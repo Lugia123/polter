@@ -210,16 +210,17 @@ pub fn defaultDir(alloc: Allocator, state_dir: []const u8) Allocator.Error![]con
 /// The path a project with this name is stored at, under `dir`
 /// (`defaultDir`'s return value). Caller owns the returned path.
 ///
-/// The name is sanitized into a filename: path separators, NUL, and other
-/// control bytes become `_`, and the result is capped in length. Two names
+/// The name is sanitized into a filename by the rule in `sanitizeFilename`
+/// (the same rule as macOS and Windows, pinned by one table they all run).
+/// Two names
 /// that sanitize to the same filename collide -- last write wins -- which
 /// is an accepted rough edge for a first version, the same trade Session.zig
 /// makes elsewhere in this codebase for the sake of not needing a second,
 /// stable identifier the user never sees. The `name` field inside the file
 /// is what's authoritative for display either way.
 ///
-/// `error.InvalidName` when nothing survives sanitizing (an empty name, or
-/// one made entirely of the characters that get replaced). This used to
+/// `error.InvalidName` for an empty name, the only name nothing survives
+/// sanitizing: every other scalar or byte becomes itself or `_`. This used to
 /// fall back to a fixed filename instead, which was worse in two ways at
 /// once: `list` filters by `.json` and the fallback didn't have that
 /// suffix, so a project saved under it was unfindable forever; and even
@@ -234,19 +235,66 @@ pub fn pathFor(alloc: Allocator, dir: []const u8, name: []const u8) (error{Inval
     return std.fs.path.join(alloc, &.{ dir, filename });
 }
 
+/// Past this many UTF-8 bytes (the `.json` not counted) a name is cut.
 const max_filename_len = 200;
 
+/// Where the rule lives, relative to the repository root. Read by the test
+/// "every row of the shared filename table", as are the macOS and Windows
+/// implementations' tests (issue #838).
+const filename_table_path = "test/fixtures/project-filenames.tsv";
+
+/// The rule that turns a project name into a filename. It is written three
+/// times -- here, `sanitize_filename` in `windows/host/src/project.rs`, and
+/// `macos/Sources/Features/Projects/ProjectFilename.swift` -- and the three
+/// disagreed for most of their lives without anything noticing (issue #23),
+/// so the rule is pinned by `test/fixtures/project-filenames.tsv`, which all
+/// three run row by row.
+///
+///   - Walk the name by Unicode scalar. No normalization: NFC and NFD
+///     spellings of one name are two filenames.
+///   - **Not by grapheme cluster.** The three standard libraries carry
+///     different Unicode versions, so a grapheme cut cannot be guaranteed to
+///     agree between them. A scalar is the same scalar in all three.
+///   - Replace with `_`: every scalar up to U+001F, U+007F, `/`, `\`, and the
+///     seven NTFS refuses in a filename, `: * ? " < > |`. (`:` is the one
+///     that matters most: NTFS takes `a:b.json` without an error and writes an
+///     alternate data stream of a file called `a`.)
+///   - Stop before the scalar that would take the result past
+///     `max_filename_len` UTF-8 bytes, never inside it -- cutting mid-scalar
+///     leaves bytes that are not UTF-8, which APFS refuses as a filename.
+///   - Nothing left (only an empty name) is `error.InvalidName`.
+///   - Append `.json`.
+///
+/// **Bytes that are not UTF-8 each become `_`.** Only this implementation
+/// needs this rule, because only it can be handed such input: the name is a
+/// byte slice here, and a string in Swift and Rust cannot hold invalid
+/// UTF-8. It is the same replacement the rule already makes, extended, so
+/// the rule stays a total function from bytes to a filename -- a failure
+/// path only Zig could reach would be exactly the kind of one-sided
+/// behaviour issue #23 was about. Pinned by this file's own test, not the
+/// shared table, whose inputs are UTF-8 by construction.
 fn sanitizeFilename(alloc: Allocator, name: []const u8) (error{InvalidName} || Allocator.Error)![]const u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(alloc);
 
-    for (name) |c| {
-        if (buf.items.len >= max_filename_len) break;
-        const safe: u8 = switch (c) {
-            0...0x1f, 0x7f, '/', '\\' => '_',
-            else => c,
+    var i: usize = 0;
+    while (i < name.len) {
+        // One step is one scalar, or one byte that does not start one.
+        const scalar: ?[]const u8 = scalar: {
+            const len = std.unicode.utf8ByteSequenceLength(name[i]) catch break :scalar null;
+            if (i + len > name.len) break :scalar null;
+            _ = std.unicode.utf8Decode(name[i..][0..len]) catch break :scalar null;
+            break :scalar name[i..][0..len];
         };
-        try buf.append(alloc, safe);
+        const step = if (scalar) |sc| sc.len else 1;
+        const out: []const u8 = if (scalar) |sc|
+            if (sc.len == 1 and replaced(sc[0])) "_" else sc
+        else
+            "_";
+
+        if (buf.items.len + out.len > max_filename_len) break;
+        try buf.appendSlice(alloc, out);
+        i += step;
     }
 
     if (buf.items.len == 0) {
@@ -255,6 +303,15 @@ fn sanitizeFilename(alloc: Allocator, name: []const u8) (error{InvalidName} || A
 
     try buf.appendSlice(alloc, ".json");
     return buf.toOwnedSlice(alloc);
+}
+
+/// The single-byte scalars the rule replaces with `_`. Every one of them is
+/// ASCII, so a multi-byte scalar is never replaced.
+fn replaced(c: u8) bool {
+    return switch (c) {
+        0...0x1f, 0x7f, '/', '\\', ':', '*', '?', '"', '<', '>', '|' => true,
+        else => false,
+    };
 }
 
 /// Write the snapshot, replacing whatever project of this name was there.
@@ -948,6 +1005,139 @@ test "a scrollback name that could name anything but a snapshot here reads as em
     try testing.expectEqualStrings("", snap.root.?.split.left.leaf.scrollback);
     try testing.expectEqualStrings("/a", snap.root.?.split.left.leaf.cwd);
     try testing.expectEqualStrings("4.snap", snap.root.?.split.right.leaf.scrollback);
+}
+
+test "every row of the shared filename table" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const table = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        filename_table_path,
+        alloc,
+        .limited(1024 * 1024),
+    ) catch |err| {
+        std.debug.print(
+            "cannot read the filename table {s} ({s}): this test runs from the repository root\n",
+            .{ filename_table_path, @errorName(err) },
+        );
+        return err;
+    };
+
+    var declared: ?usize = null;
+    var rows: usize = 0;
+    var failed: usize = 0;
+    var lines = std.mem.splitScalar(u8, table, '\n');
+    var number: usize = 0;
+    while (lines.next()) |raw| {
+        number += 1;
+        // Only a trailing \r goes (a Windows checkout). Never trim: the
+        // empty-name row *starts* with a tab, and trimming it would shift
+        // every column of that row one to the left.
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        if (line.len == 0) continue;
+        if (line[0] == '#') {
+            if (std.mem.startsWith(u8, line, "# rows: ")) {
+                declared = try std.fmt.parseInt(usize, line["# rows: ".len..], 10);
+            }
+            continue;
+        }
+
+        var field: [4][]const u8 = undefined;
+        var count: usize = 0;
+        var fields = std.mem.splitScalar(u8, line, '\t');
+        while (fields.next()) |f| : (count += 1) {
+            if (count < field.len) field[count] = f;
+        }
+        if (count != field.len) {
+            std.debug.print(
+                "{s}:{d}: {d} fields, want 4 (input, expected, status, note)\n",
+                .{ filename_table_path, number, count },
+            );
+            return error.TestUnexpectedResult;
+        }
+        const input_hex, const expected_hex, const status, const note = field;
+        rows += 1;
+
+        const input = try alloc.alloc(u8, input_hex.len / 2);
+        _ = try std.fmt.hexToBytes(input, input_hex);
+
+        const got: []const u8 = sanitizeFilename(alloc, input) catch |err| switch (err) {
+            error.InvalidName => "ERR:InvalidName",
+            else => return err,
+        };
+        const want: []const u8 = if (std.mem.eql(u8, expected_hex, "ERR:InvalidName"))
+            expected_hex
+        else want: {
+            const bytes = try alloc.alloc(u8, expected_hex.len / 2);
+            _ = try std.fmt.hexToBytes(bytes, expected_hex);
+            break :want bytes;
+        };
+
+        // `draft` rows are run and counted, not asserted: see the table's
+        // header.
+        if (std.mem.eql(u8, status, "draft")) continue;
+        if (!std.mem.eql(u8, got, want)) {
+            failed += 1;
+            std.debug.print(
+                "{s}:{d} ({s}): src/Project.zig sanitizeFilename gave {x} want {x}\n",
+                .{ filename_table_path, number, note, got, want },
+            );
+        }
+    }
+
+    // A reader that finds nothing, or finds less than the table has, passes
+    // every row it did find. This is what fails it.
+    const want_rows = declared orelse {
+        std.debug.print("{s}: no '# rows: N' line\n", .{filename_table_path});
+        return error.TestUnexpectedResult;
+    };
+    if (rows != want_rows or rows == 0) {
+        std.debug.print("{s}: read {d} rows, the table says {d}\n", .{ filename_table_path, rows, want_rows });
+        return error.TestUnexpectedResult;
+    }
+    try testing.expectEqual(@as(usize, 0), failed);
+}
+
+test "bytes that are not UTF-8 each become an underscore, and nothing is cut inside a scalar" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cases = [_]struct { in: []const u8, want: []const u8 }{
+        // A byte that starts nothing.
+        .{ .in = "\xff", .want = "_.json" },
+        // A lone continuation byte.
+        .{ .in = "a\x80b", .want = "a_b.json" },
+        // `写` cut after two of its three bytes: both left over.
+        .{ .in = "a\xe5\x86", .want = "a__.json" },
+        // Two bytes of `写`, then a character that is not a continuation.
+        .{ .in = "\xe5\x86z", .want = "__z.json" },
+        // An overlong `/`: not UTF-8, so not a separator either -- two
+        // underscores, not one.
+        .{ .in = "\xc0\xaf", .want = "__.json" },
+        // A surrogate half.
+        .{ .in = "\xed\xa0\x80", .want = "___.json" },
+        // Past U+10FFFF.
+        .{ .in = "\xf4\x90\x80\x80", .want = "____.json" },
+        // Valid scalars around the invalid ones are kept as they are.
+        .{ .in = "\xe5\x86\x99\xff\xe5\x86\x99", .want = "\xe5\x86\x99_\xe5\x86\x99.json" },
+    };
+    for (cases) |c| {
+        const got = try sanitizeFilename(alloc, c.in);
+        try testing.expectEqualSlices(u8, c.want, got);
+        try testing.expect(std.unicode.utf8ValidateSlice(got));
+    }
+
+    // Each invalid byte counts one toward the cap, like the `_` it becomes.
+    const long = [_]u8{0xff} ** 250;
+    const got = try sanitizeFilename(alloc, &long);
+    try testing.expectEqual(@as(usize, max_filename_len + ".json".len), got.len);
 }
 
 // -- the shared sample --------------------------------------------------------

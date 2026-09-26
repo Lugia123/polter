@@ -57,10 +57,7 @@ CONSUMERS = [
     "src/Project.zig",
 ]
 
-PENDING = {
-    "windows/host/src/project.rs": "Rust port of the #838 rule, @0xb8a4",
-    "src/Project.zig": "Zig port of the #838 rule, @0xed2d",
-}
+PENDING = {}
 
 STATUSES = {"ok", "draft"}
 

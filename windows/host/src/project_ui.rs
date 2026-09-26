@@ -250,7 +250,9 @@ pub fn save_project(dir: &std::path::Path, frame: HWND, id: TabId, name: String)
 
     // Derived from the file this save writes, not from `name` again: see
     // `project::scrollback_dir`.
-    let snaps = project::scrollback_dir(&project::path_for(dir, &snapshot.name));
+    let file = project::path_for(dir, &snapshot.name)
+        .map_err(|_| format!("{:?} has nothing left once sanitized, so no file can be named after it", snapshot.name))?;
+    let snaps = project::scrollback_dir(&file);
     // **What this project has already handed out**: the counter in the file
     // being replaced, and every snapshot name that file or the directory
     // still holds. A counter that went missing cannot make a number be used
@@ -395,13 +397,13 @@ pub fn load_project_into_new_tab(
     frame: HWND,
     app: crate::ffi::App,
     hinst: windows::Win32::Foundation::HINSTANCE,
-    dir: &std::path::Path,
-    name: &str,
+    file: &std::path::Path,
 ) -> Result<(), String> {
-    let snapshot = project::read(dir, name).map_err(|e| format!("{e:?}"))?;
-    // From the file just read, not from `name` sanitized again: see
-    // `project::scrollback_dir`.
-    let snaps = project::scrollback_dir(&project::path_for(dir, name));
+    // **The file the listing found**, not a path recomputed from the name:
+    // see `project::path_for`. (This used to take a name and call `path_for`
+    // right below a comment saying it did not.)
+    let snapshot = project::read_file(file).map_err(|e| format!("{e:?}"))?;
+    let snaps = project::scrollback_dir(file);
 
     // The seed pane is created here rather than by the layout step, so its
     // scrollback has to be given here too -- the same reason as `cwd` and

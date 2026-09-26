@@ -122,7 +122,7 @@ fn show(frame: HWND, at: POINT) {
     let hinst = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }
         .map(Into::into)
         .unwrap_or_default();
-    match crate::project_ui::load_project_into_new_tab(frame, crate::app_handle(), hinst, &dir, &entry.name) {
+    match crate::project_ui::load_project_into_new_tab(frame, crate::app_handle(), hinst, &entry.path) {
         Ok(()) => wlogf!(frame, "[project] loaded {:?}", entry.name),
         Err(e) => {
             // **Said on screen as well as in the log.** The row was picked;

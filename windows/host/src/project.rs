@@ -98,7 +98,14 @@ pub enum ReadError {
     NotFound,
     /// The file exists but is not a complete, well-formed project.
     Corrupt,
+    /// The name has nothing left once sanitized (`sanitize_filename`), so no
+    /// file can be named after it. Matches `Project.zig`'s `InvalidName`.
+    InvalidName,
 }
+
+/// A project name that names no file: nothing is left once it is sanitized.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidName;
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -130,10 +137,16 @@ pub fn resolve_state_dir() -> Option<PathBuf> {
     Some(PathBuf::from(base).join("polter"))
 }
 
-/// The path a project with this name is stored at, under `dir`
+/// The path a **new** project with this name is written to, under `dir`
 /// (`default_dir`'s return value).
-pub fn path_for(dir: &Path, name: &str) -> PathBuf {
-    dir.join(sanitize_filename(name))
+///
+/// ⚠️ **Not how an existing project is found.** A project's identity is the
+/// file `list` found (`Entry::path`), as on macOS: the rule that names files
+/// has changed once (#838) and a file named by an earlier rule must still
+/// open. Recomputing a path from a name is right only for the file this
+/// build is about to write.
+pub fn path_for(dir: &Path, name: &str) -> Result<PathBuf, InvalidName> {
+    Ok(dir.join(sanitize_filename(name)?))
 }
 
 /// Where the scrollback snapshots of the project saved at `project_file`
@@ -304,36 +317,42 @@ pub fn scrollback_names(node: &SavedNode) -> Vec<String> {
 
 const MAX_FILENAME_LEN: usize = 200;
 
-/// Mirrors `Project.zig`'s `sanitizeFilename` exactly, including the
-/// asymmetry it has: path separators, NUL and other control bytes become
-/// `_`, the result is capped at 200 bytes, and -- **this is the one thing
-/// worth pausing on** -- a name that sanitizes to nothing at all comes back
-/// as literally `project`, with **no** `.json` suffix, because the length
-/// check in `Project.zig` happens before the suffix is appended. Every
-/// non-empty name gets the suffix; only the empty one does not. That reads
-/// like an oversight, but agreement is the whole point of this file, so it
-/// is copied rather than "fixed" here -- flag it to whoever owns
-/// `Project.zig` if it should change, don't let the two sides drift apart
-/// silently instead.
-pub fn sanitize_filename(name: &str) -> String {
+/// The rule that names a new project file (#838). **One rule for all three
+/// implementations**, pinned by `test/fixtures/project-filenames.tsv`, which
+/// the tests below run row by row -- `src/Project.zig` and
+/// `ProjectFilename.swift` run the same file.
+///
+/// Walk the name by Unicode scalar -- no normalisation, and **not** by
+/// grapheme cluster: cluster boundaries depend on the Unicode version each
+/// language's standard library ships, so a rule written in them could not be
+/// identical in three languages. Replace every scalar at or below U+001F,
+/// U+007F, and `/ \ : * ? " < > |` with `_`. Stop before the scalar that
+/// would take the result past 200 UTF-8 bytes, so a multi-byte character is
+/// never cut in half. Nothing left is `InvalidName`; otherwise append `.json`.
+///
+/// ⚠️ **What this replaced**, so it is not rebuilt: it walked `bytes()` and
+/// pushed each byte `as char`, which turns every UTF-8 byte into its own
+/// Latin-1 code point -- `写` came out as `å\u{86}\u{99}` -- so every
+/// non-ASCII name got a different filename from the other two platforms,
+/// and the 200 cap counted the mangled length. The round trip still passed,
+/// because the writer and the reader mangled alike (#23).
+pub fn sanitize_filename(name: &str) -> Result<String, InvalidName> {
     let mut buf = String::new();
-    for b in name.bytes() {
-        if buf.len() >= MAX_FILENAME_LEN {
-            break;
-        }
-        let safe = match b {
-            0x00..=0x1f | 0x7f | b'/' | b'\\' => b'_',
+    for c in name.chars() {
+        let safe = match c {
+            '\u{0}'..='\u{1f}' | '\u{7f}' | '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             other => other,
         };
-        buf.push(safe as char);
+        if buf.len() + safe.len_utf8() > MAX_FILENAME_LEN {
+            break;
+        }
+        buf.push(safe);
     }
-
     if buf.is_empty() {
-        return "project".to_string();
+        return Err(InvalidName);
     }
-
     buf.push_str(".json");
-    buf
+    Ok(buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -484,8 +503,10 @@ pub fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot, ReadError> {
 /// half-written file is exactly the "half a tree" this format promises never
 /// to hand back.
 pub fn write(dir: &Path, snapshot: &Snapshot) -> std::io::Result<()> {
+    let path = path_for(dir, &snapshot.name).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "the project name is empty once sanitized")
+    })?;
     std::fs::create_dir_all(dir)?;
-    let path = path_for(dir, &snapshot.name);
     let tmp = path.with_extension("json.tmp");
     let body = serde_json::to_string(&snapshot_to_json(snapshot))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
@@ -493,10 +514,16 @@ pub fn write(dir: &Path, snapshot: &Snapshot) -> std::io::Result<()> {
     std::fs::rename(&tmp, &path)
 }
 
-/// Read a project by name.
+/// Read the project this build would write under `name` -- the file a save
+/// is about to replace. To open a project a person picked, use `read_file`
+/// with the path `list` found (see `path_for`).
 pub fn read(dir: &Path, name: &str) -> Result<Snapshot, ReadError> {
-    let path = path_for(dir, name);
-    let bytes = match std::fs::read(&path) {
+    read_file(&path_for(dir, name).map_err(|_| ReadError::InvalidName)?)
+}
+
+/// Read the project stored in `path`.
+pub fn read_file(path: &Path) -> Result<Snapshot, ReadError> {
+    let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ReadError::NotFound),
         Err(_) => return Err(ReadError::Corrupt),
@@ -512,7 +539,7 @@ pub fn read(dir: &Path, name: &str) -> Result<Snapshot, ReadError> {
 /// best-effort and after the file, so a failure there leaves orphans rather
 /// than a project with its scrollback gone.
 pub fn delete(dir: &Path, name: &str) -> Result<(), ReadError> {
-    let path = path_for(dir, name);
+    let path = path_for(dir, name).map_err(|_| ReadError::InvalidName)?;
     match std::fs::remove_file(&path) {
         Ok(()) => {
             let _ = std::fs::remove_dir_all(scrollback_dir(&path));
@@ -529,20 +556,15 @@ pub fn delete(dir: &Path, name: &str) -> Result<(), ReadError> {
 pub struct Entry {
     pub name: String,
     pub saved_at: i64,
+    /// The file this entry was read from. **This is the project's identity**
+    /// for opening it -- see `path_for` on why a path is not recomputed from
+    /// `name`.
+    pub path: PathBuf,
 }
 
 /// List saved projects. Best-effort, matching `Project.zig::list`: an entry
 /// this build cannot make sense of is skipped rather than failing the whole
 /// listing, and a missing directory is an empty list, not an error.
-///
-/// **Inherits `Project.zig`'s `sanitizeFilename` gap on purpose (task 544 is
-/// where that gets fixed, on the Zig side).** A project whose name sanitizes
-/// to empty is saved as `project` with no `.json` suffix, and the `.json`
-/// filter below -- copied from `Project.zig::list`'s
-/// `endsWith(..., ".json")` -- will never surface it.
-/// Fixing the filter here without the write side changing too would make
-/// this list *disagree* with macOS's about which projects exist, which is
-/// worse than both platforms sharing the same bug until 544 lands.
 ///
 /// **Skipping is unchanged; hiding it is not.** A project that fails to read
 /// is still left out -- the same in all three implementations, and changing
@@ -571,7 +593,7 @@ pub fn list(dir: &Path) -> Listing {
             }
         };
         match parse_snapshot(&bytes) {
-            Ok(snapshot) => out.entries.push(Entry { name: snapshot.name, saved_at: snapshot.saved_at }),
+            Ok(snapshot) => out.entries.push(Entry { name: snapshot.name, saved_at: snapshot.saved_at, path }),
             Err(e) => out.skipped.push((path, format!("{e:?}"))),
         }
     }
@@ -748,37 +770,105 @@ mod tests {
         }
     }
 
+    /// **The shared table, every row** (#838). The rule is a function, and
+    /// a function cannot be pinned by a sample file of fields: it is pinned
+    /// by input -> expected pairs that all three implementations run.
+    ///
+    /// ⚠️ **The row count is asserted against the table's own `# rows:`**:
+    /// a reader that parsed nothing would otherwise pass every row it saw.
+    /// `draft` rows are run and counted but not compared -- see the table's
+    /// header for why they are still undecided.
     #[test]
-    fn sanitize_filename_passes_a_plain_name_through() {
-        assert_eq!(sanitize_filename("write retry decorator"), "write retry decorator.json");
+    fn the_shared_filename_table_holds_for_this_implementation() {
+        const TABLE: &str = include_str!("../../../test/fixtures/project-filenames.tsv");
+        fn unhex(s: &str) -> Vec<u8> {
+            (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex")).collect()
+        }
+        let mut declared = None;
+        let (mut rows, mut asserted, mut drafts) = (0, 0, 0);
+        let mut wrong = Vec::new();
+        for (n, line) in TABLE.lines().enumerate() {
+            let line = line.trim_end_matches('\r');
+            if let Some(v) = line.strip_prefix("# rows:") {
+                declared = Some(v.trim().parse::<usize>().expect("# rows: is a number"));
+                continue;
+            }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let f: Vec<&str> = line.split('\t').collect();
+            assert_eq!(f.len(), 4, "line {}: {} fields", n + 1, f.len());
+            rows += 1;
+            let input = String::from_utf8(unhex(f[0])).expect("input is UTF-8");
+            let got = match sanitize_filename(&input) {
+                Ok(name) => name,
+                Err(InvalidName) => "ERR:InvalidName".to_string(),
+            };
+            let want = if f[1] == "ERR:InvalidName" {
+                f[1].to_string()
+            } else {
+                String::from_utf8(unhex(f[1])).expect("expected is UTF-8")
+            };
+            match f[2] {
+                "ok" => {
+                    asserted += 1;
+                    if got != want {
+                        wrong.push(format!("line {} ({}): got {:?}, want {:?}", n + 1, f[3], got, want));
+                    }
+                }
+                "draft" => drafts += 1,
+                other => panic!("line {}: unknown status {other:?}", n + 1),
+            }
+        }
+        assert_eq!(Some(rows), declared, "ran {rows} rows, the table declares {declared:?}");
+        assert!(asserted > 0, "no row was compared");
+        assert!(wrong.is_empty(), "{} of {} rows disagree ({} draft rows not compared):\n{}", wrong.len(), asserted, drafts, wrong.join("\n"));
     }
 
+    /// **The NTFS characters, asserted here because the table only counts
+    /// them.** Their two rows are `draft` in the shared table, so no
+    /// implementation is held to them yet -- and this is the one platform
+    /// where they bite: `a:b.json` is accepted by `CreateFileW` and becomes
+    /// an extensionless `a` with the data in an alternate stream, silently.
+    /// Same inputs and expectations as those two rows.
     #[test]
-    fn sanitize_filename_replaces_separators_and_control_bytes() {
-        assert_eq!(sanitize_filename("a/b\\c"), "a_b_c.json");
-        assert_eq!(sanitize_filename("tab\ttab"), "tab_tab.json");
-        assert_eq!(sanitize_filename("del\x7fdel"), "del_del.json");
+    fn ntfs_reserved_characters_are_replaced_on_this_platform_at_least() {
+        assert_eq!(sanitize_filename("a:b"), Ok("a_b.json".to_string()));
+        assert_eq!(sanitize_filename("*?\"<>|"), Ok("______.json".to_string()));
     }
 
+    /// The case the table's second column cannot express on its own: a name
+    /// with nothing left is refused, never written as a bare `project`.
     #[test]
-    fn sanitize_filename_caps_length() {
-        let long = "x".repeat(500);
-        let out = sanitize_filename(&long);
-        // 200 x's, then ".json" -- the cap applies before the suffix, same
-        // as Project.zig's loop-then-append order.
-        assert_eq!(out.len(), MAX_FILENAME_LEN + ".json".len());
-        assert!(out.starts_with(&"x".repeat(MAX_FILENAME_LEN)));
+    fn a_name_with_nothing_left_cannot_be_saved() {
+        assert_eq!(sanitize_filename(""), Err(InvalidName));
+        let dir = std::env::temp_dir().join(format!("polter-project-rs-empty-{}", std::process::id()));
+        let snap = Snapshot { name: String::new(), saved_at: 1, root: None, next_scrollback: None };
+        assert!(write(&dir, &snap).is_err());
+        assert!(!dir.join("project").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **Opened by the file the listing found**, not by recomputing a path
+    /// from the name: a project written under an earlier naming rule (say
+    /// the old byte-wise one, which mangled `写`) still opens.
     #[test]
-    fn sanitize_filename_of_empty_name_has_no_json_suffix() {
-        // See the doc comment on sanitize_filename: this is copied
-        // deliberately, not fixed here. Only the truly-empty name skips the
-        // suffix -- a name that sanitizes down to non-empty control bytes
-        // still gets ".json", which is why the second assertion here is not
-        // redundant with the first.
-        assert_eq!(sanitize_filename(""), "project");
-        assert_eq!(sanitize_filename("\x00\x00"), "__.json");
+    fn a_project_opens_from_the_file_list_found_even_if_its_name_now_maps_elsewhere() {
+        let dir = std::env::temp_dir().join(format!("polter-project-rs-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let snap = Snapshot { name: "写".to_string(), saved_at: 7, root: None, next_scrollback: None };
+        // The old rule's filename for "写": each UTF-8 byte as its own char.
+        let legacy = dir.join("\u{e5}\u{86}\u{99}.json");
+        std::fs::write(&legacy, serde_json::to_vec(&snapshot_to_json(&snap)).unwrap()).unwrap();
+
+        let listing = list(&dir);
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].path, legacy);
+        assert_eq!(read_file(&listing.entries[0].path), Ok(snap));
+        assert_eq!(read(&dir, "写"), Err(ReadError::NotFound), "the name alone no longer finds it");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -866,8 +956,8 @@ mod tests {
         assert_eq!(listing.skipped.len(), 1, "{:?}", listing.skipped);
         assert_eq!(listing.skipped[0].0, dir.join("garbage.json"));
         assert_eq!(entries.len(), 2);
-        assert!(entries.contains(&Entry { name: "alpha".to_string(), saved_at: 10 }));
-        assert!(entries.contains(&Entry { name: "beta".to_string(), saved_at: 20 }));
+        assert!(entries.contains(&Entry { name: "alpha".to_string(), saved_at: 10, path: dir.join("alpha.json") }));
+        assert!(entries.contains(&Entry { name: "beta".to_string(), saved_at: 20, path: dir.join("beta.json") }));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1041,9 +1131,6 @@ mod tests {
         let dir = Path::new("/state/projects");
         assert_eq!(scrollback_dir(&dir.join("写 retry.json")), dir.join("写 retry.scrollback"));
         assert_eq!(scrollback_dir(&dir.join("v1.2.json")), dir.join("v1.2.scrollback"));
-        // The empty name sanitizes to `project` with no `.json`; see
-        // `sanitize_filename`. Still its own directory, not the parent.
-        assert_eq!(scrollback_dir(&path_for(dir, "")), dir.join("project.scrollback"));
     }
 
     #[test]
@@ -1072,7 +1159,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-delete-snaps-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         write(&dir, &Snapshot { name: "with snaps".to_string(), saved_at: 1, root: None, next_scrollback: None }).unwrap();
-        let snaps = scrollback_dir(&path_for(&dir, "with snaps"));
+        let snaps = scrollback_dir(&path_for(&dir, "with snaps").unwrap());
         std::fs::create_dir_all(&snaps).unwrap();
         std::fs::write(snaps.join("0.snap"), b"x").unwrap();
 

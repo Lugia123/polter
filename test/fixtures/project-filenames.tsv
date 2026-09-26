@@ -18,9 +18,9 @@
 # path separators and half-cut characters that an editor or git would change.
 #
 # status: ok    -- every implementation must match.
-#         draft -- the NTFS-forbidden characters (: * ? " < > |): decided, but
-#                  pending a Windows test of what NTFS does with them. Read and
-#                  counted, not asserted.
+#         draft -- decided but not yet measured: read and counted, not
+#                  asserted. (No row is draft right now; the NTFS rows were,
+#                  until a Windows test measured them.)
 #
 # Every consumer asserts it read exactly `rows` data rows, so a reader that
 # finds nothing fails instead of passing. Lines starting with # are comments.
@@ -47,6 +47,6 @@ c3a9	c3a92e6a736f6e	ok	NFC e-acute
 65cc81	65cc812e6a736f6e	ok	NFD e-acute: different bytes out (no normalization)
 612f625c63	615f625f632e6a736f6e	ok	path separators
 09007f	5f5f5f2e6a736f6e	ok	C0 + DEL
-613a62	615f622e6a736f6e	draft	NTFS ADS trap
-2a3f223c3e7c	5f5f5f5f5f5f2e6a736f6e	draft	NTFS illegal set
+613a62	615f622e6a736f6e	ok	NTFS: "a:b.json" writes silently into an alternate data stream of "a" (measured: 9 bytes written, only a 0-byte "a" listed)
+2a3f223c3e7c	5f5f5f5f5f5f2e6a736f6e	ok	NTFS forbids these; measured err=123 on each, loud (only ":" is silent)
 	ERR:InvalidName	ok	empty -> error
