@@ -304,37 +304,58 @@ class AppDelegate: NSObject,
         relaunch()
     }
 
+    /// The copy waiting to open once this one has exited, while a quit that
+    /// could still be called off is in progress. See `PendingRelaunch`.
+    private var pendingRelaunch: PendingRelaunch?
+
     /// Start a fresh copy and stand down, so the new process reads the
     /// language that was just written.
     ///
-    /// The replacement waits for this pid to disappear before opening: this
-    /// app is a singleton over a socket, and launching first would leave two
-    /// instances briefly fighting over it.
-    ///
-    /// The bundle path is passed as an argument rather than spliced into the
-    /// script. A path with a quote or a space in it -- and on at least one
-    /// machine this checkout lives under a directory whose name contains a
-    /// space -- would otherwise turn into a broken command, or worse, a
-    /// working one that runs something else.
+    /// The quit this asks for can be refused -- the "Quit Polter?" box has a
+    /// Cancel -- and every refusal goes through `cancelTermination` /
+    /// `cancelTerminationLater`, which stop the waiting copy
+    /// (`tools/quitting-is-called-off-in-one-place.py` holds that).
     private func relaunch() {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/sh")
-        task.arguments = [
-            "-c",
-            "while /bin/kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open -n \"$2\"",
-            "polter-relaunch",
-            String(ProcessInfo.processInfo.processIdentifier),
-            Bundle.main.bundlePath,
-        ]
-
+        // One waiting copy at most. Only reachable if a refusal slipped past
+        // the two functions above; without it, N refused restarts would
+        // reopen the app N times on the next quit.
+        pendingRelaunch?.abandon()
         do {
-            try task.run()
+            pendingRelaunch = try PendingRelaunch.schedule(
+                waitingFor: ProcessInfo.processInfo.processIdentifier,
+                bundle: Bundle.main.bundlePath)
         } catch {
             AppDelegate.logger.warning("could not schedule relaunch: \(error)")
             return
         }
 
         NSApp.terminate(nil)
+    }
+
+    /// **The one way a quit is called off**, answering synchronously.
+    ///
+    /// A quit can be in progress with a relaunch waiting on it
+    /// (`relaunch`), and calling the quit off has to call that off too --
+    /// or it opens the app on whatever quit comes next (issue #12). So no
+    /// refusal is written anywhere else; the gate
+    /// `tools/quitting-is-called-off-in-one-place.py` fails if one is.
+    private func cancelTermination() -> NSApplication.TerminateReply {
+        abandonRelaunch()
+        return .terminateCancel
+    }
+
+    /// The same, for a quit that was answered `.terminateLater` and is
+    /// refused afterwards.
+    private func cancelTerminationLater() async {
+        abandonRelaunch()
+        await NSApp.reply(toApplicationShouldTerminate: false)
+    }
+
+    private func abandonRelaunch() {
+        guard let pending = pendingRelaunch else { return }
+        pending.abandon()
+        pendingRelaunch = nil
+        AppDelegate.logger.info("quit called off; the relaunch waiting on it was stopped")
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -1153,7 +1174,6 @@ class AppDelegate: NSObject,
         quickController.toggle()
     }
 
-
     /// Toggles visibility of all Ghosty Terminal windows. When hidden, activates Ghostty as the frontmost application
     @IBAction func toggleVisibility(_ sender: Any) {
         // If we have focus, then we hide all windows.
@@ -1513,7 +1533,7 @@ extension AppDelegate {
                 if [.OK, .alertFirstButtonReturn].contains(response) {
                     await NSApp.reply(toApplicationShouldTerminate: true)
                 } else {
-                    await NSApp.reply(toApplicationShouldTerminate: false)
+                    await self.cancelTerminationLater()
                 }
             }
 
@@ -1533,7 +1553,7 @@ extension AppDelegate {
             case .alertSecondButtonReturn:
                 return .terminateNow
             default:
-                return .terminateCancel
+                return cancelTermination()
             }
         }
     }
@@ -1552,7 +1572,7 @@ extension AppDelegate {
                     await controller.window?.close()
                     continue
                 } else {
-                    await NSApp.reply(toApplicationShouldTerminate: false)
+                    await self.cancelTerminationLater()
                     // Cancel the review
                     return
                 }
