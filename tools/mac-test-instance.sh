@@ -75,7 +75,20 @@ if [ "$bundle" = "com.lugia.polter" ] || [ "$bundle" = "$installed" ]; then
 fi
 
 # --- 2. Short state directory. ----------------------------------------------
-state=$(mktemp -d /tmp/polter-test.XXXX) || die "mktemp failed"
+# A restart test has to come back to the same state directory: projects and
+# the session live there, and a fresh one per launch would make "still bound
+# after a restart" fail for the method's sake. MAC_TEST_STATE_DIR reuses one,
+# and only one this script made (under /tmp/polter-test.*).
+if [ -n "${MAC_TEST_STATE_DIR-}" ]; then
+    case "$MAC_TEST_STATE_DIR" in
+        /tmp/polter-test.*) ;;
+        *) die "MAC_TEST_STATE_DIR must be a directory this script made (/tmp/polter-test.*), got $MAC_TEST_STATE_DIR" ;;
+    esac
+    [ -d "$MAC_TEST_STATE_DIR" ] || die "no such state directory: $MAC_TEST_STATE_DIR"
+    state=$MAC_TEST_STATE_DIR
+else
+    state=$(mktemp -d /tmp/polter-test.XXXX) || die "mktemp failed"
+fi
 probe="$state/polter/polter-0123456789abcdef.sock"
 [ "${#probe}" -lt 104 ] || die "state directory $state is too long for an AF_UNIX socket (${#probe} bytes)"
 

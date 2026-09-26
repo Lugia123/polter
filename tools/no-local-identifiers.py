@@ -193,6 +193,19 @@ KNOWN = {
     # must not leak, and from today this gate will not be the thing that says so.
     "tools/mac-test-instance.sh":
         "refuses to launch a build whose bundle id is the installed app's",
+    # The xctest runner, for the same reason one file over: `xcodebuild test`
+    # starts a test host, so the same refusal applies to it, and the line that
+    # refuses *is* one of the two hits. The other names the id in a comment
+    # explaining which configuration produces which -- `Debug` is the one with
+    # the suffix, and that is the whole reason the two xcodebuild steps are run
+    # separately with the check in between.
+    #
+    # Same cost as the launcher: KNOWN allows by *path*, and this script also
+    # composes paths (a DerivedData directory, a temp config and state dir).
+    # Those stay `mktemp` output and arguments; from today this gate does not
+    # check that they do.
+    "tools/mac-xctest-run.sh":
+        "refuses a test host whose bundle id is the installed app's",
     "src/build/PolterVersion.zig": "names the fork's own remote, Lugia123/polter",
     "macos/Ghostty-Info.plist": "pasteboard type derived from the bundle id",
     "macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift":
