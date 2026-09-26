@@ -27,13 +27,26 @@
 #   after cleaning up, and says why. Same shape as `zig build test
 #   -Dtest-filter` matching nothing: a filter that matches nothing does not
 #   fail, it quietly tests nothing.
+# - **The user's MCP registration changing fails the run (exit 4).** This check
+#   is the one gate left from #832 ("mac GUI tests leak into the user's
+#   session"): a test host that registers itself rewrites mcpServers.polter
+#   in the user's ~/.claude.json, and the user's polter MCP then points at a
+#   build that is about to be deleted. It used to print a line and exit 0, so
+#   a scripted run reported success while the user's setup was broken. Now it
+#   cleans up, prints what the entry was and what it became, and the exact
+#   command that puts it back, then exits 4 (3 is "no tests ran").
+#   MAC_XCTEST_CLAUDE_JSON overrides the file watched -- it exists so the
+#   floor for this check can change a copy instead of the user's own file.
 set -eu
 wt=$1; out=$2; shift 2
 die() { print -u2 "xctest-run: $*"; exit 1; }
 [ -d "$wt/macos" ] || die "no macos/ in $wt"
 
-mcp() { python3 -c "import json,os;d=json.load(open(os.path.expanduser('~/.claude.json')));o=d.get('mcpServers',{}).get('polter');print('EXISTS' if o else 'ABSENT');print(json.dumps(o,sort_keys=True))"; }
-before=$(mcp); [[ $before == EXISTS* ]] || die "user's mcpServers.polter is absent: the before/after check could not fail, refusing"
+claude_json=${MAC_XCTEST_CLAUDE_JSON:-$HOME/.claude.json}
+mcp() { python3 -c "import json,sys;d=json.load(open(sys.argv[1]));o=d.get('mcpServers',{}).get('polter');print('EXISTS' if o else 'ABSENT');print(json.dumps(o,sort_keys=True))" "$claude_json"; }
+before=$(mcp); [[ $before == EXISTS* ]] || die "mcpServers.polter is absent from $claude_json: the before/after check could not fail, refusing"
+# The entry exactly as it was, as a file the restore command below can read.
+python3 -c "import json,sys;print(json.dumps(json.load(open(sys.argv[1]))['mcpServers']['polter'],indent=2))" "$claude_json" > "$out-mcp-before.json"
 
 cd "$wt/macos"
 env -i PATH="$PATH" HOME="$HOME" xcodebuild build-for-testing -scheme Ghostty -skip-testing GhosttyUITests \
@@ -51,7 +64,8 @@ env -i PATH="$PATH" HOME="$HOME" TEST_RUNNER_XDG_CONFIG_HOME="$x/config" TEST_RU
     -skip-testing GhosttyUITests "$@" -resultBundlePath "$out.xcresult" > "$out-test.log" 2>&1 && rc=0 || rc=$?
 print "xcodebuild test exit=$rc; host state used: $(ls $x/state/polter 2>/dev/null | tr '\n' ' ')"
 
-after=$(mcp); [[ $after == $before ]] && print MCP_SAME || { print -u2 "MCP ENTRY CHANGED:\nbefore: $before\nafter:  $after"; }
+after=$(mcp) || after="UNREADABLE (the file no longer parses as JSON)"
+if [[ $after == $before ]]; then print MCP_SAME; mcp_changed=0; else mcp_changed=1; fi
 xcrun xcresulttool get test-results tests --path "$out.xcresult" > "$out.json"
 python3 - "$out.json" <<'EOF' && counted=0 || counted=$?
 import json, sys
@@ -73,6 +87,16 @@ for f in fails: print('FAIL', f)
 sys.exit(3 if total == 0 else 0)
 EOF
 rm -rf "$x" "$out.xcresult"
+if [ "$mcp_changed" -eq 1 ]; then
+    print -u2 "xctest-run: the user's MCP registration CHANGED during this run -- key mcpServers.polter in $claude_json."
+    print -u2 "  was: ${before#EXISTS$'\n'}"
+    print -u2 "  now: ${after#EXISTS$'\n'}"
+    print -u2 "  The user's polter MCP may now point at this test build. Put the old entry back, changing only that key (other sessions write this file, so do not overwrite it whole):"
+    print -u2 "  python3 -c \"import json,os,sys;p=sys.argv[1];d=json.load(open(p));d.setdefault('mcpServers',{})['polter']=json.load(open(sys.argv[2]));t=p+'.xctest-restore';json.dump(d,open(t,'w'),indent=2,ensure_ascii=False);os.replace(t,p)\" '$claude_json' '$out-mcp-before.json'"
+    print -u2 "  Then compare mcpServers.polter with $out-mcp-before.json once more."
+    [ "$counted" -eq 3 ] && print -u2 "xctest-run: also, 0 tests ran (see exit 3 in the header)."
+    exit 4
+fi
 if [ "$counted" -eq 3 ]; then
     print -u2 "xctest-run: 0 tests ran (xcodebuild exit=$rc). This is not a pass: the -only-testing filter matched nothing. A Swift Testing @Test is named with its (), e.g. -only-testing:GhosttyTests/PluginSettingsTests/severalSubscriptionsGiveSeveralPhrases()"
     exit 3
