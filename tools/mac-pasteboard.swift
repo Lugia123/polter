@@ -5,6 +5,7 @@
 //     swift tools/mac-pasteboard.swift save    <board> <dir>
 //     swift tools/mac-pasteboard.swift restore <board> <dir>
 //     swift tools/mac-pasteboard.swift compare <board> <dir>
+//     swift tools/mac-pasteboard.swift image-only <board>
 //     swift tools/mac-pasteboard.swift selftest
 //
 // <board> is `general`, `selection` (the private board copy-on-select writes,
@@ -23,15 +24,29 @@
 // saved count is recorded in the manifest so a report can say which it was.
 //
 // `compare` exits 1 on any difference and says which item and type differ.
+//
+// `image-only` puts one small image on the board (a 2x2 PNG, written as
+// `public.png` and `public.tiff`) and **no text of any kind**, then reads the
+// board back and proves it: it prints the types it finds, fails if any of
+// them conforms to `public.text` (plain, UTF-8, HTML, RTF ...), and fails if
+// `string(forType: .string)` returns anything. It exists for one check (#30):
+// ⌘V in a terminal with nothing pastable must reach the program running
+// there (`^[[118;9u` under the kitty keyboard protocol) rather than be taken
+// by a menu item. That check means nothing unless the board really has no
+// text, so the tool says so itself instead of relying on somebody reading the
+// board again afterwards. Save both boards before using it.
 // `selftest` is the floor under all of this, run on a pasteboard of its own
 // (never `general` or `selection`): it saves a two-item, multi-type board,
 // overwrites it the way a test would, restores, and requires equality -- and
 // then does the same with the restore skipped and requires that `compare`
 // fails. If the second half passes, the comparison cannot see a missing
-// restore and the first half proves nothing.
+// restore and the first half proves nothing. It also checks `image-only`'s
+// own verdict both ways: clean on the image-only board, and red on a board
+// that has the same image plus one text item.
 
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 struct Manifest: Codable {
     var name: String
@@ -134,6 +149,49 @@ func compare(_ pb: NSPasteboard, _ dir: URL) throws -> Bool {
     return false
 }
 
+// --- image-only ------------------------------------------------------------
+
+/// The types on `pb` that are text, by UTType conformance -- so HTML and RTF
+/// count, and so do the legacy `NSStringPboardType` aliases AppKit adds.
+func textTypes(_ pb: NSPasteboard) -> [String] {
+    (pb.types ?? []).map(\.rawValue).filter { raw in
+        if raw == NSPasteboard.PasteboardType.string.rawValue || raw == "NSStringPboardType" { return true }
+        return UTType(raw)?.conforms(to: .text) ?? false
+    }
+}
+
+/// Empty when `pb` holds no text at all; otherwise one line per problem.
+func textProblems(_ pb: NSPasteboard) -> [String] {
+    var out = textTypes(pb).map { "text type present: \($0)" }
+    if let s = pb.string(forType: .string) { out.append("string(forType: .string) returned \(s.utf8.count) bytes") }
+    return out
+}
+
+func writeImageOnly(_ pb: NSPasteboard) -> Bool {
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8,
+                               samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                               colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    guard let png = rep.representation(using: .png, properties: [:]), let tiff = rep.tiffRepresentation else { return false }
+    let item = NSPasteboardItem()
+    item.setData(png, forType: .png)
+    item.setData(tiff, forType: .tiff)
+    pb.clearContents()
+    return pb.writeObjects([item])
+}
+
+func imageOnly(_ pb: NSPasteboard) -> Bool {
+    guard writeImageOnly(pb) else { print("FAIL writeObjects refused the image"); return false }
+    let items = (pb.pasteboardItems ?? []).map { $0.types.map(\.rawValue) }
+    print("wrote image-only to \(pb.name.rawValue): changeCount=\(pb.changeCount) items=\(items)")
+    let problems = textProblems(pb)
+    if problems.isEmpty {
+        print("verified: no text type, string(forType: .string)=nil")
+        return true
+    }
+    problems.forEach { print("FAIL \($0)") }
+    return false
+}
+
 func selftest() throws -> Bool {
     // A board nobody else uses. Never general, never selection.
     let pb = NSPasteboard(name: .init("polter.mac-pasteboard.selftest.\(getpid())"))
@@ -174,14 +232,29 @@ func selftest() throws -> Bool {
     let d2 = try differences(pb, s2)
     print(d2.isEmpty ? "FAIL compare saw no difference with the restore skipped" : "PASS compare is red with the restore skipped (\(d2.count) difference(s))")
     ok = ok && !d2.isEmpty
+
+    // image-only's verdict, both ways, on this private board.
+    let clean = imageOnly(pb)
+    print(clean ? "PASS image-only board verified text-free" : "FAIL image-only board not verified text-free")
+    ok = ok && clean
+    // The floor under that verdict: the same image plus a text item must be red.
+    _ = writeImageOnly(pb)
+    let extra = NSPasteboardItem(); extra.setString("text that must be seen", forType: .string)
+    _ = pb.writeObjects([extra])
+    let seen = textProblems(pb)
+    print(seen.isEmpty ? "FAIL the text check saw nothing on a board that has text" : "PASS the text check is red when text is added (\(seen.count) problem(s))")
+    ok = ok && !seen.isEmpty
     return ok
 }
 
 let args = CommandLine.arguments
-guard args.count >= 2 else { die("usage: save|restore|compare <board> <dir>, or selftest") }
+guard args.count >= 2 else { die("usage: save|restore|compare <board> <dir>, image-only <board>, or selftest") }
 do {
     switch args[1] {
     case "selftest": exit(try selftest() ? 0 : 1)
+    case "image-only":
+        guard args.count == 3 else { die("image-only takes <board>") }
+        exit(imageOnly(board(args[2])) ? 0 : 1)
     case "save", "restore", "compare":
         guard args.count == 4 else { die("\(args[1]) takes <board> <dir>") }
         let pb = board(args[2]), dir = URL(fileURLWithPath: args[3])
