@@ -68,7 +68,7 @@ unsafe extern "system" fn load_timer(_: HWND, _: u32, id: usize, _: u32) {
 fn show(frame: HWND, at: POINT) {
     let Some(dir) = project::resolve_state_dir().map(|s| project::default_dir(&s)) else {
         wlogf!(frame, "[project] no state directory (neither XDG_STATE_HOME nor LOCALAPPDATA); nothing to list");
-        tell(frame, &tr(n_("No saved projects.")));
+        tell(frame, &tr(n_("No Saved Projects")));
         return;
     };
     let mut listing = project::list(&dir);
@@ -99,7 +99,7 @@ fn show(frame: HWND, at: POINT) {
         if listing.entries.is_empty() {
             // **Greyed, not absent**: an empty popup and one that never
             // opened look the same.
-            let wide: Vec<u16> = tr(n_("No saved projects.")).encode_utf16().chain(Some(0)).collect();
+            let wide: Vec<u16> = tr(n_("No Saved Projects")).encode_utf16().chain(Some(0)).collect();
             let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, PCWSTR(wide.as_ptr()));
         }
         for (i, e) in listing.entries.iter().enumerate() {

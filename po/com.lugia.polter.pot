@@ -2302,3 +2302,27 @@ msgstr ""
 #: windows/host/src/roles_ui.rs:865
 msgid "This list is what the CLI has on this machine. A project's own MCP servers aren't in it; at launch they follow the switch above."
 msgstr ""
+
+#: windows/host/src/menu.rs:471
+msgid "Project"
+msgstr ""
+
+#: windows/host/src/menu.rs:260
+msgid "Save as Project…"
+msgstr ""
+
+#: windows/host/src/menu.rs:261
+msgid "Load Project…"
+msgstr ""
+
+#: windows/host/src/project_picker.rs:138
+msgid "Load Project"
+msgstr ""
+
+#: windows/host/src/project_picker.rs:71 windows/host/src/project_picker.rs:102
+msgid "No Saved Projects"
+msgstr ""
+
+#: windows/host/src/project_picker.rs:132
+msgid "The project could not be opened."
+msgstr ""

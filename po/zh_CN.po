@@ -2390,3 +2390,27 @@ msgid ""
 msgstr ""
 "这里列的是这个 CLI 在本机装的东西，项目自带的 MCP 服务器不在其中；启动时它们"
 "按上面那个开关处理。"
+
+#: windows/host/src/menu.rs:471
+msgid "Project"
+msgstr "项目"
+
+#: windows/host/src/menu.rs:260
+msgid "Save as Project…"
+msgstr "另存为项目…"
+
+#: windows/host/src/menu.rs:261
+msgid "Load Project…"
+msgstr "加载项目…"
+
+#: windows/host/src/project_picker.rs:138
+msgid "Load Project"
+msgstr "加载项目"
+
+#: windows/host/src/project_picker.rs:71 windows/host/src/project_picker.rs:102
+msgid "No Saved Projects"
+msgstr "还没有保存过项目"
+
+#: windows/host/src/project_picker.rs:132
+msgid "The project could not be opened."
+msgstr "这个项目打不开"
