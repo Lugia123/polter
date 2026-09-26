@@ -1400,12 +1400,6 @@ pub fn selfPermitted(req: Request) bool {
         .terminal_send,
         .terminal_key,
 
-        // **Allowed at your own terminal.** Nothing comes back at the
-        // caller and nothing takes it away: a supervisor tidying the tab it
-        // is sitting in is an ordinary thing to want, and the same reasoning
-        // `terminal_action` uses for `new_split`.
-        .terminal_layout,
-
         // **Refused, and this one is the asymmetry the user asked for.**
         // A supervisor may answer a *worker's* prompt, with the worker's
         // switch on; its own prompt is its own to answer, and answering it
@@ -1456,6 +1450,22 @@ pub fn selfPermitted(req: Request) bool {
         // can do yourself changes nothing, and a supervisor checking that
         // its own launch came out right is an ordinary thing to want.
         .terminal_capabilities,
+
+        // **Allowed at your own terminal.** Nothing comes back at the
+        // caller and nothing takes it away: a supervisor tidying the tab it
+        // is sitting in is an ordinary thing to want, and the same reasoning
+        // `terminal_action` uses for `new_split`. Rearranging never closes
+        // a pane (every pane already in the tab must be in the shape, on
+        // both hosts), so the caller's own pane is moved, not ended.
+        //
+        // ⚠️ **This comment stood over the `=> false` arm from the day the
+        // method was added (e745c55da) until issue #10**: the intent was
+        // written down and the method was refused anyway, with no test on
+        // either side to notice. It was also no protection: `id` only picks
+        // the tab, so naming any *other* pane in the caller's tab already
+        // rearranged the caller's own tab. The test "a terminal may lay out
+        // the tab it is in" is what holds this side now.
+        .terminal_layout,
         => true,
 
         // Decided per action, exhaustively, in `actions.selfSafeTag`.
@@ -1967,11 +1977,13 @@ pub fn errorMessage(err: Error) []const u8 {
         error.TerminalHeld => "the user is holding this terminal to its work and it cannot clock out; only the user can release it",
         error.AlreadyWatched => "a watched terminal may not promote itself; " ++
             "ask its supervisor, or ask the user",
-        error.SelfTarget => "not at your own terminal: reading your own screen, typing " ++
-            "into your own input and closing yourself are a loop or a reply you would " ++
-            "never receive. terminal_action is the exception -- most actions are fine " ++
-            "on your own id, new_split included, and terminal_actions marks the ones " ++
-            "that are not with self_safe: false",
+        error.SelfTarget => "not at your own terminal: this call would come back to you " ++
+            "or take you away before the reply -- reading your own screen, typing or " ++
+            "pressing keys into your own input, answering your own prompt, setting your " ++
+            "own watch or duty, closing yourself. Calls that do neither work on your own " ++
+            "id: terminal_layout on the tab you are in, and most of terminal_action, " ++
+            "new_split included -- terminal_actions marks the ones that are not with " ++
+            "self_safe: false",
         error.NotYours => "that one is another supervisor's: it made the group, or it " ++
             "has already claimed that terminal's notices. Leave it to them, or ask the user",
         error.Supervised => "that terminal is marked -- it is a supervisor, or somebody " ++
@@ -3217,6 +3229,22 @@ test "a terminal cannot aim a call back at itself" {
     try testing.expectError(error.SelfTarget, authorize(&b, term(boss), .{
         .terminal_key = .{ .id = boss, .key = "ctrl+c" },
     }));
+    // `terminal_layout` is not in this list, on purpose: arranging the tab
+    // you are in comes back to nobody. See the next test.
+}
+
+test "a terminal may lay out the tab it is in" {
+    // Issue #10. Refused at the caller's own id from the day the method was
+    // added, under a comment saying it was allowed -- and naming any other
+    // pane in the same tab already did the same thing, so the refusal only
+    // blocked the natural way of asking.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    try authorize(&b, term(boss), .{ .terminal_layout = .{
+        .id = boss,
+        .layout = "{\"split\":\"h\",\"ratio\":0.5,\"left\":{\"pane\":\"0x1\"},\"right\":{\"new\":{}}}",
+    } });
 }
 
 test "a terminal may split itself, but not close itself" {
