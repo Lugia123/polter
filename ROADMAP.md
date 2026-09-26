@@ -40,6 +40,15 @@ supervised session on it, so there is no release binary; build from source if
 you want it. Making this a supported platform needs someone who uses Linux
 daily, and that is the honest blocker.
 
+**Projects do not exist on GTK** -- saving a tab as a project, opening one, and
+bringing back a pane's command history and scrollback. Not *Built*, not
+started. Nothing in GTK stands in the way: counted against what macOS has,
+every missing piece is work not done, none is something the toolkit cannot do.
+It waits on the same blocker as the rest of Linux, because without a machine
+that runs the GTK app it could only ever reach *Built*, and four of the pieces
+are UI. `tools/gtk-has-no-project-half.py` keeps half of it from arriving
+unannounced.
+
 ---
 
 ## Next
