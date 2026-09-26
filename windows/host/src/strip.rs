@@ -1330,6 +1330,10 @@ impl TabCmd {
             TabCmd::CloseOthers => n_("Close Other Tabs"),
             TabCmd::CloseRight => n_("Close Tabs to the Right"),
             TabCmd::MoveToNewWindow => n_("Move Tab to New Window"),
+            // TRANSLATORS: three ASCII dots, not U+2026. This renames the tab
+            // in place on the tab strip. "Rename Tab…" with U+2026 is a
+            // DIFFERENT action (prompt_tab_title) that opens the title overlay.
+            // The two entries look almost identical; do not merge them.
             TabCmd::Rename => n_("Rename Tab..."),
             TabCmd::Supervisor => n_("Make This Terminal a Supervisor"),
             TabCmd::Watch => n_("Toggle Supervision of This Terminal"),

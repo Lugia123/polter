@@ -131,6 +131,10 @@ const ROWS: &[Row] = &[
     // Two different titles, and they are genuinely different: the tab title
     // sticks to the tab and survives focus moving inside it, the surface
     // title is this pane's. The core has a separate action for each.
+    // TRANSLATORS: U+2026, not three ASCII dots. This opens the title
+    // overlay. "Rename Tab..." with three dots is a DIFFERENT action
+    // (rename_tab) that edits the tab strip in place. The two entries look
+    // almost identical; do not merge them.
     item(n_("Rename Tab…"), "prompt_tab_title"),
     item(n_("Rename Terminal…"), "prompt_surface_title"),
     SEP,

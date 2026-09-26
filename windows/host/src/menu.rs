@@ -299,6 +299,10 @@ const VIEW_ROWS: &[Row] = &[
     // row labelled for the first and wired to the second, which is a defect
     // that looks like a working menu item: the dialog opens, a name is typed,
     // and the wrong thing is renamed.
+    // TRANSLATORS: U+2026, not three ASCII dots. This opens the title
+    // overlay. "Rename Tab..." with three dots is a DIFFERENT action
+    // (rename_tab) that edits the tab strip in place. The two entries look
+    // almost identical; do not merge them.
     act(n_("Rename Tab…"), "prompt_tab_title"),
     act(n_("Rename Terminal…"), "prompt_surface_title"),
     // §3.2 called this `toggle_surface_read_only`; the core's name is shorter.
