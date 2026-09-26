@@ -1,5 +1,12 @@
 # Windows 移植 · 当前状态
 
+> ⚠️ **本篇里出现的宿主命令行 flag（`--selftest`、`--striptest`、`--selfresize`、
+> `--panic-test`、`--qttest`、`--clock`、`--draw-on-paint`、`--ops-delay`、
+> `--menu-selftest`、`--write-settings-fixture`、`--write-project-fixture`）都是改名前的写法。**
+> 这些是当时的记录，所以原样保留。现在的写法是 `--polter-host-<原名>`，带值的一律写在同一个参数里：
+> `--polter-host-write-project-fixture=<path>`（issue #21，`windows/cliargs` 的 `HOST_FLAGS`）。
+> 照着旧名启动，宿主会直接拒绝，并告诉你新名字。
+
 **这一篇是「走到哪了」，会随进度改写。** 为什么这么做见
 [design.md](design.md)，怎么动手见 [development.md](development.md)——那两篇
 是设计和方法，这一篇是进度和欠账。

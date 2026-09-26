@@ -16,7 +16,7 @@
 //! -- and the list itself is the platform's own control.
 //!
 //! **Opened from the message loop, not from inside the menu call**, for the
-//! reason `language::request_picker` gives: `--menu-selftest` performs every
+//! reason `language::request_picker` gives: `--polter-host-menu-selftest` performs every
 //! row through the same call a click makes, and a `TrackPopupMenu` entered
 //! there would hold the self-test in its modal loop.
 

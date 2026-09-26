@@ -718,7 +718,7 @@ fn monitor_count() -> u32 {
 // ------------------------------------------------------------------ toggle
 
 /// Show or hide. Called from the hotkey, from the core's action, and from
-/// `--qttest`.
+/// `--polter-host-qttest`.
 /// The `toggle_quick_terminal` action, from `cb_action`.
 ///
 /// # Why this does not go through `queue_from`
@@ -1078,7 +1078,7 @@ pub fn log_state(tag: &str) {
     plogf!("[quick] {} | {}", tag, state_line());
 }
 
-/// `--qttest`: drop in and out without a hotkey, printing the inputs each
+/// `--polter-host-qttest`: drop in and out without a hotkey, printing the inputs each
 /// time. **What it cannot cover is the part that matters most** -- that the
 /// hotkey works while Polter is not the foreground window -- because a script
 /// running inside Polter is, by definition, running while Polter is focused.

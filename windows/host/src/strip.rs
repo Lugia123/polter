@@ -2045,7 +2045,7 @@ fn reachable_span(
 
 /// Click a tab **through the hit test**, without a mouse.
 ///
-/// `--striptest`'s other steps call the model directly, and that is why they
+/// `--polter-host-striptest`'s other steps call the model directly, and that is why they
 /// did not reproduce the strip vanishing on click: the model path works. The
 /// difference between the two paths *is* the defect, so this drives the same
 /// entry point a real click does -- `on_button_down` / `on_button_up` with
@@ -2090,7 +2090,7 @@ fn synth_drag(frame: HWND, from: usize, to: usize) {
 /// it that way cost a day: three misplaced clicks (one of them minimised the
 /// window, one landed in somebody else's session) and one defect reported
 /// from a screenshot that turned out to be the screenshot's scaling. The
-/// same lesson as `--selfresize`: **when the host can do the thing itself and
+/// same lesson as `--polter-host-selfresize`: **when the host can do the thing itself and
 /// print the result as a number, no one has to aim.**
 ///
 /// Each step prints the strip's whole state before and after, so the check is
@@ -2212,7 +2212,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
         // geometry, put them through the same hit test a right-click uses,
         // and print what came back next to what was asked for.
         //
-        // `--striptest`'s whole reason applies here twice over: aiming a real
+        // `--polter-host-striptest`'s whole reason applies here twice over: aiming a real
         // right-click at tab 3 of 18 by hand is exactly the operation that
         // has already produced one false defect on this port.
         28 => {

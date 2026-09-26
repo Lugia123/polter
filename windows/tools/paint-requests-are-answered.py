@@ -15,7 +15,7 @@ layer that was already correct. The only thing to check is the shape itself:
 
 ⚠️ **The first version of this checker could not catch the defect it was
 written for**, and a mutation showed it: the arm asked for pixels behind
-`--draw-on-paint` and swallowed them everywhere else, so "the arm mentions a
+`--polter-host-draw-on-paint` and swallowed them everywhere else, so "the arm mentions a
 request" was satisfied while the shipped path threw the request away. What is
 required is the *shipped* answer -- `surface_refresh`, which schedules a
 render on any build. `surface_draw` behind a flag is an experiment, not an
@@ -57,7 +57,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "windows" / "host" / "src"
 
 # **The shipped answer, not any answer.** `surface_draw` sits behind
-# `--draw-on-paint`; an arm that only has that one answers nobody's paint
+# `--polter-host-draw-on-paint`; an arm that only has that one answers nobody's paint
 # request in an ordinary build.
 ASKS = re.compile(r"surface_refresh\s*\)")
 VALIDATES = re.compile(r"\bValidateRect\s*\(")

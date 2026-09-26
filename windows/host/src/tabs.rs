@@ -386,7 +386,7 @@ impl Op {
 /// `TabId` on the grounds that an id is already unambiguous, and duplicating
 /// the counter takes that premise away **while the checker carries on
 /// reporting green**. `initial_input` is the same shape: copied, every new
-/// window would replay `--clock`'s text into its first shell.
+/// window would replay `--polter-host-clock`'s text into its first shell.
 ///
 /// So the split is by field, not by struct, and the fields that move are the
 /// ones a window genuinely owns: which tabs are in it and which of them is in
@@ -589,7 +589,7 @@ pub struct QueuedOp {
     pub op: Op,
     /// When it was queued.
     ///
-    /// **Read only by the `--ops-delay` test hook**, which is what makes that
+    /// **Read only by the `--polter-host-ops-delay` test hook**, which is what makes that
     /// hook a stopwatch rather than a detour: the delay is a comparison
     /// against this stamp at the front of the queue, so a delayed op takes
     /// exactly the path an undelayed one takes, later. Nothing about *which*
@@ -622,13 +622,13 @@ pub struct State {
     /// meeting: the reading does not change and the conclusion is already
     /// wrong.
     pub next_id: u64,
-    /// Typed into the first shell as if the user had typed it (`--clock`).
+    /// Typed into the first shell as if the user had typed it (`--polter-host-clock`).
     /// Owned here because the core reads the pointer during `surface_new`.
     ///
     /// **Shared, and the consequence is written down rather than left to be
     /// discovered.** `create_pane` `take()`s it, so exactly one shell in the
     /// process ever receives it: the first tab of the first window. **A shell
-    /// started in a second window does not replay `--clock`'s text.** Split
+    /// started in a second window does not replay `--polter-host-clock`'s text.** Split
     /// per window it would be typed again into every new window's first
     /// shell, which is not what a diagnostic flag for one terminal means.
     pub initial_input: Option<std::ffi::CString>,
@@ -1451,7 +1451,7 @@ mod deadlock_detector_tests {
 /// Queue an op and wake the main thread. Safe from any thread.
 /// How long a queued op waits before it is allowed to run, in milliseconds.
 ///
-/// **A stopwatch, not a detour.** Zero unless `--ops-delay=N` was given, and
+/// **A stopwatch, not a detour.** Zero unless `--polter-host-ops-delay=N` was given, and
 /// the only thing a non-zero value changes is the comparison in `run_ops`
 /// that decides whether the op at the front is due yet. It does not change
 /// which queue an op goes into, when it is enqueued, which code drains it, or
@@ -2130,7 +2130,7 @@ pub fn layout(frame: HWND) {
             //
             // `surface_refresh` *schedules* a render (`queueRender` in the
             // core). **Not `surface_draw`**, which renders on the calling
-            // thread and is the `--draw-on-paint` experiment.
+            // thread and is the `--polter-host-draw-on-paint` experiment.
             let s = surface_of_pane(id as u64);
             if !s.is_null() {
                 unsafe { (crate::api().surface_refresh)(s) };
@@ -6177,7 +6177,7 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                         //
                         // `surface_refresh` schedules a render rather than
                         // performing one, so this stays off the drawing path
-                        // that `--draw-on-paint` exists to experiment with.
+                        // that `--polter-host-draw-on-paint` exists to experiment with.
                         (api().surface_refresh)(s);
                     }
                 }

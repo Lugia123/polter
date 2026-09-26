@@ -967,7 +967,7 @@ pub fn catalog() -> Vec<Plugin> {
     out
 }
 
-/// `--write-settings-fixture <path>`: write the file the Zig test reads.
+/// `--polter-host-write-settings-fixture=<path>`: write the file the Zig test reads.
 ///
 /// **The fixture has to come out of the product's own writer**, otherwise the
 /// cross-implementation test checks a file nobody ships. Regenerate with this

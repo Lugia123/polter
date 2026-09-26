@@ -118,6 +118,164 @@ where
     pending || fallback
 }
 
+// ---------------------------------------------------------------------------
+// The host's own flags (issue #21)
+// ---------------------------------------------------------------------------
+
+/// The prefix every flag that belongs to the Windows host carries.
+///
+/// **Why a prefix at all.** The core reads the whole command line on this
+/// platform (`GetCommandLineW()`, `global.zig`) and, since #21, loads config
+/// from it (`ghostty_config_load_cli_args`). Every argument it does not know
+/// becomes a config diagnostic, and the host shows diagnostics in a window at
+/// start-up -- so a bare `--selftest` would put an error window in front of
+/// every self-test. The core skips this prefix (`ArgsIterator` in
+/// `src/cli/args.zig`), and **the host must know every flag under it and
+/// refuse the rest** (`host_flags`): a prefix both sides ignore would bring
+/// back #21 itself -- a flag written, read by nobody, reported by nobody.
+///
+/// **Values go with `=`, in the one token.** A value in the next argument
+/// would not start with `--`, and the core reports that as `invalid field`
+/// whatever it follows; `=` keeps the core from having to know which host
+/// flags take a value.
+pub const HOST_PREFIX: &str = "--polter-host-";
+
+/// Whether a host flag carries a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Takes {
+    Nothing,
+    /// `--polter-host-x` or `--polter-host-x=v`.
+    Optional,
+    /// Only `--polter-host-x=v`.
+    Required,
+}
+
+/// **Every host flag, and the only list of them.** The host reads flags only
+/// through `HostFlags`, which refuses a name that is not here -- so a flag
+/// cannot be read without being listed, and a listed flag cannot be misspelt
+/// on the command line without being refused.
+pub const HOST_FLAGS: &[(&str, Takes)] = &[
+    ("menu-selftest", Takes::Nothing),
+    ("panic-test", Takes::Optional),
+    ("draw-on-paint", Takes::Nothing),
+    ("ops-delay", Takes::Required),
+    ("clock", Takes::Nothing),
+    ("striptest", Takes::Nothing),
+    ("qttest", Takes::Nothing),
+    ("selftest", Takes::Nothing),
+    ("selfresize", Takes::Nothing),
+    ("write-settings-fixture", Takes::Required),
+    ("write-project-fixture", Takes::Required),
+];
+
+/// Why a command line was refused. Each names the argument as written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rejection {
+    /// `--polter-host-…` that is not in `HOST_FLAGS`.
+    Unknown(String),
+    /// A `Takes::Required` flag with no `=value`.
+    MissingValue(String),
+    /// A `Takes::Nothing` flag given `=value`.
+    UnexpectedValue(String),
+    /// A host flag under the name it had before the prefix (`--selftest`).
+    /// **Refused by name, with the new one**: these were typed by hand for a
+    /// month, and left to the core the old spelling would come back as a
+    /// generic "unknown field" in the config error window, which sends the
+    /// person to their config file instead of to the new name.
+    Renamed { given: String, now: String },
+}
+
+impl std::fmt::Display for Rejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Rejection::Unknown(a) => write!(f, "{a}: not a flag this program knows"),
+            Rejection::MissingValue(a) => write!(f, "{a}: needs a value, written {a}=<value>"),
+            Rejection::UnexpectedValue(a) => write!(f, "{a}: takes no value"),
+            Rejection::Renamed { given, now } => write!(f, "{given} has been renamed to {now}"),
+        }
+    }
+}
+
+/// The host flags a command line carries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HostFlags {
+    found: Vec<(&'static str, Option<String>)>,
+}
+
+impl HostFlags {
+    /// Whether `name` (without the prefix) was given.
+    ///
+    /// ⚠️ **Panics on a name that is not in `HOST_FLAGS`**: asking for an
+    /// unlisted flag is a program error that would otherwise read as "not
+    /// given", forever.
+    pub fn has(&self, name: &str) -> bool {
+        listed(name);
+        self.found.iter().any(|(n, _)| *n == name)
+    }
+
+    /// The value given with `name`, if any. Same panic as `has`.
+    pub fn value(&self, name: &str) -> Option<&str> {
+        listed(name);
+        self.found.iter().find(|(n, _)| *n == name).and_then(|(_, v)| v.as_deref())
+    }
+}
+
+fn listed(name: &str) -> (&'static str, Takes) {
+    *HOST_FLAGS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .unwrap_or_else(|| panic!("{HOST_PREFIX}{name} is not in HOST_FLAGS"))
+}
+
+/// Read the host flags out of a command line, `argv[0]` first.
+///
+/// Stops at `-e`: what follows is the command to run inside the terminal, and
+/// a `--polter-host-…` there is that command's argument, not this program's.
+/// The core's `ArgsIterator` stops skipping at the same place.
+pub fn host_flags<I, S>(args: I) -> Result<HostFlags, Rejection>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut out = HostFlags::default();
+    for arg in args.into_iter().skip(1) {
+        let arg = arg.as_ref();
+        if arg == "-e" {
+            break;
+        }
+        let Some(rest) = arg.strip_prefix(HOST_PREFIX) else {
+            if let Some(now) = renamed(arg) {
+                return Err(Rejection::Renamed { given: arg.to_string(), now });
+            }
+            continue;
+        };
+        let (name, value) = match rest.split_once('=') {
+            Some((n, v)) => (n, Some(v.to_string())),
+            None => (rest, None),
+        };
+        let Some(&(name, takes)) = HOST_FLAGS.iter().find(|(n, _)| *n == name) else {
+            return Err(Rejection::Unknown(arg.to_string()));
+        };
+        match (takes, &value) {
+            (Takes::Required, None) => return Err(Rejection::MissingValue(arg.to_string())),
+            (Takes::Nothing, Some(_)) => return Err(Rejection::UnexpectedValue(arg.to_string())),
+            _ => {}
+        }
+        out.found.push((name, value));
+    }
+    Ok(out)
+}
+
+/// If `arg` is one of the host flags under its name from before the prefix
+/// (`--selftest`), the name it has now. None of those names is a core config
+/// field (checked against `src/config/Config.zig` when the prefix went in),
+/// so this can only ever catch an old host flag.
+pub fn renamed(arg: &str) -> Option<String> {
+    let bare = arg.strip_prefix("--")?;
+    let name = bare.split_once('=').map_or(bare, |(n, _)| n);
+    HOST_FLAGS.iter().find(|(n, _)| *n == name).map(|(n, _)| format!("{HOST_PREFIX}{n}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,7 +320,7 @@ mod tests {
         assert!(asks(&["polter-host.exe", "+mcp"]));
         assert!(asks(&["polter-host.exe", "--x", "+chat"]));
         assert!(!asks(&["polter-host.exe"]));
-        assert!(!asks(&["polter-host.exe", "--draw-on-paint"]));
+        assert!(!asks(&["polter-host.exe", "--polter-host-draw-on-paint"]));
         // The program's own path is skipped: a directory called `+tools` on
         // somebody's disk must not turn every run into a CLI action.
         assert!(!asks(&["C:\\+tools\\polter-host.exe"]));
@@ -207,5 +365,77 @@ mod tests {
         assert!(!asks(&["polter-host.exe", "-help"]));
         assert!(!asks(&["polter-host.exe", "--versions"]));
         assert!(!asks(&["polter-host.exe", "-E", "vim"]));
+    }
+
+    // -- host flags (#21) --------------------------------------------------
+
+    fn flags(v: &[&str]) -> Result<HostFlags, Rejection> {
+        host_flags(std::iter::once("polter-host.exe").chain(v.iter().copied()))
+    }
+
+    #[test]
+    fn a_known_host_flag_is_read_with_its_value() {
+        let f = flags(&["--polter-host-selftest", "--polter-host-write-project-fixture=C:\\x y\\p.json"]).unwrap();
+        assert!(f.has("selftest"));
+        assert!(!f.has("clock"));
+        assert_eq!(f.value("write-project-fixture"), Some("C:\\x y\\p.json"));
+        let f = flags(&["--polter-host-panic-test"]).unwrap();
+        assert!(f.has("panic-test"));
+        assert_eq!(f.value("panic-test"), None);
+    }
+
+    /// **The floor for condition 2**: a misspelt host flag is refused by
+    /// name. Both sides ignoring it would be #21 again.
+    #[test]
+    fn a_misspelt_host_flag_is_refused_by_name() {
+        assert_eq!(
+            flags(&["--polter-host-menu-seltest"]),
+            Err(Rejection::Unknown("--polter-host-menu-seltest".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_value_is_required_where_the_table_says_so_and_refused_where_it_does_not() {
+        assert_eq!(
+            flags(&["--polter-host-ops-delay"]),
+            Err(Rejection::MissingValue("--polter-host-ops-delay".to_string()))
+        );
+        assert_eq!(
+            flags(&["--polter-host-clock=1"]),
+            Err(Rejection::UnexpectedValue("--polter-host-clock=1".to_string()))
+        );
+    }
+
+    #[test]
+    fn user_config_and_everything_after_dash_e_are_not_host_flags() {
+        let f = flags(&["--font-size=12", "-e", "tool", "--selftest", "--polter-host-nonsense"]).unwrap();
+        assert_eq!(f, HostFlags::default());
+    }
+
+    /// Someone who types the old name is told the new one, by the host, at
+    /// once -- not left with a config error window that names neither.
+    #[test]
+    fn an_old_spelling_is_refused_with_the_new_name() {
+        let r = flags(&["--menu-selftest"]).unwrap_err();
+        assert_eq!(
+            r,
+            Rejection::Renamed { given: "--menu-selftest".to_string(), now: "--polter-host-menu-selftest".to_string() }
+        );
+        assert_eq!(r.to_string(), "--menu-selftest has been renamed to --polter-host-menu-selftest");
+        assert!(matches!(flags(&["--write-project-fixture"]), Err(Rejection::Renamed { .. })));
+        assert!(matches!(flags(&["--ops-delay=5"]), Err(Rejection::Renamed { .. })));
+    }
+
+    #[test]
+    fn the_old_spelling_is_pointed_at_the_new_one() {
+        assert_eq!(renamed("--selftest"), Some("--polter-host-selftest".to_string()));
+        assert_eq!(renamed("--ops-delay=5"), Some("--polter-host-ops-delay".to_string()));
+        assert_eq!(renamed("--font-size=12"), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not in HOST_FLAGS")]
+    fn asking_for_an_unlisted_flag_is_a_program_error() {
+        let _ = HostFlags::default().has("not-a-flag");
     }
 }

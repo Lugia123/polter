@@ -569,7 +569,7 @@ fn run_host(frame: HWND, action: &str) -> bool {
         }
         // **Returns before the picker is on screen.** It opens from this
         // thread's message loop, not from inside this call, because
-        // `--menu-selftest` comes through here too and a modal menu entered
+        // `--polter-host-menu-selftest` comes through here too and a modal menu entered
         // here would hold the self-test until somebody dismissed it.
         // ⚠️ So a self-test run **does put the language menu on screen once**,
         // after the run, the same way it shows the about box. That is the
@@ -1339,7 +1339,7 @@ pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
 }
 
 /// Run one row and say so. **The single place a menu row turns into an
-/// action** -- a mouse pick and `--menu-selftest` both come through here, and
+/// action** -- a mouse pick and `--polter-host-menu-selftest` both come through here, and
 /// that is the whole reason the self-test is worth anything. A self-test with
 /// its own dispatch would prove that 54 action strings parse, which is what
 /// `assert_actions_exist` already proves for free.
@@ -1383,7 +1383,7 @@ const ENDS_THE_SESSION: &[&str] = &["close_surface", "close_tab:this", "close_wi
 ///
 /// `poltergeist_toggle_held` is refused by the bus from anything but a
 /// keypress, and the host is what tells the core a keypress is what this was.
-/// A mouse pick on this row is that claim and it is true; `--menu-selftest`
+/// A mouse pick on this row is that claim and it is true; `--polter-host-menu-selftest`
 /// dispatching the same row is the same claim and it is not. The difference
 /// is invisible from inside `perform`, which is why the list is here rather
 /// than a rule somebody has to remember.
@@ -1392,10 +1392,9 @@ const ENDS_THE_SESSION: &[&str] = &["close_surface", "close_tab:this", "close_wi
 /// is an exclusion, and the two solve different problems.
 const ONLY_A_PERSON: &[&str] = &["poltergeist_toggle_held"];
 
-/// Was `--menu-selftest` on the command line?
+/// Was `--polter-host-menu-selftest` on the command line?
 fn selftest_requested() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::args().any(|a| a == "--menu-selftest"))
+    crate::host_flags().has("menu-selftest")
 }
 
 /// Run every row through `perform`, in table order, session-enders last.
@@ -1567,7 +1566,7 @@ fn arm_selftest() {
         match hwnd {
             Ok(h) => {
                 // process-wide: the whole-process self test being armed, before any window is involved
-                plogf!("[menu] selftest armed by --menu-selftest; waiting for a surface");
+                plogf!("[menu] selftest armed by --polter-host-menu-selftest; waiting for a surface");
                 let _ = PostMessageW(Some(h), WM_MENU_SELFTEST, WPARAM(0), LPARAM(0));
             }
             // Said out loud: a self-test that quietly did not run reads as a

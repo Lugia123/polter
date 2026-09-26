@@ -190,14 +190,14 @@ const ID_BASE: usize = 1;
 /// Open the picker for `frame`. **Returns at once**; the menu opens from the
 /// thread's own message loop.
 ///
-/// Deferred for the reason `settings_ui::request_about` is: `--menu-selftest`
+/// Deferred for the reason `settings_ui::request_about` is: `--polter-host-menu-selftest`
 /// dispatches this row through the same call a click makes, and a
 /// `TrackPopupMenu` entered here would hold the self-test inside its modal
 /// loop until somebody dismissed it. A thread timer needs no window procedure
 /// to reach, and runs on the thread that set it -- the one that owns `frame`.
 ///
 /// ⚠️ **The cost, written here so it is not mistaken for a defect:** a
-/// `--menu-selftest` run puts this menu on screen once, after the run, the
+/// `--polter-host-menu-selftest` run puts this menu on screen once, after the run, the
 /// same way it shows the about box. The self-test performs every row, and
 /// performing this one is opening the picker.
 pub fn request_picker(frame: HWND) -> bool {

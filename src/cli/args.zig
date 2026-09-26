@@ -1320,6 +1320,9 @@ test "parseIntoField: tagged union missing tag" {
 ///
 /// This also ignores any argument that starts with `+`. It assumes that
 /// actions were parsed out before this iterator was created.
+///
+/// It also ignores any argument that starts with `host_flag_prefix`, up to
+/// the first `-e` -- see that constant.
 pub fn ArgsIterator(comptime Iterator: type) type {
     return struct {
         const Self = @This();
@@ -1331,6 +1334,11 @@ pub fn ArgsIterator(comptime Iterator: type) type {
         /// The 0 value is used to indicate that we haven't read any
         /// values yet.
         index: usize = 0,
+
+        /// Set once `-e` has been read. Everything after it is the command
+        /// to run inside the terminal, so a `host_flag_prefix` argument
+        /// there is that command's, and is passed through.
+        past_command: bool = false,
 
         pub fn deinit(self: *Self) void {
             if (@hasDecl(Iterator, "deinit")) {
@@ -1347,6 +1355,14 @@ pub fn ArgsIterator(comptime Iterator: type) type {
             // this iterator is created.
             if (value.len > 0 and value[0] == '+') return self.next();
 
+            if (!self.past_command) {
+                if (std.mem.eql(u8, value, "-e")) {
+                    self.past_command = true;
+                } else if (std.mem.startsWith(u8, value, host_flag_prefix)) {
+                    return self.next();
+                }
+            }
+
             return value;
         }
 
@@ -1356,6 +1372,24 @@ pub fn ArgsIterator(comptime Iterator: type) type {
         }
     };
 }
+
+/// Arguments that belong to the application runtime rather than to the
+/// config. Skipped here so that loading config from the command line does
+/// not report them as unknown fields.
+///
+/// **Polter's Windows host (issue #21).** On Windows the core reads the whole
+/// command line itself (`GetCommandLineW()` in `global.zig`), so it sees the
+/// host's own flags too; before this prefix every one of them was an
+/// `unknown field` diagnostic, and the host shows diagnostics in a window at
+/// start-up. The contract has two halves and this is only the first: the core
+/// skips the prefix, and **the host must know every flag under it and refuse
+/// any other** (`windows/cliargs`, `host_flags`). A prefix both sides ignored
+/// would let a misspelt flag vanish without a word, which is #21 itself.
+///
+/// Values go with `=` in the same argument: a value in the next argument
+/// does not start with `--`, and would be reported as `invalid field` here
+/// whatever flag it followed.
+pub const host_flag_prefix = "--polter-host-";
 
 /// Create an args iterator for the process args. This will skip argv0.
 pub fn argsIterator(
@@ -1382,6 +1416,27 @@ test "ArgsIterator" {
     try testing.expectEqualStrings("--what", iter.next().?);
     try testing.expectEqualStrings("--a=42", iter.next().?);
     try testing.expectEqual(@as(?[]const u8, null), iter.next());
+    try testing.expectEqual(@as(?[]const u8, null), iter.next());
+}
+
+test "ArgsIterator skips host flags before -e and keeps them after" {
+    const testing = std.testing;
+
+    const child = try std.process.Args.IteratorGeneral(.{}).init(
+        testing.allocator,
+        "--polter-host-selftest --font-size=12 --polter-host-write-project-fixture=C:\\p.json -e tool --polter-host-x",
+    );
+    const Iter = ArgsIterator(@TypeOf(child));
+    var iter: Iter = .{ .iterator = child };
+    defer iter.deinit();
+
+    try testing.expectEqualStrings("--font-size=12", iter.next().?);
+    // The location of a diagnostic still counts every argument, skipped or
+    // not, so it names the argument as the command line has it.
+    try testing.expectEqual(@as(usize, 2), iter.index);
+    try testing.expectEqualStrings("-e", iter.next().?);
+    try testing.expectEqualStrings("tool", iter.next().?);
+    try testing.expectEqualStrings("--polter-host-x", iter.next().?);
     try testing.expectEqual(@as(?[]const u8, null), iter.next());
 }
 

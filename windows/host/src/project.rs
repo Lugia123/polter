@@ -690,7 +690,7 @@ pub fn describe(node: &Node, meta_of: &dyn Fn(PaneId) -> SavedLeaf) -> SavedNode
 }
 
 // ---------------------------------------------------------------------------
-// `--write-project-fixture <path>`: the cross-implementation check
+// `--polter-host-write-project-fixture=<path>`: the cross-implementation check
 // ---------------------------------------------------------------------------
 
 /// Writes the file `Project.zig`'s test suite is meant to read, from this

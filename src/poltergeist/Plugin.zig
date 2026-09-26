@@ -1587,7 +1587,7 @@ test "settings written by the Windows host" {
     //
     // The fixture comes out of the host's own `render_settings`
     // (`windows/host/src/plugins.rs`), regenerated with
-    // `polter-host.exe --write-settings-fixture <path>`. It carries a quote,
+    // `polter-host.exe --polter-host-write-settings-fixture=<path>`. It carries a quote,
     // a backslash and non-ASCII on purpose -- escaping is where two JSON
     // implementations actually diverge.
     //

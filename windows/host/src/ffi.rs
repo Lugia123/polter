@@ -1275,6 +1275,9 @@ pub struct Api {
     /// it alone. That is the signal the geometry restore needs.
     pub config_get: unsafe extern "C" fn(Config, *mut c_void, *const u8, usize) -> bool,
     pub config_load_default_files: unsafe extern "C" fn(Config),
+    /// `ghostty_config_load_cli_args`: config from the command line, which the
+    /// core reads itself on Windows (`GetCommandLineW()`). See #21 in `main`.
+    pub config_load_cli_args: unsafe extern "C" fn(Config),
     pub config_finalize: unsafe extern "C" fn(Config),
     /// Hand the core a config and let it propagate to every surface.
     ///
@@ -1311,7 +1314,7 @@ pub struct Api {
     ///
     /// `ghostty_surface_refresh` queues one (`refreshCallback` -> `queueRender`
     /// in the core); `ghostty_surface_draw` renders on the calling thread,
-    /// which is why the only call to it sits behind `--draw-on-paint`.
+    /// which is why the only call to it sits behind `--polter-host-draw-on-paint`.
     ///
     /// ⚠️ **It was in the header all along and nothing here bound it**, which
     /// is how a moved pane could keep its old pixels: nothing in this host
@@ -1349,7 +1352,7 @@ pub struct Api {
     /// performs the binding, and emits the resulting action back through
     /// `action_cb` -- the same path a real key press takes through
     /// `surface_key` below. The host accelerators in `keys.rs` and the
-    /// `--selftest` script both go through here, which is why a green
+    /// `--polter-host-selftest` script both go through here, which is why a green
     /// self-test is evidence about the *action* path and says nothing about
     /// the keyboard.
     pub surface_binding_action: unsafe extern "C" fn(Surface, *const u8, usize) -> bool,

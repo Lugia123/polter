@@ -1837,7 +1837,7 @@ pub fn api_opt() -> Option<&'static Api> {
     Some(unsafe { &*p })
 }
 
-/// Whether the main thread should draw in WM_PAINT (the `--draw-on-paint`
+/// Whether the main thread should draw in WM_PAINT (the `--polter-host-draw-on-paint`
 /// experiment from M1; the renderer thread drives redraw otherwise).
 pub fn draw_on_paint() -> bool {
     DRAW_ON_PAINT.load(Ordering::Relaxed) == 1
@@ -5075,6 +5075,7 @@ fn load_api() -> Option<Api> {
             config_keybind: sym!(internal, "ghostty_config_keybind"),
             config_get: sym!(internal, "ghostty_config_get"),
             config_load_default_files: sym!(internal, "ghostty_config_load_default_files"),
+            config_load_cli_args: sym!(internal, "ghostty_config_load_cli_args"),
             config_finalize: sym!(internal, "ghostty_config_finalize"),
             app_update_config: sym!(internal, "ghostty_app_update_config"),
             surface_update_config: sym!(internal, "ghostty_surface_update_config"),
@@ -5282,7 +5283,7 @@ fn install_panic_hook() {
     }));
 }
 
-/// `--panic-test[=MODE]`: panic on purpose, so the hook can be shown to work.
+/// `--polter-host-panic-test[=MODE]`: panic on purpose, so the hook can be shown to work.
 ///
 /// **A hook nobody has seen speak is indistinguishable from no hook**, and
 /// the way that failure presents itself is the next silent death being
@@ -5292,11 +5293,11 @@ fn install_panic_hook() {
 /// Three modes, because "the hook writes a line" is easy in the easy case and
 /// silent deaths do not happen in the easy case:
 ///
-///  - `--panic-test` -- plain panic on the main thread.
-///  - `--panic-test=locked` -- panic **while holding the window-state lock**,
+///  - `--polter-host-panic-test` -- plain panic on the main thread.
+///  - `--polter-host-panic-test=locked` -- panic **while holding the window-state lock**,
 ///    which is the case the design above exists for: a hook that reached for
 ///    that lock would hang here instead of reporting.
-///  - `--panic-test=thread` -- panic on a spawned thread. In a debug build
+///  - `--polter-host-panic-test=thread` -- panic on a spawned thread. In a debug build
 ///    (`panic = "abort"` is set only on `[profile.release]`) this kills the
 ///    thread and **leaves the process running**, so the log line is the only
 ///    evidence the thread ever died.
@@ -5304,15 +5305,15 @@ fn install_panic_hook() {
 /// It is an instrument, not a detour: nothing about the ordinary path changes
 /// because this exists, and without the argument none of it runs.
 fn maybe_panic_test() {
-    let Some(arg) = std::env::args().find(|a| a.starts_with("--panic-test")) else {
+    if !host_flags().has("panic-test") {
         return;
-    };
-    let mode = arg.strip_prefix("--panic-test=").unwrap_or("plain").to_string();
-    logf!("--panic-test={mode}: panicking on purpose to prove the hook speaks");
+    }
+    let mode = host_flags().value("panic-test").unwrap_or("plain").to_string();
+    logf!("--polter-host-panic-test={mode}: panicking on purpose to prove the hook speaks");
     match mode.as_str() {
         "locked" => {
             tabs::with_windows_mut(|_ws| {
-                panic!("--panic-test=locked: panicking with the window-state lock held");
+                panic!("--polter-host-panic-test=locked: panicking with the window-state lock held");
             });
         }
         "thread" => {
@@ -5322,18 +5323,18 @@ fn maybe_panic_test() {
             // whole run.
             let h = std::thread::Builder::new()
                 .name("polter-panic-test".into())
-                .spawn(|| panic!("--panic-test=thread: panicking off the main thread"))
+                .spawn(|| panic!("--polter-host-panic-test=thread: panicking off the main thread"))
                 .expect("could not spawn the panic-test thread");
             // Joining an already-panicked thread returns `Err`; reported
             // rather than unwrapped, because unwrapping here would panic a
             // second time and confuse the reading this test exists to give.
             let joined_ok = h.join().is_ok();
             logf!(
-                "--panic-test=thread: the thread has ended (joined_ok={joined_ok}); \
+                "--polter-host-panic-test=thread: the thread has ended (joined_ok={joined_ok}); \
                  the process is still running, which is the point"
             );
         }
-        _ => panic!("--panic-test: panicking on the main thread on purpose"),
+        _ => panic!("--polter-host-panic-test: panicking on the main thread on purpose"),
     }
 }
 
@@ -5506,7 +5507,7 @@ mod log_ownership_tests {
         assert!(a(&["polter-host.exe", "+mcp"]));
         assert!(a(&["polter-host.exe", "--x", "+chat"]));
         assert!(!a(&["polter-host.exe"]));
-        assert!(!a(&["polter-host.exe", "--draw-on-paint"]));
+        assert!(!a(&["polter-host.exe", "--polter-host-draw-on-paint"]));
         // The program's own path is skipped: a directory called `+tools` on
         // somebody's disk must not turn every run into a CLI action.
         assert!(!a(&["C:\\+tools\\polter-host.exe"]));
@@ -6141,6 +6142,50 @@ pub fn name_this_thread(name: &str) {
     );
 }
 
+/// This program's own flags, as `polter_cliargs::host_flags` read them from
+/// the command line. **The only way anything here reads one**: a flag read
+/// straight out of `std::env::args()` is one the table does not know about,
+/// and the table is what the core and the refusal below both go by (#21).
+static HOST_FLAGS: std::sync::OnceLock<polter_cliargs::HostFlags> = std::sync::OnceLock::new();
+
+pub fn host_flags() -> &'static polter_cliargs::HostFlags {
+    // `main` sets it, after refusing a command line it cannot read; this
+    // fallback only runs where `main` did not (tests), and reads the same way.
+    HOST_FLAGS.get_or_init(|| polter_cliargs::host_flags(std::env::args()).unwrap_or_default())
+}
+
+/// A command line with a host flag this program does not know, or one under
+/// its old name, **stops here, and says which argument**.
+///
+/// Not a warning and carry on: a misspelt `--polter-host-…` is skipped by the
+/// core by design, so if this side also let it pass, the flag would be read by
+/// nobody and reported by nobody -- #21 itself, under a new prefix. Exit code
+/// 2 so a script sees it; a box for a person, stderr for a CLI action, whose
+/// terminal would be written over by a box that it cannot see anyway.
+fn refuse_command_line(why: &polter_cliargs::Rejection) -> ! {
+    let text = format!("Polter was not started: {why}");
+    // process-wide: this is before any window exists, and it is about the
+    // process's own command line
+    plogf!("[cli] refused: {why}");
+    if cli_action_requested() {
+        use std::io::Write as _;
+        let _ = std::io::stderr().write_all(format!("{text}\n").as_bytes());
+    } else {
+        let body: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+        let title: Vec<u16> = "Polter".encode_utf16().chain(Some(0)).collect();
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                None,
+                windows::core::PCWSTR(body.as_ptr()),
+                windows::core::PCWSTR(title.as_ptr()),
+                windows::Win32::UI::WindowsAndMessaging::MB_OK
+                    | windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+            );
+        }
+    }
+    std::process::exit(2);
+}
+
 fn main() {
     // **Only the instance that owns the log clears it.** These two statements
     // used to run unconditionally, above everything -- including above the
@@ -6171,11 +6216,18 @@ fn main() {
     // **The UI thread names itself first**, so the tid in every later
     // `[thread]` line has something to be compared against.
     name_this_thread("polter-ui");
+    // **Before anything reads a flag**, and after the log exists to say why.
+    match polter_cliargs::host_flags(std::env::args()) {
+        Ok(f) => {
+            let _ = HOST_FLAGS.set(f);
+        }
+        Err(why) => refuse_command_line(&why),
+    }
     maybe_panic_test();
 
-    if std::env::args().any(|a| a == "--draw-on-paint") {
+    if host_flags().has("draw-on-paint") {
         DRAW_ON_PAINT.store(1, Ordering::Relaxed);
-        logf!("NOTE: --draw-on-paint enabled (main-thread draw; see status.md)");
+        logf!("NOTE: --polter-host-draw-on-paint enabled (main-thread draw; see status.md)");
     }
 
     log_build_identity();
@@ -6360,6 +6412,15 @@ fn main() {
     let config = unsafe {
         let c = (api_box.config_new)();
         (api_box.config_load_default_files)(c);
+        // **The command line, which this host never loaded until #21.** Every
+        // `--key=value` a person gave it was dropped without a word -- and
+        // since `poltergeist-register-mcp` defaults to on, "ignored" meant "on".
+        // After the files and before `finalize`, the order macOS uses
+        // (`Ghostty.Config.swift`), so the command line wins over the files.
+        // The host's own flags are under `--polter-host-`, which the core
+        // skips; anything else it does not know becomes a diagnostic, and
+        // diagnostics open the error window below (`settings_ui::request_errors`).
+        (api_box.config_load_cli_args)(c);
         (api_box.config_finalize)(c);
         c
     };
@@ -6439,9 +6500,9 @@ fn main() {
 
     // A static prompt cannot distinguish "renderer still drawing" from
     // "renderer frozen" -- Windows blits the client area during a move either
-    // way. --clock types a ticking clock into the shell so the screen has
+    // way. --polter-host-clock types a ticking clock into the shell so the screen has
     // something that visibly advances.
-    // `--ops-delay=N`: hold each queued op N milliseconds before running it.
+    // `--polter-host-ops-delay=N`: hold each queued op N milliseconds before running it.
     //
     // **A stopwatch on the existing path, not a second path.** It is what
     // makes "move the focus between queueing and running" an experiment
@@ -6450,22 +6511,21 @@ fn main() {
     // for why the delay is applied to running rather than to queueing -- the
     // other version of this hook reads identically and makes every experiment
     // that uses it vacuous.
-    if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--ops-delay=").map(str::to_owned))
-    {
+    if let Some(v) = host_flags().value("ops-delay").map(str::to_owned) {
         match v.parse::<u64>() {
             Ok(ms) => tabs::set_ops_delay(ms),
             // process-wide: an argument the process was started with, before
             // any window exists to attribute it to
-            Err(_) => plogf!("[ops] --ops-delay={:?} is not a number; the hook stays off", v),
+            Err(_) => plogf!("[ops] --polter-host-ops-delay={:?} is not a number; the hook stays off", v),
         }
     }
 
-    if std::env::args().any(|a| a == "--clock") {
+    if host_flags().has("clock") {
         tabs::set_initial_input(
             "powershell -NoProfile -Command \"while($true){Get-Date -Format HH:mm:ss.fff; \
              Start-Sleep -Milliseconds 250}\"\r\n",
         );
-        logf!("--clock: the first tab will run a ticking clock");
+        logf!("--polter-host-clock: the first tab will run a ticking clock");
     }
 
     // ---- put the window back where it was
@@ -6567,57 +6627,47 @@ fn main() {
     // Each step logs observable state before and after, so the log alone
     // says whether the window actually changed -- "returned true" is not
     // the same claim as "the window moved".
-    // `--striptest`: the tab strip drives itself and prints what it did.
-    // See `strip::script_step`.
-    let striptest = std::env::args().any(|a| a == "--striptest");
+    // `--polter-host-striptest`: the tab strip drives itself and prints what
+    // it did. See `strip::script_step`.
+    let striptest = host_flags().has("striptest");
     let mut strip_step = 0usize;
     let mut strip_running = striptest;
     if striptest {
-        logf!("--striptest: the strip will exercise itself, one step per ~0.6s");
+        logf!("--polter-host-striptest: the strip will exercise itself, one step per ~0.6s");
     }
 
-    // `--qttest`: the quick terminal drops in and out on its own, printing
-    // the monitor and the work area it chose alongside the result.
-    let qttest = std::env::args().any(|a| a == "--qttest");
+    // `--polter-host-qttest`: the quick terminal drops in and out on its own,
+    // printing the monitor and the work area it chose alongside the result.
+    let qttest = host_flags().has("qttest");
     let mut qt_step = 0usize;
     let mut qt_running = qttest;
     if qttest {
-        logf!("--qttest: the quick terminal will exercise itself");
+        logf!("--polter-host-qttest: the quick terminal will exercise itself");
     }
 
-    // `--write-settings-fixture <path>`: emit the file the Zig test reads, from
-    // the product's own writer, and exit. **The fixture has to come out of the
-    // shipped binary**; one generated by a copy of the code proves the copy.
-    {
-        let mut args = std::env::args();
-        while let Some(a) = args.next() {
-            if a == "--write-settings-fixture" {
-                let path = args.next().unwrap_or_default();
-                let ok = plugins::write_fixture(&path);
-                std::process::exit(if ok { 0 } else { 1 });
-            }
-        }
+    // `--polter-host-write-settings-fixture=<path>`: emit the file the Zig test
+    // reads, from the product's own writer, and exit. **The fixture has to
+    // come out of the shipped binary**; one generated by a copy of the code
+    // proves the copy. The path rides after `=`: in the next argument the core
+    // would read it as a config field (see `polter_cliargs::HOST_PREFIX`).
+    if let Some(path) = host_flags().value("write-settings-fixture") {
+        let ok = plugins::write_fixture(path);
+        std::process::exit(if ok { 0 } else { 1 });
     }
 
-    // `--write-project-fixture <path>`: same reason and same shape as
-    // `--write-settings-fixture` above, for `project.rs`.
-    {
-        let mut args = std::env::args();
-        while let Some(a) = args.next() {
-            if a == "--write-project-fixture" {
-                let path = args.next().unwrap_or_default();
-                let ok = project::write_fixture(&path);
-                std::process::exit(if ok { 0 } else { 1 });
-            }
-        }
+    // `--polter-host-write-project-fixture=<path>`: same reason and same shape
+    // as the settings fixture above, for `project.rs`.
+    if let Some(path) = host_flags().value("write-project-fixture") {
+        let ok = project::write_fixture(path);
+        std::process::exit(if ok { 0 } else { 1 });
     }
 
-    let selftest = std::env::args().any(|a| a == "--selftest");
+    let selftest = host_flags().has("selftest");
     // Stops the script once it has finished. **Not a tidiness fix.** Without
     // it the last step's "after" line reprints every tick forever, and then
     // "stuck on step N" and "finished step N and idle" look identical at the
     // tail of the log -- which is the one question this script exists to
-    // answer. `--striptest` says `striptest done`; this now does the same.
+    // answer. `--polter-host-striptest` says `striptest done`; this now does the same.
     let mut selftest_running = selftest;
     let script: &[(&str, &str)] = &[
         ("new_tab", "expect tab count 1 -> 2"),
@@ -6642,7 +6692,7 @@ fn main() {
     ];
     let mut step = 0usize;
     if selftest {
-        logf!("--selftest: {} steps, one per second", script.len());
+        logf!("--polter-host-selftest: {} steps, one per second", script.len());
     }
 
     // After the frame exists, so the palette can centre on it, and after the
@@ -6689,7 +6739,7 @@ fn main() {
     let keystrokes: Option<ITfKeystrokeMgr> =
         IME.with(|c| c.borrow().as_ref().and_then(|st| st.thread_mgr.cast().ok()));
 
-    // `--selfresize`: five seconds in, resize the frame once, from the host
+    // `--polter-host-selfresize`: five seconds in, resize the frame once, from the host
     // itself, and log the centre pixel before and after.
     //
     // The open question is whether a resize *after* the context was built is
@@ -6702,13 +6752,13 @@ fn main() {
     // by hand: mouse coordinates (two coordinate systems, one wrong click) and
     // a screenshot as the read-out. A black terminal after the resize shows up
     // here as `center_pixel` going to 0x000000, which is a number in a log.
-    let selfresize = std::env::args().any(|a| a == "--selfresize");
+    let selfresize = host_flags().has("selfresize");
     // The size before the resize, so the "after" step can work out which part
     // of the window is new. Kept here rather than re-measured because by then
     // the old size is gone.
     let mut resize_before: Option<(i32, i32)> = None;
     if selfresize {
-        logf!("--selfresize: the host will resize its own window once, at ~5s");
+        logf!("--polter-host-selfresize: the host will resize its own window once, at ~5s");
     }
 
     let mut msg = MSG::default();

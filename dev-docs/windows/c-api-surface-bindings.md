@@ -49,7 +49,7 @@
 ## 已解析，但只在实验开关后面（1 条）
 
 - **`ghostty_surface_draw`** —— 唯一的调用点在 `if crate::draw_on_paint()` 里面，
-  也就是 `--draw-on-paint`。⚠️ **出货构建里等于没有。** 头文件原文：
+  也就是 `--polter-host-draw-on-paint`。⚠️ **出货构建里等于没有。** 头文件原文：
 
   > `GHOSTTY_API void ghostty_surface_draw(ghostty_surface_t);`
 
