@@ -646,6 +646,16 @@ test {
         .{&thread},
     );
 
+    // `thread.deinit` must not run while the thread is still in its loop,
+    // so stop and join on every way out of this test -- including an early
+    // return from a failed wait below -- not only on the path that reaches
+    // the explicit stop.
+    var joined = false;
+    defer if (!joined) {
+        thread.stop.notify() catch {};
+        os_thread.join();
+    };
+
     // Start our search
     _ = thread.mailbox.push(
         io,
@@ -663,6 +673,7 @@ test {
     // Stop the thread
     try thread.stop.notify();
     os_thread.join();
+    joined = true;
 
     // 1 total matches
     try testing.expectEqual(1, ud.total);
