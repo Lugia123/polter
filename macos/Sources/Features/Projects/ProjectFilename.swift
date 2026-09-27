@@ -2,7 +2,7 @@ import Foundation
 
 /// The filename a *new* project file is given. One of three implementations
 /// of one rule -- `src/Project.zig`'s `sanitizeFilename` and
-/// `windows/host/src/project.rs`'s `sanitize_filename` are the other two --
+/// `windows/projectname/src/lib.rs`'s `sanitize_filename` are the other two --
 /// and all three are held to `test/fixtures/project-filenames.tsv`, row for
 /// row. Change the rule there first; see issue #23 for how the three drifted
 /// apart when nothing held them together.

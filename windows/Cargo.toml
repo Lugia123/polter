@@ -22,13 +22,18 @@
 #                tested off Windows at all -- `windows`'s own dependencies
 #                fail to compile for a macOS target -- so any rule worth a
 #                test has to live outside it.
+#   projectname/ the rule that names a project's file. Written three times
+#                (Zig, Swift, here) and pinned by one shared table
+#                (test/fixtures/project-filenames.tsv); inside host/ this
+#                copy's table test could only run on Windows, so breaking it
+#                on a Mac turned nothing red (issue #23).
 #
 # The workspace exists so there is **one lock file and one target directory**
 # for the two, and so `cargo test -p polter-split-tree` works from here without
 # knowing where the crate lives.
 [workspace]
 resolver = "2"
-members = ["host", "split-tree", "droppath", "cliargs", "urlpolicy"]
+members = ["host", "split-tree", "droppath", "cliargs", "urlpolicy", "projectname"]
 
 # **Profiles must live here, not in a member.** Cargo ignores a member's
 # `[profile]` inside a workspace and only says so as a warning -- the symptom

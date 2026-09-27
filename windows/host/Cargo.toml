@@ -153,3 +153,10 @@ path = "../urlpolicy"
 # written -- which `polter-host` cannot do.
 [dependencies.polter-droppath]
 path = "../droppath"
+
+# The rule that names a project's file (`project::sanitize_filename`). Out
+# here for the reason `droppath` is: its test is the table all three
+# implementations share, and inside this crate that test only ran on Windows
+# -- on the Mac, breaking the rule turned nothing red (issue #23).
+[dependencies.polter-projectname]
+path = "../projectname"

@@ -244,7 +244,7 @@ const max_filename_len = 200;
 const filename_table_path = "test/fixtures/project-filenames.tsv";
 
 /// The rule that turns a project name into a filename. It is written three
-/// times -- here, `sanitize_filename` in `windows/host/src/project.rs`, and
+/// times -- here, `sanitize_filename` in `windows/projectname/src/lib.rs`, and
 /// `macos/Sources/Features/Projects/ProjectFilename.swift` -- and the three
 /// disagreed for most of their lives without anything noticing (issue #23),
 /// so the rule is pinned by `test/fixtures/project-filenames.tsv`, which all

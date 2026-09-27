@@ -4,7 +4,7 @@ r"""Every implementation of the project filename rule reads the one table.
 # Why this exists
 
 The rule that turns a project name into a filename is written three times
--- `src/Project.zig`, `windows/host/src/project.rs`, and
+-- `src/Project.zig`, `windows/projectname/src/lib.rs`, and
 `macos/Sources/Features/Projects/ProjectFilename.swift` -- and for most of
 its life the three disagreed without anything noticing (issue #23): Zig cut
 by byte and could split a character, Swift cut by Character and could
@@ -53,7 +53,7 @@ TABLE = "test/fixtures/project-filenames.tsv"
 
 CONSUMERS = [
     "macos/Tests/Projects/ProjectFilenameTableTests.swift",
-    "windows/host/src/project.rs",
+    "windows/projectname/src/lib.rs",
     "src/Project.zig",
 ]
 

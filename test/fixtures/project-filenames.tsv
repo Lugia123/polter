@@ -1,7 +1,7 @@
 # Project filename rule: one table, three implementations (issue #23, #838).
 #
 # Every implementation of the rule that names a new project file -- src/Project.zig
-# (sanitizeFilename), windows/host/src/project.rs (sanitize_filename) and
+# (sanitizeFilename), windows/projectname/src/lib.rs (sanitize_filename) and
 # macos/Sources/Features/Projects/ProjectFilename.swift -- runs every row of this
 # file in its own tests and must produce the expected column byte for byte.
 # tools/every-project-filename-rule-reads-the-table.py checks that each of them

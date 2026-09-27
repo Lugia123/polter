@@ -28,12 +28,17 @@ version = "0.1.0"
 dependencies = [
  "polter-cliargs",
  "polter-droppath",
+ "polter-projectname",
  "polter-split-tree",
  "polter-urlpolicy",
  "serde_json",
  "windows",
  "windows-core",
 ]
+
+[[package]]
+name = "polter-projectname"
+version = "0.1.0"
 
 [[package]]
 name = "polter-split-tree"

@@ -1,0 +1,15 @@
+[package]
+name = "polter-projectname"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# No dependencies, on purpose -- the same reason `droppath` has none.
+#
+# The project filename rule is written three times (Zig, Swift, here) and
+# pinned by one shared table that each implementation runs in its own tests
+# (issue #23). A table test is only a pin if it runs where the rule is
+# changed. Inside `polter-host` it could not: that crate's tests do not
+# compile off Windows, so on the Mac this copy of the rule could be broken
+# with every check green.
+[dependencies]
