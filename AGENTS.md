@@ -11,8 +11,11 @@ A file for [guiding coding agents](https://agents.md/).
 - **Test (Zig):** `zig build test`
   - Prefer to run targeted tests with `-Dtest-filter` because the full
     test suite is slow to run.
-  - ⚠️ **但交付前必须跑一次不带 filter 的 `zig build test`。** 带 filter 的构建
-    **不编译没被选中的测试**，所以它的绿连「这棵树编得过」都不证明。见下一节。
+  - ⚠️ **不带 filter 的全量只在 `/发版` 时跑一次**（`tools/pre-push-full-test`）。
+    日常交付、`/提交`、`/构建app` **都不跑全量**，跑的是：点名测试（带基线）+
+    改动涉及目标的构建（`zig build -Demit-macos-app=false`；碰了 Windows 路径再加交叉编译）
+    + 闸。带 filter 的构建**不编译没被选中的测试**，所以「这棵树编得过」要靠那条构建来证，
+    不靠测试的绿。见下一节。
 - **Test filter (Zig)**: `zig build test -Dtest-filter=<test name>`
 - **Formatting (Zig)**: `zig fmt .`
 - **Formatting (Swift)**: `swiftlint lint --strict --fix`
@@ -68,7 +71,8 @@ A file for [guiding coding agents](https://agents.md/).
    `zig build test` 在测试进行中默认没有超时，会一直陪着等。机制是构造出来的，挂住的栈
    和真实那次逐帧同偏移（#38）。「多 agent 共用构建目录是最可能让那个文件被换掉的来源」
    是**推论**，那一次到底是什么文件没找到。
-   ⇒ 全量测试用 `tools/zig-test-watchdog -- zig build test …` 跑：它把「不动的
+   ⇒ 测试用 `tools/zig-test-watchdog -- zig build test …` 跑（`/发版` 的全量走
+   `tools/pre-push-full-test`，它内部已经套了这一层）：它把「不动的
    测试进程」采样、存盘、当失败退出（3），不会杀还在用 CPU 的慢测试。**直接跑
    `zig build test` 的人得不到这层保护。**
 
