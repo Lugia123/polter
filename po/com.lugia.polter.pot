@@ -2326,3 +2326,16 @@ msgstr ""
 #: windows/host/src/project_picker.rs:132
 msgid "The project could not be opened."
 msgstr ""
+
+#: windows/host/src/main.rs:6150
+msgid "Polter could not open its first terminal and will close."
+msgstr ""
+
+#: windows/host/src/main.rs:6144
+msgid "No reason was recorded."
+msgstr ""
+
+#: windows/host/src/main.rs:6152
+#, rust-format
+msgid "The full log is at {}"
+msgstr ""

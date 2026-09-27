@@ -5088,6 +5088,7 @@ fn load_api() -> Option<Api> {
             app_tick: sym!(internal, "ghostty_app_tick"),
             surface_config_new: sym!(internal, "ghostty_surface_config_new"),
             surface_new: sym!(internal, "ghostty_surface_new"),
+            app_last_error: sym!(internal, "ghostty_app_last_error"),
             surface_refresh: sym!(internal, "ghostty_surface_refresh"),
             surface_needs_confirm_quit: sym!(internal, "ghostty_surface_needs_confirm_quit"),
             surface_draw: sym!(internal, "ghostty_surface_draw"),
@@ -6115,6 +6116,57 @@ fn die() -> ! {
     std::process::exit(1)
 }
 
+/// Tell the person why Polter is about to close, before it does (#18).
+///
+/// **Before this, the window flashed and vanished** and the reason was only
+/// in the log. The reason shown is the one the core recorded for the surface
+/// that failed (`ghostty_app_last_error`): the error, and what the failing
+/// code knew at that moment -- on a machine whose driver refuses the OpenGL
+/// version the renderer needs, the driver's own name and the version it
+/// offered. **Nothing about OpenGL is written here**, because the next
+/// failure may have another cause and the box would then be wrong.
+///
+/// Modal and before `die`: the process must not exit while the box is up,
+/// and the log line comes first so the log says a box was shown even if
+/// nobody is there to close it.
+fn first_tab_failed(app: ffi::App) {
+    let reason = unsafe {
+        let p = (api().app_last_error)(app);
+        if p.is_null() {
+            String::new()
+        } else {
+            std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+        }
+    };
+    let reason = if reason.is_empty() {
+        // Said as what it is: the core did not record one, which is itself
+        // worth knowing -- not dressed up as a cause.
+        i18n::tr("No reason was recorded.").to_string()
+    } else {
+        reason
+    };
+    let text = format!(
+        "{}\n\n{}\n\n{}",
+        i18n::tr("Polter could not open its first terminal and will close."),
+        reason,
+        i18n::tr("The full log is at {}").replace("{}", &log_path().display().to_string()),
+    );
+    // process-wide: this is the last thing the process does, and the only
+    // window it has is about to go
+    plogf!("[fatal] first tab failed; showing: {}", text.replace('\n', " | "));
+    let body: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    let title: Vec<u16> = "Polter".encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            None,
+            windows::core::PCWSTR(body.as_ptr()),
+            windows::core::PCWSTR(title.as_ptr()),
+            windows::Win32::UI::WindowsAndMessaging::MB_OK
+                | windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+        );
+    }
+}
+
 /// Give this thread a name Windows itself will hand back, and say so in the
 /// log.
 ///
@@ -6601,6 +6653,7 @@ fn main() {
 
     // ---- first tab ----
     if !tabs::create_tab(hwnd, app, hinst) {
+        first_tab_failed(app);
         logf!("FATAL could not create the first tab");
         die();
     }

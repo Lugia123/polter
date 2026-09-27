@@ -1566,6 +1566,12 @@ GHOSTTY_API bool ghostty_surface_set_scrollback_journal(ghostty_surface_t, const
 
 GHOSTTY_API ghostty_surface_t ghostty_surface_new(ghostty_app_t,
                                                      const ghostty_surface_config_s*);
+// Why the last ghostty_surface_new on this app returned NULL, as text an apprt
+// can show a person: the error's name, then what the failing code knew (for
+// OpenGL on Windows, the driver that was there and the version it offered).
+// "" when the last surface did not fail. Valid until the next
+// ghostty_surface_new on the same app. See src/apprt/failure.zig.
+GHOSTTY_API const char* ghostty_app_last_error(ghostty_app_t);
 GHOSTTY_API void ghostty_surface_free(ghostty_surface_t);
 GHOSTTY_API void* ghostty_surface_userdata(ghostty_surface_t);
 GHOSTTY_API ghostty_app_t ghostty_surface_app(ghostty_surface_t);

@@ -1428,6 +1428,9 @@ pub struct Api {
     pub app_tick: unsafe extern "C" fn(App),
     pub surface_config_new: unsafe extern "C" fn() -> UnsizedSurfaceConfig,
     pub surface_new: unsafe extern "C" fn(App, *const SurfaceConfig) -> Surface,
+    /// Why the last `surface_new` on this app returned null, or "" (#18).
+    /// Owned by the core; valid until the next `surface_new`.
+    pub app_last_error: unsafe extern "C" fn(App) -> *const c_char,
     /// **Schedule a render. Not the same as `surface_draw`.**
     ///
     /// `ghostty_surface_refresh` queues one (`refreshCallback` -> `queueRender`

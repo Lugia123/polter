@@ -22,6 +22,7 @@ const Context = @This();
 
 const std = @import("std");
 const builtin = @import("builtin");
+const failure = @import("../../apprt/failure.zig");
 const windows = std.os.windows;
 
 const BOOL = windows.BOOL;
@@ -73,8 +74,12 @@ pub const Error = error{
 /// caller needs to load glad and build GPU resources immediately afterwards.
 /// Call `clearCurrent` before handing it to another thread.
 pub fn init(hwnd: HWND) Error!Context {
+    // Every failure below also leaves its reason in `apprt/failure.zig`, so
+    // the host can say it to a person instead of only to the log (#18).
+    failure.clearDetail();
     const hdc = c.GetDC(hwnd) orelse {
         log.err("GetDC failed for host window", .{});
+        failure.noteDetail("could not get a device context for the window", .{});
         return error.NoDeviceContext;
     };
     errdefer _ = c.ReleaseDC(hwnd, hdc);
@@ -97,6 +102,7 @@ pub fn init(hwnd: HWND) Error!Context {
     const format = c.ChoosePixelFormat(hdc, &pfd);
     if (format == 0) {
         log.err("ChoosePixelFormat found no suitable format", .{});
+        failure.noteDetail("no suitable OpenGL pixel format on this display", .{});
         return error.NoPixelFormat;
     }
     if (c.SetPixelFormat(hdc, format, &pfd) == .FALSE) {
@@ -105,6 +111,7 @@ pub fn init(hwnd: HWND) Error!Context {
                 "set an incompatible pixel format on this window",
             .{format},
         );
+        failure.noteDetail("could not set pixel format {d} on the window", .{format});
         return error.PixelFormatFailed;
     }
 
@@ -114,12 +121,14 @@ pub fn init(hwnd: HWND) Error!Context {
     // first purely to look the function up, then throw it away.
     const bootstrap = c.wglCreateContext(hdc) orelse {
         log.err("wglCreateContext failed for the bootstrap context", .{});
+        failure.noteDetail("the system could not create any OpenGL context for this window", .{});
         return error.ContextFailed;
     };
 
     if (c.wglMakeCurrent(hdc, bootstrap) == .FALSE) {
         _ = c.wglDeleteContext(bootstrap);
         log.err("wglMakeCurrent failed for the bootstrap context", .{});
+        failure.noteDetail("could not make the first OpenGL context current", .{});
         return error.MakeCurrentFailed;
     }
 
@@ -133,6 +142,7 @@ pub fn init(hwnd: HWND) Error!Context {
     }
 
     const createFn = createContextAttribs orelse {
+        noteDriver("the driver cannot be asked for an OpenGL {d}.{d} core profile (no WGL_ARB_create_context)");
         _ = c.wglMakeCurrent(null, null);
         log.err(
             "driver does not support WGL_ARB_create_context, so a " ++
@@ -158,6 +168,9 @@ pub fn init(hwnd: HWND) Error!Context {
     };
 
     const hglrc = createFn(hdc, null, &attribs) orelse {
+        // Read while the bootstrap context is still current: it is the only
+        // moment the driver that said no can be asked who it is.
+        noteDriver("the driver refused an OpenGL {d}.{d} core profile context");
         _ = c.wglMakeCurrent(null, null);
         log.err(
             "driver refused an OpenGL {d}.{d} core profile context",
@@ -172,6 +185,7 @@ pub fn init(hwnd: HWND) Error!Context {
     if (c.wglMakeCurrent(hdc, hglrc) == .FALSE) {
         _ = c.wglMakeCurrent(null, null);
         log.err("wglMakeCurrent failed for the core profile context", .{});
+        failure.noteDetail("could not make the OpenGL {d}.{d} core profile context current", .{ required_major, required_minor });
         return error.MakeCurrentFailed;
     }
 
@@ -179,6 +193,25 @@ pub fn init(hwnd: HWND) Error!Context {
 
     return .{ .hwnd = hwnd, .hdc = hdc, .hglrc = hglrc };
 }
+
+/// Note `what` (with the required version filled in) together with the
+/// driver that is current -- the bootstrap context's. That is the part that
+/// changes from one machine to the next: on the #18 machine it read
+/// "D3D12 (Microsoft Basic Render Driver)", and after `GALLIUM_DRIVER=llvmpipe`
+/// it reads "llvmpipe". Must be called while a context is current.
+fn noteDriver(comptime what: []const u8) void {
+    const renderer = c.glGetString(GL_RENDERER);
+    const version = c.glGetString(GL_VERSION);
+    failure.noteDetail(what ++ "; the OpenGL driver here is \"{s}\", which offers OpenGL {s}", .{
+        required_major,
+        required_minor,
+        if (renderer) |r| std.mem.sliceTo(r, 0) else "unknown",
+        if (version) |v| std.mem.sliceTo(v, 0) else "unknown",
+    });
+}
+
+const GL_VERSION: c_uint = 0x1F02;
+const GL_RENDERER: c_uint = 0x1F01;
 
 /// Destroy the context. The context must not be current on any thread;
 /// callers reach this state via `clearCurrent`.
@@ -339,6 +372,7 @@ const c = struct {
         hglrc: ?HGLRC,
     ) callconv(.winapi) BOOL;
     pub extern "opengl32" fn wglGetCurrentContext() callconv(.winapi) ?HGLRC;
+    pub extern "opengl32" fn glGetString(name: c_uint) callconv(.winapi) ?[*:0]const u8;
     pub extern "opengl32" fn wglGetProcAddress(
         name: [*:0]const u8,
     ) callconv(.winapi) ?PROC;

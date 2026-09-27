@@ -150,6 +150,12 @@ pub const App = struct {
     /// The configuration for the app. This is owned by this structure.
     config: Config,
 
+    /// Why the last `ghostty_surface_new` on this app returned null, for
+    /// `ghostty_app_last_error` (#18). Empty until a surface fails; cleared
+    /// when the next one starts. See `apprt/failure.zig`.
+    last_error_buf: [512]u8 = undefined,
+    last_error_len: usize = 0,
+
     pub fn init(
         self: *App,
         core_app: *CoreApp,
@@ -2254,10 +2260,25 @@ pub const CAPI = struct {
         app: *App,
         opts: *const apprt.Surface.Options,
     ) ?*Surface {
+        app.last_error_len = 0;
+        apprt.failure.clearDetail();
         return surface_new_(app, opts) catch |err| {
             log.err("error initializing surface err={}", .{err});
+            const text = apprt.failure.describe(&app.last_error_buf, @errorName(err), apprt.failure.detail());
+            app.last_error_len = text.len;
+            log.err("surface failure, as the apprt will show it: {s}", .{text});
             return null;
         };
+    }
+
+    /// Why the last `ghostty_surface_new` on this app returned null, as text
+    /// an apprt can put in front of a person: the error's name, then what the
+    /// failing code knew (for OpenGL on Windows, the driver that was there and
+    /// the version it offered). "" when the last surface did not fail. Valid
+    /// until the next `ghostty_surface_new` on the same app.
+    export fn ghostty_app_last_error(app: *App) [*:0]const u8 {
+        if (app.last_error_len == 0) return "";
+        return app.last_error_buf[0..app.last_error_len :0].ptr;
     }
 
     fn surface_new_(
