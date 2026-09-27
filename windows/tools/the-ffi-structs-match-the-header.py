@@ -72,6 +72,7 @@ PAIRS = [
     ("ffi.rs", "Action", "Action", "ghostty_action_s"),
     ("ffi.rs", "KeyEvent", "KeyEvent", "ghostty_input_key_s"),
     ("ffi.rs", "RuntimeConfig", "RuntimeConfig", "ghostty_runtime_config_s"),
+    ("ffi.rs", "ConfigColor", "ConfigColor", "ghostty_config_color_s"),
     ("ffi.rs", "SurfaceConfig", "SurfaceConfig", "ghostty_surface_config_s"),
     ("ffi.rs", "SetTitlePayload", "SetTitlePayload", "ghostty_action_set_title_s"),
     ("ffi.rs", "GString", "GString", "ghostty_string_s"),

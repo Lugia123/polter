@@ -102,6 +102,13 @@ const _: () = assert!(std::mem::offset_of!(RuntimeConfig, confirm_read_clipboard
 const _: () = assert!(std::mem::offset_of!(RuntimeConfig, write_clipboard_cb) == 48, "RuntimeConfig.write_clipboard_cb is not at ghostty_runtime_config_s.write_clipboard_cb");
 const _: () = assert!(std::mem::offset_of!(RuntimeConfig, close_surface_cb) == 56, "RuntimeConfig.close_surface_cb is not at ghostty_runtime_config_s.close_surface_cb");
 
+// ConfigColor <- ghostty_config_color_s
+const _: () = assert!(std::mem::size_of::<ConfigColor>() == 3, "size of ConfigColor != sizeof(ghostty_config_color_s)");
+const _: () = assert!(std::mem::align_of::<ConfigColor>() == 1, "align of ConfigColor != alignof(ghostty_config_color_s)");
+const _: () = assert!(std::mem::offset_of!(ConfigColor, r) == 0, "ConfigColor.r is not at ghostty_config_color_s.r");
+const _: () = assert!(std::mem::offset_of!(ConfigColor, g) == 1, "ConfigColor.g is not at ghostty_config_color_s.g");
+const _: () = assert!(std::mem::offset_of!(ConfigColor, b) == 2, "ConfigColor.b is not at ghostty_config_color_s.b");
+
 // SurfaceConfig <- ghostty_surface_config_s
 const _: () = assert!(std::mem::size_of::<SurfaceConfig>() == 120, "size of SurfaceConfig != sizeof(ghostty_surface_config_s)");
 const _: () = assert!(std::mem::align_of::<SurfaceConfig>() == 8, "align of SurfaceConfig != alignof(ghostty_surface_config_s)");

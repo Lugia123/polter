@@ -948,6 +948,17 @@ pub struct RuntimeConfig {
     pub close_surface_cb: CloseSurfaceCb,
 }
 
+/// `ghostty_config_color_s`: what `config_get` writes for a colour key such as
+/// `background`. Read by the dividers, which paint the terminal's background
+/// beside their one-pixel line (#19).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ConfigColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SurfaceConfig {

@@ -50,7 +50,32 @@ use crate::{logf, plogf, wlogf};
 
 /// Divider thickness in unscaled pixels. Wide enough to grab, narrow enough
 /// not to eat a column of text.
+/// How wide a divider can be **grabbed**: the width of its window. Unchanged
+/// by #19, and it must stay that way -- see [`LINE`].
 const THICKNESS: i32 = 6;
+/// How wide a divider is **seen**: the line drawn in the middle of the window.
+///
+/// **Why two numbers (#19).** Both used to be `THICKNESS`: `WM_PAINT` filled
+/// the whole window, so the line was six pixels wide where macOS draws one
+/// (`splitterVisibleSize`), and people said it looked heavy. Making the window
+/// thinner would have fixed the look and made the divider nearly impossible
+/// to grab, because on Win32 the window *is* the hit area. So the window stays
+/// `THICKNESS` wide and only the drawing changes: the middle `LINE` pixels get
+/// the divider colour and the rest gets the terminal's background, so the
+/// divider looks one pixel wide and still catches the pointer six pixels wide.
+/// (macOS's hit area is 7: `visibleSize + invisibleSize`.)
+///
+/// The panes cannot draw that background themselves: they are
+/// `WS_CLIPSIBLINGS`, so nothing under a divider window is ever theirs to
+/// paint. Leaving those pixels unpainted would show whatever was there last.
+///
+/// **Where the illusion breaks**, knowingly: with a non-default
+/// `unfocused-split-fill` the unfocused side's background is not `background`
+/// (with the default, the dimming layer *is* `background`, so it matches); a
+/// background that is not one flat colour is not matched; and the outer
+/// pixels of the column right at the seam stay covered, as they were under
+/// the old six-pixel bar.
+const LINE: i32 = 1;
 const COL: u32 = 0x00141312;
 const COL_HOT: u32 = 0x00605f5d;
 
@@ -92,6 +117,48 @@ static REGISTERED: AtomicBool = AtomicBool::new(false);
 fn scaled_thickness(frame: HWND) -> i32 {
     let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(frame) }.max(96) as i32;
     (THICKNESS * dpi / 96).max(3)
+}
+
+/// `LINE` in device pixels at `dpi`: 1 at 100% and 150%, 2 at 200%. Never
+/// wider than the window (`across`, its narrow side) it is drawn in.
+fn line_px(dpi: i32, across: i32) -> i32 {
+    (LINE * dpi.max(96) / 96).max(1).min(across.max(1))
+}
+
+/// The part of a divider window's client rect that is drawn as the line: the
+/// middle `line_px` of its narrow side, whichever way the divider runs. The
+/// rest of `rc` is the hit area painted as background (see `LINE`).
+fn line_rect(rc: RECT, dpi: i32) -> RECT {
+    let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+    if w <= h {
+        let l = line_px(dpi, w);
+        let x = rc.left + (w - l) / 2;
+        RECT { left: x, top: rc.top, right: x + l, bottom: rc.bottom }
+    } else {
+        let l = line_px(dpi, h);
+        let y = rc.top + (h - l) / 2;
+        RECT { left: rc.left, top: y, right: rc.right, bottom: y + l }
+    }
+}
+
+fn dpi_of(hwnd: HWND) -> i32 {
+    unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96) as i32
+}
+
+/// The terminal's `background`, read when it is painted so a reloaded config
+/// is followed. `None` when it cannot be read; the caller then paints the
+/// whole window the divider colour, which is the old look, not a hole.
+fn terminal_background() -> Option<COLORREF> {
+    let cfg = crate::config_handle();
+    if cfg.is_null() {
+        return None;
+    }
+    let mut c = crate::ffi::ConfigColor::default();
+    let key = "background";
+    let ok = unsafe {
+        (crate::api().config_get)(cfg, &mut c as *mut _ as *mut std::ffi::c_void, key.as_ptr(), key.len())
+    };
+    ok.then(|| COLORREF(c.r as u32 | (c.g as u32) << 8 | (c.b as u32) << 16))
 }
 
 // ------------------------------------------------------------------ setup
@@ -238,12 +305,34 @@ pub fn sync(frame: HWND) {
                 let _ = ShowWindow(d.hwnd, SW_HIDE);
             }
         }
-        wlogf!(frame, 
-            "[div] sync: {} dividers for {} panes, zoomed={}",
-            wanted.len(),
-            panes,
-            zoomed
-        );
+        // The two widths #19 is about, read back from the windows rather than
+        // restated from the constants: how wide the first divider can be
+        // grabbed (its window) and how wide it is drawn.
+        let widths = st.pool.first().filter(|_| !wanted.is_empty()).map(|d| {
+            let mut wr = RECT::default();
+            let _ = unsafe { GetWindowRect(d.hwnd, &mut wr) };
+            let hit = match d.axis {
+                Axis::Horizontal => wr.right - wr.left,
+                Axis::Vertical => wr.bottom - wr.top,
+            };
+            (hit, line_px(dpi_of(d.hwnd), hit))
+        });
+        match widths {
+            Some((hit, line)) => wlogf!(frame,
+                "[div] sync: {} dividers for {} panes, zoomed={}, hit={}px line={}px",
+                wanted.len(),
+                panes,
+                zoomed,
+                hit,
+                line
+            ),
+            None => wlogf!(frame,
+                "[div] sync: {} dividers for {} panes, zoomed={}",
+                wanted.len(),
+                panes,
+                zoomed
+            ),
+        }
     });
 }
 
@@ -455,8 +544,21 @@ extern "system" fn div_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
                     let mut rc = RECT::default();
                     let _ = GetClientRect(hwnd, &mut rc);
                     let hot = index_of(hwnd) == STATE.with(|c| c.borrow().hot);
-                    let brush = CreateSolidBrush(COLORREF(if hot { COL_HOT } else { COL }));
-                    FillRect(hdc, &rc, brush);
+                    let line_col = COLORREF(if hot { COL_HOT } else { COL });
+
+                    // See `LINE`: the whole window is the hit area, only the
+                    // middle of it is the line.
+                    let line_rc = match terminal_background() {
+                        Some(bg) => {
+                            let back = CreateSolidBrush(bg);
+                            FillRect(hdc, &rc, back);
+                            let _ = DeleteObject(back.into());
+                            line_rect(rc, dpi_of(hwnd))
+                        }
+                        None => rc,
+                    };
+                    let brush = CreateSolidBrush(line_col);
+                    FillRect(hdc, &line_rc, brush);
                     let _ = DeleteObject(brush.into());
                     let _ = EndPaint(hwnd, &ps);
                 }
@@ -465,5 +567,51 @@ extern "system" fn div_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
 
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn r(l: i32, t: i32, rr: i32, b: i32) -> RECT {
+        RECT { left: l, top: t, right: rr, bottom: b }
+    }
+
+    #[test]
+    fn a_six_pixel_divider_is_drawn_one_pixel_wide_in_its_middle() {
+        // A left|right split at 100%: window 6 wide, line 1 wide, centred.
+        let line = line_rect(r(0, 0, 6, 400), 96);
+        assert_eq!((line.left, line.right), (2, 3));
+        assert_eq!((line.top, line.bottom), (0, 400));
+    }
+
+    #[test]
+    fn the_line_follows_the_divider_when_it_runs_across() {
+        // A top/bottom split: the narrow side is the height.
+        let line = line_rect(r(0, 0, 400, 6), 96);
+        assert_eq!((line.top, line.bottom), (2, 3));
+        assert_eq!((line.left, line.right), (0, 400));
+    }
+
+    #[test]
+    fn the_line_scales_with_dpi_but_stays_thin() {
+        // 150%: window 9 (THICKNESS * 144 / 96), line still 1.
+        let at150 = line_rect(r(0, 0, 9, 100), 144);
+        assert_eq!(at150.right - at150.left, 1);
+        // 200%: window 12, line 2.
+        let at200 = line_rect(r(0, 0, 12, 100), 192);
+        assert_eq!(at200.right - at200.left, 2);
+        assert_eq!(at200.left, 5);
+    }
+
+    #[test]
+    fn the_hit_area_is_not_what_gets_narrower() {
+        // The fix must thin what is drawn and nothing else: the window the
+        // line sits in is still THICKNESS wide at 100%.
+        assert_eq!(THICKNESS * 96 / 96, 6);
+        let rc = r(0, 0, THICKNESS, 300);
+        let line = line_rect(rc, 96);
+        assert!(line.right - line.left < rc.right - rc.left);
     }
 }
