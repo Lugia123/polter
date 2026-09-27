@@ -210,6 +210,19 @@ pub const AgentState = enum {
 /// How long `expected` may wait for `session_started` before it is a fault.
 pub const hooks_expected_timeout_ms: u64 = 30 * std.time.ms_per_s;
 
+/// How long after an event the screen may still be drawing that event --
+/// the permission box, the last lines of an answer -- and have that count as
+/// the event's own redraw rather than as the screen moving on.
+///
+/// Measured with claude 2.1.283 in a pty (#879): the permission box was
+/// still being drawn 1.45 s and 1.82 s after the PermissionRequest hook
+/// fired. Three seconds is that, plus the sampler's one-second grain.
+///
+/// ⚠️ The cost, stated: a person who declines within this much of the box
+/// appearing moves the screen inside the window, and that one stillness
+/// is still read as explained. The next redraw after it is not.
+pub const event_redraw_grace_ms: u64 = 3 * std.time.ms_per_s;
+
 /// What an agent said that is waiting in the box. One slot, like
 /// `NoticeKind`: a later thing it said replaces an earlier one.
 pub const AgentNotice = enum {
@@ -1576,7 +1589,11 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
         // Taken out of the box rather than left: nothing more will be
         // said about this stillness, and a quiet report that comes after
         // the agent moves on is a new one.
-        if (e.pending) |kind| if (kind != .resumed and quietExplained(e.agent)) {
+        //
+        // **Only the stillness that followed the event**: see
+        // `quietExplained`. One that began after the screen moved again is
+        // reported, with the event it outlived beside it.
+        if (e.pending) |kind| if (kind != .resumed and self.quietExplained(id, now_ms)) {
             e.pending = null;
             e.handed_over = 0;
         };
@@ -1602,8 +1619,20 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
                 const sep = if (listed == 0) " " else ", ";
                 const mark = w.end;
                 const in_turn = e.agent.hooks == .live and e.agent.state == .in_turn;
+                // Still here with the agent in a state that would explain a
+                // still screen: the screen moved after that event.
+                const outlived = e.agent.hooks == .live and stateExplains(e.agent.state);
                 const written = switch (kind) {
-                    .quiescent, .still_quiescent => if (in_turn) w.print(
+                    .quiescent, .still_quiescent => if (outlived) w.print(
+                        "{s}0x{x:0>16} quiet {d}s (last event: {s} {d}s ago)",
+                        .{
+                            sep,
+                            id,
+                            self.quietMs(id, now_ms) / std.time.ms_per_s,
+                            stateWords(e.agent.state),
+                            (now_ms -| e.agent.since_ms) / std.time.ms_per_s,
+                        },
+                    ) else if (in_turn) w.print(
                         "{s}0x{x:0>16} quiet {d}s (in turn {d}m)",
                         .{
                             sep,
@@ -1756,11 +1785,45 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
 /// Whether an agent's own hooks already account for its screen being
 /// still (adapters.md 3.4). Only with hooks `live`: before that, no event
 /// explains anything.
-fn quietExplained(a: Agent) bool {
-    if (a.hooks != .live) return false;
-    return switch (a.state) {
+///
+/// **And only the stillness that followed the event** (#879). An event
+/// says why the screen stopped *then*; it says nothing about a screen that
+/// moved again afterwards and stopped a second time. Measured: declining a
+/// permission box -- Esc or No -- fires no hook at all, so the last word is
+/// still "awaiting approval" while Claude sits at an empty prompt, and a
+/// rule keyed on the state alone kept that terminal out of the box for as
+/// long as it stayed there. So the question is when the present stillness
+/// began: no later than `event_redraw_grace_ms` after the event, and the
+/// event explains it; later, and it does not.
+///
+/// A terminal nothing samples has no quiet reports to hold back, so the
+/// screen's figure is only read where there is one.
+fn quietExplained(self: *const Bus, id: Id, now_ms: u64) bool {
+    const e = self.entries.get(id) orelse return false;
+    const a = e.agent;
+    if (a.hooks != .live or !stateExplains(a.state)) return false;
+    if (!self.observed(id)) return true;
+    const still_since = now_ms -| self.quietMs(id, now_ms);
+    return still_since <= a.since_ms + event_redraw_grace_ms;
+}
+
+/// Whether being in this state is a reason for the screen to be still.
+fn stateExplains(state: AgentState) bool {
+    return switch (state) {
         .ended, .failed, .awaiting_approval, .awaiting_input => true,
         .idle, .in_turn => false,
+    };
+}
+
+/// The state as the notices name the event that put it there.
+fn stateWords(state: AgentState) []const u8 {
+    return switch (state) {
+        .idle => "session started",
+        .in_turn => "turn started",
+        .ended => "turn ended",
+        .failed => "turn failed",
+        .awaiting_approval => "awaiting approval",
+        .awaiting_input => "awaiting input",
     };
 }
 
@@ -3449,4 +3512,73 @@ test "hooks: an unwatched terminal's events are kept but go in nobody's box" {
     try testing.expectEqual(AgentState.ended, b.agentOf(worker).state);
     var buf: [255]u8 = undefined;
     try testing.expect(b.drain(boss, 0, &buf) == null);
+}
+
+test "hooks 879: a screen that moved after awaiting approval, and then went still, is reported quiet" {
+    // Measured on the test Mac, then with a bare claude 2.1.283 in a pty:
+    // declining a permission box -- Esc, or choosing No -- fires **no hook
+    // at all**. No Stop, no PostToolUseFailure, no PermissionDenied, no
+    // Notification in the 75 s after. Claude is back at an empty prompt and
+    // the last thing it said is still "awaiting approval". Before this, that
+    // state kept every quiet report out of the box: the supervisor was told
+    // nothing by either clock.
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, hookEv(.session_started), 0);
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    _ = try b.agentEvent(worker, ask, 1_000);
+    var buf: [255]u8 = undefined;
+    _ = b.drain(boss, 1_000, &buf);
+
+    // The person declines at 30s: the screen redraws, then stays still.
+    b.noteQuiet(worker, 0, 30_000);
+    _ = b.report(worker, quiet(60_000), 90_000);
+
+    const line = b.drain(boss, 90_000, &buf) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 quiet 60s (last event: awaiting approval 89s ago)",
+        line,
+    );
+}
+
+test "hooks 879: the screen drawing the event itself does not count as moving after it" {
+    // Measured: the permission box is still being drawn up to 1.8 s after
+    // the PermissionRequest hook fires. That redraw is the event's own, and
+    // the stillness after it is the one the event explains.
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, hookEv(.session_started), 0);
+    _ = try b.agentEvent(worker, hookEv(.awaiting_approval), 10_000);
+    var buf: [255]u8 = undefined;
+    _ = b.drain(boss, 10_000, &buf);
+
+    b.noteQuiet(worker, 0, 10_000 + event_redraw_grace_ms);
+    _ = b.report(worker, quiet(60_000), 10_000 + event_redraw_grace_ms + 60_000);
+    try testing.expect(b.drain(boss, 10_000 + event_redraw_grace_ms + 60_000, &buf) == null);
+}
+
+test "hooks 879: a turn that ended and then saw the screen move is reported quiet too" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, hookEv(.session_started), 0);
+    var ev = hookEv(.turn_ended);
+    ev.text = "done";
+    ev.text_bytes = 4;
+    _ = try b.agentEvent(worker, ev, 0);
+    var buf: [255]u8 = undefined;
+    _ = b.drain(boss, 0, &buf);
+
+    // Something drew on the screen long after the turn ended -- the person
+    // typing, a CLI interrupted mid-turn -- and no hook said a word.
+    b.noteQuiet(worker, 0, 20_000);
+    _ = b.report(worker, quiet(40_000), 60_000);
+    const line = b.drain(boss, 60_000, &buf) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 quiet 40s (last event: turn ended 60s ago)",
+        line,
+    );
 }

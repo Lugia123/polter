@@ -362,7 +362,10 @@ and `awaiting approval Bash: …`, `awaiting input idle_prompt`. Unlike
 everything above these are not arithmetic: the CLI said it. The quote is only
 the start of the answer; `terminal_turn(id)` has the whole of it, up to 16 KB,
 and says when it was cut. While one of these stands, that terminal is not also
-reported `quiet` — its stillness is already explained — and a `quiet` clause
+reported `quiet` — its stillness is already explained — unless the screen
+has moved since: then it is, as `quiet 90s (last event: awaiting approval
+120s ago)`, because the event no longer says why it is still (declining a
+permission box fires no hook, so that state can outlive the box). A `quiet` clause
 that says `(in turn 15m)` is a terminal still inside a turn with a still
 screen: a long build, or stuck, and worth a `terminal_read`. `terminal_list`
 shows the same state under `agent`; **no `agent` there means no hooks**, and

@@ -170,11 +170,25 @@ agent: {
 
 **hook `live` 时屏幕静止通知怎么处理**：
 
+**原则：事件只解释它之后的那一段静止。** 屏幕自事件之后又变过，事件就不再解释现在的静止，照常报。
+判法（`Bus.quietExplained`）：这一段静止的起点 ≤ 事件时刻 + `event_redraw_grace_ms`（3 秒），
+事件才算解释了它；更晚开始的静止照报。
+
 | agent state | 屏幕静止时 |
 |---|---|
-| `ended` / `awaiting_*` / `failed` | 不再单独报「quiet」——事件已经说了为什么静止 |
+| `ended` / `awaiting_*` / `failed`，静止开始于事件后 3 秒内 | 不再单独报「quiet」——事件已经说了为什么静止 |
+| `ended` / `awaiting_*` / `failed`，屏幕在那之后变过 | **照报**，并标注「last event: <事件> Ns ago」 |
 | `in_turn` | **照报**，并标注「in turn Xm」——在回合中却静止，正是值得看的情形（长构建或挂住） |
 | `idle`（`session_started` 后还没第一轮） | 照报 |
+
+为什么要这样（#879，test-mac 在真机上发现，我用裸 claude 2.1.283 在 pty 里复测过）：在授权框前**按 Esc
+或选 No 拒绝，不触发任何 hook**。Stop、PostToolUseFailure、PermissionDenied、Notification
+在之后 75 秒内一个都没有；官方文档对 PermissionDenied 的原话是「When auto mode denies a tool
+call」，只管 auto mode 的拒绝。于是 state 一直停在 `awaiting_approval`，claude 其实已经回到空输入框；
+旧规则只看 state，就把静止通知一并压掉了，总管两路都看不见这个终端。没有能标出「授权结束」的 hook，
+只能靠屏幕。3 秒是量出来的：PermissionRequest hook 触发后，授权框还要再画 1.45 秒（Esc 那次）和
+1.82 秒（No 那次），再加采样一秒的粒度。代价：在授权框出现后 3 秒内就拒绝的，这一段静止仍会被当成已解释；
+再往后屏幕只要变一次就不会了。
 
 「多久没调工具」时钟不受影响。
 
