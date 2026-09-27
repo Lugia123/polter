@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-09-21 20:21+0800\n"
+"POT-Creation-Date: 2026-09-27 20:52+0800\n"
 "PO-Revision-Date: 2026-09-13 10:50+0800\n"
 "Last-Translator: Lukas <134181853+bo2themax@users.noreply.github.com>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -27,6 +27,7 @@ msgstr "在 Ghostty 中打开"
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:12
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:197
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
+#: windows/host/src/main.rs:2525 windows/host/src/main.rs:2531
 msgid "Authorize Clipboard Access"
 msgstr "剪贴板访问授权"
 
@@ -50,7 +51,7 @@ msgstr "本提示将在重载配置后再次出现"
 
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
-#: src/apprt/gtk/class/application.zig:2322
+#: src/apprt/gtk/class/application.zig:2221 windows/host/src/roles_ui.rs:2647
 msgid "Cancel"
 msgstr "取消"
 
@@ -76,8 +77,8 @@ msgid "Ignore"
 msgstr "忽略"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
-#: src/apprt/gtk/ui/1.2/surface.blp:439 src/apprt/gtk/ui/1.5/window.blp:318
-#: windows/host/src/menu.rs:407
+#: src/apprt/gtk/ui/1.2/surface.blp:434 src/apprt/gtk/ui/1.5/window.blp:318
+#: windows/host/src/menu.rs:451
 msgid "Reload Configuration"
 msgstr "重新加载配置"
 
@@ -91,8 +92,8 @@ msgstr "⚠️ Ghostty 正在以调试模式运行！性能将大打折扣。"
 msgid "Ghostty: Terminal Inspector"
 msgstr "Ghostty 终端检查器"
 
-#: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:104
-#: windows/host/src/menu.rs:241
+#: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:108
+#: windows/host/src/menu.rs:265
 msgid "Find…"
 msgstr "查找…"
 
@@ -104,15 +105,15 @@ msgstr "上一个匹配项"
 msgid "Next Match"
 msgstr "下一个匹配项"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:7
+#: src/apprt/gtk/ui/1.2/surface.blp:6
 msgid "Oh, no."
 msgstr "糟糕。"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:8
+#: src/apprt/gtk/ui/1.2/surface.blp:7
 msgid "Unable to acquire an OpenGL context for rendering."
 msgstr "未能获取可用于渲染的 OpenGL 环境。"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:101
+#: src/apprt/gtk/ui/1.2/surface.blp:96
 msgid ""
 "This terminal is in read-only mode. You can still view, select, and scroll "
 "through the content, but no input events will be sent to the running "
@@ -121,118 +122,118 @@ msgstr ""
 "本终端当前处于只读模式。你仍可浏览、选择、并滚动其中内容，但任何用户输入都不"
 "会传给运行中的程序。"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:112 windows/host/src/ctxmenu.rs:125
-#: windows/host/src/menu.rs:281
+#: src/apprt/gtk/ui/1.2/surface.blp:107 windows/host/src/ctxmenu.rs:129
+#: windows/host/src/menu.rs:309
 msgid "Read-only"
 msgstr "只读"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:203
-#: windows/host/src/ctxmenu.rs:100 windows/host/src/menu.rs:251
+#: src/apprt/gtk/ui/1.2/surface.blp:311 src/apprt/gtk/ui/1.5/window.blp:203
+#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:275
 msgid "Copy"
 msgstr "复制"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:321 src/apprt/gtk/ui/1.5/window.blp:208
-#: windows/host/src/ctxmenu.rs:101 windows/host/src/menu.rs:252
+#: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:208
+#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:276
 msgid "Paste"
 msgstr "粘贴"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:326
+#: src/apprt/gtk/ui/1.2/surface.blp:321
 msgid "Notify on Next Command Finish"
 msgstr "下条命令完成时发出提醒"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:333 src/apprt/gtk/ui/1.5/window.blp:281
+#: src/apprt/gtk/ui/1.2/surface.blp:328 src/apprt/gtk/ui/1.5/window.blp:281
 msgid "Clear"
 msgstr "清除屏幕"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:338 src/apprt/gtk/ui/1.5/window.blp:286
+#: src/apprt/gtk/ui/1.2/surface.blp:333 src/apprt/gtk/ui/1.5/window.blp:286
 msgid "Reset"
 msgstr "重置终端"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:345 src/apprt/gtk/ui/1.5/window.blp:250
+#: src/apprt/gtk/ui/1.2/surface.blp:340 src/apprt/gtk/ui/1.5/window.blp:250
 msgid "Split"
 msgstr "分屏"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:348 src/apprt/gtk/ui/1.5/window.blp:253
+#: src/apprt/gtk/ui/1.2/surface.blp:343 src/apprt/gtk/ui/1.5/window.blp:253
 msgid "Change Title…"
 msgstr "更改标题…"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:353 src/apprt/gtk/ui/1.5/window.blp:180
+#: src/apprt/gtk/ui/1.2/surface.blp:348 src/apprt/gtk/ui/1.5/window.blp:180
 #: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
-#: windows/host/src/ctxmenu.rs:121 windows/host/src/menu.rs:233
+#: windows/host/src/ctxmenu.rs:125 windows/host/src/menu.rs:243
 msgid "Split Up"
 msgstr "向上分屏"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:359 src/apprt/gtk/ui/1.5/window.blp:185
+#: src/apprt/gtk/ui/1.2/surface.blp:354 src/apprt/gtk/ui/1.5/window.blp:185
 #: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
-#: windows/host/src/ctxmenu.rs:120 windows/host/src/menu.rs:232
+#: windows/host/src/ctxmenu.rs:124 windows/host/src/menu.rs:242
 msgid "Split Down"
 msgstr "向下分屏"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:365 src/apprt/gtk/ui/1.5/window.blp:190
+#: src/apprt/gtk/ui/1.2/surface.blp:360 src/apprt/gtk/ui/1.5/window.blp:190
 #: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
-#: windows/host/src/ctxmenu.rs:119 windows/host/src/menu.rs:231
+#: windows/host/src/ctxmenu.rs:123 windows/host/src/menu.rs:241
 msgid "Split Left"
 msgstr "向左分屏"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:371 src/apprt/gtk/ui/1.5/window.blp:195
+#: src/apprt/gtk/ui/1.2/surface.blp:366 src/apprt/gtk/ui/1.5/window.blp:195
 #: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
-#: windows/host/src/ctxmenu.rs:118 windows/host/src/menu.rs:230
+#: windows/host/src/ctxmenu.rs:122 windows/host/src/menu.rs:240
 msgid "Split Right"
 msgstr "向右分屏"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:377 windows/host/src/menu.rs:235
+#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/menu.rs:245
 msgid "Close Split"
 msgstr "关闭分屏"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:383
+#: src/apprt/gtk/ui/1.2/surface.blp:378
 msgid "Tab"
 msgstr "标签页"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:386 src/apprt/gtk/ui/1.5/window.blp:232
+#: src/apprt/gtk/ui/1.2/surface.blp:381 src/apprt/gtk/ui/1.5/window.blp:232
 #: src/apprt/gtk/ui/1.5/window.blp:339 src/input/command.zig:464
 msgid "Change Tab Title…"
 msgstr "更改标签页标题…"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:60
+#: src/apprt/gtk/ui/1.2/surface.blp:386 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
-#: src/input/command.zig:427 windows/host/src/ctxmenu.rs:106
-#: windows/host/src/menu.rs:210 windows/host/src/strip.rs:1658
+#: src/input/command.zig:427 windows/host/src/ctxmenu.rs:110
+#: windows/host/src/menu.rs:220 windows/host/src/strip.rs:1752
 msgid "New Tab"
 msgstr "新建标签页"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:396 src/apprt/gtk/ui/1.5/window.blp:242
-#: src/input/command.zig:668 windows/host/src/ctxmenu.rs:112
-#: windows/host/src/menu.rs:236 windows/host/src/strip.rs:1325
+#: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:242
+#: src/input/command.zig:668 windows/host/src/ctxmenu.rs:116
+#: windows/host/src/menu.rs:246 windows/host/src/strip.rs:1329
 msgid "Close Tab"
 msgstr "关闭标签页"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:403 windows/host/src/menu.rs:431
+#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:476
 msgid "Window"
 msgstr "窗口"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:406 src/apprt/gtk/ui/1.5/window.blp:215
+#: src/apprt/gtk/ui/1.2/surface.blp:401 src/apprt/gtk/ui/1.5/window.blp:215
 msgid "Change Window Title…"
 msgstr "更改窗口标题…"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:220
-#: src/input/command.zig:421 windows/host/src/menu.rs:209
+#: src/apprt/gtk/ui/1.2/surface.blp:406 src/apprt/gtk/ui/1.5/window.blp:220
+#: src/input/command.zig:421 windows/host/src/menu.rs:219
 msgid "New Window"
 msgstr "新建窗口"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:416 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:685 windows/host/src/menu.rs:237
+#: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:225
+#: src/input/command.zig:685 windows/host/src/menu.rs:247
 msgid "Close Window"
 msgstr "关闭窗口"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:424 src/apprt/gtk/ui/1.5/window.blp:303
+#: src/apprt/gtk/ui/1.2/surface.blp:419 src/apprt/gtk/ui/1.5/window.blp:303
 msgid "Config"
 msgstr "配置"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:427 src/apprt/gtk/ui/1.5/window.blp:306
+#: src/apprt/gtk/ui/1.2/surface.blp:422 src/apprt/gtk/ui/1.5/window.blp:306
 msgid "Open Configuration in OS Editor"
 msgstr "在系统编辑器内打开配置"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:433 src/apprt/gtk/ui/1.5/window.blp:312
+#: src/apprt/gtk/ui/1.2/surface.blp:428 src/apprt/gtk/ui/1.5/window.blp:312
 msgid "Open Configuration in New Window"
 msgstr "在新窗口内打开配置"
 
@@ -256,17 +257,17 @@ msgstr "浏览标签页"
 msgid "Main Menu"
 msgstr "主菜单"
 
-#: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:175
-#: windows/host/src/menu.rs:270 windows/host/src/strip.rs:1665
+#: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:192
+#: windows/host/src/menu.rs:294 windows/host/src/strip.rs:1759
 msgid "Command Palette"
 msgstr "命令面板"
 
-#: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:124
-#: windows/host/src/menu.rs:290
+#: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:128
+#: windows/host/src/menu.rs:318
 msgid "Terminal Inspector"
 msgstr "终端检查器"
 
-#: src/apprt/gtk/ui/1.5/window.blp:326 src/apprt/gtk/class/window.zig:1997
+#: src/apprt/gtk/ui/1.5/window.blp:326 src/apprt/gtk/class/window.zig:1973
 msgid "About Ghostty"
 msgstr "关于 Ghostty"
 
@@ -278,49 +279,51 @@ msgstr "退出"
 msgid "Execute a command…"
 msgstr "选择要执行的命令…"
 
-#: src/apprt/gtk/class/application.zig:1805
+#: src/apprt/gtk/class/application.zig:1806
 msgid "The keybind was revoked by the system."
 msgstr "系统撤销了该快捷键。"
 
-#: src/apprt/gtk/class/application.zig:1807
+#: src/apprt/gtk/class/application.zig:1808
 msgid "The keybind was denied by the system."
 msgstr "系统拒绝绑定该快捷键。"
 
-#: src/apprt/gtk/class/application.zig:1818
+#: src/apprt/gtk/class/application.zig:1819
 msgid "Global keybind unavailable"
 msgstr "全局快捷键不可用"
 
-#: src/apprt/gtk/class/application.zig:2318
+#: src/apprt/gtk/class/application.zig:2217
 msgid "Export Terminal IO Events"
 msgstr "导出终端输入输出事件"
 
-#: src/apprt/gtk/class/application.zig:2321
+#: src/apprt/gtk/class/application.zig:2220
 msgid "Export"
 msgstr "导出"
 
-#: src/apprt/gtk/class/application.zig:2868
+#: src/apprt/gtk/class/application.zig:2739
 msgid "Editing configuration file"
 msgstr "正在编辑配置文件"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
+#: windows/host/src/main.rs:2533
 msgid ""
 "An application is attempting to write to the clipboard. The current "
 "clipboard contents are shown below."
 msgstr "一个应用正在试图向剪贴板写入内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:202
+#: windows/host/src/main.rs:2527
 msgid ""
 "An application is attempting to read from the clipboard. The current "
 "clipboard contents are shown below."
 msgstr "一个应用正在试图从剪贴板读取内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2324
+#: windows/host/src/main.rs:2537
 msgid "Warning: Potentially Unsafe Paste"
 msgstr "警告：粘贴内容可能不安全"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2317
+#: windows/host/src/main.rs:2539
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -331,17 +334,17 @@ msgid "Quit Ghostty?"
 msgstr "退出 Ghostty 吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
-#: windows/host/src/tabs.rs:3005
+#: windows/host/src/tabs.rs:3070
 msgid "Close Tab?"
 msgstr "关闭标签页吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
-#: windows/host/src/tabs.rs:3006
+#: windows/host/src/tabs.rs:3071
 msgid "Close Window?"
 msgstr "关闭窗口吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
-#: windows/host/src/tabs.rs:3007
+#: windows/host/src/tabs.rs:3072
 msgid "Close Split?"
 msgstr "关闭分屏吗？"
 
@@ -350,30 +353,30 @@ msgid "All terminal sessions will be terminated."
 msgstr "终端内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
-#: windows/host/src/tabs.rs:3013
+#: windows/host/src/tabs.rs:3080
 msgid "All terminal sessions in this tab will be terminated."
 msgstr "标签页内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
-#: windows/host/src/tabs.rs:3014
+#: windows/host/src/tabs.rs:3081
 msgid "All terminal sessions in this window will be terminated."
 msgstr "窗口内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
-#: windows/host/src/tabs.rs:3015
+#: windows/host/src/tabs.rs:3082
 msgid "The currently running process in this split will be terminated."
 msgstr "分屏内正在运行中的进程将被终止。"
 
-#: src/apprt/gtk/class/surface.zig:1184
+#: src/apprt/gtk/class/surface.zig:1185
 msgid "Command Finished"
 msgstr "命令已完成"
 
-#: src/apprt/gtk/class/surface.zig:1185
+#: src/apprt/gtk/class/surface.zig:1186
 #: src/apprt/gtk/class/surface_child_exited.zig:109
 msgid "Command Succeeded"
 msgstr "命令执行成功"
 
-#: src/apprt/gtk/class/surface.zig:1186
+#: src/apprt/gtk/class/surface.zig:1187
 #: src/apprt/gtk/class/surface_child_exited.zig:113
 msgid "Command Failed"
 msgstr "命令执行失败"
@@ -390,23 +393,23 @@ msgstr "更改标签页标题"
 msgid "Change Window Title"
 msgstr "更改窗口标题"
 
-#: src/apprt/gtk/class/window.zig:1159
+#: src/apprt/gtk/class/window.zig:1135
 msgid "Reloaded the configuration"
 msgstr "已重新加载配置"
 
-#: src/apprt/gtk/class/window.zig:1836
+#: src/apprt/gtk/class/window.zig:1812
 msgid "Copied to clipboard"
 msgstr "已复制至剪贴板"
 
-#: src/apprt/gtk/class/window.zig:1838
+#: src/apprt/gtk/class/window.zig:1814
 msgid "Cleared clipboard"
 msgstr "已清空剪贴板"
 
-#: src/apprt/gtk/class/window.zig:1978
+#: src/apprt/gtk/class/window.zig:1954
 msgid "Ghostty Developers"
 msgstr "Ghostty 开发团队"
 
-#: src/input/command.zig:149 windows/host/src/ctxmenu.rs:123
+#: src/input/command.zig:149 windows/host/src/ctxmenu.rs:127
 msgid "Reset Terminal"
 msgstr "重置终端"
 
@@ -537,7 +540,7 @@ msgstr "缩小字号"
 msgid "Decrease the font size by 1 point."
 msgstr "将字体大小缩小 1pt。"
 
-#: src/input/command.zig:237 windows/host/src/menu.rs:266
+#: src/input/command.zig:237 windows/host/src/menu.rs:290
 msgid "Reset Font Size"
 msgstr "重置字号"
 
@@ -553,8 +556,8 @@ msgstr "清除屏幕"
 msgid "Clear the screen and scrollback."
 msgstr "清除屏幕和回滚内容。"
 
-#: src/input/command.zig:249 windows/host/src/ctxmenu.rs:102
-#: windows/host/src/menu.rs:260
+#: src/input/command.zig:249 windows/host/src/ctxmenu.rs:106
+#: windows/host/src/menu.rs:284
 msgid "Select All"
 msgstr "全选"
 
@@ -799,7 +802,7 @@ msgstr "标签页右移"
 msgid "Move the current tab to the right."
 msgstr "将当前标签页向右移动。"
 
-#: src/input/command.zig:446 windows/host/src/strip.rs:1328
+#: src/input/command.zig:446 windows/host/src/strip.rs:1332
 msgid "Move Tab to New Window"
 msgstr "移到新窗口"
 
@@ -923,8 +926,8 @@ msgstr "切换只读模式"
 msgid "Toggle read-only mode for the current surface."
 msgstr "切换当前分屏的只读状态。"
 
-#: src/input/command.zig:557 windows/host/src/ctxmenu.rs:134
-#: windows/host/src/menu.rs:301 windows/host/src/strip.rs:1330
+#: src/input/command.zig:557 windows/host/src/ctxmenu.rs:142
+#: windows/host/src/menu.rs:329 windows/host/src/strip.rs:1338
 msgid "Make This Terminal a Supervisor"
 msgstr "将此终端设为总管"
 
@@ -936,8 +939,8 @@ msgstr ""
 "让这个终端的 agent 去看着它认领的终端。总管可以有好几个，每个只碰自己认领的那"
 "些。"
 
-#: src/input/command.zig:563 windows/host/src/ctxmenu.rs:139
-#: windows/host/src/menu.rs:302 windows/host/src/strip.rs:1331
+#: src/input/command.zig:563 windows/host/src/ctxmenu.rs:147
+#: windows/host/src/menu.rs:330 windows/host/src/strip.rs:1339
 msgid "Toggle Supervision of This Terminal"
 msgstr "监督此终端"
 
@@ -945,7 +948,7 @@ msgstr "监督此终端"
 msgid "Report this terminal to the supervisor when its screen goes quiet."
 msgstr "这个终端的屏幕静止下来时，报给总管。"
 
-#: src/input/command.zig:594 windows/host/src/menu.rs:346
+#: src/input/command.zig:594 windows/host/src/menu.rs:388
 msgid "Hold This Terminal to Its Work"
 msgstr "保持这个终端在岗"
 
@@ -956,15 +959,10 @@ msgid ""
 msgstr ""
 "阻止这个终端被下班——无论是总管还是别的什么。只有键盘前的人能设置或解除它。"
 
-#: src/input/command.zig:600 windows/host/src/ctxmenu.rs:144
-#: windows/host/src/menu.rs:303 windows/host/src/strip.rs:1332
+#: src/input/command.zig:600 windows/host/src/ctxmenu.rs:152
+#: windows/host/src/menu.rs:331 windows/host/src/strip.rs:1340
 msgid "Keep Agents Out of This Terminal"
 msgstr "不让 agent 碰此终端"
-
-#: windows/host/src/ctxmenu.rs:182 windows/host/src/menu.rs:342
-#: windows/host/src/strip.rs:1337
-msgid "Let Workers Name Each Other Directly"
-msgstr "允许 worker 之间直接点名"
 
 #: src/input/command.zig:601
 msgid ""
@@ -974,7 +972,7 @@ msgstr ""
 "不让任何 agent（总管也在内）读这个终端、或者往里打字。屏蔽期间，它的 tab 上会"
 "带一把锁。只有你能设这一项。"
 
-#: src/input/command.zig:606 windows/host/src/menu.rs:299
+#: src/input/command.zig:606 windows/host/src/menu.rs:327
 msgid "Terminal Conversations"
 msgstr "终端群聊"
 
@@ -982,7 +980,7 @@ msgstr "终端群聊"
 msgid "Open a terminal showing what the terminals have said to each other."
 msgstr "开一个终端，显示各个终端之间说过的话。"
 
-#: src/input/command.zig:612 windows/host/src/menu.rs:362
+#: src/input/command.zig:612 windows/host/src/menu.rs:406
 msgid "Equalize Splits"
 msgstr "均分分屏大小"
 
@@ -990,7 +988,7 @@ msgstr "均分分屏大小"
 msgid "Equalize the size of all splits."
 msgstr "使所有分屏大小相等。"
 
-#: src/input/command.zig:618 windows/host/src/menu.rs:384
+#: src/input/command.zig:618 windows/host/src/menu.rs:428
 msgid "Reset Window Size"
 msgstr "重置窗口大小"
 
@@ -1058,19 +1056,21 @@ msgstr "关闭当前终端。"
 msgid "Close the current tab."
 msgstr "关闭当前标签页。"
 
-#: src/input/command.zig:673 windows/host/src/strip.rs:1326
+#: src/input/command.zig:673 windows/host/src/strip.rs:1330
+#: windows/host/src/tabs.rs:3073
 msgid "Close Other Tabs"
 msgstr "关闭其他标签页"
 
-#: src/input/command.zig:674
+#: src/input/command.zig:674 windows/host/src/tabs.rs:3090
 msgid "Close all tabs in this window except the current one."
 msgstr "关闭当前窗口内除了当前标签页以外的所有标签页。"
 
-#: src/input/command.zig:678 windows/host/src/strip.rs:1327
+#: src/input/command.zig:678 windows/host/src/strip.rs:1331
+#: windows/host/src/tabs.rs:3074
 msgid "Close Tabs to the Right"
 msgstr "关闭右侧标签页"
 
-#: src/input/command.zig:679
+#: src/input/command.zig:679 windows/host/src/tabs.rs:3091
 msgid "Close all tabs to the right of the current one."
 msgstr "关闭当前标签页右侧的所有标签页。"
 
@@ -1452,19 +1452,32 @@ msgstr "{0} 天"
 msgid "{0} d {1} h"
 msgstr "{0} 天 {1} 小时"
 
+#: src/termio/scrollback.zig:328
+msgid "Above this line: history restored from the previous session"
+msgstr "以上为上次会话恢复的历史记录"
+
 # U+2026, action prompt_tab_title: opens the title overlay (menu.rs, ctxmenu.rs). "Rename Tab..." with three ASCII dots is a DIFFERENT action, rename_tab, in-place on the tab strip. Do not merge them.
-#: windows/host/src/ctxmenu.rs:130 windows/host/src/menu.rs:278
+#. TRANSLATORS: U+2026, not three ASCII dots. This opens the title
+#. overlay. "Rename Tab..." with three dots is a DIFFERENT action
+#. (rename_tab) that edits the tab strip in place. The two entries look
+#. almost identical; do not merge them.
+#: windows/host/src/ctxmenu.rs:138 windows/host/src/menu.rs:306
 msgid "Rename Tab…"
 msgstr "改标签标题…"
 
-#: windows/host/src/ctxmenu.rs:131 windows/host/src/menu.rs:279
+#: windows/host/src/ctxmenu.rs:139 windows/host/src/menu.rs:307
 msgid "Rename Terminal…"
 msgstr "改终端标题…"
 
 # The Chinese is longer than the English on purpose: the parenthesis says this also answers "Don't Ask Again", which writes a lasting grant. English matches macOS verbatim. Shared by menu.rs and ctxmenu.rs.
-#: windows/host/src/ctxmenu.rs:169 windows/host/src/menu.rs:318
+#: windows/host/src/ctxmenu.rs:177 windows/host/src/menu.rs:346
 msgid "Let a Supervisor Answer Prompts Here"
 msgstr "允许总管替此终端点授权框（含「不再询问」）"
+
+#: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:360
+#: windows/host/src/strip.rs:1341
+msgid "Let Workers Name Each Other Directly"
+msgstr "允许 worker 之间直接点名"
 
 #: windows/host/src/i18n.rs:360 windows/host/src/settings_ui.rs:168
 msgid "Keeps the conversations"
@@ -1488,10 +1501,6 @@ msgstr "菜单里不显示这个快捷键（键仍然有效）"
 msgid "No shortcut yet"
 msgstr "尚无快捷键"
 
-#: windows/host/src/language.rs:291
-msgid "Language"
-msgstr "语言"
-
 #: windows/host/src/language.rs:283
 msgid "The language changes the next time Polter starts."
 msgstr "语言将在下次启动 Polter 时生效。"
@@ -1506,330 +1515,715 @@ msgstr ""
 "启动 Polter 的环境里已设 LANG={}，Polter 会优先用它，而不是这里的选择。要让这"
 "个选择生效，请先清掉 LANG，再重新启动 Polter。"
 
-#: windows/host/src/main.rs:2320
+#: windows/host/src/language.rs:291
+msgid "Language"
+msgstr "语言"
+
+#: windows/host/src/main.rs:2553
 #, rust-format
 msgid "{} lines in all."
 msgstr "共 {} 行。"
 
-#: windows/host/src/menu.rs:221 windows/host/src/strip.rs:1664
+#: windows/host/src/main.rs:6146
+msgid "No reason was recorded."
+msgstr "没有记录到原因。"
+
+#: windows/host/src/main.rs:6152
+msgid "Polter could not open its first terminal and will close."
+msgstr "Polter 无法打开第一个终端，即将关闭。"
+
+#: windows/host/src/main.rs:6154
+#, rust-format
+msgid "The full log is at {}"
+msgstr "完整日志在 {}"
+
+#: windows/host/src/menu.rs:231 windows/host/src/strip.rs:1758
 msgid "Reopen Closed Tab"
 msgstr "重开关闭的标签"
 
-#: windows/host/src/menu.rs:244
+#: windows/host/src/menu.rs:260
+msgid "Save as Project…"
+msgstr "另存为项目…"
+
+#: windows/host/src/menu.rs:261
+msgid "Load Project…"
+msgstr "加载项目…"
+
+#: windows/host/src/menu.rs:268
 msgid "Next"
 msgstr "下一个"
 
-#: windows/host/src/menu.rs:245
+#: windows/host/src/menu.rs:269
 msgid "Previous"
 msgstr "上一个"
 
-#: windows/host/src/menu.rs:247
+#: windows/host/src/menu.rs:271
 msgid "Hide the Find Bar"
 msgstr "隐藏查找条"
 
-#: windows/host/src/menu.rs:262
+#: windows/host/src/menu.rs:286
 msgid "Find"
 msgstr "查找"
 
-#: windows/host/src/menu.rs:267
+#: windows/host/src/menu.rs:291
 msgid "Zoom In"
 msgstr "放大"
 
-#: windows/host/src/menu.rs:268
+#: windows/host/src/menu.rs:292
 msgid "Zoom Out"
 msgstr "缩小"
 
-#: windows/host/src/menu.rs:283
+#: windows/host/src/menu.rs:311
 msgid "Quick Terminal"
 msgstr "快速终端"
 
-#: windows/host/src/menu.rs:350
+#: windows/host/src/menu.rs:392
 msgid "Plugins…"
 msgstr "插件…"
 
-#: windows/host/src/menu.rs:351 windows/host/src/personas.rs:826
-msgid "Role Editor (beta)..."
-msgstr "角色编辑器（beta）…"
+#: windows/host/src/menu.rs:395 windows/host/src/personas.rs:536
+msgid "Role Library (beta)..."
+msgstr "角色库（beta）…"
 
-#: windows/host/src/menu.rs:355
+#: windows/host/src/menu.rs:399
 msgid "Up"
 msgstr "上"
 
-#: windows/host/src/menu.rs:356
+#: windows/host/src/menu.rs:400
 msgid "Down"
 msgstr "下"
 
-#: windows/host/src/menu.rs:357
+#: windows/host/src/menu.rs:401
 msgid "Left"
 msgstr "左"
 
-#: windows/host/src/menu.rs:358
+#: windows/host/src/menu.rs:402
 msgid "Right"
 msgstr "右"
 
-#: windows/host/src/menu.rs:364
+#: windows/host/src/menu.rs:408
 msgid "Grow Up"
 msgstr "向上"
 
-#: windows/host/src/menu.rs:365
+#: windows/host/src/menu.rs:409
 msgid "Grow Down"
 msgstr "向下"
 
-#: windows/host/src/menu.rs:366
+#: windows/host/src/menu.rs:410
 msgid "Grow Left"
 msgstr "向左"
 
-#: windows/host/src/menu.rs:367
+#: windows/host/src/menu.rs:411
 msgid "Grow Right"
 msgstr "向右"
 
-#: windows/host/src/menu.rs:373
+#: windows/host/src/menu.rs:417
 msgid "Minimize"
 msgstr "最小化"
 
-#: windows/host/src/menu.rs:374
+#: windows/host/src/menu.rs:418
 msgid "Maximize"
 msgstr "最大化"
 
-#: windows/host/src/menu.rs:376
+#: windows/host/src/menu.rs:420
 msgid "Full Screen"
 msgstr "全屏"
 
-#: windows/host/src/menu.rs:378
+#: windows/host/src/menu.rs:422
 msgid "Split Zoom"
 msgstr "分屏缩放"
 
-#: windows/host/src/menu.rs:379
+#: windows/host/src/menu.rs:423
 msgid "Previous Split"
 msgstr "上一个分屏"
 
-#: windows/host/src/menu.rs:380
+#: windows/host/src/menu.rs:424
 msgid "Next Split"
 msgstr "下一个分屏"
 
-#: windows/host/src/menu.rs:381
+#: windows/host/src/menu.rs:425
 msgid "Select Split"
 msgstr "选择分屏"
 
-#: windows/host/src/menu.rs:382
+#: windows/host/src/menu.rs:426
 msgid "Resize Split"
 msgstr "调整分屏"
 
-#: windows/host/src/menu.rs:386
+#: windows/host/src/menu.rs:430
 msgid "Float on Top"
 msgstr "置顶"
 
-#: windows/host/src/menu.rs:393
+#: windows/host/src/menu.rs:437
 msgid "Polter Help"
 msgstr "Polter 帮助"
 
-#: windows/host/src/menu.rs:406
+#: windows/host/src/menu.rs:450
 msgid "Check for Updates…"
 msgstr "检查更新…"
 
-#: windows/host/src/menu.rs:412
+#: windows/host/src/menu.rs:456
 msgid "File"
 msgstr "文件"
 
-#: windows/host/src/menu.rs:413
+#: windows/host/src/menu.rs:457
 msgid "Edit"
 msgstr "编辑"
 
-#: windows/host/src/menu.rs:414
+#: windows/host/src/menu.rs:458
 msgid "View"
 msgstr "查看"
 
-#: windows/host/src/menu.rs:430
+#: windows/host/src/menu.rs:474
 msgid "Agents"
 msgstr "智能体"
 
-#: windows/host/src/menu.rs:432
+#: windows/host/src/menu.rs:475
+msgid "Project"
+msgstr "项目"
+
+#: windows/host/src/menu.rs:477
 msgid "Help"
 msgstr "帮助"
 
-#: windows/host/src/menu.rs:434
+#: windows/host/src/menu.rs:479
 msgid "Settings…"
 msgstr "设置…"
 
-#: windows/host/src/menu.rs:446
+#: windows/host/src/menu.rs:491
 msgid "Language…"
 msgstr "语言…"
 
 # Menu item (menu.rs ROOT). Deliberately a different msgid from "Keyboard Shortcuts" without the ellipsis, which is the page title and accessible name (settings_ui.rs, uia.rs). The ellipsis says the item opens a page; macOS MainMenu.xib Kb1-Nd-Ls1 has it too. Do not merge the two.
-#: windows/host/src/menu.rs:460
+#: windows/host/src/menu.rs:505
 msgid "Keyboard Shortcuts…"
 msgstr "快捷键…"
 
-#: windows/host/src/menu.rs:461 windows/host/src/settings_ui.rs:1067
+#: windows/host/src/menu.rs:506 windows/host/src/settings_ui.rs:1067
 msgid "About Polter"
 msgstr "关于 Polter"
 
-# Chosen by error_kind, never by reading the core's message. The core's own text follows this line, because ours says that something is wrong and only the core's says which line.
-#: windows/host/src/personas.rs:159
-msgid "The roles file could not be read, so the previous one is still in use"
-msgstr "角色文件读不出来，现在用的还是上一份"
+#: windows/host/src/personas.rs:166
+msgid ""
+"The roles file couldn't be read. Until it's fixed, what's in it isn't used."
+msgstr "角色文件读不出来，修好之前里面的内容不会生效。"
 
 # A click carried an id minted against an older roster. Said out loud because «the id expired» and «the click did nothing» are otherwise one picture.
-#: windows/host/src/personas.rs:161
+#: windows/host/src/personas.rs:168
 msgid "This menu is out of date. Close it and open it again"
 msgstr "这份菜单已经过期了，关掉重开一次"
 
-# Beside an MCP row whose slot process is broken. It must not read as «switched off by hand»: the user did not do it, and the place to go is the server, not the persona.
-#: windows/host/src/personas.rs:298 windows/host/src/personas_ui.rs:893
-msgid "This server didn't start. Your role isn't what's withholding it."
-msgstr "这个服务器没有起来。不是你的角色没给你它。"
-
-# The `transparent` slot state. Only two of the four states speak: granted and withheld are what the checkbox already shows, and a sentence on every row would drown the one that matters.
-#: windows/host/src/personas.rs:301
-msgid "Polter isn't managing this server, so the agent sees all of it"
-msgstr "Polter 没有接管这个服务器，所以 agent 看得到它的全部"
-
-#: windows/host/src/personas.rs:334
-msgid "Added by hand"
-msgstr "手动加上的"
-
-# The other direction from «Added by hand». Both are departures from the persona, but the user undoes them with opposite actions, so they are two phrases and not one.
-#: windows/host/src/personas.rs:335
-msgid "Switched off by hand"
-msgstr "手动关掉的"
-
-# Our gap, not the agent's. The reader should go and check the path, not go and install something.
-#: windows/host/src/personas.rs:416
-msgid "Nobody has checked where this agent keeps these yet"
-msgstr "还没有人核实过这家 agent 把它们放在哪"
-
-# Shared deliberately by two states -- the path is known and empty, and the path was read and held nothing. To the user those are one fact.
-#: windows/host/src/personas.rs:417 windows/host/src/personas.rs:418
-msgid "Looked there, and nothing is installed"
-msgstr "去那儿看过了，那里什么都没装"
-
-# It is there and could not be parsed. The core's own detail is shown beside this.
-#: windows/host/src/personas.rs:420 windows/host/src/personas_ui.rs:946
-msgid "Couldn't read what's installed here"
-msgstr "这儿装了什么，读不出来"
-
 # A persona the user picked and then changed one item of. Shown instead of the bare name, so that «Archer» and «Archer, with something switched off since» cannot look the same. Same placeholder note as `Role: {}`.
-#: windows/host/src/personas.rs:629
+#: windows/host/src/personas.rs:339
 #, rust-format
 msgid "{} (modified)"
 msgstr "{}（已改）"
 
-#: windows/host/src/personas.rs:643
+#: windows/host/src/personas.rs:353
 msgid "Takes effect the next time the agent starts"
 msgstr "下次启动 agent 时生效"
 
 # The fourth state of the agent class: nothing has said which CLI this is. It must not read like the «takes effect next start» sentence and must not read like nothing being said at all.
-#: windows/host/src/personas.rs:648
+#: windows/host/src/personas.rs:358
 msgid "May need the agent to restart before it takes effect"
 msgstr "可能要 agent 重启之后才生效"
 
 # The reason the rows below are shown but not offered. Deliberately the same words as the menu item «Keep Agents Out of This Terminal», so the reader recognises the switch they themselves ticked; an earlier draft said «shielded», a word that appears nowhere the user can see.
-#: windows/host/src/personas.rs:744 windows/host/src/personas.rs:1693
-#: windows/host/src/personas_ui.rs:155 windows/host/src/personas_ui.rs:1064
+#: windows/host/src/personas.rs:454 windows/host/src/personas.rs:1227
 msgid "Agents are kept out of this terminal, so its role cannot be changed"
 msgstr "不让 agent 碰此终端，所以它的角色也不能改"
 
-#: windows/host/src/personas.rs:750 windows/host/src/personas_ui.rs:159
+#: windows/host/src/personas.rs:460
 msgid "No agent is connected here, so nothing is wearing this yet"
 msgstr "这个终端里没有 agent 连着，角色存下了，但还没有人穿上"
 
 # The third state: nobody has been asked yet. Deliberately NOT the same sentence as «No roles are defined», which means the question was put and the answer was none.
-#: windows/host/src/personas.rs:768 windows/host/src/personas_ui.rs:136
-#: windows/host/src/personas_ui.rs:972
+#: windows/host/src/personas.rs:478
 msgid "Nothing has reported which roles exist yet"
 msgstr "还没有人报上来有哪些角色"
 
-#: windows/host/src/personas.rs:769 windows/host/src/personas.rs:1734
-#: windows/host/src/personas_ui.rs:137
+#: windows/host/src/personas.rs:479 windows/host/src/personas.rs:1268
 msgid "No roles are defined"
 msgstr "还没有定义任何角色"
 
-#: windows/host/src/personas.rs:775
+#: windows/host/src/personas.rs:485
 msgid "No Role"
 msgstr "不设角色"
 
-#: windows/host/src/personas.rs:921 windows/host/src/personas.rs:1472
+#: windows/host/src/personas.rs:599 windows/host/src/personas.rs:1006
 msgid "Role (beta)"
 msgstr "角色（beta）"
 
 # The Rust placeholder is `{}`; the Swift side of the same sentence carries `%@`. The two spellings are deliberate -- the two languages cannot share one placeholder -- and unifying them breaks one side.
-#: windows/host/src/personas.rs:925
+#: windows/host/src/personas.rs:603
 #, rust-format
 msgid "Role (beta): {}"
 msgstr "角色（beta）：{}"
 
-#: windows/host/src/personas_ui.rs:171
-msgid "Reset to the Role"
-msgstr "恢复成这个角色的样子"
+#: windows/host/src/project_picker.rs:71 windows/host/src/project_picker.rs:102
+msgid "No Saved Projects"
+msgstr "还没有保存过项目"
 
-#: windows/host/src/personas_ui.rs:178
-msgid "What This Terminal Hands Out"
-msgstr "这个终端交出去的东西"
+#: windows/host/src/project_picker.rs:132
+msgid "The project could not be opened."
+msgstr "这个项目打不开"
 
-# The third of three «nothing has reported» sentences. The other two are about which roles exist and what is installed on this machine; they are three different facts and must not share one phrase.
-#: windows/host/src/personas_ui.rs:184 windows/host/src/personas_ui.rs:973
-#: windows/host/src/personas_ui.rs:994
-msgid "Nothing has reported what this terminal hands out yet"
-msgstr "还没有人报上来这个终端交出去了什么"
-
-# Asked, and the answer was nothing -- as opposed to nobody having reported.
-#: windows/host/src/personas_ui.rs:186 windows/host/src/personas_ui.rs:995
-msgid "This terminal hands out nothing yet"
-msgstr "这个终端还没有交出去任何东西"
-
-#: windows/host/src/personas_ui.rs:188 windows/host/src/personas_ui.rs:251
-msgid "Skills"
-msgstr "技能"
-
-#: windows/host/src/personas_ui.rs:190 windows/host/src/personas_ui.rs:252
-msgid "MCP Servers"
-msgstr "MCP 服务器"
-
-#: windows/host/src/personas_ui.rs:199
-msgid "Opening Prompt"
-msgstr "开场提示词"
-
-#: windows/host/src/personas_ui.rs:211
-msgid "Only Applied on Restart"
-msgstr "只有重启才兑现"
-
-#: windows/host/src/personas_ui.rs:224
-msgid "Installed on This Machine"
-msgstr "这台机器上已经装了的"
-
-# Must be on the page and not only in a code comment: a read-only list with no explanation sends the reader looking for switches that are deliberately absent.
-#: windows/host/src/personas_ui.rs:234 windows/host/src/personas_ui.rs:784
-msgid ""
-"Shown so you can see what a role doesn't cover. Polter doesn't change any of "
-"this."
-msgstr "列在这里，是为了让你看见角色没有覆盖到哪里。Polter 不会动这些。"
-
-# The third state again, for the read-only list. An empty list would be read as «nothing is installed on this machine».
-#: windows/host/src/personas_ui.rs:237 windows/host/src/personas_ui.rs:802
-#: windows/host/src/personas_ui.rs:974
-msgid "Nothing has reported what's installed here yet"
-msgstr "还没有人报上来这台机器装了什么"
-
-# A number computed from an incomplete scan looks exactly like one computed from a complete scan, so the incompleteness has to be said out loud.
-#: windows/host/src/personas_ui.rs:245 windows/host/src/personas_ui.rs:1027
-msgid "Some agents' configuration couldn't be read, so this count may be low"
-msgstr "还有 agent 的配置没读到，这个数可能偏小"
-
-#: windows/host/src/personas_ui.rs:250
-msgid "Plugins"
-msgstr "插件"
-
-#: windows/host/src/personas_ui.rs:530
-msgid "Choose a Role"
-msgstr "选一个角色"
-
-#: windows/host/src/personas_ui.rs:544
-msgid "Role Editor (beta)"
-msgstr "角色编辑器（beta）"
+#: windows/host/src/project_picker.rs:138
+msgid "Load Project"
+msgstr "加载项目"
 
 #: windows/host/src/prompt.rs:331
 msgid "Save as Project"
 msgstr "另存为项目"
+
+#: windows/host/src/roles.rs:330
+msgid "Polter Supervisor"
+msgstr "Polter 总管"
+
+#: windows/host/src/roles.rs:340
+msgid ""
+"Makes the terminal it starts in this window's supervisor: splits the work, "
+"hands it out and checks it."
+msgstr "把启动它的终端设为本窗口的总管：拆分工作、派活、验收。"
+
+#: windows/host/src/roles.rs:606
+msgid "Yours"
+msgstr "你自己的"
+
+#: windows/host/src/roles.rs:607
+msgid "This Project"
+msgstr "本项目"
+
+#: windows/host/src/roles.rs:608
+msgid "This Project, Only on This Machine"
+msgstr "本项目（仅本机）"
+
+#: windows/host/src/roles.rs:669
+msgid ""
+"This role can't be saved: it needs a name, and a key of lowercase letters, "
+"digits and dashes."
+msgstr "这个角色存不了：它需要一个名字，以及只含小写字母、数字和短横线的 key。"
+
+#: windows/host/src/roles.rs:670
+msgid ""
+"The role library file has an error in it, so saving would overwrite it. Fix "
+"the file first."
+msgstr "角色库文件里有错误，现在保存会把它覆盖掉。请先修好这个文件。"
+
+#: windows/host/src/roles.rs:671
+msgid "That role no longer exists."
+msgstr "这个角色已经不存在了。"
+
+#: windows/host/src/roles.rs:672
+msgid "The role was written but didn't read back. This is a bug in Polter."
+msgstr "角色已写入，但读回失败。这是 Polter 的缺陷。"
+
+#: windows/host/src/roles.rs:673
+msgid "The role library file couldn't be written."
+msgstr "角色库文件写不进去。"
+
+#: windows/host/src/roles.rs:674
+msgid "This role isn't set up for that agent CLI."
+msgstr "这个角色没有为该 agent CLI 配置。"
+
+#: windows/host/src/roles.rs:675
+msgid ""
+"This role isn't set up for any agent CLI yet. Pick one in the role library."
+msgstr "这个角色还没选任何 agent CLI，请在角色库里选一个。"
+
+#: windows/host/src/roles.rs:676
+msgid "This role is set up for more than one agent CLI. Choose one."
+msgstr "这个角色配了不止一个 agent CLI，请选一个。"
+
+#: windows/host/src/roles.rs:677
+msgid ""
+"A tab was opened but didn't appear in time, so nothing was started in it."
+msgstr "标签页已打开，但没有及时出现，所以里面什么都没启动。"
+
+#: windows/host/src/roles.rs:678
+msgid "Polter isn't ready yet."
+msgstr "Polter 还没准备好。"
+
+#: windows/host/src/roles.rs:683 windows/host/src/roles_ui.rs:3189
+msgid ""
+"This role comes with Polter and can't be changed or deleted. Duplicate it to "
+"make one of your own."
+msgstr "这是 Polter 自带的角色，不能修改或删除。复制一份就能改成你自己的。"
+
+#: windows/host/src/roles.rs:684
+msgid ""
+"Only you can make a role's terminal a supervisor, let it answer permission "
+"prompts, or keep agents out of it."
+msgstr ""
+"只有你能把角色的终端设为总管、允许它回答权限提示，或把 agent 挡在它外面。"
+
+#: windows/host/src/roles_ui.rs:158 windows/host/src/roles_ui.rs:2033
+msgid "New Role"
+msgstr "新角色"
+
+#: windows/host/src/roles_ui.rs:180
+#, rust-format
+msgid "{} Copy"
+msgstr "{} 副本"
+
+#: windows/host/src/roles_ui.rs:236
+msgid "Another role already uses this key."
+msgstr "已经有别的角色用了这个 key。"
+
+#: windows/host/src/roles_ui.rs:359 windows/host/src/roles_ui.rs:4238
+msgid "Unsaved changes"
+msgstr "有未保存的修改"
+
+#: windows/host/src/roles_ui.rs:362 windows/host/src/roles_ui.rs:4235
+msgid "Open a terminal window first; the new tab goes beside it."
+msgstr "请先打开一个终端窗口，新标签页会开在它旁边。"
+
+#: windows/host/src/roles_ui.rs:387
+msgid "Basics"
+msgstr "基本信息"
+
+#: windows/host/src/roles_ui.rs:389
+#, rust-format
+msgid "Skills {}"
+msgstr "Skills {}"
+
+#: windows/host/src/roles_ui.rs:390 windows/host/src/roles_ui.rs:857
+msgid "Skills"
+msgstr "技能"
+
+#: windows/host/src/roles_ui.rs:393
+#, rust-format
+msgid "MCP {}"
+msgstr "MCP {}"
+
+#: windows/host/src/roles_ui.rs:394
+msgid "MCP"
+msgstr "MCP"
+
+#: windows/host/src/roles_ui.rs:421
+msgid "No agent CLI"
+msgstr "未选 agent CLI"
+
+#: windows/host/src/roles_ui.rs:452
+msgid "Reading the role library…"
+msgstr "正在读取角色库…"
+
+#: windows/host/src/roles_ui.rs:455
+msgid "No roles yet"
+msgstr "还没有角色"
+
+#: windows/host/src/roles_ui.rs:456
+msgid ""
+"A role is a saved way to start an agent CLI: which skills and MCP servers it "
+"keeps, and what it's told."
+msgstr ""
+"角色是一套保存好的 agent CLI 启动方式：保留哪些 skill 和 MCP 服务器、启动时告"
+"诉它什么。"
+
+#: windows/host/src/roles_ui.rs:667
+msgid "Select a role, or make a new one."
+msgstr "选一个角色，或者新建一个。"
+
+#: windows/host/src/roles_ui.rs:682
+msgid "Name"
+msgstr "名称"
+
+#: windows/host/src/roles_ui.rs:684 windows/host/src/roles_ui.rs:694
+msgid "Key"
+msgstr "Key"
+
+#: windows/host/src/roles_ui.rs:687
+msgid "Lowercase letters, digits and dashes. It can't be changed after saving."
+msgstr "只能用小写字母、数字和短横线，保存后不能再改。"
+
+#: windows/host/src/roles_ui.rs:689
+msgid "Only lowercase letters, digits and dashes, at most 32."
+msgstr "只能用小写字母、数字和短横线，最多 32 个字符。"
+
+#: windows/host/src/roles_ui.rs:697
+msgid "Description"
+msgstr "说明"
+
+#: windows/host/src/roles_ui.rs:698
+msgid "What this role is for, for whoever picks it"
+msgstr "这个角色是干什么的，写给挑选它的人看"
+
+#: windows/host/src/roles_ui.rs:701
+msgid "Instructions"
+msgstr "指令"
+
+#: windows/host/src/roles_ui.rs:712
+msgid ""
+"Added to the agent's system prompt when it starts. Leave it empty to add "
+"nothing. Drag the bottom edge to make the box taller."
+msgstr ""
+"启动时附加到 agent 的系统提示词后面。留空就什么都不加。拖动下边缘可以把输入框"
+"拉高。"
+
+#: windows/host/src/roles_ui.rs:717
+msgid "Polter"
+msgstr "Polter"
+
+#: windows/host/src/roles_ui.rs:718
+msgid "Make this terminal a supervisor"
+msgstr "将此终端设为总管"
+
+#: windows/host/src/roles_ui.rs:719
+msgid "Let the supervisor answer this terminal's permission prompts"
+msgstr "允许总管替你回答此终端的权限问题"
+
+#: windows/host/src/roles_ui.rs:720
+msgid "Shield it: no tool can reach it, a supervisor's included"
+msgstr "开启护盾：任何工具都碰不到它，总管也不行"
+
+#: windows/host/src/roles_ui.rs:722
+msgid ""
+"These three give the terminal something, so only you can set them, here. A "
+"supervisor that edits roles can't change them."
+msgstr ""
+"这三项会给终端授予权限，所以只有你能在这里设置。能编辑角色的总管也改不了它"
+"们。"
+
+#: windows/host/src/roles_ui.rs:725
+msgid "Hand it to the supervisor to watch"
+msgstr "交给总管监管"
+
+#: windows/host/src/roles_ui.rs:729
+msgid ""
+"The supervisor that started it, or the only one there is. With several and "
+"you starting it, nobody."
+msgstr ""
+"交给启动它的那个总管；如果是你启动的，就交给唯一的那个总管。有多个总管时不交"
+"给任何人。"
+
+#: windows/host/src/roles_ui.rs:730
+msgid "Report it as still after"
+msgstr "静止多久算卡住"
+
+#: windows/host/src/roles_ui.rs:738
+msgid "min"
+msgstr "分钟"
+
+#: windows/host/src/roles_ui.rs:743
+msgid "Open in"
+msgstr "打开位置"
+
+#: windows/host/src/roles_ui.rs:747
+msgid "Here when at a prompt, else a new tab"
+msgstr "在提示符处就地打开，否则开新标签页"
+
+#: windows/host/src/roles_ui.rs:747
+msgid "Always a new tab"
+msgstr "始终在新标签页中打开"
+
+#: windows/host/src/roles_ui.rs:758
+msgid ""
+"Applied once, when the role starts an agent CLI. Putting the role on a "
+"terminal that's already running changes its tools, not these."
+msgstr ""
+"只在用这个角色启动 agent CLI 时生效一次。给已经在运行的终端换上这个角色，只会"
+"切换它的工具，不会改这些设置。"
+
+#: windows/host/src/roles_ui.rs:762
+msgid "Agent CLIs"
+msgstr "Agent CLI"
+
+#: windows/host/src/roles_ui.rs:764 windows/host/src/roles_ui.rs:843
+msgid "Reading what's installed…"
+msgstr "正在读取已安装的内容…"
+
+#: windows/host/src/roles_ui.rs:766
+msgid "No plugin that manages an agent CLI is installed and switched on."
+msgstr "没有安装并启用任何管理 agent CLI 的插件。"
+
+#: windows/host/src/roles_ui.rs:771
+#, rust-format
+msgid "{} isn't on this machine's PATH"
+msgstr "本机 PATH 里找不到 {}"
+
+#: windows/host/src/roles_ui.rs:774 windows/host/src/roles_ui.rs:850
+msgid "Its plugin couldn't list what's installed"
+msgstr "它的插件没能列出已安装的内容"
+
+#: windows/host/src/roles_ui.rs:783 windows/host/src/roles_ui.rs:843
+msgid "No plugin manages this CLI any more"
+msgstr "已经没有插件管理这个 CLI 了"
+
+#: windows/host/src/roles_ui.rs:793
+#, rust-format
+msgid "Starting {}"
+msgstr "启动 {}"
+
+#: windows/host/src/roles_ui.rs:795
+msgid "Model"
+msgstr "模型"
+
+#: windows/host/src/roles_ui.rs:796
+msgid "The CLI's default"
+msgstr "CLI 默认"
+
+#: windows/host/src/roles_ui.rs:800
+msgid "Extra Arguments"
+msgstr "额外参数"
+
+#: windows/host/src/roles_ui.rs:804
+msgid "Added to the command line as typed. Quote anything with a space in it."
+msgstr "按原样追加到命令行。含空格的参数请加引号。"
+
+#: windows/host/src/roles_ui.rs:833
+msgid ""
+"Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI."
+msgstr ""
+"先在「基本信息」里选一个 agent CLI：skill 和 MCP 服务器是属于某个 CLI 的。"
+
+#: windows/host/src/roles_ui.rs:834
+msgid "Go to Basics"
+msgstr "去基本信息"
+
+#: windows/host/src/roles_ui.rs:856
+msgid "Filter skills"
+msgstr "筛选 skill"
+
+#: windows/host/src/roles_ui.rs:858
+msgid "Keep skills installed later"
+msgstr "以后新装的 skill 默认保留"
+
+#: windows/host/src/roles_ui.rs:859
+msgid "No skills are installed for this CLI."
+msgstr "这个 CLI 没有安装任何 skill。"
+
+#: windows/host/src/roles_ui.rs:860
+msgid ""
+"This list is what the CLI has on this machine. A project's own skills aren't "
+"in it; at launch they follow the switch above."
+msgstr ""
+"这里列的是这个 CLI 在本机装的东西，项目自带的 skill 不在其中；启动时它们按上"
+"面那个开关处理。"
+
+#: windows/host/src/roles_ui.rs:863
+msgid "Filter MCP servers"
+msgstr "筛选 MCP 服务器"
+
+#: windows/host/src/roles_ui.rs:864
+msgid "MCP Servers"
+msgstr "MCP 服务器"
+
+#: windows/host/src/roles_ui.rs:865
+msgid "Keep MCP servers added later"
+msgstr "以后新加的 MCP 服务器默认保留"
+
+#: windows/host/src/roles_ui.rs:866
+msgid "No MCP servers are configured for this CLI."
+msgstr "这个 CLI 没有配置任何 MCP 服务器。"
+
+#: windows/host/src/roles_ui.rs:867
+msgid ""
+"This list is what the CLI has on this machine. A project's own MCP servers "
+"aren't in it; at launch they follow the switch above."
+msgstr ""
+"这里列的是这个 CLI 在本机装的东西，项目自带的 MCP 服务器不在其中；启动时它们"
+"按上面那个开关处理。"
+
+#: windows/host/src/roles_ui.rs:893
+#, rust-format
+msgid "{} of {} kept"
+msgstr "保留 {} / {}"
+
+#: windows/host/src/roles_ui.rs:895
+msgid "Keep All"
+msgstr "全部保留"
+
+#: windows/host/src/roles_ui.rs:896
+msgid "Turn All Off"
+msgstr "全部关闭"
+
+#: windows/host/src/roles_ui.rs:903
+msgid ""
+"What happens to anything that isn't listed here yet, such as something "
+"installed tomorrow or a project's own."
+msgstr "决定这里还没列出的东西怎么处理，比如明天新装的、或某个项目自带的。"
+
+#: windows/host/src/roles_ui.rs:917
+msgid "Nothing matches the filter."
+msgstr "没有符合筛选条件的项。"
+
+#: windows/host/src/roles_ui.rs:932
+msgid "Keep or turn off everything in this group"
+msgstr "整组保留或关闭"
+
+#: windows/host/src/roles_ui.rs:960
+msgid "No description"
+msgstr "没有说明"
+
+#: windows/host/src/roles_ui.rs:976
+msgid "Show Less"
+msgstr "收起"
+
+#: windows/host/src/roles_ui.rs:976
+msgid "Show More"
+msgstr "展开"
+
+#: windows/host/src/roles_ui.rs:998
+#, rust-format
+msgid "Also in this role but not installed here: {}"
+msgstr "角色里还提到了本机没装的：{}"
+
+#: windows/host/src/roles_ui.rs:1943 windows/host/src/roles_ui.rs:2647
+msgid "Role Library"
+msgstr "角色库"
+
+#: windows/host/src/roles_ui.rs:2034 windows/host/src/roles_ui.rs:2038
+msgid "Duplicate"
+msgstr "复制"
+
+#: windows/host/src/roles_ui.rs:2035 windows/host/src/roles_ui.rs:2822
+msgid "Delete"
+msgstr "删除"
+
+#: windows/host/src/roles_ui.rs:2039 windows/host/src/roles_ui.rs:2148
+msgid "Launch"
+msgstr "启动"
+
+#: windows/host/src/roles_ui.rs:2039
+msgid "Revert"
+msgstr "还原"
+
+#: windows/host/src/roles_ui.rs:2039 windows/host/src/roles_ui.rs:2711
+#: windows/host/src/settings_ui.rs:1014
+msgid "Save"
+msgstr "保存"
+
+#: windows/host/src/roles_ui.rs:2241
+msgid ""
+"The role library file has an error in it. Roles can't be changed here until "
+"it's fixed."
+msgstr "角色库文件里有错误。修好之前，这里不能修改角色。"
+
+#: windows/host/src/roles_ui.rs:2709
+msgid "Save changes to this role?"
+msgstr "保存对这个角色的修改吗？"
+
+#: windows/host/src/roles_ui.rs:2710
+msgid "Your changes will be lost if you don't save them."
+msgstr "不保存的话，修改会丢失。"
+
+#: windows/host/src/roles_ui.rs:2712
+msgid "Don't Save"
+msgstr "不保存"
+
+#: windows/host/src/roles_ui.rs:2820
+#, rust-format
+msgid "Delete the role \"{}\"?"
+msgstr "删除角色「{}」？"
+
+#: windows/host/src/roles_ui.rs:2821
+msgid ""
+"Terminals wearing it are taken out of it. Agents already running keep "
+"running."
+msgstr "正在用它的终端会被取消这个角色；已经在跑的 agent 会继续跑。"
+
+#: windows/host/src/roles_ui.rs:2879
+msgid "The role couldn't be launched"
+msgstr "无法用这个角色启动"
 
 #: windows/host/src/settings_ui.rs:169
 msgid "Notifies you"
@@ -1853,10 +2247,6 @@ msgstr "它会收到：{}"
 #: windows/host/src/settings_ui.rs:1008
 msgid "Enabled"
 msgstr "已启用"
-
-#: windows/host/src/settings_ui.rs:1014
-msgid "Save"
-msgstr "保存"
 
 #: windows/host/src/settings_ui.rs:1066
 msgid "Open config file…"
@@ -1933,11 +2323,15 @@ msgid "Graphite"
 msgstr "石墨"
 
 # Three ASCII dots, action rename_tab: the host renames the tab in place on the tab strip (strip.rs). "Rename Tab…" with U+2026 is a DIFFERENT action, prompt_tab_title, which opens an overlay. The two msgids differ by one invisible character on purpose; do not merge them.
-#: windows/host/src/strip.rs:1329
+#. TRANSLATORS: three ASCII dots, not U+2026. This renames the tab
+#. in place on the tab strip. "Rename Tab…" with U+2026 is a
+#. DIFFERENT action (prompt_tab_title) that opens the title overlay.
+#. The two entries look almost identical; do not merge them.
+#: windows/host/src/strip.rs:1337
 msgid "Rename Tab..."
 msgstr "重命名标签…"
 
-#: windows/host/src/strip.rs:1453
+#: windows/host/src/strip.rs:1519
 msgid "Tab Color"
 msgstr "标签颜色"
 
@@ -1945,485 +2339,84 @@ msgstr "标签颜色"
 msgid "Menu"
 msgstr "菜单"
 
-#: windows/host/src/menu.rs:353
-msgid "Role Library (beta)..."
-msgstr "角色库（beta）…"
-
-#: windows/host/src/roles.rs:336
-msgid "Polter Supervisor"
-msgstr "Polter 总管"
-
-#: windows/host/src/roles.rs:346
-msgid ""
-"Makes the terminal it starts in this window's supervisor: splits the work, "
-"hands it out and checks it."
-msgstr "把启动它的终端设为本窗口的总管：拆分工作、派活、验收。"
-
-#: windows/host/src/roles.rs:612
-msgid "Yours"
-msgstr "你自己的"
-
-#: windows/host/src/roles.rs:613
-msgid "This Project"
-msgstr "本项目"
-
-#: windows/host/src/roles.rs:614
-msgid "This Project, Only on This Machine"
-msgstr "本项目（仅本机）"
-
-#: windows/host/src/roles.rs:675
-msgid ""
-"This role can't be saved: it needs a name, and a key of lowercase letters, "
-"digits and dashes."
-msgstr "这个角色存不了：它需要一个名字，以及只含小写字母、数字和短横线的 key。"
-
-#: windows/host/src/roles.rs:676
-msgid ""
-"The role library file has an error in it, so saving would overwrite it. Fix "
-"the file first."
-msgstr "角色库文件里有错误，现在保存会把它覆盖掉。请先修好这个文件。"
-
-#: windows/host/src/roles.rs:677
-msgid "That role no longer exists."
-msgstr "这个角色已经不存在了。"
-
-#: windows/host/src/roles.rs:678
-msgid "The role was written but didn't read back. This is a bug in Polter."
-msgstr "角色已写入，但读回失败。这是 Polter 的缺陷。"
-
-#: windows/host/src/roles.rs:679
-msgid "The role library file couldn't be written."
-msgstr "角色库文件写不进去。"
-
-#: windows/host/src/roles.rs:680
-msgid "This role isn't set up for that agent CLI."
-msgstr "这个角色没有为该 agent CLI 配置。"
-
-#: windows/host/src/roles.rs:681
-msgid ""
-"This role isn't set up for any agent CLI yet. Pick one in the role library."
-msgstr "这个角色还没选任何 agent CLI，请在角色库里选一个。"
-
-#: windows/host/src/roles.rs:682
-msgid "This role is set up for more than one agent CLI. Choose one."
-msgstr "这个角色配了不止一个 agent CLI，请选一个。"
-
-#: windows/host/src/roles.rs:683
-msgid ""
-"A tab was opened but didn't appear in time, so nothing was started in it."
-msgstr "标签页已打开，但没有及时出现，所以里面什么都没启动。"
-
-#: windows/host/src/roles.rs:684
-msgid "Polter isn't ready yet."
-msgstr "Polter 还没准备好。"
-
-#: windows/host/src/roles.rs:689 windows/host/src/roles_ui.rs:2893
-msgid ""
-"This role comes with Polter and can't be changed or deleted. Duplicate it to "
-"make one of your own."
-msgstr "这是 Polter 自带的角色，不能修改或删除。复制一份就能改成你自己的。"
-
-#: windows/host/src/roles.rs:690
-msgid ""
-"Only you can make a role's terminal a supervisor, let it answer permission "
-"prompts, or keep agents out of it."
-msgstr ""
-"只有你能把角色的终端设为总管、允许它回答权限提示，或把 agent 挡在它外面。"
-
-#: windows/host/src/roles_ui.rs:156 windows/host/src/roles_ui.rs:1872
-msgid "New Role"
-msgstr "新角色"
-
-#: windows/host/src/roles_ui.rs:178
-#, rust-format
-msgid "{} Copy"
-msgstr "{} 副本"
-
-#: windows/host/src/roles_ui.rs:234
-msgid "Another role already uses this key."
-msgstr "已经有别的角色用了这个 key。"
-
-#: windows/host/src/roles_ui.rs:357
-msgid "Unsaved changes"
-msgstr "有未保存的修改"
-
-#: windows/host/src/roles_ui.rs:360
-msgid "Open a terminal window first; the new tab goes beside it."
-msgstr "请先打开一个终端窗口，新标签页会开在它旁边。"
-
-#: windows/host/src/roles_ui.rs:385
-msgid "Basics"
-msgstr "基本信息"
-
-#: windows/host/src/roles_ui.rs:387
-#, rust-format
-msgid "Skills {}"
-msgstr "Skills {}"
-
-#: windows/host/src/roles_ui.rs:391
-#, rust-format
-msgid "MCP {}"
-msgstr "MCP {}"
-
-#: windows/host/src/roles_ui.rs:392
-msgid "MCP"
-msgstr "MCP"
-
-#: windows/host/src/roles_ui.rs:419
-msgid "No agent CLI"
-msgstr "未选 agent CLI"
-
-#: windows/host/src/roles_ui.rs:450
-msgid "Reading the role library…"
-msgstr "正在读取角色库…"
-
-#: windows/host/src/roles_ui.rs:453
-msgid "No roles yet"
-msgstr "还没有角色"
-
-#: windows/host/src/roles_ui.rs:454
-msgid ""
-"A role is a saved way to start an agent CLI: which skills and MCP servers it "
-"keeps, and what it's told."
-msgstr ""
-"角色是一套保存好的 agent CLI 启动方式：保留哪些 skill 和 MCP 服务器、启动时告"
-"诉它什么。"
-
-#: windows/host/src/roles_ui.rs:665
-msgid "Select a role, or make a new one."
-msgstr "选一个角色，或者新建一个。"
-
-#: windows/host/src/roles_ui.rs:680
-msgid "Name"
-msgstr "名称"
-
-#: windows/host/src/roles_ui.rs:682 windows/host/src/roles_ui.rs:692
-msgid "Key"
-msgstr "Key"
-
-#: windows/host/src/roles_ui.rs:685
-msgid "Lowercase letters, digits and dashes. It can't be changed after saving."
-msgstr "只能用小写字母、数字和短横线，保存后不能再改。"
-
-#: windows/host/src/roles_ui.rs:687
-msgid "Only lowercase letters, digits and dashes, at most 32."
-msgstr "只能用小写字母、数字和短横线，最多 32 个字符。"
-
-#: windows/host/src/roles_ui.rs:695
-msgid "Description"
-msgstr "说明"
-
-#: windows/host/src/roles_ui.rs:696
-msgid "What this role is for, for whoever picks it"
-msgstr "这个角色是干什么的，写给挑选它的人看"
-
-#: windows/host/src/roles_ui.rs:699
-msgid "Instructions"
-msgstr "指令"
-
-#: windows/host/src/roles_ui.rs:710
-msgid ""
-"Added to the agent's system prompt when it starts. Leave it empty to add "
-"nothing. Drag the bottom edge to make the box taller."
-msgstr ""
-"启动时附加到 agent 的系统提示词后面。留空就什么都不加。拖动下边缘可以把输入框"
-"拉高。"
-
-#: windows/host/src/roles_ui.rs:715
-msgid "Polter"
-msgstr "Polter"
-
-#: windows/host/src/roles_ui.rs:716
-msgid "Make this terminal a supervisor"
-msgstr "将此终端设为总管"
-
-#: windows/host/src/roles_ui.rs:717
-msgid "Let the supervisor answer this terminal's permission prompts"
-msgstr "允许总管替你回答此终端的权限问题"
-
-#: windows/host/src/roles_ui.rs:718
-msgid "Shield it: no tool can reach it, a supervisor's included"
-msgstr "开启护盾：任何工具都碰不到它，总管也不行"
-
-#: windows/host/src/roles_ui.rs:720
-msgid ""
-"These three give the terminal something, so only you can set them, here. A "
-"supervisor that edits roles can't change them."
-msgstr ""
-"这三项会给终端授予权限，所以只有你能在这里设置。能编辑角色的总管也改不了它"
-"们。"
-
-#: windows/host/src/roles_ui.rs:723
-msgid "Hand it to the supervisor to watch"
-msgstr "交给总管监管"
-
-#: windows/host/src/roles_ui.rs:727
-msgid ""
-"The supervisor that started it, or the only one there is. With several and "
-"you starting it, nobody."
-msgstr ""
-"交给启动它的那个总管；如果是你启动的，就交给唯一的那个总管。有多个总管时不交"
-"给任何人。"
-
-#: windows/host/src/roles_ui.rs:728
-msgid "Report it as still after"
-msgstr "静止多久算卡住"
-
-#: windows/host/src/roles_ui.rs:736
-msgid "min"
-msgstr "分钟"
-
-#: windows/host/src/roles_ui.rs:741
-msgid "Open in"
-msgstr "打开位置"
-
-#: windows/host/src/roles_ui.rs:745
-msgid "Here when at a prompt, else a new tab"
-msgstr "在提示符处就地打开，否则开新标签页"
-
-#: windows/host/src/roles_ui.rs:745
-msgid "Always a new tab"
-msgstr "始终在新标签页中打开"
-
-#: windows/host/src/roles_ui.rs:756
-msgid ""
-"Applied once, when the role starts an agent CLI. Putting the role on a "
-"terminal that's already running changes its tools, not these."
-msgstr ""
-"只在用这个角色启动 agent CLI 时生效一次。给已经在运行的终端换上这个角色，只会"
-"切换它的工具，不会改这些设置。"
-
-#: windows/host/src/roles_ui.rs:760
-msgid "Agent CLIs"
-msgstr "Agent CLI"
-
-#: windows/host/src/roles_ui.rs:762 windows/host/src/roles_ui.rs:841
-msgid "Reading what's installed…"
-msgstr "正在读取已安装的内容…"
-
-#: windows/host/src/roles_ui.rs:764
-msgid "No plugin that manages an agent CLI is installed and switched on."
-msgstr "没有安装并启用任何管理 agent CLI 的插件。"
-
-#: windows/host/src/roles_ui.rs:769
-#, rust-format
-msgid "{} isn't on this machine's PATH"
-msgstr "本机 PATH 里找不到 {}"
-
-#: windows/host/src/roles_ui.rs:772 windows/host/src/roles_ui.rs:848
-msgid "Its plugin couldn't list what's installed"
-msgstr "它的插件没能列出已安装的内容"
-
-#: windows/host/src/roles_ui.rs:781 windows/host/src/roles_ui.rs:841
-msgid "No plugin manages this CLI any more"
-msgstr "已经没有插件管理这个 CLI 了"
-
-#: windows/host/src/roles_ui.rs:791
-#, rust-format
-msgid "Starting {}"
-msgstr "启动 {}"
-
-#: windows/host/src/roles_ui.rs:793
-msgid "Model"
-msgstr "模型"
-
-#: windows/host/src/roles_ui.rs:794
-msgid "The CLI's default"
-msgstr "CLI 默认"
-
-#: windows/host/src/roles_ui.rs:798
-msgid "Extra Arguments"
-msgstr "额外参数"
-
-#: windows/host/src/roles_ui.rs:802
-msgid "Added to the command line as typed. Quote anything with a space in it."
-msgstr "按原样追加到命令行。含空格的参数请加引号。"
-
-#: windows/host/src/roles_ui.rs:831
-msgid ""
-"Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI."
-msgstr ""
-"先在「基本信息」里选一个 agent CLI：skill 和 MCP 服务器是属于某个 CLI 的。"
-
-#: windows/host/src/roles_ui.rs:832
-msgid "Go to Basics"
-msgstr "去基本信息"
-
-#: windows/host/src/roles_ui.rs:854
-msgid "Filter skills"
-msgstr "筛选 skill"
-
-#: windows/host/src/roles_ui.rs:856
-msgid "Keep skills installed later"
-msgstr "以后新装的 skill 默认保留"
-
-#: windows/host/src/roles_ui.rs:857
-msgid "No skills are installed for this CLI."
-msgstr "这个 CLI 没有安装任何 skill。"
-
-#: windows/host/src/roles_ui.rs:860
-msgid "Filter MCP servers"
-msgstr "筛选 MCP 服务器"
-
-#: windows/host/src/roles_ui.rs:862
-msgid "Keep MCP servers added later"
-msgstr "以后新加的 MCP 服务器默认保留"
-
-#: windows/host/src/roles_ui.rs:863
-msgid "No MCP servers are configured for this CLI."
-msgstr "这个 CLI 没有配置任何 MCP 服务器。"
-
-#: windows/host/src/roles_ui.rs:889
-#, rust-format
-msgid "{} of {} kept"
-msgstr "保留 {} / {}"
-
-#: windows/host/src/roles_ui.rs:891
-msgid "Keep All"
-msgstr "全部保留"
-
-#: windows/host/src/roles_ui.rs:892
-msgid "Turn All Off"
-msgstr "全部关闭"
-
-#: windows/host/src/roles_ui.rs:899
-msgid ""
-"What happens to anything that isn't listed here yet, such as something "
-"installed tomorrow or a project's own."
-msgstr "决定这里还没列出的东西怎么处理，比如明天新装的、或某个项目自带的。"
-
-#: windows/host/src/roles_ui.rs:906
-msgid "Nothing matches the filter."
-msgstr "没有符合筛选条件的项。"
-
-#: windows/host/src/roles_ui.rs:921
-msgid "Keep or turn off everything in this group"
-msgstr "整组保留或关闭"
-
-#: windows/host/src/roles_ui.rs:949
-msgid "No description"
-msgstr "没有说明"
-
-#: windows/host/src/roles_ui.rs:965
-msgid "Show Less"
-msgstr "收起"
-
-#: windows/host/src/roles_ui.rs:965
-msgid "Show More"
-msgstr "展开"
-
-#: windows/host/src/roles_ui.rs:987
-#, rust-format
-msgid "Also in this role but not installed here: {}"
-msgstr "角色里还提到了本机没装的：{}"
-
-#: windows/host/src/roles_ui.rs:1782 windows/host/src/roles_ui.rs:2377
-msgid "Role Library"
-msgstr "角色库"
-
-#: windows/host/src/roles_ui.rs:1873 windows/host/src/roles_ui.rs:1877
-msgid "Duplicate"
-msgstr "复制"
-
-#: windows/host/src/roles_ui.rs:1874 windows/host/src/roles_ui.rs:2536
-msgid "Delete"
-msgstr "删除"
-
-#: windows/host/src/roles_ui.rs:1878 windows/host/src/roles_ui.rs:1955
-msgid "Launch"
-msgstr "启动"
-
-#: windows/host/src/roles_ui.rs:1878
-msgid "Revert"
-msgstr "还原"
-
-#: windows/host/src/roles_ui.rs:2024
-msgid ""
-"The role library file has an error in it. Roles can't be changed here until "
-"it's fixed."
-msgstr "角色库文件里有错误。修好之前，这里不能修改角色。"
-
-#: windows/host/src/roles_ui.rs:2439
-msgid "Save changes to this role?"
-msgstr "保存对这个角色的修改吗？"
-
-#: windows/host/src/roles_ui.rs:2440
-msgid "Your changes will be lost if you don't save them."
-msgstr "不保存的话，修改会丢失。"
-
-#: windows/host/src/roles_ui.rs:2442
-msgid "Don't Save"
-msgstr "不保存"
-
-#: windows/host/src/roles_ui.rs:2534
-#, rust-format
-msgid "Delete the role \"{}\"?"
-msgstr "删除角色「{}」？"
-
-#: windows/host/src/roles_ui.rs:2535
-msgid ""
-"Terminals wearing it are taken out of it. Agents already running keep "
-"running."
-msgstr "正在用它的终端会被取消这个角色；已经在跑的 agent 会继续跑。"
-
-#: windows/host/src/roles_ui.rs:2586
-msgid "The role couldn't be launched"
-msgstr "无法用这个角色启动"
-
-#: windows/host/src/personas.rs:166
-msgid ""
-"The roles file couldn't be read. Until it's fixed, what's in it isn't used."
-msgstr "角色文件读不出来，修好之前里面的内容不会生效。"
-
-#: windows/host/src/roles_ui.rs:858
-msgid ""
-"This list is what the CLI has on this machine. A project's own skills aren't "
-"in it; at launch they follow the switch above."
-msgstr ""
-"这里列的是这个 CLI 在本机装的东西，项目自带的 skill 不在其中；启动时它们按上"
-"面那个开关处理。"
-
-#: windows/host/src/roles_ui.rs:865
-msgid ""
-"This list is what the CLI has on this machine. A project's own MCP servers "
-"aren't in it; at launch they follow the switch above."
-msgstr ""
-"这里列的是这个 CLI 在本机装的东西，项目自带的 MCP 服务器不在其中；启动时它们"
-"按上面那个开关处理。"
-
-#: windows/host/src/menu.rs:471
-msgid "Project"
-msgstr "项目"
-
-#: windows/host/src/menu.rs:260
-msgid "Save as Project…"
-msgstr "另存为项目…"
-
-#: windows/host/src/menu.rs:261
-msgid "Load Project…"
-msgstr "加载项目…"
-
-#: windows/host/src/project_picker.rs:138
-msgid "Load Project"
-msgstr "加载项目"
-
-#: windows/host/src/project_picker.rs:71 windows/host/src/project_picker.rs:102
-msgid "No Saved Projects"
-msgstr "还没有保存过项目"
-
-#: windows/host/src/project_picker.rs:132
-msgid "The project could not be opened."
-msgstr "这个项目打不开"
-
-#: windows/host/src/main.rs:6150
-msgid "Polter could not open its first terminal and will close."
-msgstr "Polter 无法打开第一个终端，即将关闭。"
-
-#: windows/host/src/main.rs:6144
-msgid "No reason was recorded."
-msgstr "没有记录到原因。"
-
-#: windows/host/src/main.rs:6152
-#, rust-format
-msgid "The full log is at {}"
-msgstr "完整日志在 {}"
+#~ msgid "Role Editor (beta)..."
+#~ msgstr "角色编辑器（beta）…"
+
+# Chosen by error_kind, never by reading the core's message. The core's own text follows this line, because ours says that something is wrong and only the core's says which line.
+#~ msgid ""
+#~ "The roles file could not be read, so the previous one is still in use"
+#~ msgstr "角色文件读不出来，现在用的还是上一份"
+
+# Beside an MCP row whose slot process is broken. It must not read as «switched off by hand»: the user did not do it, and the place to go is the server, not the persona.
+#~ msgid "This server didn't start. Your role isn't what's withholding it."
+#~ msgstr "这个服务器没有起来。不是你的角色没给你它。"
+
+# The `transparent` slot state. Only two of the four states speak: granted and withheld are what the checkbox already shows, and a sentence on every row would drown the one that matters.
+#~ msgid "Polter isn't managing this server, so the agent sees all of it"
+#~ msgstr "Polter 没有接管这个服务器，所以 agent 看得到它的全部"
+
+#~ msgid "Added by hand"
+#~ msgstr "手动加上的"
+
+# The other direction from «Added by hand». Both are departures from the persona, but the user undoes them with opposite actions, so they are two phrases and not one.
+#~ msgid "Switched off by hand"
+#~ msgstr "手动关掉的"
+
+# Our gap, not the agent's. The reader should go and check the path, not go and install something.
+#~ msgid "Nobody has checked where this agent keeps these yet"
+#~ msgstr "还没有人核实过这家 agent 把它们放在哪"
+
+# Shared deliberately by two states -- the path is known and empty, and the path was read and held nothing. To the user those are one fact.
+#~ msgid "Looked there, and nothing is installed"
+#~ msgstr "去那儿看过了，那里什么都没装"
+
+# It is there and could not be parsed. The core's own detail is shown beside this.
+#~ msgid "Couldn't read what's installed here"
+#~ msgstr "这儿装了什么，读不出来"
+
+#~ msgid "Reset to the Role"
+#~ msgstr "恢复成这个角色的样子"
+
+#~ msgid "What This Terminal Hands Out"
+#~ msgstr "这个终端交出去的东西"
+
+# The third of three «nothing has reported» sentences. The other two are about which roles exist and what is installed on this machine; they are three different facts and must not share one phrase.
+#~ msgid "Nothing has reported what this terminal hands out yet"
+#~ msgstr "还没有人报上来这个终端交出去了什么"
+
+# Asked, and the answer was nothing -- as opposed to nobody having reported.
+#~ msgid "This terminal hands out nothing yet"
+#~ msgstr "这个终端还没有交出去任何东西"
+
+#~ msgid "Opening Prompt"
+#~ msgstr "开场提示词"
+
+#~ msgid "Only Applied on Restart"
+#~ msgstr "只有重启才兑现"
+
+#~ msgid "Installed on This Machine"
+#~ msgstr "这台机器上已经装了的"
+
+# Must be on the page and not only in a code comment: a read-only list with no explanation sends the reader looking for switches that are deliberately absent.
+#~ msgid ""
+#~ "Shown so you can see what a role doesn't cover. Polter doesn't change any "
+#~ "of this."
+#~ msgstr "列在这里，是为了让你看见角色没有覆盖到哪里。Polter 不会动这些。"
+
+# The third state again, for the read-only list. An empty list would be read as «nothing is installed on this machine».
+#~ msgid "Nothing has reported what's installed here yet"
+#~ msgstr "还没有人报上来这台机器装了什么"
+
+# A number computed from an incomplete scan looks exactly like one computed from a complete scan, so the incompleteness has to be said out loud.
+#~ msgid ""
+#~ "Some agents' configuration couldn't be read, so this count may be low"
+#~ msgstr "还有 agent 的配置没读到，这个数可能偏小"
+
+#~ msgid "Plugins"
+#~ msgstr "插件"
+
+#~ msgid "Choose a Role"
+#~ msgstr "选一个角色"
+
+#~ msgid "Role Editor (beta)"
+#~ msgstr "角色编辑器（beta）"
