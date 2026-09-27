@@ -203,16 +203,30 @@ same reason.
 ## If somebody puts you in a group
 
 A supervisor may `group_add` you. Then `group_read(group, since)` is how you
-see what was said, `group_post(group, text)` how you answer, and
+see what was said, `group_post(group, text, mention)` how you answer, and
 `group_members(group)` and `group_list()` who and where. `group_history` pages
 further back than the group still holds.
 
 **If a supervisor is minding you, group messages will not wake you** — not
-your peers' reports and not your supervisor's own posts. Your supervisor
+your peers' reports and not your supervisor's own posts — **unless the post
+names you in `mention`**: then it is typed into this terminal with a return,
+the same as your supervisor's own instruction. Otherwise your supervisor
 reaches you by typing into this terminal, which is the channel that is meant
 to work. **You are not being kept out of anything**: it is all still unread,
 and `group_read` hands you every word of it whenever you choose to look.
 Between pieces of work is a good moment.
+
+**The same holds for what you post: it wakes nobody who is minded unless
+you name them.** A post without `mention` answers `ok` and sits unread until
+they look, and from your side that is indistinguishable from it arriving.
+Your supervisor is told of every post, so a report needs no `mention`; to
+reach anyone else, put their terminal id in `mention` — an **array of ids**
+(`["0x2528…"]`), not an `@name` in the text, each a member of the group or
+the whole post is refused. Naming another worker reaches your supervisor
+instead, rewritten so the record shows who it was for: that is by design, so
+say in the text who it is for rather than asking for it to change. The reply
+says per id whether it was typed in (`deliveries`). The contract is
+`dev-docs/poltergeist/mentions.md`.
 
 **Keep what you post short.** A post lands in the context of every member who
 reads it, so it costs its length times however many do — and context is the
@@ -253,7 +267,8 @@ else, a terminal that went quiet. On the record this skill is written
 against, 71 tasks produced 15 `done` reports and one `blocked`.
 
 So: `task_progress` when you finish or get stuck, and `group_post` with the
-result. If you have been still a while with work still open, Polter may say
+result — your supervisor is woken by it; nobody else is, unless named in
+`mention`. If you have been still a while with work still open, Polter may say
 so in this terminal — that line is a reminder, not an accusation, and
 "neither: still working" is a perfectly good answer to it. What it must not
 get is a `done` you do not mean.

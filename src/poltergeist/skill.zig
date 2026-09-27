@@ -416,7 +416,7 @@ test "the supervising skill names the tools it tells you to use" {
 /// sentence in every file as a mention of it, and the check below would
 /// pass for a tool nothing had ever written down. The skills already write
 /// a tool exactly one way -- `` `terminal_list` ``, `` `terminal_keys()` ``,
-/// `` `group_post(group, text)` `` -- so requiring the opening backtick, and
+/// `` `group_post(group, text, mention)` `` -- so requiring the opening backtick, and
 /// refusing a longer identifier running on after the name, matches the prose
 /// as it stands rather than asking anyone to write it differently.
 fn namesTool(source: []const u8, tool: []const u8) bool {
@@ -493,7 +493,7 @@ test "naming a tool means naming it, not containing its letters" {
     // prose that never mentioned a tool at all.
     try testing.expect(namesTool("read it with `terminal_read`.", "terminal_read"));
     try testing.expect(namesTool("`terminal_keys()` lists them", "terminal_keys"));
-    try testing.expect(namesTool("`group_post(group, text)` says", "group_post"));
+    try testing.expect(namesTool("`group_post(group, text, mention)` says", "group_post"));
 
     try testing.expect(!namesTool("some sentences mention me somewhere", "me"));
     try testing.expect(!namesTool("call terminal_read first", "terminal_read"));
@@ -502,6 +502,29 @@ test "naming a tool means naming it, not containing its letters" {
     // `terminal_actions` has not named `terminal_action`.
     try testing.expect(!namesTool("`terminal_actions` lists them", "terminal_action"));
     try testing.expect(namesTool("`terminal_actions` lists them", "terminal_actions"));
+}
+
+test "the skills say that a post wakes nobody who is not named" {
+    // A `group_post` answers `ok` whether or not anybody minded will see
+    // it, and only a terminal named in `mention` is typed into. A skill
+    // that teaches `group_post` without `mention` teaches "sent" as if it
+    // were "arrived" -- which cost one night three hand-overs that never
+    // landed. So every skill that names `group_post` must name `mention`.
+    //
+    // **Chosen by what the skill teaches, not by its name**, so a skill
+    // added later, or one that starts teaching posting, is covered without
+    // anybody remembering this list.
+    //
+    // Backtick-anchored like the tool check: "mention" is also an English
+    // verb, and `supervising` used it as one (in `group_history`'s `match`)
+    // for as long as the parameter went undocumented.
+    for (builtin_sources, builtin_names) |source, name| {
+        if (!namesTool(source, "group_post")) continue;
+        if (!namesTool(source, "mention")) {
+            std.debug.print("\n{s} never names `mention`\n", .{name});
+            return error.TestUnexpectedResult;
+        }
+    }
 }
 
 test "every field the frontmatter carries has somewhere it goes" {

@@ -208,7 +208,8 @@ The order, and step 2 is a note to yourself:
 
 1. `task_create(group, title)` — one line. It hands back a number.
 2. `group_post` the plan. **Mainly for you and for the record**, and for the
-   person at the keyboard; it will not make anybody move.
+   person at the keyboard; it will not make anybody move unless it names
+   them in `mention` (see "Talking" below).
 3. `terminal_send` each worker its own instruction, naming the task number,
    with the acceptance test in it.
 4. `task_assign(task, id)` so the panel says who has it. **This types a line
@@ -221,7 +222,9 @@ The order, and step 2 is a note to yourself:
 **Never hand work over by announcing it.** A hand-over said in the group, or
 written in a reply to somebody else, reaches nobody: the terminal you are
 handing to is watched, and a watched terminal is not woken by a post. It is
-`task_assign` or `terminal_send`, and the group is the record afterwards. The
+`task_assign`, `terminal_send`, or a `group_post` that names that terminal in
+`mention` — which types the post into it with a return — and the group is
+the record afterwards. The
 failure this is written from cost eight minutes of two agents waiting on each
 other, and the supervisor had written the rule down before breaking it — what
 it had not done was make the announcement and the delivery the same act.
@@ -668,8 +671,22 @@ user reserved the standing to themselves, this answers `StandingInstruction`.
 
 ## Talking, and clearing up after talking
 
-`group_post(group, text)` says something, `group_read(group, since)` reads
-what you have not seen, `group_members(group)` says who is there.
+`group_post(group, text, mention)` says something, `group_read(group, since)`
+reads what you have not seen, `group_members(group)` says who is there.
+
+**A post wakes no terminal you mind unless it names that terminal in
+`mention`.** Without it the reply is `ok` and the post is in the group, and the
+person it was for sees it whenever they next `group_read` — which may be
+never, if they are waiting for you. "Sent" and "arrived" look the same from
+your side. `mention` is an **array of terminal ids** (`["0x2528…"]`), not an
+`@name` in the text; every id must be a member of the group or the whole post
+is refused. Each one named has the post typed in with a return, the way a
+`terminal_send` would, and the reply has a row per id in `deliveries`:
+`delivered: false` with a `code` (`UserPresent`, `DraftInLine`) means that one
+was not typed into — the post is in the group either way. A worker naming
+another worker reaches you instead, rewritten so the record shows who it was
+for; that is by design, and the switch is the user's. The contract is
+`dev-docs/poltergeist/mentions.md`.
 
 `group_history(group, before_seq, limit)` goes further back than the group
 holds — page with `log_seq`, not `seq`: the per-group `seq` restarts every
