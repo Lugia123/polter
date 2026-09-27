@@ -146,12 +146,15 @@ final class ProjectStore {
     /// current shape, each pane's `cwd`/`title`/`history`, and each pane's
     /// scrollback snapshot name.
     ///
-    /// `capturingScrollback` is whether to also ask the core to write each
-    /// pane's snapshot, handing a pane that has none a new number. Only an
-    /// explicit save and the flush when a bound tab closes do that: a full
-    /// snapshot is up to `project-scrollback-limit-bytes` per pane, and
-    /// autosave runs whenever a title changes. Autosave writes the layout
-    /// and carries each pane's existing snapshot name over unchanged.
+    /// Every pane is given a snapshot number if it has none, and its
+    /// scrollback journaled there from now on (`SurfaceView.journalScrollback`):
+    /// the core writes what changed, every `project-scrollback-autosave-interval`
+    /// and when the pane closes, so a pane's history survives a crash.
+    ///
+    /// `capturingScrollback` also asks the core to write each pane's whole
+    /// snapshot now, flushed. Only an explicit save and the flush when a
+    /// bound tab closes do that; autosave, which runs whenever a title
+    /// changes, leaves the writing to the journal.
     ///
     /// - Important: When capturing, call this while every pane in `tree` is
     ///   still alive. The snapshots are written asynchronously on each
@@ -176,7 +179,7 @@ final class ProjectStore {
             storedNext: existing?.nextScrollback,
             inUse: (existing?.scrollbackFilenames ?? []) + onDisk)
 
-        if capturingScrollback && tree.root != nil {
+        if tree.root != nil {
             try? FileManager.default.createDirectory(
                 at: scrollbackDirectory,
                 withIntermediateDirectories: true)
@@ -188,10 +191,16 @@ final class ProjectStore {
         // starts an empty terminal -- which is today's behavior.
         let root = tree.root.map { node in
             ProjectNode.capturing(node) { view in
-                guard let snapshot = allocator.snapshot(for: view.projectSnapshot, allocate: capturingScrollback) else {
+                // Every pane gets a number, autosave included: a number is
+                // now what keeps a pane's scrollback journaled, and a pane
+                // opened after the tab was bound that waited for an explicit
+                // save would have nothing on disk when the machine goes
+                // down. Handing one out used to mean a full capture; it no
+                // longer does -- the journal writes only what changed.
+                guard let snapshot = allocator.snapshot(for: view.projectSnapshot, allocate: true) else {
                     return ""
                 }
-                view.projectSnapshot = snapshot
+                view.journalScrollback(snapshot, in: scrollbackDirectory)
                 if capturingScrollback, let surface = view.surface {
                     let path = scrollbackDirectory.appendingPathComponent(snapshot.filename).path
                     if !ghostty_surface_capture_scrollback(surface, path) {

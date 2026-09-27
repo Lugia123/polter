@@ -289,7 +289,26 @@ extension Ghostty {
         /// into or loaded from -- see `ProjectScrollback.Allocator`. Kept on
         /// the pane rather than derived from its position so that moving the
         /// pane around the split tree doesn't hand it another pane's history.
-        var projectSnapshot: ProjectScrollback.PaneSnapshot?
+        ///
+        /// Set only through `journalScrollback(_:in:)`, which is also what
+        /// asks the core to keep the pane's scrollback journaled in that
+        /// file -- see `ProjectScrollback.Journaled`.
+        private(set) var projectJournal: ProjectScrollback.Journaled?
+
+        /// The snapshot name `projectJournal` carries.
+        var projectSnapshot: ProjectScrollback.PaneSnapshot? { projectJournal?.snapshot }
+
+        /// Give this pane `snapshot` in the project whose snapshots live in
+        /// `directory`, and keep its scrollback journaled there from now on.
+        func journalScrollback(_ snapshot: ProjectScrollback.PaneSnapshot, in directory: URL) {
+            projectJournal = ProjectScrollback.Journal.start(on: surface, snapshot: snapshot, in: directory)
+        }
+
+        /// Stop journaling this pane's scrollback -- its tab is no longer
+        /// bound to the project. The pane keeps its snapshot name.
+        func stopScrollbackJournal() {
+            ProjectScrollback.Journal.stop(on: surface)
+        }
 
         // The cached contents of the screen.
         private(set) var cachedScreenContents: CachedValue<String>

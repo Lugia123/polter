@@ -138,7 +138,15 @@ extension TerminalController {
             }
             let tree = try store.loadTree(entry, app: app)
             let controller = TerminalController.openProject(ghostty, tree: tree, attachingTo: window)
-            try controller.bindProject(entry.name)
+            do {
+                try controller.bindProject(entry.name)
+            } catch {
+                // Restoring started each pane's journal into the project's
+                // files; a tab that did not get the binding must not write
+                // to them.
+                controller.stopScrollbackJournals()
+                throw error
+            }
         } catch {
             presentProjectError(error)
         }
@@ -173,6 +181,7 @@ extension TerminalController {
         let store = ProjectStore.shared
         store.bindings.release(store.bindingKey(name: name), for: self)
         stopProjectAutosave()
+        stopScrollbackJournals()
         boundProject = nil
         invalidateRestorableState()
     }
@@ -205,6 +214,15 @@ extension TerminalController {
             try ProjectStore.shared.save(name: name, tree: surfaceTree, capturingScrollback: true)
         } catch {
             Ghostty.logger.warning("final save of project '\(name, privacy: .public)' failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Stop every pane's scrollback journal: the tab no longer writes to a
+    /// project. Their files stay; the project's own saves decide what is
+    /// kept.
+    func stopScrollbackJournals() {
+        for view in surfaceTree {
+            view.stopScrollbackJournal()
         }
     }
 
@@ -248,9 +266,10 @@ extension TerminalController {
         // `.prev`, one mistake away from gone.
         guard !surfaceTree.isEmpty else { return }
         do {
-            // Layout only. A full scrollback capture is up to the configured
-            // limit per pane and this runs a second after any title change;
-            // continuous scrollback is the incremental-pages step's job.
+            // No full capture: that is up to the configured limit per pane
+            // and this runs a second after any title change. Scrollback is
+            // kept by each pane's journal, which this also starts for a
+            // pane that has none yet (`ProjectStore.save`).
             try ProjectStore.shared.save(name: name, tree: surfaceTree, capturingScrollback: false)
         } catch {
             // Logged, not alerted: this runs on its own a second after any

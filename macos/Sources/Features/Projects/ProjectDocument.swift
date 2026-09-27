@@ -313,9 +313,13 @@ extension ProjectNode {
             // the shell reports its own title.
             if !title.isEmpty { view.setTitle(title) }
             // The pane keeps the snapshot name it was saved under, so its
-            // next save writes the same file wherever the pane has moved to.
+            // next save writes the same file wherever the pane has moved to --
+            // and from now on the core keeps that file up to date. This is
+            // the restored pane's journal: it has none yet, so this starts
+            // one, and its first write rewrites the file from what was just
+            // restored.
             if let project, !scrollback.isEmpty {
-                view.projectSnapshot = .init(project: project.key, filename: scrollback)
+                view.journalScrollback(.init(project: project.key, filename: scrollback), in: project.directory)
             }
             return .leaf(view: view)
 

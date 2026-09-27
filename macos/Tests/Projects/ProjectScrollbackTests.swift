@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import Ghostty
+import GhosttyKit
 
 @Suite
 struct ProjectScrollbackTests {
@@ -66,7 +67,11 @@ struct ProjectScrollbackTests {
             storedNext: existing?.nextScrollback,
             inUse: existing?.scrollbackFilenames ?? [])
         let leaves: [ProjectNode] = panes.map { pane in
-            let snapshot = allocator.snapshot(for: pane.snapshot, allocate: capture)
+            // Every save hands out numbers now, autosave included -- see
+            // `ProjectStore.save`. `capture` only decides whether a full
+            // snapshot is also written, which this stand-in does not model.
+            _ = capture
+            let snapshot = allocator.snapshot(for: pane.snapshot, allocate: true)
             if let snapshot { pane.snapshot = snapshot }
             return .leaf(cwd: pane.cwd, title: "", history: "", scrollback: snapshot?.filename ?? "")
         }
@@ -117,14 +122,20 @@ struct ProjectScrollbackTests {
         #expect(Set(reopened.scrollbackFilenames).count == 2)
     }
 
-    @Test func autosaveHandsOutNoNumbers() {
+    /// A pane opened after its tab was bound gets a number at the next
+    /// autosave, not at the next explicit save. The number is what keeps the
+    /// pane's scrollback journaled; waiting for an explicit save would leave
+    /// it with nothing on disk if the machine went down first. (Autosave
+    /// used to hand out none, because a number meant a full capture.)
+    @Test func autosaveHandsOutNumbers() {
         let a = Pane("/a")
         let saved = save([a], existing: nil, capture: true)
         let fresh = Pane("/b")
         let autosaved = save([a, fresh], existing: saved, capture: false)
-        #expect(fresh.snapshot == nil)
-        #expect(snapshots(autosaved.root)["/b"] == "")
-        #expect(autosaved.nextScrollback == saved.nextScrollback)
+        #expect(fresh.snapshot != nil)
+        #expect(snapshots(autosaved.root)["/b"] == fresh.snapshot?.filename)
+        #expect(fresh.snapshot?.filename != a.snapshot?.filename)
+        #expect(autosaved.nextScrollback == saved.nextScrollback! + 1)
     }
 
     @Test func aSnapshotFromAnotherProjectIsNotReused() {
@@ -140,5 +151,61 @@ struct ProjectScrollbackTests {
     @Test func theCounterStartsPastEveryNumberInUse() {
         var allocator = ProjectScrollback.Allocator(project: "k", storedNext: nil, inUse: ["4.snap", "junk", "1.snap"])
         #expect(allocator.snapshot(for: nil, allocate: true)?.filename == "5.snap")
+    }
+}
+
+/// `Journal.start` is where a pane's snapshot name and the core's journal
+/// request are tied together (`ProjectScrollback.Journaled`); these check
+/// that the request is really made, with the path the host means.
+/// Serialized: they swap the one process-wide `Journal.request`.
+@Suite(.serialized)
+struct ProjectScrollbackJournalTests {
+    private final class Recorder {
+        var calls: [(ghostty_surface_t, String?)] = []
+    }
+
+    private func recording(_ body: (Recorder) throws -> Void) rethrows {
+        let recorder = Recorder()
+        let original = ProjectScrollback.Journal.request
+        ProjectScrollback.Journal.request = { surface, path in
+            recorder.calls.append((surface, path))
+            return true
+        }
+        defer { ProjectScrollback.Journal.request = original }
+        try body(recorder)
+    }
+
+    private let fakeSurface = UnsafeMutableRawPointer(bitPattern: 0x10)!
+    private let directory = URL(fileURLWithPath: "/projects/work.scrollback")
+
+    @Test func startAsksTheCoreToJournalAtThePanesFile() {
+        recording { recorder in
+            let snapshot = ProjectScrollback.PaneSnapshot(project: "work", filename: "3.snap")
+            let journaled = ProjectScrollback.Journal.start(on: fakeSurface, snapshot: snapshot, in: directory)
+            #expect(journaled.snapshot == snapshot)
+            #expect(recorder.calls.count == 1)
+            #expect(recorder.calls.first?.0 == fakeSurface)
+            #expect(recorder.calls.first?.1 == "/projects/work.scrollback/3.snap")
+        }
+    }
+
+    @Test func stopAsksTheCoreToStop() {
+        recording { recorder in
+            ProjectScrollback.Journal.stop(on: fakeSurface)
+            #expect(recorder.calls.count == 1)
+            #expect(recorder.calls.first?.1 == nil)
+        }
+    }
+
+    /// A pane whose surface failed to start keeps its name and asks nothing.
+    @Test func noSurfaceNoRequest() {
+        recording { recorder in
+            let snapshot = ProjectScrollback.PaneSnapshot(project: "work", filename: "0.snap")
+            let journaled = ProjectScrollback.Journal.start(on: nil, snapshot: snapshot, in: directory)
+            #expect(journaled.snapshot == snapshot)
+            #expect(recorder.calls.isEmpty)
+            ProjectScrollback.Journal.stop(on: nil)
+            #expect(recorder.calls.isEmpty)
+        }
     }
 }
