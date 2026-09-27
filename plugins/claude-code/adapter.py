@@ -38,6 +38,12 @@ Which launch flag switches off which kind of thing was measured, not read
     under either spelling. `--disallowedTools "Skill(argus:terminal)"` does.
   * an MCP server: `--disallowedTools mcp__<server>` removes its tools from
     the list. For a plugin's server the name is `plugin_<plugin>_<server>`.
+  * a whole installed plugin: `--settings {"enabledPlugins":{"<p>@<mk>":false}}`.
+    Better than the line above where every one of its items is off, because a
+    `Skill()` rule blocks the call but leaves the skill in the listing Claude
+    is given. Does not reach a plugin synced from claude.ai.
+  * everything Claude Code ships with: `--settings {"disableBundledSkills":true}`.
+    All of them or none; they are in the binary, so they cannot be listed.
 
 Those can change with a Claude Code release. The probe that measured them is
 described next to the table in roles.md, so it can be run again.
@@ -316,6 +322,27 @@ def plugin_items(key, path):
     return items
 
 
+# --- what is not on disk -----------------------------------------------------
+
+# Claude Code's own skills -- `/code-review`, `/run`, `/init`, `/artifact-design`
+# and a dozen more. They live in the binary, so no walk of any directory can
+# list them, and a written-out list of their names would go stale with every
+# release. `disableBundledSkills` takes all of them at once, so they are one
+# row rather than a dozen. Measured 2026-09-27 (claude 2.1.283): with it on,
+# `keybindings-help` is `Unknown skill: keybindings-help` while the user's own
+# `ponytail` still runs.
+#
+# The id cannot collide with a real skill: those are `skill:<name>`, and a
+# directory whose name starts with `.` is skipped before it is ever read.
+BUNDLED_ITEM = {
+    "kind": "skill",
+    "id": "skill:.bundled",
+    "name": "Claude Code's own skills",
+    "description": "Everything Claude Code ships with: /code-review, /run, /init, /loop and the rest. All of them or none.",
+    "source": "claude-code",
+}
+
+
 # --- the two questions -------------------------------------------------------
 
 
@@ -339,6 +366,8 @@ def inventory(req):
     cwd = req.get("cwd") or None
     notes = []
     items = []
+
+    items.append(BUNDLED_ITEM)
 
     skills_root = os.path.join(home, ".claude", "skills")
     items += skills_in(skills_root, "user")
@@ -400,8 +429,45 @@ def launch(req):
     cli = req.get("cli") or {}
     inv = inventory(req)
 
+    notes = inv["notes"]
+
+    # A plugin all of whose items are off is switched off whole, rather than
+    # item by item. It is a better off: `--disallowedTools` blocks the call but
+    # leaves every one of those skills in the listing Claude is given, so a
+    # role that took away sixteen of them still paid for sixteen descriptions
+    # and the agent still answered "I have these". `enabledPlugins` makes them
+    # `Unknown skill` and takes the plugin's MCP tools with them.
+    #
+    # Measured 2026-09-27 (claude 2.1.283), each with a control:
+    #   * `{"enabledPlugins":{"argus@argus-plugins":false}}` -> calling
+    #     `argus:agent-inventory` is `Unknown skill`, and no `mcp__plugin_argus_*`
+    #     tool is there; `kairos:…` in the same run still runs.
+    #   * `{"enabledPlugins":{}}` leaves `argus:…` running, so what the role
+    #     passes is **merged into** the user's `enabledPlugins`, not put in
+    #     place of it. A role that named one plugin does not switch off the rest.
+    #   * A synced plugin ignores it under both `design` and
+    #     `design@<marketplace>`; those stay item by item.
+    plugin_keys = {}
+    for key in enabled_plugins(req.get("home") or os.path.expanduser("~"),
+                               req.get("cwd") or None, []):
+        plugin_keys[key.split("@", 1)[0]] = key
+    whole = {}
+    for group, key in plugin_keys.items():
+        members = [i for i in inv["items"] if i.get("group") == group and not i.get("locked")]
+        if not members:
+            continue
+        if all(not enabled(cli.get("skills" if i["kind"] == "skill" else "mcp") or {}, i["id"])
+               for i in members):
+            whole[key] = members
+
+    off_whole = set()
+    for members in whole.values():
+        for item in members:
+            off_whole.add(item["id"])
+
     overrides = {}
     denied = []
+    bundled_off = False
     off = {"skill": 0, "mcp": 0}
     for item in inv["items"]:
         if item.get("locked"):
@@ -410,14 +476,17 @@ def launch(req):
         if enabled(selection, item["id"]):
             continue
         off[item["kind"]] += 1
-        if item["kind"] == "mcp":
+        if item["id"] in off_whole:
+            continue
+        if item["id"] == BUNDLED_ITEM["id"]:
+            bundled_off = True
+        elif item["kind"] == "mcp":
             denied.append("mcp__" + item["id"][len("mcp:"):])
         elif item["source"].startswith("plugin:"):
             denied.append("Skill(%s)" % item["name"])
         else:
             overrides[item["name"]] = "off"
 
-    notes = inv["notes"]
     extra, settings = split_settings([a for a in (cli.get("args") or []) if isinstance(a, str)], notes)
 
     # ⚠️ **One `--settings`, never two.** Measured: given twice, the second
@@ -429,6 +498,13 @@ def launch(req):
         merged = dict(settings.get("skillOverrides") or {})
         merged.update(overrides)
         settings["skillOverrides"] = merged
+    if whole:
+        merged = dict(settings.get("enabledPlugins") or {})
+        for key in sorted(whole):
+            merged[key] = False
+        settings["enabledPlugins"] = merged
+    if bundled_off:
+        settings["disableBundledSkills"] = True
 
     argv = ["claude"]
     if settings:

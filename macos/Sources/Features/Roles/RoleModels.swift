@@ -428,7 +428,8 @@ struct RoleItemGroup: Identifiable {
             // The user's own things, in the order they are theirs. The
             // plugins, which have no fixed order, come after all of them.
             case "claude.ai": return 3
-            default: return 4
+            case "claude-code": return 4
+            default: return 5
             }
         }
         return order
@@ -446,6 +447,7 @@ struct RoleItemGroup: Identifiable {
         case "project": return String(localized: "This Project", comment: "角色库：分组名，项目目录里的")
         case "local": return String(localized: "This Project, Only on This Machine", comment: "角色库：分组名，本机该项目的私有配置")
         case "claude.ai": return String(localized: "Synced from claude.ai", comment: "角色库：分组名，从 claude.ai 同步下来的 skill")
+        case "claude-code": return String(localized: "Built In", comment: "角色库：分组名，Claude Code 自带的 skill，只能整体开关")
         default: return item.source
         }
     }

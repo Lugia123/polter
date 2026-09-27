@@ -91,6 +91,7 @@
     {"name": "launch, only the user's --settings", "question": "launch", "request": {"version": 1, "cwd": null, "home": "{HOME}",
       "role": {"key": "s", "name": "S", "instructions": "one line"},
       "cli": {"skills": {"default": true, "except": []}, "mcp": {"default": true, "except": []}, "model": "", "args": ["--settings={\"a\": 1}", "--settings", "{\"b\": \"x\", \"a\": 2}"]}}},
+    {"name": "launch, whole plugins off, one kept back by a single server, and the bundled skills with them", "question": "launch", "request": {"version": 1, "cwd": "{CWD}", "home": "{HOME}", "role": {"key": "lean", "name": "Lean", "instructions": "be brief"}, "cli": {"skills": {"default": false, "except": []}, "mcp": {"default": false, "except": ["mcp:plugin_kanban_kanban"]}, "model": null, "args": []}}},
     {"name": "launch, an empty role and cli", "question": "launch", "request": {"version": 1, "cwd": null, "home": "{HOME}", "role": {}, "cli": {}}},
     {"name": "a request that is not JSON", "question": "launch", "raw": "not json"},
     {"name": "a request that is not an object", "question": "inventory", "raw": "[1]"},

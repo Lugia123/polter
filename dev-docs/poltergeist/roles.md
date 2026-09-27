@@ -492,7 +492,7 @@ claude 2.1.278 上实测，每条都有对照（基线能调到；同一批里�
 | 要关掉的 | 有效的开关 | 无效的开关 | 证据 |
 | --- | --- | --- | --- |
 | 个人 / 项目 skill | `--settings '{"skillOverrides":{"<name>":"off"}}'` | — | 🔬 报 `disabled for model invocation in skillOverrides settings` |
-| 插件的 skill（`argus:xxx`） | `--disallowedTools "Skill(argus:xxx)"`（bypassPermissions 下也挡） | `skillOverrides`，写 `argus:xxx` 或 `xxx` 都不行 | 🔬 报 `blocked by permission rules`；同插件别的 skill 照常 |
+| 插件的 skill（`argus:xxx`） | `--disallowedTools "Skill(argus:xxx)"`（bypassPermissions 下也挡）；整只关用 `enabledPlugins`，见 11.2.2 | `skillOverrides`，写 `argus:xxx` 或 `xxx` 都不行（2.1.283 上复测仍然如此） | 🔬 报 `blocked by permission rules`；同插件别的 skill 照常 |
 | MCP 服务器 | `--disallowedTools mcp__<server>` | — | 🔬 探针服务器日志 0 次 `tools/call`，agent 说不在清单里 |
 | 插件的 MCP | `--disallowedTools mcp__plugin_<plugin>_<server>` | — | 📖 本机工具名 `mcp__plugin_argus_argus-files__…` |
 
@@ -542,12 +542,46 @@ claude.ai 同步下来的**多一层「账号桶」**：
 适配器都先看这个目录自己像不像一个（有没有 `SKILL.md` / `plugin.json`）：像，
 那它就是，没有桶。
 
-⚠️ 还有一类关得掉但**列不出来**：Claude Code 自带的 skill（`code-review`、
-`security-review`、`run`、`init`、`artifact-design`……）。它们在二进制里，磁盘上
-没有，任何走目录的清点都够不着；`claude --help` 里也没有列 skill 的命令，只有
-`--disable-slash-commands` 一刀全关。实测 `skillOverrides` 按名字关得掉
-`keybindings-help`，所以要覆盖它们只能在适配器里写死一张名单，而那张名单会随
-Claude Code 版本过期。**目前没做。**
+### 11.2.2 「挡住调用」和「从清单里拿掉」是两件事
+
+上面那张表里的开关分两类，而**它们的区别只有在 agent 的上下文里才看得出来**：
+
+| 开关 | 调用会怎样 | 清单里还在不在 |
+| --- | --- | --- |
+| `skillOverrides: "off"` | 报 `disabled ... in skillOverrides settings` | **不在**（官方文档：`off` = Listed to Claude 为 Hidden） |
+| `--disallowedTools Skill(p:x)` | 报 `blocked by permission rules` | **还在**——描述照样注入，照样花 token |
+| `enabledPlugins: {"p@市场": false}` | 报 `Unknown skill: p:x` | **不在**，连该插件的 MCP 工具一起没了 |
+| `disableBundledSkills: true` | 报 `Unknown skill: <名字>` | **不在** |
+
+2026-09-27 的返工就是这条：同步的 skill 补上之后，角色确实把自有的和同步的都
+隐藏了，但**插件的 80 多个 skill 全都还列在 agent 眼前**——`--disallowedTools`
+只挡调用。用户看到的是「还是不太行」。
+
+所以适配器现在分三档：
+
+1. **一个插件的项全灭 → 整只关**，写 `enabledPlugins[<name>@<市场>] = false`，
+   不再逐条 `Skill(...)`。实测（claude 2.1.283，每条带对照）：
+   - `{"enabledPlugins":{"argus@argus-plugins":false}}` → 调 `argus:agent-inventory`
+     得 `Unknown skill`，`mcp__plugin_argus_*` 一个不剩；同一次里 `kairos:…` 照跑。
+   - `{"enabledPlugins":{}}` → `argus:…` 仍在。所以角色写的是**并进**用户的
+     `enabledPlugins`，不是整个替换掉它——点名一个插件不会顺手关掉别的。
+2. **只关一部分 → 还是逐条 `--disallowedTools`。** 这是「整只关」的粒度代价：
+   留一个就没法整只关。同步来的插件也走这里，它没有第 1 档：
+   `enabledPlugins` 写 `design` 或 `design@<市场>` **都无效**（两种写法都实测过）。
+3. **Claude Code 自带的那些**（`code-review`、`run`、`init`、`artifact-design`……）
+   ——`disableBundledSkills: true`，一个布尔，**全有或全无**。
+
+⚠️ **自带的那一档在清单里是一行，不是十几行。** 它们在二进制里，磁盘上没有，
+任何走目录的清点都列不出来（`claude --help` 也没有列 skill 的命令）。写死一张
+名单会随版本过期，而这个布尔不会。所以适配器凭空造一行
+`{"kind":"skill","id":"skill:.bundled","source":"claude-code"}`——`id` 不可能和
+真 skill 的 `skill:<名字>` 撞，因为点号打头的目录在读之前就被跳过了。
+实测：`disableBundledSkills` 开着时 `keybindings-help` 是
+`Unknown skill`，而用户自己的 `ponytail` 照常。
+
+> `skillOverrides` 其实有**四档**不是两档：`on` / `name-only`（只给名字不给描述）/
+> `user-invocable-only`（agent 看不见，用户还能打 `/`）/ `off`。角色现在只用
+> `on` 和 `off`。`name-only` 是个省 token 但保留可发现性的中间档，**还没做**。
 
 ## 11.3 形状：插件出答案，核心只认契约
 
@@ -574,7 +608,7 @@ Polter，适配器管角色。
 adapter inventory '{"version":1,"cwd":null|"/abs","home":"/abs"}'
 → {"version":1,"installed":bool,"notes":[…],
    "items":[{"kind":"skill"|"mcp","id":"skill:pdf","name":"pdf",
-             "description":"…","detail":"http · host","source":"user|claude.ai|project|local|plugin:<p>",
+             "description":"…","detail":"http · host","source":"user|claude.ai|claude-code|project|local|plugin:<p>",
              "group":"<plugin>","group_description":"…","locked":bool}]}
 
 adapter launch '{"version":1,"cwd":…,"home":…,

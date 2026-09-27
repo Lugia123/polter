@@ -674,6 +674,24 @@ function Resolve-Shim([string]$Shim) {
     return $null
 }
 
+# --- what is not on disk ------------------------------------------------------
+
+# Claude Code's own skills. They live in the binary, so no walk of any
+# directory lists them, and `disableBundledSkills` takes all of them at once --
+# hence one row. The id cannot collide with a real skill's `skill:<name>`,
+# because a folder starting with `.` is skipped before it is read.
+# See `BUNDLED_ITEM` in adapter.py for the measurement.
+$script:BundledId = 'skill:.bundled'
+function New-BundledItem {
+    $item = New-Map
+    $item['kind'] = 'skill'
+    $item['id'] = $script:BundledId
+    $item['name'] = "Claude Code's own skills"
+    $item['description'] = 'Everything Claude Code ships with: /code-review, /run, /init, /loop and the rest. All of them or none.'
+    $item['source'] = 'claude-code'
+    return , $item
+}
+
 # --- the two questions --------------------------------------------------------
 
 function Get-Inventory($Req) {
@@ -686,6 +704,8 @@ function Get-Inventory($Req) {
     $cwd = $(if (Test-Truthy $c) { [string]$c } else { $null })
     $notes = New-List
     $items = New-List
+
+    $items.Add((New-BundledItem))
 
     $skillsRoot = Join-PyPath (Join-PyPath $homeDir '.claude') 'skills'
     foreach ($i in (Get-SkillsIn $skillsRoot 'user')) { $items.Add($i) }
@@ -798,8 +818,47 @@ function Get-Launch($Req) {
     if (-not (Test-Truthy $cli)) { $cli = New-Map }
     $inv = Get-Inventory $Req
 
+    $notes = $inv['notes']
+
+    # A plugin all of whose items are off is switched off whole rather than
+    # item by item, because `--disallowedTools` blocks the call but leaves the
+    # skill in the listing Claude is given. See `whole` in adapter.py for what
+    # was measured, including that what the role passes is merged into the
+    # user's `enabledPlugins` rather than put in place of it.
+    $h2 = Get-J $Req 'home'
+    if (-not (Test-Truthy $h2)) {
+        $h2 = $(if ($script:OnWindows) { [string]$env:USERPROFILE } else { [string]$env:HOME })
+    }
+    $c2 = Get-J $Req 'cwd'
+    $plugins = Get-EnabledPlugins ([string]$h2) $(if (Test-Truthy $c2) { [string]$c2 } else { $null }) (New-List)
+    $pluginKeys = @($plugins.Keys | ForEach-Object { [string]$_ })
+    [Array]::Sort($pluginKeys, [StringComparer]::Ordinal)
+    $whole = New-List
+    $offWhole = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($key in $pluginKeys) {
+        $group = $key.Split('@')[0]
+        $members = New-List
+        foreach ($item in $inv['items']) {
+            if ($item.Contains('locked') -and $item['locked']) { continue }
+            if (-not $item.Contains('group')) { continue }
+            if (([string]$item['group']) -cne $group) { continue }
+            $members.Add($item)
+        }
+        if ($members.Count -eq 0) { continue }
+        $all = $true
+        foreach ($item in $members) {
+            $sel = Get-J $cli $(if (([string]$item['kind']) -ceq 'skill') { 'skills' } else { 'mcp' })
+            if (-not (Test-Truthy $sel)) { $sel = New-Map }
+            if (Test-Enabled $sel ([string]$item['id'])) { $all = $false; break }
+        }
+        if (-not $all) { continue }
+        $whole.Add($key)
+        foreach ($item in $members) { [void]$offWhole.Add([string]$item['id']) }
+    }
+
     $overrides = New-Map
     $denied = New-List
+    $bundledOff = $false
     $offSkill = 0
     $offMcp = 0
     foreach ($item in $inv['items']) {
@@ -808,20 +867,19 @@ function Get-Launch($Req) {
         $selection = Get-J $cli $(if ($kind -ceq 'skill') { 'skills' } else { 'mcp' })
         if (-not (Test-Truthy $selection)) { $selection = New-Map }
         if (Test-Enabled $selection ([string]$item['id'])) { continue }
-        if ($kind -ceq 'mcp') {
-            $offMcp += 1
+        if ($kind -ceq 'mcp') { $offMcp += 1 } else { $offSkill += 1 }
+        if ($offWhole.Contains([string]$item['id'])) { continue }
+        if (([string]$item['id']) -ceq $script:BundledId) {
+            $bundledOff = $true
+        } elseif ($kind -ceq 'mcp') {
             $denied.Add('mcp__' + ([string]$item['id']).Substring('mcp:'.Length))
+        } elseif (([string]$item['source']).StartsWith('plugin:', $script:Ordinal)) {
+            $denied.Add('Skill(' + $item['name'] + ')')
         } else {
-            $offSkill += 1
-            if (([string]$item['source']).StartsWith('plugin:', $script:Ordinal)) {
-                $denied.Add('Skill(' + $item['name'] + ')')
-            } else {
-                $overrides[[string]$item['name']] = 'off'
-            }
+            $overrides[[string]$item['name']] = 'off'
         }
     }
 
-    $notes = $inv['notes']
     $argList = New-List
     $rawArgs = Get-J $cli 'args'
     if (Test-JList $rawArgs) {
@@ -839,6 +897,14 @@ function Get-Launch($Req) {
         foreach ($k in $overrides.Keys) { $merged[$k] = $overrides[$k] }
         $settings['skillOverrides'] = $merged
     }
+    if ($whole.Count -gt 0) {
+        $merged = New-Map
+        $old = $(if ($settings.Contains('enabledPlugins')) { $settings['enabledPlugins'] } else { $null })
+        if (Test-JDict $old) { foreach ($k in (Get-JKeys $old)) { $merged[$k] = Get-J $old $k } }
+        foreach ($k in $whole) { $merged[$k] = $false }
+        $settings['enabledPlugins'] = $merged
+    }
+    if ($bundledOff) { $settings['disableBundledSkills'] = $true }
 
     $start = Resolve-ClaudeCommand
     if ($null -eq $start) {

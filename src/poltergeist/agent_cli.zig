@@ -666,6 +666,8 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
         "skill:pdf",          "skill:folded",         "skill:ops:terminal",
         "skill:theme",        "mcp:polter",           "mcp:pencil",
         "mcp:plugin_ops_ops", "skill:design:ux-copy",
+        // Claude Code's own skills: one row, and not on disk at all.
+        "skill:.bundled",
     };
     for (want) |id| if (!ids.contains(id)) {
         std.debug.print("missing {s} in {s}\n", .{ id, inv });
@@ -681,7 +683,7 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
     const p: persona.Persona = .{ .key = "r", .name = "r", .instructions = "be brief" };
     const choice: persona.CliChoice = .{
         .cli = "claude-code",
-        .skills = .{ .except = &.{ "skill:pdf", "skill:ops:terminal", "skill:theme", "skill:design:ux-copy" } },
+        .skills = .{ .except = &.{ "skill:pdf", "skill:ops:terminal", "skill:theme", "skill:design:ux-copy", "skill:.bundled" } },
         .mcp = .{ .except = &.{ "mcp:pencil", "mcp:plugin_ops_ops", "mcp:polter" } },
         .args = &.{ "--settings", "{\"theme\":\"dark\"}" },
     };
@@ -698,16 +700,22 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
     const argv = try std.mem.join(aa, "\x00", l.argv);
 
     try testing.expectEqualStrings("claude", l.argv[0]);
-    // Measured: a personal skill goes through skillOverrides, a plugin's
-    // skill through a Skill() rule, an MCP server through mcp__<name>.
+    // Measured: a personal skill goes through skillOverrides, an MCP server
+    // through mcp__<name>. A synced skill takes the same switch as the user's
+    // own, and Claude Code's own skills their one boolean.
     try testing.expect(std.mem.indexOf(u8, argv, "\"pdf\": \"off\"") != null);
-    try testing.expect(std.mem.indexOf(u8, argv, "Skill(ops:terminal)") != null);
-    // A synced skill takes the same switch as the user's own, and a synced
-    // plugin's skill the same switch as an installed plugin's.
     try testing.expect(std.mem.indexOf(u8, argv, "\"theme\": \"off\"") != null);
-    try testing.expect(std.mem.indexOf(u8, argv, "Skill(design:ux-copy)") != null);
+    try testing.expect(std.mem.indexOf(u8, argv, "\"disableBundledSkills\": true") != null);
     try testing.expect(std.mem.indexOf(u8, argv, "\x00mcp__pencil") != null);
-    try testing.expect(std.mem.indexOf(u8, argv, "\x00mcp__plugin_ops_ops") != null);
+    // `ops` loses its only skill and its only server, so it goes off whole --
+    // which is the off that also takes it out of the listing Claude is given.
+    // Neither of its two items is named on its own.
+    try testing.expect(std.mem.indexOf(u8, argv, "\"ops@m\": false") != null);
+    try testing.expect(std.mem.indexOf(u8, argv, "Skill(ops:terminal)") == null);
+    try testing.expect(std.mem.indexOf(u8, argv, "mcp__plugin_ops_ops") == null);
+    // A synced plugin has no such switch -- `enabledPlugins` does not reach
+    // it -- so it stays item by item.
+    try testing.expect(std.mem.indexOf(u8, argv, "Skill(design:ux-copy)") != null);
     // Polter's own server is not the role's to take away.
     try testing.expect(std.mem.indexOf(u8, argv, "mcp__polter") == null);
     // Measured: two --settings do not merge, the second wins. So there is
