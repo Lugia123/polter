@@ -29,6 +29,7 @@ const terminalpkg = @import("../terminal/main.zig");
 const snapshot = terminalpkg.snapshot;
 const Terminal = terminalpkg.Terminal;
 const journal = @import("scrollback_journal.zig");
+const internal_os = @import("../os/main.zig");
 
 const log = std.log.scoped(.scrollback);
 
@@ -253,6 +254,11 @@ fn transplantPrimary(from: *Terminal, to: *Terminal) void {
 
     restoreFreshCursor(to, dst, fresh);
 
+    // The line that says where the old session ends, written while the
+    // restored content is still in the active area so that the `scrollClear`
+    // below carries the two into history together. See `markBoundary`.
+    const marked = markBoundary(to, dst);
+
     // **What was on screen goes into history, and the new shell starts on a
     // clean screen.** Restored content left in the active area belongs to
     // whatever happens there next, and on Windows that destroyed it: a
@@ -260,17 +266,104 @@ fn transplantPrimary(from: *Terminal, to: *Terminal) void {
     // carry prompt marks, and the pane's own terminal redraws prompts), and
     // ConPTY's opening `ESC [ 2 J`, finding no prompt, discards the screen
     // rather than scrolling it (#826). In history nothing after the restore
-    // can reach it -- no resize, no erase, no heuristic, no timing. The cost
-    // is visible: the last screenful is one scroll up rather than on screen.
+    // can reach it -- no resize, no erase, no heuristic, no timing.
     // If this fails the restored screen stays where it was, exposed to
     // exactly what this is here to prevent -- so the log says what that
     // means for the user, not just that a call failed.
+    const before = dst.pages.total_rows;
     dst.scrollClear() catch |err| log.warn(
         "restored screen could not be moved into history and stayed on screen, " ++
             "where the new shell's first clear may erase it for good err={}",
         .{err},
     );
     to.setCursorPos(1, 1);
+
+    // And then the viewport is moved back over it, because history the user
+    // has to go looking for is history the user does not know is there.
+    if (marked) showRestoredTail(to, dst.pages.total_rows -| before);
+}
+
+/// Write the line that separates the restored session from the new one, at
+/// the row after the last one the old session wrote on. Answers whether it
+/// wrote anything: a snapshot whose active area was blank has no boundary to
+/// mark, and nothing to say about it.
+///
+/// **It goes in before the `scrollClear`, not after.** After the clear the
+/// row would be the new shell's first row -- and on Windows ConPTY's opening
+/// `ESC [ 2 J` erases exactly that (#826, the same sequence the clear exists
+/// to survive), so the marker would be there on macOS and gone on Windows.
+/// Written before, it is part of the screenful that goes into history, and
+/// the platforms agree.
+///
+/// The row after the content is found from the content, not from the
+/// restored cursor: the cursor is the old shell's and may sit anywhere in
+/// what it drew, so writing at the cursor would paint over a restored line.
+fn markBoundary(to: *Terminal, dst: *terminalpkg.Screen) bool {
+    const last = lastNonEmptyActiveRow(dst) orelse return false;
+
+    if (last + 1 < to.rows) {
+        to.setCursorPos(last + 2, 1);
+    } else {
+        // The content fills the screen, so the marker needs a row made for
+        // it. `index` at the bottom scrolls one row into history, which is
+        // where the whole screenful is going anyway.
+        to.setCursorPos(to.rows, 1);
+        to.index() catch return false;
+        to.carriageReturn();
+    }
+
+    to.setAttribute(.faint) catch {};
+    defer to.setAttribute(.unset) catch {};
+
+    const text = std.mem.span(internal_os.i18n._(boundary_msgid.ptr));
+    to.printString("\u{2500}\u{2500} ") catch return true;
+    to.printString(text) catch return true;
+    to.printString(" \u{2500}\u{2500}") catch return true;
+    return true;
+}
+
+/// The marker's untranslated wording. Extracted by `xgettext` -- this file is
+/// in the list in `src/build/GhosttyI18n.zig`, which is the only reason a
+/// translation of it has anywhere to go.
+const boundary_msgid = internal_os.i18n.N_("Above this line: history restored from the previous session");
+
+/// The active-area row of the last row with anything on it, or null for a
+/// blank active area. Emptiness is judged by cells, the way
+/// `PageList.scrollClear` judges it when it counts what to push, so the two
+/// agree on which rows count.
+fn lastNonEmptyActiveRow(dst: *terminalpkg.Screen) ?terminalpkg.size.CellCountInt {
+    const pages = &dst.pages;
+    const br = pages.getBottomRight(.active) orelse return null;
+    var it = br.rowIterator(.left_up, pages.getTopLeft(.active));
+    var from_bottom: usize = 0;
+    while (it.next()) |p| : (from_bottom += 1) {
+        const row = p.rowAndCell().row;
+        for (p.node.page().getCells(row)) |cell| {
+            if (!cell.isEmpty()) return @intCast(pages.rows - 1 - from_bottom);
+        }
+    }
+    return null;
+}
+
+/// Leave the viewport `pushed` rows above the active area, so the reopened
+/// pane opens on the end of what it was showing rather than on a blank
+/// screen with the restored screenful one scroll up.
+///
+/// **Two rows of the new screen are always kept below it**, so the cursor --
+/// which is at the top of the active area -- is on screen and the pane does
+/// not look frozen. That bound also means a long restored screenful shows
+/// its *end*, next to the marker, rather than its beginning.
+///
+/// The viewport is not a promise: anything that scrolls to the bottom takes
+/// it back, which is ordinary and right. On Windows that happens
+/// immediately, because ConPTY's opening `ESC [ 2 J` scrolls to the bottom
+/// before it erases (`stream_handler.zig`), so this is visible on macOS and
+/// GTK and not there. The marker is in history either way.
+fn showRestoredTail(to: *Terminal, pushed: usize) void {
+    if (pushed == 0) return;
+    if (to.rows <= 2) return;
+    const up = @min(pushed, @as(usize, to.rows) - 2);
+    to.scrollViewport(.{ .delta = -@as(isize, @intCast(up)) });
 }
 
 /// Give the transplanted cursor back everything but its place in the pages.
@@ -891,4 +984,134 @@ test "a restored pane's cursor carries none of the old shell's state (#36)" {
     const first = t.screens.get(.primary).?.pages.getCell(.{ .active = .{ .x = 0, .y = 0 } }).?;
     try testing.expect(!first.cell.protected);
     try testing.expect(!first.cell.hyperlink);
+}
+
+test "a reopened pane says in history where the previous session ends" {
+    var buf: [128]u8 = undefined;
+    const path = try testPath(&buf);
+    defer testCleanup(path);
+    {
+        var source = try testSource(80, 24, 30);
+        defer source.deinit(testing.allocator);
+        try testSave(&source, path);
+    }
+
+    var t = try testFresh(80, 24);
+    defer t.deinit(testing.allocator);
+    var s = t.vtStream();
+    defer s.deinit();
+    try testing.expect(restore(testing.allocator, testing.io, path, &t, &s) == .restored);
+
+    // In history, under the last line the old session wrote, and not on the
+    // screen the new shell is about to use.
+    const history = try t.screens.get(.primary).?.dumpStringAlloc(
+        testing.allocator,
+        .{ .history = .{} },
+    );
+    defer testing.allocator.free(history);
+    const marker = std.mem.indexOf(u8, history, boundary_msgid) orelse
+        return error.NoBoundaryMarker;
+    const last_line = std.mem.indexOf(u8, history, "L000029") orelse
+        return error.FixtureMissing;
+    try testing.expect(last_line < marker);
+
+    const active = try t.screens.get(.primary).?.dumpStringAlloc(
+        testing.allocator,
+        .{ .active = .{} },
+    );
+    defer testing.allocator.free(active);
+    try testing.expect(std.mem.indexOf(u8, active, boundary_msgid) == null);
+}
+
+test "a reopened pane opens on what it was showing, not below it" {
+    // The defect this is for: everything restored was one scroll up, so the
+    // user saw an empty screen and a new prompt and nothing else.
+    var buf: [128]u8 = undefined;
+    const path = try testPath(&buf);
+    defer testCleanup(path);
+    {
+        var source = try testSource(80, 24, 30);
+        defer source.deinit(testing.allocator);
+        try testSave(&source, path);
+    }
+
+    var t = try testFresh(80, 24);
+    defer t.deinit(testing.allocator);
+    var s = t.vtStream();
+    defer s.deinit();
+    try testing.expect(restore(testing.allocator, testing.io, path, &t, &s) == .restored);
+
+    try testing.expect(t.screens.get(.primary).?.pages.viewport != .active);
+
+    // What is on screen: the end of the old session and the marker under it.
+    const viewport = try t.screens.get(.primary).?.dumpStringAlloc(
+        testing.allocator,
+        .{ .viewport = .{} },
+    );
+    defer testing.allocator.free(viewport);
+    try testing.expect(std.mem.indexOf(u8, viewport, "L000029") != null);
+    try testing.expect(std.mem.indexOf(u8, viewport, boundary_msgid) != null);
+
+    // And the new shell's first row is on screen too, so the pane does not
+    // look frozen above the cursor.
+    s.nextSlice("NEWSHELL");
+    const after = try t.screens.get(.primary).?.dumpStringAlloc(
+        testing.allocator,
+        .{ .viewport = .{} },
+    );
+    defer testing.allocator.free(after);
+    try testing.expect(std.mem.indexOf(u8, after, "NEWSHELL") != null);
+}
+
+test "a snapshot with a blank screen gets no marker and no scroll" {
+    var buf: [128]u8 = undefined;
+    const path = try testPath(&buf);
+    defer testCleanup(path);
+    {
+        // Lines enough to fill history, then a clear, so the active area is
+        // blank and there is no boundary to announce.
+        var source = try testSource(80, 24, 30);
+        defer source.deinit(testing.allocator);
+        var s0 = source.vtStream();
+        defer s0.deinit();
+        s0.nextSlice("\x1b[2J\x1b[H");
+        try testSave(&source, path);
+    }
+
+    var t = try testFresh(80, 24);
+    defer t.deinit(testing.allocator);
+    var s = t.vtStream();
+    defer s.deinit();
+    try testing.expect(restore(testing.allocator, testing.io, path, &t, &s) == .restored);
+
+    const dump = try testDump(&t);
+    defer testing.allocator.free(dump);
+    try testing.expect(std.mem.indexOf(u8, dump, boundary_msgid) == null);
+    try testing.expect(t.screens.get(.primary).?.pages.viewport == .active);
+}
+
+test "the marker is the new shell's neither pen nor row" {
+    // It is written with an attribute set and the cursor moved, and both
+    // belong to the restore, not to the shell that starts next.
+    var buf: [128]u8 = undefined;
+    const path = try testPath(&buf);
+    defer testCleanup(path);
+    {
+        var source = try testSource(80, 24, 30);
+        defer source.deinit(testing.allocator);
+        try testSave(&source, path);
+    }
+
+    var t = try testFresh(80, 24);
+    defer t.deinit(testing.allocator);
+    var s = t.vtStream();
+    defer s.deinit();
+    try testing.expect(restore(testing.allocator, testing.io, path, &t, &s) == .restored);
+
+    try testing.expectEqual(@as(u16, 0), t.screens.get(.primary).?.cursor.x);
+    try testing.expectEqual(@as(u16, 0), t.screens.get(.primary).?.cursor.y);
+
+    s.nextSlice("N");
+    const first = t.screens.get(.primary).?.pages.getCell(.{ .active = .{ .x = 0, .y = 0 } }).?;
+    try testing.expectEqual(@as(u16, 0), first.cell.style_id);
 }

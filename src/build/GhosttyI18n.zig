@@ -174,6 +174,14 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
     xgettext.addArg(chat_path);
     xgettext.addFileInput(b.path(chat_path));
 
+    // The line a reopened pane gets above the new shell, saying that what is
+    // above it is the previous session. It is written by core, not by an
+    // apprt, so neither the walk nor either path above reaches it -- and a
+    // string with nowhere to go is a string nobody translates.
+    const scrollback_path = "src/termio/scrollback.zig";
+    xgettext.addArg(scrollback_path);
+    xgettext.addFileInput(b.path(scrollback_path));
+
     // Add support for localizing our `nautilus` integration
     const xgettext_py = b.addSystemCommand(&.{
         "xgettext",
