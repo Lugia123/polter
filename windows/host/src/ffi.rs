@@ -1290,9 +1290,83 @@ impl Default for Text {
     }
 }
 
+/// **The one load sequence.** `ghostty_config_new` and the four calls that
+/// fill a config, held where nothing outside this file can call them one by
+/// one.
+///
+/// #21 was two copies of this sequence drifting apart. Startup read the files
+/// and the command line; the hard reload in `reload.rs` read only the files,
+/// so ctrl+shift+, quietly dropped every `--key=value` the host was started
+/// with. And neither copy loaded the `config-file` entries, so
+/// `config-file = ...` in the file and `--config-file=...` on the command line
+/// were both read and then never opened -- with no diagnostic, because the
+/// "cannot open" diagnostic lives in the function nobody called.
+///
+/// The fields are private, so a third copy does not compile:
+/// `(api().config_loader.new)()` outside this file is E0616. What the type
+/// cannot stop is resolving `ghostty_config_new` a second time with
+/// `GetProcAddress`; `windows/tools/reload-config-rereads.py` refuses that.
+///
+/// The order is the one `Config.load` uses and macOS uses
+/// (`Ghostty.Config.swift`): files, then the command line so it wins over the
+/// files, then the files those two named, then `finalize`.
+pub struct ConfigLoader {
+    new: unsafe extern "C" fn() -> Config,
+    load_default_files: unsafe extern "C" fn(Config),
+    /// `ghostty_config_load_cli_args`: the core reads the command line itself
+    /// on Windows (`GetCommandLineW()`); the host's own flags are under
+    /// `--polter-host-`, which it skips.
+    load_cli_args: unsafe extern "C" fn(Config),
+    /// `ghostty_config_load_recursive_files`: opens every `config-file` the
+    /// two steps above collected, and is where a missing required one becomes
+    /// a diagnostic.
+    load_recursive_files: unsafe extern "C" fn(Config),
+    finalize: unsafe extern "C" fn(Config),
+}
+
+impl ConfigLoader {
+    pub fn resolve(
+        new: unsafe extern "C" fn() -> Config,
+        load_default_files: unsafe extern "C" fn(Config),
+        load_cli_args: unsafe extern "C" fn(Config),
+        load_recursive_files: unsafe extern "C" fn(Config),
+        finalize: unsafe extern "C" fn(Config),
+    ) -> ConfigLoader {
+        ConfigLoader {
+            new,
+            load_default_files,
+            load_cli_args,
+            load_recursive_files,
+            finalize,
+        }
+    }
+
+    /// A fresh config, read from everywhere a config comes from. Null only if
+    /// the core could not allocate one. A config that failed to parse is not
+    /// null: the trouble is in its diagnostics.
+    ///
+    /// # Safety
+    /// The pointers must be the symbols `load_api` resolved from
+    /// ghostty-internal.dll, after `ghostty_init`.
+    pub unsafe fn load_config(&self) -> Config {
+        unsafe {
+            let c = (self.new)();
+            if c.is_null() {
+                return c;
+            }
+            (self.load_default_files)(c);
+            (self.load_cli_args)(c);
+            (self.load_recursive_files)(c);
+            (self.finalize)(c);
+            c
+        }
+    }
+}
+
 pub struct Api {
     pub init: unsafe extern "C" fn(usize, *const *const c_char) -> i32,
-    pub config_new: unsafe extern "C" fn() -> Config,
+    /// The only way to make a config. See `ConfigLoader`.
+    pub config_loader: ConfigLoader,
     /// Version and build mode, for the about box. **The core owns this string**;
     /// a version the host composes itself is a second one to keep in step.
     pub info: unsafe extern "C" fn() -> Info,
@@ -1312,11 +1386,6 @@ pub struct Api {
     /// `window-position-x` (`?i16`) reports false exactly when the user left
     /// it alone. That is the signal the geometry restore needs.
     pub config_get: unsafe extern "C" fn(Config, *mut c_void, *const u8, usize) -> bool,
-    pub config_load_default_files: unsafe extern "C" fn(Config),
-    /// `ghostty_config_load_cli_args`: config from the command line, which the
-    /// core reads itself on Windows (`GetCommandLineW()`). See #21 in `main`.
-    pub config_load_cli_args: unsafe extern "C" fn(Config),
-    pub config_finalize: unsafe extern "C" fn(Config),
     /// Hand the core a config and let it propagate to every surface.
     ///
     /// **The seven things `App.updateConfig` sets have no other way in**, and
@@ -1340,9 +1409,9 @@ pub struct Api {
     /// surface target is: the core's conditional state moved and the values
     /// want recomputing, with no file read anywhere.
     pub surface_update_config: unsafe extern "C" fn(Surface, Config),
-    /// Release a config handle. The twin of `config_new`; without it every
-    /// reload leaks a whole `Config`, and a reload is a key people hold down
-    /// while they edit a theme.
+    /// Release a config handle. The twin of `ConfigLoader::load_config`;
+    /// without it every reload leaks a whole `Config`, and a reload is a key
+    /// people hold down while they edit a theme.
     pub config_free: unsafe extern "C" fn(Config),
     pub app_new: unsafe extern "C" fn(*const RuntimeConfig, Config) -> App,
     pub app_tick: unsafe extern "C" fn(App),

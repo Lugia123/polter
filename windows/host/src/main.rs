@@ -5065,7 +5065,13 @@ fn load_api() -> Option<Api> {
 
         Some(Api {
             init: sym!(internal, "ghostty_init"),
-            config_new: sym!(internal, "ghostty_config_new"),
+            config_loader: ConfigLoader::resolve(
+                sym!(internal, "ghostty_config_new"),
+                sym!(internal, "ghostty_config_load_default_files"),
+                sym!(internal, "ghostty_config_load_cli_args"),
+                sym!(internal, "ghostty_config_load_recursive_files"),
+                sym!(internal, "ghostty_config_finalize"),
+            ),
             info: sym!(internal, "ghostty_info"),
             config_open_path: sym!(internal, "ghostty_config_open_path"),
             string_free: sym!(internal, "ghostty_string_free"),
@@ -5074,9 +5080,6 @@ fn load_api() -> Option<Api> {
             config_keybind_count: sym!(internal, "ghostty_config_keybind_count"),
             config_keybind: sym!(internal, "ghostty_config_keybind"),
             config_get: sym!(internal, "ghostty_config_get"),
-            config_load_default_files: sym!(internal, "ghostty_config_load_default_files"),
-            config_load_cli_args: sym!(internal, "ghostty_config_load_cli_args"),
-            config_finalize: sym!(internal, "ghostty_config_finalize"),
             app_update_config: sym!(internal, "ghostty_app_update_config"),
             surface_update_config: sym!(internal, "ghostty_surface_update_config"),
             config_free: sym!(internal, "ghostty_config_free"),
@@ -6409,21 +6412,15 @@ fn main() {
         die();
     }
 
-    let config = unsafe {
-        let c = (api_box.config_new)();
-        (api_box.config_load_default_files)(c);
-        // **The command line, which this host never loaded until #21.** Every
-        // `--key=value` a person gave it was dropped without a word -- and
-        // since `poltergeist-register-mcp` defaults to on, "ignored" meant "on".
-        // After the files and before `finalize`, the order macOS uses
-        // (`Ghostty.Config.swift`), so the command line wins over the files.
-        // The host's own flags are under `--polter-host-`, which the core
-        // skips; anything else it does not know becomes a diagnostic, and
-        // diagnostics open the error window below (`settings_ui::request_errors`).
-        (api_box.config_load_cli_args)(c);
-        (api_box.config_finalize)(c);
-        c
-    };
+    // **Files, command line, the files those name, `finalize` -- in one call
+    // that `reload.rs` makes too.** The command line is the part this host
+    // never loaded until #21: every `--key=value` was dropped without a word,
+    // and since `poltergeist-register-mcp` defaults to on, "ignored" meant
+    // "on". The host's own flags are under `--polter-host-`, which the core
+    // skips; anything else it does not know becomes a diagnostic, and
+    // diagnostics open the error window below (`settings_ui::request_errors`).
+    // Why there is no way to write this sequence out here: `ConfigLoader`.
+    let config = unsafe { api_box.config_loader.load_config() };
     CONFIG.store(config, Ordering::Release);
     logf!("config ready ({:?})", config);
 

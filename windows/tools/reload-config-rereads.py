@@ -33,12 +33,14 @@ defaults for the whole life of a Windows process. Four of those defaults are
      call-graph walk would report the correct shape as a failure and this
      gate would be edited away within a day. So: the arm must hand off to a
      host module, and that module's file must contain the work.
-  3. The same file re-reads from disk: `config_new`,
-     `config_load_default_files` and `config_finalize`, the trio `main`
-     already uses at startup. Handing the core back **the config it already
-     has** is a soft update; it is a legitimate thing to do (macOS's
-     `reloadConfig(soft:)` does exactly that) and it is *not* what a person
-     pressing «重载配置» after editing the file means.
+  3. The same file re-reads from disk, through `load_config` -- the one
+     load sequence, the call `main` makes at startup. Handing the core back
+     **the config it already has** is a soft update; it is a legitimate thing
+     to do (macOS's `reloadConfig(soft:)` does exactly that) and it is *not*
+     what a person pressing «重载配置» after editing the file means.
+     This used to ask for `config_new`, `config_load_default_files` and
+     `config_finalize` by name, which is how it stayed green on a reload
+     that had its own copy of the sequence without the command line (#21).
   4. `ACTION_RELOAD_CONFIG` and `ACTION_CONFIG_CHANGE` are **not the same
      arm**. This is not tidiness. `App.updateConfig` ends by performing
      `.config_change` back at the apprt at the end of itself, so an arm that
@@ -46,6 +48,13 @@ defaults for the whole life of a Windows process. Four of those defaults are
      config_change -> reload. The two tags say opposite things -- one asks
      the host to go and read, the other tells the host what was read -- and
      one arm cannot mean both.
+  5. Each of the five symbols that make a config -- `ghostty_config_new`,
+     `_load_default_files`, `_load_cli_args`, `_load_recursive_files`,
+     `_finalize` -- is resolved exactly once in the host, in `main.rs`. The
+     fields of `ffi::ConfigLoader` are private, so a second copy of the
+     sequence through `api()` does not compile; what the type cannot see is
+     a second `GetProcAddress` of the same name, and that is this check.
+     Missing counts too: a symbol nobody resolves is a step nobody runs.
 
 **NOT CHECKED, and each of these can be true while this gate is green:**
 
@@ -60,7 +69,7 @@ Those need the test machine. Said out loud rather than letting a green here
 be read as a working menu item.
 
 Run:  python3 windows/tools/reload-config-rereads.py
-Exit: 0 when all four hold.
+Exit: 0 when all five hold.
 """
 
 import os
@@ -163,15 +172,36 @@ def analyse(files: dict):
                 "`app_update_config`. It may log, it may refresh the error "
                 "list; the core is never told, so nothing the config says takes "
                 "effect and the arm's `true` is a claim it did not meet.")
-        missing = [c for c in ("config_new", "config_load_default_files", "config_finalize")
-                   if c not in text]
-        if missing:
+        if not re.search(r"\.load_config\s*\(", text):
             bad.append(
                 f"main.rs:{line}: the ACTION_RELOAD_CONFIG arm never reaches "
-                + ", ".join("`%s`" % c for c in missing)
-                + " -- it does not re-read the file, so a config the user just "
-                "edited is not what the core would be handed.")
+                "`load_config` -- it does not re-read the file, so a config the "
+                "user just edited is not what the core would be handed.")
+
+    # 5 reads the raw text: the names are string literals, which is exactly
+    # what `strip_noise` removes.
+    for sym in LOAD_SYMBOLS:
+        quoted = '"%s"' % sym
+        where = {name: src.count(quoted) for name, src in files.items() if quoted in src}
+        total = sum(where.values())
+        if total != 1 or "main.rs" not in where:
+            seen = ", ".join("%s x%d" % kv for kv in sorted(where.items())) or "nowhere"
+            bad.append(
+                f"`{sym}` is resolved {total} time(s) ({seen}); it must be "
+                "resolved once, in main.rs, into `ConfigLoader::resolve`. A "
+                "second resolution is a second load sequence the type cannot "
+                "see; none is a step of the sequence that never runs.")
     return bad
+
+
+LOAD_SYMBOLS = (
+    "ghostty_config_new",
+    "ghostty_config_load_default_files",
+    "ghostty_config_load_cli_args",
+    "ghostty_config_load_recursive_files",
+    "ghostty_config_finalize",
+)
+_RESOLVE = "".join('sym!(internal, "%s"), ' % s for s in LOAD_SYMBOLS)
 
 
 # -- self-test ---------------------------------------------------------------
@@ -190,7 +220,7 @@ GOOD = {
             }
         }
         fn resolve() { app_update_config: sym!(internal, "ghostty_app_update_config"), }
-    ''',
+    ''' + "fn load_api() { ConfigLoader::resolve(" + _RESOLVE + ") }\n",
     "ffi.rs": "pub struct Api {\n    pub app_update_config: unsafe extern \"C\" fn(App, Config),\n}\n",
     "reload.rs": '''
         pub fn request() { let _ = PostMessageW(hwnd(), WM_POLTER_RELOAD, w, l); }
@@ -199,13 +229,26 @@ GOOD = {
             LRESULT(0)
         }
         fn perform() {
-            let c = (api().config_new)();
-            (api().config_load_default_files)(c);
-            (api().config_finalize)(c);
+            let c = unsafe { api().config_loader.load_config() };
             (api().app_update_config)(app, c);
         }
     ''',
 }
+
+# #21 as it stood: the reload had its own copy of the sequence, without the
+# command line, and nothing resolved `load_recursive_files` at all.
+DRIFTED = dict(GOOD)
+DRIFTED["main.rs"] = GOOD["main.rs"].replace(
+    '"ghostty_config_load_recursive_files"', '"ghostty_config_get"')
+DRIFTED["reload.rs"] = GOOD["reload.rs"].replace(
+    "let c = unsafe { api().config_loader.load_config() };",
+    "let c = (api().config_new)(); (api().config_load_default_files)(c); "
+    "(api().config_finalize)(c);")
+
+# A second resolution in another file: compiles, and is a second sequence.
+RESOLVED_TWICE = dict(GOOD)
+RESOLVED_TWICE["reload.rs"] = GOOD["reload.rs"] + \
+    'fn again() { GetProcAddress(lib, s!("ghostty_config_new")); }\n'
 
 TODAY = {
     "main.rs": '''
@@ -230,6 +273,14 @@ if analyse(GOOD):
     for line in analyse(GOOD):
         print("  " + line)
     sys.exit(1)
+
+for name, case, want in (
+        ("DRIFTED", DRIFTED, "does not re-read"),
+        ("DRIFTED", DRIFTED, "`ghostty_config_load_recursive_files` is resolved 0 time(s)"),
+        ("RESOLVED_TWICE", RESOLVED_TWICE, "`ghostty_config_new` is resolved 2 time(s)")):
+    if not any(want in line for line in analyse(case)):
+        print(f"FAIL: the probe cannot see {want!r} in {name}.")
+        sys.exit(1)
 
 _today = analyse(TODAY)
 for want in ("share one arm", "never reaches `app_update_config`", "does not re-read"):

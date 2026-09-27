@@ -220,17 +220,14 @@ fn perform(soft: bool, surface: ffi::Surface) {
 
     // ---- the hard reload: read the file again ----
     //
-    // The same three calls `main` makes at startup, in the same order. A
+    // **The call `main` makes at startup, not a copy of it.** This used to be
+    // its own three lines, and they had drifted: no command line, so ctrl+shift+,
+    // quietly put every `--key=value` back to the file's value (#21). A
     // config that fails to parse is still a config -- the core reports the
     // trouble as diagnostics and carries on with what it could read -- so
     // there is no "did it load" bool to check here, and the count is logged
     // instead of being turned into a refusal.
-    let fresh = unsafe {
-        let c = (api.config_new)();
-        (api.config_load_default_files)(c);
-        (api.config_finalize)(c);
-        c
-    };
+    let fresh = unsafe { api.config_loader.load_config() };
     if fresh.is_null() {
         // process-wide: no config was produced, so nothing changed anywhere
         plogf!("[reload] ghostty_config_new returned null; keeping the old config");
