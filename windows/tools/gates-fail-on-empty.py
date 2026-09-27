@@ -53,10 +53,22 @@ below, and the gate used to scan only that (measured: a leak one level up,
 is a partial one, so it is checked by count: from `sub/` of a repository with
 two tracked files, it has to say it scanned two.
 
-**NOT CHECKED: whether a gate that exits non-zero does so for the right
-reason.** See `CAVEATS` below -- one gate passes here on its ratchet rather
-than on a subject-set guard, and this gate says so out loud every run rather
-than counting it as proven.
+**A crash is not a refusal** (issue #40). An uncaught exception exits 1, the
+same code as `sys.exit(1)`, so for most of this file's life a gate whose guard
+had been replaced by a crash was counted as refusing -- measured: with the
+`if not files:` guard of `tools/git-output-is-trimmed-first.py` turned into
+`return [][0]`, this gate exited 0 and reported "85 on a subject-set guard".
+So each gate runs under a small wrapper that turns an uncaught exception into
+exit code `CRASH_RC`, told apart by behaviour rather than by looking for
+"Traceback" in the output. The gates that crash on an empty tree today are
+named in `KNOWN_CRASHES`; any other gate that crashes fails this one, and so
+does a named gate that has stopped crashing, so the list can only shrink.
+
+**NOT CHECKED: whether a refusal is for the right reason.** A gate that exits
+non-zero without crashing is counted as refusing, whether its message is "I
+found nothing to look at" or "a file I need is missing" (issue #44 sorts the
+root set by that). See also `CAVEATS` below -- one gate refuses on its
+ratchet rather than on a subject-set guard.
 """
 
 import glob
@@ -104,6 +116,64 @@ LEAK_GATE = "no-local-identifiers.py"
 # refuse there.
 GATES_ARE_THE_SUBJECT = {"every-script-here-is-a-gate.py"}
 
+# Exit code the wrapper below uses for an uncaught exception. No gate here
+# exits with it on purpose (checked when this was written).
+CRASH_RC = 97
+
+# Runs a gate as `python <gate>` would -- `__main__`, argv, its own directory
+# first on sys.path -- except that an exception nobody caught ends in
+# CRASH_RC instead of 1. SystemExit passes through untouched, so a gate's own
+# `sys.exit(n)` is n here too.
+WRAPPER = (
+    "import os, runpy, sys, traceback\n"
+    "script = sys.argv[1]\n"
+    "sys.argv = sys.argv[1:]\n"
+    "sys.path.insert(0, os.path.dirname(os.path.abspath(script)))\n"
+    "try:\n"
+    "    runpy.run_path(script, run_name='__main__')\n"
+    "except SystemExit:\n"
+    "    raise\n"
+    "except BaseException:\n"
+    "    traceback.print_exc()\n"
+    "    sys.stderr.flush()\n"
+    f"    os._exit({CRASH_RC})\n"
+)
+
+# Gates that refuse the empty tree by crashing rather than by saying why --
+# every one of them by reading a fixed file that is not there
+# (FileNotFoundError). Measured 2026-09-27 on `4ccdb004f`: 23 of 86. Named
+# `tools/<x>` for the repository-root set, bare for this directory.
+#
+# **This list may only shrink.** A gate on it that stops crashing fails this
+# gate until its line is removed, so the list cannot go on excusing a gate
+# that has been fixed -- or one whose crash has turned into something else.
+# Fixing one: ask for the file before reading it, and FAIL naming it.
+KNOWN_CRASHES = {
+    "a-count-names-the-tab-it-counted.py",
+    "a-gated-line-says-what-its-silence-means.py",
+    "a-refusal-says-which-one.py",
+    "action-arms-act.py",
+    "action-payloads-are-read.py",
+    "app-actions-need-no-window.py",
+    "explicit-titles-are-distinguishable.py",
+    "ledger-entries-say-their-state.py",
+    "menu-actions-handled.py",
+    "notification-carries-the-terminal.py",
+    "one-release-per-press.py",
+    "state-names-a-window.py",
+    "the-active-tab-is-confirmed-before-it-is-set.py",
+    "the-blocked-line-names-the-blocked-thread.py",
+    "the-components-are-reported-on-both-arms.py",
+    "the-frames-permit-comes-back.py",
+    "the-heartbeat-outlives-its-own-stall.py",
+    "the-key-line-decides-on-what-it-prints.py",
+    "tools/menu-shortcuts-come-from-the-config.py",
+    "translated-strings-reach-the-user.py",
+    "uia-patterns-declared.py",
+    "watchdog-alarm-path.py",
+    "window-tagged-logs.py",
+}
+
 
 def git(cwd, *args):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
@@ -145,7 +215,7 @@ def build_empty_tree(gates, extra=(), root_gates=()):
 
 def run(cwd, name):
     try:
-        p = subprocess.run([sys.executable, name], cwd=cwd,
+        p = subprocess.run([sys.executable, "-c", WRAPPER, name], cwd=cwd,
                            capture_output=True, text=True,
                            timeout=PER_GATE_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -173,17 +243,23 @@ def self_test():
             + "".join(f"import {m}\n" for m in mods)
             + "print('FAIL: nothing to scan')\nsys.exit(1)\n")
     bad = "print('scanned 0 files')\nprint('OK: all clear')\n"
+    # A gate whose guard is a crash: exits 1 like the guarded one, and has to
+    # be told apart from it by the wrapper, not by its exit code.
+    crash = "open('this-file-is-not-in-the-empty-tree.txt').read()\n"
     top, tools = build_empty_tree([], extra=(("zz_probe_good.py", good),
-                                             ("zz_probe_bad.py", bad)))
+                                             ("zz_probe_bad.py", bad),
+                                             ("zz_probe_crash.py", crash)))
     try:
         rc_good, said_good = run(tools, "zz_probe_good.py")
         rc_bad, _ = run(tools, "zz_probe_bad.py")
+        rc_crash, _ = run(tools, "zz_probe_crash.py")
     finally:
         shutil.rmtree(top, ignore_errors=True)
-    if rc_good == 0 or rc_bad != 0:
+    if rc_good in (0, CRASH_RC) or rc_bad != 0 or rc_crash != CRASH_RC:
         print(f"FAIL: self-test broken (guarded probe exited {rc_good}, "
-              f"unguarded probe exited {rc_bad}); this gate cannot tell the "
-              f"two apart, so nothing below it means anything.")
+              f"unguarded probe exited {rc_bad}, crashing probe exited "
+              f"{rc_crash}, expected 1 / 0 / {CRASH_RC}); this gate cannot "
+              f"tell the three apart, so nothing below it means anything.")
         return False
     if not said_good.startswith("FAIL: nothing to scan"):
         print(f"FAIL: self-test broken: the guarded probe did not reach its "
@@ -191,7 +267,8 @@ def self_test():
               f"empty tree is missing lib/, and every gate that imports from "
               f"it is refusing by crashing rather than by its guard.")
         return False
-    print("probe self-test: OK (a guarded gate passes, an unguarded one is caught)")
+    print("probe self-test: OK (a guarded gate passes, an unguarded one is "
+          "caught, a crashing one is told apart from a refusal)")
     return True
 
 
@@ -276,6 +353,18 @@ def main() -> int:
         if rc == 0:
             print(f"  SLEPT  {name}: exit 0 -- {last}")
 
+    crashed = {name: last for name, rc, last in results if rc == CRASH_RC}
+    ran = {name for name, _, _ in results}
+    unexpected = sorted(set(crashed) - KNOWN_CRASHES)
+    recovered = sorted(n for n in KNOWN_CRASHES if n in ran and n not in crashed)
+    vanished = sorted(n for n in KNOWN_CRASHES if n not in ran)
+    for name in unexpected:
+        print(f"  CRASH  {name}: {crashed[name]}")
+    for name in recovered:
+        print(f"  FIXED  {name}: no longer crashes -- take it out of KNOWN_CRASHES")
+    for name in vanished:
+        print(f"  GONE   {name}: named in KNOWN_CRASHES, but no such gate ran")
+
     for name, why in sorted(CAVEATS.items()):
         if any(n == name for n, _, _ in results):
             print(f"  NOTE   {name}: passes, but not on a subject-set guard.\n"
@@ -299,12 +388,25 @@ def main() -> int:
               f"What has to be non-empty is the *subject set*, not the hit "
               f"count: zero hits is a real pass, zero files is not an answer.")
         return 1
+    if unexpected:
+        print(f"{len(unexpected)} gate(s) refused the empty tree by crashing, and "
+              f"are not in KNOWN_CRASHES.\n**A crash exits 1 like a refusal, but "
+              f"it says nothing about the gate having noticed**: it is whatever "
+              f"the tree happened to be missing. Ask for the subject first and "
+              f"FAIL naming it.")
+        return 1
+    if recovered or vanished:
+        print("KNOWN_CRASHES names gate(s) that no longer crash here. Remove "
+              "them: a list that excuses a fixed gate would go on excusing it "
+              "after it breaks again.")
+        return 1
     if partial:
         return 1
 
-    print(f"every gate refuses to pass on an empty tree "
-          f"({len(results) - len(CAVEATS)} on a subject-set guard, "
-          f"{len(CAVEATS)} noted above).")
+    refused = len(results) - len(crashed) - len(CAVEATS)
+    print(f"every gate refuses to pass on an empty tree: {refused} without "
+          f"crashing, {len(crashed)} by crashing (all named in KNOWN_CRASHES), "
+          f"{len(CAVEATS)} noted above.")
     return 0
 
 
