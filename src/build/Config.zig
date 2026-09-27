@@ -72,6 +72,10 @@ emit_macos_app: bool = false,
 emit_terminfo: bool = false,
 emit_termcap: bool = false,
 emit_test_exe: bool = false,
+
+/// -Dintegrity-sample: run the terminal's page integrity checks on one call
+/// in N instead of every call (issue #53). 1, the default, is every call.
+integrity_sample: u32 = 1,
 emit_themes: bool = false,
 emit_xcframework: bool = false,
 emit_webdata: bool = false,
@@ -691,6 +695,24 @@ pub fn init(
         "Build and install test executables with 'build'",
     ) orelse false;
 
+    // Measured on #53: with every call checked the Debug test suite ran
+    // 487 s, 1 in 4 ran 139 s. 1 in 4 still caught every bookkeeping mutant
+    // that full checking caught, at every sampling phase; 1 in 16 did not.
+    // A value above 4 is accepted but has not been shown to catch them.
+    config.integrity_sample = b.option(
+        u32,
+        "integrity-sample",
+        "Run page integrity checks on 1 call in N (Debug only; 1 = every call, the default; 4 is the measured value)",
+    ) orelse 1;
+    if (config.integrity_sample == 0) {
+        std.log.err(
+            "-Dintegrity-sample=0 would turn the page integrity checks off; " ++
+                "use 1 for every call, or N > 1 to sample",
+            .{},
+        );
+        return error.InvalidIntegritySample;
+    }
+
     config.emit_unicode_table_gen = b.option(
         bool,
         "emit-unicode-table-gen",
@@ -986,6 +1008,7 @@ pub fn terminalOptions(
             .ReleaseFast,
             => false,
         },
+        .integrity_sample = self.integrity_sample,
     };
 }
 

@@ -32,6 +32,13 @@ pub const Options = struct {
     /// generally be disabled in production builds.
     slow_runtime_safety: bool,
 
+    /// How often the page and page-list integrity checks actually run when
+    /// `slow_runtime_safety` is on: 1 runs every one, N runs one call in N
+    /// (issue #53). **No default**, so a new constructor cannot leave it
+    /// unsaid. It never turns `slow_runtime_safety` off -- code asserts that
+    /// at comptime (`PageList.zig`), and the build refuses 0.
+    integrity_sample: u32,
+
     /// Force C ABI mode on or off. If not set, then it will be set based on
     /// Options.
     c_abi: bool,
@@ -291,6 +298,7 @@ pub const Options = struct {
         opts.addOption(bool, "oniguruma", self.oniguruma);
         opts.addOption(bool, "simd", self.simd);
         opts.addOption(bool, "slow_runtime_safety", self.slow_runtime_safety);
+        opts.addOption(u32, "integrity_sample", self.integrity_sample);
 
         // These are synthesized based on other options.
         opts.addOption(bool, "tmux_control_mode", self.oniguruma);

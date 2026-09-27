@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""The one full run before a push: every test with full integrity checks, and every gate.
+
+**Why this exists (issue #53).** `-Dintegrity-sample=N` makes the Debug test
+suite several times faster by running the page integrity checks on one call
+in N. That is for the runs between commits. The run before a push has to be
+the full one, and "remember not to pass the flag" is not a guard. So:
+
+  * **Sampling is refused here.** Any argument, or any environment value,
+    naming `integrity-sample` stops this script before it builds anything.
+  * **So is a test filter.** A filtered build does not compile the tests it
+    did not select, so its green does not even show the tree compiles
+    (`AGENTS.md`): the run before a push is the one that must not filter.
+  * **Full checking is read back, not assumed.** The test binary says which
+    mode it ran in (`integrity: full` or `integrity: sampled 1/N`). A run
+    whose output does not contain `integrity: full`, or does contain
+    `integrity: sampled`, fails here even if every test passed.
+  * **Both gate sets run**, `tools/*.py` and `windows/tools/*.py`, every
+    script, and the leak gate's `scanned N tracked files` is reported: a
+    count that dropped is how a gate that stopped looking shows up.
+  * The first line of the log names the tree: `git rev-parse HEAD` and
+    `git status --porcelain`. A dirty tree is **said**, not refused -- the
+    run still answers something, but the answer is about that tree.
+
+The tests run under `tools/zig-test-watchdog`, so a hung runner becomes a
+failure with a stack instead of a build that never returns.
+
+Run:  tools/pre-push-full-test [extra zig build args]
+      (from the repository root; extra args go to `zig build test`)
+Exit: 0 only when the tests passed with full checks and every gate passed;
+      2 when refused before running anything.
+"""
+
+import glob
+import os
+import re
+import subprocess
+import sys
+import time
+
+ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+OUT = os.path.join(ROOT, "zig-test-watchdog")  # already ignored by git
+
+
+def git(*args):
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+
+
+def main() -> int:
+    extra = sys.argv[1:]
+    refused = [a for a in extra if "integrity-sample" in a]
+    refused += [f"{k}={v}" for k, v in os.environ.items() if "integrity-sample" in v]
+    if refused:
+        print(f"REFUSED: {' '.join(refused)} -- the run before a push checks every "
+              f"integrity call. Sampling is for the runs between commits; drop the "
+              f"flag here.")
+        return 2
+    filtered = [a for a in extra if "test-filter" in a]
+    if filtered:
+        print(f"REFUSED: {' '.join(filtered)} -- a filtered build does not compile the "
+              f"tests it did not select, so the run before a push must not filter.")
+        return 2
+
+    os.makedirs(OUT, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    log_path = os.path.join(OUT, f"pre-push-{stamp}.log")
+
+    head = git("rev-parse", "HEAD")
+    status = git("status", "--porcelain")
+    if head.returncode != 0:
+        print("REFUSED: not a git checkout -- this run has to say which tree it tested.")
+        return 2
+    dirty = [l for l in status.stdout.splitlines() if l.strip()]
+    first = (f"# tree: HEAD {head.stdout.strip()}; git status --porcelain: "
+             f"{len(dirty)} line(s)")
+
+    with open(log_path, "w", encoding="utf-8") as log:
+        log.write(first + "\n")
+        for l in dirty:
+            log.write(f"#   {l}\n")
+        print(first)
+        if dirty:
+            print(f"WARNING: the tree is not clean ({len(dirty)} line(s) from "
+                  f"`git status --porcelain`, listed in the log). Running anyway; "
+                  f"the result describes this tree, not HEAD.")
+
+        cmd = [os.path.join(ROOT, "tools", "zig-test-watchdog"), "--out", OUT, "--",
+               "zig", "build", "test", "--summary", "all", *extra]
+        print(f"running: {' '.join(cmd[3:])}  (log: {os.path.relpath(log_path, ROOT)})")
+        log.flush()
+        p = subprocess.run(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+        test_rc = p.returncode
+
+    text = open(log_path, encoding="utf-8", errors="replace").read()
+    summary = re.search(r"^Build Summary:[^\n]*", text, re.M)
+    full = "integrity: full" in text
+    sampled = re.search(r"integrity: sampled[^\n]*", text)
+
+    problems = []
+    print(f"tests: exit {test_rc}; {summary.group(0) if summary else 'no Build Summary line'}")
+    if test_rc != 0:
+        problems.append(f"the test run exited {test_rc} (3 = hung and killed by the watchdog)")
+    if not summary:
+        problems.append("no Build Summary line: the build did not report what it ran")
+    if sampled:
+        problems.append(f"the tests ran with sampled integrity checks ({sampled.group(0)})")
+    elif not full:
+        problems.append("the output never said `integrity: full`, so it is not known "
+                        "that the integrity checks ran on every call")
+    else:
+        print("integrity: full (read from the test output)")
+
+    gates = sorted(glob.glob(os.path.join(ROOT, "tools", "*.py"))) + \
+        sorted(glob.glob(os.path.join(ROOT, "windows", "tools", "*.py")))
+    failed = []
+    scanned = None
+    with open(log_path, "a", encoding="utf-8") as log:
+        for g in gates:
+            r = subprocess.run([sys.executable, g], cwd=ROOT, capture_output=True, text=True)
+            rel = os.path.relpath(g, ROOT)
+            log.write(f"\n## gate {rel}: exit {r.returncode}\n{r.stdout}{r.stderr}")
+            if r.returncode != 0:
+                failed.append(rel)
+            if rel == os.path.join("tools", "no-local-identifiers.py"):
+                m = re.search(r"scanned (\d+) tracked files", r.stdout + r.stderr)
+                scanned = m.group(1) if m else None
+    n_root = sum(1 for g in gates if os.path.dirname(g) == os.path.join(ROOT, "tools"))
+    print(f"gates: {len(gates) - len(failed)}/{len(gates)} passed "
+          f"({n_root} in tools/ + {len(gates) - n_root} in windows/tools/, every .py)")
+    print(f"leak gate: scanned {scanned if scanned is not None else '?'} tracked files")
+    if not gates:
+        problems.append("no gate scripts found")
+    if failed:
+        problems.append(f"{len(failed)} gate(s) failed: {', '.join(failed)}")
+    if scanned is None:
+        problems.append("the leak gate did not report how many files it scanned")
+
+    if problems:
+        print()
+        for pr in problems:
+            print(f"FAIL: {pr}")
+        print(f"(full log: {os.path.relpath(log_path, ROOT)})")
+        return 1
+    print("OK: full tests with every integrity check, and every gate, passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

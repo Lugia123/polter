@@ -371,6 +371,7 @@ pub const Page = struct {
     /// disabled or the target is freestanding. This uses the libc allocator.
     pub inline fn assertIntegrity(self: *const Page) void {
         if (comptime build_options.slow_runtime_safety and builtin.os.tag != .freestanding) {
+            if (integrity_sampler.skip()) return;
             var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
             defer _ = debug_allocator.deinit();
             const alloc = debug_allocator.allocator();
@@ -4521,3 +4522,60 @@ test "Page layout avoids double rounding hyperlink map capacity" {
         layout.hyperlink_map_layout.capacity,
     );
 }
+
+// Sampling thins the integrity checks; it must never be done by switching
+// them off. `PageList.pinIsValid` asserts `slow_runtime_safety` at comptime
+// too, but only a build that compiles a test referencing it sees that assert:
+// with the switch off in Debug, a `-Dtest-filter=PageList` build passed
+// 396/396 (measured, #53). This block is at file level so it is analysed
+// whenever this file is -- inside `integrity_sampler` it would be skipped
+// exactly when the switch is off, since nothing references the sampler then.
+comptime {
+    if (builtin.mode == .Debug and build_options.integrity_sample != 1 and
+        !build_options.slow_runtime_safety)
+    {
+        @compileError("-Dintegrity-sample is set but slow_runtime_safety is off in a " ++
+            "Debug build: sampling must thin the integrity checks, not remove them");
+    }
+}
+
+/// Which calls to `Page.assertIntegrity` and `PageList.assertIntegrity`
+/// actually run the check: all of them, or one in `-Dintegrity-sample`
+/// (issue #53). The switch that says whether the checks exist at all,
+/// `slow_runtime_safety`, is not touched here; this only thins the calls.
+///
+/// **One counter for both kinds of check**, so the phase moves as calls are
+/// added anywhere -- which is why #53 required a value to catch every mutant
+/// at *every* phase, not just the one the suite happened to have.
+///
+/// The counter is atomic because tests run threads; a plain increment would
+/// be a data race, which Zig does not define.
+pub const integrity_sampler = struct {
+    const n: u32 = build_options.integrity_sample;
+
+    comptime {
+        if (n == 0) @compileError("integrity_sample must be at least 1");
+    }
+
+    var calls: std.atomic.Value(u64) = .init(0);
+    var announced: std.atomic.Value(bool) = .init(false);
+
+    /// True when this call should not run the check.
+    pub inline fn skip() bool {
+        // Said once per test process, so a log shows which mode it ran in:
+        // a sampled run and a full one are otherwise identical when green.
+        if (comptime builtin.is_test) {
+            if (!announced.swap(true, .monotonic)) announce();
+        }
+        if (comptime n == 1) return false;
+        return calls.fetchAdd(1, .monotonic) % n != 0;
+    }
+
+    fn announce() void {
+        if (comptime n == 1) {
+            std.debug.print("integrity: full\n", .{});
+        } else {
+            std.debug.print("integrity: sampled 1/{d}\n", .{n});
+        }
+    }
+};

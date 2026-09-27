@@ -805,6 +805,7 @@ fn initPages(
 /// release builds.
 pub inline fn assertIntegrity(self: *const PageList) void {
     if (comptime !build_options.slow_runtime_safety) return;
+    if (pagepkg.integrity_sampler.skip()) return;
 
     self.verifyIntegrity() catch |err| {
         log.err("PageList integrity check failed: {}", .{err});
