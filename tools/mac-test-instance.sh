@@ -37,8 +37,15 @@
 #    `mcpServers.polter` entry in `~/.claude.json` compared whole before and
 #    after. Not its sha (other sessions write that file all the time) and not
 #    its mtime.
-# 5. **Inherited `GHOSTTY_*` / `POLTER_*` dropped**: a shell inside the
-#    user's Polter carries the user's socket and token.
+# 5. **Inherited `GHOSTTY_*` / `POLTER_*` / `CLAUDE*` dropped**: a shell inside
+#    the user's Polter carries the user's socket and token. `CLAUDE*` (no
+#    underscore required: `CLAUDECODE=1` is one of them) is what a Claude Code
+#    session exports to the commands it runs -- `CLAUDE_CODE_SESSION_ID`,
+#    `CLAUDE_CODE_CHILD_SESSION`, its messaging socket and token. Started from
+#    inside a session, the instance handed them on to the claude in its own
+#    terminal, which then ran as a child of the session that started the
+#    instance and wrote no transcript of its own (test-mac, 2026-09-28: run 1
+#    was void because of it, #880).
 # 6. **The config is a file of its own**, `<state>/config/polter/isolated-test.polter`,
 #    given as `GHOSTTY_CONFIG_PATH` (and `XDG_CONFIG_HOME=<state>/config`).
 #    Without it, ⌘, (open_config) opened the *user's* config in TextEdit
@@ -120,7 +127,7 @@ front_pid() { lsappinfo info -only pid "$(lsappinfo front)" 2>/dev/null | sed 's
 was_front=$(front_pid)
 
 # --- 3, 5. Start it. --------------------------------------------------------
-for v in $(env | cut -d= -f1 | grep -E '^(GHOSTTY|POLTER)_' || true); do unset "$v"; done
+for v in $(env | cut -d= -f1 | grep -E '^(GHOSTTY_|POLTER_|CLAUDE)' || true); do unset "$v"; done
 XDG_STATE_HOME=$state XDG_CONFIG_HOME="$state/config" GHOSTTY_CONFIG_PATH="$config_file" nohup "$exe" \
     --poltergeist-register-mcp=false \
     --config-default-files=false \

@@ -741,17 +741,26 @@ pub const TerminalInfo = struct {
     window: ?u64 = null,
     tab: ?u64 = null,
 
-    /// What the agent CLI in it has said through its hooks. Absent for a
-    /// terminal whose hooks are `none` -- most of them -- where absence is
-    /// the answer. See `Bus.Agent`.
-    agent: ?AgentView = null,
+    /// What the agent CLI in it has said through its hooks. See `Bus.Agent`.
+    ///
+    /// ⚠️ **Always there, and no default** (task 880). It used to be left out
+    /// for a terminal whose hooks are `none`, while `terminal_turn` said
+    /// `hooks: "none"` about the same terminal -- two answers to one
+    /// question, and an absent key is also what an older host or a dropped
+    /// field looks like. `hooks: "none"` is the answer "known, and there are
+    /// none"; a construction site that forgets this field does not compile.
+    agent: AgentView,
 };
 
 /// A terminal's agent state, as `terminal_list` and `terminal_turn` show it.
 pub const AgentView = struct {
     agent: Bus.Agent,
-    /// How long it has been in `agent.state`.
-    since_ms: u64,
+    /// How long it has been in `agent.state`. Null when nothing has said
+    /// anything, so there is no state to have been in.
+    since_ms: ?u64,
+
+    /// A terminal whose agent has never said anything through hooks.
+    pub const none: AgentView = .{ .agent = .none, .since_ms = null };
 };
 
 /// What `terminal_turn` answers.
@@ -1634,10 +1643,8 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
         try s.write(t);
     }
 
-    if (info.agent) |a| {
-        try s.objectField("agent");
-        try writeAgent(s, a.agent, a.since_ms);
-    }
+    try s.objectField("agent");
+    try writeAgent(s, info.agent.agent, info.agent.since_ms);
 
     try s.endObject();
 }
@@ -1890,6 +1897,7 @@ test "a response carries ids as the same text the host exports" {
 
     try writeResponse(&w, .{ .me = .{
         .id = 0x2222,
+        .agent = .none,
         .role = .watched,
         .duty = .on,
         .held = false,
@@ -1923,8 +1931,8 @@ test "a response is one line" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 1, .role = .supervisor, .duty = .on, .held = false, .quiet_ms = 0, .watching = false, .rounds = 0 },
-        .{ .id = 2, .role = .watched, .duty = .off, .held = true, .quiet_ms = 90_000, .watching = true, .rounds = 2 },
+        .{ .id = 1, .agent = .none, .role = .supervisor, .duty = .on, .held = false, .quiet_ms = 0, .watching = false, .rounds = 0 },
+        .{ .id = 2, .agent = .none, .role = .watched, .duty = .off, .held = true, .quiet_ms = 90_000, .watching = true, .rounds = 2 },
     };
     try writeResponse(&w, .{ .terminals = &list });
 
@@ -1942,8 +1950,8 @@ test "a listing says which terminals are out of reach, and which are not" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .shielded = true },
-        .{ .id = 0x22, .role = .watched, .watching = true },
+        .{ .id = 0x11, .agent = .none, .shielded = true },
+        .{ .id = 0x22, .agent = .none, .role = .watched, .watching = true },
     };
     try writeResponse(&w, .{ .terminals = &list });
 
@@ -1986,11 +1994,13 @@ test "an unwatched terminal is placed, but not measured" {
     const list = [_]TerminalInfo{
         .{
             .id = 0x11,
+            .agent = .none,
             .cwd = "/work/alpha",
             .title = "◑ colstat",
         },
         .{
             .id = 0x22,
+            .agent = .none,
             .role = .watched,
             .watching = true,
             .cwd = "/work/beta",
@@ -2018,8 +2028,8 @@ test "a terminal that has never called a tool sends no call_silent_ms, not zero"
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11 },
-        .{ .id = 0x22, .call_silent_ms = 1_320_000 },
+        .{ .id = 0x11, .agent = .none },
+        .{ .id = 0x22, .agent = .none, .call_silent_ms = 1_320_000 },
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -2039,8 +2049,8 @@ test "grouping reaches the wire, not just the in-memory Response (task 650)" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .window = 1, .tab = 3 },
-        .{ .id = 0x22 }, // nobody grouped this one: absent, not zero
+        .{ .id = 0x11, .agent = .none, .window = 1, .tab = 3 },
+        .{ .id = 0x22, .agent = .none }, // nobody grouped this one: absent, not zero
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();

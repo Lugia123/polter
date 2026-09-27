@@ -7368,7 +7368,7 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
     // A terminal with no entry is one nobody has put under watch. It gets
     // its identity and nothing else: quiet time is not measured for it, and
     // saying `0` would claim it was busy this instant.
-    const e = bus.get(id) orelse return .{ .id = id };
+    const e = bus.get(id) orelse return .{ .id = id, .agent = .none };
 
     return .{
         .id = id,
@@ -7395,10 +7395,13 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         // the same answer as a long time ago; see `Bus.Entry.last_call_ms`.
         .call_silent_ms = host.callSilentMs(id),
 
-        // Left out for a terminal whose hooks are `none` and that has
-        // never said anything: that is most terminals, and "no hooks"
-        // is already what absence says.
-        .agent = if (e.agent.hooks == .none) null else .{
+        // `hooks: "none"` said rather than left out (task 880), the same
+        // answer `terminal_turn` gives; no duration, since nothing started
+        // one.
+        .agent = if (e.agent.hooks == .none) .{
+            .agent = e.agent,
+            .since_ms = null,
+        } else .{
             .agent = e.agent,
             .since_ms = host.nowMs() -| e.agent.since_ms,
         },
@@ -12961,7 +12964,8 @@ test "hooks: terminal_list carries the agent state, and leaves it out with no ho
     var fake: FakeHost = .{ .now_ms = 1_000 };
 
     const before = try dispatch(testing.allocator, &b, fake.host(), term(worker), .me);
-    try testing.expect(before.me.agent == null);
+    try testing.expectEqual(Bus.Hooks.none, before.me.agent.agent.hooks);
+    try testing.expect(before.me.agent.since_ms == null);
 
     var ev = hookEvent(.awaiting_approval);
     ev.detail = "Bash";
@@ -12970,10 +12974,10 @@ test "hooks: terminal_list carries the agent state, and leaves it out with no ho
 
     fake.now_ms = 4_000;
     const after = try dispatch(testing.allocator, &b, fake.host(), term(worker), .me);
-    const a = after.me.agent orelse return error.TestExpectedAgent;
+    const a = after.me.agent;
     try testing.expectEqual(Bus.Hooks.live, a.agent.hooks);
     try testing.expectEqual(Bus.AgentState.awaiting_approval, a.agent.state);
-    try testing.expectEqual(@as(u64, 3_000), a.since_ms);
+    try testing.expectEqual(@as(?u64, 3_000), a.since_ms);
 
     var out: [1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&out);
@@ -12981,6 +12985,52 @@ test "hooks: terminal_list carries the agent state, and leaves it out with no ho
     try testing.expect(std.mem.indexOf(u8, w.buffered(),
         \\"agent":{"hooks":"live","state":"awaiting_approval","since_ms":3000,"session_id":"sess-1","cli":"claude-code","detail":"Bash","note":"zig build test","waiting_on_background":false}
     ) != null);
+}
+
+test "a terminal without hooks says so in terminal_list, as terminal_turn does (task 880)" {
+    // Measured: for one terminal with no hooks, terminal_list left `agent`
+    // out and terminal_turn said `"hooks":"none"`. Both terminals here have
+    // none -- the watched one has a bus entry, the other has never been
+    // registered -- and each listing must carry the very object
+    // terminal_turn gives for it.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const open = [_]Place{
+        .{ .id = worker, .cwd = "/work", .title = "worker" },
+        .{ .id = other, .cwd = "/other", .title = "other" },
+    };
+    var fake: FakeHost = .{ .open = &open, .now_ms = 1_000 };
+
+    const list = try dispatch(alloc, &b, fake.host(), term(boss), .terminal_list);
+    var list_buf: [4096]u8 = undefined;
+    var list_w: std.Io.Writer = .fixed(&list_buf);
+    try wire.writeResponse(&list_w, list);
+    const listed = list_w.buffered();
+
+    var turn_agents: [2][]const u8 = undefined;
+    for ([_]Bus.Id{ worker, other }, 0..) |id, i| {
+        const turn = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_turn = .{ .id = id } });
+        var turn_buf: [1024]u8 = undefined;
+        var turn_w: std.Io.Writer = .fixed(&turn_buf);
+        try wire.writeResponse(&turn_w, turn);
+        const t = turn_w.buffered();
+        const start = std.mem.indexOf(u8, t, "\"agent\":").?;
+        const end = std.mem.indexOfScalarPos(u8, t, start, '}').? + 1;
+        turn_agents[i] = try alloc.dupe(u8, t[start..end]);
+    }
+
+    const says_none = std.mem.indexOf(u8, turn_agents[0], "\"hooks\":\"none\"") != null;
+    try testing.expect(says_none);
+    const turns_agree = std.mem.eql(u8, turn_agents[0], turn_agents[1]);
+    try testing.expect(turns_agree);
+
+    // Once per terminal in the listing: the watched one and the stranger.
+    const in_listing = std.mem.count(u8, listed, turn_agents[0]);
+    try testing.expectEqual(@as(usize, 2), in_listing);
 }
 
 test "hooks: terminal_turn hands back the whole answer and says when it was cut" {
