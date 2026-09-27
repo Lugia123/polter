@@ -102,14 +102,27 @@ pub fn parse(parser: *Parser, terminator_ch: ?u8) ?*Command {
 
 test "OSC 4: empty param" {
     const testing = std.testing;
+    const alloc = testing.allocator;
 
-    var p: Parser = .init(null);
+    // Without an allocator the parser discards OSC 4 at the first `;`,
+    // before any parameter is looked at, so this needs one.
+    var p: Parser = .init(alloc);
+    defer p.deinit();
 
     const input = "4;;";
     for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b');
-    try testing.expect(cmd == null);
+    const cmd = p.end('\x1b').?.*;
+    try testing.expect(cmd == .color_operation);
+    try testing.expectEqual(.osc_4, cmd.color_operation.op);
+    try testing.expectEqual(0, cmd.color_operation.requests.count());
+
+    // `parse` turns a parseColor error into an empty list as well, so the
+    // count above cannot tell "nothing to do" from "failed". Ask directly:
+    // `;` is what the parser captured after `4;`.
+    var list = try parseColor(alloc, .osc_4, ";");
+    defer list.deinit(alloc);
+    try testing.expectEqual(0, list.count());
 }
 
 /// Parse any color operation string. This should NOT include the operation
