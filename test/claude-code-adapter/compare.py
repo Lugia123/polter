@@ -197,13 +197,33 @@ def main():
         print("fixtures:   %s%s" % (base, "" if args.keep else " (removed afterwards)"))
         failures = 0
         for case in fixtures["requests"]:
+            # A case that names a `claude` version gets a stand-in `claude`
+            # first on PATH that prints it, so the hook threshold is decided
+            # by the fixture and not by whichever Claude Code this machine
+            # has. A shell script: it cannot stand in on Windows, where
+            # `adapter.ps1` only accepts a `claude.exe`, so there those
+            # cases are said to be skipped rather than quietly passed.
+            case_env = env
+            if "claude" in case:
+                if ON_WINDOWS:
+                    print("skipped   %-10s %s (needs a stand-in claude, POSIX only)"
+                          % (case["question"], case["name"]))
+                    continue
+                fake = os.path.join(base, "claude-" + str(abs(hash(case["claude"]))))
+                os.makedirs(fake, exist_ok=True)
+                script = os.path.join(fake, "claude")
+                with open(script, "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\nprintf '%%s\\n' '%s'\n" % case["claude"])
+                os.chmod(script, 0o755)
+                case_env = dict(env)
+                case_env["PATH"] = fake + os.pathsep + env.get("PATH", "")
             if "raw" in case:
                 request = case["raw"]
             else:
                 request = json.dumps(substitute(case["request"], paths), ensure_ascii=False)
             q = case["question"]
-            rc_py, out_py, err_py = run(py_cmd + [q, request], env)
-            rc_ps, out_ps, err_ps = run(ps_cmd + [q, request], env)
+            rc_py, out_py, err_py = run(py_cmd + [q, request], case_env)
+            rc_ps, out_ps, err_ps = run(ps_cmd + [q, request], case_env)
             report = []
             ok = True
             # A request that carries a real JSON object is one both adapters

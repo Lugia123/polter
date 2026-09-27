@@ -226,11 +226,17 @@ pub fn writeLaunchRequest(
     choice: persona.CliChoice,
     cwd: ?[]const u8,
     home: ?[]const u8,
+    polter: ?[]const u8,
 ) std.Io.Writer.Error!void {
     try w.print("{{\"version\":{d},\"cwd\":", .{contract_version});
     try writeOptional(w, cwd);
     try w.writeAll(",\"home\":");
     try writeOptional(w, home);
+    // The executable a CLI's hooks run as `<polter> +hook ...` -- the same
+    // one provisioning registers for `+mcp` (adapters.md 3.2). Null when it
+    // could not be worked out; an adapter then configures no hooks.
+    try w.writeAll(",\"polter\":");
+    try writeOptional(w, polter);
     try w.print(",\"role\":{{\"key\":{f},\"name\":{f},\"instructions\":", .{
         std.json.fmt(p.key, .{}),
         std.json.fmt(p.name, .{}),
@@ -511,13 +517,14 @@ test "agent_cli: the launch request carries the role and one CLI's choices" {
     };
 
     var out: std.Io.Writer.Allocating = .init(aa);
-    try writeLaunchRequest(&out.writer, p, choice, "/tmp/x", null);
+    try writeLaunchRequest(&out.writer, p, choice, "/tmp/x", null, "/Applications/Polter.app/Contents/MacOS/polter");
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, out.written(), .{});
     const o = v.object;
     try testing.expectEqual(@as(i64, contract_version), o.get("version").?.integer);
     try testing.expectEqualStrings("/tmp/x", o.get("cwd").?.string);
     try testing.expect(o.get("home").? == .null);
+    try testing.expectEqualStrings("/Applications/Polter.app/Contents/MacOS/polter", o.get("polter").?.string);
     const role = o.get("role").?.object;
     try testing.expectEqualStrings("射手", role.get("name").?.string);
     try testing.expectEqualStrings(p.instructions.?, role.get("instructions").?.string);
@@ -702,7 +709,7 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
         .args = &.{ "--settings", "{\"theme\":\"dark\"}" },
     };
     var req: std.Io.Writer.Allocating = .init(aa);
-    try writeLaunchRequest(&req.writer, p, choice, null, home);
+    try writeLaunchRequest(&req.writer, p, choice, null, home, null);
     const answer = switch (try ask(aa, io, &env, adapter, .launch, req.written())) {
         .ok => |j| j,
         .failed => |why| {
@@ -737,4 +744,252 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, argv, "--settings"));
     try testing.expect(std.mem.indexOf(u8, argv, "\"theme\": \"dark\"") != null);
     try testing.expect(std.mem.indexOf(u8, argv, "--append-system-prompt\x00be brief") != null);
+}
+
+// -- hooks (adapters.md 3.1-3.2) ----------------------------------------------
+//
+// The shipped `adapter.py`, run the way `+launch` runs it, against a stand-in
+// `claude` first on PATH that prints whichever version a cell needs -- so the
+// threshold is decided here and not by the Claude Code this machine has.
+// `adapter.ps1` gives byte-for-byte the same answers to the same cells:
+// `test/claude-code-adapter/compare.py`.
+
+const HookCell = struct {
+    /// What the stand-in `claude --version` prints.
+    version: []const u8,
+    args: []const []const u8 = &.{},
+    polter: ?[]const u8 = "/Applications/It's Polter/polter",
+};
+
+const HookAnswer = struct {
+    launch: Launch,
+    /// How many `--settings` the command line carries.
+    settings_count: usize,
+    /// The one `--settings` object, parsed, when there is one that parses.
+    settings: ?std.json.ObjectMap,
+    notes: []const u8,
+};
+
+const HookRig = struct {
+    root: []const u8,
+    home: []const u8,
+    exec: []const u8,
+};
+
+fn hookRig(aa: Allocator, io: std.Io) !HookRig {
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const root = try std.fmt.allocPrint(aa, "/tmp/polter-hooks-{x}", .{&raw});
+    const cwd = std.Io.Dir.cwd();
+    const home = try std.fmt.allocPrint(aa, "{s}/home", .{root});
+    // One personal skill, so a role that switches it off puts a
+    // `skillOverrides` in the same `--settings` the hooks go into.
+    const skill = try std.fmt.allocPrint(aa, "{s}/.claude/skills/pdf/SKILL.md", .{home});
+    try cwd.createDirPath(io, std.fs.path.dirname(skill).?);
+    {
+        var f = try cwd.createFile(io, skill, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, "---\nname: pdf\ndescription: Read PDFs.\n---\n");
+    }
+    const exec = try std.fmt.allocPrint(aa, "{s}/adapter.py", .{root});
+    {
+        var f = try cwd.createFile(io, exec, .{ .permissions = .fromMode(0o755) });
+        defer f.close(io);
+        try f.writeStreamingAll(io, @embedFile("plugin_claude_code_adapter_py"));
+    }
+    return .{ .root = root, .home = home, .exec = exec };
+}
+
+fn askHooks(aa: Allocator, io: std.Io, rig: HookRig, cell: HookCell) !?HookAnswer {
+    const cwd = std.Io.Dir.cwd();
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const bin = try std.fmt.allocPrint(aa, "{s}/bin-{x}", .{ rig.root, &raw });
+    try cwd.createDirPath(io, bin);
+    {
+        const path = try std.fmt.allocPrint(aa, "{s}/claude", .{bin});
+        var f = try cwd.createFile(io, path, .{ .permissions = .fromMode(0o755) });
+        defer f.close(io);
+        try f.writeStreamingAll(io, try std.fmt.allocPrint(aa, "#!/bin/sh\necho '{s}'\n", .{cell.version}));
+    }
+
+    var env = try global.environMap();
+    defer env.deinit();
+    try env.put("PATH", try std.fmt.allocPrint(aa, "{s}:{s}", .{ bin, env.get("PATH") orelse "" }));
+
+    const p: persona.Persona = .{ .key = "r", .name = "r" };
+    const choice: persona.CliChoice = .{
+        .cli = "claude-code",
+        .skills = .{ .except = &.{"skill:pdf"} },
+        .args = cell.args,
+    };
+    var req: std.Io.Writer.Allocating = .init(aa);
+    try writeLaunchRequest(&req.writer, p, choice, null, rig.home, cell.polter);
+    const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = rig.exec };
+    const answer = switch (try ask(aa, io, &env, adapter, .launch, req.written())) {
+        .ok => |j| j,
+        .failed => |why| {
+            if (std.mem.indexOf(u8, why, "could not be run") != null) return null;
+            std.debug.print("adapter failed: {s}\n", .{why});
+            return error.TestUnexpectedResult;
+        },
+    };
+    const l = try parseLaunch(aa, answer);
+
+    var count: usize = 0;
+    var settings: ?std.json.ObjectMap = null;
+    for (l.argv, 0..) |a, i| {
+        if (!std.mem.eql(u8, a, "--settings")) continue;
+        count += 1;
+        if (i + 1 < l.argv.len) {
+            if (std.json.parseFromSliceLeaky(std.json.Value, aa, l.argv[i + 1], .{})) |v| {
+                if (v == .object) settings = v.object;
+            } else |_| {}
+        }
+    }
+    return .{
+        .launch = l,
+        .settings_count = count,
+        .settings = settings,
+        .notes = try std.mem.join(aa, "\n", l.notes),
+    };
+}
+
+/// The six hooks, each running `<polter> +hook --cli claude-code <event>`.
+fn expectAllHooks(settings: std.json.ObjectMap, quoted: []const u8) !void {
+    const hooks = (settings.get("hooks") orelse return error.TestExpectedHooks).object;
+    for ([_][]const u8{ "SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Notification" }) |event| {
+        const entries = (hooks.get(event) orelse {
+            std.debug.print("no {s} hook\n", .{event});
+            return error.TestExpectedHooks;
+        }).array.items;
+        const ours = entries[entries.len - 1].object;
+        const hook = ours.get("hooks").?.array.items[0].object;
+        try testing.expectEqualStrings("command", hook.get("type").?.string);
+        try testing.expectEqual(@as(i64, 5), hook.get("timeout").?.integer);
+        var want: [256]u8 = undefined;
+        try testing.expectEqualStrings(
+            try std.fmt.bufPrint(&want, "{s} +hook --cli claude-code {s}", .{ quoted, event }),
+            hook.get("command").?.string,
+        );
+        if (std.mem.eql(u8, event, "Notification")) {
+            try testing.expectEqualStrings("idle_prompt|elicitation_dialog", ours.get("matcher").?.string);
+        } else {
+            try testing.expect(ours.get("matcher") == null);
+        }
+    }
+}
+
+const polter_quoted = "'/Applications/It'\\''s Polter/polter'";
+
+test "agent_cli hooks: 2.1.144 gets no hooks, and a note that says why" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rig = try hookRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    const a = (try askHooks(aa, io, rig, .{ .version = "2.1.144 (Claude Code)" })) orelse return error.SkipZigTest;
+    try testing.expect(!a.launch.hooks);
+    try testing.expect(a.settings.?.get("hooks") == null);
+    try testing.expect(std.mem.indexOf(u8, a.notes, "Claude Code 2.1.144 is older than 2.1.145") != null);
+}
+
+test "agent_cli hooks: 2.1.145 gets all six in the one --settings, beside the skill switch" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rig = try hookRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    const a = (try askHooks(aa, io, rig, .{ .version = "2.1.145 (Claude Code)" })) orelse return error.SkipZigTest;
+    try testing.expect(a.launch.hooks);
+    try testing.expectEqual(@as(usize, 1), a.settings_count);
+    const s = a.settings.?;
+    try testing.expectEqualStrings("off", s.get("skillOverrides").?.object.get("pdf").?.string);
+    try expectAllHooks(s, polter_quoted);
+    try testing.expect(std.mem.indexOf(u8, a.notes, "Hooks are not configured") == null);
+}
+
+test "agent_cli hooks: a role's own inline --settings, the skill switch and the hooks are one object" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rig = try hookRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    const a = (try askHooks(aa, io, rig, .{
+        .version = "2.1.283 (Claude Code)",
+        .args = &.{
+            "--settings",
+            \\{"theme":"dark","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}
+            ,
+        },
+    })) orelse return error.SkipZigTest;
+    try testing.expect(a.launch.hooks);
+    try testing.expectEqual(@as(usize, 1), a.settings_count);
+    const s = a.settings.?;
+    try testing.expectEqualStrings("dark", s.get("theme").?.string);
+    try testing.expectEqualStrings("off", s.get("skillOverrides").?.object.get("pdf").?.string);
+    try expectAllHooks(s, polter_quoted);
+    // The role's own Stop hook is kept, ahead of Polter's.
+    const stop = s.get("hooks").?.object.get("Stop").?.array.items;
+    try testing.expectEqual(@as(usize, 2), stop.len);
+    try testing.expectEqualStrings("say done", stop[0].object.get("hooks").?.array.items[0].object.get("command").?.string);
+}
+
+test "agent_cli hooks: a role whose --settings is a file gets no hooks, and a note" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rig = try hookRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    const a = (try askHooks(aa, io, rig, .{
+        .version = "2.1.283 (Claude Code)",
+        .args = &.{ "--settings", "/etc/claude/role.json" },
+    })) orelse return error.SkipZigTest;
+    try testing.expect(!a.launch.hooks);
+    // The file is still passed as it was written, and nothing Polter adds
+    // carries any hooks.
+    const joined = try std.mem.join(aa, "\x00", a.launch.argv);
+    try testing.expect(std.mem.indexOf(u8, joined, "--settings\x00/etc/claude/role.json") != null);
+    try testing.expect(std.mem.indexOf(u8, joined, "+hook") == null);
+    try testing.expect(std.mem.indexOf(u8, a.notes, "Hooks are not configured: the role's --settings is a file") != null);
+}
+
+test "agent_cli hooks: an unreadable version, or no Polter path, gets no hooks and says which" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rig = try hookRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    const garbled = (try askHooks(aa, io, rig, .{ .version = "Claude Code, some version" })) orelse return error.SkipZigTest;
+    try testing.expect(!garbled.launch.hooks);
+    try testing.expect(std.mem.indexOf(u8, garbled.notes, "claude --version did not say a version") != null);
+
+    const nowhere = (try askHooks(aa, io, rig, .{ .version = "2.1.283 (Claude Code)", .polter = null })) orelse return error.SkipZigTest;
+    try testing.expect(!nowhere.launch.hooks);
+    try testing.expect(std.mem.indexOf(u8, nowhere.notes, "did not say where Polter is") != null);
 }

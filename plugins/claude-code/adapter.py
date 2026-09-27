@@ -12,8 +12,8 @@ eleven is the contract; this file is one side of it.
         stdout  {"version":1,"installed":…,"items":[…],"notes":[…]}
 
     adapter.py launch '<request>'
-        request {"version":1,"cwd":…,"home":…,"role":{…},"cli":{…}}
-        stdout  {"version":1,"argv":[…],"env":{},"summary":…,"notes":[…]}
+        request {"version":1,"cwd":…,"home":…,"polter":"/abs"|null,"role":{…},"cli":{…}}
+        stdout  {"version":1,"argv":[…],"env":{},"summary":…,"notes":[…],"hooks":true?}
 
 The request is the second argument (read from stdin instead when it is
 absent, which is only for trying it by hand). One JSON object on stdout; a
@@ -27,8 +27,19 @@ Three things it deliberately does not do, and each is checkable by reading:
   * **It never reads a value out of an `env` block.** MCP entries carry API
     keys there. A server is described by its name, its transport and where
     it came from.
-  * **It never runs `claude`.** Everything comes from the files Claude Code
+  * **It runs `claude` for one thing only: `claude --version`**, at launch,
+    to decide whether to configure hooks (below). That starts no MCP server
+    and reads no settings. Everything else comes from the files Claude Code
     keeps; running the CLI to ask would start every MCP server it has.
+
+Hooks (`dev-docs/poltergeist/adapters.md` 3.1-3.2): from Claude Code
+2.1.145 on, `launch` puts six hooks into the one `--settings` it passes, each
+running `<polter> +hook --cli claude-code <event>`, and answers `"hooks":
+true` so that Polter expects to hear from them. Older, or a version it cannot
+read, or a role whose `--settings` is a file it cannot merge into, or no
+`polter` path in the request: no hooks at all, and a note that says why. No
+"some hooks" -- that would make the same state mean different things on
+different terminals.
 
 Which launch flag switches off which kind of thing was measured, not read
 (claude 2.1.278, each with a control that the rest still worked):
@@ -52,6 +63,7 @@ described next to the table in roles.md, so it can be run again.
 import json
 import os
 import re
+import subprocess
 import sys
 
 CONTRACT_VERSION = 1
@@ -62,6 +74,31 @@ POLTER_SERVER = "polter"
 
 # Largest file this will read. `~/.claude.json` is the big one.
 MAX_BYTES = 8 * 1024 * 1024
+
+# The first Claude Code with every hook field Polter reads: `Stop` carrying
+# `background_tasks` (2.1.145), after `StopFailure` (2.1.78),
+# `last_assistant_message` (2.1.47) and `PermissionRequest` (2.0.45).
+# adapters.md 3.1. Older is not half-supported: it gets no hooks.
+HOOKS_SINCE = (2, 1, 145)
+
+# The hooks, in the order they are written, and the matcher each needs.
+# `Notification` fires for more than waiting on the person; only these two
+# kinds are passed on (`+hook` drops the rest as well).
+HOOK_EVENTS = (
+    ("SessionStart", None),
+    ("UserPromptSubmit", None),
+    ("Stop", None),
+    ("StopFailure", None),
+    ("PermissionRequest", None),
+    ("Notification", "idle_prompt|elicitation_dialog"),
+)
+
+# Seconds Claude Code gives one hook. `+hook` answers in milliseconds or
+# gives up; this only bounds a Polter that has stopped answering.
+HOOK_TIMEOUT = 5
+
+# How long `claude --version` may take.
+VERSION_TIMEOUT = 10
 
 
 def read_json(path):
@@ -487,7 +524,8 @@ def launch(req):
         else:
             overrides[item["name"]] = "off"
 
-    extra, settings = split_settings([a for a in (cli.get("args") or []) if isinstance(a, str)], notes)
+    extra, settings, settings_file = split_settings(
+        [a for a in (cli.get("args") or []) if isinstance(a, str)], notes)
 
     # ⚠️ **One `--settings`, never two.** Measured: given twice, the second
     # replaces the first rather than merging with it, so a role whose extra
@@ -506,6 +544,14 @@ def launch(req):
     if bundled_off:
         settings["disableBundledSkills"] = True
 
+    hooks = hooks_for(req, settings_file, notes)
+    if hooks:
+        merged = dict(settings.get("hooks") or {}) if isinstance(settings.get("hooks"), dict) else {}
+        for event, entries in hooks.items():
+            before = merged.get(event)
+            merged[event] = (list(before) if isinstance(before, list) else []) + entries
+        settings["hooks"] = merged
+
     argv = ["claude"]
     if settings:
         argv += ["--settings", json.dumps(settings, ensure_ascii=False)]
@@ -519,13 +565,68 @@ def launch(req):
         argv += ["--append-system-prompt", instructions]
     argv += extra
 
-    return {
+    answer = {
         "version": CONTRACT_VERSION,
         "argv": argv,
         "env": {},
         "summary": "%d skill(s) and %d MCP server(s) switched off" % (off["skill"], off["mcp"]),
         "notes": notes,
     }
+    if hooks:
+        answer["hooks"] = True
+    return answer
+
+
+def claude_version():
+    """`claude --version` as a tuple, or `(None, why)`."""
+    exe = on_path("claude") or "claude"
+    try:
+        p = subprocess.run([exe, "--version"], capture_output=True, text=True,
+                           timeout=VERSION_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None, "could not run claude --version"
+    m = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", p.stdout or "")
+    if p.returncode != 0 or not m:
+        return None, "claude --version did not say a version"
+    return tuple(int(g) for g in m.groups()), None
+
+
+def shell_quote(s):
+    """One argument for the shell Claude Code runs a hook command in."""
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def hooks_for(req, settings_file, notes):
+    """The `hooks` block to add, or None with a note saying why not."""
+    screen = "so this terminal is watched by its screen alone."
+    if settings_file:
+        notes.append("Hooks are not configured: the role's --settings is a file, and the "
+                     "hooks can only be added to settings given inline -- " + screen)
+        return None
+    polter = req.get("polter")
+    if not isinstance(polter, str) or not polter:
+        notes.append("Hooks are not configured: this launch did not say where Polter is, " + screen)
+        return None
+    version, why = claude_version()
+    if version is None:
+        notes.append("Hooks are not configured: %s, %s" % (why, screen))
+        return None
+    if version < HOOKS_SINCE:
+        notes.append("Hooks are not configured: Claude Code %s is older than %s, the first "
+                     "version whose hooks Polter reads, %s"
+                     % (".".join(map(str, version)), ".".join(map(str, HOOKS_SINCE)), screen))
+        return None
+    out = {}
+    for event, matcher in HOOK_EVENTS:
+        entry = {"hooks": [{
+            "type": "command",
+            "command": "%s +hook --cli claude-code %s" % (shell_quote(polter), event),
+            "timeout": HOOK_TIMEOUT,
+        }]}
+        if matcher:
+            entry = {"matcher": matcher, "hooks": entry["hooks"]}
+        out[event] = [entry]
+    return out
 
 
 def split_settings(args, notes):
@@ -535,7 +636,7 @@ def split_settings(args, notes):
     it was and said out loud: it will replace the role's own settings, and
     the person who wrote it is the one who can fix that.
     """
-    rest, settings = [], {}
+    rest, settings, named_file = [], {}, False
     i = 0
     while i < len(args):
         a = args[i]
@@ -556,10 +657,11 @@ def split_settings(args, notes):
             settings.update(parsed)
         else:
             rest += args[i:i + step]
+            named_file = True
             notes.append("The extra --settings names a file, so it replaces the role's "
                          "skill settings instead of adding to them. Put the JSON inline.")
         i += step
-    return rest, settings
+    return rest, settings, named_file
 
 
 def main():

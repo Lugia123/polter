@@ -779,10 +779,12 @@ function Test-Enabled($Selection, [string]$Id) {
     return $default -ne $listed
 }
 
-# Take every `--settings <json>` out of `args`, merged into one object.
+# Take every `--settings <json>` out of `args`, merged into one object; the
+# third element says whether one of them named a file.
 function Split-Settings($ArgList, $Notes) {
     $rest = New-List
     $settings = New-Map
+    $namedFile = $false
     $i = 0
     while ($i -lt $ArgList.Count) {
         $a = [string]$ArgList[$i]
@@ -804,11 +806,113 @@ function Split-Settings($ArgList, $Notes) {
             foreach ($k in (Get-JKeys $parsed)) { $settings[$k] = Get-J $parsed $k }
         } else {
             for ($j = $i; $j -lt [Math]::Min($i + $step, $ArgList.Count); $j++) { $rest.Add([string]$ArgList[$j]) }
+            $namedFile = $true
             $Notes.Add("The extra --settings names a file, so it replaces the role's skill settings instead of adding to them. Put the JSON inline.")
         }
         $i += $step
     }
-    return @($rest, $settings)
+    return @($rest, $settings, $namedFile)
+}
+
+# --- hooks (adapters.md 3.1-3.2) --------------------------------------------
+#
+# See the same section in adapter.py: from Claude Code 2.1.145, six hooks go
+# into the one `--settings`, each running `<polter> +hook --cli claude-code
+# <event>`; otherwise none, and a note saying why.
+
+$script:HooksSince = @(2, 1, 145)
+$script:HookEvents = @(
+    @('SessionStart', $null),
+    @('UserPromptSubmit', $null),
+    @('Stop', $null),
+    @('StopFailure', $null),
+    @('PermissionRequest', $null),
+    @('Notification', 'idle_prompt|elicitation_dialog')
+)
+$script:HookTimeout = 5
+$script:VersionTimeoutMs = 10000
+
+# `claude --version` as @(major, minor, patch), or a string saying why not.
+function Get-ClaudeVersion {
+    $start = Resolve-ClaudeCommand
+    if ($null -eq $start) { $start = @('claude') }
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = [string]$start[0]
+        for ($k = 1; $k -lt $start.Count; $k++) { $psi.ArgumentList.Add([string]$start[$k]) }
+        $psi.ArgumentList.Add('--version')
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.RedirectStandardInput = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $p.StandardInput.Close()
+        $outTask = $p.StandardOutput.ReadToEndAsync()
+        $null = $p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit($script:VersionTimeoutMs)) {
+            try { $p.Kill() } catch { }
+            return 'could not run claude --version'
+        }
+        $out = [string]$outTask.Result
+        $code = $p.ExitCode
+    } catch {
+        return 'could not run claude --version'
+    }
+    $m = [regex]::Match($out, '^\s*(\d+)\.(\d+)\.(\d+)')
+    if ($code -ne 0 -or -not $m.Success) { return 'claude --version did not say a version' }
+    return , @([int]$m.Groups[1].Value, [int]$m.Groups[2].Value, [int]$m.Groups[3].Value)
+}
+
+function Test-VersionBefore($A, $B) {
+    for ($k = 0; $k -lt 3; $k++) {
+        if ($A[$k] -lt $B[$k]) { return $true }
+        if ($A[$k] -gt $B[$k]) { return $false }
+    }
+    return $false
+}
+
+# One argument for the shell Claude Code runs a hook command in.
+function ConvertTo-ShellQuote([string]$S) {
+    return "'" + $S.Replace("'", "'\''") + "'"
+}
+
+# The `hooks` block to add, or `$null` with a note saying why not.
+function Get-Hooks($Req, [bool]$SettingsFile, $Notes) {
+    $screen = 'so this terminal is watched by its screen alone.'
+    if ($SettingsFile) {
+        $Notes.Add("Hooks are not configured: the role's --settings is a file, and the hooks can only be added to settings given inline -- " + $screen)
+        return $null
+    }
+    $polter = Get-J $Req 'polter'
+    if (-not ($polter -is [string]) -or $polter.Length -eq 0) {
+        $Notes.Add('Hooks are not configured: this launch did not say where Polter is, ' + $screen)
+        return $null
+    }
+    $version = Get-ClaudeVersion
+    if ($version -is [string]) {
+        $Notes.Add('Hooks are not configured: ' + $version + ', ' + $screen)
+        return $null
+    }
+    if (Test-VersionBefore $version $script:HooksSince) {
+        $Notes.Add('Hooks are not configured: Claude Code ' + ($version -join '.') + ' is older than ' + ($script:HooksSince -join '.') + ', the first version whose hooks Polter reads, ' + $screen)
+        return $null
+    }
+    $out = New-Map
+    foreach ($ev in $script:HookEvents) {
+        $hook = New-Map
+        $hook['type'] = 'command'
+        $hook['command'] = (ConvertTo-ShellQuote $polter) + ' +hook --cli claude-code ' + $ev[0]
+        $hook['timeout'] = $script:HookTimeout
+        $list = New-List
+        $list.Add($hook)
+        $entry = New-Map
+        if ($null -ne $ev[1]) { $entry['matcher'] = $ev[1] }
+        $entry['hooks'] = $list
+        $entries = New-List
+        $entries.Add($entry)
+        $out[$ev[0]] = $entries
+    }
+    return , $out
 }
 
 function Get-Launch($Req) {
@@ -888,6 +992,7 @@ function Get-Launch($Req) {
     $split = Split-Settings $argList $notes
     $extra = $split[0]
     $settings = $split[1]
+    $settingsFile = [bool]$split[2]
 
     # **One `--settings`, never two** -- see `adapter.py`.
     if ($overrides.Count -gt 0) {
@@ -905,6 +1010,21 @@ function Get-Launch($Req) {
         $settings['enabledPlugins'] = $merged
     }
     if ($bundledOff) { $settings['disableBundledSkills'] = $true }
+
+    $hooks = Get-Hooks $Req $settingsFile $notes
+    if ($null -ne $hooks) {
+        $merged = New-Map
+        $old = $(if ($settings.Contains('hooks')) { $settings['hooks'] } else { $null })
+        if (Test-JDict $old) { foreach ($k in (Get-JKeys $old)) { $merged[$k] = Get-J $old $k } }
+        foreach ($k in $hooks.Keys) {
+            $list = New-List
+            $before = $(if ($merged.Contains($k)) { $merged[$k] } else { $null })
+            if (Test-JList $before) { foreach ($e in (Get-JItems $before)) { $list.Add($e) } }
+            foreach ($e in $hooks[$k]) { $list.Add($e) }
+            $merged[$k] = $list
+        }
+        $settings['hooks'] = $merged
+    }
 
     $start = Resolve-ClaudeCommand
     if ($null -eq $start) {
@@ -944,6 +1064,7 @@ function Get-Launch($Req) {
     $answer['env'] = New-Map
     $answer['summary'] = "$offSkill skill(s) and $offMcp MCP server(s) switched off"
     $answer['notes'] = $notes
+    if ($null -ne $hooks) { $answer['hooks'] = $true }
     return , $answer
 }
 

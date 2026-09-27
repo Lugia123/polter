@@ -153,7 +153,14 @@ pub fn run(alloc: Allocator) !u8 {
 
     const cwd = std.process.currentPathAlloc(io, aa) catch null;
     var request: std.Io.Writer.Allocating = .init(aa);
-    try agent_cli.writeLaunchRequest(&request.writer, p, choice, cwd, env.get("HOME") orelse env.get("USERPROFILE"));
+    try agent_cli.writeLaunchRequest(
+        &request.writer,
+        p,
+        choice,
+        cwd,
+        env.get("HOME") orelse env.get("USERPROFILE"),
+        mcpExecutable(aa, io),
+    );
 
     const answer = switch (try agent_cli.ask(aa, io, &env, adapter, .launch, request.written())) {
         .ok => |json| json,
@@ -224,6 +231,26 @@ pub fn run(alloc: Allocator) !u8 {
         .exited => |code| code,
         else => 1,
     };
+}
+
+/// The executable provisioning registers for `+mcp`, which is also what a
+/// CLI's hooks run as `+hook` (adapters.md 3.2). Null when it cannot be
+/// found, and the adapter then configures no hooks and says so.
+///
+/// On POSIX that is this very program: the launch line is typed with the
+/// app's own path (`App.launchLine`). On Windows it is not -- `+launch` runs
+/// as `polter-cli.exe`, and `+mcp` is registered as `polter-host.exe`
+/// beside it (`windows/host/src/main.rs`, `cli_sibling`), which an agent CLI
+/// starts with inherited pipes the same way it starts a hook.
+fn mcpExecutable(aa: Allocator, io: std.Io) ?[]const u8 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const self_exe = buf[0 .. std.process.executablePath(io, &buf) catch return null];
+    if (comptime builtin.os.tag != .windows) return aa.dupe(u8, self_exe) catch null;
+
+    const dir = std.fs.path.dirname(self_exe) orelse return null;
+    const host = std.fs.path.join(aa, &.{ dir, "polter-host.exe" }) catch return null;
+    std.Io.Dir.cwd().access(io, host, .{}) catch return null;
+    return host;
 }
 
 fn expectHooks(io: std.Io, env: *const std.process.Environ.Map, cli: []const u8) void {
