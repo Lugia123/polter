@@ -3854,21 +3854,17 @@ fn poltergeistConfigText(
 /// placement at one worker: the code looked for a surface that the apprt had
 /// not created yet, found none, and recorded nothing -- so the second worker
 /// saw no worker of its own in the tab and read the tab as somebody else's.
-fn poltergeistSettlePendingWorker(self: *App) void {
+fn poltergeistSettlePendingWorker(self: *App, alloc: Allocator) Allocator.Error!void {
     var pending = self.poltergeist_pending_worker orelse return;
 
-    for (self.surfaces.items) |v| {
-        const id = v.core().id;
-        if (pending.before.contains(id)) continue;
-        if (self.isChatSurface(id)) continue;
+    const now = try self.poltergeistSeen(alloc);
+    defer alloc.free(now);
+    if (pending.attribute(now, &.{})) |id| {
         self.poltergeist_last_worker.put(self.alloc, pending.by, id) catch {};
         self.poltergeist_pending_worker = null;
         pending.deinit(self.alloc);
         return;
     }
-    // The loop above is `PendingWorker.attribute` against live surfaces; the
-    // rule is stated once there and tested there, and read from the App's own
-    // list here because that is where the surfaces are.
 
     // **Nothing yet.** Which is not the same as nothing ever: the apprt
     // performs a split on its own thread, so a call that follows the last one
@@ -3892,11 +3888,49 @@ fn poltergeistSettlePendingWorker(self: *App) void {
     );
 }
 
+/// Every surface but the chat, with the tab each is in. See `Seen`.
+fn poltergeistSeen(self: *App, alloc: Allocator) Allocator.Error![]Seen {
+    var out: std.ArrayListUnmanaged(Seen) = .empty;
+    errdefer out.deinit(alloc);
+    for (self.surfaces.items) |v| {
+        const s = v.core();
+        if (self.isChatSurface(s.id)) continue;
+        try out.append(alloc, .{ .id = s.id, .tab = poltergeistTabOf(s) });
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+/// The tab a surface is in, as the apprt's opaque key, or null when the
+/// apprt did not say -- one that does not implement the question, or a
+/// surface in no tab at all (on macOS, a closed tab kept alive for undo).
+fn poltergeistTabOf(surface: *Surface) ?u64 {
+    var window: u64 = 0;
+    var tab: u64 = 0;
+    _ = surface.rt_app.performAction(
+        .{ .surface = surface },
+        .poltergeist_grouping,
+        .{ .window = &window, .tab = &tab },
+    ) catch {};
+    return if (tab == 0) null else tab;
+}
+
+/// A surface as attribution sees it: which one, and which tab it is in.
+const Seen = struct {
+    id: poltergeistpkg.Bus.Id,
+    /// Null when the apprt did not say; see `poltergeistTabOf`.
+    tab: ?u64,
+};
+
 /// A split asked for whose terminal has not appeared yet. See
 /// `poltergeist_pending_worker`.
 const PendingWorker = struct {
     by: poltergeistpkg.Bus.Id,
     before: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void),
+
+    /// The tab the split was asked for in -- the tab of the surface being
+    /// split, which is where its terminal will appear. Null when the apprt
+    /// does not say which tab anything is in.
+    tab: ?u64,
 
     /// How many settlements have looked and found nothing yet.
     ///
@@ -3914,17 +3948,28 @@ const PendingWorker = struct {
 
     /// Which of `now` is the terminal this split produced.
     ///
-    /// **The rule is "new since the split was asked for, and not the chat".**
+    /// **The rule is "new since the split was asked for, in the tab it was
+    /// asked for in, and not the chat".**
     /// Split out from the App so the sequence it belongs to can be tested
     /// without a window system -- and the sequence is the whole point, since
     /// the defect it replaced was one of timing rather than of rule.
     fn attribute(
         self: *const PendingWorker,
-        now: []const poltergeistpkg.Bus.Id,
+        now: []const Seen,
         chat: []const poltergeistpkg.Bus.Id,
     ) ?poltergeistpkg.Bus.Id {
-        for (now) |id| {
+        for (now) |seen| {
+            const id = seen.id;
             if (self.before.contains(id)) continue;
+            // ⚠️ **Only in the tab the split was asked for in** (task 881).
+            // Anything else new since then -- a terminal somebody opened in
+            // another tab, or another supervisor's -- used to be taken for
+            // this worker whenever it came first in the list, and the next
+            // worker was then split beside it, in a tab nobody was looking
+            // at. A surface whose tab is not known is not known to be here.
+            // Only when the apprt says nothing about tabs at all is there no
+            // tab to hold it to.
+            if (self.tab) |want| if (seen.tab != want) continue;
             if (std.mem.indexOfScalar(poltergeistpkg.Bus.Id, chat, id) != null) continue;
             return id;
         }
@@ -3939,8 +3984,9 @@ const PendingWorker = struct {
     fn afterSplit(
         alloc: Allocator,
         by: poltergeistpkg.Bus.Id,
+        tab: ?u64,
         before: *const std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void),
-        now: []const poltergeistpkg.Bus.Id,
+        now: []const Seen,
         chat: []const poltergeistpkg.Bus.Id,
     ) Allocator.Error!AfterSplit {
         // ⚠️ **The snapshot from before the split, never one taken after.**
@@ -3948,7 +3994,7 @@ const PendingWorker = struct {
         // worker by now, and a snapshot taken here would hold it -- so
         // nothing would ever be new against it, and the next placement
         // would wait on a split that had finished (task 877).
-        var pending: PendingWorker = .{ .by = by, .before = try before.clone(alloc) };
+        var pending: PendingWorker = .{ .by = by, .tab = tab, .before = try before.clone(alloc) };
 
         // And a worker that is already here is attributed now, not on the
         // next call: there is nothing to wait for.
@@ -3965,6 +4011,56 @@ const AfterSplit = union(enum) {
     pending: PendingWorker,
 };
 
+/// Test fixture: `ids`, all in one `tab`.
+fn seenIn(comptime tab: ?u64, comptime ids: []const poltergeistpkg.Bus.Id) [ids.len]Seen {
+    var out: [ids.len]Seen = undefined;
+    for (ids, 0..) |id, i| out[i] = .{ .id = id, .tab = tab };
+    return out;
+}
+
+test "a terminal opened in another tab is not taken for the worker (task 881)" {
+    // The Windows host splits asynchronously, so the worker is attributed on
+    // the next placement -- and anything that appeared in between was a
+    // candidate. Here the split was asked for in tab 7, and before the next
+    // placement somebody opened terminal 3 in tab 9; it comes first in the
+    // list, as a surface added earlier would.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var pending: PendingWorker = .{ .by = 1, .tab = 7, .before = .empty };
+    defer pending.deinit(alloc);
+    try pending.before.put(alloc, 1, {});
+
+    const stranger_first = [_]Seen{
+        .{ .id = 1, .tab = 7 },
+        .{ .id = 3, .tab = 9 },
+        .{ .id = 2, .tab = 7 },
+    };
+    const found = pending.attribute(&stranger_first, &.{});
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), found);
+
+    // Only the stranger so far, the worker not yet made: nothing, rather
+    // than the stranger.
+    const only_stranger = [_]Seen{ .{ .id = 1, .tab = 7 }, .{ .id = 3, .tab = 9 } };
+    const too_early = pending.attribute(&only_stranger, &.{});
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), too_early);
+
+    // A surface in no tab -- a closed tab kept alive for undo on macOS --
+    // is not in the tab either.
+    const in_no_tab = [_]Seen{ .{ .id = 1, .tab = 7 }, .{ .id = 4, .tab = null } };
+    const orphan = pending.attribute(&in_no_tab, &.{});
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), orphan);
+
+    // An apprt that never says which tab anything is in keeps the old rule
+    // rather than attributing nothing at all.
+    var blind: PendingWorker = .{ .by = 1, .tab = null, .before = .empty };
+    defer blind.deinit(alloc);
+    try blind.before.put(alloc, 1, {});
+    const unknown = [_]Seen{ .{ .id = 1, .tab = null }, .{ .id = 2, .tab = null } };
+    const blind_found = blind.attribute(&unknown, &.{});
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), blind_found);
+}
+
 test "a split that has already happened is attributed at once (task 877)" {
     // Measured 2026-09-28 on macOS: the first `here` came back with the new
     // terminal's id, so that split was complete before `performAction`
@@ -3979,14 +4075,14 @@ test "a split that has already happened is attributed at once (task 877)" {
     try before.put(alloc, 1, {});
 
     // Synchronous: the worker is already in the list.
-    var sync = try PendingWorker.afterSplit(alloc, 1, &before, &.{ 1, 2 }, &.{});
+    var sync = try PendingWorker.afterSplit(alloc, 1, 7, &before, &seenIn(7, &.{ 1, 2 }), &.{});
     defer if (sync == .pending) sync.pending.deinit(alloc);
 
     // Found at all -- now, or by the next call looking at the same list.
     // This is the half the second `here` depended on.
     const found: ?poltergeistpkg.Bus.Id = switch (sync) {
         .appeared => |id| id,
-        .pending => |*p| p.attribute(&.{ 1, 2 }, &.{}),
+        .pending => |*p| p.attribute(&seenIn(7, &.{ 1, 2 }), &.{}),
     };
     try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), found);
 
@@ -3996,10 +4092,10 @@ test "a split that has already happened is attributed at once (task 877)" {
 
     // Asynchronous: not there yet, and found against the same `before` on
     // the next call.
-    var later = try PendingWorker.afterSplit(alloc, 1, &before, &.{1}, &.{});
+    var later = try PendingWorker.afterSplit(alloc, 1, 7, &before, &seenIn(7, &.{1}), &.{});
     defer if (later == .pending) later.pending.deinit(alloc);
     try testing.expect(later == .pending);
-    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), later.pending.attribute(&.{ 1, 2 }, &.{}));
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), later.pending.attribute(&seenIn(7, &.{ 1, 2 }), &.{}));
 }
 
 test "a worker is attributed after its terminal exists, not when it was asked for" {
@@ -4007,7 +4103,7 @@ test "a worker is attributed after its terminal exists, not when it was asked fo
     const alloc = testing.allocator;
 
     // The tab as it stood when the split was asked for: the supervisor alone.
-    var pending: PendingWorker = .{ .by = 1, .before = .empty };
+    var pending: PendingWorker = .{ .by = 1, .tab = 7, .before = .empty };
     defer pending.deinit(alloc);
     try pending.before.put(alloc, 1, {});
 
@@ -4015,13 +4111,13 @@ test "a worker is attributed after its terminal exists, not when it was asked fo
     // asynchronously (the Windows host) has not changed the surface list yet. Anything that
     // tries to attribute here finds nothing -- which is exactly what capped
     // the placement at one worker on the real machine.
-    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), pending.attribute(&.{1}, &.{}));
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), pending.attribute(&seenIn(7, &.{1}), &.{}));
 
     // The next placement is a later moment, and the terminal is there by then.
-    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), pending.attribute(&.{ 1, 2 }, &.{}));
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), pending.attribute(&seenIn(7, &.{ 1, 2 }), &.{}));
 
     // A chat surface opened in between is not the worker.
-    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 3), pending.attribute(&.{ 1, 2, 3 }, &.{2}));
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 3), pending.attribute(&seenIn(7, &.{ 1, 2, 3 }), &.{2}));
 }
 
 /// What the budget says to do, given only numbers.
@@ -4307,7 +4403,7 @@ fn poltergeistOpenTerminal(
     // It could not be settled when it was asked for: an apprt that splits
     // asynchronously had not made the surface yet. It is there now --
     // this call is a later moment, and every one of them is.
-    self.poltergeistSettlePendingWorker();
+    try self.poltergeistSettlePendingWorker(alloc);
 
     var before: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty;
     defer before.deinit(alloc);
@@ -4347,6 +4443,10 @@ fn poltergeistOpenTerminal(
             },
         };
 
+        // Asked before the split: the tab its terminal will appear in, and
+        // the only tab attribution may find it in (task 881).
+        const target_tab = poltergeistTabOf(where.target);
+
         var result: apprt.action.NewSplit.Result = .unsupported;
         _ = rt_app.performAction(
             .{ .surface = where.target },
@@ -4365,14 +4465,9 @@ fn poltergeistOpenTerminal(
             // it has happened, while macOS makes it synchronously -- the
             // notification it posts is delivered before `performAction`
             // returns. Both are handled by `PendingWorker.afterSplit`.
-            var now: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
-            defer now.deinit(alloc);
-            for (self.surfaces.items) |v| {
-                const id = v.core().id;
-                if (self.isChatSurface(id)) continue;
-                try now.append(alloc, id);
-            }
-            switch (try PendingWorker.afterSplit(self.alloc, by, &before, now.items, &.{})) {
+            const now = try self.poltergeistSeen(alloc);
+            defer alloc.free(now);
+            switch (try PendingWorker.afterSplit(self.alloc, by, target_tab, &before, now, &.{})) {
                 .appeared => |id| self.poltergeist_last_worker.put(self.alloc, by, id) catch {},
                 .pending => |p| {
                     if (self.poltergeist_pending_worker) |*old_pending| old_pending.deinit(self.alloc);
