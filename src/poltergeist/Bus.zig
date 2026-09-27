@@ -1181,6 +1181,32 @@ pub fn report(
     return true;
 }
 
+/// Take back a quiet report the terminal's new threshold says is not yet
+/// worth making (task 873).
+///
+/// **The sampler is not where the repeats came from.** A new threshold does
+/// reach it (`termio.Thread`, `.poltergeist_threshold`), and from then on it
+/// says nothing until the screen has been still that long. But the report
+/// it made under the old threshold is already in the box, and a hand-over
+/// holds a notice rather than consuming it (`take`, `.hand_over`), so it
+/// went on being typed into the supervisor once a notice interval, with a
+/// freshly extrapolated figure each time -- three terminals raised to an
+/// hour were still reported "quiet 241s", "301s", "375s". The bus does not
+/// own the threshold, so it is told the new one here and drops a report
+/// that no longer clears it.
+///
+/// Only quiet reports, and only while the figure is under the threshold: a
+/// `resumed` is news whatever the threshold, and a terminal already still
+/// for longer than the new one would be reported again at once anyway.
+pub fn withdrawQuiet(self: *Bus, id: Id, threshold_ms: u64, now_ms: u64) void {
+    const e = self.entries.getPtr(id) orelse return;
+    const kind = e.pending orelse return;
+    if (kind == .resumed) return;
+    if (self.quietMs(id, now_ms) >= threshold_ms) return;
+    e.pending = null;
+    e.handed_over = 0;
+}
+
 /// Record something a terminal's agent CLI said about itself through its
 /// hooks (`rpc` method `agent_event`, sent by `polter +hook`).
 ///

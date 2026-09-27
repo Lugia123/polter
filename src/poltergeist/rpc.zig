@@ -6529,6 +6529,7 @@ pub fn dispatch(
         .set_quiescence_threshold => |p| {
             host.setThreshold(p.id, p.ms) catch
                 return hostFailure("ThresholdFailed", "could not change that threshold");
+            bus.withdrawQuiet(p.id, p.ms, host.nowMs());
             return .ok;
         },
 
@@ -9195,6 +9196,70 @@ test "terminal_list says whether anything is measuring under a watch (task 731)"
     _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .set_watch = .{ .id = worker, .watch = false } });
     b.noteSampling(worker, false);
     try testing.expect((try listed(alloc, &b, fake.host())).sampling == null);
+}
+
+test "raising the threshold of a terminal already reported quiet stops the reports (task 873)" {
+    // Measured 2026-09-28: two watched terminals quiet for about 180s had
+    // their threshold raised to an hour and were still reported "quiet"
+    // at 241s, 301s and 375s -- a notice interval apart, and three of them,
+    // which is `max_hand_overs`. The sampler had the new threshold; the
+    // report it made under the old one was still in the box.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    const still: @import("Sampler.zig").Event = .{ .quiescent = .{
+        .quiet_ms = 180_000,
+        .silent_ms = 180_000,
+        .changed_rows = 0,
+        .total_rows = 24,
+    } };
+    _ = b.report(worker, still, 180_000);
+
+    // Already on its way to the supervisor under the old threshold.
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drainIfDue(boss, 181_000, &buf) != null);
+
+    fake.now_ms = 200_000;
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_quiescence_threshold = .{ .id = worker, .ms = 3_600_000 },
+    });
+    try testing.expect(res == .ok);
+    try testing.expectEqual(@as(u64, 3_600_000), fake.set_to.?.ms);
+
+    // A minute later the terminal has been quiet 241s, far short of an hour.
+    const next = b.drainIfDue(boss, 241_000, &buf);
+    try testing.expect(next == null);
+}
+
+test "lowering the threshold below how long a terminal has been quiet keeps its report (task 873)" {
+    // The other side of the withdrawal: a terminal still for longer than
+    // the new threshold would be reported again at once anyway, so the
+    // report already in the box stays true and stays there.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    const still: @import("Sampler.zig").Event = .{ .quiescent = .{
+        .quiet_ms = 180_000,
+        .silent_ms = 180_000,
+        .changed_rows = 0,
+        .total_rows = 24,
+    } };
+    _ = b.report(worker, still, 180_000);
+
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drainIfDue(boss, 181_000, &buf) != null);
+
+    // Quiet 200s by now; the new threshold is one minute.
+    fake.now_ms = 200_000;
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_quiescence_threshold = .{ .id = worker, .ms = 60_000 },
+    });
+    try testing.expect(res == .ok);
+
+    const next = b.drainIfDue(boss, 241_000, &buf);
+    try testing.expect(next != null);
 }
 
 test "a terminal let go stops being sampled and stops having a quiet time (task 550)" {
