@@ -72,6 +72,10 @@ SWIFT_MENUS = [
     "macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift",
 ]
 
+# Every menu that carries the agent rows today (measured on 3153f8ece: all
+# three). If one is meant to stop, remove it here and say why in the commit.
+EXPECTED_CARRIERS = SWIFT_MENUS + [XIB]
+
 # The row that says "this menu carries the per-terminal agent actions".
 SHIELD_SWIFT = re.compile(r"poltergeistToggleShielded")
 SHIELD_XIB = re.compile(r'selector="poltergeistToggleShielded:"')
@@ -176,11 +180,18 @@ def findings(sources):
                     "like a feature that was never built"
                 )
 
-    if not carriers:
-        out.append(
-            "no macOS menu carries the per-terminal agent rows any more. Every check "
-            "above would pass by having nothing to check"
-        )
+    # Which menus carry the rows is written down, not rediscovered: a menu
+    # that lost its rows stopped being a carrier and was skipped, so losing
+    # them passed -- measured (#44): either right-click menu's file emptied on
+    # the real tree, `OK`. A menu that should carry them and does not is a
+    # finding; one that stops on purpose is taken off this list on purpose.
+    for name in EXPECTED_CARRIERS:
+        if name not in carriers:
+            out.append(
+                f"{name} no longer carries the per-terminal agent rows. Every check "
+                "above skips a menu without them, so this is the only line that says "
+                "the rows went missing"
+            )
     return out
 
 
@@ -298,7 +309,11 @@ def self_test():
          case(**{SWIFT_MENUS[0]: handwritten_switch}), 1),
         ("the rows are gone from everywhere",
          case(**{XIB: GOOD_XIB.replace("poltergeistToggleShielded:", "somethingElse:"),
-                 SWIFT_MENUS[0]: "// nothing", SWIFT_MENUS[1]: "// nothing"}), 1),
+                 SWIFT_MENUS[0]: "// nothing", SWIFT_MENUS[1]: "// nothing"}), 3),
+        # ⚠️ **The blind spot #44 measured**: one menu loses its rows, the
+        # others keep theirs.
+        ("one right-click menu loses the rows",
+         case(**{SWIFT_MENUS[1]: "// nothing"}), 1),
     ]
     ok = True
     for what, sources, want in cases:
@@ -342,7 +357,8 @@ def main():
     for f in found:
         print(f"HIT    {f}")
     if found:
-        print(f"\n{len(found)} problem(s): a menu has the agent rows without one of "
+        print(f"\n{len(found)} problem(s): a menu that should carry the agent rows no "
+              f"longer does, or carries them without one of "
               f"{', '.join(b.name for b in BUILDERS)}.")
         return 1
     print("OK: every menu with the agent rows builds "

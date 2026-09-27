@@ -144,11 +144,25 @@ def wiring_findings(src):
     return out
 
 
+# What each watched file must still contain for this sweep to mean anything.
+# Without it an emptied or rewritten file has no direct pushes and passes --
+# measured (#44): `Surface.zig` or `Termio.zig` emptied on the real tree,
+# `OK.` Code only; a comment naming the mailbox does not count.
+ANCHOR = re.compile(r"renderer_(?:thread\.mailbox|mailbox)\b")
+
+
 def findings(sources):
     out = []
     for name, src in sorted(sources.items()):
         plain = strip_comments(src)
         lines = src.split("\n")
+        if not ANCHOR.search(plain):
+            out.append(
+                f"{name} no longer mentions the renderer's mailbox at all. This sweep "
+                "is only a guard while the file it reads still sends to that mailbox; "
+                "if the sending moved, point WATCHED at where it went"
+            )
+            continue
         for m in re.finditer(r"renderer_(?:thread\.mailbox|mailbox)\.push\(", plain):
             line = plain[: m.start()].count("\n") + 1
             if excused_above(lines, line):
@@ -199,8 +213,14 @@ def self_test():
          case(**{"Termio.zig": "_ = self.renderer_mailbox.push(io, m, .{ ." + "instant = {} });\n"}), 0),
         # ⚠️ The shape that has cost this project several rounds: prose that
         # names what the rule looks for, with the code gone.
+        ("a comment naming the pattern beside the wrapped send",
+         case(**{"Surface.zig": "// this used to be a direct renderer_thread.mailbox.push call\n"
+                 + GOOD["Surface.zig"]}), 0),
+        # ⚠️ **The blind spot #44 measured**: with the code gone and only prose
+        # left, nothing is swept, and that must not read as clean.
         ("a comment naming the pattern, code removed",
-         case(**{"Surface.zig": "// this used to be a direct renderer_thread.mailbox.push call\n"}), 0),
+         case(**{"Surface.zig": "// this used to be a direct renderer_thread.mailbox.push call\n"}), 1),
+        ("a watched file emptied", case(**{"Termio.zig": ""}), 1),
         ("an excused one",
          case(**{"Termio.zig": "// unbounded-push: the reason.\n"
                  "_ = self.renderer_mailbox.push(io, m, .{ ." + "forever = {} });\n"}), 0),
@@ -279,7 +299,8 @@ def main():
     for f in found:
         print(f"HIT    {f}")
     if found:
-        print(f"\n{len(found)} problem(s): something can wait with no bound.")
+        print(f"\n{len(found)} problem(s): something can wait with no bound, or a "
+              "watched file no longer has the sends this sweep exists to read.")
         return 1
     print("OK.")
     return 0

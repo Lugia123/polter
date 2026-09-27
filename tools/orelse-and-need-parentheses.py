@@ -215,6 +215,13 @@ def main():
     except OSError as e:
         print(f"cannot read src/build: {e}")
         return 1
+    # The same guard `git-output-is-trimmed-first.py` has, for the same
+    # directory. Without it a `src/build/` with no .zig in it read as zero
+    # violations -- measured (#44): the real tree's 34 files moved out, `OK.`
+    if not sources:
+        print("FAIL: no .zig files under src/build. This gate's whole subject is what is "
+              "in them; finding none is a broken scan, not a clean result.")
+        return 1
 
     found = findings(sources)
     n = sum(len(MIXES.findall(s)) for s in sources.values())

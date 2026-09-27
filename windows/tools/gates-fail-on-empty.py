@@ -167,7 +167,6 @@ KNOWN_CRASHES = {
     "the-frames-permit-comes-back.py",
     "the-heartbeat-outlives-its-own-stall.py",
     "the-key-line-decides-on-what-it-prints.py",
-    "tools/menu-shortcuts-come-from-the-config.py",
     "translated-strings-reach-the-user.py",
     "uia-patterns-declared.py",
     "watchdog-alarm-path.py",
@@ -189,8 +188,11 @@ def build_empty_tree(gates, extra=(), root_gates=()):
     """
     top = tempfile.mkdtemp(prefix="gates-fail-on-empty-")
     tools = os.path.join(top, "windows", "tools")
+    # `src/build` is here so that "present, with nothing in it" is what the
+    # gates that sweep it see. Without it they saw "missing", and one of them
+    # was red here only because the directory was not there (#44).
     for d in ("windows/tools", "windows/host/src", "dev-docs/windows", "src",
-              "include/ghostty", "tools"):
+              "src/build", "include/ghostty", "tools"):
         os.makedirs(os.path.join(top, *d.split("/")), exist_ok=True)
     git(top, "init", "-q")
     for g in gates:

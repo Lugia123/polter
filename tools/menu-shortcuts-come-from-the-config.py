@@ -65,8 +65,17 @@ def line_of(xib, needle):
 
 
 def main():
-    delegate = (ROOT / DELEGATE).read_text(encoding="utf-8")
-    xib = (ROOT / XIB).read_text(encoding="utf-8")
+    # Asked for by name before reading, so a file that moved is a FAIL that
+    # says which one -- it used to be an uncaught FileNotFoundError, which the
+    # empty-tree meta gate had to excuse as a known crash (#44).
+    texts = {}
+    for rel in (DELEGATE, XIB):
+        try:
+            texts[rel] = (ROOT / rel).read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"FAIL: cannot read {rel}: {e}")
+            return 1
+    delegate, xib = texts[DELEGATE], texts[XIB]
 
     problems = []
     literal = len(LITERAL_CALL.findall(delegate))

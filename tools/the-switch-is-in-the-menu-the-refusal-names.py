@@ -81,12 +81,17 @@ def findings(sources):
         if CTX_CLAIM.search(src):
             claims_ctx.append(name)
 
-    if not claims_tab and not claims_ctx:
-        out.append(
-            "nothing says where the switch is any more. The refusal is the only place a "
-            "person finds out, so saying nothing is its own defect -- and it would make "
-            "every check below pass by having nothing to check"
-        )
+    # Each one, not all of them together. Checked only as a set, one sentence
+    # losing its "where" passed as long as another still had one -- measured
+    # (#44): any one of these files emptied on the real tree, `OK`.
+    for name in CLAIMS:
+        if name not in claims_tab and name not in claims_ctx:
+            out.append(
+                f"{name} no longer says where the switch is. The refusal is the only "
+                "place a person finds out, so saying nothing is its own defect -- and if "
+                "every one of these went quiet, every check below would pass by having "
+                "nothing to check"
+            )
 
     if claims_tab and not IN_TAB_MENU.search(sources.get(STRIP, "")):
         out.append(
@@ -144,7 +149,11 @@ def self_test():
          case(**{"src/poltergeist/rpc.zig": "the user has not allowed it",
                  "src/cli/mcp.zig": "refused with AuthoriseOff",
                  "src/poltergeist/skills/supervising.md": "a switch you cannot set",
-                 "src/poltergeist/skills/reading-a-terminal.md": "a switch you cannot set"}), 1),
+                 "src/poltergeist/skills/reading-a-terminal.md": "a switch you cannot set"}), 4),
+        # ⚠️ **The blind spot #44 measured**: one of the four goes quiet while
+        # the others still say where it is.
+        ("one of them says nothing",
+         case(**{"src/cli/mcp.zig": "refused with AuthoriseOff"}), 1),
     ]
     ok = True
     for what, sources, want in cases:
@@ -180,7 +189,8 @@ def main():
     for f in found:
         print(f"HIT    {f}")
     if found:
-        print(f"\n{len(found)} problem(s): a refusal is naming a menu the switch is not in.")
+        print(f"\n{len(found)} problem(s): a refusal names a menu the switch is not in, "
+              "or no longer says where the switch is.")
         return 1
     print("OK: every sentence names a menu that has it.")
     return 0
