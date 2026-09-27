@@ -56,7 +56,20 @@ struct SplitView<L: View, R: View>: View {
                         visibleSize: splitterVisibleSize,
                         invisibleSize: splitterInvisibleSize,
                         color: dividerColor,
-                        split: $split)
+                        split: split)
+                    // Here, not in `Divider`, so the divider holds no binding
+                    // (#45). This closure captures the split view instead.
+                    .accessibilityAdjustableAction { direction in
+                        let adjustment: CGFloat = 0.025
+                        switch direction {
+                        case .increment:
+                            split = min(split + adjustment, 0.9)
+                        case .decrement:
+                            split = max(split - adjustment, 0.1)
+                        @unknown default:
+                            break
+                        }
+                    }
                     .position(splitterPoint)
                     .gesture(dragGesture(geo.size, splitterPoint: splitterPoint))
                     .onTapGesture(count: 2) {

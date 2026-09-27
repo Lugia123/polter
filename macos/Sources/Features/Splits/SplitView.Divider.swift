@@ -2,12 +2,24 @@ import SwiftUI
 
 extension SplitView {
     /// The split divider that is rendered and can be used to resize a split view.
-    struct Divider: View {
+    ///
+    /// It holds values only -- no binding, no closure. A closure in here that
+    /// captured the divider, while the divider held the `split` binding, kept
+    /// a closed pane alive (#25): the binding's closures hold the split
+    /// tree's nodes. So the value it shows comes in as a plain number, and
+    /// everything that changes the split (dragging, double-click, VoiceOver's
+    /// adjustable action) is attached where `SplitView` creates it (#45).
+    ///
+    /// `Equatable` is what keeps it that way, not diffing: a `Binding`, a
+    /// closure, `@State` or `@Environment` stored here stops the synthesized
+    /// conformance from compiling, and the compiler names the property.
+    struct Divider: View, Equatable {
         let direction: SplitViewDirection
         let visibleSize: CGFloat
         let invisibleSize: CGFloat
         let color: Color
-        @Binding var split: CGFloat
+        /// The current fraction, shown to VoiceOver. Not a binding: see above.
+        let split: CGFloat
 
         private var visibleWidth: CGFloat? {
             switch direction {
@@ -60,17 +72,6 @@ extension SplitView {
             .accessibilityValue("\(Int(split * 100))%")
             .accessibilityHint(axHint)
             .accessibilityAddTraits(.isButton)
-            .accessibilityAdjustableAction { direction in
-                let adjustment: CGFloat = 0.025
-                switch direction {
-                case .increment:
-                    split = min(split + adjustment, 0.9)
-                case .decrement:
-                    split = max(split - adjustment, 0.1)
-                @unknown default:
-                    break
-                }
-            }
         }
 
         private var axLabel: String {
