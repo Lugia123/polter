@@ -3627,30 +3627,7 @@ pub fn eraseDisplay(
             // at a prompt scrolls the screen contents prior to clearing.
             // Most shells send `ESC [ H ESC [ 2 J` so we can't just check
             // our current cursor position. See #905
-            if (self.screens.active_key == .primary) at_prompt: {
-                // Go from the bottom of the active up and see if we're
-                // at a prompt.
-                const active_br = self.screens.active.pages.getBottomRight(
-                    .active,
-                ) orelse break :at_prompt;
-                var it = active_br.rowIterator(
-                    .left_up,
-                    self.screens.active.pages.getTopLeft(.active),
-                );
-                while (it.next()) |p| {
-                    const row = p.rowAndCell().row;
-                    switch (row.semantic_prompt) {
-                        // If we're at a prompt or input area, then we are at a prompt.
-                        .prompt,
-                        .prompt_continuation,
-                        => break,
-
-                        // If we have command output, then we're most certainly not
-                        // at a prompt.
-                        .none => break :at_prompt,
-                    }
-                } else break :at_prompt;
-
+            if (self.clearWouldScroll()) {
                 self.screens.active.scrollClear() catch {
                     // If we fail, we just fall back to doing a normal clear
                     // so we don't worry about the error.
@@ -3717,6 +3694,42 @@ pub fn eraseDisplay(
 
         .scrollback => self.screens.active.eraseHistory(null),
     }
+}
+
+/// Whether a complete erase (`ESC [ 2 J`) should scroll the screen into
+/// history instead of discarding it: on the primary screen, and the last
+/// **non-empty** row of the active area is a prompt or its continuation.
+///
+/// **Rows with nothing on them are passed over.** This used to take the
+/// bottom row as it was, so any empty row under the prompt -- the usual
+/// state of a screen that is not full -- made it answer "not at a prompt",
+/// and the screen was discarded rather than kept. The comment it was written
+/// under already said "last non-empty row"; the code did not. Emptiness is
+/// judged by cells, the way `PageList.scrollClear` judges it when it counts
+/// what to push, so the two agree on which rows count.
+///
+/// The row after a prompt carries the prompt's continuation mark even when
+/// nothing is written on it, so it is passed over too, and the prompt line
+/// itself decides.
+fn clearWouldScroll(self: *Terminal) bool {
+    if (self.screens.active_key != .primary) return false;
+    const pages = &self.screens.active.pages;
+    const active_br = pages.getBottomRight(.active) orelse return false;
+    var it = active_br.rowIterator(.left_up, pages.getTopLeft(.active));
+    while (it.next()) |p| {
+        const row = p.rowAndCell().row;
+        const empty = for (p.node.page().getCells(row)) |cell| {
+            if (!cell.isEmpty()) break false;
+        } else true;
+        if (empty) continue;
+        return switch (row.semantic_prompt) {
+            // At a prompt or in its input area.
+            .prompt, .prompt_continuation => true,
+            // Command output: certainly not at a prompt.
+            .none => false,
+        };
+    }
+    return false;
 }
 
 /// Resets all margins and fills the whole screen with the character 'E'
@@ -16641,4 +16654,112 @@ test "Terminal: eraseDisplay complete ignores stale prompt on recycled row" {
     t.eraseDisplay(.complete, false);
 
     try testing.expectEqual(t.screens.active.pages.rows, t.screens.active.pages.total_rows);
+}
+
+/// How many rows up from the bottom of the active area the first row with a
+/// prompt mark is, or null. The number the #826 probe read on Windows.
+fn testFirstMarkedFromBottom(t: *Terminal) ?usize {
+    const pages = &t.screens.active.pages;
+    var it = pages.getBottomRight(.active).?.rowIterator(.left_up, pages.getTopLeft(.active));
+    var i: usize = 0;
+    while (it.next()) |p| : (i += 1) {
+        if (p.rowAndCell().row.semantic_prompt != .none) return i;
+    }
+    return null;
+}
+
+fn testHistoryRows(t: *Terminal) usize {
+    return t.screens.active.pages.total_rows - t.rows;
+}
+
+// These four read only what `ESC [ 2 J` does to the history, never
+// `clearWouldScroll`, so the same tests compile and run against the code
+// before it -- which is how the first is shown to redden there and the other
+// three to hold on both sides.
+
+test "eraseDisplay complete: a prompt with empty rows under it is kept in history" {
+    // A screen that is not full, at a prompt: 20 rows, the cursor on row 17,
+    // a marked prompt just above it, two empty rows under. (The state
+    // measured on Windows after a restore, #826.)
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 80, .rows = 20 });
+    defer t.deinit(alloc);
+    var s = t.vtStream();
+    defer s.deinit();
+    for (0..16) |i| {
+        var b: [16]u8 = undefined;
+        s.nextSlice(try std.fmt.bufPrint(&b, "OUT{d}\r\n", .{i}));
+    }
+    s.nextSlice("\x1b]133;A\x07$ ");
+    t.carriageReturn();
+    try t.index();
+
+    // The fixture is the reading, or it is not the case being tested.
+    try testing.expectEqual(@as(usize, 17), t.screens.active.cursor.y);
+    try testing.expectEqual(@as(?usize, 2), testFirstMarkedFromBottom(&t));
+
+    const before = testHistoryRows(&t);
+    s.nextSlice("\x1b[H\x1b[2J");
+    try testing.expect(testHistoryRows(&t) > before);
+    const history = try t.screens.active.dumpStringAlloc(alloc, .{ .history = .{} });
+    defer alloc.free(history);
+    try testing.expect(std.mem.indexOf(u8, history, "OUT15") != null);
+    try testing.expect(std.mem.indexOf(u8, history, "$") != null);
+}
+
+test "eraseDisplay complete: a prompt on the bottom row is kept in history" {
+    // No empty row under the prompt: the screen is full and the prompt is
+    // its last row. Kept before this change and after; if it were not, the
+    // change would have swapped one behaviour for another rather than fixed
+    // the empty-row case.
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 80, .rows = 20 });
+    defer t.deinit(alloc);
+    var s = t.vtStream();
+    defer s.deinit();
+    for (0..19) |i| {
+        var b: [16]u8 = undefined;
+        s.nextSlice(try std.fmt.bufPrint(&b, "OUT{d}\r\n", .{i}));
+    }
+    s.nextSlice("\x1b]133;A\x07$ ");
+
+    try testing.expectEqual(@as(usize, 19), t.screens.active.cursor.y);
+    try testing.expectEqual(@as(?usize, 0), testFirstMarkedFromBottom(&t));
+
+    const before = testHistoryRows(&t);
+    s.nextSlice("\x1b[H\x1b[2J");
+    try testing.expect(testHistoryRows(&t) > before);
+    const history = try t.screens.active.dumpStringAlloc(alloc, .{ .history = .{} });
+    defer alloc.free(history);
+    try testing.expect(std.mem.indexOf(u8, history, "OUT18") != null);
+}
+
+test "eraseDisplay complete: output with empty rows under it and no prompt is discarded" {
+    // Without this, skipping empty rows could turn into always scrolling.
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 80, .rows = 20 });
+    defer t.deinit(alloc);
+    var s = t.vtStream();
+    defer s.deinit();
+    for (0..16) |i| {
+        var b: [16]u8 = undefined;
+        s.nextSlice(try std.fmt.bufPrint(&b, "OUT{d}\r\n", .{i}));
+    }
+    try testing.expectEqual(@as(usize, 16), t.screens.active.cursor.y);
+    try testing.expectEqual(@as(?usize, null), testFirstMarkedFromBottom(&t));
+
+    const before = testHistoryRows(&t);
+    s.nextSlice("\x1b[H\x1b[2J");
+    try testing.expectEqual(before, testHistoryRows(&t));
+}
+
+test "eraseDisplay complete: an empty screen is not scrolled into history" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 80, .rows = 20 });
+    defer t.deinit(alloc);
+    var s = t.vtStream();
+    defer s.deinit();
+
+    s.nextSlice("\x1b[H\x1b[2J");
+    try testing.expectEqual(@as(usize, 0), testHistoryRows(&t));
 }
