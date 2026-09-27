@@ -503,6 +503,52 @@ claude 2.1.278 上实测，每条都有对照（基线能调到；同一批里�
 
 三条都不读 `env` 块里的值，也不写任何文件。
 
+### 11.2.1 claude.ai 同步下来的东西埋深一层
+
+开关对不对是一回事，**清单看不看得见**是另一回事：清点不到的项，
+`Selection` 连问都问不到它，角色再怎么写也关不掉。2026-09-27 在本机量到的：
+一个把本机全部 20 个自有 skill 都关掉了的总管角色，启动参数里一个 claude.ai 的
+skill 都没有，`design` 插件的 7 个 skill 也全在。
+
+原因是路径。别的东西都在一层：
+
+```text
+~/.claude/skills/<skill>/SKILL.md
+~/.claude/plugins/cache/<市场>/<插件>/<版本>/…
+```
+
+claude.ai 同步下来的**多一层「账号桶」**：
+
+```text
+~/.claude/skills/synced/<账号>/<skill>/SKILL.md
+~/.claude/plugins/synced/<账号>/<插件>/.claude-plugin/plugin.json
+```
+
+停在 `skills/<skill>` 的遍历，看见 `synced/` 底下没有 `SKILL.md`，就跨过去了。
+
+两件跟着来的事，都是量出来的不是读出来的：
+
+- **同步的 skill 吃 `skillOverrides`，按裸名。** 对照：`claude -p "调用
+  theme-factory"` 调得到；同一句加
+  `--settings '{"skillOverrides":{"theme-factory":"off"}}'` 报
+  `Skill theme-factory is disabled for model invocation in skillOverrides settings`。
+  和用户自己那份是同一个开关，所以同名的两份在清单里合成一行。
+- **同步的插件不看 `enabledPlugins`。** 本机 `design@knowledge-work-plugins`
+  在 `~/.claude/settings.json` 里是 `false`，它的 7 个 skill 照样在会话里。
+  那个开关是给从市场装的插件用的，同步来的不走它——所以适配器**无条件列出**
+  `plugins/synced/` 下每个带 `.claude-plugin/plugin.json` 的目录。
+
+`synced` 是个普通名字，用户自己完全可以有一个叫这个的 skill 或插件。所以两边
+适配器都先看这个目录自己像不像一个（有没有 `SKILL.md` / `plugin.json`）：像，
+那它就是，没有桶。
+
+⚠️ 还有一类关得掉但**列不出来**：Claude Code 自带的 skill（`code-review`、
+`security-review`、`run`、`init`、`artifact-design`……）。它们在二进制里，磁盘上
+没有，任何走目录的清点都够不着；`claude --help` 里也没有列 skill 的命令，只有
+`--disable-slash-commands` 一刀全关。实测 `skillOverrides` 按名字关得掉
+`keybindings-help`，所以要覆盖它们只能在适配器里写死一张名单，而那张名单会随
+Claude Code 版本过期。**目前没做。**
+
 ## 11.3 形状：插件出答案，核心只认契约
 
 ```
@@ -528,7 +574,7 @@ Polter，适配器管角色。
 adapter inventory '{"version":1,"cwd":null|"/abs","home":"/abs"}'
 → {"version":1,"installed":bool,"notes":[…],
    "items":[{"kind":"skill"|"mcp","id":"skill:pdf","name":"pdf",
-             "description":"…","detail":"http · host","source":"user|project|local|plugin:<p>",
+             "description":"…","detail":"http · host","source":"user|claude.ai|project|local|plugin:<p>",
              "group":"<plugin>","group_description":"…","locked":bool}]}
 
 adapter launch '{"version":1,"cwd":…,"home":…,

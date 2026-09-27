@@ -141,6 +141,63 @@ def skills_in(directory, source, prefix=""):
     return items
 
 
+def synced_buckets(directory):
+    """The per-account folders under `<directory>/synced`.
+
+    What claude.ai syncs down sits one level deeper than everything else:
+    `skills/synced/<account>/<skill>/SKILL.md`, and
+    `plugins/synced/<account>/<plugin>/.claude-plugin/plugin.json`. A walk
+    that stops at `skills/<skill>` sees `synced` as a folder with no
+    `SKILL.md` and steps over it -- and what the inventory never sees, a
+    role can never switch off. Measured 2026-09-27: a supervisor role that
+    switched off all twenty of this machine's own skills left all twelve
+    synced ones and the seven skills of the synced `design` plugin on.
+
+    `synced` is an ordinary name and could be somebody's own skill or
+    plugin. If it looks like one it is one, and it has no buckets.
+    """
+    root = os.path.join(directory, "synced")
+    if os.path.isfile(os.path.join(root, "SKILL.md")):
+        return []
+    if os.path.isfile(os.path.join(root, ".claude-plugin", "plugin.json")):
+        return []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        if name.startswith("."):
+            continue
+        path = os.path.join(root, name)
+        if os.path.isdir(path):
+            out.append(path)
+    return out
+
+
+def synced_plugins_in(bucket):
+    """`<bucket>/<plugin>/` for each plugin claude.ai synced down.
+
+    Listed whatever `enabledPlugins` says, which is the one place this
+    departs from an installed plugin. Measured 2026-09-27: `design` is
+    `false` there and its seven skills were in the session anyway -- the
+    switch that settings file holds is for plugins installed from a
+    marketplace, and a synced plugin does not go through it.
+    """
+    out = []
+    try:
+        names = sorted(os.listdir(bucket))
+    except OSError:
+        return out
+    for name in names:
+        if name.startswith("."):
+            continue
+        path = os.path.join(bucket, name)
+        if os.path.isfile(os.path.join(path, ".claude-plugin", "plugin.json")):
+            out.append((name, path))
+    return out
+
+
 # --- MCP servers -----------------------------------------------------------
 
 
@@ -283,7 +340,10 @@ def inventory(req):
     notes = []
     items = []
 
-    items += skills_in(os.path.join(home, ".claude", "skills"), "user")
+    skills_root = os.path.join(home, ".claude", "skills")
+    items += skills_in(skills_root, "user")
+    for bucket in synced_buckets(skills_root):
+        items += skills_in(bucket, "claude.ai")
     if cwd:
         items += skills_in(os.path.join(cwd, ".claude", "skills"), "project")
 
@@ -303,6 +363,12 @@ def inventory(req):
 
     for key, path in sorted(enabled_plugins(home, cwd, notes).items()):
         items += plugin_items(key, path)
+    # After the installed ones: where the same plugin is both installed and
+    # synced, the installed entry is the one already described, and the
+    # de-duplication below keeps whichever came first.
+    for bucket in synced_buckets(os.path.join(home, ".claude", "plugins")):
+        for name, path in synced_plugins_in(bucket):
+            items += plugin_items(name, path)
 
     # The same id twice (a project skill shadowing a user one of the same
     # name) is one switch at launch, so it is one row here.

@@ -575,6 +575,20 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
     const files = [_][2][]const u8{
         .{ ".claude/skills/pdf/SKILL.md", "---\nname: pdf\ndescription: Read PDFs.\n---\nbody" },
         .{ ".claude/skills/folded/SKILL.md", "---\nname: folded\ndescription: >\n  One line\n  and another.\n---\n" },
+        // What claude.ai syncs down sits a folder deeper: under `synced`, and
+        // then one folder per signed-in account. A walk that stops at
+        // `skills/<skill>` steps over it -- and what the inventory never sees,
+        // a role can never switch off.
+        .{ ".claude/skills/synced/acct/theme/SKILL.md", "---\nname: theme\ndescription: Synced.\n---\n" },
+        // A synced plugin, which `installed_plugins.json` below does not
+        // mention and `enabledPlugins` does not switch on. Those two are for
+        // plugins installed from a marketplace; a synced one is in the session
+        // regardless, so it is listed regardless.
+        .{
+            ".claude/plugins/synced/acct/design/.claude-plugin/plugin.json",
+            \\{"name":"design","description":"Design work."}
+        },
+        .{ ".claude/plugins/synced/acct/design/skills/ux-copy/SKILL.md", "---\nname: ux-copy\ndescription: Words.\n---\n" },
         .{
             ".claude.json",
             \\{"mcpServers":{"polter":{"command":"/x/polter","args":["+mcp"]},
@@ -649,8 +663,9 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
         try ids.put(aa, item.object.get("id").?.string, item.object);
     }
     const want = [_][]const u8{
-        "skill:pdf",  "skill:folded", "skill:ops:terminal",
-        "mcp:polter", "mcp:pencil",   "mcp:plugin_ops_ops",
+        "skill:pdf",          "skill:folded",         "skill:ops:terminal",
+        "skill:theme",        "mcp:polter",           "mcp:pencil",
+        "mcp:plugin_ops_ops", "skill:design:ux-copy",
     };
     for (want) |id| if (!ids.contains(id)) {
         std.debug.print("missing {s} in {s}\n", .{ id, inv });
@@ -666,7 +681,7 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
     const p: persona.Persona = .{ .key = "r", .name = "r", .instructions = "be brief" };
     const choice: persona.CliChoice = .{
         .cli = "claude-code",
-        .skills = .{ .except = &.{ "skill:pdf", "skill:ops:terminal" } },
+        .skills = .{ .except = &.{ "skill:pdf", "skill:ops:terminal", "skill:theme", "skill:design:ux-copy" } },
         .mcp = .{ .except = &.{ "mcp:pencil", "mcp:plugin_ops_ops", "mcp:polter" } },
         .args = &.{ "--settings", "{\"theme\":\"dark\"}" },
     };
@@ -687,6 +702,10 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
     // skill through a Skill() rule, an MCP server through mcp__<name>.
     try testing.expect(std.mem.indexOf(u8, argv, "\"pdf\": \"off\"") != null);
     try testing.expect(std.mem.indexOf(u8, argv, "Skill(ops:terminal)") != null);
+    // A synced skill takes the same switch as the user's own, and a synced
+    // plugin's skill the same switch as an installed plugin's.
+    try testing.expect(std.mem.indexOf(u8, argv, "\"theme\": \"off\"") != null);
+    try testing.expect(std.mem.indexOf(u8, argv, "Skill(design:ux-copy)") != null);
     try testing.expect(std.mem.indexOf(u8, argv, "\x00mcp__pencil") != null);
     try testing.expect(std.mem.indexOf(u8, argv, "\x00mcp__plugin_ops_ops") != null);
     // Polter's own server is not the role's to take away.

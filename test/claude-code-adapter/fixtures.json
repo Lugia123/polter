@@ -10,6 +10,11 @@
     "HOME/.claude/skills/.hidden/SKILL.md": "---\nname: hidden\n---\n",
     "HOME/.claude/skills/Zeta/SKILL.md": "---\nname: Zeta\ndescription: an upper-case name sorts before every lower-case one\n---\n",
     "HOME/.claude/skills/no-skill-file/readme.txt": "a directory with no SKILL.md is not a skill\n",
+    "HOME/.claude/skills/synced/acct-a/manifest.json": {"json": {"skills": []}},
+    "HOME/.claude/skills/synced/acct-a/theme-factory/SKILL.md": "---\nname: theme-factory\ndescription: what claude.ai syncs down sits one folder deeper\n---\n",
+    "HOME/.claude/skills/synced/acct-a/pdf/SKILL.md": "---\nname: pdf\ndescription: the same name the user has of their own, so one row and one switch\n---\n",
+    "HOME/.claude/skills/synced/acct-a/not-a-skill/readme.txt": "no SKILL.md in a bucket either\n",
+    "HOME/.claude/skills/synced/acct-b/second-account/SKILL.md": "---\nname: second-account\ndescription: a second signed-in account is a second bucket\n---\n",
     "HOME/.claude.json": {"json": {
       "numbers": 1.5,
       "mcpServers": {
@@ -27,7 +32,7 @@
         "/elsewhere": {"mcpServers": {"not-me": {"command": "x"}}}
       }
     }},
-    "HOME/.claude/settings.json": {"json": {"enabledPlugins": {"argus@mk": true, "off@mk": false, "one@mk": 1, "kanban@mk": true, "strmcp@mk": true}}},
+    "HOME/.claude/settings.json": {"json": {"enabledPlugins": {"argus@mk": true, "off@mk": false, "one@mk": 1, "kanban@mk": true, "strmcp@mk": true, "design@mk": false}}},
     "HOME/.claude/plugins/installed_plugins.json": {"json": {"version": 2, "plugins": {
       "argus@mk": [{"scope": "user", "installPath": "{HOME}/plugins/argus"}],
       "off@mk": [{"scope": "user", "installPath": "{HOME}/plugins/off"}],
@@ -53,6 +58,11 @@
     "HOME/plugins/strmcp/.claude-plugin/plugin.json": {"json": {"description": "mcpServers named as a file", "mcpServers": "servers.json"}},
     "HOME/plugins/strmcp/servers.json": {"json": {"s1": {"command": "/x/s1"}}},
     "HOME/plugins/strmcp/skills/multi/SKILL.md": "---\nname: multi\ndescription: |\n  first\n\n  third\n---\n",
+    "HOME/.claude/plugins/synced/acct-a/manifest.json": {"json": {"plugins": []}},
+    "HOME/.claude/plugins/synced/acct-a/design/.claude-plugin/plugin.json": {"json": {"name": "design", "description": "Synced, and listed although enabledPlugins says design@mk is false: that switch is for plugins installed from a marketplace"}},
+    "HOME/.claude/plugins/synced/acct-a/design/skills/ux-copy/SKILL.md": "---\nname: ux-copy\ndescription: a synced plugin's skill\n---\n",
+    "HOME/.claude/plugins/synced/acct-a/design/.mcp.json": {"json": {"mcpServers": {"figma": {"type": "http", "url": "https://figma.example.com/mcp"}}}},
+    "HOME/.claude/plugins/synced/acct-a/no-manifest/skills/ghost/SKILL.md": "---\nname: ghost\ndescription: no plugin.json, so not a plugin and not listed\n---\n",
     "CWD/.claude/skills/pdf/SKILL.md": "---\nname: pdf\ndescription: the project's own copy, shadowed by id\n---\n",
     "CWD/.claude/skills/proj-skill/SKILL.md": "---\nname: proj-skill\ndescription: A project skill\n---\n",
     "CWD/.mcp.json": {"json": {"mcpServers": {"shared": {"type": "http", "url": "https://shared.example.com/x"}, "polter": {"command": "dup"}}}},

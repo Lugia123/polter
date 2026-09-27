@@ -321,6 +321,7 @@
 "Yours" = "你自己的";
 "This Project" = "本项目";
 "This Project, Only on This Machine" = "本项目（仅本机）";
+"Synced from claude.ai" = "从 claude.ai 同步的";
 "Duplicate Role" = "复制角色";
 "Delete Role" = "删除角色";
 "A role is a saved way to start an agent CLI: which skills and MCP servers it keeps, and what it's told." = "角色是一套保存好的 agent CLI 启动方式：保留哪些 skill 和 MCP 服务器、启动时告诉它什么。";

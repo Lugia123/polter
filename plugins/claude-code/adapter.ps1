@@ -396,6 +396,40 @@ function Get-SkillsIn([string]$Dir, [string]$Source, [string]$Prefix = '') {
     return , $items
 }
 
+# The per-account folders under `<Dir>/synced`. What claude.ai syncs down sits
+# one level deeper than everything else -- `skills/synced/<account>/<skill>/`
+# and `plugins/synced/<account>/<plugin>/` -- so a walk that stops at
+# `skills/<skill>` steps over `synced` and never sees any of it. `synced` is
+# an ordinary name: if it looks like somebody's own skill or plugin, it is
+# one, and it has no buckets. See `synced_buckets` in adapter.py.
+function Get-SyncedBuckets([string]$Dir) {
+    $root = Join-PyPath $Dir 'synced'
+    if ([System.IO.File]::Exists((Join-PyPath $root 'SKILL.md'))) { return , @() }
+    if ([System.IO.File]::Exists((Join-PyPath (Join-PyPath $root '.claude-plugin') 'plugin.json'))) { return , @() }
+    $out = New-List
+    foreach ($name in (Get-SortedNames $root)) {
+        if ($name.StartsWith('.', $script:Ordinal)) { continue }
+        $path = Join-PyPath $root $name
+        if ([System.IO.Directory]::Exists($path)) { $out.Add($path) }
+    }
+    return , $out
+}
+
+# `<Bucket>/<plugin>/` for each plugin claude.ai synced down -- listed whatever
+# `enabledPlugins` says, which is the one place this departs from an installed
+# plugin. See `synced_plugins_in` in adapter.py for the measurement.
+function Get-SyncedPluginsIn([string]$Bucket) {
+    $out = New-List
+    foreach ($name in (Get-SortedNames $Bucket)) {
+        if ($name.StartsWith('.', $script:Ordinal)) { continue }
+        $path = Join-PyPath $Bucket $name
+        if ([System.IO.File]::Exists((Join-PyPath (Join-PyPath $path '.claude-plugin') 'plugin.json'))) {
+            $out.Add(@($name, $path))
+        }
+    }
+    return , $out
+}
+
 # --- MCP servers --------------------------------------------------------------
 
 # What Claude Code puts between `mcp__` and `__`. A character outside the
@@ -653,7 +687,11 @@ function Get-Inventory($Req) {
     $notes = New-List
     $items = New-List
 
-    foreach ($i in (Get-SkillsIn (Join-PyPath (Join-PyPath $homeDir '.claude') 'skills') 'user')) { $items.Add($i) }
+    $skillsRoot = Join-PyPath (Join-PyPath $homeDir '.claude') 'skills'
+    foreach ($i in (Get-SkillsIn $skillsRoot 'user')) { $items.Add($i) }
+    foreach ($bucket in (Get-SyncedBuckets $skillsRoot)) {
+        foreach ($i in (Get-SkillsIn $bucket 'claude.ai')) { $items.Add($i) }
+    }
     if ($null -ne $cwd) {
         foreach ($i in (Get-SkillsIn (Join-PyPath (Join-PyPath $cwd '.claude') 'skills') 'project')) { $items.Add($i) }
     }
@@ -683,6 +721,13 @@ function Get-Inventory($Req) {
     [Array]::Sort($keys, [StringComparer]::Ordinal)
     foreach ($k in $keys) {
         foreach ($i in (Get-PluginItems $k $plugins[$k])) { $items.Add($i) }
+    }
+    # After the installed ones: where a plugin is both installed and synced,
+    # the de-duplication below keeps whichever came first.
+    foreach ($bucket in (Get-SyncedBuckets (Join-PyPath (Join-PyPath $homeDir '.claude') 'plugins'))) {
+        foreach ($p in (Get-SyncedPluginsIn $bucket)) {
+            foreach ($i in (Get-PluginItems $p[0] $p[1])) { $items.Add($i) }
+        }
     }
 
     # The same id twice is one switch at launch, so it is one row here.
