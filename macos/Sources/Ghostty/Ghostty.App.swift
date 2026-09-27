@@ -1104,6 +1104,19 @@ extension Ghostty {
                 guard let surface = target.target.surface else { return }
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
 
+                // **Only a surface some terminal window holds can be split.**
+                // Every controller hears the notification below and each one
+                // ignores a view outside its own tree without a word, so a
+                // view in no tree -- a closed tab kept alive for undo -- got
+                // `will_split` and then nothing at all (task 877). Refused
+                // here instead, and said: the core then opens a tab.
+                guard let controller = surfaceView.window?.windowController as? BaseTerminalController,
+                      controller.surfaceTree.contains(surfaceView) else {
+                    Ghostty.logger.warning(
+                        "new split refused: the target surface is not in any terminal window's split tree")
+                    return
+                }
+
                 var config = SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_SPLIT))
                 if let requested { config.workingDirectory = requested }
 

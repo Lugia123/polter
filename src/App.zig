@@ -235,11 +235,13 @@ poltergeist_last_worker: std.AutoHashMapUnmanaged(
 
 /// A split that has been asked for and whose terminal has not appeared yet.
 ///
-/// ⚠️ **Why this exists: the id cannot be read when the split is requested.**
-/// Both apprts perform a split asynchronously -- the Windows host pushes the
-/// op onto its window thread's queue and returns, and macOS posts a
-/// notification -- so when `performAction(.new_split, …)` comes back, the
-/// surface does not exist. The first version recorded the new worker by
+/// ⚠️ **Why this exists: the id cannot always be read when the split is
+/// requested.** The Windows host pushes the op onto its window thread's queue
+/// and returns, so when `performAction(.new_split, …)` comes back, the
+/// surface does not exist. (macOS is the other way round: its notification is
+/// delivered synchronously and the surface is already there. That case is
+/// attributed at once and never becomes pending; see
+/// `PendingWorker.afterSplit`, task 877.) The first version recorded the new worker by
 /// looking for a surface that had appeared by then, which is never, so
 /// nothing was ever recorded and every worker after the first was placed as
 /// if the tab held somebody else's panes. Measured on the real machine as
@@ -3983,7 +3985,77 @@ const PendingWorker = struct {
         }
         return null;
     }
+
+    /// What a split the apprt has said it will make leaves behind: its
+    /// terminal, if it is already there, or the question to ask next time.
+    ///
+    /// `before` is the surfaces from **before** the split was asked for;
+    /// `now` is the surfaces after `performAction` came back.
+    fn afterSplit(
+        alloc: Allocator,
+        by: poltergeistpkg.Bus.Id,
+        before: *const std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void),
+        now: []const poltergeistpkg.Bus.Id,
+        chat: []const poltergeistpkg.Bus.Id,
+    ) Allocator.Error!AfterSplit {
+        // ⚠️ **The snapshot from before the split, never one taken after.**
+        // An apprt that splits synchronously (macOS) has already added the
+        // worker by now, and a snapshot taken here would hold it -- so
+        // nothing would ever be new against it, and the next placement
+        // would wait on a split that had finished (task 877).
+        var pending: PendingWorker = .{ .by = by, .before = try before.clone(alloc) };
+
+        // And a worker that is already here is attributed now, not on the
+        // next call: there is nothing to wait for.
+        if (pending.attribute(now, chat)) |id| {
+            pending.deinit(alloc);
+            return .{ .appeared = id };
+        }
+        return .{ .pending = pending };
+    }
 };
+
+const AfterSplit = union(enum) {
+    appeared: poltergeistpkg.Bus.Id,
+    pending: PendingWorker,
+};
+
+test "a split that has already happened is attributed at once (task 877)" {
+    // Measured 2026-09-28 on macOS: the first `here` came back with the new
+    // terminal's id, so that split was complete before `performAction`
+    // returned. The snapshot of "what was here before" was taken after it,
+    // so it held the new worker too, nothing was ever new against it, and
+    // the next `here` fell back to a tab as `last_worker_pending`.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var before: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty;
+    defer before.deinit(alloc);
+    try before.put(alloc, 1, {});
+
+    // Synchronous: the worker is already in the list.
+    var sync = try PendingWorker.afterSplit(alloc, 1, &before, &.{ 1, 2 }, &.{});
+    defer if (sync == .pending) sync.pending.deinit(alloc);
+
+    // Found at all -- now, or by the next call looking at the same list.
+    // This is the half the second `here` depended on.
+    const found: ?poltergeistpkg.Bus.Id = switch (sync) {
+        .appeared => |id| id,
+        .pending => |*p| p.attribute(&.{ 1, 2 }, &.{}),
+    };
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), found);
+
+    // And found now: there is nothing to wait for.
+    const at_once = sync == .appeared;
+    try testing.expect(at_once);
+
+    // Asynchronous: not there yet, and found against the same `before` on
+    // the next call.
+    var later = try PendingWorker.afterSplit(alloc, 1, &before, &.{1}, &.{});
+    defer if (later == .pending) later.pending.deinit(alloc);
+    try testing.expect(later == .pending);
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), later.pending.attribute(&.{ 1, 2 }, &.{}));
+}
 
 test "a worker is attributed after its terminal exists, not when it was asked for" {
     const testing = std.testing;
@@ -3994,8 +4066,8 @@ test "a worker is attributed after its terminal exists, not when it was asked fo
     defer pending.deinit(alloc);
     try pending.before.put(alloc, 1, {});
 
-    // ⚠️ **The moment the split was asked for.** Both apprts split
-    // asynchronously, so the surface list has not changed yet. Anything that
+    // ⚠️ **The moment the split was asked for.** An apprt that splits
+    // asynchronously (the Windows host) has not changed the surface list yet. Anything that
     // tries to attribute here finds nothing -- which is exactly what capped
     // the placement at one worker on the real machine.
     try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), pending.attribute(&.{1}, &.{}));
@@ -4287,8 +4359,8 @@ fn poltergeistOpenTerminal(
 
     // **Settle the split asked for last time, now that its terminal exists.**
     //
-    // It could not be settled when it was asked for: both apprts split
-    // asynchronously, so the surface was not there yet. It is there now --
+    // It could not be settled when it was asked for: an apprt that splits
+    // asynchronously had not made the surface yet. It is there now --
     // this call is a later moment, and every one of them is.
     self.poltergeistSettlePendingWorker();
 
@@ -4342,17 +4414,26 @@ fn poltergeistOpenTerminal(
         ) catch break :placed .{ .tab = .split_failed };
 
         if (result == .will_split) {
-            // **Remembered as a question, not as an answer.** What the next
-            // call will do with it is find the surface that was not here when
-            // this one was asked for.
-            //
-            // ⚠️ `will_split` is the apprt saying it *will*, before it has --
-            // which is exactly why the worker cannot be identified here and
-            // is attributed on the next call instead.
-            var snapshot: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty;
-            for (self.surfaces.items) |v| snapshot.put(self.alloc, v.core().id, {}) catch {};
-            if (self.poltergeist_pending_worker) |*old_pending| old_pending.deinit(self.alloc);
-            self.poltergeist_pending_worker = .{ .by = by, .before = snapshot };
+            // **Attributed now if its terminal is already here, remembered as
+            // a question if not.** `will_split` is the apprt saying it
+            // *will*: the Windows host queues the split and returns before
+            // it has happened, while macOS makes it synchronously -- the
+            // notification it posts is delivered before `performAction`
+            // returns. Both are handled by `PendingWorker.afterSplit`.
+            var now: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+            defer now.deinit(alloc);
+            for (self.surfaces.items) |v| {
+                const id = v.core().id;
+                if (self.isChatSurface(id)) continue;
+                try now.append(alloc, id);
+            }
+            switch (try PendingWorker.afterSplit(self.alloc, by, &before, now.items, &.{})) {
+                .appeared => |id| self.poltergeist_last_worker.put(self.alloc, by, id) catch {},
+                .pending => |p| {
+                    if (self.poltergeist_pending_worker) |*old_pending| old_pending.deinit(self.alloc);
+                    self.poltergeist_pending_worker = p;
+                },
+            }
         }
 
         if (result != .will_split) {
