@@ -110,6 +110,7 @@ mod keys;
 mod hud;
 mod i18n;
 mod inspector;
+mod journal;
 mod keyseq;
 mod app_language;
 mod language;
@@ -5095,6 +5096,7 @@ fn load_api() -> Option<Api> {
             surface_set_focus: sym!(internal, "ghostty_surface_set_focus"),
             surface_free: sym!(internal, "ghostty_surface_free"),
             surface_capture_scrollback: sym!(internal, "ghostty_surface_capture_scrollback"),
+            surface_set_scrollback_journal: sym!(internal, "ghostty_surface_set_scrollback_journal"),
             surface_binding_action: sym!(internal, "ghostty_surface_binding_action"),
             app_personas: sym!(internal, "ghostty_app_personas"),
             surface_persona_face: sym!(internal, "ghostty_surface_persona_face"),

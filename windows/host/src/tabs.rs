@@ -97,7 +97,12 @@ pub struct Pane {
     /// a project restores it, and never derived from where the pane sits in
     /// the tree: two panes swapped would otherwise each save into the
     /// other's file.
-    pub scrollback: Option<crate::project::Slot>,
+    ///
+    /// **A `Journaled`, not a bare `Slot`**: the only way to make one asks
+    /// the core to keep this pane's scrollback written to that file as it
+    /// runs (`journal::start`), so a pane cannot be given a name that
+    /// nothing writes to after the save.
+    pub scrollback: Option<crate::journal::Journaled>,
 }
 
 /// A tab's identity. **Never an index, and never reused.**
@@ -2363,8 +2368,14 @@ fn create_pane(
         title: None,
         history: pending_history,
         // A pane made from a saved project keeps the snapshot it was made
-        // from, so saving it again writes to the same file.
-        scrollback: spec.scrollback.as_deref().and_then(crate::project::Slot::from_restore_path),
+        // from, so saving it again writes to the same file -- and journals
+        // to it from now on: a pane just restored has no journal, and the
+        // first write rewrites the file from the restored state.
+        scrollback: spec
+            .scrollback
+            .as_deref()
+            .and_then(crate::project::Slot::from_restore_path)
+            .map(|slot| crate::journal::start(id, s as usize, slot)),
     })
 }
 
@@ -3253,7 +3264,7 @@ pub fn close_tab(frame: HWND, id: TabId) {
 
 /// Record the snapshot a pane was just saved under -- see `Pane::scrollback`.
 /// A pane that has gone since the save started is nothing to record on.
-pub fn set_scrollback_slot(frame: HWND, pane: PaneId, slot: crate::project::Slot) {
+pub fn set_scrollback_slot(frame: HWND, pane: PaneId, slot: crate::journal::Journaled) {
     let Some(mut win) = window(frame) else { return };
     for t in win.tabs.iter_mut() {
         if let Some(p) = t.panes.iter_mut().find(|p| p.id == pane) {

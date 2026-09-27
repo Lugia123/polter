@@ -1437,6 +1437,12 @@ pub struct Api {
     /// copies it). `true` means queued, not written. Only a project save
     /// calls it (`project_ui::capture_scrollback`).
     pub surface_capture_scrollback: unsafe extern "C" fn(Surface, *const c_char) -> bool,
+    /// `ghostty_surface_set_scrollback_journal(surface, path)`: keep this
+    /// pane's scrollback written to `path` as it runs (absolute, ending in
+    /// `.snap`; null stops). `true` means queued; the core logs "scrollback
+    /// journal active path=..." once it is really written. Only
+    /// `journal::start` calls it.
+    pub surface_set_scrollback_journal: unsafe extern "C" fn(Surface, *const c_char) -> bool,
     /// **Would closing this surface lose something?**
     ///
     /// The core answers from three things at once: the `confirm-close-surface`

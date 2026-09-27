@@ -88,7 +88,7 @@ fn snapshot_and_surfaces(frame: HWND, id: TabId, name: String, saved_at: i64) ->
                             // slot (`capture_scrollback`); empty until then.
                             scrollback: String::new(),
                         },
-                        LeafPane { pane: p.id, surface: p.surface, slot: p.scrollback.clone() },
+                        LeafPane { pane: p.id, surface: p.surface, slot: p.scrollback.as_ref().map(|j| j.slot().clone()) },
                     ),
                 )
             })
@@ -153,7 +153,12 @@ fn capture_scrollback(
         }
         let name = alloc.name_for(snaps, p.slot.as_ref());
         leaf.scrollback = name.clone();
-        tabs::set_scrollback_slot(frame, p.pane, project::Slot { dir: snaps.to_path_buf(), name: name.clone() });
+        // Journaled from here on, so what the pane prints after this save
+        // is on disk too -- and asked before the capture below, which then
+        // rewrites the journal in place rather than a file beside it.
+        // Outside the window lock: `journal::start` calls into the core.
+        let journaled = crate::journal::start(p.pane, p.surface, project::Slot { dir: snaps.to_path_buf(), name: name.clone() });
+        tabs::set_scrollback_slot(frame, p.pane, journaled);
         let Some(abs) = snaps.join(&name).to_str().and_then(|s| std::ffi::CString::new(s).ok()) else {
             wlogf!(frame, "[project] capture {}: {:?} is not a UTF-8 path the core can take", name, snaps);
             continue;
