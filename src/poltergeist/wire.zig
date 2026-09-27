@@ -10,6 +10,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const AgentEvent = @import("agent_event.zig");
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Plugin = @import("Plugin.zig");
@@ -132,6 +133,9 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .group = try requireString(aa, params, "group"),
             .text = try requireString(aa, params, "text"),
         } },
+
+        .agent_event => .{ .agent_event = try parseAgentEvent(aa, params) },
+        .terminal_turn => .{ .terminal_turn = .{ .id = try requireId(params) } },
 
         .terminal_read => .{ .terminal_read = .{
             .id = try requireId(params),
@@ -471,6 +475,25 @@ fn rejectUnknownParams(method: rpc.Method, params: std.json.Value) ParseError!vo
 ///
 /// Separate from `optionalBool` on purpose: a default is a decision about
 /// what silence means, and for some fields silence has no honest reading.
+/// What `polter +hook` sends. `event` and `cli` are required; the rest is
+/// whatever that event carries. The text is cut to `max_text_bytes` here
+/// as well as in `+hook`: this end cannot assume the other one did.
+fn parseAgentEvent(aa: Allocator, params: ?std.json.ObjectMap) ParseError!AgentEvent.Event {
+    const name = try requireString(aa, params, "event");
+    const kind = std.meta.stringToEnum(AgentEvent.Kind, name) orelse return error.BadParams;
+    const text = try optionalString(aa, params, "text");
+    return .{
+        .event = kind,
+        .cli = try requireString(aa, params, "cli"),
+        .session_id = try optionalString(aa, params, "session_id"),
+        .detail = try optionalString(aa, params, "detail"),
+        .note = try optionalString(aa, params, "note"),
+        .text = if (text) |t| AgentEvent.cutBytes(t, AgentEvent.max_text_bytes) else null,
+        .text_bytes = try optionalU64(params, "text_bytes", if (text) |t| t.len else 0),
+        .waiting_on_background = optionalBool(params, "waiting_on_background", false),
+    };
+}
+
 fn requireBool(params: ?std.json.ObjectMap, key: []const u8) ParseError!bool {
     const p = params orelse return error.BadParams;
     return switch (p.get(key) orelse return error.BadParams) {
@@ -717,6 +740,37 @@ pub const TerminalInfo = struct {
     /// "separate windows" would be inventing an arrangement.
     window: ?u64 = null,
     tab: ?u64 = null,
+
+    /// What the agent CLI in it has said through its hooks. Absent for a
+    /// terminal whose hooks are `none` -- most of them -- where absence is
+    /// the answer. See `Bus.Agent`.
+    agent: ?AgentView = null,
+};
+
+/// A terminal's agent state, as `terminal_list` and `terminal_turn` show it.
+pub const AgentView = struct {
+    agent: Bus.Agent,
+    /// How long it has been in `agent.state`.
+    since_ms: u64,
+};
+
+/// What `terminal_turn` answers.
+pub const TurnView = struct {
+    id: Bus.Id,
+    agent: Bus.Agent,
+    /// Null when the terminal has not finished a turn Polter heard about.
+    turn: ?Text,
+    /// How long ago that turn ended.
+    ago_ms: u64,
+
+    pub const Text = struct {
+        text: []const u8,
+        /// The answer's length before it was cut; more than `text.len`
+        /// when it was.
+        text_bytes: u64,
+        at_ms: u64,
+        session_id: Bus.Small(96),
+    };
 };
 
 /// What became of the watch a terminal was opened with. See `Response.opened`.
@@ -868,6 +922,9 @@ pub const Response = union(enum) {
         deliveries: []const rpc.MentionRow,
     },
 
+    /// What `terminal_turn` answers.
+    turn: TurnView,
+
     failed: struct { code: []const u8, message: []const u8 },
 };
 
@@ -936,6 +993,36 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.write(true);
             try s.objectField("capabilities");
             try writeCapabilities(&s, c);
+        },
+        .turn => |t| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("id");
+            try writeId(&s, t.id);
+            try s.objectField("agent");
+            try writeAgent(&s, t.agent, null);
+
+            // `null` rather than absent: this tool was asked for exactly
+            // this, and "there is none" is its answer.
+            try s.objectField("turn");
+            if (t.turn) |turn| {
+                try s.beginObject();
+                try s.objectField("ended_ms_ago");
+                try s.write(t.ago_ms);
+                try s.objectField("session_id");
+                try s.write(turn.session_id.get());
+                try s.objectField("text");
+                try s.write(turn.text);
+                try s.objectField("text_bytes");
+                try s.write(turn.text_bytes);
+                // Said, not left to arithmetic: an answer that stops short
+                // reads as the agent having stopped short.
+                try s.objectField("truncated");
+                try s.write(turn.text_bytes > turn.text.len);
+                try s.endObject();
+            } else {
+                try s.write(null);
+            }
         },
         .skill => |k| {
             try s.objectField("ok");
@@ -1547,6 +1634,35 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
         try s.write(t);
     }
 
+    if (info.agent) |a| {
+        try s.objectField("agent");
+        try writeAgent(s, a.agent, a.since_ms);
+    }
+
+    try s.endObject();
+}
+
+/// One terminal's agent state. `since_ms` is left out where the caller has
+/// no clock reading to give.
+fn writeAgent(s: *std.json.Stringify, a: Bus.Agent, since_ms: ?u64) std.Io.Writer.Error!void {
+    try s.beginObject();
+    try s.objectField("hooks");
+    try s.write(@tagName(a.hooks));
+    try s.objectField("state");
+    try s.write(@tagName(a.state));
+    if (since_ms) |ms| {
+        try s.objectField("since_ms");
+        try s.write(ms);
+    }
+    // Absent when nothing said them, on `quiet_ms`'s terms.
+    inline for (.{ "session_id", "cli", "detail", "note" }) |name| {
+        if (@field(a, name).get()) |v| {
+            try s.objectField(name);
+            try s.write(v);
+        }
+    }
+    try s.objectField("waiting_on_background");
+    try s.write(a.waiting_on_background);
     try s.endObject();
 }
 

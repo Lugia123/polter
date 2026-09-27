@@ -30,6 +30,7 @@ pub const Sampler = @import("Sampler.zig");
 pub const Server = @import("Server.zig");
 pub const Plugin = @import("Plugin.zig");
 pub const agent_cli = @import("agent_cli.zig");
+pub const agent_event = @import("agent_event.zig");
 pub const PluginLog = @import("PluginLog.zig");
 pub const notes = @import("notes.zig");
 pub const notify = @import("notify.zig");
@@ -68,6 +69,7 @@ test {
     _ = login_path;
     _ = Resident;
     _ = Bus;
+    _ = agent_event;
     _ = Chat;
     _ = ChatLog;
     _ = Feed;

@@ -353,6 +353,24 @@ own to close, restart or interrupt anything. `terminal_list` carries the same
 figure as `call_silent_ms`, absent for a terminal that has never called.
 Threshold `poltergeist-calls-silent-after`, zero to switch off.
 
+**The agent's own word, when it has hooks.** A worker started from a role
+whose CLI supports it reports on itself, and then the line can say
+
+    [poltergeist] 0x0000000000002222 turn ended 12s ago: "Fixed #845, full suite …", 0x0000000000004444 failed rate_limit
+
+and `awaiting approval Bash: …`, `awaiting input idle_prompt`. Unlike
+everything above these are not arithmetic: the CLI said it. The quote is only
+the start of the answer; `terminal_turn(id)` has the whole of it, up to 16 KB,
+and says when it was cut. While one of these stands, that terminal is not also
+reported `quiet` — its stillness is already explained — and a `quiet` clause
+that says `(in turn 15m)` is a terminal still inside a turn with a still
+screen: a long build, or stuck, and worth a `terminal_read`. `terminal_list`
+shows the same state under `agent`; **no `agent` there means no hooks**, and
+then silence tells you nothing. `hooks expected 30s ago and nothing heard`
+means the hooks it was started with never spoke: go by the screen for that
+one. None of this replaces the screen clock — a CLI interrupted mid-turn sends
+nothing at all.
+
 Your own silence cannot come to you — if you are stuck you would not read it —
 so it goes on your tab instead: your flag turns hollow, ⚑ to ⚐, for the person
 to see.

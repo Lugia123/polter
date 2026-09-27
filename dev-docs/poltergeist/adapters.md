@@ -151,8 +151,10 @@ agent: {
   （CLI 升级改了字段、`+hook` 路径错了……），要作为一条通知报给总管，而不是静默当成「没事发生」。
 - `live`：收到过 `session_started`。之后「没有事件」才有意义。
 
-`expected` 由 launch 设：`agent_cli.parseLaunch` 的回复加一个字段 `hooks: true`，Polter 在
-执行那条命令行的终端上记下。
+`expected` 由 launch 设：adapter 的 launch 回复带一个可选字段 `hooks`（缺省 false），
+`agent_cli.parseLaunch` 读它；为 true 时 `polter +launch` 在 exec CLI **之前**用本终端的 token
+发一条 `agent_event{event:"hooks_expected"}`（尽力发，失败只写日志）。`+launch` 本来就在那个终端里、
+带着 socket 与 token，所以不需要新 RPC，1b 只改 adapter 一侧。
 
 **送到总管**：沿用 notices 盒子（`Bus.zig` 的 `take()`），新增一种 entry，与屏幕静止并列：
 
@@ -160,7 +162,10 @@ agent: {
 [poltergeist] 0x…2222 turn ended 12s ago: "已修好 #845，全量 104/104 …" · 0x…4444 failed rate_limit · 0x…6666 awaiting approval Bash: zig build test …
 ```
 
-最终答案在 notices 里只放前 120 字符；全文由 `terminal_list` 之外的一个新只读工具
+最终答案在 notices 里最多放前 120 字符，**且受整行长度限制**：notices 一行经
+`apprt.surface.Message` 送出，缓冲区是 255 字节，含 `[poltergeist]` 与每个 18 字符的 id；
+120 个中文字符就是 360 字节，一条都放不下。所以写进 `take()` 时按这一行剩余空间在 UTF-8 边界截断并加 `…`，
+不扩大 Message。全文由 `terminal_list` 之外的一个新只读工具
 `terminal_turn(id)` 取（最后一次 `turn_ended` 的全文、时间、session_id），**上限 16 KB**，超出截断并说明。
 
 **hook `live` 时屏幕静止通知怎么处理**：
@@ -172,6 +177,14 @@ agent: {
 | `idle`（`session_started` 后还没第一轮） | 照报 |
 
 「多久没调工具」时钟不受影响。
+
+实现时补定的三条（#866）：
+
+- `awaiting_input` 也进 notices——上表里它会压掉 quiet，不报的话总管什么都听不到。
+- 新一轮开始（`turn_started` / `session_started`）撤掉上一轮还没被取走的 notice；上一轮全文仍可用
+  `terminal_turn` 取。
+- 摘录里的换行等控制字符换成空格：这一行是打进总管终端的，换行会直接提交。
+- `terminal_turn` 的可达规则同 `terminal_read`，对插件先关着。
 
 ## 四、驾驶知识：`polter-driving-claude-code`
 

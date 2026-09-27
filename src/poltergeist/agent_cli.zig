@@ -271,6 +271,11 @@ pub const Launch = struct {
     env: []const [2][]const u8,
     summary: ?[]const u8,
     notes: []const []const u8,
+
+    /// The adapter configured the CLI's hooks to call `polter +hook`, so
+    /// `+launch` tells Polter to expect them (`Bus.Hooks.expected`). Only a
+    /// JSON `true` says so: an adapter that did not say it did not do it.
+    hooks: bool,
 };
 
 pub const LaunchError = error{
@@ -323,6 +328,7 @@ pub fn parseLaunch(arena: Allocator, answer: []const u8) LaunchError!Launch {
         .env = try env.toOwnedSlice(arena),
         .summary = if (obj.get("summary")) |s| (if (s == .string) s.string else null) else null,
         .notes = try notes.toOwnedSlice(arena),
+        .hooks = if (obj.get("hooks")) |h| h == .bool and h.bool else false,
     };
 }
 
@@ -537,6 +543,14 @@ test "agent_cli: a launch answer is strict about the command and lenient about t
     try testing.expectEqual(@as(usize, 1), l.env.len);
     try testing.expectEqualStrings("2 off", l.summary.?);
     try testing.expectEqual(@as(usize, 1), l.notes.len);
+    // Not said, not done.
+    try testing.expect(!l.hooks);
+
+    const with = try parseLaunch(aa, "{\"argv\":[\"claude\"],\"hooks\":true}");
+    try testing.expect(with.hooks);
+    // Only a real `true`: a string that says so is not the adapter saying so.
+    const stringly = try parseLaunch(aa, "{\"argv\":[\"claude\"],\"hooks\":\"true\"}");
+    try testing.expect(!stringly.hooks);
 
     // Anything that would put something other than a command in argv[0]
     // is not a command.

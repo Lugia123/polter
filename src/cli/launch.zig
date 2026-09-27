@@ -30,6 +30,8 @@ const persona = @import("../poltergeist/persona.zig");
 const PersonaStore = @import("../poltergeist/PersonaStore.zig");
 const agent_cli = @import("../poltergeist/agent_cli.zig");
 const Plugin = @import("../poltergeist/Plugin.zig");
+const AgentEvent = @import("../poltergeist/agent_event.zig");
+const hook = @import("hook.zig");
 
 pub const Options = struct {
     pub fn deinit(self: Options) void {
@@ -175,6 +177,14 @@ pub fn run(alloc: Allocator) !u8 {
 
     for (launch.env) |kv| try env.put(kv[0], kv[1]);
 
+    // The adapter put hooks in the CLI's settings: tell this terminal's
+    // Polter to expect them, so that hearing nothing from them for long
+    // enough is reported as a fault rather than read as nothing happening
+    // (adapters.md 3.4). Before the CLI starts, so its `session_started`
+    // cannot arrive first. Best effort, like `+hook` itself: a launch is
+    // not refused because Polter could not be told.
+    if (launch.hooks) expectHooks(io, &env, adapter.key);
+
     if (comptime std.process.can_replace) {
         const err = std.process.replace(io, .{ .argv = launch.argv, .environ_map = &env });
         try err_out.print("Polter: could not start {s} ({t}).", .{ launch.argv[0], err });
@@ -213,6 +223,17 @@ pub fn run(alloc: Allocator) !u8 {
     return switch (term) {
         .exited => |code| code,
         else => 1,
+    };
+}
+
+fn expectHooks(io: std.Io, env: *const std.process.Environ.Map, cli: []const u8) void {
+    const socket_path = env.get("GHOSTTY_POLTER_SOCKET") orelse return;
+    const token = env.get("GHOSTTY_POLTER_TOKEN") orelse return;
+    var ev: AgentEvent.Event = .none;
+    ev.event = .hooks_expected;
+    ev.cli = cli;
+    hook.deliver(io, socket_path, token, ev) catch |err| {
+        std.log.scoped(.launch).warn("could not say hooks are expected err={t}", .{err});
     };
 }
 

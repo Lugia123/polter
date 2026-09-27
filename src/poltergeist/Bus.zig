@@ -23,6 +23,7 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
 const Sampler = @import("Sampler.zig");
+const AgentEvent = @import("agent_event.zig");
 
 /// A terminal's identity. This is `Surface.id`, which Ghostty already
 /// assigns and already exports to child processes as `GHOSTTY_SURFACE_ID`,
@@ -182,6 +183,118 @@ pub const SetHeldError = error{
 /// sat in the box says how long the terminal has been quiet now rather than
 /// how long it had been when it arrived.
 pub const NoticeKind = enum { quiescent, still_quiescent, resumed };
+
+/// Whether this terminal's agent CLI reports on itself through hooks, and
+/// so whether its silence means anything. See `dev-docs/poltergeist/adapters.md`
+/// 3.4.
+///
+/// **Three values because "no events" is three different answers.** With
+/// `none`, nothing was ever going to arrive and the absence says nothing.
+/// With `expected`, the hooks were configured and have not been heard from
+/// -- past `hooks_expected_timeout_ms` that is a fault (a CLI that changed
+/// its payloads, a wrong `+hook` path) and goes in the box. With `live`,
+/// they have been heard, and from then on no event does mean no event.
+pub const Hooks = enum { none, expected, live };
+
+/// What the agent last said it was doing.
+pub const AgentState = enum {
+    /// Started, and no turn yet.
+    idle,
+    in_turn,
+    ended,
+    failed,
+    awaiting_approval,
+    awaiting_input,
+};
+
+/// How long `expected` may wait for `session_started` before it is a fault.
+pub const hooks_expected_timeout_ms: u64 = 30 * std.time.ms_per_s;
+
+/// What an agent said that is waiting in the box. One slot, like
+/// `NoticeKind`: a later thing it said replaces an earlier one.
+pub const AgentNotice = enum {
+    turn_ended,
+    turn_failed,
+    awaiting_approval,
+    awaiting_input,
+    /// Hooks were expected and nothing has come.
+    hooks_silent,
+};
+
+/// A short string held inside the entry, so an `Entry` stays a value that
+/// can be copied out of the map without anything to free.
+pub fn Small(comptime n: usize) type {
+    return struct {
+        buf: [n]u8 = undefined,
+        len: u8 = 0,
+
+        const Self = @This();
+
+        comptime {
+            assert(n <= std.math.maxInt(u8));
+        }
+
+        /// Cut on a UTF-8 boundary when it does not fit.
+        pub fn set(self: *Self, s: ?[]const u8) void {
+            const src = AgentEvent.cutBytes(s orelse "", n);
+            @memcpy(self.buf[0..src.len], src);
+            self.len = @intCast(src.len);
+        }
+
+        pub fn get(self: *const Self) ?[]const u8 {
+            if (self.len == 0) return null;
+            return self.buf[0..self.len];
+        }
+    };
+}
+
+/// Everything the bus knows about a terminal's agent from its hooks.
+pub const Agent = struct {
+    hooks: Hooks,
+    state: AgentState,
+
+    /// When `state` last changed, on the bus's clock.
+    since_ms: u64,
+
+    /// When `hooks` became `expected`, for the timeout.
+    expected_ms: u64,
+
+    session_id: Small(96),
+    cli: Small(32),
+    detail: Small(64),
+    note: Small(160),
+    waiting_on_background: bool,
+
+    pending: ?AgentNotice,
+    handed: u8,
+
+    /// No hooks, nothing known. Written out rather than defaulted field by
+    /// field, so a field added here has to be given a value in this one
+    /// place and every entry starts from it.
+    pub const none: Agent = .{
+        .hooks = .none,
+        .state = .idle,
+        .since_ms = 0,
+        .expected_ms = 0,
+        .session_id = .{},
+        .cli = .{},
+        .detail = .{},
+        .note = .{},
+        .waiting_on_background = false,
+        .pending = null,
+        .handed = 0,
+    };
+};
+
+/// The last finished turn's answer, kept for `terminal_turn`. Owned by the
+/// bus, and outside `Entry` so that an entry stays a plain value.
+pub const Turn = struct {
+    text: []u8,
+    /// How long the answer was before `+hook` cut it.
+    text_bytes: u64,
+    at_ms: u64,
+    session_id: Small(96),
+};
 
 pub const Entry = struct {
     role: Role = .none,
@@ -433,6 +546,10 @@ pub const Entry = struct {
     /// work. That is the true state, and the excursion in between is
     /// precisely the case where nobody needed to do anything.
     pending: ?NoticeKind = null,
+
+    /// What the agent CLI in this terminal has said about itself through
+    /// its hooks; see `Agent` and `agentEvent`.
+    agent: Agent = .none,
 };
 
 pub const Config = struct {
@@ -469,6 +586,9 @@ alloc: Allocator,
 config: Config,
 entries: std.AutoHashMapUnmanaged(Id, Entry) = .empty,
 
+/// The last finished turn of each terminal that has had one; see `Turn`.
+turns: std.AutoHashMapUnmanaged(Id, Turn) = .empty,
+
 /// There may be several supervisors, each minding its own piece of work.
 /// What is one at a time is the other direction: a watched terminal has at
 /// most one minder, because two of them nudging one input box is, to the
@@ -479,6 +599,9 @@ pub fn init(alloc: Allocator, config: Config) Bus {
 }
 
 pub fn deinit(self: *Bus) void {
+    var it = self.turns.valueIterator();
+    while (it.next()) |t| self.alloc.free(t.text);
+    self.turns.deinit(self.alloc);
     self.entries.deinit(self.alloc);
     self.* = undefined;
 }
@@ -496,6 +619,7 @@ pub fn unregister(self: *Bus, id: Id) void {
     // and their notices piling up for nobody.
     self.removeSupervisor(id);
     _ = self.entries.remove(id);
+    if (self.turns.fetchRemove(id)) |kv| self.alloc.free(kv.value.text);
 }
 
 pub fn get(self: *const Bus, id: Id) ?Entry {
@@ -1057,6 +1181,134 @@ pub fn report(
     return true;
 }
 
+/// Record something a terminal's agent CLI said about itself through its
+/// hooks (`rpc` method `agent_event`, sent by `polter +hook`).
+///
+/// **Not a tool call.** `rpc.isAgentCall` keeps these away from `noteCall`,
+/// because a hook that refreshed the call clock would hide the very silence
+/// that clock exists to find.
+///
+/// Registers the terminal if the bus has never seen it: unlike a screen
+/// heartbeat this is rare, it comes from the terminal itself, and an agent
+/// state nobody can list is no use to anybody. What goes in the box follows
+/// `report`: watched terminals only, and not one that has clocked off.
+///
+/// Answers whether anything went in the box.
+pub fn agentEvent(
+    self: *Bus,
+    id: Id,
+    ev: AgentEvent.Event,
+    now_ms: u64,
+) Allocator.Error!bool {
+    try self.register(id);
+    const e = self.entries.getPtr(id).?;
+    const a = &e.agent;
+
+    if (ev.cli.len > 0) a.cli.set(ev.cli);
+    if (ev.session_id) |sid| a.session_id.set(sid);
+
+    const state: AgentState, const notice: ?AgentNotice = switch (ev.event) {
+        .hooks_expected => {
+            // A second launch in the same terminal starts the wait again;
+            // a terminal already live stays live -- it has proved its
+            // hooks, and a later launch line typed into it is not the
+            // agent that proved them, but it will say `session_started`
+            // soon enough if it is.
+            a.* = .none;
+            a.hooks = .expected;
+            a.expected_ms = now_ms;
+            a.since_ms = now_ms;
+            if (ev.cli.len > 0) a.cli.set(ev.cli);
+            return false;
+        },
+        .session_started => .{ .idle, null },
+        .turn_started => .{ .in_turn, null },
+        .turn_ended => .{ .ended, .turn_ended },
+        .turn_failed => .{ .failed, .turn_failed },
+        .awaiting_approval => .{ .awaiting_approval, .awaiting_approval },
+        .awaiting_input => .{ .awaiting_input, .awaiting_input },
+    };
+
+    // Any event is the hooks working, so `expected` resolves. A
+    // `hooks_silent` line still in the box goes below with everything
+    // else: each event either clears the slot or replaces it.
+    a.hooks = .live;
+
+    a.state = state;
+    a.since_ms = now_ms;
+    a.detail.set(ev.detail);
+    a.note.set(ev.note);
+    a.waiting_on_background = ev.event == .turn_ended and ev.waiting_on_background;
+
+    if (ev.event == .turn_ended) try self.keepTurn(id, ev, now_ms);
+
+    // A new turn makes whatever was waiting about the last one stale, the
+    // way `resumed` replaces a quiet report.
+    if (ev.event == .turn_started or ev.event == .session_started) {
+        a.pending = null;
+        a.handed = 0;
+    }
+
+    const kind = notice orelse return false;
+    if (e.role != .watched or e.duty == .off) return false;
+    a.pending = kind;
+    a.handed = 0;
+    return true;
+}
+
+fn keepTurn(self: *Bus, id: Id, ev: AgentEvent.Event, now_ms: u64) Allocator.Error!void {
+    const text = try self.alloc.dupe(u8, ev.text orelse "");
+    errdefer self.alloc.free(text);
+    const gop = try self.turns.getOrPut(self.alloc, id);
+    if (gop.found_existing) self.alloc.free(gop.value_ptr.text);
+    var sid: Small(96) = .{};
+    sid.set(ev.session_id);
+    gop.value_ptr.* = .{
+        .text = text,
+        .text_bytes = if (ev.text == null) 0 else ev.text_bytes,
+        .at_ms = now_ms,
+        .session_id = sid,
+    };
+}
+
+/// The last finished turn of this terminal, or null if it has had none.
+/// Borrowed: valid until the next `agentEvent` or `unregister` for it.
+pub fn turnOf(self: *const Bus, id: Id) ?Turn {
+    return self.turns.get(id);
+}
+
+/// What the bus knows of this terminal's agent. `none` for one it has
+/// never heard of.
+pub fn agentOf(self: *const Bus, id: Id) Agent {
+    const e = self.entries.get(id) orelse return .none;
+    return e.agent;
+}
+
+/// Put a line in the box for every watched terminal whose hooks were
+/// expected `hooks_expected_timeout_ms` ago and have said nothing. Once per
+/// wait: the next launch starts a new one.
+///
+/// Answers whether anything new went in.
+pub fn considerAgents(self: *Bus, now_ms: u64) bool {
+    var raised = false;
+    var it = self.entries.iterator();
+    while (it.next()) |kv| {
+        const e = kv.value_ptr;
+        const a = &e.agent;
+        if (a.hooks != .expected) continue;
+        if (now_ms -| a.expected_ms < hooks_expected_timeout_ms) continue;
+
+        // Said once. Moving `expected_ms` out of reach rather than adding
+        // a flag: the state is still `expected`, which is the truth.
+        a.expected_ms = std.math.maxInt(u64);
+        if (e.role != .watched or e.duty == .off) continue;
+        a.pending = .hooks_silent;
+        a.handed = 0;
+        raised = true;
+    }
+    return raised;
+}
+
 /// What a tab should say about a terminal beyond its own title.
 ///
 /// A short marker rather than a sentence: it sits in front of whatever the
@@ -1283,7 +1535,7 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
     var it = self.entries.iterator();
     while (it.next()) |kv| {
         const e = kv.value_ptr;
-        if (e.pending == null and !e.silent_pending) continue;
+        if (e.pending == null and !e.silent_pending and e.agent.pending == null) continue;
 
         // Not this supervisor's terminal. Left in the box for whoever is
         // minding it, rather than dropped.
@@ -1291,6 +1543,17 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
         if (owner != to) continue;
 
         const id = kv.key_ptr.*;
+
+        // adapters.md 3.4: with hooks live, a still screen the agent has
+        // already explained -- a turn that ended, failed, or is waiting on
+        // somebody -- is not said again as "quiet". The event says why.
+        // Taken out of the box rather than left: nothing more will be
+        // said about this stillness, and a quiet report that comes after
+        // the agent moves on is a new one.
+        if (e.pending) |kind| if (kind != .resumed and quietExplained(e.agent)) {
+            e.pending = null;
+            e.handed_over = 0;
+        };
 
         if (e.pending) |kind| {
             total += 1;
@@ -1312,8 +1575,17 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
             if (listed < max_listed) {
                 const sep = if (listed == 0) " " else ", ";
                 const mark = w.end;
+                const in_turn = e.agent.hooks == .live and e.agent.state == .in_turn;
                 const written = switch (kind) {
-                    .quiescent, .still_quiescent => w.print(
+                    .quiescent, .still_quiescent => if (in_turn) w.print(
+                        "{s}0x{x:0>16} quiet {d}s (in turn {d}m)",
+                        .{
+                            sep,
+                            id,
+                            self.quietMs(id, now_ms) / std.time.ms_per_s,
+                            (now_ms -| e.agent.since_ms) / std.time.ms_per_min,
+                        },
+                    ) else w.print(
                         "{s}0x{x:0>16} quiet {d}s",
                         .{ sep, id, self.quietMs(id, now_ms) / std.time.ms_per_s },
                     ),
@@ -1376,6 +1648,37 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
                 listed += 1;
             }
         }
+
+        // What the agent said about itself: see `agentEvent`. Its own slot
+        // for `silent_pending`'s reason -- it can be true alongside either
+        // of the others.
+        if (e.agent.pending) |kind| {
+            total += 1;
+
+            switch (how) {
+                .consume => {
+                    e.agent.pending = null;
+                    e.agent.handed = 0;
+                },
+                .hand_over => {
+                    e.agent.handed +|= 1;
+                    if (e.agent.handed >= max_hand_overs) {
+                        e.agent.pending = null;
+                        e.agent.handed = 0;
+                    }
+                },
+            }
+
+            if (listed < max_listed) {
+                const sep = if (listed == 0) " " else ", ";
+                const mark = w.end;
+                writeAgent(&w, sep, id, kind, e.agent, self.turns.get(id), now_ms) catch {
+                    w.end = mark;
+                    break;
+                };
+                listed += 1;
+            }
+        }
     }
 
     // The supervisor's own line, after the terminals and before the count
@@ -1422,6 +1725,86 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
     }
 
     return w.buffered();
+}
+
+/// Whether an agent's own hooks already account for its screen being
+/// still (adapters.md 3.4). Only with hooks `live`: before that, no event
+/// explains anything.
+fn quietExplained(a: Agent) bool {
+    if (a.hooks != .live) return false;
+    return switch (a.state) {
+        .ended, .failed, .awaiting_approval, .awaiting_input => true,
+        .idle, .in_turn => false,
+    };
+}
+
+/// Most characters of a final answer quoted in the box. The rest is for
+/// `terminal_turn`.
+pub const excerpt_chars = 120;
+
+/// One agent entry. Fails when even a shortened one does not fit, so the
+/// caller can wind back to the last whole entry.
+fn writeAgent(
+    w: *std.Io.Writer,
+    sep: []const u8,
+    id: Id,
+    kind: AgentNotice,
+    a: Agent,
+    turn: ?Turn,
+    now_ms: u64,
+) std.Io.Writer.Error!void {
+    const ago_s = (now_ms -| a.since_ms) / std.time.ms_per_s;
+    switch (kind) {
+        .turn_ended => {
+            try w.print("{s}0x{x:0>16} turn ended {d}s ago", .{ sep, id, ago_s });
+            if (a.waiting_on_background) try w.writeAll(" (background tasks running)");
+            const text = if (turn) |t| t.text else "";
+            if (text.len > 0) {
+                try w.writeAll(": \"");
+                try fitTail(w, AgentEvent.prefixChars(text, excerpt_chars), text.len, 1);
+                try w.writeAll("\"");
+            }
+        },
+        .turn_failed => try w.print(
+            "{s}0x{x:0>16} failed {s}",
+            .{ sep, id, a.detail.get() orelse "(no error type)" },
+        ),
+        .awaiting_approval => {
+            try w.print(
+                "{s}0x{x:0>16} awaiting approval {s}",
+                .{ sep, id, a.detail.get() orelse "(no tool name)" },
+            );
+            if (a.note.get()) |note| {
+                try w.writeAll(": ");
+                try fitTail(w, note, note.len, 0);
+            }
+        },
+        .awaiting_input => try w.print(
+            "{s}0x{x:0>16} awaiting input {s}",
+            .{ sep, id, a.detail.get() orelse "" },
+        ),
+        .hooks_silent => try w.print(
+            "{s}0x{x:0>16} hooks expected {d}s ago and nothing heard (no session_started)",
+            .{ sep, id, ago_s },
+        ),
+    }
+}
+
+/// Write `s` in what is left of `w`, less `reserve` bytes for whatever
+/// follows it, cut on a character boundary with an ellipsis when it does
+/// not fit whole or when `full_len` says it was already a prefix. Control
+/// characters become spaces: this line is typed into a terminal, where a
+/// newline submits it.
+fn fitTail(w: *std.Io.Writer, s: []const u8, full_len: usize, reserve: usize) std.Io.Writer.Error!void {
+    const ellipsis = "\u{2026}";
+    const room = w.buffer.len -| w.end -| reserve;
+    const cut = s.len < full_len or s.len > room;
+    const body = if (!cut) s else if (room < ellipsis.len + 1)
+        return error.WriteFailed
+    else
+        AgentEvent.cutBytes(s, @min(s.len, room - ellipsis.len));
+    for (body) |c| try w.writeByte(if (c < 0x20 or c == 0x7f) ' ' else c);
+    if (cut) try w.writeAll(ellipsis);
 }
 
 /// The box, but only if enough time has passed to interrupt the supervisor
@@ -2833,4 +3216,211 @@ test "a supervisor that has never called keeps its flag" {
         TabMark.supervisor,
         b.tabMark(boss, 10 * 60 * std.time.ms_per_min, 1000),
     );
+}
+
+// -- agent hooks (adapters.md 3.4) ------------------------------------------
+
+fn hookEv(kind: AgentEvent.Kind) AgentEvent.Event {
+    var ev: AgentEvent.Event = .none;
+    ev.event = kind;
+    ev.cli = "claude-code";
+    ev.session_id = "sess-1";
+    return ev;
+}
+
+fn hookedBus() !Bus {
+    var b = testBus();
+    errdefer b.deinit();
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    return b;
+}
+
+test "hooks: expected with no session_started for 30s is put in the box" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, hookEv(.hooks_expected), 0);
+    try testing.expectEqual(Hooks.expected, b.agentOf(worker).hooks);
+
+    try testing.expect(!b.considerAgents(hooks_expected_timeout_ms - 1));
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(boss, hooks_expected_timeout_ms - 1, &buf) == null);
+
+    try testing.expect(b.considerAgents(hooks_expected_timeout_ms));
+    const line = b.drain(boss, hooks_expected_timeout_ms, &buf) orelse
+        return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "0x0000000000002222 hooks expected 30s ago") != null);
+
+    // Said once per wait, not every tick after.
+    try testing.expect(!b.considerAgents(10 * hooks_expected_timeout_ms));
+}
+
+test "hooks: session_started in time means nothing is ever said about the wait" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, hookEv(.hooks_expected), 0);
+    _ = try b.agentEvent(worker, hookEv(.session_started), 5_000);
+    try testing.expectEqual(Hooks.live, b.agentOf(worker).hooks);
+
+    try testing.expect(!b.considerAgents(10 * hooks_expected_timeout_ms));
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(boss, 10 * hooks_expected_timeout_ms, &buf) == null);
+}
+
+test "hooks: a wait reported and then answered before anyone read it is taken back" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, hookEv(.hooks_expected), 0);
+    try testing.expect(b.considerAgents(hooks_expected_timeout_ms));
+    _ = try b.agentEvent(worker, hookEv(.session_started), hooks_expected_timeout_ms + 1);
+
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(boss, hooks_expected_timeout_ms + 2, &buf) == null);
+}
+
+test "hooks: turn ended goes in the box with the start of the answer" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    var ev = hookEv(.turn_ended);
+    ev.text = "已修好 #845，全量 104/104\nsecond line";
+    ev.text_bytes = ev.text.?.len;
+    try testing.expect(try b.agentEvent(worker, ev, 1_000));
+
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 13_000, &buf) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 turn ended 12s ago: \"已修好 #845，全量 104/104 second line\"",
+        line,
+    );
+}
+
+test "hooks: an answer longer than the line is cut on a character boundary and says so" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    // 120 characters of three bytes each: far more than a 255-byte line
+    // has room for after the id.
+    var text: [360]u8 = undefined;
+    for (0..120) |i| @memcpy(text[i * 3 ..][0..3], "中");
+    var ev = hookEv(.turn_ended);
+    ev.text = &text;
+    ev.text_bytes = text.len;
+    _ = try b.agentEvent(worker, ev, 0);
+
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 0, &buf) orelse return error.TestExpectedNotice;
+    try testing.expect(line.len <= buf.len);
+    try testing.expect(std.unicode.utf8ValidateSlice(line));
+    try testing.expect(std.mem.endsWith(u8, line, "\u{2026}\""));
+    try testing.expect(std.mem.indexOf(u8, line, "turn ended 0s ago: \"中中") != null);
+}
+
+test "hooks: failed and awaiting approval read as themselves" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    var failed = hookEv(.turn_failed);
+    failed.detail = "rate_limit";
+    _ = try b.agentEvent(worker, failed, 0);
+    var buf: [255]u8 = undefined;
+    const one = b.drain(boss, 0, &buf) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings("[poltergeist] 0x0000000000002222 failed rate_limit", one);
+
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    ask.note = "zig build test";
+    _ = try b.agentEvent(worker, ask, 0);
+    const two = b.drain(boss, 0, &buf) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 awaiting approval Bash: zig build test",
+        two,
+    );
+}
+
+test "hooks: a new turn makes the last one's notice stale" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    var ev = hookEv(.turn_ended);
+    ev.text = "done";
+    ev.text_bytes = 4;
+    _ = try b.agentEvent(worker, ev, 0);
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
+
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(boss, 2_000, &buf) == null);
+    // The answer is still there for `terminal_turn`.
+    try testing.expectEqualStrings("done", b.turnOf(worker).?.text);
+}
+
+test "hooks: live and ended, a still screen is not reported again as quiet" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, hookEv(.session_started), 0);
+    var ev = hookEv(.turn_ended);
+    ev.text = "done";
+    ev.text_bytes = 4;
+    _ = try b.agentEvent(worker, ev, 0);
+    var buf: [255]u8 = undefined;
+    _ = b.drain(boss, 0, &buf);
+
+    _ = b.report(worker, quiet(60_000), 60_000);
+    try testing.expect(b.drain(boss, 60_000, &buf) == null);
+}
+
+test "hooks: live and in a turn, a still screen is reported with how long the turn has run" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, hookEv(.session_started), 0);
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 0);
+
+    _ = b.report(worker, quiet(60_000), 3 * std.time.ms_per_min);
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 3 * std.time.ms_per_min, &buf) orelse
+        return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 quiet 60s (in turn 3m)",
+        line,
+    );
+}
+
+test "hooks: live and idle, or no hooks at all, a still screen is reported as before" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, hookEv(.session_started), 0);
+    _ = b.report(worker, quiet(60_000), 60_000);
+    var buf: [255]u8 = undefined;
+    const idle = b.drain(boss, 60_000, &buf) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings("[poltergeist] 0x0000000000002222 quiet 60s", idle);
+
+    // `expected` is not `live`: until the hooks have spoken, nothing they
+    // did not say explains anything.
+    var c = try hookedBus();
+    defer c.deinit();
+    _ = try c.agentEvent(worker, hookEv(.hooks_expected), 0);
+    c.entries.getPtr(worker).?.agent.state = .ended;
+    _ = c.report(worker, quiet(60_000), 1_000);
+    const expected = c.drain(boss, 1_000, &buf) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, expected, "quiet 60s") != null);
+}
+
+test "hooks: an unwatched terminal's events are kept but go in nobody's box" {
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+
+    var ev = hookEv(.turn_ended);
+    ev.text = "done";
+    ev.text_bytes = 4;
+    try testing.expect(!try b.agentEvent(worker, ev, 0));
+    try testing.expectEqual(AgentState.ended, b.agentOf(worker).state);
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(boss, 0, &buf) == null);
 }

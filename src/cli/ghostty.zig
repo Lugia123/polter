@@ -25,6 +25,7 @@ const new_tab = @import("new_tab.zig");
 const toggle_quick_terminal = @import("toggle_quick_terminal.zig");
 const chat = @import("chat.zig");
 const mcp = @import("mcp.zig");
+const hook = @import("hook.zig");
 const mcp_slot = @import("mcp_slot.zig");
 const launch = @import("launch.zig");
 const global = @import("../global.zig");
@@ -102,6 +103,10 @@ pub const Action = enum {
     // Become an agent CLI wearing a role. Typed into a new terminal by
     // "Launch with Role" and `role_launch`. See `cli/launch.zig`.
     launch,
+
+    // Tell Polter what the agent CLI in this terminal is doing. Run by the
+    // CLI's hooks, never by hand. See `cli/hook.zig`.
+    hook,
 
     pub fn detectSpecialCase(arg: []const u8) ?SpecialCase(Action) {
         // If we see a "-e" and we haven't seen a command yet, then
@@ -307,6 +312,7 @@ pub const Action = enum {
             .mcp => try mcp.run(alloc),
             .@"mcp-slot" => try mcp_slot.run(alloc),
             .launch => try launch.run(alloc),
+            .hook => try hook.run(alloc),
         };
     }
 
@@ -354,6 +360,7 @@ pub const Action = enum {
                 .mcp => mcp.Options,
                 .@"mcp-slot" => mcp_slot.Options,
                 .launch => launch.Options,
+                .hook => hook.Options,
             };
         }
     }

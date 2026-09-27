@@ -588,6 +588,7 @@ fn poltergeistReport(
     // the same line rather than waiting a whole interval behind it.
     self.considerGroupNotes(now_ms);
     _ = self.poltergeist.considerCalls(now_ms);
+    _ = self.poltergeist.considerAgents(now_ms);
     self.considerWorkerNudge(from, event);
     self.deliverPoltergeistNotices(now_ms);
 }
@@ -617,6 +618,7 @@ fn poltergeistHeartbeat(
     const now_ms = self.poltergeistElapsedMs();
     self.poltergeist.noteQuiet(from, quiet_ms, now_ms);
     _ = self.poltergeist.considerCalls(now_ms);
+    _ = self.poltergeist.considerAgents(now_ms);
     self.deliverPoltergeistNotices(now_ms);
     self.refreshPoltergeistTabs();
 }
@@ -2132,6 +2134,15 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     poltergeistpkg.rpc.noteCall(&self.poltergeist, caller, pending.request, now_ms);
     if (was_silent) self.refreshPoltergeistTabs();
 
+    // An agent's hook may have put something in a box (a turn ended, a
+    // prompt is up). Offered now rather than on the next screen report,
+    // which for a terminal that has just gone still is a whole threshold
+    // away; still bounded by `poltergeist-notice-interval`.
+    if (pending.request == .agent_event) {
+        _ = self.poltergeist.considerAgents(now_ms);
+        self.deliverPoltergeistNotices(now_ms);
+    }
+
     pending.complete(global.io(), response);
 }
 
@@ -2642,6 +2653,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .performAction = poltergeistPerformAction,
         .quietMs = poltergeistQuiet,
         .callSilentMs = poltergeistCallSilent,
+        .nowMs = poltergeistNow,
         .openTerminals = poltergeistOpenTerminals,
         .openTerminal = poltergeistOpenTerminal,
         .configText = poltergeistConfigText,
@@ -3752,6 +3764,11 @@ fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
 fn poltergeistCallSilent(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) ?u64 {
     const self: *App = @ptrCast(@alignCast(ctx));
     return self.poltergeist.callSilentMs(id, self.poltergeistElapsedMs());
+}
+
+fn poltergeistNow(ctx: *anyopaque) u64 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.poltergeistElapsedMs();
 }
 
 /// Every terminal on screen, with where it is and what it is called.

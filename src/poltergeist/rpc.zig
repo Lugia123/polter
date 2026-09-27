@@ -14,6 +14,7 @@
 
 const std = @import("std");
 
+const AgentEvent = @import("agent_event.zig");
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Plugin = @import("Plugin.zig");
@@ -385,6 +386,25 @@ pub const Method = enum {
     /// that a task sat untouched for two days, or that it was handed to a
     /// third terminal after the first two gave it back.
     task_history,
+
+    /// A terminal's agent CLI saying what it is doing, through its hooks:
+    /// sent by `polter +hook`, never by an agent. See
+    /// `dev-docs/poltergeist/adapters.md` 3.3.
+    ///
+    /// **Not a tool call** (`isAgentCall`), and not a tool (`offeredAsTool`):
+    /// it is the terminal reporting on itself, and a hook that refreshed the
+    /// call clock would hide the silence that clock is for. Closed to
+    /// plugins: an event about a terminal is only ever that terminal's to
+    /// report.
+    agent_event,
+
+    /// The last finished turn of a terminal's agent, in full: what its
+    /// `turn_ended` hook carried, when, and in which session. The notices
+    /// quote the start of it; this is the rest, up to 16 KB.
+    ///
+    /// Read-only, and reached like `terminal_read`: the target's mark
+    /// decides.
+    terminal_turn,
 };
 
 pub const Request = union(Method) {
@@ -560,6 +580,9 @@ pub const Request = union(Method) {
     // cursor: the position of a line in the record. See `TaskLog.Event`
     // for why that number is made on reading rather than written down.
     task_history: struct { group: []const u8, before_seq: u64 = 0, limit: u64 = 0 },
+
+    agent_event: AgentEvent.Event,
+    terminal_turn: struct { id: Bus.Id },
 };
 
 /// How much text one `group_read` reply may carry.
@@ -813,6 +836,17 @@ pub fn callableByPlugin(method: Method) bool {
         .persona_slot,
         .persona_wait,
 
+        // **Closed to plugins.** An agent's events are only ever reported
+        // by the terminal they are about, with its own token: a plugin
+        // that could send them could make any terminal's agent look
+        // finished, failed or waiting.
+        .agent_event,
+
+        // **Closed to plugins, for now.** It reads what an agent answered,
+        // which is more than a screen's bookkeeping; nothing has asked for
+        // a plugin to have it, and widening is easy.
+        .terminal_turn,
+
         // **Closed to plugins.** A supervisor's question about another
         // terminal, and `requiresSupervisor` refuses it to a plugin first;
         // named so this list reads as the whole answer.
@@ -958,6 +992,11 @@ pub fn offeredAsTool(method: Method) bool {
         // question it does have -- what may I see.
         .persona_slot, .persona_wait => false,
 
+        // Sent by `polter +hook` on the CLI's behalf. An agent calling it
+        // would be reporting its own state by hand, which is what the hook
+        // is there to make unnecessary -- and could be wrong.
+        .agent_event => false,
+
         else => true,
     };
 }
@@ -966,6 +1005,13 @@ pub fn requiresSupervisor(method: Method) bool {
     return switch (method) {
         // Every terminal may ask about itself.
         .me => false,
+
+        // A terminal's hooks reporting on that terminal. Whoever it is --
+        // a worker most of all -- it is saying something about itself.
+        .agent_event => false,
+
+        // Reading, on `terminal_read`'s terms: the target's mark decides.
+        .terminal_turn => false,
 
         // The one method whose whole point is to be reachable by a
         // terminal that is *not* a supervisor. Requiring the standing it
@@ -1163,6 +1209,7 @@ pub fn requiresSupervisor(method: Method) bool {
 /// against the bus for existence.
 pub fn targetsTerminal(method: Method) bool {
     return switch (method) {
+        .agent_event,
         .me,
         .terminal_list,
         .notices,
@@ -1258,6 +1305,7 @@ pub fn targetsTerminal(method: Method) bool {
         .group_add,
         .group_remove,
         .task_assign,
+        .terminal_turn,
         .terminal_read,
         .terminal_send,
         .clock_out,
@@ -1270,6 +1318,7 @@ pub fn targetsTerminal(method: Method) bool {
 /// The target terminal, if this request has one.
 pub fn target(req: Request) ?Bus.Id {
     return switch (req) {
+        .agent_event,
         .me,
         .terminal_list,
         .notices,
@@ -1352,6 +1401,7 @@ pub fn selfPermitted(req: Request) bool {
         // `group_add` did. With no `else` a method added later cannot
         // fall in unnoticed: it will not compile until somebody puts it
         // on one of the sides below.
+        .agent_event,
         .me,
         .terminal_list,
         .notices,
@@ -1449,6 +1499,11 @@ pub fn selfPermitted(req: Request) bool {
         // A question with nothing that comes back round: asking what you
         // can do yourself changes nothing, and a supervisor checking that
         // its own launch came out right is an ordinary thing to want.
+        // Your own last answer: reading it changes nothing and nothing
+        // comes back round, unlike `terminal_read`, whose loop is that the
+        // screen it reads is the one it is typing on.
+        .terminal_turn,
+
         .terminal_capabilities,
 
         // **Allowed at your own terminal.** Nothing comes back at the
@@ -1579,6 +1634,8 @@ pub fn promptReach(method: Method) enum {
         // Rearranges windows; it cannot put a keystroke into one.
         .terminal_layout,
 
+        .agent_event,
+        .terminal_turn,
         .me,
         .terminal_list,
         .terminal_read,
@@ -2094,6 +2151,12 @@ test "only what changes the arrangement needs the supervisor" {
             .task_progress,
             .task_list,
             .task_history,
+
+            // A terminal's hooks reporting on itself, and reading what an
+            // agent answered on `terminal_read`'s terms. Neither changes
+            // the arrangement.
+            .agent_event,
+            .terminal_turn,
             => true,
 
             // Writing what a group is for is arranging, not talking.
@@ -4765,6 +4828,12 @@ pub const Host = struct {
         /// reason `quietMs` is: the host has the clock.
         callSilentMs: *const fn (ctx: *anyopaque, id: Bus.Id) ?u64,
 
+        /// The bus's clock: the same milliseconds `quietMs` and
+        /// `callSilentMs` are worked out against. The bus is given time
+        /// rather than keeping it, and `agent_event` / `terminal_turn` need
+        /// to hand it some.
+        nowMs: *const fn (ctx: *anyopaque) u64,
+
         /// Start or stop sampling a terminal's screen.
         ///
         /// Separate from the bus entry because they are separate facts: the
@@ -5237,6 +5306,10 @@ pub const Host = struct {
         return self.vtable.callSilentMs(self.ctx, id);
     }
 
+    fn nowMs(self: Host) u64 {
+        return self.vtable.nowMs(self.ctx);
+    }
+
     fn openTerminals(self: Host, alloc: std.mem.Allocator) anyerror![]const Place {
         return self.vtable.openTerminals(self.ctx, alloc);
     }
@@ -5606,7 +5679,15 @@ pub fn isAgentCall(method: Method) bool {
         .persona_wait,
         .persona_slot,
         .persona_face,
+
+        // - `agent_event`: sent by `polter +hook`, never by the agent. It
+        //   would be worse than the sidecar's traffic: it fires exactly when
+        //   a turn ends or fails, so counted, a CLI stuck in its retry loop
+        //   would refresh its own call clock every time it gave up.
+        .agent_event,
         => false,
+
+        .terminal_turn,
 
         .me,
         .terminal_list,
@@ -5871,6 +5952,38 @@ pub fn dispatch(
             const members = host.chatMembers(alloc, p.group) catch
                 return hostFailure("NoSuchGroup", "no group by that name");
             return .{ .members = members };
+        },
+
+        .agent_event => |ev| {
+            // `authorize` has already refused a plugin. Refused again here
+            // because this arm, unlike a read, would register the caller:
+            // `not_a_terminal` must never become an entry with a state.
+            const id = who.terminalId() orelse return failure(error.NotATerminal);
+            _ = try bus.agentEvent(id, ev, host.nowMs());
+            return .ok;
+        },
+
+        .terminal_turn => |p| {
+            const turn = bus.turnOf(p.id) orelse return .{ .turn = .{
+                .id = p.id,
+                .agent = bus.agentOf(p.id),
+                .turn = null,
+                .ago_ms = 0,
+            } };
+            return .{
+                .turn = .{
+                    .id = p.id,
+                    .agent = bus.agentOf(p.id),
+                    // Copied: the bus may free it before the reply is written.
+                    .turn = .{
+                        .text = try alloc.dupe(u8, turn.text),
+                        .text_bytes = turn.text_bytes,
+                        .at_ms = turn.at_ms,
+                        .session_id = turn.session_id,
+                    },
+                    .ago_ms = host.nowMs() -| turn.at_ms,
+                },
+            };
         },
 
         .terminal_read => |p| {
@@ -7280,6 +7393,14 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         // Null for a terminal that has never called a tool, which is not
         // the same answer as a long time ago; see `Bus.Entry.last_call_ms`.
         .call_silent_ms = host.callSilentMs(id),
+
+        // Left out for a terminal whose hooks are `none` and that has
+        // never said anything: that is most terminals, and "no hooks"
+        // is already what absence says.
+        .agent = if (e.agent.hooks == .none) null else .{
+            .agent = e.agent,
+            .since_ms = host.nowMs() -| e.agent.since_ms,
+        },
     };
 }
 
@@ -8063,6 +8184,7 @@ const FakeHost = struct {
             .configText = configText,
             .quietMs = quietMs,
             .callSilentMs = callSilentMs,
+            .nowMs = nowMs,
             .openTerminals = openTerminals,
             .setWatching = setWatching,
             .stoodDown = stoodDown,
@@ -8658,6 +8780,11 @@ const FakeHost = struct {
     fn callSilentMs(ctx: *anyopaque, _: Bus.Id) ?u64 {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return self.call_silent_ms;
+    }
+
+    fn nowMs(ctx: *anyopaque) u64 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.now_ms;
     }
 
     fn openTerminals(
@@ -12709,4 +12836,115 @@ test "mention: shielded, the user, and no supervisor to forward to" {
     try testing.expectEqual(mention_w2, row.id);
     try testing.expect(row.to == null and row.rewritten);
     try testing.expectEqual(@as(usize, 0), fake.typed_count);
+}
+
+// -- agent hooks ------------------------------------------------------------
+
+fn hookEvent(kind: AgentEvent.Kind) AgentEvent.Event {
+    var ev: AgentEvent.Event = .none;
+    ev.event = kind;
+    ev.cli = "claude-code";
+    ev.session_id = "sess-1";
+    return ev;
+}
+
+test "hooks: agent_event does not refresh the tool call clock" {
+    // adapters.md 3.2: a hook that counted as a call would hide the very
+    // silence the call clock exists to find. Driven the way the app drives
+    // it: `dispatch`, then `noteCall` with the same request.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    noteCall(&b, term(worker), .group_read, 0);
+
+    const n = 20 * std.time.ms_per_min;
+    var fake: FakeHost = .{ .now_ms = n };
+    const req: Request = .{ .agent_event = hookEvent(.turn_ended) };
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), req);
+    noteCall(&b, term(worker), req, n);
+
+    try testing.expect(b.callSilentMs(worker, n).? >= n);
+    // And the event itself did land.
+    try testing.expectEqual(Bus.AgentState.ended, b.agentOf(worker).state);
+}
+
+test "hooks: a real call still refreshes the clock, so the one above is not vacuous" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    noteCall(&b, term(worker), .group_read, 0);
+    const n = 20 * std.time.ms_per_min;
+    noteCall(&b, term(worker), .task_progress, n);
+    try testing.expectEqual(@as(?u64, 0), b.callSilentMs(worker, n));
+}
+
+test "hooks: a plugin may not send agent_event" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    // The refusal itself first, even for a plugin that declared the call.
+    try testing.expectError(error.NotATerminal, authorize(
+        &b,
+        plug(&.{"agent_event"}),
+        .{ .agent_event = hookEvent(.turn_ended) },
+    ));
+    try testing.expect(!callableByPlugin(.agent_event));
+    // The terminal itself may.
+    try authorize(&b, term(worker), .{ .agent_event = hookEvent(.turn_ended) });
+}
+
+test "hooks: terminal_list carries the agent state, and leaves it out with no hooks" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .now_ms = 1_000 };
+
+    const before = try dispatch(testing.allocator, &b, fake.host(), term(worker), .me);
+    try testing.expect(before.me.agent == null);
+
+    var ev = hookEvent(.awaiting_approval);
+    ev.detail = "Bash";
+    ev.note = "zig build test";
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = ev });
+
+    fake.now_ms = 4_000;
+    const after = try dispatch(testing.allocator, &b, fake.host(), term(worker), .me);
+    const a = after.me.agent orelse return error.TestExpectedAgent;
+    try testing.expectEqual(Bus.Hooks.live, a.agent.hooks);
+    try testing.expectEqual(Bus.AgentState.awaiting_approval, a.agent.state);
+    try testing.expectEqual(@as(u64, 3_000), a.since_ms);
+
+    var out: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out);
+    try wire.writeResponse(&w, after);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(),
+        \\"agent":{"hooks":"live","state":"awaiting_approval","since_ms":3000,"session_id":"sess-1","cli":"claude-code","detail":"Bash","note":"zig build test","waiting_on_background":false}
+    ) != null);
+}
+
+test "hooks: terminal_turn hands back the whole answer and says when it was cut" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .now_ms = 10_000 };
+
+    const none = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .terminal_turn = .{ .id = worker },
+    });
+    try testing.expect(none.turn.turn == null);
+
+    var ev = hookEvent(.turn_ended);
+    ev.text = "the whole answer";
+    ev.text_bytes = 20_000;
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = ev });
+
+    fake.now_ms = 12_500;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_turn = .{ .id = worker },
+    });
+    try testing.expectEqualStrings("the whole answer", res.turn.turn.?.text);
+
+    var out: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out);
+    try wire.writeResponse(&w, res);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(),
+        \\"turn":{"ended_ms_ago":2500,"session_id":"sess-1","text":"the whole answer","text_bytes":20000,"truncated":true}
+    ) != null);
 }
