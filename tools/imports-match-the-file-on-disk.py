@@ -165,6 +165,14 @@ def main() -> int:
                     "fails to find the file on Linux."
                 )
 
+    # **Zero files is not a clean result** (issue #41): on an empty tree this
+    # used to print `0 in-tree @import(s) across 0 .zig file(s)` and exit 0,
+    # the same as a tree it had read and found nothing wrong in.
+    if files == 0:
+        print("FAIL: no .zig files found under the repository root; nothing was "
+              "checked. Not a pass -- this is looking in the wrong place.")
+        return 1
+
     if problems:
         print("FAIL: an import spells a filename differently from the disk:")
         for p in problems:

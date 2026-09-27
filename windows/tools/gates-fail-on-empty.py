@@ -35,6 +35,24 @@ end in an exit code) and the assertion is a run, not a pattern. There is
 nothing to be wrong about: either the gate exits non-zero on an empty tree or
 it does not.
 
+**The repository-root gates are in scope too** (issue #41). `tools/*.py` used
+to be outside this check altogether, and one of them was named here only to be
+skipped: `tools/no-local-identifiers.py`, the gate between this machine and a
+public repository. This file already said what its control was -- "a git repo
+with no tracked files" -- and nobody ran it. Run, it exited 0: `scanned 0
+tracked files`, `no unexpected hits`. So was `a-callback-does-not-discard-the-
+cores-answer.py` (`0 host source(s)` -> `OK.`), and so was `imports-match-the-
+file-on-disk.py` (`0 .zig file(s)`). The empty tree is now a git repository
+with nothing tracked, so a gate that reads its subjects from git gets its real
+control, and both sets are run in it.
+
+A second cell, for the leak gate alone: **run from a subdirectory it must still
+scan the whole repository.** `git ls-files` lists the current directory and
+below, and the gate used to scan only that (measured: a leak one level up,
+`scanned 1 tracked files`, exit 0). That is not an empty-subject failure, it
+is a partial one, so it is checked by count: from `sub/` of a repository with
+two tracked files, it has to say it scanned two.
+
 **NOT CHECKED: whether a gate that exits non-zero does so for the right
 reason.** See `CAVEATS` below -- one gate passes here on its ratchet rather
 than on a subject-set guard, and this gate says so out loud every run rather
@@ -43,12 +61,15 @@ than counting it as proven.
 
 import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# The repository-root set. See the module docstring: it was outside this check.
+ROOT_TOOLS = os.path.normpath(os.path.join(HERE, "..", "..", "tools"))
 PER_GATE_TIMEOUT = 90
 
 # Default-include. Every `.py` next to this file is a gate until something
@@ -72,20 +93,36 @@ CAVEATS = {
         "having this guard.",
 }
 
-# Out of scope, with the reason. `tools/no-local-identifiers.py` at the repo
-# root takes its subject set from `git ls-files`, not from a glob, so "a tree
-# with empty directories" is not its control at all -- its control is "a git
-# repo with no tracked files". Running it here would go non-zero because there
-# is no repo, which is a pass for a reason that proves nothing.
-OUT_OF_SCOPE = "tools/no-local-identifiers.py (subject set comes from git, not a glob)"
+# The leak gate, which also gets the subdirectory cell below.
+LEAK_GATE = "no-local-identifiers.py"
+
+# Gates whose subject is the gate directories themselves. The tree above has to
+# fill both directories to run the gates at all, so for these it is not an
+# empty subject, and their clean exit there says nothing -- measured: once
+# `tools/` was copied in, `every-script-here-is-a-gate.py` said OK. Each is run
+# instead in a tree holding only itself, where `tools/` is empty, and has to
+# refuse there.
+GATES_ARE_THE_SUBJECT = {"every-script-here-is-a-gate.py"}
 
 
-def build_empty_tree(gates, extra=()):
-    """A tree where every gate's subject is present but empty."""
+def git(cwd, *args):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def build_empty_tree(gates, extra=(), root_gates=()):
+    """A tree where every gate's subject is present but empty.
+
+    **It is a git repository with nothing tracked**, because that -- not a
+    directory with no repository -- is the empty subject of a gate that reads
+    `git ls-files`. Without a repository such a gate crashes and goes
+    non-zero, which is a pass here for a reason that proves nothing.
+    """
     top = tempfile.mkdtemp(prefix="gates-fail-on-empty-")
     tools = os.path.join(top, "windows", "tools")
-    for d in ("windows/tools", "windows/host/src", "dev-docs/windows", "src", "include/ghostty"):
+    for d in ("windows/tools", "windows/host/src", "dev-docs/windows", "src",
+              "include/ghostty", "tools"):
         os.makedirs(os.path.join(top, *d.split("/")), exist_ok=True)
+    git(top, "init", "-q")
     for g in gates:
         shutil.copy2(os.path.join(HERE, g), tools)
     # The shared modules come along: they are code the gates run, not a
@@ -98,15 +135,17 @@ def build_empty_tree(gates, extra=()):
     if os.path.isdir(lib):
         shutil.copytree(lib, os.path.join(tools, "lib"),
                         ignore=shutil.ignore_patterns("__pycache__"))
+    for g in root_gates:
+        shutil.copy2(os.path.join(ROOT_TOOLS, g), os.path.join(top, "tools"))
     for name, body in extra:
         with open(os.path.join(tools, name), "w", encoding="utf-8") as fh:
             fh.write(body)
     return top, tools
 
 
-def run(tools, name):
+def run(cwd, name):
     try:
-        p = subprocess.run([sys.executable, name], cwd=tools,
+        p = subprocess.run([sys.executable, name], cwd=cwd,
                            capture_output=True, text=True,
                            timeout=PER_GATE_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -156,6 +195,42 @@ def self_test():
     return True
 
 
+def leak_gate_scans_the_whole_repo():
+    """The subdirectory cell: two tracked files, run from `sub/`, must scan two.
+
+    Returns a problem string, or None. Read by count, not by exit code, because
+    both files are clean and the failure this catches is a partial scan that
+    exits 0 -- the same code as the full scan.
+    """
+    top = tempfile.mkdtemp(prefix="gates-leak-subdir-")
+    try:
+        os.makedirs(os.path.join(top, "sub"))
+        for rel in ("top.txt", os.path.join("sub", "below.txt")):
+            with open(os.path.join(top, rel), "w", encoding="utf-8") as fh:
+                fh.write("nothing to see\n")
+        git(top, "init", "-q")
+        git(top, "add", "top.txt", os.path.join("sub", "below.txt"))
+        rc, out = run_full(os.path.join(top, "sub"), os.path.join(ROOT_TOOLS, LEAK_GATE))
+    finally:
+        shutil.rmtree(top, ignore_errors=True)
+    m = re.search(r"scanned (\d+) tracked files", out)
+    if rc != 0 or m is None or m.group(1) != "2":
+        seen = m.group(1) if m else "no count"
+        return (f"tools/{LEAK_GATE} run from a subdirectory of a repository with 2 "
+                f"tracked files: exit {rc}, scanned {seen}. It has to scan the whole "
+                f"repository, wherever it is run from.")
+    return None
+
+
+def run_full(cwd, script):
+    try:
+        p = subprocess.run([sys.executable, script], cwd=cwd, capture_output=True,
+                           text=True, timeout=PER_GATE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, f"timed out after {PER_GATE_TIMEOUT}s"
+    return p.returncode, p.stdout + p.stderr
+
+
 def main() -> int:
     if not self_test():
         return 1
@@ -171,13 +246,30 @@ def main() -> int:
               f"exact failure it exists to catch.")
         return 1
 
-    top, tools = build_empty_tree(gates)
+    root_gates = sorted(os.path.basename(p) for p in glob.glob(os.path.join(ROOT_TOOLS, "*.py")))
+    if not root_gates:
+        print(f"FAIL: no gate scripts found in tools/ at the repository root. That set "
+              f"is in scope; finding none is this gate failing to look.")
+        return 1
+
+    top, tools = build_empty_tree(gates, root_gates=root_gates)
     try:
-        results = [(g,) + run(tools, g) for g in gates]
+        results = [(g,) + run(tools, g) for g in gates
+                   if g not in GATES_ARE_THE_SUBJECT]
+        # Run from the empty tree's root, which is where they are run from.
+        results += [(f"tools/{g}",) + run(top, os.path.join("tools", g)) for g in root_gates]
     finally:
         shutil.rmtree(top, ignore_errors=True)
+    for g in sorted(GATES_ARE_THE_SUBJECT & set(gates)):
+        top, tools = build_empty_tree([g])
+        try:
+            results.append((g,) + run(tools, g))
+        finally:
+            shutil.rmtree(top, ignore_errors=True)
 
-    print(f"ran {len(results)} gate(s) against a tree with empty subjects\n")
+    print(f"ran {len(results)} gate(s) against a tree with empty subjects "
+          f"({len(gates)} in windows/tools, {len(root_gates)} in tools/), "
+          f"the tree being a git repository with nothing tracked\n")
 
     green = [r for r in results if r[1] == 0]
     for name, rc, last in results:
@@ -188,8 +280,13 @@ def main() -> int:
         if any(n == name for n, _, _ in results):
             print(f"  NOTE   {name}: passes, but not on a subject-set guard.\n"
                   f"         {why}")
-    print(f"  SKIP   {OUT_OF_SCOPE}")
     print()
+
+    partial = leak_gate_scans_the_whole_repo()
+    if partial:
+        print(f"  PARTIAL {partial}\n")
+    else:
+        print(f"  OK     tools/{LEAK_GATE} scans the whole repository from a subdirectory\n")
 
     if green:
         print(f"{len(green)} gate(s) returned 0 with nothing to scan.\n"
@@ -201,6 +298,8 @@ def main() -> int:
               f"        sys.exit(1)\n"
               f"What has to be non-empty is the *subject set*, not the hit "
               f"count: zero hits is a real pass, zero files is not an answer.")
+        return 1
+    if partial:
         return 1
 
     print(f"every gate refuses to pass on an empty tree "

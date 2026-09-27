@@ -111,6 +111,7 @@ Exit: 0 if every hit is in KNOWN, 1 otherwise.
 
 import hashlib
 import re
+import os
 import subprocess
 import sys
 
@@ -302,6 +303,19 @@ KNOWN = {
 }
 
 
+def repo_root():
+    """The top of the repository this is run in, whatever directory it is run from.
+
+    **`git ls-files` lists the current directory and below**, so run from
+    `src/` this used to scan `src/` and call the tree clean (issue #41,
+    measured: a leak one directory up, `scanned 1 tracked files`, exit 0).
+    Everything below runs from here instead.
+    """
+    return subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True, check=True, text=True
+    ).stdout.strip()
+
+
 def tracked_files():
     out = subprocess.run(
         ["git", "ls-files", "-z"], capture_output=True, check=True
@@ -309,9 +323,9 @@ def tracked_files():
     return [p.decode("utf-8", "replace") for p in out.split(b"\0") if p]
 
 
-def scan():
+def scan(files):
     bad = []
-    for path in tracked_files():
+    for path in files:
         if path.endswith((".lock", ".png", ".jpg", ".ico", ".icns", ".ttf")):
             continue
         try:
@@ -466,8 +480,24 @@ def main():
         return 1
     if not digest_self_test():
         return 1
-    hits = scan()
-    print(f"scanned {len(tracked_files())} tracked files; "
+    os.chdir(repo_root())
+    files = tracked_files()
+    # **Zero files is not a clean tree** (issue #41). In a repository with
+    # nothing tracked -- a fresh `git init`, a checkout that went wrong -- this
+    # used to print `scanned 0 tracked files`, then `no unexpected hits`, and
+    # exit 0, with both self-tests above passing: they prove the probe would
+    # recognise a leak, not that it was handed any files. This is the gate
+    # between this machine and a public repository, so it must not be able to
+    # pass by failing to look.
+    if not files:
+        # No path in the message: this output reaches logs, and the path of a
+        # checkout is exactly the kind of thing this gate keeps out of them.
+        print("FAIL: git lists no tracked files at the repository root; nothing "
+              "was scanned. That is not a clean tree -- it is this check looking "
+              "at nothing. (Files are only seen once they are `git add`ed.)")
+        return 1
+    hits = scan(files)
+    print(f"scanned {len(files)} tracked files; "
           f"{len(KNOWN)} paths allowed with a written reason")
     if not hits:
         print("\nno unexpected hits")

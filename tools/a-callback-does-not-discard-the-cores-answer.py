@@ -168,6 +168,13 @@ def main():
     except OSError as e:
         print(f"cannot read the host sources: {e}")
         return 1
+    # **Zero sources is not a clean result** (issue #41): on an empty tree this
+    # used to print `0 host source(s)` and then `OK.`, the same exit code as a
+    # tree it had read and found nothing wrong in.
+    if not sources:
+        print("FAIL: no .rs files in windows/host/src; nothing was checked. "
+              "Not a pass -- the host sources moved, or this is looking in the wrong place.")
+        return 1
 
     n = sum(len(DEF.findall(strip_comments(s))) for s in sources.values())
     print(f"{len(sources)} host source(s), {n} extern \"C\" fn definition(s); every ignored "
