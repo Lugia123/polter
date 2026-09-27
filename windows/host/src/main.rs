@@ -4550,11 +4550,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
 
-            // **Asked to close, before anything has been destroyed.** The X
-            // and Alt+F4 both arrive here; they are one entry point because
-            // the user cannot tell them apart either.
+            // **Asked to close, before anything has been destroyed.** The X,
+            // the taskbar, the system menu, another program, and an Alt+F4
+            // that no terminal consumed all arrive here, and `WM_CLOSE` does
+            // not say which -- so neither does the log (#59). With a terminal
+            // focused, Alt+F4 is the core's `close_window` binding instead.
             WM_CLOSE => {
-                winid::close_requested(hwnd, winid::CloseVia::WindowXOrAltF4);
+                winid::close_requested(hwnd, winid::CloseVia::WmClose);
                 // **The tabs go before the window does.** Windows destroys a
                 // frame's children with it, but it knows nothing about the
                 // surfaces bound to them -- so without this the shells in a

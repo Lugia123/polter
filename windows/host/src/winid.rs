@@ -238,8 +238,8 @@ fn count() -> usize {
 /// Where a request to close something came from.
 ///
 /// **Four routes, one destination.** Closing the last tab from the menu, from
-/// the strip's cross, from the window's own X (or Alt+F4), and from the core's
-/// `close_window` all end at the same `DestroyWindow`, so a log that records
+/// the strip's cross, from a `WM_CLOSE` (the window's own X, among others), and
+/// from the core's `close_window` all end at the same `DestroyWindow`, so a log that records
 /// only the ending cannot say which of the four a person used -- and an
 /// implementation that fixes three of them looks complete until somebody uses
 /// the fourth, which is the one they use most. The window's own X is that
@@ -248,7 +248,16 @@ fn count() -> usize {
 pub enum CloseVia {
     Menu,
     StripCross,
-    WindowXOrAltF4,
+    /// A `WM_CLOSE` reached the frame. **It says nothing about who sent it**:
+    /// the window's X, the taskbar's Close, the system menu, another program,
+    /// and an Alt+F4 that no terminal consumed all look the same here. This
+    /// used to be `WindowXOrAltF4` and log as `alt-f4` (#59), which named one
+    /// of those and was wrong about the common case besides -- with a
+    /// terminal focused, Alt+F4 is the core's `close_window` binding
+    /// (`Config.zig`, non-mac defaults) and arrives as `CoreCloseWindow`.
+    WmClose,
+    /// The core asked: `close_window`, `quit` or `close_all_windows`. Also
+    /// not told apart here -- the caller logs which action it was.
     CoreCloseWindow,
     /// The `poltergeist_close` action, which is an agent asking through the
     /// tool surface. Named apart from `CoreCloseWindow` because "who asked"
@@ -350,15 +359,23 @@ pub fn close_window_now(frame: HWND) {
     }
 }
 
+impl CloseVia {
+    /// What the log says. **Only what the route can know** (#59): where a
+    /// route is shared by several gestures, the label says so rather than
+    /// naming one of them.
+    pub fn label(self) -> &'static str {
+        match self {
+            CloseVia::Menu => "menu",
+            CloseVia::StripCross => "strip-x",
+            CloseVia::WmClose => "WM_CLOSE (window X, taskbar, system menu, another program, or an Alt+F4 no terminal took)",
+            CloseVia::CoreCloseWindow => "core close_window/quit/close_all_windows",
+            CloseVia::AgentTool => "agent tool",
+        }
+    }
+}
+
 pub fn close_requested(frame: HWND, via: CloseVia) {
-    let what = match via {
-        CloseVia::Menu => "menu",
-        CloseVia::StripCross => "strip-x",
-        CloseVia::WindowXOrAltF4 => "alt-f4",
-        CloseVia::CoreCloseWindow => "core close_window",
-        CloseVia::AgentTool => "agent tool",
-    };
-    crate::wlogf!(frame, "[win] close requested via {}", what);
+    crate::wlogf!(frame, "[win] close requested via {}", via.label());
 }
 
 /// Take a number for a window. **The only place a frame enters `FRAMES`.**
@@ -1094,5 +1111,33 @@ mod invariant_floor {
             "POLTER_HOST_LOG redirect did not take; every other test in this \
              module is unreadable until it does. Log was:\n{out}"
         );
+    }
+}
+
+#[cfg(test)]
+mod close_via_labels {
+    use super::CloseVia;
+
+    /// Every route's label, pinned (#59). A label is the only thing a person
+    /// reading the log has to go on, so it changing -- or two of them trading
+    /// places -- has to be a red test, not a quiet edit.
+    #[test]
+    fn each_route_logs_what_it_can_actually_know() {
+        assert_eq!(CloseVia::Menu.label(), "menu");
+        assert_eq!(CloseVia::StripCross.label(), "strip-x");
+        assert_eq!(
+            CloseVia::WmClose.label(),
+            "WM_CLOSE (window X, taskbar, system menu, another program, or an Alt+F4 no terminal took)"
+        );
+        assert_eq!(CloseVia::CoreCloseWindow.label(), "core close_window/quit/close_all_windows");
+        assert_eq!(CloseVia::AgentTool.label(), "agent tool");
+    }
+
+    #[test]
+    fn the_wm_close_route_does_not_claim_to_know_it_was_a_key() {
+        // The complaint in #59: `alt-f4` read as "somebody pressed a key"
+        // when nobody need have. Nothing a WM_CLOSE carries can say that.
+        assert_ne!(CloseVia::WmClose.label(), "alt-f4");
+        assert!(CloseVia::WmClose.label().starts_with("WM_CLOSE"));
     }
 }
