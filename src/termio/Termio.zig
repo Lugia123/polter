@@ -121,6 +121,22 @@ last_cursor_reset: ?std.Io.Timestamp = null,
 /// to keep track of any state or if its already been freed.
 thread_enter_state: ?*ThreadEnterState = null,
 
+/// Set when a scrollback snapshot was restored, cleared by the first pty
+/// byte, which is when it is reported: how many times the primary screen was
+/// resized in between (issue #35). A restored screen should reach the shell
+/// at the size it was restored at; every resize in between is a reflow of
+/// the restored content before anything was written to it, and one of them
+/// is what erased the restored prompt in #826. Only the reader thread
+/// touches it after `init`.
+restored: ?Restored = null,
+
+pub const Restored = struct {
+    /// `PageList.resize_count` of the primary screen just after the restore.
+    resize_count: u64,
+    cols: terminalpkg.size.CellCountInt,
+    rows: terminalpkg.size.CellCountInt,
+};
+
 /// The state we need to keep around only until we enter the IO
 /// thread. Then we can throw it all away.
 const ThreadEnterState = struct {
@@ -430,10 +446,17 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         )) {
             .missing => log.info("no scrollback snapshot to restore path={s}", .{path}),
             .unreadable => {}, // `restore` has said why and removed the file.
-            .restored => |r| log.info(
-                "scrollback restored history_rows={} dropped_continuation={} path={s}",
-                .{ r.history_rows, r.dropped_continuation, path },
-            ),
+            .restored => |r| {
+                log.info(
+                    "scrollback restored history_rows={} dropped_continuation={} path={s}",
+                    .{ r.history_rows, r.dropped_continuation, path },
+                );
+                self.restored = .{
+                    .resize_count = self.terminal.screens.get(.primary).?.pages.resize_count,
+                    .cols = self.terminal.cols,
+                    .rows = self.terminal.rows,
+                };
+            },
         }
     }
 }
@@ -1048,6 +1071,21 @@ fn processOutputLocked(self: *Termio, buf: []const u8) void {
     // number substitutes for the other.
     _ = self.poltergeist_bytes.fetchAdd(buf.len, .monotonic);
     self.scrollback_dirty.store(true, .monotonic);
+
+    // Once, at the first pty byte after a restore: the window between the
+    // two is where #35's second resize happened, so this is the moment the
+    // count has to be read. Zero is the only right answer.
+    if (self.restored) |r| {
+        self.restored = null;
+        const now = self.terminal.screens.get(.primary).?.pages.resize_count;
+        log.info("restore: {} resize(s) before the first pty byte, grid {}x{} -> {}x{}", .{
+            now - r.resize_count,
+            r.cols,
+            r.rows,
+            self.terminal.cols,
+            self.terminal.rows,
+        });
+    }
 
     // Schedule a render. We can call this first because we have the lock.
     self.terminal_stream.handler.queueRender() catch unreachable;

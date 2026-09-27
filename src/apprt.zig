@@ -20,6 +20,7 @@ pub const browser = @import("apprt/browser.zig");
 pub const embedded = @import("apprt/embedded.zig");
 pub const surface = @import("apprt/surface.zig");
 pub const Title = @import("apprt/title.zig");
+pub const initial_size = @import("apprt/initial_size.zig");
 
 pub const Action = action.Action;
 pub const Runtime = @import("apprt/runtime.zig").Runtime;
@@ -59,4 +60,5 @@ test {
     _ = action;
     _ = structs;
     _ = Title;
+    _ = initial_size;
 }

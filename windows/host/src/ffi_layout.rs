@@ -103,7 +103,7 @@ const _: () = assert!(std::mem::offset_of!(RuntimeConfig, write_clipboard_cb) ==
 const _: () = assert!(std::mem::offset_of!(RuntimeConfig, close_surface_cb) == 56, "RuntimeConfig.close_surface_cb is not at ghostty_runtime_config_s.close_surface_cb");
 
 // SurfaceConfig <- ghostty_surface_config_s
-const _: () = assert!(std::mem::size_of::<SurfaceConfig>() == 112, "size of SurfaceConfig != sizeof(ghostty_surface_config_s)");
+const _: () = assert!(std::mem::size_of::<SurfaceConfig>() == 120, "size of SurfaceConfig != sizeof(ghostty_surface_config_s)");
 const _: () = assert!(std::mem::align_of::<SurfaceConfig>() == 8, "align of SurfaceConfig != alignof(ghostty_surface_config_s)");
 const _: () = assert!(std::mem::offset_of!(SurfaceConfig, platform_tag) == 0, "SurfaceConfig.platform_tag is not at ghostty_surface_config_s.platform_tag");
 const _: () = assert!(std::mem::offset_of!(SurfaceConfig, platform_hwnd) == 8, "SurfaceConfig.platform_hwnd is not at ghostty_surface_config_s.platform");
@@ -120,6 +120,8 @@ const _: () = assert!(std::mem::offset_of!(SurfaceConfig, context) == 84, "Surfa
 const _: () = assert!(std::mem::offset_of!(SurfaceConfig, poltergeist_chat) == 88, "SurfaceConfig.poltergeist_chat is not at ghostty_surface_config_s.poltergeist_chat");
 const _: () = assert!(std::mem::offset_of!(SurfaceConfig, history_restore) == 96, "SurfaceConfig.history_restore is not at ghostty_surface_config_s.history_restore");
 const _: () = assert!(std::mem::offset_of!(SurfaceConfig, scrollback_restore) == 104, "SurfaceConfig.scrollback_restore is not at ghostty_surface_config_s.scrollback_restore");
+const _: () = assert!(std::mem::offset_of!(SurfaceConfig, width) == 112, "SurfaceConfig.width is not at ghostty_surface_config_s.width");
+const _: () = assert!(std::mem::offset_of!(SurfaceConfig, height) == 116, "SurfaceConfig.height is not at ghostty_surface_config_s.height");
 
 // SetTitlePayload <- ghostty_action_set_title_s
 const _: () = assert!(std::mem::size_of::<SetTitlePayload>() == 16, "size of SetTitlePayload != sizeof(ghostty_action_set_title_s)");

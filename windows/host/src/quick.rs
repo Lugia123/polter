@@ -910,7 +910,8 @@ fn create_surface(
         return;
     };
 
-    let mut sc: SurfaceConfig = unsafe { (api().surface_config_new)() };
+    // Same numbers as the `surface_set_size` below (#35).
+    let mut sc: SurfaceConfig = unsafe { (api().surface_config_new)() }.with_size(w.max(1) as u32, h.max(1) as u32);
     sc.platform_tag = PLATFORM_WIN32;
     sc.platform_hwnd = child.0 as *mut c_void;
     sc.scale_factor = scale;

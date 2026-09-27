@@ -598,6 +598,14 @@ typedef struct {
   // that is missing or cannot be decoded gives an empty terminal, and one
   // that cannot be decoded is deleted. See dev-docs/project-scrollback.md.
   const char* scrollback_restore;
+  // The surface's size in pixels, exactly as the apprt will report it with
+  // ghostty_surface_set_size, or 0 if it does not know yet (an 800x600
+  // placeholder is used then, as it always was). The terminal is built at
+  // this size and a scrollback_restore is restored into it, so a wrong size
+  // here means the restored screen is resized again when the real one
+  // arrives. See src/apprt/initial_size.zig.
+  uint32_t width;
+  uint32_t height;
 } ghostty_surface_config_s;
 
 typedef struct {

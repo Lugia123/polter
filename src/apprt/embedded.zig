@@ -598,8 +598,16 @@ pub const Surface = struct {
         /// this *is* just a path: core reads it, and deletes it if it cannot
         /// be read. See `configpkg.Config._scrollback_restore`.
         ///
-        /// Declared last to match `ghostty_surface_config_s`.
+        /// Declared after `history_restore` to match `ghostty_surface_config_s`.
         scrollback_restore: ?[*:0]const u8 = null,
+
+        /// The surface's size in pixels as the apprt will report it with
+        /// `set_size`, or 0 when it does not know yet. See
+        /// `apprt/initial_size.zig` for why this is not left to `set_size`.
+        ///
+        /// Declared last to match `ghostty_surface_config_s`.
+        width: u32 = 0,
+        height: u32 = 0,
     };
 
     pub fn init(self: *Surface, app: *App, opts: Options) !void {
@@ -612,9 +620,19 @@ pub const Surface = struct {
                 .x = @floatCast(opts.scale_factor),
                 .y = @floatCast(opts.scale_factor),
             },
-            .size = .{ .width = 800, .height = 600 },
+            .size = apprt.initial_size.fromApprt(opts.width, opts.height),
             .cursor_pos = .{ .x = -1, .y = -1 },
         };
+        // Said once per surface, so a restore that was resized afterwards
+        // can be traced to an apprt that did not pass a size (issue #35).
+        if (opts.width == 0 or opts.height == 0) {
+            log.info("surface starts at the {}x{} placeholder: the apprt passed no size", .{
+                self.size.width,
+                self.size.height,
+            });
+        } else {
+            log.info("surface starts at {}x{}, the size the apprt passed", .{ self.size.width, self.size.height });
+        }
 
         // Add ourselves to the list of surfaces on the app.
         try app.core_app.addSurface(self);

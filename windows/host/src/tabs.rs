@@ -2200,7 +2200,9 @@ fn create_pane(
     };
     logf!("[pane] {} hwnd = {:?} at {}x{}+{}+{}", id, child.0, w, h, x, y);
 
-    let mut sc: SurfaceConfig = unsafe { (api().surface_config_new)() };
+    // The size the `surface_set_size` below will pass, so the terminal (and a
+    // restored scrollback) is built at it rather than at a placeholder (#35).
+    let mut sc: SurfaceConfig = unsafe { (api().surface_config_new)() }.with_size(w as u32, h as u32);
     sc.platform_tag = PLATFORM_WIN32;
     sc.platform_hwnd = child.0 as *mut c_void;
     sc.scale_factor = scale;

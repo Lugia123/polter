@@ -4,7 +4,7 @@
 //! C program (offsetof/sizeof), not guessed:
 //!   action_s          size 32  align 8  (tag @0, union @8, union size 24)
 //!   target_s          size 16  align 8
-//!   surface_config_s  size 96  align 8
+//!   surface_config_s  size 120 align 8  (was 96 in this line long after it was 112; `ffi_layout.rs` is the measured one)
 //!   runtime_config_s  size 64
 //! If any of those change, this file is wrong and the symptom will be
 //! garbage payloads rather than a link error.
@@ -978,6 +978,39 @@ pub struct SurfaceConfig {
     /// from `ghostty_surface_config_new()`, which leaves it null; the project
     /// code that sets it is task 827's.
     pub scrollback_restore: *const c_char,
+    /// `ghostty_surface_config_s.width`/`height`: the size in pixels the
+    /// first `surface_set_size` will report, or 0 for "not known". Not set
+    /// directly: `UnsizedSurfaceConfig::with_size` is the only way to get a
+    /// `SurfaceConfig` out of `surface_config_new`, so a creation site that
+    /// forgets the size does not compile (issue #35).
+    pub width: u32,
+    pub height: u32,
+}
+
+/// What `ghostty_surface_config_new()` returns, before it has a size.
+///
+/// **Why a separate type (issue #35).** The core builds the terminal at the
+/// size in the config, and a pane reopened from a project is restored into
+/// it. A config left at 0 gets an 800x600 placeholder instead, and the real
+/// size arriving a moment later resizes the restored screen once more -- the
+/// resize that erased the restored prompt and let the console's first clear
+/// take the last screenful. A field that can be forgotten would be forgotten
+/// silently, so this has no fields to set: the one way to a `SurfaceConfig`
+/// is `with_size`, and a creation site without it fails to compile on its
+/// first field assignment. `repr(transparent)` keeps the ABI identical to
+/// `SurfaceConfig`, which is what the C function returns.
+#[repr(transparent)]
+pub struct UnsizedSurfaceConfig(SurfaceConfig);
+
+impl UnsizedSurfaceConfig {
+    /// `width`/`height` are exactly what the first `surface_set_size` will
+    /// pass; then that call finds the size unchanged and does nothing.
+    pub fn with_size(self, width: u32, height: u32) -> SurfaceConfig {
+        let mut c = self.0;
+        c.width = width;
+        c.height = height;
+        c
+    }
 }
 
 /// `ghostty_action_set_title_s` (its typedef in `include/ghostty.h`): `{ const
@@ -1003,7 +1036,7 @@ struct SetTitlePayload {
 const _: () = {
     assert!(std::mem::size_of::<Action>() == 32);
     assert!(std::mem::size_of::<Target>() == 16);
-    assert!(std::mem::size_of::<SurfaceConfig>() == 112);
+    assert!(std::mem::size_of::<SurfaceConfig>() == 120);
     // 8-byte pointer, then a 1-byte bool immediately after it at offset 8 --
     // asserted as a size rather than an offset because `SetTitlePayload` has
     // only the one field after the pointer, so pinning the total size pins
@@ -1313,7 +1346,7 @@ pub struct Api {
     pub config_free: unsafe extern "C" fn(Config),
     pub app_new: unsafe extern "C" fn(*const RuntimeConfig, Config) -> App,
     pub app_tick: unsafe extern "C" fn(App),
-    pub surface_config_new: unsafe extern "C" fn() -> SurfaceConfig,
+    pub surface_config_new: unsafe extern "C" fn() -> UnsizedSurfaceConfig,
     pub surface_new: unsafe extern "C" fn(App, *const SurfaceConfig) -> Surface,
     /// **Schedule a render. Not the same as `surface_draw`.**
     ///
