@@ -104,10 +104,13 @@
 | `UserPromptSubmit` | `turn_started` | —（不取 prompt 正文） |
 | `Stop` | `turn_ended` | `last_assistant_message`（截断，见 3.4）、`background_tasks` 非空 → `waiting_on_background` |
 | `StopFailure` | `turn_failed` | `error`（rate_limit / overloaded / authentication_failed / …）、`error_details` |
-| `PermissionRequest` | `awaiting_approval` | `tool_name`、一行摘要（Bash 取 `command` 前 120 字符） |
+| `PermissionRequest` | `awaiting_approval` | `tool_name`、一行摘要（shell 工具——`Bash`，Windows 上是 `PowerShell`——取 `command` 前 120 字符） |
 | `Notification` matcher `idle_prompt` / `elicitation_dialog` | `awaiting_input` | `notification_type` |
 
-每条 hook 都是 `{"type":"command","command":"<polter 可执行文件> +hook --cli claude-code <event>","timeout":5}`。
+每条 hook 都是 exec form：`{"type":"command","command":"<polter 可执行文件>","args":["+hook","--cli","claude-code","<event>"],"timeout":5}`。
+**不经过 shell**（#888）：shell form 在 Windows 上没装 Git Bash 时交给 PowerShell，
+sh 的单引号写法在那里是语法错误，而且只出现在 Claude Code 的 debug 日志里，回合照常。
+exec form 下 `command` 可以是带空格的绝对路径，`args` 每项就是一个参数，不做任何转义。
 可执行文件路径用 adapter 已知的那个（provision 注册 MCP 时用的同一个）。
 
 **不用 `mcp_tool` 类型的 hook**，两个理由：

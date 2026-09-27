@@ -178,14 +178,16 @@ fn claudeCode(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error
     return ev;
 }
 
-/// The one line that says what an approval is for. Bash's command is the
-/// case that matters; other tools say which file when they have one.
+/// The one line that says what an approval is for. A shell tool's command is
+/// the case that matters -- `Bash`, or `PowerShell` on Windows (#888); other
+/// tools say which file when they have one.
 fn approvalSummary(obj: std.json.ObjectMap, tool: []const u8) Error!?[]const u8 {
     const input = switch (obj.get("tool_input") orelse return null) {
         .object => |o| o,
         else => return null,
     };
-    const key = if (std.mem.eql(u8, tool, "Bash")) "command" else "file_path";
+    const shell = std.mem.eql(u8, tool, "Bash") or std.mem.eql(u8, tool, "PowerShell");
+    const key = if (shell) "command" else "file_path";
     const s = (try optionalString(input, key)) orelse return null;
     return prefixChars(s, summary_chars);
 }
@@ -361,6 +363,21 @@ test "claude-code PermissionRequest names the tool and the first 120 characters 
     try testing.expectEqual(Kind.awaiting_approval, ev.event);
     try testing.expectEqualStrings("Bash", ev.detail.?);
     try testing.expectEqual(@as(usize, 240), ev.note.?.len);
+}
+
+test "claude-code PermissionRequest for the PowerShell tool names its command (#888)" {
+    // Windows' shell tool is `PowerShell`, not `Bash`, and carries the same
+    // `command`. Read as a file tool it had no `file_path`, so the approval
+    // said nothing about what it was for.
+    setup();
+    defer teardown();
+    const ev = try tr("PermissionRequest",
+        \\{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"PowerShell",
+        \\ "tool_input":{"command":"Remove-Item -Recurse C:\\w\\build","description":"d"}}
+    );
+    try testing.expectEqualStrings("PowerShell", ev.detail.?);
+    const note = ev.note orelse return error.TestExpectedNote;
+    try testing.expectEqualStrings("Remove-Item -Recurse C:\\w\\build", note);
 }
 
 test "claude-code PermissionRequest for a file tool names the file" {

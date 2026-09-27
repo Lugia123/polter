@@ -34,8 +34,11 @@ Three things it deliberately does not do, and each is checkable by reading:
 
 Hooks (`dev-docs/poltergeist/adapters.md` 3.1-3.2): from Claude Code
 2.1.145 on, `launch` puts six hooks into the one `--settings` it passes, each
-running `<polter> +hook --cli claude-code <event>`, and answers `"hooks":
-true` so that Polter expects to hear from them. Older, or a version it cannot
+running `<polter> +hook --cli claude-code <event>` in exec form -- `command`
+is the Polter executable and `args` the rest, so no shell reads it: on
+Windows without Git Bash the shell is PowerShell, which read the sh-quoted
+string as a syntax error and said so only in Claude Code's debug log (#888)
+-- and answers `"hooks": true` so that Polter expects to hear from them. Older, or a version it cannot
 read, or a role whose `--settings` is a file it cannot merge into, or no
 `polter` path in the request: no hooks at all, and a note that says why. No
 "some hooks" -- that would make the same state mean different things on
@@ -591,11 +594,6 @@ def claude_version():
     return tuple(int(g) for g in m.groups()), None
 
 
-def shell_quote(s):
-    """One argument for the shell Claude Code runs a hook command in."""
-    return "'" + s.replace("'", "'\\''") + "'"
-
-
 def hooks_for(req, settings_file, notes):
     """The `hooks` block to add, or None with a note saying why not."""
     screen = "so this terminal is watched by its screen alone."
@@ -620,7 +618,8 @@ def hooks_for(req, settings_file, notes):
     for event, matcher in HOOK_EVENTS:
         entry = {"hooks": [{
             "type": "command",
-            "command": "%s +hook --cli claude-code %s" % (shell_quote(polter), event),
+            "command": polter,
+            "args": ["+hook", "--cli", "claude-code", event],
             "timeout": HOOK_TIMEOUT,
         }]}
         if matcher:

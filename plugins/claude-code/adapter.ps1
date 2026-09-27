@@ -818,7 +818,8 @@ function Split-Settings($ArgList, $Notes) {
 #
 # See the same section in adapter.py: from Claude Code 2.1.145, six hooks go
 # into the one `--settings`, each running `<polter> +hook --cli claude-code
-# <event>`; otherwise none, and a note saying why.
+# <event>` in exec form (`command` + `args`, no shell); otherwise none, and a
+# note saying why.
 
 $script:HooksSince = @(2, 1, 145)
 $script:HookEvents = @(
@@ -832,6 +833,51 @@ $script:HookEvents = @(
 $script:HookTimeout = 5
 $script:VersionTimeoutMs = 10000
 
+# One argument as a Windows program reads its command line back into argv
+# (the MSVC runtime's rules, which `CommandLineToArgvW` shares): quoted when
+# it is empty or holds whitespace or a quote; a quote is escaped with a
+# backslash, and a run of backslashes is doubled only where it ends up
+# before a quote.
+function ConvertTo-WindowsArgument([string]$S) {
+    if ($S.Length -gt 0 -and $S.IndexOfAny([char[]]@([char]32, [char]9, [char]10, [char]11, [char]34)) -lt 0) { return $S }
+    $b = New-Object System.Text.StringBuilder
+    [void]$b.Append([char]34)
+    $slashes = 0
+    foreach ($ch in $S.ToCharArray()) {
+        if ($ch -eq [char]92) { $slashes++; continue }
+        if ($ch -eq [char]34) {
+            [void]$b.Append([char]92, 2 * $slashes + 1)
+            [void]$b.Append([char]34)
+        } else {
+            [void]$b.Append([char]92, $slashes)
+            [void]$b.Append($ch)
+        }
+        $slashes = 0
+    }
+    [void]$b.Append([char]92, 2 * $slashes)
+    [void]$b.Append([char]34)
+    return $b.ToString()
+}
+
+# Put `$Argv` on a ProcessStartInfo as separate arguments.
+#
+# **Windows PowerShell 5.1 has no `ArgumentList`** (#888). It is .NET
+# Framework's ProcessStartInfo, which only takes one `Arguments` string; the
+# property is not there at all, and under `Set-StrictMode -Version 2.0`
+# reading it throws rather than giving `$null`. That throw was caught as
+# "could not run claude --version", and on the test machine no hook was ever
+# configured. So the property is looked for, not read: where it exists it is
+# used, and otherwise the string is built with the quoting a Windows program
+# undoes.
+function Set-StartArguments($Psi, $Argv) {
+    $list = $Psi.PSObject.Properties['ArgumentList']
+    if ($null -ne $list -and $null -ne $list.Value) {
+        foreach ($a in $Argv) { $list.Value.Add([string]$a) }
+        return
+    }
+    $Psi.Arguments = (@($Argv | ForEach-Object { ConvertTo-WindowsArgument ([string]$_) }) -join ' ')
+}
+
 # `claude --version` as @(major, minor, patch), or a string saying why not.
 function Get-ClaudeVersion {
     $start = Resolve-ClaudeCommand
@@ -839,8 +885,10 @@ function Get-ClaudeVersion {
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = [string]$start[0]
-        for ($k = 1; $k -lt $start.Count; $k++) { $psi.ArgumentList.Add([string]$start[$k]) }
-        $psi.ArgumentList.Add('--version')
+        $argv = New-List
+        for ($k = 1; $k -lt $start.Count; $k++) { $argv.Add([string]$start[$k]) }
+        $argv.Add('--version')
+        Set-StartArguments $psi $argv
         $psi.UseShellExecute = $false
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
@@ -871,11 +919,6 @@ function Test-VersionBefore($A, $B) {
     return $false
 }
 
-# One argument for the shell Claude Code runs a hook command in.
-function ConvertTo-ShellQuote([string]$S) {
-    return "'" + $S.Replace("'", "'\''") + "'"
-}
-
 # The `hooks` block to add, or `$null` with a note saying why not.
 function Get-Hooks($Req, [bool]$SettingsFile, $Notes) {
     $screen = 'so this terminal is watched by its screen alone.'
@@ -901,7 +944,10 @@ function Get-Hooks($Req, [bool]$SettingsFile, $Notes) {
     foreach ($ev in $script:HookEvents) {
         $hook = New-Map
         $hook['type'] = 'command'
-        $hook['command'] = (ConvertTo-ShellQuote $polter) + ' +hook --cli claude-code ' + $ev[0]
+        $hook['command'] = $polter
+        $hookArgs = New-List
+        foreach ($a in @('+hook', '--cli', 'claude-code', $ev[0])) { $hookArgs.Add($a) }
+        $hook['args'] = $hookArgs
         $hook['timeout'] = $script:HookTimeout
         $list = New-List
         $list.Add($hook)

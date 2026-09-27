@@ -855,8 +855,11 @@ fn askHooks(aa: Allocator, io: std.Io, rig: HookRig, cell: HookCell) !?HookAnswe
     };
 }
 
-/// The six hooks, each running `<polter> +hook --cli claude-code <event>`.
-fn expectAllHooks(settings: std.json.ObjectMap, quoted: []const u8) !void {
+/// The six hooks, each running `<polter> +hook --cli claude-code <event>` in
+/// exec form: `command` is the executable itself and `args` the rest, so no
+/// shell reads it (#888 -- on Windows without Git Bash that shell is
+/// PowerShell, and the sh-quoted string was a parse error there).
+fn expectAllHooks(settings: std.json.ObjectMap, polter: []const u8) !void {
     const hooks = (settings.get("hooks") orelse return error.TestExpectedHooks).object;
     for ([_][]const u8{ "SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Notification" }) |event| {
         const entries = (hooks.get(event) orelse {
@@ -867,11 +870,14 @@ fn expectAllHooks(settings: std.json.ObjectMap, quoted: []const u8) !void {
         const hook = ours.get("hooks").?.array.items[0].object;
         try testing.expectEqualStrings("command", hook.get("type").?.string);
         try testing.expectEqual(@as(i64, 5), hook.get("timeout").?.integer);
-        var want: [256]u8 = undefined;
-        try testing.expectEqualStrings(
-            try std.fmt.bufPrint(&want, "{s} +hook --cli claude-code {s}", .{ quoted, event }),
-            hook.get("command").?.string,
-        );
+        try testing.expectEqualStrings(polter, hook.get("command").?.string);
+        const args = (hook.get("args") orelse return error.TestExpectedExecForm).array.items;
+        const want = [_][]const u8{ "+hook", "--cli", "claude-code", event };
+        try testing.expectEqual(want.len, args.len);
+        for (want, args) |w, a| try testing.expectEqualStrings(w, a.string);
+        // Exec form ignores `shell`; one written anyway would say a shell
+        // is involved.
+        try testing.expect(hook.get("shell") == null);
         if (std.mem.eql(u8, event, "Notification")) {
             try testing.expectEqualStrings("idle_prompt|elicitation_dialog", ours.get("matcher").?.string);
         } else {
@@ -880,7 +886,9 @@ fn expectAllHooks(settings: std.json.ObjectMap, quoted: []const u8) !void {
     }
 }
 
-const polter_quoted = "'/Applications/It'\\''s Polter/polter'";
+/// Unquoted: exec form hands it over as one argument, apostrophe and space
+/// and all.
+const polter_path = "/Applications/It's Polter/polter";
 
 test "agent_cli hooks: 2.1.144 gets no hooks, and a note that says why" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
@@ -915,7 +923,7 @@ test "agent_cli hooks: 2.1.145 gets all six in the one --settings, beside the sk
     try testing.expectEqual(@as(usize, 1), a.settings_count);
     const s = a.settings.?;
     try testing.expectEqualStrings("off", s.get("skillOverrides").?.object.get("pdf").?.string);
-    try expectAllHooks(s, polter_quoted);
+    try expectAllHooks(s, polter_path);
     try testing.expect(std.mem.indexOf(u8, a.notes, "Hooks are not configured") == null);
 }
 
@@ -943,7 +951,7 @@ test "agent_cli hooks: a role's own inline --settings, the skill switch and the 
     const s = a.settings.?;
     try testing.expectEqualStrings("dark", s.get("theme").?.string);
     try testing.expectEqualStrings("off", s.get("skillOverrides").?.object.get("pdf").?.string);
-    try expectAllHooks(s, polter_quoted);
+    try expectAllHooks(s, polter_path);
     // The role's own Stop hook is kept, ahead of Polter's.
     const stop = s.get("hooks").?.object.get("Stop").?.array.items;
     try testing.expectEqual(@as(usize, 2), stop.len);
