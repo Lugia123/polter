@@ -88,6 +88,15 @@ pub fn append(
 
     var f = try d.createFile(io, filename, .{
         .truncate = false,
+        // **Read access, although nothing here reads the file (#20).** The
+        // `stat` below is how the append finds its offset, and on Windows a
+        // handle opened for writing only cannot be asked for its attributes:
+        // zig 0.16 opens it with `GENERIC_WRITE`, `stat` is
+        // `NtQueryInformationFile(All)`, and that answers `ACCESS_DENIED`. So
+        // every append failed there -- every command OSC 60 captured was lost,
+        // and six tests (three here, three in `stream_handler.zig`) were red
+        // for this one reason. POSIX never cared: `fstat` needs no mode.
+        .read = true,
         .permissions = if (builtin.os.tag != .windows and std.posix.mode_t != u0)
             .fromMode(0o600)
         else

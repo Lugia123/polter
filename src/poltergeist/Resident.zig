@@ -3075,18 +3075,26 @@ test "a plugin with nothing to do is not killed for having nothing to do" {
 
     const env = try fixtureEnviron(testing.allocator);
 
+    // Ten times longer on Windows, all three together so the ratios hold (#20).
+    // The first exchange's deadline is set before the greeting is written, so
+    // it also covers starting the plugin -- and a PowerShell that has not got
+    // to its first line in 200ms was killed three times and never wrote
+    // `started`. That startup time is inferred, not measured; if this test is
+    // still red on Windows with these numbers, the inference was wrong.
+    const scale: u64 = if (comptime builtin.os.tag == .windows) 10 else 1;
+
     // The shape every real manifest has: a timeout shorter than the gap
     // between heartbeats. The deadline bounds one exchange, and a plugin
     // sitting through several of these gaps has done nothing wrong.
     const a = try start(testing.allocator, io, .{
         .key = "idle",
         .exec = exec,
-        .timeout_ms = 200,
+        .timeout_ms = 200 * scale,
         .wants = .{ .events = &.{.chat}, .groups = &.{"*"} },
         .params = &.{},
         .feed = &feed,
         .environ = env,
-        .timing = .{ .poll_idle_ms = 20, .heartbeat_ms = 400 },
+        .timing = .{ .poll_idle_ms = 20, .heartbeat_ms = 400 * scale },
     });
     defer a.destroy();
 
@@ -3094,10 +3102,10 @@ test "a plugin with nothing to do is not killed for having nothing to do" {
     // and there is no file for it to be caught up from.
     saySomething(&feed);
 
-    try testing.expect(waitForLines(alloc, io, starts, 1, 5000));
+    try testing.expect(waitForLines(alloc, io, starts, 1, 5000 * scale));
 
     // Long enough for several heartbeats to come and go.
-    std.Io.sleep(io, .fromMilliseconds(2000), .awake) catch {};
+    std.Io.sleep(io, .fromMilliseconds(@intCast(2000 * scale)), .awake) catch {};
 
     try testing.expectEqual(@as(usize, 1), linesIn(alloc, io, starts));
     try testing.expectEqual(@as(u32, 0), a.status().failures);

@@ -422,6 +422,25 @@ test "env: reads the environment, and says so when it is not there" {
     );
 }
 
+/// The environment the `cmd:` tests hand the resolver. Empty on POSIX, which
+/// is what they were written against; on Windows it carries `SystemRoot`,
+/// because that is how the resolver finds `cmd.exe` (`commandProcessor`).
+///
+/// **An empty map there did not only redden "is whatever it printed" (#20).**
+/// The two tests after it expect `Unresolved`, and "no command processor" is
+/// also `Unresolved` -- so on Windows they were green without the command ever
+/// running, the exact shape their own comment says they were rewritten to end.
+fn cmdTestEnviron(alloc: Allocator) !std.process.Environ.Map {
+    var env: std.process.Environ.Map = .init(alloc);
+    errdefer env.deinit();
+    if (comptime builtin.os.tag != .windows) return env;
+
+    var real = try std.testing.environ.createMap(alloc);
+    defer real.deinit();
+    if (real.get("SystemRoot")) |v| try env.put("SystemRoot", v);
+    return env;
+}
+
 test "cmd: is whatever it printed" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -429,7 +448,7 @@ test "cmd: is whatever it printed" {
     var threaded: std.Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
 
-    var env: std.process.Environ.Map = .init(testing.allocator);
+    var env = try cmdTestEnviron(testing.allocator);
     defer env.deinit();
 
     // The trailing newline `echo` adds has to go: sending it along is a
@@ -464,7 +483,7 @@ test "a resolver that fails is a failure, not a fallback" {
     var threaded: std.Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
 
-    var env: std.process.Environ.Map = .init(testing.allocator);
+    var env = try cmdTestEnviron(testing.allocator);
     defer env.deinit();
 
     try testing.expectError(
@@ -480,7 +499,7 @@ test "a resolver that prints nothing has not resolved anything" {
     var threaded: std.Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
 
-    var env: std.process.Environ.Map = .init(testing.allocator);
+    var env = try cmdTestEnviron(testing.allocator);
     defer env.deinit();
 
     try testing.expectError(

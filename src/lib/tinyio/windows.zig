@@ -718,7 +718,9 @@ test "windows: realPath resolves through symlinks" {
     });
     // Needs SeCreateSymbolicLinkPrivilege, which plain users and CI lack.
     tmp_dir.dir.symLink(testing.io, "target.txt", "link.txt", .{}) catch |err| switch (err) {
-        error.AccessDenied => return error.SkipZigTest,
+        // PermissionDenied is what zig 0.16 says for PRIVILEGE_NOT_HELD;
+        // AccessDenied alone never matched on a machine without it (#20).
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
     const dir: Dir = .{ .handle = tmp_dir.dir.handle };

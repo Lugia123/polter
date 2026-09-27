@@ -527,6 +527,49 @@ test "a server removes its own socket when it goes away" {
     try testing.expect(!d.exists("polter-mine.sock"));
 }
 
+/// A directory to name a server's socket in, and nothing else.
+///
+/// **For the tests that only need somewhere to put a server** -- the cap and
+/// the missing `full` callback. They used to borrow `SweepDir`, whose setup
+/// binds real unix sockets to have something to sweep; on Windows that setup
+/// failed with `AddressFamilyUnsupported` before either test reached what it
+/// is about (#20), while the five sweep tests that do need the sockets skip
+/// Windows on purpose. Neither of these is about sockets on disk, so neither
+/// should depend on whether the machine can make one.
+const ScratchDir = struct {
+    threaded: std.Io.Threaded,
+    io: std.Io,
+    path: []u8,
+
+    fn setup(self: *ScratchDir) !void {
+        const alloc = testing.allocator;
+
+        self.threaded = .init(alloc, .{});
+        errdefer self.threaded.deinit();
+        const io = self.threaded.io();
+        self.io = io;
+
+        // Short for the same reason as `SweepDir`: a socket path has far
+        // less room than a file path.
+        var raw: [5]u8 = undefined;
+        io.random(&raw);
+        self.path = try std.fmt.allocPrint(alloc, "/tmp/pg-scratch-{x}", .{&raw});
+        errdefer alloc.free(self.path);
+
+        try std.Io.Dir.cwd().createDirPath(io, self.path);
+    }
+
+    fn deinit(self: *ScratchDir) void {
+        std.Io.Dir.cwd().deleteTree(self.io, self.path) catch {};
+        testing.allocator.free(self.path);
+        self.threaded.deinit();
+    }
+
+    fn full(self: *ScratchDir, buf: []u8, name: []const u8) ![]u8 {
+        return std.fmt.bufPrint(buf, "{s}/{s}", .{ self.path, name });
+    }
+};
+
 test "the agent cap comes from the caller, and out-of-range values are clamped" {
     // # Why clamped and not rejected
     //
@@ -539,7 +582,7 @@ test "the agent cap comes from the caller, and out-of-range values are clamped" 
     // The cap is checked through `slots.len` because that is what the accept
     // loop actually reads. Asserting on the argument would pass while the
     // allocation used something else.
-    var d: SweepDir = undefined;
+    var d: ScratchDir = undefined;
     try d.setup();
     defer d.deinit();
 
@@ -573,7 +616,7 @@ test "a server with no `full` callback refuses without reaching for it" {
     // fill the slots without a real client, so this checks the one thing that
     // is checkable without one: that the call is guarded and a server built
     // without the callback is usable.
-    var d: SweepDir = undefined;
+    var d: ScratchDir = undefined;
     try d.setup();
     defer d.deinit();
 
