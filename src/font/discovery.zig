@@ -1313,84 +1313,66 @@ test "coretext sorting" {
     if (options.backend != .coretext and options.backend != .coretext_freetype)
         return error.SkipZigTest;
 
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!//
-    // FIXME: Disabled for now because SF Pro is not available in CI
-    //        The solution likely involves directly testing that the
-    //        `sortMatchingDescriptors` function sorts a bundled test
-    //        font correctly, instead of relying on the system fonts.
-    if (true) return error.SkipZigTest;
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!//
-
-    const testing = std.testing;
-    const alloc = testing.allocator;
-
-    var lib = try Library.init(alloc);
-    defer lib.deinit();
-
-    var ct = CoreText.init(lib);
-    defer ct.deinit();
-
-    // We try to get a Regular, Italic, Bold, & Bold Italic version of SF Pro,
-    // which should be installed on all Macs, and has many styles which makes
-    // it a good test, since there will be many results for each discovery.
-
-    // Regular
-    {
-        var it = try ct.discover(alloc, .{
-            .family = "SF Pro",
-            .size = 12,
-        });
-        defer it.deinit();
-        const res = (try it.next()).?;
-        var buf: [1024]u8 = undefined;
-        const name = try res.name(&buf);
-        try testing.expectEqualStrings("SF Pro Regular", name);
-    }
-
-    // Regular Italic
+    // What `discover` relies on this for: asked for a family and a style, the
+    // first descriptor after sorting is the face of that style. This used to
+    // ask the system for "SF Pro" and was skipped outright (`if (true)`),
+    // because CI has no SF Pro -- so the ordering was never checked anywhere
+    // (#42). It is checked here against the bundled JetBrains Mono, whose four
+    // static styles give every request exactly one right answer.
     //
-    // NOTE: This makes sure that we don't accidentally prefer "Thin Italic",
-    //       which we previously did, because it has a shorter name.
-    {
-        var it = try ct.discover(alloc, .{
-            .family = "SF Pro",
-            .size = 12,
-            .italic = true,
-        });
-        defer it.deinit();
-        const res = (try it.next()).?;
-        var buf: [1024]u8 = undefined;
-        const name = try res.name(&buf);
-        try testing.expectEqualStrings("SF Pro Regular Italic", name);
-    }
+    // NOT COVERED: the regression the old test named -- preferring "Thin
+    // Italic" over "Regular Italic" for a shorter name -- needs a family with
+    // a Thin, and none is bundled.
+    const testing = std.testing;
+    const embedded = @import("embedded.zig");
 
-    // Bold
-    {
-        var it = try ct.discover(alloc, .{
-            .family = "SF Pro",
-            .size = 12,
-            .bold = true,
-        });
-        defer it.deinit();
-        const res = (try it.next()).?;
-        var buf: [1024]u8 = undefined;
-        const name = try res.name(&buf);
-        try testing.expectEqualStrings("SF Pro Bold", name);
-    }
+    const Style = struct { bold: bool, italic: bool, want: []const u8 };
+    const cases = [_]Style{
+        .{ .bold = false, .italic = false, .want = "Regular" },
+        .{ .bold = false, .italic = true, .want = "Italic" },
+        .{ .bold = true, .italic = false, .want = "Bold" },
+        .{ .bold = true, .italic = true, .want = "Bold Italic" },
+    };
 
-    // Bold Italic
-    {
-        var it = try ct.discover(alloc, .{
-            .family = "SF Pro",
-            .size = 12,
-            .bold = true,
-            .italic = true,
-        });
-        defer it.deinit();
-        const res = (try it.next()).?;
-        var buf: [1024]u8 = undefined;
-        const name = try res.name(&buf);
-        try testing.expectEqualStrings("SF Pro Bold Italic", name);
+    // Two input orders, neither of which is the answer for every case, so a
+    // right first element has to come from the sort rather than the input.
+    const orders = [_][4][]const u8{
+        .{ embedded.bold_italic, embedded.italic, embedded.bold, embedded.regular },
+        .{ embedded.regular, embedded.bold, embedded.italic, embedded.bold_italic },
+    };
+
+    for (orders) |sources| {
+        var descs: [4]*macos.text.FontDescriptor = undefined;
+        var made: usize = 0;
+        defer for (descs[0..made]) |d| d.release();
+        for (sources) |src| {
+            const data = try macos.foundation.Data.createWithBytesNoCopy(src);
+            defer data.release();
+            descs[made] = macos.text.createFontDescriptorFromData(data) orelse
+                return error.FontInitFailure;
+            made += 1;
+        }
+
+        for (cases) |c| {
+            var list = descs;
+            const desc: Descriptor = .{
+                .family = "JetBrains Mono",
+                .size = 12,
+                .bold = c.bold,
+                .italic = c.italic,
+            };
+            CoreText.sortMatchingDescriptors(&desc, &list);
+
+            var buf: [128]u8 = undefined;
+            const style = list[0].copyAttribute(.style_name) orelse
+                return error.NoStyleName;
+            defer style.release();
+            const got = style.cstring(&buf, .utf8) orelse "";
+            testing.expectEqualStrings(c.want, got) catch |err| {
+                std.debug.print("asked bold={} italic={}, first after sorting was {s}\n", .{ c.bold, c.italic, got });
+                return err;
+            };
+        }
     }
 }
 
