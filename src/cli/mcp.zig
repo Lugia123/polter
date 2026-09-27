@@ -829,15 +829,23 @@ const tools = [_]Tool{
     },
     .{
         .name = "role_launch",
-        .description = "Open a new tab and start an agent CLI in it wearing a role -- the " ++
-            "same thing the user's \"Launch with Role\" menu does. The tab is given the " ++
-            "role, and `polter +launch <key> <cli>` is typed into it, which builds the " ++
+        .description = "Open a terminal and start an agent CLI in it wearing a role -- the " ++
+            "same thing the user's \"Launch with Role\" does. `place` is terminal_open's, " ++
+            "with the same meaning and the same placement code: `auto` (the default) goes " ++
+            "beside you while your tab has room and into a new tab after that, `tab` is " ++
+            "always a new tab, `here` is a split in your own tab; the reply's `placed` " ++
+            "says which it got, and why when it was not what you asked. A role whose own " ++
+            "`open` is `tab` still gets a tab when you leave `place` at `auto`. The terminal " ++
+            "is given the role -- a split exactly as a tab: terminal_capabilities shows the " ++
+            "role and `started: launched` for it -- and `polter +launch <key> <cli>` is " ++
+            "typed into it, which builds the " ++
             "command line from the role (skills and MCP servers switched off, " ++
             "instructions, model, extra args) and becomes the CLI. `cli` can be left out " ++
             "when the role is set up for exactly one. `cwd` defaults to where you are " ++
             "standing and must be an absolute path when given. The reply carries the new " ++
-            "terminal's `id` -- **except when the tab does not exist yet, which on Windows " ++
-            "is every time**: then there is no `id` and no `watching`, and the terminal " ++
+            "terminal's `id` -- **except when it does not exist yet, which is every split, " ++
+            "and on Windows every tab too**: then there is no `id` and no `watching`, the " ++
+            "role is started in it the moment it appears, and the terminal " ++
             "shows up in terminal_list a moment later. The role's `polter` settings " ++
             "(supervisor, watch, ...) are applied when the agent the launch started first " ++
             "connects to Polter, not before -- a launch whose CLI never starts gets none of " ++
@@ -848,9 +856,9 @@ const tools = [_]Tool{
             "its ordinary permission mode** unless the role's args say otherwise, so a " ++
             "worker that is to run unattended needs a role that starts it that way. If " ++
             "something is wrong with the role or the CLI, the reason is printed in that " ++
-            "tab. Supervisor only.",
+            "terminal. Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"key":{"type":"string"},"cli":{"type":"string"},"cwd":{"type":"string"}},"required":["key"],"additionalProperties":false}
+        \\{"type":"object","properties":{"key":{"type":"string"},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here"]}},"required":["key"],"additionalProperties":false}
         ,
     },
     .{

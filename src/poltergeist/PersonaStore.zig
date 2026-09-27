@@ -89,6 +89,19 @@ launches: std.AutoHashMapUnmanaged(Bus.Id, Launched) = .empty,
 /// out from under it. Cleared by `forget` with the rest.
 standings: std.AutoHashMapUnmanaged(Bus.Id, PendingStanding) = .empty,
 
+/// A role launch whose terminal does not exist yet, waiting for the next
+/// one to finish starting (`expectLaunch`, `takeLaunch`).
+///
+/// **A split is the ordinary case, not the odd one.** Both hosts make a
+/// split on their own thread, and Windows makes tabs that way too, so the
+/// terminal a launch asked for is almost never there when the asking
+/// returns. What starts the role in it is the new surface claiming this at
+/// the end of its `init` -- and it has to be the same `startRole` a
+/// terminal that did exist in time gets, or the role never gets recorded:
+/// `terminal_capabilities` then says `role: null, started: none` for a
+/// terminal plainly running the role's command line.
+pending_launch: ?PendingLaunch = null,
+
 pub const NamePair = struct {
     key: [:0]const u8,
     name: [:0]const u8,
@@ -98,6 +111,30 @@ const Launched = struct {
     arena: std.heap.ArenaAllocator,
     launch: persona.Launch,
 };
+
+pub const PendingLaunch = struct {
+    arena: std.heap.ArenaAllocator,
+    key: []const u8,
+    /// The CLI it is to start in, so the launch can be recorded
+    /// (`noteLaunch`) when its terminal arrives.
+    cli: []const u8,
+    /// The line to type there.
+    line: []const u8,
+    /// The terminal the launch was asked from.
+    by: Bus.Id,
+    /// Past this, a terminal that starts is not the one that was asked for
+    /// -- the split or tab was refused or closed -- and it is left alone.
+    deadline_ms: u64,
+
+    pub fn deinit(self: *PendingLaunch) void {
+        self.arena.deinit();
+    }
+};
+
+/// How long a launch waits for its terminal. Generous for a slow machine,
+/// short enough that a terminal the person opens by hand later is never
+/// mistaken for it.
+pub const pending_launch_ms: u64 = 10_000;
 
 pub const PendingStanding = struct {
     want: persona.Polter,
@@ -124,6 +161,7 @@ pub fn deinit(self: *PersonaStore) void {
     while (it.next()) |l| l.arena.deinit();
     self.launches.deinit(self.alloc);
     self.standings.deinit(self.alloc);
+    if (self.pending_launch) |*p| p.deinit();
     self.* = undefined;
 }
 
@@ -569,6 +607,76 @@ fn roleWatcher(bus: *const Bus, by: Bus.Id, id: Bus.Id) ?Bus.Id {
         found = kv.key_ptr.*;
     }
     return found;
+}
+
+/// Everything that makes `id` a terminal started in role `key` on the CLI
+/// `cli`, short of typing the line: it wears the role, the launch is
+/// recorded (`terminal_capabilities`' `started: launched`), and the role's
+/// Polter half is held for the agent (`holdStanding`).
+///
+/// **One function for every way a role is started** -- a tab that existed
+/// in time, a split or tab that arrived later (`takeLaunch`), the terminal
+/// that was clicked -- so none of them can do less than the others.
+/// `by` is the terminal the launch was asked from.
+pub fn startRole(
+    self: *PersonaStore,
+    id: Bus.Id,
+    by: Bus.Id,
+    key: []const u8,
+    cli: []const u8,
+    now_ms: u64,
+) !void {
+    const p = self.set.find(key) orelse return error.NoSuchPersona;
+    try self.setPersona(id, key);
+    if (p.cli(cli)) |c| try self.noteLaunch(id, key, c);
+    try self.holdStanding(id, by, p.polter, now_ms);
+}
+
+/// Remember a launch for the next terminal to finish starting. Replaces
+/// one already waiting: two launches cannot share one new terminal, and the
+/// later request is the one somebody is waiting on.
+pub fn expectLaunch(
+    self: *PersonaStore,
+    key: []const u8,
+    cli: []const u8,
+    line: []const u8,
+    by: Bus.Id,
+    now_ms: u64,
+) Allocator.Error!void {
+    self.dropLaunch();
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    errdefer arena.deinit();
+    const aa = arena.allocator();
+    self.pending_launch = .{
+        .arena = undefined,
+        .key = try aa.dupe(u8, key),
+        .cli = try aa.dupe(u8, cli),
+        .line = try aa.dupe(u8, line),
+        .by = by,
+        .deadline_ms = now_ms + pending_launch_ms,
+    };
+    self.pending_launch.?.arena = arena;
+}
+
+/// The launch waiting for a terminal, taken: the caller owns it and calls
+/// `deinit`. Null when there is none, or when it waited too long -- which
+/// is also taken, so a stale launch never lands on a terminal the person
+/// opens later.
+pub fn takeLaunch(self: *PersonaStore, now_ms: u64) ?PendingLaunch {
+    var p = self.pending_launch orelse return null;
+    self.pending_launch = null;
+    if (now_ms > p.deadline_ms) {
+        log.info("poltergeist: the terminal for role {s} never came; not starting it", .{p.key});
+        p.deinit();
+        return null;
+    }
+    return p;
+}
+
+/// Forget a launch that is waiting, if any.
+pub fn dropLaunch(self: *PersonaStore) void {
+    if (self.pending_launch) |*p| p.deinit();
+    self.pending_launch = null;
 }
 
 /// Record that `id` was started in role `key` with the CLI `choice`, and

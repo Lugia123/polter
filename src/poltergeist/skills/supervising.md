@@ -442,9 +442,19 @@ library -- you have the same powers over it as the user has in the role
 library window, so edit it the way they would: say in the group what you
 changed and why.
 
-`role_launch(key, cli?, cwd?)` opens **a new tab** (never a split beside
-you), gives it the role, and starts the CLI there. The reply carries its id;
-`set_watch` it if you mean to mind it. The permission-mode advice above still
+`role_launch(key, cli?, cwd?, place?)` opens a terminal for the role, gives
+it the role, and starts the CLI there. `place` is `terminal_open`'s --
+`auto` (the default), `tab`, `here` -- placed by the same code, so the next
+section applies to it word for word; a role whose own `open` is `tab` still
+gets a tab under `auto`. A role started in a split is recorded exactly like
+one started in a tab (`terminal_capabilities` shows the role and
+`started: launched`). **Do not type `polter +launch` into a terminal
+yourself** to get a split: the command line comes out right, but Polter
+never hears which role that terminal is in, so it has no role, no
+`started: launched`, and none of the role's `polter` settings. The reply
+carries its id when the terminal already exists -- a split never does yet;
+it is in `terminal_list` a moment later -- and `set_watch` it if you mean to
+mind it. The permission-mode advice above still
 holds: a role that is to run unattended needs `--permission-mode auto` in its
 `args`, or it stops at the first prompt like any other worker. What went
 wrong, when something did, is printed in that tab -- `terminal_read` it.

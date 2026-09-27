@@ -2139,6 +2139,8 @@ pub const CAPI = struct {
             key[0..key_len],
             cli[0..cli_len],
             "",
+            // The library window's Launch button: a tab, as it always was.
+            .tab,
         ) catch |e| {
             copyErrorOut(e, err, cap);
             return false;

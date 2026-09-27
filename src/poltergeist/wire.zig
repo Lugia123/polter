@@ -228,16 +228,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .terminal_open = .{
                 .cwd = (try optionalString(aa, params, "cwd")) orelse "",
                 .watch = optionalBool(params, "watch", false),
-                // **An unknown word is `auto`, not an error.** The three names
-                // are a hint about intent, and a caller that guessed one gets the
-                // sensible placement rather than a failed open -- but a caller
-                // that meant `tab` and typed it correctly gets the guarantee.
-                .place = blk: {
-                    const w = (try optionalString(aa, params, "place")) orelse break :blk .auto;
-                    if (std.mem.eql(u8, w, "tab")) break :blk .tab;
-                    if (std.mem.eql(u8, w, "here")) break :blk .here;
-                    break :blk .auto;
-                },
+                .place = try placeParam(aa, params),
             },
         },
 
@@ -263,11 +254,15 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .role_clis => .{ .role_clis = .{
             .refresh = optionalBool(params, "refresh", false),
         } },
-        .role_launch => .{ .role_launch = .{
-            .key = try requireString(aa, params, "key"),
-            .cli = (try optionalString(aa, params, "cli")) orelse "",
-            .cwd = (try optionalString(aa, params, "cwd")) orelse "",
-        } },
+        .role_launch => .{
+            .role_launch = .{
+                .key = try requireString(aa, params, "key"),
+                .cli = (try optionalString(aa, params, "cli")) orelse "",
+                .cwd = (try optionalString(aa, params, "cwd")) orelse "",
+                // The same reading as `terminal_open`'s, from the same function.
+                .place = try placeParam(aa, params),
+            },
+        },
 
         .terminal_action => .{ .terminal_action = .{
             .id = try requireId(params),
@@ -492,6 +487,19 @@ fn parseAgentEvent(aa: Allocator, params: ?std.json.ObjectMap) ParseError!AgentE
         .text_bytes = try optionalU64(params, "text_bytes", if (text) |t| t.len else 0),
         .waiting_on_background = optionalBool(params, "waiting_on_background", false),
     };
+}
+
+/// `place`, for `terminal_open` and `role_launch` alike.
+///
+/// **An unknown word is `auto`, not an error.** The three names are a hint
+/// about intent, and a caller that guessed one gets the sensible placement
+/// rather than a failed open -- but a caller that meant `tab` and typed it
+/// correctly gets the guarantee.
+fn placeParam(aa: Allocator, params: ?std.json.ObjectMap) ParseError!rpc.Placement {
+    const w = (try optionalString(aa, params, "place")) orelse return .auto;
+    if (std.mem.eql(u8, w, "tab")) return .tab;
+    if (std.mem.eql(u8, w, "here")) return .here;
+    return .auto;
 }
 
 fn requireBool(params: ?std.json.ObjectMap, key: []const u8) ParseError!bool {
@@ -893,8 +901,9 @@ pub const Response = union(enum) {
         /// with nothing in the reply to tell them apart (issue #17).
         watch: OpenedWatch,
 
-        /// Where `terminal_open` put it. Null for `role_launch`, which does
-        /// not take a placement.
+        /// Where `terminal_open` or `role_launch` put it. Nullable because
+        /// the field predates `role_launch` taking a placement; both fill it
+        /// now.
         placed: ?rpc.Placed,
     },
     /// A task's number, answering `task_create`.
@@ -2439,5 +2448,18 @@ test "every answer about a watch carries its reason onto the wire" {
                 try testing.expect(std.mem.indexOf(u8, text, why) != null);
             },
         }
+    }
+}
+
+test "role_launch place: read exactly as terminal_open's" {
+    for ([_]struct { json: []const u8, want: rpc.Placement }{
+        .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\"}}", .want = .auto },
+        .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"place\":\"tab\"}}", .want = .tab },
+        .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"place\":\"here\"}}", .want = .here },
+        .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"place\":\"beside\"}}", .want = .auto },
+    }) |c| {
+        var p = try parse(c.json);
+        defer p.deinit();
+        try testing.expectEqual(c.want, p.value.role_launch.place);
     }
 }

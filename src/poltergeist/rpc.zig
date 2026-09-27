@@ -523,6 +523,10 @@ pub const Request = union(Method) {
         cli: []const u8 = "",
         /// Empty means where the calling terminal is standing.
         cwd: []const u8 = "",
+        /// Where the role's terminal goes, on `terminal_open`'s terms and
+        /// by the same code (`App.poltergeistOpenTerminal`). A role whose
+        /// own `open` is `tab` still gets a tab when this is `auto`.
+        place: Placement = .auto,
     },
     terminal_action: struct { id: Bus.Id, action: []const u8 },
     terminal_actions,
@@ -4743,10 +4747,12 @@ pub const Host = struct {
             refresh: bool,
         ) anyerror![]const u8,
 
-        /// Open a tab next to `by`, give it the role, and start the CLI.
-        /// The new terminal's id, or null when the runtime has not made it
-        /// by the time this returns -- the launch then waits for it and is
-        /// typed in when it appears (`App.claimPendingLaunch`).
+        /// Open a terminal for a role where `place` says -- a tab or a split,
+        /// placed as `openTerminal` places one -- give it the role, and start
+        /// the CLI. The id is null when the runtime has not made the terminal
+        /// by the time this returns (every split; every Windows tab): the
+        /// launch then waits for it and is started in it when it appears
+        /// (`App.claimPendingLaunch`), by the same path as one that was there.
         personaLaunch: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
@@ -4754,7 +4760,8 @@ pub const Host = struct {
             key: []const u8,
             cli: []const u8,
             cwd: []const u8,
-        ) anyerror!?Bus.Id,
+            place: Placement,
+        ) anyerror!Opened,
 
         /// Open a terminal in `by`'s window, starting in `cwd`.
         ///
@@ -5294,8 +5301,9 @@ pub const Host = struct {
         key: []const u8,
         cli: []const u8,
         cwd: []const u8,
-    ) anyerror!?Bus.Id {
-        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd);
+        place: Placement,
+    ) anyerror!Opened {
+        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd, place);
     }
 
     fn quietMs(self: Host, id: Bus.Id) u64 {
@@ -6189,7 +6197,7 @@ pub fn dispatch(
         },
 
         .role_launch => |p| {
-            const id = host.personaLaunch(alloc, caller, p.key, p.cli, p.cwd) catch |err| return switch (err) {
+            const opened = host.personaLaunch(alloc, caller, p.key, p.cli, p.cwd, p.place) catch |err| return switch (err) {
                 error.NoSuchPersona => hostFailure(
                     "NoSuchRole",
                     "there is no role with that key. role_list has them.",
@@ -6216,16 +6224,17 @@ pub fn dispatch(
                 ),
                 else => hostFailure("LaunchFailed", "could not open a terminal for the role"),
             };
-            // A null id is the tab still being made (Windows, always): the
-            // launch waits for it and is typed in when it appears, and
-            // `terminal_list` will have it in a moment.
+            // A null id is the terminal still being made (every split, and
+            // every Windows tab): the launch waits for it and is started in
+            // it when it appears, and `terminal_list` will have it in a
+            // moment.
             return .{
                 .opened = .{
-                    .id = id,
+                    .id = opened.id,
                     // No id yet: whether the role wants a watch cannot be asked of
                     // a terminal that is not there, so it is not known.
-                    .watch = if (id) |new| launchedWatching(alloc, bus, host, caller, new) else .unknown,
-                    .placed = null,
+                    .watch = if (opened.id) |new| launchedWatching(alloc, bus, host, caller, new) else .unknown,
+                    .placed = opened.placed,
                 },
             };
         },
@@ -7968,9 +7977,18 @@ const FakeHost = struct {
     role_put: ?[]const u8 = null,
     role_deleted: ?[]const u8 = null,
     role_error: ?anyerror = null,
-    role_launched: ?struct { by: Bus.Id, key: []const u8, cli: []const u8, cwd: []const u8 } = null,
+    role_launched: ?struct {
+        by: Bus.Id,
+        key: []const u8,
+        cli: []const u8,
+        cwd: []const u8,
+        place: Placement,
+    } = null,
     clis_refreshed: bool = false,
     role_tab_late: bool = false,
+
+    /// Whether `role_launch`'s `auto` finds room beside the caller.
+    role_auto_splits: bool = false,
 
     /// Make typing fail the way a real terminal can: its process has gone,
     /// or somebody is at the keyboard.
@@ -8769,11 +8787,23 @@ const FakeHost = struct {
         key: []const u8,
         cli: []const u8,
         cwd: []const u8,
-    ) anyerror!?Bus.Id {
+        place: Placement,
+    ) anyerror!Opened {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.role_error) |e| return e;
-        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd };
-        return if (self.role_tab_late) null else 0x7777;
+        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place };
+        // What the app's placement would answer: `tab` is a tab, `here` a
+        // split, and `auto` whichever this fake was told the tab has room
+        // for. A split has no terminal yet, and a late tab has none either.
+        const placed: Placed = switch (place) {
+            .tab => .{ .tab = .asked },
+            .here => .split,
+            .auto => if (self.role_auto_splits) .split else .{ .tab = .column_full },
+        };
+        return .{
+            .id = if (self.role_tab_late or placed == .split) null else 0x7777,
+            .placed = placed,
+        };
     }
 
     fn quietMs(ctx: *anyopaque, _: Bus.Id) u64 {
@@ -13062,4 +13092,129 @@ test "hooks: terminal_turn hands back the whole answer and says when it was cut"
     try testing.expect(std.mem.indexOf(u8, w.buffered(),
         \\"turn":{"ended_ms_ago":2500,"session_id":"sess-1","text":"the whole answer","text_bytes":20000,"truncated":true}
     ) != null);
+}
+
+// -- role_launch into a split (task 874) --------------------------------------
+
+test "role_launch place: absent is auto, and each of the three reaches the host as asked" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    for ([_]struct { place: ?Placement, want: Placement }{
+        .{ .place = null, .want = .auto },
+        .{ .place = .auto, .want = .auto },
+        .{ .place = .tab, .want = .tab },
+        .{ .place = .here, .want = .here },
+    }) |c| {
+        var fake: FakeHost = .{};
+        const req: Request = if (c.place) |pl|
+            .{ .role_launch = .{ .key = "hand", .place = pl } }
+        else
+            .{ .role_launch = .{ .key = "hand" } };
+        _ = try dispatch(alloc, &b, fake.host(), term(boss), req);
+        try testing.expectEqual(c.want, fake.role_launched.?.place);
+    }
+}
+
+test "role_launch place: the reply says where it went, as terminal_open's does" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // tab: a tab, asked for, with its id.
+    var tab_fake: FakeHost = .{};
+    const tab = try dispatch(alloc, &b, tab_fake.host(), term(boss), .{ .role_launch = .{ .key = "hand", .place = .tab } });
+    try testing.expectEqual(Placed{ .tab = .asked }, tab.opened.placed.?);
+    try testing.expectEqual(@as(?Bus.Id, 0x7777), tab.opened.id);
+
+    // here: a split, whose terminal is not there yet -- no id, and a watch
+    // that cannot be known, not `false`.
+    var here_fake: FakeHost = .{};
+    const here = try dispatch(alloc, &b, here_fake.host(), term(boss), .{ .role_launch = .{ .key = "hand", .place = .here } });
+    try testing.expectEqual(Placed.split, here.opened.placed.?);
+    try testing.expectEqual(@as(?Bus.Id, null), here.opened.id);
+    try testing.expect(here.opened.watch == .unknown);
+
+    // auto: whichever the placement found -- a split while there is room,
+    // a tab (with why) once there is not.
+    var room: FakeHost = .{ .role_auto_splits = true };
+    const beside = try dispatch(alloc, &b, room.host(), term(boss), .{ .role_launch = .{ .key = "hand" } });
+    try testing.expectEqual(Placed.split, beside.opened.placed.?);
+    var full: FakeHost = .{};
+    const away = try dispatch(alloc, &b, full.host(), term(boss), .{ .role_launch = .{ .key = "hand" } });
+    try testing.expectEqual(Placed{ .tab = .column_full }, away.opened.placed.?);
+
+    // And on the wire: `placed` is there for a role now.
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&out.writer, here);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\"placed\":\"split\"") != null);
+}
+
+test "role_launch place: a role started in a split is a launched role, like one in a tab" {
+    // What the app does, in the order it does it, with the store the app
+    // uses (`App.launchPersona`, `App.claimPendingLaunch`, `App.startRoleIn`):
+    // the launch is expected before the terminal is asked for; a tab that
+    // exists in time takes it at once; a split does not exist yet, and takes
+    // it at the end of its `init`. Both must come out the same -- before
+    // this, a supervisor wanting a split typed `polter +launch` into one by
+    // hand, and `terminal_capabilities` said `role: null, started: none`.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh, 0x7777 } };
+
+    const cases = [_]struct { id: Bus.Id, opened_now: bool }{
+        // A tab that was there when the open returned.
+        .{ .id = 0x7777, .opened_now = true },
+        // A split: no id from the open; its terminal starts a moment later.
+        .{ .id = fresh, .opened_now = false },
+    };
+    for (cases) |c| {
+        try store.expectLaunch("hand", "claude-code", "polter +launch hand claude-code", boss, 0);
+        if (c.opened_now) {
+            var p = store.takeLaunch(0) orelse return error.TestExpectedLaunch;
+            defer p.deinit();
+            try store.startRole(c.id, p.by, p.key, p.cli, 0);
+        } else {
+            // Nothing has claimed it yet; the split's surface arrives.
+            try testing.expect(store.pending_launch != null);
+            var p = store.takeLaunch(500) orelse return error.TestExpectedLaunch;
+            defer p.deinit();
+            try store.startRole(c.id, p.by, p.key, p.cli, 500);
+        }
+        try testing.expect(store.pending_launch == null);
+
+        const caps = try expectCaps(try dispatch(alloc, &bus, fake.host(), term(boss), .{
+            .terminal_capabilities = .{ .id = c.id },
+        }));
+        const role = caps.persona.role orelse {
+            std.debug.print("0x{x} has no role\n", .{c.id});
+            return error.TestExpectedRole;
+        };
+        try testing.expectEqualStrings("hand", role.key);
+        try testing.expectEqual(persona.Capabilities.Started.launched, caps.persona.started);
+        // And the role's Polter half is waiting for its agent, as for a tab.
+        const held = caps.persona.pending_standing orelse return error.TestExpectedStanding;
+        try testing.expect(held.want.watch);
+    }
+}
+
+test "role_launch place: a launch nobody claimed in time lands on nothing" {
+    var store = standingStore();
+    defer store.deinit();
+    try store.expectLaunch("hand", "claude-code", "line", boss, 0);
+    // A terminal the person opens long after is not the one that was asked
+    // for.
+    try testing.expect(store.takeLaunch(PersonaStore.pending_launch_ms + 1) == null);
+    try testing.expect(store.pending_launch == null);
 }
