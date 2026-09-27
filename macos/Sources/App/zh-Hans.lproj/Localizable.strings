@@ -8,6 +8,7 @@
 "Split Left" = "向左分屏";
 "Split Down" = "向下分屏";
 "Split Up" = "向上分屏";
+"Close Split" = "关闭分屏";
 "Reset Terminal" = "重置终端";
 "Toggle Terminal Inspector" = "切换终端检查器";
 "Terminal Read-only" = "终端只读";

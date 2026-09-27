@@ -7,6 +7,7 @@
 "Split Left" = "Split Left";
 "Split Down" = "Split Down";
 "Split Up" = "Split Up";
+"Close Split" = "Close Split";
 "Reset Terminal" = "Reset Terminal";
 "Toggle Terminal Inspector" = "Toggle Terminal Inspector";
 "Terminal Read-only" = "Terminal Read-only";

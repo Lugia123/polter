@@ -1729,6 +1729,14 @@ extension Ghostty {
             item.setImageIfDesired(systemSymbolName: "rectangle.bottomhalf.inset.filled")
             item = menu.addItem(withTitle: String(localized: "Split Up", comment: "右键菜单：向上分屏"), action: #selector(splitUp(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "rectangle.tophalf.inset.filled")
+            item = menu.addItem(withTitle: String(localized: "Close Split", comment: "右键菜单：关闭这个分屏"), action: #selector(closeSplit(_:)), keyEquivalent: "")
+            item.setImageIfDesired(systemSymbolName: "xmark.rectangle")
+            // Aimed at this surface rather than left to the responder chain,
+            // which would send it to whichever pane has focus. The four
+            // items above do that and get away with it because a right-click
+            // is nearly always on the focused pane; "close" is the one where
+            // being nearly always right is not good enough.
+            item.target = self
 
             menu.addItem(.separator())
             item = menu.addItem(withTitle: String(localized: "Reset Terminal", comment: "右键菜单：重置终端"), action: #selector(resetTerminal(_:)), keyEquivalent: "")
@@ -1893,6 +1901,46 @@ extension Ghostty {
         @IBAction func splitUp(_ sender: Any) {
             guard let surface = self.surface else { return }
             ghostty_surface_split(surface, GHOSTTY_SPLIT_DIRECTION_UP)
+        }
+
+        /// Close the split this surface is, leaving the rest of the tab.
+        ///
+        /// Goes through `request_close` -- the same path as a `close_surface`
+        /// keybind and as ⌘W -- so the "process is still running" sheet and
+        /// the undo entry are the ones the rest of the app already has.
+        @IBAction func closeSplit(_ sender: Any) {
+            guard let surface = self.surface else { return }
+
+            // Asked again here and not only in validation: an item can be
+            // fired without its menu being drawn (AppleScript, an
+            // accessibility client), and a menu item that only behaves
+            // when somebody looked at it first is not guarded.
+            guard Self.closeSplitIsOffered(in: windowSurfaceTree) else { return }
+
+            ghostty_surface_request_close(surface)
+        }
+
+        /// The split tree of the window this surface is in, when it is in one.
+        var windowSurfaceTree: SplitTree<Ghostty.SurfaceView>? {
+            (window?.windowController as? BaseTerminalController)?.surfaceTree
+        }
+
+        /// Whether **Close Split** is something to offer a surface in this tree.
+        ///
+        /// A tab with one pane is not split, and closing that pane closes the
+        /// tab. A row named after the split has to mean the split: the File
+        /// menu's `Close Tab` is a few rows down and does that other thing on
+        /// purpose, so a row that quietly did its job under another name would
+        /// be worse than a greyed one. Greyed also answers a question --
+        /// "you are not in a split" -- where a hidden row answers none.
+        ///
+        /// Takes the tree instead of reading one, so the decision can be
+        /// checked without an app, a window or a live surface; the view type
+        /// is generic for the same reason.
+        static func closeSplitIsOffered<V: NSView & Codable & Identifiable>(
+            in tree: SplitTree<V>?
+        ) -> Bool {
+            tree?.isSplit ?? false
         }
 
         @objc func resetTerminal(_ sender: Any) {
@@ -2469,6 +2517,9 @@ extension Ghostty.SurfaceView: NSMenuItemValidation {
 
         case #selector(findHide):
             return searchState != nil
+
+        case #selector(closeSplit(_:)):
+            return Self.closeSplitIsOffered(in: windowSurfaceTree)
 
         case #selector(toggleReadonly):
             item.state = readonly ? .on : .off

@@ -35,6 +35,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuSplitLeft: NSMenuItem?
     @IBOutlet private var menuSplitDown: NSMenuItem?
     @IBOutlet private var menuSplitUp: NSMenuItem?
+    @IBOutlet private var menuCloseSplit: NSMenuItem?
     @IBOutlet private var menuClose: NSMenuItem?
     @IBOutlet private var menuCloseTab: NSMenuItem?
     @IBOutlet private var menuCloseWindow: NSMenuItem?
@@ -1302,6 +1303,7 @@ extension AppDelegate {
         self.menuSplitLeft?.setImageIfDesired(systemSymbolName: "rectangle.leadinghalf.inset.filled")
         self.menuSplitUp?.setImageIfDesired(systemSymbolName: "rectangle.tophalf.inset.filled")
         self.menuSplitDown?.setImageIfDesired(systemSymbolName: "rectangle.bottomhalf.inset.filled")
+        self.menuCloseSplit?.setImageIfDesired(systemSymbolName: "xmark.rectangle")
         self.menuClose?.setImageIfDesired(systemSymbolName: "xmark")
         self.menuPasteSelection?.setImageIfDesired(systemSymbolName: "doc.on.clipboard.fill")
         self.menuIncreaseFontSize?.setImageIfDesired(systemSymbolName: "textformat.size.larger")
