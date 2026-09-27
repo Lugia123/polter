@@ -353,20 +353,32 @@ test "OSC: 1337: test Copy with question mark" {
     try testing.expect(p.end('\x1b') == null);
 }
 
-test "OSC: 1337: test Copy with non-empty value that is invalid base64" {
-    // For performance reasons, we don't check for valid base64 data
-    // right now.
-    return error.SkipZigTest;
+test "OSC: 1337: test Copy passes invalid base64 through unchecked" {
+    // The parser does not check the base64 (see the note in the `.Copy`
+    // branch above). `Surface.clipboardWrite` decodes it with
+    // `simd.base64.decodeStrict(..., .optional)` and drops a payload it
+    // cannot decode, so that is where invalid data is refused. This pins
+    // the parser's half: a character outside the alphabet still parses.
+    //
+    // It replaces a test that was skipped since it was written and expected
+    // `null` for "abc123" -- which the product would not refuse anyway:
+    // with padding optional, six alphabet characters decode (only a length
+    // that leaves one character over is invalid). If a check is ever added
+    // here, this test goes red and has to be decided together with it.
+    const testing = std.testing;
 
-    // const testing = std.testing;
+    var p: Parser = .init(testing.allocator);
+    defer p.deinit();
 
-    // var p: Parser = .init(testing.allocator);
-    // defer p.deinit();
+    const input = "1337;Copy=:abc!23";
+    for (input) |ch| p.next(ch);
 
-    // const input = "1337;Copy=:abc123";
-    // for (input) |ch| p.next(ch);
-
-    // try testing.expect(p.end('\x1b') == null);
+    const end = p.end('\x1b');
+    try testing.expect(end != null);
+    const cmd = end.?.*;
+    try testing.expect(cmd == .clipboard_contents);
+    try testing.expectEqual('c', cmd.clipboard_contents.kind);
+    try testing.expectEqualStrings("abc!23", cmd.clipboard_contents.data);
 }
 
 test "OSC: 1337: test Copy with non-empty value that is valid base64 but not prefixed with a colon" {
