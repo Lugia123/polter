@@ -295,8 +295,20 @@ extension Ghostty {
         /// file -- see `ProjectScrollback.Journaled`.
         private(set) var projectJournal: ProjectScrollback.Journaled?
 
-        /// The snapshot name `projectJournal` carries.
-        var projectSnapshot: ProjectScrollback.PaneSnapshot? { projectJournal?.snapshot }
+        /// The snapshot name this pane carries: its journal's, or -- for a
+        /// pane that came back through window restoration and has not been
+        /// journaled since -- the one it was restored with.
+        var projectSnapshot: ProjectScrollback.PaneSnapshot? { projectJournal?.snapshot ?? restoredProjectSnapshot }
+
+        /// The snapshot a pane restored by window restoration was carrying
+        /// (see `init(from:)`). Its scrollback was loaded from that file when
+        /// the surface was created; it is *not* journaled to it yet. Writing
+        /// is the binding's to start: the tab's first save after its binding
+        /// comes back hands this name to the allocator and journals it, the
+        /// way loading a project does (`ProjectNode.materializing`). If the
+        /// binding does not come back -- the project is gone, or another tab
+        /// holds it -- nothing writes to that file from here (#49).
+        private var restoredProjectSnapshot: ProjectScrollback.PaneSnapshot?
 
         /// Give this pane `snapshot` in the project whose snapshots live in
         /// `directory`, and keep its scrollback journaled there from now on.
@@ -2042,6 +2054,12 @@ extension Ghostty {
             case uuid
             case title
             case isUserSetTitle
+            // The pane's snapshot in a project (`projectSnapshot`): the
+            // project's key and the file. Without them a restart gave a
+            // bound pane a new number, and the first autosave pruned its
+            // history (#49).
+            case projectSnapshotProject
+            case projectSnapshotFile
         }
 
         required convenience init(from decoder: Decoder) throws {
@@ -2059,7 +2077,24 @@ extension Ghostty {
             let savedTitle = try container.decodeIfPresent(String.self, forKey: .title)
             let isUserSetTitle = try container.decodeIfPresent(Bool.self, forKey: .isUserSetTitle) ?? false
 
+            // A pane saved in a project comes back with that project's
+            // snapshot loaded, and keeps its number. Both halves are needed:
+            // keeping the number without loading the file would have the
+            // journal, once it starts, rewrite the file from an empty
+            // terminal -- the file there, the name right, the history gone.
+            // The name is checked like any snapshot name read from disk
+            // (the core deletes a snapshot it cannot decode).
+            var restoredSnapshot: ProjectScrollback.PaneSnapshot?
+            if let project = try container.decodeIfPresent(String.self, forKey: .projectSnapshotProject),
+               let file = try container.decodeIfPresent(String.self, forKey: .projectSnapshotFile),
+               !project.isEmpty, ProjectScrollback.isSnapshotFilename(file) {
+                let directory = ProjectScrollback.directory(forProjectFile: URL(fileURLWithPath: project))
+                config.scrollbackRestore = directory.appendingPathComponent(file).path
+                restoredSnapshot = .init(project: project, filename: file)
+            }
+
             self.init(app, baseConfig: config, uuid: uuid)
+            self.restoredProjectSnapshot = restoredSnapshot
 
             // Restore the saved title after initialization
             if let title = savedTitle {
@@ -2077,6 +2112,10 @@ extension Ghostty {
             try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
+            if let snapshot = projectSnapshot {
+                try container.encode(snapshot.project, forKey: .projectSnapshotProject)
+                try container.encode(snapshot.filename, forKey: .projectSnapshotFile)
+            }
         }
     }
 }
