@@ -42,3 +42,6 @@ vgcore.*
 # rather than imported; the cache only appears because one imports another.
 __pycache__/
 *.pyc
+
+# zig-test-watchdog writes hang/busy samples here
+/zig-test-watchdog/

@@ -60,6 +60,17 @@ A file for [guiding coding agents](https://agents.md/).
    要构建就独占并说一声；不构建不用排队。⚠️ `zig build`（**任何形态，包括
    `-Demit-macos-app=false`**）会**先删后建** `macos/GhosttyKit.xcframework`，
    期间任何 `xcodebuild` 都会死在一个与你的改动毫无关系的路径上。
+   ⚠️⚠️ **还有更坏的后果：红会变成挂。** 测试二进制在跑的时候，如果它在磁盘上的
+   那个文件被换掉了，那么一条测试失败、运行器去打印错误栈时，Zig 的
+   `std.debug.SelfInfo` 会在持锁状态下按路径读那个新文件、越界 panic，然后在打印
+   这次 panic 的栈时再去拿同一把锁，**永远等下去**：0% CPU，`state=S`，日志里只有
+   一行 `panic: start index … is larger than end index …` 加 `error return context:`。
+   `zig build test` 在测试进行中默认没有超时，会一直陪着等。机制是构造出来的，挂住的栈
+   和真实那次逐帧同偏移（#38）。「多 agent 共用构建目录是最可能让那个文件被换掉的来源」
+   是**推论**，那一次到底是什么文件没找到。
+   ⇒ 全量测试用 `tools/zig-test-watchdog -- zig build test …` 跑：它把「不动的
+   测试进程」采样、存盘、当失败退出（3），不会杀还在用 CPU 的慢测试。**直接跑
+   `zig build test` 的人得不到这层保护。**
 
 ## libghostty-vt
 

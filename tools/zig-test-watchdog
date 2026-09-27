@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""Run `zig build test` (or any command) and turn a hung test runner into a failure.
+
+**Why (issue #38).** A test runner can stop without finishing: a panic while
+`std.debug.SelfInfo` holds its lock -- reached when a failing test's stack is
+being printed and the binary's file on disk is no longer the one that is
+running -- re-enters the same lock and waits forever. The process sits at 0%
+CPU in state S. The build waits for it forever too, because while a test is
+active `zig build` has no timeout unless `--test-timeout` is passed. **A red
+turns into a hang, and a hang reports nothing.**
+
+**What this does.** It runs the command in its own process group and, every
+`--poll` seconds, looks at the processes under it whose command name is
+`--watch` (default `ghostty-test`). For each one it compares cumulative CPU
+time with the last look:
+
+  * **Working** -- CPU time went up. Never killed for being slow; a single
+    `PageList` test has been measured running over ten minutes, and a wall-clock
+    timeout would kill it (that is what `zig build --test-timeout` does).
+  * **Hung** -- CPU time has not moved for `--stall` seconds and the process is
+    sleeping (state `S`). The #38 shape. This takes a `sample` into `--out`,
+    prints the frames that matter, kills the whole group and exits 3.
+  * **Maybe spinning** -- CPU still going up, and every sample since the last
+    one has the same single leaf taking nearly all of it. **Reported, not
+    killed**: slow real work can look the same from outside, and killing it
+    would be the wall-clock timeout again. `--ceiling` is the only thing that
+    stops a process that keeps using CPU (exit 4, sampled first).
+
+If the command finishes on its own, its exit code is this script's exit code.
+
+**NOT CHECKED / limits**
+  * **Only what runs under this script is protected.** Running `zig build test`
+    directly gets none of this; it is not hooked into `build.zig`, because the
+    build system's only knob is a per-test wall-clock timeout.
+  * A test that legitimately sleeps with no CPU for longer than `--stall` is
+    treated as hung. Raise `--stall` if one exists.
+  * "Maybe spinning" is a heuristic about one leaf dominating repeated samples;
+    it can be wrong both ways, which is why it only warns.
+  * macOS only for sampling (`sample`); elsewhere a hang is still killed and
+    failed, but without a stack.
+
+Run:  tools/zig-test-watchdog -- zig build test -Demit-macos-app=false --summary all
+Exit: the command's own exit code; 3 = hung and killed; 4 = ceiling reached.
+"""
+
+import argparse
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+
+def parse_cputime(s):
+    # ps TIME: [[dd-]hh:]mm:ss[.cc]
+    days = 0
+    if "-" in s:
+        d, s = s.split("-", 1)
+        days = int(d)
+    parts = [float(p) for p in s.split(":")]
+    secs = 0.0
+    for p in parts:
+        secs = secs * 60 + p
+    return days * 86400 + secs
+
+
+def snapshot():
+    """pid -> (ppid, state, cpu_seconds, comm)."""
+    out = subprocess.run(
+        ["ps", "-A", "-o", "pid=,ppid=,stat=,time=,comm="],
+        capture_output=True, text=True, check=False,
+    ).stdout
+    procs = {}
+    for line in out.splitlines():
+        f = line.split(None, 4)
+        if len(f) < 5:
+            continue
+        try:
+            procs[int(f[0])] = (int(f[1]), f[2], parse_cputime(f[3]), f[4])
+        except ValueError:
+            continue
+    return procs
+
+
+def descendants(procs, root):
+    kids = {}
+    for pid, (ppid, _, _, _) in procs.items():
+        kids.setdefault(ppid, []).append(pid)
+    out, todo = [], [root]
+    while todo:
+        p = todo.pop()
+        for c in kids.get(p, []):
+            out.append(c)
+            todo.append(c)
+    return out
+
+
+def take_sample(pid, path, seconds):
+    if not shutil.which("sample"):
+        return False
+    subprocess.run(["sample", str(pid), str(seconds), "-file", path],
+                   capture_output=True, check=False)
+    return os.path.exists(path)
+
+
+INTERESTING = re.compile(
+    r"MachOFile|SelfInfo|Mutex\.lock|futex|ulock_wait|defaultPanic|"
+    r"dumpErrorReturnTrace|writeTrace|printSourceAtAddress|panic",
+)
+
+
+def summarize(path, limit=25):
+    """The call-graph lines that name the frames #38 is about."""
+    lines = []
+    try:
+        with open(path, errors="replace") as f:
+            in_graph = False
+            for line in f:
+                if line.startswith("Call graph:"):
+                    in_graph = True
+                    continue
+                if in_graph and line.startswith("Total number in stack"):
+                    break
+                if in_graph and INTERESTING.search(line):
+                    lines.append(re.sub(r"^[\s+!:|]*", "", line.rstrip())[:160])
+    except OSError:
+        pass
+    seen, out = set(), []
+    for l in lines:
+        if l not in seen:
+            seen.add(l)
+            out.append(l)
+    return out[:limit]
+
+
+def leaf_signature(path):
+    """(leaf, share) of the top-of-stack section, or None."""
+    try:
+        text = open(path, errors="replace").read()
+    except OSError:
+        return None
+    m = re.search(r"Sort by top of stack.*?\n(.*?)\n\n", text, re.S)
+    if not m:
+        return None
+    rows = []
+    for line in m.group(1).splitlines():
+        mm = re.match(r"\s*(.+?)\s+(\d+)\s*$", line)
+        if mm:
+            rows.append((mm.group(1), int(mm.group(2))))
+    if not rows:
+        return None
+    total = sum(c for _, c in rows)
+    return rows[0][0], rows[0][1] / total if total else 0.0
+
+
+def log(msg):
+    print(f"watchdog: {msg}", file=sys.stderr, flush=True)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--watch", default="ghostty-test",
+                    help="command name of the processes to watch (default ghostty-test)")
+    ap.add_argument("--poll", type=float, default=5.0, help="seconds between looks")
+    ap.add_argument("--stall", type=float, default=120.0,
+                    help="seconds with no CPU while sleeping before a process counts as hung")
+    ap.add_argument("--spin-every", type=float, default=600.0,
+                    help="seconds of continuous CPU between spin checks")
+    ap.add_argument("--ceiling", type=float, default=0.0,
+                    help="seconds after which a process still using CPU is sampled and failed (0 = never)")
+    ap.add_argument("--out", default="zig-test-watchdog",
+                    help="directory for samples (default ./zig-test-watchdog)")
+    ap.add_argument("cmd", nargs=argparse.REMAINDER)
+    a = ap.parse_args()
+    cmd = a.cmd[1:] if a.cmd[:1] == ["--"] else a.cmd
+    if not cmd:
+        cmd = ["zig", "build", "test"]
+    os.makedirs(a.out, exist_ok=True)
+
+    child = subprocess.Popen(cmd, start_new_session=True)
+    seen = {}  # pid -> dict(cpu, moved_at, first_seen, spin_at, spin_sig)
+
+    def kill_group():
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    try:
+        while True:
+            try:
+                rc = child.wait(timeout=a.poll)
+                return rc
+            except subprocess.TimeoutExpired:
+                pass
+            now = time.monotonic()
+            procs = snapshot()
+            # The command itself too, not only what it starts: when the
+            # command *is* the watched program, leaving it out means nothing
+            # is watched at all -- and every "was not killed" reads as a pass.
+            for pid in [child.pid] + descendants(procs, child.pid):
+                if pid not in procs:
+                    continue
+                ppid, state, cpu, comm = procs[pid]
+                if os.path.basename(comm) != a.watch:
+                    continue
+                s = seen.get(pid)
+                if s is None:
+                    seen[pid] = dict(cpu=cpu, moved_at=now, first=now, spin_at=now, spin_sig=None)
+                    continue
+                if cpu > s["cpu"]:
+                    s["cpu"], s["moved_at"] = cpu, now
+                elif state.startswith("S") and now - s["moved_at"] >= a.stall:
+                    path = os.path.join(a.out, f"hang-{pid}.sample.txt")
+                    got = take_sample(pid, path, 3)
+                    log(f"HUNG: {a.watch} pid {pid} used no CPU for {now - s['moved_at']:.0f}s "
+                        f"(state {state}, cpu {cpu:.2f}s)" + (f"; sample in {path}" if got else "; no sample"))
+                    for l in summarize(path) if got else []:
+                        log(f"  {l}")
+                    kill_group()
+                    child.wait()
+                    return 3
+                if cpu > s["cpu"] - 1e-9 and now - s["moved_at"] < a.poll * 2:
+                    if now - s["spin_at"] >= a.spin_every:
+                        path = os.path.join(a.out, f"busy-{pid}-{int(now - s['first'])}s.sample.txt")
+                        if take_sample(pid, path, 2):
+                            sig = leaf_signature(path)
+                            if sig and s["spin_sig"] and sig[0] == s["spin_sig"][0] and sig[1] > 0.95:
+                                log(f"MAYBE SPINNING (not killed): {a.watch} pid {pid}, leaf {sig[0]!r} "
+                                    f"took {sig[1]:.0%} of two samples {a.spin_every:.0f}s apart; see {path}")
+                            s["spin_sig"] = sig
+                        s["spin_at"] = now
+                if a.ceiling and now - s["first"] >= a.ceiling:
+                    path = os.path.join(a.out, f"ceiling-{pid}.sample.txt")
+                    got = take_sample(pid, path, 3)
+                    log(f"CEILING: {a.watch} pid {pid} still running after {a.ceiling:.0f}s"
+                        + (f"; sample in {path}" if got else ""))
+                    kill_group()
+                    child.wait()
+                    return 4
+    except KeyboardInterrupt:
+        kill_group()
+        raise
+
+
+if __name__ == "__main__":
+    sys.exit(main())
