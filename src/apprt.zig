@@ -56,6 +56,7 @@ pub const App = runtime.App;
 pub const Surface = runtime.Surface;
 
 test {
+    _ = embedded.PlatformTag;
     _ = Runtime;
     _ = runtime;
     _ = action;

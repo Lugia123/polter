@@ -251,6 +251,10 @@ const kUCKeyActionDisplay: u16 = 3;
 const kUCKeyTranslateNoDeadKeysBit: u32 = 0;
 const kUCKeyTranslateNoDeadKeysMask: u32 = 1 << kUCKeyTranslateNoDeadKeysBit;
 
+test {
+    _ = CarbonMods;
+}
+
 const CFData = macos.foundation.Data;
 const CFString = macos.foundation.String;
 

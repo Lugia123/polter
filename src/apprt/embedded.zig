@@ -470,37 +470,26 @@ pub const PlatformTag = enum(c_int) {
     ios = 2,
     win32 = 3,
 
-    // NOTE: This test does NOT run today. It is kept deliberately, and
-    // this comment exists so that nobody mistakes it for a live guard.
+    // This test runs because `src/apprt.zig`'s `test` block says
+    // `_ = embedded.PlatformTag;`. Nothing else would pull it in: `zig build
+    // test` builds the `exe` artifact, whose `apprt.runtime` is not
+    // `embedded`, and Zig only collects tests from containers that are
+    // referenced. Until #54 it had no such reference and never compiled in
+    // any test build (measured 2026-09-27 by planting a `@compileError` in
+    // it: mac, Windows-target and lib-vt test builds never reported it).
     //
-    // Why it doesn't run: `zig build test` builds the `exe` artifact with
-    // `app_runtime` defaulting to `.none`, so `apprt.runtime` resolves to
-    // `apprt.none` and nothing in that binary ever references
-    // `apprt.embedded.PlatformTag`. Zig only analyzes (and therefore only
-    // collects tests from) containers that are actually referenced, so this
-    // test is never compiled in. There is also no `test` step in build.zig
-    // that covers the `lib`/embedded artifact -- only `test` and
-    // `test-lib-vt`. Consequence: a green `zig build test` is NOT evidence
-    // that anything in this file compiles; that evidence comes from
-    // `zig build` / `zig build -Demit-macos-app=false`, which build
-    // main_c.zig as the `lib` artifact and do use this file.
+    // Only this enum is referenced. The rest of this file is still not
+    // compiled by `zig build test`, so a green test run is not evidence that
+    // it compiles; `zig build` / `zig build -Demit-macos-app=false` build
+    // main_c.zig as the `lib` artifact, and that is what compiles it.
     //
-    // How to make it run, and what it costs (measured 2026-08-31, on top of
-    // HEAD 3335ca394 plus the in-flight Windows-port working tree):
-    //
-    //   Adding `_ = embedded;` to the `test` block in `src/apprt.zig` is
-    //   NOT enough -- test count stayed at 3991 and a deliberately corrupted
-    //   ghostty.h still passed. That reference only reaches this file's
-    //   top-level container, not this nested enum.
-    //
-    //   `_ = embedded.PlatformTag;` DOES work:
-    //     zig build test -Demit-xcframework=false --summary all
-    //       -> exit 0, 3976/3992 tests passed (16 skipped)
-    //   i.e. it adds exactly this one test and costs nothing else -- no
-    //   pre-existing failures are uncovered. Negative control: reordering
-    //   GHOSTTY_PLATFORM_WIN32 before _IOS in ghostty.h made it fail with
-    //   "key ios does not have the same backing int as GHOSTTY_PLATFORM_IOS"
-    //   (exit 1), so the guard really does catch an ABI break.
+    // ⚠️ The reference has to name this nested enum. `_ = embedded;` only
+    // reaches the file's top-level container: measured 2026-08-31, the test
+    // count did not move and a deliberately corrupted ghostty.h still passed.
+    // With `_ = embedded.PlatformTag;` it adds exactly this one test, and
+    // reordering GHOSTTY_PLATFORM_WIN32 before _IOS in ghostty.h failed it
+    // with "key ios does not have the same backing int as
+    // GHOSTTY_PLATFORM_IOS" (exit 1) -- it does catch an ABI break.
     test "ghostty.h PlatformTag" {
         try lib.checkGhosttyHEnum(PlatformTag, "GHOSTTY_PLATFORM_");
     }

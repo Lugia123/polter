@@ -61,6 +61,8 @@ pub const getKernelInfo = kernel_info.getKernelInfo;
 pub const getConfigEditCommand = edit.getConfigEditCommand;
 
 test {
+    _ = hostname;
+    _ = openpkg;
     _ = file;
     _ = stderr;
     _ = edit;
