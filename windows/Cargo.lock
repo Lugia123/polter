@@ -29,6 +29,7 @@ dependencies = [
  "polter-cliargs",
  "polter-droppath",
  "polter-projectname",
+ "polter-settings-shell",
  "polter-split-tree",
  "polter-urlpolicy",
  "serde_json",
@@ -38,6 +39,10 @@ dependencies = [
 
 [[package]]
 name = "polter-projectname"
+version = "0.1.0"
+
+[[package]]
+name = "polter-settings-shell"
 version = "0.1.0"
 
 [[package]]

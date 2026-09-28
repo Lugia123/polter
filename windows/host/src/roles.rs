@@ -24,6 +24,24 @@ use crate::i18n::tr;
 /// The key of the supervisor role Polter ships (`persona.supervisor_key`).
 pub const SUPERVISOR_KEY: &str = "polter-supervisor";
 
+/// A built-in role's name in the reader's language, by its key -- the same
+/// name the role library shows. `None` for any other key. **Asked by key
+/// alone** so the role menus, which get only a key and a name from the core,
+/// show what the list shows: they showed "Polter Supervisor" in English
+/// beside a list that said 「Polter 总管」 (#896).
+pub fn builtin_name(key: &str) -> Option<String> {
+    match key {
+        SUPERVISOR_KEY => Some(tr("Polter Supervisor")),
+        _ => None,
+    }
+}
+
+/// The name a role menu shows for a role: the built-in's translated name,
+/// else the name as written.
+pub fn menu_name(key: &str, name: &str) -> String {
+    builtin_name(key).unwrap_or_else(|| name.to_string())
+}
+
 // ------------------------------------------------------------- the values
 
 /// Which of a CLI's own skills or MCP servers a role keeps: a default, and
@@ -326,10 +344,7 @@ impl Role {
         if !self.builtin {
             return self.name.clone();
         }
-        match self.key.as_str() {
-            SUPERVISOR_KEY => tr("Polter Supervisor"),
-            _ => self.name.clone(),
-        }
+        builtin_name(&self.key).unwrap_or_else(|| self.name.clone())
     }
 
     pub fn display_summary(&self) -> String {
@@ -1140,5 +1155,13 @@ mod tests {
         assert_eq!(message("SomethingNew"), "SomethingNew");
         assert_eq!(err_name(b"NoCli\0garbage"), "NoCli");
         assert_eq!(err_name(b"Cut"), "Cut");
+    }
+
+    /// #896: the role menus name a built-in role the way the list does.
+    #[test]
+    fn menus_name_a_builtin_role_the_way_the_list_does() {
+        assert_eq!(menu_name(SUPERVISOR_KEY, "Polter Supervisor"), tr("Polter Supervisor"));
+        assert_eq!(menu_name("archer", "Archer"), "Archer");
+        assert_eq!(builtin_name("archer"), None);
     }
 }

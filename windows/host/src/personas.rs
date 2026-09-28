@@ -511,7 +511,8 @@ pub fn entries(surface: Surface) -> Vec<Entry> {
                 // §5.2 again: the deviation belongs to this terminal's
                 // current persona, so putting it everywhere would say that every
                 // persona had been modified.
-                let text = if on { display_name(&r.name, st.deviated) } else { r.name.clone() };
+                let name = crate::roles::menu_name(&r.key, &r.name);
+                let text = if on { display_name(&name, st.deviated) } else { name };
                 out.push(Entry {
                     text,
                     separator: false,
@@ -528,12 +529,13 @@ pub fn entries(surface: Surface) -> Vec<Entry> {
 
     out.push(sep());
     out.push(Entry {
-        // ⚠️ **Three ASCII dots, because the agreed table has three.** This
-        // catalogue already carries a pair of msgids differing only by `...`
-        // against `…`: `po/zh_CN.po` has a comment on «Rename Tab...» saying
-        // the two are different actions and must not be merged. So the
-        // spelling here is copied rather than tidied.
-        text: tr("Role Library (beta)..."),
+        // ⚠️ **Three ASCII dots, because the macOS catalogue has three**
+        // (`"Role Library..."` in `Localizable.strings`). This catalogue
+        // already carries a pair of msgids differing only by `...` against
+        // `…`: `po/zh_CN.po` has a comment on «Rename Tab...» saying the two
+        // are different actions and must not be merged. So the spelling here
+        // is copied rather than tidied. No "(beta)" since settings.md §3.2.
+        text: tr("Role Library..."),
         separator: false,
         checked: false,
         enabled: true,
@@ -586,21 +588,23 @@ pub fn action_clear() -> String {
 /// §5.2's whole point is that the answer has to be visible without acting.
 ///
 /// **Task 666: `(beta)` on both branches.** 0.7's roles feature is not
-/// finished, so every entry point says so. It is inside the translated
-/// string itself -- `tr("Role (beta)")`, not `tr("Role")` with `" (beta)"`
-/// appended after -- so a translator controls its wording the same way they
-/// control every other word here, and never has to notice it was bolted on.
+/// finished, so every entry point said so -- until the settings window
+/// (settings.md) made the role library a finished place to manage them, and
+/// the heading became plain 「角色」/ "Role" with it (#896). Whatever it
+/// says, it is the translated string itself, never a word appended after,
+/// so a translator controls all of it.
 pub fn submenu_label(surface: Surface) -> String {
     let st = standing(surface);
     // §5.3. With nothing connected the persona is not in force, so the parent
     // states the heading and nothing more; what is stored is still in the
     // submenu, under a row that says why it is not being claimed.
     let Some(name) = st.name.as_deref().filter(|_| st.agent_present) else {
-        return tr("Role (beta)");
+        return tr("Role");
     };
+    let name = crate::roles::menu_name(st.key.as_deref().unwrap_or(""), name);
     // ⚠️ `{}` and not `%@`: see `display_name`. The Swift side carries
-    // `Role (beta): %@` for this same sentence, deliberately.
-    tr("Role (beta): {}").replacen("{}", &display_name(name, st.deviated), 1)
+    // `Role: %@` for this same sentence, deliberately.
+    tr("Role: {}").replacen("{}", &display_name(&name, st.deviated), 1)
 }
 
 /// Perform one picked entry, on **one named terminal**.
@@ -622,10 +626,17 @@ pub fn perform(frame: windows::Win32::Foundation::HWND, surface: Surface, e: &En
             crate::wlogf!(frame, "[persona] a row with nothing to do was picked: {:?}", e.text);
             false
         }
-        // The role library window, as the macOS role submenu opens it
-        // (`PersonaMenu.swift`). The same row as the menu bar's.
+        // The settings window's Roles section, **at this terminal's role**
+        // (settings.md §3.2): `roles/<key>`, or `roles` for a terminal
+        // wearing none. The role is the one stored for the terminal, whether
+        // or not an agent is connected -- it is the one this menu names.
         Pick::Editor => {
-            crate::roles_ui::open(frame);
+            let key = standing(surface).key;
+            crate::wlogf!(frame, "[persona] role library for surface {:?}: role {:?}", surface, key);
+            crate::settings_win::request(
+                polter_settings_shell::Route::to(polter_settings_shell::Section::Roles, key.as_deref()),
+                frame,
+            );
             true
         }
         Pick::Set(key) => {
@@ -1003,7 +1014,7 @@ mod tests {
             error: None,
             },
         );
-        assert_eq!(submenu_label(NO_SURFACE), tr("Role (beta)"));
+        assert_eq!(submenu_label(NO_SURFACE), tr("Role"));
         let e = entries(NO_SURFACE);
         assert!(
             e.iter().all(|x| !x.checked),

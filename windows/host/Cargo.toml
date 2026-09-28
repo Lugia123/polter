@@ -160,3 +160,9 @@ path = "../droppath"
 # -- on the Mac, breaking the rule turned nothing red (issue #23).
 [dependencies.polter-projectname]
 path = "../projectname"
+
+# The settings window's rules (`settings_win.rs` draws, this decides). Out
+# here for the reason `projectname` is: a rule tested only on Windows is one
+# that can be broken on the Mac with everything green.
+[dependencies.polter-settings-shell]
+path = "../settings-shell"

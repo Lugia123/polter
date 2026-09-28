@@ -1,5 +1,9 @@
-//! The role library window: every role on the left, one of them being edited
-//! on the right.
+//! The role library: every role on the left, one of them being edited on the
+//! right. **A section of the settings window** (`settings_win.rs`), not a
+//! window of its own: `dev-docs/poltergeist/settings.md` §4 moved it in as it
+//! was, so what is below is the old window's content in a child window, and
+//! the shell around it -- the title bar, the size, closing, where the
+//! keyboard goes after -- is `settings_win.rs`'s.
 //!
 //! A port of `macos/Sources/Features/Roles/RoleLibraryView.swift`, behaviour
 //! for behaviour. The values and the five calls are `roles.rs`; this file
@@ -53,7 +57,6 @@ use windows::core::{s, w, BOOL, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{
     GetLastError, COLORREF, ERROR_CLASS_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 use windows::Win32::UI::Controls::*;
@@ -64,6 +67,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use crate::i18n::tr;
 use crate::roles::{self, AgentCli, Catalog, CliChoice, CliItem, CliSnapshot, ItemGroup, ItemKind, Open, Role};
 use crate::theme;
+use polter_settings_shell::{grid, section_grid};
 
 // ================================================================ the editor
 
@@ -542,9 +546,15 @@ pub struct View<'a> {
     pub expanded: &'a HashSet<String>,
 }
 
-const LABEL_W: i32 = 104;
-const LABEL_GAP: i32 = 10;
-const SECTION_GAP: i32 = 12;
+// The form's columns and gaps are the settings window's grid (settings.md
+// §2.3a), taken from the one place that writes them.
+const LABEL_W: i32 = grid::LABEL_W;
+const LABEL_GAP: i32 = grid::LABEL_GAP;
+const SECTION_GAP: i32 = grid::GROUP_GAP;
+/// Where the control column starts: check boxes, drop-downs and the notes
+/// under them go here as well as the fields beside labels, so the page has
+/// two left edges -- the margin and this -- and no third.
+const CONTROL_COL: i32 = LABEL_W + LABEL_GAP;
 pub const INSTR_DEFAULT: i32 = 240;
 pub const INSTR_MIN: i32 = 100;
 pub const INSTR_MAX: i32 = 900;
@@ -593,6 +603,11 @@ fn field(label: String, cell: Cell) -> Row {
         enabled: true,
     };
     row(vec![lab, cell])
+}
+/// A row in the control column, with nothing in the label column: check
+/// boxes and the notes under them (settings.md §2.3a).
+fn in_controls(cells: Vec<Cell>, gap: i32) -> Row {
+    Row { cells, indent: CONTROL_COL, gap }
 }
 fn check(key: impl Into<String>, t: impl Into<String>, on: bool, enabled: bool) -> Cell {
     ctl(key, Kind::Check { text: t.into(), on }, Width::Auto, enabled)
@@ -657,7 +672,7 @@ fn cli_segments(ed: &Editor, clis: &CliSnapshot) -> Option<Row> {
             )
         })
         .collect();
-    Some(Row { cells, indent: 0, gap: 4 })
+    Some(Row { cells, indent: CONTROL_COL, gap: 4 })
 }
 
 /// Every row of the right-hand pane, top to bottom.
@@ -688,7 +703,7 @@ fn basics_rows(v: &View, d: &Role) -> Vec<Row> {
         } else {
             (tr("Only lowercase letters, digits and dashes, at most 32."), Tone::Warn)
         };
-        out.push(Row { cells: vec![text(t, tone, Font::Small)], indent: LABEL_W + LABEL_GAP, gap: -2 });
+        out.push(Row { cells: vec![text(t, tone, Font::Small)], indent: CONTROL_COL, gap: -4 });
     } else {
         // Read-only rather than painted: a key is the thing people copy.
         out.push(field(tr("Key"), ctl("key", edit(&d.key, String::new(), true), Width::Fill, false)));
@@ -715,18 +730,18 @@ fn basics_rows(v: &View, d: &Role) -> Vec<Row> {
 
     let p = &d.polter;
     out.push(heading(tr("Polter")));
-    out.push(row(vec![check("sup", tr("Make this terminal a supervisor"), p.supervisor, e.polter)]));
-    out.push(row(vec![check("auth", tr("Let the supervisor answer this terminal's permission prompts"), p.may_authorise, e.polter)]));
-    out.push(row(vec![check("shield", tr("Shield it: no tool can reach it, a supervisor's included"), p.shielded, e.polter)]));
+    out.push(in_controls(vec![check("sup", tr("Make this terminal a supervisor"), p.supervisor, e.polter)], 0));
+    out.push(in_controls(vec![check("auth", tr("Let the supervisor answer this terminal's permission prompts"), p.may_authorise, e.polter)], 0));
+    out.push(in_controls(vec![check("shield", tr("Shield it: no tool can reach it, a supervisor's included"), p.shielded, e.polter)], 0));
     out.push(note(
         tr("These three give the terminal something, so only you can set them, here. A supervisor that edits roles can't change them."),
-        20,
+        CONTROL_COL,
     ));
-    out.push(Row { cells: vec![check("watch", tr("Hand it to the supervisor to watch"), p.watch, e.watch)], indent: 0, gap: 4 });
+    out.push(in_controls(vec![check("watch", tr("Hand it to the supervisor to watch"), p.watch, e.watch)], 4));
     // The macOS side has this as the toggle's tooltip. Here it is on the
     // page: the rule is not guessable, and a hover nobody makes teaches
     // nothing.
-    out.push(note(tr("The supervisor that started it, or the only one there is. With several and you starting it, nobody."), 20));
+    out.push(note(tr("The supervisor that started it, or the only one there is. With several and you starting it, nobody."), CONTROL_COL));
     let mut quiet = vec![check("quiet", tr("Report it as still after"), p.quiet_ms.is_some(), e.quiet)];
     if let Some(ms) = p.quiet_ms {
         quiet.push(ctl(
@@ -737,33 +752,33 @@ fn basics_rows(v: &View, d: &Role) -> Vec<Row> {
         ));
         quiet.push(short(tr("min"), Tone::Dim, Font::Normal));
     }
-    out.push(row(quiet));
-    out.push(Row {
-        cells: vec![
-            short(tr("Open in"), Tone::Dim, Font::Normal),
-            ctl(
-                "open",
-                Kind::Combo {
-                    options: vec![tr("Here when at a prompt, else a new tab"), tr("Always a new tab")],
-                    sel: usize::from(p.open == Open::Tab),
-                },
-                Width::Auto,
-                e.polter,
-            ),
-        ],
-        indent: 0,
-        gap: 4,
-    });
+    out.push(in_controls(quiet, 0));
+    // A drop-down beside its label, like every other field: the label in
+    // the label column, the control in the control column.
+    let mut open_in = field(
+        tr("Open in"),
+        ctl(
+            "open",
+            Kind::Combo {
+                options: vec![tr("Here when at a prompt, else a new tab"), tr("Always a new tab")],
+                sel: usize::from(p.open == Open::Tab),
+            },
+            Width::Auto,
+            e.polter,
+        ),
+    );
+    open_in.gap = 4;
+    out.push(open_in);
     out.push(note(
         tr("Applied once, when the role starts an agent CLI. Putting the role on a terminal that's already running changes its tools, not these."),
-        0,
+        CONTROL_COL,
     ));
 
     out.push(heading(tr("Agent CLIs")));
     if v.clis.stale && v.clis.clis.is_empty() {
-        out.push(note(tr("Reading what's installed…"), 0));
+        out.push(note(tr("Reading what's installed…"), CONTROL_COL));
     } else if v.clis.clis.is_empty() {
-        out.push(note(tr("No plugin that manages an agent CLI is installed and switched on."), 0));
+        out.push(note(tr("No plugin that manages an agent CLI is installed and switched on."), CONTROL_COL));
     } else {
         for c in &v.clis.clis {
             let mut cells = vec![check(format!("cli:{}", c.key), c.label.clone(), d.choice(&c.key).is_some(), e.clis)];
@@ -773,15 +788,18 @@ fn basics_rows(v: &View, d: &Role) -> Vec<Row> {
             if c.error.is_some() {
                 cells.push(short(tr("Its plugin couldn't list what's installed"), Tone::Warn, Font::Small));
             }
-            out.push(row(cells));
+            out.push(in_controls(cells, 0));
         }
         // Choices for a CLI no plugin offers any more are still in the role;
         // say so rather than hide them.
         for orphan in d.clis.iter().filter(|c| v.clis.cli(&c.cli).is_none()) {
-            out.push(row(vec![
-                check(format!("orphan:{}", orphan.cli), orphan.cli.clone(), true, e.clis),
-                short(tr("No plugin manages this CLI any more"), Tone::Warn, Font::Small),
-            ]));
+            out.push(in_controls(
+                vec![
+                    check(format!("orphan:{}", orphan.cli), orphan.cli.clone(), true, e.clis),
+                    short(tr("No plugin manages this CLI any more"), Tone::Warn, Font::Small),
+                ],
+                0,
+            ));
         }
         if let Some(seg) = cli_segments(v.ed, v.clis) {
             out.push(seg);
@@ -802,8 +820,8 @@ fn basics_rows(v: &View, d: &Role) -> Vec<Row> {
             ));
             out.push(Row {
                 cells: vec![text(tr("Added to the command line as typed. Quote anything with a space in it."), Tone::Dim, Font::Small)],
-                indent: LABEL_W + LABEL_GAP,
-                gap: -2,
+                indent: CONTROL_COL,
+                gap: -4,
             });
         }
     }
@@ -1217,22 +1235,30 @@ fn with_items(m: &mut Model, clis: &CliSnapshot, f: impl FnOnce(&mut roles::Sele
 
 // ================================================================= geometry
 
-const W0: i32 = 920;
-const H0: i32 = 720;
-const MIN_W: i32 = 760;
-const MIN_H: i32 = 560;
-const LIST_W: i32 = 220;
+/// The size this section is given inside the settings window when that
+/// opens, and at its smallest (settings.md §2.2). Not a window of its own
+/// any more, so the tests below lay it out at these.
+#[cfg(test)]
+const W0: i32 = polter_settings_shell::content_size(polter_settings_shell::FIRST_W, polter_settings_shell::FIRST_H).0;
+#[cfg(test)]
+const H0: i32 = polter_settings_shell::content_size(polter_settings_shell::FIRST_W, polter_settings_shell::FIRST_H).1;
+#[cfg(test)]
+const MIN_W: i32 = polter_settings_shell::content_size(polter_settings_shell::MIN_W, polter_settings_shell::MIN_H).0;
+#[cfg(test)]
+const MIN_H: i32 = polter_settings_shell::content_size(polter_settings_shell::MIN_W, polter_settings_shell::MIN_H).1;
+// The grid's values, under the names this file has always used for them.
+const LIST_W: i32 = grid::LIST;
+const PAD: i32 = grid::PAD;
+const FIELD_H: i32 = grid::CONTROL_H;
+const BTN_H: i32 = grid::CONTROL_H;
+const ROW_GAP: i32 = grid::ROW_GAP;
+const CELL_GAP: i32 = grid::BUTTONS_GAP;
+// This section's own sizes.
 const ROLE_ROW_H: i32 = 44;
-const PAD: i32 = 12;
-const FIELD_H: i32 = 26;
-const BTN_H: i32 = 28;
-const ROW_GAP: i32 = 6;
-const CELL_GAP: i32 = 8;
 const TABBAR_H: i32 = 44;
 const TABS_MAX_W: i32 = 420;
-const FOOTER_H: i32 = 52;
 const BANNER_H: i32 = 44;
-const GRIP_H: i32 = 9;
+const GRIP_H: i32 = 8;
 
 /// A cell with somewhere to be, in the pane's content coordinates (before
 /// scrolling).
@@ -1277,7 +1303,9 @@ pub fn place(rows: &[Row], width: i32, dpi: i32, measure: Measure) -> Laid {
                 (Width::Fixed(v), _) => Some(s(*v)),
                 (Width::Fill, _) => None,
                 (Width::Auto, Kind::Text { text, font, .. }) => Some(measure(text, avail, *font, true).0),
-                (Width::Auto, Kind::Check { text, .. }) => Some(measure(text, avail, Font::Normal, true).0 + s(26)),
+                (Width::Auto, Kind::Check { text, .. }) => {
+                    Some(measure(text, avail, Font::Normal, true).0 + s(grid::CHECK_BOX + grid::CHECK_GAP) + 2)
+                }
                 (Width::Auto, Kind::Button { text }) => Some((measure(text, avail, Font::Normal, true).0 + s(24)).max(s(72))),
                 (Width::Auto, Kind::Link { text }) => Some(measure(text, avail, Font::Normal, true).0 + s(8)),
                 (Width::Auto, Kind::Segment { text, .. }) => Some(measure(text, avail, Font::Normal, true).0 + s(28)),
@@ -1324,6 +1352,11 @@ pub fn place(rows: &[Row], width: i32, dpi: i32, measure: Measure) -> Laid {
 
         let mut x = x0;
         for ((c, &w), &h) in r.cells.iter().zip(&widths).zip(&heights) {
+            // **Never past the row's right edge.** A natural width is capped
+            // at the whole row above, not at what is left of it after the
+            // cells before -- so a drop-down beside a 120 label (the control
+            // column, settings.md §2.3a) ran out of the pane at 400 wide.
+            let w = w.min((right - x).max(0));
             // Everything is centred on the row, so a label sits level with
             // its field; text that wraps to more than a line starts at the
             // top instead, where a reader starts.
@@ -1341,52 +1374,67 @@ pub fn place(rows: &[Row], width: i32, dpi: i32, measure: Measure) -> Laid {
     Laid { cells: out, height: y + s(PAD) }
 }
 
-/// The fixed parts of the window, in client pixels.
+/// The fixed parts of the section, in its client pixels. The list, its
+/// divider, the bottom rule and band and every button in the band are the
+/// settings window's grid (`section_grid`, settings.md §2.3a); only what is
+/// inside the editor column is decided here.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frame {
     pub list: RECT,
+    /// The line between the list and the editor, from the top rule to the
+    /// bottom rule.
+    pub list_divider: RECT,
+    /// + ⧉ −, at the left end of the bottom band.
     pub list_buttons: [RECT; 3],
     pub error: Option<RECT>,
     pub banner: Option<RECT>,
     pub banner_dup: Option<RECT>,
     pub tabs: Option<[RECT; 3]>,
     pub pane: RECT,
-    pub footer: Option<RECT>,
+    /// The rule over the bottom band: the window's rule, on the same row.
+    pub bottom_rule: RECT,
+    /// The bottom band, **always there** -- with no role open it is empty,
+    /// and the body above it does not grow into it.
+    pub band: RECT,
     pub status: RECT,
     /// Launch, Revert, Save, left to right.
     pub footer_buttons: [RECT; 3],
+    /// Where a list row's text starts: the list's left line plus `PAD`,
+    /// the + button's x and the breadcrumb's (§2.3a).
+    pub text_left: i32,
+}
+
+fn rect(r: polter_settings_shell::Rect) -> RECT {
+    RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
 }
 
 /// `error_h`: the measured height of the library-error text, when there is
 /// one. Measured by the caller because the core's message is any length.
 pub fn frame_layout(w: i32, h: i32, dpi: i32, error_h: Option<i32>, builtin: bool, has_draft: bool) -> Frame {
     let s = |v: i32| v * dpi / 96;
-    let list = RECT { left: 0, top: 0, right: s(LIST_W), bottom: h };
-    let bw = (s(LIST_W) - s(8) * 2 - s(4) * 2) / 3;
-    let by = h - s(8) - s(BTN_H);
-    let list_buttons = [0, 1, 2].map(|i| {
-        let x = s(8) + i * (bw + s(4));
-        RECT { left: x, top: by, right: x + bw, bottom: by + s(BTN_H) }
-    });
-
-    let left = s(LIST_W) + 1;
+    let g = section_grid(w, h, dpi, true);
+    let (Some(list), Some(list_divider), Some(list_buttons)) = (g.list, g.list_divider, g.list_buttons) else {
+        unreachable!("section_grid with a list returns one")
+    };
+    let left = g.editor.left;
+    let body = g.editor.bottom;
     let mut y = 0;
     let error = error_h.map(|eh| {
-        let r = RECT { left, top: y, right: w, bottom: y + eh + s(16) };
+        let r = RECT { left, top: y, right: w, bottom: y + eh + s(PAD) };
         y = r.bottom;
         r
     });
     let (banner, banner_dup) = if has_draft && builtin {
         let r = RECT { left, top: y, right: w, bottom: y + s(BANNER_H) };
         y = r.bottom;
-        let dw = s(96);
+        let dw = s(grid::ACTION_W[1]);
         let top = r.top + (s(BANNER_H) - s(BTN_H)) / 2;
         (Some(r), Some(RECT { left: w - s(PAD) - dw, top, right: w - s(PAD), bottom: top + s(BTN_H) }))
     } else {
         (None, None)
     };
     let tabs = has_draft.then(|| {
-        let tw = (w - left - s(36)).min(s(TABS_MAX_W)).max(s(90));
+        let tw = (w - left - 2 * s(PAD)).min(s(TABS_MAX_W)).max(s(90));
         let x0 = left + ((w - left) - tw) / 2;
         let top = y + (s(TABBAR_H) - s(BTN_H)) / 2;
         let one = tw / 3;
@@ -1395,17 +1443,22 @@ pub fn frame_layout(w: i32, h: i32, dpi: i32, error_h: Option<i32>, builtin: boo
     if has_draft {
         y += s(TABBAR_H);
     }
-
-    let footer = has_draft.then(|| RECT { left, top: h - s(FOOTER_H), right: w, bottom: h });
-    let pane_bottom = footer.map_or(h, |f| f.top);
-    let pane = RECT { left, top: y, right: w, bottom: pane_bottom.max(y) };
-
-    let fy = h - s(FOOTER_H) + (s(FOOTER_H) - s(BTN_H)) / 2;
-    let save = RECT { left: w - s(PAD) - s(96), top: fy, right: w - s(PAD), bottom: fy + s(BTN_H) };
-    let revert = RECT { left: save.left - s(8) - s(96), top: fy, right: save.left - s(8), bottom: fy + s(BTN_H) };
-    let launch = RECT { left: revert.left - s(8) - s(110), top: fy, right: revert.left - s(8), bottom: fy + s(BTN_H) };
-    let status = RECT { left: left + s(PAD), top: h - s(FOOTER_H), right: launch.left - s(PAD), bottom: h };
-    Frame { list, list_buttons, error, banner, banner_dup, tabs, pane, footer, status, footer_buttons: [launch, revert, save] }
+    let pane = RECT { left, top: y.min(body), right: w, bottom: body };
+    Frame {
+        list: rect(list),
+        list_divider: rect(list_divider),
+        list_buttons: list_buttons.map(rect),
+        error,
+        banner,
+        banner_dup,
+        tabs,
+        pane,
+        bottom_rule: rect(g.bottom_rule),
+        band: rect(g.band),
+        status: rect(g.status),
+        footer_buttons: g.actions.map(rect),
+        text_left: g.text_left,
+    }
 }
 
 /// Where the role list draws row `index`, with `top` the first row shown,
@@ -1416,7 +1469,7 @@ pub fn frame_layout(w: i32, h: i32, dpi: i32, error_h: Option<i32>, builtin: boo
 pub fn role_row_rect_at(dpi: i32, top: usize, index: usize) -> Option<RECT> {
     let s = |v: i32| v * dpi / 96;
     let n = index.checked_sub(top)?;
-    let y = s(8) + n as i32 * s(ROLE_ROW_H);
+    let y = s(ROW_GAP) + n as i32 * s(ROLE_ROW_H);
     Some(RECT { left: 0, top: y, right: s(LIST_W), bottom: y + s(ROLE_ROW_H) })
 }
 
@@ -1635,6 +1688,13 @@ struct State {
     /// into; `reconcile` writes even a focused field when it has moved on.
     /// See `text_needs_writing`.
     draft_gen: u64,
+    /// What the settings window's search box says; the list shows only the
+    /// roles it matches (settings.md §2.3).
+    list_filter: String,
+    /// The role selected when the settings window last closed, so the next
+    /// opening with no role named comes back to it (§3.1). Kept by
+    /// `forget_window`, which is about handles, not about this.
+    remembered: Option<String>,
 }
 
 impl Default for State {
@@ -1653,6 +1713,8 @@ impl Default for State {
             poll_until: None,
             launchable: None,
             draft_gen: 0,
+            list_filter: String::new(),
+            remembered: None,
         }
     }
 }
@@ -1702,109 +1764,87 @@ fn save_height(h: i32) {
 
 // --------------------------------------------------------------- opening
 
-/// Open the role library over `parent`, or bring it to the front.
+/// Put the library into the settings window `host`, at `rect` in `host`'s
+/// client coordinates, making it the first time.
 ///
-/// **One window for the process**, as on macOS: the library is one file, and
-/// two windows editing it would be two drafts racing each other to save.
-/// Called on the UI thread, from the menu.
-pub fn open(parent: HWND) {
-    // ⚠️ **An owned window is destroyed with its owner.** Close the terminal
-    // window this one was opened over and this window goes with it, without
-    // anybody here asking for that -- and the handle remembered for it then
-    // names nothing. It used to be believed anyway: `open` saw a handle,
-    // took the "already up, bring it forward" path, and wrote
-    // `[roles-ui] shown` about a window that had not existed for some time.
-    // `WM_NCDESTROY` forgets it, and this is the second reading, for a
-    // destruction that never reached the procedure.
+/// `origin` is the window the settings were opened from, **re-answered at
+/// every showing**: it is only what a Launch opens its tab beside, and the
+/// settings window itself belongs to no terminal (settings.md §2.1).
+///
+/// `item` is the role key a route named (§3.1): `None` keeps what is on
+/// screen, else the role selected when the window last closed, else the
+/// first. **Asks nothing** -- leaving a dirty draft for another role was
+/// agreed to by the settings window before this is called
+/// (`polter_settings_shell::must_ask`), so a named role that differs from
+/// the one on screen replaces it here.
+pub fn show(host: HWND, rect: RECT, origin: HWND, item: Option<&str>) {
+    // ⚠️ **A handle remembered for a window that is gone names nothing.**
+    // The library used to be owned by a terminal window and was destroyed
+    // with it, after which `open` believed the stale handle and wrote
+    // `[roles-ui] shown` about a window that had not existed for some time
+    // (status.md, the role library's section). It is now a child of a
+    // window nothing owns, so that path is closed; this is the second
+    // reading, kept because being wrong here is silent.
     if !main_hwnd().0.is_null() && !unsafe { IsWindow(Some(main_hwnd())) }.as_bool() {
         forget_window();
     }
-    if main_hwnd().0.is_null() && !create() {
+    if main_hwnd().0.is_null() && !create(host) {
         return;
     }
     let win = main_hwnd();
     let was_visible = unsafe { IsWindowVisible(win) }.as_bool();
-    // ⚠️ **Read before the window is on screen.** Showing it takes the
-    // focus, so the same call made afterwards answers "this window" -- which
-    // is what it answered, and what the close then handed the keyboard back
-    // to. See `handback_to`.
-    let had_focus = unsafe { GetFocus() };
-    // ⚠️ **What this is handed is not always a terminal window.** The menu
-    // bar's row passes the frame; the tab's right-click menu passes the
-    // *surface* (`ctxmenu.rs` hands `personas::perform` the surface window,
-    // and that is what reaches here). Both were taken as a frame, and
-    // everything a frame is for then went wrong quietly: `tabs::window` does
-    // not know a surface, so "is there a terminal to launch beside" answered
-    // no and the Launch button was grey with a terminal in front of it; and
-    // `GWLP_HWNDPARENT` was set to a child window, which is not an owner, so
-    // Windows had nothing to hand activation back to on close.
-    let owner = frame_for(parent);
+    // ⚠️ **What this is handed is not always a terminal window**: the tab's
+    // right-click menu hands over the surface. See `frame_for`.
+    let owner = frame_for(origin);
     ST.with(|c| c.borrow_mut().owner = owner);
-    // Owned, not topmost -- the reason is in `settings_ui::own_and_place`.
-    // Re-owned at every open, because which terminal window this belongs to
-    // is a fact about this opening.
-    unsafe {
-        SetWindowLongPtrW(win, GWLP_HWNDPARENT, owner.0 as isize);
+    if !was_visible {
+        let cat = roles::catalog();
+        let clis = roles::clis(false);
+        let h = load_height();
+        ST.with(|c| {
+            let s = &mut *c.borrow_mut();
+            s.cat = cat;
+            s.clis = clis;
+            s.model.instr_h = h;
+            s.scroll = 0;
+            s.list_top = 0;
+        });
+        start_polling_if_needed(false);
     }
-    if was_visible {
-        // **Minimised is still "visible"** to `IsWindowVisible`, so a second
-        // click on a library the person minimised lands here. Restoring it
-        // first is the usual Windows idiom -- `SetForegroundWindow` is not
-        // documented to un-minimise anything -- and that is all it is here:
-        // task 587's W3 cell on the real machine is what will say whether a
-        // minimised library came back without it. Not measured yet.
-        let iconic = unsafe { IsIconic(win) }.as_bool();
-        if iconic {
-            let _ = unsafe { ShowWindow(win, SW_RESTORE) };
-        }
-        let asked = unsafe { SetForegroundWindow(win) }.as_bool();
-        // ⚠️ **Both halves of "did it come to the front", because they can
-        // disagree.** The return value is what Windows said about the request;
-        // who is in the foreground afterwards is what happened. A refused
-        // request is silent everywhere else, and this branch used to write
-        // nothing at all -- so on the machine a second click that raised the
-        // window and one that did nothing read the same.
-        let front = unsafe { GetForegroundWindow() } == win;
-        // process-wide: the role library window is one per process; it is not
-        // opened *for* a terminal window, only placed over one
-        crate::plogf!(
-            "[roles-ui] raised (already open): iconic_before={} restored={} set_foreground={} foreground_now={}",
-            iconic,
-            iconic && !unsafe { IsIconic(win) }.as_bool(),
-            asked,
-            front
-        );
-        return;
-    }
-
-    let cat = roles::catalog();
-    let clis = roles::clis(false);
-    let h = load_height();
-    ST.with(|c| {
+    let (named, unknown) = ST.with(|c| {
         let s = &mut *c.borrow_mut();
-        s.cat = cat;
-        s.clis = clis;
-        s.model.instr_h = h;
-        s.scroll = 0;
-        s.list_top = 0;
-        if s.model.ed.draft.is_none() && !s.model.ed.is_new {
-            let first = s.cat.roles.first().map(|r| r.key.clone());
-            s.model.ed.load(&s.cat, first.as_deref());
+        let named = item.filter(|k| s.cat.role(k).is_some()).map(str::to_string);
+        let unknown = item.is_some() && named.is_none();
+        match &named {
+            Some(k) if s.model.ed.is_new || s.model.ed.selection.as_deref() != Some(k.as_str()) => {
+                s.model.ed.load(&s.cat, Some(k));
+                s.scroll = 0;
+                draft_replaced(s);
+            }
+            Some(_) => {}
+            None if s.model.ed.draft.is_none() && !s.model.ed.is_new => {
+                let key = s
+                    .remembered
+                    .clone()
+                    .filter(|k| s.cat.role(k).is_some())
+                    .or_else(|| s.cat.roles.first().map(|r| r.key.clone()));
+                s.model.ed.load(&s.cat, key.as_deref());
+                draft_replaced(s);
+            }
+            None => {}
         }
-        draft_replaced(s);
+        (named, unknown)
     });
-    start_polling_if_needed(false);
-
-    let dpi = dpi_of(win);
-    let (w, h) = (W0 * dpi / 96, H0 * dpi / 96);
-    let mut fr = RECT::default();
-    let (x, y) = if !owner.0.is_null() && unsafe { GetWindowRect(owner, &mut fr) }.is_ok() {
-        (fr.left + ((fr.right - fr.left) - w) / 2, fr.top + ((fr.bottom - fr.top) - h) / 3)
-    } else {
-        (CW_USEDEFAULT, CW_USEDEFAULT)
-    };
     unsafe {
-        let _ = SetWindowPos(win, Some(HWND_TOP), x, y, w, h, SWP_SHOWWINDOW);
+        let _ = SetWindowPos(
+            win,
+            None,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
         // **Whether a launch is possible is not a fact about this opening.**
         // Terminal windows open and close while this one stays up, and the
         // Launch button has to follow them; nothing else would tell it, so
@@ -1812,53 +1852,269 @@ pub fn open(parent: HWND) {
         SetTimer(Some(win), TIMER_TERMINALS, TERMINALS_EVERY_MS, None);
     }
     refresh();
-
-    // The window has real edit controls, so the terminal's TSF document has
-    // to go back before any of them takes focus. Same contract as the
-    // settings page.
-    let first = LIVE.with(|l| l.borrow().get("name").map(|x| x.hwnd));
-    // Its answer is the focus *now*, which is this window; the one worth
-    // keeping was read at the top.
-    let _ = crate::overlay::focus_to_edit(first.unwrap_or(win), "roles");
-    ST.with(|c| c.borrow_mut().prev_focus = had_focus);
-    // process-wide: the role library window is one per process; it is not
-    // opened *for* a terminal window, only placed over one
-    crate::plogf!("[roles-ui] shown");
+    if !was_visible {
+        // The page has real edit controls, so the terminal's TSF document
+        // has to go back before any of them takes focus.
+        let first = LIVE.with(|l| l.borrow().get("name").map(|x| x.hwnd));
+        let _ = crate::overlay::focus_to_edit(first.unwrap_or(win), "roles");
+    }
+    // process-wide: the role library is a section of the one settings
+    // window; it is not opened *for* a terminal window
+    crate::plogf!(
+        "[roles-ui] shown in the settings window: named={:?} unknown_key={} was_visible={}",
+        named,
+        unknown,
+        was_visible
+    );
 }
 
-/// Hide the window, once leaving has been agreed to. The draft goes with it:
-/// the next opening starts from the library, as a new window does on macOS.
-fn close() {
-    if !confirm_leaving() {
+/// Take the library off screen, because the settings window moved to another
+/// section or closed. **The draft stays** -- leaving was agreed to before
+/// this, and a section switch that was answered "Cancel" never gets here.
+pub fn hide() {
+    let win = main_hwnd();
+    if win.0.is_null() {
         return;
     }
-    let win = main_hwnd();
-    let (prev, owner) = ST.with(|c| {
-        let s = &mut *c.borrow_mut();
-        forgotten(&mut s.model);
-        s.poll_until = None;
-        let was = s.prev_focus;
-        s.prev_focus = HWND(std::ptr::null_mut());
-        (was, s.owner)
-    });
+    ST.with(|c| c.borrow_mut().poll_until = None);
     unsafe {
         let _ = KillTimer(Some(win), TIMER_CLIS);
         let _ = KillTimer(Some(win), TIMER_TERMINALS);
+        // hides without handing the foreground back: a child window, which
+        // cannot be the foreground; the settings window does the handback
         let _ = ShowWindow(win, SW_HIDE);
     }
-    // ⚠️ **Focus and the foreground are two different pieces of state**, and
-    // both are handed back here: on the test machine the closed window was
-    // still the foreground one, so every keystroke went into something
-    // invisible. `overlay.rs` has the whole story -- it is the command
-    // palette's bug, and it reaches any window that hides itself. Being
-    // owned was supposed to make Windows do this by itself, and did not.
-    //
-    // **Where to**, is `handback_to`: not this window, and never nothing.
-    let target = HWND(handback_to(prev.0 as isize, usable_handback(prev), owner.0 as isize) as *mut c_void);
-    crate::overlay::foreground_back(win, target, "roles");
-    crate::overlay::focus_back(target, "roles");
-    // process-wide: the role library window is one per process
-    crate::plogf!("[roles-ui] hidden");
+}
+
+/// The settings window closed: the next opening starts from the library, as
+/// a new window does on macOS -- at the role that was selected (§3.1).
+pub fn forget_draft() {
+    ST.with(|c| {
+        let s = &mut *c.borrow_mut();
+        if let Some(k) = s.model.ed.selection.clone() {
+            s.remembered = Some(k);
+        }
+        forgotten(&mut s.model);
+    });
+}
+
+/// The settings window was resized.
+pub fn move_to(rect: RECT) {
+    let win = main_hwnd();
+    if win.0.is_null() || !unsafe { IsWindowVisible(win) }.as_bool() {
+        return;
+    }
+    unsafe {
+        let _ = SetWindowPos(
+            win,
+            None,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// The settings window became active again: the terminal may have taken the
+/// TSF document meanwhile, and the library may have been changed from
+/// somewhere else -- a supervisor's `role_put`, or the file edited by hand.
+pub fn activated() {
+    let win = main_hwnd();
+    if win.0.is_null() || !unsafe { IsWindowVisible(win) }.as_bool() {
+        return;
+    }
+    crate::ime_focus(false);
+    let cat = roles::catalog();
+    with_model(|s| {
+        s.cat = cat;
+        s.model.ed.library_changed(&s.cat);
+        draft_replaced(s);
+    });
+    refresh();
+}
+
+/// This section's half of the settings window's grid log (settings.md
+/// §2.3a), in the settings window's client pixels so the two lines compare
+/// directly: the bottom rule's row, the list divider's column and rows, and
+/// the band's buttons' rows. Silent when the section is not on screen.
+pub fn log_grid() {
+    let win = main_hwnd();
+    if win.0.is_null() || !unsafe { IsWindowVisible(win) }.as_bool() {
+        return;
+    }
+    let mut rc = RECT::default();
+    let _ = unsafe { GetClientRect(win, &mut rc) };
+    let f = frame_layout(rc.right, rc.bottom, dpi_of(win), None, false, true);
+    let root = dialog_owner();
+    let mut origin = [POINT { x: 0, y: 0 }];
+    unsafe {
+        let _ = MapWindowPoints(Some(win), Some(root), &mut origin);
+    }
+    let (ox, oy) = (origin[0].x, origin[0].y);
+    // process-wide: the role library is a section of the one settings window
+    crate::plogf!(
+        "[roles-ui] grid in settings-window pixels: bottom rule row {} (x {}..{}), list divider col {} (rows {}..{}), \
+         + button rows {}..{} x {}, save rows {}..{}",
+        oy + f.bottom_rule.top,
+        ox + f.bottom_rule.left,
+        ox + f.bottom_rule.right - 1,
+        ox + f.list_divider.left,
+        oy + f.list_divider.top,
+        oy + f.list_divider.bottom - 1,
+        oy + f.list_buttons[0].top,
+        oy + f.list_buttons[0].bottom - 1,
+        ox + f.list_buttons[0].left,
+        oy + f.footer_buttons[2].top,
+        oy + f.footer_buttons[2].bottom - 1
+    );
+}
+
+/// The system colours or the theme changed. Sent to top-level windows only,
+/// so the settings window passes it on. The pane's controls are rebuilt,
+/// not only repainted: whether the combo is owner-drawn is a style fixed at
+/// creation, and high contrast has to be able to take it back.
+pub fn theme_changed() {
+    let win = main_hwnd();
+    if win.0.is_null() {
+        return;
+    }
+    drop_controls();
+    refresh();
+    theme::repaint_all(win);
+}
+
+/// The settings window moved to a monitor with another DPI. A child is not
+/// sent `WM_DPICHANGED`, so its parent passes it on.
+pub fn dpi_changed() {
+    let win = main_hwnd();
+    if win.0.is_null() {
+        return;
+    }
+    make_fonts(dpi_of(win));
+    drop_controls();
+    if let Some(f) = FIXED.with(|c| c.get()) {
+        for h in f.list_buttons.iter().chain(&f.tabs).chain(&f.footer).chain(std::iter::once(&f.banner_dup)) {
+            unsafe {
+                SendMessageW(*h, WM_SETFONT, Some(WPARAM(font(Font::Normal).0 as usize)), Some(LPARAM(1)));
+            }
+        }
+    }
+    refresh();
+}
+
+// ------------------------------------------ what the settings window asks
+
+/// §2.4's `is_dirty`.
+pub fn is_dirty() -> bool {
+    ST.with(|c| c.borrow().model.ed.is_dirty())
+}
+
+/// §2.4's `save`. On failure the reason is already on the page (the status
+/// line), and it is also returned.
+pub fn save_now() -> Result<(), String> {
+    if save() {
+        Ok(())
+    } else {
+        Err(ST.with(|c| c.borrow().model.ed.status.clone()).unwrap_or_default())
+    }
+}
+
+/// §2.4's `revert`.
+pub fn revert_now() {
+    revert();
+}
+
+/// The role on screen, for the breadcrumb: its name, or its key when it has
+/// none. `None` with nothing selected.
+pub fn current() -> Option<(Option<String>, String)> {
+    ST.with(|c| {
+        let s = c.borrow();
+        let ed = &s.model.ed;
+        ed.draft.as_ref().map(|d| {
+            let name = d.display_name();
+            (ed.selection.clone(), if name.is_empty() { d.key.clone() } else { name })
+        })
+    })
+}
+
+/// Every role's name, for the settings window's search (§2.3). Keys too, so
+/// a role found by the key it is launched with is found here.
+pub fn names() -> Vec<String> {
+    let cat = ST.with(|c| {
+        let s = c.borrow();
+        if s.cat.roles.is_empty() {
+            None
+        } else {
+            Some(s.cat.roles.iter().flat_map(|r| [r.display_name(), r.key.clone()]).collect())
+        }
+    });
+    // Before the section was ever shown the library has not been read here.
+    cat.unwrap_or_else(|| roles::catalog().roles.iter().flat_map(|r| [r.display_name(), r.key.clone()]).collect())
+}
+
+/// The search box changed: show only the roles it matches.
+pub fn set_filter(query: &str) {
+    ST.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.list_filter = query.to_string();
+        s.list_top = 0;
+    });
+    let win = main_hwnd();
+    if !win.0.is_null() {
+        let _ = unsafe { InvalidateRect(Some(win), None, false) };
+    }
+    // The breadcrumb says when the role on screen is filtered out.
+    crate::settings_win::crumb_changed();
+}
+
+/// The list as shown: `list_rows`, narrowed by the search box. A new,
+/// unsaved role is always shown -- it is the one being edited, and it has
+/// no key the search could have been looking for.
+pub fn filtered_rows(rows: Vec<ListRow>, query: &str) -> Vec<ListRow> {
+    rows.into_iter()
+        .filter(|r| {
+            r.key.is_none()
+                || polter_settings_shell::matches(query, &r.title)
+                || r.key.as_deref().is_some_and(|k| polter_settings_shell::matches(query, k))
+        })
+        .collect()
+}
+
+fn shown_rows(s: &State) -> Vec<ListRow> {
+    filtered_rows(list_rows(&s.model.ed, &s.cat, &s.clis), &s.list_filter)
+}
+
+/// What the search has done to the list (settings.md §2.3a).
+fn filter_state() -> polter_settings_shell::Filtered {
+    ST.with(|c| {
+        let s = c.borrow();
+        let rows = shown_rows(&s);
+        let selected = s.model.ed.draft.as_ref().map(|_| rows.iter().any(|r| r.selected));
+        polter_settings_shell::filtered(&s.list_filter, rows.len(), selected)
+    })
+}
+
+/// Whether the role on screen is one the search has hidden from the list,
+/// for the breadcrumb's "(not in the search results)".
+pub fn selection_hidden() -> bool {
+    filter_state().selection_hidden
+}
+
+/// Ask the settings window to close, which asks about anything unsaved.
+fn request_close(win: HWND) {
+    let root = unsafe { GetAncestor(win, GA_ROOT) };
+    if !root.0.is_null() {
+        let _ = unsafe { PostMessageW(Some(root), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+    }
+}
+
+/// The window a question is asked over: the settings window, never this
+/// child -- a dialog owned by a child is owned by nothing Windows can
+/// activate on its return.
+fn dialog_owner() -> HWND {
+    unsafe { GetAncestor(main_hwnd(), GA_ROOT) }
 }
 
 fn make_font(dpi: i32, px: i32, weight: i32, face: PCWSTR) -> HFONT {
@@ -1901,7 +2157,7 @@ fn hinst() -> HINSTANCE {
 }
 
 /// Register the classes and make the window, once.
-fn create() -> bool {
+fn create(host: HWND) -> bool {
     let hi = hinst();
     unsafe {
         for (proc_fn, class) in [
@@ -1940,42 +2196,31 @@ fn create() -> bool {
                 return false;
             }
         }
-        let title: Vec<u16> = tr("Role Library").encode_utf16().chain(Some(0)).collect();
-        // A real, resizable window with a title bar: this is an editor people
-        // spend time in, not a popup that is dismissed with a click.
+        // A child of the settings window (settings.md §4): the title bar,
+        // the size and closing are that window's.
         let win = match CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("PolterRoles"),
-            PCWSTR(title.as_ptr()),
-            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            W0,
-            H0,
-            None,
+            PCWSTR::null(),
+            WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+            0,
+            0,
+            10,
+            10,
+            Some(host),
             None,
             Some(hi),
             None,
         ) {
             Ok(h) => h,
             Err(e) => {
-                // process-wide: the role library window, one per process
+                // process-wide: the role library, one per process
                 crate::plogf!("[roles-ui] CreateWindowExW failed: {e:?}");
                 return false;
             }
         };
         MAIN.store(win.0, Ordering::Release);
         make_fonts(dpi_of(win));
-        if theme::custom_drawing() {
-            // The dark title bar, as `shell.rs` asks for the frame's.
-            let on: BOOL = true.into();
-            let _ = DwmSetWindowAttribute(
-                win,
-                DWMWINDOWATTRIBUTE(20),
-                &on as *const BOOL as *const c_void,
-                std::mem::size_of::<BOOL>() as u32,
-            );
-        }
         let pane = match CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("PolterRolesPane"),
@@ -2029,11 +2274,10 @@ fn create() -> bool {
             h
         };
         let fixed = Fixed {
-            list_buttons: [
-                mk(ID_NEW, tr("New Role"), false),
-                mk(ID_DUP, tr("Duplicate"), false),
-                mk(ID_DEL, tr("Delete"), false),
-            ],
+            // + ⧉ −, as the macOS list has them (settings.md §2.3a). Square,
+            // one control tall, so they fit the band with the status text
+            // beside them.
+            list_buttons: [mk(ID_NEW, "+".into(), false), mk(ID_DUP, "\u{29c9}".into(), false), mk(ID_DEL, "\u{2212}".into(), false)],
             tabs: [mk(ID_TAB0, String::new(), true), mk(ID_TAB0 + 1, String::new(), true), mk(ID_TAB0 + 2, String::new(), true)],
             banner_dup: mk(ID_BANNER_DUP, tr("Duplicate"), false),
             footer: [mk(ID_LAUNCH, tr("Launch"), false), mk(ID_REVERT, tr("Revert"), false), mk(ID_SAVE, tr("Save"), false)],
@@ -2068,16 +2312,6 @@ fn launch_surface() -> crate::ffi::Surface {
     // The window it was opened over is gone: the button is about whether
     // there is a terminal at all, so ask the question that way.
     crate::tabs::active_surface(crate::tabs::overlay_frame())
-}
-
-/// Whether a remembered focus is still somewhere to hand the keyboard: a
-/// window that exists and is not this one. See `handback_to`.
-fn usable_handback(prev: HWND) -> bool {
-    if prev.0.is_null() || !unsafe { IsWindow(Some(prev)) }.as_bool() {
-        return false;
-    }
-    let root = unsafe { GetAncestor(prev, GA_ROOT) };
-    root != main_hwnd()
 }
 
 fn can_launch() -> bool {
@@ -2233,6 +2467,8 @@ fn refresh() {
             RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN,
         );
     }
+    // The breadcrumb above names the role on screen.
+    crate::settings_win::crumb_changed();
 }
 
 fn error_banner_text(detail: &str) -> String {
@@ -2562,7 +2798,14 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         match msg {
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
+                // **Escape closes nothing** (settings.md §2.3): long text and
+                // an input method both use it, and a window that vanished on
+                // it took the draft's context with it. Swallowed so an edit
+                // does not beep; an open drop-down still closes on it.
                 if vk == VK_ESCAPE && SendMessageW(h, CB_GETDROPPEDSTATE, None, None).0 == 0 {
+                    return LRESULT(0);
+                }
+                if vk.0 == u16::from(b'W') && held(VK_CONTROL) {
                     let _ = PostMessageW(Some(main), WM_ROLES_CLOSE, WPARAM(0), LPARAM(0));
                     return LRESULT(0);
                 }
@@ -2573,7 +2816,7 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             // The characters those two keys also produce, which an `EDIT`
             // would otherwise answer with a beep.
-            WM_CHAR if wp.0 == 0x13 || wp.0 == 0x1B => return LRESULT(0),
+            WM_CHAR if wp.0 == 0x13 || wp.0 == 0x17 || wp.0 == 0x1B => return LRESULT(0),
             // ⚠️ **The wheel goes to whatever has the keyboard, not to
             // whatever is under the pointer.** The page opens with the name
             // field focused, an `EDIT` answers the wheel itself, and the
@@ -2642,9 +2885,24 @@ fn task_dialog_indirect() -> Option<TaskDialogIndirectFn> {
 /// the macOS alert has -- "Save / Don't Save / Cancel" is answerable at a
 /// glance, "Yes / No / Cancel" needs the question read twice.
 fn ask(owner: HWND, main: &str, body: &str, first: &str, second: Option<&str>) -> Answer {
+    // ⚠️ **Read before the dialog**, which takes the keyboard; when it closes
+    // Windows gives it to the dialog's owner -- the whole settings window --
+    // and the next ↓ moved the sidebar, not the list that had asked (#896
+    // W35). So it goes back to the control that had it.
+    let before = unsafe { GetFocus() };
+    let a = ask_modal(owner, main, body, first, second);
+    let usable = !before.0.is_null() && unsafe { IsWindow(Some(before)) }.as_bool();
+    let to = HWND(polter_settings_shell::focus_after_question(before.0 as isize, usable, owner.0 as isize) as *mut c_void);
+    if !to.0.is_null() {
+        let _ = unsafe { SetFocus(Some(to)) };
+    }
+    a
+}
+
+fn ask_modal(owner: HWND, main: &str, body: &str, first: &str, second: Option<&str>) -> Answer {
     let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(Some(0)).collect() };
     let (m, b, f1, f2, cancel, title) =
-        (wide(main), wide(body), wide(first), wide(second.unwrap_or("")), wide(&tr("Cancel")), wide(&tr("Role Library")));
+        (wide(main), wide(body), wide(first), wide(second.unwrap_or("")), wide(&tr("Cancel")), wide(&tr("Polter Settings")));
     // process-wide: a modal question from the role library window, one per
     // process. Said before the dialog, because until it is answered this
     // thread is inside it and nothing else is logged.
@@ -2705,7 +2963,7 @@ fn confirm_leaving() -> bool {
         return true;
     }
     match ask(
-        main_hwnd(),
+        dialog_owner(),
         &tr("Save changes to this role?"),
         &tr("Your changes will be lost if you don't save them."),
         &tr("Save"),
@@ -2714,6 +2972,23 @@ fn confirm_leaving() -> bool {
         Answer::First => save(),
         Answer::Second => true,
         Answer::Cancel => false,
+    }
+}
+
+/// The settings window's question before leaving this section with a
+/// dirty draft (settings.md §2.4), in the words this section already asks
+/// it in.
+pub fn ask_to_save() -> polter_settings_shell::Answer {
+    match ask(
+        dialog_owner(),
+        &tr("Save changes to this role?"),
+        &tr("Your changes will be lost if you don't save them."),
+        &tr("Save"),
+        Some(&tr("Don't Save")),
+    ) {
+        Answer::First => polter_settings_shell::Answer::Save,
+        Answer::Second => polter_settings_shell::Answer::DontSave,
+        Answer::Cancel => polter_settings_shell::Answer::Cancel,
     }
 }
 
@@ -2740,6 +3015,35 @@ fn select(key: &str) {
         });
     }
     refresh();
+}
+
+/// ↑ / ↓ in the role list: the next or previous role in the list as shown,
+/// stopping at the ends, through `select` (which asks about unsaved changes
+/// first), then scrolled so it is on screen.
+fn step_list(down: bool) {
+    let win = main_hwnd();
+    let (rows, list_top) = ST.with(|c| {
+        let s = c.borrow();
+        (shown_rows(&s), s.list_top)
+    });
+    let current = rows.iter().position(|r| r.selected);
+    let Some(next) = polter_settings_shell::step(current, rows.len(), down) else { return };
+    let Some(key) = rows[next].key.clone() else { return };
+    select(&key);
+    // Only when the move happened: a Cancel leaves the selection, and the
+    // list where it was.
+    let moved = ST.with(|c| c.borrow().model.ed.selection.as_deref() == Some(key.as_str()));
+    if moved {
+        let mut rc = RECT::default();
+        let _ = unsafe { GetClientRect(win, &mut rc) };
+        let dpi = dpi_of(win);
+        let fit = role_rows_fitting(dpi, frame_layout(rc.right, rc.bottom, dpi, None, false, false).list.bottom);
+        ST.with(|c| {
+            let s = &mut *c.borrow_mut();
+            s.list_top = polter_settings_shell::keep_visible(list_top, next, fit);
+        });
+        let _ = unsafe { InvalidateRect(Some(win), None, false) };
+    }
 }
 
 /// Save the draft. True when it was saved or there was nothing to save.
@@ -2816,7 +3120,7 @@ fn delete() {
         return;
     }
     let answer = ask(
-        main_hwnd(),
+        dialog_owner(),
         &tr("Delete the role \"{}\"?").replace("{}", &role.name),
         &tr("Terminals wearing it are taken out of it. Agents already running keep running."),
         &tr("Delete"),
@@ -3100,11 +3404,12 @@ fn draw_dot(hdc: HDC, cx: i32, cy: i32, r: i32, colour: u32) {
 
 fn paint_main(win: HWND) {
     // Everything this paints is read out first; nothing below borrows.
+    let no_match = filter_state().no_match_row;
     let (list, empty, error, builtin, has_draft, list_top, ed) = ST.with(|c| {
         let s = c.borrow();
         let ed = &s.model.ed;
         (
-            list_rows(ed, &s.cat, &s.clis),
+            shown_rows(&s),
             list_empty_note(ed, &s.cat),
             s.cat.error.clone(),
             ed.draft.as_ref().is_some_and(|d| d.builtin),
@@ -3133,11 +3438,9 @@ fn paint_main(win: HWND) {
 
         fill(hdc, &rc, theme::bg());
         fill(hdc, &frame.list, theme::panel());
-        let sep = RECT { left: frame.list.right, top: 0, right: frame.list.right + 1, bottom: rc.bottom };
-        fill(hdc, &sep, theme::border());
 
         // The list.
-        let limit = frame.list_buttons[0].top - s(8);
+        let limit = frame.list.bottom;
         for (i, row) in list.iter().enumerate() {
             let Some(r) = role_row_rect_at(dpi, list_top, i) else { continue };
             if r.bottom > limit {
@@ -3149,7 +3452,7 @@ fn paint_main(win: HWND) {
             } else {
                 (theme::text(), theme::dim())
             };
-            let x = s(PAD);
+            let x = frame.text_left;
             let right = r.right - s(PAD);
             // The marks go after the name, so the name is measured first and
             // cut short enough to leave them room.
@@ -3168,10 +3471,17 @@ fn paint_main(win: HWND) {
             let sub = RECT { left: x, top: r.top + s(23), right, bottom: r.bottom - s(3) };
             draw_text(hdc, &row.subtitle, &sub, Font::Small, dim, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
+        // §2.3a: a search that leaves nothing says so, rather than leave the
+        // list blank beside an editor that still shows the selected role.
+        if empty.is_none() && no_match {
+            let r = role_row_rect_at(dpi, 0, 0).unwrap_or_default();
+            let t = RECT { left: frame.text_left, right: r.right - s(PAD), ..r };
+            draw_text(hdc, &tr("No matching roles"), &t, Font::Normal, theme::dim(), DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        }
         if let Some((head, body)) = empty {
-            let r = RECT { left: s(PAD), top: s(PAD * 2), right: s(LIST_W - PAD), bottom: s(PAD * 2 + 24) };
+            let r = RECT { left: s(PAD), top: s(PAD * 2), right: s(LIST_W - PAD), bottom: s(PAD * 2 + BTN_H) };
             draw_text(hdc, &head, &r, Font::Bold, theme::dim(), DT_CENTER | DT_SINGLELINE);
-            let r = RECT { left: s(PAD), top: s(PAD * 2 + 28), right: s(LIST_W - PAD), bottom: limit };
+            let r = RECT { left: s(PAD), top: s(PAD * 2 + BTN_H + ROW_GAP), right: s(LIST_W - PAD), bottom: limit };
             draw_text(hdc, &body, &r, Font::Small, theme::dim(), DT_CENTER | DT_WORDBREAK);
         }
 
@@ -3193,17 +3503,21 @@ fn paint_main(win: HWND) {
                 DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_END_ELLIPSIS,
             );
         }
-        if let Some(f) = frame.footer {
-            fill(hdc, &RECT { bottom: f.top + 1, ..f }, theme::border());
-            if let Some((t, is_error)) = footer {
-                let colour = if is_error { theme::warn() } else { theme::dim() };
-                draw_text(hdc, &t, &frame.status, Font::Normal, colour, DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_END_ELLIPSIS);
-            }
+        // The bottom band is always there (settings.md §2.3a), with its text
+        // only when a role is open.
+        if let Some((t, is_error)) = footer.filter(|_| has_draft) {
+            let colour = if is_error { theme::warn() } else { theme::dim() };
+            draw_text(hdc, &t, &frame.status, Font::Normal, colour, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
         if frame.tabs.is_some() {
             let y = frame.pane.top - 1;
             fill(hdc, &RECT { left: frame.pane.left, top: y, right: rc.right, bottom: y + 1 }, theme::border());
         }
+        // The lines last, so nothing paints over a crossing: the list's
+        // divider from the top rule to the bottom rule, and the bottom rule
+        // itself on the window's row.
+        fill(hdc, &frame.list_divider, theme::border());
+        fill(hdc, &frame.bottom_rule, theme::border());
         let _ = EndPaint(win, &ps);
     }
 }
@@ -3287,13 +3601,16 @@ unsafe fn draw_button(cd: &NMCUSTOMDRAW) {
 
         if is_check {
             fill(hdc, &rc, theme::bg());
-            let side = (rc.bottom - rc.top).clamp(12, 16);
+            // Scaled with the DPI (#896 D2: a fixed 12..16 stayed 16 pixels
+            // at 250%), and never taller than the control.
+            let dpi = dpi_of(h);
+            let side = polter_settings_shell::check_box(dpi, rc.bottom - rc.top);
             let top = rc.top + ((rc.bottom - rc.top) - side) / 2;
             let b = RECT { left: rc.left, top, right: rc.left + side, bottom: top + side };
             fill(hdc, &b, if hot && !disabled { theme::btn_hot() } else { theme::field_bg() });
             frame_rect(hdc, &b, if focus { theme::focus() } else { theme::border() });
             if SendMessageW(h, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))).0 == 1 {
-                let pen = CreatePen(PS_SOLID, 2, COLORREF(fg));
+                let pen = CreatePen(PS_SOLID, (2 * dpi / 96).max(2), COLORREF(fg));
                 let old = SelectObject(hdc, pen.into());
                 let mut pt = POINT::default();
                 let _ = MoveToEx(hdc, b.left + side / 5, b.top + side / 2, Some(&mut pt));
@@ -3302,7 +3619,7 @@ unsafe fn draw_button(cd: &NMCUSTOMDRAW) {
                 SelectObject(hdc, old);
                 let _ = DeleteObject(pen.into());
             }
-            let t = RECT { left: b.right + 8, ..rc };
+            let t = RECT { left: b.right + grid::CHECK_GAP * dpi / 96, ..rc };
             draw_text(hdc, &label, &t, Font::Normal, fg, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
             return;
         }
@@ -3370,7 +3687,10 @@ unsafe fn draw_combo_item(dis: &DRAWITEMSTRUCT) {
 
 /// The messages both procedures answer the same way: colours, custom draw,
 /// the owner-drawn combo.
-unsafe fn common(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
+/// The messages every window holding these controls answers the same way --
+/// colours, the custom-drawn buttons, the owner-drawn combo. `pub(crate)`
+/// because the settings window around this one holds a button too.
+pub(crate) unsafe fn common(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
     unsafe {
         match msg {
             WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN => {
@@ -3432,8 +3752,8 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 }
                 LRESULT(0)
             }
-            WM_ROLES_CLOSE | WM_CLOSE => {
-                close();
+            WM_ROLES_CLOSE => {
+                request_close(win);
                 LRESULT(0)
             }
             WM_ROLES_SAVE => {
@@ -3442,23 +3762,32 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
-                if vk == VK_ESCAPE {
-                    close();
+                if vk.0 == u16::from(b'W') && held(VK_CONTROL) {
+                    request_close(win);
                 } else if vk.0 == u16::from(b'S') && held(VK_CONTROL) {
                     save();
+                } else if (vk == VK_UP || vk == VK_DOWN) && GetFocus() == win {
+                    // Only while the list has the keyboard (a click on it
+                    // gives it); the pane forwards its keys here too, and an
+                    // arrow in the pane is not a request for another role.
+                    step_list(vk == VK_DOWN);
                 }
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {
                 let (x, y) = lparam_xy(lp);
                 let dpi = dpi_of(win);
-                if x < LIST_W * dpi / 96 {
-                    let mut rc = RECT::default();
-                    let _ = GetClientRect(win, &mut rc);
-                    let limit = rc.bottom - (8 + BTN_H + 8) * dpi / 96;
+                let mut rc = RECT::default();
+                let _ = GetClientRect(win, &mut rc);
+                let list = frame_layout(rc.right, rc.bottom, dpi, None, false, false).list;
+                if x < list.right && y < list.bottom {
+                    // The keyboard comes to the list, so ↑ / ↓ go on from
+                    // here (settings.md §2.3a).
+                    let _ = SetFocus(Some(win));
+                    let limit = list.bottom;
                     let hit = ST.with(|c| {
                         let s = c.borrow();
-                        let list = list_rows(&s.model.ed, &s.cat, &s.clis);
+                        let list = shown_rows(&s);
                         role_row_at_y(dpi, s.list_top, list.len(), y, limit).and_then(|i| list[i].key.clone())
                     });
                     if let Some(key) = hit {
@@ -3472,13 +3801,14 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 let mut pt = POINT { x: (lp.0 & 0xFFFF) as i16 as i32, y: ((lp.0 >> 16) & 0xFFFF) as i16 as i32 };
                 let _ = ScreenToClient(win, &mut pt);
                 let dpi = dpi_of(win);
-                if pt.x < LIST_W * dpi / 96 {
-                    let mut rc = RECT::default();
-                    let _ = GetClientRect(win, &mut rc);
-                    let fit = role_rows_fitting(dpi, rc.bottom - (8 + BTN_H + 8) * dpi / 96);
+                let mut rc = RECT::default();
+                let _ = GetClientRect(win, &mut rc);
+                let list = frame_layout(rc.right, rc.bottom, dpi, None, false, false).list;
+                if pt.x < list.right {
+                    let fit = role_rows_fitting(dpi, list.bottom);
                     ST.with(|c| {
                         let s = &mut *c.borrow_mut();
-                        let n = list_rows(&s.model.ed, &s.cat, &s.clis).len();
+                        let n = shown_rows(s).len();
                         let last = n.saturating_sub(fit);
                         let step: i32 = if delta > 0 { -1 } else { 1 };
                         s.list_top = (s.list_top as i32 + step).clamp(0, last as i32) as usize;
@@ -3488,23 +3818,6 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     scroll_pane_by(-delta * 60 * dpi / 96 / 120);
                 }
                 LRESULT(0)
-            }
-            WM_ACTIVATE => {
-                if (wp.0 & 0xFFFF) as u32 != WA_INACTIVE {
-                    // Coming back to the window: the terminal may have taken
-                    // the TSF document meanwhile, and the library may have
-                    // been changed from somewhere else -- a supervisor's
-                    // `role_put`, or the file edited by hand.
-                    crate::ime_focus(false);
-                    let cat = roles::catalog();
-                    with_model(|s| {
-                        s.cat = cat;
-                        s.model.ed.library_changed(&s.cat);
-                        draft_replaced(s);
-                    });
-                    refresh();
-                }
-                DefWindowProcW(win, msg, wp, lp)
             }
             WM_TIMER if wp.0 == TIMER_CLIS => {
                 on_timer();
@@ -3526,12 +3839,6 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 if changed {
                     refresh();
                 }
-                LRESULT(0)
-            }
-            WM_GETMINMAXINFO => {
-                let mmi = &mut *(lp.0 as *mut MINMAXINFO);
-                let dpi = dpi_of(win);
-                mmi.ptMinTrackSize = POINT { x: MIN_W * dpi / 96, y: MIN_H * dpi / 96 };
                 LRESULT(0)
             }
             // The last word after a drag-resize: a size that arrived while
@@ -3558,19 +3865,6 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 );
                 LRESULT(0)
             }
-            WM_DPICHANGED => {
-                make_fonts(dpi_of(win));
-                drop_controls();
-                if let Some(f) = FIXED.with(|c| c.get()) {
-                    for h in f.list_buttons.iter().chain(&f.tabs).chain(&f.footer).chain(std::iter::once(&f.banner_dup)) {
-                        SendMessageW(*h, WM_SETFONT, Some(WPARAM(font(Font::Normal).0 as usize)), Some(LPARAM(1)));
-                    }
-                }
-                let r = &*(lp.0 as *const RECT);
-                let _ = SetWindowPos(win, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
-                refresh();
-                LRESULT(0)
-            }
             // A theme change rebuilds the pane's controls, not only repaints
             // them: whether the combo is owner-drawn is a style fixed at
             // creation, and high contrast has to be able to take it back.
@@ -3585,8 +3879,8 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 paint_main(win);
                 LRESULT(0)
             }
-            // Destroyed rather than hidden, which happens when the terminal
-            // window it is owned by is closed. See `forget_window`.
+            // Destroyed with the settings window, should that ever be
+            // destroyed rather than hidden. See `forget_window`.
             WM_NCDESTROY => {
                 forget_window();
                 DefWindowProcW(win, msg, wp, lp)
@@ -4266,7 +4560,7 @@ mod tests {
         for (w, h, dpi) in [(2560, 1440, 96), (3840, 2160, 192)] {
             let f = frame_layout(w, h, dpi, None, false, true);
             let tabs = f.tabs.unwrap();
-            assert!(tabs[0].bottom <= f.pane.top && f.pane.bottom <= f.footer.unwrap().top);
+            assert!(tabs[0].bottom <= f.pane.top && f.pane.bottom <= f.bottom_rule.top);
             assert!(f.footer_buttons[2].right <= w);
             // The tab bar stays its own width and centred on the pane rather
             // than stretching across a wide screen.
@@ -4337,22 +4631,81 @@ mod tests {
             let f = frame_layout(w, h, dpi, Some(40), true, true);
             let tabs = f.tabs.unwrap();
             let banner = f.banner.unwrap();
-            let footer = f.footer.unwrap();
             assert!(f.error.unwrap().bottom <= banner.top);
             assert!(banner.bottom <= tabs[0].top);
             assert!(tabs[0].bottom <= f.pane.top);
-            assert!(f.pane.bottom <= footer.top);
+            assert!(f.pane.bottom <= f.bottom_rule.top && f.bottom_rule.bottom <= f.band.top);
             assert!(f.pane.bottom - f.pane.top > 100 * dpi / 96, "a pane with room to edit in at {dpi}");
             let [launch, revert, save] = f.footer_buttons;
             assert!(launch.right <= revert.left && revert.right <= save.left && save.right <= w);
             assert!(f.status.right <= launch.left && f.status.left < f.status.right);
-            assert!(f.list_buttons[2].right <= f.list.right);
+            assert!(f.list_buttons[2].right <= f.status.left);
             assert!(tabs[0].right <= tabs[1].left && tabs[2].right <= w);
         }
-        // No role open: no tabs, no footer, and the pane takes the rest.
-        let f = frame_layout(920, 720, 96, None, false, false);
-        assert!(f.tabs.is_none() && f.footer.is_none() && f.banner.is_none());
-        assert_eq!(f.pane.bottom, 720);
+        // No role open: no tabs and no banner, but the bottom band is still
+        // there and the pane stops at its rule (settings.md §2.3a).
+        let f = frame_layout(W0, H0, 96, None, false, false);
+        assert!(f.tabs.is_none() && f.banner.is_none());
+        assert_eq!(f.pane.bottom, f.bottom_rule.top);
+        assert_eq!(f.band.bottom, H0);
+    }
+
+    /// §2.3a: this section's fixed parts are the settings window's grid --
+    /// its bottom rule on the window's row, its list divider from the top
+    /// rule to the bottom rule, + ⧉ − starting where the list's rows'
+    /// text does, and the band's buttons in one row.
+    #[test]
+    fn the_section_sits_on_the_settings_windows_grid() {
+        for dpi in [96, 120, 144, 192] {
+            let (ww, wh) = (1164 * dpi / 96, 761 * dpi / 96);
+            let l = polter_settings_shell::layout(ww, wh, dpi);
+            let (w, h) = (l.content.width(), l.content.height());
+            for has_draft in [true, false] {
+                let f = frame_layout(w, h, dpi, Some(40), true, has_draft);
+                assert_eq!(l.content.top + f.bottom_rule.top, l.bottom_rule.top, "at {dpi}");
+                assert_eq!(l.content.top + f.list_divider.top, l.top_rule.bottom, "at {dpi}");
+                assert_eq!(l.content.top + f.list_divider.bottom, l.bottom_rule.top, "at {dpi}");
+                assert_eq!(f.list.bottom, f.bottom_rule.top, "at {dpi}");
+                assert_eq!(f.list_buttons[0].left, PAD * dpi / 96, "at {dpi}");
+                assert_eq!(f.text_left, f.list_buttons[0].left, "the rows' text starts where + does");
+                assert_eq!(l.content.left + f.text_left, l.content_text_left, "and where the breadcrumb does");
+                for b in f.list_buttons.iter().chain(f.footer_buttons.iter()) {
+                    assert_eq!((b.top, b.bottom), (f.list_buttons[0].top, f.list_buttons[0].bottom), "at {dpi}");
+                }
+                assert!(f.pane.bottom <= f.bottom_rule.top, "at {dpi}");
+            }
+        }
+    }
+
+    /// §2.3a: the form has two left edges, the margin and the control
+    /// column. Every field, check box, drop-down and the notes under them
+    /// start on the control column; headings and the instructions box on
+    /// the margin; nothing anywhere else.
+    #[test]
+    fn the_form_has_two_left_edges() {
+        let dpi = 96;
+        let laid = basics_laid(dpi, 700);
+        let margin = PAD;
+        let control = PAD + CONTROL_COL;
+        // Headings on the margin.
+        let headings: Vec<i32> =
+            laid.cells.iter().filter(|p| matches!(&p.kind, Kind::Text { font: Font::Bold, .. })).map(|p| p.rect.left).collect();
+        assert!(headings.len() >= 3 && headings.iter().all(|&x| x == margin), "{headings:?}");
+        // Labels end where the control column's gap begins.
+        for p in laid.cells.iter().filter(|p| matches!(&p.kind, Kind::Text { right: true, .. })) {
+            assert_eq!((p.rect.left, p.rect.right), (margin, margin + LABEL_W), "{:?}", p.kind);
+        }
+        // The notes under the controls. (A small warning beside a check
+        // box starts after it, right of the control column.)
+        for p in laid.cells.iter().filter(|p| matches!(&p.kind, Kind::Text { font: Font::Small, .. }) && p.rect.left <= control) {
+            assert!(p.rect.left == margin || p.rect.left == control, "{:?} at {}", p.kind, p.rect.left);
+        }
+        for key in ["sup", "auth", "shield", "watch", "quiet", "open", "cli:claude", "name", "summary"] {
+            let p = laid.cells.iter().find(|p| p.key == key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!(p.rect.left, control, "{key}");
+        }
+        let instr = laid.cells.iter().find(|p| p.key == "instr").unwrap();
+        assert_eq!(instr.rect.left, margin);
     }
 
     #[test]
@@ -4377,5 +4730,30 @@ mod tests {
         assert_eq!(parse_minutes("0"), Some(60_000));
         assert_eq!(parse_minutes("999"), Some(240 * 60_000));
         assert_eq!(parse_minutes(""), None);
+    }
+
+    fn listed(key: Option<&str>, title: &str) -> ListRow {
+        ListRow {
+            key: key.map(str::to_string),
+            title: title.to_string(),
+            subtitle: String::new(),
+            builtin: false,
+            unsaved: false,
+            selected: false,
+        }
+    }
+
+    /// The settings window's search narrows this list (settings.md §2.3) by
+    /// the rule the jump to this section uses, so the jump never lands on a
+    /// list that then hides every match.
+    #[test]
+    fn the_search_narrows_the_list_by_name_or_key_and_keeps_a_new_role() {
+        let rows = vec![listed(None, "New Role"), listed(Some("reviewer"), "审查员"), listed(Some("dev"), "Developer")];
+        let keys = |q: &str| filtered_rows(rows.clone(), q).into_iter().map(|r| r.key).collect::<Vec<_>>();
+        assert_eq!(keys("审查"), vec![None, Some("reviewer".to_string())]);
+        assert_eq!(keys("REVIEW"), vec![None, Some("reviewer".to_string())]);
+        assert_eq!(keys("devel"), vec![None, Some("dev".to_string())]);
+        assert_eq!(keys("zzz"), vec![None]);
+        assert_eq!(keys("").len(), 3);
     }
 }

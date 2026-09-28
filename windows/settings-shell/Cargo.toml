@@ -1,0 +1,14 @@
+[package]
+name = "polter-settings-shell"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# No dependencies, on purpose -- the reason `projectname` has none.
+#
+# The settings window's rules -- which section a route opens, when leaving
+# asks first, how big the window opens and whether a remembered rectangle is
+# still on a screen -- are decided here and only drawn in `polter-host`.
+# That crate's tests cannot run off Windows, so a rule left inside it could
+# be broken on the Mac with every check green.
+[dependencies]
