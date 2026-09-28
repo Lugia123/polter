@@ -582,7 +582,7 @@ class AppDelegate: NSObject,
         // terminals are: they are lost on quit whatever the terminals say,
         // and "no running process" must not wave them through (#896 D3).
         // After the shutdown check above, so a shutdown is never held up.
-        if !SettingsWindowController.shared.mayQuit() { return .terminateCancel }
+        if !SettingsWindowController.shared.mayQuit() { return cancelTermination() }
 
         // If our app says we don't need to confirm, we can exit now.
         if !ghostty.needsConfirmQuit { return .terminateNow }
