@@ -720,8 +720,7 @@ const tools = [_]Tool{
             "on a split comes back refused, saying so; set_watch it once terminal_list " ++
             "shows it. A tab you did not ask for carries `fallback` (why) and " ++
             "`fallback_kind`: cannot (what you asked for could not be done -- worth " ++
-            "reporting for here), timing (ask again shortly) or deliberate (auto keeping " ++
-            "out of a tab the person arranged; here does not). For a tab, `id` is there " ++
+            "reporting for here) or timing (ask again shortly). For a tab, `id` is there " ++
             "when it was ready before the call returned; when it is missing terminal_list " ++
             "will have it in a moment. **What you get is a shell " ++
             "in that directory with nothing running in it**, so whatever should " ++
@@ -747,7 +746,8 @@ const tools = [_]Tool{
             "decided in one place rather than recomputed by every supervisor. " ++
             "`auto` is the default and is what you want unless you have a reason -- " ++
             "it puts the terminal beside you while there is room in your tab, and in " ++
-            "a new tab once there is not. ⚠️ **Not passing `place` means `auto`, not " ++
+            "a new tab once there is not; terminals the person opened in your tab are " ++
+            "left where they are and do not use up the room. ⚠️ **Not passing `place` means `auto`, not " ++
             "`tab`**: if you need a terminal that is *not* in with the others -- a long " ++
             "build whose scrollback should not share a screen, something the person " ++
             "will want on its own -- you have to ask for `tab`, and asking for it is a " ++
@@ -755,7 +755,7 @@ const tools = [_]Tool{
             "split in your own tab, which falls back to a tab when there is no room " ++
             "and says so in the log.",
         .schema =
-        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"},"place":{"type":"string","enum":["auto","tab","here"],"description":"Defaults to auto: beside you while there is room, a new tab once there is not. tab is a guarantee of its own tab; here asks for a split in your tab, even beside terminals you did not open, and the reply says when it could not."}},"required":["cwd"]}
+        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"},"place":{"type":"string","enum":["auto","tab","here"],"description":"Defaults to auto: beside you while there is room, a new tab once there is not. tab is a guarantee of its own tab; here asks for a split in your tab, and the reply says when it could not. Terminals in your tab that are not your workers are left alone and not counted, under auto and here alike."}},"required":["cwd"]}
         ,
     },
     .{

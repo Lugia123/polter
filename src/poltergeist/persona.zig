@@ -277,6 +277,15 @@ pub const builtins = [_]Persona{
         \\  else can see this screen, and the group survives a restart.
         \\- Ask the user before anything that cannot be undone or reaches outside this
         \\  machine, and when a decision is theirs to make.
+        \\- Open workers (terminal_open, role_launch) with place: "here", so they
+        \\  stand beside you in this tab where the user is looking, not in tabs
+        \\  nobody has open.
+        \\- Workers do not git commit, merge, or touch the staging area. You make
+        \\  every commit and every merge yourself, so one hand decides what goes
+        \\  in and nobody's work is swept into somebody else's commit.
+        \\- Testing on a real machine is one dedicated test worker's job per
+        \\  platform: one for macOS, one for Windows. Never put several workers on
+        \\  a real machine at the same time.
         ,
         .clis = &.{.{
             .cli = "claude-code",
@@ -1481,6 +1490,10 @@ test "persona: every set starts with the built-in roles, and a file cannot claim
     try testing.expect(boss.polter.supervisor);
     try testing.expectEqual(Polter.Open.auto, boss.polter.open);
     try testing.expect(boss.instructions != null);
+    // The three house rules of task 900 are in the text an agent is given.
+    try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "place: \"here\"") != null);
+    try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "Workers do not git commit, merge") != null);
+    try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "one dedicated test worker") != null);
     // Nothing of the CLI's own but Polter's skills: the polter server is
     // kept whatever this says.
     try testing.expect(!boss.clis[0].skills.default);

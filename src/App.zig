@@ -216,18 +216,26 @@ poltergeist_feed: poltergeistpkg.Feed,
 /// ones somebody calls an archive; see `startResident`.
 poltergeist_residents: std.ArrayListUnmanaged(*poltergeistpkg.Resident) = .empty,
 
-/// The last worker terminal each supervisor opened, by `Surface.id`.
+/// The worker terminals each supervisor has split off, oldest first, by
+/// `Surface.id`.
 ///
-/// **An identity, not a count and not a position.** The second and third
-/// workers are placed by splitting the previous one downwards, so this has to
-/// name a surface. It names it by id because that can be looked up: when the
-/// person has closed that pane, `findSurfaceByID` fails and the placement
-/// says so. An ordinal would still be a number after the pane it counted was
-/// gone, and the wrong placement it produced would look exactly like the
-/// right one.
-poltergeist_last_worker: std.AutoHashMapUnmanaged(
+/// **Identities, not a count and not a position.** The second and third
+/// workers are placed by splitting the previous one downwards, so the last
+/// entry has to name a surface. It names it by id because that can be looked
+/// up: when the person has closed that pane, `findSurfaceByID` fails and the
+/// placement says so. An ordinal would still be a number after the pane it
+/// counted was gone, and the wrong placement it produced would look exactly
+/// like the right one.
+///
+/// **The whole list, not only the last one, because the column is counted
+/// from it** (task 900). The tab's pane count includes terminals the person
+/// opened themselves, and those are neither in the column nor in the way of
+/// it: "three workers, the column is full" has to count ours and nothing
+/// else. A closed worker stays in the list and is not counted -- only a
+/// surface that can still be found in the supervisor's tab is.
+poltergeist_workers: std.AutoHashMapUnmanaged(
     poltergeistpkg.Bus.Id,
-    poltergeistpkg.Bus.Id,
+    std.ArrayListUnmanaged(poltergeistpkg.Bus.Id),
 ) = .empty,
 
 /// A split that has been asked for and whose terminal has not appeared yet.
@@ -420,7 +428,11 @@ pub fn deinit(self: *App) void {
     // has to have stopped before the rest of this runs.
     for (self.poltergeist_residents.items) |archive| archive.destroy();
     self.poltergeist_residents.deinit(self.alloc);
-    self.poltergeist_last_worker.deinit(self.alloc);
+    {
+        var it = self.poltergeist_workers.valueIterator();
+        while (it.next()) |list| list.deinit(self.alloc);
+        self.poltergeist_workers.deinit(self.alloc);
+    }
     if (self.poltergeist_pending_worker) |*p| p.deinit(self.alloc);
 
     // After them, and that order is the whole of it: each archive gives
@@ -3860,7 +3872,7 @@ fn poltergeistSettlePendingWorker(self: *App, alloc: Allocator) Allocator.Error!
     const now = try self.poltergeistSeen(alloc);
     defer alloc.free(now);
     if (pending.attribute(now, &.{})) |id| {
-        self.poltergeist_last_worker.put(self.alloc, pending.by, id) catch {};
+        self.poltergeistRecordWorker(pending.by, id);
         self.poltergeist_pending_worker = null;
         pending.deinit(self.alloc);
         return;
@@ -4135,12 +4147,12 @@ const WorkerPlacement = enum {
     new_tab,
 
     /// `panes` is how many terminals share the supervisor's tab, as the apprt
-    /// counted them; zero means it did not answer. `have_last_worker` is
-    /// whether this supervisor has a worker in that tab that is still open.
+    /// counted them; zero means it did not answer. `ours` is how many of
+    /// them are this supervisor's workers (`WorkerColumn`), and
+    /// `have_last_worker` whether the newest of those is one of them.
     /// `unsettled` is whether a split this supervisor asked for has not
-    /// produced its terminal yet. `named` is whether the caller named this
-    /// tab (`place: here`) rather than leaving the choice to this (`auto`).
-    fn decide(panes: u32, have_last_worker: bool, unsettled: bool, named: bool) WorkerPlacement {
+    /// produced its terminal yet.
+    fn decide(panes: u32, ours: u32, have_last_worker: bool, unsettled: bool) WorkerPlacement {
         // ⚠️ **A count that a queued operation has not reached yet is not a
         // count of anything.** The apprt performs splits on its own thread,
         // so two calls close together are both answered with the number from
@@ -4154,19 +4166,53 @@ const WorkerPlacement = enum {
         if (unsettled) return .new_tab;
 
         if (panes == 0) return .new_tab;
-        const workers = panes - 1;
-        if (workers == 0) return .beside_supervisor;
         // The fourth worker wants a second column, which means splitting a
-        // subtree, and no action can express that today.
-        if (workers >= 3) return .new_tab;
-        // Panes are here that this did not put here: the person split the tab
-        // themselves, and their layout is not ours to rearrange -- unless the
-        // caller named this tab. The caution's real premise is "nobody said
-        // which tab", and `here` says; so `here` splits beside the caller
-        // anyway (issue #17). `auto` keeps the caution, pinned by the test
-        // "the worker budget".
-        if (!have_last_worker) return if (named) .beside_supervisor else .new_tab;
+        // subtree, and no action can express that today. **Ours only**: the
+        // person's own terminals are not in the column and do not fill it.
+        if (ours >= 3) return .new_tab;
+        // None of ours here: the first worker goes beside the supervisor,
+        // whatever else the person has open in this tab (task 900). Their
+        // panes are left where they are -- this splits the supervisor's own
+        // pane and nothing else.
+        if (ours == 0) return .beside_supervisor;
+        if (!have_last_worker) return .new_tab;
         return .below_last_worker;
+    }
+};
+
+/// This supervisor's workers as the placement sees them: how many are in its
+/// tab now, and whether the newest is one of them.
+///
+/// **Split out for the same reason as `WorkerPlacement`**: counting "ours,
+/// and only ours" is the half of task 900 that a count of panes cannot do,
+/// and it is tested here without a window system.
+const WorkerColumn = struct {
+    count: u32,
+    last_here: bool,
+
+    /// `workers` is the supervisor's list, oldest first; `now` is every
+    /// surface but the chat; `tab` is the supervisor's tab. A worker counts
+    /// when it is still open and in that tab -- one the person closed or
+    /// dragged elsewhere is not in the column any more.
+    fn of(workers: []const poltergeistpkg.Bus.Id, now: []const Seen, tab: ?u64) WorkerColumn {
+        var out: WorkerColumn = .{ .count = 0, .last_here = false };
+        for (workers, 0..) |w, i| {
+            const here = for (now) |seen| {
+                if (seen.id == w) break sameTab(seen.tab, tab);
+            } else false;
+            if (!here) continue;
+            out.count += 1;
+            if (i == workers.len - 1) out.last_here = true;
+        }
+        return out;
+    }
+
+    /// Null is "the apprt did not say", and two of those are the same tab
+    /// only in the sense that nothing tells them apart.
+    fn sameTab(a: ?u64, b: ?u64) bool {
+        const x = a orelse return b == null;
+        const y = b orelse return false;
+        return x == y;
     }
 };
 
@@ -4175,57 +4221,106 @@ test "the worker budget" {
     const settled = false;
 
     // Nobody answered: a tab, whatever else is true.
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(0, false, settled, false));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(0, true, settled, false));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(0, 0, false, settled));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(0, 1, true, settled));
 
     // The supervisor alone: the first worker goes beside it.
     try testing.expectEqual(
         WorkerPlacement.beside_supervisor,
-        WorkerPlacement.decide(1, false, settled, false),
-    );
-    // ...and a remembered worker cannot exist yet, but must not change this.
-    try testing.expectEqual(
-        WorkerPlacement.beside_supervisor,
-        WorkerPlacement.decide(1, true, settled, false),
+        WorkerPlacement.decide(1, 0, false, settled),
     );
 
     // Second and third grow the column.
     try testing.expectEqual(
         WorkerPlacement.below_last_worker,
-        WorkerPlacement.decide(2, true, settled, false),
+        WorkerPlacement.decide(2, 1, true, settled),
     );
     try testing.expectEqual(
         WorkerPlacement.below_last_worker,
-        WorkerPlacement.decide(3, true, settled, false),
+        WorkerPlacement.decide(3, 2, true, settled),
     );
 
-    // **The same counts, with nothing of ours in the tab, are somebody
-    // else's layout.** This is the pair that would go unnoticed if the
-    // budget only looked at the count.
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(2, false, settled, false));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(3, false, settled, false));
-
     // The fourth worker onwards: a tab, until a subtree can be split.
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(4, true, settled, false));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(9, true, settled, false));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(4, 3, true, settled));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(9, 8, true, settled));
+
+    // The newest worker is gone and others of ours are still here: which
+    // pane replaced it is a guess this does not make.
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(3, 2, false, settled));
 }
 
-test "here splits into a tab the person arranged, and auto still does not" {
+test "the person's own terminals are neither avoided nor counted (task 900)" {
     const testing = std.testing;
+    const settled = false;
 
-    // Two terminals the person put here, none of them ours. `auto` keeps its
-    // caution; `here` named this tab, so the caution's premise ("nobody said
-    // which tab") does not hold (issue #17).
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(2, false, false, false));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(3, false, false, false));
-    try testing.expectEqual(WorkerPlacement.beside_supervisor, WorkerPlacement.decide(2, false, false, true));
-    try testing.expectEqual(WorkerPlacement.beside_supervisor, WorkerPlacement.decide(3, false, false, true));
+    // One terminal the person opened, none of ours: the first worker goes
+    // beside the supervisor all the same. This used to be a tab
+    // (`not_our_layout`) under `auto`.
+    try testing.expectEqual(
+        WorkerPlacement.beside_supervisor,
+        WorkerPlacement.decide(2, 0, false, settled),
+    );
+    try testing.expectEqual(
+        WorkerPlacement.beside_supervisor,
+        WorkerPlacement.decide(4, 0, false, settled),
+    );
 
-    // Naming the tab does not make room that is not there, nor a count
-    // that cannot be trusted.
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(4, false, false, true));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(0, false, false, true));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(2, false, true, true));
+    // The person's terminal and a worker of ours: the next grows our column.
+    try testing.expectEqual(
+        WorkerPlacement.below_last_worker,
+        WorkerPlacement.decide(3, 1, true, settled),
+    );
+    // **The pair a pane count cannot tell apart.** Five panes is "four
+    // workers, a tab" if the person's two are counted, and "two workers,
+    // room for one more" if they are not.
+    try testing.expectEqual(
+        WorkerPlacement.below_last_worker,
+        WorkerPlacement.decide(5, 2, true, settled),
+    );
+
+    // Three of ours fill the column whatever else is here.
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(5, 3, true, settled));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(4, 3, true, settled));
+}
+
+test "only this supervisor's open workers in its tab are counted" {
+    const testing = std.testing;
+    const tab: ?u64 = 7;
+
+    // The supervisor (1), the person's own terminal (5), two workers (2, 3).
+    const now = [_]Seen{
+        .{ .id = 1, .tab = 7 },
+        .{ .id = 5, .tab = 7 },
+        .{ .id = 2, .tab = 7 },
+        .{ .id = 3, .tab = 7 },
+    };
+    const two = WorkerColumn.of(&.{ 2, 3 }, &now, tab);
+    try testing.expectEqual(@as(u32, 2), two.count);
+    try testing.expect(two.last_here);
+
+    // None of ours yet: the person's terminal is not counted.
+    const none = WorkerColumn.of(&.{}, &now, tab);
+    try testing.expectEqual(@as(u32, 0), none.count);
+    try testing.expect(!none.last_here);
+
+    // The newest (9) was closed; the others still count.
+    const gone = WorkerColumn.of(&.{ 2, 3, 9 }, &now, tab);
+    try testing.expectEqual(@as(u32, 2), gone.count);
+    try testing.expect(!gone.last_here);
+
+    // A worker the person moved to another tab is not in this column.
+    const moved = [_]Seen{
+        .{ .id = 1, .tab = 7 },
+        .{ .id = 2, .tab = 8 },
+        .{ .id = 3, .tab = 7 },
+    };
+    const one = WorkerColumn.of(&.{ 2, 3 }, &moved, tab);
+    try testing.expectEqual(@as(u32, 1), one.count);
+    try testing.expect(one.last_here);
+
+    // An apprt that says nothing about tabs: every open worker counts.
+    const blind = [_]Seen{ .{ .id = 1, .tab = null }, .{ .id = 2, .tab = null } };
+    try testing.expectEqual(@as(u32, 1), WorkerColumn.of(&.{2}, &blind, null).count);
 }
 
 test "a count the queue has not reached yet is not placed on" {
@@ -4236,19 +4331,19 @@ test "a count the queue has not reached yet is not placed on" {
     // two calls close together are both answered with the number from before
     // the first ran. Measured on the real machine as a cap of four back to
     // back, and three when the calls were three seconds apart.
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(1, false, true, false));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(2, true, true, false));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(3, true, true, false));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(1, 0, false, true));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(2, 1, true, true));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(3, 2, true, true));
 
     // And the same numbers, once the terminal has appeared, place as before:
     // the rule is about not knowing, not about being cautious.
     try testing.expectEqual(
         WorkerPlacement.beside_supervisor,
-        WorkerPlacement.decide(1, false, false, false),
+        WorkerPlacement.decide(1, 0, false, false),
     );
     try testing.expectEqual(
         WorkerPlacement.below_last_worker,
-        WorkerPlacement.decide(2, true, false, false),
+        WorkerPlacement.decide(2, 1, true, false),
     );
 }
 
@@ -4273,13 +4368,20 @@ const WorkerSpot = union(enum) {
     tab: poltergeistpkg.rpc.TabWhy,
 };
 
+/// Add `id` to the end of `by`'s workers. See `poltergeist_workers`.
+fn poltergeistRecordWorker(self: *App, by: poltergeistpkg.Bus.Id, id: poltergeistpkg.Bus.Id) void {
+    const entry = self.poltergeist_workers.getOrPut(self.alloc, by) catch return;
+    if (!entry.found_existing) entry.value_ptr.* = .empty;
+    entry.value_ptr.append(self.alloc, id) catch {};
+}
+
 fn poltergeistPlaceWorker(
     self: *App,
+    alloc: Allocator,
     rt_app: *apprt.App,
     surface: *Surface,
     by: poltergeistpkg.Bus.Id,
-    place: poltergeistpkg.rpc.Placement,
-) WorkerSpot {
+) Allocator.Error!WorkerSpot {
     // **The question only the apprt can answer.** Zero comes back when it did
     // not answer at all -- no apprt writes zero, because a tab holding this
     // surface holds at least it.
@@ -4296,13 +4398,19 @@ fn poltergeistPlaceWorker(
     // still names something after the pane it counted has gone, and the wrong
     // placement it produces looks exactly like the right one. A `Surface.id`
     // can be looked up, and a lookup that fails is an answer.
-    const last = self.poltergeist_last_worker.get(by);
-    const target_alive: ?*Surface = if (last) |l| self.findSurfaceByID(l) else null;
+    const workers: []const poltergeistpkg.Bus.Id = if (self.poltergeist_workers.get(by)) |l| l.items else &.{};
+    const now = try self.poltergeistSeen(alloc);
+    defer alloc.free(now);
+    const column = WorkerColumn.of(workers, now, poltergeistTabOf(surface));
+    const target_alive: ?*Surface = if (column.last_here) self.findSurfaceByID(workers[workers.len - 1]) else null;
 
     const unsettled = if (self.poltergeist_pending_worker) |p| p.by == by else false;
 
-    switch (WorkerPlacement.decide(panes, target_alive != null, unsettled, place == .here)) {
+    switch (WorkerPlacement.decide(panes, column.count, target_alive != null, unsettled)) {
         .beside_supervisor => {
+            // None of ours is left in this tab, so whatever the list still
+            // names is closed or elsewhere: the new worker starts it again.
+            if (self.poltergeist_workers.getPtr(by)) |l| l.clearRetainingCapacity();
             // Nothing is rearranged, so no surface is rebuilt.
             return .{ .split = .{ .target = surface, .direction = .right } };
         },
@@ -4329,7 +4437,7 @@ fn poltergeistPlaceWorker(
                     .{},
                 );
                 return .{ .tab = .no_pane_count };
-            } else if (panes - 1 >= 3) {
+            } else if (column.count >= 3) {
                 log.info(
                     // ⚠️ **The ordinal used to be the word "fourth" while the
                     // count beside it was live**, so a stale count read as
@@ -4337,33 +4445,26 @@ fn poltergeistPlaceWorker(
                     // a sentence arguing with itself, and the only thing in
                     // the log that could have shown the count was wrong.
                     // Both halves say the same thing now.
-                    "poltergeist: falling back to a tab -- {d} workers already here, and " ++
-                        "number {d} would need a second column, which means splitting a " ++
-                        "subtree (not possible today)",
-                    .{ panes - 1, panes },
+                    "poltergeist: falling back to a tab -- {d} of this supervisor's workers " ++
+                        "already here ({d} terminals in the tab), and number {d} would need " ++
+                        "a second column, which means splitting a subtree (not possible today)",
+                    .{ column.count, panes, column.count + 1 },
                 );
                 return .{ .tab = .column_full };
-            } else if (last == null) {
-                log.info(
-                    "poltergeist: falling back to a tab -- this tab has {d} terminals that " ++
-                        "were not opened as workers, and rearranging somebody's own layout " ++
-                        "is not what they asked for",
-                    .{panes - 1},
-                );
-                return .{ .tab = .not_our_layout };
             } else {
-                // The last worker has been closed. **Appending, not filling
-                // the hole**: which pane is a "hole" depends on what the
-                // person did after it closed, so the same sequence would stop
-                // producing the same layout -- and a criterion that reads the
-                // shape could no longer be stated. The gap stays until
-                // something rearranges the tree.
+                // The last worker has been closed, or moved out of this tab,
+                // while others of ours are still here. **Appending, not
+                // filling the hole**: which pane is a "hole" depends on what
+                // the person did after it closed, so the same sequence would
+                // stop producing the same layout -- and a criterion that reads
+                // the shape could no longer be stated. The gap stays until
+                // something rearranges the tree, and the column starts again
+                // once none of ours is left in it.
                 log.info(
                     "poltergeist: the last worker is gone; falling back to a tab rather " ++
                         "than guessing which pane replaced it",
                     .{},
                 );
-                _ = self.poltergeist_last_worker.remove(by);
                 return .{ .tab = .last_worker_gone };
             }
         },
@@ -4425,7 +4526,7 @@ fn poltergeistOpenTerminal(
         // ask. So it never reaches the budget at all.
         if (place == .tab) break :placed .{ .tab = .asked };
 
-        const where = switch (self.poltergeistPlaceWorker(rt_app, surface, by, place)) {
+        const where = switch (try self.poltergeistPlaceWorker(alloc, rt_app, surface, by)) {
             .split => |w| w,
             .tab => |why| {
                 // **`here` was asked for and did not happen, and that is worth a
@@ -4468,7 +4569,7 @@ fn poltergeistOpenTerminal(
             const now = try self.poltergeistSeen(alloc);
             defer alloc.free(now);
             switch (try PendingWorker.afterSplit(self.alloc, by, target_tab, &before, now, &.{})) {
-                .appeared => |id| self.poltergeist_last_worker.put(self.alloc, by, id) catch {},
+                .appeared => |id| self.poltergeistRecordWorker(by, id),
                 .pending => |p| {
                     if (self.poltergeist_pending_worker) |*old_pending| old_pending.deinit(self.alloc);
                     self.poltergeist_pending_worker = p;

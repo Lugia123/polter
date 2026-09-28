@@ -2375,10 +2375,9 @@ test "where a terminal went, and why it went to a tab, reach the caller" {
         try testing.expect(std.mem.indexOf(u8, text, kind) != null);
     }
 
-    // The three kinds a caller acts on differently.
+    // The kinds a caller acts on differently.
     try testing.expectEqual(TabWhy.Kind.cannot, TabWhy.column_full.kind());
     try testing.expectEqual(TabWhy.Kind.timing, TabWhy.last_worker_pending.kind());
-    try testing.expectEqual(TabWhy.Kind.deliberate, TabWhy.not_our_layout.kind());
 }
 
 test "a terminal opened to be minded is claimed on the way" {
@@ -4510,7 +4509,9 @@ pub const TaskPage = struct {
 pub const Placement = enum {
     /// Let Poltergeist decide: beside the caller while there is room in its
     /// tab, a new tab once there is not. The default, and what a supervisor
-    /// wants unless it has a reason.
+    /// wants unless it has a reason. Terminals in that tab that are not the
+    /// caller's workers are left where they are and do not count against the
+    /// room (task 900).
     auto,
 
     /// A new tab, always.
@@ -4524,13 +4525,12 @@ pub const Placement = enum {
 
     /// A split in the caller's own tab.
     ///
-    /// Unlike `auto`, it splits even when the tab holds terminals that were
-    /// not opened as workers: the caller named this tab, so keeping the
-    /// person's layout intact is not a reason to go elsewhere
-    /// (`TabWhy.not_our_layout` is for `auto` only). It still falls back to a
-    /// tab when it cannot split, and the reply says so and why
-    /// (`Placed.tab`) -- **a fallback that was silent would read as "here"
-    /// having worked**, and did (issue #17).
+    /// Placed by the same rule as `auto` -- since task 900 `auto` no longer
+    /// keeps out of a tab the person arranged, so the two agree -- but it is
+    /// the caller naming its tab, and a tab instead is logged as `here` not
+    /// honoured. It falls back to a tab when it cannot split, and the reply
+    /// says so and why (`Placed.tab`) -- **a fallback that was silent would
+    /// read as "here" having worked**, and did (issue #17).
     here,
 };
 
@@ -4546,7 +4546,7 @@ pub const Placed = union(enum) {
     tab: TabWhy,
 };
 
-/// Why a terminal went into a tab. One code per reason, grouped into three
+/// Why a terminal went into a tab. One code per reason, grouped into the
 /// kinds a caller acts on differently -- see `Kind`.
 pub const TabWhy = enum {
     /// The caller asked for `tab`.
@@ -4571,11 +4571,6 @@ pub const TabWhy = enum {
     /// it is a guess this does not make.
     last_worker_gone,
 
-    // -- deliberate: a split was possible and was not made on purpose.
-    /// `auto` only: the tab holds terminals the person arranged, and
-    /// rearranging them is not what `auto` was asked for.
-    not_our_layout,
-
     pub const Kind = enum {
         /// Not a fallback: what was asked for.
         asked,
@@ -4584,8 +4579,6 @@ pub const TabWhy = enum {
         cannot,
         /// Worth asking again in a moment.
         timing,
-        /// On purpose; `terminal_layout` places a pane exactly.
-        deliberate,
     };
 
     pub fn kind(self: TabWhy) Kind {
@@ -4593,7 +4586,6 @@ pub const TabWhy = enum {
             .asked => .asked,
             .no_pane_count, .column_full, .split_refused, .split_failed => .cannot,
             .last_worker_pending, .last_worker_gone => .timing,
-            .not_our_layout => .deliberate,
         };
     }
 };

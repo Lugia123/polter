@@ -145,14 +145,16 @@ terminal_open(cwd="C:\PerfLogs",      place="tab")   ← 不带空格
 日志里 `[action] new_tab cwd=(inherited)`、**并且没有 `starting in` 那一行**——
 那一行只属于「有人指定了目录」的情形。
 
-## 3. 四处回落，各自要有那一行
+## 3. 三处回落，各自要有那一行
 
 | 怎么造 | 日志里那句 |
 |---|---|
 | 在 Linux/GTK 上开 worker | `this apprt would not split into …`（GTK 给不了目录 ⇒ 不分屏） |
 | apprt 答不出「几格」 | `this apprt does not say how full a tab is` |
-| 先手动 `Ctrl+Shift+E` 分一屏，再让总管开 worker | `this tab has N terminals that were not opened as workers…` |
 | 开 2 个 worker、**关掉第 2 个**、再开一个 | `the last worker is gone; falling back to a tab rather than guessing which pane replaced it` |
+
+「先手动 `Ctrl+Shift+E` 分一屏，再让总管开 worker」**已不是回落**（task 900）：worker 照常切总管
+那一格往右，用户自己那格不动、也不算进「满三个」。
 
 ⚠️ **最后一条是「有洞」那一格，它的行为是刻意的**：不填洞、不猜，退到新 tab。
 **右列会留一个空位**——**这是这一版的已知形状，不是缺陷。** 填洞需要「洞在哪」的概念，

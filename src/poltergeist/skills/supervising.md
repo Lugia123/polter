@@ -196,6 +196,20 @@ Good — same length, but it can be finished and you can tell from outside:
     constraints: do not change the test's assertions.
     report: post the run count.
 
+Three house rules go with every assignment, and each has a reason:
+
+- **Open the worker with `place: "here"`.** It lands beside you, in the tab
+  the user is looking at. A worker in a tab nobody has open is one whose stall
+  nobody sees.
+- **Workers do not commit, merge or stage.** Workers share trees, and a
+  `git add` or `git commit` in one of them sweeps up whatever another has
+  half-written. Commits and merges are yours, made once a piece has been
+  checked — one hand deciding what goes in.
+- **One test worker per real machine.** A test on a real machine drives the
+  one screen, keyboard and focus that machine has; two workers on it at once
+  type into each other's windows and read each other's results. One for
+  macOS, one for Windows, and everybody else hands their build to that one.
+
 ## The panel: what was handed out, so it survives the night
 
 A `terminal_send` scrolls off and gets compacted away. By 3am the worker no
@@ -471,6 +485,8 @@ Any terminal, another supervisor or yourself; only you can ask it.
 **You no longer say where a terminal goes, and you no longer need to.**
 `terminal_open` places workers itself: the first three go beside you, as a
 column to your right, and once that column is full the rest go into tabs.
+Terminals the person opened in your tab do not change that: they are left
+where they are, and only your own workers count towards the three.
 Asking for a position was never possible and is now not needed — the budget
 lives in one place instead of being recomputed by every supervisor, which is
 how six supervisors used to arrive at six different layouts.
@@ -479,7 +495,9 @@ how six supervisors used to arrive at six different layouts.
 have to read what came out, because a placement that went wrong looks exactly
 like one that went right from inside a tool reply. What to expect today:
 
-- Workers 1–3: beside you, top to bottom, with you on the left.
+- Workers 1–3: beside you, top to bottom, with you on the left — the first
+  splits your own pane to the right, the next two go under the one before.
+  The person's own panes in that tab stay as they were and are not counted.
 - Worker 4 onward: **a new tab**. The host log says so and says why — a
   fourth would need a second column beside the whole first one, and the
   automatic placement only ever splits a single pane.
@@ -501,8 +519,10 @@ session the person will want to look at on its own, anything you would not
 want three of your workers wedged in next to. It is a guarantee: `tab` never
 becomes a split.
 
-`here` is the opposite: put it beside me. It falls back to a tab when there
-is no room, and the log says both that it fell back and why.
+`here` is the opposite: put it beside me. It is placed exactly as `auto`
+is, and it is what to pass when opening a worker, because it says what you
+mean. It falls back to a tab when there is no room, and the log says both
+that it fell back and why.
 
 ⚠️ **The old rule of thumb "twelve workers should be two tabs" is wrong now**
 and would have you report a defect that is not one. With three workers to a
