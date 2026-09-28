@@ -260,8 +260,8 @@
 "Saves this tab: %@ pane(s)" = "将存下当前标签页的 %@ 个面板";
 
 /* 角色 —— 一个终端里的 agent 手上有哪些工具、技能、开场提示词 */
-"Role (beta)" = "角色（beta）";
-"Role (beta): %@" = "角色（beta）：%@";
+"Role" = "角色";
+"Role: %@" = "角色：%@";
 "No Role" = "不设角色";
 "No roles are defined" = "还没有定义任何角色";
 "%@ (modified)" = "%@（已改）";
@@ -407,3 +407,15 @@
 "Restore" = "恢复";
 "\"%@\" goes back to its layout before the last change. The current version is kept, so doing this again undoes it." = "“%@”将回到上一次改动之前的布局。当前版本会保留下来，再做一次就能撤销。";
 "Restore Previous Version" = "恢复上一版";
+
+/* 设置窗口（dev-docs/poltergeist/settings.md） */
+"Polter Settings" = "Polter 设置";
+"Roles" = "角色";
+"Projects" = "项目";
+"General" = "通用";
+"Save your changes?" = "保存修改吗？";
+"Coming in a later update." = "将在后续版本提供。";
+"Open config file…" = "打开配置文件…";
+"Pick an agent CLI under Basics to launch this role." = "先在「基本信息」里选一个 agent CLI，才能用这个角色启动。";
+"No matching roles" = "没有匹配的角色";
+"%@ (not in the search results)" = "%@（不在搜索结果里）";

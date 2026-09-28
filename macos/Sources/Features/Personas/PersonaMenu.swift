@@ -106,19 +106,16 @@ enum PersonaMenu {
     /// exactly alike". The submenu still ticks the stored persona, because
     /// the terminal still *has* it; what stops is the parent item claiming
     /// the terminal *is* it.
-    /// **0.7's roles feature is not finished** (roles.md is still marked
-    /// draft), so every entry point the user can reach it from says so --
-    /// task 666. `(beta)` is its own translatable text rather than a literal
-    /// appended after the fact: it sits inside the localized string itself,
-    /// the same way `%@` does, so a translator controls its wording and
-    /// placement exactly as they would any other word in the sentence.
+    /// It used to say `(beta)` (task 666); the settings window's first stage
+    /// dropped it, on both hosts, with the role library moved into that
+    /// window (#896).
     private static func title(state: PersonaState, personas: [Persona]) -> String {
         guard state.agentPresent, let name = state.displayName(in: personas) else {
-            return String(localized: "Role (beta)", comment: "标签页右键菜单：角色子菜单，功能还没做完，标 beta")
+            return String(localized: "Role", comment: "标签页右键菜单：角色子菜单")
         }
         return String(
-            format: String(localized: "Role (beta): %@",
-                           comment: "标签页右键菜单：角色子菜单，已经设了角色，功能还没做完，标 beta"),
+            format: String(localized: "Role: %@",
+                           comment: "标签页右键菜单：角色子菜单，已经设了角色，%@ 是角色名"),
             name)
     }
 
@@ -264,6 +261,10 @@ enum PersonaMenu {
             action: #selector(RoleLibraryOpener.showRoleLibrary(_:)),
             keyEquivalent: "")
         library.target = RoleLibraryOpener.shared
+        // The library opens on this terminal's role; with no terminal the
+        // state is `.none` and it opens on the last role chosen. A route and
+        // not the bare key: role rows are the ones that carry a `String`.
+        library.representedObject = SettingsRoute.roles(state.key)
         library.isEnabled = true
         library.setImage(systemSymbolName: PersonaSymbol.editor.rawValue, desired: imagesDesired)
         menu.addItem(library)

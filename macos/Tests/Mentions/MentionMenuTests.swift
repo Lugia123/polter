@@ -79,7 +79,7 @@ struct MentionMenuTests {
     /// ever been switched on -- so the tick must be off.
     @Test func theMenuBarsItemIsFilledByTheBuilderAndStartsOff() {
         let agents = NSMenu(title: "Agents")
-        let role = NSMenuItem(title: "Role (beta)", action: nil, keyEquivalent: "")
+        let role = NSMenuItem(title: "Role", action: nil, keyEquivalent: "")
         let fromNib = NSMenuItem(title: "whatever was in the nib", action: nil, keyEquivalent: "")
         agents.addItem(role)
         agents.addItem(fromNib)

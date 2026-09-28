@@ -121,7 +121,15 @@ extension Ghostty {
             ghostty_app_tick(app)
         }
 
-        private static func openConfig(_ app: ghostty_app_t) {
+        /// `os_open` -- which is also what the default ⌘, binding sends --
+        /// opens the settings window; `new_window` still opens the file
+        /// (settings.md §3.2). The core cannot tell a default binding from
+        /// an explicit `open_config:os_open`, so neither can we.
+        private static func openConfig(_ app: ghostty_app_t, mode: ghostty_action_open_config_e) {
+            if mode == GHOSTTY_ACTION_OPEN_CONFIG_OS_OPEN {
+                DispatchQueue.main.async { openSettings() }
+                return
+            }
             guard let app_ud = ghostty_app_userdata(app) else { return }
             let app = Unmanaged<App>.fromOpaque(app_ud).takeUnretainedValue()
             app.openConfig()
@@ -696,7 +704,7 @@ extension Ghostty {
                 pwdChanged(app, target: target, v: action.action.pwd)
 
             case GHOSTTY_ACTION_OPEN_CONFIG:
-                openConfig(app)
+                openConfig(app, mode: action.action.open_config)
 
             case GHOSTTY_ACTION_FLOAT_WINDOW:
                 toggleFloatWindow(app, target: target, mode: action.action.float_window)
