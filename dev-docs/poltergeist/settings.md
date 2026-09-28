@@ -105,9 +105,15 @@ GTK 本轮不做（三个界面 GTK 目前都没有）。
 | 「偏好设置…」/「Settings…」、⌘, / Ctrl+, | `open_config` 打开配置文件 | 同左 | 打开设置窗口（无参路由）。「打开配置文件」挪到「通用」 |
 
 ⌘, / Ctrl+, 在核心里绑的是 `open_config`（`src/config/Config.zig` 默认键位表）。
-**不改核心键位**：两个宿主在收到 `open_config`（mode 为 `.default`）时改为打开设置窗口；
-其它 mode 保持原来打开文件的行为。「通用」里的「打开配置文件」按钮直接调宿主原来的
-打开文件逻辑，不再绕回 `open_config`（否则会打开自己）。
+**不改核心键位**。`OpenConfig.default` 只是 `.os_open` 的别名（`src/input/Binding.zig`），
+宿主分不出「默认的 ⌘,」和用户显式写的 `open_config:os_open`，所以规则按 mode 定：
+
+- `os_open` → 打开设置窗口（无参路由）；
+- `new_window` → 保持原来的行为（用 `$EDITOR` 开文件）；
+- 菜单「偏好设置…」/「Settings…」直接调 `openSettings()`，不经 `open_config`。
+
+「通用」里的「打开配置文件」按钮直接调宿主原来的打开文件逻辑，不再绕回 `open_config`
+（否则会打开自己）。
 
 ## 4. 栏目：角色
 
