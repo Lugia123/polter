@@ -1581,9 +1581,45 @@ msgstr "快速终端"
 msgid "Plugins…"
 msgstr "插件…"
 
-#: windows/host/src/menu.rs:395 windows/host/src/personas.rs:536
-msgid "Role Library (beta)..."
-msgstr "角色库（beta）…"
+#: windows/host/src/menu.rs windows/host/src/personas.rs
+msgid "Role Library..."
+msgstr "角色库…"
+
+#: windows/host/src/settings_win.rs
+msgid "Polter Settings"
+msgstr "Polter 设置"
+
+#: windows/host/src/settings_win.rs
+msgid "Roles"
+msgstr "角色"
+
+#: windows/host/src/settings_win.rs
+msgid "Projects"
+msgstr "项目"
+
+#: windows/host/src/settings_win.rs
+msgid "Plugins"
+msgstr "插件"
+
+#: windows/host/src/settings_win.rs
+msgid "General"
+msgstr "通用"
+
+#: windows/host/src/settings_win.rs
+msgid "Search"
+msgstr "搜索"
+
+#: windows/host/src/settings_win.rs
+msgid "Coming in a later update."
+msgstr "将在后续版本提供。"
+
+#: windows/host/src/roles_ui.rs
+msgid "No matching roles"
+msgstr "没有匹配的角色"
+
+#: windows/host/src/settings_win.rs
+msgid "{} (not in the search results)"
+msgstr "{}（不在搜索结果里）"
 
 #: windows/host/src/menu.rs:399
 msgid "Up"
@@ -1750,14 +1786,14 @@ msgid "No Role"
 msgstr "不设角色"
 
 #: windows/host/src/personas.rs:599 windows/host/src/personas.rs:1006
-msgid "Role (beta)"
-msgstr "角色（beta）"
+msgid "Role"
+msgstr "角色"
 
 # The Rust placeholder is `{}`; the Swift side of the same sentence carries `%@`. The two spellings are deliberate -- the two languages cannot share one placeholder -- and unifying them breaks one side.
 #: windows/host/src/personas.rs:603
 #, rust-format
-msgid "Role (beta): {}"
-msgstr "角色（beta）：{}"
+msgid "Role: {}"
+msgstr "角色：{}"
 
 #: windows/host/src/project_picker.rs:71 windows/host/src/project_picker.rs:102
 msgid "No Saved Projects"
@@ -2167,10 +2203,6 @@ msgstr "展开"
 msgid "Also in this role but not installed here: {}"
 msgstr "角色里还提到了本机没装的：{}"
 
-#: windows/host/src/roles_ui.rs:1943 windows/host/src/roles_ui.rs:2647
-msgid "Role Library"
-msgstr "角色库"
-
 #: windows/host/src/roles_ui.rs:2034 windows/host/src/roles_ui.rs:2038
 msgid "Duplicate"
 msgstr "复制"
@@ -2412,11 +2444,11 @@ msgstr "菜单"
 #~ "Some agents' configuration couldn't be read, so this count may be low"
 #~ msgstr "还有 agent 的配置没读到，这个数可能偏小"
 
-#~ msgid "Plugins"
-#~ msgstr "插件"
-
 #~ msgid "Choose a Role"
 #~ msgstr "选一个角色"
 
 #~ msgid "Role Editor (beta)"
 #~ msgstr "角色编辑器（beta）"
+
+#~ msgid "Role Library"
+#~ msgstr "角色库"

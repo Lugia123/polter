@@ -138,9 +138,25 @@ pub fn destroyed(frame: HWND) -> usize {
         "[win] w{} destroyed; {} window(s) left{}",
         id,
         left,
-        if left == 0 { " -> quitting" } else { "" }
+        match (left, crate::settings_win::is_open()) {
+            (0, false) => " -> quitting",
+            (0, true) => " -> the settings window is open; not quitting",
+            _ => "",
+        }
     );
     left
+}
+
+/// The settings window closed. If no terminal window is left, it was the
+/// last window of the process, and the process is finished (#896 D3) --
+/// the same rule `window_finished` asks, from the other side.
+pub fn settings_closed() {
+    let left = count();
+    if polter_settings_shell::quits(left, false) {
+        // process-wide: the process is ending, and no terminal window is left to name
+        crate::plogf!("[win] settings window closed; 0 window(s) left -> quitting");
+        unsafe { windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0) };
+    }
 }
 
 /// The whole of what [`empty_agrees`] objects to, as a function of two
@@ -291,8 +307,16 @@ pub enum CloseVia {
 /// between quitting and not.
 pub fn window_finished(frame: HWND) {
     let left = destroyed(frame);
+    // **The settings window counts** (#896 D3): with it open, closing the
+    // last terminal does not take it -- or a draft in it -- away. Closing it
+    // then is what ends the process (`settings_closed`), asking about
+    // anything unsaved on the way, as any close of it does.
     if left == 0 {
-        unsafe { windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0) };
+        if polter_settings_shell::quits(left, crate::settings_win::is_open()) {
+            unsafe { windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0) };
+        }
+        // Otherwise nothing more to say: `destroyed` said why this is not
+        // the end.
     } else {
         // **This used to be `wlogf!(frame, ...)` and printed `w?`.**
         // `destroyed` above has just taken `frame` out of `FRAMES`, `of`

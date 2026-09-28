@@ -3,7 +3,7 @@
 //! pointer, and where you are in the scrollback.
 //!
 //! **Why they share one file and one window class.** All four are the same
-//! shape — a small always-on-top window that never takes focus, driven
+//! shape — a small window over its terminal that never takes focus, driven
 //! entirely by something the host already knows. None has an input field, so
 //! none touches `overlay.rs`'s focus contract. Splitting them would duplicate
 //! the window, the font, and the paint path five ways (`keyseq.rs` is the
@@ -234,6 +234,19 @@ static SEC_SHOWN_FOR: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomic
 /// window" rather than inventing one. **A surface pointer in the text is not
 /// a substitute**: it names a terminal, and the question a reader of a
 /// two-window log is asking is which *window* the line came from.
+/// Make `me` owned by `frame` and answer where it goes in the z-order: the
+/// top of the non-topmost band, which an owned window never falls below its
+/// owner in. **Re-owned at every placement**, because one sign is shared by
+/// every terminal window and is placed over whichever one it is about.
+fn above(me: HWND, frame: HWND) -> HWND {
+    if !frame.0.is_null() {
+        unsafe {
+            SetWindowLongPtrW(me, GWLP_HWNDPARENT, frame.0 as isize);
+        }
+    }
+    HWND_TOP
+}
+
 fn frame_hwnd_of(surface: usize) -> HWND {
     crate::tabs::frame_of_surface(surface as crate::ffi::Surface).unwrap_or_default()
 }
@@ -651,7 +664,12 @@ fn grid() -> Option<(i32, i32, i32, i32, i32, i32)> {
 fn make_window(hinst: windows::Win32::Foundation::HINSTANCE, class: windows::core::PCWSTR) -> HWND {
     unsafe {
         match CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            // **Not `WS_EX_TOPMOST`** (#896 D4): topmost is above every window
+            // on the desktop, the settings window and other programs included.
+            // Each placement below makes the sign owned by the terminal window
+            // it describes instead (`above`), which keeps it over that window
+            // and nowhere else.
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             class,
             w!("Polter"),
             WS_POPUP,
@@ -799,7 +817,7 @@ fn show_size(me: HWND) {
         let y = fr.top + ((fr.bottom - fr.top) - h) / 2;
         let _ = SetWindowPos(
             me,
-            Some(HWND_TOPMOST),
+            Some(above(me, frame)),
             x,
             y,
             w,
@@ -941,7 +959,7 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     + sc(corner_slot(surface, Corner::ReadOnly) * (HEIGHT + 6));
                 let _ = SetWindowPos(
                     hwnd,
-                    Some(HWND_TOPMOST),
+                    Some(above(hwnd, frame_hwnd_of(surface))),
                     x,
                     y,
                     w,
@@ -1039,7 +1057,7 @@ unsafe extern "system" fn sec_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 let y = fr.top + sc(16) + sc(slot * (HEIGHT + 6));
                 let _ = SetWindowPos(
                     hwnd,
-                    Some(HWND_TOPMOST),
+                    Some(above(hwnd, frame_hwnd_of(surface))),
                     x,
                     y,
                     w,
@@ -1146,7 +1164,7 @@ unsafe extern "system" fn link_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 let y = fr.bottom - h - sc(8);
                 let _ = SetWindowPos(
                     hwnd,
-                    Some(HWND_TOPMOST),
+                    Some(above(hwnd, frame_hwnd_of(surface))),
                     x,
                     y,
                     w,
@@ -1329,7 +1347,7 @@ unsafe extern "system" fn scroll_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 SCROLL_SHOWN_FOR.store(surface, Ordering::Release);
                 let _ = SetWindowPos(
                     hwnd,
-                    Some(HWND_TOPMOST),
+                    Some(above(hwnd, frame_hwnd_of(surface))),
                     fr.right - w,
                     fr.top,
                     w,

@@ -46,6 +46,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::i18n::{n_, tr};
+use polter_settings_shell::{Route, Section};
 use crate::{plogf, wlogf};
 
 // ------------------------------------------------------------------- table
@@ -392,7 +393,7 @@ const AGENTS_ROWS: &[Row] = &[
     act(n_("Plugins…"), "__polter_plugin_page"),
     // The role library window (`roles_ui.rs`), as on macOS. Beta is part of
     // the msgid, not appended in code: see `f63c185dd`.
-    act(n_("Role Library (beta)..."), "__polter_role_library"),
+    act(n_("Role Library..."), "__polter_role_library"),
 ];
 
 const GOTO_SPLIT_ROWS: &[Row] = &[
@@ -476,7 +477,10 @@ const ROOT: &[Row] = &[
     sub(n_("Window"), WINDOW_ROWS),
     sub(n_("Help"), HELP_ROWS),
     sep(),
-    act(n_("Settings…"), "open_config"),
+    // **Opens the settings window directly**, not through `open_config`
+    // (settings.md §3.2). The shortcut shown beside it is still
+    // `open_config`'s: see `shortcut_source`.
+    act(n_("Settings…"), "__polter_settings"),
     // **Directly under Preferences, by task 561.** It used to sit at the end
     // of the Agents group. The row is about the app rather than about a
     // terminal, and the settings group is where a person goes looking for it.
@@ -540,12 +544,16 @@ fn run_host(frame: HWND, action: &str) -> bool {
             crate::settings_ui::request_keybinds();
             true
         }
-        // The role library. The core owns the roles themselves (storage and
-        // validation are there, see `roles.rs`); this opens the window that
-        // shows and edits them. The old personas page is still reached from
-        // the tab menu's role submenu (`personas::Pick::Editor`).
+        // The role library: the settings window's Roles section
+        // (settings.md §3.2). No role named -- the menu bar is about no
+        // terminal in particular -- so it shows the last one selected.
         "__polter_role_library" => {
-            crate::roles_ui::open(frame);
+            crate::settings_win::request(Route::to(Section::Roles, None), frame);
+            true
+        }
+        // The settings window, where it was last (settings.md §3.2).
+        "__polter_settings" => {
+            crate::settings_win::request(Route::none(), frame);
             true
         }
         // The stack, and the tab it makes, both live in the host: see
@@ -611,6 +619,7 @@ const HOST_ACTIONS: &[&str] = &[
     // whole crate's tests only compile for a Windows target.
     "__polter_keybinds",
     "__polter_role_library",
+    "__polter_settings",
     "__polter_save_project",
     "__polter_load_project",
 ];
@@ -809,7 +818,19 @@ fn asks_the_core(action: &str) -> bool {
     !crate::keys::is_host_action(action)
 }
 
+/// The action whose shortcut a row shows. The same as the row's own, except
+/// for a host row that stands in for a core action's key: Settings… opens
+/// the settings window itself, and Ctrl+, reaches the same window through
+/// `open_config` (settings.md §3.2), so the row shows Ctrl+,.
+fn shortcut_source(action: &str) -> &str {
+    match action {
+        "__polter_settings" => "open_config",
+        a => a,
+    }
+}
+
 fn accel_of(action: &str) -> Option<String> {
+    let action = shortcut_source(action);
     if !asks_the_core(action) {
         return None;
     }
@@ -1685,6 +1706,17 @@ mod tests {
         }
     }
 
+    /// Settings… opens the settings window itself, and still shows Ctrl+,
+    /// -- the key that reaches the same window through `open_config`
+    /// (settings.md §3.2). Every other row shows its own action's key.
+    #[test]
+    fn the_settings_row_shows_open_configs_shortcut() {
+        assert_eq!(shortcut_source("__polter_settings"), "open_config");
+        assert!(asks_the_core(shortcut_source("__polter_settings")));
+        assert_eq!(shortcut_source("new_tab"), "new_tab");
+        assert_eq!(shortcut_source("__polter_role_library"), "__polter_role_library");
+    }
+
     /// Shape rules, the same ones `ctxmenu.rs` keeps: a blank label is a
     /// separator, a labelled row does something or opens something.
     #[test]
@@ -1723,7 +1755,7 @@ mod tests {
         assert_eq!(groups, GROUP_COUNT);
         let tail: Vec<_> = ROOT.iter().filter(|r| r.action.is_some()).collect();
         assert_eq!(tail.len(), 4);
-        assert_eq!(tail[0].action, Some("open_config"));
+        assert_eq!(tail[0].action, Some("__polter_settings"));
         // Directly under it, by task 561. If the language row moves back into
         // the Agents group, this is the line that says so.
         assert_eq!(tail[1].action, Some("__polter_language"));

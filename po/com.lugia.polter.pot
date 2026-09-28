@@ -1564,8 +1564,44 @@ msgstr ""
 msgid "Plugins…"
 msgstr ""
 
-#: windows/host/src/menu.rs:395 windows/host/src/personas.rs:536
-msgid "Role Library (beta)..."
+#: windows/host/src/menu.rs windows/host/src/personas.rs
+msgid "Role Library..."
+msgstr ""
+
+#: windows/host/src/settings_win.rs
+msgid "Polter Settings"
+msgstr ""
+
+#: windows/host/src/settings_win.rs
+msgid "Roles"
+msgstr ""
+
+#: windows/host/src/settings_win.rs
+msgid "Projects"
+msgstr ""
+
+#: windows/host/src/settings_win.rs
+msgid "Plugins"
+msgstr ""
+
+#: windows/host/src/settings_win.rs
+msgid "General"
+msgstr ""
+
+#: windows/host/src/settings_win.rs
+msgid "Search"
+msgstr ""
+
+#: windows/host/src/settings_win.rs
+msgid "Coming in a later update."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs
+msgid "No matching roles"
+msgstr ""
+
+#: windows/host/src/settings_win.rs
+msgid "{} (not in the search results)"
 msgstr ""
 
 #: windows/host/src/menu.rs:399
@@ -1727,12 +1763,12 @@ msgid "No Role"
 msgstr ""
 
 #: windows/host/src/personas.rs:599 windows/host/src/personas.rs:1006
-msgid "Role (beta)"
+msgid "Role"
 msgstr ""
 
 #: windows/host/src/personas.rs:603
 #, rust-format
-msgid "Role (beta): {}"
+msgid "Role: {}"
 msgstr ""
 
 #: windows/host/src/project_picker.rs:71 windows/host/src/project_picker.rs:102
@@ -2125,10 +2161,6 @@ msgstr ""
 #: windows/host/src/roles_ui.rs:998
 #, rust-format
 msgid "Also in this role but not installed here: {}"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:1943 windows/host/src/roles_ui.rs:2647
-msgid "Role Library"
 msgstr ""
 
 #: windows/host/src/roles_ui.rs:2034 windows/host/src/roles_ui.rs:2038

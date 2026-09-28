@@ -130,6 +130,7 @@ mod project_picker;
 mod project_ui;
 mod prompt;
 mod settings_ui;
+mod settings_win;
 mod quick;
 mod reload;
 mod reopen;
@@ -2751,6 +2752,37 @@ macro_rules! alogf {
     }};
 }
 
+/// Open the config file with the OS, the way `open_config` always did here.
+/// The core decides *where* the config is; only the opening is ours.
+///
+/// **Called directly** by the `new_window` mode of `open_config` and by the
+/// settings window's "Open config file…" (settings.md §3.2, §7) -- not by
+/// performing `open_config`, whose `os_open` mode now opens the settings
+/// window, which would be that button opening its own window.
+pub fn open_config_file(origin: Option<HWND>) -> bool {
+    let s = unsafe { (api().config_open_path)() };
+    if s.ptr.is_null() || s.len == 0 {
+        alogf!(origin, "[action] open_config: the core reported no path");
+        return false;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(s.ptr as *const u8, s.len) };
+    let path = String::from_utf8_lossy(bytes).into_owned();
+    unsafe { (api().string_free)(s) };
+    // **Off the window thread, through the one place that does it.**
+    // Task 292's cause is two adjacent shell opens where the first is
+    // cold; this is one of the three sites that could supply either half.
+    // See `shellopen::detached` for why waiting here is the part that was
+    // wrong.
+    //
+    // **The answer changes meaning with the thread.** `true` now says
+    // this host took the request on, not that the shell accepted it --
+    // which is the same trade `poltergeist_close` makes, and it is
+    // honest for the same reason: the outcome is logged, not dropped.
+    let took = shellopen::detached(origin, "[action] open_config", path.clone());
+    alogf!(origin, "[action] open_config {:?} -> handed off: {}", path, took);
+    took
+}
+
 fn queue_from(origin: Option<HWND>, op: tabs::Op, from: &'static str) -> bool {
     match origin {
         Some(frame) => {
@@ -2836,38 +2868,27 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
 
         // The read-only badge. The core owns the state; the host paints the
         // last thing it said.
-        // The core decides *where* the config is and asks the host to open
-        // it; only the opening is ours. Mode 1 wants it in an editor in a new
-        // terminal window, which needs a surface with a command -- logged
-        // rather than silently treated as mode 0, because "it opened the wrong
-        // way" is a bug report and "nothing happened" is not.
+        // Mode 1 wants the file in an editor in a new terminal window, which
+        // needs a surface with a command -- logged rather than silently
+        // treated as mode 0, because "it opened the wrong way" is a bug report
+        // and "nothing happened" is not.
+        //
+        // `os_open` -- which the core's `default` is an alias of, so Ctrl+,
+        // arrives as this -- opens the settings window; `new_window` still
+        // opens the file (settings.md §3.2). The settings window's own
+        // "Open config file…" calls `open_config_file` directly, never this
+        // action, or it would open itself.
         ffi::ACTION_OPEN_CONFIG => {
             let mode = action.as_i32();
-            let s = unsafe { (api().config_open_path)() };
-            if s.ptr.is_null() || s.len == 0 {
-                alogf!(origin, "[action] open_config: the core reported no path");
-                return false;
+            if mode == 0 {
+                // absence: means it was not reached -- every `os_open` says
+                // this, so a Ctrl+, with no such line never got to the host
+                alogf!(origin, "[action] open_config os_open -> the settings window");
+                settings_win::request(polter_settings_shell::Route::none(), origin.unwrap_or_default());
+                return true;
             }
-            let bytes = unsafe { std::slice::from_raw_parts(s.ptr as *const u8, s.len) };
-            let path = String::from_utf8_lossy(bytes).into_owned();
-            unsafe { (api().string_free)(s) };
-
-            if mode != 0 {
-                alogf!(origin, "[action] open_config mode {} not supported; opening with the OS", mode);
-            }
-            // **Off the window thread, through the one place that does it.**
-            // Task 292's cause is two adjacent shell opens where the first is
-            // cold; this arm is one of the three sites that could supply
-            // either half. See `shellopen::detached` for why waiting here is
-            // the part that was wrong.
-            //
-            // **The answer changes meaning with the thread.** `true` now says
-            // this host took the request on, not that the shell accepted it --
-            // which is the same trade `poltergeist_close` makes, and it is
-            // honest for the same reason: the outcome is logged, not dropped.
-            let took = shellopen::detached(origin, "[action] open_config", path.clone());
-            alogf!(origin, "[action] open_config {:?} -> handed off: {}", path, took);
-            took
+            alogf!(origin, "[action] open_config mode {} not supported; opening with the OS", mode);
+            open_config_file(origin)
         }
 
         // **Read-only is per surface, and this arm used to drop `target`.**
@@ -6763,6 +6784,7 @@ fn main() {
     notify::init(hinst);
     divider::init(hinst);
     settings_ui::init(hinst);
+    settings_win::init(hinst);
     // **After the API is loaded**, because the provider asks it questions the
     // moment a menu is built.
     personas::install_core_provider();

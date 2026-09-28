@@ -27,13 +27,17 @@
 #                (test/fixtures/project-filenames.tsv); inside host/ this
 #                copy's table test could only run on Windows, so breaking it
 #                on a Mac turned nothing red (issue #23).
+#   settings-shell/ the settings window's rules: routes, when leaving asks,
+#                the opening size and whether a remembered one is still on a
+#                screen. Shared with macOS through one specification
+#                (dev-docs/poltergeist/settings.md), so they are tested here.
 #
 # The workspace exists so there is **one lock file and one target directory**
 # for the two, and so `cargo test -p polter-split-tree` works from here without
 # knowing where the crate lives.
 [workspace]
 resolver = "2"
-members = ["host", "split-tree", "droppath", "cliargs", "urlpolicy", "projectname"]
+members = ["host", "split-tree", "droppath", "cliargs", "urlpolicy", "projectname", "settings-shell"]
 
 # **Profiles must live here, not in a member.** Cargo ignores a member's
 # `[profile]` inside a workspace and only says so as a warning -- the symptom
