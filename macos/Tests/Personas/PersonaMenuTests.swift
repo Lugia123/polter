@@ -207,6 +207,23 @@ struct PersonaMenuTests {
         #expect(editor.isEnabled)
     }
 
+    /// The library row opens the settings window on the role of the terminal
+    /// it came from, and with no terminal on no role in particular
+    /// (settings.md §3.2).
+    @Test func theLibraryOpensOnThisTerminalsRole() throws {
+        let menu = try submenu(wearingArcher)
+        let row = try #require(
+            menu.items.first { $0.title == String(localized: "Role Library...") })
+        #expect(row.representedObject as? SettingsRoute == .roles("archer"))
+
+        let bare = try #require(PersonaMenu.makeItem(
+            state: .none, personas: both, personasKnown: true,
+            target: nil).submenu)
+        let bareRow = try #require(
+            bare.items.first { $0.title == String(localized: "Role Library...") })
+        #expect(bareRow.representedObject as? SettingsRoute == .roles(nil))
+    }
+
     // MARK: Empty, and the two kinds of empty
 
     /// "Asked, and the user has defined none" sends them to write

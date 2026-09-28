@@ -41,11 +41,9 @@ final class RoleLibraryEditor: ObservableObject {
     /// Select a role, asking first when leaving unsaved changes behind.
     func select(_ key: String?) {
         guard key != draft?.key || isNew else { return }
-        guard confirmLeavingDraft() else {
-            // Put the list back on the role being edited.
-            selection = isNew ? nil : draft?.key
-            return
-        }
+        // Cancelled: the list draws its highlight from `selection`, which
+        // has not moved, so there is nothing to put back.
+        guard confirmLeavingDraft() else { return }
         load(key)
     }
 
@@ -71,24 +69,12 @@ final class RoleLibraryEditor: ObservableObject {
         }
     }
 
-    /// True when it is fine to throw the draft away.
+    /// True when it is fine to throw the draft away. The same question the
+    /// settings window asks when leaving the section or closing.
     private func confirmLeavingDraft() -> Bool {
-        guard isDirty else { return true }
-        let alert = NSAlert()
-        alert.messageText = String(localized: "Save changes to this role?", comment: "角色库：切换/关闭前有未保存修改")
-        alert.informativeText = String(localized: "Your changes will be lost if you don't save them.", comment: "角色库：未保存修改的后果")
-        alert.addButton(withTitle: String(localized: "Save", comment: "角色库：保存按钮"))
-        alert.addButton(withTitle: String(localized: "Don't Save", comment: "角色库：丢弃修改"))
-        alert.addButton(withTitle: String(localized: "Cancel", comment: "角色库：取消"))
-        switch alert.runModal() {
-        case .alertFirstButtonReturn: return save()
-        case .alertSecondButtonReturn: return true
-        default: return false
-        }
-    }
-
-    func confirmClose() -> Bool {
-        confirmLeavingDraft()
+        SettingsUnsaved.confirmLeaving(
+            self,
+            message: String(localized: "Save changes to this role?", comment: "角色库：切换/关闭前有未保存修改"))
     }
 
     // MARK: Editing
@@ -205,13 +191,27 @@ final class RoleLibraryEditor: ObservableObject {
     }
 }
 
+extension RoleLibraryEditor: SettingsPane {}
+
 /// The three parts of a role the editor shows one at a time.
 enum RoleEditorTab: Hashable { case basics, skills, mcp }
 
-/// The role library: every role, and one of them being edited.
+/// The role library: every role, and one of them being edited. The
+/// settings window lays it out on its grid (settings.md §2.3a), so it comes
+/// in three parts placed separately: the list column, the editor column,
+/// and the one bar across the bottom band.
 struct RoleLibraryView: View {
+    enum Part { case list, detail, bar }
+
     @ObservedObject var library: RoleLibrary
     @ObservedObject var editor: RoleLibraryEditor
+    var part: Part
+
+    @FocusState private var listFocused: Bool
+
+    /// The settings window's search text: roles whose name or key contains
+    /// it, ignoring case. Empty shows them all.
+    var filter: String = ""
 
     /// Asked each time the footer is drawn: a terminal window can open or
     /// close while this one stays up.
@@ -219,36 +219,84 @@ struct RoleLibraryView: View {
     var onLaunch: (Role, String) -> Void
 
     var body: some View {
-        HSplitView {
+        switch part {
+        case .list:
             sidebar
-                .frame(minWidth: 190, idealWidth: 220, maxWidth: 320)
+                // Once, on the one part that is always there with the others.
+                .onChange(of: library.catalog) { _ in editor.libraryChanged() }
+        case .detail:
             detail
-                .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+        case .bar:
+            bar
         }
-        .frame(minWidth: 760, idealWidth: 920, minHeight: 560, idealHeight: 820)
-        .onChange(of: library.catalog) { _ in editor.libraryChanged() }
     }
 
     // MARK: Sidebar
 
+    /// Drawn rows rather than a `List`, for the same reason as the
+    /// settings sidebar: the text has to start on the column's content edge
+    /// (settings.md §2.3a), and a list's cell insets are not ours to set.
     private var sidebar: some View {
-        VStack(spacing: 0) {
-            List(selection: Binding(
-                get: { editor.isNew ? nil : editor.selection },
-                set: { editor.select($0) })
-            ) {
+        let listing = Self.listing(library: library, editor: editor, query: filter)
+        return ScrollViewReader { scroller in ScrollView {
+            VStack(spacing: SettingsLayout.rowGap / 4) {
+                // A role being made is kept whatever the search says: it is
+                // the one on screen, and it has no row of its own to find.
                 if editor.isNew, let draft = editor.draft {
-                    roleRow(draft, unsaved: true)
+                    SettingsRow(selected: true) { roleRow(draft, unsaved: true) }
                 }
-                ForEach(library.catalog.roles) { role in
-                    roleRow(role, unsaved: false).tag(role.key)
+                ForEach(listing.visible, id: \.self) { key in
+                    if let role = library.catalog.roles.first(where: { $0.key == key }) {
+                        SettingsRow(selected: !editor.isNew && editor.selection == key) {
+                            roleRow(role, unsaved: false)
+                        }
+                        .id(key)
+                        .onTapGesture {
+                            // As in the sidebar: focus lands before any
+                            // unsaved-changes question is asked.
+                            listFocused = true
+                            DispatchQueue.main.async { editor.select(key) }
+                        }
+                    }
+                }
+                if listing.noMatch {
+                    SettingsRow(selected: false) {
+                        Text(String(localized: "No matching roles", comment: "设置窗口：搜索后角色列表里一个都不剩"))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
-            .listStyle(.sidebar)
-            .overlay { sidebarEmptyState }
+            .padding(.vertical, SettingsLayout.rowGap)
+        }
+        // A row chosen with ↑↓, or by a route from elsewhere, is scrolled to.
+        .onChange(of: editor.selection) { key in
+            if let key { scroller.scrollTo(key) }
+        } }
+        .settingsListFocus()
+        .focused($listFocused)
+        .onMoveCommand { direction in
+            guard let delta = direction.rowDelta,
+                  let next = SettingsRules.step(
+                    from: editor.isNew ? nil : editor.selection, in: listing.visible, by: delta)
+            else { return }
+            editor.select(next)
+        }
+        .overlay { sidebarEmptyState }
+    }
 
-            Divider()
-            HStack(spacing: 4) {
+    /// What the search leaves of the list. The breadcrumb asks the same
+    /// question, so both come from here.
+    static func listing(library: RoleLibrary, editor: RoleLibraryEditor, query: String) -> SettingsRules.Listing {
+        SettingsRules.listing(
+            items: library.catalog.roles.map { ($0.key, $0.displayName) },
+            query: query,
+            selection: editor.isNew ? nil : editor.draft?.key)
+    }
+
+    /// New, Duplicate, Delete: at the left end of the bottom bar, under the
+    /// list they act on.
+    private var listButtons: some View {
+            HStack(spacing: SettingsLayout.rowGap / 2) {
                 iconButton("plus", help: String(localized: "New Role", comment: "角色库：新建角色的默认名字")) {
                     editor.newRole()
                 }
@@ -261,10 +309,7 @@ struct RoleLibraryView: View {
                     editor.delete()
                 }
                 .disabled(editor.draft == nil || editor.draft?.builtin == true || library.catalog.error != nil)
-                Spacer()
             }
-            .padding(6)
-        }
     }
 
     @ViewBuilder
@@ -337,7 +382,7 @@ struct RoleLibraryView: View {
                 tabBar
                 Divider()
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: SettingsLayout.groupGap) {
                         Group {
                             switch editor.tab {
                             case .basics:
@@ -356,11 +401,9 @@ struct RoleLibraryView: View {
                         // point of looking at it.
                         .disabled(draft.builtin)
                     }
-                    .padding(18)
+                    .padding(SettingsLayout.pad)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Divider()
-                footer
             } else {
                 Spacer()
                 Text(String(localized: "Select a role, or make a new one.", comment: "角色库：右侧没有选中角色时的提示"))
@@ -394,8 +437,8 @@ struct RoleLibraryView: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .frame(maxWidth: 420)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
+        .padding(.horizontal, SettingsLayout.pad)
+        .padding(.vertical, SettingsLayout.rowGap + 4)
         .frame(maxWidth: .infinity)
     }
 
@@ -435,7 +478,8 @@ struct RoleLibraryView: View {
             Button(String(localized: "Duplicate", comment: "角色库：横幅上的复制按钮")) { editor.duplicate() }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
+        .padding(.horizontal, SettingsLayout.pad)
+        .padding(.vertical, SettingsLayout.rowGap + 4)
         .background(Color.secondary.opacity(0.08))
     }
 
@@ -449,7 +493,8 @@ struct RoleLibraryView: View {
                 .textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
+        .padding(.horizontal, SettingsLayout.pad)
+        .padding(.vertical, SettingsLayout.rowGap + 4)
         .background(Color.orange.opacity(0.08))
     }
 
@@ -458,7 +503,7 @@ struct RoleLibraryView: View {
     }
 
     private var basics: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: SettingsLayout.rowGap) {
             labeled(String(localized: "Name", comment: "角色库：字段名，角色名")) {
                 TextField("", text: editor.draft?.builtin == true
                           ? .constant(editor.draft?.displayName ?? "") : draftBinding.name)
@@ -519,23 +564,31 @@ struct RoleLibraryView: View {
 
     private var polterSection: some View {
         section(String(localized: "Polter", comment: "角色库：分区名，这个角色启动的终端在 Polter 里是什么身份")) {
-            VStack(alignment: .leading, spacing: 6) {
-                Toggle(String(localized: "Make this terminal a supervisor", comment: "角色库：Polter 选项，启动后设为总管"),
-                       isOn: polterBinding.supervisor)
-                Toggle(String(localized: "Let the supervisor answer this terminal's permission prompts", comment: "角色库：Polter 选项，允许总管替你回答权限问题"),
-                       isOn: polterBinding.mayAuthorise)
-                Toggle(String(localized: "Shield it: no tool can reach it, a supervisor's included", comment: "角色库：Polter 选项，护盾"),
-                       isOn: polterBinding.shielded)
-                note(String(localized: "These three give the terminal something, so only you can set them, here. A supervisor that edits roles can't change them.", comment: "角色库：前三个 Polter 选项只有用户能改"))
-                    .padding(.leading, 20)
-                    .padding(.bottom, 4)
+            VStack(alignment: .leading, spacing: SettingsLayout.rowGap) {
+                formControl {
+                    Toggle(String(localized: "Make this terminal a supervisor", comment: "角色库：Polter 选项，启动后设为总管"),
+                           isOn: polterBinding.supervisor)
+                }
+                formControl {
+                    Toggle(String(localized: "Let the supervisor answer this terminal's permission prompts", comment: "角色库：Polter 选项，允许总管替你回答权限问题"),
+                           isOn: polterBinding.mayAuthorise)
+                }
+                formControl {
+                    Toggle(String(localized: "Shield it: no tool can reach it, a supervisor's included", comment: "角色库：Polter 选项，护盾"),
+                           isOn: polterBinding.shielded)
+                }
+                formControl {
+                    note(String(localized: "These three give the terminal something, so only you can set them, here. A supervisor that edits roles can't change them.", comment: "角色库：前三个 Polter 选项只有用户能改"))
+                }
 
                 let p = editor.draft?.polter ?? RolePolter()
-                Toggle(String(localized: "Hand it to the supervisor to watch", comment: "角色库：Polter 选项，启动后交给当前总管监管"),
-                       isOn: polterBinding.watch)
-                    .disabled(p.supervisor || p.shielded)
-                    .help(String(localized: "The supervisor that started it, or the only one there is. With several and you starting it, nobody.", comment: "角色库：交给总管监管的规则说明"))
-                HStack(spacing: 8) {
+                formControl {
+                    Toggle(String(localized: "Hand it to the supervisor to watch", comment: "角色库：Polter 选项，启动后交给当前总管监管"),
+                           isOn: polterBinding.watch)
+                        .disabled(p.supervisor || p.shielded)
+                        .help(String(localized: "The supervisor that started it, or the only one there is. With several and you starting it, nobody.", comment: "角色库：交给总管监管的规则说明"))
+                }
+                formControl { HStack(spacing: SettingsLayout.rowGap) {
                     Toggle(String(localized: "Report it as still after", comment: "角色库：Polter 选项，静止多久算卡住，后接分钟数"),
                            isOn: Binding(
                             get: { editor.draft?.polter.quietMs != nil },
@@ -550,14 +603,18 @@ struct RoleLibraryView: View {
                         .fixedSize()
                     }
                 }
-                .disabled(p.shielded)
-                Picker(String(localized: "Open in", comment: "角色库：Polter 选项，点角色时在哪打开"), selection: polterBinding.open) {
-                    Text(String(localized: "Here when at a prompt, else a new tab", comment: "角色库：打开位置，自动")).tag(RolePolter.Open.auto)
-                    Text(String(localized: "Always a new tab", comment: "角色库：打开位置，始终新标签页")).tag(RolePolter.Open.tab)
+                .disabled(p.shielded) }
+                labeled(String(localized: "Open in", comment: "角色库：Polter 选项，点角色时在哪打开")) {
+                    Picker("", selection: polterBinding.open) {
+                        Text(String(localized: "Here when at a prompt, else a new tab", comment: "角色库：打开位置，自动")).tag(RolePolter.Open.auto)
+                        Text(String(localized: "Always a new tab", comment: "角色库：打开位置，始终新标签页")).tag(RolePolter.Open.tab)
+                    }
+                    .labelsHidden()
+                    .fixedSize()
                 }
-                .fixedSize()
-                .padding(.top, 4)
-                note(String(localized: "Applied once, when the role starts an agent CLI. Putting the role on a terminal that's already running changes its tools, not these.", comment: "角色库：Polter 选项何时生效"))
+                formControl {
+                    note(String(localized: "Applied once, when the role starts an agent CLI. Putting the role on a terminal that's already running changes its tools, not these.", comment: "角色库：Polter 选项何时生效"))
+                }
             }
             .toggleStyle(.checkbox)
         }
@@ -566,15 +623,17 @@ struct RoleLibraryView: View {
     private var cliPicker: some View {
         section(String(localized: "Agent CLIs", comment: "角色库：分区名，这个角色可以启动哪些 CLI")) {
             if library.clis.stale && library.clis.clis.isEmpty {
-                HStack(spacing: 6) {
+                formControl { HStack(spacing: SettingsLayout.rowGap) {
                     ProgressView().controlSize(.small)
                     note(String(localized: "Reading what's installed…", comment: "角色库：正在读取各 CLI 装了什么"))
-                }
+                } }
             } else if library.clis.clis.isEmpty {
-                note(String(localized: "No plugin that manages an agent CLI is installed and switched on.", comment: "角色库：没有任何 CLI 适配插件"))
+                formControl {
+                    note(String(localized: "No plugin that manages an agent CLI is installed and switched on.", comment: "角色库：没有任何 CLI 适配插件"))
+                }
             } else {
                 ForEach(library.clis.clis) { cli in
-                    HStack(spacing: 8) {
+                    formControl { HStack(spacing: SettingsLayout.rowGap) {
                         Toggle(isOn: Binding(
                             get: { editor.draft?.choice(for: cli.key) != nil },
                             set: { editor.setCli(cli.key, used: $0) })) {
@@ -591,12 +650,12 @@ struct RoleLibraryView: View {
                                 .font(.caption)
                                 .foregroundStyle(.orange)
                         }
-                    }
+                    } }
                 }
                 // Choices for a CLI no plugin offers any more are still in
                 // the role; say so rather than hide them.
                 ForEach(editor.draft?.clis.filter { library.clis.cli($0.cli) == nil } ?? []) { orphan in
-                    HStack(spacing: 8) {
+                    formControl { HStack(spacing: SettingsLayout.rowGap) {
                         Toggle(isOn: Binding(get: { true }, set: { editor.setCli(orphan.cli, used: $0) })) {
                             Text(orphan.cli).font(.body.monospaced())
                         }
@@ -604,33 +663,45 @@ struct RoleLibraryView: View {
                         Text(String(localized: "No plugin manages this CLI any more", comment: "角色库：角色里配了某 CLI，但对应插件已不在"))
                             .font(.caption)
                             .foregroundStyle(.orange)
-                    }
+                    } }
                 }
                 if let clis = editor.draft?.clis, clis.count > 1 {
-                    Picker("", selection: Binding(
-                        get: { editor.activeCli ?? clis[0].cli },
-                        set: { editor.activeCli = $0 })) {
-                        ForEach(clis) { choice in
-                            Text(library.clis.label(for: choice.cli)).tag(choice.cli)
+                    formControl {
+                        Picker("", selection: Binding(
+                            get: { editor.activeCli ?? clis[0].cli },
+                            set: { editor.activeCli = $0 })) {
+                            ForEach(clis) { choice in
+                                Text(library.clis.label(for: choice.cli)).tag(choice.cli)
+                            }
                         }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(maxWidth: 360)
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(maxWidth: 360)
-                    .padding(.top, 4)
                 }
             }
         }
     }
 
-    private var footer: some View {
-        HStack(spacing: 10) {
+    /// The one bar in the bottom band: list buttons at the list's left edge,
+    /// then the status line, then Launch / Revert / Save on the right.
+    private var bar: some View {
+        HStack(spacing: SettingsLayout.rowGap) {
+            listButtons
+                .padding(.trailing, SettingsLayout.rowGap)
             if let status = editor.status {
                 Label(status, systemImage: "exclamationmark.circle")
                     .foregroundStyle(.red)
                     .font(.callout)
                     .lineLimit(2)
                     .textSelection(.enabled)
+            } else if let reason = launchBlockedReason {
+                // Written out rather than a tooltip: a reason nobody hovers
+                // over is no reason (settings.md §4).
+                Text(reason)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             } else if editor.isDirty {
                 Text(String(localized: "Unsaved changes", comment: "角色库：有未保存的修改"))
                     .font(.callout)
@@ -644,19 +715,31 @@ struct RoleLibraryView: View {
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(!editor.isDirty || library.catalog.error != nil)
         }
-        .padding(12)
+        .controlSize(.large)
+        .padding(.leading, SettingsLayout.ContentEdge.bottomBar)
+        .padding(.trailing, SettingsLayout.pad)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Why Launch is greyed out, shown in the footer; nil when it isn't.
+    private var launchBlockedReason: String? {
+        if !canLaunch() {
+            return String(localized: "Open a terminal window first; the new tab goes beside it.", comment: "角色库：没有终端窗口时无法启动")
+        }
+        if editor.isDirty {
+            return String(localized: "Save the role before launching it.", comment: "角色库：有未保存修改时不能启动")
+        }
+        if (editor.draft?.clis ?? []).isEmpty {
+            return String(localized: "Pick an agent CLI under Basics to launch this role.", comment: "角色库：角色没选 CLI 时不能启动")
+        }
+        return nil
     }
 
     @ViewBuilder
     private var launchButton: some View {
         let clis = editor.draft?.clis ?? []
-        let launchable = canLaunch()
-        let blocked = editor.isDirty || clis.isEmpty || !launchable
-        let help = !launchable
-            ? String(localized: "Open a terminal window first; the new tab goes beside it.", comment: "角色库：没有终端窗口时无法启动")
-            : editor.isDirty
-            ? String(localized: "Save the role before launching it.", comment: "角色库：有未保存修改时不能启动")
-            : String(localized: "Open a new tab and start the agent CLI in it wearing this role.", comment: "角色库：启动按钮的说明")
+        let blocked = launchBlockedReason != nil
+        let help = String(localized: "Open a new tab and start the agent CLI in it wearing this role.", comment: "角色库：启动按钮的说明")
         if clis.count > 1 {
             Menu(String(localized: "Launch", comment: "角色库：用这个角色启动")) {
                 ForEach(clis) { choice in
@@ -680,12 +763,7 @@ struct RoleLibraryView: View {
     // MARK: Chrome
 
     private func labeled<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(title)
-                .frame(width: 104, alignment: .trailing)
-                .foregroundStyle(.secondary)
-            content()
-        }
+        formRow(title, content: content)
     }
 }
 
@@ -705,20 +783,14 @@ struct RoleCliStartEditor: View {
 
     var body: some View {
         section(String(format: String(localized: "Starting %@", comment: "角色库：分区名，%@ 是 CLI 名，启动参数"), library.clis.label(for: cliKey))) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(String(localized: "Model", comment: "角色库：字段名，模型"))
-                    .frame(width: 104, alignment: .trailing)
-                    .foregroundStyle(.secondary)
+            formRow(String(localized: "Model", comment: "角色库：字段名，模型")) {
                 TextField(String(localized: "The CLI's default", comment: "角色库：模型字段占位，留空用 CLI 默认"), text: Binding(
                     get: { choice?.model ?? "" },
                     set: { value in editor.updateChoice(cliKey) { $0.model = value } }))
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 260)
             }
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(String(localized: "Extra Arguments", comment: "角色库：字段名，额外命令行参数"))
-                    .frame(width: 104, alignment: .trailing)
-                    .foregroundStyle(.secondary)
+            formRow(String(localized: "Extra Arguments", comment: "角色库：字段名，额外命令行参数")) {
                 VStack(alignment: .leading, spacing: 3) {
                     TextField(Self.argsExample, text: $argsText)
                         .textFieldStyle(.roundedBorder)
@@ -1050,10 +1122,32 @@ struct RoleItemRow: View {
 
 @ViewBuilder
 private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: SettingsLayout.rowGap) {
         Text(title).font(.headline)
         content()
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
+}
+
+/// A form row: a right-aligned label in the label column, the control in
+/// the control column (settings.md §2.3a). Every control of a form sits in
+/// that column, checkboxes and pop-ups included.
+func formRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: SettingsLayout.labelGap) {
+        Text(title)
+            .frame(width: SettingsLayout.label, alignment: .trailing)
+            .foregroundStyle(.secondary)
+        content()
+    }
+}
+
+/// A row with no label of its own: the control still starts in the control
+/// column, so it lines up with the labelled rows above and below it.
+func formControl<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+    HStack(spacing: 0) {
+        content()
+    }
+    .padding(.leading, SettingsLayout.label + SettingsLayout.labelGap)
     .frame(maxWidth: .infinity, alignment: .leading)
 }
 

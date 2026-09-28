@@ -578,6 +578,12 @@ class AppDelegate: NSObject,
             }
         }
 
+        // Unsaved changes in the settings window are asked about before the
+        // terminals are: they are lost on quit whatever the terminals say,
+        // and "no running process" must not wave them through (#896 D3).
+        // After the shutdown check above, so a shutdown is never held up.
+        if !SettingsWindowController.shared.mayQuit() { return .terminateCancel }
+
         // If our app says we don't need to confirm, we can exit now.
         if !ghostty.needsConfirmQuit { return .terminateNow }
 
@@ -1115,8 +1121,10 @@ class AppDelegate: NSObject,
 
     // MARK: - IB Actions
 
+    /// Preferences… opens the settings window; the file itself is under
+    /// General there (settings.md §3.2).
     @IBAction func openConfig(_ sender: Any?) {
-        ghostty.openConfig()
+        openSettings()
     }
 
     @IBAction func reloadConfig(_ sender: Any?) {

@@ -246,8 +246,8 @@
 "Saves this tab: %@ pane(s)" = "Saves this tab: %@ pane(s)";
 
 /* Roles: which tools, skills and opening prompt the agent in a terminal has */
-"Role (beta)" = "Role (beta)";
-"Role (beta): %@" = "Role (beta): %@";
+"Role" = "Role";
+"Role: %@" = "Role: %@";
 "No Role" = "No Role";
 "No roles are defined" = "No roles are defined";
 "%@ (modified)" = "%@ (modified)";
@@ -391,3 +391,15 @@
 "Restore" = "Restore";
 "\"%@\" goes back to its layout before the last change. The current version is kept, so doing this again undoes it." = "\"%@\" goes back to its layout before the last change. The current version is kept, so doing this again undoes it.";
 "Restore Previous Version" = "Restore Previous Version";
+
+/* Settings window (dev-docs/poltergeist/settings.md) */
+"Polter Settings" = "Polter Settings";
+"Roles" = "Roles";
+"Projects" = "Projects";
+"General" = "General";
+"Save your changes?" = "Save your changes?";
+"Coming in a later update." = "Coming in a later update.";
+"Open config file…" = "Open config file…";
+"Pick an agent CLI under Basics to launch this role." = "Pick an agent CLI under Basics to launch this role.";
+"No matching roles" = "No matching roles";
+"%@ (not in the search results)" = "%@ (not in the search results)";
