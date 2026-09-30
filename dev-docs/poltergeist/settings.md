@@ -223,7 +223,8 @@ off…"），对刚打开未重启的也非空（"no copy of it is running"）�
 （mac `SettingsRules`、Windows `settings-shell`）用同一张判定用例表测试。
 
 **宿主取数**：核心加两个 C 接口，两个宿主共用，不各加一份——`ghostty_app_plugin_list(app, buf, cap)`
-返回与 MCP `plugin_list` 同一份 JSON；`ghostty_app_plugin_test(app, key, len, out, cap) -> bool`，
+返回与 MCP `plugin_list` 同一份 JSON；`ghostty_app_plugin_configure(app, key, len, settings_json, len, out, cap)`
+与 MCP `plugin_configure` 同一个函数；`ghostty_app_plugin_test(app, key, len, out, cap) -> bool`，
 `out` 是报告文本或错误名（`TooSoon` / `NoSuchPlugin`）。缓冲规则同 `ghostty_app_persona_catalog`。
 
 ### 5.2 详情
@@ -237,7 +238,10 @@ off…"），对刚打开未重启的也非空（"no copy of it is running"）�
 4. **「测试」按钮**：走与 MCP `plugin_test` 相同的核心逻辑，结果显示在按钮旁。
 5. **日志**：最近 20 行（`~/.local/state/polter/plugins/<key>.log`，Windows 为对应目录），
    以及「显示日志」「显示插件文件夹」。Windows 现在没有这两个入口，补上。
-6. **需要重启**：改成详情区顶部一直显示的横幅，不再弹对话框；横幅上有「现在重启」。
+6. **需要重启**：改成详情区顶部一直显示的横幅，不再弹对话框。2026-10-01 定：两边保存插件设置
+   都经核心 `ghostty_app_plugin_configure`（与 MCP `plugin_configure` 同一个函数：存盘、重读插件、
+   未在跑的按需启动），所以多数改动当场生效；只有保存时该插件的常驻进程已经在跑，才留下 ↻ 和
+   横幅「重启 Polter 后生效」。本期不做进程自重启，不放「现在重启」按钮。
 
 ### 5.3 插件自带网页
 
