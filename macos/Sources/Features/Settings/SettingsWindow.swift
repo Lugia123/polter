@@ -72,13 +72,17 @@ final class SettingsModel: ObservableObject {
     let library: RoleLibrary
     let roles: RoleLibraryEditor
     let plugins: PluginsPane
+    let projects: ProjectsModel
+    let general = GeneralModel()
 
-    init(section: SettingsSection, library: RoleLibrary) {
+    init(section: SettingsSection, library: RoleLibrary, projects: ProjectsModel? = nil) {
         self.section = section
         self.library = library
         self.roles = RoleLibraryEditor(library: library)
         self.plugins = PluginsPane()
         plugins.reload()
+        self.projects = projects ?? ProjectsModel()
+        self.projects.reload()
     }
 
     /// The section whose unsaved state has to be settled before leaving it.
@@ -97,7 +101,9 @@ final class SettingsModel: ObservableObject {
             !RoleLibraryView.listing(library: library, editor: roles, query: search).visible.isEmpty
         case .plugins:
             !plugins.listing(query: search).visible.isEmpty
-        case .projects, .general:
+        case .projects:
+            !projects.listing(query: search).visible.isEmpty
+        case .general:
             false
         }
     }
@@ -179,7 +185,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             styleMask: Self.style).size
         let host = NSHostingController(rootView: SettingsRootView(
             model: model, library: library, editor: model.roles, plugins: model.plugins,
-            minimumContent: minContent))
+            projects: model.projects, minimumContent: minContent))
         host.sizingOptions = [.minSize]
 
         let window = NSWindow(contentViewController: host)
@@ -242,9 +248,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 current: model.plugins.selection,
                 fresh: fresh,
                 keys: model.plugins.plugins.map(\.key)))
-        case .projects, .general:
-            // Placeholders with nothing to select.
-            break
+        case .projects:
+            // A route that names nothing leaves an open window where it is.
+            if fresh || route.item != nil { model.projects.route(to: route.item) } else { model.projects.reload() }
+        case .general:
+            model.general.route(to: route.item, fresh: fresh)
         }
     }
 

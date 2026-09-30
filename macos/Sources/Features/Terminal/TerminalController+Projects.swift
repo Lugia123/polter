@@ -11,6 +11,26 @@ extension TerminalController: ProjectBindingHolder {
     var projectBindingTitle: String { window?.title ?? "" }
 }
 
+/// Renamed from the settings window while this tab is bound to it: the tab
+/// stays bound, under the new name, and its panes go on journaling into the
+/// moved snapshot directory under the same snapshot names.
+extension TerminalController: ProjectMoveFollower {
+    func projectWillMove() {
+        // A pending autosave lands where the project is now, before it moves.
+        projectAutosave?.flush()
+        stopScrollbackJournals()
+    }
+
+    func projectDidMove(to name: String, oldKey: String, key: String, scrollback: URL) {
+        boundProject = name
+        for view in surfaceTree {
+            guard let snapshot = view.projectSnapshot, snapshot.project == oldKey else { continue }
+            view.journalScrollback(.init(project: key, filename: snapshot.filename), in: scrollback)
+        }
+        invalidateRestorableState()
+    }
+}
+
 extension TerminalController {
     @IBAction func saveAsProject(_ sender: Any?) {
         projectPicker.present(
@@ -28,8 +48,10 @@ extension TerminalController {
             })
     }
 
+    /// The Projects section of the settings window, on this tab's project
+    /// (settings.md §3.2).
     @IBAction func manageProjects(_ sender: Any?) {
-        projectPicker.present(mode: .manage)
+        openSettings(.projects(boundProject))
     }
 
     // MARK: Close Flow
@@ -110,8 +132,9 @@ extension TerminalController {
 
     /// Save this tab as `name` and bind it there. Throws rather than
     /// reporting, so a caller that has something riding on the save --
-    /// closing the tab -- can tell whether it worked.
-    private func saveAndBind(name: String) throws {
+    /// closing the tab, the settings window's "Overwrite with Current Tab"
+    /// -- can tell whether it worked.
+    func saveAndBind(name: String) throws {
         let store = ProjectStore.shared
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         // Checked before writing, not after: saving over a project another
@@ -127,28 +150,35 @@ extension TerminalController {
     }
 
     private func performLoad(_ entry: ProjectStore.Entry) {
-        guard let app = ghostty.app else { return }
-        let store = ProjectStore.shared
         do {
-            // Refused before `loadTree`, which starts a shell per pane: a
-            // second tab on the same project would have to either not
-            // autosave (quietly unlike the first) or fight it for the file.
-            if let holder = store.holderTitle(name: entry.name) {
-                throw ProjectStore.StoreError.boundElsewhere(name: entry.name, holder: holder)
-            }
-            let tree = try store.loadTree(entry, app: app)
-            let controller = TerminalController.openProject(ghostty, tree: tree, attachingTo: window)
-            do {
-                try controller.bindProject(entry.name)
-            } catch {
-                // Restoring started each pane's journal into the project's
-                // files; a tab that did not get the binding must not write
-                // to them.
-                controller.stopScrollbackJournals()
-                throw error
-            }
+            try Self.load(entry, ghostty: ghostty, beside: window)
         } catch {
             presentProjectError(error)
+        }
+    }
+
+    /// Open `entry` as a new tab beside `parent` (a new window without one)
+    /// and bind the tab to it. What "Load Project" and the settings window's
+    /// "Open" both do.
+    static func load(_ entry: ProjectStore.Entry, ghostty: Ghostty.App, beside parent: NSWindow?) throws {
+        guard let app = ghostty.app else { return }
+        let store = ProjectStore.shared
+        // Refused before `loadTree`, which starts a shell per pane: a
+        // second tab on the same project would have to either not
+        // autosave (quietly unlike the first) or fight it for the file.
+        if let holder = store.holderTitle(name: entry.name) {
+            throw ProjectStore.StoreError.boundElsewhere(name: entry.name, holder: holder)
+        }
+        let tree = try store.loadTree(entry, app: app)
+        let controller = TerminalController.openProject(ghostty, tree: tree, attachingTo: parent)
+        do {
+            try controller.bindProject(entry.name)
+        } catch {
+            // Restoring started each pane's journal into the project's
+            // files; a tab that did not get the binding must not write
+            // to them.
+            controller.stopScrollbackJournals()
+            throw error
         }
     }
 

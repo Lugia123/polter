@@ -128,4 +128,58 @@ Windows 列的读数取自 worktree `s2-win-plugins`（基于 60b63ad7d + 核心
 | P15 | 页面只能读 `ui/` 里的文件，`..`、编码过的 `..`、别的插件、别的 scheme 一律拒 | | ✅（纯层）`requests_stay_inside_ui`；宿主另按 canonicalize 后的真实路径再围一次 |
 | P16 | `WebView2Loader.dll` 不在导入表（缺它时进程照常起） | | ✅ `objdump -p polter-host.exe` 38 个 DLL Name，含 webview 的 0 个 |
 | P17 | 搜索框按插件名过滤侧栏插件行，过滤掉当前插件时面包屑加「（不在搜索结果里）」 | | ⏳ |
+## 第 3 期：项目栏目（§6）
 
+mac 列的读数取自 worktree `s2-mac-projects`（基于 60b63ad7d，未提交改动）。单元测试由
+`tools/mac-xctest-run.sh` 跑（隔离状态目录、`poltergeist-register-mcp = false`，前后 `mcpServers.polter`
+逐字相同，输出 `MCP_SAME`）。截图不是真实例：是一条**临时**测试（不入库）在测试宿主里用真的
+`SettingsRootView` + 一个指向临时目录的 `ProjectStore` 离屏渲染、`cacheDisplay` 出的图，数据是造的
+（4 个项目，polter 有 3 个 pane、一个 `.prev`、1.7 MB scrollback）；没有终端窗口，所以「用当前标签页覆盖」
+是灰的、底栏写原因。截图目录 `ghostty-wt/settings-mac-shots/p3-projects/`（不在仓内）。
+
+| # | 行为 | mac | Windows |
+|---|---|---|---|
+| PJ1 | 列表每行：名称、上次保存时间、pane 数（tab 数恒为 1，不显示，见群里 #957 规格点 2） | ✅ `08-projects-1180.png` | |
+| PJ2 | 缩略图按分屏树画，pane 标目录末段 + 标题（项目文件不存角色，见 #957 规格点 1） | ✅ 画面见 08；矩形切分 `ProjectsRules.cells`，单元测试 `aSideBySideSplitCutsTheWidth`、`anOverUnderSplitCutsTheHeightByItsRatio`、`nestedSplitsTileTheRectWithoutOverlap`、`aRatioOutOfRangeLeavesNoNegativeCell` | |
+| PJ3 | 详情：目录、scrollback 占用、自动保存状态（绑定到哪个标签页 / 未绑定） | ✅（未绑定一格）见 08。绑定状态的文字没在画面上出现过 | |
+| PJ4 | 打开 = 加载项目 | ⏳ 与「加载项目…」共用 `TerminalController.load`（原 `performLoad` 抽出）。没在真实例上点过 | |
+| PJ5 | 重命名：重名拒绝并说明（含大小写 / 同文件名） | ✅ 规则 `renameVerdict`：`anotherProjectsNameIsRefused`、`aNameSavedUnderAnotherProjectsFileIsRefused`、`aFileDifferingOnlyInCaseIsRefused`；落盘 `renameOntoAnotherProjectIsRefusedAndTouchesNothing` | |
+| PJ6 | 重命名带走 `.prev`、scrollback，`.prev` 里的名字也改；只改大小写不丢文件 | ✅ `renameMovesTheFileItsPreviousAndItsSnapshots`、`renameThatOnlyChangesCaseKeepsTheProject` | |
+| PJ7 | 已绑定的项目改名，绑定跟着走 | ✅（存储层）`aBoundProjectIsRenamedAndItsBindingFollows`：登记表换键、持有者收到 will/did（新 key、新 scrollback 目录）。⏳ 真标签页上的续写（`TerminalController.projectDidMove` 重接 journal）没在真实例上验 | |
+| PJ8 | 复制一份，默认名「<原名> 副本」，重名递增 | ✅ `aCopyTakesTheFirstFreeNameAndTheSnapshotsButNotThePrevious`、`aCopyNameThatIsTakenIsNumbered` | |
+| PJ9 | 用当前标签页覆盖，需确认 | ⏳ 确认框 + `saveAndBind`（与「另存为项目」覆盖同一条路）。无终端时按钮灰、底栏写原因（08）。没在真实例上点过 | |
+| PJ10 | 删除需确认；之后列表顶部「已删除 <名> [撤销]」直到关窗或下一次删除 | ✅ 画面 `10-projects-deleted-banner.png`；规则 `aDeleteShowsTheBannerAndTheNextReplacesIt`、`undoingTakesTheBannerAwayAndAFailedUndoKeepsIt`；关窗即丢（横幅在随窗口释放的 model 上） | |
+| PJ11 | 删除进废纸篓、撤销放回；同名已被重新占用时撤销拒绝且不覆盖 | ✅ `deleteMovesEveryPartToTheTrashAndUndoPutsThemBack`、`undoIsRefusedWhenTheNameHasBeenTakenSince`、`aBoundProjectIsNotDeleted`（测试注入自己的「废纸篓」目录） | |
+| PJ12 | 版本历史：当前 + 至多 1 个上一版，按时间，标出当前，选一个恢复 | ✅ 画面见 08；`versionsListTheCurrentAndTheKeptOne`、`versionsAreNewestFirst`、`aPreviousVersionNewerThanTheCurrentSortsFirst`。恢复走原 `restorePrevious`（互换，绑定时拒绝） | |
+| PJ13 | 在 Finder 中显示 | ⏳ `NSWorkspace.activateFileViewerSelecting`。没在真实例上点过 | |
+| PJ14 | 「管理项目…」→ `projects/<当前窗口的项目>` | ⏳ `manageProjects:` 改为 `openSettings(.projects(boundProject))`；选中规则 `projectToSelect` 四条单测。没在真实例上点过 | |
+| PJ15 | 搜索按项目名过滤；过滤掉选中项时面包屑加注；在项目栏目里输入不被角色的匹配拉走 | ✅（规则）`sectionForSearch` 三条单测（在当前栏目有匹配就留下，否则去第一个有匹配的）。⚠️ 这是对 §2.3「跳到第一个有匹配的栏目」的收窄，已在群里报。没看画面 | |
+| PJ16 | §2.3a 顶带下沿三段同一行 | ✅ 08（1180×800 @2x）：侧栏 / 列表 / 详情都是第 168–169 行；09（900×620）同 | |
+| PJ17 | §2.3a 底带上沿三段同一行 | ✅ 08：三段都是第 1494–1495 行；09：三段都是 1134–1135 | |
+| PJ18 | §2.3a 竖线上下贯通 | ✅ 08 / 09：侧栏竖线在顶带、主体上端、主体下端、底带都是 440–441 列；列表竖线主体上下端都是 962–963，顶带和底带里没有。⚠️ 10 里横幅紧贴顶带线，量法（比上下 6px 邻居）在列表段量不出那条线，不是没有 | |
+| PJ19 | 每列内容左缘 = 列左线 + PAD | ✅ 08：面包屑、列表「polter」「market」首个墨迹都在第 475 列（线在 440–441 → 442 + 32 = 474，+1 是字形边距）；底栏第一个图标墨迹 479（按钮框起点 474，图标 18pt 框内居中）；详情标题 998、「版本历史」997（列表竖线 962–963 → 964 + 32 = 996） | |
+| PJ20 | 最小 900×620 下按钮不被裁 | ✅ `09-projects-min-900.png`：重命名 / 在 Finder 中显示 / 用当前标签页覆盖 / 打开都在 | |
+
+### 单元测试（mac，第 3 期）
+
+`macos/Tests/Settings/ProjectsRulesTests.swift`（28 条，被测 `ProjectsRules.swift` + `SettingsRules.sectionForSearch`）、
+`macos/Tests/Projects/ProjectStoreSettingsTests.swift`（11 条，被测 `ProjectStore` 新增的 rename / duplicate / trash /
+untrash / versions / scrollbackBytes，临时目录 + 注入的废纸篓）。同批回归 `ProjectStoreTests` 14、`ProjectAutosaveTests` 9、
+`SettingsRulesTests` 30。基线（`-only-testing` 一个不存在的测试）0 条。地板：一次打坏 8 处，全部红在各自断言上，见交付报告。
+
+## 第 4 期：通用栏目（§7）——不依赖核心表单的部分
+
+mac 列：worktree `s2-mac-projects`（基于 1f9d4de14，未提交）。截图同第 3 期的离屏办法（临时测试，不入库），测试宿主
+读隔离配置、没有配置错误；目录 `ghostty-wt/settings-mac-shots/p4-general/`。外观 / 字体 / 终端 / 窗口与标签 / Polter /
+全部选项六组等 #960 的 form.zig，现在是占位页、列表里灰字。
+
+| # | 行为 | mac | Windows |
+|---|---|---|---|
+| G1 | 中栏分组按 §7.1 顺序：外观、字体、终端、窗口与标签、Polter、全部选项、快捷键、高级、关于 | ✅ `general-*.png`；单测 `theGroupsAreTheSpecsInItsOrder`、`onlyTheFormGroupsWaitForTheCoresTable` | |
+| G2 | 快捷键：只读列表，一行一个动作：名称（下面是 tag）、按键（没有就写 —）、说明（菜单不显示 / 没有快捷键 / agent 开关）；同一个键只列一次，一个键不会被拆到两行 | ✅ `menu-keybinds-1180.png`、`menu-keybinds-900.png`（99 个动作）。数据用现成的 `KeybindsModel`（读正向表，与 Windows 页同源），配置重载后跟着刷新。去重：`fold` 按渲染后的字符串去重，真实配置里 99 行都没有重复键（`log.txt`：goto_tab 是 ⌘1…⌘8 各一次）；单测 `aKeyWrittenTheSameWayTwiceIsListedOnce`。不断行：键里的空格换成不断行空格，单测 `aKeyIsNeverBrokenAcrossLines`，画面上「⇧Page Down」在同一行。窄窗口：说明挤不下时（规则 `keybindNoteBelow`，名称 + 按键 + 两个间距 + 160）放到按键下面，900 宽那张就是这样 | |
+| G3 | 快捷键：「在配置文件中编辑…」 | ⏳ 底栏按钮，调宿主的打开文件逻辑（不走 `open_config`）。没在真实例上点过 | |
+| G4 | 高级：配置错误列表（没有错误时明说）、打开配置文件、重新加载配置 | ✅（没有错误的一格）`general-advanced-1180.png`，重载后底栏写「已重新加载配置。」。⏳ 有错误时的列表没在画面上出现过；上一次写入前的备份位置要等 form.zig 实现 | |
+| G5 | 关于：版本、构建、提交号 | ✅ `general-about-1180.png`（Debug 测试宿主的 bundle 里没有 PolterCommit，所以提交号那一行按规则不显示）；单测 `aboutListsVersionBuildAndCommitInThatOrder`、`aboutLeavesOutWhatTheBundleDoesNotSay` | |
+| G6 | 路由 general/<组>：点名的组；没点名时新开窗口在第一组，已经开着的窗口留在原组 | ✅（规则）`aRouteLandsOnTheGroupItNames`、`withNoneNamedANewWindowTakesTheFirstAndAnOpenOneStays` | |
+| G7 | §2.3a 网格 | ✅ 快捷键 / 高级 / 关于三张（1180×800 @2x）和快捷键 900×620：顶带下沿三段都在第 168–169 行；底带上沿三段都在 1494–1495 行（900：1134–1135）；侧栏竖线 440–441 贯通顶带、主体和底带；列表竖线 962–963 只画在主体里 | |
+| G8 | 菜单「快捷键…」→ `general/keybinds`：打开设置窗口的「快捷键」组，不再开旧的独立窗口（旧的 `KeybindsController` 留给第 4 期删） | ✅ 在测试宿主里调真实的 `AppDelegate.showKeybinds(nil)`：打开的是「Polter 设置」窗口、只有 1 个，面包屑「通用 › 快捷键」（`menu-keybinds-1180.png`）；单测 `theKeyboardShortcutsMenuRoutesToItsGroup`。⏳ 菜单项本身没有点过（xib 的 action 没改，仍然是 `showKeybinds:`） | |
