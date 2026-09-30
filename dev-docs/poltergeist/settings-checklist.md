@@ -163,6 +163,7 @@ mac 列的读数取自 worktree `s2-mac-projects`（基于 60b63ad7d，未提交
 | PJ22 | 设置窗口开着时，列表与详情的「上次保存」随自动保存刷新 | ✅ 真机：打开 beta 后没有点任何东西，5 秒后列表与详情都从 03:23 变成 03:35（磁盘 saved_at 1790796916），绑定标签页名也跟着换成新标题。`p965/s1-just-opened.png` → `s2-after-5s.png`。机制：`ProjectStore.didWrite`（真写了才发）+ `bindingDidChange`（绑定 / 解绑 / 每次自动保存），项目模型订阅，不轮询 | |
 | PJ23 | 绑定的标签页名永不为空（刚打开的项目曾显示「绑定到标签页「」」） | ⏳ 规则 `ProjectsRules.holderLabel`：窗口标题 → 第一个非空 pane 标题 → 第一个 cwd 末段 → 「未命名标签页」，单元测试 3 条。真机这次没复现出空标题：点「打开」后 0.3 秒窗口标题已是「🪄 Polter」（`s1`）；空标题那一刻只在 #962 的截图 s02 里见过 | |
 | PJ24 | 菜单「另存为项目」存到已有名字也留上一版，确认框写「被替换的版本会留作上一版」（#969） | ✅ 真机（mac-fix969，dylib `d71230b0`）：/bin/sh（1 个面板）另存为到已有的 gamma（1 个面板）→ 确认框「“gamma”已经有 1 个面板，保存于 …。被替换的版本会留作上一版。」→ 覆盖后生成 `gamma.json.prev`，与之前的 gamma.json 逐字节相同。另存为新名字 delta 不产生 `.prev`。地板：把这个调用点改回 `.onLayoutChange` 重建（`cfe9683a`），同样操作覆盖照样发生、没有 `.prev`。`p969/s1-saveas-picker.png`、`s2-saveas-overwrite-confirm.png` | |
+| PJ25 | 「另存为项目」在名字框输入已有项目名（含只差大小写）再保存，先弹与点选已有项目相同的覆盖确认；取消 = 不写、不换绑定（#980） | ✅ 真机（mac-saveas980，dylib `7231a4b7`）：输入 gamma、Gamma 都弹「覆盖这个项目？“gamma”已经有 1 个面板…被替换的版本会留作上一版。」，取消后 gamma.json sha 不变、没有新文件和 `.prev`。地板：`createNew` 改回直接 `onSave`（`e20d40c0`）→ 不问，gamma.json 被连续改写两次。判定：`ProjectsRules.saveAsStep` + `ProjectStore.nameVerdict(current: nil, …)`（与重命名同一规则，文件名不分大小写）。`p980/run.sh` 复现 | |
 
 ### 单元测试（mac，第 3 期）
 
