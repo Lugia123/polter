@@ -419,3 +419,34 @@
 "Pick an agent CLI under Basics to launch this role." = "先在「基本信息」里选一个 agent CLI，才能用这个角色启动。";
 "No matching roles" = "没有匹配的角色";
 "%@ (not in the search results)" = "%@（不在搜索结果里）";
+
+/* 设置窗口·项目栏目（settings.md §6） */
+"No matching projects" = "没有匹配的项目";
+"Deleted %@" = "已删除 %@";
+"Rename Project" = "重命名项目";
+"Rename" = "重命名";
+"Rename…" = "重命名…";
+"Select a project. Save a tab as a project from its right-click menu." = "选一个项目。标签页的右键菜单里可以把它存成项目。";
+"The tab \"%@\" stays bound to it under the new name." = "标签页「%@」会以新名字继续绑定它。";
+"The project's file, its previous version and its scrollback move with it." = "项目文件、上一版和 scrollback 会一起改名。";
+"Duplicate Project" = "复制一份";
+"Delete Project" = "删除项目";
+"Open a terminal window to overwrite a project with its tab." = "先打开一个终端窗口，才能用它的标签页覆盖项目。";
+"Overwrite with Current Tab…" = "用当前标签页覆盖…";
+"Open" = "打开";
+"\"%@\" moves to the Trash. You can undo this until you close this window." = "「%@」会移到废纸篓。关掉这个窗口之前都可以撤销。";
+"\"%@\" is replaced by the tab \"%@\" (%@ pane(s)), and that tab saves to it from now on. The replaced layout is kept as the previous version." = "「%@」会被标签页「%@」（%@ 个面板）替换，之后这个标签页会自动保存到它。被替换的布局留作上一版。";
+"Show in Finder" = "在 Finder 中显示";
+"Saved" = "上次保存";
+"Panes" = "面板数";
+"Directories" = "目录";
+"Scrollback" = "Scrollback";
+"Autosave" = "自动保存";
+"Version History" = "版本历史";
+"%@ pane(s)" = "%@ 个面板";
+"Current" = "当前";
+"Restore…" = "恢复…";
+"An earlier version is kept when a save changes the layout: a pane added or closed, or a split turned." = "保存时布局变了（加了或关了面板、分屏换了方向）才会留下上一版。";
+"Not bound to an open tab." = "没有绑定到打开的标签页。";
+"Bound to the tab \"%@\"; saved automatically as it changes, last at %@." = "绑定到标签页「%@」，改动后自动保存，上次在 %@。";
+"There is already a project called \"%@\"." = "已经有一个叫「%@」的项目了。";

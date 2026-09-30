@@ -242,4 +242,27 @@ final class ProjectBindingRegistry {
     func owner(of key: String) -> AnyObject? {
         owners[key]?.owner
     }
+
+    /// The project under `old` is now under `new` (it was renamed): whoever
+    /// held it holds it there. Nothing held `new` -- a rename onto a
+    /// project that exists is refused before it gets here.
+    func move(_ old: String, to new: String) {
+        guard old != new, let entry = owners.removeValue(forKey: old) else { return }
+        owners[new] = entry
+    }
+}
+
+/// A binding holder that has to be told when its project is renamed under
+/// it (settings.md §6.2: "the binding follows the new name"). Separate from
+/// `ProjectBindingHolder` so that a holder that is only ever asked its title
+/// need not answer this.
+@MainActor
+protocol ProjectMoveFollower: AnyObject {
+    /// About to move: land any pending write where the project is now, and
+    /// stop writing to it.
+    func projectWillMove()
+    /// Moved: the project is `name` now, its key `key`, its snapshots in
+    /// `scrollback`. Panes that were journaling under `oldKey` go on
+    /// journaling the same snapshot names there.
+    func projectDidMove(to name: String, oldKey: String, key: String, scrollback: URL)
 }

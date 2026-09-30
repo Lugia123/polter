@@ -8,6 +8,7 @@ struct SettingsRootView: View {
     @ObservedObject var model: SettingsModel
     @ObservedObject var library: RoleLibrary
     @ObservedObject var editor: RoleLibraryEditor
+    @ObservedObject var projects: ProjectsModel
     /// The window's minimum, as content size (settings.md §2.2).
     var minimumContent: CGSize
 
@@ -87,6 +88,9 @@ struct SettingsRootView: View {
         if model.section == .roles, let draft = editor.draft {
             item = draft.displayName.isEmpty ? draft.key : draft.displayName
             hidden = RoleLibraryView.listing(library: library, editor: editor, query: model.search).selectionHidden
+        } else if model.section == .projects, let name = projects.selected?.name {
+            item = name
+            hidden = projects.listing(query: model.search).selectionHidden
         }
         return SettingsRules.breadcrumb(section: model.section.title, item: item, hiddenBySearch: hidden)
     }
@@ -136,7 +140,15 @@ struct SettingsRootView: View {
                 roles(.detail)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        case .projects, .plugins:
+        case .projects:
+            HStack(spacing: 0) {
+                projectsPart(.list)
+                    .frame(width: L.list)
+                vRule
+                projectsPart(.detail)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        case .plugins:
             Text(String(localized: "Coming in a later update.", comment: "设置窗口：项目/插件栏目第一期的占位文字"))
                 .foregroundStyle(.secondary)
         case .general:
@@ -161,8 +173,13 @@ struct SettingsRootView: View {
     private var bar: some View {
         switch model.section {
         case .roles: roles(.bar)
-        case .projects, .plugins, .general: Color.clear
+        case .projects: projectsPart(.bar)
+        case .plugins, .general: Color.clear
         }
+    }
+
+    private func projectsPart(_ part: ProjectsView.Part) -> some View {
+        ProjectsView(model: projects, part: part, filter: model.search)
     }
 
     private func roles(_ part: RoleLibraryView.Part) -> some View {

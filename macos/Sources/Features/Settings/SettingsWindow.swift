@@ -59,19 +59,26 @@ final class SettingsModel: ObservableObject {
     @Published private(set) var section: SettingsSection
     @Published var search = "" {
         didSet {
-            // A search goes to the first section it can filter; in the first
-            // stage that is only roles.
-            if !search.isEmpty && section != .roles { go(.roles) }
+            guard !search.isEmpty else { return }
+            var matching = Set<SettingsSection>()
+            if !RoleLibraryView.listing(library: library, editor: roles, query: search).noMatch { matching.insert(.roles) }
+            if !projects.listing(query: search).noMatch { matching.insert(.projects) }
+            let target = SettingsRules.sectionForSearch(
+                current: section, searchable: [.roles, .projects], matching: matching)
+            if target != section { go(target) }
         }
     }
 
     let library: RoleLibrary
     let roles: RoleLibraryEditor
+    let projects: ProjectsModel
 
-    init(section: SettingsSection, library: RoleLibrary) {
+    init(section: SettingsSection, library: RoleLibrary, projects: ProjectsModel? = nil) {
         self.section = section
         self.library = library
         self.roles = RoleLibraryEditor(library: library)
+        self.projects = projects ?? ProjectsModel()
+        self.projects.reload()
     }
 
     /// The section whose unsaved state has to be settled before leaving it.
@@ -148,7 +155,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             forFrameRect: CGRect(origin: .zero, size: SettingsRules.minimumSize),
             styleMask: Self.style).size
         let host = NSHostingController(rootView: SettingsRootView(
-            model: model, library: library, editor: model.roles, minimumContent: minContent))
+            model: model, library: library, editor: model.roles, projects: model.projects, minimumContent: minContent))
         host.sizingOptions = [.minSize]
 
         let window = NSWindow(contentViewController: host)
@@ -204,8 +211,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 last: UserDefaults.standard.string(forKey: Self.lastRoleKey),
                 roles: model.library.catalog.roles.map(\.key))
             if case .select(let key) = choice { model.roles.select(key) }
-        case .projects, .plugins, .general:
-            // First stage: placeholders with nothing to select.
+        case .projects:
+            // A route that names nothing leaves an open window where it is.
+            if fresh || route.item != nil { model.projects.route(to: route.item) } else { model.projects.reload() }
+        case .plugins, .general:
+            // Placeholders with nothing to select.
             break
         }
     }

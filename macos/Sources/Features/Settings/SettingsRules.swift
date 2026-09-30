@@ -39,6 +39,7 @@ struct SettingsRoute: Equatable {
     var item: String?
 
     static func roles(_ key: String? = nil) -> Self { .init(section: .roles, item: key) }
+    static func projects(_ name: String? = nil) -> Self { .init(section: .projects, item: name) }
 }
 
 enum SettingsRules {
@@ -116,6 +117,25 @@ enum SettingsRules {
             visible: visible,
             noMatch: visible.isEmpty,
             selectionHidden: selection.map { !visible.contains($0) } ?? false)
+    }
+
+    /// The section a search shows (§2.3): the one on screen if it has a
+    /// match -- typing a project's name while looking at projects does not
+    /// jump away because a role's name has it too -- else the first, in
+    /// sidebar order, that has one. With no match anywhere, a section that
+    /// can be searched stays and says so; one that can't goes to the first
+    /// that can.
+    static func sectionForSearch(
+        current: SettingsSection,
+        searchable: [SettingsSection],
+        matching: Set<SettingsSection>
+    ) -> SettingsSection {
+        if matching.contains(current) { return current }
+        if let first = SettingsSection.allCases.first(where: { searchable.contains($0) && matching.contains($0) }) {
+            return first
+        }
+        if searchable.contains(current) { return current }
+        return searchable.first ?? current
     }
 
     /// `Section › item`, `Section` when nothing is chosen, and a note after

@@ -64,3 +64,42 @@ roles 路由选哪个角色、未保存时的保存 / 不保存 / 取消。`xcod
 
 - 用户叫停了真机 GUI 测试（测试实例反复抢前台，用户的按键进了测试窗口）：14 / 15 / 17、真机小屏 90% 截断、
   修复后的最小尺寸读回，等用户说前台可以占用时再验。
+
+## 第 3 期：项目栏目（§6）
+
+mac 列的读数取自 worktree `s2-mac-projects`（基于 60b63ad7d，未提交改动）。单元测试由
+`tools/mac-xctest-run.sh` 跑（隔离状态目录、`poltergeist-register-mcp = false`，前后 `mcpServers.polter`
+逐字相同，输出 `MCP_SAME`）。截图不是真实例：是一条**临时**测试（不入库）在测试宿主里用真的
+`SettingsRootView` + 一个指向临时目录的 `ProjectStore` 离屏渲染、`cacheDisplay` 出的图，数据是造的
+（4 个项目，polter 有 3 个 pane、一个 `.prev`、1.7 MB scrollback）；没有终端窗口，所以「用当前标签页覆盖」
+是灰的、底栏写原因。截图目录 `ghostty-wt/settings-mac-shots/p3-projects/`（不在仓内）。
+
+| # | 行为 | mac | Windows |
+|---|---|---|---|
+| P1 | 列表每行：名称、上次保存时间、pane 数（tab 数恒为 1，不显示，见群里 #957 规格点 2） | ✅ `08-projects-1180.png` | |
+| P2 | 缩略图按分屏树画，pane 标目录末段 + 标题（项目文件不存角色，见 #957 规格点 1） | ✅ 画面见 08；矩形切分 `ProjectsRules.cells`，单元测试 `aSideBySideSplitCutsTheWidth`、`anOverUnderSplitCutsTheHeightByItsRatio`、`nestedSplitsTileTheRectWithoutOverlap`、`aRatioOutOfRangeLeavesNoNegativeCell` | |
+| P3 | 详情：目录、scrollback 占用、自动保存状态（绑定到哪个标签页 / 未绑定） | ✅（未绑定一格）见 08。绑定状态的文字没在画面上出现过 | |
+| P4 | 打开 = 加载项目 | ⏳ 与「加载项目…」共用 `TerminalController.load`（原 `performLoad` 抽出）。没在真实例上点过 | |
+| P5 | 重命名：重名拒绝并说明（含大小写 / 同文件名） | ✅ 规则 `renameVerdict`：`anotherProjectsNameIsRefused`、`aNameSavedUnderAnotherProjectsFileIsRefused`、`aFileDifferingOnlyInCaseIsRefused`；落盘 `renameOntoAnotherProjectIsRefusedAndTouchesNothing` | |
+| P6 | 重命名带走 `.prev`、scrollback，`.prev` 里的名字也改；只改大小写不丢文件 | ✅ `renameMovesTheFileItsPreviousAndItsSnapshots`、`renameThatOnlyChangesCaseKeepsTheProject` | |
+| P7 | 已绑定的项目改名，绑定跟着走 | ✅（存储层）`aBoundProjectIsRenamedAndItsBindingFollows`：登记表换键、持有者收到 will/did（新 key、新 scrollback 目录）。⏳ 真标签页上的续写（`TerminalController.projectDidMove` 重接 journal）没在真实例上验 | |
+| P8 | 复制一份，默认名「<原名> 副本」，重名递增 | ✅ `aCopyTakesTheFirstFreeNameAndTheSnapshotsButNotThePrevious`、`aCopyNameThatIsTakenIsNumbered` | |
+| P9 | 用当前标签页覆盖，需确认 | ⏳ 确认框 + `saveAndBind`（与「另存为项目」覆盖同一条路）。无终端时按钮灰、底栏写原因（08）。没在真实例上点过 | |
+| P10 | 删除需确认；之后列表顶部「已删除 <名> [撤销]」直到关窗或下一次删除 | ✅ 画面 `10-projects-deleted-banner.png`；规则 `aDeleteShowsTheBannerAndTheNextReplacesIt`、`undoingTakesTheBannerAwayAndAFailedUndoKeepsIt`；关窗即丢（横幅在随窗口释放的 model 上） | |
+| P11 | 删除进废纸篓、撤销放回；同名已被重新占用时撤销拒绝且不覆盖 | ✅ `deleteMovesEveryPartToTheTrashAndUndoPutsThemBack`、`undoIsRefusedWhenTheNameHasBeenTakenSince`、`aBoundProjectIsNotDeleted`（测试注入自己的「废纸篓」目录） | |
+| P12 | 版本历史：当前 + 至多 1 个上一版，按时间，标出当前，选一个恢复 | ✅ 画面见 08；`versionsListTheCurrentAndTheKeptOne`、`versionsAreNewestFirst`、`aPreviousVersionNewerThanTheCurrentSortsFirst`。恢复走原 `restorePrevious`（互换，绑定时拒绝） | |
+| P13 | 在 Finder 中显示 | ⏳ `NSWorkspace.activateFileViewerSelecting`。没在真实例上点过 | |
+| P14 | 「管理项目…」→ `projects/<当前窗口的项目>` | ⏳ `manageProjects:` 改为 `openSettings(.projects(boundProject))`；选中规则 `projectToSelect` 四条单测。没在真实例上点过 | |
+| P15 | 搜索按项目名过滤；过滤掉选中项时面包屑加注；在项目栏目里输入不被角色的匹配拉走 | ✅（规则）`sectionForSearch` 三条单测（在当前栏目有匹配就留下，否则去第一个有匹配的）。⚠️ 这是对 §2.3「跳到第一个有匹配的栏目」的收窄，已在群里报。没看画面 | |
+| P16 | §2.3a 顶带下沿三段同一行 | ✅ 08（1180×800 @2x）：侧栏 / 列表 / 详情都是第 168–169 行；09（900×620）同 | |
+| P17 | §2.3a 底带上沿三段同一行 | ✅ 08：三段都是第 1494–1495 行；09：三段都是 1134–1135 | |
+| P18 | §2.3a 竖线上下贯通 | ✅ 08 / 09：侧栏竖线在顶带、主体上端、主体下端、底带都是 440–441 列；列表竖线主体上下端都是 962–963，顶带和底带里没有。⚠️ 10 里横幅紧贴顶带线，量法（比上下 6px 邻居）在列表段量不出那条线，不是没有 | |
+| P19 | 每列内容左缘 = 列左线 + PAD | ✅ 08：面包屑、列表「polter」「market」首个墨迹都在第 475 列（线在 440–441 → 442 + 32 = 474，+1 是字形边距）；底栏第一个图标墨迹 479（按钮框起点 474，图标 18pt 框内居中）；详情标题 998、「版本历史」997（列表竖线 962–963 → 964 + 32 = 996） | |
+| P20 | 最小 900×620 下按钮不被裁 | ✅ `09-projects-min-900.png`：重命名 / 在 Finder 中显示 / 用当前标签页覆盖 / 打开都在 | |
+
+### 单元测试（mac，第 3 期）
+
+`macos/Tests/Settings/ProjectsRulesTests.swift`（28 条，被测 `ProjectsRules.swift` + `SettingsRules.sectionForSearch`）、
+`macos/Tests/Projects/ProjectStoreSettingsTests.swift`（11 条，被测 `ProjectStore` 新增的 rename / duplicate / trash /
+untrash / versions / scrollbackBytes，临时目录 + 注入的废纸篓）。同批回归 `ProjectStoreTests` 14、`ProjectAutosaveTests` 9、
+`SettingsRulesTests` 30。基线（`-only-testing` 一个不存在的测试）0 条。地板：一次打坏 8 处，全部红在各自断言上，见交付报告。
