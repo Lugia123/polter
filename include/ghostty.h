@@ -1526,6 +1526,17 @@ GHOSTTY_API uintptr_t ghostty_app_persona_catalog(ghostty_app_t, char*, uintptr_
 GHOSTTY_API bool ghostty_app_persona_put(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 GHOSTTY_API bool ghostty_app_persona_delete(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 GHOSTTY_API uintptr_t ghostty_app_agent_clis(ghostty_app_t, bool, char*, uintptr_t);
+// Plugins, for the settings window: the list is the document `plugin_list`
+// answers with (same buffer rule). The test is `plugin_test` with no
+// terminal asking; call it once -- it sends -- and its report, or on false
+// the error's name, is cut to fit the buffer. Configure is the writer
+// `plugin_configure` uses, as the user: key, then settings JSON
+// {"enabled":bool,"params":{"name":"value"}}; on true the buffer holds how
+// the resident copy stands (`already_running` = takes effect on restart),
+// on false the error's name. Call it once; it writes.
+GHOSTTY_API uintptr_t ghostty_app_plugin_list(ghostty_app_t, char*, uintptr_t);
+GHOSTTY_API bool ghostty_app_plugin_test(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+GHOSTTY_API bool ghostty_app_plugin_configure(ghostty_app_t, const char*, uintptr_t, const char*, uintptr_t, char*, uintptr_t);
 GHOSTTY_API void ghostty_app_tick(ghostty_app_t);
 GHOSTTY_API void* ghostty_app_userdata(ghostty_app_t);
 GHOSTTY_API void ghostty_app_set_focus(ghostty_app_t, bool);

@@ -495,6 +495,51 @@ pub const PlatformTag = enum(c_int) {
     }
 };
 
+/// A C caller's text buffer that is written once and cut to fit, for
+/// answers that cannot be asked for twice (`ghostty_app_plugin_test` sends
+/// a notification). Tested from `apprt.zig`, the same way `PlatformTag` is.
+pub const TextOut = struct {
+    /// `text` into `buf`, NUL-terminated, cut to fit without splitting a
+    /// UTF-8 sequence.
+    pub fn copy(text: []const u8, buf: ?[*]u8, cap: usize) void {
+        const b = buf orelse return;
+        if (cap == 0) return;
+        var n = @min(text.len, cap - 1);
+        if (n < text.len) {
+            while (n > 0 and (text[n] & 0xC0) == 0x80) n -= 1;
+        }
+        @memcpy(b[0..n], text[0..n]);
+        b[n] = 0;
+    }
+
+    test "TextOut fits whole text and NUL" {
+        var buf: [8]u8 = @splat(0xAA);
+        copy("abc", &buf, buf.len);
+        try std.testing.expectEqualStrings("abc", std.mem.sliceTo(&buf, 0));
+    }
+
+    test "TextOut cuts on a UTF-8 boundary" {
+        // "a" then 设 (3 bytes) then 置: room for 4 bytes plus the NUL
+        // would take "a" and all of 设; room for 3 would split 设, so it
+        // is left out whole.
+        const text = "a\u{8BBE}\u{7F6E}";
+        var five: [5]u8 = @splat(0xAA);
+        copy(text, &five, five.len);
+        try std.testing.expectEqualStrings("a\u{8BBE}", std.mem.sliceTo(&five, 0));
+
+        var four: [4]u8 = @splat(0xAA);
+        copy(text, &four, four.len);
+        try std.testing.expectEqualStrings("a", std.mem.sliceTo(&four, 0));
+    }
+
+    test "TextOut writes nothing into no room" {
+        var one: [1]u8 = @splat(0xAA);
+        copy("abc", &one, one.len);
+        try std.testing.expectEqual(@as(u8, 0), one[0]);
+        copy("abc", null, 0);
+    }
+};
+
 pub const EnvVar = extern struct {
     /// The name of the environment variable.
     key: [*:0]const u8,
@@ -2115,6 +2160,76 @@ pub const CAPI = struct {
             return copyJsonOut(clis_fallback, buf, cap);
         defer core.alloc.free(json);
         return copyJsonOut(json, buf, cap);
+    }
+
+    const plugins_fallback =
+        \\{"ok":false,"error":"the plugin list could not be rendered","plugins":[]}
+    ;
+
+    /// Every plugin, as JSON: the document `plugin_list` answers with
+    /// (`App.pluginListJson`), so the settings window and an agent read the
+    /// same state, failures and note. Same buffer rule as
+    /// `ghostty_app_persona_catalog`.
+    export fn ghostty_app_plugin_list(
+        app: *App,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        const core = app.core_app;
+        const json = core.pluginListJson(core.alloc) catch
+            return copyJsonOut(plugins_fallback, buf, cap);
+        defer core.alloc.free(json);
+        return copyJsonOut(json, buf, cap);
+    }
+
+    /// Test one plugin the way `plugin_test` does. True with the report in
+    /// `out`; false with the error's name there (`TooSoon`, `NoSuchPlugin`,
+    /// ...). **Called once, not asked for a size first**: a test sends a
+    /// real notification, so the report is cut to fit `out` (on a UTF-8
+    /// boundary) rather than produced twice.
+    export fn ghostty_app_plugin_test(
+        app: *App,
+        key: [*]const u8,
+        len: usize,
+        out: ?[*]u8,
+        cap: usize,
+    ) bool {
+        const core = app.core_app;
+        const said = core.testPlugin(core.alloc, key[0..len]) catch |e| {
+            copyErrorOut(e, out, cap);
+            return false;
+        };
+        defer core.alloc.free(said);
+        TextOut.copy(said, out, cap);
+        return true;
+    }
+
+    /// Save one plugin's settings from the settings window, through the
+    /// same writer `plugin_configure` uses (`App.configurePlugin`, as the
+    /// user). `json` is `{"enabled": bool, "params": {"name": "value"}}`.
+    /// True with how its resident copy stands in `out` -- `already_running`
+    /// means the new settings wait for a restart; false with the error's
+    /// name there. Called once: it writes.
+    export fn ghostty_app_plugin_configure(
+        app: *App,
+        key: [*]const u8,
+        key_len: usize,
+        json: [*]const u8,
+        json_len: usize,
+        out: ?[*]u8,
+        cap: usize,
+    ) bool {
+        const core = app.core_app;
+        const started = core.configurePluginJson(
+            core.alloc,
+            key[0..key_len],
+            json[0..json_len],
+        ) catch |e| {
+            copyErrorOut(e, out, cap);
+            return false;
+        };
+        TextOut.copy(@tagName(started), out, cap);
+        return true;
     }
 
     /// Open a tab beside this terminal and start a CLI in it wearing a role

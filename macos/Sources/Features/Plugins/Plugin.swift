@@ -53,6 +53,14 @@ struct Plugin: Identifiable {
     /// same: it is installed, and hiding what is installed was the bug.
     let events: [String]
 
+    /// The manifest's `version`, empty when it gives none.
+    var version: String = ""
+
+    /// The manifest's `author` -- a string, or an object with a `name` --
+    /// empty when it gives none. Shown in the settings window's title area
+    /// (settings.md §5.2) only when there is one.
+    var author: String = ""
+
     /// Whether the plugin ships a settings page of its own (`ui/index.html`).
     ///
     /// Checked at display time rather than read into a stored field: a page
@@ -67,6 +75,18 @@ struct Plugin: Identifiable {
     }
 
     var id: String { key }
+
+    /// What "is it filled in" needs to know about each parameter.
+    var requirements: [PluginRequirement] {
+        parameters.map {
+            PluginRequirement(
+                name: $0.name,
+                title: $0.title,
+                required: $0.required,
+                isFlag: $0.control == .flag,
+                defaultValue: $0.defaultValue)
+        }
+    }
 
     /// The events this build has something to say about, in the order they
     /// are said.
@@ -377,7 +397,11 @@ struct PluginCatalog {
             parameters: parameters(
                 from: root["params"] as? [String: Any],
                 translated: text),
-            events: events)
+            events: events,
+            version: (root["version"] as? String) ?? "",
+            author: (root["author"] as? String)
+                ?? ((root["author"] as? [String: Any])?["name"] as? String)
+                ?? "")
     }
 
     private static func parameters(

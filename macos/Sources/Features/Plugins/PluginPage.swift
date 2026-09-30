@@ -346,31 +346,39 @@ extension PluginPageBridge: WKScriptMessageHandlerWithReply {
         ]
     }
 
-    /// Write this plugin's file, and nothing else's.
+    /// Write this plugin's settings, and nothing else's -- through the
+    /// core's writer, the one the settings window and `plugin_configure`
+    /// use (settings.md §5.1), not a file written from here.
     ///
     /// `enabled` and `params` are the whole of it. What is not named is left
     /// as it was, so a page that only wants to change one value does not
     /// have to send back everything it read and risk clobbering a field it
-    /// did not understand.
+    /// did not understand. An empty value unsets one, as everywhere else.
     private func write(_ argument: [String: Any]) throws -> [String: Any] {
-        var settings = PluginSettings.load(for: plugin)
-
-        if let enabled = argument["enabled"] as? Bool { settings.enabled = enabled }
-
-        if let params = argument["params"] as? [String: Any] {
-            for (name, value) in params {
+        var params: [String: String] = [:]
+        if let raw = argument["params"] as? [String: Any] {
+            for (name, value) in raw {
                 // Only text. A settings file is a flat map of strings on
                 // both sides -- the core reads nothing else out of it -- so
                 // a number arriving here would be written and then not read,
                 // which is worse than being refused.
                 guard let text = value as? String else { continue }
-                settings.params[name] = text
+                params[name] = text
             }
         }
 
-        try settings.save(key: plugin.key)
-        onSave?()
-        return describe(settings)
+        switch PluginCore.configure(plugin.key, enabled: argument["enabled"] as? Bool, params: params) {
+        case .failure(let failure):
+            throw PageWriteError(message: failure.message)
+        case .success:
+            onSave?()
+            return describe(PluginSettings.load(for: plugin))
+        }
+    }
+
+    private struct PageWriteError: LocalizedError {
+        var message: String
+        var errorDescription: String? { message }
     }
 }
 

@@ -59,24 +59,54 @@ final class SettingsModel: ObservableObject {
     @Published private(set) var section: SettingsSection
     @Published var search = "" {
         didSet {
-            // A search goes to the first section it can filter; in the first
-            // stage that is only roles.
-            if !search.isEmpty && section != .roles { go(.roles) }
+            // A search stays in the section it is in while that has a match,
+            // and otherwise goes to the first that has one (settings.md
+            // §2.3).
+            let next = SettingsRules.sectionForSearch(search, current: section) { [unowned self] in
+                self.searchMatches(in: $0)
+            }
+            if let next, next != section { go(next) }
         }
     }
 
     let library: RoleLibrary
     let roles: RoleLibraryEditor
+    let plugins: PluginsPane
 
     init(section: SettingsSection, library: RoleLibrary) {
         self.section = section
         self.library = library
         self.roles = RoleLibraryEditor(library: library)
+        self.plugins = PluginsPane()
+        plugins.reload()
     }
 
     /// The section whose unsaved state has to be settled before leaving it.
     var currentPane: SettingsPane? {
-        section == .roles ? roles : nil
+        switch section {
+        case .roles: roles
+        case .plugins: plugins
+        case .projects, .general: nil
+        }
+    }
+
+    /// Whether the search leaves anything in `section`'s list.
+    private func searchMatches(in section: SettingsSection) -> Bool {
+        switch section {
+        case .roles:
+            !RoleLibraryView.listing(library: library, editor: roles, query: search).visible.isEmpty
+        case .plugins:
+            !plugins.listing(query: search).visible.isEmpty
+        case .projects, .general:
+            false
+        }
+    }
+
+    /// Show one plugin: go to the Plugins section, then to it, each asking
+    /// about unsaved changes on the way out (settings.md §2.4).
+    func goPlugin(_ key: String) {
+        guard go(.plugins) else { return }
+        plugins.select(key)
     }
 
     /// Switch section, asking first when the one being left has unsaved
@@ -148,7 +178,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             forFrameRect: CGRect(origin: .zero, size: SettingsRules.minimumSize),
             styleMask: Self.style).size
         let host = NSHostingController(rootView: SettingsRootView(
-            model: model, library: library, editor: model.roles, minimumContent: minContent))
+            model: model, library: library, editor: model.roles, plugins: model.plugins,
+            minimumContent: minContent))
         host.sizingOptions = [.minSize]
 
         let window = NSWindow(contentViewController: host)
@@ -204,8 +235,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 last: UserDefaults.standard.string(forKey: Self.lastRoleKey),
                 roles: model.library.catalog.roles.map(\.key))
             if case .select(let key) = choice { model.roles.select(key) }
-        case .projects, .plugins, .general:
-            // First stage: placeholders with nothing to select.
+        case .plugins:
+            model.plugins.reload()
+            model.plugins.select(SettingsRules.pluginToSelect(
+                item: route.item,
+                current: model.plugins.selection,
+                fresh: fresh,
+                keys: model.plugins.plugins.map(\.key)))
+        case .projects, .general:
+            // Placeholders with nothing to select.
             break
         }
     }
@@ -224,6 +262,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     /// the hosting view's to keep, and this does not depend on it.
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
         SettingsRules.clamped(frameSize)
+    }
+
+    /// Plugins change behind the window's back -- an agent configures one,
+    /// its copy fails, a directory is dropped in -- so what the Plugins
+    /// section shows is read again whenever the window comes forward. A
+    /// draft being edited is kept.
+    func windowDidBecomeKey(_ notification: Notification) {
+        model?.plugins.reload()
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
