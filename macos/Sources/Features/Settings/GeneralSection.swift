@@ -16,6 +16,9 @@ final class GeneralModel: ObservableObject {
         guard group != self.group else { return }
         self.group = group
         status = nil
+        // Another group is another page: a refusal on the last one no
+        // longer describes anything on screen (#986).
+        fieldErrors = ConfigFormRules.errors(fieldErrors, after: .reread)
     }
 
     func route(to item: String?, fresh: Bool) {
@@ -55,7 +58,8 @@ final class GeneralModel: ObservableObject {
     /// Read the table again: on opening, after every write, and whenever
     /// the window comes forward -- the file may have been edited by hand
     /// (§7.3).
-    func reloadForm() {
+    func reloadForm(_ read: ConfigFormRules.FormRead = .reread) {
+        fieldErrors = ConfigFormRules.errors(fieldErrors, after: read)
         guard let app = ghostty?.app,
               let json = PersonaCatalog.readJSON({ ghostty_app_config_form(app, $0, $1) }),
               let form = ConfigForm.parse(json)
@@ -90,7 +94,8 @@ final class GeneralModel: ObservableObject {
         } else {
             fieldErrors[key] = Self.message(for: result)
         }
-        reloadForm()
+        // This write's own read: its refusal stays under the control.
+        reloadForm(.afterOwnWrite)
     }
 
     /// The call writes once; a result too long for the buffer is read back

@@ -120,6 +120,51 @@ struct ConfigFormWriteTests {
         #expect(appFontSize(ghostty) == Float(defaultValue))
     }
 
+    // MARK: Refusals (#986)
+
+    /// A refusal is shown under its control while the person is still at
+    /// that field, and is gone once the form is read for another reason: the
+    /// window coming forward, a reload, another group. Before #986 it was
+    /// still there after a reload and choosing the group again.
+    @Test func aRefusalIsGoneOnceTheFormIsReadAgain() throws {
+        let delegate = try #require(NSApp.delegate as? AppDelegate)
+        let host = try #require(delegate.ghostty.configPath)
+        let temporary = [canonical(NSTemporaryDirectory()), "/private/tmp/", "/tmp/"]
+        try #require(temporary.contains { canonical(host).hasPrefix($0) }, "\(host) is not a temporary file")
+        let lock = open(host + ".form-write-test.lock", O_CREAT | O_RDWR, 0o600)
+        try #require(lock >= 0)
+        flock(lock, LOCK_EX)
+        defer {
+            flock(lock, LOCK_UN)
+            close(lock)
+        }
+        let url = URL(fileURLWithPath: host)
+        let before = (try? Data(contentsOf: url)) ?? Data()
+
+        let model = GeneralModel()
+        model.reloadForm()
+        let form = try #require(model.form)
+        try #require(canonical(form.main) == canonical(host))
+        model.select(.font)
+
+        // Refused, and still shown after the write's own read.
+        model.set("font-size", "not a size")
+        #expect(model.fieldErrors["font-size"] != nil)
+        // The window comes forward, or the configuration is reloaded.
+        model.reloadForm()
+        #expect(model.fieldErrors["font-size"] == nil)
+
+        // Refused again, then another group and back.
+        model.set("font-size", "not a size")
+        #expect(model.fieldErrors["font-size"] != nil)
+        model.select(.appearance)
+        model.select(.font)
+        #expect(model.fieldErrors["font-size"] == nil)
+
+        // A refused value writes nothing.
+        #expect(((try? Data(contentsOf: url)) ?? Data()) == before)
+    }
+
     // MARK: Config errors (§7)
 
     /// End to end: a bad line in the file this process loaded, a reload,
