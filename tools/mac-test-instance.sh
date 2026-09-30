@@ -58,6 +58,10 @@
 #    (`Config(at:)`, no default files) and ⌘, opens it; the candidate search
 #    never runs. The odd filename is on purpose: a window titled
 #    `config.polter` would not say which one was opened.
+#    The role library follows the same variable: under it the core keeps
+#    `personas.json` beside that file (`PersonaStore.defaultPath`), so the
+#    instance's roles are `<state>/config/polter/personas.json`, not the
+#    user's (#976; before it they were the user's, isolation or not).
 #
 # ⚠️ What this does not stop: launching activates the new app, so it takes
 # the foreground from whoever was using the machine -- the user, if they are

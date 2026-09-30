@@ -173,21 +173,48 @@ pub fn deinit(self: *PersonaStore) void {
 /// second rule -- two files that are meant to sit together and are looked
 /// for in different places is a support question nobody can answer from the
 /// outside.
+///
+/// **That includes the mac app's own config file.** Under
+/// `GHOSTTY_CONFIG_PATH` the mac app loads that one file and never looks at
+/// the default ones (`AppDelegate` -> `Config(at:)`; #830), and the library
+/// sits beside it. Without this, a test instance with its config and every
+/// XDG directory isolated still read and wrote the user's real library:
+/// the Application Support path below is built from the core's
+/// compile-time bundle id, which a `.debug` build shares (#976). The
+/// variable rather than the loaded config's `_origin`, because `+launch`
+/// runs in a terminal of its own and has no config to ask -- it inherits
+/// the variable from the app that started it. macOS only, since it is the
+/// only host that honours the variable for its config.
 pub fn defaultPath(alloc: Allocator) ![]const u8 {
+    var environ_map = try global.environMap();
+    defer environ_map.deinit();
+    return try pathIn(alloc, &environ_map);
+}
+
+/// `defaultPath` against the environment given.
+pub fn pathIn(alloc: Allocator, environ_map: *const std.process.Environ.Map) ![]const u8 {
     if (comptime builtin.os.tag == .macos) {
+        if (try besideConfigOverride(alloc, environ_map.get("GHOSTTY_CONFIG_PATH"))) |p| return p;
         if (internal_os.macos.appSupportDir(alloc, "personas.json")) |p| {
             return p;
         } else |_| {}
     }
 
-    var environ_map = try global.environMap();
-    defer environ_map.deinit();
     return try internal_os.xdg.config(
         global.io(),
         alloc,
-        &environ_map,
+        environ_map,
         .{ .subdir = "polter/personas.json" },
     );
+}
+
+/// `personas.json` in the directory of the config file the mac app was
+/// told to load instead of the default ones; null when it was not told.
+fn besideConfigOverride(alloc: Allocator, override: ?[]const u8) Allocator.Error!?[]const u8 {
+    const config_path = override orelse return null;
+    if (config_path.len == 0) return null;
+    const dir = std.fs.path.dirname(config_path) orelse ".";
+    return try std.fs.path.join(alloc, &.{ dir, "personas.json" });
 }
 
 /// Longest `personas.json` we will read. A persona file is a handful of
@@ -1435,4 +1462,44 @@ test "personas: a supervisor may not set what grants a terminal something" {
         \\{"key":"x","name":"x"}
     , .supervisor));
     try testing.expect(store.set.find("x").?.polter.may_authorise);
+}
+
+test "personas: under a config file of the mac app's own, the library sits beside it (#976)" {
+    if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
+    const alloc = testing.allocator;
+    var environ_map = try std.testing.environ.createMap(alloc);
+    defer environ_map.deinit();
+    try environ_map.put("GHOSTTY_CONFIG_PATH", "/tmp/polter-test.X/config/polter/isolated-test.polter");
+
+    const path = try pathIn(alloc, &environ_map);
+    defer alloc.free(path);
+    try testing.expectEqualStrings("/tmp/polter-test.X/config/polter/personas.json", path);
+
+    // Nowhere near the user's own library.
+    const user = try internal_os.macos.appSupportDir(alloc, "personas.json");
+    defer alloc.free(user);
+    try testing.expect(!std.mem.eql(u8, user, path));
+}
+
+test "personas: without it, the library stays where it always was" {
+    const alloc = testing.allocator;
+    var environ_map = try std.testing.environ.createMap(alloc);
+    defer environ_map.deinit();
+    _ = environ_map.swapRemove("GHOSTTY_CONFIG_PATH");
+    // An empty value is not a file to sit beside.
+    var empty = try std.testing.environ.createMap(alloc);
+    defer empty.deinit();
+    try empty.put("GHOSTTY_CONFIG_PATH", "");
+
+    const expected = if (comptime builtin.os.tag == .macos)
+        try internal_os.macos.appSupportDir(alloc, "personas.json")
+    else
+        try internal_os.xdg.config(global.io(), alloc, &environ_map, .{ .subdir = "polter/personas.json" });
+    defer alloc.free(expected);
+
+    for ([_]*const std.process.Environ.Map{ &environ_map, &empty }) |m| {
+        const path = try pathIn(alloc, m);
+        defer alloc.free(path);
+        try testing.expectEqualStrings(expected, path);
+    }
 }
