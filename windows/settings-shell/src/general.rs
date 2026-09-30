@@ -399,6 +399,25 @@ pub fn row_help(it: &Item, translate: impl Fn(&str) -> String) -> String {
     }
 }
 
+/// Why the table is being read (#986; mac `ConfigFormRules.FormRead`):
+/// right after the form's own write, or for any other reason -- the window
+/// came forward, the configuration was reloaded, another group was chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormRead {
+    AfterOwnWrite,
+    Reread,
+}
+
+/// A row's refusal after a read. It belongs to the write that caused it:
+/// kept while the person is still at that field, gone on any other read,
+/// when it no longer describes anything on screen.
+pub fn error_after(read: FormRead, error: Option<String>) -> Option<String> {
+    match read {
+        FormRead::AfterOwnWrite => error,
+        FormRead::Reread => None,
+    }
+}
+
 /// What each value of an enum is called in its list: the table's name,
 /// translated, else the value itself (#977; mac `ConfigFormRules.choiceTitle`).
 /// What is written is always the value.
@@ -850,6 +869,16 @@ mod tests {
         assert!(!has_more(&plain));
         plain.doc = None;
         assert!(!has_more(&plain));
+    }
+
+    /// #986: a refusal stays through the form's own read after the write,
+    /// and goes on any other read.
+    #[test]
+    fn a_refusal_lasts_until_the_form_is_read_again() {
+        let red = Some("font-size: invalid value".to_string());
+        assert_eq!(error_after(FormRead::AfterOwnWrite, red.clone()), red);
+        assert_eq!(error_after(FormRead::Reread, red), None);
+        assert_eq!(error_after(FormRead::AfterOwnWrite, None), None);
     }
 
     #[test]

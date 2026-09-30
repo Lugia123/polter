@@ -253,4 +253,12 @@ struct ConfigFormRulesTests {
         // All Options' one-line boxes take the row: any key can be there.
         #expect(ConfigFormRules.fieldWidth(fontSize, control: .text, in: .all) == nil)
     }
+
+    // MARK: Refusals (#986)
+
+    @Test func aRefusalLastsUntilTheFormIsReadAgain() {
+        let red = ["font-size": "font-size: invalid value"]
+        #expect(ConfigFormRules.errors(red, after: .afterOwnWrite) == red)
+        #expect(ConfigFormRules.errors(red, after: .reread).isEmpty)
+    }
 }

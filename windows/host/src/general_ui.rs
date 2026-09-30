@@ -27,7 +27,7 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicUsize, Ordering};
 
-use polter_settings_shell::general::{self as rules, Commit, Control, Group, Item, ReadOnlyNote, Source};
+use polter_settings_shell::general::{self as rules, Commit, Control, FormRead, Group, Item, ReadOnlyNote, Source};
 use polter_settings_shell::{self as shell, grid, Rect};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -577,7 +577,7 @@ fn is_showing() -> bool {
 /// behind the form's back (§7.3).
 pub fn activated() {
     if is_showing() {
-        refresh_values();
+        refresh_values(FormRead::Reread);
     }
 }
 
@@ -592,7 +592,7 @@ pub fn config_changed() {
         if is_showing() {
             // In place: a write from this form ends in a reload, and making
             // the rows again would take the keyboard out of the next field.
-            refresh_values();
+            refresh_values(FormRead::Reread);
         }
         return;
     }
@@ -1157,7 +1157,7 @@ fn write(index: usize, key: &str, value: Option<&str>) {
         // Rule 7: reloading is the host's, through its usual path. The
         // reload ends in `config_changed`, which reads the table again.
         let _ = crate::reload::request(false, std::ptr::null_mut());
-        refresh_values();
+        refresh_values(FormRead::AfterOwnWrite);
     } else {
         let why = match r.code.as_str() {
             "invalid_value" => r.message.unwrap_or_else(|| tr("That value is not valid for this key.")),
@@ -1173,15 +1173,30 @@ fn write(index: usize, key: &str, value: Option<&str>) {
             s.status = why;
             s.status_warn = true;
         });
-        // The control goes back to the effective value (§7.3).
-        refresh_values();
+        // The control goes back to the effective value (§7.3); this write's
+        // refusal stays under it.
+        refresh_values(FormRead::AfterOwnWrite);
     }
 }
 
 /// Read the table again and put the values into the controls in place,
 /// keeping the keyboard where it is. The rows are made again only when the
-/// group now lists other keys.
-fn refresh_values() {
+/// group now lists other keys. A read that is not the form's own, right
+/// after a write, clears the refusals shown under the controls and the red
+/// status that said the same (#986).
+fn refresh_values(read: FormRead) {
+    if read == FormRead::Reread {
+        ST.with(|c| {
+            let s = &mut *c.borrow_mut();
+            for row in s.rows.iter_mut() {
+                row.error = rules::error_after(read, row.error.take());
+            }
+            if s.status_warn {
+                s.status.clear();
+                s.status_warn = false;
+            }
+        });
+    }
     let keybinds = crate::keybinds::rows();
     ST.with(|c| c.borrow_mut().keybinds = keybinds);
     kb_publish(current() == Group::Keybinds);

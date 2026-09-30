@@ -212,6 +212,20 @@ enum ConfigFormRules {
         }
     }
 
+    /// Why the table is being read (#986): right after the form's own write
+    /// -- whose refusal is what the red text under the control says -- or
+    /// for any other reason: the window came forward, the configuration was
+    /// reloaded, another group was chosen.
+    enum FormRead: Equatable { case afterOwnWrite, reread }
+
+    /// The refusals still shown after a read. A refusal belongs to the write
+    /// that caused it: it stays while the person is still at that field,
+    /// and goes when the form is read again for any other reason -- by then
+    /// it no longer describes anything on screen.
+    static func errors(_ errors: [String: String], after read: FormRead) -> [String: String] {
+        read == .afterOwnWrite ? errors : [:]
+    }
+
     static func isWritable(_ item: ConfigForm.Item) -> Bool {
         item.readonly == nil && item.control != .readonly
     }
