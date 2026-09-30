@@ -1526,6 +1526,26 @@ GHOSTTY_API uintptr_t ghostty_app_persona_catalog(ghostty_app_t, char*, uintptr_
 GHOSTTY_API bool ghostty_app_persona_put(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 GHOSTTY_API bool ghostty_app_persona_delete(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 GHOSTTY_API uintptr_t ghostty_app_agent_clis(ghostty_app_t, bool, char*, uintptr_t);
+
+// The settings window's General section (dev-docs/poltergeist/settings.md
+// §7.2), as JSON; the shape is documented at `writeJson` in
+// src/config/form.zig. Same buffer rule as the persona calls. Read from the
+// files on disk each call, so call it again when the window takes focus.
+GHOSTTY_API uintptr_t ghostty_app_config_form(ghostty_app_t, char*, uintptr_t);
+// Set one key in the main config file: (key, key_len, value, value_len,
+// buf, cap). A NULL value restores the default. The result is JSON
+// (`setJson` in src/config/form.zig) under the same buffer rule, but the
+// write happens once per call: when the result did not fit, read it with
+// ghostty_app_config_set_result instead of calling again. Reloading the
+// config afterwards is the host's, through its usual reload path.
+GHOSTTY_API uintptr_t ghostty_app_config_set(ghostty_app_t,
+                                             const char*,
+                                             uintptr_t,
+                                             const char*,
+                                             uintptr_t,
+                                             char*,
+                                             uintptr_t);
+GHOSTTY_API uintptr_t ghostty_app_config_set_result(ghostty_app_t, char*, uintptr_t);
 GHOSTTY_API void ghostty_app_tick(ghostty_app_t);
 GHOSTTY_API void* ghostty_app_userdata(ghostty_app_t);
 GHOSTTY_API void ghostty_app_set_focus(ghostty_app_t, bool);

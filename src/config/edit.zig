@@ -72,7 +72,7 @@ const ConfigPathResult = struct {
 ///
 /// The allocator must be an arena allocator. No memory is freed by this
 /// function and the resulting path is not all the memory that is allocated.
-fn configPath(alloc_arena: Allocator) !ConfigPathResult {
+pub fn configPath(alloc_arena: Allocator) !ConfigPathResult {
     const paths: []const []const u8 = try configPathCandidates(alloc_arena);
     assert(paths.len > 0);
 
