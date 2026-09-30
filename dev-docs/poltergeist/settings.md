@@ -216,6 +216,16 @@ Save / Revert、Launch），**功能原样搬进来**，本轮不改功能；**�
 
 数据与 MCP 的 `plugin_list` 同源（`src/poltergeist/Plugin.zig`），宿主不自己猜。
 
+**判定顺序**（2026-10-01 定，先命中者胜）：↻ > ○ 已关 > ◐ 缺必填 > ▲（在跑且 `failures > 0`，
+或已开且 `note` 非空）> ● 已开。理由：核心对已关的插件 `note` 恒非空（"installed but switched
+off…"），对刚打开未重启的也非空（"no copy of it is running"），照表字面判 ▲ 会把它们全画红。
+「本次启动读到的设置」由宿主在 app 启动时给每个插件拍快照，核心不留这份。两边的纯规则层
+（mac `SettingsRules`、Windows `settings-shell`）用同一张判定用例表测试。
+
+**宿主取数**：核心加两个 C 接口，两个宿主共用，不各加一份——`ghostty_app_plugin_list(app, buf, cap)`
+返回与 MCP `plugin_list` 同一份 JSON；`ghostty_app_plugin_test(app, key, len, out, cap) -> bool`，
+`out` 是报告文本或错误名（`TooSoon` / `NoSuchPlugin`）。缓冲规则同 `ghostty_app_persona_catalog`。
+
 ### 5.2 详情
 
 自上而下：
