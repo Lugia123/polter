@@ -2497,7 +2497,7 @@ msgstr ""
 msgid "No earlier version is kept yet."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs
+#: windows/host/src/prompt.rs
 msgid "Rename"
 msgstr ""
 
@@ -2527,4 +2527,16 @@ msgstr ""
 
 #: windows/host/src/menu.rs
 msgid "Manage Projects…"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Rename…"
+msgstr ""
+
+#: windows/host/src/prompt.rs
+msgid "Rename Project"
+msgstr ""
+
+#: windows/host/src/prompt.rs
+msgid "The project's file, its previous version and its scrollback move with it."
 msgstr ""

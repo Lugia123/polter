@@ -78,7 +78,7 @@ roles 路由选哪个角色、未保存时的保存 / 不保存 / 取消。`xcod
 | P2 | ✅（规则）`projects::thumbnail`：`the_thumbnail_has_one_box_per_pane_in_tree_order`、`a_deep_tree_in_a_small_box_still_shows_every_pane`；标签 `pane_label`（目录末段 · 标题）`a_pane_is_labelled_by_its_directory_and_its_title`。没看画面 |
 | P3 | ⏳ 目录 / 回滚内容（`scrollback_bytes`、`format_bytes` 有单测）/ 自动保存恒为「没有绑定到打开的窗口」（Windows 无绑定，裁定）。「角色」一行写「项目文件不记录角色」 |
 | P4 | ⏳ 与「加载项目…」同一个 `project_ui::load_project_into_new_tab`，装进发起设置窗口的那个终端窗口。没点过 |
-| P5 | ✅（规则）`check_rename`：`a_rename_onto_a_name_that_is_taken_is_refused_and_names_it`（含名字只差大小写而文件名不同的旧文件、两个名字清洗成同一文件名）；落盘 `a_move_onto_another_project_is_refused_and_touches_nothing` |
+| P5 | ⏳ 详情首行是项目名（粗体）+ 右边「重命名…」，点了弹「重命名项目」框（`prompt::prompt_rename_project`：输入框、说明「项目文件、上一版和 scrollback 一起改名。」、重命名 / 取消，Enter / Esc；框开着时设置窗口禁用），与 mac 一样没有内联名字框。✅（规则）`check_rename`：`a_rename_onto_a_name_that_is_taken_is_refused_and_names_it`（含名字只差大小写而文件名不同的旧文件、两个名字清洗成同一文件名）；落盘 `a_move_onto_another_project_is_refused_and_touches_nothing` |
 | P6 | ✅ `a_move_takes_every_sidecar_with_it`、`a_rename_to_itself_is_nothing_and_a_change_of_case_is_a_rename`；`.prev` 里的名字由 `project::set_name` 一起改（宿主，未在真机跑） |
 | P7 | —（Windows 没有 tab↔项目绑定，裁定不做） |
 | P8 | ✅ `a_copy_is_named_after_its_original_and_numbered_past_what_is_taken`、`a_copy_has_the_snapshots_and_no_history` |

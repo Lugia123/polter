@@ -47,7 +47,6 @@ use crate::theme;
 const ID_NEW: u16 = 200;
 const ID_DUP: u16 = 201;
 const ID_DEL: u16 = 202;
-const ID_NAME: u16 = 210;
 const ID_RENAME: u16 = 211;
 const ID_RESTORE0: u16 = 220;
 const ID_UNDO: u16 = 230;
@@ -66,7 +65,6 @@ static FONT_SMALL: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 #[derive(Clone, Copy, Default)]
 struct Controls {
     list_buttons: [HWND; 3],
-    name: HWND,
     rename: HWND,
     restore: [HWND; 2],
     undo: HWND,
@@ -266,12 +264,6 @@ fn select(path: Option<PathBuf>) {
         s.status = None;
     });
     load_detail();
-    // The name field shows the selected project's name. Written here only,
-    // so a name half typed is not overwritten under the caret.
-    let name = with(|s| s.detail.as_ref().map(|d| d.snap.name.clone()).unwrap_or_default());
-    if let Some(c) = ctl() {
-        set_text(c.name, &name);
-    }
     keep_selection_visible();
     refresh();
     crate::settings_win::crumb_changed();
@@ -473,21 +465,6 @@ fn keep_selection_visible() {
 
 // ============================================================ the controls
 
-fn set_text(h: HWND, t: &str) {
-    if h.0.is_null() {
-        return;
-    }
-    let w = wide(t);
-    let _ = unsafe { SetWindowTextW(h, PCWSTR(w.as_ptr())) };
-}
-
-fn get_text(h: HWND) -> String {
-    let n = unsafe { GetWindowTextLengthW(h) }.max(0) as usize;
-    let mut buf = vec![0u16; n + 1];
-    let got = unsafe { GetWindowTextW(h, &mut buf) }.max(0) as usize;
-    String::from_utf16_lossy(&buf[..got])
-}
-
 fn place(h: HWND, r: SRect, show: bool, enabled: bool) {
     if h.0.is_null() {
         return;
@@ -551,7 +528,6 @@ fn refresh() {
         place(c.list_buttons[2], b[2], true, has_sel);
     }
     place(c.undo, ll.undo.unwrap_or_default(), banner, banner);
-    place(c.name, e.name, has_sel, has_sel);
     place(c.rename, e.rename, has_sel, has_sel);
     for i in 0..2 {
         let restorable = versions.get(i).is_some_and(|v| !v.current);
@@ -700,10 +676,21 @@ fn open_selected() {
     }
 }
 
+/// Rename… (§6.2, as the macOS side has it): a box asking for the name,
+/// modal over the settings window; `rename_to` does the rest.
 fn rename_selected() {
-    let Some(c) = ctl() else { return };
-    let Some((dir, item)) = dir_and_selected() else { return };
-    let wanted = get_text(c.name);
+    let Some((_, item)) = dir_and_selected() else { return };
+    crate::prompt::prompt_rename_project(owner(), item.path.clone(), &item.name);
+}
+
+/// The Rename Project box was answered with `wanted` for the project in
+/// `file`: rename it, or say why not in the status line.
+pub fn rename_to(file: &Path, wanted: &str) {
+    let Some(dir) = with(|s| s.dir.clone()) else { return };
+    let Some(item) = with(|s| s.items.iter().find(|i| i.path == file).cloned()) else {
+        say(tr("The project could not be renamed."), true);
+        return;
+    };
     let all: Vec<Named> = with(|s| {
         s.items
             .iter()
@@ -712,7 +699,7 @@ fn rename_selected() {
     });
     let this = Named { name: item.name.clone(), file: file_name(&item.path) };
     let wanted_file = project::sanitize_filename(wanted.trim()).ok();
-    match pj::check_rename(&this, &wanted, wanted_file.as_deref(), &all) {
+    match pj::check_rename(&this, wanted, wanted_file.as_deref(), &all) {
         Verdict::Nothing => {}
         Verdict::Refused(Refusal::Empty) => say(tr("A project needs a name."), true),
         Verdict::Refused(Refusal::Taken(other)) => {
@@ -723,7 +710,7 @@ fn rename_selected() {
             let r = pj::move_project(&item.path, &to).map_err(|e| e.to_string()).and_then(|_| project::set_name(&to, &new));
             match r {
                 Ok(()) => {
-                    // process-wide: as above
+                    // process-wide: the projects section of the one settings window
                     crate::plogf!("[projects-ui] renamed {:?} -> {:?} ({:?})", item.name, new, to);
                     reload();
                     select(Some(to));
@@ -736,6 +723,7 @@ fn rename_selected() {
             }
         }
     }
+    crate::settings_win::crumb_changed();
 }
 
 fn file_name(p: &Path) -> String {
@@ -986,7 +974,7 @@ fn make_fonts(dpi: i32) {
     }
     if let Some(c) = ctl() {
         let f = FONT.load(Ordering::Acquire);
-        let all = c.list_buttons.iter().chain(&c.restore).chain(&c.actions).chain([&c.name, &c.rename, &c.undo]);
+        let all = c.list_buttons.iter().chain(&c.restore).chain(&c.actions).chain([&c.rename, &c.undo]);
         for h in all {
             unsafe {
                 SendMessageW(*h, WM_SETFONT, Some(WPARAM(f as usize)), Some(LPARAM(1)));
@@ -1136,7 +1124,8 @@ fn paint(win: HWND) {
 fn paint_detail(hdc: HDC, d: &Detail, e: &pj::EditorLayout, dpi: i32, offset: i64) {
     let right_label = DT_RIGHT | DT_SINGLELINE | DT_VCENTER;
     let value = DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS;
-    draw_text(hdc, &tr("Name"), &rect(e.name_label), &FONT, theme::dim(), right_label);
+    // The project's name as the page's heading, as on macOS.
+    draw_text(hdc, &d.snap.name, &rect(e.title), &FONT_BOLD, theme::text(), DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
     // The thumbnail (§6.1): the tab's split tree, each pane named by its
     // directory's last part and its title.
@@ -1267,8 +1256,7 @@ fn create(host: HWND) -> bool {
         let c = Controls {
             // + ⧉ −, as the roles list has them (settings.md §2.3a).
             list_buttons: [mk(ID_NEW, w!("BUTTON"), "+", button), mk(ID_DUP, w!("BUTTON"), "\u{29c9}", button), mk(ID_DEL, w!("BUTTON"), "\u{2212}", button)],
-            name: mk(ID_NAME, w!("EDIT"), "", WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER),
-            rename: mk(ID_RENAME, w!("BUTTON"), &tr("Rename"), button),
+            rename: mk(ID_RENAME, w!("BUTTON"), &tr("Rename…"), button),
             restore: [mk(ID_RESTORE0, w!("BUTTON"), &tr("Restore"), button), mk(ID_RESTORE0 + 1, w!("BUTTON"), &tr("Restore"), button)],
             undo: mk(ID_UNDO, w!("BUTTON"), &tr("Undo"), button),
             actions: [
@@ -1297,7 +1285,7 @@ fn held(vk: VIRTUAL_KEY) -> bool {
 }
 
 /// Ctrl+W closes the settings window wherever the keyboard is; **Escape
-/// closes nothing** (§2.3); Enter in the name field renames.
+/// closes nothing** (§2.3).
 unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let prev = GetPropW(h, PROP_PREV).0 as isize;
@@ -1311,14 +1299,10 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let _ = PostMessageW(Some(owner()), WM_CLOSE, WPARAM(0), LPARAM(0));
                     return LRESULT(0);
                 }
-                if vk == VK_RETURN && Some(h) == ctl().map(|c| c.name) {
-                    let _ = PostMessageW(Some(main_hwnd()), WM_COMMAND, WPARAM(ID_RENAME as usize), LPARAM(0));
-                    return LRESULT(0);
-                }
             }
             // The characters those keys also produce, which an `EDIT` would
             // answer with a beep.
-            WM_CHAR if wp.0 == 0x0D || wp.0 == 0x17 || wp.0 == 0x1B => return LRESULT(0),
+            WM_CHAR if wp.0 == 0x17 || wp.0 == 0x1B => return LRESULT(0),
             WM_NCDESTROY => {
                 let _ = RemovePropW(h, PROP_PREV);
             }
@@ -1369,10 +1353,7 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 } else if vk == VK_DELETE {
                     delete_selected();
                 } else if vk == VK_F2 {
-                    if let Some(c) = ctl() {
-                        let _ = SetFocus(Some(c.name));
-                        SendMessageW(c.name, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
-                    }
+                    rename_selected();
                 }
                 LRESULT(0)
             }

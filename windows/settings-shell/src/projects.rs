@@ -703,9 +703,7 @@ pub const THUMB_GAP: i32 = 4;
 /// One line of the detail, and one row of the version history (a button
 /// tall, for Restore).
 pub const LINE_H: i32 = 20;
-/// The name field's widest.
-pub const NAME_MAX_W: i32 = 320;
-/// Rename and Restore.
+/// Rename… and Restore.
 pub const BUTTON_W: i32 = 96;
 /// How many detail lines there are: last saved, size, directories, roles,
 /// scrollback, autosave.
@@ -713,8 +711,8 @@ pub const DETAIL_LINES: usize = 6;
 
 /// This section's own constants, for the test that holds them to multiples
 /// of four with the grid's.
-pub const ALL: [i32; 12] =
-    [ACTION_W[0], ACTION_W[1], ACTION_W[2], ROW_H, BANNER_H, UNDO_W, THUMB_MIN, THUMB_MAX, THUMB_GAP, LINE_H, NAME_MAX_W, BUTTON_W];
+pub const ALL: [i32; 11] =
+    [ACTION_W[0], ACTION_W[1], ACTION_W[2], ROW_H, BANNER_H, UNDO_W, THUMB_MIN, THUMB_MAX, THUMB_GAP, LINE_H, BUTTON_W];
 
 /// Show in Explorer, Overwrite, Open: right-aligned in the band, `PAD` from
 /// the right, on the row the band's buttons are on.
@@ -783,8 +781,12 @@ pub fn rows_fitting(l: &ListLayout, bottom: i32) -> usize {
 /// starts; labels are right-aligned in the label column before it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditorLayout {
-    pub name_label: Rect,
-    pub name: Rect,
+    /// The project's name, as a heading, from the margin to just before
+    /// Rename… -- the macOS detail's first row. Renaming is a dialog
+    /// (`Rename…`), not a field here, so nothing on this page is ever typed
+    /// and left unapplied.
+    pub title: Rect,
+    /// Rename…, at the editor's right margin.
     pub rename: Rect,
     pub thumb: Rect,
     /// One per detail line: the label, right-aligned, and the value.
@@ -807,11 +809,9 @@ pub fn editor_layout(editor: Rect, dpi: i32) -> EditorLayout {
     let label_right = margin + s(LABEL_W);
     let control_left = label_right + s(LABEL_GAP);
     let mut y = editor.top + s(PAD);
-    let name_label = Rect::new(margin, y, label_right, y + s(CONTROL_H));
-    let rename_right = (control_left + s(NAME_MAX_W) + s(BUTTONS_GAP) + s(BUTTON_W)).min(right);
-    let rename = Rect::new((rename_right - s(BUTTON_W)).max(control_left), y, rename_right, y + s(CONTROL_H));
-    let name = Rect::new(control_left, y, (rename.left - s(BUTTONS_GAP)).max(control_left), y + s(CONTROL_H));
-    y = name.bottom + s(GROUP_GAP);
+    let rename = Rect::new((right - s(BUTTON_W)).max(margin), y, right, y + s(CONTROL_H));
+    let title = Rect::new(margin, y, (rename.left - s(BUTTONS_GAP)).max(margin), y + s(CONTROL_H));
+    y = title.bottom + s(GROUP_GAP);
     // Everything under the thumbnail, measured first so the thumbnail can
     // have what is left: the gap, the detail lines, the history.
     let below = s(GROUP_GAP)
@@ -840,7 +840,7 @@ pub fn editor_layout(editor: Rect, dpi: i32) -> EditorLayout {
         restore[i] = Rect::new((right - s(BUTTON_W)).max(control_left), y, right.max(control_left), y + s(CONTROL_H));
         y += s(CONTROL_H) + s(ROW_GAP);
     }
-    EditorLayout { name_label, name, rename, thumb, labels, values, history_heading, history, restore, margin, control_left }
+    EditorLayout { title, rename, thumb, labels, values, history_heading, history, restore, margin, control_left }
 }
 
 #[cfg(test)]
@@ -1333,21 +1333,22 @@ mod tests {
             let at = format!("{w}x{h} at {dpi}");
             assert_eq!(e.margin, g.editor.left + scale(PAD, dpi), "{at}");
             assert_eq!(e.control_left, e.margin + scale(LABEL_W + LABEL_GAP, dpi), "{at}");
-            let mut starts = vec![e.name_label.left, e.thumb.left, e.history_heading.left];
+            let mut starts = vec![e.title.left, e.thumb.left, e.history_heading.left];
             starts.extend(e.labels.iter().map(|r| r.left));
             assert!(starts.iter().all(|&x| x == e.margin), "{at} {starts:?}");
-            let mut ctl = vec![e.name.left];
+            let mut ctl = vec![];
             ctl.extend(e.values.iter().map(|r| r.left));
             ctl.extend(e.history.iter().map(|r| r.left));
             assert!(ctl.iter().all(|&x| x == e.control_left), "{at} {ctl:?}");
             assert!(e.labels.iter().all(|r| r.right == e.control_left - scale(LABEL_GAP, dpi)), "{at}");
             // Inside the editor and above the bottom rule.
-            let all = [e.name, e.rename, e.thumb, e.history_heading, e.history[1], e.restore[1]];
+            let all = [e.title, e.rename, e.thumb, e.history_heading, e.history[1], e.restore[1]];
             for r in all {
                 assert!(r.left >= g.editor.left && r.right <= g.editor.right, "{at} {r:?}");
                 assert!(r.bottom <= g.bottom_rule.top, "{at} {r:?} under the rule at {}", g.bottom_rule.top);
             }
-            assert!(e.name.right < e.rename.left && e.name.width() > 0, "{at}");
+            assert!(e.title.right < e.rename.left && e.title.width() > 0, "{at}");
+            assert_eq!(e.rename.right, g.editor.right - scale(PAD, dpi), "{at} Rename… at the right margin");
             let th = e.thumb.height();
             assert!(th >= scale(THUMB_MIN, dpi) && th <= scale(THUMB_MAX, dpi), "{at} thumb {th}");
             assert!(e.history[0].bottom < e.history[1].top, "{at}");
