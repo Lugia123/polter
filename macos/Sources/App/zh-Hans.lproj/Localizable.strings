@@ -248,7 +248,7 @@
 "Load Project" = "加载项目";
 "Manage Projects" = "管理项目";
 "Overwrite Project?" = "覆盖这个项目？";
-"\"%@\" already has %@ pane(s), saved %@. Overwriting it can't be undone." = "“%@”已经有 %@ 个面板，保存于 %@。覆盖后无法撤销。";
+"\"%@\" already has %@ pane(s), saved %@. The replaced version is kept as the previous version." = "“%@”已经有 %@ 个面板，保存于 %@。被替换的版本会留作上一版。";
 "%@ pane(s) · saved %@" = "%@ 个面板 · 保存于 %@";
 "\"%@\" will be permanently deleted." = "“%@”将被永久删除。";
 "Save as Project..." = "另存为项目…";

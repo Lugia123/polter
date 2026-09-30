@@ -234,7 +234,7 @@
 "Load Project" = "Load Project";
 "Manage Projects" = "Manage Projects";
 "Overwrite Project?" = "Overwrite Project?";
-"\"%@\" already has %@ pane(s), saved %@. Overwriting it can't be undone." = "\"%@\" already has %@ pane(s), saved %@. Overwriting it can't be undone.";
+"\"%@\" already has %@ pane(s), saved %@. The replaced version is kept as the previous version." = "\"%@\" already has %@ pane(s), saved %@. The replaced version is kept as the previous version.";
 "%@ pane(s) · saved %@" = "%@ pane(s) · saved %@";
 "\"%@\" will be permanently deleted." = "\"%@\" will be permanently deleted.";
 "Save as Project..." = "Save as Project...";

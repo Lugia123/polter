@@ -119,7 +119,9 @@ extension TerminalController {
                     onSave: { [weak self] name in
                         guard let self else { return }
                         ProjectSaveBeforeClose.saveThenClose(
-                            save: { try self.saveAndBind(name: name, keeping: .onLayoutChange) },
+                            // Save As onto an existing name replaces that
+                            // project: what it held is kept as `.prev` (#969).
+                            save: { try self.saveAndBind(name: name, keeping: .always) },
                             reportFailure: { self.presentProjectError($0) },
                             close: closeAction)
                     })
@@ -131,7 +133,10 @@ extension TerminalController {
 
     private func performSave(name: String) {
         do {
-            try saveAndBind(name: name, keeping: .onLayoutChange)
+            // Save As: a name that is taken is a replacement, and what it
+            // held is kept as the previous version, whatever its layout
+            // (#969). A new name has nothing to keep either way.
+            try saveAndBind(name: name, keeping: .always)
         } catch {
             presentProjectError(error)
         }
