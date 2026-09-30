@@ -9,6 +9,7 @@ struct SettingsRootView: View {
     @ObservedObject var library: RoleLibrary
     @ObservedObject var editor: RoleLibraryEditor
     @ObservedObject var plugins: PluginsPane
+    @ObservedObject var projects: ProjectsModel
     /// The window's minimum, as content size (settings.md §2.2).
     var minimumContent: CGSize
 
@@ -88,6 +89,11 @@ struct SettingsRootView: View {
         if model.section == .roles, let draft = editor.draft {
             item = draft.displayName.isEmpty ? draft.key : draft.displayName
             hidden = RoleLibraryView.listing(library: library, editor: editor, query: model.search).selectionHidden
+        } else if model.section == .projects, let name = projects.selected?.name {
+            item = name
+            hidden = projects.listing(query: model.search).selectionHidden
+        } else if model.section == .general {
+            item = model.general.group.title
         }
         if model.section == .plugins, let plugin = plugins.plugin {
             item = plugin.name
@@ -188,19 +194,21 @@ struct SettingsRootView: View {
         case .plugins:
             PluginsView(pane: plugins, part: .detail)
         case .projects:
-            Text(String(localized: "Coming in a later update.", comment: "设置窗口：项目/插件栏目第一期的占位文字"))
-                .foregroundStyle(.secondary)
-        case .general:
-            VStack(alignment: .leading, spacing: L.rowGap) {
-                // The host's own file opener, not `open_config`: that now
-                // opens this window.
-                Button(String(localized: "Open config file…", comment: "设置窗口：通用栏目，用外部编辑器打开配置文件")) {
-                    (NSApp.delegate as? AppDelegate)?.ghostty.openConfig()
-                }
-                Spacer()
+            HStack(spacing: 0) {
+                projectsPart(.list)
+                    .frame(width: L.list)
+                vRule
+                projectsPart(.detail)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(L.pad)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        case .general:
+            HStack(spacing: 0) {
+                generalPart(.list)
+                    .frame(width: L.list)
+                vRule
+                generalPart(.detail)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 
@@ -213,8 +221,17 @@ struct SettingsRootView: View {
         switch model.section {
         case .roles: roles(.bar)
         case .plugins: PluginsView(pane: plugins, part: .bar)
-        case .projects, .general: Color.clear
+        case .projects: projectsPart(.bar)
+        case .general: generalPart(.bar)
         }
+    }
+
+    private func generalPart(_ part: GeneralView.Part) -> some View {
+        GeneralView(model: model.general, part: part)
+    }
+
+    private func projectsPart(_ part: ProjectsView.Part) -> some View {
+        ProjectsView(model: projects, part: part, filter: model.search)
     }
 
     private func roles(_ part: RoleLibraryView.Part) -> some View {

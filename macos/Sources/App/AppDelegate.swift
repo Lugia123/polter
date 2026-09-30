@@ -1161,13 +1161,14 @@ class AppDelegate: NSObject,
         AboutController.shared.show()
     }
 
-    /// The keybind listing.
+    /// The keybind listing: the Keyboard Shortcuts group of the settings
+    /// window's General section (settings.md §7).
     ///
     /// **The page reads the core's forward binding table**, not the reverse map
     /// the menu bar asks for its own accelerators -- which is why it can show
     /// shortcuts the menus cannot name. See `KeybindsModel`.
     @IBAction func showKeybinds(_ sender: Any?) {
-        KeybindsController.shared.show(config: ghostty.config.config)
+        openSettings(.general(.keybinds))
     }
 
     @IBAction func showHelp(_ sender: Any) {

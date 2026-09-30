@@ -40,6 +40,9 @@ final class ProjectStore {
     enum StoreError: LocalizedError {
         case nameEmpty
         case notFound
+        /// Another project, `name`, already has the name (or the file the
+        /// name would be saved in).
+        case nameTaken(String)
         /// `name` is bound to an open tab, titled `holder`, and the action
         /// would either give it a second writer or change the file under it.
         case boundElsewhere(name: String, holder: String)
@@ -50,6 +53,8 @@ final class ProjectStore {
                 return String(localized: "Project name can't be empty.", comment: "项目存储出错：名字为空")
             case .notFound:
                 return String(localized: "That project no longer exists.", comment: "项目存储出错：项目已不存在")
+            case .nameTaken(let name):
+                return String(localized: "There is already a project called \"\(name)\".", comment: "项目存储出错：重名，参数是已有的那个项目名")
             case .boundElsewhere(let name, let holder):
                 return String(localized: "\"\(name)\" is open in the tab \"\(holder)\", which saves it automatically. Close that tab first.", comment: "项目存储出错：项目已绑定到另一个 tab，参数依次是项目名、那个 tab 的标题")
             }
@@ -70,7 +75,12 @@ final class ProjectStore {
 
     private let directory: URL
 
-    init(directory: URL? = nil) {
+    /// Moves a file to the Trash and says where it landed. A test passes one
+    /// of its own, so running the tests leaves nothing in the person's Trash.
+    private let trashItem: (URL) throws -> URL
+
+    init(directory: URL? = nil, trashItem: @escaping (URL) throws -> URL = ProjectStore.systemTrash) {
+        self.trashItem = trashItem
         self.directory = directory ?? Self.defaultDirectory
         try? FileManager.default.createDirectory(
             at: self.directory,
@@ -309,6 +319,204 @@ final class ProjectStore {
             try? FileManager.default.removeItem(at: sidecar)
         }
         Self.logger.info("deleted project '\(entry.name, privacy: .public)'")
+    }
+
+    // MARK: - The settings window's operations (settings.md §6.2)
+
+    /// The saved file itself, for what the settings window shows about a
+    /// project (its tree, its directories). Nil when it can't be read.
+    func document(_ entry: Entry) -> ProjectFile? {
+        (try? Data(contentsOf: entry.url)).flatMap { try? ProjectFile.decode(from: $0) }
+    }
+
+    /// The versions `entry` can go back to: the current file, and the one
+    /// `.prev` keeps when there is one (`ProjectFileWriter`). A `.prev` that
+    /// doesn't decode isn't offered: restoring it would give back a project
+    /// nothing can open.
+    func versions(_ entry: Entry) -> [ProjectsRules.Version] {
+        let current = ProjectsRules.Version(isCurrent: true, savedAt: entry.savedAt, paneCount: entry.paneCount)
+        let previous = (try? Data(contentsOf: ProjectFileWriter.previousURL(for: entry.url)))
+            .flatMap { try? ProjectFile.decode(from: $0) }
+            .map { ProjectsRules.Version(isCurrent: false, savedAt: $0.savedAtDate, paneCount: $0.paneCount) }
+        return ProjectsRules.versions(current: current, previous: previous)
+    }
+
+    /// Bytes the project's scrollback snapshots take on disk.
+    func scrollbackBytes(_ entry: Entry) -> Int64 {
+        let dir = ProjectScrollback.directory(forProjectFile: entry.url)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return names.reduce(Int64(0)) { sum, name in
+            let size = (try? FileManager.default.attributesOfItem(
+                atPath: dir.appendingPathComponent(name).path)[.size] as? NSNumber)?.int64Value ?? 0
+            return sum + size
+        }
+    }
+
+    /// Whether `proposed` can name the project called `current` -- see
+    /// `ProjectsRules.renameVerdict`. `current` nil asks for a new project.
+    func nameVerdict(current: String?, proposed: String) -> ProjectsRules.NameVerdict {
+        let others = listed()
+            .filter { $0.file.name != current }
+            .map { (name: $0.file.name, filename: $0.url.lastPathComponent) }
+        return ProjectsRules.renameVerdict(
+            current: current ?? "",
+            proposed: proposed,
+            others: others,
+            ruleFilename: ProjectFilename.forNewFile(named: proposed.trimmingCharacters(in: .whitespacesAndNewlines)))
+    }
+
+    /// Rename `entry` to `newName`, with its `.prev` and its snapshots. A
+    /// name another project has -- or one saved under the same file -- is
+    /// refused. A tab bound to the project stays bound, under the new name
+    /// (settings.md §6.2); it is told through `ProjectMoveFollower`.
+    ///
+    /// Every part goes through a temporary name first, so that a rename
+    /// that only changes case (one file, on a case-insensitive disk) moves
+    /// the file rather than deleting it.
+    @discardableResult
+    func rename(_ entry: Entry, to newName: String) throws -> Entry {
+        let name: String
+        switch nameVerdict(current: entry.name, proposed: newName) {
+        case .unchanged: return entry
+        case .empty: throw StoreError.nameEmpty
+        case .taken(let other): throw StoreError.nameTaken(other)
+        case .ok(let ok): name = ok
+        }
+        guard let target = ruleURL(name: name) else { throw StoreError.nameEmpty }
+        guard let data = try? Data(contentsOf: entry.url) else { throw StoreError.notFound }
+        let file = try ProjectFile.decode(from: data)
+
+        let oldKey = bindingKey(name: entry.name)
+        let newKey = bindingKey(name: name)
+        let follower = bindings.owner(of: oldKey) as? ProjectMoveFollower
+        follower?.projectWillMove()
+
+        let fm = FileManager.default
+        let parked = try park(entry.url)
+        do {
+            try ProjectFile(name: name, savedAt: file.savedAt, root: file.root, nextScrollback: file.nextScrollback)
+                .encoded().write(to: target, options: .atomic)
+        } catch {
+            try? fm.moveItem(at: parked, to: entry.url)
+            follower?.projectDidMove(to: entry.name, oldKey: oldKey, key: oldKey,
+                                     scrollback: ProjectScrollback.directory(forProjectFile: entry.url))
+            throw error
+        }
+        try? fm.removeItem(at: parked)
+
+        for (from, to) in zip(ProjectFileAdoption.sidecars(of: entry.url), ProjectFileAdoption.sidecars(of: target))
+        where fm.fileExists(atPath: from.path) {
+            do {
+                try fm.moveItem(at: try park(from), to: to)
+            } catch {
+                Self.logger.warning("renaming project '\(entry.name, privacy: .public)': '\(from.lastPathComponent, privacy: .public)' not moved: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        // The `.prev` says who it is too; left alone, restoring it would
+        // put the old name back.
+        let prev = ProjectFileWriter.previousURL(for: target)
+        if let old = (try? Data(contentsOf: prev)).flatMap({ try? ProjectFile.decode(from: $0) }) {
+            try? ProjectFile(name: name, savedAt: old.savedAt, root: old.root, nextScrollback: old.nextScrollback)
+                .encoded().write(to: prev, options: .atomic)
+        }
+
+        bindings.move(oldKey, to: newKey)
+        follower?.projectDidMove(to: name, oldKey: oldKey, key: newKey,
+                                 scrollback: ProjectScrollback.directory(forProjectFile: target))
+        Self.logger.info("renamed project '\(entry.name, privacy: .public)' to '\(name, privacy: .public)'")
+        return makeEntry(ProjectFile(name: name, savedAt: file.savedAt, root: file.root, nextScrollback: file.nextScrollback), at: target)
+    }
+
+    /// Move `url` to a hidden name beside it, and return that name.
+    private func park(_ url: URL) throws -> URL {
+        let parked = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).moving")
+        try FileManager.default.moveItem(at: url, to: parked)
+        return parked
+    }
+
+    /// A copy of `entry` under the first free "<name> Copy" name, with its
+    /// snapshots (so the copy opens with the same scrollback) but not its
+    /// `.prev`: a copy starts its own history. Saved now, so it lists at
+    /// the top.
+    @discardableResult
+    func duplicate(_ entry: Entry) throws -> Entry {
+        guard let file = document(entry) else { throw StoreError.notFound }
+        let name = ProjectsRules.copyName(of: entry.name) { candidate in
+            if case .ok = nameVerdict(current: nil, proposed: candidate) { return false }
+            return true
+        }
+        guard let target = ruleURL(name: name) else { throw StoreError.nameEmpty }
+        let copy = ProjectFile(
+            name: name,
+            savedAt: Int(Date().timeIntervalSince1970),
+            root: file.root,
+            nextScrollback: file.nextScrollback)
+        let snapshots = ProjectScrollback.directory(forProjectFile: entry.url)
+        if FileManager.default.fileExists(atPath: snapshots.path) {
+            try FileManager.default.copyItem(at: snapshots, to: ProjectScrollback.directory(forProjectFile: target))
+        }
+        try copy.encoded().write(to: target, options: .atomic)
+        Self.logger.info("copied project '\(entry.name, privacy: .public)' to '\(name, privacy: .public)'")
+        return makeEntry(copy, at: target)
+    }
+
+    /// A project `trash` moved to the Trash: where each of its parts was
+    /// and where it went, which is what `untrash` needs to put it back.
+    struct Trashed: Equatable {
+        struct Move: Equatable {
+            let from: URL
+            let to: URL
+        }
+
+        let name: String
+        let moves: [Move]
+    }
+
+    /// Delete `entry` so that it can be undone (settings.md §6.2): the file,
+    /// its `.prev` and its snapshots go to the Trash. Refused while a tab is
+    /// bound to the project, like `delete`.
+    func trash(_ entry: Entry) throws -> Trashed {
+        try refuseIfBound(name: entry.name)
+        // The file first: once it is gone the project is gone from every
+        // list, and a sidecar that then fails to move is only an orphan.
+        var moves = [Trashed.Move(from: entry.url, to: try trashItem(entry.url))]
+        for sidecar in ProjectFileAdoption.sidecars(of: entry.url)
+        where FileManager.default.fileExists(atPath: sidecar.path) {
+            do {
+                moves.append(.init(from: sidecar, to: try trashItem(sidecar)))
+            } catch {
+                Self.logger.warning("deleting project '\(entry.name, privacy: .public)': '\(sidecar.lastPathComponent, privacy: .public)' not moved to the Trash: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        Self.logger.info("moved project '\(entry.name, privacy: .public)' to the Trash")
+        return Trashed(name: entry.name, moves: moves)
+    }
+
+    /// Put back what `trash` moved. Refused, touching nothing, if the
+    /// project's file has been taken since -- a project saved under the same
+    /// name in the meantime is not overwritten.
+    func untrash(_ trashed: Trashed) throws {
+        let fm = FileManager.default
+        if let file = trashed.moves.first, fm.fileExists(atPath: file.from.path) {
+            throw StoreError.nameTaken(trashed.name)
+        }
+        guard trashed.moves.allSatisfy({ fm.fileExists(atPath: $0.to.path) }) else {
+            throw StoreError.notFound
+        }
+        // Sidecars first, the file last, as `ProjectFileAdoption` does: until
+        // the file is back nothing lists the project.
+        for move in trashed.moves.reversed() where !fm.fileExists(atPath: move.from.path) {
+            try fm.moveItem(at: move.to, to: move.from)
+        }
+        Self.logger.info("put project '\(trashed.name, privacy: .public)' back from the Trash")
+    }
+
+    nonisolated static func systemTrash(_ url: URL) throws -> URL {
+        var landed: NSURL?
+        try FileManager.default.trashItem(at: url, resultingItemURL: &landed)
+        guard let landed else { throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: url.path]) }
+        return landed as URL
     }
 
     /// Before saving `name` to `target`: if the project is still in a file
