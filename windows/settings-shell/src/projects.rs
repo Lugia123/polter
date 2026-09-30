@@ -149,6 +149,37 @@ pub fn plan_write(existing: Existing) -> WritePlan {
     }
 }
 
+/// **Why a project file is being written**, because the three are not one
+/// rule (§6.2, 39ae3f040). They were one boolean -- "decide about `.prev`" or
+/// not -- and "Overwrite with Current Tab" went through the save's rule,
+/// which keeps a generation only when the *layout* changed: one pane
+/// overwritten by one pane lost the old directory and title, under a
+/// confirmation that said it would be kept (found on the mac, #962 P9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteKind {
+    /// "Save as Project" -- and on macOS the autosave: `plan_write`, so the
+    /// changes that follow a person around all day do not push the good
+    /// layout out of `.prev`.
+    Save,
+    /// "Overwrite with Current Tab": the person replaced the project on
+    /// purpose, was told the replaced version is kept, and it is -- **always**,
+    /// whatever changed or did not.
+    Overwrite,
+    /// The same project under a new name (a rename, a copy): not a new
+    /// version, so `.prev` is left as it is.
+    Rename,
+}
+
+/// The plan for writing a project of `kind` over `existing`.
+pub fn plan_for(kind: WriteKind, existing: Existing) -> WritePlan {
+    match (kind, existing) {
+        (WriteKind::Save, e) => plan_write(e),
+        (WriteKind::Overwrite, Existing::Nothing) => WritePlan::Write { keep_previous: false },
+        (WriteKind::Overwrite, _) => WritePlan::Write { keep_previous: true },
+        (WriteKind::Rename, _) => WritePlan::Write { keep_previous: false },
+    }
+}
+
 /// `<name>.json.prev` beside `<name>.json`. Its extension is `prev`, so a
 /// listing that takes only `.json` never lists it -- on macOS
 /// (`ProjectFileWriter.previousURL`) and here.
@@ -949,6 +980,50 @@ mod tests {
         assert_eq!(plan_write(title), WritePlan::Write { keep_previous: false }, "a title is not worth a generation");
         let panes = Existing::Read { layout_changed: true, only_the_time_changed: false };
         assert_eq!(plan_write(panes), WritePlan::Write { keep_previous: true });
+    }
+
+    /// §6.2 (39ae3f040): an overwrite always keeps what it replaced -- the
+    /// case the mac lost, one pane over one pane with only the directory and
+    /// title changed, first.
+    #[test]
+    fn an_overwrite_always_keeps_what_it_replaces() {
+        let one_pane_over_one_pane = Existing::Read { layout_changed: false, only_the_time_changed: false };
+        assert_eq!(plan_for(WriteKind::Overwrite, one_pane_over_one_pane), WritePlan::Write { keep_previous: true });
+        assert_eq!(
+            plan_for(WriteKind::Save, one_pane_over_one_pane),
+            WritePlan::Write { keep_previous: false },
+            "a save of the same does not: that is the rule that must stay"
+        );
+        let identical = Existing::Read { layout_changed: false, only_the_time_changed: true };
+        assert_eq!(plan_for(WriteKind::Overwrite, identical), WritePlan::Write { keep_previous: true }, "asked for, so done");
+        assert_eq!(plan_for(WriteKind::Save, identical), WritePlan::Unchanged);
+        let reshaped = Existing::Read { layout_changed: true, only_the_time_changed: false };
+        assert_eq!(plan_for(WriteKind::Overwrite, reshaped), WritePlan::Write { keep_previous: true });
+        assert_eq!(plan_for(WriteKind::Overwrite, Existing::Unreadable), WritePlan::Write { keep_previous: true });
+        assert_eq!(plan_for(WriteKind::Overwrite, Existing::Nothing), WritePlan::Write { keep_previous: false }, "nothing to keep");
+    }
+
+    #[test]
+    fn a_rename_is_not_a_new_version() {
+        for e in [
+            Existing::Nothing,
+            Existing::Unreadable,
+            Existing::Read { layout_changed: true, only_the_time_changed: false },
+            Existing::Read { layout_changed: false, only_the_time_changed: true },
+        ] {
+            assert_eq!(plan_for(WriteKind::Rename, e), WritePlan::Write { keep_previous: false }, "{e:?}");
+        }
+    }
+
+    /// On disk: one pane overwritten by one pane, the old file is the `.prev`.
+    #[test]
+    fn an_overwrite_on_disk_leaves_the_old_file_as_prev() {
+        let d = Scratch::new("overwrite");
+        let f = d.0.join("a.json");
+        let same_shape = Existing::Read { layout_changed: false, only_the_time_changed: false };
+        write_keeping_previous(&f, b"cwd=/old", plan_for(WriteKind::Save, Existing::Nothing)).unwrap();
+        write_keeping_previous(&f, b"cwd=/new", plan_for(WriteKind::Overwrite, same_shape)).unwrap();
+        assert_eq!((read(&f), read(&prev_path(&f))), ("cwd=/new".into(), "cwd=/old".into()));
     }
 
     #[test]
