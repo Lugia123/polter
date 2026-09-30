@@ -604,20 +604,20 @@ fn close(accept: bool) {
         Completion::SaveProject { tab, close_after } => {
             let saved = match crate::project::resolve_state_dir().map(|s| crate::project::default_dir(&s)) {
                 None => Err("no state directory (neither XDG_STATE_HOME nor LOCALAPPDATA)".to_string()),
-                Some(dir) => {
-                    // A taken name is an overwrite: asked first, and what it
-                    // replaces is kept (§6.2, #970).
-                    let taken = crate::project::path_for(&dir, &text).is_ok_and(|p| p.exists());
-                    let kind = polter_settings_shell::projects::save_as(taken);
-                    let existing = crate::project_ui::existing_project_for_overwrite_check(&dir, &text);
-                    if taken && !crate::projects_ui::confirm_save_as_overwrite(frame, &text, existing.as_ref()) {
-                        // not-gated: the condition is the event -- the person
-                        // declined, and nothing was written or closed.
-                        wlogf!(frame, "[prompt] save as project {:?}: overwrite declined; nothing written", text);
+                Some(dir) => match crate::projects_ui::save_as_plan(frame, &dir, &text) {
+                    // A taken name -- the same name, or the same file whatever
+                    // the case, after trimming (#983, the mac's nameVerdict) --
+                    // is an overwrite: asked first, and what it replaces is
+                    // kept (§6.2, #970). Declined, or nothing typed: nothing
+                    // is written and nothing closes.
+                    None => {
+                        // not-gated: the condition is the event -- nothing
+                        // was written, and this line is the only trace.
+                        wlogf!(frame, "[prompt] save as project {:?}: declined or empty; nothing written", text);
                         return;
                     }
-                    crate::project_ui::write_tab_as(&dir, frame, tab, text.clone(), kind)
-                }
+                    Some((name, kind)) => crate::project_ui::write_tab_as(&dir, frame, tab, name, kind),
+                },
             };
             match (&saved, close_after) {
                 (Ok(()), None) => wlogf!(frame, "[prompt] saved as project {:?}", text),
