@@ -182,6 +182,14 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
     xgettext.addArg(scrollback_path);
     xgettext.addFileInput(b.path(scrollback_path));
 
+    // The settings window's General form: each row's name and sentence are
+    // in the core's table, marked `N_`, and translated by the hosts. The
+    // Windows host looks them up in these catalogues; the macOS app has
+    // the same strings in `Localizable.strings` (#973).
+    const config_form_path = "src/config/form.zig";
+    xgettext.addArg(config_form_path);
+    xgettext.addFileInput(b.path(config_form_path));
+
     // Add support for localizing our `nautilus` integration
     const xgettext_py = b.addSystemCommand(&.{
         "xgettext",

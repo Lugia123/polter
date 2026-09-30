@@ -165,6 +165,10 @@ pub struct Item {
     pub default: String,
     pub value: String,
     pub doc: Option<String>,
+    /// The form's own name and sentence for it, English msgids the host
+    /// translates (#973); `None` for a key only in All Options.
+    pub label: Option<String>,
+    pub summary: Option<String>,
     pub source: Source,
     /// Why the form may not write it (`repeatable`, `multiple`, `cli`,
     /// `file`); `None` when it may.
@@ -370,6 +374,28 @@ pub fn readonly_note(it: &Item) -> Option<ReadOnlyNote> {
     })
 }
 
+/// What the label column says for a row: the form's name for it, translated,
+/// else the key itself (All Options' keys have no name). Same rule as mac
+/// `ConfigFormRules.title`.
+pub fn row_title(it: &Item, translate: impl Fn(&str) -> String) -> String {
+    match &it.label {
+        Some(label) => translate(label),
+        None => it.key.clone(),
+    }
+}
+
+/// The line under a row's control when nothing is wrong: for a named key,
+/// the key as the config file spells it and then the form's sentence,
+/// translated (#973, mac `ConfigFormView.help`); for the rest, the first
+/// paragraph of Ghostty's help.
+pub fn row_help(it: &Item, translate: impl Fn(&str) -> String) -> String {
+    match (&it.label, &it.summary) {
+        (Some(_), Some(summary)) => format!("{}  {}", it.key, translate(summary)),
+        (Some(_), None) => it.key.clone(),
+        _ => it.doc.as_deref().map(doc_summary).unwrap_or_default(),
+    }
+}
+
 /// The first line of a key's documentation, for under its control: the
 /// whole text is `+show-config --docs`, far longer than a form row.
 pub fn doc_summary(doc: &str) -> String {
@@ -511,6 +537,8 @@ mod tests {
             default: default.into(),
             value: value.into(),
             doc: None,
+            label: None,
+            summary: None,
             source: Source::Default,
             readonly: None,
         }
@@ -699,6 +727,28 @@ mod tests {
         it.readonly = Some("cli".into());
         it.source = Source::Cli { arg: 2 };
         assert_eq!(readonly_note(&it), Some(ReadOnlyNote::CommandLine));
+    }
+
+    /// #973: a named key shows its name, and its key before its sentence;
+    /// an unnamed one is shown by its key and Ghostty's first paragraph.
+    #[test]
+    fn a_named_key_shows_its_name_and_its_key_before_its_sentence() {
+        let zh = |s: &str| match s {
+            "Font Size" => "字号".to_string(),
+            "In points; may be fractional." => "以点为单位，可以带小数。".to_string(),
+            other => other.to_string(),
+        };
+        let mut named = item("font-size", Some("font"), Control::Number, "13", "13");
+        named.label = Some("Font Size".into());
+        named.summary = Some("In points; may be fractional.".into());
+        named.doc = Some("Font size in points.\n\nMore.".into());
+        assert_eq!(row_title(&named, zh), "字号");
+        assert_eq!(row_help(&named, zh), "font-size  以点为单位，可以带小数。");
+
+        let mut unnamed = item("font-thicken", None, Control::Toggle, "false", "false");
+        unnamed.doc = Some("Draw fonts thicker.\n\nMore.".into());
+        assert_eq!(row_title(&unnamed, zh), "font-thicken");
+        assert_eq!(row_help(&unnamed, zh), "Draw fonts thicker.");
     }
 
     #[test]

@@ -21,7 +21,7 @@ struct ConfigFormRulesTests {
       {"key":"background-opacity","group":"appearance","control":"number","choices":null,"min":0,"max":1,
        "default":"1","value":"0.9","doc":null,"source":{"kind":"file","path":"/home/me/extra","line":7},"readonly":"file"},
       {"key":"font-size","group":"font","control":"number","choices":null,"min":1,"max":null,
-       "default":"13","value":"13","doc":null,"source":{"kind":"default"},"readonly":null},
+       "default":"13","value":"13","doc":"Font size in points.\n\nMore about it.","label":"Font Size","summary":"In points; may be fractional.","source":{"kind":"default"},"readonly":null},
       {"key":"window-save-state","group":"window","control":"choice","choices":["default","never","always"],"min":null,"max":null,
        "default":"default","value":"never","doc":null,"source":{"kind":"cli","arg":2},"readonly":"cli"},
       {"key":"keybind","group":null,"control":"readonly","choices":null,"min":null,"max":null,
@@ -168,5 +168,53 @@ struct ConfigFormRulesTests {
         let link = dir.appendingPathComponent("link.polter")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
         #expect(ConfigFormRules.formWritesAllowed(hostConfigPath: link.path, formMain: real.path))
+    }
+
+    // MARK: Names (#973)
+
+    private var zhHans: Bundle? {
+        Bundle.main.path(forResource: "zh-Hans", ofType: "lproj").flatMap(Bundle.init(path:))
+    }
+
+    @Test func aNamedKeyShowsItsNameAndItsSentence() throws {
+        let fontSize = item("font-size")
+        #expect(fontSize.label == "Font Size")
+        #expect(ConfigFormRules.title(fontSize, bundle: .main) != "font-size")
+        #expect(ConfigFormRules.sentence(fontSize, bundle: .main) != nil)
+        // Ghostty's text is one click away, not gone.
+        #expect(ConfigFormRules.hasMore(fontSize))
+        let zh = try #require(zhHans)
+        #expect(ConfigFormRules.title(fontSize, bundle: zh) == "字号")
+        #expect(ConfigFormRules.sentence(fontSize, bundle: zh) == "以点为单位，可以带小数。")
+    }
+
+    /// All Options' keys have no name: the key is the label and the first
+    /// paragraph of Ghostty's text is the sentence.
+    @Test func anUnnamedKeyIsShownByItsKey() {
+        let theme = item("theme")
+        #expect(theme.label == nil)
+        #expect(ConfigFormRules.title(theme) == "theme")
+        #expect(ConfigFormRules.sentence(theme) == "The theme.")
+        #expect(ConfigFormRules.hasMore(theme))
+        #expect(ConfigFormRules.sentence(item("keybind")) == nil)
+        #expect(!ConfigFormRules.hasMore(item("keybind")))
+    }
+
+    /// Every name and sentence the real core hands over has Chinese behind
+    /// it -- the strings gate cannot see these, they are not Swift literals.
+    @MainActor
+    @Test func everyNameTheCoreHandsOverIsTranslated() throws {
+        let app = try #require((NSApp.delegate as? AppDelegate)?.ghostty.app)
+        let json = try #require(PersonaCatalog.readJSON({ ghostty_app_config_form(app, $0, $1) }))
+        let form = try #require(ConfigForm.parse(json))
+        let zh = try #require(zhHans)
+        let named = form.items.filter { $0.group != nil }
+        #expect(named.count >= 30)
+        for item in named {
+            let label = try #require(item.label, "\(item.key) has no label")
+            let summary = try #require(item.summary, "\(item.key) has no summary")
+            #expect(ConfigFormRules.localized(label, bundle: zh) != label, "\(item.key): \(label) has no Chinese")
+            #expect(ConfigFormRules.localized(summary, bundle: zh) != summary, "\(item.key): \(summary) has no Chinese")
+        }
     }
 }

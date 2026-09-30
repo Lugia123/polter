@@ -71,6 +71,9 @@ private struct ConfigFormRow: View {
 
     private typealias L = SettingsLayout
 
+    /// Ghostty's own help text, folded away until asked for.
+    @State private var showingMore = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: L.rowGap / 2) {
             HStack(alignment: .firstTextBaseline, spacing: L.labelGap) {
@@ -95,12 +98,13 @@ private struct ConfigFormRow: View {
                     if !ConfigFormRules.isWritable(item) {
                         readonlyNote
                     }
-                    if let doc = Self.summary(item.doc) {
+                    help
+                    if showingMore, let doc = item.doc {
                         Text(doc)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(3)
-                            .help(item.doc ?? "")
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -114,8 +118,50 @@ private struct ConfigFormRow: View {
         }
     }
 
-    /// The key as the config file spells it, with the dot of §7.3 when the
-    /// value is not the default.
+    /// Under the control: the key as the config file spells it (quiet,
+    /// monospaced -- it is what a person searches the file for), then the
+    /// form's sentence, then "More…" for Ghostty's own text (#973). A key
+    /// with no name of its own shows only the sentence: its key is already
+    /// the label.
+    private var help: some View {
+        let line = helpLine(ConfigFormRules.sentence(item))
+        // "More…" is the last run of the same text, not a button beside
+        // it: beside it, a long key squeezed the sentence into a column at
+        // the window's narrowest. As a link it wraps with the words.
+        let more: Text? = ConfigFormRules.hasMore(item) ? Text(Self.moreLink(showingMore)).font(.caption) : nil
+        return (more.map { line + Text(verbatim: "  ") + $0 } ?? line)
+            .lineLimit(showingMore ? nil : 3)
+            .fixedSize(horizontal: false, vertical: true)
+            .environment(\.openURL, OpenURLAction { url in
+                guard url == Self.moreURL else { return .systemAction }
+                showingMore.toggle()
+                return .handled
+            })
+    }
+
+    private static let moreURL = URL(string: "polter-settings:more")!
+
+    private static func moreLink(_ showing: Bool) -> AttributedString {
+        var text = AttributedString(showing
+            ? String(localized: "Less", comment: "设置窗口·通用：收起 Ghostty 原文说明")
+            : String(localized: "More…", comment: "设置窗口·通用：展开 Ghostty 原文说明"))
+        text.link = moreURL
+        return text
+    }
+
+    private func helpLine(_ sentence: String?) -> Text {
+        let key = Text(item.key).font(.caption.monospaced()).foregroundColor(Color(nsColor: .tertiaryLabelColor))
+        let words = sentence.map { Text($0).font(.caption).foregroundColor(.secondary) }
+        switch (item.label != nil, words) {
+        case (true, let words?): return key + Text(verbatim: "  ") + words
+        case (true, nil): return key
+        case (false, let words?): return words
+        case (false, nil): return Text(verbatim: "")
+        }
+    }
+
+    /// The form's name for the key (the key itself in All Options), with the
+    /// dot of §7.3 when the value is not the default.
     private var label: some View {
         HStack(spacing: 4) {
             if ConfigFormRules.differsFromDefault(item) {
@@ -124,7 +170,7 @@ private struct ConfigFormRow: View {
                     .frame(width: 6, height: 6)
                     .help(String(format: String(localized: "Changed from the default (%@). Right-click to restore it.", comment: "设置窗口·通用：与默认值不同的圆点的说明，%@ 是默认值"), item.default.isEmpty ? "—" : item.default))
             }
-            Text(item.key)
+            Text(ConfigFormRules.title(item))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.trailing)
@@ -159,15 +205,6 @@ private struct ConfigFormRow: View {
             }
             .font(.callout)
         }
-    }
-
-    /// The help text's first paragraph: the rest is in the tooltip.
-    static func summary(_ doc: String?) -> String? {
-        guard let doc else { return nil }
-        let first = doc.components(separatedBy: "\n\n").first?
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return first.isEmpty ? nil : first
     }
 }
 
