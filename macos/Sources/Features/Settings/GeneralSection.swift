@@ -378,10 +378,13 @@ private struct GeneralAdvanced: View {
     }
 }
 
-/// About: version, build and commit, from the bundle -- the same three the
-/// About window shows.
+/// About: version, build and commit, from the bundle, and the links and
+/// copyright the About window used to carry -- "About Polter" opens this
+/// group now (settings.md §7).
 private struct GeneralAbout: View {
     private typealias L = SettingsLayout
+
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let info = Bundle.main.infoDictionary
@@ -409,6 +412,16 @@ private struct GeneralAbout: View {
                             .textSelection(.enabled)
                     }
                 }
+            }
+            HStack(spacing: L.rowGap) {
+                Button("Docs") { openURL(PolterLinks.docs) }
+                Button("GitHub") { openURL(PolterLinks.github) }
+                Button("Ghostty") { openURL(PolterLinks.upstream) }
+            }
+            if let copyright = Bundle.main.infoDictionary?["NSHumanReadableCopyright"] as? String, !copyright.isEmpty {
+                Text(copyright)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Spacer()
         }

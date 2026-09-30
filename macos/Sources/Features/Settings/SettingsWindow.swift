@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import OSLog
 import SwiftUI
 
@@ -74,6 +75,11 @@ final class SettingsModel: ObservableObject {
     let plugins: PluginsPane
     let projects: ProjectsModel
     let general = GeneralModel()
+    /// The breadcrumb names the General group, and the root view watches
+    /// this model, not `general`: without passing its group on, a click in
+    /// the group list changed the page and left the breadcrumb on the old
+    /// group (#974 C).
+    private var generalGroupChanges: AnyCancellable?
 
     init(section: SettingsSection, library: RoleLibrary, projects: ProjectsModel? = nil) {
         self.section = section
@@ -83,6 +89,9 @@ final class SettingsModel: ObservableObject {
         plugins.reload()
         self.projects = projects ?? ProjectsModel()
         self.projects.reload()
+        generalGroupChanges = general.$group.dropFirst().sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     /// The section whose unsaved state has to be settled before leaving it.

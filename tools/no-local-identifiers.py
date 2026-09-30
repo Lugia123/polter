@@ -232,7 +232,10 @@ KNOWN = {
     # other direction.
     "macos/Sources/Features/Mentions/MentionMenu.swift":
         "NSUserInterfaceItemIdentifier value namespaced by the bundle id",
-    "macos/Sources/Features/About/AboutView.swift": "links to the fork's public repository",
+    # Was macos/Sources/Features/About/AboutView.swift; the About window
+    # became the settings window's About group (#979) and its links moved
+    # here, a file holding nothing else.
+    "macos/Sources/Features/Settings/PolterLinks.swift": "links to the fork's public repository",
     # The download link. A README that tells people where to get the releases
     # has to name the repository, and the repository's name is the fork's
     # public identity -- the same one in the bundle id, the copyright line and
