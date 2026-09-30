@@ -4913,25 +4913,7 @@ pub fn loadCliArgs(self: *Config, alloc_gpa: Allocator) !void {
     var iter = try cli.args.argsIterator(alloc_gpa, global.args());
     defer iter.deinit();
     try self.loadIter(alloc_gpa, &iter);
-
-    // If we are not loading the default files, then we need to
-    // replay the steps up to this point so that we can rebuild
-    // the config without it.
-    if (!self.@"config-default-files") reload: {
-        const replay_len_end = self._replay_steps.items.len;
-        if (replay_len_end == replay_len_start) break :reload;
-        log.info("config-default-files unset, discarding configuration from default files", .{});
-
-        var new_config = try self.cloneEmpty(alloc_gpa);
-        errdefer new_config.deinit();
-        var it = Replay.iterator(
-            self._replay_steps.items[replay_len_start..replay_len_end],
-            &new_config,
-        );
-        try new_config.loadIter(alloc_gpa, &it);
-        self.deinit();
-        self.* = new_config;
-    }
+    try self.discardDefaultFiles(alloc_gpa, replay_len_start);
 
     // Any paths referenced from the CLI are relative to the current working
     // directory.
@@ -4941,6 +4923,70 @@ pub fn loadCliArgs(self: *Config, alloc_gpa: Allocator) !void {
         ".",
         &buf,
     )]);
+}
+
+/// If we are not loading the default files, then we need to replay the
+/// steps from `replay_len_start` (where the command line began) so that
+/// we can rebuild the config without them.
+///
+/// Polter fork change (task 981), not upstream: **only default files.**
+/// A file the host loaded in their place (`ghostty_config_load_file`,
+/// recorded in `_origin.file`) is not a default file, and it used to be
+/// dropped with them: the mac test launcher passes
+/// `--config-default-files=false` as a second guard beside
+/// `GHOSTTY_CONFIG_PATH`, and the instance then ran on no config at all --
+/// its config errors and the settings form's writes were both invisible.
+/// Nothing before the command line here is a default file in that case,
+/// so there is nothing to discard.
+fn discardDefaultFiles(self: *Config, alloc_gpa: Allocator, replay_len_start: usize) !void {
+    if (self.@"config-default-files") return;
+    if (self._origin.file) |path| {
+        log.info("config-default-files unset; keeping {s}, which the host loaded instead of them", .{path});
+        return;
+    }
+    const replay_len_end = self._replay_steps.items.len;
+    if (replay_len_end == replay_len_start) return;
+    log.info("config-default-files unset, discarding configuration from default files", .{});
+
+    var new_config = try self.cloneEmpty(alloc_gpa);
+    errdefer new_config.deinit();
+    var it = Replay.iterator(
+        self._replay_steps.items[replay_len_start..replay_len_end],
+        &new_config,
+    );
+    try new_config.loadIter(alloc_gpa, &it);
+    self.deinit();
+    self.* = new_config;
+}
+
+test "config-default-files=false keeps a file the host loaded instead of the default ones (task 981)" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const data = "font-size = 17\n";
+
+    // Loaded the way `ghostty_config_load_file` loads it, then the command
+    // line the mac test launcher passes.
+    const Case = struct { explicit: bool, size: f32 };
+    var def = try Config.default(alloc);
+    defer def.deinit();
+    const default_size = def.@"font-size";
+    for ([_]Case{ .{ .explicit = true, .size = 17 }, .{ .explicit = false, .size = default_size } }) |case| {
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        var reader: std.Io.Reader = .fixed(data);
+        try cfg.loadReader(alloc, &reader, "/tmp/polter-981/isolated-test.polter");
+        if (case.explicit) cfg._origin.file = "/tmp/polter-981/isolated-test.polter";
+
+        const start = cfg._replay_steps.items.len;
+        var it = cli.args.sliceIterator(&.{ "--config-default-files=false", "--title=cli" });
+        try cfg.loadIter(alloc, &it);
+        try cfg.discardDefaultFiles(alloc, start);
+
+        // The file survives only when it was the host's own; the command
+        // line survives either way.
+        try testing.expectEqual(case.size, cfg.@"font-size");
+        try testing.expectEqualStrings("cli", cfg.title.?);
+    }
 }
 
 /// Load and parse the config files that were added in the "config-file" key.
