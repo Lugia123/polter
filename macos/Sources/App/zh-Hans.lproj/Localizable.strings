@@ -490,3 +490,27 @@
 "Version" = "版本";
 "Build" = "构建";
 "Commit" = "提交";
+
+/* 设置窗口·通用栏目·表单（settings.md §7.2–7.4） */
+"Backup" = "备份";
+"Changed from the default (%@). Right-click to restore it." = "与默认值（%@）不同。右键可以恢复默认。";
+"Dark" = "深色";
+"Light" = "浅色";
+"Edited in the config file, not here." = "这一项要在配置文件里改，表单不写。";
+"Filter by setting name" = "按设置名过滤";
+"No matching settings" = "没有匹配的设置";
+"Not a valid value for this setting." = "这不是这一项能接受的值。";
+"Open That File" = "打开那个文件";
+"Polter's core did not answer." = "Polter 的核心没有回答。";
+"Polter's core did not hand over the settings table." = "Polter 的核心没有给出设置表。";
+"Reading the settings…" = "正在读取设置…";
+"Restore Default" = "恢复默认";
+"Saved to %@." = "已写入 %@。";
+"Set in %@, line %@." = "由 %@ 第 %@ 行设置。";
+"Set on the command line; a change here would not take effect." = "由命令行设置；在这里改不会生效。";
+"The config file kept changing while it was being written. Try again." = "写入时配置文件一直在变，请再试一次。";
+"The setting could not be written." = "这一项没能写入。";
+"This Polter reads %@, but the form would write %@. The settings are shown read-only." = "这个 Polter 读的是 %@，而表单会写到 %@。所以这里只读显示。";
+"This build does not know this setting." = "这个版本不认识这一项。";
+"This setting is set somewhere the form does not write." = "这一项由表单不写的地方设置。";
+"This window has not written the config file since Polter started, so there is no backup yet." = "Polter 这次启动后设置窗口还没写过配置文件，所以还没有备份。";

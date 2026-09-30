@@ -1,10 +1,11 @@
 import AppKit
 import SwiftUI
+import GhosttyKit
 
 /// The General section (settings.md §7): a list of groups, and the group's
-/// page. The groups drawn from the core's form table are placeholders until
-/// the host has that table; Keyboard Shortcuts, Advanced and About need
-/// nothing from it and are here now.
+/// page. The first six are the core's form table (`ghostty_app_config_form`),
+/// written one key at a time through `ghostty_app_config_set`; Keyboard
+/// Shortcuts, Advanced and About need nothing from it.
 @MainActor
 final class GeneralModel: ObservableObject {
     @Published private(set) var group: GeneralGroup = GeneralGroup.allCases[0]
@@ -32,7 +33,106 @@ final class GeneralModel: ObservableObject {
     func reloadConfig() {
         guard let ghostty else { return }
         ghostty.reloadConfig()
+        reloadForm()
         status = String(localized: "Configuration reloaded.", comment: "设置窗口·通用：重新加载配置之后底栏的提示")
+    }
+
+    // MARK: Form (§7.2-7.3)
+
+    /// The core's table, as last read. Nil before the first read or when
+    /// the core did not answer.
+    @Published private(set) var form: ConfigForm?
+    /// The core could not be asked, or its answer did not read.
+    @Published private(set) var formUnavailable = false
+    /// Why the last write of a key was refused, under that key's control.
+    @Published private(set) var fieldErrors: [String: String] = [:]
+    /// All Options' filter.
+    @Published var query = ""
+
+    /// Read the table again: on opening, after every write, and whenever
+    /// the window comes forward -- the file may have been edited by hand
+    /// (§7.3).
+    func reloadForm() {
+        guard let app = ghostty?.app,
+              let json = PersonaCatalog.readJSON({ ghostty_app_config_form(app, $0, $1) }),
+              let form = ConfigForm.parse(json)
+        else {
+            formUnavailable = true
+            return
+        }
+        formUnavailable = false
+        self.form = form
+    }
+
+    /// Write one key (nil = restore the default), then reload the app's
+    /// configuration and the table (§7.2 rule 7). A refusal is shown under
+    /// the control and the control goes back to the value on disk.
+    /// See `ConfigFormRules.formWritesAllowed`.
+    var writesAllowed: Bool {
+        guard let form else { return false }
+        return ConfigFormRules.formWritesAllowed(hostConfigPath: ghostty?.configPath, formMain: form.main)
+    }
+
+    func set(_ key: String, _ value: String?) {
+        guard let app = ghostty?.app, writesAllowed else { return }
+        let result = Self.callSet(app: app, key: key, value: value)
+        status = nil
+        if let result, result.ok {
+            fieldErrors[key] = nil
+            ghostty?.reloadConfig()
+            if let wrote = result.wrote {
+                status = String(format: String(localized: "Saved to %@.", comment: "设置窗口·通用：写入配置文件之后底栏的提示，%@ 是文件路径"), (wrote as NSString).abbreviatingWithTildeInPath)
+            }
+        } else {
+            fieldErrors[key] = Self.message(for: result)
+        }
+        reloadForm()
+    }
+
+    /// The call writes once; a result too long for the buffer is read back
+    /// with `ghostty_app_config_set_result` rather than by calling again.
+    private static func callSet(app: ghostty_app_t, key: String, value: String?) -> ConfigSetResult? {
+        var buf = [CChar](repeating: 0, count: 16 * 1024)
+        let cap = UInt(buf.count)
+        let size: UInt = key.withCString { k in
+            buf.withUnsafeMutableBufferPointer { b in
+                if let value {
+                    return value.withCString { v in
+                        ghostty_app_config_set(app, k, UInt(strlen(k)), v, UInt(strlen(v)), b.baseAddress, cap)
+                    }
+                }
+                return ghostty_app_config_set(app, k, UInt(strlen(k)), nil, 0, b.baseAddress, cap)
+            }
+        }
+        let json: String?
+        if size < cap {
+            json = String(bytes: buf.prefix(Int(size)).map { UInt8(bitPattern: $0) }, encoding: .utf8)
+        } else {
+            json = PersonaCatalog.readJSON({ ghostty_app_config_set_result(app, $0, $1) })
+        }
+        return json.flatMap(ConfigSetResult.parse)
+    }
+
+    static func message(for result: ConfigSetResult?) -> String {
+        guard let result else {
+            return String(localized: "Polter's core did not answer.", comment: "设置窗口·通用：写配置时核心没有回答")
+        }
+        switch result.code {
+        case "invalid_value":
+            return result.message ?? String(localized: "Not a valid value for this setting.", comment: "设置窗口·通用：值不合法")
+        case "read_only":
+            return String(localized: "This setting is set somewhere the form does not write.", comment: "设置窗口·通用：这一项由别处设置，表单不写")
+        case "busy":
+            return String(localized: "The config file kept changing while it was being written. Try again.", comment: "设置窗口·通用：写入时配置文件一直在变")
+        case "unknown_key":
+            return String(localized: "This build does not know this setting.", comment: "设置窗口·通用：核心不认识这个键")
+        default:
+            return result.message ?? String(localized: "The setting could not be written.", comment: "设置窗口·通用：写入失败")
+        }
+    }
+
+    func openFile(_ path: String) {
+        ghostty?.openTextFile(path: path)
     }
 }
 
@@ -64,7 +164,6 @@ struct GeneralView: View {
                 ForEach(GeneralGroup.allCases) { group in
                     SettingsRow(selected: model.group == group) {
                         Text(group.title)
-                            .foregroundStyle(group.needsForm ? .secondary : .primary)
                     }
                     .onTapGesture {
                         listFocused = true
@@ -89,17 +188,11 @@ struct GeneralView: View {
     @ViewBuilder
     private var detail: some View {
         if model.group.needsForm {
-            VStack {
-                Spacer()
-                Text(String(localized: "Coming in a later update.", comment: "设置窗口：项目/插件栏目第一期的占位文字"))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .frame(maxWidth: .infinity)
+            ConfigFormPage(model: model, group: model.group)
         } else if let ghostty = model.ghostty {
             switch model.group {
             case .keybinds: GeneralKeybinds(ghostty: ghostty)
-            case .advanced: GeneralAdvanced(ghostty: ghostty)
+            case .advanced: GeneralAdvanced(ghostty: ghostty, backup: model.form?.backup)
             default: GeneralAbout()
             }
         } else {
@@ -120,6 +213,10 @@ struct GeneralView: View {
             }
             Spacer()
             switch model.group {
+            case .appearance, .font, .terminal, .windows, .polter, .all:
+                Button(String(localized: "Open config file…", comment: "设置窗口：通用栏目，用外部编辑器打开配置文件")) {
+                    model.openConfigFile()
+                }
             case .keybinds:
                 Button(String(localized: "Edit in Config File…", comment: "设置窗口·通用：快捷键组，在配置文件里改快捷键")) {
                     model.openConfigFile()
@@ -222,6 +319,8 @@ private struct GeneralKeybinds: View {
 /// Opening and reloading the file are in the bottom bar.
 private struct GeneralAdvanced: View {
     @ObservedObject var ghostty: Ghostty.App
+    /// Where the copy taken before this run's first write went (§7.1).
+    var backup: String?
 
     private typealias L = SettingsLayout
 
@@ -249,6 +348,17 @@ private struct GeneralAdvanced: View {
                     .background(
                         RoundedRectangle(cornerRadius: 6)
                             .fill(Color(nsColor: .controlBackgroundColor)))
+                }
+                Text(String(localized: "Backup", comment: "设置窗口·通用：高级组，设置窗口第一次写配置前留的备份"))
+                    .font(.headline)
+                    .padding(.top, L.groupGap - L.rowGap)
+                if let backup {
+                    Text((backup as NSString).abbreviatingWithTildeInPath)
+                        .font(.system(size: 12).monospaced())
+                        .textSelection(.enabled)
+                } else {
+                    Text(String(localized: "This window has not written the config file since Polter started, so there is no backup yet.", comment: "设置窗口·通用：高级组，还没有备份"))
+                        .foregroundStyle(.secondary)
                 }
             }
             .padding(L.pad)

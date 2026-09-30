@@ -278,6 +278,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     /// draft being edited is kept.
     func windowDidBecomeKey(_ notification: Notification) {
         model?.plugins.reload()
+        // The config file may have been edited by hand (§7.3).
+        model?.general.reloadForm()
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
