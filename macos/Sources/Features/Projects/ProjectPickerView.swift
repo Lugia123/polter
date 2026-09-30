@@ -258,7 +258,7 @@ struct ProjectPickerView: View {
     // sees `String(localized:` when the literal starts on the same line as
     // the call.
     private func overwriteMessage(for entry: ProjectStore.Entry) -> String {
-        String(localized: "\"\(entry.name)\" already has \(String(entry.paneCount)) pane(s), saved \(Self.dateFormatter.string(from: entry.savedAt)). Overwriting it can't be undone.", comment: "覆盖确认框正文，参数依次是项目名、面板数、保存时间")
+        String(localized: "\"\(entry.name)\" already has \(String(entry.paneCount)) pane(s), saved \(Self.dateFormatter.string(from: entry.savedAt)). The replaced version is kept as the previous version.", comment: "覆盖确认框正文，参数依次是项目名、面板数、保存时间")
     }
 
     private func currentPaneCountLabel(_ count: Int) -> String {
