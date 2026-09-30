@@ -2152,6 +2152,17 @@ fn make_fonts(dpi: i32) {
     }
 }
 
+/// Make the fonts the custom-drawn buttons use (`common`), **only when the
+/// role library has not made them itself**: another section of the settings
+/// window can be shown first, and its buttons are drawn here. Once the
+/// library exists it keeps them itself (`dpi_changed`), and remaking them
+/// here would pull them out from under its controls.
+pub(crate) fn ensure_fonts(dpi: i32) {
+    if main_hwnd().0.is_null() {
+        make_fonts(dpi);
+    }
+}
+
 fn hinst() -> HINSTANCE {
     unsafe { GetModuleHandleW(None) }.map(Into::into).unwrap_or_default()
 }

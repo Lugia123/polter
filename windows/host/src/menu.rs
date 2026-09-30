@@ -255,11 +255,13 @@ const FILE_ROWS: &[Row] = &[
 /// **`Load Project…` is why this group exists (task 839).** Saving had a
 /// dialog and no row that opened it; loading had neither. Without these two
 /// rows no Windows user could reach a saved project, and nothing that restores
-/// one had ever run outside a unit test. `Manage Projects…` (macOS's third
-/// row) is not here yet.
+/// one had ever run outside a unit test. `Manage Projects…` is macOS's third
+/// row, and opens the settings window's projects section (settings.md §3.2,
+/// §6.3).
 const PROJECT_ROWS: &[Row] = &[
     act(n_("Save as Project…"), "__polter_save_project"),
     act(n_("Load Project…"), "__polter_load_project"),
+    act(n_("Manage Projects…"), "__polter_manage_projects"),
 ];
 
 const FIND_ROWS: &[Row] = &[
@@ -575,6 +577,13 @@ fn run_host(frame: HWND, action: &str) -> bool {
         // **Returns before the list is on screen**, for the reason
         // `__polter_language` gives below.
         "__polter_load_project" => crate::project_picker::request_load(frame),
+        // The projects section (settings.md §3.2): `projects/<this window's
+        // project>`, and a window here is bound to no project, so no item --
+        // the section opens on the last one selected, else the first.
+        "__polter_manage_projects" => {
+            crate::settings_win::request(Route::to(Section::Projects, None), frame);
+            true
+        }
         "__polter_minimize" => {
             let _ = unsafe { ShowWindow(frame, SW_MINIMIZE) };
             true
@@ -622,6 +631,7 @@ const HOST_ACTIONS: &[&str] = &[
     "__polter_settings",
     "__polter_save_project",
     "__polter_load_project",
+    "__polter_manage_projects",
 ];
 
 // ------------------------------------------------------- the core's actions

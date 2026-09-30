@@ -1,9 +1,9 @@
 //! The settings window: one window for roles, projects, plugins and general
 //! settings, the same on both hosts. The specification is
 //! `dev-docs/poltergeist/settings.md`, shared with the macOS side; section
-//! numbers below are that file's. This is phase 1 (§9): the window, the
-//! routes, the roles section, and "open the config file" under General.
-//! Projects and Plugins are placeholders.
+//! numbers below are that file's. Phase 1 (§9) made the window, the routes,
+//! the roles section, and "open the config file" under General; phase 3 the
+//! projects section (`projects_ui.rs`). Plugins is a placeholder.
 //!
 //! **Every rule is decided in `polter-settings-shell`** -- which section a
 //! route opens, when leaving asks, the opening size, whether a remembered
@@ -146,6 +146,7 @@ fn current_place() -> Option<Place> {
     let section = ST.with(|c| c.borrow().section)?;
     let item = match section {
         Section::Roles => crate::roles_ui::current().and_then(|(key, _)| key),
+        Section::Projects => crate::projects_ui::current(),
         _ => None,
     };
     Some(Place { section, item })
@@ -315,6 +316,7 @@ fn log_grid() {
         crumb_top + crumb_asc
     );
     crate::roles_ui::log_grid();
+    crate::projects_ui::log_grid();
 }
 
 /// A font's line height and ascent, in pixels.
@@ -370,8 +372,9 @@ fn switch_to(target: Place) {
     ST.with(|c| c.borrow_mut().section = Some(target.section));
     match target.section {
         Section::Roles => crate::roles_ui::show(h, from_rect(l.content), origin, target.item.as_deref()),
+        Section::Projects => crate::projects_ui::show(h, from_rect(l.content), origin, target.item.as_deref()),
         Section::General => place_general(&l, true),
-        Section::Projects | Section::Plugins => {}
+        Section::Plugins => {}
     }
     let _ = unsafe { InvalidateRect(Some(h), None, false) };
     // process-wide: as above
@@ -381,13 +384,14 @@ fn switch_to(target: Place) {
 fn hide_section(s: Section) {
     match s {
         Section::Roles => crate::roles_ui::hide(),
+        Section::Projects => crate::projects_ui::hide(),
         Section::General => {
             let b = HWND(OPEN_CONFIG.load(Ordering::Acquire));
             if !b.0.is_null() {
                 let _ = unsafe { ShowWindow(b, SW_HIDE) };
             }
         }
-        Section::Projects | Section::Plugins => {}
+        Section::Plugins => {}
     }
 }
 
@@ -427,6 +431,9 @@ fn close() {
     let last = current_place();
     crate::roles_ui::hide();
     crate::roles_ui::forget_draft();
+    crate::projects_ui::hide();
+    // Undo for a deleted project ends with the window (§6.2).
+    crate::projects_ui::closed();
     let (prev, origin) = ST.with(|c| {
         let s = &mut *c.borrow_mut();
         s.last = last.clone();
@@ -743,6 +750,9 @@ pub fn init(hi: HINSTANCE) {
         make_fonts(dpi_of(h));
         // The `WM_SIZE` from creation arrived before these controls existed.
         relayout();
+        // Projects an earlier process deleted and could no longer undo go
+        // on to the Recycle Bin (settings.md §6.2).
+        crate::projects_ui::sweep_leftovers();
         // process-wide: as above
         crate::plogf!("[settings] ready (hidden until a route opens it)");
     }
@@ -819,6 +829,7 @@ fn relayout() {
     }
     match ST.with(|c| c.borrow().section) {
         Some(Section::Roles) => crate::roles_ui::move_to(from_rect(l.content)),
+        Some(Section::Projects) => crate::projects_ui::move_to(from_rect(l.content)),
         Some(Section::General) => place_general(&l, false),
         _ => {}
     }
@@ -834,7 +845,7 @@ fn search_text() -> String {
 }
 
 /// The search box changed (§2.3): narrow the lists and jump to the first
-/// section with a match. Phase 1 has one list, the roles.
+/// section with a match: the roles and the projects (plugins join in phase 2).
 fn on_search() {
     // The whole field repaints, so no piece of the placeholder is left
     // beside the first letter typed.
@@ -842,8 +853,12 @@ fn on_search() {
     let _ = unsafe { InvalidateRect(Some(edit), None, true) };
     let q = search_text();
     crate::roles_ui::set_filter(&q);
-    let items = vec![(Section::Roles, crate::roles_ui::names())];
-    let Some(target) = shell::search_target(&q, &items) else { return };
+    crate::projects_ui::set_filter(&q);
+    let items = vec![(Section::Roles, crate::roles_ui::names()), (Section::Projects, crate::projects_ui::names())];
+    // §2.3 (narrowed 2026-10-01): the section on screen keeps a search it
+    // can answer.
+    let here = ST.with(|c| c.borrow().section).unwrap_or(Section::ALL[0]);
+    let Some(target) = shell::search_section(here, &q, &items) else { return };
     if ST.with(|c| c.borrow().section) == Some(target) {
         return;
     }
@@ -933,6 +948,7 @@ fn paint(h: HWND) {
     let section = ST.with(|c| c.borrow().section);
     let crumb_item = match section {
         Some(Section::Roles) => crate::roles_ui::current().map(|(_, name)| name),
+        Some(Section::Projects) => crate::projects_ui::current(),
         _ => None,
     };
     let mut ps = PAINTSTRUCT::default();
@@ -986,13 +1002,16 @@ fn paint(h: HWND) {
             Some(name) if sec == Section::Roles && crate::roles_ui::selection_hidden() => {
                 Some(shell::hidden_item(&tr("{} (not in the search results)"), &name))
             }
+            Some(name) if sec == Section::Projects && crate::projects_ui::selection_hidden() => {
+                Some(shell::hidden_item(&tr("{} (not in the search results)"), &name))
+            }
             other => other,
         };
         let crumb = shell::breadcrumb(&label(sec), item.as_deref());
         let (top, _) = crumb_top(&l);
         let t = RECT { left: l.breadcrumb.left, top, right: l.breadcrumb.right, bottom: l.top_rule.top };
         draw_text(hdc, &crumb, &t, bold, theme::text(), DT_SINGLELINE | DT_TOP | DT_END_ELLIPSIS);
-        if matches!(sec, Section::Projects | Section::Plugins) {
+        if matches!(sec, Section::Plugins) {
             let t = RECT {
                 left: l.content.left + pad,
                 top: l.content.top + pad,
@@ -1065,6 +1084,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             WM_ACTIVATE => {
                 if (wp.0 & 0xFFFF) as u32 != WA_INACTIVE {
                     crate::roles_ui::activated();
+                    crate::projects_ui::activated();
                 }
                 DefWindowProcW(h, msg, wp, lp)
             }
@@ -1115,6 +1135,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                     );
                 }
                 crate::roles_ui::dpi_changed();
+                crate::projects_ui::dpi_changed();
                 relayout();
                 log_grid();
                 LRESULT(0)

@@ -84,7 +84,11 @@ fn scope_of(scope: i32) -> Option<(&'static str, &'static str)> {
 /// meant to also be true for saving a project.
 enum Completion {
     Binding(&'static str),
-    SaveProject(crate::tabs::TabId),
+    /// `close_after`: the box was opened by "Save as a Project Before
+    /// Closing?" (settings.md §6.3) -- `Some(false)` closes the tab once the
+    /// save has worked, `Some(true)` its whole window (one tab). A save that
+    /// fails, or a box cancelled, closes nothing.
+    SaveProject { tab: crate::tabs::TabId, close_after: Option<bool> },
 }
 
 struct Open {
@@ -328,7 +332,15 @@ pub fn prompt_save_as_project(frame: HWND, tab: crate::tabs::TabId, default_name
     // that still promises a further dialog would be wrong. `title_dialog.zig`
     // draws the same distinction -- `Change Tab Title…` on the row, `Change
     // Tab Title` on the box.
-    open_prompt(frame, n_("Save as Project"), &default_name, 0, Completion::SaveProject(tab), -1);
+    open_prompt(frame, n_("Save as Project"), &default_name, 0, Completion::SaveProject { tab, close_after: None }, -1);
+}
+
+/// The same box, from "Save as a Project Before Closing?" (settings.md
+/// §6.3): the tab -- or, with `whole_window`, its window -- closes once the
+/// save has worked, and only then (`ProjectSaveBeforeClose.saveThenClose`).
+pub fn prompt_save_as_project_then_close(frame: HWND, tab: crate::tabs::TabId, default_name: String, whole_window: bool) {
+    let completion = Completion::SaveProject { tab, close_after: Some(whole_window) };
+    open_prompt(frame, n_("Save as Project"), &default_name, 0, completion, -1);
 }
 
 /// Shared by `prompt_title` and `prompt_save_as_project`: build the popup,
@@ -470,6 +482,12 @@ fn close(accept: bool) {
     crate::overlay::focus_back(HWND(open.prev as *mut std::ffi::c_void), "title prompt");
 
     if !accept {
+        // not-gated: the condition is the event -- a close that waited on
+        // this box now does not happen, and this line is the only trace.
+        if let Completion::SaveProject { close_after: Some(_), .. } = open.completion {
+            wlogf!(frame, "[prompt] {} cancelled; the tab stays open", open.label);
+            return;
+        }
         wlogf!(frame, "[prompt] {} cancelled", open.label);
         return;
     }
@@ -494,14 +512,33 @@ fn close(accept: bool) {
             // says which of the three this box was.
             wlogf!(frame, "[prompt] {} -> {:?} ok={}", open.label, binding, ok as i32);
         }
-        Completion::SaveProject(tab) => {
-            let Some(dir) = crate::project::resolve_state_dir().map(|s| crate::project::default_dir(&s)) else {
-                wlogf!(frame, "[prompt] save as project {:?}: no state directory available", text);
-                return;
+        Completion::SaveProject { tab, close_after } => {
+            let saved = match crate::project::resolve_state_dir().map(|s| crate::project::default_dir(&s)) {
+                None => Err("no state directory (neither XDG_STATE_HOME nor LOCALAPPDATA)".to_string()),
+                Some(dir) => crate::project_ui::save_project(&dir, frame, tab, text.clone()),
             };
-            match crate::project_ui::save_project(&dir, frame, tab, text.clone()) {
-                Ok(()) => wlogf!(frame, "[prompt] saved as project {:?}", text),
-                Err(e) => wlogf!(frame, "[prompt] save as project {:?} failed: {}", text, e),
+            match (&saved, close_after) {
+                (Ok(()), None) => wlogf!(frame, "[prompt] saved as project {:?}", text),
+                (Ok(()), Some(whole_window)) => {
+                    wlogf!(frame, "[prompt] saved as project {:?}; closing the {}", text, if whole_window { "window" } else { "tab" });
+                    if whole_window {
+                        crate::tabs::close_all_tabs_of(frame);
+                    } else {
+                        crate::tabs::close_tab(frame, tab);
+                    }
+                }
+                (Err(e), None) => wlogf!(frame, "[prompt] save as project {:?} failed: {}", text, e),
+                (Err(e), Some(_)) => {
+                    // **Said on screen, and the tab stays**: the person chose
+                    // Save so as not to lose what is running in it.
+                    wlogf!(frame, "[prompt] save as project {:?} failed: {}; the tab stays open", text, e);
+                    let body: Vec<u16> =
+                        format!("{}\n\n{}", tr("The project could not be saved."), e).encode_utf16().chain(Some(0)).collect();
+                    let title: Vec<u16> = tr("Save as Project").encode_utf16().chain(Some(0)).collect();
+                    unsafe {
+                        MessageBoxW(Some(frame), PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONWARNING);
+                    }
+                }
             }
         }
     }

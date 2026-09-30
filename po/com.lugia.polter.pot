@@ -2328,3 +2328,203 @@ msgstr ""
 #: windows/host/src/uia.rs:1168
 msgid "Menu"
 msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "There is no terminal window to open the project in."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Opened “{}”."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "A project needs a name."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "There is already a project called “{}”."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Renamed to “{}”."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "The project could not be renamed."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "{} copy"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Copied as “{}”."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "The project could not be copied."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Delete “{}”?"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "You can undo this until the settings window closes."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "The project could not be deleted."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "“{}” is back."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "The project could not be put back."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Restore the previous version of “{}”?"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "The current version becomes the previous one, so you can switch back."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Restore"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Restored the previous version."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "The previous version could not be restored."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Overwrite “{}” with the current tab?"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "“{}” replaces what the project holds. The version it replaces is kept and can be restored."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Overwrite"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs windows/host/src/prompt.rs
+msgid "The project could not be saved."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Saved the current tab as “{}”."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Explorer could not be started."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "1 pane"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "{} panes"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Deleted “{}”"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "No matching projects"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Select a project, or save the current tab as one with +."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Last saved"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Panes"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Directories"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "None recorded"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Not recorded in project files"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Scrollback"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Autosave"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Not bound to an open window"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Version History"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Current version"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Previous version"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "No earlier version is kept yet."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Rename"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Show in Explorer"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Overwrite with Current Tab"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Open"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Save as a Project Before Closing?"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "The terminal still has a running process. Closing it without saving as a project will kill it."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Close Without Saving"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Manage Projects…"
+msgstr ""
