@@ -48,6 +48,9 @@ final class GeneralModel: ObservableObject {
     @Published private(set) var fieldErrors: [String: String] = [:]
     /// All Options' filter.
     @Published var query = ""
+    /// How many writes of each key have been tried; part of the control's
+    /// identity, so a refused write still puts the value on disk back.
+    @Published private(set) var attempts: [String: Int] = [:]
 
     /// Read the table again: on opening, after every write, and whenever
     /// the window comes forward -- the file may have been edited by hand
@@ -76,6 +79,7 @@ final class GeneralModel: ObservableObject {
     func set(_ key: String, _ value: String?) {
         guard let app = ghostty?.app, writesAllowed else { return }
         let result = Self.callSet(app: app, key: key, value: value)
+        attempts[key, default: 0] += 1
         status = nil
         if let result, result.ok {
             fieldErrors[key] = nil
@@ -185,8 +189,15 @@ struct GeneralView: View {
 
     // MARK: Detail
 
-    @ViewBuilder
     private var detail: some View {
+        detailContent
+            // Advanced shows the form's backup, and a route can land there
+            // before any form group has been drawn.
+            .onAppear { if model.form == nil { model.reloadForm() } }
+    }
+
+    @ViewBuilder
+    private var detailContent: some View {
         if model.group.needsForm {
             ConfigFormPage(model: model, group: model.group)
         } else if let ghostty = model.ghostty {

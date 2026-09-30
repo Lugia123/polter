@@ -256,6 +256,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    var isOpen: Bool { window != nil }
+
+    /// Where the window is, for a test: its section, and the General
+    /// group when that is the section. Nil when it is closed.
+    var shown: (section: SettingsSection, group: GeneralGroup?)? {
+        guard let model else { return nil }
+        return (model.section, model.section == .general ? model.general.group : nil)
+    }
+
+    /// Go to a General group as a click would, for a test.
+    func selectGeneralGroup(_ group: GeneralGroup) {
+        model?.general.select(group)
+    }
+
+    /// The configuration was reloaded: what the General section shows is
+    /// read again where it is (Advanced's error list follows the app's
+    /// config by itself).
+    func configChanged() {
+        model?.general.reloadForm()
+    }
+
     /// Asked before the app quits: the settings window's unsaved changes
     /// are asked about like any other leaving (settings.md §2.4, #896 D3).
     /// True when quitting may go on.

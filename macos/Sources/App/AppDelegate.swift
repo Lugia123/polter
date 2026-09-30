@@ -997,13 +997,29 @@ class AppDelegate: NSObject,
             NSApp.setActivationPolicy(.accessory)
         }
 
-        // If we have configuration errors, we need to show them.
-        let c = ConfigurationErrorsController.sharedInstance
-        c.errors = config.errors
-        if c.errors.count > 0 {
-            if c.window == nil || !c.window!.isVisible {
-                c.showWindow(self)
+        // Configuration errors are shown in the settings window, at
+        // General › Advanced: opened there when it is closed, followed in
+        // place when it is open (settings.md §7; the Windows host does the
+        // same). The old errors window is no longer shown.
+        //
+        // In place when this is already the main thread, which is where the
+        // config-change action arrives: queued, it would wait behind
+        // whatever main-queue work is running -- a test that reloads and
+        // then looks would never see it.
+        let errorCount = config.errors.count
+        let follow: @MainActor @Sendable () -> Void = {
+            switch SettingsRules.onConfigChanged(
+                errorCount: errorCount,
+                windowOpen: SettingsWindowController.shared.isOpen) {
+            case .open(let route): openSettings(route)
+            case .refresh: SettingsWindowController.shared.configChanged()
+            case .nothing: break
             }
+        }
+        if Thread.isMainThread {
+            MainActor.assumeIsolated(follow)
+        } else {
+            DispatchQueue.main.async { MainActor.assumeIsolated(follow) }
         }
 
         // We need to handle our global event tap depending on if there are global
