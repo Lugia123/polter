@@ -855,7 +855,8 @@ fn overwrite_selected() {
             }
         }
     }
-    match crate::project_ui::save_project(&dir, frame, tab, item.name.clone()) {
+    // **Overwrite, not save**: what it replaces is kept, always (§6.2).
+    match crate::project_ui::overwrite_project(&dir, frame, tab, item.name.clone()) {
         Ok(()) => {
             reload();
             let to = project::path_for(&dir, &item.name).ok();

@@ -474,25 +474,28 @@ pub fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot, ReadError> {
 /// **Keeps one previous generation** (`<name>.json.prev`) by the rule the
 /// macOS side keeps it (settings.md §6.2, `ProjectFileWriter.write`): only
 /// when the layout changed, nothing written when only the time would change.
-/// The rule is `polter_settings_shell::projects::plan_write`, tested there;
-/// this only says what is on disk.
-pub fn write(dir: &Path, snapshot: &Snapshot) -> std::io::Result<()> {
+/// The rule is `polter_settings_shell::projects::plan_for`, tested there;
+/// this only says what is on disk. `kind` is why it is written: a save, or
+/// "Overwrite with Current Tab", **which always keeps what it replaces**
+/// (§6.2, 39ae3f040).
+pub fn write(dir: &Path, snapshot: &Snapshot, kind: WriteKind) -> std::io::Result<()> {
     let path = path_for(dir, &snapshot.name).map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "the project name is empty once sanitized")
     })?;
-    write_file(&path, snapshot, true)
+    write_file(&path, snapshot, kind)
 }
 
-/// Write `snapshot` into `path`. `generations`: decide about `.prev` as a
-/// save does; without it the file is simply replaced, which is what changing
-/// only a project's name in place (a rename, a copy) wants -- that is not a
-/// new version of the project.
-pub fn write_file(path: &Path, snapshot: &Snapshot, generations: bool) -> std::io::Result<()> {
-    use polter_settings_shell::projects::{plan_write, write_keeping_previous, WritePlan};
+pub use polter_settings_shell::projects::WriteKind;
+
+/// Write `snapshot` into `path`, deciding about `.prev` by `kind`
+/// (`plan_for`). `WriteKind::Rename` simply replaces the file, which is what
+/// changing only a project's name in place (a rename, a copy) wants -- that
+/// is not a new version of the project.
+pub fn write_file(path: &Path, snapshot: &Snapshot, kind: WriteKind) -> std::io::Result<()> {
+    use polter_settings_shell::projects::{plan_for, write_keeping_previous};
     let body = serde_json::to_string(&snapshot_to_json(snapshot))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    let plan = if generations { plan_write(existing(path, snapshot)) } else { WritePlan::Write { keep_previous: false } };
-    write_keeping_previous(path, body.as_bytes(), plan)
+    write_keeping_previous(path, body.as_bytes(), plan_for(kind, existing(path, snapshot)))
 }
 
 /// What a save of `new` into `path` finds there, as `plan_write` asks.
@@ -559,7 +562,7 @@ pub fn set_name(file: &Path, name: &str) -> Result<(), String> {
         match read_file(&p) {
             Ok(mut snap) => {
                 snap.name = name.to_string();
-                write_file(&p, &snap, false).map_err(|e| format!("{}: {e}", p.display()))?;
+                write_file(&p, &snap, WriteKind::Rename).map_err(|e| format!("{}: {e}", p.display()))?;
             }
             Err(ReadError::NotFound) if p != file => {}
             Err(e) => return Err(format!("{}: {e:?}", p.display())),
@@ -896,7 +899,7 @@ mod tests {
             root: Some(SavedNode::Leaf(SavedLeaf { cwd: "C:\\w".to_string(), scrollback: "0.snap".to_string(), ..Default::default() })),
             next_scrollback: Some(1),
         };
-        write(&dir, &snap).expect("write past MAX_PATH");
+        write(&dir, &snap, WriteKind::Save).expect("write past MAX_PATH");
         assert!(file.exists(), "{file:?} was not written");
         assert_eq!(read_file(&file), Ok(snap.clone()));
         let listing = list(&dir);
@@ -925,7 +928,7 @@ mod tests {
         assert_eq!(sanitize_filename(""), Err(InvalidName));
         let dir = std::env::temp_dir().join(format!("polter-project-rs-empty-{}", std::process::id()));
         let snap = Snapshot { name: String::new(), saved_at: 1, root: None, next_scrollback: None };
-        assert!(write(&dir, &snap).is_err());
+        assert!(write(&dir, &snap, WriteKind::Save).is_err());
         assert!(!dir.join("project").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -979,7 +982,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         let snapshot = Snapshot { name: "写 retry 装饰器".to_string(), saved_at: 1_757_000_000, root: Some(sample_tree()), next_scrollback: None };
-        write(&dir, &snapshot).expect("write should succeed");
+        write(&dir, &snapshot, WriteKind::Save).expect("write should succeed");
 
         let back = read(&dir, "写 retry 装饰器").expect("read should succeed");
         assert_eq!(back, snapshot);
@@ -992,7 +995,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-blank-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        write(&dir, &Snapshot { name: "blank".to_string(), saved_at: 1, root: None, next_scrollback: None }).unwrap();
+        write(&dir, &Snapshot { name: "blank".to_string(), saved_at: 1, root: None, next_scrollback: None }, WriteKind::Save).unwrap();
         let back = read(&dir, "blank").unwrap();
         assert!(back.root.is_none());
 
@@ -1004,7 +1007,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-delete-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        write(&dir, &Snapshot { name: "gone soon".to_string(), saved_at: 5, root: None, next_scrollback: None }).unwrap();
+        write(&dir, &Snapshot { name: "gone soon".to_string(), saved_at: 5, root: None, next_scrollback: None }, WriteKind::Save).unwrap();
         delete(&dir, "gone soon").unwrap();
         assert_eq!(read(&dir, "gone soon"), Err(ReadError::NotFound));
 
@@ -1027,8 +1030,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-list-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        write(&dir, &Snapshot { name: "alpha".to_string(), saved_at: 10, root: None, next_scrollback: None }).unwrap();
-        write(&dir, &Snapshot { name: "beta".to_string(), saved_at: 20, root: None, next_scrollback: None }).unwrap();
+        write(&dir, &Snapshot { name: "alpha".to_string(), saved_at: 10, root: None, next_scrollback: None }, WriteKind::Save).unwrap();
+        write(&dir, &Snapshot { name: "beta".to_string(), saved_at: 20, root: None, next_scrollback: None }, WriteKind::Save).unwrap();
         std::fs::write(dir.join("garbage.json"), b"{not json").unwrap();
 
         let listing = list(&dir);
@@ -1239,7 +1242,7 @@ mod tests {
     fn deleting_a_project_takes_its_snapshot_directory_with_it() {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-delete-snaps-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        write(&dir, &Snapshot { name: "with snaps".to_string(), saved_at: 1, root: None, next_scrollback: None }).unwrap();
+        write(&dir, &Snapshot { name: "with snaps".to_string(), saved_at: 1, root: None, next_scrollback: None }, WriteKind::Save).unwrap();
         let snaps = scrollback_dir(&path_for(&dir, "with snaps").unwrap());
         std::fs::create_dir_all(&snaps).unwrap();
         std::fs::write(snaps.join("0.snap"), b"x").unwrap();

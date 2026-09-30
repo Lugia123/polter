@@ -234,6 +234,18 @@ pub fn should_offer_save_as_project(tab_needs_confirmation: bool) -> bool {
 /// capture was toggled mid-session rather than a per-pane setting anyone
 /// asked for.
 pub fn save_project(dir: &std::path::Path, frame: HWND, id: TabId, name: String) -> Result<(), String> {
+    write_tab(dir, frame, id, name, project::WriteKind::Save)
+}
+
+/// "Overwrite with Current Tab" (settings.md §6.2): `save_project`, except
+/// that **what it replaces is always kept as the previous version**, as the
+/// confirmation promised -- the save's rule keeps it only on a layout change,
+/// and one pane over one pane then lost it (39ae3f040).
+pub fn overwrite_project(dir: &std::path::Path, frame: HWND, id: TabId, name: String) -> Result<(), String> {
+    write_tab(dir, frame, id, name, project::WriteKind::Overwrite)
+}
+
+fn write_tab(dir: &std::path::Path, frame: HWND, id: TabId, name: String, kind: project::WriteKind) -> Result<(), String> {
     let saved_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -277,7 +289,7 @@ pub fn save_project(dir: &std::path::Path, frame: HWND, id: TabId, name: String)
     capture_scrollback(frame, &mut snapshot, &surfaces, &snaps, &mut alloc);
     snapshot.next_scrollback = Some(alloc.next);
     let named = snapshot.root.as_ref().map(project::scrollback_names).unwrap_or_default();
-    project::write(dir, &snapshot).map_err(|e| e.to_string())?;
+    project::write(dir, &snapshot, kind).map_err(|e| e.to_string())?;
     // After the write, so a failed write leaves the previous save's
     // snapshots where its file still points. Kept: exactly what the tree
     // now names.
@@ -584,7 +596,7 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("polter-project-ui-rs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        project::write(&dir, &snapshot).expect("write should succeed");
+        project::write(&dir, &snapshot, project::WriteKind::Save).expect("write should succeed");
 
         let back = project::read(&dir, "three panes three dirs").expect("read should succeed");
         let root = back.root.expect("root should round-trip");
