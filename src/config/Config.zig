@@ -4535,6 +4535,23 @@ _replay_steps: std.ArrayList(Replay.Step) = .empty,
 /// Set to true if Ghostty was executed as xdg-terminal-exec on Linux.
 @"_xdg-terminal-exec": bool = false,
 
+/// Polter fork addition (task 967), not upstream: how the host loaded this
+/// config, so the settings form reads and writes the same files. A host
+/// that loads one file instead of the default ones (the mac app under
+/// `GHOSTTY_CONFIG_PATH`) says so through `ghostty_config_load_file`; the
+/// default files and the command line are recorded where they are read.
+/// Carried by `cloneEmpty`, so every clone and every conditional reload
+/// keeps it.
+_origin: Origin = .{},
+
+pub const Origin = struct {
+    /// The file loaded in place of the default files; null when the
+    /// default files were loaded.
+    file: ?[:0]const u8 = null,
+    /// Whether the command line was read into this config.
+    cli: bool = false,
+};
+
 pub fn deinit(self: *Config) void {
     if (self._arena) |arena| arena.deinit();
     self.* = undefined;
@@ -4557,6 +4574,7 @@ pub fn load(alloc_gpa: Allocator) !Config {
 
     // Parse the config from the CLI args.
     try result.loadCliArgs(alloc_gpa);
+    result._origin.cli = true;
 
     // Parse the config files that were added from our file and CLI args.
     try result.loadRecursiveFiles(alloc_gpa);
@@ -5738,6 +5756,10 @@ pub fn cloneEmpty(
 ) Allocator.Error!Config {
     var result = try default(alloc_gpa);
     result._conditional_state = self._conditional_state;
+    result._origin = .{
+        .file = if (self._origin.file) |f| try result._arena.?.allocator().dupeZ(u8, f) else null,
+        .cli = self._origin.cli,
+    };
     return result;
 }
 

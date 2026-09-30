@@ -55,6 +55,7 @@ export fn ghostty_config_load_cli_args(self: *Config) void {
     self.loadCliArgs(global.alloc()) catch |err| {
         log.err("error loading config err={}", .{err});
     };
+    self._origin.cli = true;
 }
 
 /// Load the configuration from the default file locations. This
@@ -73,6 +74,9 @@ export fn ghostty_config_load_file(self: *Config, path: [*:0]const u8) void {
     self.loadFile(global.alloc(), path_slice) catch |err| {
         log.err("error loading config from file path={s} err={}", .{ path_slice, err });
     };
+    // Recorded even when the file was missing: the host still means this
+    // file, and the settings form should create it there, not elsewhere.
+    self._origin.file = self.arenaAlloc().dupeZ(u8, path_slice) catch null;
 }
 
 /// Load the configuration from the user-specified configuration
@@ -586,4 +590,30 @@ test "keybind listing: an index past the end is not a row" {
     const row = ghostty_config_keybind(&cfg, n);
     try testing.expectEqual(@as(usize, 0), row.action_len);
     try testing.expect(!row.bound);
+}
+
+test "ghostty_config_load_file and _load_cli_args record how the config was loaded (task 967)" {
+    // The settings form reads and writes the files this names, so a host
+    // that loads a file of its own must not be taken for one that loaded
+    // the defaults.
+    const testing = std.testing;
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+    try testing.expectEqual(@as(?[:0]const u8, null), cfg._origin.file);
+    try testing.expect(!cfg._origin.cli);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "config", .data = "font-size = 17\n" });
+    const dir = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(dir);
+    const path = try std.fs.path.joinZ(testing.allocator, &.{ dir, "config" });
+    defer testing.allocator.free(path);
+
+    ghostty_config_load_file(&cfg, path);
+    try testing.expectEqualStrings(path, cfg._origin.file.?);
+    try testing.expectEqual(@as(f32, 17), cfg.@"font-size");
+
+    ghostty_config_load_cli_args(&cfg);
+    try testing.expect(cfg._origin.cli);
 }

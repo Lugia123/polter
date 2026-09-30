@@ -2241,15 +2241,17 @@ pub const CAPI = struct {
 
     /// The settings window's General section: every config key with its
     /// group, control, value and source (`configpkg.form.formJson`). Loads
-    /// the config from disk the way the app does, so it answers for the
-    /// files as they are now, not for the config this app last applied.
+    /// the config from disk the way this app's config was loaded
+    /// (`Config._origin`: the host's own file under `GHOSTTY_CONFIG_PATH`,
+    /// else the default files), so it answers for the files as they are
+    /// now, not for the config this app last applied.
     export fn ghostty_app_config_form(
         app: *App,
         buf: ?[*]u8,
         cap: usize,
     ) usize {
         const alloc = app.core_app.alloc;
-        const json = configpkg.form.formJson(alloc) catch |err| {
+        const json = configpkg.form.formJson(alloc, app.config._origin) catch |err| {
             log.warn("config form: could not render: {t}", .{err});
             return copyJsonOut(config_form_fallback, buf, cap);
         };
@@ -2272,7 +2274,7 @@ pub const CAPI = struct {
     ) usize {
         const alloc = app.core_app.alloc;
         const v: ?[]const u8 = if (value) |p| p[0..value_len] else null;
-        const json = configpkg.form.setJson(alloc, &configpkg.form.state, key[0..key_len], v) catch
+        const json = configpkg.form.setJson(alloc, &configpkg.form.state, app.config._origin, key[0..key_len], v) catch
             return copyJsonOut(config_set_fallback, buf, cap);
         defer alloc.free(json);
         return copyJsonOut(json, buf, cap);
