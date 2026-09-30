@@ -53,13 +53,11 @@ use crate::theme;
 const WM_SETTINGS_OPEN: u32 = WM_APP + 18;
 
 const ID_SEARCH: u16 = 10;
-const ID_OPEN_CONFIG: u16 = 11;
 const EN_CHANGE: u32 = 0x0300;
 const PROP_PREV: PCWSTR = w!("PolterSettingsWinPrevProc");
 
 static WIN: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static SEARCH: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-static OPEN_CONFIG: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static FONT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static FONT_BOLD: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 /// Set while this side moves the window to where it opens: the move can
@@ -151,7 +149,7 @@ fn current_place() -> Option<Place> {
         Section::Roles => crate::roles_ui::current().and_then(|(key, _)| key),
         Section::Plugins => crate::plugins_ui::current().map(|(key, _)| key),
         Section::Projects => crate::projects_ui::current(),
-        _ => None,
+        Section::General => Some(crate::general_ui::current().key().to_string()),
     };
     Some(Place { section, item })
 }
@@ -253,6 +251,7 @@ fn open(route: Route, origin: HWND) {
     ST.with(|c| c.borrow_mut().prev_focus = had);
     // The plugins are listed in the sidebar whatever section opens.
     crate::plugins_ui::opened();
+    crate::general_ui::opened();
     let (r, maximized, why) = opening_state(origin);
     // **One call that says both facts** -- the normal rectangle and whether
     // it is maximized over it (#896 D1). `SetWindowPos` on a window that was
@@ -397,7 +396,7 @@ fn switch_to(target: Place) {
         Section::Roles => crate::roles_ui::show(h, from_rect(l.content), origin, target.item.as_deref()),
         Section::Plugins => crate::plugins_ui::show(h, from_rect(l.content), target.item.as_deref()),
         Section::Projects => crate::projects_ui::show(h, from_rect(l.content), origin, target.item.as_deref()),
-        Section::General => place_general(&l, true),
+        Section::General => crate::general_ui::show(h, from_rect(l.content), target.item.as_deref()),
     }
     let _ = unsafe { InvalidateRect(Some(h), None, false) };
     // process-wide: as above
@@ -409,27 +408,7 @@ fn hide_section(s: Section) {
         Section::Roles => crate::roles_ui::hide(),
         Section::Plugins => crate::plugins_ui::hide(),
         Section::Projects => crate::projects_ui::hide(),
-        Section::General => {
-            let b = HWND(OPEN_CONFIG.load(Ordering::Acquire));
-            if !b.0.is_null() {
-                let _ = unsafe { ShowWindow(b, SW_HIDE) };
-            }
-        }
-    }
-}
-
-fn place_general(l: &shell::Layout, show: bool) {
-    let b = HWND(OPEN_CONFIG.load(Ordering::Acquire));
-    if b.0.is_null() {
-        return;
-    }
-    let dpi = dpi_of(win());
-    let s = |v: i32| shell::scale(v, dpi);
-    let flags = if show { SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW } else { SWP_NOZORDER | SWP_NOACTIVATE };
-    // At the editor's margin, one control tall; two action buttons wide.
-    let w = s(grid::ACTION_W[1]) * 2;
-    unsafe {
-        let _ = SetWindowPos(b, None, l.content.left + s(grid::PAD), l.content.top + s(grid::PAD), w, s(grid::CONTROL_H), flags);
+        Section::General => crate::general_ui::hide(),
     }
 }
 
@@ -652,7 +631,7 @@ fn make_fonts(dpi: i32) {
         }
     }
     let f = FONT.load(Ordering::Acquire);
-    for c in [&SEARCH, &OPEN_CONFIG] {
+    for c in [&SEARCH] {
         let h = HWND(c.load(Ordering::Acquire));
         if !h.0.is_null() {
             unsafe {
@@ -752,26 +731,6 @@ pub fn init(hi: HINSTANCE) {
             // is one it can see and put in the theme's dim colour.
             subclass(search);
         }
-        let label = wide(&tr("Open config file…"));
-        let btn = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            w!("BUTTON"),
-            PCWSTR(label.as_ptr()),
-            WS_CHILD | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-            0,
-            0,
-            10,
-            10,
-            Some(h),
-            Some(HMENU(ID_OPEN_CONFIG as usize as *mut c_void)),
-            Some(hi),
-            None,
-        )
-        .unwrap_or_default();
-        if !btn.0.is_null() {
-            OPEN_CONFIG.store(btn.0, Ordering::Release);
-            subclass(btn);
-        }
         make_fonts(dpi_of(h));
         // The `WM_SIZE` from creation arrived before these controls existed.
         relayout();
@@ -860,7 +819,7 @@ fn relayout() {
         Some(Section::Roles) => crate::roles_ui::move_to(from_rect(l.content)),
         Some(Section::Plugins) => crate::plugins_ui::move_to(from_rect(l.content)),
         Some(Section::Projects) => crate::projects_ui::move_to(from_rect(l.content)),
-        Some(Section::General) => place_general(&l, false),
+        Some(Section::General) => crate::general_ui::move_to(from_rect(l.content)),
         _ => {}
     }
     let _ = unsafe { InvalidateRect(Some(h), None, false) };
@@ -1021,7 +980,8 @@ fn paint(h: HWND) {
         Some(Section::Roles) => crate::roles_ui::current().map(|(_, name)| name),
         Some(Section::Plugins) => crate::plugins_ui::current().map(|(_, name)| name),
         Some(Section::Projects) => crate::projects_ui::current(),
-        _ => None,
+        Some(Section::General) => Some(crate::general_ui::label(crate::general_ui::current())),
+        None => None,
     };
     let plugin_rows = crate::plugins_ui::sidebar_rows();
     let mut ps = PAINTSTRUCT::default();
@@ -1159,14 +1119,6 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 let code = ((wp.0 >> 16) & 0xFFFF) as u32;
                 if id == ID_SEARCH && code == EN_CHANGE {
                     on_search();
-                } else if id == ID_OPEN_CONFIG {
-                    // **The host's own opening, not `open_config`**, which
-                    // now opens this window (§3.2).
-                    let origin = ST.with(|c| c.borrow().origin);
-                    let frame = crate::winid::frame_of_window(origin);
-                    let ok = crate::open_config_file(frame);
-                    // process-wide: opening the config file: one config, one process
-                    crate::plogf!("[settings] open config file -> handed off: {}", ok);
                 }
                 LRESULT(0)
             }
@@ -1180,6 +1132,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 if (wp.0 & 0xFFFF) as u32 != WA_INACTIVE {
                     crate::roles_ui::activated();
                     crate::projects_ui::activated();
+                    crate::general_ui::activated();
                     // A plugin installed or configured meanwhile -- by an
                     // agent's `plugin_configure`, or by hand.
                     if is_open() {
@@ -1238,6 +1191,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 crate::roles_ui::dpi_changed();
                 crate::plugins_ui::dpi_changed();
                 crate::projects_ui::dpi_changed();
+                crate::general_ui::dpi_changed();
                 relayout();
                 log_grid();
                 LRESULT(0)
@@ -1247,6 +1201,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
                 crate::roles_ui::theme_changed();
                 crate::plugins_ui::theme_changed();
+                crate::general_ui::theme_changed();
                 theme::repaint_all(h);
                 DefWindowProcW(h, msg, wp, lp)
             }

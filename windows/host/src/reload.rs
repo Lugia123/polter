@@ -271,7 +271,7 @@ fn perform(soft: bool, surface: ffi::Surface) {
     );
 
     // Last, so the window is asked to redraw once, after the swap.
-    crate::settings_ui::request_errors();
+    crate::general_ui::config_changed();
 }
 
 /// The core telling us what it just applied.
@@ -290,5 +290,5 @@ fn perform(soft: bool, surface: ffi::Surface) {
 /// `light:`/`dark:` conditional is in play, and only for the values a menu
 /// shortcut is looked up from.
 pub fn on_config_change() {
-    crate::settings_ui::request_errors();
+    crate::general_ui::config_changed();
 }

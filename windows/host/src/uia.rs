@@ -2051,7 +2051,7 @@ impl IRawElementProviderSimple_Impl for KeybindsRoot_Impl {
 
 impl IRawElementProviderFragment_Impl for KeybindsRoot_Impl {
     fn Navigate(&self, direction: NavigateDirection) -> WResult<IRawElementProviderFragment> {
-        let n = crate::settings_ui::kb_row_count();
+        let n = crate::general_ui::kb_row_count();
         match direction {
             NavigateDirection_FirstChild if n > 0 => {
                 Ok(KeybindsItem { hwnd: self.hwnd, index: 0 }.into())
@@ -2081,7 +2081,7 @@ impl IRawElementProviderFragment_Impl for KeybindsRoot_Impl {
 
 impl IRawElementProviderFragmentRoot_Impl for KeybindsRoot_Impl {
     fn ElementProviderFromPoint(&self, x: f64, y: f64) -> WResult<IRawElementProviderFragment> {
-        let n = crate::settings_ui::kb_row_count();
+        let n = crate::general_ui::kb_row_count();
         let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
         if !unsafe {
             windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd(), &mut origin)
@@ -2091,7 +2091,7 @@ impl IRawElementProviderFragmentRoot_Impl for KeybindsRoot_Impl {
             return Err(gone());
         }
         for i in 0..n {
-            let Some(r) = crate::settings_ui::kb_row_rect(i) else { continue };
+            let Some(r) = crate::general_ui::kb_row_rect(i) else { continue };
             let (l, t) = (origin.x + r.left, origin.y + r.top);
             let (rr, b) = (origin.x + r.right, origin.y + r.bottom);
             if x >= l as f64 && x < rr as f64 && y >= t as f64 && y < b as f64 {
@@ -2118,7 +2118,7 @@ impl IRawElementProviderSimple_Impl for KeybindsItem_Impl {
         Err(gone())
     }
     fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> WResult<VARIANT> {
-        let Some(row) = crate::settings_ui::kb_row(self.index) else {
+        let Some(row) = crate::general_ui::kb_row(self.index) else {
             return Err(gone());
         };
         Ok(match id {
@@ -2154,7 +2154,7 @@ impl IRawElementProviderSimple_Impl for KeybindsItem_Impl {
             // this false means "the provider could not answer" -- the same
             // ambiguity task 328 removed from the palette.
             UIA_IsOffscreenPropertyId => {
-                variant_bool(crate::settings_ui::kb_row_rect(self.index).is_none())
+                variant_bool(crate::general_ui::kb_row_rect(self.index).is_none())
             }
             _ => variant_empty(),
         })
@@ -2166,7 +2166,7 @@ impl IRawElementProviderSimple_Impl for KeybindsItem_Impl {
 
 impl IRawElementProviderFragment_Impl for KeybindsItem_Impl {
     fn Navigate(&self, direction: NavigateDirection) -> WResult<IRawElementProviderFragment> {
-        let n = crate::settings_ui::kb_row_count();
+        let n = crate::general_ui::kb_row_count();
         if self.index >= n {
             return Err(gone());
         }
@@ -2193,7 +2193,7 @@ impl IRawElementProviderFragment_Impl for KeybindsItem_Impl {
     /// on whatever is really there.
     fn BoundingRectangle(&self) -> WResult<UiaRect> {
         let zero = UiaRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 };
-        let Some(r) = crate::settings_ui::kb_row_rect(self.index) else {
+        let Some(r) = crate::general_ui::kb_row_rect(self.index) else {
             return Ok(zero);
         };
         let mut origin = windows::Win32::Foundation::POINT { x: r.left, y: r.top };

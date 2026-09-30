@@ -533,18 +533,20 @@ fn run_host(frame: HWND, action: &str) -> bool {
             crate::settings_win::request(Route::to(Section::Plugins, None), frame);
             true
         }
-        // **The about box this host already has**, not a second one. It shows
-        // the product, the core's own version string, the build mode and the
-        // running binary's identity -- the same line `[build]` logs.
+        // **The about page this host already has**, not a second one: the
+        // settings window's General › About (settings.md §7.1), which shows
+        // the core's own version string, the build mode and the running
+        // binary's identity -- the same line `[build]` logs.
         "__polter_about" => {
-            crate::settings_ui::request_about();
+            crate::settings_win::request(Route::to(Section::General, Some("about")), frame);
             true
         }
-        // **The page reads the core's forward binding table**, not the
-        // reverse map this menu asks for its own accelerators -- which is why
-        // it can show what the rows above cannot.
+        // General › Keyboard Shortcuts. **The page reads the core's forward
+        // binding table**, not the reverse map this menu asks for its own
+        // accelerators -- which is why it can show what the rows above
+        // cannot.
         "__polter_keybinds" => {
-            crate::settings_ui::request_keybinds();
+            crate::settings_win::request(Route::to(Section::General, Some("keybinds")), frame);
             true
         }
         // The role library: the settings window's Roles section

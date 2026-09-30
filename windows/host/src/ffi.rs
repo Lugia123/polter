@@ -1659,6 +1659,17 @@ pub struct Api {
     /// `report.Started`); false: the error's name.
     pub app_plugin_configure: unsafe extern "C" fn(App, *const u8, usize, *const u8, usize, *mut u8, usize) -> bool,
 
+    // -- the settings window's General section (settings.md §7.2,
+    // `src/config/form.zig`). Same buffer rule as above.
+    /// `ghostty_app_config_form(app, buf, cap)`: the table (`writeJson`).
+    pub app_config_form: unsafe extern "C" fn(App, *mut u8, usize) -> usize,
+    /// `ghostty_app_config_set(app, key, len, value, len, buf, cap)`: a null
+    /// value restores the default. **The write happens once per call**: a
+    /// result that did not fit is read with `app_config_set_result`.
+    pub app_config_set: unsafe extern "C" fn(App, *const u8, usize, *const u8, usize, *mut u8, usize) -> usize,
+    /// `ghostty_app_config_set_result(app, buf, cap)`: the last `set`'s JSON.
+    pub app_config_set_result: unsafe extern "C" fn(App, *mut u8, usize) -> usize,
+
     // from ghostty-vt.dll -- proves both DLLs are loaded and callable
     pub codepoint_width: unsafe extern "C" fn(u32) -> u8,
     /// Cluster-aware width, in cells. Consumes one grapheme per call and

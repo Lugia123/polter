@@ -233,7 +233,6 @@ PENDING = {
     ('windows/host/src/quick.rs', 'if RegisterClassExW(&wc) == 0 {'),
     ('windows/host/src/reload.rs', 'if RegisterClassW(&wc) == 0 {'),
     ('windows/host/src/search.rs', 'if RegisterClassExW(&wc) == 0 {'),
-    ('windows/host/src/settings_ui.rs', 'if RegisterClassExW(&wc) == 0 {'),
     ('windows/host/src/strip.rs', 'if chosen == 0 {'),
     ('windows/host/src/tabs.rs', 'if count(frame) == 0 {'),
     ('windows/host/src/tabs.rs', 'if h == 0 || w <= 0 {'),

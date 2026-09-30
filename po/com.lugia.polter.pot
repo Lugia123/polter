@@ -2668,3 +2668,123 @@ msgstr ""
 #: windows/host/src/prompt.rs
 msgid "The project's file, its previous version and its scrollback move with it."
 msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Edit in Config File…"
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Filter by key"
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Set by {}:{}. Edit it there."
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Set on the command line, which has the last word."
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Edit this one in the config file."
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Light"
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Dark"
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Saved to the config file."
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "That value is not valid for this key."
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "This key is set somewhere the form does not write."
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "The config file kept changing while it was being written. Try again."
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Could not write the config file: {}"
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Restore Default"
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "The settings could not be read: {}"
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "The form writes to:\n{}"
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "The configuration loaded without errors."
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "{} error(s). The lines they name were ignored; fix them and reload."
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Before this run's first write the config file was copied to:\n{}"
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "A terminal that minds the agents running in it. \nBuilt on Ghostty."
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Version"
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Build"
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Commit"
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "The shortcuts could not be read from the configuration."
+msgstr ""
+
+#: windows/settings-shell/src/general.rs
+msgid "Appearance"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs
+msgid "Font"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs
+msgid "Terminal"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs
+msgid "Windows & Tabs"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs
+msgid "All Options"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs
+msgid "Advanced"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs
+msgid "About"
+msgstr ""
