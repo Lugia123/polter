@@ -29,7 +29,7 @@ use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-use polter_settings_shell::projects::{self as pj, Named, Refusal, Stash, Undo, Verdict};
+use polter_settings_shell::projects::{self as pj, NameVerdict, Named, SaveAsStep, Stash, Undo};
 use polter_settings_shell::{grid, scale, section_grid, Rect as SRect};
 use windows::core::{s, w, BOOL, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{GetLastError, COLORREF, ERROR_CLASS_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -708,22 +708,16 @@ pub fn rename_to(file: &Path, wanted: &str) {
         say(tr("The project could not be renamed."), true);
         return;
     };
-    let all: Vec<Named> = with(|s| {
-        s.items
-            .iter()
-            .map(|i| Named { name: i.name.clone(), file: file_name(&i.path) })
-            .collect()
-    });
+    let all: Vec<Named> = named_projects(&dir).into_iter().map(|(n, _)| n).collect();
     let this = Named { name: item.name.clone(), file: file_name(&item.path) };
-    let wanted_file = project::sanitize_filename(wanted.trim()).ok();
-    match pj::check_rename(&this, wanted, wanted_file.as_deref(), &all) {
-        Verdict::Nothing => {}
-        Verdict::Refused(Refusal::Empty) => say(tr("A project needs a name."), true),
-        Verdict::Refused(Refusal::Taken(other)) => {
+    match pj::name_verdict(Some(&this), wanted, rule_file, &all) {
+        NameVerdict::Unchanged => {}
+        NameVerdict::Empty => say(tr("A project needs a name."), true),
+        NameVerdict::Taken(other) => {
             say(tr("There is already a project called “{}”.").replacen("{}", &other, 1), true)
         }
-        Verdict::Rename(new) => {
-            let to = dir.join(wanted_file.unwrap_or_default());
+        NameVerdict::Ok(new) => {
+            let to = dir.join(rule_file(&new).unwrap_or_default());
             let r = pj::move_project(&item.path, &to).map_err(|e| e.to_string()).and_then(|_| project::set_name(&to, &new));
             match r {
                 Ok(()) => {
@@ -747,12 +741,67 @@ fn file_name(p: &Path) -> String {
     p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// The file name the naming rule gives a name, for `pj::name_verdict`.
+fn rule_file(name: &str) -> Option<String> {
+    project::sanitize_filename(name).ok()
+}
+
+/// Every listed project as a typed name is checked against it (#983), with
+/// the file it was found in. Read from disk, not from the section's list:
+/// Save as Project asks this with the settings window closed.
+fn named_projects(dir: &Path) -> Vec<(Named, PathBuf)> {
+    project::list(dir)
+        .entries
+        .into_iter()
+        .map(|e| (Named { name: e.name.clone(), file: file_name(&e.path) }, e.path))
+        .collect()
+}
+
+/// What Save as Project does with `typed` (#983, the mac's `saveAsStep`):
+/// the name to save under and how, or `None` for nothing -- nothing typed,
+/// or an overwrite the person declined. A name another project has (the same
+/// name, or its file whatever the case) asks the overwrite question and saves
+/// **under that project's name**; a project in a file an older naming rule
+/// gave it is moved to the rule's file first, so the save replaces it rather
+/// than writing a second one beside it.
+pub(crate) fn save_as_plan(owner: HWND, dir: &Path, typed: &str) -> Option<(String, pj::WriteKind)> {
+    let listed = named_projects(dir);
+    let all: Vec<Named> = listed.iter().map(|(n, _)| n.clone()).collect();
+    match pj::save_as_step(pj::name_verdict(None, typed, rule_file, &all)) {
+        SaveAsStep::Nothing => None,
+        SaveAsStep::Save(name) => {
+            // A file under the rule's name that did not list (it does not
+            // read) is still somebody's project: asked about, and kept.
+            let there = project::path_for(dir, &name).is_ok_and(|p| p.exists());
+            if there && !confirm_save_as_overwrite(owner, &name, None) {
+                return None;
+            }
+            Some((name, pj::save_as(there)))
+        }
+        SaveAsStep::ConfirmOverwrite(existing) => {
+            let path = listed.iter().find(|(n, _)| n.name == existing).map(|(_, p)| p.clone())?;
+            let snap = project::read_file(&path).ok();
+            if !confirm_save_as_overwrite(owner, &existing, snap.as_ref()) {
+                return None;
+            }
+            if let Ok(rule) = project::path_for(dir, &existing) {
+                if rule != path && pj::move_project(&path, &rule).is_err() {
+                    return None;
+                }
+            }
+            Some((existing, pj::WriteKind::Overwrite))
+        }
+    }
+}
+
 fn duplicate_selected() {
     let Some((dir, item)) = dir_and_selected() else { return };
-    let names: Vec<String> = with(|s| s.items.iter().map(|i| i.name.to_lowercase()).collect());
+    // The same rule a typed name is held to (#983), and a file already on
+    // disk under the name -- listed or not -- is taken too.
+    let all: Vec<Named> = named_projects(&dir).into_iter().map(|(n, _)| n).collect();
     let taken = |n: &str| {
-        names.iter().any(|x| *x == n.to_lowercase())
-            || project::sanitize_filename(n).map_or(true, |f| dir.join(f).exists())
+        !matches!(pj::name_verdict(None, n, rule_file, &all), NameVerdict::Ok(_))
+            || rule_file(n).map_or(true, |f| dir.join(f).exists())
     };
     let new = pj::copy_name(&item.name, &tr("{} copy"), taken);
     let Ok(file) = project::sanitize_filename(&new) else { return };

@@ -499,26 +499,25 @@ impl<T> Undo<T> {
 
 // ================================================================ names
 
-/// Why a rename is refused (§6.2: "重名时拒绝并说明").
+/// What a typed project name comes to (§6.2) -- **the macOS side's
+/// `ProjectsRules.NameVerdict`, case for case**, so the two hosts agree on
+/// which names clash. Asked by all three places a name is typed on Windows:
+/// Save as Project, Rename…, and the name a copy is given (#983).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Refusal {
-    /// Nothing is left of the name once trimmed or once made a file name.
+pub enum NameVerdict {
+    /// Go ahead, under this name: the one typed, **with its surrounding
+    /// white space taken off**.
+    Ok(String),
+    /// The same name the project already has: nothing to do.
+    Unchanged,
+    /// Nothing left once trimmed, or once made a file name.
     Empty,
-    /// Another project has this name, or its file would be this one's --
-    /// named, so the refusal can say which.
+    /// Another project has this name, or a name saved under the same file --
+    /// named, so the refusal (or Save As's overwrite question) can say which.
     Taken(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Verdict {
-    /// Rename to this (trimmed) name.
-    Rename(String),
-    /// The name is what it already is: nothing to do, and nothing to say.
-    Nothing,
-    Refused(Refusal),
-}
-
-/// One project as a rename is checked against it: its name and its file's
+/// One project as a name is checked against it: its name and its file's
 /// name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Named {
@@ -526,30 +525,56 @@ pub struct Named {
     pub file: String,
 }
 
-/// Whether `this` may be called `wanted`. `wanted_file` is the file name the
-/// naming rule gives `wanted` (`None` when nothing is left of it).
+/// `ProjectsRules.renameVerdict` / `ProjectStore.nameVerdict`: whether
+/// `proposed` may be the name of `current` (`None` for a new project, as Save
+/// As has). `rule_file` is the file name the naming rule gives a name
+/// (`None` when nothing is left of it); it is asked of the **trimmed** name.
 ///
-/// **Compared without case**, both names and files: Windows' file system
-/// does not tell `Demo.json` from `demo.json`, so two projects that differ
-/// only in case would be one file, and a list with two rows that differ only
-/// in case is a list nobody can read. A change of case to this project's own
-/// name is a rename, not a clash.
-pub fn check_rename(this: &Named, wanted: &str, wanted_file: Option<&str>, all: &[Named]) -> Verdict {
-    let wanted = wanted.trim();
-    let Some(file) = wanted_file.filter(|_| !wanted.is_empty()) else {
-        return Verdict::Refused(Refusal::Empty);
+/// The rule, as on macOS: trim; empty is `Empty`; the project's own name is
+/// `Unchanged`; then a clash with any *other* project -- the same name
+/// exactly, **or** the same file ignoring case (Windows' and macOS' disks
+/// both do not tell `Demo.json` from `demo.json`). A change of case to the
+/// project's own name is its own file, so it is a rename.
+pub fn name_verdict(
+    current: Option<&Named>,
+    proposed: &str,
+    rule_file: impl Fn(&str) -> Option<String>,
+    all: &[Named],
+) -> NameVerdict {
+    let name = proposed.trim();
+    let Some(file) = rule_file(name).filter(|_| !name.is_empty()) else {
+        return NameVerdict::Empty;
     };
-    if wanted == this.name {
-        return Verdict::Nothing;
+    if current.is_some_and(|c| c.name == name) {
+        return NameVerdict::Unchanged;
     }
-    let (lw, lf, own) = (wanted.to_lowercase(), file.to_lowercase(), this.file.to_lowercase());
-    let clash = all.iter().find(|o| {
-        let theirs = o.file.to_lowercase();
-        theirs != own && (theirs == lf || o.name.trim().to_lowercase() == lw)
-    });
+    let own = current.map(|c| c.file.to_lowercase());
+    let clash = all
+        .iter()
+        .filter(|o| Some(o.file.to_lowercase()) != own)
+        .find(|o| o.name == name || o.file.to_lowercase() == file.to_lowercase());
     match clash {
-        Some(o) => Verdict::Refused(Refusal::Taken(o.name.clone())),
-        None => Verdict::Rename(wanted.to_string()),
+        Some(o) => NameVerdict::Taken(o.name.clone()),
+        None => NameVerdict::Ok(name.to_string()),
+    }
+}
+
+/// What Save as Project does with a typed name (#980 on macOS,
+/// `ProjectsRules.saveAsStep`): a free name is saved; a taken one is asked
+/// about -- the same overwrite question as picking that project -- and then
+/// saved **under the existing project's name**; nothing typed does nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SaveAsStep {
+    Save(String),
+    ConfirmOverwrite(String),
+    Nothing,
+}
+
+pub fn save_as_step(v: NameVerdict) -> SaveAsStep {
+    match v {
+        NameVerdict::Ok(n) => SaveAsStep::Save(n),
+        NameVerdict::Taken(existing) => SaveAsStep::ConfirmOverwrite(existing),
+        NameVerdict::Empty | NameVerdict::Unchanged => SaveAsStep::Nothing,
     }
 }
 
@@ -1241,37 +1266,70 @@ mod tests {
         Named { name: n.into(), file: f.into() }
     }
 
+    /// The naming rule, as far as these tests need it: `<name>.json`,
+    /// nothing for nothing.
+    fn rule(n: &str) -> Option<String> {
+        (!n.is_empty()).then(|| format!("{n}.json"))
+    }
+
+    /// #983: the macOS side's five cells (`ProjectStoreSettingsTests.
+    /// aTypedNameThatIsAlreadyAProjectIsAnOverwrite`), for Save As: gamma,
+    /// "  gamma ", Gamma, delta, blank.
     #[test]
-    fn a_rename_onto_a_name_that_is_taken_is_refused_and_names_it() {
-        let all = [named("Demo", "Demo.json"), named("Other", "Other.json")];
-        let me = &all[0];
-        assert_eq!(check_rename(me, "Other", Some("Other.json"), &all), Verdict::Refused(Refusal::Taken("Other".into())));
-        assert_eq!(check_rename(me, "OTHER", Some("OTHER.json"), &all), Verdict::Refused(Refusal::Taken("Other".into())), "case");
-        // Two names that differ only in case clash even when their files do
-        // not -- a file an older naming rule gave one of them.
-        let legacy = [named("Demo", "Demo.json"), named("Other", "legacy-other.json")];
-        assert_eq!(
-            check_rename(&legacy[0], "other", Some("other.json"), &legacy),
-            Verdict::Refused(Refusal::Taken("Other".into()))
-        );
-        // Two names that sanitize to one file are the same file.
-        let odd = [named("Demo", "Demo.json"), named("a:b", "a_b.json")];
-        assert_eq!(check_rename(&odd[0], "a_b", Some("a_b.json"), &odd), Verdict::Refused(Refusal::Taken("a:b".into())));
+    fn a_typed_name_is_trimmed_and_checked_as_on_macos() {
+        let all = [named("gamma", "gamma.json"), named("beta", "beta.json")];
+        let v = |t: &str| name_verdict(None, t, rule, &all);
+        assert_eq!(v("gamma"), NameVerdict::Taken("gamma".into()));
+        assert_eq!(v("  gamma "), NameVerdict::Taken("gamma".into()), "trimmed first");
+        assert_eq!(v("Gamma"), NameVerdict::Taken("gamma".into()), "the same file, whatever the case");
+        assert_eq!(v("delta"), NameVerdict::Ok("delta".into()));
+        assert_eq!(v("   "), NameVerdict::Empty);
+        assert_eq!(save_as_step(v("  gamma ")), SaveAsStep::ConfirmOverwrite("gamma".into()));
+        assert_eq!(save_as_step(v(" delta ")), SaveAsStep::Save("delta".into()), "saved under the trimmed name");
+        assert_eq!(save_as_step(v(" ")), SaveAsStep::Nothing);
     }
 
     #[test]
-    fn a_rename_to_itself_is_nothing_and_a_change_of_case_is_a_rename() {
+    fn a_rename_onto_a_name_that_is_taken_is_refused_and_names_it() {
         let all = [named("Demo", "Demo.json"), named("Other", "Other.json")];
-        assert_eq!(check_rename(&all[0], " Demo ", Some("Demo.json"), &all), Verdict::Nothing);
-        assert_eq!(check_rename(&all[0], "demo", Some("demo.json"), &all), Verdict::Rename("demo".into()));
-        assert_eq!(check_rename(&all[0], "New", Some("New.json"), &all), Verdict::Rename("New".into()));
+        let me = Some(&all[0]);
+        assert_eq!(name_verdict(me, "Other", rule, &all), NameVerdict::Taken("Other".into()));
+        assert_eq!(name_verdict(me, " OTHER ", rule, &all), NameVerdict::Taken("Other".into()), "its file, whatever the case");
+        // The same name clashes even when the files differ -- a file an older
+        // naming rule gave one of them.
+        let legacy = [named("Demo", "Demo.json"), named("Other", "legacy-other.json")];
+        assert_eq!(name_verdict(Some(&legacy[0]), "Other", rule, &legacy), NameVerdict::Taken("Other".into()));
+        // Names are compared exactly, as on macOS: another case of a name
+        // saved under another file is a different name.
+        assert_eq!(name_verdict(Some(&legacy[0]), "other", rule, &legacy), NameVerdict::Ok("other".into()));
+        // Two names that sanitize to one file are the same file.
+        let odd = [named("Demo", "Demo.json"), named("a:b", "a_b.json")];
+        assert_eq!(name_verdict(Some(&odd[0]), "a_b", rule, &odd), NameVerdict::Taken("a:b".into()));
+    }
+
+    #[test]
+    fn a_rename_to_itself_is_unchanged_and_a_change_of_case_is_a_rename() {
+        let all = [named("Demo", "Demo.json"), named("Other", "Other.json")];
+        let me = Some(&all[0]);
+        assert_eq!(name_verdict(me, " Demo ", rule, &all), NameVerdict::Unchanged);
+        assert_eq!(name_verdict(me, "demo", rule, &all), NameVerdict::Ok("demo".into()));
+        assert_eq!(name_verdict(me, "  New  ", rule, &all), NameVerdict::Ok("New".into()));
     }
 
     #[test]
     fn a_rename_to_nothing_is_refused() {
         let all = [named("Demo", "Demo.json")];
-        assert_eq!(check_rename(&all[0], "  ", Some("x.json"), &all), Verdict::Refused(Refusal::Empty));
-        assert_eq!(check_rename(&all[0], "///", None, &all), Verdict::Refused(Refusal::Empty));
+        assert_eq!(name_verdict(Some(&all[0]), "  ", rule, &all), NameVerdict::Empty);
+        assert_eq!(name_verdict(Some(&all[0]), "///", |_| None, &all), NameVerdict::Empty);
+    }
+
+    /// A copy's name is checked with the same rule: a name whose file some
+    /// other project already has is skipped.
+    #[test]
+    fn a_copy_is_named_past_what_the_name_rule_calls_taken() {
+        let all = [named("Demo", "Demo.json"), named("demo copy", "demo copy.json")];
+        let taken = |n: &str| !matches!(name_verdict(None, n, rule, &all), NameVerdict::Ok(_));
+        assert_eq!(copy_name("Demo", "{} copy", taken), "Demo copy 2", "Demo copy is demo copy.json");
     }
 
     #[test]

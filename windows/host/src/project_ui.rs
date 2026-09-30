@@ -308,16 +308,6 @@ fn write_tab(dir: &std::path::Path, frame: HWND, id: TabId, name: String, kind: 
     Ok(())
 }
 
-/// Read the project that saving as `name` would overwrite, if any -- for a
-/// UI to show "you are about to replace a N-pane project saved at T" before
-/// it happens. `None` for a name that would be a fresh save (nothing to
-/// confirm) as well as for a name whose existing file is corrupt (nothing
-/// useful to show; the write will still replace it, same as `Project.zig`'s
-/// `write` does unconditionally).
-pub fn existing_project_for_overwrite_check(dir: &std::path::Path, name: &str) -> Option<Snapshot> {
-    project::read(dir, name).ok()
-}
-
 /// Build the shape for a *new* tab from a loaded project, reusing the tab's
 /// already-existing seed pane (every `tabs::Op::NewTab` starts with one)
 /// rather than creating a redundant extra pane and discarding it.
