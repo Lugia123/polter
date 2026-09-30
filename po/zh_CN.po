@@ -2499,6 +2499,218 @@ msgstr "出错"
 msgid "On"
 msgstr "已开"
 
+#: windows/host/src/projects_ui.rs
+msgid "There is no terminal window to open the project in."
+msgstr "没有打开的终端窗口可以用。"
+
+#: windows/host/src/projects_ui.rs
+msgid "Opened “{}”."
+msgstr "已打开「{}」。"
+
+#: windows/host/src/projects_ui.rs
+msgid "A project needs a name."
+msgstr "项目要有名字。"
+
+#: windows/host/src/projects_ui.rs
+msgid "There is already a project called “{}”."
+msgstr "已经有一个叫「{}」的项目。"
+
+#: windows/host/src/projects_ui.rs
+msgid "Renamed to “{}”."
+msgstr "已改名为「{}」。"
+
+#: windows/host/src/projects_ui.rs
+msgid "The project could not be renamed."
+msgstr "项目改不了名："
+
+#: windows/host/src/projects_ui.rs
+msgid "{} copy"
+msgstr "{} 副本"
+
+#: windows/host/src/projects_ui.rs
+msgid "Copied as “{}”."
+msgstr "已复制为「{}」。"
+
+#: windows/host/src/projects_ui.rs
+msgid "The project could not be copied."
+msgstr "项目复制不了："
+
+#: windows/host/src/projects_ui.rs
+msgid "Delete “{}”?"
+msgstr "删除「{}」？"
+
+#: windows/host/src/projects_ui.rs
+msgid "You can undo this until the settings window closes."
+msgstr "关掉设置窗口之前都可以撤销。"
+
+#: windows/host/src/projects_ui.rs
+msgid "The project could not be deleted."
+msgstr "项目删不掉："
+
+#: windows/host/src/projects_ui.rs
+msgid "“{}” is back."
+msgstr "「{}」已恢复。"
+
+#: windows/host/src/projects_ui.rs
+msgid "The project could not be put back."
+msgstr "项目放不回去："
+
+#: windows/host/src/projects_ui.rs
+msgid "Restore the previous version of “{}”?"
+msgstr "把「{}」恢复到上一版？"
+
+#: windows/host/src/projects_ui.rs
+msgid "The current version becomes the previous one, so you can switch back."
+msgstr "当前版本会变成上一版，随时可以换回来。"
+
+#: windows/host/src/projects_ui.rs
+msgid "Restore"
+msgstr "恢复"
+
+#: windows/host/src/projects_ui.rs
+msgid "Restored the previous version."
+msgstr "已恢复上一版。"
+
+#: windows/host/src/projects_ui.rs
+msgid "The previous version could not be restored."
+msgstr "上一版恢复不了："
+
+#: windows/host/src/projects_ui.rs
+msgid "Overwrite “{}” with the current tab?"
+msgstr "用当前标签页覆盖「{}」？"
+
+#: windows/host/src/projects_ui.rs
+msgid "“{}” replaces what the project holds. The version it replaces is kept and can be restored."
+msgstr "「{}」会替换项目里现有的内容。被替换的版本会保留，可以恢复。"
+
+#: windows/host/src/projects_ui.rs
+msgid "Overwrite"
+msgstr "覆盖"
+
+#: windows/host/src/projects_ui.rs windows/host/src/prompt.rs
+msgid "The project could not be saved."
+msgstr "项目存不了："
+
+#: windows/host/src/projects_ui.rs
+msgid "Saved the current tab as “{}”."
+msgstr "已把当前标签页存为「{}」。"
+
+#: windows/host/src/projects_ui.rs
+msgid "Explorer could not be started."
+msgstr "资源管理器打不开。"
+
+#: windows/host/src/projects_ui.rs
+msgid "1 pane"
+msgstr "1 个窗格"
+
+#: windows/host/src/projects_ui.rs
+msgid "{} panes"
+msgstr "{} 个窗格"
+
+#: windows/host/src/projects_ui.rs
+msgid "Deleted “{}”"
+msgstr "已删除「{}」"
+
+#: windows/host/src/projects_ui.rs
+msgid "No matching projects"
+msgstr "没有匹配的项目"
+
+#: windows/host/src/projects_ui.rs
+msgid "Select a project, or save the current tab as one with +."
+msgstr "选一个项目，或者用 + 把当前标签页存成项目。"
+
+#: windows/host/src/projects_ui.rs
+msgid "Last saved"
+msgstr "上次保存"
+
+#: windows/host/src/projects_ui.rs
+msgid "Panes"
+msgstr "窗格"
+
+#: windows/host/src/projects_ui.rs
+msgid "Directories"
+msgstr "目录"
+
+#: windows/host/src/projects_ui.rs
+msgid "None recorded"
+msgstr "没有记录"
+
+#: windows/host/src/projects_ui.rs
+msgid "Not recorded in project files"
+msgstr "项目文件不记录角色"
+
+#: windows/host/src/projects_ui.rs
+msgid "Scrollback"
+msgstr "回滚内容"
+
+#: windows/host/src/projects_ui.rs
+msgid "Autosave"
+msgstr "自动保存"
+
+#: windows/host/src/projects_ui.rs
+msgid "Not bound to an open window"
+msgstr "没有绑定到打开的窗口"
+
+#: windows/host/src/projects_ui.rs
+msgid "Version History"
+msgstr "版本历史"
+
+#: windows/host/src/projects_ui.rs
+msgid "Current version"
+msgstr "当前版本"
+
+#: windows/host/src/projects_ui.rs
+msgid "Previous version"
+msgstr "上一版"
+
+#: windows/host/src/projects_ui.rs
+msgid "No earlier version is kept yet."
+msgstr "还没有保留更早的版本。"
+
+#: windows/host/src/prompt.rs
+msgid "Rename"
+msgstr "重命名"
+
+#: windows/host/src/projects_ui.rs
+msgid "Show in Explorer"
+msgstr "在资源管理器中显示"
+
+#: windows/host/src/projects_ui.rs
+msgid "Overwrite with Current Tab"
+msgstr "用当前标签页覆盖"
+
+#: windows/host/src/projects_ui.rs
+msgid "Open"
+msgstr "打开"
+
+#: windows/host/src/projects_ui.rs
+msgid "Save as a Project Before Closing?"
+msgstr "关闭前存成项目吗？"
+
+#: windows/host/src/projects_ui.rs
+msgid "The terminal still has a running process. Closing it without saving as a project will kill it."
+msgstr "终端里还有正在运行的进程。不存成项目就关闭，进程会被结束。"
+
+#: windows/host/src/projects_ui.rs
+msgid "Close Without Saving"
+msgstr "不保存，直接关闭"
+
+#: windows/host/src/menu.rs
+msgid "Manage Projects…"
+msgstr "管理项目…"
+
+#: windows/host/src/projects_ui.rs
+msgid "Rename…"
+msgstr "重命名…"
+
+#: windows/host/src/prompt.rs
+msgid "Rename Project"
+msgstr "重命名项目"
+
+#: windows/host/src/prompt.rs
+msgid "The project's file, its previous version and its scrollback move with it."
+msgstr "项目文件、上一版和 scrollback 一起改名。"
+
 #~ msgid "Role Editor (beta)..."
 #~ msgstr "角色编辑器（beta）…"
 

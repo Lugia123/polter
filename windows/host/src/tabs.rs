@@ -3135,9 +3135,15 @@ fn ask(frame: HWND, what: Subject) -> bool {
 /// can say which of the two happened instead of "handled".
 pub fn close_tab_asking(frame: HWND, id: TabId) -> bool {
     let flags = tab_confirm_flags(frame, id);
+    let busy = dialogs_for(&flags) == 1;
+    // §6.3: one busy tab is offered a save instead of the plain warning.
+    if crate::project_ui::should_offer_save_as_project(busy) {
+        if !offer_save_before_close(frame, id, false) {
+            return false;
+        }
     // not-gated: the condition is the event -- one dialog was shown and the
     // person said no. Silence here is a tab that was not kept.
-    if dialogs_for(&flags) == 1 && !ask(frame, Subject::Tab) {
+    } else if busy && !ask(frame, Subject::Tab) {
         wlogf!(frame, "[close] tab {:?} kept", id);
         return false;
     }
@@ -3145,10 +3151,41 @@ pub fn close_tab_asking(frame: HWND, id: TabId) -> bool {
     true
 }
 
+/// "Save as a Project Before Closing?" (settings.md §6.3) for tab `id`, or
+/// for its whole window when `whole_window` (a window of one tab). `true`
+/// means close it now. **Save closes nothing yet**: it opens the name box,
+/// and the tab -- or window -- closes when the save in it has worked
+/// (`prompt::prompt_save_as_project_then_close`).
+fn offer_save_before_close(frame: HWND, id: TabId, whole_window: bool) -> bool {
+    use polter_settings_shell::projects::CloseChoice;
+    let choice = crate::projects_ui::ask_save_before_close(frame);
+    wlogf!(frame, "[close] save-as-project offer for tab {:?} (whole_window={}) -> {:?}", id, whole_window, choice);
+    match choice {
+        CloseChoice::CloseWithoutSaving => true,
+        CloseChoice::KeepOpen => false,
+        CloseChoice::Save => {
+            let title = strip_snapshot(frame).0.into_iter().find(|(t, _)| *t == id).map(|(_, n)| n).unwrap_or_default();
+            crate::prompt::prompt_save_as_project_then_close(frame, id, title, whole_window);
+            false
+        }
+    }
+}
+
 /// Close every tab in a window **after asking once**, however many panes it
 /// holds.
 pub fn close_all_tabs_of_asking(frame: HWND) -> bool {
     let flags = window_confirm_flags(frame);
+    // §6.3: a window of one busy tab is that tab, and is offered a save.
+    let only = window(frame).filter(|w| w.tabs.len() == 1).map(|w| w.tabs[0].id);
+    if let Some(id) = only {
+        if crate::project_ui::should_offer_save_as_project(dialogs_for(&flags) == 1) {
+            if !offer_save_before_close(frame, id, true) {
+                return false;
+            }
+            close_all_tabs_of(frame);
+            return true;
+        }
+    }
     // not-gated: the condition is the event -- one dialog was shown and the
     // person said no. Silence here is a window that was not kept.
     if dialogs_for(&flags) == 1 && !ask(frame, Subject::Window) {
@@ -3180,6 +3217,11 @@ pub fn close_all_tabs_of_asking(frame: HWND) -> bool {
 /// `false` when nothing was closed: the person said no, or `anchor` is gone.
 pub fn close_tabs_asking(frame: HWND, anchor: TabId, scope: crate::close_scope::Scope) -> bool {
     use crate::close_scope::Scope;
+    // One tab is the one the strip's cross closes, and is offered the same
+    // save (§6.3).
+    if scope == Scope::This {
+        return close_tab_asking(frame, anchor);
+    }
     let (at, ids, busy) = {
         let Some(win) = window(frame) else { return false };
         let Some(at) = win.tabs.iter().position(|t| t.id == anchor) else { return false };

@@ -130,6 +130,7 @@ mod polterclose;
 mod project;
 mod project_picker;
 mod project_ui;
+mod projects_ui;
 mod prompt;
 mod settings_ui;
 mod settings_win;
