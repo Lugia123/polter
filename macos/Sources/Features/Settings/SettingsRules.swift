@@ -40,6 +40,7 @@ struct SettingsRoute: Equatable {
 
     static func roles(_ key: String? = nil) -> Self { .init(section: .roles, item: key) }
     static func projects(_ name: String? = nil) -> Self { .init(section: .projects, item: name) }
+    static func general(_ group: GeneralGroup? = nil) -> Self { .init(section: .general, item: group?.rawValue) }
 }
 
 enum SettingsRules {

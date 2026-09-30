@@ -44,7 +44,7 @@ struct KeybindsView: View {
                     // cell**: blank reads as a rendering failure, and this
                     // page's whole point is that "no key" is a fact worth
                     // showing.
-                    Text(row.keys.isEmpty ? "—" : row.keys.joined(separator: "   "))
+                    Text(KeybindsModel.keysLabel(row.keys))
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(row.keys.isEmpty ? .secondary : .primary)
                         .frame(width: 160, alignment: .leading)

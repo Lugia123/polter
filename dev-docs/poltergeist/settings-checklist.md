@@ -103,3 +103,20 @@ mac 列的读数取自 worktree `s2-mac-projects`（基于 60b63ad7d，未提交
 `macos/Tests/Projects/ProjectStoreSettingsTests.swift`（11 条，被测 `ProjectStore` 新增的 rename / duplicate / trash /
 untrash / versions / scrollbackBytes，临时目录 + 注入的废纸篓）。同批回归 `ProjectStoreTests` 14、`ProjectAutosaveTests` 9、
 `SettingsRulesTests` 30。基线（`-only-testing` 一个不存在的测试）0 条。地板：一次打坏 8 处，全部红在各自断言上，见交付报告。
+
+## 第 4 期：通用栏目（§7）——不依赖核心表单的部分
+
+mac 列：worktree `s2-mac-projects`（基于 1f9d4de14，未提交）。截图同第 3 期的离屏办法（临时测试，不入库），测试宿主
+读隔离配置、没有配置错误；目录 `ghostty-wt/settings-mac-shots/p4-general/`。外观 / 字体 / 终端 / 窗口与标签 / Polter /
+全部选项六组等 #960 的 form.zig，现在是占位页、列表里灰字。
+
+| # | 行为 | mac | Windows |
+|---|---|---|---|
+| G1 | 中栏分组按 §7.1 顺序：外观、字体、终端、窗口与标签、Polter、全部选项、快捷键、高级、关于 | ✅ `general-*.png`；单测 `theGroupsAreTheSpecsInItsOrder`、`onlyTheFormGroupsWaitForTheCoresTable` | |
+| G2 | 快捷键：只读列表，一行一个动作：名称（下面是 tag）、按键（没有就写 —）、说明（菜单不显示 / 没有快捷键 / agent 开关）；同一个键只列一次，一个键不会被拆到两行 | ✅ `menu-keybinds-1180.png`、`menu-keybinds-900.png`（99 个动作）。数据用现成的 `KeybindsModel`（读正向表，与 Windows 页同源），配置重载后跟着刷新。去重：`fold` 按渲染后的字符串去重，真实配置里 99 行都没有重复键（`log.txt`：goto_tab 是 ⌘1…⌘8 各一次）；单测 `aKeyWrittenTheSameWayTwiceIsListedOnce`。不断行：键里的空格换成不断行空格，单测 `aKeyIsNeverBrokenAcrossLines`，画面上「⇧Page Down」在同一行。窄窗口：说明挤不下时（规则 `keybindNoteBelow`，名称 + 按键 + 两个间距 + 160）放到按键下面，900 宽那张就是这样 | |
+| G3 | 快捷键：「在配置文件中编辑…」 | ⏳ 底栏按钮，调宿主的打开文件逻辑（不走 `open_config`）。没在真实例上点过 | |
+| G4 | 高级：配置错误列表（没有错误时明说）、打开配置文件、重新加载配置 | ✅（没有错误的一格）`general-advanced-1180.png`，重载后底栏写「已重新加载配置。」。⏳ 有错误时的列表没在画面上出现过；上一次写入前的备份位置要等 form.zig 实现 | |
+| G5 | 关于：版本、构建、提交号 | ✅ `general-about-1180.png`（Debug 测试宿主的 bundle 里没有 PolterCommit，所以提交号那一行按规则不显示）；单测 `aboutListsVersionBuildAndCommitInThatOrder`、`aboutLeavesOutWhatTheBundleDoesNotSay` | |
+| G6 | 路由 general/<组>：点名的组；没点名时新开窗口在第一组，已经开着的窗口留在原组 | ✅（规则）`aRouteLandsOnTheGroupItNames`、`withNoneNamedANewWindowTakesTheFirstAndAnOpenOneStays` | |
+| G7 | §2.3a 网格 | ✅ 快捷键 / 高级 / 关于三张（1180×800 @2x）和快捷键 900×620：顶带下沿三段都在第 168–169 行；底带上沿三段都在 1494–1495 行（900：1134–1135）；侧栏竖线 440–441 贯通顶带、主体和底带；列表竖线 962–963 只画在主体里 | |
+| G8 | 菜单「快捷键…」→ `general/keybinds`：打开设置窗口的「快捷键」组，不再开旧的独立窗口（旧的 `KeybindsController` 留给第 4 期删） | ✅ 在测试宿主里调真实的 `AppDelegate.showKeybinds(nil)`：打开的是「Polter 设置」窗口、只有 1 个，面包屑「通用 › 快捷键」（`menu-keybinds-1180.png`）；单测 `theKeyboardShortcutsMenuRoutesToItsGroup`。⏳ 菜单项本身没有点过（xib 的 action 没改，仍然是 `showKeybinds:`） | |

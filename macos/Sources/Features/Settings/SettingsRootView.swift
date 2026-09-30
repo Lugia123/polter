@@ -91,6 +91,8 @@ struct SettingsRootView: View {
         } else if model.section == .projects, let name = projects.selected?.name {
             item = name
             hidden = projects.listing(query: model.search).selectionHidden
+        } else if model.section == .general {
+            item = model.general.group.title
         }
         return SettingsRules.breadcrumb(section: model.section.title, item: item, hiddenBySearch: hidden)
     }
@@ -152,16 +154,13 @@ struct SettingsRootView: View {
             Text(String(localized: "Coming in a later update.", comment: "设置窗口：项目/插件栏目第一期的占位文字"))
                 .foregroundStyle(.secondary)
         case .general:
-            VStack(alignment: .leading, spacing: L.rowGap) {
-                // The host's own file opener, not `open_config`: that now
-                // opens this window.
-                Button(String(localized: "Open config file…", comment: "设置窗口：通用栏目，用外部编辑器打开配置文件")) {
-                    (NSApp.delegate as? AppDelegate)?.ghostty.openConfig()
-                }
-                Spacer()
+            HStack(spacing: 0) {
+                generalPart(.list)
+                    .frame(width: L.list)
+                vRule
+                generalPart(.detail)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(L.pad)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -174,8 +173,13 @@ struct SettingsRootView: View {
         switch model.section {
         case .roles: roles(.bar)
         case .projects: projectsPart(.bar)
-        case .plugins, .general: Color.clear
+        case .general: generalPart(.bar)
+        case .plugins: Color.clear
         }
+    }
+
+    private func generalPart(_ part: GeneralView.Part) -> some View {
+        GeneralView(model: model.general, part: part)
     }
 
     private func projectsPart(_ part: ProjectsView.Part) -> some View {

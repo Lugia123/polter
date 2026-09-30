@@ -434,3 +434,20 @@
 "Not bound to an open tab." = "Not bound to an open tab.";
 "Bound to the tab \"%@\"; saved automatically as it changes, last at %@." = "Bound to the tab \"%@\"; saved automatically as it changes, last at %@.";
 "There is already a project called \"%@\"." = "There is already a project called \"%@\".";
+
+/* 设置窗口·通用栏目（settings.md §7） */
+"Appearance" = "Appearance";
+"Font" = "Font";
+"Terminal" = "Terminal";
+"Windows & Tabs" = "Windows & Tabs";
+"All Options" = "All Options";
+"Advanced" = "Advanced";
+"About" = "About";
+"Configuration reloaded." = "Configuration reloaded.";
+"Edit in Config File…" = "Edit in Config File…";
+"Configuration Errors" = "Configuration Errors";
+"The configuration loaded without errors." = "The configuration loaded without errors.";
+"%@ error(s). The lines they name were ignored; fix them and reload." = "%@ error(s). The lines they name were ignored; fix them and reload.";
+"Version" = "Version";
+"Build" = "Build";
+"Commit" = "Commit";

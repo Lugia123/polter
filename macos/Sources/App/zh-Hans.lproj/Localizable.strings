@@ -450,3 +450,20 @@
 "Not bound to an open tab." = "没有绑定到打开的标签页。";
 "Bound to the tab \"%@\"; saved automatically as it changes, last at %@." = "绑定到标签页「%@」，改动后自动保存，上次在 %@。";
 "There is already a project called \"%@\"." = "已经有一个叫「%@」的项目了。";
+
+/* 设置窗口·通用栏目（settings.md §7） */
+"Appearance" = "外观";
+"Font" = "字体";
+"Terminal" = "终端";
+"Windows & Tabs" = "窗口与标签";
+"All Options" = "全部选项";
+"Advanced" = "高级";
+"About" = "关于";
+"Configuration reloaded." = "已重新加载配置。";
+"Edit in Config File…" = "在配置文件中编辑…";
+"Configuration Errors" = "配置错误";
+"The configuration loaded without errors." = "配置加载时没有错误。";
+"%@ error(s). The lines they name were ignored; fix them and reload." = "%@ 个错误。它们指出的那些行已被忽略；改好后重新加载。";
+"Version" = "版本";
+"Build" = "构建";
+"Commit" = "提交";

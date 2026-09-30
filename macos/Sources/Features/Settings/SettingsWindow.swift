@@ -72,6 +72,7 @@ final class SettingsModel: ObservableObject {
     let library: RoleLibrary
     let roles: RoleLibraryEditor
     let projects: ProjectsModel
+    let general = GeneralModel()
 
     init(section: SettingsSection, library: RoleLibrary, projects: ProjectsModel? = nil) {
         self.section = section
@@ -214,7 +215,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         case .projects:
             // A route that names nothing leaves an open window where it is.
             if fresh || route.item != nil { model.projects.route(to: route.item) } else { model.projects.reload() }
-        case .plugins, .general:
+        case .general:
+            model.general.route(to: route.item, fresh: fresh)
+        case .plugins:
             // Placeholders with nothing to select.
             break
         }

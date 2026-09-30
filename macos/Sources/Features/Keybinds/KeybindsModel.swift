@@ -78,10 +78,7 @@ enum KeybindsModel {
     static func rows(config: ghostty_config_t?) -> [KeybindRow] {
         guard let cfg = config else { return [] }
 
-        var order: [String] = []
-        var keys: [String: [String]] = [:]
-        var hidden: [String: Bool] = [:]
-
+        var bindings: [Binding] = []
         let n = ghostty_config_keybind_count(cfg)
         for i in 0..<n {
             let row = ghostty_config_keybind(cfg, i)
@@ -101,28 +98,72 @@ enum KeybindsModel {
                     decoding: UnsafeBufferPointer(start: $0, count: Int(row.action_len)),
                     as: UTF8.self)
             }
-
-            if keys[action] == nil {
-                order.append(action)
-                keys[action] = []
-                hidden[action] = false
-            }
-            guard row.bound else { continue }
-            if let text = display(trigger: row.trigger) {
-                keys[action]?.append(text)
-            }
             let flags = Ghostty.Input.BindingFlags(rawValue: UInt32(row.flags))
-            if flags.contains(.performable) { hidden[action] = true }
+            bindings.append(Binding(
+                action: action,
+                bound: row.bound,
+                key: row.bound ? display(trigger: row.trigger) : nil,
+                performable: flags.contains(.performable)))
         }
 
         let names = titles(config: cfg)
-        return order.map { action in
+        return fold(bindings).map { row in
             KeybindRow(
-                action: action,
-                name: names[action] ?? namedByTag(action),
-                keys: keys[action] ?? [],
-                hiddenFromMenu: hidden[action] ?? false)
+                action: row.action,
+                name: names[row.action] ?? namedByTag(row.action),
+                keys: row.keys,
+                hiddenFromMenu: row.hiddenFromMenu)
         }
+    }
+
+    /// One row of the core's listing, already decoded and its key written.
+    struct Binding: Equatable {
+        let action: String
+        /// False: the action exists and has no key (a row, not an omission).
+        let bound: Bool
+        /// The key as a person reads it; nil when unbound or unwritable.
+        let key: String?
+        let performable: Bool
+    }
+
+    struct Folded: Equatable {
+        let action: String
+        let keys: [String]
+        let hiddenFromMenu: Bool
+    }
+
+    /// One row per action, in the order the core answered.
+    ///
+    /// **A key written the same way twice is listed once.** The default
+    /// configuration binds `goto_tab` both to the physical digit key and to
+    /// the character it types, and both read "⌘1": listed twice, the row
+    /// said `⌘1 ⌘1 ⌘2 ⌘2 …`, which reads as a rendering fault. What the page
+    /// shows is keys a person presses, and those are one key.
+    static func fold(_ bindings: [Binding]) -> [Folded] {
+        var order: [String] = []
+        var keys: [String: [String]] = [:]
+        var hidden: [String: Bool] = [:]
+        for b in bindings {
+            if keys[b.action] == nil {
+                order.append(b.action)
+                keys[b.action] = []
+                hidden[b.action] = false
+            }
+            guard b.bound else { continue }
+            if let key = b.key, !(keys[b.action] ?? []).contains(key) {
+                keys[b.action]?.append(key)
+            }
+            if b.performable { hidden[b.action] = true }
+        }
+        return order.map { Folded(action: $0, keys: keys[$0] ?? [], hiddenFromMenu: hidden[$0] ?? false) }
+    }
+
+    /// The keys column: the keys three spaces apart, each one unbreakable --
+    /// its own spaces made no-break, so a line ends between two keys and
+    /// never inside one ("⇧Page" / "Down"). A dash when there are none.
+    static func keysLabel(_ keys: [String]) -> String {
+        guard !keys.isEmpty else { return "—" }
+        return keys.map { $0.replacingOccurrences(of: " ", with: "\u{00A0}") }.joined(separator: "   ")
     }
 
     /// The name for an action the core gives no command for.
