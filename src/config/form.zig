@@ -425,9 +425,27 @@ pub const Context = struct {
     args: []const []const u8,
     cwd: []const u8,
 
-    /// The running process's own. Everything is allocated in `arena`.
-    pub fn current(arena: Allocator) !Context {
-        const main_path = (try edit.configPath(arena)).name;
+    /// The files the host that loaded `origin` reads, in this process.
+    /// Everything is allocated in `arena`.
+    pub fn current(arena: Allocator, origin: Config.Origin) !Context {
+        var argv: std.ArrayList([]const u8) = .empty;
+        if (origin.cli) {
+            var iter = try cli.args.argsIterator(arena, global.args());
+            defer iter.deinit();
+            while (iter.next()) |arg| {
+                // Everything after `-e` is the command, not config.
+                if (std.mem.eql(u8, arg, "-e")) break;
+                try argv.append(arena, try arena.dupe(u8, arg));
+            }
+        }
+
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const n = try std.Io.Dir.cwd().realPathFile(global.io(), ".", &buf);
+        const cwd = try arena.dupe(u8, buf[0..n]);
+
+        // A host that loaded one file of its own never reads the default
+        // ones, so they are not even looked up.
+        if (origin.file != null) return try fromOrigin(arena, origin, undefined, argv.items, cwd);
 
         var defaults: std.ArrayList([]const u8) = .empty;
         // `Config.loadDefaultFiles`' order.
@@ -437,27 +455,59 @@ pub const Context = struct {
             try defaults.append(arena, try file_load.legacyDefaultAppSupportPath(arena));
             try defaults.append(arena, try file_load.preferredAppSupportPath(arena));
         }
+        return try fromOrigin(arena, origin, .{
+            .main = (try edit.configPath(arena)).name,
+            .files = defaults.items,
+        }, argv.items, cwd);
+    }
 
-        var args: std.ArrayList([]const u8) = .empty;
-        var iter = try cli.args.argsIterator(arena, global.args());
-        defer iter.deinit();
-        while (iter.next()) |arg| {
-            // Everything after `-e` is the command, not config.
-            if (std.mem.eql(u8, arg, "-e")) break;
-            try args.append(arena, try arena.dupe(u8, arg));
+    /// The default files and which of them the form writes: the answer
+    /// when the host loaded the default files.
+    pub const Defaults = struct {
+        main: []const u8,
+        files: []const []const u8,
+    };
+
+    /// `current` without the process: what `origin` means given where the
+    /// default files are. `defaults` is not read when `origin.file` is set.
+    pub fn fromOrigin(
+        arena: Allocator,
+        origin: Config.Origin,
+        defaults: Defaults,
+        argv: []const []const u8,
+        cwd: []const u8,
+    ) Allocator.Error!Context {
+        const args = if (origin.cli) argv else &.{};
+        if (origin.file) |f| {
+            const files = try arena.alloc([]const u8, 1);
+            files[0] = f;
+            return .{ .main_path = f, .defaults = files, .args = args, .cwd = cwd };
         }
-
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const n = try std.Io.Dir.cwd().realPathFile(global.io(), ".", &buf);
-
-        return .{
-            .main_path = main_path,
-            .defaults = defaults.items,
-            .args = args.items,
-            .cwd = try arena.dupe(u8, buf[0..n]),
-        };
+        return .{ .main_path = defaults.main, .defaults = defaults.files, .args = args, .cwd = cwd };
     }
 };
+
+/// A config loaded the way the host that produced `origin` loaded its own
+/// (the calls `Ghostty.Config.loadConfig` makes on the mac, and the Windows
+/// host's), so the form's values are the ones that host would show.
+pub fn loadLike(alloc: Allocator, origin: Config.Origin) !Config {
+    var cfg = try Config.default(alloc);
+    errdefer cfg.deinit();
+    if (origin.file) |f| {
+        cfg.loadFile(alloc, f) catch |err| log.warn("config form: cannot load {s}: {t}", .{ f, err });
+    } else try cfg.loadDefaultFiles(alloc);
+    if (origin.cli) try cfg.loadCliArgs(alloc);
+    try cfg.loadRecursiveFiles(alloc);
+    cfg._origin = .{
+        .file = if (origin.file) |f| try cfg.arenaAlloc().dupeZ(u8, f) else null,
+        .cli = origin.cli,
+    };
+    try cfg.finalize();
+    // What `ghostty_config_finalize` adds after `finalize`.
+    @import("../font/main.zig").family_check.diagnose(&cfg) catch |err|
+        log.warn("config form: cannot check font-family: {t}", .{err});
+    return cfg;
+}
 
 const max_file_bytes = 16 * 1024 * 1024;
 
@@ -618,7 +668,7 @@ fn writeSource(w: *std.Io.Writer, scan: *const Scan, t: ?Scan.Tally) !void {
 // ------------------------------------------------------------ read
 
 /// The whole table as JSON (§7.2 "read"). `cfg` is the effective config,
-/// loaded the way the app loads it; `def` is the default one.
+/// loaded the way the host loads it (`loadLike`); `def` is the default one.
 ///
 ///     {"main": path, "backup": path|null, "errors": [string],
 ///      "sections": [{"group": g, "keys": [key]}],
@@ -766,17 +816,18 @@ fn writeValue(comptime T: type, comptime name: []const u8, alloc: Allocator, w: 
 }
 
 /// The read, end to end, for the running process: load the config the way
-/// the app does, scan its files, render. Caller owns the result.
-pub fn formJson(alloc: Allocator) ![]u8 {
+/// the host that made `origin` loaded its own, scan the same files, render.
+/// Caller owns the result.
+pub fn formJson(alloc: Allocator, origin: Config.Origin) ![]u8 {
     var arena_state: ArenaAllocator = .init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const io = global.io();
 
-    const ctx = try Context.current(arena);
+    const ctx = try Context.current(arena, origin);
     const scan = try gather(arena, io, ctx);
 
-    var cfg = try Config.load(alloc);
+    var cfg = try loadLike(alloc, origin);
     defer cfg.deinit();
     var def = try Config.default(alloc);
     defer def.deinit();
@@ -944,8 +995,8 @@ pub fn setIn(
 ///      "message": string|null, "source": {...}|null}
 ///
 /// `errors` is the configuration's errors after the write, loaded the way
-/// the app loads it; reloading the app is the host's (rule 7).
-pub fn setJson(alloc: Allocator, st: *State, key: []const u8, value: ?[]const u8) ![]u8 {
+/// the host loads it (`loadLike`); reloading the app is the host's (rule 7).
+pub fn setJson(alloc: Allocator, st: *State, origin: Config.Origin, key: []const u8, value: ?[]const u8) ![]u8 {
     var arena_state: ArenaAllocator = .init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -960,7 +1011,7 @@ pub fn setJson(alloc: Allocator, st: *State, key: []const u8, value: ?[]const u8
     const key_json = std.json.fmt(key, .{});
 
     const outcome = outcome: {
-        const ctx = Context.current(arena) catch |err| break :outcome err;
+        const ctx = Context.current(arena, origin) catch |err| break :outcome err;
         break :outcome setIn(st, arena, io, ctx, key, value);
     } catch |err| {
         try w.print("{{\"ok\":false,\"key\":{f},\"code\":\"failed\",\"message\":\"{t}\",\"source\":null}}", .{ key_json, err });
@@ -972,7 +1023,7 @@ pub fn setJson(alloc: Allocator, st: *State, key: []const u8, value: ?[]const u8
             try w.print("{{\"ok\":true,\"key\":{f},\"wrote\":", .{key_json});
             if (path) |p| try w.print("{f}", .{std.json.fmt(p, .{})}) else try w.writeAll("null");
             try w.writeAll(",\"errors\":[");
-            if (Config.load(alloc)) |loaded| {
+            if (loadLike(alloc, origin)) |loaded| {
                 var cfg = loaded;
                 defer cfg.deinit();
                 for (cfg._diagnostics.items(), 0..) |*d, i| {
@@ -1342,4 +1393,83 @@ test "config form: the JSON names every key and parses" {
         try testing.expectEqualStrings("main", item.object.get("source").?.object.get("kind").?.string);
         try testing.expectEqual(@as(i64, 1), item.object.get("source").?.object.get("line").?.integer);
     }
+}
+
+test "config form: under a host's own config file, that file is the main one and the default files stay as they were" {
+    var fx: Fixture = try .init();
+    defer fx.deinit();
+    const a = fx.arena.allocator();
+    try fx.write("config", "font-size = 10\n");
+    try fx.write("override", "font-size = 20\n");
+    const override = try a.dupeZ(u8, fx.path("override"));
+
+    const ctx = try Context.fromOrigin(a, .{ .file = override, .cli = true }, .{
+        .main = fx.path("config"),
+        .files = &.{fx.path("config")},
+    }, &.{}, fx.root);
+    try testing.expectEqualStrings(override, ctx.main_path);
+
+    const scan = try gather(a, testing.io, ctx);
+    const size = resolve(&scan, .@"font-size");
+    try testing.expectEqual(@as(?Reason, null), size.readonly);
+    try testing.expectEqualStrings(override, scan.layers[size.tally.?.last.layer].path.?);
+
+    var st: State = .{};
+    const out = try setIn(&st, a, testing.io, ctx, "font-size", "21");
+    try testing.expectEqualStrings(override, out.ok.?);
+    _ = try setIn(&st, a, testing.io, ctx, "title", "t");
+    try testing.expectEqualStrings("font-size = 21\n\n" ++ block_marker ++ "\ntitle = t\n", try fx.read("override"));
+
+    try testing.expectEqualStrings("font-size = 10\n", try fx.read("config"));
+    try testing.expectError(error.FileNotFound, fx.tmp.dir.statFile(testing.io, "config" ++ backup_suffix, .{}));
+}
+
+test "config form: without a file of the host's own, the default main file is written, and the command line only when it was read" {
+    var fx: Fixture = try .init();
+    defer fx.deinit();
+    const a = fx.arena.allocator();
+    try fx.write("config", "font-size = 10\n");
+    const defaults: Context.Defaults = .{ .main = fx.path("config"), .files = &.{fx.path("config")} };
+    const argv: []const []const u8 = &.{"--font-size=30"};
+
+    // The mac app under Xcode does not read the command line.
+    const no_cli = try Context.fromOrigin(a, .{}, defaults, argv, fx.root);
+    try testing.expectEqualStrings(fx.path("config"), no_cli.main_path);
+    try testing.expectEqual(@as(usize, 0), no_cli.args.len);
+    var st: State = .{};
+    _ = try setIn(&st, a, testing.io, no_cli, "font-size", "11");
+    try testing.expectEqualStrings("font-size = 11\n", try fx.read("config"));
+
+    const with_cli = try Context.fromOrigin(a, .{ .cli = true }, defaults, argv, fx.root);
+    const out = try setIn(&st, a, testing.io, with_cli, "font-size", "12");
+    try testing.expectEqual(Reason.cli, out.read_only.reason);
+}
+
+test "config form: the origin survives a clone and a conditional reload" {
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+    cfg._origin = .{ .file = try cfg.arenaAlloc().dupeZ(u8, "/x/override"), .cli = true };
+
+    var copy = try cfg.clone(testing.allocator);
+    defer copy.deinit();
+    try testing.expectEqualStrings("/x/override", copy._origin.file.?);
+    try testing.expect(copy._origin.cli);
+
+    // A theme switch rebuilds the config from its replay steps.
+    cfg._conditional_set.insert(.theme);
+    const other: @TypeOf(cfg._conditional_state.theme) = if (cfg._conditional_state.theme == .dark) .light else .dark;
+    var flipped = (try cfg.changeConditionalState(.{ .theme = other })).?;
+    defer flipped.deinit();
+    try testing.expectEqualStrings("/x/override", flipped._origin.file.?);
+}
+
+test "config form: the values come from the host's own file, not the default ones" {
+    var fx: Fixture = try .init();
+    defer fx.deinit();
+    try fx.write("override", "font-size = 23\n");
+    const override = try fx.arena.allocator().dupeZ(u8, fx.path("override"));
+    var cfg = try loadLike(testing.allocator, .{ .file = override });
+    defer cfg.deinit();
+    try testing.expectEqual(@as(f32, 23), cfg.@"font-size");
+    try testing.expectEqualStrings(override, cfg._origin.file orelse "");
 }
