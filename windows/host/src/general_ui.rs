@@ -249,6 +249,8 @@ fn parse_form(text: &str) -> Option<Form> {
                 default: st("default").unwrap_or_default(),
                 value: st("value").unwrap_or_default(),
                 doc: st("doc"),
+                label: st("label"),
+                summary: st("summary"),
                 source: it.get("source").map(source_of).unwrap_or(Source::Default),
                 readonly: st("readonly"),
             })
@@ -747,7 +749,7 @@ fn row_note(it: &Item, error: Option<&str>) -> (String, bool) {
         }
         Some(ReadOnlyNote::CommandLine) => (tr("Set on the command line, which has the last word."), false),
         Some(ReadOnlyNote::InTheFile) => (tr("Edit this one in the config file."), false),
-        None => (it.doc.as_deref().map(rules::doc_summary).unwrap_or_default(), false),
+        None => (rules::row_help(it, tr), false),
     }
 }
 
@@ -1439,7 +1441,7 @@ fn paint_form(win: HWND) {
             draw_text(hdc, &slider_now(*h, it), &tr_, font(), theme::dim(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
         }
         let lr = RECT { left: r.label.left + dot, top: r.label.top - scroll, right: r.label.right, bottom: r.label.bottom - scroll };
-        draw_text(hdc, &it.key, &lr, font(), theme::text(), DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        draw_text(hdc, &rules::row_title(it, tr), &lr, font(), theme::text(), DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         if rules::differs_from_default(it) {
             let d = RECT { left: r.label.left, top: lr.top, right: r.label.left + dot, bottom: lr.bottom };
             draw_text(hdc, "\u{2022}", &d, font(), theme::focus(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);

@@ -35,6 +35,7 @@ const file_load = @import("file_load.zig");
 const formatter = @import("formatter.zig");
 const global = @import("../global.zig");
 const help_strings = @import("help_strings");
+const i18n = @import("../os/i18n.zig");
 const RepeatablePath = @import("path.zig").RepeatablePath;
 
 const log = std.log.scoped(.config_form);
@@ -68,54 +69,68 @@ pub const Item = struct {
     control: ?Control = null,
     min: ?f64 = null,
     max: ?f64 = null,
+    /// What the form calls it, in English -- a msgid both hosts translate
+    /// (mac `Localizable.strings`, Windows `po/`), marked with `i18n.N_` so
+    /// `zig build update-translations` puts it in the template. **No default on
+    /// purpose**: a row added to the table without one does not compile,
+    /// rather than showing a config key where a name should be (#973).
+    label: []const u8,
+    /// One sentence, at most 60 characters, also a msgid: what the setting
+    /// does, shown under it in place of Ghostty's own help text (which the
+    /// hosts keep one click away). No default, for the same reason.
+    summary: []const u8,
 };
+
+/// The longest `summary` may be: one line under the control at the
+/// window's narrowest (settings.md §2.2).
+pub const summary_max = 60;
 
 /// The first five groups of §7.1, in the order they are drawn.
 pub const table = [_]Item{
     // Appearance
-    .{ .key = .theme, .group = .appearance },
-    .{ .key = .@"background-opacity", .group = .appearance, .min = 0, .max = 1 },
-    .{ .key = .@"background-blur", .group = .appearance },
-    .{ .key = .@"cursor-style", .group = .appearance },
-    .{ .key = .@"cursor-style-blink", .group = .appearance },
-    .{ .key = .@"window-padding-x", .group = .appearance },
-    .{ .key = .@"window-padding-y", .group = .appearance },
-    .{ .key = .@"window-padding-balance", .group = .appearance },
-    .{ .key = .@"macos-titlebar-style", .group = .appearance, .os = .macos },
+    .{ .key = .theme, .group = .appearance, .label = i18n.N_("Theme"), .summary = i18n.N_("The color theme; light and dark mode can differ.") },
+    .{ .key = .@"background-opacity", .group = .appearance, .min = 0, .max = 1, .label = i18n.N_("Background Opacity"), .summary = i18n.N_("1 is fully opaque; lower lets the desktop show through.") },
+    .{ .key = .@"background-blur", .group = .appearance, .label = i18n.N_("Background Blur"), .summary = i18n.N_("Blur behind a see-through background: on, off or a strength.") },
+    .{ .key = .@"cursor-style", .group = .appearance, .label = i18n.N_("Cursor Style"), .summary = i18n.N_("The cursor's shape; programs in the terminal may change it.") },
+    .{ .key = .@"cursor-style-blink", .group = .appearance, .label = i18n.N_("Blinking Cursor"), .summary = i18n.N_("Whether the cursor blinks by default.") },
+    .{ .key = .@"window-padding-x", .group = .appearance, .label = i18n.N_("Horizontal Padding"), .summary = i18n.N_("Space between the text and the left and right edges.") },
+    .{ .key = .@"window-padding-y", .group = .appearance, .label = i18n.N_("Vertical Padding"), .summary = i18n.N_("Space between the text and the top and bottom edges.") },
+    .{ .key = .@"window-padding-balance", .group = .appearance, .label = i18n.N_("Balance Padding"), .summary = i18n.N_("Spread leftover space evenly around the text.") },
+    .{ .key = .@"macos-titlebar-style", .group = .appearance, .os = .macos, .label = i18n.N_("Title Bar Style"), .summary = i18n.N_("Native, transparent, tabs, or hidden.") },
 
     // Font
-    .{ .key = .@"font-family", .group = .font, .control = .font },
-    .{ .key = .@"font-size", .group = .font, .min = 1 },
-    .{ .key = .@"adjust-cell-height", .group = .font },
+    .{ .key = .@"font-family", .group = .font, .control = .font, .label = i18n.N_("Font"), .summary = i18n.N_("The font family to use; empty uses the default.") },
+    .{ .key = .@"font-size", .group = .font, .min = 1, .label = i18n.N_("Font Size"), .summary = i18n.N_("In points; may be fractional.") },
+    .{ .key = .@"adjust-cell-height", .group = .font, .label = i18n.N_("Line Height"), .summary = i18n.N_("Extra height per line, in points or percent (e.g. 20%).") },
 
     // Terminal
-    .{ .key = .@"scrollback-limit-lines", .group = .terminal },
-    .{ .key = .@"copy-on-select", .group = .terminal },
-    .{ .key = .@"clipboard-read", .group = .terminal },
-    .{ .key = .@"clipboard-write", .group = .terminal },
-    .{ .key = .@"mouse-hide-while-typing", .group = .terminal },
-    .{ .key = .@"confirm-close-surface", .group = .terminal },
-    .{ .key = .@"shell-integration", .group = .terminal },
+    .{ .key = .@"scrollback-limit-lines", .group = .terminal, .label = i18n.N_("Scrollback Lines"), .summary = i18n.N_("How many lines of history each terminal keeps.") },
+    .{ .key = .@"copy-on-select", .group = .terminal, .label = i18n.N_("Copy on Select"), .summary = i18n.N_("Copy selected text to the clipboard automatically.") },
+    .{ .key = .@"clipboard-read", .group = .terminal, .label = i18n.N_("Clipboard Reading"), .summary = i18n.N_("Whether programs may read the clipboard: ask, allow or deny.") },
+    .{ .key = .@"clipboard-write", .group = .terminal, .label = i18n.N_("Clipboard Writing"), .summary = i18n.N_("Whether programs may set the clipboard: ask, allow or deny.") },
+    .{ .key = .@"mouse-hide-while-typing", .group = .terminal, .label = i18n.N_("Hide Pointer While Typing"), .summary = i18n.N_("Hide the mouse pointer while you type in a terminal.") },
+    .{ .key = .@"confirm-close-surface", .group = .terminal, .label = i18n.N_("Confirm Before Closing"), .summary = i18n.N_("Ask before closing a terminal still running something.") },
+    .{ .key = .@"shell-integration", .group = .terminal, .label = i18n.N_("Shell Integration"), .summary = i18n.N_("Lets the shell report its directory and prompt to Polter.") },
 
     // Windows and tabs
-    .{ .key = .@"window-save-state", .group = .window },
-    .{ .key = .@"window-inherit-working-directory", .group = .window },
-    .{ .key = .@"quit-after-last-window-closed", .group = .window },
-    .{ .key = .@"window-decoration", .group = .window },
+    .{ .key = .@"window-save-state", .group = .window, .label = i18n.N_("Restore Windows"), .summary = i18n.N_("Reopen windows, tabs and splits where they were.") },
+    .{ .key = .@"window-inherit-working-directory", .group = .window, .label = i18n.N_("New Windows Inherit Directory"), .summary = i18n.N_("New windows start in the focused window's directory.") },
+    .{ .key = .@"quit-after-last-window-closed", .group = .window, .label = i18n.N_("Quit After Last Window Closes"), .summary = i18n.N_("Quit Polter when its last window is closed.") },
+    .{ .key = .@"window-decoration", .group = .window, .label = i18n.N_("Window Decorations"), .summary = i18n.N_("Whether windows have a title bar and borders.") },
 
     // Polter
-    .{ .key = .@"poltergeist-notice-interval", .group = .polter },
-    .{ .key = .@"poltergeist-quiescence-after", .group = .polter },
-    .{ .key = .@"poltergeist-quiescence-repeat", .group = .polter },
-    .{ .key = .@"poltergeist-worker-nudge-after", .group = .polter },
-    .{ .key = .@"poltergeist-calls-silent-after", .group = .polter },
-    .{ .key = .@"poltergeist-task-idle-after", .group = .polter },
-    .{ .key = .@"poltergeist-group-quiet-after", .group = .polter },
-    .{ .key = .@"poltergeist-notify-window", .group = .polter },
-    .{ .key = .@"poltergeist-supervisor-stand-down", .group = .polter },
-    .{ .key = .@"poltergeist-chat-log", .group = .polter },
-    .{ .key = .@"poltergeist-terminal-log", .group = .polter },
-    .{ .key = .language, .group = .polter },
+    .{ .key = .@"poltergeist-notice-interval", .group = .polter, .label = i18n.N_("Notice Interval"), .summary = i18n.N_("How often the supervisor is handed what it has not seen.") },
+    .{ .key = .@"poltergeist-quiescence-after", .group = .polter, .label = i18n.N_("Quiet After"), .summary = i18n.N_("How long a screen must stay unchanged to count as quiet.") },
+    .{ .key = .@"poltergeist-quiescence-repeat", .group = .polter, .label = i18n.N_("Repeat Quiet Report"), .summary = i18n.N_("How long before a still-quiet terminal is reported again.") },
+    .{ .key = .@"poltergeist-worker-nudge-after", .group = .polter, .label = i18n.N_("Nudge Workers After"), .summary = i18n.N_("How long a worker may sit still before it is told to report.") },
+    .{ .key = .@"poltergeist-calls-silent-after", .group = .polter, .label = i18n.N_("Tool Silence Reminder"), .summary = i18n.N_("How long without a Polter tool call before it is mentioned.") },
+    .{ .key = .@"poltergeist-task-idle-after", .group = .polter, .label = i18n.N_("Idle Task Reminder"), .summary = i18n.N_("How long a task may go untouched before it is mentioned.") },
+    .{ .key = .@"poltergeist-group-quiet-after", .group = .polter, .label = i18n.N_("Quiet Group Reminder"), .summary = i18n.N_("How long a group may be silent before it is mentioned.") },
+    .{ .key = .@"poltergeist-notify-window", .group = .polter, .label = i18n.N_("Hours I May Be Disturbed"), .summary = i18n.N_("When you may be asked, as HH:MM-HH:MM; empty is any time.") },
+    .{ .key = .@"poltergeist-supervisor-stand-down", .group = .polter, .label = i18n.N_("Supervisor May Stand Down"), .summary = i18n.N_("Let a supervisor whose work is done take itself off duty.") },
+    .{ .key = .@"poltergeist-chat-log", .group = .polter, .label = i18n.N_("Keep Chat Log"), .summary = i18n.N_("Write what the terminals say to each other to disk.") },
+    .{ .key = .@"poltergeist-terminal-log", .group = .polter, .label = i18n.N_("Keep Terminal Transcripts"), .summary = i18n.N_("Keep a transcript of what ran in each terminal.") },
+    .{ .key = .language, .group = .polter, .label = i18n.N_("Language"), .summary = i18n.N_("The interface language; empty follows the system.") },
 };
 
 comptime {
@@ -753,6 +768,12 @@ noinline fn writeItem(
 
     try w.print("{{\"key\":\"{s}\",\"group\":", .{name});
     if (item != null and comptime shownHere(item.?)) try w.print("\"{s}\"", .{@tagName(item.?.group)}) else try w.writeAll("null");
+    // The name and sentence the form shows (#973); null for a key that is
+    // only in "All options", which the hosts show by its key.
+    try w.writeAll(",\"label\":");
+    if (item) |it| try w.print("{f}", .{std.json.fmt(it.label, .{})}) else try w.writeAll("null");
+    try w.writeAll(",\"summary\":");
+    if (item) |it| try w.print("{f}", .{std.json.fmt(it.summary, .{})}) else try w.writeAll("null");
     try w.print(",\"control\":\"{s}\",\"choices\":", .{@tagName(control)});
     if (control == .choice) {
         try w.writeAll("[");
@@ -1390,8 +1411,48 @@ test "config form: the JSON names every key and parses" {
         if (!std.mem.eql(u8, item.object.get("key").?.string, "font-size")) continue;
         try testing.expectEqualStrings("10", item.object.get("value").?.string);
         try testing.expectEqualStrings("font", item.object.get("group").?.string);
+        try testing.expectEqualStrings("Font Size", item.object.get("label").?.string);
+        try testing.expectEqualStrings("In points; may be fractional.", item.object.get("summary").?.string);
         try testing.expectEqualStrings("main", item.object.get("source").?.object.get("kind").?.string);
         try testing.expectEqual(@as(i64, 1), item.object.get("source").?.object.get("line").?.integer);
+    }
+}
+
+test "config form: a key only in All options has no label, and says so" {
+    var fx: Fixture = try .init();
+    defer fx.deinit();
+    const scan = try gather(fx.arena.allocator(), testing.io, fx.ctx(&.{}));
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+    var def = try Config.default(testing.allocator);
+    defer def.deinit();
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try writeJson(testing.allocator, &out.writer, &scan, fx.path("config"), null, &cfg, &def);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, out.written(), .{});
+    defer parsed.deinit();
+    var labelled: usize = 0;
+    for (parsed.value.object.get("items").?.array.items) |item| {
+        const label = item.object.get("label").?;
+        if (std.mem.eql(u8, item.object.get("key").?.string, "keybind")) {
+            try testing.expect(label == .null);
+            try testing.expect(item.object.get("summary").? == .null);
+        }
+        if (label != .null) labelled += 1;
+    }
+    try testing.expectEqual(table.len, labelled);
+}
+
+test "config form: every row of the first five groups has a name and a one-line summary (#973)" {
+    for (table) |item| {
+        errdefer std.debug.print("#973: {s} has label \"{s}\", summary \"{s}\"\n", .{ @tagName(item.key), item.label, item.summary });
+        try testing.expect(item.label.len > 0);
+        try testing.expect(item.summary.len > 0);
+        try testing.expect(item.summary.len <= summary_max);
+        // One line: the hosts draw it under the control as it is.
+        try testing.expect(std.mem.indexOfScalar(u8, item.summary, '\n') == null);
+        // A name, not the key it names.
+        try testing.expect(!std.mem.eql(u8, item.label, @tagName(item.key)));
     }
 }
 

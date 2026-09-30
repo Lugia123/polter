@@ -2823,6 +2823,278 @@ msgstr "“{}”已经有 {} 个面板，保存于 {}。被替换的版本会留
 msgid "Overwrite Project?"
 msgstr "覆盖这个项目？"
 
+#: src/config/form.zig:91
+msgid "Theme"
+msgstr "主题"
+
+#: src/config/form.zig:91
+msgid "The color theme; light and dark mode can differ."
+msgstr "配色主题，浅色和深色模式可以分别设置。"
+
+#: src/config/form.zig:92
+msgid "Background Opacity"
+msgstr "背景不透明度"
+
+#: src/config/form.zig:92
+msgid "1 is fully opaque; lower lets the desktop show through."
+msgstr "1 为完全不透明，越小越能透出桌面。"
+
+#: src/config/form.zig:93
+msgid "Background Blur"
+msgstr "背景模糊"
+
+#: src/config/form.zig:93
+msgid "Blur behind a see-through background: on, off or a strength."
+msgstr "背景透明时的模糊：开、关或强度数值。"
+
+#: src/config/form.zig:94
+msgid "Cursor Style"
+msgstr "光标样式"
+
+#: src/config/form.zig:94
+msgid "The cursor's shape; programs in the terminal may change it."
+msgstr "光标形状；终端里的程序可以改变它。"
+
+#: src/config/form.zig:95
+msgid "Blinking Cursor"
+msgstr "光标闪烁"
+
+#: src/config/form.zig:95
+msgid "Whether the cursor blinks by default."
+msgstr "光标默认是否闪烁。"
+
+#: src/config/form.zig:96
+msgid "Horizontal Padding"
+msgstr "左右边距"
+
+#: src/config/form.zig:96
+msgid "Space between the text and the left and right edges."
+msgstr "文字与窗口左右边缘之间的空白。"
+
+#: src/config/form.zig:97
+msgid "Vertical Padding"
+msgstr "上下边距"
+
+#: src/config/form.zig:97
+msgid "Space between the text and the top and bottom edges."
+msgstr "文字与窗口上下边缘之间的空白。"
+
+#: src/config/form.zig:98
+msgid "Balance Padding"
+msgstr "均分边距"
+
+#: src/config/form.zig:98
+msgid "Spread leftover space evenly around the text."
+msgstr "把多出来的空白平均分到四边。"
+
+#: src/config/form.zig:99
+msgid "Title Bar Style"
+msgstr "标题栏样式"
+
+#: src/config/form.zig:99
+msgid "Native, transparent, tabs, or hidden."
+msgstr "原生、透明、标签页或隐藏。"
+
+#: src/config/form.zig:102
+msgid "The font family to use; empty uses the default."
+msgstr "使用的字体；留空用默认字体。"
+
+#: src/config/form.zig:103
+msgid "Font Size"
+msgstr "字号"
+
+#: src/config/form.zig:103
+msgid "In points; may be fractional."
+msgstr "以点为单位，可以带小数。"
+
+#: src/config/form.zig:104
+msgid "Line Height"
+msgstr "行高调整"
+
+#: src/config/form.zig:104
+msgid "Extra height per line, in points or percent (e.g. 20%)."
+msgstr "每行额外加高，写点数或百分比（如 20%）。"
+
+#: src/config/form.zig:107
+msgid "Scrollback Lines"
+msgstr "回滚行数"
+
+#: src/config/form.zig:107
+msgid "How many lines of history each terminal keeps."
+msgstr "每个终端保留多少行历史。"
+
+#: src/config/form.zig:108
+msgid "Copy on Select"
+msgstr "选中即复制"
+
+#: src/config/form.zig:108
+msgid "Copy selected text to the clipboard automatically."
+msgstr "选中文字时自动复制到剪贴板。"
+
+#: src/config/form.zig:109
+msgid "Clipboard Reading"
+msgstr "读取剪贴板"
+
+#: src/config/form.zig:109
+msgid "Whether programs may read the clipboard: ask, allow or deny."
+msgstr "终端里的程序能否读取剪贴板：询问、允许或拒绝。"
+
+#: src/config/form.zig:110
+msgid "Clipboard Writing"
+msgstr "写入剪贴板"
+
+#: src/config/form.zig:110
+msgid "Whether programs may set the clipboard: ask, allow or deny."
+msgstr "终端里的程序能否写入剪贴板：询问、允许或拒绝。"
+
+#: src/config/form.zig:111
+msgid "Hide Pointer While Typing"
+msgstr "打字时隐藏鼠标"
+
+#: src/config/form.zig:111
+msgid "Hide the mouse pointer while you type in a terminal."
+msgstr "在终端里打字时隐藏鼠标指针。"
+
+#: src/config/form.zig:112
+msgid "Confirm Before Closing"
+msgstr "关闭前确认"
+
+#: src/config/form.zig:112
+msgid "Ask before closing a terminal still running something."
+msgstr "关闭仍在运行程序的终端前先确认。"
+
+#: src/config/form.zig:113
+msgid "Shell Integration"
+msgstr "Shell 集成"
+
+#: src/config/form.zig:113
+msgid "Lets the shell report its directory and prompt to Polter."
+msgstr "让 shell 报告当前目录和提示符位置，Polter 才能跟踪它们。"
+
+#: src/config/form.zig:116
+msgid "Restore Windows"
+msgstr "恢复窗口"
+
+#: src/config/form.zig:116
+msgid "Reopen windows, tabs and splits where they were."
+msgstr "重新打开时恢复窗口、标签页和分屏。"
+
+#: src/config/form.zig:117
+msgid "New Windows Inherit Directory"
+msgstr "新窗口沿用目录"
+
+#: src/config/form.zig:117
+msgid "New windows start in the focused window's directory."
+msgstr "新窗口从当前窗口的目录开始。"
+
+#: src/config/form.zig:118
+msgid "Quit After Last Window Closes"
+msgstr "关闭最后一个窗口后退出"
+
+#: src/config/form.zig:118
+msgid "Quit Polter when its last window is closed."
+msgstr "最后一个窗口关掉后退出 Polter。"
+
+#: src/config/form.zig:119
+msgid "Window Decorations"
+msgstr "窗口装饰"
+
+#: src/config/form.zig:119
+msgid "Whether windows have a title bar and borders."
+msgstr "窗口是否带标题栏和边框。"
+
+#: src/config/form.zig:122
+msgid "Notice Interval"
+msgstr "提醒间隔"
+
+#: src/config/form.zig:122
+msgid "How often the supervisor is handed what it has not seen."
+msgstr "多久把总管还没看过的动态交给它一次。"
+
+#: src/config/form.zig:123
+msgid "Quiet After"
+msgstr "静止判定"
+
+#: src/config/form.zig:123
+msgid "How long a screen must stay unchanged to count as quiet."
+msgstr "屏幕多久不变算作静止。"
+
+#: src/config/form.zig:124
+msgid "Repeat Quiet Report"
+msgstr "静止重复报告"
+
+#: src/config/form.zig:124
+msgid "How long before a still-quiet terminal is reported again."
+msgstr "仍然静止的终端隔多久再报一次。"
+
+#: src/config/form.zig:125
+msgid "Nudge Workers After"
+msgstr "催促汇报"
+
+#: src/config/form.zig:125
+msgid "How long a worker may sit still before it is told to report."
+msgstr "worker 静止多久后提醒它汇报。"
+
+#: src/config/form.zig:126
+msgid "Tool Silence Reminder"
+msgstr "工具沉默提醒"
+
+#: src/config/form.zig:126
+msgid "How long without a Polter tool call before it is mentioned."
+msgstr "多久没调用 Polter 工具就提一句。"
+
+#: src/config/form.zig:127
+msgid "Idle Task Reminder"
+msgstr "任务搁置提醒"
+
+#: src/config/form.zig:127
+msgid "How long a task may go untouched before it is mentioned."
+msgstr "任务多久没人动就提一句。"
+
+#: src/config/form.zig:128
+msgid "Quiet Group Reminder"
+msgstr "群静默提醒"
+
+#: src/config/form.zig:128
+msgid "How long a group may be silent before it is mentioned."
+msgstr "群多久没人说话就提一句。"
+
+#: src/config/form.zig:129
+msgid "Hours I May Be Disturbed"
+msgstr "可打扰时段"
+
+#: src/config/form.zig:129
+msgid "When you may be asked, as HH:MM-HH:MM; empty is any time."
+msgstr "什么时候可以问你，写成 HH:MM-HH:MM；留空表示随时。"
+
+#: src/config/form.zig:130
+msgid "Supervisor May Stand Down"
+msgstr "总管可自行卸任"
+
+#: src/config/form.zig:130
+msgid "Let a supervisor whose work is done take itself off duty."
+msgstr "允许做完事的总管自己卸任。"
+
+#: src/config/form.zig:131
+msgid "Keep Chat Log"
+msgstr "保存群聊记录"
+
+#: src/config/form.zig:131
+msgid "Write what the terminals say to each other to disk."
+msgstr "把终端之间的对话写到磁盘上。"
+
+#: src/config/form.zig:132
+msgid "Keep Terminal Transcripts"
+msgstr "保存终端记录"
+
+#: src/config/form.zig:132
+msgid "Keep a transcript of what ran in each terminal."
+msgstr "记录每个终端里实际运行了什么。"
+
+#: src/config/form.zig:133
+msgid "The interface language; empty follows the system."
+msgstr "界面语言；留空跟随系统。"
+
 #~ msgid "Role Editor (beta)..."
 #~ msgstr "角色编辑器（beta）…"
 

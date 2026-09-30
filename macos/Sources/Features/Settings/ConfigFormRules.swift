@@ -45,6 +45,10 @@ struct ConfigForm: Decodable, Equatable {
         /// with `\n`.
         var value: String
         var doc: String?
+        /// The form's own name and sentence for it, English msgids (#973);
+        /// nil for a key that is only in All Options.
+        var label: String?
+        var summary: String?
         var source: Source
         /// Why the form may not write it: `repeatable`, `multiple`, `cli`,
         /// `file`; nil when it may.
@@ -53,7 +57,7 @@ struct ConfigForm: Decodable, Equatable {
         var id: String { key }
 
         private enum CodingKeys: String, CodingKey {
-            case key, group, control, choices, min, max, `default`, value, doc, source, readonly
+            case key, group, control, choices, min, max, `default`, value, doc, label, summary, source, readonly
         }
 
         init(from decoder: Decoder) throws {
@@ -69,6 +73,8 @@ struct ConfigForm: Decodable, Equatable {
             `default` = try c.decode(String.self, forKey: .default)
             value = try c.decode(String.self, forKey: .value)
             doc = try c.decodeIfPresent(String.self, forKey: .doc)
+            label = try c.decodeIfPresent(String.self, forKey: .label)
+            summary = try c.decodeIfPresent(String.self, forKey: .summary)
             source = try c.decode(Source.self, forKey: .source)
             readonly = try c.decodeIfPresent(String.self, forKey: .readonly)
         }
@@ -147,6 +153,36 @@ enum ConfigFormRules {
             URL(fileURLWithPath: (p as NSString).expandingTildeInPath).resolvingSymlinksInPath().standardizedFileURL.path
         }
         return canonical(hostConfigPath) == canonical(formMain)
+    }
+
+    /// A msgid the core hands over, in the person's language: the same
+    /// table the Swift literals use, looked up by the English text.
+    static func localized(_ msgid: String, bundle: Bundle = .main) -> String {
+        bundle.localizedString(forKey: msgid, value: msgid, table: nil)
+    }
+
+    /// What the label column says: the form's name for the key, else the
+    /// key itself (All Options' keys have no name).
+    static func title(_ item: ConfigForm.Item, bundle: Bundle = .main) -> String {
+        item.label.map { localized($0, bundle: bundle) } ?? item.key
+    }
+
+    /// The sentence under the control: the form's own summary, else the
+    /// first paragraph of Ghostty's help. Nil when there is neither.
+    static func sentence(_ item: ConfigForm.Item, bundle: Bundle = .main) -> String? {
+        if let summary = item.summary { return localized(summary, bundle: bundle) }
+        guard let doc = item.doc else { return nil }
+        let first = doc.components(separatedBy: "\n\n").first?
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return first.isEmpty ? nil : first
+    }
+
+    /// Whether "More…" has anything to show: Ghostty's help text, unless
+    /// the sentence already is the whole of it.
+    static func hasMore(_ item: ConfigForm.Item, bundle: Bundle = .main) -> Bool {
+        guard let doc = item.doc?.trimmingCharacters(in: .whitespacesAndNewlines), !doc.isEmpty else { return false }
+        return item.summary != nil || sentence(item, bundle: bundle) != doc.replacingOccurrences(of: "\n", with: " ")
     }
 
     static func isWritable(_ item: ConfigForm.Item) -> Bool {

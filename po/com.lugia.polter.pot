@@ -2780,3 +2780,275 @@ msgstr ""
 #: windows/host/src/projects_ui.rs
 msgid "Overwrite Project?"
 msgstr ""
+
+#: src/config/form.zig:91
+msgid "Theme"
+msgstr ""
+
+#: src/config/form.zig:91
+msgid "The color theme; light and dark mode can differ."
+msgstr ""
+
+#: src/config/form.zig:92
+msgid "Background Opacity"
+msgstr ""
+
+#: src/config/form.zig:92
+msgid "1 is fully opaque; lower lets the desktop show through."
+msgstr ""
+
+#: src/config/form.zig:93
+msgid "Background Blur"
+msgstr ""
+
+#: src/config/form.zig:93
+msgid "Blur behind a see-through background: on, off or a strength."
+msgstr ""
+
+#: src/config/form.zig:94
+msgid "Cursor Style"
+msgstr ""
+
+#: src/config/form.zig:94
+msgid "The cursor's shape; programs in the terminal may change it."
+msgstr ""
+
+#: src/config/form.zig:95
+msgid "Blinking Cursor"
+msgstr ""
+
+#: src/config/form.zig:95
+msgid "Whether the cursor blinks by default."
+msgstr ""
+
+#: src/config/form.zig:96
+msgid "Horizontal Padding"
+msgstr ""
+
+#: src/config/form.zig:96
+msgid "Space between the text and the left and right edges."
+msgstr ""
+
+#: src/config/form.zig:97
+msgid "Vertical Padding"
+msgstr ""
+
+#: src/config/form.zig:97
+msgid "Space between the text and the top and bottom edges."
+msgstr ""
+
+#: src/config/form.zig:98
+msgid "Balance Padding"
+msgstr ""
+
+#: src/config/form.zig:98
+msgid "Spread leftover space evenly around the text."
+msgstr ""
+
+#: src/config/form.zig:99
+msgid "Title Bar Style"
+msgstr ""
+
+#: src/config/form.zig:99
+msgid "Native, transparent, tabs, or hidden."
+msgstr ""
+
+#: src/config/form.zig:102
+msgid "The font family to use; empty uses the default."
+msgstr ""
+
+#: src/config/form.zig:103
+msgid "Font Size"
+msgstr ""
+
+#: src/config/form.zig:103
+msgid "In points; may be fractional."
+msgstr ""
+
+#: src/config/form.zig:104
+msgid "Line Height"
+msgstr ""
+
+#: src/config/form.zig:104
+msgid "Extra height per line, in points or percent (e.g. 20%)."
+msgstr ""
+
+#: src/config/form.zig:107
+msgid "Scrollback Lines"
+msgstr ""
+
+#: src/config/form.zig:107
+msgid "How many lines of history each terminal keeps."
+msgstr ""
+
+#: src/config/form.zig:108
+msgid "Copy on Select"
+msgstr ""
+
+#: src/config/form.zig:108
+msgid "Copy selected text to the clipboard automatically."
+msgstr ""
+
+#: src/config/form.zig:109
+msgid "Clipboard Reading"
+msgstr ""
+
+#: src/config/form.zig:109
+msgid "Whether programs may read the clipboard: ask, allow or deny."
+msgstr ""
+
+#: src/config/form.zig:110
+msgid "Clipboard Writing"
+msgstr ""
+
+#: src/config/form.zig:110
+msgid "Whether programs may set the clipboard: ask, allow or deny."
+msgstr ""
+
+#: src/config/form.zig:111
+msgid "Hide Pointer While Typing"
+msgstr ""
+
+#: src/config/form.zig:111
+msgid "Hide the mouse pointer while you type in a terminal."
+msgstr ""
+
+#: src/config/form.zig:112
+msgid "Confirm Before Closing"
+msgstr ""
+
+#: src/config/form.zig:112
+msgid "Ask before closing a terminal still running something."
+msgstr ""
+
+#: src/config/form.zig:113
+msgid "Shell Integration"
+msgstr ""
+
+#: src/config/form.zig:113
+msgid "Lets the shell report its directory and prompt to Polter."
+msgstr ""
+
+#: src/config/form.zig:116
+msgid "Restore Windows"
+msgstr ""
+
+#: src/config/form.zig:116
+msgid "Reopen windows, tabs and splits where they were."
+msgstr ""
+
+#: src/config/form.zig:117
+msgid "New Windows Inherit Directory"
+msgstr ""
+
+#: src/config/form.zig:117
+msgid "New windows start in the focused window's directory."
+msgstr ""
+
+#: src/config/form.zig:118
+msgid "Quit After Last Window Closes"
+msgstr ""
+
+#: src/config/form.zig:118
+msgid "Quit Polter when its last window is closed."
+msgstr ""
+
+#: src/config/form.zig:119
+msgid "Window Decorations"
+msgstr ""
+
+#: src/config/form.zig:119
+msgid "Whether windows have a title bar and borders."
+msgstr ""
+
+#: src/config/form.zig:122
+msgid "Notice Interval"
+msgstr ""
+
+#: src/config/form.zig:122
+msgid "How often the supervisor is handed what it has not seen."
+msgstr ""
+
+#: src/config/form.zig:123
+msgid "Quiet After"
+msgstr ""
+
+#: src/config/form.zig:123
+msgid "How long a screen must stay unchanged to count as quiet."
+msgstr ""
+
+#: src/config/form.zig:124
+msgid "Repeat Quiet Report"
+msgstr ""
+
+#: src/config/form.zig:124
+msgid "How long before a still-quiet terminal is reported again."
+msgstr ""
+
+#: src/config/form.zig:125
+msgid "Nudge Workers After"
+msgstr ""
+
+#: src/config/form.zig:125
+msgid "How long a worker may sit still before it is told to report."
+msgstr ""
+
+#: src/config/form.zig:126
+msgid "Tool Silence Reminder"
+msgstr ""
+
+#: src/config/form.zig:126
+msgid "How long without a Polter tool call before it is mentioned."
+msgstr ""
+
+#: src/config/form.zig:127
+msgid "Idle Task Reminder"
+msgstr ""
+
+#: src/config/form.zig:127
+msgid "How long a task may go untouched before it is mentioned."
+msgstr ""
+
+#: src/config/form.zig:128
+msgid "Quiet Group Reminder"
+msgstr ""
+
+#: src/config/form.zig:128
+msgid "How long a group may be silent before it is mentioned."
+msgstr ""
+
+#: src/config/form.zig:129
+msgid "Hours I May Be Disturbed"
+msgstr ""
+
+#: src/config/form.zig:129
+msgid "When you may be asked, as HH:MM-HH:MM; empty is any time."
+msgstr ""
+
+#: src/config/form.zig:130
+msgid "Supervisor May Stand Down"
+msgstr ""
+
+#: src/config/form.zig:130
+msgid "Let a supervisor whose work is done take itself off duty."
+msgstr ""
+
+#: src/config/form.zig:131
+msgid "Keep Chat Log"
+msgstr ""
+
+#: src/config/form.zig:131
+msgid "Write what the terminals say to each other to disk."
+msgstr ""
+
+#: src/config/form.zig:132
+msgid "Keep Terminal Transcripts"
+msgstr ""
+
+#: src/config/form.zig:132
+msgid "Keep a transcript of what ran in each terminal."
+msgstr ""
+
+#: src/config/form.zig:133
+msgid "The interface language; empty follows the system."
+msgstr ""
