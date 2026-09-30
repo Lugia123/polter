@@ -62,6 +62,15 @@
 #    `personas.json` beside that file (`PersonaStore.defaultPath`), so the
 #    instance's roles are `<state>/config/polter/personas.json`, not the
 #    user's (#976; before it they were the user's, isolation or not).
+# 7. **`--config-default-files=false`** stays as a second guard behind 6: it
+#    is from before 6 existed (9bc1ef038), and it still keeps the user's
+#    default files out if a build ever ignores GHOSTTY_CONFIG_PATH. Until
+#    #981 it also threw away the isolated file itself -- the core counted
+#    everything loaded before the command line as "default files" -- so the
+#    instance ran on no config: config errors never showed and the settings
+#    form's writes had no effect. The core now keeps a file the host loaded
+#    in place of the default ones (`Config.discardDefaultFiles`), so
+#    MAC_TEST_EXTRA_FLAGS='--config-default-files=true' is no longer needed.
 #
 # ⚠️ What this does not stop: launching activates the new app, so it takes
 # the foreground from whoever was using the machine -- the user, if they are

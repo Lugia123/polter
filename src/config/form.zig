@@ -484,6 +484,9 @@ pub const Context = struct {
     defaults: []const []const u8,
     args: []const []const u8,
     cwd: []const u8,
+    /// `defaults` is the one file the host loaded in their place, which
+    /// `config-default-files = false` does not drop (`Config.discardDefaultFiles`).
+    explicit: bool = false,
 
     /// The files the host that loaded `origin` reads, in this process.
     /// Everything is allocated in `arena`.
@@ -541,7 +544,7 @@ pub const Context = struct {
         if (origin.file) |f| {
             const files = try arena.alloc([]const u8, 1);
             files[0] = f;
-            return .{ .main_path = f, .defaults = files, .args = args, .cwd = cwd };
+            return .{ .main_path = f, .defaults = files, .args = args, .cwd = cwd, .explicit = true };
         }
         return .{ .main_path = defaults.main, .defaults = defaults.files, .args = args, .cwd = cwd };
     }
@@ -583,11 +586,11 @@ pub fn gather(arena: Allocator, io: std.Io, ctx: Context) !Scan {
     // `config-default-files = false` on the command line drops the default
     // files and what they asked for (`Config.loadCliArgs`).
     var use_defaults = true;
-    for (ctx.args) |arg| {
+    if (!ctx.explicit) for (ctx.args) |arg| {
         const k, const v = splitArg(arg) orelse continue;
         if (!std.mem.eql(u8, k, "config-default-files")) continue;
         use_defaults = if (v) |s| cli.args.parseBool(s) catch use_defaults else true;
-    }
+    };
 
     if (use_defaults) {
         var seen: std.StringHashMapUnmanaged(void) = .empty;
@@ -1637,4 +1640,25 @@ test "config form: the values come from the host's own file, not the default one
     defer cfg.deinit();
     try testing.expectEqual(@as(f32, 23), cfg.@"font-size");
     try testing.expectEqualStrings(override, cfg._origin.file orelse "");
+}
+
+test "config form: config-default-files=false does not drop a file the host loaded instead of them" {
+    var fx: Fixture = try .init();
+    defer fx.deinit();
+    const a = fx.arena.allocator();
+    try fx.write("override", "font-size = 20\n");
+    const override = try a.dupeZ(u8, fx.path("override"));
+    const argv: []const []const u8 = &.{"--config-default-files=false"};
+
+    const ctx = try Context.fromOrigin(a, .{ .file = override, .cli = true }, undefined, argv, fx.root);
+    const scan = try gather(a, testing.io, ctx);
+    try testing.expectEqual(@as(?usize, 0), scan.main);
+    try testing.expectEqualStrings(override, scan.layers[resolve(&scan, .@"font-size").tally.?.last.layer].path.?);
+
+    // The default files are still dropped when they are what was loaded.
+    try fx.write("config", "font-size = 10\n");
+    const plain = try Context.fromOrigin(a, .{ .cli = true }, .{ .main = fx.path("config"), .files = &.{fx.path("config")} }, argv, fx.root);
+    const scan2 = try gather(a, testing.io, plain);
+    try testing.expectEqual(@as(?usize, null), scan2.main);
+    try testing.expectEqual(@as(?Scan.Tally, null), resolve(&scan2, .@"font-size").tally);
 }
