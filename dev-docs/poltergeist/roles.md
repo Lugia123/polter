@@ -620,6 +620,12 @@ adapter launch '{"version":1,"cwd":…,"home":…,
 - `id` 是适配器的，核心只存不懂。`locked` 的项（Claude Code 的是 `polter` 这个
   MCP）角色关不掉——关掉等于一个交不了活的终端，和第五节「`polter` 永远隐式在内」
   是同一条。
+- `source` 为 `project` / `local` 的项（`<cwd>/.claude/skills`、`<cwd>/.mcp.json`、
+  `~/.claude.json` 的 `projects[<cwd>].mcpServers`）角色**也关不掉**：`launch` 一律
+  保留。角色是在设置窗口里写的，那里没有工作目录，这些项永远进不了 `except`；
+  `default:false` 的角色（比如总管）于是会在它启动的每个项目里把它们全关掉，而且
+  没有人能说「别关」。项目里的东西只在那个目录里看得见，角色管不到。同名时（项目
+  skill 和用户 skill 同名）那一行算项目的，也就保留。
 - 描述里**不许有秘密**：MCP 只给传输方式和主机名 / 命令的文件名，不给参数（令牌常
   以参数传），不给 `env`，URL 里的 `user:pw@` 剥掉。这两条有测试钉着。
 - 关掉的插件不列：它已经在每个会话之外了，角色对它无事可做。

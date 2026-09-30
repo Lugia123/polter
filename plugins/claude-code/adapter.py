@@ -440,14 +440,19 @@ def inventory(req):
             items += plugin_items(name, path)
 
     # The same id twice (a project skill shadowing a user one of the same
-    # name) is one switch at launch, so it is one row here.
-    seen = set()
+    # name) is one switch at launch, so it is one row here. Whichever came
+    # first keeps its place -- except that a project's item takes the row
+    # from anything else's: in that directory it is the one Claude Code
+    # uses, and it is the one `launch` must leave alone (`PROJECT_SOURCES`).
+    at = {}
     unique = []
     for item in items:
-        if item["id"] in seen:
-            continue
-        seen.add(item["id"])
-        unique.append(item)
+        i = at.get(item["id"])
+        if i is None:
+            at[item["id"]] = len(unique)
+            unique.append(item)
+        elif item["source"] in PROJECT_SOURCES and unique[i]["source"] not in PROJECT_SOURCES:
+            unique[i] = item
 
     notes.append("Connectors added in claude.ai are not listed: they are not kept on this machine.")
     return {
@@ -456,6 +461,17 @@ def inventory(req):
         "items": unique,
         "notes": notes,
     }
+
+
+# What belongs to the directory a role is launched in rather than to the
+# person: `<cwd>/.claude/skills`, `<cwd>/.mcp.json`, and `~/.claude.json`'s
+# `projects[<cwd>].mcpServers`. **A role never switches these off.** A role
+# is written in the settings window, which has no directory, so these never
+# appear there and can never be in a role's `except`: a role whose default is
+# off would take away every one of them in every project it is started in,
+# and nobody could have said otherwise. They are the project's, visible only
+# in that directory; the role has no say over them.
+PROJECT_SOURCES = ("project", "local")
 
 
 def enabled(selection, item_id):
@@ -511,6 +527,9 @@ def launch(req):
     off = {"skill": 0, "mcp": 0}
     for item in inv["items"]:
         if item.get("locked"):
+            continue
+        # The project's own, not the role's to take (`PROJECT_SOURCES`).
+        if item["source"] in PROJECT_SOURCES:
             continue
         selection = cli.get("skills" if item["kind"] == "skill" else "mcp") or {}
         if enabled(selection, item["id"]):

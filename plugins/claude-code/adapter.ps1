@@ -751,10 +751,18 @@ function Get-Inventory($Req) {
     }
 
     # The same id twice is one switch at launch, so it is one row here.
-    $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+    # Whichever came first keeps its place, except that a project's item
+    # takes the row from anything else's -- see `adapter.py`.
+    $at = New-Object 'System.Collections.Generic.Dictionary[string,int]'
     $unique = New-List
     foreach ($item in $items) {
-        if ($seen.Add([string]$item['id'])) { $unique.Add($item) }
+        $id = [string]$item['id']
+        if (-not $at.ContainsKey($id)) {
+            $at[$id] = $unique.Count
+            $unique.Add($item)
+        } elseif ((Test-ProjectSource $item) -and -not (Test-ProjectSource $unique[$at[$id]])) {
+            $unique[$at[$id]] = $item
+        }
     }
 
     $notes.Add('Connectors added in claude.ai are not listed: they are not kept on this machine.')
@@ -764,6 +772,19 @@ function Get-Inventory($Req) {
     $answer['items'] = $unique
     $answer['notes'] = $notes
     return , $answer
+}
+
+# What belongs to the directory a role is launched in rather than to the
+# person: `<cwd>/.claude/skills`, `<cwd>/.mcp.json`, and `~/.claude.json`'s
+# `projects[<cwd>].mcpServers`. **A role never switches these off.** A role
+# is written in the settings window, which has no directory, so these never
+# appear there and can never be in a role's `except`: a role whose default is
+# off would take away every one of them in every project it is started in,
+# and nobody could have said otherwise. They are the project's, visible only
+# in that directory; the role has no say over them.
+function Test-ProjectSource($Item) {
+    $source = [string]$Item['source']
+    return ($source -ceq 'project') -or ($source -ceq 'local')
 }
 
 # Whether a role leaves this item on: its default, flipped by `except`.
@@ -1013,6 +1034,8 @@ function Get-Launch($Req) {
     $offMcp = 0
     foreach ($item in $inv['items']) {
         if ($item.Contains('locked') -and $item['locked']) { continue }
+        # The project's own, not the role's to take (`Test-ProjectSource`).
+        if (Test-ProjectSource $item) { continue }
         $kind = [string]$item['kind']
         $selection = Get-J $cli $(if ($kind -ceq 'skill') { 'skills' } else { 'mcp' })
         if (-not (Test-Truthy $selection)) { $selection = New-Map }

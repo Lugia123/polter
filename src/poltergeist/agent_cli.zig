@@ -746,6 +746,110 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
     try testing.expect(std.mem.indexOf(u8, argv, "--append-system-prompt\x00be brief") != null);
 }
 
+test "agent_cli: a role never switches off what belongs to the directory it is launched in" {
+    // A role is written in the settings window, which has no directory, so
+    // a project's skills and servers can never be in its `except`. A role
+    // whose default is off would otherwise take all of them away in every
+    // project it is started in (the supervisor lost the repository's
+    // `/提交` that way). Everything of the person's own still goes.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const root = try std.fmt.allocPrint(aa, "/tmp/polter-adapter-proj-{x}", .{&raw});
+    const cwd = std.Io.Dir.cwd();
+    defer cwd.deleteTree(io, root) catch {};
+
+    const home = try std.fmt.allocPrint(aa, "{s}/home", .{root});
+    const project = try std.fmt.allocPrint(aa, "{s}/project", .{root});
+    const files = [_][2][]const u8{
+        // The person's own: a skill only they have, one the project has
+        // too, and a server.
+        .{ "home/.claude/skills/writer/SKILL.md", "---\nname: writer\ndescription: Mine.\n---\n" },
+        .{ "home/.claude/skills/pdf/SKILL.md", "---\nname: pdf\ndescription: Mine too.\n---\n" },
+        .{ "home/.claude.json", "" },
+        // The project's: a skill of its own, the same name as the person's
+        // `pdf` (in this directory it is the project's that answers), and
+        // a shared server.
+        .{ "project/.claude/skills/提交/SKILL.md", "---\nname: 提交\ndescription: Commit.\n---\n" },
+        .{ "project/.claude/skills/pdf/SKILL.md", "---\nname: pdf\ndescription: Ours.\n---\n" },
+        .{
+            "project/.mcp.json",
+            \\{"mcpServers":{"shared":{"type":"http","url":"https://shared.example.com/x"}}}
+        },
+    };
+    for (files) |f| {
+        const path = try std.fmt.allocPrint(aa, "{s}/{s}", .{ root, f[0] });
+        try cwd.createDirPath(io, std.fs.path.dirname(path).?);
+        var file = try cwd.createFile(io, path, .{});
+        defer file.close(io);
+        // `projects[<cwd>]` is keyed by the directory, so it is written here.
+        const body = if (std.mem.endsWith(u8, f[0], ".claude.json"))
+            try std.fmt.allocPrint(aa,
+                \\{{"mcpServers":{{"pencil":{{"command":"/opt/pencil"}}}},
+                \\ "projects":{{"{s}":{{"mcpServers":{{"localsrv":{{"command":"/bin/local"}}}}}}}}}}
+            , .{project})
+        else
+            f[1];
+        try file.writeStreamingAll(io, body);
+    }
+
+    const exec = try std.fmt.allocPrint(aa, "{s}/adapter.py", .{root});
+    {
+        var f = try cwd.createFile(io, exec, .{ .permissions = .fromMode(0o755) });
+        defer f.close(io);
+        try f.writeStreamingAll(io, @embedFile("plugin_claude_code_adapter_py"));
+    }
+    const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = exec };
+
+    var env = try global.environMap();
+    defer env.deinit();
+
+    // A supervisor's shape: everything off by default, nothing excepted.
+    const p: persona.Persona = .{ .key = "s", .name = "s" };
+    const choice: persona.CliChoice = .{
+        .cli = "claude-code",
+        .skills = .{ .default = false },
+        .mcp = .{ .default = false },
+    };
+    var req: std.Io.Writer.Allocating = .init(aa);
+    try writeLaunchRequest(&req.writer, p, choice, project, home, null);
+    const answer = switch (try ask(aa, io, &env, adapter, .launch, req.written())) {
+        .ok => |j| j,
+        .failed => |why| {
+            if (std.mem.indexOf(u8, why, "could not be run") != null) return error.SkipZigTest;
+            std.debug.print("adapter failed: {s}\n", .{why});
+            return error.TestUnexpectedResult;
+        },
+    };
+    const l = try parseLaunch(aa, answer);
+    const argv = try std.mem.join(aa, "\x00", l.argv);
+
+    // The control: the person's own still go.
+    const writer_off = std.mem.indexOf(u8, argv, "\"writer\": \"off\"") != null;
+    try testing.expect(writer_off);
+    const pencil_off = std.mem.indexOf(u8, argv, "\x00mcp__pencil") != null;
+    try testing.expect(pencil_off);
+    // The project's stay.
+    const commit_off = std.mem.indexOf(u8, argv, "\"提交\": \"off\"") != null;
+    try testing.expect(!commit_off);
+    const shared_off = std.mem.indexOf(u8, argv, "mcp__shared") != null;
+    try testing.expect(!shared_off);
+    const local_off = std.mem.indexOf(u8, argv, "mcp__localsrv") != null;
+    try testing.expect(!local_off);
+    // One name, both the person's and the project's: the project's.
+    const pdf_off = std.mem.indexOf(u8, argv, "\"pdf\": \"off\"") != null;
+    try testing.expect(!pdf_off);
+}
+
 // -- hooks (adapters.md 3.1-3.2) ----------------------------------------------
 //
 // The shipped `adapter.py`, run the way `+launch` runs it, against a stand-in
