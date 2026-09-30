@@ -453,7 +453,7 @@
 "%@ pane(s)" = "%@ pane(s)";
 "Current" = "Current";
 "Restore…" = "Restore…";
-"An earlier version is kept when a save changes the layout: a pane added or closed, or a split turned." = "An earlier version is kept when a save changes the layout: a pane added or closed, or a split turned.";
+"An earlier version is kept when an automatic save changes the layout (a pane added or closed, or a split turned), and whenever the project is overwritten with a tab." = "An earlier version is kept when an automatic save changes the layout (a pane added or closed, or a split turned), and whenever the project is overwritten with a tab.";
 "Not bound to an open tab." = "Not bound to an open tab.";
 "Bound to the tab \"%@\"; saved automatically as it changes, last at %@." = "Bound to the tab \"%@\"; saved automatically as it changes, last at %@.";
 "There is already a project called \"%@\"." = "There is already a project called \"%@\".";
@@ -474,3 +474,4 @@
 "Version" = "Version";
 "Build" = "Build";
 "Commit" = "Commit";
+"Untitled tab" = "Untitled tab";

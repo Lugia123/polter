@@ -91,15 +91,15 @@ struct ProjectAutosaveTests {
         let side = ProjectFile(name: "p", savedAt: 2, root: .split(direction: .horizontal, ratio: 0.5, left: leaf("/a"), right: leaf("/b")), nextScrollback: nil)
         let stacked = ProjectFile(name: "p", savedAt: 3, root: .split(direction: .vertical, ratio: 0.5, left: leaf("/a"), right: leaf("/b")), nextScrollback: nil)
 
-        #expect(try ProjectFileWriter.write(single, to: url) == .written(rotated: false))
+        #expect(try ProjectFileWriter.write(single, to: url, keeping: .onLayoutChange) == .written(rotated: false))
         #expect(!FileManager.default.fileExists(atPath: prev.path))
         let first = try Data(contentsOf: url)
 
-        #expect(try ProjectFileWriter.write(side, to: url) == .written(rotated: true))
+        #expect(try ProjectFileWriter.write(side, to: url, keeping: .onLayoutChange) == .written(rotated: true))
         #expect(try Data(contentsOf: prev) == first)
         let second = try Data(contentsOf: url)
 
-        #expect(try ProjectFileWriter.write(stacked, to: url) == .written(rotated: true))
+        #expect(try ProjectFileWriter.write(stacked, to: url, keeping: .onLayoutChange) == .written(rotated: true))
         #expect(try Data(contentsOf: prev) == second)
         #expect(try Data(contentsOf: prev) != first)
     }
@@ -110,29 +110,67 @@ struct ProjectAutosaveTests {
     @Test func previousSurvivesChangesThatAreNotLayout() throws {
         let url = try makeURL()
         let prev = ProjectFileWriter.previousURL(for: url)
-        try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 1, root: leaf("/a"), nextScrollback: nil), to: url)
-        try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 2, root: .split(direction: .horizontal, ratio: 0.5, left: leaf("/a"), right: leaf("/b")), nextScrollback: nil), to: url)
+        try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 1, root: leaf("/a"), nextScrollback: nil), to: url, keeping: .onLayoutChange)
+        try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 2, root: .split(direction: .horizontal, ratio: 0.5, left: leaf("/a"), right: leaf("/b")), nextScrollback: nil), to: url, keeping: .onLayoutChange)
         let kept = try Data(contentsOf: prev)
 
         let retitled = ProjectFile(name: "p", savedAt: 3, root: .split(direction: .horizontal, ratio: 0.8, left: leaf("/a/x", "vim"), right: leaf("/b")), nextScrollback: nil)
-        #expect(try ProjectFileWriter.write(retitled, to: url) == .written(rotated: false))
+        #expect(try ProjectFileWriter.write(retitled, to: url, keeping: .onLayoutChange) == .written(rotated: false))
         #expect(try Data(contentsOf: prev) == kept)
         #expect(try ProjectFile.decode(from: Data(contentsOf: url)).root == retitled.root)
     }
 
+    // MARK: Overwrite keeps what it replaced (#965)
+
+    /// The case found on the real app: one pane over one pane is no layout
+    /// change, so the autosave rule kept nothing -- and the old cwd and
+    /// title were gone while the confirmation said they were kept.
+    @Test func overwritingOnePaneWithOnePaneKeepsTheReplacedVersion() throws {
+        let url = try makeURL()
+        let prev = ProjectFileWriter.previousURL(for: url)
+        try ProjectFileWriter.write(ProjectFile(name: "g", savedAt: 1, root: leaf("/work/g", "gamma-only"), nextScrollback: nil), to: url, keeping: .onLayoutChange)
+        let replaced = try Data(contentsOf: url)
+
+        let tab = ProjectFile(name: "g", savedAt: 2, root: leaf("/bin", "/bin/sh"), nextScrollback: nil)
+        #expect(try ProjectFileWriter.write(tab, to: url, keeping: .always) == .written(rotated: true))
+        #expect(try Data(contentsOf: prev) == replaced)
+        #expect(try ProjectFile.decode(from: Data(contentsOf: prev)).root == leaf("/work/g", "gamma-only"))
+        #expect(try ProjectFile.decode(from: Data(contentsOf: url)).root == tab.root)
+    }
+
+    /// The decision on its own, both kinds side by side: they differ only
+    /// where the layout did not change.
+    @Test func theTwoKindsDifferOnlyWhenTheLayoutStaysTheSame() throws {
+        let old = try ProjectFile(name: "p", savedAt: 1, root: leaf("/a", "x"), nextScrollback: nil).encoded()
+        let retitled = ProjectFile(name: "p", savedAt: 2, root: leaf("/a", "y"), nextScrollback: nil)
+        let split = ProjectFile(name: "p", savedAt: 2, root: .split(direction: .horizontal, ratio: 0.5, left: leaf("/a"), right: leaf("/b")), nextScrollback: nil)
+        let same = ProjectFile(name: "p", savedAt: 9, root: leaf("/a", "x"), nextScrollback: nil)
+
+        #expect(ProjectFileWriter.plan(writing: retitled, over: old, keeping: .onLayoutChange) == .written(rotated: false))
+        #expect(ProjectFileWriter.plan(writing: retitled, over: old, keeping: .always) == .written(rotated: true))
+        #expect(ProjectFileWriter.plan(writing: split, over: old, keeping: .onLayoutChange) == .written(rotated: true))
+        #expect(ProjectFileWriter.plan(writing: split, over: old, keeping: .always) == .written(rotated: true))
+        // Nothing but `saved_at` differs: nothing is replaced, nothing kept.
+        #expect(ProjectFileWriter.plan(writing: same, over: old, keeping: .always) == .unchanged)
+        // No file yet: nothing to keep, either way.
+        #expect(ProjectFileWriter.plan(writing: same, over: nil, keeping: .always) == .written(rotated: false))
+        // A file that does not decode is kept, either way.
+        #expect(ProjectFileWriter.plan(writing: same, over: Data("not json".utf8), keeping: .onLayoutChange) == .written(rotated: true))
+    }
+
     @Test func onlySavedAtChangingIsNotAWrite() throws {
         let url = try makeURL()
-        try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 1, root: leaf("/a"), nextScrollback: nil), to: url)
+        try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 1, root: leaf("/a"), nextScrollback: nil), to: url, keeping: .onLayoutChange)
         let before = try Data(contentsOf: url)
-        #expect(try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 2, root: leaf("/a"), nextScrollback: nil), to: url) == .unchanged)
+        #expect(try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 2, root: leaf("/a"), nextScrollback: nil), to: url, keeping: .onLayoutChange) == .unchanged)
         #expect(try Data(contentsOf: url) == before)
     }
 
     @Test func restoringSwapsAndRestoringAgainUndoes() throws {
         let url = try makeURL()
         let prev = ProjectFileWriter.previousURL(for: url)
-        try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 1, root: leaf("/a"), nextScrollback: nil), to: url)
-        try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 2, root: .split(direction: .horizontal, ratio: 0.5, left: leaf("/a"), right: leaf("/b")), nextScrollback: nil), to: url)
+        try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 1, root: leaf("/a"), nextScrollback: nil), to: url, keeping: .onLayoutChange)
+        try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 2, root: .split(direction: .horizontal, ratio: 0.5, left: leaf("/a"), right: leaf("/b")), nextScrollback: nil), to: url, keeping: .onLayoutChange)
         let current = try Data(contentsOf: url)
         let previous = try Data(contentsOf: prev)
 
@@ -148,7 +186,7 @@ struct ProjectAutosaveTests {
     @Test func anUndecodableFileIsKeptNotOverwritten() throws {
         let url = try makeURL()
         try Data("{not json".utf8).write(to: url)
-        try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 1, root: leaf("/a"), nextScrollback: nil), to: url)
+        try ProjectFileWriter.write(ProjectFile(name: "p", savedAt: 1, root: leaf("/a"), nextScrollback: nil), to: url, keeping: .onLayoutChange)
         #expect(try Data(contentsOf: ProjectFileWriter.previousURL(for: url)) == Data("{not json".utf8))
     }
 

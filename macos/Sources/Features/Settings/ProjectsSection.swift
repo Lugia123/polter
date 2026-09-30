@@ -17,8 +17,27 @@ final class ProjectsModel: ObservableObject {
     /// Why the last action failed, in the bottom bar; cleared by the next.
     @Published var status: String?
 
+    /// The two notifications below, for as long as the model lives (the
+    /// settings window's lifetime).
+    private var observers: [NSObjectProtocol] = []
+
     init(store: ProjectStore = .shared) {
         self.store = store
+        // "Last saved" and the bound tab's title change while the window is
+        // open, from tabs this knows nothing about: read the directory again
+        // when a project is written or a binding changes, not on a timer and
+        // not only when the person happens to click something (#965).
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: ProjectStore.didWrite, object: store, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reload() }
+        })
+        observers.append(center.addObserver(forName: ProjectStore.bindingDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reload() }
+        })
+    }
+
+    deinit {
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
     }
 
     var selected: ProjectStore.Entry? {
@@ -99,7 +118,9 @@ final class ProjectsModel: ObservableObject {
 
     func overwriteWithCurrentTab() {
         guard let entry = selected, let tab = currentTab else { return }
-        attempt { try tab.saveAndBind(name: entry.name) }
+        // A replacement, not a save that follows the tab: whatever was there
+        // is kept as the previous version, as the confirmation says.
+        attempt { try tab.saveAndBind(name: entry.name, keeping: .always) }
     }
 
     func delete() {
@@ -458,7 +479,7 @@ private struct ProjectDetail: View {
                 }
                 if versions.count < 2 {
                     formControl {
-                        Text(String(localized: "An earlier version is kept when a save changes the layout: a pane added or closed, or a split turned.", comment: "设置窗口·项目：只有当前版本时解释什么时候会有上一版"))
+                        Text(String(localized: "An earlier version is kept when an automatic save changes the layout (a pane added or closed, or a split turned), and whenever the project is overwritten with a tab.", comment: "设置窗口·项目：只有当前版本时解释什么时候会有上一版"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

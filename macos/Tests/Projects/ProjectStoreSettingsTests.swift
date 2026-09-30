@@ -32,14 +32,51 @@ struct ProjectStoreSettingsTests {
         .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback)
     }
 
+    // MARK: The section keeps up with autosave (#965)
+
+    /// A bound tab autosaves while the settings window is open. The section
+    /// used to show the "last saved" it read when it was opened until
+    /// something else made it read again (the real app: disk 03:04, window
+    /// 02:52). A write now reaches it without anybody calling `reload`.
+    @Test func aWriteReachesTheProjectsSectionWithoutAReload() throws {
+        let f = try makeFixture()
+        try f.store.write(ProjectFile(name: "beta", savedAt: 100, root: leaf("/a"), nextScrollback: nil), keeping: .onLayoutChange)
+        let model = ProjectsModel(store: f.store)
+        model.reload()
+        #expect(model.entries.first?.savedAt == Date(timeIntervalSince1970: 100))
+
+        // What an autosave does: a new cwd, written by the store.
+        try f.store.write(ProjectFile(name: "beta", savedAt: 200, root: leaf("/a/b"), nextScrollback: nil), keeping: .onLayoutChange)
+        #expect(model.entries.first?.savedAt == Date(timeIntervalSince1970: 200))
+    }
+
+    /// Another store's writes are not this section's: the notification is
+    /// the store's own.
+    @Test func anotherStoresWriteIsNotRead() throws {
+        let f = try makeFixture()
+        let other = try makeFixture()
+        try f.store.write(ProjectFile(name: "beta", savedAt: 100, root: leaf("/a"), nextScrollback: nil), keeping: .onLayoutChange)
+        let model = ProjectsModel(store: f.store)
+        model.reload()
+        try f.store.write(ProjectFile(name: "beta", savedAt: 200, root: leaf("/a/b"), nextScrollback: nil), keeping: .onLayoutChange)
+        // Behind the model's back, so only a reload could see it.
+        try ProjectFile(name: "zzz", savedAt: 1, root: leaf("/z"), nextScrollback: nil).encoded()
+            .write(to: f.dir.appendingPathComponent("zzz.json"))
+        // The control: a reload does see it, so its absence below means no
+        // reload happened rather than a file the list skips.
+        #expect(f.store.list().contains { $0.name == "zzz" })
+        try other.store.write(ProjectFile(name: "x", savedAt: 1, root: leaf("/x"), nextScrollback: nil), keeping: .onLayoutChange)
+        #expect(!model.entries.contains { $0.name == "zzz" })
+    }
+
     /// A project with a `.prev` (two layouts) and one snapshot.
     @discardableResult
     private func seed(_ f: Fixture, _ name: String) throws -> ProjectStore.Entry {
-        try f.store.write(ProjectFile(name: name, savedAt: 100, root: leaf("/a"), nextScrollback: 1))
+        try f.store.write(ProjectFile(name: name, savedAt: 100, root: leaf("/a"), nextScrollback: 1), keeping: .onLayoutChange)
         let entry = try f.store.write(ProjectFile(
             name: name, savedAt: 200,
             root: .split(direction: .horizontal, ratio: 0.5, left: leaf("/a", "0.snap"), right: leaf("/b")),
-            nextScrollback: 1))
+            nextScrollback: 1), keeping: .onLayoutChange)
         let snaps = ProjectScrollback.directory(forProjectFile: entry.url)
         try FileManager.default.createDirectory(at: snaps, withIntermediateDirectories: true)
         try Data("scroll".utf8).write(to: snaps.appendingPathComponent("0.snap"))
@@ -62,7 +99,7 @@ struct ProjectStoreSettingsTests {
 
     @Test func aProjectWithNoPreviousHasOneVersion() throws {
         let f = try makeFixture()
-        let entry = try f.store.write(ProjectFile(name: "fresh", savedAt: 1, root: leaf("/a"), nextScrollback: nil))
+        let entry = try f.store.write(ProjectFile(name: "fresh", savedAt: 1, root: leaf("/a"), nextScrollback: nil), keeping: .onLayoutChange)
         #expect(f.store.versions(entry).map(\.isCurrent) == [true])
     }
 
@@ -187,7 +224,7 @@ struct ProjectStoreSettingsTests {
         let f = try makeFixture()
         let entry = try seed(f, "work")
         let trashed = try f.store.trash(entry)
-        try f.store.write(ProjectFile(name: "work", savedAt: 999, root: leaf("/new"), nextScrollback: nil))
+        try f.store.write(ProjectFile(name: "work", savedAt: 999, root: leaf("/new"), nextScrollback: nil), keeping: .onLayoutChange)
 
         #expect(throws: ProjectStore.StoreError.self) { try f.store.untrash(trashed) }
         #expect(f.store.entry(name: "work")?.savedAt == Date(timeIntervalSince1970: 999))

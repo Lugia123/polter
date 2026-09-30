@@ -8,7 +8,14 @@ import GhosttyKit
 /// menu (targeting the focused tab via the responder chain, see
 /// `MainMenu.xib`).
 extension TerminalController: ProjectBindingHolder {
-    var projectBindingTitle: String { window?.title ?? "" }
+    /// Never empty: a tab just opened has no window title until its shell
+    /// sets one (see `ProjectsRules.holderLabel`, #965).
+    var projectBindingTitle: String {
+        ProjectsRules.holderLabel(
+            windowTitle: window?.title ?? "",
+            paneTitles: [focusedSurface?.title ?? ""] + surfaceTree.map(\.title),
+            cwds: [focusedSurface?.pwd] + surfaceTree.map(\.pwd))
+    }
 }
 
 /// Renamed from the settings window while this tab is bound to it: the tab
@@ -112,7 +119,7 @@ extension TerminalController {
                     onSave: { [weak self] name in
                         guard let self else { return }
                         ProjectSaveBeforeClose.saveThenClose(
-                            save: { try self.saveAndBind(name: name) },
+                            save: { try self.saveAndBind(name: name, keeping: .onLayoutChange) },
                             reportFailure: { self.presentProjectError($0) },
                             close: closeAction)
                     })
@@ -124,7 +131,7 @@ extension TerminalController {
 
     private func performSave(name: String) {
         do {
-            try saveAndBind(name: name)
+            try saveAndBind(name: name, keeping: .onLayoutChange)
         } catch {
             presentProjectError(error)
         }
@@ -133,8 +140,9 @@ extension TerminalController {
     /// Save this tab as `name` and bind it there. Throws rather than
     /// reporting, so a caller that has something riding on the save --
     /// closing the tab, the settings window's "Overwrite with Current Tab"
-    /// -- can tell whether it worked.
-    func saveAndBind(name: String) throws {
+    /// -- can tell whether it worked. `keeping` is `.always` when this
+    /// replaces a project with the tab ("Overwrite with Current Tab").
+    func saveAndBind(name: String, keeping: ProjectFileWriter.Keeping) throws {
         let store = ProjectStore.shared
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         // Checked before writing, not after: saving over a project another
@@ -145,7 +153,7 @@ extension TerminalController {
                 name: trimmed,
                 holder: store.holderTitle(name: trimmed) ?? "")
         }
-        let entry = try store.save(name: trimmed, tree: surfaceTree)
+        let entry = try store.save(name: trimmed, tree: surfaceTree, keeping: keeping)
         try bindProject(entry.name)
     }
 
@@ -198,6 +206,7 @@ extension TerminalController {
         }
         boundProject = name
         startProjectAutosave()
+        ProjectStore.postBindingDidChange(name)
 
         // What carries the binding across a restart -- see
         // `TerminalRestorableState.InternalState.boundProject`.
@@ -214,6 +223,7 @@ extension TerminalController {
         stopScrollbackJournals()
         boundProject = nil
         invalidateRestorableState()
+        ProjectStore.postBindingDidChange(name)
     }
 
     /// Window restoration's half of `bindProject`: a restored tab takes its
@@ -241,7 +251,7 @@ extension TerminalController {
         projectAutosave?.cancel()
         guard let name = boundProject, !surfaceTree.isEmpty else { return }
         do {
-            try ProjectStore.shared.save(name: name, tree: surfaceTree, capturingScrollback: true)
+            try ProjectStore.shared.save(name: name, tree: surfaceTree, capturingScrollback: true, keeping: .onLayoutChange)
         } catch {
             Ghostty.logger.warning("final save of project '\(name, privacy: .public)' failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -300,7 +310,11 @@ extension TerminalController {
             // and this runs a second after any title change. Scrollback is
             // kept by each pane's journal, which this also starts for a
             // pane that has none yet (`ProjectStore.save`).
-            try ProjectStore.shared.save(name: name, tree: surfaceTree, capturingScrollback: false)
+            try ProjectStore.shared.save(name: name, tree: surfaceTree, capturingScrollback: false, keeping: .onLayoutChange)
+            // Also when nothing was written: what changed may be only the
+            // window's title, which is what the settings window calls this
+            // tab by.
+            ProjectStore.postBindingDidChange(name)
         } catch {
             // Logged, not alerted: this runs on its own a second after any
             // change, and an alert per keystroke-driven title change is

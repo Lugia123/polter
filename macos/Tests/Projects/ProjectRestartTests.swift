@@ -64,7 +64,7 @@ struct ProjectRestartTests {
         // (the capture lands asynchronously). A file of made-up bytes would
         // not do: once the restored pane loads it, the core deletes a
         // snapshot it cannot decode.
-        try store.save(name: "restart", tree: .init(view: original), capturingScrollback: true)
+        try store.save(name: "restart", tree: .init(view: original), capturingScrollback: true, keeping: .onLayoutChange)
         let number = try #require(original.projectSnapshot?.filename)
         let url = try #require(store.entry(name: "restart")?.url)
         let snapshotFile = ProjectScrollback.directory(forProjectFile: url).appendingPathComponent(number)
@@ -88,7 +88,7 @@ struct ProjectRestartTests {
         #expect(historyBack, "the restored pane does not show \(marker): its snapshot was not loaded")
 
         // The tab is bound again, and the first autosave runs.
-        try store.save(name: "restart", tree: .init(view: restored), capturingScrollback: false)
+        try store.save(name: "restart", tree: .init(view: restored), capturingScrollback: false, keeping: .onLayoutChange)
 
         // Reading 2 and 3: the file and the name the project gives the pane.
         let fileSurvives = FileManager.default.fileExists(atPath: snapshotFile.path)
@@ -125,7 +125,7 @@ struct ProjectRestartTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let store = ProjectStore(directory: dir)
         let view = Ghostty.SurfaceView(app, baseConfig: .init())
-        try store.save(name: "restart", tree: .init(view: view), capturingScrollback: true)
+        try store.save(name: "restart", tree: .init(view: view), capturingScrollback: true, keeping: .onLayoutChange)
         let number = try #require(view.projectSnapshot?.filename)
         let url = try #require(store.entry(name: "restart")?.url)
         let snapshotDir = ProjectScrollback.directory(forProjectFile: url)
@@ -133,7 +133,7 @@ struct ProjectRestartTests {
         try FileManager.default.createDirectory(at: snapshotDir, withIntermediateDirectories: true)
         try Data("history".utf8).write(to: snapshotFile)
 
-        try store.save(name: "restart", tree: .init(view: view), capturingScrollback: false)
+        try store.save(name: "restart", tree: .init(view: view), capturingScrollback: false, keeping: .onLayoutChange)
 
         let saved = try ProjectFile.decode(from: Data(contentsOf: url))
         #expect(FileManager.default.fileExists(atPath: snapshotFile.path), "control: the autosave deleted \(number) with no restart in between")
