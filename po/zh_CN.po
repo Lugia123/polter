@@ -2843,10 +2843,6 @@ msgstr "1 为完全不透明，越小越能透出桌面。"
 msgid "Background Blur"
 msgstr "背景模糊"
 
-#: src/config/form.zig:93
-msgid "Blur behind a see-through background: on, off or a strength."
-msgstr "背景透明时的模糊：开、关或强度数值。"
-
 #: src/config/form.zig:94
 msgid "Cursor Style"
 msgstr "光标样式"
@@ -3094,6 +3090,154 @@ msgstr "记录每个终端里实际运行了什么。"
 #: src/config/form.zig:133
 msgid "The interface language; empty follows the system."
 msgstr "界面语言；留空跟随系统。"
+
+#: src/config/form.zig:105
+msgid "true, false, a strength, or macos-glass-regular/-clear."
+msgstr "填 true、false、强度数值，或 macos-glass-regular / -clear。"
+
+#: src/config/form.zig:106
+msgid "Bar"
+msgstr "竖线"
+
+#: src/config/form.zig:106
+msgid "Block"
+msgstr "方块"
+
+#: src/config/form.zig:106
+msgid "Underline"
+msgstr "下划线"
+
+#: src/config/form.zig:106
+msgid "Hollow Block"
+msgstr "空心方块"
+
+#: src/config/form.zig:110
+msgid "No Balancing"
+msgstr "关"
+
+#: src/config/form.zig:110
+msgid "Balanced, Top Capped"
+msgstr "均分（上边距有上限）"
+
+#: src/config/form.zig:110
+msgid "Equal on All Sides"
+msgstr "四边相等"
+
+#: src/config/form.zig:111
+msgid "Native"
+msgstr "原生"
+
+#: src/config/form.zig:111
+msgid "Transparent"
+msgstr "透明"
+
+#: src/config/form.zig:111
+msgid "Tabs in Title Bar"
+msgstr "标签页在标题栏"
+
+#: src/config/form.zig:111
+msgid "Hidden"
+msgstr "隐藏"
+
+#: src/config/form.zig:120
+msgid "Don't Copy"
+msgstr "不复制"
+
+#: src/config/form.zig:120
+msgid "Selection Pasteboard Only"
+msgstr "仅选区剪贴板"
+
+#: src/config/form.zig:120
+msgid "Clipboard Only"
+msgstr "仅系统剪贴板"
+
+#: src/config/form.zig:120
+msgid "Both"
+msgstr "两者都复制"
+
+#: src/config/form.zig:121 src/config/form.zig:122
+msgid "Ask"
+msgstr "询问"
+
+#: src/config/form.zig:124
+msgid "Don't Confirm"
+msgstr "不确认"
+
+#: src/config/form.zig:124
+msgid "When Something Is Running"
+msgstr "有程序在运行时确认"
+
+#: src/config/form.zig:124
+msgid "Always Confirm"
+msgstr "总是确认"
+
+#: src/config/form.zig:125
+msgid "Detect Automatically"
+msgstr "自动检测"
+
+#: src/config/form.zig:125
+msgid "No Integration"
+msgstr "不集成"
+
+#: src/config/form.zig:125
+msgid "Bash"
+msgstr "Bash"
+
+#: src/config/form.zig:125
+msgid "Elvish"
+msgstr "Elvish"
+
+#: src/config/form.zig:125
+msgid "fish"
+msgstr "fish"
+
+#: src/config/form.zig:125
+msgid "Nushell"
+msgstr "Nushell"
+
+#: src/config/form.zig:125
+msgid "PowerShell"
+msgstr "PowerShell"
+
+#: src/config/form.zig:125
+msgid "Zsh"
+msgstr "Zsh"
+
+#: src/config/form.zig:128
+msgid "System Default"
+msgstr "跟随系统"
+
+#: src/config/form.zig:128
+msgid "Never"
+msgstr "从不"
+
+#: src/config/form.zig:128
+msgid "Always"
+msgstr "总是"
+
+#: src/config/form.zig:131
+msgid "Automatic"
+msgstr "自动"
+
+#: src/config/form.zig:131
+msgid "Drawn by Polter"
+msgstr "由 Polter 绘制"
+
+#: src/config/form.zig:131
+msgid "Drawn by the System"
+msgstr "由系统绘制"
+
+#: src/config/form.zig:131
+msgid "No Decorations"
+msgstr "无"
+
+#: windows/host/src/general_ui.rs:754
+msgid "Less"
+msgstr "收起"
+
+#: windows/host/src/general_ui.rs:754
+msgid "More…"
+msgstr "更多…"
 
 #~ msgid "Role Editor (beta)..."
 #~ msgstr "角色编辑器（beta）…"

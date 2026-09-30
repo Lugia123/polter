@@ -35,7 +35,7 @@ struct ConfigFormPage: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: L.groupGap - L.rowGap) {
                         ForEach(items) { item in
-                            ConfigFormRow(model: model, item: item, control: ConfigFormRules.control(for: item, in: group))
+                            ConfigFormRow(model: model, item: item, control: ConfigFormRules.control(for: item, in: group), group: group)
                                 .disabled(!model.writesAllowed)
                         }
                         if items.isEmpty {
@@ -68,6 +68,7 @@ private struct ConfigFormRow: View {
     @ObservedObject var model: GeneralModel
     let item: ConfigForm.Item
     let control: ConfigForm.Control
+    let group: GeneralGroup
 
     private typealias L = SettingsLayout
 
@@ -79,7 +80,7 @@ private struct ConfigFormRow: View {
             HStack(alignment: .firstTextBaseline, spacing: L.labelGap) {
                 label
                     .frame(width: L.label, alignment: .trailing)
-                ConfigFormControl(model: model, item: item, control: control)
+                ConfigFormControl(model: model, item: item, control: control, group: group)
                     // Made again from the value on disk whenever that
                     // changes -- after a write, a refused write, a restore
                     // or a hand edit -- so what the control shows is never
@@ -214,6 +215,7 @@ private struct ConfigFormControl: View {
     @ObservedObject var model: GeneralModel
     let item: ConfigForm.Item
     let control: ConfigForm.Control
+    let group: GeneralGroup
 
     @State private var draft = ""
     @State private var light = ""
@@ -239,7 +241,7 @@ private struct ConfigFormControl: View {
             Picker("", selection: Binding(
                 get: { item.value },
                 set: { if $0 != item.value { model.set(item.key, $0) } })) {
-                ForEach(item.choices ?? [], id: \.self) { Text($0).tag($0) }
+                ForEach(item.choices ?? [], id: \.self) { Text(ConfigFormRules.choiceTitle($0, of: item)).tag($0) }
                 if !(item.choices ?? []).contains(item.value) {
                     Text(item.value).tag(item.value)
                 }
@@ -290,7 +292,8 @@ private struct ConfigFormControl: View {
     private var textField: some View {
         TextField(item.default, text: $draft)
             .textFieldStyle(.roundedBorder)
-            .frame(maxWidth: control == .number ? 160 : .infinity)
+            .frame(width: ConfigFormRules.fieldWidth(item, control: control, in: group))
+            .frame(maxWidth: .infinity, alignment: .leading)
             .focused($focused)
             .onSubmit { commit(draft) }
             .onChange(of: focused) { if !$0 { commit(draft) } }

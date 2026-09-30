@@ -22,7 +22,7 @@ struct ConfigFormRulesTests {
        "default":"1","value":"0.9","doc":null,"source":{"kind":"file","path":"/home/me/extra","line":7},"readonly":"file"},
       {"key":"font-size","group":"font","control":"number","choices":null,"min":1,"max":null,
        "default":"13","value":"13","doc":"Font size in points.\n\nMore about it.","label":"Font Size","summary":"In points; may be fractional.","source":{"kind":"default"},"readonly":null},
-      {"key":"window-save-state","group":"window","control":"choice","choices":["default","never","always"],"min":null,"max":null,
+      {"key":"window-save-state","group":"window","control":"choice","choices":["default","never","always"],"choice_labels":["System Default","Never","Always"],"min":null,"max":null,
        "default":"default","value":"never","doc":null,"source":{"kind":"cli","arg":2},"readonly":"cli"},
       {"key":"keybind","group":null,"control":"readonly","choices":null,"min":null,"max":null,
        "default":"a\nb","value":"a\nb","doc":null,"source":{"kind":"default"},"readonly":"repeatable"},
@@ -215,6 +215,42 @@ struct ConfigFormRulesTests {
             let summary = try #require(item.summary, "\(item.key) has no summary")
             #expect(ConfigFormRules.localized(label, bundle: zh) != label, "\(item.key): \(label) has no Chinese")
             #expect(ConfigFormRules.localized(summary, bundle: zh) != summary, "\(item.key): \(summary) has no Chinese")
+            // Every value of a named enum has a name, and the name Chinese
+            // (#977); the proper nouns (Bash, fish, ...) are their own.
+            if item.control == .choice {
+                let names = try #require(item.choiceLabels, "\(item.key) has no choice names")
+                #expect(names.count == item.choices?.count)
+                for name in names where !Self.properNouns.contains(name) {
+                    #expect(ConfigFormRules.localized(name, bundle: zh) != name, "\(item.key): \(name) has no Chinese")
+                }
+            }
         }
+    }
+
+    // MARK: Choices and widths (#977)
+
+    static let properNouns: Set<String> = ["Bash", "Elvish", "fish", "Nushell", "PowerShell", "Zsh"]
+
+    @Test func aValueIsShownByItsNameAndWrittenAsItself() throws {
+        let saveState = item("window-save-state")
+        let zh = try #require(zhHans)
+        #expect(ConfigFormRules.choiceTitle("never", of: saveState, bundle: zh) == "从不")
+        #expect(ConfigFormRules.choiceTitle("default", of: saveState, bundle: zh) == "跟随系统")
+        // A value the table does not name (a newer core) is shown as itself.
+        #expect(ConfigFormRules.choiceTitle("sometimes", of: saveState, bundle: zh) == "sometimes")
+        // An enum with no names at all (All Options) is shown by its values.
+        var unnamed = saveState
+        unnamed.choiceLabels = nil
+        #expect(ConfigFormRules.choiceTitle("never", of: unnamed, bundle: zh) == "never")
+    }
+
+    @Test func aShortBoxIsSizedForWhatGoesInIt() {
+        let fontSize = item("font-size")
+        #expect(ConfigFormRules.fieldWidth(fontSize, control: .number, in: .font) == 120)
+        #expect(ConfigFormRules.fieldWidth(fontSize, control: .text, in: .font) == 160)
+        #expect(ConfigFormRules.fieldWidth(fontSize, control: .font, in: .font) == nil)
+        #expect(ConfigFormRules.fieldWidth(item("theme"), control: .theme, in: .appearance) == nil)
+        // All Options' one-line boxes take the row: any key can be there.
+        #expect(ConfigFormRules.fieldWidth(fontSize, control: .text, in: .all) == nil)
     }
 }
