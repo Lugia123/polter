@@ -64,3 +64,31 @@ roles 路由选哪个角色、未保存时的保存 / 不保存 / 取消。`xcod
 
 - 用户叫停了真机 GUI 测试（测试实例反复抢前台，用户的按键进了测试窗口）：14 / 15 / 17、真机小屏 90% 截断、
   修复后的最小尺寸读回，等用户说前台可以占用时再验。
+
+## 第 2 期：插件栏目
+
+Windows 列的读数取自 worktree `s2-win-plugins`（基于 60b63ad7d + 核心补丁 9ca547a18，未提交），交叉编译
+`cargo build --release --target x86_64-pc-windows-gnu -p polter-host`，`polter-host.exe` sha256 前缀 `f9194b09`。
+**Windows 测试机本轮没开**，所以下表 Windows 列没有一格是在真机上看过的：✅（纯层）= `polter-settings-shell`
+的单元测试在 mac 上跑过、打坏过；⏳ = 代码写了、编过，等真机。
+
+| # | 行为 | mac | Windows |
+|---|---|---|---|
+| P1 | 插件在侧栏「插件」下逐个列出，「通用」排在它们下面 | | ✅（纯层）`plugin_rows_sit_between_plugins_and_general`；⏳ 画面 |
+| P2 | 状态点判定顺序 ↻ > ○ > ◐ > ▲ > ●（§5.1） | | ✅（纯层）`dot_table`，14 行用例（与 mac `SettingsRules` 同一张表，待 #956 贴出后逐行对） |
+| P3 | ↻ 只在「保存时常驻进程已在跑」时留下（核心 `already_running`），横幅「重启 Polter 后生效」，无按钮 | | ✅（纯层）`restart_pending_only_when_a_running_copy_has_other_settings`；⏳ 画面 |
+| P4 | 核心没回答运行状态时不画 ▲，详情写「Polter 核心没有报告这个插件是否在运行」 | | ✅（纯层）`dot_table` 末行；⏳ 画面 |
+| P5 | 点侧栏插件行 → 路由 `plugins/<key>`，面包屑「插件 › <名>」 | | ⏳ |
+| P6 | 菜单「插件…」、Ctrl+Shift+, → `plugins`（打开，不再是开关） | | ⏳ `menu.rs` / `keys.rs` 改走 `settings_win::request` |
+| P7 | 插件有未保存改动时切到别的插件 / 别的栏目 / 关窗先问「保存对这个插件的更改吗？」 | | ⏳ 走 `shell::leave` + `PluginsSection` |
+| P8 | 缺必填项时开关不能打开，旁边写缺哪几项 | | ✅（纯层）`the_switch_cannot_be_turned_on_with_something_missing`、`missing_required_names_empty_required_ones_in_order`；⏳ 画面 |
+| P9 | 表单：标签列 120 右对齐 + 控件列，说明在控件下；与开关同一条控件列 | | ✅（纯层）`detail_uses_two_left_edges_only`、`form_rows_stack_with_help_under_the_control`；⏳ 像素 |
+| P10 | 保存经核心 `ghostty_app_plugin_configure`（空值=删除），宿主不再自己写设置文件 | | ⏳ `plugins::configure`；`plugins::save` 已删 |
+| P11 | 「测试」在底栏还原左边，结果首行写在底栏，全文放在日志框顶部；一分钟一次的额度有专门的话 | | ⏳ |
+| P12 | 日志：最近 20 行 + 「显示日志」「显示插件文件夹」 | | ✅（纯层）`the_log_tail_is_the_last_lines_oldest_first`；⏳ 画面 |
+| P13 | 最小窗口 900×620、横幅 + 长简介时表单区仍 ≥ 2 行控件高，五种 DPI | | ✅（纯层）`detail_fits_at_the_smallest_window`（首版在这里红过：表单只剩 25px，改为开关后行距 8、日志 4 行） |
+| P14 | 有 `ui/index.html` 才有「页面」页签；缺 Runtime / 缺 Loader / 创建失败 三种各有说明，页签不藏 | | ✅（纯层）`page_tab_stays_when_the_page_cannot_show`；⏳ 画面（Server 2022 默认无 Runtime，正好测「缺 Runtime」） |
+| P15 | 页面只能读 `ui/` 里的文件，`..`、编码过的 `..`、别的插件、别的 scheme 一律拒 | | ✅（纯层）`requests_stay_inside_ui`；宿主另按 canonicalize 后的真实路径再围一次 |
+| P16 | `WebView2Loader.dll` 不在导入表（缺它时进程照常起） | | ✅ `objdump -p polter-host.exe` 38 个 DLL Name，含 webview 的 0 个 |
+| P17 | 搜索框按插件名过滤侧栏插件行，过滤掉当前插件时面包屑加「（不在搜索结果里）」 | | ⏳ |
+

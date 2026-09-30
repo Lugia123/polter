@@ -12,6 +12,8 @@
 //! `settings_win.rs` asks these functions and decides nothing itself;
 //! `windows/tools/pure-crates-pass-their-tests.py` runs the tests below.
 
+pub mod plugins;
+
 // ================================================================ sections
 
 /// The four sections of the sidebar, in the order they are listed (§2.3).

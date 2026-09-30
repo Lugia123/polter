@@ -2771,6 +2771,32 @@ fn pluginList(
     return out.items;
 }
 
+/// Every plugin, as the JSON document `plugin_list` answers with -- the
+/// same `wire.writeResponse` rendering of the same `pluginList`. The
+/// settings window reads this, so it and an agent cannot be told two
+/// different stories about a plugin (settings.md §5.1).
+pub fn pluginListJson(self: *App, alloc: Allocator) ![]u8 {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const list = try pluginList(self, arena.allocator(), "");
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    try poltergeistpkg.wire.writeResponse(&out.writer, .{ .plugins = list });
+    return try out.toOwnedSlice();
+}
+
+/// Test one plugin the way `plugin_test` does, for the settings window's
+/// Test button: the same function, with no terminal asking (settings.md
+/// §5.2). The same one-a-minute budget applies, so a click and an agent
+/// share it. Returns the sentence `plugin_test` would have answered with.
+pub fn testPlugin(self: *App, alloc: Allocator, key: []const u8) ![]u8 {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const said = try pluginTest(self, arena.allocator(), key, 0);
+    return try alloc.dupe(u8, said);
+}
+
 /// The value configured for a name, or empty when there is none.
 fn configuredValue(
     params: []const poltergeistpkg.Plugin.Param,
@@ -2838,7 +2864,38 @@ fn pluginConfigure(
     params: []const poltergeistpkg.Plugin.Param,
 ) anyerror![]const u8 {
     const self: *App = @ptrCast(@alignCast(ctx));
+    const done = try self.configurePlugin(alloc, key, enable, params, .supervisor);
+    return done.said;
+}
 
+/// What a configure did: the sentence `plugin_configure` answers with, and
+/// whether the plugin's resident copy was already running -- in which case
+/// it keeps the settings it started with until Polter restarts, which is
+/// what the settings window's "restart to apply" banner is for
+/// (settings.md §5.1).
+pub const PluginConfigured = struct {
+    said: []const u8,
+    started: poltergeistpkg.report.Started,
+};
+
+/// Write one plugin's settings: `plugin_configure` (`who` = supervisor) and
+/// the settings window (`who` = user) both come here, the way `putPersona`
+/// is the one writer for roles.
+///
+/// Three things are the agent's alone to be refused, and the person at the
+/// window may do: switch a plugin off, write a `cmd:` reference, and --
+/// since the window sends its whole form -- say `enable` either way rather
+/// than only ever towards on. Everything else is the same path: declared
+/// names only, merged into what is there, written, reloaded, and started
+/// if it was just switched on and nothing is running it.
+pub fn configurePlugin(
+    self: *App,
+    alloc: Allocator,
+    key: []const u8,
+    enable: ?bool,
+    params: []const poltergeistpkg.Plugin.Param,
+    who: poltergeistpkg.Bus.Authority,
+) !PluginConfigured {
     const io = global.io();
     var environ_map = try global.environMap();
     defer environ_map.deinit();
@@ -2849,9 +2906,9 @@ fn pluginConfigure(
 
     // `rpc.Guard.enabling` already refuses this with the sentence an agent
     // reads. This is the second lock, on the thing that actually writes: a
-    // plugin is the channel the person hears about things on, and no path
-    // through this file may quiet it.
-    if (enable) |e| if (!e) return error.WillNotDisable;
+    // plugin is the channel the person hears about things on, and no agent
+    // may quiet it. The person at the settings window may.
+    const enabled = try pluginEnabledAfter(who, installed.settings.enabled, enable);
 
     for (params) |change| {
         // Independent of whatever dispatch checked, and it is this check
@@ -2866,15 +2923,13 @@ fn pluginConfigure(
         // existing line through is not writing a new one. Checking the merge
         // instead would make every properly configured plugin permanently
         // unconfigurable, and it would look like a refusal rather than a bug.
-        if (poltergeistpkg.secret.classify(change.value)) |prefix| {
-            if (prefix == .cmd) return error.WillNotWriteCmd;
-        }
+        try pluginValueAllowed(who, change.value);
     }
 
     var next = try installed.settings.merge(alloc, params);
 
     // `merge` deliberately leaves this alone; deciding it is the caller's.
-    next.enabled = installed.settings.enabled or (enable orelse false);
+    next.enabled = enabled;
     const switched_on = next.enabled and !installed.settings.enabled;
 
     // Keyed on `manifest.key` rather than the directory name, and written
@@ -2908,7 +2963,7 @@ fn pluginConfigure(
         params.len > 0,
         started,
     );
-    if (started != .not_started) return said;
+    if (started != .not_started) return .{ .said = said, .started = started };
 
     // Why it is not running is `residentNote`'s to say, so it is said in one
     // place and never written out twice.
@@ -2920,9 +2975,83 @@ fn pluginConfigure(
         .log_open = self.chat_log != null,
         .status = null,
     });
-    if (note.len == 0) return said;
+    if (note.len == 0) return .{ .said = said, .started = started };
 
-    return std.fmt.allocPrint(alloc, "{s} {s}", .{ said, note });
+    return .{
+        .said = try std.fmt.allocPrint(alloc, "{s} {s}", .{ said, note }),
+        .started = started,
+    };
+}
+
+/// Whether a plugin is on after a configure. An agent can only move it
+/// towards on: a plugin is the channel the person hears about things on,
+/// and no agent may quiet it (`error.WillNotDisable`, the second lock
+/// behind `rpc.Guard.enabling`). The person says it either way, and saying
+/// nothing keeps what was there.
+fn pluginEnabledAfter(
+    who: poltergeistpkg.Bus.Authority,
+    was: bool,
+    enable: ?bool,
+) error{WillNotDisable}!bool {
+    return switch (who) {
+        .supervisor => if (enable) |e|
+            (if (e) true else error.WillNotDisable)
+        else
+            was,
+        .user => enable orelse was,
+    };
+}
+
+/// Whether a configure may write this value. `cmd:` is refused to an agent
+/// -- a command it chose would run on the next plugin call -- and allowed
+/// to the person: it is the form the settings window itself tells them to
+/// use for a password manager. Checked over the requested changes only,
+/// never over the merged result (see `configurePlugin`).
+fn pluginValueAllowed(
+    who: poltergeistpkg.Bus.Authority,
+    value: []const u8,
+) error{WillNotWriteCmd}!void {
+    if (who != .supervisor) return;
+    if (poltergeistpkg.secret.classify(value)) |prefix| {
+        if (prefix == .cmd) return error.WillNotWriteCmd;
+    }
+}
+
+test "a plugin configure: only the person may switch one off" {
+    try std.testing.expectError(error.WillNotDisable, pluginEnabledAfter(.supervisor, true, false));
+    try std.testing.expectError(error.WillNotDisable, pluginEnabledAfter(.supervisor, false, false));
+    try std.testing.expect(try pluginEnabledAfter(.supervisor, false, true));
+    try std.testing.expect(try pluginEnabledAfter(.supervisor, true, null));
+    try std.testing.expect(!try pluginEnabledAfter(.supervisor, false, null));
+
+    try std.testing.expect(!try pluginEnabledAfter(.user, true, false));
+    try std.testing.expect(try pluginEnabledAfter(.user, false, true));
+    try std.testing.expect(try pluginEnabledAfter(.user, true, null));
+    try std.testing.expect(!try pluginEnabledAfter(.user, false, null));
+}
+
+test "a plugin configure: only the person may write a cmd: reference" {
+    try std.testing.expectError(error.WillNotWriteCmd, pluginValueAllowed(.supervisor, "cmd:op read x"));
+    try pluginValueAllowed(.supervisor, "env:HOOK");
+    try pluginValueAllowed(.supervisor, "https://example.invalid/hook");
+    try pluginValueAllowed(.user, "cmd:op read x");
+}
+
+/// The settings window's save (settings.md §5.2): `json` is a
+/// `Plugin.Settings.Change`, and it goes through `configurePlugin` as the
+/// user. Returns how the resident copy stands afterwards.
+pub fn configurePluginJson(
+    self: *App,
+    alloc: Allocator,
+    key: []const u8,
+    json: []const u8,
+) !poltergeistpkg.report.Started {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const change = try poltergeistpkg.Plugin.Settings.parseChange(a, json);
+    const done = try self.configurePlugin(a, key, change.enable, change.params, .user);
+    return done.started;
 }
 
 /// Start the archive plugin called `key`, taking the manifest out of the

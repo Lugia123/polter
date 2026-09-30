@@ -120,6 +120,16 @@ features = [
 # same, the 200 lines are just 200 lines.
 serde_json = "1"
 
+# A plugin's own page in the settings window (settings.md §5.3). **Only the
+# WebView2 COM interface definitions and callback objects are used**: the
+# crate's own `CreateCoreWebView2Environment*` would import
+# `WebView2Loader.dll`, and a missing DLL in the import table stops the
+# process before `main`. `plugin_page.rs` loads the DLL by path when a page
+# is first shown and says in the page tab when it or the Runtime is missing.
+# 0.39 because it is built on `windows` 0.62, the version below -- an older
+# one would bring a second copy of the whole `windows` crate.
+webview2-com = "0.39"
+
 # The #[implement] macro expands to paths rooted at `windows_core`, so it has
 # to be a direct dependency even though `windows` re-exports the same types.
 windows-core = "0.62"

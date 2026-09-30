@@ -2371,6 +2371,134 @@ msgstr "标签颜色"
 msgid "Menu"
 msgstr "菜单"
 
+#: windows/host/src/plugins_ui.rs
+msgid "Test"
+msgstr "测试"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Show Log"
+msgstr "显示日志"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Show Plugin Folder"
+msgstr "显示插件文件夹"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Polter's core did not say whether this plugin is running."
+msgstr "Polter 核心没有报告这个插件是否在运行。"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Test: {}"
+msgstr "测试：{}"
+
+#: windows/host/src/plugins_ui.rs
+msgid "The log is empty."
+msgstr "日志是空的。"
+
+#: windows/host/src/plugins_ui.rs
+msgid "No log yet: {}"
+msgstr "还没有日志：{}"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Saved."
+msgstr "已保存。"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Could not save: {}"
+msgstr "保存失败：{}"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Save changes to this plugin?"
+msgstr "保存对这个插件的更改吗？"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Tested less than a minute ago. Try again in a minute."
+msgstr "距上次测试不到一分钟，请一分钟后再试。"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Polter's core does not know this plugin."
+msgstr "Polter 核心不认识这个插件。"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Polter is not ready yet."
+msgstr "Polter 还没准备好。"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Test failed: {}"
+msgstr "测试失败：{}"
+
+#: windows/host/src/plugins_ui.rs
+msgid "No plugins found. The bundled plugin directory exists and holds none this build can read:\n{}"
+msgstr "没有找到插件。内置插件目录存在，但里面没有这个版本能读取的插件：\n{}"
+
+#: windows/host/src/plugins_ui.rs
+msgid "The bundled plugin directory is missing:\n{}\nThis build's resources are not installed next to it."
+msgstr "内置插件目录不存在：\n{}\n这个版本的资源没有安装在它旁边。"
+
+#: windows/host/src/plugins_ui.rs
+msgid "The bundled plugin directory could not be located: POLTER_RESOURCES_DIR is not set."
+msgstr "找不到内置插件目录：没有设置 POLTER_RESOURCES_DIR。"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Restart Polter to apply"
+msgstr "重启 Polter 后生效"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Status"
+msgstr "状态"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Still empty and required: {}"
+msgstr "必填但仍为空：{}"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Settings"
+msgstr "设置"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Page"
+msgstr "页面"
+
+#: windows/host/src/plugins_ui.rs
+msgid "This plugin has no settings."
+msgstr "这个插件没有可设置的项。"
+
+#: windows/host/src/plugins_ui.rs
+msgid "This plugin brings its own page, and it cannot be shown: WebView2Loader.dll is not next to polter-host.exe, so this installation is incomplete."
+msgstr "这个插件带有自己的页面，但无法显示：polter-host.exe 旁边没有 WebView2Loader.dll，安装不完整。"
+
+#: windows/host/src/plugins_ui.rs
+msgid "This plugin brings its own page, and it cannot be shown: the Microsoft Edge WebView2 Runtime is not installed on this computer. Get it from {} and reopen this window."
+msgstr "这个插件带有自己的页面，但无法显示：这台电脑没有安装 Microsoft Edge WebView2 Runtime。请从 {} 下载安装，然后重新打开此窗口。"
+
+#: windows/host/src/plugins_ui.rs
+msgid "This plugin brings its own page, and it could not be opened (error 0x{})."
+msgstr "这个插件带有自己的页面，但打开失败（错误 0x{}）。"
+
+#: windows/host/src/plugins_ui.rs
+msgid "Log"
+msgstr "日志"
+
+#: windows/settings-shell/src/plugins.rs
+msgid "Restart to apply"
+msgstr "改了未重启"
+
+#: windows/settings-shell/src/plugins.rs
+msgid "Off"
+msgstr "已关"
+
+#: windows/settings-shell/src/plugins.rs
+msgid "Needs setup"
+msgstr "缺配置"
+
+#: windows/settings-shell/src/plugins.rs
+msgid "Error"
+msgstr "出错"
+
+#: windows/settings-shell/src/plugins.rs
+msgid "On"
+msgstr "已开"
+
 #~ msgid "Role Editor (beta)..."
 #~ msgstr "角色编辑器（beta）…"
 

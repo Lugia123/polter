@@ -1381,6 +1381,59 @@ pub const Settings = struct {
         return false;
     }
 
+    /// What the settings window asks a configure to do, in the file's own
+    /// shape: `{"enabled": bool, "params": {"name": "value"}}`, both
+    /// optional. An empty value unsets, as in `merge`.
+    pub const Change = struct {
+        enable: ?bool = null,
+        params: []const Param = &.{},
+    };
+
+    /// Read a `Change`. **Strict where `readMaybe` is forgiving**: that one
+    /// reads a file a person may have hand-written and must not refuse it,
+    /// while this reads a request, and a value it would drop -- a number, a
+    /// nested object -- is a value the window thought it was saving. So
+    /// anything but a string parameter, a boolean `enabled`, or an object at
+    /// the top is `error.BadSettings`, and nothing is written.
+    pub fn parseChange(arena: Allocator, bytes: []const u8) error{ BadSettings, OutOfMemory }!Change {
+        const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, bytes, .{}) catch |err|
+            return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.BadSettings,
+            };
+        const obj = switch (parsed) {
+            .object => |o| o,
+            else => return error.BadSettings,
+        };
+
+        var change: Change = .{};
+        var it = obj.iterator();
+        while (it.next()) |kv| {
+            if (std.mem.eql(u8, kv.key_ptr.*, "enabled")) {
+                change.enable = switch (kv.value_ptr.*) {
+                    .bool => |b| b,
+                    else => return error.BadSettings,
+                };
+            } else if (std.mem.eql(u8, kv.key_ptr.*, "params")) {
+                const params = switch (kv.value_ptr.*) {
+                    .object => |o| o,
+                    else => return error.BadSettings,
+                };
+                var out: std.ArrayListUnmanaged(Param) = .empty;
+                var pit = params.iterator();
+                while (pit.next()) |p| {
+                    const value = switch (p.value_ptr.*) {
+                        .string => |v| v,
+                        else => return error.BadSettings,
+                    };
+                    try out.append(arena, .{ .name = p.key_ptr.*, .value = value });
+                }
+                change.params = out.items;
+            } else return error.BadSettings;
+        }
+        return change;
+    }
+
     fn paramsOf(arena: Allocator, obj: std.json.ObjectMap) []const Param {
         var out: std.ArrayListUnmanaged(Param) = .empty;
         var it = obj.iterator();
@@ -2698,4 +2751,45 @@ test "agent_cli: a CLI key is exactly a key personas.json accepts" {
     for (samples) |k| {
         try testing.expectEqual(persona.isValidKey(k), validCliKey(k));
     }
+}
+
+test "Settings.parseChange reads enabled and string params" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const c = try Settings.parseChange(arena.allocator(),
+        \\{"enabled": false, "params": {"webhook": "env:HOOK", "mode": ""}}
+    );
+    try std.testing.expectEqual(@as(?bool, false), c.enable);
+    try std.testing.expectEqual(@as(usize, 2), c.params.len);
+    try std.testing.expectEqualStrings("webhook", c.params[0].name);
+    try std.testing.expectEqualStrings("env:HOOK", c.params[0].value);
+    try std.testing.expectEqualStrings("", c.params[1].value);
+}
+
+test "Settings.parseChange leaves out what was not said" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const c = try Settings.parseChange(arena.allocator(), "{}");
+    try std.testing.expectEqual(@as(?bool, null), c.enable);
+    try std.testing.expectEqual(@as(usize, 0), c.params.len);
+}
+
+test "Settings.parseChange refuses what it would drop" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectError(error.BadSettings, Settings.parseChange(a, "[]"));
+    try std.testing.expectError(error.BadSettings, Settings.parseChange(a, "{"));
+    try std.testing.expectError(error.BadSettings, Settings.parseChange(a,
+        \\{"enabled": "yes"}
+    ));
+    try std.testing.expectError(error.BadSettings, Settings.parseChange(a,
+        \\{"params": {"port": 8080}}
+    ));
+    try std.testing.expectError(error.BadSettings, Settings.parseChange(a,
+        \\{"params": []}
+    ));
+    try std.testing.expectError(error.BadSettings, Settings.parseChange(a,
+        \\{"enable": true}
+    ));
 }

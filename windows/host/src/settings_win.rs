@@ -1,9 +1,10 @@
 //! The settings window: one window for roles, projects, plugins and general
 //! settings, the same on both hosts. The specification is
 //! `dev-docs/poltergeist/settings.md`, shared with the macOS side; section
-//! numbers below are that file's. This is phase 1 (§9): the window, the
-//! routes, the roles section, and "open the config file" under General.
-//! Projects and Plugins are placeholders.
+//! numbers below are that file's. Phase 1 (§9) made the window, the routes,
+//! the roles section and "open the config file" under General; phase 2 adds
+//! the plugins, listed in the sidebar under their section with their status
+//! dots, and their detail (`plugins_ui.rs`). Projects is a placeholder.
 //!
 //! **Every rule is decided in `polter-settings-shell`** -- which section a
 //! route opens, when leaving asks, the opening size, whether a remembered
@@ -32,6 +33,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::Mutex;
 
+use polter_settings_shell::plugins::{self as plugin_rules, Hit};
 use polter_settings_shell::{self as shell, grid, Place, Rect, Route, Section, Unsaved};
 use windows::core::{w, BOOL, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -146,6 +148,7 @@ fn current_place() -> Option<Place> {
     let section = ST.with(|c| c.borrow().section)?;
     let item = match section {
         Section::Roles => crate::roles_ui::current().and_then(|(key, _)| key),
+        Section::Plugins => crate::plugins_ui::current().map(|(key, _)| key),
         _ => None,
     };
     Some(Place { section, item })
@@ -166,12 +169,28 @@ impl Unsaved for RolesSection {
     }
 }
 
-/// Whether a section has something unsaved. Phase 1 has one section with
-/// an unsaved state; the others show no Revert / Save (§2.3) and never ask.
+/// §2.4 for the plugins section: the plugin on screen.
+struct PluginsSection;
+
+impl Unsaved for PluginsSection {
+    fn is_dirty(&self) -> bool {
+        crate::plugins_ui::is_dirty()
+    }
+    fn save(&mut self) -> Result<(), String> {
+        crate::plugins_ui::save_now()
+    }
+    fn revert(&mut self) {
+        crate::plugins_ui::revert_now()
+    }
+}
+
+/// Whether a section has something unsaved. The others show no Revert /
+/// Save (§2.3) and never ask.
 fn section_dirty(s: Section) -> bool {
     match s {
         Section::Roles => crate::roles_ui::is_dirty(),
-        Section::Projects | Section::Plugins | Section::General => false,
+        Section::Plugins => crate::plugins_ui::is_dirty(),
+        Section::Projects | Section::General => false,
     }
 }
 
@@ -180,6 +199,7 @@ fn section_dirty(s: Section) -> bool {
 fn leave_current() -> bool {
     match ST.with(|c| c.borrow().section) {
         Some(Section::Roles) => shell::leave(&mut RolesSection, crate::roles_ui::ask_to_save),
+        Some(Section::Plugins) => shell::leave(&mut PluginsSection, || crate::plugins_ui::ask_to_save(win())),
         _ => true,
     }
 }
@@ -229,6 +249,8 @@ fn open(route: Route, origin: HWND) {
     // `roles_ui::handback_to`.
     let had = unsafe { GetFocus() };
     ST.with(|c| c.borrow_mut().prev_focus = had);
+    // The plugins are listed in the sidebar whatever section opens.
+    crate::plugins_ui::opened();
     let (r, maximized, why) = opening_state(origin);
     // **One call that says both facts** -- the normal rectangle and whether
     // it is maximized over it (#896 D1). `SetWindowPos` on a window that was
@@ -370,8 +392,9 @@ fn switch_to(target: Place) {
     ST.with(|c| c.borrow_mut().section = Some(target.section));
     match target.section {
         Section::Roles => crate::roles_ui::show(h, from_rect(l.content), origin, target.item.as_deref()),
+        Section::Plugins => crate::plugins_ui::show(h, from_rect(l.content), target.item.as_deref()),
         Section::General => place_general(&l, true),
-        Section::Projects | Section::Plugins => {}
+        Section::Projects => {}
     }
     let _ = unsafe { InvalidateRect(Some(h), None, false) };
     // process-wide: as above
@@ -381,13 +404,14 @@ fn switch_to(target: Place) {
 fn hide_section(s: Section) {
     match s {
         Section::Roles => crate::roles_ui::hide(),
+        Section::Plugins => crate::plugins_ui::hide(),
         Section::General => {
             let b = HWND(OPEN_CONFIG.load(Ordering::Acquire));
             if !b.0.is_null() {
                 let _ = unsafe { ShowWindow(b, SW_HIDE) };
             }
         }
-        Section::Projects | Section::Plugins => {}
+        Section::Projects => {}
     }
 }
 
@@ -427,6 +451,8 @@ fn close() {
     let last = current_place();
     crate::roles_ui::hide();
     crate::roles_ui::forget_draft();
+    crate::plugins_ui::hide();
+    crate::plugins_ui::closed();
     let (prev, origin) = ST.with(|c| {
         let s = &mut *c.borrow_mut();
         s.last = last.clone();
@@ -751,6 +777,10 @@ pub fn init(hi: HINSTANCE) {
 /// Ctrl+W has to close the window wherever the keyboard is, and a control
 /// swallows keys its parent never sees. **Escape closes nothing** (§2.3):
 /// long text and an input method both use it.
+pub fn subclass_child(h: HWND) {
+    subclass(h);
+}
+
 fn subclass(h: HWND) {
     unsafe {
         let prev = SetWindowLongPtrW(h, GWLP_WNDPROC, child_proc as *const () as isize);
@@ -819,6 +849,7 @@ fn relayout() {
     }
     match ST.with(|c| c.borrow().section) {
         Some(Section::Roles) => crate::roles_ui::move_to(from_rect(l.content)),
+        Some(Section::Plugins) => crate::plugins_ui::move_to(from_rect(l.content)),
         Some(Section::General) => place_general(&l, false),
         _ => {}
     }
@@ -842,7 +873,10 @@ fn on_search() {
     let _ = unsafe { InvalidateRect(Some(edit), None, true) };
     let q = search_text();
     crate::roles_ui::set_filter(&q);
-    let items = vec![(Section::Roles, crate::roles_ui::names())];
+    crate::plugins_ui::set_filter(&q);
+    // The sidebar's plugin rows are narrowed too, so it repaints.
+    let _ = unsafe { InvalidateRect(Some(win()), None, false) };
+    let items = vec![(Section::Roles, crate::roles_ui::names()), (Section::Plugins, crate::plugins_ui::names())];
     let Some(target) = shell::search_target(&q, &items) else { return };
     if ST.with(|c| c.borrow().section) == Some(target) {
         return;
@@ -863,14 +897,39 @@ fn on_click(x: i32, y: i32) {
     let h = win();
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(h, &mut rc) };
-    let l = shell::layout(rc.right, rc.bottom, dpi_of(h));
-    let Some(section) = shell::section_at(&l, x, y) else { return };
+    let dpi = dpi_of(h);
+    let l = shell::layout(rc.right, rc.bottom, dpi);
+    let rows = crate::plugins_ui::sidebar_rows();
+    let sb = plugin_rules::sidebar(&l, dpi, rows.len());
+    let Some(hit) = plugin_rules::hit(&l, &sb, x, y) else { return };
     // **The keyboard comes to the sidebar before anything is asked** (#896
     // W35): the question gives it back to whoever had it when it opened, and
     // on a click that must be the sidebar that was clicked, not the field the
     // keyboard was in before.
     let _ = unsafe { SetFocus(Some(h)) };
-    go_section(section);
+    go_hit(hit, &rows);
+}
+
+/// Where the sidebar's selection is, as a row of it.
+fn current_hit(rows: &[crate::plugins_ui::SidebarRow]) -> Option<Hit> {
+    let section = section_now()?;
+    if section == Section::Plugins {
+        if let Some(i) = rows.iter().position(|r| r.selected) {
+            return Some(Hit::Plugin(i));
+        }
+    }
+    Some(Hit::Section(section))
+}
+
+/// Go to a sidebar row: a section, or one plugin under Plugins.
+fn go_hit(hit: Hit, rows: &[crate::plugins_ui::SidebarRow]) {
+    match hit {
+        Hit::Section(s) => go_section(s),
+        Hit::Plugin(i) => {
+            let key = rows.get(i).and_then(|r| crate::plugins_ui::key_at(r.index));
+            go_place(Place { section: Section::Plugins, item: key });
+        }
+    }
 }
 
 /// The section on screen. A function of its own so the borrow ends before
@@ -884,10 +943,19 @@ fn section_now() -> Option<Section> {
 /// next ↓ goes on down it: showing the roles section would otherwise put
 /// it in the role's name field.
 fn go_section(section: Section) {
+    if section_now() != Some(section) {
+        go_place(Place { section, item: None });
+    } else {
+        let _ = unsafe { SetFocus(Some(win())) };
+    }
+}
+
+/// Go to a place from the sidebar, asking first about anything unsaved --
+/// a plugin with changes asks before another plugin is shown (§2.4).
+fn go_place(place: Place) {
     let h = win();
-    if ST.with(|c| c.borrow().section) != Some(section) {
-        let place = Place { section, item: None };
-        let current = current_place();
+    let current = current_place();
+    if current.as_ref() != Some(&place) {
         let dirty = current.as_ref().is_some_and(|c| section_dirty(c.section));
         if shell::must_ask(current.as_ref(), dirty, &place) && !leave_current() {
             return;
@@ -933,8 +1001,10 @@ fn paint(h: HWND) {
     let section = ST.with(|c| c.borrow().section);
     let crumb_item = match section {
         Some(Section::Roles) => crate::roles_ui::current().map(|(_, name)| name),
+        Some(Section::Plugins) => crate::plugins_ui::current().map(|(_, name)| name),
         _ => None,
     };
+    let plugin_rows = crate::plugins_ui::sidebar_rows();
     let mut ps = PAINTSTRUCT::default();
     let hdc = unsafe { BeginPaint(h, &mut ps) };
     let mut rc = RECT::default();
@@ -949,9 +1019,34 @@ fn paint(h: HWND) {
     let right = RECT { left: l.content.left, top: 0, right: rc.right, bottom: rc.bottom };
     fill(hdc, &right, theme::bg());
     let pad = s(grid::PAD);
+    let sb = plugin_rules::sidebar(&l, dpi, plugin_rows.len());
+    // The plugins, under their section (§2.3): dot, name, and the dot's word
+    // on the right. Only rows above the bottom rule are drawn; a list that
+    // runs past it is cut there rather than into the band.
+    let clip = unsafe { SaveDC(hdc) };
+    unsafe {
+        let _ = IntersectClipRect(hdc, 0, l.top_rule.bottom, l.sidebar.right, l.bottom_rule.top);
+    }
+    for (row, r) in plugin_rows.iter().zip(sb.plugins.iter()) {
+        let r = from_rect(*r);
+        let on = section == Some(Section::Plugins) && row.selected;
+        if on {
+            fill(hdc, &r, theme::sel());
+        }
+        let colour = if on { theme::sel_text() } else { theme::text() };
+        let dim = if on { theme::sel_text() } else { theme::dim() };
+        let word = crate::plugins_ui::dot_word(row.dot);
+        let word_w = s(64);
+        let t = RECT { left: sb.plugin_text_left, right: r.right - s(grid::PAD_SIDEBAR) - word_w, ..r };
+        draw_text(hdc, &format!("{} {}", row.dot.glyph(), row.name), &t, font, colour, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        let w = RECT { left: r.right - s(grid::PAD_SIDEBAR) - word_w, right: r.right - s(grid::PAD_SIDEBAR), ..r };
+        draw_text(hdc, &word, &w, font, dim, DT_SINGLELINE | DT_VCENTER | DT_RIGHT | DT_END_ELLIPSIS);
+    }
     for (i, sec) in Section::ALL.iter().enumerate() {
-        let r = from_rect(l.rows[i]);
-        let on = section == Some(*sec);
+        let r = from_rect(sb.sections[i]);
+        // A section's row is highlighted when it is the place -- Plugins
+        // only while no plugin under it is.
+        let on = section == Some(*sec) && !(*sec == Section::Plugins && plugin_rows.iter().any(|p| p.selected));
         if on {
             // The highlight is the row's box: the search field's left and
             // right edges (§2.3a, `PAD_SIDEBAR`).
@@ -963,10 +1058,13 @@ fn paint(h: HWND) {
             hdc,
             &label(*sec),
             &t,
-            if on { bold } else { font },
+            if on || section == Some(*sec) { bold } else { font },
             if on { theme::sel_text() } else { theme::text() },
             DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
         );
+    }
+    unsafe {
+        let _ = RestoreDC(hdc, clip);
     }
 
     // §2.3a. The search field's frame; the breadcrumb on the search text's
@@ -983,7 +1081,10 @@ fn paint(h: HWND) {
     if let Some(sec) = section {
         // §2.3a: an item the search has hidden from its list says so here.
         let item = match crumb_item {
-            Some(name) if sec == Section::Roles && crate::roles_ui::selection_hidden() => {
+            Some(name)
+                if (sec == Section::Roles && crate::roles_ui::selection_hidden())
+                    || (sec == Section::Plugins && crate::plugins_ui::selection_hidden()) =>
+            {
                 Some(shell::hidden_item(&tr("{} (not in the search results)"), &name))
             }
             other => other,
@@ -992,7 +1093,7 @@ fn paint(h: HWND) {
         let (top, _) = crumb_top(&l);
         let t = RECT { left: l.breadcrumb.left, top, right: l.breadcrumb.right, bottom: l.top_rule.top };
         draw_text(hdc, &crumb, &t, bold, theme::text(), DT_SINGLELINE | DT_TOP | DT_END_ELLIPSIS);
-        if matches!(sec, Section::Projects | Section::Plugins) {
+        if sec == Section::Projects {
             let t = RECT {
                 left: l.content.left + pad,
                 top: l.content.top + pad,
@@ -1036,7 +1137,8 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                     // The window itself has the keyboard only after a click
                     // on the sidebar (`go_section`), so these are the
                     // sidebar's (§2.3a: the arrow keys are not lost).
-                    go_section(shell::step_section(section_now(), vk == VK_DOWN));
+                    let rows = crate::plugins_ui::sidebar_rows();
+                    go_hit(plugin_rules::step_sidebar(current_hit(&rows), rows.len(), vk == VK_DOWN), &rows);
                 }
                 LRESULT(0)
             }
@@ -1065,6 +1167,12 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             WM_ACTIVATE => {
                 if (wp.0 & 0xFFFF) as u32 != WA_INACTIVE {
                     crate::roles_ui::activated();
+                    // A plugin installed or configured meanwhile -- by an
+                    // agent's `plugin_configure`, or by hand.
+                    if is_open() {
+                        crate::plugins_ui::refresh_catalog();
+                        let _ = InvalidateRect(Some(h), None, false);
+                    }
                 }
                 DefWindowProcW(h, msg, wp, lp)
             }
@@ -1115,6 +1223,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                     );
                 }
                 crate::roles_ui::dpi_changed();
+                crate::plugins_ui::dpi_changed();
                 relayout();
                 log_grid();
                 LRESULT(0)
@@ -1123,6 +1232,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             // now -- hears it from here.
             WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
                 crate::roles_ui::theme_changed();
+                crate::plugins_ui::theme_changed();
                 theme::repaint_all(h);
                 DefWindowProcW(h, msg, wp, lp)
             }

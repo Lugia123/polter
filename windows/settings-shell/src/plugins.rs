@@ -1,0 +1,787 @@
+//! The plugins section's rules (settings.md §5), with nothing drawn: which
+//! status dot a plugin gets, which required parameters are still empty,
+//! where the sidebar's plugin rows and the detail's blocks go, and what the
+//! plugin's own page (§5.3) may load.
+//!
+//! Here rather than in `polter-host` for the reason the rest of this crate
+//! is: those tests run only on Windows, so a rule left there could be broken
+//! on the Mac with everything green.
+
+use crate::grid::*;
+use crate::{scale, Layout, Rect, Section};
+
+// ============================================================ status dots
+
+/// The five dots of §5.1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dot {
+    /// ↻ The settings saved are not the ones the running copy was started
+    /// with.
+    Changed,
+    /// ○ Switched off.
+    Off,
+    /// ◐ A required parameter is empty.
+    Missing,
+    /// ▲ The running copy has failed, or the core has something to say about
+    /// a plugin that is on.
+    Error,
+    /// ● On, and nothing wrong that anybody reported.
+    On,
+}
+
+impl Dot {
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Dot::Changed => "\u{21bb}",
+            Dot::Off => "\u{25cb}",
+            Dot::Missing => "\u{25d0}",
+            Dot::Error => "\u{25b2}",
+            Dot::On => "\u{25cf}",
+        }
+    }
+
+    /// The word beside the dot, as an English msgid (settings.md §5.1's
+    /// table: 已开 / 缺配置 / 已关 / 出错 / 改了未重启).
+    pub fn msgid(self) -> &'static str {
+        match self {
+            Dot::Changed => "Restart to apply",
+            Dot::Off => "Off",
+            Dot::Missing => "Needs setup",
+            Dot::Error => "Error",
+            Dot::On => "On",
+        }
+    }
+}
+
+/// What the core says about a plugin's running copy -- `plugin_list`'s
+/// `state` / `failures` / `note`, the same data MCP hands an agent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Runtime {
+    /// `state` was present: a copy is running. Absent means none is.
+    pub running: bool,
+    pub failures: u32,
+    pub note: String,
+}
+
+/// Everything the dot is decided from.
+///
+/// **`runtime` is an `Option` on purpose** (AGENTS.md 验证 §5): `None` is
+/// "the core was not asked, or could not answer" -- the host is paired with
+/// a core that has no `ghostty_app_plugin_list` -- and `Some` with nothing
+/// in it is "asked, and nothing is wrong". The two must not draw the same
+/// thing by accident, so the caller says which it has.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Facts {
+    pub enabled: bool,
+    /// How many required parameters are still empty.
+    pub missing: usize,
+    pub restart_pending: bool,
+    pub runtime: Option<Runtime>,
+}
+
+/// The dot (§5.1). **The first that holds wins**, in the order the spec
+/// fixed on 2026-10-01: ↻ > ○ > ◐ > ▲ > ●. The core's `note` is never empty
+/// for a plugin that is off ("installed but switched off") or one switched
+/// on and not yet running ("no copy of it is running"), which is why ○ and
+/// ↻ are asked before ▲ reads it.
+///
+/// With no runtime to read, ▲ cannot be told from ●; the answer is ●, and
+/// the detail says the core gave no running state (`Facts::runtime`).
+pub fn dot(f: &Facts) -> Dot {
+    if f.restart_pending {
+        return Dot::Changed;
+    }
+    if !f.enabled {
+        return Dot::Off;
+    }
+    if f.missing > 0 {
+        return Dot::Missing;
+    }
+    match &f.runtime {
+        Some(r) if (r.running && r.failures > 0) || !r.note.trim().is_empty() => Dot::Error,
+        _ => Dot::On,
+    }
+}
+
+/// A plugin's saved settings: on or off, and every parameter value, sorted
+/// by name. What the running copy was started with is one of these; what is
+/// on disk now is another.
+pub type Settings = (bool, Vec<(String, String)>);
+
+/// Whether ↻ holds: a copy is running, and it was started with settings
+/// other than the ones saved now.
+///
+/// `running_with` is what the host recorded -- the settings at startup, and
+/// again after every save made while no copy was running (the core starts
+/// one then, with what was saved: settings.md §5.2). `running` is `None`
+/// when the core gave no running state, and then the answer leans towards
+/// saying so: a difference nobody can rule out is shown, not hidden.
+pub fn restart_pending(running_with: Option<&Settings>, now: &Settings, running: Option<bool>) -> bool {
+    if running == Some(false) {
+        return false;
+    }
+    match running_with {
+        Some(w) => normalised(w) != normalised(now),
+        // Installed after the copy that is running was started, or never
+        // seen: whatever is running is not this.
+        None => running == Some(true),
+    }
+}
+
+/// Empty values dropped and the rest sorted, so "a field left blank" and "a
+/// field never written" compare equal -- the host saves neither.
+fn normalised(s: &Settings) -> Settings {
+    let mut v: Vec<(String, String)> = s.1.iter().filter(|(_, val)| !val.is_empty()).cloned().collect();
+    v.sort();
+    (s.0, v)
+}
+
+/// The required parameters still empty, by title, in the manifest's order.
+/// `params` is `(name, title, required)`.
+pub fn missing_required(params: &[(String, String, bool)], values: &[(String, String)]) -> Vec<String> {
+    params
+        .iter()
+        .filter(|(name, _, required)| *required && !values.iter().any(|(k, v)| k == name && !v.trim().is_empty()))
+        .map(|(_, title, _)| title.clone())
+        .collect()
+}
+
+/// Whether the switch may be turned **on** (§5.2 item 2): not while a
+/// required parameter is empty. Turning it off is always allowed.
+pub fn switch_enabled(currently_on: bool, missing: usize) -> bool {
+    currently_on || missing == 0
+}
+
+// ================================================================ sidebar
+
+/// The sidebar with the plugins listed under their section (§2.3): the four
+/// section rows, and one row per plugin between Plugins and General.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sidebar {
+    /// One per `Section::ALL`, in order; the selected highlight's box.
+    pub sections: [Rect; 4],
+    /// One per plugin shown, in order.
+    pub plugins: Vec<Rect>,
+    /// Where a plugin row's dot starts: `PAD` further in than a section's
+    /// label, so the rows read as belonging to the one above.
+    pub plugin_text_left: i32,
+}
+
+/// A plugin row: `SECTION_ROW_H` like a section's, so the sidebar keeps one
+/// rhythm.
+pub fn sidebar(l: &Layout, dpi: i32, plugins: usize) -> Sidebar {
+    let s = |v| scale(v, dpi);
+    let row_h = s(SECTION_ROW_H);
+    let mut sections = l.rows;
+    let first_plugin = l.rows[2].bottom;
+    let plugin_rows: Vec<Rect> = (0..plugins as i32)
+        .map(|i| {
+            let t = first_plugin + i * row_h;
+            Rect::new(l.rows[2].left, t, l.rows[2].right, t + row_h)
+        })
+        .collect();
+    let shift = plugins as i32 * row_h;
+    sections[3] = Rect::new(l.rows[3].left, l.rows[3].top + shift, l.rows[3].right, l.rows[3].bottom + shift);
+    Sidebar { sections, plugins: plugin_rows, plugin_text_left: l.sidebar_text_left + s(PAD) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hit {
+    Section(Section),
+    /// The index into the plugins shown.
+    Plugin(usize),
+}
+
+/// What a click at `(x, y)` is on. Only inside the sidebar, and only above
+/// the bottom rule: a row that has run into the bottom band is not a row a
+/// click can find.
+pub fn hit(l: &Layout, sb: &Sidebar, x: i32, y: i32) -> Option<Hit> {
+    if x < l.sidebar.left || x >= l.sidebar.right || y >= l.bottom_rule.top {
+        return None;
+    }
+    let inside = |r: &Rect| y >= r.top && y < r.bottom;
+    if let Some(i) = sb.sections.iter().position(inside) {
+        return Some(Hit::Section(Section::ALL[i]));
+    }
+    sb.plugins.iter().position(inside).map(Hit::Plugin)
+}
+
+/// ↑ / ↓ through the sidebar, plugins included: the row after or before
+/// `current`, stopping at the ends.
+pub fn step_sidebar(current: Option<Hit>, plugins: usize, down: bool) -> Hit {
+    let order: Vec<Hit> = [Hit::Section(Section::Roles), Hit::Section(Section::Projects), Hit::Section(Section::Plugins)]
+        .into_iter()
+        .chain((0..plugins).map(Hit::Plugin))
+        .chain(Some(Hit::Section(Section::General)))
+        .collect();
+    let i = current.and_then(|c| order.iter().position(|h| *h == c));
+    order[crate::step(i, order.len(), down).unwrap_or(0)]
+}
+
+// ================================================================= detail
+
+/// What the detail's layout needs measured by whoever has the fonts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DetailInput {
+    /// The restart banner is up (§5.2 item 6).
+    pub banner: bool,
+    /// The title block -- name, version and author, summary, what it is
+    /// handed -- measured at the editor's width, in pixels.
+    pub head_h: i32,
+    /// One line of the log's font, in pixels.
+    pub log_line_h: i32,
+}
+
+/// How many log lines the log box shows at once. The file's last 20 are in
+/// it (§5.2 item 5); the rest are a scroll away.
+pub const LOG_VISIBLE: i32 = 4;
+/// How many lines of the log are read.
+pub const LOG_LINES: usize = 20;
+/// The restart banner's height, the roles section's banner's.
+pub const BANNER_H: i32 = 44;
+/// The least room the tab's body is left, so a form row and a half show at
+/// the smallest window (§2.2: nothing cut off).
+pub const BODY_MIN: i32 = CONTROL_H * 2;
+
+/// The detail's blocks, top to bottom (§5.2), in the section's coordinates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Detail {
+    pub banner: Option<Rect>,
+    pub head: Rect,
+    /// The switch: in the control column, one control tall.
+    pub switch: Rect,
+    /// Beside the switch: which required parameters are missing.
+    pub switch_note: Rect,
+    pub tabs: Rect,
+    /// The selected tab's body: the form (scrolls) or the page.
+    pub body: Rect,
+    /// The log's heading row, with Show Log and Show Plugin Folder on its
+    /// right.
+    pub log_head: Rect,
+    pub log_buttons: [Rect; 2],
+    pub log: Rect,
+    /// Left edges: the editor's margin and the form's control column.
+    pub left: i32,
+    pub control_left: i32,
+}
+
+/// Width of one of the log's two buttons.
+pub const LOG_BUTTON_W: i32 = 144;
+/// Width of one tab in the tab row.
+pub const TAB_W: i32 = 112;
+
+/// The detail inside `editor` (`SectionGrid::editor`), at `dpi`.
+pub fn detail(editor: Rect, dpi: i32, input: DetailInput) -> Detail {
+    let s = |v| scale(v, dpi);
+    let left = editor.left + s(PAD);
+    let right = editor.right - s(PAD);
+    let control_left = left + s(LABEL_W) + s(LABEL_GAP);
+    let mut y = editor.top + s(PAD);
+    let banner = input.banner.then(|| {
+        let r = Rect::new(left, y, right, y + s(BANNER_H));
+        y = r.bottom + s(ROW_GAP);
+        r
+    });
+    let head = Rect::new(left, y, right, y + input.head_h.max(0));
+    y = head.bottom + s(GROUP_GAP);
+    let switch_w = s(ACTION_W[0]);
+    let switch = Rect::new(control_left, y, (control_left + switch_w).min(right), y + s(CONTROL_H));
+    let switch_note = Rect::new((switch.right + s(BUTTONS_GAP)).min(right), y, right, switch.bottom);
+    // The tabs belong to the switch's plugin as much as the switch does:
+    // a row gap, not a group gap -- which is also what leaves the form
+    // room at the smallest window (the test below).
+    y = switch.bottom + s(ROW_GAP);
+    let tabs = Rect::new(left, y, right, y + s(CONTROL_H));
+    y = tabs.bottom + s(ROW_GAP);
+
+    // The log from the bottom up, then the body takes what is between.
+    let bottom = editor.bottom - s(PAD);
+    let log_h = input.log_line_h.max(1) * LOG_VISIBLE + 2;
+    let log = Rect::new(left, (bottom - log_h).max(y), right, bottom);
+    let log_head = Rect::new(left, log.top - s(ROW_GAP) - s(CONTROL_H), right, log.top - s(ROW_GAP));
+    let b1 = Rect::new(right - s(LOG_BUTTON_W), log_head.top, right, log_head.bottom);
+    let b0 = Rect::new(b1.left - s(BUTTONS_GAP) - s(LOG_BUTTON_W), log_head.top, b1.left - s(BUTTONS_GAP), log_head.bottom);
+    let body = Rect::new(left, y, right, (log_head.top - s(GROUP_GAP)).max(y));
+    Detail { banner, head, switch, switch_note, tabs, body, log_head, log_buttons: [b0, b1], log, left, control_left }
+}
+
+/// One tab's box in the tab row, `index` from the left.
+pub fn tab_rect(d: &Detail, dpi: i32, index: usize) -> Rect {
+    let w = scale(TAB_W, dpi);
+    let l = d.tabs.left + index as i32 * w;
+    Rect::new(l, d.tabs.top, l + w, d.tabs.bottom)
+}
+
+/// The tabs of §5.2 item 3: Settings always, Page when the plugin brings
+/// one -- **and Page stays even when WebView2 cannot show it** (§5.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Settings,
+    Page,
+}
+
+pub fn tabs(has_page: bool) -> Vec<Tab> {
+    if has_page {
+        vec![Tab::Settings, Tab::Page]
+    } else {
+        vec![Tab::Settings]
+    }
+}
+
+/// One parameter's row in the form: label column right-aligned (§2.3a),
+/// control in the control column, the manifest's help under the control.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormRow {
+    pub label: Rect,
+    pub control: Rect,
+    pub help: Option<Rect>,
+}
+
+/// The form inside the body, in the body's own coordinates, before
+/// scrolling. `helps` holds each parameter's measured help height (0 for
+/// none). Returns the rows and the content height.
+pub fn form(body_w: i32, dpi: i32, helps: &[i32]) -> (Vec<FormRow>, i32) {
+    let s = |v| scale(v, dpi);
+    let label_left = 0;
+    let control_left = s(LABEL_W) + s(LABEL_GAP);
+    let right = body_w.max(control_left + s(40));
+    let mut y = 0;
+    let mut out = Vec::new();
+    for &help_h in helps {
+        let label = Rect::new(label_left, y, s(LABEL_W), y + s(CONTROL_H));
+        let control = Rect::new(control_left, y, right, y + s(CONTROL_H));
+        y = control.bottom;
+        let help = (help_h > 0).then(|| {
+            let r = Rect::new(control_left, y + s(BUTTON_GAP), right, y + s(BUTTON_GAP) + help_h);
+            y = r.bottom;
+            r
+        });
+        out.push(FormRow { label, control, help });
+        y += s(ROW_GAP);
+    }
+    (out, y)
+}
+
+/// The last `n` lines of a log's text, oldest first. A trailing newline
+/// makes no empty last line, and CRLF is one break.
+pub fn tail(text: &str, n: usize) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let from = lines.len().saturating_sub(n);
+    lines[from..].iter().map(|l| l.trim_end_matches('\r').to_string()).collect()
+}
+
+// ============================================================== the page
+
+/// The scheme a plugin's page is served over, and the one the macOS side
+/// uses (`PluginPage.scheme`).
+pub const SCHEME: &str = "polter-plugin";
+
+/// The `Content-Security-Policy` sent with every response: this origin
+/// only, no network of any kind. The same policy `PluginPage.swift` sends.
+pub const CSP: &str = "default-src polter-plugin: 'unsafe-inline' 'unsafe-eval' data: blob:; \
+connect-src 'none'; frame-src 'none'; form-action 'none'";
+
+/// The page's entry URL. The key is the host, so two plugins' pages are
+/// two origins.
+pub fn entry_url(key: &str) -> String {
+    format!("{SCHEME}://{key}/index.html")
+}
+
+/// Why a request was not served.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// Not this scheme: the network, `file:`, anything.
+    OtherScheme,
+    /// This scheme, another plugin's origin.
+    OtherPlugin,
+    /// A path that would leave `ui/`, or one that cannot be read as a path.
+    OutsideUi,
+}
+
+/// The file a request asks for, relative to the plugin's `ui/`, as path
+/// segments -- or why it is refused. **Every request passes here**: a page
+/// may not leave its own `ui/` (the fence `PluginPageBridge.resolve` is on
+/// the macOS side). The query and fragment are ignored; `/` is
+/// `index.html`.
+pub fn resolve(url: &str, key: &str) -> Result<Vec<String>, Refused> {
+    let prefix = format!("{SCHEME}://");
+    let Some(rest) = url.get(..prefix.len()).filter(|p| p.eq_ignore_ascii_case(&prefix)).map(|_| &url[prefix.len()..])
+    else {
+        return Err(Refused::OtherScheme);
+    };
+    let (host, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    if !host.eq_ignore_ascii_case(key) {
+        return Err(Refused::OtherPlugin);
+    }
+    let path = path.split(['?', '#']).next().unwrap_or("/");
+    let decoded = percent_decode(path).ok_or(Refused::OutsideUi)?;
+    let mut segs: Vec<String> = Vec::new();
+    for seg in decoded.split(['/', '\\']) {
+        match seg {
+            "" | "." => {}
+            ".." => return Err(Refused::OutsideUi),
+            s if s.contains(':') || s.contains('\0') => return Err(Refused::OutsideUi),
+            s => segs.push(s.to_string()),
+        }
+    }
+    if segs.is_empty() {
+        segs.push("index.html".into());
+    }
+    Ok(segs)
+}
+
+/// `%XX` decoded, as UTF-8. `None` for a malformed escape or bytes that
+/// are not UTF-8: a path that cannot be read is not guessed at.
+fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = s.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The `Content-Type` for a file, by extension -- the table
+/// `PluginPageBridge.contentType` has.
+pub fn content_type(file: &str) -> &'static str {
+    let ext = file.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    match ext.as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Whether the page tab can show the page, and if not, which of the three
+/// reasons (§5.3: the tab stays, and says what is missing).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PageState {
+    /// `WebView2Loader.dll` is not beside the executable: the install is
+    /// incomplete, and installing the Runtime would not help.
+    LoaderMissing,
+    /// The loader is there and finds no WebView2 Runtime on this machine.
+    RuntimeMissing,
+    /// The Runtime is there and making the view failed, with this HRESULT.
+    Failed(i32),
+    /// Being made.
+    Loading,
+    Ready,
+}
+
+/// Where to get the Runtime, said in the page tab when it is missing.
+pub const RUNTIME_URL: &str = "https://developer.microsoft.com/microsoft-edge/webview2/";
+
+/// Which state the probe's answers mean. `loader` is whether the DLL
+/// loaded and had the entry point; `version` is what
+/// `GetAvailableCoreWebView2BrowserVersionString` answered (`Err` with its
+/// HRESULT, or an empty version, both mean no Runtime).
+pub fn page_state(loader: bool, version: Result<&str, i32>) -> PageState {
+    if !loader {
+        return PageState::LoaderMissing;
+    }
+    match version {
+        Ok(v) if !v.trim().is_empty() => PageState::Loading,
+        _ => PageState::RuntimeMissing,
+    }
+}
+
+/// The calls a page may make through `window.polter` -- the whole surface
+/// (`PluginPageBridge`: read, write, close).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Call {
+    Read,
+    Write,
+    Close,
+}
+
+impl Call {
+    pub fn parse(method: &str) -> Option<Call> {
+        match method {
+            "read" => Some(Call::Read),
+            "write" => Some(Call::Write),
+            "close" => Some(Call::Close),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a message came from where the bridge answers: the page's own
+/// origin. A frame from anywhere else gets nothing.
+pub fn message_from_page(source: &str, key: &str) -> bool {
+    matches!(resolve(source, key), Ok(_))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rt(running: bool, failures: u32, note: &str) -> Option<Runtime> {
+        Some(Runtime { running, failures, note: note.into() })
+    }
+
+    /// **The table the macOS side's `SettingsRules` tests too** (settings.md
+    /// §5.1: one table for both). Each row: enabled, missing, restart
+    /// pending, runtime, expected dot.
+    #[test]
+    fn dot_table() {
+        let off_note = "installed but switched off";
+        let idle_note = "no copy of it is running";
+        let rows: &[(bool, usize, bool, Option<Runtime>, Dot)] = &[
+            // ↻ beats everything, off and failing included.
+            (true, 0, true, rt(true, 3, "boom"), Dot::Changed),
+            (false, 2, true, rt(false, 0, off_note), Dot::Changed),
+            // ○: off, whatever the core's note says about it.
+            (false, 0, false, rt(false, 0, off_note), Dot::Off),
+            (false, 1, false, rt(false, 0, off_note), Dot::Off),
+            (false, 0, false, None, Dot::Off),
+            // ◐: on, a required parameter empty -- before ▲.
+            (true, 1, false, rt(true, 2, "x"), Dot::Missing),
+            (true, 3, false, None, Dot::Missing),
+            // ▲: running with failures, or on with a note.
+            (true, 0, false, rt(true, 1, ""), Dot::Error),
+            (true, 0, false, rt(false, 0, idle_note), Dot::Error),
+            (true, 0, false, rt(true, 0, "backing off"), Dot::Error),
+            // A note of only blanks is no note.
+            (true, 0, false, rt(true, 0, "  "), Dot::On),
+            // Failures counted on a copy that is not running are old news
+            // and the note covers what is current.
+            (true, 0, false, rt(false, 4, ""), Dot::On),
+            // ●
+            (true, 0, false, rt(true, 0, ""), Dot::On),
+            // No runtime to read: ▲ cannot be told, so ●.
+            (true, 0, false, None, Dot::On),
+        ];
+        for (i, (enabled, missing, restart, runtime, want)) in rows.iter().enumerate() {
+            let f = Facts { enabled: *enabled, missing: *missing, restart_pending: *restart, runtime: runtime.clone() };
+            assert_eq!(dot(&f), *want, "row {i}: {f:?}");
+        }
+    }
+
+    fn st(on: bool, kv: &[(&str, &str)]) -> Settings {
+        (on, kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect())
+    }
+
+    #[test]
+    fn restart_pending_only_when_a_running_copy_has_other_settings() {
+        let a = st(true, &[("url", "x")]);
+        let b = st(true, &[("url", "y")]);
+        // Running, started with a, now b: pending.
+        assert!(restart_pending(Some(&a), &b, Some(true)));
+        // Running with what is saved: not pending.
+        assert!(!restart_pending(Some(&a), &a, Some(true)));
+        // Not running: the core starts it with what was saved, nothing to
+        // restart (settings.md §5.2 item 6).
+        assert!(!restart_pending(Some(&a), &b, Some(false)));
+        // Nothing to ask: a difference is shown, not hidden.
+        assert!(restart_pending(Some(&a), &b, None));
+        assert!(!restart_pending(Some(&a), &a, None));
+        // Blank and absent are the same thing; order does not matter.
+        let c = st(true, &[("a", "1"), ("b", "")]);
+        let d = st(true, &[("a", "1")]);
+        assert!(!restart_pending(Some(&c), &d, Some(true)));
+        let e = st(true, &[("b", "2"), ("a", "1")]);
+        let f = st(true, &[("a", "1"), ("b", "2")]);
+        assert!(!restart_pending(Some(&e), &f, Some(true)));
+        // Switching off is a change too.
+        assert!(restart_pending(Some(&a), &st(false, &[("url", "x")]), Some(true)));
+        // Never seen: running means it runs with something else.
+        assert!(restart_pending(None, &a, Some(true)));
+        assert!(!restart_pending(None, &a, None));
+    }
+
+    #[test]
+    fn missing_required_names_empty_required_ones_in_order() {
+        let p = |n: &str, t: &str, r: bool| (n.to_string(), t.to_string(), r);
+        let params = vec![p("url", "Webhook", true), p("tag", "Tag", false), p("token", "Token", true)];
+        let v = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        assert_eq!(missing_required(&params, &v(&[])), vec!["Webhook", "Token"]);
+        assert_eq!(missing_required(&params, &v(&[("url", "https://x"), ("token", "  ")])), vec!["Token"]);
+        assert!(missing_required(&params, &v(&[("url", "a"), ("token", "b")])).is_empty());
+    }
+
+    #[test]
+    fn the_switch_cannot_be_turned_on_with_something_missing() {
+        assert!(!switch_enabled(false, 1));
+        assert!(switch_enabled(false, 0));
+        // Off is always a way out.
+        assert!(switch_enabled(true, 2));
+    }
+
+    #[test]
+    fn plugin_rows_sit_between_plugins_and_general() {
+        let dpi = 96;
+        let l = crate::layout(1164, 761, dpi);
+        let sb = sidebar(&l, dpi, 3);
+        assert_eq!(sb.plugins.len(), 3);
+        assert_eq!(sb.plugins[0].top, l.rows[2].bottom);
+        assert_eq!(sb.sections[3].top, sb.plugins[2].bottom);
+        // The first three sections do not move.
+        assert_eq!(&sb.sections[..3], &l.rows[..3]);
+        // Same box as the section rows: the highlight's left and right.
+        for r in &sb.plugins {
+            assert_eq!((r.left, r.right), (l.rows[0].left, l.rows[0].right));
+            assert_eq!(r.height(), scale(SECTION_ROW_H, dpi));
+        }
+        assert_eq!(sb.plugin_text_left, l.sidebar_text_left + PAD);
+        // No plugins: the phase 1 sidebar exactly.
+        assert_eq!(sidebar(&l, dpi, 0).sections, l.rows);
+    }
+
+    #[test]
+    fn clicks_find_sections_and_plugins() {
+        let dpi = 144;
+        let l = crate::layout(1700, 1100, dpi);
+        let sb = sidebar(&l, dpi, 2);
+        let mid = |r: &Rect| (r.left + 1, (r.top + r.bottom) / 2);
+        let (x, y) = mid(&sb.plugins[1]);
+        assert_eq!(hit(&l, &sb, x, y), Some(Hit::Plugin(1)));
+        let (x, y) = mid(&sb.sections[3]);
+        assert_eq!(hit(&l, &sb, x, y), Some(Hit::Section(Section::General)));
+        let (_, y) = mid(&sb.sections[2]);
+        assert_eq!(hit(&l, &sb, l.sidebar.right, y), None);
+        assert_eq!(hit(&l, &sb, 2, l.bottom_rule.top), None);
+    }
+
+    #[test]
+    fn arrows_walk_through_the_plugins() {
+        use Hit::*;
+        assert_eq!(step_sidebar(Some(Section(crate::Section::Plugins)), 2, true), Plugin(0));
+        assert_eq!(step_sidebar(Some(Plugin(1)), 2, true), Section(crate::Section::General));
+        assert_eq!(step_sidebar(Some(Section(crate::Section::General)), 2, false), Plugin(1));
+        assert_eq!(step_sidebar(Some(Section(crate::Section::General)), 0, false), Section(crate::Section::Plugins));
+        assert_eq!(step_sidebar(Some(Section(crate::Section::General)), 2, true), Section(crate::Section::General));
+    }
+
+    fn at_min(dpi: i32) -> (Rect, crate::SectionGrid) {
+        let (w, h) = crate::content_size(crate::MIN_W, crate::MIN_H);
+        let (w, h) = (scale(w, dpi), scale(h, dpi));
+        let g = crate::section_grid(w, h, dpi, false);
+        (g.editor, g)
+    }
+
+    #[test]
+    fn detail_fits_at_the_smallest_window() {
+        for dpi in [96, 120, 144, 192, 240] {
+            let (editor, _) = at_min(dpi);
+            // A long summary, wrapped to the cap, and the banner up.
+            let d = detail(editor, dpi, DetailInput { banner: true, head_h: scale(96, dpi), log_line_h: scale(16, dpi) });
+            assert!(d.body.height() >= scale(BODY_MIN, dpi), "dpi {dpi}: body {:?}", d.body);
+            assert!(d.log.bottom <= editor.bottom - scale(PAD, dpi) || d.log.bottom == editor.bottom - scale(PAD, dpi));
+            assert!(d.log_buttons[0].left > d.left, "dpi {dpi}: buttons run off the left");
+            assert!(d.switch.right <= editor.right - scale(PAD, dpi));
+        }
+    }
+
+    #[test]
+    fn detail_uses_two_left_edges_only() {
+        let dpi = 96;
+        let (editor, g) = at_min(dpi);
+        let d = detail(editor, dpi, DetailInput { banner: true, head_h: 60, log_line_h: 16 });
+        let left = editor.left + PAD;
+        // The editor's margin: the same x as the bottom band's first text.
+        assert_eq!(left, g.text_left);
+        for r in [d.banner.unwrap(), d.head, d.tabs, d.body, d.log_head, d.log] {
+            assert_eq!(r.left, left, "{r:?}");
+        }
+        assert_eq!(d.switch.left, left + LABEL_W + LABEL_GAP);
+        assert_eq!(d.control_left, d.switch.left);
+        // The form's control column is the same line, in the body's
+        // coordinates.
+        let (rows, _) = form(d.body.width(), dpi, &[0, 18]);
+        assert_eq!(d.body.left + rows[0].control.left, d.control_left);
+        assert_eq!(rows[0].label.right, LABEL_W);
+    }
+
+    #[test]
+    fn form_rows_stack_with_help_under_the_control() {
+        let dpi = 96;
+        let (rows, h) = form(500, dpi, &[0, 20, 0]);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].help, None);
+        let help = rows[1].help.unwrap();
+        assert_eq!(help.left, rows[1].control.left);
+        assert_eq!(help.top, rows[1].control.bottom + BUTTON_GAP);
+        assert_eq!(rows[2].control.top, help.bottom + ROW_GAP);
+        assert_eq!(h, rows[2].control.bottom + ROW_GAP);
+    }
+
+    #[test]
+    fn page_tab_stays_when_the_page_cannot_show() {
+        assert_eq!(tabs(false), vec![Tab::Settings]);
+        assert_eq!(tabs(true), vec![Tab::Settings, Tab::Page]);
+        assert_eq!(page_state(false, Ok("120.0")), PageState::LoaderMissing);
+        assert_eq!(page_state(true, Err(-2147024894)), PageState::RuntimeMissing);
+        assert_eq!(page_state(true, Ok("")), PageState::RuntimeMissing);
+        assert_eq!(page_state(true, Ok("128.0.2739.42")), PageState::Loading);
+    }
+
+    #[test]
+    fn requests_stay_inside_ui() {
+        let k = "feishu";
+        assert_eq!(resolve("polter-plugin://feishu/index.html", k), Ok(vec!["index.html".to_string()]));
+        assert_eq!(resolve("polter-plugin://feishu/", k), Ok(vec!["index.html".to_string()]));
+        assert_eq!(resolve("polter-plugin://feishu", k), Ok(vec!["index.html".to_string()]));
+        assert_eq!(resolve("POLTER-PLUGIN://Feishu/a/b.js?v=1#x", k), Ok(vec!["a".to_string(), "b.js".to_string()]));
+        assert_eq!(resolve("polter-plugin://feishu/a%20b.css", k), Ok(vec!["a b.css".to_string()]));
+        assert_eq!(resolve("polter-plugin://feishu/../plugin.json", k), Err(Refused::OutsideUi));
+        assert_eq!(resolve("polter-plugin://feishu/a/%2e%2e/%2e%2e/x", k), Err(Refused::OutsideUi));
+        assert_eq!(resolve("polter-plugin://feishu/..%5c..%5cx", k), Err(Refused::OutsideUi));
+        assert_eq!(resolve("polter-plugin://feishu/C:%5cWindows", k), Err(Refused::OutsideUi));
+        assert_eq!(resolve("polter-plugin://feishu/%zz", k), Err(Refused::OutsideUi));
+        assert_eq!(resolve("polter-plugin://slack/index.html", k), Err(Refused::OtherPlugin));
+        assert_eq!(resolve("https://example.com/", k), Err(Refused::OtherScheme));
+        assert_eq!(resolve("file:///C:/keys/id_rsa", k), Err(Refused::OtherScheme));
+        assert_eq!(resolve("polter", k), Err(Refused::OtherScheme));
+        assert!(message_from_page(&entry_url(k), k));
+        assert!(!message_from_page("https://evil.example/", k));
+    }
+
+    #[test]
+    fn content_types_are_the_macos_table() {
+        assert_eq!(content_type("index.HTML"), "text/html; charset=utf-8");
+        assert_eq!(content_type("app.mjs"), "text/javascript; charset=utf-8");
+        assert_eq!(content_type("x.woff2"), "font/woff2");
+        assert_eq!(content_type("README"), "application/octet-stream");
+        assert!(CSP.contains("connect-src 'none'"));
+    }
+
+    #[test]
+    fn the_log_tail_is_the_last_lines_oldest_first() {
+        let text: String = (1..=25).map(|i| format!("line {i}\r\n")).collect();
+        let t = tail(&text, LOG_LINES);
+        assert_eq!(t.len(), 20);
+        assert_eq!(t[0], "line 6");
+        assert_eq!(t[19], "line 25");
+        assert_eq!(tail("a\nb", 20), vec!["a", "b"]);
+        assert!(tail("", 20).is_empty());
+    }
+
+    #[test]
+    fn the_bridge_has_three_calls() {
+        assert_eq!(Call::parse("read"), Some(Call::Read));
+        assert_eq!(Call::parse("write"), Some(Call::Write));
+        assert_eq!(Call::parse("close"), Some(Call::Close));
+        assert_eq!(Call::parse("terminal_send"), None);
+    }
+}

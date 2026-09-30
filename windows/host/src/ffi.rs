@@ -1645,6 +1645,20 @@ pub struct Api {
     pub surface_persona_launch:
         unsafe extern "C" fn(Surface, *const u8, usize, *const u8, usize, *mut u8, usize) -> bool,
 
+    // -- the settings window's plugins section (settings.md §5.1). Same
+    // buffer rules as the role library's.
+    /// `ghostty_app_plugin_list(app, buf, cap)`: MCP `plugin_list`'s JSON,
+    /// `{"ok":true,"plugins":[...]}`.
+    pub app_plugin_list: unsafe extern "C" fn(App, *mut u8, usize) -> usize,
+    /// `ghostty_app_plugin_test(app, key, len, out, cap)`: the report, or
+    /// the error's name when false.
+    pub app_plugin_test: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> bool,
+    /// `ghostty_app_plugin_configure(app, key, len, settings, len, out, cap)`:
+    /// the function MCP `plugin_configure` runs, as the user. True: `out` is
+    /// what happened to the running copy (`already_running` and the rest of
+    /// `report.Started`); false: the error's name.
+    pub app_plugin_configure: unsafe extern "C" fn(App, *const u8, usize, *const u8, usize, *mut u8, usize) -> bool,
+
     // from ghostty-vt.dll -- proves both DLLs are loaded and callable
     pub codepoint_width: unsafe extern "C" fn(u32) -> u8,
     /// Cluster-aware width, in cells. Consumes one grapheme per call and

@@ -2770,10 +2770,10 @@ fn drop_controls() {
 
 /// Every control this window makes goes through here: Escape and Ctrl+S
 /// have to work wherever the keyboard is, and a control swallows keys its
-/// parent never sees. **Not `overlay::forward_escape_to_parent`**, which
-/// keeps the previous procedure in `GWLP_USERDATA` and knows only Escape;
-/// this one keeps it in a window property, so the two could not collide
-/// even on one control.
+/// parent never sees. **Not the Escape forwarding `overlay.rs` had for the
+/// old plugin page** (gone with that page), which kept the previous
+/// procedure in `GWLP_USERDATA` and knew only Escape; this one keeps it in a
+/// window property.
 fn subclass(h: HWND) {
     unsafe {
         let prev = SetWindowLongPtrW(h, GWLP_WNDPROC, child_proc as *const () as isize);
@@ -2986,6 +2986,18 @@ pub fn ask_to_save() -> polter_settings_shell::Answer {
         &tr("Save"),
         Some(&tr("Don't Save")),
     ) {
+        Answer::First => polter_settings_shell::Answer::Save,
+        Answer::Second => polter_settings_shell::Answer::DontSave,
+        Answer::Cancel => polter_settings_shell::Answer::Cancel,
+    }
+}
+
+/// The same question for another section's item (§2.4: one protocol, one
+/// dialog): `question` names what would be lost -- the plugins section asks
+/// "Save changes to this plugin?". `owner` is the settings window: the
+/// role library's own window may never have been made.
+pub fn ask_to_save_this(owner: HWND, question: &str) -> polter_settings_shell::Answer {
+    match ask(owner, question, &tr("Your changes will be lost if you don't save them."), &tr("Save"), Some(&tr("Don't Save"))) {
         Answer::First => polter_settings_shell::Answer::Save,
         Answer::Second => polter_settings_shell::Answer::DontSave,
         Answer::Cancel => polter_settings_shell::Answer::Cancel,
