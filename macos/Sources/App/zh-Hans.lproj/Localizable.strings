@@ -87,7 +87,6 @@
 "A terminal that minds the agents running in it. \nBuilt on Ghostty." = "一个会照看在里面干活的 agent 的终端。\n基于 Ghostty 构建。";
 "Allow" = "允许";
 "Checking for updates…" = "正在检查更新…";
-"Copy Icon Config" = "复制图标配置";
 "Disable" = "关闭";
 "Downloading Update" = "正在下载更新";
 "Enable automatic updates?" = "开启自动更新？";

@@ -1170,11 +1170,13 @@ class AppDelegate: NSObject,
 
     @IBAction func closeAllWindows(_ sender: Any?) {
         TerminalController.closeAllWindows()
-        AboutController.shared.hide()
     }
 
+    /// "About Polter": the About group of the settings window's General
+    /// section, as on Windows (settings.md §7) -- there is no About window
+    /// of its own any more.
     @IBAction func showAbout(_ sender: Any?) {
-        AboutController.shared.show()
+        openSettings(.general(.about))
     }
 
     /// The keybind listing: the Keyboard Shortcuts group of the settings
