@@ -3,11 +3,11 @@ import SwiftUI
 
 /// Presents `ProjectPickerView` as a standalone window.
 ///
-/// A standalone window rather than a sheet: "Load Project" and "Manage
-/// Projects" are meaningful even when no terminal window is focused (or
-/// none exists), and a sheet needs a parent window to attach to. "Save as
-/// Project" happens to always have one (there's a tab being saved), but
-/// using the same presentation for all three keeps them from drifting.
+/// A standalone window rather than a sheet: "Load Project" is meaningful
+/// even when no terminal window is focused (or none exists), and a sheet
+/// needs a parent window to attach to. "Save as Project" happens to always
+/// have one (there's a tab being saved), but using the same presentation
+/// for both keeps them from drifting.
 @MainActor
 final class ProjectPicker: NSObject {
     private var window: NSWindow?
@@ -43,12 +43,6 @@ final class ProjectPicker: NSObject {
             onLoad: { [weak self] entry in
                 onLoad(entry)
                 self?.close()
-            },
-            onDelete: { entry in
-                try store.delete(entry)
-            },
-            onRestorePrevious: { entry in
-                try store.restorePrevious(entry)
             },
             onCancel: { [weak self] in
                 onCancel()
