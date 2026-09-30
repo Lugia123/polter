@@ -477,8 +477,14 @@ pub fn handle_key_message(
                 // there would just return false, and the accelerator would look
                 // like it did not fire.
                 let ok = match name {
+                    // The settings window's Plugins section (settings.md
+                    // §3.2); it opens, it no longer toggles -- Ctrl+W closes
+                    // the window, wherever the keyboard is in it.
                     "__polter_plugin_page" => {
-                        crate::settings_ui::request_toggle();
+                        crate::settings_win::request(
+                            polter_settings_shell::Route::to(polter_settings_shell::Section::Plugins, None),
+                            hwnd,
+                        );
                         true
                     }
                     _ => crate::binding(name),

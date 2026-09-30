@@ -29,13 +29,11 @@
 //!    as well would be a second place that has to stay in agreement with the
 //!    first, and the two would drift.
 
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_ESCAPE};
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, GetAncestor, GetClassNameW, GetForegroundWindow, GetParent,
-    GetWindowLongPtrW, GetWindowThreadProcessId, SendMessageW, SetForegroundWindow,
-    SetWindowLongPtrW, GA_ROOT, GWLP_USERDATA, GWLP_WNDPROC, WM_KEYDOWN,
+    GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow, GA_ROOT,
 };
 
 use crate::hlogf;
@@ -221,96 +219,5 @@ pub fn foreground_back(me: HWND, prev: HWND, who: &str) {
             "[overlay] {} hid (foreground was {}); handed back to {:?} ok={} -- GetForegroundWindow now {:?}: {}",
             who, was, want, ok as u8, now, verdict
         );
-    }
-}
-
-// --------------------------------------------------- letting Escape through
-//
-// **A native control eats Escape and tells nobody.** An `EDIT`, a `COMBOBOX`
-// and a `BUTTON` all take the key and hand it to `DefWindowProcW`, which does
-// nothing with it; Win32 does not bubble keys to the parent. So a page whose
-// only way out is `Escape`, handled in the *page's* window procedure, closes
-// only while nothing inside it has focus -- and the settings page puts focus
-// into its first control the moment it opens. There was no way out.
-//
-// **Why this is here and not a third copy of the subclass in `strip.rs` and
-// `prompt.rs`.** Those two subclass an edit to make a *one-field dialog*:
-// Return means accept, Escape means cancel, losing focus decides which. That
-// is a contract about editing one value, and it belongs to those boxes. What
-// a page needs is narrower and different: **do not swallow the key that
-// closes me**. Folding the three together would push dialog semantics onto a
-// page that has a Save button, so what is shared here is only the part that
-// is the same -- and the part whose absence is silent.
-
-/// Let `control`'s parent see **the keys that close the page it is on**.
-///
-/// Two of them, because a page needs a way out that works wherever focus is:
-///
-///  * `Escape`.
-///  * `Ctrl+Shift+,` -- **the chord that opened the page**. It is a host
-///    accelerator in `keys.rs`, and that path runs only for a *surface*
-///    window, so once focus is inside the page the key never reaches the code
-///    that would toggle it. The page handles it itself; this makes sure a
-///    control does not eat it first.
-///
-/// **The second key was the half that was missed.** The first version of this
-/// forwarded only `Escape`, the page grew a branch for the chord, and the
-/// commit message said the page could now be closed from anywhere -- while
-/// the chord was still being swallowed by whichever control had focus, which
-/// is the condition that was broken to begin with. A fix for one of two ways
-/// out reads exactly like a fix for both.
-///
-/// A `COMBOBOX` with its list dropped keeps `Escape`: closing the list is what
-/// it means there, and it is what every other Windows program does. The second
-/// press then reaches the parent, because the list is no longer down.
-///
-/// **The chord half has not been verified on a machine, and cannot be with
-/// the input tooling in use.** The injector cannot produce a comma:
-/// `key(",")` fails outright and `key("ctrl+shift+,")` reports success while
-/// sending nothing -- shown by a positive control, where the same chord aimed
-/// at a focused terminal did not open the page it opens. So the earlier
-/// reading of "the chord does nothing" was measuring the tool, not this code.
-/// **What is written here is what the code does when read; nothing has
-/// watched it happen.** Verifying it needs another input channel -- a real
-/// keyboard, or an injector that can send `VK_OEM_COMMA` with two modifiers.
-pub fn forward_escape_to_parent(control: HWND) {
-    if control.0.is_null() {
-        return;
-    }
-    unsafe {
-        let prev = SetWindowLongPtrW(control, GWLP_WNDPROC, escape_proc as *const () as isize);
-        SetWindowLongPtrW(control, GWLP_USERDATA, prev);
-    }
-}
-
-/// `CB_GETDROPPEDSTATE`. Spelled numerically because the constant lives
-/// behind a Controls feature this crate does not otherwise need.
-const CB_GETDROPPEDSTATE: u32 = 0x0157;
-
-fn held(vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY) -> bool {
-    (unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(vk.0 as i32) } as u16
-        & 0x8000)
-        != 0
-}
-
-unsafe extern "system" fn escape_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_OEM_COMMA, VK_SHIFT};
-    unsafe {
-        let prev = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-        if msg == WM_KEYDOWN {
-            let key = wp.0 as u16;
-            let is_escape = key == VK_ESCAPE.0
-                && SendMessageW(hwnd, CB_GETDROPPEDSTATE, None, None).0 == 0;
-            let is_chord = key == VK_OEM_COMMA.0 && held(VK_CONTROL) && held(VK_SHIFT);
-            if is_escape || is_chord {
-                if let Ok(parent) = GetParent(hwnd) {
-                    SendMessageW(parent, WM_KEYDOWN, Some(wp), Some(lp));
-                    return LRESULT(0);
-                }
-            }
-        }
-        let f: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT =
-            std::mem::transmute(prev);
-        CallWindowProcW(Some(f), hwnd, msg, wp, lp)
     }
 }

@@ -2328,3 +2328,131 @@ msgstr ""
 #: windows/host/src/uia.rs:1168
 msgid "Menu"
 msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Test"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Show Log"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Show Plugin Folder"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Polter's core did not say whether this plugin is running."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Test: {}"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "The log is empty."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "No log yet: {}"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Saved."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Could not save: {}"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Save changes to this plugin?"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Tested less than a minute ago. Try again in a minute."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Polter's core does not know this plugin."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Polter is not ready yet."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Test failed: {}"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "No plugins found. The bundled plugin directory exists and holds none this build can read:\n{}"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "The bundled plugin directory is missing:\n{}\nThis build's resources are not installed next to it."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "The bundled plugin directory could not be located: POLTER_RESOURCES_DIR is not set."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Restart Polter to apply"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Status"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Still empty and required: {}"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Settings"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Page"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "This plugin has no settings."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "This plugin brings its own page, and it cannot be shown: WebView2Loader.dll is not next to polter-host.exe, so this installation is incomplete."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "This plugin brings its own page, and it cannot be shown: the Microsoft Edge WebView2 Runtime is not installed on this computer. Get it from {} and reopen this window."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "This plugin brings its own page, and it could not be opened (error 0x{})."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs
+msgid "Log"
+msgstr ""
+
+#: windows/settings-shell/src/plugins.rs
+msgid "Restart to apply"
+msgstr ""
+
+#: windows/settings-shell/src/plugins.rs
+msgid "Off"
+msgstr ""
+
+#: windows/settings-shell/src/plugins.rs
+msgid "Needs setup"
+msgstr ""
+
+#: windows/settings-shell/src/plugins.rs
+msgid "Error"
+msgstr ""
+
+#: windows/settings-shell/src/plugins.rs
+msgid "On"
+msgstr ""

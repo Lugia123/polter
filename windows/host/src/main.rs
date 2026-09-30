@@ -124,6 +124,8 @@ mod osk;
 mod palette;
 mod personas;
 mod plugins;
+mod plugins_ui;
+mod plugin_page;
 mod polterclose;
 mod project;
 mod project_picker;
@@ -5086,7 +5088,6 @@ fn load_api() -> Option<Api> {
                 std::mem::transmute(p.unwrap())
             }};
         }
-
         Some(Api {
             init: sym!(internal, "ghostty_init"),
             config_loader: ConfigLoader::resolve(
@@ -5129,6 +5130,9 @@ fn load_api() -> Option<Api> {
             app_persona_delete: sym!(internal, "ghostty_app_persona_delete"),
             app_agent_clis: sym!(internal, "ghostty_app_agent_clis"),
             surface_persona_launch: sym!(internal, "ghostty_surface_persona_launch"),
+            app_plugin_list: sym!(internal, "ghostty_app_plugin_list"),
+            app_plugin_test: sym!(internal, "ghostty_app_plugin_test"),
+            app_plugin_configure: sym!(internal, "ghostty_app_plugin_configure"),
             surface_complete_clipboard_request: sym!(
                 internal,
                 "ghostty_surface_complete_clipboard_request"
@@ -6784,6 +6788,9 @@ fn main() {
     notify::init(hinst);
     divider::init(hinst);
     settings_ui::init(hinst);
+    // What each plugin's running copy starts with: the status dots' ↻
+    // (settings.md §5.1) compares against it, and the core keeps no copy.
+    plugins::snapshot_at_startup();
     settings_win::init(hinst);
     // **After the API is loaded**, because the provider asks it questions the
     // moment a menu is built.

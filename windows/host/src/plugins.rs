@@ -11,7 +11,7 @@
 //! | file | who writes it |
 //! | --- | --- |
 //! | `<dir>/plugin.json` | the plugin author. Read only. |
-//! | `<config>/polter/plugins/<key>.json` | **this, and the macOS app.** |
+//! | `<config>/polter/plugins/<key>.json` | **the core**, asked by this host through `ghostty_app_plugin_configure` (`configure`). |
 //!
 //! **The config directory has to be the one the core computes**, or the
 //! symptom is "the setting saved and the plugin did not change", with nothing
@@ -72,10 +72,14 @@ pub struct Plugin {
     pub key: String,
     pub name: String,
     pub summary: String,
+    /// The manifest's `version` and `author`, for the settings section's
+    /// title block (settings.md §5.2 item 1). Empty when it has none -- no
+    /// shipped manifest names an author.
+    pub version: String,
+    pub author: String,
     /// Where the plugin itself lives. Kept because a settings page that
     /// cannot say *which* file it is configuring is a page you cannot check
     /// by hand, and hand-checking is how the first plugin gets debugged.
-    #[allow(dead_code)]
     pub dir: PathBuf,
     pub params: Vec<Parameter>,
     /// What the manifest's `wants.events` asks to be handed, **as the wire
@@ -331,10 +335,15 @@ fn parse_manifest(key: &str, dir: &Path, text: &str) -> Option<Plugin> {
         .map(|a| a.iter().map(as_str).filter(|s| !s.is_empty()).collect())
         .unwrap_or_default();
 
+    let version = v.get("version").map(as_str).unwrap_or_default();
+    let author = v.get("author").map(as_str).unwrap_or_default();
+
     Some(Plugin {
         key: key.to_string(),
         name,
         summary,
+        version,
+        author,
         dir: dir.to_path_buf(),
         params,
         events,
@@ -871,40 +880,6 @@ fn parse_settings(key: &str, text: &str) -> (bool, BTreeMap<String, String>) {
     (enabled, values)
 }
 
-/// Write one plugin's settings.
-///
-/// **Written to a temporary file and renamed**, so a crash halfway through
-/// leaves the previous settings rather than half of the new ones. A truncated
-/// settings file reads as "not configured", which would silently switch a
-/// plugin off.
-pub fn save(key: &str, enabled: bool, values: &BTreeMap<String, String>) -> bool {
-    let Some(path) = settings_path(key) else {
-        // process-wide: the process's config directory, or the absence of one
-        plogf!("[plug] {}: no config directory; nothing saved", key);
-        return false;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let tmp = path.with_extension("json.tmp");
-    let body = render_settings(enabled, values);
-
-    if let Err(e) = std::fs::write(&tmp, body.as_bytes()) {
-        // process-wide: writing a plugin's settings file
-        plogf!("[plug] {}: write failed: {}", key, e);
-        return false;
-    }
-    if let Err(e) = std::fs::rename(&tmp, &path) {
-        // process-wide: writing a plugin's settings file
-        plogf!("[plug] {}: rename failed: {}", key, e);
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    }
-    // process-wide: writing a plugin's settings file
-    plogf!("[plug] {} saved: enabled={} params={}", key, enabled, values.len());
-    true
-}
-
 // ---------------------------------------------------------------- catalog
 
 /// Every plugin this build can see, shipped first, then the user's own.
@@ -994,6 +969,199 @@ pub fn write_fixture(path: &str) -> bool {
             false
         }
     }
+}
+
+
+// ------------------------------------------------ what the core says, and
+// what the running copies were started with (settings.md §5.1)
+
+/// A plugin's saved settings as the status rule compares them.
+pub fn settings_of(p: &Plugin) -> polter_settings_shell::plugins::Settings {
+    (p.enabled, p.values.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+}
+
+/// What each plugin's running copy was started with, by key: the settings
+/// at startup, and again after a save made while no copy was running (the
+/// core starts one then, with what was saved). **The core keeps no copy of
+/// this** (settings.md §5.1), so the host takes it.
+static RUNNING_WITH: std::sync::Mutex<BTreeMap<String, polter_settings_shell::plugins::Settings>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// Take the startup snapshot. Once, early in `main`, before the settings
+/// window can save anything.
+pub fn snapshot_at_startup() {
+    let cat = catalog();
+    if let Ok(mut m) = RUNNING_WITH.lock() {
+        for p in &cat {
+            m.insert(p.key.clone(), settings_of(p));
+        }
+    }
+    // process-wide: the plugin catalog at startup, one per process
+    plogf!("[plug] startup snapshot of {} plugins' settings", cat.len());
+}
+
+pub fn running_with(key: &str) -> Option<polter_settings_shell::plugins::Settings> {
+    RUNNING_WITH.lock().ok()?.get(key).cloned()
+}
+
+/// A save happened while no copy was running: the core starts one with
+/// what was saved, so that is what it runs with now.
+pub fn started_with(key: &str, s: polter_settings_shell::plugins::Settings) {
+    if let Ok(mut m) = RUNNING_WITH.lock() {
+        m.insert(key.to_string(), s);
+    }
+}
+
+/// Ask the core by the persona buffer rule (`roles::ask_json`).
+fn ask_json(mut call: impl FnMut(*mut u8, usize) -> usize) -> Option<String> {
+    let need = call(std::ptr::null_mut(), 0);
+    if need == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; need + 1];
+    if call(buf.as_mut_ptr(), buf.len()) != need {
+        return None;
+    }
+    String::from_utf8(buf[..need].to_vec()).ok()
+}
+
+/// Every plugin's running state from `ghostty_app_plugin_list`, by key --
+/// the same JSON MCP's `plugin_list` hands an agent. **`None` is "the core
+/// was not asked or could not answer"** (the app not up, an answer that
+/// would not parse); it is not "nothing is wrong" (`Facts::runtime`).
+pub fn runtimes() -> Option<BTreeMap<String, polter_settings_shell::plugins::Runtime>> {
+    let api = crate::api_opt()?;
+    let list = api.app_plugin_list;
+    let app = crate::app_opt();
+    if app.is_null() {
+        return None;
+    }
+    let text = ask_json(|b, c| unsafe { list(app, b, c) })?;
+    parse_runtimes(&text)
+}
+
+/// The rows of a `plugin_list` answer: a bare array, or an object holding
+/// one under `plugins`. `state` present is "running" (`wire.writePlugin`
+/// leaves the group out when no copy is).
+pub fn parse_runtimes(text: &str) -> Option<BTreeMap<String, polter_settings_shell::plugins::Runtime>> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let rows = v.as_array().or_else(|| v.get("plugins").and_then(|p| p.as_array()))?;
+    let mut out = BTreeMap::new();
+    for r in rows {
+        let Some(key) = r.get("key").and_then(|k| k.as_str()) else { continue };
+        let state = r.get("state").and_then(|s| s.as_str()).unwrap_or("");
+        out.insert(
+            key.to_string(),
+            polter_settings_shell::plugins::Runtime {
+                running: !state.is_empty(),
+                failures: r.get("failures").and_then(|f| f.as_u64()).unwrap_or(0) as u32,
+                note: r.get("note").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+            },
+        );
+    }
+    Some(out)
+}
+
+/// The error name for "the app is not up", in the form the core's own
+/// refusals come back in.
+pub const NO_APP: &str = "NoApp";
+
+/// `ghostty_app_plugin_test`: the core's report, the one MCP's
+/// `plugin_test` returns. `Err` carries the error name (`TooSoon`,
+/// `NoSuchPlugin`, or `NoApp`).
+pub fn test(key: &str) -> Result<String, String> {
+    let Some(api) = crate::api_opt() else { return Err(NO_APP.into()) };
+    let call = api.app_plugin_test;
+    let app = crate::app_opt();
+    if app.is_null() {
+        return Err(NO_APP.into());
+    }
+    let mut out = vec![0u8; 16 * 1024];
+    let ok = unsafe { call(app, key.as_ptr(), key.len(), out.as_mut_ptr(), out.len()) };
+    let end = out.iter().position(|&b| b == 0).unwrap_or(out.len());
+    let text = String::from_utf8_lossy(&out[..end]).into_owned();
+    if ok {
+        Ok(text)
+    } else {
+        Err(text)
+    }
+}
+
+/// What saving did to the plugin's running copy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Saved {
+    /// A copy was already running and keeps the settings it started with:
+    /// the change waits for a restart (↻, settings.md §5.2 item 6). The
+    /// core's `already_running`.
+    WaitsForRestart,
+    /// The core started a copy with the new settings, or none runs.
+    Applied,
+}
+
+/// Save one plugin's settings **through the core** --
+/// `ghostty_app_plugin_configure`, the function MCP's `plugin_configure`
+/// runs, as the user: it takes only declared parameters, merges, **deletes a
+/// parameter given as an empty string**, re-reads the plugins and starts one
+/// that was switched on and is not running. So every field is sent, the
+/// empty ones too -- clearing a field is how a value is removed. **This host
+/// no longer writes the settings file itself**: the one writer is the core's,
+/// so a save from here and one from an agent cannot disagree about the file.
+pub fn configure(key: &str, enabled: bool, values: &BTreeMap<String, String>) -> Result<Saved, String> {
+    let Some(api) = crate::api_opt() else { return Err(NO_APP.into()) };
+    let app = crate::app_opt();
+    if app.is_null() {
+        return Err(NO_APP.into());
+    }
+    let body = render_settings(enabled, values);
+    let mut out = vec![0u8; 512];
+    let ok = unsafe {
+        (api.app_plugin_configure)(app, key.as_ptr(), key.len(), body.as_ptr(), body.len(), out.as_mut_ptr(), out.len())
+    };
+    let end = out.iter().position(|&b| b == 0).unwrap_or(out.len());
+    let said = String::from_utf8_lossy(&out[..end]).into_owned();
+    // process-wide: a plugin's settings, one file per plugin
+    plogf!("[plug] {} plugin_configure ok={} said={:?} enabled={} params={}", key, ok, said, enabled, values.len());
+    if !ok {
+        return Err(said);
+    }
+    Ok(if said == "already_running" { Saved::WaitsForRestart } else { Saved::Applied })
+}
+
+/// Where the core writes a plugin's log: `$XDG_STATE_HOME`, or
+/// `%LOCALAPPDATA%`, then `polter\plugins\<key>.log` -- `App.pluginLogDir`
+/// with `xdg.state` and `PluginLog.dir_name`.
+pub fn log_path(key: &str) -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()))?;
+    Some(PathBuf::from(base).join("polter").join("plugins").join(format!("{key}.log")))
+}
+
+/// The plugin's log, last `n` lines. `Err` is the reason it could not be
+/// read, which is shown instead: a log that is not there yet (a plugin never
+/// started) is a fact, not an empty box.
+pub fn log_tail(key: &str, n: usize) -> Result<Vec<String>, String> {
+    let path = log_path(key).ok_or_else(|| "no state directory".to_string())?;
+    // Only the end is needed; a log that has grown large is read from near
+    // its end rather than whole.
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(&path).map_err(|e| format!("{}: {}", path.display(), e))?;
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let from = len.saturating_sub(64 * 1024);
+    let _ = f.seek(SeekFrom::Start(from));
+    let mut bytes = Vec::new();
+    f.read_to_end(&mut bytes).map_err(|e| format!("{}: {}", path.display(), e))?;
+    let text = String::from_utf8_lossy(&bytes);
+    // Started mid-file: the first line is a piece of one.
+    let text = if from > 0 { text.split_once('\n').map(|(_, r)| r.to_string()).unwrap_or_default() } else { text.into_owned() };
+    Ok(polter_settings_shell::plugins::tail(&text, n))
+}
+
+/// The plugin's page: `ui/index.html` in its directory, when there is one
+/// (`Plugin.pageURL` on the macOS side).
+pub fn page_of(p: &Plugin) -> Option<PathBuf> {
+    let f = p.dir.join("ui").join("index.html");
+    f.is_file().then_some(f)
 }
 
 #[cfg(test)]
@@ -1306,6 +1474,8 @@ mod locale_tests {
             key: "k".into(),
             name: "Archive".into(),
             summary: "English summary".into(),
+            version: String::new(),
+            author: String::new(),
             dir: std::path::PathBuf::from("."),
             params: vec![Parameter {
                 name: "dir".into(),
@@ -1640,5 +1810,27 @@ mod shipped_manifest_tests {
     fn a_shipped_manifest_says_what_it_wants() {
         assert_eq!(parse("archive", ARCHIVE).events, vec!["chat".to_string()]);
         assert_eq!(parse("kimi", KIMI).events, vec!["provision".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    /// The document `ghostty_app_plugin_list` answers with -- MCP
+    /// `plugin_list`'s, `{"ok":true,"plugins":[...]}` -- read the way the
+    /// status dots need it: `state` present is running, absent is not.
+    #[test]
+    fn plugin_list_rows_become_running_states() {
+        let doc = r#"{"ok":true,"plugins":[
+            {"key":"feishu","enabled":true,"state":"running","cursor":3,"failures":2,"note":""},
+            {"key":"slack","enabled":false,"note":"installed but switched off"}
+        ]}"#;
+        let m = parse_runtimes(doc).expect("parses");
+        assert_eq!(m["feishu"], polter_settings_shell::plugins::Runtime { running: true, failures: 2, note: String::new() });
+        assert!(!m["slack"].running);
+        assert_eq!(m["slack"].note, "installed but switched off");
+        assert!(parse_runtimes("not json").is_none());
+        assert!(parse_runtimes(r#"{"ok":true}"#).is_none());
     }
 }

@@ -526,8 +526,9 @@ const GROUP_COUNT: usize = 7;
 /// fails the build instead of doing nothing on a Tuesday.
 fn run_host(frame: HWND, action: &str) -> bool {
     match action {
+        // The settings window's Plugins section (settings.md §3.2).
         "__polter_plugin_page" => {
-            crate::settings_ui::request_toggle();
+            crate::settings_win::request(Route::to(Section::Plugins, None), frame);
             true
         }
         // **The about box this host already has**, not a second one. It shows
