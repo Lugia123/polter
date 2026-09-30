@@ -170,6 +170,20 @@ pub enum WriteKind {
     Rename,
 }
 
+/// "Save as Project" under a name that already has a project **is an
+/// overwrite** (§6.2, #969/#970): the person is asked first, and what it
+/// replaces is kept as the previous version, exactly as "Overwrite with
+/// Current Tab" keeps it. Under a new name it is a save. `target_exists` is
+/// whether the file the name gives is there -- a file this build cannot read
+/// included: it is somebody's project all the same.
+pub fn save_as(target_exists: bool) -> WriteKind {
+    if target_exists {
+        WriteKind::Overwrite
+    } else {
+        WriteKind::Save
+    }
+}
+
 /// The plan for writing a project of `kind` over `existing`.
 pub fn plan_for(kind: WriteKind, existing: Existing) -> WritePlan {
     match (kind, existing) {
@@ -1001,6 +1015,16 @@ mod tests {
         assert_eq!(plan_for(WriteKind::Overwrite, reshaped), WritePlan::Write { keep_previous: true });
         assert_eq!(plan_for(WriteKind::Overwrite, Existing::Unreadable), WritePlan::Write { keep_previous: true });
         assert_eq!(plan_for(WriteKind::Overwrite, Existing::Nothing), WritePlan::Write { keep_previous: false }, "nothing to keep");
+    }
+
+    /// #970: "Save as Project" onto a taken name is an overwrite, and so
+    /// keeps what it replaced -- one pane over one pane included.
+    #[test]
+    fn save_as_onto_a_taken_name_is_an_overwrite() {
+        assert_eq!(save_as(true), WriteKind::Overwrite);
+        assert_eq!(save_as(false), WriteKind::Save);
+        let one_pane_over_one_pane = Existing::Read { layout_changed: false, only_the_time_changed: false };
+        assert_eq!(plan_for(save_as(true), one_pane_over_one_pane), WritePlan::Write { keep_previous: true });
     }
 
     #[test]

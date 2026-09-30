@@ -2788,3 +2788,11 @@ msgstr ""
 #: windows/settings-shell/src/general.rs
 msgid "About"
 msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "\"{}\" already has {} pane(s), saved {}. The replaced version is kept as the previous version."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs
+msgid "Overwrite Project?"
+msgstr ""

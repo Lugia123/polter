@@ -604,7 +604,20 @@ fn close(accept: bool) {
         Completion::SaveProject { tab, close_after } => {
             let saved = match crate::project::resolve_state_dir().map(|s| crate::project::default_dir(&s)) {
                 None => Err("no state directory (neither XDG_STATE_HOME nor LOCALAPPDATA)".to_string()),
-                Some(dir) => crate::project_ui::save_project(&dir, frame, tab, text.clone()),
+                Some(dir) => {
+                    // A taken name is an overwrite: asked first, and what it
+                    // replaces is kept (§6.2, #970).
+                    let taken = crate::project::path_for(&dir, &text).is_ok_and(|p| p.exists());
+                    let kind = polter_settings_shell::projects::save_as(taken);
+                    let existing = crate::project_ui::existing_project_for_overwrite_check(&dir, &text);
+                    if taken && !crate::projects_ui::confirm_save_as_overwrite(frame, &text, existing.as_ref()) {
+                        // not-gated: the condition is the event -- the person
+                        // declined, and nothing was written or closed.
+                        wlogf!(frame, "[prompt] save as project {:?}: overwrite declined; nothing written", text);
+                        return;
+                    }
+                    crate::project_ui::write_tab_as(&dir, frame, tab, text.clone(), kind)
+                }
             };
             match (&saved, close_after) {
                 (Ok(()), None) => wlogf!(frame, "[prompt] saved as project {:?}", text),

@@ -2601,11 +2601,11 @@ msgstr "资源管理器打不开。"
 
 #: windows/host/src/projects_ui.rs
 msgid "1 pane"
-msgstr "1 个窗格"
+msgstr "1 个面板"
 
 #: windows/host/src/projects_ui.rs
 msgid "{} panes"
-msgstr "{} 个窗格"
+msgstr "{} 个面板"
 
 #: windows/host/src/projects_ui.rs
 msgid "Deleted “{}”"
@@ -2625,7 +2625,7 @@ msgstr "上次保存"
 
 #: windows/host/src/projects_ui.rs
 msgid "Panes"
-msgstr "窗格"
+msgstr "面板"
 
 #: windows/host/src/projects_ui.rs
 msgid "Directories"
@@ -2830,6 +2830,14 @@ msgstr "高级"
 #: windows/settings-shell/src/general.rs
 msgid "About"
 msgstr "关于"
+
+#: windows/host/src/projects_ui.rs
+msgid "\"{}\" already has {} pane(s), saved {}. The replaced version is kept as the previous version."
+msgstr "“{}”已经有 {} 个面板，保存于 {}。被替换的版本会留作上一版。"
+
+#: windows/host/src/projects_ui.rs
+msgid "Overwrite Project?"
+msgstr "覆盖这个项目？"
 
 #~ msgid "Role Editor (beta)..."
 #~ msgstr "角色编辑器（beta）…"

@@ -637,6 +637,23 @@ pub(crate) fn ask_save_before_close(frame: HWND) -> pj::CloseChoice {
     pj::close_choice(pressed)
 }
 
+/// "Save as Project" onto a name that already has a project (§6.2, #970):
+/// the same question macOS asks (`ProjectPickerView`, "Overwrite Project?"),
+/// with the same promise -- the replaced version is kept, and it is
+/// (`WriteKind::Overwrite`). `existing` is the project there, `None` when its
+/// file does not read. True to overwrite.
+pub(crate) fn confirm_save_as_overwrite(owner: HWND, name: &str, existing: Option<&Snapshot>) -> bool {
+    let (panes, saved) = match existing {
+        Some(s) => (s.root.as_ref().map(crate::project_ui::leaf_count).unwrap_or(0).to_string(), pj::format_time(s.saved_at, local_offset())),
+        None => ("?".to_string(), "?".to_string()),
+    };
+    let body = tr("\"{}\" already has {} pane(s), saved {}. The replaced version is kept as the previous version.")
+        .replacen("{}", name, 1)
+        .replacen("{}", &panes, 1)
+        .replacen("{}", &saved, 1);
+    ask(owner, "[prompt]", &tr("Overwrite Project?"), &body, &[tr("Overwrite"), tr("Cancel")]) == Some(0)
+}
+
 /// "Do it / Cancel", true for the first.
 fn confirm(main: &str, body: &str, verb: &str) -> bool {
     ask(owner(), "[projects-ui]", main, body, &[verb.to_string(), tr("Cancel")]) == Some(0)
@@ -1014,7 +1031,7 @@ fn draw_text(hdc: HDC, s: &str, r: &RECT, font: &AtomicPtr<c_void>, colour: u32,
 
 /// "3 panes". A project is one tab on both hosts, so the tab count is
 /// always 1 and is not shown (§6.1).
-fn size_text(panes: usize) -> String {
+pub(crate) fn size_text(panes: usize) -> String {
     if panes == 1 {
         tr("1 pane")
     } else {
@@ -1023,7 +1040,7 @@ fn size_text(panes: usize) -> String {
 }
 
 /// Seconds east of UTC on this machine now.
-fn local_offset() -> i64 {
+pub(crate) fn local_offset() -> i64 {
     use windows::Win32::System::SystemInformation::{GetLocalTime, GetSystemTime};
     let (l, u) = unsafe { (GetLocalTime(), GetSystemTime()) };
     let t = |s: windows::Win32::Foundation::SYSTEMTIME| {
