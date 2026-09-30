@@ -245,6 +245,12 @@ pub fn overwrite_project(dir: &std::path::Path, frame: HWND, id: TabId, name: St
     write_tab(dir, frame, id, name, project::WriteKind::Overwrite)
 }
 
+/// A tab saved as a project of `kind` -- `Save` or `Overwrite`, as
+/// `polter_settings_shell::projects::save_as` decided for "Save as Project".
+pub fn write_tab_as(dir: &std::path::Path, frame: HWND, id: TabId, name: String, kind: project::WriteKind) -> Result<(), String> {
+    write_tab(dir, frame, id, name, kind)
+}
+
 fn write_tab(dir: &std::path::Path, frame: HWND, id: TabId, name: String, kind: project::WriteKind) -> Result<(), String> {
     let saved_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
