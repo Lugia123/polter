@@ -2232,6 +2232,64 @@ pub const CAPI = struct {
         return true;
     }
 
+    const config_form_fallback =
+        \\{"error":"the settings table could not be rendered","main":null,"backup":null,"errors":[],"sections":[],"items":[]}
+    ;
+    const config_set_fallback =
+        \\{"ok":false,"key":null,"code":"failed","message":"the result could not be rendered","source":null}
+    ;
+
+    /// The settings window's General section: every config key with its
+    /// group, control, value and source (`configpkg.form.formJson`). Loads
+    /// the config from disk the way the app does, so it answers for the
+    /// files as they are now, not for the config this app last applied.
+    export fn ghostty_app_config_form(
+        app: *App,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        const alloc = app.core_app.alloc;
+        const json = configpkg.form.formJson(alloc) catch |err| {
+            log.warn("config form: could not render: {t}", .{err});
+            return copyJsonOut(config_form_fallback, buf, cap);
+        };
+        defer alloc.free(json);
+        return copyJsonOut(json, buf, cap);
+    }
+
+    /// Write one key into the main config file; `value` null restores the
+    /// default. The write happens once per call, so a result that did not
+    /// fit is read back with `ghostty_app_config_set_result`, not by
+    /// calling this again. Reloading is the host's, as for any edit.
+    export fn ghostty_app_config_set(
+        app: *App,
+        key: [*]const u8,
+        key_len: usize,
+        value: ?[*]const u8,
+        value_len: usize,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        const alloc = app.core_app.alloc;
+        const v: ?[]const u8 = if (value) |p| p[0..value_len] else null;
+        const json = configpkg.form.setJson(alloc, &configpkg.form.state, key[0..key_len], v) catch
+            return copyJsonOut(config_set_fallback, buf, cap);
+        defer alloc.free(json);
+        return copyJsonOut(json, buf, cap);
+    }
+
+    /// The last `ghostty_app_config_set` result again, without writing.
+    export fn ghostty_app_config_set_result(
+        app: *App,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        _ = app;
+        const last = configpkg.form.state.last_result orelse
+            return copyJsonOut(config_set_fallback, buf, cap);
+        return copyJsonOut(last, buf, cap);
+    }
+
     /// Open a tab beside this terminal and start a CLI in it wearing a role
     /// -- what "Launch with Role" does, and the same path `role_launch`
     /// takes. `cli` may be empty for a role set up for exactly one. The new
