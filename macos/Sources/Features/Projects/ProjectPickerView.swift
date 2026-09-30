@@ -151,10 +151,25 @@ struct ProjectPickerView: View {
         }
     }
 
+    /// A typed name that is already a project's is that project being
+    /// replaced: it asks first, exactly as picking its row does (#980).
+    /// It used to save straight away -- overwriting the project and moving
+    /// the tab's binding with no question asked.
     private func createNew() {
-        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        onSave(trimmed)
+        switch ProjectsRules.saveAsStep(store.nameVerdict(current: nil, proposed: newName)) {
+        case .save(let name):
+            onSave(name)
+        case .confirmOverwrite(let existing):
+            // The row the name clashes with, read fresh: if it went away in
+            // the meantime, show the list as it is now rather than save.
+            if let entry = store.entry(name: existing) {
+                pendingOverwrite = entry
+            } else {
+                reload()
+            }
+        case .nothing:
+            return
+        }
     }
 
     private func reload() {

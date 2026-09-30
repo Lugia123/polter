@@ -69,6 +69,23 @@ struct ProjectStoreSettingsTests {
         #expect(!model.entries.contains { $0.name == "zzz" })
     }
 
+    // MARK: Save As onto an existing name (#980)
+
+    /// What the Save As picker asks before saving a typed name: the same
+    /// verdict a rename gets, for a project that does not exist yet. A name
+    /// that differs only in case lands in the same file on a
+    /// case-insensitive disk, so it is the existing project too.
+    @Test func aTypedNameThatIsAlreadyAProjectIsAnOverwrite() throws {
+        let f = try makeFixture()
+        try f.store.write(ProjectFile(name: "gamma", savedAt: 100, root: leaf("/g"), nextScrollback: nil), keeping: .onLayoutChange)
+
+        #expect(ProjectsRules.saveAsStep(f.store.nameVerdict(current: nil, proposed: "gamma")) == .confirmOverwrite("gamma"))
+        #expect(ProjectsRules.saveAsStep(f.store.nameVerdict(current: nil, proposed: "  gamma ")) == .confirmOverwrite("gamma"))
+        #expect(ProjectsRules.saveAsStep(f.store.nameVerdict(current: nil, proposed: "Gamma")) == .confirmOverwrite("gamma"))
+        #expect(ProjectsRules.saveAsStep(f.store.nameVerdict(current: nil, proposed: "delta")) == .save("delta"))
+        #expect(ProjectsRules.saveAsStep(f.store.nameVerdict(current: nil, proposed: "   ")) == .nothing)
+    }
+
     /// A project with a `.prev` (two layouts) and one snapshot.
     @discardableResult
     private func seed(_ f: Fixture, _ name: String) throws -> ProjectStore.Entry {

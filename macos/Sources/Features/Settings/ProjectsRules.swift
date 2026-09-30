@@ -76,6 +76,27 @@ enum ProjectsRules {
         return .ok(name)
     }
 
+    /// What "Save" in the Save As picker's name box does (#980). A name that
+    /// is already a project's -- by the same rule a rename uses, filenames
+    /// compared ignoring case -- is that project being replaced, and goes
+    /// through the same "Overwrite?" confirmation as picking its row; only
+    /// a new name saves straight away.
+    enum SaveAsStep: Equatable {
+        case save(String)
+        /// Ask first; on Overwrite, save under this (the existing) name.
+        case confirmOverwrite(String)
+        /// Nothing to save under.
+        case nothing
+    }
+
+    static func saveAsStep(_ verdict: NameVerdict) -> SaveAsStep {
+        switch verdict {
+        case .ok(let name): .save(name)
+        case .taken(let existing): .confirmOverwrite(existing)
+        case .empty, .unchanged: .nothing
+        }
+    }
+
     /// The name a copy of `name` gets: "<name> Copy", then "<name> Copy 2",
     /// "<name> Copy 3", … -- the first that `isTaken` does not refuse.
     /// `isTaken` is asked with the same check a rename makes, so a copy is

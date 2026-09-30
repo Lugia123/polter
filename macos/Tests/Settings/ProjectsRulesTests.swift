@@ -27,6 +27,17 @@ struct ProjectsRulesTests {
         #expect(!ProjectsRules.holderLabel(windowTitle: "", paneTitles: ["", " "], cwds: [nil, ""]).isEmpty)
     }
 
+    // MARK: Save As onto an existing name (#980)
+
+    /// A typed name that is taken asks before overwriting, under the
+    /// existing project's name; only a new name saves at once.
+    @Test func aTakenNameInSaveAsAsksFirst() {
+        #expect(ProjectsRules.saveAsStep(.taken("Notes")) == .confirmOverwrite("Notes"))
+        #expect(ProjectsRules.saveAsStep(.ok("fresh")) == .save("fresh"))
+        #expect(ProjectsRules.saveAsStep(.empty) == .nothing)
+        #expect(ProjectsRules.saveAsStep(.unchanged) == .nothing)
+    }
+
     @Test func aRouteSelectsTheProjectItNames() {
         #expect(ProjectsRules.projectToSelect(item: "b", bound: "c", names: ["a", "b", "c"]) == "b")
     }
