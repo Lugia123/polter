@@ -554,17 +554,33 @@ pub const Context = struct {
 /// (the calls `Ghostty.Config.loadConfig` makes on the mac, and the Windows
 /// host's), so the form's values are the ones that host would show.
 pub fn loadLike(alloc: Allocator, origin: Config.Origin) !Config {
+    return loadLikeWith(alloc, origin, null);
+}
+
+/// `loadLike` with the command line given; null reads the process's own.
+fn loadLikeWith(alloc: Allocator, origin: Config.Origin, argv: ?[]const []const u8) !Config {
     var cfg = try Config.default(alloc);
     errdefer cfg.deinit();
-    if (origin.file) |f| {
-        cfg.loadFile(alloc, f) catch |err| log.warn("config form: cannot load {s}: {t}", .{ f, err });
-    } else try cfg.loadDefaultFiles(alloc);
-    if (origin.cli) try cfg.loadCliArgs(alloc);
-    try cfg.loadRecursiveFiles(alloc);
+    // **Before anything is loaded** (#984): reading the command line asks
+    // it whether what came before was the host's own file
+    // (`Config.discardDefaultFiles`). Set after, under
+    // `--config-default-files=false` the override was thrown away and the
+    // form showed the old values while writing the new ones -- the order
+    // `ghostty_config_load_file` then `_load_cli_args` has on the host.
     cfg._origin = .{
         .file = if (origin.file) |f| try cfg.arenaAlloc().dupeZ(u8, f) else null,
         .cli = origin.cli,
     };
+    if (origin.file) |f| {
+        cfg.loadFile(alloc, f) catch |err| log.warn("config form: cannot load {s}: {t}", .{ f, err });
+    } else try cfg.loadDefaultFiles(alloc);
+    if (origin.cli) {
+        if (argv) |a| {
+            var it = cli.args.sliceIterator(a);
+            try cfg.loadCliIter(alloc, &it);
+        } else try cfg.loadCliArgs(alloc);
+    }
+    try cfg.loadRecursiveFiles(alloc);
     try cfg.finalize();
     // What `ghostty_config_finalize` adds after `finalize`.
     @import("../font/main.zig").family_check.diagnose(&cfg) catch |err|
@@ -1654,6 +1670,11 @@ test "config form: config-default-files=false does not drop a file the host load
     const scan = try gather(a, testing.io, ctx);
     try testing.expectEqual(@as(?usize, 0), scan.main);
     try testing.expectEqualStrings(override, scan.layers[resolve(&scan, .@"font-size").tally.?.last.layer].path.?);
+    // And the value the form shows is that file's (#984: this was the half
+    // that was missing, and it was wrong).
+    var cfg = try loadLikeWith(testing.allocator, .{ .file = override, .cli = true }, argv);
+    defer cfg.deinit();
+    try testing.expectEqual(@as(f32, 20), cfg.@"font-size");
 
     // The default files are still dropped when they are what was loaded.
     try fx.write("config", "font-size = 10\n");
@@ -1661,4 +1682,23 @@ test "config form: config-default-files=false does not drop a file the host load
     const scan2 = try gather(a, testing.io, plain);
     try testing.expectEqual(@as(?usize, null), scan2.main);
     try testing.expectEqual(@as(?Scan.Tally, null), resolve(&scan2, .@"font-size").tally);
+}
+
+test "config form: the value shown is the host's own file's, --config-default-files=false and all (#984)" {
+    var fx: Fixture = try .init();
+    defer fx.deinit();
+    try fx.write("isolated-test.polter", "font-size = 17\n");
+    const override = try fx.arena.allocator().dupeZ(u8, fx.path("isolated-test.polter"));
+
+    // What `tools/mac-test-instance.sh` starts the instance with.
+    var cfg = try loadLikeWith(testing.allocator, .{ .file = override, .cli = true }, &.{
+        "--poltergeist-register-mcp=false",
+        "--config-default-files=false",
+        "--window-save-state=never",
+    });
+    defer cfg.deinit();
+    try testing.expectEqual(@as(f32, 17), cfg.@"font-size");
+    try testing.expectEqualStrings(override, cfg._origin.file.?);
+    // The command line still counts.
+    try testing.expectEqual(Config.WindowSaveState.never, cfg.@"window-save-state");
 }

@@ -4885,6 +4885,17 @@ pub fn loadCliArgs(self: *Config, alloc_gpa: Allocator) !void {
         }
     }
 
+    var iter = try cli.args.argsIterator(alloc_gpa, global.args());
+    defer iter.deinit();
+    try self.loadCliIter(alloc_gpa, &iter);
+}
+
+/// The command line from `iter`, with everything `loadCliArgs` does around
+/// it: `font-family` replacing rather than appending, `config-default-files`
+/// honoured, paths relative to the working directory. Split out (task 984)
+/// so a command line can be handed in -- the settings form's tests load
+/// the way a host does, flags included.
+pub fn loadCliIter(self: *Config, alloc_gpa: Allocator, iter: anytype) !void {
     // We set config-default-files to true here because this
     // should always be reset so we can detect if it is set
     // in the CLI since it is documented as having no affect
@@ -4909,10 +4920,7 @@ pub fn loadCliArgs(self: *Config, alloc_gpa: Allocator) !void {
         inline for (fields) |field| @field(self, field).overwrite_next = false;
     }
 
-    // Initialize our CLI iterator.
-    var iter = try cli.args.argsIterator(alloc_gpa, global.args());
-    defer iter.deinit();
-    try self.loadIter(alloc_gpa, &iter);
+    try self.loadIter(alloc_gpa, iter);
     try self.discardDefaultFiles(alloc_gpa, replay_len_start);
 
     // Any paths referenced from the CLI are relative to the current working
