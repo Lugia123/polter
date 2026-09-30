@@ -124,6 +124,7 @@ mod osk;
 mod palette;
 mod personas;
 mod plugins;
+mod general_ui;
 mod plugins_ui;
 mod plugin_page;
 mod polterclose;
@@ -132,7 +133,6 @@ mod project_picker;
 mod project_ui;
 mod projects_ui;
 mod prompt;
-mod settings_ui;
 mod settings_win;
 mod quick;
 mod reload;
@@ -5134,6 +5134,9 @@ fn load_api() -> Option<Api> {
             app_plugin_list: sym!(internal, "ghostty_app_plugin_list"),
             app_plugin_test: sym!(internal, "ghostty_app_plugin_test"),
             app_plugin_configure: sym!(internal, "ghostty_app_plugin_configure"),
+            app_config_form: sym!(internal, "ghostty_app_config_form"),
+            app_config_set: sym!(internal, "ghostty_app_config_set"),
+            app_config_set_result: sym!(internal, "ghostty_app_config_set_result"),
             surface_complete_clipboard_request: sym!(
                 internal,
                 "ghostty_surface_complete_clipboard_request"
@@ -6500,7 +6503,8 @@ fn main() {
     // and since `poltergeist-register-mcp` defaults to on, "ignored" meant
     // "on". The host's own flags are under `--polter-host-`, which the core
     // skips; anything else it does not know becomes a diagnostic, and
-    // diagnostics open the error window below (`settings_ui::request_errors`).
+    // diagnostics open the settings window at General › Advanced below
+    // (`general_ui::config_changed`).
     // Why there is no way to write this sequence out here: `ConfigLoader`.
     let config = unsafe { api_box.config_loader.load_config() };
     CONFIG.store(config, Ordering::Release);
@@ -6788,7 +6792,6 @@ fn main() {
     taskbar::init(hinst);
     notify::init(hinst);
     divider::init(hinst);
-    settings_ui::init(hinst);
     // What each plugin's running copy starts with: the status dots' ↻
     // (settings.md §5.1) compares against it, and the core keeps no copy.
     plugins::snapshot_at_startup();
@@ -6799,8 +6802,10 @@ fn main() {
     reload::init(hinst);
     // A config that failed to parse is the one thing worth interrupting a
     // start-up for: the terminal comes up looking normal and behaving like a
-    // default install, with the reason only in a log nobody opened.
-    settings_ui::request_errors();
+    // default install, with the reason only in a log nobody opened. The
+    // errors used to be a box of their own; they are General › Advanced now
+    // (settings.md §7.1), and the settings window opens there.
+    general_ui::config_changed();
 
     start_watchdog();
     logf!("entering message loop; renderer thread drives redraw");

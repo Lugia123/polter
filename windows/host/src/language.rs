@@ -190,7 +190,7 @@ const ID_BASE: usize = 1;
 /// Open the picker for `frame`. **Returns at once**; the menu opens from the
 /// thread's own message loop.
 ///
-/// Deferred for the reason `settings_ui::request_about` is: `--polter-host-menu-selftest`
+/// Deferred for the reason `settings_win::request` is: `--polter-host-menu-selftest`
 /// dispatches this row through the same call a click makes, and a
 /// `TrackPopupMenu` entered here would hold the self-test inside its modal
 /// loop until somebody dismissed it. A thread timer needs no window procedure

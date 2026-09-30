@@ -2711,6 +2711,126 @@ msgstr "重命名项目"
 msgid "The project's file, its previous version and its scrollback move with it."
 msgstr "项目文件、上一版和 scrollback 一起改名。"
 
+#: windows/host/src/general_ui.rs
+msgid "Edit in Config File…"
+msgstr "在配置文件中编辑…"
+
+#: windows/host/src/general_ui.rs
+msgid "Filter by key"
+msgstr "按键名筛选"
+
+#: windows/host/src/general_ui.rs
+msgid "Set by {}:{}. Edit it there."
+msgstr "由 {}:{} 设置，请在那里修改。"
+
+#: windows/host/src/general_ui.rs
+msgid "Set on the command line, which has the last word."
+msgstr "在命令行里设置，以命令行为准。"
+
+#: windows/host/src/general_ui.rs
+msgid "Edit this one in the config file."
+msgstr "这一项请在配置文件中编辑。"
+
+#: windows/host/src/general_ui.rs
+msgid "Light"
+msgstr "浅色"
+
+#: windows/host/src/general_ui.rs
+msgid "Dark"
+msgstr "深色"
+
+#: windows/host/src/general_ui.rs
+msgid "Saved to the config file."
+msgstr "已写入配置文件。"
+
+#: windows/host/src/general_ui.rs
+msgid "That value is not valid for this key."
+msgstr "这个值对该项无效。"
+
+#: windows/host/src/general_ui.rs
+msgid "This key is set somewhere the form does not write."
+msgstr "这一项在表单不写入的地方设置。"
+
+#: windows/host/src/general_ui.rs
+msgid "The config file kept changing while it was being written. Try again."
+msgstr "写入时配置文件一直在变，请再试一次。"
+
+#: windows/host/src/general_ui.rs
+msgid "Could not write the config file: {}"
+msgstr "无法写入配置文件：{}"
+
+#: windows/host/src/general_ui.rs
+msgid "Restore Default"
+msgstr "恢复默认"
+
+#: windows/host/src/general_ui.rs
+msgid "The settings could not be read: {}"
+msgstr "无法读取设置：{}"
+
+#: windows/host/src/general_ui.rs
+msgid "The form writes to:\n{}"
+msgstr "表单写入的文件：\n{}"
+
+#: windows/host/src/general_ui.rs
+msgid "The configuration loaded without errors."
+msgstr "配置加载时没有错误。"
+
+#: windows/host/src/general_ui.rs
+msgid "{} error(s). The lines they name were ignored; fix them and reload."
+msgstr "{} 个错误。它们指出的那些行已被忽略；改好后重新加载。"
+
+#: windows/host/src/general_ui.rs
+msgid "Before this run's first write the config file was copied to:\n{}"
+msgstr "本次运行第一次写入前，配置文件已备份到：\n{}"
+
+#: windows/host/src/general_ui.rs
+msgid "A terminal that minds the agents running in it. \nBuilt on Ghostty."
+msgstr "一个会照看在里面干活的 agent 的终端。\n基于 Ghostty 构建。"
+
+#: windows/host/src/general_ui.rs
+msgid "Version"
+msgstr "版本"
+
+#: windows/host/src/general_ui.rs
+msgid "Build"
+msgstr "构建"
+
+#: windows/host/src/general_ui.rs
+msgid "Commit"
+msgstr "提交"
+
+#: windows/host/src/general_ui.rs
+msgid "The shortcuts could not be read from the configuration."
+msgstr "无法从配置中读取快捷键。"
+
+#: windows/settings-shell/src/general.rs
+msgid "Appearance"
+msgstr "外观"
+
+#: windows/settings-shell/src/general.rs
+msgid "Font"
+msgstr "字体"
+
+#: windows/settings-shell/src/general.rs
+msgid "Terminal"
+msgstr "终端"
+
+#: windows/settings-shell/src/general.rs
+msgid "Windows & Tabs"
+msgstr "窗口与标签"
+
+#: windows/settings-shell/src/general.rs
+msgid "All Options"
+msgstr "全部选项"
+
+#: windows/settings-shell/src/general.rs
+msgid "Advanced"
+msgstr "高级"
+
+#: windows/settings-shell/src/general.rs
+msgid "About"
+msgstr "关于"
+
 #~ msgid "Role Editor (beta)..."
 #~ msgstr "角色编辑器（beta）…"
 

@@ -162,3 +162,29 @@ Windows 列的读数取自 worktree `s2-win-plugins`（基于 60b63ad7d + 核心
 单元测试（Windows 纯层）：`polter-settings-shell` 79 条（基线 HEAD 44 条，新增 35：`projects.rs` 31、`lib.rs` 搜索 4），
 `cargo test -p polter-settings-shell` 在 mac 上全过；地板 13 处变异（先写 9、后补 4），每处都红在各自断言行上，
 其中「重名比较去掉大小写折叠」第一次没红，补了一条旧文件名的用例后才红。宿主测试 exe 交叉编译通过，没跑（只能在测试机上跑）。
+
+## 第 4 期：通用栏目（§7）· Windows 列（#963）
+
+读数取自集成树 `s2-int-win`（feature/v0.9 9fc5c4bc5 + 合并中的 settings2/win-projects + 本期改动，未提交），交叉编译
+`polter-host.exe` sha256 前缀 `1326f409`。**没上真机**：✅（纯层）= `polter-settings-shell` 的 `general` 模块单元测试
+在 mac 上跑过、打坏过；⏳ = 写了、编过，等真机。mac 列见 mac 集成树的清单（#961 的 G1–G8 与 #964 的表单格）。
+
+| # | 行为 | Windows |
+|---|---|---|
+| W-G1 | 通用栏目有分组列表（列表列 260）：外观 / 字体 / 终端 / 窗口与标签 / Polter / 全部选项 / 快捷键 / 高级 / 关于，与 mac `GeneralGroup` 同名同序 | ✅（纯层）`group_keys_are_the_macos_raw_values`、`group_rows_are_the_sidebar_rhythm_and_clicks_find_them`（900×620 下九行都在底带线之上）；⏳ 画面 |
+| W-G2 | 路由 `general/<组>` 落到该组；无组时新开的窗口在第一组、已开的留在原组；不认识的组名当作无 | ✅（纯层）`a_route_lands_on_its_group_else_first_or_stays`、`general_carries_a_group_and_nothing_else`。⚠️ 规格 §3.1 表里 general 的 item 仍写「—」，mac #961 与这里都已按 `general/<组>` 做，表要改 |
+| W-G3 | 前五组的键取自核心 `ghostty_app_config_form` 的 `sections`，顺序照核心；全部选项 = 全部键，按键名筛选（忽略大小写） | ✅（纯层）`a_group_shows_its_keys_in_the_tables_order_and_all_filters`；⏳ 画面 |
+| W-G4 | 控件：开关→勾选框，枚举→下拉，主题→浅色 / 深色两个框（写回 `light:A,dark:B`，两边相同写一个名），其余→单行框；全部选项里可写的一律单行框；只读项只读框 + 原因 | ✅（纯层）`a_row_draws_by_whether_it_can_be_written`、`theme_pairs_round_trip`、`a_readonly_row_says_why`；⏳ 画面。⚠️ 数值项没做滑块（mac 对 0–1 的范围用滑块），Windows 是单行框 |
+| W-G5 | 即时写入：开关 / 枚举一动就写，文本框回车或失焦时写，值没变不写；写完走宿主的重新加载，并原地刷新数值（不重建控件、键盘不丢） | ✅（纯层）`switches_write_at_once_boxes_on_enter_readonly_never`、`the_dot_and_restore_default`（`should_write`）；⏳ 真机 |
+| W-G6 | 校验失败：控件下方红字显示核心的 `message`，值退回生效值，框线变红 | ⏳ |
+| W-G7 | 与默认值不同的项在标签左侧有点；右键标签有「恢复默认」，仅当生效行在主文件里（规则 5） | ✅（纯层）`the_dot_and_restore_default`；⏳ 菜单 |
+| W-G8 | 快捷键组：旧快捷键弹窗并入（列：名称 220 / 按键 160 / 说明；窄于 name+keys+说明 160 时说明折到按键下），UI 自动化行读的是这里的快照；底栏「在配置文件中编辑…」 | ✅（纯层）`keybind_rows_do_not_overlap_and_scroll_into_the_same_slots`、`a_narrow_page_puts_the_note_under_the_keys`、`keybind_scrolling_holds_at_the_ends`；⏳ 画面、UIA |
+| W-G9 | 高级组：表单写入的文件、配置错误列表（旧错误弹窗并入）、本次运行第一次写入前的备份位置；底栏「打开配置文件…」「重新加载配置」 | ⏳ |
+| W-G10 | 设置窗口没开、配置有错时（启动、重新加载），直接打开设置窗口到 通用 › 高级（替代旧的错误弹窗）；窗口开着时只刷新页面、不跳转 | ⏳ `general_ui::config_changed` |
+| W-G11 | 关于组：版本（核心 `ghostty_info`）/ 构建（构建模式 · 本二进制身份，与 `[build]` 日志同源）/ 提交（宿主提交号），空值不显示 | ✅（纯层）`about_leaves_out_what_is_blank`；⏳ 画面 |
+| W-G12 | 菜单「关于 Polter」「快捷键…」改走 `general/about`、`general/keybinds`；`settings_ui.rs` 整个删除 | ⏳ `menu.rs` |
+| W-G13 | 窗口重新获得焦点时重读整张表（§7.3），不重建控件除非该组的键变了 | ⏳ |
+
+单元测试（Windows 纯层）：`polter-settings-shell` 110 条（合并后 94 + `general` 16），基线 `zz-nothing` 0；
+地板 10 处（G1–G10），每处红在各自断言行。其中「全部选项筛选区分大小写」第一版变异体是等价的（键名本来就全小写），没红；
+改成拿掉查询词一侧的小写化后红在 `general.rs:488`。

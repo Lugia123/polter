@@ -12,6 +12,7 @@
 //! `settings_win.rs` asks these functions and decides nothing itself;
 //! `windows/tools/pure-crates-pass-their-tests.py` runs the tests below.
 
+pub mod general;
 pub mod plugins;
 pub mod projects;
 
@@ -44,11 +45,16 @@ impl Section {
         Section::ALL.into_iter().find(|s| s.key() == k)
     }
 
-    /// Whether the section has items to select. `general` has none (§3.1),
-    /// so an item named for it is dropped rather than carried around as a
-    /// selection that means nothing.
-    pub fn has_items(self) -> bool {
-        self != Section::General
+    /// Whether `item` names something this section can select. `general`'s
+    /// items are its groups (`general/keybinds`, as the macOS side's
+    /// `SettingsRoute.general(_:)` has them); a name that is no group is
+    /// dropped rather than carried around as a selection that means
+    /// nothing. The other sections' items are keys only they can check.
+    pub fn accepts(self, item: &str) -> bool {
+        match self {
+            Section::General => general::Group::from_key(item).is_some(),
+            _ => true,
+        }
     }
 }
 
@@ -68,7 +74,7 @@ impl Route {
     }
 
     pub fn to(section: Section, item: Option<&str>) -> Route {
-        let item = item.filter(|i| !i.is_empty() && section.has_items()).map(str::to_string);
+        let item = item.filter(|i| !i.is_empty() && section.accepts(i)).map(str::to_string);
         Route { section: Some(section), item }
     }
 
@@ -760,8 +766,12 @@ mod tests {
     }
 
     #[test]
-    fn general_carries_no_item() {
+    fn general_carries_a_group_and_nothing_else() {
         assert_eq!(Route::parse("general/x"), Some(Route { section: Some(Section::General), item: None }));
+        assert_eq!(
+            Route::parse("general/keybinds"),
+            Some(Route { section: Some(Section::General), item: Some("keybinds".into()) })
+        );
     }
 
     #[test]
