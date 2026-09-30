@@ -205,6 +205,73 @@ pub fn control_for(it: &Item, group: Group) -> Control {
     }
 }
 
+/// A range narrow enough to drag -- background opacity's 0-1 -- is a
+/// slider; an integer type comes with its type's whole range, which is not
+/// (`ConfigFormRules.usesSlider`).
+pub fn uses_slider(it: &Item) -> bool {
+    match (it.control, it.min, it.max) {
+        (Control::Number, Some(min), Some(max)) => max > min && max - min <= 1.0,
+        _ => false,
+    }
+}
+
+/// Whether row `it` draws a slider in `group`: a writable number with a
+/// narrow range, and not in All Options, where every writable key is one
+/// line of text.
+pub fn slider_for(it: &Item, group: Group) -> bool {
+    control_for(it, group) == Control::Number && uses_slider(it)
+}
+
+/// A slider's value as it is written: two decimals, trailing zeros dropped
+/// (`0.9`, `1`, `0.25`) -- `ConfigFormRules.sliderText`.
+pub fn slider_text(v: f64) -> String {
+    let s = format!("{v:.2}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s == "-0" || s.is_empty() {
+        "0".to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+/// A trackbar is integers: this many steps from `min` to `max`, so a
+/// step is a hundredth of the 0-1 range, the precision `slider_text`
+/// writes.
+pub const SLIDER_STEPS: i32 = 100;
+
+/// The trackbar position for `value` (the effective value, as the file
+/// writes it). A value that does not read as a number, or lies outside the
+/// range, sits at the nearer end rather than nowhere.
+pub fn slider_pos(value: &str, min: f64, max: f64) -> i32 {
+    let v = value.trim().parse::<f64>().unwrap_or(min);
+    if max <= min {
+        return 0;
+    }
+    (((v - min) / (max - min)) * SLIDER_STEPS as f64).round().clamp(0.0, SLIDER_STEPS as f64) as i32
+}
+
+/// The value a trackbar position stands for.
+pub fn slider_value(pos: i32, min: f64, max: f64) -> f64 {
+    min + (max - min) * (pos.clamp(0, SLIDER_STEPS) as f64) / SLIDER_STEPS as f64
+}
+
+/// The slider's widest, as on the macOS side (`.frame(maxWidth: 240)`).
+pub const SLIDER_MAX_W: i32 = 240;
+/// Room for the value beside it: "0.25" and a little.
+pub const SLIDER_TEXT_W: i32 = 48;
+
+/// A slider row's two parts inside its control cell: the slider from the
+/// control column's left edge, at most `SLIDER_MAX_W`, and the value after
+/// it, a row gap away.
+pub fn slider_parts(control: Rect, dpi: i32) -> (Rect, Rect) {
+    let s = |v| scale(v, dpi);
+    let room = (control.width() - s(ROW_GAP) - s(SLIDER_TEXT_W)).max(s(CONTROL_H));
+    let w = room.min(s(SLIDER_MAX_W));
+    let slider = Rect::new(control.left, control.top, control.left + w, control.bottom);
+    let text = Rect::new(slider.right + s(ROW_GAP), control.top, (slider.right + s(ROW_GAP) + s(SLIDER_TEXT_W)).min(control.right.max(slider.right)), control.bottom);
+    (slider, text)
+}
+
 /// When a row writes (§7.3): a switch or a choice the moment it changes, a
 /// text box on Return or when it loses focus, a read-only row never.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -523,6 +590,82 @@ mod tests {
         assert!(!differs_from_default(&item("a", None, Control::Text, "x", "x")));
         assert!(should_write("16", &item("a", None, Control::Text, "x", "15")));
         assert!(!should_write("15", &item("a", None, Control::Text, "x", "15")));
+    }
+
+    fn ranged(key: &str, min: Option<f64>, max: Option<f64>) -> Item {
+        let mut it = item(key, Some("appearance"), Control::Number, "1", "0.9");
+        it.min = min;
+        it.max = max;
+        it
+    }
+
+    /// **The macOS side's `onlyANarrowRangeIsASlider`**, the same items.
+    #[test]
+    fn only_a_narrow_range_is_a_slider() {
+        assert!(uses_slider(&ranged("background-opacity", Some(0.0), Some(1.0))));
+        assert!(!uses_slider(&ranged("font-size", Some(1.0), None)));
+        assert_eq!(slider_text(0.9), "0.9");
+        assert_eq!(slider_text(1.0), "1");
+        assert_eq!(slider_text(0.25), "0.25");
+        assert_eq!(slider_text(0.0), "0");
+        // And the edges of the rule: a whole integer range, an empty or
+        // backwards one, and a range that is not a number's.
+        assert!(!uses_slider(&ranged("scrollback", Some(0.0), Some(4294967295.0))));
+        assert!(!uses_slider(&ranged("x", Some(1.0), Some(1.0))));
+        assert!(!uses_slider(&ranged("x", Some(1.0), Some(0.0))));
+        assert!(uses_slider(&ranged("x", Some(0.5), Some(1.5))));
+        let mut t = ranged("x", Some(0.0), Some(1.0));
+        t.control = Control::Text;
+        assert!(!uses_slider(&t));
+    }
+
+    #[test]
+    fn a_slider_only_where_the_row_is_a_writable_number_outside_all() {
+        let it = ranged("background-opacity", Some(0.0), Some(1.0));
+        assert!(slider_for(&it, Group::Appearance));
+        assert!(!slider_for(&it, Group::All));
+        let mut ro = it.clone();
+        ro.readonly = Some("file".into());
+        assert!(!slider_for(&ro, Group::Appearance));
+    }
+
+    #[test]
+    fn slider_positions_round_trip_to_what_is_written() {
+        assert_eq!(slider_pos("0.9", 0.0, 1.0), 90);
+        assert_eq!(slider_pos("1", 0.0, 1.0), SLIDER_STEPS);
+        assert_eq!(slider_pos("junk", 0.0, 1.0), 0);
+        assert_eq!(slider_pos("7", 0.0, 1.0), SLIDER_STEPS);
+        assert_eq!(slider_pos("-3", 0.0, 1.0), 0);
+        // Rounded, not cut: 0.29 * 100 is 28.999... in a double, and a
+        // truncating conversion would put a file's own 0.29 on step 28.
+        assert_eq!(slider_pos("0.29", 0.0, 1.0), 29);
+        assert_eq!(slider_pos("0.57", 0.0, 1.0), 57);
+        assert_eq!(slider_pos("0.456", 0.0, 1.0), 46);
+        for p in [0, 1, 25, 33, 90, 100] {
+            let v = slider_value(p, 0.0, 1.0);
+            assert_eq!(slider_pos(&slider_text(v), 0.0, 1.0), p, "position {p}");
+        }
+        assert_eq!(slider_text(slider_value(90, 0.0, 1.0)), "0.9");
+        assert_eq!(slider_text(slider_value(100, 0.5, 1.5)), "1.5");
+    }
+
+    #[test]
+    fn the_slider_starts_on_the_control_column_and_stops_at_240() {
+        let dpi = 96;
+        let wide = Rect::new(128, 0, 900, CONTROL_H);
+        let (sl, tx) = slider_parts(wide, dpi);
+        assert_eq!(sl.left, wide.left);
+        assert_eq!(sl.width(), SLIDER_MAX_W);
+        assert_eq!(tx.left, sl.right + ROW_GAP);
+        assert_eq!((sl.top, sl.bottom), (wide.top, wide.bottom));
+        // Narrow: the slider gives way, the value keeps its room.
+        let narrow = Rect::new(128, 0, 128 + 200, CONTROL_H);
+        let (sl, tx) = slider_parts(narrow, dpi);
+        assert_eq!(tx.right, narrow.right);
+        assert_eq!(tx.width(), SLIDER_TEXT_W);
+        assert!(sl.width() < SLIDER_MAX_W);
+        let (sl2, _) = slider_parts(wide, 192);
+        assert_eq!(sl2.width(), 2 * SLIDER_MAX_W);
     }
 
     #[test]

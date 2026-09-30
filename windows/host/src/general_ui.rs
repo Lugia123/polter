@@ -85,6 +85,9 @@ struct Row {
     /// What the core said when it refused the last write (§7.3: under the
     /// control, in red, the value back to the effective one).
     error: Option<String>,
+    /// A number with a narrow range, drawn as a trackbar with its value
+    /// beside it (`rules::slider_for`).
+    slider: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -357,6 +360,10 @@ fn get_text(h: HWND) -> String {
 
 fn create(host: HWND) -> bool {
     unsafe {
+        // The trackbar is comctl32's, not user32's: its class exists once
+        // this has been asked for.
+        let icc = INITCOMMONCONTROLSEX { dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_BAR_CLASSES };
+        let _ = InitCommonControlsEx(&icc);
         for (class, proc_fn) in [
             (w!("PolterGeneralSection"), section_proc as unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT),
             (w!("PolterGeneralForm"), form_proc),
@@ -466,6 +473,10 @@ fn label_fixed(f: Fixed) {
 /// anything (`borrow-across-dispatch.py`).
 fn set_fixed(f: Fixed) {
     ST.with(|c| c.borrow_mut().fixed = Some(f));
+}
+
+fn set_rows(rows: Vec<Row>) {
+    ST.with(|c| c.borrow_mut().rows = rows);
 }
 
 fn set_scroll(to: i32) {
@@ -784,11 +795,12 @@ fn rebuild() {
             let it = &form.items[i];
             let control = rules::control_for(it, group);
             let id = ID_ROW_BASE + made.len() as u16;
-            let (hwnd, hwnd2) = make_row(control, it, id);
-            made.push(Row { item: i, control, hwnd, hwnd2, error: None });
+            let slider = rules::slider_for(it, group);
+            let (hwnd, hwnd2) = if slider { (make_slider(id), HWND(std::ptr::null_mut())) } else { make_row(control, it, id) };
+            made.push(Row { item: i, control, hwnd, hwnd2, error: None, slider });
         }
     }
-    ST.with(|c| c.borrow_mut().rows = made);
+    set_rows(made);
     fill_rows();
     relayout();
 }
@@ -818,6 +830,34 @@ fn make_control(class: PCWSTR, style: WINDOW_STYLE, id: u16) -> HWND {
     h
 }
 
+/// A trackbar of `SLIDER_STEPS` steps; the range it stands for is the
+/// item's own, converted in `rules::slider_pos` / `slider_value`. No tick
+/// marks: the value is written beside it.
+fn make_slider(id: u16) -> HWND {
+    let h = make_control(w!("msctls_trackbar32"), WINDOW_STYLE((TBS_HORZ | TBS_NOTICKS) as u32), id);
+    if !h.0.is_null() {
+        unsafe {
+            SendMessageW(h, TBM_SETRANGEMIN, Some(WPARAM(0)), Some(LPARAM(0)));
+            SendMessageW(h, TBM_SETRANGEMAX, Some(WPARAM(1)), Some(LPARAM(rules::SLIDER_STEPS as isize)));
+            SendMessageW(h, TBM_SETLINESIZE, Some(WPARAM(0)), Some(LPARAM(1)));
+            SendMessageW(h, TBM_SETPAGESIZE, Some(WPARAM(0)), Some(LPARAM(10)));
+        }
+    }
+    h
+}
+
+/// `TBM_GETPOS`, which is `WM_USER` itself and has no constant in the
+/// `windows` crate (its neighbours `TBM_SETPOS` = 1029 and
+/// `TBM_SETRANGEMIN` = 1031 do).
+const TBM_GETPOS: u32 = WM_USER;
+
+/// Where a trackbar is now, as the value it stands for, written the way
+/// the file writes it.
+fn slider_now(h: HWND, it: &Item) -> String {
+    let pos = unsafe { SendMessageW(h, TBM_GETPOS, None, None).0 } as i32;
+    rules::slider_text(rules::slider_value(pos, it.min.unwrap_or(0.0), it.max.unwrap_or(1.0)))
+}
+
 fn make_row(control: Control, it: &Item, id: u16) -> (HWND, HWND) {
     let border = if theme::custom_drawing() { WINDOW_STYLE(0) } else { WS_BORDER };
     let edit = WINDOW_STYLE(ES_AUTOHSCROLL as u32) | border;
@@ -843,13 +883,20 @@ fn make_row(control: Control, it: &Item, id: u16) -> (HWND, HWND) {
 
 /// Put every row's effective value into its control.
 fn fill_rows() {
-    let rows: Vec<(HWND, HWND, Control, Item)> = ST.with(|c| {
+    let rows: Vec<(HWND, HWND, Control, Item, bool)> = ST.with(|c| {
         let s = c.borrow();
         let Some(form) = &s.form else { return Vec::new() };
-        s.rows.iter().map(|r| (r.hwnd, r.hwnd2, r.control, form.items[r.item].clone())).collect()
+        s.rows.iter().map(|r| (r.hwnd, r.hwnd2, r.control, form.items[r.item].clone(), r.slider)).collect()
     });
     ST.with(|c| c.borrow_mut().filling = true);
-    for (h, h2, control, it) in rows {
+    for (h, h2, control, it, slider) in rows {
+        if slider {
+            let pos = rules::slider_pos(&it.value, it.min.unwrap_or(0.0), it.max.unwrap_or(1.0));
+            unsafe {
+                SendMessageW(h, TBM_SETPOS, Some(WPARAM(1)), Some(LPARAM(pos as isize)));
+            }
+            continue;
+        }
         fill_one(h, h2, control, &it);
     }
     ST.with(|c| c.borrow_mut().filling = false);
@@ -932,15 +979,18 @@ fn layout_form(dpi: i32) {
     let (ctls, scroll) = ST.with(|c| {
         let s = &mut *c.borrow_mut();
         s.scroll = s.scroll.clamp(0, (total - view).max(0));
-        (s.rows.iter().map(|r| (r.hwnd, r.hwnd2, r.control)).collect::<Vec<_>>(), s.scroll)
+        (s.rows.iter().map(|r| (r.hwnd, r.hwnd2, r.control, r.slider)).collect::<Vec<_>>(), s.scroll)
     });
     let gap = shell::scale(grid::BUTTONS_GAP, dpi);
-    for ((h, h2, control), r) in ctls.iter().zip(rows.iter()) {
+    for ((h, h2, control, slider), r) in ctls.iter().zip(rows.iter()) {
         let c = r.control;
         let extra = if *control == Control::Choice { shell::scale(CHOICE_LIST_ROWS * CHOICE_ROW_H, dpi) } else { 0 };
         let flags = SWP_NOZORDER | SWP_NOACTIVATE;
         unsafe {
-            if *control == Control::Theme {
+            if *slider {
+                let (sl, _) = rules::slider_parts(c, dpi);
+                let _ = SetWindowPos(*h, None, sl.left, sl.top - scroll, sl.width(), sl.height(), flags);
+            } else if *control == Control::Theme {
                 let half = (c.width() - gap) / 2;
                 let _ = SetWindowPos(*h, None, c.left, c.top - scroll, half, c.height(), flags);
                 let _ = SetWindowPos(*h2, None, c.left + half + gap, c.top - scroll, c.width() - half - gap, c.height(), flags);
@@ -982,11 +1032,15 @@ fn row_of_id(id: u16) -> Option<usize> {
 
 /// What row `index`'s control says now, as the value to write.
 fn edited_value(index: usize) -> Option<(Item, Control, String)> {
-    let (h, h2, control, it) = ST.with(|c| {
+    let (h, h2, control, it, slider) = ST.with(|c| {
         let s = c.borrow();
         let r = s.rows.get(index)?;
-        Some((r.hwnd, r.hwnd2, r.control, s.form.as_ref()?.items.get(r.item)?.clone()))
+        Some((r.hwnd, r.hwnd2, r.control, s.form.as_ref()?.items.get(r.item)?.clone(), r.slider))
     })?;
+    if slider {
+        let v = slider_now(h, &it);
+        return Some((it, control, v));
+    }
     let v = match control {
         Control::Toggle => rules::toggle_value(unsafe { SendMessageW(h, BM_GETCHECK, None, None).0 == 1 }).to_string(),
         Control::Choice => get_text(h),
@@ -1008,6 +1062,19 @@ fn changed(index: usize, commit: Commit) {
         return;
     }
     write(index, &it.key, Some(&v));
+}
+
+/// A slider was let go (`TB_ENDTRACK`, after a drag or a key): it writes
+/// then, as the macOS slider does when editing ends, and only a value that
+/// is not what the file says.
+fn slider_released(index: usize) {
+    if ST.with(|c| c.borrow().filling) {
+        return;
+    }
+    let Some((it, _, v)) = edited_value(index) else { return };
+    if rules::should_write(&v, &it) {
+        write(index, &it.key, Some(&v));
+    }
 }
 
 fn write(index: usize, key: &str, value: Option<&str>) {
@@ -1125,6 +1192,12 @@ fn row_at(y: i32) -> Option<usize> {
 /// Return in a text box writes it; Ctrl+W and Escape behave as everywhere
 /// in this window (`settings_win::subclass_child` keeps its previous
 /// procedure in another property, so the two never collide).
+fn is_trackbar(h: HWND) -> bool {
+    let mut buf = [0u16; 32];
+    let n = unsafe { GetClassNameW(h, &mut buf) }.max(0) as usize;
+    String::from_utf16_lossy(&buf[..n]).eq_ignore_ascii_case("msctls_trackbar32")
+}
+
 fn subclass_field(h: HWND) {
     unsafe {
         let prev = SetWindowLongPtrW(h, GWLP_WNDPROC, field_proc as *const () as isize);
@@ -1347,8 +1420,8 @@ fn paint_form(win: HWND) {
     let rows = form_rows(rc.right, dpi);
     let (scroll, items) = ST.with(|c| {
         let s = c.borrow();
-        let items: Vec<(Item, Control, Option<String>, HWND, HWND)> = match &s.form {
-            Some(f) => s.rows.iter().map(|r| (f.items[r.item].clone(), r.control, r.error.clone(), r.hwnd, r.hwnd2)).collect(),
+        let items: Vec<(Item, Control, Option<String>, HWND, HWND, bool)> = match &s.form {
+            Some(f) => s.rows.iter().map(|r| (f.items[r.item].clone(), r.control, r.error.clone(), r.hwnd, r.hwnd2, r.slider)).collect(),
             None => Vec::new(),
         };
         (s.scroll, items)
@@ -1357,7 +1430,14 @@ fn paint_form(win: HWND) {
     let hdc = unsafe { BeginPaint(win, &mut ps) };
     fill(hdc, &rc, theme::bg());
     let dot = shell::scale(8, dpi);
-    for (r, (it, control, error, h, h2)) in rows.iter().zip(items.iter()) {
+    for (r, (it, control, error, h, h2, slider)) in rows.iter().zip(items.iter()) {
+        if *slider {
+            // The value beside the slider, read off the trackbar itself so
+            // it follows a drag before anything is written.
+            let (_, tx) = rules::slider_parts(r.control, dpi);
+            let tr_ = RECT { left: tx.left, top: tx.top - scroll, right: tx.right, bottom: tx.bottom - scroll };
+            draw_text(hdc, &slider_now(*h, it), &tr_, font(), theme::dim(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        }
         let lr = RECT { left: r.label.left + dot, top: r.label.top - scroll, right: r.label.right, bottom: r.label.bottom - scroll };
         draw_text(hdc, &it.key, &lr, font(), theme::text(), DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         if rules::differs_from_default(it) {
@@ -1369,7 +1449,7 @@ fn paint_form(win: HWND) {
             let hr = RECT { left: hr.left, top: hr.top - scroll, right: hr.right, bottom: hr.bottom - scroll };
             draw_text(hdc, &note, &hr, font(), if red { theme::warn() } else { theme::dim() }, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL);
         }
-        if theme::custom_drawing() && !matches!(control, Control::Toggle | Control::Choice) {
+        if theme::custom_drawing() && !*slider && !matches!(control, Control::Toggle | Control::Choice) {
             for c in [*h, *h2] {
                 if c.0.is_null() {
                     continue;
@@ -1598,10 +1678,32 @@ unsafe extern "system" fn section_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPAR
 
 unsafe extern "system" fn form_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        // A trackbar's paint arrives as the same custom-draw notification a
+        // button's does, and `common` would draw it as a push button. The
+        // system draws the trackbar; its ground comes from
+        // `WM_CTLCOLORSTATIC`, which `common` does answer.
+        if msg == WM_NOTIFY {
+            let nm = &*(lp.0 as *const NMHDR);
+            if nm.code == NM_CUSTOMDRAW && is_trackbar(nm.hwndFrom) {
+                return LRESULT(CDRF_DODEFAULT as isize);
+            }
+        }
         if let Some(r) = crate::roles_ui::common(win, msg, wp, lp) {
             return r;
         }
         match msg {
+            WM_HSCROLL if lp.0 != 0 => {
+                let bar = HWND(lp.0 as *mut c_void);
+                if let Some(i) = row_of_id(GetDlgCtrlID(bar) as u16) {
+                    if (wp.0 & 0xFFFF) as u32 == TB_ENDTRACK {
+                        slider_released(i);
+                    } else {
+                        // Moving: the value beside it follows.
+                        let _ = InvalidateRect(Some(win), None, false);
+                    }
+                }
+                LRESULT(0)
+            }
             WM_COMMAND => {
                 let id = (wp.0 & 0xFFFF) as u16;
                 let code = ((wp.0 >> 16) & 0xFFFF) as u32;
