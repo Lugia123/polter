@@ -2801,10 +2801,6 @@ msgstr ""
 msgid "Background Blur"
 msgstr ""
 
-#: src/config/form.zig:93
-msgid "Blur behind a see-through background: on, off or a strength."
-msgstr ""
-
 #: src/config/form.zig:94
 msgid "Cursor Style"
 msgstr ""
@@ -3051,4 +3047,152 @@ msgstr ""
 
 #: src/config/form.zig:133
 msgid "The interface language; empty follows the system."
+msgstr ""
+
+#: src/config/form.zig:105
+msgid "true, false, a strength, or macos-glass-regular/-clear."
+msgstr ""
+
+#: src/config/form.zig:106
+msgid "Bar"
+msgstr ""
+
+#: src/config/form.zig:106
+msgid "Block"
+msgstr ""
+
+#: src/config/form.zig:106
+msgid "Underline"
+msgstr ""
+
+#: src/config/form.zig:106
+msgid "Hollow Block"
+msgstr ""
+
+#: src/config/form.zig:110
+msgid "No Balancing"
+msgstr ""
+
+#: src/config/form.zig:110
+msgid "Balanced, Top Capped"
+msgstr ""
+
+#: src/config/form.zig:110
+msgid "Equal on All Sides"
+msgstr ""
+
+#: src/config/form.zig:111
+msgid "Native"
+msgstr ""
+
+#: src/config/form.zig:111
+msgid "Transparent"
+msgstr ""
+
+#: src/config/form.zig:111
+msgid "Tabs in Title Bar"
+msgstr ""
+
+#: src/config/form.zig:111
+msgid "Hidden"
+msgstr ""
+
+#: src/config/form.zig:120
+msgid "Don't Copy"
+msgstr ""
+
+#: src/config/form.zig:120
+msgid "Selection Pasteboard Only"
+msgstr ""
+
+#: src/config/form.zig:120
+msgid "Clipboard Only"
+msgstr ""
+
+#: src/config/form.zig:120
+msgid "Both"
+msgstr ""
+
+#: src/config/form.zig:121 src/config/form.zig:122
+msgid "Ask"
+msgstr ""
+
+#: src/config/form.zig:124
+msgid "Don't Confirm"
+msgstr ""
+
+#: src/config/form.zig:124
+msgid "When Something Is Running"
+msgstr ""
+
+#: src/config/form.zig:124
+msgid "Always Confirm"
+msgstr ""
+
+#: src/config/form.zig:125
+msgid "Detect Automatically"
+msgstr ""
+
+#: src/config/form.zig:125
+msgid "No Integration"
+msgstr ""
+
+#: src/config/form.zig:125
+msgid "Bash"
+msgstr ""
+
+#: src/config/form.zig:125
+msgid "Elvish"
+msgstr ""
+
+#: src/config/form.zig:125
+msgid "fish"
+msgstr ""
+
+#: src/config/form.zig:125
+msgid "Nushell"
+msgstr ""
+
+#: src/config/form.zig:125
+msgid "PowerShell"
+msgstr ""
+
+#: src/config/form.zig:125
+msgid "Zsh"
+msgstr ""
+
+#: src/config/form.zig:128
+msgid "System Default"
+msgstr ""
+
+#: src/config/form.zig:128
+msgid "Never"
+msgstr ""
+
+#: src/config/form.zig:128
+msgid "Always"
+msgstr ""
+
+#: src/config/form.zig:131
+msgid "Automatic"
+msgstr ""
+
+#: src/config/form.zig:131
+msgid "Drawn by Polter"
+msgstr ""
+
+#: src/config/form.zig:131
+msgid "Drawn by the System"
+msgstr ""
+
+#: src/config/form.zig:131
+msgid "No Decorations"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:754
+msgid "Less"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:754
+msgid "More…"
 msgstr ""

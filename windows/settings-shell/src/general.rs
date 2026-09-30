@@ -160,6 +160,9 @@ pub struct Item {
     pub group: Option<String>,
     pub control: Control,
     pub choices: Vec<String>,
+    /// The display name of each of `choices`, same order, English msgids
+    /// (#977); empty where the table names none.
+    pub choice_labels: Vec<String>,
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub default: String,
@@ -396,6 +399,57 @@ pub fn row_help(it: &Item, translate: impl Fn(&str) -> String) -> String {
     }
 }
 
+/// What each value of an enum is called in its list: the table's name,
+/// translated, else the value itself (#977; mac `ConfigFormRules.choiceTitle`).
+/// What is written is always the value.
+pub fn choice_titles(it: &Item, translate: impl Fn(&str) -> String) -> Vec<String> {
+    if it.choice_labels.len() == it.choices.len() {
+        it.choice_labels.iter().map(|l| translate(l)).collect()
+    } else {
+        it.choices.clone()
+    }
+}
+
+/// The value to write for the list's selected row: the row's value, never
+/// the name it is shown by (#977). `None` for no selection (`CB_ERR`, -1)
+/// or a row past the end.
+pub fn choice_value(it: &Item, selected: isize) -> Option<String> {
+    usize::try_from(selected).ok().and_then(|i| it.choices.get(i)).cloned()
+}
+
+/// How wide a text box is, in 96-DPI pixels (#977; mac
+/// `ConfigFormRules.fieldWidth`): a number 120, a short value 160, starting
+/// on the control column; `None` takes the row -- a font, a theme pair, and
+/// every box in All Options, where any key can be.
+pub fn field_width(control: Control, group: Group) -> Option<i32> {
+    if group == Group::All {
+        return None;
+    }
+    match control {
+        Control::Number => Some(120),
+        Control::Text | Control::Color => Some(160),
+        Control::Font | Control::Theme | Control::Toggle | Control::Choice | Control::ReadOnly => None,
+    }
+}
+
+/// Whether a row offers "More…" for Ghostty's own help text (mac
+/// `ConfigFormRules.hasMore`): there is one, and the line under the control
+/// is not already the whole of it.
+pub fn has_more(it: &Item) -> bool {
+    let Some(doc) = it.doc.as_deref().map(str::trim).filter(|d| !d.is_empty()) else { return false };
+    it.summary.is_some() || doc_summary(doc) != doc.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The line under the control with "More…" opened: the usual line, then
+/// Ghostty's text in full.
+pub fn expanded_help(it: &Item, translate: impl Fn(&str) -> String) -> String {
+    let line = row_help(it, &translate);
+    match it.doc.as_deref().map(str::trim) {
+        Some(doc) if !doc.is_empty() => format!("{line}\n\n{doc}"),
+        _ => line,
+    }
+}
+
 /// The first line of a key's documentation, for under its control: the
 /// whole text is `+show-config --docs`, far longer than a form row.
 pub fn doc_summary(doc: &str) -> String {
@@ -532,6 +586,7 @@ mod tests {
             group: group.map(str::to_string),
             control,
             choices: Vec::new(),
+            choice_labels: Vec::new(),
             min: None,
             max: None,
             default: default.into(),
@@ -749,6 +804,52 @@ mod tests {
         unnamed.doc = Some("Draw fonts thicker.\n\nMore.".into());
         assert_eq!(row_title(&unnamed, zh), "font-thicken");
         assert_eq!(row_help(&unnamed, zh), "Draw fonts thicker.");
+    }
+
+    /// #977: a value is shown by its name and written as itself; a list
+    /// the table does not name is shown by its values.
+    #[test]
+    fn a_value_is_shown_by_its_name() {
+        let zh = |s: &str| match s {
+            "Never" => "从不".to_string(),
+            "System Default" => "跟随系统".to_string(),
+            other => other.to_string(),
+        };
+        let mut it = item("window-save-state", Some("window"), Control::Choice, "default", "never");
+        it.choices = vec!["default".into(), "never".into(), "always".into()];
+        it.choice_labels = vec!["System Default".into(), "Never".into(), "Always".into()];
+        assert_eq!(choice_titles(&it, zh), ["跟随系统", "从不", "Always"]);
+        // What is written is the value of the selected row, not its name.
+        assert_eq!(choice_value(&it, 1).as_deref(), Some("never"));
+        assert_eq!(choice_value(&it, -1), None);
+        assert_eq!(choice_value(&it, 3), None);
+        it.choice_labels.clear();
+        assert_eq!(choice_titles(&it, zh), ["default", "never", "always"]);
+    }
+
+    #[test]
+    fn a_short_box_is_sized_for_what_goes_in_it() {
+        assert_eq!(field_width(Control::Number, Group::Font), Some(120));
+        assert_eq!(field_width(Control::Text, Group::Appearance), Some(160));
+        assert_eq!(field_width(Control::Font, Group::Font), None);
+        assert_eq!(field_width(Control::Text, Group::All), None);
+    }
+
+    #[test]
+    fn more_opens_ghosttys_text_under_the_line() {
+        let zh = |s: &str| if s == "In points." { "以点为单位。".to_string() } else { s.to_string() };
+        let mut it = item("font-size", Some("font"), Control::Number, "13", "13");
+        it.label = Some("Font Size".into());
+        it.summary = Some("In points.".into());
+        it.doc = Some("Font size in points.\n\nMore.".into());
+        assert!(has_more(&it));
+        assert_eq!(expanded_help(&it, zh), "font-size  以点为单位。\n\nFont size in points.\n\nMore.");
+        // Nothing more to show: a one-paragraph doc that is already the line.
+        let mut plain = item("x", None, Control::Text, "", "");
+        plain.doc = Some("Just this.".into());
+        assert!(!has_more(&plain));
+        plain.doc = None;
+        assert!(!has_more(&plain));
     }
 
     #[test]

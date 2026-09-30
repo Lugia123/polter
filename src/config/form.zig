@@ -79,6 +79,18 @@ pub const Item = struct {
     /// does, shown under it in place of Ghostty's own help text (which the
     /// hosts keep one click away). No default, for the same reason.
     summary: []const u8,
+    /// A display name for each value of an enum key, English msgids like
+    /// `label` (#977); what is written to the file is still the value.
+    /// Null for a key that is not an enum -- and required for one that is:
+    /// the check below the table refuses to compile a table whose enum key
+    /// leaves a value unnamed or names one the enum does not have.
+    choices: ?[]const Choice = null,
+};
+
+/// One value of an enum key and what the form calls it.
+pub const Choice = struct {
+    value: []const u8,
+    label: []const u8,
 };
 
 /// The longest `summary` may be: one line under the control at the
@@ -90,13 +102,13 @@ pub const table = [_]Item{
     // Appearance
     .{ .key = .theme, .group = .appearance, .label = i18n.N_("Theme"), .summary = i18n.N_("The color theme; light and dark mode can differ.") },
     .{ .key = .@"background-opacity", .group = .appearance, .min = 0, .max = 1, .label = i18n.N_("Background Opacity"), .summary = i18n.N_("1 is fully opaque; lower lets the desktop show through.") },
-    .{ .key = .@"background-blur", .group = .appearance, .label = i18n.N_("Background Blur"), .summary = i18n.N_("Blur behind a see-through background: on, off or a strength.") },
-    .{ .key = .@"cursor-style", .group = .appearance, .label = i18n.N_("Cursor Style"), .summary = i18n.N_("The cursor's shape; programs in the terminal may change it.") },
+    .{ .key = .@"background-blur", .group = .appearance, .label = i18n.N_("Background Blur"), .summary = i18n.N_("true, false, a strength, or macos-glass-regular/-clear.") },
+    .{ .key = .@"cursor-style", .group = .appearance, .label = i18n.N_("Cursor Style"), .summary = i18n.N_("The cursor's shape; programs in the terminal may change it."), .choices = &.{ .{ .value = "bar", .label = i18n.N_("Bar") }, .{ .value = "block", .label = i18n.N_("Block") }, .{ .value = "underline", .label = i18n.N_("Underline") }, .{ .value = "block_hollow", .label = i18n.N_("Hollow Block") } } },
     .{ .key = .@"cursor-style-blink", .group = .appearance, .label = i18n.N_("Blinking Cursor"), .summary = i18n.N_("Whether the cursor blinks by default.") },
     .{ .key = .@"window-padding-x", .group = .appearance, .label = i18n.N_("Horizontal Padding"), .summary = i18n.N_("Space between the text and the left and right edges.") },
     .{ .key = .@"window-padding-y", .group = .appearance, .label = i18n.N_("Vertical Padding"), .summary = i18n.N_("Space between the text and the top and bottom edges.") },
-    .{ .key = .@"window-padding-balance", .group = .appearance, .label = i18n.N_("Balance Padding"), .summary = i18n.N_("Spread leftover space evenly around the text.") },
-    .{ .key = .@"macos-titlebar-style", .group = .appearance, .os = .macos, .label = i18n.N_("Title Bar Style"), .summary = i18n.N_("Native, transparent, tabs, or hidden.") },
+    .{ .key = .@"window-padding-balance", .group = .appearance, .label = i18n.N_("Balance Padding"), .summary = i18n.N_("Spread leftover space evenly around the text."), .choices = &.{ .{ .value = "false", .label = i18n.N_("No Balancing") }, .{ .value = "true", .label = i18n.N_("Balanced, Top Capped") }, .{ .value = "equal", .label = i18n.N_("Equal on All Sides") } } },
+    .{ .key = .@"macos-titlebar-style", .group = .appearance, .os = .macos, .label = i18n.N_("Title Bar Style"), .summary = i18n.N_("Native, transparent, tabs, or hidden."), .choices = &.{ .{ .value = "native", .label = i18n.N_("Native") }, .{ .value = "transparent", .label = i18n.N_("Transparent") }, .{ .value = "tabs", .label = i18n.N_("Tabs in Title Bar") }, .{ .value = "hidden", .label = i18n.N_("Hidden") } } },
 
     // Font
     .{ .key = .@"font-family", .group = .font, .control = .font, .label = i18n.N_("Font"), .summary = i18n.N_("The font family to use; empty uses the default.") },
@@ -105,18 +117,18 @@ pub const table = [_]Item{
 
     // Terminal
     .{ .key = .@"scrollback-limit-lines", .group = .terminal, .label = i18n.N_("Scrollback Lines"), .summary = i18n.N_("How many lines of history each terminal keeps.") },
-    .{ .key = .@"copy-on-select", .group = .terminal, .label = i18n.N_("Copy on Select"), .summary = i18n.N_("Copy selected text to the clipboard automatically.") },
-    .{ .key = .@"clipboard-read", .group = .terminal, .label = i18n.N_("Clipboard Reading"), .summary = i18n.N_("Whether programs may read the clipboard: ask, allow or deny.") },
-    .{ .key = .@"clipboard-write", .group = .terminal, .label = i18n.N_("Clipboard Writing"), .summary = i18n.N_("Whether programs may set the clipboard: ask, allow or deny.") },
+    .{ .key = .@"copy-on-select", .group = .terminal, .label = i18n.N_("Copy on Select"), .summary = i18n.N_("Copy selected text to the clipboard automatically."), .choices = &.{ .{ .value = "none", .label = i18n.N_("Don't Copy") }, .{ .value = "primary", .label = i18n.N_("Selection Pasteboard Only") }, .{ .value = "clipboard", .label = i18n.N_("Clipboard Only") }, .{ .value = "both", .label = i18n.N_("Both") } } },
+    .{ .key = .@"clipboard-read", .group = .terminal, .label = i18n.N_("Clipboard Reading"), .summary = i18n.N_("Whether programs may read the clipboard: ask, allow or deny."), .choices = &.{ .{ .value = "ask", .label = i18n.N_("Ask") }, .{ .value = "allow", .label = i18n.N_("Allow") }, .{ .value = "deny", .label = i18n.N_("Deny") } } },
+    .{ .key = .@"clipboard-write", .group = .terminal, .label = i18n.N_("Clipboard Writing"), .summary = i18n.N_("Whether programs may set the clipboard: ask, allow or deny."), .choices = &.{ .{ .value = "ask", .label = i18n.N_("Ask") }, .{ .value = "allow", .label = i18n.N_("Allow") }, .{ .value = "deny", .label = i18n.N_("Deny") } } },
     .{ .key = .@"mouse-hide-while-typing", .group = .terminal, .label = i18n.N_("Hide Pointer While Typing"), .summary = i18n.N_("Hide the mouse pointer while you type in a terminal.") },
-    .{ .key = .@"confirm-close-surface", .group = .terminal, .label = i18n.N_("Confirm Before Closing"), .summary = i18n.N_("Ask before closing a terminal still running something.") },
-    .{ .key = .@"shell-integration", .group = .terminal, .label = i18n.N_("Shell Integration"), .summary = i18n.N_("Lets the shell report its directory and prompt to Polter.") },
+    .{ .key = .@"confirm-close-surface", .group = .terminal, .label = i18n.N_("Confirm Before Closing"), .summary = i18n.N_("Ask before closing a terminal still running something."), .choices = &.{ .{ .value = "false", .label = i18n.N_("Don't Confirm") }, .{ .value = "true", .label = i18n.N_("When Something Is Running") }, .{ .value = "always", .label = i18n.N_("Always Confirm") } } },
+    .{ .key = .@"shell-integration", .group = .terminal, .label = i18n.N_("Shell Integration"), .summary = i18n.N_("Lets the shell report its directory and prompt to Polter."), .choices = &.{ .{ .value = "detect", .label = i18n.N_("Detect Automatically") }, .{ .value = "none", .label = i18n.N_("No Integration") }, .{ .value = "bash", .label = i18n.N_("Bash") }, .{ .value = "elvish", .label = i18n.N_("Elvish") }, .{ .value = "fish", .label = i18n.N_("fish") }, .{ .value = "nushell", .label = i18n.N_("Nushell") }, .{ .value = "powershell", .label = i18n.N_("PowerShell") }, .{ .value = "zsh", .label = i18n.N_("Zsh") } } },
 
     // Windows and tabs
-    .{ .key = .@"window-save-state", .group = .window, .label = i18n.N_("Restore Windows"), .summary = i18n.N_("Reopen windows, tabs and splits where they were.") },
+    .{ .key = .@"window-save-state", .group = .window, .label = i18n.N_("Restore Windows"), .summary = i18n.N_("Reopen windows, tabs and splits where they were."), .choices = &.{ .{ .value = "default", .label = i18n.N_("System Default") }, .{ .value = "never", .label = i18n.N_("Never") }, .{ .value = "always", .label = i18n.N_("Always") } } },
     .{ .key = .@"window-inherit-working-directory", .group = .window, .label = i18n.N_("New Windows Inherit Directory"), .summary = i18n.N_("New windows start in the focused window's directory.") },
     .{ .key = .@"quit-after-last-window-closed", .group = .window, .label = i18n.N_("Quit After Last Window Closes"), .summary = i18n.N_("Quit Polter when its last window is closed.") },
-    .{ .key = .@"window-decoration", .group = .window, .label = i18n.N_("Window Decorations"), .summary = i18n.N_("Whether windows have a title bar and borders.") },
+    .{ .key = .@"window-decoration", .group = .window, .label = i18n.N_("Window Decorations"), .summary = i18n.N_("Whether windows have a title bar and borders."), .choices = &.{ .{ .value = "auto", .label = i18n.N_("Automatic") }, .{ .value = "client", .label = i18n.N_("Drawn by Polter") }, .{ .value = "server", .label = i18n.N_("Drawn by the System") }, .{ .value = "none", .label = i18n.N_("No Decorations") } } },
 
     // Polter
     .{ .key = .@"poltergeist-notice-interval", .group = .polter, .label = i18n.N_("Notice Interval"), .summary = i18n.N_("How often the supervisor is handed what it has not seen.") },
@@ -139,6 +151,39 @@ comptime {
     for (table, 0..) |a, i| for (table[i + 1 ..]) |b| {
         if (a.key == b.key) @compileError("config form: key in the table twice: " ++ @tagName(a.key));
     };
+}
+
+comptime {
+    // Every enum key in the table names each of its values, and only
+    // those (#977): a value without a name would be shown to the person
+    // as the raw word, and a name for a value that no longer exists would
+    // be a translation nothing uses.
+    @setEvalBranchQuota(100_000);
+    for (table) |item| {
+        const T = @FieldType(Config, @tagName(item.key));
+        const control = item.control orelse controlOf(T);
+        if (control != .choice) {
+            if (item.choices != null) @compileError("config form: choices named for a key that is not an enum: " ++ @tagName(item.key));
+            continue;
+        }
+        const names = item.choices orelse
+            @compileError("config form: enum key without choice names: " ++ @tagName(item.key));
+        const fields = std.meta.fields(Unwrapped(T));
+        for (fields) |f| {
+            var found = false;
+            for (names) |c| {
+                if (std.mem.eql(u8, c.value, f.name)) found = true;
+            }
+            if (!found) @compileError("config form: " ++ @tagName(item.key) ++ " has no name for its value " ++ f.name);
+        }
+        for (names) |c| {
+            var found = false;
+            for (fields) |f| {
+                if (std.mem.eql(u8, c.value, f.name)) found = true;
+            }
+            if (!found) @compileError("config form: " ++ @tagName(item.key) ++ " names a value it does not have: " ++ c.value);
+        }
+    }
 }
 
 /// The marker line of the block new keys are appended under (§7.2 rule 3).
@@ -744,6 +789,13 @@ pub fn writeJson(
     try w.writeAll("]}");
 }
 
+fn choiceLabel(comptime item: Item, comptime value: []const u8) []const u8 {
+    for (item.choices.?) |c| {
+        if (std.mem.eql(u8, c.value, value)) return c.label;
+    }
+    unreachable; // the table check above
+}
+
 fn shownHere(comptime item: Item) bool {
     const os = item.os orelse return true;
     return os == builtin.os.tag;
@@ -780,6 +832,18 @@ noinline fn writeItem(
         inline for (std.meta.fields(U), 0..) |f, i| {
             if (i > 0) try w.writeAll(",");
             try w.print("\"{s}\"", .{f.name});
+        }
+        try w.writeAll("]");
+    } else try w.writeAll("null");
+    // The display name of each of `choices`, in the same order (#977); null
+    // where the table names none (All Options' enums).
+    try w.writeAll(",\"choice_labels\":");
+    if (comptime control == .choice and item != null and item.?.choices != null) {
+        try w.writeAll("[");
+        inline for (std.meta.fields(U), 0..) |f, i| {
+            if (i > 0) try w.writeAll(",");
+            const shown = comptime choiceLabel(item.?, f.name);
+            try w.print("{f}", .{std.json.fmt(shown, .{})});
         }
         try w.writeAll("]");
     } else try w.writeAll("null");
@@ -1441,6 +1505,46 @@ test "config form: a key only in All options has no label, and says so" {
         if (label != .null) labelled += 1;
     }
     try testing.expectEqual(table.len, labelled);
+}
+
+test "config form: every value of a named enum key has a name, in the JSON too (#977)" {
+    var named: usize = 0;
+    for (table) |item| {
+        const names = item.choices orelse continue;
+        named += 1;
+        for (names, 0..) |c, i| {
+            errdefer std.debug.print("#977: {s}={s} is named \"{s}\"\n", .{ @tagName(item.key), c.value, c.label });
+            try testing.expect(c.label.len > 0);
+            // Two values with one name could not be told apart in the list.
+            for (names[i + 1 ..]) |other| try testing.expect(!std.mem.eql(u8, c.label, other.label));
+        }
+    }
+    try testing.expectEqual(@as(usize, 10), named);
+
+    var fx: Fixture = try .init();
+    defer fx.deinit();
+    const scan = try gather(fx.arena.allocator(), testing.io, fx.ctx(&.{}));
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+    var def = try Config.default(testing.allocator);
+    defer def.deinit();
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try writeJson(testing.allocator, &out.writer, &scan, fx.path("config"), null, &cfg, &def);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, out.written(), .{});
+    defer parsed.deinit();
+    for (parsed.value.object.get("items").?.array.items) |it| {
+        if (!std.mem.eql(u8, it.object.get("key").?.string, "cursor-style")) continue;
+        const values = it.object.get("choices").?.array.items;
+        const shown = it.object.get("choice_labels").?;
+        try testing.expect(shown == .array);
+        const labels = shown.array.items;
+        try testing.expectEqual(values.len, labels.len);
+        for (values, labels) |v, l| {
+            if (std.mem.eql(u8, v.string, "block")) try testing.expectEqualStrings("Block", l.string);
+            if (std.mem.eql(u8, v.string, "block_hollow")) try testing.expectEqualStrings("Hollow Block", l.string);
+        }
+    }
 }
 
 test "config form: every row of the first five groups has a name and a one-line summary (#973)" {

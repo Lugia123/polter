@@ -88,6 +88,9 @@ struct Row {
     /// A number with a narrow range, drawn as a trackbar with its value
     /// beside it (`rules::slider_for`).
     slider: bool,
+    /// "More…" has been clicked: Ghostty's own text is shown in full under
+    /// the line, and the link reads "Less" (#977, as on the mac).
+    expanded: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -244,6 +247,7 @@ fn parse_form(text: &str) -> Option<Form> {
                 group: st("group"),
                 control: Control::parse(&st("control").unwrap_or_default()),
                 choices: strs(it.get("choices")),
+                choice_labels: strs(it.get("choice_labels")),
                 min: it.get("min").and_then(|x| x.as_f64()),
                 max: it.get("max").and_then(|x| x.as_f64()),
                 default: st("default").unwrap_or_default(),
@@ -739,7 +743,25 @@ fn band_buttons(g: &shell::SectionGrid, dpi: i32, group: Group) -> Vec<(u16, Rec
 
 /// What goes under a row's control: the core's refusal (red), why it cannot
 /// be written, or the first lines of its documentation.
-fn row_note(it: &Item, error: Option<&str>) -> (String, bool) {
+/// Whether a row ends in a "More…" / "Less" line: only a plain row -- no
+/// refusal, nothing read-only to explain -- whose Ghostty text says more
+/// than the line does.
+fn has_link(it: &Item, error: Option<&str>) -> bool {
+    error.is_none() && rules::readonly_note(it).is_none() && rules::has_more(it)
+}
+
+fn link_text(expanded: bool) -> String {
+    if expanded { tr("Less") } else { tr("More…") }
+}
+
+fn row_note(it: &Item, error: Option<&str>, expanded: bool) -> (String, bool) {
+    if expanded && has_link(it, error) {
+        return (rules::expanded_help(it, tr), false);
+    }
+    row_note_closed(it, error)
+}
+
+fn row_note_closed(it: &Item, error: Option<&str>) -> (String, bool) {
     if let Some(e) = error {
         return (e.to_string(), true);
     }
@@ -761,21 +783,54 @@ fn form_rows(width: i32, dpi: i32) -> Vec<polter_settings_shell::plugins::FormRo
         s.rows
             .iter()
             .map(|r| {
-                let (note, _) = row_note(&form.items[r.item], r.error.as_deref());
-                (r.item, note)
+                let it = &form.items[r.item];
+                let (note, _) = row_note(it, r.error.as_deref(), r.expanded);
+                (note, r.expanded, has_link(it, r.error.as_deref()))
             })
             .collect::<Vec<_>>()
     })
     .into_iter()
-    .map(|(_, note)| {
+    .map(|(note, expanded, link)| {
         let control_w = width - shell::scale(grid::LABEL_W + grid::LABEL_GAP, dpi);
-        measure(&note, control_w, font(), DOC_LINES)
+        // Opened, the whole of Ghostty's text; the link gets a line of its own.
+        let text = measure(&note, control_w, font(), if expanded { 0 } else { DOC_LINES });
+        text + if link { metrics(font()) } else { 0 }
     })
     .collect();
     polter_settings_shell::plugins::form(width, dpi, &helps).0
 }
 
 // ================================================================== the form
+
+/// A click on a row's "More…" / "Less" line opens or closes Ghostty's text
+/// under it, and the form is laid out again. True when the click was one.
+fn toggle_more_at(win: HWND, x: i32, y: i32) -> bool {
+    let (_, dpi) = laid();
+    let mut rc = RECT::default();
+    let _ = unsafe { GetClientRect(win, &mut rc) };
+    let rows = form_rows(rc.right, dpi);
+    let line = metrics(font());
+    let hit = ST.with(|c| {
+        let s = c.borrow();
+        let form = s.form.as_ref()?;
+        rows.iter().zip(s.rows.iter()).position(|(r, row)| {
+            let Some(hr) = r.help else { return false };
+            if !has_link(&form.items[row.item], row.error.as_deref()) {
+                return false;
+            }
+            let top = hr.bottom - line - s.scroll;
+            x >= hr.left && x < hr.right && y >= top && y < top + line
+        })
+    });
+    let Some(i) = hit else { return false };
+    ST.with(|c| {
+        let row = &mut c.borrow_mut().rows[i];
+        row.expanded = !row.expanded;
+    });
+    layout_form(dpi);
+    let _ = unsafe { InvalidateRect(Some(win), None, true) };
+    true
+}
 
 /// Make the controls for the group on screen and put everything in place.
 fn rebuild() {
@@ -799,7 +854,7 @@ fn rebuild() {
             let id = ID_ROW_BASE + made.len() as u16;
             let slider = rules::slider_for(it, group);
             let (hwnd, hwnd2) = if slider { (make_slider(id), HWND(std::ptr::null_mut())) } else { make_row(control, it, id) };
-            made.push(Row { item: i, control, hwnd, hwnd2, error: None, slider });
+            made.push(Row { item: i, control, hwnd, hwnd2, error: None, slider, expanded: false });
         }
     }
     set_rows(made);
@@ -869,7 +924,9 @@ fn make_row(control: Control, it: &Item, id: u16) -> (HWND, HWND) {
         Control::Choice => {
             let od = if theme::custom_drawing() { CBS_OWNERDRAWFIXED } else { 0 };
             let h = make_control(w!("COMBOBOX"), WINDOW_STYLE((CBS_DROPDOWNLIST | CBS_HASSTRINGS | od) as u32) | WS_VSCROLL, id);
-            for o in &it.choices {
+            // Names, not values (#977); the index is the value's, so what is
+            // written is still the value (`changed` reads `it.choices`).
+            for o in &rules::choice_titles(it, tr) {
                 let w = wide(o);
                 unsafe {
                     SendMessageW(h, CB_ADDSTRING, Some(WPARAM(0)), Some(LPARAM(w.as_ptr() as isize)));
@@ -983,6 +1040,7 @@ fn layout_form(dpi: i32) {
         s.scroll = s.scroll.clamp(0, (total - view).max(0));
         (s.rows.iter().map(|r| (r.hwnd, r.hwnd2, r.control, r.slider)).collect::<Vec<_>>(), s.scroll)
     });
+    let group = current();
     let gap = shell::scale(grid::BUTTONS_GAP, dpi);
     for ((h, h2, control, slider), r) in ctls.iter().zip(rows.iter()) {
         let c = r.control;
@@ -997,7 +1055,11 @@ fn layout_form(dpi: i32) {
                 let _ = SetWindowPos(*h, None, c.left, c.top - scroll, half, c.height(), flags);
                 let _ = SetWindowPos(*h2, None, c.left + half + gap, c.top - scroll, c.width() - half - gap, c.height(), flags);
             } else {
-                let _ = SetWindowPos(*h, None, c.left, c.top - scroll, c.width(), c.height() + extra, flags);
+                // A number or a short value is as wide as what goes in it
+                // and starts on the control column (#977, same widths as
+                // the mac); the rest take the row.
+                let w = rules::field_width(*control, group).map(|v| shell::scale(v, dpi).min(c.width())).unwrap_or(c.width());
+                let _ = SetWindowPos(*h, None, c.left, c.top - scroll, w, c.height() + extra, flags);
             }
         }
     }
@@ -1045,7 +1107,9 @@ fn edited_value(index: usize) -> Option<(Item, Control, String)> {
     }
     let v = match control {
         Control::Toggle => rules::toggle_value(unsafe { SendMessageW(h, BM_GETCHECK, None, None).0 == 1 }).to_string(),
-        Control::Choice => get_text(h),
+        // The selected row's value: the list shows names (#977), and a name
+        // written into the config file would be an invalid value.
+        Control::Choice => rules::choice_value(&it, unsafe { SendMessageW(h, CB_GETCURSEL, None, None).0 })?,
         Control::Theme => rules::theme_value(&get_text(h), &get_text(h2)),
         Control::ReadOnly => return None,
         _ => get_text(h),
@@ -1422,8 +1486,8 @@ fn paint_form(win: HWND) {
     let rows = form_rows(rc.right, dpi);
     let (scroll, items) = ST.with(|c| {
         let s = c.borrow();
-        let items: Vec<(Item, Control, Option<String>, HWND, HWND, bool)> = match &s.form {
-            Some(f) => s.rows.iter().map(|r| (f.items[r.item].clone(), r.control, r.error.clone(), r.hwnd, r.hwnd2, r.slider)).collect(),
+        let items: Vec<(Item, Control, Option<String>, HWND, HWND, bool, bool)> = match &s.form {
+            Some(f) => s.rows.iter().map(|r| (f.items[r.item].clone(), r.control, r.error.clone(), r.hwnd, r.hwnd2, r.slider, r.expanded)).collect(),
             None => Vec::new(),
         };
         (s.scroll, items)
@@ -1432,7 +1496,7 @@ fn paint_form(win: HWND) {
     let hdc = unsafe { BeginPaint(win, &mut ps) };
     fill(hdc, &rc, theme::bg());
     let dot = shell::scale(8, dpi);
-    for (r, (it, control, error, h, h2, slider)) in rows.iter().zip(items.iter()) {
+    for (r, (it, control, error, h, h2, slider, expanded)) in rows.iter().zip(items.iter()) {
         if *slider {
             // The value beside the slider, read off the trackbar itself so
             // it follows a drag before anything is written.
@@ -1447,9 +1511,15 @@ fn paint_form(win: HWND) {
             draw_text(hdc, "\u{2022}", &d, font(), theme::focus(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
         }
         if let Some(hr) = r.help {
-            let (note, red) = row_note(it, error.as_deref());
-            let hr = RECT { left: hr.left, top: hr.top - scroll, right: hr.right, bottom: hr.bottom - scroll };
+            let (note, red) = row_note(it, error.as_deref(), *expanded);
+            let link = has_link(it, error.as_deref());
+            let line = if link { metrics(font()) } else { 0 };
+            let hr = RECT { left: hr.left, top: hr.top - scroll, right: hr.right, bottom: hr.bottom - scroll - line };
             draw_text(hdc, &note, &hr, font(), if red { theme::warn() } else { theme::dim() }, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL);
+            if link {
+                let lr = RECT { left: hr.left, top: hr.bottom, right: hr.right, bottom: hr.bottom + line };
+                draw_text(hdc, &link_text(*expanded), &lr, font(), theme::focus(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            }
         }
         if theme::custom_drawing() && !*slider && !matches!(control, Control::Toggle | Control::Choice) {
             for c in [*h, *h2] {
@@ -1694,6 +1764,14 @@ unsafe extern "system" fn form_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             return r;
         }
         match msg {
+            WM_LBUTTONDOWN => {
+                let x = (lp.0 & 0xFFFF) as i16 as i32;
+                let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
+                if toggle_more_at(win, x, y) {
+                    return LRESULT(0);
+                }
+                DefWindowProcW(win, msg, wp, lp)
+            }
             WM_HSCROLL if lp.0 != 0 => {
                 let bar = HWND(lp.0 as *mut c_void);
                 if let Some(i) = row_of_id(GetDlgCtrlID(bar) as u16) {
