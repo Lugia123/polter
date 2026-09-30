@@ -12,6 +12,22 @@ import OSLog
 final class ProjectStore {
     static let shared = ProjectStore()
 
+    /// Posted after a project file was written (not after an `.unchanged`
+    /// save that wrote nothing); `object` is the store, `userInfo["name"]`
+    /// the project. Autosave writes from a tab the settings window knows
+    /// nothing about, so this is how its "last saved" keeps up.
+    static let didWrite = Notification.Name("PolterProjectStoreDidWrite")
+
+    /// Posted when a tab binds to a project, lets it go, or settles after a
+    /// change (its autosave ran, written or not); `userInfo["name"]` is the
+    /// project. What the settings window says about a binding -- whether
+    /// there is one, and the tab's title -- is read again on it.
+    static let bindingDidChange = Notification.Name("PolterProjectBindingDidChange")
+
+    static func postBindingDidChange(_ name: String) {
+        NotificationCenter.default.post(name: bindingDidChange, object: nil, userInfo: ["name": name])
+    }
+
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
         category: "projects")
@@ -171,11 +187,16 @@ final class ProjectStore {
     ///   surface's IO thread; the core guarantees a capture requested before
     ///   `ghostty_surface_free` has landed by the time that returns, and
     ///   nothing about one requested after.
+    ///
+    /// `keeping` says whether this follows the tab around (autosave, the
+    /// last save on close) or replaces the project with something else --
+    /// see `ProjectFileWriter.Keeping`. It has no default.
     @discardableResult
     func save(
         name: String,
         tree: SplitTree<Ghostty.SurfaceView>,
-        capturingScrollback: Bool = true
+        capturingScrollback: Bool = true,
+        keeping: ProjectFileWriter.Keeping
     ) throws -> Entry {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = ruleURL(name: trimmed) else { throw StoreError.nameEmpty }
@@ -225,7 +246,8 @@ final class ProjectStore {
             name: trimmed,
             savedAt: Int(Date().timeIntervalSince1970),
             root: root,
-            nextScrollback: allocator.next))
+            nextScrollback: allocator.next),
+            keeping: keeping)
 
         // Kept: exactly the names the saved tree refers to (and their
         // in-flight `.tmp`). A pane closed since the last save leaves a
@@ -242,9 +264,9 @@ final class ProjectStore {
     /// see `ProjectFileWriter.write`. Separate so it can be driven without
     /// live surfaces.
     @discardableResult
-    func write(_ file: ProjectFile) throws -> Entry {
+    func write(_ file: ProjectFile, keeping: ProjectFileWriter.Keeping) throws -> Entry {
         guard let url = ruleURL(name: file.name) else { throw StoreError.nameEmpty }
-        let outcome = try ProjectFileWriter.write(file, to: url)
+        let outcome = try ProjectFileWriter.write(file, to: url, keeping: keeping)
 
         switch outcome {
         case .unchanged:
@@ -252,6 +274,11 @@ final class ProjectStore {
         case .written(let rotated):
             Self.logger.info(
                 "saved project '\(file.name, privacy: .public)' with \(file.paneCount, privacy: .public) pane(s), previous kept: \(rotated, privacy: .public)")
+            // Whoever shows a project's "last saved" -- the settings window --
+            // reads it again now rather than when something else happens to
+            // make it look (#965). Only a write that happened: `.unchanged`
+            // moved nothing on disk.
+            NotificationCenter.default.post(name: Self.didWrite, object: self, userInfo: ["name": file.name])
         }
 
         return makeEntry(file, at: url)

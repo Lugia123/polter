@@ -22,7 +22,7 @@ struct ProjectStoreTests {
     @MainActor
     @Test func saveThenListFindsIt() throws {
         let store = makeStore()
-        let entry = try store.save(name: "sprint planning", tree: .init())
+        let entry = try store.save(name: "sprint planning", tree: .init(), keeping: .onLayoutChange)
 
         #expect(entry.name == "sprint planning")
         #expect(entry.paneCount == 0)
@@ -35,8 +35,8 @@ struct ProjectStoreTests {
     @MainActor
     @Test func savingTheSameNameTwiceOverwritesRatherThanDuplicates() throws {
         let store = makeStore()
-        try store.save(name: "notes", tree: .init())
-        try store.save(name: "notes", tree: .init())
+        try store.save(name: "notes", tree: .init(), keeping: .onLayoutChange)
+        try store.save(name: "notes", tree: .init(), keeping: .onLayoutChange)
 
         #expect(store.list().count == 1)
     }
@@ -48,8 +48,8 @@ struct ProjectStoreTests {
         // write wins -- ... the `name` field inside the file is what's
         // authoritative for display either way."
         let store = makeStore()
-        try store.save(name: "a/b", tree: .init())
-        try store.save(name: "a\\b", tree: .init())
+        try store.save(name: "a/b", tree: .init(), keeping: .onLayoutChange)
+        try store.save(name: "a\\b", tree: .init(), keeping: .onLayoutChange)
 
         let listed = store.list()
         #expect(listed.count == 1)
@@ -59,7 +59,7 @@ struct ProjectStoreTests {
     @MainActor
     @Test func deleteRemovesIt() throws {
         let store = makeStore()
-        try store.save(name: "throwaway", tree: .init())
+        try store.save(name: "throwaway", tree: .init(), keeping: .onLayoutChange)
         #expect(store.list().count == 1)
 
         try store.delete(try #require(store.entry(name: "throwaway")))
@@ -83,7 +83,7 @@ struct ProjectStoreTests {
     @Test func blankNameIsRejected() {
         let store = makeStore()
         #expect(throws: ProjectStore.StoreError.self) {
-            try store.save(name: "   ", tree: .init())
+            try store.save(name: "   ", tree: .init(), keeping: .onLayoutChange)
         }
     }
 
@@ -105,7 +105,7 @@ struct ProjectStoreTests {
     @MainActor
     @Test func actionsOnABoundProjectAreRefusedNamingTheTab() throws {
         let store = makeStore()
-        try store.save(name: "notes", tree: .init())
+        try store.save(name: "notes", tree: .init(), keeping: .onLayoutChange)
         let tab = FakeTab("~/src/notes")
         guard case .claimed = store.bindings.claim(store.bindingKey(name: "notes"), for: tab) else {
             Issue.record("claim refused")
@@ -146,8 +146,8 @@ struct ProjectStoreTests {
     @MainActor
     @Test func deleteAlsoRemovesThePreviousVersion() throws {
         let (store, dir) = makeStoreWithDirectory()
-        try store.write(ProjectFile(name: "notes", savedAt: 1, root: .leaf(cwd: "/a", title: "", history: "", scrollback: ""), nextScrollback: nil))
-        try store.write(ProjectFile(name: "notes", savedAt: 2, root: nil, nextScrollback: nil))
+        try store.write(ProjectFile(name: "notes", savedAt: 1, root: .leaf(cwd: "/a", title: "", history: "", scrollback: ""), nextScrollback: nil), keeping: .onLayoutChange)
+        try store.write(ProjectFile(name: "notes", savedAt: 2, root: nil, nextScrollback: nil), keeping: .onLayoutChange)
         #expect(store.entry(name: "notes")?.hasPrevious == true)
 
         try store.delete(try #require(store.entry(name: "notes")))
@@ -159,7 +159,7 @@ struct ProjectStoreTests {
     @MainActor
     @Test func deleteAlsoRemovesTheScrollbackDirectory() throws {
         let (store, dir) = makeStoreWithDirectory()
-        try store.save(name: "notes", tree: .init())
+        try store.save(name: "notes", tree: .init(), keeping: .onLayoutChange)
         let snapshots = dir.appendingPathComponent("notes.scrollback")
         try FileManager.default.createDirectory(at: snapshots, withIntermediateDirectories: true)
         try Data("x".utf8).write(to: snapshots.appendingPathComponent("0.snap"))
@@ -178,7 +178,7 @@ struct ProjectStoreTests {
         try FileManager.default.createDirectory(at: snapshots, withIntermediateDirectories: true)
         try Data("old".utf8).write(to: snapshots.appendingPathComponent("0.snap"))
 
-        try store.save(name: "notes", tree: .init())
+        try store.save(name: "notes", tree: .init(), keeping: .onLayoutChange)
         #expect(!FileManager.default.fileExists(atPath: snapshots.path))
     }
 
@@ -206,7 +206,7 @@ struct ProjectStoreTests {
         #expect(found.url.lastPathComponent == "a:b.json")
         #expect(store.list().map(\.name) == ["a:b"])
 
-        try store.save(name: "a:b", tree: .init())
+        try store.save(name: "a:b", tree: .init(), keeping: .onLayoutChange)
 
         let moved = dir.appendingPathComponent("a_b.json")
         #expect(!FileManager.default.fileExists(atPath: legacy.path))

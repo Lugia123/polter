@@ -469,7 +469,7 @@
 "%@ pane(s)" = "%@ 个面板";
 "Current" = "当前";
 "Restore…" = "恢复…";
-"An earlier version is kept when a save changes the layout: a pane added or closed, or a split turned." = "保存时布局变了（加了或关了面板、分屏换了方向）才会留下上一版。";
+"An earlier version is kept when an automatic save changes the layout (a pane added or closed, or a split turned), and whenever the project is overwritten with a tab." = "自动保存时布局变了（加了或关了面板、分屏换了方向），或者用标签页覆盖这个项目时，会留下上一版。";
 "Not bound to an open tab." = "没有绑定到打开的标签页。";
 "Bound to the tab \"%@\"; saved automatically as it changes, last at %@." = "绑定到标签页「%@」，改动后自动保存，上次在 %@。";
 "There is already a project called \"%@\"." = "已经有一个叫「%@」的项目了。";
@@ -514,3 +514,4 @@
 "This build does not know this setting." = "这个版本不认识这一项。";
 "This setting is set somewhere the form does not write." = "这一项由表单不写的地方设置。";
 "This window has not written the config file since Polter started, so there is no backup yet." = "Polter 这次启动后设置窗口还没写过配置文件，所以还没有备份。";
+"Untitled tab" = "未命名标签页";

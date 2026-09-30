@@ -8,6 +8,25 @@ import Testing
 struct ProjectsRulesTests {
     // MARK: Route
 
+    // MARK: Bound tab's label (#965)
+
+    /// A project just opened is bound before its shell sets a title: the
+    /// window title is empty, and the settings window said `Bound to the
+    /// tab ""`.
+    @Test func aTabWithNoTitleYetIsCalledByItsPanes() {
+        #expect(ProjectsRules.holderLabel(windowTitle: "", paneTitles: ["", "vim"], cwds: []) == "vim")
+        #expect(ProjectsRules.holderLabel(windowTitle: "  ", paneTitles: [""], cwds: [nil, "/Users/x/work/b-left"]) == "b-left")
+        #expect(ProjectsRules.holderLabel(windowTitle: "", paneTitles: [], cwds: ["/"]) == "/")
+    }
+
+    @Test func theWindowTitleWinsWhenThereIsOne() {
+        #expect(ProjectsRules.holderLabel(windowTitle: "/bin/sh", paneTitles: ["vim"], cwds: ["/a"]) == "/bin/sh")
+    }
+
+    @Test func theLabelIsNeverEmpty() {
+        #expect(!ProjectsRules.holderLabel(windowTitle: "", paneTitles: ["", " "], cwds: [nil, ""]).isEmpty)
+    }
+
     @Test func aRouteSelectsTheProjectItNames() {
         #expect(ProjectsRules.projectToSelect(item: "b", bound: "c", names: ["a", "b", "c"]) == "b")
     }

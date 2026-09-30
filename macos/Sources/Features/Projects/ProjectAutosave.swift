@@ -26,41 +26,61 @@ enum ProjectFileWriter {
         url.appendingPathExtension("prev")
     }
 
-    /// Write `file` to `url`, keeping what was there as `.prev` when the
-    /// *layout* changed.
+    /// When the version on disk is kept as `.prev`. **No default, on
+    /// purpose**: the two kinds of write look the same at the call, and the
+    /// one that was wrong -- "Overwrite with Current Tab" -- went through the
+    /// autosave rule because it never had to say which it was (#965).
+    enum Keeping: Equatable {
+        /// Autosave, and every save that follows a tab around as it
+        /// changes: keep the old version only when the *layout* changed.
+        case onLayoutChange
+        /// Replacing a project with something else ("Overwrite with Current
+        /// Tab", settings.md §6.2): always keep what was replaced, whatever
+        /// its shape. One pane over one pane otherwise lost the old cwd and
+        /// title outright, while the confirmation said they were kept.
+        case always
+    }
+
+    /// What writing `file` over `existing` (the bytes on disk, nil when
+    /// there is no file) does, decided without touching the disk.
     ///
     /// Autosave turns a mistake into something permanent: close five panes
     /// by accident and the project no longer has them. `.prev` is the way
     /// back, and it only works if it still holds the layout from before the
-    /// mistake. So it is rotated on a layout change (a pane added or
+    /// mistake. So autosave rotates on a layout change (a pane added or
     /// removed, a split's direction changed) and **not** on the changes that
     /// follow a person around all day -- a title, a cwd, a divider dragged a
     /// few points. Rotating on those would replace the good layout with the
     /// bad one within seconds of the mistake, the next time a shell set its
-    /// title.
+    /// title. A replacement is one deliberate act, so it always rotates.
     ///
-    /// A file that's identical apart from `saved_at` isn't written at all:
-    /// every write would otherwise change `saved_at`, so every write would
-    /// look like a change.
+    /// A file that's identical apart from `saved_at` isn't written at all,
+    /// by either kind: every write would otherwise change `saved_at`, so
+    /// every write would look like a change -- and there is nothing being
+    /// replaced to keep.
     ///
     /// An existing file that doesn't decode is always rotated rather than
     /// overwritten -- it is somebody's project, and this can't tell whose
     /// layout it was.
-    @discardableResult
-    static func write(_ file: ProjectFile, to url: URL) throws -> Outcome {
-        let fm = FileManager.default
-        var rotate = false
-        if let old = try? Data(contentsOf: url) {
-            if let existing = try? ProjectFile.decode(from: old) {
-                if existing.name == file.name && existing.root == file.root
-                    && existing.nextScrollback == file.nextScrollback {
-                    return .unchanged
-                }
-                rotate = existing.root?.layout != file.root?.layout
-            } else {
-                rotate = true
-            }
+    static func plan(writing file: ProjectFile, over existing: Data?, keeping: Keeping) -> Outcome {
+        guard let existing else { return .written(rotated: false) }
+        guard let old = try? ProjectFile.decode(from: existing) else { return .written(rotated: true) }
+        if old.name == file.name && old.root == file.root && old.nextScrollback == file.nextScrollback {
+            return .unchanged
         }
+        switch keeping {
+        case .always: return .written(rotated: true)
+        case .onLayoutChange: return .written(rotated: old.root?.layout != file.root?.layout)
+        }
+    }
+
+    /// Write `file` to `url`, keeping what was there as `.prev` as `plan`
+    /// decides.
+    @discardableResult
+    static func write(_ file: ProjectFile, to url: URL, keeping: Keeping) throws -> Outcome {
+        let fm = FileManager.default
+        let outcome = plan(writing: file, over: try? Data(contentsOf: url), keeping: keeping)
+        guard case .written(let rotate) = outcome else { return outcome }
 
         if rotate {
             let prev = previousURL(for: url)
@@ -72,7 +92,7 @@ enum ProjectFileWriter {
         }
 
         try file.encoded().write(to: url, options: .atomic)
-        return .written(rotated: rotate)
+        return outcome
     }
 
     /// Swap the project at `url` with its `.prev`, so that restoring the

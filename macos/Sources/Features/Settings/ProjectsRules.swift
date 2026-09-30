@@ -19,6 +19,25 @@ enum ProjectsRules {
         return names.first
     }
 
+    // MARK: Binding
+
+    /// What a tab bound to a project is called in the settings window. Its
+    /// window's title is empty until a shell sets one, so a project just
+    /// opened read `Bound to the tab ""` (#965). Falls back, in order, to
+    /// the first pane title that has anything in it, then the last part of
+    /// the first pane's working directory, then "Untitled tab" -- never
+    /// empty.
+    static func holderLabel(windowTitle: String, paneTitles: [String], cwds: [String?]) -> String {
+        func blank(_ s: String) -> Bool { s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if !blank(windowTitle) { return windowTitle }
+        if let title = paneTitles.first(where: { !blank($0) }) { return title }
+        if let cwd = cwds.compactMap({ $0 }).first(where: { !blank($0) }) {
+            let last = (cwd as NSString).lastPathComponent
+            return blank(last) ? cwd : last
+        }
+        return String(localized: "Untitled tab", comment: "设置窗口·项目：绑定的标签页还没有标题、也没有目录时的称呼")
+    }
+
     // MARK: Rename
 
     enum NameVerdict: Equatable {
