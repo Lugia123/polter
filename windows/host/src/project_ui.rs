@@ -215,8 +215,13 @@ pub fn missing_history_count(node: &SavedNode) -> usize {
 /// fired" (`tabs::dialogs_for`'s condition) -- the person has not confirmed
 /// "always offer, even for an idle tab" yet (see the windows-port
 /// discussion). If that changes, this is the only line that needs to.
+///
+/// Asked by `tabs::close_tab_asking` and `close_all_tabs_of_asking` (a window
+/// of one tab) since settings.md §6.3; the rule itself is
+/// `polter_settings_shell::projects::offers_save_before_close`, whose tests
+/// run off Windows.
 pub fn should_offer_save_as_project(tab_needs_confirmation: bool) -> bool {
-    tab_needs_confirmation
+    polter_settings_shell::projects::offers_save_before_close(1, tab_needs_confirmation)
 }
 
 /// Save the given tab as a named project. The caller (whichever UI ends up

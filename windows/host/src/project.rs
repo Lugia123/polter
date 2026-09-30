@@ -160,7 +160,7 @@ pub fn path_for(dir: &Path, name: &str) -> Result<PathBuf, InvalidName> {
 /// Characters (issue #23), so a snapshot would be written into one directory
 /// and looked for in another, with nothing reporting it.
 pub fn scrollback_dir(project_file: &Path) -> PathBuf {
-    project_file.with_extension("scrollback")
+    polter_settings_shell::projects::scrollback_dir(project_file)
 }
 
 /// Whether `name` is a snapshot name this format writes: ASCII digits, then
@@ -470,16 +470,102 @@ pub fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot, ReadError> {
 /// own state file, and the same reason `Project.zig::write` gives: a
 /// half-written file is exactly the "half a tree" this format promises never
 /// to hand back.
+///
+/// **Keeps one previous generation** (`<name>.json.prev`) by the rule the
+/// macOS side keeps it (settings.md §6.2, `ProjectFileWriter.write`): only
+/// when the layout changed, nothing written when only the time would change.
+/// The rule is `polter_settings_shell::projects::plan_write`, tested there;
+/// this only says what is on disk.
 pub fn write(dir: &Path, snapshot: &Snapshot) -> std::io::Result<()> {
     let path = path_for(dir, &snapshot.name).map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "the project name is empty once sanitized")
     })?;
-    std::fs::create_dir_all(dir)?;
-    let tmp = path.with_extension("json.tmp");
+    write_file(&path, snapshot, true)
+}
+
+/// Write `snapshot` into `path`. `generations`: decide about `.prev` as a
+/// save does; without it the file is simply replaced, which is what changing
+/// only a project's name in place (a rename, a copy) wants -- that is not a
+/// new version of the project.
+pub fn write_file(path: &Path, snapshot: &Snapshot, generations: bool) -> std::io::Result<()> {
+    use polter_settings_shell::projects::{plan_write, write_keeping_previous, WritePlan};
     let body = serde_json::to_string(&snapshot_to_json(snapshot))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    std::fs::write(&tmp, body.as_bytes())?;
-    std::fs::rename(&tmp, &path)
+    let plan = if generations { plan_write(existing(path, snapshot)) } else { WritePlan::Write { keep_previous: false } };
+    write_keeping_previous(path, body.as_bytes(), plan)
+}
+
+/// What a save of `new` into `path` finds there, as `plan_write` asks.
+fn existing(path: &Path, new: &Snapshot) -> polter_settings_shell::projects::Existing {
+    use polter_settings_shell::projects::{same_layout, Existing};
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Existing::Nothing,
+        Err(_) => return Existing::Unreadable,
+    };
+    match parse_snapshot(&bytes) {
+        Ok(old) => {
+            let (a, b) = (old.root.as_ref().map(to_shape), new.root.as_ref().map(to_shape));
+            Existing::Read {
+                layout_changed: !same_layout(a.as_ref(), b.as_ref()),
+                only_the_time_changed: old.name == new.name
+                    && old.root == new.root
+                    && old.next_scrollback == new.next_scrollback,
+            }
+        }
+        Err(_) => Existing::Unreadable,
+    }
+}
+
+/// The saved tree's shape, for the rules that need nothing else: the
+/// thumbnail and whether a save changes the layout.
+pub fn to_shape(node: &SavedNode) -> polter_settings_shell::projects::Shape {
+    use polter_settings_shell::projects::Shape;
+    match node {
+        SavedNode::Leaf(_) => Shape::Pane,
+        SavedNode::Split { axis, ratio, left, right } => Shape::Split {
+            side_by_side: *axis == Axis::Horizontal,
+            ratio: *ratio,
+            first: Box::new(to_shape(left)),
+            second: Box::new(to_shape(right)),
+        },
+    }
+}
+
+/// Every leaf, left before right, for the detail's directories and the
+/// thumbnail's labels (in the order `thumbnail` gives its boxes).
+pub fn leaves(node: &SavedNode) -> Vec<&SavedLeaf> {
+    let mut out = Vec::new();
+    fn walk<'a>(n: &'a SavedNode, out: &mut Vec<&'a SavedLeaf>) {
+        match n {
+            SavedNode::Leaf(l) => out.push(l),
+            SavedNode::Split { left, right, .. } => {
+                walk(left, out);
+                walk(right, out);
+            }
+        }
+    }
+    walk(node, &mut out);
+    out
+}
+
+/// Give the project in `file` -- and its previous generation, when it has
+/// one -- the name `name`, in place. A rename and a copy change the file's
+/// name on disk; the name *inside* it has to follow, or the listing shows the
+/// old one and the next save writes under it.
+pub fn set_name(file: &Path, name: &str) -> Result<(), String> {
+    let prev = polter_settings_shell::projects::prev_path(file);
+    for p in [file.to_path_buf(), prev] {
+        match read_file(&p) {
+            Ok(mut snap) => {
+                snap.name = name.to_string();
+                write_file(&p, &snap, false).map_err(|e| format!("{}: {e}", p.display()))?;
+            }
+            Err(ReadError::NotFound) if p != file => {}
+            Err(e) => return Err(format!("{}: {e:?}", p.display())),
+        }
+    }
+    Ok(())
 }
 
 /// Read the project this build would write under `name` -- the file a save
@@ -511,6 +597,8 @@ pub fn delete(dir: &Path, name: &str) -> Result<(), ReadError> {
     match std::fs::remove_file(&path) {
         Ok(()) => {
             let _ = std::fs::remove_dir_all(scrollback_dir(&path));
+            // The previous generation means nothing without the project.
+            let _ = std::fs::remove_file(polter_settings_shell::projects::prev_path(&path));
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ReadError::NotFound),
@@ -547,10 +635,10 @@ pub fn list(dir: &Path) -> Listing {
     };
     for dirent in read_dir.flatten() {
         let path = dirent.path();
-        if !path.is_file() {
-            continue;
-        }
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        // `.deleted`, `.prev`, snapshot directories and temporary files are
+        // not projects; the rule is `polter_settings_shell::projects::listable`.
+        let name = dirent.file_name().to_string_lossy().into_owned();
+        if !polter_settings_shell::projects::listable(&name, path.is_file()) {
             continue;
         }
         let bytes = match std::fs::read(&path) {

@@ -4,7 +4,8 @@
 //! numbers below are that file's. Phase 1 (§9) made the window, the routes,
 //! the roles section and "open the config file" under General; phase 2 adds
 //! the plugins, listed in the sidebar under their section with their status
-//! dots, and their detail (`plugins_ui.rs`). Projects is a placeholder.
+//! dots, and their detail (`plugins_ui.rs`); phase 3 the projects section
+//! (`projects_ui.rs`).
 //!
 //! **Every rule is decided in `polter-settings-shell`** -- which section a
 //! route opens, when leaving asks, the opening size, whether a remembered
@@ -149,6 +150,7 @@ fn current_place() -> Option<Place> {
     let item = match section {
         Section::Roles => crate::roles_ui::current().and_then(|(key, _)| key),
         Section::Plugins => crate::plugins_ui::current().map(|(key, _)| key),
+        Section::Projects => crate::projects_ui::current(),
         _ => None,
     };
     Some(Place { section, item })
@@ -337,6 +339,7 @@ fn log_grid() {
         crumb_top + crumb_asc
     );
     crate::roles_ui::log_grid();
+    crate::projects_ui::log_grid();
 }
 
 /// A font's line height and ascent, in pixels.
@@ -393,8 +396,8 @@ fn switch_to(target: Place) {
     match target.section {
         Section::Roles => crate::roles_ui::show(h, from_rect(l.content), origin, target.item.as_deref()),
         Section::Plugins => crate::plugins_ui::show(h, from_rect(l.content), target.item.as_deref()),
+        Section::Projects => crate::projects_ui::show(h, from_rect(l.content), origin, target.item.as_deref()),
         Section::General => place_general(&l, true),
-        Section::Projects => {}
     }
     let _ = unsafe { InvalidateRect(Some(h), None, false) };
     // process-wide: as above
@@ -405,13 +408,13 @@ fn hide_section(s: Section) {
     match s {
         Section::Roles => crate::roles_ui::hide(),
         Section::Plugins => crate::plugins_ui::hide(),
+        Section::Projects => crate::projects_ui::hide(),
         Section::General => {
             let b = HWND(OPEN_CONFIG.load(Ordering::Acquire));
             if !b.0.is_null() {
                 let _ = unsafe { ShowWindow(b, SW_HIDE) };
             }
         }
-        Section::Projects => {}
     }
 }
 
@@ -453,6 +456,9 @@ fn close() {
     crate::roles_ui::forget_draft();
     crate::plugins_ui::hide();
     crate::plugins_ui::closed();
+    crate::projects_ui::hide();
+    // Undo for a deleted project ends with the window (§6.2).
+    crate::projects_ui::closed();
     let (prev, origin) = ST.with(|c| {
         let s = &mut *c.borrow_mut();
         s.last = last.clone();
@@ -769,6 +775,9 @@ pub fn init(hi: HINSTANCE) {
         make_fonts(dpi_of(h));
         // The `WM_SIZE` from creation arrived before these controls existed.
         relayout();
+        // Projects an earlier process deleted and could no longer undo go
+        // on to the Recycle Bin (settings.md §6.2).
+        crate::projects_ui::sweep_leftovers();
         // process-wide: as above
         crate::plogf!("[settings] ready (hidden until a route opens it)");
     }
@@ -850,6 +859,7 @@ fn relayout() {
     match ST.with(|c| c.borrow().section) {
         Some(Section::Roles) => crate::roles_ui::move_to(from_rect(l.content)),
         Some(Section::Plugins) => crate::plugins_ui::move_to(from_rect(l.content)),
+        Some(Section::Projects) => crate::projects_ui::move_to(from_rect(l.content)),
         Some(Section::General) => place_general(&l, false),
         _ => {}
     }
@@ -865,7 +875,7 @@ fn search_text() -> String {
 }
 
 /// The search box changed (§2.3): narrow the lists and jump to the first
-/// section with a match. Phase 1 has one list, the roles.
+/// section with a match: the roles and the projects (plugins join in phase 2).
 fn on_search() {
     // The whole field repaints, so no piece of the placeholder is left
     // beside the first letter typed.
@@ -874,10 +884,18 @@ fn on_search() {
     let q = search_text();
     crate::roles_ui::set_filter(&q);
     crate::plugins_ui::set_filter(&q);
+    crate::projects_ui::set_filter(&q);
     // The sidebar's plugin rows are narrowed too, so it repaints.
     let _ = unsafe { InvalidateRect(Some(win()), None, false) };
-    let items = vec![(Section::Roles, crate::roles_ui::names()), (Section::Plugins, crate::plugins_ui::names())];
-    let Some(target) = shell::search_target(&q, &items) else { return };
+    let items = vec![
+        (Section::Roles, crate::roles_ui::names()),
+        (Section::Projects, crate::projects_ui::names()),
+        (Section::Plugins, crate::plugins_ui::names()),
+    ];
+    // §2.3 (narrowed 2026-10-01): the section on screen keeps a search it
+    // can answer.
+    let here = section_now().unwrap_or(Section::ALL[0]);
+    let Some(target) = shell::search_section(here, &q, &items) else { return };
     if ST.with(|c| c.borrow().section) == Some(target) {
         return;
     }
@@ -1002,6 +1020,7 @@ fn paint(h: HWND) {
     let crumb_item = match section {
         Some(Section::Roles) => crate::roles_ui::current().map(|(_, name)| name),
         Some(Section::Plugins) => crate::plugins_ui::current().map(|(_, name)| name),
+        Some(Section::Projects) => crate::projects_ui::current(),
         _ => None,
     };
     let plugin_rows = crate::plugins_ui::sidebar_rows();
@@ -1018,7 +1037,6 @@ fn paint(h: HWND) {
     fill(hdc, &from_rect(l.sidebar), theme::panel());
     let right = RECT { left: l.content.left, top: 0, right: rc.right, bottom: rc.bottom };
     fill(hdc, &right, theme::bg());
-    let pad = s(grid::PAD);
     let sb = plugin_rules::sidebar(&l, dpi, plugin_rows.len());
     // The plugins, under their section (§2.3): dot, name, and the dot's word
     // on the right. Only rows above the bottom rule are drawn; a list that
@@ -1087,21 +1105,15 @@ fn paint(h: HWND) {
             {
                 Some(shell::hidden_item(&tr("{} (not in the search results)"), &name))
             }
+            Some(name) if sec == Section::Projects && crate::projects_ui::selection_hidden() => {
+                Some(shell::hidden_item(&tr("{} (not in the search results)"), &name))
+            }
             other => other,
         };
         let crumb = shell::breadcrumb(&label(sec), item.as_deref());
         let (top, _) = crumb_top(&l);
         let t = RECT { left: l.breadcrumb.left, top, right: l.breadcrumb.right, bottom: l.top_rule.top };
         draw_text(hdc, &crumb, &t, bold, theme::text(), DT_SINGLELINE | DT_TOP | DT_END_ELLIPSIS);
-        if sec == Section::Projects {
-            let t = RECT {
-                left: l.content.left + pad,
-                top: l.content.top + pad,
-                right: l.content.right - pad,
-                bottom: l.bottom_rule.top,
-            };
-            draw_text(hdc, &tr("Coming in a later update."), &t, font, theme::dim(), DT_WORDBREAK);
-        }
     }
     let _ = unsafe { EndPaint(h, &ps) };
 }
@@ -1167,6 +1179,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             WM_ACTIVATE => {
                 if (wp.0 & 0xFFFF) as u32 != WA_INACTIVE {
                     crate::roles_ui::activated();
+                    crate::projects_ui::activated();
                     // A plugin installed or configured meanwhile -- by an
                     // agent's `plugin_configure`, or by hand.
                     if is_open() {
@@ -1224,6 +1237,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 }
                 crate::roles_ui::dpi_changed();
                 crate::plugins_ui::dpi_changed();
+                crate::projects_ui::dpi_changed();
                 relayout();
                 log_grid();
                 LRESULT(0)

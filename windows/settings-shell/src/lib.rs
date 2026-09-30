@@ -13,6 +13,7 @@
 //! `windows/tools/pure-crates-pass-their-tests.py` runs the tests below.
 
 pub mod plugins;
+pub mod projects;
 
 // ================================================================ sections
 
@@ -690,6 +691,40 @@ pub fn search_target(query: &str, items: &[(Section, Vec<String>)]) -> Option<Se
         .find(|s| items.iter().any(|(sec, names)| sec == s && names.iter().any(|n| matches(query, n))))
 }
 
+/// The section a search shows (§2.3, narrowed 2026-10-01): **the one on
+/// screen if it has a match** -- typing a project's name while looking at
+/// projects does not jump away because a role's name has it too -- else the
+/// first, in sidebar order, that has one. With no match anywhere, a section
+/// that can be searched stays (and its list says so); one that can't goes to
+/// the first that can. The macOS side's `SettingsRules.sectionForSearch`,
+/// with the same cases in its tests.
+pub fn section_for_search(current: Section, searchable: &[Section], matching: &[Section]) -> Section {
+    if matching.contains(&current) {
+        return current;
+    }
+    if let Some(first) = Section::ALL.into_iter().find(|s| searchable.contains(s) && matching.contains(s)) {
+        return first;
+    }
+    if searchable.contains(&current) {
+        return current;
+    }
+    searchable.first().copied().unwrap_or(current)
+}
+
+/// `section_for_search` for a query typed into the box: the sections that
+/// can be searched are the ones `items` names, the matching ones those with
+/// a name the query matches (`matches`). **An empty query goes nowhere**: an
+/// empty box is no search.
+pub fn search_section(current: Section, query: &str, items: &[(Section, Vec<String>)]) -> Option<Section> {
+    if query.trim().is_empty() {
+        return None;
+    }
+    let searchable: Vec<Section> = items.iter().map(|(s, _)| *s).collect();
+    let matching: Vec<Section> =
+        items.iter().filter(|(_, names)| names.iter().any(|n| matches(query, n))).map(|(s, _)| *s).collect();
+    Some(section_for_search(current, &searchable, &matching))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1194,6 +1229,40 @@ mod tests {
         assert!(matches("  ", "anything"));
         assert!(matches("rev", "Reviewer"));
         assert!(!matches("xyz", "Reviewer"));
+    }
+
+    // The macOS side's three cases (`ProjectsRulesTests.swift`, "Search"),
+    // word for word.
+    #[test]
+    fn a_search_stays_in_the_section_on_screen_when_it_matches_there() {
+        use Section::*;
+        assert_eq!(section_for_search(Projects, &[Roles, Projects], &[Roles, Projects]), Projects);
+    }
+
+    #[test]
+    fn a_search_goes_to_the_first_section_that_matches() {
+        use Section::*;
+        assert_eq!(section_for_search(Roles, &[Roles, Projects], &[Projects]), Projects);
+        assert_eq!(section_for_search(General, &[Roles, Projects], &[Roles, Projects]), Roles);
+    }
+
+    #[test]
+    fn a_search_that_matches_nothing_stays_in_a_searchable_section() {
+        use Section::*;
+        assert_eq!(section_for_search(Projects, &[Roles, Projects], &[]), Projects);
+        assert_eq!(section_for_search(General, &[Roles, Projects], &[]), Roles);
+    }
+
+    #[test]
+    fn a_typed_query_is_asked_of_the_names() {
+        let items = vec![
+            (Section::Roles, vec!["Reviewer".to_string()]),
+            (Section::Projects, vec!["review notes".to_string(), "web".to_string()]),
+        ];
+        assert_eq!(search_section(Section::Projects, "REVIEW", &items), Some(Section::Projects), "stays");
+        assert_eq!(search_section(Section::Roles, "web", &items), Some(Section::Projects));
+        assert_eq!(search_section(Section::General, "review", &items), Some(Section::Roles));
+        assert_eq!(search_section(Section::Roles, "  ", &items), None, "an empty box is no search");
     }
 
     #[test]

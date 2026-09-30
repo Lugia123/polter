@@ -1321,6 +1321,11 @@ enum TabCmd {
     /// each other directly in the group. Default off: a worker naming another
     /// worker has that mention rewritten to this supervisor.
     WorkerMentions,
+    /// The right-clicked tab as a project (settings.md §6.3), through the
+    /// box the menu bar's row opens.
+    SaveProject,
+    /// The project list, as the menu bar's row opens it.
+    LoadProject,
 }
 
 impl TabCmd {
@@ -1339,6 +1344,10 @@ impl TabCmd {
             TabCmd::Watch => n_("Toggle Supervision of This Terminal"),
             TabCmd::Shield => n_("Keep Agents Out of This Terminal"),
             TabCmd::WorkerMentions => n_("Let Workers Name Each Other Directly"),
+            // The menu bar's words for the same two rows (`menu.rs`), so one
+            // msgid each.
+            TabCmd::SaveProject => n_("Save as Project…"),
+            TabCmd::LoadProject => n_("Load Project…"),
         }
     }
 
@@ -1358,6 +1367,8 @@ impl TabCmd {
             TabCmd::Watch => "poltergeist_toggle_watch",
             TabCmd::Shield => "poltergeist_toggle_shielded",
             TabCmd::WorkerMentions => "poltergeist_toggle_worker_mentions",
+            TabCmd::SaveProject => "save_project",
+            TabCmd::LoadProject => "load_project",
         }
     }
 
@@ -1386,7 +1397,9 @@ impl TabCmd {
             | TabCmd::CloseOthers
             | TabCmd::CloseRight
             | TabCmd::MoveToNewWindow
-            | TabCmd::Rename => false,
+            | TabCmd::Rename
+            | TabCmd::SaveProject
+            | TabCmd::LoadProject => false,
         }
     }
 
@@ -1437,7 +1450,13 @@ const TAB_MENU: &[Option<TabCmd>] = &[
     Some(TabCmd::MoveToNewWindow),
     None,
     Some(TabCmd::Rename),
-    // The colour submenu is inserted here, between the two separators.
+    // The colour submenu is inserted here, after this separator.
+    None,
+    // The project rows, as macOS appends them (`appendProjectSection`):
+    // after the colours, before the agent rows, each group its own section.
+    None,
+    Some(TabCmd::SaveProject),
+    Some(TabCmd::LoadProject),
     None,
     Some(TabCmd::Supervisor),
     Some(TabCmd::Watch),
@@ -1677,6 +1696,16 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
         // the same effect, which is the asymmetry that left three of the four
         // close paths looking complete.
         TabCmd::MoveToNewWindow => tabs::binding_on_tab(frame, id, "move_tab_to_new_window"),
+        // **The tab that was right-clicked**, not the one in front: the box
+        // opens on its name, as the menu bar's row opens on the front tab's.
+        TabCmd::SaveProject => match tabs::strip_snapshot(frame).0.into_iter().find(|(t, _)| *t == id) {
+            Some((_, title)) => {
+                crate::prompt::prompt_save_as_project(frame, id, title);
+                true
+            }
+            None => false,
+        },
+        TabCmd::LoadProject => crate::project_picker::request_load(frame),
         TabCmd::Rename => {
             let g = slots(frame);
             match g.slots.iter().find(|s| s.id == id) {
@@ -2590,10 +2619,13 @@ mod menu_inset_tests {
     /// appear in the wrong section, which looks like a design choice.
     #[test]
     fn the_colour_submenu_goes_after_the_second_separator() {
-        assert!(TAB_MENU[6].is_none(), "index 6 must be the separator before the agent rows");
+        assert!(TAB_MENU[6].is_none(), "index 6 must be the separator the colours follow");
         assert_eq!(TAB_MENU[5], Some(TabCmd::Rename), "the colours follow Rename Tab...");
-        assert_eq!(TAB_MENU[7], Some(TabCmd::Supervisor));
-        assert_eq!(TAB_MENU.iter().filter(|r| r.is_none()).count(), 2);
+        assert!(TAB_MENU[7].is_none(), "the project rows are a section of their own");
+        assert_eq!((TAB_MENU[8], TAB_MENU[9]), (Some(TabCmd::SaveProject), Some(TabCmd::LoadProject)));
+        assert!(TAB_MENU[10].is_none());
+        assert_eq!(TAB_MENU[11], Some(TabCmd::Supervisor));
+        assert_eq!(TAB_MENU.iter().filter(|r| r.is_none()).count(), 4);
     }
 
     /// **The reading that came off the real machine, pinned.**

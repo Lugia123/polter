@@ -26,9 +26,9 @@
 use std::cell::RefCell;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN};
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, VK_ESCAPE, VK_RETURN};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::i18n::{n_, tr};
@@ -84,7 +84,15 @@ fn scope_of(scope: i32) -> Option<(&'static str, &'static str)> {
 /// meant to also be true for saving a project.
 enum Completion {
     Binding(&'static str),
-    SaveProject(crate::tabs::TabId),
+    /// `close_after`: the box was opened by "Save as a Project Before
+    /// Closing?" (settings.md §6.3) -- `Some(false)` closes the tab once the
+    /// save has worked, `Some(true)` its whole window (one tab). A save that
+    /// fails, or a box cancelled, closes nothing.
+    SaveProject { tab: crate::tabs::TabId, close_after: Option<bool> },
+    /// "Rename Project" (settings.md §6.2), from the settings window's
+    /// projects section: the project in this file gets the typed name
+    /// (`projects_ui::rename_to`, which refuses a taken or empty one).
+    RenameProject(std::path::PathBuf),
 }
 
 struct Open {
@@ -105,6 +113,12 @@ struct Open {
     label: &'static str,
     /// What had focus before, for `overlay::focus_back`.
     prev: isize,
+    /// A line under the field saying what the answer does, for a box that
+    /// is a question (the rename); `None` for the title boxes.
+    note: Option<String>,
+    /// The window this box is modal over -- disabled while it is open, so
+    /// the box is answered before anything else is done there -- or 0.
+    modal_over: isize,
 }
 
 thread_local! {
@@ -328,7 +342,15 @@ pub fn prompt_save_as_project(frame: HWND, tab: crate::tabs::TabId, default_name
     // that still promises a further dialog would be wrong. `title_dialog.zig`
     // draws the same distinction -- `Change Tab Title…` on the row, `Change
     // Tab Title` on the box.
-    open_prompt(frame, n_("Save as Project"), &default_name, 0, Completion::SaveProject(tab), -1);
+    open_prompt(frame, n_("Save as Project"), &default_name, 0, Completion::SaveProject { tab, close_after: None }, -1);
+}
+
+/// The same box, from "Save as a Project Before Closing?" (settings.md
+/// §6.3): the tab -- or, with `whole_window`, its window -- closes once the
+/// save has worked, and only then (`ProjectSaveBeforeClose.saveThenClose`).
+pub fn prompt_save_as_project_then_close(frame: HWND, tab: crate::tabs::TabId, default_name: String, whole_window: bool) {
+    let completion = Completion::SaveProject { tab, close_after: Some(whole_window) };
+    open_prompt(frame, n_("Save as Project"), &default_name, 0, completion, -1);
 }
 
 /// Shared by `prompt_title` and `prompt_save_as_project`: build the popup,
@@ -344,6 +366,31 @@ fn open_prompt(
     completion: Completion,
     scope: i32,
 ) {
+    open_box(frame, label, default_text, surface, completion, scope, None);
+}
+
+/// "Rename Project" (settings.md §6.2, the macOS side's alert): the box
+/// above with a line saying what renaming takes along, and Rename / Cancel
+/// under it, **modal over `owner`** -- the settings window is disabled until
+/// it is answered. Enter renames, Escape cancels, as in every box here.
+pub fn prompt_rename_project(owner: HWND, file: std::path::PathBuf, current: &str) {
+    let note = tr("The project's file, its previous version and its scrollback move with it.");
+    open_box(owner, n_("Rename Project"), current, 0, Completion::RenameProject(file), -1, Some(note));
+}
+
+/// The ids of the question box's two buttons.
+const ID_ACCEPT: usize = 1;
+const ID_CANCEL: usize = 2;
+
+fn open_box(
+    frame: HWND,
+    label: &'static str,
+    default_text: &str,
+    surface: usize,
+    completion: Completion,
+    scope: i32,
+    note: Option<String>,
+) {
     close(false);
 
     if frame.0.is_null() {
@@ -352,13 +399,24 @@ fn open_prompt(
         plogf!("[prompt] no frame window; {label} box not shown");
         return;
     }
-    let scale = crate::tabs::scale_of(frame);
+    // A terminal window knows its scale; the settings window, which is not
+    // one, is asked for its DPI.
+    // Asked on a line of its own: the guard `window` returns must be gone
+    // before `scale_of` takes the same lock.
+    let is_terminal = crate::tabs::window(frame).is_some();
+    let scale = if is_terminal {
+        crate::tabs::scale_of(frame)
+    } else {
+        f64::from(unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(frame) }.max(96)) / 96.0
+    };
     let s = |v: i32| ((v as f64) * scale).round() as i32;
     let current = default_text.to_string();
+    let question = note.is_some();
 
     let mut fr = RECT::default();
     let _ = unsafe { GetWindowRect(frame, &mut fr) };
-    let (w, h) = (s(420), s(96));
+    // A question is taller by the note (24) and a row of buttons (28 + PAD).
+    let (w, h) = (s(420), if question { s(96 + 24 + 28 + PAD) } else { s(96) });
     let x = fr.left + ((fr.right - fr.left) - w) / 2;
     let y = fr.top + s(120);
 
@@ -418,6 +476,36 @@ fn open_prompt(
             return;
         };
 
+        if question {
+            // Rename (the default, as Enter is) and Cancel, right-aligned on
+            // the bottom row.
+            let (bw, bh) = (s(96), s(28));
+            let top = h - s(PAD) - bh;
+            for (i, (id, text)) in [(ID_ACCEPT, tr("Rename")), (ID_CANCEL, tr("Cancel"))].into_iter().enumerate() {
+                let label: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+                let left = w - s(PAD) - bw * (2 - i as i32) - s(8) * (1 - i as i32);
+                let style = if id == ID_ACCEPT { BS_DEFPUSHBUTTON } else { BS_PUSHBUTTON };
+                if let Ok(b) = CreateWindowExW(
+                    WINDOW_EX_STYLE::default(),
+                    w!("BUTTON"),
+                    PCWSTR(label.as_ptr()),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(style as u32),
+                    left,
+                    top,
+                    bw,
+                    bh,
+                    Some(hwnd),
+                    Some(HMENU(id as *mut std::ffi::c_void)),
+                    None,
+                    None,
+                ) {
+                    SendMessageW(b, WM_SETFONT, Some(WPARAM(GetStockObject(DEFAULT_GUI_FONT).0 as usize)), Some(LPARAM(1)));
+                }
+            }
+            // Modal: the window it is about waits for the answer.
+            let _ = EnableWindow(frame, false);
+        }
+
         let prev_proc = SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_proc as *const () as isize);
         SetWindowLongPtrW(edit, GWLP_USERDATA, prev_proc);
         // Select everything, so typing replaces the old name.
@@ -439,6 +527,8 @@ fn open_prompt(
                 completion,
                 label,
                 prev: prev.0 as isize,
+                note,
+                modal_over: if question { frame.0 as isize } else { 0 },
             });
         });
     }
@@ -465,15 +555,26 @@ fn close(accept: bool) {
     };
 
     unsafe {
+        // Given back before the box goes, so the window it was modal over is
+        // the one Windows activates next.
+        if open.modal_over != 0 {
+            let _ = EnableWindow(HWND(open.modal_over as *mut std::ffi::c_void), true);
+        }
         let _ = DestroyWindow(hwnd);
     }
     crate::overlay::focus_back(HWND(open.prev as *mut std::ffi::c_void), "title prompt");
 
     if !accept {
+        // not-gated: the condition is the event -- a close that waited on
+        // this box now does not happen, and this line is the only trace.
+        if let Completion::SaveProject { close_after: Some(_), .. } = open.completion {
+            wlogf!(frame, "[prompt] {} cancelled; the tab stays open", open.label);
+            return;
+        }
         wlogf!(frame, "[prompt] {} cancelled", open.label);
         return;
     }
-    if text.trim().is_empty() {
+    if text.trim().is_empty() && !matches!(open.completion, Completion::RenameProject(_)) {
         // An empty name would clear the title (or, for SaveProject, save
         // under a name nobody chose) -- a different request from the one
         // the menu row makes, either way.
@@ -494,14 +595,39 @@ fn close(accept: bool) {
             // says which of the three this box was.
             wlogf!(frame, "[prompt] {} -> {:?} ok={}", open.label, binding, ok as i32);
         }
-        Completion::SaveProject(tab) => {
-            let Some(dir) = crate::project::resolve_state_dir().map(|s| crate::project::default_dir(&s)) else {
-                wlogf!(frame, "[prompt] save as project {:?}: no state directory available", text);
-                return;
+        // The section says what happened -- a refusal included -- in its own
+        // status line.
+        Completion::RenameProject(file) => {
+            wlogf!(frame, "[prompt] {} -> {:?} for {:?}", open.label, text, file);
+            crate::projects_ui::rename_to(&file, &text);
+        }
+        Completion::SaveProject { tab, close_after } => {
+            let saved = match crate::project::resolve_state_dir().map(|s| crate::project::default_dir(&s)) {
+                None => Err("no state directory (neither XDG_STATE_HOME nor LOCALAPPDATA)".to_string()),
+                Some(dir) => crate::project_ui::save_project(&dir, frame, tab, text.clone()),
             };
-            match crate::project_ui::save_project(&dir, frame, tab, text.clone()) {
-                Ok(()) => wlogf!(frame, "[prompt] saved as project {:?}", text),
-                Err(e) => wlogf!(frame, "[prompt] save as project {:?} failed: {}", text, e),
+            match (&saved, close_after) {
+                (Ok(()), None) => wlogf!(frame, "[prompt] saved as project {:?}", text),
+                (Ok(()), Some(whole_window)) => {
+                    wlogf!(frame, "[prompt] saved as project {:?}; closing the {}", text, if whole_window { "window" } else { "tab" });
+                    if whole_window {
+                        crate::tabs::close_all_tabs_of(frame);
+                    } else {
+                        crate::tabs::close_tab(frame, tab);
+                    }
+                }
+                (Err(e), None) => wlogf!(frame, "[prompt] save as project {:?} failed: {}", text, e),
+                (Err(e), Some(_)) => {
+                    // **Said on screen, and the tab stays**: the person chose
+                    // Save so as not to lose what is running in it.
+                    wlogf!(frame, "[prompt] save as project {:?} failed: {}; the tab stays open", text, e);
+                    let body: Vec<u16> =
+                        format!("{}\n\n{}", tr("The project could not be saved."), e).encode_utf16().chain(Some(0)).collect();
+                    let title: Vec<u16> = tr("Save as Project").encode_utf16().chain(Some(0)).collect();
+                    unsafe {
+                        MessageBoxW(Some(frame), PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONWARNING);
+                    }
+                }
             }
         }
     }
@@ -567,6 +693,10 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 crate::theme::repaint_all(hwnd);
                 LRESULT(0)
             }
+            WM_COMMAND if wp.0 & 0xFFFF == ID_ACCEPT || wp.0 & 0xFFFF == ID_CANCEL => {
+                close(wp.0 & 0xFFFF == ID_ACCEPT);
+                LRESULT(0)
+            }
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
                 let label = OPEN.with(|c| c.borrow().as_ref().map(|o| o.label).unwrap_or(""));
@@ -585,6 +715,18 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     let mut wide: Vec<u16> = tr(label).encode_utf16().collect();
                     let mut r = RECT { left: 12, top: 12, right: rc.right - 12, bottom: 40 };
                     DrawTextW(hdc, &mut wide, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                    // The question's note, under the field, in the dim colour.
+                    if let Some(note) = OPEN.with(|c| c.borrow().as_ref().and_then(|o| o.note.clone())) {
+                        let mut er = RECT::default();
+                        let edit = OPEN.with(|c| c.borrow().as_ref().map(|o| o.edit).unwrap_or(0));
+                        let _ = GetWindowRect(HWND(edit as *mut std::ffi::c_void), &mut er);
+                        let mut pts = [POINT { x: er.left, y: er.bottom }];
+                        let _ = MapWindowPoints(None, Some(hwnd), &mut pts);
+                        SetTextColor(hdc, COLORREF(theme::dim()));
+                        let mut wide: Vec<u16> = note.encode_utf16().collect();
+                        let mut r = RECT { left: pts[0].x, top: pts[0].y + 4, right: rc.right - 12, bottom: pts[0].y + 4 + (rc.bottom / 6) };
+                        DrawTextW(hdc, &mut wide, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                    }
                     SelectObject(hdc, old);
                 }
                 let _ = EndPaint(hwnd, &ps);
@@ -613,11 +755,17 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             }
         }
         if msg == WM_KILLFOCUS {
-            // Clicking away cancels rather than commits: a title box is not a
-            // rename-in-place, and a half-typed name landing because the
-            // pointer moved is not something to explain afterwards.
-            close(false);
-            return LRESULT(0);
+            // The keyboard moving to one of the box's own buttons is not
+            // clicking away: the click is on its way to that button.
+            let to = HWND(wp.0 as *mut std::ffi::c_void);
+            let ours = !to.0.is_null() && GetParent(to).ok() == GetParent(hwnd).ok();
+            if !ours {
+                // Clicking away cancels rather than commits: a title box is not a
+                // rename-in-place, and a half-typed name landing because the
+                // pointer moved is not something to explain afterwards.
+                close(false);
+                return LRESULT(0);
+            }
         }
         let f: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT =
             std::mem::transmute(prev);

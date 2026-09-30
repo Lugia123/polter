@@ -183,3 +183,37 @@ mac 列：worktree `s2-mac-projects`（基于 1f9d4de14，未提交）。截图�
 | G6 | 路由 general/<组>：点名的组；没点名时新开窗口在第一组，已经开着的窗口留在原组 | ✅（规则）`aRouteLandsOnTheGroupItNames`、`withNoneNamedANewWindowTakesTheFirstAndAnOpenOneStays` | |
 | G7 | §2.3a 网格 | ✅ 快捷键 / 高级 / 关于三张（1180×800 @2x）和快捷键 900×620：顶带下沿三段都在第 168–169 行；底带上沿三段都在 1494–1495 行（900：1134–1135）；侧栏竖线 440–441 贯通顶带、主体和底带；列表竖线 962–963 只画在主体里 | |
 | G8 | 菜单「快捷键…」→ `general/keybinds`：打开设置窗口的「快捷键」组，不再开旧的独立窗口（旧的 `KeybindsController` 留给第 4 期删） | ✅ 在测试宿主里调真实的 `AppDelegate.showKeybinds(nil)`：打开的是「Polter 设置」窗口、只有 1 个，面包屑「通用 › 快捷键」（`menu-keybinds-1180.png`）；单测 `theKeyboardShortcutsMenuRoutesToItsGroup`。⏳ 菜单项本身没有点过（xib 的 action 没改，仍然是 `showKeybinds:`） | |
+
+## 第 3 期：项目栏目（§6）· Windows 列（#959）
+
+> 行号与 mac 那一节（`settings2/mac-projects`，1f9d4de14）的 P1–P20 一一对应，合并时填进那张表的 Windows 列；
+> W1–W3 是 §6.3 只属于 Windows 的三项。读数取自 worktree `s2-win-projects`（基于 60b63ad7d，未提交改动）。
+> **Windows 测试机今晚不开，下面没有一格是在真机上看过的**：✅ 只表示纯规则有单元测试（`polter-settings-shell`，
+> 在 mac 上跑，含临时目录里的真实文件操作）、宿主交叉编译通过；画面、点击、像素全部 ⏳。
+
+| # | Windows |
+|---|---|
+| P1 | ⏳ 行：名称 / 「时间 · N 个窗格」（`projects_ui::paint`；tab 数不显示）。没看画面 |
+| P2 | ✅（规则）`projects::thumbnail`：`the_thumbnail_has_one_box_per_pane_in_tree_order`、`a_deep_tree_in_a_small_box_still_shows_every_pane`；标签 `pane_label`（目录末段 · 标题）`a_pane_is_labelled_by_its_directory_and_its_title`。没看画面 |
+| P3 | ⏳ 目录 / 回滚内容（`scrollback_bytes`、`format_bytes` 有单测）/ 自动保存恒为「没有绑定到打开的窗口」（Windows 无绑定，裁定）。「角色」一行写「项目文件不记录角色」 |
+| P4 | ⏳ 与「加载项目…」同一个 `project_ui::load_project_into_new_tab`，装进发起设置窗口的那个终端窗口。没点过 |
+| P5 | ⏳ 详情首行是项目名（粗体）+ 右边「重命名…」，点了弹「重命名项目」框（`prompt::prompt_rename_project`：输入框、说明「项目文件、上一版和 scrollback 一起改名。」、重命名 / 取消，Enter / Esc；框开着时设置窗口禁用），与 mac 一样没有内联名字框。✅（规则）`check_rename`：`a_rename_onto_a_name_that_is_taken_is_refused_and_names_it`（含名字只差大小写而文件名不同的旧文件、两个名字清洗成同一文件名）；落盘 `a_move_onto_another_project_is_refused_and_touches_nothing` |
+| P6 | ✅ `a_move_takes_every_sidecar_with_it`、`a_rename_to_itself_is_nothing_and_a_change_of_case_is_a_rename`；`.prev` 里的名字由 `project::set_name` 一起改（宿主，未在真机跑） |
+| P7 | —（Windows 没有 tab↔项目绑定，裁定不做） |
+| P8 | ✅ `a_copy_is_named_after_its_original_and_numbered_past_what_is_taken`、`a_copy_has_the_snapshots_and_no_history` |
+| P9 | ⏳ 确认框 → `project_ui::save_project`（旧命名规则的文件先挪到规则文件名）。没终端窗口时按钮灰、状态栏写原因。没点过 |
+| P10 | ✅（规则）`the_undo_banner_lasts_until_the_next_delete_or_the_close`；画面 ⏳ |
+| P11 | ✅（规则）删除先整份移进 `projects\.deleted\<名>-<时间>\`（`a_stashed_project_leaves_the_listing_and_comes_back_whole`、`two_deletes_of_one_name_in_one_second_are_two_stashes`），撤销=移回、同名已占用拒绝不覆盖（`undo_does_not_overwrite_a_project_saved_since`）；横幅结束（关窗 / 下一次删除）与启动时的残留（`leftovers_are_everything_but_what_the_banner_holds`）用 `SHFileOperationW(FO_DELETE, FOF_ALLOWUNDO\|NOCONFIRMATION\|SILENT\|NOERRORUI)` 送回收站——⏳ 送回收站这一步只在真机上能看 |
+| P12 | ✅ `versions_are_newest_first_and_say_which_is_current`；一代 `.prev` 与 mac 同规则：`the_previous_generation_is_kept_only_on_a_layout_change`、`a_write_keeps_what_was_there_as_prev_and_leaves_nothing_else`、`restoring_swaps_so_it_is_undone_by_restoring_again`、`the_layout_is_the_shape_and_the_directions_not_the_ratios` |
+| P13 | ⏳ `explorer.exe /select,"<文件>"`。没点过 |
+| P14 | ⏳ 项目菜单新增「管理项目…」→ `projects`（Windows 无绑定，item 空 → 上次选中的，再空第一个）。没点过 |
+| P15 | ✅（规则）`section_for_search` 搬了 mac 的三条用例原样：`a_search_stays_in_the_section_on_screen_when_it_matches_there`、`a_search_goes_to_the_first_section_that_matches`、`a_search_that_matches_nothing_stays_in_a_searchable_section`，加 `a_typed_query_is_asked_of_the_names`；面包屑加注走 `hidden_item`。没看画面 |
+| P16–P19 | ⏳ 像素没量。网格规则：本栏目底带按钮与 `section_grid` 同一行 `the_actions_sit_in_the_band_on_its_row`；列表文字 = 列表左线 + PAD `the_banner_pushes_the_rows_down_and_the_text_keeps_its_edge`；详情只有「边距 / 控件列」两条左缘 `the_editor_has_two_left_edges_and_fits_at_the_minimum`。打开时日志 `[projects-ui] grid:` 会报这些列 / 行 |
+| P20 | ✅（规则）最小窗口 900×620 在 96–240 DPI 下，详情全部落在底带线之上、缩略图不小于 96（该测试首跑就红过：固定 160 高时最后一行版本历史压到底带线下 33px，改成缩略图吃剩余高度）。画面 ⏳ |
+| W1 | ⏳ 项目菜单补「管理项目…」一行（`menu.rs` `__polter_manage_projects`，已进 `HOST_ACTIONS`） |
+| W2 | ✅（规则）关一个忙的 tab（或只有一个 tab 的窗口）时问「关闭前存成项目吗？」[另存为项目… / 不保存，直接关闭 / 取消]：`only_one_busy_tab_is_offered_a_save_before_it_closes`、`only_the_close_button_closes`；选「另存为项目…」弹名字框，**存成功才关**，取消或失败不关（`prompt.rs` `close_after`）。`project_ui::should_offer_save_as_project` 现在有调用方。弹框 ⏳ |
+| W3 | ⏳ tab 右键在颜色之后、智能体之前一节「另存为项目… / 加载项目…」（`strip.rs` `TAB_MENU[8..=9]`，`the_colour_submenu_goes_after_the_second_separator` 已按新表改，宿主测试只编未跑） |
+
+单元测试（Windows 纯层）：`polter-settings-shell` 79 条（基线 HEAD 44 条，新增 35：`projects.rs` 31、`lib.rs` 搜索 4），
+`cargo test -p polter-settings-shell` 在 mac 上全过；地板 13 处变异（先写 9、后补 4），每处都红在各自断言行上，
+其中「重名比较去掉大小写折叠」第一次没红，补了一条旧文件名的用例后才红。宿主测试 exe 交叉编译通过，没跑（只能在测试机上跑）。
