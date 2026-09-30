@@ -1,4 +1,5 @@
-//! `polter +launch <role> [<cli>]` -- become an agent CLI wearing a role.
+//! `polter +launch <role> [<cli>] [-- <arg>...]` -- become an agent CLI
+//! wearing a role.
 //!
 //! This is what a "Launch with Role" click and a supervisor's `role_launch`
 //! both end up typing into a fresh terminal. It runs **inside** that
@@ -14,6 +15,12 @@
 //!   * When something is wrong (the role was deleted, the plugin is off,
 //!     `claude` is not installed) the reason is printed where the person is
 //!     looking: in the terminal that did not start.
+//!
+//! Anything after a `--` goes to the CLI as written, after the role's own
+//! extra arguments: `polter +launch polter-supervisor claude-code -- -r`.
+//! It travels in the launch request's `args` like those, so the adapter
+//! treats it the same way (Claude Code's merges a `--settings <json>` into
+//! its own and appends the rest to the command line).
 //!
 //! The process then **replaces itself** with the CLI, so the CLI is the
 //! shell's child exactly as if it had been typed, and inherits this
@@ -48,11 +55,14 @@ pub const Options = struct {
 /// The `launch` command starts an agent CLI wearing a role defined in
 /// Polter's role library.
 ///
-///   polter +launch <role> [<cli>]
+///   polter +launch <role> [<cli>] [-- <arg>...]
 ///
 /// `<role>` is the role's key. `<cli>` is the key of the plugin that
 /// manages the CLI (`claude-code`), and may be left out when the role is
 /// set up for exactly one.
+///
+/// Everything after `--` is handed to the CLI as written, after the role's
+/// own extra arguments, e.g. `polter +launch dev-worker claude-code -- -r`.
 ///
 /// Normally this is not typed by hand: "Launch with Role" in a tab's menu,
 /// and the supervisor's `role_launch`, open a terminal and type it there.
@@ -75,13 +85,13 @@ pub fn run(alloc: Allocator) !u8 {
     const err_out = &stderr_writer.interface;
     defer err_out.flush() catch {};
 
-    const parsed = parseArgs(aa) catch {
-        try err_out.writeAll(
-            \\Polter: `+launch` needs a role.
-            \\
-            \\    polter +launch <role> [<cli>]
-            \\
-        );
+    const parsed = parseArgs(aa) catch |err| {
+        try err_out.writeAll(switch (err) {
+            error.ExtraArgument => "Polter: `+launch` takes a role and a CLI; " ++
+                "put what is for the CLI after `--`.\n",
+            else => "Polter: `+launch` needs a role.\n",
+        });
+        try err_out.writeAll(usage);
         return 2;
     };
 
@@ -156,7 +166,7 @@ pub fn run(alloc: Allocator) !u8 {
     try agent_cli.writeLaunchRequest(
         &request.writer,
         p,
-        choice,
+        try withPassthrough(aa, choice, parsed.passthrough),
         cwd,
         env.get("HOME") orelse env.get("USERPROFILE"),
         mcpExecutable(aa, io),
@@ -369,12 +379,20 @@ const Console = struct {
     }
 };
 
+const usage =
+    \\
+    \\    polter +launch <role> [<cli>] [-- <arg>...]
+    \\
+;
+
 const Parsed = struct {
     role: []const u8,
     cli: ?[]const u8,
+    /// What came after `--`, for the CLI, in order. Empty without one.
+    passthrough: []const []const u8,
 };
 
-/// `<role> [<cli>]` after our own `+launch` token.
+/// `<role> [<cli>] [-- <arg>...]` after our own `+launch` token.
 ///
 /// Read by hand for `+mcp-slot`'s reason: the shared iterator drops
 /// anything beginning with `+`, and it takes no positionals.
@@ -387,8 +405,117 @@ fn parseArgs(aa: Allocator) !Parsed {
         if (std.mem.eql(u8, arg, "+launch")) break;
     } else return error.NoRole;
 
-    const role = iter.next() orelse return error.NoRole;
-    if (!persona.isValidKey(role)) return error.NoRole;
-    const cli: ?[]const u8 = if (iter.next()) |c| try aa.dupe(u8, c) else null;
-    return .{ .role = try aa.dupe(u8, role), .cli = cli };
+    var rest: std.ArrayList([]const u8) = .empty;
+    while (iter.next()) |arg| try rest.append(aa, try aa.dupe(u8, arg));
+    return parseRest(rest.items);
+}
+
+/// `args` is everything after `+launch`. Returns slices of it.
+///
+/// A third word before `--` is refused rather than dropped: dropping it
+/// is how `+launch dev-worker claude-code -r` used to start a CLI that
+/// had never been told `-r`, with nothing on screen to say so.
+fn parseRest(args: []const []const u8) error{ NoRole, ExtraArgument }!Parsed {
+    const split = for (args, 0..) |a, i| {
+        if (std.mem.eql(u8, a, "--")) break i;
+    } else args.len;
+    const before = args[0..split];
+    const passthrough = if (split < args.len) args[split + 1 ..] else args[args.len..];
+
+    if (before.len == 0) return error.NoRole;
+    if (!persona.isValidKey(before[0])) return error.NoRole;
+    if (before.len > 2) return error.ExtraArgument;
+    return .{
+        .role = before[0],
+        .cli = if (before.len == 2) before[1] else null,
+        .passthrough = passthrough,
+    };
+}
+
+/// `choice` with `passthrough` after its own `args`: the role's extra
+/// arguments first, then what was typed after `--`, so a later flag the
+/// person typed wins wherever the CLI lets a repeat override.
+fn withPassthrough(
+    aa: Allocator,
+    choice: persona.CliChoice,
+    passthrough: []const []const u8,
+) Allocator.Error!persona.CliChoice {
+    if (passthrough.len == 0) return choice;
+    var out = choice;
+    out.args = try std.mem.concat(aa, []const u8, &.{ choice.args, passthrough });
+    return out;
+}
+
+test "+launch: no `--` is a role and an optional CLI, nothing passed through" {
+    const one = try parseRest(&.{"dev-worker"});
+    try std.testing.expectEqualStrings("dev-worker", one.role);
+    try std.testing.expect(one.cli == null);
+    try std.testing.expectEqual(0, one.passthrough.len);
+
+    const two = try parseRest(&.{ "dev-worker", "claude-code" });
+    try std.testing.expectEqualStrings("claude-code", two.cli.?);
+    try std.testing.expectEqual(0, two.passthrough.len);
+}
+
+test "+launch: `--` right after the role leaves the CLI to the role" {
+    const p = try parseRest(&.{ "dev-worker", "--", "-r" });
+    try std.testing.expectEqualStrings("dev-worker", p.role);
+    try std.testing.expect(p.cli == null);
+    try std.testing.expectEqual(1, p.passthrough.len);
+    try std.testing.expectEqualStrings("-r", p.passthrough[0]);
+}
+
+test "+launch: `--` after the CLI passes everything after it, in order" {
+    const p = try parseRest(&.{ "dev-worker", "claude-code", "--", "x", "--", "y" });
+    try std.testing.expectEqualStrings("claude-code", p.cli.?);
+    try std.testing.expectEqual(3, p.passthrough.len);
+    try std.testing.expectEqualStrings("x", p.passthrough[0]);
+    // A second `--` belongs to the CLI, not to us.
+    try std.testing.expectEqualStrings("--", p.passthrough[1]);
+    try std.testing.expectEqualStrings("y", p.passthrough[2]);
+}
+
+test "+launch: a `--` with nothing after it passes nothing" {
+    const p = try parseRest(&.{ "dev-worker", "claude-code", "--" });
+    try std.testing.expectEqualStrings("claude-code", p.cli.?);
+    try std.testing.expectEqual(0, p.passthrough.len);
+}
+
+test "+launch: a third word before `--` is refused, not dropped" {
+    try std.testing.expectError(
+        error.ExtraArgument,
+        parseRest(&.{ "dev-worker", "claude-code", "-r" }),
+    );
+    try std.testing.expectError(
+        error.ExtraArgument,
+        parseRest(&.{ "dev-worker", "claude-code", "-r", "--", "x" }),
+    );
+    try std.testing.expectError(error.NoRole, parseRest(&.{}));
+    try std.testing.expectError(error.NoRole, parseRest(&.{ "--", "x" }));
+}
+
+test "+launch: what follows `--` reaches the adapter after the role's own args" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const choice: persona.CliChoice = .{ .cli = "claude-code", .args = &.{"--verbose"} };
+    const parsed = try parseRest(&.{ "dev-worker", "claude-code", "--", "-r", "x y" });
+    const sent = try withPassthrough(aa, choice, parsed.passthrough);
+
+    var request: std.Io.Writer.Allocating = .init(aa);
+    try agent_cli.writeLaunchRequest(
+        &request.writer,
+        .{ .key = "dev-worker", .name = "Dev worker" },
+        sent,
+        null,
+        null,
+        null,
+    );
+    const json = try std.json.parseFromSliceLeaky(std.json.Value, aa, request.written(), .{});
+    const args = json.object.get("cli").?.object.get("args").?.array.items;
+    try std.testing.expectEqual(3, args.len);
+    try std.testing.expectEqualStrings("--verbose", args[0].string);
+    try std.testing.expectEqualStrings("-r", args[1].string);
+    try std.testing.expectEqualStrings("x y", args[2].string);
 }

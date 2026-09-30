@@ -34,6 +34,12 @@ pub fn detectIter(
     var fallback: ?E = null;
     var pending: ?E = null;
     while (iter.next()) |arg| {
+        // Once an action is named, a `--` ends what is ours to read: the
+        // rest belongs to that action (`+launch <role> -- --version` hands
+        // `--version` to the agent CLI, it does not ask for ours). Before an
+        // action a `--` means nothing here, as it always has.
+        if (pending != null and std.mem.eql(u8, arg, "--")) break;
+
         // Allow handling of special cases.
         if (@hasDecl(E, "detectSpecialCase")) special: {
             const special = E.detectSpecialCase(arg) orelse break :special;
@@ -273,5 +279,44 @@ test "detect special case abort_if_no_action" {
         defer iter.deinit();
         const result = try detectIter(Enum, &iter);
         try testing.expect(result == null);
+    }
+}
+
+test "detect stops at `--` after an action" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const Enum = enum {
+        foo,
+        bar,
+
+        fn detectSpecialCase(arg: []const u8) ?SpecialCase(@This()) {
+            return if (std.mem.eql(u8, arg, "--special"))
+                .{ .action = .foo }
+            else
+                null;
+        }
+    };
+
+    // What follows the `--` is the action's: neither a special case
+    // nor a second action.
+    {
+        var iter = try std.process.Args.IteratorGeneral(.{}).init(
+            alloc,
+            "+bar x -- --special +foo +nonsense",
+        );
+        defer iter.deinit();
+        const result = try detectIter(Enum, &iter);
+        try testing.expectEqual(Enum.bar, result.?);
+    }
+
+    // A `--` before any action changes nothing.
+    {
+        var iter = try std.process.Args.IteratorGeneral(.{}).init(
+            alloc,
+            "-- +bar",
+        );
+        defer iter.deinit();
+        const result = try detectIter(Enum, &iter);
+        try testing.expectEqual(Enum.bar, result.?);
     }
 }
