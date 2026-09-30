@@ -1592,10 +1592,6 @@ msgstr ""
 msgid "Search"
 msgstr ""
 
-#: windows/host/src/settings_win.rs
-msgid "Coming in a later update."
-msgstr ""
-
 #: windows/host/src/roles_ui.rs
 msgid "No matching roles"
 msgstr ""
@@ -2248,10 +2244,6 @@ msgstr ""
 msgid "MIT licensed. A fork of Ghostty."
 msgstr ""
 
-#: windows/host/src/settings_ui.rs:1229 windows/host/src/settings_ui.rs:2320
-msgid "Esc or click to dismiss"
-msgstr ""
-
 #: windows/host/src/settings_ui.rs:2129 windows/host/src/uia.rs:2038
 msgid "Keyboard Shortcuts"
 msgstr ""
@@ -2263,14 +2255,6 @@ msgstr ""
 #, rust-format
 msgid ""
 "This page lists actions; {} in all. Some actions have no shortcut assigned."
-msgstr ""
-
-#. TRANSLATORS: the runs of four spaces are column padding that
-#. separates the three groups; please keep them. `{}-{} / {}` is
-#. first-shown, last-shown, total.
-#: windows/host/src/settings_ui.rs:2219
-#, rust-format
-msgid "{}–{} / {}    ↑↓ PgUp PgDn Scroll    Esc Close"
 msgstr ""
 
 #: windows/host/src/strip.rs:1294

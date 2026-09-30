@@ -205,7 +205,7 @@ mac 列：worktree `s2-mac-projects`（基于 1f9d4de14，未提交）。截图�
 | P6 | ✅ `a_move_takes_every_sidecar_with_it`、`a_rename_to_itself_is_nothing_and_a_change_of_case_is_a_rename`；`.prev` 里的名字由 `project::set_name` 一起改（宿主，未在真机跑） |
 | P7 | —（Windows 没有 tab↔项目绑定，裁定不做） |
 | P8 | ✅ `a_copy_is_named_after_its_original_and_numbered_past_what_is_taken`、`a_copy_has_the_snapshots_and_no_history` |
-| P9 | ⏳ 确认框 → `project_ui::save_project`（旧命名规则的文件先挪到规则文件名）。没终端窗口时按钮灰、状态栏写原因。没点过 |
+| P9 | ⏳ 确认框 → `project_ui::overwrite_project`（被替换的版本一律留作 `.prev`，#966；旧命名规则的文件先挪到规则文件名）。没终端窗口时按钮灰、状态栏写原因。没点过 |
 | P10 | ✅（规则）`the_undo_banner_lasts_until_the_next_delete_or_the_close`；画面 ⏳ |
 | P11 | ✅（规则）删除先整份移进 `projects\.deleted\<名>-<时间>\`（`a_stashed_project_leaves_the_listing_and_comes_back_whole`、`two_deletes_of_one_name_in_one_second_are_two_stashes`），撤销=移回、同名已占用拒绝不覆盖（`undo_does_not_overwrite_a_project_saved_since`）；横幅结束（关窗 / 下一次删除）与启动时的残留（`leftovers_are_everything_but_what_the_banner_holds`）用 `SHFileOperationW(FO_DELETE, FOF_ALLOWUNDO\|NOCONFIRMATION\|SILENT\|NOERRORUI)` 送回收站——⏳ 送回收站这一步只在真机上能看 |
 | P12 | ✅ `versions_are_newest_first_and_say_which_is_current`；一代 `.prev` 与 mac 同规则：`the_previous_generation_is_kept_only_on_a_layout_change`、`a_write_keeps_what_was_there_as_prev_and_leaves_nothing_else`、`restoring_swaps_so_it_is_undone_by_restoring_again`、`the_layout_is_the_shape_and_the_directions_not_the_ratios` |
