@@ -142,6 +142,22 @@ enum SettingsRules {
         return keys[min(max(i + delta, 0), keys.count - 1)]
     }
 
+    /// What the settings window does when the configuration is loaded or
+    /// reloaded (§7): with errors and no window, it opens at General ›
+    /// Advanced, which is where they are listed -- in place of the old
+    /// errors window; an open window follows in place and does not jump,
+    /// so a reload the form itself caused leaves the person where they are.
+    enum ConfigChange: Equatable {
+        case open(SettingsRoute)
+        case refresh
+        case nothing
+    }
+
+    static func onConfigChanged(errorCount: Int, windowOpen: Bool) -> ConfigChange {
+        if windowOpen { return .refresh }
+        return errorCount > 0 ? .open(.general(.advanced)) : .nothing
+    }
+
     enum UnsavedAnswer { case save, dontSave, cancel }
 
     /// Whether it is fine to leave a section or an item (§2.4). Asks only

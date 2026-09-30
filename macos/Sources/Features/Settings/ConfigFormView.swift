@@ -77,6 +77,11 @@ private struct ConfigFormRow: View {
                 label
                     .frame(width: L.label, alignment: .trailing)
                 ConfigFormControl(model: model, item: item, control: control)
+                    // Made again from the value on disk whenever that
+                    // changes -- after a write, a refused write, a restore
+                    // or a hand edit -- so what the control shows is never
+                    // an old draft beside a new value.
+                    .id("\(item.value)\u{0}\(model.attempts[item.key] ?? 0)")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             formControl {
@@ -182,7 +187,6 @@ private struct ConfigFormControl: View {
     var body: some View {
         content
             .onAppear(perform: load)
-            .onChange(of: item.value) { _ in load() }
     }
 
     @ViewBuilder

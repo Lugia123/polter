@@ -265,3 +265,6 @@ mac 列：worktree `s2-int-mac`（基于 02842d01f，未提交）。截图 `ghos
 单元测试（Windows 纯层）：`polter-settings-shell` 110 条（合并后 94 + `general` 16），基线 `zz-nothing` 0；
 地板 10 处（G1–G10），每处红在各自断言行。其中「全部选项筛选区分大小写」第一版变异体是等价的（键名本来就全小写），没红；
 改成拿掉查询词一侧的小写化后红在 `general.rs:488`。
+| G18 | 端到端写入（#968，#967 合入后）：改值 → 文件字节 → 重载 → 标点 → 非法值红字 → 恢复默认删行 | ✅ 测试宿主里 `ConfigFormWriteTests.aValueIsWrittenReloadedMarkedRefusedAndRestored`：form.main 与宿主读的是同一个临时文件（不是的话测试在写之前就停）；font-size 写入后原有字节不变、追加在「由 Polter 设置窗口写入」块下；app 配置读回 17；行上有标点、来源 main；备份与写前逐字节相同；非法值文件一个字节不变、红字、值不变；恢复默认后那一行没了、app 读回默认。截图 `ghostty-wt/settings-mac-shots/p4-form-write/` w0–w5 | |
+| G19 | 配置出错（启动 / 重载）且设置窗口没开 → 打开到 通用›高级；窗口开着 → 只刷新不跳（替代旧的配置错误窗口） | ✅ `aConfigErrorOpensTheWindowAtAdvancedAndThenStaysPut`：往测试宿主的配置里写一行坏值、重载 → 窗口开在 通用›高级；切到「关于」再重载 → 仍在「关于」。规则 `SettingsRules.onConfigChanged` 三条单测。截图 w4 | |
+| G20 | 写入后控件显示磁盘上的值（被拒时退回生效值） | ✅ 截图 w1（写 17 后框里是 17）、w2（非法值被拒，框里退回 17、下方红字）。修之前框里一直显示 13，是从截图里发现的 | |
