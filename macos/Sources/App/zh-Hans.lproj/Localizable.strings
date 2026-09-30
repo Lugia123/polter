@@ -87,7 +87,6 @@
 "A terminal that minds the agents running in it. \nBuilt on Ghostty." = "一个会照看在里面干活的 agent 的终端。\n基于 Ghostty 构建。";
 "Allow" = "允许";
 "Checking for updates…" = "正在检查更新…";
-"Coming Soon. 🚧" = "即将推出。🚧";
 "Copy Icon Config" = "复制图标配置";
 "Disable" = "关闭";
 "Downloading Update" = "正在下载更新";
@@ -96,7 +95,6 @@
 "GitHub limits anonymous requests to 60 per hour; try again later." = "GitHub 限制匿名请求每小时 60 次；请稍后再试。";
 "GitHub returned an unexpected response (%@)." = "GitHub 返回了一个意外的响应（%@）。";
 "GitHub's response could not be read." = "无法读取 GitHub 的响应。";
-"Ignore" = "忽略";
 "Install and Relaunch" = "安装并重新启动";
 "Let a Supervisor Answer Prompts Here" = "允许总管在此终端替你回答权限询问";
 "Let Workers Name Each Other Directly" = "允许 worker 之间直接点名";
@@ -127,7 +125,6 @@
 "Update Failed" = "更新失败";
 "Version:" = "版本：";
 "View Release" = "查看发布版本";
-"You can't configure settings in the GUI yet. To modify settings, " = "目前还不能在图形界面里改设置。要修改设置，";
 "You're already running the latest version." = "你运行的已经是最新版本。";
 "You're running a debug build of Polter! Performance will be degraded." = "你运行的是 Polter 的调试构建！性能会下降。";
 
@@ -246,11 +243,9 @@
 "No Saved Projects" = "还没有保存过项目";
 "Save as Project" = "另存为项目";
 "Load Project" = "加载项目";
-"Manage Projects" = "管理项目";
 "Overwrite Project?" = "覆盖这个项目？";
 "\"%@\" already has %@ pane(s), saved %@. The replaced version is kept as the previous version." = "“%@”已经有 %@ 个面板，保存于 %@。被替换的版本会留作上一版。";
 "%@ pane(s) · saved %@" = "%@ 个面板 · 保存于 %@";
-"\"%@\" will be permanently deleted." = "“%@”将被永久删除。";
 "Save as Project..." = "另存为项目…";
 "Load Project..." = "加载项目…";
 "Save as a Project Before Closing?" = "关闭前要存成项目吗？";
@@ -405,7 +400,6 @@
 "Restore Previous Version?" = "恢复上一版？";
 "Restore" = "恢复";
 "\"%@\" goes back to its layout before the last change. The current version is kept, so doing this again undoes it." = "“%@”将回到上一次改动之前的布局。当前版本会保留下来，再做一次就能撤销。";
-"Restore Previous Version" = "恢复上一版";
 
 /* 设置窗口（dev-docs/poltergeist/settings.md） */
 "Polter Settings" = "Polter 设置";

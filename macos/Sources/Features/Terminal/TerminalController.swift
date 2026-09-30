@@ -61,7 +61,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// The notification cancellable for focused surface property changes.
     private var surfaceAppearanceCancellables: Set<AnyCancellable> = []
 
-    /// The "Save as Project" / "Load Project" / "Manage Projects" picker
+    /// The "Save as Project" / "Load Project" picker
     /// window, owned per-controller so it closes along with its terminal
     /// and doesn't leak into another window's lifetime. See
     /// `TerminalController+Projects.swift`.

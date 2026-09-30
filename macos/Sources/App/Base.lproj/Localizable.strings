@@ -78,13 +78,11 @@
 "A terminal that minds the agents running in it. \nBuilt on Ghostty." = "A terminal that minds the agents running in it. \nBuilt on Ghostty.";
 "Allow" = "Allow";
 "Checking for updates…" = "Checking for updates…";
-"Coming Soon. 🚧" = "Coming Soon. 🚧";
 "Copy Icon Config" = "Copy Icon Config";
 "Disable" = "Disable";
 "Downloading Update" = "Downloading Update";
 "Enable automatic updates?" = "Enable automatic updates?";
 "Execute a command…" = "Execute a command…";
-"Ignore" = "Ignore";
 "Install and Relaunch" = "Install and Relaunch";
 "Let a Supervisor Answer Prompts Here" = "Let a Supervisor Answer Prompts Here";
 "Let Workers Name Each Other Directly" = "Let Workers Name Each Other Directly";
@@ -113,7 +111,6 @@
 "Update Available" = "Update Available";
 "Update Failed" = "Update Failed";
 "Version:" = "Version:";
-"You can't configure settings in the GUI yet. To modify settings, " = "You can't configure settings in the GUI yet. To modify settings, ";
 "You're already running the latest version." = "You're already running the latest version.";
 "You're running a debug build of Polter! Performance will be degraded." = "You're running a debug build of Polter! Performance will be degraded.";
 
@@ -232,11 +229,9 @@
 "No Saved Projects" = "No Saved Projects";
 "Save as Project" = "Save as Project";
 "Load Project" = "Load Project";
-"Manage Projects" = "Manage Projects";
 "Overwrite Project?" = "Overwrite Project?";
 "\"%@\" already has %@ pane(s), saved %@. The replaced version is kept as the previous version." = "\"%@\" already has %@ pane(s), saved %@. The replaced version is kept as the previous version.";
 "%@ pane(s) · saved %@" = "%@ pane(s) · saved %@";
-"\"%@\" will be permanently deleted." = "\"%@\" will be permanently deleted.";
 "Save as Project..." = "Save as Project...";
 "Load Project..." = "Load Project...";
 "Save as a Project Before Closing?" = "Save as a Project Before Closing?";
@@ -389,7 +384,6 @@
 "Restore Previous Version?" = "Restore Previous Version?";
 "Restore" = "Restore";
 "\"%@\" goes back to its layout before the last change. The current version is kept, so doing this again undoes it." = "\"%@\" goes back to its layout before the last change. The current version is kept, so doing this again undoes it.";
-"Restore Previous Version" = "Restore Previous Version";
 
 /* Settings window (dev-docs/poltergeist/settings.md) */
 "Polter Settings" = "Polter Settings";

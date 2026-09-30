@@ -1,32 +1,13 @@
 import Foundation
-import OSLog
 
 /// What the user has said about one plugin: whether it is on, and its values.
 ///
 /// The same file the core reads (`Plugin.Settings` in
-/// `src/poltergeist/Plugin.zig`). Written whole -- it is small, and this is
-/// the only thing that writes it.
+/// `src/poltergeist/Plugin.zig`). Only read here: every write goes through
+/// the core's writer (`PluginCore.configure`, settings.md §5.1).
 struct PluginSettings: Equatable {
     var enabled: Bool = false
     var params: [String: String] = [:]
-
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier!,
-        category: "plugins")
-
-    /// Read what the user has said. Missing or unreadable is "not
-    /// configured", which is the same as off: a plugin nobody has set up
-    /// should not be sending anything.
-    ///
-    /// This one looks only at the user's file. Anything showing a plugin's
-    /// state wants `load(for:)`, which also sees the defaults a release
-    /// ships with.
-    static func load(key: String) -> PluginSettings {
-        guard let url = PluginCatalog.settingsURL(for: key) else {
-            return PluginSettings()
-        }
-        return read(url) ?? PluginSettings()
-    }
 
     /// Read two places, nearest first: the user's file, and failing that the
     /// `settings.json` the plugin's own directory may carry.
@@ -40,7 +21,7 @@ struct PluginSettings: Equatable {
     /// user's file that will not parse wins too, in the same direction, for
     /// the same reason.
     ///
-    /// Nothing ever writes the shipped copy; `save` knows one path.
+    /// Nothing ever writes the shipped copy: the core writes the user's file only.
     static func load(for plugin: Plugin) -> PluginSettings {
         if let url = PluginCatalog.settingsURL(for: plugin.key),
            let settings = read(url) {
@@ -71,26 +52,6 @@ struct PluginSettings: Equatable {
         return PluginSettings(
             enabled: (root["enabled"] as? Bool) ?? false,
             params: strings(root["params"] as? [String: Any] ?? [:]))
-    }
-
-    /// Write it back, owner-only.
-    ///
-    /// The file may hold a reference to a secret, and on some setups the
-    /// secret itself -- so it is created 0600 rather than left to the
-    /// umask, the same as everything else Polter writes about your work.
-    func save(key: String) throws {
-        guard let url = PluginCatalog.settingsURL(for: key) else {
-            throw CocoaError(.fileNoSuchFile)
-        }
-
-        let root: [String: Any] = ["enabled": enabled, "params": params]
-        let data = try JSONSerialization.data(
-            withJSONObject: root,
-            options: [.prettyPrinted, .sortedKeys])
-
-        try data.write(to: url, options: [.atomic])
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     /// Whether every required parameter has something in it.
