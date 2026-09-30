@@ -47,14 +47,13 @@
 "Show Log" = "Show Log";
 "Show Log (nothing written yet)" = "Show Log (nothing written yet)";
 "Restart Polter to apply" = "Restart Polter to apply";
-"Plugins are loaded when Polter starts." = "Plugins are loaded when Polter starts.";
 
 "Keeps the conversations" = "Keeps the conversations";
 "Notifies you" = "Notifies you";
 "Sets your agent up to reach Polter" = "Sets your agent up to reach Polter";
 
 "Let this plugin run" = "Let this plugin run";
-"It runs for as long as Polter does and is handed those events as they happen. A plugin that stops, or cannot reach where it writes, catches up afterwards rather than losing anything -- Polter's own record on disk is what it is copied from and stays the record either way. Changing this takes effect the next time Polter starts." = "It runs for as long as Polter does and is handed those events as they happen. A plugin that stops, or cannot reach where it writes, catches up afterwards rather than losing anything -- Polter's own record on disk is what it is copied from and stays the record either way. Changing this takes effect the next time Polter starts.";
+"It runs for as long as Polter does and is handed those events as they happen. A plugin that stops, or cannot reach where it writes, catches up afterwards rather than losing anything -- Polter's own record on disk is what it is copied from and stays the record either way." = "It runs for as long as Polter does and is handed those events as they happen. A plugin that stops, or cannot reach where it writes, catches up afterwards rather than losing anything -- Polter's own record on disk is what it is copied from and stays the record either way.";
 "What it is handed: %@" = "What it is handed: %@";
 "This plugin subscribes to nothing, so Polter has nothing to hand it and will not start it." = "This plugin subscribes to nothing, so Polter has nothing to hand it and will not start it.";
 "This plugin has nothing to configure." = "This plugin has nothing to configure.";
@@ -403,3 +402,28 @@
 "Pick an agent CLI under Basics to launch this role." = "Pick an agent CLI under Basics to launch this role.";
 "No matching roles" = "No matching roles";
 "%@ (not in the search results)" = "%@ (not in the search results)";
+
+/* 设置窗口：插件栏目 */
+"Restart to apply" = "Restart to apply";
+"Off" = "Off";
+"Needs settings" = "Needs settings";
+"Error" = "Error";
+"On" = "On";
+"Fill in first: %@" = "Fill in first: %@";
+", " = ", ";
+"Choose a plugin in the sidebar." = "Choose a plugin in the sidebar.";
+"Takes effect after Polter restarts. Its running copy still has the settings it started with." = "Takes effect after Polter restarts. Its running copy still has the settings it started with.";
+"Status" = "Status";
+"Settings" = "Settings";
+"Page" = "Page";
+"Log" = "Log";
+"Refresh" = "Refresh";
+"Show Plugin Folder" = "Show Plugin Folder";
+"Nothing written yet." = "Nothing written yet.";
+"Test" = "Test";
+"No matching plugins" = "No matching plugins";
+"Polter's core is not running." = "Polter's core is not running.";
+"A plugin was tested less than a minute ago. Try again in a minute." = "A plugin was tested less than a minute ago. Try again in a minute.";
+"This plugin is no longer installed." = "This plugin is no longer installed.";
+"A setting is not one this plugin declares." = "A setting is not one this plugin declares.";
+"The core refused: %@" = "The core refused: %@";

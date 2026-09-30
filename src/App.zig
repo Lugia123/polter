@@ -3030,6 +3030,18 @@ test "a plugin configure: only the person may switch one off" {
     try std.testing.expect(!try pluginEnabledAfter(.user, false, null));
 }
 
+test "configure answers with report.Started's tag names" {
+    // `ghostty_app_plugin_configure` writes these names and the macOS
+    // settings window reads them (`PluginStarted`); a rename here has to
+    // fail somewhere.
+    const Started = poltergeistpkg.report.Started;
+    try std.testing.expectEqualStrings("already_running", @tagName(Started.already_running));
+    try std.testing.expectEqualStrings("started_now", @tagName(Started.started_now));
+    try std.testing.expectEqualStrings("not_started", @tagName(Started.not_started));
+    try std.testing.expectEqualStrings("subscribes_to_nothing", @tagName(Started.subscribes_to_nothing));
+    try std.testing.expectEqual(@as(usize, 4), @typeInfo(Started).@"enum".fields.len);
+}
+
 test "a plugin configure: only the person may write a cmd: reference" {
     try std.testing.expectError(error.WillNotWriteCmd, pluginValueAllowed(.supervisor, "cmd:op read x"));
     try pluginValueAllowed(.supervisor, "env:HOOK");

@@ -54,7 +54,6 @@
 "Show Log" = "查看日志";
 "Show Log (nothing written yet)" = "查看日志（还没有内容）";
 "Restart Polter to apply" = "需重启 Polter 才生效";
-"Plugins are loaded when Polter starts." = "插件在 Polter 启动时加载。";
 
 /* 插件订阅了什么，一个事件一句 —— 菜单里跟在插件名后面，设置窗口里也用这几句 */
 "Keeps the conversations" = "保管群聊记录";
@@ -63,7 +62,7 @@
 
 /* 插件设置窗口 */
 "Let this plugin run" = "让这个插件运行";
-"It runs for as long as Polter does and is handed those events as they happen. A plugin that stops, or cannot reach where it writes, catches up afterwards rather than losing anything -- Polter's own record on disk is what it is copied from and stays the record either way. Changing this takes effect the next time Polter starts." = "它跟 Polter 一起运行，事件发生时就交给它。插件停了、或者写不进它要写的地方，事后会补上，不会丢东西 —— 抄的是 Polter 自己在磁盘上的记录，那份记录无论如何都在。改这一项要下次 Polter 启动才生效。";
+"It runs for as long as Polter does and is handed those events as they happen. A plugin that stops, or cannot reach where it writes, catches up afterwards rather than losing anything -- Polter's own record on disk is what it is copied from and stays the record either way." = "它跟 Polter 一起运行，事件发生时就交给它。插件停了、或者写不进它要写的地方，事后会补上，不会丢东西 —— 抄的是 Polter 自己在磁盘上的记录，那份记录无论如何都在。";
 "What it is handed: %@" = "交给它的是：%@";
 "This plugin subscribes to nothing, so Polter has nothing to hand it and will not start it." = "这个插件什么都没订阅，Polter 没有东西交给它，也不会启动它。";
 "This plugin has nothing to configure." = "此插件没有需要配置的项。";
@@ -419,3 +418,28 @@
 "Pick an agent CLI under Basics to launch this role." = "先在「基本信息」里选一个 agent CLI，才能用这个角色启动。";
 "No matching roles" = "没有匹配的角色";
 "%@ (not in the search results)" = "%@（不在搜索结果里）";
+
+/* 设置窗口：插件栏目 */
+"Restart to apply" = "重启后生效";
+"Off" = "已关";
+"Needs settings" = "缺配置";
+"Error" = "出错";
+"On" = "已开";
+"Fill in first: %@" = "先填好：%@";
+", " = "、";
+"Choose a plugin in the sidebar." = "在侧栏里选一个插件。";
+"Takes effect after Polter restarts. Its running copy still has the settings it started with." = "重启 Polter 后生效。正在运行的那一份仍用它启动时的设置。";
+"Status" = "状态";
+"Settings" = "设置";
+"Page" = "页面";
+"Log" = "日志";
+"Refresh" = "刷新";
+"Show Plugin Folder" = "显示插件文件夹";
+"Nothing written yet." = "还没有写过日志。";
+"Test" = "测试";
+"No matching plugins" = "没有匹配的插件";
+"Polter's core is not running." = "Polter 的核心没有在运行。";
+"A plugin was tested less than a minute ago. Try again in a minute." = "一分钟内已经测试过插件，请一分钟后再试。";
+"This plugin is no longer installed." = "这个插件已经不在了。";
+"A setting is not one this plugin declares." = "有一项设置不是这个插件声明过的。";
+"The core refused: %@" = "核心拒绝了：%@";

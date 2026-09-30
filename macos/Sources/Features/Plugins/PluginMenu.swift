@@ -13,8 +13,6 @@ final class PluginMenu: NSObject, NSMenuDelegate {
         subsystem: Bundle.main.bundleIdentifier!,
         category: "plugins")
 
-    private var windows: [String: NSWindow] = [:]
-
     /// Attach to the menu item that should hold the list.
     func attach(to item: NSMenuItem) {
         let menu = NSMenu(title: item.title)
@@ -76,7 +74,7 @@ final class PluginMenu: NSObject, NSMenuDelegate {
 
         let configure = NSMenuItem(
             title: String(localized: "Settings…", comment: "插件菜单：打开设置"),
-            action: #selector(openSettings(_:)),
+            action: #selector(openPluginSettings(_:)),
             keyEquivalent: "")
         configure.target = self
         configure.representedObject = plugin.key
@@ -164,33 +162,11 @@ final class PluginMenu: NSObject, NSMenuDelegate {
 
     // MARK: Actions
 
-    @objc private func openSettings(_ sender: NSMenuItem) {
-        guard let key = sender.representedObject as? String,
-              let plugin = PluginCatalog.installed().first(where: { $0.key == key })
-        else { return }
-
-        // One window per plugin, reused: opening the menu twice should not
-        // leave two windows disagreeing about the same file.
-        if let existing = windows[key] {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        let view = PluginSettingsView(plugin: plugin) { [weak self] in
-            self?.windows[key]?.close()
-            self?.windows.removeValue(forKey: key)
-        }
-
-        let window = NSWindow(contentViewController: NSHostingController(rootView: view))
-        window.title = plugin.name
-        window.styleMask = [.titled, .closable]
-        window.isReleasedWhenClosed = false
-        windows[key] = window
-
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    /// The plugin's page in the settings window (settings.md §3.2): one
+    /// window for every plugin, rather than a window each.
+    @objc private func openPluginSettings(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        openSettings(.plugins(key))
     }
 
     @objc private func toggleEnabled(_ sender: NSMenuItem) {
@@ -201,27 +177,30 @@ final class PluginMenu: NSObject, NSMenuDelegate {
         // Started from what is in effect, not from the user's file alone:
         // switching off a plugin that a release ships switched on has to
         // write "off", and reading only the user's file would see "never
-        // configured" and toggle it to on.
-        var settings = PluginSettings.load(for: plugin)
-        settings.enabled.toggle()
-        do {
-            try settings.save(key: key)
-        } catch {
-            PluginMenu.logger.warning("could not switch \(key): \(error)")
-            return
+        // configured" and toggle it to on. Written by the core's writer, the
+        // one every other place that saves a plugin uses.
+        let enabled = PluginSettings.load(for: plugin).enabled
+        switch PluginCore.configure(key, enabled: !enabled, params: [:]) {
+        case .failure(let failure):
+            PluginMenu.logger.warning("could not switch \(key): \(failure.message)")
+            NSSound.beep()
+        case .success(.alreadyRunning):
+            // Its running copy keeps what it started with. Saying so is
+            // better than leaving somebody to wonder why nothing changed.
+            let alert = NSAlert()
+            alert.messageText = String(
+                localized: "Restart Polter to apply",
+                comment: "插件启停后需重启")
+            alert.informativeText = String(
+                localized: "Takes effect after Polter restarts. Its running copy still has the settings it started with.",
+                comment: "设置窗口：插件，保存时它在跑，重启后生效的横幅")
+            alert.alertStyle = .informational
+            alert.runModal()
+        case .success:
+            // Switched on and started now, or off with nothing running:
+            // already in effect.
+            break
         }
-
-        // The core reads these files when it starts. Saying so is better than
-        // leaving somebody to wonder why the next notification went nowhere.
-        let alert = NSAlert()
-        alert.messageText = String(
-            localized: "Restart Polter to apply",
-            comment: "插件启停后需重启")
-        alert.informativeText = String(
-            localized: "Plugins are loaded when Polter starts.",
-            comment: "插件启停后需重启的说明")
-        alert.alertStyle = .informational
-        alert.runModal()
     }
 
     @objc private func revealFolder(_ sender: Any?) {

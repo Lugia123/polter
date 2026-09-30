@@ -64,3 +64,42 @@ roles 路由选哪个角色、未保存时的保存 / 不保存 / 取消。`xcod
 
 - 用户叫停了真机 GUI 测试（测试实例反复抢前台，用户的按键进了测试窗口）：14 / 15 / 17、真机小屏 90% 截断、
   修复后的最小尺寸读回，等用户说前台可以占用时再验。
+
+## 第 2 期：插件栏目
+
+mac 列的读数取自 worktree `settings2/mac-plugins`（基于 60b63ad7d，未提交改动）的 Debug 构建
+（`polter.debug.dylib` sha256 前缀 `a991d0f9`，最后一处改动——详情里状态点上色——之后重建为 `a2544a58`，
+没有重截图）。测试实例由 `tools/mac-test-instance.sh` 起，状态目录预先放了两个夹具插件：`feishu-demo`
+（必填 `webhook`、带 `ui/index.html`、已开未填）和 `flaky`（进程一启动就退出）；起前起后
+`mcpServers.polter.command` 都是 `/Applications/Polter.app/Contents/MacOS/polter`。窗口由 lldb 在进程内发
+`openConfig:`、合成鼠标事件点击、`cacheDisplayInRect:` 自绘出图。截图目录
+`ghostty-wt/settings-mac-shots/p2-plugins/`（不在仓内），驱动脚本在同目录。
+
+| # | 行为 | mac | Windows |
+|---|---|---|---|
+| 33 | 插件在侧栏「插件」下展开，每个带状态点与文字 | ✅ 11 个插件，● 已开 / ◐ 缺配置 / ○ 已关 / ▲ 出错 / ↻ 重启后生效 都出现过。`11`、`14`、`19` | |
+| 34 | 状态点判定 ↻ > ○ > ◐ > ▲ > ● | ✅ 纯函数 `SettingsRules.pluginDot`，用例表 10 行（`SettingsPluginRulesTests.dotCases`，Windows 同表）。真机：已开未填 → ◐（`12`）；进程反复退出 → ▲（`15`）；已关 → ○ | |
+| 35 | 状态数据与 MCP `plugin_list` 同源 | ✅ 新 C 接口 `ghostty_app_plugin_list` = `wire.writeResponse(.plugins = pluginList)`，与 MCP 同一个函数；宿主只解析，不猜 | |
+| 36 | 详情：名称、版本、作者、本地化说明 | ✅ 「飞书演示 v0.3.1 · Polter 测试」。`12`。manifest 没有 `author` 时不显示 | |
+| 37 | 开关：缺必填项时禁止打开，旁边写缺哪几项 | ✅ 「先填好：Webhook」。`12`。已开着的仍可关掉 | |
+| 38 | 「设置」页签 = 按 schema 生成的表单，标签列 120 + 控件列 | ✅（目视）文本框 / 下拉 / 勾选框都在控件列，说明与密钥提示也在控件列。`12` | |
+| 39 | 有 `ui/index.html` 时多一个「页面」页签，嵌 PluginPage | ✅ 页签内 WKWebView，`polter.settings()` 读到设置。`13` | |
+| 40 | 插件页面的保存走核心写入器 | ✅ 页面里 `polter.save({params:{webhook:…}})` → 文件变成核心 `Settings.render` 的格式（`"enabled": true`，0600），不是 Swift 的 `"enabled" : true`。`14` | |
+| 41 | 「测试」走 `plugin_test` 同一逻辑，结果在按钮旁 | ✅ Flaky 的测试回核心原句（backing off after 8 failed starts…）。`15`；一分钟内再按 → 「一分钟内已经测试过插件，请一分钟后再试。」`16` | |
+| 42 | 日志：最近 20 行 + 查看日志 + 显示插件文件夹 | ✅ 20 行（纯函数 `logTail`，CR / CRLF / LF 都断行）。`12`、`15`。两个按钮没点（会开 Finder） | |
+| 43 | 保存时插件在跑 → ↻ + 详情顶部常驻横幅「重启 Polter 后生效」，不弹框，无「现在重启」按钮 | ✅ 页面保存 feishu-demo、表单保存 flaky 后，侧栏 ↻、顶部横幅。`14`、`19` | |
+| 44 | 设置窗口可以关掉插件（agent 不能） | ✅ 取消勾选 + 保存 → 文件 `enabled: false`。`19`。核心：`pluginEnabledAfter(.user, …)` 放行、`.supervisor` 仍报 `WillNotDisable`（Zig 测试） | |
+| 45 | 有未保存改动时切到另一个插件先问；取消后留在原处、草稿还在 | ✅ 改 Label 为 two 后点「飞书演示」→ 弹出 `_NSAlertPanel`；取消后仍是 Flaky、two、「有未保存的修改」。`17`、`18` | |
+| 46 | 搜索按插件名过滤；选中项被滤掉时面包屑加注；当前栏目无匹配时跳到第一个有匹配的栏目 | ✅ 「code」→ 剩 4 个插件，面包屑「插件 › Flaky（不在搜索结果里）」`20`；「polter」→ 插件「没有匹配的插件」、跳到角色 `21` | |
+| 47 | 插件子菜单「设置…」→ `plugins/<key>`，不再每插件一个窗口 | ✅ 菜单项 `Claude Code > 设置… ro=claude-code` → 面包屑「插件 › Claude Code」，设置窗口数 = 1。`22` | |
+| 48 | §2.3a 网格在插件栏目 | ✅ @2x：顶带下沿 侧栏 / 详情两段都是第 168–169 行；底带上沿两段都是 1494–1495 行（页面页签的白色网页下方也是）；侧栏竖线在顶带、主体、底带都是 440–441 列。插件栏目没有列表列 | |
+| 49 | 插件菜单的开关走核心写入器；在跑的插件才提示重启 | ⏳ 代码：`PluginCore.configure`，只有 `already_running` 弹「需重启 Polter 才生效」。没在真机上点 | |
+
+### 单元测试（mac，第 2 期）
+
+`macos/Tests/Settings/SettingsPluginRulesTests.swift`，被测 `SettingsPluginRules.swift`（只依赖 Foundation）。
+同第 1 期的办法：符号链接进临时 SwiftPM 包 `swift test`：全部 54 条（3 个 suite）过，其中插件 20 条（`theDot`
+参数化 10 例算 1 条），基线 `--filter zz-nothing` 0 条。`xcodebuild build-for-testing` 把它和 `PluginSettingsTests`
+编进测试包（没跑宿主）。打坏 4 次，各红在：判定顺序对调 → `theDot` 第 0 例（得 `.off`）；去掉 `running &&` → 第 7 例
+（得 `.failing`）；只按 `\n` 断行 → `everyLineBreakEndsALine`；去掉 `savedWhileRunning` 守卫 →
+`onlyASaveWhileRunningWaitsForARestart`。

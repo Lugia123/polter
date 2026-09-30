@@ -8,6 +8,7 @@ struct SettingsRootView: View {
     @ObservedObject var model: SettingsModel
     @ObservedObject var library: RoleLibrary
     @ObservedObject var editor: RoleLibraryEditor
+    @ObservedObject var plugins: PluginsPane
     /// The window's minimum, as content size (settings.md §2.2).
     var minimumContent: CGSize
 
@@ -88,6 +89,10 @@ struct SettingsRootView: View {
             item = draft.displayName.isEmpty ? draft.key : draft.displayName
             hidden = RoleLibraryView.listing(library: library, editor: editor, query: model.search).selectionHidden
         }
+        if model.section == .plugins, let plugin = plugins.plugin {
+            item = plugin.name
+            hidden = plugins.listing(query: model.search).selectionHidden
+        }
         return SettingsRules.breadcrumb(section: model.section.title, item: item, hiddenBySearch: hidden)
     }
 
@@ -97,31 +102,75 @@ struct SettingsRootView: View {
     /// their own that SwiftUI does not let us set, and the highlight has to
     /// share its edges with the search box above it.
     private var sections: some View {
-        VStack(spacing: L.rowGap / 4) {
-            ForEach(SettingsSection.allCases) { section in
-                SettingsRow(selected: model.section == section, inset: L.padSidebar) {
-                    Label(section.title, systemImage: section.symbol)
-                }
-                .onTapGesture {
-                    // Focus first, the switch on the next turn: the switch can
-                    // ask about unsaved changes, and a modal question asked
-                    // before the focus has moved leaves it, once answered, in
-                    // the column that did not ask (#896 W35).
-                    sectionsFocused = true
-                    DispatchQueue.main.async { model.go(section) }
+        ScrollView {
+            VStack(spacing: L.rowGap / 4) {
+                ForEach(SettingsSection.allCases) { section in
+                    SettingsRow(selected: sidebarSelection == .section(section), inset: L.padSidebar) {
+                        Label(section.title, systemImage: section.symbol)
+                    }
+                    .onTapGesture {
+                        // Focus first, the switch on the next turn: the switch can
+                        // ask about unsaved changes, and a modal question asked
+                        // before the focus has moved leaves it, once answered, in
+                        // the column that did not ask (#896 W35).
+                        sectionsFocused = true
+                        DispatchQueue.main.async { go(.section(section)) }
+                    }
+
+                    // Each plugin is a page of settings of its own, so the
+                    // Plugins section lists them here, under itself, with
+                    // their dots (settings.md §2.3, §5.1).
+                    if section == .plugins {
+                        PluginSidebarRows(
+                            pane: plugins,
+                            query: model.search,
+                            selected: { sidebarSelection == .plugin($0) },
+                            onSelect: { key in
+                                sectionsFocused = true
+                                DispatchQueue.main.async { go(.plugin(key)) }
+                            })
+                    }
                 }
             }
-            Spacer(minLength: 0)
+            .padding(.top, L.rowGap)
         }
-        .padding(.top, L.rowGap)
-        // ↑↓ like the list this replaced.
+        // ↑↓ like the list this replaced, through the plugins too.
         .settingsListFocus()
         .focused($sectionsFocused)
         .onMoveCommand { direction in
             guard let delta = direction.rowDelta,
-                  let next = SettingsRules.step(from: model.section, in: SettingsSection.allCases, by: delta)
+                  let next = SettingsRules.step(from: sidebarSelection, in: sidebarEntries, by: delta)
             else { return }
-            model.go(next)
+            go(next)
+        }
+    }
+
+    /// A row of the sidebar: a section, or one plugin under Plugins.
+    private enum SidebarEntry: Hashable {
+        case section(SettingsSection)
+        case plugin(String)
+    }
+
+    /// The rows in order, as ↑↓ walks them: the plugins the search leaves,
+    /// right after Plugins.
+    private var sidebarEntries: [SidebarEntry] {
+        SettingsSection.allCases.flatMap { section -> [SidebarEntry] in
+            guard section == .plugins else { return [.section(section)] }
+            return [.section(section)] + plugins.listing(query: model.search).visible.map { .plugin($0) }
+        }
+    }
+
+    /// In Plugins with one chosen, that plugin's row is the highlighted one
+    /// rather than the section's.
+    private var sidebarSelection: SidebarEntry {
+        if model.section == .plugins, let key = plugins.selection { return .plugin(key) }
+        return .section(model.section)
+    }
+
+    private func go(_ entry: SidebarEntry) {
+        switch entry {
+        case .section(let section): model.go(section)
+        case .plugin(let key): model.goPlugin(key)
         }
     }
 
@@ -136,7 +185,9 @@ struct SettingsRootView: View {
                 roles(.detail)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        case .projects, .plugins:
+        case .plugins:
+            PluginsView(pane: plugins, part: .detail)
+        case .projects:
             Text(String(localized: "Coming in a later update.", comment: "设置窗口：项目/插件栏目第一期的占位文字"))
                 .foregroundStyle(.secondary)
         case .general:
@@ -161,7 +212,8 @@ struct SettingsRootView: View {
     private var bar: some View {
         switch model.section {
         case .roles: roles(.bar)
-        case .projects, .plugins, .general: Color.clear
+        case .plugins: PluginsView(pane: plugins, part: .bar)
+        case .projects, .general: Color.clear
         }
     }
 

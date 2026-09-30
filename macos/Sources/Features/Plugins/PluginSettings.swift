@@ -99,17 +99,16 @@ struct PluginSettings: Equatable {
     /// or a resolvable `cmd:` reference is not knowable without running it,
     /// and guessing would mean refusing to save something that works.
     func isComplete(for plugin: Plugin) -> Bool {
-        for parameter in plugin.parameters where parameter.required {
-            // A switch that is off is an answer. Emptiness cannot mean
-            // "unanswered" for a boolean, so requiring one to be non-empty
-            // would mean a required flag could only be satisfied by turning
-            // it on -- which is not what `required` says.
-            if parameter.control == .flag { continue }
+        missing(for: plugin).isEmpty
+    }
 
-            let value = params[parameter.name] ?? parameter.defaultValue ?? ""
-            if value.trimmingCharacters(in: .whitespaces).isEmpty { return false }
-        }
-        return true
+    /// The titles of the required parameters with nothing in them -- what
+    /// the settings window names beside a switch it will not turn on
+    /// (settings.md §5.2). One rule, `SettingsRules.pluginMissing`: a
+    /// switch that is off is an answer, and an unset value with a schema
+    /// default counts as set.
+    func missing(for plugin: Plugin) -> [String] {
+        SettingsRules.pluginMissing(plugin.requirements, params: params)
     }
 
     private static func strings(_ raw: [String: Any]) -> [String: String] {

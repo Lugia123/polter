@@ -375,6 +375,11 @@ class AppDelegate: NSObject,
         // The Plugins submenu is filled in from what is installed on disk.
         if let item = menuPlugins { pluginMenu.attach(to: item) }
 
+        // What each plugin's settings were as this launch read them: the
+        // settings window's "restart to apply" compares against it
+        // (settings.md §5.1).
+        PluginLaunch.shared.snapshot()
+
         // The same `Role` submenu the two right-click menus carry, built by
         // the same `PersonaMenu` -- and rebuilt when the Agents menu opens,
         // because which terminal it is about is decided then, not now.
