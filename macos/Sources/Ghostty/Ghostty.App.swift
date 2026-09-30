@@ -28,7 +28,7 @@ extension Ghostty {
         @Published private(set) var config: Config
 
         /// Preferred config file than the default ones
-        private var configPath: String?
+        private(set) var configPath: String?
         /// The ghostty app instance. We only have one of these for the entire app, although I guess
         /// in theory you can have multiple... I don't know why you would...
         @Published var app: ghostty_app_t? {
@@ -136,7 +136,12 @@ extension Ghostty {
         }
 
         func openConfig() {
-            let str = configPath ?? Ghostty.AllocatedString(ghostty_config_open_path()).string
+            openTextFile(path: configPath ?? Ghostty.AllocatedString(ghostty_config_open_path()).string)
+        }
+
+        /// Open a config file -- the main one, or one it includes -- the way
+        /// `openConfig` opens the main one: as text, in the person's editor.
+        func openTextFile(path str: String) {
             guard !str.isEmpty else { return }
             let fileURL = URL(fileURLWithPath: str).absoluteString
             var action = ghostty_action_open_url_s()

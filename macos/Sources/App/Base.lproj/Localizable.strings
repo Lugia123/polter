@@ -474,3 +474,27 @@
 "Version" = "Version";
 "Build" = "Build";
 "Commit" = "Commit";
+
+/* 设置窗口·通用栏目·表单（settings.md §7.2–7.4） */
+"Backup" = "Backup";
+"Changed from the default (%@). Right-click to restore it." = "Changed from the default (%@). Right-click to restore it.";
+"Dark" = "Dark";
+"Light" = "Light";
+"Edited in the config file, not here." = "Edited in the config file, not here.";
+"Filter by setting name" = "Filter by setting name";
+"No matching settings" = "No matching settings";
+"Not a valid value for this setting." = "Not a valid value for this setting.";
+"Open That File" = "Open That File";
+"Polter's core did not answer." = "Polter's core did not answer.";
+"Polter's core did not hand over the settings table." = "Polter's core did not hand over the settings table.";
+"Reading the settings…" = "Reading the settings…";
+"Restore Default" = "Restore Default";
+"Saved to %@." = "Saved to %@.";
+"Set in %@, line %@." = "Set in %@, line %@.";
+"Set on the command line; a change here would not take effect." = "Set on the command line; a change here would not take effect.";
+"The config file kept changing while it was being written. Try again." = "The config file kept changing while it was being written. Try again.";
+"The setting could not be written." = "The setting could not be written.";
+"This Polter reads %@, but the form would write %@. The settings are shown read-only." = "This Polter reads %@, but the form would write %@. The settings are shown read-only.";
+"This build does not know this setting." = "This build does not know this setting.";
+"This setting is set somewhere the form does not write." = "This setting is set somewhere the form does not write.";
+"This window has not written the config file since Polter started, so there is no backup yet." = "This window has not written the config file since Polter started, so there is no backup yet.";

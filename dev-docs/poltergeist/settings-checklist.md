@@ -183,3 +183,21 @@ mac 列：worktree `s2-mac-projects`（基于 1f9d4de14，未提交）。截图�
 | G6 | 路由 general/<组>：点名的组；没点名时新开窗口在第一组，已经开着的窗口留在原组 | ✅（规则）`aRouteLandsOnTheGroupItNames`、`withNoneNamedANewWindowTakesTheFirstAndAnOpenOneStays` | |
 | G7 | §2.3a 网格 | ✅ 快捷键 / 高级 / 关于三张（1180×800 @2x）和快捷键 900×620：顶带下沿三段都在第 168–169 行；底带上沿三段都在 1494–1495 行（900：1134–1135）；侧栏竖线 440–441 贯通顶带、主体和底带；列表竖线 962–963 只画在主体里 | |
 | G8 | 菜单「快捷键…」→ `general/keybinds`：打开设置窗口的「快捷键」组，不再开旧的独立窗口（旧的 `KeybindsController` 留给第 4 期删） | ✅ 在测试宿主里调真实的 `AppDelegate.showKeybinds(nil)`：打开的是「Polter 设置」窗口、只有 1 个，面包屑「通用 › 快捷键」（`menu-keybinds-1180.png`）；单测 `theKeyboardShortcutsMenuRoutesToItsGroup`。⏳ 菜单项本身没有点过（xib 的 action 没改，仍然是 `showKeybinds:`） | |
+
+### 第 4 期：通用栏目表单（§7.2–7.4，form.zig 三接口）
+
+mac 列：worktree `s2-int-mac`（基于 02842d01f，未提交）。截图 `ghostty-wt/settings-mac-shots/p4-form/`（临时测试在测试宿主里离屏出图）。
+⚠️ 测试宿主带着自己的配置文件（`GHOSTTY_CONFIG_PATH`）启动，而 form.zig 的「主文件」按默认候选找，指到用户自己的
+`~/Library/Application Support/<bundle>/config.polter`；所以截图里是只读横幅，写入没有端到端验过，等 #967。
+
+| # | 行为 | mac | Windows |
+|---|---|---|---|
+| G9 | 前五组按核心表的顺序列键；「全部选项」列全部键、可按键名过滤 | ✅ 真核心读数：外观 9（含 mac 独有的 macos-titlebar-style）/ 字体 3 / Polter 12 / 全部 230；单测 `theCoresOwnTableDecodes`（真 `ghostty_app_config_form` 的输出能解码、每组每个键都在 items 里且组名对得上）、`aGroupShowsItsKeysInTheTablesOrder`、`allOptionsIsEveryKeyFilteredByName` | |
+| G10 | 控件：开关 / 枚举下拉 / 窄范围滑块（background-opacity）/ 文本 / 主题拆浅色+深色；全部选项里一律单行文本；可重复和来源不在主文件的只读 | ✅ 画面 `form-appearance-1180.png`、`form-all-1180.png`；规则 `control(for:in:)`、`usesSlider`、`themePair/themeValue` 的单测 | |
+| G11 | 与默认值不同的标点，右键「恢复默认」（只对主文件里有那一行的键） | ⏳ 规则 `differsFromDefault`、`canRestoreDefault` 单测；画面上没出现过（测试宿主读到的全是默认） | |
+| G12 | 只读项说明来源：别的文件 → 「由 <文件> 第 <行> 行设置」+「打开那个文件」；命令行 → 说明；可重复 → 「在配置文件中编辑…」 | ✅（可重复一格）`form-all-1180.png`；其余两格没在画面上出现过 | |
+| G13 | 写入即时：开关、下拉、滑块松手就写；文本回车或失焦才写，没改不写；拒绝时红字显示在控件下、值退回；写完重载配置和表 | ⏳ 代码路径 + `leavingATextBoxWritesOnlyWhatChanged`、`aRefusalSaysWhatTheCoreSaid`、`aSetResultDecodesEitherWay`。**没有端到端写过**（见上面的 ⚠️） | |
+| G14 | 进程读的配置文件和表单要写的不是同一个时，整页只读、顶上横幅写明两个路径 | ✅ 测试宿主实测：host=`/tmp/pxt…/config.polter`，main=`~/Library/Application Support/<bundle id>/config.polter`，writesAllowed=false，横幅见截图；单测 `aProcessOnAnotherConfigFileDoesNotWrite`（符号链接指向同一个文件时视为同一份） | |
+| G15 | 高级：上一次写入前的备份位置 | ⏳ 读 `form.backup`；没有写过，所以只见过「还没有备份」 | |
+| G16 | 窗口获得焦点时重读整张表 | ⏳ `windowDidBecomeKey` 里调 `reloadForm()`；没在真实例上验 | |
+| G17 | §2.3a 网格 | ✅ 外观 / 全部选项 / Polter（1180）和外观（900）：顶带下沿 168–169 行、底带上沿 1494–1495 行（900：1134–1135）、侧栏竖线 440–441 贯通、列表竖线 962–963 只在主体里 | |
