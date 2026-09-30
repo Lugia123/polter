@@ -1609,10 +1609,6 @@ msgstr "通用"
 msgid "Search"
 msgstr "搜索"
 
-#: windows/host/src/settings_win.rs
-msgid "Coming in a later update."
-msgstr "将在后续版本提供。"
-
 #: windows/host/src/roles_ui.rs
 msgid "No matching roles"
 msgstr "没有匹配的角色"
@@ -2288,10 +2284,6 @@ msgstr "打开配置文件…"
 msgid "MIT licensed. A fork of Ghostty."
 msgstr "MIT 许可。Ghostty 的一个分支。"
 
-#: windows/host/src/settings_ui.rs:1229 windows/host/src/settings_ui.rs:2320
-msgid "Esc or click to dismiss"
-msgstr "按 Esc 或点击以关闭"
-
 # Page title and accessible name (settings_ui.rs, uia.rs). Deliberately a different msgid from the menu item "Keyboard Shortcuts…" (U+2026). Do not merge the two.
 #: windows/host/src/settings_ui.rs:2129 windows/host/src/uia.rs:2038
 msgid "Keyboard Shortcuts"
@@ -2305,14 +2297,6 @@ msgstr "快捷键"
 msgid ""
 "This page lists actions; {} in all. Some actions have no shortcut assigned."
 msgstr "这里列的是「动作」，共 {} 个；有的动作还没有分配快捷键。"
-
-#. TRANSLATORS: the runs of four spaces are column padding that
-#. separates the three groups; please keep them. `{}-{} / {}` is
-#. first-shown, last-shown, total.
-#: windows/host/src/settings_ui.rs:2219
-#, rust-format
-msgid "{}–{} / {}    ↑↓ PgUp PgDn Scroll    Esc Close"
-msgstr "{}–{} / {}    ↑↓ PgUp PgDn 滚动    Esc 关闭"
 
 #: windows/host/src/strip.rs:1294
 msgid "None"

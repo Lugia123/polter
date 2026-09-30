@@ -15,7 +15,7 @@
 //! for a session with real-machine access.
 //!
 //! What lives here is everything about task 533 that *is* verifiable without
-//! a screen: turning a live tab into a `Snapshot` (`save_project`) and
+//! a screen: turning a live tab into a `Snapshot` (`write_tab`) and
 //! turning a loaded `Snapshot` into the JSON the existing
 //! `poltergeist_layout` pipeline already knows how to build a tab from
 //! (`shape_for_snapshot`). A UI, whatever shape it ends up taking, calls
@@ -39,7 +39,7 @@ use crate::tabs::{self, TabId};
 /// `Leaf.history` default -- unlike the gap this function used to have
 /// before `ACTION_HISTORY_FILENAME` was wired (`tabs::history_of_pane`),
 /// where the field was empty for a reason nobody could ask about. See
-/// `save_project`'s doc comment for how those two "empty" cases are told
+/// `write_tab`'s doc comment for how those two "empty" cases are told
 /// apart now (an apprt-side count, not just a hope that a log line was
 /// read).
 ///
@@ -65,7 +65,7 @@ use crate::tabs::{self, TabId};
 /// default too.
 ///
 /// **Nothing is asked of the core in here.** The surfaces come out so that
-/// `save_project` can make its capture calls after this lock is released;
+/// `write_tab` can make its capture calls after this lock is released;
 /// the deadlock described above is what calling out from inside it has
 /// already cost once.
 fn snapshot_and_surfaces(frame: HWND, id: TabId, name: String, saved_at: i64) -> Option<(Snapshot, Vec<LeafPane>)> {
@@ -84,7 +84,7 @@ fn snapshot_and_surfaces(frame: HWND, id: TabId, name: String, saved_at: i64) ->
                             cwd: p.cwd.clone().unwrap_or_default(),
                             title: p.title.clone().unwrap_or_default(),
                             history: p.history.clone().unwrap_or_default(),
-                            // Named by `save_project`, from the pane's own
+                            // Named by `write_tab`, from the pane's own
                             // slot (`capture_scrollback`); empty until then.
                             scrollback: String::new(),
                         },
@@ -174,7 +174,7 @@ fn capture_scrollback(
     }
 }
 
-/// Number of leaves in a saved tree. Used by `save_project`'s log line and by
+/// Number of leaves in a saved tree. Used by `write_tab`'s log line and by
 /// the "you are about to overwrite N-pane project saved at T" confirmation a
 /// UI shows before replacing an existing name -- **on the *existing on-disk*
 /// project being overwritten**, read fresh with `project::read`, never on the
@@ -224,21 +224,8 @@ pub fn should_offer_save_as_project(tab_needs_confirmation: bool) -> bool {
     polter_settings_shell::projects::offers_save_before_close(1, tab_needs_confirmation)
 }
 
-/// Save the given tab as a named project. The caller (whichever UI ends up
-/// asking for the name) is responsible for telling the person the result;
-/// this only reports success/failure as a value.
-///
-/// **Logs once when some, but not all, panes have a history handle.** All
-/// missing (capture is plainly off) or all present are both unremarkable; a
-/// *mix* in one save is the shape worth a line, since it usually means
-/// capture was toggled mid-session rather than a per-pane setting anyone
-/// asked for.
-pub fn save_project(dir: &std::path::Path, frame: HWND, id: TabId, name: String) -> Result<(), String> {
-    write_tab(dir, frame, id, name, project::WriteKind::Save)
-}
-
-/// "Overwrite with Current Tab" (settings.md §6.2): `save_project`, except
-/// that **what it replaces is always kept as the previous version**, as the
+/// "Overwrite with Current Tab" (settings.md §6.2): a save, except that
+/// **what it replaces is always kept as the previous version**, as the
 /// confirmation promised -- the save's rule keeps it only on a layout change,
 /// and one pane over one pane then lost it (39ae3f040).
 pub fn overwrite_project(dir: &std::path::Path, frame: HWND, id: TabId, name: String) -> Result<(), String> {
@@ -251,6 +238,15 @@ pub fn write_tab_as(dir: &std::path::Path, frame: HWND, id: TabId, name: String,
     write_tab(dir, frame, id, name, kind)
 }
 
+/// Save the given tab as a named project. The caller (whichever UI asked
+/// for the name) is responsible for telling the person the result; this
+/// only reports success/failure as a value.
+///
+/// **Logs once when some, but not all, panes have a history handle.** All
+/// missing (capture is plainly off) or all present are both unremarkable; a
+/// *mix* in one save is the shape worth a line, since it usually means
+/// capture was toggled mid-session rather than a per-pane setting anyone
+/// asked for.
 fn write_tab(dir: &std::path::Path, frame: HWND, id: TabId, name: String, kind: project::WriteKind) -> Result<(), String> {
     let saved_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -622,7 +618,7 @@ mod tests {
     /// **Judgment ③ from the windows-port discussion: the missing-history
     /// gap must be discoverable, not a silent empty string that reads the
     /// same as "this pane never ran a command".** This does not (and
-    /// cannot, on this machine) prove the log line in `save_project` fires
+    /// cannot, on this machine) prove the log line in `write_tab` fires
     /// -- it proves the *fact the log line reports* is independently
     /// computable from the saved data, so code (not just a person reading a
     /// scrolled-off log) can act on it later.

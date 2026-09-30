@@ -78,7 +78,7 @@ fn scope_of(scope: i32) -> Option<(&'static str, &'static str)> {
 /// to a core keybind action, the same as a keybind would" -- that is what
 /// every row `scope_of` knows about does, and it is what the module doc
 /// comment above describes. `SaveProject` does not touch the core at all:
-/// it calls `project_ui::save_project` directly, against a *tab*, not a
+/// it calls `project_ui::write_tab_as` directly, against a *tab*, not a
 /// surface -- the two variants exist because the doc comment's "exactly one
 /// path that changes a title" claim is still true for titles and was never
 /// meant to also be true for saving a project.

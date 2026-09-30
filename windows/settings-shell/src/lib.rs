@@ -685,18 +685,6 @@ pub fn matches(query: &str, name: &str) -> bool {
     q.is_empty() || name.to_lowercase().contains(&q)
 }
 
-/// Which section the sidebar's search jumps to (§2.3): the first, in sidebar
-/// order, with an item whose name contains the query, ignoring case. An
-/// empty query jumps nowhere. Phase 1 passes only the roles.
-pub fn search_target(query: &str, items: &[(Section, Vec<String>)]) -> Option<Section> {
-    if query.trim().is_empty() {
-        return None;
-    }
-    Section::ALL
-        .into_iter()
-        .find(|s| items.iter().any(|(sec, names)| sec == s && names.iter().any(|n| matches(query, n))))
-}
-
 /// The section a search shows (§2.3, narrowed 2026-10-01): **the one on
 /// screen if it has a match** -- typing a project's name while looking at
 /// projects does not jump away because a role's name has it too -- else the
@@ -1276,15 +1264,23 @@ mod tests {
     }
 
     #[test]
+    /// The cases the phase 1 `search_target` carried, asked of the rule that
+    /// replaced it (`search_section`) from a section with no list of its
+    /// own: ignoring case, CJK, the first section in sidebar order, an empty
+    /// box going nowhere. **One case changed meaning, on purpose**: a query
+    /// nothing matches used to go nowhere; now a section that cannot be
+    /// searched hands over to the first that can, whose list says it has no
+    /// match (§2.3, narrowed 2026-10-01).
     fn search_jumps_to_the_first_section_with_a_match() {
         let items = vec![
             (Section::Roles, vec!["Reviewer".to_string(), "审查员".to_string()]),
             (Section::Plugins, vec!["review-bot".to_string()]),
         ];
-        assert_eq!(search_target("REVIEW", &items), Some(Section::Roles));
-        assert_eq!(search_target("审查", &items), Some(Section::Roles));
-        assert_eq!(search_target("bot", &items), Some(Section::Plugins));
-        assert_eq!(search_target("nothing", &items), None);
-        assert_eq!(search_target("  ", &items), None);
+        let from = Section::General;
+        assert_eq!(search_section(from, "REVIEW", &items), Some(Section::Roles));
+        assert_eq!(search_section(from, "审查", &items), Some(Section::Roles));
+        assert_eq!(search_section(from, "bot", &items), Some(Section::Plugins));
+        assert_eq!(search_section(from, "nothing", &items), Some(Section::Roles));
+        assert_eq!(search_section(from, "  ", &items), None);
     }
 }
