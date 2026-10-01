@@ -13,29 +13,31 @@ mac 列的读数取自 worktree `settings/mac`（基于 0a18c2700，未提交改
 截图是窗口自己 `cacheDisplayInRect:` 出的图，不是系统截屏。截图目录
 `ghostty-wt/settings-mac-shots/`（不在仓内），复现脚本 `run_all.sh`、输出 `run.log` 在同目录。
 
+Windows 列（#988 真机，见第 2 期 Windows 表上方的「真机读数从哪来」）只填了真机读到的格；空着的格不在 #988 的范围里，没测。
+
 | # | 行为 | mac | Windows |
 |---|---|---|---|
-| 1 | ⌘, / Ctrl+, 打开设置窗口（`open_config` os_open） | ✅ 主菜单 `performKeyEquivalent:` 收 ⌘, → `handled=1`，开出窗口。`01-first-open-cmd-comma.png`。⚠️ 核心 `GHOSTTY_ACTION_OPEN_CONFIG` 的 os_open / new_window 两个分支没有单独触发过 | |
+| 1 | ⌘, / Ctrl+, 打开设置窗口（`open_config` os_open） | ✅ 主菜单 `performKeyEquivalent:` 收 ⌘, → `handled=1`，开出窗口。`01-first-open-cmd-comma.png`。⚠️ 核心 `GHOSTTY_ACTION_OPEN_CONFIG` 的 os_open / new_window 两个分支没有单独触发过 |✅ 96 / 144 @27ae20c52：Ctrl+, → `[settings] shown for route "" … (first opening)`。`96-1.1-first-open-client.jpg`、`144-1.1-first-open-client.jpg` |
 | 2 | 菜单「偏好设置… / 设置…」打开设置窗口 | ✅ 菜单项（macOS 26 显示为「设置…」）→ `openConfig:` → 开出窗口。`02-reopen-keeps-size.png` | |
-| 3 | 首开尺寸 1180×800，居中，超 90% 屏幕则缩 | ✅ frame 读回 `310,165,1180,800`（可用区 1800×1130，未触发 90%）。90% 截断：单元测试 `firstOpeningIsCutToNinetyPercent`、`onlyTheSideThatDoesNotFitIsCut`（1280×720 → 1152×648）；真机小屏没验 | |
-| 4 | 最小 900×620，按钮不被裁 | ✅ 布局：900×620 下侧栏、列表、编辑器、底栏 + ⧉ − / 启动 / 还原 / 保存都在（旧构建截图，未随本次修复重截）。约束：原先 `minSize` 读回 0×32——SwiftUI hosting 在首次布局后按根视图最小尺寸（0×0）重设了它；现在根视图带最小尺寸、`sizingOptions = [.minSize]`，另在 `windowWillResize` 里用 `SettingsRules.clamped` 夹取。离屏探针（窗口不上屏）读回 minSize 900×620、frame 1180×800；单元测试 `aResizeIsHeldAtTheMinimum`。**修复后的 app 没在真机上读回过** | |
+| 3 | 首开尺寸 1180×800，居中，超 90% 屏幕则缩 | ✅ frame 读回 `310,165,1180,800`（可用区 1800×1130，未触发 90%）。90% 截断：单元测试 `firstOpeningIsCutToNinetyPercent`、`onlyTheSideThatDoesNotFitIsCut`（1280×720 → 1152×648）；真机小屏没验 |✅ 96 @27ae20c52：`shown … at 690,364 1180x800 … (first opening) dpi=96`；144：1770x1200（= 1180×800×1.5）。90% 截断没在真机上造出来 |
+| 4 | 最小 900×620，按钮不被裁 | ✅ 布局：900×620 下侧栏、列表、编辑器、底栏 + ⧉ − / 启动 / 还原 / 保存都在（旧构建截图，未随本次修复重截）。约束：原先 `minSize` 读回 0×32——SwiftUI hosting 在首次布局后按根视图最小尺寸（0×0）重设了它；现在根视图带最小尺寸、`sizingOptions = [.minSize]`，另在 `windowWillResize` 里用 `SettingsRules.clamped` 夹取。离屏探针（窗口不上屏）读回 minSize 900×620、frame 1180×800；单元测试 `aResizeIsHeldAtTheMinimum`。**修复后的 app 没在真机上读回过** |✅ 144：请求 200×200 被夹到 1350×930（= 900×620×1.5），96：900×620；底栏按钮不被裁（插件 P13 / R1、项目 P20 两格的读数） |
 | 5 | 调大后关窗，再开尺寸保留 | ✅ 调到 1320×900、关窗；defaults `NSWindow Frame PolterSettings = 200 150 1320 900`；再开 frame 读回 `200,150,1320,900`。`02-reopen-keeps-size.png` | |
 | 6 | 单例：多入口只有一个设置窗口 | ✅ 走完菜单栏 / tab 右键 / 终端右键三入口后，app 内标题为「Polter 设置」的窗口数 = 1 | |
 | 7 | 菜单栏 智能体 ▸ 角色 ▸ 角色库… → roles/<当前终端的角色> | ✅ 焦点终端穿 test-worker，菜单项 route=`roles("test-worker")`，窗口选中「测试 Worker」。`03-menubar-role-library.png` | |
 | 8 | tab 右键 ▸ 角色 ▸ 角色库… → roles/<该 tab 的角色> | ✅ 经 `NSMenuWillOpenNotification` 让真实的 `configureTabContextMenuIfNeeded` 加出角色子菜单，route=`roles("dev-worker")`，面包屑「角色 › 开发 Worker」。`04-tab-rightclick-role-library.png` ⚠️ 这张图的搜索框里有用户误打进来的 "pu"，列表被它过滤空了 | |
 | 9 | 终端右键 ▸ 角色 ▸ 角色库… → roles/<该终端的角色> | ✅ route=`roles("test-worker")`，面包屑「角色 › 测试 Worker」。`05-terminal-rightclick-role-library.png`（同上，搜索框有 "pu"） | |
 | 10 | 无角色的终端 / 无终端 → roles（无条目） | ✅（菜单读数）无角色终端的「角色库…」route=`roles(nil)`；单元测试 `theLibraryOpensOnThisTerminalsRole` 覆盖 `.none` 状态。没跑测试 | |
-| 11 | 侧栏四栏目 角色 / 项目 / 插件 / 通用；项目、插件为占位 | ✅ 见 01。点「项目」只在 12 里点过（被询问拦下），占位页本身没截图 | |
-| 12 | 有未保存改动时切栏目先问（保存 / 不保存 / 取消） | ✅ 改「测试 Worker」名字后点侧栏「项目」→ 弹窗「保存修改吗？」按钮 取消 / 不保存 / 保存。`06a-dirty.png`、`06b-unsaved-prompt-alert.png`（NSAlert 自绘不全，文字以视图树读数为准） | |
-| 13 | 取消后留在原栏目、草稿保留、侧栏高亮复位 | ✅ 取消后仍是「角色 › 测试 Worker（改）」、蓝点在、侧栏高亮回「角色」。`06c-after-cancel.png` | |
-| 14 | 未保存时切同栏目条目 / 从别的入口跳进来 / 关窗 先问 | ❌ 没验（代码走同一个 `SettingsUnsaved.confirmLeaving`） | |
-| 15 | Esc 不关窗；⌘W 关窗（先问） | ❌ 没验 | |
+| 11 | 侧栏四栏目 角色 / 项目 / 插件 / 通用；项目、插件为占位 | ✅ 见 01。点「项目」只在 12 里点过（被询问拦下），占位页本身没截图 |✅ 96 / 144 @27ae20c52：角色 / 项目 / 插件（11 个插件逐行）/ 通用。`144-1.1-first-open-client.jpg` |
+| 12 | 有未保存改动时切栏目先问（保存 / 不保存 / 取消） | ✅ 改「测试 Worker」名字后点侧栏「项目」→ 弹窗「保存修改吗？」按钮 取消 / 不保存 / 保存。`06a-dirty.png`、`06b-unsaved-prompt-alert.png`（NSAlert 自绘不全，文字以视图树读数为准） |✅ 96 @27ae20c52：插件有未保存改动时点「角色」→ 问「保存对这个插件的更改吗？」（插件 P7②） |
+| 13 | 取消后留在原栏目、草稿保留、侧栏高亮复位 | ✅ 取消后仍是「角色 › 测试 Worker（改）」、蓝点在、侧栏高亮回「角色」。`06c-after-cancel.png` |✅ 96 @27ae20c52：取消后仍在 flaky、草稿 x 还在（插件 P7①）。侧栏高亮复位没单独读 |
+| 14 | 未保存时切同栏目条目 / 从别的入口跳进来 / 关窗 先问 | ❌ 没验（代码走同一个 `SettingsUnsaved.confirmLeaving`） |✅（两支）96 @27ae20c52：切到另一个插件先问（P7①）、Ctrl+W 关窗先问（P7③）。「从别的入口跳进来」没读 |
+| 15 | Esc 不关窗；⌘W 关窗（先问） | ❌ 没验 |✅ Esc 不关：96 / 144 @27ae20c52，按 Esc 后设置窗口仍在前台（`96-1.3-after-esc.jpg`、`144-1.3-after-esc.jpg`）。Ctrl+W 关：`[settings] hidden; last=…`；有未保存改动先问（P7③）。**焦点在哪都关**（R13，@2e768a5bf 96 / 144）：栏目窗口自身、勾选框、保存按钮、文本框、页面 close() 之后、点「保存」「还原」按钮变灰之后（插件 / 角色 / 项目）共 9 种都关，日志 `[settings] Ctrl+W (keyboard on …): closing`；对照 Ctrl+Shift+W、Ctrl+Alt+W 在任何焦点下都不关、标签页不动。页面里的 Ctrl+W（R10）@8aed2370c / @30f748f99 通过。中间两次 ❌：8aed2370c 上焦点在勾选框 / 按钮 / 栏目窗口时不关（→ #1005），30f748f99 上点保存后焦点为空时不关（→ #1010） |
 | 16 | Launch 不可用原因写在底栏文字里 | ✅ 有未保存改动时底栏写「先保存角色再启动。」。见 06a | |
-| 17 | 通用 ▸ 打开配置文件… | ❌ 没验 | |
-| 18 | §2.3a 顶带下沿：侧栏 / 列表 / 编辑器三段同一行 | ✅ 1320×900 窗口 @2x：三段都是第 168–169 行（= 32pt 标题栏 + 52pt 顶带）。`07-grid-readings.png` | |
-| 19 | §2.3a 底带上沿：三段同一行 | ✅ 三段都是第 1694–1695 行（= 900 − 52 − 1 pt） | |
-| 20 | §2.3a 搜索框文字与面包屑同基线 | ✅ 搜索框填「角色」，与面包屑首字同字形比：「角」墨迹框两处都是第 104–128 行（阈值 40）/ 105–127 行（阈值 160），宽 22px；加权重心 116.34 / 116.30 | |
-| 21 | §2.3a 竖线上下贯通 | ✅ 侧栏竖线：顶带 / 主体上端 / 主体下端 / 底带都在第 440–441 列（= 220pt）；列表竖线：主体上端与下端都在第 962–963 列（= 220 + 1 + 260pt），顶带和底带里没有 | |
+| 17 | 通用 ▸ 打开配置文件… | ❌ 没验 |✅ R4：96 @63dcba805、144 @8aed2370c，`.polter` 无关联时打开记事本，日志 `-> Notepad (.polter is claimed by None)`；`R96-R4-advanced-open-notepad-overview.jpg`。27ae20c52 上 ❌（系统 OpenWith 框，→ #999） |
+| 18 | §2.3a 顶带下沿：侧栏 / 列表 / 编辑器三段同一行 | ✅ 1320×900 窗口 @2x：三段都是第 168–169 行（= 32pt 标题栏 + 52pt 顶带）。`07-grid-readings.png` |✅ 96 / 144 @27ae20c52：顶线侧栏段 / 内容段都在第 52 行（144：78），与日志 `[settings] grid … top rule row` 一致 |
+| 19 | §2.3a 底带上沿：三段同一行 | ✅ 三段都是第 1694–1695 行（= 900 − 52 − 1 pt） |✅ 底线两段都在第 708 行（144：1065） |
+| 20 | §2.3a 搜索框文字与面包屑同基线 | ✅ 搜索框填「角色」，与面包屑首字同字形比：「角」墨迹框两处都是第 104–128 行（阈值 40）/ 105–127 行（阈值 160），宽 22px；加权重心 116.34 / 116.30 |✅ 日志两条基线同为第 31 行（144：48）；墨迹 144 下两者都是 y 29..50，96 下 20..31 对 17..32（底沿差 1px，字号不同） |
+| 21 | §2.3a 竖线上下贯通 | ✅ 侧栏竖线：顶带 / 主体上端 / 主体下端 / 底带都在第 440–441 列（= 220pt）；列表竖线：主体上端与下端都在第 962–963 列（= 220 + 1 + 260pt），顶带和底带里没有 |✅ 侧栏竖线顶带 / 中段 / 底带都在第 220 列（144：330） |
 | 22 | §2.3a 表单「标签列 120 + 控件列」，勾选框 / 下拉进控件列 | ✅（目视）名称 / Key / 说明 / 打开位置 标签右对齐、勾选框与「打开位置」下拉在同一控件列。见 06a。没做像素测量 | |
 | 23 | §2.3a 每列内容左缘 = 列左线 + PAD：面包屑文字、列表条目文字、底栏 + 按钮同一个 x | ⏳ 代码按 `SettingsLayout.ContentEdge` 摆放（三者都是 16），单元测试 `aColumnHasOneContentEdge`。修改后没在真机上量像素 | |
 | 24 | §2.3a 侧栏搜索框左右缘 = 选中高亮左右缘（`PAD_SIDEBAR = 8`） | ⏳ 两者都取 `sidebarSearchEdges` / `sidebarHighlightEdges`（8..212），单元测试 `theSearchBoxAndTheHighlightShareTheirEdges`。没量像素 | |
@@ -45,7 +47,7 @@ mac 列的读数取自 worktree `settings/mac`（基于 0a18c2700，未提交改
 | 28 | 内置角色在子菜单里显示本地化名（与列表一致的「Polter 总管」） | ✅（代码）子菜单行名取自 `PersonaCatalog`，它用的是 `Role.displayName`，与列表同源；本轮未改。没看菜单 | |
 | 29 | 英文界面搜索框占位字 "Search" | ✅（代码）msgid "Search"，Base 为 "Search"、zh-Hans 为「搜索」 | |
 | 30 | 最大化 / 缩放后关窗再开，状态与几何一致 | ⏳ 设置窗口 `collectionBehavior` 加 `.fullScreenNone`：绿色按钮是缩放，缩放后的 frame 就是普通 frame，按原样自动保存、原样再开，没有「标志与几何不一致」的余地。没在真机上关开过 | |
-| 31 | 设置窗口开着时关掉最后一个终端窗口，app 不退出；退出前有未保存改动先问 | ⏳ 不退出：AppKit 只在最后一个窗口关掉后才问 `applicationShouldTerminateAfterLastWindowClosed`，设置窗口算窗口（且 mac 默认 quit-after-last-window-closed 为 false）。先问：`applicationShouldTerminate` 在关机检查之后、`needsConfirmQuit` 之前调 `SettingsWindowController.mayQuit()`（同一个未保存协议），取消则 `.terminateCancel`——之前 ⌘Q 在没有运行中进程时会直接退出、丢掉未保存的改动。都没在真机上试 | |
+| 31 | 设置窗口开着时关掉最后一个终端窗口，app 不退出；退出前有未保存改动先问 | ⏳ 不退出：AppKit 只在最后一个窗口关掉后才问 `applicationShouldTerminateAfterLastWindowClosed`，设置窗口算窗口（且 mac 默认 quit-after-last-window-closed 为 false）。先问：`applicationShouldTerminate` 在关机检查之后、`needsConfirmQuit` 之前调 `SettingsWindowController.mayQuit()`（同一个未保存协议），取消则 `.terminateCancel`——之前 ⌘Q 在没有运行中进程时会直接退出、丢掉未保存的改动。都没在真机上试 |✅（不退出一支）144 @27ae20c52：`0 window(s) left -> the settings window is open; not quitting`，关设置窗口后 `… quitting`。「退出前先问」没读 |
 | 32 | 未保存询问框关掉后，键盘焦点回到发起它的那一列（侧栏引起的回侧栏，列表 ↑↓ 引起的回列表） | ⏳ ↑↓ 引起的：焦点本来就在那一列，询问是 `runModal`，关掉后 AppKit 把 key 还给设置窗口、first responder 不变。点击引起的：先把焦点给被点的列，切换挪到下一轮 runloop 再做，保证询问前焦点已落地。没有单元测试（焦点是 AppKit / SwiftUI 的状态，规则层没有可测的东西），没在真机上试 | |
 
 写法注：mac 列的边缘写成区间（`8..212` = 从 8 到 212，右端是边界不是像素列）；Windows 列写含端点的像素列（`8..211`），两者同值。
@@ -104,30 +106,53 @@ mac 列的读数取自 worktree `settings2/mac-plugins`（基于 60b63ad7d，未
 （得 `.failing`）；只按 `\n` 断行 → `everyLineBreakEndsALine`；去掉 `savedWhileRunning` 守卫 →
 `onlyASaveWhileRunningWaitsForARestart`。
 
-Windows 列的读数取自 worktree `s2-win-plugins`（基于 60b63ad7d + 核心补丁 9ca547a18，未提交），交叉编译
-`cargo build --release --target x86_64-pc-windows-gnu -p polter-host`，`polter-host.exe` sha256 前缀 `f9194b09`。
-**Windows 测试机本轮没开**，所以下表 Windows 列没有一格是在真机上看过的：✅（纯层）= `polter-settings-shell`
-的单元测试在 mac 上跑过、打坏过；⏳ = 代码写了、编过，等真机。
+Windows 列最初（#958）的读数取自 worktree `s2-win-plugins`（基于 60b63ad7d + 核心补丁 9ca547a18），交叉编译
+`polter-host.exe` sha256 前缀 `f9194b09`，当时只有纯层单元测试。**现在每格写的是 #988 的真机结论。**
+
+#### 真机读数从哪来（#988，2026-10-01，本节和第 3、4 期的 Windows 列都按这个读）
+
+- 测试机：Windows 测试机（中文界面、中文输入法），96 DPI 与 144 DPI 各一轮干净进程。被测的都是 feature/v0.9 上的
+  复测包，从干净克隆构建，测试机上每个包 713 个文件逐个 sha256 与本机清单一致，启动日志 `[build] polter-host.exe sha256=…`、
+  `pair (both from <提交>)` 都核过。格子里写「@提交号」就是**最终通过的那个包**：
+  27ae20c52（`5c51fdd3`，首轮）｜63dcba805（`3b21da6c`）｜8aed2370c（`9d1f4448`）｜30f748f99（`10d8e408`）｜
+  2e768a5bf（`7c284409`）｜04b09b027（`d8affa38`）｜d627112ff（`cde3ee62`）。括号里是 polter-host.exe sha256 前缀。
+- 证据：test-win 的 `results.md`（逐格读数、日志原文）和 `shots/`（截图，格子里写文件名；`R96-` / `R144-` 开头的是复测轮）。
+  都不在仓内；各轮宿主日志在测试机 `D:\polter988\pkg-<提交>\`。
+- 首轮（27ae20c52）里 ❌ 的格，写成「❌ → 修复单 → 复测包上 ✅」。
+- **滚轮一律未读到**：Argus 在这台测试机上送不出滚轮事件（发了 delta，画面不动），不记成缺陷，也不算通过。
 
 | # | 行为 | mac | Windows |
 |---|---|---|---|
-| P1 | 插件在侧栏「插件」下逐个列出，「通用」排在它们下面 | | ✅（纯层）`plugin_rows_sit_between_plugins_and_general`；⏳ 画面 |
-| P2 | 状态点判定顺序 ↻ > ○ > ◐ > ▲ > ●（§5.1） | | ✅（纯层）`dot_table`，14 行用例（与 mac `SettingsRules` 同一张表，待 #956 贴出后逐行对） |
-| P3 | ↻ 只在「保存时常驻进程已在跑」时留下（核心 `already_running`），横幅「重启 Polter 后生效」，无按钮 | | ✅（纯层）`restart_pending_only_when_a_running_copy_has_other_settings`；⏳ 画面 |
-| P4 | 核心没回答运行状态时不画 ▲，详情写「Polter 核心没有报告这个插件是否在运行」 | | ✅（纯层）`dot_table` 末行；⏳ 画面 |
-| P5 | 点侧栏插件行 → 路由 `plugins/<key>`，面包屑「插件 › <名>」 | | ⏳ |
-| P6 | 菜单「插件…」、Ctrl+Shift+, → `plugins`（打开，不再是开关） | | ⏳ `menu.rs` / `keys.rs` 改走 `settings_win::request` |
-| P7 | 插件有未保存改动时切到别的插件 / 别的栏目 / 关窗先问「保存对这个插件的更改吗？」 | | ⏳ 走 `shell::leave` + `PluginsSection` |
-| P8 | 缺必填项时开关不能打开，旁边写缺哪几项 | | ✅（纯层）`the_switch_cannot_be_turned_on_with_something_missing`、`missing_required_names_empty_required_ones_in_order`；⏳ 画面 |
-| P9 | 表单：标签列 120 右对齐 + 控件列，说明在控件下；与开关同一条控件列 | | ✅（纯层）`detail_uses_two_left_edges_only`、`form_rows_stack_with_help_under_the_control`；⏳ 像素 |
-| P10 | 保存经核心 `ghostty_app_plugin_configure`（空值=删除），宿主不再自己写设置文件 | | ⏳ `plugins::configure`；`plugins::save` 已删 |
-| P11 | 「测试」在底栏还原左边，结果首行写在底栏，全文放在日志框顶部；一分钟一次的额度有专门的话 | | ⏳ |
-| P12 | 日志：最近 20 行 + 「显示日志」「显示插件文件夹」 | | ✅（纯层）`the_log_tail_is_the_last_lines_oldest_first`；⏳ 画面 |
-| P13 | 最小窗口 900×620、横幅 + 长简介时表单区仍 ≥ 2 行控件高，五种 DPI | | ✅（纯层）`detail_fits_at_the_smallest_window`（首版在这里红过：表单只剩 25px，改为开关后行距 8、日志 4 行） |
-| P14 | 有 `ui/index.html` 才有「页面」页签；缺 Runtime / 缺 Loader / 创建失败 三种各有说明，页签不藏 | | ✅（纯层）`page_tab_stays_when_the_page_cannot_show`；⏳ 画面（Server 2022 默认无 Runtime，正好测「缺 Runtime」） |
-| P15 | 页面只能读 `ui/` 里的文件，`..`、编码过的 `..`、别的插件、别的 scheme 一律拒 | | ✅（纯层）`requests_stay_inside_ui`；宿主另按 canonicalize 后的真实路径再围一次 |
-| P16 | `WebView2Loader.dll` 不在导入表（缺它时进程照常起） | | ✅ `objdump -p polter-host.exe` 38 个 DLL Name，含 webview 的 0 个 |
-| P17 | 搜索框按插件名过滤侧栏插件行，过滤掉当前插件时面包屑加「（不在搜索结果里）」 | | ⏳ |
+| P1 | 插件在侧栏「插件」下逐个列出，「通用」排在它们下面 | | ✅ 96 / 144 @27ae20c52：侧栏「插件」下 11 行、「通用」在其下，每行「点 名称 …… 状态字」。`96-1.1-first-open-client.jpg`、`144-1.1-first-open-client.jpg`。观察：固件名在侧栏宽度里被省略号截断 |
+| P2 | 状态点判定顺序 ↻ > ○ > ◐ > ▲ > ●（§5.1） | | ✅ 96 @27ae20c52：flaky 启用后变「▲ 出错」（`96-P2-flaky-just-enabled.jpg`）；w1-controls「○ 已关」；page-demo 缺必填时「◐ 缺配置」（`96-WG10b-restart-opens-advanced-and-page-demo-half-dot.jpg`）。在跑时清空必填并保存显示 ↻ 而不是 ◐、关掉退避中的插件显示 ↻ 而不是 ○——总管裁定符合规格（↻ 排在最前）。状态点**自己刷新**（R14，@30f748f99 96 / 144）：干净进程先落在「角色」再点进插件、启用 flaky 后不碰窗口，6–9 秒内变 ▲ + 红字（`R144-R14-flaky-turned-error-by-itself.jpg`）；对照 8aed2370c 上 112 秒仍「● 已开」（只等了 112 秒，不是方案的 3 分钟）。纯层 `dot_table` 仍在 |
+| P3 | ↻ 只在「保存时常驻进程已在跑」时留下（核心 `already_running`），横幅「重启 Polter 后生效」，无按钮 | | ✅ 96 / 144 @27ae20c52：存档在跑时改目录保存 → `plugin_configure ok=true said="already_running"`、侧栏 ↻、详情顶部横幅「重启 Polter 后生效」、无按钮；重启后回到「● 已开」。`144-P3-archive-restart-banner.jpg`。首轮状态字被截成「改了未…」，#990 后 R6（144 @30f748f99）读到完整的「改了未重启」 |
+| P4 | 核心没回答运行状态时不画 ▲，详情写「Polter 核心没有报告这个插件是否在运行」 | | ✅（核心有回答的一支）96 @27ae20c52：flaky / page-demo / w1-controls / 存档四个详情都没有这句。「核心没回答」那一支没在真机上造出来，只有纯层 `dot_table` 末行 |
+| P5 | 点侧栏插件行 → 路由 `plugins/<key>`，面包屑「插件 › <名>」 | | ✅ 96 / 144 @27ae20c52：面包屑「插件 › Page demo (test fixture)」，日志 `[plugins-ui] shown: named=Some(8)`、`[settings] section plugins item=Some("page-demo")`。`144-P5-P8-page-demo-settings.jpg` |
+| P6 | 菜单「插件…」、Ctrl+Shift+, → `plugins`（打开，不再是开关） | | ✅（菜单）96 @27ae20c52：智能体 › 插件… → 插件栏目（`96-P6-agent-menu.jpg`）。**方案勘误**：Ctrl+Shift+, 是 `reload_config`（与 mac 一致），不打开设置窗口；本行行为里写的「Ctrl+Shift+,」作废（总管裁定）。真机上按它两次都是 `[action] reload_config` |
+| P7 | 插件有未保存改动时切到别的插件 / 别的栏目 / 关窗先问「保存对这个插件的更改吗？」 | | ✅ 96 @27ae20c52：flaky 有未保存改动时 ①切到另一个插件 ②点「角色」③Ctrl+W，都问「保存对这个插件的更改吗？」；取消留在原处、草稿还在；不保存后 flaky.json 不变。`96-P7-dirty-prompt-on-switch-plugin.jpg`。观察：这个询问的日志标签是 `[roles-ui]` |
+| P8 | 缺必填项时开关不能打开，旁边写缺哪几项 | | ✅ 96 @27ae20c52：webhook 空时开关 `enabled=false`、旁边红字「必填但仍为空：Webhook」；填上（未保存）后红字消失、开关可用。`96-P5-P8-page-demo-switch-disabled.jpg`、`96-P8-webhook-filled-switch-enabled.jpg` |
+| P9 | 表单：标签列 120 右对齐 + 控件列，说明在控件下；与开关同一条控件列 | | ✅ 96 / 144 @27ae20c52（UIA）：开关 / 文本框 / 下拉 / 勾选框左缘同一 x（客户区 96：365，144：547）；标签列 120px（144：180px），标签右对齐；说明在控件下。`96-P9-w1-controls-client.jpg`、`144-P9-w1-controls-client.jpg`。首轮文本框外框比框长 16 / 26px → #990 → R6（144 @30f748f99）线 546..1697 对框 547..1697 |
+| P10 | 保存经核心 `ghostty_app_plugin_configure`（空值=删除），宿主不再自己写设置文件 | | ✅ 96 @27ae20c52：w1-controls 三次保存的文件原文——填 abc：`"a_text": "abc"`；清空：params 里没有 a_text；填 x：`"a_text": "x"`；日志 `plugin_configure ok=true said="not_started"`；文件写法与核心写的 page-demo.json 相同 |
+| P11 | 「测试」在底栏还原左边，结果首行写在底栏，全文放在日志框顶部；一分钟一次的额度有专门的话 | | ✅ 96 @27ae20c52：测试结果首行在底栏、全文在日志框顶部；一分钟内再按 → 底栏红字「距上次测试不到一分钟，请一分钟后再试。」。`96-P11-second-test-within-a-minute.jpg` |
+| P12 | 日志：最近 20 行 + 「显示日志」「显示插件文件夹」 | | ✅ 96 @27ae20c52：日志框最新一行在最下、11 行；「显示日志」打开记事本 `flaky.log`，「显示插件文件夹」打开资源管理器 |
+| P13 | 最小窗口 900×620、横幅 + 长简介时表单区仍 ≥ 2 行控件高，五种 DPI | | ❌ @27ae20c52（最小窗口表单区 96：50px、144：68px，不足两行控件；侧栏「通用」被底带线切掉一半）→ #990 → ✅ R1：96 @63dcba805 表单区 64px、日志框 2 行；144 @30f748f99 表单区 112px；点露出一半的「通用」侧栏自动滚动、选中行落在底带线之上。`R96-R1-min-window-archive.jpg`、`R144-R1-min-window-archive.jpg`、`R144-R1-click-general-scrolls-into-view.jpg`。**滚轮滚侧栏：未读到**（见上） |
+| P14 | 有 `ui/index.html` 才有「页面」页签；缺 Runtime / 缺 Loader / 创建失败 三种各有说明，页签不藏 | | ✅ 144 @27ae20c52：缺 Runtime（`144-P14a-runtime-missing.jpg`，日志 `-> RuntimeMissing`）、缺 Loader（改名后进程照常起，`144-P14b-loader-missing.jpg`）两种说明都对、页签都在；装上 Runtime 后页面渲染（`144-P14c-page-rendered.jpg`，96 同）。「创建失败」一支没造出来 |
+| P15 | 页面只能读 `ui/` 里的文件，`..`、编码过的 `..`、别的插件、别的 scheme 一律拒 | | ✅ R3 / R3b / R3c：96 @63dcba805、144 @30f748f99。index.html / style.css / app.js 三个 `-> 200`；fetch example.com、`../plugin.json`、别的插件都是 `FAILED: TypeError: Failed to fetch`，页面策略框每次多一行 `blocked by the page's policy: connect-src -> …`，宿主日志里这三个地址 0 行；settings() / save() / window.open / close() 如预期。**方案勘误**：P15-4（`../plugin.json`）原写 `status 403`；插件页面本来就不许 fetch（`connect-src 'none'`，与 mac 一致），请求在页面里被拦、得到 TypeError，到不了宿主（#999 改了预期）。`R96-R3b-btn4-pluginjson.jpg`、`R144-R3b-btn4-pluginjson.jpg` |
+| P16 | `WebView2Loader.dll` 不在导入表（缺它时进程照常起） | | ✅ 每个复测包构建后 `objdump -p` 都核过导入表里没有 WebView2Loader.dll；真机 144 @27ae20c52：把 Loader 改名后进程照常起（P14 的缺 Loader 一格） |
+| P17 | 搜索框按插件名过滤侧栏插件行，过滤掉当前插件时面包屑加「（不在搜索结果里）」 | | ✅ 96 @27ae20c52：搜 flak → 侧栏插件行只剩「▲ Flaky 出错」，选中的 page-demo 被滤掉，面包屑「插件 › Page demo (test fixture)（不在搜索结果里）」。`96-P17-search-flak.jpg` |
+
+#988 读到的、不在上表行里的（都没有单子，按轻重）：
+
+- 浮层关掉后键盘回到看不见的标签页（F10）：30f748f99 上 2/2 复现 → #1012 → R15 @04b09b027 设置窗口 96 / 144 通过，
+  日志 `[overlay] settings closing: remembered … -> keyboard to … (CurrentPane)`；搜索条那一格 @96 ❌（键盘交还给了已隐藏的搜索窗口自己）
+  → #1016 → R16 @d627112ff 96 / 144 通过（搜索条所属终端切出屏幕时自己结束，`the bar's terminal … is no longer on screen`）。
+- 按钮变灰后键盘的去处（R17，#1017）：@d627112ff 96 / 144，插件 / 角色栏目交给表单里的框（Edit id=2000 / 1000），项目栏目交给栏目窗口自身；
+  之后打字没有进侧栏搜索框。2e768a5bf 上交给的是侧栏搜索框（打字会过滤侧栏）。
+- Ctrl+Shift+F 在这台机上打不开搜索：键绑着，但宿主日志 `[key] TSF ate … vk=0x46 … (not dispatched)`，被中文输入法吃掉
+  （「微软拼音拿它做简繁切换」是推断，没核对）；菜单「查找…」不显示快捷键（`no shortcut for 27 of 50 core actions`）。
+- 主窗口宽 770 时活动的第 2 个标签页上没有 ×；144 DPI 下调色板 `shown at -35,194 840x525`，比窗口宽、贴屏幕左缘时左边被切；
+  搜索条计数显示「-1/1」；R5 焦点回到字号框后光标在开头；关窗时 `[page] keyboard taken back from the hidden page (HWND(<表单框>))` 的 from 印的不是页面。
+
 ## 第 3 期：项目栏目（§6）
 
 mac 列的读数取自 worktree `s2-mac-projects`（基于 60b63ad7d，未提交改动）。单元测试由
@@ -193,31 +218,37 @@ mac 列：worktree `s2-mac-projects`（基于 1f9d4de14，未提交）。截图�
 
 > 行号与 mac 那一节（`settings2/mac-projects`，1f9d4de14）的 P1–P20 一一对应，合并时填进那张表的 Windows 列；
 > W1–W3 是 §6.3 只属于 Windows 的三项。读数取自 worktree `s2-win-projects`（基于 60b63ad7d，未提交改动）。
-> **Windows 测试机今晚不开，下面没有一格是在真机上看过的**：✅ 只表示纯规则有单元测试（`polter-settings-shell`，
-> 在 mac 上跑，含临时目录里的真实文件操作）、宿主交叉编译通过；画面、点击、像素全部 ⏳。
+> 当时（#959）测试机没开，格子里只有纯规则的单元测试；**现在每格写的是 #988 的真机结论**，来源与写法见第 2 期 Windows 表上方
+> 「真机读数从哪来」。纯规则的用例名留在 #959 的交付记录里，这里不再重复。
 
 | # | Windows |
 |---|---|
-| P1 | ⏳ 行：名称 / 「时间 · N 个窗格」（`projects_ui::paint`；tab 数不显示）。没看画面 |
-| P2 | ✅（规则）`projects::thumbnail`：`the_thumbnail_has_one_box_per_pane_in_tree_order`、`a_deep_tree_in_a_small_box_still_shows_every_pane`；标签 `pane_label`（目录末段 · 标题）`a_pane_is_labelled_by_its_directory_and_its_title`。没看画面 |
-| P3 | ⏳ 目录 / 回滚内容（`scrollback_bytes`、`format_bytes` 有单测）/ 自动保存恒为「没有绑定到打开的窗口」（Windows 无绑定，裁定）。「角色」一行写「项目文件不记录角色」 |
-| P4 | ⏳ 与「加载项目…」同一个 `project_ui::load_project_into_new_tab`，装进发起设置窗口的那个终端窗口。没点过 |
-| P5 | ⏳ 详情首行是项目名（粗体）+ 右边「重命名…」，点了弹「重命名项目」框（`prompt::prompt_rename_project`：输入框、说明「项目文件、上一版和 scrollback 一起改名。」、重命名 / 取消，Enter / Esc；框开着时设置窗口禁用），与 mac 一样没有内联名字框。✅（规则）`check_rename`：`a_rename_onto_a_name_that_is_taken_is_refused_and_names_it`（含名字只差大小写而文件名不同的旧文件、两个名字清洗成同一文件名）；落盘 `a_move_onto_another_project_is_refused_and_touches_nothing` |
-| P6 | ✅ `a_move_takes_every_sidecar_with_it`、`a_rename_to_itself_is_nothing_and_a_change_of_case_is_a_rename`；`.prev` 里的名字由 `project::set_name` 一起改（宿主，未在真机跑） |
+| P1 | ✅ 96 / 144 @27ae20c52：「beta / 2026-10-01 13:10 · 1 个面板」「alpha / … · 2 个面板」，tab 数不显示。`96-P1-P14-projects-beta-1180.jpg`、`144-P1-P14-projects-beta-1770.jpg` |
+| P2 | ✅ 96 / 144 @27ae20c52：alpha（两窗格）缩略图两个框「D: · D:\」「Windows · C:\Windows」。`144-P2-P3-alpha-detail.jpg` |
+| P3 | ✅ 96 / 144 @27ae20c52：目录「D:\; C:\Windows」、回滚内容 2.6 KB（96：2.7 KB）、自动保存「没有绑定到打开的窗口」。`144-P2-P3-alpha-detail.jpg` |
+| P4 | ✅ 96 / 144 @27ae20c52：alpha →「打开」→ `[projects-ui] open "alpha" … -> load_project_into_new_tab`、`[tab] created; count now 3`，新标签页两个窗格 `PS D:\>` / `PS C:\Windows>`。`144-P4-alpha-opened-tab3.jpg` |
+| P5 | ✅ 96 / 144 @27ae20c52：alpha → alpha2，目录里 alpha.json / alpha.scrollback 换成 alpha2.*，日志 `renamed "alpha" -> "alpha2"`。名字去首尾空白、判重（含只差大小写）、空名拒绝见下面 3b。`144-P5-rename-prompt.jpg`。观察：重命名 / 另存为的输入框是衬线字，和设置窗口其余部分不一致 |
+| P6 | ✅ 96 / 144 @27ae20c52：alpha2 改成 beta 被拒，底栏红字「已经有一个叫「beta」的项目。」，两个文件 sha 不变（`144-P6-rename-to-beta-refused.jpg`）；改名时 .scrollback 一起走（P5）。`.prev` 里的名字没单独读 |
 | P7 | —（Windows 没有 tab↔项目绑定，裁定不做） |
-| P8 | ✅ `a_copy_is_named_after_its_original_and_numbered_past_what_is_taken`、`a_copy_has_the_snapshots_and_no_history` |
-| P9 | ⏳ 确认框 → `project_ui::overwrite_project`（被替换的版本一律留作 `.prev`，#966；旧命名规则的文件先挪到规则文件名）。没终端窗口时按钮灰、状态栏写原因。没点过 |
-| P10 | ✅（规则）`the_undo_banner_lasts_until_the_next_delete_or_the_close`；画面 ⏳ |
-| P11 | ✅（规则）删除先整份移进 `projects\.deleted\<名>-<时间>\`（`a_stashed_project_leaves_the_listing_and_comes_back_whole`、`two_deletes_of_one_name_in_one_second_are_two_stashes`），撤销=移回、同名已占用拒绝不覆盖（`undo_does_not_overwrite_a_project_saved_since`）；横幅结束（关窗 / 下一次删除）与启动时的残留（`leftovers_are_everything_but_what_the_banner_holds`）用 `SHFileOperationW(FO_DELETE, FOF_ALLOWUNDO\|NOCONFIRMATION\|SILENT\|NOERRORUI)` 送回收站——⏳ 送回收站这一步只在真机上能看 |
-| P12 | ✅ `versions_are_newest_first_and_say_which_is_current`；一代 `.prev` 与 mac 同规则：`the_previous_generation_is_kept_only_on_a_layout_change`、`a_write_keeps_what_was_there_as_prev_and_leaves_nothing_else`、`restoring_swaps_so_it_is_undone_by_restoring_again`、`the_layout_is_the_shape_and_the_directions_not_the_ratios` |
-| P13 | ⏳ `explorer.exe /select,"<文件>"`。没点过 |
-| P14 | ⏳ 项目菜单新增「管理项目…」→ `projects`（Windows 无绑定，item 空 → 上次选中的，再空第一个）。没点过 |
-| P15 | ✅（规则）`section_for_search` 搬了 mac 的三条用例原样：`a_search_stays_in_the_section_on_screen_when_it_matches_there`、`a_search_goes_to_the_first_section_that_matches`、`a_search_that_matches_nothing_stays_in_a_searchable_section`，加 `a_typed_query_is_asked_of_the_names`；面包屑加注走 `hidden_item`。没看画面 |
-| P16–P19 | ⏳ 像素没量。网格规则：本栏目底带按钮与 `section_grid` 同一行 `the_actions_sit_in_the_band_on_its_row`；列表文字 = 列表左线 + PAD `the_banner_pushes_the_rows_down_and_the_text_keeps_its_edge`；详情只有「边距 / 控件列」两条左缘 `the_editor_has_two_left_edges_and_fits_at_the_minimum`。打开时日志 `[projects-ui] grid:` 会报这些列 / 行 |
-| P20 | ✅（规则）最小窗口 900×620 在 96–240 DPI 下，详情全部落在底带线之上、缩略图不小于 96（该测试首跑就红过：固定 160 高时最后一行版本历史压到底带线下 33px，改成缩略图吃剩余高度）。画面 ⏳ |
-| W1 | ⏳ 项目菜单补「管理项目…」一行（`menu.rs` `__polter_manage_projects`，已进 `HOST_ACTIONS`） |
-| W2 | ✅（规则）关一个忙的 tab（或只有一个 tab 的窗口）时问「关闭前存成项目吗？」[另存为项目… / 不保存，直接关闭 / 取消]：`only_one_busy_tab_is_offered_a_save_before_it_closes`、`only_the_close_button_closes`；选「另存为项目…」弹名字框，**存成功才关**，取消或失败不关（`prompt.rs` `close_after`）。`project_ui::should_offer_save_as_project` 现在有调用方。弹框 ⏳ |
-| W3 | ⏳ tab 右键在颜色之后、智能体之前一节「另存为项目… / 加载项目…」（`strip.rs` `TAB_MENU[8..=9]`，`the_colour_submenu_goes_after_the_second_separator` 已按新表改，宿主测试只编未跑） |
+| P8 | ✅ 96 / 144 @27ae20c52：复制 → 「alpha2 副本」（.json + .scrollback）；再复制按「副本 2」递增，手放的空文件「副本 3」被跳过、得「副本 4」（3b N13 / N14）。`144-P8-copy-alpha2.jpg`、`144-N13-N14-gamma-copies.jpg` |
+| P9 | ✅ 96 / 144 @27ae20c52：确认框「用当前标签页覆盖「beta」？… 被替换的版本会保留，可以恢复。」；覆盖后 `beta.json.prev` 的 sha = 覆盖前 beta.json 的 sha（1 窗格盖 1 窗格也留）。`144-P9-overwrite-confirm.jpg`。「没终端窗口时按钮灰」没读 |
+| P10 | ✅ 96 / 144 @27ae20c52：删除后列表顶「已删除「alpha2 副本」 [撤销]」，撤销后文件 sha 与删前相同。`144-P10-deleted-undo-banner.jpg`、`96-P10-deleted-undo-banner.jpg` |
+| P11 | ✅ 96 / 144 @27ae20c52：横幅还在时关窗 → `[projects-ui] window closed: "…" -> Recycle Bin ok=true`，回收站 0 → 1 项、`projects\.deleted` 清空（证据是回收站枚举，不是截图）。观察：回收站里的条目是 `.deleted\<名>-<时间>` 目录，从回收站还原会回到 `.deleted` 下，不回到列表。「同名已被占用时撤销拒绝」没读 |
+| P12 | ✅ 96 / 144 @27ae20c52：版本历史「当前版本 · 13:15」「上一版 · 13:10 [恢复]」；恢复两次，beta.json 与 .prev 的 sha 来回互换，日志两行 `restored the previous version of "beta"`。`144-P12-version-history.jpg` |
+| P13 | ❌ @27ae20c52 144：资源管理器打开了目录但没选中文件（96 那轮 3/3 选中）→ #1000 → ✅ R2：96 @63dcba805 6/6、144 @30f748f99 6/6，`beta` 和带空格中文的 `测试 项目` 各 3 次都选中，日志全是 `SHOpenFolderAndSelectItems`、无退路。`R96-R2-beta-1-selected.jpg`、`R96-R2-cjk-space-1-selected.jpg`、`R144-R2-beta-1-selected.jpg` |
+| P14 | ✅ 96 / 144 @27ae20c52：菜单 项目 › 管理项目… → `[settings] shown for route "projects"`、`section projects item=None` |
+| P15 | ✅ 96 / 144 @27ae20c52：项目栏目搜 alp 留在项目、列表只剩 alpha2；在角色栏目搜 beta 跳到项目、面包屑「项目 › alpha2（不在搜索结果里）」。`144-P15a-search-alp-in-projects.jpg`、`144-P15b-search-beta-from-roles-jumps.jpg` |
+| P16–P19 | ✅ 96 / 144 @27ae20c52（像素）：1180 宽 @96 顶线 52、底线 708（侧栏 / 列表 / 详情三段相同）、侧栏竖线 220、列表竖线 481、「+」左缘 237、最右按钮距右缘 16；900 宽底线 528。1770 宽 @144 顶线 78、底线 1065、竖线 330 / 721、「+」左缘 355；1350 宽底线 795。与日志 `[projects-ui] grid:` 一致。`144-P16-P20-projects-min-window.jpg`、`96-P16-P20-projects-min-window.jpg` |
+| P20 | ✅ 96 / 144 @27ae20c52：最小窗口下详情最低墨迹 495 < 底线 528（144：749 < 795），缩略图 102px（144：157px = 104.7 逻辑）≥ 96。观察：96 下版本历史那行被截成「… 2 个面…」 |
+| W1 | ✅ 96 / 144 @27ae20c52：`w1 [menu] pick "Manage Projects…" -> __polter_manage_projects ok=1` → 项目栏目（同 P14） |
+| W2 | ✅ 96 / 144 @27ae20c52：跑着 ping 的标签页关闭时弹「关闭前存成项目吗？」；选「另存为项目…」后 Esc → `Save as Project cancelled; the tab stays open`；存成 w2ping → `saved as project "w2ping"; closing the tab`，ping 进程 0。`144-W2-close-tab-with-ping-asks.jpg`。首轮空闲提示符也弹（F3）→ #991 → R7：96 @8aed2370c、144 @30f748f99 各 4/4，空闲 PowerShell / cmd 不问直接关、跑 ping 的问（`R96-R7-idle-powershell-closed-no-prompt.jpg`、`R96-R7-ping-powershell-close-prompt.jpg`） |
+| W3 | ✅ 96 / 144 @27ae20c52：标签页右键 关闭… ｜ 重命名标签… ｜ 标签颜色 ｜ **另存为项目… / 加载项目…** ｜ 智能体三项。`144-W3-tab-context-menu.jpg`、`96-W3-tab-context-menu.jpg` |
+
+3b 项目名（#983，N1–N14）：96 / 144 @27ae20c52 全部通过——另存为输入「  gamma 」/ `Gamma` / `gamma` 都弹同一个覆盖确认（写的是 “gamma”），
+取消一个字节不写，覆盖后 `.prev` = 覆盖前；`delta` 不问直接存；重命名「  gamma 」/ `Gamma` 被拒、三个空格「项目要有名字。」、「epsilon 」存成
+`epsilon.json`（无尾随空格）。`144-N1-overwrite-gamma-confirm.jpg`、`144-N4-Gamma-confirm-says-gamma.jpg`、`144-N8-rename-zeta-to-gamma-refused.jpg`、
+`96-N10-rename-blank-refused.jpg`。N7（另存为输入三个空格）行为对，日志原文是 `Save as Project accepted with an empty name; nothing sent`，与方案写的
+`declined or empty; nothing written` 措辞不同。
 
 单元测试（Windows 纯层）：`polter-settings-shell` 79 条（基线 HEAD 44 条，新增 35：`projects.rs` 31、`lib.rs` 搜索 4），
 `cargo test -p polter-settings-shell` 在 mac 上全过；地板 13 处变异（先写 9、后补 4），每处都红在各自断言行上，
@@ -243,25 +274,26 @@ mac 列：worktree `s2-int-mac`（基于 02842d01f，未提交）。截图 `ghos
 
 ## 第 4 期：通用栏目（§7）· Windows 列（#963）
 
-读数取自集成树 `s2-int-win`（feature/v0.9 9fc5c4bc5 + 合并中的 settings2/win-projects + 本期改动，未提交），交叉编译
-`polter-host.exe` sha256 前缀 `1326f409`。**没上真机**：✅（纯层）= `polter-settings-shell` 的 `general` 模块单元测试
-在 mac 上跑过、打坏过；⏳ = 写了、编过，等真机。mac 列见 mac 集成树的清单（#961 的 G1–G8 与 #964 的表单格）。
+当时（#963）读数取自集成树 `s2-int-win`，交叉编译 `polter-host.exe` sha256 前缀 `1326f409`，只有纯层单元测试。
+**现在每格写的是 #988 的真机结论**，来源与写法见第 2 期 Windows 表上方「真机读数从哪来」。方案里的 W-G14–W-G19
+（标签名称、下拉选项、写进文件的原值、框宽、「更多…」、红字的清除）对应上面表单那张表的 G21 / G22 / G25，读数写在那三格。
+mac 列见 mac 集成树的清单（#961 的 G1–G8 与 #964 的表单格）。
 
 | # | 行为 | Windows |
 |---|---|---|
-| W-G1 | 通用栏目有分组列表（列表列 260）：外观 / 字体 / 终端 / 窗口与标签 / Polter / 全部选项 / 快捷键 / 高级 / 关于，与 mac `GeneralGroup` 同名同序 | ✅（纯层）`group_keys_are_the_macos_raw_values`、`group_rows_are_the_sidebar_rhythm_and_clicks_find_them`（900×620 下九行都在底带线之上）；⏳ 画面 |
-| W-G2 | 路由 `general/<组>` 落到该组；无组时新开的窗口在第一组、已开的留在原组；不认识的组名当作无 | ✅（纯层）`a_route_lands_on_its_group_else_first_or_stays`、`general_carries_a_group_and_nothing_else`。⚠️ 规格 §3.1 表里 general 的 item 仍写「—」，mac #961 与这里都已按 `general/<组>` 做，表要改 |
-| W-G3 | 前五组的键取自核心 `ghostty_app_config_form` 的 `sections`，顺序照核心；全部选项 = 全部键，按键名筛选（忽略大小写） | ✅（纯层）`a_group_shows_its_keys_in_the_tables_order_and_all_filters`；⏳ 画面 |
-| W-G4 | 控件：开关→勾选框，枚举→下拉，主题→浅色 / 深色两个框（写回 `light:A,dark:B`，两边相同写一个名），其余→单行框；全部选项里可写的一律单行框；只读项只读框 + 原因 | ✅（纯层）`a_row_draws_by_whether_it_can_be_written`、`theme_pairs_round_trip`、`a_readonly_row_says_why`；⏳ 画面。数值项有 min/max 且跨度 ≤ 1（`background-opacity` 0–1）时是滑块（trackbar，100 步，最宽 240，右边显示两位小数去零的值，松手 / 放开按键时写，拖动时只刷新旁边的值），判定与 mac `ConfigFormRules.usesSlider` 同一张用例：`only_a_narrow_range_is_a_slider`、`a_slider_only_where_the_row_is_a_writable_number_outside_all`、`slider_positions_round_trip_to_what_is_written`、`the_slider_starts_on_the_control_column_and_stops_at_240`（#971）；⏳ 滑块画面、深色下的绘制 |
-| W-G5 | 即时写入：开关 / 枚举一动就写，文本框回车或失焦时写，值没变不写；写完走宿主的重新加载，并原地刷新数值（不重建控件、键盘不丢） | ✅（纯层）`switches_write_at_once_boxes_on_enter_readonly_never`、`the_dot_and_restore_default`（`should_write`）；⏳ 真机 |
-| W-G6 | 校验失败：控件下方红字显示核心的 `message`，值退回生效值，框线变红 | ⏳ |
-| W-G7 | 与默认值不同的项在标签左侧有点；右键标签有「恢复默认」，仅当生效行在主文件里（规则 5） | ✅（纯层）`the_dot_and_restore_default`；⏳ 菜单 |
-| W-G8 | 快捷键组：旧快捷键弹窗并入（列：名称 220 / 按键 160 / 说明；窄于 name+keys+说明 160 时说明折到按键下），UI 自动化行读的是这里的快照；底栏「在配置文件中编辑…」 | ✅（纯层）`keybind_rows_do_not_overlap_and_scroll_into_the_same_slots`、`a_narrow_page_puts_the_note_under_the_keys`、`keybind_scrolling_holds_at_the_ends`；⏳ 画面、UIA |
-| W-G9 | 高级组：表单写入的文件、配置错误列表（旧错误弹窗并入）、本次运行第一次写入前的备份位置；底栏「打开配置文件…」「重新加载配置」 | ⏳ |
-| W-G10 | 设置窗口没开、配置有错时（启动、重新加载），直接打开设置窗口到 通用 › 高级（替代旧的错误弹窗）；窗口开着时只刷新页面、不跳转 | ⏳ `general_ui::config_changed` |
-| W-G11 | 关于组：版本（核心 `ghostty_info`）/ 构建（构建模式 · 本二进制身份，与 `[build]` 日志同源）/ 提交（宿主提交号），空值不显示 | ✅（纯层）`about_leaves_out_what_is_blank`；⏳ 画面 |
-| W-G12 | 菜单「关于 Polter」「快捷键…」改走 `general/about`、`general/keybinds`；`settings_ui.rs` 整个删除 | ⏳ `menu.rs` |
-| W-G13 | 窗口重新获得焦点时重读整张表（§7.3），不重建控件除非该组的键变了 | ⏳ |
+| W-G1 | 通用栏目有分组列表（列表列 260）：外观 / 字体 / 终端 / 窗口与标签 / Polter / 全部选项 / 快捷键 / 高级 / 关于，与 mac `GeneralGroup` 同名同序 | ✅ 96 / 144 @27ae20c52：九组 外观 … 关于，同名同序；最小窗口（144）下九组都在底带线之上。`144-WG1-general-appearance-1770.jpg`、`96-WG1-general-appearance-1180.jpg`、`144-WG8-WG1-keybinds-min-window.jpg` |
+| W-G2 | 路由 `general/<组>` 落到该组；无组时新开的窗口在第一组、已开的留在原组；不认识的组名当作无 | ✅ 96 / 144 @27ae20c52：菜单「快捷键…」→ `shown for route "general/keybinds"`、`[general-ui] shown at keybinds`；「关于 Polter」→ `general/about`；配置出错时 → `general/advanced`（W-G10）。`144-WG2-menu-keybinds.jpg`。「不认识的组名当作无」没在真机上造 |
+| W-G3 | 前五组的键取自核心 `ghostty_app_config_form` 的 `sections`，顺序照核心；全部选项 = 全部键，按键名筛选（忽略大小写） | ✅ 96 / 144 @27ae20c52：外观组顺序 主题、背景不透明度、背景模糊、光标样式…；全部选项按键序列出，筛 `FONT` 只剩 font-*（忽略大小写）。`144-WG3-all-options-filter-FONT.jpg`、`96-WG3-all-options-filter-FONT.jpg`。观察：首轮长键名被截成「font-family-bold…」，bold / bold-italic 两行看不出区别；#990（标签换行）之后这一项**未读到**（复测轮没看全部选项） |
+| W-G4 | 控件：开关→勾选框，枚举→下拉，主题→浅色 / 深色两个框（写回 `light:A,dark:B`，两边相同写一个名），其余→单行框；全部选项里可写的一律单行框；只读项只读框 + 原因 | ✅ 96 / 144 @27ae20c52：光标样式是下拉、光标闪烁是勾选框、主题是浅色 / 深色两个框、背景不透明度是滑块（240 逻辑像素，144 下 360px），右边显示数值；拖到 0.9 松手只写一行 `set background-opacity = Some("0.9")`，左方向键再写一行 `0.89`。`144-WG4b-slider-0.9.jpg`。**未读到**：拖动中途「只刷新数值、不写」（一次性的拖动注入看不到中途）；深色下的绘制 |
+| W-G5 | 即时写入：开关 / 枚举一动就写，文本框回车或失焦时写，值没变不写；写完走宿主的重新加载，并原地刷新数值（不重建控件、键盘不丢） | ✅ 96 / 144 @27ae20c52：字号输 15 回车 → 一行 `set font-size = Some("15")`，再 Tab 走开（没改）不写；下拉一选就写（`set copy-on-select = Some("clipboard")`）；写完插入点还在表单的框里 |
+| W-G6 | 校验失败：控件下方红字显示核心的 `message`，值退回生效值，框线变红 | ✅ 96 / 144 @27ae20c52：字号输 abc 回车 → 控件下红字 `font-size: invalid value "abc"`（核心原文）、框线变红、值退回 15、底栏同一句；配置文件 sha 前后不变。`144-WG6-WG19-0-red-abc.jpg`、`96-WG6-WG19-0-red-abc.jpg` |
+| W-G7 | 与默认值不同的项在标签左侧有点；右键标签有「恢复默认」，仅当生效行在主文件里（规则 5） | ✅ 96 / 144 @27ae20c52：写过的字号标签左侧有「•」；右键 →「恢复默认」→ `set font-size = None`，文件少了那一行（sha 回到写之前）、点消失、值回 12；没写进文件的「行高调整」右键没有菜单。`144-WG7-restore-default-menu.jpg`、`144-WG7-after-restore-default.jpg` |
+| W-G8 | 快捷键组：旧快捷键弹窗并入（列：名称 220 / 按键 160 / 说明；窄于 name+keys+说明 160 时说明折到按键下），UI 自动化行读的是这里的快照；底栏「在配置文件中编辑…」 | ✅（布局）96 / 144 @27ae20c52：宽窗口三列、99 个动作，窄窗口说明折到按键下面，PageDown 翻一页。`144-WG8-keybinds-wide.jpg`、`144-WG8-WG1-keybinds-min-window.jpg`。「在配置文件中编辑…」：❌ @27ae20c52（`.polter` 无关联，出系统 OpenWith 框）→ #999 → ✅ R4：96 @63dcba805、144 @8aed2370c 打开记事本（`R96-R4-keys-edit-notepad-title.jpg`）。**滚轮未读到**；UIA 行快照没单独读。观察：部分动作名是英文原名（open_config、close_tab…）、列表没有可见滚动条、窄窗口下按键列在右缘被裁掉 |
+| W-G9 | 高级组：表单写入的文件、配置错误列表（旧错误弹窗并入）、本次运行第一次写入前的备份位置；底栏「打开配置文件…」「重新加载配置」 | ✅ 96 / 144 @27ae20c52：显示表单写入的文件、「配置加载时没有错误。」、首次写入前的备份位置；「重新加载配置」→ `[reload] hard -> re-read the file, 0 diagnostic(s)`。`144-WG9-advanced.jpg`。「打开配置文件…」同 W-G8：首轮 OpenWith → R4 记事本（`R96-R4-advanced-open-notepad-overview.jpg`）。观察：路径里正反斜杠混用（`…\polter/config.polter`） |
+| W-G10 | 设置窗口没开、配置有错时（启动、重新加载），直接打开设置窗口到 通用 › 高级（替代旧的错误弹窗）；窗口开着时只刷新页面、不跳转 | ✅ 96 / 144 @27ae20c52：窗口没开时配置里写 `font-size = abc` 再重载 → 设置窗口自己打开到 通用 › 高级，列出 `…config.polter:9:font-size: invalid value "abc"`（`144-WG10-auto-open-advanced-with-error.jpg`）；带着错重启同样（`144-WG10b-restart-with-error-opens-advanced.jpg`）；窗口开着、停在「关于」时再重载 → 不跳。改好后重载回到「没有错误」。观察：一次重载日志里 `config diagnostics` 和 `shown at advanced` 各出现 7 次（每个窗格的通知各触发一次） |
+| W-G11 | 关于组：版本（核心 `ghostty_info`）/ 构建（构建模式 · 本二进制身份，与 `[build]` 日志同源）/ 提交（宿主提交号），空值不显示 | ✅ 96 / 144 @27ae20c52：版本 `1.3.2-HEAD+27ae20c52`、构建 `ReleaseFast · polter-host.exe sha256=5c51fdd335fd0437 …`、提交 `27ae20c52`，与 `[build]` 日志一致。观察：构建那一行行尾被省略号截断 |
+| W-G12 | 菜单「关于 Polter」「快捷键…」改走 `general/about`、`general/keybinds`；`settings_ui.rs` 整个删除 | ✅ 96 / 144 @27ae20c52：两个菜单之后顶层可见窗口只有「Polter 设置」和主窗口，没有旧的关于 / 快捷键弹窗；带错重载时也没有错误弹窗 |
+| W-G13 | 窗口重新获得焦点时重读整张表（§7.3），不重建控件除非该组的键变了 | ✅（重读）96 / 144 @27ae20c52：设置窗口失焦时外部把 font-size 改成 17，点回来字号框是 17、标签旁有点。焦点：❌ @27ae20c52（切回后键入的字不进原来的框，F6）→ #999 → ✅ R5：96 / 144 @8aed2370c，`[settings] activated; keyboard back to HWND(…)`，键入落进字号框，含外部改文件的对照（`R96-R5-typed-3-lands-in-font-size.jpg`、`R144-R5-control-external-17-typed-5.jpg`）。观察：焦点回到框后光标在开头。「键变了才重建控件」没单独读 |
 
 单元测试（Windows 纯层）：`polter-settings-shell` 110 条（合并后 94 + `general` 16），基线 `zz-nothing` 0；
 地板 10 处（G1–G10），每处红在各自断言行。其中「全部选项筛选区分大小写」第一版变异体是等价的（键名本来就全小写），没红；
@@ -269,8 +301,8 @@ mac 列：worktree `s2-int-mac`（基于 02842d01f，未提交）。截图 `ghos
 | G18 | 端到端写入（#968，#967 合入后）：改值 → 文件字节 → 重载 → 标点 → 非法值红字 → 恢复默认删行 | ✅ 测试宿主里 `ConfigFormWriteTests.aValueIsWrittenReloadedMarkedRefusedAndRestored`：form.main 与宿主读的是同一个临时文件（不是的话测试在写之前就停）；font-size 写入后原有字节不变、追加在「由 Polter 设置窗口写入」块下；app 配置读回 17；行上有标点、来源 main；备份与写前逐字节相同；非法值文件一个字节不变、红字、值不变；恢复默认后那一行没了、app 读回默认。截图 `ghostty-wt/settings-mac-shots/p4-form-write/` w0–w5 | |
 | G19 | 配置出错（启动 / 重载）且设置窗口没开 → 打开到 通用›高级；窗口开着 → 只刷新不跳（替代旧的配置错误窗口） | ✅ `aConfigErrorOpensTheWindowAtAdvancedAndThenStaysPut`：往测试宿主的配置里写一行坏值、重载 → 窗口开在 通用›高级；切到「关于」再重载 → 仍在「关于」。规则 `SettingsRules.onConfigChanged` 三条单测。截图 w4 | |
 | G20 | 写入后控件显示磁盘上的值（被拒时退回生效值） | ✅ 截图 w1（写 17 后框里是 17）、w2（非法值被拒，框里退回 17、下方红字）。修之前框里一直显示 13，是从截图里发现的 | |
-| G21 | 前五组每项显示本地化名称；说明行是「键名（等宽灰字）+ 一句话说明」，Ghostty 原文收在「更多…」里；全部选项里没有名称的仍显示键名（#973） | ✅ 截图 `ghostty-wt/settings-mac-shots/p4-form-labels/`（外观 / 字体 / 终端 / 窗口与标签 / Polter 1180 宽，Polter 900 宽，全部选项）。核心：`form.zig` 表项的 label / summary 不给默认值，漏填编译报 `missing struct field: label`；测试「前五组每项都有非空 label / summary，summary ≤ 60 字符、只有一行、label 不等于键名」。mac：`everyNameTheCoreHandsOverIsTranslated` 用真核心的输出逐条核对 zh-Hans 都有译文。⏳「更多…」的展开没有点过（离屏截图点不了链接） | ✅（代码）标签列显示 `row_title`、说明行显示 `row_help`（键名 + 说明），`a_named_key_shows_its_name_and_its_key_before_its_sentence`；po 里 70 条中文与 mac 逐字相同（脚本比对 0 差异）。⚠️ Windows 没有做「更多…」展开，也没上真机 |
-| G22 | 前五组枚举项的下拉显示本地化名称（方块 / 竖线 / 询问 / 跟随系统…），写进文件的仍是原值；只有两个值的已经都是开关；数值框 120、短文本框 160，从控件列起（#977） | ✅ 截图 `ghostty-wt/settings-mac-shots/p4-form-choices/`（外观 / 终端 / 窗口与标签，1180 与 900；字体 1180）。核心：枚举键缺名称、或给了枚举里没有的值，都编不过（报出键名和值）；测试「每个值有名称、同一键内名称不重复、JSON 里 choice_labels 与 choices 一一对应」。mac：`aValueIsShownByItsNameAndWrittenAsItself`、`aShortBoxIsSizedForWhatGoesInIt`，真核心的每个选项名都有中文 | ✅（代码）下拉用 `choice_titles` 显示名称，写入时用 `choice_value` 按选中行取原值（原先直接读下拉框文字，会把中文名写进配置）；框宽用 `field_width`；说明行下方加「更多… / 收起」一行，点击展开 Ghostty 原文。settings-shell 单测覆盖以上四条。⚠️ 没上真机、没点过 |
+| G21 | 前五组每项显示本地化名称；说明行是「键名（等宽灰字）+ 一句话说明」，Ghostty 原文收在「更多…」里；全部选项里没有名称的仍显示键名（#973） | ✅ 截图 `ghostty-wt/settings-mac-shots/p4-form-labels/`（外观 / 字体 / 终端 / 窗口与标签 / Polter 1180 宽，Polter 900 宽，全部选项）。核心：`form.zig` 表项的 label / summary 不给默认值，漏填编译报 `missing struct field: label`；测试「前五组每项都有非空 label / summary，summary ≤ 60 字符、只有一行、label 不等于键名」。mac：`everyNameTheCoreHandsOverIsTranslated` 用真核心的输出逐条核对 zh-Hans 都有译文。⏳「更多…」的展开没有点过（离屏截图点不了链接） | ✅ 96 / 144 @27ae20c52（方案 W-G14）：外观 / 字体 / 终端 / 窗口与标签 / Polter 五组的标签都是中文名，说明行是「键名（灰）+ 一句中文」，没有仍是键名的标签。`144-WG14-font-group.jpg`、`96-WG14-terminal-group.jpg`、`96-WG14-polter-group.jpg`。观察：「关闭最后一个窗…」（quit-after-last-window-closed）标签被省略号截断。「更多…」见 G22 |
+| G22 | 前五组枚举项的下拉显示本地化名称（方块 / 竖线 / 询问 / 跟随系统…），写进文件的仍是原值；只有两个值的已经都是开关；数值框 120、短文本框 160，从控件列起（#977） | ✅ 截图 `ghostty-wt/settings-mac-shots/p4-form-choices/`（外观 / 终端 / 窗口与标签，1180 与 900；字体 1180）。核心：枚举键缺名称、或给了枚举里没有的值，都编不过（报出键名和值）；测试「每个值有名称、同一键内名称不重复、JSON 里 choice_labels 与 choices 一一对应」。mac：`aValueIsShownByItsNameAndWrittenAsItself`、`aShortBoxIsSizedForWhatGoesInIt`，真核心的每个选项名都有中文 | ✅ 96 / 144 @27ae20c52（方案 W-G15–W-G18）：下拉显示中文选项名（光标样式 竖线 / 方块 / 下划线 / 空心方块，终端、窗口与标签各下拉逐项读出），写进文件的是原值（`cursor-style = block_hollow`、`copy-on-select = clipboard`、`window-save-state = never`、`confirm-close-surface = false`）；字号框 120（144：180px），从控件列起；「更多… / 收起」展开 Ghostty 原文、下面的行下移不重叠（`144-WG18-expanded.jpg`）。**方案勘误**（W-G17）：左右 / 上下边距是短文本框 160（144：240），不是数值框 120——window-padding-x/y 不是数值控件，mac 相同（总管裁定，R9 两个 DPI 读到 160 / 240）。首轮整行宽的下拉箭头被表单滚动条盖住（F4）→ #1003 → R12 ✅：96 / 144 @8aed2370c，首次进组与写入重载后，下拉右缘与箭头都在滚动条左缘之左（`R96-R12-appearance-first-entry.jpg`、`R144-R12-appearance-after-reload.jpg`） |
 | G23 | 菜单「关于 Polter」→ 设置窗口 通用›关于（与 Windows W-G12 一致），旧的 About 窗口删掉；原来窗口里的 Docs / GitHub / Ghostty 链接和版权行搬进「关于」组（#979） | ✅ 在测试宿主里调真实的 `AppDelegate.showAbout(nil)`：打开的是「Polter 设置」，只有 1 个，停在 通用›关于（`aboutPolterOpensTheAboutGroup`）。截图 `ghostty-wt/settings-mac-shots/p979/a1-about-from-menu.png`、`a4-about-900.png`。`Features/About/` 五个文件已删，grep 没有调用者 | |
 | G24 | 在通用栏目的组列表里点一个组，面包屑跟着变（#974 C） | ✅ `choosingAGroupIsAChangeTheRootViewSees`（组的变化要通知到根视图观察的那个 model）。截图 a2（点「高级」→「通用 › 高级」）、a3（点「快捷键」→「通用 › 快捷键」） | |
-| G25 | 被拒值的红字只属于那一次写入：写入后的那次读表保留；窗口获焦、重载配置、切到别的组再读表时清掉（#986） | ✅ 测试宿主 `aRefusalIsGoneOnceTheFormIsReadAgain`（写非法值 → 红字在；重读 → 没了；再写非法值 → 切组再切回 → 没了；文件一个字节没变）；规则 `ConfigFormRules.errors(_:after:)` | ✅（代码）`refresh_values` 带读表原因：写入后的读表保留行上的红字，获焦 / 重载改为清掉，底栏的红色状态一起清；切组本来就重建行。规则 `error_after` + `a_refusal_lasts_until_the_form_is_read_again`。⚠️ 没上真机 |
+| G25 | 被拒值的红字只属于那一次写入：写入后的那次读表保留；窗口获焦、重载配置、切到别的组再读表时清掉（#986） | ✅ 测试宿主 `aRefusalIsGoneOnceTheFormIsReadAgain`（写非法值 → 红字在；重读 → 没了；再写非法值 → 切组再切回 → 没了；文件一个字节没变）；规则 `ConfigFormRules.errors(_:after:)` | ✅ 96 / 144 @27ae20c52（方案 W-G19）：红字出现后 ①同组内 Tab 走开再回来，红字、红框、底栏红字都在；②点别处再点回设置窗口，三样都清掉；③终端里重载配置（设置窗口没获焦）也清掉，对照只失焦不重载时还在；④切到别的组再切回，清掉。四次期间配置文件 sha 不变。`144-WG6-WG19-0-red-abc.jpg`、`96-WG6-WG19-0-red-abc.jpg` |
