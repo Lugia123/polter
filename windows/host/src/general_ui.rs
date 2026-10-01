@@ -776,8 +776,12 @@ fn row_note_closed(it: &Item, error: Option<&str>) -> (String, bool) {
 }
 
 /// The form's rows, laid out in the form window's width.
-fn form_rows(width: i32, dpi: i32) -> Vec<polter_settings_shell::plugins::FormRow> {
-    let helps: Vec<i32> = ST.with(|c| {
+/// The rows, and the form's whole height, in `width` -- the form window's
+/// client width, which does not change with the form's length: its scroll
+/// bar is always there (`SIF_DISABLENOSCROLL`, task 990), so the width the
+/// controls are laid out in is the width they are painted in.
+fn form_rows(width: i32, dpi: i32) -> (Vec<polter_settings_shell::plugins::FormRow>, i32) {
+    let texts: Vec<(String, String, bool, bool)> = ST.with(|c| {
         let s = c.borrow();
         let Some(form) = &s.form else { return Vec::new() };
         s.rows
@@ -785,19 +789,24 @@ fn form_rows(width: i32, dpi: i32) -> Vec<polter_settings_shell::plugins::FormRo
             .map(|r| {
                 let it = &form.items[r.item];
                 let (note, _) = row_note(it, r.error.as_deref(), r.expanded);
-                (note, r.expanded, has_link(it, r.error.as_deref()))
+                (rules::row_title(it, tr), note, r.expanded, has_link(it, r.error.as_deref()))
             })
             .collect::<Vec<_>>()
-    })
-    .into_iter()
-    .map(|(note, expanded, link)| {
-        let control_w = width - shell::scale(grid::LABEL_W + grid::LABEL_GAP, dpi);
-        // Opened, the whole of Ghostty's text; the link gets a line of its own.
-        let text = measure(&note, control_w, font(), if expanded { 0 } else { DOC_LINES });
-        text + if link { metrics(font()) } else { 0 }
-    })
-    .collect();
-    polter_settings_shell::plugins::form(width, dpi, &helps).0
+    });
+    let control_w = width - shell::scale(grid::LABEL_W + grid::LABEL_GAP, dpi);
+    // The label column less the room the "differs from default" dot takes.
+    let label_w = shell::scale(grid::LABEL_W, dpi) - shell::scale(8, dpi);
+    let rows: Vec<(i32, i32)> = texts
+        .into_iter()
+        .map(|(title, note, expanded, link)| {
+            // Opened, the whole of Ghostty's text; the link gets a line of
+            // its own. A name too long for the label column wraps (task
+            // 990) rather than being cut.
+            let help = measure(&note, control_w, font(), if expanded { 0 } else { DOC_LINES }) + if link { metrics(font()) } else { 0 };
+            (measure(&title, label_w, font(), 3), help)
+        })
+        .collect();
+    polter_settings_shell::plugins::form_labeled(width, dpi, &rows)
 }
 
 // ================================================================== the form
@@ -808,7 +817,7 @@ fn toggle_more_at(win: HWND, x: i32, y: i32) -> bool {
     let (_, dpi) = laid();
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(win, &mut rc) };
-    let rows = form_rows(rc.right, dpi);
+    let (rows, _) = form_rows(rc.right, dpi);
     let line = metrics(font());
     let hit = ST.with(|c| {
         let s = c.borrow();
@@ -1030,10 +1039,16 @@ fn relayout() {
 
 fn layout_form(dpi: i32) {
     let form = form_hwnd();
+    // The bar first, so the client width the rows are laid out in is the
+    // one they will be painted in (task 990).
+    unsafe {
+        let si = SCROLLINFO { cbSize: std::mem::size_of::<SCROLLINFO>() as u32, fMask: SIF_DISABLENOSCROLL, ..Default::default() };
+        SetScrollInfo(form, SB_VERT, &si, false);
+        let _ = ShowScrollBar(form, SB_VERT, true);
+    }
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(form, &mut rc) };
-    let rows = form_rows(rc.right, dpi);
-    let total = rows.last().map(|r| r.help.map(|h| h.bottom).unwrap_or(r.control.bottom)).unwrap_or(0) + shell::scale(grid::ROW_GAP, dpi);
+    let (rows, total) = form_rows(rc.right, dpi);
     let view = rc.bottom;
     let (ctls, scroll) = ST.with(|c| {
         let s = &mut *c.borrow_mut();
@@ -1065,7 +1080,7 @@ fn layout_form(dpi: i32) {
     }
     let si = SCROLLINFO {
         cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
-        fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+        fMask: SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL,
         nMin: 0,
         nMax: (total - 1).max(0),
         nPage: view.max(0) as u32,
@@ -1262,10 +1277,10 @@ fn row_at(y: i32) -> Option<usize> {
     let form = form_hwnd();
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(form, &mut rc) };
-    let rows = form_rows(rc.right, dpi_of(form));
+    let (rows, _) = form_rows(rc.right, dpi_of(form));
     let scroll = ST.with(|c| c.borrow().scroll);
     rows.iter().position(|r| {
-        let bottom = r.help.map(|h| h.bottom).unwrap_or(r.control.bottom);
+        let bottom = r.help.map(|h| h.bottom).unwrap_or(r.control.bottom).max(r.label.bottom);
         y + scroll >= r.label.top && y + scroll < bottom
     })
 }
@@ -1498,7 +1513,7 @@ fn paint_form(win: HWND) {
     let dpi = dpi_of(win);
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(win, &mut rc) };
-    let rows = form_rows(rc.right, dpi);
+    let (rows, _) = form_rows(rc.right, dpi);
     let (scroll, items) = ST.with(|c| {
         let s = c.borrow();
         let items: Vec<(Item, Control, Option<String>, HWND, HWND, bool, bool)> = match &s.form {
@@ -1520,9 +1535,16 @@ fn paint_form(win: HWND) {
             draw_text(hdc, &slider_now(*h, it), &tr_, font(), theme::dim(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
         }
         let lr = RECT { left: r.label.left + dot, top: r.label.top - scroll, right: r.label.right, bottom: r.label.bottom - scroll };
-        draw_text(hdc, &rules::row_title(it, tr), &lr, font(), theme::text(), DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        // Wrapped in the label column (task 990), right-aligned; one line
+        // sits on the control's middle as before.
+        let title = rules::row_title(it, tr);
+        let one_line = measure(&title, lr.right - lr.left, font(), 0) <= metrics(font());
+        let control_h = shell::scale(grid::CONTROL_H, dpi);
+        let lr = if one_line { RECT { bottom: lr.top + control_h, ..lr } } else { lr };
+        let flags = if one_line { DT_RIGHT | DT_SINGLELINE | DT_VCENTER } else { DT_RIGHT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL };
+        draw_text(hdc, &title, &lr, font(), theme::text(), flags);
         if rules::differs_from_default(it) {
-            let d = RECT { left: r.label.left, top: lr.top, right: r.label.left + dot, bottom: lr.bottom };
+            let d = RECT { left: r.label.left, top: lr.top, right: r.label.left + dot, bottom: lr.top + control_h };
             draw_text(hdc, "\u{2022}", &d, font(), theme::focus(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
         }
         if let Some(hr) = r.help {
