@@ -1441,7 +1441,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// coming back from here was "the action was dispatched".
     enum ToolCloseResult {
         case closed
-        case awaitingConfirmation
+        /// It would have needed the user's consent -- something running in a
+        /// terminal that is the user's, or one the user locked -- so nothing
+        /// closed and **nobody was asked** (#989). A tool close never puts a
+        /// box on the user's screen.
+        case refused
 
         /// This controller could not act -- no window to speak of. Kept
         /// separate from `closed` on purpose: "nothing happened" reported as
@@ -1459,10 +1463,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// code it was. Nothing above is edited; this is a second door with its
     /// own lock. The duplication is the guarantee.
     ///
-    /// `confirm` false means the target carries a Polter mark: nobody is
-    /// sitting at that tab, so the dialog would strand the caller behind a box
-    /// it can neither see nor press. It is a licence to skip a question, never
-    /// a reason to ask a new one.
+    /// `confirm` false means the target carries a Polter mark, or an agent
+    /// opened it: the close is the agent's to make. True means it would need
+    /// the user's consent -- and **this never asks for it** (#989): where the
+    /// dialog used to go up, the close is refused and the agent is told. The
+    /// person's own close (`closeTab(_:)` and friends) still asks.
     func closeFromTool(scope: ToolCloseScope, confirm: Bool) -> ToolCloseResult {
         switch scope {
         case .thisTab:
@@ -1477,13 +1482,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 return .closed
             }
 
-            confirmClose(
-                messageText: String(localized: "Close Tab?", comment: "关闭确认框"),
-                informativeText: String(localized: "The terminal still has a running process. If you close the tab the process will be killed.", comment: "关闭确认框")
-            ) {
-                self.closeTabImmediately()
-            }
-            return .awaitingConfirmation
+            // Refused, not asked (#989): the dialog that used to go up here
+            // sat on the user's screen for a close an agent wanted.
+            return .refused
 
         case .otherTabs:
             guard let window else { return .unsupported }
@@ -1501,13 +1502,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 return .closed
             }
 
-            confirmClose(
-                messageText: String(localized: "Close Other Tabs?", comment: "关闭确认框"),
-                informativeText: String(localized: "At least one other tab still has a running process. If you close the tab the process will be killed.", comment: "关闭确认框")
-            ) {
-                self.closeOtherTabsImmediately()
-            }
-            return .awaitingConfirmation
+            // Refused, not asked (#989): the dialog that used to go up here
+            // sat on the user's screen for a close an agent wanted.
+            return .refused
 
         case .tabsToTheRight:
             guard let window,
@@ -1525,13 +1522,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 return .closed
             }
 
-            confirmClose(
-                messageText: String(localized: "Close Tabs on the Right?", comment: "关闭确认框"),
-                informativeText: String(localized: "At least one tab to the right still has a running process. If you close the tab the process will be killed.", comment: "关闭确认框")
-            ) {
-                self.closeTabsOnTheRightImmediately()
-            }
-            return .awaitingConfirmation
+            // Refused, not asked (#989): the dialog that used to go up here
+            // sat on the user's screen for a close an agent wanted.
+            return .refused
 
         case .window:
             guard let window else { return .unsupported }
@@ -1540,24 +1533,21 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             // say -- the same sweep `closeWindow(_:)` makes.
             let windows: [NSWindow] = window.tabGroup?.windows ?? [window]
             let controllers = windows.compactMap { $0.windowController as? TerminalController }
-            guard let confirmController = controllers.first(
+            guard controllers.contains(
                 where: { self.toolCloseAsks($0.surfaceTree, confirm: confirm) }
             ) else {
                 closeWindowImmediately()
                 return .closed
             }
 
-            confirmController.confirmClose(
-                messageText: String(localized: "Close Window?", comment: "关闭确认框"),
-                informativeText: String(localized: "All terminal sessions in this window will be terminated.", comment: "关闭确认框"),
-            ) {
-                self.closeWindowImmediately()
-            }
-            return .awaitingConfirmation
+            // Refused, not asked (#989): the dialog that used to go up here
+            // sat on the user's screen for a close an agent wanted.
+            return .refused
         }
     }
 
-    /// Whether a tool close of `surfaces` still puts the dialog up.
+    /// Whether a tool close of `surfaces` would need the user's consent --
+    /// which, from the tool surface, means it is refused (#989).
     ///
     /// Two bits, and the second is the one worth reading twice.
     ///

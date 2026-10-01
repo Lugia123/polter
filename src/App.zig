@@ -298,6 +298,14 @@ poltergeist_server: ?poltergeistpkg.Server = null,
 /// reach user identity by any route.
 chat_surfaces: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty,
 
+/// A terminal the tool surface asked for that the runtime has not made yet
+/// (every split, every Windows tab): the next terminal to finish starting
+/// before `deadline_ms` is the one, and is marked as opened by an agent
+/// (`claimAgentOpened`, #989). The same shape, and the same accepted risk, as
+/// `PersonaStore.pending_launch`: a terminal the person opens in that same
+/// moment could be taken for it.
+poltergeist_agent_open: ?u64 = null,
+
 /// The apprt, kept so that a connection thread can wake the app loop after
 /// putting a request in the mailbox.
 ///
@@ -2396,6 +2404,27 @@ pub fn launchPersona(
     return opened;
 }
 
+/// Called by a surface at the end of its `init`: if the tool surface asked
+/// for a terminal the runtime had not made yet, this is it, and an agent
+/// opened it (`Bus.Entry.opened_by_agent`, #989).
+pub fn claimAgentOpened(self: *App, surface: *Surface) void {
+    const deadline = self.poltergeist_agent_open orelse return;
+    self.poltergeist_agent_open = null;
+    if (self.poltergeistElapsedMs() > deadline) return;
+    self.markAgentOpened(surface.id);
+}
+
+/// Record that an agent opened `id`. A failure to record leaves it the
+/// user's -- the safe way round: an agent is refused a close it could have
+/// made, rather than allowed one it should not.
+fn markAgentOpened(self: *App, id: poltergeistpkg.Bus.Id) void {
+    self.poltergeist.markOpenedByAgent(id) catch |err| {
+        log.warn("poltergeist: could not record that an agent opened terminal {x} err={}", .{ id, err });
+        return;
+    };
+    log.info("poltergeist: terminal {x} was opened by an agent", .{id});
+}
+
 /// Called by a surface at the end of its `init`, the first moment it can be
 /// typed into: if a role launch is waiting for a terminal, this is it --
 /// a split's as much as a tab's.
@@ -3282,6 +3311,12 @@ fn poltergeistLayout(
     const spec_z = try alloc.dupeZ(u8, in_spec);
     defer alloc.free(spec_z);
 
+    // The panes there before, so the ones the layout makes can be told apart
+    // afterwards and marked as opened by an agent (#989).
+    var before: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty;
+    defer before.deinit(alloc);
+    for (self.surfaces.items) |v| try before.put(alloc, v.core().id, {});
+
     // **The caller's buffer, sized once.** An apprt that needs more room says
     // so in its reason rather than truncating; see the ABI note on `Out`.
     const buf = try alloc.alloc(u8, 8 * 1024);
@@ -3317,9 +3352,19 @@ fn poltergeistLayout(
             .applied = false,
             .text = try self.layoutHandlesInText(alloc, said),
         },
-        .applied => .{
-            .applied = true,
-            .text = try self.layoutSurfacesToIds(alloc, said),
+        .applied => applied: {
+            // ⚠️ Only the panes the runtime made inside the call. An apprt
+            // that makes them later would leave them unmarked -- the user's
+            // -- and an agent closing one busy would be refused, which is
+            // the safe way to be wrong.
+            for (self.surfaces.items) |v| {
+                const new = v.core().id;
+                if (!before.contains(new) and !self.isChatSurface(new)) self.markAgentOpened(new);
+            }
+            break :applied .{
+                .applied = true,
+                .text = try self.layoutSurfacesToIds(alloc, said),
+            };
         },
     };
 }
@@ -3641,11 +3686,11 @@ fn poltergeistPerformAction(
     // way back whether a dialog went up. Everything else still goes through
     // the shared path, which is the point of this whole surface.
     switch (parsed) {
-        // The surface closes itself: `closeFromTool` is the same two lines
-        // as `close` with the answer to both halves.
-        .close_surface => {
-            if (surface.closeFromTool(confirm_close)) return error.CloseAwaitingConfirm;
-            return;
+        // The surface closes itself, or refuses -- never a dialog (#989).
+        .close_surface => return switch (surface.closeFromTool(confirm_close)) {
+            .close => {},
+            .refuse_users_terminal => error.CloseRefusedUsersTerminal,
+            .refuse_locked => error.CloseRefusedLocked,
         },
 
         // A tab and a window are the apprt's to close and the apprt's to
@@ -3655,7 +3700,7 @@ fn poltergeistPerformAction(
         // rather than being decided here. See `apprt.action.PoltergeistClose`.
         //
         // `readonly` is folded in here rather than in `rpc.zig` for the same
-        // reason it is in `Surface.toolCloseAsks`: it is this surface's
+        // reason it is in `Surface.toolCloseVerdict`: it is this surface's
         // state, and the tool surface has no way to read it. The apprt folds
         // in the rest of the tab on top of this, because a tab is more
         // surfaces than the one that was named.
@@ -4653,6 +4698,15 @@ fn poltergeistOpenTerminal(
 
     const rt_app = self.poltergeist_rt_app orelse return error.NoRuntime;
 
+    // **An agent is opening this terminal** (#989), so it is marked as one
+    // whenever it appears: now, if the runtime makes it inside the calls
+    // below (its `init` claims this), or later, if it makes it after this
+    // returns. Taken back below when the terminal is found here.
+    self.poltergeist_agent_open = self.poltergeistElapsedMs() + poltergeistpkg.PersonaStore.pending_launch_ms;
+    // A terminal that was never made must not leave the mark waiting for the
+    // next one somebody else opens.
+    errdefer self.poltergeist_agent_open = null;
+
     // **Where it goes, decided here and nowhere else.**
     //
     // The caller says it wants a terminal; it never says where. A position in
@@ -4746,6 +4800,12 @@ fn poltergeistOpenTerminal(
         // already exists, and a split's surface never does yet -- that is the
         // defect this replaced. The worker is attributed on the next call,
         // through `poltergeist_pending_worker`.
+        //
+        // Who opened it is, though (#989): it is here, it is new, and the
+        // agent asked for it. Its own `init` may already have claimed the
+        // mark; either way the claim waiting for a later terminal is spent.
+        self.poltergeist_agent_open = null;
+        self.markAgentOpened(id);
         return .{ .id = id, .placed = placed };
     }
     return .{ .id = null, .placed = placed };

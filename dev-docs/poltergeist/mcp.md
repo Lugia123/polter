@@ -433,7 +433,12 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
   也就是没有。它披露的是各终端的标记，方向是对的：让一个 agent**在动手之前**就知道
   哪些终端碰不得（`src/poltergeist/rpc.zig:556-568`）。
 
-- **`terminal_action` 的关闭确认，看被关的那一方。** 从工具面关一个带标记的终端
+- **`terminal_action` 的关闭：从工具面关，永远不在用户屏幕上弹确认框**（#989）。
+  该不该放行看被关的那一方：带标记的（`watched` / `supervisor`），或者**由 agent 开出来的**
+  （`terminal_open`、`role_launch`、`terminal_layout` 的新 pane 会在 bus 上记
+  `opened_by_agent`，跟着终端走，取消监管不丢）——直接关。其余（用户自己的终端）里面有
+  东西在跑：**直接拒绝**，答 `UserTerminal`，不再替 agent 去问用户；用户锁了 readonly 的
+  答 `Locked`。以下是这条规则的来历——当初的写法是从工具面关一个带标记的终端
   （`watched` 或 `supervisor`）**不弹确认框**：那个框防的是用户手滑，而总管关一个
   它正在指挥的 worker 不是手滑，何况那边没有人能去点它——框弹出来只会把调用者卡在
   一个它既看不见也按不动的东西后面。关一个**无标记**终端仍然照常确认：程序不知道
@@ -445,20 +450,22 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
   工具面一律尊重（`shielded` 由 `rpc.authorize` 挡，`held` 由 `governed` 挡，
   readonly 挡在这里）。既被监管**又是** readonly 的终端不是「更该放行」，恰恰是
   最该停下来问的那个：用户之所以锁它，就是因为 agent 够得着它。两个条件是 `or`，
-  不是 `and`（`actions.confirmsCloseProtected`，落点在 `Surface.toolCloseAsks`）。
+  不是 `and`（`actions.confirmsCloseProtected`，落点在 `Surface.toolCloseVerdict`）。
 
   **用户自己关，无论目标有没有标记，一律照旧确认。** 判据是「从工具面来的」和
   「目标的标记」两个条件同时成立，不是「被监管的终端一律不确认」——后者是把保护
   删掉，不是把它挪对地方。
 
-  确认框真的弹出来时，`terminal_action` 答 `AwaitingConfirmation` 而**不是 `ok`**：
-  `rt_surface.close` 交出请求就返回，弹框和真关掉在调用者看来一模一样，之前这里
-  报的是成功而终端还开着。
+  ~~确认框真的弹出来时，`terminal_action` 答 `AwaitingConfirmation`~~——#989 起不再
+  弹框：需要用户同意的关闭直接被拒，答 `UserTerminal` / `Locked`，同样**不是 `ok`**
+  （当初的教训仍然成立：`rt_surface.close` 交出请求就返回，拒绝必须在交出之前判定，
+  见 `Surface.closeFromTool` / `actions.toolClose`）。
 
   **`close_tab` / `close_window` 走同一套规则，但决定权在 apprt。** 一个 surface
   只知道自己要不要确认；哪些 surface 共用一个 tab、以及那个对话框本身，只有 apprt
   知道。所以这两个动作不走 `performBindingAction`，而是发一个专门的 apprt 动作
-  `poltergeist_close`：`confirm` 往下带，结果（`closed` / `awaiting_confirmation` /
+  `poltergeist_close`：`confirm` 往下带（#989 起它的意思是「这次关闭需要用户同意」，
+  apprt 见到这种情况**不弹框、答 `refused`**），结果（`closed` / `refused` /
   `unsupported`）通过出参指针往上带。`performAction` 原本的 `bool` 只说「这个动作
   我接了」，弹框和真关掉都答 `true`，分不开——这正是 tab/window 曾经回假 `ok` 的
   原因。tab 里其它终端的 readonly 也算数：关 tab 会连它们一起杀掉。

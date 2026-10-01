@@ -872,12 +872,13 @@ const tools = [_]Tool{
             "-- guessing at a name gets you UnknownAction, which is a typo, not a refusal " ++
             "by the terminal. A new tab opens in the same directory as the terminal you " ++
             "asked from, which is worth thinking about before you ask. Same reach rule as " ++
-            "terminal_read. `close_surface` is the one action that can answer " ++
-            "AwaitingConfirmation: an unmarked terminal with something still running in " ++
-            "it gets the same confirmation a person clicking close would get, the " ++
-            "terminal stays open, and nothing here can press that button -- wait and " ++
-            "check terminal_list, or ask the user. A terminal you are minding closes " ++
-            "without asking.",
+            "terminal_read. Closing never puts a confirmation on the user's screen. " ++
+            "A terminal an agent opened (terminal_open, role_launch, a new pane in " ++
+            "terminal_layout) -- even one you have since stopped watching -- or one you " ++
+            "are minding closes without asking. The user's own terminal with something " ++
+            "still running in it is refused with UserTerminal and stays open; one the " ++
+            "user locked with readonly is refused with Locked. Either way ask the person " ++
+            "at the keyboard.",
         .schema =
         \\{"type":"object","properties":{"id":{"type":"string"},"action":{"type":"string"}},"required":["id","action"]}
         ,

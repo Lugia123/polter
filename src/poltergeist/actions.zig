@@ -333,12 +333,27 @@ pub const CloseAsker = union(enum) {
     /// close button.
     user,
 
-    /// The tool surface, aimed at a terminal carrying this mark.
-    tool: Bus.Role,
+    /// The tool surface, aimed at this terminal.
+    tool: Target,
+
+    /// What the tool surface knows about the terminal it is closing: its
+    /// mark, and whether an agent opened it (`Bus.Entry.opened_by_agent`).
+    /// Two facts because they come apart: a worker its supervisor has let
+    /// go of is `.none` and still the agent's (#989).
+    pub const Target = struct {
+        role: Bus.Role,
+        opened_by_agent: bool,
+    };
 };
 
-/// Whether a close from `by` still puts the confirmation in front of the
-/// user.
+/// Whether a close from `by` needs the user's consent.
+///
+/// ⚠️ **For the tool surface, "needs consent" no longer means "ask"** (#989).
+/// It used to put "Close Terminal?" on the user's screen for a close an agent
+/// had asked for -- a box the agent cannot see or press, in front of a person
+/// who did not ask for anything. The user said plainly that box must not
+/// appear. So a tool close that needs consent is **refused** and the agent is
+/// told why (`toolClose`); only the person's own close still asks.
 ///
 /// **The confirmation is a guard against the user's own misclick.** That is
 /// the whole reason it exists, and it is why the answer for `.user` is
@@ -363,6 +378,11 @@ pub const CloseAsker = union(enum) {
 ///     guess: the confirmation is the only protection an unmarked terminal
 ///     has from a tool call, and it keeps it.
 ///
+///   - **An agent opened it** (`opened_by_agent`): consent was never the
+///     user's to give. A supervisor that let go of its worker and then closes
+///     it is tidying up its own work; the mark going does not make the pane
+///     the user's (#989).
+///
 /// A `shielded` terminal never reaches here at all -- `rpc.authorize`
 /// refuses the whole call before any of this -- so there is no prong for it
 /// and there must not be one.
@@ -370,11 +390,34 @@ pub fn confirmsClose(by: CloseAsker) bool {
     return switch (by) {
         .user => true,
 
-        .tool => |role| switch (role) {
+        .tool => |t| if (t.opened_by_agent) false else switch (t.role) {
             .watched, .supervisor => false,
             .none => true,
         },
     };
+}
+
+/// What a close from the tool surface does (#989). **Never a dialog**: it
+/// closes, or it is refused and the caller is told which refusal.
+pub const ToolClose = enum {
+    close,
+    /// Something is running, and the terminal is the user's: no mark, and no
+    /// agent opened it. The agent is told to ask the person.
+    refuse_users_terminal,
+    /// The user locked it (`readonly`). Not something a mark or an agent's
+    /// provenance waives -- see `confirmsCloseProtected`.
+    refuse_locked,
+};
+
+/// The tool close, decided: `needs_consent` is `confirmsClose` already
+/// answered by the tool surface; `readonly` and `running`
+/// (`Surface.needsConfirmQuit`) are the terminal's own. Nothing running is
+/// nothing to lose, so it closes whatever the rest says.
+pub fn toolClose(needs_consent: bool, readonly: bool, running: bool) ToolClose {
+    if (!running) return .close;
+    if (readonly) return .refuse_locked;
+    if (needs_consent) return .refuse_users_terminal;
+    return .close;
 }
 
 /// The same question again with the *target's* own protections folded back
@@ -406,7 +449,7 @@ pub fn confirmsClose(by: CloseAsker) bool {
 /// `readonly` off one inside it -- would trade that for a function that can
 /// only be exercised by standing up a terminal, which is how a rule stops
 /// being checked. The bit comes in as a bit; the caller that owns the
-/// surface is the one that reads it. See `Surface.toolCloseAsks`, which is
+/// surface is the one that reads it. See `Surface.toolCloseVerdict`, which is
 /// that caller.
 ///
 /// The position rejected was folding this into `CloseAsker` -- a `protected`
@@ -605,7 +648,7 @@ test "the close confirmation follows who asked, and the user is always asked" {
             .watched, .supervisor => false,
             .none => true,
         };
-        if (confirmsClose(.{ .tool = role }) != want) {
+        if (confirmsClose(.{ .tool = .{ .role = role, .opened_by_agent = false } }) != want) {
             std.debug.print("\ntool close on {t}: wanted {}\n", .{ role, want });
             return error.ToolCloseConfirmWrong;
         }
@@ -621,7 +664,7 @@ test "a lock on the target puts back the dialog the mark waived" {
     // silently is the readonly flag being spent on something it was never
     // for, so the lock wins.
     for (std.enums.values(Bus.Role)) |role| {
-        const asked = confirmsClose(.{ .tool = role });
+        const asked = confirmsClose(.{ .tool = .{ .role = role, .opened_by_agent = false } });
         try testing.expect(confirmsCloseProtected(asked, true));
     }
 
@@ -629,7 +672,7 @@ test "a lock on the target puts back the dialog the mark waived" {
     // nothing when there is nothing to add, which is what makes it safe to
     // put on the path every tool close takes.
     for (std.enums.values(Bus.Role)) |role| {
-        const asked = confirmsClose(.{ .tool = role });
+        const asked = confirmsClose(.{ .tool = .{ .role = role, .opened_by_agent = false } });
         try testing.expectEqual(asked, confirmsCloseProtected(asked, false));
     }
 
@@ -645,6 +688,36 @@ test "a lock on the target puts back the dialog the mark waived" {
     // uses a `true` asker; this is the pair that tells them apart.
     try testing.expect(confirmsCloseProtected(false, true));
     try testing.expect(!confirmsCloseProtected(false, false));
+}
+
+test "#989: what an agent opened, an agent closes without anybody's consent" {
+    const testing = std.testing;
+    // The reported case: a worker its supervisor let go of is `.none` again
+    // -- and still the agent's.
+    for (std.enums.values(Bus.Role)) |role| {
+        try testing.expect(!confirmsClose(.{ .tool = .{ .role = role, .opened_by_agent = true } }));
+    }
+    // So it closes, running or not, unless the user locked it.
+    try testing.expectEqual(ToolClose.close, toolClose(false, false, true));
+    try testing.expectEqual(ToolClose.refuse_locked, toolClose(false, true, true));
+}
+
+test "#989: the user's busy terminal is refused, never asked about" {
+    const testing = std.testing;
+    const users = confirmsClose(.{ .tool = .{ .role = .none, .opened_by_agent = false } });
+    try testing.expect(users);
+    try testing.expectEqual(ToolClose.refuse_users_terminal, toolClose(users, false, true));
+    // Nothing running: nothing to lose, so it closes -- no consent needed.
+    try testing.expectEqual(ToolClose.close, toolClose(users, false, false));
+    // There is no fourth answer: a dialog is not one of the things a tool
+    // close can come to.
+    try testing.expectEqual(3, std.enums.values(ToolClose).len);
+}
+
+test "#989: the person's own close still asks" {
+    // `Surface.close` is unchanged: `confirmsClose(.user)` is true, so a
+    // running terminal the person closes still gets its dialog.
+    try std.testing.expect(confirmsClose(.user));
 }
 
 test "the user's close is the identity, so that path is unchanged by construction" {

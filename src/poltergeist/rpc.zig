@@ -2574,7 +2574,30 @@ test "closing a terminal in the arrangement does not stop to ask" {
     try testing.expect(!fake.acted.?.confirm_close);
 }
 
-test "closing an unmarked terminal still asks, and the ask is not reported as done" {
+test "#989: a worker an agent opened is closed without asking, even after it was let go" {
+    // The reported bug: a supervisor `set_watch(false)`s a worker it opened,
+    // then `close_surface`s it, and the user gets "Close Terminal?" for a
+    // pane they never opened. The mark is gone; the provenance is not.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    try b.markOpenedByAgent(other);
+    try b.watch(other, boss);
+    b.unwatch(other);
+    try testing.expectEqual(Bus.Role.none, b.roleOf(other));
+
+    var fake: FakeHost = .{};
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_action = .{ .id = other, .action = "close_surface" },
+    });
+    try testing.expectEqual(wire.Response.ok, res);
+    // Handed down as "no consent needed": the host closes it outright.
+    try testing.expect(!fake.acted.?.confirm_close);
+}
+
+test "closing an unmarked busy terminal is refused, and the refusal is not reported as done" {
     // **The half of the rule that is easy to write out of existence.** A
     // terminal carrying no mark is one the program knows nothing about --
     // it cannot tell an agent from a person reading their mail -- and the
@@ -2596,16 +2619,23 @@ test "closing an unmarked terminal still asks, and the ask is not reported as do
     try testing.expectEqual(wire.Response.ok, res);
     try testing.expect(fake.acted.?.confirm_close);
 
-    // And when the host says the dialog actually went up, the answer is
-    // not `ok`. This is the second bug: `rt_surface.close` returns as soon
-    // as the request is handed over, so before this the agent was told the
-    // terminal had closed while it sat there behind a box.
-    var asking: FakeHost = .{ .action_error = error.CloseAwaitingConfirm };
-    const waiting = try dispatch(arena.allocator(), &b, asking.host(), term(boss), .{
+    // #989: when the host says the close needed the user's consent, it
+    // refused -- nobody was asked -- and the agent is told so by name, never
+    // `ok`. (The refusal itself, never a dialog, is `actions.toolClose` and
+    // `Surface.toolCloseVerdict`.)
+    var refusing: FakeHost = .{ .action_error = error.CloseRefusedUsersTerminal };
+    const refused = try dispatch(arena.allocator(), &b, refusing.host(), term(boss), .{
         .terminal_action = .{ .id = other, .action = "close_surface" },
     });
-    if (waiting != .failed) return error.AwaitingConfirmReportedAsDone;
-    try testing.expectEqualStrings("AwaitingConfirmation", waiting.failed.code);
+    if (refused != .failed) return error.RefusalReportedAsDone;
+    try testing.expectEqualStrings("UserTerminal", refused.failed.code);
+
+    var locked: FakeHost = .{ .action_error = error.CloseRefusedLocked };
+    const lock = try dispatch(arena.allocator(), &b, locked.host(), term(boss), .{
+        .terminal_action = .{ .id = other, .action = "close_surface" },
+    });
+    if (lock != .failed) return error.RefusalReportedAsDone;
+    try testing.expectEqualStrings("Locked", lock.failed.code);
 }
 
 test "closing a tab or a window answers the same way closing a surface does" {
@@ -2634,7 +2664,8 @@ test "closing a tab or a window answers the same way closing a surface does" {
         try testing.expectEqual(wire.Response.ok, marked);
         try testing.expect(!fake.acted.?.confirm_close);
 
-        // Unmarked: the dialog stays, same as a surface.
+        // Unmarked: consent would be needed, same as a surface -- and the
+        // host refuses rather than asks (#989).
         var plain: FakeHost = .{};
         const unmarked = try dispatch(arena.allocator(), &b, plain.host(), term(boss), .{
             .terminal_action = .{ .id = other, .action = action },
@@ -2645,12 +2676,12 @@ test "closing a tab or a window answers the same way closing a surface does" {
         // And the dialog going up is never `ok`. This is the one that
         // matters most: an agent told `ok` walks away from a window that is
         // still open, and everything it does next is built on that.
-        var asking: FakeHost = .{ .action_error = error.CloseAwaitingConfirm };
-        const waiting = try dispatch(arena.allocator(), &b, asking.host(), term(boss), .{
+        var refusing: FakeHost = .{ .action_error = error.CloseRefusedUsersTerminal };
+        const refused = try dispatch(arena.allocator(), &b, refusing.host(), term(boss), .{
             .terminal_action = .{ .id = other, .action = action },
         });
-        if (waiting != .failed) return error.AwaitingConfirmReportedAsDone;
-        try testing.expectEqualStrings("AwaitingConfirmation", waiting.failed.code);
+        if (refused != .failed) return error.RefusalReportedAsDone;
+        try testing.expectEqualStrings("UserTerminal", refused.failed.code);
     }
 }
 
@@ -4787,10 +4818,11 @@ pub const Host = struct {
         /// carries the fix for. Ignored by every action that does not close
         /// a surface.
         ///
-        /// Answers `error.CloseAwaitingConfirm` when the close it was asked
-        /// for raised the confirmation instead of closing. Not a failure of
-        /// the request -- the close was asked for and the dialog is up --
-        /// but not a success either, and the caller has to be told which.
+        /// **A close from here never raises a dialog** (#989). Where one would
+        /// have been needed the host closes nothing and answers
+        /// `error.CloseRefusedUsersTerminal` (the terminal is the user's and
+        /// something is running in it) or `error.CloseRefusedLocked` (the
+        /// user locked it with readonly).
         performAction: *const fn (
             ctx: *anyopaque,
             id: Bus.Id,
@@ -6283,30 +6315,37 @@ pub fn dispatch(
             //
             // The target's mark answers it, not the caller's standing --
             // the same judgement the reach rule above makes, and for the
-            // same reason. See `actions.confirmsClose`.
-            const confirm_close = actions.confirmsClose(.{ .tool = bus.roleOf(p.id) });
+            // same reason -- and so does who opened it: a worker its
+            // supervisor has let go of is unmarked and still the agent's
+            // (#989). See `actions.confirmsClose`.
+            const confirm_close = actions.confirmsClose(.{ .tool = .{
+                .role = bus.roleOf(p.id),
+                .opened_by_agent = bus.openedByAgent(p.id),
+            } });
 
             host.performAction(p.id, p.action, confirm_close) catch |err| return switch (err) {
                 error.UnknownTerminal => failure(error.UnknownTerminal),
 
-                // The close went in and the user is being asked. Said as a
-                // failure because the two answers this surface has are
-                // "done" and "not done", and a terminal still sitting
-                // there behind a dialog is not done. Answering `ok` here
-                // is what the agent was doing before, and it is worse than
-                // useless: it goes away satisfied while the thing it asked
-                // for waits on a person it cannot reach.
-                error.CloseAwaitingConfirm => hostFailure(
-                    "AwaitingConfirmation",
-                    "the close was asked for, something is still running, and the " ++
-                        "user has been asked to confirm -- so nothing has closed yet. " ++
-                        "Three ways to get here: the terminal carries no mark, so it " ++
-                        "keeps the confirmation an unmarked terminal is entitled to; " ++
-                        "or it is in readonly, which is the user locking it on purpose " ++
-                        "and is not something a mark waives; or you asked for a tab or " ++
-                        "window and one of the other terminals in it is in one of those " ++
-                        "two states. Nothing here can press that button. Either wait " ++
-                        "and check terminal_list, or ask the person at the keyboard.",
+                // **Refused, and the user was not asked** (#989). It used to
+                // put "Close Terminal?" on the user's screen for a close an
+                // agent wanted -- a box the agent cannot see or press, in
+                // front of a person who asked for nothing. The user said that
+                // box must not appear, so a close that would need their
+                // consent is refused here and the agent is told why.
+                error.CloseRefusedUsersTerminal => hostFailure(
+                    "UserTerminal",
+                    "not closed: something is still running in it, and it is the " ++
+                        "user's terminal -- no agent opened it and it carries no mark " ++
+                        "(or, for a tab or window, one of the terminals in it is like " ++
+                        "that). The user is not asked on your behalf. Ask the person " ++
+                        "at the keyboard to close it, or leave it.",
+                ),
+                error.CloseRefusedLocked => hostFailure(
+                    "Locked",
+                    "not closed: the user has put this terminal in readonly, which " ++
+                        "is them locking it on purpose. Neither a mark nor having " ++
+                        "opened it lets an agent past that. Ask the person at the " ++
+                        "keyboard.",
                 ),
 
                 // The name exists, so this is the value: `goto_split` with

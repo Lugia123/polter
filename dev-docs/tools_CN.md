@@ -18,7 +18,7 @@ Polter 全部四十个 MCP 工具：每个做什么、拒绝什么、哪些是�
 | `terminal_send`    | 像键盘前的人一样往终端里打字。控制字符在进来的路上就被剥掉了，所以它按不了 `ctrl+c`。`submit` 默认为 true（自动回车）。                                                                                                    |
 | `terminal_key`     | 按一个键，用 Ghostty keybinding 的写法：`ctrl+c`、`escape`、`f2`、`arrow_down`。这是唯一的打断手段。普通字符 `a` 在这里会被拒 —— 那是 `terminal_send` 的活。                                                                |
 | `terminal_keys`    | `terminal_key` 接受的完整词汇表（所有修饰键名和键名）。别猜名字，读这个。                                                                                                                                                  |
-| `terminal_action`  | 做菜单栏能做的事：`new_tab`、`close_surface`、`toggle_fullscreen`、`copy_to_clipboard`、`increase_font_size:1`、`goto_split:left`、`new_split:right`、`inspector:toggle`。`close_surface` 可能返回 `AwaitingConfirmation` —— 一个没标记、里面还跑着东西的终端，会跟人点关闭时一样弹确认，而这里谁也按不了那个按钮。你自己在盯的终端则直接关。 |
+| `terminal_action`  | 做菜单栏能做的事：`new_tab`、`close_surface`、`toggle_fullscreen`、`copy_to_clipboard`、`increase_font_size:1`、`goto_split:left`、`new_split:right`、`inspector:toggle`。关闭永远不会在用户屏幕上弹确认框：agent 开出来的终端（取消监管后也算）和你正在盯的终端直接关；用户自己的、里面还跑着东西的终端被拒绝，答 `UserTerminal`；用户锁成 readonly 的答 `Locked`。 |
 | `terminal_actions` | `terminal_action` 全部可用的动作，以及哪些需要在冒号后面带值。                                                                                                                                                             |
 | `terminal_open` 🔑 | 在本窗口开一个新终端，起始目录由你指定（`cwd` 必须是存在的绝对路径；不存在直接拒，而不是悄悄开到别处去）。比 `new_tab` 强：后者只能继承发起者所在的目录，四份工作在四个目录里根本没法那样铺开。`watch: true` 可以从它诞生的那一刻就纳入监管。回包里带 `id` 说明终端在调用返回前就已就绪；没有 `id` 则稍后它会出现在 `terminal_list` 里。 |
 

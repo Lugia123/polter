@@ -2301,15 +2301,18 @@ pub const PoltergeistGrouping = extern struct {
 pub const PoltergeistClose = extern struct {
     scope: Scope,
 
-    /// Whether the confirmation stays in front of the user. Already answered
+    /// Whether this close would need the user's consent. Already answered
     /// by `poltergeist.actions.confirmsCloseProtected` -- the target's mark
-    /// says whether anybody is there to press it, the target's readonly lock
-    /// says whether the user meant this terminal to be hard to close, and
-    /// neither is a fact an apprt has.
+    /// and whether an agent opened it say whether the consent is the user's
+    /// to give, the target's readonly lock says whether the user meant this
+    /// terminal to be hard to close, and none of those is a fact an apprt
+    /// has.
     ///
-    /// An apprt may only turn a confirmation *off* with this. It never adds
-    /// one: false says "you may skip the question you were going to ask",
-    /// and true says nothing at all beyond "carry on as usual".
+    /// ⚠️ **True is not "ask"** (#989). The apprt checks what it is about to
+    /// close as it always did -- anything running? -- and where it would have
+    /// put the dialog up it does nothing and answers `refused`. A tool close
+    /// never puts a box on the user's screen. False says "close it, whatever
+    /// is running".
     confirm: bool,
 
     /// Written by the apprt before it returns. Never read by it.
@@ -2345,8 +2348,10 @@ pub const PoltergeistClose = extern struct {
         unsupported,
         /// It is closed, or on its way to closed with nothing left to ask.
         closed,
-        /// The dialog is up and a person has to answer it. Nothing closed.
-        awaiting_confirmation,
+        /// It would have needed the user's consent, so it was refused and
+        /// nothing closed. No dialog went up (#989). The same value
+        /// `awaiting_confirmation` had, renamed with its meaning.
+        refused,
 
         /// The same three answers as the two the tool surface understands:
         /// it happened, or it did not and here is which sort of "did not".
@@ -2360,12 +2365,12 @@ pub const PoltergeistClose = extern struct {
         /// reports a close that never happened as done, and that is the bug
         /// this action was added to end.
         pub fn toolAnswer(self: Result) error{
-            CloseAwaitingConfirm,
+            CloseRefusedUsersTerminal,
             ActionIgnored,
         }!void {
             return switch (self) {
                 .closed => {},
-                .awaiting_confirmation => error.CloseAwaitingConfirm,
+                .refused => error.CloseRefusedUsersTerminal,
                 .unsupported => error.ActionIgnored,
             };
         }
@@ -2378,8 +2383,8 @@ pub const PoltergeistClose = extern struct {
             const testing = std.testing;
             try Result.closed.toolAnswer();
             try testing.expectError(
-                error.CloseAwaitingConfirm,
-                Result.awaiting_confirmation.toolAnswer(),
+                error.CloseRefusedUsersTerminal,
+                Result.refused.toolAnswer(),
             );
             try testing.expectError(
                 error.ActionIgnored,
@@ -2404,7 +2409,7 @@ pub const PoltergeistClose = extern struct {
         // `closed` there and rebuilding the bug in the enum's ordering.
         try std.testing.expectEqual(0, @intFromEnum(Result.unsupported));
         try std.testing.expect(@intFromEnum(Result.closed) != 0);
-        try std.testing.expect(@intFromEnum(Result.awaiting_confirmation) != 0);
+        try std.testing.expect(@intFromEnum(Result.refused) != 0);
 
         // And the answer really does travel by pointer. An apprt writes it
         // after the value has been copied across the C boundary, so a

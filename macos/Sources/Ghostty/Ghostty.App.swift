@@ -1298,8 +1298,8 @@ extension Ghostty {
                 switch controller.closeFromTool(scope: scope, confirm: v.confirm) {
                 case .closed:
                     out.pointee = GHOSTTY_ACTION_POLTERGEIST_CLOSE_RESULT_CLOSED
-                case .awaitingConfirmation:
-                    out.pointee = GHOSTTY_ACTION_POLTERGEIST_CLOSE_RESULT_AWAITING_CONFIRMATION
+                case .refused:
+                    out.pointee = GHOSTTY_ACTION_POLTERGEIST_CLOSE_RESULT_REFUSED
                 case .unsupported:
                     // Left at the value the core initialised it to, and said
                     // out loud rather than falling through, so that adding a
