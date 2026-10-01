@@ -670,16 +670,22 @@ pub struct Heir {
     pub usable: bool,
     /// The control about to be disabled or hidden, or inside it.
     pub losing: bool,
+    /// In the section's content area (`Layout::content`) -- not the
+    /// sidebar, not the breadcrumb bar's search box (task 1017: the
+    /// keyboard went to that box, and the next keys filtered the sidebar).
+    pub in_content: bool,
 }
 
 /// Where the keyboard goes when the control holding it is about to be
 /// disabled or hidden (task 1010: Save went grey under the keyboard, focus
 /// became nothing, and Ctrl+W stopped closing the window). The first usable
-/// field, else the first usable control of any kind, never the one going
-/// away; `None` means the settings window itself. Candidates come in the
-/// window's own order.
+/// field in the section's content area, else the first usable control of
+/// any kind there, never the one going away; `None` means the settings
+/// window itself. **Nothing outside the content area** -- the search box
+/// is a field too, and comes first in the window's order. Candidates come
+/// in the window's own order.
 pub fn focus_heir(candidates: &[Heir]) -> Option<usize> {
-    let ok = |h: &Heir| h.usable && !h.losing;
+    let ok = |h: &Heir| h.usable && !h.losing && h.in_content;
     candidates
         .iter()
         .position(|h| ok(h) && h.kind == HeirKind::Field)
@@ -845,7 +851,7 @@ mod tests {
     #[test]
     fn the_keyboard_goes_to_a_field_never_to_what_is_going() {
         use HeirKind::*;
-        let h = |kind, usable, losing| Heir { kind, usable, losing };
+        let h = |kind, usable, losing| Heir { kind, usable, losing, in_content: true };
         // Save (losing) comes first in the window, a check box, then a box.
         let c = [h(Other, true, true), h(Other, true, false), h(Field, true, false)];
         assert_eq!(focus_heir(&c), Some(2), "a field before a check box");
@@ -861,6 +867,21 @@ mod tests {
         // Nothing usable: the window itself.
         assert_eq!(focus_heir(&[h(Field, true, true), h(Other, false, false)]), None);
         assert_eq!(focus_heir(&[]), None);
+    }
+
+    #[test]
+    fn the_keyboard_stays_in_the_section_not_the_search_box() {
+        use HeirKind::*;
+        let h = |kind, in_content| Heir { kind, usable: true, losing: false, in_content };
+        // The window's order as the test machine read it: the search box
+        // (a field, outside the content) first, then the form's box.
+        let c = [h(Field, false), h(Other, true), h(Field, true)];
+        assert_eq!(focus_heir(&c), Some(2), "the form's box, not the search box");
+        // No field in the content: its first control, still not the search box.
+        let c = [h(Field, false), h(Other, true)];
+        assert_eq!(focus_heir(&c), Some(1));
+        // Nothing in the content: the settings window itself.
+        assert_eq!(focus_heir(&[h(Field, false), h(Other, false)]), None);
     }
 
     #[test]
