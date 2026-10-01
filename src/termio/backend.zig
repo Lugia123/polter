@@ -110,6 +110,14 @@ pub const Backend = union(Kind) {
             .exec => |*exec| exec.getProcessInfo(info),
         };
     }
+
+    /// Whether the shell is running a command, where that can be told from
+    /// its child processes (#991). Null where it cannot.
+    pub fn shellBusy(self: *Backend) ?bool {
+        return switch (self.*) {
+            .exec => |*exec| exec.shellBusy(),
+        };
+    }
 };
 
 /// Termio thread data. See termio.ThreadData for docs.

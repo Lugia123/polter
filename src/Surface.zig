@@ -1333,9 +1333,14 @@ pub fn needsConfirmQuit(self: *Surface) bool {
         .always => true,
         .false => false,
         .true => true: {
+            // Asked before the lock: it reads the process table, not the
+            // terminal. Null except for the Windows shells that cannot mark
+            // their prompt, where an idle prompt otherwise always counted
+            // as "running" (#991, `termio.shell_busy`).
+            const busy = self.io.shellBusy();
             self.renderer_state.mutex.lockUncancelable(global.io());
             defer self.renderer_state.mutex.unlock(global.io());
-            break :true !self.io.terminal.cursorIsAtPrompt();
+            break :true termio.shell_busy.confirms(self.io.terminal.cursorIsAtPrompt(), busy);
         },
     };
 }
