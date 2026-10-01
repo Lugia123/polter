@@ -748,6 +748,30 @@ pub fn close_choice(pressed: Option<usize>) -> CloseChoice {
     pressed.and_then(|i| CLOSE_BUTTONS.get(i).copied()).unwrap_or(CloseChoice::KeepOpen)
 }
 
+// ========================================================= show in Explorer
+
+/// The path Show in Explorer selects (#1000), in the form the shell's own
+/// `ILCreateFromPathW` and `explorer /select` both read: backslashes only,
+/// and **without** the `\\?\` long-path prefix, which neither of them takes
+/// -- a path handed over with it opens nothing, or opens the folder with
+/// nothing selected.
+pub fn reveal_path(path: &str) -> String {
+    let p = path.replace('/', "\\");
+    match p.strip_prefix("\\\\?\\UNC\\") {
+        Some(rest) => format!("\\\\{rest}"),
+        None => p.strip_prefix("\\\\?\\").map(str::to_string).unwrap_or(p),
+    }
+}
+
+/// `explorer.exe`'s argument for the fallback when the shell API cannot
+/// select: `/select,"<path>"`, written raw. Explorer splits its own command
+/// line, and the quotes go round the path only -- a quote round the whole
+/// `/select,...` (what an ordinary argument quoter writes for a path with a
+/// space in it) opens the folder and selects nothing.
+pub fn explorer_select_arg(path: &str) -> String {
+    format!("/select,\"{}\"", reveal_path(path))
+}
+
 // ================================================================== layout
 
 /// Launch/Revert/Save's places are the roles section's; this section has no
@@ -1419,6 +1443,17 @@ mod tests {
         assert_eq!(close_choice(Some(2)), CloseChoice::KeepOpen);
         assert_eq!(close_choice(Some(9)), CloseChoice::KeepOpen, "not a button");
         assert_eq!(close_choice(None), CloseChoice::KeepOpen, "the dialog failed or went away");
+    }
+
+    /// #1000: Show in Explorer selects the project's file -- with spaces,
+    /// Chinese, a long-path prefix, a UNC path.
+    #[test]
+    fn show_in_explorer_names_the_file_the_way_explorer_reads_it() {
+        assert_eq!(reveal_path(r"C:\Users\a\AppData\Local\polter\projects\beta.json"), r"C:\Users\a\AppData\Local\polter\projects\beta.json");
+        assert_eq!(reveal_path("C:/Users/a b/项目 一.json"), r"C:\Users\a b\项目 一.json");
+        assert_eq!(reveal_path(r"\\?\C:\very\long\x.json"), r"C:\very\long\x.json");
+        assert_eq!(reveal_path(r"\\?\UNC\server\share\x.json"), r"\\server\share\x.json");
+        assert_eq!(explorer_select_arg(r"C:\a b\项目.json"), r#"/select,"C:\a b\项目.json""#);
     }
 
     // --------------------------------------------------------------- layout
