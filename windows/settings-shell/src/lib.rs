@@ -622,6 +622,25 @@ pub fn hidden_item(sentence: &str, name: &str) -> String {
     sentence.replacen("{}", name, 1)
 }
 
+/// A key the settings window answers itself, **whichever of its controls
+/// has the keyboard** (task 1005: with the keyboard on a check box, a button
+/// or a section's own window, Ctrl+W went to that control and nothing
+/// closed). Asked before a key is dispatched, of every key aimed at the
+/// window or anything inside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowKey {
+    /// Ctrl+W: close, through the unsaved-changes question (§2.3).
+    Close,
+}
+
+/// `vk` going down with these modifiers held. **Only Ctrl+W**: Escape closes
+/// nothing (§2.3 -- long text and input methods use it), and the arrows,
+/// Tab, Return and every letter belong to whichever control has the keyboard.
+pub fn window_key(vk: u32, ctrl: bool, shift: bool, alt: bool) -> Option<WindowKey> {
+    const VK_W: u32 = 0x57;
+    (vk == VK_W && ctrl && !shift && !alt).then_some(WindowKey::Close)
+}
+
 /// ↑ / ↓ in a list of `len` rows (§2.3a: the keys must not be lost):
 /// the next or previous row, **stopping at the ends** rather than wrapping.
 /// From nothing selected, ↓ is the first row and ↑ the last. `None` for an
@@ -751,6 +770,20 @@ mod tests {
     fn unknown_section_is_refused_not_opened_as_last() {
         assert_eq!(Route::parse("role"), None);
         assert_eq!(Route::parse("Roles"), None);
+    }
+
+    #[test]
+    fn only_ctrl_w_is_the_windows_own() {
+        assert_eq!(window_key(0x57, true, false, false), Some(WindowKey::Close));
+        // Not W alone, not Ctrl+Shift+W, not AltGr+W (Ctrl+Alt).
+        assert_eq!(window_key(0x57, false, false, false), None);
+        assert_eq!(window_key(0x57, true, true, false), None);
+        assert_eq!(window_key(0x57, true, false, true), None);
+        // Escape closes nothing; the arrows, Tab and Return are the controls'.
+        for vk in [0x1B, 0x25, 0x26, 0x27, 0x28, 0x09, 0x0D] {
+            assert_eq!(window_key(vk, false, false, false), None, "vk {vk:#x}");
+            assert_eq!(window_key(vk, true, false, false), None, "ctrl+vk {vk:#x}");
+        }
     }
 
     #[test]

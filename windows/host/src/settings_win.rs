@@ -473,6 +473,32 @@ fn close() {
     crate::winid::settings_closed();
 }
 
+/// **Ctrl+W wherever the keyboard is in this window** (task 1005): asked by
+/// the message loop before a key is dispatched. A key aimed at this window
+/// or any control in it that is one of the window's own
+/// (`shell::window_key`) is answered here and not dispatched -- a check box,
+/// a button or a section's window used to receive Ctrl+W and do nothing
+/// with it. True when the key was taken.
+pub fn pre_translate(msg: &MSG) -> bool {
+    if msg.message != WM_KEYDOWN {
+        return false;
+    }
+    let h = win();
+    if h.0.is_null() || !(msg.hwnd == h || unsafe { IsChild(h, msg.hwnd) }.as_bool()) {
+        return false;
+    }
+    let vk = (msg.wParam.0 & 0xFFFF) as u32;
+    match shell::window_key(vk, held(VK_CONTROL), held(VK_SHIFT), held(VK_MENU)) {
+        Some(shell::WindowKey::Close) => {
+            // process-wide: the one settings window
+            crate::plogf!("[settings] Ctrl+W (keyboard on {:?}): closing", msg.hwnd);
+            let _ = unsafe { PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+            true
+        }
+        None => false,
+    }
+}
+
 /// Whether `f` is a live, visible, enabled control inside this window --
 /// somewhere the keyboard can be given back to.
 fn focus_is_ours(f: HWND) -> bool {

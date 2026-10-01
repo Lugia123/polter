@@ -305,6 +305,32 @@ pub fn opened() {
     }
 }
 
+/// Where the keyboard goes when the page it was in is hidden (task 1005:
+/// after `close()` it was left on this section's own window, where no key
+/// does anything): the first parameter field, else the switch, else
+/// nowhere -- the caller then gives it to the settings window.
+pub fn focus_after_page() -> bool {
+    let target = first_focusable();
+    match target {
+        Some(h) => {
+            let _ = unsafe { SetFocus(Some(h)) };
+            true
+        }
+        None => false,
+    }
+}
+
+fn first_focusable() -> Option<HWND> {
+    let (fields, switch) = ST.with(|c| {
+        let s = c.borrow();
+        (s.fields.iter().map(|f| f.hwnd).collect::<Vec<_>>(), s.fixed.map(|f| f.switch))
+    });
+    fields
+        .into_iter()
+        .chain(switch)
+        .find(|h| !h.0.is_null() && unsafe { IsWindowVisible(*h) }.as_bool() && unsafe { IsWindowEnabled(*h) }.as_bool())
+}
+
 pub fn closed() {
     let h = section();
     if !h.0.is_null() {
@@ -413,6 +439,12 @@ fn create(host: HWND) -> bool {
             return false;
         };
         SECTION.store(sec.0, Ordering::Release);
+        // **The dots' refresh starts with the section** (task 1005): it was
+        // started only by `opened`, and only if this window already existed
+        // then -- open the settings window on Roles, click into Plugins, and
+        // no plugin's dot changed for the rest of that opening. `closed`
+        // stops it; the next `opened` starts it again.
+        SetTimer(Some(sec), TIMER_RUNTIMES, RUNTIMES_EVERY_MS, None);
         make_fonts(dpi_of(sec));
         let form = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
