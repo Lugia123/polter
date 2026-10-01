@@ -19,6 +19,7 @@ const fastmem = @import("../fastmem.zig");
 const internal_os = @import("../os/main.zig");
 const renderer = @import("../renderer.zig");
 const shell_integration = @import("shell_integration.zig");
+const shell_busy = @import("shell_busy.zig");
 const terminal = @import("../terminal/main.zig");
 const termio = @import("../termio.zig");
 const Command = @import("../Command.zig");
@@ -1533,6 +1534,21 @@ const Subprocess = struct {
         const pty = &(self.pty orelse return null);
         return pty.getProcessInfo(info);
     }
+
+    /// Whether the shell is running a command, where the shell cannot mark
+    /// its prompt and this can be asked of its child processes instead
+    /// (#991, `shell_busy`). Null everywhere else -- every POSIX platform,
+    /// and every Windows program that is not PowerShell or cmd -- so the
+    /// prompt marks answer as they always have.
+    pub fn shellBusy(self: *Subprocess) ?bool {
+        if (comptime builtin.os.tag != .windows) return null;
+        if (self.args.len == 0 or !shell_busy.applies(self.args[0])) return null;
+        const p = self.process orelse return null;
+        return switch (p) {
+            .fork_exec => |cmd| shell_busy.shellBusy(cmd.pid orelse return null),
+            .flatpak => null,
+        };
+    }
 };
 
 /// The read thread works with a companion gather thread to form a two-stage
@@ -2470,6 +2486,11 @@ fn appendEnvAlways(
 /// not available on a particular platform.
 pub fn getProcessInfo(self: *Exec, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.subprocess.getProcessInfo(info);
+}
+
+/// See `Subprocess.shellBusy`.
+pub fn shellBusy(self: *Exec) ?bool {
+    return self.subprocess.shellBusy();
 }
 
 test "execCommand darwin: shell command" {

@@ -1263,3 +1263,8 @@ pub const ThreadData = struct {
 pub fn getProcessInfo(self: *Termio, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.backend.getProcessInfo(info);
 }
+
+/// See `backend.Backend.shellBusy`.
+pub fn shellBusy(self: *Termio) ?bool {
+    return self.backend.shellBusy();
+}

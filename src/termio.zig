@@ -26,6 +26,7 @@ pub const Exec = @import("termio/Exec.zig");
 pub const Options = @import("termio/Options.zig");
 pub const scrollback = @import("termio/scrollback.zig");
 pub const scrollback_journal = @import("termio/scrollback_journal.zig");
+pub const shell_busy = @import("termio/shell_busy.zig");
 pub const Termio = @import("termio/Termio.zig");
 pub const Thread = @import("termio/Thread.zig");
 pub const Backend = backend.Backend;
