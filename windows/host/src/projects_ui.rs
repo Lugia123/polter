@@ -469,6 +469,10 @@ fn place(h: HWND, r: SRect, show: bool, enabled: bool) {
     if h.0.is_null() {
         return;
     }
+    // Off the keyboard before it is hidden or greyed (task 1010).
+    if !show {
+        crate::settings_win::keep_keyboard_off(h);
+    }
     unsafe {
         let _ = SetWindowPos(
             h,
@@ -479,8 +483,8 @@ fn place(h: HWND, r: SRect, show: bool, enabled: bool) {
             r.height(),
             SWP_NOZORDER | SWP_NOACTIVATE | if show { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW },
         );
-        let _ = EnableWindow(h, enabled);
     }
+    crate::settings_win::enable(h, enabled);
 }
 
 /// Which way the tab "Overwrite" and "+" would take goes: the terminal
@@ -1391,10 +1395,6 @@ fn subclass(h: HWND) {
     }
 }
 
-fn held(vk: VIRTUAL_KEY) -> bool {
-    (unsafe { GetKeyState(vk.0 as i32) } as u16 & 0x8000) != 0
-}
-
 /// Ctrl+W closes the settings window wherever the keyboard is; **Escape
 /// closes nothing** (§2.3).
 unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -1406,7 +1406,7 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 if vk == VK_ESCAPE {
                     return LRESULT(0);
                 }
-                if vk.0 == u16::from(b'W') && held(VK_CONTROL) {
+                if crate::settings_win::is_close_key(vk.0) {
                     let _ = PostMessageW(Some(owner()), WM_CLOSE, WPARAM(0), LPARAM(0));
                     return LRESULT(0);
                 }
@@ -1455,7 +1455,7 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             WM_GETDLGCODE => LRESULT(DLGC_WANTARROWS as isize),
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
-                if vk.0 == u16::from(b'W') && held(VK_CONTROL) {
+                if crate::settings_win::is_close_key(vk.0) {
                     let _ = PostMessageW(Some(owner()), WM_CLOSE, WPARAM(0), LPARAM(0));
                 } else if vk == VK_UP || vk == VK_DOWN {
                     step(vk == VK_DOWN);

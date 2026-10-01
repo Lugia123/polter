@@ -480,7 +480,9 @@ fn close() {
 /// a button or a section's window used to receive Ctrl+W and do nothing
 /// with it. True when the key was taken.
 pub fn pre_translate(msg: &MSG) -> bool {
-    if msg.message != WM_KEYDOWN {
+    // WM_SYSKEYDOWN too: with nothing holding the keyboard, every key comes
+    // to the active window as that (task 1010).
+    if !shell::key_down_message(msg.message) {
         return false;
     }
     let h = win();
@@ -497,6 +499,80 @@ pub fn pre_translate(msg: &MSG) -> bool {
         }
         None => false,
     }
+}
+
+/// Enable or disable a control in this window **without leaving the
+/// keyboard on nothing** (task 1010): Windows takes the keyboard away from a
+/// control it disables and gives it to nobody, after which Ctrl+W, Tab and
+/// every other key went nowhere. Every section's Save / Revert / footer
+/// buttons go through here, and so does anything else that greys out while
+/// it may hold the keyboard.
+pub fn enable(h: HWND, enabled: bool) {
+    if !enabled {
+        keep_keyboard_off(h);
+    }
+    let _ = unsafe { EnableWindow(h, enabled) };
+}
+
+/// If the keyboard is on `h` or inside it, move it -- before `h` is
+/// disabled or hidden -- to the control `shell::focus_heir` picks: the first
+/// usable box in this window, else the first usable control, else this
+/// window itself.
+pub fn keep_keyboard_off(h: HWND) {
+    let root = win();
+    if root.0.is_null() || h.0.is_null() {
+        return;
+    }
+    let f = unsafe { GetFocus() };
+    if f.0.is_null() || !(f == h || unsafe { IsChild(h, f) }.as_bool()) {
+        return;
+    }
+    let mut all = Vec::new();
+    descendants(root, &mut all);
+    let heirs: Vec<shell::Heir> = all
+        .iter()
+        .map(|&c| {
+            let field = is_field(c);
+            let style = unsafe { GetWindowLongW(c, GWL_STYLE) } as u32;
+            shell::Heir {
+                kind: if field { shell::HeirKind::Field } else { shell::HeirKind::Other },
+                usable: unsafe { IsWindowVisible(c) }.as_bool()
+                    && unsafe { IsWindowEnabled(c) }.as_bool()
+                    && (field || style & WS_TABSTOP.0 != 0),
+                losing: c == h || unsafe { IsChild(h, c) }.as_bool(),
+            }
+        })
+        .collect();
+    let to = shell::focus_heir(&heirs).map_or(root, |i| all[i]);
+    let _ = unsafe { SetFocus(Some(to)) };
+    // process-wide: the one settings window
+    crate::plogf!("[settings] keyboard moved off {:?} before it went away; now on {:?}", h, to);
+}
+
+/// Every window under `parent`, depth first, in the window's own order.
+fn descendants(parent: HWND, out: &mut Vec<HWND>) {
+    let mut c = unsafe { GetWindow(parent, GW_CHILD) }.unwrap_or_default();
+    while !c.0.is_null() {
+        out.push(c);
+        descendants(c, out);
+        c = unsafe { GetWindow(c, GW_HWNDNEXT) }.unwrap_or_default();
+    }
+}
+
+/// A box you type into or pick from.
+fn is_field(h: HWND) -> bool {
+    let mut buf = [0u16; 32];
+    let n = unsafe { GetClassNameW(h, &mut buf) }.max(0) as usize;
+    let class = String::from_utf16_lossy(&buf[..n]);
+    class.eq_ignore_ascii_case("Edit") || class.eq_ignore_ascii_case("ComboBox")
+}
+
+/// Whether `vk` going down now is the settings window's close key, as
+/// `shell::window_key` says -- **the one table every control asks** (task
+/// 1010: seven controls each tested `W && Ctrl` themselves, so Ctrl+Shift+W
+/// closed the window from some controls and not others).
+pub fn is_close_key(vk: u16) -> bool {
+    shell::window_key(u32::from(vk), held(VK_CONTROL), held(VK_SHIFT), held(VK_MENU)) == Some(shell::WindowKey::Close)
 }
 
 /// Whether `f` is a live, visible, enabled control inside this window --
@@ -813,7 +889,7 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     unsafe {
         let prev = GetPropW(h, PROP_PREV).0 as isize;
         match msg {
-            WM_KEYDOWN if wp.0 as u16 == u16::from(b'W') && held(VK_CONTROL) => {
+            WM_KEYDOWN if is_close_key(wp.0 as u16) => {
                 let _ = PostMessageW(Some(win()), WM_CLOSE, WPARAM(0), LPARAM(0));
                 return LRESULT(0);
             }
@@ -1211,7 +1287,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             }
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
-                if vk.0 == u16::from(b'W') && held(VK_CONTROL) {
+                if is_close_key(vk.0) {
                     close();
                 } else if vk == VK_UP || vk == VK_DOWN {
                     // The window itself has the keyboard only after a click

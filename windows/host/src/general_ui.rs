@@ -1312,7 +1312,7 @@ unsafe extern "system" fn field_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
                 return LRESULT(0);
             }
-            WM_KEYDOWN if wp.0 as u16 == u16::from(b'W') && (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0 => {
+            WM_KEYDOWN if crate::settings_win::is_close_key(wp.0 as u16) => {
                 let _ = PostMessageW(Some(GetAncestor(h, GA_ROOT)), WM_CLOSE, WPARAM(0), LPARAM(0));
                 return LRESULT(0);
             }
