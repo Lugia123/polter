@@ -31,7 +31,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
     CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler,
-    WebMessageReceivedEventHandler, WebResourceRequestedEventHandler,
+    WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, AcceleratorKeyPressedEventHandler,
 };
 use windows::core::{Interface, HRESULT, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, RECT, WPARAM};
@@ -194,10 +194,35 @@ pub fn show(parent: HWND, rect: RECT, p: &Plugin) {
 /// Take the page off screen. The controller is kept for the same plugin:
 /// switching tabs back should not reload what the person was doing.
 pub fn hide() {
-    let ctl = PAGE.with(|c| c.borrow().controller.clone());
+    let (ctl, parent) = PAGE.with(|c| {
+        let s = c.borrow();
+        (s.controller.clone(), s.parent)
+    });
     if let Some(ctl) = ctl {
         unsafe {
             let _ = ctl.SetIsVisible(false);
+        }
+        take_keyboard_back(parent);
+    }
+}
+
+/// **The keyboard out of a hidden page** (task 1003): after `close()` or a
+/// switch to the Settings tab the focus stayed in WebView2's own child
+/// window, now invisible, and Ctrl+W -- and every other key -- went into
+/// it. It goes to the settings window, as a click on its sidebar would.
+fn take_keyboard_back(parent: HWND) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
+    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, IsChild, IsWindowVisible, GA_ROOT};
+    if parent.0.is_null() {
+        return;
+    }
+    unsafe {
+        let f = GetFocus();
+        if !f.0.is_null() && IsChild(parent, f).as_bool() && !IsWindowVisible(f).as_bool() {
+            let root = GetAncestor(parent, GA_ROOT);
+            let _ = SetFocus(Some(root));
+            // process-wide: the one plugin page
+            crate::plogf!("[page] keyboard taken back from the hidden page to {:?}", root);
         }
     }
 }
@@ -387,6 +412,36 @@ fn configure(ctl: &ICoreWebView2Controller) -> windows::core::Result<()> {
             &WebMessageReceivedEventHandler::create(Box::new(move |wv, args| {
                 if let (Some(wv), Some(args)) = (wv, args) {
                     on_message(&wv, &args, &k);
+                }
+                Ok(())
+            })),
+            &mut token,
+        )?;
+        // **The settings window's own chords come back to it** (task
+        // 1003). With the keyboard in the page WebView2 sees every key
+        // first; Ctrl+W, the window's close, went nowhere.
+        ctl.add_AcceleratorKeyPressed(
+            &AcceleratorKeyPressedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                let mut kind = COREWEBVIEW2_KEY_EVENT_KIND::default();
+                let mut vk = 0u32;
+                if args.KeyEventKind(&mut kind).is_err() || args.VirtualKey(&mut vk).is_err() {
+                    return Ok(());
+                }
+                if kind != COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN {
+                    return Ok(());
+                }
+                let held = |k: i32| (windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(k) as u16 & 0x8000) != 0;
+                let (ctrl, shift, alt) = (held(0x11), held(0x10), held(0x12));
+                if rules::page_accelerator(vk, ctrl, shift, alt) == Some(rules::PageKey::Close) {
+                    let _ = args.SetHandled(true);
+                    let parent = PAGE.with(|c| c.borrow().parent);
+                    let root = windows::Win32::UI::WindowsAndMessaging::GetAncestor(parent, windows::Win32::UI::WindowsAndMessaging::GA_ROOT);
+                    // Posted: the close may ask about unsaved changes, and a
+                    // modal question has no place inside WebView2's callback.
+                    let _ = PostMessageW(Some(root), windows::Win32::UI::WindowsAndMessaging::WM_CLOSE, WPARAM(0), LPARAM(0));
+                    // process-wide: the one plugin page
+                    crate::plogf!("[page] Ctrl+W in the page: handed to the settings window");
                 }
                 Ok(())
             })),
