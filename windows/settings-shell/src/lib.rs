@@ -14,6 +14,7 @@
 
 pub mod general;
 pub mod plugins;
+pub mod handback;
 pub mod projects;
 
 // ================================================================ sections

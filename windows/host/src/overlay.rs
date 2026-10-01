@@ -69,8 +69,47 @@ pub fn focus_to_edit(edit: HWND, who: &str) -> HWND {
     prev
 }
 
+/// Where the keyboard goes back to, decided **at closing** (#1012).
+///
+/// `prev` is what the overlay remembered when it opened. The settings window
+/// stays up for minutes; if the person switched tabs meanwhile, `prev` is a
+/// pane in a tab that is no longer on screen, and handing it the keyboard is
+/// how six keystrokes landed in a hidden terminal on the test machine. So
+/// `prev` is kept only while its tab is still the active one of the current
+/// window; otherwise the keyboard goes to where typing goes now. The rule is
+/// `polter_settings_shell::handback`, tested there; this only reads the
+/// windows it needs.
+pub fn handback_target(prev: HWND, who: &str) -> HWND {
+    use polter_settings_shell::handback::{handback, Current, Prev};
+    let alive = !prev.0.is_null() && unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(prev)) }.as_bool();
+    let p = if !alive || crate::tabs::is_frame(prev) {
+        Prev::Nothing
+    } else {
+        match crate::tabs::pane_place(prev) {
+            Some((f, active)) => Prev::Pane { hwnd: prev.0 as isize, frame: f.0 as isize, tab_active: active },
+            None => Prev::Other(prev.0 as isize),
+        }
+    };
+    let cur = frame();
+    let current = (!cur.0.is_null()).then(|| Current {
+        frame: cur.0 as isize,
+        pane: crate::tabs::active_pane_hwnd(cur).map(|h| h.0 as isize),
+    });
+    let anywhere = crate::tabs::any_visible_active_pane().map(|h| h.0 as isize);
+    let (to, why) = handback(p, current, anywhere);
+    let target = HWND(to.unwrap_or(0) as *mut core::ffi::c_void);
+    if target != prev {
+        hlogf!(frame(), "[overlay] {} closing: remembered {:?} -> keyboard to {:?} ({:?})", who, prev, target, why);
+    }
+    target
+}
+
 /// Give focus back to whatever had it, and let *that* window restore the IME.
+///
+/// "Whatever had it" is checked first (`handback_target`, #1012): a pane
+/// that has gone out of sight meanwhile does not get it.
 pub fn focus_back(prev: HWND, who: &str) {
+    let prev = handback_target(prev, who);
     if prev.0.is_null() {
         // Nothing to give it back to. Release the document rather than leave
         // it pointed at an overlay that is gone -- the terminal will take it
@@ -150,6 +189,8 @@ pub fn focus_back(prev: HWND, who: &str) {
 ///    `prev` is a surface *child*, and the foreground window is a top-level
 ///    one.
 pub fn foreground_back(me: HWND, prev: HWND, who: &str) {
+    // The same destination `focus_back` will give the keyboard to (#1012).
+    let prev = handback_target(prev, who);
     unsafe {
         let fg = GetForegroundWindow();
         let mut pid = 0u32;
