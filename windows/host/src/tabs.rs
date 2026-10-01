@@ -4483,6 +4483,21 @@ pub fn pane_place(hwnd: HWND) -> Option<(HWND, bool)> {
     })
 }
 
+/// Whether the pane holding `surface` is on screen: its tab is its window's
+/// active one. `None` when no pane holds it any more (#1016).
+// window-free: keyed by surface, which is unique in the process -- this finds
+// the window it is in
+pub fn surface_showing(surface: usize) -> Option<bool> {
+    with_windows(|ws| {
+        ws.iter().find_map(|w| {
+            w.tabs
+                .iter()
+                .position(|t| t.panes.iter().any(|p| p.surface == surface))
+                .map(|i| i == w.active)
+        })
+    })
+}
+
 /// Whether `hwnd` is one of our terminal windows (a frame, not a pane).
 pub fn is_frame(hwnd: HWND) -> bool {
     let key = hwnd.0 as isize;
@@ -4904,6 +4919,9 @@ fn set_active(frame: HWND, idx: usize) {
     // the same reason it is one line and not four.
     wlogf!(frame, "[tab] layout returned; focusing");
     focus_active(frame);
+    // A find bar over the tab just left belongs to a terminal no longer on
+    // screen (#1016). Posted: nothing here may move its windows.
+    crate::search::tab_changed();
     wlogf!(frame, "[tab] active -> {} of {}", active_index(frame) + 1, count(frame));
     // **A property change, not a structure change**: switching tabs does not
     // alter the shape of the tree, only which element has focus. The identity

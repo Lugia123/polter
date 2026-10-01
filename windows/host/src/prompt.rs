@@ -562,7 +562,7 @@ fn close(accept: bool) {
         }
         let _ = DestroyWindow(hwnd);
     }
-    crate::overlay::focus_back(HWND(open.prev as *mut std::ffi::c_void), "title prompt");
+    crate::overlay::focus_back(hwnd, HWND(open.prev as *mut std::ffi::c_void), "title prompt");
 
     if !accept {
         // not-gated: the condition is the event -- a close that waited on

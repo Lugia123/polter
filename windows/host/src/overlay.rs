@@ -79,7 +79,11 @@ pub fn focus_to_edit(edit: HWND, who: &str) -> HWND {
 /// window; otherwise the keyboard goes to where typing goes now. The rule is
 /// `polter_settings_shell::handback`, tested there; this only reads the
 /// windows it needs.
-pub fn handback_target(prev: HWND, who: &str) -> HWND {
+///
+/// `me` is the overlay that is closing. A remembered window inside it, or
+/// one that is hidden or disabled, cannot take the keyboard and is not kept
+/// (#1016: the find bar handed it to its own hidden window).
+pub fn handback_target(me: HWND, prev: HWND, who: &str) -> HWND {
     use polter_settings_shell::handback::{handback, Current, Prev};
     let alive = !prev.0.is_null() && unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(prev)) }.as_bool();
     let p = if !alive || crate::tabs::is_frame(prev) {
@@ -87,7 +91,14 @@ pub fn handback_target(prev: HWND, who: &str) -> HWND {
     } else {
         match crate::tabs::pane_place(prev) {
             Some((f, active)) => Prev::Pane { hwnd: prev.0 as isize, frame: f.0 as isize, tab_active: active },
-            None => Prev::Other(prev.0 as isize),
+            None => Prev::Other {
+                hwnd: prev.0 as isize,
+                usable: unsafe {
+                    use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+                    use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+                    IsWindowVisible(prev).as_bool() && IsWindowEnabled(prev).as_bool() && !belongs_to(prev, me)
+                },
+            },
         }
     };
     let cur = frame();
@@ -104,12 +115,23 @@ pub fn handback_target(prev: HWND, who: &str) -> HWND {
     target
 }
 
+/// Whether `h` is `overlay` or inside it. A focus remembered at opening that
+/// is the overlay's own -- `show` run again while it was already up -- is no
+/// previous focus (#1016).
+pub fn belongs_to(h: HWND, overlay: HWND) -> bool {
+    if h.0.is_null() || overlay.0.is_null() {
+        return false;
+    }
+    h == overlay || unsafe { GetAncestor(h, GA_ROOT) } == unsafe { GetAncestor(overlay, GA_ROOT) }
+}
+
 /// Give focus back to whatever had it, and let *that* window restore the IME.
 ///
 /// "Whatever had it" is checked first (`handback_target`, #1012): a pane
-/// that has gone out of sight meanwhile does not get it.
-pub fn focus_back(prev: HWND, who: &str) {
-    let prev = handback_target(prev, who);
+/// that has gone out of sight meanwhile does not get it, and neither does
+/// anything of the closing overlay `me` itself (#1016).
+pub fn focus_back(me: HWND, prev: HWND, who: &str) {
+    let prev = handback_target(me, prev, who);
     if prev.0.is_null() {
         // Nothing to give it back to. Release the document rather than leave
         // it pointed at an overlay that is gone -- the terminal will take it
@@ -190,7 +212,7 @@ pub fn focus_back(prev: HWND, who: &str) {
 ///    one.
 pub fn foreground_back(me: HWND, prev: HWND, who: &str) {
     // The same destination `focus_back` will give the keyboard to (#1012).
-    let prev = handback_target(prev, who);
+    let prev = handback_target(me, prev, who);
     unsafe {
         let fg = GetForegroundWindow();
         let mut pid = 0u32;
