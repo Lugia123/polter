@@ -105,6 +105,9 @@ features = [
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
+    # `ITEMIDLIST`, for `ILCreateFromPathW` / `SHOpenFolderAndSelectItems`:
+    # Show in Explorer selecting the project's file (#1000).
+    "Win32_UI_Shell_Common",
     "Win32_UI_TextServices",
     "Win32_UI_WindowsAndMessaging",
 ]

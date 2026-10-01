@@ -944,18 +944,62 @@ fn save_new() {
     crate::prompt::prompt_save_as_project(frame, tab, title);
 }
 
+/// Show in Explorer (§6.2): the project's folder, **with its file selected**.
+///
+/// ⚠️ `explorer.exe /select,"<path>"` alone was what this did, and on the test
+/// machine it opened the projects folder with nothing selected (#1000, the
+/// log said `spawned=true`). Starting a process says nothing about what
+/// Explorer then does with its argument. So the shell's own call is asked
+/// first -- `SHOpenFolderAndSelectItems` on the file's ID list, which opens
+/// the folder and selects the file, or says it could not -- and the command
+/// line is only the fallback.
+///
+/// On a thread of its own, with its own COM apartment: the call talks to
+/// Explorer and can wait on it, and the settings window must not wait with
+/// it -- `shellopen::detached` keeps `ShellExecuteW` off the window thread
+/// for the same reason.
 fn reveal_selected() {
     let Some((_, item)) = dir_and_selected() else { return };
-    use std::os::windows::process::CommandExt;
-    // `explorer /select,"<path>"`, raw: explorer reads its own command line,
-    // and the quoting `Command::arg` would add puts the comma inside quotes.
-    let r = std::process::Command::new("explorer.exe")
-        .raw_arg(format!("/select,\"{}\"", item.path.display()))
-        .spawn();
-    // process-wide: as above
-    crate::plogf!("[projects-ui] show in Explorer {:?}: spawned={}", item.path, r.is_ok());
-    if r.is_err() {
+    let path = pj::reveal_path(&item.path.to_string_lossy());
+    let spawned = std::thread::Builder::new().name("polter-reveal".into()).spawn(move || {
+        crate::name_this_thread("polter-reveal");
+        let how = match reveal_with_shell(&path) {
+            Ok(()) => "SHOpenFolderAndSelectItems".to_string(),
+            Err(e) => {
+                use std::os::windows::process::CommandExt;
+                let r = std::process::Command::new("explorer.exe").raw_arg(pj::explorer_select_arg(&path)).spawn();
+                format!("SHOpenFolderAndSelectItems failed ({e}); explorer /select spawned={}", r.is_ok())
+            }
+        };
+        // process-wide: the projects section of the one settings window
+        crate::plogf!("[projects-ui] show in Explorer {:?}: {how}", path);
+    });
+    if spawned.is_err() {
         say(tr("Explorer could not be started."), true);
+    }
+}
+
+/// The shell's call, on the calling thread (which it initialises for COM).
+fn reveal_with_shell(path: &str) -> Result<(), String> {
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+    let w = wide(path);
+    unsafe {
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let pidl = ILCreateFromPathW(PCWSTR(w.as_ptr()));
+        let r = if pidl.is_null() {
+            Err("no ID list for that path".to_string())
+        } else {
+            // A full ID list for the file and no children: the shell opens its
+            // folder and selects it.
+            let r = SHOpenFolderAndSelectItems(pidl, None, 0).map_err(|e| format!("{e:?}"));
+            ILFree(Some(pidl));
+            r
+        };
+        if com {
+            CoUninitialize();
+        }
+        r
     }
 }
 
