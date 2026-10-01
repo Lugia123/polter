@@ -1,0 +1,7 @@
+/* Loaded from the plugin's own ui/ through the host's scheme handler: when
+   it applies, the line below turns green and says so. */
+body { font: 14px "Segoe UI", sans-serif; margin: 16px; }
+pre { background: #eee; padding: 8px; white-space: pre-wrap; }
+button { margin: 4px 8px 4px 0; }
+#css { color: #080; }
+#css::after { content: " -- applied"; }

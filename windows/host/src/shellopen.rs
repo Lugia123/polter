@@ -87,6 +87,16 @@ static REQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Returns whether the worker started. **A `false` here is the one failure
 /// the caller must report itself**, and it is reported below as well.
 pub fn detached(frame: Option<HWND>, tag: &'static str, target: String) -> bool {
+    spawn(frame, tag, target, None)
+}
+
+/// Start `program` with `args` on the same worker, the same way: "Open
+/// config file…" names Notepad when nothing claims `.polter` (task 999).
+pub fn detached_program(frame: Option<HWND>, tag: &'static str, program: String, args: String) -> bool {
+    spawn(frame, tag, program, Some(args))
+}
+
+fn spawn(frame: Option<HWND>, tag: &'static str, target: String, args: Option<String>) -> bool {
     // **The window thread's own clock.** See the positive-criterion note on
     // this module: the point of this change is what happens to *this* thread,
     // and until now nothing measured it. The worker's duration was always
@@ -170,16 +180,19 @@ pub fn detached(frame: Option<HWND>, tag: &'static str, target: String) -> bool 
             // creates an association. Building one would be writing to the
             // person's registry to make our own log easier to read, which is
             // not a trade this host gets to make.
-            log_association(&target);
+            if args.is_none() {
+                log_association(&target);
+            }
 
             let wide: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
+            let wide_args: Option<Vec<u16>> = args.as_ref().map(|a| a.encode_utf16().chain(Some(0)).collect());
             let started = std::time::Instant::now();
             let r = unsafe {
                 ShellExecuteW(
                     None,
                     windows::core::w!("open"),
                     PCWSTR(wide.as_ptr()),
-                    PCWSTR::null(),
+                    wide_args.as_ref().map(|a| PCWSTR(a.as_ptr())).unwrap_or(PCWSTR::null()),
                     PCWSTR::null(),
                     SW_SHOWNORMAL,
                 )
@@ -302,6 +315,29 @@ pub fn detached(frame: Option<HWND>, tag: &'static str, target: String) -> bool 
 ///
 /// Diagnostic only -- nothing branches on it. See the call site for why the
 /// `ShellExecuteW` return value cannot answer this question.
+/// The program the machine associates with `ext` (".polter"), or `None`.
+/// `ASSOCF_INIT_IGNOREUNKNOWN`: an extension nothing claims is answered with
+/// nothing, rather than with the Open With picker.
+pub fn association(ext: &str) -> Option<String> {
+    use windows::Win32::UI::Shell::{AssocQueryStringW, ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_EXECUTABLE};
+    let wide_ext: Vec<u16> = ext.encode_utf16().chain(Some(0)).collect();
+    let mut buf = [0u16; 520];
+    let mut len: u32 = buf.len() as u32;
+    let r = unsafe {
+        AssocQueryStringW(
+            ASSOCF_INIT_IGNOREUNKNOWN,
+            ASSOCSTR_EXECUTABLE,
+            windows::core::PCWSTR(wide_ext.as_ptr()),
+            windows::core::PCWSTR::null(),
+            Some(windows::core::PWSTR(buf.as_mut_ptr())),
+            &mut len,
+        )
+    };
+    r.ok().ok()?;
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..n])).filter(|s| !s.is_empty())
+}
+
 fn log_association(target: &str) {
     use windows::Win32::UI::Shell::{AssocQueryStringW, ASSOCF_NONE, ASSOCSTR_EXECUTABLE};
 

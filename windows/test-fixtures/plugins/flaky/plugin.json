@@ -1,0 +1,14 @@
+{
+  "key": "flaky",
+  "name": "Flaky (test fixture)",
+  "version": "0.1.0",
+  "description": "Not a real plugin. Its process exits the moment it starts, so once it is switched on the core counts failures and the dot turns red.",
+  "exec": "flaky.ps1",
+  "wants": { "events": ["chat"] },
+  "params": {
+    "type": "object",
+    "properties": {
+      "note": { "type": "string", "title": "Note", "description": "Anything; change it to make the form dirty." }
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "key": "page-demo",
+  "name": "Page demo (test fixture)",
+  "version": "0.1.0",
+  "author": "Polter test",
+  "description": "Not a real plugin. A required parameter (so the dot is half-filled until it is filled in) and its own page under ui/, for the Plugins section's Page tab.",
+  "exec": "idle.ps1",
+  "wants": { "events": ["provision"] },
+  "params": {
+    "type": "object",
+    "required": ["webhook"],
+    "properties": {
+      "webhook": { "type": "string", "title": "Webhook", "description": "Any text. Required." },
+      "label": { "type": "string", "title": "Label", "description": "Optional; the page writes this one." }
+    }
+  }
+}

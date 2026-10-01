@@ -576,6 +576,39 @@ pub fn kb_scroll(top: usize, by: i32, len: usize, fit: usize) -> usize {
     (top as i32 + by).clamp(0, last as i32) as usize
 }
 
+// ============================================================ config file
+
+/// How "Open config file…" opens it (task 999).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opener {
+    /// The program the machine associates with `.polter`, through the shell.
+    Associated,
+    /// Notepad, named: nothing claims `.polter`, and handing the file to the
+    /// shell then only puts up "How do you want to open this file?" -- which
+    /// the test machine did, with nothing opened. The macOS side opens the
+    /// system's default text editor; Notepad is that here.
+    Notepad,
+}
+
+/// `assoc_exe` is what `AssocQueryStringW(ASSOCSTR_EXECUTABLE)` answered for
+/// `.polter`, or `None` when it found nothing. **The Open With picker is not
+/// an editor**: some machines answer with it for an unclaimed extension.
+pub fn config_opener(assoc_exe: Option<&str>) -> Opener {
+    let Some(exe) = assoc_exe.map(str::trim).filter(|e| !e.is_empty()) else { return Opener::Notepad };
+    let name = exe.rsplit(['\\', '/']).next().unwrap_or(exe).to_ascii_lowercase();
+    if name == "openwith.exe" {
+        Opener::Notepad
+    } else {
+        Opener::Associated
+    }
+}
+
+/// The arguments Notepad is started with: the path, quoted, so a space in
+/// the user name is not an argument boundary.
+pub fn notepad_args(path: &str) -> String {
+    format!("\"{}\"", path.trim_matches('"'))
+}
+
 // ================================================================== about
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -954,6 +987,17 @@ mod tests {
         assert_eq!(kb_scroll(0, -3, 100, 18), 0);
         assert_eq!(kb_scroll(80, 30, 100, 18), 82);
         assert_eq!(kb_scroll(5, 1, 10, 18), 0);
+    }
+
+    #[test]
+    fn an_unclaimed_config_file_opens_in_notepad() {
+        assert_eq!(config_opener(None), Opener::Notepad);
+        assert_eq!(config_opener(Some("  ")), Opener::Notepad);
+        assert_eq!(config_opener(Some("C:\\Windows\\System32\\OpenWith.exe")), Opener::Notepad);
+        assert_eq!(config_opener(Some("C:\\Program Files\\Microsoft VS Code\\Code.exe")), Opener::Associated);
+        assert_eq!(config_opener(Some("C:\\Windows\\system32\\NOTEPAD.EXE")), Opener::Associated);
+        assert_eq!(notepad_args("C:\\Users\\a b\\AppData\\Local\\polter\\config.polter"), "\"C:\\Users\\a b\\AppData\\Local\\polter\\config.polter\"");
+        assert_eq!(notepad_args("\"C:\\x.polter\""), "\"C:\\x.polter\"");
     }
 
     #[test]

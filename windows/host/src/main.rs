@@ -2781,8 +2781,22 @@ pub fn open_config_file(origin: Option<HWND>) -> bool {
     // this host took the request on, not that the shell accepted it --
     // which is the same trade `poltergeist_close` makes, and it is
     // honest for the same reason: the outcome is logged, not dropped.
-    let took = shellopen::detached(origin, "[action] open_config", path.clone());
-    alogf!(origin, "[action] open_config {:?} -> handed off: {}", path, took);
+    // **Notepad when nothing claims `.polter`** (task 999). Handed to the
+    // shell, an unclaimed file only puts up "How do you want to open this
+    // file?" and reports success; the macOS side opens the default text
+    // editor, and on Windows that is Notepad.
+    let assoc = shellopen::association(".polter");
+    let opener = polter_settings_shell::general::config_opener(assoc.as_deref());
+    let took = match opener {
+        polter_settings_shell::general::Opener::Associated => shellopen::detached(origin, "[action] open_config", path.clone()),
+        polter_settings_shell::general::Opener::Notepad => shellopen::detached_program(
+            origin,
+            "[action] open_config",
+            "notepad.exe".to_string(),
+            polter_settings_shell::general::notepad_args(&path),
+        ),
+    };
+    alogf!(origin, "[action] open_config {:?} -> {:?} (.polter is claimed by {:?}); handed off: {}", path, opener, assoc, took);
     took
 }
 

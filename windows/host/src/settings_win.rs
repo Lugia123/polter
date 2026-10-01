@@ -69,6 +69,11 @@ static POSITIONING: AtomicBool = AtomicBool::new(false);
 /// plugins listed, General went under the bottom band at the smallest
 /// window). Kept in range by `plugin_rules::sidebar_max_scroll`.
 static SIDE_SCROLL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// The control that had the keyboard when the window was last deactivated,
+/// given it back on the next activation (task 999: after switching away and
+/// back, typing went into no field). What a dialog does for itself; a plain
+/// window's `DefWindowProc` puts the focus on the window instead.
+static LAST_FOCUS: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Routes asked for from any thread, drained on the window's.
 /// `(route, origin HWND as isize)`: a handle is not `Send`.
@@ -436,6 +441,7 @@ fn close() {
     let h = win();
     save_state();
     let last = current_place();
+    LAST_FOCUS.store(std::ptr::null_mut(), Ordering::Release);
     crate::roles_ui::hide();
     crate::roles_ui::forget_draft();
     crate::plugins_ui::hide();
@@ -465,6 +471,18 @@ fn close() {
     crate::plogf!("[settings] hidden; last={:?}", last);
     // It may have been the last window (#896 D3).
     crate::winid::settings_closed();
+}
+
+/// Whether `f` is a live, visible, enabled control inside this window --
+/// somewhere the keyboard can be given back to.
+fn focus_is_ours(f: HWND) -> bool {
+    let h = win();
+    !f.0.is_null()
+        && f != h
+        && unsafe { IsWindow(Some(f)) }.as_bool()
+        && unsafe { IsWindowVisible(f) }.as_bool()
+        && unsafe { IsWindowEnabled(f) }.as_bool()
+        && unsafe { IsChild(h, f) }.as_bool()
 }
 
 /// Whether a remembered focus is still somewhere to hand the keyboard: a
@@ -1205,18 +1223,32 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_ACTIVATE => {
-                if (wp.0 & 0xFFFF) as u32 != WA_INACTIVE {
-                    crate::roles_ui::activated();
-                    crate::projects_ui::activated();
-                    crate::general_ui::activated();
-                    // A plugin installed or configured meanwhile -- by an
-                    // agent's `plugin_configure`, or by hand.
-                    if is_open() {
-                        crate::plugins_ui::refresh_catalog();
-                        let _ = InvalidateRect(Some(h), None, false);
-                    }
+                if (wp.0 & 0xFFFF) as u32 == WA_INACTIVE {
+                    // Remember who had the keyboard, if it was one of ours.
+                    let f = GetFocus();
+                    let ours = focus_is_ours(f);
+                    LAST_FOCUS.store(if ours { f.0 } else { std::ptr::null_mut() }, Ordering::Release);
+                    return DefWindowProcW(h, msg, wp, lp);
                 }
-                DefWindowProcW(h, msg, wp, lp)
+                crate::roles_ui::activated();
+                crate::projects_ui::activated();
+                crate::general_ui::activated();
+                // A plugin installed or configured meanwhile -- by an
+                // agent's `plugin_configure`, or by hand.
+                if is_open() {
+                    crate::plugins_ui::refresh_catalog();
+                    let _ = InvalidateRect(Some(h), None, false);
+                }
+                // **Back to the control that had it**, after the sections
+                // refreshed (a refresh may have made it again, and then it is
+                // gone and the window takes the keyboard, as before). Not
+                // `DefWindowProc`, which would put it on the window.
+                let saved = HWND(LAST_FOCUS.swap(std::ptr::null_mut(), Ordering::AcqRel));
+                let to = HWND(shell::focus_after_question(saved.0 as isize, focus_is_ours(saved), h.0 as isize) as *mut c_void);
+                let _ = SetFocus(Some(to));
+                // process-wide: the one settings window
+                crate::plogf!("[settings] activated; keyboard back to {:?} (saved {:?})", to, saved);
+                LRESULT(0)
             }
             WM_GETMINMAXINFO => {
                 let mmi = &mut *(lp.0 as *mut MINMAXINFO);
