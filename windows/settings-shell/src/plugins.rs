@@ -30,6 +30,9 @@ pub enum Dot {
 }
 
 impl Dot {
+    /// All five, for whoever measures the widest word.
+    pub const ALL: [Dot; 5] = [Dot::Changed, Dot::Off, Dot::Missing, Dot::Error, Dot::On];
+
     pub fn glyph(self) -> &'static str {
         match self {
             Dot::Changed => "\u{21bb}",
@@ -185,6 +188,56 @@ pub fn sidebar(l: &Layout, dpi: i32, plugins: usize) -> Sidebar {
     Sidebar { sections, plugins: plugin_rows, plugin_text_left: l.sidebar_text_left + s(PAD) }
 }
 
+/// The sidebar scrolled by `scroll` pixels (task 990: at the smallest
+/// window the plugins pushed General under the bottom band). The search
+/// field stays in the top band; only the rows move, and they are drawn
+/// clipped to [`sidebar_view`].
+pub fn sidebar_at(l: &Layout, dpi: i32, plugins: usize, scroll: i32) -> Sidebar {
+    let mut sb = sidebar(l, dpi, plugins);
+    let up = |r: &Rect| Rect::new(r.left, r.top - scroll, r.right, r.bottom - scroll);
+    sb.sections = sb.sections.map(|r| up(&r));
+    sb.plugins = sb.plugins.iter().map(up).collect();
+    sb
+}
+
+/// The rows' window: under the top rule, over the bottom rule.
+pub fn sidebar_view(l: &Layout) -> (i32, i32) {
+    (l.top_rule.bottom, l.bottom_rule.top)
+}
+
+/// How far the rows can scroll: the last row (General) and a row gap under
+/// it fit above the bottom rule at the end.
+pub fn sidebar_max_scroll(l: &Layout, dpi: i32, plugins: usize) -> i32 {
+    let sb = sidebar(l, dpi, plugins);
+    (sb.sections[3].bottom + scale(ROW_GAP, dpi) - sidebar_view(l).1).max(0)
+}
+
+/// The scroll that shows `row` (unscrolled), moved as little as possible,
+/// held inside `0..=max`.
+pub fn sidebar_scroll_to(l: &Layout, row: Rect, scroll: i32, max: i32) -> i32 {
+    let (top, bottom) = sidebar_view(l);
+    let s = if row.top - scroll < top {
+        row.top - top
+    } else if row.bottom - scroll > bottom {
+        row.bottom - bottom
+    } else {
+        scroll
+    };
+    s.clamp(0, max.max(0))
+}
+
+/// A plugin row's two columns: the dot's word on the right, `word_w` wide
+/// -- the widest of the five words as the host's font measures them, so
+/// "改了未重启" is never cut (task 990) -- and the name in what is left,
+/// cut with an ellipsis if it must be.
+pub fn plugin_columns(row: Rect, text_left: i32, word_w: i32, dpi: i32) -> (Rect, Rect) {
+    let s = |v| scale(v, dpi);
+    let right = row.right - s(PAD_SIDEBAR);
+    let word = Rect::new((right - word_w).max(text_left), row.top, right, row.bottom);
+    let name = Rect::new(text_left, row.top, (word.left - s(BUTTONS_GAP)).max(text_left), row.bottom);
+    (name, word)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
     Section(Section),
@@ -196,7 +249,9 @@ pub enum Hit {
 /// the bottom rule: a row that has run into the bottom band is not a row a
 /// click can find.
 pub fn hit(l: &Layout, sb: &Sidebar, x: i32, y: i32) -> Option<Hit> {
-    if x < l.sidebar.left || x >= l.sidebar.right || y >= l.bottom_rule.top {
+    // Rows scrolled out of the window are not under the pointer.
+    let (top, bottom) = sidebar_view(l);
+    if x < l.sidebar.left || x >= l.sidebar.right || y >= bottom || y < top {
         return None;
     }
     let inside = |r: &Rect| y >= r.top && y < r.bottom;
@@ -235,13 +290,16 @@ pub struct DetailInput {
 /// How many log lines the log box shows at once. The file's last 20 are in
 /// it (§5.2 item 5); the rest are a scroll away.
 pub const LOG_VISIBLE: i32 = 4;
+/// The fewest log lines shown when the window is short: the log gives way
+/// to the form first, down to this (task 990).
+pub const LOG_MIN: i32 = 2;
 /// How many lines of the log are read.
 pub const LOG_LINES: usize = 20;
 /// The restart banner's height, the roles section's banner's.
 pub const BANNER_H: i32 = 44;
 /// The least room the tab's body is left, so a form row and a half show at
 /// the smallest window (§2.2: nothing cut off).
-pub const BODY_MIN: i32 = CONTROL_H * 2;
+pub const BODY_MIN: i32 = CONTROL_H * 2 + ROW_GAP;
 
 /// The detail's blocks, top to bottom (§5.2), in the section's coordinates.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -276,28 +334,44 @@ pub fn detail(editor: Rect, dpi: i32, input: DetailInput) -> Detail {
     let left = editor.left + s(PAD);
     let right = editor.right - s(PAD);
     let control_left = left + s(LABEL_W) + s(LABEL_GAP);
+    let line = input.log_line_h.max(1);
+    let log_h = |lines: i32| line * lines + 2;
+    let banner_h = if input.banner { s(BANNER_H) + s(ROW_GAP) } else { 0 };
+
+    // **What the form is owed comes first** (task 990: at 144 DPI the
+    // smallest window left it 68px). Everything but the title block and the
+    // log is fixed; the form keeps `BODY_MIN`; the log gives way down to
+    // `LOG_MIN` lines; and only then is the title block cut -- to at least
+    // one control's height, its first line, the plugin's name.
+    let fixed = s(PAD) + banner_h + s(GROUP_GAP) + s(CONTROL_H) + s(ROW_GAP) + s(CONTROL_H) + s(ROW_GAP)
+        + s(GROUP_GAP) + s(CONTROL_H) + s(ROW_GAP) + s(PAD);
+    let room = editor.height() - fixed - s(BODY_MIN);
+    let mut lines = LOG_VISIBLE;
+    while lines > LOG_MIN && input.head_h.max(0) + log_h(lines) > room {
+        lines -= 1;
+    }
+    let head_h = input.head_h.max(0).min((room - log_h(lines)).max(s(CONTROL_H)));
+
     let mut y = editor.top + s(PAD);
     let banner = input.banner.then(|| {
         let r = Rect::new(left, y, right, y + s(BANNER_H));
         y = r.bottom + s(ROW_GAP);
         r
     });
-    let head = Rect::new(left, y, right, y + input.head_h.max(0));
+    let head = Rect::new(left, y, right, y + head_h);
     y = head.bottom + s(GROUP_GAP);
     let switch_w = s(ACTION_W[0]);
     let switch = Rect::new(control_left, y, (control_left + switch_w).min(right), y + s(CONTROL_H));
     let switch_note = Rect::new((switch.right + s(BUTTONS_GAP)).min(right), y, right, switch.bottom);
     // The tabs belong to the switch's plugin as much as the switch does:
-    // a row gap, not a group gap -- which is also what leaves the form
-    // room at the smallest window (the test below).
+    // a row gap, not a group gap.
     y = switch.bottom + s(ROW_GAP);
     let tabs = Rect::new(left, y, right, y + s(CONTROL_H));
     y = tabs.bottom + s(ROW_GAP);
 
     // The log from the bottom up, then the body takes what is between.
     let bottom = editor.bottom - s(PAD);
-    let log_h = input.log_line_h.max(1) * LOG_VISIBLE + 2;
-    let log = Rect::new(left, (bottom - log_h).max(y), right, bottom);
+    let log = Rect::new(left, (bottom - log_h(lines)).max(y), right, bottom);
     let log_head = Rect::new(left, log.top - s(ROW_GAP) - s(CONTROL_H), right, log.top - s(ROW_GAP));
     let b1 = Rect::new(right - s(LOG_BUTTON_W), log_head.top, right, log_head.bottom);
     let b0 = Rect::new(b1.left - s(BUTTONS_GAP) - s(LOG_BUTTON_W), log_head.top, b1.left - s(BUTTONS_GAP), log_head.bottom);
@@ -341,23 +415,32 @@ pub struct FormRow {
 /// scrolling. `helps` holds each parameter's measured help height (0 for
 /// none). Returns the rows and the content height.
 pub fn form(body_w: i32, dpi: i32, helps: &[i32]) -> (Vec<FormRow>, i32) {
+    let rows: Vec<(i32, i32)> = helps.iter().map(|&h| (0, h)).collect();
+    form_labeled(body_w, dpi, &rows)
+}
+
+/// `form`, with each label's height as wrapped in the label column: a
+/// label longer than `LABEL_W` wraps onto more lines instead of being cut
+/// (task 990: "给每一行签名的…"), and the row is as tall as the taller of the
+/// label and the control with its help. `rows` is `(label_h, help_h)`.
+pub fn form_labeled(body_w: i32, dpi: i32, rows: &[(i32, i32)]) -> (Vec<FormRow>, i32) {
     let s = |v| scale(v, dpi);
     let label_left = 0;
     let control_left = s(LABEL_W) + s(LABEL_GAP);
     let right = body_w.max(control_left + s(40));
     let mut y = 0;
     let mut out = Vec::new();
-    for &help_h in helps {
-        let label = Rect::new(label_left, y, s(LABEL_W), y + s(CONTROL_H));
+    for &(label_h, help_h) in rows {
+        let label = Rect::new(label_left, y, s(LABEL_W), y + label_h.max(s(CONTROL_H)));
         let control = Rect::new(control_left, y, right, y + s(CONTROL_H));
-        y = control.bottom;
+        let mut bottom = control.bottom;
         let help = (help_h > 0).then(|| {
-            let r = Rect::new(control_left, y + s(BUTTON_GAP), right, y + s(BUTTON_GAP) + help_h);
-            y = r.bottom;
+            let r = Rect::new(control_left, bottom + s(BUTTON_GAP), right, bottom + s(BUTTON_GAP) + help_h);
+            bottom = r.bottom;
             r
         });
         out.push(FormRow { label, control, help });
-        y += s(ROW_GAP);
+        y = bottom.max(label.bottom) + s(ROW_GAP);
     }
     (out, y)
 }
@@ -680,16 +763,119 @@ mod tests {
         (g.editor, g)
     }
 
+    /// The title block at its tallest, as the host can build it: name and
+    /// version in one line each, the summary at its 3-line cap, what it is
+    /// handed at 2, the core's note at 3 -- ten lines of a 14px Segoe UI
+    /// (19px a line at 96 DPI) and four 4px gaps. **The first version of
+    /// this test gave the block 96px**, a sixth of that; it stayed green
+    /// while the machine at 144 DPI left the form 68px (task 990).
+    fn tallest_head(dpi: i32) -> i32 {
+        scale(10 * 19 + 4 * BUTTON_GAP, dpi)
+    }
+
     #[test]
     fn detail_fits_at_the_smallest_window() {
         for dpi in [96, 120, 144, 192, 240] {
             let (editor, _) = at_min(dpi);
-            // A long summary, wrapped to the cap, and the banner up.
-            let d = detail(editor, dpi, DetailInput { banner: true, head_h: scale(96, dpi), log_line_h: scale(16, dpi) });
+            // The tallest title block, and the banner up.
+            let d = detail(editor, dpi, DetailInput { banner: true, head_h: tallest_head(dpi), log_line_h: scale(16, dpi) });
             assert!(d.body.height() >= scale(BODY_MIN, dpi), "dpi {dpi}: body {:?}", d.body);
+            // Two control rows: what the machine's reading is measured in.
+            assert!(d.body.height() >= 2 * scale(CONTROL_H, dpi), "dpi {dpi}: body {:?}", d.body);
+            // The log gave way, but not away; the name is still there.
+            assert!(d.log.height() >= scale(16, dpi) * LOG_MIN, "dpi {dpi}: log {:?}", d.log);
+            assert!(d.head.height() >= scale(CONTROL_H, dpi), "dpi {dpi}: head {:?}", d.head);
             assert!(d.log.bottom <= editor.bottom - scale(PAD, dpi) || d.log.bottom == editor.bottom - scale(PAD, dpi));
             assert!(d.log_buttons[0].left > d.left, "dpi {dpi}: buttons run off the left");
             assert!(d.switch.right <= editor.right - scale(PAD, dpi));
+        }
+    }
+
+    #[test]
+    fn the_sidebar_scrolls_until_general_is_above_the_band() {
+        // The machine's case: the smallest window at 144 DPI, the shipped
+        // plugins and the three fixtures.
+        let dpi = 144;
+        let (w, h) = crate::content_size(crate::MIN_W, crate::MIN_H);
+        let l = crate::layout(scale(w + SIDEBAR + 1, dpi), scale(h + TOP + 1, dpi), dpi);
+        let n = 12;
+        let max = sidebar_max_scroll(&l, dpi, n);
+        assert!(max > 0, "twelve plugins at the minimum must overflow");
+        let (_, bottom) = sidebar_view(&l);
+        assert!(sidebar(&l, dpi, n).sections[3].bottom > bottom, "unscrolled, General is under the band");
+        let end = sidebar_at(&l, dpi, n, max);
+        assert!(end.sections[3].bottom <= bottom, "scrolled to the end, General is above it");
+        // Selecting General scrolls it into view; selecting Roles back.
+        let general = sidebar(&l, dpi, n).sections[3];
+        assert_eq!(sidebar_scroll_to(&l, general, 0, max), general.bottom - bottom);
+        let roles = sidebar(&l, dpi, n).sections[0];
+        let back = sidebar_scroll_to(&l, roles, max, max);
+        assert!(roles.top - back >= sidebar_view(&l).0 && roles.bottom - back <= bottom, "Roles shown whole after {back}");
+        assert!(back < max);
+        // A click above the rows' window -- on the top band -- finds nothing.
+        assert_eq!(hit(&l, &end, 5, sidebar_view(&l).0 - 1), None);
+        let g = end.sections[3];
+        assert_eq!(hit(&l, &end, 5, (g.top + g.bottom) / 2), Some(Hit::Section(Section::General)));
+        // Few plugins: nothing to scroll.
+        assert_eq!(sidebar_max_scroll(&l, dpi, 0), 0);
+    }
+
+    #[test]
+    fn the_status_word_keeps_its_measured_width() {
+        let dpi = 144;
+        let row = Rect::new(12, 100, 318, 148);
+        let word_w = 108; // "改了未重启" at 14px x 1.5
+        let (name, word) = plugin_columns(row, 48, word_w, dpi);
+        assert_eq!(word.width(), word_w);
+        assert_eq!(word.right, row.right - scale(PAD_SIDEBAR, dpi));
+        assert_eq!(name.left, 48);
+        assert_eq!(name.right, word.left - scale(BUTTONS_GAP, dpi));
+    }
+
+    #[test]
+    fn a_long_label_wraps_and_pushes_the_next_row_down() {
+        let dpi = 96;
+        let (rows, _) = form_labeled(500, dpi, &[(3 * 19, 18), (0, 0)]);
+        assert_eq!(rows[0].label.height(), 3 * 19);
+        assert_eq!(rows[0].label.right, LABEL_W);
+        // The control stays on the first line.
+        assert_eq!(rows[0].control.top, rows[0].label.top);
+        let first_bottom = rows[0].label.bottom.max(rows[0].help.unwrap().bottom);
+        assert_eq!(rows[1].label.top, first_bottom + ROW_GAP);
+        // A short label is one control tall, as before.
+        assert_eq!(rows[1].label.height(), CONTROL_H);
+    }
+
+    #[test]
+    fn the_log_gives_way_before_the_title_block() {
+        // A title block that fits once the log is down to its fewest lines:
+        // the log shrinks, the block keeps every pixel it asked for.
+        for dpi in [96, 144] {
+            let (editor, _) = at_min(dpi);
+            let line = scale(16, dpi);
+            let probe = detail(editor, dpi, DetailInput { banner: true, head_h: 0, log_line_h: line });
+            // Room for the block with the log at LOG_MIN, but not at LOG_VISIBLE.
+            let spare = probe.body.height() - scale(BODY_MIN, dpi);
+            let head = spare + line * (LOG_VISIBLE - LOG_MIN) - 1;
+            assert!(spare > 0, "dpi {dpi}: probe leaves {spare}");
+            let d = detail(editor, dpi, DetailInput { banner: true, head_h: head, log_line_h: line });
+            assert_eq!(d.head.height(), head, "dpi {dpi}: the block was cut while the log could give");
+            assert!(d.log.height() < line * LOG_VISIBLE + 2, "dpi {dpi}: the log did not give way");
+            assert!(d.body.height() >= scale(BODY_MIN, dpi));
+        }
+    }
+
+    #[test]
+    fn nothing_gives_way_when_there_is_room() {
+        // A full-height window and an ordinary title block: four log lines,
+        // the block as asked.
+        for dpi in [96, 144] {
+            let (w, h) = crate::content_size(crate::FIRST_W, crate::FIRST_H);
+            let g = crate::section_grid(scale(w, dpi), scale(h, dpi), dpi, false);
+            let head = scale(4 * 19, dpi);
+            let d = detail(g.editor, dpi, DetailInput { banner: true, head_h: head, log_line_h: scale(16, dpi) });
+            assert_eq!(d.head.height(), head, "dpi {dpi}");
+            assert_eq!(d.log.height(), scale(16, dpi) * LOG_VISIBLE + 2, "dpi {dpi}");
         }
     }
 

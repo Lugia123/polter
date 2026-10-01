@@ -878,7 +878,7 @@ fn relayout() {
     }
     let form = form_hwnd();
     place(form, d.body, has && tab == Tab::Settings);
-    layout_form(d.body.width(), dpi);
+    layout_form(dpi);
     // The page, over the same body, when its tab is on.
     let page = ST.with(|c| {
         let st = c.borrow();
@@ -894,28 +894,59 @@ fn relayout() {
 
 /// The form's rows, in the form window's coordinates, before scrolling,
 /// and the helps' heights they were laid out with.
-fn form_rows(width: i32, dpi: i32) -> (Vec<rules::FormRow>, i32, Vec<(String, String, bool)>) {
+/// A parameter's label as the label column shows it.
+fn label_text(title: &str, required: bool) -> String {
+    if required {
+        format!("{title} *")
+    } else {
+        title.to_string()
+    }
+}
+
+/// The form's rows in the form window's **client** width. Measured from
+/// the window itself, once, for both the controls and the paint: they used
+/// to be laid out at one width and framed at another, and with no scroll
+/// bar showing the frame ran a scroll bar's width past the box (task 990:
+/// 546..1723 against 547..1697 at 144 DPI). The bar is now always there
+/// (`SIF_DISABLENOSCROLL`), so the client width does not change with the
+/// length of the form.
+fn form_rows(dpi: i32) -> (Vec<rules::FormRow>, i32, Vec<(String, String, bool)>) {
     let p = ST.with(|c| {
         let s = c.borrow();
         s.selected.and_then(|i| s.plugins.get(i)).cloned()
     });
     let Some(p) = p else { return (Vec::new(), 0, Vec::new()) };
-    // The scroll bar takes its width out of the form; the helps are
-    // measured at what is left of the control column.
-    let control_w = width - shell::scale(grid::LABEL_W + grid::LABEL_GAP, dpi) - unsafe { GetSystemMetrics(SM_CXVSCROLL) };
+    let mut rc = RECT::default();
+    let _ = unsafe { GetClientRect(form_hwnd(), &mut rc) };
+    let width = rc.right;
+    let control_w = width - shell::scale(grid::LABEL_W + grid::LABEL_GAP, dpi);
+    let label_w = shell::scale(grid::LABEL_W, dpi);
     let f = font();
-    let helps: Vec<i32> = p.params.iter().map(|x| measure(&x.help, control_w, f, 3)).collect();
+    // A label too long for the column wraps (up to three lines) rather
+    // than being cut.
+    let rows: Vec<(i32, i32)> = p
+        .params
+        .iter()
+        .map(|x| (measure(&label_text(&x.title, x.required), label_w, f, 3), measure(&x.help, control_w, f, 3)))
+        .collect();
     let texts = p.params.iter().map(|x| (x.title.clone(), x.help.clone(), x.required)).collect();
-    let (rows, h) = rules::form(width - unsafe { GetSystemMetrics(SM_CXVSCROLL) }, dpi, &helps);
+    let (rows, h) = rules::form_labeled(width, dpi, &rows);
     (rows, h, texts)
 }
 
-fn layout_form(width: i32, dpi: i32) {
+fn layout_form(dpi: i32) {
     let form = form_hwnd();
     if form.0.is_null() {
         return;
     }
-    let (rows, total, _) = form_rows(width, dpi);
+    // The bar first, so the client width the rows are laid out in is the
+    // one they will be painted in.
+    unsafe {
+        let si = SCROLLINFO { cbSize: std::mem::size_of::<SCROLLINFO>() as u32, fMask: SIF_DISABLENOSCROLL, ..Default::default() };
+        SetScrollInfo(form, SB_VERT, &si, false);
+        let _ = ShowScrollBar(form, SB_VERT, true);
+    }
+    let (rows, total, _) = form_rows(dpi);
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(form, &mut rc) };
     let view = rc.bottom;
@@ -941,7 +972,7 @@ fn layout_form(width: i32, dpi: i32) {
     }
     let si = SCROLLINFO {
         cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
-        fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+        fMask: SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL,
         nMin: 0,
         nMax: (total - 1).max(0),
         nPage: view.max(0) as u32,
@@ -955,11 +986,14 @@ fn layout_form(width: i32, dpi: i32) {
 }
 
 fn scroll_form(to: i32) {
+    set_scroll(to);
+    layout_form(dpi_of(form_hwnd()));
+}
+
+/// A setter of its own, so the borrow ends before the caller lays anything
+/// out (`borrow-across-dispatch.py`).
+fn set_scroll(to: i32) {
     ST.with(|c| c.borrow_mut().scroll = to);
-    let form = form_hwnd();
-    let mut rc = RECT::default();
-    let _ = unsafe { GetClientRect(form, &mut rc) };
-    layout_form(rc.right + unsafe { GetSystemMetrics(SM_CXVSCROLL) }, dpi_of(form));
 }
 
 // ================================================================ actions
@@ -1225,8 +1259,15 @@ fn paint(win: HWND) {
 
     let h = head(&p, dot, d.head.width());
     let mut y = d.head.top;
+    // The block gets what `rules::detail` left it -- less than it asked for
+    // when the window is short (task 990) -- so a line that would run past
+    // its bottom is cut there, with an ellipsis, and nothing after it is
+    // drawn over the switch.
     for (i, (text, font, colour, height)) in h.lines.iter().enumerate() {
-        let r = RECT { left: d.head.left, top: y, right: d.head.right, bottom: y + height };
+        if y >= d.head.bottom {
+            break;
+        }
+        let r = RECT { left: d.head.left, top: y, right: d.head.right, bottom: (y + height).min(d.head.bottom) };
         let flags = if i == 0 { DT_SINGLELINE | DT_END_ELLIPSIS } else { DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL };
         draw_text(hdc, text, &r, *font, *colour, flags);
         y += height + s(grid::BUTTON_GAP);
@@ -1311,7 +1352,7 @@ fn paint_form(win: HWND) {
     let dpi = dpi_of(win);
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(win, &mut rc) };
-    let (rows, _, texts) = form_rows(rc.right + unsafe { GetSystemMetrics(SM_CXVSCROLL) }, dpi);
+    let (rows, _, texts) = form_rows(dpi);
     let (scroll, fields) = ST.with(|c| {
         let s = c.borrow();
         (s.scroll, s.fields.iter().map(|f| (f.hwnd, f.control.clone())).collect::<Vec<_>>())
@@ -1321,9 +1362,15 @@ fn paint_form(win: HWND) {
     fill(hdc, &rc, theme::bg());
     let f = font();
     for (r, (title, help, required)) in rows.iter().zip(texts.iter()) {
-        let label = if *required { format!("{title} *") } else { title.clone() };
+        let label = label_text(title, *required);
         let lr = RECT { left: r.label.left, top: r.label.top - scroll, right: r.label.right, bottom: r.label.bottom - scroll };
-        draw_text(hdc, &label, &lr, f, theme::text(), DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        // Wrapped in the label column (task 990), right-aligned. A one-line
+        // label sits on the control's middle, as before; a longer one starts
+        // at the control's top.
+        let one_line = measure(&label, r.label.width(), f, 0) <= metrics(f).0;
+        let flags = if one_line { DT_RIGHT | DT_SINGLELINE | DT_VCENTER } else { DT_RIGHT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL };
+        let lr = if one_line { RECT { bottom: lr.top + shell::scale(grid::CONTROL_H, dpi), ..lr } } else { lr };
+        draw_text(hdc, &label, &lr, f, theme::text(), flags);
         if let Some(hr) = r.help {
             let hr = RECT { left: hr.left, top: hr.top - scroll, right: hr.right, bottom: hr.bottom - scroll };
             draw_text(hdc, help, &hr, f, theme::dim(), DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL);

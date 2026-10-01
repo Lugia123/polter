@@ -65,6 +65,10 @@ static FONT_BOLD: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 /// suggests is the old one rescaled -- a second scaling of a size that was
 /// already computed at the new DPI.
 static POSITIONING: AtomicBool = AtomicBool::new(false);
+/// How far the sidebar's rows are scrolled, in pixels (task 990: with the
+/// plugins listed, General went under the bottom band at the smallest
+/// window). Kept in range by `plugin_rules::sidebar_max_scroll`.
+static SIDE_SCROLL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 /// Routes asked for from any thread, drained on the window's.
 /// `(route, origin HWND as isize)`: a handle is not `Send`.
@@ -398,6 +402,7 @@ fn switch_to(target: Place) {
         Section::Projects => crate::projects_ui::show(h, from_rect(l.content), origin, target.item.as_deref()),
         Section::General => crate::general_ui::show(h, from_rect(l.content), target.item.as_deref()),
     }
+    reveal_selection();
     let _ = unsafe { InvalidateRect(Some(h), None, false) };
     // process-wide: as above
     crate::plogf!("[settings] section {} item={:?}", target.section.key(), target.item);
@@ -877,7 +882,7 @@ fn on_click(x: i32, y: i32) {
     let dpi = dpi_of(h);
     let l = shell::layout(rc.right, rc.bottom, dpi);
     let rows = crate::plugins_ui::sidebar_rows();
-    let sb = plugin_rules::sidebar(&l, dpi, rows.len());
+    let sb = plugin_rules::sidebar_at(&l, dpi, rows.len(), side_scroll(&l, dpi, rows.len()));
     let Some(hit) = plugin_rules::hit(&l, &sb, x, y) else { return };
     // **The keyboard comes to the sidebar before anything is asked** (#896
     // W35): the question gives it back to whoever had it when it opened, and
@@ -885,6 +890,48 @@ fn on_click(x: i32, y: i32) {
     // keyboard was in before.
     let _ = unsafe { SetFocus(Some(h)) };
     go_hit(hit, &rows);
+}
+
+/// The sidebar's scroll, held inside what the rows can scroll now -- the
+/// number of plugin rows changes with the search box.
+fn side_scroll(l: &shell::Layout, dpi: i32, plugins: usize) -> i32 {
+    let max = plugin_rules::sidebar_max_scroll(l, dpi, plugins);
+    SIDE_SCROLL.load(Ordering::Acquire).clamp(0, max)
+}
+
+/// Scroll the sidebar by `by` pixels (the wheel over it).
+fn scroll_sidebar(by: i32) {
+    let h = win();
+    let mut rc = RECT::default();
+    let _ = unsafe { GetClientRect(h, &mut rc) };
+    let dpi = dpi_of(h);
+    let l = shell::layout(rc.right, rc.bottom, dpi);
+    let n = crate::plugins_ui::sidebar_rows().len();
+    let max = plugin_rules::sidebar_max_scroll(&l, dpi, n);
+    let next = (side_scroll(&l, dpi, n) + by).clamp(0, max);
+    SIDE_SCROLL.store(next, Ordering::Release);
+    let _ = unsafe { InvalidateRect(Some(h), Some(&from_rect(l.sidebar)), false) };
+}
+
+/// Bring the selected row -- a section, or the plugin on screen -- into the
+/// sidebar's window, moving it as little as possible.
+fn reveal_selection() {
+    let h = win();
+    let mut rc = RECT::default();
+    let _ = unsafe { GetClientRect(h, &mut rc) };
+    let dpi = dpi_of(h);
+    let l = shell::layout(rc.right, rc.bottom, dpi);
+    let rows = crate::plugins_ui::sidebar_rows();
+    let sb = plugin_rules::sidebar(&l, dpi, rows.len());
+    let row = match current_hit(&rows) {
+        Some(Hit::Plugin(i)) => sb.plugins.get(i).copied(),
+        Some(Hit::Section(sec)) => Section::ALL.iter().position(|x| *x == sec).map(|i| sb.sections[i]),
+        None => None,
+    };
+    let Some(row) = row else { return };
+    let max = plugin_rules::sidebar_max_scroll(&l, dpi, rows.len());
+    let next = plugin_rules::sidebar_scroll_to(&l, row, side_scroll(&l, dpi, rows.len()), max);
+    SIDE_SCROLL.store(next, Ordering::Release);
 }
 
 /// Where the sidebar's selection is, as a row of it.
@@ -961,6 +1008,18 @@ fn bar_frame(hdc: HDC, r: &RECT, inside: u32) {
     }
 }
 
+/// How wide `s` is in `font`, in pixels.
+fn text_width(hdc: HDC, s: &str, font: *mut c_void) -> i32 {
+    let mut w: Vec<u16> = s.encode_utf16().collect();
+    let mut r = RECT::default();
+    unsafe {
+        let old = SelectObject(hdc, HGDIOBJ(font));
+        DrawTextW(hdc, &mut w, &mut r, DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
+        SelectObject(hdc, old);
+    }
+    r.right - r.left
+}
+
 fn draw_text(hdc: HDC, s: &str, r: &RECT, font: *mut c_void, colour: u32, flags: DRAW_TEXT_FORMAT) {
     let mut w: Vec<u16> = s.encode_utf16().collect();
     let mut r = *r;
@@ -989,7 +1048,6 @@ fn paint(h: HWND) {
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(h, &mut rc) };
     let dpi = dpi_of(h);
-    let s = |v: i32| shell::scale(v, dpi);
     let l = shell::layout(rc.right, rc.bottom, dpi);
     let font = FONT.load(Ordering::Acquire);
     let bold = FONT_BOLD.load(Ordering::Acquire);
@@ -997,7 +1055,15 @@ fn paint(h: HWND) {
     fill(hdc, &from_rect(l.sidebar), theme::panel());
     let right = RECT { left: l.content.left, top: 0, right: rc.right, bottom: rc.bottom };
     fill(hdc, &right, theme::bg());
-    let sb = plugin_rules::sidebar(&l, dpi, plugin_rows.len());
+    let sb = plugin_rules::sidebar_at(&l, dpi, plugin_rows.len(), side_scroll(&l, dpi, plugin_rows.len()));
+    // The words' column is as wide as the widest of the five words in this
+    // font, so none of them is cut ("改了未重启" was, at 144 DPI); the name
+    // gives way instead (task 990).
+    let word_w = plugin_rules::Dot::ALL
+        .iter()
+        .map(|d| text_width(hdc, &crate::plugins_ui::dot_word(*d), font))
+        .max()
+        .unwrap_or(0);
     // The plugins, under their section (§2.3): dot, name, and the dot's word
     // on the right. Only rows above the bottom rule are drawn; a list that
     // runs past it is cut there rather than into the band.
@@ -1014,11 +1080,9 @@ fn paint(h: HWND) {
         let colour = if on { theme::sel_text() } else { theme::text() };
         let dim = if on { theme::sel_text() } else { theme::dim() };
         let word = crate::plugins_ui::dot_word(row.dot);
-        let word_w = s(64);
-        let t = RECT { left: sb.plugin_text_left, right: r.right - s(grid::PAD_SIDEBAR) - word_w, ..r };
-        draw_text(hdc, &format!("{} {}", row.dot.glyph(), row.name), &t, font, colour, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-        let w = RECT { left: r.right - s(grid::PAD_SIDEBAR) - word_w, right: r.right - s(grid::PAD_SIDEBAR), ..r };
-        draw_text(hdc, &word, &w, font, dim, DT_SINGLELINE | DT_VCENTER | DT_RIGHT | DT_END_ELLIPSIS);
+        let (name_r, word_r) = plugin_rules::plugin_columns(to_rect(r), sb.plugin_text_left, word_w, dpi);
+        draw_text(hdc, &format!("{} {}", row.dot.glyph(), row.name), &from_rect(name_r), font, colour, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        draw_text(hdc, &word, &from_rect(word_r), font, dim, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
     }
     for (i, sec) in Section::ALL.iter().enumerate() {
         let r = from_rect(sb.sections[i]);
@@ -1126,6 +1190,18 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 let x = (lp.0 & 0xFFFF) as i16 as i32;
                 let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
                 on_click(x, y);
+                LRESULT(0)
+            }
+            // The wheel over the sidebar scrolls its rows (task 990). Over a
+            // section the section's own window had it first.
+            WM_MOUSEWHEEL => {
+                let mut pt = POINT { x: (lp.0 & 0xFFFF) as i16 as i32, y: ((lp.0 >> 16) & 0xFFFF) as i16 as i32 };
+                let _ = ScreenToClient(h, &mut pt);
+                let dpi = dpi_of(h);
+                if pt.x < shell::scale(grid::SIDEBAR, dpi) {
+                    let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as i32;
+                    scroll_sidebar(-delta * shell::scale(grid::SECTION_ROW_H, dpi) * 3 / 120);
+                }
                 LRESULT(0)
             }
             WM_ACTIVATE => {
