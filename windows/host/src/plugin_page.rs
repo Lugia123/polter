@@ -458,6 +458,12 @@ fn serve(args: &ICoreWebView2WebResourceRequestedEventArgs, key: &str) {
             (403, "Forbidden", Vec::new(), "text/plain")
         }
     };
+    // **Every answer, not only refusals** (task 999): a page's own script
+    // and style files arriving here as 200 is what shows this path works,
+    // and a `fetch` that never appears is then the policy stopping it in
+    // the page (`rules::CSP`, `connect-src 'none'`), not a request lost.
+    // process-wide: as above
+    crate::plogf!("[page] {}: {} -> {}", key, uri, status);
     let headers = format!(
         "Content-Type: {ctype}\r\nContent-Security-Policy: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff",
         rules::CSP

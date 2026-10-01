@@ -461,8 +461,19 @@ pub const SCHEME: &str = "polter-plugin";
 
 /// The `Content-Security-Policy` sent with every response: this origin
 /// only, no network of any kind. The same policy `PluginPage.swift` sends.
-pub const CSP: &str = "default-src polter-plugin: 'unsafe-inline' 'unsafe-eval' data: blob:; \
-connect-src 'none'; frame-src 'none'; form-action 'none'";
+///
+/// **The macOS side's policy, directive for directive** (`PluginPage.policy`),
+/// so the two hosts allow a page the same things. `connect-src 'none'` is the
+/// one that matters most and it is meant: **a page cannot `fetch` at all**,
+/// not even a file of its own -- its data comes through `window.polter`, and
+/// the request is stopped in the page before it is made, so `serve` never
+/// sees it (task 999: `fetch('../plugin.json')` gave `TypeError`, not 403,
+/// on the Windows test machine; that is this line working). The Windows
+/// policy this replaces was looser than the Mac's (`'unsafe-eval'`, `blob:`
+/// and `data:` everywhere).
+pub const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; \
+img-src 'self' data:; font-src 'self' data:; connect-src 'none'; frame-src 'none'; object-src 'none'; \
+form-action 'none'; base-uri 'none'; frame-ancestors 'none'";
 
 /// The page's entry URL. The key is the host, so two plugins' pages are
 /// two origins.
@@ -950,6 +961,24 @@ mod tests {
         assert_eq!(content_type("x.woff2"), "font/woff2");
         assert_eq!(content_type("README"), "application/octet-stream");
         assert!(CSP.contains("connect-src 'none'"));
+        // The macOS policy, word for word (`PluginPage.policy`): the same
+        // eleven directives in the same order.
+        let mac = [
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data:",
+            "font-src 'self' data:",
+            "connect-src 'none'",
+            "frame-src 'none'",
+            "object-src 'none'",
+            "form-action 'none'",
+            "base-uri 'none'",
+            "frame-ancestors 'none'",
+        ]
+        .join("; ");
+        assert_eq!(CSP, mac);
+        assert!(!CSP.contains("unsafe-eval") && !CSP.contains("blob:"));
     }
 
     #[test]

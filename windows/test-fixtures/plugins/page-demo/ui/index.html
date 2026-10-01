@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>page-demo</title>
+<link rel="stylesheet" href="style.css">
+<h3>page-demo</h3>
+<p>Each button writes its result into the box below. Expected results are in TEST-PLAN.md.</p>
+<p id="sub">style.css / app.js: <span id="css">style.css not applied</span> / <span id="js">app.js did not run</span></p>
+<button id="read">1 settings()</button>
+<button id="save">2 save({params:{label:"from-page"}})</button>
+<button id="net">3 fetch https://example.com</button>
+<button id="up">4 fetch ../plugin.json</button>
+<button id="other">5 fetch polter-plugin://flaky/</button>
+<button id="win">6 window.open</button>
+<button id="close">7 close()</button>
+<pre id="out">(nothing yet)</pre>
+<pre id="csp">(no policy violation yet)</pre>
+<script src="app.js"></script>
