@@ -3124,6 +3124,23 @@ fn ask(frame: HWND, what: Subject) -> bool {
     yes
 }
 
+/// Whether an agent's `poltergeist_close` of `scope` around `tab` is refused
+/// (#989): `confirm` is the core's "this would need the user's consent", and
+/// the rule is `close_scope::tool_close_refused` -- refused when a tab it
+/// takes has something running, never asked about. `None` when the tab has
+/// gone.
+pub fn tool_close_refused(frame: HWND, tab: TabId, scope: i32, confirm: bool) -> Option<bool> {
+    let (at, busy) = {
+        let win = window(frame)?;
+        let at = win.tabs.iter().position(|t| t.id == tab)?;
+        let busy: Vec<bool> =
+            win.tabs.iter().map(|t| t.panes.iter().any(|p| surface_needs_confirm(p.surface))).collect();
+        (at, busy)
+    };
+    let going = crate::close_scope::tool_victims(scope, at, busy.len());
+    Some(crate::close_scope::tool_close_refused(confirm, &going, &busy))
+}
+
 /// Close a tab **after asking**, if the core says something would be lost.
 ///
 /// The user-gesture entry point: the strip's cross and the tab menu. The

@@ -28,13 +28,18 @@
 //!
 //! `closed` is nonetheless the honest answer, and the enum says so in words
 //! -- *"it is closed, or on its way to closed with nothing left to ask"*.
-//! What makes it true here is the second half: **this host never asks.**
-//! `cb_close_surface` ignores the `confirm` flag it is handed and there is no
-//! confirmation dialog anywhere in it, so there is no state in which a queued
-//! close is waiting on a person. `AWAITING_CONFIRMATION` is therefore a value
-//! this file can never write, and that is a fact about the host rather than
-//! an omission -- if a close prompt is ever added, this is the file that has
-//! to grow the third answer with it.
+//! What makes it true here is the second half: **this never asks.**
+//!
+//! # `refused` (#989)
+//!
+//! `confirm` is the core saying "this close would need the user's consent":
+//! the named terminal carries no mark and no agent opened it, or the user
+//! locked it. This file used to ignore it and close anyway -- an agent could
+//! take a tab with the user's build running in it. Now a busy tab among the
+//! ones the scope takes **refuses** the close (`REFUSED`, nothing queued),
+//! and it is never put to the user as a question: that box was on the user's
+//! screen for a close an agent wanted, and the user said it must not appear.
+//! The rule is `close_scope::tool_close_refused`.
 
 use crate::ffi;
 use crate::{plogf, wlogf};
@@ -61,6 +66,15 @@ pub fn perform(action: &ffi::Action, target: Option<ffi::Surface>) -> bool {
     let mut answer = ffi::POLTERGEIST_CLOSE_RESULT_UNSUPPORTED;
 
     let handled = match target.and_then(crate::tabs::tab_of_surface) {
+        Some((frame, tab)) if crate::tabs::tool_close_refused(frame, tab, scope, confirm) == Some(true) => {
+            answer = ffi::POLTERGEIST_CLOSE_RESULT_REFUSED;
+            wlogf!(
+                frame,
+                "[polterclose] scope={} confirm=1 tab={:?} -> refused: a tab it takes is busy and the close needs the user's consent; nothing queued, nobody asked",
+                scope, tab
+            );
+            true
+        }
         Some((frame, tab)) => {
             crate::tabs::post_op(
                 frame,

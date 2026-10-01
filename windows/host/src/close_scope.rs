@@ -46,6 +46,29 @@ pub fn victims(scope: Scope, anchor: usize, n: usize) -> Vec<usize> {
     }
 }
 
+/// The tabs an agent's `poltergeist_close` takes (#989), by the core's
+/// `ghostty_action_poltergeist_close_scope_e`: 0 the anchor's tab, 1 every
+/// other tab, 2 the tabs to its right, 3 the whole window. Anything else is
+/// the anchor's tab, the conservative reading `tabs.rs` already gives it.
+pub fn tool_victims(scope: i32, anchor: usize, n: usize) -> Vec<usize> {
+    match scope {
+        1 => victims(Scope::Others, anchor, n),
+        2 => victims(Scope::Right, anchor, n),
+        3 if anchor < n => (0..n).rev().collect(),
+        _ => victims(Scope::This, anchor, n),
+    }
+}
+
+/// Whether an agent's close is **refused** (#989): it would need the user's
+/// consent (`confirm`, the core's answer for the named terminal) and one of
+/// the tabs it takes has something running. **Never asked**: the box this
+/// used to be is on the user's screen for a close an agent wanted, and the
+/// user said it must not appear. Nothing busy among the victims closes
+/// whatever `confirm` says -- there is nothing to lose.
+pub fn tool_close_refused(confirm: bool, victims: &[usize], busy: &[bool]) -> bool {
+    confirm && victims.iter().any(|i| busy.get(*i).copied().unwrap_or(false))
+}
+
 /// Decide a close before it happens. `busy[i]` is whether tab `i` holds any
 /// surface the core wants confirmed (`needsConfirmQuit`, which is where
 /// `confirm-close-surface` is read). `ask` puts the question to the person and
@@ -66,6 +89,23 @@ pub fn decide(scope: Scope, anchor: usize, busy: &[bool], ask: impl FnOnce() -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #989: the user's busy tab is refused, an agent's (or marked) one
+    /// closes, and nothing busy closes either way.
+    #[test]
+    fn an_agents_close_is_refused_only_over_something_busy() {
+        let busy = [false, true, false, false];
+        // The busy tab is among the victims.
+        assert!(tool_close_refused(true, &tool_victims(0, 1, 4), &busy));
+        assert!(tool_close_refused(true, &tool_victims(3, 0, 4), &busy), "the whole window");
+        // Consent not needed (marked, or the agent's own): it closes.
+        assert!(!tool_close_refused(false, &tool_victims(0, 1, 4), &busy));
+        // The busy tab is not among the victims: nothing to lose.
+        assert!(!tool_close_refused(true, &tool_victims(2, 1, 4), &busy), "right of the busy one");
+        assert!(!tool_close_refused(true, &tool_victims(0, 2, 4), &busy));
+        assert_eq!(tool_victims(1, 1, 4), vec![3, 2, 0]);
+        assert_eq!(tool_victims(9, 1, 4), vec![1], "unknown is the anchor's tab");
+    }
 
     /// A strip of four tabs, anchor at 1, where each case marks which are busy.
     const N: usize = 4;

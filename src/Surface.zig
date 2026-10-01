@@ -1036,6 +1036,10 @@ pub fn init(
     // reason as the line above.
     app.claimPendingLaunch(self);
 
+    // A terminal the tool surface asked for, made after the request
+    // returned: an agent opened it (#989).
+    app.claimAgentOpened(self);
+
     // We are no longer the first surface
     app.first = false;
 }
@@ -1141,13 +1145,15 @@ pub fn close(self: *Surface) void {
 /// surface reaching into the bus to ask about itself would put the rule in
 /// a second place, and the mark is not a surface's business anyway.
 ///
-/// Note it is `and`, not `or`: saying "confirm" here does not add a dialog
-/// where there was none, it only declines to remove the one
-/// `needsConfirmQuit` was already going to raise.
-pub fn closeFromTool(self: *Surface, confirm: bool) bool {
-    const ask = self.toolCloseAsks(confirm);
-    self.rt_surface.close(ask);
-    return ask;
+/// ⚠️ **It never asks** (#989). A close that needs the user's consent is
+/// refused here, before anything reaches the runtime, and the caller is told
+/// which refusal; one that does not is closed outright -- `rt_surface.close`
+/// is handed `false`. The dialog this used to raise sat on the user's screen
+/// for a close an agent had asked for, and the user said it must not.
+pub fn closeFromTool(self: *Surface, confirm: bool) poltergeistpkg.actions.ToolClose {
+    const verdict = self.toolCloseVerdict(confirm);
+    if (verdict == .close) self.rt_surface.close(false);
+    return verdict;
 }
 
 /// Whether a tool close carrying `confirm` puts the dialog up for this
@@ -1168,17 +1174,12 @@ pub fn closeFromTool(self: *Surface, confirm: bool) bool {
 /// the two go through, and it says why the join is `or` and why it is not a
 /// field on `CloseAsker`.
 ///
-/// Still `and needsConfirmQuit()` at the end, and that is unchanged: this
-/// function can decline to remove a dialog, never add one. A readonly
-/// surface makes `needsConfirmQuit` true on its own first line, so the two
-/// agree by construction -- but the `and` is what guarantees no future
-/// `protected` bit can conjure a confirmation out of a terminal that had
-/// nothing to confirm.
-fn toolCloseAsks(self: *Surface, confirm: bool) bool {
-    return poltergeistpkg.actions.confirmsCloseProtected(
-        confirm,
-        self.readonly,
-    ) and self.needsConfirmQuit();
+/// `needsConfirmQuit` is still what says whether there is anything to lose:
+/// nothing running closes, whatever the rest says. A readonly surface makes
+/// it true on its own first line, so a locked terminal is never "nothing
+/// running". The rule is `actions.toolClose`.
+fn toolCloseVerdict(self: *Surface, confirm: bool) poltergeistpkg.actions.ToolClose {
+    return poltergeistpkg.actions.toolClose(confirm, self.readonly, self.needsConfirmQuit());
 }
 
 /// Returns a mailbox that can be used to send messages to this surface.
@@ -8211,37 +8212,39 @@ pub fn getProcessInfo(self: *Surface, comptime info: ProcessInfo) ?ProcessInfo.T
     return self.io.getProcessInfo(info);
 }
 
-test "a tool close never skips the dialog on a readonly terminal" {
+test "a tool close never closes a readonly terminal, and never asks" {
     const testing = std.testing;
 
     // Same shape as the readonly test below: a `Surface` is far too big to
     // stand up here, so only the fields the decision reads are set. That is
-    // safe precisely because `toolCloseAsks` was split out to touch nothing
+    // safe precisely because `toolCloseVerdict` was split out to touch nothing
     // else -- if somebody gives it a third input this test crashes rather
     // than passing, which is the right way round.
     const surface = try testing.allocator.create(Surface);
     defer testing.allocator.destroy(surface);
 
     // Locked by the user. `confirm = false` is the tool surface saying "this
-    // one is marked, do not ask" -- and it is overruled. This is the bug:
-    // before, a watched *and* readonly terminal went away in silence.
+    // one is marked, or an agent opened it" -- and it is overruled: the
+    // close is refused (#989: refused, not asked). Before the readonly rule,
+    // a watched *and* readonly terminal went away in silence.
     surface.readonly = true;
-    try testing.expect(surface.toolCloseAsks(false));
-    try testing.expect(surface.toolCloseAsks(true));
+    try testing.expectEqual(.refuse_locked, surface.toolCloseVerdict(false));
+    try testing.expectEqual(.refuse_locked, surface.toolCloseVerdict(true));
 
-    // Not locked, and nothing running: no dialog either way. The floor, so
-    // that the `true` above is not just "this function returns true".
+    // Not locked, and nothing running: it closes either way. The floor, so
+    // that the refusals above are not just "this function refuses".
     surface.readonly = false;
     surface.child_exited = true;
-    try testing.expect(!surface.toolCloseAsks(false));
-    try testing.expect(!surface.toolCloseAsks(true));
+    try testing.expectEqual(.close, surface.toolCloseVerdict(false));
+    try testing.expectEqual(.close, surface.toolCloseVerdict(true));
 
-    // Not locked, something running: now the mark is what decides, which is
-    // the behaviour the previous change added and this one must not undo.
+    // Not locked, something running: the target's mark and provenance
+    // decide. Marked or agent-opened closes; the user's own is refused --
+    // never a dialog (#989).
     surface.child_exited = false;
     surface.config.confirm_close_surface = .always;
-    try testing.expect(!surface.toolCloseAsks(false));
-    try testing.expect(surface.toolCloseAsks(true));
+    try testing.expectEqual(.close, surface.toolCloseVerdict(false));
+    try testing.expectEqual(.refuse_users_terminal, surface.toolCloseVerdict(true));
 }
 
 test "queueIo frees allocated writes in readonly mode" {

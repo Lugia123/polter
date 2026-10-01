@@ -344,6 +344,22 @@ pub const Entry = struct {
     /// "you may not stop working", this says "nobody may touch you".
     shielded: bool = false,
 
+    /// An agent opened this terminal: `terminal_open`, `role_launch`, or a
+    /// new pane in `terminal_layout` (task #989).
+    ///
+    /// **Where it came from, not what it is now**, and that is why it is not
+    /// `role`. A supervisor that lets go of a worker (`set_watch` false,
+    /// `unwatch`) makes it `.none` -- and before this bit, closing it then
+    /// was closing a terminal the program knew nothing about, which put
+    /// "Close Terminal?" in front of the person at the keyboard for a pane
+    /// they never opened. So this survives `unwatch` and every other change
+    /// of standing, and goes only with the entry (`unregister`, when the
+    /// terminal closes).
+    ///
+    /// Read by `actions.confirmsClose`: an agent may close what an agent
+    /// opened without asking anybody.
+    opened_by_agent: bool = false,
+
     /// Whether a supervisor may answer a permission prompt in this terminal
     /// on its behalf.
     ///
@@ -633,6 +649,22 @@ pub fn unregister(self: *Bus, id: Id) void {
     self.removeSupervisor(id);
     _ = self.entries.remove(id);
     if (self.turns.fetchRemove(id)) |kv| self.alloc.free(kv.value.text);
+}
+
+/// Record that an agent opened this terminal (`Entry.opened_by_agent`).
+/// Registers it if the bus has not heard of it yet: a terminal the tool
+/// surface has just made is usually exactly that.
+pub fn markOpenedByAgent(self: *Bus, id: Id) Allocator.Error!void {
+    try self.register(id);
+    self.entries.getPtr(id).?.opened_by_agent = true;
+}
+
+/// Whether an agent opened this terminal. False for one the bus has never
+/// heard of -- that is a terminal nothing recorded opening, which is the
+/// user's.
+pub fn openedByAgent(self: *const Bus, id: Id) bool {
+    const e = self.entries.get(id) orelse return false;
+    return e.opened_by_agent;
 }
 
 pub fn get(self: *const Bus, id: Id) ?Entry {
@@ -1938,6 +1970,29 @@ fn quiet(quiet_ms: u64) Sampler.Event {
 
 fn testBus() Bus {
     return .init(testing.allocator, .{});
+}
+
+test "who opened a terminal outlives its being let go, and goes with it" {
+    // #989: a supervisor lets go of a worker it opened, then closes it. The
+    // close asked the user because the mark was gone; the provenance must
+    // not go with the mark.
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+    try b.addSupervisor(1);
+    try b.markOpenedByAgent(2);
+    try b.watch(2, 1);
+    b.unwatch(2);
+    try testing.expectEqual(Role.none, b.roleOf(2));
+    try testing.expect(b.openedByAgent(2));
+
+    // A terminal nobody recorded opening is the user's.
+    try b.register(3);
+    try testing.expect(!b.openedByAgent(3));
+    try testing.expect(!b.openedByAgent(99));
+
+    // Closed: forgotten, so an id reused later starts as nobody's.
+    b.unregister(2);
+    try testing.expect(!b.openedByAgent(2));
 }
 
 test "an unclaimed terminal reports to whoever is asking" {

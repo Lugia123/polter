@@ -624,10 +624,13 @@ The judgement is what this file is for:
 
 - **`close_surface` deserves hesitation.** A terminal with unsaved work looks
   exactly like an idle one from a screenful of text. Nothing will stop you
-  either: a terminal you are minding closes without the confirmation a person
-  clicking close would get, because there is nobody at that tab to answer it.
-  An *unmarked* terminal still asks, and you will get `AwaitingConfirmation`
-  with the terminal still open -- that button is the user's, not yours.
+  either: a terminal an agent opened (`terminal_open`, `role_launch`, a new
+  pane in `terminal_layout`) -- **even after you `set_watch(false)` it** -- and
+  a terminal you are minding both close without asking anybody. Closing
+  **never** puts a box on the user's screen. The user's own terminal with
+  something running in it is refused with `UserTerminal` and stays open; one
+  they locked with readonly is refused with `Locked`. That close is theirs,
+  not yours -- ask them.
 - **Layout is the person's**; rearranging it while they are away is no favour.
 - **Name every worker as soon as you open it, in both places.** They are two
   different names for two different readers, and neither substitutes for the

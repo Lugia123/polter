@@ -377,7 +377,7 @@ pub const POLTERGEIST_CLOSE_WINDOW: i32 = 3;
 /// the *worse* of the two failures because the screen looks right.
 pub const POLTERGEIST_CLOSE_RESULT_UNSUPPORTED: i32 = 0;
 pub const POLTERGEIST_CLOSE_RESULT_CLOSED: i32 = 1;
-pub const POLTERGEIST_CLOSE_RESULT_AWAITING_CONFIRMATION: i32 = 2;
+pub const POLTERGEIST_CLOSE_RESULT_REFUSED: i32 = 2;
 
 // `ghostty_action_goto_tab_e`. Anything >= 0 is a 1-based tab index.
 pub const GOTO_TAB_PREVIOUS: i32 = -1;
