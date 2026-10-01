@@ -600,6 +600,23 @@ pub fn page_state(loader: bool, version: Result<&str, i32>) -> PageState {
     }
 }
 
+/// A key the page's web view must hand back to the settings window rather
+/// than keep (task 1003): with the keyboard in the page, WebView2 sees every
+/// key first, and Ctrl+W -- the settings window's close -- went nowhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageKey {
+    /// Close the settings window, through its unsaved-changes question.
+    Close,
+}
+
+/// `vk` is the virtual key of a key going down, with the modifiers held.
+/// Only the settings window's own chords: everything else stays the page's
+/// (typing, Ctrl+C in a field, Escape -- which closes nothing here, §2.3).
+pub fn page_accelerator(vk: u32, ctrl: bool, shift: bool, alt: bool) -> Option<PageKey> {
+    const VK_W: u32 = 0x57;
+    (vk == VK_W && ctrl && !shift && !alt).then_some(PageKey::Close)
+}
+
 /// The calls a page may make through `window.polter` -- the whole surface
 /// (`PluginPageBridge`: read, write, close).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -990,6 +1007,44 @@ mod tests {
         assert_eq!(t[19], "line 25");
         assert_eq!(tail("a\nb", 20), vec!["a", "b"]);
         assert!(tail("", 20).is_empty());
+    }
+
+    #[test]
+    fn only_the_settings_windows_own_chord_leaves_the_page() {
+        assert_eq!(page_accelerator(0x57, true, false, false), Some(PageKey::Close));
+        // W alone is typing; Ctrl+Shift+W and AltGr (Ctrl+Alt) are not the chord.
+        assert_eq!(page_accelerator(0x57, false, false, false), None);
+        assert_eq!(page_accelerator(0x57, true, true, false), None);
+        assert_eq!(page_accelerator(0x57, true, false, true), None);
+        // Ctrl+C and Escape stay the page's.
+        assert_eq!(page_accelerator(0x43, true, false, false), None);
+        assert_eq!(page_accelerator(0x1B, false, false, false), None);
+    }
+
+    #[test]
+    fn the_blocks_move_down_together_as_the_red_note_grows() {
+        // A plugin turning red adds the core's note -- one or two lines --
+        // to the title block (task 1003: the switch stayed where it was and
+        // the note was painted under it). Every block below moves down by
+        // what the block grew, none overlaps the next.
+        for dpi in [96, 144] {
+            let (w, h) = crate::content_size(crate::FIRST_W, crate::FIRST_H);
+            let g = crate::section_grid(scale(w, dpi), scale(h, dpi), dpi, false);
+            let line = scale(19, dpi);
+            let base = scale(4 * 19, dpi);
+            let mut prev: Option<Detail> = None;
+            for lines in 0..=2 {
+                let d = detail(g.editor, dpi, DetailInput { banner: false, head_h: base + lines * line, log_line_h: scale(16, dpi) });
+                assert!(d.head.bottom <= d.switch.top, "dpi {dpi}, {lines} line(s): switch under the head");
+                assert!(d.switch.bottom <= d.tabs.top, "dpi {dpi}, {lines}: tabs under the switch");
+                assert!(d.tabs.bottom <= d.body.top, "dpi {dpi}, {lines}: body under the tabs");
+                if let Some(p) = &prev {
+                    assert_eq!(d.switch.top - p.switch.top, line, "dpi {dpi}, {lines}: the switch moves by the note's line");
+                    assert_eq!(d.tabs.top - p.tabs.top, line, "dpi {dpi}, {lines}: so do the tabs");
+                }
+                prev = Some(d);
+            }
+        }
     }
 
     #[test]

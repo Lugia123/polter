@@ -267,7 +267,31 @@ pub fn refresh_catalog() {
 
 fn refresh_runtimes() {
     let runtimes = plugins::runtimes();
-    ST.with(|c| c.borrow_mut().runtimes = runtimes);
+    set_runtimes(runtimes);
+    // A plugin that turned red grows the title block by the core's note;
+    // the switch, the tabs and the form are child windows and do not move
+    // with a repaint (task 1003: the note was drawn under the switch).
+    if head_moved() {
+        relayout();
+    }
+}
+
+fn set_runtimes(r: Option<BTreeMap<String, rules::Runtime>>) {
+    ST.with(|c| c.borrow_mut().runtimes = r);
+}
+
+/// The title block's height the children were last placed for.
+static LAID_HEAD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// Whether the title block is not the height the children were placed
+/// for -- the core's note came or went, the summary changed.
+fn head_moved() -> bool {
+    let win = section();
+    if win.0.is_null() || !unsafe { IsWindowVisible(win) }.as_bool() {
+        return false;
+    }
+    let (_, d, _) = laid();
+    d.head.height() != LAID_HEAD.load(Ordering::Acquire)
 }
 
 /// The settings window opened: keep the dots current while it is.
@@ -853,6 +877,7 @@ fn relayout() {
         return;
     }
     let (g, d, dpi) = laid();
+    LAID_HEAD.store(d.head.height(), Ordering::Release);
     let s = |v: i32| shell::scale(v, dpi);
     let has = current().is_some();
     let tab = ST.with(|c| c.borrow().tab);
@@ -1444,6 +1469,12 @@ unsafe extern "system" fn section_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
                 paint(win);
+                // Whatever made the title block taller or shorter since the
+                // children were placed -- a refresh of the catalog, a test --
+                // they follow it now rather than staying under it.
+                if head_moved() {
+                    relayout();
+                }
                 LRESULT(0)
             }
             _ => DefWindowProcW(win, msg, wp, lp),
