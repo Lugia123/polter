@@ -612,9 +612,10 @@ pub enum PageKey {
 /// `vk` is the virtual key of a key going down, with the modifiers held.
 /// Only the settings window's own chords: everything else stays the page's
 /// (typing, Ctrl+C in a field, Escape -- which closes nothing here, §2.3).
+/// The window's own table (`crate::window_key`), so the page and the rest of
+/// the window cannot disagree about which keys those are.
 pub fn page_accelerator(vk: u32, ctrl: bool, shift: bool, alt: bool) -> Option<PageKey> {
-    const VK_W: u32 = 0x57;
-    (vk == VK_W && ctrl && !shift && !alt).then_some(PageKey::Close)
+    crate::window_key(vk, ctrl, shift, alt).map(|crate::WindowKey::Close| PageKey::Close)
 }
 
 /// The calls a page may make through `window.polter` -- the whole surface

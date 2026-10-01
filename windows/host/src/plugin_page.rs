@@ -218,11 +218,20 @@ fn take_keyboard_back(parent: HWND) {
     }
     unsafe {
         let f = GetFocus();
-        if !f.0.is_null() && IsChild(parent, f).as_bool() && !IsWindowVisible(f).as_bool() {
-            let root = GetAncestor(parent, GA_ROOT);
-            let _ = SetFocus(Some(root));
+        // In the hidden page's own windows -- or, as the test machine read
+        // it (task 1005), on the section's window itself, where WebView2
+        // leaves it when it hides.
+        let stranded = !f.0.is_null() && (f == parent || (IsChild(parent, f).as_bool() && !IsWindowVisible(f).as_bool()));
+        if stranded {
+            let to = if crate::plugins_ui::focus_after_page() {
+                GetFocus()
+            } else {
+                let root = GetAncestor(parent, GA_ROOT);
+                let _ = SetFocus(Some(root));
+                root
+            };
             // process-wide: the one plugin page
-            crate::plogf!("[page] keyboard taken back from the hidden page to {:?}", root);
+            crate::plogf!("[page] keyboard taken back from the hidden page ({:?}) to {:?}", f, to);
         }
     }
 }

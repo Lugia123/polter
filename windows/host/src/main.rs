@@ -7176,6 +7176,9 @@ fn main() {
                              not printed. The total is on the exit line."
                         );
                     }
+                } else if settings_win::pre_translate(&msg) {
+                    // The settings window's own chord, taken before any of its
+                    // controls could swallow it (task 1005).
                 } else {
                     trace_intercept("before TranslateMessage");
                     let _ = TranslateMessage(&msg);
