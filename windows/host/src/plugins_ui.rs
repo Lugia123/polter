@@ -891,14 +891,16 @@ fn changed() {
         s.selected.and_then(|i| s.plugins.get(i)).map(params_of).unwrap_or_default()
     });
     let missing = rules::missing_required(&params, &values);
-    unsafe {
-        let _ = EnableWindow(f.save, dirty);
-        let _ = EnableWindow(f.revert, dirty);
-        let _ = EnableWindow(f.test, has);
-        let _ = EnableWindow(f.show_log, has);
-        let _ = EnableWindow(f.show_folder, has);
-        let _ = EnableWindow(f.switch, has && rules::switch_enabled(on, missing.len()));
-    }
+    // Through `settings_win::enable`: Save goes grey the moment it is
+    // clicked, with the keyboard on it (task 1010). The switch first, so it
+    // is already what it will be when the keyboard looks for somewhere to go.
+    let sw = crate::settings_win::enable;
+    sw(f.switch, has && rules::switch_enabled(on, missing.len()));
+    sw(f.test, has);
+    sw(f.show_log, has);
+    sw(f.show_folder, has);
+    sw(f.save, dirty);
+    sw(f.revert, dirty);
     let _ = unsafe { InvalidateRect(Some(section()), None, false) };
 }
 

@@ -2494,9 +2494,13 @@ fn error_banner_text(detail: &str) -> String {
 fn place_fixed(frame: &Frame, tab_labels: &[String; 3], tab: Tab, b: Buttons, launch_label: &str, builtin: bool, has_draft: bool) {
     let Some(f) = FIXED.with(|c| c.get()) else { return };
     let put = |h: HWND, r: &RECT, show: bool, enabled: bool| unsafe {
+        // Off the keyboard before it is hidden or greyed (task 1010).
+        if !show {
+            crate::settings_win::keep_keyboard_off(h);
+        }
         let _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
         let _ = ShowWindow(h, if show { SW_SHOWNA } else { SW_HIDE });
-        let _ = EnableWindow(h, enabled);
+        crate::settings_win::enable(h, enabled);
     };
     for (i, h) in f.list_buttons.iter().enumerate() {
         let enabled = [b.new, b.duplicate, b.delete][i];
@@ -2667,7 +2671,7 @@ fn reconcile(pane: HWND, laid: &Laid, scroll: i32, dpi: i32, gen: u64) -> HashMa
         let want_enabled = matches!(p.kind, Kind::Edit { .. }) || p.enabled;
         unsafe {
             if IsWindowEnabled(h).as_bool() != want_enabled {
-                let _ = EnableWindow(h, want_enabled);
+                crate::settings_win::enable(h, want_enabled);
             }
         }
         now.insert(p.key.clone(), live);
@@ -2816,7 +2820,7 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 if vk == VK_ESCAPE && SendMessageW(h, CB_GETDROPPEDSTATE, None, None).0 == 0 {
                     return LRESULT(0);
                 }
-                if vk.0 == u16::from(b'W') && held(VK_CONTROL) {
+                if crate::settings_win::is_close_key(vk.0) {
                     let _ = PostMessageW(Some(main), WM_ROLES_CLOSE, WPARAM(0), LPARAM(0));
                     return LRESULT(0);
                 }
@@ -3785,7 +3789,7 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
-                if vk.0 == u16::from(b'W') && held(VK_CONTROL) {
+                if crate::settings_win::is_close_key(vk.0) {
                     request_close(win);
                 } else if vk.0 == u16::from(b'S') && held(VK_CONTROL) {
                     save();

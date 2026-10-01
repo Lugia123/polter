@@ -641,6 +641,50 @@ pub fn window_key(vk: u32, ctrl: bool, shift: bool, alt: bool) -> Option<WindowK
     (vk == VK_W && ctrl && !shift && !alt).then_some(WindowKey::Close)
 }
 
+/// Whether a message is a key going down that `window_key` should be asked
+/// about. **Both kinds** (task 1010): with no window holding the keyboard
+/// -- a Save button that had it was just disabled -- Windows sends every
+/// key to the active window as WM_SYSKEYDOWN, Alt or not, and Ctrl+W asked
+/// only of WM_KEYDOWN did nothing at all.
+pub fn key_down_message(msg: u32) -> bool {
+    const WM_KEYDOWN: u32 = 0x0100;
+    const WM_SYSKEYDOWN: u32 = 0x0104;
+    msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN
+}
+
+/// What a control that might take the keyboard is, for `focus_heir`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeirKind {
+    /// A box you type into or pick from: where the keyboard is most use.
+    Field,
+    /// Anything else that takes the keyboard: a check box, a button, a list.
+    Other,
+}
+
+/// One control in the settings window, as `focus_heir` weighs it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Heir {
+    pub kind: HeirKind,
+    /// Visible, enabled, and takes the keyboard.
+    pub usable: bool,
+    /// The control about to be disabled or hidden, or inside it.
+    pub losing: bool,
+}
+
+/// Where the keyboard goes when the control holding it is about to be
+/// disabled or hidden (task 1010: Save went grey under the keyboard, focus
+/// became nothing, and Ctrl+W stopped closing the window). The first usable
+/// field, else the first usable control of any kind, never the one going
+/// away; `None` means the settings window itself. Candidates come in the
+/// window's own order.
+pub fn focus_heir(candidates: &[Heir]) -> Option<usize> {
+    let ok = |h: &Heir| h.usable && !h.losing;
+    candidates
+        .iter()
+        .position(|h| ok(h) && h.kind == HeirKind::Field)
+        .or_else(|| candidates.iter().position(ok))
+}
+
 /// ↑ / ↓ in a list of `len` rows (§2.3a: the keys must not be lost):
 /// the next or previous row, **stopping at the ends** rather than wrapping.
 /// From nothing selected, ↓ is the first row and ↑ the last. `None` for an
@@ -784,6 +828,38 @@ mod tests {
             assert_eq!(window_key(vk, false, false, false), None, "vk {vk:#x}");
             assert_eq!(window_key(vk, true, false, false), None, "ctrl+vk {vk:#x}");
         }
+    }
+
+    #[test]
+    fn a_key_goes_down_as_either_message() {
+        assert!(key_down_message(0x0100), "WM_KEYDOWN");
+        // What arrives when nothing has the keyboard.
+        assert!(key_down_message(0x0104), "WM_SYSKEYDOWN");
+        // Not the ups, not the characters.
+        for m in [0x0101, 0x0105, 0x0102, 0x0106] {
+            assert!(!key_down_message(m), "msg {m:#x}");
+        }
+    }
+
+    #[test]
+    fn the_keyboard_goes_to_a_field_never_to_what_is_going() {
+        use HeirKind::*;
+        let h = |kind, usable, losing| Heir { kind, usable, losing };
+        // Save (losing) comes first in the window, a check box, then a box.
+        let c = [h(Other, true, true), h(Other, true, false), h(Field, true, false)];
+        assert_eq!(focus_heir(&c), Some(2), "a field before a check box");
+        // A field that is hidden or disabled is passed over.
+        let c = [h(Field, false, false), h(Other, true, false), h(Field, true, false)];
+        assert_eq!(focus_heir(&c), Some(2));
+        // No field: the first other control, not the one going away.
+        let c = [h(Other, true, true), h(Other, false, false), h(Other, true, false)];
+        assert_eq!(focus_heir(&c), Some(2));
+        // The field going away is not its own heir.
+        let c = [h(Field, true, true), h(Other, true, false)];
+        assert_eq!(focus_heir(&c), Some(1));
+        // Nothing usable: the window itself.
+        assert_eq!(focus_heir(&[h(Field, true, true), h(Other, false, false)]), None);
+        assert_eq!(focus_heir(&[]), None);
     }
 
     #[test]
