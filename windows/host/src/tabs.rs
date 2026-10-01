@@ -4468,6 +4468,49 @@ pub fn count(frame: HWND) -> usize {
     window(frame).map(|w| w.tabs.len()).unwrap_or(0)
 }
 
+/// Where a pane window is (#1012): its terminal window, and whether its tab is
+/// that window's active one -- i.e. whether it is on screen. `None` for a
+/// window that is not one of our panes.
+pub fn pane_place(hwnd: HWND) -> Option<(HWND, bool)> {
+    let key = hwnd.0 as isize;
+    with_windows(|ws| {
+        ws.iter().find_map(|w| {
+            w.tabs
+                .iter()
+                .position(|t| t.panes.iter().any(|p| p.hwnd == key))
+                .map(|i| (HWND(w.frame as *mut c_void), i == w.active))
+        })
+    })
+}
+
+/// Whether `hwnd` is one of our terminal windows (a frame, not a pane).
+pub fn is_frame(hwnd: HWND) -> bool {
+    let key = hwnd.0 as isize;
+    with_windows(|ws| ws.iter().any(|w| w.frame == key))
+}
+
+/// The pane window of the focused pane of `frame`'s active tab -- where typing
+/// goes in that window (#1012).
+pub fn active_pane_hwnd(frame: HWND) -> Option<HWND> {
+    window(frame)
+        .and_then(|w| w.tabs.get(w.active).and_then(|t| t.focused_pane()).map(|p| p.hwnd))
+        .filter(|h| *h != 0)
+        .map(|h| HWND(h as *mut c_void))
+}
+
+/// The active pane of the first terminal window that is on screen, for when
+/// the current one is gone (#1012).
+// window-free: scans every window on purpose -- it is asked exactly when the
+// window that was named has gone, and any visible one will do
+pub fn any_visible_active_pane() -> Option<HWND> {
+    let frames: Vec<isize> = with_windows(|ws| ws.iter().map(|w| w.frame).collect());
+    frames
+        .into_iter()
+        .map(|f| HWND(f as *mut c_void))
+        .filter(|f| unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(*f) }.as_bool())
+        .find_map(active_pane_hwnd)
+}
+
 /// The surface of the focused pane of the active tab -- "where typing goes".
 pub fn active_surface(frame: HWND) -> Surface {
     let found = window(frame)
