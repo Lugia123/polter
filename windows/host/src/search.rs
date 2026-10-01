@@ -47,6 +47,10 @@ use crate::{plogf, wlogf};
 const WM_SEARCH_SHOW: u32 = WM_APP + 3;
 const WM_SEARCH_HIDE: u32 = WM_APP + 4;
 const WM_SEARCH_COUNT: u32 = WM_APP + 5;
+/// A tab became active somewhere: is the bar's terminal still on screen?
+/// **`WM_APP + 22`**, free when written (`grep 'WM_APP +'`); posted to this
+/// window only.
+const WM_SEARCH_TABCHECK: u32 = WM_APP + 22;
 
 const WIDTH: i32 = 340;
 const HEIGHT: i32 = 38;
@@ -193,6 +197,21 @@ fn post(msg: u32) {
         return;
     }
     let _ = unsafe { PostMessageW(Some(HWND(h)), msg, WPARAM(0), LPARAM(0)) };
+}
+
+/// A tab was made active (`tabs::set_active`). **Safe from any thread**, and
+/// it only posts: the caller may be in the middle of moving windows.
+///
+/// The bar is one top-level window placed over a frame, and it belongs to
+/// one terminal (`OPEN_FOR`). Switching tabs left it hanging over the new
+/// tab, where Esc goes to the new tab's terminal, the core's `end_search` for
+/// it is not this bar's and is dropped (#1016: `end_search … dropped`), and
+/// the bar stays. So when its terminal is no longer on screen the bar's search
+/// is ended and the bar closed -- what Esc in the bar does.
+pub fn tab_changed() {
+    if OPEN_FOR.load(Ordering::Acquire) != 0 {
+        post(WM_SEARCH_TABCHECK);
+    }
 }
 
 // ------------------------------------------------------- from `action_cb`
@@ -413,7 +432,16 @@ fn show(needle: &str, owner: Option<usize>) {
         let _ = SetWindowPos(me, Some(HWND_TOPMOST), x, y, w, h, SWP_SHOWWINDOW);
 
         if let Some(wins) = wins {
-            PREV_FOCUS.set(crate::overlay::focus_to_edit(wins.edit, "search"));
+            // **Not over a focus that is already the bar's own** (#1016).
+            // `show` runs again while the bar is up -- `start_search` once
+            // more, a menu row -- and the focus it then finds is the bar's
+            // edit box. Remembered, that is where the keyboard went back to
+            // on closing: the bar's own hidden window, and every key after
+            // that was lost.
+            let had = crate::overlay::focus_to_edit(wins.edit, "search");
+            if !crate::overlay::belongs_to(had, me) {
+                PREV_FOCUS.set(had);
+            }
             // Select all, so typing replaces the previous needle.
             SendMessageW(wins.edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
         }
@@ -455,7 +483,7 @@ fn hide() {
         // instead of only the one that was reported, and it is the one people
         // open more often.
         crate::overlay::foreground_back(me, PREV_FOCUS.get(), "search");
-        crate::overlay::focus_back(PREV_FOCUS.get(), "search");
+        crate::overlay::focus_back(me, PREV_FOCUS.get(), "search");
     }
 }
 
@@ -575,6 +603,17 @@ extern "system" fn search_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     .map(|mut i| (i.show.take(), i.owner.take()))
                     .unwrap_or((None, None));
                 show(&needle.unwrap_or_default(), owner);
+                LRESULT(0)
+            }
+            WM_SEARCH_TABCHECK => {
+                let owner = OPEN_FOR.load(Ordering::Acquire);
+                let vis = STATE.with(|c| c.borrow().as_ref().map(|s| s.visible).unwrap_or(false));
+                if vis && owner != 0 && crate::tabs::surface_showing(owner) != Some(true) {
+                    // process-wide: the bar's terminal is the one it names;
+                    // it is no longer on screen in any window
+                    plogf!("[search] the bar's terminal {:#x} is no longer on screen; ending its search", owner);
+                    end_from_host();
+                }
                 LRESULT(0)
             }
             WM_SEARCH_HIDE => {

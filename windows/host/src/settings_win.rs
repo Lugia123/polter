@@ -466,7 +466,7 @@ fn close() {
     let frame = crate::winid::frame_of_window(origin).unwrap_or_else(crate::tabs::overlay_frame);
     let target = HWND(crate::roles_ui::handback_to(prev.0 as isize, usable_handback(prev), frame.0 as isize) as *mut c_void);
     crate::overlay::foreground_back(h, target, "settings");
-    crate::overlay::focus_back(target, "settings");
+    crate::overlay::focus_back(h, target, "settings");
     // process-wide: as above
     crate::plogf!("[settings] hidden; last={:?}", last);
     // It may have been the last window (#896 D3).

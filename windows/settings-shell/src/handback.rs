@@ -25,8 +25,13 @@ pub enum Prev {
     /// Nothing; or a window that no longer exists; or a terminal window
     /// itself rather than a pane in it.
     Nothing,
-    /// Some window that is not a terminal pane, still there.
-    Other(isize),
+    /// Some window that is not a terminal pane, still there. `usable` is
+    /// whether it can take the keyboard at all: **visible, enabled, and not
+    /// the overlay that is closing** (#1016). The find bar handed the keyboard
+    /// back to its own hidden window -- its "previous focus" had become its
+    /// own edit box -- and every key after that went nowhere. A window that
+    /// is not usable is no previous focus, and is answered like `Nothing`.
+    Other { hwnd: isize, usable: bool },
     /// A terminal pane.
     Pane {
         hwnd: isize,
@@ -65,7 +70,7 @@ pub enum Why {
 /// terminal window, for when there is no current one or it has no pane.
 pub fn handback(prev: Prev, current: Option<Current>, anywhere: Option<isize>) -> (Option<isize>, Why) {
     match prev {
-        Prev::Other(h) => return (Some(h), Why::NotAPane),
+        Prev::Other { hwnd, usable: true } => return (Some(hwnd), Why::NotAPane),
         Prev::Pane { hwnd, frame, tab_active: true } if current.is_none_or(|c| c.frame == frame) => {
             return (Some(hwnd), Why::StillShowing);
         }
@@ -136,6 +141,24 @@ mod tests {
     #[test]
     fn what_is_not_a_pane_is_handed_back_as_it_was() {
         let now = Some(Current { frame: W1, pane: Some(TAB2_PANE) });
-        assert_eq!(handback(Prev::Other(0x999), now, None), (Some(0x999), Why::NotAPane));
+        assert_eq!(handback(Prev::Other { hwnd: 0x999, usable: true }, now, None), (Some(0x999), Why::NotAPane));
+    }
+
+    /// #1016, measured: the find bar remembered its own edit box, and on
+    /// closing handed the keyboard to itself -- hidden. Not usable, so the
+    /// keyboard goes to where typing goes now.
+    #[test]
+    fn the_closing_overlay_itself_is_no_previous_focus() {
+        let now = Some(Current { frame: W1, pane: Some(TAB2_PANE) });
+        let own = Prev::Other { hwnd: 0x220484, usable: false };
+        assert_eq!(handback(own, now, None), (Some(TAB2_PANE), Why::CurrentPane));
+    }
+
+    /// A hidden or disabled window is the same: it cannot take a key.
+    #[test]
+    fn a_hidden_window_is_no_previous_focus() {
+        let hidden = Prev::Other { hwnd: 0x555, usable: false };
+        assert_eq!(handback(hidden, None, Some(0x77)), (Some(0x77), Why::AnyWindow));
+        assert_eq!(handback(hidden, None, None), (None, Why::Nowhere));
     }
 }

@@ -947,7 +947,12 @@ fn show(asked: Option<HWND>) {
         let x = fr.left + ((fr.right - fr.left) - w) / 2;
         let y = fr.top + sc(60);
 
-        PREV_FOCUS.set(GetFocus());
+        // Not over a focus that is already ours -- `show` again while open
+        // would otherwise remember the palette's own box (#1016).
+        let had = GetFocus();
+        if !crate::overlay::belongs_to(had, me) {
+            PREV_FOCUS.set(had);
+        }
         STATE.with(|c| {
             if let Some(st) = c.borrow_mut().as_mut() {
                 st.visible = true;
@@ -988,7 +993,10 @@ fn show(asked: Option<HWND>) {
             // The release-then-focus ordering lives in `overlay.rs` now:
             // three call sites reached it independently, and every way of
             // getting it wrong is silent.
-            PREV_FOCUS.set(crate::overlay::focus_to_edit(wins.edit, "palette"));
+            let had = crate::overlay::focus_to_edit(wins.edit, "palette");
+            if !crate::overlay::belongs_to(had, me) {
+                PREV_FOCUS.set(had);
+            }
         }
     }
 }
@@ -1025,7 +1033,7 @@ fn hide() {
         // hidden palette went on holding the keyboard. `focus_back` moves the
         // focus inside this thread; it cannot move the foreground window.
         crate::overlay::foreground_back(me, PREV_FOCUS.get(), "palette");
-        crate::overlay::focus_back(PREV_FOCUS.get(), "palette");
+        crate::overlay::focus_back(me, PREV_FOCUS.get(), "palette");
     }
 }
 
