@@ -516,8 +516,8 @@ pub fn enable(h: HWND, enabled: bool) {
 
 /// If the keyboard is on `h` or inside it, move it -- before `h` is
 /// disabled or hidden -- to the control `shell::focus_heir` picks: the first
-/// usable box in this window, else the first usable control, else this
-/// window itself.
+/// usable box in the section's content area, else the first usable control
+/// there, else this window itself. Never the search box (task 1017).
 pub fn keep_keyboard_off(h: HWND) {
     let root = win();
     if root.0.is_null() || h.0.is_null() {
@@ -529,9 +529,18 @@ pub fn keep_keyboard_off(h: HWND) {
     }
     let mut all = Vec::new();
     descendants(root, &mut all);
+    // The section's content area, in the settings window's client
+    // coordinates: where an heir has to be (task 1017).
+    let mut rc = RECT::default();
+    let _ = unsafe { GetClientRect(root, &mut rc) };
+    let content = shell::layout(rc.right, rc.bottom, dpi_of(root)).content;
     let heirs: Vec<shell::Heir> = all
         .iter()
         .map(|&c| {
+            let mut r = RECT::default();
+            let _ = unsafe { GetWindowRect(c, &mut r) };
+            let mut mid = [POINT { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 }];
+            let _ = unsafe { MapWindowPoints(None, Some(root), &mut mid) };
             let field = is_field(c);
             let style = unsafe { GetWindowLongW(c, GWL_STYLE) } as u32;
             shell::Heir {
@@ -540,6 +549,7 @@ pub fn keep_keyboard_off(h: HWND) {
                     && unsafe { IsWindowEnabled(c) }.as_bool()
                     && (field || style & WS_TABSTOP.0 != 0),
                 losing: c == h || unsafe { IsChild(h, c) }.as_bool(),
+                in_content: content.contains(mid[0].x, mid[0].y),
             }
         })
         .collect();
