@@ -6574,10 +6574,36 @@ pub fn dispatch(
         },
 
         .set_watch => |p| {
-            // The host goes first, because it is the side that knows
-            // whether this id is a terminal at all. Recording the bus entry
-            // first would leave a phantom behind when it is not -- one that
-            // shows up in `terminal_list` and can never be read.
+            // **Another supervisor's claim refuses both directions, and
+            // before anything is touched** (#1064). The host used to go
+            // first unconditionally, so a refused `set_watch(false)` had
+            // already stopped the sampler under the terminal it was told
+            // it could not let go -- the owner kept the mark and lost the
+            // quiet notices behind it.
+            //
+            // A claim, and nothing weaker: a terminal the user watched from
+            // the tab's menu has no minder, and that is not a lock. Any
+            // supervisor may take it or let it go.
+            if (bus.minderOf(p.id)) |owner| {
+                if (owner != caller) return failure(error.NotYours);
+            }
+
+            // Nothing to let go. Its own answer rather than `NotYours`,
+            // whose words are about another supervisor: there is none here.
+            // Asked before the host for the same reason as above -- it would
+            // stop a sampler nobody asked it to.
+            if (!p.watch and bus.roleOf(p.id) != .watched) {
+                if (!isOpenTerminal(alloc, host, p.id)) return failure(error.UnknownTerminal);
+                return hostFailure(
+                    "NotWatched",
+                    "nobody is watching that terminal, so there is nothing to let go.",
+                );
+            }
+
+            // The host goes before the bus, because it is the side that
+            // knows whether this id is a terminal at all. Recording the bus
+            // entry first would leave a phantom behind when it is not -- one
+            // that shows up in `terminal_list` and can never be read.
             host.setWatching(p.id, p.watch) catch
                 return failure(error.UnknownTerminal);
 
@@ -6585,7 +6611,9 @@ pub fn dispatch(
                 bus.watch(p.id, caller) catch |err| switch (err) {
                     // Two supervisors typing into one input box is, to the
                     // agent in it, being given orders by two people at
-                    // once. Refused rather than silently taken over.
+                    // once. Refused rather than silently taken over. Already
+                    // answered above; kept because the bus is the one that
+                    // holds the rule.
                     error.AlreadyWatched => return failure(error.NotYours),
                     error.OutOfMemory => return hostFailure(
                         "WatchFailed",
@@ -6593,8 +6621,6 @@ pub fn dispatch(
                     ),
                 };
             } else {
-                // Only the supervisor minding it may let it go.
-                if (!bus.minds(caller, p.id)) return failure(error.NotYours);
                 bus.unwatch(p.id);
 
                 // **Said back, because letting go changes more than the
@@ -9282,7 +9308,7 @@ test "raising the threshold of a terminal already reported quiet stops the repor
 
     // Already on its way to the supervisor under the old threshold.
     var buf: [255]u8 = undefined;
-    try testing.expect(b.drainIfDue(boss, 181_000, &buf) != null);
+    try testing.expect(b.drainIfDue(boss, 181_000, &buf, .none) != null);
 
     fake.now_ms = 200_000;
     const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
@@ -9292,7 +9318,7 @@ test "raising the threshold of a terminal already reported quiet stops the repor
     try testing.expectEqual(@as(u64, 3_600_000), fake.set_to.?.ms);
 
     // A minute later the terminal has been quiet 241s, far short of an hour.
-    const next = b.drainIfDue(boss, 241_000, &buf);
+    const next = b.drainIfDue(boss, 241_000, &buf, .none);
     try testing.expect(next == null);
 }
 
@@ -9313,7 +9339,7 @@ test "lowering the threshold below how long a terminal has been quiet keeps its 
     _ = b.report(worker, still, 180_000);
 
     var buf: [255]u8 = undefined;
-    try testing.expect(b.drainIfDue(boss, 181_000, &buf) != null);
+    try testing.expect(b.drainIfDue(boss, 181_000, &buf, .none) != null);
 
     // Quiet 200s by now; the new threshold is one minute.
     fake.now_ms = 200_000;
@@ -9322,7 +9348,7 @@ test "lowering the threshold below how long a terminal has been quiet keeps its 
     });
     try testing.expect(res == .ok);
 
-    const next = b.drainIfDue(boss, 241_000, &buf);
+    const next = b.drainIfDue(boss, 241_000, &buf, .none);
     try testing.expect(next != null);
 }
 
@@ -9448,7 +9474,7 @@ test "the sidecar's own traffic does not keep a stuck agent's clock fresh" {
     }
 
     var buf: [255]u8 = undefined;
-    const line = b.drain(boss, end, &buf) orelse return error.TestExpectedNotice;
+    const line = b.drain(boss, end, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expect(std.mem.indexOf(u8, line, "0x0000000000002222 no tool call 16m") != null);
     try testing.expect(std.mem.indexOf(u8, line, "3333") == null);
 }
@@ -9928,6 +9954,129 @@ test "a reply that fits is passed through whole and says there is no more" {
     const batch = try chat.read(alloc, "g", worker, null, seam_budget);
     try testing.expectEqual(@as(usize, 2), batch.messages.len);
     try testing.expect(!batch.more);
+}
+
+test "#1064: any supervisor may let go of a terminal the user watched by hand" {
+    // Measured 2026-10-02: two terminals watched from the tab's menu had no
+    // minder, so `minds(caller, id)` was false for every supervisor there
+    // was and each was told `NotYours` -- "another supervisor's" -- about a
+    // terminal no supervisor had. Nothing but the user could let it go.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.addSupervisor(other);
+
+    const by_hand: Bus.Id = 0x6161;
+    try b.watch(by_hand, null);
+    try testing.expectEqual(Bus.Role.watched, b.roleOf(by_hand));
+    try testing.expectEqual(@as(?Bus.Id, null), b.minderOf(by_hand));
+
+    var fake: FakeHost = .{};
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(other), .{
+        .set_watch = .{ .id = by_hand, .watch = false },
+    });
+    try testing.expect(res == .text);
+    const role = b.roleOf(by_hand);
+    try testing.expectEqual(Bus.Role.none, role);
+    try testing.expectEqual(@as(?bool, false), fake.watching);
+
+    // Either of them: the first supervisor is no more its owner than the
+    // second was.
+    try b.watch(by_hand, null);
+    const again = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_watch = .{ .id = by_hand, .watch = false },
+    });
+    try testing.expect(again == .text);
+    try testing.expectEqual(Bus.Role.none, b.roleOf(by_hand));
+}
+
+test "#1064: a supervisor may claim a terminal the user watched by hand, and then it is that one's" {
+    // The user's watch is not a lock in this direction either. Once
+    // claimed it follows the rule every claimed terminal follows.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.addSupervisor(other);
+
+    const by_hand: Bus.Id = 0x6161;
+    try b.watch(by_hand, null);
+
+    var fake: FakeHost = .{};
+    const claimed = try dispatch(testing.allocator, &b, fake.host(), term(other), .{
+        .set_watch = .{ .id = by_hand, .watch = true },
+    });
+    try testing.expectEqual(wire.Response.ok, claimed);
+    try testing.expectEqual(@as(?Bus.Id, other), b.minderOf(by_hand));
+
+    // Its notices are in the claimant's box and nobody else's.
+    const still: @import("Sampler.zig").Event = .{ .quiescent = .{
+        .quiet_ms = 180_000,
+        .silent_ms = 180_000,
+        .changed_rows = 0,
+        .total_rows = 24,
+    } };
+    _ = b.report(by_hand, still, 181_000);
+    var buf: [255]u8 = undefined;
+    const elsewhere = b.drain(boss, 181_000, &buf, .none);
+    try testing.expect(elsewhere == null);
+    const mine = b.drain(other, 181_000, &buf, .none);
+    try testing.expect(mine != null);
+
+    // And the first supervisor can no longer let it go or take it.
+    const let_go = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_watch = .{ .id = by_hand, .watch = false },
+    });
+    try testing.expect(let_go == .failed);
+    try testing.expectEqualStrings("NotYours", let_go.failed.code);
+    const take = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_watch = .{ .id = by_hand, .watch = true },
+    });
+    try testing.expect(take == .failed);
+    try testing.expectEqualStrings("NotYours", take.failed.code);
+    try testing.expectEqual(@as(?Bus.Id, other), b.minderOf(by_hand));
+}
+
+test "#1064: another supervisor's terminal is still refused, and the refusal stops nothing" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.addSupervisor(other);
+
+    // `testBus` has `worker` claimed by `boss`.
+    var fake: FakeHost = .{};
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(other), .{
+        .set_watch = .{ .id = worker, .watch = false },
+    });
+    try testing.expect(res == .failed);
+    try testing.expectEqualStrings("NotYours", res.failed.code);
+    try testing.expectEqual(Bus.Role.watched, b.roleOf(worker));
+    try testing.expect(b.minds(boss, worker));
+
+    // The host was not asked to stop sampling a terminal the caller was
+    // then told it could not let go. It used to be, before the refusal.
+    const touched = fake.watching;
+    try testing.expectEqual(@as(?bool, null), touched);
+}
+
+test "#1064: letting go of a terminal nobody is watching says so, not that it is somebody else's" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    const loose: Bus.Id = 0x6161;
+    const open = [_]Place{.{ .id = loose, .cwd = "/work", .title = "loose" }};
+    var fake: FakeHost = .{ .open = &open };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_watch = .{ .id = loose, .watch = false },
+    });
+    try testing.expect(res == .failed);
+    try testing.expectEqualStrings("NotWatched", res.failed.code);
+    try testing.expect(std.mem.indexOf(u8, res.failed.message, "supervisor") == null);
+    try testing.expectEqual(@as(?bool, null), fake.watching);
+
+    // And an id that is no terminal at all is still that.
+    const gone = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_watch = .{ .id = 0x7171, .watch = false },
+    });
+    try testing.expect(gone == .failed);
+    try testing.expectEqualStrings("UnknownTerminal", gone.failed.code);
 }
 
 test "set_watch works on a terminal nobody is watching, which is the point" {

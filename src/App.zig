@@ -882,7 +882,10 @@ fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
         };
 
         var buf: [255:0]u8 = undefined;
-        const line = self.poltergeist.drainIfDue(to, now_ms, &buf) orelse continue;
+        // `chat.peers()`: a terminal the user watched by hand has no minder,
+        // and with several supervisors it is the groups that say whose work
+        // it is part of (#1064). The bus cannot know that; the chat does.
+        const line = self.poltergeist.drainIfDue(to, now_ms, &buf, self.chat.peers()) orelse continue;
         buf[line.len] = 0;
 
         self.surfaceMessage(surface, self.noticeFor(to, buf)) catch |err| {
@@ -4863,8 +4866,12 @@ fn poltergeistDrainNotices(
     const self: *App = @ptrCast(@alignCast(ctx));
 
     var buf: [255]u8 = undefined;
-    const line = self.poltergeist.drain(to, self.poltergeistElapsedMs(), &buf) orelse
-        return "";
+    const line = self.poltergeist.drain(
+        to,
+        self.poltergeistElapsedMs(),
+        &buf,
+        self.chat.peers(),
+    ) orelse return "";
     return alloc.dupe(u8, line);
 }
 

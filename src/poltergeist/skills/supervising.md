@@ -312,8 +312,18 @@ There can be several supervisors, and **you may reach another supervisor's
 workers and the supervisors themselves** — two of you co-ordinating one build
 sometimes have to restart each other. Not licence: to that agent it is two
 people giving orders, so **say so in a group you are both in first**. Not
-yours at all: a group somebody else made, and a terminal already claimed —
-both answer `NotYours`, because notices belong to one box.
+yours at all: a group somebody else made, and a terminal another supervisor
+has claimed — both answer `NotYours`, because notices belong to one box.
+
+**A terminal the user watched by hand is not claimed, and not locked.** The
+tab's menu marks it `watched` with no minder (`terminal_capabilities` shows
+`watched_by: null`). Any supervisor may `set_watch(id, true)` to claim it —
+from then on it is yours like any other — or `set_watch(id, false)` to let it
+go. Until somebody claims it, its notices go to the only supervisor there is;
+with several of you, only to the ones in a group with it, and to nobody if
+none is. So a hand-watched terminal that keeps turning up in your box is
+yours to settle: claim it, let it go, or take it out of your group.
+`set_watch(id, false)` on a terminal nobody is watching answers `NotWatched`.
 
 ## What you are told, and what to do about it
 
