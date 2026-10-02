@@ -830,7 +830,10 @@ pub fn addSupervisor(self: *Bus, id: Id) Allocator.Error!void {
     try self.register(id);
     const e = self.entries.getPtr(id).?;
 
-    // A supervisor is not watched, by anyone including itself.
+    // A supervisor is not watched, by anyone including itself. If it was,
+    // that watch ends here the way any other does: what was waiting in a
+    // box about it is not carried into its being in charge.
+    if (e.role == .watched) release(e);
     e.role = .supervisor;
     e.watched_by = null;
 }
@@ -850,10 +853,7 @@ pub fn removeSupervisor(self: *Bus, id: Id) void {
     var it = self.entries.iterator();
     while (it.next()) |kv| {
         const other = kv.value_ptr;
-        if (other.watched_by == id) {
-            other.watched_by = null;
-            if (other.role == .watched) other.role = .none;
-        }
+        if (other.watched_by == id) release(other);
     }
 }
 
@@ -1013,25 +1013,54 @@ pub const WatchError = error{
 
 /// Stop watching a terminal, without forgetting it.
 pub fn unwatch(self: *Bus, id: Id) void {
-    if (self.entries.getPtr(id)) |e| {
-        if (e.role == .watched) e.role = .none;
-        e.watched_by = null;
+    if (self.entries.getPtr(id)) |e| release(e);
+}
 
-        // Letting go stops the sampling (`Host.setWatching`), so the last
-        // figure stops being extrapolated from and starts being extended
-        // by time nobody measured. Forgetting it is what makes the
-        // terminal read as "not measured" again, which is what it is --
-        // and what `TerminalInfo.quiet_ms` already promised for a terminal
-        // nobody is minding. A released terminal used to keep counting up
-        // for as long as the window stayed open.
-        e.last_event_ms = null;
-        e.last_quiet_ms = 0;
+/// End a watch: the one place a terminal stops being watched, whoever
+/// ended it -- `unwatch`, a supervisor standing down or closing
+/// (`removeSupervisor`), or the terminal being made a supervisor itself
+/// (`addSupervisor`).
+///
+/// One function because the three used to differ, and each difference was
+/// something left behind: only `unwatch` forgot the quiet figure, and none
+/// of them emptied the box (#1067).
+fn release(e: *Entry) void {
+    if (e.role == .watched) e.role = .none;
+    e.watched_by = null;
 
-        // The count belongs to the watch that has just ended. Carried
-        // across, it would start the next one partway through a tally of
-        // reports nobody in it had been given.
-        e.rounds = 0;
-    }
+    // Letting go stops the sampling (`Host.setWatching`), so the last
+    // figure stops being extrapolated from and starts being extended
+    // by time nobody measured. Forgetting it is what makes the
+    // terminal read as "not measured" again, which is what it is --
+    // and what `TerminalInfo.quiet_ms` already promised for a terminal
+    // nobody is minding. A released terminal used to keep counting up
+    // for as long as the window stayed open.
+    e.last_event_ms = null;
+    e.last_quiet_ms = 0;
+
+    // The count belongs to the watch that has just ended. Carried
+    // across, it would start the next one partway through a tally of
+    // reports nobody in it had been given.
+    e.rounds = 0;
+
+    // **What was already in the box goes with the watch** (#1067).
+    // Measured 2026-10-02: a supervisor let a terminal go, was told "no
+    // notices", and a minute later was handed `no tool call 16m` about
+    // it. Nothing makes a new notice for a terminal that is not watched
+    // -- `report`, `considerCalls`, `agentEvent` and `considerAgents` all
+    // ask -- but the one made a minute earlier was still in its slot, and
+    // `take` does not ask: with no minder left it fell to whichever
+    // supervisor `hears` picked, until its three hand-overs ran out.
+    //
+    // All three slots, and their counts: left in place they would also
+    // come back to life under the next watch, as news about a stretch of
+    // time nobody in that watch was responsible for.
+    e.pending = null;
+    e.handed_over = 0;
+    e.silent_pending = false;
+    e.silent_handed = 0;
+    e.agent.pending = null;
+    e.agent.handed = 0;
 }
 
 /// Hold a terminal to its work, or let it go. The user only -- see
@@ -2176,6 +2205,162 @@ test "#1064: a claim outranks the group an unclaimed terminal was in" {
     try testing.expect(grouped == null);
     const owner = b.drain(second, 1_000, &buf, pair.peers());
     try testing.expect(owner != null);
+}
+
+test "#1067: a quiet report already in the box is not handed over after the terminal is let go" {
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    _ = b.report(worker, quiet(60_000), 0);
+
+    // Handed over once and held, which is what a hand-over does.
+    var buf: [255]u8 = undefined;
+    const before = b.drainIfDue(boss, 1_000, &buf, .none);
+    try testing.expect(before != null);
+
+    b.unwatch(worker);
+    const due = 1_000 + std.time.ms_per_min + 1;
+    const handed = b.drainIfDue(boss, due, &buf, .none);
+    try testing.expect(handed == null);
+    const read = b.drain(boss, due, &buf, .none);
+    try testing.expect(read == null);
+    const count = b.get(worker).?.handed_over;
+    try testing.expectEqual(@as(u8, 0), count);
+
+    // Watched again: a clean start, not the old report come back.
+    try b.watch(worker, boss);
+    const revived = b.drain(boss, due, &buf, .none);
+    try testing.expect(revived == null);
+}
+
+test "#1067: a `no tool call` notice already in the box is not handed over after the terminal is let go" {
+    // The measured one: `no tool call 15m` handed over, the terminal let
+    // go with "no notices" said back, and `no tool call 16m` a minute on.
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+
+    const at = 15 * std.time.ms_per_min;
+    b.noteCall(worker, 0);
+    try testing.expect(b.considerCalls(at));
+
+    var buf: [255]u8 = undefined;
+    const before = b.drainIfDue(boss, at, &buf, .none);
+    try testing.expect(before != null);
+
+    b.unwatch(worker);
+    const due = at + std.time.ms_per_min + 1;
+    const handed = b.drainIfDue(boss, due, &buf, .none);
+    try testing.expect(handed == null);
+    const read = b.drain(boss, due, &buf, .none);
+    try testing.expect(read == null);
+    const count = b.get(worker).?.silent_handed;
+    try testing.expectEqual(@as(u8, 0), count);
+
+    try b.watch(worker, boss);
+    const revived = b.drain(boss, due, &buf, .none);
+    try testing.expect(revived == null);
+}
+
+test "#1067: what the agent said, already in the box, is not handed over after the terminal is let go" {
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    try testing.expect(try b.agentEvent(worker, hookEv(.turn_ended), 1_000));
+
+    var buf: [255]u8 = undefined;
+    const before = b.drainIfDue(boss, 1_000, &buf, .none);
+    try testing.expect(before != null);
+
+    b.unwatch(worker);
+    const due = 1_000 + std.time.ms_per_min + 1;
+    const handed = b.drainIfDue(boss, due, &buf, .none);
+    try testing.expect(handed == null);
+    const read = b.drain(boss, due, &buf, .none);
+    try testing.expect(read == null);
+    const count = b.agentOf(worker).handed;
+    try testing.expectEqual(@as(u8, 0), count);
+
+    try b.watch(worker, boss);
+    const revived = b.drain(boss, due, &buf, .none);
+    try testing.expect(revived == null);
+}
+
+test "#1067: nothing new is put in the box about a terminal that was let go" {
+    // Each of the four makers asks whether the terminal is watched. This
+    // is what holds them to it: emptying the box on the way out would be
+    // undone a moment later by any one of them that did not.
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    b.unwatch(worker);
+
+    const went_quiet = b.report(worker, quiet(60_000), 1_000);
+    try testing.expect(!went_quiet);
+    try testing.expect(b.get(worker).?.pending == null);
+
+    b.noteCall(worker, 0);
+    const went_silent = b.considerCalls(16 * std.time.ms_per_min);
+    try testing.expect(!went_silent);
+    try testing.expect(!b.get(worker).?.silent_pending);
+
+    const said = try b.agentEvent(worker, hookEv(.turn_ended), 2_000);
+    try testing.expect(!said);
+    try testing.expect(b.agentOf(worker).pending == null);
+
+    _ = try b.agentEvent(worker, hookEv(.hooks_expected), 3_000);
+    const unheard = b.considerAgents(3_000 + hooks_expected_timeout_ms);
+    try testing.expect(!unheard);
+    try testing.expect(b.agentOf(worker).pending == null);
+
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 20 * std.time.ms_per_min, &buf, .none);
+    try testing.expect(line == null);
+}
+
+test "#1067: a supervisor standing down or closing takes its terminals' notices with it" {
+    // Neither goes through `unwatch`. The terminals end up with no minder,
+    // which with one supervisor left is exactly whom `hears` hands an
+    // unclaimed terminal to -- so the survivor would inherit, as news,
+    // reports about terminals it was never minding.
+    var b = testBus();
+    defer b.deinit();
+
+    const survivor: Id = 0x4444;
+    const closing: Id = 0x5555;
+    const its_worker: Id = 0x6666;
+    try b.addSupervisor(boss);
+    try b.addSupervisor(survivor);
+    try b.addSupervisor(closing);
+    try b.watch(worker, boss);
+    try b.watch(its_worker, closing);
+    _ = b.report(worker, quiet(60_000), 0);
+    _ = b.report(its_worker, quiet(60_000), 0);
+
+    var buf: [255]u8 = undefined;
+    b.unregister(closing);
+    b.removeSupervisor(boss);
+    try testing.expectEqual(@as(usize, 1), b.supervisorCount());
+
+    const inherited = b.drain(survivor, 1_000, &buf, .none);
+    try testing.expect(inherited == null);
+    try testing.expect(b.get(worker).?.last_event_ms == null);
+}
+
+test "#1067: a watched terminal made a supervisor does not carry its notices into the job" {
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    _ = b.report(worker, quiet(60_000), 0);
+
+    try b.addSupervisor(worker);
+    const left = b.get(worker).?.pending;
+    try testing.expect(left == null);
 }
 
 test "a note rides out in the same line as the quiet reports" {

@@ -9956,6 +9956,31 @@ test "a reply that fits is passed through whole and says there is no more" {
     try testing.expect(!batch.more);
 }
 
+test "#1067: set_watch(false) says `no notices`, and that is true of the one already in the box" {
+    // Measured 2026-10-02: `no tool call 15m` handed over, the terminal let
+    // go a minute later with this reply, and `no tool call 16m` handed over
+    // a minute after that. The words were right and the bus was not.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    const at = 15 * std.time.ms_per_min;
+    b.noteCall(worker, 0);
+    try testing.expect(b.considerCalls(at));
+    var buf: [255]u8 = undefined;
+    const before = b.drainIfDue(boss, at, &buf, .none);
+    try testing.expect(before != null);
+
+    var fake: FakeHost = .{};
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_watch = .{ .id = worker, .watch = false },
+    });
+    try testing.expect(res == .text);
+    try testing.expect(std.mem.indexOf(u8, res.text, "no notices") != null);
+
+    const after = b.drainIfDue(boss, at + std.time.ms_per_min + 1, &buf, .none);
+    try testing.expect(after == null);
+}
+
 test "#1064: any supervisor may let go of a terminal the user watched by hand" {
     // Measured 2026-10-02: two terminals watched from the tab's menu had no
     // minder, so `minds(caller, id)` was false for every supervisor there
