@@ -445,6 +445,11 @@ pub const Entry = struct {
     ///
     /// Null for a terminal nobody is minding, and for the supervisors
     /// themselves.
+    ///
+    /// ⚠️ **Null with `role == .watched` is a real state, not a gap**: the
+    /// user watched it from the tab's menu and no supervisor has claimed
+    /// it. Any supervisor may claim it or let it go (`rpc` `set_watch`),
+    /// and `hears` says whose box it is in meanwhile.
     watched_by: ?Id = null,
 
     /// When this supervisor was last handed its box. Only meaningful on a
@@ -925,10 +930,13 @@ pub fn minds(self: *const Bus, caller: Id, id: Id) bool {
 
 /// Put a terminal under a supervisor's eye.
 ///
-/// `by` is null when the user did it from the keyboard and no supervisor
-/// has claimed it -- the terminal is watched and its notices go to
-/// whoever claims it, which for one supervisor is the obvious answer and
-/// for none is nobody.
+/// `by` is null when the user did it from the tab's menu or the keyboard
+/// and no supervisor has claimed it -- the terminal is watched, and where
+/// its notices go until one does is `hears`'s to say.
+///
+/// **A watch the user made is not a lock** (#1064): a supervisor's `by`
+/// on a terminal with no minder takes it, and from then on it is that
+/// supervisor's like any other. Only another supervisor's claim refuses.
 pub fn watch(self: *Bus, id: Id, by: ?Id) WatchError!void {
     try self.register(id);
     const e = self.entries.getPtr(id).?;
@@ -1576,8 +1584,67 @@ pub fn leaveNote(self: *Bus, to: Id, text: []const u8) bool {
     return true;
 }
 
-pub fn drain(self: *Bus, to: Id, now_ms: u64, buf: []u8) ?[]u8 {
-    return self.take(to, now_ms, buf, .consume);
+/// Which terminals a supervisor is working with, asked of whoever knows.
+///
+/// **The bus does not know what a group is, and this is how it stays that
+/// way** (#1064). A terminal the user watched by hand has no minder, and
+/// with two supervisors in a window "whoever is asking" hands its notices
+/// to both -- including the one whose work it has nothing to do with. What
+/// tells them apart is which supervisor is in a group with it, and groups
+/// belong to `Chat`. So the question is put through this, the host answers
+/// it from the chat (`Chat.peers`), and the bus keeps only the rule about
+/// when to ask.
+///
+/// A parameter to `take` rather than something stored on the bus, and with
+/// no default: a host that forgot to supply it would otherwise fall back to
+/// one of the two answers without saying which.
+pub const Peers = struct {
+    ctx: ?*const anyopaque,
+    shareFn: *const fn (ctx: ?*const anyopaque, supervisor: Id, terminal: Id) bool,
+
+    /// Nobody is in a group with anybody. What a caller with no chat behind
+    /// it passes; with a single supervisor the question is never asked.
+    pub const none: Peers = .{ .ctx = null, .shareFn = never };
+
+    fn never(_: ?*const anyopaque, _: Id, _: Id) bool {
+        return false;
+    }
+
+    fn share(self: Peers, supervisor: Id, terminal: Id) bool {
+        return self.shareFn(self.ctx, supervisor, terminal);
+    }
+};
+
+/// How many terminals are supervising.
+pub fn supervisorCount(self: *const Bus) usize {
+    var n: usize = 0;
+    var it = self.entries.valueIterator();
+    while (it.next()) |e| {
+        if (e.role == .supervisor) n += 1;
+    }
+    return n;
+}
+
+/// Whether `to`'s box is where this terminal's notices belong.
+///
+/// Claimed: its minder's, and nobody else's. Unclaimed -- the user watched
+/// it from the tab's menu and no supervisor has taken it -- depends on how
+/// many supervisors there are. One: that one, because there is nobody else
+/// it could be meant for. Several: only those in a group with it, because
+/// "every supervisor" was two unrelated pieces of work being interrupted
+/// about each other's terminals (#1064).
+///
+/// ⚠️ Several supervisors and a terminal in a group with none of them is
+/// in nobody's box. That is deliberate rather than overlooked: the two
+/// ways out are both one call -- `set_watch` to claim it, or `group_add`.
+fn hears(to: Id, id: Id, e: *const Entry, alone: bool, peers: Peers) bool {
+    if (e.watched_by) |owner| return owner == to;
+    if (alone) return true;
+    return peers.share(to, id);
+}
+
+pub fn drain(self: *Bus, to: Id, now_ms: u64, buf: []u8, peers: Peers) ?[]u8 {
+    return self.take(to, now_ms, buf, .consume, peers);
 }
 
 /// The box belonging to one supervisor.
@@ -1585,15 +1652,20 @@ pub fn drain(self: *Bus, to: Id, now_ms: u64, buf: []u8) ?[]u8 {
 /// Filtered by who is minding each terminal: with two supervisors on two
 /// pieces of work, a shared box would hand each of them the other's
 /// reports -- twice the interruption and half of it about terminals they
-/// cannot even read.
-pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
+/// cannot even read. `peers` settles the terminals nobody has claimed; see
+/// `hears`.
+pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers) ?[]u8 {
     // Only a supervisor has a box. Said here rather than left to the
     // caller, because the rule below hands an unclaimed terminal's report
-    // to whoever is asking -- so a terminal that has just stood down would
-    // otherwise keep being handed exactly the reports it stopped being
-    // responsible for, which is the one thing standing down is for.
+    // to a lone supervisor that asks -- so a terminal that has just stood
+    // down would otherwise keep being handed exactly the reports it stopped
+    // being responsible for, which is the one thing standing down is for.
     const minder = self.entries.get(to) orelse return null;
     if (minder.role != .supervisor) return null;
+
+    // Counted once, before the walk: `to` is one of them, so one means
+    // there is nobody else an unclaimed terminal could belong to.
+    const alone = self.supervisorCount() <= 1;
 
     var listed: usize = 0;
     var total: usize = 0;
@@ -1610,10 +1682,8 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
 
         // Not this supervisor's terminal. Left in the box for whoever is
         // minding it, rather than dropped.
-        const owner = e.watched_by orelse to;
-        if (owner != to) continue;
-
         const id = kv.key_ptr.*;
+        if (!hears(to, id, e, alone, peers)) continue;
 
         // adapters.md 3.4: with hooks live, a still screen the agent has
         // already explained -- a turn that ended, failed, or is waiting on
@@ -1939,13 +2009,13 @@ fn fitTail(w: *std.Io.Writer, s: []const u8, full_len: usize, reserve: usize) st
 /// box does not count as having been shown anything, so a terminal going
 /// quiet a second after a silent tick is not made to wait another full
 /// interval.
-pub fn drainIfDue(self: *Bus, to: Id, now_ms: u64, buf: []u8) ?[]u8 {
+pub fn drainIfDue(self: *Bus, to: Id, now_ms: u64, buf: []u8, peers: Peers) ?[]u8 {
     const minder = self.entries.getPtr(to) orelse return null;
     if (minder.last_delivery_ms) |last| {
         if (now_ms -| last < self.config.notice_interval_ms) return null;
     }
 
-    const line = self.take(to, now_ms, buf, .hand_over) orelse return null;
+    const line = self.take(to, now_ms, buf, .hand_over, peers) orelse return null;
 
     // Re-fetched: `take` may have grown the map and moved the entry.
     if (self.entries.getPtr(to)) |b| b.last_delivery_ms = now_ms;
@@ -1995,15 +2065,11 @@ test "who opened a terminal outlives its being let go, and goes with it" {
     try testing.expect(!b.openedByAgent(2));
 }
 
-test "an unclaimed terminal reports to whoever is asking" {
+test "an unclaimed terminal reports to the only supervisor there is" {
     // Watching from the keyboard leaves the terminal with no owner: which
-    // supervisor should mind it is not something a keybind can say. Its
-    // reports go to whoever reads the box.
-    //
-    // With one supervisor that is simply right. With several it is
-    // arbitrary -- but the alternative is a terminal the user explicitly
-    // watched whose reports go nowhere at all, and silence that the user
-    // asked for is worse than an answer given to the wrong reader.
+    // supervisor should mind it is not something a keybind can say. With
+    // one supervisor there is nobody else it could be meant for, whatever
+    // groups it is or is not in -- `Peers.none` says it shares none.
     var b = testBus();
     defer b.deinit();
 
@@ -2012,8 +2078,104 @@ test "an unclaimed terminal reports to whoever is asking" {
     _ = b.report(worker, quiet(60_000), 0);
 
     var buf: [255]u8 = undefined;
-    const line = b.drain(boss, 1_000, &buf) orelse return error.ExpectedANotice;
+    const line = b.drain(boss, 1_000, &buf, .none) orelse return error.ExpectedANotice;
     try testing.expect(std.mem.indexOf(u8, line, "quiet") != null);
+}
+
+/// A stand-in for the chat: one supervisor is in a group with one terminal.
+const OnePair = struct {
+    supervisor: Id,
+    terminal: Id,
+
+    fn peers(self: *const OnePair) Peers {
+        return .{ .ctx = self, .shareFn = share };
+    }
+
+    fn share(ctx: ?*const anyopaque, supervisor: Id, terminal: Id) bool {
+        const self: *const OnePair = @ptrCast(@alignCast(ctx.?));
+        return supervisor == self.supervisor and terminal == self.terminal;
+    }
+};
+
+test "#1064: with two supervisors an unclaimed terminal reports only to the one it works with" {
+    // Measured 2026-10-02: two terminals the user had watched from the tab
+    // menu sent their `no tool call` notices to every supervisor in the
+    // window, including one minding unrelated work, and the hand-over
+    // count that drops a notice after three was being used up by both.
+    var b = testBus();
+    defer b.deinit();
+
+    const second: Id = 0x4444;
+    try b.addSupervisor(boss);
+    try b.addSupervisor(second);
+    try b.watch(worker, null);
+    _ = b.report(worker, quiet(60_000), 0);
+
+    const pair: OnePair = .{ .supervisor = boss, .terminal = worker };
+
+    // The scheduled hand-over to the other one carries nothing, and does
+    // not spend one of the three the notice gets.
+    var buf: [255]u8 = undefined;
+    const stray = b.drainIfDue(second, 1_000, &buf, pair.peers());
+    try testing.expect(stray == null);
+    const spent = b.get(worker).?.handed_over;
+    try testing.expectEqual(@as(u8, 0), spent);
+
+    // Reading its box does not take it either.
+    const read = b.drain(second, 1_000, &buf, pair.peers());
+    try testing.expect(read == null);
+
+    // Still there for the one in a group with it.
+    const line = b.drain(boss, 1_000, &buf, pair.peers()) orelse return error.ExpectedANotice;
+    try testing.expect(std.mem.indexOf(u8, line, "0x0000000000002222 quiet") != null);
+}
+
+test "#1064: with two supervisors an unclaimed terminal in a group with neither is in no box" {
+    // Not handed to both, which is the bug, and not to an arbitrary one.
+    // Claiming it is one call and so is adding it to a group.
+    var b = testBus();
+    defer b.deinit();
+
+    const second: Id = 0x4444;
+    try b.addSupervisor(boss);
+    try b.addSupervisor(second);
+    try b.watch(worker, null);
+    _ = b.report(worker, quiet(60_000), 0);
+
+    var buf: [255]u8 = undefined;
+    const first = b.drain(boss, 1_000, &buf, .none);
+    try testing.expect(first == null);
+    const other = b.drain(second, 1_000, &buf, .none);
+    try testing.expect(other == null);
+
+    // Kept rather than dropped: the supervisor that claims it is told.
+    try b.watch(worker, second);
+    const claimed = b.drain(second, 1_000, &buf, .none);
+    try testing.expect(claimed != null);
+}
+
+test "#1064: a claim outranks the group an unclaimed terminal was in" {
+    // The user's watch is not a lock. Once a supervisor claims the
+    // terminal its notices go to that box alone, even though the other
+    // supervisor is the one in a group with it.
+    var b = testBus();
+    defer b.deinit();
+
+    const second: Id = 0x4444;
+    try b.addSupervisor(boss);
+    try b.addSupervisor(second);
+    try b.watch(worker, null);
+    try b.watch(worker, second);
+    try testing.expectEqual(@as(?Id, second), b.minderOf(worker));
+    _ = b.report(worker, quiet(60_000), 0);
+
+    const pair: OnePair = .{ .supervisor = boss, .terminal = worker };
+
+    var buf: [255]u8 = undefined;
+    const grouped = b.drain(boss, 1_000, &buf, pair.peers());
+    try testing.expect(grouped == null);
+    const owner = b.drain(second, 1_000, &buf, pair.peers());
+    try testing.expect(owner != null);
 }
 
 test "a note rides out in the same line as the quiet reports" {
@@ -2029,13 +2191,13 @@ test "a note rides out in the same line as the quiet reports" {
     try testing.expect(b.leaveNote(boss, "build: #93 untouched 49h"));
 
     var buf: [255]u8 = undefined;
-    const line = b.drain(boss, 1_000, &buf) orelse return error.ExpectedANotice;
+    const line = b.drain(boss, 1_000, &buf, .none) orelse return error.ExpectedANotice;
 
     try testing.expect(std.mem.indexOf(u8, line, "quiet") != null);
     try testing.expect(std.mem.indexOf(u8, line, "#93 untouched 49h") != null);
 
     // Read once, gone -- the same rule the terminal reports keep.
-    try testing.expect(b.drain(boss, 2_000, &buf) == null);
+    try testing.expect(b.drain(boss, 2_000, &buf, .none) == null);
 }
 
 test "a note on its own is worth an interruption" {
@@ -2049,7 +2211,7 @@ test "a note on its own is worth an interruption" {
     try testing.expect(b.leaveNote(boss, "build: quiet 3h40m"));
 
     var buf: [255]u8 = undefined;
-    const line = b.drain(boss, 1_000, &buf) orelse return error.ExpectedANotice;
+    const line = b.drain(boss, 1_000, &buf, .none) orelse return error.ExpectedANotice;
     try testing.expect(std.mem.indexOf(u8, line, "quiet 3h40m") != null);
 }
 
@@ -2062,13 +2224,13 @@ test "a note waits for the interval the same as everything else" {
 
     // Delivered once...
     var buf: [255]u8 = undefined;
-    try testing.expect(b.drainIfDue(boss, 0, &buf) != null);
+    try testing.expect(b.drainIfDue(boss, 0, &buf, .none) != null);
 
     // ...and the next one waits out `notice_interval_ms`, which is the one
     // number the user set to say how often this may happen at all.
     try testing.expect(b.leaveNote(boss, "build: #71 untouched 40h"));
-    try testing.expect(b.drainIfDue(boss, 1_000, &buf) == null);
-    try testing.expect(b.drainIfDue(boss, std.time.ms_per_min + 1, &buf) != null);
+    try testing.expect(b.drainIfDue(boss, 1_000, &buf, .none) == null);
+    try testing.expect(b.drainIfDue(boss, std.time.ms_per_min + 1, &buf, .none) != null);
 }
 
 test "a note nobody reads stops repeating itself" {
@@ -2084,10 +2246,10 @@ test "a note nobody reads stops repeating itself" {
     var buf: [255]u8 = undefined;
     var at: u64 = 0;
     for (0..3) |_| {
-        try testing.expect(b.drainIfDue(boss, at, &buf) != null);
+        try testing.expect(b.drainIfDue(boss, at, &buf, .none) != null);
         at += std.time.ms_per_min + 1;
     }
-    try testing.expect(b.drainIfDue(boss, at, &buf) == null);
+    try testing.expect(b.drainIfDue(boss, at, &buf, .none) == null);
 }
 
 test "a note that has stopped being true can be taken back" {
@@ -2099,7 +2261,7 @@ test "a note that has stopped being true can be taken back" {
     try testing.expect(b.leaveNote(boss, ""));
 
     var buf: [255]u8 = undefined;
-    try testing.expect(b.drain(boss, 1_000, &buf) == null);
+    try testing.expect(b.drain(boss, 1_000, &buf, .none) == null);
 }
 
 test "only a supervisor has a box to leave a note in" {
@@ -2127,8 +2289,8 @@ test "one supervisor's note does not turn up in another's box" {
     try testing.expect(b.leaveNote(boss, "build: #93 untouched 49h"));
 
     var buf: [255]u8 = undefined;
-    try testing.expect(b.drain(second, 1_000, &buf) == null);
-    try testing.expect(b.drain(boss, 1_000, &buf) != null);
+    try testing.expect(b.drain(second, 1_000, &buf, .none) == null);
+    try testing.expect(b.drain(boss, 1_000, &buf, .none) != null);
 }
 
 test "a claimed terminal reports only to the supervisor minding it" {
@@ -2143,11 +2305,11 @@ test "a claimed terminal reports only to the supervisor minding it" {
 
     // Not the other one's business, and not in its box.
     var buf: [255]u8 = undefined;
-    try testing.expect(b.drain(second, 1_000, &buf) == null);
+    try testing.expect(b.drain(second, 1_000, &buf, .none) == null);
 
     // Still waiting for the one whose terminal it is.
     var buf2: [255]u8 = undefined;
-    try testing.expect(b.drain(boss, 1_000, &buf2) != null);
+    try testing.expect(b.drain(boss, 1_000, &buf2, .none) != null);
 }
 
 test "a watched terminal going quiet reaches the supervisor" {
@@ -2275,7 +2437,7 @@ test "rounds count every report, not every interruption" {
 
     // Both of them are one entry in the box, not two.
     var buf: [255]u8 = undefined;
-    const line = b.drain(boss, 100, &buf) orelse return error.ExpectedANotice;
+    const line = b.drain(boss, 100, &buf, .none) orelse return error.ExpectedANotice;
     const first = std.mem.indexOf(u8, line, "0x0000000000002222").?;
     try testing.expect(std.mem.indexOfPos(u8, line, first + 1, "0x0000000000002222") == null);
 }
@@ -2606,12 +2768,12 @@ test "reading the box clears it" {
     _ = bus.report(worker, quiet(60_000), 1000);
 
     var buf: [255]u8 = undefined;
-    const first = bus.drain(boss, 1000, &buf) orelse return error.ExpectedANotice;
+    const first = bus.drain(boss, 1000, &buf, .none) orelse return error.ExpectedANotice;
     try testing.expect(std.mem.indexOf(u8, first, "0x0000000000002222") != null);
     try testing.expect(std.mem.indexOf(u8, first, "quiet") != null);
 
     // Nothing new has happened, so there is nothing to say.
-    try testing.expect(bus.drain(boss, 2000, &buf) == null);
+    try testing.expect(bus.drain(boss, 2000, &buf, .none) == null);
 }
 
 test "many reports about one terminal read as one line" {
@@ -2631,7 +2793,7 @@ test "many reports about one terminal read as one line" {
     }
 
     var buf: [255]u8 = undefined;
-    const line = bus.drain(boss, t, &buf) orelse return error.ExpectedANotice;
+    const line = bus.drain(boss, t, &buf, .none) orelse return error.ExpectedANotice;
 
     // One mention of the terminal, and no "+N more".
     const first = std.mem.indexOf(u8, line, "0x0000000000002222").?;
@@ -2658,7 +2820,7 @@ test "coming back to work replaces the quiet it is waiting on" {
     } }, 3000);
 
     var buf: [255]u8 = undefined;
-    const line = bus.drain(boss, 3000, &buf) orelse return error.ExpectedANotice;
+    const line = bus.drain(boss, 3000, &buf, .none) orelse return error.ExpectedANotice;
     try testing.expect(std.mem.indexOf(u8, line, "back at work") != null);
     try testing.expect(std.mem.indexOf(u8, line, "quiet") == null);
 }
@@ -2672,7 +2834,7 @@ test "an empty box says nothing rather than saying all is well" {
     try bus.watch(worker, boss);
 
     var buf: [255]u8 = undefined;
-    try testing.expect(bus.drain(boss, 1000, &buf) == null);
+    try testing.expect(bus.drain(boss, 1000, &buf, .none) == null);
 }
 
 test "more terminals than fit are counted rather than listed" {
@@ -2689,11 +2851,11 @@ test "more terminals than fit are counted rather than listed" {
     }
 
     var buf: [255]u8 = undefined;
-    const line = bus.drain(boss, 1000, &buf) orelse return error.ExpectedANotice;
+    const line = bus.drain(boss, 1000, &buf, .none) orelse return error.ExpectedANotice;
     try testing.expect(std.mem.indexOf(u8, line, "(+3 more)") != null);
 
     // Counted or listed, every one of them was consumed.
-    try testing.expect(bus.drain(boss, 1000, &buf) == null);
+    try testing.expect(bus.drain(boss, 1000, &buf, .none) == null);
 }
 
 test "a notice that waited says how long it has been quiet now" {
@@ -2707,7 +2869,7 @@ test "a notice that waited says how long it has been quiet now" {
     _ = bus.report(worker, quiet(60_000), 1000);
 
     var buf: [255]u8 = undefined;
-    const line = bus.drain(boss, 1000 + 30_000, &buf) orelse return error.ExpectedANotice;
+    const line = bus.drain(boss, 1000 + 30_000, &buf, .none) orelse return error.ExpectedANotice;
     try testing.expect(std.mem.indexOf(u8, line, "quiet 90s") != null);
 }
 
@@ -2720,7 +2882,7 @@ test "a terminal the supervisor never watched is not in the box" {
     _ = bus.report(worker, quiet(60_000), 1000);
 
     var buf: [255]u8 = undefined;
-    try testing.expect(bus.drain(boss, 1000, &buf) == null);
+    try testing.expect(bus.drain(boss, 1000, &buf, .none) == null);
 }
 
 test "the hold is the user's alone -- the supervisor cannot touch it" {
@@ -2776,11 +2938,11 @@ test "a scheduled hand-over holds the notice, because typing is not arrival" {
     var buf: [512]u8 = undefined;
 
     // Handed over, and still there to hand over again.
-    const first = b.take(boss, 1_000, &buf, .hand_over) orelse return error.NothingToSay;
+    const first = b.take(boss, 1_000, &buf, .hand_over, .none) orelse return error.NothingToSay;
     try testing.expect(std.mem.indexOf(u8, first, "quiet") != null);
 
     var buf2: [512]u8 = undefined;
-    const second = b.take(boss, 2_000, &buf2, .hand_over) orelse return error.NothingToSay;
+    const second = b.take(boss, 2_000, &buf2, .hand_over, .none) orelse return error.NothingToSay;
     try testing.expect(std.mem.indexOf(u8, second, "quiet") != null);
 }
 
@@ -2793,11 +2955,11 @@ test "the supervisor reading the box clears it, because that is arrival" {
     _ = b.report(worker, quiet(200_000), 1_000);
 
     var buf: [512]u8 = undefined;
-    _ = b.take(boss, 1_000, &buf, .consume) orelse return error.NothingToSay;
+    _ = b.take(boss, 1_000, &buf, .consume, .none) orelse return error.NothingToSay;
 
     // Nothing left: what it read, it has.
     var buf2: [512]u8 = undefined;
-    try testing.expect(b.take(boss, 2_000, &buf2, .consume) == null);
+    try testing.expect(b.take(boss, 2_000, &buf2, .consume, .none) == null);
 }
 
 test "a notice nobody reads stops repeating rather than stacking up" {
@@ -2814,7 +2976,7 @@ test "a notice nobody reads stops repeating rather than stacking up" {
     var buf: [512]u8 = undefined;
     var handed: usize = 0;
     var at: u64 = 1_000;
-    while (b.take(boss, at, &buf, .hand_over) != null) : (at += 1_000) {
+    while (b.take(boss, at, &buf, .hand_over, .none) != null) : (at += 1_000) {
         handed += 1;
         if (handed > 10) break;
     }
@@ -2853,7 +3015,7 @@ test "standing down stops the interval it was being woken on" {
     _ = b.report(worker, quiet(200_000), 1000);
 
     var buf: [512]u8 = undefined;
-    try testing.expect(b.drainIfDue(boss, 1000, &buf) != null);
+    try testing.expect(b.drainIfDue(boss, 1000, &buf, .none) != null);
 
     b.unwatch(worker);
     try b.standDown(boss);
@@ -2861,7 +3023,7 @@ test "standing down stops the interval it was being woken on" {
     // Nothing is delivered to a terminal that is no longer minding anyone,
     // whatever is in the box.
     _ = b.report(worker, quiet(300_000), 200_000);
-    try testing.expect(b.drainIfDue(boss, 200_000, &buf) == null);
+    try testing.expect(b.drainIfDue(boss, 200_000, &buf, .none) == null);
 }
 
 test "a user who says a supervisor may not stand down is obeyed" {
@@ -3211,7 +3373,7 @@ test "a moving screen with no tool call reaches the supervisor; one that keeps c
     runMoving(&b, &.{ worker, busy }, 0, 16 * std.time.ms_per_min);
 
     var buf: [255]u8 = undefined;
-    const line = b.drain(boss, 16 * std.time.ms_per_min, &buf) orelse
+    const line = b.drain(boss, 16 * std.time.ms_per_min, &buf, .none) orelse
         return error.TestExpectedNotice;
 
     // The positive control, as the words the supervisor reads.
@@ -3248,7 +3410,7 @@ test "a terminal that has never called a tool is not reported as silent" {
 
     try testing.expect(b.callSilentMs(worker, 60 * std.time.ms_per_min) == null);
     var buf: [255]u8 = undefined;
-    const line = b.drain(boss, 60 * std.time.ms_per_min, &buf) orelse
+    const line = b.drain(boss, 60 * std.time.ms_per_min, &buf, .none) orelse
         return error.TestExpectedNotice;
     try testing.expect(std.mem.indexOf(u8, line, "3333 no tool call 60m") != null);
     try testing.expect(std.mem.indexOf(u8, line, "2222") == null);
@@ -3266,7 +3428,7 @@ test "a threshold of zero says nothing about calls, in the box or on the tab" {
     runMoving(&b, &.{worker}, 0, 3 * 60 * std.time.ms_per_min);
 
     var buf: [255]u8 = undefined;
-    try testing.expect(b.drain(boss, 3 * 60 * std.time.ms_per_min, &buf) == null);
+    try testing.expect(b.drain(boss, 3 * 60 * std.time.ms_per_min, &buf, .none) == null);
     try testing.expectEqual(
         TabMark.supervisor,
         b.tabMark(boss, 3 * 60 * std.time.ms_per_min, 1000),
@@ -3284,16 +3446,16 @@ test "the silence is said again a threshold later, and a call ends it" {
     var buf: [255]u8 = undefined;
 
     runMoving(&b, &.{worker}, 0, 15 * std.time.ms_per_min);
-    const first = b.drain(boss, 15 * std.time.ms_per_min, &buf) orelse
+    const first = b.drain(boss, 15 * std.time.ms_per_min, &buf, .none) orelse
         return error.TestExpectedNotice;
     try testing.expect(std.mem.indexOf(u8, first, "2222 no tool call 15m") != null);
 
     // Read, and nothing new until another whole threshold has passed.
     runMoving(&b, &.{worker}, 15 * std.time.ms_per_min + 5000, 29 * std.time.ms_per_min);
-    try testing.expect(b.drain(boss, 29 * std.time.ms_per_min, &buf) == null);
+    try testing.expect(b.drain(boss, 29 * std.time.ms_per_min, &buf, .none) == null);
 
     runMoving(&b, &.{worker}, 29 * std.time.ms_per_min + 5000, 30 * std.time.ms_per_min);
-    const second = b.drain(boss, 30 * std.time.ms_per_min, &buf) orelse
+    const second = b.drain(boss, 30 * std.time.ms_per_min, &buf, .none) orelse
         return error.TestExpectedNotice;
     try testing.expect(std.mem.indexOf(u8, second, "2222 no tool call 30m") != null);
 
@@ -3301,10 +3463,10 @@ test "the silence is said again a threshold later, and a call ends it" {
     // goes; the clock starts from the call.
     runMoving(&b, &.{worker}, 30 * std.time.ms_per_min + 5000, 45 * std.time.ms_per_min);
     b.noteCall(worker, 45 * std.time.ms_per_min);
-    try testing.expect(b.drain(boss, 45 * std.time.ms_per_min, &buf) == null);
+    try testing.expect(b.drain(boss, 45 * std.time.ms_per_min, &buf, .none) == null);
 
     runMoving(&b, &.{worker}, 45 * std.time.ms_per_min, 60 * std.time.ms_per_min);
-    const third = b.drain(boss, 60 * std.time.ms_per_min, &buf) orelse
+    const third = b.drain(boss, 60 * std.time.ms_per_min, &buf, .none) orelse
         return error.TestExpectedNotice;
     try testing.expect(std.mem.indexOf(u8, third, "2222 no tool call 15m") != null);
 }
@@ -3323,7 +3485,7 @@ test "a clocked off terminal is not reported for not calling" {
     runMoving(&b, &.{}, 0, 20 * std.time.ms_per_min);
 
     var buf: [255]u8 = undefined;
-    const line = b.drain(boss, 20 * std.time.ms_per_min, &buf) orelse
+    const line = b.drain(boss, 20 * std.time.ms_per_min, &buf, .none) orelse
         return error.TestExpectedNotice;
     try testing.expect(std.mem.indexOf(u8, line, "3333 no tool call 20m") != null);
     try testing.expect(std.mem.indexOf(u8, line, "2222") == null);
@@ -3345,7 +3507,7 @@ test "a silent supervisor's flag goes hollow, and a call fills it again" {
     // And not in its own box, where nobody would see it.
     _ = b.considerCalls(t15);
     var buf: [255]u8 = undefined;
-    try testing.expect(b.drain(boss, t15, &buf) == null);
+    try testing.expect(b.drain(boss, t15, &buf, .none) == null);
 
     b.noteCall(boss, t15 + 1000);
     try testing.expectEqual(TabMark.supervisor, b.tabMark(boss, t15 + 1000, 1000));
@@ -3389,10 +3551,10 @@ test "hooks: expected with no session_started for 30s is put in the box" {
 
     try testing.expect(!b.considerAgents(hooks_expected_timeout_ms - 1));
     var buf: [255]u8 = undefined;
-    try testing.expect(b.drain(boss, hooks_expected_timeout_ms - 1, &buf) == null);
+    try testing.expect(b.drain(boss, hooks_expected_timeout_ms - 1, &buf, .none) == null);
 
     try testing.expect(b.considerAgents(hooks_expected_timeout_ms));
-    const line = b.drain(boss, hooks_expected_timeout_ms, &buf) orelse
+    const line = b.drain(boss, hooks_expected_timeout_ms, &buf, .none) orelse
         return error.TestExpectedNotice;
     try testing.expect(std.mem.indexOf(u8, line, "0x0000000000002222 hooks expected 30s ago") != null);
 
@@ -3410,7 +3572,7 @@ test "hooks: session_started in time means nothing is ever said about the wait" 
 
     try testing.expect(!b.considerAgents(10 * hooks_expected_timeout_ms));
     var buf: [255]u8 = undefined;
-    try testing.expect(b.drain(boss, 10 * hooks_expected_timeout_ms, &buf) == null);
+    try testing.expect(b.drain(boss, 10 * hooks_expected_timeout_ms, &buf, .none) == null);
 }
 
 test "hooks: a wait reported and then answered before anyone read it is taken back" {
@@ -3422,7 +3584,7 @@ test "hooks: a wait reported and then answered before anyone read it is taken ba
     _ = try b.agentEvent(worker, hookEv(.session_started), hooks_expected_timeout_ms + 1);
 
     var buf: [255]u8 = undefined;
-    try testing.expect(b.drain(boss, hooks_expected_timeout_ms + 2, &buf) == null);
+    try testing.expect(b.drain(boss, hooks_expected_timeout_ms + 2, &buf, .none) == null);
 }
 
 test "hooks: turn ended goes in the box with the start of the answer" {
@@ -3435,7 +3597,7 @@ test "hooks: turn ended goes in the box with the start of the answer" {
     try testing.expect(try b.agentEvent(worker, ev, 1_000));
 
     var buf: [255]u8 = undefined;
-    const line = b.drain(boss, 13_000, &buf) orelse return error.TestExpectedNotice;
+    const line = b.drain(boss, 13_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
         "[poltergeist] 0x0000000000002222 turn ended 12s ago: \"已修好 #845，全量 104/104 second line\"",
         line,
@@ -3456,7 +3618,7 @@ test "hooks: an answer longer than the line is cut on a character boundary and s
     _ = try b.agentEvent(worker, ev, 0);
 
     var buf: [255]u8 = undefined;
-    const line = b.drain(boss, 0, &buf) orelse return error.TestExpectedNotice;
+    const line = b.drain(boss, 0, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expect(line.len <= buf.len);
     try testing.expect(std.unicode.utf8ValidateSlice(line));
     try testing.expect(std.mem.endsWith(u8, line, "\u{2026}\""));
@@ -3471,14 +3633,14 @@ test "hooks: failed and awaiting approval read as themselves" {
     failed.detail = "rate_limit";
     _ = try b.agentEvent(worker, failed, 0);
     var buf: [255]u8 = undefined;
-    const one = b.drain(boss, 0, &buf) orelse return error.TestExpectedNotice;
+    const one = b.drain(boss, 0, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings("[poltergeist] 0x0000000000002222 failed rate_limit", one);
 
     var ask = hookEv(.awaiting_approval);
     ask.detail = "Bash";
     ask.note = "zig build test";
     _ = try b.agentEvent(worker, ask, 0);
-    const two = b.drain(boss, 0, &buf) orelse return error.TestExpectedNotice;
+    const two = b.drain(boss, 0, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
         "[poltergeist] 0x0000000000002222 awaiting approval Bash: zig build test",
         two,
@@ -3496,7 +3658,7 @@ test "hooks: a new turn makes the last one's notice stale" {
     _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
 
     var buf: [255]u8 = undefined;
-    try testing.expect(b.drain(boss, 2_000, &buf) == null);
+    try testing.expect(b.drain(boss, 2_000, &buf, .none) == null);
     // The answer is still there for `terminal_turn`.
     try testing.expectEqualStrings("done", b.turnOf(worker).?.text);
 }
@@ -3511,10 +3673,10 @@ test "hooks: live and ended, a still screen is not reported again as quiet" {
     ev.text_bytes = 4;
     _ = try b.agentEvent(worker, ev, 0);
     var buf: [255]u8 = undefined;
-    _ = b.drain(boss, 0, &buf);
+    _ = b.drain(boss, 0, &buf, .none);
 
     _ = b.report(worker, quiet(60_000), 60_000);
-    try testing.expect(b.drain(boss, 60_000, &buf) == null);
+    try testing.expect(b.drain(boss, 60_000, &buf, .none) == null);
 }
 
 test "hooks: live and in a turn, a still screen is reported with how long the turn has run" {
@@ -3526,7 +3688,7 @@ test "hooks: live and in a turn, a still screen is reported with how long the tu
 
     _ = b.report(worker, quiet(60_000), 3 * std.time.ms_per_min);
     var buf: [255]u8 = undefined;
-    const line = b.drain(boss, 3 * std.time.ms_per_min, &buf) orelse
+    const line = b.drain(boss, 3 * std.time.ms_per_min, &buf, .none) orelse
         return error.TestExpectedNotice;
     try testing.expectEqualStrings(
         "[poltergeist] 0x0000000000002222 quiet 60s (in turn 3m)",
@@ -3541,7 +3703,7 @@ test "hooks: live and idle, or no hooks at all, a still screen is reported as be
     _ = try b.agentEvent(worker, hookEv(.session_started), 0);
     _ = b.report(worker, quiet(60_000), 60_000);
     var buf: [255]u8 = undefined;
-    const idle = b.drain(boss, 60_000, &buf) orelse return error.TestExpectedNotice;
+    const idle = b.drain(boss, 60_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings("[poltergeist] 0x0000000000002222 quiet 60s", idle);
 
     // `expected` is not `live`: until the hooks have spoken, nothing they
@@ -3551,7 +3713,7 @@ test "hooks: live and idle, or no hooks at all, a still screen is reported as be
     _ = try c.agentEvent(worker, hookEv(.hooks_expected), 0);
     c.entries.getPtr(worker).?.agent.state = .ended;
     _ = c.report(worker, quiet(60_000), 1_000);
-    const expected = c.drain(boss, 1_000, &buf) orelse return error.TestExpectedNotice;
+    const expected = c.drain(boss, 1_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expect(std.mem.indexOf(u8, expected, "quiet 60s") != null);
 }
 
@@ -3566,7 +3728,7 @@ test "hooks: an unwatched terminal's events are kept but go in nobody's box" {
     try testing.expect(!try b.agentEvent(worker, ev, 0));
     try testing.expectEqual(AgentState.ended, b.agentOf(worker).state);
     var buf: [255]u8 = undefined;
-    try testing.expect(b.drain(boss, 0, &buf) == null);
+    try testing.expect(b.drain(boss, 0, &buf, .none) == null);
 }
 
 test "hooks 879: a screen that moved after awaiting approval, and then went still, is reported quiet" {
@@ -3585,13 +3747,13 @@ test "hooks 879: a screen that moved after awaiting approval, and then went stil
     ask.detail = "Bash";
     _ = try b.agentEvent(worker, ask, 1_000);
     var buf: [255]u8 = undefined;
-    _ = b.drain(boss, 1_000, &buf);
+    _ = b.drain(boss, 1_000, &buf, .none);
 
     // The person declines at 30s: the screen redraws, then stays still.
     b.noteQuiet(worker, 0, 30_000);
     _ = b.report(worker, quiet(60_000), 90_000);
 
-    const line = b.drain(boss, 90_000, &buf) orelse return error.TestExpectedNotice;
+    const line = b.drain(boss, 90_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
         "[poltergeist] 0x0000000000002222 quiet 60s (last event: awaiting approval 89s ago)",
         line,
@@ -3608,11 +3770,11 @@ test "hooks 879: the screen drawing the event itself does not count as moving af
     _ = try b.agentEvent(worker, hookEv(.session_started), 0);
     _ = try b.agentEvent(worker, hookEv(.awaiting_approval), 10_000);
     var buf: [255]u8 = undefined;
-    _ = b.drain(boss, 10_000, &buf);
+    _ = b.drain(boss, 10_000, &buf, .none);
 
     b.noteQuiet(worker, 0, 10_000 + event_redraw_grace_ms);
     _ = b.report(worker, quiet(60_000), 10_000 + event_redraw_grace_ms + 60_000);
-    try testing.expect(b.drain(boss, 10_000 + event_redraw_grace_ms + 60_000, &buf) == null);
+    try testing.expect(b.drain(boss, 10_000 + event_redraw_grace_ms + 60_000, &buf, .none) == null);
 }
 
 test "hooks 879: a turn that ended and then saw the screen move is reported quiet too" {
@@ -3625,13 +3787,13 @@ test "hooks 879: a turn that ended and then saw the screen move is reported quie
     ev.text_bytes = 4;
     _ = try b.agentEvent(worker, ev, 0);
     var buf: [255]u8 = undefined;
-    _ = b.drain(boss, 0, &buf);
+    _ = b.drain(boss, 0, &buf, .none);
 
     // Something drew on the screen long after the turn ended -- the person
     // typing, a CLI interrupted mid-turn -- and no hook said a word.
     b.noteQuiet(worker, 0, 20_000);
     _ = b.report(worker, quiet(40_000), 60_000);
-    const line = b.drain(boss, 60_000, &buf) orelse return error.TestExpectedNotice;
+    const line = b.drain(boss, 60_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
         "[poltergeist] 0x0000000000002222 quiet 40s (last event: turn ended 60s ago)",
         line,

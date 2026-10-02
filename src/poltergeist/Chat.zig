@@ -534,6 +534,38 @@ pub fn isMember(self: *const Chat, name: []const u8, id: Id) bool {
     return group.members.contains(id);
 }
 
+/// Whether two terminals are members of at least one group together.
+///
+/// Membership and nothing finer: not who made the group, not whether
+/// either has read anything in it. A group restored after a restart has
+/// its name and nobody in it, so it joins nobody to anybody until they are
+/// added back -- which is the same judgement `group_list` leaves to the
+/// supervisor.
+pub fn sharesGroup(self: *const Chat, one: Id, other: Id) bool {
+    var it = self.groups.valueIterator();
+    while (it.next()) |group| {
+        if (group.members.contains(one) and group.members.contains(other)) return true;
+    }
+    return false;
+}
+
+/// The answer the bus asks for when a watched terminal has no minder and
+/// there is more than one supervisor to hear about it (#1064): the ones in
+/// a group with it. The chat depends on the bus, never the other way
+/// round, so the bus names the question (`Bus.Peers`) and this is the only
+/// place that knows groups are how it is answered.
+///
+/// ⚠️ Holds a pointer to this chat: for the length of one call, not to be
+/// kept.
+pub fn peers(self: *const Chat) Bus.Peers {
+    return .{ .ctx = self, .shareFn = sharesGroupOpaque };
+}
+
+fn sharesGroupOpaque(ctx: ?*const anyopaque, supervisor: Id, terminal: Id) bool {
+    const self: *const Chat = @ptrCast(@alignCast(ctx.?));
+    return self.sharesGroup(supervisor, terminal);
+}
+
 /// Where a member's view of a group begins, in both numberings.
 pub const Floor = struct { seq: u64 = 0, log_seq: u64 = 0, barred: bool = false };
 
@@ -1311,6 +1343,73 @@ test "a group starts with its creator in it" {
     try chat.create("build", boss);
     try testing.expect(chat.isMember("build", boss));
     try testing.expect(!chat.isMember("build", a));
+}
+
+test "#1064: a terminal the user watched reports to the supervisor it is in a group with, not to every one" {
+    // The real chat behind the real bus, in the shape that was measured:
+    // two supervisors on unrelated work, a terminal watched from the tab
+    // menu (so nobody's), and the `no tool call` clock running on it.
+    var chat = testChat();
+    defer chat.deinit();
+    var bus: Bus = .init(testing.allocator, .{});
+    defer bus.deinit();
+
+    const s1: Id = 0x1111;
+    const s2: Id = 0x4444;
+    const w: Id = 0x2222;
+    try bus.addSupervisor(s1);
+    try bus.addSupervisor(s2);
+    try bus.watch(w, null);
+
+    try chat.create("video", s1);
+    try chat.add("video", w, .all, .{});
+    try chat.create("port", s2);
+
+    try testing.expect(chat.sharesGroup(s1, w));
+    try testing.expect(!chat.sharesGroup(s2, w));
+
+    const late = 16 * std.time.ms_per_min;
+    bus.noteCall(w, 0);
+    try testing.expect(bus.considerCalls(late));
+
+    // The scheduled hand-over to the unrelated supervisor: nothing, and
+    // none of the three the notice gets is spent on it.
+    var buf: [255]u8 = undefined;
+    const stray = bus.drainIfDue(s2, late, &buf, chat.peers());
+    try testing.expect(stray == null);
+    try testing.expectEqual(@as(u8, 0), bus.get(w).?.silent_handed);
+
+    const line = bus.drainIfDue(s1, late, &buf, chat.peers()) orelse
+        return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "0x0000000000002222 no tool call 16m") != null);
+    try testing.expectEqual(@as(u8, 1), bus.get(w).?.silent_handed);
+
+    // Put in a group with the second one as well, and it hears too: the
+    // rule is membership, not who got there first.
+    try chat.add("port", w, .all, .{});
+    const both = bus.drain(s2, late, &buf, chat.peers());
+    try testing.expect(both != null);
+}
+
+test "#1064: a lone supervisor hears a terminal the user watched, in a group with it or not" {
+    var chat = testChat();
+    defer chat.deinit();
+    var bus: Bus = .init(testing.allocator, .{});
+    defer bus.deinit();
+
+    const s1: Id = 0x1111;
+    const w: Id = 0x2222;
+    try bus.addSupervisor(s1);
+    try bus.watch(w, null);
+    try testing.expect(!chat.sharesGroup(s1, w));
+
+    const late = 16 * std.time.ms_per_min;
+    bus.noteCall(w, 0);
+    try testing.expect(bus.considerCalls(late));
+
+    var buf: [255]u8 = undefined;
+    const line = bus.drain(s1, late, &buf, chat.peers());
+    try testing.expect(line != null);
 }
 
 test "group names are restricted" {
