@@ -938,14 +938,14 @@ fn overwrite_selected() {
 }
 
 /// "+": the current tab as a new project, through the window the menu row
-/// opens. It belongs to the terminal window; the list reads the new project
-/// when this window is active again (`activated`).
+/// opens, in front of this one; the list reads the new project when this
+/// window is active again (`activated`).
 fn save_new() {
     let Some((frame, tab, _)) = current_tab() else {
         say(tr("There is no terminal window to open the project in."), true);
         return;
     };
-    crate::project_picker::open_save(frame, tab);
+    crate::project_picker::open_save_over(owner(), frame, tab);
 }
 
 /// Show in Explorer (§6.2): the project's folder, **with its file selected**.

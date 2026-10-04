@@ -39,8 +39,8 @@ use windows::Win32::Foundation::{COLORREF, HANDLE, HWND, LPARAM, LRESULT, RECT, 
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Controls::{
-    CDDS_PREPAINT, CDIS_DISABLED, CDIS_FOCUS, CDIS_HOT, CDIS_SELECTED, CDRF_SKIPDEFAULT, DRAWITEMSTRUCT, NMCUSTOMDRAW, NM_CUSTOMDRAW,
-    ODS_SELECTED,
+    SetWindowTheme, CDDS_PREPAINT, CDIS_DISABLED, CDIS_FOCUS, CDIS_HOT, CDIS_SELECTED, CDRF_SKIPDEFAULT, DRAWITEMSTRUCT, NMCUSTOMDRAW,
+    NM_CUSTOMDRAW, ODS_SELECTED,
 };
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -145,6 +145,8 @@ fn handles() -> Option<Handles> {
     HANDLES.with(|h| h.get())
 }
 
+
+
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
@@ -175,20 +177,29 @@ unsafe extern "system" fn load_timer(_: HWND, _: u32, id: usize, _: u32) {
     if frame.0.is_null() {
         return;
     }
-    open(frame, Purpose::Load);
+    open(frame, frame, Purpose::Load);
 }
 
 /// Open the window to save tab `tab` of `frame` as a project. **Main thread
 /// only** -- it makes windows.
 pub fn open_save(frame: HWND, tab: TabId) {
-    open(frame, Purpose::Save { tab, close_after: None });
+    open(frame, frame, Purpose::Save { tab, close_after: None });
+}
+
+/// The same, asked for from another window -- the settings window's "+".
+/// **The window belongs to `owner`, the one the person is looking at**: owned
+/// by the terminal window instead, one click on the settings window put it
+/// behind that window with nothing to say it was still there. What is saved
+/// is still `frame`'s tab.
+pub fn open_save_over(owner: HWND, frame: HWND, tab: TabId) {
+    open(owner, frame, Purpose::Save { tab, close_after: None });
 }
 
 /// The same, from "Save as a Project Before Closing?" (settings.md §6.3):
 /// the tab -- or, with `whole_window`, its window -- closes once the save has
 /// worked, and only then (`ProjectSaveBeforeClose.saveThenClose`).
 pub fn open_save_then_close(frame: HWND, tab: TabId, whole_window: bool) {
-    open(frame, Purpose::Save { tab, close_after: Some(whole_window) });
+    open(frame, frame, Purpose::Save { tab, close_after: Some(whole_window) });
 }
 
 /// The saved projects, newest first, as `ProjectStore.list` orders them on
@@ -227,7 +238,9 @@ fn panes_of(frame: HWND, tab: TabId) -> Option<usize> {
     crate::tabs::tab_pane_count(frame, index).filter(|(t, _)| *t == tab).map(|(_, n)| n)
 }
 
-fn open(frame: HWND, purpose: Purpose) {
+/// `owner` is the window this one stays in front of and opens on the
+/// monitor of; `frame` is the terminal window it loads into or saves from.
+fn open(owner: HWND, frame: HWND, purpose: Purpose) {
     // One picker: a second request replaces the first, as `present` does on
     // macOS.
     dismiss();
@@ -247,18 +260,19 @@ fn open(frame: HWND, purpose: Purpose) {
         }),
     };
 
-    let dpi = (unsafe { GetDpiForWindow(frame) } as i32).max(96);
+    let owner = if owner.0.is_null() { frame } else { owner };
+    let dpi = (unsafe { GetDpiForWindow(owner) } as i32).max(96);
     let (cw, ch) = (pj_scale(picker::WIDTH, dpi), pj_scale(picker::HEIGHT, dpi));
     let mut outer = RECT { left: 0, top: 0, right: cw, bottom: ch };
     let _ = unsafe { AdjustWindowRectExForDpi(&mut outer, STYLE, false, EX_STYLE, dpi as u32) };
     let (ow, oh) = (outer.right - outer.left, outer.bottom - outer.top);
-    // The middle of the monitor the terminal window is on.
+    // The middle of the monitor its owner is on.
     let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-    let work = if unsafe { GetMonitorInfoW(MonitorFromWindow(frame, MONITOR_DEFAULTTONEAREST), &mut mi) }.as_bool() {
+    let work = if unsafe { GetMonitorInfoW(MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST), &mut mi) }.as_bool() {
         SRect::new(mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom)
     } else {
         let mut fr = RECT::default();
-        let _ = unsafe { GetWindowRect(frame, &mut fr) };
+        let _ = unsafe { GetWindowRect(owner, &mut fr) };
         SRect::new(fr.left, fr.top, fr.right, fr.bottom)
     };
     let (x, y) = picker::centred(work, ow, oh);
@@ -269,7 +283,7 @@ fn open(frame: HWND, purpose: Purpose) {
         // Who has the keyboard now, read before the window can take it.
         let prev = GetFocus();
         let title = wide(&tr(purpose.title()));
-        let hwnd = CreateWindowExW(EX_STYLE, w!("PolterProjectPicker"), PCWSTR(title.as_ptr()), STYLE, x, y, ow, oh, Some(frame), None, None, None);
+        let hwnd = CreateWindowExW(EX_STYLE, w!("PolterProjectPicker"), PCWSTR(title.as_ptr()), STYLE, x, y, ow, oh, Some(owner), None, None, None);
         let Ok(hwnd) = hwnd else {
             wlogf!(frame, "[project] CreateWindowExW failed; {} window not shown", purpose.title());
             return;
@@ -309,11 +323,18 @@ fn open(frame: HWND, purpose: Purpose) {
             Some(r) => child(w!("BUTTON"), &tr("Save"), BS_DEFPUSHBUTTON as u32 | WS_TABSTOP.0 | WS_DISABLED.0, r, ID_SAVE),
             None => HWND::default(),
         };
-        let cancel = child(w!("BUTTON"), &tr("Cancel"), BS_PUSHBUTTON as u32 | WS_TABSTOP.0, l.cancel, ID_CANCEL);
         // `LBS_HASSTRINGS` with owner drawing: each row's string is the
         // project's name, which is what a UI Automation client reads.
+        // **Made before Cancel**: Tab goes through the controls in the order
+        // they were made, and the list is above Cancel on screen.
         let list_style = (LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32 | WS_VSCROLL.0 | WS_TABSTOP.0;
         let list = child(w!("LISTBOX"), "", list_style, l.list, ID_LIST);
+        if theme::custom_drawing() && !list.0.is_null() {
+            // The list's scrollbar in the dark theme, as the role library's
+            // lists have it; without this it is the system's light one.
+            let _ = SetWindowTheme(list, w!("DarkMode_Explorer"), PCWSTR::null());
+        }
+        let cancel = child(w!("BUTTON"), &tr("Cancel"), BS_PUSHBUTTON as u32 | WS_TABSTOP.0, l.cancel, ID_CANCEL);
         if field.0.is_null() || list.0.is_null() || cancel.0.is_null() {
             let _ = DestroyWindow(hwnd);
             wlogf!(frame, "[project] a control could not be made; {} window not shown", purpose.title());

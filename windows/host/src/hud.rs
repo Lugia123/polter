@@ -234,17 +234,41 @@ static SEC_SHOWN_FOR: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomic
 /// window" rather than inventing one. **A surface pointer in the text is not
 /// a substitute**: it names a terminal, and the question a reader of a
 /// two-window log is asking is which *window* the line came from.
-/// Make `me` owned by `frame` and answer where it goes in the z-order: the
-/// top of the non-topmost band, which an owned window never falls below its
-/// owner in. **Re-owned at every placement**, because one sign is shared by
-/// every terminal window and is placed over whichever one it is about.
+/// Make `me` owned by `frame` and answer where it goes in the z-order:
+/// **directly above `frame`, and under whatever is above that.**
+/// **Re-owned at every placement**, because one sign is shared by every
+/// terminal window and is placed over whichever one it is about.
+///
+/// This used to answer `HWND_TOP`, the top of the non-topmost band, on the
+/// reasoning that an owned window never falls below its owner. That is true
+/// and it is not the same as staying with it. Measured on the test machine
+/// with `ping` scrolling: the scrollbar of a terminal window lying *behind*
+/// the settings window was drawn down the middle of the settings window, and
+/// down the name field of the project picker in front of both. Every line
+/// the terminal printed placed the sign again, at the top of everything this
+/// program had on screen.
+///
+/// So the sign goes after the window that is just above `frame` now. With
+/// the terminal window in front that is the top, as before; with something
+/// over it, the sign is under that thing, where its terminal is.
 fn above(me: HWND, frame: HWND) -> HWND {
-    if !frame.0.is_null() {
-        unsafe {
-            SetWindowLongPtrW(me, GWLP_HWNDPARENT, frame.0 as isize);
+    if frame.0.is_null() {
+        return HWND_TOP;
+    }
+    unsafe {
+        SetWindowLongPtrW(me, GWLP_HWNDPARENT, frame.0 as isize);
+        // The window above the terminal window, not counting this sign,
+        // which is usually the one there already.
+        let mut over = GetWindow(frame, GW_HWNDPREV).unwrap_or_default();
+        if over == me {
+            over = GetWindow(over, GW_HWNDPREV).unwrap_or_default();
+        }
+        if over.0.is_null() {
+            HWND_TOP
+        } else {
+            over
         }
     }
-    HWND_TOP
 }
 
 fn frame_hwnd_of(surface: usize) -> HWND {
