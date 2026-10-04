@@ -2052,7 +2052,9 @@ pub fn errorMessage(err: Error) []const u8 {
             "Terminals carrying no mark are open to you. If co-ordinating is your job, " ++
             "call become_supervisor and try again; otherwise ask the user",
         error.AuthoriseOff => "the user has not allowed a supervisor to answer that " ++
-            "terminal's permission prompts. It is off until they switch it on from that " ++
+            "terminal's permission prompts. A terminal a supervisor opened starts " ++
+            "with it on; this one either was not opened by a supervisor or has had " ++
+            "it switched off. It is off until they switch it on from that " ++
             "terminal's own right-click menu, or the app menu, and nothing here can " ++
             "switch it on -- not being a " ++
             "supervisor, not asking again. A worker stopped on a prompt therefore stays " ++
@@ -2583,7 +2585,7 @@ test "#989: a worker an agent opened is closed without asking, even after it was
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
-    try b.markOpenedByAgent(other);
+    try b.markOpenedByAgent(other, boss);
     try b.watch(other, boss);
     b.unwatch(other);
     try testing.expectEqual(Bus.Role.none, b.roleOf(other));

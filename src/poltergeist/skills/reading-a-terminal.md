@@ -32,11 +32,12 @@ The agent has asked something and stopped. Signs: a question ending in a
 prompt; a permission or approval dialog; a numbered list of choices; an
 input box with a cursor and nothing else happening.
 
-**Do not answer it.** If it is a permission prompt, that is the user's to
-answer — unless they have said otherwise for that terminal, which they do from
-its own right-click menu and which you cannot do for them. `terminal_answer_prompt`
-tells you which it is: refused with `AuthoriseOff` means it is still the
-user's. If it is an ordinary question the agent asked its user, you may
+**Do not answer it** — unless it is a permission prompt in a terminal where
+you may. That is so in a terminal a supervisor opened (unless the user has
+switched it off there), and in any other terminal only once the user has said
+so from its own right-click menu, which you cannot do for them.
+`terminal_answer_prompt` tells you which it is: refused with `AuthoriseOff`
+means it is still the user's. If it is an ordinary question the agent asked its user, you may
 answer it *if you know the answer from the task at hand* — but if you are
 guessing, leave it. A wrong answer here is worse than a delay.
 

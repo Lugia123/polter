@@ -401,6 +401,24 @@ pub const Entry = struct {
     /// stops the dedicated tool and the casual keypress, and **leaves a
     /// published, logged bypass rather than a silent one**. See the note on
     /// `rpc.authorize`.
+    ///
+    /// **On from the start in a terminal a supervisor opened**
+    /// (`markOpenedByAgent`), by the user's decision of 2026-10-04. Every
+    /// line above is about a terminal the person started themselves, and it
+    /// still holds there: off until they switch it on, and no tool switches
+    /// it on. A tab or a split a supervisor opened is a different thing --
+    /// the supervisor put the agent in it and is the one minding it, and a
+    /// worker stopped on a box at three in the morning with nobody allowed
+    /// to answer is the night the whole arrangement exists to prevent. So
+    /// the grant is made once, by the program, at the moment the terminal is
+    /// recorded as agent-opened; it is not something a supervisor can ask
+    /// for afterwards, and `setMayAuthorise` still refuses everybody but the
+    /// user -- who can switch it off again from the same menu.
+    ///
+    /// ⚠️ **What that default opens**, in the words used above: a supervisor
+    /// can open a terminal in a directory and take `Yes, and don't ask
+    /// again` there, which is a standing permission for every agent that
+    /// runs in that directory afterwards.
     may_authorise: bool = false,
 
     /// Whether the workers this supervisor minds may name each other in a
@@ -656,12 +674,20 @@ pub fn unregister(self: *Bus, id: Id) void {
     if (self.turns.fetchRemove(id)) |kv| self.alloc.free(kv.value.text);
 }
 
-/// Record that an agent opened this terminal (`Entry.opened_by_agent`).
-/// Registers it if the bus has not heard of it yet: a terminal the tool
-/// surface has just made is usually exactly that.
-pub fn markOpenedByAgent(self: *Bus, id: Id) Allocator.Error!void {
+/// Record that the agent in `by` opened this terminal
+/// (`Entry.opened_by_agent`). Registers it if the bus has not heard of it
+/// yet: a terminal the tool surface has just made is usually exactly that.
+///
+/// **When `by` is a supervisor, that supervisor may answer the new
+/// terminal's permission prompts from the start** -- see
+/// `Entry.may_authorise`. Decided on who is asking *now*: a terminal a
+/// plain worker opened carries no grant, and one that becomes a supervisor
+/// later does not go back and collect it.
+pub fn markOpenedByAgent(self: *Bus, id: Id, by: Id) Allocator.Error!void {
     try self.register(id);
-    self.entries.getPtr(id).?.opened_by_agent = true;
+    const e = self.entries.getPtr(id).?;
+    e.opened_by_agent = true;
+    if (self.isSupervisor(by)) e.may_authorise = true;
 }
 
 /// Whether an agent opened this terminal. False for one the bus has never
@@ -2078,7 +2104,7 @@ test "who opened a terminal outlives its being let go, and goes with it" {
     var b: Bus = .init(testing.allocator, .{});
     defer b.deinit();
     try b.addSupervisor(1);
-    try b.markOpenedByAgent(2);
+    try b.markOpenedByAgent(2, 1);
     try b.watch(2, 1);
     b.unwatch(2);
     try testing.expectEqual(Role.none, b.roleOf(2));
@@ -3307,6 +3333,55 @@ test "only the user may let a supervisor answer prompts, and it starts off" {
     try testing.expect(b.mayAuthorise(worker));
 
     try b.setMayAuthorise(worker, false, .user);
+    try testing.expect(!b.mayAuthorise(worker));
+}
+
+test "a terminal a supervisor opened lets a supervisor answer its prompts from the start" {
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+
+    // The supervisor opened it: the grant is there before anybody has
+    // touched a menu.
+    try b.markOpenedByAgent(worker, boss);
+    try testing.expect(b.openedByAgent(worker));
+    try testing.expect(b.mayAuthorise(worker));
+
+    // It is a default, not a lock: the user switches it off like any other,
+    // and marking the same terminal again is the only thing that would put
+    // it back -- which happens once, when it is opened.
+    try b.setMayAuthorise(worker, false, .user);
+    try testing.expect(!b.mayAuthorise(worker));
+
+    // And still nothing an agent can do afterwards turns it on.
+    try testing.expectError(
+        error.NotPermitted,
+        b.setMayAuthorise(worker, true, .supervisor),
+    );
+    try testing.expect(!b.mayAuthorise(worker));
+}
+
+test "a terminal opened by an agent that is not a supervisor carries no grant" {
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    const plain: Id = 0x7001;
+    const opened: Id = 0x7002;
+    try b.register(plain);
+
+    // `terminal_open` is not a supervisor's alone. A worker that opens a
+    // terminal has opened it -- it may close it without a question -- and
+    // that is all: no supervisor asked for this one.
+    try b.markOpenedByAgent(opened, plain);
+    try testing.expect(b.openedByAgent(opened));
+    try testing.expect(!b.mayAuthorise(opened));
+
+    // Becoming a supervisor afterwards does not go back for it.
+    try b.addSupervisor(plain);
+    try testing.expect(!b.mayAuthorise(opened));
+
+    // And the terminal the person started is as it always was.
+    try b.register(worker);
     try testing.expect(!b.mayAuthorise(worker));
 }
 

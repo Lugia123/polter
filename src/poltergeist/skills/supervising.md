@@ -589,10 +589,13 @@ compacted.
 
 **Start it in a mode that can run unattended.** This is part of starting an
 agent, not a detail to settle afterwards, because afterwards is too late: a
-worker stopped on a permission prompt stays stopped, and by default you cannot
-answer it. `terminal_answer_prompt` exists, but it is refused at every terminal
-whose user has not switched it on from that terminal's own right-click menu — you
-cannot switch it on, and asking again will not change it. So plan for the
+worker stopped on a permission prompt stays stopped until somebody answers it.
+In a terminal you opened yourself, that can be you: `terminal_answer_prompt`
+is on there from the start, unless the user has switched it off. In a terminal
+the user started it is refused until they switch it on from that terminal's own
+right-click menu — you cannot switch it on, and asking again will not change
+it. Being allowed to answer is not a reason to leave a worker to stop every
+few minutes, and for the terminals where you may not, plan for the
 default: the notification that fetches somebody goes out at whatever hour it
 happens, since `authorisation` is
 the one reason that ignores the user's quiet window. So the choice is between
@@ -787,8 +790,9 @@ tool here reads it; tell the person the path.
 
 `notify_user` asks for the person to be told, and the reason matters:
 
-- **`authorisation`** — a permission prompt. Unless that terminal's user has
-  switched on `terminal_answer_prompt` for it, nobody may answer it for them,
+- **`authorisation`** — a permission prompt you may not answer: a terminal
+  you did not open whose user has not switched on `terminal_answer_prompt`
+  for it, or one where they switched it off. Nobody may answer it for them,
   so these go at any hour. Send as soon as you have looked and seen it.
 - **`scheduling`** — something you *could* decide. Not sent during the user's
   quiet hours; decide it and say so in the group. That is what unattended
@@ -889,9 +893,11 @@ to its work or release one that is held.
 
 **And one that depends on the user, per terminal.** Answering another agent's
 permission prompt used to be in that first list. It is now
-`terminal_answer_prompt`, and it is refused unless the user has switched it on
-for that terminal from its own right-click menu — a switch nothing you can call will
-set. With it off, the answer is what it always was: say which terminal is
+`terminal_answer_prompt`. It is on from the start in a terminal a supervisor
+opened, and refused everywhere else unless the user has switched it on for
+that terminal from its own right-click menu — a switch nothing you can call
+will set, and one the user can switch off in a terminal you opened. With it
+off, the answer is what it always was: say which terminal is
 stopped and on what, and do not type `yes` into it.
 
 ⚠️ **Two things about that switch you should know before you meet it.** With

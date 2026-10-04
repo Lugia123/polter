@@ -46,7 +46,7 @@ The supervisor is not polling. Polter pushes a notice when a screen has stopped 
 
 - **Roles.** A role is a saved way to start an agent CLI: which of its skills and MCP servers it keeps, what it is told on top of its system prompt, which model. They live under `Agents → Role`, and a supervisor can start its own workers wearing one.
 - **Projects.** `Project → Save as Project…` keeps a tab — its splits, each pane's directory, command history and scrollback — and `Load Project…` brings it back. macOS and Windows; not on Linux.
-- **Who may answer a prompt.** Off everywhere. You can let a supervisor answer permission prompts in one terminal (`Agents → Let a Supervisor Answer Prompts Here`); no tool can switch it on.
+- **Who may answer a prompt.** A supervisor may answer permission prompts in the terminals it opened itself, and in no others unless you say so, one terminal at a time (`Agents → Let a Supervisor Answer Prompts Here`). No tool can switch it on, and you can switch it off in a terminal the supervisor opened.
 - **English and Chinese.** The menus and windows follow the system language, or the one picked under `Language`.
 
 Two things are in the tree and not in a release yet: one **settings window** for roles, projects, plugins and the config file, and **hooks** — a Claude Code started from a role tells Polter when a turn ends and what it said, so the supervisor is told rather than left to read a still screen.
@@ -122,7 +122,7 @@ Everything lands under `$XDG_STATE_HOME/polter/`: `chat/` is what the agents sai
 
 ### What it doesn't do today
 
-- **Won't answer a permission prompt for an agent unless you said it may, for that terminal.** Otherwise it tells you instead.
+- **Won't answer a permission prompt in a terminal you started, unless you said it may there.** It tells you instead. In a terminal the supervisor opened, it may.
 - **Won't let an agent undo a lock you set.** The hold and the shield are yours to set and yours to lift.
 - **Won't grow into a task system.** The panel holds who is on what, and whether it's done.
 - **Won't be a way around an agent's own permissions.** `terminal_send` sends text only, down the paste path, with control bytes turned into spaces.

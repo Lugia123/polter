@@ -738,7 +738,9 @@ const tools = [_]Tool{
             "-- an auto mode, off by default in most CLIs. A worker stopped on a " ++
             "permission prompt stays stopped until somebody answers it, and " ++
             "whether that somebody can be you is the user's call, one terminal at " ++
-            "a time: terminal_answer_prompt is refused with `AuthoriseOff` until " ++
+            "a time. **A terminal you open as a supervisor starts with it on**; " ++
+            "the user can switch it off, and anywhere else " ++
+            "terminal_answer_prompt is refused with `AuthoriseOff` until " ++
             "they switch it on from that terminal's own right-click menu, and nothing you " ++
             "can call switches it on. With it off, the keys that answer a box " ++
             "(return, the arrows, tab) are refused at that terminal too. " ++
@@ -923,8 +925,11 @@ const tools = [_]Tool{
         .name = "terminal_answer_prompt",
         .description = "Answer a permission prompt that has stopped another terminal -- " ++
             "the `Do you want to proceed? 1. Yes / 2. Yes, and don't ask again / 3. No` " ++
-            "box a worker sits on until somebody answers it. **Off for every terminal " ++
-            "until the user switches it on for that one**, from that terminal's own " ++
+            "box a worker sits on until somebody answers it. **On from the start in " ++
+            "a terminal a supervisor opened** (terminal_open, role_launch, a new pane " ++
+            "in terminal_layout), unless the user has switched it off there. **Off " ++
+            "for every other terminal until the user switches it on for that one**, " ++
+            "from that terminal's own " ++
             "right-click menu; nothing you can call switches it on, and asking again " ++
             "will not " ++
             "change it. With it off you get `AuthoriseOff`, and the right move is to " ++

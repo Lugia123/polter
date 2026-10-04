@@ -304,7 +304,10 @@ chat_surfaces: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty,
 /// (`claimAgentOpened`, #989). The same shape, and the same accepted risk, as
 /// `PersonaStore.pending_launch`: a terminal the person opens in that same
 /// moment could be taken for it.
-poltergeist_agent_open: ?u64 = null,
+///
+/// `by` is the agent that asked, kept because what the new terminal is
+/// granted depends on who that was (`Bus.markOpenedByAgent`).
+poltergeist_agent_open: ?struct { deadline_ms: u64, by: poltergeistpkg.Bus.Id } = null,
 
 /// The apprt, kept so that a connection thread can wake the app loop after
 /// putting a request in the mailbox.
@@ -2411,21 +2414,26 @@ pub fn launchPersona(
 /// for a terminal the runtime had not made yet, this is it, and an agent
 /// opened it (`Bus.Entry.opened_by_agent`, #989).
 pub fn claimAgentOpened(self: *App, surface: *Surface) void {
-    const deadline = self.poltergeist_agent_open orelse return;
+    const pending = self.poltergeist_agent_open orelse return;
     self.poltergeist_agent_open = null;
-    if (self.poltergeistElapsedMs() > deadline) return;
-    self.markAgentOpened(surface.id);
+    if (self.poltergeistElapsedMs() > pending.deadline_ms) return;
+    self.markAgentOpened(surface.id, pending.by);
 }
 
-/// Record that an agent opened `id`. A failure to record leaves it the
-/// user's -- the safe way round: an agent is refused a close it could have
-/// made, rather than allowed one it should not.
-fn markAgentOpened(self: *App, id: poltergeistpkg.Bus.Id) void {
-    self.poltergeist.markOpenedByAgent(id) catch |err| {
+/// Record that the agent in `by` opened `id`. A failure to record leaves it
+/// the user's -- the safe way round: an agent is refused a close it could
+/// have made, rather than allowed one it should not.
+fn markAgentOpened(self: *App, id: poltergeistpkg.Bus.Id, by: poltergeistpkg.Bus.Id) void {
+    self.poltergeist.markOpenedByAgent(id, by) catch |err| {
         log.warn("poltergeist: could not record that an agent opened terminal {x} err={}", .{ id, err });
         return;
     };
-    log.info("poltergeist: terminal {x} was opened by an agent", .{id});
+    // Said in the same words the menu switch logs, so one grep finds every
+    // way the switch came to be on.
+    const granted = self.poltergeist.mayAuthorise(id);
+    log.info("poltergeist: terminal {x} was opened by an agent ({x}); supervisor may answer prompts here: {}", .{ id, by, granted });
+    // The menu item shows the switch, and reads it off the tab's mark.
+    if (granted) self.refreshPoltergeistTabs();
 }
 
 /// Called by a surface at the end of its `init`, the first moment it can be
@@ -3362,7 +3370,7 @@ fn poltergeistLayout(
             // the safe way to be wrong.
             for (self.surfaces.items) |v| {
                 const new = v.core().id;
-                if (!before.contains(new) and !self.isChatSurface(new)) self.markAgentOpened(new);
+                if (!before.contains(new) and !self.isChatSurface(new)) self.markAgentOpened(new, id);
             }
             break :applied .{
                 .applied = true,
@@ -4705,7 +4713,10 @@ fn poltergeistOpenTerminal(
     // whenever it appears: now, if the runtime makes it inside the calls
     // below (its `init` claims this), or later, if it makes it after this
     // returns. Taken back below when the terminal is found here.
-    self.poltergeist_agent_open = self.poltergeistElapsedMs() + poltergeistpkg.PersonaStore.pending_launch_ms;
+    self.poltergeist_agent_open = .{
+        .deadline_ms = self.poltergeistElapsedMs() + poltergeistpkg.PersonaStore.pending_launch_ms,
+        .by = by,
+    };
     // A terminal that was never made must not leave the mark waiting for the
     // next one somebody else opens.
     errdefer self.poltergeist_agent_open = null;
@@ -4808,7 +4819,7 @@ fn poltergeistOpenTerminal(
         // agent asked for it. Its own `init` may already have claimed the
         // mark; either way the claim waiting for a later terminal is spent.
         self.poltergeist_agent_open = null;
-        self.markAgentOpened(id);
+        self.markAgentOpened(id, by);
         return .{ .id = id, .placed = placed };
     }
     return .{ .id = null, .placed = placed };

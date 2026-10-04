@@ -480,6 +480,8 @@ skill 里要写清楚这一步该怎么做：读回材料、逐个核对现在�
 
 R2 是硬约束：**Poltergeist 不替任何 agent 回答权限询问**。Claude Code 自己有自动模式，重复造一个没必要；更重要的是，替对方按下工具授权等于废掉对方的安全模型。旧稿里「可选地自动回答权限询问」的设计在本次修订中删除，**且不留任何 opt-in 白名单口子**——留了口子就等于没删。
 
+> **这一节已被两次决定改写，以代码为准（`Bus.Entry.may_authorise` 的注释是事实源）。** 先是加了一个按终端的开关：只有用户能开，总管用 `terminal_answer_prompt` 才答得了。2026-10-04 用户再定：**总管自己开出来的终端（`terminal_open`、`role_launch`、`terminal_layout` 新建的面板）这个开关默认是开的**，用户可以在那个终端上关掉；用户自己开的终端仍然默认关、仍然没有任何工具能打开。
+
 ### 注入限流与竞态守卫
 
 注入走已有的粘贴通道：`Surface.textCallback`（`src/Surface.zig:3672`，文档注释在 `:3303-3307`）→ `completeClipboardPaste`（`src/Surface.zig:6433`），从而继承 bracketed paste 行为（bracketed 模式下走 bracketed paste，否则把换行过滤成 `\r`）。
