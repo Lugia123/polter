@@ -47,9 +47,9 @@ The supervisor is not polling. Polter pushes a notice when a screen has stopped 
 - **Roles.** A role is a saved way to start an agent CLI: which of its skills and MCP servers it keeps, what it is told on top of its system prompt, which model. They live under `Agents → Role`, and a supervisor can start its own workers wearing one.
 - **Projects.** `Project → Save as Project…` keeps a tab — its splits, each pane's directory, command history and scrollback — and `Load Project…` brings it back. macOS and Windows; not on Linux.
 - **Who may answer a prompt.** A supervisor may answer permission prompts in the terminals it opened itself, and in no others unless you say so, one terminal at a time (`Agents → Let a Supervisor Answer Prompts Here`). No tool can switch it on, and you can switch it off in a terminal the supervisor opened.
+- **One settings window.** Roles, projects, plugins and the config file, in one place and the same on both platforms (`Settings…`).
+- **Hooks.** A Claude Code started from a role tells Polter when a turn ends and what it said, so the supervisor is told rather than left to read a still screen. Claude Code only; every other CLI is still watched by its screen.
 - **English and Chinese.** The menus and windows follow the system language, or the one picked under `Language`.
-
-Two things are in the tree and not in a release yet: one **settings window** for roles, projects, plugins and the config file, and **hooks** — a Claude Code started from a role tells Polter when a turn ends and what it said, so the supervisor is told rather than left to read a still screen.
 
 ### Download
 
