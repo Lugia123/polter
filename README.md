@@ -22,6 +22,11 @@
 </p>
 
 <p align="center">
+  <a href="https://lugia123.github.io/polter/?lang=en"><img src="docs/poster-en.jpg" alt="Polter: give your AI agents a supervisor. Click to watch the 80-second film." width="72%"></a><br>
+  <sub><a href="https://lugia123.github.io/polter/?lang=en">▶ Watch the 80-second film</a></sub>
+</p>
+
+<p align="center">
   <img src="images/screenshots/group-chat.png" alt="A group chat with several worker terminals, showing a supervisor handing out numbered tasks" width="46%">
   <img src="images/screenshots/group-total.png" alt="The statistics view: which tasks are waiting and how long each terminal has been still" width="52%">
 </p>

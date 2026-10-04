@@ -19,6 +19,11 @@
 </p>
 
 <p align="center">
+  <a href="https://lugia123.github.io/polter/?lang=zh"><img src="docs/poster-zh.jpg" alt="Polter：给你的 AI 找个总管。点击观看 73 秒的介绍片。" width="72%"></a><br>
+  <sub><a href="https://lugia123.github.io/polter/?lang=zh">▶ 观看 73 秒介绍片</a></sub>
+</p>
+
+<p align="center">
   <img src="images/screenshots/group-chat.png" alt="群聊：总管派任务，worker 汇报" width="46%">
   <img src="images/screenshots/group-total.png" alt="统计视图：谁在等你，哪个终端静止了多久" width="52%">
 </p>

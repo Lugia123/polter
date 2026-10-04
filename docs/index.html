@@ -149,7 +149,9 @@
 
   var saved=null;
   try{saved=localStorage.getItem('polter-lang')}catch(e){}
-  setLang(saved||((navigator.language||'').toLowerCase().indexOf('zh')===0?'zh':'en'));
+  // ?lang=en / ?lang=zh 优先于记住的选择：README 的两种语言各自链到自己的片子
+  var asked=(location.search.match(/[?&]lang=(zh|en)(&|$)/)||[])[1];
+  setLang(asked||saved||((navigator.language||'').toLowerCase().indexOf('zh')===0?'zh':'en'));
 
   langBtn.addEventListener('click',function(){setLang(html.lang==='zh'?'en':'zh')});
   snd.addEventListener('click',function(){
