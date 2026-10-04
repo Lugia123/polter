@@ -1367,8 +1367,13 @@ impl TabCmd {
             TabCmd::Watch => "poltergeist_toggle_watch",
             TabCmd::Shield => "poltergeist_toggle_shielded",
             TabCmd::WorkerMentions => "poltergeist_toggle_worker_mentions",
-            TabCmd::SaveProject => "save_project",
-            TabCmd::LoadProject => "load_project",
+            // The menu bar's names for the same two rows (`menu.rs`). The
+            // `__polter_` prefix is what says a row is the host's own and
+            // reaches no core command; without it `command.zig`'s "menu
+            // labels reach the palette" counts the row as a core action
+            // nobody can search for.
+            TabCmd::SaveProject => "__polter_save_project",
+            TabCmd::LoadProject => "__polter_load_project",
         }
     }
 
