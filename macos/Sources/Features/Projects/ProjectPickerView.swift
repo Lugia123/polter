@@ -10,6 +10,14 @@ enum ProjectPickerMode: Equatable {
     case saveAs(currentPaneCount: Int)
     /// Tab right-click / `Project` menu "Load Project...".
     case load
+
+    /// The picker window's title.
+    var title: String {
+        switch self {
+        case .saveAs: return String(localized: "Save as Project", comment: "项目选择界面标题：另存为项目")
+        case .load: return String(localized: "Load Project", comment: "项目选择界面标题：加载项目")
+        }
+    }
 }
 
 /// The list-and-act UI shared by "Save as Project" and "Load Project" --
@@ -30,25 +38,30 @@ struct ProjectPickerView: View {
 
     @State private var entries: [ProjectStore.Entry] = []
     @State private var newName: String = ""
+    @State private var query: String = ""
     @State private var pendingOverwrite: ProjectStore.Entry?
     @FocusState private var newNameFocused: Bool
+    @FocusState private var searchFocused: Bool
+
+    /// The window's content size. `ProjectPicker` sizes the window to this
+    /// before centering it: a hosting window has no size until it is shown,
+    /// and centering it then leaves it up and to the right of the middle.
+    static let size = CGSize(width: 420, height: 380)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(title)
-                .font(.headline)
-                .padding([.top, .horizontal])
-                .padding(.bottom, 8)
-
-            if case .saveAs = mode {
-                newProjectRow
-                Divider()
+            switch mode {
+            case .saveAs: newProjectRow
+            case .load: searchRow
             }
+            Divider()
 
             if entries.isEmpty {
-                emptyState
+                emptyState(String(localized: "No Saved Projects", comment: "项目列表为空时的占位文字"))
+            } else if visibleEntries.isEmpty {
+                emptyState(String(localized: "No matching projects", comment: "设置窗口·项目：搜索后项目列表里一个都不剩"))
             } else {
-                List(entries) { entry in
+                List(visibleEntries) { entry in
                     row(for: entry)
                 }
                 .listStyle(.plain)
@@ -65,7 +78,7 @@ struct ProjectPickerView: View {
             }
             .padding()
         }
-        .frame(width: 420, height: 380)
+        .frame(width: Self.size.width, height: Self.size.height)
         .onAppear { reload() }
         .alert(
             overwriteTitle,
@@ -108,8 +121,31 @@ struct ProjectPickerView: View {
                     .padding(.leading, 22)
             }
         }
-        .padding(.horizontal)
+        .padding([.top, .horizontal])
         .padding(.bottom, 8)
+    }
+
+    private var searchRow: some View {
+        HStack {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField(String(localized: "Search", comment: "搜索框占位文字"), text: $query)
+                .focused($searchFocused)
+                .onSubmit(loadOnlyMatch)
+                .textFieldStyle(.roundedBorder)
+        }
+        .padding([.top, .horizontal])
+        .padding(.bottom, 8)
+    }
+
+    /// What the search leaves of the list: the same rule the settings
+    /// window's Projects section filters by.
+    private var visibleEntries: [ProjectStore.Entry] {
+        let visible = SettingsRules.listing(
+            items: entries.map { ($0.name, $0.name) },
+            query: query,
+            selection: nil).visible
+        return entries.filter { visible.contains($0.name) }
     }
 
     private func row(for entry: ProjectStore.Entry) -> some View {
@@ -130,10 +166,10 @@ struct ProjectPickerView: View {
         .buttonStyle(.plain)
     }
 
-    private var emptyState: some View {
+    private func emptyState(_ text: String) -> some View {
         VStack {
             Spacer()
-            Text(String(localized: "No Saved Projects", comment: "项目列表为空时的占位文字"))
+            Text(text)
                 .foregroundStyle(.secondary)
             Spacer()
         }
@@ -149,6 +185,14 @@ struct ProjectPickerView: View {
         case .load:
             onLoad(entry)
         }
+    }
+
+    /// Return in the search field loads the project when the search has
+    /// narrowed the list to one; with more left it is still a choice.
+    private func loadOnlyMatch() {
+        let visible = visibleEntries
+        guard visible.count == 1 else { return }
+        onLoad(visible[0])
     }
 
     /// A typed name that is already a project's is that project being
@@ -174,19 +218,13 @@ struct ProjectPickerView: View {
 
     private func reload() {
         entries = store.list()
-        if case .saveAs = mode {
-            newNameFocused = true
+        switch mode {
+        case .saveAs: newNameFocused = true
+        case .load: searchFocused = true
         }
     }
 
     // MARK: - Copy
-
-    private var title: String {
-        switch mode {
-        case .saveAs: return String(localized: "Save as Project", comment: "项目选择界面标题：另存为项目")
-        case .load: return String(localized: "Load Project", comment: "项目选择界面标题：加载项目")
-        }
-    }
 
     private var overwriteTitle: String {
         String(localized: "Overwrite Project?", comment: "覆盖确认框标题")

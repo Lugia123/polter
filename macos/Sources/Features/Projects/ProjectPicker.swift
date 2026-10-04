@@ -52,10 +52,13 @@ final class ProjectPicker: NSObject {
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
         window.styleMask = [.titled, .closable]
+        window.title = mode.title
         window.isReleasedWhenClosed = false
         window.delegate = self
         self.window = window
 
+        // Sized before it is centered: see `ProjectPickerView.size`.
+        window.setContentSize(ProjectPickerView.size)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
