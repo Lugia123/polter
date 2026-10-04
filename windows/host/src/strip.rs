@@ -1696,15 +1696,14 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
         // the same effect, which is the asymmetry that left three of the four
         // close paths looking complete.
         TabCmd::MoveToNewWindow => tabs::binding_on_tab(frame, id, "move_tab_to_new_window"),
-        // **The tab that was right-clicked**, not the one in front: the box
-        // opens on its name, as the menu bar's row opens on the front tab's.
-        TabCmd::SaveProject => match tabs::strip_snapshot(frame).0.into_iter().find(|(t, _)| *t == id) {
-            Some((_, title)) => {
-                crate::prompt::prompt_save_as_project(frame, id, title);
-                true
+        // **The tab that was right-clicked**, not the one in front.
+        TabCmd::SaveProject => {
+            let there = tabs::strip_snapshot(frame).0.iter().any(|(t, _)| *t == id);
+            if there {
+                crate::project_picker::open_save(frame, id);
             }
-            None => false,
-        },
+            there
+        }
         TabCmd::LoadProject => crate::project_picker::request_load(frame),
         TabCmd::Rename => {
             let g = slots(frame);

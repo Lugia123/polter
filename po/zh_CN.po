@@ -1803,9 +1803,17 @@ msgstr "这个项目打不开"
 msgid "Load Project"
 msgstr "加载项目"
 
-#: windows/host/src/prompt.rs:331
+#: windows/host/src/project_picker.rs
 msgid "Save as Project"
 msgstr "另存为项目"
+
+#: windows/host/src/project_picker.rs
+msgid "New Project Name"
+msgstr "新项目的名字"
+
+#: windows/host/src/project_picker.rs
+msgid "Saves this tab: {} pane(s)"
+msgstr "将存下当前标签页的 {} 个面板"
 
 #: windows/host/src/roles.rs:330
 msgid "Polter Supervisor"
@@ -2571,7 +2579,7 @@ msgstr "「{}」会替换项目里现有的内容。被替换的版本会保留�
 msgid "Overwrite"
 msgstr "覆盖"
 
-#: windows/host/src/projects_ui.rs windows/host/src/prompt.rs
+#: windows/host/src/projects_ui.rs windows/host/src/project_picker.rs
 msgid "The project could not be saved."
 msgstr "项目存不了："
 

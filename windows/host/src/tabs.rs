@@ -3170,9 +3170,9 @@ pub fn close_tab_asking(frame: HWND, id: TabId) -> bool {
 
 /// "Save as a Project Before Closing?" (settings.md §6.3) for tab `id`, or
 /// for its whole window when `whole_window` (a window of one tab). `true`
-/// means close it now. **Save closes nothing yet**: it opens the name box,
-/// and the tab -- or window -- closes when the save in it has worked
-/// (`prompt::prompt_save_as_project_then_close`).
+/// means close it now. **Save closes nothing yet**: it opens the project
+/// picker, and the tab -- or window -- closes when the save in it has worked
+/// (`project_picker::open_save_then_close`).
 fn offer_save_before_close(frame: HWND, id: TabId, whole_window: bool) -> bool {
     use polter_settings_shell::projects::CloseChoice;
     let choice = crate::projects_ui::ask_save_before_close(frame);
@@ -3181,8 +3181,7 @@ fn offer_save_before_close(frame: HWND, id: TabId, whole_window: bool) -> bool {
         CloseChoice::CloseWithoutSaving => true,
         CloseChoice::KeepOpen => false,
         CloseChoice::Save => {
-            let title = strip_snapshot(frame).0.into_iter().find(|(t, _)| *t == id).map(|(_, n)| n).unwrap_or_default();
-            crate::prompt::prompt_save_as_project_then_close(frame, id, title, whole_window);
+            crate::project_picker::open_save_then_close(frame, id, whole_window);
             false
         }
     }

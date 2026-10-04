@@ -73,22 +73,13 @@ fn scope_of(scope: i32) -> Option<(&'static str, &'static str)> {
 
 /// What happens to the typed text on accept.
 ///
-/// **Added for task 533, kept separate from `action` rather than folding
-/// project-save into a fourth `scope_of` row.** `Binding` is "hand the text
-/// to a core keybind action, the same as a keybind would" -- that is what
-/// every row `scope_of` knows about does, and it is what the module doc
-/// comment above describes. `SaveProject` does not touch the core at all:
-/// it calls `project_ui::write_tab_as` directly, against a *tab*, not a
-/// surface -- the two variants exist because the doc comment's "exactly one
-/// path that changes a title" claim is still true for titles and was never
-/// meant to also be true for saving a project.
+/// `Binding` is "hand the text to a core keybind action, the same as a
+/// keybind would" -- that is what every row `scope_of` knows about does, and
+/// it is what the module doc comment above describes. `RenameProject` does
+/// not touch the core at all. Saving a tab as a project used to be a third
+/// variant; it has a window of its own now (`project_picker.rs`).
 enum Completion {
     Binding(&'static str),
-    /// `close_after`: the box was opened by "Save as a Project Before
-    /// Closing?" (settings.md §6.3) -- `Some(false)` closes the tab once the
-    /// save has worked, `Some(true)` its whole window (one tab). A save that
-    /// fails, or a box cancelled, closes nothing.
-    SaveProject { tab: crate::tabs::TabId, close_after: Option<bool> },
     /// "Rename Project" (settings.md §6.2), from the settings window's
     /// projects section: the project in this file gets the typed name
     /// (`projects_ui::rename_to`, which refuses a taken or empty one).
@@ -106,8 +97,7 @@ struct Open {
     /// window procedure, which has no way back to the frame.
     frame: isize,
     /// The terminal the typed name will be applied to. 0 = whichever has
-    /// focus, which is a fallback and not a default. Unused by
-    /// `Completion::SaveProject`, which names its tab directly.
+    /// focus, which is a fallback and not a default.
     surface: usize,
     completion: Completion,
     label: &'static str,
@@ -330,34 +320,10 @@ pub fn prompt_title(scope: i32, surface: usize) {
     open_prompt(frame, label, &current, surface, Completion::Binding(action), scope);
 }
 
-/// Ask for a name to save the given tab as a project under. **Main thread
-/// only**, same as `prompt_title` -- it makes windows the same way, and
-/// shares this function's window-creation code with it (`open_prompt`)
-/// rather than a second copy: this whole box's geometry, IME handoff and
-/// Enter/Escape handling is exactly `prompt_title`'s, only what happens on
-/// accept differs (see `Completion`).
-pub fn prompt_save_as_project(frame: HWND, tab: crate::tabs::TabId, default_name: String) {
-    // **No ellipsis, and that is not an oversight.** macOS spells the *menu
-    // row* `Save as Project...`; this is the box that row opens, and a title
-    // that still promises a further dialog would be wrong. `title_dialog.zig`
-    // draws the same distinction -- `Change Tab Title…` on the row, `Change
-    // Tab Title` on the box.
-    open_prompt(frame, n_("Save as Project"), &default_name, 0, Completion::SaveProject { tab, close_after: None }, -1);
-}
-
-/// The same box, from "Save as a Project Before Closing?" (settings.md
-/// §6.3): the tab -- or, with `whole_window`, its window -- closes once the
-/// save has worked, and only then (`ProjectSaveBeforeClose.saveThenClose`).
-pub fn prompt_save_as_project_then_close(frame: HWND, tab: crate::tabs::TabId, default_name: String, whole_window: bool) {
-    let completion = Completion::SaveProject { tab, close_after: Some(whole_window) };
-    open_prompt(frame, n_("Save as Project"), &default_name, 0, completion, -1);
-}
-
-/// Shared by `prompt_title` and `prompt_save_as_project`: build the popup,
-/// pre-filled with `default_text`, over `frame`, and arm it so accepting
-/// runs `completion` on the typed text. `scope` is only for the log line at
-/// the end (`-1` for callers with no `scope_of` row, i.e. everything but
-/// `prompt_title`).
+/// Build the popup, pre-filled with `default_text`, over `frame`, and arm it
+/// so accepting runs `completion` on the typed text. `scope` is only for the
+/// log line at the end (`-1` for callers with no `scope_of` row, i.e.
+/// everything but `prompt_title`).
 fn open_prompt(
     frame: HWND,
     label: &'static str,
@@ -565,19 +531,12 @@ fn close(accept: bool) {
     crate::overlay::focus_back(hwnd, HWND(open.prev as *mut std::ffi::c_void), "title prompt");
 
     if !accept {
-        // not-gated: the condition is the event -- a close that waited on
-        // this box now does not happen, and this line is the only trace.
-        if let Completion::SaveProject { close_after: Some(_), .. } = open.completion {
-            wlogf!(frame, "[prompt] {} cancelled; the tab stays open", open.label);
-            return;
-        }
         wlogf!(frame, "[prompt] {} cancelled", open.label);
         return;
     }
     if text.trim().is_empty() && !matches!(open.completion, Completion::RenameProject(_)) {
-        // An empty name would clear the title (or, for SaveProject, save
-        // under a name nobody chose) -- a different request from the one
-        // the menu row makes, either way.
+        // An empty name would clear the title -- a different request from
+        // the one the menu row makes.
         wlogf!(frame, "[prompt] {} accepted with an empty name; nothing sent", open.label);
         return;
     }
@@ -600,48 +559,6 @@ fn close(accept: bool) {
         Completion::RenameProject(file) => {
             wlogf!(frame, "[prompt] {} -> {:?} for {:?}", open.label, text, file);
             crate::projects_ui::rename_to(&file, &text);
-        }
-        Completion::SaveProject { tab, close_after } => {
-            let saved = match crate::project::resolve_state_dir().map(|s| crate::project::default_dir(&s)) {
-                None => Err("no state directory (neither XDG_STATE_HOME nor LOCALAPPDATA)".to_string()),
-                Some(dir) => match crate::projects_ui::save_as_plan(frame, &dir, &text) {
-                    // A taken name -- the same name, or the same file whatever
-                    // the case, after trimming (#983, the mac's nameVerdict) --
-                    // is an overwrite: asked first, and what it replaces is
-                    // kept (§6.2, #970). Declined, or nothing typed: nothing
-                    // is written and nothing closes.
-                    None => {
-                        // not-gated: the condition is the event -- nothing
-                        // was written, and this line is the only trace.
-                        wlogf!(frame, "[prompt] save as project {:?}: declined or empty; nothing written", text);
-                        return;
-                    }
-                    Some((name, kind)) => crate::project_ui::write_tab_as(&dir, frame, tab, name, kind),
-                },
-            };
-            match (&saved, close_after) {
-                (Ok(()), None) => wlogf!(frame, "[prompt] saved as project {:?}", text),
-                (Ok(()), Some(whole_window)) => {
-                    wlogf!(frame, "[prompt] saved as project {:?}; closing the {}", text, if whole_window { "window" } else { "tab" });
-                    if whole_window {
-                        crate::tabs::close_all_tabs_of(frame);
-                    } else {
-                        crate::tabs::close_tab(frame, tab);
-                    }
-                }
-                (Err(e), None) => wlogf!(frame, "[prompt] save as project {:?} failed: {}", text, e),
-                (Err(e), Some(_)) => {
-                    // **Said on screen, and the tab stays**: the person chose
-                    // Save so as not to lose what is running in it.
-                    wlogf!(frame, "[prompt] save as project {:?} failed: {}; the tab stays open", text, e);
-                    let body: Vec<u16> =
-                        format!("{}\n\n{}", tr("The project could not be saved."), e).encode_utf16().chain(Some(0)).collect();
-                    let title: Vec<u16> = tr("Save as Project").encode_utf16().chain(Some(0)).collect();
-                    unsafe {
-                        MessageBoxW(Some(frame), PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONWARNING);
-                    }
-                }
-            }
         }
     }
 }

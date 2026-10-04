@@ -1779,8 +1779,16 @@ msgstr ""
 msgid "Load Project"
 msgstr ""
 
-#: windows/host/src/prompt.rs:331
+#: windows/host/src/project_picker.rs
 msgid "Save as Project"
+msgstr ""
+
+#: windows/host/src/project_picker.rs
+msgid "New Project Name"
+msgstr ""
+
+#: windows/host/src/project_picker.rs
+msgid "Saves this tab: {} pane(s)"
 msgstr ""
 
 #: windows/host/src/roles.rs:330
@@ -2529,7 +2537,7 @@ msgstr ""
 msgid "Overwrite"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs windows/host/src/prompt.rs
+#: windows/host/src/projects_ui.rs windows/host/src/project_picker.rs
 msgid "The project could not be saved."
 msgstr ""
 

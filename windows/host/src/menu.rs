@@ -565,19 +565,18 @@ fn run_host(frame: HWND, action: &str) -> bool {
         // `reopen.rs`. It answers false when there is nothing to reopen,
         // which is also what the greyed row is saying.
         "__polter_reopen_tab" => crate::reopen::reopen_last(frame),
-        // The tab in front, named by the name it shows -- the box opens on
-        // that name, as `prompt_title` opens on the current title.
+        // The tab in front.
         "__polter_save_project" => {
             let (tabs_now, active) = crate::tabs::strip_snapshot(frame);
             match tabs_now.get(active) {
-                Some((id, title)) => {
-                    crate::prompt::prompt_save_as_project(frame, *id, title.clone());
+                Some((id, _)) => {
+                    crate::project_picker::open_save(frame, *id);
                     true
                 }
                 None => false,
             }
         }
-        // **Returns before the list is on screen**, for the reason
+        // **Returns before the window is on screen**, for the reason
         // `__polter_language` gives below.
         "__polter_load_project" => crate::project_picker::request_load(frame),
         // The projects section (settings.md §3.2): `projects/<this window's

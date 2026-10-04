@@ -937,15 +937,15 @@ fn overwrite_selected() {
     }
 }
 
-/// "+": the current tab as a new project, through the box the menu row opens.
-/// The box is over the terminal window; the list reads the new project when
-/// this window is active again (`activated`).
+/// "+": the current tab as a new project, through the window the menu row
+/// opens. It belongs to the terminal window; the list reads the new project
+/// when this window is active again (`activated`).
 fn save_new() {
-    let Some((frame, tab, title)) = current_tab() else {
+    let Some((frame, tab, _)) = current_tab() else {
         say(tr("There is no terminal window to open the project in."), true);
         return;
     };
-    crate::prompt::prompt_save_as_project(frame, tab, title);
+    crate::project_picker::open_save(frame, tab);
 }
 
 /// Show in Explorer (§6.2): the project's folder, **with its file selected**.
@@ -1055,7 +1055,7 @@ fn on_click(x: i32, y: i32) {
 
 // ================================================================ drawing
 
-fn make_font(dpi: i32, px: i32, weight: i32) -> HFONT {
+pub(crate) fn make_font(dpi: i32, px: i32, weight: i32) -> HFONT {
     unsafe {
         CreateFontW(
             -(px * dpi / 96),
