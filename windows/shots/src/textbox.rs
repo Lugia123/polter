@@ -95,15 +95,61 @@ pub fn on_toolbar(p: Point, keep_clear: &[Rect]) -> bool {
 }
 
 /// The parts of the box at `rect` that lie on the toolbar: what the host
-/// takes out of the box, so that the toolbar is what is pressed there, and
-/// what it has to draw the toolbar back into after the box has drawn.
-///
-/// Taking them out of the box's window was not enough to see the toolbar
-/// (task 1107): the press went through and the box's paper stayed. Empty
-/// for every box [`rect`] could keep clear.
+/// takes out of the box, so that the toolbar is what is pressed there and
+/// what is seen there. Empty for every box [`rect`] could keep clear.
 pub fn covered(rect: Rect, keep_clear: &[Rect]) -> Vec<Rect> {
     keep_clear.iter().filter_map(|r| rect.intersect(*r)).collect()
 }
+
+/// Of the parts taken out of the box ([`covered`]), the ones the toolbar
+/// has to be drawn back into after the box draws: all of them if the system
+/// says the box can still draw there, none if it cannot.
+///
+/// None is the expected answer. Taking them out of a plain `EDIT` was not
+/// enough to see the toolbar (task 1107: the press went through and the
+/// box's paper stayed), because that class draws through its parent's
+/// clipping; the host's box is of a class that does not.
+pub fn to_draw_back(covered: Vec<Rect>, box_draws_there: bool) -> Vec<Rect> {
+    if box_draws_there {
+        covered
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether window message `msg` is one the text box draws by, so that a box
+/// which can draw on the toolbar ([`to_draw_back`]) has the overlay painted
+/// there again after it. `left_down`: the left button is held, which is what
+/// makes a mouse move a selection being dragged.
+///
+/// **A list of the messages that draw, not everything but a list of those
+/// that do not.** It was the second, with seven questions excepted, and
+/// drawing the toolbar back was itself a source of messages to the box that
+/// were not among the seven (showing and hiding the caret is announced to
+/// whoever listens, and a listener answers by asking the window for its
+/// object): the window thread drew, was asked, drew again, and never read
+/// its queue (package 31c90b552). A message missing from this list costs
+/// the box's paper on the toolbar until the overlay next paints; one too
+/// many on the other kind of list cost the program.
+///
+/// Nothing the overlay's painting sends or causes may be here. The test
+/// below names those.
+pub fn box_draws(msg: u32, left_down: bool) -> bool {
+    match msg {
+        WM_MOUSEMOVE => left_down,
+        _ => DRAWS.contains(&msg),
+    }
+}
+
+const WM_MOUSEMOVE: u32 = 0x0200;
+/// `WM_SETFOCUS`, `WM_PAINT`, `WM_SETFONT`; `EM_SETSEL`, `EM_LINESCROLL`,
+/// `EM_REPLACESEL`; `WM_KEYDOWN`, `WM_CHAR`, `WM_IME_ENDCOMPOSITION`,
+/// `WM_IME_COMPOSITION`; the left button down, up and twice, the wheel;
+/// `WM_CUT`, `WM_PASTE`, `WM_CLEAR`, `WM_UNDO`.
+const DRAWS: [u32; 18] = [
+    0x0007, 0x000F, 0x0030, 0x00B1, 0x00B6, 0x00C2, 0x0100, 0x0102, 0x010E, 0x010F, 0x0201, 0x0202, 0x0203, 0x020A, 0x0300,
+    0x0302, 0x0303, 0x0304,
+];
 
 #[cfg(test)]
 mod tests {
@@ -297,6 +343,52 @@ mod tests {
         // A box that keeps clear has nothing to give back.
         assert!(covered(Rect::new(1450, 600, 800, 96), &keep).is_empty());
         assert!(covered(large, &[]).is_empty());
+    }
+
+    #[test]
+    fn nothing_is_drawn_back_into_a_box_that_cannot_draw_on_the_toolbar() {
+        let holes = vec![Rect::new(1450, 730, 800, 40), Rect::new(1450, 776, 800, 24)];
+        // The system honours the cut: nothing to do, for any box.
+        assert!(to_draw_back(holes.clone(), false).is_empty());
+        // It does not: every part, as it was.
+        assert_eq!(to_draw_back(holes.clone(), true), holes);
+        // No part on the toolbar is nothing either way.
+        assert!(to_draw_back(Vec::new(), true).is_empty());
+    }
+
+    /// The overlay paints the toolbar again after the box handles one of
+    /// these. What that painting sends to the box, or has others send, must
+    /// never be one of them: that is a loop, and it stopped the window
+    /// thread once.
+    #[test]
+    fn what_painting_the_toolbar_again_sends_the_box_does_not_ask_for_another_painting() {
+        // WM_GETOBJECT: what a listener sends on hearing the caret was
+        // hidden or shown, which painting there does.
+        assert!(!box_draws(0x003D, false));
+        // The caret's own timer.
+        assert!(!box_draws(0x0118, false));
+        // What the system asks of a window under the pointer, and what
+        // `fit_edit` and closing the box ask of it.
+        for asked in [0x0084, 0x0020, 0x000D, 0x000E, 0x0087, 0x00BA, 0x00CE] {
+            assert!(!box_draws(asked, false), "{asked:#06x}");
+        }
+        // Being cut, moved, and ended: `keep_toolbar_clear` and `commit_edit`.
+        for told in [0x0046, 0x0047, 0x0083, 0x0085, 0x0014, 0x0003, 0x0005, 0x0008, 0x0002, 0x0082] {
+            assert!(!box_draws(told, false), "{told:#06x}");
+        }
+        // A pointer passing over is not a selection being dragged.
+        assert!(!box_draws(WM_MOUSEMOVE, false));
+        assert!(box_draws(WM_MOUSEMOVE, true));
+        // A held button changes nothing else.
+        assert!(!box_draws(0x003D, true));
+
+        // And it is a list: the ones named and no other, of every message
+        // number there is below the application's own.
+        let named: Vec<u32> = (0..0x0400).filter(|m| box_draws(*m, false)).collect();
+        assert_eq!(named, DRAWS);
+        for typed in [0x000F, 0x0100, 0x0102, 0x010F] {
+            assert!(box_draws(typed, false), "{typed:#06x}");
+        }
     }
 
     #[test]

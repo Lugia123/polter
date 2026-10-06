@@ -55,7 +55,7 @@ use polter_shots::style::{self, Prefs, Tool};
 use polter_shots::toolbar::{self, Button, Layout};
 use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, GlobalFree, COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+    CloseHandle, GetLastError, GlobalFree, COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::*;
@@ -113,9 +113,11 @@ struct EditCtl {
     /// Where it was last put, in virtual-screen pixels: `fit_edit` moves it
     /// only when this changes, and says so in the log when it does.
     rect: Rect,
-    /// The parts of it that lie on the toolbar, in virtual-screen pixels:
-    /// cut out of its window, and drawn over with the toolbar whenever
-    /// either window has drawn (`keep_toolbar_clear`, `show_toolbar_through`).
+    /// The parts of it on the toolbar **that it can still draw in** although
+    /// they are cut out of its window, in virtual-screen pixels. Empty for a
+    /// box that keeps clear, and empty for one whose cut the system honours
+    /// -- which is what its window class is for (`register_text_class`), so
+    /// this is empty unless that did not work (`keep_toolbar_clear`).
     on_toolbar: Vec<Rect>,
 }
 
@@ -201,6 +203,46 @@ const TIMER_NOTES: usize = 1;
 static KEYS_LOGGED: AtomicU32 = AtomicU32::new(0);
 const KEY_LOG_CAP: u32 = 200;
 
+/// Whether `PolterShotText` is registered (`register_text_class`).
+static TEXT_CLASS: AtomicBool = AtomicBool::new(false);
+
+/// The text box's window class: the system's `EDIT` in everything but one
+/// class style, `CS_PARENTDC`.
+///
+/// **That style is why cutting the toolbar out of the box did not keep the
+/// box from drawing there** (task 1107, read on the test machine: `box draws
+/// there=true (class CS_PARENTDC=true)`). A window of such a class draws
+/// through its parent's clipping, and its own window region is not part of
+/// that. Without the style the box's device context is its own window, cut
+/// included, so the control cannot put a pixel on the toolbar by any road --
+/// `WM_PAINT`, a key, the caret -- and nothing has to be drawn back after it.
+///
+/// Drawing it back after every message the box handled is what this
+/// replaces. That made the box's procedure a source of the very messages it
+/// answered by drawing, and the window thread never came back from opening
+/// such a box (package 31c90b552: `MAIN THREAD BLOCKED`, the thread running).
+unsafe fn register_text_class(hinst: HINSTANCE) {
+    unsafe {
+        let mut wc = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, ..Default::default() };
+        if let Err(e) = GetClassInfoExW(None, w!("EDIT"), &mut wc) {
+            // process-wide: screenshots are one facility for the whole process
+            plogf!("[shot] the EDIT class could not be read ({e}); the text box is a plain EDIT");
+            return;
+        }
+        wc.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
+        wc.style &= !(CS_PARENTDC | CS_GLOBALCLASS);
+        wc.hInstance = hinst;
+        wc.lpszClassName = w!("PolterShotText");
+        // absence: means it was not reached -- the class registered
+        if RegisterClassExW(&wc) == 0 {
+            // process-wide: screenshots are one facility for the whole process
+            plogf!("[shot] the text box's class could not be registered (err={}); the text box is a plain EDIT", GetLastError().0);
+            return;
+        }
+        TEXT_CLASS.store(true, Ordering::Release);
+    }
+}
+
 fn with<R>(f: impl FnOnce(&mut Session) -> R) -> Option<R> {
     SESSION.with(|s| s.try_borrow_mut().ok().and_then(|mut s| s.as_mut().map(f)))
 }
@@ -263,6 +305,7 @@ pub fn init() {
             plogf!("[shot] RegisterClassExW failed (err={}); screenshots are unavailable", GetLastError().0);
             return;
         }
+        register_text_class(hinst.into());
         let control = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("PolterShotControl"),
@@ -1444,16 +1487,14 @@ unsafe fn paint(hwnd: HWND) {
 }
 
 /// Draw `canvas` -- monitor `i`'s overlay as just composed -- into the parts
-/// of the text box that lie on the toolbar.
+/// of the text box that lie on the toolbar and that the box can still draw
+/// in. **Only ever from the overlay's own `WM_PAINT`**, and with nothing to
+/// do unless the box's window class failed at its one job
+/// (`register_text_class`): `on_toolbar` is empty otherwise.
 ///
-/// **Through a device context that is not clipped by the overlay's
-/// children**, which is the point (task 1107). The overlay is
-/// `WS_CLIPCHILDREN`, and the text box has those parts cut out of its window
-/// region; on the test machine a press there reached the toolbar and the
-/// pixels stayed the box's white paper all the same, through every repaint
-/// of the overlay. So what is seen there is not left to how the two windows
-/// are clipped against each other: it is drawn, last, by whichever of them
-/// drew.
+/// Through a device context that is not clipped by the overlay's children,
+/// so that what is seen there does not depend on how the two windows are
+/// clipped against each other.
 unsafe fn toolbar_over_text_box(s: &Session, i: usize, canvas: &Canvas) {
     let Some(edit) = s.edit.as_ref().filter(|e| !e.on_toolbar.is_empty()) else { return };
     if s.editor.selection().map(|x| x.monitor) != Some(i) {
@@ -1481,27 +1522,30 @@ unsafe fn toolbar_over_text_box(s: &Session, i: usize, canvas: &Canvas) {
     }
 }
 
-/// The text box has, or may have, drawn: put the toolbar back over the
-/// parts of it that lie there. Nothing to do for a box that keeps clear,
-/// which is every box but a text opened again on the toolbar's own rows.
-fn show_toolbar_through() {
-    with(|s| {
-        if !s.edit.as_ref().is_some_and(|e| !e.on_toolbar.is_empty()) {
-            return;
-        }
-        let Some(i) = s.editor.selection().map(|x| x.monitor) else { return };
-        unsafe {
-            let like = GetDCEx(Some(s.mons[i].hwnd), None, DCX_CACHE);
-            if like.is_invalid() {
-                return;
-            }
-            let canvas = compose_overlay(s, i, like);
-            ReleaseDC(Some(s.mons[i].hwnd), like);
-            if let Some(canvas) = canvas {
-                toolbar_over_text_box(s, i, &canvas);
-            }
-        }
-    });
+/// The text box has drawn and may have drawn on the toolbar: have the
+/// overlay paint those parts again, in its own time.
+///
+/// **This asks; it draws nothing.** `InvalidateRect` sends no message and
+/// returns at once, the overlay's `WM_PAINT` comes when the queue is
+/// otherwise empty, and any number of these before it are one paint. Nothing
+/// the overlay does while painting is on `textbox::box_draws`'s list, so a
+/// paint cannot ask for the next one.
+///
+/// Nothing at all for a box with nothing in `on_toolbar` -- every box that
+/// keeps clear, and every box whose cut the system honours.
+fn toolbar_again_after_box() {
+    let Some((overlay, parts)) = with(|s| {
+        let e = s.edit.as_ref().filter(|e| !e.on_toolbar.is_empty())?;
+        let m = &s.mons[s.editor.selection()?.monitor];
+        Some((m.hwnd, e.on_toolbar.iter().map(|r| r.relative_to(m.rect.origin())).collect::<Vec<Rect>>()))
+    })
+    .flatten() else {
+        return;
+    };
+    for l in parts {
+        let rc = RECT { left: l.x, top: l.y, right: l.right(), bottom: l.bottom() };
+        let _ = unsafe { InvalidateRect(Some(overlay), Some(&rc), false) };
+    }
 }
 
 fn repaint() {
@@ -1889,7 +1933,8 @@ fn open_edit() {
     unsafe {
         let edit = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
-            w!("EDIT"),
+            // `EDIT` itself only if the class could not be made.
+            if TEXT_CLASS.load(Ordering::Acquire) { w!("PolterShotText") } else { w!("EDIT") },
             PCWSTR(initial.as_ptr()),
             // No border: the box is whole lines tall, and a border would
             // take two pixels of the last one. Its paper is what shows it.
@@ -2011,15 +2056,18 @@ fn fit_edit() {
 /// What is left is a text opened for editing again whose first line sits
 /// where the toolbar now is; this is for that one.
 ///
-/// **The cut settles who is pressed, and was seen not to settle what is
-/// seen** (task 1107): the parts are remembered, and the toolbar is drawn
-/// into them after either window draws (`toolbar_over_text_box`).
+/// **The cut settles who is pressed; whether it settles what is seen is
+/// asked of the system each time and logged** (task 1107). With the box's
+/// own class it should: `box draws there=false`. If the answer is ever
+/// `true`, the parts are remembered and the overlay is asked to paint them
+/// again after the box draws (`toolbar_again_after_box`).
 fn keep_toolbar_clear(edit: HWND, rect: Rect) {
     let keep = with(|s| s.editor.text_keep_clear()).unwrap_or_default();
     let holes = polter_shots::textbox::covered(rect, &keep);
+    // Nothing is drawn back while the cut is being changed.
     with(|s| {
         if let Some(e) = &mut s.edit {
-            e.on_toolbar = holes.clone();
+            e.on_toolbar.clear();
         }
     });
     unsafe {
@@ -2038,11 +2086,11 @@ fn keep_toolbar_clear(edit: HWND, rect: Rect) {
         let _ = SetWindowRgn(edit, Some(region), true);
     }
     // Which window can still draw there once the cut is made, as the system
-    // answers it: the two readings task 1107 did not have. `box draws there`
-    // true means the box's own device context ignores its window region
-    // (the `EDIT` class is `CS_PARENTDC`); `overlay draws there` false means
-    // `WS_CLIPCHILDREN` keeps the overlay out of the box's whole rectangle,
-    // cut or not. Either leaves the box's paper where the toolbar is.
+    // answers it. `box draws there` true means the box's own device context
+    // ignores its window region (what `CS_PARENTDC` does, and the class made
+    // in `register_text_class` is without it); `overlay draws there` false
+    // would mean `WS_CLIPCHILDREN` keeps the overlay out of the box's whole
+    // rectangle, cut or not.
     let (box_draws, overlay_draws, parent_dc) = unsafe {
         let first = holes[0];
         let visible = |dc: HDC, r: Rect| {
@@ -2060,13 +2108,19 @@ fn keep_toolbar_clear(edit: HWND, rect: Rect) {
         ReleaseDC(Some(parent), clipped);
         (box_draws, overlay_draws, GetClassLongW(edit, GCL_STYLE) & CS_PARENTDC.0 != 0)
     };
+    let again = polter_shots::textbox::to_draw_back(holes.clone(), box_draws);
+    let then = if again.is_empty() { "nothing is drawn back" } else { "the overlay paints them again after the box draws" };
+    with(|s| {
+        if let Some(e) = &mut s.edit {
+            e.on_toolbar = again;
+        }
+    });
     // process-wide: the overlay is not a terminal window
     plogf!(
         "[shot] text box: {} part(s) of it are under the toolbar and were cut out of it; in the first, box draws there={box_draws} \
-         (class CS_PARENTDC={parent_dc}), overlay draws there={overlay_draws}; the toolbar is drawn over them",
+         (class CS_PARENTDC={parent_dc}), overlay draws there={overlay_draws}; {then}",
         holes.len()
     );
-    show_toolbar_through();
 }
 
 fn log_edit(rect: Rect, lines: i32, what: &str) {
@@ -2179,18 +2233,14 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         if matches!(msg, WM_CHAR | WM_KEYDOWN | WM_PASTE | WM_CUT | WM_CLEAR | WM_UNDO | WM_IME_ENDCOMPOSITION | WM_IME_COMPOSITION) {
             fit_edit();
         }
-        // And whatever the control may have drawn itself by: a box lying on
-        // the toolbar gets the toolbar drawn back over that part of it
-        // (task 1107). Everything but the questions asked of it many times
-        // a second, which draw nothing -- an edit control draws on keys,
-        // the mouse, its timer and focus as well as in `WM_PAINT`, and a
-        // list of those would be one short sooner or later.
-        const EM_GETLINECOUNT: u32 = 0x00BA;
-        const EM_GETFIRSTVISIBLELINE: u32 = 0x00CE;
-        let asks = matches!(msg, WM_NCHITTEST | WM_SETCURSOR | WM_GETTEXT | WM_GETTEXTLENGTH | WM_GETDLGCODE | EM_GETLINECOUNT | EM_GETFIRSTVISIBLELINE)
-            || (msg == WM_MOUSEMOVE && wp.0 & 0x0001 == 0);
-        if !asks && msg != WM_NCDESTROY && msg != WM_DESTROY {
-            show_toolbar_through();
+        // A box that can draw on the toolbar although that part is cut out
+        // of it (there is none unless its class failed; see
+        // `register_text_class`): after a message it draws by, the overlay
+        // is asked to paint there again. Asked, never drawn from here, and
+        // only for the messages on a list -- drawing here after everything
+        // but a few questions is what stopped the window thread.
+        if polter_shots::textbox::box_draws(msg, wp.0 & 0x0001 != 0) {
+            toolbar_again_after_box();
         }
         r
     }
