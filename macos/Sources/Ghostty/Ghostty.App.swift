@@ -349,6 +349,30 @@ extension Ghostty {
                     let mime = String(cString: ptr)
                     guard !seen.contains(mime) else { continue }
                     seen.insert(mime)
+                    // A clipboard holding an image and no text is pasted as
+                    // the path of a file holding the image. Asked first, and
+                    // it answers nil for everything that is not that case, so
+                    // text and copied files go the way they always did.
+                    if mime == "text/plain", location == GHOSTTY_CLIPBOARD_STANDARD,
+                       let config = (NSApplication.shared.delegate as? AppDelegate)?.ghostty.config,
+                       let path = ImagePasteService.shared.pastedPath(
+                        from: pasteboard,
+                        pasteImage: config.clipboardPasteImage,
+                        directory: config.screenshotDirectory) {
+                        contents.append(.init(mime: mime, data: Data(path.utf8)))
+                        // A screenshot taken here carries its annotations as
+                        // a line of text, pasted second and on its own: the
+                        // first paste has to be exactly one path for a CLI
+                        // to take it as an image.
+                        if let line = ImagePasteService.shared.annotations(for: pasteboard) {
+                            DispatchQueue.main.asyncAfter(
+                                deadline: .now() + ScreenshotController.secondPasteDelay
+                            ) { [weak surfaceView] in
+                                MainActor.assumeIsolated { surfaceView?.surfaceModel?.sendText(line) }
+                            }
+                        }
+                        continue
+                    }
                     guard let data = pasteboard.ghosttyData(forMime: mime) else { continue }
                     contents.append(.init(mime: mime, data: data))
                 }
@@ -749,6 +773,12 @@ extension Ghostty {
 
             case GHOSTTY_ACTION_TOGGLE_VISIBILITY:
                 toggleVisibility(app, target: target)
+
+            case GHOSTTY_ACTION_SCREENSHOT:
+                // From the command palette or a keybind that is not the
+                // registered hotkey. The controller reads for itself whether
+                // this app is in front.
+                ScreenshotController.shared.trigger()
 
             case GHOSTTY_ACTION_TOGGLE_BACKGROUND_OPACITY:
                 toggleBackgroundOpacity(app, target: target)

@@ -617,3 +617,24 @@
 "Drawn by Polter" = "由 Polter 绘制";
 "Drawn by the System" = "由系统绘制";
 "No Decorations" = "无";
+
+/* 截图 */
+"Rectangle" = "矩形";
+"Arrow" = "箭头";
+"Pen" = "画笔";
+"Text" = "文字";
+"Number" = "编号";
+"Red" = "红色";
+"Yellow" = "黄色";
+"Blue" = "蓝色";
+"White" = "白色";
+"The screenshot shortcut could not be registered" = "截图快捷键没能注册上";
+"Another application is already using it. Choose a different one with a `screenshot` keybind in the configuration." = "别的应用已经占用了这个组合。请在配置里用 `screenshot` 的 keybind 换一个。";
+"Polter needs the Screen Recording permission to take a screenshot" = "截图需要先给 Polter「屏幕录制」权限";
+"Turn it on for Polter in System Settings, under Privacy & Security, then restart Polter." = "在「系统设置 › 隐私与安全性」里为 Polter 打开它，然后重新启动 Polter。";
+"Open System Settings" = "打开系统设置";
+/* 粘进终端的截图标注文本；英文原文就是 src/input/screenshot.zig 里的 msgid */
+"Screenshot annotations" = "截图标注";
+"Box" = "框";
+"; " = "；";
+". See " = "。详见 ";

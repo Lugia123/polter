@@ -194,6 +194,41 @@ extension Ghostty {
             return v
         }
 
+        var clipboardPasteImage: Bool {
+            guard let config = self.config else { return true }
+            var v = true
+            let key = "clipboard-paste-image"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v
+        }
+
+        /// Where screenshots and pasted images go: `screenshot-directory`, or
+        /// the default under the state directory when it is not set.
+        var screenshotDirectory: URL {
+            var configured: String?
+            if let config = self.config {
+                var v: UnsafePointer<Int8>?
+                let key = "screenshot-directory"
+                if ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8))), let ptr = v {
+                    configured = String(cString: ptr)
+                }
+            }
+            return ShotStore.directory(
+                configured: configured,
+                environment: ProcessInfo.processInfo.environment,
+                home: FileManager.default.homeDirectoryForCurrentUser)
+        }
+
+        /// The modifiers of `screenshot-mouse-trigger` as `ghostty_input_mods_e`
+        /// bits; zero is `none`, off.
+        var screenshotMouseTrigger: CUnsignedInt {
+            guard let config = self.config else { return 0 }
+            var v: CUnsignedInt = 0
+            let key = "screenshot-mouse-trigger"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v
+        }
+
         var shouldQuitAfterLastWindowClosed: Bool {
             guard let config = self.config else { return true }
             var v = false

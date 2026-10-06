@@ -77,6 +77,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuChangeTabTitle: NSMenuItem?
     @IBOutlet private var menuReadonly: NSMenuItem?
     @IBOutlet private var menuQuickTerminal: NSMenuItem?
+    @IBOutlet private var menuScreenshot: NSMenuItem?
     @IBOutlet private var menuTerminalInspector: NSMenuItem?
     @IBOutlet private var menuCommandPalette: NSMenuItem?
 
@@ -368,6 +369,17 @@ class AppDelegate: NSObject,
 
         // Store our start time
         applicationLaunchTime = ProcessInfo.processInfo.systemUptime
+
+        // Screenshots and pasted images older than a week go. Only files
+        // named the way `ShotStore` names them: `screenshot-directory` may
+        // point at a directory that holds other things.
+        let shots = ghostty.config.screenshotDirectory
+        DispatchQueue.global(qos: .utility).async {
+            let removed = ShotStore.cleanup(directory: shots)
+            if !removed.isEmpty {
+                Ghostty.logger.info("screenshots: removed \(removed.count, privacy: .public) files older than a week from \(shots.path, privacy: .public)")
+            }
+        }
 
         // The Language submenu is built from AppLanguage rather than the nib.
         setupLanguageMenu()
@@ -1022,6 +1034,13 @@ class AppDelegate: NSObject,
             DispatchQueue.main.async { MainActor.assumeIsolated(follow) }
         }
 
+        // The screenshot hotkey and its mouse gesture. Neither goes through
+        // the event tap below -- that is the point of them: the tap costs
+        // the Accessibility permission and these must not. Deferred for the
+        // reason the appearance sync above is: this can run during launch,
+        // and a failed registration puts up an alert.
+        DispatchQueue.main.async { ScreenshotController.shared.configure(config) }
+
         // We need to handle our global event tap depending on if there are global
         // events that we care about in Ghostty.
         if ghostty_app_has_global_keybinds(ghostty.app!) {
@@ -1207,6 +1226,10 @@ class AppDelegate: NSObject,
         quickController.toggle()
     }
 
+    @IBAction func takeScreenshot(_ sender: Any) {
+        ScreenshotController.shared.trigger()
+    }
+
     /// Toggles visibility of all Ghosty Terminal windows. When hidden, activates Ghostty as the frontmost application
     @IBAction func toggleVisibility(_ sender: Any) {
         // If we have focus, then we hide all windows.
@@ -1343,6 +1366,7 @@ extension AppDelegate {
         self.menuDecreaseFontSize?.setImageIfDesired(systemSymbolName: "textformat.size.smaller")
         self.menuCommandPalette?.setImageIfDesired(systemSymbolName: "filemenu.and.selection")
         self.menuQuickTerminal?.setImageIfDesired(systemSymbolName: "apple.terminal")
+        self.menuScreenshot?.setImageIfDesired(systemSymbolName: "camera.viewfinder")
         self.menuChangeTabTitle?.setImageIfDesired(systemSymbolName: "pencil.line")
         self.menuTerminalInspector?.setImageIfDesired(systemSymbolName: "scope")
         self.menuReadonly?.setImageIfDesired(systemSymbolName: "eye.fill")
@@ -1420,6 +1444,7 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "prompt_surface_title", menuItem: self.menuChangeTitle)
         syncMenuShortcut(config, action: "prompt_tab_title", menuItem: self.menuChangeTabTitle)
         syncMenuShortcut(config, action: "toggle_quick_terminal", menuItem: self.menuQuickTerminal)
+        syncMenuShortcut(config, action: "screenshot", menuItem: self.menuScreenshot)
         syncMenuShortcut(config, action: "toggle_visibility", menuItem: self.menuToggleVisibility)
         syncMenuShortcut(config, action: "toggle_window_float_on_top", menuItem: self.menuFloatOnTop)
         syncMenuShortcut(config, action: "inspector:toggle", menuItem: self.menuTerminalInspector)
