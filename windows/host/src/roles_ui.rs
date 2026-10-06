@@ -2561,6 +2561,9 @@ fn reconcile(pane: HWND, laid: &Laid, scroll: i32, dpi: i32, gen: u64) -> HashMa
                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
                 );
             }
+            if tag == Tag::Combo {
+                fit_combo(h, r.bottom - r.top);
+            }
             live.rect = r;
         }
         match &p.kind {
@@ -3617,7 +3620,7 @@ unsafe fn draw_button(cd: &NMCUSTOMDRAW) {
 
         if is_link {
             fill(hdc, &rc, theme::bg());
-            let colour = if disabled { theme::dim() } else if hot { theme::text() } else { theme::focus() };
+            let colour = if disabled { theme::dim() } else if hot { theme::text() } else { theme::link() };
             draw_text(hdc, &label, &rc, Font::Normal, colour, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
             if focus {
                 frame_rect(hdc, &rc, theme::focus());
@@ -3672,6 +3675,44 @@ unsafe fn draw_combo_item(dis: &DRAWITEMSTRUCT) {
         }
         if in_edit && dis.itemState.0 & ODS_FOCUS.0 != 0 {
             frame_rect(dis.hDC, &dis.rcItem, theme::focus());
+        }
+    }
+}
+
+/// Make a drop-down's closed box `want` pixels tall, as the row it sits in
+/// is. **Every drop-down in the settings window is placed through this**
+/// (the General form, a plugin's form, the role editor): where it is put
+/// does not decide how tall it is -- see `combo_field_height` for why, and
+/// for the 26 px it stood at beside 28 px controls.
+///
+/// Called after each placement, not once at creation: the field's height is
+/// in pixels, so a window moved to a screen of another DPI needs it again.
+pub(crate) fn fit_combo(h: HWND, want: i32) {
+    if h.0.is_null() {
+        return;
+    }
+    unsafe {
+        let mut wr = RECT::default();
+        if GetWindowRect(h, &mut wr).is_err() {
+            return;
+        }
+        // The selection field is item -1; CB_ERR is -1 too, and is refused
+        // by the rule as "cannot be told".
+        let field = SendMessageW(h, CB_GETITEMHEIGHT, Some(WPARAM(usize::MAX)), None).0 as i32;
+        let closed = wr.bottom - wr.top;
+        if let Some(fitted) = polter_settings_shell::combo_field_height(closed, field, want) {
+            SendMessageW(h, CB_SETITEMHEIGHT, Some(WPARAM(usize::MAX)), Some(LPARAM(fitted as isize)));
+            let mut now = RECT::default();
+            let _ = GetWindowRect(h, &mut now);
+            // process-wide: every drop-down fitted is in the one settings window
+            crate::plogf!(
+                "[settings] drop-down fitted: closed {} -> {} px (wanted {}), field {} -> {} px",
+                closed,
+                now.bottom - now.top,
+                want,
+                field,
+                fitted
+            );
         }
     }
 }

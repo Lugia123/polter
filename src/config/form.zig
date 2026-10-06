@@ -152,7 +152,7 @@ pub const table = [_]Item{
 
     // Font
     .{ .key = .@"font-family", .group = .font, .control = .font, .label = i18n.N_("Font"), .summary = i18n.N_("The font family to use; empty uses the default.") },
-    .{ .key = .@"font-size", .group = .font, .min = 1, .label = i18n.N_("Font Size"), .summary = i18n.N_("In points; may be fractional.") },
+    .{ .key = .@"font-size", .group = .font, .min = 1, .label = i18n.N_("Font Size"), .summary = i18n.N_("In points; may be fractional."), .aliases = &.{ "size", "text size", "字号", "大小", "字体大小", "文字大小" } },
     .{ .key = .@"adjust-cell-height", .group = .font, .label = i18n.N_("Line Height"), .summary = i18n.N_("Extra height per line, in points or percent (e.g. 20%).") },
 
     // Terminal
@@ -1102,6 +1102,10 @@ pub const SearchEntry = struct {
     summary: []const u8 = "",
     /// The names of an enum's values, in the interface's language.
     choices: []const []const u8 = &.{},
+    /// The group it is drawn in, in the interface's language: what the
+    /// breadcrumb over the result says. Somebody who types `font size` for
+    /// a row called "Size" under "Font" has named it correctly.
+    group: []const u8 = "",
 };
 
 /// Where a query matched, strongest first. An entry is ranked by the
@@ -1112,7 +1116,7 @@ pub const SearchRank = enum(u8) {
     name,
     alias,
     key,
-    /// The summary, or the name of one of the choices.
+    /// The summary, the name of one of the choices, or the group's name.
     summary,
 };
 
@@ -1173,7 +1177,8 @@ fn foldAlloc(alloc: Allocator, text: []const u8) Allocator.Error![]u8 {
 ///
 /// The query is split on whitespace into terms and **every term has to be
 /// found** somewhere in the entry -- its name, an alias, its key, its
-/// summary or the name of a choice -- as a substring, ignoring case. An
+/// summary, the name of a choice or of its group -- as a substring,
+/// ignoring case. An
 /// empty query matches nothing: the host shows its ordinary page.
 ///
 /// Sorted by rank, and within a rank in the order the entries were given,
@@ -1195,6 +1200,7 @@ pub fn search(alloc: Allocator, entries: []const SearchEntry, query: []const u8)
         const name = try foldAlloc(arena, entry.name);
         const key = try foldAlloc(arena, entry.key);
         const summary = try foldAlloc(arena, entry.summary);
+        const group = try foldAlloc(arena, entry.group);
 
         var weakest: SearchRank = .name;
         for (terms.items) |term| {
@@ -1208,6 +1214,7 @@ pub fn search(alloc: Allocator, entries: []const SearchEntry, query: []const u8)
                 for (entry.choices) |choice| {
                     if (std.mem.indexOf(u8, try foldAlloc(arena, choice), term) != null) break :rank .summary;
                 }
+                if (std.mem.indexOf(u8, group, term) != null) break :rank .summary;
                 // One term nowhere: the terms are an "and".
                 continue :entries;
             };
@@ -1227,7 +1234,7 @@ pub fn search(alloc: Allocator, entries: []const SearchEntry, query: []const u8)
 }
 
 /// `search` for a host: the entries as a JSON array of
-/// `{"name", "aliases", "key", "summary", "choices"}` -- every field
+/// `{"name", "aliases", "key", "summary", "choices", "group"}` -- every field
 /// optional -- and the answer as `{"hits": [{"index", "rank"}]}`.
 ///
 /// An entry that is not an object, or a field of the wrong type, counts as
@@ -1276,6 +1283,7 @@ pub fn searchJson(alloc: Allocator, entries_json: []const u8, query: []const u8)
                 .key = H.string(obj, "key"),
                 .summary = H.string(obj, "summary"),
                 .choices = try H.strings(arena, obj, "choices"),
+                .group = H.string(obj, "group"),
             },
             else => .{},
         };
@@ -2156,10 +2164,10 @@ test "config form: each screenshot row says how it is drawn and what it writes" 
     try testing.expectEqualStrings("allow", agents.get("value").?.string);
 
     // A row outside the screenshot group has none of the new fields set.
-    const size = itemNamed(root, "font-size").?;
-    try testing.expect(size.get("choice_template").? == .null);
-    try testing.expect(size.get("on").? == .null);
-    try testing.expectEqual(@as(usize, 0), size.get("aliases").?.array.items.len);
+    const family = itemNamed(root, "font-family").?;
+    try testing.expect(family.get("choice_template").? == .null);
+    try testing.expect(family.get("on").? == .null);
+    try testing.expectEqual(@as(usize, 0), family.get("aliases").?.array.items.len);
 }
 
 test "config form: every listed value of a free choice is one the key accepts, as the file writes it" {
@@ -2324,6 +2332,210 @@ test "config search: accented Latin, Greek and Cyrillic fold; what does not is l
             try testing.expectEqual(@as(usize, case[1]), hits[0].index);
         }
     }
+}
+
+test "config search: a term may name the group the row is in, as weakly as its summary" {
+    const entries = [_]SearchEntry{
+        .{ .name = "Family", .key = "font-family", .group = "Font" },
+        .{ .name = "Size", .key = "x-size", .group = "Font" },
+        .{ .name = "Font Rendering", .key = "x-render", .group = "Appearance" },
+        .{ .name = "Scrollback", .key = "x-lines", .group = "Terminal" },
+    };
+    const E = struct {
+        fn hits(query: []const u8, expected: []const SearchHit) !void {
+            const got = try search(testing.allocator, &entries, query);
+            defer testing.allocator.free(got);
+            try testing.expectEqualSlices(SearchHit, expected, got);
+        }
+    };
+    // The group alone: its rows, after the row that is called that.
+    try E.hits("font", &.{
+        .{ .index = 2, .rank = .name },
+        .{ .index = 0, .rank = .key },
+        .{ .index = 1, .rank = .summary },
+    });
+    // One term from the group and one from the name: the row, and only it.
+    try E.hits("font size", &.{.{ .index = 1, .rank = .summary }});
+    try E.hits("FONT  family", &.{.{ .index = 0, .rank = .key }});
+    // A group nobody is in.
+    try E.hits("terminal size", &.{});
+}
+
+/// What the Windows host handed the core on the test machine (task 1093,
+/// S7), rebuilt: **the General rows are this file's own `table` and
+/// `shortcuts`** -- their aliases, keys and groups, so that a change to
+/// the table is a change to these readings -- under the Chinese interface
+/// the machine ran. The names below are the Chinese catalogue's for the
+/// rows the readings turn on; every other row keeps its English, which is
+/// what a host shows for a string with no translation.
+///
+/// ⚠️ **The roles, plugins and shortcut-page actions are stand-ins.** A
+/// host lists those itself and the core never sees where they came from;
+/// they are here in the numbers the machine had, so that a row of the
+/// table starting to match `总管` or `claude` shows up as a count that
+/// moved.
+const MachineEntries = struct {
+    const zh = std.StaticStringMap([]const u8).initComptime(.{
+        .{ "Font", "字体" },
+        .{ "Font Size", "字号" },
+        .{ "Line Height", "行高调整" },
+        .{ "The font family to use; empty uses the default.", "使用的字体；留空用默认字体。" },
+        .{ "In points; may be fractional.", "以点为单位，可以带小数。" },
+        .{ "Extra height per line, in points or percent (e.g. 20%).", "每行额外加高，写点数或百分比（如 20%）。" },
+        .{ "Paste Images as Files", "粘贴图片时存成文件并粘贴路径" },
+        .{ "Save a pasted image as a file and paste its path.", "把粘贴的图片存成文件，再粘贴它的路径。" },
+        .{ "Screenshot Folder", "截图保存位置" },
+        .{ "Where screenshots and pasted images are saved.", "截图和粘贴的图片存在这里。" },
+        .{ "Mouse Trigger", "鼠标触发" },
+        .{ "Hold these keys and double-click to take a screenshot.", "按住这些键双击即可截图。" },
+        .{ "Let Agents Take Screenshots", "允许 agent 截图" },
+        .{ "Agents may capture the screen with the screenshot tools.", "agent 可以用截图工具拍下屏幕。" },
+        .{ "Screenshot Shortcut", "截图快捷键" },
+        .{ "Change it with a keybind line in the config file.", "在配置文件的 keybind 里修改。" },
+        .{ "Off", "关" },
+    });
+
+    fn tr(msgid: []const u8) []const u8 {
+        return zh.get(msgid) orelse msgid;
+    }
+
+    fn groupName(group: Group) []const u8 {
+        return switch (group) {
+            .appearance => "外观",
+            .font => "字体",
+            .terminal => "终端",
+            .window => "窗口与标签页",
+            .polter => "Polter",
+            .screenshot => "截图",
+        };
+    }
+
+    /// A translated name is also findable by its English (both hosts).
+    fn withEnglish(arena: Allocator, aliases: []const []const u8, msgid: []const u8) ![]const []const u8 {
+        if (std.mem.eql(u8, tr(msgid), msgid)) return aliases;
+        var out: std.ArrayList([]const u8) = .empty;
+        try out.appendSlice(arena, aliases);
+        try out.append(arena, msgid);
+        return out.items;
+    }
+
+    const stand_ins = [_]SearchEntry{
+        // Roles.
+        .{ .name = "Polter 总管", .key = "polter-supervisor" },
+        .{ .name = "开发总管", .key = "dev-supervisor" },
+        .{ .name = "测试总管", .key = "test-supervisor" },
+        .{ .name = "文档总管", .key = "docs-supervisor" },
+        .{ .name = "开发 worker", .key = "dev-worker" },
+        // Plugins and their own settings.
+        .{ .name = "Claude Code", .key = "claude" },
+        .{ .name = "Model", .key = "claude.model", .summary = "Which model a new session starts with." },
+        .{ .name = "Hooks", .key = "claude.hooks" },
+        .{ .name = "Codex", .key = "codex" },
+        // The Keyboard Shortcuts page.
+        .{ .name = "截图", .key = "screenshot", .summary = "Ctrl+Shift+0" },
+        .{ .name = "粘贴剪贴板内容", .key = "paste_from_clipboard", .summary = "Ctrl+Shift+V" },
+        .{ .name = "粘贴主选区内容", .key = "paste_from_selection", .summary = "Shift+Insert" },
+        .{ .name = "放大字号", .key = "increase_font_size", .summary = "Ctrl+=" },
+    };
+
+    fn build(arena: Allocator) ![]const SearchEntry {
+        var out: std.ArrayList(SearchEntry) = .empty;
+        inline for (table) |item| {
+            if (item.os == null or item.os.? == .windows) {
+                var choices: std.ArrayList([]const u8) = .empty;
+                if (item.choices) |listed| for (listed) |choice| {
+                    if (choice.label.len > 0) try choices.append(arena, tr(choice.label));
+                };
+                try out.append(arena, .{
+                    .name = tr(item.label),
+                    .aliases = try withEnglish(arena, item.aliases, item.label),
+                    .key = @tagName(item.key),
+                    .summary = tr(item.summary),
+                    .choices = choices.items,
+                    .group = groupName(item.group),
+                });
+            }
+        }
+        inline for (shortcuts) |row| {
+            try out.append(arena, .{
+                .name = tr(row.label),
+                .aliases = try withEnglish(arena, row.aliases, row.label),
+                .key = row.action,
+                .summary = tr(row.summary),
+                .group = groupName(row.group),
+            });
+        }
+        try out.appendSlice(arena, &stand_ins);
+        return out.items;
+    }
+
+    /// The names of what `query` finds, in order.
+    fn names(arena: Allocator, query: []const u8) ![]const []const u8 {
+        const entries = try build(arena);
+        const hits = try search(arena, entries, query);
+        const out = try arena.alloc([]const u8, hits.len);
+        for (hits, out) |hit, *name| name.* = entries[hit.index].name;
+        return out;
+    }
+
+    fn expectNames(query: []const u8, expected: []const []const u8) !void {
+        var arena_state: ArenaAllocator = .init(testing.allocator);
+        defer arena_state.deinit();
+        const got = try names(arena_state.allocator(), query);
+        errdefer {
+            std.debug.print("`{s}` found {d}:", .{ query, got.len });
+            for (got) |name| std.debug.print(" [{s}]", .{name});
+            std.debug.print("\n", .{});
+        }
+        try testing.expectEqual(expected.len, got.len);
+        for (expected, got) |e, g| try testing.expectEqualStrings(e, g);
+    }
+
+    fn expectCount(query: []const u8, expected: usize) !void {
+        var arena_state: ArenaAllocator = .init(testing.allocator);
+        defer arena_state.deinit();
+        const got = try names(arena_state.allocator(), query);
+        errdefer {
+            std.debug.print("`{s}` found {d}:", .{ query, got.len });
+            for (got) |name| std.debug.print(" [{s}]", .{name});
+            std.debug.print("\n", .{});
+        }
+        try testing.expectEqual(expected, got.len);
+    }
+};
+
+test "config search: the readings the test machine took still hold (#1093 S7)" {
+    const M = MachineEntries;
+    // The four settings, the shortcut row, and the shortcut page's action.
+    try M.expectCount("截图", 6);
+    try M.expectCount("screenshot", 6);
+    try M.expectCount("capture", 3);
+    try M.expectNames("SCREENSHOT-DIR", &.{"截图保存位置"});
+    try M.expectCount("总管", 4);
+    try M.expectCount("claude", 3);
+    // The three called it come before the one that only mentions it.
+    try M.expectNames("粘贴", &.{
+        "粘贴图片时存成文件并粘贴路径",
+        "粘贴剪贴板内容",
+        "粘贴主选区内容",
+        "截图保存位置",
+    });
+    try M.expectCount("zzzz-nothing", 0);
+}
+
+test "config search: font size is found by what people call it (#1100)" {
+    const M = MachineEntries;
+    // The row is 字号 and its key is font-size: neither 字体 nor 大小 is in
+    // either, and the machine read 0 for all three of these.
+    try M.expectNames("字体 大小", &.{"字号"});
+    try M.expectNames("字体 大", &.{"字号"});
+    try M.expectNames("大小", &.{"字号"});
+    try M.expectNames("字体大小", &.{"字号"});
+    try M.expectNames("文字 size", &.{"字号"});
+    // The group's name finds its rows, the one called that first.
+    try M.expectNames("字体", &.{ "字体", "字号", "行高调整" });
+    // Under the Chinese interface the English still works.
+    try M.expectNames("font size", &.{ "字号", "放大字号" });
 }
 
 test "config search: the JSON form answers with positions and ranks" {

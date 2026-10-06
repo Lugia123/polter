@@ -26,7 +26,7 @@ enum SettingsSearch {
         case keybind(action: String)
     }
 
-    /// One thing the search can find. The five fields the core matches
+    /// One thing the search can find. The six fields the core matches
     /// against, any of which may be missing, and what this host keeps.
     struct Entry: Equatable {
         var target: Target
@@ -35,6 +35,9 @@ enum SettingsSearch {
         var key: String?
         var summary: String?
         var choices: [String] = []
+        /// The group it is drawn in, as the breadcrumb names it. Only a
+        /// General row has one; All Options is not a place to look for.
+        var group: String?
     }
 
     /// The words on a result that are not its name: where it is.
@@ -57,6 +60,12 @@ enum SettingsSearch {
         return GeneralGroup.allCases.first { ConfigFormRules.coreGroup($0) == name } ?? .all
     }
 
+    /// What the core matches a group by: its title, and nothing for All
+    /// Options, which every key would otherwise be found under.
+    static func groupName(_ group: GeneralGroup) -> String? {
+        group == .all ? nil : group.title
+    }
+
     /// The General form as entries: every key, in the table's order, and
     /// after them the rows that show a binding.
     ///
@@ -77,7 +86,8 @@ enum SettingsSearch {
                 summary: ConfigFormRules.sentence(item, bundle: bundle),
                 choices: item.control == .choice
                     ? ConfigFormRules.choices(of: item).map { ConfigFormRules.choiceTitle($0, of: item, bundle: bundle) }
-                    : [])
+                    : [],
+                group: groupName(group(of: item)))
         }
         for section in form.sections {
             guard let group = GeneralGroup.allCases.first(where: { ConfigFormRules.coreGroup($0) == section.group })
@@ -88,7 +98,8 @@ enum SettingsSearch {
                     name: ConfigFormRules.localized(shortcut.label, bundle: bundle),
                     aliases: withEnglish(shortcut.aliases ?? [], shortcut.label),
                     key: shortcut.action,
-                    summary: shortcut.summary.map { ConfigFormRules.localized($0, bundle: bundle) }))
+                    summary: shortcut.summary.map { ConfigFormRules.localized($0, bundle: bundle) },
+                    group: groupName(group)))
             }
         }
         return out
@@ -105,6 +116,7 @@ enum SettingsSearch {
             if let key = entry.key, !key.isEmpty { object["key"] = key }
             if let summary = entry.summary, !summary.isEmpty { object["summary"] = summary }
             if !entry.choices.isEmpty { object["choices"] = entry.choices }
+            if let group = entry.group, !group.isEmpty { object["group"] = group }
             return object
         }
         guard let data = try? JSONSerialization.data(withJSONObject: objects, options: [.sortedKeys]),

@@ -22,6 +22,9 @@ pub struct Entry {
     pub key: Option<String>,
     pub summary: Option<String>,
     pub choices: Vec<String>,
+    /// The group it is drawn in, as the breadcrumb names it. Only a General
+    /// row has one: `字体 大小` is then a way to ask for the size under Font.
+    pub group: Option<String>,
 }
 
 /// What the result list says when the query finds nothing: the core's
@@ -74,7 +77,9 @@ pub fn form_entries(items: &[Item], sections: &Sections, translate: impl Fn(&str
             if out.iter().any(|(seen, _, _)| *seen == i) {
                 continue;
             }
-            out.push((i, group, form_entry(&items[i], &translate)));
+            let mut entry = form_entry(&items[i], &translate);
+            entry.group = Some(translate(group.msgid()));
+            out.push((i, group, entry));
         }
     }
     out
@@ -95,7 +100,7 @@ pub fn form_entry(it: &Item, translate: impl Fn(&str) -> String) -> Entry {
         _ => it.summary.as_deref().map(&translate),
     };
     let choices = if it.control == Control::Choice { choice_titles(it, &translate) } else { Vec::new() };
-    Entry { name, aliases, key: (!it.key.is_empty()).then(|| it.key.clone()), summary, choices }
+    Entry { name, aliases, key: (!it.key.is_empty()).then(|| it.key.clone()), summary, choices, group: None }
 }
 
 /// A JSON string literal. This crate has no dependencies, so no serializer;
@@ -154,6 +159,10 @@ pub fn json(entries: &[Entry]) -> String {
         if !e.choices.is_empty() {
             out.push_str(",\"choices\":");
             list(&e.choices, &mut out);
+        }
+        if let Some(g) = &e.group {
+            out.push_str(",\"group\":");
+            quoted(g, &mut out);
         }
         out.push('}');
     }
@@ -227,6 +236,8 @@ mod tests {
     fn zh(s: &str) -> String {
         match s {
             "Font Size" => "字号".into(),
+            "Font" => "字体".into(),
+            "Screenshot" => "截图".into(),
             "Screenshot Folder" => "截图保存位置".into(),
             "Where screenshots are saved." => "截图存在哪里。".into(),
             "Screenshot Shortcut" => "截图快捷键".into(),
@@ -268,7 +279,10 @@ mod tests {
         assert_eq!(order, [(1, Group::Font), (0, Group::Screenshot), (3, Group::Screenshot)]);
         // The name is the translated one; the English one is an alias, after
         // the table's own.
-        assert_eq!(got[0].2, Entry { name: "字号".into(), aliases: vec!["Font Size".into()], key: Some("font-size".into()), summary: None, choices: vec![] });
+        assert_eq!(got[0].2, Entry { name: "字号".into(), aliases: vec!["Font Size".into()], key: Some("font-size".into()), summary: None, choices: vec![], group: Some("字体".into()) });
+        // Each row says which group it is in, in the language shown.
+        assert_eq!(got[1].2.group.as_deref(), Some("截图"));
+        assert_eq!(got[2].2.group.as_deref(), Some("截图"));
         assert_eq!(got[1].2.name, "截图保存位置");
         assert_eq!(got[1].2.aliases, ["capture", "截屏", "Screenshot Folder"]);
         assert_eq!(got[1].2.summary.as_deref(), Some("截图存在哪里。"));
@@ -300,7 +314,7 @@ mod tests {
         // they are a role's own name and sentence, not msgids.
         it.summary = Some("Font Size".into());
         let e = form_entry(&it, zh);
-        assert_eq!(e, Entry { name: "Off".into(), aliases: vec![], key: None, summary: Some("Font Size".into()), choices: vec![] });
+        assert_eq!(e, Entry { name: "Off".into(), aliases: vec![], key: None, summary: Some("Font Size".into()), choices: vec![], group: None });
     }
 
     #[test]
@@ -314,12 +328,13 @@ mod tests {
                 key: Some("font-size".into()),
                 summary: Some("s".into()),
                 choices: vec!["关".into()],
+                group: Some("字体".into()),
             },
         ];
         assert_eq!(
             json(&entries),
             "[{\"name\":\"a \\\"b\\\"\\\\\\n\\tc\\u0001\"},{\"name\":\"\"},\
-             {\"name\":\"字号\",\"aliases\":[\"Font Size\",\"x\"],\"key\":\"font-size\",\"summary\":\"s\",\"choices\":[\"关\"]}]"
+             {\"name\":\"字号\",\"aliases\":[\"Font Size\",\"x\"],\"key\":\"font-size\",\"summary\":\"s\",\"choices\":[\"关\"],\"group\":\"字体\"}]"
         );
         assert_eq!(json(&[]), "[]");
     }

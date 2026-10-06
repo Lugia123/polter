@@ -226,6 +226,27 @@ pub fn scale(v: i32, dpi: i32) -> i32 {
     v * dpi / 96
 }
 
+/// The height to give a drop-down's selection field so that the closed box
+/// is `want` tall, or `None` when it already is (or cannot be told).
+///
+/// **A drop-down does not take its height from where it is put.** The
+/// height handed to `SetWindowPos` is the open list's; the closed box is
+/// its selection field plus the frame the system draws round it, and the
+/// field's height is whatever `WM_MEASUREITEM` answered when it was made
+/// (20 DIP here, a list row). So every drop-down in the window stood 26 px
+/// tall at 96 DPI beside 28 px boxes and buttons (task 1100).
+///
+/// `closed` and `field` are read off the control as it is now -- the frame
+/// is their difference, **measured rather than assumed**, because it is the
+/// system's and differs with the theme. Asking again with what this
+/// returned applied gives `None`.
+pub fn combo_field_height(closed: i32, field: i32, want: i32) -> Option<i32> {
+    if closed <= 0 || field <= 0 || field > closed || want <= 0 || closed == want {
+        return None;
+    }
+    Some((want - (closed - field)).max(1))
+}
+
 /// The height a font is made at (§2.3b): the size it was designed with, in
 /// 96-DPI pixels, scaled to `dpi` -- and **never less than the system's menu
 /// font**, `menu_px`, which the host asks the system for at that same DPI.
@@ -1459,4 +1480,39 @@ mod tests {
         assert_eq!(search_section(from, "nothing", &items), Some(Section::Roles));
         assert_eq!(search_section(from, "  ", &items), None);
     }
+    #[test]
+    fn a_drop_down_is_made_as_tall_as_the_other_controls_at_every_dpi() {
+        use grid::CONTROL_H;
+        // What the test machine measured (task 1093, S1): a 20 DIP field in
+        // a box 6 px taller, beside controls of CONTROL_H.
+        for (dpi, was) in [(96, 26), (120, 31), (144, 36), (192, 46)] {
+            let field = scale(20, dpi);
+            assert_eq!(field + 6, was, "dpi {dpi}");
+            let want = scale(CONTROL_H, dpi);
+            let fitted = combo_field_height(was, field, want).expect("it was short");
+            // The closed box is the field and the same frame.
+            assert_eq!(fitted + (was - field), want, "dpi {dpi}");
+            // Applied, there is nothing left to do.
+            assert_eq!(combo_field_height(want, fitted, want), None, "dpi {dpi}");
+        }
+        assert_eq!(combo_field_height(26, 20, 28), Some(22));
+        assert_eq!(combo_field_height(36, 30, 42), Some(36));
+        // A frame of another thickness is taken as found, not assumed.
+        assert_eq!(combo_field_height(24, 20, 28), Some(24));
+        // Too tall comes down too.
+        assert_eq!(combo_field_height(40, 34, 28), Some(22));
+    }
+
+    #[test]
+    fn a_drop_down_that_cannot_be_measured_is_left_alone() {
+        // CB_ERR for the field, a window with no height, a field taller
+        // than its own box, nowhere to fit it.
+        assert_eq!(combo_field_height(26, -1, 28), None);
+        assert_eq!(combo_field_height(0, 20, 28), None);
+        assert_eq!(combo_field_height(26, 30, 28), None);
+        assert_eq!(combo_field_height(26, 20, 0), None);
+        // A frame thicker than the room there is still leaves a field.
+        assert_eq!(combo_field_height(26, 2, 10), Some(1));
+    }
+
 }

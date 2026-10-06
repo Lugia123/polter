@@ -248,7 +248,12 @@ struct ConfigFormShapeTests {
             name: tongue.mouseTrigger,
             aliases: tongue.isEnglish ? ["double-click"] : ["double-click", "Mouse Trigger"],
             key: "screenshot-mouse-trigger", summary: "S",
-            choices: [tongue.off, "⇧⌘ + \(tongue.doubleClick)", "⌃⇧ + \(tongue.doubleClick)"]))
+            choices: [tongue.off, "⇧⌘ + \(tongue.doubleClick)", "⌃⇧ + \(tongue.doubleClick)"],
+            group: GeneralGroup.screenshot.title))
+        // A row says which group it is in, so `font size` finds the size
+        // under Font; All Options is not a group anybody names.
+        #expect(entries[safe: 4]?.group == GeneralGroup.font.title)
+        #expect(entries[safe: 5]?.group == nil)
         // A key with no name of its own: found by its key and its help.
         #expect(entries[safe: 5]?.name == nil)
         #expect(entries[safe: 5]?.summary == "Sync.")
@@ -256,7 +261,7 @@ struct ConfigFormShapeTests {
         #expect(entries[safe: 7] == .init(
             target: .shortcut(action: "screenshot", group: .screenshot),
             name: tongue.screenshot, aliases: tongue.isEnglish ? ["capture"] : ["capture", "Screenshot"],
-            key: "screenshot", summary: "Take one."))
+            key: "screenshot", summary: "Take one.", group: GeneralGroup.screenshot.title))
     }
 
     @Test(arguments: Tongue.all)
@@ -284,7 +289,7 @@ struct ConfigFormShapeTests {
             .init(target: .project(name: "site"), name: "site"),
             .init(target: .keybind(action: "new_tab"), name: "New Tab", aliases: [], key: "new_tab", summary: "⌘T"),
             .init(target: .plugin(key: "p"), name: "", key: "", summary: ""),
-            .init(target: .formItem(key: "k", group: .all), name: "N", aliases: ["a", "b"], key: "k", summary: "S", choices: ["x"]),
+            .init(target: .formItem(key: "k", group: .all), name: "N", aliases: ["a", "b"], key: "k", summary: "S", choices: ["x"], group: "G"),
         ]
         let root = try #require(try JSONSerialization.jsonObject(with: Data(SettingsSearch.json(entries).utf8)) as? [[String: Any]])
         #expect(root.count == 5)
@@ -293,7 +298,7 @@ struct ConfigFormShapeTests {
         #expect(root[safe: 2] as NSDictionary? == ["name": "New Tab", "key": "new_tab", "summary": "⌘T"] as NSDictionary)
         #expect(root[safe: 3]?.isEmpty == true, "still an entry: the indexes after it must not move")
         #expect(root[safe: 4] as NSDictionary?
-            == ["name": "N", "aliases": ["a", "b"], "key": "k", "summary": "S", "choices": ["x"]] as NSDictionary)
+            == ["name": "N", "aliases": ["a", "b"], "key": "k", "summary": "S", "choices": ["x"], "group": "G"] as NSDictionary)
         #expect(SettingsSearch.json([]) == "[]")
     }
 

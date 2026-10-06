@@ -1069,7 +1069,7 @@ fn research() {
         let keys = crate::keybinds::keys_label(r);
         let (crumb, place) = here(Group::Keybinds);
         let synth = jump_item(&name, Some(&keys));
-        entries.push(find::Entry { name, aliases: Vec::new(), key: Some(r.action.to_string()), summary: Some(keys), choices: Vec::new() });
+        entries.push(find::Entry { name, key: Some(r.action.to_string()), summary: Some(keys), ..Default::default() });
         what.push(Hit { item: None, home: Group::All, synth: Some(synth), crumb, place });
     }
     let doc = find::json(&entries);
@@ -1403,6 +1403,9 @@ fn layout_form(dpi: i32) {
                 // the mac); the rest take the row.
                 let w = rules::field_width(*control, *home).map(|v| shell::scale(v, dpi).min(c.width())).unwrap_or(c.width());
                 let _ = SetWindowPos(*h, None, c.left, c.top - scroll, w, c.height() + extra, flags);
+                if *control == Control::Choice {
+                    crate::roles_ui::fit_combo(*h, c.height());
+                }
             }
         }
     }
@@ -1961,7 +1964,7 @@ fn paint_form(win: HWND) {
         // Where the result lives, above it; a click goes there (`click_at`).
         if let (Some(text), Some(cr)) = (crumb, crumbs.get(i)) {
             let cr = RECT { left: cr.left + dot, top: cr.top - scroll, right: cr.right, bottom: cr.bottom - scroll };
-            draw_text(hdc, text, &cr, font(), theme::focus(), DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            draw_text(hdc, text, &cr, font(), theme::link(), DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         }
         // A result that is no form row: its sentence where a control would be.
         if it.kind == Kind::Jump {
@@ -1996,7 +1999,7 @@ fn paint_form(win: HWND) {
             draw_text(hdc, &note, &hr, font(), if red { theme::warn() } else { theme::dim() }, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL);
             if link {
                 let lr = RECT { left: hr.left, top: hr.bottom, right: hr.right, bottom: hr.bottom + line };
-                draw_text(hdc, &link_text(it, *expanded), &lr, font(), theme::focus(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                draw_text(hdc, &link_text(it, *expanded), &lr, font(), theme::link(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
             }
         }
         if theme::custom_drawing() && !*slider && !matches!(control, Control::Toggle | Control::Choice) {

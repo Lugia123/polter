@@ -29,7 +29,7 @@ use windows::Win32::Foundation::{COLORREF, HWND};
 use windows::Win32::Graphics::Gdi::{
     CreateSolidBrush, DeleteObject, GetSysColor, SetBkColor, SetTextColor, COLOR_BTNFACE,
     COLOR_BTNSHADOW, COLOR_BTNTEXT, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT,
-    COLOR_WINDOW, COLOR_WINDOWTEXT, HBRUSH, HDC,
+    COLOR_HOTLIGHT, COLOR_WINDOW, COLOR_WINDOWTEXT, HBRUSH, HDC,
 };
 use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -196,6 +196,20 @@ pub fn focus() -> u32 {
         sys(COLOR_WINDOWTEXT)
     } else {
         0x0090_8f8e
+    }
+}
+
+/// Text that goes somewhere when clicked: a link under a row, a search
+/// result's breadcrumb, a link-styled button. The macOS side draws these
+/// with the system's link colour (`.buttonStyle(.link)`), and this is that
+/// colour as it is on a dark ground (`#419CFF`) -- **not `focus()`**, which
+/// is a grey for rings and was borrowed for these until task 1100: a grey
+/// sentence under a grey help line does not read as something to click.
+pub fn link() -> u32 {
+    if high_contrast() {
+        sys(COLOR_HOTLIGHT)
+    } else {
+        0x00ff_9c41
     }
 }
 

@@ -1026,6 +1026,9 @@ fn layout_form(dpi: i32) {
                 SWP_NOZORDER | SWP_NOACTIVATE,
             );
         }
+        if matches!(control, Control::Choice(_)) {
+            crate::roles_ui::fit_combo(*h, r.control.height());
+        }
     }
     let si = SCROLLINFO {
         cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
