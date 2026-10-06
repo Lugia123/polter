@@ -30,6 +30,8 @@ pub struct Entry {
 ///    whatever the `.json`'s own age, so a shot is never left half there.
 ///  * A recognised `.json` with no `.png` beside it is an orphan and is judged
 ///    by its own age.
+///  * The tiles of a long screenshot (`<stem>-<n>.png`) follow the same two
+///    rules as the `.json`.
 ///  * Nothing else is ever named.
 pub fn plan(entries: &[Entry], max_age: Duration) -> Vec<String> {
     let ours: Vec<(&Entry, &str, Kind)> =
@@ -40,8 +42,10 @@ pub fn plan(entries: &[Entry], max_age: Duration) -> Vec<String> {
     ours.iter()
         .filter(|(e, stem, kind)| match kind {
             Kind::Png => old_pngs.contains(stem),
-            Kind::Json if pngs.contains(stem) => old_pngs.contains(stem),
-            Kind::Json => e.age > max_age,
+            // A sidecar and the tiles of a long screenshot belong to their
+            // shot: they go when it goes, and alone they go by their own age.
+            Kind::Json | Kind::Tile if pngs.contains(stem) => old_pngs.contains(stem),
+            Kind::Json | Kind::Tile => e.age > max_age,
         })
         .map(|(e, _, _)| e.name.clone())
         .collect()
@@ -150,6 +154,26 @@ mod tests {
         // The png is old, the json was touched yesterday: the shot goes whole.
         let got = planned(&[e("20260901-000000-000.png", 30), e("20260901-000000-000.json", 1)]);
         assert_eq!(got, ["20260901-000000-000.json", "20260901-000000-000.png"]);
+    }
+
+    #[test]
+    fn a_long_screenshots_tiles_go_with_it() {
+        let got = planned(&[
+            e("20260901-000000-000.png", 8),
+            e("20260901-000000-000.json", 8),
+            e("20260901-000000-000-1.png", 8),
+            e("20260901-000000-000-2.png", 1),
+            // Another shot's, recent, and a stranger numbered the same way.
+            e("20261005-000000-000-1.png", 30),
+            e("20261005-000000-000.png", 1),
+            e("holiday-1.png", 400),
+        ]);
+        assert_eq!(
+            got,
+            ["20260901-000000-000-1.png", "20260901-000000-000-2.png", "20260901-000000-000.json", "20260901-000000-000.png"]
+        );
+        // Tiles whose shot is gone are judged by their own age.
+        assert_eq!(planned(&[e("20260901-000000-000-1.png", 8), e("20260901-000000-000-2.png", 2)]), ["20260901-000000-000-1.png"]);
     }
 
     #[test]

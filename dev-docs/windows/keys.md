@@ -541,7 +541,7 @@ swallowed=… tsf_ate=…`**。`seen` 是那个零的意义所在：**没有它�
 > `[shot] <实际按着的修饰键> double click at (x,y)`（默认是 `ctrl+shift double click`；
 > 配成 `alt` 就是 `alt double click`）。
 >
-> 定格画面收到的每个键有一行 `[shot] key vk=0x.. mods=<修饰键> async_ctrl=<bool> annotations=<n> -> <cancel|finish|undo|ignored>`
+> 定格画面收到的每个键有一行 `[shot] key vk=0x.. mods=<修饰键> async_ctrl=<bool> annotations=<n> -> <cancel|finish|undo|redo|tool|colour|step|delete|nudge|ignored>`
 > （每进程前 200 行）。`mods` 是按 `GetKeyState` 读的、也就是做决定用的那一份；`async_ctrl` 是
 > `GetAsyncKeyState` 的读数，只为对照——两者不一致正是 #1085 D1 的成因（见 `shot.rs::key_mods`）。
 

@@ -41,13 +41,18 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
 
-use polter_shots::annot::{self, Annotation, Labels, Meta, Source};
+use polter_shots::annot::{self, By, Display, Item, Labels, Meta, Shape, Source, Tile};
 use polter_shots::dclick::{Detector, Mods, Press, Rule, Setting, Verdict};
-use polter_shots::geom::{self, Handle, Hit, Point, Rect};
+use polter_shots::editor::{Editor, Effect, Export, Measure, Monitor, Window};
+use polter_shots::geom::{self, Handle, Point, Rect};
 use polter_shots::name::Stamp;
-use polter_shots::overlay::{self, Key};
-use polter_shots::paste::{Later, SECOND_PASTE_DELAY_MS};
-use windows::core::{w, PWSTR};
+use polter_shots::overlay::Key;
+use polter_shots::paste::{Later, MAX_TILES_PASTED, SECOND_PASTE_DELAY_MS};
+use polter_shots::pixels::{self, Composed, Frozen, TILE_HEIGHT, TILE_OVERLAP};
+use polter_shots::stitch::{Step, Stitcher};
+use polter_shots::style::{self, Prefs, Tool};
+use polter_shots::toolbar::{self, Button, Layout};
+use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, GlobalFree, COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
@@ -85,104 +90,69 @@ const WM_SHOT_MOUSE: u32 = WM_APP + 33;
 /// `CF_DIB`, numerically, as in `shots.rs`.
 const CF_DIB: u32 = 8;
 
-/// Red, yellow, blue, white: the four the specification asks for, red first.
-const COLOURS: [COLORREF; 4] =
-    [COLORREF(0x0028_28E6), COLORREF(0x0000_C8FA), COLORREF(0x00F0_6E28), COLORREF(0x00FF_FFFF)];
 /// The selection's frame and handles.
 const ACCENT: COLORREF = COLORREF(0x00F0_A01E);
+
 
 // ---------------------------------------------------------------- state
 
 struct Mon {
     rect: Rect,
     dpi: u32,
-    /// The frozen picture of this monitor.
-    bmp: HBITMAP,
     hwnd: HWND,
+    /// This monitor as it was when the screenshot began. In memory only, and
+    /// gone when the session is.
+    frozen: Frozen,
 }
 
-/// A top-level window as it was when the screen was frozen.
-struct Win {
-    hwnd: isize,
-    rect: Rect,
-}
-
-struct Sel {
-    rect: Rect,
-    mon: usize,
-    /// The window this selection is, while it is still exactly that window.
-    /// Resizing or moving it makes it a region.
-    window: Option<isize>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Tool {
-    Rect,
-    Arrow,
-    Pen,
-    Text,
-    Number,
-}
-
-const TOOLS: [Tool; 5] = [Tool::Rect, Tool::Arrow, Tool::Pen, Tool::Text, Tool::Number];
-/// Toolbar cells after the five tools.
-const CELL_COLOUR: usize = 5;
-const CELL_UNDO: usize = 6;
-const CELL_CANCEL: usize = 7;
-const CELL_DONE: usize = 8;
-const CELLS: usize = 9;
-const GLYPHS: [&str; CELLS] = ["▭", "↗", "✎", "A", "①", "●", "↶", "✕", "✓"];
-
-enum Drag {
-    None,
-    /// Button down with no selection yet: a click picks the window under it,
-    /// a drag makes a region.
-    Picking { down: Point },
-    Resize(Handle),
-    Move { last: Point },
-    /// A rectangle or an arrow being drawn.
-    Shape { start: Point },
-    Pen,
-}
-
-struct Editing {
-    edit: HWND,
-    /// Where the text goes, virtual screen.
-    at: Point,
-    /// The index of the number this is the caption of, or `None` for a text
-    /// annotation of its own.
-    caption_of: Option<usize>,
-    colour: usize,
+/// The native text box while something is being typed.
+struct EditCtl {
+    hwnd: HWND,
     font: HFONT,
 }
 
+/// One screenshot in progress. What it *does* is `editor`
+/// (`polter_shots::editor`); this is the windows around it.
 struct Session {
+    editor: Editor,
     mons: Vec<Mon>,
-    wins: Vec<Win>,
-    hover: Option<(usize, Rect)>,
-    /// A region being dragged out, before the button comes up.
-    forming: Option<(Rect, usize)>,
-    sel: Option<Sel>,
-    /// Annotations in virtual-screen pixels, each with its colour.
-    items: Vec<(Annotation, usize)>,
-    /// The annotation being drawn.
-    live: Option<Annotation>,
-    tool: Option<Tool>,
-    colour: usize,
-    drag: Drag,
-    editing: Option<Editing>,
+    edit: Option<EditCtl>,
     /// The id of the pane that had the keyboard when the shot was triggered,
     /// if Polter was the foreground application -- where the result is sent.
     /// An id rather than a window: ids are never reused, window handles are.
     origin_pane: Option<u64>,
     prev_fg: HWND,
+    /// What the tools remembered when the session began, to know whether
+    /// there is anything to save when it ends.
+    prefs_at_start: Prefs,
+    /// A long screenshot being taken.
+    long: Option<LongShot>,
 }
+
+/// A long screenshot in progress: the frames stitched so far, and what the
+/// last frame turned out to be (for the hint beside the toolbar).
+struct LongShot {
+    stitcher: Stitcher,
+    /// The overlay that has the hole in it and owns the timer.
+    hwnd: HWND,
+    /// The selection: the rectangle of the screen each frame is.
+    rect: Rect,
+    last: Step,
+    frames: u32,
+    lost: u32,
+}
+
+/// The overlay window's timer that takes a frame.
+const TIMER_LONG: usize = 2;
+/// How often, in milliseconds.
+const LONG_INTERVAL_MS: u32 = 120;
 
 thread_local! {
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
 }
 
-/// Whether a session is open, for the hook thread, which cannot look.
+/// Whether the bundled annotation font was found and loaded.
+static FONT_OK: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// The control window, for the hook thread to post to.
 static CONTROL: AtomicIsize = AtomicIsize::new(0);
@@ -283,6 +253,7 @@ pub fn init() {
         CONTROL.store(control.0 as isize, Ordering::Release);
         register_hotkey(control);
     }
+    load_font();
     read_mouse_trigger();
     start_hook();
 }
@@ -544,8 +515,14 @@ fn tick_ms() -> u64 {
 /// callback when a paste made by hand reuses a screenshot that has
 /// annotations.
 pub fn paste_note_later(pane: u64, note: String) {
+    paste_later(pane, note, SECOND_PASTE_DELAY_MS);
+}
+
+/// Queue `text` to be pasted into pane `pane`, `delay_ms` from now. A long
+/// screenshot's tiles go in one after another this way, each its own paste.
+fn paste_later(pane: u64, text: String, delay_ms: u64) {
     let now = tick_ms();
-    NOTES.lock().unwrap_or_else(|e| e.into_inner()).push(now, SECOND_PASTE_DELAY_MS, pane, note);
+    NOTES.lock().unwrap_or_else(|e| e.into_inner()).push(now, delay_ms, pane, text);
     arm_notes_timer(now);
 }
 
@@ -598,6 +575,8 @@ fn paste_notes() {
         unsafe { (crate::api().surface_text)(surface, note.as_ptr() as *const _, note.len()) };
         // process-wide: reported by pane id, which is unique in the process
         plogf!("[shot] annotation line pasted into pane={pane}: {} chars", note.chars().count());
+        // (The same line for a long screenshot's later tiles: each is a
+        // queued paste like the annotation line, and is reported like it.)
     }
     arm_notes_timer(now);
 }
@@ -638,7 +617,7 @@ fn window_bounds(hwnd: HWND) -> Option<Rect> {
 
 unsafe extern "system" fn window_cb(hwnd: HWND, data: LPARAM) -> windows::core::BOOL {
     unsafe {
-        let out = &mut *(data.0 as *mut Vec<Win>);
+        let out = &mut *(data.0 as *mut Vec<Window>);
         if IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() {
             // Cloaked: on another virtual desktop, or a suspended store app's
             // placeholder. Visible to `IsWindowVisible`, not to a person.
@@ -646,12 +625,31 @@ unsafe extern "system" fn window_cb(hwnd: HWND, data: LPARAM) -> windows::core::
             let _ = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &mut cloaked as *mut u32 as *mut c_void, 4);
             if cloaked == 0 {
                 if let Some(rect) = window_bounds(hwnd) {
-                    out.push(Win { hwnd: hwnd.0 as isize, rect });
+                    out.push(Window { id: hwnd.0 as usize as u64, rect });
                 }
             }
         }
     }
     true.into()
+}
+
+/// Open a session: freeze the screen and put an overlay on every monitor.
+/// `preselect` is where a mouse trigger happened; the window there starts
+/// out selected.
+
+/// Read a rectangle of the screen into a `Frozen`: the monitor as it is now,
+/// before any overlay exists.
+unsafe fn grab(screen: HDC, rect: Rect) -> Option<Frozen> {
+    unsafe {
+        let canvas = Canvas::new(screen, rect)?;
+        // CAPTUREBLT so layered windows are in the picture.
+        let ok = BitBlt(canvas.dc, 0, 0, rect.w, rect.h, Some(screen), rect.x, rect.y, SRCCOPY | CAPTUREBLT);
+        let _ = GdiFlush();
+        if ok.is_err() {
+            return None;
+        }
+        Frozen::new(rect, canvas.bits().to_vec())
+    }
 }
 
 /// Open a session: freeze the screen and put an overlay on every monitor.
@@ -676,29 +674,20 @@ fn begin(preselect: Option<Point>) {
         // The windows first, in z-order, **before any overlay exists** -- so
         // the list cannot contain one, and "the topmost window under the
         // cursor" needs no exception for our own.
-        let mut wins: Vec<Win> = Vec::new();
+        let mut wins: Vec<Window> = Vec::new();
         let _ = EnumWindows(Some(window_cb), LPARAM(&mut wins as *mut _ as isize));
         let mut found: Vec<(Rect, u32)> = Vec::new();
         let _ = EnumDisplayMonitors(None, None, Some(monitor_cb), LPARAM(&mut found as *mut _ as isize));
 
         let screen = GetDC(None);
-        let mem = CreateCompatibleDC(Some(screen));
         let mut mons = Vec::new();
         for (rect, dpi) in found {
-            let bmp = CreateCompatibleBitmap(screen, rect.w, rect.h);
-            let old = SelectObject(mem, bmp.into());
-            // CAPTUREBLT so layered windows are in the picture.
-            let ok = BitBlt(mem, 0, 0, rect.w, rect.h, Some(screen), rect.x, rect.y, SRCCOPY | CAPTUREBLT);
-            SelectObject(mem, old);
-            if ok.is_err() {
+            match grab(screen, rect) {
+                Some(frozen) => mons.push(Mon { rect, dpi, hwnd: HWND::default(), frozen }),
                 // process-wide: about a monitor, not about a terminal window
-                plogf!("[shot] monitor {:?} could not be captured (err={}); left out", rect, GetLastError().0);
-                let _ = DeleteObject(bmp.into());
-                continue;
+                None => plogf!("[shot] monitor {:?} could not be captured (err={}); left out", rect, GetLastError().0),
             }
-            mons.push(Mon { rect, dpi, bmp, hwnd: HWND::default() });
         }
-        let _ = DeleteDC(mem);
         ReleaseDC(None, screen);
         if mons.is_empty() {
             // process-wide: one session at a time for the whole process
@@ -707,39 +696,25 @@ fn begin(preselect: Option<Point>) {
             return;
         }
 
-        let rects: Vec<Rect> = wins.iter().map(|w| w.rect).collect();
-        let mon_rects: Vec<Rect> = mons.iter().map(|m| m.rect).collect();
-        let sel = preselect.and_then(|p| {
-            let mon = geom::monitor_at(&mon_rects, p)?;
-            let (i, rect) = geom::pick_window(&rects, p, mon_rects[mon])?;
-            Some(Sel { rect, mon, window: Some(wins[i].hwnd) })
-        });
+        let prefs = load_prefs();
+        let monitors: Vec<Monitor> =
+            mons.iter().map(|m| Monitor { rect: m.rect, scale: f64::from(m.dpi.max(96)) / 96.0 }).collect();
+        let window_count = wins.len();
+        let editor = Editor::new(monitors, wins, prefs.clone(), preselect);
         // process-wide: one session at a time for the whole process
         plogf!(
             "[shot] begin: {} monitor(s) {:?}, {} window(s), foreground={:?} polter_pane={:?}, preselected={:?}",
             mons.len(),
             mons.iter().map(|m| (m.rect.x, m.rect.y, m.rect.w, m.rect.h, m.dpi)).collect::<Vec<_>>(),
-            wins.len(),
+            window_count,
             prev_fg.0,
             origin_pane,
-            sel.as_ref().map(|s| s.rect)
+            editor.selection().map(|s| s.rect)
         );
+        let mon_rects: Vec<Rect> = mons.iter().map(|m| m.rect).collect();
         SESSION.with(|s| {
-            *s.borrow_mut() = Some(Session {
-                mons,
-                wins,
-                hover: None,
-                forming: None,
-                sel,
-                items: Vec::new(),
-                live: None,
-                tool: None,
-                colour: 0,
-                drag: Drag::None,
-                editing: None,
-                origin_pane,
-                prev_fg,
-            })
+            *s.borrow_mut() =
+                Some(Session { editor, mons, edit: None, origin_pane, prev_fg, prefs_at_start: prefs, long: None })
         });
 
         // The overlays, created with no borrow held: creation and showing
@@ -751,7 +726,7 @@ fn begin(preselect: Option<Point>) {
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
                 w!("PolterShot"),
                 w!("Polter"),
-                WS_POPUP,
+                WS_POPUP | WS_CLIPCHILDREN,
                 rect.x,
                 rect.y,
                 rect.w,
@@ -786,19 +761,20 @@ fn begin(preselect: Option<Point>) {
         let took = SetForegroundWindow(first).as_bool();
         let _ = SetFocus(Some(first));
         // process-wide: one session at a time for the whole process
-        plogf!("[shot] overlays shown; SetForegroundWindow={took}");
+        plogf!("[shot] overlays shown; SetForegroundWindow={took}; annotation font loaded={}", font_ok());
     }
 }
 
-/// Close the session: overlays gone, bitmaps freed, foreground handed back.
-/// Returns the session's state for `finish` to use, already detached.
-fn end(log_cancel: bool) -> Option<Session> {
+/// Close the session: overlays gone, the frozen pictures freed with it,
+/// foreground handed back. Returns the session for `finish` to use, already
+/// detached; `None` when it was cancelled.
+fn end(cancelled: bool) -> Option<Session> {
     let session = SESSION.with(|s| s.try_borrow_mut().ok().and_then(|mut s| s.take()));
     ACTIVE.store(false, Ordering::Release);
     let session = session?;
     unsafe {
-        if let Some(e) = &session.editing {
-            let _ = DestroyWindow(e.edit);
+        if let Some(e) = &session.edit {
+            let _ = DestroyWindow(e.hwnd);
             let _ = DeleteObject(e.font.into());
         }
         let _ = ReleaseCapture();
@@ -811,47 +787,96 @@ fn end(log_cancel: bool) -> Option<Session> {
             let _ = SetForegroundWindow(session.prev_fg);
         }
     }
-    if log_cancel {
+    // What each tool was last used with, for the next screenshot.
+    if *session.editor.prefs() != session.prefs_at_start {
+        save_prefs(session.editor.prefs());
+    }
+    if cancelled {
         // process-wide: one session at a time for the whole process
         plogf!("[shot] cancelled: clipboard untouched, nothing written");
-        free(&session);
         return None;
     }
     Some(session)
 }
 
-fn free(session: &Session) {
-    for m in &session.mons {
-        let _ = unsafe { DeleteObject(m.bmp.into()) };
+// ------------------------------------------------------- tools' memory
+
+fn prefs_path() -> Option<std::path::PathBuf> {
+    crate::project::resolve_state_dir().map(|d| d.join("shot-tools.json"))
+}
+
+/// The colour and step each tool was last used with. Anything unreadable is
+/// the defaults (`Prefs::from_json`), and so is no file at all.
+fn load_prefs() -> Prefs {
+    prefs_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| Prefs::from_json(&t)).unwrap_or_default()
+}
+
+fn save_prefs(prefs: &Prefs) {
+    let Some(path) = prefs_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::write(&path, prefs.to_json()) {
+        // process-wide: the overlay is not a terminal window
+        plogf!("[shot] the tools' colours and sizes were not saved to {}: {e}", path.display());
     }
 }
 
-// --------------------------------------------------------------- drawing
+// --------------------------------------------------------------- the font
 
-struct Pens {
-    dpi: u32,
+/// Where the bundled annotation font is: beside the executable, under
+/// `share`. One place, so that when the file's real name lands there is one
+/// line to change.
+fn font_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("share").join("ghostty").join("fonts").join("NotoSansSC-Regular.ttf"))
 }
 
-impl Pens {
-    fn width(&self) -> i32 {
-        scaled(3, self.dpi)
-    }
-    fn font_px(&self) -> i32 {
-        scaled(20, self.dpi)
-    }
-    fn radius(&self) -> i32 {
-        scaled(13, self.dpi)
-    }
+const FONT_FACE: PCWSTR = w!("Noto Sans SC");
+
+fn font_ok() -> bool {
+    FONT_OK.load(Ordering::Acquire)
 }
 
-fn text_font(px: i32, bold: bool) -> HFONT {
+/// Make the bundled font available to this process, and only to it.
+///
+/// **Missing is said, here and on the toolbar, and not papered over**
+/// (§9.1): text is then drawn in the system's font, which is not the font
+/// the other platform draws in, and nobody would know why the two pictures
+/// differ.
+fn load_font() {
+    let path = font_path();
+    let added = path.as_ref().map_or(0, |p| {
+        let wide: Vec<u16> = p.to_string_lossy().encode_utf16().chain(Some(0)).collect();
+        unsafe { AddFontResourceExW(PCWSTR(wide.as_ptr()), FR_PRIVATE, None) }
+    });
+    FONT_OK.store(added > 0, Ordering::Release);
+    // process-wide: one font for the whole process
+    plogf!(
+        "[shot] annotation font {:?}: {}",
+        path,
+        if added > 0 { "loaded".to_string() } else { "NOT loaded; text falls back to Segoe UI and the toolbar says so".to_string() }
+    );
+}
+
+/// The font annotations are written in, `px` pixels tall.
+fn annot_font(px: i32) -> HFONT {
+    make_font(px, if font_ok() { FONT_FACE } else { w!("Segoe UI") })
+}
+
+/// The font the overlay's own words (size label, tooltips) are in.
+fn ui_font(px: i32) -> HFONT {
+    make_font(px, w!("Segoe UI"))
+}
+
+fn make_font(px: i32, face: PCWSTR) -> HFONT {
     unsafe {
         CreateFontW(
             -px,
             0,
             0,
             0,
-            if bold { 700 } else { 400 },
+            400,
             0,
             0,
             0,
@@ -860,97 +885,219 @@ fn text_font(px: i32, bold: bool) -> HFONT {
             CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY,
             0,
-            w!("Segoe UI"),
+            face,
         )
     }
 }
 
-/// Where a number's caption starts, given the number's centre.
-fn caption_at(at: Point, p: &Pens) -> Point {
-    Point::new(at.x + p.radius() + scaled(6, p.dpi), at.y - p.font_px() * 2 / 3)
+/// Text measured by GDI in the annotation font: what `Editor` hit-tests
+/// text against.
+struct Gdi;
+
+impl Measure for Gdi {
+    fn text(&self, text: &str, font_px: i32) -> (i32, i32) {
+        unsafe {
+            let dc = CreateCompatibleDC(None);
+            let font = annot_font(font_px);
+            let old = SelectObject(dc, font.into());
+            let mut rc = RECT::default();
+            let mut t = wide(text);
+            DrawTextW(dc, &mut t, &mut rc, DT_CALCRECT | DT_NOPREFIX);
+            SelectObject(dc, old);
+            let _ = DeleteObject(font.into());
+            let _ = DeleteDC(dc);
+            (rc.right - rc.left, rc.bottom - rc.top)
+        }
+    }
 }
 
-/// Draw annotations given in virtual-screen pixels into a DC whose origin is
-/// `origin`. **The one routine for both the overlay and the saved image**, so
-/// what is saved is what was shown.
+// --------------------------------------------------------------- drawing
+
+/// A 32-bit top-down bitmap GDI can draw into and this code can read and
+/// write as bytes: B, G, R, X rows, the format `polter_shots::pixels` works
+/// in. Covers `rect` of the virtual screen.
+struct Canvas {
+    dc: HDC,
+    dib: HBITMAP,
+    old: HGDIOBJ,
+    bits: *mut u8,
+    rect: Rect,
+}
+
+impl Canvas {
+    unsafe fn new(like: HDC, rect: Rect) -> Option<Canvas> {
+        unsafe {
+            let dc = CreateCompatibleDC(Some(like));
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: rect.w,
+                    // Negative: the first row in memory is the top one.
+                    biHeight: -rect.h,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits: *mut c_void = std::ptr::null_mut();
+            match CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) {
+                Ok(dib) if !bits.is_null() => {
+                    let old = SelectObject(dc, dib.into());
+                    Some(Canvas { dc, dib, old, bits: bits as *mut u8, rect })
+                }
+                _ => {
+                    let _ = DeleteDC(dc);
+                    None
+                }
+            }
+        }
+    }
+
+    /// The pixels. GDI batches its drawing, so it is flushed first: what GDI
+    /// was asked to draw is in these bytes by the time they are read.
+    fn bits(&self) -> &mut [u8] {
+        unsafe {
+            let _ = GdiFlush();
+            std::slice::from_raw_parts_mut(self.bits, self.rect.w as usize * self.rect.h as usize * 4)
+        }
+    }
+}
+
+impl Drop for Canvas {
+    fn drop(&mut self) {
+        unsafe {
+            SelectObject(self.dc, self.old);
+            let _ = DeleteObject(self.dib.into());
+            let _ = DeleteDC(self.dc);
+        }
+    }
+}
+
+fn colour_ref(index: u8) -> COLORREF {
+    let (r, g, b) = style::COLOURS[index as usize % style::COLOURS.len()];
+    COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16)
+}
+
+/// Black or white, whichever shows on colour `index` (the digit in a number's
+/// circle).
+fn ink_on(index: u8) -> COLORREF {
+    let (r, g, b) = style::COLOURS[index as usize % style::COLOURS.len()];
+    let luma = (299 * r as u32 + 587 * g as u32 + 114 * b as u32) / 1000;
+    COLORREF(if luma > 150 { 0 } else { 0x00FF_FFFF })
+}
+
+/// Draw the annotations that are not mosaics onto `canvas`, in the order
+/// given. **The one routine for both the overlay and the saved image**, so
+/// what is saved is what was shown. Mosaics are already in the pixels
+/// (`pixels::apply_mosaics`) and are skipped here.
+///
+/// `hide_text_of` is the annotation whose text the text box is showing
+/// instead: its words are not drawn twice.
 unsafe fn draw_items<'a>(
-    hdc: HDC,
-    items: impl Iterator<Item = (&'a Annotation, usize)>,
-    origin: Point,
-    p: &Pens,
+    canvas: &Canvas,
+    items: impl Iterator<Item = (usize, &'a Item)>,
+    scale: f64,
+    hide_text_of: Option<usize>,
 ) {
     unsafe {
-        let font = text_font(p.font_px(), true);
-        let old_font = SelectObject(hdc, font.into());
+        let hdc = canvas.dc;
+        let o = canvas.rect.origin();
         SetBkMode(hdc, TRANSPARENT);
-        for (item, colour) in items {
-            let colour = COLOURS[colour % COLOURS.len()];
-            let pen = CreatePen(PS_SOLID, p.width(), colour);
+        for (index, item) in items {
+            let colour = colour_ref(item.colour);
+            let width = item.stroke_px(scale);
+            let brush_style = LOGBRUSH { lbStyle: BS_SOLID, lbColor: colour, lbHatch: 0 };
+            // Round ends and joins: a thick freehand stroke with square ones
+            // is a row of notches.
+            let pen = ExtCreatePen(
+                PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_ROUND | PS_JOIN_ROUND,
+                width as u32,
+                &brush_style,
+                None,
+            );
             let brush = CreateSolidBrush(colour);
             let old_pen = SelectObject(hdc, pen.into());
             let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            let font = annot_font(style::font_px(item.level, scale));
+            let old_font = SelectObject(hdc, font.into());
             SetTextColor(hdc, colour);
-            let at = |q: Point| q.relative_to(origin);
-            match item {
-                Annotation::Rect { rect } => {
-                    let r = rect.relative_to(origin);
+            let at = |q: Point| q.relative_to(o);
+            let hidden = hide_text_of == Some(index);
+            match &item.shape {
+                Shape::Mosaic(_) => {}
+                Shape::Rect(r) => {
+                    let r = r.relative_to(o);
                     let _ = Rectangle(hdc, r.x, r.y, r.right(), r.bottom());
                 }
-                Annotation::Arrow { from, to } => {
+                Shape::Ellipse(r) => {
+                    let r = r.relative_to(o);
+                    let _ = Ellipse(hdc, r.x, r.y, r.right(), r.bottom());
+                }
+                Shape::Line { from, to } => {
                     let (a, b) = (at(*from), at(*to));
                     let _ = MoveToEx(hdc, a.x, a.y, None);
                     let _ = LineTo(hdc, b.x, b.y);
-                    if let Some(head) = geom::arrow_head(a, b, p.width() * 5) {
+                }
+                Shape::Arrow { from, to } => {
+                    let (a, b) = (at(*from), at(*to));
+                    let _ = MoveToEx(hdc, a.x, a.y, None);
+                    let _ = LineTo(hdc, b.x, b.y);
+                    if let Some(head) = geom::arrow_head(a, b, width * 5) {
                         SelectObject(hdc, brush.into());
                         let pts = head.map(|q| POINT { x: q.x, y: q.y });
                         let _ = Polygon(hdc, &pts);
                     }
                 }
-                Annotation::Pen { points } => {
+                Shape::Pen(points) => {
                     let pts: Vec<POINT> = points.iter().map(|q| at(*q)).map(|q| POINT { x: q.x, y: q.y }).collect();
                     let _ = Polyline(hdc, &pts);
                 }
-                Annotation::Text { at: q, text } => {
-                    let q = at(*q);
-                    let _ = TextOutW(hdc, q.x, q.y, &wide(text));
+                Shape::Highlighter(points) => {
+                    // Not GDI's to draw: it multiplies into what is there.
+                    pixels::highlight(
+                        canvas.bits(),
+                        canvas.rect,
+                        points,
+                        width,
+                        style::COLOURS[item.colour as usize % style::COLOURS.len()],
+                    );
                 }
-                Annotation::Number { n, at: q, text } => {
+                Shape::Text { at: q, text, size } => {
+                    if !hidden {
+                        let q = at(*q);
+                        let mut rc = RECT { left: q.x, top: q.y, right: q.x + size.0, bottom: q.y + size.1 };
+                        DrawTextW(hdc, &mut wide(text), &mut rc, DT_NOPREFIX | DT_NOCLIP);
+                    }
+                }
+                Shape::Number { n, at: q, text, size } => {
                     let c = at(*q);
-                    let r = p.radius();
+                    let r = annot::number_radius(item.level, scale);
                     SelectObject(hdc, brush.into());
-                    let _ = Ellipse(hdc, c.x - r, c.y - r, c.x + r, c.y + r);
-                    // The digit, in whichever of black and white the colour
-                    // does not swallow (white and yellow take black).
+                    SelectObject(hdc, GetStockObject(NULL_PEN));
+                    let _ = Ellipse(hdc, c.x - r, c.y - r, c.x + r + 1, c.y + r + 1);
                     let digit = wide(&n.to_string());
-                    let mut size = SIZE::default();
-                    let _ = GetTextExtentPoint32W(hdc, &digit, &mut size);
-                    let light = colour.0 == COLOURS[1].0 || colour.0 == COLOURS[3].0;
-                    SetTextColor(hdc, COLORREF(if light { 0 } else { 0x00FF_FFFF }));
-                    let _ = TextOutW(hdc, c.x - size.cx / 2, c.y - size.cy / 2, &digit);
+                    let mut extent = SIZE::default();
+                    let _ = GetTextExtentPoint32W(hdc, &digit, &mut extent);
+                    SetTextColor(hdc, ink_on(item.colour));
+                    let _ = TextOutW(hdc, c.x - extent.cx / 2, c.y - extent.cy / 2, &digit);
                     SetTextColor(hdc, colour);
-                    if !text.is_empty() {
-                        let t = caption_at(*q, p).relative_to(origin);
-                        let _ = TextOutW(hdc, t.x, t.y, &wide(text));
+                    if !text.is_empty() && !hidden {
+                        let t = annot::caption_at(*q, item.level, scale, size.1).relative_to(o);
+                        let mut rc = RECT { left: t.x, top: t.y, right: t.x + size.0, bottom: t.y + size.1 };
+                        DrawTextW(hdc, &mut wide(text), &mut rc, DT_NOPREFIX | DT_NOCLIP);
                     }
                 }
             }
+            SelectObject(hdc, old_font);
             SelectObject(hdc, old_pen);
             SelectObject(hdc, old_brush);
+            let _ = DeleteObject(font.into());
             let _ = DeleteObject(pen.into());
             let _ = DeleteObject(brush.into());
         }
-        SelectObject(hdc, old_font);
-        let _ = DeleteObject(font.into());
     }
-}
-
-/// Darken `r` (client coordinates) by blending black over it.
-unsafe fn dim(hdc: HDC, black: HDC, r: Rect) {
-    if r.is_empty() {
-        return;
-    }
-    let blend = BLENDFUNCTION { BlendOp: 0, BlendFlags: 0, SourceConstantAlpha: 110, AlphaFormat: 0 };
-    let _ = unsafe { AlphaBlend(hdc, r.x, r.y, r.w, r.h, black, 0, 0, 1, 1, blend) };
 }
 
 fn fill(hdc: HDC, r: Rect, colour: COLORREF) {
@@ -969,17 +1116,179 @@ fn frame(hdc: HDC, r: Rect, colour: COLORREF, thickness: i32) {
     fill(hdc, Rect::new(r.right() - thickness, r.y, thickness, r.h), colour);
 }
 
-/// The toolbar's rectangle on the virtual screen and the side of one cell.
-fn toolbar(sel: &Sel, mon: &Mon) -> (Rect, i32) {
-    let cell = scaled(36, mon.dpi);
-    let size = (cell * CELLS as i32, cell);
-    let at = geom::toolbar_origin(sel.rect, size, mon.rect, scaled(8, mon.dpi));
-    (Rect::new(at.x, at.y, size.0, size.1), cell)
+const BAR: COLORREF = COLORREF(0x0030_3030);
+const BAR_ACTIVE: COLORREF = COLORREF(0x0068_6868);
+const BAR_HOVER: COLORREF = COLORREF(0x0048_4848);
+const INK: COLORREF = COLORREF(0x00FF_FFFF);
+const INK_OFF: COLORREF = COLORREF(0x0080_8080);
+
+/// Draw one toolbar button's picture into `r` (canvas coordinates).
+///
+/// Shapes are drawn as shapes rather than taken from a font: a glyph that a
+/// machine's fonts do not have comes out as an empty box, and a toolbar of
+/// empty boxes cannot be used. The three that stay glyphs (undo, redo and
+/// the two marks) were seen to draw on the test machine.
+unsafe fn draw_icon(hdc: HDC, button: Button, r: Rect, scale: f64, ink: COLORREF) {
+    unsafe {
+        let line = style::px(2, scale).max(1);
+        let pen = CreatePen(PS_SOLID, line, ink);
+        let brush = CreateSolidBrush(ink);
+        let old_pen = SelectObject(hdc, pen.into());
+        let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        // The picture's box: the button less a quarter all round.
+        let m = r.w / 4;
+        let (l, t, rt, b) = (r.x + m, r.y + m, r.right() - m, r.bottom() - m);
+        let (cx, cy) = (r.x + r.w / 2, r.y + r.h / 2);
+        let glyph = |s: &str, px: i32| {
+            let font = ui_font(px);
+            let old = SelectObject(hdc, font.into());
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, ink);
+            let mut rc = RECT { left: r.x, top: r.y, right: r.right(), bottom: r.bottom() };
+            DrawTextW(hdc, &mut wide(s), &mut rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(hdc, old);
+            let _ = DeleteObject(font.into());
+        };
+        let stroke = |pts: &[(i32, i32)]| {
+            let pts: Vec<POINT> = pts.iter().map(|(x, y)| POINT { x: *x, y: *y }).collect();
+            let _ = Polyline(hdc, &pts);
+        };
+        match button {
+            Button::Tool(Tool::Select) => {
+                // A pointer: an arrow from the top-left.
+                SelectObject(hdc, brush.into());
+                let pts = [(l, t), (l, b), (l + (rt - l) / 3, b - (b - t) / 3), (rt - m / 2, b - (b - t) / 3)]
+                    .map(|(x, y)| POINT { x, y });
+                let _ = Polygon(hdc, &pts);
+            }
+            Button::Tool(Tool::Rect) => {
+                let _ = Rectangle(hdc, l, t + m / 3, rt, b - m / 3);
+            }
+            Button::Tool(Tool::Ellipse) => {
+                let _ = Ellipse(hdc, l, t + m / 3, rt, b - m / 3);
+            }
+            Button::Tool(Tool::Line) => stroke(&[(l, b), (rt, t)]),
+            Button::Tool(Tool::Arrow) => {
+                stroke(&[(l, b), (rt, t)]);
+                stroke(&[(rt - (rt - l) / 2, t), (rt, t), (rt, t + (b - t) / 2)]);
+            }
+            Button::Tool(Tool::Pen) => {
+                let q = (rt - l) / 4;
+                stroke(&[(l, b), (l + q, t + q), (l + 2 * q, b - q), (l + 3 * q, t), (rt, t + q)]);
+            }
+            Button::Tool(Tool::Highlighter) => {
+                let thick = CreatePen(PS_SOLID, line * 3, ink);
+                SelectObject(hdc, thick.into());
+                stroke(&[(l, cy), (rt, cy)]);
+                SelectObject(hdc, pen.into());
+                let _ = DeleteObject(thick.into());
+            }
+            Button::Tool(Tool::Text) => glyph("A", r.h * 5 / 9),
+            Button::Tool(Tool::Number) => {
+                let _ = Ellipse(hdc, l, t, rt, b);
+                glyph("1", r.h * 4 / 9);
+            }
+            Button::Tool(Tool::Mosaic) => {
+                // Four squares of a chequerboard.
+                let (hw, hh) = ((rt - l) / 2, (b - t) / 2);
+                let _ = Rectangle(hdc, l, t, rt, b);
+                fill(hdc, Rect::new(l, t, hw, hh), ink);
+                fill(hdc, Rect::new(l + hw, t + hh, rt - l - hw, b - t - hh), ink);
+            }
+            Button::Undo => glyph("↶", r.h * 5 / 9),
+            Button::Redo => glyph("↷", r.h * 5 / 9),
+            Button::Long => {
+                // A tall page and an arrow down it.
+                let _ = Rectangle(hdc, l + m / 2, t - m / 3, rt - m / 2, b + m / 3);
+                stroke(&[(cx, t + m / 3), (cx, b - m / 4)]);
+                stroke(&[(cx - m / 2, b - m / 4 - m / 2), (cx, b - m / 4), (cx + m / 2, b - m / 4 - m / 2)]);
+            }
+            Button::Cancel => glyph("✕", r.h * 5 / 9),
+            Button::Done => glyph("✓", r.h * 5 / 9),
+            Button::Colour(c) => {
+                fill(hdc, r, colour_ref(c));
+            }
+            Button::Level(level) => {
+                // A dot that grows with the step.
+                SelectObject(hdc, brush.into());
+                let radius = (r.w * (level as i32 + 1)) / 12 + 1;
+                let _ = Ellipse(hdc, cx - radius, cy - radius, cx + radius + 1, cy + radius + 1);
+            }
+        }
+        SelectObject(hdc, old_pen);
+        SelectObject(hdc, old_brush);
+        let _ = DeleteObject(pen.into());
+        let _ = DeleteObject(brush.into());
+    }
 }
 
-fn toolbar_cell(sel: &Sel, mon: &Mon, p: Point) -> Option<usize> {
-    let (bar, cell) = toolbar(sel, mon);
-    bar.contains(p).then(|| ((p.x - bar.x) / cell) as usize).filter(|i| *i < CELLS)
+/// The toolbar, the tooltip of the button under the pointer, and -- when the
+/// bundled font is missing -- a line saying so.
+unsafe fn draw_toolbar(canvas: &Canvas, editor: &Editor, layout: &Layout, scale: f64, monitor: Rect) {
+    unsafe {
+        let hdc = canvas.dc;
+        let o = canvas.rect.origin();
+        fill(hdc, layout.bar.relative_to(o), BAR);
+        if let Some(row) = layout.props {
+            fill(hdc, row.relative_to(o), BAR);
+        }
+        let (colour, level) = editor.current();
+        for (button, rect) in &layout.buttons {
+            let r = rect.relative_to(o);
+            let current = match *button {
+                Button::Tool(t) => editor.tool() == t,
+                Button::Colour(c) => c == colour,
+                Button::Level(l) => l == level,
+                _ => false,
+            };
+            let enabled = match *button {
+                Button::Undo => editor.can_undo(),
+                Button::Redo => editor.can_redo(),
+                _ => true,
+            };
+            let hovered = editor.hover_button() == Some(*button) && enabled;
+            match *button {
+                Button::Colour(_) => {
+                    // The current colour wears a ring.
+                    if current {
+                        let ring = style::px(2, scale);
+                        frame(hdc, Rect::new(r.x - ring * 2, r.y - ring * 2, r.w + ring * 4, r.h + ring * 4), INK, ring);
+                    }
+                }
+                _ if current => fill(hdc, r, BAR_ACTIVE),
+                _ if hovered => fill(hdc, r, BAR_HOVER),
+                _ => {}
+            }
+            draw_icon(hdc, *button, r, scale, if enabled { INK } else { INK_OFF });
+        }
+
+        let font = ui_font(style::px(14, scale));
+        let old_font = SelectObject(hdc, font.into());
+        SetBkMode(hdc, OPAQUE);
+        SetBkColor(hdc, COLORREF(0x0020_2020));
+        SetTextColor(hdc, INK);
+        let label = |text: &str, x: i32, y: i32| {
+            let text = wide(&format!(" {text} "));
+            let mut size = SIZE::default();
+            let _ = GetTextExtentPoint32W(hdc, &text, &mut size);
+            // Kept on the monitor sideways.
+            let x = x.min(monitor.right() - o.x - size.cx).max(monitor.x - o.x);
+            let _ = TextOutW(hdc, x, y, &text);
+            size.cy
+        };
+        let below = layout.props.map_or(layout.bar.bottom(), |r| r.bottom()) - o.y + style::px(4, scale);
+        let mut next_line = below;
+        if !font_ok() {
+            next_line += label(&tr(toolbar::FONT_MISSING), layout.bar.x - o.x, next_line) + style::px(2, scale);
+        }
+        if let Some((button, rect)) =
+            editor.hover_button().and_then(|b| layout.rect_of(b).map(|r| (b, r.relative_to(o))))
+        {
+            label(&toolbar::tooltip(button, tr), rect.x, next_line.max(rect.bottom() + style::px(4, scale)));
+        }
+        SelectObject(hdc, old_font);
+        let _ = DeleteObject(font.into());
+    }
 }
 
 unsafe fn paint(hwnd: HWND) {
@@ -989,99 +1298,88 @@ unsafe fn paint(hwnd: HWND) {
         with(|s| {
             let Some(i) = s.mons.iter().position(|m| m.hwnd == hwnd) else { return };
             let mon = &s.mons[i];
-            let (w, h) = (mon.rect.w, mon.rect.h);
+            let Some(canvas) = Canvas::new(hdc, mon.rect) else { return };
+            let e = &s.editor;
+            let scale = e.scale();
             let o = mon.rect.origin();
-            let pens = Pens { dpi: mon.dpi };
 
-            // Everything is drawn into a bitmap and shown in one blit.
-            let mem = CreateCompatibleDC(Some(hdc));
-            let back = CreateCompatibleBitmap(hdc, w, h);
-            let old_back = SelectObject(mem, back.into());
-            let src = CreateCompatibleDC(Some(hdc));
-            let old_src = SelectObject(src, mon.bmp.into());
-            let _ = BitBlt(mem, 0, 0, w, h, Some(src), 0, 0, SRCCOPY);
-            SelectObject(src, old_src);
+            // The frozen picture, with the mosaics in it -- including the one
+            // being dragged out, so its size is chosen by what it hides.
+            mon.frozen.show(canvas.bits(), mon.rect);
+            pixels::apply_mosaics(canvas.bits(), mon.rect, &mon.frozen, e.items(), scale);
+            if let Some(live) = e.live() {
+                pixels::apply_mosaics(canvas.bits(), mon.rect, &mon.frozen, std::slice::from_ref(live), scale);
+            }
 
             // What is in focus on this monitor: the selection, the region
-            // being dragged, or the window under the cursor.
-            let sel = s.sel.as_ref().filter(|x| x.mon == i).map(|x| x.rect);
-            let forming = s.forming.filter(|f| f.1 == i).map(|f| f.0);
-            let hover = if s.sel.is_none() && s.forming.is_none() {
-                s.hover.filter(|x| x.0 == i).map(|x| x.1)
+            // being dragged, or the window under the cursor. The rest dims.
+            let sel = e.selection().filter(|x| x.monitor == i).map(|x| x.rect);
+            let forming = e.forming().filter(|f| f.1 == i).map(|f| f.0);
+            let hover = if e.selection().is_none() && e.forming().is_none() {
+                e.hover().filter(|x| x.0 == i).map(|x| x.1)
             } else {
                 None
             };
-            let focus = sel.or(forming).or(hover).map(|r| r.relative_to(o));
+            let focus = sel.or(forming).or(hover);
+            pixels::dim(canvas.bits(), mon.rect, focus);
 
-            // Dim everything outside it.
-            let black_bmp = CreateCompatibleBitmap(hdc, 1, 1);
-            let old_black = SelectObject(src, black_bmp.into());
-            let _ = SetPixel(src, 0, 0, COLORREF(0));
-            match focus {
-                Some(f) => {
-                    dim(mem, src, Rect::new(0, 0, w, f.y));
-                    dim(mem, src, Rect::new(0, f.bottom(), w, h - f.bottom()));
-                    dim(mem, src, Rect::new(0, f.y, f.x, f.h));
-                    dim(mem, src, Rect::new(f.right(), f.y, w - f.right(), f.h));
-                    frame(mem, f, ACCENT, scaled(2, mon.dpi));
-                }
-                None => dim(mem, src, Rect::new(0, 0, w, h)),
+            let hide = e.text_box().and_then(|t| t.editing);
+            let mosaic = |it: &Item| matches!(it.shape, Shape::Mosaic(_));
+            let drawn = e.draw_order().into_iter().filter(|(_, it)| !mosaic(it));
+            let live = e.live().filter(|it| !mosaic(it)).map(|it| (usize::MAX, it));
+            draw_items(&canvas, drawn.chain(live), scale, hide);
+
+            let mem = canvas.dc;
+            if let Some(f) = focus {
+                frame(mem, f.relative_to(o), ACCENT, scaled(2, mon.dpi));
             }
-            SelectObject(src, old_black);
-            let _ = DeleteObject(black_bmp.into());
-            let _ = DeleteDC(src);
-
-            if let Some(sel_ref) = s.sel.as_ref().filter(|x| x.mon == i) {
-                let f = sel_ref.rect.relative_to(o);
-                let all = s.items.iter().map(|(a, c)| (a, *c)).chain(s.live.iter().map(|a| (a, s.colour)));
-                draw_items(mem, all, o, &pens);
-
-                // Handles, when the selection is what the mouse adjusts.
-                if s.tool.is_none() {
-                    let g = scaled(4, mon.dpi);
-                    for handle in Handle::ALL {
-                        let c = handle.at(f);
-                        fill(mem, Rect::new(c.x - g, c.y - g, g * 2, g * 2), ACCENT);
+            if let Some(sel) = sel {
+                let f = sel.relative_to(o);
+                let g = scaled(4, mon.dpi);
+                let knob = |c: Point| fill(mem, Rect::new(c.x - g, c.y - g, g * 2, g * 2), ACCENT);
+                match e.selected().and_then(|k| e.items().get(k)) {
+                    // The selected annotation: its grips, or its outline
+                    // when it can only be moved.
+                    Some(item) => {
+                        let grips = item.grips();
+                        if grips.is_empty() {
+                            frame(mem, item.bounds(scale).relative_to(o), ACCENT, 1);
+                        }
+                        for (_, at) in grips {
+                            knob(at.relative_to(o));
+                        }
                     }
+                    // Otherwise the selection's own handles, while the
+                    // select tool is what the mouse is.
+                    None if e.tool() == Tool::Select => {
+                        for handle in Handle::ALL {
+                            knob(handle.at(f));
+                        }
+                    }
+                    None => {}
                 }
 
                 // Size, in pixels of the image.
-                let ui = text_font(scaled(14, mon.dpi), false);
+                let ui = ui_font(scaled(14, mon.dpi));
                 let old_font = SelectObject(mem, ui.into());
                 SetBkMode(mem, OPAQUE);
                 SetBkColor(mem, COLORREF(0x0020_2020));
-                SetTextColor(mem, COLORREF(0x00FF_FFFF));
+                SetTextColor(mem, INK);
                 let label = wide(&format!(" {} × {} ", f.w, f.h));
                 let ly = if f.y >= scaled(22, mon.dpi) { f.y - scaled(22, mon.dpi) } else { f.y + scaled(4, mon.dpi) };
                 let _ = TextOutW(mem, f.x, ly, &label);
                 SelectObject(mem, old_font);
                 let _ = DeleteObject(ui.into());
 
-                // The toolbar.
-                let (bar, cell) = toolbar(sel_ref, mon);
-                let bar = bar.relative_to(o);
-                fill(mem, bar, COLORREF(0x0030_3030));
-                let glyphs = text_font(cell * 5 / 9, false);
-                let old_font = SelectObject(mem, glyphs.into());
-                SetBkMode(mem, TRANSPARENT);
-                for (n, glyph) in GLYPHS.iter().enumerate() {
-                    let c = Rect::new(bar.x + cell * n as i32, bar.y, cell, cell);
-                    if n < TOOLS.len() && s.tool == Some(TOOLS[n]) {
-                        fill(mem, c, COLORREF(0x0060_6060));
+                if let Some(layout) = e.layout() {
+                    draw_toolbar(&canvas, e, &layout, scale, mon.rect);
+                    if let Some(long) = &s.long {
+                        draw_long_status(&canvas, long, &layout, sel, scale, mon.rect);
                     }
-                    SetTextColor(mem, if n == CELL_COLOUR { COLOURS[s.colour] } else { COLORREF(0x00FF_FFFF) });
-                    let mut text = wide(glyph);
-                    let mut rc = RECT { left: c.x, top: c.y, right: c.right(), bottom: c.bottom() };
-                    DrawTextW(mem, &mut text, &mut rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
                 }
-                SelectObject(mem, old_font);
-                let _ = DeleteObject(glyphs.into());
             }
 
-            let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
-            SelectObject(mem, old_back);
-            let _ = DeleteObject(back.into());
-            let _ = DeleteDC(mem);
+            let _ = BitBlt(hdc, 0, 0, mon.rect.w, mon.rect.h, Some(mem), 0, 0, SRCCOPY);
         });
         let _ = EndPaint(hwnd, &ps);
     }
@@ -1097,214 +1395,6 @@ fn repaint() {
 }
 
 // ----------------------------------------------------------------- input
-
-/// What a handler decided, performed once the session is no longer borrowed.
-enum Act {
-    None,
-    Repaint,
-    Capture,
-    Release,
-    Cancel,
-    Finish,
-    /// Open the text box at this point, for a text annotation or a caption.
-    Edit { at: Point, caption_of: Option<usize> },
-    CommitEdit,
-    CancelEdit,
-}
-
-fn button_down(s: &mut Session, p: Point) -> Act {
-    if s.editing.is_some() {
-        // A click away from the box keeps what was typed.
-        return Act::CommitEdit;
-    }
-    let mon_rects: Vec<Rect> = s.mons.iter().map(|m| m.rect).collect();
-    if let Some(sel) = &s.sel {
-        let mon = &s.mons[sel.mon];
-        if let Some(cell) = toolbar_cell(sel, mon, p) {
-            return match cell {
-                CELL_COLOUR => {
-                    s.colour = (s.colour + 1) % COLOURS.len();
-                    Act::Repaint
-                }
-                CELL_UNDO => {
-                    s.items.pop();
-                    Act::Repaint
-                }
-                CELL_CANCEL => Act::Cancel,
-                CELL_DONE => Act::Finish,
-                n => {
-                    // The same tool again puts it down: back to adjusting
-                    // the selection.
-                    s.tool = if s.tool == Some(TOOLS[n]) { None } else { Some(TOOLS[n]) };
-                    Act::Repaint
-                }
-            };
-        }
-        let inside = sel.rect.contains(p);
-        match s.tool {
-            Some(_) if !inside => Act::None,
-            Some(Tool::Rect) | Some(Tool::Arrow) => {
-                s.drag = Drag::Shape { start: p };
-                Act::Capture
-            }
-            Some(Tool::Pen) => {
-                s.drag = Drag::Pen;
-                s.live = Some(Annotation::Pen { points: vec![p] });
-                Act::Capture
-            }
-            Some(Tool::Text) => Act::Edit { at: p, caption_of: None },
-            Some(Tool::Number) => {
-                let plain: Vec<Annotation> = s.items.iter().map(|(a, _)| a.clone()).collect();
-                let n = annot::next_number(&plain);
-                s.items.push((Annotation::Number { n, at: p, text: String::new() }, s.colour));
-                let pens = Pens { dpi: mon.dpi };
-                Act::Edit { at: caption_at(p, &pens), caption_of: Some(s.items.len() - 1) }
-            }
-            None => match geom::hit(sel.rect, p, scaled(6, mon.dpi)) {
-                Hit::Handle(h) => {
-                    s.drag = Drag::Resize(h);
-                    Act::Capture
-                }
-                Hit::Inside => {
-                    s.drag = Drag::Move { last: p };
-                    Act::Capture
-                }
-                // Outside with nothing drawn yet: choose again. With
-                // annotations it would throw them away, so it does nothing.
-                Hit::Outside if s.items.is_empty() => {
-                    s.sel = None;
-                    s.hover = geom::monitor_at(&mon_rects, p).and_then(|m| {
-                        let rects: Vec<Rect> = s.wins.iter().map(|w| w.rect).collect();
-                        geom::pick_window(&rects, p, mon_rects[m]).map(|(_, r)| (m, r))
-                    });
-                    s.drag = Drag::Picking { down: p };
-                    Act::Capture
-                }
-                Hit::Outside => Act::None,
-            },
-        }
-    } else {
-        s.drag = Drag::Picking { down: p };
-        Act::Capture
-    }
-}
-
-fn mouse_move(s: &mut Session, p: Point) -> Act {
-    if s.editing.is_some() {
-        return Act::None;
-    }
-    let mon_rects: Vec<Rect> = s.mons.iter().map(|m| m.rect).collect();
-    match &mut s.drag {
-        Drag::None => {
-            if s.sel.is_some() {
-                return Act::None;
-            }
-            let rects: Vec<Rect> = s.wins.iter().map(|w| w.rect).collect();
-            let hover = geom::monitor_at(&mon_rects, p)
-                .and_then(|m| geom::pick_window(&rects, p, mon_rects[m]).map(|(_, r)| (m, r)));
-            if hover == s.hover {
-                return Act::None;
-            }
-            s.hover = hover;
-        }
-        Drag::Picking { down } => {
-            let down = *down;
-            if !geom::is_drag(down, p) {
-                return Act::None;
-            }
-            // Confined to the monitor the drag started on.
-            let Some(m) = geom::monitor_at(&mon_rects, down) else { return Act::None };
-            s.forming = geom::drag_selection(down, p, mon_rects[m]).map(|r| (r, m));
-        }
-        Drag::Resize(h) => {
-            let h = *h;
-            if let Some(sel) = &mut s.sel {
-                sel.rect = geom::resize(sel.rect, h, p, mon_rects[sel.mon]);
-                sel.window = None;
-            }
-        }
-        Drag::Move { last } => {
-            let delta = Point::new(p.x - last.x, p.y - last.y);
-            *last = p;
-            if let Some(sel) = &mut s.sel {
-                sel.rect = geom::move_by(sel.rect, delta, mon_rects[sel.mon]);
-                sel.window = None;
-            }
-        }
-        Drag::Shape { start } => {
-            let start = *start;
-            let Some(sel) = &s.sel else { return Act::None };
-            let end = sel.rect.clamp(p);
-            s.live = Some(match s.tool {
-                Some(Tool::Arrow) => Annotation::Arrow { from: start, to: end },
-                _ => Annotation::Rect { rect: Rect::spanning(start, end) },
-            });
-        }
-        Drag::Pen => {
-            let Some(sel) = &s.sel else { return Act::None };
-            let q = sel.rect.clamp(p);
-            if let Some(Annotation::Pen { points }) = &mut s.live {
-                if points.last() != Some(&q) {
-                    points.push(q);
-                }
-            }
-        }
-    }
-    Act::Repaint
-}
-
-fn button_up(s: &mut Session, p: Point) -> Act {
-    match std::mem::replace(&mut s.drag, Drag::None) {
-        Drag::None => return Act::None,
-        Drag::Picking { .. } => {
-            if let Some((rect, mon)) = s.forming.take() {
-                s.sel = Some(Sel { rect, mon, window: None });
-            } else {
-                // A click: the window under the cursor, as it was frozen.
-                // Asked of the click's own position rather than taken from
-                // `hover`, which is only as fresh as the last mouse move.
-                let mon_rects: Vec<Rect> = s.mons.iter().map(|m| m.rect).collect();
-                let rects: Vec<Rect> = s.wins.iter().map(|w| w.rect).collect();
-                s.sel = geom::monitor_at(&mon_rects, p).and_then(|mon| {
-                    let (i, rect) = geom::pick_window(&rects, p, mon_rects[mon])?;
-                    Some(Sel { rect, mon, window: Some(s.wins[i].hwnd) })
-                });
-            }
-            s.hover = None;
-        }
-        Drag::Resize(_) | Drag::Move { .. } => {}
-        Drag::Shape { .. } | Drag::Pen => {
-            let keep = match &s.live {
-                Some(Annotation::Rect { rect }) => !rect.is_empty(),
-                Some(Annotation::Arrow { from, to }) => from != to,
-                Some(Annotation::Pen { points }) => points.len() > 1,
-                _ => false,
-            };
-            if let Some(a) = s.live.take().filter(|_| keep) {
-                s.items.push((a, s.colour));
-            }
-        }
-    }
-    Act::Release
-}
-
-/// Right click and its keyboard twin step back once: out of the text box,
-/// then out of the selection, then out of the screenshot.
-fn step_back(s: &mut Session) -> Act {
-    if s.editing.is_some() {
-        Act::CancelEdit
-    } else if s.sel.is_some() || s.forming.is_some() {
-        s.sel = None;
-        s.forming = None;
-        s.items.clear();
-        s.live = None;
-        s.tool = None;
-        s.drag = Drag::None;
-        Act::Release
-    } else {
-        Act::Cancel
-    }
-}
 
 /// The modifiers as they were when the key message being handled was made.
 ///
@@ -1359,103 +1449,304 @@ fn point_of(hwnd: HWND, lp: LPARAM) -> Option<Point> {
     with(|s| s.mons.iter().find(|m| m.hwnd == hwnd).map(|m| Point::new(x + m.rect.x, y + m.rect.y))).flatten()
 }
 
-fn perform(hwnd: HWND, act: Act) {
-    match act {
-        Act::None => {}
-        Act::Repaint => repaint(),
-        Act::Capture => {
+/// Do what `Editor` asked for, with the session no longer borrowed: most of
+/// these send messages back to this thread's window procedures.
+fn perform(hwnd: HWND, effect: Effect) {
+    match effect {
+        Effect::None => {}
+        Effect::Repaint => repaint(),
+        Effect::Capture => {
             unsafe { SetCapture(hwnd) };
             repaint();
         }
-        Act::Release => {
+        Effect::Release => {
             let _ = unsafe { ReleaseCapture() };
             repaint();
         }
-        Act::Cancel => {
+        Effect::Cancel => {
             end(true);
         }
-        Act::Finish => finish(),
-        Act::Edit { at, caption_of } => open_edit(at, caption_of),
-        Act::CommitEdit => close_edit(true),
-        Act::CancelEdit => close_edit(false),
+        Effect::Finish => finish(),
+        Effect::Long => start_long(),
+        Effect::LeaveLong => stop_long(),
+        Effect::OpenText => open_edit(),
+        Effect::RestyleText => restyle_edit(),
+        Effect::CommitText => commit_edit(),
     }
 }
 
 unsafe extern "system" fn overlay_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    let act = match msg {
+    let effect = match msg {
         WM_PAINT => {
             unsafe { paint(hwnd) };
             return LRESULT(0);
         }
         // Painted whole in WM_PAINT; erasing first would flash.
         WM_ERASEBKGND => return LRESULT(1),
-        WM_MOUSEMOVE => point_of(hwnd, lp).and_then(|p| with(|s| mouse_move(s, p))),
-        WM_LBUTTONDOWN => point_of(hwnd, lp).and_then(|p| with(|s| button_down(s, p))),
-        WM_LBUTTONDBLCLK => point_of(hwnd, lp).and_then(|p| {
-            with(|s| {
-                // With no tool in hand a double click on the selection is
-                // "done". With one, it is just the second of two clicks.
-                let on_selection = s.sel.as_ref().is_some_and(|sel| sel.rect.contains(p));
-                let on_toolbar = s.sel.as_ref().is_some_and(|sel| toolbar_cell(sel, &s.mons[sel.mon], p).is_some());
-                if s.tool.is_none() && on_selection && !on_toolbar && s.editing.is_none() {
-                    Act::Finish
-                } else {
-                    button_down(s, p)
-                }
-            })
-        }),
-        WM_LBUTTONUP => point_of(hwnd, lp).and_then(|p| with(|s| button_up(s, p))),
-        WM_RBUTTONDOWN => with(step_back),
+        WM_MOUSEMOVE => point_of(hwnd, lp).and_then(|p| with(|s| s.editor.pointer_move(p, key_mods()))),
+        WM_LBUTTONDOWN => point_of(hwnd, lp).and_then(|p| with(|s| s.editor.pointer_down(p, key_mods(), &Gdi))),
+        WM_LBUTTONDBLCLK => point_of(hwnd, lp).and_then(|p| with(|s| s.editor.double_click(p, key_mods(), &Gdi))),
+        WM_LBUTTONUP => point_of(hwnd, lp).and_then(|p| with(|s| s.editor.pointer_up(p))),
+        WM_RBUTTONDOWN => with(|s| s.editor.right_click()),
         // Alt+F4 on an overlay closes the session, not one monitor's window.
-        WM_CLOSE => Some(Act::Cancel),
+        WM_CLOSE => Some(Effect::Cancel),
+        WM_TIMER if wp.0 == TIMER_LONG => {
+            long_tick();
+            return LRESULT(0);
+        }
         WM_KEYDOWN => {
             let vk = wp.0 as u16;
             let mods = key_mods();
             with(|s| {
-                let does = overlay::key(vk, mods, s.sel.is_some());
-                log_key(vk, mods, does, s.items.len());
-                match does {
-                    Key::Cancel => Act::Cancel,
-                    Key::Finish => Act::Finish,
-                    Key::Undo => {
-                        s.items.pop();
-                        Act::Repaint
-                    }
-                    Key::Ignored => Act::None,
-                }
+                let before = s.editor.items().len();
+                let (key, effect) = s.editor.key(vk, mods, &Gdi);
+                log_key(vk, mods, key, before);
+                effect
             })
+        }
+        // The text box asks what colours to draw itself in: the text's own.
+        WM_CTLCOLOREDIT => {
+            let colour = with(|s| s.editor.text_box().map(|t| t.colour)).flatten().unwrap_or(0);
+            unsafe {
+                let dc = HDC(wp.0 as *mut c_void);
+                // Dark paper under light ink, light under dark.
+                let paper = if ink_on(colour).0 == 0 { COLORREF(0x0030_3030) } else { COLORREF(0x00FF_FFFF) };
+                SetTextColor(dc, colour_ref(colour));
+                SetBkColor(dc, paper);
+                SetDCBrushColor(dc, paper);
+                return LRESULT(GetStockObject(DC_BRUSH).0 as isize);
+            }
         }
         _ => return unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     };
-    perform(hwnd, act.unwrap_or(Act::None));
+    perform(hwnd, effect.unwrap_or(Effect::None));
     LRESULT(0)
 }
 
-// ------------------------------------------------------------- text box
+// ---------------------------------------------------------- long screenshot
 
-/// Open a native `EDIT` at `at` for typing a text annotation or a number's
-/// caption. **A real edit control, so the input method works in it** -- an
-/// IME composes into a window that implements the text protocols, and this
-/// one already does.
-fn open_edit(at: Point, caption_of: Option<usize>) {
-    let Some((parent, mon_rect, dpi, sel_rect, colour)) = with(|s| {
-        let sel = s.sel.as_ref()?;
-        let m = &s.mons[sel.mon];
-        Some((m.hwnd, m.rect, m.dpi, sel.rect, s.colour))
+/// Enter long-screenshot mode (`Editor` already has): open the selection to
+/// the live screen and start taking frames.
+///
+/// **The overlay gets a hole where the selection is.** A window region is
+/// the one thing that does both jobs at once: what is under the hole shows
+/// (the live page), and the mouse over the hole is not ours at all, so the
+/// wheel scrolls the application underneath with no forwarding to get wrong.
+///
+/// The overlays are also taken out of screen capture, so a toolbar that had
+/// to sit inside a selection as tall as the monitor is not in the frames.
+fn start_long() {
+    let Some((hwnd, mon_rect, sel, bar, overlays)) = with(|s| {
+        let sel = *s.editor.selection()?;
+        let m = &s.mons[sel.monitor];
+        let bar = s.editor.layout().map(|l| l.bar);
+        Some((m.hwnd, m.rect, sel.rect, bar, s.mons.iter().map(|m| m.hwnd).collect::<Vec<_>>()))
     })
     .flatten() else {
         return;
     };
-    let pens = Pens { dpi };
-    let local = at.relative_to(mon_rect.origin());
-    let height = pens.font_px() + scaled(8, dpi);
-    let width = (sel_rect.right() - at.x).max(scaled(160, dpi)).min(mon_rect.right() - at.x).max(scaled(40, dpi));
+    let Some(stitcher) = Stitcher::new(sel.w as usize, sel.h as usize) else { return };
+    with(|s| s.long = Some(LongShot { stitcher, hwnd, rect: sel, last: Step::Unchanged, frames: 0, lost: 0 }));
+    unsafe {
+        let o = mon_rect.origin();
+        let local = sel.relative_to(o);
+        let region = CreateRectRgn(0, 0, mon_rect.w, mon_rect.h);
+        let hole = CreateRectRgn(local.x, local.y, local.right(), local.bottom());
+        CombineRgn(Some(region), Some(region), Some(hole), RGN_DIFF);
+        let _ = DeleteObject(hole.into());
+        // A toolbar inside the selection stays part of the window.
+        if let Some(bar) = bar.and_then(|b| b.intersect(sel)) {
+            let b = bar.relative_to(o);
+            let keep = CreateRectRgn(b.x, b.y, b.right(), b.bottom());
+            CombineRgn(Some(region), Some(region), Some(keep), RGN_OR);
+            let _ = DeleteObject(keep.into());
+        }
+        // The system owns the region from here.
+        SetWindowRgn(hwnd, Some(region), true);
+        let mut excluded = 0;
+        for h in &overlays {
+            if !h.0.is_null() && SetWindowDisplayAffinity(*h, WDA_EXCLUDEFROMCAPTURE).is_ok() {
+                excluded += 1;
+            }
+        }
+        let timer = SetTimer(Some(hwnd), TIMER_LONG, LONG_INTERVAL_MS, None);
+        // process-wide: the overlay is not a terminal window
+        plogf!(
+            "[shot] long screenshot started: frames of {:?} every {LONG_INTERVAL_MS} ms; {excluded} of {} overlay(s) \
+             excluded from capture; timer={}",
+            sel,
+            overlays.len(),
+            timer != 0
+        );
+    }
+    repaint();
+}
+
+/// Leave long-screenshot mode without finishing: cover the selection again.
+fn stop_long() {
+    let Some((long, overlays)) =
+        with(|s| s.long.take().map(|l| (l, s.mons.iter().map(|m| m.hwnd).collect::<Vec<_>>()))).flatten()
+    else {
+        return;
+    };
+    unsafe {
+        let _ = KillTimer(Some(long.hwnd), TIMER_LONG);
+        SetWindowRgn(long.hwnd, None, true);
+        for h in overlays {
+            if !h.0.is_null() {
+                let _ = SetWindowDisplayAffinity(h, WDA_NONE);
+            }
+        }
+    }
+    // process-wide: the overlay is not a terminal window
+    plogf!(
+        "[shot] long screenshot left without finishing: {} frame(s), {} dropped, {} px collected and discarded",
+        long.frames,
+        long.lost,
+        long.stitcher.total_height()
+    );
+    repaint();
+}
+
+/// Take one frame of the selection as it is on the live screen and hand it
+/// to the stitcher.
+fn long_tick() {
+    let Some(rect) = with(|s| s.long.as_ref().map(|l| l.rect)).flatten() else { return };
+    let frame = unsafe {
+        let screen = GetDC(None);
+        let frame = Canvas::new(screen, rect).and_then(|canvas| {
+            BitBlt(canvas.dc, 0, 0, rect.w, rect.h, Some(screen), rect.x, rect.y, SRCCOPY | CAPTUREBLT)
+                .ok()
+                .map(|()| canvas.bits().to_vec())
+        });
+        ReleaseDC(None, screen);
+        frame
+    };
+    let Some(frame) = frame else { return };
+    let changed = with(|s| {
+        let long = s.long.as_mut()?;
+        let step = long.stitcher.push(&frame);
+        long.frames += 1;
+        if step == Step::Lost {
+            long.lost += 1;
+        }
+        // What the hint shows follows the last frame that said something:
+        // an unchanged frame does not clear "scroll more slowly".
+        let shown = if step == Step::Unchanged { long.last } else { step };
+        let changed = shown != long.last || matches!(step, Step::Added(_));
+        if step == Step::Full && long.last != Step::Full {
+            // process-wide: the overlay is not a terminal window
+            plogf!("[shot] long screenshot reached the {} px limit; no more is added", polter_shots::stitch::MAX_HEIGHT);
+            unsafe {
+                let _ = KillTimer(Some(long.hwnd), TIMER_LONG);
+            }
+        }
+        long.last = shown;
+        Some(changed)
+    })
+    .flatten()
+    .unwrap_or(false);
+    if changed {
+        repaint();
+    }
+}
+
+/// Beside the toolbar: how tall the picture is so far, what the last frame
+/// meant, and a small copy of the picture beside the selection.
+unsafe fn draw_long_status(canvas: &Canvas, long: &LongShot, layout: &Layout, sel: Rect, scale: f64, monitor: Rect) {
+    unsafe {
+        let hdc = canvas.dc;
+        let o = canvas.rect.origin();
+        let font = ui_font(style::px(14, scale));
+        let old_font = SelectObject(hdc, font.into());
+        SetBkMode(hdc, OPAQUE);
+        SetBkColor(hdc, COLORREF(0x0020_2020));
+        SetTextColor(hdc, INK);
+        let hint = match long.last {
+            Step::Lost => format!(" — {}", tr(toolbar::LONG_SLOWER)),
+            Step::Full => format!(" — {}", tr(toolbar::LONG_FULL)),
+            _ => String::new(),
+        };
+        let text = wide(&format!(" {} {} px{hint} ", tr(toolbar::LONG_STATUS), long.stitcher.total_height()));
+        let at = Point::new(layout.bar.x, layout.bar.bottom() + style::px(4, scale)).relative_to(o);
+        let _ = TextOutW(hdc, at.x, at.y, &text);
+        SelectObject(hdc, old_font);
+        let _ = DeleteObject(font.into());
+
+        // The preview: right of the selection, or left of it, or not at all.
+        let gap = style::px(12, scale);
+        let width = style::px(120, scale);
+        let x = if sel.right() + gap + width <= monitor.right() {
+            sel.right() + gap
+        } else if sel.x - gap - width >= monitor.x {
+            sel.x - gap - width
+        } else {
+            return;
+        };
+        let room = (monitor.h - gap * 2).max(1);
+        let Some((w, h, bits)) = long.stitcher.thumbnail(width as usize, room as usize) else { return };
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w as i32,
+                biHeight: -(h as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let top = (sel.y.max(monitor.y + gap)).min(monitor.bottom() - gap - h as i32).max(monitor.y);
+        let dest = Point::new(x, top).relative_to(o);
+        SetDIBitsToDevice(
+            hdc,
+            dest.x,
+            dest.y,
+            w as u32,
+            h as u32,
+            0,
+            0,
+            0,
+            h as u32,
+            bits.as_ptr() as *const c_void,
+            &info,
+            DIB_RGB_COLORS,
+        );
+        frame(hdc, Rect::new(dest.x - 1, dest.y - 1, w as i32 + 2, h as i32 + 2), ACCENT, 1);
+    }
+}
+
+// ------------------------------------------------------------- text box
+
+/// Open a native `EDIT` for the text `Editor` is about to take. **A real
+/// edit control, so the input method works in it** -- an IME composes into a
+/// window that implements the text protocols, and this one already does.
+/// Several lines: Enter is a line break, Ctrl+Enter and Esc end it.
+fn open_edit() {
+    let Some((parent, mon_rect, sel_rect, scale, tb)) = with(|s| {
+        let sel = *s.editor.selection()?;
+        let m = &s.mons[sel.monitor];
+        Some((m.hwnd, m.rect, sel.rect, s.editor.scale(), s.editor.text_box()?.clone()))
+    })
+    .flatten() else {
+        return;
+    };
+    let font_px = style::font_px(tb.level, scale);
+    let local = tb.at.relative_to(mon_rect.origin());
+    let pad = style::px(4, scale);
+    let width = (sel_rect.right() - tb.at.x).max(style::px(200, scale)).min(mon_rect.right() - tb.at.x).max(style::px(40, scale));
+    let height = (font_px * 4).min((mon_rect.bottom() - tb.at.y).max(font_px + pad * 2));
+    let initial: Vec<u16> = tb.text.replace('\n', "\r\n").encode_utf16().chain(Some(0)).collect();
     unsafe {
         let edit = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("EDIT"),
-            w!(""),
-            WS_CHILD | WS_VISIBLE | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+            PCWSTR(initial.as_ptr()),
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_BORDER
+                | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN) as u32),
             local.x,
             local.y,
             width,
@@ -1468,75 +1759,98 @@ fn open_edit(at: Point, caption_of: Option<usize>) {
         let Ok(edit) = edit else {
             // process-wide: the overlay is not a terminal window
             plogf!("[shot] the text box could not be created (err={})", GetLastError().0);
+            with(|s| s.editor.end_text("", &Gdi));
             return;
         };
-        let font = text_font(pens.font_px(), true);
+        let font = annot_font(font_px);
         SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
         let prev = SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_proc as *const () as isize);
         SetWindowLongPtrW(edit, GWLP_USERDATA, prev);
-        with(|s| s.editing = Some(Editing { edit, at, caption_of, colour, font }));
+        // The caret after what is already there.
+        const EM_SETSEL: u32 = 0x00B1;
+        let end = GetWindowTextLengthW(edit).max(0);
+        SendMessageW(edit, EM_SETSEL, Some(WPARAM(end as usize)), Some(LPARAM(end as isize)));
+        with(|s| s.edit = Some(EditCtl { hwnd: edit, font }));
         let _ = SetForegroundWindow(parent);
         let _ = SetFocus(Some(edit));
     }
     repaint();
 }
 
-/// Close the text box. `keep` puts what was typed into the annotation;
-/// otherwise it is dropped (a number keeps its circle either way).
-fn close_edit(keep: bool) {
+/// The text's colour or size changed while it is being typed: the box
+/// follows, so what is seen while typing is what will be drawn.
+fn restyle_edit() {
+    let Some((edit, old, level, scale)) = with(|s| {
+        let e = s.edit.as_ref()?;
+        Some((e.hwnd, e.font, s.editor.text_box()?.level, s.editor.scale()))
+    })
+    .flatten() else {
+        return;
+    };
+    unsafe {
+        let font = annot_font(style::font_px(level, scale));
+        SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        with(|s| {
+            if let Some(e) = &mut s.edit {
+                e.font = font;
+            }
+        });
+        let _ = DeleteObject(old.into());
+        let _ = InvalidateRect(Some(edit), None, true);
+        let _ = SetFocus(Some(edit));
+    }
+    repaint();
+}
+
+/// Close the text box and hand what was typed to `Editor`, which decides
+/// what it becomes (nothing, if nothing was typed).
+fn commit_edit() {
     // Taken out first: destroying the box sends it WM_KILLFOCUS, which asks
     // for this same close and must find nothing left to do.
-    let Some(e) = with(|s| s.editing.take()).flatten() else { return };
+    let Some(e) = with(|s| s.edit.take()).flatten() else {
+        // `Editor` has a text box the host does not (it failed to open).
+        if with(|s| s.editor.end_text("", &Gdi)).is_some() {
+            repaint();
+        }
+        return;
+    };
     let text = unsafe {
-        let mut buf = vec![0u16; GetWindowTextLengthW(e.edit).max(0) as usize + 1];
-        let n = GetWindowTextW(e.edit, &mut buf).max(0) as usize;
+        let mut buf = vec![0u16; GetWindowTextLengthW(e.hwnd).max(0) as usize + 1];
+        let n = GetWindowTextW(e.hwnd, &mut buf).max(0) as usize;
         String::from_utf16_lossy(&buf[..n])
     };
-    let text = text.trim().to_string();
-    let parent = unsafe { GetParent(e.edit) }.ok();
+    let parent = unsafe { GetParent(e.hwnd) }.ok();
     unsafe {
-        let _ = DestroyWindow(e.edit);
+        let _ = DestroyWindow(e.hwnd);
         let _ = DeleteObject(e.font.into());
     }
-    with(|s| {
-        if !keep || text.is_empty() {
-            return;
-        }
-        match e.caption_of {
-            Some(i) => {
-                if let Some((Annotation::Number { text: caption, .. }, _)) = s.items.get_mut(i) {
-                    *caption = text;
-                }
-            }
-            None => s.items.push((Annotation::Text { at: e.at, text }, e.colour)),
-        }
-    });
+    with(|s| s.editor.end_text(&text, &Gdi));
     if let Some(parent) = parent {
         let _ = unsafe { SetFocus(Some(parent)) };
     }
     repaint();
 }
 
-/// Enter keeps, Escape drops, and losing the keyboard keeps. An `EDIT` eats
-/// the first two and tells nobody, hence the subclass (as in `prompt.rs`).
+/// Ctrl+Enter and Escape end the typing and keep it; so does losing the
+/// keyboard. Plain Enter is a line break and is the control's own. While an
+/// input method is composing, Escape reaches the IME and not this procedure
+/// (it arrives as `VK_PROCESSKEY`), so it cancels the composition only.
 unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let prev = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-        if msg == WM_KEYDOWN && wp.0 as u16 == VK_RETURN.0 {
-            close_edit(true);
+        let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
+        if msg == WM_KEYDOWN && (wp.0 as u16 == VK_ESCAPE.0 || (wp.0 as u16 == VK_RETURN.0 && ctrl)) {
+            commit_edit();
             return LRESULT(0);
         }
-        if msg == WM_KEYDOWN && wp.0 as u16 == VK_ESCAPE.0 {
-            close_edit(false);
-            return LRESULT(0);
-        }
-        // The beep an `EDIT` makes for Enter and Escape arrives as WM_CHAR.
-        if msg == WM_CHAR && (wp.0 == 13 || wp.0 == 27) {
+        // What those two keys leave behind as characters: Escape, and the
+        // line feed Ctrl+Enter makes.
+        if msg == WM_CHAR && (wp.0 == 27 || wp.0 == 10) {
             return LRESULT(0);
         }
         if msg == WM_KILLFOCUS {
             // The box is destroyed by this; nothing is forwarded to it after.
-            close_edit(true);
+            commit_edit();
             return LRESULT(0);
         }
         let f: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT = std::mem::transmute(prev);
@@ -1546,9 +1860,10 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
 
 // ------------------------------------------------------------ the result
 
-/// The program and title of a window, for the sidecar. Either may be absent.
-fn window_names(hwnd: isize) -> (Option<String>, Option<String>) {
-    let hwnd = HWND(hwnd as *mut c_void);
+/// The program, title and process of a window, for the sidecar. Any may be
+/// absent.
+fn window_names(hwnd: u64) -> (Option<String>, Option<String>, Option<u32>) {
+    let hwnd = HWND(hwnd as usize as *mut c_void);
     unsafe {
         let mut buf = [0u16; 512];
         let n = GetWindowTextW(hwnd, &mut buf).max(0) as usize;
@@ -1564,55 +1879,7 @@ fn window_names(hwnd: isize) -> (Option<String>, Option<String>) {
             let full = String::from_utf16_lossy(&path[..len as usize]);
             Path::new(&full).file_stem().map(|s| s.to_string_lossy().to_string())
         });
-        (app, title)
-    }
-}
-
-/// The selection as an image, annotations drawn on it.
-unsafe fn compose(session: &Session, sel: &Sel) -> Option<polter_shots::Image> {
-    unsafe {
-        let mon = &session.mons[sel.mon];
-        let (w, h) = (sel.rect.w, sel.rect.h);
-        let screen = GetDC(None);
-        let mem = CreateCompatibleDC(Some(screen));
-        let src = CreateCompatibleDC(Some(screen));
-        ReleaseDC(None, screen);
-        let info = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: w,
-                // Negative: the first row in memory is the top one.
-                biHeight: -h,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut bits: *mut c_void = std::ptr::null_mut();
-        let dib = CreateDIBSection(Some(mem), &info, DIB_RGB_COLORS, &mut bits, None, 0);
-        let image = match dib {
-            Ok(dib) if !bits.is_null() => {
-                let old_mem = SelectObject(mem, dib.into());
-                let old_src = SelectObject(src, mon.bmp.into());
-                let from = sel.rect.relative_to(mon.rect.origin());
-                let _ = BitBlt(mem, 0, 0, w, h, Some(src), from.x, from.y, SRCCOPY);
-                SelectObject(src, old_src);
-                let pens = Pens { dpi: mon.dpi };
-                draw_items(mem, session.items.iter().map(|(a, c)| (a, *c)), sel.rect.origin(), &pens);
-                let _ = GdiFlush();
-                let bytes = std::slice::from_raw_parts(bits as *const u8, w as usize * h as usize * 4);
-                let image = polter_shots::Image::from_bgrx(w as u32, h as u32, bytes);
-                SelectObject(mem, old_mem);
-                let _ = DeleteObject(dib.into());
-                image
-            }
-            _ => None,
-        };
-        let _ = DeleteDC(mem);
-        let _ = DeleteDC(src);
-        image
+        (app, title, (pid != 0).then_some(pid))
     }
 }
 
@@ -1637,52 +1904,104 @@ unsafe fn set_clipboard(format: u32, bytes: &[u8]) -> bool {
 }
 
 /// The words of the annotation line in the app's language. The msgids are
-/// `src/input/screenshot.zig`'s -- `polter_shots::annot::EN` is that list --
-/// so they are looked up, not written again here.
-fn labels() -> [String; 7] {
+/// `polter_shots::annot::EN`, looked up one by one.
+fn labels() -> [String; 11] {
     let en = annot::EN;
-    [en.header, en.text, en.rect, en.arrow, en.pen, en.separator, en.see].map(tr)
+    [
+        en.header,
+        en.text,
+        en.rect,
+        en.ellipse,
+        en.line,
+        en.arrow,
+        en.pen,
+        en.highlighter,
+        en.mosaic,
+        en.separator,
+        en.see,
+    ]
+    .map(tr)
+}
+
+/// The selection as it leaves: cut from the frozen picture with the mosaics
+/// applied (`Composed::new`), the other annotations drawn on top.
+///
+/// **`Composed` is the only thing with a way out** -- `png`, `dib` and
+/// `tiles` are its methods -- so the file, the clipboard image and the tiles
+/// cannot be the picture a mosaic was meant to hide.
+fn compose(mon: &Mon, export: &Export) -> Option<Composed> {
+    let mut composed = Composed::new(&mon.frozen, export.selection.rect, &export.on_screen, export.scale, &[])?;
+    let mut drawn = false;
+    composed.draw(|bits, rect| unsafe {
+        let screen = GetDC(None);
+        let canvas = Canvas::new(screen, rect);
+        ReleaseDC(None, screen);
+        let Some(canvas) = canvas else { return };
+        canvas.bits().copy_from_slice(bits);
+        let others = export.on_screen.iter().enumerate().filter(|(_, it)| !matches!(it.shape, Shape::Mosaic(_)));
+        draw_items(&canvas, others, export.scale, None);
+        bits.copy_from_slice(canvas.bits());
+        drawn = true;
+    });
+    drawn.then_some(composed)
 }
 
 /// Done: the composed image to the clipboard and to a file, the sidecar
 /// beside it, and -- if Polter was in front when this started -- the path and
 /// the annotation line into the pane that had the keyboard.
 fn finish() {
-    close_edit(true);
-    if with(|s| s.sel.is_none()).unwrap_or(true) {
-        return;
+    commit_edit();
+    let Some(export) = with(|s| s.editor.export()).flatten() else { return };
+    // A long screenshot's frames, taken out before the windows go.
+    let long = with(|s| s.long.take()).flatten();
+    if let Some(l) = &long {
+        let _ = unsafe { KillTimer(Some(l.hwnd), TIMER_LONG) };
+        // process-wide: the overlay is not a terminal window
+        plogf!(
+            "[shot] long screenshot finished: {} frame(s), {} dropped for want of overlap, {} px tall",
+            l.frames,
+            l.lost,
+            l.stitcher.total_height()
+        );
     }
     let Some(session) = end(false) else { return };
-    let Some(sel) = session.sel.as_ref() else {
-        free(&session);
-        return;
+    let sel = export.selection;
+    let Some(mon) = session.mons.get(sel.monitor) else { return };
+    let composed = match &long {
+        // Stitched frames carry no annotations and need no composing.
+        Some(l) => l.stitcher.finish().and_then(|(width, rows)| Composed::from_stitched(width, rows)),
+        None => compose(mon, &export),
     };
-    let image = unsafe { compose(&session, sel) };
-    let dpi = session.mons[sel.mon].dpi;
-    let origin = sel.rect.origin();
-    let items: Vec<Annotation> = session.items.iter().map(|(a, _)| a.relative_to(origin)).collect();
-    let source = match sel.window {
-        Some(hwnd) => {
-            let (app, title) = window_names(hwnd);
-            Source::Window { app, title }
-        }
-        None => Source::Region,
-    };
-    free(&session);
-    let Some(image) = image else {
+    let Some(composed) = composed else {
         // process-wide: the overlay is not a terminal window
         plogf!("[shot] the selection {:?} could not be composed; nothing written", sel.rect);
         return;
     };
-    let Some(png) = polter_shots::encode::png(&image) else {
+    let no_items: Vec<Item> = Vec::new();
+    let (Some(png), Some(dib)) = (composed.png(), composed.dib()) else {
         // process-wide: the overlay is not a terminal window
         plogf!("[shot] the image could not be encoded; nothing written");
         return;
     };
+    let size = composed.size();
+    let items = if long.is_some() { &no_items } else { &export.on_image };
+    // A long screenshot is also cut into tiles: the pieces a CLI can read
+    // without shrinking them. One tile would be the picture itself.
+    let tiles = if long.is_some() { composed.tiles(TILE_HEIGHT, TILE_OVERLAP) } else { Vec::new() };
+    let tiles = if tiles.len() > 1 { tiles } else { Vec::new() };
+    let source = match sel.window {
+        Some(id) => {
+            let (app, title, pid) = window_names(id);
+            // The window's own bounds as they were frozen, which the
+            // selection is the on-monitor part of.
+            let window_rect = session.editor.window_rect(id);
+            Source::Window { app, title, pid, window_rect, selection_rect: sel.rect }
+        }
+        None => Source::Region { selection_rect: sel.rect },
+    };
 
     // 1. The clipboard: the bitmap every program reads, and the PNG beside
     //    it for the ones that prefer that.
-    let dib = polter_shots::dib::encode(&image);
     let (on_clipboard, seq) = unsafe {
         // Opened in the control window's name: with no owner window,
         // `EmptyClipboard` leaves the clipboard ownerless and the
@@ -1717,35 +2036,74 @@ fn finish() {
         Ok(p) => p,
         Err(why) => {
             // process-wide: the overlay is not a terminal window
-            plogf!(
-                "[shot] done {}x{} but NOT saved: {why}. On the clipboard: {on_clipboard}",
-                image.width, image.height
-            );
+            plogf!("[shot] done {}x{} but NOT saved: {why}. On the clipboard: {on_clipboard}", size.0, size.1);
             return;
         }
     };
     let taken = taken.get();
+    let image_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    // The tiles beside it: `<name>-1.png`, `-2.png`, ...
+    let mut tile_entries = Vec::new();
+    let mut tile_paths = Vec::new();
+    for (i, (y, height, bytes)) in tiles.iter().enumerate() {
+        let name = polter_shots::name::tile(&image_name, i + 1);
+        let tile_path = path.with_file_name(&name);
+        match std::fs::write(&tile_path, bytes) {
+            Ok(()) => {
+                tile_entries.push(Tile { image: name, y: *y, height: *height });
+                tile_paths.push(tile_path);
+            }
+            // process-wide: the overlay is not a terminal window
+            Err(e) => plogf!("[shot] tile {} NOT written: {e}", tile_path.display()),
+        }
+    }
     let meta = Meta {
-        image: path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+        image: image_name,
         taken,
         utc_offset_minutes: polter_shots::name::utc_offset_minutes(&taken, &utc),
-        size: (image.width, image.height),
-        scale: f64::from(dpi) / 96.0,
+        size,
+        scale: export.scale,
+        by: By::User,
+        display: Some(Display { index: sel.monitor, size: (mon.rect.w as u32, mon.rect.h as u32), scale: export.scale }),
+        appearance: None,
         source,
+        terminal: None,
+        previous: None,
+        tiles: tile_entries,
     };
     let json = path.with_extension("json");
-    let sidecar_written = std::fs::write(&json, annot::sidecar(&meta, &items));
+    let sidecar_written = std::fs::write(&json, annot::sidecar(&meta, items));
     let words = labels();
     let l = Labels {
         header: &words[0],
         text: &words[1],
         rect: &words[2],
-        arrow: &words[3],
-        pen: &words[4],
-        separator: &words[5],
-        see: &words[6],
+        ellipse: &words[3],
+        line: &words[4],
+        arrow: &words[5],
+        pen: &words[6],
+        highlighter: &words[7],
+        mosaic: &words[8],
+        separator: &words[9],
+        see: &words[10],
     };
-    let note = annot::line(meta.size, &items, &json.to_string_lossy(), &l);
+    // What is pasted: an ordinary shot's own path, or a long one's tiles --
+    // at most `MAX_TILES_PASTED` of them, with a line saying so when there
+    // are more.
+    let pasted_tiles = tile_paths.len().min(MAX_TILES_PASTED);
+    let note = if long.is_some() {
+        let long_words = [annot::LONG_EN.header, annot::LONG_EN.tiles, annot::LONG_EN.whole].map(tr);
+        let ll = annot::LongLabels {
+            header: &long_words[0],
+            tiles: &long_words[1],
+            whole: &long_words[2],
+            separator: &words[9],
+            see: &words[10],
+        };
+        annot::long_line(meta.size, tile_paths.len(), pasted_tiles, &path.to_string_lossy(), &json.to_string_lossy(), &ll)
+    } else {
+        annot::line(meta.size, items, &json.to_string_lossy(), &l)
+    };
 
     // A paste made later by hand finds this file by the clipboard's sequence
     // number instead of saving the clipboard's bitmap a second time.
@@ -1754,13 +2112,15 @@ fn finish() {
     }
     // process-wide: the overlay is not a terminal window
     plogf!(
-        "[shot] done: {}x{} px at scale {} from {:?}, {} annotation(s); saved {}; sidecar {}; \
-         clipboard={on_clipboard} (sequence {seq})",
-        image.width,
-        image.height,
+        "[shot] done: {}x{} px at scale {} from {:?}, {} annotation(s) ({} drawn in all), {} tile(s); saved {}; \
+         sidecar {}; clipboard={on_clipboard} (sequence {seq})",
+        size.0,
+        size.1,
         meta.scale,
         sel.rect,
         items.len(),
+        session.editor.items().len(),
+        meta.tiles.len(),
         path.display(),
         match &sidecar_written {
             Ok(()) => "written".to_string(),
@@ -1781,14 +2141,25 @@ fn finish() {
         plogf!("[shot] the pane that had the keyboard (pane={pane}) was closed meanwhile; nothing pasted");
         return;
     }
-    let text = polter_droppath::quote(&path.to_string_lossy());
+    // One path for an ordinary shot; for a long one its tiles, each a paste
+    // of its own, spaced like the annotation line is from the path.
+    let paths: Vec<&std::path::PathBuf> =
+        if tile_paths.is_empty() { vec![&path] } else { tile_paths.iter().take(pasted_tiles).collect() };
+    let quoted: Vec<String> = paths.iter().map(|p| polter_droppath::quote(&p.to_string_lossy())).collect();
+    let text = &quoted[0];
     unsafe { (crate::api().surface_text)(surface, text.as_ptr() as *const _, text.len()) };
     // process-wide: reported by pane id, which is unique in the process
     plogf!(
-        "[shot] path pasted into pane={pane}: {text:?}; annotation line to follow in {SECOND_PASTE_DELAY_MS} ms: {}",
+        "[shot] path pasted into pane={pane}: {text:?}; {} more path(s) to follow, one every \
+         {SECOND_PASTE_DELAY_MS} ms; annotation line to follow in {} ms: {}",
+        quoted.len() - 1,
+        SECOND_PASTE_DELAY_MS * quoted.len() as u64,
         note.is_some()
     );
+    for (i, later) in quoted.iter().enumerate().skip(1) {
+        paste_later(pane, later.clone(), SECOND_PASTE_DELAY_MS * i as u64);
+    }
     if let Some(note) = note {
-        paste_note_later(pane, note);
+        paste_later(pane, note, SECOND_PASTE_DELAY_MS * quoted.len() as u64);
     }
 }

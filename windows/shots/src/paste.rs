@@ -101,6 +101,11 @@ impl Reuse {
 /// text. macOS waits 0.15 s for the same reason; this is that number.
 pub const SECOND_PASTE_DELAY_MS: u64 = 150;
 
+/// The most tiles of a long screenshot that are pasted into a pane (§9.6).
+/// More than this and the line that follows says how many there are and
+/// where the whole picture is.
+pub const MAX_TILES_PASTED: usize = 8;
+
 /// Things to do later, each addressed to a target and due at a time.
 ///
 /// For the second paste: `T` is the identity of the pane the first paste

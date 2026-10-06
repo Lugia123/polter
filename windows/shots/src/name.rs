@@ -77,6 +77,14 @@ pub fn utc_offset_minutes(local: &Stamp, utc: &Stamp) -> i32 {
 pub enum Kind {
     Png,
     Json,
+    /// One piece of a long screenshot: `<stem>-<n>.png`.
+    Tile,
+}
+
+/// The file name of tile `n` (counted from 1) of the shot `image` -- the
+/// shot's own file name with `-<n>` before the extension.
+pub fn tile(image: &str, n: usize) -> String {
+    format!("{}-{n}.png", image.strip_suffix(".png").unwrap_or(image))
 }
 
 /// The stem and kind of a file name this crate could have written, or `None`
@@ -85,22 +93,35 @@ pub enum Kind {
 /// Exact, on purpose: ASCII digits only, the two hyphens where they belong, a
 /// lowercase extension. `IMG_20261006-153012-123.png`, `…-123.PNG`,
 /// `…-123 (1).png` and `…-123.png.bak` are all somebody else's.
+///
+/// A `.png` may carry one more part, `-` and one to three digits: a tile of
+/// a long screenshot. The stem returned for it is the shot's, without that
+/// part.
 pub fn parse(file_name: &str) -> Option<(&str, Kind)> {
-    let (stem, kind) = if let Some(s) = file_name.strip_suffix(".png") {
-        (s, Kind::Png)
+    let (rest, json) = if let Some(s) = file_name.strip_suffix(".png") {
+        (s, false)
     } else if let Some(s) = file_name.strip_suffix(".json") {
-        (s, Kind::Json)
+        (s, true)
     } else {
         return None;
     };
-    let b = stem.as_bytes();
-    if b.len() != 19 {
+    if !rest.is_ascii() || rest.len() < 19 {
         return None;
     }
-    let shaped = b.iter().enumerate().all(|(i, c)| match i {
-        8 | 15 => *c == b'-',
+    let (stem, tail) = rest.split_at(19);
+    let shaped = stem.bytes().enumerate().all(|(i, c)| match i {
+        8 | 15 => c == b'-',
         _ => c.is_ascii_digit(),
     });
+    let numbered = |t: &str| {
+        t.strip_prefix('-').is_some_and(|d| (1..=3).contains(&d.len()) && d.bytes().all(|c| c.is_ascii_digit()))
+    };
+    let kind = match (tail, json) {
+        ("", false) => Kind::Png,
+        ("", true) => Kind::Json,
+        (t, false) if numbered(t) => Kind::Tile,
+        _ => return None,
+    };
     shaped.then_some((stem, kind))
 }
 
@@ -159,6 +180,24 @@ mod tests {
         assert_eq!(utc_offset_minutes(&t(2026, 10, 6, 15, 30, 13), &t(2026, 10, 6, 7, 30, 12)), 480);
         assert_eq!(utc_offset_minutes(&t(2026, 10, 6, 15, 29, 59), &t(2026, 10, 6, 7, 30, 0)), 480);
         assert_eq!(utc_offset_minutes(&t(2026, 10, 6, 3, 59, 59), &t(2026, 10, 6, 7, 30, 0)), -210);
+    }
+
+    #[test]
+    fn a_long_screenshots_tiles_are_recognised_as_that_shots() {
+        assert_eq!(tile(&T.png(), 1), "20261006-153012-123-1.png");
+        assert_eq!(tile(&T.png(), 12), "20261006-153012-123-12.png");
+        assert_eq!(parse("20261006-153012-123-1.png"), Some(("20261006-153012-123", Kind::Tile)));
+        assert_eq!(parse("20261006-153012-123-999.png"), Some(("20261006-153012-123", Kind::Tile)));
+        for other in [
+            "20261006-153012-123-.png",
+            "20261006-153012-123-1234.png",
+            "20261006-153012-123-1a.png",
+            "20261006-153012-123-1.json",
+            "20261006-153012-123-1-2.png",
+            "20261006-153012-123_1.png",
+        ] {
+            assert_eq!(parse(other), None, "{other:?}");
+        }
     }
 
     #[test]

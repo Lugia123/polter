@@ -17,17 +17,24 @@
 //! | [`annot`] | annotations as data: the sidecar `.json` and the pasted line |
 //! | [`dclick`] | the mouse trigger: a double click with modifiers held |
 //! | [`overlay`] | what a key does while the frozen screen is up |
+//! | [`style`] | the tools, the nine colours, the five steps of each size |
+//! | [`pixels`] | the mosaic, the highlighter, and the one image that leaves |
 
 pub mod annot;
 pub mod dclick;
 pub mod dib;
+pub mod editor;
 pub mod encode;
 pub mod geom;
 pub mod name;
 pub mod overlay;
 pub mod paste;
+pub mod pixels;
+pub mod stitch;
 pub mod store;
+pub mod style;
 pub mod sweep;
+pub mod toolbar;
 
 /// Pixels, top row first, four bytes each in R, G, B, A order, not
 /// premultiplied. `rgba.len() == width * height * 4`.
