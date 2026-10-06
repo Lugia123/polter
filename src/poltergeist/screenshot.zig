@@ -1859,6 +1859,56 @@ test "screenshot: info reads the sidecar of a path, or of the latest" {
     try testing.expectEqualStrings("BadParams", codeOf(neither));
 }
 
+test "screenshot: info of an indented sidecar is answered on one line, with all of it" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try tmpShots(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    // What a host writes: indented, one key to a line, a newline at the end.
+    // The other host's line endings too.
+    const sidecar =
+        "{\n" ++
+        "  \"version\": 2,\n" ++
+        "  \"image\": \"20261006-222115-699.png\",\r\n" ++
+        "  \"size\": [299, 337],\n" ++
+        "  \"annotations\": [\n" ++
+        "    {\"kind\": \"text\", \"text\": \"first\\nsecond\"}\n" ++
+        "  ]\n" ++
+        "}\n";
+    try put(io, dir, "20261006-222115-699.png", "x");
+    try put(io, dir, "20261006-222115-699.json", sidecar);
+
+    const answer = info(io, alloc, dir, .{ .latest = "true" });
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try @import("wire.zig").writeResponse(&out.writer, .{ .json = jsonOf(answer) });
+    const reply = out.written();
+
+    // **One line, and the line is the whole reply.** The caller reads up
+    // to the first newline and takes that for the answer; anything after
+    // it is read as the answer to the next call.
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, reply, "\n"));
+    try testing.expectEqual(reply.len - 1, std.mem.indexOfScalar(u8, reply, '\n').?);
+    try testing.expectEqual(@as(usize, 0), std.mem.count(u8, reply, "\r"));
+
+    const got = (parse(alloc, reply).?).object.get("result").?;
+    const want = parse(alloc, sidecar).?;
+    try testing.expectEqualStrings(
+        try std.json.Stringify.valueAlloc(alloc, want, .{}),
+        try std.json.Stringify.valueAlloc(alloc, got, .{}),
+    );
+    try testing.expectEqualStrings(
+        "first\nsecond",
+        got.object.get("annotations").?.array.items[0].object.get("text").?.string,
+    );
+}
+
 test "screenshot: a link named like a screenshot is not followed" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
 

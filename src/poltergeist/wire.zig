@@ -1012,7 +1012,7 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.write(true);
             try s.objectField("result");
             try s.beginWriteRaw();
-            try s.writer.writeAll(raw);
+            try writeRawOnOneLine(s.writer, raw);
             s.endWriteRaw();
         },
         .persona_slot => |v| {
@@ -1407,6 +1407,30 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
     }
     try s.endObject();
     try writer.writeByte('\n');
+}
+
+/// JSON somebody else built, written without its line breaks.
+///
+/// **The newline is the frame, so nothing inside an answer may be one.**
+/// Everything else in `writeResponse` goes through `std.json.Stringify`,
+/// which escapes a line break inside a string and writes none between
+/// tokens. This is the one place bytes go out as they came -- from a host,
+/// or from a file a host wrote -- and both hosts write a screenshot's
+/// sidecar indented. Handed on whole, the reader took the first line of it
+/// as the answer and every later call on that connection got the next line
+/// of the file instead of its own reply: off by a dozen answers, for good.
+///
+/// Dropped rather than escaped: JSON allows a raw CR or LF only between
+/// tokens, where it means nothing, so the value that arrives is the value
+/// that was sent. Text that is not JSON still comes out as one line -- wrong
+/// for that one answer, and the next one is read from where it starts.
+fn writeRawOnOneLine(writer: *std.Io.Writer, raw: []const u8) std.Io.Writer.Error!void {
+    var rest = raw;
+    while (std.mem.indexOfAny(u8, rest, "\r\n")) |i| {
+        try writer.writeAll(rest[0..i]);
+        rest = rest[i + 1 ..];
+    }
+    try writer.writeAll(rest);
 }
 
 /// Ids go out as the same `0x…` text the host puts in the environment, so
@@ -2408,6 +2432,40 @@ test "a JSON answer is carried under result as it was built" {
     try writeResponse(&out.writer, .{ .json = "{\"a\":[1,2]}" });
     // One line per answer: the newline is the frame.
     try testing.expectEqualStrings("{\"ok\":true,\"result\":{\"a\":[1,2]}}\n", out.written());
+}
+
+test "an answer is one line, whatever was put in it" {
+    const alloc = testing.allocator;
+    // Indented the way both hosts write a sidecar, with both line endings,
+    // and with an escaped line break inside a string that must stay one.
+    const indented = "{\n  \"version\": 2,\r\n  \"size\": [\n    299,\n    337\n  ],\n  \"note\": \"a\\nb\"\n}\n";
+
+    const answers = [_]Response{
+        .{ .json = indented },
+        // Not JSON at all: a raw line break inside a string.
+        .{ .json = "{\"a\":\"x\ny\"}" },
+        .{ .json = "\n\r\n" },
+        .{ .text = "one\ntwo\r\nthree" },
+        .{ .failed = .{ .code = "No\nCode", .message = "one\ntwo\r\nthree" } },
+    };
+    for (answers) |answer| {
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        defer out.deinit();
+        try writeResponse(&out.writer, answer);
+        const line = out.written();
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, line, "\n"));
+        try testing.expectEqual(@as(usize, 0), std.mem.count(u8, line, "\r"));
+        try testing.expectEqual(@as(u8, '\n'), line[line.len - 1]);
+    }
+
+    // And what arrives is what was sent, not just something on one line.
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try writeResponse(&out.writer, .{ .json = indented });
+    try testing.expectEqualStrings(
+        "{\"ok\":true,\"result\":{  \"version\": 2,  \"size\": [    299,    337  ],  \"note\": \"a\\nb\"}}\n",
+        out.written(),
+    );
 }
 
 test "group_post: mention is ids in either form, and the reply has one row per name" {
