@@ -211,6 +211,7 @@ pub fn selfSafeTag(tag: std.meta.Tag(inputpkg.Binding.Action)) bool {
         .toggle_visibility,
         .toggle_background_opacity,
         .check_for_updates,
+        .screenshot,
         .undo,
         .redo,
         .end_key_sequence,

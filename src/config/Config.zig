@@ -3001,6 +3001,70 @@ keybind: Keybinds = .{},
 /// program, not the terminal emulator).
 @"clipboard-paste-bracketed-safe": bool = true,
 
+/// Paste an image that is on the clipboard as the path of a file holding it.
+///
+/// When a paste finds no text and no files on the clipboard but does find an
+/// image -- a system screenshot, a picture copied out of a browser -- the
+/// image is written to a PNG in `screenshot-directory` and that file's path
+/// is what gets pasted, escaped the way a file dropped onto the terminal is.
+/// Coding agents that take an image by path (Claude Code, Codex) pick it up
+/// as an attachment.
+///
+/// Text always wins: a clipboard holding both text and an image pastes the
+/// text, exactly as before. Pasting the same image twice writes one file.
+///
+/// Set this to `false` to get the old behaviour back, byte for byte: a paste
+/// with only an image on the clipboard pastes nothing, and on Windows
+/// `ctrl+v` goes through to the program so it can read the clipboard itself.
+///
+/// Only implemented on macOS and Windows.
+@"clipboard-paste-image": bool = true,
+
+/// The directory screenshots and pasted clipboard images are written to.
+///
+/// Unset, this is `$XDG_STATE_HOME/polter/shots` (on Windows,
+/// `%LOCALAPPDATA%\polter\shots` when `XDG_STATE_HOME` is not set). A
+/// leading `~/` is the home directory. The directory is created on first use,
+/// owner-only where the platform has such a thing.
+///
+/// Point this inside your project when an agent refuses to read files
+/// outside its workspace.
+///
+/// Files are named `YYYYMMDD-HHMMSS-mmm.png`, with a `.json` of the same name
+/// beside a screenshot that carries annotations. At launch, files in this
+/// directory **whose names match that pattern** and that are more than seven
+/// days old are deleted. Nothing else in the directory is ever touched, so
+/// it is safe to point this at a directory that holds other things.
+///
+/// Only implemented on macOS and Windows.
+@"screenshot-directory": ?[:0]const u8 = null,
+
+/// The modifier keys that, held while double-clicking the left mouse button
+/// anywhere on screen, take a screenshot -- the second way to start one, for
+/// when one hand is already on the mouse. The keyboard way is the
+/// `screenshot` keybind action.
+///
+/// The value is modifier names joined with `+`: `shift`, `ctrl` (or
+/// `control`), `alt` (or `opt`, `option`) and `super` (or `cmd`, `command`).
+/// The default is `cmd+shift` on macOS and `ctrl+shift` elsewhere. `none`
+/// turns this off. A value with no modifier in it is refused: it would make
+/// every double-click on the machine a screenshot.
+///
+/// Both clicks have to be made with exactly these modifiers held -- one more
+/// and it is some other program's gesture, not this one -- and close enough
+/// together in time and place to be a double-click by the system's own
+/// settings.
+///
+/// The screenshot opens with the window under the pointer already selected.
+///
+/// Double-click on something that does not react. The clicks are not hidden
+/// from the application under the pointer (on Windows the first one is not;
+/// on macOS neither is), so a double-click on a link opens it and one on a
+/// title bar may zoom the window.
+///
+/// Only implemented on macOS and Windows.
+@"screenshot-mouse-trigger": ScreenshotMouseTrigger = .default,
+
 /// Enables or disabled title reporting (CSI 21 t). This escape sequence
 /// allows the running program to query the terminal title. This is a common
 /// security issue and is disabled by default.
@@ -7407,6 +7471,22 @@ pub const Keybinds = struct {
                     .{ .performable = true },
                 );
 
+                // The screenshot hotkey, `global:` so it works with another
+                // application in front. The host registers it with
+                // `RegisterHotKey`; see `dev-docs/poltergeist/screenshot.md`.
+                // `ctrl+shift+0` is in neither this function nor
+                // `keys.rs::accelerator()` (`ctrl+0`, without shift, is
+                // `reset_font_size`). ⚠️ Windows itself may take this chord
+                // for switching input language when several are installed;
+                // whether it registers is a cell of the acceptance run, and
+                // the default changes if it does not.
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .unicode = '0' }, .mods = .{ .ctrl = true, .shift = true } },
+                    .{ .screenshot = {} },
+                    .{ .global = true },
+                );
+
                 // **Polter's own five, and binding them widens a permission
                 // on purpose. Read this before changing any of it.**
                 //
@@ -8087,6 +8167,21 @@ pub const Keybinds = struct {
 
         // Mac-specific keyboard bindings.
         if (comptime builtin.target.os.tag.isDarwin()) {
+            // The screenshot hotkey, `global:` so it works with another
+            // application in front. ⚠️ **This is the one `global:` binding
+            // that must not cost the Accessibility permission**: the host
+            // registers it as a system hotkey rather than through the event
+            // tap, and `apprt.embedded.App.hasGlobalKeybinds` leaves it out
+            // of the answer that turns the tap on. Without that, every launch
+            // would open the Accessibility prompt for a default nobody chose.
+            // See `dev-docs/poltergeist/screenshot.md`.
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .unicode = '0' }, .mods = .{ .super = true, .shift = true } },
+                .{ .screenshot = {} },
+                .{ .global = true },
+            );
+
             try self.set.put(
                 alloc,
                 .{ .key = .{ .unicode = 'q' }, .mods = .{ .super = true } },
@@ -10508,6 +10603,142 @@ pub const MouseShiftCapture = enum {
     true,
     always,
     never,
+};
+
+/// See screenshot-mouse-trigger
+pub const ScreenshotMouseTrigger = struct {
+    const Self = @This();
+
+    /// The modifiers to hold. **Empty is `none`, the off state**, and it is
+    /// the only way to be empty: `parseCLI` refuses a value that names no
+    /// modifier, so a host reading zero cannot be reading a typo.
+    mods: inputpkg.Mods.Keys = .{},
+
+    pub const none: Self = .{};
+    pub const default: Self = .{
+        .mods = if (builtin.target.os.tag.isDarwin())
+            .{ .super = true, .shift = true }
+        else
+            .{ .ctrl = true, .shift = true },
+    };
+
+    /// The same bits as `ghostty_input_mods_e` (shift 1, ctrl 2, alt 4,
+    /// super 8); zero is off.
+    pub fn cval(self: Self) c_uint {
+        return self.mods.int();
+    }
+
+    pub fn parseCLI(self: *Self, input_: ?[]const u8) !void {
+        const input = std.mem.trim(u8, input_ orelse return error.ValueRequired, " \t");
+        if (input.len == 0) return error.ValueRequired;
+        if (std.mem.eql(u8, input, "none")) {
+            self.* = .none;
+            return;
+        }
+
+        var mods: inputpkg.Mods.Keys = .{};
+        var it = std.mem.splitScalar(u8, input, '+');
+        while (it.next()) |raw| {
+            const part = std.mem.trim(u8, raw, " \t");
+            const mod: inputpkg.Mod = std.meta.stringToEnum(inputpkg.Mod, part) orelse alias: {
+                for (inputpkg.mod_alias) |entry| {
+                    if (std.mem.eql(u8, part, entry[0])) break :alias entry[1];
+                }
+                // Includes the empty part of `cmd+` and a key name: this is
+                // a set of modifiers, there is no key in it.
+                return error.InvalidValue;
+            };
+            switch (mod) {
+                inline else => |m| {
+                    // Twice is a typo for something else.
+                    if (@field(mods, @tagName(m))) return error.InvalidValue;
+                    @field(mods, @tagName(m)) = true;
+                },
+            }
+        }
+
+        self.* = .{ .mods = mods };
+    }
+
+    /// Deep copy of the struct. Required by Config.
+    pub fn clone(self: *const Self, alloc: Allocator) Allocator.Error!Self {
+        _ = alloc;
+        return self.*;
+    }
+
+    /// Compare if two of our value are equal. Required by Config.
+    pub fn equal(self: Self, other: Self) bool {
+        return self.mods.int() == other.mods.int();
+    }
+
+    /// Used by Formatter
+    pub fn formatEntry(self: Self, formatter: formatterpkg.EntryFormatter) !void {
+        if (self.mods.int() == 0) return try formatter.formatEntry([]const u8, "none");
+
+        var buf: [32]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buf);
+        // The order `Trigger` prints its modifiers in.
+        inline for (.{ "super", "ctrl", "alt", "shift" }) |name| {
+            if (@field(self.mods, name)) {
+                if (writer.end > 0) writer.writeByte('+') catch return error.OutOfMemory;
+                writer.writeAll(name) catch return error.OutOfMemory;
+            }
+        }
+        try formatter.formatEntry([]const u8, writer.buffered());
+    }
+
+    test "screenshot-mouse-trigger: parse" {
+        const testing = std.testing;
+
+        var v: Self = .none;
+        try v.parseCLI("cmd+shift");
+        const cmd_shift: c_uint = v.cval();
+        try testing.expectEqual(@as(c_uint, 8 | 1), cmd_shift);
+
+        try v.parseCLI(" control + option ");
+        const ctrl_alt: c_uint = v.cval();
+        try testing.expectEqual(@as(c_uint, 2 | 4), ctrl_alt);
+
+        try v.parseCLI("none");
+        const off: c_uint = v.cval();
+        try testing.expectEqual(@as(c_uint, 0), off);
+    }
+
+    test "screenshot-mouse-trigger: a value that is not a set of modifiers is refused and changes nothing" {
+        const testing = std.testing;
+
+        var v: Self = .{ .mods = .{ .alt = true } };
+        // No modifier at all would make every double-click a screenshot.
+        try testing.expectError(error.ValueRequired, v.parseCLI(""));
+        try testing.expectError(error.ValueRequired, v.parseCLI(null));
+        try testing.expectError(error.InvalidValue, v.parseCLI("cmd+"));
+        try testing.expectError(error.InvalidValue, v.parseCLI("cmd+a"));
+        try testing.expectError(error.InvalidValue, v.parseCLI("shift+shift"));
+        try testing.expectError(error.InvalidValue, v.parseCLI("None"));
+        const kept: c_uint = v.cval();
+        try testing.expectEqual(@as(c_uint, 4), kept);
+    }
+
+    test "screenshot-mouse-trigger: what is written is what is read back" {
+        const testing = std.testing;
+
+        inline for (.{ "none", "super+shift", "ctrl+shift", "super+ctrl+alt+shift" }) |text| {
+            var v: Self = .none;
+            try v.parseCLI(text);
+            var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+            defer buf.deinit();
+            try v.formatEntry(formatterpkg.entryFormatter("a", &buf.writer));
+            try testing.expectEqualStrings("a = " ++ text ++ "\n", buf.written());
+        }
+    }
+
+    test "screenshot-mouse-trigger: on by default" {
+        const on: c_uint = Self.default.cval();
+        try std.testing.expect(on != 0);
+        // Shift plus the platform's command modifier, whichever that is.
+        try std.testing.expect(Self.default.mods.shift);
+        try std.testing.expect(Self.default.mods.super != Self.default.mods.ctrl);
+    }
 };
 
 /// See mouse-scroll-multiplier

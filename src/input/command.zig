@@ -734,6 +734,12 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Toggle the background opacity of a window that started transparent."),
         }},
 
+        .screenshot => comptime &.{.{
+            .action = .screenshot,
+            .title = i18n.N_("Screenshot"),
+            .description = i18n.N_("Freeze the screen, pick a window or drag a region, annotate it, and put the result on the clipboard."),
+        }},
+
         .check_for_updates => comptime &.{.{
             .action = .check_for_updates,
             .title = i18n.N_("Check for Updates"),

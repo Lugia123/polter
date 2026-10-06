@@ -4164,6 +4164,20 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             }
         }
 
+        // The core half landed first; the capture, the overlay and the
+        // annotations are this host's still to write (see
+        // `dev-docs/poltergeist/screenshot.md`). Until then the action is
+        // named when it arrives rather than falling through to a bare tag
+        // number, and it answers `false` because nothing was done.
+        // owed: 1081 -- the screenshot itself; remove `screenshot` from `palette.rs`'s UNAVAILABLE with it.
+        ffi::ACTION_SCREENSHOT => {
+            alogf!(
+                origin,
+                "[action] screenshot: arrived, and this host does not take screenshots yet (task 1081)"
+            );
+            false
+        }
+
         // owed: 286 -- reviewed and deferred; there is no transparency to toggle.
         ffi::ACTION_TOGGLE_BACKGROUND_OPACITY => {
             alogf!(

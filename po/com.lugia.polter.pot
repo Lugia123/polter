@@ -1131,6 +1131,44 @@ msgid "Toggle the background opacity of a window that started transparent."
 msgstr ""
 
 #: src/input/command.zig:739
+msgid "Screenshot"
+msgstr ""
+
+#: src/input/command.zig:740
+msgid ""
+"Freeze the screen, pick a window or drag a region, annotate it, and put the "
+"result on the clipboard."
+msgstr ""
+
+#: src/input/screenshot.zig:43
+msgid "Screenshot annotations"
+msgstr ""
+
+#: src/input/screenshot.zig:44
+msgid "Text"
+msgstr ""
+
+#: src/input/screenshot.zig:45
+msgid "Box"
+msgstr ""
+
+#: src/input/screenshot.zig:46
+msgid "Arrow"
+msgstr ""
+
+#: src/input/screenshot.zig:47
+msgid "Pen"
+msgstr ""
+
+#: src/input/screenshot.zig:48
+msgid "; "
+msgstr ""
+
+#: src/input/screenshot.zig:49
+msgid ". See "
+msgstr ""
+
+#: src/input/command.zig:739
 msgid "Check for Updates"
 msgstr ""
 

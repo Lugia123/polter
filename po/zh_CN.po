@@ -1144,6 +1144,44 @@ msgid "Toggle the background opacity of a window that started transparent."
 msgstr "切换最初透明的窗口的背景透明度。"
 
 #: src/input/command.zig:739
+msgid "Screenshot"
+msgstr "截图"
+
+#: src/input/command.zig:740
+msgid ""
+"Freeze the screen, pick a window or drag a region, annotate it, and put the "
+"result on the clipboard."
+msgstr "定格屏幕，点选窗口或拖出一块区域，标注后把结果放进剪贴板。"
+
+#: src/input/screenshot.zig:43
+msgid "Screenshot annotations"
+msgstr "截图标注"
+
+#: src/input/screenshot.zig:44
+msgid "Text"
+msgstr "文字"
+
+#: src/input/screenshot.zig:45
+msgid "Box"
+msgstr "框"
+
+#: src/input/screenshot.zig:46
+msgid "Arrow"
+msgstr "箭头"
+
+#: src/input/screenshot.zig:47
+msgid "Pen"
+msgstr "画笔"
+
+#: src/input/screenshot.zig:48
+msgid "; "
+msgstr "；"
+
+#: src/input/screenshot.zig:49
+msgid ". See "
+msgstr "。详见 "
+
+#: src/input/command.zig:739
 msgid "Check for Updates"
 msgstr "检查更新"
 

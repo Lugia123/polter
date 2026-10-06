@@ -430,6 +430,16 @@ pub const Action = union(Key) {
     history_filename: HistoryFilename,
     poltergeist_grouping: PoltergeistGrouping,
 
+    /// Freeze the screen and let the person pick a region and annotate it.
+    /// See `dev-docs/poltergeist/screenshot.md`.
+    ///
+    /// App-scoped, and it has to be: the default binding is `global:`, so
+    /// this arrives while some other application is in front and no surface
+    /// of ours is focused. The apprt decides for itself whether it was
+    /// frontmost at that moment -- that is what says whether the result is
+    /// also pasted into a pane.
+    screenshot,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -513,6 +523,7 @@ pub const Action = union(Key) {
         poltergeist_layout,
         history_filename,
         poltergeist_grouping,
+        screenshot,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");

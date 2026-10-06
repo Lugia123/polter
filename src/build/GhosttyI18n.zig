@@ -170,6 +170,12 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
     // apprt, so the walk over `src/apprt/gtk` above does not reach it --
     // which is why every string in it was a Chinese literal for as long as
     // it existed: there was nowhere for a translation of one to go.
+    // The words of the line a screenshot's annotations are pasted as. Both
+    // hosts look them up by msgid; see the file's own header.
+    const screenshot_path = "src/input/screenshot.zig";
+    xgettext.addArg(screenshot_path);
+    xgettext.addFileInput(b.path(screenshot_path));
+
     const chat_path = "src/cli/chat.zig";
     xgettext.addArg(chat_path);
     xgettext.addFileInput(b.path(chat_path));

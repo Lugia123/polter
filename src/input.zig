@@ -14,6 +14,7 @@ pub const key_encode = @import("input/key_encode.zig");
 pub const kitty = @import("input/kitty.zig");
 pub const mouse_encode = @import("input/mouse_encode.zig");
 pub const paste = @import("input/paste.zig");
+pub const screenshot = @import("input/screenshot.zig");
 
 pub const ctrlOrSuper = key.ctrlOrSuper;
 pub const Action = key.Action;
@@ -25,7 +26,9 @@ pub const KeyboardLayout = keyboard.Layout;
 pub const KeyEvent = key.KeyEvent;
 pub const KeyRemapSet = key_mods.RemapSet;
 pub const InspectorMode = Binding.Action.InspectorMode;
+pub const Mod = key_mods.Mod;
 pub const Mods = key_mods.Mods;
+pub const mod_alias = key_mods.alias;
 pub const MouseAction = mouse.Action;
 pub const MouseButton = mouse.Button;
 pub const MouseButtonState = mouse.ButtonState;

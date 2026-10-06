@@ -180,17 +180,12 @@ pub const App = struct {
         self.config.deinit();
     }
 
-    /// Returns true if there are any global keybinds in the configuration.
+    /// Returns true if there are global keybinds the host has to watch the
+    /// keyboard for. **Narrower than "any global keybind"** since
+    /// `screenshot` got a global default: see
+    /// `Binding.Set.hasGlobalNeedingEventTap` for which are left out and why.
     pub fn hasGlobalKeybinds(self: *const App) bool {
-        var it = self.config.keybind.set.bindings.iterator();
-        while (it.next()) |entry| {
-            switch (entry.value_ptr.*) {
-                .leader => {},
-                inline .leaf, .leaf_chained => |leaf| if (leaf.flags.global) return true,
-            }
-        }
-
-        return false;
+        return self.config.keybind.set.hasGlobalNeedingEventTap();
     }
 
     /// The target of a key event. This is used to determine some subtly

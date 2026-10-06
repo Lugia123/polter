@@ -1046,6 +1046,32 @@ pub const Action = union(enum) {
     /// Only implemented on macOS.
     check_for_updates,
 
+    /// Take a screenshot: the screen freezes, a click picks the window under
+    /// the pointer or a drag picks a region, and the selection can be
+    /// annotated before it is finished.
+    ///
+    /// The finished image goes to the system clipboard and to a file in
+    /// `screenshot-directory`. If Polter was the frontmost application when
+    /// this was triggered, the file's path is also pasted into the focused
+    /// terminal, followed by the annotations as one line of text.
+    ///
+    /// The default binding is global, so it works while another application
+    /// is in front:
+    ///
+    /// ```ini
+    /// keybind = global:cmd+shift+0=screenshot
+    /// ```
+    ///
+    /// (`global:ctrl+shift+0` on Windows.) On macOS this binding does not
+    /// need the Accessibility permission other `global:` keybinds need; the
+    /// first screenshot asks for Screen Recording instead.
+    ///
+    /// Holding modifiers and double-clicking starts one too; that is the
+    /// `screenshot-mouse-trigger` configuration, not a keybind.
+    ///
+    /// Only implemented on macOS and Windows.
+    screenshot,
+
     /// Undo the last undoable action for the focused surface or terminal,
     /// if possible. This can undo actions such as closing tabs or
     /// windows.
@@ -1543,6 +1569,7 @@ pub const Action = union(enum) {
             .toggle_visibility,
             .check_for_updates,
             .show_gtk_inspector,
+            .screenshot,
             => .app,
 
             // These are app but can be special-cased in a surface context.
@@ -2517,6 +2544,37 @@ pub const Set = struct {
         self.bindings.deinit(alloc);
         self.reverse.deinit(alloc);
         self.* = undefined;
+    }
+
+    /// Whether any `global:` binding here has to be caught by watching the
+    /// keyboard system-wide, which on macOS is the event tap that costs the
+    /// Accessibility permission.
+    ///
+    /// **Not the same question as "is anything global".** A binding whose
+    /// only action is `screenshot` is registered by the host as a system
+    /// hotkey, which needs no permission, and `screenshot` is bound
+    /// `global:` by default -- so counting it would open the Accessibility
+    /// prompt at every launch for a default nobody chose
+    /// (`dev-docs/poltergeist/screenshot.md`, 3.1).
+    ///
+    /// A chain is counted even when `screenshot` is in it: the host
+    /// registers a hotkey for the action alone, so the rest of the chain
+    /// would otherwise never run.
+    pub fn hasGlobalNeedingEventTap(self: *const Set) bool {
+        var it = self.bindings.iterator();
+        while (it.next()) |entry| {
+            switch (entry.value_ptr.*) {
+                .leader => {},
+                .leaf => |leaf| {
+                    if (!leaf.flags.global) continue;
+                    if (leaf.action == .screenshot) continue;
+                    return true;
+                },
+                .leaf_chained => |leaf| if (leaf.flags.global) return true,
+            }
+        }
+
+        return false;
     }
 
     /// Parse a user input binding and add it to the set. This will handle
@@ -3757,6 +3815,42 @@ test "parse: sequences" {
         } }, (try p.next()).?);
         try testing.expect(try p.next() == null);
     }
+}
+
+test "set: a global screenshot binding does not need the event tap" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s: Set = .{};
+    defer s.deinit(alloc);
+
+    // Nothing global at all.
+    try s.parseAndPut(alloc, "a=new_window");
+    const nothing_global = s.hasGlobalNeedingEventTap();
+    try testing.expect(!nothing_global);
+
+    // The default. This is the cell the Accessibility prompt hangs on.
+    try s.parseAndPut(alloc, "global:super+shift+0=screenshot");
+    const only_screenshot = s.hasGlobalNeedingEventTap();
+    try testing.expect(!only_screenshot);
+
+    // The exemption is for the action, not for the word `global`.
+    try s.parseAndPut(alloc, "global:super+shift+3=toggle_quick_terminal");
+    const with_another = s.hasGlobalNeedingEventTap();
+    try testing.expect(with_another);
+}
+
+test "set: a global chain holding screenshot still needs the event tap" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s: Set = .{};
+    defer s.deinit(alloc);
+
+    try s.parseAndPut(alloc, "global:super+shift+0=screenshot");
+    try s.parseAndPut(alloc, "chain=new_window");
+    const chained = s.hasGlobalNeedingEventTap();
+    try testing.expect(chained);
 }
 
 test "set: parseAndPut typical binding" {

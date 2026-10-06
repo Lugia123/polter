@@ -123,6 +123,12 @@ pub const ACTION_HISTORY_FILENAME: u32 = 74;
 /// "the Windows host's action tags" test is what caught it.
 pub const ACTION_POLTERGEIST_GROUPING: u32 = 75;
 
+/// `Action.Key.screenshot`, appended after `poltergeist_grouping`
+/// (task 1081, `dev-docs/poltergeist/screenshot.md`). ⚠️ **Appended, like
+/// every one before it** -- see the note on `ACTION_POLTERGEIST_LAYOUT`.
+/// Checked by `the Windows host's action tags` in `src/apprt/action.zig`.
+pub const ACTION_SCREENSHOT: u32 = 76;
+
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
 // **Every ordinal below was counted twice, from two files that are generated
