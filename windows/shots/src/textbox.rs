@@ -94,6 +94,17 @@ pub fn on_toolbar(p: Point, keep_clear: &[Rect]) -> bool {
     keep_clear.iter().any(|r| r.contains(p))
 }
 
+/// The parts of the box at `rect` that lie on the toolbar: what the host
+/// takes out of the box, so that the toolbar is what is pressed there, and
+/// what it has to draw the toolbar back into after the box has drawn.
+///
+/// Taking them out of the box's window was not enough to see the toolbar
+/// (task 1107): the press went through and the box's paper stayed. Empty
+/// for every box [`rect`] could keep clear.
+pub fn covered(rect: Rect, keep_clear: &[Rect]) -> Vec<Rect> {
+    keep_clear.iter().filter_map(|r| rect.intersect(*r)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +247,56 @@ mod tests {
         assert_eq!(on.h, 30);
         assert!(on_toolbar(Point::new(360, 525), &[bar]));
         assert!(!on_toolbar(Point::new(360, 560), &[bar]));
+    }
+
+    /// The reading the test machine brought back (task 1107): a text typed
+    /// at the largest size on the selection's bottom row, the selection's
+    /// bottom edge then dragged from 800 to 720, the text opened again. Its
+    /// box was 800x96 at (1450,704) and these four points on the toolbar's
+    /// first row were the box's white paper.
+    #[test]
+    fn the_box_the_test_machine_measured_covers_the_toolbar_where_it_read_white() {
+        let (scale, monitor) = (1.5, Rect::new(0, 0, 2560, 1600));
+        let selection = Rect::from_ltrb(1350, 300, 2250, 720);
+        let keep = bars(selection, monitor, scale);
+        let read_white = [Point::new(1560, 762), Point::new(2220, 762), Point::new(2000, 745), Point::new(2000, 790)];
+
+        let font = style::font_px(4, scale);
+        let at = Point::new(1450, 704);
+        let large = rect(at, 1, 96, min_width(font, scale), selection, monitor, &keep);
+        assert_eq!(large, Rect::new(1450, 704, 800, 96), "the box the log gave");
+        let parts = covered(large, &keep);
+        // Both rows: the log's `2 part(s)`.
+        assert_eq!(parts.len(), 2);
+        for p in read_white {
+            assert!(parts.iter().any(|r| r.contains(p)), "{p:?} is not in {parts:?}");
+        }
+        // Every part is the box's and the toolbar's both, and nothing of
+        // the box that is on the toolbar is left out.
+        for r in &parts {
+            assert!(within(*r, large) && keep.iter().any(|k| within(*r, *k)), "{r:?}");
+        }
+        let on_both: i64 = keep.iter().filter_map(|k| large.intersect(*k)).map(|r| r.w as i64 * r.h as i64).sum();
+        assert_eq!(parts.iter().map(|r| r.w as i64 * r.h as i64).sum::<i64>(), on_both);
+        assert!(on_both > 0);
+        // The colour row "could be seen": the box reaches two pixel rows of it.
+        assert_eq!(parts[1].h, large.bottom() - keep[1].y);
+        assert!(parts[1].h < 4);
+
+        // The third size, 39 px a line: "the toolbar was drawn again". One
+        // part is still under the box -- and none of the four points is.
+        let small = rect(at, 1, 39, min_width(style::font_px(2, scale), scale), selection, monitor, &keep);
+        assert_eq!(small, Rect::new(1450, 704, 800, 39));
+        let parts = covered(small, &keep);
+        assert_eq!(parts.len(), 1);
+        assert_eq!((parts[0].y, parts[0].bottom()), (keep[0].y, small.bottom()));
+        for p in read_white {
+            assert!(!small.contains(p), "{p:?}");
+        }
+
+        // A box that keeps clear has nothing to give back.
+        assert!(covered(Rect::new(1450, 600, 800, 96), &keep).is_empty());
+        assert!(covered(large, &[]).is_empty());
     }
 
     #[test]

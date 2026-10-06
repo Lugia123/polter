@@ -113,6 +113,10 @@ struct EditCtl {
     /// Where it was last put, in virtual-screen pixels: `fit_edit` moves it
     /// only when this changes, and says so in the log when it does.
     rect: Rect,
+    /// The parts of it that lie on the toolbar, in virtual-screen pixels:
+    /// cut out of its window, and drawn over with the toolbar whenever
+    /// either window has drawn (`keep_toolbar_clear`, `show_toolbar_through`).
+    on_toolbar: Vec<Rect>,
 }
 
 /// One screenshot in progress. What it *does* is `editor`
@@ -1333,14 +1337,13 @@ unsafe fn draw_toolbar(canvas: &Canvas, editor: &Editor, layout: &Layout, scale:
     }
 }
 
-unsafe fn paint(hwnd: HWND) {
+/// Everything monitor `i`'s overlay shows, drawn into a canvas the size of
+/// the monitor. `like` is a device context of that overlay.
+unsafe fn compose_overlay(s: &Session, i: usize, like: HDC) -> Option<Canvas> {
     unsafe {
-        let mut ps = PAINTSTRUCT::default();
-        let hdc = BeginPaint(hwnd, &mut ps);
-        with(|s| {
-            let Some(i) = s.mons.iter().position(|m| m.hwnd == hwnd) else { return };
+        {
             let mon = &s.mons[i];
-            let Some(canvas) = Canvas::new(hdc, mon.rect) else { return };
+            let canvas = Canvas::new(like, mon.rect)?;
             let e = &s.editor;
             let scale = e.scale();
             let o = mon.rect.origin();
@@ -1420,11 +1423,85 @@ unsafe fn paint(hwnd: HWND) {
                     }
                 }
             }
+            Some(canvas)
+        }
+    }
+}
 
-            let _ = BitBlt(hdc, 0, 0, mon.rect.w, mon.rect.h, Some(mem), 0, 0, SRCCOPY);
+unsafe fn paint(hwnd: HWND) {
+    unsafe {
+        let mut ps = PAINTSTRUCT::default();
+        let hdc = BeginPaint(hwnd, &mut ps);
+        with(|s| {
+            let Some(i) = s.mons.iter().position(|m| m.hwnd == hwnd) else { return };
+            let Some(canvas) = compose_overlay(s, i, hdc) else { return };
+            let mon = &s.mons[i];
+            let _ = BitBlt(hdc, 0, 0, mon.rect.w, mon.rect.h, Some(canvas.dc), 0, 0, SRCCOPY);
+            toolbar_over_text_box(s, i, &canvas);
         });
         let _ = EndPaint(hwnd, &ps);
     }
+}
+
+/// Draw `canvas` -- monitor `i`'s overlay as just composed -- into the parts
+/// of the text box that lie on the toolbar.
+///
+/// **Through a device context that is not clipped by the overlay's
+/// children**, which is the point (task 1107). The overlay is
+/// `WS_CLIPCHILDREN`, and the text box has those parts cut out of its window
+/// region; on the test machine a press there reached the toolbar and the
+/// pixels stayed the box's white paper all the same, through every repaint
+/// of the overlay. So what is seen there is not left to how the two windows
+/// are clipped against each other: it is drawn, last, by whichever of them
+/// drew.
+unsafe fn toolbar_over_text_box(s: &Session, i: usize, canvas: &Canvas) {
+    let Some(edit) = s.edit.as_ref().filter(|e| !e.on_toolbar.is_empty()) else { return };
+    if s.editor.selection().map(|x| x.monitor) != Some(i) {
+        return;
+    }
+    let mon = &s.mons[i];
+    unsafe {
+        // `DCX_CACHE` alone: no `DCX_CLIPCHILDREN`, and no `DCX_USESTYLE`
+        // to bring the window's own `WS_CLIPCHILDREN` back in.
+        let dc = GetDCEx(Some(mon.hwnd), None, DCX_CACHE);
+        if dc.is_invalid() {
+            return;
+        }
+        // A caret drawn in the box is an inversion; drawing under a shown
+        // one leaves its ghost when it is next taken away.
+        let hid = HideCaret(Some(edit.hwnd)).is_ok();
+        for r in &edit.on_toolbar {
+            let l = r.relative_to(mon.rect.origin());
+            let _ = BitBlt(dc, l.x, l.y, l.w, l.h, Some(canvas.dc), l.x, l.y, SRCCOPY);
+        }
+        if hid {
+            let _ = ShowCaret(Some(edit.hwnd));
+        }
+        ReleaseDC(Some(mon.hwnd), dc);
+    }
+}
+
+/// The text box has, or may have, drawn: put the toolbar back over the
+/// parts of it that lie there. Nothing to do for a box that keeps clear,
+/// which is every box but a text opened again on the toolbar's own rows.
+fn show_toolbar_through() {
+    with(|s| {
+        if !s.edit.as_ref().is_some_and(|e| !e.on_toolbar.is_empty()) {
+            return;
+        }
+        let Some(i) = s.editor.selection().map(|x| x.monitor) else { return };
+        unsafe {
+            let like = GetDCEx(Some(s.mons[i].hwnd), None, DCX_CACHE);
+            if like.is_invalid() {
+                return;
+            }
+            let canvas = compose_overlay(s, i, like);
+            ReleaseDC(Some(s.mons[i].hwnd), like);
+            if let Some(canvas) = canvas {
+                toolbar_over_text_box(s, i, &canvas);
+            }
+        }
+    });
 }
 
 fn repaint() {
@@ -1840,7 +1917,7 @@ fn open_edit() {
         const EM_SETSEL: u32 = 0x00B1;
         let end = GetWindowTextLengthW(edit).max(0);
         SendMessageW(edit, EM_SETSEL, Some(WPARAM(end as usize)), Some(LPARAM(end as isize)));
-        with(|s| s.edit = Some(EditCtl { hwnd: edit, font, rect }));
+        with(|s| s.edit = Some(EditCtl { hwnd: edit, font, rect, on_toolbar: Vec::new() }));
         keep_toolbar_clear(edit, rect);
         log_edit(rect, polter_shots::textbox::lines(&tb.text), "opened");
         // The one time the input method is wanted: see `keys_are_raw`.
@@ -1933,9 +2010,18 @@ fn fit_edit() {
 /// `textbox::rect` already keeps a box off the toolbar wherever it can.
 /// What is left is a text opened for editing again whose first line sits
 /// where the toolbar now is; this is for that one.
+///
+/// **The cut settles who is pressed, and was seen not to settle what is
+/// seen** (task 1107): the parts are remembered, and the toolbar is drawn
+/// into them after either window draws (`toolbar_over_text_box`).
 fn keep_toolbar_clear(edit: HWND, rect: Rect) {
     let keep = with(|s| s.editor.text_keep_clear()).unwrap_or_default();
-    let holes: Vec<Rect> = keep.iter().filter_map(|r| rect.intersect(*r)).collect();
+    let holes = polter_shots::textbox::covered(rect, &keep);
+    with(|s| {
+        if let Some(e) = &mut s.edit {
+            e.on_toolbar = holes.clone();
+        }
+    });
     unsafe {
         if holes.is_empty() {
             // The whole window again. The system owns a region once set.
@@ -1951,8 +2037,36 @@ fn keep_toolbar_clear(edit: HWND, rect: Rect) {
         }
         let _ = SetWindowRgn(edit, Some(region), true);
     }
+    // Which window can still draw there once the cut is made, as the system
+    // answers it: the two readings task 1107 did not have. `box draws there`
+    // true means the box's own device context ignores its window region
+    // (the `EDIT` class is `CS_PARENTDC`); `overlay draws there` false means
+    // `WS_CLIPCHILDREN` keeps the overlay out of the box's whole rectangle,
+    // cut or not. Either leaves the box's paper where the toolbar is.
+    let (box_draws, overlay_draws, parent_dc) = unsafe {
+        let first = holes[0];
+        let visible = |dc: HDC, r: Rect| {
+            let rc = RECT { left: r.x, top: r.y, right: r.right(), bottom: r.bottom() };
+            !dc.is_invalid() && RectVisible(dc, &rc).as_bool()
+        };
+        let own = GetDC(Some(edit));
+        let box_draws = visible(own, first.relative_to(rect.origin()));
+        ReleaseDC(Some(edit), own);
+        let parent = GetParent(edit).unwrap_or_default();
+        let mut origin = POINT::default();
+        let _ = ClientToScreen(parent, &mut origin);
+        let clipped = GetDCEx(Some(parent), None, DCX_CACHE | DCX_CLIPCHILDREN);
+        let overlay_draws = visible(clipped, first.relative_to(Point::new(origin.x, origin.y)));
+        ReleaseDC(Some(parent), clipped);
+        (box_draws, overlay_draws, GetClassLongW(edit, GCL_STYLE) & CS_PARENTDC.0 != 0)
+    };
     // process-wide: the overlay is not a terminal window
-    plogf!("[shot] text box: {} part(s) of it are under the toolbar and were cut out of it", holes.len());
+    plogf!(
+        "[shot] text box: {} part(s) of it are under the toolbar and were cut out of it; in the first, box draws there={box_draws} \
+         (class CS_PARENTDC={parent_dc}), overlay draws there={overlay_draws}; the toolbar is drawn over them",
+        holes.len()
+    );
+    show_toolbar_through();
 }
 
 fn log_edit(rect: Rect, lines: i32, what: &str) {
@@ -2064,6 +2178,19 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         const WM_IME_COMPOSITION: u32 = 0x010F;
         if matches!(msg, WM_CHAR | WM_KEYDOWN | WM_PASTE | WM_CUT | WM_CLEAR | WM_UNDO | WM_IME_ENDCOMPOSITION | WM_IME_COMPOSITION) {
             fit_edit();
+        }
+        // And whatever the control may have drawn itself by: a box lying on
+        // the toolbar gets the toolbar drawn back over that part of it
+        // (task 1107). Everything but the questions asked of it many times
+        // a second, which draw nothing -- an edit control draws on keys,
+        // the mouse, its timer and focus as well as in `WM_PAINT`, and a
+        // list of those would be one short sooner or later.
+        const EM_GETLINECOUNT: u32 = 0x00BA;
+        const EM_GETFIRSTVISIBLELINE: u32 = 0x00CE;
+        let asks = matches!(msg, WM_NCHITTEST | WM_SETCURSOR | WM_GETTEXT | WM_GETTEXTLENGTH | WM_GETDLGCODE | EM_GETLINECOUNT | EM_GETFIRSTVISIBLELINE)
+            || (msg == WM_MOUSEMOVE && wp.0 & 0x0001 == 0);
+        if !asks && msg != WM_NCDESTROY && msg != WM_DESTROY {
+            show_toolbar_through();
         }
         r
     }
