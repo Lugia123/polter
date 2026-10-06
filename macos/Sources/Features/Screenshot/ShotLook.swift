@@ -159,6 +159,7 @@ enum ShotLook {
         static let haloFarAlpha: Double = 0.55
         static let markedLine: Double = 2.0
         static let lightTextLuminance: Double = 0.5
+        static let selectionAlpha: Double = 0.35
     }
 
     enum Annotation {

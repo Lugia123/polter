@@ -1,22 +1,16 @@
 //! The two-row toolbar: where each button is, and what its tooltip says.
 //!
-//! Specification §9.1. The first row is the tools and the commands; the
-//! second is the properties of the current tool, or of the selected
-//! annotation. Sizes are in points and follow the grid the macOS toolbar
-//! uses: 28-point buttons, 4 between them, 12 between groups, 6 of padding.
+//! Specification §9.1 and §9.8.2. The first row is the tools and the
+//! commands; the second is the properties of the current tool, or of the
+//! selected annotation. **One plate holds both rows**, as wide as the first
+//! whatever the second holds. The sizes are the look's (`look::size`, in
+//! points): 28-point cells, 4 between them, 12 between groups, 6 of
+//! padding, nothing between the rows. A colour and a step each have a whole
+//! cell, like a tool; what is drawn in it is smaller (`chrome`).
 
 use crate::geom::{Point, Rect};
+use crate::look::size;
 use crate::style::{self, Props, Tool};
-
-pub const BUTTON: u32 = 28;
-pub const GAP: u32 = 4;
-pub const GROUP_GAP: u32 = 12;
-pub const PADDING: u32 = 6;
-/// Between the two rows.
-pub const ROW_GAP: u32 = 4;
-pub const SWATCH: u32 = 20;
-/// Between the selection and the toolbar.
-pub const OFFSET: u32 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
@@ -54,9 +48,9 @@ const ROW: [&[Button]; 5] = [
 /// Where everything on the toolbar is, in virtual-screen pixels.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layout {
-    /// The first row's background.
+    /// The first row.
     pub bar: Rect,
-    /// The property row's background, when it is shown.
+    /// The property row, when it is shown: under the first, as wide.
     pub props: Option<Rect>,
     pub buttons: Vec<(Button, Rect)>,
 }
@@ -72,6 +66,12 @@ impl Layout {
         self.bar.contains(p) || self.props.is_some_and(|r| r.contains(p))
     }
 
+    /// The plate: both rows when the second is shown, the first alone
+    /// when it is not.
+    pub fn plate(&self) -> Rect {
+        Rect::new(self.bar.x, self.bar.y, self.bar.w, self.props.map_or(self.bar.bottom(), |r| r.bottom()) - self.bar.y)
+    }
+
     pub fn rect_of(&self, button: Button) -> Option<Rect> {
         self.buttons.iter().find(|(b, _)| *b == button).map(|(_, r)| *r)
     }
@@ -81,54 +81,67 @@ impl Layout {
 /// toolbar whether or not the property row is showing, so that picking a
 /// tool does not make it jump.
 pub fn footprint(scale: f64) -> (i32, i32) {
-    let px = |points: u32| style::px(points, scale);
+    let px = |points: f64| style::px_f(points, scale);
     let buttons: i32 = ROW.iter().map(|g| g.len() as i32).sum();
     let inner_gaps: i32 = ROW.iter().map(|g| g.len() as i32 - 1).sum();
-    let width = px(PADDING) * 2 + buttons * px(BUTTON) + inner_gaps * px(GAP) + (ROW.len() as i32 - 1) * px(GROUP_GAP);
-    let row = px(BUTTON) + px(PADDING) * 2;
-    (width, row * 2 + px(ROW_GAP))
+    let width =
+        px(size::PADDING) * 2 + buttons * px(size::BUTTON) + inner_gaps * px(size::GAP) + (ROW.len() as i32 - 1) * px(size::GROUP_GAP);
+    (width, row_height(scale) * 2 + row_gap(scale))
+}
+
+/// A row's height: a cell and the padding over and under it.
+pub fn row_height(scale: f64) -> i32 {
+    style::px_f(size::BUTTON, scale) + style::px_f(size::PADDING, scale) * 2
+}
+
+/// Between the two rows: nothing, by the look. Not `px_f`, which never
+/// gives less than a pixel.
+fn row_gap(scale: f64) -> i32 {
+    (size::ROW_GAP * scale).round() as i32
 }
 
 /// Lay the toolbar out beside `selection` on `monitor`: below it, or above,
 /// or inside its bottom edge (`geom::toolbar_origin`). `props` is which
 /// property row to show.
 pub fn layout(selection: Rect, monitor: Rect, scale: f64, props: Props) -> Layout {
-    let px = |points: u32| style::px(points, scale);
+    let px = |points: f64| style::px_f(points, scale);
     let (width, height) = footprint(scale);
-    let origin = crate::geom::toolbar_origin(selection, (width, height), monitor, px(OFFSET));
-    let row_h = px(BUTTON) + px(PADDING) * 2;
+    let origin = crate::geom::toolbar_origin(selection, (width, height), monitor, px(size::OFFSET));
+    let row_h = row_height(scale);
+    let (cell, step) = (px(size::BUTTON), px(size::BUTTON) + px(size::GAP));
     let mut buttons = Vec::new();
 
-    let mut x = origin.x + px(PADDING);
-    let y = origin.y + px(PADDING);
+    let mut x = origin.x + px(size::PADDING);
+    let y = origin.y + px(size::PADDING);
     for (g, group) in ROW.iter().enumerate() {
         if g > 0 {
-            x += px(GROUP_GAP) - px(GAP);
+            x += px(size::GROUP_GAP) - px(size::GAP);
         }
         for button in group.iter() {
-            buttons.push((*button, Rect::new(x, y, px(BUTTON), px(BUTTON))));
-            x += px(BUTTON) + px(GAP);
+            buttons.push((*button, Rect::new(x, y, cell, cell)));
+            x += step;
         }
     }
     let bar = Rect::new(origin.x, origin.y, width, row_h);
 
     let mut props_rect = None;
     if props != Props::None {
-        let top = origin.y + row_h + px(ROW_GAP);
-        let mut x = origin.x + px(PADDING);
+        let top = origin.y + row_h + row_gap(scale);
+        let mut x = origin.x + px(size::PADDING);
         if props != Props::Block {
-            let inset = (px(BUTTON) - px(SWATCH)) / 2;
             for c in 0..style::COLOURS.len() as u8 {
-                buttons.push((Button::Colour(c), Rect::new(x, top + px(PADDING) + inset, px(SWATCH), px(SWATCH))));
-                x += px(SWATCH) + px(GAP);
+                buttons.push((Button::Colour(c), Rect::new(x, top + px(size::PADDING), cell, cell)));
+                x += step;
             }
-            x += px(GROUP_GAP) - px(GAP);
+            x += px(size::GROUP_GAP) - px(size::GAP);
         }
         for l in 0..style::LEVELS {
-            buttons.push((Button::Level(l), Rect::new(x, top + px(PADDING), px(BUTTON), px(BUTTON))));
-            x += px(BUTTON) + px(GAP);
+            buttons.push((Button::Level(l), Rect::new(x, top + px(size::PADDING), cell, cell)));
+            x += step;
         }
-        props_rect = Some(Rect::new(origin.x, top, x - px(GAP) + px(PADDING) - origin.x, row_h));
+        // As wide as the first row: the contents are at the left and the
+        // rest of the plate is empty.
+        props_rect = Some(Rect::new(origin.x, top, width, row_h));
     }
     Layout { bar, props: props_rect, buttons }
 }
@@ -289,7 +302,7 @@ mod tests {
     fn buttons_sit_on_the_grid_with_wider_gaps_between_groups() {
         let l = layout(SEL, MON, 1.0, Props::None);
         let x = |b: Button| l.rect_of(b).unwrap().x;
-        assert_eq!(footprint(1.0), (2 * 6 + 15 * 28 + 10 * 4 + 4 * 12, 2 * 40 + 4));
+        assert_eq!(footprint(1.0), (2 * 6 + 15 * 28 + 10 * 4 + 4 * 12, 2 * 40), "520 x 80: one plate, nothing between its rows");
         assert_eq!(l.bar, Rect::new(SEL.right() - 520, SEL.bottom() + 8, 520, 40));
         assert_eq!(l.rect_of(Button::Tool(Tool::Select)), Some(Rect::new(l.bar.x + 6, l.bar.y + 6, 28, 28)));
         // Select | Rect: a group gap.  Rect, Ellipse: an ordinary one.
@@ -305,7 +318,7 @@ mod tests {
     fn everything_scales_with_the_monitor() {
         let l = layout(SEL, MON, 1.5, Props::Stroke);
         assert_eq!(l.rect_of(Button::Tool(Tool::Select)).unwrap().w, 42);
-        assert_eq!(l.rect_of(Button::Colour(0)).unwrap().w, 30);
+        assert_eq!(l.rect_of(Button::Colour(0)).unwrap().w, 42, "a colour has a whole cell");
         assert_eq!(footprint(1.5).0, 2 * 9 + 15 * 42 + 10 * 6 + 4 * 18);
     }
 
@@ -327,17 +340,43 @@ mod tests {
     fn the_property_row_is_under_the_first_and_holds_its_buttons() {
         let l = layout(SEL, MON, 1.0, Props::Stroke);
         let row = l.props.unwrap();
-        assert_eq!((row.x, row.y, row.h), (l.bar.x, l.bar.bottom() + 4, 40));
-        assert_eq!(row.w, 6 + 9 * 20 + 8 * 4 + 12 + 5 * 28 + 4 * 4 + 6);
+        // Directly under the first row and as wide: one plate.
+        assert_eq!(row, Rect::new(l.bar.x, l.bar.bottom(), l.bar.w, 40));
+        assert_eq!(l.plate(), Rect::new(l.bar.x, l.bar.y, 520, 80));
+        assert_eq!(layout(SEL, MON, 1.0, Props::None).plate(), Rect::new(l.bar.x, l.bar.y, 520, 40));
         for (b, r) in &l.buttons {
             if matches!(b, Button::Colour(_) | Button::Level(_)) {
                 assert!(r.x >= row.x + 6 && r.right() <= row.right() - 6 && r.y >= row.y && r.bottom() <= row.bottom(), "{b:?}");
+                assert_eq!((r.w, r.h), (28, 28), "{b:?}: a whole cell");
             }
         }
-        // A swatch is smaller than a button and centred in the row.
-        assert_eq!(l.rect_of(Button::Colour(0)), Some(Rect::new(row.x + 6, row.y + 6 + 4, 20, 20)));
+        // The contents are at the left: 464 of the 520 points.
+        assert_eq!(l.rect_of(Button::Level(4)).unwrap().right() + 6 - row.x, 2 * 6 + 9 * 28 + 8 * 4 + 12 + 5 * 28 + 4 * 4);
+        assert_eq!(l.rect_of(Button::Colour(0)), Some(Rect::new(row.x + 6, row.y + 6, 28, 28)));
         let block = layout(SEL, MON, 1.0, Props::Block);
         assert_eq!(block.rect_of(Button::Level(0)).unwrap().x, block.bar.x + 6, "with no swatches the steps start at the left");
+        assert_eq!(block.props.unwrap().w, 520, "and the plate is as wide all the same");
+    }
+
+    /// The grid at 200%, in pixels: arithmetic, so it is exact (§9.8.13 B).
+    #[test]
+    fn at_two_hundred_percent_every_cell_is_on_the_grid_to_the_pixel() {
+        let l = layout(SEL, MON, 2.0, Props::Font);
+        let first: Vec<Rect> = l.buttons.iter().filter(|(b, _)| !matches!(b, Button::Colour(_) | Button::Level(_))).map(|(_, r)| *r).collect();
+        assert_eq!(first.len(), 15);
+        assert!(first.iter().all(|r| r.y == first[0].y && (r.w, r.h) == (56, 56)));
+        // Within a group 64 apart, across groups 80: 1 / 9 / 2 / 1 / 2.
+        let steps: Vec<i32> = first.windows(2).map(|w| w[1].x - w[0].x).collect();
+        assert_eq!(steps, [80, 64, 64, 64, 64, 64, 64, 64, 64, 80, 64, 80, 80, 64]);
+        let second: Vec<Rect> = l.buttons.iter().filter(|(b, _)| matches!(b, Button::Colour(_) | Button::Level(_))).map(|(_, r)| *r).collect();
+        assert!(second.iter().all(|r| r.y == second[0].y && (r.w, r.h) == (56, 56)));
+        let steps: Vec<i32> = second.windows(2).map(|w| w[1].x - w[0].x).collect();
+        assert_eq!(steps, [64, 64, 64, 64, 64, 64, 64, 64, 80, 64, 64, 64, 64], "nine colours, a group gap, five steps");
+        // Both rows start at the plate's left edge and 12, the plate is 1040
+        // wide and 160 tall, and the second row's cells are 24 under the first's.
+        assert_eq!((first[0].x, second[0].x), (l.bar.x + 12, l.bar.x + 12));
+        assert_eq!((l.plate().w, l.plate().h, layout(SEL, MON, 2.0, Props::None).plate().h), (1040, 160, 80));
+        assert_eq!(second[0].y, first[0].bottom() + 24);
     }
 
     #[test]
@@ -353,7 +392,7 @@ mod tests {
         // Room for one row under the selection but not for two.
         let low = Rect::new(400, 800, 900, 590);
         let l = layout(low, MON, 1.0, Props::Stroke);
-        assert_eq!(l.bar.y, low.y - 8 - 84);
+        assert_eq!(l.bar.y, low.y - 8 - 80);
         assert!(l.props.unwrap().bottom() <= low.y - 8);
         // The whole monitor selected: inside the bottom edge.
         let l = layout(MON, MON, 1.0, Props::Stroke);
@@ -372,8 +411,10 @@ mod tests {
         assert_eq!(l.button_at(Point::new(swatch.x, swatch.y)), Some(Button::Colour(3)));
         assert!(l.covers(Point::new(swatch.x, swatch.y - 2)));
         assert!(!l.covers(Point::new(SEL.x + 10, SEL.y + 10)));
-        // Between the rows is not the toolbar.
-        assert!(!l.covers(Point::new(l.bar.x + 10, l.bar.bottom() + 1)));
+        // There is no "between the rows": the plate is one piece.
+        assert!(l.covers(Point::new(l.bar.x + 10, l.bar.bottom())));
+        assert!(l.covers(Point::new(l.bar.right() - 1, l.props.unwrap().bottom() - 1)), "the empty right of the second row too");
+        assert!(!l.covers(Point::new(l.bar.x + 10, l.props.unwrap().bottom())));
     }
 
     #[test]

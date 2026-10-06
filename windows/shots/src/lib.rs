@@ -15,25 +15,33 @@
 //! | [`paste`] | which clipboard format a paste is answered from |
 //! | [`geom`] | selections, monitors, windows, handles: where things are |
 //! | [`annot`] | annotations as data: the sidecar `.json` and the pasted line |
-//! | [`dclick`] | the mouse trigger: a double click with modifiers held |
+//! | [`dclick`] | the mouse trigger: one click with modifiers held |
 //! | [`overlay`] | what a key does while the frozen screen is up |
 //! | [`agent`] | an agent's request: which rectangle, what is blacked out, the answer |
 //! | [`style`] | the tools, the nine colours, the five steps of each size |
 //! | [`pixels`] | the mosaic, the highlighter, and the one image that leaves |
+//! | [`glass`] | the frosted glass outside the selection, and a frame out of it |
+//! | [`chrome`] | the toolbar's plate and cells, the selection's outline, a selected annotation's frame |
+//! | [`motion`] | what changes over a moment: which shares to mix two pictures by, and until when |
+//! | [`paint`] | smooth shapes laid into pixels: rounded rectangles, rings, glows |
 //! | [`look`] | what the overlay looks like: sizes, colours, the icons' paths (generated) |
 //! | [`icon`] | one icon into a button cell, the same pixels as the macOS host |
 
 pub mod agent;
 pub mod annot;
+pub mod chrome;
 pub mod dclick;
 pub mod dib;
 pub mod editor;
 pub mod encode;
 pub mod geom;
+pub mod glass;
 pub mod icon;
 pub mod look;
+pub mod motion;
 pub mod name;
 pub mod overlay;
+pub mod paint;
 pub mod paste;
 pub mod pixels;
 pub mod stitch;

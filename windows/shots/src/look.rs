@@ -162,6 +162,7 @@ pub mod text_box {
     pub const HALO_FAR_ALPHA: f64 = 0.55;
     pub const MARKED_LINE: f64 = 2.0;
     pub const LIGHT_TEXT_LUMINANCE: f64 = 0.5;
+    pub const SELECTION_ALPHA: f64 = 0.35;
 }
 
 pub mod annotation {

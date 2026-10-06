@@ -39,20 +39,26 @@ use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, Ordering};
-use std::sync::Mutex;
+use std::sync::{mpsc, Arc, Mutex};
 
 use polter_shots::agent;
 use polter_shots::annot::{self, By, Display, Item, Labels, Meta, Shape, Source, Terminal, Tile};
-use polter_shots::dclick::{Detector, Mods, Press, Rule, Setting, Verdict};
-use polter_shots::editor::{Editor, Effect, Export, Measure, Monitor, Window};
-use polter_shots::geom::{self, Handle, Point, Rect};
+use polter_shots::chrome;
+use polter_shots::dclick::{Detector, Mods, Setting, Verdict};
+use polter_shots::editor::{Cursor, Editor, Effect, Export, Measure, Monitor, Window};
+use polter_shots::geom::{self, Point, Rect};
+use polter_shots::glass::Glass;
+use polter_shots::look;
+use polter_shots::motion;
+use polter_shots::paint::{Box2, Surface};
 use polter_shots::name::Stamp;
 use polter_shots::overlay::Key;
 use polter_shots::paste::{Later, MAX_TILES_PASTED};
 use polter_shots::pixels::{self, Composed, Frozen, TILE_HEIGHT, TILE_OVERLAP};
 use polter_shots::stitch::{Step, Stitcher};
-use polter_shots::style::{self, Prefs, Tool};
-use polter_shots::toolbar::{self, Button, Layout};
+use polter_shots::style::{self, Prefs};
+use polter_shots::textbox::{self, Typed};
+use polter_shots::toolbar;
 use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, GlobalFree, COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
@@ -71,7 +77,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, GetDoubleClickTime, GetKeyState, RegisterHotKey, ReleaseCapture, SetCapture, SetFocus,
+    GetAsyncKeyState, GetKeyState, RegisterHotKey, ReleaseCapture, SetCapture, SetFocus,
     UnregisterHotKey, MOD_NOREPEAT, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RETURN, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -87,12 +93,19 @@ const HOTKEY_ID: i32 = 0xB1;
 /// Posted to the control window. `WM_APP + 33`, free when written
 /// (`grep 'WM_APP +'`) -- and private to this window class in any case.
 const WM_SHOT_MOUSE: u32 = WM_APP + 33;
+/// Posted to the control window by a thread that has finished a monitor's
+/// frosted glass (`glass_arrived`). `WM_APP + 47`, free when written
+/// (`grep 'WM_APP +'`: 35 is `shot_agent::WM_AGENT_DONE`, on this same
+/// window, which is why the number is not the next one along).
+const WM_SHOT_GLASS: u32 = WM_APP + 47;
+/// How long the first frame waits for the frosted glass, in milliseconds.
+/// A monitor whose glass is not made by then is shown darkened only, as it
+/// is for a system that asks for less transparency, until its glass
+/// arrives. The macOS host waits as long.
+const GLASS_WAIT_MS: u64 = 50;
 
 /// `CF_DIB`, numerically, as in `shots.rs`.
 const CF_DIB: u32 = 8;
-
-/// The selection's frame and handles.
-const ACCENT: COLORREF = COLORREF(0x00F0_A01E);
 
 
 // ---------------------------------------------------------------- state
@@ -102,8 +115,25 @@ struct Mon {
     dpi: u32,
     hwnd: HWND,
     /// This monitor as it was when the screenshot began. In memory only, and
-    /// gone when the session is.
-    frozen: Frozen,
+    /// gone when the session is. Shared with the thread that blurs it,
+    /// which only reads it and may outlive the session by a moment.
+    frozen: Arc<Frozen>,
+    /// What that picture is seen through outside the selection, and what
+    /// the toolbar's plate is made of (`polter_shots::glass`). Blurred once,
+    /// on a thread of its own; until that is done -- if it takes longer
+    /// than the first frame waits -- the picture only darkened.
+    glass: Glass,
+    /// What this monitor's overlay window is showing, pixel for pixel: the
+    /// last frame composed. The next one is compared with it and the window
+    /// is given only where they differ (`paint`).
+    shown: Option<Canvas>,
+    /// The canvas the frame before that was in, to compose the next into.
+    spare: Option<Canvas>,
+    /// What is clear on this monitor, over time: the hole, and what was the
+    /// hole a moment ago and is still going to glass (`motion::Holes`).
+    holes: motion::Holes,
+    /// Whether this overlay's `TIMER_MOVING` is set.
+    moving: bool,
 }
 
 /// The native text box while something is being typed.
@@ -113,12 +143,12 @@ struct EditCtl {
     /// Where it was last put, in virtual-screen pixels: `fit_edit` moves it
     /// only when this changes, and says so in the log when it does.
     rect: Rect,
-    /// The parts of it on the toolbar **that it can still draw in** although
-    /// they are cut out of its window, in virtual-screen pixels. Empty for a
-    /// box that keeps clear, and empty for one whose cut the system honours
-    /// -- which is what its window class is for (`register_text_class`), so
-    /// this is empty unless that did not work (`keep_toolbar_clear`).
-    on_toolbar: Vec<Rect>,
+    /// What it holds, as last read back from it (`read_edit`), and what an
+    /// input method is composing in it. **This is what the overlay draws**:
+    /// the control draws nothing (`hide_box`), and painting asks it nothing.
+    typed: Typed,
+    /// Whether the caret is in the shown half of its blink.
+    caret_on: bool,
 }
 
 /// One screenshot in progress. What it *does* is `editor`
@@ -138,6 +168,34 @@ struct Session {
     prefs_at_start: Prefs,
     /// A long screenshot being taken.
     long: Option<LongShot>,
+    /// The toolbar's icons as drawn so far (`chrome::Icons`).
+    icons: chrome::Icons,
+    /// When the session was triggered: what "late" is counted from.
+    began: std::time::Instant,
+    /// Where a monitor's frosted glass arrives when it was not made in
+    /// time for the first frame: the monitor's index, the glass, and how
+    /// long making it took. **The session's own**: a thread still blurring
+    /// when the session ends sends into a channel nobody holds, and what it
+    /// made is dropped there -- it has no way to reach a later session, or
+    /// anything that has been freed.
+    late: mpsc::Receiver<(usize, Option<Glass>, f64)>,
+    /// Whether changes take a moment (`motion`). Not, when the system's own
+    /// animations are switched off: then every change is one frame.
+    animate: bool,
+    /// The states the toolbar's cells were last drawn in, and the toolbar
+    /// on its way from what it showed then to what it shows now.
+    cells: Vec<chrome::State>,
+    fade: Option<motion::Crossfade>,
+    /// The cell the pointer is resting on and whether it has rested long
+    /// enough for its tooltip to show (`tip_follows`).
+    tip: (Option<toolbar::Button>, bool),
+    /// The colours the overlay's own parts are drawn in: the look's, or the
+    /// system's in high-contrast mode (`tones`).
+    tones: chrome::Tones,
+    /// How many frames were composed, the longest any took and all of them
+    /// together in milliseconds, and how many pixels the windows were given:
+    /// said once, when the session ends.
+    frames: (u32, f64, f64, u64),
 }
 
 /// A long screenshot in progress: the frames stitched so far, and what the
@@ -161,6 +219,17 @@ const LONG_LOG_EVERY: u32 = 10;
 
 /// The overlay window's timer that takes a frame.
 const TIMER_LONG: usize = 2;
+/// The overlay window's timer that blinks the text box's caret.
+const TIMER_CARET: usize = 3;
+/// The overlay window's timer while something is on its way (`motion`): a
+/// frame each time it fires. **Set only while something is moving** and
+/// killed by the first frame that finds nothing is (`paint`).
+const TIMER_MOVING: usize = 5;
+/// How often, in milliseconds: about a frame at 60 Hz.
+const MOVING_INTERVAL_MS: u32 = 16;
+/// The overlay window's timer that shows a tooltip once the pointer has
+/// rested on a cell for `look::transition_ms::TIP_DELAY`.
+const TIMER_TIP: usize = 4;
 /// How often, in milliseconds.
 const LONG_INTERVAL_MS: u32 = 120;
 
@@ -211,18 +280,15 @@ static TEXT_CLASS: AtomicBool = AtomicBool::new(false);
 /// The text box's window class: the system's `EDIT` in everything but one
 /// class style, `CS_PARENTDC`.
 ///
-/// **That style is why cutting the toolbar out of the box did not keep the
-/// box from drawing there** (task 1107, read on the test machine: `box draws
-/// there=true (class CS_PARENTDC=true)`). A window of such a class draws
-/// through its parent's clipping, and its own window region is not part of
-/// that. Without the style the box's device context is its own window, cut
-/// included, so the control cannot put a pixel on the toolbar by any road --
-/// `WM_PAINT`, a key, the caret -- and nothing has to be drawn back after it.
-///
-/// Drawing it back after every message the box handled is what this
-/// replaces. That made the box's procedure a source of the very messages it
-/// answered by drawing, and the window thread never came back from opening
-/// such a box (package 31c90b552: `MAIN THREAD BLOCKED`, the thread running).
+/// **That style is what would let the control draw although its window
+/// region is empty** (task 1107, read on the test machine with part of the
+/// box cut out: `box draws there=true (class CS_PARENTDC=true)`, and
+/// `false` with this class). A window of such a class draws through its
+/// parent's clipping, and its own window region is not part of that.
+/// Without the style the box's device context is its own window, and a
+/// window with nothing in its region cannot put a pixel anywhere by any
+/// road -- `WM_PAINT`, a key, the caret. The overlay draws the text
+/// instead (`draw_text_box`), over the picture and under the toolbar.
 unsafe fn register_text_class(hinst: HINSTANCE) {
     unsafe {
         let mut wc = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, ..Default::default() };
@@ -249,9 +315,6 @@ fn with<R>(f: impl FnOnce(&mut Session) -> R) -> Option<R> {
     SESSION.with(|s| s.try_borrow_mut().ok().and_then(|mut s| s.as_mut().map(f)))
 }
 
-fn scaled(px: i32, dpi: u32) -> i32 {
-    (px * dpi.max(96) as i32 + 48) / 96
-}
 
 pub(crate) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
@@ -369,7 +432,7 @@ fn read_mouse_trigger() {
 pub fn from_action() {
     // process-wide: a screenshot is of the screen, not of the window asking
     plogf!("[shot] the screenshot action arrived from the core");
-    begin(None);
+    begin();
 }
 
 /// Register the global hotkey from the core's binding for `screenshot`.
@@ -488,9 +551,19 @@ fn start_hook() {
     }
 }
 
+/// Whether the click that is the mouse trigger is kept from the application
+/// under the pointer -- the press and its release both, or neither.
+///
+/// **The one place this is decided.** Eaten, the trigger's modifiers and a
+/// click are no longer that application's gesture for as long as Polter
+/// runs (extending a selection, a link into a new tab); passed on, the
+/// application acts on a click that was meant for the screenshot. The
+/// specification (§3.1) has it eaten.
+const EAT_TRIGGER_CLICK: bool = true;
+
 thread_local! {
-    /// The hook thread's memory of the previous press. Only that thread
-    /// touches it.
+    /// The hook thread's memory of whether the next release is the
+    /// trigger's. Only that thread touches it.
     static DETECTOR: RefCell<Detector> = const { RefCell::new(Detector::new()) };
 }
 
@@ -516,24 +589,13 @@ unsafe extern "system" fn hook_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LRESUL
                 DETECTOR.with(|d| d.borrow_mut().release())
             } else {
                 let ev = &*(lp.0 as *const MSLLHOOKSTRUCT);
-                let press = Press {
-                    time_ms: ev.time,
-                    x: ev.pt.x,
-                    y: ev.pt.y,
-                    mods: Mods {
-                        ctrl: held(VK_CONTROL.0),
-                        shift: held(VK_SHIFT.0),
-                        alt: held(VK_MENU.0),
-                        win: held(VK_LWIN.0) || held(VK_RWIN.0),
-                    },
+                let down = Mods {
+                    ctrl: held(VK_CONTROL.0),
+                    shift: held(VK_SHIFT.0),
+                    alt: held(VK_MENU.0),
+                    win: held(VK_LWIN.0) || held(VK_RWIN.0),
                 };
-                let rule = Rule {
-                    interval_ms: GetDoubleClickTime(),
-                    width: GetSystemMetrics(SM_CXDOUBLECLK),
-                    height: GetSystemMetrics(SM_CYDOUBLECLK),
-                    trigger,
-                };
-                let v = DETECTOR.with(|d| d.borrow_mut().press(press, &rule));
+                let v = DETECTOR.with(|d| d.borrow_mut().press(down, trigger));
                 if v == Verdict::Trigger {
                     let control = HWND(CONTROL.load(Ordering::Acquire) as *mut c_void);
                     // x in the low half, and in the high half the modifier
@@ -548,7 +610,7 @@ unsafe extern "system" fn hook_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LRESUL
                 }
                 v
             };
-            if verdict != Verdict::Pass {
+            if verdict != Verdict::Pass && EAT_TRIGGER_CLICK {
                 // Eaten: the application under the pointer never sees it.
                 return LRESULT(1);
             }
@@ -562,19 +624,25 @@ unsafe extern "system" fn control_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
         WM_HOTKEY if wp.0 as i32 == HOTKEY_ID => {
             // process-wide: the hotkey fires whatever is in front
             plogf!("[shot] hotkey pressed");
-            begin(None);
+            begin();
             LRESULT(0)
         }
         WM_SHOT_MOUSE => {
             let at = Point::new(wp.0 as u32 as i32, lp.0 as i32);
             let mods = bits_mods((wp.0 >> 32) as u8);
+            // Where it happened is for this line only: the session opens as
+            // the hotkey opens it, with nothing selected.
             // process-wide: the mouse trigger fires whatever is under the pointer
-            plogf!("[shot] {} double click at ({},{})", mods.label(), at.x, at.y);
-            begin(Some(at));
+            plogf!("[shot] {} click at ({},{})", mods.label(), at.x, at.y);
+            begin();
             LRESULT(0)
         }
         WM_TIMER if wp.0 == TIMER_NOTES => {
             paste_notes();
+            LRESULT(0)
+        }
+        WM_SHOT_GLASS => {
+            glass_arrived();
             LRESULT(0)
         }
         crate::shot_agent::WM_AGENT_DONE => {
@@ -721,10 +789,6 @@ pub(crate) unsafe extern "system" fn window_cb(hwnd: HWND, data: LPARAM) -> wind
     true.into()
 }
 
-/// Open a session: freeze the screen and put an overlay on every monitor.
-/// `preselect` is where a mouse trigger happened; the window there starts
-/// out selected.
-
 /// Read a rectangle of the screen into a `Frozen`: the monitor as it is now,
 /// before any overlay exists.
 pub(crate) unsafe fn grab(screen: HDC, rect: Rect) -> Option<Frozen> {
@@ -741,9 +805,8 @@ pub(crate) unsafe fn grab(screen: HDC, rect: Rect) -> Option<Frozen> {
 }
 
 /// Open a session: freeze the screen and put an overlay on every monitor.
-/// `preselect` is where a mouse trigger happened; the window there starts
-/// out selected.
-fn begin(preselect: Option<Point>) {
+/// Nothing is selected, whatever the trigger was.
+fn begin() {
     // absence: means it was not reached -- no session was open, and the
     // `[shot] begin` line that follows says so
     if ACTIVE.swap(true, Ordering::AcqRel) {
@@ -767,15 +830,80 @@ fn begin(preselect: Option<Point>) {
         let mut found: Vec<(Rect, u32)> = Vec::new();
         let _ = EnumDisplayMonitors(None, None, Some(monitor_cb), LPARAM(&mut found as *mut _ as isize));
 
+        let began = std::time::Instant::now();
         let screen = GetDC(None);
-        let mut mons = Vec::new();
+        let frosted = !less_transparency() && !crate::theme::high_contrast();
+        let (made, late) = mpsc::channel::<(usize, Option<Glass>, f64)>();
+        let control = CONTROL.load(Ordering::Acquire);
+        let mut taken: Vec<(Rect, u32, Arc<Frozen>)> = Vec::new();
         for (rect, dpi) in found {
-            match grab(screen, rect) {
-                Some(frozen) => mons.push(Mon { rect, dpi, hwnd: HWND::default(), frozen }),
+            let Some(frozen) = grab(screen, rect) else {
                 // process-wide: about a monitor, not about a terminal window
-                None => plogf!("[shot] monitor {:?} could not be captured (err={}); left out", rect, GetLastError().0),
+                plogf!("[shot] monitor {:?} could not be captured (err={}); left out", rect, GetLastError().0);
+                continue;
+            };
+            let frozen = Arc::new(frozen);
+            if frosted {
+                // The one blur of the session, on a thread of its own: the
+                // overlay does not wait for it past `GLASS_WAIT_MS`. The
+                // thread reads the frozen picture and sends what it made;
+                // it touches no window and no canvas.
+                let (index, scale, picture, made) = (taken.len(), f64::from(dpi.max(96)) / 96.0, frozen.clone(), made.clone());
+                let spawned = std::thread::Builder::new().name("polter-shot-glass".into()).spawn(move || {
+                    crate::name_this_thread("polter-shot-glass");
+                    let began = std::time::Instant::now();
+                    let glass = picture.glass(scale, true);
+                    // Nobody listening is a session that has ended: fine.
+                    let _ = made.send((index, glass, began.elapsed().as_secs_f64() * 1e3));
+                    let _ = PostMessageW(Some(HWND(control as *mut c_void)), WM_SHOT_GLASS, WPARAM(0), LPARAM(0));
+                });
+                if let Err(e) = spawned {
+                    // process-wide: about a monitor, not about a terminal window
+                    plogf!("[shot] no thread to frost monitor {:?} ({e}); it is darkened only", rect);
+                }
+            }
+            taken.push((rect, dpi, frozen));
+        }
+        drop(made);
+        // The first frame waits this long for the glass and no longer.
+        let mut frosted_glass: Vec<Option<(Glass, f64)>> = taken.iter().map(|_| None).collect();
+        let deadline = began + std::time::Duration::from_millis(GLASS_WAIT_MS);
+        while frosted && frosted_glass.iter().any(|g| g.is_none()) {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match late.recv_timeout(left) {
+                Ok((index, Some(glass), took)) if index < frosted_glass.len() => frosted_glass[index] = Some((glass, took)),
+                Ok(_) => {}
+                // Out of time, or every thread has ended.
+                Err(_) => break,
             }
         }
+        let in_time = frosted_glass.iter().filter(|g| g.is_some()).count();
+        let mut mons = Vec::new();
+        for ((rect, dpi, frozen), arrived) in taken.into_iter().zip(frosted_glass) {
+            let scale = f64::from(dpi.max(96)) / 96.0;
+            let glass = match arrived {
+                Some((glass, took)) => {
+                    log_glass(rect, scale, took, true);
+                    Some(glass)
+                }
+                // Darkened only: for good when that is what was asked for,
+                // until the frosted one arrives when it is late.
+                None => frozen.glass(scale, false),
+            };
+            let Some(glass) = glass else {
+                // process-wide: about a monitor, not about a terminal window
+                plogf!("[shot] monitor {:?} has no glass (its picture is not its size); left out", rect);
+                continue;
+            };
+            mons.push(Mon { rect, dpi, hwnd: HWND::default(), frozen, glass, shown: None, spare: None, holes: motion::Holes::new(), moving: false });
+        }
+        // process-wide: one session at a time for the whole process
+        plogf!(
+            "[shot] glass: {in_time} of {} monitor(s) frosted in time for the first frame (waited {:.1} ms of the {GLASS_WAIT_MS} ms it \
+             may; frosting wanted={frosted}); the others are darkened only until theirs arrives",
+            mons.len(),
+            began.elapsed().as_secs_f64() * 1e3
+        );
         ReleaseDC(None, screen);
         if mons.is_empty() {
             // process-wide: one session at a time for the whole process
@@ -788,7 +916,7 @@ fn begin(preselect: Option<Point>) {
         let monitors: Vec<Monitor> =
             mons.iter().map(|m| Monitor { rect: m.rect, scale: f64::from(m.dpi.max(96)) / 96.0 }).collect();
         let window_count = wins.len();
-        let editor = Editor::new(monitors, wins, prefs.clone(), preselect);
+        let editor = Editor::new(monitors, wins, prefs.clone());
         // process-wide: one session at a time for the whole process
         plogf!(
             "[shot] begin: {} monitor(s) {:?}, {} window(s), foreground={:?} polter_pane={:?}, preselected={:?}",
@@ -802,8 +930,31 @@ fn begin(preselect: Option<Point>) {
         let mon_rects: Vec<Rect> = mons.iter().map(|m| m.rect).collect();
         SESSION.with(|s| {
             *s.borrow_mut() =
-                Some(Session { editor, mons, edit: None, origin_pane, prev_fg, prefs_at_start: prefs, long: None })
+                Some(Session {
+                    editor,
+                    mons,
+                    edit: None,
+                    origin_pane,
+                    prev_fg,
+                    prefs_at_start: prefs,
+                    long: None,
+                    icons: chrome::Icons::new(),
+                    began,
+                    late,
+                    animate: animations_on(),
+                    cells: Vec::new(),
+                    fade: None,
+                    tip: (None, false),
+                    tones: tones(),
+                    frames: (0, 0.0, 0.0, 0),
+                })
         });
+        // Where the pointer is, before the first frame: the window under it
+        // is the clear one from the start, not from the first mouse move.
+        let mut at = POINT::default();
+        if GetCursorPos(&mut at).is_ok() {
+            with(|s| s.editor.pointer_move(Point::new(at.x, at.y), Mods::NONE));
+        }
 
         // The overlays, created with no borrow held: creation and showing
         // both call `overlay_proc`.
@@ -864,6 +1015,16 @@ fn end(cancelled: bool) -> Option<Session> {
     ACTIVE.store(false, Ordering::Release);
     TEXT_OPEN.store(false, Ordering::Release);
     let session = session?;
+    let (frames, slowest, all, given) = session.frames;
+    let whole: u64 = session.mons.iter().map(|m| m.rect.w as u64 * m.rect.h as u64).sum();
+    // process-wide: one session at a time for the whole process
+    plogf!(
+        "[shot] frames: {frames} composed in {:.1} s, the slowest in {slowest:.1} ms, {:.1} ms each on average; the windows \
+         were given {given} px in all, {:.2} monitors' worth (all monitors are {whole} px)",
+        session.began.elapsed().as_secs_f64(),
+        if frames > 0 { all / f64::from(frames) } else { 0.0 },
+        if whole > 0 { given as f64 / whole as f64 } else { 0.0 }
+    );
     unsafe {
         if let Some(e) = &session.edit {
             let _ = DestroyWindow(e.hwnd);
@@ -956,10 +1117,6 @@ fn annot_font(px: i32) -> HFONT {
     make_font(px, if font_ok() { FONT_FACE } else { w!("Segoe UI") })
 }
 
-/// The font the overlay's own words (size label, tooltips) are in.
-fn ui_font(px: i32) -> HFONT {
-    make_font(px, w!("Segoe UI"))
-}
 
 fn make_font(px: i32, face: PCWSTR) -> HFONT {
     unsafe {
@@ -1071,9 +1228,6 @@ fn rgb_ref((r, g, b): (u8, u8, u8)) -> COLORREF {
     COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16)
 }
 
-fn colour_ref(index: u8) -> COLORREF {
-    rgb_ref(style::COLOURS[index as usize % style::COLOURS.len()])
-}
 
 /// Black or white, whichever shows on this colour (the digit in a number's
 /// circle, the paper under the text being typed).
@@ -1203,362 +1357,483 @@ fn fill(hdc: HDC, r: Rect, colour: COLORREF) {
     }
 }
 
-fn frame(hdc: HDC, r: Rect, colour: COLORREF, thickness: i32) {
-    fill(hdc, Rect::new(r.x, r.y, r.w, thickness), colour);
-    fill(hdc, Rect::new(r.x, r.bottom() - thickness, r.w, thickness), colour);
-    fill(hdc, Rect::new(r.x, r.y, thickness, r.h), colour);
-    fill(hdc, Rect::new(r.right() - thickness, r.y, thickness, r.h), colour);
-}
 
-const BAR: COLORREF = COLORREF(0x0030_3030);
-const BAR_ACTIVE: COLORREF = COLORREF(0x0068_6868);
-const BAR_HOVER: COLORREF = COLORREF(0x0048_4848);
 const INK: COLORREF = COLORREF(0x00FF_FFFF);
-const INK_OFF: COLORREF = COLORREF(0x0080_8080);
 
-/// Draw one toolbar button's picture into `r` (canvas coordinates).
+/// Whether the system asks for less transparency (Settings >
+/// Personalisation > Colours > Transparency effects, off): then nothing is
+/// blurred, the plates are opaque and nothing glows (§9.8.10).
+fn less_transparency() -> bool {
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let mut value = 1u32;
+    let mut len = std::mem::size_of::<u32>() as u32;
+    let read = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+            w!("EnableTransparency"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut value as *mut u32 as *mut c_void),
+            Some(&mut len),
+        )
+    };
+    read.is_ok() && value == 0
+}
+
+/// The colours the overlay's own parts are drawn in. The look's, unless the
+/// system is in high-contrast mode: then the system's own, which the person
+/// chose in order to see -- button face and text for the plates and what is
+/// on them, the highlight for what is chosen, grey text for what cannot be
+/// pressed (`theme.rs` has the same rule for the rest of the host).
+fn tones() -> chrome::Tones {
+    if !crate::theme::high_contrast() {
+        return chrome::Tones::LOOK;
+    }
+    let sys = |index: SYS_COLOR_INDEX| {
+        let c = unsafe { GetSysColor(index) };
+        look::Rgba { r: (c & 0xFF) as u8, g: ((c >> 8) & 0xFF) as u8, b: ((c >> 16) & 0xFF) as u8, a: 1.0 }
+    };
+    chrome::Tones {
+        ink: sys(COLOR_BTNTEXT),
+        ink_dim: sys(COLOR_BTNTEXT),
+        ink_off: sys(COLOR_GRAYTEXT),
+        accent: sys(COLOR_HIGHLIGHT),
+        on_accent: sys(COLOR_HIGHLIGHTTEXT),
+        plate: sys(COLOR_BTNFACE),
+        plate_edge: sys(COLOR_BTNTEXT),
+    }
+}
+
+/// Whether the system animates what is inside windows (Settings >
+/// Accessibility > Visual effects > Animation effects). Off, and nothing
+/// here takes a moment either (§9.8.7).
+fn animations_on() -> bool {
+    let mut on = windows::core::BOOL(1);
+    let asked = unsafe {
+        SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some(&mut on as *mut _ as *mut c_void), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0))
+    };
+    asked.is_err() || on.as_bool()
+}
+
+fn log_glass(rect: Rect, scale: f64, took: f64, in_time: bool) {
+    // process-wide: about a monitor, not about a terminal window
+    plogf!(
+        "[shot] glass for monitor {}x{} at scale {scale}: made in {took:.1} ms on a thread of its own ({} thread(s) for the \
+         stretch); in time for the first frame={in_time} (shrunk {}x, box radius {})",
+        rect.w,
+        rect.h,
+        polter_shots::glass::threads(),
+        polter_shots::glass::factor(scale),
+        polter_shots::glass::radius(look::glass::OUTSIDE_BLUR_SIGMA, scale)
+    );
+}
+
+/// A monitor's frosted glass was made after the first frame had to be
+/// shown: it takes the place of the darkened picture, and the overlay is
+/// painted again. Nothing here if the session it was made for has ended --
+/// what the thread sent went into that session's channel and was dropped
+/// with it.
+fn glass_arrived() {
+    let arrived = with(|s| {
+        let mut n = 0;
+        while let Ok((index, glass, took)) = s.late.try_recv() {
+            let (Some(glass), Some(mon)) = (glass, s.mons.get_mut(index)) else { continue };
+            log_glass(mon.rect, f64::from(mon.dpi.max(96)) / 96.0, took, false);
+            // process-wide: about a monitor, not about a terminal window
+            plogf!(
+                "[shot] glass for monitor {index} arrived {:.1} ms after the trigger, {:.1} ms after the first frame stopped \
+                 waiting; the monitor is frosted from the next frame",
+                s.began.elapsed().as_secs_f64() * 1e3,
+                (s.began.elapsed().as_secs_f64() * 1e3 - GLASS_WAIT_MS as f64).max(0.0)
+            );
+            mon.glass = glass;
+            n += 1;
+        }
+        n
+    })
+    .unwrap_or(0);
+    if arrived > 0 {
+        repaint();
+    }
+}
+
+fn ink_ref(c: look::Rgba) -> COLORREF {
+    rgb_ref((c.r, c.g, c.b))
+}
+
+/// The overlay's own words -- the selection's size, a tooltip, the long
+/// screenshot's status -- in the system's menu font at the monitor's DPI,
+/// which is the smallest any text of ours may be (`uifont`).
+struct Words {
+    dc: HDC,
+    font: HFONT,
+    saved: i32,
+    origin: Point,
+}
+
+impl Words {
+    unsafe fn on(canvas: &Canvas, dpi: u32) -> Words {
+        unsafe {
+            let saved = SaveDC(canvas.dc);
+            // 12 px is the menu's own size on an unchanged system; the
+            // font made is the menu's or that, whichever is larger.
+            let font = crate::uifont::make(dpi as i32, 12, 400, w!("Segoe UI"));
+            SelectObject(canvas.dc, font.into());
+            SetBkMode(canvas.dc, TRANSPARENT);
+            Words { dc: canvas.dc, font, saved, origin: canvas.rect.origin() }
+        }
+    }
+
+    fn size(&self, text: &str) -> (i32, i32) {
+        let mut size = SIZE::default();
+        let _ = unsafe { GetTextExtentPoint32W(self.dc, &wide(text), &mut size) };
+        (size.cx, size.cy)
+    }
+
+    /// `text` with its top-left corner at `at` (virtual-screen pixels).
+    fn put(&self, at: Point, text: &str, colour: look::Rgba) {
+        let l = at.relative_to(self.origin);
+        unsafe {
+            SetTextColor(self.dc, ink_ref(colour));
+            let _ = TextOutW(self.dc, l.x, l.y, &wide(text));
+        }
+    }
+}
+
+impl Drop for Words {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = RestoreDC(self.dc, self.saved);
+            let _ = DeleteObject(self.font.into());
+        }
+    }
+}
+
+/// Everything monitor `i`'s overlay shows, drawn into `canvas`, which is the
+/// size of the monitor. Every pixel of it is written.
 ///
-/// Shapes are drawn as shapes rather than taken from a font: a glyph that a
-/// machine's fonts do not have comes out as an empty box, and a toolbar of
-/// empty boxes cannot be used. The three that stay glyphs (undo, redo and
-/// the two marks) were seen to draw on the test machine.
-unsafe fn draw_icon(hdc: HDC, button: Button, r: Rect, scale: f64, ink: COLORREF) {
-    unsafe {
-        let line = style::px(2, scale).max(1);
-        let pen = CreatePen(PS_SOLID, line, ink);
-        let brush = CreateSolidBrush(ink);
-        let old_pen = SelectObject(hdc, pen.into());
-        let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-        // The picture's box: the button less a quarter all round.
-        let m = r.w / 4;
-        let (l, t, rt, b) = (r.x + m, r.y + m, r.right() - m, r.bottom() - m);
-        let (cx, cy) = (r.x + r.w / 2, r.y + r.h / 2);
-        let glyph = |s: &str, px: i32| {
-            let font = ui_font(px);
-            let old = SelectObject(hdc, font.into());
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, ink);
-            let mut rc = RECT { left: r.x, top: r.y, right: r.right(), bottom: r.bottom() };
-            DrawTextW(hdc, &mut wide(s), &mut rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            SelectObject(hdc, old);
-            let _ = DeleteObject(font.into());
-        };
-        let stroke = |pts: &[(i32, i32)]| {
-            let pts: Vec<POINT> = pts.iter().map(|(x, y)| POINT { x: *x, y: *y }).collect();
-            let _ = Polyline(hdc, &pts);
-        };
-        match button {
-            Button::Tool(Tool::Select) => {
-                // A pointer: an arrow from the top-left.
-                SelectObject(hdc, brush.into());
-                let pts = [(l, t), (l, b), (l + (rt - l) / 3, b - (b - t) / 3), (rt - m / 2, b - (b - t) / 3)]
-                    .map(|(x, y)| POINT { x, y });
-                let _ = Polygon(hdc, &pts);
-            }
-            Button::Tool(Tool::Rect) => {
-                let _ = Rectangle(hdc, l, t + m / 3, rt, b - m / 3);
-            }
-            Button::Tool(Tool::Ellipse) => {
-                let _ = Ellipse(hdc, l, t + m / 3, rt, b - m / 3);
-            }
-            Button::Tool(Tool::Line) => stroke(&[(l, b), (rt, t)]),
-            Button::Tool(Tool::Arrow) => {
-                stroke(&[(l, b), (rt, t)]);
-                stroke(&[(rt - (rt - l) / 2, t), (rt, t), (rt, t + (b - t) / 2)]);
-            }
-            Button::Tool(Tool::Pen) => {
-                let q = (rt - l) / 4;
-                stroke(&[(l, b), (l + q, t + q), (l + 2 * q, b - q), (l + 3 * q, t), (rt, t + q)]);
-            }
-            Button::Tool(Tool::Highlighter) => {
-                let thick = CreatePen(PS_SOLID, line * 3, ink);
-                SelectObject(hdc, thick.into());
-                stroke(&[(l, cy), (rt, cy)]);
-                SelectObject(hdc, pen.into());
-                let _ = DeleteObject(thick.into());
-            }
-            Button::Tool(Tool::Text) => glyph("A", r.h * 5 / 9),
-            Button::Tool(Tool::Number) => {
-                let _ = Ellipse(hdc, l, t, rt, b);
-                glyph("1", r.h * 4 / 9);
-            }
-            Button::Tool(Tool::Mosaic) => {
-                // Four squares of a chequerboard.
-                let (hw, hh) = ((rt - l) / 2, (b - t) / 2);
-                let _ = Rectangle(hdc, l, t, rt, b);
-                fill(hdc, Rect::new(l, t, hw, hh), ink);
-                fill(hdc, Rect::new(l + hw, t + hh, rt - l - hw, b - t - hh), ink);
-            }
-            Button::Undo => glyph("↶", r.h * 5 / 9),
-            Button::Redo => glyph("↷", r.h * 5 / 9),
-            Button::Long => {
-                // A tall page and an arrow down it.
-                let _ = Rectangle(hdc, l + m / 2, t - m / 3, rt - m / 2, b + m / 3);
-                stroke(&[(cx, t + m / 3), (cx, b - m / 4)]);
-                stroke(&[(cx - m / 2, b - m / 4 - m / 2), (cx, b - m / 4), (cx + m / 2, b - m / 4 - m / 2)]);
-            }
-            Button::Cancel => glyph("✕", r.h * 5 / 9),
-            Button::Done => glyph("✓", r.h * 5 / 9),
-            Button::Colour(c) => {
-                fill(hdc, r, colour_ref(c));
-            }
-            Button::Level(level) => {
-                // A dot that grows with the step.
-                SelectObject(hdc, brush.into());
-                let radius = (r.w * (level as i32 + 1)) / 12 + 1;
-                let _ = Ellipse(hdc, cx - radius, cy - radius, cx + radius + 1, cy + radius + 1);
-            }
-        }
-        SelectObject(hdc, old_pen);
-        SelectObject(hdc, old_brush);
-        let _ = DeleteObject(pen.into());
-        let _ = DeleteObject(brush.into());
-    }
+/// **Nothing is blurred here.** The glass was made when the session began;
+/// a frame is that glass, the frozen picture where the hole is, and what is
+/// drawn over them (§9.8.8). The hole and the selection's outline are the
+/// same rectangle read from the same `Editor` in the same call, so there is
+/// no frame in which one has moved and the other has not.
+unsafe fn compose_overlay(s: &mut Session, i: usize, canvas: &Canvas, now: f64) {
+    // What is clear, and what was and is still going (`motion::Holes`).
+    let chosen = s.editor.selection().is_some_and(|x| x.monitor == i) || s.editor.forming().is_some_and(|f| f.1 == i);
+    let (hole, rect, animate) = (s.editor.hole(i), s.mons[i].rect, s.animate);
+    s.mons[i].holes.step(hole, chosen, rect, now, animate);
+    let clear = s.mons[i].holes.layers(now);
+    // The icons are drawn once and kept; taken out while `s` is read.
+    let mut icons = std::mem::take(&mut s.icons);
+    unsafe { compose_into(s, i, canvas, &clear, &mut icons) };
+    s.icons = icons;
 }
 
-/// The toolbar, the tooltip of the button under the pointer, and -- when the
-/// bundled font is missing -- a line saying so.
-unsafe fn draw_toolbar(canvas: &Canvas, editor: &Editor, layout: &Layout, scale: f64, monitor: Rect) {
+unsafe fn compose_into(s: &Session, i: usize, canvas: &Canvas, clear: &[(Rect, u32)], icons: &mut chrome::Icons) {
     unsafe {
-        let hdc = canvas.dc;
-        let o = canvas.rect.origin();
-        fill(hdc, layout.bar.relative_to(o), BAR);
-        if let Some(row) = layout.props {
-            fill(hdc, row.relative_to(o), BAR);
-        }
-        let (colour, level) = editor.current();
-        for (button, rect) in &layout.buttons {
-            let r = rect.relative_to(o);
-            let current = match *button {
-                Button::Tool(t) => editor.tool() == t,
-                Button::Colour(c) => c == colour,
-                Button::Level(l) => l == level,
-                _ => false,
-            };
-            let enabled = match *button {
-                Button::Undo => editor.can_undo(),
-                Button::Redo => editor.can_redo(),
-                _ => true,
-            };
-            let hovered = editor.hover_button() == Some(*button) && enabled;
-            match *button {
-                Button::Colour(_) => {
-                    // The current colour wears a ring.
-                    if current {
-                        let ring = style::px(2, scale);
-                        frame(hdc, Rect::new(r.x - ring * 2, r.y - ring * 2, r.w + ring * 4, r.h + ring * 4), INK, ring);
-                    }
-                }
-                _ if current => fill(hdc, r, BAR_ACTIVE),
-                _ if hovered => fill(hdc, r, BAR_HOVER),
-                _ => {}
-            }
-            draw_icon(hdc, *button, r, scale, if enabled { INK } else { INK_OFF });
+        let mon = &s.mons[i];
+        let e = &s.editor;
+        let scale = f64::from(mon.dpi.max(96)) / 96.0;
+        let glass = &mon.glass;
+        let tones = &s.tones;
+        // Whether anything glows: only on frosted glass.
+        let frosted = glass.is_frosted();
+
+        // What is in focus on this monitor: the selection, the region
+        // being dragged, or the window under the cursor. The rest is glass.
+        let sel = e.selection().filter(|x| x.monitor == i).map(|x| x.rect);
+        let forming = e.forming().filter(|f| f.1 == i).map(|f| f.0);
+        mon.frozen.frame_layers(glass, canvas.bits(), mon.rect, clear, mon.rect);
+
+        // The mosaics are in the picture -- including the one being dragged
+        // out, so its size is chosen by what it hides.
+        pixels::apply_mosaics(canvas.bits(), mon.rect, &mon.frozen, e.items(), scale);
+        if let Some(live) = e.live() {
+            pixels::apply_mosaics(canvas.bits(), mon.rect, &mon.frozen, std::slice::from_ref(live), scale);
         }
 
-        let font = ui_font(style::px(14, scale));
-        let old_font = SelectObject(hdc, font.into());
-        SetBkMode(hdc, OPAQUE);
-        SetBkColor(hdc, COLORREF(0x0020_2020));
-        SetTextColor(hdc, INK);
-        let label = |text: &str, x: i32, y: i32| {
-            let text = wide(&format!(" {text} "));
-            let mut size = SIZE::default();
-            let _ = GetTextExtentPoint32W(hdc, &text, &mut size);
-            // Kept on the monitor sideways.
-            let x = x.min(monitor.right() - o.x - size.cx).max(monitor.x - o.x);
-            let _ = TextOutW(hdc, x, y, &text);
-            size.cy
+        let hide = e.text_box().and_then(|t| t.editing);
+        let mosaic = |it: &Item| matches!(it.shape, Shape::Mosaic(_));
+        let drawn = e.draw_order().into_iter().filter(|(_, it)| !mosaic(it));
+        let live = e.live().filter(|it| !mosaic(it)).map(|it| (usize::MAX, it));
+        draw_items(canvas, drawn.chain(live), scale, hide);
+        // What reaches out of the selection will not be in the picture: it
+        // is drawn whole and then made fainter out there (§9.8.11A.5).
+        if let Some(sel) = sel {
+            for item in e.items().iter().chain(e.live()) {
+                let b = item.bounds(scale);
+                let b = Rect::new(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
+                if b.intersect(sel) != Some(b) {
+                    glass.veil(canvas.bits(), mon.rect, sel, b, look::annotation::OUTSIDE_OPACITY);
+                }
+            }
+        }
+        // What is being typed: over the annotations, under everything
+        // of the overlay's own -- the toolbar is drawn after it.
+        draw_text_box(s, i, canvas);
+
+        let surface = || Surface::new(canvas.bits(), mon.rect);
+        if let Some(mut on) = surface() {
+            match (sel, forming) {
+                (Some(sel), _) => {
+                    chrome::selection(&mut on, sel, e.knobs(), scale, tones);
+                    // The selected annotation: over every annotation, under
+                    // the toolbar.
+                    if let Some(marked) = e.marked() {
+                        if marked.framed {
+                            chrome::annotation_frame(&mut on, marked.ink, scale, frosted, tones);
+                        }
+                        for (at, how) in marked.grips {
+                            chrome::grip(&mut on, at, how, scale, frosted, tones);
+                        }
+                    }
+                }
+                (None, Some(forming)) => chrome::selection(&mut on, forming, false, scale, tones),
+                (None, None) => {
+                    // The window that a click would take. Not the whole
+                    // monitor: that is "no window", and has no outline.
+                    if let Some((_, window)) = e.hover().filter(|h| h.0 == i && h.1 != mon.rect) {
+                        chrome::window_outline(&mut on, window, scale, tones);
+                    }
+                }
+            }
+        }
+
+        let words = Words::on(canvas, mon.dpi);
+        let plate = |r: Rect| {
+            if let Some(mut on) = surface() {
+                chrome::label(&mut on, glass, r, scale, tones);
+            }
         };
-        let below = layout.props.map_or(layout.bar.bottom(), |r| r.bottom()) - o.y + style::px(4, scale);
-        let mut next_line = below;
-        if !font_ok() {
-            next_line += label(&tr(toolbar::FONT_MISSING), layout.bar.x - o.x, next_line) + style::px(2, scale);
+        // Its size, in pixels of the image.
+        if let Some(r) = sel.or(forming) {
+            let text = format!("{} × {}", r.w, r.h);
+            let tag = chrome::size_label(r, words.size(&text), scale, mon.rect);
+            plate(tag.plate);
+            words.put(tag.text, &text, tones.ink);
         }
-        if let Some((button, rect)) =
-            editor.hover_button().and_then(|b| layout.rect_of(b).map(|r| (b, r.relative_to(o))))
-        {
-            let tip = toolbar::tooltip(button, editor.props(), tr);
-            label(&tip, rect.x, next_line.max(rect.bottom() + style::px(4, scale)));
-        }
-        SelectObject(hdc, old_font);
-        let _ = DeleteObject(font.into());
-    }
-}
-
-/// Everything monitor `i`'s overlay shows, drawn into a canvas the size of
-/// the monitor. `like` is a device context of that overlay.
-unsafe fn compose_overlay(s: &Session, i: usize, like: HDC) -> Option<Canvas> {
-    unsafe {
-        {
-            let mon = &s.mons[i];
-            let canvas = Canvas::new(like, mon.rect)?;
-            let e = &s.editor;
-            let scale = e.scale();
-            let o = mon.rect.origin();
-
-            // The frozen picture, with the mosaics in it -- including the one
-            // being dragged out, so its size is chosen by what it hides.
-            mon.frozen.show(canvas.bits(), mon.rect);
-            pixels::apply_mosaics(canvas.bits(), mon.rect, &mon.frozen, e.items(), scale);
-            if let Some(live) = e.live() {
-                pixels::apply_mosaics(canvas.bits(), mon.rect, &mon.frozen, std::slice::from_ref(live), scale);
+        if let (Some(sel), Some(layout)) = (sel, e.layout()) {
+            if let Some(mut on) = surface() {
+                chrome::toolbar(&mut on, glass, &layout, &e.cells(), e.props(), scale, icons, tones);
             }
-
-            // What is in focus on this monitor: the selection, the region
-            // being dragged, or the window under the cursor. The rest dims.
-            let sel = e.selection().filter(|x| x.monitor == i).map(|x| x.rect);
-            let forming = e.forming().filter(|f| f.1 == i).map(|f| f.0);
-            let hover = if e.selection().is_none() && e.forming().is_none() {
-                e.hover().filter(|x| x.0 == i).map(|x| x.1)
-            } else {
-                None
-            };
-            let focus = sel.or(forming).or(hover);
-            pixels::dim(canvas.bits(), mon.rect, focus);
-
-            let hide = e.text_box().and_then(|t| t.editing);
-            let mosaic = |it: &Item| matches!(it.shape, Shape::Mosaic(_));
-            let drawn = e.draw_order().into_iter().filter(|(_, it)| !mosaic(it));
-            let live = e.live().filter(|it| !mosaic(it)).map(|it| (usize::MAX, it));
-            draw_items(&canvas, drawn.chain(live), scale, hide);
-
-            let mem = canvas.dc;
-            if let Some(f) = focus {
-                frame(mem, f.relative_to(o), ACCENT, scaled(2, mon.dpi));
+            // The lines of words beside the toolbar, one after another.
+            let whole = layout.plate();
+            let between = style::px_f(look::size::TIP_OFFSET, scale);
+            let mut before = 0;
+            if let Some(long) = &s.long {
+                before += draw_long_status(canvas, &words, glass, tones, long, whole, sel, scale, mon.rect) + between;
             }
-            if let Some(sel) = sel {
-                let f = sel.relative_to(o);
-                let g = scaled(4, mon.dpi);
-                let knob = |c: Point| fill(mem, Rect::new(c.x - g, c.y - g, g * 2, g * 2), ACCENT);
-                match e.selected().and_then(|k| e.items().get(k)) {
-                    // The selected annotation: its grips, or its outline
-                    // when it can only be moved.
-                    Some(item) => {
-                        let grips = item.grips();
-                        if grips.is_empty() {
-                            frame(mem, item.bounds(scale).relative_to(o), ACCENT, 1);
-                        }
-                        for (_, at) in grips {
-                            knob(at.relative_to(o));
-                        }
+            if !font_ok() {
+                let text = tr(toolbar::FONT_MISSING);
+                let tag = chrome::line(whole, before, words.size(&text), scale, mon.rect);
+                plate(tag.plate);
+                words.put(tag.text, &text, tones.ink);
+                before += tag.plate.h + between;
+            }
+            // A tooltip, once the pointer has rested on the cell (`tip_follows`).
+            let rested = e.hover_button().filter(|b| s.tip == (Some(*b), true));
+            if let Some((button, cell)) = rested.and_then(|b| layout.rect_of(b).map(|r| (b, r))) {
+                let name = tr(toolbar::name(button, e.props()));
+                let key = toolbar::shortcut(button);
+                let tip = chrome::tooltip(cell, whole, before, words.size(&name), key.as_deref().map(|k| words.size(k)), scale, mon.rect);
+                plate(tip.plate);
+                words.put(tip.name, &name, tones.ink);
+                if let (Some((key_plate, at)), Some(key)) = (tip.key, &key) {
+                    if let Some(mut on) = surface() {
+                        chrome::key_plate(&mut on, key_plate, scale, tones);
                     }
-                    // Otherwise the selection's own handles, while the
-                    // select tool is what the mouse is.
-                    None if e.tool() == Tool::Select => {
-                        for handle in Handle::ALL {
-                            knob(handle.at(f));
-                        }
-                    }
-                    None => {}
-                }
-
-                // Size, in pixels of the image.
-                let ui = ui_font(scaled(14, mon.dpi));
-                let old_font = SelectObject(mem, ui.into());
-                SetBkMode(mem, OPAQUE);
-                SetBkColor(mem, COLORREF(0x0020_2020));
-                SetTextColor(mem, INK);
-                let label = wide(&format!(" {} × {} ", f.w, f.h));
-                let ly = if f.y >= scaled(22, mon.dpi) { f.y - scaled(22, mon.dpi) } else { f.y + scaled(4, mon.dpi) };
-                let _ = TextOutW(mem, f.x, ly, &label);
-                SelectObject(mem, old_font);
-                let _ = DeleteObject(ui.into());
-
-                if let Some(layout) = e.layout() {
-                    draw_toolbar(&canvas, e, &layout, scale, mon.rect);
-                    if let Some(long) = &s.long {
-                        draw_long_status(&canvas, long, &layout, sel, scale, mon.rect);
-                    }
+                    words.put(at, key, tones.ink_dim);
                 }
             }
-            Some(canvas)
+        }
+        // What a shape being reshaped measures, beside the pointer.
+        if let (Some(text), Some(at)) = (e.reshape_tag(), e.pointer().filter(|p| mon.rect.contains(*p))) {
+            let tag = chrome::pointer_tag(at, words.size(&text), scale, mon.rect);
+            plate(tag.plate);
+            words.put(tag.text, &text, tones.ink);
         }
     }
 }
 
+/// How many rows of a frame are compared at a time: a change is given to
+/// the window as one rectangle for each band of this many rows it touches.
+const BAND: usize = 64;
+
+/// Compose monitor `hwnd`'s frame and give the window what differs from the
+/// frame it is showing.
+///
+/// **The whole frame is composed, in memory, and only what changed in it is
+/// sent to the screen** (`pixels::changed`): moving a selection sends the
+/// strip it left and the strip it took, a tooltip its own rectangle, the
+/// caret its few pixels. Sending is the part that is slow where there is no
+/// graphics card -- the test machine is such a one -- and what is not sent
+/// cannot be late. Nothing has to say what it changed; a change nobody
+/// thought of is found by the comparison like any other.
 unsafe fn paint(hwnd: HWND) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let hdc = BeginPaint(hwnd, &mut ps);
         with(|s| {
             let Some(i) = s.mons.iter().position(|m| m.hwnd == hwnd) else { return };
-            let Some(canvas) = compose_overlay(s, i, hdc) else { return };
-            let mon = &s.mons[i];
-            let _ = BitBlt(hdc, 0, 0, mon.rect.w, mon.rect.h, Some(canvas.dc), 0, 0, SRCCOPY);
-            toolbar_over_text_box(s, i, &canvas);
+            let rect = s.mons[i].rect;
+            let Some(canvas) = s.mons[i].spare.take().or_else(|| Canvas::new(hdc, rect)) else { return };
+            let began = std::time::Instant::now();
+            let now = s.began.elapsed().as_secs_f64() * 1e3;
+            compose_overlay(s, i, &canvas, now);
+            // The toolbar, when a cell's state changed, goes from what it
+            // showed to what it shows over the time the look gives -- a
+            // press at once (`motion::cells_change`).
+            if s.editor.selection().is_some_and(|x| x.monitor == i) {
+                let states: Vec<chrome::State> = s.editor.cells().iter().map(|c| c.state).collect();
+                if let Some(ms) = motion::cells_change(&s.cells, &states) {
+                    let plate = s.editor.layout().map(|l| l.plate());
+                    s.fade = match (&s.mons[i].shown, plate) {
+                        (Some(shown), Some(plate)) if ms > 0.0 && s.animate && !s.cells.is_empty() => {
+                            motion::Crossfade::new(shown.bits(), rect, plate, now, ms)
+                        }
+                        _ => None,
+                    };
+                    s.cells = states;
+                }
+                if s.fade.as_ref().is_some_and(|f| f.done(now)) {
+                    s.fade = None;
+                }
+                if let Some(fade) = &s.fade {
+                    fade.apply(canvas.bits(), rect, now);
+                }
+            }
+            // A frame for as long as something is on its way, and not one
+            // more: the timer is killed by the frame that finds nothing is.
+            let busy = s.mons[i].holes.busy(now) || s.fade.is_some();
+            if busy != s.mons[i].moving {
+                s.mons[i].moving = busy;
+                if busy {
+                    SetTimer(Some(hwnd), TIMER_MOVING, MOVING_INTERVAL_MS, None);
+                } else {
+                    let _ = KillTimer(Some(hwnd), TIMER_MOVING);
+                }
+            }
+            let whole = Rect::new(0, 0, rect.w, rect.h);
+            let first = s.mons[i].shown.is_none();
+            let changed = match &s.mons[i].shown {
+                Some(shown) => pixels::changed(shown.bits(), canvas.bits(), rect.w as usize, rect.h as usize, BAND),
+                None => vec![whole],
+            };
+            let took = began.elapsed().as_secs_f64() * 1e3;
+            // Not the paint's own device context: that one is clipped to
+            // what was declared invalid, which is nothing (`repaint`).
+            let direct = GetDC(Some(hwnd));
+            for r in &changed {
+                let _ = BitBlt(direct, r.x, r.y, r.w, r.h, Some(canvas.dc), r.x, r.y, SRCCOPY);
+            }
+            ReleaseDC(Some(hwnd), direct);
+            // And whatever the system itself wants painted again.
+            let _ = BitBlt(hdc, 0, 0, rect.w, rect.h, Some(canvas.dc), 0, 0, SRCCOPY);
+            let given: u64 = changed.iter().map(|r| r.w as u64 * r.h as u64).sum();
+            s.frames = (s.frames.0 + 1, s.frames.1.max(took), s.frames.2 + took, s.frames.3 + given);
+            // absence: depends -- one line for each monitor's first frame;
+            // a session whose overlay was never painted has none
+            if first {
+                // process-wide: about a monitor, not about a terminal window
+                plogf!(
+                    "[shot] first frame of monitor {i}: composed in {took:.1} ms, {given} px given to the window; on the screen \
+                     {:.1} ms after the trigger (frosted={})",
+                    s.began.elapsed().as_secs_f64() * 1e3,
+                    s.mons[i].glass.is_frosted()
+                );
+            }
+            s.mons[i].spare = s.mons[i].shown.replace(canvas);
         });
         let _ = EndPaint(hwnd, &ps);
     }
 }
 
-/// Draw `canvas` -- monitor `i`'s overlay as just composed -- into the parts
-/// of the text box that lie on the toolbar and that the box can still draw
-/// in. **Only ever from the overlay's own `WM_PAINT`**, and with nothing to
-/// do unless the box's window class failed at its one job
-/// (`register_text_class`): `on_toolbar` is empty otherwise.
+/// Draw the text box of monitor `i` into `canvas`: the dashed frame, what
+/// is selected, the words with their halo, what an input method is
+/// composing, and the caret. **From `EditCtl::typed` alone** -- the native
+/// control is asked nothing here, so painting cannot be the cause of a
+/// message to it, and so not of another painting (`textbox::changes_box`).
 ///
-/// Through a device context that is not clipped by the overlay's children,
-/// so that what is seen there does not depend on how the two windows are
-/// clipped against each other.
-unsafe fn toolbar_over_text_box(s: &Session, i: usize, canvas: &Canvas) {
-    let Some(edit) = s.edit.as_ref().filter(|e| !e.on_toolbar.is_empty()) else { return };
+/// The words are drawn the way a finished text annotation is (`draw_items`:
+/// `DrawTextW` in the annotation font from the box's corner), so what is
+/// typed is where it will be. Nothing is drawn under them: the box has no
+/// paper (§9.8).
+unsafe fn draw_text_box(s: &Session, i: usize, canvas: &Canvas) {
+    let (Some(e), Some(tb)) = (s.edit.as_ref(), s.editor.text_box()) else { return };
     if s.editor.selection().map(|x| x.monitor) != Some(i) {
         return;
     }
-    let mon = &s.mons[i];
+    let scale = s.editor.scale();
+    let b = e.rect;
+    let font_px = style::font_px(tb.level, scale);
+    let line = s.editor.text_line(tb.level, &Gdi);
+    let v = textbox::view(&e.typed, b.w, line, font_px, scale, &Gdi);
+    let rgb = style::COLOURS[tb.colour as usize % style::COLOURS.len()];
+    let at = |r: Rect| Rect::new(r.x + b.x, r.y + b.y, r.w, r.h);
+
+    textbox::draw_frame(canvas.bits(), canvas.rect, b, scale);
+    for r in &v.selected {
+        if let Some(r) = at(*r).intersect(b) {
+            pixels::blend(canvas.bits(), canvas.rect, r, SELECTED, (polter_shots::look::text_box::SELECTION_ALPHA * 256.0).round() as u32);
+        }
+    }
+    let underline = v.underline.and_then(|u| at(u).intersect(b));
     unsafe {
-        // `DCX_CACHE` alone: no `DCX_CLIPCHILDREN`, and no `DCX_USESTYLE`
-        // to bring the window's own `WS_CLIPCHILDREN` back in.
-        let dc = GetDCEx(Some(mon.hwnd), None, DCX_CACHE);
-        if dc.is_invalid() {
-            return;
+        let font = annot_font(font_px);
+        // The words into `dc`, whose top-left pixel is `origin` of the
+        // virtual screen, clipped to the box.
+        let words = |dc: HDC, origin: Point, colour: COLORREF| {
+            let saved = SaveDC(dc);
+            let l = b.relative_to(origin);
+            IntersectClipRect(dc, l.x, l.y, l.right(), l.bottom());
+            SelectObject(dc, font.into());
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, colour);
+            let q = Point::new(b.x + v.origin.x, b.y + v.origin.y).relative_to(origin);
+            let mut rc = RECT { left: q.x, top: q.y, right: q.x + 1, bottom: q.y + 1 };
+            DrawTextW(dc, &mut wide(&v.text), &mut rc, DT_NOPREFIX | DT_NOCLIP);
+            let _ = RestoreDC(dc, saved);
+        };
+        // The halo first, from how much of each pixel the words cover:
+        // white on black in a sheet of their own, the underline with them.
+        let reach = textbox::halo_reach(scale);
+        let mask_rect = Rect::new(b.x - reach, b.y - reach, b.w + 2 * reach, b.h + 2 * reach);
+        if let Some(sheet) = Canvas::new(canvas.dc, mask_rect) {
+            words(sheet.dc, mask_rect.origin(), INK);
+            if let Some(u) = underline {
+                fill(sheet.dc, u.relative_to(mask_rect.origin()), INK);
+            }
+            let mask: Vec<u8> =
+                sheet.bits().chunks_exact(4).map(|p| ((p[0] as u32 + p[1] as u32 + p[2] as u32) / 3) as u8).collect();
+            textbox::halo(canvas.bits(), canvas.rect, &mask, mask_rect, textbox::inverse(rgb), scale);
         }
-        // A caret drawn in the box is an inversion; drawing under a shown
-        // one leaves its ghost when it is next taken away.
-        let hid = HideCaret(Some(edit.hwnd)).is_ok();
-        for r in &edit.on_toolbar {
-            let l = r.relative_to(mon.rect.origin());
-            let _ = BitBlt(dc, l.x, l.y, l.w, l.h, Some(canvas.dc), l.x, l.y, SRCCOPY);
-        }
-        if hid {
-            let _ = ShowCaret(Some(edit.hwnd));
-        }
-        ReleaseDC(Some(mon.hwnd), dc);
+        words(canvas.dc, canvas.rect.origin(), rgb_ref(rgb));
+        let _ = DeleteObject(font.into());
+    }
+    if let Some(u) = underline {
+        pixels::blend(canvas.bits(), canvas.rect, u, rgb, 256);
+    }
+    if e.caret_on {
+        textbox::draw_caret(canvas.bits(), canvas.rect, at(v.caret), b, rgb, scale);
     }
 }
 
-/// The text box has drawn and may have drawn on the toolbar: have the
-/// overlay paint those parts again, in its own time.
-///
-/// **This asks; it draws nothing.** `InvalidateRect` sends no message and
-/// returns at once, the overlay's `WM_PAINT` comes when the queue is
-/// otherwise empty, and any number of these before it are one paint. Nothing
-/// the overlay does while painting is on `textbox::box_draws`'s list, so a
-/// paint cannot ask for the next one.
-///
-/// Nothing at all for a box with nothing in `on_toolbar` -- every box that
-/// keeps clear, and every box whose cut the system honours.
-fn toolbar_again_after_box() {
-    let Some((overlay, parts)) = with(|s| {
-        let e = s.edit.as_ref().filter(|e| !e.on_toolbar.is_empty())?;
-        let m = &s.mons[s.editor.selection()?.monitor];
-        Some((m.hwnd, e.on_toolbar.iter().map(|r| r.relative_to(m.rect.origin())).collect::<Vec<Rect>>()))
-    })
-    .flatten() else {
-        return;
-    };
-    for l in parts {
-        let rc = RECT { left: l.x, top: l.y, right: l.right(), bottom: l.bottom() };
-        let _ = unsafe { InvalidateRect(Some(overlay), Some(&rc), false) };
-    }
-}
+/// What is selected in the text box is shown by the accent colour laid
+/// under it, as much of it as the look says (35%, the same on both hosts).
+const SELECTED: (u8, u8, u8) = (polter_shots::look::colour::ACCENT.r, polter_shots::look::colour::ACCENT.g, polter_shots::look::colour::ACCENT.b);
 
 fn repaint() {
     let windows: Vec<HWND> = with(|s| s.mons.iter().map(|m| m.hwnd).collect()).unwrap_or_default();
+    // Asked to paint with nothing declared invalid: `paint` finds what to
+    // give the window by comparing frames, and a window declared invalid is
+    // a whole window sent. Not "one pixel is invalid" either -- while a long
+    // screenshot is taken the overlay has a hole in it, and a pixel in the
+    // hole is no part of the window, so declaring it invalid asks for
+    // nothing at all.
     for h in windows {
         if !h.0.is_null() {
-            let _ = unsafe { InvalidateRect(Some(h), None, false) };
+            let _ = unsafe { RedrawWindow(Some(h), None, None, RDW_INTERNALPAINT) };
         }
     }
 }
@@ -1645,6 +1920,40 @@ fn perform(hwnd: HWND, effect: Effect) {
 }
 
 unsafe extern "system" fn overlay_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    // A press in the text box is the box's: where the caret goes, what is
+    // selected. The control has no window to press (`hide_box`), so the
+    // press is handed to it, in its own coordinates; it takes the mouse
+    // until the button is up, as it would have.
+    if matches!(msg, WM_LBUTTONDOWN | WM_LBUTTONDBLCLK) {
+        if let Some((edit, l)) = point_of(hwnd, lp).and_then(box_at) {
+            let at = ((l.y as u16 as isize) << 16) | (l.x as u16 as isize);
+            unsafe { SendMessageW(edit, msg, Some(wp), Some(LPARAM(at))) };
+            return LRESULT(0);
+        }
+    }
+    if msg == WM_SETCURSOR {
+        let mut at = POINT::default();
+        if unsafe { GetCursorPos(&mut at) }.is_ok() {
+            let p = Point::new(at.x, at.y);
+            let shape = if box_at(p).is_some() {
+                IDC_IBEAM
+            } else {
+                // What the pointer is over says what a press there would do
+                // (§9.8.11A.4).
+                match with(|s| s.editor.cursor(p, key_mods())).unwrap_or(Cursor::Tool) {
+                    Cursor::Tool => IDC_CROSS,
+                    Cursor::Arrow => IDC_ARROW,
+                    Cursor::Move => IDC_SIZEALL,
+                    Cursor::UpDown => IDC_SIZENS,
+                    Cursor::LeftRight => IDC_SIZEWE,
+                    Cursor::Diagonal => IDC_SIZENWSE,
+                    Cursor::AntiDiagonal => IDC_SIZENESW,
+                }
+            };
+            unsafe { SetCursor(LoadCursorW(None, shape).ok()) };
+            return LRESULT(1);
+        }
+    }
     let effect = match msg {
         WM_PAINT => {
             unsafe { paint(hwnd) };
@@ -1663,6 +1972,25 @@ unsafe extern "system" fn overlay_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             long_tick();
             return LRESULT(0);
         }
+        WM_TIMER if wp.0 == TIMER_MOVING => {
+            let _ = unsafe { RedrawWindow(Some(hwnd), None, None, RDW_INTERNALPAINT) };
+            return LRESULT(0);
+        }
+        WM_TIMER if wp.0 == TIMER_TIP => {
+            let _ = unsafe { KillTimer(Some(hwnd), TIMER_TIP) };
+            with(|s| s.tip.1 = s.tip.0.is_some() && s.tip.0 == s.editor.hover_button());
+            repaint();
+            return LRESULT(0);
+        }
+        WM_TIMER if wp.0 == TIMER_CARET => {
+            with(|s| {
+                if let Some(e) = &mut s.edit {
+                    e.caret_on = !e.caret_on;
+                }
+            });
+            repaint_text_box();
+            return LRESULT(0);
+        }
         WM_KEYDOWN => {
             let vk = wp.0 as u16;
             let mods = key_mods();
@@ -1673,23 +2001,40 @@ unsafe extern "system" fn overlay_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 effect
             })
         }
-        // The text box asks what colours to draw itself in: the text's own.
-        WM_CTLCOLOREDIT => {
-            let colour = with(|s| s.editor.text_box().map(|t| t.colour)).flatten().unwrap_or(0);
-            unsafe {
-                let dc = HDC(wp.0 as *mut c_void);
-                // Dark paper under light ink, light under dark.
-                let paper = if ink_on(style::COLOURS[colour as usize % style::COLOURS.len()]).0 == 0 { COLORREF(0x0030_3030) } else { COLORREF(0x00FF_FFFF) };
-                SetTextColor(dc, colour_ref(colour));
-                SetBkColor(dc, paper);
-                SetDCBrushColor(dc, paper);
-                return LRESULT(GetStockObject(DC_BRUSH).0 as isize);
-            }
-        }
         _ => return unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     };
     perform(hwnd, effect.unwrap_or(Effect::None));
+    tip_follows(hwnd);
     LRESULT(0)
+}
+
+/// Keep the tooltip to the cell the pointer is on: a tooltip shows half a
+/// second after the pointer came to rest on a cell and goes the moment it
+/// leaves (§9.8.4.0). Called after every event the overlay handled; does
+/// nothing unless the cell under the pointer changed.
+fn tip_follows(hwnd: HWND) {
+    let Some(now) = with(|s| {
+        let over = s.editor.hover_button();
+        (over != s.tip.0).then(|| {
+            let shown = s.tip.1;
+            s.tip = (over, false);
+            (over, shown)
+        })
+    })
+    .flatten() else {
+        return;
+    };
+    unsafe {
+        // Killing one that is not set fails, and that is fine.
+        let _ = KillTimer(Some(hwnd), TIMER_TIP);
+        if now.0.is_some() {
+            SetTimer(Some(hwnd), TIMER_TIP, look::transition_ms::TIP_DELAY as u32, None);
+        }
+    }
+    // The one that was showing goes now.
+    if now.1 {
+        repaint();
+    }
 }
 
 // ---------------------------------------------------------- long screenshot
@@ -1708,7 +2053,7 @@ fn start_long() {
     let Some((hwnd, mon_rect, sel, bar, overlays)) = with(|s| {
         let sel = *s.editor.selection()?;
         let m = &s.mons[sel.monitor];
-        let bar = s.editor.layout().map(|l| l.bar);
+        let bar = s.editor.layout().map(|l| l.plate());
         Some((m.hwnd, m.rect, sel.rect, bar, s.mons.iter().map(|m| m.hwnd).collect::<Vec<_>>()))
     })
     .flatten() else {
@@ -1846,67 +2191,50 @@ fn long_tick() {
 
 /// Beside the toolbar: how tall the picture is so far, what the last frame
 /// meant, and a small copy of the picture beside the selection.
-unsafe fn draw_long_status(canvas: &Canvas, long: &LongShot, layout: &Layout, sel: Rect, scale: f64, monitor: Rect) {
-    unsafe {
-        let hdc = canvas.dc;
-        let o = canvas.rect.origin();
-        let font = ui_font(style::px(14, scale));
-        let old_font = SelectObject(hdc, font.into());
-        SetBkMode(hdc, OPAQUE);
-        SetBkColor(hdc, COLORREF(0x0020_2020));
-        SetTextColor(hdc, INK);
-        // Until the first new rows are joined the line says what to do.
-        let added = long.stitcher.total_height() > long.rect.h as usize;
-        let restless = toolbar::long_restless(long.stitcher.never_steady(), long.moving);
-        let hint = toolbar::long_hint(long.last, added, restless).map(|h| format!(" — {}", tr(h))).unwrap_or_default();
-        let text = wide(&format!(" {} {} px{hint} ", tr(toolbar::LONG), long.stitcher.total_height()));
-        let at = Point::new(layout.bar.x, layout.bar.bottom() + style::px(4, scale)).relative_to(o);
-        let _ = TextOutW(hdc, at.x, at.y, &text);
-        SelectObject(hdc, old_font);
-        let _ = DeleteObject(font.into());
-
-        // The preview: right of the selection, or left of it, or not at all.
-        let gap = style::px(12, scale);
-        let width = style::px(120, scale);
-        let x = if sel.right() + gap + width <= monitor.right() {
-            sel.right() + gap
-        } else if sel.x - gap - width >= monitor.x {
-            sel.x - gap - width
-        } else {
-            return;
-        };
-        let room = (monitor.h - gap * 2).max(1);
-        let Some((w, h, bits)) = long.stitcher.thumbnail(width as usize, room as usize) else { return };
-        let info = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: w as i32,
-                biHeight: -(h as i32),
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let top = (sel.y.max(monitor.y + gap)).min(monitor.bottom() - gap - h as i32).max(monitor.y);
-        let dest = Point::new(x, top).relative_to(o);
-        SetDIBitsToDevice(
-            hdc,
-            dest.x,
-            dest.y,
-            w as u32,
-            h as u32,
-            0,
-            0,
-            0,
-            h as u32,
-            bits.as_ptr() as *const c_void,
-            &info,
-            DIB_RGB_COLORS,
-        );
-        frame(hdc, Rect::new(dest.x - 1, dest.y - 1, w as i32 + 2, h as i32 + 2), ACCENT, 1);
+unsafe fn draw_long_status(
+    canvas: &Canvas,
+    words: &Words,
+    glass: &Glass,
+    tones: &chrome::Tones,
+    long: &LongShot,
+    plate: Rect,
+    sel: Rect,
+    scale: f64,
+    monitor: Rect,
+) -> i32 {
+    // Until the first new rows are joined the line says what to do.
+    let added = long.stitcher.total_height() > long.rect.h as usize;
+    let restless = toolbar::long_restless(long.stitcher.never_steady(), long.moving);
+    let said = format!("{} {} px", tr(toolbar::LONG), long.stitcher.total_height());
+    let hint = toolbar::long_hint(long.last, added, restless).map(|h| format!(" — {}", tr(h))).unwrap_or_default();
+    let (a, b) = (words.size(&said), words.size(&hint));
+    let (tag, dot) = chrome::status(plate, 0, (a.0 + b.0, a.1.max(b.1)), scale, monitor);
+    if let Some(mut on) = Surface::new(canvas.bits(), canvas.rect) {
+        chrome::label(&mut on, glass, tag.plate, scale, tones);
+        chrome::status_dot(&mut on, dot, scale);
     }
+    words.put(tag.text, &said, tones.ink);
+    words.put(Point::new(tag.text.x + a.0, tag.text.y), &hint, tones.ink_dim);
+
+    // The preview: right of the selection, or left of it, or not at all.
+    let gap = style::px(12, scale);
+    let width = style::px(120, scale);
+    let x = if sel.right() + gap + width <= monitor.right() {
+        sel.right() + gap
+    } else if sel.x - gap - width >= monitor.x {
+        sel.x - gap - width
+    } else {
+        return tag.plate.h;
+    };
+    let room = (monitor.h - gap * 2).max(1);
+    let Some((w, h, bits)) = long.stitcher.thumbnail(width as usize, room as usize) else { return tag.plate.h };
+    let top = (sel.y.max(monitor.y + gap)).min(monitor.bottom() - gap - h as i32).max(monitor.y);
+    let at = Rect::new(x, top, w as i32, h as i32);
+    pixels::blit(canvas.bits(), canvas.rect, &bits, at);
+    if let Some(mut on) = Surface::new(canvas.bits(), canvas.rect) {
+        on.outline(Box2::of(at), 0.0, style::px_f(look::size::SELECTION_LINE, scale) as f64, tones.accent);
+    }
+    tag.plate.h
 }
 
 // ------------------------------------------------------------- text box
@@ -1915,6 +2243,12 @@ unsafe fn draw_long_status(canvas: &Canvas, long: &LongShot, layout: &Layout, se
 /// edit control, so the input method works in it** -- an IME composes into a
 /// window that implements the text protocols, and this one already does.
 /// Several lines: Enter is a line break, Ctrl+Enter and Esc end it.
+///
+/// **It holds the text and draws none of it.** The control keeps the
+/// keyboard, the selection, the undo stack and the clipboard, and scrolls
+/// to keep the caret's line in view; its window region is empty
+/// (`hide_box`), and the overlay draws what it holds (`draw_text_box`) with
+/// no paper under it.
 fn open_edit() {
     let Some((parent, mon_rect, scale, tb)) = with(|s| {
         let sel = *s.editor.selection()?;
@@ -1928,7 +2262,7 @@ fn open_edit() {
     // As tall as what is in it and inside the selection (`textbox`). It was
     // `font_px * 4` whatever was typed, stopped only by the monitor: 264 px
     // at the largest size on a 144 DPI screen, over the toolbar (task 1104).
-    let Some(rect) = with(|s| s.editor.text_rect(polter_shots::textbox::lines(&tb.text), &Gdi)).flatten() else {
+    let Some(rect) = with(|s| s.editor.text_rect(textbox::lines(&tb.text), &Gdi)).flatten() else {
         // The editor has a box the host cannot place: end it, as below.
         commit_edit();
         return;
@@ -1943,7 +2277,7 @@ fn open_edit() {
             if TEXT_CLASS.load(Ordering::Acquire) { w!("PolterShotText") } else { w!("EDIT") },
             PCWSTR(initial.as_ptr()),
             // No border: the box is whole lines tall, and a border would
-            // take two pixels of the last one. Its paper is what shows it.
+            // take two pixels of the last one.
             WS_CHILD | WS_VISIBLE | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN) as u32),
             local.x,
             local.y,
@@ -1962,19 +2296,38 @@ fn open_edit() {
         };
         let font = annot_font(font_px);
         SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        no_margins(edit);
+        hide_box(edit, rect);
         let prev = SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_proc as *const () as isize);
         SetWindowLongPtrW(edit, GWLP_USERDATA, prev);
         // The caret after what is already there.
         const EM_SETSEL: u32 = 0x00B1;
         let end = GetWindowTextLengthW(edit).max(0);
         SendMessageW(edit, EM_SETSEL, Some(WPARAM(end as usize)), Some(LPARAM(end as isize)));
-        with(|s| s.edit = Some(EditCtl { hwnd: edit, font, rect, on_toolbar: Vec::new() }));
-        keep_toolbar_clear(edit, rect);
-        log_edit(rect, polter_shots::textbox::lines(&tb.text), "opened");
+        with(|s| s.edit = Some(EditCtl { hwnd: edit, font, rect, typed: Typed::default(), caret_on: true }));
+        log_edit(rect, textbox::lines(&tb.text), "opened");
         // The one time the input method is wanted: see `keys_are_raw`.
         TEXT_OPEN.store(true, Ordering::Release);
         let _ = SetForegroundWindow(parent);
         let _ = SetFocus(Some(edit));
+        read_edit(edit);
+        // The caret is the overlay's to blink, at the system's own pace
+        // (0 and INFINITE both mean a caret that does not blink).
+        let blink = GetCaretBlinkTime();
+        if blink != 0 && blink != u32::MAX {
+            SetTimer(Some(parent), TIMER_CARET, blink, None);
+        }
+        // Who has the keyboard now, as the system says it: the control has
+        // no pixel of its own, and this is where that would show.
+        let mut gui = GUITHREADINFO { cbSize: std::mem::size_of::<GUITHREADINFO>() as u32, ..Default::default() };
+        let asked = GetGUIThreadInfo(0, &mut gui).is_ok();
+        // process-wide: the overlay is not a terminal window
+        plogf!(
+            "[shot] text box: the keyboard is the box's={} (focus {:#x}, box {:#x}; asked={asked})",
+            gui.hwndFocus == edit,
+            gui.hwndFocus.0 as usize,
+            edit.0 as usize
+        );
     }
     repaint();
 }
@@ -1992,13 +2345,13 @@ fn restyle_edit() {
     unsafe {
         let font = annot_font(style::font_px(level, scale));
         SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        no_margins(edit);
         with(|s| {
             if let Some(e) = &mut s.edit {
                 e.font = font;
             }
         });
         let _ = DeleteObject(old.into());
-        let _ = InvalidateRect(Some(edit), None, true);
         let _ = SetFocus(Some(edit));
     }
     // Another size is another line height, and for a new text possibly
@@ -2049,84 +2402,230 @@ fn fit_edit() {
             e.rect = rect;
         }
     });
-    keep_toolbar_clear(edit, rect);
     log_edit(rect, lines, "now");
+    read_edit(edit);
     repaint();
 }
 
-/// The toolbar is above the text box, always: whatever of the box would lie
-/// over either toolbar row is cut out of the box's window, so it is neither
-/// drawn there nor pressed there, and the press reaches the toolbar.
+/// The control's own margins, none: its first character is at the box's
+/// left edge, where a finished text's is. Setting a font puts them back.
+unsafe fn no_margins(edit: HWND) {
+    const EM_SETMARGINS: u32 = 0x00D3;
+    // EC_LEFTMARGIN | EC_RIGHTMARGIN
+    unsafe { SendMessageW(edit, EM_SETMARGINS, Some(WPARAM(3)), Some(LPARAM(0))) };
+}
+
+/// Take every pixel away from the text box: its window region is made
+/// empty. It is still a window, still shown, still the one with the
+/// keyboard -- but it draws nowhere and nothing can be pressed on it, so
+/// the picture shows where it is, the toolbar is over it wherever the two
+/// meet, and a press there is the overlay's to hand on (`box_at`).
 ///
-/// `textbox::rect` already keeps a box off the toolbar wherever it can.
-/// What is left is a text opened for editing again whose first line sits
-/// where the toolbar now is; this is for that one.
-///
-/// **The cut settles who is pressed; whether it settles what is seen is
-/// asked of the system each time and logged** (task 1107). With the box's
-/// own class it should: `box draws there=false`. If the answer is ever
-/// `true`, the parts are remembered and the overlay is asked to paint them
-/// again after the box draws (`toolbar_again_after_box`).
-fn keep_toolbar_clear(edit: HWND, rect: Rect) {
-    let keep = with(|s| s.editor.text_keep_clear()).unwrap_or_default();
-    let holes = polter_shots::textbox::covered(rect, &keep);
-    // Nothing is drawn back while the cut is being changed.
-    with(|s| {
-        if let Some(e) = &mut s.edit {
-            e.on_toolbar.clear();
-        }
-    });
+/// **Whether the system keeps the control from drawing is asked and
+/// logged**, once for each box (task 1107: a plain `EDIT` drew in parts cut
+/// out of it; `register_text_class` is why this one does not). `box draws`
+/// true would be the control's paper over the picture, and the line says so
+/// rather than leaving it to be seen.
+unsafe fn hide_box(edit: HWND, rect: Rect) {
     unsafe {
-        if holes.is_empty() {
-            // The whole window again. The system owns a region once set.
-            let _ = SetWindowRgn(edit, None, true);
-            return;
-        }
-        let region = CreateRectRgn(0, 0, rect.w, rect.h);
-        for h in &holes {
-            let l = h.relative_to(rect.origin());
-            let hole = CreateRectRgn(l.x, l.y, l.right(), l.bottom());
-            let _ = CombineRgn(Some(region), Some(region), Some(hole), RGN_DIFF);
-            let _ = DeleteObject(hole.into());
-        }
-        let _ = SetWindowRgn(edit, Some(region), true);
-    }
-    // Which window can still draw there once the cut is made, as the system
-    // answers it. `box draws there` true means the box's own device context
-    // ignores its window region (what `CS_PARENTDC` does, and the class made
-    // in `register_text_class` is without it); `overlay draws there` false
-    // would mean `WS_CLIPCHILDREN` keeps the overlay out of the box's whole
-    // rectangle, cut or not.
-    let (box_draws, overlay_draws, parent_dc) = unsafe {
-        let first = holes[0];
+        // The system owns a region once it is set.
+        let _ = SetWindowRgn(edit, Some(CreateRectRgn(0, 0, 0, 0)), true);
         let visible = |dc: HDC, r: Rect| {
             let rc = RECT { left: r.x, top: r.y, right: r.right(), bottom: r.bottom() };
             !dc.is_invalid() && RectVisible(dc, &rc).as_bool()
         };
         let own = GetDC(Some(edit));
-        let box_draws = visible(own, first.relative_to(rect.origin()));
+        let box_draws = visible(own, Rect::new(0, 0, rect.w, rect.h));
         ReleaseDC(Some(edit), own);
         let parent = GetParent(edit).unwrap_or_default();
         let mut origin = POINT::default();
         let _ = ClientToScreen(parent, &mut origin);
         let clipped = GetDCEx(Some(parent), None, DCX_CACHE | DCX_CLIPCHILDREN);
-        let overlay_draws = visible(clipped, first.relative_to(Point::new(origin.x, origin.y)));
+        let overlay_draws = visible(clipped, rect.relative_to(Point::new(origin.x, origin.y)));
         ReleaseDC(Some(parent), clipped);
-        (box_draws, overlay_draws, GetClassLongW(edit, GCL_STYLE) & CS_PARENTDC.0 != 0)
+        let parent_dc = GetClassLongW(edit, GCL_STYLE) & CS_PARENTDC.0 != 0;
+        let then = if box_draws { "THE BOX'S OWN PAPER IS OVER THE PICTURE" } else { "the overlay draws the text" };
+        // process-wide: the overlay is not a terminal window
+        plogf!(
+            "[shot] text box: its window region is empty; box draws there={box_draws} (class CS_PARENTDC={parent_dc}), \
+             overlay draws there={overlay_draws}; {then}"
+        );
+    }
+}
+
+/// The text box, if `p` is in it and not on the toolbar: its window and
+/// `p` in its own coordinates. The toolbar is asked first, always
+/// (`textbox::on_toolbar`).
+fn box_at(p: Point) -> Option<(HWND, Point)> {
+    with(|s| {
+        let e = s.edit.as_ref()?;
+        (e.rect.contains(p) && !textbox::on_toolbar(p, &s.editor.text_keep_clear())).then(|| (e.hwnd, p.relative_to(e.rect.origin())))
+    })
+    .flatten()
+}
+
+/// Have the overlay paint the text box again, in its own time.
+/// `InvalidateRect` sends nothing and returns at once.
+fn repaint_text_box() {
+    let Some((overlay, l)) = with(|s| {
+        let e = s.edit.as_ref()?;
+        let m = &s.mons[s.editor.selection()?.monitor];
+        Some((m.hwnd, textbox::damage(e.rect, s.editor.scale()).relative_to(m.rect.origin())))
+    })
+    .flatten() else {
+        return;
     };
-    let again = polter_shots::textbox::to_draw_back(holes.clone(), box_draws);
-    let then = if again.is_empty() { "nothing is drawn back" } else { "the overlay paints them again after the box draws" };
+    let rc = RECT { left: l.x, top: l.y, right: l.right(), bottom: l.bottom() };
+    let _ = unsafe { InvalidateRect(Some(overlay), Some(&rc), false) };
+}
+
+/// Read back what the control holds -- its text, what is selected and
+/// which end the caret is at, how far it has scrolled -- into
+/// `EditCtl::typed`, have the overlay paint it, and tell the input method
+/// where the caret now is.
+///
+/// **Every message this sends is a question** (`textbox::HOST_READS`), and
+/// none of them is one `edit_proc` reads the control back after
+/// (`textbox::changes_box`): reading cannot ask for another reading.
+fn read_edit(edit: HWND) {
+    const EM_GETSEL: u32 = 0x00B0;
+    const EM_GETFIRSTVISIBLELINE: u32 = 0x00CE;
+    const EM_POSFROMCHAR: u32 = 0x00D6;
+    if !with(|s| s.edit.as_ref().is_some_and(|e| e.hwnd == edit)).unwrap_or(false) {
+        return;
+    }
+    let (units, sel, caret_at_start, first_line, scroll_x) = unsafe {
+        let mut units = vec![0u16; GetWindowTextLengthW(edit).max(0) as usize + 1];
+        let n = GetWindowTextW(edit, &mut units).max(0) as usize;
+        units.truncate(n);
+        let (mut from, mut to) = (0u32, 0u32);
+        SendMessageW(edit, EM_GETSEL, Some(WPARAM(&mut from as *mut u32 as usize)), Some(LPARAM(&mut to as *mut u32 as isize)));
+        // Where the control has a character, in its own coordinates;
+        // nothing for one past the end.
+        let place = |i: u32| {
+            let r = SendMessageW(edit, EM_POSFROMCHAR, Some(WPARAM(i as usize)), None).0;
+            (r != -1).then(|| ((r & 0xFFFF) as i16 as i32, ((r >> 16) & 0xFFFF) as i16 as i32))
+        };
+        // The first character is at the left edge until the control
+        // scrolls sideways (`no_margins`).
+        let scroll_x = if n > 0 { place(0).map_or(0, |p| -p.0) } else { 0 };
+        // The control does not say which end of a selection the caret is
+        // at; the system's caret, which it still moves, does.
+        let mut caret = POINT::default();
+        let caret_at_start = from < to && GetCaretPos(&mut caret).is_ok() && place(from).is_some_and(|p| p.1 == caret.y && (p.0 - caret.x).abs() <= 2);
+        let first_line = SendMessageW(edit, EM_GETFIRSTVISIBLELINE, None, None).0 as i32;
+        (units, (from as usize, to as usize), caret_at_start, first_line, scroll_x)
+    };
     with(|s| {
         if let Some(e) = &mut s.edit {
-            e.on_toolbar = again;
+            e.typed = Typed { units, sel, caret_at_start, first_line, scroll_x, comp: std::mem::take(&mut e.typed.comp), comp_caret: e.typed.comp_caret };
+            // Something happened: the caret is shown, whatever half of its
+            // blink it was in.
+            e.caret_on = true;
         }
     });
-    // process-wide: the overlay is not a terminal window
-    plogf!(
-        "[shot] text box: {} part(s) of it are under the toolbar and were cut out of it; in the first, box draws there={box_draws} \
-         (class CS_PARENTDC={parent_dc}), overlay draws there={overlay_draws}; {then}",
-        holes.len()
-    );
+    repaint_text_box();
+    place_ime(edit);
+}
+
+/// Where the caret is drawn: its rectangle on the virtual screen, the box,
+/// and the height of a line.
+fn caret_place() -> Option<(Rect, Rect, i32)> {
+    with(|s| {
+        let (e, tb) = (s.edit.as_ref()?, s.editor.text_box()?);
+        let scale = s.editor.scale();
+        let line = s.editor.text_line(tb.level, &Gdi);
+        let v = textbox::view(&e.typed, e.rect.w, line, style::font_px(tb.level, scale), scale, &Gdi);
+        Some((Rect::new(v.caret.x + e.rect.x, v.caret.y + e.rect.y, v.caret.w, v.caret.h), e.rect, line))
+    })
+    .flatten()
+}
+
+/// Tell the input method where the caret is, so its candidates open beside
+/// what is being composed and not on it: the composition's place, and a
+/// rectangle -- the caret's line -- the candidate window keeps off.
+fn place_ime(edit: HWND) {
+    use windows::Win32::UI::Input::Ime::{
+        ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow, ImmSetCompositionWindow, CANDIDATEFORM, CFS_EXCLUDE, CFS_POINT,
+        COMPOSITIONFORM,
+    };
+    let Some((caret, b, line)) = caret_place() else { return };
+    // In the control's own coordinates, which start at the box's corner.
+    let l = caret.relative_to(b.origin());
+    let row = (l.y + l.h / 2).div_euclid(line.max(1)) * line.max(1);
+    let area = RECT { left: 0, top: row, right: b.w, bottom: row + line };
+    unsafe {
+        let himc = ImmGetContext(edit);
+        if himc.0.is_null() {
+            return;
+        }
+        let comp = COMPOSITIONFORM { dwStyle: CFS_POINT, ptCurrentPos: POINT { x: l.x, y: row }, rcArea: area };
+        let _ = ImmSetCompositionWindow(himc, &comp);
+        let cand = CANDIDATEFORM { dwIndex: 0, dwStyle: CFS_EXCLUDE, ptCurrentPos: POINT { x: l.x, y: row + line }, rcArea: area };
+        let _ = ImmSetCandidateWindow(himc, &cand);
+        let _ = ImmReleaseContext(edit, himc);
+    }
+}
+
+/// The input method has something to say about what it is composing
+/// (`WM_IME_COMPOSITION`, whose `lParam` is `flags`). What it committed
+/// goes into the control as typing does -- one step to undo; what it is
+/// still composing is kept beside the control's text and drawn at the
+/// caret (`textbox::view`), because the control would show it in a window
+/// of the system's own, with paper.
+fn ime_composition(edit: HWND, flags: u32) {
+    use windows::Win32::UI::Input::Ime::{
+        ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, GCS_COMPSTR, GCS_CURSORPOS, GCS_RESULTSTR, IME_COMPOSITION_STRING,
+    };
+    const EM_REPLACESEL: u32 = 0x00C2;
+    let (mut committed, comp, comp_caret) = unsafe {
+        let himc = ImmGetContext(edit);
+        if himc.0.is_null() {
+            return;
+        }
+        let read = |what: IME_COMPOSITION_STRING| {
+            let bytes = ImmGetCompositionStringW(himc, what, None, 0);
+            let mut units = vec![0u16; bytes.max(0) as usize / 2];
+            if !units.is_empty() {
+                ImmGetCompositionStringW(himc, what, Some(units.as_mut_ptr() as *mut c_void), bytes as u32);
+            }
+            units
+        };
+        let committed = if flags & GCS_RESULTSTR.0 != 0 { read(GCS_RESULTSTR) } else { Vec::new() };
+        let comp = read(GCS_COMPSTR);
+        let comp_caret = (ImmGetCompositionStringW(himc, GCS_CURSORPOS, None, 0).max(0) as usize & 0xFFFF).min(comp.len());
+        let _ = ImmReleaseContext(edit, himc);
+        (committed, comp, comp_caret)
+    };
+    let (was, now) = with(|s| {
+        let e = s.edit.as_mut()?;
+        let was = e.typed.comp.len();
+        e.typed.comp = comp;
+        e.typed.comp_caret = comp_caret;
+        Some((was, e.typed.comp.len()))
+    })
+    .flatten()
+    .unwrap_or((0, 0));
+    // The first and the last of a composition, not every key of it.
+    // absence: depends -- with an input method composing and no line, the
+    // box's procedure never got WM_IME_COMPOSITION (the method is not one
+    // that asks the application to draw); with none composing it is silent
+    if (was == 0) != (now == 0) || !committed.is_empty() {
+        let at = caret_place().map(|(c, _, _)| (c.x, c.bottom()));
+        // process-wide: the overlay is not a terminal window
+        plogf!(
+            "[shot] text box: the input method is composing {now} unit(s) (was {was}), committed {}; the caret it is told of is at {at:?}",
+            committed.len()
+        );
+    }
+    if committed.is_empty() {
+        read_edit(edit);
+    } else {
+        committed.push(0);
+        // Read back by `edit_proc` after it, as anything typed is.
+        unsafe { SendMessageW(edit, EM_REPLACESEL, Some(WPARAM(1)), Some(LPARAM(committed.as_ptr() as isize))) };
+        fit_edit();
+    }
 }
 
 fn log_edit(rect: Rect, lines: i32, what: &str) {
@@ -2181,6 +2680,10 @@ fn commit_edit() {
         String::from_utf16_lossy(&buf[..n])
     });
     let parent = edit.as_ref().and_then(|e| unsafe { GetParent(e.hwnd) }.ok());
+    if let Some(parent) = parent {
+        // Killing one that was never set fails, and that is fine.
+        let _ = unsafe { KillTimer(Some(parent), TIMER_CARET) };
+    }
     TEXT_OPEN.store(false, Ordering::Release);
     if let Some(e) = &edit {
         unsafe {
@@ -2229,24 +2732,69 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             commit_edit();
             return LRESULT(0);
         }
+        // The input method. What it composes is the overlay's to draw, so
+        // none of this reaches the control or the system's default, which
+        // would open a composition window with paper of its own over the
+        // picture (seen on the test machine, task 1106: `MSCTFIME
+        // Composition`, black on white whatever colour was chosen).
+        const WM_IME_STARTCOMPOSITION: u32 = 0x010D;
+        const WM_IME_ENDCOMPOSITION: u32 = 0x010E;
+        const WM_IME_COMPOSITION: u32 = 0x010F;
+        const WM_IME_SETCONTEXT: u32 = 0x0281;
+        const WM_IME_REQUEST: u32 = 0x0288;
+        const IMR_QUERYCHARPOSITION: usize = 0x0006;
+        // ISC_SHOWUICOMPOSITIONWINDOW: the system is not to show one.
+        let lp = if msg == WM_IME_SETCONTEXT { LPARAM(lp.0 & !0x8000_0000isize) } else { lp };
+        match msg {
+            WM_IME_STARTCOMPOSITION => {
+                place_ime(hwnd);
+                return LRESULT(0);
+            }
+            WM_IME_COMPOSITION => {
+                ime_composition(hwnd, lp.0 as u32);
+                return LRESULT(0);
+            }
+            WM_IME_ENDCOMPOSITION => {
+                ime_composition(hwnd, 0);
+                return LRESULT(0);
+            }
+            // Where is the character being composed? At the caret the
+            // overlay draws, which is the only one there is to see.
+            WM_IME_REQUEST if wp.0 == IMR_QUERYCHARPOSITION && lp.0 != 0 => {
+                if let Some((caret, b, line)) = caret_place() {
+                    let ask = &mut *(lp.0 as *mut windows::Win32::UI::Input::Ime::IMECHARPOSITION);
+                    ask.pt = POINT { x: caret.x, y: caret.y };
+                    ask.cLineHeight = line as u32;
+                    ask.rcDocument = RECT { left: b.x, top: b.y, right: b.right(), bottom: b.bottom() };
+                    return LRESULT(1);
+                }
+            }
+            // A box of the plain class could draw although it has no
+            // region (`register_text_class`): then it is at least never
+            // asked to. What it draws unasked -- a key, its caret -- it
+            // still would, and `hide_box` has said so in the log.
+            WM_PAINT if !TEXT_CLASS.load(Ordering::Acquire) => {
+                let _ = ValidateRect(Some(hwnd), None);
+                return LRESULT(0);
+            }
+            WM_ERASEBKGND if !TEXT_CLASS.load(Ordering::Acquire) => return LRESULT(1),
+            _ => {}
+        }
         let f: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT = std::mem::transmute(prev);
         let r = f(hwnd, msg, wp, lp);
         // Whatever may have added or removed a line: a key, a character, a
-        // paste, a cut, an undo, an input method finishing. The box follows
-        // what is in it (`fit_edit` does nothing when nothing changed).
-        const WM_IME_ENDCOMPOSITION: u32 = 0x010E;
-        const WM_IME_COMPOSITION: u32 = 0x010F;
-        if matches!(msg, WM_CHAR | WM_KEYDOWN | WM_PASTE | WM_CUT | WM_CLEAR | WM_UNDO | WM_IME_ENDCOMPOSITION | WM_IME_COMPOSITION) {
+        // paste, a cut, an undo. The box follows what is in it (`fit_edit`
+        // does nothing when nothing changed).
+        if textbox::may_change_lines(msg) {
             fit_edit();
         }
-        // A box that can draw on the toolbar although that part is cut out
-        // of it (there is none unless its class failed; see
-        // `register_text_class`): after a message it draws by, the overlay
-        // is asked to paint there again. Asked, never drawn from here, and
-        // only for the messages on a list -- drawing here after everything
-        // but a few questions is what stopped the window thread.
-        if polter_shots::textbox::box_draws(msg, wp.0 & 0x0001 != 0) {
-            toolbar_again_after_box();
+        // The control draws nothing, so after anything that may have
+        // changed what it holds it is read back and the overlay paints.
+        // Only for the messages on a list, and reading back sends none of
+        // them -- doing something here after everything but a few
+        // questions is what stopped the window thread (31c90b552).
+        if textbox::changes_box(msg, wp.0 & 0x0001 != 0) {
+            read_edit(hwnd);
         }
         r
     }

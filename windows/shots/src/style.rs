@@ -47,6 +47,12 @@ pub fn px(points: u32, scale: f64) -> i32 {
     ((points as f64 * scale).round() as i32).max(1)
 }
 
+/// The same for the lengths of the look (`look.rs`), which are not all
+/// whole numbers of points: half a point is one pixel at 100% and at 200%.
+pub fn px_f(points: f64, scale: f64) -> i32 {
+    ((points * scale).round() as i32).max(1)
+}
+
 /// A stroke's width in pixels at `level`.
 pub fn width_px(level: u8, scale: f64) -> i32 {
     px(WIDTHS[level.min(LEVELS - 1) as usize], scale)

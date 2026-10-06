@@ -1,5 +1,11 @@
-//! The mouse trigger: a double left click with exactly the configured
-//! modifier keys held (`screenshot-mouse-trigger`, `ctrl+shift` by default).
+//! The mouse trigger: one left click with exactly the configured modifier
+//! keys held (`screenshot-mouse-trigger`, `ctrl+shift` by default).
+//!
+//! It was a double click, and the window under it started out selected;
+//! the module keeps the name it had then. One click now, and the screenshot
+//! opens exactly as the hotkey opens it, with nothing selected: the window
+//! under the pointer is the clear one there, and a second click -- which
+//! lands on the overlay, not here -- is what selects it.
 //!
 //! **This runs inside a low-level mouse hook**, which sees every click made
 //! anywhere on the machine and can eat it. So what it decides is two things
@@ -8,9 +14,10 @@
 //! wrong: a click eaten by mistake is a click that silently did nothing, in
 //! somebody else's program.
 //!
-//! The rule: the first press always passes. The second press is eaten only
-//! when it completes the trigger, and then its release is eaten with it, so
-//! the application does not see a button come up that never went down.
+//! The rule: a press with exactly the trigger's modifiers held is the
+//! trigger and is eaten, and its release is eaten with it, so the
+//! application does not see a button come up that never went down. Every
+//! other press, and every other release, passes.
 
 /// Which modifier keys are down. Left and right are not told apart.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -69,85 +76,39 @@ impl Setting {
     }
 }
 
-/// The system's idea of a double click, read by the host at the moment of
-/// the press.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Rule {
-    /// `GetDoubleClickTime`: the longest gap between the two presses, ms.
-    pub interval_ms: u32,
-    /// `SM_CXDOUBLECLK` / `SM_CYDOUBLECLK`: the width and height of the
-    /// rectangle, centred on the first press, the second must land in.
-    pub width: i32,
-    pub height: i32,
-    pub trigger: Setting,
-}
-
-/// One left-button press as the hook sees it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Press {
-    /// The event's time in milliseconds. It is a tick count and wraps.
-    pub time_ms: u32,
-    pub x: i32,
-    pub y: i32,
-    pub mods: Mods,
-}
-
 /// What to do with the event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
     /// Let it through to whatever is under the pointer.
     Pass,
-    /// A press that completed the trigger: eat it and take the screenshot at
-    /// its position.
+    /// The trigger: eat the press and take the screenshot.
     Trigger,
     /// The release of that press: eat it, nothing else.
     Swallow,
 }
 
-/// The hook's memory between events.
+/// The hook's memory between events: whether the next release is the
+/// trigger's.
 #[derive(Debug, Default)]
 pub struct Detector {
-    first: Option<Press>,
     eat_release: bool,
 }
 
 impl Detector {
     pub const fn new() -> Detector {
-        Detector { first: None, eat_release: false }
+        Detector { eat_release: false }
     }
 
-    /// A left button press.
+    /// A left button press with `held` down, while the setting is `trigger`.
     ///
-    /// The modifiers must be **exactly** the trigger's on both presses: one
-    /// more held, or one fewer, and it is some other chord that belongs to
-    /// the application. A press that does not qualify also forgets the one
-    /// before it, so `ctrl+shift` click, plain click, `ctrl+shift` click is
-    /// not a double click.
-    pub fn press(&mut self, p: Press, rule: &Rule) -> Verdict {
-        self.eat_release = false;
-        let Setting::On(wanted) = rule.trigger else {
-            self.first = None;
-            return Verdict::Pass;
-        };
-        if p.mods != wanted {
-            self.first = None;
-            return Verdict::Pass;
-        }
-        let second = self.first.is_some_and(|f| {
-            // Twice the distance against the whole width, so an odd width is
-            // not rounded: the rectangle is centred on the first press.
-            p.time_ms.wrapping_sub(f.time_ms) <= rule.interval_ms
-                && (p.x - f.x).abs() * 2 <= rule.width
-                && (p.y - f.y).abs() * 2 <= rule.height
-        });
-        if second {
-            // Forgotten, so a third quick press starts over rather than
-            // triggering again.
-            self.first = None;
-            self.eat_release = true;
+    /// The modifiers must be **exactly** the trigger's: one more held, or
+    /// one fewer, and it is some other chord that belongs to the
+    /// application.
+    pub fn press(&mut self, held: Mods, trigger: Setting) -> Verdict {
+        self.eat_release = trigger == Setting::On(held);
+        if self.eat_release {
             Verdict::Trigger
         } else {
-            self.first = Some(p);
             Verdict::Pass
         }
     }
@@ -166,36 +127,24 @@ impl Detector {
 mod tests {
     use super::*;
 
-    /// Windows' defaults: 500 ms, a 4 x 4 rectangle.
-    const RULE: Rule =
-        Rule { interval_ms: 500, width: 4, height: 4, trigger: Setting::On(Mods::CTRL_SHIFT) };
-
-    fn at(time_ms: u32, x: i32, y: i32, mods: Mods) -> Press {
-        Press { time_ms, x, y, mods }
-    }
-
-    fn cs(time_ms: u32, x: i32, y: i32) -> Press {
-        at(time_ms, x, y, Mods::CTRL_SHIFT)
-    }
+    const ON: Setting = Setting::On(Mods::CTRL_SHIFT);
 
     #[test]
-    fn the_first_press_passes_and_the_second_triggers() {
+    fn one_press_with_the_modifiers_held_is_the_trigger() {
         let mut d = Detector::new();
-        assert_eq!(d.press(cs(1000, 50, 50), &RULE), Verdict::Pass);
-        assert_eq!(d.release(), Verdict::Pass);
-        assert_eq!(d.press(cs(1200, 51, 49), &RULE), Verdict::Trigger);
+        assert_eq!(d.press(Mods::CTRL_SHIFT, ON), Verdict::Trigger);
+        // Not the second of two: the very first press there has ever been.
+        assert_eq!(Detector::new().press(Mods::CTRL_SHIFT, ON), Verdict::Trigger);
     }
 
     #[test]
     fn the_release_of_the_eaten_press_is_eaten_and_only_that_one() {
         let mut d = Detector::new();
-        d.press(cs(1000, 50, 50), &RULE);
-        assert_eq!(d.release(), Verdict::Pass);
-        d.press(cs(1200, 50, 50), &RULE);
+        assert_eq!(d.press(Mods::CTRL_SHIFT, ON), Verdict::Trigger);
         assert_eq!(d.release(), Verdict::Swallow);
         assert_eq!(d.release(), Verdict::Pass);
         // And an ordinary click afterwards is whole again.
-        assert_eq!(d.press(at(5000, 50, 50, Mods::NONE), &RULE), Verdict::Pass);
+        assert_eq!(d.press(Mods::NONE, ON), Verdict::Pass);
         assert_eq!(d.release(), Verdict::Pass);
     }
 
@@ -204,125 +153,67 @@ mod tests {
         // The overlay opens on the trigger press and can take the release
         // with it, so the hook may never see one.
         let mut d = Detector::new();
-        d.press(cs(1000, 50, 50), &RULE);
-        assert_eq!(d.press(cs(1100, 50, 50), &RULE), Verdict::Trigger);
-        assert_eq!(d.press(at(9000, 50, 50, Mods::NONE), &RULE), Verdict::Pass);
+        assert_eq!(d.press(Mods::CTRL_SHIFT, ON), Verdict::Trigger);
+        assert_eq!(d.press(Mods::NONE, ON), Verdict::Pass);
         assert_eq!(d.release(), Verdict::Pass);
     }
 
     #[test]
-    fn the_interval_is_the_systems_and_is_inclusive() {
+    fn the_release_is_eaten_even_though_the_trigger_is_off_by_then() {
+        // The host turns the trigger off for as long as a session is open,
+        // and the session opens between this press and its release.
         let mut d = Detector::new();
-        d.press(cs(1000, 50, 50), &RULE);
-        assert_eq!(d.press(cs(1500, 50, 50), &RULE), Verdict::Trigger);
-        d.press(cs(3000, 50, 50), &RULE);
-        assert_eq!(d.press(cs(3501, 50, 50), &RULE), Verdict::Pass, "one millisecond late");
-        // A longer system setting admits the same pair.
-        let slow = Rule { interval_ms: 900, ..RULE };
-        let mut d = Detector::new();
-        d.press(cs(3000, 50, 50), &slow);
-        assert_eq!(d.press(cs(3501, 50, 50), &slow), Verdict::Trigger);
+        assert_eq!(d.press(Mods::CTRL_SHIFT, ON), Verdict::Trigger);
+        assert_eq!(d.release(), Verdict::Swallow);
+        // With a session open the second click is the overlay's, whole.
+        assert_eq!(d.press(Mods::CTRL_SHIFT, Setting::Off), Verdict::Pass);
+        assert_eq!(d.release(), Verdict::Pass);
     }
 
     #[test]
-    fn a_late_second_press_is_a_new_first_press() {
-        let mut d = Detector::new();
-        d.press(cs(1000, 50, 50), &RULE);
-        assert_eq!(d.press(cs(2000, 50, 50), &RULE), Verdict::Pass);
-        assert_eq!(d.press(cs(2300, 50, 50), &RULE), Verdict::Trigger);
-    }
-
-    #[test]
-    fn the_second_press_must_land_in_the_systems_rectangle() {
-        // 4 wide, centred: two pixels either side.
-        for (dx, dy, expected) in [
-            (2, 0, Verdict::Trigger),
-            (-2, 2, Verdict::Trigger),
-            (3, 0, Verdict::Pass),
-            (0, -3, Verdict::Pass),
-        ] {
-            let mut d = Detector::new();
-            d.press(cs(1000, 50, 50), &RULE);
-            assert_eq!(d.press(cs(1100, 50 + dx, 50 + dy), &RULE), expected, "({dx},{dy})");
-        }
-        // Width and height are separate numbers.
-        let wide = Rule { width: 40, height: 4, ..RULE };
-        let mut d = Detector::new();
-        d.press(cs(1000, 50, 50), &wide);
-        assert_eq!(d.press(cs(1100, 70, 50), &wide), Verdict::Trigger);
-        let mut d = Detector::new();
-        d.press(cs(1000, 50, 50), &wide);
-        assert_eq!(d.press(cs(1100, 50, 70), &wide), Verdict::Pass);
-    }
-
-    #[test]
-    fn the_modifiers_must_be_exactly_the_triggers_on_both_presses() {
+    fn the_modifiers_must_be_exactly_the_triggers() {
         let more = Mods { alt: true, ..Mods::CTRL_SHIFT };
         let fewer = Mods { shift: false, ..Mods::CTRL_SHIFT };
-        for (first, second) in [
-            (Mods::CTRL_SHIFT, more),
-            (more, Mods::CTRL_SHIFT),
-            (more, more),
-            (Mods::CTRL_SHIFT, fewer),
-            (fewer, Mods::CTRL_SHIFT),
-            (Mods::NONE, Mods::NONE),
-            (Mods::CTRL_SHIFT, Mods { win: true, ..Mods::CTRL_SHIFT }),
-        ] {
+        for held in [more, fewer, Mods::NONE, Mods { win: true, ..Mods::CTRL_SHIFT }, Mods { shift: true, ..Mods::NONE }] {
             let mut d = Detector::new();
-            assert_eq!(d.press(at(1000, 50, 50, first), &RULE), Verdict::Pass);
-            assert_eq!(d.press(at(1100, 50, 50, second), &RULE), Verdict::Pass, "{first:?} then {second:?}");
-            assert_eq!(d.release(), Verdict::Pass);
+            assert_eq!(d.press(held, ON), Verdict::Pass, "{held:?}");
+            assert_eq!(d.release(), Verdict::Pass, "{held:?}");
         }
     }
 
     #[test]
-    fn a_press_without_the_modifiers_in_between_breaks_the_pair() {
+    fn every_press_that_qualifies_is_a_trigger_of_its_own() {
+        // There is no pair to complete and none to break: a plain click in
+        // between changes nothing, and a quick second one is not held back.
+        // (The host has a session open after the first, and then says the
+        // trigger is off.)
         let mut d = Detector::new();
-        d.press(cs(1000, 50, 50), &RULE);
-        assert_eq!(d.press(at(1100, 50, 50, Mods::NONE), &RULE), Verdict::Pass);
-        assert_eq!(d.press(cs(1200, 50, 50), &RULE), Verdict::Pass);
-    }
-
-    #[test]
-    fn a_third_quick_press_does_not_trigger_again() {
-        let mut d = Detector::new();
-        d.press(cs(1000, 50, 50), &RULE);
-        assert_eq!(d.press(cs(1100, 50, 50), &RULE), Verdict::Trigger);
-        assert_eq!(d.press(cs(1200, 50, 50), &RULE), Verdict::Pass);
-        assert_eq!(d.press(cs(1300, 50, 50), &RULE), Verdict::Trigger);
-    }
-
-    #[test]
-    fn the_tick_count_wrapping_between_presses_is_still_a_short_gap() {
-        let mut d = Detector::new();
-        d.press(cs(u32::MAX - 100, 50, 50), &RULE);
-        assert_eq!(d.press(cs(150, 50, 50), &RULE), Verdict::Trigger);
+        assert_eq!(d.press(Mods::CTRL_SHIFT, ON), Verdict::Trigger);
+        assert_eq!(d.release(), Verdict::Swallow);
+        assert_eq!(d.press(Mods::NONE, ON), Verdict::Pass);
+        assert_eq!(d.release(), Verdict::Pass);
+        assert_eq!(d.press(Mods::CTRL_SHIFT, ON), Verdict::Trigger);
+        assert_eq!(d.press(Mods::CTRL_SHIFT, ON), Verdict::Trigger);
     }
 
     #[test]
     fn switched_off_nothing_triggers_and_nothing_is_eaten() {
-        let off = Rule { trigger: Setting::Off, ..RULE };
         let mut d = Detector::new();
-        assert_eq!(d.press(cs(1000, 50, 50), &off), Verdict::Pass);
-        assert_eq!(d.press(cs(1100, 50, 50), &off), Verdict::Pass);
+        assert_eq!(d.press(Mods::CTRL_SHIFT, Setting::Off), Verdict::Pass);
         assert_eq!(d.release(), Verdict::Pass);
-        // Switched off between the two presses of a pair.
-        let mut d = Detector::new();
-        d.press(cs(1000, 50, 50), &RULE);
-        assert_eq!(d.press(cs(1100, 50, 50), &off), Verdict::Pass);
-        assert_eq!(d.press(cs(1200, 50, 50), &RULE), Verdict::Pass, "the pair did not survive it");
+        // No modifiers held is never a trigger: there is no setting for it.
+        assert_eq!(d.press(Mods::NONE, Setting::Off), Verdict::Pass);
+        assert_eq!(d.press(Mods::NONE, Setting::from_bits(0)), Verdict::Pass);
+        assert_eq!(d.release(), Verdict::Pass);
     }
 
     #[test]
     fn another_combination_can_be_the_trigger() {
         let alt = Mods { alt: true, ..Mods::NONE };
-        let rule = Rule { trigger: Setting::On(alt), ..RULE };
         let mut d = Detector::new();
-        d.press(at(1000, 50, 50, alt), &rule);
-        assert_eq!(d.press(at(1100, 50, 50, alt), &rule), Verdict::Trigger);
-        let mut d = Detector::new();
-        d.press(cs(1000, 50, 50), &rule);
-        assert_eq!(d.press(cs(1100, 50, 50), &rule), Verdict::Pass);
+        assert_eq!(d.press(alt, Setting::On(alt)), Verdict::Trigger);
+        assert_eq!(d.release(), Verdict::Swallow);
+        assert_eq!(d.press(Mods::CTRL_SHIFT, Setting::On(alt)), Verdict::Pass);
     }
 
     #[test]

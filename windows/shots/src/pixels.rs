@@ -18,6 +18,7 @@
 
 use crate::annot::{Item, Shape};
 use crate::geom::{Point, Rect};
+use crate::glass::Glass;
 use crate::style;
 use crate::Image;
 
@@ -45,6 +46,29 @@ impl Frozen {
         blit(dst, dst_rect, &self.bgrx, self.rect);
     }
 
+    /// The glass this picture is seen through outside the selection, made
+    /// once (`glass`): blurred, or -- `frosted` false, for a system that
+    /// asks for less transparency -- only darkened.
+    pub fn glass(&self, scale: f64, frosted: bool) -> Option<Glass> {
+        if frosted {
+            Glass::new(self.rect, &self.bgrx, scale)
+        } else {
+            Glass::plain(self.rect, &self.bgrx)
+        }
+    }
+
+    /// The part `area` of one frame of the overlay into `dst` (covering
+    /// `dst_rect`): `glass` everywhere, this picture where `hole` is
+    /// ([`Glass::frame`]). For the overlay's own display, like [`Self::show`].
+    pub fn frame(&self, glass: &Glass, dst: &mut [u8], dst_rect: Rect, hole: Option<Rect>, area: Rect) {
+        glass.frame(dst, dst_rect, &self.bgrx, hole, area);
+    }
+
+    /// The same with something on its way ([`Glass::frame_layers`]).
+    pub fn frame_layers(&self, glass: &Glass, dst: &mut [u8], dst_rect: Rect, layers: &[(Rect, u32)], area: Rect) {
+        glass.frame_layers(dst, dst_rect, &self.bgrx, layers, area);
+    }
+
     fn pixel(&self, x: i32, y: i32) -> &[u8] {
         let at = ((y - self.rect.y) as usize * self.rect.w as usize + (x - self.rect.x) as usize) * 4;
         &self.bgrx[at..at + 4]
@@ -68,6 +92,58 @@ pub fn blit(dst: &mut [u8], dst_rect: Rect, src: &[u8], src_rect: Rect) {
     }
 }
 
+/// Copy the part `part` of `src` into `dst`, each a buffer covering its own
+/// rectangle of the same coordinate space. Nothing outside `part` is
+/// written, and nothing where the two buffers do not both reach.
+pub fn blit_part(dst: &mut [u8], dst_rect: Rect, src: &[u8], src_rect: Rect, part: Rect) {
+    let Some(both) = dst_rect.intersect(src_rect).and_then(|b| b.intersect(part)) else { return };
+    if dst.len() != dst_rect.w as usize * dst_rect.h as usize * 4
+        || src.len() != src_rect.w as usize * src_rect.h as usize * 4
+    {
+        return;
+    }
+    let n = both.w as usize * 4;
+    for y in both.y..both.bottom() {
+        let s = ((y - src_rect.y) as usize * src_rect.w as usize + (both.x - src_rect.x) as usize) * 4;
+        let d = ((y - dst_rect.y) as usize * dst_rect.w as usize + (both.x - dst_rect.x) as usize) * 4;
+        dst[d..d + n].copy_from_slice(&src[s..s + n]);
+    }
+}
+
+/// Where two pictures of the same size differ, as rectangles in their own
+/// coordinates: one for each band of `band` rows that holds a difference,
+/// as wide as the differences in it reach. **What a window has to be given
+/// to turn the one into the other** -- copying these rectangles from `b`
+/// over `a` makes `a` equal `b` -- so a frame costs the screen only what
+/// changed in it, whatever it was that changed. Empty when they are equal;
+/// everything when they are not the same size.
+pub fn changed(a: &[u8], b: &[u8], w: usize, h: usize, band: usize) -> Vec<Rect> {
+    if a.len() != w * h * 4 || b.len() != w * h * 4 || w == 0 || h == 0 {
+        return vec![Rect::new(0, 0, w as i32, h as i32)];
+    }
+    let band = band.max(1);
+    let mut out = Vec::new();
+    for top in (0..h).step_by(band) {
+        let (mut y0, mut y1, mut x0, mut x1) = (usize::MAX, 0, usize::MAX, 0);
+        for y in top..(top + band).min(h) {
+            let (ra, rb) = (&a[y * w * 4..(y + 1) * w * 4], &b[y * w * 4..(y + 1) * w * 4]);
+            if ra == rb {
+                continue;
+            }
+            let first = ra.chunks_exact(4).zip(rb.chunks_exact(4)).position(|(p, q)| p != q).unwrap_or(0);
+            let last = ra.chunks_exact(4).zip(rb.chunks_exact(4)).rposition(|(p, q)| p != q).unwrap_or(w - 1);
+            y0 = y0.min(y);
+            y1 = y;
+            x0 = x0.min(first);
+            x1 = x1.max(last);
+        }
+        if y0 != usize::MAX {
+            out.push(Rect::new(x0 as i32, y0 as i32, (x1 - x0 + 1) as i32, (y1 - y0 + 1) as i32));
+        }
+    }
+    out
+}
+
 /// Fill `rect` of a buffer covering `dst_rect` with black.
 pub fn black_out(dst: &mut [u8], dst_rect: Rect, rect: Rect) {
     let Some(r) = rect.intersect(dst_rect) else { return };
@@ -75,6 +151,25 @@ pub fn black_out(dst: &mut [u8], dst_rect: Rect, rect: Rect) {
         let d = ((y - dst_rect.y) as usize * dst_rect.w as usize + (r.x - dst_rect.x) as usize) * 4;
         for px in dst[d..d + r.w as usize * 4].chunks_exact_mut(4) {
             px.copy_from_slice(&[0, 0, 0, 255]);
+        }
+    }
+}
+
+/// Lay `rgb` over `rect` of a buffer covering `dst_rect`, `alpha` parts of
+/// 256 of it: 256 is the colour itself.
+pub fn blend(dst: &mut [u8], dst_rect: Rect, rect: Rect, rgb: (u8, u8, u8), alpha: u32) {
+    if dst.len() != dst_rect.w.max(0) as usize * dst_rect.h.max(0) as usize * 4 {
+        return;
+    }
+    let Some(r) = rect.intersect(dst_rect) else { return };
+    let alpha = alpha.min(256);
+    for y in r.y..r.bottom() {
+        let d = ((y - dst_rect.y) as usize * dst_rect.w as usize + (r.x - dst_rect.x) as usize) * 4;
+        for px in dst[d..d + r.w as usize * 4].chunks_exact_mut(4) {
+            for (c, ink) in px[..3].iter_mut().zip([rgb.2, rgb.1, rgb.0]) {
+                *c = ((*c as u32 * (256 - alpha) + ink as u32 * alpha) / 256) as u8;
+            }
+            px[3] = 255;
         }
     }
 }
@@ -395,6 +490,158 @@ pub fn dib_fits_the_clipboard(w: usize, h: usize) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Not a test: what keeping the frame before costs, against keeping
+    /// only a hash of each 64 x 64 tile of it (task 1116, which asked
+    /// whether the second canvas is worth its 33 MB on a 4K monitor).
+    ///
+    ///     cargo test --release -p polter-shots pixels::tests::how_long -- --ignored --nocapture
+    #[test]
+    #[ignore = "a measurement, run by hand"]
+    fn how_long_comparing_two_frames_takes_against_hashing_one() {
+        use std::time::Instant;
+        fn median(mut runs: Vec<f64>) -> f64 {
+            runs.sort_by(|a, b| a.total_cmp(b));
+            runs[runs.len() / 2]
+        }
+        for (w, h) in [(2560usize, 1568usize), (3840, 2160)] {
+            let mut g = Lcg(9);
+            let a: Vec<u8> = (0..w * h * 4).map(|_| g.next() as u8).collect();
+            let mut b = a.clone();
+            // A toolbar cell's worth of change.
+            for y in 900..956 {
+                for x in 1200..1256 {
+                    b[(y * w + x) * 4] ^= 0x55;
+                }
+            }
+            let compare = median((0..9).map(|_| {
+                let t = Instant::now();
+                std::hint::black_box(changed(&a, &b, w, h, 64));
+                t.elapsed().as_secs_f64() * 1e3
+            }).collect());
+            // One multiply-and-fold hash for each 64 x 64 tile.
+            let hash = median((0..9).map(|_| {
+                let t = Instant::now();
+                let mut tiles = vec![0u64; w.div_ceil(64) * h.div_ceil(64)];
+                for y in 0..h {
+                    for (tx, chunk) in b[y * w * 4..(y + 1) * w * 4].chunks(64 * 4).enumerate() {
+                        let tile = &mut tiles[(y / 64) * w.div_ceil(64) + tx];
+                        for word in chunk.chunks_exact(8) {
+                            *tile = (*tile ^ u64::from_le_bytes(word.try_into().unwrap())).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                        }
+                    }
+                }
+                std::hint::black_box(tiles);
+                t.elapsed().as_secs_f64() * 1e3
+            }).collect());
+            let rects = changed(&a, &b, w, h, 64);
+            println!(
+                "{w}x{h}: comparing with the frame before {compare:.2} ms -> {:?} ({} px to send); hashing 64x64 tiles {hash:.2} ms -> \
+                 one tile of 4096 px to send; the frame before is {:.1} MB, the hashes {:.2} MB",
+                rects,
+                rects.iter().map(|r| r.w * r.h).sum::<i32>(),
+                (w * h * 4) as f64 / 1e6,
+                (w.div_ceil(64) * h.div_ceil(64) * 8) as f64 / 1e6
+            );
+        }
+    }
+
+    /// The host blurs on a thread of its own and does not wait for it: the
+    /// thread shares the frozen picture, sends what it made, and may find
+    /// nobody listening.
+    #[test]
+    fn glass_made_on_another_thread_is_the_same_glass_and_may_be_made_for_nobody() {
+        use std::sync::{mpsc, Arc};
+        let rect = Rect::new(10, 20, 120, 90);
+        let mut g = Lcg(5);
+        let frozen = Arc::new(Frozen::new(rect, (0..120 * 90 * 4).map(|_| g.next() as u8).collect()).unwrap());
+        let here = frozen.glass(1.5, true).unwrap();
+        let mut frame_here = vec![0u8; 120 * 90 * 4];
+        frozen.frame(&here, &mut frame_here, rect, Some(Rect::new(30, 40, 50, 30)), rect);
+
+        let (made, late) = mpsc::channel();
+        let picture = frozen.clone();
+        let worker = std::thread::spawn(move || made.send(picture.glass(1.5, true)).is_ok());
+        let there = late.recv().unwrap().unwrap();
+        assert!(worker.join().unwrap(), "somebody was listening");
+        let mut frame_there = vec![0u8; 120 * 90 * 4];
+        frozen.frame(&there, &mut frame_there, rect, Some(Rect::new(30, 40, 50, 30)), rect);
+        assert!(frame_here == frame_there);
+        // Until it arrives the monitor is darkened only -- and in the hole
+        // the two are the same picture, so nothing in the selection moves
+        // when the one takes the place of the other.
+        let plain = frozen.glass(1.5, false).unwrap();
+        let mut frame_plain = vec![0u8; 120 * 90 * 4];
+        frozen.frame(&plain, &mut frame_plain, rect, Some(Rect::new(30, 40, 50, 30)), rect);
+        assert!(!plain.is_frosted() && there.is_frosted() && frame_plain != frame_there);
+        for y in 40..70usize {
+            let row = ((y - 20) * 120 + 20) * 4;
+            assert_eq!(frame_plain[row..row + 50 * 4], frame_there[row..row + 50 * 4]);
+        }
+
+        // The session ended before the blur did: nobody holds the other
+        // end. The thread finishes, what it made is dropped, and the
+        // picture is freed when the thread lets go of it -- not before.
+        let (made, late) = mpsc::channel::<Option<Glass>>();
+        drop(late);
+        let picture = frozen.clone();
+        let weak = Arc::downgrade(&frozen);
+        drop(frozen);
+        let worker = std::thread::spawn(move || made.send(picture.glass(1.5, true)).is_ok());
+        assert!(!worker.join().unwrap(), "nobody was listening, and that is not an error");
+        assert!(weak.upgrade().is_none(), "the picture went with the last one holding it");
+    }
+
+    #[test]
+    fn what_changed_between_two_frames_is_enough_to_make_one_from_the_other() {
+        let (w, h) = (97usize, 150usize);
+        let mut seed = 7u32;
+        let mut noise = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 24) as u8
+        };
+        let a: Vec<u8> = (0..w * h * 4).map(|_| noise()).collect();
+        // Nothing changed: nothing to give the window.
+        assert!(changed(&a, &a, w, h, 16).is_empty());
+        // A pixel; a rectangle; two things far apart; the last row and
+        // column; everything.
+        let cases: Vec<Vec<Rect>> = vec![
+            vec![Rect::new(40, 70, 1, 1)],
+            vec![Rect::new(10, 20, 30, 40)],
+            vec![Rect::new(2, 3, 5, 5), Rect::new(80, 130, 10, 12)],
+            vec![Rect::new(96, 0, 1, 150), Rect::new(0, 149, 97, 1)],
+            vec![Rect::new(0, 0, 97, 150)],
+        ];
+        let whole = Rect::new(0, 0, w as i32, h as i32);
+        for touched in cases {
+            let mut b = a.clone();
+            for r in &touched {
+                for y in r.y..r.bottom() {
+                    for x in r.x..r.right() {
+                        let at = (y as usize * w + x as usize) * 4;
+                        b[at] = b[at].wrapping_add(1);
+                    }
+                }
+            }
+            for band in [1, 16, 64, 1000] {
+                let rects = changed(&a, &b, w, h, band);
+                // Copy just those from the new frame over the old one.
+                let mut made = a.clone();
+                for r in &rects {
+                    blit_part(&mut made, whole, &b, whole, *r);
+                }
+                assert!(made == b, "{touched:?} band {band}: {rects:?} left a pixel as it was");
+                // And not the whole picture for a small change.
+                let area: i32 = rects.iter().map(|r| r.w * r.h).sum();
+                let least: i32 = touched.iter().map(|r| r.w * r.h).sum();
+                if touched.len() == 1 && band <= 16 {
+                    assert_eq!(area, least, "{touched:?} band {band}: exactly what changed");
+                }
+            }
+        }
+        // Pictures of different sizes: all of it.
+        assert_eq!(changed(&a, &a[..40], w, h, 16), [whole]);
+    }
     use crate::annot::tests::it;
     use crate::encode::tests::read_back;
 

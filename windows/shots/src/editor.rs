@@ -17,6 +17,8 @@ use crate::geom::{self, Handle, Hit, Point, Rect};
 use crate::overlay::{self, Key};
 use crate::style::{self, Prefs, Props, Tool};
 use crate::textbox;
+use crate::chrome;
+use crate::glass;
 use crate::toolbar::{self, Button, Layout};
 
 /// How text measures in the font it will be drawn in. The host's is GDI; a
@@ -107,7 +109,9 @@ enum Drag {
     /// A pen or highlighter stroke being drawn.
     Stroke,
     MoveItem { index: usize, last: Point, before: Vec<Item>, changed: bool },
-    ReshapeItem { index: usize, grip: Grip, before: Vec<Item>, changed: bool },
+    /// `offset`: from the pointer to the point of the shape the grip moves.
+    /// A grip is drawn on the frame, a little outside that point.
+    ReshapeItem { index: usize, grip: Grip, offset: Point, before: Vec<Item>, changed: bool },
 }
 
 pub struct Editor {
@@ -126,7 +130,38 @@ pub struct Editor {
     live: Option<Item>,
     text: Option<TextBox>,
     hover_button: Option<Button>,
+    /// The toolbar cell the button is held on, until it comes up.
+    pressed: Option<Button>,
+    /// The grip of the selected annotation the pointer is over.
+    hover_grip: Option<Grip>,
+    /// Where the pointer was last seen.
+    pointer: Option<Point>,
     long: bool,
+}
+
+/// What the pointer looks like (§9.8.11A.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cursor {
+    /// The current tool's: a cross.
+    Tool,
+    Arrow,
+    /// Over the selected annotation: it can be moved.
+    Move,
+    UpDown,
+    LeftRight,
+    /// North-west to south-east.
+    Diagonal,
+    /// North-east to south-west.
+    AntiDiagonal,
+}
+
+/// The selected annotation as it is marked: the box of what it draws,
+/// whether a frame goes round that, and its grips.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Marked {
+    pub ink: Rect,
+    pub framed: bool,
+    pub grips: Vec<(Point, chrome::Grip)>,
 }
 
 /// What leaves when the person is done.
@@ -143,10 +178,13 @@ pub struct Export {
 }
 
 impl Editor {
-    /// A new session over frozen `monitors` and `windows`. `preselect` is
-    /// where a mouse trigger happened: the window there starts selected.
-    pub fn new(monitors: Vec<Monitor>, windows: Vec<Window>, prefs: Prefs, preselect: Option<Point>) -> Editor {
-        let mut e = Editor {
+    /// A new session over frozen `monitors` and `windows`, with nothing
+    /// selected -- however it was triggered. A mouse trigger used to hand
+    /// over where it happened and the window there started out selected;
+    /// now the window under the pointer is only the clear one, and a click
+    /// on the overlay selects it, as after the hotkey.
+    pub fn new(monitors: Vec<Monitor>, windows: Vec<Window>, prefs: Prefs) -> Editor {
+        Editor {
             monitors,
             windows,
             hover: None,
@@ -162,10 +200,11 @@ impl Editor {
             live: None,
             text: None,
             hover_button: None,
+            pressed: None,
+            hover_grip: None,
+            pointer: None,
             long: false,
-        };
-        e.selection = preselect.and_then(|p| e.window_at(p));
-        e
+        }
     }
 
     // ------------------------------------------------------------- reading
@@ -241,6 +280,168 @@ impl Editor {
     }
     pub fn hover_button(&self) -> Option<Button> {
         self.hover_button
+    }
+
+    /// Where the pointer was last seen. The host tells it once when the
+    /// session opens ([`Self::pointer_move`]), so this is known before the
+    /// mouse first moves.
+    pub fn pointer(&self) -> Option<Point> {
+        self.pointer
+    }
+
+    /// The part of monitor `index` shown as it is, the rest being glass
+    /// (`glass::hole`): the selection, else the window under the pointer.
+    pub fn hole(&self, index: usize) -> Option<Rect> {
+        let monitor = self.monitors.get(index)?.rect;
+        glass::hole(
+            index,
+            monitor,
+            self.selection.map(|s| (s.monitor, s.rect)),
+            self.forming.map(|(r, m)| (m, r)),
+            self.hover,
+            self.pointer.and_then(|p| self.monitor_at(p)),
+        )
+    }
+
+    /// Whether `button` can be pressed now.
+    fn enabled(&self, button: Button) -> bool {
+        if self.long {
+            return matches!(button, Button::Long | Button::Cancel | Button::Done);
+        }
+        match button {
+            Button::Undo => self.can_undo(),
+            Button::Redo => self.can_redo(),
+            _ => true,
+        }
+    }
+
+    /// Every cell of the toolbar and the state it is drawn in (§9.8.4).
+    /// Empty before there is a selection.
+    pub fn cells(&self) -> Vec<chrome::Cell> {
+        let Some(layout) = self.layout() else { return Vec::new() };
+        let (colour, level) = self.current();
+        layout
+            .buttons
+            .iter()
+            .map(|(button, rect)| {
+                let current = match *button {
+                    Button::Tool(t) => !self.long && self.tool == t,
+                    Button::Colour(c) => c == colour,
+                    Button::Level(l) => l == level,
+                    Button::Long => self.long,
+                    _ => false,
+                };
+                let state =
+                    chrome::state(self.enabled(*button), current, self.hover_button == Some(*button), self.pressed == Some(*button));
+                chrome::Cell { button: *button, rect: *rect, state }
+            })
+            .collect()
+    }
+
+    /// Whether the selection shows its eight knobs: while the select tool
+    /// is the mouse and no annotation is selected.
+    pub fn knobs(&self) -> bool {
+        !self.long && self.text.is_none() && self.tool == Tool::Select && self.selected.is_none()
+    }
+
+    /// Where the grips of annotation `i` are drawn: a box's on the corners
+    /// and sides of its frame, a line's on its two ends.
+    fn grip_points(&self, i: usize) -> Vec<(Grip, Point)> {
+        let scale = self.scale();
+        let item = &self.items[i];
+        let frame = chrome::frame_box(item.bounds(scale), scale);
+        item.grips().into_iter().map(|(g, at)| (g, if let Grip::Box(h) = g { h.at(frame) } else { at })).collect()
+    }
+
+    /// The grip of the selected annotation under `p`.
+    fn grip_under(&self, p: Point) -> Option<Grip> {
+        let i = self.selected.filter(|i| *i < self.items.len())?;
+        let reach = chrome::grip_reach(self.scale());
+        self.grip_points(i).into_iter().find(|(_, at)| (p.x - at.x).abs() <= reach && (p.y - at.y).abs() <= reach).map(|(g, _)| g)
+    }
+
+    /// How the selected annotation is marked (§9.8.11A): a frame for
+    /// everything but a line and an arrow; grips for what can be reshaped,
+    /// put away while it is being moved.
+    pub fn marked(&self) -> Option<Marked> {
+        let i = self.selected.filter(|i| *i < self.items.len())?;
+        let item = &self.items[i];
+        let framed = !matches!(item.shape, Shape::Line { .. } | Shape::Arrow { .. });
+        let held = match &self.drag {
+            Drag::ReshapeItem { grip, .. } => Some(*grip),
+            _ => None,
+        };
+        let grips = if matches!(self.drag, Drag::MoveItem { .. }) {
+            Vec::new()
+        } else {
+            self.grip_points(i)
+                .into_iter()
+                .map(|(g, at)| {
+                    let how = if held == Some(g) {
+                        chrome::Grip::Held
+                    } else if held.is_none() && self.hover_grip == Some(g) {
+                        chrome::Grip::Hot
+                    } else {
+                        chrome::Grip::Normal
+                    };
+                    (at, how)
+                })
+                .collect()
+        };
+        Some(Marked { ink: item.bounds(self.scale()), framed, grips })
+    }
+
+    /// What a shape being reshaped measures, for the tag beside the
+    /// pointer: a box's width and height in pixels, a line's angle from
+    /// the horizontal in whole degrees.
+    pub fn reshape_tag(&self) -> Option<String> {
+        let Drag::ReshapeItem { index, .. } = &self.drag else { return None };
+        match &self.items.get(*index)?.shape {
+            Shape::Rect(r) | Shape::Ellipse(r) | Shape::Mosaic(r) => Some(format!("{} × {}", r.w, r.h)),
+            Shape::Line { from, to } | Shape::Arrow { from, to } => {
+                // Up the screen is a positive angle.
+                let degrees = ((from.y - to.y) as f64).atan2((to.x - from.x) as f64).to_degrees().round() as i32;
+                Some(format!("{}°", degrees.rem_euclid(360)))
+            }
+            _ => None,
+        }
+    }
+
+    /// What the pointer looks like at `p` (§9.8.11A.4).
+    pub fn cursor(&self, p: Point, mods: Mods) -> Cursor {
+        let Some(sel) = self.selection else { return Cursor::Tool };
+        if self.long || self.text.is_some() {
+            return Cursor::Tool;
+        }
+        if self.layout().is_some_and(|l| l.covers(p)) {
+            return Cursor::Arrow;
+        }
+        if self.tool != Tool::Select && !mods.ctrl {
+            return Cursor::Tool;
+        }
+        let of = |h: Handle| match h {
+            Handle::N | Handle::S => Cursor::UpDown,
+            Handle::E | Handle::W => Cursor::LeftRight,
+            Handle::NW | Handle::SE => Cursor::Diagonal,
+            Handle::NE | Handle::SW => Cursor::AntiDiagonal,
+        };
+        let scale = self.scale();
+        match self.grip_under(p) {
+            Some(Grip::Box(h)) => return of(h),
+            Some(Grip::End(_)) => return Cursor::Tool,
+            None => {}
+        }
+        match annot::hit_test(&self.items, p, scale) {
+            Some(i) if self.selected == Some(i) => return Cursor::Move,
+            Some(_) => return Cursor::Arrow,
+            None => {}
+        }
+        if self.knobs() {
+            if let Hit::Handle(h) = geom::hit(sel.rect, p, style::px(6, scale)) {
+                return of(h);
+            }
+        }
+        Cursor::Tool
     }
     pub fn prefs(&self) -> &Prefs {
         &self.prefs
@@ -445,6 +646,25 @@ impl Editor {
         Effect::LeaveLong
     }
 
+    /// The button went down on toolbar cell `button`. It is drawn held
+    /// until the button comes up. What it does it does now -- except
+    /// Cancel and Done, which act when the button comes up on them
+    /// ([`Self::pointer_up`]): the overlay is gone the moment they act, and
+    /// a cell that acted on the way down would never be seen held.
+    fn press_down(&mut self, button: Button, m: &dyn Measure) -> Effect {
+        if !self.enabled(button) {
+            return Effect::None;
+        }
+        self.pressed = Some(button);
+        if matches!(button, Button::Cancel | Button::Done) {
+            return Effect::Repaint;
+        }
+        match self.press(button, m) {
+            Effect::None => Effect::Repaint,
+            effect => effect,
+        }
+    }
+
     fn press(&mut self, button: Button, m: &dyn Measure) -> Effect {
         if self.long {
             // Only the three that mean something while frames are taken.
@@ -471,11 +691,12 @@ impl Editor {
 
     /// The left button went down at `p`.
     pub fn pointer_down(&mut self, p: Point, mods: Mods, m: &dyn Measure) -> Effect {
+        self.pointer = Some(p);
         if self.long {
             // The selection is the live screen and clicks in it are not
             // ours; of the overlay, only the toolbar answers.
             return match self.layout().and_then(|l| l.button_at(p)) {
-                Some(b) => self.press(b, m),
+                Some(b) => self.press_down(b, m),
                 None => Effect::None,
             };
         }
@@ -483,7 +704,7 @@ impl Editor {
             // A click outside the box keeps what was typed. That is all this
             // click does: the next one starts something new.
             return match self.layout().and_then(|l| l.button_at(p)) {
-                Some(b @ (Button::Colour(_) | Button::Level(_))) => self.press(b, m),
+                Some(b @ (Button::Colour(_) | Button::Level(_))) => self.press_down(b, m),
                 _ => Effect::CommitText,
             };
         }
@@ -493,7 +714,7 @@ impl Editor {
         };
         if let Some(layout) = self.layout() {
             if let Some(b) = layout.button_at(p) {
-                return self.press(b, m);
+                return self.press_down(b, m);
             }
             if layout.covers(p) {
                 return Effect::None;
@@ -506,8 +727,13 @@ impl Editor {
             // The selected annotation's own grips come first: they sit on
             // top of everything, including other annotations.
             if let Some(i) = self.selected.filter(|i| *i < self.items.len()) {
-                if let Some(grip) = self.items[i].grip_at(p, reach) {
-                    self.drag = Drag::ReshapeItem { index: i, grip, before: self.items.clone(), changed: false };
+                if let Some(grip) = self.grip_under(p) {
+                    // The grip is on the frame; what it moves is the
+                    // shape's own corner, side or end, and that keeps its
+                    // distance from the pointer for the whole drag.
+                    let moves = self.items[i].grips().into_iter().find(|(g, _)| *g == grip).map_or(p, |(_, at)| at);
+                    let offset = Point::new(moves.x - p.x, moves.y - p.y);
+                    self.drag = Drag::ReshapeItem { index: i, grip, offset, before: self.items.clone(), changed: false };
                     return Effect::Capture;
                 }
             }
@@ -610,6 +836,7 @@ impl Editor {
 
     /// The pointer moved to `p`.
     pub fn pointer_move(&mut self, p: Point, mods: Mods) -> Effect {
+        self.pointer = Some(p);
         if self.text.is_some() {
             return Effect::None;
         }
@@ -618,10 +845,12 @@ impl Editor {
             Drag::None => {
                 if self.selection.is_some() {
                     let over = self.layout().and_then(|l| l.button_at(p));
-                    if over == self.hover_button {
+                    let grip = if over.is_none() && !self.long { self.grip_under(p) } else { None };
+                    if over == self.hover_button && grip == self.hover_grip {
                         return Effect::None;
                     }
                     self.hover_button = over;
+                    self.hover_grip = grip;
                     return Effect::Repaint;
                 }
                 let hover = self.window_at(p).map(|s| (s.monitor, s.rect));
@@ -676,9 +905,9 @@ impl Editor {
                 let i = *index;
                 self.items[i] = self.items[i].moved(dx, dy);
             }
-            Drag::ReshapeItem { index, grip, changed, .. } => {
+            Drag::ReshapeItem { index, grip, offset, changed, .. } => {
                 let (i, grip) = (*index, *grip);
-                let next = self.items[i].reshaped(grip, p);
+                let next = self.items[i].reshaped(grip, Point::new(p.x + offset.x, p.y + offset.y));
                 if next == self.items[i] {
                     return Effect::None;
                 }
@@ -691,8 +920,25 @@ impl Editor {
 
     /// The left button came up at `p`.
     pub fn pointer_up(&mut self, p: Point) -> Effect {
+        let held = self.pressed.take();
         match std::mem::replace(&mut self.drag, Drag::None) {
-            Drag::None => return Effect::None,
+            Drag::None => {
+                return match held {
+                    // Cancel and Done act here, if the button comes up on
+                    // the cell it went down on; let go elsewhere, it was
+                    // not meant.
+                    Some(b @ (Button::Cancel | Button::Done)) if self.layout().and_then(|l| l.button_at(p)) == Some(b) => {
+                        if b == Button::Cancel {
+                            Effect::Cancel
+                        } else {
+                            Effect::Finish
+                        }
+                    }
+                    // The cell is no longer held: that is something to show.
+                    Some(_) => Effect::Repaint,
+                    None => Effect::None,
+                };
+            }
             Drag::PickRegion { .. } => {
                 self.selection = match self.forming.take() {
                     Some((rect, monitor)) => Some(Selection { rect, monitor, window: None }),
@@ -974,7 +1220,7 @@ mod tests {
     fn fresh() -> Editor {
         let monitors = vec![Monitor { rect: MON, scale: 1.0 }];
         let windows = vec![Window { id: 7, rect: WIN }, Window { id: 1, rect: MON }];
-        Editor::new(monitors, windows, Prefs::default(), None)
+        Editor::new(monitors, windows, Prefs::default())
     }
 
     /// An editor with `WIN` selected.
@@ -985,10 +1231,14 @@ mod tests {
         e
     }
 
+    /// Down and up at `p`. What the click did: Cancel and Done act when
+    /// the button comes up, everything else when it goes down.
     fn click(e: &mut Editor, p: Point) -> Effect {
         let down = e.pointer_down(p, NONE, &Fake);
-        e.pointer_up(p);
-        down
+        match e.pointer_up(p) {
+            up @ (Effect::Cancel | Effect::Finish) => up,
+            _ => down,
+        }
     }
 
     fn drag(e: &mut Editor, from: Point, to: Point) {
@@ -1071,13 +1321,19 @@ mod tests {
     }
 
     #[test]
-    fn a_mouse_trigger_opens_with_the_window_under_it_selected() {
+    fn a_session_opens_with_nothing_selected_and_the_next_click_selects_the_window_under_it() {
         let monitors = vec![Monitor { rect: MON, scale: 1.0 }];
         let windows = vec![Window { id: 7, rect: WIN }];
-        let e = Editor::new(monitors.clone(), windows.clone(), Prefs::default(), Some(P(500, 300)));
+        let mut e = Editor::new(monitors, windows, Prefs::default());
+        assert!(e.selection().is_none(), "however it was triggered");
+        // The click after a mouse trigger: the trigger's modifiers are
+        // still held, and it selects the window all the same.
+        e.pointer_move(P(500, 300), crate::dclick::Mods::CTRL_SHIFT);
+        assert_eq!(e.hover().map(|h| h.1), Some(WIN), "the clear one, not yet selected");
+        assert!(e.selection().is_none());
+        e.pointer_down(P(500, 300), crate::dclick::Mods::CTRL_SHIFT, &Fake);
+        e.pointer_up(P(500, 300));
         assert_eq!(e.selection().map(|s| s.window), Some(Some(7)));
-        let e = Editor::new(monitors, windows, Prefs::default(), Some(P(10, 10)));
-        assert!(e.selection().is_none(), "nothing under the pointer");
     }
 
     #[test]
@@ -1305,7 +1561,167 @@ mod tests {
         e.items[0].rgb = Some((1, 2, 3));
         assert_eq!(press(&mut e, Button::Colour(8)), Effect::Repaint);
         assert_eq!((e.items()[0].colour, e.items()[0].rgb), (8, None));
-        assert_eq!(press(&mut e, Button::Colour(8)), Effect::None, "and now it is that colour already");
+        // And now it is that colour already: pressing it again is no step
+        // to undo -- though the cell is still drawn held, which is a repaint.
+        let steps = e.undo.len();
+        assert_eq!(press(&mut e, Button::Colour(8)), Effect::Repaint);
+        assert_eq!(e.undo.len(), steps);
+    }
+
+    #[test]
+    fn a_cell_is_held_from_the_press_to_the_release_and_done_and_cancel_act_on_the_release() {
+        let mut e = selected();
+        let at = |e: &Editor, b: Button| {
+            let r = e.layout().unwrap().rect_of(b).unwrap();
+            P(r.x + 2, r.y + 2)
+        };
+        let state = |e: &Editor, b: Button| e.cells().into_iter().find(|c| c.button == b).unwrap().state;
+        // A tool: chosen on the way down, drawn held until the button is up.
+        let rect = Button::Tool(Tool::Rect);
+        assert_eq!(e.pointer_down(at(&e, rect), NONE, &Fake), Effect::Repaint);
+        assert_eq!((e.tool(), state(&e, rect)), (Tool::Rect, chrome::State::Down));
+        assert_eq!(e.pointer_up(at(&e, rect)), Effect::Repaint, "no longer held: that is shown");
+        assert_eq!(state(&e, rect), chrome::State::Selected);
+        assert_eq!(state(&e, Button::Tool(Tool::Select)), chrome::State::Normal, "the one before it is let go");
+        // With the pointer still on it, it is chosen and under the pointer.
+        e.pointer_move(at(&e, rect), NONE);
+        assert_eq!(state(&e, rect), chrome::State::SelectedHover);
+        e.pointer_move(at(&e, Button::Tool(Tool::Arrow)), NONE);
+        assert_eq!((state(&e, rect), state(&e, Button::Tool(Tool::Arrow))), (chrome::State::Selected, chrome::State::Hover));
+
+        // Undo with nothing to undo: off, under the pointer and under a press.
+        e.pointer_move(at(&e, Button::Undo), NONE);
+        assert_eq!(state(&e, Button::Undo), chrome::State::Off);
+        assert_eq!(e.pointer_down(at(&e, Button::Undo), NONE, &Fake), Effect::None);
+        assert_eq!(state(&e, Button::Undo), chrome::State::Off);
+        e.pointer_up(at(&e, Button::Undo));
+
+        // Done: held, and nothing happens until the button comes up on it.
+        assert_eq!(e.pointer_down(at(&e, Button::Done), NONE, &Fake), Effect::Repaint);
+        assert_eq!(state(&e, Button::Done), chrome::State::Down);
+        // Let go somewhere else: it was not meant.
+        assert_eq!(e.pointer_up(at(&e, Button::Cancel)), Effect::Repaint);
+        assert_eq!(state(&e, Button::Done), chrome::State::Normal);
+        e.pointer_down(at(&e, Button::Done), NONE, &Fake);
+        assert_eq!(e.pointer_up(at(&e, Button::Done)), Effect::Finish);
+        e.pointer_down(at(&e, Button::Cancel), NONE, &Fake);
+        assert_eq!(state(&e, Button::Cancel), chrome::State::Down);
+        assert_eq!(e.pointer_up(at(&e, Button::Cancel)), Effect::Cancel);
+
+        // A long screenshot: its button is the chosen one, the three that
+        // mean something can be pressed, the rest are off.
+        let mut e = selected();
+        press(&mut e, Button::Long);
+        assert!(e.is_long());
+        e.pointer_move(P(5, 5), NONE);
+        assert_eq!(state(&e, Button::Long), chrome::State::Selected);
+        assert_eq!((state(&e, Button::Cancel), state(&e, Button::Done)), (chrome::State::Normal, chrome::State::Normal));
+        assert_eq!((state(&e, rect), state(&e, Button::Tool(Tool::Select))), (chrome::State::Off, chrome::State::Off));
+    }
+
+    #[test]
+    fn a_selected_box_has_a_frame_and_eight_grips_on_it_a_line_two_and_a_text_none() {
+        let mut e = selected();
+        letter(&mut e, 'R');
+        drag(&mut e, P(500, 300), P(700, 420));
+        letter(&mut e, 'L');
+        drag(&mut e, P(800, 300), P(900, 380));
+        letter(&mut e, 'T');
+        click(&mut e, P(600, 500));
+        type_text(&mut e, "abc");
+        letter(&mut e, 'V');
+        assert!(e.marked().is_none() && e.knobs(), "nothing selected: the selection's own knobs");
+
+        // The rectangle: its ink is the rectangle and half its line; the
+        // frame is 4 px out from that, and the grips are on the frame.
+        click(&mut e, P(500, 350));
+        let m = e.marked().unwrap();
+        let ink = e.items()[0].bounds(1.0);
+        let frame = chrome::frame_box(ink, 1.0);
+        assert_eq!((m.ink, m.framed, m.grips.len()), (ink, true, 8));
+        assert!(!e.knobs(), "never both kinds of handle at once");
+        for (at, how) in &m.grips {
+            assert_eq!(*how, chrome::Grip::Normal);
+            assert!(at.x == frame.x || at.x == frame.right() || at.x == frame.x + frame.w / 2, "{at:?}");
+        }
+        // The pointer over the frame's corner: that grip is hot, and the
+        // pointer is the diagonal one.
+        let corner = P(frame.right(), frame.bottom());
+        assert_eq!(e.pointer_move(corner, NONE), Effect::Repaint);
+        assert_eq!(e.marked().unwrap().grips.iter().filter(|g| g.1 == chrome::Grip::Hot).count(), 1);
+        assert_eq!(e.cursor(corner, NONE), Cursor::Diagonal);
+        assert_eq!(e.cursor(P(frame.right(), frame.y), NONE), Cursor::AntiDiagonal);
+        assert_eq!(e.cursor(P(frame.x + frame.w / 2, frame.y), NONE), Cursor::UpDown);
+        assert_eq!(e.cursor(P(frame.x, frame.y + frame.h / 2), NONE), Cursor::LeftRight);
+        assert_eq!(e.cursor(P(500, 350), NONE), Cursor::Move, "on its own line");
+        assert_eq!(e.cursor(P(850, 340), NONE), Cursor::Arrow, "on another annotation");
+        assert_eq!(e.cursor(P(1000, 600), NONE), Cursor::Tool);
+        // Dragged from the grip -- which is 5 px outside the corner -- the
+        // corner moves by as much as the pointer does, and does not jump
+        // to it.
+        let before = rect_of(&e, 0);
+        e.pointer_down(corner, NONE, &Fake);
+        assert_eq!(e.marked().unwrap().grips.iter().filter(|g| g.1 == chrome::Grip::Held).count(), 1);
+        assert_eq!(e.reshape_tag().as_deref(), Some("200 × 120"));
+        e.pointer_move(P(corner.x + 30, corner.y + 10), NONE);
+        assert_eq!(rect_of(&e, 0), Rect::new(before.x, before.y, before.w + 30, before.h + 10));
+        assert_eq!(e.reshape_tag().as_deref(), Some("230 × 130"));
+        e.pointer_up(P(corner.x + 30, corner.y + 10));
+        assert!(e.reshape_tag().is_none());
+
+        // The line: no frame, a grip on each end, a cross over them.
+        click(&mut e, P(850, 340));
+        let m = e.marked().unwrap();
+        assert_eq!((m.framed, m.grips.iter().map(|g| g.0).collect::<Vec<_>>()), (false, vec![P(800, 300), P(900, 380)]));
+        assert_eq!(e.cursor(P(900, 380), NONE), Cursor::Tool);
+        e.pointer_down(P(900, 380), NONE, &Fake);
+        e.pointer_move(P(900, 300), NONE);
+        assert_eq!(e.reshape_tag().as_deref(), Some("0°"));
+        e.pointer_move(P(800, 200), NONE);
+        assert_eq!(e.reshape_tag().as_deref(), Some("90°"));
+        e.pointer_up(P(800, 200));
+
+        // The text: a frame and no grips -- it can only be moved -- and
+        // while it is being moved the frame goes with it.
+        click(&mut e, P(605, 505));
+        let m = e.marked().unwrap();
+        assert_eq!((m.framed, m.grips.len()), (true, 0));
+        e.pointer_down(P(605, 505), NONE, &Fake);
+        e.pointer_move(P(625, 515), NONE);
+        assert_eq!(e.marked().unwrap().ink, Rect::new(m.ink.x + 20, m.ink.y + 10, m.ink.w, m.ink.h));
+        e.pointer_up(P(625, 515));
+        // A box being moved puts its grips away until it is let go.
+        click(&mut e, P(500, 350));
+        e.pointer_down(P(500, 350), NONE, &Fake);
+        e.pointer_move(P(510, 350), NONE);
+        assert_eq!(e.marked().unwrap().grips.len(), 0);
+        e.pointer_up(P(510, 350));
+        assert_eq!(e.marked().unwrap().grips.len(), 8);
+    }
+
+    #[test]
+    fn what_is_clear_is_the_selection_or_the_window_under_the_pointer() {
+        let monitors = vec![Monitor { rect: MON, scale: 1.0 }, Monitor { rect: Rect::new(2560, 0, 1920, 1080), scale: 1.0 }];
+        let windows = vec![Window { id: 7, rect: WIN }];
+        let mut e = Editor::new(monitors, windows, Prefs::default());
+        // Nobody has said where the pointer is: glass everywhere.
+        assert_eq!((e.hole(0), e.hole(1)), (None, None));
+        e.pointer_move(P(500, 300), NONE);
+        assert_eq!((e.hole(0), e.hole(1)), (Some(WIN), None));
+        // Off the window, on the desktop: the whole of that monitor.
+        e.pointer_move(P(50, 50), NONE);
+        assert_eq!((e.hole(0), e.hole(1)), (Some(MON), None));
+        e.pointer_move(P(3000, 300), NONE);
+        assert_eq!((e.hole(0), e.hole(1)), (None, Some(Rect::new(2560, 0, 1920, 1080))));
+        // A selection being dragged out, then made: the hole, and the
+        // other monitor is glass wherever the pointer goes.
+        e.pointer_down(P(100, 100), NONE, &Fake);
+        e.pointer_move(P(300, 250), NONE);
+        assert_eq!(e.hole(0), Some(Rect::new(100, 100, 200, 150)));
+        e.pointer_up(P(300, 250));
+        e.pointer_move(P(3000, 300), NONE);
+        assert_eq!((e.hole(0), e.hole(1)), (Some(Rect::new(100, 100, 200, 150)), None));
+        assert_eq!(e.hole(9), None);
     }
 
     #[test]
@@ -1944,7 +2360,8 @@ mod tests {
     fn sizes_follow_the_monitor_the_selection_is_on() {
         let monitors = vec![Monitor { rect: MON, scale: 1.0 }, Monitor { rect: Rect::new(2560, 0, 3840, 2160), scale: 2.0 }];
         let windows = vec![Window { id: 9, rect: Rect::new(3000, 200, 1600, 1000) }];
-        let mut e = Editor::new(monitors, windows, Prefs::default(), Some(P(3100, 300)));
+        let mut e = Editor::new(monitors, windows, Prefs::default());
+        click(&mut e, P(3100, 300));
         assert_eq!(e.scale(), 2.0);
         assert_eq!(e.layout().unwrap().rect_of(Button::Done).unwrap().w, 56);
         letter(&mut e, 'T');
