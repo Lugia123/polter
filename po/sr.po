@@ -2480,8 +2480,13 @@ msgstr "Достигнуто је ограничење висине."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
-msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
-msgstr "Укупно делова: %1$d; првих %2$d је приложено. Цела слика: "
+msgid "{n} tiles, first {m} pasted"
+msgstr "делова: {n}, налепљено првих {m}"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "whole image"
+msgstr "цела слика"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig

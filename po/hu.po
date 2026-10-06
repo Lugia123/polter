@@ -2502,8 +2502,13 @@ msgstr "Elérte a magassági korlátot."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
-msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
-msgstr "Összesen %1$d rész; az első %2$d csatolva. A teljes kép: "
+msgid "{n} tiles, first {m} pasted"
+msgstr "{n} rész, az első {m} beillesztve"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "whole image"
+msgstr "a teljes kép"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig

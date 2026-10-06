@@ -2447,8 +2447,13 @@ msgstr "已達高度上限。"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
-msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
-msgstr "共 %1$d 片，已附上前 %2$d 片。完整圖片："
+msgid "{n} tiles, first {m} pasted"
+msgstr "共 {n} 片，已貼上前 {m} 片"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "whole image"
+msgstr "完整圖片"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig

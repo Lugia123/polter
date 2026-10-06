@@ -2456,8 +2456,13 @@ msgstr "Batas tinggi telah tercapai."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
-msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
-msgstr "Total %1$d potongan; %2$d pertama dilampirkan. Gambar utuh: "
+msgid "{n} tiles, first {m} pasted"
+msgstr "{n} potongan, {m} pertama ditempel"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "whole image"
+msgstr "gambar utuh"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig

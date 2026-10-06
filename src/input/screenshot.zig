@@ -10,8 +10,8 @@
 //! by the host that took the screenshot -- it is the one holding the
 //! annotations -- and reads, in English:
 //!
-//!     [Screenshot annotations 1280×800] ① (412,96) misaligned; Text (60,500)
-//!     too wide; Box (380,80,240,44); Arrow (100,300)→(220,340). See <json>
+//!     [Screenshot annotations 1280x800] #1 (412,96) misaligned; Text (60,500)
+//!     too wide; Box (380,80,240,44); Arrow (100,300)->(220,340). See <json>
 //!
 //! Numbers, coordinates and what the person typed are not words and are not
 //! here. Everything else is, including the two separators: Chinese joins the
@@ -66,6 +66,7 @@ pub const Msgid = enum {
     long_slower,
     long_limit,
     long_tiles,
+    long_whole,
     hotkey_failed,
     hotkey_taken,
     search_empty,
@@ -108,7 +109,8 @@ pub const Msgid = enum {
             .long_hint => i18n.N_("Scroll down slowly. What comes into view is added at the bottom."),
             .long_slower => i18n.N_("Scroll slower"),
             .long_limit => i18n.N_("The height limit was reached."),
-            .long_tiles => i18n.N_("%1$d tiles in all; the first %2$d are attached. Whole image: "),
+            .long_tiles => i18n.N_("{n} tiles, first {m} pasted"),
+            .long_whole => i18n.N_("whole image"),
             .hotkey_failed => i18n.N_("The screenshot shortcut could not be registered"),
             .hotkey_taken => i18n.N_("Another application is already using it. Choose a different one with a `screenshot` keybind in the configuration."),
             .search_empty => i18n.N_("No settings match."),

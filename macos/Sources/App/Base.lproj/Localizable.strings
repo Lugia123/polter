@@ -643,7 +643,8 @@
 "Scroll down slowly. What comes into view is added at the bottom." = "Scroll down slowly. What comes into view is added at the bottom.";
 "Scroll slower" = "Scroll slower";
 "The height limit was reached." = "The height limit was reached.";
-"%1$d tiles in all; the first %2$d are attached. Whole image: " = "%1$d tiles in all; the first %2$d are attached. Whole image: ";
+"{n} tiles, first {m} pasted" = "{n} tiles, first {m} pasted";
+"whole image" = "whole image";
 "The screenshot shortcut could not be registered" = "The screenshot shortcut could not be registered";
 "Another application is already using it. Choose a different one with a `screenshot` keybind in the configuration." = "Another application is already using it. Choose a different one with a `screenshot` keybind in the configuration.";
 "No settings match." = "No settings match.";

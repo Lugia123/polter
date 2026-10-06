@@ -2455,8 +2455,13 @@ msgstr "高さの上限に達しました。"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
-msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
-msgstr "全 %1$d 枚中、最初の %2$d 枚を添付しました。全体の画像: "
+msgid "{n} tiles, first {m} pasted"
+msgstr "全 {n} 枚、最初の {m} 枚をペースト済み"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "whole image"
+msgstr "全体の画像"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig

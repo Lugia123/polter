@@ -2458,8 +2458,13 @@ msgstr "S’ha arribat al límit d’alçada."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
-msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
-msgstr "%1$d parts en total; s’adjunten les %2$d primeres. Imatge sencera: "
+msgid "{n} tiles, first {m} pasted"
+msgstr "{n} parts, les {m} primeres enganxades"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "whole image"
+msgstr "imatge sencera"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig

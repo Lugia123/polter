@@ -30,6 +30,31 @@ const AgentEvent = @import("agent_event.zig");
 /// so agents and the bus agree on names without inventing a second scheme.
 pub const Id = u64;
 
+/// The id a surface goes by: what `terminal_list` reports for it, and what
+/// `ghostty_surface_poltergeist_id` gives a host that holds only the
+/// surface. **Both go through here**, so that a sidecar file written by a
+/// host and a row read by an agent cannot name the same terminal two ways.
+///
+/// A host has a second number for every surface -- its own handle, the
+/// pointer -- and that one is *not* this: it changes from run to run and no
+/// tool accepts it.
+pub fn idOf(surface: anytype) Id {
+    return surface.id;
+}
+
+test "a surface's terminal id is its id, not its handle" {
+    // The two numbers a host could confuse, on one value.
+    const Fake = struct { handle: u64, id: u64 };
+    const fake: Fake = .{ .handle = 0x1111_2222_3333_4444, .id = 0x9382_ac53_5955_05a6 };
+    const reported: Id = idOf(&fake);
+    try std.testing.expectEqual(@as(Id, 0x9382_ac53_5955_05a6), reported);
+
+    // And as `terminal_list` writes it.
+    var buf: [32]u8 = undefined;
+    const text = try std.fmt.bufPrint(&buf, "0x{x:0>16}", .{reported});
+    try std.testing.expectEqualStrings("0x9382ac53595505a6", text);
+}
+
 /// An id no terminal has.
 ///
 /// Used where a `Bus.Id` has to be produced for a caller that is not a

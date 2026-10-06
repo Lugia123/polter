@@ -5202,6 +5202,7 @@ fn load_api() -> Option<Api> {
             app_persona_put: sym!(internal, "ghostty_app_persona_put"),
             app_persona_delete: sym!(internal, "ghostty_app_persona_delete"),
             app_agent_clis: sym!(internal, "ghostty_app_agent_clis"),
+            surface_poltergeist_id: sym!(internal, "ghostty_surface_poltergeist_id"),
             surface_persona_launch: sym!(internal, "ghostty_surface_persona_launch"),
             app_plugin_list: sym!(internal, "ghostty_app_plugin_list"),
             app_plugin_test: sym!(internal, "ghostty_app_plugin_test"),

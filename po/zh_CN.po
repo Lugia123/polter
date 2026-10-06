@@ -3368,8 +3368,12 @@ msgid "The height limit was reached."
 msgstr "已到高度上限。"
 
 #: src/input/screenshot.zig
-msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
-msgstr "共 %1$d 片，已附上前 %2$d 片。整图："
+msgid "{n} tiles, first {m} pasted"
+msgstr "共 {n} 片，已粘贴前 {m} 片"
+
+#: src/input/screenshot.zig
+msgid "whole image"
+msgstr "整图"
 
 #: src/input/screenshot.zig
 msgid "The screenshot shortcut could not be registered"

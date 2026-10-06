@@ -5032,7 +5032,7 @@ fn poltergeistOpenTerminals(
         ) catch {};
 
         try out.append(alloc, .{
-            .id = surface.id,
+            .id = poltergeistpkg.Bus.idOf(surface),
             .cwd = footing.cwd,
             .title = footing.title,
             .window = if (window == 0) null else window,

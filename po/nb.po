@@ -2497,8 +2497,13 @@ msgstr "Høydegrensen er nådd."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
-msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
-msgstr "%1$d deler totalt; de første %2$d er lagt ved. Hele bildet: "
+msgid "{n} tiles, first {m} pasted"
+msgstr "{n} deler, de første {m} limt inn"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "whole image"
+msgstr "hele bildet"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig

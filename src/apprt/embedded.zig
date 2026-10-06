@@ -19,6 +19,7 @@ const terminal = @import("../terminal/main.zig");
 const CoreApp = @import("../App.zig");
 const CoreInspector = @import("../inspector/main.zig").Inspector;
 const CoreSurface = @import("../Surface.zig");
+const poltergeistpkg = @import("../poltergeist/main.zig");
 const configpkg = @import("../config.zig");
 const Config = configpkg.Config;
 const String = @import("../main_c.zig").String;
@@ -2982,6 +2983,18 @@ pub const CAPI = struct {
     /// request. Once it is called with a request the request pointer will
     /// be invalidated.
     ///
+    /// The terminal id of a surface: the number `terminal_list` reports for
+    /// it and every tool takes, written `0x%016llx`. Zero for NULL, and no
+    /// terminal has zero.
+    ///
+    /// This is what a host writes as `terminal.id` beside a screenshot the
+    /// person took themselves (`dev-docs/poltergeist/screenshot.md`, 11);
+    /// the surface handle it already holds is a pointer and names nothing.
+    export fn ghostty_surface_poltergeist_id(surface: ?*Surface) u64 {
+        const s = surface orelse return 0;
+        return poltergeistpkg.Bus.idOf(&s.core_surface);
+    }
+
     /// To deny a request use ghostty_surface_deny_clipboard_request
     /// instead.
     export fn ghostty_clipboard_request_is_paste(

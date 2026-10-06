@@ -2520,8 +2520,13 @@ msgstr "La hauteur maximale est atteinte."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
-msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
-msgstr "%1$d morceaux au total ; les %2$d premiers sont joints. Image entière : "
+msgid "{n} tiles, first {m} pasted"
+msgstr "{n} morceaux, les {m} premiers collés"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "whole image"
+msgstr "image entière"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig

@@ -1724,6 +1724,10 @@ GHOSTTY_API uintptr_t ghostty_surface_persona_face(ghostty_surface_t, char*, uin
 // role (key, key_len, cli, cli_len; cli may be empty). False, with the
 // error's name in the last buffer, when nothing was started.
 GHOSTTY_API bool ghostty_surface_persona_launch(ghostty_surface_t, const char*, uintptr_t, const char*, uintptr_t, char*, uintptr_t);
+// The terminal id of a surface: the number terminal_list reports for it and
+// every tool takes, written "0x%016llx". 0 for NULL; no terminal has 0. The
+// surface handle is a pointer and is not this.
+GHOSTTY_API uint64_t ghostty_surface_poltergeist_id(ghostty_surface_t);
 // Whether the read whose `state` this is -- the pointer read_clipboard_cb
 // was handed -- is the person pasting, rather than a program reading the
 // clipboard (OSC 52, Kitty) or listing it. Both arrive asking for

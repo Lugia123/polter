@@ -1658,6 +1658,10 @@ pub struct Api {
     /// `ghostty_app_agent_clis(app, refresh, buf, cap)`. JSON:
     /// `{stale,refreshing,clis}`; never runs an adapter on this thread.
     pub app_agent_clis: unsafe extern "C" fn(App, bool, *mut u8, usize) -> usize,
+    /// `ghostty_surface_poltergeist_id(surface)`: the terminal id
+    /// `terminal_list` reports for this surface, written `0x{:016x}`. 0 for
+    /// null. The `Surface` handle itself is a pointer and is not this.
+    pub surface_poltergeist_id: unsafe extern "C" fn(Surface) -> u64,
     /// `ghostty_surface_persona_launch(surface, key, len, cli, len, err, cap)`.
     pub surface_persona_launch:
         unsafe extern "C" fn(Surface, *const u8, usize, *const u8, usize, *mut u8, usize) -> bool,

@@ -2476,8 +2476,13 @@ msgstr "높이 제한에 도달했습니다."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
-msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
-msgstr "총 %1$d개 조각 중 처음 %2$d개를 첨부했습니다. 전체 이미지: "
+msgid "{n} tiles, first {m} pasted"
+msgstr "총 {n}개 조각, 처음 {m}개 붙여넣음"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "whole image"
+msgstr "전체 이미지"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
