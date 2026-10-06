@@ -139,6 +139,38 @@ GTK 本轮不做（三个界面 GTK 目前都没有）。
 「看起来齐了」。Windows 侧另外在 `polter-settings-shell` 里有断言这些相等的单元测试，而且
 要做一次打坏（把某一段的高度改 1）看它红。
 
+### 2.3b 最小字号（用户定，#1083）
+
+**最小字号 = 系统菜单的字号。** 设置窗口的每个栏目（含快捷键、高级、关于页），以及项目的
+另存为 / 加载 / 管理 / 改名 / 关窗前提示，任何文字都不许小于它；比它大的（正文、标题）不动。
+起因是第 1–4 期实物里的说明、状态、副标题用的是 10–12pt 的小字，用户说很多地方完全看不清。
+
+- **字号向系统要，不写死一个数。** mac 是 `NSFont.menuFont(ofSize: 0).pointSize`（本机量到
+  13）；Windows 是 `NONCLIENTMETRICSW.lfMenuFont`，用 `SystemParametersInfoForDpi` 按窗口
+  的 DPI 取（没人改过的机器上 96 DPI 是 12px，随「设置 › 辅助功能 › 文字大小」变大）。
+- **每边只有一个来源。** mac：`SettingsFont`（`minimum` / `minimumMonospaced`），原来的
+  `.caption` / `.caption2` / `.subheadline` / `.callout` / 字面量 `size: 12` 全部改走它，
+  这几个样式在范围内不许再写。Windows：`host/src/uifont.rs` 的 `make(dpi, px, …)` 是范围内
+  唯一调 `CreateFontW` 的地方，高度取 `polter_settings_shell::text_px(设计值, dpi, 菜单字号)`
+  = 两者取大；各界面原来各有一份的 `make_font` 都委托给它，库存字体
+  （`DEFAULT_GUI_FONT`，11px 且不随 DPI 缩放）不许用。
+- **层级靠颜色和字重，不靠缩小。** 说明、状态、副标题与正文同号，用次要色（mac `.secondary`
+  / Windows `theme::dim()`）区分；这是这条规则的直接后果，不是疏漏。
+- **闸**：`tools/no-text-below-the-menu-font.py`（mac）与
+  `windows/tools/no-text-below-the-menu-font.py`（Windows），外加 settings-shell 里
+  `text_` 开头的四条单测。两道闸各自写明了它**看不见**什么，改之前先读。
+- **已知没管到的**：
+  - 系统自己画的文字（mac `NSAlert`、tooltip；Windows `TaskDialog` / `MessageBoxW`）。
+    mac 在 Darwin 25.5 上量过 `NSAlert` 全部是 13pt；更旧的系统没量。
+  - Windows 上「文字大小」调大以后，字会跟着菜单变大，而行高、列宽是按 DPI 缩放的像素、
+    不是按字高算的，**没有在真机上看过会不会截断**。默认 100% 时所有设计值都 ≥ 菜单字号，
+    画面与改之前相同（改名输入框除外：它原来用库存字体，现在是 14px）。
+  - Windows 上运行中改「文字大小」不会立刻重做字体，要等窗口换 DPI 或重开。
+  - 盖在终端上的几个小窗（HUD、按键序列提示、命令面板、搜索条、tab 条）不在这条规则的
+    范围里，闸按名字把它们留在外面。
+- 字变大以后的对齐仍按 §2.3a 的判据用截图核对；网格常量（`TOP` / `BOTTOM` / `control` 等）
+  没有因为这条规则改动。
+
 ### 2.4 未保存改动的统一协议
 
 每个栏目实现同一组接口（mac 为 protocol，Windows 为 trait）：

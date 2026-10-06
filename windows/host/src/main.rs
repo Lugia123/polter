@@ -154,6 +154,7 @@ mod tabs;
 mod taskbar;
 mod termcolor;
 mod theme;
+mod uifont;
 mod tsf;
 mod uia;
 mod update;

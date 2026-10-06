@@ -253,7 +253,7 @@ struct PluginsView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
-        .font(.callout)
+        .font(SettingsFont.minimum)
         .padding(Grid.rowGap + Grid.rowGap / 2)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.15)))
     }
@@ -274,7 +274,7 @@ struct PluginsView: View {
             // language when it ships one.
             if !plugin.summary.isEmpty {
                 Text(plugin.summary)
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -357,7 +357,7 @@ struct PluginsView: View {
                     .foregroundStyle(.secondary)
             } else {
                 Text(pane.logLines.joined(separator: "\n"))
-                    .font(.system(.caption, design: .monospaced))
+                    .font(SettingsFont.minimumMonospaced)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(Grid.rowGap)
@@ -374,19 +374,19 @@ struct PluginsView: View {
             if let status = pane.status {
                 Label(status, systemImage: "exclamationmark.circle")
                     .foregroundStyle(.red)
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
                     .lineLimit(2)
                     .textSelection(.enabled)
             } else if pane.isDirty {
                 Text(String(localized: "Unsaved changes", comment: "角色库：有未保存的修改"))
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
             }
             Spacer()
             if let result = pane.testResult {
                 // Beside the button that produced it (settings.md §5.2).
                 Text(result.text)
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(result.ok ? Color.secondary : Color.red)
                     .lineLimit(2)
                     .truncationMode(.tail)
@@ -424,7 +424,7 @@ struct PluginSidebarRows: View {
         let listing = pane.listing(query: query)
         if listing.noMatch && !pane.plugins.isEmpty {
             Text(String(localized: "No matching plugins", comment: "设置窗口：搜索没有匹配的插件"))
-                .font(.callout)
+                .font(SettingsFont.minimum)
                 .foregroundStyle(.secondary)
                 .padding(.leading, Grid.pad + Grid.pad)
                 .frame(maxWidth: .infinity, minHeight: Grid.control, alignment: .leading)
@@ -440,7 +440,7 @@ struct PluginSidebarRows: View {
                         Text(plugin.name).lineLimit(1)
                         Spacer(minLength: Grid.rowGap / 2)
                         Text(dot.title)
-                            .font(.caption)
+                            .font(SettingsFont.minimum)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }

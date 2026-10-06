@@ -225,6 +225,14 @@ pub fn scale(v: i32, dpi: i32) -> i32 {
     v * dpi / 96
 }
 
+/// The height a font is made at (§2.3b): the size it was designed with, in
+/// 96-DPI pixels, scaled to `dpi` -- and **never less than the system's menu
+/// font**, `menu_px`, which the host asks the system for at that same DPI.
+/// `menu_px == 0` is "the system would not say", and leaves the design size.
+pub fn text_px(design: i32, dpi: i32, menu_px: i32) -> i32 {
+    scale(design, dpi).max(menu_px)
+}
+
 /// The smallest the window may be dragged to, at `dpi`.
 pub fn min_size(dpi: i32) -> (i32, i32) {
     (scale(MIN_W, dpi), scale(MIN_H, dpi))
@@ -793,6 +801,41 @@ pub fn search_section(current: Section, query: &str, items: &[(Section, Vec<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ------------------------------------------------- smallest text
+
+    /// The numbers a machine nobody has changed gives: the menu is 12 px at
+    /// 96 DPI and scales with it.
+    #[test]
+    fn text_is_never_smaller_than_the_menu_font() {
+        for (design, dpi, menu) in [(11, 96, 12), (12, 96, 12), (14, 96, 12), (12, 144, 18), (12, 192, 24), (8, 240, 30)] {
+            assert!(text_px(design, dpi, menu) >= menu, "design {design} at {dpi} dpi under a {menu} px menu");
+        }
+    }
+
+    /// Text size turned up in Settings: the menu grows and a caption written
+    /// as 12 has to follow it; a title already larger does not move.
+    #[test]
+    fn text_follows_a_menu_font_the_user_enlarged() {
+        assert_eq!(text_px(12, 96, 18), 18);
+        assert_eq!(text_px(14, 96, 18), 18);
+        assert_eq!(text_px(20, 96, 18), 20);
+    }
+
+    /// Nothing that was at or above the menu's size changes.
+    #[test]
+    fn text_at_or_above_the_menu_font_keeps_its_design_size() {
+        assert_eq!(text_px(12, 96, 12), 12);
+        assert_eq!(text_px(14, 96, 12), 14);
+        assert_eq!(text_px(15, 144, 18), 22);
+    }
+
+    /// The system not answering is not a size of zero.
+    #[test]
+    fn text_keeps_its_design_size_when_the_menu_font_is_unknown() {
+        assert_eq!(text_px(12, 96, 0), 12);
+        assert_eq!(text_px(14, 192, 0), 28);
+    }
 
     // ------------------------------------------------------------ routes
 

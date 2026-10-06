@@ -243,7 +243,7 @@ struct ProjectsView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(entry.name).lineLimit(1)
             Text(Self.summary(entry))
-                .font(.caption)
+                .font(SettingsFont.minimum)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
@@ -259,7 +259,7 @@ struct ProjectsView: View {
             Spacer(minLength: 0)
             Button(String(localized: "Undo", comment: "设置窗口·项目：撤销删除")) { model.undoDelete() }
         }
-        .font(.callout)
+        .font(SettingsFont.minimum)
         .padding(.horizontal, L.pad)
         .frame(height: L.control + L.rowGap)
         .background(Color.accentColor.opacity(0.10))
@@ -337,13 +337,13 @@ struct ProjectsView: View {
             if let status = model.status {
                 Label(status, systemImage: "exclamationmark.circle")
                     .foregroundStyle(.red)
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
                     .lineLimit(2)
                     .textSelection(.enabled)
             } else if entry != nil, tab == nil {
                 // Written out rather than a tooltip (settings.md §4).
                 Text(String(localized: "Open a terminal window to overwrite a project with its tab.", comment: "设置窗口·项目：没有终端窗口时无法用当前标签页覆盖"))
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
@@ -480,7 +480,7 @@ private struct ProjectDetail: View {
                 if versions.count < 2 {
                     formControl {
                         Text(String(localized: "An earlier version is kept when an automatic save changes the layout (a pane added or closed, or a split turned), and whenever the project is overwritten with a tab.", comment: "设置窗口·项目：只有当前版本时解释什么时候会有上一版"))
-                            .font(.caption)
+                            .font(SettingsFont.minimum)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -539,10 +539,10 @@ private struct ProjectThumbnail: View {
                     let leaf = cell.leaf < leaves.count ? leaves[cell.leaf] : nil
                     VStack(spacing: 2) {
                         Text(ProjectsRules.directoryLabel(leaf?.cwd ?? ""))
-                            .font(.callout.weight(.medium))
+                            .font(SettingsFont.minimum.weight(.medium))
                         if let title = leaf?.title, !title.isEmpty {
                             Text(title)
-                                .font(.caption)
+                                .font(SettingsFont.minimum)
                                 .foregroundStyle(.secondary)
                         }
                     }

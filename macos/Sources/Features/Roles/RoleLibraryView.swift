@@ -322,7 +322,7 @@ struct RoleLibraryView: View {
                     Text(String(localized: "No roles yet", comment: "角色库：一个角色都没有"))
                         .font(.headline)
                     Text(String(localized: "A role is a saved way to start an agent CLI: which skills and MCP servers it keeps, and what it's told.", comment: "角色库：空列表时解释角色是什么"))
-                        .font(.caption)
+                        .font(SettingsFont.minimum)
                         .multilineTextAlignment(.center)
                     Button(String(localized: "New Role", comment: "角色库：新建角色的默认名字")) { editor.newRole() }
                         .padding(.top, 4)
@@ -340,7 +340,7 @@ struct RoleLibraryView: View {
                     .lineLimit(1)
                 if role.builtin {
                     Image(systemName: "lock.fill")
-                        .font(.caption2)
+                        .font(SettingsFont.minimum)
                         .foregroundStyle(.secondary)
                         .help(String(localized: "Comes with Polter", comment: "角色库：内置角色的锁图标说明"))
                 }
@@ -352,7 +352,7 @@ struct RoleLibraryView: View {
             Text(role.clis.isEmpty
                  ? String(localized: "No agent CLI", comment: "角色库：列表行副标题，这个角色还没选 CLI")
                  : role.clis.map { library.clis.label(for: $0.cli) }.joined(separator: " · "))
-                .font(.caption)
+                .font(SettingsFont.minimum)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
@@ -488,7 +488,7 @@ struct RoleLibraryView: View {
             Label(text, systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             Text(detail)
-                .font(.caption)
+                .font(SettingsFont.minimum)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
         }
@@ -522,7 +522,7 @@ struct RoleLibraryView: View {
                         Text(Role.isValidKey(key)
                              ? String(localized: "Lowercase letters, digits and dashes. It can't be changed after saving.", comment: "角色库：key 的规则说明")
                              : String(localized: "Only lowercase letters, digits and dashes, at most 32.", comment: "角色库：key 不合规时的提示"))
-                            .font(.caption)
+                            .font(SettingsFont.minimum)
                             .foregroundStyle(Role.isValidKey(key) ? Color.secondary : Color.red)
                     }
                 } else {
@@ -642,12 +642,12 @@ struct RoleLibraryView: View {
                         .toggleStyle(.checkbox)
                         if cli.installed == false {
                             Text(String(format: String(localized: "%@ isn't on this machine's PATH", comment: "角色库：CLI 程序没找到，%@ 是程序名"), cli.bin))
-                                .font(.caption)
+                                .font(SettingsFont.minimum)
                                 .foregroundStyle(.orange)
                         }
                         if cli.error != nil {
                             Text(String(localized: "Its plugin couldn't list what's installed", comment: "角色库：适配插件读取清单失败"))
-                                .font(.caption)
+                                .font(SettingsFont.minimum)
                                 .foregroundStyle(.orange)
                         }
                     } }
@@ -661,7 +661,7 @@ struct RoleLibraryView: View {
                         }
                         .toggleStyle(.checkbox)
                         Text(String(localized: "No plugin manages this CLI any more", comment: "角色库：角色里配了某 CLI，但对应插件已不在"))
-                            .font(.caption)
+                            .font(SettingsFont.minimum)
                             .foregroundStyle(.orange)
                     } }
                 }
@@ -692,19 +692,19 @@ struct RoleLibraryView: View {
             if let status = editor.status {
                 Label(status, systemImage: "exclamationmark.circle")
                     .foregroundStyle(.red)
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
                     .lineLimit(2)
                     .textSelection(.enabled)
             } else if let reason = launchBlockedReason {
                 // Written out rather than a tooltip: a reason nobody hovers
                 // over is no reason (settings.md §4).
                 Text(reason)
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             } else if editor.isDirty {
                 Text(String(localized: "Unsaved changes", comment: "角色库：有未保存的修改"))
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -827,7 +827,7 @@ struct RoleCliItemsEditor: View {
                     Label {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(String(localized: "Its plugin couldn't list what's installed", comment: "角色库：适配插件读取清单失败"))
-                            Text(error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            Text(error).font(SettingsFont.minimum).foregroundStyle(.secondary).textSelection(.enabled)
                         }
                     } icon: {
                         Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
@@ -919,7 +919,7 @@ struct RoleItemSection: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(title).font(.headline)
                 Text(String(format: String(localized: "%lld of %lld kept", comment: "角色库：保留了多少项，例如 12 of 40 kept"), onCount, all.count))
-                    .font(.caption)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button(String(localized: "Keep All", comment: "角色库：当前筛选下全部保留")) {
@@ -940,7 +940,7 @@ struct RoleItemSection: View {
                 Text(kind == .skill
                      ? String(localized: "Keep skills installed later", comment: "角色库：以后新装的 skill 默认保留")
                      : String(localized: "Keep MCP servers added later", comment: "角色库：以后新加的 MCP 默认保留"))
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
             }
             .toggleStyle(.checkbox)
             .help(String(localized: "What happens to anything that isn't listed here yet, such as something installed tomorrow or a project's own.", comment: "角色库：默认项开关的说明"))
@@ -949,11 +949,11 @@ struct RoleItemSection: View {
                 Text(kind == .skill
                      ? String(localized: "No skills are installed for this CLI.", comment: "角色库：这个 CLI 没有 skill")
                      : String(localized: "No MCP servers are configured for this CLI.", comment: "角色库：这个 CLI 没有 MCP"))
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
             } else if visible.isEmpty {
                 Text(String(localized: "Nothing matches the filter.", comment: "角色库：筛选无结果"))
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
             }
 
@@ -966,7 +966,7 @@ struct RoleItemSection: View {
             }
             if !missing.isEmpty {
                 Text(String(format: String(localized: "Also in this role but not installed here: %@", comment: "角色库：角色里提到但本机没装的项，%@ 是列表"), missing.joined(separator: ", ")))
-                    .font(.caption)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
@@ -983,11 +983,11 @@ struct RoleItemSection: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                            .font(.caption.weight(.semibold))
-                            .frame(width: 10)
-                        Text(group.title).font(.subheadline.weight(.semibold))
+                            .font(SettingsFont.minimum.weight(.semibold))
+                            .frame(width: 12)
+                        Text(group.title).font(SettingsFont.minimum.weight(.semibold))
                         Text(verbatim: "\(on)/\(group.items.count)")
-                            .font(.caption.monospacedDigit())
+                            .font(SettingsFont.minimum.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
                     .contentShape(Rectangle())
@@ -1007,7 +1007,7 @@ struct RoleItemSection: View {
 
             if let summary = group.summary, !summary.isEmpty, !isCollapsed {
                 Text(summary)
-                    .font(.caption)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 24)
@@ -1074,13 +1074,13 @@ struct RoleItemRow: View {
                         .textSelection(.enabled)
                     if item.locked {
                         Image(systemName: "lock.fill")
-                            .font(.caption2)
+                            .font(SettingsFont.minimum)
                             .foregroundStyle(.secondary)
                             .help(String(localized: "Always kept: this is how the agent reaches Polter.", comment: "角色库：polter 自己的 MCP 不能关"))
                     }
                     if !item.detail.isEmpty {
                         Text(item.detail)
-                            .font(.caption.monospaced())
+                            .font(SettingsFont.minimum.monospaced())
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
@@ -1089,12 +1089,12 @@ struct RoleItemRow: View {
                     EmptyView()
                 } else if item.summary.isEmpty {
                     Text(String(localized: "No description", comment: "角色库：这一项没有说明"))
-                        .font(.callout)
+                        .font(SettingsFont.minimum)
                         .italic()
                         .foregroundStyle(.tertiary)
                 } else {
                     Text(item.summary)
-                        .font(.callout)
+                        .font(SettingsFont.minimum)
                         .foregroundStyle(.secondary)
                         .lineLimit(expanded ? nil : 3)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1106,7 +1106,7 @@ struct RoleItemRow: View {
                             expanded.toggle()
                         }
                         .buttonStyle(.link)
-                        .font(.caption)
+                        .font(SettingsFont.minimum)
                     }
                 }
             }
@@ -1153,7 +1153,7 @@ func formControl<Content: View>(@ViewBuilder content: () -> Content) -> some Vie
 
 private func note(_ text: String) -> some View {
     Text(text)
-        .font(.caption)
+        .font(SettingsFont.minimum)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 }

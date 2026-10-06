@@ -25,7 +25,7 @@ struct PluginSettingsForm: View {
             // plugin that says nothing about itself, which is the shape the
             // old kind list failed in.
             subscription
-                .font(.caption)
+                .font(SettingsFont.minimum)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -36,7 +36,7 @@ struct PluginSettingsForm: View {
             // entries are added for it. Only a single literal is a
             // `LocalizedStringKey`.
             Text(String(localized: "It runs for as long as Polter does and is handed those events as they happen. A plugin that stops, or cannot reach where it writes, catches up afterwards rather than losing anything -- Polter's own record on disk is what it is copied from and stays the record either way.", comment: "插件设置"))
-                .font(.caption)
+                .font(SettingsFont.minimum)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -61,7 +61,7 @@ struct PluginSettingsForm: View {
             // documentation nobody has open while typing a password in.
             formControl {
                 Text(String(localized: "A value may be a reference instead of the thing itself: env:NAME, file:/path, keychain:service/account, or cmd:… for a password manager. It is resolved at the moment the plugin is called, and never stored here.", comment: "插件设置"))
-                    .font(.caption)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -104,7 +104,7 @@ struct PluginSettingsForm: View {
             if !parameter.help.isEmpty {
                 formControl {
                     Text(parameter.help)
-                        .font(.caption)
+                        .font(SettingsFont.minimum)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -116,7 +116,7 @@ struct PluginSettingsForm: View {
             if parameter.looksSecret {
                 formControl {
                     Text(String(localized: "Prefer a reference here so the secret stays out of this file.", comment: "插件设置"))
-                        .font(.caption)
+                        .font(SettingsFont.minimum)
                         .foregroundStyle(.orange)
                 }
             }

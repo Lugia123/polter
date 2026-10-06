@@ -1056,24 +1056,7 @@ fn on_click(x: i32, y: i32) {
 // ================================================================ drawing
 
 pub(crate) fn make_font(dpi: i32, px: i32, weight: i32) -> HFONT {
-    unsafe {
-        CreateFontW(
-            -(px * dpi / 96),
-            0,
-            0,
-            0,
-            weight,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
-            (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
-            w!("Segoe UI"),
-        )
-    }
+    crate::uifont::make(dpi, px, weight, w!("Segoe UI"))
 }
 
 fn make_fonts(dpi: i32) {

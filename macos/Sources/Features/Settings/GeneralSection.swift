@@ -223,7 +223,7 @@ struct GeneralView: View {
         HStack(spacing: L.rowGap) {
             if let status = model.status {
                 Text(status)
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
@@ -271,7 +271,7 @@ private struct GeneralKeybinds: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: L.rowGap) {
                     Text(String(localized: "\(String(rows.count)) actions. Some have no shortcut yet.", comment: "快捷键一览窗口"))
-                        .font(.caption)
+                        .font(SettingsFont.minimum)
                         .foregroundStyle(.secondary)
                     ForEach(rows) { row in
                         if below {
@@ -307,7 +307,7 @@ private struct GeneralKeybinds: View {
                 .font(row.name == nil ? .system(.body, design: .monospaced) : .body)
             if row.name != nil {
                 Text(row.action)
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(SettingsFont.minimumMonospaced)
                     .foregroundStyle(.tertiary)
             }
         }
@@ -324,7 +324,7 @@ private struct GeneralKeybinds: View {
 
     private func note(_ row: KeybindRow) -> some View {
         Text(row.note)
-            .font(.caption)
+            .font(SettingsFont.minimum)
             .foregroundStyle(row.hiddenFromMenu ? Color.orange : Color.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -355,7 +355,7 @@ private struct GeneralAdvanced: View {
                     VStack(alignment: .leading, spacing: L.rowGap / 2) {
                         ForEach(Array(errors.enumerated()), id: \.offset) { _, error in
                             Text(error)
-                                .font(.system(size: 12).monospaced())
+                                .font(SettingsFont.minimumMonospaced)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -370,7 +370,7 @@ private struct GeneralAdvanced: View {
                     .padding(.top, L.groupGap - L.rowGap)
                 if let backup {
                     Text((backup as NSString).abbreviatingWithTildeInPath)
-                        .font(.system(size: 12).monospaced())
+                        .font(SettingsFont.minimumMonospaced)
                         .textSelection(.enabled)
                 } else {
                     Text(String(localized: "This window has not written the config file since Polter started, so there is no backup yet.", comment: "设置窗口·通用：高级组，还没有备份"))
@@ -425,7 +425,7 @@ private struct GeneralAbout: View {
             }
             if let copyright = Bundle.main.infoDictionary?["NSHumanReadableCopyright"] as? String, !copyright.isEmpty {
                 Text(copyright)
-                    .font(.caption)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
             }
             Spacer()

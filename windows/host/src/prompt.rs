@@ -113,10 +113,33 @@ struct Open {
 
 thread_local! {
     static OPEN: RefCell<Option<Open>> = const { RefCell::new(None) };
+    /// The box's font and the DPI it was made for (`font_for`).
+    static FONT: std::cell::Cell<(i32, isize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 const PAD: i32 = 12;
 use crate::theme;
+
+/// The font the box's label, note, field and buttons are set in, at `dpi`:
+/// the settings window's body size, and so never under the menu font's
+/// (`uifont`, settings.md §2.3b). **Not a stock font**: `DEFAULT_GUI_FONT`
+/// is 11 px whatever the DPI, and an `EDIT` given none falls back to one
+/// that does not scale either. Kept for the thread, remade when the DPI it
+/// was made for is not the one asked about.
+fn font_for(dpi: i32) -> HFONT {
+    FONT.with(|c| {
+        let (made_for, font) = c.get();
+        if made_for == dpi && font != 0 {
+            return HFONT(font as *mut std::ffi::c_void);
+        }
+        if font != 0 {
+            let _ = unsafe { DeleteObject(HGDIOBJ(font as *mut std::ffi::c_void)) };
+        }
+        let f = crate::uifont::make(dpi, 14, FW_NORMAL.0 as i32, w!("Segoe UI"));
+        c.set((dpi, f.0 as isize));
+        f
+    })
+}
 
 /// Is the window pinned above the others right now?
 ///
@@ -441,6 +464,8 @@ fn open_box(
             wlogf!(frame, "[prompt] CreateWindowExW(EDIT) failed; {label} box not shown");
             return;
         };
+        let font = font_for(s(96));
+        SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
 
         if question {
             // Rename (the default, as Enter is) and Cancel, right-aligned on
@@ -465,7 +490,7 @@ fn open_box(
                     None,
                     None,
                 ) {
-                    SendMessageW(b, WM_SETFONT, Some(WPARAM(GetStockObject(DEFAULT_GUI_FONT).0 as usize)), Some(LPARAM(1)));
+                    SendMessageW(b, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
                 }
             }
             // Modal: the window it is about waits for the answer.
@@ -640,10 +665,13 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     let _ = DeleteObject(b.into());
                     SetBkMode(hdc, TRANSPARENT);
                     SetTextColor(hdc, COLORREF(theme::text()));
-                    let font = GetStockObject(DEFAULT_GUI_FONT);
-                    let old = SelectObject(hdc, font);
+                    // The label's band is the one above the field, which is
+                    // placed in scaled pixels (`s(44)` in `open`); so is this.
+                    let dpi = windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd).max(96) as i32;
+                    let s = |v: i32| v * dpi / 96;
+                    let old = SelectObject(hdc, font_for(dpi).into());
                     let mut wide: Vec<u16> = tr(label).encode_utf16().collect();
-                    let mut r = RECT { left: 12, top: 12, right: rc.right - 12, bottom: 40 };
+                    let mut r = RECT { left: s(PAD), top: s(12), right: rc.right - s(PAD), bottom: s(40) };
                     DrawTextW(hdc, &mut wide, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
                     // The question's note, under the field, in the dim colour.
                     if let Some(note) = OPEN.with(|c| c.borrow().as_ref().and_then(|o| o.note.clone())) {
@@ -654,7 +682,7 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         let _ = MapWindowPoints(None, Some(hwnd), &mut pts);
                         SetTextColor(hdc, COLORREF(theme::dim()));
                         let mut wide: Vec<u16> = note.encode_utf16().collect();
-                        let mut r = RECT { left: pts[0].x, top: pts[0].y + 4, right: rc.right - 12, bottom: pts[0].y + 4 + (rc.bottom / 6) };
+                        let mut r = RECT { left: pts[0].x, top: pts[0].y + s(4), right: rc.right - s(PAD), bottom: pts[0].y + s(4 + 24) };
                         DrawTextW(hdc, &mut wide, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
                     }
                     SelectObject(hdc, old);

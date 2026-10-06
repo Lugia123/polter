@@ -24,7 +24,7 @@ struct ConfigFormPage: View {
             if let form = model.form, !model.writesAllowed {
                 Label(String(format: String(localized: "This Polter reads %@, but the form would write %@. The settings are shown read-only.", comment: "设置窗口·通用：进程读的配置文件与表单要写的不是同一个，参数依次是两个路径"), ((model.ghostty?.configPath ?? "") as NSString).abbreviatingWithTildeInPath, (form.main as NSString).abbreviatingWithTildeInPath), systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
-                    .font(.callout)
+                    .font(SettingsFont.minimum)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, L.pad)
                     .padding(.vertical, L.rowGap + 4)
@@ -93,7 +93,7 @@ private struct ConfigFormRow: View {
                     if let error = model.fieldErrors[item.key] {
                         Label(error, systemImage: "exclamationmark.circle")
                             .foregroundStyle(.red)
-                            .font(.callout)
+                            .font(SettingsFont.minimum)
                             .textSelection(.enabled)
                     }
                     if !ConfigFormRules.isWritable(item) {
@@ -102,7 +102,7 @@ private struct ConfigFormRow: View {
                     help
                     if showingMore, let doc = item.doc {
                         Text(doc)
-                            .font(.caption)
+                            .font(SettingsFont.minimum)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
@@ -129,7 +129,7 @@ private struct ConfigFormRow: View {
         // "More…" is the last run of the same text, not a button beside
         // it: beside it, a long key squeezed the sentence into a column at
         // the window's narrowest. As a link it wraps with the words.
-        let more: Text? = ConfigFormRules.hasMore(item) ? Text(Self.moreLink(showingMore)).font(.caption) : nil
+        let more: Text? = ConfigFormRules.hasMore(item) ? Text(Self.moreLink(showingMore)).font(SettingsFont.minimum) : nil
         return (more.map { line + Text(verbatim: "  ") + $0 } ?? line)
             .lineLimit(showingMore ? nil : 3)
             .fixedSize(horizontal: false, vertical: true)
@@ -151,8 +151,8 @@ private struct ConfigFormRow: View {
     }
 
     private func helpLine(_ sentence: String?) -> Text {
-        let key = Text(item.key).font(.caption.monospaced()).foregroundColor(Color(nsColor: .tertiaryLabelColor))
-        let words = sentence.map { Text($0).font(.caption).foregroundColor(.secondary) }
+        let key = Text(item.key).font(SettingsFont.minimum.monospaced()).foregroundColor(Color(nsColor: .tertiaryLabelColor))
+        let words = sentence.map { Text($0).font(SettingsFont.minimum).foregroundColor(.secondary) }
         switch (item.label != nil, words) {
         case (true, let words?): return key + Text(verbatim: "  ") + words
         case (true, nil): return key
@@ -172,7 +172,7 @@ private struct ConfigFormRow: View {
                     .help(String(format: String(localized: "Changed from the default (%@). Right-click to restore it.", comment: "设置窗口·通用：与默认值不同的圆点的说明，%@ 是默认值"), item.default.isEmpty ? "—" : item.default))
             }
             Text(ConfigFormRules.title(item))
-                .font(.callout)
+                .font(SettingsFont.minimum)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.trailing)
                 .lineLimit(2)
@@ -192,10 +192,10 @@ private struct ConfigFormRow: View {
                 }
                 .buttonStyle(.link)
             }
-            .font(.callout)
+            .font(SettingsFont.minimum)
         case .cli:
             Text(String(localized: "Set on the command line; a change here would not take effect.", comment: "设置窗口·通用：这一项由命令行设置"))
-                .font(.callout)
+                .font(SettingsFont.minimum)
         case .main, .default:
             HStack(spacing: L.rowGap) {
                 Text(String(localized: "Edited in the config file, not here.", comment: "设置窗口·通用：可重复的键等表单不写，只能在配置文件里改"))
@@ -204,7 +204,7 @@ private struct ConfigFormRow: View {
                 }
                 .buttonStyle(.link)
             }
-            .font(.callout)
+            .font(SettingsFont.minimum)
         }
     }
 }
@@ -282,7 +282,7 @@ private struct ConfigFormControl: View {
             textField
         case .readonly:
             Text(item.value.isEmpty ? "—" : item.value)
-                .font(.system(.callout, design: .monospaced))
+                .font(SettingsFont.minimumMonospaced)
                 .foregroundStyle(.secondary)
                 .lineLimit(4)
                 .textSelection(.enabled)

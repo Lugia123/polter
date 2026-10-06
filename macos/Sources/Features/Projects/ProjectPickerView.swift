@@ -116,7 +116,7 @@ struct ProjectPickerView: View {
             }
             if case .saveAs(let currentPaneCount) = mode {
                 Text(currentPaneCountLabel(currentPaneCount))
-                    .font(.caption)
+                    .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
                     .padding(.leading, 22)
             }
@@ -156,7 +156,7 @@ struct ProjectPickerView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(entry.name)
                     Text(subtitle(for: entry))
-                        .font(.caption)
+                        .font(SettingsFont.minimum)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
