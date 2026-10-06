@@ -4,16 +4,18 @@ import Testing
 /// Covers `GeneralRules`: the General section's groups, where a route lands
 /// in them, and what About lists (settings.md §7).
 struct GeneralRulesTests {
-    /// §7.1's table, in its order: the five form groups, All Options, then
-    /// the three that need no form.
+    /// §7.1's table, in its order: the five form groups, All Options, the
+    /// screenshot group (screenshot.md §12.1: before Keyboard Shortcuts),
+    /// then the three that need no form.
     @Test func theGroupsAreTheSpecsInItsOrder() {
         #expect(GeneralGroup.allCases.map(\.rawValue) == [
-            "appearance", "font", "terminal", "windows", "polter", "all", "keybinds", "advanced", "about",
+            "appearance", "font", "terminal", "windows", "polter", "all", "screenshot", "keybinds", "advanced", "about",
         ])
     }
 
     @Test func onlyTheFormGroupsWaitForTheCoresTable() {
-        #expect(GeneralGroup.allCases.filter(\.needsForm) == [.appearance, .font, .terminal, .windows, .polter, .all])
+        #expect(GeneralGroup.allCases.filter(\.needsForm)
+            == [.appearance, .font, .terminal, .windows, .polter, .all, .screenshot])
     }
 
     @Test func aRouteLandsOnTheGroupItNames() {

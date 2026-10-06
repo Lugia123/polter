@@ -61,7 +61,7 @@ struct ConfigFormRulesTests {
         let json = try #require(PersonaCatalog.readJSON({ ghostty_app_config_form(app, $0, $1) }))
         let form = try #require(ConfigForm.parse(json))
         #expect(form.items.count > 100)
-        #expect(form.sections.map(\.group) == ["appearance", "font", "terminal", "window", "polter"])
+        #expect(form.sections.map(\.group) == ["appearance", "font", "terminal", "window", "polter", "screenshot"])
         for section in form.sections {
             for key in section.keys {
                 let found = form.items.first { $0.key == key }

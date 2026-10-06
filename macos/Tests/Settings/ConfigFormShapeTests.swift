@@ -43,15 +43,64 @@ struct ConfigFormShapeTests {
      ]}
     """#
 
-    @Test func aChoiceTheTableDoesNotNameDoesNotTakeTheTableWithIt() throws {
+    /// The words a test expects, in one of the app's languages, and the
+    /// table they are looked up in.
+    ///
+    /// **A test names its table; none of them reads `Bundle.main`.** In the
+    /// app, on a machine set to Chinese, `Bundle.main` answers in Chinese,
+    /// and six tests here that expected English from it were red there and
+    /// green wherever the sources are compiled on their own -- where
+    /// `Bundle.main` has no table at all and every msgid comes back as
+    /// itself. Each of those now runs once for each language, against that
+    /// language's own table, so that what the machine is set to cannot
+    /// decide the result.
+    struct Tongue: CustomTestStringConvertible, Sendable {
+        var table: String
+        var off: String
+        var doubleClick: String
+        var notSet: String
+        var mouseTrigger: String
+        var screenshot: String
+        var pasteImages: String
+        /// Whether a name is its own msgid, so that there is no English to
+        /// add beside it.
+        var isEnglish: Bool
+
+        var testDescription: String { table }
+
+        static let english = Tongue(
+            table: "Base", off: "Off", doubleClick: "Double-Click", notSet: "Not set",
+            mouseTrigger: "Mouse Trigger", screenshot: "Screenshot", pasteImages: "Paste Images as Files",
+            isEnglish: true)
+        static let chinese = Tongue(
+            table: "zh-Hans", off: "已关", doubleClick: "双击", notSet: "未设置",
+            mouseTrigger: "鼠标触发", screenshot: "截图", pasteImages: "粘贴图片时存成文件并粘贴路径",
+            isEnglish: false)
+        static let all = [english, chinese]
+
+        /// The table: the app's own copy when the tests run inside it,
+        /// else the one in the sources this file was compiled from.
+        var bundle: Bundle? {
+            if let inApp = Bundle.main.path(forResource: table, ofType: "lproj") { return Bundle(path: inApp) }
+            let here = URL(fileURLWithPath: #filePath).resolvingSymlinksInPath()
+            let lproj = here.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Sources/App/\(table).lproj")
+            return FileManager.default.fileExists(atPath: lproj.appendingPathComponent("Localizable.strings").path)
+                ? Bundle(path: lproj.path) : nil
+        }
+    }
+
+    @Test(arguments: Tongue.all)
+    func aChoiceTheTableDoesNotNameDoesNotTakeTheTableWithIt(_ tongue: Tongue) throws {
+        let words = try #require(tongue.bundle, "no \(tongue.table) table")
         let form = try #require(ConfigForm.parse(Self.withScreenshots), "the whole table failed to decode")
         #expect(form.items.count == 7)
         let trigger = try #require(form.items.first { $0.key == "screenshot-mouse-trigger" })
         #expect(trigger.choiceLabels == ["Off", nil, nil])
         // Named: its name. Not named: the value, until the host spells it.
-        #expect(ConfigFormRules.choiceTitle("", of: trigger, bundle: .main) == "Off")
+        #expect(ConfigFormRules.choiceTitle("", of: trigger, bundle: words) == tongue.off)
         // Not named: spelled by the host, through the item's template.
-        #expect(ConfigFormRules.choiceTitle("cmd+shift", of: trigger, bundle: .main) == "⇧⌘ + Double-Click")
+        #expect(ConfigFormRules.choiceTitle("cmd+shift", of: trigger, bundle: words) == "⇧⌘ + \(tongue.doubleClick)")
         #expect(form.items.first { $0.key == "screenshot-directory" }?.control == .directory)
         #expect(form.items.first { $0.key == "screenshot-agent-access" }?.control == .toggle)
         // A control this build does not draw is shown read-only.
@@ -61,13 +110,6 @@ struct ConfigFormShapeTests {
     private var form: ConfigForm { ConfigForm.parse(Self.withScreenshots)! }
     private func item(_ key: String) -> ConfigForm.Item { form.items.first { $0.key == key }! }
 
-    /// The app's Chinese table, read from the sources.
-    private var zhHans: Bundle? {
-        let here = URL(fileURLWithPath: #filePath).resolvingSymlinksInPath()
-        let table = here.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Sources/App/zh-Hans.lproj")
-        return Bundle(path: table.path)
-    }
 
     // MARK: The screenshot group (screenshot.md §12.1, §12.3)
 
@@ -137,26 +179,30 @@ struct ConfigFormShapeTests {
         #expect(ConfigFormRules.modifierSymbols("super+hyper") == nil)
     }
 
-    @Test func aChoiceWithNoNameIsSpelledThroughTheTemplate() throws {
+    @Test(arguments: Tongue.all)
+    func aChoiceWithNoNameIsSpelledThroughTheTemplate(_ tongue: Tongue) throws {
+        let words = try #require(tongue.bundle, "no \(tongue.table) table")
         let trigger = item("screenshot-mouse-trigger")
-        #expect(ConfigFormRules.choiceTitle("ctrl+shift", of: trigger, bundle: .main) == "⌃⇧ + Double-Click")
-        let zh = try #require(zhHans)
-        #expect(ConfigFormRules.choiceTitle("cmd+shift", of: trigger, bundle: zh) == "⇧⌘ + 双击")
-        #expect(ConfigFormRules.choiceTitle("", of: trigger, bundle: zh) == "已关")
+        #expect(ConfigFormRules.choiceTitle("ctrl+shift", of: trigger, bundle: words) == "⌃⇧ + \(tongue.doubleClick)")
+        #expect(ConfigFormRules.choiceTitle("cmd+shift", of: trigger, bundle: words) == "⇧⌘ + \(tongue.doubleClick)")
+        #expect(ConfigFormRules.choiceTitle("", of: trigger, bundle: words) == tongue.off)
         // A value the template cannot spell is shown as it is written.
-        #expect(ConfigFormRules.choiceTitle("sideways", of: trigger, bundle: .main) == "sideways")
+        #expect(ConfigFormRules.choiceTitle("sideways", of: trigger, bundle: words) == "sideways")
         // Without a template a nameless value is itself.
         var plain = trigger
         plain.choiceTemplate = nil
-        #expect(ConfigFormRules.choiceTitle("cmd+shift", of: plain, bundle: .main) == "cmd+shift")
+        #expect(ConfigFormRules.choiceTitle("cmd+shift", of: plain, bundle: words) == "cmd+shift")
     }
 
-    @Test func aValueTheTableDoesNotOfferIsShownAsItselfAndNotAsTheFirstChoice() {
+    @Test(arguments: Tongue.all)
+    func aValueTheTableDoesNotOfferIsShownAsItselfAndNotAsTheFirstChoice(_ tongue: Tongue) throws {
+        let words = try #require(tongue.bundle, "no \(tongue.table) table")
         var trigger = item("screenshot-mouse-trigger")
         #expect(ConfigFormRules.choices(of: trigger) == ["", "cmd+shift", "ctrl+shift"])
         trigger.value = "super+ctrl+shift"
         #expect(ConfigFormRules.choices(of: trigger) == ["", "cmd+shift", "ctrl+shift", "super+ctrl+shift"])
-        #expect(ConfigFormRules.choiceTitle("super+ctrl+shift", of: trigger, bundle: .main) == "⌃⇧⌘ + Double-Click")
+        #expect(ConfigFormRules.choiceTitle("super+ctrl+shift", of: trigger, bundle: words)
+            == "⌃⇧⌘ + \(tongue.doubleClick)")
         #expect(ConfigFormRules.choices(of: item("font-size")) == ["13"])
     }
 
@@ -168,20 +214,23 @@ struct ConfigFormShapeTests {
         #expect(ConfigFormRules.isWritable(folder))
     }
 
-    @Test func aGroupsShortcutRowsFollowItsSettings() throws {
+    @Test(arguments: Tongue.all)
+    func aGroupsShortcutRowsFollowItsSettings(_ tongue: Tongue) throws {
+        let words = try #require(tongue.bundle, "no \(tongue.table) table")
         #expect(ConfigFormRules.shortcuts(in: .screenshot, of: form).map(\.action) == ["screenshot"])
         #expect(ConfigFormRules.shortcuts(in: .font, of: form).isEmpty)
         #expect(ConfigFormRules.shortcuts(in: .keybinds, of: form).isEmpty)
-        #expect(ConfigFormRules.bindingText(["⇧⌘0"], bundle: .main) == "⇧⌘0")
-        #expect(ConfigFormRules.bindingText(["⇧⌘0", "F13"], bundle: .main) == "⇧⌘0   F13")
-        #expect(ConfigFormRules.bindingText([], bundle: .main) == "Not set")
-        #expect(ConfigFormRules.bindingText([], bundle: try #require(zhHans)) == "未设置")
+        #expect(ConfigFormRules.bindingText(["⇧⌘0"], bundle: words) == "⇧⌘0")
+        #expect(ConfigFormRules.bindingText(["⇧⌘0", "F13"], bundle: words) == "⇧⌘0   F13")
+        #expect(ConfigFormRules.bindingText([], bundle: words) == tongue.notSet)
     }
 
     // MARK: Search (screenshot.md §12.2)
 
-    @Test func everyKeyAndEveryShortcutRowCanBeFound() {
-        let entries = SettingsSearch.entries(of: form, bundle: .main)
+    @Test(arguments: Tongue.all)
+    func everyKeyAndEveryShortcutRowCanBeFound(_ tongue: Tongue) throws {
+        let words = try #require(tongue.bundle, "no \(tongue.table) table")
+        let entries = SettingsSearch.entries(of: form, bundle: words)
         #expect(entries.map(\.target) == [
             .formItem(key: "screenshot-mouse-trigger", group: .screenshot),
             .formItem(key: "screenshot-directory", group: .screenshot),
@@ -196,28 +245,37 @@ struct ConfigFormShapeTests {
         ])
         #expect(entries[safe: 0] == .init(
             target: .formItem(key: "screenshot-mouse-trigger", group: .screenshot),
-            name: "Mouse Trigger", aliases: ["double-click"], key: "screenshot-mouse-trigger", summary: "S",
-            choices: ["Off", "⇧⌘ + Double-Click", "⌃⇧ + Double-Click"]))
+            name: tongue.mouseTrigger,
+            aliases: tongue.isEnglish ? ["double-click"] : ["double-click", "Mouse Trigger"],
+            key: "screenshot-mouse-trigger", summary: "S",
+            choices: [tongue.off, "⇧⌘ + \(tongue.doubleClick)", "⌃⇧ + \(tongue.doubleClick)"]))
         // A key with no name of its own: found by its key and its help.
         #expect(entries[safe: 5]?.name == nil)
         #expect(entries[safe: 5]?.summary == "Sync.")
         #expect(entries[safe: 4]?.choices == [], "a number has no choices")
         #expect(entries[safe: 7] == .init(
             target: .shortcut(action: "screenshot", group: .screenshot),
-            name: "Screenshot", aliases: ["capture"], key: "screenshot", summary: "Take one."))
+            name: tongue.screenshot, aliases: tongue.isEnglish ? ["capture"] : ["capture", "Screenshot"],
+            key: "screenshot", summary: "Take one."))
     }
 
-    @Test func aTranslatedNameIsAlsoFoundByItsEnglish() throws {
-        let zh = try #require(zhHans)
-        let entries = SettingsSearch.entries(of: form, bundle: zh)
-        #expect(entries[safe: 0]?.name == "鼠标触发")
-        #expect(entries[safe: 0]?.aliases == ["double-click", "Mouse Trigger"])
-        #expect(entries[safe: 0]?.choices == ["已关", "⇧⌘ + 双击", "⌃⇧ + 双击"])
-        #expect(entries[safe: 3]?.aliases == ["paste", "粘贴", "Paste Images as Files"])
-        #expect(entries[safe: 7]?.name == "截图")
-        #expect(entries[safe: 7]?.aliases == ["capture", "Screenshot"])
-        // In English there is nothing to add.
-        #expect(SettingsSearch.entries(of: form, bundle: .main)[safe: 3]?.aliases == ["paste", "粘贴"])
+    @Test(arguments: Tongue.all)
+    func aTranslatedNameIsAlsoFoundByItsEnglish(_ tongue: Tongue) throws {
+        let words = try #require(tongue.bundle, "no \(tongue.table) table")
+        let entries = SettingsSearch.entries(of: form, bundle: words)
+        #expect(entries[safe: 0]?.name == tongue.mouseTrigger)
+        #expect(entries[safe: 3]?.name == tongue.pasteImages)
+        #expect(entries[safe: 7]?.name == tongue.screenshot)
+        if tongue.isEnglish {
+            // The name is the English: there is nothing to add beside it.
+            #expect(entries[safe: 0]?.aliases == ["double-click"])
+            #expect(entries[safe: 3]?.aliases == ["paste", "粘贴"])
+            #expect(entries[safe: 7]?.aliases == ["capture"])
+        } else {
+            #expect(entries[safe: 0]?.aliases == ["double-click", "Mouse Trigger"])
+            #expect(entries[safe: 3]?.aliases == ["paste", "粘贴", "Paste Images as Files"])
+            #expect(entries[safe: 7]?.aliases == ["capture", "Screenshot"])
+        }
     }
 
     @Test func theEntriesGoToTheCoreInOrderWithEmptyFieldsLeftOut() throws {

@@ -8206,11 +8206,20 @@ fn screenshotCall(
     };
 
     if (request.surface) |id| {
-        const entry = bus.get(id) orelse return failure(error.UnknownTerminal);
         // **The shield is absolute, and a photograph of the terminal is a
         // way of reading it.** Refused here, before the apprt is asked, so
         // that nothing about that window is captured at all.
-        if (entry.shielded) return hostFailure(
+        //
+        // ⚠️ **The bus is asked about the shield and about nothing else.**
+        // This used to read `bus.get(id) orelse UnknownTerminal`, which
+        // asks the bus whether the terminal *exists* -- and the bus does
+        // not know that. It holds an entry only for a terminal that has
+        // been made a supervisor, put under watch or marked by the user;
+        // an ordinary terminal has none, so every capture of a terminal's
+        // window, the caller's own included, was refused as unknown. Which
+        // terminals exist is the apprt's to say: it is asked for the
+        // surface below, and answers `NoSuchTerminal` when there is none.
+        if (bus.isShielded(id)) return hostFailure(
             "NotPermitted",
             "that terminal is shielded: the user has closed it to every agent, and a " ++
                 "screenshot of its window would be a way of reading it. Nothing was captured.",
@@ -8310,6 +8319,9 @@ const FakeHost = struct {
     shot_reply: screenshot.HostReply = .unsupported,
     shot_interactive: bool = true,
     shot_asked: ?struct { spec: []const u8, surface: ?Bus.Id, op: screenshot.Op } = null,
+    /// The terminals the app has a surface for. **Not the bus's list**: the
+    /// app knows every terminal, the bus only the ones somebody marked.
+    shot_surfaces: []const Bus.Id = &.{ boss, worker, other },
     shot_asks: usize = 0,
     shot_io: ?std.Io = null,
 
@@ -8548,6 +8560,11 @@ const FakeHost = struct {
             .surface = request.surface,
             .op = request.op,
         };
+        // As the app does: a terminal is a surface it can find, whatever
+        // the bus has or has not heard of.
+        if (request.surface) |id| {
+            if (std.mem.indexOfScalar(Bus.Id, self.shot_surfaces, id) == null) return error.NoSuchTerminal;
+        }
         return self.shot_reply;
     }
 
@@ -13869,7 +13886,112 @@ test "screenshot: a terminal nobody knows is not a window to capture" {
         .terminal = "\"0x9999\"",
     } });
     try testing.expectEqualStrings("UnknownTerminal", shotCode(res));
-    try testing.expect(fake.shot_asked == null);
+    // It is the apprt that said so: it was asked for that surface and had
+    // none. The bus not having heard of a terminal says nothing.
+    const asked_surface: ?Bus.Id = askedSurface(fake);
+    try testing.expectEqual(@as(?Bus.Id, 0x9999), asked_surface);
+}
+
+/// The surface the apprt was last asked to capture, or null when it was
+/// not asked at all -- so that "never asked" fails an expectation instead
+/// of unwrapping nothing.
+fn askedSurface(fake: FakeHost) ?Bus.Id {
+    const asked = fake.shot_asked orelse return null;
+    return asked.surface;
+}
+
+/// Three terminals the app has and the bus has never heard of: nobody made
+/// them a supervisor, watched them or marked them. That is what every
+/// terminal is until one of those happens, and it is what the fixtures
+/// above are not -- `testBus` registers every id its tests go on to use,
+/// which is how "the bus has no entry" came to be read as "there is no
+/// such terminal" with every test green.
+const plain_self: Bus.Id = 0x7001;
+const plain_other: Bus.Id = 0x7002;
+const plain_shielded: Bus.Id = 0x7003;
+const plain_surfaces = [_]Bus.Id{ plain_self, plain_other, plain_shielded };
+
+fn plainCapture(
+    alloc: std.mem.Allocator,
+    b: *Bus,
+    fake: *FakeHost,
+    terminal: []const u8,
+) !wire.Response {
+    return dispatch(alloc, b, fake.host(), term(plain_self), .{ .screenshot_capture = .{
+        .target = "\"terminal\"",
+        .terminal = terminal,
+    } });
+}
+
+test "screenshot: a terminal's window, for terminals the bus has never heard of" {
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    try testing.expect(b.get(plain_self) == null);
+    try testing.expect(b.get(plain_other) == null);
+
+    // 1. No `terminal` given: the caller's own.
+    {
+        var fake: FakeHost = .{ .shot_reply = .{ .done = shot_done }, .shot_surfaces = &plain_surfaces };
+        const res = try plainCapture(alloc, &b, &fake, "");
+        try testing.expectEqualStrings(shot_done, shotJson(res));
+        const asked_surface: ?Bus.Id = askedSurface(fake);
+        try testing.expectEqual(@as(?Bus.Id, plain_self), asked_surface);
+    }
+
+    // 2. Its own id, written out.
+    {
+        var fake: FakeHost = .{ .shot_reply = .{ .done = shot_done }, .shot_surfaces = &plain_surfaces };
+        const res = try plainCapture(alloc, &b, &fake, "\"0x0000000000007001\"");
+        try testing.expectEqualStrings(shot_done, shotJson(res));
+        const asked_surface: ?Bus.Id = askedSurface(fake);
+        try testing.expectEqual(@as(?Bus.Id, plain_self), asked_surface);
+    }
+
+    // 3. Another terminal's.
+    {
+        var fake: FakeHost = .{ .shot_reply = .{ .done = shot_done }, .shot_surfaces = &plain_surfaces };
+        const res = try plainCapture(alloc, &b, &fake, "\"0x7002\"");
+        try testing.expectEqualStrings(shot_done, shotJson(res));
+        const asked_surface: ?Bus.Id = askedSurface(fake);
+        try testing.expectEqual(@as(?Bus.Id, plain_other), asked_surface);
+    }
+
+    // 4. An id no terminal has: unknown, and it is the apprt that says so.
+    {
+        var fake: FakeHost = .{ .shot_reply = .{ .done = shot_done }, .shot_surfaces = &plain_surfaces };
+        const res = try plainCapture(alloc, &b, &fake, "\"0x7fff\"");
+        try testing.expectEqualStrings("UnknownTerminal", shotCode(res));
+        const asked_surface: ?Bus.Id = askedSurface(fake);
+        try testing.expectEqual(@as(?Bus.Id, 0x7fff), asked_surface);
+    }
+
+    // What the apprt answers reaches the caller: a refusal for want of a
+    // permission is that refusal, not "unknown terminal".
+    {
+        var fake: FakeHost = .{
+            .shot_reply = .{ .refused = "{\"code\":\"ScreenRecordingRequired\",\"message\":\"m\"}" },
+            .shot_surfaces = &plain_surfaces,
+        };
+        const res = try plainCapture(alloc, &b, &fake, "");
+        try testing.expectEqualStrings("ScreenRecordingRequired", shotCode(res));
+    }
+
+    // 5. A shielded one: refused, and the apprt is not asked to capture.
+    {
+        try b.register(plain_shielded);
+        try b.setShielded(plain_shielded, true, .user);
+        var fake: FakeHost = .{ .shot_reply = .{ .done = shot_done }, .shot_surfaces = &plain_surfaces };
+        const res = try plainCapture(alloc, &b, &fake, "\"0x7003\"");
+        try testing.expectEqualStrings("NotPermitted", shotCode(res));
+        try testing.expect(std.mem.indexOf(u8, shotMessage(res), "shielded") != null);
+        try testing.expect(fake.shot_asked == null);
+        // Shielding one terminal closes that one, not the rest.
+        const still = try plainCapture(alloc, &b, &fake, "\"0x7002\"");
+        try testing.expectEqualStrings(shot_done, shotJson(still));
+    }
 }
 
 test "screenshot: what the apprt answers is what the caller is told" {
