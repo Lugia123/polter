@@ -2246,32 +2246,8 @@ msgstr ""
 msgid "None"
 msgstr ""
 
-#: windows/host/src/strip.rs:1295
-msgid "Blue"
-msgstr ""
-
-#: windows/host/src/strip.rs:1296
-msgid "Purple"
-msgstr ""
-
 #: windows/host/src/strip.rs:1297
 msgid "Pink"
-msgstr ""
-
-#: windows/host/src/strip.rs:1298
-msgid "Red"
-msgstr ""
-
-#: windows/host/src/strip.rs:1299
-msgid "Orange"
-msgstr ""
-
-#: windows/host/src/strip.rs:1300
-msgid "Yellow"
-msgstr ""
-
-#: windows/host/src/strip.rs:1301
-msgid "Green"
 msgstr ""
 
 #: windows/host/src/strip.rs:1302
@@ -2297,3 +2273,258 @@ msgstr ""
 #: windows/host/src/uia.rs:1168
 msgid "Menu"
 msgstr ""
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Select"
+msgstr "Roghnaigh"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Rectangle"
+msgstr "Dronuilleog"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Ellipse"
+msgstr "Éilips"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Straight Line"
+msgstr "Líne dhíreach"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Highlighter"
+msgstr "Aibhsitheoir"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Number"
+msgstr "Uimhir"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Mosaic"
+msgstr "Mósáic"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Long Screenshot"
+msgstr "Seat scáileáin fada"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Done"
+msgstr "Déanta"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Color"
+msgstr "Dath"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Thickness"
+msgstr "Tiús"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Block Size"
+msgstr "Méid bloc"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Red"
+msgstr "Dearg"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Orange"
+msgstr "Oráiste"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Yellow"
+msgstr "Buí"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Green"
+msgstr "Glas"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Cyan"
+msgstr "Cian"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Blue"
+msgstr "Gorm"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Purple"
+msgstr "Corcra"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Black"
+msgstr "Dubh"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "White"
+msgstr "Bán"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Circle"
+msgstr "Ciorcal"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Line"
+msgstr "Líne"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Screenshot"
+msgstr "Seat scáileáin"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Screenshot annotations"
+msgstr "Nótaí an tseata scáileáin"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Text"
+msgstr "Téacs"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Box"
+msgstr "Bosca"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Arrow"
+msgstr "Saighead"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Pen"
+msgstr "Peann"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "; "
+msgstr "; "
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid ". See "
+msgstr ". Féach "
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Freeze the screen, pick a window or drag a region, annotate it, and put the result on the clipboard."
+msgstr "Reoigh an scáileán, roghnaigh fuinneog nó tarraing réigiún, cuir nótaí leis agus cuir an toradh ar an ngearrthaisce."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The annotation font is missing, so the system font is used."
+msgstr "Tá cló na nótaí ar iarraidh, mar sin úsáidtear cló an chórais."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scroll down slowly. What comes into view is added at the bottom."
+msgstr "Scrollaigh síos go mall. Cuirtear a dtagann chun radhairc leis an mbun."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scroll slower"
+msgstr "Scrollaigh níos moille"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The height limit was reached."
+msgstr "Sroicheadh an teorainn airde."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
+msgstr "%1$d píosa san iomlán; tá an chéad %2$d ceangailte. An íomhá iomlán: "
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The screenshot shortcut could not be registered"
+msgstr "Níorbh fhéidir aicearra an tseata scáileáin a chlárú"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Another application is already using it. Choose a different one with a `screenshot` keybind in the configuration."
+msgstr "Tá feidhmchlár eile á úsáid cheana. Roghnaigh ceann eile le keybind `screenshot` sa chumraíocht."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "No settings match."
+msgstr "Níl aon socrú ag teacht leis."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Paste Images as Files"
+msgstr "Greamaigh íomhánna mar chomhaid"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Save a pasted image as a file and paste its path."
+msgstr "Sábháil íomhá ghreamaithe mar chomhad agus greamaigh a conair."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Screenshot Folder"
+msgstr "Fillteán seat scáileáin"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Where screenshots and pasted images are saved."
+msgstr "An áit a sábháiltear seatanna scáileáin agus íomhánna greamaithe."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Mouse Trigger"
+msgstr "Truicear luiche"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Hold these keys and double-click to take a screenshot."
+msgstr "Coinnigh na heochracha seo agus déchliceáil chun seat scáileáin a ghlacadh."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "%s + Double-Click"
+msgstr "%s + déchliceáil"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Let Agents Take Screenshots"
+msgstr "Lig do ghníomhairí seatanna scáileáin a ghlacadh"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Agents may capture the screen with the screenshot tools."
+msgstr "Is féidir le gníomhairí an scáileán a ghabháil leis na huirlisí seat scáileáin."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Screenshot Shortcut"
+msgstr "Aicearra seat scáileáin"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Change it with a keybind line in the config file."
+msgstr "Athraigh é le líne keybind sa chomhad cumraíochta."

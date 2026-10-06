@@ -3065,6 +3065,26 @@ keybind: Keybinds = .{},
 /// Only implemented on macOS and Windows.
 @"screenshot-mouse-trigger": ScreenshotMouseTrigger = .default,
 
+/// Whether an agent running in a Polter terminal may take screenshots.
+///
+/// With `allow`, the default, an agent has the `screenshot_*` tools: it can
+/// list the windows on screen, capture a display, a window or a region,
+/// draw annotations on a screenshot, take a long screenshot, open the
+/// screenshot interface for you, and read what earlier screenshots recorded
+/// about themselves. With `deny` every one of those tools is refused, and
+/// the refusal names this setting.
+///
+/// What an agent captures goes to a file in `screenshot-directory` and
+/// nowhere else: it is not put on the clipboard and not pasted anywhere.
+/// A terminal you have shielded is never photographed on an agent's behalf
+/// -- its window cannot be the target, and where it is visible in a wider
+/// capture it is painted over.
+///
+/// This does not affect screenshots you take yourself.
+///
+/// Only implemented on macOS and Windows.
+@"screenshot-agent-access": ScreenshotAgentAccess = .allow,
+
 /// Enables or disabled title reporting (CSI 21 t). This escape sequence
 /// allows the running program to query the terminal title. This is a common
 /// security issue and is disabled by default.
@@ -10603,6 +10623,12 @@ pub const MouseShiftCapture = enum {
     true,
     always,
     never,
+};
+
+/// See screenshot-agent-access
+pub const ScreenshotAgentAccess = enum {
+    allow,
+    deny,
 };
 
 /// See screenshot-mouse-trigger

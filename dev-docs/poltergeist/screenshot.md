@@ -194,9 +194,6 @@ mac `global:cmd+shift+0`，Windows `global:ctrl+shift+0`。用户在配置里用
 
 - SSH 到远端时不通：文件和剪贴板都在本地。
 - aider 不识别粘贴的路径（它只有 `/paste` 和 `/add`）。
-- 程序用 OSC 52 读剪贴板、而剪贴板只有图片时，也会存一张 PNG 并把路径交给它：核心对
-  「普通粘贴」和「OSC 52 读」发的是同一个 `text/plain` 请求，宿主分不开。仍受
-  `clipboard-read` 的询问/拒绝管着。要分开得改核心的请求类型，本轮不做。
 - mac 上「文本与文件谁先」沿用既有的 `getOpinionatedStringContents`（逐项先取文件路径
   再取文本），本功能只决定「是否轮到图片」。
 - 选区不识别窗口内的控件；不取浏览器 URL、不做文字识别、不读无障碍树。
@@ -236,6 +233,18 @@ mac `global:cmd+shift+0`，Windows `global:ctrl+shift+0`。用户在配置里用
 - **字体只有一种**：随包带的 Noto Sans SC Regular（SIL OFL 1.1，许可证文本随包）。
   文字与编号都用它，输入框里也用它，两个平台画出来是同一套字形。**不许回落到系统字体
   而不出声**：字体文件缺失时记日志并在工具栏给一句提示。
+  - 文件：Noto Sans SC Regular 2.004 的**简体区域子集 OTF**（notofonts/noto-cjk 的
+    `Sans/SubsetOTF/SC/NotoSansSC-Regular.otf`，8,331,336 字节，原样不改）。仓里在
+    `fonts/`，`zig build` 装到 `share/ghostty/polter/fonts/`，不编进二进制。
+  - **宿主找它的路径：`<资源目录>/polter/fonts/NotoSansSC-Regular.otf`**，许可证在同目录的
+    `OFL.txt`。资源目录就是各宿主找 skill 和插件用的那个：Windows 包里是
+    `share\ghostty\polter\fonts\NotoSansSC-Regular.otf`，mac app 里是
+    `Contents/Resources/ghostty/polter/fonts/NotoSansSC-Regular.otf`。
+  - 「出声」只针对**文件缺失**（或加载失败）。文件在、而某个字不在子集里（谚文、只有繁体
+    或日文用的字形等）时，**按字回落到系统字体，不提示**——这是正常的逐字回落，不算
+    「回落而不出声」。
+  - `tools/the-annotation-font-ships.py` 看住这条链：文件是钉住的那一份、许可证在旁边、
+    构建会装、有构建树时产物里有。
 - 当前颜色 / 粗细 / 字号**各工具分别记住**，一次截图内有效；下一次截图回到上次用过的
   值（存在宿主的状态文件里，不进配置）。
 - 每个按钮有**悬停提示**：名称 + 快捷键，走本地化。msgid 在核心 `src/input/screenshot.zig`
@@ -380,6 +389,174 @@ Windows worker 开工时提出、总管定的（2026-10-06）。纯逻辑各自�
   触发截图时出现）。
 - 合成与马赛克走与界面同一份代码，不另写一套。
 
+### 10.1 核心 ↔ 宿主契约
+
+七个工具在 `src/cli/mcp.zig` 定义，请求经 `rpc.zig` 到 app 线程。**核心做的**：权限
+（`screenshot-agent-access`）、终端 id → surface、路径校验、标注校验与规范化、
+`screenshot_info` / `screenshot_list`（纯读文件）、`screenshot_interactive`（直接发既有的
+`screenshot` 动作，宿主不用新写）。**宿主做的**：列窗口、截、给已有图加标注、长截图、报
+截图目录。
+
+#### 动作与 C ABI
+
+一个新的 apprt 动作，追加在 `Action.Key` 末尾：`poltergeist_screenshot`
+（`GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT`，`ffi.rs` 的序号 = 77）。负载两个指针，形状与
+`poltergeist_layout` 相同：
+
+```c
+typedef enum {
+  GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT_UNSUPPORTED,  // 0：宿主什么都没写
+  GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT_DONE,         // buf 里是结果 JSON
+  GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT_REFUSED,      // buf 里是 {"code","message"}
+  GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT_PENDING,      // 稍后用 token 回
+} ghostty_action_poltergeist_screenshot_result_e;
+
+typedef struct {
+  ghostty_action_poltergeist_screenshot_result_e result;
+  uint64_t token;   // 核心填；PENDING 时宿主记下，回的时候带上
+  char* buf;        // 核心的缓冲区
+  size_t cap;       // 64 KiB
+  size_t len;       // 宿主写了多少
+} ghostty_action_poltergeist_screenshot_out_s;
+
+typedef struct {
+  const char* spec;                                    // 请求 JSON，调用期间有效
+  ghostty_action_poltergeist_screenshot_out_s* out;
+} ghostty_action_poltergeist_screenshot_s;
+
+// 仅在答了 PENDING 之后调用，恰好一次，**必须在 app（UI）线程上**。
+// result 只能是 DONE 或 REFUSED。json 由核心在返回前拷走。
+GHOSTTY_API void ghostty_app_poltergeist_screenshot_complete(
+    ghostty_app_t, uint64_t token,
+    ghostty_action_poltergeist_screenshot_result_e result,
+    const char* json, uintptr_t len);
+```
+
+- 动作的 target：`capture` 的 `terminal` 目标是 `.surface`（那个终端的 surface，宿主截它
+  所在的窗口）；其余都是 `.app`。
+- **同步还是异步由宿主定**：能当场答的（`directory`、`windows`，以及 Windows 上的
+  `capture`/`annotate`）答 `DONE`；做不到的（mac 14+ 的截屏接口是异步的、长截图要滚好几屏）
+  答 `PENDING` 后尽快返回，**不许在 UI 线程上等**。工作线程做完要回到 UI 线程再调
+  `…_complete`。
+- 核心对 `PENDING` 设时限：`capture`/`annotate` 15 秒，`long` 为 10 秒 + 每屏 3 秒。超时回
+  `Timeout`；之后迟到的 `…_complete` 按未知 token 丢弃（记一行日志）。
+- 结果放不进 64 KiB（窗口极多）时宿主截断列表并在 JSON 里加 `"truncated": true`，不许写
+  半截 JSON。异步回的 JSON 不受这个上限。
+
+#### 坐标
+
+一律**某个显示器内的物理像素**，原点在该显示器左上角，配一个 `display` 序号。不用全局
+坐标：两个显示器缩放不同时 mac 没有「全局物理像素」这种空间。`display` 序号就是
+`windows` 答复里 `displays` 数组的下标，主显示器是 0。
+
+#### 请求（核心 → 宿主，`spec`）
+
+| `op` | 其余字段 | `DONE` 的 JSON |
+|---|---|---|
+| `directory` | — | `{"directory": "<绝对路径>"}`。宿主实际写截图的目录（配置 + 默认值 + `~` 展开之后）。核心不自己解析目录，只认这个答复 |
+| `windows` | — | `{"displays": [{"index": 0, "size": [w, h], "scale": 2.0, "primary": true}], "windows": [{"window_id": 123, "app": "…", "title": "…", "pid": 4242, "display": 0, "rect": [x, y, w, h]}]}`。窗口从前到后；只列普通应用窗口（与界面里悬停能选中的同一批）；`app`/`title`/`pid` 取不到就省略；跨显示器的窗口记在中心点所在的那个上，`rect` 可以超出该显示器 |
+| `capture` | `target`、`annotations`、`meta` | `{"path": "…png", "json": "…json", "size": [w, h]}` |
+| `annotate` | `path`（核心已校验的绝对路径）、`annotations`、`meta` | 同上，是**新文件**。原图旁路文件里的 `redacted` 原样抄过去 |
+| `long` | `target`（只能是 `window` 或 `region`）、`pages`（1–20）、`meta` | `{"path", "json", "size", "tiles": [{"image": "…-1.png", "y": 0, "height": 1800}], "pages": 实际滚了几屏, "stopped": "pages" \| "bottom" \| "limit"}` |
+
+`target`：`{"kind": "display", "index": 0}` ｜ `{"kind": "window", "window_id": 123}` ｜
+`{"kind": "region", "display": 0, "rect": [x, y, w, h]}` ｜ `{"kind": "terminal"}`。
+
+`meta`（核心填，宿主原样写进 `.json` 并用于日志）：
+`{"by": "agent", "agent_terminal": "0x…", "terminal": {"id": "0x…", "cwd": "/…"}}`。
+`terminal` 是调用者自己的终端；`cwd` 取不到就省略。`git` 仍由宿主在该 `cwd` 下取（§11）。
+
+`annotations`：核心**已校验并规范化**，宿主拿到的每一项都带齐字段、不用再判缺省；坐标是
+**结果图的像素**（与 `.json` 里的一致）：
+
+| `type` | 字段 |
+|---|---|
+| `rect`、`ellipse` | `rect` `[x,y,w,h]`、`color`、`width` |
+| `line`、`arrow` | `from` `[x,y]`、`to` `[x,y]`、`color`、`width` |
+| `pen`、`highlighter` | `points` `[[x,y],…]`（至少 2 个）、`color`、`width` |
+| `text` | `at` `[x,y]`、`text`、`color`、`font_size` |
+| `number` | `n`、`at` `[x,y]`、`text`（可空）、`color`、`font_size` |
+| `mosaic` | `rect`、`block` |
+
+- `color` 是 `#RRGGBB`（大写），agent 可以给任意颜色，缺省 `#E62828`。
+- `width`、`font_size`、`block` 是**逻辑点**，必须是 §9.1 / §9.5 的档值之一（`width` 1/2/4/6/10，
+  `font_size` 14/18/24/32/44，`block` 8/12/16/24/32），缺省各取第 2 档。给了别的值核心回
+  `BadAnnotations`，不就近取整。
+- `number` 缺 `n` 时核心按出现顺序从 1 编。
+- 上限：200 项；每段 `text` 2000 字节；`points` 每项 5000 个点。
+- ⚠️ `pen`/`highlighter` 作为**输入**带 `points`；写进 `.json` 的仍只有 `bbox`（§11）。所以
+  `screenshot_info` 读回来的画笔不能原样再喂给 `screenshot_annotate`——工具说明里写明。
+
+`annotate` 的新文件：`.json` 的 `source`/`display` 抄原图旁路文件的（原图没有旁路文件就
+省略），`annotations` = 原有的 + 新加的，`by` = `agent`，`previous` = 原图文件名。
+
+#### 宿主的拒绝码（`REFUSED` 的 `code`）
+
+| `code` | 何时 |
+|---|---|
+| `ScreenRecordingRequired` | mac 没授屏幕录制。**不许因此弹系统授权框** |
+| `AccessibilityRequired` | mac 的 `long` 没授辅助功能。同样不弹 |
+| `NoSuchWindow` / `NoSuchDisplay` | `window_id` / `index` 不存在（窗口可能刚关） |
+| `BadRegion` | 矩形与该显示器没有交集，或宽高为 0 |
+| `Busy` | 用户的定格界面正开着，或另一次 agent 截图还没完 |
+| `BadImage` | `annotate` 的文件读不出来 |
+| `CaptureFailed` / `WriteFailed` | 截不到 / 写不进目录，`message` 里带系统给的原因 |
+
+`message` 是给 agent 读的一句英文，说清楚是什么、能做什么。未知的 `code` 核心原样透传。
+
+#### 核心自己答的错误
+
+`NotPermitted`（`screenshot-agent-access = deny`，文案点名这个配置项）、`Unsupported`
+（宿主答 0，例如 GTK）、`UnknownTerminal`、`BadPath`（不在截图目录里，或名字不符合模式）、
+`NotFound`、`BadAnnotations`（文案说是第几项、哪个字段）、`Timeout`、`HostFault`（宿主回的
+路径不在它自己报的目录里，或 JSON 解不开——这是宿主的 bug，不是 agent 的）。
+
+#### 路径与命名
+
+- 模式在第二轮扩成 `YYYYMMDD-HHMMSS-mmm` + 可选的 `-<1 到 3 位数字>` + `.png` / `.json`
+  （后缀是长截图的分片）。**两个宿主的 7 天清理也要认这个扩展后的模式**，否则分片永远
+  不会被清。
+- 校验在核心（`src/poltergeist/` 下的纯函数，有测试）：取宿主报的目录，路径必须是它的
+  **直接子项**（不许子目录、不许 `..`、不许符号链接指到外面——按解析后的真实路径比），
+  文件名符合上面的模式。`screenshot_info`、`screenshot_annotate` 的 `path` 和宿主回来的
+  每一个路径都过这道。
+- agent 截的图不进剪贴板、不粘贴；宿主对 `by = agent` 的请求不许碰剪贴板，也不许更新
+  「上一张粘贴的图」那份缓存。
+- 每次 `capture` / `annotate` / `long` 宿主记一行日志：`agent_terminal`、`op`、目标、结果
+  路径或拒绝码。
+
+#### 屏蔽的终端（shielded）
+
+被用户屏蔽的终端禁止任何 agent 读，截图不许成为绕过它的路：
+
+1. `capture` 的 `target = terminal` 且该终端 shielded → **核心**拒绝，`NotPermitted`，动作
+   不发给宿主。
+2. `by = agent` 的任何截图（`capture` 的 display / window / region / terminal，以及 `long`）：
+   **宿主在合成前把画面里 shielded 窗格的矩形涂成纯黑**，原像素不出去——与马赛克同一条
+   「原图不落地」，而且先于马赛克和其它标注落到图上。`.json` 里记
+   `"redacted": [[x, y, w, h], …]`（结果图像素；没有就省略这个键）。用户自己触发的截图不涂。
+3. 宿主怎么知道哪些窗格 shielded：既有的 `poltergeist_mark` 动作已经把每个 surface 的
+   `shielded` 送到宿主（`ghostty_action_poltergeist_mark_s.shielded`，标签页的锁就是它），
+   宿主按 surface 记着最后一次的值，不用新接口。
+4. 矩形怎么算：对每个 shielded 且**所在窗口此刻在屏幕上**（没最小化、没隐藏、在当前桌面）
+   的窗格，取它的终端视图在所截显示器内的物理像素矩形，与所截区域求交，平移到结果图坐标。
+   **不判遮挡**：窗格被别的窗口盖住时也照涂——宁可多涂，判遮挡判错一次就是泄露。
+   长截图里每一帧各算各的，拼接前就涂。
+5. 纯函数（两个宿主各自实现、各有测试）：输入「窗格矩形列表 + 所截区域矩形」，输出结果图
+   坐标下要涂的矩形列表；空交集的不出现，超出的裁到图内。
+
+#### MCP 工具的参数（agent 看到的）
+
+| 工具 | 参数 |
+|---|---|
+| `screenshot_windows` | 无 |
+| `screenshot_capture` | `target`: `"display"` \| `"window"` \| `"region"` \| `"terminal"`；`display`: 整数（`display`/`region` 用，缺省 0）；`window_id`: 整数；`rect`: `[x,y,w,h]`；`terminal`: 终端 id（`terminal` 目标用，缺省是自己）；`annotations`: 数组，可省。每种目标只收自己的参数，多给别的目标的参数回 `BadParams` |
+| `screenshot_annotate` | `path`、`annotations` |
+| `screenshot_long` | `window_id`，或 `display` + `rect`；`pages`: 1–20 |
+| `screenshot_interactive` | 无。返回 `{"started": true}`，不等用户 |
+| `screenshot_info` | `path`，或 `latest: true` |
+| `screenshot_list` | `limit`: 1–50，缺省 10。每条：`path`、`time`（文件名里的时间）、`size`、`source`、`annotations`（条数）、`by`；没有旁路文件的（粘贴存下的图）只有 `path`、`time`、`size`（读 PNG 头） |
+
 ## 11. 旁路文件 v2
 
 `version` 升到 2。新增（取不到的键省略，不写空值）：
@@ -440,10 +617,65 @@ Windows worker 开工时提出、总管定的（2026-10-06）。纯逻辑各自�
 - 匹配与排序是核心里的纯函数（`form.zig` 一侧），两个宿主只管画；字号、网格照 §2.3a/§2.3b
   （settings.md）。
 
+### 12.3 核心给宿主的东西（契约）
+
+表单 JSON（`ghostty_app_config_form`，形状见 `src/config/form.zig` 的 `writeJson`）第二轮
+多了这些，**老字段一个没动**，不认识新字段的宿主照旧能画前五组：
+
+- `sections` 末尾多一组 `"group": "screenshot"`，`keys` 依次是 `clipboard-paste-image`、
+  `screenshot-directory`、`screenshot-mouse-trigger`、`screenshot-agent-access`。宿主把这一
+  组画在「快捷键」之前。
+- 每个 section 多一个 `shortcuts` 数组（只有截图组非空）：
+  `{"action": "screenshot", "label", "summary", "aliases"}`——就是 §12.1 表里最后那一行。
+  `label`/`summary` 是 msgid；当前绑定由宿主用 `ghostty_config_trigger(action)` 取了自己
+  格式化，没绑定时显示本地化的「未设置」。
+- 每个 item 多五个字段：
+  - `aliases`：字符串数组，搜索用的别名词（**不是 msgid，不翻译**，原样参与匹配）。
+  - `on` / `off`：`toggle` 控件写入的值；`null` 表示写 `true` / `false`。
+    `screenshot-agent-access` 是 `"allow"` / `"deny"`。**宿主的开关控件必须读这两个字段**，
+    对它写 `true` 会被核心以 `invalid_value` 拒绝。
+  - `choice_template`：带一个 `%s` 的 msgid。`choice_labels` 里为 `null` 的那些取值由宿主
+    拼：把取值里的修饰键按本平台写快捷键的方式写出来（mac `⌘⇧`，Windows `Ctrl+Shift`），
+    代入翻译后的模板。只有 `screenshot-mouse-trigger` 用到，模板是 `%s + Double-Click`。
+- 新控件名 `directory`：路径框 + 「选择…」+ 「在文件管理器中显示」，写入方式同 `text`
+  （空 = 还原默认）。
+- `screenshot-mouse-trigger` 是 `choice`，但它的键不是枚举：`choices` 是核心表里列的七个
+  （`none`、`super+shift`、`ctrl+shift`、`alt+shift`、`super+alt`、`ctrl+alt`、`super+ctrl`），
+  第一个的名字是 msgid `Off`。**配置文件里写了不在表里的组合**（如三个修饰键）时，宿主把
+  当前值作为额外一项显示在下拉里并选中它，不许显示成第一项。
+
+搜索（`ghostty_app_config_form_search(app, entries, entries_len, query, query_len, buf, cap)`，
+纯函数，实现是 `form.zig` 的 `search`）：
+
+- `entries` 是 JSON 数组，**一项对应一个可被搜到的最子项，顺序 = 结果里「同级按原有顺序」
+  的那个顺序**。每项 `{"name", "aliases", "key", "summary", "choices"}`，全部可省：
+
+  | 条目 | `name` | `aliases` | `key` | `summary` | `choices` |
+  |---|---|---|---|---|---|
+  | 通用表单项 | 本地化名称 | 表里的 `aliases`；界面不是英文时再加英文原名 | 配置键 | 本地化说明 | 各取值的本地化名 |
+  | 快捷键行（§12.1 末行） | 本地化 `label` | 表里的 `aliases` | `action` | 本地化 `summary` | — |
+  | 角色 / 项目 / 插件 | 它的名字 | — | — | 有说明就放 | — |
+  | 插件自己的表单项 | 该项名称 | — | 该项的键 | 该项说明 | 有就放 |
+  | 快捷键页的动作 | 动作的本地化名称 | — | 动作名 | 当前绑定的文本 | — |
+
+- 答复 `{"hits": [{"index": 在 entries 里的下标, "rank": "name" | "alias" | "key" | "summary"}]}`，
+  已排好序。宿主按下标找回自己的条目；它是什么类型、点了跳哪，核心不知道也不管。
+- 规则（有测试）：查询按空白（含全角空格）切成词，**每个词都要命中**；一个词的级别是它
+  命中的最强字段（名称 > 别名 > 键名 > 说明 = 取值名），一个条目的级别是它各词里**最弱**的
+  那个；同级按 `entries` 的顺序。空查询没有结果（宿主显示原页面）。
+- 不分大小写的范围：ASCII、带重音的拉丁字母（À–Þ）、希腊字母、西里尔字母。**不是完整的
+  Unicode 大小写折叠**：这些范围之外的字母（拉丁扩展、带重音的希腊大写等）只按原样匹配。
+- 「取值名命中」规格 §12.2 没给级别，定为与说明同级（最弱）。
+
 ## 13. 第一轮留下、这一轮清掉的
 
 - OSC 52 读剪贴板不再触发存图：核心让宿主分得清「用户粘贴」与「程序读剪贴板」，只有前者
   走图片（§8 那条限制删掉）。
+  做法：新导出 `bool ghostty_clipboard_request_is_paste(const void* state)`，`state` 就是
+  读剪贴板回调收到的那个指针；只有键位动作发起的粘贴答 `true`，OSC 52、Kitty 读、列类型都
+  答 `false`。两个宿主在「剪贴板只有图片 → 存图粘路径」那一支前各加这一个条件；文本与
+  复制的文件不受影响（那是剪贴板上本来就有的内容）。mac 上「手动粘贴本机截图时补发标注
+  文本」跟着同一个条件走，所以也不会发给程序读。
 - Windows「截图快捷键被占用」的提示补中文；本轮所有新 msgid 给全部已有语言补译文
   （机器翻译的在 po 里按该仓惯例标注，不冒充人工校对）。
 - mac 的文案键与核心 msgid 的一致性加机器检查。

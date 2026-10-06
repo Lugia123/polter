@@ -224,6 +224,22 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .key = (try optionalString(aa, params, "key")) orelse "",
         } },
 
+        // The screenshot tools carry each parameter as the JSON it arrived
+        // as; `screenshot.zig` decides what a value may be. The names were
+        // checked above, against the same structs.
+        .screenshot_windows => .screenshot_windows,
+        .screenshot_interactive => .screenshot_interactive,
+        inline .screenshot_capture,
+        .screenshot_annotate,
+        .screenshot_long,
+        .screenshot_info,
+        .screenshot_list,
+        => |m| @unionInit(
+            rpc.Request,
+            @tagName(m),
+            try rawParams(@FieldType(rpc.Request, @tagName(m)), aa, params),
+        ),
+
         .terminal_open => .{
             .terminal_open = .{
                 .cwd = (try optionalString(aa, params, "cwd")) orelse "",
@@ -383,6 +399,21 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
     };
 
     return value;
+}
+
+/// A payload whose every field is the raw JSON text of the parameter with
+/// that name, and empty when the parameter was not given.
+fn rawParams(comptime T: type, aa: Allocator, params: ?std.json.ObjectMap) ParseError!T {
+    var out: T = .{};
+    const obj = params orelse return out;
+    inline for (@typeInfo(T).@"struct".fields) |f| {
+        if (obj.get(f.name)) |v| {
+            var buf: std.Io.Writer.Allocating = .init(aa);
+            std.json.Stringify.value(v, .{}, &buf.writer) catch return error.BadParams;
+            @field(out, f.name) = buf.written();
+        }
+    }
+    return out;
 }
 
 fn requireId(params: ?std.json.ObjectMap) ParseError!Bus.Id {
@@ -2462,4 +2493,40 @@ test "role_launch place: read exactly as terminal_open's" {
         defer p.deinit();
         try testing.expectEqual(c.want, p.value.role_launch.place);
     }
+}
+
+test "wire: a screenshot call carries each parameter as the JSON it arrived as" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const req = try parseRequestLeaky(arena.allocator(),
+        \\{"method":"screenshot_capture","params":{"target":"region","display":1,"rect":[1,2,30,40],
+        \\ "annotations":[{"type":"text","at":[5,6],"text":"间距"}]}}
+    );
+    const args = req.screenshot_capture;
+    try testing.expectEqualStrings("\"region\"", args.target);
+    try testing.expectEqualStrings("1", args.display);
+    try testing.expectEqualStrings("[1,2,30,40]", args.rect);
+    try testing.expectEqualStrings("[{\"type\":\"text\",\"at\":[5,6],\"text\":\"间距\"}]", args.annotations);
+    // Not given is empty, which is how "absent" is told from `null`.
+    try testing.expectEqualStrings("", args.window_id);
+    try testing.expectEqualStrings("", args.terminal);
+
+    const bare = try parseRequestLeaky(arena.allocator(),
+        \\{"method":"screenshot_windows"}
+    );
+    try testing.expect(bare == .screenshot_windows);
+
+    const list = try parseRequestLeaky(arena.allocator(),
+        \\{"method":"screenshot_list","params":{"limit":3}}
+    );
+    try testing.expectEqualStrings("3", list.screenshot_list.limit);
+
+    // A parameter the tool does not have is a mistake, not something to drop.
+    try testing.expectError(error.BadParams, parseRequestLeaky(arena.allocator(),
+        \\{"method":"screenshot_capture","params":{"target":"display","window":5}}
+    ));
+    try testing.expectError(error.BadParams, parseRequestLeaky(arena.allocator(),
+        \\{"method":"screenshot_windows","params":{"display":0}}
+    ));
 }

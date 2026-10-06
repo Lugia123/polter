@@ -2379,10 +2379,15 @@ extern "C" fn cb_read_clipboard(
     // as it was read above and this function as it was before any of this.
     let text = if wants_text {
         use polter_shots::paste::{choose, Available, Source};
+        // An image is turned into a file only for the person pasting. A
+        // program reading the clipboard (OSC 52) arrives here with the same
+        // `text/plain` request and must get what is there, not a path to a
+        // file it never asked to have written.
+        let pasting = unsafe { (api().clipboard_request_is_paste)(state) };
         let on = Available {
             text: text.is_some(),
             files: shots::has_files(),
-            image: shots::has_image(),
+            image: pasting && shots::has_image(),
         };
         match choose(on, shots::enabled()) {
             Source::Text | Source::Nothing => text,
@@ -4188,6 +4193,20 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             }
         }
 
+        // An agent's `screenshot_*` tool, for this host to carry out: the
+        // contract is `dev-docs/poltergeist/screenshot.md`, section 10.1. The
+        // core half landed first. Until this arm reads `spec` and writes the
+        // out cell, the cell stays as the core zeroed it, which the core
+        // reports to the agent as `Unsupported` -- the honest answer.
+        // owed: 1088 -- the host half of the agent screenshot tools.
+        ffi::ACTION_POLTERGEIST_SCREENSHOT => {
+            alogf!(
+                origin,
+                "[action] poltergeist_screenshot: arrived, and this host does not answer it yet (task 1088)"
+            );
+            false
+        }
+
         // From the menu, the command palette, or the keybind pressed while a
         // terminal has the keyboard (the global hotkey and the mouse trigger
         // do not come through here; `shot.rs` owns those).
@@ -5190,6 +5209,7 @@ fn load_api() -> Option<Api> {
             app_config_form: sym!(internal, "ghostty_app_config_form"),
             app_config_set: sym!(internal, "ghostty_app_config_set"),
             app_config_set_result: sym!(internal, "ghostty_app_config_set_result"),
+            clipboard_request_is_paste: sym!(internal, "ghostty_clipboard_request_is_paste"),
             surface_complete_clipboard_request: sym!(
                 internal,
                 "ghostty_surface_complete_clipboard_request"

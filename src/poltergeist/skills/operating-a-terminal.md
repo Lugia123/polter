@@ -278,6 +278,47 @@ messaging.** A `group_post` goes into Polter's chat log and onto the user's
 screen. A message sent out of band is in neither, so nobody — you after a
 restart, the supervisor, the user — can read that it was ever said.
 
+## Looking at the screen: the `screenshot_*` tools
+
+When the work is about how something *looks* — a layout that is off, a
+dialog nobody can describe — you can take the picture yourself instead of
+asking for one. Every terminal may; the user's `screenshot-agent-access`
+setting is what turns it off, and then each of these answers `NotPermitted`
+and names that setting.
+
+- **`screenshot_windows`** first. It lists the displays and the windows on
+  them. Coordinates are pixels *inside one display*, so a rect always travels
+  with a display index — there is no single space across two screens.
+- **`screenshot_capture`** takes the picture: a `display`, a `window` (by the
+  `window_id` you were just given), a `region`, or the window a `terminal` is
+  in. You get back a path. **Read the image from that path**; nothing goes on
+  the clipboard and nothing is pasted, because the clipboard is the user's.
+  It can draw `annotations` in the same call — boxes, arrows, numbers, text,
+  and a `mosaic` over anything that should not be legible.
+- **`screenshot_annotate`** draws on a screenshot that already exists and
+  gives you a new file; the original is left alone.
+- **`screenshot_long`** scrolls a window and stitches what goes by. Read its
+  `tiles`, not the whole image: one picture that tall gets scaled down until
+  nothing in it can be read. The user will see the window scroll.
+- **`screenshot_interactive`** presses the screenshot key *for* the user, who
+  then picks and annotates. It returns at once; you are not told what they
+  chose. Use it when they should show you something.
+- **`screenshot_info`** and **`screenshot_list`** read what earlier
+  screenshots recorded about themselves: which window, which terminal and
+  commit, every annotation with its position and text.
+
+Two things these will not do. A path that is not a screenshot in the
+screenshot directory is refused (`BadPath`) — they are not a way to read a
+file. And a terminal the user has shielded is never photographed for you:
+it cannot be the target, and where it shows in a wider capture it comes back
+painted black, with the rectangle listed under `redacted`.
+
+On macOS a capture needs the Screen Recording permission, and a long
+screenshot also needs Accessibility. Without them you get
+`ScreenRecordingRequired` or `AccessibilityRequired` and **no prompt is put
+up on your behalf** — say so to the user; taking one screenshot themselves
+is what raises the system's prompt.
+
 ## Reading the rest
 
 `skill_read(name)` hands you any of Polter's skills — instructions, not

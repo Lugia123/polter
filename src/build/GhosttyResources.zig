@@ -187,6 +187,21 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
         }
     }
 
+    // The font the screenshot tool draws its annotations with, and its
+    // license. A file rather than something compiled in: both hosts hand a
+    // path to the system's font loader, and a path is what they need. Found
+    // as `<resources dir>/polter/fonts/NotoSansSC-Regular.otf`; see
+    // `fonts/README.md`.
+    {
+        const install_step = b.addInstallDirectory(.{
+            .source_dir = b.path("fonts"),
+            .install_dir = .{ .custom = "share" },
+            .install_subdir = b.pathJoin(&.{ "ghostty", "polter", "fonts" }),
+            .exclude_extensions = &.{".md"},
+        });
+        try steps.append(b.allocator, &install_step.step);
+    }
+
     // Themes
     if (cfg.emit_themes) {
         if (b.lazyDependency("iterm2_themes", .{})) |upstream| {

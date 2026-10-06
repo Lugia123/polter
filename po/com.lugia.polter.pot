@@ -1131,44 +1131,6 @@ msgid "Toggle the background opacity of a window that started transparent."
 msgstr ""
 
 #: src/input/command.zig:739
-msgid "Screenshot"
-msgstr ""
-
-#: src/input/command.zig:740
-msgid ""
-"Freeze the screen, pick a window or drag a region, annotate it, and put the "
-"result on the clipboard."
-msgstr ""
-
-#: src/input/screenshot.zig:43
-msgid "Screenshot annotations"
-msgstr ""
-
-#: src/input/screenshot.zig:44
-msgid "Text"
-msgstr ""
-
-#: src/input/screenshot.zig:45
-msgid "Box"
-msgstr ""
-
-#: src/input/screenshot.zig:46
-msgid "Arrow"
-msgstr ""
-
-#: src/input/screenshot.zig:47
-msgid "Pen"
-msgstr ""
-
-#: src/input/screenshot.zig:48
-msgid "; "
-msgstr ""
-
-#: src/input/screenshot.zig:49
-msgid ". See "
-msgstr ""
-
-#: src/input/command.zig:739
 msgid "Check for Updates"
 msgstr ""
 
@@ -2307,32 +2269,8 @@ msgstr ""
 msgid "None"
 msgstr ""
 
-#: windows/host/src/strip.rs:1295
-msgid "Blue"
-msgstr ""
-
-#: windows/host/src/strip.rs:1296
-msgid "Purple"
-msgstr ""
-
 #: windows/host/src/strip.rs:1297
 msgid "Pink"
-msgstr ""
-
-#: windows/host/src/strip.rs:1298
-msgid "Red"
-msgstr ""
-
-#: windows/host/src/strip.rs:1299
-msgid "Orange"
-msgstr ""
-
-#: windows/host/src/strip.rs:1300
-msgid "Yellow"
-msgstr ""
-
-#: windows/host/src/strip.rs:1301
-msgid "Green"
 msgstr ""
 
 #: windows/host/src/strip.rs:1302
@@ -3241,4 +3179,208 @@ msgstr ""
 
 #: windows/host/src/general_ui.rs:754
 msgid "More…"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Select"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Rectangle"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Ellipse"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Straight Line"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Highlighter"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Number"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Mosaic"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Long Screenshot"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Done"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Color"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Thickness"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Block Size"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Red"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Orange"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Yellow"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Green"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Cyan"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Blue"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Purple"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Black"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "White"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Circle"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Line"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Screenshot"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Screenshot annotations"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Text"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Box"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Arrow"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Pen"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "; "
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid ". See "
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Freeze the screen, pick a window or drag a region, annotate it, and put the result on the clipboard."
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "The annotation font is missing, so the system font is used."
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Scroll down slowly. What comes into view is added at the bottom."
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Scroll slower"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "The height limit was reached."
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "The screenshot shortcut could not be registered"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Another application is already using it. Choose a different one with a `screenshot` keybind in the configuration."
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "No settings match."
+msgstr ""
+
+#: src/config/form.zig
+msgid "Paste Images as Files"
+msgstr ""
+
+#: src/config/form.zig
+msgid "Save a pasted image as a file and paste its path."
+msgstr ""
+
+#: src/config/form.zig
+msgid "Screenshot Folder"
+msgstr ""
+
+#: src/config/form.zig
+msgid "Where screenshots and pasted images are saved."
+msgstr ""
+
+#: src/config/form.zig
+msgid "Mouse Trigger"
+msgstr ""
+
+#: src/config/form.zig
+msgid "Hold these keys and double-click to take a screenshot."
+msgstr ""
+
+#: src/config/form.zig
+msgid "%s + Double-Click"
+msgstr ""
+
+#: src/config/form.zig
+msgid "Let Agents Take Screenshots"
+msgstr ""
+
+#: src/config/form.zig
+msgid "Agents may capture the screen with the screenshot tools."
+msgstr ""
+
+#: src/config/form.zig
+msgid "Screenshot Shortcut"
+msgstr ""
+
+#: src/config/form.zig
+msgid "Change it with a keybind line in the config file."
 msgstr ""

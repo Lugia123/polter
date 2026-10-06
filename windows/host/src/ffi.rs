@@ -129,6 +129,12 @@ pub const ACTION_POLTERGEIST_GROUPING: u32 = 75;
 /// Checked by `the Windows host's action tags` in `src/apprt/action.zig`.
 pub const ACTION_SCREENSHOT: u32 = 76;
 
+/// `Action.Key.poltergeist_screenshot`, appended after `screenshot`
+/// (task 1087; the contract is `dev-docs/poltergeist/screenshot.md`, 10.1).
+/// ⚠️ **Appended, like every one before it.** Only the ordinal is here: the
+/// out struct, its accessor and the arm in `cb_action` are task 1088's.
+pub const ACTION_POLTERGEIST_SCREENSHOT: u32 = 77;
+
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
 // **Every ordinal below was counted twice, from two files that are generated
@@ -1500,6 +1506,11 @@ pub struct Api {
     /// is what holds the two together.
     pub surface_complete_clipboard_request:
         unsafe extern "C" fn(Surface, *const ClipboardComplete, *mut c_void),
+    /// `ghostty_clipboard_request_is_paste(state)`: whether the read this
+    /// `state` belongs to is the person pasting, as opposed to a program
+    /// reading the clipboard. The two ask for the same `text/plain`; only
+    /// the first may be answered with the path of a saved image.
+    pub clipboard_request_is_paste: unsafe extern "C" fn(*const c_void) -> bool,
     /// The other way to finish a started request: the user said no. The core
     /// answers the protocol (an empty OSC 52 reply, a Kitty `EPERM`) and frees
     /// the state. Before this existed "no" had to be spelled as an empty

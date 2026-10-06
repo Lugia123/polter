@@ -353,7 +353,12 @@ extension Ghostty {
                     // the path of a file holding the image. Asked first, and
                     // it answers nil for everything that is not that case, so
                     // text and copied files go the way they always did.
+                    //
+                    // Only for the person pasting. A program that reads the
+                    // clipboard (OSC 52) asks with the same "text/plain" and
+                    // must get what is there, not a file it never asked for.
                     if mime == "text/plain", location == GHOSTTY_CLIPBOARD_STANDARD,
+                       ghostty_clipboard_request_is_paste(state),
                        let config = (NSApplication.shared.delegate as? AppDelegate)?.ghostty.config,
                        let path = ImagePasteService.shared.pastedPath(
                         from: pasteboard,

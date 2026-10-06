@@ -1069,6 +1069,112 @@ const tools = [_]Tool{
         \\{"type":"object","properties":{"group":{"type":"string"},"limit":{"type":"integer"},"before":{"type":"integer"},"state":{"type":"string","enum":["open","closed","cancelled"]},"owner":{"type":"integer"},"match":{"type":"string"}},"required":["group"],"additionalProperties":false}
         ,
     },
+    .{
+        .name = "screenshot_windows",
+        .description = "What is on screen that can be captured: every display (`index`, `size` in " ++
+            "pixels, `scale`) and every ordinary window, front to back (`window_id`, `app`, " ++
+            "`title`, `pid`, the `display` it is on and its `rect` there). **Coordinates are " ++
+            "pixels inside one display, origin at that display's top left** -- there is no " ++
+            "single coordinate space across displays, so a rect always goes with a display " ++
+            "index. Call this before screenshot_capture with a window or a region: a " ++
+            "`window_id` is only good while that window is open. Refused with NotPermitted " ++
+            "when the user has set `screenshot-agent-access = deny`.",
+        .schema =
+        \\{"type":"object","properties":{}}
+        ,
+    },
+    .{
+        .name = "screenshot_capture",
+        .description = "Take a screenshot without any interface appearing, and get back the " ++
+            "path of the PNG, the path of the `.json` describing it, and its size. **Read " ++
+            "the image from the path yourself** -- nothing is put on the clipboard and " ++
+            "nothing is pasted anywhere; the clipboard is the user's. `target` is " ++
+            "\"display\" (with `display`, default 0), \"window\" (with `window_id` from " ++
+            "screenshot_windows), \"region\" (with `display` and `rect`: [x, y, w, h] in that " ++
+            "display's pixels) or \"terminal\" (with `terminal`, a terminal id, default " ++
+            "yours: the window that terminal is in). `annotations` draws on it in the same " ++
+            "call -- an array of {type, ...} in the image's own pixels: rect and ellipse " ++
+            "take `rect`; line and arrow take `from` and `to`; pen and highlighter take " ++
+            "`points`; text takes `at` and `text`; number takes `at` and optionally `text` " ++
+            "and `n`; mosaic takes `rect` and blurs it beyond recovery. `color` is " ++
+            "\"#RRGGBB\"; `width` is one of 1, 2, 4, 6, 10; `font_size` one of 14, 18, 24, " ++
+            "32, 44; a mosaic's `block` one of 8, 12, 16, 24, 32 -- any other value is " ++
+            "refused rather than rounded. ⚠️ A terminal the user has shielded is never the " ++
+            "target, and where one is visible in a wider capture it is painted black; the " ++
+            "`.json` lists those rectangles as `redacted`. ⚠️ On macOS this needs the " ++
+            "Screen Recording permission and answers ScreenRecordingRequired without it -- " ++
+            "it will not put the system's prompt up; ask the user to take one screenshot " ++
+            "themselves, which does.",
+        .schema =
+        \\{"type":"object","properties":{"target":{"type":"string","enum":["display","window","region","terminal"]},"display":{"type":"integer"},"window_id":{"type":"integer"},"rect":{"type":"array","description":"[x, y, w, h] in that display's pixels"},"terminal":{"type":"string"},"annotations":{"type":"array"}},"required":["target"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "screenshot_annotate",
+        .description = "Draw on a screenshot that already exists and get a **new file** back; " ++
+            "the original is not changed. `path` must be one screenshot_capture or " ++
+            "screenshot_list gave you -- only a file in the screenshot directory, named the " ++
+            "way screenshots are named, is accepted, and anything else is BadPath. " ++
+            "`annotations` is the same array screenshot_capture takes, in that image's " ++
+            "pixels. ⚠️ What screenshot_info reports for a pen or highlighter stroke is its " ++
+            "bounding box, not its points, so a stroke read back from there cannot be fed " ++
+            "in here as it is.",
+        .schema =
+        \\{"type":"object","properties":{"path":{"type":"string"},"annotations":{"type":"array"}},"required":["path","annotations"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "screenshot_long",
+        .description = "A long screenshot of something that scrolls: the window `window_id`, or " ++
+            "the region `rect` on `display`, scrolled down `pages` screens (1 to 20) and " ++
+            "stitched into one tall image. The reply has the whole image and its `tiles` -- " ++
+            "the same picture cut into pieces no taller than 1800 pixels, which is what to " ++
+            "read: a single image that tall is scaled down until it cannot be read. " ++
+            "`stopped` says why it ended: \"pages\" (it scrolled as far as asked), " ++
+            "\"bottom\" (the content ran out) or \"limit\" (20000 pixels). It takes a few " ++
+            "seconds per page and **the wheel is turned over that window while it runs**, " ++
+            "so the user will see it scroll. ⚠️ On macOS turning the wheel needs the " ++
+            "Accessibility permission; without it this answers AccessibilityRequired and " ++
+            "does not ask for it.",
+        .schema =
+        \\{"type":"object","properties":{"window_id":{"type":"integer"},"display":{"type":"integer"},"rect":{"type":"array","description":"[x, y, w, h] in that display's pixels"},"pages":{"type":"integer","minimum":1,"maximum":20}},"required":["pages"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "screenshot_interactive",
+        .description = "Press the screenshot key for the user: the screen freezes and **the user** " ++
+            "picks the region and annotates it. Returns at once with `started` and does not " ++
+            "wait -- you are not told when they finish or what they chose. Use it when the " ++
+            "user should show you something; the result reaches you the way any screenshot " ++
+            "of theirs does, by being pasted, or ask screenshot_info for `latest` afterwards.",
+        .schema =
+        \\{"type":"object","properties":{}}
+        ,
+    },
+    .{
+        .name = "screenshot_info",
+        .description = "Everything recorded about one screenshot: the whole `.json` beside it -- " ++
+            "who took it (`by`), which display and at what scale, the window it was of, the " ++
+            "terminal and git commit it was taken from, each annotation with its position, " ++
+            "colour and text, any `redacted` rectangles, and the `tiles` of a long one. Give " ++
+            "`path`, or `latest: true` for the newest. Only a file in the screenshot " ++
+            "directory is read (BadPath otherwise). An image that was merely pasted from the " ++
+            "clipboard has nothing recorded and answers NotFound.",
+        .schema =
+        \\{"type":"object","properties":{"path":{"type":"string"},"latest":{"type":"boolean"}},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "screenshot_list",
+        .description = "The newest screenshots, newest first: `path`, `time` (local, from the file " ++
+            "name), `size`, where it came from (`source`), how many `annotations`, and who " ++
+            "took it (`by`). `limit` is 1 to 50, default 10. Also names the screenshot " ++
+            "`directory`. Images pasted from the clipboard are listed too, with only their " ++
+            "path, time and size.",
+        .schema =
+        \\{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}
+        ,
+    },
 };
 
 const Tool = struct {

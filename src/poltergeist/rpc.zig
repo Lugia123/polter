@@ -19,6 +19,7 @@ const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Plugin = @import("Plugin.zig");
 const Tasks = @import("Tasks.zig");
+const screenshot = @import("screenshot.zig");
 pub const actions = @import("actions.zig");
 pub const keys = @import("keys.zig");
 pub const persona = @import("persona.zig");
@@ -405,6 +406,20 @@ pub const Method = enum {
     /// Read-only, and reached like `terminal_read`: the target's mark
     /// decides.
     terminal_turn,
+
+    /// The screenshot tools: `dev-docs/poltergeist/screenshot.md`, section
+    /// 10. Open to any agent while `screenshot-agent-access` allows it, and
+    /// to no plugin.
+    ///
+    /// Seven methods rather than one with an `op`, because each is a tool an
+    /// agent picks by name and a refusal has to be able to say which.
+    screenshot_windows,
+    screenshot_capture,
+    screenshot_annotate,
+    screenshot_long,
+    screenshot_interactive,
+    screenshot_info,
+    screenshot_list,
 };
 
 pub const Request = union(Method) {
@@ -587,6 +602,17 @@ pub const Request = union(Method) {
 
     agent_event: AgentEvent.Event,
     terminal_turn: struct { id: Bus.Id },
+
+    // The screenshot tools. Every parameter is carried as its raw JSON text
+    // and read in `screenshot.zig`, where the rule and its test are in one
+    // file; `wire` checks only the names.
+    screenshot_windows,
+    screenshot_capture: screenshot.CaptureArgs,
+    screenshot_annotate: screenshot.AnnotateArgs,
+    screenshot_long: screenshot.LongArgs,
+    screenshot_interactive,
+    screenshot_info: screenshot.InfoArgs,
+    screenshot_list: screenshot.ListArgs,
 };
 
 /// How much text one `group_read` reply may carry.
@@ -878,6 +904,16 @@ pub fn callableByPlugin(method: Method) bool {
         // setting of this machine; widening is easy and narrowing after
         // somebody has built on the wider rule is not.
         .terminal_answer_prompt,
+
+        // The screen is the user's, and a plugin is a setting of this
+        // machine rather than somebody doing a piece of work on it.
+        .screenshot_windows,
+        .screenshot_capture,
+        .screenshot_annotate,
+        .screenshot_long,
+        .screenshot_interactive,
+        .screenshot_info,
+        .screenshot_list,
         => false,
 
         // About the caller: its identity, its standing, its box, its window.
@@ -1098,6 +1134,18 @@ pub fn requiresSupervisor(method: Method) bool {
         // refusing would mean an agent cannot find out why it was nudged.
         .skill_read => false,
 
+        // Looking at the screen is not arranging the work, and a worker
+        // asked to fix a layout bug has to be able to see it. What governs
+        // these is the user's `screenshot-agent-access`, not standing.
+        .screenshot_windows,
+        .screenshot_capture,
+        .screenshot_annotate,
+        .screenshot_long,
+        .screenshot_interactive,
+        .screenshot_info,
+        .screenshot_list,
+        => false,
+
         // What this terminal itself may do. The same kind of question as
         // `me`, and needing standing for it would mean a worker could not
         // find out what it is allowed to do -- which is the one thing every
@@ -1251,6 +1299,13 @@ pub fn targetsTerminal(method: Method) bool {
 
         // Names a setting, not a terminal.
         .config_get,
+        .screenshot_windows,
+        .screenshot_capture,
+        .screenshot_annotate,
+        .screenshot_long,
+        .screenshot_interactive,
+        .screenshot_info,
+        .screenshot_list,
         .persona_face,
         .persona_slot,
         .persona_wait,
@@ -1347,6 +1402,17 @@ pub fn target(req: Request) ?Bus.Id {
         .terminal_keys,
         .terminal_open,
         .config_get,
+        // `screenshot_capture` may name a terminal, as `terminal`: whose
+        // window to photograph is not reach into that terminal, and the one
+        // rule about it -- never a shielded one -- is checked where the
+        // call is carried out.
+        .screenshot_windows,
+        .screenshot_capture,
+        .screenshot_annotate,
+        .screenshot_long,
+        .screenshot_interactive,
+        .screenshot_info,
+        .screenshot_list,
         .persona_face,
         .persona_slot,
         .persona_wait,
@@ -1413,6 +1479,13 @@ pub fn selfPermitted(req: Request) bool {
         .notify_user,
         .skill_read,
         .config_get,
+        .screenshot_windows,
+        .screenshot_capture,
+        .screenshot_annotate,
+        .screenshot_long,
+        .screenshot_interactive,
+        .screenshot_info,
+        .screenshot_list,
         .persona_face,
         .persona_slot,
         .persona_wait,
@@ -1659,6 +1732,13 @@ pub fn promptReach(method: Method) enum {
         .notify_user,
         .skill_read,
         .config_get,
+        .screenshot_windows,
+        .screenshot_capture,
+        .screenshot_annotate,
+        .screenshot_long,
+        .screenshot_interactive,
+        .screenshot_info,
+        .screenshot_list,
         .persona_face,
         .persona_slot,
         .persona_wait,
@@ -2111,6 +2191,15 @@ test "only what changes the arrangement needs the supervisor" {
         const open = switch (m) {
             .me,
             .skill_read,
+
+            // Looking at the screen changes nothing about who minds whom.
+            .screenshot_windows,
+            .screenshot_capture,
+            .screenshot_annotate,
+            .screenshot_long,
+            .screenshot_interactive,
+            .screenshot_info,
+            .screenshot_list,
 
             // What this terminal itself may do -- the same kind of
             // question as `me`. Needing the supervisor's standing for it
@@ -5153,6 +5242,39 @@ pub const Host = struct {
             kind: Tasks.Kind,
         ) anyerror!u64,
 
+        /// Whether the user lets agents take screenshots
+        /// (`screenshot-agent-access`).
+        screenshotAllowed: *const fn (ctx: *anyopaque) bool,
+
+        /// Hand one screenshot request to the apprt and say what it
+        /// answered. `directory` is what the apprt reported earlier, kept
+        /// for checking an answer that arrives later; empty when the
+        /// request is the one that asks for it.
+        ///
+        /// `pending` means the request has been parked by the host and
+        /// **must not be answered by the caller**.
+        screenshotHost: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            by: Bus.Id,
+            request: screenshot.HostRequest,
+            directory: []const u8,
+        ) anyerror!screenshot.HostReply,
+
+        /// Start the interactive screenshot, as the user's own key would.
+        /// False when this apprt has none.
+        screenshotInteractive: *const fn (ctx: *anyopaque) bool,
+
+        /// A terminal's working directory, when it is known.
+        screenshotCwd: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+        ) ?[]const u8,
+
+        /// For reading the screenshot directory.
+        screenshotIo: *const fn (ctx: *anyopaque) std.Io,
+
         /// Rearrange a tab's panes into a shape given from outside.
         ///
         /// `spec` is JSON and travels as text on purpose: the tree belongs
@@ -5750,6 +5872,13 @@ pub fn isAgentCall(method: Method) bool {
         .plugin_configure,
         .plugin_test,
         .config_get,
+        .screenshot_windows,
+        .screenshot_capture,
+        .screenshot_annotate,
+        .screenshot_long,
+        .screenshot_interactive,
+        .screenshot_info,
+        .screenshot_list,
         .terminal_capabilities,
         .terminal_open,
         .role_list,
@@ -6429,6 +6558,15 @@ pub fn dispatch(
             // answer; `keys.Outcome` argues each one.
             return .{ .text = outcome.describe() };
         },
+
+        .screenshot_windows,
+        .screenshot_capture,
+        .screenshot_annotate,
+        .screenshot_long,
+        .screenshot_interactive,
+        .screenshot_info,
+        .screenshot_list,
+        => return screenshotCall(alloc, bus, host, caller, req),
 
         .terminal_layout => |p| {
             const answer = host.layout(alloc, p.id, p.layout) catch |err| return switch (err) {
@@ -7990,6 +8128,139 @@ fn launchedWatching(
     return if (held.want.watch) .later else .not_asked;
 }
 
+/// The seven screenshot tools: `dev-docs/poltergeist/screenshot.md`, 10.1.
+///
+/// What is decided here is everything that does not need a screen -- the
+/// user's switch, which terminal, which directory, whether a path is one of
+/// ours -- and the order matters: nothing is asked of the apprt until the
+/// request is one it can simply carry out.
+fn screenshotCall(
+    alloc: std.mem.Allocator,
+    bus: *Bus,
+    host: Host,
+    caller: Bus.Id,
+    req: Request,
+) wire.Response {
+    const v = host.vtable;
+    if (!v.screenshotAllowed(host.ctx)) return hostFailure(
+        "NotPermitted",
+        "the user has turned screenshots by agents off (`screenshot-agent-access = deny`). " ++
+            "Nothing was captured. Ask the user for the screenshot, or to change that setting.",
+    );
+
+    switch (req) {
+        .screenshot_interactive => {
+            if (!v.screenshotInteractive(host.ctx)) return hostFailure(
+                "Unsupported",
+                "this platform has no screenshot interface to open",
+            );
+            // It has started, and that is all that is known: the picking
+            // and the annotating are the user's and take as long as they take.
+            return .{ .json = "{\"started\":true}" };
+        },
+        .screenshot_windows => return screenshotReply(alloc, host, caller, .{
+            .op = .windows,
+            .spec = screenshot.windows_spec,
+        }, ""),
+        else => {},
+    }
+
+    // Everything else is about files, and the only side that knows where
+    // they go is the one that writes them.
+    const directory = directory: {
+        const reply = v.screenshotHost(host.ctx, alloc, caller, .{
+            .op = .directory,
+            .spec = screenshot.directory_spec,
+        }, "") catch return hostFailure("ScreenshotFailed", "the screenshot directory could not be asked for");
+        switch (reply) {
+            .done => |json| break :directory screenshot.directoryOf(alloc, json) orelse
+                return screenshotFailed(screenshot.refusal(alloc, "")),
+            .unsupported => return screenshotUnsupported(),
+            .refused => |json| return screenshotFailed(screenshot.refusal(alloc, json)),
+            // Where the files go is not something to wait for.
+            .pending => return screenshotFailed(screenshot.refusal(alloc, "")),
+        }
+    };
+
+    const meta: screenshot.Meta = .{
+        .by = caller,
+        .cwd = v.screenshotCwd(host.ctx, alloc, caller),
+    };
+
+    const prepared: screenshot.Prepared = switch (req) {
+        .screenshot_info => |a| return screenshotAnswer(
+            screenshot.info(v.screenshotIo(host.ctx), alloc, directory, a),
+        ),
+        .screenshot_list => |a| return screenshotAnswer(
+            screenshot.list(v.screenshotIo(host.ctx), alloc, directory, a),
+        ),
+        .screenshot_capture => |a| screenshot.prepareCapture(alloc, a, meta),
+        .screenshot_annotate => |a| screenshot.prepareAnnotate(alloc, a, meta, directory),
+        .screenshot_long => |a| screenshot.prepareLong(alloc, a, meta),
+        else => unreachable,
+    };
+
+    const request = switch (prepared) {
+        .failed => |f| return screenshotFailed(f),
+        .request => |r| r,
+    };
+
+    if (request.surface) |id| {
+        const entry = bus.get(id) orelse return failure(error.UnknownTerminal);
+        // **The shield is absolute, and a photograph of the terminal is a
+        // way of reading it.** Refused here, before the apprt is asked, so
+        // that nothing about that window is captured at all.
+        if (entry.shielded) return hostFailure(
+            "NotPermitted",
+            "that terminal is shielded: the user has closed it to every agent, and a " ++
+                "screenshot of its window would be a way of reading it. Nothing was captured.",
+        );
+    }
+
+    return screenshotReply(alloc, host, caller, request, directory);
+}
+
+fn screenshotReply(
+    alloc: std.mem.Allocator,
+    host: Host,
+    caller: Bus.Id,
+    request: screenshot.HostRequest,
+    directory: []const u8,
+) wire.Response {
+    const reply = host.vtable.screenshotHost(host.ctx, alloc, caller, request, directory) catch |err|
+        return switch (err) {
+            error.NoSuchTerminal, error.UnknownTerminal => failure(error.UnknownTerminal),
+            else => hostFailure("ScreenshotFailed", "the screenshot request could not be handed to the window system"),
+        };
+    return switch (reply) {
+        .unsupported => screenshotUnsupported(),
+        .refused => |json| screenshotFailed(screenshot.refusal(alloc, json)),
+        .done => |json| screenshotAnswer(screenshot.finish(alloc, request.op, directory, json)),
+        // ⚠️ **Not an answer.** The host has parked the request and will
+        // complete it itself; whoever called `dispatch` must not send this.
+        // `.ok` because the type needs a value, not because anything is.
+        .pending => .ok,
+    };
+}
+
+fn screenshotAnswer(answer: screenshot.Answer) wire.Response {
+    return switch (answer) {
+        .json => |j| .{ .json = j },
+        .failed => |f| screenshotFailed(f),
+    };
+}
+
+fn screenshotFailed(f: screenshot.Failure) wire.Response {
+    return .{ .failed = .{ .code = f.code, .message = f.message } };
+}
+
+fn screenshotUnsupported() wire.Response {
+    return hostFailure(
+        "Unsupported",
+        "this platform does not take screenshots for agents, and nothing was captured",
+    );
+}
+
 fn hostFailure(code: []const u8, message: []const u8) wire.Response {
     return .{ .failed = .{ .code = code, .message = message } };
 }
@@ -8031,6 +8302,16 @@ const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 /// A host that records what it was asked to do and can be told to refuse.
 const FakeHost = struct {
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
+
+    /// The screenshot tools: what the user's switch says, what the apprt
+    /// answers to each kind of request, and what it was last asked.
+    shot_allowed: bool = true,
+    shot_directory: screenshot.HostReply = .{ .done = "{\"directory\":\"/s\"}" },
+    shot_reply: screenshot.HostReply = .unsupported,
+    shot_interactive: bool = true,
+    shot_asked: ?struct { spec: []const u8, surface: ?Bus.Id, op: screenshot.Op } = null,
+    shot_asks: usize = 0,
+    shot_io: ?std.Io = null,
 
     /// What the role library calls were handed, and what they fail with.
     role_put: ?[]const u8 = null,
@@ -8245,6 +8526,48 @@ const FakeHost = struct {
     /// Terminals this fake says exist, for `terminal_capabilities`.
     known: []const Bus.Id = &.{ boss, worker, other },
 
+    fn screenshotAllowedFake(ctx: *anyopaque) bool {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.shot_allowed;
+    }
+
+    fn screenshotHostFake(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        by: Bus.Id,
+        request: screenshot.HostRequest,
+        directory: []const u8,
+    ) anyerror!screenshot.HostReply {
+        _ = by;
+        _ = directory;
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.shot_asks += 1;
+        if (request.op == .directory) return self.shot_directory;
+        self.shot_asked = .{
+            .spec = try alloc.dupe(u8, request.spec),
+            .surface = request.surface,
+            .op = request.op,
+        };
+        return self.shot_reply;
+    }
+
+    fn screenshotInteractiveFake(ctx: *anyopaque) bool {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.shot_interactive;
+    }
+
+    fn screenshotCwdFake(ctx: *anyopaque, alloc: std.mem.Allocator, id: Bus.Id) ?[]const u8 {
+        _ = ctx;
+        _ = alloc;
+        _ = id;
+        return "/work";
+    }
+
+    fn screenshotIoFake(ctx: *anyopaque) std.Io {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.shot_io.?;
+    }
+
     fn host(self: *FakeHost) Host {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
@@ -8294,6 +8617,11 @@ const FakeHost = struct {
             .taskCreate = taskCreate,
             .taskEdit = taskEdit,
             .layout = layout,
+            .screenshotAllowed = screenshotAllowedFake,
+            .screenshotHost = screenshotHostFake,
+            .screenshotInteractive = screenshotInteractiveFake,
+            .screenshotCwd = screenshotCwdFake,
+            .screenshotIo = screenshotIoFake,
             .taskAssign = taskAssign,
             .taskClose = taskClose,
             .taskOwner = taskOwner,
@@ -13424,4 +13752,226 @@ test "role_launch place: a launch nobody claimed in time lands on nothing" {
     // for.
     try testing.expect(store.takeLaunch(PersonaStore.pending_launch_ms + 1) == null);
     try testing.expect(store.pending_launch == null);
+}
+
+// -- the screenshot tools ---------------------------------------------------
+
+fn shotCode(r: wire.Response) []const u8 {
+    return switch (r) {
+        .failed => |f| f.code,
+        else => "(not refused)",
+    };
+}
+
+fn shotMessage(r: wire.Response) []const u8 {
+    return switch (r) {
+        .failed => |f| f.message,
+        else => "",
+    };
+}
+
+fn shotJson(r: wire.Response) []const u8 {
+    return switch (r) {
+        .json => |j| j,
+        .failed => |f| f.code,
+        else => "(neither)",
+    };
+}
+
+const shot_done = "{\"path\":\"/s/20261006-153012-123.png\",\"json\":\"/s/20261006-153012-123.json\",\"size\":[10,20]}";
+
+test "screenshot: with the user's switch off nothing is asked of the apprt" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .shot_allowed = false, .shot_reply = .{ .done = shot_done } };
+
+    for ([_]Request{
+        .screenshot_windows,
+        .screenshot_interactive,
+        .{ .screenshot_capture = .{ .target = "\"display\"" } },
+        .{ .screenshot_annotate = .{ .path = "\"/s/20261006-153012-123.png\"" } },
+        .{ .screenshot_long = .{ .window_id = "1", .pages = "1" } },
+        .{ .screenshot_info = .{ .latest = "true" } },
+        .{ .screenshot_list = .{} },
+    }) |req| {
+        const res = try dispatch(arena.allocator(), &b, fake.host(), term(worker), req);
+        try testing.expectEqualStrings("NotPermitted", shotCode(res));
+        // The refusal names the setting, so the reader knows whose it is.
+        try testing.expect(std.mem.indexOf(u8, shotMessage(res), "screenshot-agent-access") != null);
+    }
+    try testing.expectEqual(@as(usize, 0), fake.shot_asks);
+}
+
+test "screenshot: any terminal may capture, and the apprt gets the checked request" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .shot_reply = .{ .done = shot_done } };
+
+    // A watched worker: not a supervisor, and it does not need to be.
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(worker), .{ .screenshot_capture = .{
+        .target = "\"window\"",
+        .window_id = "7",
+    } });
+    try testing.expectEqualStrings(shot_done, shotJson(res));
+
+    const asked = fake.shot_asked.?;
+    try testing.expect(asked.op == .capture);
+    try testing.expectEqual(@as(?Bus.Id, null), asked.surface);
+    try testing.expectEqualStrings(
+        "{\"op\":\"capture\",\"target\":{\"kind\":\"window\",\"window_id\":7},\"annotations\":[]," ++
+            "\"meta\":{\"by\":\"agent\",\"agent_terminal\":\"0x0000000000002222\"," ++
+            "\"terminal\":{\"id\":\"0x0000000000002222\",\"cwd\":\"/work\"}}}",
+        asked.spec,
+    );
+}
+
+test "screenshot: a shielded terminal is never the target, and the apprt is not asked" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.watch(other, boss);
+    try b.setShielded(other, true, .user);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .shot_reply = .{ .done = shot_done } };
+
+    const refused = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .screenshot_capture = .{
+        .target = "\"terminal\"",
+        .terminal = "\"0x3333\"",
+    } });
+    try testing.expectEqualStrings("NotPermitted", shotCode(refused));
+    try testing.expect(std.mem.indexOf(u8, shotMessage(refused), "shielded") != null);
+    // Only the directory was asked for; the capture never left the core.
+    try testing.expect(fake.shot_asked == null);
+
+    // The control: the same call at a terminal that is not shielded goes
+    // through, with that terminal's surface as the action's target.
+    const allowed = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .screenshot_capture = .{
+        .target = "\"terminal\"",
+        .terminal = "\"0x2222\"",
+    } });
+    try testing.expectEqualStrings(shot_done, shotJson(allowed));
+    try testing.expectEqual(@as(?Bus.Id, worker), fake.shot_asked.?.surface);
+}
+
+test "screenshot: a terminal nobody knows is not a window to capture" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .shot_reply = .{ .done = shot_done } };
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .screenshot_capture = .{
+        .target = "\"terminal\"",
+        .terminal = "\"0x9999\"",
+    } });
+    try testing.expectEqualStrings("UnknownTerminal", shotCode(res));
+    try testing.expect(fake.shot_asked == null);
+}
+
+test "screenshot: what the apprt answers is what the caller is told" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const capture: Request = .{ .screenshot_capture = .{ .target = "\"display\"" } };
+
+    {
+        var fake: FakeHost = .{ .shot_reply = .{
+            .refused = "{\"code\":\"ScreenRecordingRequired\",\"message\":\"grant it in System Settings\"}",
+        } };
+        const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), capture);
+        try testing.expectEqualStrings("ScreenRecordingRequired", shotCode(res));
+        try testing.expectEqualStrings("grant it in System Settings", shotMessage(res));
+    }
+    {
+        var fake: FakeHost = .{ .shot_reply = .unsupported };
+        const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), capture);
+        try testing.expectEqualStrings("Unsupported", shotCode(res));
+    }
+    {
+        // An apprt with no screenshots at all does not even have a directory.
+        var fake: FakeHost = .{ .shot_directory = .unsupported, .shot_reply = .{ .done = shot_done } };
+        const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), capture);
+        try testing.expectEqualStrings("Unsupported", shotCode(res));
+        try testing.expect(fake.shot_asked == null);
+    }
+    {
+        // A file written outside the directory the apprt itself named.
+        var fake: FakeHost = .{ .shot_reply = .{
+            .done = "{\"path\":\"/tmp/20261006-153012-123.png\",\"json\":\"/s/20261006-153012-123.json\"}",
+        } };
+        const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), capture);
+        try testing.expectEqualStrings("HostFault", shotCode(res));
+    }
+    {
+        var fake: FakeHost = .{ .shot_directory = .{ .done = "{}" }, .shot_reply = .{ .done = shot_done } };
+        const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), capture);
+        try testing.expectEqualStrings("HostFault", shotCode(res));
+        try testing.expect(fake.shot_asked == null);
+    }
+}
+
+test "screenshot: a path that is not a screenshot never reaches the apprt" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .shot_reply = .{ .done = shot_done } };
+    const rect = "[{\"type\":\"rect\",\"rect\":[1,2,3,4]}]";
+
+    for ([_][]const u8{
+        "\"/etc/passwd\"",
+        "\"/s/../etc/passwd\"",
+        "\"/s/notes.png\"",
+        "\"/s/sub/20261006-153012-123.png\"",
+    }) |path| {
+        const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .screenshot_annotate = .{
+            .path = path,
+            .annotations = rect,
+        } });
+        try testing.expectEqualStrings("BadPath", shotCode(res));
+    }
+    try testing.expect(fake.shot_asked == null);
+
+    // The control: one of ours does reach it.
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .screenshot_annotate = .{
+        .path = "\"/s/20261006-153012-123.png\"",
+        .annotations = rect,
+    } });
+    try testing.expectEqualStrings(shot_done, shotJson(res));
+    try testing.expect(fake.shot_asked.?.op == .annotate);
+}
+
+test "screenshot: the interactive one only says that it started" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var fake: FakeHost = .{};
+    const started = try dispatch(arena.allocator(), &b, fake.host(), term(worker), .screenshot_interactive);
+    try testing.expectEqualStrings("{\"started\":true}", shotJson(started));
+    // The existing action carried it; no screenshot request was made.
+    try testing.expectEqual(@as(usize, 0), fake.shot_asks);
+
+    var none: FakeHost = .{ .shot_interactive = false };
+    const unsupported = try dispatch(arena.allocator(), &b, none.host(), term(worker), .screenshot_interactive);
+    try testing.expectEqualStrings("Unsupported", shotCode(unsupported));
+}
+
+test "screenshot: a plugin has none of these" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    for ([_]Method{
+        .screenshot_windows,     .screenshot_capture, .screenshot_annotate, .screenshot_long,
+        .screenshot_interactive, .screenshot_info,    .screenshot_list,
+    }) |m| {
+        try testing.expect(!callableByPlugin(m));
+        try testing.expect(!requiresSupervisor(m));
+        try testing.expect(offeredAsTool(m));
+    }
 }

@@ -2296,32 +2296,8 @@ msgstr ""
 msgid "None"
 msgstr ""
 
-#: windows/host/src/strip.rs:1295
-msgid "Blue"
-msgstr ""
-
-#: windows/host/src/strip.rs:1296
-msgid "Purple"
-msgstr ""
-
 #: windows/host/src/strip.rs:1297
 msgid "Pink"
-msgstr ""
-
-#: windows/host/src/strip.rs:1298
-msgid "Red"
-msgstr ""
-
-#: windows/host/src/strip.rs:1299
-msgid "Orange"
-msgstr ""
-
-#: windows/host/src/strip.rs:1300
-msgid "Yellow"
-msgstr ""
-
-#: windows/host/src/strip.rs:1301
-msgid "Green"
 msgstr ""
 
 #: windows/host/src/strip.rs:1302
@@ -2347,3 +2323,258 @@ msgstr ""
 #: windows/host/src/uia.rs:1168
 msgid "Menu"
 msgstr ""
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Select"
+msgstr "Selecionar"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Rectangle"
+msgstr "Retângulo"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Ellipse"
+msgstr "Elipse"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Straight Line"
+msgstr "Linha reta"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Highlighter"
+msgstr "Marca-texto"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Number"
+msgstr "Número"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Mosaic"
+msgstr "Mosaico"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Long Screenshot"
+msgstr "Captura longa"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Done"
+msgstr "Concluir"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Color"
+msgstr "Cor"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Thickness"
+msgstr "Espessura"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Block Size"
+msgstr "Tamanho do bloco"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Red"
+msgstr "Vermelho"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Orange"
+msgstr "Laranja"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Yellow"
+msgstr "Amarelo"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Green"
+msgstr "Verde"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Cyan"
+msgstr "Ciano"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Blue"
+msgstr "Azul"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Purple"
+msgstr "Roxo"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Black"
+msgstr "Preto"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "White"
+msgstr "Branco"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Circle"
+msgstr "Círculo"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Line"
+msgstr "Linha"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Screenshot"
+msgstr "Captura de tela"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Screenshot annotations"
+msgstr "Anotações da captura"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Text"
+msgstr "Texto"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Box"
+msgstr "Caixa"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Arrow"
+msgstr "Seta"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Pen"
+msgstr "Caneta"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "; "
+msgstr "; "
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid ". See "
+msgstr ". Veja "
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Freeze the screen, pick a window or drag a region, annotate it, and put the result on the clipboard."
+msgstr "Congela a tela, escolha uma janela ou arraste uma região, anote e coloque o resultado na área de transferência."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The annotation font is missing, so the system font is used."
+msgstr "A fonte de anotação está ausente, então a fonte do sistema é usada."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scroll down slowly. What comes into view is added at the bottom."
+msgstr "Role para baixo devagar. O que aparecer é adicionado ao final."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scroll slower"
+msgstr "Role mais devagar"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The height limit was reached."
+msgstr "O limite de altura foi atingido."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
+msgstr "%1$d partes no total; as primeiras %2$d estão anexadas. Imagem inteira: "
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The screenshot shortcut could not be registered"
+msgstr "Não foi possível registrar o atalho de captura de tela"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Another application is already using it. Choose a different one with a `screenshot` keybind in the configuration."
+msgstr "Outro aplicativo já o está usando. Escolha outro com um keybind `screenshot` na configuração."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "No settings match."
+msgstr "Nenhuma configuração corresponde."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Paste Images as Files"
+msgstr "Colar imagens como arquivos"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Save a pasted image as a file and paste its path."
+msgstr "Salva uma imagem colada como arquivo e cola o caminho dele."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Screenshot Folder"
+msgstr "Pasta de capturas"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Where screenshots and pasted images are saved."
+msgstr "Onde as capturas e as imagens coladas são salvas."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Mouse Trigger"
+msgstr "Gatilho do mouse"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Hold these keys and double-click to take a screenshot."
+msgstr "Segure estas teclas e clique duas vezes para capturar a tela."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "%s + Double-Click"
+msgstr "%s + clique duplo"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Let Agents Take Screenshots"
+msgstr "Permitir capturas pelos agentes"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Agents may capture the screen with the screenshot tools."
+msgstr "Os agentes podem capturar a tela com as ferramentas de captura."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Screenshot Shortcut"
+msgstr "Atalho de captura de tela"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Change it with a keybind line in the config file."
+msgstr "Altere com uma linha keybind no arquivo de configuração."

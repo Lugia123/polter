@@ -440,6 +440,18 @@ pub const Action = union(Key) {
     /// also pasted into a pane.
     screenshot,
 
+    /// One of an agent's `screenshot_*` tools, for the apprt to carry out:
+    /// list the windows, capture, annotate an image, take a long screenshot,
+    /// or say which directory screenshots go to. The contract is
+    /// `dev-docs/poltergeist/screenshot.md`, section 10.1.
+    ///
+    /// The core is a conduit, as it is for `poltergeist_layout`: the request
+    /// travels as JSON it has already checked, and the apprt -- the side
+    /// that can see the screen -- answers in the caller's buffer, or says
+    /// `pending` and answers later through
+    /// `ghostty_app_poltergeist_screenshot_complete`.
+    poltergeist_screenshot: PoltergeistScreenshot,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -524,6 +536,7 @@ pub const Action = union(Key) {
         history_filename,
         poltergeist_grouping,
         screenshot,
+        poltergeist_screenshot,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -2594,6 +2607,74 @@ pub const PoltergeistLayout = struct {
 
     pub fn cval(self: PoltergeistLayout) C {
         return .{ .spec = self.spec.ptr, .out = self.out };
+    }
+};
+
+pub const PoltergeistScreenshot = struct {
+    /// The request, as JSON: `{"op": ...}`. Valid for the call.
+    spec: [:0]const u8,
+
+    /// Where the apprt writes its answer. One pointer for the reason
+    /// `PoltergeistLayout.out` is one: the action union is pinned to three
+    /// words.
+    out: ?*Out = null,
+
+    /// Sync with: ghostty_action_poltergeist_screenshot_result_e
+    ///
+    /// `unsupported` is first so that zero is the honest answer: an apprt
+    /// that writes nothing is reported as having no such thing, rather than
+    /// as having taken a screenshot.
+    pub const Result = enum(c_int) {
+        /// This apprt does not do this.
+        unsupported,
+        /// Done. The buffer holds the result, as JSON.
+        done,
+        /// Understood and refused. The buffer holds `{"code", "message"}`,
+        /// and nothing was written to disk.
+        refused,
+        /// Not finished. The apprt has kept `token` and will call
+        /// `ghostty_app_poltergeist_screenshot_complete` with it, once, on
+        /// the app thread. The buffer is not read.
+        pending,
+
+        test "ghostty.h PoltergeistScreenshot.Result" {
+            try lib.checkGhosttyHEnum(Result, "GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT_");
+        }
+    };
+
+    /// The cell the caller hands over and reads back. The buffer is the
+    /// caller's, as it is for `PoltergeistLayout.Out`; `token` is the
+    /// caller's too, and means something only to a `pending` answer.
+    ///
+    /// Sync with: ghostty_action_poltergeist_screenshot_out_s
+    pub const Out = extern struct {
+        result: Result = .unsupported,
+        token: u64 = 0,
+        buf: ?[*]u8 = null,
+        cap: usize = 0,
+        len: usize = 0,
+    };
+
+    // Sync with: ghostty_action_poltergeist_screenshot_s
+    pub const C = extern struct {
+        spec: [*:0]const u8,
+        out: ?*Out,
+    };
+
+    pub fn cval(self: PoltergeistScreenshot) C {
+        return .{ .spec = self.spec.ptr, .out = self.out };
+    }
+
+    test "the screenshot out cell is laid out the way ghostty.h says" {
+        // Written out rather than left to the compiler on both sides: the
+        // Windows host declares this struct by hand, from these numbers.
+        const testing = std.testing;
+        try testing.expectEqual(@as(usize, 0), @offsetOf(Out, "result"));
+        try testing.expectEqual(@as(usize, 8), @offsetOf(Out, "token"));
+        try testing.expectEqual(@as(usize, 16), @offsetOf(Out, "buf"));
+        try testing.expectEqual(@as(usize, 24), @offsetOf(Out, "cap"));
+        try testing.expectEqual(@as(usize, 32), @offsetOf(Out, "len"));
+        try testing.expectEqual(@as(usize, 40), @sizeOf(Out));
     }
 };
 

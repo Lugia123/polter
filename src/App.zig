@@ -271,6 +271,22 @@ poltergeist_pending_worker: ?PendingWorker = null,
 /// thread at `pending.done`.
 poltergeist_persona_waits: poltergeistpkg.PersonaWaits = undefined,
 
+/// Screenshot requests the apprt answered `pending` to, held until it calls
+/// `ghostty_app_poltergeist_screenshot_complete` or their time runs out.
+/// Each holds a reference to its request, taken when it was parked.
+poltergeist_screenshot_waits: poltergeistpkg.screenshot.Waits(*poltergeistpkg.Server.Pending) = .{},
+
+/// The request being dispatched right now, so that a host function called
+/// from inside `dispatch` can park it. Null outside `poltergeistRequest`.
+poltergeist_dispatching: ?*poltergeistpkg.Server.Pending = null,
+
+/// Set by a host function that parked `poltergeist_dispatching`: the
+/// response `dispatch` returned is then not an answer and is not sent.
+poltergeist_parked: bool = false,
+
+/// `screenshot-agent-access`.
+poltergeist_screenshot_allowed: bool = true,
+
 /// Whether the resident plugins have been looked for. Testing the list
 /// instead would not do: with none installed it stays empty for ever,
 /// and every config reload would re-read every plugin's settings file to
@@ -469,6 +485,10 @@ pub fn deinit(self: *App) void {
     self.personas.deinit();
     self.poltergeist_agent_clis.deinit(global.io());
     self.poltergeist_persona_waits.deinit();
+    // The requests themselves are answered by the server shutting down;
+    // what is dropped here is this side's reference to each.
+    for (self.poltergeist_screenshot_waits.entries.items) |e| e.held.release();
+    self.poltergeist_screenshot_waits.deinit(self.alloc);
 
     // Clean up our font group cache
     // We should have zero items in the grid set at this point because
@@ -523,6 +543,7 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
     self.poltergeist_worker_nudge_ms =
         config.@"poltergeist-worker-nudge-after".duration / std.time.ns_per_ms;
     self.poltergeist_compact_after = config.@"poltergeist-compact-after".value;
+    self.poltergeist_screenshot_allowed = config.@"screenshot-agent-access" == .allow;
 
     self.poltergeist_notify_window =
         poltergeistpkg.notify.Window.parse(config.@"poltergeist-notify-window");
@@ -2117,6 +2138,7 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     // Anything arriving is a chance to notice a wait that has run out.
     // See `persona_wait_timeout_ms` for what this is and is not.
     self.sweepPersonaWaits();
+    self.sweepScreenshotWaits();
 
     // **Held rather than answered**, when it is a wait and nothing has
     // moved. Done here rather than in `dispatch` because `dispatch` is pure
@@ -2131,6 +2153,12 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     if (pending.request == .persona_wait) {
         if (self.parkPersonaWait(pending, caller)) return;
     }
+
+    // A host function may park this request instead of answering it (a
+    // screenshot the apprt has not finished). It finds the request here.
+    self.poltergeist_dispatching = pending;
+    self.poltergeist_parked = false;
+    defer self.poltergeist_dispatching = null;
 
     const response = poltergeistpkg.rpc.dispatch(
         pending.arena.allocator(),
@@ -2167,7 +2195,151 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
         self.deliverPoltergeistNotices(now_ms);
     }
 
+    // Parked: the apprt answers it later, through
+    // `poltergeistScreenshotComplete`, or the sweep does when its time is up.
+    if (self.poltergeist_parked) {
+        self.poltergeist_parked = false;
+        return;
+    }
+
     pending.complete(global.io(), response);
+}
+
+fn poltergeistScreenshotAllowed(ctx: *anyopaque) bool {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.poltergeist_screenshot_allowed;
+}
+
+/// Hand one screenshot request to the apprt.
+///
+/// The buffer is ours, as it is for a layout. A `pending` answer parks the
+/// request being dispatched under the token the apprt was given.
+fn poltergeistScreenshotHost(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    by: poltergeistpkg.Bus.Id,
+    request: poltergeistpkg.screenshot.HostRequest,
+    directory: []const u8,
+) anyerror!poltergeistpkg.screenshot.HostReply {
+    _ = by;
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const rt_app = self.poltergeist_rt_app orelse return .unsupported;
+
+    const target: apprt.Target = if (request.surface) |id|
+        .{ .surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal }
+    else
+        .app;
+
+    const buf = try alloc.alloc(u8, poltergeistpkg.screenshot.host_buffer_bytes);
+    const token = self.poltergeist_screenshot_waits.issue();
+    var out: apprt.action.PoltergeistScreenshot.Out = .{
+        .token = token,
+        .buf = buf.ptr,
+        .cap = buf.len,
+    };
+
+    _ = rt_app.performAction(
+        target,
+        .poltergeist_screenshot,
+        .{ .spec = request.spec, .out = &out },
+    ) catch |err| {
+        log.warn("poltergeist: screenshot action failed err={}", .{err});
+        return error.ScreenshotFailed;
+    };
+
+    const said = buf[0..@min(out.len, buf.len)];
+    switch (out.result) {
+        .unsupported => return .unsupported,
+        .done => return .{ .done = said },
+        .refused => return .{ .refused = said },
+        .pending => {
+            // Nothing to park it on, or an operation that has no business
+            // taking time: the apprt will call back with a token nobody
+            // holds, which is logged and dropped.
+            const pending = self.poltergeist_dispatching orelse return .unsupported;
+            if (request.timeout_ms == 0) return .{ .refused = "" };
+
+            try self.poltergeist_screenshot_waits.park(self.alloc, .{
+                .token = token,
+                .held = pending,
+                .op = request.op,
+                // `alloc` is the request's own arena, so this lives exactly
+                // as long as the request does.
+                .directory = try alloc.dupe(u8, directory),
+                .deadline_ms = self.poltergeistElapsedMs() + request.timeout_ms,
+            });
+            pending.retain();
+            self.poltergeist_parked = true;
+            return .pending;
+        },
+    }
+}
+
+fn poltergeistScreenshotInteractive(ctx: *anyopaque) bool {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const rt_app = self.poltergeist_rt_app orelse return false;
+    return rt_app.performAction(.app, .screenshot, {}) catch false;
+}
+
+fn poltergeistScreenshotCwd(ctx: *anyopaque, alloc: Allocator, id: poltergeistpkg.Bus.Id) ?[]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return null;
+    return surface.pwd(alloc) catch null;
+}
+
+fn poltergeistScreenshotIo(ctx: *anyopaque) std.Io {
+    _ = ctx;
+    return global.io();
+}
+
+/// The apprt has finished a screenshot it answered `pending` to.
+///
+/// `result` is the raw enum value from the C side. A token nobody holds is
+/// one that was answered already or ran out of time; it is logged, because
+/// a host that calls back twice has a bug worth seeing, and dropped.
+pub fn poltergeistScreenshotComplete(
+    self: *App,
+    token: u64,
+    result: c_int,
+    json: []const u8,
+) void {
+    const shot = poltergeistpkg.screenshot;
+    const entry = self.poltergeist_screenshot_waits.take(token) orelse {
+        log.warn("poltergeist: screenshot completion for token {d}, which is not waiting", .{token});
+        return;
+    };
+    defer entry.held.release();
+
+    const alloc = entry.held.arena.allocator();
+    // Copied: the apprt's bytes are valid only for this call.
+    const text = alloc.dupe(u8, json) catch "";
+
+    const R = apprt.action.PoltergeistScreenshot.Result;
+    const answer: shot.Answer = if (result == @intFromEnum(R.done))
+        shot.finish(alloc, entry.op, entry.directory, text)
+    else if (result == @intFromEnum(R.refused))
+        .{ .failed = shot.refusal(alloc, text) }
+    else
+        // `unsupported` or `pending` are not answers to have waited for.
+        .{ .failed = shot.refusal(alloc, "") };
+
+    entry.held.complete(global.io(), switch (answer) {
+        .json => |j| .{ .json = j },
+        .failed => |f| .{ .failed = .{ .code = f.code, .message = f.message } },
+    });
+}
+
+/// Answer screenshots whose apprt never called back.
+fn sweepScreenshotWaits(self: *App) void {
+    const now_ms = self.poltergeistElapsedMs();
+    while (self.poltergeist_screenshot_waits.takeExpired(now_ms)) |entry| {
+        log.warn("poltergeist: screenshot token {d} timed out", .{entry.token});
+        entry.held.complete(global.io(), .{ .failed = .{
+            .code = poltergeistpkg.screenshot.timeout.code,
+            .message = poltergeistpkg.screenshot.timeout.message,
+        } });
+        entry.held.release();
+    }
 }
 
 /// Put a terminal into a persona, and tell everything that is waiting.
@@ -2683,6 +2855,11 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .taskCreate = taskCreate,
         .taskEdit = taskEdit,
         .layout = poltergeistLayout,
+        .screenshotAllowed = poltergeistScreenshotAllowed,
+        .screenshotHost = poltergeistScreenshotHost,
+        .screenshotInteractive = poltergeistScreenshotInteractive,
+        .screenshotCwd = poltergeistScreenshotCwd,
+        .screenshotIo = poltergeistScreenshotIo,
         .taskAssign = taskAssign,
         .taskClose = taskClose,
         .taskOwner = taskOwner,

@@ -42,7 +42,7 @@ const log = std.log.scoped(.config_form);
 
 /// The groups of §7.1 that hold a chosen set of keys. "All options" is not
 /// one of them: it is every key, and every item is in it.
-pub const Group = enum { appearance, font, terminal, window, polter };
+pub const Group = enum { appearance, font, terminal, window, polter, screenshot };
 
 /// What a host draws for a key. Derived from the field's type by
 /// `controlOf` unless the table says otherwise.
@@ -54,6 +54,9 @@ pub const Control = enum {
     font,
     color,
     theme,
+    /// A directory: a path box, a button that picks one, and one that shows
+    /// it in the file manager. Written like `text`.
+    directory,
     /// A repeatable or compound key: shown, never written from the form
     /// (§7.4).
     readonly,
@@ -85,6 +88,43 @@ pub const Item = struct {
     /// the check below the table refuses to compile a table whose enum key
     /// leaves a value unnamed or names one the enum does not have.
     choices: ?[]const Choice = null,
+    /// A msgid with one `%s` in it, for the choices whose `label` is empty:
+    /// the host puts that value in, written the way it writes a shortcut's
+    /// modifiers. Only `screenshot-mouse-trigger` has one, because the
+    /// names of its values are the names of keys, and those are the host's
+    /// to spell (`⌘⇧` on one, `Ctrl+Shift` on the other).
+    choice_template: ?[]const u8 = null,
+    /// For a `toggle` over a key that is not a bool: the values written for
+    /// on and for off. Null for a bool, which is written `true` / `false`.
+    on: ?[]const u8 = null,
+    off: ?[]const u8 = null,
+    /// Extra words the settings search finds this row by (screenshot.md
+    /// §12.2): what somebody would type who does not know what the row is
+    /// called. **Not msgids** -- they are matched as they are, in whatever
+    /// language they are written in, under every interface language.
+    aliases: []const []const u8 = &.{},
+};
+
+/// A row that shows what an action is bound to. It has no config key of its
+/// own to write: the binding is a `keybind` line, and the row says so.
+pub const Shortcut = struct {
+    group: Group,
+    /// The keybind action, as the config file writes it.
+    action: []const u8,
+    label: []const u8,
+    summary: []const u8,
+    aliases: []const []const u8 = &.{},
+};
+
+/// The shortcut rows, drawn after their group's settings.
+pub const shortcuts = [_]Shortcut{
+    .{
+        .group = .screenshot,
+        .action = "screenshot",
+        .label = i18n.N_("Screenshot Shortcut"),
+        .summary = i18n.N_("Change it with a keybind line in the config file."),
+        .aliases = &.{ "screenshot", "hotkey", "keybind", "截图", "截屏", "快捷键", "热键" },
+    },
 };
 
 /// One value of an enum key and what the form calls it.
@@ -143,6 +183,23 @@ pub const table = [_]Item{
     .{ .key = .@"poltergeist-chat-log", .group = .polter, .label = i18n.N_("Keep Chat Log"), .summary = i18n.N_("Write what the terminals say to each other to disk.") },
     .{ .key = .@"poltergeist-terminal-log", .group = .polter, .label = i18n.N_("Keep Terminal Transcripts"), .summary = i18n.N_("Keep a transcript of what ran in each terminal.") },
     .{ .key = .language, .group = .polter, .label = i18n.N_("Language"), .summary = i18n.N_("The interface language; empty follows the system.") },
+
+    // Screenshot (screenshot.md §12.1)
+    .{ .key = .@"clipboard-paste-image", .group = .screenshot, .label = i18n.N_("Paste Images as Files"), .summary = i18n.N_("Save a pasted image as a file and paste its path."), .aliases = &.{ "screenshot", "image", "picture", "paste", "clipboard", "截图", "截屏", "图片", "粘贴", "剪贴板" } },
+    .{ .key = .@"screenshot-directory", .group = .screenshot, .control = .directory, .label = i18n.N_("Screenshot Folder"), .summary = i18n.N_("Where screenshots and pasted images are saved."), .aliases = &.{ "screenshot", "capture", "folder", "directory", "path", "save", "截图", "截屏", "保存", "目录", "文件夹", "位置" } },
+    .{ .key = .@"screenshot-mouse-trigger", .group = .screenshot, .control = .choice, .label = i18n.N_("Mouse Trigger"), .summary = i18n.N_("Hold these keys and double-click to take a screenshot."), .choices = &.{
+        .{ .value = "none", .label = i18n.N_("Off") },
+        .{ .value = "super+shift", .label = "" },
+        .{ .value = "ctrl+shift", .label = "" },
+        .{ .value = "alt+shift", .label = "" },
+        .{ .value = "super+alt", .label = "" },
+        .{ .value = "ctrl+alt", .label = "" },
+        .{ .value = "super+ctrl", .label = "" },
+    }, .choice_template = i18n.N_("%s + Double-Click"), .aliases = &.{ "screenshot", "capture", "mouse", "double-click", "double click", "截图", "截屏", "鼠标", "双击" } },
+    .{ .key = .@"screenshot-agent-access", .group = .screenshot, .control = .toggle, .on = "allow", .off = "deny", .label = i18n.N_("Let Agents Take Screenshots"), .summary = i18n.N_("Agents may capture the screen with the screenshot tools."), .choices = &.{
+        .{ .value = "allow", .label = i18n.N_("Allow") },
+        .{ .value = "deny", .label = i18n.N_("Deny") },
+    }, .aliases = &.{ "screenshot", "capture", "agent", "mcp", "permission", "截图", "截屏", "权限", "允许" } },
 };
 
 comptime {
@@ -162,12 +219,34 @@ comptime {
     for (table) |item| {
         const T = @FieldType(Config, @tagName(item.key));
         const control = item.control orelse controlOf(T);
-        if (control != .choice) {
+        const is_enum = @typeInfo(Unwrapped(T)) == .@"enum";
+
+        // A toggle writes `true` / `false` unless the row says what on and
+        // off are, and a row may only say so with both.
+        if ((item.on == null) != (item.off == null))
+            @compileError("config form: `on` without `off`, or the reverse: " ++ @tagName(item.key));
+        if (item.on != null and control != .toggle)
+            @compileError("config form: on/off values on a row that is not a toggle: " ++ @tagName(item.key));
+        if (control == .toggle and @typeInfo(Unwrapped(T)) != .bool and item.on == null)
+            @compileError("config form: a toggle over a key that is not a bool needs on/off values: " ++ @tagName(item.key));
+        if (item.choice_template != null and control != .choice)
+            @compileError("config form: a choice template on a row that is not a choice: " ++ @tagName(item.key));
+
+        if (control != .choice and !(control == .toggle and is_enum)) {
             if (item.choices != null) @compileError("config form: choices named for a key that is not an enum: " ++ @tagName(item.key));
             continue;
         }
         const names = item.choices orelse
             @compileError("config form: enum key without choice names: " ++ @tagName(item.key));
+        for (names) |c| {
+            if (c.label.len == 0 and item.choice_template == null)
+                @compileError("config form: " ++ @tagName(item.key) ++ " has a value with no name and no template: " ++ c.value);
+        }
+        // A choice over a key that is not an enum lists its own values;
+        // there is no type to hold them against here. The test
+        // "config form: every listed value of a free choice is one the key
+        // accepts" parses each of them instead.
+        if (!is_enum) continue;
         const fields = std.meta.fields(Unwrapped(T));
         for (fields) |f| {
             var found = false;
@@ -750,8 +829,11 @@ fn writeSource(w: *std.Io.Writer, scan: *const Scan, t: ?Scan.Tally) !void {
 /// loaded the way the host loads it (`loadLike`); `def` is the default one.
 ///
 ///     {"main": path, "backup": path|null, "errors": [string],
-///      "sections": [{"group": g, "keys": [key]}],
+///      "sections": [{"group": g, "keys": [key],
+///                    "shortcuts": [{"action", "label", "summary", "aliases": [s]}]}],
 ///      "items": [{"key", "group": g|null, "control", "choices": [s]|null,
+///                 "choice_labels": [s|null]|null, "choice_template": s|null,
+///                 "on": s|null, "off": s|null, "aliases": [s],
 ///                 "min"|null, "max"|null, "default", "value", "doc"|null,
 ///                 "source": {"kind": "default"|"main"|"file"|"cli", ...},
 ///                 "readonly": null|"repeatable"|"multiple"|"cli"|"file"}]}
@@ -794,6 +876,20 @@ pub fn writeJson(
             first = false;
             try w.print("\"{s}\"", .{@tagName(item.key)});
         };
+        // The rows of this group that show a binding rather than a setting.
+        try w.writeAll("],\"shortcuts\":[");
+        var first_shortcut = true;
+        inline for (shortcuts) |s| if (s.group == group) {
+            if (!first_shortcut) try w.writeAll(",");
+            first_shortcut = false;
+            try w.print("{{\"action\":\"{s}\",\"label\":{f},\"summary\":{f},\"aliases\":", .{
+                s.action,
+                std.json.fmt(s.label, .{}),
+                std.json.fmt(s.summary, .{}),
+            });
+            try writeStrings(w, s.aliases);
+            try w.writeAll("}");
+        };
         try w.writeAll("]}");
     }
 
@@ -806,6 +902,15 @@ pub fn writeJson(
         try writeItem(field.name, field.type, alloc, w, scan, cfg, def);
     }
     try w.writeAll("]}");
+}
+
+fn writeStrings(w: *std.Io.Writer, strings: []const []const u8) !void {
+    try w.writeAll("[");
+    for (strings, 0..) |s, i| {
+        if (i > 0) try w.writeAll(",");
+        try w.print("{f}", .{std.json.fmt(s, .{})});
+    }
+    try w.writeAll("]");
 }
 
 fn choiceLabel(comptime item: Item, comptime value: []const u8) []const u8 {
@@ -846,7 +951,17 @@ noinline fn writeItem(
     try w.writeAll(",\"summary\":");
     if (item) |it| try w.print("{f}", .{std.json.fmt(it.summary, .{})}) else try w.writeAll("null");
     try w.print(",\"control\":\"{s}\",\"choices\":", .{@tagName(control)});
-    if (control == .choice) {
+    // A choice over a key that is not an enum lists its own values, in the
+    // table's order; an enum's are its fields, in the type's.
+    const free_choice = comptime control == .choice and @typeInfo(U) != .@"enum";
+    if (free_choice) {
+        try w.writeAll("[");
+        inline for (item.?.choices.?, 0..) |c, i| {
+            if (i > 0) try w.writeAll(",");
+            try w.print("{f}", .{std.json.fmt(c.value, .{})});
+        }
+        try w.writeAll("]");
+    } else if (control == .choice) {
         try w.writeAll("[");
         inline for (std.meta.fields(U), 0..) |f, i| {
             if (i > 0) try w.writeAll(",");
@@ -855,9 +970,17 @@ noinline fn writeItem(
         try w.writeAll("]");
     } else try w.writeAll("null");
     // The display name of each of `choices`, in the same order (#977); null
-    // where the table names none (All Options' enums).
+    // where the table names none (All Options' enums). One that is itself
+    // null is spelled by the host, through `choice_template`.
     try w.writeAll(",\"choice_labels\":");
-    if (comptime control == .choice and item != null and item.?.choices != null) {
+    if (free_choice) {
+        try w.writeAll("[");
+        inline for (item.?.choices.?, 0..) |c, i| {
+            if (i > 0) try w.writeAll(",");
+            if (c.label.len == 0) try w.writeAll("null") else try w.print("{f}", .{std.json.fmt(c.label, .{})});
+        }
+        try w.writeAll("]");
+    } else if (comptime control == .choice and item != null and item.?.choices != null) {
         try w.writeAll("[");
         inline for (std.meta.fields(U), 0..) |f, i| {
             if (i > 0) try w.writeAll(",");
@@ -866,6 +989,19 @@ noinline fn writeItem(
         }
         try w.writeAll("]");
     } else try w.writeAll("null");
+    try w.writeAll(",\"choice_template\":");
+    if (item != null and item.?.choice_template != null)
+        try w.print("{f}", .{std.json.fmt(item.?.choice_template.?, .{})})
+    else
+        try w.writeAll("null");
+    // What a toggle writes when it is not over a bool; null for a bool.
+    try w.writeAll(",\"on\":");
+    if (item != null and item.?.on != null) try w.print("{f}", .{std.json.fmt(item.?.on.?, .{})}) else try w.writeAll("null");
+    try w.writeAll(",\"off\":");
+    if (item != null and item.?.off != null) try w.print("{f}", .{std.json.fmt(item.?.off.?, .{})}) else try w.writeAll("null");
+    // Extra words the search finds this row by. Empty outside the table.
+    try w.writeAll(",\"aliases\":");
+    try writeStrings(w, if (item) |it| it.aliases else &.{});
 
     const min: ?f64, const max: ?f64 = comptime bounds: {
         if (item) |it| if (it.min != null or it.max != null) break :bounds .{ it.min, it.max };
@@ -944,6 +1080,216 @@ pub fn formJson(alloc: Allocator, origin: Config.Origin) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
     try writeJson(alloc, &out.writer, &scan, ctx.main_path, if (has_backup) backup else null, &cfg, &def);
+    return try out.toOwnedSlice();
+}
+
+// ------------------------------------------------------------ search
+
+/// One thing the settings search can find (screenshot.md §12.2): a setting
+/// row, a role, a project, a plugin or one of its settings, an action on
+/// the shortcuts page. **The search does not know which.** A host hands
+/// over what each one is called and gets back which of them matched, by
+/// position; what a match is and where clicking it goes stay the host's.
+pub const SearchEntry = struct {
+    /// What it is called, in the interface's language.
+    name: []const u8 = "",
+    /// Other words for it: the table's `aliases`, and anything else the
+    /// host wants it found by (the English name under another language).
+    aliases: []const []const u8 = &.{},
+    /// The config key, or the action's name.
+    key: []const u8 = "",
+    /// The sentence under it; for an action, what it is bound to.
+    summary: []const u8 = "",
+    /// The names of an enum's values, in the interface's language.
+    choices: []const []const u8 = &.{},
+};
+
+/// Where a query matched, strongest first. An entry is ranked by the
+/// weakest of its terms: `folder screenshot` against a row named
+/// "Screenshot Folder" is a name match, but against a row that only
+/// mentions folders in its summary it is a summary match.
+pub const SearchRank = enum(u8) {
+    name,
+    alias,
+    key,
+    /// The summary, or the name of one of the choices.
+    summary,
+};
+
+pub const SearchHit = struct {
+    index: usize,
+    rank: SearchRank,
+};
+
+/// Lower-case `text` for comparing: ASCII, the accented Latin-1 letters,
+/// Greek and Cyrillic. Everything else is left as it is, which for Chinese,
+/// Japanese and Korean is all there is to do.
+///
+/// ⚠️ **Not full Unicode case folding.** Letters outside those blocks
+/// (Latin Extended, Armenian, ...) match only in the case they were typed
+/// in. Named here because a search that silently misses is the kind of
+/// thing that gets reported as "the setting is not there".
+fn foldAlloc(alloc: Allocator, text: []const u8) Allocator.Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    try out.ensureTotalCapacity(alloc, text.len);
+
+    var i: usize = 0;
+    while (i < text.len) {
+        const len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
+        if (len == 1 or i + len > text.len) {
+            try out.append(alloc, std.ascii.toLower(text[i]));
+            i += 1;
+            continue;
+        }
+        const cp = std.unicode.utf8Decode(text[i..][0..len]) catch {
+            try out.appendSlice(alloc, text[i..][0..len]);
+            i += len;
+            continue;
+        };
+        const lower: u21 = switch (cp) {
+            // À..Þ, without the multiplication sign.
+            0xC0...0xD6, 0xD8...0xDE => cp + 0x20,
+            // Α..Ω (0x3A2 is unassigned).
+            0x391...0x3A1, 0x3A3...0x3A9 => cp + 0x20,
+            // Ѐ..Џ and А..Я.
+            0x400...0x40F => cp + 0x50,
+            0x410...0x42F => cp + 0x20,
+            else => cp,
+        };
+        var buf: [4]u8 = undefined;
+        const n = std.unicode.utf8Encode(lower, &buf) catch {
+            try out.appendSlice(alloc, text[i..][0..len]);
+            i += len;
+            continue;
+        };
+        try out.appendSlice(alloc, buf[0..n]);
+        i += len;
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+/// The entries that match `query`, best first.
+///
+/// The query is split on whitespace into terms and **every term has to be
+/// found** somewhere in the entry -- its name, an alias, its key, its
+/// summary or the name of a choice -- as a substring, ignoring case. An
+/// empty query matches nothing: the host shows its ordinary page.
+///
+/// Sorted by rank, and within a rank in the order the entries were given,
+/// which is the order they are drawn in.
+pub fn search(alloc: Allocator, entries: []const SearchEntry, query: []const u8) Allocator.Error![]SearchHit {
+    var arena_state: ArenaAllocator = .init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var terms: std.ArrayList([]const u8) = .empty;
+    var words = std.mem.tokenizeAny(u8, try foldAlloc(arena, query), " \t\r\n\u{3000}");
+    while (words.next()) |word| try terms.append(arena, word);
+
+    var hits: std.ArrayList(SearchHit) = .empty;
+    errdefer hits.deinit(alloc);
+    if (terms.items.len == 0) return hits.toOwnedSlice(alloc);
+
+    entries: for (entries, 0..) |entry, index| {
+        const name = try foldAlloc(arena, entry.name);
+        const key = try foldAlloc(arena, entry.key);
+        const summary = try foldAlloc(arena, entry.summary);
+
+        var weakest: SearchRank = .name;
+        for (terms.items) |term| {
+            const rank: SearchRank = rank: {
+                if (std.mem.indexOf(u8, name, term) != null) break :rank .name;
+                for (entry.aliases) |alias| {
+                    if (std.mem.indexOf(u8, try foldAlloc(arena, alias), term) != null) break :rank .alias;
+                }
+                if (std.mem.indexOf(u8, key, term) != null) break :rank .key;
+                if (std.mem.indexOf(u8, summary, term) != null) break :rank .summary;
+                for (entry.choices) |choice| {
+                    if (std.mem.indexOf(u8, try foldAlloc(arena, choice), term) != null) break :rank .summary;
+                }
+                // One term nowhere: the terms are an "and".
+                continue :entries;
+            };
+            if (@intFromEnum(rank) > @intFromEnum(weakest)) weakest = rank;
+        }
+        try hits.append(alloc, .{ .index = index, .rank = weakest });
+    }
+
+    // Stable, so that equal ranks keep the order they were given in.
+    std.mem.sort(SearchHit, hits.items, {}, struct {
+        fn before(_: void, a: SearchHit, b: SearchHit) bool {
+            if (a.rank != b.rank) return @intFromEnum(a.rank) < @intFromEnum(b.rank);
+            return a.index < b.index;
+        }
+    }.before);
+    return hits.toOwnedSlice(alloc);
+}
+
+/// `search` for a host: the entries as a JSON array of
+/// `{"name", "aliases", "key", "summary", "choices"}` -- every field
+/// optional -- and the answer as `{"hits": [{"index", "rank"}]}`.
+///
+/// An entry that is not an object, or a field of the wrong type, counts as
+/// empty rather than failing the search: one malformed plugin manifest
+/// should not empty the results for everything else.
+pub fn searchJson(alloc: Allocator, entries_json: []const u8, query: []const u8) ![]u8 {
+    var arena_state: ArenaAllocator = .init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const root = std.json.parseFromSliceLeaky(std.json.Value, arena, entries_json, .{}) catch
+        return error.InvalidEntries;
+    const list = switch (root) {
+        .array => |a| a.items,
+        else => return error.InvalidEntries,
+    };
+
+    const H = struct {
+        fn string(obj: std.json.ObjectMap, name: []const u8) []const u8 {
+            return switch (obj.get(name) orelse return "") {
+                .string => |s| s,
+                else => "",
+            };
+        }
+
+        fn strings(a: Allocator, obj: std.json.ObjectMap, name: []const u8) ![]const []const u8 {
+            const items = switch (obj.get(name) orelse return &.{}) {
+                .array => |arr| arr.items,
+                else => return &.{},
+            };
+            var out: std.ArrayList([]const u8) = .empty;
+            for (items) |item| switch (item) {
+                .string => |s| try out.append(a, s),
+                else => {},
+            };
+            return out.items;
+        }
+    };
+
+    const entries = try arena.alloc(SearchEntry, list.len);
+    for (list, entries) |value, *entry| {
+        entry.* = switch (value) {
+            .object => |obj| .{
+                .name = H.string(obj, "name"),
+                .aliases = try H.strings(arena, obj, "aliases"),
+                .key = H.string(obj, "key"),
+                .summary = H.string(obj, "summary"),
+                .choices = try H.strings(arena, obj, "choices"),
+            },
+            else => .{},
+        };
+    }
+
+    const hits = try search(arena, entries, query);
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"hits\":[");
+    for (hits, 0..) |hit, i| {
+        if (i > 0) try out.writer.writeAll(",");
+        try out.writer.print("{{\"index\":{d},\"rank\":\"{s}\"}}", .{ hit.index, @tagName(hit.rank) });
+    }
+    try out.writer.writeAll("]}");
     return try out.toOwnedSlice();
 }
 
@@ -1533,12 +1879,18 @@ test "config form: every value of a named enum key has a name, in the JSON too (
         named += 1;
         for (names, 0..) |c, i| {
             errdefer std.debug.print("#977: {s}={s} is named \"{s}\"\n", .{ @tagName(item.key), c.value, c.label });
-            try testing.expect(c.label.len > 0);
+            // A value with no name of its own is one the host spells, and
+            // the row has to carry the template it is spelled into.
+            if (c.label.len == 0) {
+                try testing.expect(item.choice_template != null);
+                continue;
+            }
             // Two values with one name could not be told apart in the list.
             for (names[i + 1 ..]) |other| try testing.expect(!std.mem.eql(u8, c.label, other.label));
         }
     }
-    try testing.expectEqual(@as(usize, 10), named);
+    // The ten of #977, and the two the screenshot group added.
+    try testing.expectEqual(@as(usize, 12), named);
 
     var fx: Fixture = try .init();
     defer fx.deinit();
@@ -1701,4 +2053,325 @@ test "config form: the value shown is the host's own file's, --config-default-fi
     try testing.expectEqualStrings(override, cfg._origin.file.?);
     // The command line still counts.
     try testing.expectEqual(Config.WindowSaveState.never, cfg.@"window-save-state");
+}
+
+// ------------------------------------------------------------ screenshot group, search
+
+fn renderForTest(alloc: Allocator) !std.json.Parsed(std.json.Value) {
+    var fx: Fixture = try .init();
+    defer fx.deinit();
+    const scan = try gather(fx.arena.allocator(), testing.io, fx.ctx(&.{}));
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+    var def = try Config.default(testing.allocator);
+    defer def.deinit();
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try writeJson(testing.allocator, &out.writer, &scan, fx.path("config"), null, &cfg, &def);
+    return try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{ .allocate = .alloc_always });
+}
+
+fn itemNamed(root: std.json.Value, key: []const u8) ?std.json.ObjectMap {
+    for (root.object.get("items").?.array.items) |item| {
+        if (std.mem.eql(u8, item.object.get("key").?.string, key)) return item.object;
+    }
+    return null;
+}
+
+test "config form: the screenshot group lists its four settings and its shortcut row" {
+    const parsed = try renderForTest(testing.allocator);
+    defer parsed.deinit();
+
+    const sections = parsed.value.object.get("sections").?.array.items;
+    // After Polter, so the hosts draw it last of the table's groups.
+    const last = sections[sections.len - 1].object;
+    try testing.expectEqualStrings("screenshot", last.get("group").?.string);
+
+    const keys = last.get("keys").?.array.items;
+    try testing.expectEqual(@as(usize, 4), keys.len);
+    try testing.expectEqualStrings("clipboard-paste-image", keys[0].string);
+    try testing.expectEqualStrings("screenshot-directory", keys[1].string);
+    try testing.expectEqualStrings("screenshot-mouse-trigger", keys[2].string);
+    try testing.expectEqualStrings("screenshot-agent-access", keys[3].string);
+
+    const rows = last.get("shortcuts").?.array.items;
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqualStrings("screenshot", rows[0].object.get("action").?.string);
+    try testing.expectEqualStrings("Screenshot Shortcut", rows[0].object.get("label").?.string);
+    try testing.expect(rows[0].object.get("aliases").?.array.items.len > 0);
+
+    // Every other group has the key and no rows in it.
+    for (sections[0 .. sections.len - 1]) |section| {
+        try testing.expectEqual(@as(usize, 0), section.object.get("shortcuts").?.array.items.len);
+    }
+}
+
+test "config form: each screenshot row says how it is drawn and what it writes" {
+    const parsed = try renderForTest(testing.allocator);
+    defer parsed.deinit();
+    const root = parsed.value;
+
+    const paste = itemNamed(root, "clipboard-paste-image").?;
+    try testing.expectEqualStrings("toggle", paste.get("control").?.string);
+    // A bool writes true and false; nothing says otherwise.
+    try testing.expect(paste.get("on").? == .null);
+    try testing.expect(paste.get("off").? == .null);
+    try testing.expectEqualStrings("true", paste.get("value").?.string);
+    // The words the search finds it by travel with the row.
+    var has_alias = false;
+    for (paste.get("aliases").?.array.items) |alias| {
+        if (std.mem.eql(u8, alias.string, "截屏")) has_alias = true;
+    }
+    try testing.expect(has_alias);
+
+    const directory = itemNamed(root, "screenshot-directory").?;
+    try testing.expectEqualStrings("directory", directory.get("control").?.string);
+    try testing.expect(directory.get("readonly").? == .null);
+
+    const mouse = itemNamed(root, "screenshot-mouse-trigger").?;
+    try testing.expectEqualStrings("choice", mouse.get("control").?.string);
+    const values = mouse.get("choices").?.array.items;
+    const labels = mouse.get("choice_labels").?.array.items;
+    try testing.expectEqual(@as(usize, 7), values.len);
+    try testing.expectEqual(values.len, labels.len);
+    // Off is a word; the rest are keys, which the host spells.
+    try testing.expectEqualStrings("none", values[0].string);
+    try testing.expectEqualStrings("Off", labels[0].string);
+    for (labels[1..]) |label| try testing.expect(label == .null);
+    const template = mouse.get("choice_template").?;
+    try testing.expect(template == .string);
+    try testing.expectEqualStrings("%s + Double-Click", template.string);
+    // What it is set to is one of the things it offers.
+    const current = mouse.get("value").?.string;
+    var offered = false;
+    for (values) |v| {
+        if (std.mem.eql(u8, v.string, current)) offered = true;
+    }
+    try testing.expect(offered);
+
+    const agents = itemNamed(root, "screenshot-agent-access").?;
+    try testing.expectEqualStrings("toggle", agents.get("control").?.string);
+    try testing.expectEqualStrings("allow", agents.get("on").?.string);
+    try testing.expectEqualStrings("deny", agents.get("off").?.string);
+    try testing.expectEqualStrings("allow", agents.get("value").?.string);
+
+    // A row outside the screenshot group has none of the new fields set.
+    const size = itemNamed(root, "font-size").?;
+    try testing.expect(size.get("choice_template").? == .null);
+    try testing.expect(size.get("on").? == .null);
+    try testing.expectEqual(@as(usize, 0), size.get("aliases").?.array.items.len);
+}
+
+test "config form: every listed value of a free choice is one the key accepts, as the file writes it" {
+    // A dropdown value the parser refuses would be a row that fails every
+    // time it is chosen; one the formatter writes differently would never
+    // show as selected after being chosen.
+    inline for (table) |item| {
+        const T = @FieldType(Config, @tagName(item.key));
+        const control = comptime item.control orelse controlOf(T);
+        if (comptime control == .choice and @typeInfo(Unwrapped(T)) != .@"enum") {
+            for (item.choices.?) |choice| {
+                errdefer std.debug.print("{s}: `{s}`\n", .{ @tagName(item.key), choice.value });
+                const bad = try validate(testing.allocator, @tagName(item.key), choice.value);
+                defer if (bad) |b| testing.allocator.free(b);
+                try testing.expect(bad == null);
+
+                var v: T = undefined;
+                try v.parseCLI(choice.value);
+                var out: std.Io.Writer.Allocating = .init(testing.allocator);
+                defer out.deinit();
+                try v.formatEntry(formatter.entryFormatter("k", &out.writer));
+                const expected = try std.fmt.allocPrint(testing.allocator, "k = {s}\n", .{choice.value});
+                defer testing.allocator.free(expected);
+                try testing.expectEqualStrings(expected, out.written());
+            }
+        }
+    }
+}
+
+test "config form: a toggle's on and off are values of its key" {
+    inline for (table) |item| {
+        if (item.on) |on| {
+            const T = Unwrapped(@FieldType(Config, @tagName(item.key)));
+            const on_value = std.meta.stringToEnum(T, on);
+            const off_value = std.meta.stringToEnum(T, item.off.?);
+            try testing.expect(on_value != null);
+            try testing.expect(off_value != null);
+            try testing.expect(on_value.? != off_value.?);
+        }
+    }
+}
+
+test "config form: every screenshot row can be found by the word screenshot, in two languages" {
+    // §12.2's own example: the rows carry `screenshot` and `截屏` so that
+    // somebody who does not know a row's name still finds it.
+    var seen: usize = 0;
+    inline for (table) |item| {
+        if (item.group == .screenshot) {
+            seen += 1;
+            inline for (.{ "screenshot", "截屏" }) |word| {
+                var found = false;
+                for (item.aliases) |alias| {
+                    if (std.mem.eql(u8, alias, word)) found = true;
+                }
+                if (!found) std.debug.print("{s} has no alias `{s}`\n", .{ @tagName(item.key), word });
+                try testing.expect(found);
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 4), seen);
+}
+
+const search_fixture = [_]SearchEntry{
+    // 0
+    .{ .name = "Font Size", .key = "font-size", .summary = "In points; may be fractional." },
+    // 1
+    .{ .name = "截图保存位置", .aliases = &.{ "screenshot", "截屏", "capture", "folder" }, .key = "screenshot-directory", .summary = "截图和粘贴的图片存在哪里。" },
+    // 2
+    .{ .name = "鼠标触发", .aliases = &.{ "screenshot", "截屏", "double-click" }, .key = "screenshot-mouse-trigger", .summary = "按住这些键双击即可截图。", .choices = &.{ "关", "⌘⇧ + 双击" } },
+    // 3: only its key says "screenshot".
+    .{ .name = "允许 Agent 截屏", .key = "screenshot-agent-access", .summary = "Agent 可以用工具拍下屏幕。" },
+    // 4: only its summary mentions it.
+    .{ .name = "Clipboard Reading", .key = "clipboard-read", .summary = "Also governs a screenshot pasted by a program.", .choices = &.{ "Ask", "Allow", "Deny" } },
+    // 5: a role, which has nothing but a name.
+    .{ .name = "Screenshot Reviewer" },
+};
+
+fn expectHits(query: []const u8, expected: []const SearchHit) !void {
+    const hits = try search(testing.allocator, &search_fixture, query);
+    defer testing.allocator.free(hits);
+    errdefer {
+        std.debug.print("`{s}` gave:", .{query});
+        for (hits) |h| std.debug.print(" {d}/{s}", .{ h.index, @tagName(h.rank) });
+        std.debug.print("\n", .{});
+    }
+    try testing.expectEqual(expected.len, hits.len);
+    for (expected, hits) |e, h| {
+        try testing.expectEqual(e.index, h.index);
+        try testing.expectEqual(e.rank, h.rank);
+    }
+}
+
+test "config search: name, then alias, then key, then summary; ties keep their order" {
+    // "screenshot": 5 by name; 1 and 2 by alias, in the order given; 3 by
+    // key; 4 by its summary. Entry 0 not at all.
+    try expectHits("screenshot", &.{
+        .{ .index = 5, .rank = .name },
+        .{ .index = 1, .rank = .alias },
+        .{ .index = 2, .rank = .alias },
+        .{ .index = 3, .rank = .key },
+        .{ .index = 4, .rank = .summary },
+    });
+}
+
+test "config search: case is ignored, and Chinese is matched as it is" {
+    try expectHits("SCREENSHOT reviewer", &.{.{ .index = 5, .rank = .name }});
+    try expectHits("截图", &.{
+        .{ .index = 1, .rank = .name },
+        .{ .index = 2, .rank = .summary },
+    });
+    try expectHits("截屏", &.{
+        .{ .index = 3, .rank = .name },
+        .{ .index = 1, .rank = .alias },
+        .{ .index = 2, .rank = .alias },
+    });
+}
+
+test "config search: every term has to be found, and the weakest one decides the rank" {
+    // Both words in the name.
+    try expectHits("size font", &.{.{ .index = 0, .rank = .name }});
+    // One in the name, one only in the summary.
+    try expectHits("font fractional", &.{.{ .index = 0, .rank = .summary }});
+    // One of them nowhere.
+    try expectHits("font screenshot", &.{});
+    // Across fields of different entries is not a match for either.
+    try expectHits("reviewer folder", &.{});
+}
+
+test "config search: the name of a choice finds the row, as weakly as its summary does" {
+    try expectHits("deny", &.{.{ .index = 4, .rank = .summary }});
+    try expectHits("双击", &.{.{ .index = 2, .rank = .summary }});
+}
+
+test "config search: a key is found by part of itself" {
+    try expectHits("mouse-trigger", &.{.{ .index = 2, .rank = .key }});
+    try expectHits("clipboard-read", &.{.{ .index = 4, .rank = .key }});
+}
+
+test "config search: nothing typed finds nothing" {
+    try expectHits("", &.{});
+    try expectHits("   \t ", &.{});
+    // An ideographic space separates terms too.
+    try expectHits("截图\u{3000}保存", &.{.{ .index = 1, .rank = .name }});
+}
+
+test "config search: accented Latin, Greek and Cyrillic fold; what does not is left alone" {
+    const entries = [_]SearchEntry{
+        .{ .name = "Größe Ändern" },
+        .{ .name = "Размер шрифта" },
+        .{ .name = "Μέγεθος" },
+    };
+    inline for (.{ .{ "ändern", 0 }, .{ "GRÖßE", 0 }, .{ "РАЗМЕР", 1 }, .{ "ΜΈΓΕΘΟΣ", 2 }, .{ "μέγεθος", 2 } }) |case| {
+        const hits = try search(testing.allocator, &entries, case[0]);
+        defer testing.allocator.free(hits);
+        errdefer std.debug.print("`{s}`\n", .{case[0]});
+        // "ΜΈΓΕΘΟΣ" has a tonos on its second letter, outside the folded
+        // range: that one is the documented miss.
+        if (comptime std.mem.eql(u8, case[0], "ΜΈΓΕΘΟΣ")) {
+            try testing.expectEqual(@as(usize, 0), hits.len);
+        } else {
+            try testing.expectEqual(@as(usize, 1), hits.len);
+            try testing.expectEqual(@as(usize, case[1]), hits[0].index);
+        }
+    }
+}
+
+test "config search: the JSON form answers with positions and ranks" {
+    const entries =
+        \\[{"name":"Font Size","key":"font-size"},
+        \\ {"name":"截图保存位置","aliases":["screenshot","截屏"],"key":"screenshot-directory","summary":"…"},
+        \\ "not an object",
+        \\ {"name":7,"aliases":"nope","choices":[1,"Deny"]},
+        \\ {"name":"Screenshot Reviewer"}]
+    ;
+    const out = try searchJson(testing.allocator, entries, "screenshot");
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(
+        "{\"hits\":[{\"index\":4,\"rank\":\"name\"},{\"index\":1,\"rank\":\"alias\"}]}",
+        out,
+    );
+
+    // The malformed entries are empty, not fatal -- and still counted, so
+    // the positions after them are the host's own.
+    const deny = try searchJson(testing.allocator, entries, "deny");
+    defer testing.allocator.free(deny);
+    try testing.expectEqualStrings("{\"hits\":[{\"index\":3,\"rank\":\"summary\"}]}", deny);
+
+    const none = try searchJson(testing.allocator, entries, "");
+    defer testing.allocator.free(none);
+    try testing.expectEqualStrings("{\"hits\":[]}", none);
+
+    try testing.expectError(error.InvalidEntries, searchJson(testing.allocator, "{}", "x"));
+    try testing.expectError(error.InvalidEntries, searchJson(testing.allocator, "[", "x"));
+}
+
+test "config form: the screenshot group's names are translated wherever the hosts look them up" {
+    // The same floor `input/screenshot.zig` puts under its own strings: the
+    // template, every catalogue, both macOS tables, one Chinese.
+    var msgids: std.ArrayList([]const u8) = .empty;
+    defer msgids.deinit(testing.allocator);
+    inline for (table) |item| {
+        if (item.group == .screenshot) {
+            try msgids.append(testing.allocator, item.label);
+            try msgids.append(testing.allocator, item.summary);
+            if (item.choice_template) |template| try msgids.append(testing.allocator, template);
+        }
+    }
+    inline for (shortcuts) |row| {
+        try msgids.append(testing.allocator, row.label);
+        try msgids.append(testing.allocator, row.summary);
+    }
+    // Four rows with a name and a sentence, one template, one shortcut row.
+    try testing.expectEqual(@as(usize, 11), msgids.items.len);
+    try @import("../input/screenshot.zig").expectEverywhere(msgids.items);
 }

@@ -2237,32 +2237,8 @@ msgstr ""
 msgid "None"
 msgstr ""
 
-#: windows/host/src/strip.rs:1295
-msgid "Blue"
-msgstr ""
-
-#: windows/host/src/strip.rs:1296
-msgid "Purple"
-msgstr ""
-
 #: windows/host/src/strip.rs:1297
 msgid "Pink"
-msgstr ""
-
-#: windows/host/src/strip.rs:1298
-msgid "Red"
-msgstr ""
-
-#: windows/host/src/strip.rs:1299
-msgid "Orange"
-msgstr ""
-
-#: windows/host/src/strip.rs:1300
-msgid "Yellow"
-msgstr ""
-
-#: windows/host/src/strip.rs:1301
-msgid "Green"
 msgstr ""
 
 #: windows/host/src/strip.rs:1302
@@ -2288,3 +2264,258 @@ msgstr ""
 #: windows/host/src/uia.rs:1168
 msgid "Menu"
 msgstr ""
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Select"
+msgstr "選取"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Rectangle"
+msgstr "矩形"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Ellipse"
+msgstr "橢圓"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Straight Line"
+msgstr "直線"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Highlighter"
+msgstr "螢光筆"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Number"
+msgstr "編號"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Mosaic"
+msgstr "馬賽克"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Long Screenshot"
+msgstr "長截圖"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Done"
+msgstr "完成"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Color"
+msgstr "顏色"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Thickness"
+msgstr "粗細"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Block Size"
+msgstr "區塊大小"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Red"
+msgstr "紅色"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Orange"
+msgstr "橙色"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Yellow"
+msgstr "黃色"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Green"
+msgstr "綠色"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Cyan"
+msgstr "青色"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Blue"
+msgstr "藍色"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Purple"
+msgstr "紫色"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Black"
+msgstr "黑色"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "White"
+msgstr "白色"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Circle"
+msgstr "圓"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Line"
+msgstr "線"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Screenshot"
+msgstr "截圖"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Screenshot annotations"
+msgstr "截圖標註"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Text"
+msgstr "文字"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Box"
+msgstr "框"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Arrow"
+msgstr "箭頭"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Pen"
+msgstr "畫筆"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "; "
+msgstr "；"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid ". See "
+msgstr "。詳見 "
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Freeze the screen, pick a window or drag a region, annotate it, and put the result on the clipboard."
+msgstr "凍結畫面，點選視窗或拖出一塊區域，標註後把結果放進剪貼簿。"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The annotation font is missing, so the system font is used."
+msgstr "標註字型檔遺失，已改用系統字型。"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scroll down slowly. What comes into view is added at the bottom."
+msgstr "慢慢向下捲動，新露出的部分會接到底部。"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scroll slower"
+msgstr "捲慢一點"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The height limit was reached."
+msgstr "已達高度上限。"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
+msgstr "共 %1$d 片，已附上前 %2$d 片。完整圖片："
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The screenshot shortcut could not be registered"
+msgstr "截圖快速鍵無法註冊"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Another application is already using it. Choose a different one with a `screenshot` keybind in the configuration."
+msgstr "其他應用程式已佔用這個組合。請在設定裡用 `screenshot` 的 keybind 換一個。"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "No settings match."
+msgstr "沒有符合的設定。"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Paste Images as Files"
+msgstr "貼上圖片時存成檔案並貼上路徑"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Save a pasted image as a file and paste its path."
+msgstr "把貼上的圖片存成檔案，再貼上它的路徑。"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Screenshot Folder"
+msgstr "截圖儲存位置"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Where screenshots and pasted images are saved."
+msgstr "截圖和貼上的圖片存在這裡。"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Mouse Trigger"
+msgstr "滑鼠觸發"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Hold these keys and double-click to take a screenshot."
+msgstr "按住這些鍵並按兩下即可截圖。"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "%s + Double-Click"
+msgstr "%s + 按兩下"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Let Agents Take Screenshots"
+msgstr "允許 agent 截圖"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Agents may capture the screen with the screenshot tools."
+msgstr "agent 可以用截圖工具拍下畫面。"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Screenshot Shortcut"
+msgstr "截圖快速鍵"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Change it with a keybind line in the config file."
+msgstr "在設定檔的 keybind 裡修改。"

@@ -2308,32 +2308,8 @@ msgstr ""
 msgid "None"
 msgstr ""
 
-#: windows/host/src/strip.rs:1295
-msgid "Blue"
-msgstr ""
-
-#: windows/host/src/strip.rs:1296
-msgid "Purple"
-msgstr ""
-
 #: windows/host/src/strip.rs:1297
 msgid "Pink"
-msgstr ""
-
-#: windows/host/src/strip.rs:1298
-msgid "Red"
-msgstr ""
-
-#: windows/host/src/strip.rs:1299
-msgid "Orange"
-msgstr ""
-
-#: windows/host/src/strip.rs:1300
-msgid "Yellow"
-msgstr ""
-
-#: windows/host/src/strip.rs:1301
-msgid "Green"
 msgstr ""
 
 #: windows/host/src/strip.rs:1302
@@ -2359,3 +2335,258 @@ msgstr ""
 #: windows/host/src/uia.rs:1168
 msgid "Menu"
 msgstr ""
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Select"
+msgstr "Избери"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Rectangle"
+msgstr "Правоаголник"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Ellipse"
+msgstr "Елипса"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Straight Line"
+msgstr "Права линија"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Highlighter"
+msgstr "Маркер"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Number"
+msgstr "Број"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Mosaic"
+msgstr "Мозаик"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Long Screenshot"
+msgstr "Долга слика од екранот"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Done"
+msgstr "Готово"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Color"
+msgstr "Боја"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Thickness"
+msgstr "Дебелина"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Block Size"
+msgstr "Големина на блок"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Red"
+msgstr "Црвена"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Orange"
+msgstr "Портокалова"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Yellow"
+msgstr "Жолта"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Green"
+msgstr "Зелена"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Cyan"
+msgstr "Цијан"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Blue"
+msgstr "Сина"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Purple"
+msgstr "Виолетова"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Black"
+msgstr "Црна"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "White"
+msgstr "Бела"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Circle"
+msgstr "Круг"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Line"
+msgstr "Линија"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Screenshot"
+msgstr "Слика од екранот"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Screenshot annotations"
+msgstr "Белешки на сликата"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Text"
+msgstr "Текст"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Box"
+msgstr "Рамка"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Arrow"
+msgstr "Стрелка"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Pen"
+msgstr "Пенкало"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "; "
+msgstr "; "
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid ". See "
+msgstr ". Види "
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Freeze the screen, pick a window or drag a region, annotate it, and put the result on the clipboard."
+msgstr "Замрзнете го екранот, изберете прозорец или повлечете област, додајте белешки и ставете го резултатот во таблата со исечоци."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The annotation font is missing, so the system font is used."
+msgstr "Фонтот за белешки недостасува, па се користи системскиот фонт."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scroll down slowly. What comes into view is added at the bottom."
+msgstr "Лизгајте полека надолу. Она што ќе се појави се додава на дното."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scroll slower"
+msgstr "Лизгајте побавно"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The height limit was reached."
+msgstr "Достигнато е ограничувањето за висина."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "%1$d tiles in all; the first %2$d are attached. Whole image: "
+msgstr "Вкупно %1$d делови; првите %2$d се приложени. Целата слика: "
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The screenshot shortcut could not be registered"
+msgstr "Кратенката за слика од екранот не можеше да се регистрира"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Another application is already using it. Choose a different one with a `screenshot` keybind in the configuration."
+msgstr "Друга апликација веќе ја користи. Изберете друга со keybind `screenshot` во конфигурацијата."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "No settings match."
+msgstr "Нема соодветни поставки."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Paste Images as Files"
+msgstr "Вметни слики како датотеки"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Save a pasted image as a file and paste its path."
+msgstr "Ја зачувува вметнатата слика како датотека и ја вметнува нејзината патека."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Screenshot Folder"
+msgstr "Папка за слики од екранот"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Where screenshots and pasted images are saved."
+msgstr "Каде се зачувуваат сликите од екранот и вметнатите слики."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Mouse Trigger"
+msgstr "Активирање со глушец"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Hold these keys and double-click to take a screenshot."
+msgstr "Држете ги овие копчиња и кликнете двапати за слика од екранот."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "%s + Double-Click"
+msgstr "%s + двоен клик"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Let Agents Take Screenshots"
+msgstr "Дозволи агентите да сликаат екран"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Agents may capture the screen with the screenshot tools."
+msgstr "Агентите можат да го сликаат екранот со алатките за слика."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Screenshot Shortcut"
+msgstr "Кратенка за слика од екранот"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig
+msgid "Change it with a keybind line in the config file."
+msgstr "Сменете ја со ред keybind во конфигурациската датотека."

@@ -95,6 +95,33 @@ pub const ClipboardReadResult = enum(c_int) {
 
 /// Clipboard request. This is used to request clipboard contents and must
 /// be sent as a response to a ClipboardRequest event.
+/// Whether a clipboard read is the person pasting, as opposed to a program
+/// in the terminal reading the clipboard for itself (OSC 52, the Kitty
+/// protocol) or asking what is on it.
+///
+/// The two are asked for with the same `text/plain` request, and for text
+/// that is right: text is text. For an **image** it is not. Pasting one is
+/// answered by saving it to a file and pasting the path
+/// (`dev-docs/poltergeist/screenshot.md`, section 2); a program that reads
+/// the clipboard has asked for nothing of the kind, and would be handed a
+/// path and leave a file behind that nobody asked to have written.
+pub fn isUserPaste(kind: ClipboardRequestType) bool {
+    return switch (kind) {
+        .paste => true,
+        .osc_52_read, .osc_52_write, .kitty_read, .kitty_write, .list => false,
+    };
+}
+
+test "only a paste is the person pasting" {
+    const testing = @import("std").testing;
+    const paste = isUserPaste(.paste);
+    try testing.expect(paste);
+    inline for (.{ .osc_52_read, .osc_52_write, .kitty_read, .kitty_write, .list }) |kind| {
+        const other = isUserPaste(kind);
+        try testing.expect(!other);
+    }
+}
+
 pub const ClipboardRequest = union(ClipboardRequestType) {
     /// A direct paste of clipboard contents.
     paste: Clipboard,

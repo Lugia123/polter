@@ -33,6 +33,7 @@ pub const ClipboardContent = structs.ClipboardContent;
 pub const ClipboardReadResult = structs.ClipboardReadResult;
 pub const ClipboardRequest = structs.ClipboardRequest;
 pub const ClipboardRequestType = structs.ClipboardRequestType;
+pub const isUserPaste = structs.isUserPaste;
 pub const ColorScheme = structs.ColorScheme;
 pub const CursorPos = structs.CursorPos;
 pub const IMEPos = structs.IMEPos;

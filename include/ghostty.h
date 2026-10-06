@@ -1228,6 +1228,40 @@ typedef struct {
   ghostty_action_new_split_result_e* result;
 } ghostty_action_new_split_s;
 
+// apprt.action.PoltergeistScreenshot.Result
+//
+// UNSUPPORTED is first for the reason it is first above. PENDING means the
+// apprt kept `token` and will answer through
+// ghostty_app_poltergeist_screenshot_complete.
+typedef enum {
+  GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT_UNSUPPORTED,
+  GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT_DONE,
+  GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT_REFUSED,
+  GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT_PENDING,
+} ghostty_action_poltergeist_screenshot_result_e;
+
+// apprt.action.PoltergeistScreenshot.Out
+//
+// The buffer and the token belong to the caller. `len` is what the apprt
+// wrote; `cap` is how much room there was. DONE leaves the result's JSON in
+// the buffer, REFUSED leaves {"code","message"}, PENDING leaves nothing.
+typedef struct {
+  ghostty_action_poltergeist_screenshot_result_e result;
+  uint64_t token;
+  char* buf;
+  size_t cap;
+  size_t len;
+} ghostty_action_poltergeist_screenshot_out_s;
+
+// apprt.action.PoltergeistScreenshot
+//
+// `spec` is the request as JSON, valid for the call. The contract is
+// dev-docs/poltergeist/screenshot.md, section 10.1.
+typedef struct {
+  const char* spec;
+  ghostty_action_poltergeist_screenshot_out_s* out;
+} ghostty_action_poltergeist_screenshot_s;
+
 // apprt.action.PoltergeistTabPanes
 //
 // How many terminals share a tab with the target surface. The apprt writes
@@ -1338,6 +1372,7 @@ typedef enum {
   GHOSTTY_ACTION_HISTORY_FILENAME,
   GHOSTTY_ACTION_POLTERGEIST_GROUPING,
   GHOSTTY_ACTION_SCREENSHOT,
+  GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1387,6 +1422,7 @@ typedef union {
   ghostty_action_poltergeist_tab_panes_s poltergeist_tab_panes;
   ghostty_action_poltergeist_grouping_s poltergeist_grouping;
   ghostty_action_poltergeist_layout_s poltergeist_layout;
+  ghostty_action_poltergeist_screenshot_s poltergeist_screenshot;
   ghostty_action_history_filename_s history_filename;
 } ghostty_action_u;
 
@@ -1558,6 +1594,19 @@ GHOSTTY_API uintptr_t ghostty_app_config_set(ghostty_app_t,
                                              char*,
                                              uintptr_t);
 GHOSTTY_API uintptr_t ghostty_app_config_set_result(ghostty_app_t, char*, uintptr_t);
+// The settings search (dev-docs/poltergeist/screenshot.md §12.2): (entries,
+// entries_len, query, query_len, buf, cap). `entries` is a JSON array of
+// {"name","aliases","key","summary","choices"}, one per thing the search can
+// find, in the order they are drawn; the result is {"hits":[{"index","rank"}]}
+// under the same buffer rule, best first. Pure: it reads nothing but its
+// arguments.
+GHOSTTY_API uintptr_t ghostty_app_config_form_search(ghostty_app_t,
+                                                     const char*,
+                                                     uintptr_t,
+                                                     const char*,
+                                                     uintptr_t,
+                                                     char*,
+                                                     uintptr_t);
 GHOSTTY_API void ghostty_app_tick(ghostty_app_t);
 GHOSTTY_API void* ghostty_app_userdata(ghostty_app_t);
 GHOSTTY_API void ghostty_app_set_focus(ghostty_app_t, bool);
@@ -1567,6 +1616,18 @@ GHOSTTY_API void ghostty_app_open_config(ghostty_app_t);
 GHOSTTY_API void ghostty_app_update_config(ghostty_app_t, ghostty_config_t);
 GHOSTTY_API bool ghostty_app_needs_confirm_quit(ghostty_app_t);
 GHOSTTY_API bool ghostty_app_has_global_keybinds(ghostty_app_t);
+
+// Answer a GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT that was answered PENDING.
+// Once per token, on the app (UI) thread. `result` is DONE or REFUSED and
+// `json` is what the out buffer would have held; it is copied before this
+// returns. A token that is not waiting -- answered already, or timed out --
+// is ignored.
+GHOSTTY_API void ghostty_app_poltergeist_screenshot_complete(
+    ghostty_app_t,
+    uint64_t token,
+    ghostty_action_poltergeist_screenshot_result_e result,
+    const char* json,
+    uintptr_t len);
 GHOSTTY_API void ghostty_app_set_color_scheme(ghostty_app_t, ghostty_color_scheme_e);
 
 GHOSTTY_API ghostty_surface_config_s ghostty_surface_config_new();
@@ -1663,6 +1724,16 @@ GHOSTTY_API uintptr_t ghostty_surface_persona_face(ghostty_surface_t, char*, uin
 // role (key, key_len, cli, cli_len; cli may be empty). False, with the
 // error's name in the last buffer, when nothing was started.
 GHOSTTY_API bool ghostty_surface_persona_launch(ghostty_surface_t, const char*, uintptr_t, const char*, uintptr_t, char*, uintptr_t);
+// Whether the read whose `state` this is -- the pointer read_clipboard_cb
+// was handed -- is the person pasting, rather than a program reading the
+// clipboard (OSC 52, Kitty) or listing it. Both arrive asking for
+// "text/plain". An apprt that serves something other than the clipboard's
+// own text for a paste (an image, as the path of a file saved from it) asks
+// this first and serves a program only what is really there. False for NULL.
+// Valid until the request is completed, denied, or the callback returns
+// anything but STARTED.
+GHOSTTY_API bool ghostty_clipboard_request_is_paste(const void* state);
+
 GHOSTTY_API void ghostty_surface_complete_clipboard_request(
     ghostty_surface_t,
     const ghostty_clipboard_complete_s*,

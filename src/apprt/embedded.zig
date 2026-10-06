@@ -2254,6 +2254,26 @@ pub const CAPI = struct {
         return copyJsonOut(json, buf, cap);
     }
 
+    /// The settings search (`configpkg.form.searchJson`): which of the
+    /// entries the host describes match the query, best first.
+    export fn ghostty_app_config_form_search(
+        app: *App,
+        entries: [*]const u8,
+        entries_len: usize,
+        query: [*]const u8,
+        query_len: usize,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        const alloc = app.core_app.alloc;
+        const json = configpkg.form.searchJson(alloc, entries[0..entries_len], query[0..query_len]) catch |err| {
+            log.warn("config form: search failed: {t}", .{err});
+            return copyJsonOut("{\"hits\":[]}", buf, cap);
+        };
+        defer alloc.free(json);
+        return copyJsonOut(json, buf, cap);
+    }
+
     /// Write one key into the main config file; `value` null restores the
     /// default. The write happens once per call, so a result that did not
     /// fit is read back with `ghostty_app_config_set_result`, not by
@@ -2399,6 +2419,19 @@ pub const CAPI = struct {
     /// Returns true if the app has global keybinds.
     export fn ghostty_app_has_global_keybinds(v: *App) bool {
         return v.hasGlobalKeybinds();
+    }
+
+    /// The answer to a `poltergeist_screenshot` action that said `pending`.
+    /// See `ghostty.h`: once per token, on the app thread.
+    export fn ghostty_app_poltergeist_screenshot_complete(
+        v: *App,
+        token: u64,
+        result: c_int,
+        json: ?[*]const u8,
+        len: usize,
+    ) void {
+        const text: []const u8 = if (json) |p| p[0..len] else "";
+        v.core_app.poltergeistScreenshotComplete(token, result, text);
     }
 
     /// Update the color scheme of the app.
@@ -2951,6 +2984,14 @@ pub const CAPI = struct {
     ///
     /// To deny a request use ghostty_surface_deny_clipboard_request
     /// instead.
+    export fn ghostty_clipboard_request_is_paste(
+        state: ?*const apprt.ClipboardRequest,
+    ) bool {
+        const req = state orelse return false;
+        return apprt.isUserPaste(std.meta.activeTag(req.*));
+    }
+
+    /// Complete a clipboard request.
     export fn ghostty_surface_complete_clipboard_request(
         ptr: *Surface,
         complete: *const ClipboardComplete,
