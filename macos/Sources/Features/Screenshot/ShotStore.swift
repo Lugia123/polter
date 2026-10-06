@@ -74,33 +74,55 @@ enum ShotStore {
     }
 
     /// Whether `name` is one this store wrote: the stem above plus `.png` or
-    /// `.json`, and nothing else.
+    /// `.json`, and nothing else -- except that a `.png` may carry one more
+    /// part, `-` and one to three digits, which is a tile of a long
+    /// screenshot (`20261006-153012-123-4.png`).
     ///
     /// **This is the whole of what protects a user's own files.**
     /// `screenshot-directory` can point anywhere, including at a directory
     /// full of other people's pictures, and the cleanup deletes by this
-    /// answer alone.
+    /// answer alone. And a tile that this did not recognise would never be
+    /// cleaned up at all.
     static func isOurs(_ name: String) -> Bool {
         let bytes = Array(name.utf8)
-        let ext: [UInt8]
-        if name.hasSuffix(".png") {
-            ext = Array(".png".utf8)
-        } else if name.hasSuffix(".json") {
-            ext = Array(".json".utf8)
-        } else {
-            return false
-        }
+        let isPng = name.hasSuffix(".png")
+        guard isPng || name.hasSuffix(".json") else { return false }
+        let body = bytes.dropLast(isPng ? 4 : 5)
+
         // 8 digits, '-', 6 digits, '-', 3 digits.
         let stemLength = 8 + 1 + 6 + 1 + 3
-        guard bytes.count == stemLength + ext.count else { return false }
-        for (i, b) in bytes.prefix(stemLength).enumerated() {
+        guard body.count >= stemLength else { return false }
+        func isDigit(_ b: UInt8) -> Bool { b >= UInt8(ascii: "0") && b <= UInt8(ascii: "9") }
+        for (i, b) in body.prefix(stemLength).enumerated() {
             if i == 8 || i == 15 {
                 guard b == UInt8(ascii: "-") else { return false }
             } else {
-                guard b >= UInt8(ascii: "0"), b <= UInt8(ascii: "9") else { return false }
+                guard isDigit(b) else { return false }
             }
         }
-        return true
+        let rest = body.dropFirst(stemLength)
+        if rest.isEmpty { return true }
+        // A tile: only a picture has them.
+        guard isPng, rest.first == UInt8(ascii: "-") else { return false }
+        let number = rest.dropFirst()
+        return (1...3).contains(number.count) && number.allSatisfy(isDigit)
+    }
+
+    /// The file name of tile `n`, counted from 1, of the screenshot `image`:
+    /// the screenshot's own name with `-n` before the extension.
+    static func tileName(of image: String, _ n: Int) -> String {
+        let stem = image.hasSuffix(".png") ? String(image.dropLast(4)) : image
+        return "\(stem)-\(n).png"
+    }
+
+    /// Where the colour and size each tool was last used with are kept:
+    /// `shot-tools.json` in the state directory, beside the default
+    /// screenshot directory. It does not follow `screenshot-directory` --
+    /// that can be a folder of the user's own pictures, and this is not one.
+    static func toolPrefsURL(environment: [String: String], home: URL) -> URL {
+        directory(configured: nil, environment: environment, home: home)
+            .deletingLastPathComponent()
+            .appendingPathComponent("shot-tools.json", isDirectory: false)
     }
 
     // MARK: Cleanup

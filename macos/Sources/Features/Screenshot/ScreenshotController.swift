@@ -4,7 +4,7 @@ import OSLog
 
 /// Taking a screenshot, from the trigger to where the result goes
 /// (`dev-docs/poltergeist/screenshot.md`, section 3).
-final class ScreenshotController: ShotOverlayDelegate {
+final class ScreenshotController: ShotSessionDelegate {
     static let shared = ScreenshotController()
 
     private static let logger = Logger(
@@ -22,14 +22,17 @@ final class ScreenshotController: ShotOverlayDelegate {
     private var mouse: ShotMouseTrigger?
     private var warnedAboutHotKey = false
 
-    /// A screenshot in progress: the overlays, and where the result should
+    /// A screenshot in progress: the session, and where the result should
     /// also be pasted.
     private struct Session {
-        var overlays: [(window: ShotOverlayWindow, view: ShotOverlayView)]
+        var shot: ShotSession
         /// The terminal that had the focus when the screenshot was started,
         /// if this app was the one in front. Nil otherwise, and then nothing
         /// is pasted.
         weak var target: Ghostty.SurfaceView?
+        /// That terminal as the sidecar names it. The git state arrives a
+        /// moment after the screenshot starts, if it arrives.
+        var terminal: ShotSidecar.Terminal?
         var directory: URL
     }
 
@@ -38,6 +41,8 @@ final class ScreenshotController: ShotOverlayDelegate {
     /// trigger in that gap -- the hotkey arriving twice, or a double-click
     /// and the hotkey together -- does not start a second screenshot.
     private var starting = false
+    /// Set while the explanation of a missing permission is on screen.
+    private var asking = false
 
     // MARK: Triggers
 
@@ -78,7 +83,9 @@ final class ScreenshotController: ShotOverlayDelegate {
             localized: "Another application is already using it. Choose a different one with a `screenshot` keybind in the configuration.",
             comment: "截图热键注册失败的提示")
         alert.addButton(withTitle: String(localized: "OK", comment: "截图热键注册失败的提示"))
-        alert.runModal()
+        // Not from inside whatever called this: the configuration is also
+        // reloaded while this app is in the background.
+        DispatchQueue.main.async { _ = Self.runInFront(alert, what: "hotkey not registered") }
     }
 
     /// The `screenshot` keybind as a hotkey registration, or nil when there
@@ -125,7 +132,10 @@ final class ScreenshotController: ShotOverlayDelegate {
     ///   coordinates, when the screenshot was started by a double-click; the
     ///   window there is already selected when the overlay appears.
     func trigger(preselecting point: CGPoint? = nil) {
-        guard session == nil, !starting else { return }
+        guard session == nil, !starting, !asking else {
+            Self.logger.info("screenshot: trigger ignored (session=\(self.session != nil, privacy: .public) starting=\(self.starting, privacy: .public) asking=\(self.asking, privacy: .public))")
+            return
+        }
 
         guard ShotCapture.isPermitted else {
             askForPermission()
@@ -178,103 +188,140 @@ final class ScreenshotController: ShotOverlayDelegate {
             comment: "截图没有屏幕录制权限时的提示")
         alert.addButton(withTitle: String(localized: "Open System Settings", comment: "截图没有屏幕录制权限时的提示"))
         alert.addButton(withTitle: String(localized: "Cancel", comment: "截图没有屏幕录制权限时的提示"))
-        if alert.runModal() == .alertFirstButtonReturn,
-           let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-            NSWorkspace.shared.open(url)
+        // One explanation at a time, and not from inside the hotkey's or
+        // the mouse monitor's own callback: a second trigger while this is
+        // up is ignored rather than queued behind it.
+        asking = true
+        DispatchQueue.main.async { [weak self] in
+            let answer = Self.runInFront(alert, what: "Screen Recording not granted")
+            self?.asking = false
+            if answer == .alertFirstButtonReturn,
+               let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                NSWorkspace.shared.open(url)
+            }
         }
+    }
+
+    /// Run `alert` where the person can see it.
+    ///
+    /// A screenshot is usually asked for while some other application is in
+    /// front -- that is what a global hotkey is for -- and a modal alert
+    /// put up by an application that is not active opens *behind* the one
+    /// that is. The person sees a key that did nothing, and this
+    /// application sits in a modal loop on a window nobody can find. So
+    /// this application is brought forward first; and because the system
+    /// may decline to do that, the alert's own window is also raised above
+    /// other applications' windows and ordered front whether or not this
+    /// application is the active one.
+    private static func runInFront(_ alert: NSAlert, what: String) -> NSApplication.ModalResponse {
+        let wasActive = NSApp.isActive
+        NSApp.activate(ignoringOtherApps: true)
+        alert.window.level = .modalPanel
+        alert.window.orderFrontRegardless()
+        logger.info("screenshot: alert (\(what, privacy: .public)) shown: appActive before=\(wasActive, privacy: .public) now=\(NSApp.isActive, privacy: .public) level=\(alert.window.level.rawValue, privacy: .public) visible=\(alert.window.isVisible, privacy: .public)")
+        let answer = alert.runModal()
+        logger.info("screenshot: alert (\(what, privacy: .public)) answered \(answer.rawValue, privacy: .public)")
+        return answer
     }
 
     private func present(
         _ displays: [ShotDisplay],
-        windows: [ShotGeometry.Window],
+        windows: [ShotWindow],
         target: Ghostty.SurfaceView?,
         directory: URL,
         preselecting point: CGPoint?
     ) {
-        var overlays: [(window: ShotOverlayWindow, view: ShotOverlayView)] = []
-        for display in displays {
-            // The window list is in global coordinates; the view wants its
-            // own display's.
-            let local = windows.map { window -> ShotGeometry.Window in
-                var window = window
-                window.frame = window.frame.offsetBy(dx: -display.frame.minX, dy: -display.frame.minY)
-                return window
+        // AppKit's global point has its origin at the bottom left of the
+        // primary display; the window list's is at its top left.
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let preselect = point.map { CGPoint(x: $0.x, y: primaryHeight - $0.y) }
+        guard let shot = ShotSession(
+            displays: displays, windows: windows, prefs: Self.loadPrefs(), preselect: preselect) else {
+            Self.logger.error("screenshot: a display's picture could not be read")
+            return
+        }
+        shot.delegate = self
+
+        var terminal: ShotSidecar.Terminal?
+        if let target, let surface = target.surface {
+            let id = ghostty_surface_poltergeist_id(surface)
+            if id != 0 {
+                terminal = .init(id: String(format: "0x%016llx", id), cwd: target.pwd, git: nil)
             }
-            let view = ShotOverlayView(display: display, windows: local)
-            view.delegate = self
-            let window = ShotOverlayWindow(display: display)
-            window.contentView = view
-            overlays.append((window, view))
         }
-        session = Session(overlays: overlays, target: target, directory: directory)
+        session = Session(shot: shot, target: target, terminal: terminal, directory: directory)
+        shot.show()
 
-        // The overlay under the pointer takes the keyboard.
-        let mouse = NSEvent.mouseLocation
-        let under = overlays.first(where: { $0.view.display.screen.frame.contains(mouse) }) ?? overlays[0]
-        for overlay in overlays { overlay.window.orderFrontRegardless() }
-        under.window.makeKey()
-        under.window.makeFirstResponder(under.view)
-
-        if let point,
-           let hit = overlays.first(where: { $0.view.display.screen.frame.contains(point) }) {
-            // AppKit's global point, bottom-left origin, as that view's.
-            let frame = hit.view.display.screen.frame
-            hit.view.preselectWindow(at: CGPoint(x: point.x - frame.minX, y: frame.maxY - point.y))
+        // Asked now and not waited for: it has the whole time the person
+        // spends choosing and drawing, and if it is not back by then the
+        // sidecar goes without.
+        if let cwd = terminal?.cwd, !cwd.isEmpty {
+            ShotContext.lookUpGit(cwd: cwd) { [weak self, weak shot] git in
+                guard let self, let git, let shot, self.session?.shot === shot else { return }
+                self.session?.terminal?.git = (git.head, git.dirty)
+            }
         }
     }
 
-    private func dismiss() {
-        guard let session else { return }
-        self.session = nil
-        for overlay in session.overlays {
-            overlay.view.delegate = nil
-            overlay.window.orderOut(nil)
-            overlay.window.contentView = nil
+    // MARK: The tool memory
+
+    private static var prefsURL: URL {
+        ShotStore.toolPrefsURL(
+            environment: ProcessInfo.processInfo.environment,
+            home: FileManager.default.homeDirectoryForCurrentUser)
+    }
+
+    private static func loadPrefs() -> ToolPrefs {
+        guard let data = try? Data(contentsOf: prefsURL) else { return ToolPrefs() }
+        return ToolPrefs(json: String(data: data, encoding: .utf8) ?? "")
+    }
+
+    /// Keep the colour and size each tool was left with, for the next
+    /// screenshot. Written whether the screenshot was finished or not.
+    private static func savePrefs(_ prefs: ToolPrefs) {
+        guard prefs != loadPrefs() else { return }
+        let url = prefsURL
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+            try Data(prefs.json().utf8).write(to: url, options: .atomic)
+        } catch {
+            logger.error("screenshot: the tool memory could not be saved to \(url.path, privacy: .public): \(String(describing: error), privacy: .public)")
         }
     }
 
-    // MARK: ShotOverlayDelegate
-
-    func overlayDidBeginSelection(_ view: ShotOverlayView) {
-        guard let session else { return }
-        for overlay in session.overlays where overlay.view !== view {
-            overlay.view.clearSelection()
-        }
-        if let window = view.window, !window.isKeyWindow {
-            window.makeKey()
-            window.makeFirstResponder(view)
-        }
-    }
+    // MARK: ShotSessionDelegate
 
     /// Cancelled: nothing was written and the clipboard is as it was.
-    func overlayDidCancel(_ view: ShotOverlayView) {
-        dismiss()
+    func sessionDidCancel(_ shot: ShotSession) {
+        guard session?.shot === shot else { return }
+        session = nil
+        Self.savePrefs(shot.prefs)
     }
 
-    func overlayDidFinish(_ view: ShotOverlayView) {
-        guard let session, let selection = view.selection else { return }
-        let display = view.display
-        let annotations = view.annotations.items
-        let source = view.source
+    func sessionDidFinish(_ shot: ShotSession, with result: ShotSession.Result) {
+        guard let session, session.shot === shot else { return }
+        self.session = nil
+        Self.savePrefs(shot.prefs)
         let target = session.target
         let directory = session.directory
-        dismiss()
+        let image = result.image
 
-        guard let composed = ShotRenderer.composite(
-                display: display, selection: selection, annotations: annotations),
-              let png = ShotRenderer.png(composed.image) else {
-            Self.logger.error("screenshot: the image could not be composed")
+        guard let png = image.png() else {
+            Self.logger.error("screenshot: the image could not be encoded; nothing written")
             return
         }
 
         // 1. The clipboard, so it can be pasted anywhere.
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.declareTypes([.png, .tiff], owner: nil)
+        // A long screenshot goes on as a PNG only: uncompressed, a picture
+        // twenty thousand rows tall is hundreds of megabytes of clipboard.
+        let tiff = result.isLong ? nil : image.cgImage().flatMap { NSBitmapImageRep(cgImage: $0).tiffRepresentation }
+        pasteboard.declareTypes(tiff == nil ? [.png] : [.png, .tiff], owner: nil)
         pasteboard.setData(png, forType: .png)
-        if let tiff = NSBitmapImageRep(cgImage: composed.image).tiffRepresentation {
-            pasteboard.setData(tiff, forType: .tiff)
-        }
+        if let tiff { pasteboard.setData(tiff, forType: .tiff) }
 
         // 2. The file, and what was drawn as data beside it.
         let now = Date()
@@ -285,60 +332,125 @@ final class ScreenshotController: ShotOverlayDelegate {
             Self.logger.error("screenshot: could not write to \(directory.path, privacy: .public): \(String(describing: error), privacy: .public)")
             return
         }
+        let name = url.lastPathComponent
 
-        let scale = display.scale
-        let items = ShotExport.items(
-            annotations,
-            selectionOrigin: CGPoint(x: composed.pixels.minX / scale, y: composed.pixels.minY / scale),
-            scale: scale)
-        let metadata = ShotExport.Metadata(
-            image: url.lastPathComponent,
-            takenAt: now,
-            timeZone: .current,
-            pixelWidth: composed.image.width,
-            pixelHeight: composed.image.height,
-            scale: Double(scale),
-            source: source)
+        // A long screenshot is also cut into tiles: the pieces a CLI can
+        // read without shrinking them. One tile would be the picture itself.
+        var tiles: [ShotSidecar.Tile] = []
+        var tileURLs: [URL] = []
+        if result.isLong {
+            let cut = image.tiles()
+            for (i, tile) in cut.enumerated() where cut.count > 1 {
+                let tileName = ShotStore.tileName(of: name, i + 1)
+                let tileURL = directory.appendingPathComponent(tileName)
+                if FileManager.default.createFile(
+                    atPath: tileURL.path, contents: tile.png, attributes: [.posixPermissions: 0o600]) {
+                    tiles.append(.init(image: tileName, y: tile.y, height: tile.height))
+                    tileURLs.append(tileURL)
+                } else {
+                    Self.logger.error("screenshot: tile \(tileURL.path, privacy: .public) was not written")
+                }
+            }
+        }
+
+        let source: ShotSidecar.Source
+        if let window = result.window {
+            source = .window(
+                app: window.app, title: window.title, pid: window.pid,
+                windowRect: result.windowRect, selectionRect: result.selection)
+        } else {
+            source = .region(selectionRect: result.selection)
+        }
+        let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let meta = ShotSidecar.Meta(
+            image: name,
+            taken: .init(now, timeZone: .current),
+            width: image.width,
+            height: image.height,
+            scale: result.scale,
+            by: .user,
+            display: .init(
+                index: result.display, width: result.displaySize.w, height: result.displaySize.h,
+                scale: result.scale),
+            appearance: dark ? "dark" : "light",
+            source: source,
+            terminal: session.terminal,
+            previous: result.window.flatMap {
+                ShotContext.previous(app: $0.app, title: $0.title, before: name, in: directory)
+            },
+            tiles: tiles)
         let jsonURL = url.deletingPathExtension().appendingPathExtension("json")
-        let json = Data(ShotExport.json(metadata, items: items).utf8)
+        let json = Data(ShotSidecar.json(meta, items: result.items).utf8)
         if !FileManager.default.createFile(
             atPath: jsonURL.path, contents: json, attributes: [.posixPermissions: 0o600]) {
             Self.logger.error("screenshot: could not write \(jsonURL.path, privacy: .public)")
         }
 
-        let line = ShotExport.line(
-            items: items,
-            pixelWidth: composed.image.width,
-            pixelHeight: composed.image.height,
-            jsonPath: jsonURL.path,
-            words: Self.words)
+        // What is pasted: an ordinary screenshot's own path, or a long
+        // one's tiles -- at most eight of them, with a line saying so when
+        // there are more.
+        let pastedTiles = min(tileURLs.count, ShotSidecar.maxPastedTiles)
+        let line: String?
+        if result.isLong {
+            line = ShotSidecar.longLine(
+                size: .init(image.width, image.height), tiles: tileURLs.count, pasted: pastedTiles,
+                imagePath: url.path, jsonPath: jsonURL.path, labels: Self.longLabels)
+        } else {
+            line = ShotSidecar.line(
+                width: image.width, height: image.height, items: result.items,
+                jsonPath: jsonURL.path, labels: Self.labels)
+        }
 
-        // A later paste of this image finds this file, and its annotations,
+        // A later paste of this image finds this file, and its line,
         // instead of writing the image a second time.
         ImagePasteService.shared.remember(changeCount: pasteboard.changeCount, url: url, annotations: line)
-        Self.logger.info("screenshot: \(composed.image.width, privacy: .public)x\(composed.image.height, privacy: .public) written to \(url.path, privacy: .public), \(items.count, privacy: .public) annotations")
+        Self.logger.info("screenshot: \(image.width, privacy: .public)x\(image.height, privacy: .public) written to \(url.path, privacy: .public), \(result.items.count, privacy: .public) annotation(s), \(tiles.count, privacy: .public) tile(s)")
 
-        // 3. Into the terminal, if this app was in front when it started.
+        // 3. Into the terminal, if this app was in front when it started:
+        //    each path a paste of its own, then the line.
         guard let target else { return }
-        let path = Ghostty.Shell.escape(url.path)
-        MainActor.assumeIsolated { target.surfaceModel?.sendText(path) }
-        if let line {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.secondPasteDelay) { [weak target] in
-                MainActor.assumeIsolated { target?.surfaceModel?.sendText(line) }
+        let paths = (tileURLs.isEmpty ? [url] : Array(tileURLs.prefix(pastedTiles)))
+            .map { Ghostty.Shell.escape($0.path) }
+        for (i, text) in (paths + [line].compactMap { $0 }).enumerated() {
+            if i == 0 {
+                MainActor.assumeIsolated { target.surfaceModel?.sendText(text) }
+            } else {
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + Self.secondPasteDelay * Double(i)
+                ) { [weak target] in
+                    MainActor.assumeIsolated { target?.surfaceModel?.sendText(text) }
+                }
             }
         }
     }
 
     /// The words of the annotation line in the app's language. The English
     /// ones are the msgids `src/input/screenshot.zig` names.
-    private static var words: ShotExport.Words {
-        .init(
-            header: String(localized: "Screenshot annotations", comment: "粘进终端的截图标注文本"),
-            text: String(localized: "Text", comment: "粘进终端的截图标注文本"),
-            rect: String(localized: "Box", comment: "粘进终端的截图标注文本"),
-            arrow: String(localized: "Arrow", comment: "粘进终端的截图标注文本"),
-            pen: String(localized: "Pen", comment: "粘进终端的截图标注文本"),
-            separator: String(localized: "; ", comment: "粘进终端的截图标注文本：两条标注之间"),
-            see: String(localized: ". See ", comment: "粘进终端的截图标注文本：最后一条标注与 json 路径之间"))
+    private static var labels: ShotSidecar.Labels {
+        // One msgid to a line, in the order of the fields.
+        let words = [
+            "Screenshot annotations",
+            "Text",
+            "Box",
+            "Circle",
+            "Line",
+            "Arrow",
+            "Pen",
+            "Highlighter",
+            "Mosaic",
+            "; ",
+            ". See ",
+        ].map(ShotWords.translate)
+        return .init(
+            header: words[0], text: words[1], rect: words[2], ellipse: words[3], line: words[4],
+            arrow: words[5], pen: words[6], highlighter: words[7], mosaic: words[8],
+            separator: words[9], see: words[10])
+    }
+
+    private static var longLabels: ShotSidecar.LongLabels {
+        let t = ShotWords.translate
+        return .init(
+            header: t("Long Screenshot"), tiles: t("{n} tiles, first {m} pasted"), whole: t("whole image"),
+            separator: t("; "), see: t(". See "))
     }
 }

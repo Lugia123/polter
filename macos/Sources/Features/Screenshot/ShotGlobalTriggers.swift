@@ -99,6 +99,11 @@ final class ShotMouseTrigger {
     /// ours; it matches the selection's own click-or-drag threshold.
     static let distance: CGFloat = 4
 
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "polter",
+        category: String(describing: ShotMouseTrigger.self)
+    )
+
     private var detector: DoubleClickDetector
     private var globalMonitor: Any?
     private var localMonitor: Any?
@@ -122,11 +127,11 @@ final class ShotMouseTrigger {
         guard globalMonitor == nil else { return }
         // Presses in other applications.
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            self?.pressed(event)
+            self?.pressed(event, from: "global")
         }
         // And in our own windows, which the global monitor does not report.
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            self?.pressed(event)
+            self?.pressed(event, from: "local")
             return event
         }
     }
@@ -138,11 +143,19 @@ final class ShotMouseTrigger {
         localMonitor = nil
     }
 
-    private func pressed(_ event: NSEvent) {
+    private func pressed(_ event: NSEvent, from monitor: String) {
         let point = NSEvent.mouseLocation
-        if detector.leftDown(at: point, time: event.timestamp, mods: ShotMods(event.modifierFlags)) {
-            fire(point)
+        let mods = ShotMods(event.modifierFlags)
+        let verdict = detector.press(at: point, time: event.timestamp, mods: mods)
+        // Only presses made with the modifiers held are worth a line: the
+        // rest is every click on the machine.
+        if verdict != .wrongModifiers {
+            Self.logger.info("screenshot: press monitor=\(monitor, privacy: .public) number=\(event.eventNumber, privacy: .public) time=\(event.timestamp, privacy: .public) clicks=\(event.clickCount, privacy: .public) appActive=\(NSApp.isActive, privacy: .public) -> \(String(describing: verdict), privacy: .public)")
         }
+        guard verdict == .fired else { return }
+        // Not from inside the monitor: what this starts may run a dialog,
+        // and the monitor must have returned the press by then.
+        DispatchQueue.main.async { [fire] in fire(point) }
     }
 }
 

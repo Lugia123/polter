@@ -45,31 +45,65 @@ struct DoubleClickDetector: Equatable {
         self.distance = distance
     }
 
-    /// Feed a left-button press. True when it is the second of two presses
-    /// that were both made with **exactly** the required modifiers, no later
-    /// than `interval` apart and no further than `distance`.
+    /// What a press turned out to be.
+    enum Verdict: Equatable {
+        /// The second of two presses: the gesture.
+        case fired
+        /// A press that could be the first of two.
+        case first
+        /// Not made with exactly the required modifiers; forgotten, and the
+        /// press before it with it.
+        case wrongModifiers
+        /// A press this has already been fed, reported again. Nothing
+        /// changes.
+        case replay
+    }
+
+    /// When the latest press this was fed happened, whatever became of it.
+    private var latest: TimeInterval?
+
+    /// Feed a left-button press. `.fired` when it is the second of two
+    /// presses that were both made with **exactly** the required modifiers,
+    /// no later than `interval` apart and no further than `distance`.
     ///
     /// Exactly: one modifier more and it is some other program's gesture.
     /// A press with the wrong modifiers also forgets the one before it, so
     /// right-wrong-right is not a double-click.
-    mutating func leftDown(at point: CGPoint, time: TimeInterval, mods: ShotMods) -> Bool {
+    ///
+    /// **A press that is not later than the last one fed is the same press
+    /// arriving again, and is not counted.** One click can be reported more
+    /// than once -- by the monitor for other applications' events and the
+    /// one for our own, or delivered a second time while this application
+    /// is being brought to the front by that very click -- and two reports
+    /// of one press are no further apart than a double-click allows. Without
+    /// this a single click fired the gesture, and a double click fired it
+    /// twice. Two presses a person made are never at the same instant.
+    mutating func press(at point: CGPoint, time: TimeInterval, mods: ShotMods) -> Verdict {
+        if let latest, time <= latest { return .replay }
+        latest = time
+
         guard !required.isEmpty, mods.intersection(.all) == required else {
             previous = nil
-            return false
+            return .wrongModifiers
         }
 
         if let previous {
             let elapsed = time - previous.time
             let moved = max(abs(point.x - previous.point.x), abs(point.y - previous.point.y))
-            if elapsed >= 0, elapsed <= interval, moved <= distance {
+            if elapsed <= interval, moved <= distance {
                 // Spent: a third press starts over rather than firing again.
                 self.previous = nil
-                return true
+                return .fired
             }
         }
 
         previous = Press(time: time, point: point)
-        return false
+        return .first
+    }
+
+    /// `press`, as whether it completed the gesture.
+    mutating func leftDown(at point: CGPoint, time: TimeInterval, mods: ShotMods) -> Bool {
+        press(at: point, time: time, mods: mods) == .fired
     }
 }
 

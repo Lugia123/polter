@@ -133,6 +133,54 @@ struct ShotTriggerTests {
         #expect(!result14)
     }
 
+    /// One click can be reported twice: by the monitor for other
+    /// applications' events and by the one for our own, or again while the
+    /// click is bringing this application to the front. Two reports of one
+    /// press are within any double-click interval of each other.
+    @Test func aPressReportedTwiceIsOnePress() {
+        var d = detector()
+        #expect(d.press(at: here, time: 10.0, mods: commandShift) == .first)
+        #expect(d.press(at: here, time: 10.0, mods: commandShift) == .replay, "one click is not a double click")
+        #expect(d.press(at: here, time: 10.2, mods: commandShift) == .fired)
+        #expect(d.press(at: here, time: 10.2, mods: commandShift) == .replay, "and a double click fires once")
+        // The gesture is spent as before: the next press starts over.
+        #expect(d.press(at: here, time: 10.3, mods: commandShift) == .first)
+    }
+
+    @Test func bothReportsOfBothPressesInEitherOrderFireOnce() {
+        // Each press twice, back to back.
+        var paired = detector()
+        let a = [10.0, 10.0, 10.2, 10.2].map { paired.press(at: here, time: $0, mods: commandShift) }
+        #expect(a == [.first, .replay, .fired, .replay])
+        // Both presses once, then both again.
+        var replayed = detector()
+        let b = [10.0, 10.2, 10.0, 10.2].map { replayed.press(at: here, time: $0, mods: commandShift) }
+        #expect(b == [.first, .fired, .replay, .replay])
+        #expect(a.filter { $0 == .fired }.count == 1)
+        #expect(b.filter { $0 == .fired }.count == 1)
+    }
+
+    @Test func aReplayChangesNothing() {
+        var d = detector()
+        _ = d.press(at: here, time: 10.0, mods: commandShift)
+        let before = d
+        // Reported again from somewhere else on the screen and with other
+        // modifiers: still the press already counted, and it neither moves
+        // the first press nor forgets it.
+        #expect(d.press(at: CGPoint(x: 900, y: 900), time: 10.0, mods: [.command]) == .replay)
+        #expect(d == before)
+        #expect(d.press(at: here, time: 10.1, mods: commandShift) == .fired)
+    }
+
+    @Test func aPressWithTheWrongModifiersIsStillTheLatestPress() {
+        var d = detector()
+        #expect(d.press(at: here, time: 10.0, mods: [.command]) == .wrongModifiers)
+        #expect(d.press(at: here, time: 10.0, mods: commandShift) == .replay)
+        #expect(d.press(at: here, time: 10.1, mods: commandShift) == .first)
+        #expect(d.press(at: here, time: 10.2, mods: [.command]) == .wrongModifiers)
+        #expect(d.press(at: here, time: 10.3, mods: commandShift) == .first, "the wrong one forgot the first")
+    }
+
     @Test func theConfiguredBitsAreTheseModifiers() {
         // `ghostty_input_mods_e`: shift 1, ctrl 2, alt 4, super 8.
         #expect(ShotMods(rawValue: 8 | 1) == [.command, .shift])

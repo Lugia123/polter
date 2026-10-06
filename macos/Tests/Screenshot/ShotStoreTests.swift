@@ -100,6 +100,38 @@ struct ShotStoreTests {
         }
     }
 
+    @Test func aLongScreenshotsTilesAreOursToo() {
+        let image = ShotStore.stem(for: date(), timeZone: utc) + ".png"
+        #expect(ShotStore.tileName(of: image, 1) == "20261006-153012-123-1.png")
+        #expect(ShotStore.tileName(of: image, 12) == "20261006-153012-123-12.png")
+        for n in [1, 9, 10, 99, 100, 999] {
+            #expect(ShotStore.isOurs(ShotStore.tileName(of: image, n)), "tile \(n)")
+        }
+        let notOurs = [
+            // Only a picture has tiles.
+            "20261006-153012-123-1.json",
+            "20261006-153012-123-.png",
+            "20261006-153012-123-1000.png",
+            "20261006-153012-123-1a.png",
+            "20261006-153012-123-a.png",
+            "20261006-153012-123_1.png",
+            "20261006-153012-123-1-2.png",
+            "20261006-153012-123--1.png",
+            "20261006-153012-123-１.png",
+        ]
+        for name in notOurs {
+            #expect(!ShotStore.isOurs(name), "\(name) was taken for one of ours")
+        }
+    }
+
+    @Test func theToolMemoryIsBesideTheDefaultDirectoryWhateverIsConfigured() {
+        let home = URL(fileURLWithPath: "/Users/someone", isDirectory: true)
+        #expect(ShotStore.toolPrefsURL(environment: [:], home: home).path
+            == "/Users/someone/.local/state/polter/shot-tools.json")
+        #expect(ShotStore.toolPrefsURL(environment: ["XDG_STATE_HOME": "/var/state"], home: home).path
+            == "/var/state/polter/shot-tools.json")
+    }
+
     // MARK: Cleanup
 
     @Test func onlyOurOldFilesExpire() {
