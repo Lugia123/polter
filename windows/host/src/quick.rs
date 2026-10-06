@@ -519,7 +519,7 @@ const K_F1: u32 = 121;
 /// letters, digits, function keys, backquote, space, escape. That is
 /// arithmetic on three contiguous ranges plus three constants, not a
 /// 176-entry table; an unmapped key falls back and logs.
-fn hotkey_from_trigger(t: crate::keys::TriggerC) -> Option<(HOT_KEY_MODIFIERS, u32, String)> {
+pub(crate) fn hotkey_from_trigger(t: crate::keys::TriggerC) -> Option<(HOT_KEY_MODIFIERS, u32, String)> {
     let vk = match t.tag {
         crate::keys::TRIGGER_PHYSICAL => vk_from_physical(t.key)?,
         // **A unicode trigger is the common case, not the exotic one**, and

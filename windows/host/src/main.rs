@@ -146,6 +146,8 @@ mod winnav;
 mod wintitle;
 mod search;
 mod shell;
+mod shot;
+mod shots;
 mod shellopen;
 mod strip;
 mod tabs;
@@ -2343,7 +2345,8 @@ extern "C" fn cb_read_clipboard(
         return ffi::CLIPBOARD_READ_UNSUPPORTED;
     }
     // The only representation this host can serve is text. The core spells
-    // every text-like type `text/plain` before it gets here.
+    // every text-like type `text/plain` before it gets here. (An image or a
+    // file list is served as text too -- as a path. See below.)
     let wanted: Vec<String> = if mimes.is_null() {
         Vec::new()
     } else {
@@ -2367,6 +2370,26 @@ extern "C" fn cb_read_clipboard(
         }
     } else {
         None
+    };
+    // No text, and text is what was asked for: copied files paste as their
+    // paths and a bitmap as the path of a PNG saved from it (`shots.rs`).
+    // `choose` is the whole rule -- text first, then files, then an image, and
+    // with `clipboard-paste-image` off nothing but text, which leaves `text`
+    // as it was read above and this function as it was before any of this.
+    let text = if wants_text {
+        use polter_shots::paste::{choose, Available, Source};
+        let on = Available {
+            text: text.is_some(),
+            files: shots::has_files(),
+            image: shots::has_image(),
+        };
+        match choose(on, shots::enabled()) {
+            Source::Text | Source::Nothing => text,
+            Source::Files => shots::files_text(pane),
+            Source::Image => shots::image_text(pane),
+        }
+    } else {
+        text
     };
     // Nothing to serve and no listing asked for: there is nothing to complete
     // the request with, so it is not started. **This is the ctrl+v-on-an-
@@ -4164,18 +4187,19 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             }
         }
 
-        // The core half landed first; the capture, the overlay and the
-        // annotations are this host's still to write (see
-        // `dev-docs/poltergeist/screenshot.md`). Until then the action is
-        // named when it arrives rather than falling through to a bare tag
-        // number, and it answers `false` because nothing was done.
-        // owed: 1081 -- the screenshot itself; remove `screenshot` from `palette.rs`'s UNAVAILABLE with it.
+        // From the menu, the command palette, or the keybind pressed while a
+        // terminal has the keyboard (the global hotkey and the mouse trigger
+        // do not come through here; `shot.rs` owns those).
         ffi::ACTION_SCREENSHOT => {
-            alogf!(
-                origin,
-                "[action] screenshot: arrived, and this host does not take screenshots yet (task 1081)"
-            );
-            false
+            alogf!(origin, "[action] screenshot");
+            // The pane the result is pasted into is the one with the keyboard
+            // when the session opens, which `shot.rs` reads for itself -- the
+            // same answer for the hotkey and the mouse trigger, which arrive
+            // with no surface at all.
+            // carries no terminal: a screenshot is of the screen, not of the
+            // terminal that asked
+            shot::from_action();
+            true
         }
 
         // owed: 286 -- reviewed and deferred; there is no transparency to toggle.
@@ -6701,6 +6725,11 @@ fn main() {
         );
         session::restore(hwnd, !(has_x || has_y), !configured_size);
     }
+
+    // Shots older than a week, once per launch (screenshot.md §5).
+    shots::sweep_old();
+    // The screenshot hotkey and the mouse trigger.
+    shot::init();
 
     // Before the first tab, because the first tab can be closed. `reopen.rs`
     // keeps the stack and `tabs.rs` builds the tabs; this is the one line

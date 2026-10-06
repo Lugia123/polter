@@ -1,0 +1,27 @@
+[package]
+name = "polter-shots"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The rules of pasting an image and of taking a screenshot that do not need a
+# window: what a clipboard bitmap decodes to, what the file is called, which
+# old files startup may delete, which clipboard format wins.
+# Specification: dev-docs/poltergeist/screenshot.md, shared with macOS.
+#
+# Out of `polter-host` for the reason `droppath` is: the host cannot be tested
+# off Windows at all, and every rule here can be wrong without anything
+# looking wrong -- a bottom-up bitmap saved upside down is still a valid PNG,
+# and a cleanup that matches too much deletes somebody's files on a day nobody
+# is watching.
+#
+# **One dependency, unlike the other pure crates, and it is deliberate.** A PNG
+# needs a deflate stream, and a hand-written compressor is the largest thing
+# this crate could get wrong while still producing a file some decoders open.
+# `png` is pure Rust and builds for every target the workspace does.
+#
+# `serde_json` is here for one thing: escaping the strings a person typed into
+# an annotation on their way into the sidecar file. The host already has it.
+[dependencies]
+png = "0.17"
+serde_json = "1"

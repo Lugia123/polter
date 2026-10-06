@@ -39,7 +39,7 @@
 | `核·数字` | 同上，`alt+1..9` 的 `inline while` 块（非 mac 上 `mods = .alt`） |
 | `核·win` | 同上，`if (builtin.target.os.tag == .windows)` 块内——**只有 Windows 有的绑定** |
 | `宿主` | `windows/host/src/keys.rs` → `accelerator()` |
-| `宿主·热键` | `windows/host/src/quick.rs` → `RegisterHotKey` |
+| `宿主·热键` | `windows/host/src/quick.rs` → `RegisterHotKey`；截图那一条在 `windows/host/src/shot.rs` → `register_hotkey` |
 
 本文所有「核心处理」的行，都是把 `Keybinds.init()` 按
 `builtin.target.os.tag.isDarwin() == false`、`inputpkg.ctrlOrSuper() == ctrl`
@@ -523,6 +523,22 @@ swallowed=… tsf_ate=…`**。`seen` 是那个零的意义所在：**没有它�
 | `Ctrl+Shift+J` | `write_screen_file:paste` | 核·共通 |
 | `Ctrl+Shift+Alt+J` | `write_screen_file:open` | 核·共通 |
 | `Ctrl+Shift+Win+J` | `write_screen_file:copy` | 核·共通 |
+| `Ctrl+Shift+0` | `screenshot`（截图） | 核·win ＋ 宿主·热键 |
+
+> **`Ctrl+Shift+0` 是这张表里唯一的全局键，它不走第二节那四步。** 核心把它绑成
+> `global:`，宿主用 `ghostty_config_trigger("screenshot")` 取出来交给 `RegisterHotKey`
+> （注册在 `shot.rs` 自己的 message-only 窗口上，不在任何终端窗口上）。注册成功之后这个
+> 和弦**被系统先拿走**，`handle_key_message` 永远看不到它，所以日志里**没有它的 `[key]` 行**
+> ——判据是 `[shot] hotkey … registered` 和按下时的 `[shot] hotkey pressed`。
+> 注册失败有 `[shot] hotkey … FAILED err=…` 加一次系统通知。
+>
+> ⚠️ **「注册上了」不等于「按得出来」**：装了多个输入法时，系统的「切换输入语言」热键可能
+> 先吃掉这个和弦，那时注册照样成功、`hotkey pressed` 永远不出现。真机上没按过
+> （`dev-docs/poltergeist/screenshot.md` §7 第 12 条）。
+>
+> 第二种触发是 **`Ctrl+Shift` + 左键双击**（`screenshot-mouse-trigger`），不是键位绑定，
+> 不在任何绑定表里：`shot.rs` 的低级鼠标钩子在独立线程上判定，日志是
+> `[shot] ctrl+shift double click at (x,y)`。
 
 ### 3.2 宿主处理（`keys.rs::accelerator()`，只剩四行）
 

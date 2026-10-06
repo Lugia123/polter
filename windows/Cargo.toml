@@ -31,13 +31,17 @@
 #                the opening size and whether a remembered one is still on a
 #                screen. Shared with macOS through one specification
 #                (dev-docs/poltergeist/settings.md), so they are tested here.
+#   shots/       pasting an image and taking a screenshot, minus the windows:
+#                clipboard bitmap to PNG, the file's name, which old files
+#                startup may delete, which clipboard format wins. Shared with
+#                macOS through dev-docs/poltergeist/screenshot.md.
 #
 # The workspace exists so there is **one lock file and one target directory**
 # for the two, and so `cargo test -p polter-split-tree` works from here without
 # knowing where the crate lives.
 [workspace]
 resolver = "2"
-members = ["host", "split-tree", "droppath", "cliargs", "urlpolicy", "projectname", "settings-shell"]
+members = ["host", "split-tree", "droppath", "cliargs", "urlpolicy", "projectname", "settings-shell", "shots"]
 
 # **Profiles must live here, not in a member.** Cargo ignores a member's
 # `[profile]` inside a workspace and only says so as a warning -- the symptom

@@ -177,5 +177,8 @@ path = "../projectname"
 # The settings window's rules (`settings_win.rs` draws, this decides). Out
 # here for the reason `projectname` is: a rule tested only on Windows is one
 # that can be broken on the Mac with everything green.
+[dependencies.polter-shots]
+path = "../shots"
+
 [dependencies.polter-settings-shell]
 path = "../settings-shell"

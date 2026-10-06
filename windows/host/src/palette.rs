@@ -400,14 +400,6 @@ const UNAVAILABLE: &[Unavailable] = &[
               underneath it would produce precisely the symptom this table exists to remove -- \
               a row that is offered, pressed, and does nothing.",
     },
-    Unavailable {
-        key: "screenshot",
-        blocked_on: "screenshot",
-        why: "Owed, not refused (task 1081): the core's action and its default hotkey landed \
-              before this host's capture and overlay. `cb_action` names the action when it \
-              arrives and does nothing. This entry goes in the same change that makes that arm \
-              take a screenshot.",
-    },
 ];
 
 const SYNONYMS: &str = include_str!("synonyms.txt");

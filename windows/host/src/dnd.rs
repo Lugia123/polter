@@ -93,6 +93,30 @@ fn has_files(data: &IDataObject) -> bool {
     unsafe { data.QueryGetData(&fmt).is_ok() }
 }
 
+/// The paths in an `HDROP`, by the three `DragQueryFileW` calls `paths_of`
+/// documents. Shared with `shots.rs`, which meets the same handle on the
+/// clipboard (files copied in Explorer) rather than in a drop.
+pub fn hdrop_paths(hdrop: HDROP) -> Vec<String> {
+    let mut out = Vec::new();
+    unsafe {
+        // (1) the count.
+        let n = DragQueryFileW(hdrop, 0xFFFF_FFFF, None);
+        for i in 0..n {
+            // (2) the length, then (3) the copy. `+1` for the NUL the API
+            // writes but does not count.
+            let len = DragQueryFileW(hdrop, i, None);
+            if len == 0 {
+                continue;
+            }
+            let mut buf = vec![0u16; len as usize + 1];
+            let copied = DragQueryFileW(hdrop, i, Some(&mut buf));
+            buf.truncate(copied as usize);
+            out.push(String::from_utf16_lossy(&buf));
+        }
+    }
+    out
+}
+
 /// The paths in a data object, in the order the shell hands them over.
 ///
 /// # `DragQueryFileW` is three functions wearing one name
@@ -115,6 +139,7 @@ fn has_files(data: &IDataObject) -> bool {
 /// arrived on, carried in so this function's one failure line can say which
 /// terminal window lost the drop; nothing here reads it for any other reason.
 fn paths_of(data: &IDataObject, owner: HWND) -> Vec<String> {
+    // The three calls documented above are `hdrop_paths`.
     let fmt = FORMATETC {
         cfFormat: CF_HDROP.0,
         ptd: std::ptr::null_mut(),
@@ -128,21 +153,7 @@ fn paths_of(data: &IDataObject, owner: HWND) -> Vec<String> {
             hlogf!(owner, "[drop] the data object has no CF_HDROP after all");
             return out;
         };
-        let hdrop = HDROP(medium.u.hGlobal.0);
-        // (1) the count.
-        let n = DragQueryFileW(hdrop, 0xFFFF_FFFF, None);
-        for i in 0..n {
-            // (2) the length, then (3) the copy. `+1` for the NUL the API
-            // writes but does not count.
-            let len = DragQueryFileW(hdrop, i, None);
-            if len == 0 {
-                continue;
-            }
-            let mut buf = vec![0u16; len as usize + 1];
-            let copied = DragQueryFileW(hdrop, i, Some(&mut buf));
-            buf.truncate(copied as usize);
-            out.push(String::from_utf16_lossy(&buf));
-        }
+        out = hdrop_paths(HDROP(medium.u.hGlobal.0));
         // **Released whatever happened above.** The medium is the caller's to
         // free; leaking it leaks the whole path list, once per drop, for the
         // life of the process.

@@ -256,7 +256,10 @@ fn perform(soft: bool, surface: ffi::Surface) {
     // and `keys::trigger_lookup`, reached while a menu is being built and
     // from `quick::init`, and `settings_ui`'s error list. All three are on
     // the thread that owns windows, which is this one, and none of them keeps
-    // the pointer past its own call. A fourth caller on another thread would
+    // the pointer past its own call. (`shots.rs` and `shot.rs` read their
+    // settings through it the same way: on this thread, copying what they
+    // are handed -- `screenshot-directory` is a string and is copied before
+    // the call returns. The mouse hook's thread never touches it.) A fourth caller on another thread would
     // make this a use-after-free with no symptom until the timing is wrong,
     // which is why the list is written down where the free is.
     if !old.is_null() && old != fresh {
@@ -269,6 +272,10 @@ fn perform(soft: bool, surface: ffi::Surface) {
         diagnostics,
         (!old.is_null() && old != fresh) as u8
     );
+
+    // The screenshot hotkey and mouse trigger are read from the config, on
+    // this thread, and keep nothing of the handle.
+    crate::shot::config_changed();
 
     // Last, so the window is asked to redraw once, after the swap.
     crate::general_ui::config_changed();
