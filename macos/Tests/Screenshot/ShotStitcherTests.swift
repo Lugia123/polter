@@ -469,4 +469,146 @@ struct ShotStitcherTests {
         #expect(after == .unchanged)
         #expect(try #require(s.finish()).rgbx == page.expected(40))
     }
+
+    /// `frame` with the columns `columns` replaced by something that is the
+    /// same in every frame and different in every row: the window's border
+    /// and what lies outside it, caught inside the selection.
+    private func withStill(_ frame: [UInt8], _ columns: [Int]) -> [UInt8] {
+        var frame = frame
+        let edge = Self.noise(rows: frame.count / (Self.w * 4), seed: 99)
+        for y in 0..<(frame.count / (Self.w * 4)) {
+            for x in columns {
+                let at = (y * Self.w + x) * 4
+                frame.replaceSubrange(at..<(at + 4), with: edge[at..<(at + 4)])
+            }
+        }
+        return frame
+    }
+
+    /// `picture` without the columns `columns`.
+    private func without(_ picture: [UInt8], _ columns: [Int]) -> [UInt8] {
+        var out: [UInt8] = []
+        for i in 0..<(picture.count / 4) where !columns.contains(i % Self.w) {
+            out.append(contentsOf: picture[(i * 4)..<(i * 4 + 4)])
+        }
+        return out
+    }
+
+    /// #1096 (the other host's test machine, Notepad and Edge, the
+    /// selection's left edge on the window's border): 204 frames, 69
+    /// dropped, 600 px tall. Two frames a notch apart were the same in 799
+    /// columns of 800 once lined up, and differed in every row of the one
+    /// that does not scroll.
+    @Test func aColumnThatDoesNotScrollDoesNotLoseEveryFrame() throws {
+        let body = Self.noise(rows: 600, seed: 9)
+        func frame(_ y: Int) -> [UInt8] { withStill(Self.rows(body, y, y + Self.h), [0]) }
+        var s = stitcher()
+        let steps = [0, 30, 75, 76, 40, 110].map { s.push(frame($0)) }
+        #expect(steps == [.first, .added(30), .added(45), .added(1), .back, .added(34)])
+        #expect(s.totalHeight == Self.h + 110, "one frame and everything it moved by")
+        let picture = try #require(s.finish()).rgbx
+        #expect(without(picture, [0]) == without(Self.rows(body, 0, 110 + Self.h), [0]), "the page, unbroken")
+        // The still column is in the picture as the frames showed it: the
+        // first frame's, then under it the rows each later frame added.
+        #expect(Self.rows(picture, 0, Self.h) == frame(0))
+
+        // And off a live screen, where each frame is seen twice.
+        var live = stitcher()
+        let offered = [0, 0, 30, 30, 75, 75].map { live.offer(frame($0)) }.filter { $0 != .moving }
+        #expect(offered == [.first, .added(30), .added(45)])
+        #expect(live.totalHeight == Self.h + 75)
+    }
+
+    @Test func stillColumnsBesideAFixedHeaderAndFooter() throws {
+        // A bar across the top and one across the bottom, and at both sides
+        // a strip that does not scroll, through the bars as well.
+        let page = Page()
+        let sides = [0, Self.w - 2, Self.w - 1]
+        var s = stitcher()
+        let steps = [0, 40, 95].map { s.push(withStill(page.frame($0), sides)) }
+        #expect(steps == [.first, .added(40), .added(55)])
+        #expect(s.totalHeight == Self.h + 95)
+        let picture = try #require(s.finish()).rgbx
+        #expect(without(picture, sides) == without(page.expected(95), sides), "the bars once, the page unbroken")
+    }
+
+    @Test func aStillColumnDoesNotMakeFramesWithNothingInCommonJoin() {
+        let body = Self.noise(rows: 900, seed: 9)
+        func frame(_ y: Int) -> [UInt8] { withStill(Self.rows(body, y, y + Self.h), [0]) }
+        var s = stitcher()
+        _ = s.push(frame(0))
+        // Before anything was joined, and after.
+        let before = s.push(frame(Self.h))
+        #expect(before == .lost)
+        let joined = s.push(frame(30))
+        #expect(joined == .added(30))
+        let after = [s.push(frame(30 + Self.h)), s.push(frame(30 + Self.h - 20))]
+        #expect(after == [.lost, .lost], "twenty rows in common are too few, as they always were")
+        // Another page altogether behind the same border.
+        let other = s.push(withStill(Self.noise(rows: Self.h, seed: 77), [0]))
+        #expect(other == .lost)
+        #expect(s.totalHeight == Self.h + 30, "nothing was added")
+        let on = s.push(frame(60))
+        #expect(on == .added(30), "and it goes on from the last good frame")
+    }
+
+    @Test func aStillColumnDoesNotMakeAFrameThatDidNotMoveJoinTwice() {
+        let body = Self.noise(rows: 600, seed: 9)
+        func frame(_ y: Int) -> [UInt8] { withStill(Self.rows(body, y, y + Self.h), [0]) }
+        var s = stitcher()
+        _ = s.push(frame(0))
+        let same = s.push(frame(0))
+        #expect(same == .unchanged)
+        #expect(s.totalHeight == Self.h)
+        _ = s.push(frame(20))
+        let again = (0..<3).map { _ in s.push(frame(20)) }
+        #expect(again == [.unchanged, .unchanged, .unchanged])
+        let offered = [s.offer(frame(20)), s.offer(frame(20))]
+        #expect(offered == [.moving, .unchanged], "the first look `offer` has had at it, then the second")
+        #expect(s.totalHeight == Self.h + 20)
+    }
+
+    /// Why a column is left out only when *no* row of it changed. Lines of
+    /// text that are all alike, numbered down the side: scrolled by three
+    /// lines every column of the text is unchanged, and the numbers -- which
+    /// are unchanged in nine rows of ten -- are all that says it was three
+    /// lines and not one. Leaving out columns that are *mostly* unchanged
+    /// would leave them out too.
+    @Test func aColumnThatChangedInAFewRowsIsStillEvidence() {
+        let line = Self.noise(rows: 10, seed: 51)
+        let numbers = Self.noise(rows: 60, seed: 52)
+        var body: [UInt8] = []
+        for _ in 0..<60 { body += line }
+        for n in 0..<60 {
+            // One pixel of each line, in column 0, is that line's own.
+            let at = (n * 10 + 4) * Self.w * 4
+            body.replaceSubrange(at..<(at + 4), with: numbers[(n * Self.w * 4)..<(n * Self.w * 4 + 4)])
+        }
+        var s = stitcher()
+        _ = s.push(Self.rows(body, 0, Self.h))
+        let step = s.push(Self.rows(body, 30, 30 + Self.h))
+        #expect(step == .added(30))
+        #expect(s.finish()?.rgbx == Self.rows(body, 0, 30 + Self.h))
+    }
+
+    @Test func theColumnsLeftOutAreTheOnesNoRowChangedIn() {
+        // Four pixels wide, three rows: column 1 the same throughout,
+        // column 2 different in one row, column 3 different only in its
+        // fourth byte, which is not part of the picture.
+        let before = (0..<(3 * 4 * 4)).map { UInt8($0) }
+        var now = before
+        for y in 0..<3 {
+            now[(y * 4) * 4] ^= 1
+            now[(y * 4 + 3) * 4 + 3] ^= 1
+        }
+        now[(4 + 2) * 4 + 1] ^= 1
+        #expect(ShotStitcher.stillColumns(before, now, width: 4, rows: 0..<3) == [false, true, false, true])
+        // Only the rows asked about.
+        #expect(ShotStitcher.stillColumns(before, now, width: 4, rows: 2..<3) == [false, true, true, true])
+        // With nothing left out the hashes are the whole rows'.
+        let whole = ShotStitcher.rowHashes(now, width: 4)
+        let none = [Bool](repeating: false, count: 4)
+        #expect(ShotStitcher.movingHashes(now, width: 4, rows: 1..<3, still: none) == Array(whole[1..<3]))
+        #expect(ShotStitcher.movingHashes(now, width: 4, rows: 0..<3, still: [false, true, false, true]) != whole)
+    }
 }

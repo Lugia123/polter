@@ -18,6 +18,12 @@
 //! fixed header, a status bar -- are found from the first pair of frames that
 //! scrolled, and kept once.
 //!
+//! Columns that do not move while the rest does -- a window's border caught
+//! at the selection's edge, a strip of whatever is behind the window, a fixed
+//! side bar -- are left out of the comparison (`still_columns`), pair of
+//! frames by pair of frames. They are still in the picture, as each frame
+//! showed them.
+//!
 //! Frames are B, G, R, X rows, top row first, like everything in `pixels`.
 
 /// The tallest a long screenshot may get, in pixels.
@@ -76,7 +82,60 @@ fn row_hashes(frame: &[u8], width: usize) -> Vec<u64> {
         .collect()
 }
 
-/// How `now` relates to `before` inside the band `[top, bottom)` of rows.
+/// Which columns are, in every row of `rows`, the same pixel in `before` and
+/// in `now` (screenshot.md §9.7). Called for two frames that are known to
+/// differ, such a column is one of two things, and either way it is no
+/// evidence of how far the rest moved: something that does not scroll (the
+/// window's border, the desktop beside it, a fixed side bar), or page that
+/// looks the same after the scroll as before it (a margin).
+///
+/// **Every row, not most of them.** A column that changed in a few rows is
+/// kept in the comparison, because the few rows are what tells apart two
+/// lines of text that are otherwise alike -- a column of line numbers beside
+/// identical lines is mostly unchanged, and is the only thing that says how
+/// far they scrolled.
+fn still_columns(before: &[u8], now: &[u8], width: usize, rows: std::ops::Range<usize>) -> Vec<bool> {
+    let mut still = vec![true; width];
+    for y in rows {
+        let at = y * width * 4;
+        let (a, b) = (&before[at..at + width * 4], &now[at..at + width * 4]);
+        for x in 0..width {
+            if a[x * 4..x * 4 + 3] != b[x * 4..x * 4 + 3] {
+                still[x] = false;
+            }
+        }
+    }
+    still
+}
+
+/// `row_hashes` of the rows `rows` of `frame`, over the columns that are not
+/// `still`.
+fn moving_hashes(frame: &[u8], width: usize, rows: std::ops::Range<usize>, still: &[bool]) -> Vec<u64> {
+    frame[rows.start * width * 4..rows.end * width * 4]
+        .chunks_exact(width * 4)
+        .map(|row| {
+            let mut h = 0xcbf2_9ce4_8422_2325u64;
+            for (x, px) in row.chunks_exact(4).enumerate() {
+                if still[x] {
+                    continue;
+                }
+                for b in &px[..3] {
+                    h = (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3);
+                }
+            }
+            h
+        })
+        .collect()
+}
+
+/// How `now` relates to `before` in the rows `rows`, going by the columns
+/// that changed.
+fn motion_between(before: &[u8], now: &[u8], width: usize, rows: std::ops::Range<usize>) -> Motion {
+    let still = still_columns(before, now, width, rows.clone());
+    motion(&moving_hashes(before, width, rows.clone(), &still), &moving_hashes(now, width, rows, &still))
+}
+
+/// How `now` relates to `before`, each the hashes of one band of rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Motion {
     None,
@@ -145,8 +204,8 @@ pub struct Stitcher {
     strip: Vec<u8>,
     /// Where the last accepted frame's middle starts in `strip`, in rows.
     position: usize,
-    /// The last accepted frame: its row hashes, and the frame itself for the
-    /// bottom band.
+    /// The last accepted frame: its row hashes, and the frame itself -- the
+    /// next one is compared against it, and the bottom band is taken from it.
     last_hashes: Vec<u64>,
     last: Vec<u8>,
     full: bool,
@@ -234,6 +293,7 @@ impl Stitcher {
         let hashes = row_hashes(frame, self.width);
         if self.first.is_empty() {
             self.first = frame.to_vec();
+            self.last = frame.to_vec();
             self.last_hashes = hashes;
             return Step::First;
         }
@@ -245,8 +305,7 @@ impl Stitcher {
         // from then on.
         let ((top, bottom), moved) = match self.bands {
             Some((top, bottom)) => {
-                let middle = top..self.height - bottom;
-                ((top, bottom), motion(&self.last_hashes[middle.clone()], &hashes[middle]))
+                ((top, bottom), motion_between(&self.last, frame, self.width, top..self.height - bottom))
             }
             None => {
                 if hashes == self.last_hashes {
@@ -268,8 +327,7 @@ impl Stitcher {
                 let trimmed =
                     (firm(top, |i| hashes[top - 1 - i]), firm(bottom, |i| hashes[self.height - bottom + i]));
                 let try_with = |(top, bottom): (usize, usize)| {
-                    let middle = top..self.height - bottom;
-                    motion(&self.last_hashes[middle.clone()], &hashes[middle])
+                    motion_between(&self.last, frame, self.width, top..self.height - bottom)
                 };
                 match try_with(plain) {
                     Motion::Unknown if trimmed != plain => (trimmed, try_with(trimmed)),
@@ -876,5 +934,152 @@ mod tests {
         // another size is still said to be that.
         assert_eq!(s.offer(&page.frame(0)[4..]), Step::WrongSize);
         assert_eq!(s.finish().unwrap().1, page.expected(40));
+    }
+
+    /// `frame` with the columns `columns` replaced by something that is the
+    /// same in every frame and different in every row: the window's border
+    /// and what lies outside it, caught inside the selection.
+    fn with_still(mut frame: Vec<u8>, columns: &[usize]) -> Vec<u8> {
+        let edge = noise(frame.len() / (W * 4), 99);
+        for y in 0..frame.len() / (W * 4) {
+            for x in columns {
+                let at = (y * W + x) * 4;
+                frame[at..at + 4].copy_from_slice(&edge[at..at + 4]);
+            }
+        }
+        frame
+    }
+
+    /// `picture` without the columns `columns`.
+    fn without(picture: &[u8], columns: &[usize]) -> Vec<u8> {
+        picture
+            .chunks_exact(4)
+            .enumerate()
+            .filter(|(i, _)| !columns.contains(&(i % W)))
+            .flat_map(|(_, px)| px.to_vec())
+            .collect()
+    }
+
+    /// #1096 (the test machine, Notepad and Edge, the selection's left edge
+    /// on the window's border): 204 frames, 69 dropped, 600 px tall. Two
+    /// frames a notch apart were the same in 799 columns of 800 once lined
+    /// up, and differed in every row of the one that does not scroll.
+    #[test]
+    fn a_column_that_does_not_scroll_does_not_lose_every_frame() {
+        let body = noise(600, 9);
+        let frame = |y: usize| with_still(body[y * W * 4..(y + H) * W * 4].to_vec(), &[0]);
+        let mut s = stitcher();
+        assert_eq!(s.push(&frame(0)), Step::First);
+        assert_eq!(s.push(&frame(30)), Step::Added(30));
+        assert_eq!(s.push(&frame(75)), Step::Added(45));
+        assert_eq!(s.push(&frame(76)), Step::Added(1));
+        assert_eq!(s.push(&frame(40)), Step::Back);
+        assert_eq!(s.push(&frame(110)), Step::Added(34));
+        assert_eq!(s.total_height(), H + 110, "one frame and everything it moved by");
+        let (_, picture) = s.finish().unwrap();
+        assert_eq!(without(&picture, &[0]), without(&body[..(110 + H) * W * 4], &[0]), "the page, unbroken");
+        // The still column is in the picture as the frames showed it: the
+        // first frame's, then under it the rows each later frame added.
+        assert_eq!(picture[..H * W * 4], frame(0));
+
+        // And off a live screen, where each frame is seen twice.
+        let mut s = stitcher();
+        let steps: Vec<Step> =
+            [0, 0, 30, 30, 75, 75].iter().map(|y| s.offer(&frame(*y))).filter(|s| *s != Step::Moving).collect();
+        assert_eq!(steps, [Step::First, Step::Added(30), Step::Added(45)]);
+        assert_eq!(s.total_height(), H + 75);
+    }
+
+    #[test]
+    fn still_columns_beside_a_fixed_header_and_footer() {
+        // A bar across the top and one across the bottom, and at both sides
+        // a strip that does not scroll, through the bars as well.
+        let page = Page::new();
+        let sides = [0, W - 2, W - 1];
+        let frame = |y: usize| with_still(page.frame(y), &sides);
+        let mut s = stitcher();
+        s.push(&frame(0));
+        assert_eq!(s.push(&frame(40)), Step::Added(40));
+        assert_eq!(s.push(&frame(95)), Step::Added(55));
+        assert_eq!(s.total_height(), H + 95);
+        let (_, picture) = s.finish().unwrap();
+        assert_eq!(without(&picture, &sides), without(&page.expected(95), &sides), "the bars once, the page unbroken");
+    }
+
+    #[test]
+    fn a_still_column_does_not_make_frames_with_nothing_in_common_join() {
+        let body = noise(900, 9);
+        let frame = |y: usize| with_still(body[y * W * 4..(y + H) * W * 4].to_vec(), &[0]);
+        let mut s = stitcher();
+        s.push(&frame(0));
+        // Before anything was joined, and after.
+        assert_eq!(s.push(&frame(H)), Step::Lost);
+        assert_eq!(s.push(&frame(30)), Step::Added(30));
+        assert_eq!(s.push(&frame(30 + H)), Step::Lost);
+        assert_eq!(s.push(&frame(30 + H - 20)), Step::Lost, "twenty rows in common are too few, as they always were");
+        // Another page altogether behind the same border.
+        assert_eq!(s.push(&with_still(noise(H, 77), &[0])), Step::Lost);
+        assert_eq!(s.total_height(), H + 30, "nothing was added");
+        assert_eq!(s.push(&frame(60)), Step::Added(30), "and it goes on from the last good frame");
+    }
+
+    #[test]
+    fn a_still_column_does_not_make_a_frame_that_did_not_move_join_twice() {
+        let body = noise(600, 9);
+        let frame = |y: usize| with_still(body[y * W * 4..(y + H) * W * 4].to_vec(), &[0]);
+        let mut s = stitcher();
+        s.push(&frame(0));
+        assert_eq!(s.push(&frame(0)), Step::Unchanged);
+        assert_eq!(s.total_height(), H);
+        s.push(&frame(20));
+        for _ in 0..3 {
+            assert_eq!(s.push(&frame(20)), Step::Unchanged);
+        }
+        assert_eq!(s.offer(&frame(20)), Step::Moving, "the first look `offer` has had at it");
+        assert_eq!(s.offer(&frame(20)), Step::Unchanged);
+        assert_eq!(s.total_height(), H + 20);
+    }
+
+    /// Why a column is left out only when *no* row of it changed. Lines of
+    /// text that are all alike, numbered down the side: scrolled by three
+    /// lines every column of the text is unchanged, and the numbers -- which
+    /// are unchanged in nine rows of ten -- are all that says it was three
+    /// lines and not one. Leaving out columns that are *mostly* unchanged
+    /// would leave them out too.
+    #[test]
+    fn a_column_that_changed_in_a_few_rows_is_still_evidence() {
+        let line = noise(10, 51);
+        let numbers = noise(60, 52);
+        let mut body: Vec<u8> = (0..60).flat_map(|_| line.clone()).collect();
+        for n in 0..60 {
+            // One pixel of each line, in column 0, is that line's own.
+            let at = (n * 10 + 4) * W * 4;
+            body[at..at + 4].copy_from_slice(&numbers[n * W * 4..n * W * 4 + 4]);
+        }
+        let frame = |y: usize| body[y * W * 4..(y + H) * W * 4].to_vec();
+        let mut s = stitcher();
+        s.push(&frame(0));
+        assert_eq!(s.push(&frame(30)), Step::Added(30));
+        assert_eq!(s.finish().unwrap().1, body[..(30 + H) * W * 4].to_vec());
+    }
+
+    #[test]
+    fn the_columns_left_out_are_the_ones_no_row_changed_in() {
+        // Four pixels wide, three rows: column 1 the same throughout,
+        // column 2 different in one row, column 3 different only in its
+        // fourth byte, which is not part of the picture.
+        let before: Vec<u8> = (0..3 * 4 * 4).map(|i| i as u8).collect();
+        let mut now = before.clone();
+        for y in 0..3 {
+            now[(y * 4) * 4] ^= 1;
+            now[(y * 4 + 3) * 4 + 3] ^= 1;
+        }
+        now[(4 + 2) * 4 + 1] ^= 1;
+        assert_eq!(still_columns(&before, &now, 4, 0..3), [false, true, false, true]);
+        // Only the rows asked about.
+        assert_eq!(still_columns(&before, &now, 4, 2..3), [false, true, true, true]);
+        // With nothing left out the hashes are the whole rows'.
+        assert_eq!(moving_hashes(&now, 4, 1..3, &[false; 4]), row_hashes(&now, 4)[1..3]);
+        assert_ne!(moving_hashes(&now, 4, 0..3, &[false, true, false, true]), row_hashes(&now, 4));
     }
 }

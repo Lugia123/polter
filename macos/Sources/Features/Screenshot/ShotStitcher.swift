@@ -22,6 +22,12 @@ import Foundation
 /// fixed header, a status bar -- are found from the first pair of frames
 /// that scrolled, and kept once.
 ///
+/// Columns that do not move while the rest does -- a window's border caught
+/// at the selection's edge, a strip of whatever is behind the window, a
+/// fixed side bar -- are left out of the comparison (`stillColumns`), pair
+/// of frames by pair of frames. They are still in the picture, as each frame
+/// showed them.
+///
 /// Frames are four bytes a pixel, top row first; only the first three
 /// bytes of each pixel are compared.
 struct ShotStitcher {
@@ -82,8 +88,9 @@ struct ShotStitcher {
     private var strip: [UInt8] = []
     /// Where the last accepted frame's middle starts in `strip`, in rows.
     private var position = 0
-    /// The last accepted frame: its row hashes, and the frame itself for
-    /// the bottom band.
+    /// The last accepted frame: its row hashes, and the frame itself -- the
+    /// next one is compared against it, and the bottom band is taken from
+    /// it.
     private var lastHashes: [UInt64] = []
     private var last: [UInt8] = []
     private(set) var isFull = false
@@ -129,6 +136,71 @@ struct ShotStitcher {
             }
         }
         return out
+    }
+
+    /// Which columns are, in every row of `rows`, the same pixel in
+    /// `before` and in `now` (`dev-docs/poltergeist/screenshot.md`, 9.7).
+    /// Called for two frames that are known to differ, such a column is one
+    /// of two things, and either way it is no evidence of how far the rest
+    /// moved: something that does not scroll (the window's border, the
+    /// desktop beside it, a fixed side bar), or page that looks the same
+    /// after the scroll as before it (a margin).
+    ///
+    /// **Every row, not most of them.** A column that changed in a few rows
+    /// is kept in the comparison, because the few rows are what tells apart
+    /// two lines of text that are otherwise alike -- a column of line
+    /// numbers beside identical lines is mostly unchanged, and is the only
+    /// thing that says how far they scrolled.
+    static func stillColumns(_ before: [UInt8], _ now: [UInt8], width: Int, rows: Range<Int>) -> [Bool] {
+        var still = [Bool](repeating: true, count: width)
+        before.withUnsafeBufferPointer { a in
+            now.withUnsafeBufferPointer { b in
+                for y in rows {
+                    var at = y * width * 4
+                    for x in 0..<width {
+                        if a[at] != b[at] || a[at + 1] != b[at + 1] || a[at + 2] != b[at + 2] {
+                            still[x] = false
+                        }
+                        at += 4
+                    }
+                }
+            }
+        }
+        return still
+    }
+
+    /// `rowHashes` of the rows `rows` of `frame`, over the columns that are
+    /// not `still`.
+    static func movingHashes(_ frame: [UInt8], width: Int, rows: Range<Int>, still: [Bool]) -> [UInt64] {
+        var out: [UInt64] = []
+        out.reserveCapacity(rows.count)
+        frame.withUnsafeBufferPointer { bytes in
+            for y in rows {
+                var h: UInt64 = 0xcbf2_9ce4_8422_2325
+                var i = y * width * 4
+                for x in 0..<width {
+                    if still[x] {
+                        i += 4
+                        continue
+                    }
+                    h = (h ^ UInt64(bytes[i])) &* 0x0100_0000_01b3
+                    h = (h ^ UInt64(bytes[i + 1])) &* 0x0100_0000_01b3
+                    h = (h ^ UInt64(bytes[i + 2])) &* 0x0100_0000_01b3
+                    i += 4
+                }
+                out.append(h)
+            }
+        }
+        return out
+    }
+
+    /// How `now` relates to `before` in the rows `rows`, going by the
+    /// columns that changed.
+    private static func motionBetween(_ before: [UInt8], _ now: [UInt8], width: Int, rows: Range<Int>) -> Motion {
+        let still = stillColumns(before, now, width: width, rows: rows)
+        let a = movingHashes(before, width: width, rows: rows, still: still)
+        let b = movingHashes(now, width: width, rows: rows, still: still)
+        return motion(a[...], b[...])
     }
 
     /// Whether `a` shifted by `shift` rows lines up with `b`: `a[i +
@@ -208,6 +280,7 @@ struct ShotStitcher {
         let hashes = Self.rowHashes(frame, width: width)
         if first.isEmpty {
             first = frame
+            last = frame
             lastHashes = hashes
             return .first
         }
@@ -219,7 +292,7 @@ struct ShotStitcher {
         let moved: Motion
         if let bands {
             (top, bottom) = bands
-            moved = Self.motion(lastHashes[top..<(height - bottom)], hashes[top..<(height - bottom)])
+            moved = Self.motionBetween(last, frame, width: width, rows: top..<(height - bottom))
         } else {
             if hashes == lastHashes { return .unchanged }
             var t = 0
@@ -242,9 +315,7 @@ struct ShotStitcher {
                 bottom: Self.firm(rows: b) { hashes[height - b + $0] }
             )
             func tryWith(_ bands: (top: Int, bottom: Int)) -> Motion {
-                Self.motion(
-                    lastHashes[bands.top..<(height - bands.bottom)],
-                    hashes[bands.top..<(height - bands.bottom)])
+                Self.motionBetween(last, frame, width: width, rows: bands.top..<(height - bands.bottom))
             }
             let plainMotion = tryWith(plain)
             if plainMotion == .unknown, trimmed != plain {
