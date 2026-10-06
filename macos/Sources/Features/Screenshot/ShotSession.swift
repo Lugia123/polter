@@ -262,14 +262,15 @@ final class ShotSession {
         }
         let index = selection.display
         let scale = editor.scale
-        let display = space.displays[index].rect
-        let fontPx = ShotStyle.fontPx(level: box.level, scale: scale)
-        let pad = ShotStyle.px(4, scale: scale)
-        let width = max(
-            min(max(selection.rect.right - box.at.x, ShotStyle.px(200, scale: scale)), display.right - box.at.x),
-            ShotStyle.px(40, scale: scale))
-        let height = min(fontPx * 4, max(display.bottom - box.at.y, fontPx + pad * 2))
-        let frame = space.local(PixelRect(box.at.x, box.at.y, width, height), on: index)
+        // As tall as what is in it and inside the selection (`ShotTextBox`).
+        // It was `fontPx * 4` whatever was typed, stopped only by the
+        // display: at the largest size, low in the selection, it lay over
+        // the toolbar (task 1104).
+        guard let rect = editor.textRect(lines: ShotTextBox.lines(in: box.text), measure: measure) else {
+            perform(editor.endText("", measure: measure))
+            return
+        }
+        let frame = space.local(rect, on: index)
 
         let view = ShotTextView(frame: frame)
         view.isRichText = false
@@ -288,6 +289,11 @@ final class ShotSession {
         view.setSelectedRange(NSRange(location: (box.text as NSString).length, length: 0))
         view.onCommit = { [weak self] in self?.commitText() }
         view.staysOpen = { [weak self] in self?.pressRestylesText() ?? false }
+        view.onChange = { [weak self] in self?.fitText() }
+        view.isToolbar = { [weak self] point in
+            guard let self else { return false }
+            return ShotTextBox.onToolbar(self.space.pixel(ofLocal: point, on: index), keepClear: self.editor.textKeepClear)
+        }
 
         textView = view
         let overlay = overlays[index]
@@ -321,7 +327,52 @@ final class ShotSession {
             storage.setAttributes(textView.typingAttributes, range: NSRange(location: 0, length: storage.length))
         }
         textView.window?.makeFirstResponder(textView)
+        // Another size is another line height, and for a new text possibly
+        // another place (`ShotEditor.setLevel`).
+        fitText()
         repaint()
+    }
+
+    /// How many lines the view has laid out: a line break is one, and so is
+    /// a line the view wrapped at its right edge.
+    private func laidOutLines(of view: ShotTextView) -> Int {
+        guard let manager = view.layoutManager, let container = view.textContainer, let font = view.font else {
+            return ShotTextBox.lines(in: view.string)
+        }
+        manager.ensureLayout(for: container)
+        let pitch = manager.defaultLineHeight(for: font)
+        guard pitch > 0 else { return ShotTextBox.lines(in: view.string) }
+        let laidOut = Int((manager.usedRect(for: container).height / pitch).rounded())
+        return max(laidOut, ShotTextBox.lines(in: view.string))
+    }
+
+    /// Put the text view where `ShotEditor.textRect` says it goes for what
+    /// is in it now: a line taller for each line, never past the selection's
+    /// bottom edge. Past that the text scrolls in the box, so that the line
+    /// the caret is on is the one in view.
+    private func fitText() {
+        guard let view = textView, let selection = editor.selection,
+              let rect = editor.textRect(lines: laidOutLines(of: view), measure: measure) else { return }
+        let frame = space.local(rect, on: selection.display)
+        if view.frame != frame { view.frame = frame }
+
+        var top: CGFloat = 0
+        if let manager = view.layoutManager, let container = view.textContainer {
+            let used = manager.usedRect(for: container).height
+            if used > frame.height + 0.5 {
+                let caret = view.selectedRange().location
+                var line = manager.extraLineFragmentRect
+                if caret < (view.string as NSString).length || line.isEmpty {
+                    let glyph = min(manager.glyphIndexForCharacter(at: caret), max(manager.numberOfGlyphs - 1, 0))
+                    if manager.numberOfGlyphs > 0 {
+                        line = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                    }
+                }
+                top = min(max(line.maxY - frame.height, 0), max(used - frame.height, 0))
+            }
+        }
+        if view.bounds.origin.y != top { view.setBoundsOrigin(NSPoint(x: 0, y: top)) }
+        view.needsDisplay = true
     }
 
     /// Close the text box and hand what was typed to the editor, which
@@ -344,6 +395,8 @@ final class ShotSession {
         textView = nil
         view.onCommit = nil
         view.staysOpen = nil
+        view.onChange = nil
+        view.isToolbar = nil
         let effect = editor.endText(view.string, measure: measure)
         let window = view.window
         let owner = view.superview

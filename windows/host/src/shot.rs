@@ -110,6 +110,9 @@ struct Mon {
 struct EditCtl {
     hwnd: HWND,
     font: HFONT,
+    /// Where it was last put, in virtual-screen pixels: `fit_edit` moves it
+    /// only when this changes, and says so in the log when it does.
+    rect: Rect,
 }
 
 /// One screenshot in progress. What it *does* is `editor`
@@ -1786,29 +1789,34 @@ unsafe fn draw_long_status(canvas: &Canvas, long: &LongShot, layout: &Layout, se
 /// window that implements the text protocols, and this one already does.
 /// Several lines: Enter is a line break, Ctrl+Enter and Esc end it.
 fn open_edit() {
-    let Some((parent, mon_rect, sel_rect, scale, tb)) = with(|s| {
+    let Some((parent, mon_rect, scale, tb)) = with(|s| {
         let sel = *s.editor.selection()?;
         let m = &s.mons[sel.monitor];
-        Some((m.hwnd, m.rect, sel.rect, s.editor.scale(), s.editor.text_box()?.clone()))
+        Some((m.hwnd, m.rect, s.editor.scale(), s.editor.text_box()?.clone()))
     })
     .flatten() else {
         return;
     };
     let font_px = style::font_px(tb.level, scale);
-    let local = tb.at.relative_to(mon_rect.origin());
-    let pad = style::px(4, scale);
-    let width = (sel_rect.right() - tb.at.x).max(style::px(200, scale)).min(mon_rect.right() - tb.at.x).max(style::px(40, scale));
-    let height = (font_px * 4).min((mon_rect.bottom() - tb.at.y).max(font_px + pad * 2));
+    // As tall as what is in it and inside the selection (`textbox`). It was
+    // `font_px * 4` whatever was typed, stopped only by the monitor: 264 px
+    // at the largest size on a 144 DPI screen, over the toolbar (task 1104).
+    let Some(rect) = with(|s| s.editor.text_rect(polter_shots::textbox::lines(&tb.text), &Gdi)).flatten() else {
+        // The editor has a box the host cannot place: end it, as below.
+        commit_edit();
+        return;
+    };
+    let local = rect.relative_to(mon_rect.origin());
+    let (width, height) = (rect.w, rect.h);
     let initial: Vec<u16> = tb.text.replace('\n', "\r\n").encode_utf16().chain(Some(0)).collect();
     unsafe {
         let edit = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("EDIT"),
             PCWSTR(initial.as_ptr()),
-            WS_CHILD
-                | WS_VISIBLE
-                | WS_BORDER
-                | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN) as u32),
+            // No border: the box is whole lines tall, and a border would
+            // take two pixels of the last one. Its paper is what shows it.
+            WS_CHILD | WS_VISIBLE | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN) as u32),
             local.x,
             local.y,
             width,
@@ -1832,7 +1840,9 @@ fn open_edit() {
         const EM_SETSEL: u32 = 0x00B1;
         let end = GetWindowTextLengthW(edit).max(0);
         SendMessageW(edit, EM_SETSEL, Some(WPARAM(end as usize)), Some(LPARAM(end as isize)));
-        with(|s| s.edit = Some(EditCtl { hwnd: edit, font }));
+        with(|s| s.edit = Some(EditCtl { hwnd: edit, font, rect }));
+        keep_toolbar_clear(edit, rect);
+        log_edit(rect, polter_shots::textbox::lines(&tb.text), "opened");
         // The one time the input method is wanted: see `keys_are_raw`.
         TEXT_OPEN.store(true, Ordering::Release);
         let _ = SetForegroundWindow(parent);
@@ -1863,7 +1873,111 @@ fn restyle_edit() {
         let _ = InvalidateRect(Some(edit), None, true);
         let _ = SetFocus(Some(edit));
     }
+    // Another size is another line height, and for a new text possibly
+    // another place (`Editor::set_level`).
+    fit_edit();
     repaint();
+}
+
+/// Put the text box where `Editor::text_rect` says it goes for what is in
+/// it now: a line taller for each line break, never past the selection's
+/// bottom edge. Called after anything that may have changed the text or
+/// its size; does nothing when the box is already there.
+fn fit_edit() {
+    const EM_GETLINECOUNT: u32 = 0x00BA;
+    const EM_GETFIRSTVISIBLELINE: u32 = 0x00CE;
+    const EM_LINESCROLL: u32 = 0x00B6;
+    let Some((edit, was, parent_origin)) = with(|s| {
+        let e = s.edit.as_ref()?;
+        let sel = s.editor.selection()?;
+        Some((e.hwnd, e.rect, s.mons[sel.monitor].rect.origin()))
+    })
+    .flatten() else {
+        return;
+    };
+    // The control's own count: with ES_AUTOHSCROLL a line is never wrapped,
+    // so this is the line breaks and one.
+    let lines = unsafe { SendMessageW(edit, EM_GETLINECOUNT, None, None).0 }.max(1) as i32;
+    let Some(rect) = with(|s| s.editor.text_rect(lines, &Gdi)).flatten() else {
+        return;
+    };
+    if rect == was {
+        return;
+    }
+    let local = rect.relative_to(parent_origin);
+    unsafe {
+        let _ = SetWindowPos(edit, None, local.x, local.y, rect.w, rect.h, SWP_NOZORDER | SWP_NOACTIVATE);
+        // Enter on the last line scrolls the text up a line before the box
+        // has grown to hold it. If everything fits again, show it from the
+        // top; if it does not, the control keeps the caret in view itself.
+        let line = with(|s| s.editor.text_box().map(|t| s.editor.text_line(t.level, &Gdi))).flatten().unwrap_or(1);
+        let first = SendMessageW(edit, EM_GETFIRSTVISIBLELINE, None, None).0 as i32;
+        if first > 0 && lines * line <= rect.h {
+            SendMessageW(edit, EM_LINESCROLL, Some(WPARAM(0)), Some(LPARAM(-(first as isize))));
+        }
+    }
+    with(|s| {
+        if let Some(e) = &mut s.edit {
+            e.rect = rect;
+        }
+    });
+    keep_toolbar_clear(edit, rect);
+    log_edit(rect, lines, "now");
+    repaint();
+}
+
+/// The toolbar is above the text box, always: whatever of the box would lie
+/// over either toolbar row is cut out of the box's window, so it is neither
+/// drawn there nor pressed there, and the press reaches the toolbar.
+///
+/// `textbox::rect` already keeps a box off the toolbar wherever it can.
+/// What is left is a text opened for editing again whose first line sits
+/// where the toolbar now is; this is for that one.
+fn keep_toolbar_clear(edit: HWND, rect: Rect) {
+    let keep = with(|s| s.editor.text_keep_clear()).unwrap_or_default();
+    let holes: Vec<Rect> = keep.iter().filter_map(|r| rect.intersect(*r)).collect();
+    unsafe {
+        if holes.is_empty() {
+            // The whole window again. The system owns a region once set.
+            let _ = SetWindowRgn(edit, None, true);
+            return;
+        }
+        let region = CreateRectRgn(0, 0, rect.w, rect.h);
+        for h in &holes {
+            let l = h.relative_to(rect.origin());
+            let hole = CreateRectRgn(l.x, l.y, l.right(), l.bottom());
+            let _ = CombineRgn(Some(region), Some(region), Some(hole), RGN_DIFF);
+            let _ = DeleteObject(hole.into());
+        }
+        let _ = SetWindowRgn(edit, Some(region), true);
+    }
+    // process-wide: the overlay is not a terminal window
+    plogf!("[shot] text box: {} part(s) of it are under the toolbar and were cut out of it", holes.len());
+}
+
+fn log_edit(rect: Rect, lines: i32, what: &str) {
+    let (line, font, sel) = with(|s| {
+        let t = s.editor.text_box()?;
+        Some((s.editor.text_line(t.level, &Gdi), style::font_px(t.level, s.editor.scale()), s.editor.selection()?.rect))
+    })
+    .flatten()
+    .unwrap_or((0, 0, Rect::new(0, 0, 0, 0)));
+    // process-wide: the overlay is not a terminal window
+    plogf!(
+        "[shot] text box {}: {}x{} px at ({},{}), {} line(s) typed, a line is {} px (font {} px); selection {}x{} at ({},{})",
+        what,
+        rect.w,
+        rect.h,
+        rect.x,
+        rect.y,
+        lines,
+        line,
+        font,
+        sel.w,
+        sel.h,
+        sel.x,
+        sel.y
+    );
 }
 
 /// Close the text box and hand what was typed to `Editor`, which decides
@@ -1942,7 +2056,16 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             return LRESULT(0);
         }
         let f: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT = std::mem::transmute(prev);
-        f(hwnd, msg, wp, lp)
+        let r = f(hwnd, msg, wp, lp);
+        // Whatever may have added or removed a line: a key, a character, a
+        // paste, a cut, an undo, an input method finishing. The box follows
+        // what is in it (`fit_edit` does nothing when nothing changed).
+        const WM_IME_ENDCOMPOSITION: u32 = 0x010E;
+        const WM_IME_COMPOSITION: u32 = 0x010F;
+        if matches!(msg, WM_CHAR | WM_KEYDOWN | WM_PASTE | WM_CUT | WM_CLEAR | WM_UNDO | WM_IME_ENDCOMPOSITION | WM_IME_COMPOSITION) {
+            fit_edit();
+        }
+        r
     }
 }
 

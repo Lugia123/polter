@@ -36,6 +36,7 @@ pub mod stitch;
 pub mod store;
 pub mod style;
 pub mod sweep;
+pub mod textbox;
 pub mod toolbar;
 
 /// Pixels, top row first, four bytes each in R, G, B, A order, not

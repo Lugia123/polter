@@ -20,7 +20,7 @@ private final class Rig {
     static let window = PixelRect(400, 200, 900, 500)
 
     var editor: ShotEditor
-    private let measure = FakeMeasure()
+    let measure = FakeMeasure()
 
     init(_ editor: ShotEditor) { self.editor = editor }
 
@@ -666,6 +666,60 @@ struct ShotEditorTests {
             .text(at: Pt(500, 300), text: "first", size: .init(50, 18)),
             .text(at: Pt(500, 400), text: "second\nline", size: .init(60, 36)),
         ])
+    }
+
+    @Test func aTextStartedOnTheSelectionsLastRowsIsPulledUpAndItsBoxStaysInside() {
+        // The window is y 200..700 and x 400..1300; the fake's line is the
+        // font's height, 18 px at the default size and 44 at the largest.
+        let rig = Rig.selected()
+        rig.letter("T")
+        #expect(rig.click(Pt(500, 699)) == .openText)
+        #expect(rig.editor.textBox?.at == Pt(500, 682), "one line above the bottom edge")
+        #expect(rig.editor.textRect(lines: 1, measure: rig.measure) == PixelRect(500, 682, 800, 18))
+        // There is no room under it: more lines scroll, the box does not grow.
+        #expect(rig.editor.textRect(lines: 5, measure: rig.measure) == PixelRect(500, 682, 800, 18))
+        // A bigger size is a taller line, and the text moves up to hold it.
+        #expect(rig.touch(.level(4)) == .restyleText)
+        #expect(rig.editor.textBox?.at == Pt(500, 656))
+        #expect(rig.editor.textBox?.level == 4)
+        let box = rig.editor.textRect(lines: 1, measure: rig.measure)
+        #expect(box == PixelRect(500, 656, 800, 44))
+        #expect(rig.editor.textKeepClear.count == 2)
+        #expect(rig.editor.textKeepClear.allSatisfy { box?.intersect($0) == nil },
+                "the toolbar is under the selection, the box is in it")
+        // What is kept is where it was typed.
+        rig.type("low")
+        #expect(rig.shapes == [.text(at: Pt(500, 656), text: "low", size: .init(30, 44))])
+    }
+
+    @Test func theBoxIsAsTallAsItsLinesUntilTheSelectionsBottomEdge() {
+        let rig = Rig.selected()
+        rig.letter("T")
+        rig.click(Pt(500, 300))
+        rig.touch(.level(4))
+        #expect(rig.editor.textBox?.at == Pt(500, 300), "there was room: it did not move")
+        #expect(rig.editor.textRect(lines: 1, measure: rig.measure) == PixelRect(500, 300, 800, 44))
+        #expect(rig.editor.textRect(lines: 3, measure: rig.measure) == PixelRect(500, 300, 800, 132))
+        // 400 px to the bottom edge is nine lines of 44 and a bit: nine.
+        #expect(rig.editor.textRect(lines: 99, measure: rig.measure) == PixelRect(500, 300, 800, 396))
+        #expect(rig.editor.textRect(lines: 1, measure: rig.measure)?.h
+            == rig.editor.textLine(level: 4, measure: rig.measure))
+    }
+
+    @Test func aTextEditedAgainStaysWhereItIsWhateverItsSizeBecomes() {
+        let rig = Rig.selected()
+        rig.letter("T")
+        rig.click(Pt(500, 690))
+        #expect(rig.editor.textBox?.at == Pt(500, 682))
+        rig.type("first")
+        rig.letter("V")
+        #expect(rig.double(Pt(510, 688)) == .openText)
+        rig.touch(.level(4))
+        // Its place is the annotation's, which other things were drawn
+        // around: one line, even though that line now ends below the edge.
+        #expect(rig.editor.textBox?.at == Pt(500, 682))
+        #expect(rig.editor.textBox?.editing == 0)
+        #expect(rig.editor.textRect(lines: 3, measure: rig.measure) == PixelRect(500, 682, 800, 44))
     }
 
     @Test func aClickOutsideTheBoxCommitsAndDoesNothingElse() {

@@ -262,9 +262,51 @@ struct ShotEditor {
         return .repaint
     }
 
+    /// The height of one line of text at `level`, as the host draws it.
+    func textLine(level: Int, measure: TextMeasure) -> Int {
+        max(measure.size(of: "M", fontPx: ShotStyle.fontPx(level: level, scale: scale)).h, 1)
+    }
+
+    /// What the text box has to stay off: both rows of the toolbar as they
+    /// are while a text is typed (`ShotTextBox`).
+    var textKeepClear: [PixelRect] {
+        guard let selection, displays.indices.contains(selection.display) else { return [] }
+        let display = displays[selection.display]
+        let l = ShotToolbarGrid.layout(
+            selection: selection.rect, display: display.rect, scale: display.scale, props: .font)
+        return [l.bar] + (l.props.map { [$0] } ?? [])
+    }
+
+    /// Where the open text box is, for a text of `lines` lines
+    /// (specification 9.3; `ShotTextBox.rect` for the rule). Nil with no
+    /// box open.
+    func textRect(lines: Int, measure: TextMeasure) -> PixelRect? {
+        guard let box = textBox, let selection, displays.indices.contains(selection.display) else { return nil }
+        let display = displays[selection.display]
+        let minW = ShotTextBox.minWidth(
+            fontPx: ShotStyle.fontPx(level: box.level, scale: display.scale), scale: display.scale)
+        return ShotTextBox.rect(
+            at: box.at, lines: lines, line: textLine(level: box.level, measure: measure), minW: minW,
+            selection: selection.rect, display: display.rect, keepClear: textKeepClear)
+    }
+
+    /// Where a new text starts for a press at `p`: the press, pulled into
+    /// the selection far enough for one line (`ShotTextBox.origin`).
+    private func textOrigin(_ p: PixelPoint, level: Int, measure: TextMeasure) -> PixelPoint {
+        guard let selection else { return p }
+        let minW = ShotTextBox.minWidth(fontPx: ShotStyle.fontPx(level: level, scale: scale), scale: scale)
+        return ShotTextBox.origin(
+            click: p, line: textLine(level: level, measure: measure), minW: minW,
+            selection: selection.rect, keepClear: textKeepClear)
+    }
+
     private mutating func setLevel(_ level: Int, measure: TextMeasure) -> Effect {
         let level = min(max(level, 0), ShotStyle.levels - 1)
         if var box = textBox {
+            // A text that is new keeps to the selection at its new size
+            // too: a bigger line may no longer fit where it was started.
+            // One edited again, or a number's sentence, stays where it is.
+            if box.editing == nil, !box.caption { box.at = textOrigin(box.at, level: level, measure: measure) }
             box.level = level
             textBox = box
             prefs.setLevel(level, of: box.caption ? .number : .text)
@@ -437,7 +479,8 @@ struct ShotEditor {
             live = Annotation(shape: .highlighter([p]), colour: colour, level: level)
         case .text:
             textBox = TextBox(
-                at: p, text: "", colour: colour, level: level, editing: nil, caption: false, fresh: false)
+                at: textOrigin(p, level: level, measure: measure),
+                text: "", colour: colour, level: level, editing: nil, caption: false, fresh: false)
             return .openText
         case .number:
             // The circle and the sentence typed after it are one step.

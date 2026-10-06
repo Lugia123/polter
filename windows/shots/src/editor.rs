@@ -16,6 +16,7 @@ use crate::dclick::Mods;
 use crate::geom::{self, Handle, Hit, Point, Rect};
 use crate::overlay::{self, Key};
 use crate::style::{self, Prefs, Props, Tool};
+use crate::textbox;
 use crate::toolbar::{self, Button, Layout};
 
 /// How text measures in the font it will be drawn in. The host's is GDI; a
@@ -203,6 +204,41 @@ impl Editor {
     pub fn text_box(&self) -> Option<&TextBox> {
         self.text.as_ref()
     }
+
+    /// The height of one line of text at `level`, as the host draws it.
+    pub fn text_line(&self, level: u8, m: &dyn Measure) -> i32 {
+        m.text("M", style::font_px(level, self.scale())).1.max(1)
+    }
+
+    /// What the text box has to stay off: both rows of the toolbar as they
+    /// are while a text is typed (`textbox`).
+    pub fn text_keep_clear(&self) -> Vec<Rect> {
+        let Some(s) = self.selection else { return Vec::new() };
+        let Some(mon) = self.monitors.get(s.monitor) else { return Vec::new() };
+        let l = toolbar::layout(s.rect, mon.rect, mon.scale, Props::Font);
+        let mut out = vec![l.bar];
+        out.extend(l.props);
+        out
+    }
+
+    /// Where the open text box is, for a text of `lines` lines: specification
+    /// §9.3, and `textbox::rect` for the rule. `None` with no box open.
+    pub fn text_rect(&self, lines: i32, m: &dyn Measure) -> Option<Rect> {
+        let t = self.text.as_ref()?;
+        let s = self.selection?;
+        let mon = self.monitors.get(s.monitor)?;
+        let min_w = textbox::min_width(style::font_px(t.level, mon.scale), mon.scale);
+        Some(textbox::rect(t.at, lines, self.text_line(t.level, m), min_w, s.rect, mon.rect, &self.text_keep_clear()))
+    }
+
+    /// Where a new text starts for a press at `p`: the press, pulled into
+    /// the selection far enough for one line (`textbox::origin`).
+    fn text_origin(&self, p: Point, level: u8, m: &dyn Measure) -> Point {
+        let Some(s) = self.selection else { return p };
+        let scale = self.scale();
+        let min_w = textbox::min_width(style::font_px(level, scale), scale);
+        textbox::origin(p, self.text_line(level, m), min_w, s.rect, &self.text_keep_clear())
+    }
     pub fn hover_button(&self) -> Option<Button> {
         self.hover_button
     }
@@ -340,10 +376,17 @@ impl Editor {
 
     fn set_level(&mut self, level: u8, m: &dyn Measure) -> Effect {
         let level = level.min(style::LEVELS - 1);
-        if let Some(t) = &mut self.text {
-            t.level = level;
+        if let Some(t) = &self.text {
+            // A text that is new keeps to the selection at its new size
+            // too: a bigger line may no longer fit where it was started.
+            // One edited again, or a number's sentence, stays where it is.
+            let at = if t.editing.is_none() && !t.caption { self.text_origin(t.at, level, m) } else { t.at };
             let tool = if t.caption { Tool::Number } else { Tool::Text };
             self.prefs.set_level(tool, level);
+            if let Some(t) = &mut self.text {
+                t.level = level;
+                t.at = at;
+            }
             return Effect::RestyleText;
         }
         if let Some(i) = self.selected.filter(|i| *i < self.items.len()) {
@@ -517,7 +560,8 @@ impl Editor {
             Tool::Pen => self.live = Some(Item { shape: Shape::Pen(vec![p]), colour, level, rgb: None }),
             Tool::Highlighter => self.live = Some(Item { shape: Shape::Highlighter(vec![p]), colour, level, rgb: None }),
             Tool::Text => {
-                self.text = Some(TextBox { at: p, text: String::new(), colour, level, editing: None, caption: false, fresh: false, closing: false });
+                let at = self.text_origin(p, level, m);
+                self.text = Some(TextBox { at, text: String::new(), colour, level, editing: None, caption: false, fresh: false, closing: false });
                 return Effect::OpenText;
             }
             Tool::Number => {
@@ -1440,6 +1484,60 @@ mod tests {
         assert_eq!(e.items().len(), 2);
         assert_eq!(e.items()[0].shape, Shape::Text { at: P(500, 300), text: "first".into(), size: (50, 18) });
         assert_eq!(e.items()[1].shape, Shape::Text { at: P(500, 400), text: "second\nline".into(), size: (60, 36) });
+    }
+
+    #[test]
+    fn a_text_started_on_the_selections_last_rows_is_pulled_up_and_its_box_stays_inside() {
+        // WIN is y 200..700 and x 400..1300; `Fake`'s line is the font's
+        // height, 18 px at the default size and 44 at the largest.
+        let mut e = selected();
+        letter(&mut e, 'T');
+        assert_eq!(click(&mut e, P(500, 699)), Effect::OpenText);
+        assert_eq!(e.text_box().map(|t| t.at), Some(P(500, 682)), "one line above the bottom edge");
+        assert_eq!(e.text_rect(1, &Fake), Some(Rect::new(500, 682, 800, 18)));
+        // There is no room under it: more lines scroll, the box does not grow.
+        assert_eq!(e.text_rect(5, &Fake), Some(Rect::new(500, 682, 800, 18)));
+        // A bigger size is a taller line, and the text moves up to hold it.
+        assert_eq!(press(&mut e, Button::Level(4)), Effect::RestyleText);
+        assert_eq!(e.text_box().map(|t| (t.at, t.level)), Some((P(500, 656), 4)));
+        let b = e.text_rect(1, &Fake).unwrap();
+        assert_eq!(b, Rect::new(500, 656, 800, 44));
+        for r in e.text_keep_clear() {
+            assert_eq!(b.intersect(r), None, "the toolbar is under the selection, the box is in it");
+        }
+        // What is kept is where it was typed.
+        type_text(&mut e, "low");
+        assert_eq!(e.items()[0].shape, Shape::Text { at: P(500, 656), text: "low".into(), size: (30, 44) });
+    }
+
+    #[test]
+    fn the_box_is_as_tall_as_its_lines_until_the_selections_bottom_edge() {
+        let mut e = selected();
+        letter(&mut e, 'T');
+        click(&mut e, P(500, 300));
+        press(&mut e, Button::Level(4));
+        assert_eq!(e.text_box().map(|t| t.at), Some(P(500, 300)), "there was room: it did not move");
+        assert_eq!(e.text_rect(1, &Fake), Some(Rect::new(500, 300, 800, 44)));
+        assert_eq!(e.text_rect(3, &Fake), Some(Rect::new(500, 300, 800, 132)));
+        // 400 px to the bottom edge is nine lines of 44 and a bit: nine.
+        assert_eq!(e.text_rect(99, &Fake), Some(Rect::new(500, 300, 800, 396)));
+        assert_eq!(e.text_rect(1, &Fake).map(|r| r.h), Some(e.text_line(4, &Fake)));
+    }
+
+    #[test]
+    fn a_text_edited_again_stays_where_it_is_whatever_its_size_becomes() {
+        let mut e = selected();
+        letter(&mut e, 'T');
+        click(&mut e, P(500, 690));
+        assert_eq!(e.text_box().map(|t| t.at), Some(P(500, 682)));
+        type_text(&mut e, "first");
+        letter(&mut e, 'V');
+        assert_eq!(e.double_click(P(510, 688), NONE, &Fake), Effect::OpenText);
+        press(&mut e, Button::Level(4));
+        // Its place is the annotation's, which other things were drawn
+        // around: one line, even though that line now ends below the edge.
+        assert_eq!(e.text_box().map(|t| (t.at, t.editing)), Some((P(500, 682), Some(0))));
+        assert_eq!(e.text_rect(3, &Fake), Some(Rect::new(500, 682, 800, 44)));
     }
 
     #[test]

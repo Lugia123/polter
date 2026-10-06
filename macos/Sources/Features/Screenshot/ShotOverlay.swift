@@ -51,6 +51,31 @@ final class ShotTextView: NSTextView {
     /// press of a colour or a size, which changes this text and hands the
     /// keyboard straight back, and so is not the end of the typing.
     var staysOpen: (() -> Bool)?
+    /// Called when what is typed, or where the caret is, has changed: the
+    /// box is as tall as its lines (`ShotTextBox`), and whoever placed it
+    /// places it again.
+    var onChange: (() -> Void)?
+    /// Whether a point of the overlay (the superview's coordinates) is the
+    /// toolbar's. A press there is not this view's even where the view
+    /// lies over it: the toolbar is asked first, always (specification 9.3).
+    var isToolbar: ((NSPoint) -> Bool)?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if isToolbar?(point) == true { return nil }
+        return super.hitTest(point)
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        onChange?()
+    }
+
+    override func setSelectedRanges(
+        _ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool
+    ) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+        if !stillSelecting { onChange?() }
+    }
 
     override func cancelOperation(_ sender: Any?) {
         onCommit?()
