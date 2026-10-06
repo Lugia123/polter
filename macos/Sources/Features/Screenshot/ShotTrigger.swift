@@ -16,43 +16,31 @@ struct ShotMods: OptionSet, Equatable, Hashable {
     static let all: ShotMods = [.shift, .control, .option, .command]
 }
 
-/// Modifiers held plus a double-click of the left button, anywhere on screen
+/// Modifiers held plus a click of the left button, anywhere on screen
 /// (`dev-docs/poltergeist/screenshot.md`, 3.1).
 ///
 /// A value that is fed every left-button press and answers whether that
-/// press completed the gesture. It keeps the previous press and nothing
-/// else; the clock, the position and the modifiers all come in from outside.
-struct DoubleClickDetector: Equatable {
+/// press is the gesture. The clock and the modifiers come in from outside.
+///
+/// Until 2026-10-07 the gesture was a double click, and the screenshot
+/// opened with the window under the pointer already selected. It is one
+/// click now and opens exactly as the hotkey opens it: the frozen screen is
+/// where a second click selects that window anyway, without waiting out the
+/// system's double-click interval.
+struct ClickDetector: Equatable {
     /// The modifiers that have to be held. Empty is off: with nothing
-    /// required, every double-click on the machine would match.
+    /// required, every click on the machine would match.
     var required: ShotMods
-    /// The longest gap between the two presses, the system's own
-    /// double-click interval.
-    var interval: TimeInterval
-    /// How far apart the two presses may be, along either axis.
-    var distance: CGFloat
 
-    private var previous: Press?
-
-    private struct Press: Equatable {
-        var time: TimeInterval
-        var point: CGPoint
-    }
-
-    init(required: ShotMods, interval: TimeInterval, distance: CGFloat) {
+    init(required: ShotMods) {
         self.required = required.intersection(.all)
-        self.interval = interval
-        self.distance = distance
     }
 
     /// What a press turned out to be.
     enum Verdict: Equatable {
-        /// The second of two presses: the gesture.
+        /// Made with exactly the required modifiers: the gesture.
         case fired
-        /// A press that could be the first of two.
-        case first
-        /// Not made with exactly the required modifiers; forgotten, and the
-        /// press before it with it.
+        /// Not made with exactly the required modifiers.
         case wrongModifiers
         /// A press this has already been fed, reported again. Nothing
         /// changes.
@@ -62,48 +50,27 @@ struct DoubleClickDetector: Equatable {
     /// When the latest press this was fed happened, whatever became of it.
     private var latest: TimeInterval?
 
-    /// Feed a left-button press. `.fired` when it is the second of two
-    /// presses that were both made with **exactly** the required modifiers,
-    /// no later than `interval` apart and no further than `distance`.
-    ///
-    /// Exactly: one modifier more and it is some other program's gesture.
-    /// A press with the wrong modifiers also forgets the one before it, so
-    /// right-wrong-right is not a double-click.
+    /// Feed a left-button press. `.fired` when it was made with **exactly**
+    /// the required modifiers: one modifier more and it is some other
+    /// program's gesture.
     ///
     /// **A press that is not later than the last one fed is the same press
     /// arriving again, and is not counted.** One click can be reported more
     /// than once -- by the monitor for other applications' events and the
     /// one for our own, or delivered a second time while this application
-    /// is being brought to the front by that very click -- and two reports
-    /// of one press are no further apart than a double-click allows. Without
-    /// this a single click fired the gesture, and a double click fired it
-    /// twice. Two presses a person made are never at the same instant.
-    mutating func press(at point: CGPoint, time: TimeInterval, mods: ShotMods) -> Verdict {
+    /// is being brought to the front by that very click. With one click
+    /// being the whole gesture, a press counted twice is two screenshots
+    /// asked for. Two presses a person made are never at the same instant.
+    mutating func press(time: TimeInterval, mods: ShotMods) -> Verdict {
         if let latest, time <= latest { return .replay }
         latest = time
-
-        guard !required.isEmpty, mods.intersection(.all) == required else {
-            previous = nil
-            return .wrongModifiers
-        }
-
-        if let previous {
-            let elapsed = time - previous.time
-            let moved = max(abs(point.x - previous.point.x), abs(point.y - previous.point.y))
-            if elapsed <= interval, moved <= distance {
-                // Spent: a third press starts over rather than firing again.
-                self.previous = nil
-                return .fired
-            }
-        }
-
-        previous = Press(time: time, point: point)
-        return .first
+        guard !required.isEmpty, mods.intersection(.all) == required else { return .wrongModifiers }
+        return .fired
     }
 
-    /// `press`, as whether it completed the gesture.
-    mutating func leftDown(at point: CGPoint, time: TimeInterval, mods: ShotMods) -> Bool {
-        press(at: point, time: time, mods: mods) == .fired
+    /// `press`, as whether it is the gesture.
+    mutating func leftDown(time: TimeInterval, mods: ShotMods) -> Bool {
+        press(time: time, mods: mods) == .fired
     }
 }
 

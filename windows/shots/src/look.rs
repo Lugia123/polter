@@ -93,6 +93,7 @@ pub mod size {
     pub const ICON: f64 = 20.0;
     pub const SWATCH: f64 = 16.0;
     pub const SWATCH_EDGE: f64 = 0.5;
+    pub const HOVER_EDGE: f64 = 0.5;
     pub const RING: f64 = 1.5;
     pub const GLOW_SIGMA: f64 = 2.0;
     pub const OFFSET: f64 = 8.0;
@@ -135,6 +136,7 @@ pub mod glass {
     pub const DOWNSAMPLE_HI: f64 = 4.0;
     pub const DOWNSAMPLE_LO: f64 = 2.0;
     pub const BOX_PASSES: f64 = 3.0;
+    pub const WAIT_MS: f64 = 50.0;
 }
 
 pub mod transition_ms {

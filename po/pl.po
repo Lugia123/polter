@@ -2545,15 +2545,15 @@ msgstr "Gdzie zapisywane są zrzuty ekranu i wklejone obrazy."
 msgid "Mouse Trigger"
 msgstr "Wyzwalacz myszą"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "Przytrzymaj te klawisze i kliknij dwukrotnie, aby zrobić zrzut ekranu."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "Przytrzymaj te klawisze i kliknij, aby zrobić zrzut ekranu."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + dwukrotne kliknięcie"
+msgid "%s + Click"
+msgstr "%s + kliknięcie"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

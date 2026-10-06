@@ -51,8 +51,9 @@ final class ShotSession {
 
     /// How often a long screenshot takes a frame.
     static let longInterval: TimeInterval = 0.12
-    /// How much of the picture outside the focus is left: about 57%.
-    private static let dim: CGFloat = 0.43
+    /// How often the picture is drawn again while something on it is on
+    /// its way somewhere: a window coming into focus, a button lighting up.
+    private static let frameInterval: TimeInterval = 1.0 / 120
 
     weak var delegate: ShotSessionDelegate?
 
@@ -63,6 +64,117 @@ final class ShotSession {
     private(set) var editor: ShotEditor
     private let measure = ShotTextMeasure()
     private var overlays: [(window: ShotOverlayWindow, view: ShotOverlayView)] = []
+
+    /// Each display's picture out of focus, made once when the screen was
+    /// frozen (`ShotBlur`): the small sharp copy the glass is cut from, and
+    /// the whole picture as it is shown outside the selection. Nil for a
+    /// display when the system is asked to reduce transparency -- then
+    /// nothing is blurred and the outside is only darkened.
+    ///
+    /// Also nil until it has been made. Making it is waited for, briefly,
+    /// when the screen is frozen -- an optimised build is done well inside
+    /// the wait -- and a build that is not done by then shows the outside
+    /// darkened and puts the glass in when it arrives (`blurWait`).
+    private var prepared: [ShotBlur.Prepared?]
+    private var outside: [CGImage?]
+    /// How long freezing the screen waits for the out-of-focus pictures:
+    /// three frames, the same on both hosts. Measured on a 3600 x 2338
+    /// display: 33 ms optimised, 1.7 s in a debug build, where waiting
+    /// would be a hotkey that seems not to have worked.
+    static let blurWait: TimeInterval = ShotLook.Glass.waitMs / 1000
+
+    /// The out-of-focus pictures as they come in from the queue that makes
+    /// them.
+    private final class Soft: @unchecked Sendable {
+        private let lock = NSLock()
+        private var made: [Int: (ShotBlur.Prepared, CGImage)] = [:]
+
+        func put(_ index: Int, _ prepared: ShotBlur.Prepared, _ image: CGImage) {
+            lock.lock()
+            made[index] = (prepared, image)
+            lock.unlock()
+        }
+
+        func take() -> [Int: (ShotBlur.Prepared, CGImage)] {
+            lock.lock()
+            defer { lock.unlock() }
+            return made
+        }
+    }
+    /// Which part of each display is sharp, on its way from one answer to
+    /// the next (`ShotVeil`).
+    private var fades: [ShotVeil.Fade]
+    /// The display the pointer was last seen on.
+    private var pointerDisplay: Int?
+    /// What was on each display, other than the picture, the last time it
+    /// was asked to paint: the next change repaints these and what replaces
+    /// them, and nothing else.
+    private var painted: [[PixelRect]]
+    private var paintedState: PaintState?
+    private var frameTimer: Timer?
+
+    /// What the system was asked to do for the person looking: with
+    /// transparency reduced or contrast increased the plates are opaque
+    /// and nothing is blurred (9.8.10). Read once, when the screen is
+    /// frozen.
+    private let access: ShotChrome.Access
+    private let still: Bool
+    /// Where the pointer was last seen, in the editor's pixels: where the
+    /// tag of a shape being reshaped goes.
+    private var pointer: PixelPoint?
+    /// The labels each display had on it the last time it was painted --
+    /// the size, the hover text, the status, the tag. Over them the pointer
+    /// is an arrow, as it is over the toolbar.
+    private var labelRects: [[PixelRect]] = []
+    /// Whether the text box's caret is in the showing half of its blink.
+    private var caretOn = true
+    private var caretTimer: Timer?
+    /// The modifiers held at the last move of the pointer.
+    private var lastMods: ShotMods = []
+    /// The toolbar button the mouse went down on and is still down on.
+    private var pressed: ToolbarButton?
+    /// "Cancel" or "done", held down: what the editor will be told when it
+    /// is let go.
+    private var held: (button: ToolbarButton, at: PixelPoint, mods: ShotMods)?
+    /// Each toolbar cell's look, on its way to what the editor says it is.
+    private var cellFades: [ToolbarButton: ShotCell.Fade] = [:]
+    /// The toolbar as it was last painted, kept while nothing about it
+    /// changes: its plate (which is cut from the picture and is the costly
+    /// part), and the plate with its cells on.
+    private struct PlateKey: Equatable {
+        var display: Int
+        var plate: PixelRect
+        var props: PixelRect?
+        var glass: Bool
+    }
+    private var plateCache: (key: PlateKey, painted: ShotChrome.Painted)?
+    private struct ToolbarPicture {
+        var key: PlateKey
+        var cells: [ShotChrome.Cell]
+        var props: AnnotationTool.Props
+        var image: CGImage
+    }
+    private var toolbarCache: ToolbarPicture?
+    /// What time it is, in seconds. The system's clock, except in a test
+    /// that paints a display into a bitmap and wants a fade over with.
+    var clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+
+    /// Everything the editor holds that is not where the sharp part is.
+    /// While only the selection moves this does not change, and then only
+    /// the part of the display that moved is painted again.
+    private struct PaintState: Equatable {
+        var items: [Annotation]
+        var live: Annotation?
+        var selected: Int?
+        var tool: AnnotationTool
+        var prefs: ToolPrefs
+        var textBox: ShotEditor.TextBox?
+        var hoverButton: ToolbarButton?
+        var hoverGrip: Annotation.Grip?
+        var isLong: Bool
+        var canUndo: Bool
+        var canRedo: Bool
+    }
 
     /// The text box, while one is open.
     private var typing: ShotTextScroll?
@@ -102,16 +214,53 @@ final class ShotSession {
     private var mosaicCache: MosaicPatch?
 
     /// Nil when a display's picture could not be read.
-    init?(displays: [ShotDisplay], windows: [ShotWindow], prefs: ToolPrefs, preselect: CGPoint?) {
+    ///
+    /// `blurWait` is how long to wait here for the out-of-focus pictures;
+    /// a test that paints into a bitmap waits for as long as it takes.
+    init?(
+        displays: [ShotDisplay], windows: [ShotWindow], prefs: ToolPrefs,
+        blurWait: TimeInterval = ShotSession.blurWait, access: ShotChrome.Access? = nil
+    ) {
         let space = ShotScreenSpace(displays.map {
             .init(frame: $0.frame, pixels: .init($0.image.width, $0.image.height))
         })
         var frozen: [FrozenImage] = []
+        // With transparency reduced nothing is blurred: the outside is the
+        // picture darkened, as it was before there was any glass (9.8.10).
+        let workspace = NSWorkspace.shared
+        // (`access` is given by a test that wants to see what the system's
+        // settings would do without changing them.)
+        let glass = access.map { !$0.opaque } ?? !(workspace.accessibilityDisplayShouldReduceTransparency
+            || workspace.accessibilityDisplayShouldIncreaseContrast)
+        self.access = ShotChrome.Access(opaque: !glass)
+        self.still = workspace.accessibilityDisplayShouldReduceMotion
+        let started = ProcessInfo.processInfo.systemUptime
+        let soft = Soft()
+        let making = DispatchGroup()
         for (i, display) in displays.enumerated() {
             guard let bytes = ShotRenderer.rgbx(of: display.image),
                   let picture = FrozenImage(rect: space.displays[i].rect, rgbx: bytes) else { return nil }
             frozen.append(picture)
+            guard glass else { continue }
+            let width = display.image.width, height = display.image.height, scale = space.displays[i].scale
+            DispatchQueue.global(qos: .userInteractive).async(group: making) {
+                guard let whole = ShotBlur.Picture(width: width, height: height, rgbx: bytes),
+                      let prepared = ShotBlur.prepare(whole, scale: scale),
+                      let image = ShotRenderer.image(of: prepared.outside) else { return }
+                soft.put(i, prepared, image)
+            }
         }
+        let inTime = making.wait(timeout: .now() + blurWait) == .success
+        let made = soft.take()
+        self.prepared = displays.indices.map { made[$0]?.0 }
+        self.outside = displays.indices.map { made[$0]?.1 }
+        let took = (ProcessInfo.processInfo.systemUptime - started) * 1000
+        Self.logger.info("screenshot: \(displays.count, privacy: .public) display(s) frozen; glass=\(glass, privacy: .public); out-of-focus pictures ready when the picture went up=\(made.count, privacy: .public) of \(glass ? displays.count : 0, privacy: .public), \(Int(took), privacy: .public) ms after the pixels were asked for")
+        let motion = workspace.accessibilityDisplayShouldReduceMotion
+            ? 0 : ShotLook.TransitionMs.windowSwitch / 1000
+        self.fades = displays.map { _ in ShotVeil.Fade(duration: motion) }
+        self.painted = displays.map { _ in [] }
+        self.labelRects = displays.map { _ in [] }
         self.displays = displays
         self.space = space
         self.frozen = frozen
@@ -119,8 +268,20 @@ final class ShotSession {
         self.editor = ShotEditor(
             displays: space.displays,
             windows: space.windows(windows.map { .init(id: $0.id, frame: $0.frame) }),
-            prefs: prefs,
-            preselect: preselect.flatMap(space.pixel(ofGlobal:)))
+            prefs: prefs)
+        if glass, !inTime {
+            // Not ready: the outside is darkened until they are, and then
+            // every display is painted again with its glass.
+            making.notify(queue: .main) { [weak self] in
+                guard let self else { return }
+                let made = soft.take()
+                self.prepared = self.displays.indices.map { made[$0]?.0 }
+                self.outside = self.displays.indices.map { made[$0]?.1 }
+                let late = (ProcessInfo.processInfo.systemUptime - started) * 1000
+                Self.logger.info("screenshot: the out-of-focus pictures arrived \(Int(late), privacy: .public) ms after the pixels were asked for (\(made.count, privacy: .public) of \(self.displays.count, privacy: .public)); until now the outside was only darkened")
+                for overlay in self.overlays { overlay.view.needsDisplay = true }
+            }
+        }
     }
 
     // MARK: Showing and closing
@@ -136,6 +297,10 @@ final class ShotSession {
         // The overlay under the pointer takes the keyboard.
         let mouse = NSEvent.mouseLocation
         let under = overlays.first(where: { $0.window.frame.contains(mouse) }) ?? overlays.first
+        pointerDisplay = overlays.firstIndex(where: { $0.window.frame.contains(mouse) })
+        // The first frame is already the right one: nothing fades in when
+        // the screen is frozen (9.8.7).
+        settleFocus()
         for overlay in overlays { overlay.window.orderFrontRegardless() }
         under?.window.makeKey()
         under?.window.makeFirstResponder(under?.view)
@@ -187,6 +352,10 @@ final class ShotSession {
     private func close() {
         long?.timer.invalidate()
         long = nil
+        frameTimer?.invalidate()
+        frameTimer = nil
+        caretTimer?.invalidate()
+        caretTimer = nil
         // Before the overlays go: the window that becomes key when they do
         // is the one that should have the keyboard.
         if let keyWatch { NotificationCenter.default.removeObserver(keyWatch) }
@@ -210,20 +379,210 @@ final class ShotSession {
     /// The tool memory as it is now, to be saved for the next screenshot.
     var prefs: ToolPrefs { editor.prefs }
 
+    /// Put every display's sharp part where the editor has it, with nothing
+    /// on its way: the frame when the screen is frozen, and what a test
+    /// that paints into a bitmap asks for before it looks.
+    func settleFocus() {
+        let now = clock()
+        for i in fades.indices {
+            fades[i].set(focus(on: i), at: now - 1)
+            fades[i].settle(at: now)
+            painted[i] = extents(on: i)
+        }
+    }
+
+    /// What display `index` shows sharp, as the editor has it now.
+    private func focus(on index: Int) -> ShotVeil.Focus {
+        ShotVeil.focus(
+            display: index, whole: space.displays[index].rect,
+            selection: editor.selection.map { (display: $0.display, rect: $0.rect) },
+            forming: editor.forming.map { (display: $0.display, rect: $0.rect) },
+            hover: editor.hover,
+            pointerDisplay: pointerDisplay)
+    }
+
+    /// The rectangles on display `index` that hold something other than
+    /// the picture itself: the sharp part's edge, the selection's size, the
+    /// toolbar and what hangs under it. Generous rather than exact -- a
+    /// rectangle too large costs a little copying, one too small leaves
+    /// last frame's toolbar on screen.
+    private func extents(on index: Int) -> [PixelRect] {
+        let scale = space.displays[index].scale
+        func px(_ points: Double) -> Int { Int((points * scale).rounded(.up)) }
+        var rects = fades[index].touched
+        if let box = textBoxExtent(on: index) { rects.append(box) }
+        if let selection = editor.selection, selection.display == index {
+            // The size, above the selection or just inside its top edge.
+            let r = selection.rect
+            rects.append(PixelRect(left: r.x - px(8), top: r.y - px(40), right: r.x + px(260), bottom: r.y + px(40)))
+            if let layout = editor.layout {
+                // Both rows whether or not the second is showing, the
+                // shadow around them, and room below for the hover text,
+                // the missing-font line and a long screenshot's status.
+                let bar = layout.bar
+                let a = ShotLook.Annotation.self
+                rects.append(PixelRect(
+                    left: bar.x - px(a.dirtyShadowX), top: bar.y - px(a.dirtyShadowTop),
+                    right: bar.right + px(a.dirtyShadowX) + px(240),
+                    bottom: bar.bottom + px(ShotLook.Size.button + 2 * ShotLook.Size.padding) + px(120)))
+            }
+        }
+        return rects
+    }
+
+    /// Something changed: paint what has to be painted again.
+    ///
+    /// When all that changed is where the sharp part is -- a selection
+    /// being dragged out, moved or resized, the pointer going from one
+    /// window to another -- that is the old and the new place of it and of
+    /// what follows it around, and the rest of the display is left alone
+    /// (9.8.8). Anything else paints the whole display.
     private func repaint() {
-        for overlay in overlays { overlay.view.needsDisplay = true }
+        let now = clock()
+        let state = PaintState(
+            items: editor.items, live: editor.live, selected: editor.selected, tool: editor.tool,
+            prefs: editor.prefs, textBox: editor.textBox, hoverButton: editor.hoverButton, hoverGrip: editor.hoverGrip,
+            isLong: editor.isLong,
+            canUndo: editor.canUndo, canRedo: editor.canRedo)
+        let onlyMoved = state == paintedState && long == nil
+        paintedState = state
+        headCells(at: now)
+        for i in fades.indices {
+            let before = painted[i]
+            fades[i].settle(at: now)
+            fades[i].set(focus(on: i), at: now)
+            let after = extents(on: i)
+            painted[i] = after
+            // No overlay when a display is painted into a bitmap by a test.
+            guard overlays.indices.contains(i) else { continue }
+            let whole = space.displays[i].rect
+            let ring = ShotStyle.px(Int(ShotLook.Annotation.dirtyRing), scale: space.displays[i].scale)
+            if onlyMoved {
+                if let dirty = ShotVeil.dirty(before + after, ring: ring, within: whole) {
+                    overlays[i].view.setNeedsDisplay(space.local(dirty, on: i))
+                }
+            } else {
+                overlays[i].view.needsDisplay = true
+            }
+        }
+        runFrames()
+    }
+
+    /// What the editor knows about a toolbar button now.
+    private func cellState(of button: ToolbarButton) -> ShotCell.State {
+        let current = editor.current
+        var state = ShotCell.State()
+        switch button {
+        case let .tool(t):
+            state.selected = editor.tool == t && !editor.isLong
+            state.enabled = !editor.isLong
+        case let .colour(c):
+            state.selected = c == current.colour
+            state.enabled = !editor.isLong
+        case let .level(l):
+            state.selected = l == current.level
+            state.enabled = !editor.isLong
+        case .undo: state.enabled = editor.canUndo && !editor.isLong
+        case .redo: state.enabled = editor.canRedo && !editor.isLong
+        case .long: state.selected = editor.isLong
+        case .cancel: break
+        case .done: state.isDone = true
+        }
+        state.hovered = editor.hoverButton == button
+        state.pressed = pressed == button
+        return state
+    }
+
+    /// Send every cell of the toolbar towards the look the editor gives it.
+    private func headCells(at now: TimeInterval) {
+        guard let layout = editor.layout else {
+            cellFades = [:]
+            return
+        }
+        var next: [ToolbarButton: ShotCell.Fade] = [:]
+        for placed in layout.buttons {
+            let look = ShotCell.look(for: cellState(of: placed.button))
+            // A cell that was not there a moment ago is simply as it is.
+            var fade = cellFades[placed.button] ?? ShotCell.Fade(showing: look, still: still)
+            fade.head(for: look, at: now)
+            next[placed.button] = fade
+        }
+        cellFades = next
+    }
+
+    private func anythingMoving(at now: TimeInterval) -> Bool {
+        fades.contains { $0.isMoving(at: now) } || cellFades.values.contains { $0.isMoving(at: now) }
+    }
+
+    /// Keep painting while a window is coming into focus or going out of
+    /// it, or a button is lighting up, and stop when nothing is on its way
+    /// any more.
+    private func runFrames() {
+        let now = clock()
+        guard !overlays.isEmpty, anythingMoving(at: now) else {
+            frameTimer?.invalidate()
+            frameTimer = nil
+            return
+        }
+        guard frameTimer == nil else { return }
+        let timer = Timer(timeInterval: Self.frameInterval, repeats: true) { [weak self] _ in self?.frame() }
+        RunLoop.main.add(timer, forMode: .common)
+        frameTimer = timer
+    }
+
+    private func frame() {
+        let now = clock()
+        for (i, overlay) in overlays.enumerated() where fades.indices.contains(i) {
+            let whole = space.displays[i].rect
+            // Whatever is on its way: the windows changing focus, and the
+            // toolbar when a cell of it is.
+            var moving = fades[i].isMoving(at: now) ? fades[i].touched : []
+            if cellFades.values.contains(where: { $0.isMoving(at: now) }),
+               let selection = editor.selection, selection.display == i, let layout = editor.layout {
+                let m = ShotChrome.margins(scale: space.displays[i].scale)
+                let plate = layout.plate
+                moving.append(PixelRect(
+                    left: plate.x - m.x, top: plate.y - m.top, right: plate.right + m.x, bottom: plate.bottom + m.bottom))
+            }
+            if let dirty = ShotVeil.dirty(moving, ring: 0, within: whole) {
+                overlay.view.setNeedsDisplay(space.local(dirty, on: i))
+            }
+            fades[i].settle(at: now)
+        }
+        if !anythingMoving(at: now) {
+            frameTimer?.invalidate()
+            frameTimer = nil
+        }
     }
 
     // MARK: From the views
 
     func pointerDown(at local: CGPoint, on index: Int, mods: ShotMods, double: Bool) {
-        guard overlays.indices.contains(index) else { return }
-        let window = overlays[index].window
-        if !window.isKeyWindow, typing == nil {
-            window.makeKey()
-            window.makeFirstResponder(overlays[index].view)
+        guard displays.indices.contains(index) else { return }
+        if overlays.indices.contains(index) {
+            let window = overlays[index].window
+            if !window.isKeyWindow, typing == nil {
+                window.makeKey()
+                window.makeFirstResponder(overlays[index].view)
+            }
         }
+        pointerDisplay = index
         let p = space.pixel(ofLocal: local, on: index)
+        pointer = p
+        // The button the press is on shows it for as long as it is held
+        // (9.8.4). Looked up before the editor acts: a press may be the one
+        // that takes the toolbar away.
+        if let button = editor.layout?.button(at: p), cellState(of: button).enabled {
+            pressed = button
+            if button == .cancel || button == .done {
+                // These two end the screenshot, so they act when the button
+                // is let go, over the same button: pressed, they show it
+                // (9.8.4), and a press that slides off them is taken back.
+                held = (button, p, mods)
+                repaint()
+                return
+            }
+        }
         let effect = double
             ? editor.doubleClick(at: p, mods: mods, measure: measure)
             : editor.pointerDown(at: p, mods: mods, measure: measure)
@@ -232,12 +591,35 @@ final class ShotSession {
 
     func pointerMove(to local: CGPoint, on index: Int, mods: ShotMods) {
         let p = space.pixel(ofLocal: local, on: index)
+        pointer = p
+        lastMods = mods
+        if pointerDisplay != index {
+            // Onto another display: with no window under the pointer the
+            // editor has nothing to say, and the display is all sharp.
+            pointerDisplay = index
+            repaint()
+        }
         perform(editor.pointerMove(to: p, mods: mods))
         cursor(at: local, on: index).set()
     }
 
     func pointerUp(at local: CGPoint, on index: Int) {
+        let was = pressed
+        pressed = nil
+        if let held {
+            self.held = nil
+            if editor.layout?.button(at: space.pixel(ofLocal: local, on: index)) == held.button {
+                // Now it is pressed, as far as the editor is concerned.
+                perform(editor.pointerDown(at: held.at, mods: held.mods, measure: measure))
+            } else {
+                repaint()
+                return
+            }
+        }
         perform(editor.pointerUp(at: space.pixel(ofLocal: local, on: index)))
+        // Letting go of a button is something to paint even when the
+        // editor has nothing to say about it.
+        if was != nil { repaint() }
     }
 
     func rightClick(on index: Int) {
@@ -253,10 +635,30 @@ final class ShotSession {
         perform(effect)
     }
 
-    /// An arrow over the toolbar, a crosshair everywhere else.
+    /// The pointer at a point of a display (9.8.11A.4): an arrow over the
+    /// toolbar and the labels, what the editor says everywhere else.
     func cursor(at local: CGPoint, on index: Int) -> NSCursor {
         let p = space.pixel(ofLocal: local, on: index)
-        return editor.layout?.covers(p) == true ? .arrow : .crosshair
+        if labelRects.indices.contains(index), labelRects[index].contains(where: { $0.contains(p) }) { return .arrow }
+        switch editor.cursor(at: p, mods: lastMods) {
+        case .tool: return .crosshair
+        case .arrow: return .arrow
+        case .move: return editor.isMovingItem ? .closedHand : .openHand
+        case .upDown: return .resizeUpDown
+        case .leftRight: return .resizeLeftRight
+        case .diagonal: return Self.diagonal(northWest: true)
+        case .antiDiagonal: return Self.diagonal(northWest: false)
+        }
+    }
+
+    /// The pointer for dragging a corner. The system has had one that is
+    /// public since macOS 15; before that there is none, and the cross
+    /// stands in.
+    private static func diagonal(northWest: Bool) -> NSCursor {
+        if #available(macOS 15.0, *) {
+            return .frameResize(position: northWest ? .topLeft : .topRight, directions: .all)
+        }
+        return .crosshair
     }
 
     /// Do what the editor asked for.
@@ -292,12 +694,8 @@ final class ShotSession {
 
     // MARK: The text box
 
-    private static func paper(for colour: Int) -> NSColor {
-        // Dark paper under light ink, light under dark.
-        let c = ShotStyle.colour(colour)
-        let luma = (299 * Int(c.r) + 587 * Int(c.g) + 114 * Int(c.b)) / 1000
-        return luma > 150 ? NSColor(white: 0.19, alpha: 1) : .white
-    }
+    /// The text box as it is now, for a test that paints it.
+    var textBoxView: ShotTextScroll? { typing }
 
     /// Give the box the colour and size of `box`. `reach` is how much of it:
     /// while an input method is composing, only what will be typed and the
@@ -313,9 +711,11 @@ final class ShotSession {
         if reach == .everything {
             view.font = font
             view.textColor = ink
+            // The halo, the caret's edge, how a selection and a composition
+            // show: all from the ink. Left alone while an input method is
+            // composing, like the text itself.
+            view.ink = ShotStyle.colour(box.colour)
         }
-        view.insertionPointColor = ink
-        typing.paper = Self.paper(for: box.colour)
         view.typingAttributes = [.font: font, .foregroundColor: ink]
         if reach == .everything, let storage = view.textStorage, storage.length > 0 {
             storage.setAttributes(view.typingAttributes, range: NSRange(location: 0, length: storage.length))
@@ -325,7 +725,7 @@ final class ShotSession {
     /// Open a text view for the text the editor is about to take.
     private func openText() {
         guard let box = editor.textBox, let selection = editor.selection,
-              overlays.indices.contains(selection.display) else {
+              displays.indices.contains(selection.display) else {
             // The editor has a box the host cannot show: end it, empty.
             perform(editor.endText("", measure: measure))
             return
@@ -345,7 +745,6 @@ final class ShotSession {
         let view = typing.text
         view.isRichText = false
         view.allowsUndo = true
-        view.drawsBackground = true
         view.isAutomaticQuoteSubstitutionEnabled = false
         view.isAutomaticDashSubstitutionEnabled = false
         view.isAutomaticTextReplacementEnabled = false
@@ -367,10 +766,16 @@ final class ShotSession {
         }
 
         self.typing = typing
-        let overlay = overlays[index]
-        overlay.view.addSubview(typing)
-        overlay.window.makeKey()
-        overlay.window.makeFirstResponder(view)
+        // (No overlay when a display is painted into a bitmap by a test:
+        // the box is then a view with no window, which is enough to lay
+        // out and to draw.)
+        if overlays.indices.contains(index) {
+            let overlay = overlays[index]
+            overlay.view.addSubview(typing)
+            overlay.window.makeKey()
+            overlay.window.makeFirstResponder(view)
+        }
+        showCaret()
         // A text opened again may have more lines than the box has room
         // for, or have wrapped: place it for what it holds.
         fitText()
@@ -385,7 +790,7 @@ final class ShotSession {
     /// keyboard first. Ending the text there meant the press found no box:
     /// the piece kept its old colour and only the tool's memory changed
     /// (task 1098). `restyleText` gives the keyboard back.
-    private func pressRestylesText() -> Bool {
+    func pressRestylesText() -> Bool {
         guard let event = NSApp.currentEvent, event.type == .leftMouseDown,
               let index = overlays.firstIndex(where: { $0.window === event.window }) else { return false }
         let local = overlays[index].view.convert(event.locationInWindow, from: nil)
@@ -417,6 +822,62 @@ final class ShotSession {
             style(typing, as: box, scale: editor.scale, reach: .everything)
         }
         fitText()
+        // The frame and the caret are the overlay's to draw, and both go
+        // where the text goes. A caret that has just moved is showing.
+        showCaret()
+        repaint()
+    }
+
+    // MARK: The caret
+
+    /// How long the caret shows and how long it does not, in seconds: the
+    /// system's, as every text field on the machine blinks.
+    private static var blink: (on: TimeInterval, off: TimeInterval) {
+        let defaults = UserDefaults.standard
+        func period(_ key: String) -> TimeInterval {
+            let ms = defaults.double(forKey: key)
+            return ms > 0 ? ms / 1000 : 0.56
+        }
+        return (period("NSTextInsertionPointBlinkPeriodOn"), period("NSTextInsertionPointBlinkPeriodOff"))
+    }
+
+    /// Show the caret now and start it blinking from here.
+    private func showCaret() {
+        caretTimer?.invalidate()
+        caretTimer = nil
+        caretOn = true
+        guard typing != nil, !overlays.isEmpty else { return }
+        scheduleCaret()
+    }
+
+    private func scheduleCaret() {
+        let blink = Self.blink
+        let timer = Timer(timeInterval: caretOn ? blink.on : blink.off, repeats: false) { [weak self] _ in
+            guard let self, self.typing != nil else { return }
+            self.caretOn.toggle()
+            self.paintTextBox()
+            self.scheduleCaret()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        caretTimer = timer
+    }
+
+    /// The text box and what the overlay draws around it, in the editor's
+    /// pixels: its frame, grown by the dashed line and the caret's edge.
+    private func textBoxExtent(on index: Int) -> PixelRect? {
+        guard let typing, let selection = editor.selection, selection.display == index else { return nil }
+        let scale = space.displays[index].scale
+        let a = space.pixel(ofLocal: typing.frame.origin, on: index)
+        let b = space.pixel(ofLocal: CGPoint(x: typing.frame.maxX, y: typing.frame.maxY), on: index)
+        let ring = Int(((ShotLook.TextBox.offset + ShotLook.TextBox.line + 2) * scale).rounded(.up))
+        return PixelRect(left: a.x - ring, top: a.y - ring, right: b.x + ring, bottom: b.y + ring)
+    }
+
+    /// Paint the text box's part of its display again.
+    private func paintTextBox() {
+        guard let selection = editor.selection, overlays.indices.contains(selection.display),
+              let extent = textBoxExtent(on: selection.display) else { return }
+        overlays[selection.display].view.setNeedsDisplay(space.local(extent, on: selection.display))
     }
 
     /// Put the box where `ShotEditor.textRect` says it goes for what is in
@@ -449,6 +910,8 @@ final class ShotSession {
         }
         self.typing = nil
         restyleHeld = false
+        caretTimer?.invalidate()
+        caretTimer = nil
         let view = typing.text
         view.onCommit = nil
         view.staysOpen = nil
@@ -638,37 +1101,78 @@ final class ShotSession {
         ctx.translateBy(x: -CGFloat(whole.x), y: -CGFloat(whole.y))
 
         // What is in focus on this display: the selection, the region being
-        // dragged, or the window under the pointer. The rest dims.
+        // dragged, or the window under the pointer -- or all of it, when the
+        // pointer is here and over no window. The rest is out of focus.
         let selection = editor.selection.flatMap { $0.display == index ? $0.rect : nil }
         let forming = editor.forming.flatMap { $0.display == index ? $0.rect : nil }
         let hover = editor.selection == nil && editor.forming == nil
             ? editor.hover.flatMap { $0.display == index ? $0.rect : nil } : nil
         let focus = selection ?? forming ?? hover
         let hole = long != nil ? selection : nil
+        let now = clock()
+        let layers = fades.indices.contains(index) ? fades[index].layers(at: now) : []
 
-        // The frozen picture, with the mosaics in it.
-        ShotRenderer.draw(displays[index].image, in: cg(whole), of: ctx)
-        if selection != nil, let patch = mosaics(on: index, scale: scale) {
-            ShotRenderer.draw(patch.image, in: cg(patch.rect), of: ctx)
+        if let soft = outside.indices.contains(index) ? outside[index] : nil {
+            // The picture out of focus, and the sharp picture over it
+            // wherever it shows. Nothing is blurred here: both pictures were
+            // made when the screen was frozen (9.8.8).
+            ShotRenderer.draw(soft, in: cg(whole), of: ctx)
+            for layer in layers {
+                ctx.saveGState()
+                ctx.clip(to: cg(layer.rect))
+                ctx.setAlpha(CGFloat(layer.alpha))
+                ShotRenderer.draw(displays[index].image, in: cg(whole), of: ctx)
+                ctx.restoreGState()
+            }
+            if let selection, let patch = mosaics(on: index, scale: scale) {
+                ctx.saveGState()
+                ctx.clip(to: cg(selection))
+                ShotRenderer.draw(patch.image, in: cg(patch.rect), of: ctx)
+                ctx.restoreGState()
+            }
+        } else {
+            // Transparency reduced: the picture, darkened outside the focus.
+            ShotRenderer.draw(displays[index].image, in: cg(whole), of: ctx)
+            if selection != nil, let patch = mosaics(on: index, scale: scale) {
+                ShotRenderer.draw(patch.image, in: cg(patch.rect), of: ctx)
+            }
+            ctx.saveGState()
+            ctx.addRect(cg(whole))
+            for layer in layers where layer.alpha >= 1 { ctx.addRect(cg(layer.rect)) }
+            ctx.setFillColor(CGColor(gray: 0, alpha: CGFloat(ShotLook.Colour.outsideDimOpaque.a)))
+            ctx.fillPath(using: .evenOdd)
+            ctx.restoreGState()
         }
 
-        ctx.saveGState()
-        ctx.addRect(cg(whole))
-        if let focus { ctx.addRect(cg(focus)) }
-        ctx.setFillColor(CGColor(gray: 0, alpha: Self.dim))
-        ctx.fillPath(using: .evenOdd)
-        ctx.restoreGState()
-
-        if selection != nil {
+        if let selection {
             func isMosaic(_ item: Annotation) -> Bool {
                 if case .mosaic = item.shape { return true }
                 return false
             }
             var drawn = editor.drawOrder.filter { !isMosaic($0.item) }
             if let live = editor.live, !isMosaic(live) { drawn.append((index: Int.max, item: live)) }
-            ShotRenderer.draw(
-                drawn, in: ctx, scale: scale, hideTextOf: editor.textBox?.editing,
-                highlighter: ShotRenderer.blendedHighlighter(in: ctx))
+            func annotations() {
+                ShotRenderer.draw(
+                    drawn, in: ctx, scale: scale, hideTextOf: editor.textBox?.editing,
+                    highlighter: ShotRenderer.blendedHighlighter(in: ctx))
+            }
+            // Inside the selection as they will be in the picture. What
+            // reaches outside it is cut off when the picture is made, and is
+            // drawn faint to say so (9.8.11A.5): still there to be seen and
+            // carried back, not part of what leaves.
+            ctx.saveGState()
+            ctx.clip(to: cg(selection))
+            annotations()
+            ctx.restoreGState()
+            ctx.saveGState()
+            ctx.addRect(cg(whole))
+            ctx.addRect(cg(selection))
+            ctx.clip(using: .evenOdd)
+            ctx.setAlpha(CGFloat(ShotLook.Annotation.outsideOpacity))
+            ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+            annotations()
+            ctx.endTransparencyLayer()
+            ctx.restoreGState()
         }
 
         // A long screenshot: the selection is the live screen.
@@ -679,66 +1183,221 @@ final class ShotSession {
             ctx.restoreGState()
         }
 
-        let accent = ShotRenderer.colour(ShotRenderer.accent)
-        if let focus {
-            ShotRenderer.frame(focus, accent, thickness: ShotStyle.px(2, scale: scale), in: ctx)
+        let accent = ShotRenderer.ink(ShotLook.Colour.accent)
+        if let selection {
+            // The selection's edge: a line just outside it.
+            let line = ShotStyle.px(Int(ShotLook.Size.selectionLine), scale: scale)
+            ShotRenderer.frame(
+                PixelRect(selection.x - line, selection.y - line, selection.w + 2 * line, selection.h + 2 * line),
+                accent, thickness: line, in: ctx)
+        } else if let focus {
+            // The window that a click would take, or the region being
+            // dragged out.
+            let line = ShotStyle.px(Int(forming != nil ? ShotLook.Size.selectionLine : ShotLook.Size.windowLine), scale: scale)
+            ShotRenderer.frame(focus, accent, thickness: line, in: ctx)
         }
         guard let selection else { return }
 
-        let knob = ShotStyle.px(4, scale: scale)
-        func drawKnob(_ c: PixelPoint) {
-            ShotRenderer.fill(PixelRect(c.x - knob, c.y - knob, knob * 2, knob * 2), accent, in: ctx)
+        // Everything from here on is glass, cut from this display's picture.
+        let glass = (prepared.indices.contains(index) ? prepared[index] : nil).map {
+            ShotChrome.Glass(prepared: $0, origin: whole.origin, scale: scale)
         }
+        let surface = ShotChrome.Surface(scale: scale, glass: glass, access: access)
+        var labels: [PixelRect] = []
+        defer { if labelRects.indices.contains(index) { labelRects[index] = labels } }
+
         if long == nil {
-            if let i = editor.selected, editor.items.indices.contains(i) {
-                // The selected annotation: its grips, or its outline when
-                // it can only be moved.
-                let item = editor.items[i]
-                let grips = item.grips
-                if grips.isEmpty {
-                    ShotRenderer.frame(item.bounds(scale: scale), accent, thickness: 1, in: ctx)
+            if let marked = editor.marked {
+                // The selected annotation: a dashed frame round what can be
+                // framed, square grips on what can be reshaped. Over every
+                // annotation, whichever of them it is.
+                if marked.framed { ShotRenderer.drawFrame(round: marked.ink, on: surface, in: ctx) }
+                for grip in marked.grips { ShotRenderer.drawGrip(at: grip.at, look: grip.look, on: surface, in: ctx) }
+                if let tag = editor.reshapeTag, let pointer, whole.contains(pointer) {
+                    // What it measures now, beside the pointer.
+                    let off = ShotStyle.px(Int(ShotLook.Annotation.tagOffset), scale: scale)
+                    labels.append(ShotRenderer.label(
+                        [.words(tag)], style: .size, at: PixelPoint(pointer.x + off, pointer.y + off), within: whole,
+                        on: surface, in: ctx))
                 }
-                for grip in grips { drawKnob(grip.at) }
-            } else if editor.tool == .select {
-                // Otherwise the selection's own handles, while the select
-                // tool is what the mouse is.
-                for handle in PixelHandle.all { drawKnob(handle.at(selection)) }
+            } else if editor.knobs {
+                // Otherwise the selection's own handles, round, while the
+                // select tool is what the mouse is. The two kinds are never
+                // on screen together.
+                for handle in PixelHandle.all { ShotRenderer.drawKnob(at: handle.at(selection), scale: scale, in: ctx) }
             }
         }
 
-        // The selection's size, in pixels of the image.
-        let labelHeight = ShotStyle.px(22, scale: scale)
-        let labelY = selection.y - whole.y >= labelHeight
-            ? selection.y - labelHeight : selection.y + ShotStyle.px(4, scale: scale)
-        ShotRenderer.label(
-            "\(selection.w) × \(selection.h)", at: PixelPoint(selection.x, labelY),
-            within: whole, scale: scale, in: ctx)
+        drawTextBox(on: index, in: ctx)
+
+        // Everything from here is furniture beside the selection, and its
+        // shadows stop at the selection's edge: what is inside is the
+        // picture and nothing else, down to the pixel. (Furniture that has
+        // nowhere to go but inside -- the toolbar of a selection as tall as
+        // the display -- is drawn whole, below.)
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        ctx.addRect(cg(whole))
+        ctx.addRect(cg(selection))
+        ctx.clip(using: .evenOdd)
+
+        // The selection's size, in pixels of the image: above its top left
+        // corner, or just inside it when there is no room above.
+        let sizeParts: [ShotRenderer.LabelPart] = [.words("\(selection.w) × \(selection.h)")]
+        let sizeLabel = ShotRenderer.labelSize(sizeParts, style: .size, scale: scale)
+        let sizeOffset = ShotStyle.px(Int(ShotLook.Size.sizeLabelOffset), scale: scale)
+        let sizeY = selection.y - whole.y >= sizeLabel.h + sizeOffset
+            ? selection.y - sizeLabel.h - sizeOffset
+            : selection.y + ShotStyle.px(Int(ShotLook.Size.sizeLabelInset), scale: scale)
+        labels.append(ShotRenderer.label(
+            sizeParts, style: .size, at: PixelPoint(selection.x, sizeY), within: whole, on: surface, in: ctx))
 
         guard let layout = editor.layout else { return }
-        let below = ShotRenderer.drawToolbar(
-            layout, editor: editor, scale: scale, display: whole, in: ctx, translate: ShotWords.translate)
-        if let long {
-            drawLongStatus(long, at: PixelPoint(layout.bar.x, below), selection: selection, display: whole, scale: scale, in: ctx)
+        if layout.plate.intersect(selection) != nil {
+            // Inside the selection: there was no room beside it. Back to
+            // the clip the furniture's own was put on top of.
+            ctx.restoreGState()
+            ctx.saveGState()
         }
+        drawToolbar(layout, on: index, surface: surface, at: now, in: ctx)
+
+        // Under the toolbar, one below another: the line that says the font
+        // is missing, the hover text, a long screenshot's status.
+        let gap = ShotStyle.px(Int(ShotLook.Size.tipOffset), scale: scale)
+        var below = layout.plate.bottom + gap
+        if !ShotFont.isAvailable {
+            let words = ShotWords.translate("The annotation font is missing, so the system font is used.")
+            let plate = ShotRenderer.label(
+                [.words(words)], style: .tip, at: PixelPoint(layout.plate.x, below), within: whole,
+                on: surface, in: ctx)
+            labels.append(plate)
+            below = plate.bottom + gap
+        }
+        if let button = editor.hoverButton, let r = layout.rect(of: button), cellState(of: button).enabled {
+            var parts: [ShotRenderer.LabelPart] = [
+                .words(ShotWords.translate(ShotToolbarGrid.name(of: button, props: editor.props))),
+            ]
+            if let key = ShotToolbarGrid.shortcut(of: button) { parts.append(.key(key)) }
+            let plate = ShotRenderer.label(
+                parts, style: .tip, at: PixelPoint(r.x, below), within: whole, on: surface, in: ctx)
+            labels.append(plate)
+            below = plate.bottom + gap
+        }
+        if let long {
+            labels.append(drawLongStatus(
+                long, at: PixelPoint(layout.plate.x, below), selection: selection, display: whole,
+                surface: surface, in: ctx))
+        }
+    }
+
+    /// What the overlay draws for the text box, which has no ground of its
+    /// own (9.8.11): a dashed line around it that reads as dashes on any
+    /// picture, and the caret.
+    private func drawTextBox(on index: Int, in ctx: CGContext) {
+        guard let typing, let selection = editor.selection, selection.display == index else { return }
+        let scale = space.displays[index].scale
+        let t = ShotLook.TextBox.self
+        let a = space.pixel(ofLocal: typing.frame.origin, on: index)
+        let b = space.pixel(ofLocal: CGPoint(x: typing.frame.maxX, y: typing.frame.maxY), on: index)
+        let line = ShotStyle.px(Int(t.line), scale: scale)
+        let off = ShotStyle.px(Int(t.offset), scale: scale)
+        let dash = CGFloat(ShotStyle.px(Int(t.dash), scale: scale))
+        // The middle of a line `line` wide whose inner edge is `off` out
+        // from the box.
+        let out = CGFloat(off) - CGFloat(line) / 2 + CGFloat(line)
+        let frame = CGRect(x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y).insetBy(dx: -out, dy: -out)
+        ctx.saveGState()
+        // Whole pixels, hard edges: a dash is a dash.
+        ctx.setShouldAntialias(false)
+        ctx.setLineWidth(CGFloat(line))
+        // Dark all the way round, then light over every other piece: dark
+        // and light end to end. On a light picture the dark pieces read,
+        // on a dark one the light, and the rhythm is the same.
+        ctx.setStrokeColor(ShotRenderer.ink(ShotLook.Colour.boxDark))
+        ctx.stroke(frame)
+        ctx.setStrokeColor(ShotRenderer.ink(ShotLook.Colour.boxLight))
+        ctx.setLineDash(phase: dash, lengths: [dash, dash])
+        ctx.stroke(frame)
+        ctx.restoreGState()
+
+        // The caret: the ink, with an edge of the opposite lightness so that
+        // it shows on a picture of its own colour.
+        guard caretOn, let box = editor.textBox else { return }
+        let fontPt = CGFloat(ShotStyle.fontPx(level: box.level, scale: scale)) / CGFloat(scale)
+        guard let caret = typing.caret(fontSize: fontPt) else { return }
+        let ink = ShotStyle.colour(box.colour)
+        let top = space.pixel(ofLocal: caret.origin, on: index)
+        let width = max(ShotStyle.px(Int(t.caretWidth), scale: scale), 1)
+        let height = max(Int((caret.height * CGFloat(scale)).rounded()), 1)
+        let edge = ShotStyle.px(Int(t.caretEdge), scale: scale)
+        let body = PixelRect(top.x, top.y, width, height)
+        let dark = ShotTextLook.haloIsDark(for: ink)
+        ShotRenderer.fill(
+            PixelRect(body.x - edge, body.y - edge, body.w + 2 * edge, body.h + 2 * edge),
+            ShotRenderer.ink(dark ? ShotLook.Colour.caretEdgeDark : ShotLook.Colour.caretEdgeLight), in: ctx)
+        ShotRenderer.fill(body, ShotRenderer.colour(ink), in: ctx)
+    }
+
+    /// The toolbar: its plate, kept until it moves, and its cells as they
+    /// look at `now`.
+    private func drawToolbar(
+        _ layout: ShotToolbarGrid.Layout, on index: Int, surface: ShotChrome.Surface, at now: TimeInterval,
+        in ctx: CGContext
+    ) {
+        let key = PlateKey(display: index, plate: layout.plate, props: layout.props, glass: surface.glass != nil)
+        let cells = layout.buttons.map { placed in
+            ShotChrome.Cell(
+                button: placed.button, rect: placed.rect,
+                look: cellFades[placed.button]?.look(at: now) ?? ShotCell.look(for: cellState(of: placed.button)))
+        }
+        func place(_ image: CGImage, of painted: ShotChrome.Painted) {
+            ShotRenderer.draw(
+                image,
+                in: CGRect(
+                    x: painted.origin.x, y: painted.origin.y,
+                    width: painted.canvas.width, height: painted.canvas.height),
+                of: ctx)
+        }
+        let plate: ShotChrome.Painted
+        if let cache = plateCache, cache.key == key {
+            plate = cache.painted
+        } else {
+            plate = ShotChrome.toolbarPlate(layout, on: surface)
+            plateCache = (key, plate)
+        }
+        if let cache = toolbarCache, cache.key == key, cache.cells == cells, cache.props == editor.props {
+            place(cache.image, of: plate)
+            return
+        }
+        let painted = ShotChrome.toolbar(over: plate, cells: cells, props: editor.props, on: surface)
+        guard let image = ShotRenderer.image(of: painted.canvas) else { return }
+        toolbarCache = ToolbarPicture(key: key, cells: cells, props: editor.props, image: image)
+        place(image, of: painted)
     }
 
     /// Under the toolbar: how tall the picture is so far and what the last
     /// frame meant; and beside the selection, a small copy of the picture.
     private func drawLongStatus(
-        _ long: Long, at: PixelPoint, selection: PixelRect, display: PixelRect, scale: Double, in ctx: CGContext
-    ) {
-        var text = "\(ShotWords.translate("Long Screenshot")) \(long.stitcher.totalHeight) px"
+        _ long: Long, at: PixelPoint, selection: PixelRect, display: PixelRect,
+        surface: ShotChrome.Surface, in ctx: CGContext
+    ) -> PixelRect {
+        let scale = surface.scale
+        // A dot, what this is, how tall it has become, and what to do.
+        var parts: [ShotRenderer.LabelPart] = [
+            .dot, .words(ShotWords.translate("Long Screenshot")), .words("\(long.stitcher.totalHeight) px"),
+        ]
         switch long.last {
         case _ where long.stitcher.isRestless(held: long.moving):
-            text += " — " + ShotWords.translate("The picture keeps changing, so nothing can be added.")
-        case .lost: text += " — " + ShotWords.translate("Scroll slower")
-        case .full: text += " — " + ShotWords.translate("The height limit was reached.")
+            parts.append(.words(ShotWords.translate("The picture keeps changing, so nothing can be added."), dim: true))
+        case .lost: parts.append(.words(ShotWords.translate("Scroll slower"), dim: true))
+        case .full: parts.append(.words(ShotWords.translate("The height limit was reached."), dim: true))
         default:
             if long.stitcher.totalHeight <= selection.h {
-                text += " — " + ShotWords.translate("Scroll down slowly. What comes into view is added at the bottom.")
+                parts.append(.words(
+                    ShotWords.translate("Scroll down slowly. What comes into view is added at the bottom."), dim: true))
             }
         }
-        ShotRenderer.label(text, at: at, within: display, scale: scale, in: ctx)
+        let plate = ShotRenderer.label(parts, style: .status, at: at, within: display, on: surface, in: ctx)
 
         // The preview: right of the selection, or left of it, or not at all.
         let gap = ShotStyle.px(12, scale: scale)
@@ -749,15 +1408,16 @@ final class ShotSession {
         } else if selection.x - gap - width >= display.x {
             x = selection.x - gap - width
         } else {
-            return
+            return plate
         }
         let room = max(display.h - gap * 2, 1)
         guard let thumb = long.stitcher.thumbnail(maxWidth: width, maxHeight: room),
-              let image = ComposedImage(width: thumb.width, rgbx: thumb.rgbx)?.cgImage() else { return }
+              let image = ComposedImage(width: thumb.width, rgbx: thumb.rgbx)?.cgImage() else { return plate }
         let top = max(min(max(selection.y, display.y + gap), display.bottom - gap - thumb.height), display.y)
         ShotRenderer.draw(image, in: CGRect(x: x, y: top, width: thumb.width, height: thumb.height), of: ctx)
         ShotRenderer.frame(
             PixelRect(x - 1, top - 1, thumb.width + 2, thumb.height + 2),
-            ShotRenderer.colour(ShotRenderer.accent), thickness: 1, in: ctx)
+            ShotRenderer.ink(ShotLook.Colour.accent), thickness: 1, in: ctx)
+        return plate
     }
 }

@@ -3039,7 +3039,7 @@ keybind: Keybinds = .{},
 /// Only implemented on macOS and Windows.
 @"screenshot-directory": ?[:0]const u8 = null,
 
-/// The modifier keys that, held while double-clicking the left mouse button
+/// The modifier keys that, held while clicking the left mouse button
 /// anywhere on screen, take a screenshot -- the second way to start one, for
 /// when one hand is already on the mouse. The keyboard way is the
 /// `screenshot` keybind action.
@@ -3048,19 +3048,23 @@ keybind: Keybinds = .{},
 /// `control`), `alt` (or `opt`, `option`) and `super` (or `cmd`, `command`).
 /// The default is `cmd+shift` on macOS and `ctrl+shift` elsewhere. `none`
 /// turns this off. A value with no modifier in it is refused: it would make
-/// every double-click on the machine a screenshot.
+/// every click on the machine a screenshot.
 ///
-/// Both clicks have to be made with exactly these modifiers held -- one more
-/// and it is some other program's gesture, not this one -- and close enough
-/// together in time and place to be a double-click by the system's own
-/// settings.
+/// The click has to be made with exactly these modifiers held -- one more
+/// and it is some other program's gesture, not this one. It is the press
+/// that counts, not the release.
 ///
-/// The screenshot opens with the window under the pointer already selected.
+/// The screenshot opens exactly as the keybind opens it: nothing is selected
+/// yet, the window under the pointer is the one in focus, and a second click
+/// selects it. (Until 2026-10-07 the gesture was a double-click and the
+/// window came already selected.)
 ///
-/// Double-click on something that does not react. The clicks are not hidden
-/// from the application under the pointer (on Windows the first one is not;
-/// on macOS neither is), so a double-click on a link opens it and one on a
-/// title bar may zoom the window.
+/// On macOS the click is not hidden from the application under the pointer,
+/// so click on something that does not react: with `cmd+shift` held a click
+/// on a link opens it in a new tab, and one in a list extends the selection.
+/// On Windows the click is swallowed -- which also means that while Polter
+/// is running, no other program sees a click made with exactly these
+/// modifiers. Choose another combination, or `none`, to have those back.
 ///
 /// Only implemented on macOS and Windows.
 @"screenshot-mouse-trigger": ScreenshotMouseTrigger = .default,

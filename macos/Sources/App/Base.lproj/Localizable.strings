@@ -654,8 +654,8 @@
 "Screenshot Folder" = "Screenshot Folder";
 "Where screenshots and pasted images are saved." = "Where screenshots and pasted images are saved.";
 "Mouse Trigger" = "Mouse Trigger";
-"Hold these keys and double-click to take a screenshot." = "Hold these keys and double-click to take a screenshot.";
-"%s + Double-Click" = "%s + Double-Click";
+"Hold these keys and click to take a screenshot." = "Hold these keys and click to take a screenshot.";
+"%s + Click" = "%s + Click";
 "Let Agents Take Screenshots" = "Let Agents Take Screenshots";
 "Agents may capture the screen with the screenshot tools." = "Agents may capture the screen with the screenshot tools.";
 "Screenshot Shortcut" = "Screenshot Shortcut";

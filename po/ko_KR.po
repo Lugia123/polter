@@ -2529,15 +2529,15 @@ msgstr "스크린샷과 붙여넣은 이미지가 저장되는 곳입니다."
 msgid "Mouse Trigger"
 msgstr "마우스 트리거"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "이 키들을 누른 채 더블 클릭하면 스크린샷을 찍습니다."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "이 키들을 누른 채 클릭하면 스크린샷을 찍습니다."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + 더블 클릭"
+msgid "%s + Click"
+msgstr "%s + 클릭"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

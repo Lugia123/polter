@@ -90,6 +90,7 @@
     "icon": 20,
     "swatch": 16,
     "swatch_edge": 0.5,
+    "hover_edge": 0.5,
     "ring": 1.5,
     "glow_sigma": 2,
     "offset": 8,
@@ -170,7 +171,8 @@
     "downsample_scale_at_least": 1.75,
     "downsample_hi": 4,
     "downsample_lo": 2,
-    "box_passes": 3
+    "box_passes": 3,
+    "wait_ms": 50
   },
 
   "transition_ms": {

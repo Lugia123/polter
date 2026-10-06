@@ -2542,15 +2542,15 @@ msgstr "Ekran görüntülerinin ve yapıştırılan görüntülerin kaydedildiğ
 msgid "Mouse Trigger"
 msgstr "Fare tetikleyicisi"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "Ekran görüntüsü almak için bu tuşları basılı tutup çift tıklayın."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "Ekran görüntüsü almak için bu tuşları basılı tutup tıklayın."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + çift tıklama"
+msgid "%s + Click"
+msgstr "%s + tıklama"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

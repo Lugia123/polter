@@ -252,4 +252,37 @@ struct ShotTextInputTests {
         #expect(typing.text.string == "L1\nL2\nL3\nL4\nL5\n你好")
         #expect(caretInView(typing))
     }
+
+    @Test func aPressOnAColourOrASizeDoesNotTakeTheKeyboardFromTheBox() {
+        // Found on a real machine (task 1112): the box gave the keyboard up
+        // and got it back, and the input method's candidates were gone.
+        #expect(!ShotTextInput.overlayTakesKeyboard(typing: true, pressRestyles: true))
+        // Any other press while typing ends the typing, and takes it.
+        #expect(ShotTextInput.overlayTakesKeyboard(typing: true, pressRestyles: false))
+        // With no text being typed there is nothing to keep it for.
+        #expect(ShotTextInput.overlayTakesKeyboard(typing: false, pressRestyles: true))
+        #expect(ShotTextInput.overlayTakesKeyboard(typing: false, pressRestyles: false))
+    }
+
+    @Test func onlyYellowAndWhiteAreLightEnoughToWantADarkHalo() {
+        // 9.8.11: by relative luminance, against the data's threshold.
+        let dark = (0..<9).filter { ShotTextLook.haloIsDark(for: ShotStyle.colour($0)) }
+        #expect(dark == [2, 8], "yellow and white: \(dark)")
+        #expect(abs(ShotTextLook.luminance(ShotStyle.RGB(r: 255, g: 255, b: 255)) - 1) < 1e-9)
+        #expect(ShotTextLook.luminance(ShotStyle.RGB(r: 0, g: 0, b: 0)) == 0)
+        // Orange is light to a formula that skips the gamma (0.58), and is
+        // not light: 0.355.
+        #expect(abs(ShotTextLook.luminance(ShotStyle.colour(1)) - 0.355) < 0.005)
+    }
+
+    @Test func theCaretIsAsTallAsTheFontSaysAndNeverTallerThanItsLine() {
+        let t = ShotLook.TextBox.self
+        let caret = ShotTextLook.caret(x: 50, lineTop: 100, lineHeight: 27, fontSize: 18, scale: 1)
+        #expect(caret.width == t.caretWidth && abs(caret.height - 18 * t.caretHeightEm) < 1e-9)
+        #expect(abs(caret.midY - 113.5) < 1e-9, "centred on its line")
+        #expect(caret.minX == 50)
+        // A line shorter than the font would make it: the line's height.
+        #expect(ShotTextLook.caret(x: 0, lineTop: 0, lineHeight: 10, fontSize: 18, scale: 1).height == 10)
+        #expect(abs(ShotTextLook.caret(x: 0, lineTop: 0, lineHeight: 60, fontSize: 18, scale: 2).width - 2 * t.caretWidth) < 1e-9)
+    }
 }

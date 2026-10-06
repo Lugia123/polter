@@ -180,6 +180,18 @@ enum ShotRenderer {
         ctx.restoreGState()
     }
 
+    /// `picture` as an image, opaque: its fourth byte is not alpha and is
+    /// not read.
+    static func image(of picture: ShotBlur.Picture) -> CGImage? {
+        guard let provider = CGDataProvider(data: Data(picture.rgbx) as CFData),
+              let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        return CGImage(
+            width: picture.width, height: picture.height, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: picture.width * 4, space: space,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+
     /// `image` as rows of R, G, B, X, top row first, or nil when it cannot
     /// be drawn.
     static func rgbx(of image: CGImage) -> [UInt8]? {
@@ -260,12 +272,17 @@ enum ShotRenderer {
 
     // MARK: Chrome
 
-    static let accent = ShotStyle.RGB(r: 0x1E, g: 0xA0, b: 0xF0)
-    private static let bar = 0x30
-    private static let barActive = 0x68
-    private static let barHover = 0x48
-    private static let ink = 0xFF
-    private static let inkOff = 0x80
+    /// The accent: the selection's edge, the ring of whatever is selected
+    /// (9.8.3).
+    static let accent = ShotStyle.RGB(
+        r: ShotLook.Colour.accent.r, g: ShotLook.Colour.accent.g, b: ShotLook.Colour.accent.b)
+
+    /// One of the look's colours, thinned by `times`.
+    static func ink(_ c: ShotLook.RGBA, times: Double = 1) -> CGColor {
+        CGColor(
+            srgbRed: CGFloat(c.r) / 255, green: CGFloat(c.g) / 255, blue: CGFloat(c.b) / 255,
+            alpha: CGFloat(c.a * times))
+    }
 
     static func fill(_ r: PixelRect, _ colour: CGColor, in ctx: CGContext) {
         ctx.setFillColor(colour)
@@ -280,6 +297,124 @@ enum ShotRenderer {
         fill(PixelRect(r.right - thickness, r.y, thickness, r.h), colour, in: ctx)
     }
 
+    // MARK: Handles and frames (9.8.11A)
+
+    /// One of the selection's own eight handles: round, white, edged in the
+    /// accent. Round is what tells it from an annotation's, which is square.
+    static func drawKnob(at c: PixelPoint, scale: Double, in ctx: CGContext) {
+        let d = CGFloat(ShotLook.Size.selectionKnob * scale)
+        let line = CGFloat(ShotStyle.px(Int(ShotLook.Size.selectionLine), scale: scale))
+        let box = CGRect(x: CGFloat(c.x) - d / 2, y: CGFloat(c.y) - d / 2, width: d, height: d)
+        ctx.saveGState()
+        ctx.setFillColor(ink(ShotLook.Colour.knobFill))
+        ctx.fillEllipse(in: box)
+        ctx.setStrokeColor(ink(ShotLook.Colour.accent))
+        ctx.setLineWidth(line)
+        ctx.strokeEllipse(in: box.insetBy(dx: line / 2, dy: line / 2))
+        ctx.restoreGState()
+    }
+
+    /// The frame round a selected annotation whose ink is `inkBox`: a white
+    /// line with dashes of the accent over it -- blue and white by turns, so
+    /// that it shows on white, where the white is lost, and on blue, where
+    /// the blue is -- with the glow a selected cell has. It is a little
+    /// outside the ink, so it is never on the annotation's own line.
+    static func drawFrame(round inkBox: PixelRect, on surface: ShotChrome.Surface, in ctx: CGContext) {
+        let scale = surface.scale
+        let a = ShotLook.Annotation.self
+        let frame = ShotEditor.frame(of: inkBox, scale: scale)
+        let line = CGFloat(ShotStyle.px(Int(a.frameLine), scale: scale))
+        let radius = CGFloat(a.frameRadius * scale)
+        if !surface.access.opaque {
+            // The glow, along the line.
+            let sigma = ShotLook.Size.glowSigma * scale
+            let reach = Int((sigma * 3).rounded(.up)) + 2
+            var canvas = ShotCanvas(width: frame.w + 2 * reach, height: frame.h + 2 * reach)
+            canvas.glow(
+                ShotCanvas.Shape(
+                    x: Double(reach), y: Double(reach), w: Double(frame.w), h: Double(frame.h), radius: Double(radius)),
+                sigma: sigma, ShotCanvas.Ink(ShotLook.Colour.glow))
+            draw(ShotChrome.Painted(canvas: canvas, origin: PixelPoint(frame.x - reach, frame.y - reach)), in: ctx)
+        }
+        // The line runs just outside the frame's rectangle.
+        let path = CGPath(
+            roundedRect: rect(frame).insetBy(dx: -line / 2, dy: -line / 2),
+            cornerWidth: radius, cornerHeight: radius, transform: nil)
+        ctx.saveGState()
+        ctx.setLineWidth(line)
+        ctx.addPath(path)
+        ctx.setStrokeColor(ink(ShotLook.Colour.frameLight))
+        ctx.strokePath()
+        ctx.addPath(path)
+        ctx.setStrokeColor(ink(ShotLook.Colour.accent))
+        ctx.setLineDash(
+            phase: 0,
+            lengths: [
+                CGFloat(ShotStyle.px(Int(a.frameDashOn), scale: scale)),
+                CGFloat(ShotStyle.px(Int(a.frameDashOff), scale: scale)),
+            ])
+        ctx.strokePath()
+        ctx.restoreGState()
+    }
+
+    /// One grip of a selected annotation: a small square, white edged in
+    /// the accent; larger and glowing under the pointer; the accent edged
+    /// in white while it is dragged.
+    static func drawGrip(at c: PixelPoint, look: ShotEditor.GripLook, on surface: ShotChrome.Surface, in ctx: CGContext) {
+        let scale = surface.scale
+        let a = ShotLook.Annotation.self
+        let side = CGFloat((look == .normal ? a.grip : a.gripHot) * scale)
+        let line = CGFloat(ShotStyle.px(Int(a.gripLine), scale: scale))
+        let radius = CGFloat(a.gripRadius * scale)
+        let box = CGRect(x: CGFloat(c.x) - side / 2, y: CGFloat(c.y) - side / 2, width: side, height: side)
+        let outline = CGPath(roundedRect: box, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        ctx.saveGState()
+        // What is under it: a thin dark edge that lifts a white square off
+        // a white picture, or the glow.
+        if look == .normal || surface.access.opaque {
+            ctx.setShadow(offset: .zero, blur: CGFloat(a.gripShadow * scale * 2), color: ink(ShotLook.Colour.gripShadow))
+        } else {
+            ctx.setShadow(
+                offset: .zero, blur: CGFloat(ShotLook.Size.glowSigma * scale * 2),
+                color: ink(ShotLook.Colour.accent))
+        }
+        ctx.addPath(outline)
+        ctx.setFillColor(ink(look == .held ? ShotLook.Colour.accent : ShotLook.Colour.gripFill))
+        ctx.fillPath()
+        ctx.restoreGState()
+        ctx.saveGState()
+        ctx.addPath(CGPath(
+            roundedRect: box.insetBy(dx: line / 2, dy: line / 2),
+            cornerWidth: max(radius - line / 2, 0), cornerHeight: max(radius - line / 2, 0), transform: nil))
+        ctx.setStrokeColor(ink(look == .held ? ShotLook.Colour.gripFill : ShotLook.Colour.accent))
+        ctx.setLineWidth(line)
+        ctx.strokePath()
+        ctx.restoreGState()
+    }
+
+    /// A painted canvas as an image, with its alpha.
+    static func image(of canvas: ShotCanvas) -> CGImage? {
+        guard canvas.width > 0, canvas.height > 0,
+              let provider = CGDataProvider(data: Data(canvas.rgba) as CFData),
+              let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        return CGImage(
+            width: canvas.width, height: canvas.height, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: canvas.width * 4, space: space,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+
+    /// Draw a painted piece of furniture where it goes.
+    static func draw(_ painted: ShotChrome.Painted, in ctx: CGContext) {
+        guard let image = image(of: painted.canvas) else { return }
+        draw(
+            image,
+            in: CGRect(
+                x: painted.origin.x, y: painted.origin.y,
+                width: painted.canvas.width, height: painted.canvas.height),
+            of: ctx)
+    }
+
     /// The font the overlay's own words are in: the system's, at the size
     /// menus use, which is the smallest any text of ours may be.
     static func uiFont(scale: Double) -> CTFont {
@@ -288,168 +423,139 @@ enum ShotRenderer {
             ?? CTFontCreateWithName("Helvetica" as CFString, points * scale, nil)
     }
 
-    /// A line of the overlay's own words on a dark plate, its top left at
-    /// `at`, kept on `display` sideways. Returns the plate's height.
-    @discardableResult
-    static func label(_ text: String, at: PixelPoint, within display: PixelRect, scale: Double, in ctx: CGContext) -> Int {
+    /// One thing on a label.
+    enum LabelPart: Equatable {
+        /// Words, in the ordinary ink or the fainter one.
+        case words(String, dim: Bool = false)
+        /// A key, on a small plate of its own: `R`, `⌘Z`.
+        case key(String)
+        /// The red dot of something being recorded.
+        case dot
+    }
+
+    /// The paddings of a label, in points.
+    struct LabelStyle: Equatable {
+        var padX: Double
+        var padY: Double
+        var gap: Double
+
+        /// The hover text of a button.
+        static let tip = LabelStyle(
+            padX: ShotLook.Size.tipPadX, padY: ShotLook.Size.tipPadY, gap: ShotLook.Size.tipKeyGap)
+        /// A long screenshot's status line.
+        static let status = LabelStyle(
+            padX: ShotLook.Size.statusPadX, padY: ShotLook.Size.statusPadY, gap: ShotLook.Size.statusGap)
+        /// The selection's size.
+        static let size = LabelStyle(
+            padX: ShotLook.Size.sizeLabelPadX, padY: ShotLook.Size.sizeLabelPadY, gap: ShotLook.Size.statusGap)
+    }
+
+    /// How big a label of `parts` is, in pixels.
+    static func labelSize(_ parts: [LabelPart], style: LabelStyle, scale: Double) -> (w: Int, h: Int) {
+        let laid = lay(parts, style: style, scale: scale)
+        return (laid.width, laid.height)
+    }
+
+    private struct LaidPart {
+        var part: LabelPart
+        var x: CGFloat
+        var width: CGFloat
+        var line: CTLine?
+    }
+
+    private struct Laid {
+        var parts: [LaidPart]
+        var width: Int
+        var height: Int
+        var ascent: CGFloat
+        var descent: CGFloat
+    }
+
+    private static func lay(_ parts: [LabelPart], style: LabelStyle, scale: Double) -> Laid {
         let font = uiFont(scale: scale)
-        let line = ShotFont.line(text, font: font, colour: gray(ink))
-        var ascent: CGFloat = 0, descent: CGFloat = 0
-        let width = Int(CTLineGetTypographicBounds(line, &ascent, &descent, nil).rounded(.up))
-        let pad = ShotStyle.px(4, scale: scale)
-        let height = Int((ascent + descent).rounded(.up)) + pad
-        let plateWidth = width + pad * 2
-        let x = max(min(at.x, display.right - plateWidth), display.x)
-        fill(PixelRect(x, at.y, plateWidth, height), gray(0x20), in: ctx)
+        let ascent = CTFontGetAscent(font), descent = CTFontGetDescent(font)
+        let size = ShotLook.Size.self
+        var x = CGFloat(style.padX * scale)
+        var laid: [LaidPart] = []
+        for (n, part) in parts.enumerated() {
+            if n > 0 { x += CGFloat(style.gap * scale) }
+            switch part {
+            case let .words(text, dim):
+                let line = ShotFont.line(text, font: font, colour: ink(dim ? ShotLook.Colour.inkDim : ShotLook.Colour.ink))
+                let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)).rounded(.up)
+                laid.append(LaidPart(part: part, x: x, width: width, line: line))
+                x += width
+            case let .key(text):
+                let line = ShotFont.line(text, font: font, colour: ink(ShotLook.Colour.inkDim))
+                let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)).rounded(.up)
+                    + 2 * CGFloat(size.tipKeyPadX * scale)
+                laid.append(LaidPart(part: part, x: x, width: width, line: line))
+                x += width
+            case .dot:
+                let width = CGFloat((size.statusDot + 2 * size.statusDotHalo) * scale)
+                laid.append(LaidPart(part: part, x: x, width: width, line: nil))
+                x += width
+            }
+        }
+        x += CGFloat(style.padX * scale)
+        let height = (ascent + descent).rounded(.up) + 2 * CGFloat(style.padY * scale)
+        return Laid(
+            parts: laid, width: Int(x.rounded(.up)), height: Int(height.rounded(.up)), ascent: ascent, descent: descent)
+    }
+
+    /// A label: `parts` on a glass plate whose top left is at `at`, moved
+    /// sideways to stay on `display`. Returns the plate's rectangle.
+    @discardableResult
+    static func label(
+        _ parts: [LabelPart], style: LabelStyle, at: PixelPoint, within display: PixelRect,
+        on surface: ShotChrome.Surface, in ctx: CGContext
+    ) -> PixelRect {
+        let scale = surface.scale
+        let laid = lay(parts, style: style, scale: scale)
+        let x = max(min(at.x, display.right - laid.width), display.x)
+        let plate = PixelRect(x, at.y, laid.width, laid.height)
+        var painted = ShotChrome.canvas(for: plate, scale: scale)
+        ShotChrome.plate(
+            into: &painted.canvas, rect: plate, origin: painted.origin, radius: ShotLook.Size.labelRadius,
+            on: surface)
+        let size = ShotLook.Size.self
+        let middle = Double(plate.y - painted.origin.y) + Double(plate.h) / 2
+        for item in laid.parts {
+            let left = Double(plate.x - painted.origin.x) + Double(item.x)
+            switch item.part {
+            case .key:
+                // The key's own small plate.
+                let h = Double(laid.ascent + laid.descent) + 2 * size.tipKeyPadY * scale
+                painted.canvas.fill(
+                    ShotCanvas.Shape(
+                        x: left, y: middle - h / 2, w: Double(item.width), h: h, radius: size.tipKeyRadius * scale),
+                    ShotCanvas.Ink(ShotLook.Colour.tipKeyPlate))
+            case .dot:
+                let cx = left + Double(item.width) / 2
+                painted.canvas.fill(
+                    .circle(cx: cx, cy: middle, diameter: (size.statusDot + 2 * size.statusDotHalo) * scale),
+                    ShotCanvas.Ink(ShotLook.Colour.statusDotHalo))
+                painted.canvas.fill(
+                    .circle(cx: cx, cy: middle, diameter: size.statusDot * scale),
+                    ShotCanvas.Ink(ShotLook.Colour.statusDot))
+            case .words:
+                break
+            }
+        }
+        draw(painted, in: ctx)
+
+        // The words, over the plate.
+        let baseline = CGFloat(plate.y) + (CGFloat(plate.h) - (laid.ascent + laid.descent)) / 2 + laid.ascent
         ctx.saveGState()
         ctx.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
-        ctx.textPosition = CGPoint(x: CGFloat(x + pad), y: CGFloat(at.y) + CGFloat(pad) / 2 + ascent)
-        CTLineDraw(line, ctx)
-        ctx.restoreGState()
-        return height
-    }
-
-    /// One toolbar button's picture, in `r`.
-    ///
-    /// Drawn as shapes, the same shapes as the other host, rather than
-    /// taken from a symbol font: the two toolbars are meant to be one
-    /// toolbar.
-    static func drawIcon(_ button: ToolbarButton, in r: PixelRect, scale: Double, ink: CGColor, of ctx: CGContext) {
-        let line = max(ShotStyle.px(2, scale: scale), 1)
-        // The picture's box: the button less a quarter all round.
-        let m = r.w / 4
-        let l = r.x + m, t = r.y + m, rt = r.right - m, b = r.bottom - m
-        let cx = r.x + r.w / 2, cy = r.y + r.h / 2
-        func p(_ x: Int, _ y: Int) -> CGPoint { CGPoint(x: x, y: y) }
-        func stroke(_ points: [CGPoint]) {
-            ctx.addLines(between: points)
-            ctx.strokePath()
-        }
-        func glyph(_ text: String, _ px: Int) {
-            let font = CTFontCreateUIFontForLanguage(.system, CGFloat(px), nil)
-                ?? CTFontCreateWithName("Helvetica" as CFString, CGFloat(px), nil)
-            drawCentred(text, on: p(cx, cy), font: font, colour: ink, in: ctx)
-        }
-
-        ctx.saveGState()
-        ctx.setStrokeColor(ink)
-        ctx.setFillColor(ink)
-        ctx.setLineWidth(CGFloat(line))
-        ctx.setLineCap(.round)
-        ctx.setLineJoin(.round)
-        switch button {
-        case .tool(.select):
-            // A pointer: an arrow from the top left.
-            ctx.addLines(between: [p(l, t), p(l, b), p(l + (rt - l) / 3, b - (b - t) / 3), p(rt - m / 2, b - (b - t) / 3)])
-            ctx.closePath()
-            ctx.fillPath()
-        case .tool(.rect):
-            ctx.stroke(CGRect(x: l, y: t + m / 3, width: rt - l, height: b - t - 2 * (m / 3)))
-        case .tool(.ellipse):
-            ctx.strokeEllipse(in: CGRect(x: l, y: t + m / 3, width: rt - l, height: b - t - 2 * (m / 3)))
-        case .tool(.line):
-            stroke([p(l, b), p(rt, t)])
-        case .tool(.arrow):
-            stroke([p(l, b), p(rt, t)])
-            stroke([p(rt - (rt - l) / 2, t), p(rt, t), p(rt, t + (b - t) / 2)])
-        case .tool(.pen):
-            let q = (rt - l) / 4
-            stroke([p(l, b), p(l + q, t + q), p(l + 2 * q, b - q), p(l + 3 * q, t), p(rt, t + q)])
-        case .tool(.highlighter):
-            ctx.setLineWidth(CGFloat(line * 3))
-            ctx.setLineCap(.butt)
-            stroke([p(l, cy), p(rt, cy)])
-        case .tool(.text):
-            glyph("A", r.h * 5 / 9)
-        case .tool(.number):
-            ctx.strokeEllipse(in: CGRect(x: l, y: t, width: rt - l, height: b - t))
-            glyph("1", r.h * 4 / 9)
-        case .tool(.mosaic):
-            // Four squares of a chequerboard.
-            let hw = (rt - l) / 2, hh = (b - t) / 2
-            ctx.stroke(CGRect(x: l, y: t, width: rt - l, height: b - t))
-            ctx.fill(CGRect(x: l, y: t, width: hw, height: hh))
-            ctx.fill(CGRect(x: l + hw, y: t + hh, width: rt - l - hw, height: b - t - hh))
-        case .undo:
-            glyph("↶", r.h * 5 / 9)
-        case .redo:
-            glyph("↷", r.h * 5 / 9)
-        case .long:
-            // A tall page and an arrow down it.
-            ctx.stroke(CGRect(x: l + m / 2, y: t - m / 3, width: rt - l - m, height: b - t + 2 * (m / 3)))
-            stroke([p(cx, t + m / 3), p(cx, b - m / 4)])
-            stroke([p(cx - m / 2, b - m / 4 - m / 2), p(cx, b - m / 4), p(cx + m / 2, b - m / 4 - m / 2)])
-        case .cancel:
-            glyph("✕", r.h * 5 / 9)
-        case .done:
-            glyph("✓", r.h * 5 / 9)
-        case let .colour(c):
-            ctx.setFillColor(colour(ShotStyle.colour(c)))
-            ctx.fill(rect(r))
-        case let .level(level):
-            // A dot that grows with the step.
-            let radius = (r.w * (level + 1)) / 12 + 1
-            ctx.fillEllipse(in: CGRect(x: cx - radius, y: cy - radius, width: radius * 2, height: radius * 2))
+        for item in laid.parts {
+            guard let line = item.line else { continue }
+            var tx = CGFloat(plate.x) + item.x
+            if case .key = item.part { tx += CGFloat(size.tipKeyPadX * scale) }
+            ctx.textPosition = CGPoint(x: tx, y: baseline)
+            CTLineDraw(line, ctx)
         }
         ctx.restoreGState()
-    }
-
-    /// The toolbar, the hover text of the button under the pointer, and --
-    /// when the bundled font is missing -- a line saying so. Returns the y
-    /// just under the last thing drawn below the bar, where the next line
-    /// (a long screenshot's status) may go.
-    @discardableResult
-    static func drawToolbar(
-        _ layout: ShotToolbarGrid.Layout, editor: ShotEditor, scale: Double, display: PixelRect,
-        in ctx: CGContext, translate: (String) -> String
-    ) -> Int {
-        fill(layout.bar, gray(bar), in: ctx)
-        if let row = layout.props { fill(row, gray(bar), in: ctx) }
-        let current = editor.current
-        for placed in layout.buttons {
-            let r = placed.rect
-            let isCurrent: Bool
-            switch placed.button {
-            case let .tool(t): isCurrent = editor.tool == t
-            case let .colour(c): isCurrent = c == current.colour
-            case let .level(l): isCurrent = l == current.level
-            default: isCurrent = false
-            }
-            let enabled: Bool
-            switch placed.button {
-            case .undo: enabled = editor.canUndo
-            case .redo: enabled = editor.canRedo
-            default: enabled = true
-            }
-            let hovered = editor.hoverButton == placed.button && enabled
-            if case .colour = placed.button {
-                // The current colour wears a ring.
-                if isCurrent {
-                    let ring = ShotStyle.px(2, scale: scale)
-                    frame(
-                        PixelRect(r.x - ring * 2, r.y - ring * 2, r.w + ring * 4, r.h + ring * 4),
-                        gray(ink), thickness: ring, in: ctx)
-                }
-            } else if isCurrent {
-                fill(r, gray(barActive), in: ctx)
-            } else if hovered {
-                fill(r, gray(barHover), in: ctx)
-            }
-            drawIcon(placed.button, in: r, scale: scale, ink: gray(enabled ? ink : inkOff), of: ctx)
-        }
-
-        let gap = ShotStyle.px(4, scale: scale)
-        var next = (layout.props?.bottom ?? layout.bar.bottom) + gap
-        if !ShotFont.isAvailable {
-            let words = translate("The annotation font is missing, so the system font is used.")
-            next += label(words, at: PixelPoint(layout.bar.x, next), within: display, scale: scale, in: ctx)
-                + ShotStyle.px(2, scale: scale)
-        }
-        if let button = editor.hoverButton, let r = layout.rect(of: button) {
-            let tip = ShotToolbarGrid.tooltip(for: button, props: editor.props, translate: translate)
-            let y = max(next, r.bottom + gap)
-            next = y + label(tip, at: PixelPoint(r.x, y), within: display, scale: scale, in: ctx) + gap
-        }
-        return next
+        return plate
     }
 }

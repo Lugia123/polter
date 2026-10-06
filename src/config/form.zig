@@ -187,7 +187,7 @@ pub const table = [_]Item{
     // Screenshot (screenshot.md §12.1)
     .{ .key = .@"clipboard-paste-image", .group = .screenshot, .label = i18n.N_("Paste Images as Files"), .summary = i18n.N_("Save a pasted image as a file and paste its path."), .aliases = &.{ "screenshot", "image", "picture", "paste", "clipboard", "截图", "截屏", "图片", "粘贴", "剪贴板" } },
     .{ .key = .@"screenshot-directory", .group = .screenshot, .control = .directory, .label = i18n.N_("Screenshot Folder"), .summary = i18n.N_("Where screenshots and pasted images are saved."), .aliases = &.{ "screenshot", "capture", "folder", "directory", "path", "save", "截图", "截屏", "保存", "目录", "文件夹", "位置" } },
-    .{ .key = .@"screenshot-mouse-trigger", .group = .screenshot, .control = .choice, .label = i18n.N_("Mouse Trigger"), .summary = i18n.N_("Hold these keys and double-click to take a screenshot."), .choices = &.{
+    .{ .key = .@"screenshot-mouse-trigger", .group = .screenshot, .control = .choice, .label = i18n.N_("Mouse Trigger"), .summary = i18n.N_("Hold these keys and click to take a screenshot."), .choices = &.{
         .{ .value = "none", .label = i18n.N_("Off") },
         .{ .value = "super+shift", .label = "" },
         .{ .value = "ctrl+shift", .label = "" },
@@ -195,7 +195,7 @@ pub const table = [_]Item{
         .{ .value = "super+alt", .label = "" },
         .{ .value = "ctrl+alt", .label = "" },
         .{ .value = "super+ctrl", .label = "" },
-    }, .choice_template = i18n.N_("%s + Double-Click"), .aliases = &.{ "screenshot", "capture", "mouse", "double-click", "double click", "截图", "截屏", "鼠标", "双击" } },
+    }, .choice_template = i18n.N_("%s + Click"), .aliases = &.{ "screenshot", "capture", "mouse", "click", "double-click", "double click", "截图", "截屏", "鼠标", "单击", "点击", "双击" } },
     .{ .key = .@"screenshot-agent-access", .group = .screenshot, .control = .toggle, .on = "allow", .off = "deny", .label = i18n.N_("Let Agents Take Screenshots"), .summary = i18n.N_("Agents may capture the screen with the screenshot tools."), .choices = &.{
         .{ .value = "allow", .label = i18n.N_("Allow") },
         .{ .value = "deny", .label = i18n.N_("Deny") },
@@ -2148,7 +2148,7 @@ test "config form: each screenshot row says how it is drawn and what it writes" 
     for (labels[1..]) |label| try testing.expect(label == .null);
     const template = mouse.get("choice_template").?;
     try testing.expect(template == .string);
-    try testing.expectEqualStrings("%s + Double-Click", template.string);
+    try testing.expectEqualStrings("%s + Click", template.string);
     // What it is set to is one of the things it offers.
     const current = mouse.get("value").?.string;
     var offered = false;
@@ -2236,7 +2236,7 @@ const search_fixture = [_]SearchEntry{
     // 1
     .{ .name = "截图保存位置", .aliases = &.{ "screenshot", "截屏", "capture", "folder" }, .key = "screenshot-directory", .summary = "截图和粘贴的图片存在哪里。" },
     // 2
-    .{ .name = "鼠标触发", .aliases = &.{ "screenshot", "截屏", "double-click" }, .key = "screenshot-mouse-trigger", .summary = "按住这些键双击即可截图。", .choices = &.{ "关", "⌘⇧ + 双击" } },
+    .{ .name = "鼠标触发", .aliases = &.{ "screenshot", "截屏", "double-click" }, .key = "screenshot-mouse-trigger", .summary = "按住这些键单击即可截图。", .choices = &.{ "关", "⌘⇧ + 单击" } },
     // 3: only its key says "screenshot".
     .{ .name = "允许 Agent 截屏", .key = "screenshot-agent-access", .summary = "Agent 可以用工具拍下屏幕。" },
     // 4: only its summary mentions it.
@@ -2298,7 +2298,7 @@ test "config search: every term has to be found, and the weakest one decides the
 
 test "config search: the name of a choice finds the row, as weakly as its summary does" {
     try expectHits("deny", &.{.{ .index = 4, .rank = .summary }});
-    try expectHits("双击", &.{.{ .index = 2, .rank = .summary }});
+    try expectHits("单击", &.{.{ .index = 2, .rank = .summary }});
 }
 
 test "config search: a key is found by part of itself" {
@@ -2387,7 +2387,7 @@ const MachineEntries = struct {
         .{ "Screenshot Folder", "截图保存位置" },
         .{ "Where screenshots and pasted images are saved.", "截图和粘贴的图片存在这里。" },
         .{ "Mouse Trigger", "鼠标触发" },
-        .{ "Hold these keys and double-click to take a screenshot.", "按住这些键双击即可截图。" },
+        .{ "Hold these keys and click to take a screenshot.", "按住这些键单击即可截图。" },
         .{ "Let Agents Take Screenshots", "允许 agent 截图" },
         .{ "Agents may capture the screen with the screenshot tools.", "agent 可以用截图工具拍下屏幕。" },
         .{ "Screenshot Shortcut", "截图快捷键" },

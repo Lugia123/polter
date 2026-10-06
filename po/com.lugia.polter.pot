@@ -3370,11 +3370,11 @@ msgid "Mouse Trigger"
 msgstr ""
 
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
+msgid "Hold these keys and click to take a screenshot."
 msgstr ""
 
 #: src/config/form.zig
-msgid "%s + Double-Click"
+msgid "%s + Click"
 msgstr ""
 
 #: src/config/form.zig

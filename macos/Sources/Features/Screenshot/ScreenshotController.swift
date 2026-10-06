@@ -125,8 +125,10 @@ final class ScreenshotController: ShotSessionDelegate {
         mouse = nil
         guard !required.isEmpty else { return }
 
-        let trigger = ShotMouseTrigger(required: required) { [weak self] point in
-            self?.trigger(preselecting: point)
+        // The same way in as the hotkey: nothing is selected for having
+        // been clicked on (3.1).
+        let trigger = ShotMouseTrigger(required: required) { [weak self] in
+            self?.trigger()
         }
         trigger.start()
         mouse = trigger
@@ -134,12 +136,9 @@ final class ScreenshotController: ShotSessionDelegate {
 
     // MARK: Starting
 
-    /// Start a screenshot.
-    ///
-    /// - Parameter preselecting: where the pointer was, in AppKit's global
-    ///   coordinates, when the screenshot was started by a double-click; the
-    ///   window there is already selected when the overlay appears.
-    func trigger(preselecting point: CGPoint? = nil) {
+    /// Start a screenshot. However it was asked for -- the hotkey, the
+    /// click, the menu -- it starts the same: with nothing selected.
+    func trigger() {
         guard session == nil, !starting, !asking else {
             Self.logger.info("screenshot: trigger ignored (session=\(self.session != nil, privacy: .public) starting=\(self.starting, privacy: .public) asking=\(self.asking, privacy: .public))")
             return
@@ -169,7 +168,7 @@ final class ScreenshotController: ShotSessionDelegate {
                 Self.logger.error("screenshot: no display could be captured")
                 return
             }
-            self.present(displays, windows: windows, focused: focused, directory: directory, preselecting: point)
+            self.present(displays, windows: windows, focused: focused, directory: directory)
         }
     }
 
@@ -236,15 +235,9 @@ final class ScreenshotController: ShotSessionDelegate {
         _ displays: [ShotDisplay],
         windows: [ShotWindow],
         focused: Ghostty.SurfaceView?,
-        directory: URL,
-        preselecting point: CGPoint?
+        directory: URL
     ) {
-        // AppKit's global point has its origin at the bottom left of the
-        // primary display; the window list's is at its top left.
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        let preselect = point.map { CGPoint(x: $0.x, y: primaryHeight - $0.y) }
-        guard let shot = ShotSession(
-            displays: displays, windows: windows, prefs: Self.loadPrefs(), preselect: preselect) else {
+        guard let shot = ShotSession(displays: displays, windows: windows, prefs: Self.loadPrefs()) else {
             Self.logger.error("screenshot: a display's picture could not be read")
             return
         }

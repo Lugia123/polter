@@ -2569,15 +2569,15 @@ msgstr "Pantaila-argazkiak eta itsatsitako irudiak non gordetzen diren."
 msgid "Mouse Trigger"
 msgstr "Saguaren abiarazlea"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "Eduki tekla hauek sakatuta eta egin klik bikoitza argazkia ateratzeko."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "Eduki tekla hauek sakatuta eta egin klik argazkia ateratzeko."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + klik bikoitza"
+msgid "%s + Click"
+msgstr "%s + klik"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

@@ -33,7 +33,7 @@ struct ShotToolbarLayoutTests {
         func x(_ b: ToolbarButton) -> Int { l.rect(of: b)?.x ?? .min }
         let size = Grid.footprint(scale: 1)
         #expect(size.w == 2 * 6 + 15 * 28 + 10 * 4 + 4 * 12)
-        #expect(size.h == 2 * 40 + 4)
+        #expect(size.h == 2 * 40, "two rows and nothing between them: one plate")
         #expect(l.bar == PixelRect(selection.right - 520, selection.bottom + 8, 520, 40))
         #expect(l.rect(of: .tool(.select)) == PixelRect(l.bar.x + 6, l.bar.y + 6, 28, 28))
         // Select | Rectangle: a group gap. Rectangle, Ellipse: an ordinary one.
@@ -52,9 +52,9 @@ struct ShotToolbarLayoutTests {
     @Test func everythingScalesWithTheDisplay() {
         let l = layout(.stroke, scale: 1.5)
         #expect(l.rect(of: .tool(.select))?.w == 42)
-        #expect(l.rect(of: .colour(0))?.w == 30)
+        #expect(l.rect(of: .colour(0))?.w == 42, "a colour is a cell like any other")
         #expect(Grid.footprint(scale: 1.5).w == 2 * 9 + 15 * 42 + 10 * 6 + 4 * 18)
-        #expect(Grid.footprint(scale: 1.5).h == 2 * 60 + 6)
+        #expect(Grid.footprint(scale: 1.5).h == 2 * 60)
         #expect(l.bar.y == selection.bottom + 12)
     }
 
@@ -75,27 +75,32 @@ struct ShotToolbarLayoutTests {
         let l = layout(.stroke)
         let row = try #require(l.props)
         #expect(row.x == l.bar.x)
-        #expect(row.y == l.bar.bottom + 4)
+        #expect(row.y == l.bar.bottom, "one plate: the second row starts where the first ends")
         #expect(row.h == 40)
-        #expect(row.w == 6 + 9 * 20 + 8 * 4 + 12 + 5 * 28 + 4 * 4 + 6)
+        #expect(row.w == l.bar.w, "as wide as the first row whatever it holds")
+        #expect(l.plate == PixelRect(l.bar.x, l.bar.y, 520, 80))
+        #expect(layout(.none).plate == layout(.none).bar)
         for placed in l.buttons {
             switch placed.button {
             case .colour, .level:
                 let r = placed.rect
                 #expect(r.x >= row.x + 6 && r.right <= row.right - 6 && r.y >= row.y && r.bottom <= row.bottom,
                         "\(placed.button)")
+                #expect(r.w == 28 && r.h == 28, "\(placed.button) is a cell of the grid")
             default:
                 break
             }
         }
-        // A swatch is smaller than a button and centred in the row.
-        #expect(l.rect(of: .colour(0)) == PixelRect(row.x + 6, row.y + 6 + 4, 20, 20))
-        #expect(l.rect(of: .colour(1))?.x == row.x + 6 + 24)
-        #expect(l.rect(of: .level(0)) == PixelRect(row.x + 6 + 9 * 24 - 4 + 12, row.y + 6, 28, 28))
-        #expect(l.rect(of: .level(4))?.right == row.right - 6)
+        // A colour is a cell: the same size and the same step as a tool.
+        #expect(l.rect(of: .colour(0)) == PixelRect(row.x + 6, row.y + 6, 28, 28))
+        #expect(l.rect(of: .colour(1))?.x == row.x + 6 + 32)
+        #expect(l.rect(of: .colour(0))?.x == l.rect(of: .tool(.select))?.x, "the two rows start on one line")
+        // Nine colours, a group gap, five steps: 464 points of the 520.
+        #expect(l.rect(of: .level(0)) == PixelRect(row.x + 6 + 9 * 32 - 4 + 12, row.y + 6, 28, 28))
+        #expect(l.rect(of: .level(4))?.right == row.x + 6 + 9 * 28 + 8 * 4 + 12 + 5 * 28 + 4 * 4)
         let block = layout(.block)
         #expect(block.rect(of: .level(0))?.x == block.bar.x + 6, "with no swatches the steps start at the left")
-        #expect(block.props?.w == 6 + 5 * 28 + 4 * 4 + 6)
+        #expect(block.props?.w == block.bar.w)
     }
 
     @Test func showingThePropertyRowDoesNotMoveTheFirst() {
@@ -109,7 +114,7 @@ struct ShotToolbarLayoutTests {
         // Room for one row under the selection but not for two.
         let low = PixelRect(400, 800, 900, 590)
         var l = Grid.layout(selection: low, display: display, scale: 1, props: .stroke)
-        #expect(l.bar.y == low.y - 8 - 84)
+        #expect(l.bar.y == low.y - 8 - 80)
         #expect(try #require(l.props).bottom <= low.y - 8)
         // The whole display selected: inside the bottom edge.
         l = Grid.layout(selection: display, display: display, scale: 1, props: .stroke)
@@ -127,8 +132,11 @@ struct ShotToolbarLayoutTests {
         #expect(l.button(at: Pt(swatch.x, swatch.y)) == .colour(3))
         #expect(l.covers(Pt(swatch.x, swatch.y - 2)))
         #expect(!l.covers(Pt(selection.x + 10, selection.y + 10)))
-        // Between the rows is not the toolbar.
-        #expect(!l.covers(Pt(l.bar.x + 10, l.bar.bottom + 1)))
+        // The rows are one plate: there is no "between" them, and the part
+        // of the second row past its last cell is the toolbar too.
+        #expect(l.covers(Pt(l.bar.x + 10, l.bar.bottom)))
+        #expect(l.covers(Pt(l.bar.right - 3, l.bar.bottom + 20)))
+        #expect(l.button(at: Pt(l.bar.right - 3, l.bar.bottom + 20)) == nil)
         // With no property row, where it would be is not the toolbar.
         #expect(!layout(.none).covers(Pt(swatch.x, swatch.y)))
     }

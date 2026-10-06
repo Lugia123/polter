@@ -2555,15 +2555,15 @@ msgstr "Ide kerülnek a képernyőképek és a beillesztett képek."
 msgid "Mouse Trigger"
 msgstr "Egeres indítás"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "Tartsa lenyomva ezeket a billentyűket, és kattintson duplán."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "Tartsa lenyomva ezeket a billentyűket, és kattintson."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + dupla kattintás"
+msgid "%s + Click"
+msgstr "%s + kattintás"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

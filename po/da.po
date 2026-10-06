@@ -2552,15 +2552,15 @@ msgstr "Hvor skærmbilleder og indsatte billeder gemmes."
 msgid "Mouse Trigger"
 msgstr "Museudløser"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "Hold disse taster nede, og dobbeltklik for at tage et skærmbillede."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "Hold disse taster nede, og klik for at tage et skærmbillede."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + dobbeltklik"
+msgid "%s + Click"
+msgstr "%s + klik"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

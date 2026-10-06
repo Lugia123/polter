@@ -670,8 +670,8 @@
 "Screenshot Folder" = "截图保存位置";
 "Where screenshots and pasted images are saved." = "截图和粘贴的图片存在这里。";
 "Mouse Trigger" = "鼠标触发";
-"Hold these keys and double-click to take a screenshot." = "按住这些键双击即可截图。";
-"%s + Double-Click" = "%s + 双击";
+"Hold these keys and click to take a screenshot." = "按住这些键单击即可截图。";
+"%s + Click" = "%s + 单击";
 "Let Agents Take Screenshots" = "允许 agent 截图";
 "Agents may capture the screen with the screenshot tools." = "agent 可以用截图工具拍下屏幕。";
 "Screenshot Shortcut" = "截图快捷键";

@@ -15,23 +15,31 @@ enum ToolbarButton: Equatable, Hashable {
 }
 
 /// The two-row toolbar: where each button is, what it is called and what
-/// its hover text says (`dev-docs/poltergeist/screenshot.md`, 9.1 and 9.7).
-/// A port of the Windows host's `toolbar.rs`; see `PixelGeometry.swift`.
+/// its hover text says (`dev-docs/poltergeist/screenshot.md`, 9.1, 9.7 and
+/// 9.8.2). A port of the Windows host's `toolbar.rs`; see
+/// `PixelGeometry.swift`.
 ///
 /// The first row is the tools and the commands; the second is the
-/// properties of the current tool, or of the selected annotation. Sizes are
-/// in points, on one grid: 28-point buttons, 4 between them, 12 between
-/// groups, 6 of padding, 20-point swatches.
+/// properties of the current tool, or of the selected annotation. The two
+/// rows are one plate, as wide as the first row whatever the second holds.
+/// **Everything that can be pressed is a cell of the same size** -- a
+/// colour and a step of a size as much as a tool -- on one grid. The
+/// numbers are the generated `ShotLook.Size`, in points.
 enum ShotToolbarGrid {
-    static let button = 28
-    static let gap = 4
-    static let groupGap = 12
-    static let padding = 6
-    /// Between the two rows.
-    static let rowGap = 4
-    static let swatch = 20
+    static let button = Int(ShotLook.Size.button)
+    static let gap = Int(ShotLook.Size.gap)
+    static let groupGap = Int(ShotLook.Size.groupGap)
+    static let padding = Int(ShotLook.Size.padding)
+    /// Between the two rows: none, they are one plate.
+    static let rowGap = Int(ShotLook.Size.rowGap)
     /// Between the selection and the toolbar.
-    static let offset = 8
+    static let offset = Int(ShotLook.Size.offset)
+
+    /// The gap between the rows in pixels. `ShotStyle.px` never gives less
+    /// than one, which is right for a line and wrong for a gap of nothing.
+    static func rowGapPx(_ scale: Double) -> Int {
+        rowGap > 0 ? ShotStyle.px(rowGap, scale: scale) : 0
+    }
 
     /// The first row's groups, left to right.
     static let row: [[ToolbarButton]] = [
@@ -47,9 +55,10 @@ enum ShotToolbarGrid {
 
     /// Where everything on the toolbar is, in the display's pixels.
     struct Layout: Equatable {
-        /// The first row's background.
+        /// The first row.
         var bar: PixelRect
-        /// The property row's background, when it is shown.
+        /// The property row, when it is shown: under the first, and as
+        /// wide.
         var props: PixelRect?
         var buttons: [Placed]
 
@@ -71,6 +80,13 @@ enum ShotToolbarGrid {
         func rect(of button: ToolbarButton) -> PixelRect? {
             buttons.first { $0.button == button }?.rect
         }
+
+        /// The plate: both rows when the second is showing, the first
+        /// otherwise.
+        var plate: PixelRect {
+            guard let props else { return bar }
+            return PixelRect(left: bar.x, top: bar.y, right: bar.right, bottom: props.bottom)
+        }
     }
 
     /// The size both rows take together, in pixels: what is kept clear for
@@ -82,7 +98,7 @@ enum ShotToolbarGrid {
         let innerGaps = row.map { $0.count - 1 }.reduce(0, +)
         let width = px(padding) * 2 + buttons * px(button) + innerGaps * px(gap) + (row.count - 1) * px(groupGap)
         let rowHeight = px(button) + px(padding) * 2
-        return (width, rowHeight * 2 + px(rowGap))
+        return (width, rowHeight * 2 + rowGapPx(scale))
     }
 
     /// Lay the toolbar out beside `selection` on `display`: below it, or
@@ -108,14 +124,14 @@ enum ShotToolbarGrid {
 
         var propsRect: PixelRect?
         if props != .none {
-            let top = origin.y + rowHeight + px(rowGap)
+            let top = origin.y + rowHeight + rowGapPx(scale)
             var x = origin.x + px(padding)
             if props != .block {
-                let inset = (px(button) - px(swatch)) / 2
+                // A colour is a cell like any other; the swatch is drawn
+                // smaller, inside it.
                 for c in 0..<ShotStyle.colours.count {
-                    buttons.append(.init(
-                        button: .colour(c), rect: PixelRect(x, top + px(padding) + inset, px(swatch), px(swatch))))
-                    x += px(swatch) + px(gap)
+                    buttons.append(.init(button: .colour(c), rect: PixelRect(x, top + px(padding), px(button), px(button))))
+                    x += px(button) + px(gap)
                 }
                 x += px(groupGap) - px(gap)
             }
@@ -123,7 +139,7 @@ enum ShotToolbarGrid {
                 buttons.append(.init(button: .level(l), rect: PixelRect(x, top + px(padding), px(button), px(button))))
                 x += px(button) + px(gap)
             }
-            propsRect = PixelRect(origin.x, top, x - px(gap) + px(padding) - origin.x, rowHeight)
+            propsRect = PixelRect(origin.x, top, size.w, rowHeight)
         }
         return Layout(bar: bar, props: propsRect, buttons: buttons)
     }

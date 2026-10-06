@@ -2544,15 +2544,15 @@ msgstr "Kur įrašomos ekrano kopijos ir įklijuoti vaizdai."
 msgid "Mouse Trigger"
 msgstr "Pelės paleidiklis"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "Laikykite šiuos klavišus ir dukart spustelėkite, kad padarytumėte kopiją."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "Laikykite šiuos klavišus ir spustelėkite, kad padarytumėte kopiją."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + dvigubas spustelėjimas"
+msgid "%s + Click"
+msgstr "%s + spustelėjimas"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

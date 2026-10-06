@@ -98,7 +98,46 @@ struct ShotEditor {
         /// A pen or highlighter stroke being drawn.
         case stroke
         case moveItem(index: Int, last: PixelPoint, before: [Annotation], changed: Bool)
-        case reshapeItem(index: Int, grip: Annotation.Grip, before: [Annotation], changed: Bool)
+        /// `offset`: from the pointer to the point of the shape the grip
+        /// moves. A grip is drawn on the frame, a little outside that point.
+        case reshapeItem(index: Int, grip: Annotation.Grip, offset: PixelPoint, before: [Annotation], changed: Bool)
+    }
+
+    /// What the pointer looks like (9.8.11A.4).
+    enum Cursor: Equatable {
+        /// The current tool's: a cross.
+        case tool
+        case arrow
+        /// Over the selected annotation: it can be moved.
+        case move
+        case upDown
+        case leftRight
+        /// North-west to south-east.
+        case diagonal
+        /// North-east to south-west.
+        case antiDiagonal
+    }
+
+    /// How one grip of the selected annotation is drawn.
+    enum GripLook: Equatable {
+        case normal
+        /// The pointer is over it.
+        case hot
+        /// It is being dragged.
+        case held
+    }
+
+    /// The selected annotation as it is marked: the box of what it draws,
+    /// whether a frame goes round that, and its grips.
+    struct Marked: Equatable {
+        struct Grip: Equatable {
+            var at: PixelPoint
+            var look: GripLook
+        }
+
+        var ink: PixelRect
+        var framed: Bool
+        var grips: [Grip]
     }
 
     /// What leaves when the person is done.
@@ -131,6 +170,8 @@ struct ShotEditor {
     private(set) var live: Annotation?
     private(set) var textBox: TextBox?
     private(set) var hoverButton: ToolbarButton?
+    /// The grip of the selected annotation the pointer is over.
+    private(set) var hoverGrip: Annotation.Grip?
     /// Whether a long screenshot is being taken: the selection shows the
     /// live screen, and nothing can be drawn.
     private(set) var isLong = false
@@ -196,6 +237,123 @@ struct ShotEditor {
 
     private func display(at p: PixelPoint) -> Int? {
         displays.firstIndex { $0.rect.contains(p) }
+    }
+
+    // MARK: The selected annotation (9.8.11A)
+
+    /// The frame round an annotation whose ink is `ink`: a little outside
+    /// it, so that it is never on the annotation's own line.
+    static func frame(of ink: PixelRect, scale: Double) -> PixelRect {
+        let out = Int((ShotLook.Annotation.frameOffset * scale).rounded())
+        return PixelRect(ink.x - out, ink.y - out, ink.w + 2 * out, ink.h + 2 * out)
+    }
+
+    /// How close to a grip a press has to be, in pixels.
+    static func gripReach(scale: Double) -> Int {
+        Int((ShotLook.Annotation.gripReach * scale).rounded())
+    }
+
+    /// Whether the selection shows its eight knobs: while the select tool
+    /// is the mouse and no annotation is selected.
+    var knobs: Bool {
+        !isLong && textBox == nil && tool == .select && selected == nil
+    }
+
+    /// Where the grips of annotation `i` are drawn: a box's on the corners
+    /// and sides of its frame, a line's on its two ends.
+    private func gripPoints(_ i: Int) -> [(grip: Annotation.Grip, at: PixelPoint)] {
+        let item = items[i]
+        let frame = Self.frame(of: item.bounds(scale: scale), scale: scale)
+        return item.grips.map { entry in
+            if case let .box(handle) = entry.grip { return (entry.grip, handle.at(frame)) }
+            return entry
+        }
+    }
+
+    /// The grip of the selected annotation under `p`.
+    private func gripUnder(_ p: PixelPoint) -> Annotation.Grip? {
+        guard let i = selected, items.indices.contains(i) else { return nil }
+        let reach = Self.gripReach(scale: scale)
+        return gripPoints(i).first { abs(p.x - $0.at.x) <= reach && abs(p.y - $0.at.y) <= reach }?.grip
+    }
+
+    /// Whether the selected annotation is being carried about.
+    var isMovingItem: Bool {
+        if case .moveItem = drag { return true }
+        return false
+    }
+
+    /// How the selected annotation is marked: a frame for everything but a
+    /// line and an arrow; grips for what can be reshaped, put away while it
+    /// is being moved.
+    var marked: Marked? {
+        guard let i = selected, items.indices.contains(i) else { return nil }
+        let item = items[i]
+        let framed: Bool
+        switch item.shape {
+        case .line, .arrow: framed = false
+        default: framed = true
+        }
+        var held: Annotation.Grip?
+        if case let .reshapeItem(_, grip, _, _, _) = drag { held = grip }
+        var grips: [Marked.Grip] = []
+        if !isMovingItem {
+            grips = gripPoints(i).map { entry in
+                let look: GripLook
+                if held == entry.grip {
+                    look = .held
+                } else if held == nil && hoverGrip == entry.grip {
+                    look = .hot
+                } else {
+                    look = .normal
+                }
+                return Marked.Grip(at: entry.at, look: look)
+            }
+        }
+        return Marked(ink: item.bounds(scale: scale), framed: framed, grips: grips)
+    }
+
+    /// What a shape being reshaped measures, for the tag beside the
+    /// pointer: a box's width and height in pixels, a line's angle from the
+    /// horizontal in whole degrees.
+    var reshapeTag: String? {
+        guard case let .reshapeItem(index, _, _, _, _) = drag, items.indices.contains(index) else { return nil }
+        switch items[index].shape {
+        case let .rect(r), let .ellipse(r), let .mosaic(r):
+            return "\(r.w) × \(r.h)"
+        case let .line(from, to), let .arrow(from, to):
+            // Up the screen is a positive angle.
+            let degrees = Int((atan2(Double(from.y - to.y), Double(to.x - from.x)) * 180 / .pi).rounded())
+            return "\(((degrees % 360) + 360) % 360)°"
+        default:
+            return nil
+        }
+    }
+
+    /// What the pointer looks like at `p` (9.8.11A.4).
+    func cursor(at p: PixelPoint, mods: ShotMods) -> Cursor {
+        guard let sel = selection else { return .tool }
+        if isLong || textBox != nil { return .tool }
+        if layout?.covers(p) == true { return .arrow }
+        if tool != .select && !mods.contains(.command) { return .tool }
+        func of(_ handle: PixelHandle) -> Cursor {
+            let edge = handle.edges
+            let vertical = edge.n || edge.s, horizontal = edge.e || edge.w
+            if vertical && horizontal { return (edge.n && edge.w) || (edge.s && edge.e) ? .diagonal : .antiDiagonal }
+            return vertical ? .upDown : .leftRight
+        }
+        switch gripUnder(p) {
+        case let .box(handle)?: return of(handle)
+        case .end?: return .tool
+        case nil: break
+        }
+        if let i = Annotation.hitTest(items, at: p, scale: scale) {
+            return selected == i ? .move : .arrow
+        }
+        if knobs, case let .handle(handle) = PixelGeometry.hit(sel.rect, at: p, grip: ShotStyle.px(6, scale: scale)) {
+            return of(handle)
+        }
+        return .tool
     }
 
     private func window(at p: PixelPoint) -> Selection? {
@@ -430,8 +588,14 @@ struct ShotEditor {
         if tool == .select || mods.contains(.command) {
             // The selected annotation's own grips come first: they sit on
             // top of everything, including other annotations.
-            if let i = selected, items.indices.contains(i), let grip = items[i].grip(at: p, reach: reach) {
-                drag = .reshapeItem(index: i, grip: grip, before: items, changed: false)
+            if let i = selected, items.indices.contains(i), let grip = gripUnder(p) {
+                // The grip is on the frame; what it moves is the shape's
+                // own corner, side or end, and that keeps its distance from
+                // the pointer for the whole drag.
+                let moves = items[i].grips.first { $0.grip == grip }?.at ?? p
+                drag = .reshapeItem(
+                    index: i, grip: grip, offset: PixelPoint(moves.x - p.x, moves.y - p.y), before: items,
+                    changed: false)
                 return .capture
             }
             if let i = Annotation.hitTest(items, at: p, scale: scale) {
@@ -525,8 +689,10 @@ struct ShotEditor {
         case .none:
             if selection != nil {
                 let over = layout?.button(at: p)
-                if over == hoverButton { return .none }
+                let grip = over == nil && !isLong ? gripUnder(p) : nil
+                if over == hoverButton && grip == hoverGrip { return .none }
                 hoverButton = over
+                hoverGrip = grip
                 return .repaint
             }
             let next = window(at: p).map { (display: $0.display, rect: $0.rect) }
@@ -580,10 +746,10 @@ struct ShotEditor {
             drag = .moveItem(index: index, last: p, before: before, changed: true)
             items[index] = items[index].moved(dx: dx, dy: dy)
 
-        case let .reshapeItem(index, grip, before, _):
-            let next = items[index].reshaped(grip, to: p)
+        case let .reshapeItem(index, grip, offset, before, _):
+            let next = items[index].reshaped(grip, to: PixelPoint(p.x + offset.x, p.y + offset.y))
             if next == items[index] { return .none }
-            drag = .reshapeItem(index: index, grip: grip, before: before, changed: true)
+            drag = .reshapeItem(index: index, grip: grip, offset: offset, before: before, changed: true)
             items[index] = next
         }
         return .repaint
@@ -616,7 +782,7 @@ struct ShotEditor {
                 checkpoint()
                 items.append(made)
             }
-        case let .moveItem(_, _, before, changed), let .reshapeItem(_, _, before, changed):
+        case let .moveItem(_, _, before, changed), let .reshapeItem(_, _, _, before, changed):
             // One drag is one step, however many moves it was made of.
             if changed {
                 undoStack.append(before)

@@ -3412,12 +3412,12 @@ msgid "Mouse Trigger"
 msgstr "鼠标触发"
 
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "按住这些键双击即可截图。"
+msgid "Hold these keys and click to take a screenshot."
+msgstr "按住这些键单击即可截图。"
 
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + 双击"
+msgid "%s + Click"
+msgstr "%s + 单击"
 
 #: src/config/form.zig
 msgid "Let Agents Take Screenshots"

@@ -2554,15 +2554,15 @@ msgstr "Dónde se guardan las capturas y las imágenes pegadas."
 msgid "Mouse Trigger"
 msgstr "Activador del ratón"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "Mantén estas teclas y haz doble clic para tomar una captura."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "Mantén estas teclas y haz clic para tomar una captura."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + doble clic"
+msgid "%s + Click"
+msgstr "%s + clic"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

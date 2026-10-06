@@ -2500,15 +2500,15 @@ msgstr "截圖和貼上的圖片存在這裡。"
 msgid "Mouse Trigger"
 msgstr "滑鼠觸發"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "按住這些鍵並按兩下即可截圖。"
+msgid "Hold these keys and click to take a screenshot."
+msgstr "按住這些鍵並按一下即可截圖。"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + 按兩下"
+msgid "%s + Click"
+msgstr "%s + 按一下"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

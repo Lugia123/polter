@@ -86,36 +86,26 @@ final class ShotGlobalHotKey {
     }
 }
 
-/// Modifiers held plus a double-click of the left button, anywhere on
-/// screen.
+/// Modifiers held plus a click of the left button, anywhere on screen.
 ///
 /// A global monitor for mouse-down events needs neither the Accessibility
 /// nor the Input Monitoring permission (measured on an untrusted process:
 /// both checks answered no and the presses still arrived). It observes and
-/// cannot consume, so both clicks also reach whatever is under the pointer.
+/// cannot consume, so the click also reaches whatever is under the pointer.
 final class ShotMouseTrigger {
-    /// The longest distance between the two presses. macOS publishes its
-    /// double-click interval and not its double-click distance, so this is
-    /// ours; it matches the selection's own click-or-drag threshold.
-    static let distance: CGFloat = 4
-
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "polter",
         category: String(describing: ShotMouseTrigger.self)
     )
 
-    private var detector: DoubleClickDetector
+    private var detector: ClickDetector
     private var globalMonitor: Any?
     private var localMonitor: Any?
-    private let fire: (CGPoint) -> Void
+    private let fire: () -> Void
 
-    /// - Parameter fire: called on the main thread with where the pointer
-    ///   was, in AppKit's global coordinates.
-    init(required: ShotMods, fire: @escaping (CGPoint) -> Void) {
-        self.detector = DoubleClickDetector(
-            required: required,
-            interval: NSEvent.doubleClickInterval,
-            distance: Self.distance)
+    /// - Parameter fire: called on the main thread.
+    init(required: ShotMods, fire: @escaping () -> Void) {
+        self.detector = ClickDetector(required: required)
         self.fire = fire
     }
 
@@ -144,9 +134,8 @@ final class ShotMouseTrigger {
     }
 
     private func pressed(_ event: NSEvent, from monitor: String) {
-        let point = NSEvent.mouseLocation
         let mods = ShotMods(event.modifierFlags)
-        let verdict = detector.press(at: point, time: event.timestamp, mods: mods)
+        let verdict = detector.press(time: event.timestamp, mods: mods)
         // Only presses made with the modifiers held are worth a line: the
         // rest is every click on the machine.
         if verdict != .wrongModifiers {
@@ -155,7 +144,7 @@ final class ShotMouseTrigger {
         guard verdict == .fired else { return }
         // Not from inside the monitor: what this starts may run a dialog,
         // and the monitor must have returned the press by then.
-        DispatchQueue.main.async { [fire] in fire(point) }
+        DispatchQueue.main.async { [fire] in fire() }
     }
 }
 

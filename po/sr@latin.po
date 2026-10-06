@@ -2540,15 +2540,15 @@ msgstr "Gde se čuvaju snimci ekrana i nalepljene slike."
 msgid "Mouse Trigger"
 msgstr "Okidač mišem"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "Drži ove tastere i dvaput klikni za snimak ekrana."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "Drži ove tastere i klikni za snimak ekrana."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + dvostruki klik"
+msgid "%s + Click"
+msgstr "%s + klik"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

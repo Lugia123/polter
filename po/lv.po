@@ -2526,15 +2526,15 @@ msgstr "Kur tiek saglabāti ekrānuzņēmumi un ielīmētie attēli."
 msgid "Mouse Trigger"
 msgstr "Peles aktivizētājs"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "Turiet šos taustiņus un veiciet dubultklikšķi, lai uzņemtu ekrānu."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "Turiet šos taustiņus un noklikšķiniet, lai uzņemtu ekrānu."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + dubultklikšķis"
+msgid "%s + Click"
+msgstr "%s + klikšķis"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

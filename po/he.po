@@ -2531,15 +2531,15 @@ msgstr "היכן נשמרים צילומי מסך ותמונות מודבקות.
 msgid "Mouse Trigger"
 msgstr "הפעלה בעכבר"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "החזיקו את המקשים האלה ולחצו לחיצה כפולה כדי לצלם את המסך."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "החזיקו את המקשים האלה ולחצו כדי לצלם את המסך."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + לחיצה כפולה"
+msgid "%s + Click"
+msgstr "%s + לחיצה"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

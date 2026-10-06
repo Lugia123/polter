@@ -70,6 +70,112 @@ enum ShotTextInput {
     static func restyleDue(held: Bool, composing: Bool) -> Bool {
         held && !composing
     }
+
+    /// Whether a press on the overlay may take the keyboard from the text
+    /// box. Not when it is a press on a colour or a size while a text is
+    /// being typed: that press changes the text and the typing goes on.
+    ///
+    /// AppKit makes the view that is pressed the first responder before it
+    /// sends it the press, and the box used to give the keyboard up and be
+    /// handed it back a moment later. A text view that gives up the keyboard
+    /// ends its input method's composition: the candidates went away, and
+    /// the space that should have chosen one typed the letters instead
+    /// (found on a real machine, task 1112). So the overlay says no, and the
+    /// box never loses the keyboard at all.
+    static func overlayTakesKeyboard(typing: Bool, pressRestyles: Bool) -> Bool {
+        !(typing && pressRestyles)
+    }
+}
+
+/// How the box shows a text of a given colour over a picture it does not
+/// cover (`dev-docs/poltergeist/screenshot.md`, 9.8.11).
+///
+/// The box has no ground of its own, so white text over a white picture has
+/// nothing to be seen against. What is being typed therefore wears a halo
+/// of the opposite lightness, and the caret an edge of it; neither is in
+/// the finished picture.
+enum ShotTextLook {
+    /// A colour's relative luminance, 0 to 1: each channel made linear, then
+    /// weighed.
+    static func luminance(_ c: ShotStyle.RGB) -> Double {
+        func linear(_ v: UInt8) -> Double {
+            let s = Double(v) / 255
+            return s <= 0.04045 ? s / 12.92 : pow((s + 0.055) / 1.055, 2.4)
+        }
+        let g = ShotLook.Glass.self
+        return g.lumaR * linear(c.r) + g.lumaG * linear(c.g) + g.lumaB * linear(c.b)
+    }
+
+    /// Whether what sets a text of colour `c` off is dark: for a light
+    /// text. Of the nine colours only yellow and white are light.
+    static func haloIsDark(for c: ShotStyle.RGB) -> Bool {
+        luminance(c) >= ShotLook.TextBox.lightTextLuminance
+    }
+
+    /// The caret for a line `line` (its rectangle in whatever space the
+    /// caller draws in) whose insertion point is at `x`: as wide as the
+    /// data says, 1.08 of the font's size tall and never taller than the
+    /// line, centred on it.
+    static func caret(x: Double, lineTop: Double, lineHeight: Double, fontSize: Double, scale: Double) -> CGRect {
+        let t = ShotLook.TextBox.self
+        let height = min(fontSize * t.caretHeightEm, lineHeight)
+        return CGRect(
+            x: x, y: lineTop + (lineHeight - height) / 2, width: t.caretWidth * scale, height: height)
+    }
+}
+
+/// The layout manager of the text box: it draws what is typed with a halo
+/// around it (9.8.11), which is what makes white text readable over a white
+/// picture while it is being typed.
+///
+/// The halo is two soft copies of the glyphs under the glyphs themselves --
+/// a tight strong one and a wider faint one -- and it reaches the underline
+/// of a composition too, which is drawn with the glyphs.
+final class ShotHaloLayout: NSLayoutManager {
+    /// The halo's colour, without its alpha; nil for none.
+    var halo: NSColor?
+    /// The characters an input method is composing, and the colour of the
+    /// line drawn under them. The line is drawn here, with the glyphs, so
+    /// that it is the same two points on every system and has the halo.
+    var marked: NSRange?
+    var ink: NSColor = .red
+
+    /// The glyphs, and the line under a composition.
+    private func drawInk(_ glyphsToShow: NSRange, at origin: NSPoint) {
+        super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
+        guard let marked, marked.length > 0, let container = textContainers.first else { return }
+        let glyphs = glyphRange(forCharacterRange: marked, actualCharacterRange: nil)
+        let shown = NSIntersectionRange(glyphs, glyphsToShow)
+        guard shown.length > 0 else { return }
+        let thick = CGFloat(ShotLook.TextBox.markedLine)
+        ink.setFill()
+        enumerateEnclosingRects(
+            forGlyphRange: shown, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: container
+        ) { rect, _ in
+            // Against the bottom of its line.
+            NSRect(x: rect.minX + origin.x, y: rect.maxY + origin.y - thick, width: rect.width, height: thick).fill()
+        }
+    }
+
+    override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        guard let halo, let ctx = NSGraphicsContext.current?.cgContext else {
+            drawInk(glyphsToShow, at: origin)
+            return
+        }
+        // A shadow's blur is in the bitmap's pixels whatever the context is
+        // scaled by, and about twice the deviation it gives.
+        let scale = abs(ctx.userSpaceToDeviceSpaceTransform.a)
+        let t = ShotLook.TextBox.self
+        for (sigma, alpha) in [(t.haloFarSigma, t.haloFarAlpha), (t.haloNearSigma, t.haloNearAlpha)] {
+            ctx.saveGState()
+            ctx.setShadow(
+                offset: .zero, blur: CGFloat(2 * sigma) * scale,
+                color: halo.withAlphaComponent(CGFloat(alpha)).cgColor)
+            drawInk(glyphsToShow, at: origin)
+            ctx.restoreGState()
+        }
+        drawInk(glyphsToShow, at: origin)
+    }
 }
 
 /// The box a piece of text is typed in: a real text view, so that the input
@@ -96,19 +202,93 @@ final class ShotTextView: NSTextView {
     var onChange: (() -> Void)?
 
     private var gate = ShotTextInput.Gate()
+    /// The text itself. A text view made around a container does not keep
+    /// what the container's layout manager belongs to.
+    private var storage: NSTextStorage?
 
     /// A box with its layout settled before anything is typed in it.
     ///
-    /// **The layout manager is asked for here, and that is the point.** A
+    /// **It is built on TextKit 1 from the start, and that is the point.** A
     /// text view made with `init(frame:)` lays out with TextKit 2, and the
     /// first time anything asks it for `layoutManager` it rebuilds itself on
     /// TextKit 1, for good. The box is measured through the layout manager,
     /// so that rebuilding used to happen on the first change to the text --
     /// which for a new box is the first key, inside the input method's
-    /// first `setMarkedText`, with the composition half recorded.
+    /// first `setMarkedText`, with the composition half recorded (task
+    /// 1110). Made around its own layout manager there is nothing to
+    /// rebuild -- and the layout manager is the one that draws the halo.
     convenience init(box frame: NSRect) {
-        self.init(frame: frame)
-        _ = layoutManager
+        let storage = NSTextStorage()
+        let manager = ShotHaloLayout()
+        storage.addLayoutManager(manager)
+        let container = NSTextContainer(size: NSSize(width: frame.width, height: .greatestFiniteMagnitude))
+        manager.addTextContainer(container)
+        self.init(frame: frame, textContainer: container)
+        self.storage = storage
+        // No ground: the picture shows through (9.8.11).
+        drawsBackground = false
+    }
+
+    /// The colour of what is typed. The halo, the caret's edge and the
+    /// selection follow from it.
+    var ink: ShotStyle.RGB = ShotStyle.colour(0) {
+        didSet { dress() }
+    }
+
+    /// Everything about the box that depends on the ink and not on the
+    /// text: what sets it off, how a selection and a composition show.
+    private func dress() {
+        let dark = ShotTextLook.haloIsDark(for: ink)
+        let colour = NSColor(
+            srgbRed: CGFloat(ink.r) / 255, green: CGFloat(ink.g) / 255, blue: CGFloat(ink.b) / 255, alpha: 1)
+        (layoutManager as? ShotHaloLayout)?.halo = dark ? .black : .white
+        (layoutManager as? ShotHaloLayout)?.ink = colour
+        // The caret is drawn by the overlay, with an edge that shows on any
+        // picture; the view's own would be a second one.
+        insertionPointColor = .clear
+        // A selection is the accent laid under the text, the same on both
+        // hosts, not the system's selection colour.
+        let accent = ShotLook.Colour.accent
+        selectedTextAttributes = [
+            .backgroundColor: NSColor(
+                srgbRed: CGFloat(accent.r) / 255, green: CGFloat(accent.g) / 255, blue: CGFloat(accent.b) / 255,
+                alpha: CGFloat(ShotLook.TextBox.selectionAlpha)),
+        ]
+        // A composition is the text in its own colour; the line under it
+        // is the layout manager's (`ShotHaloLayout.marked`).
+        markedTextAttributes = [.foregroundColor: colour]
+        needsDisplay = true
+    }
+
+    /// Where the caret is, in this view's coordinates: the rectangle of its
+    /// line and the x of the insertion point. Nil while something is
+    /// selected -- then there is no caret.
+    var caretPlace: (line: NSRect, x: CGFloat)? {
+        guard let manager = layoutManager, let container = textContainer else { return nil }
+        let selection = selectedRange()
+        guard selection.length == 0 else { return nil }
+        manager.ensureLayout(for: container)
+        let origin = textContainerOrigin
+        let length = (string as NSString).length
+        let extra = manager.extraLineFragmentRect
+        if manager.numberOfGlyphs == 0 || (selection.location >= length && !extra.isEmpty) {
+            // An empty box, or after a line break at the end.
+            let line = extra.isEmpty
+                ? NSRect(x: 0, y: 0, width: bounds.width, height: manager.defaultLineHeight(for: font ?? .systemFont(ofSize: 12)))
+                : extra
+            return (line.offsetBy(dx: origin.x, dy: origin.y), origin.x + line.minX)
+        }
+        if selection.location >= length {
+            // After the last character: the end of what its line holds.
+            let glyph = manager.numberOfGlyphs - 1
+            let line = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let used = manager.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+            return (line.offsetBy(dx: origin.x, dy: origin.y), origin.x + used.maxX)
+        }
+        let glyph = manager.glyphIndexForCharacter(at: selection.location)
+        let line = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let at = manager.location(forGlyphAt: glyph)
+        return (line.offsetBy(dx: origin.x, dy: origin.y), origin.x + line.minX + at.x)
     }
 
     /// How many lines the view has laid out: a line break is one, and so is
@@ -131,6 +311,10 @@ final class ShotTextView: NSTextView {
     private func inputCall(_ body: () -> Void) {
         gate.enter()
         body()
+        // Where the composition is now, for the line under it.
+        let range = markedRange()
+        (layoutManager as? ShotHaloLayout)?.marked = hasMarkedText() && range.location != NSNotFound ? range : nil
+        needsDisplay = true
         if gate.leave() { onChange?() }
     }
 
@@ -209,7 +393,9 @@ final class ShotTextScroll: NSScrollView {
         horizontalScrollElasticity = .none
         automaticallyAdjustsContentInsets = false
         contentInsets = NSEdgeInsetsZero
-        drawsBackground = true
+        // No ground of its own: what is under the box is the picture, and
+        // it shows (9.8.11).
+        drawsBackground = false
 
         text.isVerticallyResizable = true
         text.isHorizontallyResizable = false
@@ -219,6 +405,7 @@ final class ShotTextScroll: NSScrollView {
         text.textContainer?.widthTracksTextView = true
         text.textContainer?.containerSize = NSSize(width: frame.width, height: CGFloat.greatestFiniteMagnitude)
         documentView = text
+        contentView.drawsBackground = false
     }
 
     @available(*, unavailable)
@@ -229,13 +416,20 @@ final class ShotTextScroll: NSScrollView {
         return super.hitTest(point)
     }
 
-    /// The paper under the text, and under the part of the box below it.
-    var paper: NSColor {
-        get { backgroundColor }
-        set {
-            backgroundColor = newValue
-            text.backgroundColor = newValue
-        }
+    /// The caret as the overlay draws it, in the coordinates this view's
+    /// frame is in: nil when there is none, or when its line is scrolled
+    /// out of the box.
+    func caret(fontSize: CGFloat) -> CGRect? {
+        guard let place = text.caretPlace else { return nil }
+        let line = convert(place.line, from: text)
+        let x = convert(NSPoint(x: place.x, y: place.line.minY), from: text).x
+        // In this view's own coordinates, from its top edge, whichever way
+        // up it is.
+        let top = isFlipped ? line.minY : bounds.height - line.maxY
+        let caret = ShotTextLook.caret(
+            x: Double(x), lineTop: Double(top), lineHeight: Double(line.height), fontSize: Double(fontSize), scale: 1)
+        guard caret.maxY > 0, caret.minY < bounds.height else { return nil }
+        return caret.offsetBy(dx: frame.minX, dy: frame.minY)
     }
 
     /// Put the box at `frame` and bring the caret's line into view. A text

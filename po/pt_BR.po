@@ -2559,15 +2559,15 @@ msgstr "Onde as capturas e as imagens coladas são salvas."
 msgid "Mouse Trigger"
 msgstr "Gatilho do mouse"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "Segure estas teclas e clique duas vezes para capturar a tela."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "Segure estas teclas e clique para capturar a tela."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + clique duplo"
+msgid "%s + Click"
+msgstr "%s + clique"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

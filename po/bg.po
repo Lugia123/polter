@@ -2567,15 +2567,15 @@ msgstr "Къде се запазват снимките на екрана и п�
 msgid "Mouse Trigger"
 msgstr "Задействане с мишката"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "Задръжте тези клавиши и щракнете двукратно, за да направите снимка."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "Задръжте тези клавиши и щракнете, за да направите снимка."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + двойно щракване"
+msgid "%s + Click"
+msgstr "%s + щракване"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

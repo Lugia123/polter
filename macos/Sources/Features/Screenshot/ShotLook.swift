@@ -90,6 +90,7 @@ enum ShotLook {
         static let icon: Double = 20.0
         static let swatch: Double = 16.0
         static let swatchEdge: Double = 0.5
+        static let hoverEdge: Double = 0.5
         static let ring: Double = 1.5
         static let glowSigma: Double = 2.0
         static let offset: Double = 8.0
@@ -132,6 +133,7 @@ enum ShotLook {
         static let downsampleHi: Double = 4.0
         static let downsampleLo: Double = 2.0
         static let boxPasses: Double = 3.0
+        static let waitMs: Double = 50.0
     }
 
     enum TransitionMs {

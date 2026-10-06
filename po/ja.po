@@ -2508,15 +2508,15 @@ msgstr "スクリーンショットとペーストした画像の保存先。"
 msgid "Mouse Trigger"
 msgstr "マウストリガー"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "これらのキーを押しながらダブルクリックでスクリーンショット。"
+msgid "Hold these keys and click to take a screenshot."
+msgstr "これらのキーを押しながらクリックでスクリーンショット。"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + ダブルクリック"
+msgid "%s + Click"
+msgstr "%s + クリック"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig

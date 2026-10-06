@@ -422,17 +422,21 @@ struct ShotEditorTests {
     }
 
     @Test func aGripIsInReachSixPointsAway() {
+        // A grip is drawn on the annotation's frame, four points outside
+        // its ink (9.8.11A.3): for this rectangle -- (500, 300) 100 x 80,
+        // a two-pixel line -- the bottom right one is at (605, 385).
         let rig = Rig.withTwoRects()
         rig.letter("V")
         rig.click(Pt(500, 340))
-        // Six pixels off the bottom right handle still takes it; the
-        // rectangle follows the pointer exactly.
-        rig.drag(Pt(606, 386), Pt(650, 420))
-        #expect(rig.box(0) == PixelRect(500, 300, 150, 120))
+        // Six pixels off it still takes it; the corner moves by exactly as
+        // far as the pointer does, from where it was -- it does not jump to
+        // the pointer.
+        rig.drag(Pt(611, 391), Pt(655, 425))
+        #expect(rig.box(0) == PixelRect(500, 300, 144, 114))
         // Seven is the selection's inside: the selection moves instead.
         rig.undo()
         rig.click(Pt(500, 340))
-        rig.drag(Pt(607, 387), Pt(617, 397))
+        rig.drag(Pt(612, 392), Pt(622, 402))
         #expect(rig.box(0) == PixelRect(500, 300, 100, 80))
         #expect(rig.editor.selection?.rect == PixelRect(410, 210, 900, 500))
     }

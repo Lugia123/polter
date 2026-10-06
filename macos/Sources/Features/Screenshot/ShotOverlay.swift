@@ -59,7 +59,13 @@ final class ShotOverlayView: NSView {
 
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
-    override var acceptsFirstResponder: Bool { true }
+    /// Yes, except for the one press that must not take the keyboard from
+    /// the text box: a colour or a size, while a text is being typed
+    /// (`ShotTextInput.overlayTakesKeyboard`).
+    override var acceptsFirstResponder: Bool {
+        guard let session else { return true }
+        return ShotTextInput.overlayTakesKeyboard(typing: session.isTyping, pressRestyles: session.pressRestylesText())
+    }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     private func location(of event: NSEvent) -> CGPoint {

@@ -2509,15 +2509,15 @@ msgstr "An áit a sábháiltear seatanna scáileáin agus íomhánna greamaithe.
 msgid "Mouse Trigger"
 msgstr "Truicear luiche"
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "Hold these keys and double-click to take a screenshot."
-msgstr "Coinnigh na heochracha seo agus déchliceáil chun seat scáileáin a ghlacadh."
+msgid "Hold these keys and click to take a screenshot."
+msgstr "Coinnigh na heochracha seo agus cliceáil chun seat scáileáin a ghlacadh."
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
+# Machine translation (2026-10-07), not reviewed by a speaker.
 #: src/config/form.zig
-msgid "%s + Double-Click"
-msgstr "%s + déchliceáil"
+msgid "%s + Click"
+msgstr "%s + cliceáil"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/config/form.zig
