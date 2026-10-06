@@ -642,6 +642,7 @@
 "The annotation font is missing, so the system font is used." = "The annotation font is missing, so the system font is used.";
 "Scroll down slowly. What comes into view is added at the bottom." = "Scroll down slowly. What comes into view is added at the bottom.";
 "Scroll slower" = "Scroll slower";
+"The picture keeps changing, so nothing can be added." = "The picture keeps changing, so nothing can be added.";
 "The height limit was reached." = "The height limit was reached.";
 "{n} tiles, first {m} pasted" = "{n} tiles, first {m} pasted";
 "whole image" = "whole image";

@@ -179,14 +179,31 @@ pub const LONG_SLOWER: &str = "Scroll slower";
 /// What to do, shown until the first new rows have been joined.
 pub const LONG_HINT: &str = "Scroll down slowly. What comes into view is added at the bottom.";
 
+/// Shown when the region has not held still for one frame yet: nothing can
+/// be added to a picture that keeps changing (a video, a spinner).
+pub const LONG_RESTLESS: &str = "The picture keeps changing, so nothing can be added.";
+/// How many frames in a row have to be held back, with none joined yet,
+/// before the status line says so: about a second of them. The first frame
+/// of every long screenshot is held back once, and a page caught while it
+/// settles a few times more.
+pub const LONG_RESTLESS_AFTER: u32 = 8;
+
+/// Whether to say the region keeps changing: no frame was ever joined
+/// (`Stitcher::never_steady`) and `held` were held back.
+pub fn long_restless(never_steady: bool, held: u32) -> bool {
+    never_steady && held >= LONG_RESTLESS_AFTER
+}
+
 /// What a long screenshot's status line says after the height, if
-/// anything: that the last frame could not be followed, that the limit was
-/// reached, or -- while nothing has been added yet -- what to do. `last` is
-/// the last frame that said something; `added` whether any rows have been
-/// joined below the first frame. A msgid.
-pub fn long_hint(last: crate::stitch::Step, added: bool) -> Option<&'static str> {
+/// anything: that the region keeps changing, that the last frame could not
+/// be followed, that the limit was reached, or -- while nothing has been
+/// added yet -- what to do. `last` is the last frame that said something;
+/// `added` whether any rows have been joined below the first frame;
+/// `restless` is `long_restless`. A msgid.
+pub fn long_hint(last: crate::stitch::Step, added: bool, restless: bool) -> Option<&'static str> {
     use crate::stitch::Step;
     match last {
+        _ if restless => Some(LONG_RESTLESS),
         Step::Lost => Some(LONG_SLOWER),
         Step::Full => Some(LONG_FULL),
         _ if !added => Some(LONG_HINT),
@@ -210,7 +227,7 @@ pub fn words() -> Vec<&'static str> {
         all.push(name(b, Props::None));
     }
     all.extend(COLOUR_NAMES);
-    all.extend([FONT_MISSING, LONG_HINT, LONG_SLOWER, LONG_FULL, HOTKEY_FAILED, HOTKEY_TAKEN]);
+    all.extend([FONT_MISSING, LONG_HINT, LONG_SLOWER, LONG_FULL, LONG_RESTLESS, HOTKEY_FAILED, HOTKEY_TAKEN]);
     let l = crate::annot::EN;
     all.extend([
         l.header, l.text, l.rect, l.ellipse, l.line, l.arrow, l.pen, l.highlighter, l.mosaic, l.separator, l.see,
@@ -423,15 +440,31 @@ mod tests {
     fn the_status_line_says_what_to_do_until_something_was_added() {
         use crate::stitch::Step;
         for quiet in [Step::First, Step::Unchanged, Step::Moving, Step::Seen, Step::Back] {
-            assert_eq!(long_hint(quiet, false), Some(LONG_HINT), "{quiet:?}");
-            assert_eq!(long_hint(quiet, true), None, "{quiet:?}");
+            assert_eq!(long_hint(quiet, false, false), Some(LONG_HINT), "{quiet:?}");
+            assert_eq!(long_hint(quiet, true, false), None, "{quiet:?}");
         }
-        assert_eq!(long_hint(Step::Added(5), true), None);
+        assert_eq!(long_hint(Step::Added(5), true, false), None);
         // A frame that could not be followed, and the limit, say so whether
         // or not anything was added before.
         for added in [false, true] {
-            assert_eq!(long_hint(Step::Lost, added), Some(LONG_SLOWER));
-            assert_eq!(long_hint(Step::Full, added), Some(LONG_FULL));
+            assert_eq!(long_hint(Step::Lost, added, false), Some(LONG_SLOWER));
+            assert_eq!(long_hint(Step::Full, added, false), Some(LONG_FULL));
         }
+    }
+
+    #[test]
+    fn the_status_line_says_when_the_region_never_holds_still() {
+        use crate::stitch::Step;
+        // Not at once: the first frame of every long screenshot is held
+        // back, and nobody has done anything wrong yet.
+        assert!(!long_restless(true, 0));
+        assert!(!long_restless(true, LONG_RESTLESS_AFTER - 1));
+        assert!(long_restless(true, LONG_RESTLESS_AFTER));
+        // Frames held back while scrolling, after one was joined, are not it.
+        assert!(!long_restless(false, 500));
+        // And then it is said in place of what to do, which cannot help.
+        assert_eq!(long_hint(Step::Unchanged, false, true), Some(LONG_RESTLESS));
+        assert_eq!(long_hint(Step::Unchanged, false, false), Some(LONG_HINT));
+        assert!(words().contains(&LONG_RESTLESS));
     }
 }

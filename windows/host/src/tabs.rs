@@ -57,6 +57,12 @@ pub struct Pane {
     pub id: PaneId,
     pub hwnd: isize,
     pub surface: usize,
+    /// Whether **this pane's terminal** is shielded, as its own last
+    /// `poltergeist_mark` said. `Tab::shielded` is the tab's badge and takes
+    /// whichever pane's mark came last; a screenshot an agent takes must
+    /// black out the shielded terminal and no other, so it reads this
+    /// (`shielded_pane_hwnds`).
+    pub shielded: bool,
     /// This pane's own last-reported `PWD` (`GHOSTTY_ACTION_PWD`), independent
     /// of `Tab::cwd`.
     ///
@@ -2364,6 +2370,8 @@ fn create_pane(
         id,
         hwnd: child.0 as isize,
         surface: s as usize,
+        // A new terminal is not shielded until a mark says so.
+        shielded: false,
         cwd: pending_cwd,
         title: None,
         history: pending_history,
@@ -3791,21 +3799,36 @@ pub fn mark_for_surface(surface: Surface) -> Option<Mark> {
 /// The windows of the panes whose terminal is shielded, for a screenshot an
 /// agent takes: what is in them must not be in the picture.
 ///
-/// Every pane of a shielded tab, wherever it is. Whether a pane is on screen
-/// is the caller's to ask of the window itself; whether something covers it
-/// is deliberately asked by nobody (screenshot.md §10.1).
+/// **The shielded panes, not every pane of a tab that has one.** A mark is
+/// about one terminal. This used to go by `Tab::shielded`, which a mark for
+/// any pane of the tab sets, so with two panes side by side and one of them
+/// shielded both were painted black -- the agent's own terminal included
+/// (the test machine, 94bf0b56a: `redacted` held both rectangles).
+///
+/// Wherever the pane is. Whether it is on screen is the caller's to ask of
+/// the window itself; whether something covers it is deliberately asked by
+/// nobody (screenshot.md §10.1).
 // window-free: a scan over every window, on purpose -- the question is about
 // all of them
 pub fn shielded_pane_hwnds() -> Vec<isize> {
-    with_windows(|ws| {
-        ws.iter()
-            .flat_map(|w| w.tabs.iter())
-            .filter(|t| t.shielded)
-            .flat_map(|t| t.panes.iter())
-            .map(|p| p.hwnd)
-            .filter(|h| *h != 0)
-            .collect()
-    })
+    with_windows(|ws| shielded_hwnds_of(ws.iter().flat_map(|w| w.tabs.iter())))
+}
+
+/// `shielded_pane_hwnds` over the tabs it is given.
+fn shielded_hwnds_of<'a>(tabs: impl Iterator<Item = &'a Tab>) -> Vec<isize> {
+    tabs.flat_map(|t| t.panes.iter()).filter(|p| p.shielded).map(|p| p.hwnd).filter(|h| *h != 0).collect()
+}
+
+/// Record on the pane showing `surface` whether its terminal is shielded.
+/// `false` when no pane of `tab` shows it.
+fn mark_pane_shielded(tab: &mut Tab, surface: usize, shielded: bool) -> bool {
+    match tab.panes.iter_mut().find(|p| p.surface == surface) {
+        Some(pane) => {
+            pane.shielded = shielded;
+            true
+        }
+        None => false,
+    }
 }
 
 /// The persona half of the mark for one surface.
@@ -3867,7 +3890,7 @@ pub fn set_mark_for_surface(
     with_windows_mut(|ws| {
         for win in ws.iter_mut() {
             for tab in win.tabs.iter_mut() {
-                if tab.panes.iter().any(|p| p.surface == key) {
+                if mark_pane_shielded(tab, key, shielded) {
                     tab.role = role;
                     tab.shielded = shielded;
                     tab.held = held;
@@ -4048,7 +4071,39 @@ mod pane_metadata_tests {
     use super::*;
 
     fn test_pane(id: u64, surface: usize) -> Pane {
-        Pane { id, hwnd: 0, surface, cwd: None, title: None, history: None, scrollback: None }
+        Pane { id, hwnd: 0, surface, shielded: false, cwd: None, title: None, history: None, scrollback: None }
+    }
+
+    /// The test machine, 94bf0b56a: two panes side by side, the right one
+    /// shielded, and a screenshot the left one's agent took had both painted
+    /// black. A mark is about one terminal.
+    #[test]
+    fn only_the_shielded_pane_is_kept_out_of_an_agents_screenshot() {
+        let mut left = test_pane(1, 0x10);
+        left.hwnd = 0x100;
+        let mut right = test_pane(2, 0x20);
+        right.hwnd = 0x200;
+        let mut other = test_pane(3, 0x30);
+        other.hwnd = 0x300;
+        let mut tabs = vec![test_tab(vec![left, right]), test_tab(vec![other])];
+
+        assert!(shielded_hwnds_of(tabs.iter()).is_empty());
+        assert!(mark_pane_shielded(&mut tabs[0], 0x20, true));
+        assert_eq!(shielded_hwnds_of(tabs.iter()), [0x200], "the pane beside it is not shielded");
+        // A mark for the other pane of the same tab, saying it is not
+        // shielded, does not take the first one's away.
+        assert!(mark_pane_shielded(&mut tabs[0], 0x10, false));
+        assert_eq!(shielded_hwnds_of(tabs.iter()), [0x200]);
+        assert!(mark_pane_shielded(&mut tabs[1], 0x30, true));
+        assert_eq!(shielded_hwnds_of(tabs.iter()), [0x200, 0x300]);
+        assert!(mark_pane_shielded(&mut tabs[0], 0x20, false));
+        assert_eq!(shielded_hwnds_of(tabs.iter()), [0x300]);
+        // A surface this tab does not show is not this tab's to mark.
+        assert!(!mark_pane_shielded(&mut tabs[0], 0x30, false));
+        assert_eq!(shielded_hwnds_of(tabs.iter()), [0x300]);
+        // A pane with no window yet has nothing to paint over.
+        tabs[1].panes[0].hwnd = 0;
+        assert!(shielded_hwnds_of(tabs.iter()).is_empty());
     }
 
     fn test_tab(panes: Vec<Pane>) -> Tab {

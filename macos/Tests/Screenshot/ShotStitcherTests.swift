@@ -591,24 +591,156 @@ struct ShotStitcherTests {
         #expect(s.finish()?.rgbx == Self.rows(body, 0, 30 + Self.h))
     }
 
-    @Test func theColumnsLeftOutAreTheOnesNoRowChangedIn() {
-        // Four pixels wide, three rows: column 1 the same throughout,
-        // column 2 different in one row, column 3 different only in its
-        // fourth byte, which is not part of the picture.
-        let before = (0..<(3 * 4 * 4)).map { UInt8($0) }
+    @Test func theColumnsLeftOutAreTheOnesWhoseChangesLieInTwoShortStretchesOrFewer() {
+        // Six pixels wide, twelve rows. Which rows of each column changed:
+        let changedRows: [[Int]] = [
+            [],                    // none: still
+            [2, 3],                // one stretch
+            [0, 1, 9, 10, 11],     // two: where a thumb was, and where it is
+            [0, 2, 4],             // three: lines of text that scrolled
+            [3, 4, 5, 6, 7, 8],    // one, and half the rows: a picture that scrolled
+            [],                    // only the fourth byte, which is no part of the picture
+        ]
+        let before = (0..<(12 * 6 * 4)).map { UInt8(truncatingIfNeeded: $0) }
         var now = before
-        for y in 0..<3 {
-            now[(y * 4) * 4] ^= 1
-            now[(y * 4 + 3) * 4 + 3] ^= 1
+        for (x, rows) in changedRows.enumerated() {
+            for y in rows { now[(y * 6 + x) * 4 + 1] ^= 1 }
         }
-        now[(4 + 2) * 4 + 1] ^= 1
-        #expect(ShotStitcher.stillColumns(before, now, width: 4, rows: 0..<3) == [false, true, false, true])
-        // Only the rows asked about.
-        #expect(ShotStitcher.stillColumns(before, now, width: 4, rows: 2..<3) == [false, true, true, true])
+        for y in 0..<12 { now[(y * 6 + 5) * 4 + 3] ^= 1 }
+        #expect(ShotStitcher.stillColumns(before, now, width: 6, rows: 0..<12) == [true, true, true, false, false, true])
+        // Only the rows asked about. In rows 0..<3 every column that changed
+        // did so in one short stretch, so nothing would be left to compare
+        // -- and then only the columns with no changed row are left out.
+        #expect(ShotStitcher.stillColumns(before, now, width: 6, rows: 0..<3) == [true, false, false, false, true, true])
         // With nothing left out the hashes are the whole rows'.
-        let whole = ShotStitcher.rowHashes(now, width: 4)
-        let none = [Bool](repeating: false, count: 4)
-        #expect(ShotStitcher.movingHashes(now, width: 4, rows: 1..<3, still: none) == Array(whole[1..<3]))
-        #expect(ShotStitcher.movingHashes(now, width: 4, rows: 0..<3, still: [false, true, false, true]) != whole)
+        let whole = ShotStitcher.rowHashes(now, width: 6)
+        let none = [Bool](repeating: false, count: 6)
+        #expect(ShotStitcher.movingHashes(now, width: 6, rows: 1..<3, still: none) == Array(whole[1..<3]))
+        #expect(ShotStitcher.movingHashes(now, width: 6, rows: 0..<12, still: [false, true, false, true, false, false]) != whole)
+    }
+
+    /// `frame` with a scroll bar down its last two columns: an arrow at
+    /// each end that is the same in every frame, a flat track between, and
+    /// a thumb `long` rows long whose top is at row `at` of the track.
+    private func withScrollBar(_ frame: [UInt8], at: Int, long: Int) -> [UInt8] {
+        var frame = frame
+        let rows = frame.count / (Self.w * 4)
+        let arrows = Self.noise(rows: rows, seed: 98)
+        for y in 0..<rows {
+            for x in [Self.w - 2, Self.w - 1] {
+                let px = (y * Self.w + x) * 4
+                let onThumb = y >= 4 + at && y < 4 + at + long
+                if y < 4 || y >= rows - 4 {
+                    frame.replaceSubrange(px..<(px + 4), with: arrows[px..<(px + 4)])
+                } else {
+                    frame.replaceSubrange(px..<(px + 4), with: onThumb ? [90, 90, 90, 0] : [230, 230, 230, 0])
+                }
+            }
+        }
+        return frame
+    }
+
+    /// The whole of a window, as an agent's `screenshot_long` takes it (the
+    /// other host's test machine, Notepad by `window_id`: 7 frames, 6
+    /// dropped, one screen): the border down one side, and down the other a
+    /// scroll bar whose thumb moves as the page does. The thumb's columns
+    /// change in two stretches -- where it was and where it is -- and line
+    /// up at no shift.
+    @Test func aScrollBarWhoseThumbMovesDoesNotLoseEveryFrame() throws {
+        let body = Self.noise(rows: 900, seed: 9)
+        // The thumb moves a fifth as far as the page.
+        func frame(_ y: Int) -> [UInt8] {
+            withScrollBar(withStill(Self.rows(body, y, y + Self.h), [0]), at: y / 5, long: 12)
+        }
+        var s = stitcher()
+        // A small move: the two stretches are short. A long one: the thumb
+        // has left where it was altogether.
+        let steps = [0, 30, 105, 60, 150].map { s.push(frame($0)) }
+        #expect(steps == [.first, .added(30), .added(75), .back, .added(45)])
+        #expect(s.totalHeight == Self.h + 150)
+        let picture = try #require(s.finish()).rgbx
+        let bar = [0, Self.w - 2, Self.w - 1]
+        #expect(without(picture, bar) == without(Self.rows(body, 0, 150 + Self.h), bar), "the page, unbroken")
+        // And with nothing in common it is still not joined.
+        let apart = [s.push(frame(150 + Self.h)), s.push(withScrollBar(Self.noise(rows: Self.h, seed: 77), at: 40, long: 12))]
+        #expect(apart == [.lost, .lost])
+        #expect(s.totalHeight == Self.h + 150)
+    }
+
+    /// Both at once, which is what the whole of a window is (the other
+    /// host's test machine again, on the package that already left still
+    /// columns out: the same 7 frames and 6 dropped): rows that do not
+    /// scroll above and below -- title bar, menu, status bar -- and beside
+    /// the page a border and a scroll bar whose thumb moves.
+    @Test func aWholeWindowHasFixedRowsAndAMovingThumbAndIsFollowed() throws {
+        let page = Page()
+        let sides = [0, Self.w - 2, Self.w - 1]
+        // The thumb stays between the bars, as a scroll bar's does.
+        func frame(_ y: Int) -> [UInt8] {
+            withScrollBar(withStill(page.frame(y), [0]), at: Self.header + y / 5, long: 12)
+        }
+        var s = stitcher()
+        let steps = [0, 25, 100, 140].map { s.push(frame($0)) }
+        #expect(steps == [.first, .added(25), .added(75), .added(40)])
+        #expect(s.totalHeight == Self.h + 140)
+        let picture = try #require(s.finish()).rgbx
+        #expect(without(picture, sides) == without(page.expected(140), sides), "the bars once, the page unbroken")
+        // Off a live screen, a notch at a time, as the agent's tool does it.
+        var live = stitcher()
+        var added = 0
+        for y in stride(from: 0, through: 120, by: 15) {
+            let held = live.offer(frame(y))
+            #expect(held == .moving, "at \(y)")
+            let step = live.offer(frame(y))
+            if case let .added(n) = step { added += n } else { #expect(step == .first, "at \(y)") }
+        }
+        #expect(added == 120)
+        #expect(live.totalHeight == Self.h + 120)
+    }
+
+    /// The other side of leaving out a column that changed in a stretch or
+    /// two: a page with one thing on it changes in one stretch in every
+    /// column it crosses, and those columns are all there is to go by.
+    @Test func aPageWithOneThingOnItIsStillFollowed() {
+        var body: [UInt8] = []
+        for _ in 0..<(400 * Self.w) { body += [250, 250, 250, 0] }
+        let thing = Self.noise(rows: 20, seed: 61)
+        body.replaceSubrange((150 * Self.w * 4)..<(170 * Self.w * 4), with: thing)
+        var s = stitcher()
+        let steps = [60, 70, 100].map { s.push(Self.rows(body, $0, $0 + Self.h)) }
+        #expect(steps == [.first, .added(10), .added(30)])
+        #expect(s.finish()?.rgbx == Self.rows(body, 60, 100 + Self.h))
+    }
+
+    /// The other host's test machine, a selection with a spinner in it: 71
+    /// frames, 71 held back, `0 px tall`, and no file. A region that never
+    /// holds still cannot be made longer, but the person asked for a
+    /// picture of it.
+    @Test func aRegionThatNeverHoldsStillGivesItsFirstFrame() {
+        var s = stitcher()
+        #expect(!s.neverSteady, "nothing was offered yet")
+        let frames = (0..<9).map { Self.noise(rows: Self.h, seed: 200 + UInt64($0)) }
+        let steps = frames.map { s.offer($0) }
+        #expect(steps.allSatisfy { $0 == .moving })
+        #expect(s.neverSteady)
+        #expect(s.totalHeight == 0, "nothing was joined")
+        #expect(s.finish()?.rgbx == frames[0], "the first frame offered, as it was")
+        #expect(s.finish()?.width == Self.w)
+        // The status line says so only after about a second of it.
+        #expect(!s.isRestless(held: ShotStitcher.restlessAfter - 1))
+        #expect(s.isRestless(held: ShotStitcher.restlessAfter))
+
+        // Once a frame is joined it is an ordinary picture again, and the
+        // first frame offered -- which was never steady -- is not in it.
+        let joined = s.offer(frames[8])
+        #expect(joined == .first)
+        #expect(!s.neverSteady)
+        #expect(!s.isRestless(held: 500), "frames held back while scrolling are not it")
+        #expect(s.finish()?.rgbx == frames[8])
+
+        var raw = stitcher()
+        let short = raw.offer(Array(frames[0].dropFirst(4)))
+        #expect(short == .wrongSize)
+        #expect(!raw.neverSteady && raw.finish() == nil, "a frame of another size is not a first frame")
     }
 }

@@ -93,6 +93,9 @@ features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Ole",
+    # `RegGetValueW`, for one value: whether the system asks applications to
+    # be light or dark, which a screenshot's sidecar records.
+    "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
     "Win32_System_Threading",

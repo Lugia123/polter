@@ -2491,6 +2491,11 @@ msgstr "Pasiekta aukščio riba."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
+msgid "The picture keeps changing, so nothing can be added."
+msgstr "Vaizdas nuolat keičiasi, todėl nieko negalima pridėti."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
 msgid "{n} tiles, first {m} pasted"
 msgstr "dalių: {n}, įklijuotos pirmosios {m}"
 

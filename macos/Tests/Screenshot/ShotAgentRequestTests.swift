@@ -322,7 +322,7 @@ struct ShotAgentRequestTests {
             (.busy, "Busy"), (.badImage, "BadImage"), (.captureFailed, "CaptureFailed"), (.writeFailed, "WriteFailed"),
         ]
         for (code, name) in names { #expect(code.rawValue == name) }
-        #expect([ShotAgent.Stopped.pages, .bottom, .limit].map(\.rawValue) == ["pages", "bottom", "limit"])
+        #expect([ShotAgent.Stopped.pages, .bottom, .limit, .moving].map(\.rawValue) == ["pages", "bottom", "limit", "moving"])
     }
 
     // MARK: An annotated copy

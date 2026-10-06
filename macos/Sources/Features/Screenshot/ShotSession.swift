@@ -411,6 +411,11 @@ final class ShotSession {
             let shown = step == .unchanged || step == .moving ? long.last : step
             var changed = shown != long.last
             if case .added = step { changed = true }
+            // The status line also changes on the frame that makes it say
+            // the region keeps changing.
+            if step == .moving, long.moving == ShotStitcher.restlessAfter, long.stitcher.isRestless(held: long.moving) {
+                changed = true
+            }
             if step == .full && long.last != .full {
                 Self.logger.info("screenshot: long screenshot reached the \(ShotStitcher.maxHeight, privacy: .public) px limit; no more is added")
                 long.timer.invalidate()
@@ -432,6 +437,9 @@ final class ShotSession {
         long = nil
         if let taken {
             Self.logger.info("screenshot: long screenshot finished: \(taken.frames, privacy: .public) frame(s), \(taken.lost, privacy: .public) dropped for want of overlap, \(taken.moving, privacy: .public) held back (still moving), \(taken.stitcher.totalHeight, privacy: .public) px tall")
+            if taken.stitcher.neverSteady {
+                Self.logger.info("screenshot: long screenshot: the region never held still for two frames in a row, so nothing was joined; the picture is the first frame taken, \(taken.stitcher.height, privacy: .public) px tall")
+            }
         }
         close()
 
@@ -611,6 +619,8 @@ final class ShotSession {
     ) {
         var text = "\(ShotWords.translate("Long Screenshot")) \(long.stitcher.totalHeight) px"
         switch long.last {
+        case _ where long.stitcher.isRestless(held: long.moving):
+            text += " — " + ShotWords.translate("The picture keeps changing, so nothing can be added.")
         case .lost: text += " — " + ShotWords.translate("Scroll slower")
         case .full: text += " — " + ShotWords.translate("The height limit was reached.")
         default:

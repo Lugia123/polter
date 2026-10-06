@@ -2486,6 +2486,11 @@ msgstr "Досягнуто межі висоти."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
+msgid "The picture keeps changing, so nothing can be added."
+msgstr "Зображення постійно змінюється, тому нічого не можна додати."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
 msgid "{n} tiles, first {m} pasted"
 msgstr "частин: {n}, вставлено перші {m}"
 

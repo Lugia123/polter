@@ -3326,6 +3326,10 @@ msgid "The height limit was reached."
 msgstr ""
 
 #: src/input/screenshot.zig
+msgid "The picture keeps changing, so nothing can be added."
+msgstr ""
+
+#: src/input/screenshot.zig
 msgid "{n} tiles, first {m} pasted"
 msgstr ""
 

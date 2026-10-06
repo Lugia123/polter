@@ -1691,7 +1691,12 @@ fn long_tick() {
         // an unchanged frame, or one held back, does not clear "scroll
         // more slowly".
         let shown = if matches!(step, Step::Unchanged | Step::Moving) { long.last } else { step };
-        let changed = shown != long.last || matches!(step, Step::Added(_));
+        // The status line also changes on the frame that makes it say the
+        // region keeps changing.
+        let restless = step == Step::Moving
+            && long.moving == toolbar::LONG_RESTLESS_AFTER
+            && toolbar::long_restless(long.stitcher.never_steady(), long.moving);
+        let changed = shown != long.last || matches!(step, Step::Added(_)) || restless;
         if step == Step::Full && long.last != Step::Full {
             // process-wide: the overlay is not a terminal window
             plogf!("[shot] long screenshot reached the {} px limit; no more is added", polter_shots::stitch::MAX_HEIGHT);
@@ -1722,7 +1727,8 @@ unsafe fn draw_long_status(canvas: &Canvas, long: &LongShot, layout: &Layout, se
         SetTextColor(hdc, INK);
         // Until the first new rows are joined the line says what to do.
         let added = long.stitcher.total_height() > long.rect.h as usize;
-        let hint = toolbar::long_hint(long.last, added).map(|h| format!(" — {}", tr(h))).unwrap_or_default();
+        let restless = toolbar::long_restless(long.stitcher.never_steady(), long.moving);
+        let hint = toolbar::long_hint(long.last, added, restless).map(|h| format!(" — {}", tr(h))).unwrap_or_default();
         let text = wide(&format!(" {} {} px{hint} ", tr(toolbar::LONG), long.stitcher.total_height()));
         let at = Point::new(layout.bar.x, layout.bar.bottom() + style::px(4, scale)).relative_to(o);
         let _ = TextOutW(hdc, at.x, at.y, &text);
@@ -1965,12 +1971,28 @@ pub(crate) fn window_names(hwnd: u64) -> (Option<String>, Option<String>, Option
     }
 }
 
-/// `light` or `dark`: which of the two this host is drawing itself in, which
-/// follows the system's setting.
+/// `light` or `dark`: what the system asks applications to draw themselves
+/// in right now (screenshot.md §11), read when the screenshot is written.
+///
+/// This used to go by this host's own background, which is the same dark
+/// colour whatever the setting, so every sidecar said `dark` (the test
+/// machine, 94bf0b56a, with the setting on light and switched both ways).
 pub(crate) fn appearance() -> String {
-    let c = crate::theme::bg();
-    let luma = (299 * (c & 0xFF) + 587 * ((c >> 8) & 0xFF) + 114 * ((c >> 16) & 0xFF)) / 1000;
-    if luma < 128 { "dark" } else { "light" }.to_string()
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let mut value = 0u32;
+    let mut len = std::mem::size_of::<u32>() as u32;
+    let read = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+            w!("AppsUseLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut value as *mut u32 as *mut c_void),
+            Some(&mut len),
+        )
+    };
+    polter_shots::agent::appearance(read.is_ok().then_some(value)).to_string()
 }
 
 /// The first seven characters of `HEAD` in `cwd` and whether a tracked file has changes, if
@@ -2134,6 +2156,14 @@ fn finish() {
             l.moving,
             l.stitcher.total_height()
         );
+        if l.stitcher.never_steady() {
+            // process-wide: the overlay is not a terminal window
+            plogf!(
+                "[shot] long screenshot: the region never held still for two frames in a row, so nothing was joined; \
+                 the picture is the first frame taken, {} px tall",
+                l.rect.h
+            );
+        }
     }
     let Some(session) = end(false) else { return };
     let sel = export.selection;

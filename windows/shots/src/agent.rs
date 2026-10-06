@@ -437,10 +437,46 @@ pub enum Stopped {
     Bottom,
     /// The picture reached the height limit.
     Limit,
+    /// The region never held still, so nothing was scrolled and nothing
+    /// joined: the picture is one frame of it (`Stitcher::never_steady`).
+    Moving,
 }
 
-/// The answer to `long`. `tiles` are full paths, each with its `y` and
-/// height in the whole picture.
+/// The file name of a tile given by name or by path, either separator.
+fn tile_name(tile: &str) -> &str {
+    match tile.rfind(['/', '\\']) {
+        Some(at) => &tile[at + 1..],
+        None => tile,
+    }
+}
+
+/// `light` or `dark` for a sidecar's `appearance` (screenshot.md §11): what
+/// the system asks applications to draw themselves in. `apps_use_light` is
+/// `AppsUseLightTheme` under
+/// `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`,
+/// `None` when it is not there -- a Windows from before there was a dark
+/// mode, which is light.
+///
+/// **Not what this host is drawn in.** Its own windows are dark whatever
+/// the setting, so asking them answered `dark` on every machine.
+pub fn appearance(apps_use_light: Option<u32>) -> &'static str {
+    match apps_use_light {
+        Some(0) => "dark",
+        _ => "light",
+    }
+}
+
+/// The answer to `long`. Each of `tiles` goes out by **file name**, beside
+/// the whole picture, with its `y` and height in it -- what the sidecar's
+/// `tiles` say, and what the core lets through: it refuses the whole answer
+/// as `HostFault` if a tile is named by a path (`screenshot.zig`, `finish`).
+///
+/// **Whatever it is handed, a name is what it writes.** The host used to
+/// hand over each tile's full path and this wrote it as it came, so every
+/// long screenshot that had tiles was taken, saved, and then reported to
+/// the agent as a fault (the test machine, 94bf0b56a). `tile_name` is here
+/// rather than at the caller so that the one place the answer is written
+/// cannot be given the wrong thing.
 pub fn long_json(
     path: &str,
     json: &str,
@@ -451,12 +487,13 @@ pub fn long_json(
 ) -> String {
     let tiles: Vec<String> = tiles
         .iter()
-        .map(|(image, y, h)| format!("{{\"image\": {}, \"y\": {y}, \"height\": {h}}}", quoted(image)))
+        .map(|(image, y, h)| format!("{{\"image\": {}, \"y\": {y}, \"height\": {h}}}", quoted(tile_name(image))))
         .collect();
     let stopped = match stopped {
         Stopped::Pages => "pages",
         Stopped::Bottom => "bottom",
         Stopped::Limit => "limit",
+        Stopped::Moving => "moving",
     };
     format!(
         "{{\"path\": {}, \"json\": {}, \"size\": [{}, {}], \"tiles\": [{}], \"pages\": {pages}, \"stopped\": \"{stopped}\"}}",
@@ -819,16 +856,34 @@ mod tests {
     }
 
     #[test]
+    fn the_appearance_is_what_the_system_asks_of_applications() {
+        assert_eq!(appearance(Some(0)), "dark");
+        assert_eq!(appearance(Some(1)), "light");
+        // No such value: a Windows from before there was a dark mode.
+        assert_eq!(appearance(None), "light");
+        assert_eq!(appearance(Some(7)), "light");
+    }
+
+    #[test]
     fn the_capture_and_long_answers_are_the_specified_documents() {
         let c: serde_json::Value = serde_json::from_str(&capture_json("C:\\s\\a.png", "C:\\s\\a.json", (800, 600))).unwrap();
         assert_eq!(c, serde_json::json!({"path": "C:\\s\\a.png", "json": "C:\\s\\a.json", "size": [800, 600]}));
-        let tiles = [("C:\\s\\a-1.png".to_string(), 0, 1800), ("C:\\s\\a-2.png".to_string(), 1680, 900)];
+        // One tile handed over by name, one by its full path as the host
+        // once did, one with the other separator: all go out by name.
+        let tiles = [
+            ("a-1.png".to_string(), 0, 1800),
+            ("C:\\s\\a-2.png".to_string(), 1680, 900),
+            ("C:/s/a-3.png".to_string(), 2580, 10),
+        ];
         let l: serde_json::Value =
             serde_json::from_str(&long_json("C:\\s\\a.png", "C:\\s\\a.json", (800, 2580), &tiles, 2, Stopped::Bottom)).unwrap();
-        assert_eq!(l["tiles"][1], serde_json::json!({"image": "C:\\s\\a-2.png", "y": 1680, "height": 900}));
+        assert_eq!(l["tiles"][0], serde_json::json!({"image": "a-1.png", "y": 0, "height": 1800}));
+        assert_eq!(l["tiles"][1], serde_json::json!({"image": "a-2.png", "y": 1680, "height": 900}));
+        assert_eq!(l["tiles"][2]["image"], "a-3.png");
+        assert_eq!((l["path"].as_str(), l["json"].as_str()), (Some("C:\\s\\a.png"), Some("C:\\s\\a.json")), "the picture itself is a path");
         assert_eq!((l["pages"].as_u64(), l["stopped"].as_str()), (Some(2), Some("bottom")));
         assert_eq!(serde_json::from_str::<serde_json::Value>(&directory_json("C:\\a b\\shots")).unwrap()["directory"], "C:\\a b\\shots");
-        for (s, word) in [(Stopped::Pages, "pages"), (Stopped::Limit, "limit")] {
+        for (s, word) in [(Stopped::Pages, "pages"), (Stopped::Limit, "limit"), (Stopped::Moving, "moving")] {
             assert!(long_json("p", "j", (1, 1), &[], 1, s).contains(&format!("\"stopped\": \"{word}\"")));
         }
     }

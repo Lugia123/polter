@@ -103,9 +103,9 @@ fn screen() -> (Vec<DisplayInfo>, Vec<WindowInfo>) {
     (displays, windows)
 }
 
-/// Where the shielded panes are on the screen right now: every pane of a
-/// shielded tab whose window is showing. **Covered or not** -- see the
-/// module documentation and `agent::redactions`.
+/// Where the shielded panes are on the screen right now: every pane whose
+/// terminal is shielded and whose window is showing. **Covered or not** --
+/// see the module documentation and `agent::redactions`.
 fn shielded_panes() -> Vec<Rect> {
     crate::tabs::shielded_pane_hwnds()
         .into_iter()
@@ -405,8 +405,9 @@ fn run_long(job: &LongJob) -> Result<(String, String), Refusal> {
     let mut moving = 0u32;
     // The first frame is taken like every other: when the region has held
     // still for two captures (screenshot.md §9.7).
-    if steady_step(&mut stitcher, rect, &job.panes, &mut moving).is_none() {
-        return Err(Refusal::new("CaptureFailed", "The screen could not be read, or the region never held still."));
+    let steady = steady_step(&mut stitcher, rect, &job.panes, &mut moving).is_some();
+    if !steady && !stitcher.never_steady() {
+        return Err(Refusal::new("CaptureFailed", "The screen could not be read."));
     }
 
     let mut before = POINT::default();
@@ -417,7 +418,13 @@ fn run_long(job: &LongJob) -> Result<(String, String), Refusal> {
     let settle = std::time::Duration::from_millis(150);
     let (mut pages, mut stopped) = (0u32, Stopped::Pages);
     let (mut frames, mut lost) = (1u32, 0u32);
-    'pages: for _ in 0..job.pages {
+    // A region that never held still (a video, a spinner) is not scrolled:
+    // nothing could be joined to it. Its first frame is the picture, and
+    // the answer says why there is no more (`stopped: "moving"`).
+    if !steady {
+        stopped = Stopped::Moving;
+    }
+    'pages: for _ in 0..if steady { job.pages } else { 0 } {
         let (mut scrolled, mut still, mut blind) = (0usize, 0u32, 0u32);
         // Forty notches is far more than a page; it bounds a page that
         // never reports progress.
@@ -485,8 +492,10 @@ fn run_long(job: &LongJob) -> Result<(String, String), Refusal> {
         let tile_path = path.with_file_name(&name);
         std::fs::write(&tile_path, bytes)
             .map_err(|e| write_failed(&format!("The tile {} could not be written", tile_path.display()), e))?;
+        // By file name in the answer as in the sidecar: the core refuses an
+        // answer whose tile is named by a path (`agent::long_json`).
+        answered.push((name.clone(), *y, *height));
         entries.push(Tile { image: name, y: *y, height: *height });
-        answered.push((tile_path.to_string_lossy().to_string(), *y, *height));
     }
     let (app, title) = source_names(&job.source);
     let meta = Meta {

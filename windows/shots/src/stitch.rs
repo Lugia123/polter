@@ -18,11 +18,11 @@
 //! fixed header, a status bar -- are found from the first pair of frames that
 //! scrolled, and kept once.
 //!
-//! Columns that do not move while the rest does -- a window's border caught
-//! at the selection's edge, a strip of whatever is behind the window, a fixed
-//! side bar -- are left out of the comparison (`still_columns`), pair of
-//! frames by pair of frames. They are still in the picture, as each frame
-//! showed them.
+//! Columns that do not move with the rest -- a window's border caught at the
+//! selection's edge, a strip of whatever is behind the window, a fixed side
+//! bar, a scroll bar and the thumb sliding down it -- are left out of the
+//! comparison (`still_columns`), pair of frames by pair of frames. They are
+//! still in the picture, as each frame showed them.
 //!
 //! Frames are B, G, R, X rows, top row first, like everything in `pixels`.
 
@@ -38,6 +38,12 @@ const AGREE_PER_MILLE: usize = 970;
 /// The overlap must have at least this many different-looking rows. A blank
 /// stretch matches itself at every offset and says nothing about which.
 const MIN_DISTINCT: usize = 4;
+/// A column whose changed rows, between two frames, lie in at most this many
+/// unbroken stretches -- and are fewer than half its rows -- did not scroll
+/// (`still_columns`). None: it is still. One or two: one thing in it moved --
+/// a scroll bar's thumb leaves a stretch where it was and one where it now
+/// is.
+const STILL_RUNS: u32 = 2;
 
 /// What a frame turned out to be.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,30 +88,50 @@ fn row_hashes(frame: &[u8], width: usize) -> Vec<u64> {
         .collect()
 }
 
-/// Which columns are, in every row of `rows`, the same pixel in `before` and
-/// in `now` (screenshot.md §9.7). Called for two frames that are known to
-/// differ, such a column is one of two things, and either way it is no
-/// evidence of how far the rest moved: something that does not scroll (the
-/// window's border, the desktop beside it, a fixed side bar), or page that
-/// looks the same after the scroll as before it (a margin).
+/// Which columns say nothing about how far the page moved between `before`
+/// and `now`, going by the rows `rows` (screenshot.md §9.7): the ones whose
+/// changed rows lie in at most `STILL_RUNS` unbroken stretches and are fewer
+/// than half of the rows.
 ///
-/// **Every row, not most of them.** A column that changed in a few rows is
-/// kept in the comparison, because the few rows are what tells apart two
-/// lines of text that are otherwise alike -- a column of line numbers beside
-/// identical lines is mostly unchanged, and is the only thing that says how
-/// far they scrolled.
+/// With no changed row at all the column is something that does not scroll
+/// (the window's border, the desktop beside it, a fixed side bar), or page
+/// that looks the same after the scroll as before it (a margin). With one
+/// stretch or two, one thing in it moved while the rest stood: a scroll
+/// bar's thumb, the mark beside the current heading in a fixed side bar.
+/// Page that scrolled changes wherever there is something on it: at every
+/// line of text, which is many stretches, or from top to bottom of a
+/// picture, which is one stretch and all of the rows.
+///
+/// **By how the changes lie, not by how many rows changed.** A column of
+/// line numbers beside lines that are all alike is unchanged in nine rows
+/// of ten, and is the only thing that says how far they scrolled; its
+/// changes are a stretch at every line, so it is kept.
+///
+/// **When that would leave nothing to compare** -- a page with one thing on
+/// it, which is one stretch in every column it crosses -- only the columns
+/// with no changed row are left out.
 fn still_columns(before: &[u8], now: &[u8], width: usize, rows: std::ops::Range<usize>) -> Vec<bool> {
-    let mut still = vec![true; width];
+    let mut runs = vec![0u32; width];
+    let mut total = vec![0usize; width];
+    let mut inside = vec![false; width];
+    let half = rows.len() / 2;
     for y in rows {
         let at = y * width * 4;
         let (a, b) = (&before[at..at + width * 4], &now[at..at + width * 4]);
         for x in 0..width {
-            if a[x * 4..x * 4 + 3] != b[x * 4..x * 4 + 3] {
-                still[x] = false;
+            let changed = a[x * 4..x * 4 + 3] != b[x * 4..x * 4 + 3];
+            if changed && !inside[x] {
+                runs[x] += 1;
             }
+            total[x] += changed as usize;
+            inside[x] = changed;
         }
     }
-    still
+    let slid: Vec<bool> = (0..width).map(|x| total[x] == 0 || (runs[x] <= STILL_RUNS && total[x] < half)).collect();
+    if slid.iter().all(|s| *s) {
+        return total.iter().map(|n| *n == 0).collect();
+    }
+    slid
 }
 
 /// `row_hashes` of the rows `rows` of `frame`, over the columns that are not
@@ -211,6 +237,9 @@ pub struct Stitcher {
     full: bool,
     /// The frame offered last, joined or not (`offer`).
     offered: Vec<u8>,
+    /// The first frame ever offered, kept only until one is joined: what
+    /// there is to hand over if none ever is (`never_steady`).
+    glimpse: Vec<u8>,
 }
 
 impl Stitcher {
@@ -228,6 +257,7 @@ impl Stitcher {
             last: Vec::new(),
             full: false,
             offered: Vec::new(),
+            glimpse: Vec::new(),
         })
     }
 
@@ -253,6 +283,14 @@ impl Stitcher {
         self.full
     }
 
+    /// Frames were offered and not one was joined: the region never held
+    /// still for two captures in a row (screenshot.md §9.7). `finish` then
+    /// hands over the first frame offered, as it was, and nothing was added
+    /// to it -- which whoever is told about the picture has to be told too.
+    pub fn never_steady(&self) -> bool {
+        self.first.is_empty() && !self.glimpse.is_empty()
+    }
+
     /// Offer a frame taken off a live screen (screenshot.md §9.7). **Only a
     /// frame that is, pixel for pixel, the one offered just before it is
     /// joined**; any other is `Moving` and is only remembered.
@@ -276,6 +314,9 @@ impl Stitcher {
         if frame.len() != self.row() * self.height {
             return Step::WrongSize;
         }
+        if self.first.is_empty() && self.glimpse.is_empty() {
+            self.glimpse.extend_from_slice(frame);
+        }
         if self.offered != frame {
             self.offered.clear();
             self.offered.extend_from_slice(frame);
@@ -295,6 +336,7 @@ impl Stitcher {
             self.first = frame.to_vec();
             self.last = frame.to_vec();
             self.last_hashes = hashes;
+            self.glimpse = Vec::new();
             return Step::First;
         }
         if self.full {
@@ -427,10 +469,14 @@ impl Stitcher {
 
     /// The picture: its width, and its rows -- the top band, everything that
     /// scrolled past, the bottom band as it last was. `None` before any
-    /// frame.
+    /// frame. When frames were offered and none was joined
+    /// (`never_steady`), the first one offered.
     pub fn finish(&self) -> Option<(u32, Vec<u8>)> {
         if self.first.is_empty() {
-            return None;
+            if self.glimpse.is_empty() {
+                return None;
+            }
+            return Some((self.width as u32, self.glimpse.clone()));
         }
         let Some((top, bottom)) = self.bands else { return Some((self.width as u32, self.first.clone())) };
         let row = self.row();
@@ -1064,22 +1110,159 @@ mod tests {
     }
 
     #[test]
-    fn the_columns_left_out_are_the_ones_no_row_changed_in() {
-        // Four pixels wide, three rows: column 1 the same throughout,
-        // column 2 different in one row, column 3 different only in its
-        // fourth byte, which is not part of the picture.
-        let before: Vec<u8> = (0..3 * 4 * 4).map(|i| i as u8).collect();
+    fn the_columns_left_out_are_the_ones_whose_changes_lie_in_two_short_stretches_or_fewer() {
+        // Six pixels wide, twelve rows. Which rows of each column changed:
+        let changed: [&[usize]; 6] = [
+            &[],                    // none: still
+            &[2, 3],                // one stretch
+            &[0, 1, 9, 10, 11],     // two: where a thumb was, and where it is
+            &[0, 2, 4],             // three: lines of text that scrolled
+            &[3, 4, 5, 6, 7, 8],    // one, and half the rows: a picture that scrolled
+            &[],                    // only the fourth byte, which is no part of the picture
+        ];
+        let before: Vec<u8> = (0..12 * 6 * 4).map(|i| i as u8).collect();
         let mut now = before.clone();
-        for y in 0..3 {
-            now[(y * 4) * 4] ^= 1;
-            now[(y * 4 + 3) * 4 + 3] ^= 1;
+        for (x, rows) in changed.iter().enumerate() {
+            for y in rows.iter() {
+                now[(y * 6 + x) * 4 + 1] ^= 1;
+            }
         }
-        now[(4 + 2) * 4 + 1] ^= 1;
-        assert_eq!(still_columns(&before, &now, 4, 0..3), [false, true, false, true]);
-        // Only the rows asked about.
-        assert_eq!(still_columns(&before, &now, 4, 2..3), [false, true, true, true]);
+        for y in 0..12 {
+            now[(y * 6 + 5) * 4 + 3] ^= 1;
+        }
+        assert_eq!(still_columns(&before, &now, 6, 0..12), [true, true, true, false, false, true]);
+        // Only the rows asked about. In rows 0..3 every column that changed
+        // did so in one short stretch, so nothing would be left to compare
+        // -- and then only the columns with no changed row are left out.
+        assert_eq!(still_columns(&before, &now, 6, 0..3), [true, false, false, false, true, true]);
         // With nothing left out the hashes are the whole rows'.
-        assert_eq!(moving_hashes(&now, 4, 1..3, &[false; 4]), row_hashes(&now, 4)[1..3]);
-        assert_ne!(moving_hashes(&now, 4, 0..3, &[false, true, false, true]), row_hashes(&now, 4));
+        assert_eq!(moving_hashes(&now, 6, 1..3, &[false; 6]), row_hashes(&now, 6)[1..3]);
+        assert_ne!(moving_hashes(&now, 6, 0..12, &[false, true, false, true, false, false]), row_hashes(&now, 6));
+    }
+
+    /// `frame` with a scroll bar down its last two columns: an arrow at
+    /// each end that is the same in every frame, a flat track between, and
+    /// a thumb `long` rows long whose top is at row `at` of the track.
+    fn with_scroll_bar(mut frame: Vec<u8>, at: usize, long: usize) -> Vec<u8> {
+        let rows = frame.len() / (W * 4);
+        let arrows = noise(rows, 98);
+        for y in 0..rows {
+            for x in [W - 2, W - 1] {
+                let px = (y * W + x) * 4;
+                let on_thumb = y >= 4 + at && y < 4 + at + long;
+                if y < 4 || y >= rows - 4 {
+                    frame[px..px + 4].copy_from_slice(&arrows[px..px + 4]);
+                } else {
+                    frame[px..px + 4].copy_from_slice(if on_thumb { &[90, 90, 90, 0] } else { &[230, 230, 230, 0] });
+                }
+            }
+        }
+        frame
+    }
+
+    /// The whole of a window, as an agent's `screenshot_long` takes it (the
+    /// test machine, Notepad by `window_id`: 7 frames, 6 dropped, one
+    /// screen): the border down one side, and down the other a scroll bar
+    /// whose thumb moves as the page does. The thumb's columns change in
+    /// two stretches -- where it was and where it is -- and line up at no
+    /// shift.
+    #[test]
+    fn a_scroll_bar_whose_thumb_moves_does_not_lose_every_frame() {
+        let body = noise(900, 9);
+        // The thumb moves a fifth as far as the page.
+        let frame = |y: usize| with_scroll_bar(with_still(body[y * W * 4..(y + H) * W * 4].to_vec(), &[0]), y / 5, 12);
+        let mut s = stitcher();
+        s.push(&frame(0));
+        // A small move: the two stretches are short. A long one: the thumb
+        // has left where it was altogether.
+        assert_eq!(s.push(&frame(30)), Step::Added(30));
+        assert_eq!(s.push(&frame(105)), Step::Added(75));
+        assert_eq!(s.push(&frame(60)), Step::Back);
+        assert_eq!(s.push(&frame(150)), Step::Added(45));
+        assert_eq!(s.total_height(), H + 150);
+        let (_, picture) = s.finish().unwrap();
+        let bar = [0, W - 2, W - 1];
+        assert_eq!(without(&picture, &bar), without(&body[..(150 + H) * W * 4], &bar), "the page, unbroken");
+        // And with nothing in common it is still not joined.
+        assert_eq!(s.push(&frame(150 + H)), Step::Lost);
+        assert_eq!(s.push(&with_scroll_bar(noise(H, 77), 40, 12)), Step::Lost);
+        assert_eq!(s.total_height(), H + 150);
+    }
+
+    /// Both at once, which is what the whole of a window is (the test
+    /// machine again, on the package that already left still columns out:
+    /// the same 7 frames and 6 dropped): rows that do not scroll above and
+    /// below -- title bar, menu, status bar -- and beside the page a border
+    /// and a scroll bar whose thumb moves.
+    #[test]
+    fn a_whole_window_has_fixed_rows_and_a_moving_thumb_and_is_followed() {
+        let page = Page::new();
+        let sides = [0, W - 2, W - 1];
+        // The thumb stays between the bars, as a scroll bar's does.
+        let frame = |y: usize| with_scroll_bar(with_still(page.frame(y), &[0]), HEADER + y / 5, 12);
+        let mut s = stitcher();
+        s.push(&frame(0));
+        assert_eq!(s.push(&frame(25)), Step::Added(25));
+        assert_eq!(s.push(&frame(100)), Step::Added(75));
+        assert_eq!(s.push(&frame(140)), Step::Added(40));
+        assert_eq!(s.total_height(), H + 140);
+        let (_, picture) = s.finish().unwrap();
+        assert_eq!(without(&picture, &sides), without(&page.expected(140), &sides), "the bars once, the page unbroken");
+        // Off a live screen, a notch at a time, as the agent's tool does it.
+        let mut live = stitcher();
+        let mut added = 0;
+        for y in (0..=120).step_by(15) {
+            assert_eq!(live.offer(&frame(y)), Step::Moving, "at {y}");
+            match live.offer(&frame(y)) {
+                Step::First => {}
+                Step::Added(n) => added += n,
+                other => panic!("at {y}: {other:?}"),
+            }
+        }
+        assert_eq!((added, live.total_height()), (120, H + 120));
+    }
+
+    /// The other side of leaving out a column that changed in a stretch or
+    /// two: a page with one thing on it changes in one stretch in every
+    /// column it crosses, and those columns are all there is to go by.
+    #[test]
+    fn a_page_with_one_thing_on_it_is_still_followed() {
+        let mut body: Vec<u8> = std::iter::repeat([250u8, 250, 250, 0]).take(400 * W).flatten().collect();
+        let thing = noise(20, 61);
+        body[150 * W * 4..170 * W * 4].copy_from_slice(&thing);
+        let frame = |y: usize| body[y * W * 4..(y + H) * W * 4].to_vec();
+        let mut s = stitcher();
+        s.push(&frame(60));
+        assert_eq!(s.push(&frame(70)), Step::Added(10));
+        assert_eq!(s.push(&frame(100)), Step::Added(30));
+        assert_eq!(s.finish().unwrap().1, body[60 * W * 4..(100 + H) * W * 4].to_vec());
+    }
+
+    /// The test machine, a selection with a spinner in it: 71 frames, 71
+    /// held back, `0 px tall`, and no file. A region that never holds still
+    /// cannot be made longer, but the person asked for a picture of it.
+    #[test]
+    fn a_region_that_never_holds_still_gives_its_first_frame() {
+        let mut s = stitcher();
+        assert!(!s.never_steady(), "nothing was offered yet");
+        let frames: Vec<Vec<u8>> = (0..6).map(|n| noise(H, 200 + n)).collect();
+        for f in &frames {
+            assert_eq!(s.offer(f), Step::Moving);
+        }
+        assert!(s.never_steady());
+        assert_eq!(s.total_height(), 0, "nothing was joined");
+        assert_eq!(s.finish(), Some((W as u32, frames[0].clone())), "the first frame offered, as it was");
+
+        // Once a frame is joined it is an ordinary picture again, and the
+        // first frame offered -- which was never steady -- is not in it.
+        assert_eq!(s.offer(&frames[5]), Step::First);
+        assert!(!s.never_steady());
+        assert_eq!(s.finish(), Some((W as u32, frames[5].clone())));
+
+        // `push` takes what it is given: it has no say in this.
+        let mut raw = stitcher();
+        assert!(!raw.never_steady());
+        assert_eq!(raw.offer(&frames[0][4..]), Step::WrongSize);
+        assert!(!raw.never_steady() && raw.finish().is_none(), "a frame of another size is not a first frame");
     }
 }

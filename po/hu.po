@@ -2502,6 +2502,11 @@ msgstr "Elérte a magassági korlátot."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
+msgid "The picture keeps changing, so nothing can be added."
+msgstr "A kép folyamatosan változik, ezért semmit sem lehet hozzáadni."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
 msgid "{n} tiles, first {m} pasted"
 msgstr "{n} rész, az első {m} beillesztve"
 

@@ -542,9 +542,17 @@ final class ShotAgentHost {
         steadyFrame(job) { [weak self] first in
             guard let self else { return }
             guard first == .first else {
-                self.finishLong(job, area: area, scale: scale, meta: meta, failure: .init(
-                    code: .captureFailed, message: "The area never held still long enough to take a first frame of."),
-                    completion: completion)
+                // A region that never held still (a video, a spinner) is not
+                // scrolled: nothing could be joined to it. Its first frame
+                // is the picture, and the answer says why there is no more.
+                if job.stitcher.neverSteady {
+                    job.stopped = .moving
+                    self.finishLong(job, area: area, scale: scale, meta: meta, failure: nil, completion: completion)
+                } else {
+                    self.finishLong(job, area: area, scale: scale, meta: meta, failure: .init(
+                        code: .captureFailed, message: "The screen could not be read."),
+                        completion: completion)
+                }
                 return
             }
             self.scrollPage(job, stepsLeft: ShotAgent.Scroll.stepsPerPage) {

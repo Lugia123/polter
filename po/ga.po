@@ -2456,6 +2456,11 @@ msgstr "Sroicheadh an teorainn airde."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
+msgid "The picture keeps changing, so nothing can be added."
+msgstr "Tá an pictiúr ag athrú i gcónaí, mar sin ní féidir aon rud a chur leis."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
 msgid "{n} tiles, first {m} pasted"
 msgstr "{n} píosa, an chéad {m} greamaithe"
 

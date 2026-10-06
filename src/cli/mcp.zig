@@ -1130,8 +1130,11 @@ const tools = [_]Tool{
             "stitched into one tall image. The reply has the whole image and its `tiles` -- " ++
             "the same picture cut into pieces no taller than 1800 pixels, which is what to " ++
             "read: a single image that tall is scaled down until it cannot be read. " ++
+            "Each tile's `image` is a file name, in the same directory as `path`. " ++
             "`stopped` says why it ended: \"pages\" (it scrolled as far as asked), " ++
-            "\"bottom\" (the content ran out) or \"limit\" (20000 pixels). It takes a few " ++
+            "\"bottom\" (the content ran out), \"limit\" (20000 pixels) or \"moving\" " ++
+            "(the area never held still -- a video, an animation -- so nothing was " ++
+            "scrolled and the image is one screen of it). It takes a few " ++
             "seconds per page and **the wheel is turned over that window while it runs**, " ++
             "so the user will see it scroll. ⚠️ On macOS turning the wheel needs the " ++
             "Accessibility permission; without it this answers AccessibilityRequired and " ++

@@ -22,11 +22,11 @@ import Foundation
 /// fixed header, a status bar -- are found from the first pair of frames
 /// that scrolled, and kept once.
 ///
-/// Columns that do not move while the rest does -- a window's border caught
-/// at the selection's edge, a strip of whatever is behind the window, a
-/// fixed side bar -- are left out of the comparison (`stillColumns`), pair
-/// of frames by pair of frames. They are still in the picture, as each frame
-/// showed them.
+/// Columns that do not move with the rest -- a window's border caught at the
+/// selection's edge, a strip of whatever is behind the window, a fixed side
+/// bar, a scroll bar and the thumb sliding down it -- are left out of the
+/// comparison (`stillColumns`), pair of frames by pair of frames. They are
+/// still in the picture, as each frame showed them.
 ///
 /// Frames are four bytes a pixel, top row first; only the first three
 /// bytes of each pixel are compared.
@@ -43,6 +43,17 @@ struct ShotStitcher {
     /// blank stretch matches itself at every offset and says nothing about
     /// which.
     private static let minDistinct = 4
+    /// A column whose changed rows, between two frames, lie in at most this
+    /// many unbroken stretches -- and are fewer than half its rows -- did
+    /// not scroll (`stillColumns`). None: it is still. One or two: one thing
+    /// in it moved -- a scroll bar's thumb leaves a stretch where it was and
+    /// one where it now is.
+    private static let stillRuns = 2
+    /// How many frames in a row have to be held back, with none joined yet,
+    /// before the status line says the region keeps changing: about a
+    /// second of them. The first frame of every long screenshot is held
+    /// back once, and a page caught while it settles a few times more.
+    static let restlessAfter = 8
 
     /// What a frame turned out to be.
     enum Step: Equatable {
@@ -96,6 +107,9 @@ struct ShotStitcher {
     private(set) var isFull = false
     /// The frame `offer` was last given, joined or not.
     private var offered: [UInt8] = []
+    /// The first frame ever offered, kept only until one is joined: what
+    /// there is to hand over if none ever is (`neverSteady`).
+    private var glimpse: [UInt8] = []
 
     /// A stitcher for frames `width` by `height` pixels. Nil for a size
     /// that is not a picture.
@@ -138,35 +152,54 @@ struct ShotStitcher {
         return out
     }
 
-    /// Which columns are, in every row of `rows`, the same pixel in
-    /// `before` and in `now` (`dev-docs/poltergeist/screenshot.md`, 9.7).
-    /// Called for two frames that are known to differ, such a column is one
-    /// of two things, and either way it is no evidence of how far the rest
-    /// moved: something that does not scroll (the window's border, the
-    /// desktop beside it, a fixed side bar), or page that looks the same
-    /// after the scroll as before it (a margin).
+    /// Which columns say nothing about how far the page moved between
+    /// `before` and `now`, going by the rows `rows`
+    /// (`dev-docs/poltergeist/screenshot.md`, 9.7): the ones whose changed
+    /// rows lie in at most `stillRuns` unbroken stretches and are fewer than
+    /// half of the rows.
     ///
-    /// **Every row, not most of them.** A column that changed in a few rows
-    /// is kept in the comparison, because the few rows are what tells apart
-    /// two lines of text that are otherwise alike -- a column of line
-    /// numbers beside identical lines is mostly unchanged, and is the only
-    /// thing that says how far they scrolled.
+    /// With no changed row at all the column is something that does not
+    /// scroll (the window's border, the desktop beside it, a fixed side
+    /// bar), or page that looks the same after the scroll as before it (a
+    /// margin). With one stretch or two, one thing in it moved while the
+    /// rest stood: a scroll bar's thumb, the mark beside the current heading
+    /// in a fixed side bar. Page that scrolled changes wherever there is
+    /// something on it: at every line of text, which is many stretches, or
+    /// from top to bottom of a picture, which is one stretch and all of the
+    /// rows.
+    ///
+    /// **By how the changes lie, not by how many rows changed.** A column of
+    /// line numbers beside lines that are all alike is unchanged in nine
+    /// rows of ten, and is the only thing that says how far they scrolled;
+    /// its changes are a stretch at every line, so it is kept.
+    ///
+    /// **When that would leave nothing to compare** -- a page with one thing
+    /// on it, which is one stretch in every column it crosses -- only the
+    /// columns with no changed row are left out.
     static func stillColumns(_ before: [UInt8], _ now: [UInt8], width: Int, rows: Range<Int>) -> [Bool] {
-        var still = [Bool](repeating: true, count: width)
+        var runs = [Int](repeating: 0, count: width)
+        var total = [Int](repeating: 0, count: width)
+        var inside = [Bool](repeating: false, count: width)
+        let half = rows.count / 2
         before.withUnsafeBufferPointer { a in
             now.withUnsafeBufferPointer { b in
                 for y in rows {
                     var at = y * width * 4
                     for x in 0..<width {
-                        if a[at] != b[at] || a[at + 1] != b[at + 1] || a[at + 2] != b[at + 2] {
-                            still[x] = false
+                        let changed = a[at] != b[at] || a[at + 1] != b[at + 1] || a[at + 2] != b[at + 2]
+                        if changed {
+                            if !inside[x] { runs[x] += 1 }
+                            total[x] += 1
                         }
+                        inside[x] = changed
                         at += 4
                     }
                 }
             }
         }
-        return still
+        let slid = (0..<width).map { total[$0] == 0 || (runs[$0] <= stillRuns && total[$0] < half) }
+        if slid.allSatisfy({ $0 }) { return total.map { $0 == 0 } }
+        return slid
     }
 
     /// `rowHashes` of the rows `rows` of `frame`, over the columns that are
@@ -266,12 +299,24 @@ struct ShotStitcher {
     /// that never holds still -- a video, a spinner -- adds nothing at all.
     mutating func offer(_ frame: [UInt8]) -> Step {
         guard frame.count == row * height else { return .wrongSize }
+        if first.isEmpty && glimpse.isEmpty { glimpse = frame }
         if offered != frame {
             offered = frame
             return .moving
         }
         return push(frame)
     }
+
+    /// Frames were offered and not one was joined: the region never held
+    /// still for two captures in a row
+    /// (`dev-docs/poltergeist/screenshot.md`, 9.7). `finish` then hands over
+    /// the first frame offered, as it was, and nothing was added to it --
+    /// which whoever is told about the picture has to be told too.
+    var neverSteady: Bool { first.isEmpty && !glimpse.isEmpty }
+
+    /// Whether to say the region keeps changing: no frame was ever joined
+    /// and `held` were held back.
+    func isRestless(held: Int) -> Bool { neverSteady && held >= Self.restlessAfter }
 
     /// Take the next frame as it is. `offer` is the one for frames off a
     /// live screen; this joins whatever it is given.
@@ -282,6 +327,7 @@ struct ShotStitcher {
             first = frame
             last = frame
             lastHashes = hashes
+            glimpse = []
             return .first
         }
         if isFull { return .full }
@@ -417,9 +463,10 @@ struct ShotStitcher {
 
     /// The picture: its width, and its rows -- the top band, everything
     /// that scrolled past, the bottom band as it last was. Nil before any
-    /// frame.
+    /// frame. When frames were offered and none was joined (`neverSteady`),
+    /// the first one offered.
     func finish() -> (width: Int, rgbx: [UInt8])? {
-        guard !first.isEmpty else { return nil }
+        guard !first.isEmpty else { return glimpse.isEmpty ? nil : (width, glimpse) }
         guard let bands else { return (width, first) }
         var out: [UInt8] = []
         out.reserveCapacity((bands.top + bands.bottom) * row + strip.count)

@@ -3368,6 +3368,10 @@ msgid "The height limit was reached."
 msgstr "已到高度上限。"
 
 #: src/input/screenshot.zig
+msgid "The picture keeps changing, so nothing can be added."
+msgstr "画面一直在动，没能接长。"
+
+#: src/input/screenshot.zig
 msgid "{n} tiles, first {m} pasted"
 msgstr "共 {n} 片，已粘贴前 {m} 片"
 

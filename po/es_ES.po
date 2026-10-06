@@ -2506,6 +2506,11 @@ msgstr "Se alcanzó el límite de altura."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
+msgid "The picture keeps changing, so nothing can be added."
+msgstr "La imagen cambia constantemente, así que no se puede añadir nada."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
 msgid "{n} tiles, first {m} pasted"
 msgstr "{n} partes, las primeras {m} pegadas"
 

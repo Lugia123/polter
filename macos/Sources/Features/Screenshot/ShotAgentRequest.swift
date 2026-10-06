@@ -353,6 +353,10 @@ enum ShotAgent {
         case bottom
         /// The picture reached the height limit.
         case limit
+        /// The region never held still, so nothing was scrolled and nothing
+        /// joined: the picture is one frame of it
+        /// (`ShotStitcher.neverSteady`).
+        case moving
     }
 
     static func doneJSON(path: String, json: String, size: Annotation.PixelSize) -> String {

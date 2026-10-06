@@ -2480,6 +2480,11 @@ msgstr "Достигнуто је ограничење висине."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
+msgid "The picture keeps changing, so nothing can be added."
+msgstr "Слика се стално мења, па ништа не може да се дода."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
 msgid "{n} tiles, first {m} pasted"
 msgstr "делова: {n}, налепљено првих {m}"
 

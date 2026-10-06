@@ -2488,6 +2488,11 @@ msgstr "Биіктік шегіне жетті."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: src/input/screenshot.zig
+msgid "The picture keeps changing, so nothing can be added."
+msgstr "Сурет үздіксіз өзгеріп тұр, сондықтан ештеңе қосу мүмкін емес."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig
 msgid "{n} tiles, first {m} pasted"
 msgstr "{n} бөлік, алғашқы {m} қойылды"
 
