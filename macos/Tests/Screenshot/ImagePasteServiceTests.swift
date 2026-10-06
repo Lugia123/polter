@@ -176,6 +176,34 @@ struct ImagePasteServiceTests {
         #expect(Array(data.prefix(8)) == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
     }
 
+    /// What finishing a long screenshot used to send by itself, a paste
+    /// sends now: the first tile answers it, the others and the line follow.
+    @Test func aLongScreenshotTakenHereIsPastedAsItsTiles() throws {
+        let pasteboard = makePasteboard()
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = ImagePasteService()
+
+        let url = try ShotStore.write(png: png(), to: directory)
+        let tiles = (1...3).map { directory.appendingPathComponent("tile \($0).png") }
+        for tile in tiles { try png().write(to: tile) }
+        pasteboard.setData(png(), forType: .png)
+        service.remember(changeCount: pasteboard.changeCount, url: url, tiles: tiles, annotations: nil)
+
+        let pasted = try #require(service.pastedPath(from: pasteboard, pasteImage: true, directory: directory))
+        #expect(unescaped(pasted) == tiles[0].path, "the first tile, not the whole picture")
+        #expect(service.followUps(for: pasteboard).map(unescaped) == [tiles[1].path, tiles[2].path])
+        #expect(files(in: directory).count == 4, "nothing written by the paste")
+
+        // A tile deleted: its path is not pasted. The clipboard's image is
+        // saved afresh, as any image is, and nothing follows it.
+        try FileManager.default.removeItem(at: tiles[1])
+        let fresh = try #require(service.pastedPath(from: pasteboard, pasteImage: true, directory: directory))
+        #expect(!tiles.map(\.path).contains(unescaped(fresh)))
+        #expect(unescaped(fresh) != url.path)
+        #expect(service.followUps(for: pasteboard).isEmpty)
+    }
+
     @Test func aScreenshotTakenHereIsReusedWithItsAnnotations() throws {
         let pasteboard = makePasteboard()
         let directory = makeDirectory()
@@ -191,11 +219,19 @@ struct ImagePasteServiceTests {
         let pasted = try #require(service.pastedPath(from: pasteboard, pasteImage: true, directory: directory))
         #expect(unescaped(pasted) == url.path)
         #expect(files(in: directory).count == 1)
-        #expect(service.annotations(for: pasteboard) == "the line")
+        #expect(service.followUps(for: pasteboard) == ["the line"])
+
+        // Finishing a screenshot pastes nothing, so this is the only way it
+        // reaches a terminal -- and it may be pasted into several. Each
+        // paste gives the same file and the same line.
+        let again = try #require(service.pastedPath(from: pasteboard, pasteImage: true, directory: directory))
+        #expect(again == pasted)
+        #expect(files(in: directory).count == 1)
+        #expect(service.followUps(for: pasteboard) == ["the line"])
 
         // Something else is copied: the line belongs to the old image.
         pasteboard.clearContents()
         pasteboard.setData(png(red: 0), forType: .png)
-        #expect(service.annotations(for: pasteboard) == nil)
+        #expect(service.followUps(for: pasteboard).isEmpty)
     }
 }

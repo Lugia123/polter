@@ -99,4 +99,64 @@ struct ImagePasteTests {
         cache.remember(changeCount: 8, url: url)
         #expect(cache.reusable(changeCount: 8, fileExists: { _ in true })?.annotations == nil)
     }
+
+    // MARK: What a paste of a screenshot is
+
+    private func tiles(_ n: Int) -> [URL] {
+        (1...n).map { URL(fileURLWithPath: "/shots/20261006-153012-123-\($0).png") }
+    }
+
+    @Test func anOrdinaryScreenshotIsItsPathAndThenItsLine() {
+        let plain = ImagePaste.Cache.Saved(changeCount: 1, url: url)
+        #expect(plain.pastes.first == url)
+        #expect(plain.pastes.later.isEmpty)
+        let noted = ImagePaste.Cache.Saved(changeCount: 1, url: url, annotations: "the line")
+        #expect(noted.pastes.first == url)
+        #expect(noted.pastes.later == [.line("the line")])
+    }
+
+    @Test func aLongScreenshotIsItsTilesInOrder() {
+        let six = tiles(6)
+        let saved = ImagePaste.Cache.Saved(changeCount: 1, url: url, tiles: six)
+        #expect(saved.pastes.first == six[0], "the first tile answers the paste, not the whole picture")
+        #expect(saved.pastes.later == six.dropFirst().map(ImagePaste.Cache.Piece.tile))
+    }
+
+    @Test func pastEightTilesTheRestAreLeftOutAndTheLineComesLast() {
+        let twelve = tiles(12)
+        let saved = ImagePaste.Cache.Saved(changeCount: 1, url: url, tiles: twelve, annotations: "12 tiles, first 8 pasted")
+        #expect(saved.pastes.first == twelve[0])
+        #expect(saved.pastes.later == twelve[1..<8].map(ImagePaste.Cache.Piece.tile) + [.line("12 tiles, first 8 pasted")])
+    }
+
+    @Test func aLongScreenshotMissingATileItWouldPasteIsNotReused() {
+        let ten = tiles(10)
+        var cache = ImagePaste.Cache()
+        cache.remember(changeCount: 7, url: url, tiles: ten)
+        #expect(cache.reusable(changeCount: 7, fileExists: { _ in true })?.tiles == ten)
+        // The tenth is never pasted, so losing it loses nothing.
+        #expect(cache.reusable(changeCount: 7, fileExists: { $0 != ten[9] }) != nil)
+        #expect(cache.reusable(changeCount: 7, fileExists: { $0 != ten[2] }) == nil)
+    }
+
+    // MARK: Pasting again before the last paste has finished arriving
+
+    @Test func pastingAgainIntoTheSameTerminalEndsTheEarlierRun() {
+        var runs = ImagePaste.Runs<String>()
+        let first = runs.begin(in: "a")
+        #expect(runs.isCurrent(first, in: "a"))
+        let second = runs.begin(in: "a")
+        #expect(!runs.isCurrent(first, in: "a"), "what the first paste still owed is not sent")
+        #expect(runs.isCurrent(second, in: "a"))
+    }
+
+    @Test func aPasteIntoAnotherTerminalLeavesThisOnesRunAlone() {
+        var runs = ImagePaste.Runs<String>()
+        let a = runs.begin(in: "a")
+        let b = runs.begin(in: "b")
+        #expect(runs.isCurrent(a, in: "a"))
+        #expect(runs.isCurrent(b, in: "b"))
+        // A run belongs to its terminal: the same number means nothing in another.
+        #expect(!runs.isCurrent(a, in: "c"))
+    }
 }

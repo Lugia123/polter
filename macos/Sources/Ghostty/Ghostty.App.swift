@@ -365,15 +365,27 @@ extension Ghostty {
                         pasteImage: config.clipboardPasteImage,
                         directory: config.screenshotDirectory) {
                         contents.append(.init(mime: mime, data: Data(path.utf8)))
-                        // A screenshot taken here carries its annotations as
-                        // a line of text, pasted second and on its own: the
-                        // first paste has to be exactly one path for a CLI
-                        // to take it as an image.
-                        if let line = ImagePasteService.shared.annotations(for: pasteboard) {
+                        // A screenshot taken here has more to say: a long
+                        // one's other tiles, and a line of text. Each is
+                        // pasted on its own, after this one: a paste has to
+                        // be exactly one path for a CLI to take it as an
+                        // image.
+                        //
+                        // They go to **this** terminal, the one pasted into.
+                        // Closed before a piece is due, it gets none of what
+                        // is left and no other terminal gets it instead;
+                        // pasted into again, the pieces start over and what
+                        // the earlier paste still owed is dropped.
+                        let pane = ObjectIdentifier(surfaceView)
+                        let run = ImagePasteService.shared.beginRun(in: pane)
+                        let later = ImagePasteService.shared.followUps(for: pasteboard)
+                        for (i, text) in later.enumerated() {
                             DispatchQueue.main.asyncAfter(
-                                deadline: .now() + ScreenshotController.secondPasteDelay
+                                deadline: .now() + ScreenshotController.secondPasteDelay * Double(i + 1)
                             ) { [weak surfaceView] in
-                                MainActor.assumeIsolated { surfaceView?.surfaceModel?.sendText(line) }
+                                guard let surfaceView,
+                                      ImagePasteService.shared.isCurrent(run, in: pane) else { return }
+                                MainActor.assumeIsolated { surfaceView.surfaceModel?.sendText(text) }
                             }
                         }
                         continue

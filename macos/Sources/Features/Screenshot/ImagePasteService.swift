@@ -18,6 +18,7 @@ final class ImagePasteService {
 
     private let lock = NSLock()
     private var cache = ImagePaste.Cache()
+    private var runs = ImagePaste.Runs<ObjectIdentifier>()
 
     /// What a paste of `pasteboard` should insert in place of text, or nil
     /// when this is not an image paste -- the clipboard has text or files,
@@ -43,7 +44,9 @@ final class ImagePasteService {
         if let saved = cache.reusable(changeCount: changeCount, fileExists: {
             FileManager.default.fileExists(atPath: $0.path)
         }) {
-            return Ghostty.Shell.escape(saved.url.path)
+            // A long screenshot taken here answers with its first tile;
+            // the rest are `followUps`.
+            return Ghostty.Shell.escape(saved.pastes.first.path)
         }
 
         guard let png = pasteboard.ghosttyImagePNG() else {
@@ -64,21 +67,44 @@ final class ImagePasteService {
     }
 
     /// Record a file this app put on the clipboard itself -- a finished
-    /// screenshot -- so that a later paste of it reuses that file, with its
-    /// annotations, instead of writing the image a second time.
-    func remember(changeCount: Int, url: URL, annotations: String?) {
+    /// screenshot -- so that a paste of it reuses that file, with a long
+    /// one's tiles and with its line, instead of writing the image a second
+    /// time.
+    func remember(changeCount: Int, url: URL, tiles: [URL] = [], annotations: String?) {
         lock.lock()
         defer { lock.unlock() }
-        cache.remember(changeCount: changeCount, url: url, annotations: annotations)
+        cache.remember(changeCount: changeCount, url: url, tiles: tiles, annotations: annotations)
     }
 
-    /// The annotation line that belongs to the image currently on
-    /// `pasteboard`, when it is a screenshot taken here that has one.
-    func annotations(for pasteboard: NSPasteboard) -> String? {
+    /// What is pasted after the path `pastedPath` answered with, in order,
+    /// when the image on `pasteboard` is a screenshot taken here: a long
+    /// one's later tiles as escaped paths, then its line. Each is a paste
+    /// of its own. Empty for anything else.
+    func followUps(for pasteboard: NSPasteboard) -> [String] {
         lock.lock()
         defer { lock.unlock() }
-        return cache.reusable(changeCount: pasteboard.changeCount, fileExists: {
+        guard let saved = cache.reusable(changeCount: pasteboard.changeCount, fileExists: {
             FileManager.default.fileExists(atPath: $0.path)
-        })?.annotations
+        }) else { return [] }
+        return saved.pastes.later.map {
+            switch $0 {
+            case let .tile(url): return Ghostty.Shell.escape(url.path)
+            case let .line(line): return line
+            }
+        }
+    }
+
+    /// An image paste into `pane` begins. What an earlier one still owes
+    /// that terminal is not to be sent: ask `isCurrent` before each piece.
+    func beginRun(in pane: ObjectIdentifier) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return runs.begin(in: pane)
+    }
+
+    func isCurrent(_ run: Int, in pane: ObjectIdentifier) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return runs.isCurrent(run, in: pane)
     }
 }

@@ -436,8 +436,8 @@ pub const Action = union(Key) {
     /// App-scoped, and it has to be: the default binding is `global:`, so
     /// this arrives while some other application is in front and no surface
     /// of ours is focused. The apprt decides for itself whether it was
-    /// frontmost at that moment -- that is what says whether the result is
-    /// also pasted into a pane.
+    /// frontmost at that moment -- that is what says which terminal the
+    /// screenshot's sidecar names. The result is not sent to any pane.
     screenshot,
 
     /// One of an agent's `screenshot_*` tools, for the apprt to carry out:

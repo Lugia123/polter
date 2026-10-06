@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use polter_shots::name::Stamp;
-use polter_shots::paste::Reuse;
+use polter_shots::paste::{Piece, Reuse};
 use windows::core::w;
 use windows::Win32::Foundation::{HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
@@ -105,10 +105,10 @@ pub fn dir() -> Option<PathBuf> {
 }
 
 /// Record that the clipboard, as it is now numbered `seq`, holds the image
-/// saved at `path` -- a screenshot just put there -- and the line describing
-/// its annotations.
-pub fn remember(seq: u32, path: PathBuf, note: Option<String>) {
-    REUSE.lock().unwrap_or_else(|e| e.into_inner()).remember(seq, path, note);
+/// saved at `path` -- a screenshot just put there -- with the tiles it was
+/// cut into if it is a long one, and the line that goes with it.
+pub fn remember(seq: u32, path: PathBuf, tiles: Vec<PathBuf>, note: Option<String>) {
+    REUSE.lock().unwrap_or_else(|e| e.into_inner()).remember(seq, path, tiles, note);
 }
 
 /// The clipboard's own `PNG` format, which browsers and image editors put
@@ -231,18 +231,45 @@ fn now() -> Stamp {
 /// number is what "the same" means.
 pub fn image_text(pane: u64) -> Option<String> {
     let seq = unsafe { GetClipboardSequenceNumber() };
+    // An image pasted into a pane whose last paste is still arriving piece by
+    // piece -- a long screenshot's tiles: what was left of that one is
+    // dropped. Pasted again, the pieces start over from the first; a
+    // different image should not have the old one's tiles land after it.
+    let dropped = crate::shot::forget_pastes(pane);
     let mut reuse = REUSE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(saved) = reuse.lookup(seq) {
+        // A screenshot taken here: this paste is the one way it reaches a
+        // terminal. Its path answers the paste -- a long one's first tile
+        // rather than itself -- and the rest follow, each a paste of its own
+        // into **this** pane, by id: a pane closed before a piece is due
+        // gets none of what is left, and no other pane gets it instead.
+        let (first, later) = saved.pastes();
         logf!(
-            "[clip] read pane={} -> image: reusing {} (clipboard sequence {} unchanged; annotation line: {})",
-            pane, saved.path.display(), seq, saved.note.is_some()
+            "[clip] read pane={} -> image: reusing {} (clipboard sequence {} unchanged); pasting {}, then {} more \
+             piece(s), one every {} ms ({} tile(s) in all, a line of text: {}); {} piece(s) of an earlier paste \
+             into this pane dropped",
+            pane,
+            saved.path.display(),
+            seq,
+            first.display(),
+            later.len(),
+            polter_shots::paste::SECOND_PASTE_DELAY_MS,
+            saved.tiles.len(),
+            saved.note.is_some(),
+            dropped
         );
-        // A screenshot's annotations go in as a second paste, after this
-        // one has been completed.
-        if let Some(note) = saved.note {
-            crate::shot::paste_note_later(pane, note.to_string());
+        for (delay_ms, piece) in later {
+            match piece {
+                Piece::Tile(path) => {
+                    crate::shot::paste_later(pane, polter_droppath::quote(&path.to_string_lossy()), delay_ms, "tile path")
+                }
+                Piece::Line(line) => {
+                    let what = if saved.tiles.is_empty() { "annotation line" } else { "long-screenshot line" };
+                    crate::shot::paste_later(pane, line.to_string(), delay_ms, what)
+                }
+            }
         }
-        return Some(polter_droppath::quote(&saved.path.to_string_lossy()));
+        return Some(polter_droppath::quote(&first.to_string_lossy()));
     }
     let Some(dir) = dir() else {
         logf!("[clip] read pane={} -> image: no screenshot-directory and no LOCALAPPDATA, so nowhere to save it", pane);
@@ -264,11 +291,12 @@ pub fn image_text(pane: u64) -> Option<String> {
         }
     };
     logf!(
-        "[clip] read pane={} -> image: saved {} ({} bytes, from {}, clipboard sequence {})",
-        pane, path.display(), bytes.len(), from, seq
+        "[clip] read pane={} -> image: saved {} ({} bytes, from {}, clipboard sequence {}); {} piece(s) of an \
+         earlier paste into this pane dropped",
+        pane, path.display(), bytes.len(), from, seq, dropped
     );
     let text = polter_droppath::quote(&path.to_string_lossy());
-    reuse.remember(seq, path, None);
+    reuse.remember(seq, path, Vec::new(), None);
     Some(text)
 }
 

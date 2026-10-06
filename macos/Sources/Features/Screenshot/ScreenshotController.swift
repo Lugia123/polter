@@ -12,26 +12,29 @@ final class ScreenshotController: ShotSessionDelegate {
         category: String(describing: ScreenshotController.self)
     )
 
-    /// How long after the image's path the annotation line is pasted. They
-    /// are two pastes on purpose -- a CLI takes the first as an attachment
-    /// only when the paste is exactly one path -- and this keeps the second
-    /// from arriving inside the first one's handling.
+    /// How long after the image's path the next piece is pasted -- a long
+    /// screenshot's next tile, the line of text -- when the person pastes a
+    /// screenshot (`Ghostty.App`'s clipboard read). They are separate
+    /// pastes on purpose -- a CLI takes one as an attachment only when the
+    /// paste is exactly one path -- and this keeps each from arriving
+    /// inside the handling of the one before.
     static let secondPasteDelay: TimeInterval = 0.15
 
     private let hotKey = ShotGlobalHotKey()
     private var mouse: ShotMouseTrigger?
     private var warnedAboutHotKey = false
 
-    /// A screenshot in progress: the session, and where the result should
-    /// also be pasted.
+    /// A screenshot in progress.
     private struct Session {
         var shot: ShotSession
         /// The terminal that had the focus when the screenshot was started,
-        /// if this app was the one in front. Nil otherwise, and then nothing
-        /// is pasted.
-        weak var target: Ghostty.SurfaceView?
-        /// That terminal as the sidecar names it. The git state arrives a
-        /// moment after the screenshot starts, if it arrives.
+        /// if this app was the one in front, as the sidecar names it. Nil
+        /// otherwise. The git state arrives a moment after the screenshot
+        /// starts, if it arrives.
+        ///
+        /// **Only for the sidecar.** Nothing is sent to that terminal when
+        /// the screenshot is finished: the person pastes it where they
+        /// want it.
         var terminal: ShotSidecar.Terminal?
         var directory: URL
     }
@@ -151,9 +154,9 @@ final class ScreenshotController: ShotSessionDelegate {
         let directory = config.screenshotDirectory
 
         // Read before anything of ours appears: this is "was Polter in front
-        // when the screenshot was started", and it decides whether the
-        // result is also pasted.
-        let target: Ghostty.SurfaceView? = NSApp.isActive
+        // when the screenshot was started", and it is what the sidecar's
+        // `terminal` says.
+        let focused: Ghostty.SurfaceView? = NSApp.isActive
             ? (NSApp.keyWindow?.windowController as? BaseTerminalController)?.focusedSurface
             : nil
         let windows = ShotCapture.windows()
@@ -166,7 +169,7 @@ final class ScreenshotController: ShotSessionDelegate {
                 Self.logger.error("screenshot: no display could be captured")
                 return
             }
-            self.present(displays, windows: windows, target: target, directory: directory, preselecting: point)
+            self.present(displays, windows: windows, focused: focused, directory: directory, preselecting: point)
         }
     }
 
@@ -232,7 +235,7 @@ final class ScreenshotController: ShotSessionDelegate {
     private func present(
         _ displays: [ShotDisplay],
         windows: [ShotWindow],
-        target: Ghostty.SurfaceView?,
+        focused: Ghostty.SurfaceView?,
         directory: URL,
         preselecting point: CGPoint?
     ) {
@@ -248,13 +251,13 @@ final class ScreenshotController: ShotSessionDelegate {
         shot.delegate = self
 
         var terminal: ShotSidecar.Terminal?
-        if let target, let surface = target.surface {
+        if let focused, let surface = focused.surface {
             let id = ghostty_surface_poltergeist_id(surface)
             if id != 0 {
-                terminal = .init(id: String(format: "0x%016llx", id), cwd: target.pwd, git: nil)
+                terminal = .init(id: String(format: "0x%016llx", id), cwd: focused.pwd, git: nil)
             }
         }
-        session = Session(shot: shot, target: target, terminal: terminal, directory: directory)
+        session = Session(shot: shot, terminal: terminal, directory: directory)
         shot.show()
 
         // Asked now and not waited for: it has the whole time the person
@@ -309,7 +312,6 @@ final class ScreenshotController: ShotSessionDelegate {
         guard let session, session.shot === shot else { return }
         self.session = nil
         Self.savePrefs(shot.prefs)
-        let target = session.target
         let directory = session.directory
         let image = result.image
 
@@ -391,9 +393,9 @@ final class ScreenshotController: ShotSessionDelegate {
             Self.logger.error("screenshot: could not write \(jsonURL.path, privacy: .public)")
         }
 
-        // What is pasted: an ordinary screenshot's own path, or a long
-        // one's tiles -- at most eight of them, with a line saying so when
-        // there are more.
+        // The line that ends a paste of this screenshot: its annotations,
+        // or for a long one -- pasted as its tiles, at most eight of them --
+        // how many tiles there are, when some were left out.
         let pastedTiles = min(tileURLs.count, ShotSidecar.maxPastedTiles)
         let line: String?
         if result.isLong {
@@ -406,27 +408,17 @@ final class ScreenshotController: ShotSessionDelegate {
                 jsonPath: jsonURL.path, labels: Self.labels)
         }
 
-        // A later paste of this image finds this file, and its line,
+        // A paste of this image finds this file, its tiles and its line,
         // instead of writing the image a second time.
-        ImagePasteService.shared.remember(changeCount: pasteboard.changeCount, url: url, annotations: line)
+        ImagePasteService.shared.remember(
+            changeCount: pasteboard.changeCount, url: url, tiles: tileURLs, annotations: line)
         Self.logger.info("screenshot: \(image.width, privacy: .public)x\(image.height, privacy: .public) written to \(url.path, privacy: .public), \(result.items.count, privacy: .public) annotation(s), \(tiles.count, privacy: .public) tile(s)")
 
-        // 3. Into the terminal, if this app was in front when it started:
-        //    each path a paste of its own, then the line.
-        guard let target else { return }
-        let paths = (tileURLs.isEmpty ? [url] : Array(tileURLs.prefix(pastedTiles)))
-            .map { Ghostty.Shell.escape($0.path) }
-        for (i, text) in (paths + [line].compactMap { $0 }).enumerated() {
-            if i == 0 {
-                MainActor.assumeIsolated { target.surfaceModel?.sendText(text) }
-            } else {
-                DispatchQueue.main.asyncAfter(
-                    deadline: .now() + Self.secondPasteDelay * Double(i)
-                ) { [weak target] in
-                    MainActor.assumeIsolated { target?.surfaceModel?.sendText(text) }
-                }
-            }
-        }
+        // And that is all. Nothing is sent to a terminal from here, whether
+        // or not this app was in front: a path arriving in whichever pane
+        // had the focus is one the person has to delete when it was meant
+        // for another. They paste it, and the paste is what sends the path
+        // -- a long one's tiles -- and the line remembered above.
     }
 
     /// The words of the annotation line in the app's language. The English

@@ -48,20 +48,63 @@ pub fn choose(on: Available, paste_image: bool) -> Source {
 /// number, so pasting the same image twice writes one file.
 ///
 /// A screenshot is remembered the same way, at the moment it is put on the
-/// clipboard, together with the line describing its annotations -- so a paste
-/// made later, by hand, names the screenshot's own file and can send that
-/// line after it.
+/// clipboard, together with the line that goes with it and, for a long one,
+/// its tiles -- so a paste made later, by hand, names the screenshot's own
+/// files and can send that line after them. **That paste is the only way a
+/// screenshot reaches a terminal**: finishing one pastes nothing.
 #[derive(Debug, Default)]
 pub struct Reuse {
-    last: Option<(u32, PathBuf, Option<String>)>,
+    last: Option<(u32, PathBuf, Vec<PathBuf>, Option<String>)>,
 }
 
-/// What [`Reuse::lookup`] found: the file, and the annotation line that goes
-/// with it if it was a screenshot that had annotations.
+/// What [`Reuse::lookup`] found: the file, the tiles it was cut into if it
+/// was a long screenshot (none otherwise), and the line that goes with it if
+/// it was a screenshot that has one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Saved<'a> {
     pub path: &'a Path,
+    pub tiles: &'a [PathBuf],
     pub note: Option<&'a str>,
+}
+
+/// One of the pastes that follow the first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Piece<'a> {
+    /// A tile's path.
+    Tile(&'a Path),
+    /// The line of text, last.
+    Line(&'a str),
+}
+
+impl<'a> Saved<'a> {
+    /// What pasting this is: the path that answers the paste itself, and
+    /// what follows it, each with how long after the paste it is due.
+    ///
+    /// An ordinary image is its own path, then its line if it has one. A
+    /// long screenshot is its tiles instead of itself -- a CLI shrinks
+    /// anything much over 2000 px, and the whole picture shrunk cannot be
+    /// read -- at most [`MAX_TILES_PASTED`] of them, one every
+    /// [`SECOND_PASTE_DELAY_MS`], and then the line, which is there when
+    /// tiles were left out and says how many and where the whole picture is.
+    ///
+    /// **Every piece is a paste of its own**, for the reason the line is
+    /// (see `SECOND_PASTE_DELAY_MS`).
+    pub fn pastes(&self) -> (&'a Path, Vec<(u64, Piece<'a>)>) {
+        let tiles = &self.tiles[..self.tiles.len().min(MAX_TILES_PASTED)];
+        let (first, rest) = match tiles.split_first() {
+            Some((first, rest)) => (first.as_path(), rest),
+            None => (self.path, tiles),
+        };
+        let mut later: Vec<(u64, Piece<'a>)> = rest
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (SECOND_PASTE_DELAY_MS * (i as u64 + 1), Piece::Tile(t.as_path())))
+            .collect();
+        if let Some(note) = self.note {
+            later.push((SECOND_PASTE_DELAY_MS * (later.len() as u64 + 1), Piece::Line(note)));
+        }
+        (first, later)
+    }
 }
 
 impl Reuse {
@@ -70,25 +113,33 @@ impl Reuse {
     }
 
     /// The path saved for clipboard state `seq`, if that is still the state
-    /// and the file is still there.
+    /// and the file is still there -- and so is every tile a paste would
+    /// name. One of them deleted and the answer is `None`, which has the
+    /// caller save the clipboard's image afresh: a path to nothing is worse
+    /// than a second file.
     ///
     /// **`seq == 0` never matches**, because [`Reuse::remember`] never keeps
     /// one.
     pub fn lookup(&self, seq: u32) -> Option<Saved<'_>> {
         match &self.last {
-            Some((s, p, note)) if *s == seq && p.is_file() => Some(Saved { path: p, note: note.as_deref() }),
+            Some((s, p, tiles, note))
+                if *s == seq && p.is_file() && tiles.iter().take(MAX_TILES_PASTED).all(|t| t.is_file()) =>
+            {
+                Some(Saved { path: p, tiles, note: note.as_deref() })
+            }
             _ => None,
         }
     }
 
-    /// Record that clipboard state `seq` was saved to `path`.
+    /// Record that clipboard state `seq` was saved to `path`, cut into
+    /// `tiles` if it is a long screenshot (empty otherwise).
     ///
     /// **`seq == 0` records nothing and forgets what was there.**
     /// `GetClipboardSequenceNumber` returns 0 when it cannot tell (no access
     /// to the window station's clipboard), and "I do not know" must not read
     /// as "unchanged since the last 0".
-    pub fn remember(&mut self, seq: u32, path: PathBuf, note: Option<String>) {
-        self.last = (seq != 0).then_some((seq, path, note));
+    pub fn remember(&mut self, seq: u32, path: PathBuf, tiles: Vec<PathBuf>, note: Option<String>) {
+        self.last = (seq != 0).then_some((seq, path, tiles, note));
     }
 }
 
@@ -101,9 +152,9 @@ impl Reuse {
 /// text. macOS waits 0.15 s for the same reason; this is that number.
 pub const SECOND_PASTE_DELAY_MS: u64 = 150;
 
-/// The most tiles of a long screenshot that are pasted into a pane (§9.6).
-/// More than this and the line that follows says how many there are and
-/// where the whole picture is.
+/// The most tiles of a long screenshot that one paste puts into a pane
+/// (§9.6). More than this and the line that follows says how many there are
+/// and where the whole picture is.
 pub const MAX_TILES_PASTED: usize = 8;
 
 /// Things to do later, each addressed to a target and due at a time.
@@ -147,6 +198,17 @@ impl<T> Later<T> {
         }
         self.waiting = rest;
         due
+    }
+
+    /// Drop everything still waiting whose target `gone` says yes to.
+    ///
+    /// For a second paste into a pane whose first is still arriving: the
+    /// second starts the pieces again from the first, and what was left of
+    /// the earlier run would otherwise arrive in between them.
+    pub fn forget(&mut self, gone: impl Fn(&T) -> bool) -> usize {
+        let before = self.waiting.len();
+        self.waiting.retain(|(_, target, _)| !gone(target));
+        before - self.waiting.len()
     }
 
     /// How long from `now_ms` until the next entry is due: 0 when one is
@@ -248,8 +310,8 @@ mod tests {
         std::fs::write(&p, b"x").unwrap();
         let mut r = Reuse::new();
         assert_eq!(r.lookup(7), None);
-        r.remember(7, p.clone(), None);
-        assert_eq!(r.lookup(7), Some(Saved { path: &p, note: None }));
+        r.remember(7, p.clone(), Vec::new(), None);
+        assert_eq!(r.lookup(7), Some(Saved { path: &p, tiles: &[], note: None }));
         assert_eq!(r.lookup(8), None, "the clipboard changed");
     }
 
@@ -260,11 +322,104 @@ mod tests {
         let p = s.0.join("a.png");
         std::fs::write(&p, b"x").unwrap();
         let mut r = Reuse::new();
-        r.remember(7, p.clone(), Some("[notes] 1".into()));
-        assert_eq!(r.lookup(7), Some(Saved { path: &p, note: Some("[notes] 1") }));
+        r.remember(7, p.clone(), Vec::new(), Some("[notes] 1".into()));
+        assert_eq!(r.lookup(7), Some(Saved { path: &p, tiles: &[], note: Some("[notes] 1") }));
         // The next thing saved is not a screenshot and has no line.
-        r.remember(9, p.clone(), None);
-        assert_eq!(r.lookup(9), Some(Saved { path: &p, note: None }));
+        r.remember(9, p.clone(), Vec::new(), None);
+        assert_eq!(r.lookup(9), Some(Saved { path: &p, tiles: &[], note: None }));
+    }
+
+    /// Finishing a screenshot pastes nothing, so this is the only way one
+    /// reaches a terminal -- and the person may paste it into several.
+    #[test]
+    fn every_paste_of_a_screenshot_gives_the_file_and_the_line() {
+        let s = Scratch::new("again");
+        std::fs::create_dir_all(&s.0).unwrap();
+        let p = s.0.join("a.png");
+        std::fs::write(&p, b"x").unwrap();
+        let mut r = Reuse::new();
+        r.remember(7, p.clone(), Vec::new(), Some("[notes] 1".into()));
+        let first = r.lookup(7).map(|f| (f.pastes().0.to_path_buf(), f.note.map(str::to_string)));
+        let second = r.lookup(7).map(|f| (f.pastes().0.to_path_buf(), f.note.map(str::to_string)));
+        assert_eq!(first, Some((p, Some("[notes] 1".to_string()))));
+        assert_eq!(second, first, "looking it up does not use it up");
+    }
+
+    /// What finishing a long screenshot used to send by itself, a paste
+    /// sends now: the same paths at the same times.
+    #[test]
+    fn a_long_screenshot_is_pasted_as_its_tiles_one_at_a_time() {
+        let whole = PathBuf::from("a.png");
+        let tiles: Vec<PathBuf> = (1..=6).map(|i| PathBuf::from(format!("a-{i}.png"))).collect();
+        let saved = Saved { path: &whole, tiles: &tiles, note: None };
+        let (first, later) = saved.pastes();
+        assert_eq!(first, tiles[0].as_path(), "the first tile answers the paste, not the whole picture");
+        let want: Vec<(u64, Piece)> =
+            (1..6).map(|i| (SECOND_PASTE_DELAY_MS * i as u64, Piece::Tile(tiles[i].as_path()))).collect();
+        assert_eq!(later, want);
+    }
+
+    #[test]
+    fn past_eight_tiles_the_rest_are_left_out_and_the_line_comes_last() {
+        let whole = PathBuf::from("a.png");
+        let tiles: Vec<PathBuf> = (1..=12).map(|i| PathBuf::from(format!("a-{i}.png"))).collect();
+        let saved = Saved { path: &whole, tiles: &tiles, note: Some("12 tiles, first 8 pasted") };
+        let (first, later) = saved.pastes();
+        assert_eq!(first, tiles[0].as_path());
+        assert_eq!(later.len(), 8, "seven more tiles and the line");
+        assert_eq!(later[6], (SECOND_PASTE_DELAY_MS * 7, Piece::Tile(tiles[7].as_path())));
+        assert_eq!(later[7], (SECOND_PASTE_DELAY_MS * 8, Piece::Line("12 tiles, first 8 pasted")));
+        assert!(!later.iter().any(|(_, p)| *p == Piece::Tile(tiles[8].as_path())), "the ninth is not pasted");
+    }
+
+    #[test]
+    fn an_ordinary_screenshot_is_its_path_and_then_its_line() {
+        let whole = PathBuf::from("a.png");
+        let plain = Saved { path: &whole, tiles: &[], note: None };
+        assert_eq!(plain.pastes(), (whole.as_path(), vec![]));
+        let noted = Saved { path: &whole, tiles: &[], note: Some("[notes] 1") };
+        assert_eq!(noted.pastes(), (whole.as_path(), vec![(SECOND_PASTE_DELAY_MS, Piece::Line("[notes] 1"))]));
+    }
+
+    #[test]
+    fn a_long_screenshot_missing_a_tile_it_would_paste_is_not_reused() {
+        let s = Scratch::new("tiles");
+        std::fs::create_dir_all(&s.0).unwrap();
+        let whole = s.0.join("a.png");
+        let tiles: Vec<PathBuf> = (1..=10).map(|i| s.0.join(format!("a-{i}.png"))).collect();
+        for f in tiles.iter().chain([&whole]) {
+            std::fs::write(f, b"x").unwrap();
+        }
+        let mut r = Reuse::new();
+        r.remember(7, whole.clone(), tiles.clone(), None);
+        assert_eq!(r.lookup(7).map(|f| f.tiles.len()), Some(10));
+        // The tenth is never pasted, so losing it loses nothing.
+        std::fs::remove_file(&tiles[9]).unwrap();
+        assert!(r.lookup(7).is_some());
+        std::fs::remove_file(&tiles[2]).unwrap();
+        assert_eq!(r.lookup(7), None, "a path to a file that is gone is not pasted");
+    }
+
+    /// A second paste into a pane whose tiles are still arriving starts them
+    /// again; what was left of the first run must not land in between. A
+    /// different pane's are its own.
+    #[test]
+    fn pasting_again_into_the_same_pane_drops_what_the_first_paste_still_owed() {
+        let mut q: Later<u64> = Later::new();
+        for i in 1..=3u64 {
+            q.push(1000, SECOND_PASTE_DELAY_MS * i, 7, format!("first run, tile {}", i + 1));
+        }
+        q.push(1000, SECOND_PASTE_DELAY_MS * 2, 9, "another pane".into());
+        assert_eq!(q.take_due(1150), vec![(7, "first run, tile 2".to_string())]);
+        // Pane 7 is pasted into again at 1200.
+        assert_eq!(q.forget(|pane| *pane == 7), 2);
+        q.push(1200, SECOND_PASTE_DELAY_MS, 7, "second run, tile 2".into());
+        assert_eq!(
+            q.take_due(9999),
+            vec![(9, "another pane".to_string()), (7, "second run, tile 2".to_string())],
+            "pane 9 still gets what it was owed"
+        );
+        assert_eq!(q.forget(|pane| *pane == 7), 0);
     }
 
     #[test]
@@ -274,7 +429,7 @@ mod tests {
         let p = s.0.join("a.png");
         std::fs::write(&p, b"x").unwrap();
         let mut r = Reuse::new();
-        r.remember(7, p.clone(), None);
+        r.remember(7, p.clone(), Vec::new(), None);
         std::fs::remove_file(&p).unwrap();
         assert_eq!(r.lookup(7), None);
     }
@@ -286,12 +441,12 @@ mod tests {
         let p = s.0.join("a.png");
         std::fs::write(&p, b"x").unwrap();
         let mut r = Reuse::new();
-        r.remember(0, p.clone(), None);
+        r.remember(0, p.clone(), Vec::new(), None);
         assert_eq!(r.lookup(0), None);
         // And an unknown reading forgets the known one rather than keeping a
         // path that may belong to an older clipboard.
-        r.remember(7, p.clone(), None);
-        r.remember(0, p, None);
+        r.remember(7, p.clone(), Vec::new(), None);
+        r.remember(0, p, Vec::new(), None);
         assert_eq!(r.lookup(7), None);
     }
 }

@@ -46,10 +46,40 @@ enum ImagePaste {
         struct Saved: Equatable {
             var changeCount: Int
             var url: URL
-            /// The line of annotation text that goes with this image, when
-            /// it is a screenshot taken here and has any. Pasted after the
-            /// path.
+            /// The tiles this image was cut into, when it is a long
+            /// screenshot taken here. Empty otherwise.
+            var tiles: [URL] = []
+            /// The line of text that goes with this image, when it is a
+            /// screenshot taken here and has one. Pasted last.
             var annotations: String?
+
+            /// What pasting this is: the file whose path answers the paste
+            /// itself, and what follows it in order, the first one
+            /// `secondPasteDelay` after the paste and each of the others
+            /// that long after the one before.
+            ///
+            /// An ordinary image is itself, then its line if it has one. A
+            /// long screenshot is its tiles instead of itself -- a CLI
+            /// shrinks anything much over 2000 px, and the whole picture
+            /// shrunk cannot be read -- at most `maxPastedTiles` of them,
+            /// and then the line, which is there when tiles were left out
+            /// and says how many and where the whole picture is.
+            ///
+            /// **This paste is the only way a screenshot reaches a
+            /// terminal**: finishing one sends nothing.
+            var pastes: (first: URL, later: [Piece]) {
+                let pasted = Array(tiles.prefix(ShotSidecar.maxPastedTiles))
+                let later = pasted.dropFirst().map(Piece.tile) + (annotations.map { [Piece.line($0)] } ?? [])
+                return (pasted.first ?? url, later)
+            }
+        }
+
+        /// One of the pastes that follow the first.
+        enum Piece: Equatable {
+            /// A tile's file.
+            case tile(URL)
+            /// The line of text.
+            case line(String)
         }
 
         private(set) var saved: Saved?
@@ -60,16 +90,43 @@ enum ImagePaste {
         /// **The change count has to match exactly.** It only ever goes up,
         /// so "at least" would hand a newer image the older one's file. And
         /// the file has to still be there: the user may have deleted it, and
-        /// a path to nothing is worse than writing the image again.
+        /// a path to nothing is worse than writing the image again. The
+        /// same goes for every tile a paste would name.
         func reusable(changeCount: Int, fileExists: (URL) -> Bool) -> Saved? {
-            guard let saved, saved.changeCount == changeCount, fileExists(saved.url) else {
+            guard let saved, saved.changeCount == changeCount, fileExists(saved.url),
+                  saved.tiles.prefix(ShotSidecar.maxPastedTiles).allSatisfy(fileExists) else {
                 return nil
             }
             return saved
         }
 
-        mutating func remember(changeCount: Int, url: URL, annotations: String? = nil) {
-            saved = Saved(changeCount: changeCount, url: url, annotations: annotations)
+        mutating func remember(changeCount: Int, url: URL, tiles: [URL] = [], annotations: String? = nil) {
+            saved = Saved(changeCount: changeCount, url: url, tiles: tiles, annotations: annotations)
+        }
+    }
+
+    /// Which paste into each terminal is the latest, so that the pieces
+    /// still owed by an earlier one are not sent.
+    ///
+    /// A long screenshot arrives over a second or so. Pasted again into the
+    /// same terminal before it has finished, the pieces start again from the
+    /// first, and what was left of the earlier run would otherwise land in
+    /// between them. Another terminal's run is its own and is not touched.
+    struct Runs<Pane: Hashable> {
+        private var latest: [Pane: Int] = [:]
+
+        init() {}
+
+        /// A paste into `pane` begins: every earlier run there is over.
+        mutating func begin(in pane: Pane) -> Int {
+            let run = (latest[pane] ?? 0) + 1
+            latest[pane] = run
+            return run
+        }
+
+        /// Whether `run` is still the latest paste into `pane`.
+        func isCurrent(_ run: Int, in pane: Pane) -> Bool {
+            latest[pane] == run
         }
     }
 }

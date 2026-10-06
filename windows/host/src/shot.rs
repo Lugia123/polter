@@ -48,7 +48,7 @@ use polter_shots::editor::{Editor, Effect, Export, Measure, Monitor, Window};
 use polter_shots::geom::{self, Handle, Point, Rect};
 use polter_shots::name::Stamp;
 use polter_shots::overlay::Key;
-use polter_shots::paste::{Later, MAX_TILES_PASTED, SECOND_PASTE_DELAY_MS};
+use polter_shots::paste::{Later, MAX_TILES_PASTED};
 use polter_shots::pixels::{self, Composed, Frozen, TILE_HEIGHT, TILE_OVERLAP};
 use polter_shots::stitch::{Step, Stitcher};
 use polter_shots::style::{self, Prefs, Tool};
@@ -128,7 +128,8 @@ struct Session {
     mons: Vec<Mon>,
     edit: Option<EditCtl>,
     /// The id of the pane that had the keyboard when the shot was triggered,
-    /// if Polter was the foreground application -- where the result is sent.
+    /// if Polter was the foreground application -- the sidecar's `terminal`,
+    /// and nothing else: the result is not sent there, the person pastes it.
     /// An id rather than a window: ids are never reused, window handles are.
     origin_pane: Option<u64>,
     prev_fg: HWND,
@@ -192,8 +193,9 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static CONTROL: AtomicIsize = AtomicIsize::new(0);
 /// The mouse trigger's modifiers as bits (see `mods_bits`); 0 is off.
 static MOUSE_TRIGGER: AtomicU8 = AtomicU8::new(0);
-/// Annotation lines waiting to be pasted, each a while after its image's
-/// path and each addressed to a pane **by id**. A pane id comes out of one
+/// What a paste of a screenshot still owes its pane -- a long one's later
+/// tiles, the line of text -- each due a while after the path that answered
+/// the paste and each addressed to a pane **by id**. A pane id comes out of one
 /// counter and is never handed out twice, so a pane closed while its line
 /// waits resolves to nothing; it cannot resolve to a different pane.
 static NOTES: Mutex<Later<(u64, &'static str)>> = Mutex::new(Later::new());
@@ -587,27 +589,31 @@ pub(crate) fn tick_ms() -> u64 {
     unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
 }
 
-/// Queue an annotation line to be pasted into pane `pane`,
-/// `SECOND_PASTE_DELAY_MS` from now -- the second of the two pastes, kept
-/// apart from the first so the program in the terminal reads them apart.
+/// Queue `text` to be pasted into pane `pane`, `delay_ms` from now: one of
+/// the pastes that follow a screenshot's path, kept apart from it and from
+/// each other so the program in the terminal reads them apart. A long
+/// screenshot's tiles go in one after another this way.
 ///
-/// Called after a screenshot's path has been pasted, and from the clipboard
-/// callback when a paste made by hand reuses a screenshot that has
-/// annotations.
-pub fn paste_note_later(pane: u64, note: String) {
-    paste_later(pane, note, SECOND_PASTE_DELAY_MS, "annotation line");
-}
-
-/// Queue `text` to be pasted into pane `pane`, `delay_ms` from now. A long
-/// screenshot's tiles go in one after another this way, each its own paste.
+/// Called from the clipboard callback, when a paste made by hand reuses a
+/// screenshot (`shots::image_text`) -- and from nowhere else: finishing a
+/// screenshot pastes nothing.
 ///
 /// `what` is what the text is, for the log: a line that says "annotation
 /// line pasted" about a tile's path sends whoever reads it looking for an
 /// annotation.
-fn paste_later(pane: u64, text: String, delay_ms: u64, what: &'static str) {
+pub fn paste_later(pane: u64, text: String, delay_ms: u64, what: &'static str) {
     let now = tick_ms();
     NOTES.lock().unwrap_or_else(|e| e.into_inner()).push(now, delay_ms, (pane, what), text);
     arm_notes_timer(now);
+}
+
+/// Drop what is still waiting to be pasted into pane `pane`, and say how
+/// many pieces that was. For a paste into a pane whose last paste has not
+/// finished arriving.
+pub fn forget_pastes(pane: u64) -> usize {
+    let dropped = NOTES.lock().unwrap_or_else(|e| e.into_inner()).forget(|(p, _)| *p == pane);
+    arm_notes_timer(tick_ms());
+    dropped
 }
 
 /// Set the control window's timer for the next line due, or stop it when
@@ -2438,9 +2444,12 @@ fn compose(mon: &Mon, export: &Export) -> Option<Composed> {
     drawn.then_some(composed)
 }
 
-/// Done: the composed image to the clipboard and to a file, the sidecar
-/// beside it, and -- if Polter was in front when this started -- the path and
-/// the annotation line into the pane that had the keyboard.
+/// Done: the composed image to the clipboard and to a file, and the sidecar
+/// beside it. **Nothing is pasted**, whether or not Polter was in front when
+/// this started: a path arriving in whichever pane had the keyboard is one
+/// the person has to delete when it was meant for another. They paste it,
+/// and that paste (`shots::image_text`) finds the file, a long one's tiles,
+/// and the line.
 fn finish() {
     commit_edit();
     let Some(export) = with(|s| s.editor.export()).flatten() else { return };
@@ -2615,9 +2624,9 @@ fn finish() {
         separator: &words[9],
         see: &words[10],
     };
-    // What is pasted: an ordinary shot's own path, or a long one's tiles --
-    // at most `MAX_TILES_PASTED` of them, with a line saying so when there
-    // are more.
+    // The line that ends a paste of this shot: its annotations, or for a
+    // long one -- pasted as its tiles, at most `MAX_TILES_PASTED` of them --
+    // how many tiles there are, when some were left out.
     let pasted_tiles = tile_paths.len().min(MAX_TILES_PASTED);
     let note = if long.is_some() {
         let en = annot::LONG_EN;
@@ -2628,15 +2637,16 @@ fn finish() {
         annot::line(meta.size, items, &json.to_string_lossy(), &l)
     };
 
-    // A paste made later by hand finds this file by the clipboard's sequence
-    // number instead of saving the clipboard's bitmap a second time.
+    // A paste made by hand finds this file, its tiles and its line by the
+    // clipboard's sequence number, instead of saving the clipboard's bitmap
+    // a second time.
     if on_clipboard {
-        crate::shots::remember(seq, path.clone(), note.clone());
+        crate::shots::remember(seq, path.clone(), tile_paths, note);
     }
     // process-wide: the overlay is not a terminal window
     plogf!(
         "[shot] done: {}x{} px at scale {} from {:?}, {} annotation(s) ({} drawn in all), {} tile(s); saved {}; \
-         sidecar {}; clipboard={on_clipboard} (sequence {seq})",
+         sidecar {}; clipboard={on_clipboard} (sequence {seq}); nothing pasted",
         size.0,
         size.1,
         meta.scale,
@@ -2650,40 +2660,4 @@ fn finish() {
             Err(e) => format!("NOT written: {e}"),
         }
     );
-
-    // 3. Into the pane, if Polter was in front: the path, then the line, as
-    //    two pastes.
-    let Some(pane) = session.origin_pane else {
-        // process-wide: the overlay is not a terminal window
-        plogf!("[shot] Polter was not the foreground application when this started; nothing pasted");
-        return;
-    };
-    let surface = crate::tabs::surface_of_pane(pane);
-    if surface.is_null() {
-        // process-wide: the pane this was for has gone, so there is no window to name
-        plogf!("[shot] the pane that had the keyboard (pane={pane}) was closed meanwhile; nothing pasted");
-        return;
-    }
-    // One path for an ordinary shot; for a long one its tiles, each a paste
-    // of its own, spaced like the annotation line is from the path.
-    let paths: Vec<&std::path::PathBuf> =
-        if tile_paths.is_empty() { vec![&path] } else { tile_paths.iter().take(pasted_tiles).collect() };
-    let quoted: Vec<String> = paths.iter().map(|p| polter_droppath::quote(&p.to_string_lossy())).collect();
-    let text = &quoted[0];
-    unsafe { (crate::api().surface_text)(surface, text.as_ptr() as *const _, text.len()) };
-    // process-wide: reported by pane id, which is unique in the process
-    plogf!(
-        "[shot] path pasted into pane={pane}: {text:?}; {} more path(s) to follow, one every \
-         {SECOND_PASTE_DELAY_MS} ms; a line of text to follow in {} ms: {}",
-        quoted.len() - 1,
-        SECOND_PASTE_DELAY_MS * quoted.len() as u64,
-        note.is_some()
-    );
-    for (i, later) in quoted.iter().enumerate().skip(1) {
-        paste_later(pane, later.clone(), SECOND_PASTE_DELAY_MS * i as u64, "tile path");
-    }
-    if let Some(note) = note {
-        let what = if long.is_some() { "long-screenshot line" } else { "annotation line" };
-        paste_later(pane, note, SECOND_PASTE_DELAY_MS * quoted.len() as u64, what);
-    }
 }

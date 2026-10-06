@@ -1051,9 +1051,9 @@ pub const Action = union(enum) {
     /// annotated before it is finished.
     ///
     /// The finished image goes to the system clipboard and to a file in
-    /// `screenshot-directory`. If Polter was the frontmost application when
-    /// this was triggered, the file's path is also pasted into the focused
-    /// terminal, followed by the annotations as one line of text.
+    /// `screenshot-directory`. Nothing is typed into a terminal: pasting
+    /// the image into one gives the file's path, followed by the
+    /// annotations as one line of text.
     ///
     /// The default binding is global, so it works while another application
     /// is in front:

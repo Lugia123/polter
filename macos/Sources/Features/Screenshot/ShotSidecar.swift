@@ -357,7 +357,7 @@ enum ShotSidecar {
         var see: String
     }
 
-    /// The most tiles pasted into a terminal for one long screenshot.
+    /// The most tiles one paste of a long screenshot puts into a terminal.
     static let maxPastedTiles = 8
 
     /// The line pasted after a long screenshot's tiles when not all of them
