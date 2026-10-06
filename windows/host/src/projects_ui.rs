@@ -380,16 +380,6 @@ pub fn names() -> Vec<String> {
     with(|s| s.items.iter().map(|i| i.name.clone()).collect())
 }
 
-pub fn set_filter(q: &str) {
-    with(|s| {
-        s.filter = q.to_string();
-        s.list_top = 0;
-    });
-    if !main_hwnd().0.is_null() {
-        refresh();
-    }
-}
-
 fn filter_state() -> polter_settings_shell::Filtered {
     with(|s| {
         let v = shown(s);

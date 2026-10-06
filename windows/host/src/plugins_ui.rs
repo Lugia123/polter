@@ -218,9 +218,28 @@ pub fn dot_word(d: Dot) -> String {
     tr(d.msgid())
 }
 
-/// Every plugin's name, for the search box's jump (§2.3).
-pub fn names() -> Vec<String> {
-    ST.with(|c| c.borrow().plugins.iter().map(|p| p.name.clone()).collect())
+/// A plugin as the search lists it (screenshot.md §12.3): itself, and each
+/// of its own settings as `(key, title, help)`.
+pub struct SearchRow {
+    pub key: String,
+    pub name: String,
+    pub summary: String,
+    pub params: Vec<(String, String, String)>,
+}
+
+pub fn search_rows() -> Vec<SearchRow> {
+    ST.with(|c| {
+        c.borrow()
+            .plugins
+            .iter()
+            .map(|p| SearchRow {
+                key: p.key.clone(),
+                name: p.name.clone(),
+                summary: p.summary.clone(),
+                params: p.params.iter().map(|q| (q.name.clone(), q.title.clone(), q.help.clone())).collect(),
+            })
+            .collect()
+    })
 }
 
 /// The plugin on screen: its key and its name.
@@ -234,10 +253,6 @@ pub fn current() -> Option<(String, String)> {
 /// The key of the plugin at a catalog index.
 pub fn key_at(index: usize) -> Option<String> {
     ST.with(|c| c.borrow().plugins.get(index).map(|p| p.key.clone()))
-}
-
-pub fn set_filter(q: &str) {
-    ST.with(|c| c.borrow_mut().filter = q.to_string());
 }
 
 /// The plugin on screen is one the search hid (§2.3a).

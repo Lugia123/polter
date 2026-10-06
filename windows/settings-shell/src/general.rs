@@ -23,6 +23,8 @@ pub enum Group {
     Terminal,
     Windows,
     Polter,
+    /// screenshot.md §12.1: before Keyboard Shortcuts.
+    Screenshot,
     All,
     Keybinds,
     Advanced,
@@ -30,12 +32,13 @@ pub enum Group {
 }
 
 impl Group {
-    pub const ALL: [Group; 9] = [
+    pub const ALL: [Group; 10] = [
         Group::Appearance,
         Group::Font,
         Group::Terminal,
         Group::Windows,
         Group::Polter,
+        Group::Screenshot,
         Group::All,
         Group::Keybinds,
         Group::Advanced,
@@ -51,6 +54,7 @@ impl Group {
             Group::Terminal => "terminal",
             Group::Windows => "windows",
             Group::Polter => "polter",
+            Group::Screenshot => "screenshot",
             Group::All => "all",
             Group::Keybinds => "keybinds",
             Group::Advanced => "advanced",
@@ -70,6 +74,7 @@ impl Group {
             Group::Terminal => "Terminal",
             Group::Windows => "Windows & Tabs",
             Group::Polter => "Polter",
+            Group::Screenshot => "Screenshot",
             Group::All => "All Options",
             Group::Keybinds => "Keyboard Shortcuts",
             Group::Advanced => "Advanced",
@@ -87,6 +92,7 @@ impl Group {
             Group::Terminal => Some("terminal"),
             Group::Windows => Some("window"),
             Group::Polter => Some("polter"),
+            Group::Screenshot => Some("screenshot"),
             Group::All | Group::Keybinds | Group::Advanced | Group::About => None,
         }
     }
@@ -125,6 +131,9 @@ pub enum Control {
     Font,
     Color,
     Theme,
+    /// A folder: a path box, "Choose…" and "Show in Explorer"
+    /// (screenshot.md §12.3). Written like `Text`; empty restores the default.
+    Directory,
     ReadOnly,
 }
 
@@ -138,6 +147,7 @@ impl Control {
             "font" => Control::Font,
             "color" => Control::Color,
             "theme" => Control::Theme,
+            "directory" => Control::Directory,
             _ => Control::ReadOnly,
         }
     }
@@ -151,9 +161,25 @@ pub enum Source {
     Cli { arg: u32 },
 }
 
+/// What a row stands for. Only a `Key` is something the form writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// A configuration key, from the core's `items`.
+    Key,
+    /// A section's `shortcuts` row (screenshot.md §12.1's last line): `key`
+    /// is the action, `value` the keys bound to it now, read-only, with a
+    /// link to the Keyboard Shortcuts page.
+    Shortcut,
+    /// A search result that is no form row -- a role, a project, a plugin,
+    /// an action: `label` and `summary` are already in the user's language,
+    /// and clicking it goes where it lives (screenshot.md §12.2).
+    Jump,
+}
+
 /// One row of the core's table.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Item {
+    pub kind: Kind,
     pub key: String,
     /// The §7.1 group the core puts it in on this OS; `None` for a key only
     /// in All Options.
@@ -161,8 +187,20 @@ pub struct Item {
     pub control: Control,
     pub choices: Vec<String>,
     /// The display name of each of `choices`, same order, English msgids
-    /// (#977); empty where the table names none.
-    pub choice_labels: Vec<String>,
+    /// (#977); empty where the table names none. `None` is a value the
+    /// table leaves to `choice_template`.
+    pub choice_labels: Vec<Option<String>>,
+    /// A msgid with one `%s`, for the values `choice_labels` leaves `None`:
+    /// the value's modifiers, written this platform's way, go in
+    /// (`screenshot-mouse-trigger`'s `%s + Double-Click`).
+    pub choice_template: Option<String>,
+    /// What a switch writes; `None` is `true` / `false`.
+    /// `screenshot-agent-access` writes `allow` / `deny`, and the core
+    /// refuses `true` for it.
+    pub on: Option<String>,
+    pub off: Option<String>,
+    /// Words the search also finds this by. Not msgids; never translated.
+    pub aliases: Vec<String>,
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub default: String,
@@ -187,7 +225,9 @@ pub type Sections = Vec<(String, Vec<String>)>;
 pub fn items_in(group: Group, items: &[Item], sections: &Sections, query: &str) -> Vec<usize> {
     if group == Group::All {
         let needle = query.trim().to_lowercase();
-        return (0..items.len()).filter(|&i| needle.is_empty() || items[i].key.to_lowercase().contains(&needle)).collect();
+        return (0..items.len())
+            .filter(|&i| items[i].kind == Kind::Key && (needle.is_empty() || items[i].key.to_lowercase().contains(&needle)))
+            .collect();
     }
     let Some(name) = group.core() else { return Vec::new() };
     let Some((_, keys)) = sections.iter().find(|(g, _)| g == name) else { return Vec::new() };
@@ -195,7 +235,7 @@ pub fn items_in(group: Group, items: &[Item], sections: &Sections, query: &str) 
 }
 
 pub fn is_writable(it: &Item) -> bool {
-    it.readonly.is_none() && it.control != Control::ReadOnly
+    it.kind == Kind::Key && it.readonly.is_none() && it.control != Control::ReadOnly
 }
 
 /// What a row draws. The form never writes a read-only one; in All Options
@@ -298,7 +338,7 @@ pub fn commit_for(c: Control) -> Commit {
 
 /// The dot beside the label (§7.3).
 pub fn differs_from_default(it: &Item) -> bool {
-    it.value != it.default
+    it.kind == Kind::Key && it.value != it.default
 }
 
 /// "Restore Default" deletes the main file's line (§7.2 rule 5), so it is
@@ -313,15 +353,19 @@ pub fn should_write(edited: &str, it: &Item) -> bool {
     edited != it.value
 }
 
+/// Whether a switch is on: its value is the one it writes when turned on
+/// (`on`, else `true`).
 pub fn is_on(it: &Item) -> bool {
-    it.value == "true"
+    it.value == it.on.as_deref().unwrap_or("true")
 }
 
-pub fn toggle_value(on: bool) -> &'static str {
+/// What a switch writes: the table's `on` / `off` for this key, else
+/// `true` / `false`.
+pub fn toggle_value(it: &Item, on: bool) -> String {
     if on {
-        "true"
+        it.on.clone().unwrap_or_else(|| "true".to_string())
     } else {
-        "false"
+        it.off.clone().unwrap_or_else(|| "false".to_string())
     }
 }
 
@@ -367,7 +411,9 @@ pub enum ReadOnlyNote {
 }
 
 pub fn readonly_note(it: &Item) -> Option<ReadOnlyNote> {
-    if is_writable(it) {
+    // A shortcut row or a result that jumps is not a key somebody set
+    // somewhere: there is nothing of that kind to explain.
+    if it.kind != Kind::Key || is_writable(it) {
         return None;
     }
     Some(match (&it.readonly.as_deref(), &it.source) {
@@ -382,6 +428,8 @@ pub fn readonly_note(it: &Item) -> Option<ReadOnlyNote> {
 /// `ConfigFormRules.title`.
 pub fn row_title(it: &Item, translate: impl Fn(&str) -> String) -> String {
     match &it.label {
+        // Already a name in the user's language: a role, a project.
+        Some(label) if it.kind == Kind::Jump => label.clone(),
         Some(label) => translate(label),
         None => it.key.clone(),
     }
@@ -392,6 +440,12 @@ pub fn row_title(it: &Item, translate: impl Fn(&str) -> String) -> String {
 /// translated (#973, mac `ConfigFormView.help`); for the rest, the first
 /// paragraph of Ghostty's help.
 pub fn row_help(it: &Item, translate: impl Fn(&str) -> String) -> String {
+    match it.kind {
+        Kind::Key => {}
+        // No key to spell: the sentence alone.
+        Kind::Shortcut => return it.summary.as_deref().map(&translate).unwrap_or_default(),
+        Kind::Jump => return it.summary.clone().unwrap_or_default(),
+    }
     match (&it.label, &it.summary) {
         (Some(_), Some(summary)) => format!("{}  {}", it.key, translate(summary)),
         (Some(_), None) => it.key.clone(),
@@ -418,22 +472,71 @@ pub fn error_after(read: FormRead, error: Option<String>) -> Option<String> {
     }
 }
 
-/// What each value of an enum is called in its list: the table's name,
-/// translated, else the value itself (#977; mac `ConfigFormRules.choiceTitle`).
-/// What is written is always the value.
-pub fn choice_titles(it: &Item, translate: impl Fn(&str) -> String) -> Vec<String> {
-    if it.choice_labels.len() == it.choices.len() {
-        it.choice_labels.iter().map(|l| translate(l)).collect()
-    } else {
-        it.choices.clone()
+/// The values a list offers: the table's, and after them the value in
+/// effect when it is not one of them -- `screenshot-mouse-trigger` set to
+/// three modifiers in the config file. It is shown and selected as itself;
+/// showing the first row instead would say "Off" about a trigger that is
+/// on (screenshot.md §12.3).
+pub fn shown_choices(it: &Item) -> Vec<String> {
+    let mut out = it.choices.clone();
+    if !it.value.is_empty() && !out.contains(&it.value) {
+        out.push(it.value.clone());
     }
+    out
+}
+
+/// `super+shift` as this platform writes a shortcut's modifiers:
+/// `Shift+Win`, in the order the menus use (`keyseq::mods_label`: Ctrl,
+/// Alt, Shift, Win). A word that is no modifier is kept as written, after
+/// them, so a value this build does not know is still told apart.
+pub fn modifiers_text(value: &str) -> String {
+    const ORDER: [(&str, &str); 4] = [("ctrl", "Ctrl"), ("alt", "Alt"), ("shift", "Shift"), ("super", "Win")];
+    let words: Vec<String> = value.split('+').map(|w| w.trim().to_ascii_lowercase()).filter(|w| !w.is_empty()).collect();
+    let mut out: Vec<String> = ORDER.iter().filter(|(k, _)| words.iter().any(|w| w == k)).map(|(_, n)| n.to_string()).collect();
+    out.extend(words.iter().filter(|w| !ORDER.iter().any(|(k, _)| k == w)).cloned());
+    out.join("+")
+}
+
+/// What each of `shown_choices` is called in its list: the table's name,
+/// translated; where the table leaves it to the template, the value's
+/// modifiers in the translated template; else the value itself (#977; mac
+/// `ConfigFormRules.choiceTitle`). What is written is always the value.
+pub fn choice_titles(it: &Item, translate: impl Fn(&str) -> String) -> Vec<String> {
+    let named = it.choice_labels.len() == it.choices.len();
+    shown_choices(it)
+        .iter()
+        .enumerate()
+        .map(|(i, value)| match (named.then(|| it.choice_labels.get(i).cloned().flatten()).flatten(), &it.choice_template) {
+            (Some(label), _) => translate(&label),
+            (None, Some(template)) => translate(template).replacen("%s", &modifiers_text(value), 1),
+            (None, None) => value.clone(),
+        })
+        .collect()
+}
+
+/// The list row that is the value in effect; `None` only for an empty
+/// value that is no choice.
+pub fn choice_index(it: &Item) -> Option<usize> {
+    shown_choices(it).iter().position(|c| *c == it.value)
 }
 
 /// The value to write for the list's selected row: the row's value, never
 /// the name it is shown by (#977). `None` for no selection (`CB_ERR`, -1)
 /// or a row past the end.
 pub fn choice_value(it: &Item, selected: isize) -> Option<String> {
-    usize::try_from(selected).ok().and_then(|i| it.choices.get(i)).cloned()
+    usize::try_from(selected).ok().and_then(|i| shown_choices(it).get(i).cloned())
+}
+
+/// A folder row's three parts inside its control cell: the path box, then
+/// "Choose…" and "Show in Explorer", each as wide as asked, a button gap
+/// apart, ending on the cell's right edge. The box keeps at least a
+/// control's height of width.
+pub fn directory_parts(control: Rect, dpi: i32, choose_w: i32, reveal_w: i32) -> (Rect, Rect, Rect) {
+    let gap = scale(BUTTONS_GAP, dpi);
+    let reveal = Rect::new((control.right - reveal_w).max(control.left), control.top, control.right, control.bottom);
+    let choose = Rect::new((reveal.left - gap - choose_w).max(control.left), control.top, (reveal.left - gap).max(control.left), control.bottom);
+    let edit_right = (choose.left - gap).max(control.left + scale(CONTROL_H, dpi)).min(control.right);
+    (Rect::new(control.left, control.top, edit_right, control.bottom), choose, reveal)
 }
 
 /// How wide a text box is, in 96-DPI pixels (#977; mac
@@ -447,7 +550,7 @@ pub fn field_width(control: Control, group: Group) -> Option<i32> {
     match control {
         Control::Number => Some(120),
         Control::Text | Control::Color => Some(160),
-        Control::Font | Control::Theme | Control::Toggle | Control::Choice | Control::ReadOnly => None,
+        Control::Font | Control::Theme | Control::Toggle | Control::Choice | Control::Directory | Control::ReadOnly => None,
     }
 }
 
@@ -455,6 +558,9 @@ pub fn field_width(control: Control, group: Group) -> Option<i32> {
 /// `ConfigFormRules.hasMore`): there is one, and the line under the control
 /// is not already the whole of it.
 pub fn has_more(it: &Item) -> bool {
+    if it.kind != Kind::Key {
+        return false;
+    }
     let Some(doc) = it.doc.as_deref().map(str::trim).filter(|d| !d.is_empty()) else { return false };
     it.summary.is_some() || doc_summary(doc) != doc.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -634,11 +740,16 @@ mod tests {
 
     fn item(key: &str, group: Option<&str>, control: Control, default: &str, value: &str) -> Item {
         Item {
+            kind: Kind::Key,
             key: key.into(),
             group: group.map(str::to_string),
             control,
             choices: Vec::new(),
             choice_labels: Vec::new(),
+            choice_template: None,
+            on: None,
+            off: None,
+            aliases: Vec::new(),
             min: None,
             max: None,
             default: default.into(),
@@ -654,7 +765,7 @@ mod tests {
     #[test]
     fn group_keys_are_the_macos_raw_values() {
         let keys: Vec<_> = Group::ALL.iter().map(|g| g.key()).collect();
-        assert_eq!(keys, ["appearance", "font", "terminal", "windows", "polter", "all", "keybinds", "advanced", "about"]);
+        assert_eq!(keys, ["appearance", "font", "terminal", "windows", "polter", "screenshot", "all", "keybinds", "advanced", "about"]);
         for g in Group::ALL {
             assert_eq!(Group::from_key(g.key()), Some(g));
         }
@@ -807,8 +918,152 @@ mod tests {
     fn toggles_are_true_and_false() {
         assert!(is_on(&item("a", None, Control::Toggle, "false", "true")));
         assert!(!is_on(&item("a", None, Control::Toggle, "false", "false")));
-        assert_eq!(toggle_value(true), "true");
-        assert_eq!(toggle_value(false), "false");
+        let plain = item("a", None, Control::Toggle, "false", "true");
+        assert_eq!(toggle_value(&plain, true), "true");
+        assert_eq!(toggle_value(&plain, false), "false");
+    }
+
+    /// screenshot.md §12.3: `screenshot-agent-access` is a switch whose two
+    /// values are `allow` and `deny`. Writing `true` is refused by the core.
+    #[test]
+    fn a_switch_reads_and_writes_the_tables_own_two_values() {
+        let mut it = item("screenshot-agent-access", Some("screenshot"), Control::Toggle, "allow", "allow");
+        it.on = Some("allow".into());
+        it.off = Some("deny".into());
+        assert!(is_on(&it));
+        it.value = "deny".into();
+        assert!(!is_on(&it));
+        // `true` is not this switch's "on".
+        it.value = "true".into();
+        assert!(!is_on(&it));
+        assert_eq!(toggle_value(&it, true), "allow");
+        assert_eq!(toggle_value(&it, false), "deny");
+    }
+
+    fn trigger(value: &str) -> Item {
+        let mut it = item("screenshot-mouse-trigger", Some("screenshot"), Control::Choice, "ctrl+shift", value);
+        it.choices = ["none", "super+shift", "ctrl+shift", "alt+shift", "super+alt", "ctrl+alt", "super+ctrl"].map(String::from).to_vec();
+        it.choice_labels = vec![Some("Off".into()), None, None, None, None, None, None];
+        it.choice_template = Some("%s + Double-Click".into());
+        it
+    }
+
+    #[test]
+    fn modifiers_are_written_the_way_the_menus_write_them() {
+        assert_eq!(modifiers_text("ctrl+shift"), "Ctrl+Shift");
+        assert_eq!(modifiers_text("super+shift"), "Shift+Win");
+        assert_eq!(modifiers_text("super+ctrl"), "Ctrl+Win");
+        assert_eq!(modifiers_text("shift+alt+ctrl"), "Ctrl+Alt+Shift");
+        assert_eq!(modifiers_text(" Super + ALT "), "Alt+Win");
+        // A word this build does not know is kept, not dropped.
+        assert_eq!(modifiers_text("hyper+shift"), "Shift+hyper");
+    }
+
+    #[test]
+    fn a_templated_choice_is_named_from_its_modifiers() {
+        let zh = |s: &str| match s {
+            "Off" => "关".to_string(),
+            "%s + Double-Click" => "%s + 双击".to_string(),
+            other => other.to_string(),
+        };
+        let it = trigger("ctrl+shift");
+        assert_eq!(
+            choice_titles(&it, zh),
+            ["关", "Shift+Win + 双击", "Ctrl+Shift + 双击", "Alt+Shift + 双击", "Alt+Win + 双击", "Ctrl+Alt + 双击", "Ctrl+Win + 双击"]
+        );
+        assert_eq!(choice_index(&it), Some(2));
+        assert_eq!(choice_value(&it, 0).as_deref(), Some("none"));
+        assert_eq!(choice_value(&it, 6).as_deref(), Some("super+ctrl"));
+    }
+
+    /// The config file says three modifiers, which the table does not list:
+    /// the list gains that value as a row of its own, selected. It must not
+    /// read as the first row -- "Off" -- while the trigger is on.
+    #[test]
+    fn a_value_the_table_does_not_list_is_a_row_of_its_own_and_selected() {
+        let it = trigger("ctrl+alt+shift");
+        let titles = choice_titles(&it, |s| s.to_string());
+        assert_eq!(titles.len(), 8);
+        assert_eq!(titles[7], "Ctrl+Alt+Shift + Double-Click");
+        assert_eq!(choice_index(&it), Some(7));
+        assert_ne!(choice_index(&it), Some(0));
+        // Selecting it again writes it back unchanged.
+        assert_eq!(choice_value(&it, 7).as_deref(), Some("ctrl+alt+shift"));
+        assert_eq!(choice_value(&it, 8), None);
+        // A listed value adds no row.
+        assert_eq!(shown_choices(&trigger("none")).len(), 7);
+    }
+
+    #[test]
+    fn a_folder_row_is_a_box_and_two_buttons() {
+        assert_eq!(Control::parse("directory"), Control::Directory);
+        assert_eq!(commit_for(Control::Directory), Commit::OnEnterOrBlur);
+        assert_eq!(field_width(Control::Directory, Group::Screenshot), None);
+        for dpi in [96, 144] {
+            let cell = Rect::new(100, 10, 600, 10 + scale(CONTROL_H, dpi));
+            let (edit, choose, reveal) = directory_parts(cell, dpi, 80, 130);
+            let gap = scale(BUTTONS_GAP, dpi);
+            assert_eq!((edit.left, reveal.right), (cell.left, cell.right));
+            assert_eq!((choose.width(), reveal.width()), (80, 130));
+            assert_eq!(choose.left - edit.right, gap);
+            assert_eq!(reveal.left - choose.right, gap);
+            for r in [edit, choose, reveal] {
+                assert_eq!((r.top, r.bottom), (cell.top, cell.bottom));
+            }
+        }
+        // Too narrow for both buttons: nothing leaves the cell.
+        let cell = Rect::new(0, 0, 120, CONTROL_H);
+        let (edit, choose, reveal) = directory_parts(cell, 96, 80, 130);
+        for r in [edit, choose, reveal] {
+            assert!(r.left >= cell.left && r.right <= cell.right && r.left <= r.right, "{r:?}");
+        }        // Narrower than one control is tall: the box still ends in the cell.
+        let cell = Rect::new(0, 0, 10, CONTROL_H);
+        let (edit, choose, reveal) = directory_parts(cell, 96, 80, 130);
+        for r in [edit, choose, reveal] {
+            assert!(r.left >= cell.left && r.right <= cell.right && r.left <= r.right, "{r:?}");
+        }
+    }
+
+    fn shortcut() -> Item {
+        let mut it = item("screenshot", Some("screenshot"), Control::ReadOnly, "", "Ctrl+Shift+0");
+        it.kind = Kind::Shortcut;
+        it.label = Some("Screenshot Shortcut".into());
+        it.summary = Some("Change it with a keybind line in the config file.".into());
+        it
+    }
+
+    /// §12.1's last row: read-only, with its own sentence under it and no
+    /// "edit this one in the config file" -- it is not a key that was set
+    /// somewhere -- and it is not one of All Options' keys.
+    #[test]
+    fn a_shortcut_row_is_read_only_and_says_its_own_sentence() {
+        let it = shortcut();
+        let zh = |s: &str| if s == "Screenshot Shortcut" { "截图快捷键".to_string() } else { format!("<{s}>") };
+        assert_eq!(control_for(&it, Group::Screenshot), Control::ReadOnly);
+        assert!(!is_writable(&it) && !can_restore_default(&it) && !differs_from_default(&it));
+        assert_eq!(readonly_note(&it), None);
+        assert_eq!(row_title(&it, zh), "截图快捷键");
+        assert_eq!(row_help(&it, zh), "<Change it with a keybind line in the config file.>");
+        assert!(!has_more(&it));
+        let items = vec![item("font-size", Some("font"), Control::Number, "13", "13"), it];
+        let sections: Sections = vec![("screenshot".into(), vec!["screenshot".into()])];
+        assert_eq!(items_in(Group::Screenshot, &items, &sections, ""), vec![1]);
+        assert_eq!(items_in(Group::All, &items, &sections, ""), vec![0]);
+        assert_eq!(items_in(Group::All, &items, &sections, "screenshot"), Vec::<usize>::new());
+    }
+
+    /// A result that jumps carries text already in the user's language: it
+    /// is not looked up again.
+    #[test]
+    fn a_jump_row_shows_its_text_as_given() {
+        let mut it = item("", None, Control::ReadOnly, "", "");
+        it.kind = Kind::Jump;
+        it.label = Some("Off".into());
+        it.summary = Some("A role".into());
+        let zh = |s: &str| format!("<{s}>");
+        assert_eq!(row_title(&it, zh), "Off");
+        assert_eq!(row_help(&it, zh), "A role");
+        assert_eq!(readonly_note(&it), None);
     }
 
     #[test]
@@ -869,12 +1124,13 @@ mod tests {
         };
         let mut it = item("window-save-state", Some("window"), Control::Choice, "default", "never");
         it.choices = vec!["default".into(), "never".into(), "always".into()];
-        it.choice_labels = vec!["System Default".into(), "Never".into(), "Always".into()];
+        it.choice_labels = vec![Some("System Default".into()), Some("Never".into()), Some("Always".into())];
         assert_eq!(choice_titles(&it, zh), ["跟随系统", "从不", "Always"]);
         // What is written is the value of the selected row, not its name.
         assert_eq!(choice_value(&it, 1).as_deref(), Some("never"));
         assert_eq!(choice_value(&it, -1), None);
         assert_eq!(choice_value(&it, 3), None);
+        assert_eq!(choice_index(&it), Some(1));
         it.choice_labels.clear();
         assert_eq!(choice_titles(&it, zh), ["default", "never", "always"]);
     }
@@ -928,14 +1184,20 @@ mod tests {
         assert_eq!(r0.top, scale(ROW_GAP, dpi));
         assert_eq!(r0.height(), scale(SECTION_ROW_H, dpi));
         assert_eq!((r0.left, r0.right), (scale(PAD_SIDEBAR, dpi), list.right - scale(PAD_SIDEBAR, dpi)));
-        let r8 = group_row(list, dpi, 8);
+        let last = Group::ALL.len() - 1;
+        let r8 = group_row(list, dpi, last);
         assert_eq!(group_at(list, dpi, 5, (r8.top + r8.bottom) / 2), Some(Group::About));
+        // Screenshot sits before Keyboard Shortcuts (screenshot.md §12.1).
+        let at = |g: Group| Group::ALL.iter().position(|x| *x == g).unwrap();
+        assert!(at(Group::Screenshot) < at(Group::Keybinds));
+        let r5 = group_row(list, dpi, at(Group::Screenshot));
+        assert_eq!(group_at(list, dpi, 5, (r5.top + r5.bottom) / 2), Some(Group::Screenshot));
         assert_eq!(group_at(list, dpi, 5, r0.top - 1), None);
         assert_eq!(group_at(list, dpi, list.right, r0.top + 1), None);
-        // All nine fit at the smallest window.
+        // All of them fit at the smallest window.
         let (_, h) = crate::content_size(crate::MIN_W, crate::MIN_H);
         let body = h - BOTTOM - 1;
-        assert!(group_row(list, 96, 8).bottom <= body);
+        assert!(group_row(list, 96, last).bottom <= body);
     }
 
     #[test]

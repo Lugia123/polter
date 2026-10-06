@@ -41,7 +41,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
 
-use polter_shots::annot::{self, By, Display, Item, Labels, Meta, Shape, Source, Tile};
+use polter_shots::agent;
+use polter_shots::annot::{self, By, Display, Item, Labels, Meta, Shape, Source, Terminal, Tile};
 use polter_shots::dclick::{Detector, Mods, Press, Rule, Setting, Verdict};
 use polter_shots::editor::{Editor, Effect, Export, Measure, Monitor, Window};
 use polter_shots::geom::{self, Handle, Point, Rect};
@@ -140,7 +141,13 @@ struct LongShot {
     last: Step,
     frames: u32,
     lost: u32,
+    /// Frames held back because the screen was still changing
+    /// (`Stitcher::offer`). Not dropped: the next steady one is joined.
+    moving: u32,
 }
+
+/// One progress line for every this many frames of a long screenshot.
+const LONG_LOG_EVERY: u32 = 10;
 
 /// The overlay window's timer that takes a frame.
 const TIMER_LONG: usize = 2;
@@ -153,6 +160,24 @@ thread_local! {
 
 /// Whether the bundled annotation font was found and loaded.
 static FONT_OK: AtomicBool = AtomicBool::new(false);
+/// Whether the text box is open, for the message pump (`keys_are_raw`).
+static TEXT_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// Whether key messages on this thread are the overlay's tool keys and must
+/// reach it untouched by the input method.
+///
+/// **The overlay's letters are commands** -- `R` is the rectangle tool -- and
+/// the main loop's pump is built for a terminal, where a letter under a
+/// Chinese input method is the start of a composition. With the overlay in
+/// front and that input method on, the pump (`ITfMessagePump::PeekMessageW`)
+/// took the key off the queue and never handed it back: the log said
+/// `[key] pump swallowed msg=0x100 vk=0x52 ... binding=no` and there was no
+/// `[shot] key` line (task 1090). So while a session is open the pump is
+/// asked not to route keys through TSF -- except while the text box is open,
+/// which is the one place the input method is the point.
+pub fn keys_are_raw() -> bool {
+    ACTIVE.load(Ordering::Acquire) && !TEXT_OPEN.load(Ordering::Acquire)
+}
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// The control window, for the hook thread to post to.
 static CONTROL: AtomicIsize = AtomicIsize::new(0);
@@ -162,7 +187,7 @@ static MOUSE_TRIGGER: AtomicU8 = AtomicU8::new(0);
 /// path and each addressed to a pane **by id**. A pane id comes out of one
 /// counter and is never handed out twice, so a pane closed while its line
 /// waits resolves to nothing; it cannot resolve to a different pane.
-static NOTES: Mutex<Later<u64>> = Mutex::new(Later::new());
+static NOTES: Mutex<Later<(u64, &'static str)>> = Mutex::new(Later::new());
 /// The control window's timer for `NOTES`.
 const TIMER_NOTES: usize = 1;
 /// How many `[shot] key` lines have been written (see `log_key`).
@@ -177,15 +202,15 @@ fn scaled(px: i32, dpi: u32) -> i32 {
     (px * dpi.max(96) as i32 + 48) / 96
 }
 
-fn wide(s: &str) -> Vec<u16> {
+pub(crate) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
 }
 
-fn now() -> Stamp {
+pub(crate) fn now() -> Stamp {
     stamp(unsafe { GetLocalTime() })
 }
 
-fn stamp(t: windows::Win32::Foundation::SYSTEMTIME) -> Stamp {
+pub(crate) fn stamp(t: windows::Win32::Foundation::SYSTEMTIME) -> Stamp {
     Stamp {
         year: t.wYear,
         month: t.wMonth as u8,
@@ -352,11 +377,12 @@ fn register_hotkey(control: HWND) {
     }
 }
 
-/// The one visible notice that the shortcut is not working.
+/// The one visible notice that the shortcut is not working. The words are
+/// the core's two msgids; the combination is added after them, outside the
+/// translated text -- it is a key, not a word.
 fn notify_hotkey_failure(combo: &str) {
-    let body = tr("The screenshot shortcut {} is in use by another program. Change it with keybind = …=screenshot.")
-        .replace("{}", combo);
-    let shown = crate::notify::on_notification(None, Some(tr("Screenshot")), Some(body));
+    let body = format!("{}\n{combo}", tr(toolbar::HOTKEY_TAKEN));
+    let shown = crate::notify::on_notification(None, Some(tr(toolbar::HOTKEY_FAILED)), Some(body));
     // process-wide: the hotkey is registered once for the process
     plogf!("[shot] hotkey failure notice for {combo}: shown={shown}");
 }
@@ -499,11 +525,15 @@ unsafe extern "system" fn control_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             paste_notes();
             LRESULT(0)
         }
+        crate::shot_agent::WM_AGENT_DONE => {
+            crate::shot_agent::deliver_finished();
+            LRESULT(0)
+        }
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
 }
 
-fn tick_ms() -> u64 {
+pub(crate) fn tick_ms() -> u64 {
     unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
 }
 
@@ -515,14 +545,18 @@ fn tick_ms() -> u64 {
 /// callback when a paste made by hand reuses a screenshot that has
 /// annotations.
 pub fn paste_note_later(pane: u64, note: String) {
-    paste_later(pane, note, SECOND_PASTE_DELAY_MS);
+    paste_later(pane, note, SECOND_PASTE_DELAY_MS, "annotation line");
 }
 
 /// Queue `text` to be pasted into pane `pane`, `delay_ms` from now. A long
 /// screenshot's tiles go in one after another this way, each its own paste.
-fn paste_later(pane: u64, text: String, delay_ms: u64) {
+///
+/// `what` is what the text is, for the log: a line that says "annotation
+/// line pasted" about a tile's path sends whoever reads it looking for an
+/// annotation.
+fn paste_later(pane: u64, text: String, delay_ms: u64, what: &'static str) {
     let now = tick_ms();
-    NOTES.lock().unwrap_or_else(|e| e.into_inner()).push(now, delay_ms, pane, text);
+    NOTES.lock().unwrap_or_else(|e| e.into_inner()).push(now, delay_ms, (pane, what), text);
     arm_notes_timer(now);
 }
 
@@ -565,25 +599,23 @@ fn arm_notes_timer(now: u64) {
 fn paste_notes() {
     let now = tick_ms();
     let due = NOTES.lock().unwrap_or_else(|e| e.into_inner()).take_due(now);
-    for (pane, note) in due {
+    for ((pane, what), note) in due {
         let surface = crate::tabs::surface_of_pane(pane);
         if surface.is_null() {
             // process-wide: the pane this was for has gone, so there is no window to name
-            plogf!("[shot] annotation line for pane={pane} not pasted: that pane was closed while it waited");
+            plogf!("[shot] {what} for pane={pane} not pasted: that pane was closed while it waited");
             continue;
         }
         unsafe { (crate::api().surface_text)(surface, note.as_ptr() as *const _, note.len()) };
         // process-wide: reported by pane id, which is unique in the process
-        plogf!("[shot] annotation line pasted into pane={pane}: {} chars", note.chars().count());
-        // (The same line for a long screenshot's later tiles: each is a
-        // queued paste like the annotation line, and is reported like it.)
+        plogf!("[shot] {what} pasted into pane={pane}: {} chars", note.chars().count());
     }
     arm_notes_timer(now);
 }
 
 // ------------------------------------------------------------ the freeze
 
-unsafe extern "system" fn monitor_cb(
+pub(crate) unsafe extern "system" fn monitor_cb(
     mon: HMONITOR,
     _dc: HDC,
     rect: *mut RECT,
@@ -615,7 +647,7 @@ fn window_bounds(hwnd: HWND) -> Option<Rect> {
     }
 }
 
-unsafe extern "system" fn window_cb(hwnd: HWND, data: LPARAM) -> windows::core::BOOL {
+pub(crate) unsafe extern "system" fn window_cb(hwnd: HWND, data: LPARAM) -> windows::core::BOOL {
     unsafe {
         let out = &mut *(data.0 as *mut Vec<Window>);
         if IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() {
@@ -639,7 +671,7 @@ unsafe extern "system" fn window_cb(hwnd: HWND, data: LPARAM) -> windows::core::
 
 /// Read a rectangle of the screen into a `Frozen`: the monitor as it is now,
 /// before any overlay exists.
-unsafe fn grab(screen: HDC, rect: Rect) -> Option<Frozen> {
+pub(crate) unsafe fn grab(screen: HDC, rect: Rect) -> Option<Frozen> {
     unsafe {
         let canvas = Canvas::new(screen, rect)?;
         // CAPTUREBLT so layered windows are in the picture.
@@ -742,6 +774,9 @@ fn begin(preselect: Option<Point>) {
                 continue;
             };
             with(|s| s.mons[i].hwnd = hwnd);
+            // No input method on the overlay itself: its keys are commands.
+            // The text box is a child with a context of its own and keeps it.
+            let _ = windows::Win32::UI::Input::Ime::ImmAssociateContext(hwnd, windows::Win32::UI::Input::Ime::HIMC::default());
             let _ = ShowWindow(hwnd, SW_SHOWNA);
             if first.0.is_null() {
                 first = hwnd;
@@ -771,6 +806,7 @@ fn begin(preselect: Option<Point>) {
 fn end(cancelled: bool) -> Option<Session> {
     let session = SESSION.with(|s| s.try_borrow_mut().ok().and_then(|mut s| s.take()));
     ACTIVE.store(false, Ordering::Release);
+    TEXT_OPEN.store(false, Ordering::Release);
     let session = session?;
     unsafe {
         if let Some(e) = &session.edit {
@@ -824,12 +860,12 @@ fn save_prefs(prefs: &Prefs) {
 
 // --------------------------------------------------------------- the font
 
-/// Where the bundled annotation font is: beside the executable, under
-/// `share`. One place, so that when the file's real name lands there is one
-/// line to change.
+/// Where the bundled annotation font is: `polter\fonts` under the resources
+/// directory -- the one this host found its skills and plugins in
+/// (`announce_resources_dir`), not a path worked out again here.
 fn font_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join("share").join("ghostty").join("fonts").join("NotoSansSC-Regular.ttf"))
+    let resources = std::env::var_os("POLTER_RESOURCES_DIR").filter(|v| !v.is_empty())?;
+    Some(std::path::PathBuf::from(resources).join("polter").join("fonts").join("NotoSansSC-Regular.otf"))
 }
 
 const FONT_FACE: PCWSTR = w!("Noto Sans SC");
@@ -855,7 +891,7 @@ fn load_font() {
     plogf!(
         "[shot] annotation font {:?}: {}",
         path,
-        if added > 0 { "loaded".to_string() } else { "NOT loaded; text falls back to Segoe UI and the toolbar says so".to_string() }
+        if added > 0 { "loaded" } else { "NOT loaded; text falls back to Segoe UI and the toolbar says so" }
     );
 }
 
@@ -892,7 +928,7 @@ fn make_font(px: i32, face: PCWSTR) -> HFONT {
 
 /// Text measured by GDI in the annotation font: what `Editor` hit-tests
 /// text against.
-struct Gdi;
+pub(crate) struct Gdi;
 
 impl Measure for Gdi {
     fn text(&self, text: &str, font_px: i32) -> (i32, i32) {
@@ -916,8 +952,8 @@ impl Measure for Gdi {
 /// A 32-bit top-down bitmap GDI can draw into and this code can read and
 /// write as bytes: B, G, R, X rows, the format `polter_shots::pixels` works
 /// in. Covers `rect` of the virtual screen.
-struct Canvas {
-    dc: HDC,
+pub(crate) struct Canvas {
+    pub(crate) dc: HDC,
     dib: HBITMAP,
     old: HGDIOBJ,
     bits: *mut u8,
@@ -925,7 +961,7 @@ struct Canvas {
 }
 
 impl Canvas {
-    unsafe fn new(like: HDC, rect: Rect) -> Option<Canvas> {
+    pub(crate) unsafe fn new(like: HDC, rect: Rect) -> Option<Canvas> {
         unsafe {
             let dc = CreateCompatibleDC(Some(like));
             let info = BITMAPINFO {
@@ -957,7 +993,7 @@ impl Canvas {
 
     /// The pixels. GDI batches its drawing, so it is flushed first: what GDI
     /// was asked to draw is in these bytes by the time they are read.
-    fn bits(&self) -> &mut [u8] {
+    pub(crate) fn bits(&self) -> &mut [u8] {
         unsafe {
             let _ = GdiFlush();
             std::slice::from_raw_parts_mut(self.bits, self.rect.w as usize * self.rect.h as usize * 4)
@@ -975,15 +1011,17 @@ impl Drop for Canvas {
     }
 }
 
-fn colour_ref(index: u8) -> COLORREF {
-    let (r, g, b) = style::COLOURS[index as usize % style::COLOURS.len()];
+fn rgb_ref((r, g, b): (u8, u8, u8)) -> COLORREF {
     COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16)
 }
 
-/// Black or white, whichever shows on colour `index` (the digit in a number's
-/// circle).
-fn ink_on(index: u8) -> COLORREF {
-    let (r, g, b) = style::COLOURS[index as usize % style::COLOURS.len()];
+fn colour_ref(index: u8) -> COLORREF {
+    rgb_ref(style::COLOURS[index as usize % style::COLOURS.len()])
+}
+
+/// Black or white, whichever shows on this colour (the digit in a number's
+/// circle, the paper under the text being typed).
+fn ink_on((r, g, b): (u8, u8, u8)) -> COLORREF {
     let luma = (299 * r as u32 + 587 * g as u32 + 114 * b as u32) / 1000;
     COLORREF(if luma > 150 { 0 } else { 0x00FF_FFFF })
 }
@@ -995,7 +1033,7 @@ fn ink_on(index: u8) -> COLORREF {
 ///
 /// `hide_text_of` is the annotation whose text the text box is showing
 /// instead: its words are not drawn twice.
-unsafe fn draw_items<'a>(
+pub(crate) unsafe fn draw_items<'a>(
     canvas: &Canvas,
     items: impl Iterator<Item = (usize, &'a Item)>,
     scale: f64,
@@ -1006,7 +1044,7 @@ unsafe fn draw_items<'a>(
         let o = canvas.rect.origin();
         SetBkMode(hdc, TRANSPARENT);
         for (index, item) in items {
-            let colour = colour_ref(item.colour);
+            let colour = rgb_ref(item.colour_rgb());
             let width = item.stroke_px(scale);
             let brush_style = LOGBRUSH { lbStyle: BS_SOLID, lbColor: colour, lbHatch: 0 };
             // Round ends and joins: a thick freehand stroke with square ones
@@ -1061,7 +1099,7 @@ unsafe fn draw_items<'a>(
                         canvas.rect,
                         points,
                         width,
-                        style::COLOURS[item.colour as usize % style::COLOURS.len()],
+                        item.colour_rgb(),
                     );
                 }
                 Shape::Text { at: q, text, size } => {
@@ -1080,7 +1118,7 @@ unsafe fn draw_items<'a>(
                     let digit = wide(&n.to_string());
                     let mut extent = SIZE::default();
                     let _ = GetTextExtentPoint32W(hdc, &digit, &mut extent);
-                    SetTextColor(hdc, ink_on(item.colour));
+                    SetTextColor(hdc, ink_on(item.colour_rgb()));
                     let _ = TextOutW(hdc, c.x - extent.cx / 2, c.y - extent.cy / 2, &digit);
                     SetTextColor(hdc, colour);
                     if !text.is_empty() && !hidden {
@@ -1284,7 +1322,8 @@ unsafe fn draw_toolbar(canvas: &Canvas, editor: &Editor, layout: &Layout, scale:
         if let Some((button, rect)) =
             editor.hover_button().and_then(|b| layout.rect_of(b).map(|r| (b, r.relative_to(o))))
         {
-            label(&toolbar::tooltip(button, tr), rect.x, next_line.max(rect.bottom() + style::px(4, scale)));
+            let tip = toolbar::tooltip(button, editor.props(), tr);
+            label(&tip, rect.x, next_line.max(rect.bottom() + style::px(4, scale)));
         }
         SelectObject(hdc, old_font);
         let _ = DeleteObject(font.into());
@@ -1510,7 +1549,7 @@ unsafe extern "system" fn overlay_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             unsafe {
                 let dc = HDC(wp.0 as *mut c_void);
                 // Dark paper under light ink, light under dark.
-                let paper = if ink_on(colour).0 == 0 { COLORREF(0x0030_3030) } else { COLORREF(0x00FF_FFFF) };
+                let paper = if ink_on(style::COLOURS[colour as usize % style::COLOURS.len()]).0 == 0 { COLORREF(0x0030_3030) } else { COLORREF(0x00FF_FFFF) };
                 SetTextColor(dc, colour_ref(colour));
                 SetBkColor(dc, paper);
                 SetDCBrushColor(dc, paper);
@@ -1546,7 +1585,7 @@ fn start_long() {
         return;
     };
     let Some(stitcher) = Stitcher::new(sel.w as usize, sel.h as usize) else { return };
-    with(|s| s.long = Some(LongShot { stitcher, hwnd, rect: sel, last: Step::Unchanged, frames: 0, lost: 0 }));
+    with(|s| s.long = Some(LongShot { stitcher, hwnd, rect: sel, last: Step::Unchanged, frames: 0, lost: 0, moving: 0 }));
     unsafe {
         let o = mon_rect.origin();
         let local = sel.relative_to(o);
@@ -1600,9 +1639,10 @@ fn stop_long() {
     }
     // process-wide: the overlay is not a terminal window
     plogf!(
-        "[shot] long screenshot left without finishing: {} frame(s), {} dropped, {} px collected and discarded",
+        "[shot] long screenshot left without finishing: {} frame(s), {} dropped, {} held back as still moving, {} px collected and discarded",
         long.frames,
         long.lost,
+        long.moving,
         long.stitcher.total_height()
     );
     repaint();
@@ -1625,14 +1665,32 @@ fn long_tick() {
     let Some(frame) = frame else { return };
     let changed = with(|s| {
         let long = s.long.as_mut()?;
-        let step = long.stitcher.push(&frame);
+        // Only a frame that is the one before it, pixel for pixel, is
+        // joined (screenshot.md §9.7): one caught mid-scroll or half
+        // painted is `Moving` and waits for the next.
+        let step = long.stitcher.offer(&frame);
         long.frames += 1;
-        if step == Step::Lost {
-            long.lost += 1;
+        match step {
+            Step::Lost => long.lost += 1,
+            Step::Moving => long.moving += 1,
+            _ => {}
+        }
+        if long.frames % LONG_LOG_EVERY == 0 {
+            // absence: depends -- one line per LONG_LOG_EVERY frames, so a session of fewer frames than that has none; the start and finish lines are not gated
+            // process-wide: the overlay is not a terminal window
+            plogf!(
+                "[shot] long screenshot frame {}: {} px so far, {} dropped for want of overlap, {} held back as still moving; this frame -> {:?}",
+                long.frames,
+                long.stitcher.total_height(),
+                long.lost,
+                long.moving,
+                step
+            );
         }
         // What the hint shows follows the last frame that said something:
-        // an unchanged frame does not clear "scroll more slowly".
-        let shown = if step == Step::Unchanged { long.last } else { step };
+        // an unchanged frame, or one held back, does not clear "scroll
+        // more slowly".
+        let shown = if matches!(step, Step::Unchanged | Step::Moving) { long.last } else { step };
         let changed = shown != long.last || matches!(step, Step::Added(_));
         if step == Step::Full && long.last != Step::Full {
             // process-wide: the overlay is not a terminal window
@@ -1662,12 +1720,10 @@ unsafe fn draw_long_status(canvas: &Canvas, long: &LongShot, layout: &Layout, se
         SetBkMode(hdc, OPAQUE);
         SetBkColor(hdc, COLORREF(0x0020_2020));
         SetTextColor(hdc, INK);
-        let hint = match long.last {
-            Step::Lost => format!(" — {}", tr(toolbar::LONG_SLOWER)),
-            Step::Full => format!(" — {}", tr(toolbar::LONG_FULL)),
-            _ => String::new(),
-        };
-        let text = wide(&format!(" {} {} px{hint} ", tr(toolbar::LONG_STATUS), long.stitcher.total_height()));
+        // Until the first new rows are joined the line says what to do.
+        let added = long.stitcher.total_height() > long.rect.h as usize;
+        let hint = toolbar::long_hint(long.last, added).map(|h| format!(" — {}", tr(h))).unwrap_or_default();
+        let text = wide(&format!(" {} {} px{hint} ", tr(toolbar::LONG), long.stitcher.total_height()));
         let at = Point::new(layout.bar.x, layout.bar.bottom() + style::px(4, scale)).relative_to(o);
         let _ = TextOutW(hdc, at.x, at.y, &text);
         SelectObject(hdc, old_font);
@@ -1759,7 +1815,7 @@ fn open_edit() {
         let Ok(edit) = edit else {
             // process-wide: the overlay is not a terminal window
             plogf!("[shot] the text box could not be created (err={})", GetLastError().0);
-            with(|s| s.editor.end_text("", &Gdi));
+            commit_edit();
             return;
         };
         let font = annot_font(font_px);
@@ -1771,6 +1827,8 @@ fn open_edit() {
         let end = GetWindowTextLengthW(edit).max(0);
         SendMessageW(edit, EM_SETSEL, Some(WPARAM(end as usize)), Some(LPARAM(end as isize)));
         with(|s| s.edit = Some(EditCtl { hwnd: edit, font }));
+        // The one time the input method is wanted: see `keys_are_raw`.
+        TEXT_OPEN.store(true, Ordering::Release);
         let _ = SetForegroundWindow(parent);
         let _ = SetFocus(Some(edit));
     }
@@ -1804,27 +1862,51 @@ fn restyle_edit() {
 
 /// Close the text box and hand what was typed to `Editor`, which decides
 /// what it becomes (nothing, if nothing was typed).
+///
+/// **This is re-entered, and `Editor::close_text` is what makes that
+/// harmless.** `DestroyWindow` below makes the box lose the keyboard;
+/// `edit_proc` answers `WM_KILLFOCUS` by calling this function again, from
+/// inside the first call and before the first has handed over the text. The
+/// second call must do nothing whatsoever -- it once ended the box with an
+/// empty string, and every text annotation was lost without a line in the
+/// log (task 1090). `close_text` says `true` to exactly one caller.
+///
+/// Keep the order of steps the same as `host_commit` in
+/// `polter-shots/src/editor.rs`, which is this function with the windows
+/// taken out and is what the tests re-enter.
 fn commit_edit() {
-    // Taken out first: destroying the box sends it WM_KILLFOCUS, which asks
-    // for this same close and must find nothing left to do.
-    let Some(e) = with(|s| s.edit.take()).flatten() else {
-        // `Editor` has a text box the host does not (it failed to open).
-        if with(|s| s.editor.end_text("", &Gdi)).is_some() {
-            repaint();
-        }
+    if !with(|s| s.editor.close_text()).unwrap_or(false) {
         return;
-    };
-    let text = unsafe {
+    }
+    // From here this call owns the close. The native control may be absent
+    // (it failed to open); then there is nothing to read.
+    let edit = with(|s| s.edit.take()).flatten();
+    let text = edit.as_ref().map_or(String::new(), |e| unsafe {
         let mut buf = vec![0u16; GetWindowTextLengthW(e.hwnd).max(0) as usize + 1];
         let n = GetWindowTextW(e.hwnd, &mut buf).max(0) as usize;
         String::from_utf16_lossy(&buf[..n])
-    };
-    let parent = unsafe { GetParent(e.hwnd) }.ok();
-    unsafe {
-        let _ = DestroyWindow(e.hwnd);
-        let _ = DeleteObject(e.font.into());
+    });
+    let parent = edit.as_ref().and_then(|e| unsafe { GetParent(e.hwnd) }.ok());
+    TEXT_OPEN.store(false, Ordering::Release);
+    if let Some(e) = &edit {
+        unsafe {
+            // Re-enters this function through WM_KILLFOCUS; see above.
+            let _ = DestroyWindow(e.hwnd);
+            let _ = DeleteObject(e.font.into());
+        }
     }
-    with(|s| s.editor.end_text(&text, &Gdi));
+    let counts = with(|s| {
+        let before = s.editor.items().len();
+        s.editor.end_text(&text, &Gdi);
+        (before, s.editor.items().len())
+    });
+    // process-wide: the overlay is not a terminal window
+    plogf!(
+        "[shot] text box closed: {} char(s) read from it (native control present: {}); annotations {:?}",
+        text.chars().count(),
+        edit.is_some(),
+        counts.map(|(before, after)| format!("{before} -> {after}"))
+    );
     if let Some(parent) = parent {
         let _ = unsafe { SetFocus(Some(parent)) };
     }
@@ -1862,7 +1944,7 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
 
 /// The program, title and process of a window, for the sidecar. Any may be
 /// absent.
-fn window_names(hwnd: u64) -> (Option<String>, Option<String>, Option<u32>) {
+pub(crate) fn window_names(hwnd: u64) -> (Option<String>, Option<String>, Option<u32>) {
     let hwnd = HWND(hwnd as usize as *mut c_void);
     unsafe {
         let mut buf = [0u16; 512];
@@ -1881,6 +1963,94 @@ fn window_names(hwnd: u64) -> (Option<String>, Option<String>, Option<u32>) {
         });
         (app, title, (pid != 0).then_some(pid))
     }
+}
+
+/// `light` or `dark`: which of the two this host is drawing itself in, which
+/// follows the system's setting.
+pub(crate) fn appearance() -> String {
+    let c = crate::theme::bg();
+    let luma = (299 * (c & 0xFF) + 587 * ((c >> 8) & 0xFF) + 114 * ((c >> 16) & 0xFF)) / 1000;
+    if luma < 128 { "dark" } else { "light" }.to_string()
+}
+
+/// The first seven characters of `HEAD` in `cwd` and whether a tracked file has changes, if
+/// `cwd` is in a git repository and git answers within 300 ms. Otherwise
+/// nothing -- a screenshot does not wait for git (§11).
+pub(crate) fn git_of(cwd: &str) -> Option<(String, bool)> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let cwd = cwd.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new().name("polter-shot-git".into()).spawn(move || {
+        crate::name_this_thread("polter-shot-git");
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&cwd)
+                .args(args)
+                .creation_flags(CREATE_NO_WINDOW)
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        };
+        // Seven characters of HEAD; dirty for tracked files only
+        // (`agent::git_state`, the same reading as the macOS side).
+        let answer = run(&["rev-parse", "HEAD"]).and_then(|head| {
+            run(&["status", "--porcelain", "--untracked-files=no"]).and_then(|changes| agent::git_state(&head, &changes))
+        });
+        let _ = tx.send(answer);
+    });
+    spawned.ok()?;
+    rx.recv_timeout(std::time::Duration::from_millis(300)).ok().flatten()
+}
+
+/// The file name of the last shot of the same window (§11), found among the
+/// newest sidecars in `dir`.
+pub(crate) fn previous_in(dir: &Path, image: &str, app: Option<&str>, title: Option<&str>) -> Option<String> {
+    // Without both names there is no "same window" to look for.
+    app.filter(|a| !a.is_empty())?;
+    title.filter(|t| !t.is_empty())?;
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|d| d.ok()?.file_name().into_string().ok())
+        .filter(|n| matches!(polter_shots::name::parse(n), Some((_, polter_shots::name::Kind::Json))))
+        .collect();
+    // Names sort by time. The newest two hundred are enough to look through:
+    // a week of shots is all the directory keeps.
+    names.sort_unstable_by(|a, b| b.cmp(a));
+    let earlier: Vec<_> = names
+        .iter()
+        .take(200)
+        .filter_map(|n| std::fs::read_to_string(dir.join(n)).ok())
+        .filter_map(|t| agent::identity(&t))
+        .collect();
+    agent::previous(&earlier, image, app, title)
+}
+
+/// The terminal id (`0x…`) of the terminal in pane `pane`, as the agent
+/// tools name it: `ghostty_surface_poltergeist_id`, sixteen hex digits. The
+/// core answers 0 for a surface that is no terminal, and then the sidecar
+/// leaves `terminal.id` out.
+pub(crate) fn terminal_id_of(pane: u64) -> Option<String> {
+    let surface = crate::tabs::surface_of_pane(pane);
+    if surface.is_null() {
+        return None;
+    }
+    let id = unsafe { (crate::api().surface_poltergeist_id)(surface) };
+    agent::terminal_id(id)
+}
+
+/// Whether a session of the user's own is open.
+pub(crate) fn is_active() -> bool {
+    ACTIVE.load(Ordering::Acquire)
+}
+
+/// The control window, for other threads to post to.
+pub(crate) fn control_window() -> HWND {
+    HWND(CONTROL.load(Ordering::Acquire) as *mut c_void)
 }
 
 /// Put one format on the open clipboard. The block is the clipboard's once
@@ -1958,9 +2128,10 @@ fn finish() {
         let _ = unsafe { KillTimer(Some(l.hwnd), TIMER_LONG) };
         // process-wide: the overlay is not a terminal window
         plogf!(
-            "[shot] long screenshot finished: {} frame(s), {} dropped for want of overlap, {} px tall",
+            "[shot] long screenshot finished: {} frame(s), {} dropped for want of overlap, {} held back as still moving, {} px tall",
             l.frames,
             l.lost,
+            l.moving,
             l.stitcher.total_height()
         );
     }
@@ -1978,11 +2149,23 @@ fn finish() {
         return;
     };
     let no_items: Vec<Item> = Vec::new();
-    let (Some(png), Some(dib)) = (composed.png(), composed.dib()) else {
+    let Some(png) = composed.png() else {
         // process-wide: the overlay is not a terminal window
         plogf!("[shot] the image could not be encoded; nothing written");
         return;
     };
+    // The bitmap every program reads -- unless it would be past the limit
+    // (a tall long screenshot is hundreds of megabytes uncompressed), and
+    // then the clipboard carries the PNG alone.
+    let dib = composed.clipboard_dib();
+    if dib.is_none() {
+        // process-wide: the overlay is not a terminal window
+        plogf!(
+            "[shot] no bitmap on the clipboard: it would be {} bytes, over the {} byte limit; the PNG alone goes on it",
+            composed.dib_len(),
+            polter_shots::pixels::CLIPBOARD_DIB_LIMIT
+        );
+    }
     let size = composed.size();
     let items = if long.is_some() { &no_items } else { &export.on_image };
     // A long screenshot is also cut into tiles: the pieces a CLI can read
@@ -2011,11 +2194,12 @@ fn finish() {
         let mut ok = false;
         if opened {
             let _ = EmptyClipboard();
-            ok = set_clipboard(CF_DIB, &dib);
+            let bitmap = dib.as_deref().map(|d| set_clipboard(CF_DIB, d));
             let png_format = RegisterClipboardFormatW(w!("PNG"));
-            if png_format != 0 {
-                let _ = set_clipboard(png_format, &png);
-            }
+            let png_ok = png_format != 0 && set_clipboard(png_format, &png);
+            // With a bitmap, it is the bitmap that has to have gone on;
+            // without one, the PNG is all there is.
+            ok = bitmap.unwrap_or(png_ok);
             let _ = CloseClipboard();
         }
         (ok, GetClipboardSequenceNumber())
@@ -2057,6 +2241,19 @@ fn finish() {
             Err(e) => plogf!("[shot] tile {} NOT written: {e}", tile_path.display()),
         }
     }
+    // The pane the shot was triggered from, when Polter was in front: its
+    // id when the host can learn it (`terminal_id_of`), its directory, and
+    // that directory's git state.
+    let cwd = session.origin_pane.and_then(crate::tabs::cwd_of_pane);
+    let id = session.origin_pane.and_then(terminal_id_of).unwrap_or_default();
+    let terminal = (session.origin_pane.is_some() && (cwd.is_some() || !id.is_empty()))
+        .then(|| Terminal { id, git: cwd.as_deref().and_then(git_of), cwd: cwd.clone() });
+    let (source_app, source_title) = match &source {
+        Source::Window { app, title, .. } => (app.clone(), title.clone()),
+        Source::Region { .. } => (None, None),
+    };
+    let previous =
+        path.parent().and_then(|d| previous_in(d, &image_name, source_app.as_deref(), source_title.as_deref()));
     let meta = Meta {
         image: image_name,
         taken,
@@ -2065,11 +2262,12 @@ fn finish() {
         scale: export.scale,
         by: By::User,
         display: Some(Display { index: sel.monitor, size: (mon.rect.w as u32, mon.rect.h as u32), scale: export.scale }),
-        appearance: None,
+        appearance: Some(appearance()),
         source,
-        terminal: None,
-        previous: None,
+        terminal,
+        previous,
         tiles: tile_entries,
+        redacted: Vec::new(),
     };
     let json = path.with_extension("json");
     let sidecar_written = std::fs::write(&json, annot::sidecar(&meta, items));
@@ -2092,14 +2290,9 @@ fn finish() {
     // are more.
     let pasted_tiles = tile_paths.len().min(MAX_TILES_PASTED);
     let note = if long.is_some() {
-        let long_words = [annot::LONG_EN.header, annot::LONG_EN.tiles, annot::LONG_EN.whole].map(tr);
-        let ll = annot::LongLabels {
-            header: &long_words[0],
-            tiles: &long_words[1],
-            whole: &long_words[2],
-            separator: &words[9],
-            see: &words[10],
-        };
+        let en = annot::LONG_EN;
+        let w = [en.header, en.tiles, en.whole, en.separator, en.see].map(tr);
+        let ll = annot::LongLabels { header: &w[0], tiles: &w[1], whole: &w[2], separator: &w[3], see: &w[4] };
         annot::long_line(meta.size, tile_paths.len(), pasted_tiles, &path.to_string_lossy(), &json.to_string_lossy(), &ll)
     } else {
         annot::line(meta.size, items, &json.to_string_lossy(), &l)
@@ -2151,15 +2344,16 @@ fn finish() {
     // process-wide: reported by pane id, which is unique in the process
     plogf!(
         "[shot] path pasted into pane={pane}: {text:?}; {} more path(s) to follow, one every \
-         {SECOND_PASTE_DELAY_MS} ms; annotation line to follow in {} ms: {}",
+         {SECOND_PASTE_DELAY_MS} ms; a line of text to follow in {} ms: {}",
         quoted.len() - 1,
         SECOND_PASTE_DELAY_MS * quoted.len() as u64,
         note.is_some()
     );
     for (i, later) in quoted.iter().enumerate().skip(1) {
-        paste_later(pane, later.clone(), SECOND_PASTE_DELAY_MS * i as u64);
+        paste_later(pane, later.clone(), SECOND_PASTE_DELAY_MS * i as u64, "tile path");
     }
     if let Some(note) = note {
-        paste_later(pane, note, SECOND_PASTE_DELAY_MS * quoted.len() as u64);
+        let what = if long.is_some() { "long-screenshot line" } else { "annotation line" };
+        paste_later(pane, note, SECOND_PASTE_DELAY_MS * quoted.len() as u64, what);
     }
 }

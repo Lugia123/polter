@@ -14,6 +14,15 @@ const _: () = assert!(std::mem::offset_of!(LayoutOut, buf) == 8, "LayoutOut.buf 
 const _: () = assert!(std::mem::offset_of!(LayoutOut, cap) == 16, "LayoutOut.cap is not at ghostty_action_poltergeist_layout_out_s.cap");
 const _: () = assert!(std::mem::offset_of!(LayoutOut, len) == 24, "LayoutOut.len is not at ghostty_action_poltergeist_layout_out_s.len");
 
+// ScreenshotOut <- ghostty_action_poltergeist_screenshot_out_s
+const _: () = assert!(std::mem::size_of::<ScreenshotOut>() == 40, "size of ScreenshotOut != sizeof(ghostty_action_poltergeist_screenshot_out_s)");
+const _: () = assert!(std::mem::align_of::<ScreenshotOut>() == 8, "align of ScreenshotOut != alignof(ghostty_action_poltergeist_screenshot_out_s)");
+const _: () = assert!(std::mem::offset_of!(ScreenshotOut, result) == 0, "ScreenshotOut.result is not at ghostty_action_poltergeist_screenshot_out_s.result");
+const _: () = assert!(std::mem::offset_of!(ScreenshotOut, token) == 8, "ScreenshotOut.token is not at ghostty_action_poltergeist_screenshot_out_s.token");
+const _: () = assert!(std::mem::offset_of!(ScreenshotOut, buf) == 16, "ScreenshotOut.buf is not at ghostty_action_poltergeist_screenshot_out_s.buf");
+const _: () = assert!(std::mem::offset_of!(ScreenshotOut, cap) == 24, "ScreenshotOut.cap is not at ghostty_action_poltergeist_screenshot_out_s.cap");
+const _: () = assert!(std::mem::offset_of!(ScreenshotOut, len) == 32, "ScreenshotOut.len is not at ghostty_action_poltergeist_screenshot_out_s.len");
+
 // PoltergeistMark <- ghostty_action_poltergeist_mark_s
 const _: () = assert!(std::mem::size_of::<PoltergeistMark>() == 24, "size of PoltergeistMark != sizeof(ghostty_action_poltergeist_mark_s)");
 const _: () = assert!(std::mem::align_of::<PoltergeistMark>() == 8, "align of PoltergeistMark != alignof(ghostty_action_poltergeist_mark_s)");

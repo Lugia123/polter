@@ -62,6 +62,7 @@ TARGET = "x86_64-windows-gnu"
 # (file under windows/host/src, Rust struct, path the asserts use, C typedef)
 PAIRS = [
     ("ffi.rs", "LayoutOut", "LayoutOut", "ghostty_action_poltergeist_layout_out_s"),
+    ("ffi.rs", "ScreenshotOut", "ScreenshotOut", "ghostty_action_poltergeist_screenshot_out_s"),
     ("ffi.rs", "PoltergeistMark", "PoltergeistMark", "ghostty_action_poltergeist_mark_s"),
     ("ffi.rs", "PersonaMark", "PersonaMark", "ghostty_poltergeist_persona_s"),
     ("ffi.rs", "PersonaRow", "PersonaRow", "ghostty_persona_s"),

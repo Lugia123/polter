@@ -350,6 +350,23 @@ impl Composed {
         Some(crate::dib::encode(&self.image_of(0, self.rect.h as u32)?))
     }
 
+    /// How many bytes `dib` would be, without making it.
+    pub fn dib_len(&self) -> usize {
+        dib_len(self.rect.w as usize, self.rect.h as usize)
+    }
+
+    /// `dib`, unless it would be larger than [`CLIPBOARD_DIB_LIMIT`]: a
+    /// long screenshot 2560 by 20000 is some 200 MB uncompressed, and the
+    /// clipboard then carries the PNG alone, as the macOS side always does.
+    /// `None` for "too large" as well as "could not be made"; `dib_len`
+    /// says which.
+    pub fn clipboard_dib(&self) -> Option<Vec<u8>> {
+        if !dib_fits_the_clipboard(self.rect.w as usize, self.rect.h as usize) {
+            return None;
+        }
+        self.dib()
+    }
+
     /// The image cut into tiles for a long screenshot: each tile's `y` in
     /// the whole image, its height, and its PNG.
     pub fn tiles(&self, max: u32, overlap: u32) -> Vec<(u32, u32, Vec<u8>)> {
@@ -358,6 +375,21 @@ impl Composed {
             .filter_map(|(y, h)| Some((y, h, crate::encode::png(&self.image_of(y, h)?)?)))
             .collect()
     }
+}
+
+/// The largest bitmap put on the clipboard as `CF_DIB`, in bytes.
+pub const CLIPBOARD_DIB_LIMIT: usize = 64 << 20;
+
+/// The size of a `w` by `h` picture as a packed 32-bit DIB: its header and
+/// four bytes a pixel.
+pub fn dib_len(w: usize, h: usize) -> usize {
+    40 + w * h * 4
+}
+
+/// Whether a `w` by `h` picture goes on the clipboard as a bitmap: up to
+/// the limit, and the limit itself.
+pub fn dib_fits_the_clipboard(w: usize, h: usize) -> bool {
+    dib_len(w, h) <= CLIPBOARD_DIB_LIMIT
 }
 
 #[cfg(test)]
@@ -741,5 +773,25 @@ pub(crate) mod tests {
         assert_eq!(c.size(), (3, 5));
         assert!(Composed::from_stitched(3, vec![9; 13]).is_none());
         assert!(Composed::from_stitched(0, vec![]).is_none());
+    }
+
+    #[test]
+    fn a_bitmap_past_the_limit_is_not_made_for_the_clipboard() {
+        let small = Composed::from_stitched(3, vec![9; 3 * 4 * 5]).unwrap();
+        assert_eq!(small.dib().unwrap().len(), small.dib_len());
+        assert_eq!(small.dib_len(), dib_len(3, 5));
+        assert_eq!(small.clipboard_dib(), small.dib());
+        // The limit is 64 MiB and is itself allowed.
+        assert_eq!(CLIPBOARD_DIB_LIMIT, 64 * 1024 * 1024);
+        let rows = (CLIPBOARD_DIB_LIMIT - 40) / 4 / 2560;
+        assert!(dib_fits_the_clipboard(2560, rows));
+        assert!(!dib_fits_the_clipboard(2560, rows + 1));
+        assert_eq!(dib_len(2, (CLIPBOARD_DIB_LIMIT - 40) / 8), CLIPBOARD_DIB_LIMIT);
+        assert!(dib_fits_the_clipboard(2, (CLIPBOARD_DIB_LIMIT - 40) / 8));
+        // The case it is for: a long screenshot as tall as they get.
+        assert!(!dib_fits_the_clipboard(2560, 20_000));
+        let tall = Composed::from_stitched(4096, vec![0; 4096 * 4 * 4097]).unwrap();
+        assert!(tall.dib_len() > CLIPBOARD_DIB_LIMIT);
+        assert_eq!(tall.clipboard_dib(), None);
     }
 }

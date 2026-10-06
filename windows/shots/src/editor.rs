@@ -64,6 +64,8 @@ pub struct TextBox {
     /// Whether the number was placed by the same click that opened the box
     /// (so the two are one step to undo).
     fresh: bool,
+    /// Whether the host has begun closing the box ([`Editor::close_text`]).
+    closing: bool,
 }
 
 /// What the host has to do after an event.
@@ -89,7 +91,8 @@ pub enum Effect {
     OpenText,
     /// The text box's colour or size changed; restyle it.
     RestyleText,
-    /// Read the text box, close it, and call [`Editor::end_text`].
+    /// Close the text box and keep what is in it: [`Editor::close_text`],
+    /// then read the box and destroy it, then [`Editor::end_text`].
     CommitText,
 }
 
@@ -319,11 +322,13 @@ impl Editor {
             return Effect::RestyleText;
         }
         if let Some(i) = self.selected.filter(|i| *i < self.items.len()) {
-            if self.items[i].props() == Props::Block || self.items[i].colour == colour {
+            if self.items[i].props() == Props::Block || (self.items[i].colour == colour && self.items[i].rgb.is_none()) {
                 return Effect::None;
             }
             self.checkpoint();
             self.items[i].colour = colour;
+            // A palette colour replaces whatever colour it had.
+            self.items[i].rgb = None;
             return Effect::Repaint;
         }
         if matches!(self.tool.props(), Props::None | Props::Block) {
@@ -500,23 +505,26 @@ impl Editor {
             };
         }
 
-        self.selected = None;
+        // A drawing tool lets go of what was selected. Outside the selection
+        // nothing is drawn, but letting go is still something to show: the
+        // grips have to leave the screen now, not at the next repaint.
+        let let_go = self.selected.take().is_some();
         if !sel.rect.contains(p) {
-            return Effect::None;
+            return if let_go { Effect::Repaint } else { Effect::None };
         }
         let (colour, level) = (self.prefs.colour(self.tool), self.prefs.level(self.tool));
         match self.tool {
-            Tool::Pen => self.live = Some(Item { shape: Shape::Pen(vec![p]), colour, level }),
-            Tool::Highlighter => self.live = Some(Item { shape: Shape::Highlighter(vec![p]), colour, level }),
+            Tool::Pen => self.live = Some(Item { shape: Shape::Pen(vec![p]), colour, level, rgb: None }),
+            Tool::Highlighter => self.live = Some(Item { shape: Shape::Highlighter(vec![p]), colour, level, rgb: None }),
             Tool::Text => {
-                self.text = Some(TextBox { at: p, text: String::new(), colour, level, editing: None, caption: false, fresh: false });
+                self.text = Some(TextBox { at: p, text: String::new(), colour, level, editing: None, caption: false, fresh: false, closing: false });
                 return Effect::OpenText;
             }
             Tool::Number => {
                 // The circle and the sentence typed after it are one step.
                 self.checkpoint();
                 let n = annot::next_number(&self.items);
-                self.items.push(Item { shape: Shape::Number { n, at: p, text: String::new(), size: (0, 0) }, colour, level });
+                self.items.push(Item { shape: Shape::Number { n, at: p, text: String::new(), size: (0, 0) }, colour, level, rgb: None });
                 let at = annot::caption_at(p, level, scale, style::font_px(level, scale));
                 self.text = Some(TextBox {
                     at,
@@ -526,6 +534,7 @@ impl Editor {
                     editing: Some(self.items.len() - 1),
                     caption: true,
                     fresh: true,
+                    closing: false,
                 });
                 return Effect::OpenText;
             }
@@ -552,7 +561,7 @@ impl Editor {
             Tool::Arrow => Shape::Arrow { from: start, to: tip },
             _ => return None,
         };
-        Some(Item { shape, colour, level })
+        Some(Item { shape, colour, level, rgb: None })
     }
 
     /// The pointer moved to `p`.
@@ -705,6 +714,7 @@ impl Editor {
                         editing: Some(i),
                         caption,
                         fresh: false,
+                        closing: false,
                     });
                     return Effect::OpenText;
                 }
@@ -716,10 +726,40 @@ impl Editor {
         self.pointer_down(p, mods, m)
     }
 
-    /// The text box closed with `text` in it. Call after
-    /// [`Effect::CommitText`], and when the box ends itself (Ctrl+Enter,
-    /// Esc, losing the keyboard).
+    /// Begin closing the text box. `true` when there is a box and this is
+    /// the call that closes it: the caller then reads the native control,
+    /// destroys it and calls [`Self::end_text`] with what it read. `false`
+    /// when there is no box **or it is already being closed** -- the caller
+    /// does nothing at all.
+    ///
+    /// **Closing is a state because closing is re-entered.** Destroying the
+    /// native control makes it lose the keyboard, and losing the keyboard is
+    /// one of the things that closes the box; so the host's close routine is
+    /// called a second time from inside the first, before the first has
+    /// handed over the text. That second call once ended the box with an
+    /// empty string, and every text and every number's sentence was thrown
+    /// away with nothing logged (task 1090). No test here saw it: the
+    /// re-entry is made by the window system, and these tests drove `Editor`
+    /// the way a well-behaved host would. Now the order is this type's to
+    /// keep, and a test below re-enters the way the window system does.
+    pub fn close_text(&mut self) -> bool {
+        match &mut self.text {
+            Some(t) if !t.closing => {
+                t.closing = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The text box closed with `text` in it. Only after [`Self::close_text`]
+    /// said `true`; a call that did not begin the close is ignored, and the
+    /// box stays open -- a host that skips the first step gets a box that
+    /// will not close, which is seen, rather than text that is quietly lost.
     pub fn end_text(&mut self, text: &str, m: &dyn Measure) -> Effect {
+        if !self.text.as_ref().is_some_and(|t| t.closing) {
+            return Effect::None;
+        }
         let Some(t) = self.text.take() else { return Effect::None };
         let text = text.trim().replace("\r\n", "\n");
         let font = style::font_px(t.level, self.scale());
@@ -760,7 +800,7 @@ impl Editor {
             None => {
                 if !text.is_empty() {
                     self.checkpoint();
-                    self.items.push(Item { shape: Shape::Text { at: t.at, text, size }, colour: t.colour, level: t.level });
+                    self.items.push(Item { shape: Shape::Text { at: t.at, text, size }, colour: t.colour, level: t.level, rgb: None });
                 }
             }
         }
@@ -939,7 +979,25 @@ mod tests {
     /// Type `s` into the open text box and commit it.
     fn type_text(e: &mut Editor, s: &str) {
         assert!(e.text_box().is_some(), "no text box is open");
-        e.end_text(s, &Fake);
+        host_commit(e, s, true);
+    }
+
+    /// **What the host's `commit_edit` does, step for step**, including the
+    /// part the window system does to it: destroying the native box makes it
+    /// lose the keyboard, and losing the keyboard calls `commit_edit` again
+    /// before the first call has handed over the text. `reenter` is that
+    /// second call. Keep this the same shape as `shot.rs::commit_edit`.
+    fn host_commit(e: &mut Editor, typed: &str, reenter: bool) {
+        if !e.close_text() {
+            return;
+        }
+        // The host has read `typed` out of the control by now. Then:
+        // DestroyWindow -> WM_KILLFOCUS -> commit_edit, which finds no native
+        // control any more and has nothing to read.
+        if reenter {
+            host_commit(e, "", false);
+        }
+        e.end_text(typed, &Fake);
     }
 
     // ----------------------------------------------------------- selecting
@@ -1195,6 +1253,13 @@ mod tests {
         press(&mut e, Button::Colour(8));
         press(&mut e, Button::Level(4));
         assert_eq!((e.items()[0].colour, e.items()[0].level), (8, 4));
+        // An annotation an agent drew in a colour of its own (`rgb`) takes
+        // the palette colour chosen for it, even the one its index already
+        // says: the custom colour is what goes.
+        e.items[0].rgb = Some((1, 2, 3));
+        assert_eq!(press(&mut e, Button::Colour(8)), Effect::Repaint);
+        assert_eq!((e.items()[0].colour, e.items()[0].rgb), (8, None));
+        assert_eq!(press(&mut e, Button::Colour(8)), Effect::None, "and now it is that colour already");
     }
 
     #[test]
@@ -1295,6 +1360,51 @@ mod tests {
     }
 
     #[test]
+    fn undo_and_redo_let_go_of_the_selected_annotation_and_undo_each_other() {
+        let mut e = with_two_rects();
+        letter(&mut e, 'V');
+        click(&mut e, P(500, 340));
+        key(&mut e, overlay::VK_RIGHT);
+        assert_eq!(e.selected(), Some(0));
+        assert_eq!(e.key(overlay::VK_Z, CTRL, &Fake).1, Effect::Repaint);
+        assert_eq!(e.selected(), None, "what was selected may not be there any more");
+        assert_eq!(rect_of(&e, 0), Rect::new(500, 300, 100, 80));
+        click(&mut e, P(700, 340));
+        assert_eq!(e.selected(), Some(1));
+        assert_eq!(e.key(overlay::VK_Z, Mods::CTRL_SHIFT, &Fake).1, Effect::Repaint);
+        assert_eq!(e.selected(), None);
+        assert_eq!(rect_of(&e, 0), Rect::new(501, 300, 100, 80));
+        // What was redone can be undone again.
+        assert_eq!(e.key(overlay::VK_Z, CTRL, &Fake).1, Effect::Repaint);
+        assert_eq!(rect_of(&e, 0), Rect::new(500, 300, 100, 80));
+        assert_eq!(e.items().len(), 2, "one step back from the redone nudge, not two");
+        assert!(e.can_redo());
+    }
+
+    #[test]
+    fn drawing_lets_go_of_the_selected_annotation() {
+        let mut e = with_two_rects();
+        let ctrl_click = |e: &mut Editor, p: Point| {
+            let down = e.pointer_down(p, CTRL, &Fake);
+            e.pointer_up(p);
+            down
+        };
+        ctrl_click(&mut e, P(500, 340));
+        assert_eq!(e.selected(), Some(0));
+        drag(&mut e, P(900, 300), P(950, 350));
+        assert_eq!(e.items().len(), 3);
+        assert_eq!(e.selected(), None);
+        // A click outside the selection draws nothing, but it lets go too,
+        // and says so: the grips have to leave the screen.
+        ctrl_click(&mut e, P(500, 340));
+        assert_eq!(e.selected(), Some(0));
+        assert_eq!(click(&mut e, P(100, 100)), Effect::Repaint);
+        assert_eq!(e.selected(), None);
+        assert_eq!(click(&mut e, P(100, 100)), Effect::None, "with nothing selected there is nothing to repaint");
+        assert_eq!(e.items().len(), 3);
+    }
+
+    #[test]
     fn a_click_that_moves_nothing_is_not_a_step() {
         let mut e = with_two_rects();
         letter(&mut e, 'V');
@@ -1337,9 +1447,45 @@ mod tests {
         click(&mut e, P(500, 300));
         assert_eq!(e.pointer_down(P(800, 500), NONE, &Fake), Effect::CommitText);
         assert!(e.text_box().is_some(), "the host reads the box and then calls end_text");
-        e.end_text("kept", &Fake);
+        host_commit(&mut e, "kept", true);
         assert_eq!(e.items().len(), 1);
         assert!(e.text_box().is_none(), "that click did not open another box");
+    }
+
+    #[test]
+    fn closing_the_box_is_re_entered_and_the_text_survives_it() {
+        // The defect of task 1090, as the window system produces it.
+        let mut e = selected();
+        letter(&mut e, 'T');
+        click(&mut e, P(500, 300));
+        host_commit(&mut e, "abc", true);
+        assert_eq!(e.items().len(), 1, "the text that was typed is an annotation");
+        assert_eq!(e.items()[0].shape, Shape::Text { at: P(500, 300), text: "abc".into(), size: (30, 18) });
+        assert!(e.text_box().is_none());
+        // And a number's sentence, which went the same way.
+        letter(&mut e, 'N');
+        click(&mut e, P(600, 300));
+        host_commit(&mut e, "this one", true);
+        assert_eq!(e.items()[1].shape, Shape::Number { n: 1, at: P(600, 300), text: "this one".into(), size: (80, 18) });
+    }
+
+    #[test]
+    fn only_the_call_that_began_the_close_may_end_it() {
+        let mut e = selected();
+        assert!(!e.close_text(), "no box, nothing to close");
+        letter(&mut e, 'T');
+        click(&mut e, P(500, 300));
+        // Ending without beginning is ignored, and the box stays.
+        assert_eq!(e.end_text("", &Fake), Effect::None);
+        assert!(e.text_box().is_some());
+        assert!(e.close_text());
+        assert!(!e.close_text(), "already closing: a second caller does nothing");
+        assert!(!e.close_text());
+        assert_eq!(e.end_text("abc", &Fake), Effect::Repaint);
+        assert_eq!(e.items().len(), 1);
+        assert!(!e.close_text(), "and it is closed");
+        assert_eq!(e.end_text("again", &Fake), Effect::None);
+        assert_eq!(e.items().len(), 1);
     }
 
     #[test]
@@ -1464,7 +1610,7 @@ mod tests {
         letter(&mut e, 'T');
         click(&mut e, P(900, 600));
         assert_eq!(e.right_click(), Effect::CommitText, "1. out of the text box");
-        e.end_text("note", &Fake);
+        host_commit(&mut e, "note", true);
         e.pointer_down(P(500, 340), CTRL, &Fake);
         e.pointer_up(P(500, 340));
         assert_eq!(e.selected(), Some(0));
@@ -1495,11 +1641,40 @@ mod tests {
         assert_eq!(e.tool(), Tool::Rect);
         // Between two buttons: the toolbar swallows it; nothing is drawn.
         let r = e.layout().unwrap().rect_of(Button::Tool(Tool::Rect)).unwrap();
+        assert_eq!(click(&mut e, P(r.right() + 1, r.y + 3)), Effect::None);
         drag(&mut e, P(r.right() + 1, r.y + 3), P(r.right() + 60, r.y + 60));
         assert!(e.items().is_empty());
         assert_eq!(press(&mut e, Button::Done), Effect::Finish);
         assert_eq!(press(&mut e, Button::Cancel), Effect::Cancel);
         assert_eq!(press(&mut e, Button::Long), Effect::Long);
+    }
+
+    /// With the whole display selected the toolbar is inside the selection,
+    /// where a click that missed its buttons would otherwise be a click on
+    /// the picture. (With the toolbar outside the selection, as in the test
+    /// above, nothing is drawn there whether the toolbar swallows the click
+    /// or not -- that one alone does not show that it does.)
+    #[test]
+    fn a_toolbar_inside_the_selection_still_takes_its_clicks() {
+        let mut e = fresh();
+        click(&mut e, P(2000, 1000));
+        assert_eq!(e.selection().map(|s| s.rect), Some(MON));
+        let pen = e.layout().unwrap().rect_of(Button::Tool(Tool::Pen)).unwrap();
+        assert!(MON.contains(P(pen.x, pen.y)), "the toolbar is inside the selection");
+        // A double click on a button presses it; it does not finish.
+        assert_eq!(e.double_click(P(pen.x + 2, pen.y + 2), NONE, &Fake), Effect::Repaint);
+        assert_eq!(e.tool(), Tool::Pen);
+        letter(&mut e, 'V');
+        let gap = P(pen.right() + 1, pen.y + 3);
+        assert_eq!(e.layout().unwrap().button_at(gap), None);
+        assert_eq!(e.double_click(gap, NONE, &Fake), Effect::None, "nor does one between two buttons");
+        // Between two buttons nothing is drawn and nothing is moved.
+        letter(&mut e, 'R');
+        assert_eq!(e.pointer_down(gap, NONE, &Fake), Effect::None);
+        e.pointer_up(gap);
+        drag(&mut e, gap, P(pen.right() + 60, pen.y - 200));
+        assert!(e.items().is_empty());
+        assert_eq!(e.selection().map(|s| s.rect), Some(MON));
     }
 
     #[test]
@@ -1575,6 +1750,20 @@ mod tests {
         drag(&mut e, P(900, 300), P(1000, 400));
         let order: Vec<usize> = e.draw_order().into_iter().map(|(i, _)| i).collect();
         assert_eq!(order, [2, 0, 1]);
+        // And that is the order they leave in for the picture -- here the
+        // mosaic was made last, so the order made would put it over the
+        // boxes; the file keeps the order they were made in.
+        let x = e.export().unwrap();
+        let shapes: Vec<Shape> = x.on_screen.iter().map(|i| i.shape.clone()).collect();
+        assert_eq!(
+            shapes,
+            [Shape::Mosaic(Rect::new(900, 300, 100, 100)), Shape::Rect(Rect::new(500, 300, 100, 80)), Shape::Rect(Rect::new(700, 300, 100, 80))]
+        );
+        let on_image: Vec<Shape> = x.on_image.iter().map(|i| i.shape.clone()).collect();
+        assert_eq!(
+            on_image,
+            [Shape::Rect(Rect::new(100, 100, 100, 80)), Shape::Rect(Rect::new(300, 100, 100, 80)), Shape::Mosaic(Rect::new(500, 100, 100, 100))]
+        );
     }
 
     #[test]

@@ -147,6 +147,7 @@ mod wintitle;
 mod search;
 mod shell;
 mod shot;
+mod shot_agent;
 mod shots;
 mod shellopen;
 mod strip;
@@ -4193,18 +4194,14 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             }
         }
 
-        // An agent's `screenshot_*` tool, for this host to carry out: the
-        // contract is `dev-docs/poltergeist/screenshot.md`, section 10.1. The
-        // core half landed first. Until this arm reads `spec` and writes the
-        // out cell, the cell stays as the core zeroed it, which the core
-        // reports to the agent as `Unsupported` -- the honest answer.
-        // owed: 1088 -- the host half of the agent screenshot tools.
+        // An agent's screenshot request (screenshot.md §10.1): one JSON request
+        // in, one JSON answer out, written into the core's own buffer. Listing
+        // windows, capturing and annotating are answered before this returns;
+        // a long screenshot answers "pending" and finishes on its own thread.
         ffi::ACTION_POLTERGEIST_SCREENSHOT => {
-            alogf!(
-                origin,
-                "[action] poltergeist_screenshot: arrived, and this host does not answer it yet (task 1088)"
-            );
-            false
+            // carries no terminal: the request says what to capture; the one
+            // target that is a terminal is resolved from `target_surface`
+            shot_agent::perform(&action, target_surface(&target))
         }
 
         // From the menu, the command palette, or the keybind pressed while a
@@ -5210,6 +5207,8 @@ fn load_api() -> Option<Api> {
             app_config_form: sym!(internal, "ghostty_app_config_form"),
             app_config_set: sym!(internal, "ghostty_app_config_set"),
             app_config_set_result: sym!(internal, "ghostty_app_config_set_result"),
+            app_config_form_search: sym!(internal, "ghostty_app_config_form_search"),
+            app_poltergeist_screenshot_complete: sym!(internal, "ghostty_app_poltergeist_screenshot_complete"),
             clipboard_request_is_paste: sym!(internal, "ghostty_clipboard_request_is_paste"),
             surface_complete_clipboard_request: sym!(
                 internal,
@@ -6994,7 +6993,12 @@ fn main() {
                     None
                 };
 
-                let got = match &pump {
+                // The screenshot overlay's keys are commands, not text: while
+                // it is up (and its text box is not), TSF is not in the path
+                // at all -- neither this pump nor the keystroke manager
+                // below. See `shot::keys_are_raw`.
+                let raw_keys = shot::keys_are_raw();
+                let got = match pump.as_ref().filter(|_| !raw_keys) {
                     Some(p) => {
                         let mut ok = windows::core::BOOL(0);
                         p.PeekMessageW(
@@ -7181,7 +7185,7 @@ fn main() {
                 // `TranslateMessage` + `DispatchMessageW` below, exactly as if
                 // TSF had been asked and had declined.
                 let mut eaten = false;
-                if let Some(k) = &keystrokes.as_ref().filter(|_| !ours.may_intercept()) {
+                if let Some(k) = &keystrokes.as_ref().filter(|_| !ours.may_intercept() && !raw_keys) {
                     match msg.message {
                         WM_KEYDOWN | WM_SYSKEYDOWN => {
                             if k.TestKeyDown(msg.wParam, msg.lParam)

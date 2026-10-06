@@ -317,6 +317,11 @@ mod tests {
         assert_eq!((p.colour(Tool::Rect), p.level(Tool::Rect)), (0, 1), "9 and 5 are past the end");
         assert_eq!((p.colour(Tool::Pen), p.level(Tool::Pen)), (0, 1));
         assert_eq!((p.colour(Tool::Text), p.level(Tool::Text)), (3, 1), "the half that is readable is kept");
+        // `true` is not the number 1, nor is "2" the number 2, nor 1.5 a step.
+        let odd = Prefs::from_json(
+            r#"{"tools": {"rect": {"color": true, "level": true}, "pen": {"color": "2", "level": 1.5}}}"#,
+        );
+        assert_eq!(odd, Prefs::default());
         let mut q = Prefs::default();
         q.set_colour(Tool::Rect, 200);
         q.set_level(Tool::Rect, 200);

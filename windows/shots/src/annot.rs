@@ -46,6 +46,9 @@ pub struct Item {
     /// The step of whichever property the shape has: thickness, font size
     /// or block size.
     pub level: u8,
+    /// A colour that is not one of the nine: an agent may ask for any
+    /// (§10.1). `None` for everything drawn by hand, which uses `colour`.
+    pub rgb: Option<(u8, u8, u8)>,
 }
 
 /// Where a shape can be taken hold of to change it.
@@ -71,6 +74,17 @@ pub fn caption_at(at: Point, level: u8, scale: f64, caption_height: i32) -> Poin
 }
 
 impl Item {
+    /// The colour this is drawn in, as R, G, B.
+    pub fn colour_rgb(&self) -> (u8, u8, u8) {
+        self.rgb.unwrap_or(style::COLOURS[self.colour as usize % style::COLOURS.len()])
+    }
+
+    /// The same, as `#RRGGBB`.
+    pub fn colour_hex(&self) -> String {
+        let (r, g, b) = self.colour_rgb();
+        format!("#{r:02X}{g:02X}{b:02X}")
+    }
+
     /// The tool that makes this kind of annotation.
     pub fn tool(&self) -> Tool {
         match self.shape {
@@ -167,7 +181,7 @@ impl Item {
             Shape::Text { at, text, size } => Shape::Text { at: m(at), text: text.clone(), size: *size },
             Shape::Number { n, at, text, size } => Shape::Number { n: *n, at: m(at), text: text.clone(), size: *size },
         };
-        Item { shape, colour: self.colour, level: self.level }
+        Item { shape, colour: self.colour, level: self.level, rgb: self.rgb }
     }
 
     /// The same annotation in a space whose origin is `origin`.
@@ -222,7 +236,7 @@ impl Item {
             }
             (other, _) => other.clone(),
         };
-        Item { shape, colour: self.colour, level: self.level }
+        Item { shape, colour: self.colour, level: self.level, rgb: self.rgb }
     }
 
     /// Whether the shape is too small to be worth keeping: a rectangle,
@@ -405,6 +419,9 @@ pub struct Meta {
     pub previous: Option<String>,
     /// A long screenshot's pieces. Empty for an ordinary one.
     pub tiles: Vec<Tile>,
+    /// Rectangles of the image painted black because a shielded terminal
+    /// was there, in image pixels. Only an agent's shots have any.
+    pub redacted: Vec<Rect>,
 }
 
 fn quoted(s: &str) -> String {
@@ -436,7 +453,7 @@ fn rect_text(r: &Rect) -> String {
 /// numbers, `block` for a mosaic -- which records where and how coarse, and
 /// nothing of what was under it.
 fn entry(item: &Item) -> String {
-    let colour = style::hex(item.colour);
+    let colour = item.colour_hex();
     let level = item.level.min(style::LEVELS - 1) as usize;
     let stroke = format!("\"color\": \"{colour}\", \"width\": {}", style::WIDTHS[level]);
     let font = format!("\"color\": \"{colour}\", \"font_size\": {}", style::FONTS[level]);
@@ -528,13 +545,18 @@ pub fn sidecar(meta: &Meta, items: &[Item]) -> String {
     }
     lines.extend(named("appearance", &meta.appearance));
     lines.push(format!("\"source\": {source}"));
-    if let Some(t) = meta.terminal.as_ref().filter(|t| !t.id.is_empty()) {
-        let mut parts = vec![format!("\"id\": {}", quoted(&t.id))];
+    if let Some(t) = &meta.terminal {
+        // Each part that is known; a terminal about which nothing is known
+        // is not written at all.
+        let mut parts = Vec::new();
+        parts.extend(named("id", &Some(t.id.clone())));
         parts.extend(named("cwd", &t.cwd));
         if let Some((head, dirty)) = t.git.as_ref().filter(|g| !g.0.is_empty()) {
             parts.push(format!("\"git\": {{\"head\": {}, \"dirty\": {dirty}}}", quoted(head)));
         }
-        lines.push(format!("\"terminal\": {{{}}}", parts.join(", ")));
+        if !parts.is_empty() {
+            lines.push(format!("\"terminal\": {{{}}}", parts.join(", ")));
+        }
     }
     lines.extend(named("previous", &meta.previous));
     if !meta.tiles.is_empty() {
@@ -544,6 +566,10 @@ pub fn sidecar(meta: &Meta, items: &[Item]) -> String {
             .map(|t| format!("{{\"image\": {}, \"y\": {}, \"height\": {}}}", quoted(&t.image), t.y, t.height))
             .collect();
         lines.push(format!("\"tiles\": [{}]", tiles.join(", ")));
+    }
+    if !meta.redacted.is_empty() {
+        let rects: Vec<String> = meta.redacted.iter().map(rect_text).collect();
+        lines.push(format!("\"redacted\": [{}]", rects.join(", ")));
     }
     let entries: Vec<String> = items.iter().map(entry).collect();
     lines.push(if entries.is_empty() {
@@ -618,12 +644,18 @@ pub const EN: Labels<'static> = Labels {
     see: ". See ",
 };
 
-/// ①…⑳, then `(21)`.
-pub fn circled(n: u32) -> String {
-    match n {
-        1..=20 => char::from_u32(0x2460 + n - 1).map(String::from).unwrap_or_default(),
-        _ => format!("({n})"),
-    }
+/// A number as the pasted line writes it: `#1`, `#2`, ...
+///
+/// **Plain ASCII, and that is a measured requirement, not a taste.** The
+/// line is pasted into console programs, and on Windows a pasted `①`
+/// (U+2460) or `×` (U+00D7) reaches them as U+0000 (task 1090; the cause is
+/// the console's, tracked separately). So everything this crate itself puts
+/// in the line -- the size, the numbers, the arrow between two points -- is
+/// ASCII. The words are the translator's and what the person typed is theirs.
+/// The circle drawn on the picture still shows the number; the sidecar is
+/// unchanged.
+pub fn numbered(n: u32) -> String {
+    format!("#{n}")
 }
 
 /// `text` with every control character turned into a space.
@@ -639,8 +671,8 @@ fn flat(text: &str) -> String {
 /// annotations and so nothing to say. Shapes with no words still make a line:
 /// where they are is the information. A mosaic says only where it is.
 ///
-/// `[截图标注 1280×800] ① (412,96) 这个按钮没对齐；文字 (60,500) 间距太大；框
-/// (380,80,240,44)；箭头 (100,300)→(220,340)。详见 <json path>`
+/// `[截图标注 1280x800] #1 (412,96) 这个按钮没对齐；文字 (60,500) 间距太大；框
+/// (380,80,240,44)；箭头 (100,300)->(220,340)。详见 <json path>`
 pub fn line(size: (u32, u32), items: &[Item], json_path: &str, l: &Labels) -> Option<String> {
     if items.is_empty() {
         return None;
@@ -654,12 +686,12 @@ pub fn line(size: (u32, u32), items: &[Item], json_path: &str, l: &Labels) -> Op
         }
     };
     let boxed = |word: &str, r: &Rect| format!("{word} ({},{},{},{})", r.x, r.y, r.w, r.h);
-    let ends = |word: &str, a: &Point, b: &Point| format!("{word} ({},{})→({},{})", a.x, a.y, b.x, b.y);
+    let ends = |word: &str, a: &Point, b: &Point| format!("{word} ({},{})->({},{})", a.x, a.y, b.x, b.y);
     let empty = Rect::new(0, 0, 0, 0);
     let parts: Vec<String> = items
         .iter()
         .map(|i| match &i.shape {
-            Shape::Number { n, at, text, .. } => with(format!("{} ({},{})", circled(*n), at.x, at.y), text),
+            Shape::Number { n, at, text, .. } => with(format!("{} ({},{})", numbered(*n), at.x, at.y), text),
             Shape::Text { at, text, .. } => with(format!("{} ({},{})", l.text, at.x, at.y), text),
             Shape::Rect(r) => boxed(l.rect, r),
             Shape::Ellipse(r) => boxed(l.ellipse, r),
@@ -670,44 +702,49 @@ pub fn line(size: (u32, u32), items: &[Item], json_path: &str, l: &Labels) -> Op
             Shape::Highlighter(points) => boxed(l.highlighter, &bbox(points).unwrap_or(empty)),
         })
         .collect();
-    Some(format!("[{} {}×{}] {}{}{}", l.header, size.0, size.1, parts.join(l.separator), l.see, flat(json_path)))
+    Some(format!("[{} {}x{}] {}{}{}", l.header, size.0, size.1, parts.join(l.separator), l.see, flat(json_path)))
 }
 
 /// The words of the line that follows a long screenshot's tiles.
+///
+/// ⚠️ **One sentence today, and due to change.** The core's catalogue has
+/// this as a single msgid ending in `Whole image: `; a two-part wording
+/// (`{n} tiles, first {m} pasted` and `whole image`) is agreed and not yet
+/// merged. Everything about the wording is in this struct, [`LONG_EN`] and
+/// [`long_line`], so the change is here and nowhere else.
 #[derive(Clone, Copy, Debug)]
 pub struct LongLabels<'a> {
-    /// `Long screenshot` / `长截图`
+    /// `Long Screenshot` / `长截图`
     pub header: &'a str,
-    /// `{n} tiles, first {m} pasted` / `共 {n} 片，已粘贴前 {m} 片` -- `{n}` and
-    /// `{m}` are replaced with the numbers.
+    /// `{n} tiles, first {m} pasted` / `共 {n} 片，已粘贴前 {m} 片` -- `{n}`
+    /// and `{m}` are replaced with the two numbers, in whichever order the
+    /// language puts them.
     pub tiles: &'a str,
-    /// `whole image` / `整图`
+    /// `whole image` / `整图`; a space and the image's path follow.
     pub whole: &'a str,
+    /// `; ` / `；`, between the two halves.
     pub separator: &'a str,
+    /// `. See ` / `。详见 `
     pub see: &'a str,
 }
 
+/// The core's msgids (`src/input/screenshot.zig`: `screenshot`'s long form,
+/// `long_tiles`, `long_whole`, `separator`, `see`).
 pub const LONG_EN: LongLabels<'static> = LongLabels {
-    header: "Long screenshot",
+    header: "Long Screenshot",
     tiles: "{n} tiles, first {m} pasted",
     whole: "whole image",
     separator: "; ",
     see: ". See ",
 };
 
-pub const LONG_ZH: LongLabels<'static> = LongLabels {
-    header: "长截图",
-    tiles: "共 {n} 片，已粘贴前 {m} 片",
-    whole: "整图",
-    separator: "；",
-    see: "。详见 ",
-};
-
 /// The line pasted after a long screenshot's tiles when not all of them were
 /// pasted: how many there are, how many went in, and where the whole picture
 /// is. `None` when every tile was pasted -- there is then nothing to add.
 ///
-/// `[长截图 1280×9000] 共 12 片，已粘贴前 8 片；整图 <png path>。详见 <json path>`
+/// `[Long Screenshot 1280x9000] 12 tiles, first 8 pasted; whole image <png
+/// path>. See <json path>` -- the same line the macOS side writes
+/// (`ShotSidecar.longLine`).
 pub fn long_line(
     size: (u32, u32),
     tiles: usize,
@@ -721,7 +758,7 @@ pub fn long_line(
     }
     let count = l.tiles.replace("{n}", &tiles.to_string()).replace("{m}", &pasted.to_string());
     Some(format!(
-        "[{} {}×{}] {}{}{} {}{}{}",
+        "[{} {}x{}] {}{}{} {}{}{}",
         l.header,
         size.0,
         size.1,
@@ -741,7 +778,7 @@ pub(crate) mod tests {
     const P: fn(i32, i32) -> Point = Point::new;
 
     pub(crate) fn it(shape: Shape) -> Item {
-        Item { shape, colour: 0, level: 1 }
+        Item { shape, colour: 0, level: 1, rgb: None }
     }
 
     fn text(at: Point, s: &str) -> Shape {
@@ -778,6 +815,7 @@ pub(crate) mod tests {
             terminal: None,
             previous: None,
             tiles: Vec::new(),
+            redacted: Vec::new(),
         }
     }
 
@@ -827,11 +865,11 @@ pub(crate) mod tests {
     #[test]
     fn the_new_shapes_have_their_own_entries() {
         let items = vec![
-            Item { shape: Shape::Ellipse(Rect::new(1, 2, 30, 40)), colour: 5, level: 4 },
-            Item { shape: Shape::Line { from: P(1, 2), to: P(3, 4) }, colour: 8, level: 0 },
-            Item { shape: Shape::Highlighter(vec![P(10, 10), P(29, 19)]), colour: 2, level: 2 },
-            Item { shape: Shape::Mosaic(Rect::new(5, 6, 70, 80)), colour: 0, level: 3 },
-            Item { shape: number(2, P(9, 9), ""), colour: 3, level: 4 },
+            Item { shape: Shape::Ellipse(Rect::new(1, 2, 30, 40)), colour: 5, level: 4, rgb: None },
+            Item { shape: Shape::Line { from: P(1, 2), to: P(3, 4) }, colour: 8, level: 0, rgb: None },
+            Item { shape: Shape::Highlighter(vec![P(10, 10), P(29, 19)]), colour: 2, level: 2, rgb: None },
+            Item { shape: Shape::Mosaic(Rect::new(5, 6, 70, 80)), colour: 0, level: 3, rgb: None },
+            Item { shape: number(2, P(9, 9), ""), colour: 3, level: 4, rgb: None },
         ];
         let doc = sidecar(&meta(Source::Region { selection_rect: SEL }), &items);
         let v: serde_json::Value = serde_json::from_str(&doc).unwrap();
@@ -899,7 +937,7 @@ pub(crate) mod tests {
         let r = v(&meta(Source::Region { selection_rect: SEL }));
         assert_eq!(r["source"], serde_json::json!({"kind": "region", "selection_rect": [120, 80, 1280, 800]}));
         assert_eq!(r["annotations"], serde_json::json!([]));
-        for key in ["display", "appearance", "terminal", "previous", "tiles", "agent_terminal"] {
+        for key in ["display", "appearance", "terminal", "previous", "tiles", "agent_terminal", "redacted"] {
             assert!(r.get(key).is_none(), "{key} has no value and must not be written");
         }
         assert_eq!(r["by"], "user");
@@ -910,8 +948,22 @@ pub(crate) mod tests {
         m.appearance = Some(String::new());
         let t = v(&m);
         assert_eq!(t["terminal"], serde_json::json!({"id": "0x1"}));
+        // The id is the part a host may not have: the rest is still written.
+        m.terminal = Some(Terminal { id: String::new(), cwd: Some("/w".into()), git: Some(("abc1234".into(), false)) });
+        assert_eq!(v(&m)["terminal"], serde_json::json!({"cwd": "/w", "git": {"head": "abc1234", "dirty": false}}));
+        m.terminal = Some(Terminal { id: String::new(), cwd: None, git: None });
+        assert!(v(&m).get("terminal").is_none(), "nothing known is nothing written");
+        m.terminal = Some(Terminal { id: "0x1".into(), cwd: None, git: None });
         assert!(t.get("previous").is_none());
         assert!(t.get("appearance").is_none());
+    }
+
+    #[test]
+    fn what_was_blacked_out_is_on_record() {
+        let mut m = meta(Source::Region { selection_rect: SEL });
+        m.redacted = vec![Rect::new(10, 20, 300, 200), Rect::new(0, 0, 5, 5)];
+        let v: serde_json::Value = serde_json::from_str(&sidecar(&m, &[])).unwrap();
+        assert_eq!(v["redacted"], serde_json::json!([[10, 20, 300, 200], [0, 0, 5, 5]]));
     }
 
     #[test]
@@ -959,7 +1011,7 @@ pub(crate) mod tests {
     fn a_stroke_that_only_touches_the_selection_with_its_thickness_is_still_exported() {
         // A line 4 px left of the selection, 10 pt wide at scale 2: 20 px.
         let sel = Rect::new(100, 100, 200, 200);
-        let near = Item { shape: Shape::Line { from: P(96, 150), to: P(96, 250) }, colour: 0, level: 4 };
+        let near = Item { shape: Shape::Line { from: P(96, 150), to: P(96, 250) }, colour: 0, level: 4, rgb: None };
         assert_eq!(exported(&[near.clone()], sel, 2.0).len(), 1);
         let thin = Item { level: 0, ..near };
         assert_eq!(exported(&[thin], sel, 1.0).len(), 0);
@@ -970,8 +1022,8 @@ pub(crate) mod tests {
         let got = line((1280, 800), &example(), r"C:\shots\20261006-153012-123.json", &ZH).unwrap();
         assert_eq!(
             got,
-            "[截图标注 1280×800] ① (412,96) 这个按钮没对齐；框 (380,80,240,44)；\
-             箭头 (100,300)→(220,340)；文字 (60,500) 间距太大；画笔 (10,10,80,40)。\
+            "[截图标注 1280x800] #1 (412,96) 这个按钮没对齐；框 (380,80,240,44)；\
+             箭头 (100,300)->(220,340)；文字 (60,500) 间距太大；画笔 (10,10,80,40)。\
              详见 C:\\shots\\20261006-153012-123.json"
         );
     }
@@ -982,30 +1034,38 @@ pub(crate) mod tests {
             it(Shape::Ellipse(Rect::new(1, 2, 3, 4))),
             it(Shape::Line { from: P(1, 2), to: P(3, 4) }),
             it(Shape::Highlighter(vec![P(10, 10), P(29, 19)])),
-            Item { shape: Shape::Mosaic(Rect::new(5, 6, 7, 8)), colour: 0, level: 4 },
+            Item { shape: Shape::Mosaic(Rect::new(5, 6, 7, 8)), colour: 0, level: 4, rgb: None },
         ];
         assert_eq!(
             line((10, 10), &items, "j", &ZH).unwrap(),
-            "[截图标注 10×10] 圆 (1,2,3,4)；线 (1,2)→(3,4)；荧光笔 (10,10,20,10)；马赛克 (5,6,7,8)。详见 j"
+            "[截图标注 10x10] 圆 (1,2,3,4)；线 (1,2)->(3,4)；荧光笔 (10,10,20,10)；马赛克 (5,6,7,8)。详见 j"
         );
         assert_eq!(
             line((10, 10), &items, "j", &EN).unwrap(),
-            "[Screenshot annotations 10×10] Circle (1,2,3,4); Line (1,2)→(3,4); \
+            "[Screenshot annotations 10x10] Circle (1,2,3,4); Line (1,2)->(3,4); \
              Highlighter (10,10,20,10); Mosaic (5,6,7,8). See j"
         );
     }
 
     #[test]
     fn a_long_screenshot_says_how_many_tiles_there_are_only_when_some_were_left_out() {
-        assert_eq!(long_line((1280, 9000), 5, 5, "a.png", "a.json", &LONG_ZH), None);
-        assert_eq!(long_line((1280, 9000), 8, 8, "a.png", "a.json", &LONG_ZH), None);
-        assert_eq!(
-            long_line((1280, 19000), 12, 8, r"C:\s\a.png", r"C:\s\a.json", &LONG_ZH).unwrap(),
-            "[长截图 1280×19000] 共 12 片，已粘贴前 8 片；整图 C:\\s\\a.png。详见 C:\\s\\a.json"
-        );
+        assert_eq!(long_line((1280, 9000), 5, 5, "a.png", "a.json", &LONG_EN), None);
+        assert_eq!(long_line((1280, 9000), 8, 8, "a.png", "a.json", &LONG_EN), None);
         assert_eq!(
             long_line((1280, 19000), 12, 8, "a.png", "a.json", &LONG_EN).unwrap(),
-            "[Long screenshot 1280×19000] 12 tiles, first 8 pasted; whole image a.png. See a.json"
+            "[Long Screenshot 1280x19000] 12 tiles, first 8 pasted; whole image a.png. See a.json"
+        );
+        // The catalogue's Chinese, and a wording that puts the two numbers
+        // the other way round.
+        let zh = LongLabels { header: "长截图", tiles: "共 {n} 片，已粘贴前 {m} 片", whole: "整图", separator: "；", see: "。详见 " };
+        assert_eq!(
+            long_line((1280, 19000), 12, 8, "a.png", "a.json", &zh).unwrap(),
+            "[长截图 1280x19000] 共 12 片，已粘贴前 8 片；整图 a.png。详见 a.json"
+        );
+        let turned = LongLabels { tiles: "已粘贴前 {m} 片，共 {n} 片", ..zh };
+        assert_eq!(
+            long_line((1280, 19000), 12, 8, "a.png", "a.json", &turned).unwrap(),
+            "[长截图 1280x19000] 已粘贴前 8 片，共 12 片；整图 a.png。详见 a.json"
         );
     }
 
@@ -1013,7 +1073,7 @@ pub(crate) mod tests {
     fn no_annotations_is_no_line_but_shapes_without_words_are_one() {
         assert_eq!(line((10, 10), &[], "x.json", &ZH), None);
         let shapes = [it(Shape::Rect(Rect::new(1, 2, 3, 4)))];
-        assert_eq!(line((10, 10), &shapes, "x.json", &ZH).unwrap(), "[截图标注 10×10] 框 (1,2,3,4)。详见 x.json");
+        assert_eq!(line((10, 10), &shapes, "x.json", &ZH).unwrap(), "[截图标注 10x10] 框 (1,2,3,4)。详见 x.json");
     }
 
     #[test]
@@ -1021,14 +1081,33 @@ pub(crate) mod tests {
         let items = [it(text(P(1, 2), "first\r\nsecond\tthird\u{1b}[0m")), it(number(1, P(3, 4), "\n"))];
         let got = line((10, 10), &items, "x.json", &ZH).unwrap();
         assert!(!got.chars().any(char::is_control), "{got:?}");
-        assert_eq!(got, "[截图标注 10×10] 文字 (1,2) first  second third [0m；① (3,4)。详见 x.json");
+        assert_eq!(got, "[截图标注 10x10] 文字 (1,2) first  second third [0m；#1 (3,4)。详见 x.json");
     }
 
     #[test]
-    fn numbers_are_circled_up_to_twenty() {
+    fn what_this_crate_puts_in_the_line_is_ascii() {
+        // Shapes only, English words: nothing here is the person's or the
+        // translator's, so every character is this crate's own.
+        let items = vec![
+            it(number(7, P(1, 2), "")),
+            it(Shape::Rect(Rect::new(1, 2, 3, 4))),
+            it(Shape::Arrow { from: P(1, 2), to: P(3, 4) }),
+            it(Shape::Line { from: P(1, 2), to: P(3, 4) }),
+            it(Shape::Mosaic(Rect::new(1, 2, 3, 4))),
+        ];
+        let got = line((1280, 800), &items, "C:\\s\\a.json", &EN).unwrap();
+        assert!(got.is_ascii(), "{got}");
+        assert!(got.starts_with("[Screenshot annotations 1280x800] #7 (1,2); "), "{got}");
+        assert!(got.contains("Arrow (1,2)->(3,4)"), "{got}");
+        let long = long_line((1280, 19000), 12, 8, "a.png", "a.json", &LONG_EN).unwrap();
+        assert!(long.is_ascii(), "{long}");
+    }
+
+    #[test]
+    fn numbers_are_written_with_a_hash() {
         let n = |n| it(number(n, P(0, 0), ""));
         let got = line((1, 1), &[n(2), n(20), n(21)], "j", &ZH).unwrap();
-        assert_eq!(got, "[截图标注 1×1] ② (0,0)；⑳ (0,0)；(21) (0,0)。详见 j");
+        assert_eq!(got, "[截图标注 1x1] #2 (0,0)；#20 (0,0)；#21 (0,0)。详见 j");
     }
 
     #[test]
@@ -1039,7 +1118,7 @@ pub(crate) mod tests {
         items.push(it(number(2, P(0, 0), "")));
         items.push(it(number(3, P(0, 0), "")));
         assert_eq!(next_number(&items), 4);
-        items.remove(5); // ② goes; ③ stays ③
+        items.remove(5); // #2 goes; ③ stays ③
         assert_eq!(next_number(&items), 4);
         items.pop();
         assert_eq!(next_number(&items), 2);
@@ -1085,7 +1164,7 @@ pub(crate) mod tests {
         assert!(thick.hit(P(200, 105), 1.0));
         assert!(l.hit(P(200, 108), 2.0), "the reach is in points, so it doubles at 200%");
         // A highlighter is four times its step.
-        let h = Item { shape: Shape::Highlighter(vec![P(100, 100), P(300, 100)]), colour: 2, level: 3 };
+        let h = Item { shape: Shape::Highlighter(vec![P(100, 100), P(300, 100)]), colour: 2, level: 3, rgb: None };
         assert!(h.hit(P(200, 112), 1.0));
         assert!(!h.hit(P(200, 113), 1.0));
     }
@@ -1131,13 +1210,26 @@ pub(crate) mod tests {
 
     #[test]
     fn moving_keeps_everything_but_the_position() {
-        let before = Item { shape: number(3, P(10, 20), "x"), colour: 4, level: 2 };
+        let before = Item { shape: number(3, P(10, 20), "x"), colour: 4, level: 2, rgb: None };
         let after = before.moved(5, -7);
-        assert_eq!(after, Item { shape: number(3, P(15, 13), "x"), colour: 4, level: 2 });
+        assert_eq!(after, Item { shape: number(3, P(15, 13), "x"), colour: 4, level: 2, rgb: None });
         let pen = it(Shape::Pen(vec![P(0, 0), P(1, 1)])).moved(10, 10);
         assert_eq!(pen.shape, Shape::Pen(vec![P(10, 10), P(11, 11)]));
         let m = it(Shape::Mosaic(Rect::new(1, 2, 3, 4))).moved(1, 1);
         assert_eq!(m.shape, Shape::Mosaic(Rect::new(2, 3, 3, 4)));
+    }
+
+    #[test]
+    fn a_colour_outside_the_palette_is_kept_through_moving_and_reshaping() {
+        let teal = Item { shape: Shape::Rect(Rect::new(0, 0, 10, 10)), colour: 0, level: 1, rgb: Some((1, 2, 3)) };
+        assert_eq!(teal.colour_hex(), "#010203");
+        assert_eq!(teal.moved(5, 5).rgb, Some((1, 2, 3)));
+        assert_eq!(teal.reshaped(Grip::Box(Handle::SE), P(20, 20)).colour_hex(), "#010203");
+        assert_eq!(teal.relative_to(P(3, 3)).colour_rgb(), (1, 2, 3));
+        assert_eq!(it(Shape::Rect(Rect::new(0, 0, 10, 10))).colour_hex(), "#E62828", "none given: the palette's");
+        let v: serde_json::Value =
+            serde_json::from_str(&sidecar(&meta(Source::Region { selection_rect: SEL }), &[teal])).unwrap();
+        assert_eq!(v["annotations"][0]["color"], "#010203");
     }
 
     #[test]
@@ -1200,7 +1292,7 @@ pub(crate) mod tests {
 
     #[test]
     fn bounds_take_in_the_stroke_and_the_caption() {
-        let r = Item { shape: Shape::Rect(Rect::new(100, 100, 50, 50)), colour: 0, level: 4 };
+        let r = Item { shape: Shape::Rect(Rect::new(100, 100, 50, 50)), colour: 0, level: 4, rgb: None };
         assert_eq!(r.bounds(1.0), Rect::new(95, 95, 60, 60));
         assert_eq!(it(Shape::Mosaic(Rect::new(1, 2, 3, 4))).bounds(1.0), Rect::new(1, 2, 3, 4));
         let n = it(number(1, P(100, 100), "hello"));

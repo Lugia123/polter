@@ -17,6 +17,7 @@ pub mod plugins;
 pub mod handback;
 pub mod picker;
 pub mod projects;
+pub mod search;
 
 // ================================================================ sections
 

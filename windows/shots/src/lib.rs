@@ -17,9 +17,11 @@
 //! | [`annot`] | annotations as data: the sidecar `.json` and the pasted line |
 //! | [`dclick`] | the mouse trigger: a double click with modifiers held |
 //! | [`overlay`] | what a key does while the frozen screen is up |
+//! | [`agent`] | an agent's request: which rectangle, what is blacked out, the answer |
 //! | [`style`] | the tools, the nine colours, the five steps of each size |
 //! | [`pixels`] | the mosaic, the highlighter, and the one image that leaves |
 
+pub mod agent;
 pub mod annot;
 pub mod dclick;
 pub mod dib;

@@ -2039,34 +2039,15 @@ pub fn current() -> Option<(Option<String>, String)> {
     })
 }
 
-/// Every role's name, for the settings window's search (§2.3). Keys too, so
-/// a role found by the key it is launched with is found here.
-pub fn names() -> Vec<String> {
+/// Every role as the search lists it: the name shown and the key a route
+/// selects it by (screenshot.md §12.3).
+pub fn search_rows() -> Vec<(String, String)> {
     let cat = ST.with(|c| {
         let s = c.borrow();
-        if s.cat.roles.is_empty() {
-            None
-        } else {
-            Some(s.cat.roles.iter().flat_map(|r| [r.display_name(), r.key.clone()]).collect())
-        }
+        (!s.cat.roles.is_empty()).then(|| s.cat.roles.iter().map(|r| (r.display_name(), r.key.clone())).collect())
     });
     // Before the section was ever shown the library has not been read here.
-    cat.unwrap_or_else(|| roles::catalog().roles.iter().flat_map(|r| [r.display_name(), r.key.clone()]).collect())
-}
-
-/// The search box changed: show only the roles it matches.
-pub fn set_filter(query: &str) {
-    ST.with(|c| {
-        let s = &mut *c.borrow_mut();
-        s.list_filter = query.to_string();
-        s.list_top = 0;
-    });
-    let win = main_hwnd();
-    if !win.0.is_null() {
-        let _ = unsafe { InvalidateRect(Some(win), None, false) };
-    }
-    // The breadcrumb says when the role on screen is filtered out.
-    crate::settings_win::crumb_changed();
+    cat.unwrap_or_else(|| roles::catalog().roles.iter().map(|r| (r.display_name(), r.key.clone())).collect())
 }
 
 /// The list as shown: `list_rows`, narrowed by the search box. A new,

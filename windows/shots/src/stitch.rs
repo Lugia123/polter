@@ -55,6 +55,9 @@ pub enum Step {
     Full,
     /// Not a frame of this session's size: ignored.
     WrongSize,
+    /// Not the same as the frame offered just before it: the screen was
+    /// still changing, so it is held back, not joined (`offer`).
+    Moving,
 }
 
 fn row_hashes(frame: &[u8], width: usize) -> Vec<u64> {
@@ -147,6 +150,8 @@ pub struct Stitcher {
     last_hashes: Vec<u64>,
     last: Vec<u8>,
     full: bool,
+    /// The frame offered last, joined or not (`offer`).
+    offered: Vec<u8>,
 }
 
 impl Stitcher {
@@ -163,6 +168,7 @@ impl Stitcher {
             last_hashes: Vec::new(),
             last: Vec::new(),
             full: false,
+            offered: Vec::new(),
         })
     }
 
@@ -188,7 +194,39 @@ impl Stitcher {
         self.full
     }
 
-    /// Take the next frame.
+    /// Offer a frame taken off a live screen (screenshot.md §9.7). **Only a
+    /// frame that is, pixel for pixel, the one offered just before it is
+    /// joined**; any other is `Moving` and is only remembered.
+    ///
+    /// A screen caught between two states is not a state. An application
+    /// that scrolls by moving what it has and painting the newly exposed
+    /// strip afterwards (Notepad does) can be caught with the strip still
+    /// blank. Nothing in such a frame says so: the blank rows lie below the
+    /// rows two frames are lined up on, so it lines up perfectly and its
+    /// blank rows are joined as if they were the page. From there it goes
+    /// one of two ways, both seen on the test machine -- a few blank rows
+    /// stay in the picture across a line of text, or, with more of them,
+    /// no later frame lines up with that one again and the picture stops
+    /// growing. Two captures in a row that are identical were not taken
+    /// mid-change, whatever the application and however it paints.
+    ///
+    /// The cost is one capture interval before a frame counts, and a region
+    /// that never holds still -- a video, a spinner -- adds nothing at all,
+    /// where a frame's 3% tolerance used to let a small animation through.
+    pub fn offer(&mut self, frame: &[u8]) -> Step {
+        if frame.len() != self.row() * self.height {
+            return Step::WrongSize;
+        }
+        if self.offered != frame {
+            self.offered.clear();
+            self.offered.extend_from_slice(frame);
+            return Step::Moving;
+        }
+        self.push(frame)
+    }
+
+    /// Take the next frame as it is. `offer` is the one for frames off a
+    /// live screen; this joins whatever it is given.
     pub fn push(&mut self, frame: &[u8]) -> Step {
         if frame.len() != self.row() * self.height {
             return Step::WrongSize;
@@ -468,9 +506,47 @@ mod tests {
         assert_eq!(s.total_height(), H + 30, "nothing was added");
         // Too little in common is not trusted either (the minimum is 24 rows).
         assert_eq!(s.push(&page.frame(30 + VIEW - 10)), Step::Lost);
+        // Twenty rows in common: more than an eighth of the band (13), still
+        // under the twenty-four that are the least believed.
+        assert_eq!(s.push(&page.frame(30 + VIEW - 20)), Step::Lost);
         // Scrolled back to within reach of the last good frame: it goes on.
         assert_eq!(s.push(&page.frame(60)), Step::Added(30));
         assert_eq!(s.finish().unwrap().1, page.expected(60));
+    }
+
+    #[test]
+    fn a_page_that_repeats_is_taken_to_have_moved_the_least_and_downwards() {
+        // Twenty rows, over and over: scrolled down by ten it lines up at a
+        // shift of 10, 30, 50 and 70 -- and, the period being twice the
+        // scroll, scrolling *up* by ten looks exactly the same.
+        let period = noise(20, 31);
+        let body: Vec<u8> = (0..20).flat_map(|_| period.clone()).collect();
+        let frame = |y: usize| body[y * W * 4..(y + H) * W * 4].to_vec();
+        let mut s = stitcher();
+        s.push(&frame(0));
+        // The smallest shift, and down before up: the least that could be
+        // wrong is added.
+        assert_eq!(s.push(&frame(10)), Step::Added(10));
+        assert_eq!(s.total_height(), H + 10);
+    }
+
+    #[test]
+    fn the_footer_is_the_last_frames_not_the_firsts() {
+        // A status bar that is still while the first two frames are taken
+        // and has changed by the third: a clock, a scroll position.
+        let page = Page::new();
+        let mut s = stitcher();
+        s.push(&page.frame(0));
+        s.push(&page.frame(30));
+        let later = noise(FOOTER, 41);
+        let mut third = page.header.clone();
+        third.extend_from_slice(&page.body[60 * W * 4..(60 + VIEW) * W * 4]);
+        third.extend_from_slice(&later);
+        assert_eq!(s.push(&third), Step::Added(30));
+        let mut expected = page.header.clone();
+        expected.extend_from_slice(&page.body[..(60 + VIEW) * W * 4]);
+        expected.extend_from_slice(&later);
+        assert_eq!(s.finish().unwrap().1, expected);
     }
 
     #[test]
@@ -688,5 +764,117 @@ mod tests {
         assert_eq!(s.push(&page.frame(20)), Step::Lost, "there is nothing above the first frame");
         assert_eq!(s.push(&page.frame(80)), Step::Added(30));
         assert_eq!(s.finish().unwrap().1[HEADER * W * 4..(HEADER + 5) * W * 4], page.body[50 * W * 4..55 * W * 4]);
+    }
+
+    /// `page` scrolled to `y`, caught before the strip that just came into
+    /// view was painted to the bottom: its last `unpainted` rows are still
+    /// the window's blank ground.
+    fn half_painted(page: &Page, y: usize, unpainted: usize) -> Vec<u8> {
+        let mut f = page.frame(y);
+        let end = (HEADER + VIEW) * W * 4;
+        for b in &mut f[end - unpainted * W * 4..end] {
+            *b = 0xff;
+        }
+        f
+    }
+
+    /// What a capture timer sees of an application that scrolls `by` rows
+    /// at a time and paints the exposed strip late: after each scroll one
+    /// frame with `unpainted` rows still blank, then the finished frame
+    /// three times over.
+    fn late_painter(page: &Page, by: usize, scrolls: usize, unpainted: usize) -> Vec<Vec<u8>> {
+        let mut frames = vec![page.frame(0); 3];
+        for n in 1..=scrolls {
+            frames.push(half_painted(page, n * by, unpainted));
+            frames.extend(vec![page.frame(n * by); 3]);
+        }
+        frames
+    }
+
+    fn blank_rows(picture: &[u8]) -> usize {
+        picture.chunks_exact(W * 4).filter(|row| row.chunks_exact(4).all(|px| px[..3] == [0xff, 0xff, 0xff])).count()
+    }
+
+    /// Defect 3, first form (the test machine, Notepad, a notch every
+    /// 350 ms): the picture came out the right height with every line in
+    /// it, and with two bands of blank rows across half a line of text.
+    /// Two blank rows are inside what `lines_up` forgives, so the frames
+    /// after a half-painted one are joined to it and its blank rows stay.
+    #[test]
+    fn a_frame_caught_half_painted_leaves_no_blank_rows_in_the_picture() {
+        let page = Page::new();
+        let frames = late_painter(&page, 20, 6, 2);
+        // What `push` alone does with them -- the defect, kept as the
+        // statement of what `offer` is for.
+        let mut raw = stitcher();
+        for f in &frames {
+            raw.push(f);
+        }
+        assert_eq!(raw.total_height(), H + 120, "the height was right on the test machine too");
+        let (_, torn) = raw.finish().unwrap();
+        assert!(blank_rows(&torn) > 0 && torn != page.expected(120), "this sequence no longer shows the defect");
+
+        let mut s = stitcher();
+        let steps: Vec<Step> = frames.iter().map(|f| s.offer(f)).collect();
+        assert!(!steps.contains(&Step::Lost), "{steps:?}");
+        assert_eq!(steps.iter().filter(|s| matches!(s, Step::Added(20))).count(), 6, "{steps:?}");
+        let (_, picture) = s.finish().unwrap();
+        assert_eq!(blank_rows(&picture), 0);
+        assert_eq!(picture, page.expected(120));
+    }
+
+    /// Defect 3, second form (a notch every 600 ms): five notches were
+    /// joined and nothing after them, 101 of 128 frames dropped, and the
+    /// picture ended in blank rows. With more rows unpainted than
+    /// `lines_up` forgives, no later frame lines up with the half-painted
+    /// one, and it stays the frame everything is compared against.
+    #[test]
+    fn a_frame_caught_half_painted_does_not_stop_the_picture_growing() {
+        let page = Page::new();
+        let frames = late_painter(&page, 20, 6, 12);
+        let mut raw = stitcher();
+        let lost = frames.iter().filter(|f| raw.push(f) == Step::Lost).count();
+        assert!(lost > frames.len() / 2, "only {lost} of {} dropped: this sequence no longer shows the defect", frames.len());
+        assert_eq!(raw.total_height(), H + 20, "it stuck after the first notch");
+        let (_, stuck) = raw.finish().unwrap();
+        assert_eq!(blank_rows(&stuck), 12, "and ended in the blank rows");
+
+        let mut s = stitcher();
+        let steps: Vec<Step> = frames.iter().map(|f| s.offer(f)).collect();
+        assert!(!steps.contains(&Step::Lost), "{steps:?}");
+        assert_eq!(s.total_height(), H + 120);
+        let (_, picture) = s.finish().unwrap();
+        assert_eq!(picture, page.expected(120));
+    }
+
+    /// The rule itself: a frame counts when it is the one offered just
+    /// before it, and only then.
+    #[test]
+    fn only_a_frame_seen_twice_running_is_joined() {
+        let page = Page::new();
+        let mut s = stitcher();
+        assert_eq!(s.offer(&page.frame(0)), Step::Moving);
+        assert_eq!(s.total_height(), 0, "one capture alone is not a picture yet");
+        assert_eq!(s.offer(&page.frame(0)), Step::First);
+        // Scrolling: every frame differs from the one before, none joined.
+        for y in [5, 12, 20] {
+            assert_eq!(s.offer(&page.frame(y)), Step::Moving, "at {y}");
+        }
+        assert_eq!(s.total_height(), H);
+        // It stops: the second look at the same frame joins it.
+        assert_eq!(s.offer(&page.frame(30)), Step::Moving);
+        assert_eq!(s.offer(&page.frame(30)), Step::Added(30));
+        // Still there: nothing new, and not "moving".
+        assert_eq!(s.offer(&page.frame(30)), Step::Unchanged);
+        // A frame seen twice, but not twice running, is not steady.
+        assert_eq!(s.offer(&page.frame(40)), Step::Moving);
+        assert_eq!(s.offer(&page.frame(50)), Step::Moving);
+        assert_eq!(s.offer(&page.frame(40)), Step::Moving);
+        assert_eq!(s.total_height(), H + 30);
+        assert_eq!(s.offer(&page.frame(40)), Step::Added(10));
+        // The fourth byte is not part of the picture, but a frame of
+        // another size is still said to be that.
+        assert_eq!(s.offer(&page.frame(0)[4..]), Step::WrongSize);
+        assert_eq!(s.finish().unwrap().1, page.expected(40));
     }
 }

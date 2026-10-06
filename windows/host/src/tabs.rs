@@ -3788,6 +3788,26 @@ pub fn mark_for_surface(surface: Surface) -> Option<Mark> {
     })
 }
 
+/// The windows of the panes whose terminal is shielded, for a screenshot an
+/// agent takes: what is in them must not be in the picture.
+///
+/// Every pane of a shielded tab, wherever it is. Whether a pane is on screen
+/// is the caller's to ask of the window itself; whether something covers it
+/// is deliberately asked by nobody (screenshot.md §10.1).
+// window-free: a scan over every window, on purpose -- the question is about
+// all of them
+pub fn shielded_pane_hwnds() -> Vec<isize> {
+    with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .filter(|t| t.shielded)
+            .flat_map(|t| t.panes.iter())
+            .map(|p| p.hwnd)
+            .filter(|h| *h != 0)
+            .collect()
+    })
+}
+
 /// The persona half of the mark for one surface.
 ///
 /// `None` is a **third state**: no mark carrying a persona has reached this

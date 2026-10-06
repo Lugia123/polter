@@ -136,17 +136,22 @@ pub fn layout(selection: Rect, monitor: Rect, scale: f64, props: Props) -> Layou
 /// The nine colours' names, in palette order.
 pub const COLOUR_NAMES: [&str; 9] = ["Red", "Orange", "Yellow", "Green", "Cyan", "Blue", "Purple", "Black", "White"];
 
-/// A button's name -- the English msgid; the host translates it.
+/// A button's name -- the English msgid; the host translates it. `props` is
+/// the property row that is showing, which is what a step button is a step
+/// *of*.
 ///
-/// **Every word the overlay shows is in this file or in `annot::EN`**, so
-/// that when the core's list of msgids lands there is one place to check
-/// against it.
-pub fn name(button: Button) -> &'static str {
+/// **Every word the overlay shows is in this file or in `annot::EN`**, and
+/// every one of them is a msgid the core's catalogue has -- [`words`] lists
+/// them and a test below reads the catalogue to check. The core's own list is
+/// `src/input/screenshot.zig`; a word made up here would show in English in
+/// every language and fail nowhere.
+pub fn name(button: Button, props: Props) -> &'static str {
     match button {
         Button::Tool(Tool::Select) => "Select",
         Button::Tool(Tool::Rect) => "Rectangle",
         Button::Tool(Tool::Ellipse) => "Ellipse",
-        Button::Tool(Tool::Line) => "Line",
+        // Not `Line`: that is the word for a line in the pasted text.
+        Button::Tool(Tool::Line) => "Straight Line",
         Button::Tool(Tool::Arrow) => "Arrow",
         Button::Tool(Tool::Pen) => "Pen",
         Button::Tool(Tool::Highlighter) => "Highlighter",
@@ -155,19 +160,67 @@ pub fn name(button: Button) -> &'static str {
         Button::Tool(Tool::Mosaic) => "Mosaic",
         Button::Undo => "Undo",
         Button::Redo => "Redo",
-        Button::Long => "Long screenshot",
+        Button::Long => LONG,
         Button::Cancel => "Cancel",
         Button::Done => "Done",
         Button::Colour(c) => COLOUR_NAMES[c as usize % COLOUR_NAMES.len()],
-        Button::Level(_) => "Size",
+        Button::Level(_) => match props {
+            Props::Font => "Font Size",
+            Props::Block => "Block Size",
+            _ => "Thickness",
+        },
     }
 }
 
 /// The other words the overlay shows.
-pub const FONT_MISSING: &str = "The annotation font is missing; text will not be drawn in it.";
-pub const LONG_STATUS: &str = "Long screenshot";
-pub const LONG_SLOWER: &str = "Scroll more slowly";
-pub const LONG_FULL: &str = "Reached the height limit";
+pub const LONG: &str = "Long Screenshot";
+pub const FONT_MISSING: &str = "The annotation font is missing, so the system font is used.";
+pub const LONG_SLOWER: &str = "Scroll slower";
+/// What to do, shown until the first new rows have been joined.
+pub const LONG_HINT: &str = "Scroll down slowly. What comes into view is added at the bottom.";
+
+/// What a long screenshot's status line says after the height, if
+/// anything: that the last frame could not be followed, that the limit was
+/// reached, or -- while nothing has been added yet -- what to do. `last` is
+/// the last frame that said something; `added` whether any rows have been
+/// joined below the first frame. A msgid.
+pub fn long_hint(last: crate::stitch::Step, added: bool) -> Option<&'static str> {
+    use crate::stitch::Step;
+    match last {
+        Step::Lost => Some(LONG_SLOWER),
+        Step::Full => Some(LONG_FULL),
+        _ if !added => Some(LONG_HINT),
+        _ => None,
+    }
+}
+pub const LONG_FULL: &str = "The height limit was reached.";
+/// The notice when the hotkey cannot be registered: its title and its body.
+pub const HOTKEY_FAILED: &str = "The screenshot shortcut could not be registered";
+pub const HOTKEY_TAKEN: &str =
+    "Another application is already using it. Choose a different one with a `screenshot` keybind in the configuration.";
+
+/// Every msgid this crate asks a host to translate.
+pub fn words() -> Vec<&'static str> {
+    let mut all: Vec<&'static str> = Vec::new();
+    for props in [Props::Stroke, Props::Font, Props::Block] {
+        all.push(name(Button::Level(0), props));
+    }
+    all.extend(Tool::ALL.iter().map(|t| name(Button::Tool(*t), Props::None)));
+    for b in [Button::Undo, Button::Redo, Button::Long, Button::Cancel, Button::Done] {
+        all.push(name(b, Props::None));
+    }
+    all.extend(COLOUR_NAMES);
+    all.extend([FONT_MISSING, LONG_HINT, LONG_SLOWER, LONG_FULL, HOTKEY_FAILED, HOTKEY_TAKEN]);
+    let l = crate::annot::EN;
+    all.extend([
+        l.header, l.text, l.rect, l.ellipse, l.line, l.arrow, l.pen, l.highlighter, l.mosaic, l.separator, l.see,
+    ]);
+    let long = crate::annot::LONG_EN;
+    all.extend([long.header, long.tiles, long.whole, long.separator, long.see]);
+    all.sort_unstable();
+    all.dedup();
+    all
+}
 
 /// The key that does what the button does, as it is written on a Windows
 /// keyboard; `None` when there is none.
@@ -185,8 +238,8 @@ pub fn shortcut(button: Button) -> Option<String> {
 
 /// The tooltip: `Rectangle (R)`, or just the name when no key does it.
 /// `translate` turns the English name into the app's language.
-pub fn tooltip(button: Button, translate: impl Fn(&str) -> String) -> String {
-    let name = translate(name(button));
+pub fn tooltip(button: Button, props: Props, translate: impl Fn(&str) -> String) -> String {
+    let name = translate(name(button, props));
     match shortcut(button) {
         Some(key) => format!("{name} ({key})"),
         None => name,
@@ -308,24 +361,77 @@ mod tests {
 
     #[test]
     fn a_tooltip_is_the_name_and_the_key() {
-        assert_eq!(tooltip(Button::Tool(Tool::Rect), same), "Rectangle (R)");
-        assert_eq!(tooltip(Button::Tool(Tool::Select), same), "Select (V)");
-        assert_eq!(tooltip(Button::Undo, same), "Undo (Ctrl+Z)");
-        assert_eq!(tooltip(Button::Redo, same), "Redo (Ctrl+Shift+Z)");
-        assert_eq!(tooltip(Button::Done, same), "Done (Enter)");
-        assert_eq!(tooltip(Button::Cancel, same), "Cancel (Esc)");
-        assert_eq!(tooltip(Button::Long, same), "Long screenshot", "no key, no brackets");
-        assert_eq!(tooltip(Button::Colour(0), same), "Red (1)");
-        assert_eq!(tooltip(Button::Colour(8), same), "White (9)");
-        assert_eq!(tooltip(Button::Tool(Tool::Mosaic), |s| format!("<{s}>")), "<Mosaic> (M)", "the name is translated, the key is not");
+        let tip = |b| tooltip(b, Props::Stroke, same);
+        assert_eq!(tip(Button::Tool(Tool::Rect)), "Rectangle (R)");
+        assert_eq!(tip(Button::Tool(Tool::Select)), "Select (V)");
+        assert_eq!(tip(Button::Tool(Tool::Line)), "Straight Line (L)");
+        assert_eq!(tip(Button::Undo), "Undo (Ctrl+Z)");
+        assert_eq!(tip(Button::Redo), "Redo (Ctrl+Shift+Z)");
+        assert_eq!(tip(Button::Done), "Done (Enter)");
+        assert_eq!(tip(Button::Cancel), "Cancel (Esc)");
+        assert_eq!(tip(Button::Long), "Long Screenshot", "no key, no brackets");
+        assert_eq!(tip(Button::Colour(0)), "Red (1)");
+        assert_eq!(tip(Button::Colour(8)), "White (9)");
+        assert_eq!(
+            tooltip(Button::Tool(Tool::Mosaic), Props::None, |s| format!("<{s}>")),
+            "<Mosaic> (M)",
+            "the name is translated, the key is not"
+        );
+    }
+
+    #[test]
+    fn a_step_button_is_named_for_what_it_is_a_step_of() {
+        assert_eq!(tooltip(Button::Level(2), Props::Stroke, same), "Thickness");
+        assert_eq!(tooltip(Button::Level(2), Props::Font, same), "Font Size");
+        assert_eq!(tooltip(Button::Level(2), Props::Block, same), "Block Size");
+    }
+
+    /// **The floor for every word in this crate.** A host passes the English
+    /// to the core's catalogue; a word that is not a msgid there comes back
+    /// unchanged, so a Chinese toolbar shows one English tooltip and nothing
+    /// anywhere fails. This reads the catalogue's template.
+    #[test]
+    fn every_word_shown_is_a_msgid_in_the_cores_catalogue() {
+        // The template is named after the bundle id; found by its extension
+        // so the name is not written here.
+        let po = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../po");
+        let pot = std::fs::read_dir(&po)
+            .unwrap_or_else(|e| panic!("cannot list {}: {e}", po.display()))
+            .filter_map(|d| d.ok().map(|d| d.path()))
+            .find(|p| p.extension().is_some_and(|x| x == "pot"))
+            .unwrap_or_else(|| panic!("no .pot in {}", po.display()));
+        let catalogue =
+            std::fs::read_to_string(&pot).unwrap_or_else(|e| panic!("cannot read {}: {e}", pot.display()));
+        let all = words();
+        assert!(all.len() >= 35, "only {} words were collected", all.len());
+        for word in all {
+            let entry = format!("\nmsgid {}\n", serde_json::to_string(word).unwrap());
+            assert!(catalogue.contains(&entry), "{word:?} is not a msgid in {}", pot.display());
+        }
     }
 
     #[test]
     fn every_tools_tooltip_names_the_key_that_selects_it() {
         for tool in Tool::ALL {
-            let tip = tooltip(Button::Tool(tool), same);
+            let tip = tooltip(Button::Tool(tool), Props::None, same);
             assert!(tip.ends_with(&format!("({})", tool.letter())), "{tip}");
             assert_eq!(crate::overlay::key(tool.letter() as u16, crate::dclick::Mods::NONE, true), crate::overlay::Key::Tool(tool));
+        }
+    }
+
+    #[test]
+    fn the_status_line_says_what_to_do_until_something_was_added() {
+        use crate::stitch::Step;
+        for quiet in [Step::First, Step::Unchanged, Step::Moving, Step::Seen, Step::Back] {
+            assert_eq!(long_hint(quiet, false), Some(LONG_HINT), "{quiet:?}");
+            assert_eq!(long_hint(quiet, true), None, "{quiet:?}");
+        }
+        assert_eq!(long_hint(Step::Added(5), true), None);
+        // A frame that could not be followed, and the limit, say so whether
+        // or not anything was added before.
+        for added in [false, true] {
+            assert_eq!(long_hint(Step::Lost, added), Some(LONG_SLOWER));
+            assert_eq!(long_hint(Step::Full, added), Some(LONG_FULL));
         }
     }
 }

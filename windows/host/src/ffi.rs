@@ -288,6 +288,27 @@ pub struct LayoutOut {
     pub len: usize,
 }
 
+/// `ghostty_action_poltergeist_screenshot_out_s`: where the host leaves its
+/// answer to an agent's screenshot request (screenshot.md §10.1).
+///
+/// The buffer and the token are the core's. `result` arrives 0, which is
+/// "this host did not answer" and is what the core reports as `Unsupported`;
+/// 1 is done (the result's JSON is in `buf`), 2 refused (`{"code",
+/// "message"}` is), 3 pending -- answered later, with the token, through
+/// `app_poltergeist_screenshot_complete`.
+#[repr(C)]
+pub struct ScreenshotOut {
+    pub result: i32,
+    pub token: u64,
+    pub buf: *mut u8,
+    pub cap: usize,
+    pub len: usize,
+}
+
+pub const SCREENSHOT_DONE: i32 = 1;
+pub const SCREENSHOT_REFUSED: i32 = 2;
+pub const SCREENSHOT_PENDING: i32 = 3;
+
 /// ⚠️ **`repr(C)` and the `persona` field are what make the assertions on
 /// this struct mean anything.** Without them `offset_of!` measured whatever
 /// order rustc chose and `size_of` came out 16 -- a number the C side has
@@ -718,6 +739,20 @@ impl Action {
     pub fn as_poltergeist_layout(&self) -> (String, *mut LayoutOut) {
         let spec = usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *const c_char;
         let out = usize::from_ne_bytes(self.payload[8..16].try_into().unwrap()) as *mut LayoutOut;
+        let text = if spec.is_null() {
+            String::new()
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(spec) }.to_string_lossy().into_owned()
+        };
+        (text, out)
+    }
+
+    /// `ghostty_action_poltergeist_screenshot_s { const char* spec; out_s* out; }`.
+    /// The same shape as the layout action: the request's JSON, copied, and
+    /// the caller's out cell.
+    pub fn as_poltergeist_screenshot(&self) -> (String, *mut ScreenshotOut) {
+        let spec = usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *const c_char;
+        let out = usize::from_ne_bytes(self.payload[8..16].try_into().unwrap()) as *mut ScreenshotOut;
         let text = if spec.is_null() {
             String::new()
         } else {
@@ -1690,6 +1725,14 @@ pub struct Api {
     pub app_config_set: unsafe extern "C" fn(App, *const u8, usize, *const u8, usize, *mut u8, usize) -> usize,
     /// `ghostty_app_config_set_result(app, buf, cap)`: the last `set`'s JSON.
     pub app_config_set_result: unsafe extern "C" fn(App, *mut u8, usize) -> usize,
+    /// `ghostty_app_config_form_search(app, entries, len, query, len, buf,
+    /// cap)`: the settings search (screenshot.md §12.3). Pure.
+    pub app_config_form_search:
+        unsafe extern "C" fn(App, *const u8, usize, *const u8, usize, *mut u8, usize) -> usize,
+    /// `ghostty_app_poltergeist_screenshot_complete(app, token, result, json,
+    /// len)`: the answer to a screenshot request that was answered pending.
+    /// **On the UI thread, once per token.**
+    pub app_poltergeist_screenshot_complete: unsafe extern "C" fn(App, u64, i32, *const u8, usize),
 
     // from ghostty-vt.dll -- proves both DLLs are loaded and callable
     pub codepoint_width: unsafe extern "C" fn(u32) -> u8,

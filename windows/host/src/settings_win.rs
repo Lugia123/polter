@@ -88,6 +88,10 @@ struct State {
     origin: HWND,
     /// Who had the keyboard before the window was shown.
     prev_focus: HWND,
+    /// `Some` while the search box holds a search (screenshot.md §12.2):
+    /// where the window was when the first character was typed, and where
+    /// clearing the box goes back to.
+    search_from: Option<Place>,
 }
 
 thread_local! {
@@ -97,6 +101,7 @@ thread_local! {
             last: None,
             origin: HWND(std::ptr::null_mut()),
             prev_focus: HWND(std::ptr::null_mut()),
+            search_from: None,
         })
     };
 }
@@ -122,6 +127,10 @@ fn from_rect(r: Rect) -> RECT {
 
 /// The section's label, as the sidebar and the breadcrumb show it. The
 /// msgids were agreed with the macOS side (settings.md §2.3).
+pub fn section_label(s: Section) -> String {
+    label(s)
+}
+
 fn label(s: Section) -> String {
     match s {
         Section::Roles => tr("Roles"),
@@ -218,6 +227,9 @@ fn open(route: Route, origin: HWND) {
     if h.0.is_null() {
         return;
     }
+    // A route is somewhere to go: it ends a search rather than landing
+    // under a list of results.
+    quit_search();
     let (last, prev_origin) = ST.with(|c| {
         let s = c.borrow();
         (s.last.clone(), s.origin)
@@ -435,6 +447,10 @@ pub fn crumb_changed() {
 /// Close: ask about anything unsaved, remember where it was, hide, and give
 /// the keyboard back.
 fn close() {
+    // Where the window "was" is where the search began, not the results.
+    if let Some(from) = quit_search() {
+        switch_to(from);
+    }
     if !leave_current() {
         return;
     }
@@ -951,44 +967,134 @@ fn search_text() -> String {
     String::from_utf16_lossy(&buf[..got])
 }
 
-/// The search box changed (§2.3): narrow the lists and jump to the first
-/// section with a match: the roles and the projects (plugins join in phase 2).
+pub fn is_searching() -> bool {
+    ST.with(|c| c.borrow().search_from.is_some())
+}
+
+fn take_search() -> Option<Place> {
+    ST.with(|c| c.borrow_mut().search_from.take())
+}
+
+fn set_search_from(p: Place) {
+    ST.with(|c| c.borrow_mut().search_from = Some(p));
+}
+
+/// End a search without going anywhere: the results go, the box is
+/// emptied. Returns where the search began, for a caller that goes back.
+/// The box is emptied **after** the search is marked over, so the change
+/// it raises finds nothing to end.
+fn quit_search() -> Option<Place> {
+    let from = take_search()?;
+    crate::general_ui::set_search(None);
+    let edit = HWND(SEARCH.load(Ordering::Acquire));
+    unsafe {
+        let _ = SetWindowTextW(edit, PCWSTR::null());
+        let _ = InvalidateRect(Some(edit), None, true);
+        let _ = InvalidateRect(Some(win()), None, false);
+    }
+    // process-wide: the one settings window, not any terminal window's
+    crate::plogf!("[settings] search ended; it began at {}/{:?}", from.section.key(), from.item);
+    Some(from)
+}
+
+/// A result was clicked: the search ends and the window goes to where the
+/// result lives.
+pub fn leave_search_to(place: Place) {
+    if quit_search().is_none() {
+        return;
+    }
+    switch_to(place);
+}
+
+/// What the search can find outside the General section (screenshot.md
+/// §12.3): each role, project and plugin by name, and each of a plugin's
+/// own settings. A click goes to the role, the project, the plugin.
+fn search_externals() -> Vec<crate::general_ui::External> {
+    use polter_settings_shell::search::Entry;
+    let mut out = Vec::new();
+    let at = |section: Section, item: &str| Place { section, item: Some(item.to_string()) };
+    for (name, key) in crate::roles_ui::search_rows() {
+        out.push(crate::general_ui::External {
+            entry: Entry { name, key: Some(key.clone()), ..Default::default() },
+            crumb: label(Section::Roles),
+            place: at(Section::Roles, &key),
+        });
+    }
+    for name in crate::projects_ui::names() {
+        out.push(crate::general_ui::External {
+            entry: Entry { name: name.clone(), ..Default::default() },
+            crumb: label(Section::Projects),
+            place: at(Section::Projects, &name),
+        });
+    }
+    for p in crate::plugins_ui::search_rows() {
+        let place = at(Section::Plugins, &p.key);
+        out.push(crate::general_ui::External {
+            entry: Entry { name: p.name.clone(), key: Some(p.key.clone()), summary: (!p.summary.is_empty()).then(|| p.summary.clone()), ..Default::default() },
+            crumb: label(Section::Plugins),
+            place: place.clone(),
+        });
+        for (key, title, help) in p.params {
+            out.push(crate::general_ui::External {
+                entry: Entry { name: if title.is_empty() { key.clone() } else { title }, key: Some(key), summary: (!help.is_empty()).then_some(help), ..Default::default() },
+                crumb: shell::breadcrumb(&label(Section::Plugins), Some(&p.name)),
+                place: place.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// The search box changed (screenshot.md §12.2). With something in it the
+/// content shows the results -- every setting, role, project, plugin and
+/// action the query finds -- and the sidebar and the lists stand aside,
+/// dimmed and unfiltered; emptied, the window is back where the search
+/// began.
 fn on_search() {
     // The whole field repaints, so no piece of the placeholder is left
     // beside the first letter typed.
     let edit = HWND(SEARCH.load(Ordering::Acquire));
     let _ = unsafe { InvalidateRect(Some(edit), None, true) };
     let q = search_text();
-    crate::roles_ui::set_filter(&q);
-    crate::plugins_ui::set_filter(&q);
-    crate::projects_ui::set_filter(&q);
-    // The sidebar's plugin rows are narrowed too, so it repaints.
+    match polter_settings_shell::search::step(is_searching(), &q) {
+        polter_settings_shell::search::Step::Idle => {}
+        polter_settings_shell::search::Step::Begin => {
+            let results = Place { section: Section::General, item: None };
+            let current = current_place();
+            let dirty = current.as_ref().is_some_and(|c| section_dirty(c.section));
+            // The results replace the section on screen, so anything
+            // unsaved in it is asked about first, as for any other leaving.
+            if dirty && current.as_ref().is_some_and(|c| c.section != Section::General) && !leave_current() {
+                // process-wide: the one settings window, not any terminal window's
+                crate::plogf!("[settings] search not begun: leaving {:?} was cancelled", current);
+                return;
+            }
+            let from = current.unwrap_or(Place { section: Section::ALL[0], item: None });
+            // process-wide: as above
+            crate::plogf!("[settings] search began at {}/{:?}", from.section.key(), from.item);
+            set_search_from(from);
+            switch_to(results);
+            crate::general_ui::set_search(Some((q, search_externals())));
+            // Showing a section must not take the keyboard out of the box
+            // being typed in.
+            let _ = unsafe { SetFocus(Some(edit)) };
+        }
+        polter_settings_shell::search::Step::Continue => crate::general_ui::set_search(Some((q, search_externals()))),
+        polter_settings_shell::search::Step::End => {
+            if let Some(from) = quit_search() {
+                switch_to(from);
+                let _ = unsafe { SetFocus(Some(edit)) };
+            }
+        }
+    }
     let _ = unsafe { InvalidateRect(Some(win()), None, false) };
-    let items = vec![
-        (Section::Roles, crate::roles_ui::names()),
-        (Section::Projects, crate::projects_ui::names()),
-        (Section::Plugins, crate::plugins_ui::names()),
-    ];
-    // §2.3 (narrowed 2026-10-01): the section on screen keeps a search it
-    // can answer.
-    let here = section_now().unwrap_or(Section::ALL[0]);
-    let Some(target) = shell::search_section(here, &q, &items) else { return };
-    if ST.with(|c| c.borrow().section) == Some(target) {
-        return;
-    }
-    let place = Place { section: target, item: None };
-    let current = current_place();
-    let dirty = current.as_ref().is_some_and(|c| section_dirty(c.section));
-    if shell::must_ask(current.as_ref(), dirty, &place) && !leave_current() {
-        return;
-    }
-    switch_to(place);
-    // The jump must not take the keyboard out of the box being typed in.
-    let s = HWND(SEARCH.load(Ordering::Acquire));
-    let _ = unsafe { SetFocus(Some(s)) };
 }
 
 fn on_click(x: i32, y: i32) {
+    // In a search the sidebar takes no part (screenshot.md §12.2).
+    if is_searching() {
+        return;
+    }
     let h = win();
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(h, &mut rc) };
@@ -1147,7 +1253,12 @@ fn draw_text(hdc: HDC, s: &str, r: &RECT, font: *mut c_void, colour: u32, flags:
 
 
 fn paint(h: HWND) {
-    let section = ST.with(|c| c.borrow().section);
+    let (section, searching) = ST.with(|c| {
+        let s = c.borrow();
+        // In a search nothing in the sidebar is "the place": the rows are
+        // dimmed and none is highlighted.
+        (if s.search_from.is_some() { None } else { s.section }, s.search_from.is_some())
+    });
     let crumb_item = match section {
         Some(Section::Roles) => crate::roles_ui::current().map(|(_, name)| name),
         Some(Section::Plugins) => crate::plugins_ui::current().map(|(_, name)| name),
@@ -1190,7 +1301,7 @@ fn paint(h: HWND) {
         if on {
             fill(hdc, &r, theme::sel());
         }
-        let colour = if on { theme::sel_text() } else { theme::text() };
+        let colour = if searching { theme::dim() } else if on { theme::sel_text() } else { theme::text() };
         let dim = if on { theme::sel_text() } else { theme::dim() };
         let word = crate::plugins_ui::dot_word(row.dot);
         let (name_r, word_r) = plugin_rules::plugin_columns(to_rect(r), sb.plugin_text_left, word_w, dpi);
@@ -1214,7 +1325,7 @@ fn paint(h: HWND) {
             &label(*sec),
             &t,
             if on || section == Some(*sec) { bold } else { font },
-            if on { theme::sel_text() } else { theme::text() },
+            if searching { theme::dim() } else if on { theme::sel_text() } else { theme::text() },
             DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
         );
     }
@@ -1233,6 +1344,12 @@ fn paint(h: HWND) {
     fill(hdc, &from_rect(l.bottom_rule), theme::border());
     fill(hdc, &from_rect(l.divider), theme::border());
 
+    if searching {
+        // The line above the content names what is under it: the results.
+        let (top, _) = crumb_top(&l);
+        let t = RECT { left: l.breadcrumb.left, top, right: l.breadcrumb.right, bottom: l.top_rule.top };
+        draw_text(hdc, &tr("Search"), &t, bold, theme::text(), DT_SINGLELINE | DT_TOP | DT_END_ELLIPSIS);
+    }
     if let Some(sec) = section {
         // §2.3a: an item the search has hidden from its list says so here.
         let item = match crumb_item {
@@ -1282,7 +1399,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 let vk = VIRTUAL_KEY(wp.0 as u16);
                 if is_close_key(vk.0) {
                     close();
-                } else if vk == VK_UP || vk == VK_DOWN {
+                } else if (vk == VK_UP || vk == VK_DOWN) && !is_searching() {
                     // The window itself has the keyboard only after a click
                     // on the sidebar (`go_section`), so these are the
                     // sidebar's (§2.3a: the arrow keys are not lost).

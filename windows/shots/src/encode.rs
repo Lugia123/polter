@@ -43,23 +43,61 @@ pub fn png(image: &Image) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Read a PNG back into pixels: for annotating a shot that was saved
+/// earlier. `None` for anything that is not a PNG this can read, or one
+/// larger than [`crate::dib::MAX_PIXELS`].
+pub fn decode(bytes: &[u8]) -> Option<(Image, ::png::ColorType)> {
+    let mut decoder = ::png::Decoder::new(bytes);
+    // Palettes, 16-bit samples and low bit depths all come out as 8-bit
+    // RGB or RGBA, or grey.
+    decoder.set_transformations(::png::Transformations::normalize_to_color8());
+    let mut r = decoder.read_info().ok()?;
+    let (w, h) = (r.info().width, r.info().height);
+    if w as u64 * h as u64 > crate::dib::MAX_PIXELS {
+        return None;
+    }
+    let mut buf = vec![0; r.output_buffer_size()];
+    let info = r.next_frame(&mut buf).ok()?;
+    buf.truncate(info.buffer_size());
+    let rgba: Vec<u8> = match info.color_type {
+        ::png::ColorType::Rgba => buf,
+        ::png::ColorType::Rgb => buf.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        ::png::ColorType::Grayscale => buf.iter().flat_map(|g| [*g, *g, *g, 255]).collect(),
+        ::png::ColorType::GrayscaleAlpha => buf.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        ::png::ColorType::Indexed => return None,
+    };
+    Some((Image { width: info.width, height: info.height, rgba }, info.color_type))
+}
+
+impl Image {
+    /// The pixels as B, G, R, X rows -- what `pixels::Frozen` holds.
+    pub fn to_bgrx(&self) -> Vec<u8> {
+        self.rgba.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255]).collect()
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
     /// Decode with the `png` crate's reader, expanding RGB to RGBA.
     pub(crate) fn read_back(bytes: &[u8]) -> (Image, ::png::ColorType) {
-        let mut r = ::png::Decoder::new(bytes).read_info().unwrap();
-        let mut buf = vec![0; r.output_buffer_size()];
-        let info = r.next_frame(&mut buf).unwrap();
-        buf.truncate(info.buffer_size());
-        assert_eq!(info.bit_depth, ::png::BitDepth::Eight);
-        let rgba = match info.color_type {
-            ::png::ColorType::Rgba => buf,
-            ::png::ColorType::Rgb => buf.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
-            other => panic!("unexpected colour type {other:?}"),
-        };
-        (Image { width: info.width, height: info.height, rgba }, info.color_type)
+        decode(bytes).unwrap()
+    }
+
+    #[test]
+    fn what_is_not_a_png_is_not_decoded() {
+        assert!(decode(b"").is_none());
+        assert!(decode(b"GIF89a....").is_none());
+        let whole = png(&image(5, 3, 255)).unwrap();
+        assert!(decode(&whole[..whole.len() / 2]).is_none(), "a truncated file");
+        assert!(decode(&whole).is_some());
+    }
+
+    #[test]
+    fn pixels_go_to_gdis_order_and_back() {
+        let i = image(4, 2, 255);
+        assert_eq!(Image::from_bgrx(4, 2, &i.to_bgrx()), Some(i));
     }
 
     fn image(width: u32, height: u32, alpha: u8) -> Image {

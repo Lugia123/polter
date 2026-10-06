@@ -27,7 +27,8 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicUsize, Ordering};
 
-use polter_settings_shell::general::{self as rules, Commit, Control, FormRead, Group, Item, ReadOnlyNote, Source};
+use polter_settings_shell::general::{self as rules, Commit, Control, FormRead, Group, Item, Kind, ReadOnlyNote, Source};
+use polter_settings_shell::search as find;
 use polter_settings_shell::{self as shell, grid, Rect};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -45,7 +46,9 @@ const ID_OPEN_CONFIG: u16 = 101;
 const ID_RELOAD: u16 = 102;
 const ID_EDIT_KEYBINDS: u16 = 103;
 const ID_ROW_BASE: u16 = 2000;
-/// The second box of a theme row (the dark half) is its row's id plus this.
+/// The second box of a theme row (the dark half) is its row's id plus this;
+/// so is a folder row's "Choose…", and its "Show in Explorer" is the id
+/// plus twice this (`part_of_id`).
 const ID_DARK_OFFSET: u16 = 1000;
 const ID_RESTORE: usize = 1;
 const EN_KILLFOCUS: u32 = 0x0200;
@@ -80,8 +83,19 @@ struct Row {
     item: usize,
     control: Control,
     hwnd: HWND,
-    /// The dark half of a theme row.
+    /// The dark half of a theme row; a folder row's "Choose…".
     hwnd2: HWND,
+    /// A folder row's "Show in Explorer".
+    hwnd3: HWND,
+    /// The group whose rules draw the row: the one on screen, or in a
+    /// search the one the row lives in.
+    home: Group,
+    /// In a search: the line above the row that says where it lives, and
+    /// where a click on it goes (screenshot.md §12.2).
+    crumb: Option<(String, shell::Place)>,
+    /// A search result that is no row of the form -- a role, a project, a
+    /// plugin, an action: the row is this, and `item` names nothing.
+    synth: Option<Item>,
     /// What the core said when it refused the last write (§7.3: under the
     /// control, in red, the value back to the effective one).
     error: Option<String>,
@@ -91,6 +105,35 @@ struct Row {
     /// "More…" has been clicked: Ghostty's own text is shown in full under
     /// the line, and the link reads "Less" (#977, as on the mac).
     expanded: bool,
+}
+
+/// Something the search can find that is not this section's: a role, a
+/// project, a plugin or one of a plugin's own settings. `settings_win`
+/// collects them; where a click goes is theirs to say.
+#[derive(Clone)]
+pub struct External {
+    pub entry: find::Entry,
+    pub crumb: String,
+    pub place: shell::Place,
+}
+
+/// One result, in the order the core ranked it.
+#[derive(Clone)]
+struct Hit {
+    /// Index into `Form::items` for a row of the form.
+    item: Option<usize>,
+    home: Group,
+    synth: Option<Item>,
+    crumb: String,
+    place: shell::Place,
+}
+
+/// The search box has something in it: the form shows results and the
+/// group list stands aside.
+struct Search {
+    query: String,
+    externals: Vec<External>,
+    hits: Vec<Hit>,
 }
 
 #[derive(Clone, Copy)]
@@ -116,6 +159,7 @@ struct State {
     /// Set while the form's controls are being filled from the table, so
     /// the notifications that filling raises are not taken for edits.
     filling: bool,
+    search: Option<Search>,
 }
 
 thread_local! {
@@ -132,6 +176,7 @@ thread_local! {
             keybinds: Vec::new(),
             fixed: None,
             filling: false,
+            search: None,
         })
     };
 }
@@ -210,7 +255,46 @@ fn read_form() -> Result<Form, String> {
         return Err("NoApp".into());
     }
     let text = ask_json(|b, c| unsafe { (api.app_config_form)(app, b, c) }).ok_or("the core gave no answer")?;
-    parse_form(&text).ok_or_else(|| "the core's answer would not parse".to_string())
+    parse_form(&text, shortcut_text).ok_or_else(|| "the core's answer would not parse".to_string())
+}
+
+/// The keys bound to `action` now, written as the menus write them, or
+/// "Not set" (screenshot.md §12.3).
+fn shortcut_text(action: &str) -> String {
+    crate::keys::shortcut_for(action).unwrap_or_else(|| tr("Not set"))
+}
+
+/// The item row `r` draws. Total: a row whose item the table no longer has
+/// draws as an empty read-only row until the rows are made again, rather
+/// than shifting every row after it onto another row's rectangle.
+fn item_of(form: Option<&Form>, r: &Row) -> Item {
+    r.synth.clone().or_else(|| form.and_then(|f| f.items.get(r.item).cloned())).unwrap_or_else(|| jump_item("", None))
+}
+
+/// A result that is no form row, as a row: its name where a label goes and
+/// its sentence where a value would be.
+fn jump_item(name: &str, summary: Option<&str>) -> Item {
+    Item {
+        kind: Kind::Jump,
+        key: String::new(),
+        group: None,
+        control: Control::ReadOnly,
+        choices: Vec::new(),
+        choice_labels: Vec::new(),
+        choice_template: None,
+        on: None,
+        off: None,
+        aliases: Vec::new(),
+        min: None,
+        max: None,
+        default: String::new(),
+        value: String::new(),
+        doc: None,
+        label: Some(name.to_string()),
+        summary: summary.map(str::to_string),
+        source: Source::Default,
+        readonly: None,
+    }
 }
 
 fn source_of(v: &serde_json::Value) -> Source {
@@ -224,30 +308,40 @@ fn source_of(v: &serde_json::Value) -> Source {
     }
 }
 
-/// `writeJson`'s document (`src/config/form.zig`).
-fn parse_form(text: &str) -> Option<Form> {
+/// `writeJson`'s document (`src/config/form.zig`). `binding` says what is
+/// bound to an action now, as the row shows it.
+fn parse_form(text: &str, binding: impl Fn(&str) -> String) -> Option<Form> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     let strs = |x: Option<&serde_json::Value>| -> Vec<String> {
         x.and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default()
     };
-    let sections = v
+    // `null` where the table leaves a value's name to `choice_template`.
+    let names = |x: Option<&serde_json::Value>| -> Vec<Option<String>> {
+        x.and_then(|a| a.as_array()).map(|a| a.iter().map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default()
+    };
+    let mut sections: rules::Sections = v
         .get("sections")?
         .as_array()?
         .iter()
         .filter_map(|s| Some((s.get("group")?.as_str()?.to_string(), strs(s.get("keys")))))
         .collect();
-    let items = v
+    let mut items: Vec<Item> = v
         .get("items")?
         .as_array()?
         .iter()
         .filter_map(|it| {
             let st = |k: &str| it.get(k).and_then(|x| x.as_str()).map(str::to_string);
             Some(Item {
+                kind: Kind::Key,
                 key: st("key")?,
                 group: st("group"),
                 control: Control::parse(&st("control").unwrap_or_default()),
                 choices: strs(it.get("choices")),
-                choice_labels: strs(it.get("choice_labels")),
+                choice_labels: names(it.get("choice_labels")),
+                choice_template: st("choice_template"),
+                on: st("on"),
+                off: st("off"),
+                aliases: strs(it.get("aliases")),
                 min: it.get("min").and_then(|x| x.as_f64()),
                 max: it.get("max").and_then(|x| x.as_f64()),
                 default: st("default").unwrap_or_default(),
@@ -260,6 +354,42 @@ fn parse_form(text: &str) -> Option<Form> {
             })
         })
         .collect();
+    // A section's `shortcuts` (screenshot.md §12.3): each is a read-only
+    // row after the section's keys, showing what is bound to its action
+    // now. The binding is asked of the core here, on every read -- a reload
+    // ends in a read, so the row never shows a key that is no longer bound.
+    for sec in v.get("sections").and_then(|s| s.as_array()).into_iter().flatten() {
+        let Some(group) = sec.get("group").and_then(|g| g.as_str()) else { continue };
+        for sc in sec.get("shortcuts").and_then(|a| a.as_array()).into_iter().flatten() {
+            let st = |k: &str| sc.get(k).and_then(|x| x.as_str()).map(str::to_string);
+            let Some(action) = st("action") else { continue };
+            let bound = binding(&action);
+            items.push(Item {
+                kind: Kind::Shortcut,
+                key: action.clone(),
+                group: Some(group.to_string()),
+                control: Control::ReadOnly,
+                choices: Vec::new(),
+                choice_labels: Vec::new(),
+                choice_template: None,
+                on: None,
+                off: None,
+                aliases: strs(sc.get("aliases")),
+                min: None,
+                max: None,
+                default: bound.clone(),
+                value: bound,
+                doc: None,
+                label: st("label"),
+                summary: st("summary"),
+                source: Source::Default,
+                readonly: None,
+            });
+            if let Some((_, keys)) = sections.iter_mut().find(|(g, _)| g == group) {
+                keys.push(action);
+            }
+        }
+    }
     Some(Form {
         main: v.get("main").and_then(|m| m.as_str()).unwrap_or("").to_string(),
         backup: v.get("backup").and_then(|b| b.as_str()).map(str::to_string),
@@ -730,10 +860,14 @@ fn band_buttons(g: &shell::SectionGrid, dpi: i32, group: Group) -> Vec<(u16, Rec
 /// refusal, nothing read-only to explain -- whose Ghostty text says more
 /// than the line does.
 fn has_link(it: &Item, error: Option<&str>) -> bool {
-    error.is_none() && rules::readonly_note(it).is_none() && rules::has_more(it)
+    // A shortcut row's line is the way to the page that lists it (§12.1).
+    it.kind == Kind::Shortcut || (error.is_none() && rules::readonly_note(it).is_none() && rules::has_more(it))
 }
 
-fn link_text(expanded: bool) -> String {
+fn link_text(it: &Item, expanded: bool) -> String {
+    if it.kind == Kind::Shortcut {
+        return tr(Group::Keybinds.msgid());
+    }
     if expanded { tr("Less") } else { tr("More…") }
 }
 
@@ -747,6 +881,10 @@ fn row_note(it: &Item, error: Option<&str>, expanded: bool) -> (String, bool) {
 fn row_note_closed(it: &Item, error: Option<&str>) -> (String, bool) {
     if let Some(e) = error {
         return (e.to_string(), true);
+    }
+    // Its sentence is drawn where a control would be (`paint_form`).
+    if it.kind == Kind::Jump {
+        return (String::new(), false);
     }
     match rules::readonly_note(it) {
         Some(ReadOnlyNote::SetBy { path, line }) => {
@@ -764,17 +902,24 @@ fn row_note_closed(it: &Item, error: Option<&str>) -> (String, bool) {
 /// bar is always there (`SIF_DISABLENOSCROLL`, task 990), so the width the
 /// controls are laid out in is the width they are painted in.
 fn form_rows(width: i32, dpi: i32) -> (Vec<polter_settings_shell::plugins::FormRow>, i32) {
-    let texts: Vec<(String, String, bool, bool)> = ST.with(|c| {
+    let (rows, _, total) = form_layout(width, dpi);
+    (rows, total)
+}
+
+/// `form_rows`, and in a search each row's breadcrumb line above it.
+fn form_layout(width: i32, dpi: i32) -> (Vec<polter_settings_shell::plugins::FormRow>, Vec<Rect>, i32) {
+    let (texts, crumbed): (Vec<(String, String, bool, bool)>, bool) = ST.with(|c| {
         let s = c.borrow();
-        let Some(form) = &s.form else { return Vec::new() };
-        s.rows
+        let texts = s
+            .rows
             .iter()
             .map(|r| {
-                let it = &form.items[r.item];
-                let (note, _) = row_note(it, r.error.as_deref(), r.expanded);
-                (rules::row_title(it, tr), note, r.expanded, has_link(it, r.error.as_deref()))
+                let it = item_of(s.form.as_ref(), r);
+                let (note, _) = row_note(&it, r.error.as_deref(), r.expanded);
+                (rules::row_title(&it, tr), note, r.expanded, has_link(&it, r.error.as_deref()))
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        (texts, s.search.is_some())
     });
     let control_w = width - shell::scale(grid::LABEL_W + grid::LABEL_GAP, dpi);
     // The label column less the room the "differs from default" dot takes.
@@ -789,39 +934,170 @@ fn form_rows(width: i32, dpi: i32) -> (Vec<polter_settings_shell::plugins::FormR
             (measure(&title, label_w, font(), 3), help)
         })
         .collect();
-    polter_settings_shell::plugins::form_labeled(width, dpi, &rows)
+    let (rows, total) = polter_settings_shell::plugins::form_labeled(width, dpi, &rows);
+    if !crumbed {
+        return (rows, Vec::new(), total);
+    }
+    find::with_crumbs(&rows, total, metrics(font()), shell::scale(grid::BUTTON_GAP, dpi))
 }
 
 // ================================================================== the form
 
-/// A click on a row's "More…" / "Less" line opens or closes Ghostty's text
-/// under it, and the form is laid out again. True when the click was one.
-fn toggle_more_at(win: HWND, x: i32, y: i32) -> bool {
+/// What a click in the form did, if anything: in a search, a breadcrumb
+/// line or a result that is no form row goes where it lives; a shortcut
+/// row's line goes to Keyboard Shortcuts; a "More…" / "Less" line opens or
+/// closes Ghostty's text under it, and the form is laid out again.
+fn click_at(win: HWND, x: i32, y: i32) -> bool {
     let (_, dpi) = laid();
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(win, &mut rc) };
-    let (rows, _) = form_rows(rc.right, dpi);
+    let (rows, crumbs, _) = form_layout(rc.right, dpi);
     let line = metrics(font());
-    let hit = ST.with(|c| {
+    enum Did {
+        Go(shell::Place),
+        Toggle(usize),
+    }
+    let did = ST.with(|c| {
         let s = c.borrow();
-        let form = s.form.as_ref()?;
-        rows.iter().zip(s.rows.iter()).position(|(r, row)| {
-            let Some(hr) = r.help else { return false };
-            if !has_link(&form.items[row.item], row.error.as_deref()) {
-                return false;
+        let y = y + s.scroll;
+        for (i, row) in s.rows.iter().enumerate() {
+            let Some(r) = rows.get(i) else { break };
+            let it = item_of(s.form.as_ref(), row);
+            if let (Some(cr), Some((_, place))) = (crumbs.get(i), &row.crumb) {
+                let bottom = r.help.map(|h| h.bottom).unwrap_or(r.control.bottom).max(r.label.bottom);
+                let on_crumb = x >= cr.left && x < cr.right && y >= cr.top && y < cr.bottom;
+                let on_row = y >= r.label.top && y < bottom;
+                if on_crumb || (it.kind == Kind::Jump && on_row) {
+                    return Some(Did::Go(place.clone()));
+                }
             }
-            let top = hr.bottom - line - s.scroll;
-            x >= hr.left && x < hr.right && y >= top && y < top + line
-        })
+            let Some(hr) = r.help else { continue };
+            if !has_link(&it, row.error.as_deref()) {
+                continue;
+            }
+            let top = hr.bottom - line;
+            if x >= hr.left && x < hr.right && y >= top && y < top + line {
+                return Some(if it.kind == Kind::Shortcut {
+                    Did::Go(shell::Place { section: shell::Section::General, item: Some(Group::Keybinds.key().to_string()) })
+                } else {
+                    Did::Toggle(i)
+                });
+            }
+        }
+        None
     });
-    let Some(i) = hit else { return false };
+    match did {
+        None => false,
+        Some(Did::Go(place)) => {
+            go(place);
+            true
+        }
+        Some(Did::Toggle(i)) => {
+            ST.with(|c| {
+                let row = &mut c.borrow_mut().rows[i];
+                row.expanded = !row.expanded;
+            });
+            layout_form(dpi);
+            let _ = unsafe { InvalidateRect(Some(win), None, true) };
+            true
+        }
+    }
+}
+
+/// Go to where something lives: out of a search through the settings
+/// window, which owns the box; otherwise to a group of this section.
+fn go(place: shell::Place) {
+    // process-wide: the settings window's one General section
+    crate::plogf!("[general-ui] go to {}/{:?} (searching: {})", place.section.key(), place.item, is_searching());
+    if is_searching() {
+        crate::settings_win::leave_search_to(place);
+    } else if let Some(g) = place.item.as_deref().and_then(Group::from_key).filter(|_| place.section == shell::Section::General) {
+        select(g);
+    }
+}
+
+pub fn is_searching() -> bool {
+    ST.with(|c| c.borrow().search.is_some())
+}
+
+/// The search box holds `query` (screenshot.md §12.2): the form shows what
+/// it finds, across the whole window, and the group list stands aside.
+/// `None` is the box cleared: the section is as it was.
+pub fn set_search(search: Option<(String, Vec<External>)>) {
     ST.with(|c| {
-        let row = &mut c.borrow_mut().rows[i];
-        row.expanded = !row.expanded;
+        let s = &mut *c.borrow_mut();
+        s.search = search.map(|(query, externals)| Search { query, externals, hits: Vec::new() });
+        s.status.clear();
+        s.status_warn = false;
     });
-    layout_form(dpi);
-    let _ = unsafe { InvalidateRect(Some(win), None, true) };
-    true
+    if section().0.is_null() {
+        return;
+    }
+    research();
+    rebuild();
+}
+
+/// Ask the core which entries the query finds. **The list of entries and
+/// the list of what each one is are built together, in one loop**, so an
+/// index in the answer cannot name a different thing here.
+fn research() {
+    let Some((query, externals)) = ST.with(|c| c.borrow().search.as_ref().map(|s| (s.query.clone(), s.externals.clone()))) else { return };
+    let (form, keybinds) = ST.with(|c| {
+        let s = c.borrow();
+        (s.form.clone(), s.keybinds.clone())
+    });
+    let general = crate::settings_win::section_label(shell::Section::General);
+    let here = |g: Group| (shell::breadcrumb(&general, Some(&label(g))), shell::Place { section: shell::Section::General, item: Some(g.key().to_string()) });
+    let mut entries: Vec<find::Entry> = Vec::new();
+    let mut what: Vec<Hit> = Vec::new();
+    if let Some(f) = &form {
+        for (i, g, e) in find::form_entries(&f.items, &f.sections, tr) {
+            let (crumb, place) = here(g);
+            entries.push(e);
+            what.push(Hit { item: Some(i), home: g, synth: None, crumb, place });
+        }
+    }
+    for x in externals {
+        let synth = jump_item(&x.entry.name, x.entry.summary.as_deref());
+        entries.push(x.entry);
+        what.push(Hit { item: None, home: Group::All, synth: Some(synth), crumb: x.crumb, place: x.place });
+    }
+    // The Keyboard Shortcuts page's actions: the name it shows, the action,
+    // and the keys it has now (§12.3's last row).
+    for r in &keybinds {
+        let name = r.title.clone().unwrap_or_else(|| r.action.to_string());
+        let keys = crate::keybinds::keys_label(r);
+        let (crumb, place) = here(Group::Keybinds);
+        let synth = jump_item(&name, Some(&keys));
+        entries.push(find::Entry { name, aliases: Vec::new(), key: Some(r.action.to_string()), summary: Some(keys), choices: Vec::new() });
+        what.push(Hit { item: None, home: Group::All, synth: Some(synth), crumb, place });
+    }
+    let doc = find::json(&entries);
+    let answer = match (crate::api_opt(), crate::app_opt()) {
+        (Some(api), app) if !app.is_null() => {
+            ask_json(|b, c| unsafe { (api.app_config_form_search)(app, doc.as_ptr(), doc.len(), query.as_ptr(), query.len(), b, c) })
+        }
+        _ => None,
+    };
+    let indices: Option<Vec<usize>> = answer.as_deref().and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok()).and_then(|v| {
+        Some(v.get("hits")?.as_array()?.iter().filter_map(|h| h.get("index").and_then(|i| i.as_u64()).map(|i| i as usize)).collect())
+    });
+    let hits: Vec<Hit> = find::valid_hits(indices.as_deref().unwrap_or(&[]), what.len()).into_iter().map(|i| what[i].clone()).collect();
+    // process-wide: the settings window's one General section
+    crate::plogf!(
+        "[general-ui] search {:?}: {} entries handed to the core -> {}",
+        query,
+        entries.len(),
+        match &indices {
+            Some(_) => format!("{} hit(s)", hits.len()),
+            None => "NO ANSWER (the core gave none, or one that would not parse); shown as no results".to_string(),
+        }
+    );
+    ST.with(|c| {
+        if let Some(s) = c.borrow_mut().search.as_mut() {
+            s.hits = hits;
+        }
+    });
 }
 
 /// Make the controls for the group on screen and put everything in place.
@@ -829,25 +1105,37 @@ fn rebuild() {
     let doomed: Vec<HWND> = ST.with(|c| {
         let s = &mut *c.borrow_mut();
         s.scroll = 0;
-        s.rows.drain(..).flat_map(|r| [r.hwnd, r.hwnd2]).filter(|h| !h.0.is_null()).collect()
+        s.rows.drain(..).flat_map(|r| [r.hwnd, r.hwnd2, r.hwnd3]).filter(|h| !h.0.is_null()).collect()
     });
     for h in doomed {
         let _ = unsafe { DestroyWindow(h) };
     }
-    let (group, form, query) = ST.with(|c| {
+    // What the form shows: a search's results, else the group's keys.
+    let wanted: Vec<(usize, Group, Item, Option<(String, shell::Place)>, bool)> = ST.with(|c| {
         let s = c.borrow();
-        (s.group, s.form.clone(), s.query.clone())
-    });
-    let mut made = Vec::new();
-    if let (true, Some(form)) = (group.is_form(), &form) {
-        for i in rules::items_in(group, &form.items, &form.sections, &query) {
-            let it = &form.items[i];
-            let control = rules::control_for(it, group);
-            let id = ID_ROW_BASE + made.len() as u16;
-            let slider = rules::slider_for(it, group);
-            let (hwnd, hwnd2) = if slider { (make_slider(id), HWND(std::ptr::null_mut())) } else { make_row(control, it, id) };
-            made.push(Row { item: i, control, hwnd, hwnd2, error: None, slider, expanded: false });
+        match (&s.search, &s.form) {
+            (Some(search), form) => search
+                .hits
+                .iter()
+                .filter_map(|h| {
+                    let it = h.synth.clone().or_else(|| form.as_ref()?.items.get(h.item?).cloned())?;
+                    Some((h.item.unwrap_or(usize::MAX), h.home, it, Some((h.crumb.clone(), h.place.clone())), h.synth.is_some()))
+                })
+                .collect(),
+            (None, Some(form)) if s.group.is_form() => {
+                rules::items_in(s.group, &form.items, &form.sections, &s.query).into_iter().map(|i| (i, s.group, form.items[i].clone(), None, false)).collect()
+            }
+            _ => Vec::new(),
         }
+    });
+    let none = HWND(std::ptr::null_mut());
+    let mut made = Vec::new();
+    for (i, home, it, crumb, synth) in wanted {
+        let control = rules::control_for(&it, home);
+        let id = ID_ROW_BASE + made.len() as u16;
+        let slider = rules::slider_for(&it, home);
+        let (hwnd, hwnd2, hwnd3) = if slider { (make_slider(id), none, none) } else { make_row(control, &it, id) };
+        made.push(Row { item: i, control, hwnd, hwnd2, hwnd3, home, crumb, synth: synth.then_some(it), error: None, slider, expanded: false });
     }
     set_rows(made);
     fill_rows();
@@ -907,37 +1195,71 @@ fn slider_now(h: HWND, it: &Item) -> String {
     rules::slider_text(rules::slider_value(pos, it.min.unwrap_or(0.0), it.max.unwrap_or(1.0)))
 }
 
-fn make_row(control: Control, it: &Item, id: u16) -> (HWND, HWND) {
+fn make_row(control: Control, it: &Item, id: u16) -> (HWND, HWND, HWND) {
     let border = if theme::custom_drawing() { WINDOW_STYLE(0) } else { WS_BORDER };
     let edit = WINDOW_STYLE(ES_AUTOHSCROLL as u32) | border;
     let none = HWND(std::ptr::null_mut());
     match control {
-        Control::Toggle => (make_control(w!("BUTTON"), WINDOW_STYLE(BS_AUTOCHECKBOX as u32), id), none),
+        Control::Toggle => (make_control(w!("BUTTON"), WINDOW_STYLE(BS_AUTOCHECKBOX as u32), id), none, none),
         Control::Choice => {
             let od = if theme::custom_drawing() { CBS_OWNERDRAWFIXED } else { 0 };
-            let h = make_control(w!("COMBOBOX"), WINDOW_STYLE((CBS_DROPDOWNLIST | CBS_HASSTRINGS | od) as u32) | WS_VSCROLL, id);
-            // Names, not values (#977); the index is the value's, so what is
-            // written is still the value (`changed` reads `it.choices`).
-            for o in &rules::choice_titles(it, tr) {
-                let w = wide(o);
-                unsafe {
-                    SendMessageW(h, CB_ADDSTRING, Some(WPARAM(0)), Some(LPARAM(w.as_ptr() as isize)));
-                }
-            }
-            (h, none)
+            // Its rows are put in by `fill_one`, with the value: the list
+            // can gain a row when the file says something it does not list.
+            (make_control(w!("COMBOBOX"), WINDOW_STYLE((CBS_DROPDOWNLIST | CBS_HASSTRINGS | od) as u32) | WS_VSCROLL, id), none, none)
         }
-        Control::Theme => (make_control(w!("EDIT"), edit, id), make_control(w!("EDIT"), edit, id + ID_DARK_OFFSET)),
-        Control::ReadOnly => (make_control(w!("EDIT"), edit | WINDOW_STYLE(ES_READONLY as u32), id), none),
-        _ => (make_control(w!("EDIT"), edit, id), none),
+        Control::Theme => (make_control(w!("EDIT"), edit, id), make_control(w!("EDIT"), edit, id + ID_DARK_OFFSET), none),
+        Control::Directory => (
+            make_control(w!("EDIT"), edit, id),
+            make_button(id + ID_DARK_OFFSET, &tr("Choose…")),
+            make_button(id + 2 * ID_DARK_OFFSET, &tr("Show in Explorer")),
+        ),
+        // A result that goes somewhere has nothing to hold: its sentence is
+        // drawn where a control would be.
+        Control::ReadOnly if it.kind == Kind::Jump => (none, none, none),
+        Control::ReadOnly => (make_control(w!("EDIT"), edit | WINDOW_STYLE(ES_READONLY as u32), id), none, none),
+        _ => (make_control(w!("EDIT"), edit, id), none, none),
     }
+}
+
+/// A push button in the form. **Not `make_control`**: that one's subclass
+/// takes Return for "write this row", and on a button Return is a click.
+fn make_button(id: u16, text: &str) -> HWND {
+    let h = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("BUTTON"),
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+            0,
+            0,
+            10,
+            10,
+            Some(form_hwnd()),
+            Some(HMENU(id as usize as *mut c_void)),
+            Some(hinst()),
+            None,
+        )
+    }
+    .unwrap_or_default();
+    if !h.0.is_null() {
+        set_font(h, font());
+        set_text(h, text);
+        crate::settings_win::subclass_child(h);
+    }
+    h
+}
+
+/// How wide a button is for its label: the text and the grid's padding,
+/// as the bottom band's buttons are.
+fn button_width(text: &str, dpi: i32) -> i32 {
+    text_width(text, font()) + 2 * shell::scale(grid::PAD, dpi)
 }
 
 /// Put every row's effective value into its control.
 fn fill_rows() {
     let rows: Vec<(HWND, HWND, Control, Item, bool)> = ST.with(|c| {
         let s = c.borrow();
-        let Some(form) = &s.form else { return Vec::new() };
-        s.rows.iter().map(|r| (r.hwnd, r.hwnd2, r.control, form.items[r.item].clone(), r.slider)).collect()
+        s.rows.iter().map(|r| (r.hwnd, r.hwnd2, r.control, item_of(s.form.as_ref(), r), r.slider)).collect()
     });
     ST.with(|c| c.borrow_mut().filling = true);
     for (h, h2, control, it, slider) in rows {
@@ -959,11 +1281,24 @@ fn fill_one(h: HWND, h2: HWND, control: Control, it: &Item) {
             SendMessageW(h, BM_SETCHECK, Some(WPARAM(rules::is_on(it) as usize)), Some(LPARAM(0)));
         },
         Control::Choice => {
-            let idx = it.choices.iter().position(|c| *c == it.value).map(|i| i as isize).unwrap_or(-1);
+            // Names, not values (#977); the index is the value's, so what
+            // is written is still the value (`edited_value`). Put in again
+            // on every fill: a value the table does not list is a row of
+            // its own (screenshot.md §12.3), and it comes and goes with
+            // what the file says.
+            let idx = rules::choice_index(it).map(|i| i as isize).unwrap_or(-1);
             unsafe {
+                SendMessageW(h, CB_RESETCONTENT, Some(WPARAM(0)), Some(LPARAM(0)));
+                for o in &rules::choice_titles(it, tr) {
+                    let w = wide(o);
+                    SendMessageW(h, CB_ADDSTRING, Some(WPARAM(0)), Some(LPARAM(w.as_ptr() as isize)));
+                }
                 SendMessageW(h, CB_SETCURSEL, Some(WPARAM(idx as usize)), Some(LPARAM(0)));
             }
         }
+        // Nothing to fill: there is no control.
+        Control::ReadOnly if it.kind == Kind::Jump => {}
+        Control::Directory => set_text(h, &it.value),
         Control::Theme => {
             let (l, d) = rules::theme_pair(&it.value);
             set_text(h, &l);
@@ -1000,9 +1335,11 @@ fn relayout() {
             SWP_NOZORDER | SWP_NOACTIVATE | if show { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW },
         );
     };
-    let (filter, body) = rules::form_area(g.editor, dpi, group == Group::All);
+    let searching = is_searching();
+    let (filter, body) = rules::form_area(g.editor, dpi, group == Group::All && !searching);
     if let Some(f) = fixed() {
-        let buttons = band_buttons(&g, dpi, group);
+        // A search is across every group: the band is the form's own.
+        let buttons = band_buttons(&g, dpi, if searching { Group::All } else { group });
         for (id, h) in [(ID_OPEN_CONFIG, f.open_config), (ID_RELOAD, f.reload), (ID_EDIT_KEYBINDS, f.edit_keybinds)] {
             match buttons.iter().find(|(i, _)| *i == id) {
                 Some((_, r)) => place(h, *r, true),
@@ -1011,10 +1348,10 @@ fn relayout() {
         }
         place(f.filter, filter.unwrap_or(Rect::new(0, 0, 1, 1)), filter.is_some());
     }
-    place(form_hwnd(), body, group.is_form());
-    place(kb_hwnd(), body, group == Group::Keybinds);
-    kb_publish(group == Group::Keybinds);
-    if group.is_form() {
+    place(form_hwnd(), body, group.is_form() || searching);
+    place(kb_hwnd(), body, group == Group::Keybinds && !searching);
+    kb_publish(group == Group::Keybinds && !searching);
+    if group.is_form() || searching {
         layout_form(dpi);
     }
     let _ = unsafe { InvalidateRect(Some(sec), None, false) };
@@ -1036,11 +1373,14 @@ fn layout_form(dpi: i32) {
     let (ctls, scroll) = ST.with(|c| {
         let s = &mut *c.borrow_mut();
         s.scroll = s.scroll.clamp(0, (total - view).max(0));
-        (s.rows.iter().map(|r| (r.hwnd, r.hwnd2, r.control, r.slider)).collect::<Vec<_>>(), s.scroll)
+        (s.rows.iter().map(|r| (r.hwnd, r.hwnd2, r.hwnd3, r.control, r.slider, r.home)).collect::<Vec<_>>(), s.scroll)
     });
-    let group = current();
     let gap = shell::scale(grid::BUTTONS_GAP, dpi);
-    for ((h, h2, control, slider), r) in ctls.iter().zip(rows.iter()) {
+    let (choose_w, reveal_w) = (button_width(&tr("Choose…"), dpi), button_width(&tr("Show in Explorer"), dpi));
+    for ((h, h2, h3, control, slider, home), r) in ctls.iter().zip(rows.iter()) {
+        if h.0.is_null() {
+            continue;
+        }
         let c = r.control;
         let extra = if *control == Control::Choice { shell::scale(CHOICE_LIST_ROWS * CHOICE_ROW_H, dpi) } else { 0 };
         let flags = SWP_NOZORDER | SWP_NOACTIVATE;
@@ -1052,11 +1392,16 @@ fn layout_form(dpi: i32) {
                 let half = (c.width() - gap) / 2;
                 let _ = SetWindowPos(*h, None, c.left, c.top - scroll, half, c.height(), flags);
                 let _ = SetWindowPos(*h2, None, c.left + half + gap, c.top - scroll, c.width() - half - gap, c.height(), flags);
+            } else if *control == Control::Directory {
+                let (e, ch, rv) = rules::directory_parts(c, dpi, choose_w, reveal_w);
+                for (w, r) in [(*h, e), (*h2, ch), (*h3, rv)] {
+                    let _ = SetWindowPos(w, None, r.left, r.top - scroll, r.width(), r.height(), flags);
+                }
             } else {
                 // A number or a short value is as wide as what goes in it
                 // and starts on the control column (#977, same widths as
                 // the mac); the rest take the row.
-                let w = rules::field_width(*control, group).map(|v| shell::scale(v, dpi).min(c.width())).unwrap_or(c.width());
+                let w = rules::field_width(*control, *home).map(|v| shell::scale(v, dpi).min(c.width())).unwrap_or(c.width());
                 let _ = SetWindowPos(*h, None, c.left, c.top - scroll, w, c.height() + extra, flags);
             }
         }
@@ -1086,10 +1431,94 @@ fn scroll_form(to: i32) {
 /// The row whose control has id `id`, and whether it is a theme row's dark
 /// half.
 fn row_of_id(id: u16) -> Option<usize> {
+    part_of_id(id).map(|(i, _)| i)
+}
+
+/// The row a control's id belongs to, and which of the row's controls it
+/// is: 0 the first, 1 the second (a theme's dark half, a folder's
+/// "Choose…"), 2 the third (a folder's "Show in Explorer").
+fn part_of_id(id: u16) -> Option<(usize, u16)> {
     let n = ST.with(|c| c.borrow().rows.len()) as u16;
-    let base = if id >= ID_ROW_BASE + ID_DARK_OFFSET { id - ID_DARK_OFFSET } else { id };
-    let i = base.checked_sub(ID_ROW_BASE)?;
-    (i < n).then_some(i as usize)
+    let off = id.checked_sub(ID_ROW_BASE)?;
+    let (part, i) = (off / ID_DARK_OFFSET, off % ID_DARK_OFFSET);
+    (part <= 2 && i < n).then_some((i as usize, part))
+}
+
+/// One of a folder row's two buttons was pressed.
+fn directory_button(index: usize, part: u16) {
+    let Some((edit, it)) = ST.with(|c| {
+        let s = c.borrow();
+        let r = s.rows.get(index)?;
+        (r.control == Control::Directory).then(|| (r.hwnd, item_of(s.form.as_ref(), r)))
+    }) else {
+        return;
+    };
+    let typed = get_text(edit).trim().to_string();
+    let root = unsafe { GetAncestor(form_hwnd(), GA_ROOT) };
+    if part == 1 {
+        // "Choose…": the system's folder picker, opened at what the box
+        // says. Picking writes at once, as leaving the box would.
+        let picked = pick_folder(root, &typed);
+        // not-gated: the branch is which of the row's two buttons was pressed, and the other one logs its own line below
+        // process-wide: the settings window's one General section
+        crate::plogf!("[general-ui] choose folder for {} (from {:?}) -> {:?}", it.key, typed, picked);
+        if let Some(path) = picked {
+            set_text(edit, &path);
+            changed(index, Commit::OnEnterOrBlur);
+        }
+        return;
+    }
+    // "Show in Explorer": the folder in effect -- what the box says, else
+    // the one screenshots go to now -- made first if it is not there yet,
+    // because a folder nothing has been saved into is still the answer to
+    // "where will they go".
+    let dir = if typed.is_empty() { crate::shots::dir() } else { Some(std::path::PathBuf::from(&typed)) };
+    let Some(dir) = dir else {
+        say_status(tr("The screenshot folder could not be worked out."), true);
+        return;
+    };
+    let made = std::fs::create_dir_all(&dir);
+    let started = made.is_ok() && crate::shellopen::detached(Some(root), "[general-ui] show folder", dir.to_string_lossy().into_owned());
+    // process-wide: the settings window's one General section
+    crate::plogf!("[general-ui] show folder {:?}: exists_or_made={:?} handed_to_shell={}", dir, made.as_ref().map(|_| true).map_err(|e| e.to_string()), started);
+    if !started {
+        say_status(tr("Explorer could not be started."), true);
+    }
+}
+
+fn say_status(text: String, warn: bool) {
+    ST.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.status = text;
+        s.status_warn = warn;
+    });
+    let _ = unsafe { InvalidateRect(Some(section()), None, false) };
+}
+
+/// The system's folder picker, opened at `start` when that is a folder.
+/// `None` when it was cancelled or could not be shown.
+fn pick_folder(owner: HWND, start: &str) -> Option<String> {
+    use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, SIGDN_FILESYSPATH};
+    unsafe {
+        let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let opts = dlg.GetOptions().ok()?;
+        dlg.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM).ok()?;
+        if !start.is_empty() {
+            let w = wide(start);
+            if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(w.as_ptr()), None) {
+                let _ = dlg.SetFolder(&item);
+            }
+        }
+        // Modal: it runs its own message loop until a folder is picked or
+        // the dialog is dismissed. Nothing of `ST` is borrowed here.
+        dlg.Show(Some(owner)).ok()?;
+        let item = dlg.GetResult().ok()?;
+        let p = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let s = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as *const c_void));
+        s
+    }
 }
 
 /// What row `index`'s control says now, as the value to write.
@@ -1097,14 +1526,16 @@ fn edited_value(index: usize) -> Option<(Item, Control, String)> {
     let (h, h2, control, it, slider) = ST.with(|c| {
         let s = c.borrow();
         let r = s.rows.get(index)?;
-        Some((r.hwnd, r.hwnd2, r.control, s.form.as_ref()?.items.get(r.item)?.clone(), r.slider))
+        Some((r.hwnd, r.hwnd2, r.control, item_of(s.form.as_ref(), r), r.slider))
     })?;
     if slider {
         let v = slider_now(h, &it);
         return Some((it, control, v));
     }
     let v = match control {
-        Control::Toggle => rules::toggle_value(unsafe { SendMessageW(h, BM_GETCHECK, None, None).0 == 1 }).to_string(),
+        // The table's own two values where it names them: `allow` / `deny`
+        // for one switch, and `true` there is refused (screenshot.md §12.3).
+        Control::Toggle => rules::toggle_value(&it, unsafe { SendMessageW(h, BM_GETCHECK, None, None).0 == 1 }),
         // The selected row's value: the list shows names (#977), and a name
         // written into the config file would be an invalid value.
         Control::Choice => rules::choice_value(&it, unsafe { SendMessageW(h, CB_GETCURSEL, None, None).0 })?,
@@ -1213,6 +1644,11 @@ fn refresh_values(read: FormRead) {
     };
     let same = ST.with(|c| {
         let s = c.borrow();
+        if s.search.is_some() {
+            // A result names its item by index: the rows stand while the
+            // table lists the same keys in the same places.
+            return s.form.as_ref().is_some_and(|old| old.items.iter().map(|i| &i.key).eq(form.items.iter().map(|i| &i.key)));
+        }
         let keys = rules::items_in(s.group, &form.items, &form.sections, &s.query);
         s.rows.iter().map(|r| r.item).eq(keys.into_iter())
     });
@@ -1222,6 +1658,7 @@ fn refresh_values(read: FormRead) {
         s.form_error = None;
     });
     if !same {
+        research();
         rebuild();
         return;
     }
@@ -1236,7 +1673,7 @@ fn context_menu(index: usize, at: POINT) {
     let it = ST.with(|c| {
         let s = c.borrow();
         let r = s.rows.get(index)?;
-        s.form.as_ref()?.items.get(r.item).cloned()
+        Some(item_of(s.form.as_ref(), r))
     });
     let Some(it) = it else { return };
     if !rules::can_restore_default(&it) {
@@ -1343,9 +1780,10 @@ fn draw_text(hdc: HDC, s: &str, r: &RECT, f: HFONT, colour: u32, flags: DRAW_TEX
 fn paint(win: HWND) {
     let (g, dpi) = laid();
     let s = |v: i32| shell::scale(v, dpi);
-    let (group, status, warn, form_error, errors, backup, main) = ST.with(|c| {
+    let (searching, group, status, warn, form_error, errors, backup, main) = ST.with(|c| {
         let st = c.borrow();
         (
+            st.search.is_some(),
             st.group,
             st.status.clone(),
             st.status_warn,
@@ -1365,12 +1803,15 @@ fn paint(win: HWND) {
     if let Some(list) = g.list {
         for (i, gr) in Group::ALL.iter().enumerate() {
             let r = to_rect(rules::group_row(list, dpi, i));
-            let on = *gr == group;
+            // In a search the list takes no part (screenshot.md §12.2):
+            // dimmed, nothing selected, and `section_proc` ignores it.
+            let on = *gr == group && !searching;
             if on {
                 fill(hdc, &r, theme::sel());
             }
             let t = RECT { left: list.left + g.text_left, ..r };
-            draw_text(hdc, &label(*gr), &t, if on { bold() } else { font() }, if on { theme::sel_text() } else { theme::text() }, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            let colour = if searching { theme::dim() } else if on { theme::sel_text() } else { theme::text() };
+            draw_text(hdc, &label(*gr), &t, if on { bold() } else { font() }, colour, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         }
     }
     if let Some(d) = g.list_divider {
@@ -1384,7 +1825,7 @@ fn paint(win: HWND) {
     let ed = g.editor;
     let area = RECT { left: ed.left + pad, top: ed.top + pad, right: ed.right - pad, bottom: ed.bottom - pad };
     match group {
-        _ if group.is_form() => {
+        _ if group.is_form() || searching => {
             if let Some(e) = form_error {
                 draw_text(hdc, &tr("The settings could not be read: {}").replace("{}", &e), &area, font(), theme::warn(), DT_WORDBREAK);
             }
@@ -1496,20 +1937,37 @@ fn paint_form(win: HWND) {
     let dpi = dpi_of(win);
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(win, &mut rc) };
-    let (rows, _) = form_rows(rc.right, dpi);
-    let (scroll, items) = ST.with(|c| {
+    let (rows, crumbs, _) = form_layout(rc.right, dpi);
+    let (scroll, searching, items) = ST.with(|c| {
         let s = c.borrow();
-        let items: Vec<(Item, Control, Option<String>, HWND, HWND, bool, bool)> = match &s.form {
-            Some(f) => s.rows.iter().map(|r| (f.items[r.item].clone(), r.control, r.error.clone(), r.hwnd, r.hwnd2, r.slider, r.expanded)).collect(),
-            None => Vec::new(),
-        };
-        (s.scroll, items)
+        let items: Vec<(Item, Control, Option<String>, HWND, HWND, bool, bool, Option<String>)> = s
+            .rows
+            .iter()
+            .map(|r| (item_of(s.form.as_ref(), r), r.control, r.error.clone(), r.hwnd, r.hwnd2, r.slider, r.expanded, r.crumb.as_ref().map(|(t, _)| t.clone())))
+            .collect();
+        (s.scroll, s.search.is_some(), items)
     });
     let mut ps = PAINTSTRUCT::default();
     let hdc = unsafe { BeginPaint(win, &mut ps) };
     fill(hdc, &rc, theme::bg());
+    // A search that finds nothing says so (screenshot.md §12.2): not an
+    // empty page, which reads as a window that failed to draw.
+    if searching && items.is_empty() {
+        let line = RECT { bottom: metrics(font()) * 2, ..rc };
+        draw_text(hdc, &tr(find::NO_RESULTS), &line, font(), theme::dim(), DT_LEFT | DT_WORDBREAK);
+    }
     let dot = shell::scale(8, dpi);
-    for (r, (it, control, error, h, h2, slider, expanded)) in rows.iter().zip(items.iter()) {
+    for (i, (r, (it, control, error, h, h2, slider, expanded, crumb))) in rows.iter().zip(items.iter()).enumerate() {
+        // Where the result lives, above it; a click goes there (`click_at`).
+        if let (Some(text), Some(cr)) = (crumb, crumbs.get(i)) {
+            let cr = RECT { left: cr.left + dot, top: cr.top - scroll, right: cr.right, bottom: cr.bottom - scroll };
+            draw_text(hdc, text, &cr, font(), theme::focus(), DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        }
+        // A result that is no form row: its sentence where a control would be.
+        if it.kind == Kind::Jump {
+            let vr = RECT { left: r.control.left, top: r.control.top - scroll, right: r.control.right, bottom: r.control.bottom - scroll };
+            draw_text(hdc, &rules::row_help(it, tr), &vr, font(), theme::dim(), DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        }
         if *slider {
             // The value beside the slider, read off the trackbar itself so
             // it follows a drag before anything is written.
@@ -1538,11 +1996,13 @@ fn paint_form(win: HWND) {
             draw_text(hdc, &note, &hr, font(), if red { theme::warn() } else { theme::dim() }, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL);
             if link {
                 let lr = RECT { left: hr.left, top: hr.bottom, right: hr.right, bottom: hr.bottom + line };
-                draw_text(hdc, &link_text(*expanded), &lr, font(), theme::focus(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                draw_text(hdc, &link_text(it, *expanded), &lr, font(), theme::focus(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
             }
         }
         if theme::custom_drawing() && !*slider && !matches!(control, Control::Toggle | Control::Choice) {
-            for c in [*h, *h2] {
+            // A folder row's second control is a button, which frames itself.
+            let boxes = if *control == Control::Directory { [*h, HWND(std::ptr::null_mut())] } else { [*h, *h2] };
+            for c in boxes {
                 if c.0.is_null() {
                     continue;
                 }
@@ -1735,7 +2195,7 @@ unsafe extern "system" fn section_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 let x = (lp.0 & 0xFFFF) as i16 as i32;
                 let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
                 let (g, dpi) = laid();
-                if let Some(list) = g.list {
+                if let Some(list) = g.list.filter(|_| !is_searching()) {
                     if let Some(gr) = rules::group_at(list, dpi, x, y) {
                         let _ = SetFocus(Some(win));
                         select(gr);
@@ -1745,7 +2205,7 @@ unsafe extern "system" fn section_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPAR
             }
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
-                if vk == VK_UP || vk == VK_DOWN {
+                if (vk == VK_UP || vk == VK_DOWN) && !is_searching() {
                     let i = Group::ALL.iter().position(|g| *g == current());
                     if let Some(n) = shell::step(i, Group::ALL.len(), vk == VK_DOWN) {
                         select(Group::ALL[n]);
@@ -1787,7 +2247,7 @@ unsafe extern "system" fn form_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             WM_LBUTTONDOWN => {
                 let x = (lp.0 & 0xFFFF) as i16 as i32;
                 let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
-                if toggle_more_at(win, x, y) {
+                if click_at(win, x, y) {
                     return LRESULT(0);
                 }
                 DefWindowProcW(win, msg, wp, lp)
@@ -1807,7 +2267,16 @@ unsafe extern "system" fn form_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             WM_COMMAND => {
                 let id = (wp.0 & 0xFFFF) as u16;
                 let code = ((wp.0 >> 16) & 0xFFFF) as u32;
-                if let Some(i) = row_of_id(id) {
+                if let Some((i, part)) = part_of_id(id) {
+                    // A folder row's buttons (BN_CLICKED is 0); a theme
+                    // row's second control is a box and takes the arms below.
+                    let folder = part > 0 && ST.with(|c| c.borrow().rows.get(i).map(|r| r.control)) == Some(Control::Directory);
+                    if folder {
+                        if code == 0 {
+                            directory_button(i, part);
+                        }
+                        return LRESULT(0);
+                    }
                     match code {
                         // BN_CLICKED / CBN_SELCHANGE (both 0 and 1 carry
                         // the change for these two controls).
