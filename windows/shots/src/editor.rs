@@ -684,7 +684,9 @@ impl Editor {
             return self.pointer_down(p, mods, m);
         }
         if self.text.is_some() {
-            return Effect::CommitText;
+            // While typing, the second of two quick clicks is a click: two
+            // swatches tried one after the other must not end the text.
+            return self.pointer_down(p, mods, m);
         }
         let Some(sel) = self.selection else { return self.pointer_down(p, mods, m) };
         if self.layout().is_some_and(|l| l.covers(p)) {
@@ -1514,6 +1516,24 @@ mod tests {
         assert_eq!((e.items()[0].colour, e.items()[0].level), (5, 3));
         assert_eq!(e.items()[0].shape, Shape::Text { at: P(500, 300), text: "big".into(), size: (30, 32) });
         assert_eq!((e.prefs().colour(Tool::Text), e.prefs().level(Tool::Text)), (5, 3), "and the tool remembers");
+    }
+
+    #[test]
+    fn two_quick_presses_on_the_row_while_typing_are_two_presses_and_the_text_stays_open() {
+        let mut e = selected();
+        letter(&mut e, 'T');
+        click(&mut e, P(500, 300));
+        let swatch = e.layout().unwrap().rect_of(Button::Colour(5)).unwrap();
+        let step = e.layout().unwrap().rect_of(Button::Level(3)).unwrap();
+        // The host gets the second of two quick presses as a double click.
+        assert_eq!(e.pointer_down(P(swatch.x + 1, swatch.y + 1), NONE, &Fake), Effect::RestyleText);
+        assert_eq!(e.double_click(P(swatch.x + 1, swatch.y + 1), NONE, &Fake), Effect::RestyleText);
+        assert_eq!(e.double_click(P(step.x + 1, step.y + 1), NONE, &Fake), Effect::RestyleText);
+        assert_eq!(e.text_box().map(|t| (t.colour, t.level)), Some((5, 3)));
+        // Anywhere else it is still a click outside, which ends the text.
+        assert_eq!(e.double_click(P(800, 500), NONE, &Fake), Effect::CommitText);
+        type_text(&mut e, "still here");
+        assert_eq!((e.items()[0].colour, e.items()[0].level), (5, 3));
     }
 
     #[test]

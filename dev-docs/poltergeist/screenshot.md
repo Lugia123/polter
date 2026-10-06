@@ -273,7 +273,9 @@ mac `global:cmd+shift+0`，Windows `global:ctrl+shift+0`。用户在配置里用
 - 输入框里 `Enter` 换行，`cmd/ctrl+Enter` 或点输入框外 = 提交；`Esc` = 提交已输入的内容并
   退出输入（空的就丢弃）。组字中的 `Esc` 只取消组字。
 - 双击一段已有文字 = 重新进入编辑。
-- 文字颜色、字号在输入中可以改，改的是这一整段。
+- 文字颜色、字号在输入中可以改，改的是这一整段。输入中点属性栏的色块或字号档：改这一段，
+  **输入不退出**（键盘回到输入框，已输入的字和光标都在），工具的记忆值照常更新；连点两下
+  （系统当成双击的第二下）也只是又点了一次。点工具栏别的按钮或画面别处仍是提交。
 
 ### 9.4 选择、移动、修改、删除
 
@@ -520,8 +522,9 @@ GHOSTTY_API void ghostty_app_poltergeist_screenshot_complete(
 - ⚠️ `pen`/`highlighter` 作为**输入**带 `points`；写进 `.json` 的仍只有 `bbox`（§11）。所以
   `screenshot_info` 读回来的画笔不能原样再喂给 `screenshot_annotate`——工具说明里写明。
 
-`annotate` 的新文件：`.json` 的 `source`/`display` 抄原图旁路文件的（原图没有旁路文件就
-省略），`annotations` = 原有的 + 新加的，`by` = `agent`，`previous` = 原图文件名。
+`annotate` 的新文件：`.json` 的 `source`/`display`/`appearance`/`redacted` 抄原图旁路文件的
+——这些说的是**原图是在什么环境下截的**，在图上再画几笔不改变它；原图没有旁路文件、或
+它没有其中某个键，就省略，不拿「现在」的值顶替。`annotations` = 原有的 + 新加的，`by` = `agent`，`previous` = 原图文件名。
 
 #### 宿主的拒绝码（`REFUSED` 的 `code`）
 
@@ -609,6 +612,10 @@ GHOSTTY_API void ghostty_app_poltergeist_screenshot_complete(
 ```
 
 - `by`：`user` 或 `agent`（agent 时另有 `agent_terminal`）。
+- `source.window_rect`：**窗口本身的矩形，不裁**——窗口有一部分在屏幕外时，它照样是整个
+  窗口，可以超出 `display.size`、可以有负的起点。`source.selection_rect`：**实际截到的**
+  那一块，总在显示器之内。两者坐标同 §10.1「坐标」。界面截图和 agent 截图记的是同一对
+  数：同一个窗口，不论哪条路截，`window_rect` 相同。
 - `terminal`：用户从 Polter 前台触发时是聚焦的窗格；agent 触发时是它自己的终端。
   `git` 在该 `cwd` 下取，不是仓库就省略；取 git 不许拖慢截图（异步，超时 300 ms 就省略）。
 - `previous`：截图目录里上一张 `source.app` + `source.title` 相同的截图。

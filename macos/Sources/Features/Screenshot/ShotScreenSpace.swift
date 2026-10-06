@@ -102,10 +102,11 @@ struct ShotScreenSpace: Equatable {
         return PixelRect(r.x + origin.x, r.y + origin.y, r.w, r.h)
     }
 
-    /// The part of a global rectangle that is on display `index`, in the
-    /// space; nil when none of it is. Edges go to the nearest pixel
-    /// boundary.
-    func pixels(ofGlobal frame: CGRect, on index: Int) -> PixelRect? {
+    /// A global rectangle in the space, measured in display `index`'s
+    /// pixels and **not cut to the display**: a window's own bounds, which
+    /// may reach past the edge of the screen. Nil when it is empty. Edges go
+    /// to the nearest pixel boundary.
+    func wholePixels(ofGlobal frame: CGRect, on index: Int) -> PixelRect? {
         let screen = screens[index], display = displays[index]
         func edge(_ v: CGFloat, from origin: CGFloat) -> Int {
             Int((Double(v - origin) * display.scale).rounded())
@@ -115,8 +116,14 @@ struct ShotScreenSpace: Equatable {
             top: display.rect.y + edge(frame.minY, from: screen.frame.minY),
             right: display.rect.x + edge(frame.maxX, from: screen.frame.minX),
             bottom: display.rect.y + edge(frame.maxY, from: screen.frame.minY))
-        guard !rect.isEmpty else { return nil }
-        return rect.intersect(display.rect)
+        return rect.isEmpty ? nil : rect
+    }
+
+    /// The part of a global rectangle that is on display `index`, in the
+    /// space; nil when none of it is. Edges go to the nearest pixel
+    /// boundary.
+    func pixels(ofGlobal frame: CGRect, on index: Int) -> PixelRect? {
+        wholePixels(ofGlobal: frame, on: index)?.intersect(displays[index].rect)
     }
 
     /// The windows as the editor wants them: topmost first, as given. A

@@ -755,6 +755,49 @@ struct ShotEditorTests {
         #expect(rig.editor.prefs.colour(of: .number) == 0, "the number tool is another tool")
     }
 
+    @Test func onlyAColourOrASizeIsPressedWithoutEndingTheText() throws {
+        let rig = Rig.selected()
+        rig.letter("T")
+        let layout = try #require(rig.editor.layout)
+        func inside(_ button: ToolbarButton) throws -> Pt {
+            let r = try #require(layout.rect(of: button))
+            return Pt(r.x + 1, r.y + 1)
+        }
+        // Nothing is being typed: there is no text for a press to change.
+        #expect(!rig.editor.restylesText(at: try inside(.colour(5))))
+
+        rig.click(Pt(500, 300))
+        #expect(rig.editor.textBox != nil)
+        // What the host asks when the box is about to lose the keyboard.
+        #expect(rig.editor.restylesText(at: try inside(.colour(5))))
+        #expect(rig.editor.restylesText(at: try inside(.level(3))))
+        #expect(!rig.editor.restylesText(at: try inside(.tool(.rect))), "another tool ends the text")
+        #expect(!rig.editor.restylesText(at: try inside(.undo)))
+        #expect(!rig.editor.restylesText(at: try inside(.done)))
+        #expect(!rig.editor.restylesText(at: Pt(800, 500)), "so does a press on the picture")
+        // And the press agrees with the answer, each way.
+        #expect(rig.down(try inside(.undo)) == .commitText)
+        #expect(rig.editor.textBox != nil, "the box is the host's to close")
+        #expect(rig.down(try inside(.colour(5))) == .restyleText)
+    }
+
+    @Test func twoQuickPressesOnTheRowWhileTypingAreTwoPressesAndTheTextStaysOpen() throws {
+        let rig = Rig.selected()
+        rig.letter("T")
+        rig.click(Pt(500, 300))
+        let layout = try #require(rig.editor.layout)
+        let swatch = try #require(layout.rect(of: .colour(5)))
+        let step = try #require(layout.rect(of: .level(3)))
+        // The host sends the second of two quick presses as a double click.
+        #expect(rig.down(Pt(swatch.x + 1, swatch.y + 1)) == .restyleText)
+        #expect(rig.double(Pt(swatch.x + 1, swatch.y + 1)) == .restyleText)
+        #expect(rig.double(Pt(step.x + 1, step.y + 1)) == .restyleText)
+        #expect(rig.editor.textBox?.colour == 5)
+        #expect(rig.editor.textBox?.level == 3)
+        rig.type("still here")
+        #expect(rig.style(0) == [5, 3])
+    }
+
     @Test func doubleClickingATextEditsItAgain() {
         let rig = Rig.selected()
         rig.letter("T")

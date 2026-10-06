@@ -501,7 +501,7 @@ pub fn identity(sidecar: &str) -> Option<(String, Option<String>, Option<String>
 }
 
 /// The sidecar of an annotated copy (§10.1): the original's `source`,
-/// `display`, `scale` and `redacted` carried over as they are, its
+/// `display`, `scale`, `appearance` and `redacted` carried over as they are, its
 /// annotations followed by the new ones, `by` the agent, `previous` the
 /// original image. `original` is the original's sidecar, when it has one.
 pub fn annotated_sidecar(
@@ -898,6 +898,7 @@ mod tests {
         let original = r##"{
           "version": 2, "image": "20261006-110000-000.png", "scale": 1.5, "by": "user",
           "display": {"index": 1, "size": [3840, 2160], "scale": 1.5},
+          "appearance": "dark",
           "source": {"kind": "window", "app": "chrome", "title": "Docs", "selection_rect": [5, 6, 800, 600]},
           "redacted": [[10, 10, 50, 50]],
           "annotations": [{"type": "rect", "rect": [1, 2, 3, 4], "text": "", "color": "#E62828", "width": 2}]
@@ -913,6 +914,7 @@ mod tests {
         assert_eq!(v["source"]["app"], "chrome");
         assert_eq!(v["source"]["selection_rect"], serde_json::json!([5, 6, 800, 600]));
         assert_eq!(v["display"]["index"], 1);
+        assert_eq!(v["appearance"], "dark", "the screen it was taken on was dark, whatever it is now");
         assert_eq!(v["redacted"], serde_json::json!([[10, 10, 50, 50]]), "what was blacked out stays on record");
         let a = v["annotations"].as_array().unwrap();
         assert_eq!(a.len(), 2);
@@ -930,6 +932,7 @@ mod tests {
             assert_eq!(v["previous"], "20261006-110000-000.png");
             assert!(v.get("source").is_none(), "what the picture is of was never recorded, so it is not stated");
             assert!(v.get("display").is_none());
+            assert!(v.get("appearance").is_none());
             assert_eq!(v["scale"], 1.0);
         }
         // A sidecar with no display and no redaction: the copy has neither.

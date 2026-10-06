@@ -287,6 +287,7 @@ final class ShotSession {
         // The caret after what is already there.
         view.setSelectedRange(NSRange(location: (box.text as NSString).length, length: 0))
         view.onCommit = { [weak self] in self?.commitText() }
+        view.staysOpen = { [weak self] in self?.pressRestylesText() ?? false }
 
         textView = view
         let overlay = overlays[index]
@@ -294,6 +295,21 @@ final class ShotSession {
         overlay.window.makeKey()
         overlay.window.makeFirstResponder(view)
         repaint()
+    }
+
+    /// Whether the event being delivered is a press the editor answers by
+    /// changing the text being typed (a colour, a size).
+    ///
+    /// AppKit makes the view that was clicked the first responder *before*
+    /// it sends it the press, so the text view is asked to give up the
+    /// keyboard first. Ending the text there meant the press found no box:
+    /// the piece kept its old colour and only the tool's memory changed
+    /// (task 1098). `restyleText` gives the keyboard back.
+    private func pressRestylesText() -> Bool {
+        guard let event = NSApp.currentEvent, event.type == .leftMouseDown,
+              let index = overlays.firstIndex(where: { $0.window === event.window }) else { return false }
+        let local = overlays[index].view.convert(event.locationInWindow, from: nil)
+        return editor.restylesText(at: space.pixel(ofLocal: local, on: index))
     }
 
     /// The text's colour or size changed while it is being typed: the box
@@ -327,6 +343,7 @@ final class ShotSession {
         }
         textView = nil
         view.onCommit = nil
+        view.staysOpen = nil
         let effect = editor.endText(view.string, measure: measure)
         let window = view.window
         let owner = view.superview
@@ -444,8 +461,11 @@ final class ShotSession {
             displaySize: .init(display.w, display.h),
             selection: space.displayLocal(export.selection.rect, on: index),
             window: window,
+            // The window's own bounds, not the part of it on the screen:
+            // that part is `selection`. An agent's capture of the same
+            // window records the same rectangle (11).
             windowRect: window
-                .flatMap { space.pixels(ofGlobal: $0.frame, on: index) }
+                .flatMap { space.wholePixels(ofGlobal: $0.frame, on: index) }
                 .map { space.displayLocal($0, on: index) }))
     }
 

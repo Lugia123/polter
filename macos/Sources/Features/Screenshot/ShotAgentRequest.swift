@@ -376,8 +376,9 @@ enum ShotAgent {
     /// `fresh` is the sidecar the new image would have on its own; `original`
     /// is the text of the old image's sidecar, when it has one. What the
     /// picture is *of* does not change by drawing on it, so `source`,
-    /// `display` and `redacted` are the original's -- and are left out when
-    /// there is no original to take them from, rather than made up. The
+    /// `display`, `appearance` and `redacted` are the original's -- and are
+    /// left out when there is no original to take them from, rather than
+    /// made up. The
     /// annotations are the original's followed by the new ones. Nil when
     /// `fresh` is not a sidecar.
     static func annotatedSidecar(fresh: String, original: String?) -> String? {
@@ -386,7 +387,7 @@ enum ShotAgent {
         }
         guard var out = object(fresh) else { return nil }
         let old = original.flatMap(object)
-        for key in ["source", "display", "redacted"] {
+        for key in ["source", "display", "appearance", "redacted"] {
             if let value = old?[key] {
                 out[key] = value
             } else {

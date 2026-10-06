@@ -333,6 +333,7 @@ struct ShotAgentRequestTests {
             image: "20261006-010203-000.png", taken: stamp, width: 100, height: 80, scale: 2,
             source: .window(app: "Safari", title: "Docs", pid: 9, windowRect: PixelRect(1, 2, 100, 80), selectionRect: PixelRect(1, 2, 100, 80)))
         old.display = .init(index: 1, width: 1920, height: 1080, scale: 2)
+        old.appearance = "dark"
         old.redacted = [PixelRect(5, 5, 10, 10)]
         let original = ShotSidecar.json(old, items: [Annotation(shape: .rect(PixelRect(1, 1, 5, 5)), colour: 0, level: 1)])
         let fresh = ShotSidecar.json(
@@ -351,6 +352,7 @@ struct ShotAgentRequestTests {
         #expect((root["source"] as? [String: Any])?["kind"] as? String == "window")
         #expect((root["source"] as? [String: Any])?["title"] as? String == "Docs")
         #expect((root["display"] as? [String: Any])?["index"] as? Int == 1)
+        #expect(root["appearance"] as? String == "dark", "the screen it was taken on was dark, whatever it is now")
         #expect(root["redacted"] as? [[Int]] == [[5, 5, 10, 10]])
         let annotations = try #require(root["annotations"] as? [[String: Any]])
         #expect(annotations.map { $0["type"] as? String } == ["rect", "arrow"], "the old ones first")
@@ -369,6 +371,7 @@ struct ShotAgentRequestTests {
             let root = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
             #expect(root["source"] == nil, "what it is of is not known")
             #expect(root["display"] == nil)
+            #expect(root["appearance"] == nil)
             #expect(root["redacted"] == nil)
             #expect((root["annotations"] as? [Any])?.count == 1)
             #expect(root["previous"] as? String == "a.png")

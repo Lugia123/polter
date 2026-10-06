@@ -86,6 +86,29 @@ struct ShotScreenSpaceTests {
         #expect(space.pixels(ofGlobal: CGRect(x: 100, y: 50, width: 0, height: 300), on: 0) == nil)
     }
 
+    @Test func aWindowsOwnBoundsAreNotCutToTheDisplay() {
+        // Hanging off the right of the second display by 500 points, and
+        // off its bottom by 20.
+        let hanging = CGRect(x: 1512 + 1500, y: 100 + 900, width: 920, height: 200)
+        #expect(space.pixels(ofGlobal: hanging, on: 1) == PixelRect(3024 + 1500, 900, 420, 180))
+        let whole = space.wholePixels(ofGlobal: hanging, on: 1)
+        #expect(whole == PixelRect(3024 + 1500, 900, 920, 200))
+        // What a file is told: the same rectangle an agent's capture of
+        // this window records.
+        #expect(whole.map { space.displayLocal($0, on: 1) } == PixelRect(1500, 900, 920, 200))
+        #expect(whole.map { space.displayLocal($0, on: 1) }
+            == ShotAgent.rect(of: hanging, on: CGRect(x: 1512, y: 100, width: 1920, height: 1080), scale: 1))
+        // Off the top left of the first, at two pixels to the point.
+        let off = CGRect(x: -50, y: -20, width: 100, height: 100)
+        #expect(space.wholePixels(ofGlobal: off, on: 0) == PixelRect(-100, -40, 200, 200))
+        #expect(space.wholePixels(ofGlobal: off, on: 0).map { space.displayLocal($0, on: 0) }
+            == ShotAgent.rect(of: off, on: CGRect(x: 0, y: 0, width: 1512, height: 982), scale: 2))
+        // A window wholly on the display is the same either way.
+        let inside = CGRect(x: 100, y: 50, width: 400, height: 300)
+        #expect(space.wholePixels(ofGlobal: inside, on: 0) == space.pixels(ofGlobal: inside, on: 0))
+        #expect(space.wholePixels(ofGlobal: CGRect(x: 100, y: 50, width: 0, height: 300), on: 0) == nil)
+    }
+
     @Test func windowsKeepTheirOrderAndAreListedOncePerDisplay() {
         let windows = space.windows([
             .init(id: 7, frame: CGRect(x: 1400, y: 200, width: 500, height: 300)),

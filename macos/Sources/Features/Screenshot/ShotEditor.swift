@@ -341,6 +341,23 @@ struct ShotEditor {
 
     // MARK: Mouse
 
+    /// Whether a press at `p` changes the text being typed and leaves it
+    /// being typed: a colour or a size in the property row (9.3). Any other
+    /// press while typing ends it.
+    ///
+    /// **The host asks this too, before the press arrives.** A native text
+    /// control gives up the keyboard to whatever was clicked, and a host
+    /// that ends the text on losing the keyboard would end it here -- in its
+    /// old colour -- before `pointerDown` was ever called, leaving the
+    /// swatch to change nothing but the tool's memory.
+    func restylesText(at p: PixelPoint) -> Bool {
+        guard textBox != nil, !isLong, let button = layout?.button(at: p) else { return false }
+        switch button {
+        case .colour, .level: return true
+        default: return false
+        }
+    }
+
     /// The left button went down at `p`.
     mutating func pointerDown(at p: PixelPoint, mods: ShotMods, measure: TextMeasure) -> Effect {
         if isLong {
@@ -352,11 +369,8 @@ struct ShotEditor {
         if textBox != nil {
             // A click outside the box keeps what was typed. That is all
             // this click does: the next one starts something new.
-            if let button = layout?.button(at: p) {
-                switch button {
-                case .colour, .level: return press(button, measure: measure)
-                default: break
-                }
+            if restylesText(at: p), let button = layout?.button(at: p) {
+                return press(button, measure: measure)
             }
             return .commitText
         }
@@ -573,7 +587,9 @@ struct ShotEditor {
     /// button-down).
     mutating func doubleClick(at p: PixelPoint, mods: ShotMods, measure: TextMeasure) -> Effect {
         if isLong { return pointerDown(at: p, mods: mods, measure: measure) }
-        if textBox != nil { return .commitText }
+        // While typing, the second of two quick clicks is a click: two
+        // swatches tried one after the other must not end the text.
+        if textBox != nil { return pointerDown(at: p, mods: mods, measure: measure) }
         guard let sel = selection else { return pointerDown(at: p, mods: mods, measure: measure) }
         if layout?.covers(p) == true { return pointerDown(at: p, mods: mods, measure: measure) }
 

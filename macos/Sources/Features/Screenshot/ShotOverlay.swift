@@ -38,7 +38,8 @@ final class ShotOverlayWindow: NSPanel {
 /// method works in it (`dev-docs/poltergeist/screenshot.md`, 9.3).
 ///
 /// Enter is a line break and is the view's own. Command+Enter and Esc end
-/// the typing and keep what was typed; so does losing the keyboard. While
+/// the typing and keep what was typed; so does losing the keyboard -- except
+/// to a press on a colour or a size, which is a change to this text. While
 /// an input method is composing, Esc reaches the input method and not
 /// `cancelOperation`, so it cancels the composition only.
 final class ShotTextView: NSTextView {
@@ -46,6 +47,10 @@ final class ShotTextView: NSTextView {
     /// box -- taking the box away makes it give up the keyboard, which asks
     /// again -- and whoever is called has to make the second call nothing.
     var onCommit: (() -> Void)?
+    /// Asked when the keyboard is being given up: whether that is only the
+    /// press of a colour or a size, which changes this text and hands the
+    /// keyboard straight back, and so is not the end of the typing.
+    var staysOpen: (() -> Bool)?
 
     override func cancelOperation(_ sender: Any?) {
         onCommit?()
@@ -62,7 +67,7 @@ final class ShotTextView: NSTextView {
 
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
-        if resigned { onCommit?() }
+        if resigned, staysOpen?() != true { onCommit?() }
         return resigned
     }
 }
