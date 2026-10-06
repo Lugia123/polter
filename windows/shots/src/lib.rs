@@ -20,6 +20,8 @@
 //! | [`agent`] | an agent's request: which rectangle, what is blacked out, the answer |
 //! | [`style`] | the tools, the nine colours, the five steps of each size |
 //! | [`pixels`] | the mosaic, the highlighter, and the one image that leaves |
+//! | [`look`] | what the overlay looks like: sizes, colours, the icons' paths (generated) |
+//! | [`icon`] | one icon into a button cell, the same pixels as the macOS host |
 
 pub mod agent;
 pub mod annot;
@@ -28,6 +30,8 @@ pub mod dib;
 pub mod editor;
 pub mod encode;
 pub mod geom;
+pub mod icon;
+pub mod look;
 pub mod name;
 pub mod overlay;
 pub mod paste;
