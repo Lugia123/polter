@@ -101,8 +101,9 @@ const WM_SHOT_GLASS: u32 = WM_APP + 47;
 /// How long the first frame waits for the frosted glass, in milliseconds.
 /// A monitor whose glass is not made by then is shown darkened only, as it
 /// is for a system that asks for less transparency, until its glass
-/// arrives. The macOS host waits as long.
-const GLASS_WAIT_MS: u64 = 50;
+/// arrives. The macOS host waits as long: both read the one number in
+/// `src/input/screenshot-look.json`.
+const GLASS_WAIT_MS: u64 = look::glass::WAIT_MS as u64;
 
 /// `CF_DIB`, numerically, as in `shots.rs`.
 const CF_DIB: u32 = 8;

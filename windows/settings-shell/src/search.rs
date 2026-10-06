@@ -242,7 +242,7 @@ mod tests {
             "Where screenshots are saved." => "截图存在哪里。".into(),
             "Screenshot Shortcut" => "截图快捷键".into(),
             "Off" => "关".into(),
-            "%s + Double-Click" => "%s + 双击".into(),
+            "%s + Click" => "%s + 单击".into(),
             other => other.to_string(),
         }
     }
@@ -299,9 +299,9 @@ mod tests {
         let mut it = item("screenshot-mouse-trigger", "screenshot", Control::Choice, "Mouse Trigger");
         it.choices = vec!["none".into(), "ctrl+shift".into()];
         it.choice_labels = vec![Some("Off".into()), None];
-        it.choice_template = Some("%s + Double-Click".into());
+        it.choice_template = Some("%s + Click".into());
         it.value = "none".into();
-        assert_eq!(form_entry(&it, zh).choices, ["关", "Ctrl+Shift + 双击"]);
+        assert_eq!(form_entry(&it, zh).choices, ["关", "Ctrl+Shift + 单击"]);
         // A switch has no value names.
         assert!(form_entry(&item("a", "font", Control::Toggle, "A"), zh).choices.is_empty());
     }
