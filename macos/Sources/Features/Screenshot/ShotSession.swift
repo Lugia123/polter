@@ -65,8 +65,17 @@ final class ShotSession {
     private var overlays: [(window: ShotOverlayWindow, view: ShotOverlayView)] = []
 
     /// The text box, while one is open.
-    private var textView: ShotTextView?
-    var isTyping: Bool { textView != nil }
+    private var typing: ShotTextScroll?
+    var isTyping: Bool { typing != nil }
+    /// A colour or a size was pressed while an input method was composing:
+    /// what is in the box is restyled when the composition is over
+    /// (`ShotTextInput.restyle`).
+    private var restyleHeld = false
+
+    /// The overlay that last had the keyboard, and the watch that gives it
+    /// back (`ShotKeyHold`).
+    private var keyOverlay = 0
+    private var keyWatch: NSObjectProtocol?
 
     /// A long screenshot being taken.
     private struct Long {
@@ -130,16 +139,65 @@ final class ShotSession {
         for overlay in overlays { overlay.window.orderFrontRegardless() }
         under?.window.makeKey()
         under?.window.makeFirstResponder(under?.view)
+        if let under, let index = overlays.firstIndex(where: { $0.window === under.window }) { keyOverlay = index }
+        keyWatch = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: nil
+        ) { [weak self] note in
+            guard let window = note.object as? NSWindow else { return }
+            self?.windowBecameKey(window)
+        }
+    }
+
+    /// A window of this application became key while the picture is up: if
+    /// it is one behind the picture, the keyboard goes back to the overlay
+    /// (`ShotKeyHold`).
+    ///
+    /// The overlay is a non-activating panel, so making it key takes
+    /// nothing from another application. Its first responder is still what
+    /// it was -- the text box, while one is open -- because a window keeps
+    /// its first responder when it stops being key.
+    private func windowBecameKey(_ window: NSWindow) {
+        if let index = overlays.firstIndex(where: { $0.window === window }) {
+            keyOverlay = index
+            return
+        }
+        guard overlays.indices.contains(keyOverlay) else { return }
+        let overlay = overlays[keyOverlay]
+        let became = ShotKeyHold.Window(level: window.level.rawValue, isModal: NSApp.modalWindow != nil)
+        guard ShotKeyHold.takesBack(from: became, overlayLevel: overlay.window.level.rawValue) else { return }
+        Self.logger.info("screenshot: window \(window.windowNumber, privacy: .public) became key behind the picture; the keyboard goes back to the overlay (typing=\(self.isTyping, privacy: .public))")
+        overlay.window.makeKey()
+        if let typing, typing.window === overlay.window, overlay.window.firstResponder !== typing.text {
+            overlay.window.makeFirstResponder(typing.text)
+        }
+        // Whoever made that window key may not be done with it: look again
+        // when they are.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.overlays.indices.contains(self.keyOverlay),
+                  let key = NSApp.keyWindow, !self.overlays.contains(where: { $0.window === key }) else { return }
+            let again = ShotKeyHold.Window(level: key.level.rawValue, isModal: NSApp.modalWindow != nil)
+            let overlay = self.overlays[self.keyOverlay]
+            if ShotKeyHold.takesBack(from: again, overlayLevel: overlay.window.level.rawValue) {
+                overlay.window.makeKey()
+            }
+        }
     }
 
     /// Take everything down. The frozen pictures go with this object.
     private func close() {
         long?.timer.invalidate()
         long = nil
-        if let textView {
-            self.textView = nil
-            textView.onCommit = nil
-            textView.removeFromSuperview()
+        // Before the overlays go: the window that becomes key when they do
+        // is the one that should have the keyboard.
+        if let keyWatch { NotificationCenter.default.removeObserver(keyWatch) }
+        keyWatch = nil
+        if let typing {
+            self.typing = nil
+            typing.text.onCommit = nil
+            typing.text.staysOpen = nil
+            typing.text.onChange = nil
+            typing.isToolbar = nil
+            typing.removeFromSuperview()
         }
         for overlay in overlays {
             overlay.view.session = nil
@@ -161,7 +219,7 @@ final class ShotSession {
     func pointerDown(at local: CGPoint, on index: Int, mods: ShotMods, double: Bool) {
         guard overlays.indices.contains(index) else { return }
         let window = overlays[index].window
-        if !window.isKeyWindow, textView == nil {
+        if !window.isKeyWindow, typing == nil {
             window.makeKey()
             window.makeFirstResponder(overlays[index].view)
         }
@@ -241,15 +299,27 @@ final class ShotSession {
         return luma > 150 ? NSColor(white: 0.19, alpha: 1) : .white
     }
 
-    private func style(_ view: ShotTextView, as box: ShotEditor.TextBox, scale: Double) {
+    /// Give the box the colour and size of `box`. `reach` is how much of it:
+    /// while an input method is composing, only what will be typed and the
+    /// box itself -- the text that is there is the input method's
+    /// (`ShotTextInput.restyle`).
+    private func style(
+        _ typing: ShotTextScroll, as box: ShotEditor.TextBox, scale: Double, reach: ShotTextInput.Restyle
+    ) {
+        let view = typing.text
         let fontPx = ShotStyle.fontPx(level: box.level, scale: scale)
         let font = ShotFont.font(size: CGFloat(fontPx) / CGFloat(scale)) as NSFont
         let ink = NSColor(cgColor: ShotRenderer.colour(ShotStyle.colour(box.colour))) ?? .red
-        view.font = font
-        view.textColor = ink
+        if reach == .everything {
+            view.font = font
+            view.textColor = ink
+        }
         view.insertionPointColor = ink
-        view.backgroundColor = Self.paper(for: box.colour)
+        typing.paper = Self.paper(for: box.colour)
         view.typingAttributes = [.font: font, .foregroundColor: ink]
+        if reach == .everything, let storage = view.textStorage, storage.length > 0 {
+            storage.setAttributes(view.typingAttributes, range: NSRange(location: 0, length: storage.length))
+        }
     }
 
     /// Open a text view for the text the editor is about to take.
@@ -270,9 +340,9 @@ final class ShotSession {
             perform(editor.endText("", measure: measure))
             return
         }
-        let frame = space.local(rect, on: index)
 
-        let view = ShotTextView(frame: frame)
+        let typing = ShotTextScroll(box: space.local(rect, on: index))
+        let view = typing.text
         view.isRichText = false
         view.allowsUndo = true
         view.drawsBackground = true
@@ -283,23 +353,27 @@ final class ShotSession {
         view.textContainerInset = .zero
         view.textContainer?.lineFragmentPadding = 0
         view.focusRingType = .none
-        style(view, as: box, scale: scale)
+        restyleHeld = false
+        style(typing, as: box, scale: scale, reach: .everything)
         view.string = box.text
         // The caret after what is already there.
         view.setSelectedRange(NSRange(location: (box.text as NSString).length, length: 0))
         view.onCommit = { [weak self] in self?.commitText() }
         view.staysOpen = { [weak self] in self?.pressRestylesText() ?? false }
-        view.onChange = { [weak self] in self?.fitText() }
-        view.isToolbar = { [weak self] point in
+        view.onChange = { [weak self] in self?.textChanged() }
+        typing.isToolbar = { [weak self] point in
             guard let self else { return false }
             return ShotTextBox.onToolbar(self.space.pixel(ofLocal: point, on: index), keepClear: self.editor.textKeepClear)
         }
 
-        textView = view
+        self.typing = typing
         let overlay = overlays[index]
-        overlay.view.addSubview(view)
+        overlay.view.addSubview(typing)
         overlay.window.makeKey()
         overlay.window.makeFirstResponder(view)
+        // A text opened again may have more lines than the box has room
+        // for, or have wrapped: place it for what it holds.
+        fitText()
         repaint()
     }
 
@@ -321,58 +395,39 @@ final class ShotSession {
     /// The text's colour or size changed while it is being typed: the box
     /// follows, so that what is seen while typing is what will be drawn.
     private func restyleText() {
-        guard let textView, let box = editor.textBox else { return }
-        style(textView, as: box, scale: editor.scale)
-        if let storage = textView.textStorage {
-            storage.setAttributes(textView.typingAttributes, range: NSRange(location: 0, length: storage.length))
-        }
-        textView.window?.makeFirstResponder(textView)
+        guard let typing, let box = editor.textBox else { return }
+        // With a composition open, what is in the box is left alone and
+        // restyled when the composition is over (`textChanged`).
+        let reach = ShotTextInput.restyle(composing: typing.text.hasMarkedText())
+        restyleHeld = reach == .typingOnly
+        style(typing, as: box, scale: editor.scale, reach: reach)
+        typing.window?.makeFirstResponder(typing.text)
         // Another size is another line height, and for a new text possibly
         // another place (`ShotEditor.setLevel`).
         fitText()
         repaint()
     }
 
-    /// How many lines the view has laid out: a line break is one, and so is
-    /// a line the view wrapped at its right edge.
-    private func laidOutLines(of view: ShotTextView) -> Int {
-        guard let manager = view.layoutManager, let container = view.textContainer, let font = view.font else {
-            return ShotTextBox.lines(in: view.string)
+    /// What is typed, or where the caret is, changed. Never called from
+    /// inside one of the input method's calls (`ShotTextInput.Gate`).
+    private func textChanged() {
+        if let typing, let box = editor.textBox,
+           ShotTextInput.restyleDue(held: restyleHeld, composing: typing.text.hasMarkedText()) {
+            restyleHeld = false
+            style(typing, as: box, scale: editor.scale, reach: .everything)
         }
-        manager.ensureLayout(for: container)
-        let pitch = manager.defaultLineHeight(for: font)
-        guard pitch > 0 else { return ShotTextBox.lines(in: view.string) }
-        let laidOut = Int((manager.usedRect(for: container).height / pitch).rounded())
-        return max(laidOut, ShotTextBox.lines(in: view.string))
+        fitText()
     }
 
-    /// Put the text view where `ShotEditor.textRect` says it goes for what
-    /// is in it now: a line taller for each line, never past the selection's
+    /// Put the box where `ShotEditor.textRect` says it goes for what is in
+    /// it now: a line taller for each line, never past the selection's
     /// bottom edge. Past that the text scrolls in the box, so that the line
-    /// the caret is on is the one in view.
+    /// the caret is on is the one in view (`ShotTextScroll.place`). Geometry
+    /// only, so it is safe while an input method is composing.
     private func fitText() {
-        guard let view = textView, let selection = editor.selection,
-              let rect = editor.textRect(lines: laidOutLines(of: view), measure: measure) else { return }
-        let frame = space.local(rect, on: selection.display)
-        if view.frame != frame { view.frame = frame }
-
-        var top: CGFloat = 0
-        if let manager = view.layoutManager, let container = view.textContainer {
-            let used = manager.usedRect(for: container).height
-            if used > frame.height + 0.5 {
-                let caret = view.selectedRange().location
-                var line = manager.extraLineFragmentRect
-                if caret < (view.string as NSString).length || line.isEmpty {
-                    let glyph = min(manager.glyphIndexForCharacter(at: caret), max(manager.numberOfGlyphs - 1, 0))
-                    if manager.numberOfGlyphs > 0 {
-                        line = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-                    }
-                }
-                top = min(max(line.maxY - frame.height, 0), max(used - frame.height, 0))
-            }
-        }
-        if view.bounds.origin.y != top { view.setBoundsOrigin(NSPoint(x: 0, y: top)) }
-        view.needsDisplay = true
+        guard let typing, let selection = editor.selection,
+              let rect = editor.textRect(lines: typing.text.laidOutLines, measure: measure) else { return }
+        typing.place(space.local(rect, on: selection.display))
     }
 
     /// Close the text box and hand what was typed to the editor, which
@@ -380,27 +435,29 @@ final class ShotSession {
     ///
     /// **Called again from inside itself**: taking the view away makes it
     /// give up the keyboard, and giving up the keyboard commits. So the view
-    /// is taken out of `textView` and the text is given to the editor
+    /// is taken out of `typing` and the text is given to the editor
     /// *before* the view is touched. The second call then finds no view and
     /// an editor with no box, and `endText` with no box does nothing --
     /// rather than ending the text with an empty string, which is how the
     /// other host once lost everything typed.
     private func commitText() {
-        guard let view = textView else {
+        guard let typing else {
             // No view. If the editor still has a box, it is one that failed
             // to open; with none this is the second call, and nothing.
             if editor.textBox != nil { perform(editor.endText("", measure: measure)) }
             return
         }
-        textView = nil
+        self.typing = nil
+        restyleHeld = false
+        let view = typing.text
         view.onCommit = nil
         view.staysOpen = nil
         view.onChange = nil
-        view.isToolbar = nil
+        typing.isToolbar = nil
         let effect = editor.endText(view.string, measure: measure)
-        let window = view.window
-        let owner = view.superview
-        view.removeFromSuperview()
+        let window = typing.window
+        let owner = typing.superview
+        typing.removeFromSuperview()
         if let window, let owner { window.makeFirstResponder(owner) }
         perform(effect)
         repaint()

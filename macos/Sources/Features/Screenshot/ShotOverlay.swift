@@ -34,69 +34,6 @@ final class ShotOverlayWindow: NSPanel {
     }
 }
 
-/// The box a piece of text is typed in: a real text view, so that the input
-/// method works in it (`dev-docs/poltergeist/screenshot.md`, 9.3).
-///
-/// Enter is a line break and is the view's own. Command+Enter and Esc end
-/// the typing and keep what was typed; so does losing the keyboard -- except
-/// to a press on a colour or a size, which is a change to this text. While
-/// an input method is composing, Esc reaches the input method and not
-/// `cancelOperation`, so it cancels the composition only.
-final class ShotTextView: NSTextView {
-    /// Called when the typing ends. May be called more than once for one
-    /// box -- taking the box away makes it give up the keyboard, which asks
-    /// again -- and whoever is called has to make the second call nothing.
-    var onCommit: (() -> Void)?
-    /// Asked when the keyboard is being given up: whether that is only the
-    /// press of a colour or a size, which changes this text and hands the
-    /// keyboard straight back, and so is not the end of the typing.
-    var staysOpen: (() -> Bool)?
-    /// Called when what is typed, or where the caret is, has changed: the
-    /// box is as tall as its lines (`ShotTextBox`), and whoever placed it
-    /// places it again.
-    var onChange: (() -> Void)?
-    /// Whether a point of the overlay (the superview's coordinates) is the
-    /// toolbar's. A press there is not this view's even where the view
-    /// lies over it: the toolbar is asked first, always (specification 9.3).
-    var isToolbar: ((NSPoint) -> Bool)?
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        if isToolbar?(point) == true { return nil }
-        return super.hitTest(point)
-    }
-
-    override func didChangeText() {
-        super.didChangeText()
-        onChange?()
-    }
-
-    override func setSelectedRanges(
-        _ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool
-    ) {
-        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
-        if !stillSelecting { onChange?() }
-    }
-
-    override func cancelOperation(_ sender: Any?) {
-        onCommit?()
-    }
-
-    override func keyDown(with event: NSEvent) {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if [36, 76].contains(event.keyCode), flags.contains(.command), !hasMarkedText() {
-            onCommit?()
-            return
-        }
-        super.keyDown(with: event)
-    }
-
-    override func resignFirstResponder() -> Bool {
-        let resigned = super.resignFirstResponder()
-        if resigned, staysOpen?() != true { onCommit?() }
-        return resigned
-    }
-}
-
 /// One display's frozen picture with everything the session has on it
 /// (`dev-docs/poltergeist/screenshot.md`, 3.2 and section 9).
 ///
