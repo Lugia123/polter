@@ -2553,3 +2553,13 @@ msgstr "스크린샷 단축키"
 #: src/config/form.zig
 msgid "Change it with a keybind line in the config file."
 msgstr "설정 파일의 keybind 줄에서 변경합니다."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: windows/host/src/general_ui.rs
+msgid "Choose…"
+msgstr "선택…"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: windows/host/src/general_ui.rs
+msgid "Not set"
+msgstr "설정 안 됨"

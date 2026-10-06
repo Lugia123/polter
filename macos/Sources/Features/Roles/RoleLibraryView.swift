@@ -605,12 +605,15 @@ struct RoleLibraryView: View {
                 }
                 .disabled(p.shielded) }
                 labeled(String(localized: "Open in", comment: "角色库：Polter 选项，点角色时在哪打开")) {
-                    Picker("", selection: polterBinding.open) {
-                        Text(String(localized: "Here when at a prompt, else a new tab", comment: "角色库：打开位置，自动")).tag(RolePolter.Open.auto)
-                        Text(String(localized: "Always a new tab", comment: "角色库：打开位置，始终新标签页")).tag(RolePolter.Open.tab)
+                    // As wide as its longest choice where there is room for
+                    // that, and no wider than the column where there is
+                    // not: at the window's narrowest the choice is longer
+                    // than the column, and a control that will not give
+                    // way pushes the whole page wider than the window.
+                    ViewThatFits(in: .horizontal) {
+                        openInPicker.fixedSize()
+                        openInPicker
                     }
-                    .labelsHidden()
-                    .fixedSize()
                 }
                 formControl {
                     note(String(localized: "Applied once, when the role starts an agent CLI. Putting the role on a terminal that's already running changes its tools, not these.", comment: "角色库：Polter 选项何时生效"))
@@ -689,25 +692,32 @@ struct RoleLibraryView: View {
         HStack(spacing: SettingsLayout.rowGap) {
             listButtons
                 .padding(.trailing, SettingsLayout.rowGap)
-            if let status = editor.status {
-                Label(status, systemImage: "exclamationmark.circle")
-                    .foregroundStyle(.red)
-                    .font(SettingsFont.minimum)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-            } else if let reason = launchBlockedReason {
-                // Written out rather than a tooltip: a reason nobody hovers
-                // over is no reason (settings.md §4).
-                Text(reason)
-                    .font(SettingsFont.minimum)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            } else if editor.isDirty {
-                Text(String(localized: "Unsaved changes", comment: "角色库：有未保存的修改"))
-                    .font(SettingsFont.minimum)
-                    .foregroundStyle(.secondary)
+            // The words take what is left between the buttons on either
+            // side and wrap inside it: a sentence longer than the space --
+            // a translation, or this one at the window's narrowest -- goes
+            // onto a second line of the band rather than up against the
+            // button beside it.
+            Group {
+                if let status = editor.status {
+                    Label(status, systemImage: "exclamationmark.circle")
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                } else if let reason = launchBlockedReason {
+                    // Written out rather than a tooltip: a reason nobody
+                    // hovers over is no reason (settings.md §4).
+                    Text(reason)
+                        .foregroundStyle(.secondary)
+                } else if editor.isDirty {
+                    Text(String(localized: "Unsaved changes", comment: "角色库：有未保存的修改"))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Color.clear.frame(height: 1)
+                }
             }
-            Spacer()
+            .font(SettingsFont.minimum)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
             launchButton
             Button(String(localized: "Revert", comment: "角色库：放弃修改回到已保存的版本")) { editor.revert() }
                 .disabled(!editor.isDirty)
@@ -733,6 +743,14 @@ struct RoleLibraryView: View {
             return String(localized: "Pick an agent CLI under Basics to launch this role.", comment: "角色库：角色没选 CLI 时不能启动")
         }
         return nil
+    }
+
+    private var openInPicker: some View {
+        Picker("", selection: polterBinding.open) {
+            Text(String(localized: "Here when at a prompt, else a new tab", comment: "角色库：打开位置，自动")).tag(RolePolter.Open.auto)
+            Text(String(localized: "Always a new tab", comment: "角色库：打开位置，始终新标签页")).tag(RolePolter.Open.tab)
+        }
+        .labelsHidden()
     }
 
     @ViewBuilder

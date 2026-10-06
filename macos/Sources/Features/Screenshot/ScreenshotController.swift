@@ -44,6 +44,11 @@ final class ScreenshotController: ShotSessionDelegate {
     /// Set while the explanation of a missing permission is on screen.
     private var asking = false
 
+    /// Whether the person is in the middle of a screenshot of their own.
+    /// An agent's waits its turn: the frozen overlay is on screen, and a
+    /// capture now would be a picture of it.
+    var isBusy: Bool { session != nil || starting || asking }
+
     // MARK: Triggers
 
     /// Register the hotkey and the mouse gesture the configuration asks for.

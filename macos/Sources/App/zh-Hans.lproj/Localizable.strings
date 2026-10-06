@@ -675,3 +675,4 @@
 "Agents may capture the screen with the screenshot tools." = "agent 可以用截图工具拍下屏幕。";
 "Screenshot Shortcut" = "截图快捷键";
 "Change it with a keybind line in the config file." = "在配置文件的 keybind 里修改。";
+"Choose…" = "选择…";

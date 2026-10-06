@@ -683,6 +683,15 @@ extension Ghostty {
             case GHOSTTY_ACTION_POLTERGEIST_LAYOUT:
                 return poltergeistLayout(app, target: target, v: action.action.poltergeist_layout)
 
+            case GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT:
+                // An agent's screenshot request. The terminal target of a
+                // capture arrives as the surface; everything else as the app.
+                var terminal: SurfaceView?
+                if target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface {
+                    terminal = self.surfaceView(from: surface)
+                }
+                return ShotAgentHost.shared.handle(action.action.poltergeist_screenshot, terminal: terminal)
+
             case GHOSTTY_ACTION_HISTORY_FILENAME:
                 return historyFilename(target: target, v: action.action.history_filename)
 

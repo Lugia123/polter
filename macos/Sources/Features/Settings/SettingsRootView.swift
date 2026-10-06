@@ -88,16 +88,19 @@ struct SettingsRootView: View {
         var hidden = false
         if model.section == .roles, let draft = editor.draft {
             item = draft.displayName.isEmpty ? draft.key : draft.displayName
-            hidden = RoleLibraryView.listing(library: library, editor: editor, query: model.search).selectionHidden
+            hidden = false
         } else if model.section == .projects, let name = projects.selected?.name {
             item = name
-            hidden = projects.listing(query: model.search).selectionHidden
+            hidden = false
         } else if model.section == .general {
             item = model.general.group.title
         }
         if model.section == .plugins, let plugin = plugins.plugin {
             item = plugin.name
-            hidden = plugins.listing(query: model.search).selectionHidden
+            hidden = false
+        }
+        if model.results != nil {
+            return String(localized: "Search", comment: "设置窗口：侧栏搜索框占位文字")
         }
         return SettingsRules.breadcrumb(section: model.section.title, item: item, hiddenBySearch: hidden)
     }
@@ -129,7 +132,7 @@ struct SettingsRootView: View {
                     if section == .plugins {
                         PluginSidebarRows(
                             pane: plugins,
-                            query: model.search,
+                            query: "",
                             selected: { sidebarSelection == .plugin($0) },
                             onSelect: { key in
                                 sectionsFocused = true
@@ -140,6 +143,7 @@ struct SettingsRootView: View {
             }
             .padding(.top, L.rowGap)
         }
+        .searchDimmed(model.results != nil)
         // ↑↓ like the list this replaced, through the plugins too.
         .settingsListFocus()
         .focused($sectionsFocused)
@@ -162,7 +166,7 @@ struct SettingsRootView: View {
     private var sidebarEntries: [SidebarEntry] {
         SettingsSection.allCases.flatMap { section -> [SidebarEntry] in
             guard section == .plugins else { return [.section(section)] }
-            return [.section(section)] + plugins.listing(query: model.search).visible.map { .plugin($0) }
+            return [.section(section)] + plugins.listing(query: "").visible.map { .plugin($0) }
         }
     }
 
@@ -180,36 +184,63 @@ struct SettingsRootView: View {
         }
     }
 
+    /// While there is a search the detail area is the list of what was
+    /// found; the columns beside it stay where they were, greyed and out of
+    /// reach, and nothing in them is filtered (screenshot.md §12.2).
     @ViewBuilder
     private var content: some View {
+        let searching = model.results != nil
         switch model.section {
         case .roles:
             HStack(spacing: 0) {
                 roles(.list)
                     .frame(width: L.list)
+                    .searchDimmed(searching)
                 vRule
-                roles(.detail)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                detail(searching) { roles(.detail) }
             }
         case .plugins:
-            PluginsView(pane: plugins, part: .detail)
+            detail(searching) { PluginsView(pane: plugins, part: .detail) }
         case .projects:
             HStack(spacing: 0) {
                 projectsPart(.list)
                     .frame(width: L.list)
+                    .searchDimmed(searching)
                 vRule
-                projectsPart(.detail)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                detail(searching) { projectsPart(.detail) }
             }
         case .general:
             HStack(spacing: 0) {
                 generalPart(.list)
                     .frame(width: L.list)
+                    .searchDimmed(searching)
                 vRule
-                generalPart(.detail)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                detail(searching) { generalPart(.detail) }
             }
         }
+    }
+
+    @ViewBuilder
+    private func detail<Page: View>(_ searching: Bool, @ViewBuilder page: () -> Page) -> some View {
+        // The detail area is whatever the columns to its left leave, and
+        // what is in it is laid out inside that -- it is not asked how
+        // wide it would like to be. A page that wants more than there is
+        // (a control that will not shrink, at the window's narrowest) is
+        // cut at the right edge; it used to make the whole row wider than
+        // the window, and the row, centred, moved every rule in it a few
+        // points to the left of the same rule in the bands above and below.
+        Color.clear
+            .overlay(alignment: .topLeading) {
+                Group {
+                    if searching {
+                        SettingsSearchResults(model: model)
+                    } else {
+                        page()
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .clipped()
     }
 
     // MARK: Bottom band
@@ -218,6 +249,16 @@ struct SettingsRootView: View {
     /// there, so the body does not change height between sections.
     @ViewBuilder
     private var bar: some View {
+        if model.results != nil {
+            // The bar belongs to the page the results are covering.
+            Color.clear
+        } else {
+            sectionBar
+        }
+    }
+
+    @ViewBuilder
+    private var sectionBar: some View {
         switch model.section {
         case .roles: roles(.bar)
         case .plugins: PluginsView(pane: plugins, part: .bar)
@@ -231,7 +272,7 @@ struct SettingsRootView: View {
     }
 
     private func projectsPart(_ part: ProjectsView.Part) -> some View {
-        ProjectsView(model: projects, part: part, filter: model.search)
+        ProjectsView(model: projects, part: part, filter: "")
     }
 
     private func roles(_ part: RoleLibraryView.Part) -> some View {
@@ -239,7 +280,7 @@ struct SettingsRootView: View {
             library: library,
             editor: editor,
             part: part,
-            filter: model.search,
+            filter: "",
             canLaunch: { RoleLibraryOpener.launchSurface != nil },
             onLaunch: { role, cli in RoleLibraryOpener.launch(role: role, cli: cli) })
     }
@@ -270,6 +311,12 @@ struct SettingsRow<Content: View>: View {
 }
 
 extension View {
+    /// A column the search results are beside: still there, greyed, and
+    /// not to be clicked while the results are what the window is showing.
+    func searchDimmed(_ dimmed: Bool) -> some View {
+        opacity(dimmed ? 0.35 : 1).allowsHitTesting(!dimmed)
+    }
+
     /// Takes keyboard focus, for ↑↓ in a list of drawn rows, without the
     /// focus ring around the whole column (the highlight already shows
     /// where you are).

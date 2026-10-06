@@ -2580,3 +2580,13 @@ msgstr "Scorciatoia per lo screenshot"
 #: src/config/form.zig
 msgid "Change it with a keybind line in the config file."
 msgstr "Modificala con una riga keybind nel file di configurazione."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: windows/host/src/general_ui.rs
+msgid "Choose…"
+msgstr "Scegli…"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: windows/host/src/general_ui.rs
+msgid "Not set"
+msgstr "Non impostato"

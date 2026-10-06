@@ -38,7 +38,12 @@ struct ConfigFormPage: View {
                             ConfigFormRow(model: model, item: item, control: ConfigFormRules.control(for: item, in: group), group: group)
                                 .disabled(!model.writesAllowed)
                         }
-                        if items.isEmpty {
+                        // What an action of this group is bound to, after
+                        // the group's settings (screenshot.md §12.1).
+                        ForEach(ConfigFormRules.shortcuts(in: group, of: form)) { shortcut in
+                            ConfigShortcutRow(model: model, shortcut: shortcut)
+                        }
+                        if items.isEmpty && ConfigFormRules.shortcuts(in: group, of: form).isEmpty {
                             Text(String(localized: "No matching settings", comment: "设置窗口·通用：全部选项过滤后一个都不剩"))
                                 .foregroundStyle(.secondary)
                         }
@@ -62,9 +67,48 @@ struct ConfigFormPage: View {
     }
 }
 
+/// A row that shows what an action is bound to. Read-only: bindings are
+/// edited in the config file, and the row says so and leads to the page
+/// that lists them all.
+struct ConfigShortcutRow: View {
+    @ObservedObject var model: GeneralModel
+    let shortcut: ConfigForm.Shortcut
+
+    private typealias L = SettingsLayout
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: L.rowGap / 2) {
+            HStack(alignment: .firstTextBaseline, spacing: L.labelGap) {
+                Text(ConfigFormRules.localized(shortcut.label))
+                    .font(SettingsFont.minimum)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(2)
+                    .frame(width: L.label, alignment: .trailing)
+                Text(ConfigFormRules.bindingText(model.keys(of: shortcut.action)))
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            formControl {
+                HStack(alignment: .firstTextBaseline, spacing: L.rowGap) {
+                    if let summary = shortcut.summary {
+                        Text(ConfigFormRules.localized(summary))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Button(GeneralGroup.keybinds.title) { model.select(.keybinds) }
+                        .buttonStyle(.link)
+                }
+                .font(SettingsFont.minimum)
+            }
+        }
+    }
+}
+
 /// One key: label, control, help, error, and where the value comes from
 /// when the form cannot write it.
-private struct ConfigFormRow: View {
+struct ConfigFormRow: View {
     @ObservedObject var model: GeneralModel
     let item: ConfigForm.Item
     let control: ConfigForm.Control
@@ -234,16 +278,18 @@ private struct ConfigFormControl: View {
         case .toggle:
             Toggle("", isOn: Binding(
                 get: { ConfigFormRules.isOn(item) },
-                set: { model.set(item.key, ConfigFormRules.toggleValue($0)) }))
+                set: { model.set(item.key, ConfigFormRules.toggleValue($0, of: item)) }))
                 .labelsHidden()
                 .toggleStyle(.checkbox)
         case .choice:
             Picker("", selection: Binding(
                 get: { item.value },
                 set: { if $0 != item.value { model.set(item.key, $0) } })) {
-                ForEach(item.choices ?? [], id: \.self) { Text(ConfigFormRules.choiceTitle($0, of: item)).tag($0) }
-                if !(item.choices ?? []).contains(item.value) {
-                    Text(item.value).tag(item.value)
+                // The table's values, and after them the one the file
+                // holds when the table does not have it: it is shown and
+                // selected as what it is, never as the first choice.
+                ForEach(ConfigFormRules.choices(of: item), id: \.self) {
+                    Text(ConfigFormRules.choiceTitle($0, of: item)).tag($0)
                 }
             }
             .labelsHidden()
@@ -276,6 +322,16 @@ private struct ConfigFormControl: View {
                         .fill(color)
                         .frame(width: 18, height: 18)
                         .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color(nsColor: .separatorColor)))
+                }
+            }
+        case .directory:
+            HStack(spacing: SettingsLayout.rowGap) {
+                textField
+                Button(String(localized: "Choose…", comment: "设置窗口·通用：目录项，选一个文件夹")) {
+                    if let path = model.chooseDirectory(startingAt: model.directory(of: item)) { commit(path) }
+                }
+                Button(String(localized: "Show in Finder", comment: "设置窗口·通用：目录项，在访达里显示这个文件夹")) {
+                    model.revealDirectory(model.directory(of: item))
                 }
             }
         case .number, .text, .font:

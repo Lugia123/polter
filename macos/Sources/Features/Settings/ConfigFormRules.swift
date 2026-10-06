@@ -19,10 +19,43 @@ struct ConfigForm: Decodable, Equatable {
     struct Section: Decodable, Equatable {
         var group: String
         var keys: [String]
+        /// The rows of this group that show a binding rather than a setting
+        /// (screenshot.md §12.1); none in most groups, and none at all from
+        /// a core that predates them.
+        var shortcuts: [Shortcut]
+
+        private enum CodingKeys: String, CodingKey { case group, keys, shortcuts }
+
+        init(group: String, keys: [String], shortcuts: [Shortcut] = []) {
+            self.group = group
+            self.keys = keys
+            self.shortcuts = shortcuts
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            group = try c.decode(String.self, forKey: .group)
+            keys = try c.decode([String].self, forKey: .keys)
+            shortcuts = try c.decodeIfPresent([Shortcut].self, forKey: .shortcuts) ?? []
+        }
+    }
+
+    /// A row that shows what an action is bound to. `label` and `summary`
+    /// are English msgids; `aliases` are search words, used as they are.
+    struct Shortcut: Decodable, Equatable, Identifiable {
+        var action: String
+        var label: String
+        var summary: String?
+        var aliases: [String]?
+
+        var id: String { action }
     }
 
     enum Control: String, Equatable {
         case toggle, choice, number, text, font, color, theme, readonly
+        /// A folder: a path box, a button that chooses one and a button
+        /// that shows it. Written like `text`; empty restores the default.
+        case directory
     }
 
     struct Source: Decodable, Equatable {
@@ -46,6 +79,17 @@ struct ConfigForm: Decodable, Equatable {
         /// the value. Decoding these as plain strings made one such row
         /// fail the whole table, and every group showed nothing.
         var choiceLabels: [String?]?
+        /// A msgid with one `%s` in it, for the values `choiceLabels` leaves
+        /// nil: the host writes the value's modifier keys the way this
+        /// platform writes them and puts them where the `%s` is.
+        var choiceTemplate: String?
+        /// What a toggle writes when it is not over a true/false key; nil
+        /// for one that is. Writing `true` to a key that wants `allow` is
+        /// refused by the core.
+        var on: String?
+        var off: String?
+        /// Other words a search finds this by. Not msgids: never translated.
+        var aliases: [String]
         var min: Double?
         var max: Double?
         var `default`: String
@@ -66,6 +110,7 @@ struct ConfigForm: Decodable, Equatable {
 
         private enum CodingKeys: String, CodingKey {
             case key, group, control, choices, choiceLabels = "choice_labels", min, max, `default`, value, doc, label, summary, source, readonly
+            case choiceTemplate = "choice_template", on, off, aliases
         }
 
         init(from decoder: Decoder) throws {
@@ -77,6 +122,10 @@ struct ConfigForm: Decodable, Equatable {
             control = Control(rawValue: try c.decode(String.self, forKey: .control)) ?? .readonly
             choices = try c.decodeIfPresent([String].self, forKey: .choices)
             choiceLabels = try c.decodeIfPresent([String?].self, forKey: .choiceLabels)
+            choiceTemplate = try c.decodeIfPresent(String.self, forKey: .choiceTemplate)
+            on = try c.decodeIfPresent(String.self, forKey: .on)
+            off = try c.decodeIfPresent(String.self, forKey: .off)
+            aliases = try c.decodeIfPresent([String].self, forKey: .aliases) ?? []
             min = try c.decodeIfPresent(Double.self, forKey: .min)
             max = try c.decodeIfPresent(Double.self, forKey: .max)
             `default` = try c.decode(String.self, forKey: .default)
@@ -122,6 +171,7 @@ enum ConfigFormRules {
         case .terminal: "terminal"
         case .windows: "window"
         case .polter: "polter"
+        case .screenshot: "screenshot"
         case .all, .keybinds, .advanced, .about: nil
         }
     }
@@ -197,10 +247,45 @@ enum ConfigFormRules {
     /// What a value is called in the list: its name from the table,
     /// translated, else the value itself (#977). What is written is always
     /// the value.
+    ///
+    /// A value the table gives no name spells itself through the item's
+    /// template -- `super+shift` is `⇧⌘ + Double-Click` -- and so does a
+    /// value that is not in the table at all, which is what the config
+    /// file holds when somebody wrote a combination the form does not
+    /// offer: it is shown as what it is, not as the first choice.
     static func choiceTitle(_ value: String, of item: ConfigForm.Item, bundle: Bundle = .main) -> String {
-        guard let values = item.choices, let names = item.choiceLabels, names.count == values.count,
-              let i = values.firstIndex(of: value), let name = names[i] else { return value }
-        return localized(name, bundle: bundle)
+        if let values = item.choices, let names = item.choiceLabels, names.count == values.count,
+           let i = values.firstIndex(of: value), let name = names[i] {
+            return localized(name, bundle: bundle)
+        }
+        guard let template = item.choiceTemplate, let keys = modifierSymbols(value) else { return value }
+        return localized(template, bundle: bundle).replacingOccurrences(of: "%s", with: keys)
+    }
+
+    /// Modifier keys named the way the config file names them
+    /// (`super+shift`), written the way macOS writes them (`⇧⌘`): always
+    /// in the order Control, Option, Shift, Command, whatever order they
+    /// were named in. Nil when a name is not a modifier, or there is none.
+    static func modifierSymbols(_ value: String) -> String? {
+        var held = Set<Character>()
+        for name in value.split(separator: "+") {
+            switch name.trimmingCharacters(in: .whitespaces).lowercased() {
+            case "ctrl", "control": held.insert("⌃")
+            case "alt", "opt", "option": held.insert("⌥")
+            case "shift": held.insert("⇧")
+            case "super", "cmd", "command": held.insert("⌘")
+            default: return nil
+            }
+        }
+        guard !held.isEmpty else { return nil }
+        return String("⌃⌥⇧⌘".filter(held.contains))
+    }
+
+    /// The values a list offers, in the table's order, and the current one
+    /// after them when the table does not have it.
+    static func choices(of item: ConfigForm.Item) -> [String] {
+        let listed = item.choices ?? []
+        return listed.contains(item.value) ? listed : listed + [item.value]
     }
 
     /// How wide a text box is (#977): a number or a short value is sized
@@ -212,7 +297,7 @@ enum ConfigFormRules {
         switch control {
         case .number: return 120
         case .text, .color: return 160
-        case .font, .theme, .toggle, .choice, .readonly: return nil
+        case .font, .theme, .toggle, .choice, .readonly, .directory: return nil
         }
     }
 
@@ -251,9 +336,27 @@ enum ConfigFormRules {
         edited != item.value
     }
 
-    static func isOn(_ item: ConfigForm.Item) -> Bool { item.value == "true" }
+    /// Whether a toggle is on: its value is the one the table says "on"
+    /// writes, which for most keys is `true`.
+    static func isOn(_ item: ConfigForm.Item) -> Bool { item.value == (item.on ?? "true") }
 
-    static func toggleValue(_ on: Bool) -> String { on ? "true" : "false" }
+    /// What a toggle writes. The table's own words where it has them
+    /// (`allow` / `deny`): the core refuses `true` for such a key.
+    static func toggleValue(_ on: Bool, of item: ConfigForm.Item) -> String {
+        on ? (item.on ?? "true") : (item.off ?? "false")
+    }
+
+    /// The shortcut rows a group shows after its settings.
+    static func shortcuts(in group: GeneralGroup, of form: ConfigForm) -> [ConfigForm.Shortcut] {
+        guard let name = coreGroup(group) else { return [] }
+        return form.sections.first { $0.group == name }?.shortcuts ?? []
+    }
+
+    /// What a shortcut row says the action is bound to: its keys, or that
+    /// it has none.
+    static func bindingText(_ keys: [String], bundle: Bundle = .main) -> String {
+        keys.isEmpty ? localized("Not set", bundle: bundle) : keys.joined(separator: "   ")
+    }
 
     /// A range narrow enough to drag (background opacity's 0-1). Integer
     /// types come with their type's whole range, which is not a slider.

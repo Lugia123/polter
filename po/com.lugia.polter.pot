@@ -3388,3 +3388,11 @@ msgstr ""
 #: src/config/form.zig
 msgid "Change it with a keybind line in the config file."
 msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Choose…"
+msgstr ""
+
+#: windows/host/src/general_ui.rs
+msgid "Not set"
+msgstr ""

@@ -143,6 +143,41 @@ final class GeneralModel: ObservableObject {
     func openFile(_ path: String) {
         ghostty?.openTextFile(path: path)
     }
+
+    /// The keys an action is bound to, written the way the Keyboard
+    /// Shortcuts page writes them; none when it has no binding.
+    func keys(of action: String) -> [String] {
+        KeybindsModel.rows(config: ghostty?.config.config).first { $0.action == action }?.keys ?? []
+    }
+
+    /// The folder a directory setting names: what is written, or, with
+    /// nothing written, the default the app is actually using.
+    func directory(of item: ConfigForm.Item) -> URL {
+        if item.key == "screenshot-directory", let url = ghostty?.config.screenshotDirectory { return url }
+        return URL(fileURLWithPath: (item.value as NSString).expandingTildeInPath, isDirectory: true)
+    }
+
+    /// Ask for a folder. Nil when the person cancelled.
+    func chooseDirectory(startingAt start: URL) -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = start
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return (url.path as NSString).abbreviatingWithTildeInPath
+    }
+
+    /// Show a folder in the Finder: itself selected when it is there, and
+    /// otherwise the nearest folder above it that is.
+    func revealDirectory(_ url: URL) {
+        var shown = url
+        while !FileManager.default.fileExists(atPath: shown.path), shown.pathComponents.count > 1 {
+            shown = shown.deletingLastPathComponent()
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([shown])
+    }
 }
 
 /// The section's three parts on the settings grid (§2.3a): the group list,
@@ -229,7 +264,7 @@ struct GeneralView: View {
             }
             Spacer()
             switch model.group {
-            case .appearance, .font, .terminal, .windows, .polter, .all:
+            case .appearance, .font, .terminal, .windows, .polter, .all, .screenshot:
                 Button(String(localized: "Open config file…", comment: "设置窗口：通用栏目，用外部编辑器打开配置文件")) {
                     model.openConfigFile()
                 }

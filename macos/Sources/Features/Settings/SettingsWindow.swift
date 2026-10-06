@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import GhosttyKit
 import OSLog
 import SwiftUI
 
@@ -58,17 +59,16 @@ func openSettings(_ route: SettingsRoute? = nil) {
 @MainActor
 final class SettingsModel: ObservableObject {
     @Published private(set) var section: SettingsSection
+    /// What is typed in the search box. While it holds a search the detail
+    /// area lists what was found (`results`) and nothing else moves: the
+    /// section, the lists and what is selected in them stay as they were,
+    /// so that clearing the box is back where the person was
+    /// (screenshot.md §12.2).
     @Published var search = "" {
-        didSet {
-            // A search stays in the section it is in while that has a match,
-            // and otherwise goes to the first that has one (settings.md
-            // §2.3).
-            let next = SettingsRules.sectionForSearch(search, current: section) { [unowned self] in
-                self.searchMatches(in: $0)
-            }
-            if let next, next != section { go(next) }
-        }
+        didSet { refreshResults() }
     }
+    /// What the search found, best first; nil when there is no search.
+    @Published private(set) var results: [SettingsSearch.Entry]?
 
     let library: RoleLibrary
     let roles: RoleLibraryEditor
@@ -103,17 +103,90 @@ final class SettingsModel: ObservableObject {
         }
     }
 
-    /// Whether the search leaves anything in `section`'s list.
-    private func searchMatches(in section: SettingsSection) -> Bool {
-        switch section {
-        case .roles:
-            !RoleLibraryView.listing(library: library, editor: roles, query: search).visible.isEmpty
-        case .plugins:
-            !plugins.listing(query: search).visible.isEmpty
-        case .projects:
-            !projects.listing(query: search).visible.isEmpty
-        case .general:
-            false
+    // MARK: Search
+
+    /// Everything the search can find, in the order the window draws it:
+    /// roles, projects, plugins and their settings, the General form, and
+    /// the lines of the Keyboard Shortcuts page.
+    func searchEntries() -> [SettingsSearch.Entry] {
+        if general.form == nil { general.reloadForm() }
+        var entries: [SettingsSearch.Entry] = library.catalog.roles.map {
+            .init(target: .role(key: $0.key), name: $0.displayName.isEmpty ? $0.key : $0.displayName, key: $0.key)
+        }
+        entries += projects.entries.map { .init(target: .project(name: $0.name), name: $0.name) }
+        for plugin in plugins.plugins {
+            entries.append(.init(target: .plugin(key: plugin.key), name: plugin.name, key: plugin.key, summary: plugin.summary))
+            entries += plugin.parameters.map {
+                .init(
+                    target: .pluginItem(plugin: plugin.key, name: $0.name),
+                    name: $0.title.isEmpty ? $0.name : $0.title, key: $0.name, summary: $0.help)
+            }
+        }
+        if let form = general.form { entries += SettingsSearch.entries(of: form) }
+        entries += KeybindsModel.rows(config: general.ghostty?.config.config).map {
+            .init(
+                target: .keybind(action: $0.action), name: $0.name ?? $0.action, key: $0.action,
+                summary: $0.keys.isEmpty ? nil : KeybindsModel.keysLabel($0.keys))
+        }
+        return entries
+    }
+
+    private func refreshResults() {
+        guard SettingsSearch.isSearching(search) else {
+            if results != nil { results = nil }
+            return
+        }
+        let entries = searchEntries()
+        guard let app = general.ghostty?.app else {
+            results = []
+            return
+        }
+        let list = SettingsSearch.json(entries)
+        let query = search
+        let answer = PersonaCatalog.readJSON { buf, cap in
+            list.withCString { e in
+                query.withCString { q in
+                    ghostty_app_config_form_search(app, e, UInt(strlen(e)), q, UInt(strlen(q)), buf, cap)
+                }
+            }
+        }
+        let hits = answer.flatMap { SettingsSearch.hits(from: $0, count: entries.count) } ?? []
+        results = SettingsSearch.results(entries, hits: hits)
+    }
+
+    /// Where a result lives, for the small line above it.
+    func crumb(for target: SettingsSearch.Target) -> String {
+        switch target {
+        case let .formItem(_, group), let .shortcut(_, group):
+            return SettingsSearch.crumb(section: SettingsSection.general.title, item: group.title)
+        case .keybind:
+            return SettingsSearch.crumb(section: SettingsSection.general.title, item: GeneralGroup.keybinds.title)
+        case .role:
+            return SettingsSection.roles.title
+        case .project:
+            return SettingsSection.projects.title
+        case .plugin:
+            return SettingsSection.plugins.title
+        case let .pluginItem(plugin, _):
+            return SettingsSearch.crumb(
+                section: SettingsSection.plugins.title, item: plugins.plugins.first { $0.key == plugin }?.name ?? plugin)
+        }
+    }
+
+    /// Leave the search and go to where a result lives.
+    func jump(to target: SettingsSearch.Target) {
+        search = ""
+        switch target {
+        case let .formItem(_, group), let .shortcut(_, group):
+            if go(.general) { general.select(group) }
+        case .keybind:
+            if go(.general) { general.select(.keybinds) }
+        case let .role(key):
+            if go(.roles) { roles.select(key) }
+        case let .project(name):
+            if go(.projects) { projects.select(name) }
+        case let .plugin(key), let .pluginItem(key, _):
+            goPlugin(key)
         }
     }
 

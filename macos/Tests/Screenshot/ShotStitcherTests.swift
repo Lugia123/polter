@@ -353,4 +353,120 @@ struct ShotStitcherTests {
         #expect(ShotStitcher.rowHashes(a, width: 2) != ShotStitcher.rowHashes(c, width: 2))
         #expect(ShotStitcher.rowHashes(a, width: 1).count == 2)
     }
+    // MARK: Only steady frames (9.7)
+
+    /// `page` scrolled to `y`, caught before the strip that just came into
+    /// view was painted to the bottom: its last `unpainted` rows are still
+    /// the window's blank ground.
+    private func halfPainted(_ page: Page, _ y: Int, unpainted: Int) -> [UInt8] {
+        var f = page.frame(y)
+        let end = (Self.header + Self.view) * Self.w * 4
+        for i in (end - unpainted * Self.w * 4)..<end { f[i] = 0xff }
+        return f
+    }
+
+    /// What a capture timer sees of an application that scrolls `by` rows
+    /// at a time and paints the exposed strip late: after each scroll one
+    /// frame with `unpainted` rows still blank, then the finished frame
+    /// three times over.
+    private func latePainter(_ page: Page, by: Int, scrolls: Int, unpainted: Int) -> [[UInt8]] {
+        var frames = [[UInt8]](repeating: page.frame(0), count: 3)
+        for n in 1...scrolls {
+            frames.append(halfPainted(page, n * by, unpainted: unpainted))
+            frames += [[UInt8]](repeating: page.frame(n * by), count: 3)
+        }
+        return frames
+    }
+
+    private func blankRows(_ picture: [UInt8]) -> Int {
+        let row = Self.w * 4
+        return stride(from: 0, to: picture.count, by: row).filter { start in
+            stride(from: start, to: start + row, by: 4).allSatisfy {
+                picture[$0] == 0xff && picture[$0 + 1] == 0xff && picture[$0 + 2] == 0xff
+            }
+        }.count
+    }
+
+    /// The other host's defect 3, first form: the picture came out the
+    /// right height with every line in it, and with bands of blank rows
+    /// across half a line of text. Two blank rows are inside what lining up
+    /// forgives, so the frames after a half-painted one are joined to it
+    /// and its blank rows stay.
+    @Test func aFrameCaughtHalfPaintedLeavesNoBlankRowsInThePicture() throws {
+        let page = Page()
+        let frames = latePainter(page, by: 20, scrolls: 6, unpainted: 2)
+        // What `push` alone does with them -- the defect, kept as the
+        // statement of what `offer` is for.
+        var raw = stitcher()
+        for f in frames { _ = raw.push(f) }
+        #expect(raw.totalHeight == Self.h + 120, "the height was right on the test machine too")
+        let torn = try #require(raw.finish()).rgbx
+        #expect(blankRows(torn) > 0, "this sequence no longer shows the defect")
+        #expect(torn != page.expected(120), "this sequence no longer shows the defect")
+
+        var s = stitcher()
+        let steps = frames.map { s.offer($0) }
+        #expect(!steps.contains(.lost), "\(steps)")
+        #expect(steps.filter { $0 == .added(20) }.count == 6, "\(steps)")
+        let picture = try #require(s.finish()).rgbx
+        #expect(blankRows(picture) == 0)
+        #expect(picture == page.expected(120))
+    }
+
+    /// Defect 3, second form: a few notches were joined and nothing after
+    /// them, most frames dropped, and the picture ended in blank rows. With
+    /// more rows unpainted than lining up forgives, no later frame lines up
+    /// with the half-painted one, and it stays the frame everything is
+    /// compared against.
+    @Test func aFrameCaughtHalfPaintedDoesNotStopThePictureGrowing() throws {
+        let page = Page()
+        let frames = latePainter(page, by: 20, scrolls: 6, unpainted: 12)
+        var raw = stitcher()
+        let lost = frames.filter { raw.push($0) == .lost }.count
+        #expect(lost > frames.count / 2, "only \(lost) of \(frames.count) dropped: this sequence no longer shows the defect")
+        #expect(raw.totalHeight == Self.h + 20, "it stuck after the first notch")
+        #expect(blankRows(try #require(raw.finish()).rgbx) == 12, "and ended in the blank rows")
+
+        var s = stitcher()
+        let steps = frames.map { s.offer($0) }
+        #expect(!steps.contains(.lost), "\(steps)")
+        #expect(s.totalHeight == Self.h + 120)
+        #expect(try #require(s.finish()).rgbx == page.expected(120))
+    }
+
+    /// The rule itself: a frame counts when it is the one offered just
+    /// before it, and only then.
+    @Test func onlyAFrameSeenTwiceRunningIsJoined() throws {
+        let page = Page()
+        var s = stitcher()
+        let one = s.offer(page.frame(0))
+        #expect(one == .moving)
+        #expect(s.totalHeight == 0, "one capture alone is not a picture yet")
+        let two = s.offer(page.frame(0))
+        #expect(two == .first)
+        // Scrolling: every frame differs from the one before, none joined.
+        let scrolling = [5, 12, 20].map { s.offer(page.frame($0)) }
+        #expect(scrolling == [.moving, .moving, .moving])
+        #expect(s.totalHeight == Self.h)
+        // It stops: the second look at the same frame joins it.
+        let stopped = [s.offer(page.frame(30)), s.offer(page.frame(30))]
+        #expect(stopped == [.moving, .added(30)])
+        // Still there: nothing new, and not "moving".
+        let still = s.offer(page.frame(30))
+        #expect(still == .unchanged)
+        // A frame seen twice, but not twice running, is not steady.
+        let apart = [s.offer(page.frame(40)), s.offer(page.frame(50)), s.offer(page.frame(40))]
+        #expect(apart == [.moving, .moving, .moving])
+        #expect(s.totalHeight == Self.h + 30)
+        let again = s.offer(page.frame(40))
+        #expect(again == .added(10))
+        // A frame of another size is still said to be that.
+        let short = s.offer(Array(page.frame(0).dropFirst(4)))
+        #expect(short == .wrongSize)
+        // ...and it was not remembered: the next real frame is compared
+        // with the last real one.
+        let after = s.offer(page.frame(40))
+        #expect(after == .unchanged)
+        #expect(try #require(s.finish()).rgbx == page.expected(40))
+    }
 }

@@ -2567,3 +2567,13 @@ msgstr "Screenshot-Kürzel"
 #: src/config/form.zig
 msgid "Change it with a keybind line in the config file."
 msgstr "Mit einer keybind-Zeile in der Konfigurationsdatei ändern."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: windows/host/src/general_ui.rs
+msgid "Choose…"
+msgstr "Auswählen…"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: windows/host/src/general_ui.rs
+msgid "Not set"
+msgstr "Nicht festgelegt"

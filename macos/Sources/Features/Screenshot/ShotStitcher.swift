@@ -59,6 +59,9 @@ struct ShotStitcher {
         case full
         /// Not a frame of this session's size: ignored.
         case wrongSize
+        /// Not the same as the frame offered just before it: the screen was
+        /// still changing, so it is held back, not joined (`offer`).
+        case moving
     }
 
     private enum Motion: Equatable {
@@ -84,6 +87,8 @@ struct ShotStitcher {
     private var lastHashes: [UInt64] = []
     private var last: [UInt8] = []
     private(set) var isFull = false
+    /// The frame `offer` was last given, joined or not.
+    private var offered: [UInt8] = []
 
     /// A stitcher for frames `width` by `height` pixels. Nil for a size
     /// that is not a picture.
@@ -168,7 +173,36 @@ struct ShotStitcher {
         return rows - flat
     }
 
-    /// Take the next frame.
+    /// Offer a frame taken off a live screen
+    /// (`dev-docs/poltergeist/screenshot.md`, 9.7). **Only a frame that is,
+    /// pixel for pixel, the one offered just before it is joined**; any
+    /// other is `.moving` and is only remembered.
+    ///
+    /// A screen caught between two states is not a state. An application
+    /// that scrolls by moving what it has and painting the newly exposed
+    /// strip afterwards can be caught with the strip still blank. Nothing
+    /// in such a frame says so: the blank rows lie below the rows two
+    /// frames are lined up on, so it lines up perfectly and its blank rows
+    /// are joined as if they were the page. From there it goes one of two
+    /// ways, both seen on the other host's test machine -- a few blank rows
+    /// stay in the picture across a line of text, or, with more of them, no
+    /// later frame lines up with that one again and the picture stops
+    /// growing. Two captures in a row that are identical were not taken
+    /// mid-change, whatever the application and however it paints.
+    ///
+    /// The cost is one capture interval before a frame counts, and a region
+    /// that never holds still -- a video, a spinner -- adds nothing at all.
+    mutating func offer(_ frame: [UInt8]) -> Step {
+        guard frame.count == row * height else { return .wrongSize }
+        if offered != frame {
+            offered = frame
+            return .moving
+        }
+        return push(frame)
+    }
+
+    /// Take the next frame as it is. `offer` is the one for frames off a
+    /// live screen; this joins whatever it is given.
     mutating func push(_ frame: [UInt8]) -> Step {
         guard frame.count == row * height else { return .wrongSize }
         let hashes = Self.rowHashes(frame, width: width)

@@ -2561,3 +2561,13 @@ msgstr "Phím tắt chụp màn hình"
 #: src/config/form.zig
 msgid "Change it with a keybind line in the config file."
 msgstr "Đổi bằng một dòng keybind trong tệp cấu hình."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: windows/host/src/general_ui.rs
+msgid "Choose…"
+msgstr "Chọn…"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: windows/host/src/general_ui.rs
+msgid "Not set"
+msgstr "Chưa đặt"

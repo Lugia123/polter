@@ -77,6 +77,8 @@ final class ShotSession {
         var last: ShotStitcher.Step = .unchanged
         var frames = 0
         var lost = 0
+        /// Frames held back because the screen was still changing.
+        var moving = 0
     }
     private var long: Long?
 
@@ -380,12 +382,16 @@ final class ShotSession {
         guard let capture = long?.capture else { return }
         capture.frame { [weak self] frame in
             guard let self, let frame, var long = self.long else { return }
-            let step = long.stitcher.push(frame)
+            // Only a frame seen twice running is joined: one caught half
+            // painted is `.moving` and waits for the next.
+            let step = long.stitcher.offer(frame)
             long.frames += 1
             if step == .lost { long.lost += 1 }
+            if step == .moving { long.moving += 1 }
             // What the hint shows follows the last frame that said
-            // something: an unchanged frame does not clear "scroll slower".
-            let shown = step == .unchanged ? long.last : step
+            // something: a frame that is unchanged, or still moving, does
+            // not clear "scroll slower".
+            let shown = step == .unchanged || step == .moving ? long.last : step
             var changed = shown != long.last
             if case .added = step { changed = true }
             if step == .full && long.last != .full {
@@ -408,7 +414,7 @@ final class ShotSession {
         long?.timer.invalidate()
         long = nil
         if let taken {
-            Self.logger.info("screenshot: long screenshot finished: \(taken.frames, privacy: .public) frame(s), \(taken.lost, privacy: .public) dropped for want of overlap, \(taken.stitcher.totalHeight, privacy: .public) px tall")
+            Self.logger.info("screenshot: long screenshot finished: \(taken.frames, privacy: .public) frame(s), \(taken.lost, privacy: .public) dropped for want of overlap, \(taken.moving, privacy: .public) held back (still moving), \(taken.stitcher.totalHeight, privacy: .public) px tall")
         }
         close()
 

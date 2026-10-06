@@ -3512,3 +3512,11 @@ msgstr "在配置文件的 keybind 里修改。"
 
 #~ msgid "Role Library"
 #~ msgstr "角色库"
+
+#: windows/host/src/general_ui.rs
+msgid "Choose…"
+msgstr "选择…"
+
+#: windows/host/src/general_ui.rs
+msgid "Not set"
+msgstr "未设置"

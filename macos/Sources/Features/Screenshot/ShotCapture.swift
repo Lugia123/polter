@@ -44,7 +44,12 @@ enum ShotCapture {
     /// which this app still supports, has only the CoreGraphics one, which
     /// in turn is gone from macOS 15. So each is used where it exists.
     static func captureAll(completion: @escaping ([ShotDisplay]) -> Void) {
-        let screens = NSScreen.screens
+        capture(NSScreen.screens, completion: completion)
+    }
+
+    /// These displays as they are right now, in the order given; one that
+    /// could not be captured is left out.
+    static func capture(_ screens: [NSScreen], completion: @escaping ([ShotDisplay]) -> Void) {
         if #available(macOS 14.0, *) {
             Task {
                 var displays: [ShotDisplay] = []
