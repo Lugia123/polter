@@ -220,7 +220,7 @@ struct ConfigFormRulesTests {
             if item.control == .choice {
                 let names = try #require(item.choiceLabels, "\(item.key) has no choice names")
                 #expect(names.count == item.choices?.count)
-                for name in names where !Self.properNouns.contains(name) {
+                for name in names.compactMap({ $0 }) where !Self.properNouns.contains(name) {
                     #expect(ConfigFormRules.localized(name, bundle: zh) != name, "\(item.key): \(name) has no Chinese")
                 }
             }

@@ -40,8 +40,12 @@ struct ConfigForm: Decodable, Equatable {
         var control: Control
         var choices: [String]?
         /// The display name of each of `choices`, same order, English
-        /// msgids (#977); nil where the table names none.
-        var choiceLabels: [String]?
+        /// msgids (#977); nil where the table names none. **One name may
+        /// itself be nil**: a value the table leaves for the host to spell
+        /// (through `choice_template`), and until the host does, shown as
+        /// the value. Decoding these as plain strings made one such row
+        /// fail the whole table, and every group showed nothing.
+        var choiceLabels: [String?]?
         var min: Double?
         var max: Double?
         var `default`: String
@@ -72,7 +76,7 @@ struct ConfigForm: Decodable, Equatable {
             // read-only, rather than dropping the key or the whole table.
             control = Control(rawValue: try c.decode(String.self, forKey: .control)) ?? .readonly
             choices = try c.decodeIfPresent([String].self, forKey: .choices)
-            choiceLabels = try c.decodeIfPresent([String].self, forKey: .choiceLabels)
+            choiceLabels = try c.decodeIfPresent([String?].self, forKey: .choiceLabels)
             min = try c.decodeIfPresent(Double.self, forKey: .min)
             max = try c.decodeIfPresent(Double.self, forKey: .max)
             `default` = try c.decode(String.self, forKey: .default)
@@ -195,8 +199,8 @@ enum ConfigFormRules {
     /// the value.
     static func choiceTitle(_ value: String, of item: ConfigForm.Item, bundle: Bundle = .main) -> String {
         guard let values = item.choices, let names = item.choiceLabels, names.count == values.count,
-              let i = values.firstIndex(of: value) else { return value }
-        return localized(names[i], bundle: bundle)
+              let i = values.firstIndex(of: value), let name = names[i] else { return value }
+        return localized(name, bundle: bundle)
     }
 
     /// How wide a text box is (#977): a number or a short value is sized
