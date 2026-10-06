@@ -92,6 +92,65 @@ impl Reuse {
     }
 }
 
+/// How long after the image's path the line describing its annotations is
+/// pasted, in milliseconds.
+///
+/// **They are two pastes, and the gap is what makes them two.** With none,
+/// the program in the terminal receives the path and the line in one read
+/// and has no way to treat the first as an attachment and the second as
+/// text. macOS waits 0.15 s for the same reason; this is that number.
+pub const SECOND_PASTE_DELAY_MS: u64 = 150;
+
+/// Things to do later, each addressed to a target and due at a time.
+///
+/// For the second paste: `T` is the identity of the pane the first paste
+/// went into. **An identity, not "wherever the keyboard is by then"** -- the
+/// host looks the pane up again when the entry falls due, and a pane that
+/// has been closed in the meantime resolves to nothing, so the text is
+/// dropped rather than typed into whatever took its place.
+#[derive(Debug)]
+pub struct Later<T> {
+    waiting: Vec<(u64, T, String)>,
+}
+
+impl<T> Default for Later<T> {
+    fn default() -> Self {
+        Later { waiting: Vec::new() }
+    }
+}
+
+impl<T> Later<T> {
+    pub const fn new() -> Self {
+        Later { waiting: Vec::new() }
+    }
+
+    /// Queue `text` for `target`, due `delay_ms` after `now_ms`.
+    pub fn push(&mut self, now_ms: u64, delay_ms: u64, target: T, text: String) {
+        self.waiting.push((now_ms.saturating_add(delay_ms), target, text));
+    }
+
+    /// Remove and return everything due at `now_ms`, in the order queued.
+    pub fn take_due(&mut self, now_ms: u64) -> Vec<(T, String)> {
+        let mut due = Vec::new();
+        let mut rest = Vec::new();
+        for (at, target, text) in self.waiting.drain(..) {
+            if at <= now_ms {
+                due.push((target, text));
+            } else {
+                rest.push((at, target, text));
+            }
+        }
+        self.waiting = rest;
+        due
+    }
+
+    /// How long from `now_ms` until the next entry is due: 0 when one is
+    /// already, `None` when nothing is waiting.
+    pub fn next_in(&self, now_ms: u64) -> Option<u64> {
+        self.waiting.iter().map(|(at, _, _)| at.saturating_sub(now_ms)).min()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +191,48 @@ mod tests {
                 assert_eq!(choose(on(false, files, image), false), Source::Nothing);
             }
         }
+    }
+
+    #[test]
+    fn the_second_paste_waits_its_delay() {
+        let mut q: Later<u64> = Later::new();
+        assert_eq!(q.next_in(1000), None);
+        q.push(1000, SECOND_PASTE_DELAY_MS, 7, "note".into());
+        assert_eq!(q.next_in(1000), Some(SECOND_PASTE_DELAY_MS));
+        assert!(q.take_due(1000).is_empty(), "not in the same instant as the first paste");
+        assert!(q.take_due(1000 + SECOND_PASTE_DELAY_MS - 1).is_empty());
+        assert_eq!(q.next_in(1000 + SECOND_PASTE_DELAY_MS - 1), Some(1));
+        assert_eq!(q.take_due(1000 + SECOND_PASTE_DELAY_MS), vec![(7, "note".to_string())]);
+        assert_eq!(q.next_in(2000), None);
+        assert!(q.take_due(9999).is_empty(), "delivered once");
+    }
+
+    #[test]
+    fn the_delay_is_long_enough_to_be_two_pastes() {
+        // The measured gap that was the defect: 0 ms in one path, 12 in the other.
+        assert!(SECOND_PASTE_DELAY_MS >= 100);
+    }
+
+    #[test]
+    fn each_entry_keeps_its_own_target_and_its_own_time() {
+        let mut q: Later<u64> = Later::new();
+        q.push(1000, 150, 7, "for seven".into());
+        q.push(1100, 150, 9, "for nine".into());
+        assert_eq!(q.next_in(1000), Some(150), "the timer is set for the nearest, not the furthest");
+        assert_eq!(q.take_due(1150), vec![(7, "for seven".to_string())]);
+        assert_eq!(q.next_in(1150), Some(100));
+        assert_eq!(q.take_due(1250), vec![(9, "for nine".to_string())]);
+    }
+
+    #[test]
+    fn everything_due_comes_out_in_the_order_it_went_in() {
+        let mut q: Later<u64> = Later::new();
+        q.push(1000, 150, 7, "a".into());
+        q.push(1001, 150, 7, "b".into());
+        q.push(5000, 150, 8, "later".into());
+        assert_eq!(q.take_due(3000), vec![(7, "a".to_string()), (7, "b".to_string())]);
+        assert_eq!(q.next_in(3000), Some(2150));
+        assert_eq!(q.next_in(6000), Some(0), "overdue is due now, not a negative wait");
     }
 
     #[test]

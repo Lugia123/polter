@@ -24,6 +24,23 @@ pub struct Mods {
 impl Mods {
     pub const NONE: Mods = Mods { ctrl: false, shift: false, alt: false, win: false };
     pub const CTRL_SHIFT: Mods = Mods { ctrl: true, shift: true, alt: false, win: false };
+
+    /// The modifiers by name, joined with `+`, in the order the setting's
+    /// documentation lists them: `ctrl+shift`, `alt`, `shift+super`. `none`
+    /// when there are none. For log lines, so one that reports a trigger
+    /// names the modifiers it was actually made with.
+    pub fn label(&self) -> String {
+        let names: Vec<&str> = [(self.shift, "shift"), (self.ctrl, "ctrl"), (self.alt, "alt"), (self.win, "super")]
+            .into_iter()
+            .filter_map(|(on, name)| on.then_some(name))
+            .collect();
+        match names.as_slice() {
+            [] => "none".to_string(),
+            // The one everybody says the other way round.
+            ["shift", "ctrl"] => "ctrl+shift".to_string(),
+            _ => names.join("+"),
+        }
+    }
 }
 
 /// What `screenshot-mouse-trigger` asks for.
@@ -306,6 +323,19 @@ mod tests {
         let mut d = Detector::new();
         d.press(cs(1000, 50, 50), &rule);
         assert_eq!(d.press(cs(1100, 50, 50), &rule), Verdict::Pass);
+    }
+
+    #[test]
+    fn modifiers_are_named_as_they_are() {
+        assert_eq!(Mods::CTRL_SHIFT.label(), "ctrl+shift");
+        assert_eq!(Mods { alt: true, ..Mods::NONE }.label(), "alt");
+        assert_eq!(Mods { ctrl: true, ..Mods::NONE }.label(), "ctrl");
+        assert_eq!(Mods { shift: true, ..Mods::NONE }.label(), "shift");
+        assert_eq!(Mods { win: true, ..Mods::NONE }.label(), "super");
+        assert_eq!(Mods { shift: true, win: true, ..Mods::NONE }.label(), "shift+super");
+        assert_eq!(Mods { ctrl: true, alt: true, ..Mods::NONE }.label(), "ctrl+alt");
+        assert_eq!(Mods { ctrl: true, shift: true, alt: true, win: true }.label(), "shift+ctrl+alt+super");
+        assert_eq!(Mods::NONE.label(), "none");
     }
 
     #[test]

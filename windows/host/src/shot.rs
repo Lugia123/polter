@@ -36,16 +36,17 @@
 //! returns an [`Act`], and performs it with the borrow released.
 
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use polter_shots::annot::{self, Annotation, Labels, Meta, Source};
 use polter_shots::dclick::{Detector, Mods, Press, Rule, Setting, Verdict};
 use polter_shots::geom::{self, Handle, Hit, Point, Rect};
 use polter_shots::name::Stamp;
+use polter_shots::overlay::{self, Key};
+use polter_shots::paste::{Later, SECOND_PASTE_DELAY_MS};
 use windows::core::{w, PWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, GlobalFree, COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
@@ -64,7 +65,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, GetDoubleClickTime, RegisterHotKey, ReleaseCapture, SetCapture, SetFocus,
+    GetAsyncKeyState, GetDoubleClickTime, GetKeyState, RegisterHotKey, ReleaseCapture, SetCapture, SetFocus,
     UnregisterHotKey, MOD_NOREPEAT, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RETURN, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -77,10 +78,9 @@ use crate::plogf;
 /// own, so the two could not collide even if they were equal.
 const HOTKEY_ID: i32 = 0xB1;
 
-/// Posted to the control window. `WM_APP + 33` and `+ 34`, free when written
+/// Posted to the control window. `WM_APP + 33`, free when written
 /// (`grep 'WM_APP +'`) -- and private to this window class in any case.
 const WM_SHOT_MOUSE: u32 = WM_APP + 33;
-const WM_SHOT_NOTE: u32 = WM_APP + 34;
 
 /// `CF_DIB`, numerically, as in `shots.rs`.
 const CF_DIB: u32 = 8;
@@ -171,9 +171,10 @@ struct Session {
     colour: usize,
     drag: Drag,
     editing: Option<Editing>,
-    /// The pane window that had the keyboard when the shot was triggered, if
-    /// Polter was the foreground application -- where the result is sent.
-    origin_pane: Option<isize>,
+    /// The id of the pane that had the keyboard when the shot was triggered,
+    /// if Polter was the foreground application -- where the result is sent.
+    /// An id rather than a window: ids are never reused, window handles are.
+    origin_pane: Option<u64>,
     prev_fg: HWND,
 }
 
@@ -187,16 +188,16 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static CONTROL: AtomicIsize = AtomicIsize::new(0);
 /// The mouse trigger's modifiers as bits (see `mods_bits`); 0 is off.
 static MOUSE_TRIGGER: AtomicU8 = AtomicU8::new(0);
-/// Annotation lines waiting to be pasted, each after its image's path.
-static NOTES: Mutex<VecDeque<(NoteTarget, String)>> = Mutex::new(VecDeque::new());
-
-#[derive(Clone, Copy)]
-enum NoteTarget {
-    /// A pane id, from the clipboard callback.
-    Pane(u64),
-    /// A pane window.
-    Hwnd(isize),
-}
+/// Annotation lines waiting to be pasted, each a while after its image's
+/// path and each addressed to a pane **by id**. A pane id comes out of one
+/// counter and is never handed out twice, so a pane closed while its line
+/// waits resolves to nothing; it cannot resolve to a different pane.
+static NOTES: Mutex<Later<u64>> = Mutex::new(Later::new());
+/// The control window's timer for `NOTES`.
+const TIMER_NOTES: usize = 1;
+/// How many `[shot] key` lines have been written (see `log_key`).
+static KEYS_LOGGED: AtomicU32 = AtomicU32::new(0);
+const KEY_LOG_CAP: u32 = 200;
 
 fn with<R>(f: impl FnOnce(&mut Session) -> R) -> Option<R> {
     SESSION.with(|s| s.try_borrow_mut().ok().and_then(|mut s| s.as_mut().map(f)))
@@ -419,7 +420,7 @@ fn start_hook() {
             // process-wide: one mouse hook for the whole process
             Ok(_) => plogf!("[shot] mouse hook installed on its own thread"),
             // process-wide: one mouse hook for the whole process
-            Err(e) => plogf!("[shot] mouse hook NOT installed ({e}); ctrl+shift double click will not work"),
+            Err(e) => plogf!("[shot] mouse hook NOT installed ({e}); the mouse trigger will not work"),
         }
         if hook.is_err() {
             return;
@@ -486,10 +487,13 @@ unsafe extern "system" fn hook_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LRESUL
                 let v = DETECTOR.with(|d| d.borrow_mut().press(press, &rule));
                 if v == Verdict::Trigger {
                     let control = HWND(CONTROL.load(Ordering::Acquire) as *mut c_void);
+                    // x in the low half, and in the high half the modifier
+                    // bits this press was matched against -- so the line
+                    // that reports the trigger names what was actually held.
                     let _ = PostMessageW(
                         Some(control),
                         WM_SHOT_MOUSE,
-                        WPARAM(ev.pt.x as u32 as usize),
+                        WPARAM((bits as usize) << 32 | ev.pt.x as u32 as usize),
                         LPARAM(ev.pt.y as isize),
                     );
                 }
@@ -514,12 +518,13 @@ unsafe extern "system" fn control_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
         }
         WM_SHOT_MOUSE => {
             let at = Point::new(wp.0 as u32 as i32, lp.0 as i32);
+            let mods = bits_mods((wp.0 >> 32) as u8);
             // process-wide: the mouse trigger fires whatever is under the pointer
-            plogf!("[shot] ctrl+shift double click at ({},{})", at.x, at.y);
+            plogf!("[shot] {} double click at ({},{})", mods.label(), at.x, at.y);
             begin(Some(at));
             LRESULT(0)
         }
-        WM_SHOT_NOTE => {
+        WM_TIMER if wp.0 == TIMER_NOTES => {
             paste_notes();
             LRESULT(0)
         }
@@ -527,40 +532,74 @@ unsafe extern "system" fn control_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
     }
 }
 
-/// Queue an annotation line to be pasted into a pane once the paste that is
-/// in progress has finished. Called from the clipboard callback when a paste
-/// reuses a screenshot that has annotations.
-pub fn paste_note_later(pane: u64, note: String) {
-    queue_note(NoteTarget::Pane(pane), note);
+fn tick_ms() -> u64 {
+    unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
 }
 
-fn queue_note(target: NoteTarget, note: String) {
-    NOTES.lock().unwrap_or_else(|e| e.into_inner()).push_back((target, note));
+/// Queue an annotation line to be pasted into pane `pane`,
+/// `SECOND_PASTE_DELAY_MS` from now -- the second of the two pastes, kept
+/// apart from the first so the program in the terminal reads them apart.
+///
+/// Called after a screenshot's path has been pasted, and from the clipboard
+/// callback when a paste made by hand reuses a screenshot that has
+/// annotations.
+pub fn paste_note_later(pane: u64, note: String) {
+    let now = tick_ms();
+    NOTES.lock().unwrap_or_else(|e| e.into_inner()).push(now, SECOND_PASTE_DELAY_MS, pane, note);
+    arm_notes_timer(now);
+}
+
+/// Set the control window's timer for the next line due, or stop it when
+/// none is waiting.
+fn arm_notes_timer(now: u64) {
     let control = HWND(CONTROL.load(Ordering::Acquire) as *mut c_void);
-    if control.0.is_null() || unsafe { PostMessageW(Some(control), WM_SHOT_NOTE, WPARAM(0), LPARAM(0)) }.is_err() {
-        // process-wide: the queue belongs to the process, not to a window
-        plogf!("[shot] an annotation line could not be queued for pasting: no control window");
+    let next = NOTES.lock().unwrap_or_else(|e| e.into_inner()).next_in(now);
+    unsafe {
+        match next {
+            None => {
+                let _ = KillTimer(Some(control), TIMER_NOTES);
+            }
+            // At least a millisecond: a timer of 0 is rounded up by the
+            // system anyway, and this says so.
+            Some(wait) => {
+                // absence: means it was not reached -- the timer was set, and
+                // the line's own `annotation line pasted` (or `not pasted`)
+                // follows when it fires
+                if control.0.is_null() || SetTimer(Some(control), TIMER_NOTES, wait.clamp(1, 60_000) as u32, None) == 0 {
+                    // process-wide: the queue belongs to the process, not to a window
+                    plogf!(
+                        "[shot] the timer for an annotation line could not be set (err={}); the line \
+                         stays queued and is not pasted",
+                        GetLastError().0
+                    );
+                }
+            }
+        }
     }
 }
 
-/// The second paste: the line describing the annotations, after the path.
+/// The second paste: every annotation line that has fallen due, each into
+/// the pane it was queued for and no other.
+///
+/// **The pane is looked up again now, by id.** If it was closed while the
+/// line waited there is no surface and the line is dropped, with a line here
+/// saying so. Which pane has the keyboard by now is not asked: the line
+/// belongs with the path, and goes where the path went.
 fn paste_notes() {
-    loop {
-        let next = NOTES.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
-        let Some((target, note)) = next else { return };
-        let (surface, what) = match target {
-            NoteTarget::Pane(id) => (crate::tabs::surface_of_pane(id), format!("pane={id}")),
-            NoteTarget::Hwnd(h) => (crate::tabs::surface_of(HWND(h as *mut c_void)), format!("pane window {h:#x}")),
-        };
+    let now = tick_ms();
+    let due = NOTES.lock().unwrap_or_else(|e| e.into_inner()).take_due(now);
+    for (pane, note) in due {
+        let surface = crate::tabs::surface_of_pane(pane);
         if surface.is_null() {
             // process-wide: the pane this was for has gone, so there is no window to name
-            plogf!("[shot] annotation line for {what} not pasted: that pane has no surface any more");
+            plogf!("[shot] annotation line for pane={pane} not pasted: that pane was closed while it waited");
             continue;
         }
         unsafe { (crate::api().surface_text)(surface, note.as_ptr() as *const _, note.len()) };
-        // process-wide: reported by pane, which is unique in the process
-        plogf!("[shot] annotation line pasted into {what}: {} chars", note.chars().count());
+        // process-wide: reported by pane id, which is unique in the process
+        plogf!("[shot] annotation line pasted into pane={pane}: {} chars", note.chars().count());
     }
+    arm_notes_timer(now);
 }
 
 // ------------------------------------------------------------ the freeze
@@ -631,7 +670,8 @@ fn begin(preselect: Option<Point>) {
         let origin_pane = crate::tabs::is_frame(prev_fg)
             .then(|| crate::tabs::active_pane_hwnd(prev_fg))
             .flatten()
-            .map(|h| h.0 as isize);
+            .and_then(crate::tabs::pane_of)
+            .map(|(_, _, id)| id);
 
         // The windows first, in z-order, **before any overlay exists** -- so
         // the list cannot contain one, and "the topmost window under the
@@ -1266,6 +1306,54 @@ fn step_back(s: &mut Session) -> Act {
     }
 }
 
+/// The modifiers as they were when the key message being handled was made.
+///
+/// **`GetKeyState`, not `GetAsyncKeyState`, and that is the whole of defect
+/// D1 (task 1085).** `GetKeyState` is the keyboard as of the message this
+/// thread is processing; `GetAsyncKeyState` is the keyboard right now. For a
+/// chord pressed and released faster than this thread gets to it -- every
+/// injected `Ctrl+Z`, and a real one behind a slow repaint -- "right now"
+/// already has Ctrl up, and the `Z` was taken for a bare `Z`. Every other key
+/// handler in this host reads `GetKeyState`; the hook (`held`) is the one
+/// place the asynchronous state is the right one, because a low-level hook
+/// runs before the event reaches any thread's synchronised state.
+fn key_mods() -> Mods {
+    let down = |vk: u16| unsafe { GetKeyState(vk as i32) } < 0;
+    Mods {
+        ctrl: down(VK_CONTROL.0),
+        shift: down(VK_SHIFT.0),
+        alt: down(VK_MENU.0),
+        win: down(VK_LWIN.0) || down(VK_RWIN.0),
+    }
+}
+
+/// One line per key the overlay receives: which key, the modifiers the
+/// decision was made with, and what was decided.
+///
+/// `async_ctrl` is the reading the decision is *not* made with, printed
+/// beside the one it is: where the two differ, this line is the evidence for
+/// D1's cause (`ctrl=true async_ctrl=false` on a chord that arrived late).
+fn log_key(vk: u16, mods: Mods, does: Key, annotations: usize) {
+    // absence: depends -- after KEY_LOG_CAP lines in one process it means
+    // nothing, and the cap's own line says when that happened; before it, no
+    // line means the overlay's window procedure was not sent a WM_KEYDOWN
+    // (the key went to the text box, to another window, or was not delivered)
+    let n = KEYS_LOGGED.fetch_add(1, Ordering::Relaxed) + 1;
+    if n <= KEY_LOG_CAP {
+        // process-wide: the overlay is not a terminal window
+        plogf!(
+            "[shot] key vk=0x{vk:02x} mods={} async_ctrl={} annotations={annotations} -> {}",
+            mods.label(),
+            held(VK_CONTROL.0),
+            does.label()
+        );
+    }
+    if n == KEY_LOG_CAP {
+        // process-wide: about the log, not a window
+        plogf!("[shot] key: reached the {KEY_LOG_CAP} line cap; further keys are handled but not printed");
+    }
+}
+
 fn point_of(hwnd: HWND, lp: LPARAM) -> Option<Point> {
     let (x, y) = ((lp.0 & 0xFFFF) as i16 as i32, ((lp.0 >> 16) & 0xFFFF) as i16 as i32);
     with(|s| s.mons.iter().find(|m| m.hwnd == hwnd).map(|m| Point::new(x + m.rect.x, y + m.rect.y))).flatten()
@@ -1322,17 +1410,18 @@ unsafe extern "system" fn overlay_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
         WM_CLOSE => Some(Act::Cancel),
         WM_KEYDOWN => {
             let vk = wp.0 as u16;
-            let ctrl = unsafe { GetAsyncKeyState(VK_CONTROL.0 as i32) } < 0;
+            let mods = key_mods();
             with(|s| {
-                if vk == VK_ESCAPE.0 {
-                    Act::Cancel
-                } else if vk == VK_RETURN.0 && s.sel.is_some() {
-                    Act::Finish
-                } else if ctrl && vk == b'Z' as u16 {
-                    s.items.pop();
-                    Act::Repaint
-                } else {
-                    Act::None
+                let does = overlay::key(vk, mods, s.sel.is_some());
+                log_key(vk, mods, does, s.items.len());
+                match does {
+                    Key::Cancel => Act::Cancel,
+                    Key::Finish => Act::Finish,
+                    Key::Undo => {
+                        s.items.pop();
+                        Act::Repaint
+                    }
+                    Key::Ignored => Act::None,
                 }
             })
         }
@@ -1686,17 +1775,20 @@ fn finish() {
         plogf!("[shot] Polter was not the foreground application when this started; nothing pasted");
         return;
     };
-    let surface = crate::tabs::surface_of(HWND(pane as *mut c_void));
+    let surface = crate::tabs::surface_of_pane(pane);
     if surface.is_null() {
         // process-wide: the pane this was for has gone, so there is no window to name
-        plogf!("[shot] the pane that had the keyboard ({pane:#x}) has no surface any more; nothing pasted");
+        plogf!("[shot] the pane that had the keyboard (pane={pane}) was closed meanwhile; nothing pasted");
         return;
     }
     let text = polter_droppath::quote(&path.to_string_lossy());
     unsafe { (crate::api().surface_text)(surface, text.as_ptr() as *const _, text.len()) };
-    // process-wide: reported by pane window, which is unique in the process
-    plogf!("[shot] path pasted into pane window {pane:#x}: {text:?}; annotation line to follow: {}", note.is_some());
+    // process-wide: reported by pane id, which is unique in the process
+    plogf!(
+        "[shot] path pasted into pane={pane}: {text:?}; annotation line to follow in {SECOND_PASTE_DELAY_MS} ms: {}",
+        note.is_some()
+    );
     if let Some(note) = note {
-        queue_note(NoteTarget::Hwnd(pane), note);
+        paste_note_later(pane, note);
     }
 }

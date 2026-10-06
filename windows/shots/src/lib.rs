@@ -16,6 +16,7 @@
 //! | [`geom`] | selections, monitors, windows, handles: where things are |
 //! | [`annot`] | annotations as data: the sidecar `.json` and the pasted line |
 //! | [`dclick`] | the mouse trigger: a double click with modifiers held |
+//! | [`overlay`] | what a key does while the frozen screen is up |
 
 pub mod annot;
 pub mod dclick;
@@ -23,6 +24,7 @@ pub mod dib;
 pub mod encode;
 pub mod geom;
 pub mod name;
+pub mod overlay;
 pub mod paste;
 pub mod store;
 pub mod sweep;
