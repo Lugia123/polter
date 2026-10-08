@@ -1170,6 +1170,13 @@ pub(crate) struct Gdi;
 
 impl Measure for Gdi {
     fn text(&self, text: &str, font_px: i32) -> (i32, i32) {
+        // Nothing to measure is nothing: `DrawTextW` is given a counted
+        // slice, and for an empty one (a dangling pointer, a count of 0)
+        // `USER32` on Windows 11 build 26200 reads through the pointer --
+        // the access violation of task 1199.
+        if text.is_empty() {
+            return (0, 0);
+        }
         unsafe {
             let dc = CreateCompatibleDC(None);
             let font = annot_font(font_px);
@@ -1338,7 +1345,7 @@ pub(crate) unsafe fn draw_items<'a>(
                     );
                 }
                 Shape::Text { at: q, text, size } => {
-                    if !hidden {
+                    if !hidden && !text.is_empty() {
                         let q = at(*q);
                         let mut rc = RECT { left: q.x, top: q.y, right: q.x + size.0, bottom: q.y + size.1 };
                         DrawTextW(hdc, &mut wide(text), &mut rc, DT_NOPREFIX | DT_NOCLIP);
@@ -1856,7 +1863,12 @@ unsafe fn draw_text_box(s: &Session, i: usize, canvas: &Canvas) {
             SetTextColor(dc, colour);
             let q = Point::new(b.x + v.origin.x, b.y + v.origin.y).relative_to(origin);
             let mut rc = RECT { left: q.x, top: q.y, right: q.x + 1, bottom: q.y + 1 };
-            DrawTextW(dc, &mut wide(&v.text), &mut rc, DT_NOPREFIX | DT_NOCLIP);
+            // An empty box (the first thing the text tool opens) has no
+            // words, and `DrawTextW` is not given a counted slice of none:
+            // see `Measure for Gdi` (task 1199).
+            if !v.text.is_empty() {
+                DrawTextW(dc, &mut wide(&v.text), &mut rc, DT_NOPREFIX | DT_NOCLIP);
+            }
             let _ = RestoreDC(dc, saved);
         };
         // The halo first, from how much of each pixel the words cover:
@@ -2417,6 +2429,7 @@ fn open_edit() {
     let (width, height) = (rect.w, rect.h);
     let initial: Vec<u16> = tb.text.replace('\n', "\r\n").encode_utf16().chain(Some(0)).collect();
     unsafe {
+        crumb(&format!("creating (class {})", if TEXT_CLASS.load(Ordering::Acquire) { "PolterShotText" } else { "EDIT" }));
         let edit = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             // `EDIT` itself only if the class could not be made.
@@ -2431,7 +2444,9 @@ fn open_edit() {
             height,
             Some(parent),
             None,
-            None,
+            // The module the class was registered with (`register_text_class`),
+            // not "whichever": a class of the process is looked up by it.
+            Some(GetModuleHandleW(None).unwrap_or_default().into()),
             None,
         );
         let Ok(edit) = edit else {
@@ -2440,10 +2455,14 @@ fn open_edit() {
             commit_edit();
             return;
         };
+        crumb("created; font");
         let font = annot_font(font_px);
         SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        crumb("margins");
         no_margins(edit);
+        crumb("region");
         hide_box(edit, rect);
+        crumb("subclass");
         let prev = SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_proc as *const () as isize);
         SetWindowLongPtrW(edit, GWLP_USERDATA, prev);
         // The caret after what is already there.
@@ -2476,6 +2495,15 @@ fn open_edit() {
         );
     }
     repaint();
+}
+
+/// One line in the log before a step of opening the text box that goes into
+/// the system, so a crash inside the system (task 1199: an access violation
+/// in `USER32` on a first run on Windows 11 build 26200) is placed by the
+/// last line written, which is flushed on its own, instead of by a dump.
+fn crumb(step: &str) {
+    // process-wide: the overlay is not a terminal window
+    plogf!("[shot] text box: {step}");
 }
 
 /// The text's colour or size changed while it is being typed: the box
@@ -2587,8 +2615,11 @@ unsafe fn no_margins(edit: HWND) {
 /// rather than leaving it to be seen.
 unsafe fn hide_box(edit: HWND, rect: Rect) {
     unsafe {
-        // The system owns a region once it is set.
-        let _ = SetWindowRgn(edit, Some(CreateRectRgn(0, 0, 0, 0)), true);
+        // The system owns a region once it is set. No redraw: a box with
+        // nothing in its region has nothing to repaint, and the redraw is a
+        // paint of a control that has just been created.
+        let _ = SetWindowRgn(edit, Some(CreateRectRgn(0, 0, 0, 0)), false);
+        crumb("region set; asking whether it draws");
         let visible = |dc: HDC, r: Rect| {
             let rc = RECT { left: r.x, top: r.y, right: r.right(), bottom: r.bottom() };
             !dc.is_invalid() && RectVisible(dc, &rc).as_bool()
@@ -2596,6 +2627,7 @@ unsafe fn hide_box(edit: HWND, rect: Rect) {
         let own = GetDC(Some(edit));
         let box_draws = visible(own, Rect::new(0, 0, rect.w, rect.h));
         ReleaseDC(Some(edit), own);
+        crumb("asking the parent's view");
         let parent = GetParent(edit).unwrap_or_default();
         let mut origin = POINT::default();
         let _ = ClientToScreen(parent, &mut origin);
@@ -2871,6 +2903,13 @@ fn commit_edit() {
     repaint();
 }
 
+/// Whether `hwnd` is the text box the session holds. `commit_edit` takes it
+/// out of the session before it destroys the window, so for a box that is
+/// being destroyed (up to and including `WM_NCDESTROY`) this is false.
+fn is_live_edit(hwnd: HWND) -> bool {
+    with(|s| s.edit.as_ref().is_some_and(|e| e.hwnd == hwnd)).unwrap_or(false)
+}
+
 /// Ctrl+Enter and Escape end the typing and keep it; so does losing the
 /// keyboard. Plain Enter is a line break and is the control's own. While an
 /// input method is composing, Escape reaches the IME and not this procedure
@@ -2907,16 +2946,25 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         // ISC_SHOWUICOMPOSITIONWINDOW: the system is not to show one.
         let lp = if msg == WM_IME_SETCONTEXT { LPARAM(lp.0 & !0x8000_0000isize) } else { lp };
         match msg {
+            // A box being destroyed (`commit_edit` has already taken it from
+            // the session) is not asked about, and asks nothing: no context
+            // of the input method is taken on a window on its way out.
             WM_IME_STARTCOMPOSITION => {
-                place_ime(hwnd);
+                if is_live_edit(hwnd) {
+                    place_ime(hwnd);
+                }
                 return LRESULT(0);
             }
             WM_IME_COMPOSITION => {
-                ime_composition(hwnd, lp.0 as u32);
+                if is_live_edit(hwnd) {
+                    ime_composition(hwnd, lp.0 as u32);
+                }
                 return LRESULT(0);
             }
             WM_IME_ENDCOMPOSITION => {
-                ime_composition(hwnd, 0);
+                if is_live_edit(hwnd) {
+                    ime_composition(hwnd, 0);
+                }
                 return LRESULT(0);
             }
             // Where is the character being composed? At the caret the
@@ -2941,8 +2989,10 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             WM_ERASEBKGND if !TEXT_CLASS.load(Ordering::Acquire) => return LRESULT(1),
             _ => {}
         }
-        let f: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT = std::mem::transmute(prev);
-        let r = f(hwnd, msg, wp, lp);
+        // Not a call through the number: what `GWLP_WNDPROC` hands back is
+        // for `CallWindowProcW`, which knows whether it is an address.
+        let prev: WNDPROC = std::mem::transmute(prev);
+        let r = CallWindowProcW(prev, hwnd, msg, wp, lp);
         // Whatever may have added or removed a line: a key, a character, a
         // paste, a cut, an undo. The box follows what is in it (`fit_edit`
         // does nothing when nothing changed).

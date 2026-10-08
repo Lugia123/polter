@@ -282,7 +282,12 @@ impl Editor {
         let min_w = textbox::min_width(font, mon.scale);
         let line = self.text_line(t.level, m);
         let lines = textbox::lines(&text.replace("\r\n", "\n"));
-        let widest = text.split('\n').map(|l| m.text(l.trim_end_matches('\r'), font).0).max().unwrap_or(0);
+        // **An empty line is not measured** (task 1199): the host's `Measure`
+        // hands the text to `DrawTextW` as a counted slice, and for an empty
+        // one that is a dangling pointer and a count of 0 -- which `USER32`
+        // on Windows 11 build 26200 reads through. The first click of the
+        // text tool opens an empty box, so this was the first thing it did.
+        let widest = text.split('\n').map(|l| l.trim_end_matches('\r')).filter(|l| !l.is_empty()).map(|l| m.text(l, font).0).max().unwrap_or(0);
         let content_w = textbox::width_for(widest, min_w, font);
         Some(textbox::rect(self.text_start(t, lines, line), lines, line, content_w, min_w, s.rect, mon.rect, &self.text_keep_clear()))
     }
@@ -690,7 +695,7 @@ impl Editor {
             // Text takes a different amount of room at a different size.
             let font = style::font_px(level, scale);
             match &mut item.shape {
-                Shape::Text { text, size, .. } => *size = m.text(text, font),
+                Shape::Text { text, size, .. } if !text.is_empty() => *size = m.text(text, font),
                 Shape::Number { text, size, .. } if !text.is_empty() => *size = m.text(text, font),
                 _ => {}
             }
@@ -1331,6 +1336,19 @@ mod tests {
             let lines: Vec<&str> = text.split('\n').collect();
             let widest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as i32;
             (widest * 10, lines.len() as i32 * font_px)
+        }
+    }
+
+    /// A `Measure` that refuses what the host's cannot do (task 1199): the
+    /// host hands the text to `DrawTextW` as a counted slice, and for an
+    /// empty one that is a dangling pointer and a count of 0, which `USER32`
+    /// on Windows 11 build 26200 reads through -- an access violation on
+    /// the first click of the text tool.
+    struct NotEmpty;
+    impl Measure for NotEmpty {
+        fn text(&self, text: &str, font_px: i32) -> (i32, i32) {
+            assert!(!text.is_empty(), "the host's measure was asked for an empty text");
+            Fake.text(text, font_px)
         }
     }
 
@@ -2576,6 +2594,26 @@ mod tests {
         type_text(&mut e, "ok");
         assert_eq!((e.items()[0].colour, e.items()[0].level), (3, 4));
         assert!(e.number_in_edit().is_none());
+    }
+
+    /// #1199: opening the text box measures what is in it, and an empty box
+    /// -- the first thing the text tool opens -- and empty lines in a box
+    /// are measured as nothing, never handed to the host's measure.
+    #[test]
+    fn an_empty_text_box_is_placed_without_measuring_an_empty_text() {
+        let mut e = selected();
+        press(&mut e, Button::Tool(Tool::Text));
+        // The click itself, with the strict measure: the editor is given
+        // the host's measure on every press.
+        e.pointer_down(P(500, 300), NONE, &NotEmpty);
+        e.pointer_up(P(500, 300));
+        assert!(e.text_box().is_some(), "the click opens a box");
+        for text in ["", "\n", "a\n\nb", "\r\n", "x\r\n"] {
+            assert!(e.text_rect(text, &NotEmpty).is_some(), "{text:?}");
+        }
+        // The measure that refuses empty text is what is asserted on: with
+        // the filter taken out of `text_rect` this test is red there.
+        assert_eq!(e.text_rect("", &NotEmpty), e.text_rect("", &Fake));
     }
 
     /// #1197 item 5: the toolbar is held by its plate and dragged; it stays

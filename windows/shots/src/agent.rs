@@ -221,7 +221,7 @@ pub fn items(raw: &[Raw], origin: Point, scale: f64, m: &dyn Measure) -> Result<
             "text" => {
                 let level = font()?;
                 let text = text();
-                let size = m.text(&text, style::font_px(level, scale));
+                let size = if text.is_empty() { (0, 0) } else { m.text(&text, style::font_px(level, scale)) };
                 (Shape::Text { at: point_of(&v["at"], &what("at"))?, text, size }, level, true)
             }
             "number" => {
