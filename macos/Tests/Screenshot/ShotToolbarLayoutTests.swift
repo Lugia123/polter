@@ -16,12 +16,12 @@ struct ShotToolbarLayoutTests {
 
     private func same(_ s: String) -> String { s }
 
-    @Test func theFirstRowIsTheSpecifiedFifteenInOrder() {
+    @Test func theFirstRowIsTheSpecifiedSixteenInOrder() {
         let l = layout(.none)
         var expected = AnnotationTool.allCases.map(ToolbarButton.tool)
-        expected += [.undo, .redo, .long, .cancel, .done]
+        expected += [.undo, .redo, .long, .save, .cancel, .done]
         #expect(l.buttons.map(\.button) == expected)
-        #expect(expected.count == 15)
+        #expect(expected.count == 16)
         #expect(AnnotationTool.allCases.first == .select)
         #expect(zip(l.buttons, l.buttons.dropFirst()).allSatisfy { $0.rect.right <= $1.rect.x },
                 "left to right, not overlapping")
@@ -32,9 +32,9 @@ struct ShotToolbarLayoutTests {
         let l = layout(.none)
         func x(_ b: ToolbarButton) -> Int { l.rect(of: b)?.x ?? .min }
         let size = Grid.footprint(scale: 1)
-        #expect(size.w == 2 * 6 + 15 * 28 + 10 * 4 + 4 * 12)
+        #expect(size.w == 2 * 6 + 16 * 28 + 11 * 4 + 4 * 12)
         #expect(size.h == 2 * 40, "two rows and nothing between them: one plate")
-        #expect(l.bar == PixelRect(selection.right - 520, selection.bottom + 8, 520, 40))
+        #expect(l.bar == PixelRect(selection.right - 552, selection.bottom + 8, 552, 40))
         #expect(l.rect(of: .tool(.select)) == PixelRect(l.bar.x + 6, l.bar.y + 6, 28, 28))
         // Select | Rectangle: a group gap. Rectangle, Ellipse: an ordinary one.
         #expect(x(.tool(.rect)) - x(.tool(.select)) == 28 + 12)
@@ -42,7 +42,8 @@ struct ShotToolbarLayoutTests {
         #expect(x(.undo) - x(.tool(.mosaic)) == 28 + 12)
         #expect(x(.redo) - x(.undo) == 28 + 4)
         #expect(x(.long) - x(.redo) == 28 + 12)
-        #expect(x(.cancel) - x(.long) == 28 + 12)
+        #expect(x(.save) - x(.long) == 28 + 4, "Save is beside Long Screenshot, in its group")
+        #expect(x(.cancel) - x(.save) == 28 + 12)
         #expect(x(.done) - x(.cancel) == 28 + 4)
         let done = try #require(l.rect(of: .done))
         #expect(done.right == l.bar.right - 6, "the last button ends at the padding")
@@ -53,7 +54,7 @@ struct ShotToolbarLayoutTests {
         let l = layout(.stroke, scale: 1.5)
         #expect(l.rect(of: .tool(.select))?.w == 42)
         #expect(l.rect(of: .colour(0))?.w == 42, "a colour is a cell like any other")
-        #expect(Grid.footprint(scale: 1.5).w == 2 * 9 + 15 * 42 + 10 * 6 + 4 * 18)
+        #expect(Grid.footprint(scale: 1.5).w == 2 * 9 + 16 * 42 + 11 * 6 + 4 * 18)
         #expect(Grid.footprint(scale: 1.5).h == 2 * 60)
         #expect(l.bar.y == selection.bottom + 12)
     }
@@ -78,7 +79,7 @@ struct ShotToolbarLayoutTests {
         #expect(row.y == l.bar.bottom, "one plate: the second row starts where the first ends")
         #expect(row.h == 40)
         #expect(row.w == l.bar.w, "as wide as the first row whatever it holds")
-        #expect(l.plate == PixelRect(l.bar.x, l.bar.y, 520, 80))
+        #expect(l.plate == PixelRect(l.bar.x, l.bar.y, 552, 80))
         #expect(layout(.none).plate == layout(.none).bar)
         for placed in l.buttons {
             switch placed.button {

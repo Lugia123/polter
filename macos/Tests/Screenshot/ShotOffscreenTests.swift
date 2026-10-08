@@ -212,8 +212,16 @@ final class ShotStage {
     /// picture.
     func differing(_ pixels: [UInt8], in r: CGRect) -> Int {
         var n = 0
+        // The magnifier hangs beside the pointer while a region is being
+        // chosen, over whatever is there: it is furniture, not the picture
+        // these are asked about.
+        let m = ShotChrome.margins(scale: scale)
+        let furniture = session.magnifierPlate(on: 0).map {
+            PixelRect(left: $0.x - m.x, top: $0.y - m.top, right: $0.right + m.x, bottom: $0.bottom + m.bottom)
+        }
         for y in Int(r.minY * scale)..<Int(r.maxY * scale) {
             for x in Int(r.minX * scale)..<Int(r.maxX * scale) {
+                if let furniture, furniture.contains(PixelPoint(x, y)) { continue }
                 let i = (y * width + x) * 4
                 if pixels[i] != frozen[i] || pixels[i + 1] != frozen[i + 1] || pixels[i + 2] != frozen[i + 2] { n += 1 }
             }
@@ -772,17 +780,17 @@ struct ShotOffscreenTextBoxTests {
             // The line: the row two points above the box, to its right of
             // the corner. Pieces of dark and light, each eight pixels.
             let y = Int(box.minY * s.scale) - 5
-            let x0 = Int(box.minX * s.scale) + 40
+            let x0 = Int(box.minX * s.scale) + 12
             let ground = luma(s.at(s.frozen, Double(x0) / s.scale, Double(y) / s.scale))
             var lengths: [Int] = []
             var run = 0
-            for x in x0..<(x0 + 160) {
+            for x in x0..<(Int(box.maxX * s.scale) - 12) {
                 let l = luma(s.at(p, Double(x) / s.scale, Double(y) / s.scale))
                 if abs(l - ground) > 60 { run += 1 } else if run > 0 { lengths.append(run); run = 0 }
             }
             // The first and last may be cut by where the row starts.
             let whole = lengths.dropFirst().dropLast()
-            #expect(whole.count >= 7 && whole.allSatisfy { $0 == 8 }, "\(dark ? "dark" : "light"): \(lengths)")
+            #expect(whole.count >= 4 && whole.allSatisfy { $0 == 8 }, "\(dark ? "dark" : "light"): \(lengths)")
             runs[dark] = Array(whole)
             // Nothing of the accent: there are no corner marks.
             for dy in -12..<Int(box.height * s.scale) + 12 {
@@ -1250,5 +1258,486 @@ struct ShotBenchTests {
         line("the glass under a 1040 x 160 px plate", plate)
         line("one frame, whole display, into a bitmap (allocating it included)", whole)
         line("one frame, dirty rectangle 1640 x 1040 px, into a bitmap (allocating it included)", part)
+    }
+}
+
+/// What the screenshot looks like before and while a region is dragged out
+/// (task 1196, 6 and 8).
+@MainActor
+struct ShotOffscreenFirstFrameTests {
+    @Test func theFirstFrameAlreadyHasTheWindowUnderThePointerInFocus() throws {
+        // The pointer is over the dark window the moment the picture is up:
+        // no mouse move has been made. (Cocoa's coordinates: the screen is
+        // 700 points tall and y runs upwards.)
+        let seeded = try ShotStage()
+        seeded.session.seedPointer(atCocoa: CGPoint(x: 900, y: 700 - 300), primaryHeight: 700)
+        seeded.session.settleFocus()
+        let hover = try #require(seeded.session.editor.hover)
+        #expect(hover.rect.w > 0 && hover.rect.h > 0)
+        let p = seeded.shot("f1-first-frame-pointer-over-dark-window")
+        #expect(seeded.differing(p, in: ShotStage.dark.insetBy(dx: 4, dy: 4)) == 0)
+        #expect(seeded.differing(p, in: ShotStage.light.insetBy(dx: 4, dy: 4)) > 1000)
+
+        // Without it the editor knows of no window under the pointer: what
+        // the screen showed until the first mouse move.
+        let unseeded = try ShotStage()
+        #expect(unseeded.session.editor.hover == nil)
+
+        // A pointer over no window: the whole display is sharp, still.
+        let bare = try ShotStage()
+        bare.session.seedPointer(atCocoa: CGPoint(x: 1180, y: 700 - 20), primaryHeight: 700)
+        bare.session.settleFocus()
+        #expect(bare.session.editor.hover == nil)
+    }
+
+    @Test func theSizeIsShownAndFollowsEveryFrameOfADrag() throws {
+        let stage = try ShotStage()
+        stage.move(100, 500)
+        stage.wait(1)
+        stage.press(100, 500)
+        stage.move(160, 540)
+        stage.wait(1)
+        _ = stage.shot("f2-size-while-dragging-small")
+        let small = try #require(stage.session.labelRects.first?.first, "a label while the region is being dragged")
+        stage.move(700, 650)
+        stage.wait(1)
+        _ = stage.shot("f3-size-while-dragging-large")
+        let large = try #require(stage.session.labelRects.first?.first)
+        #expect(large.w > small.w, "\"600 × 150\" is longer than \"60 × 40\" and the label was drawn again")
+        // It is above the region's top left corner, as the selection's is.
+        #expect(large.x == small.x && large.bottom <= 500 * 2)
+        stage.release(700, 650)
+        stage.wait(1)
+        #expect(stage.session.editor.selection != nil)
+    }
+}
+
+/// A number's sentence as it is typed: the circle follows the colour and
+/// size chosen, the box is as high as the circle is round, and as wide as
+/// what is in it (task 1196, 2, 3 and 4).
+@MainActor
+struct ShotOffscreenNumberBoxTests {
+    private func stage(colour: Int? = nil) throws -> ShotStage {
+        let stage = try ShotStage()
+        stage.move(60, 60)
+        stage.drag([(60, 60), (540, 450)])
+        try stage.click(.tool(.number))
+        stage.wait(1)
+        stage.move(200, 200)
+        stage.press(200, 200)
+        stage.release(200, 200)
+        stage.wait(1)
+        return stage
+    }
+
+    @Test func theBoxIsCentredOnTheCircleWithNothingTypedAndWithText() throws {
+        let s = try stage()
+        let empty = try #require(s.session.textBoxView).frame
+        let mid = { (r: CGRect) in (r.minY + r.maxY) / 2 }
+        #expect(abs(mid(empty) - 200) <= 1.0, "empty: the box's middle is \(mid(empty)), the circle's 200")
+        _ = s.shot("g1-number-empty-box")
+        let view = try #require(s.session.textBoxView)
+        view.text.insertText("说明文字 abc", replacementRange: NSRange(location: NSNotFound, length: 0))
+        s.wait(1)
+        let typed = try #require(s.session.textBoxView).frame
+        #expect(abs(mid(typed) - 200) <= 1.0, "typed: the box's middle is \(mid(typed))")
+        #expect(abs(mid(typed) - mid(empty)) <= 1.0, "and it did not move when text came in")
+        _ = s.shot("g2-number-typed-box")
+    }
+
+    @Test func theBoxIsNarrowWhenEmptyAndGrowsWithTheTextButNeverPastTheSelection() throws {
+        let s = try stage()
+        let view = try #require(s.session.textBoxView)
+        let empty = view.frame.width
+        let oneLine = view.frame.height
+        // Four ems of the default size, or 40 points.
+        let font = Double(ShotStyle.fontPx(level: s.session.editor.textBox?.level ?? 0, scale: s.scale)) / s.scale
+        #expect(abs(empty - max(font * 4, 40)) <= 1, "empty box is \(empty) points wide")
+        #expect(empty < 120, "and not a line across the selection")
+        view.text.insertText("hello world", replacementRange: NSRange(location: NSNotFound, length: 0))
+        s.wait(1)
+        let some = try #require(s.session.textBoxView).frame.width
+        #expect(some > empty)
+        view.text.insertText(String(repeating: "wider ", count: 40), replacementRange: NSRange(location: NSNotFound, length: 0))
+        s.wait(1)
+        let box = try #require(s.session.textBoxView).frame
+        #expect(box.maxX <= 540 + 0.5, "the selection ends at x = 540 and the box at \(box.maxX)")
+        #expect(box.maxX <= 1200)
+        #expect(box.height > oneLine * 2, "what wrapped at the selection's edge makes the box taller, not a scroll of one line")
+        _ = s.shot("g3-number-long-text-stops-at-selection")
+    }
+
+    @Test func theCircleIsDrawnInTheColourAndSizeChosenWhileTheSentenceIsTyped() throws {
+        let s = try stage()
+        let before = s.shot("g4-number-editing-before")
+        let circle = CGRect(x: 200 - 8, y: 200 - 8, width: 16, height: 16)
+        let probe = (x: 200.0, y: 200.0 - 10)
+        // The red default on the page's white; then blue and larger.
+        let read0 = s.at(before, probe.x, probe.y)
+        try s.click(.colour(3))
+        s.wait(1)
+        try s.click(.level(4))
+        s.wait(1)
+        let after = s.shot("g5-number-editing-after-colour-and-size")
+        let read1 = s.at(after, 200 - 1, 200 - 10)
+        #expect(read0 != read1 || s.differing(after, in: circle.insetBy(dx: -30, dy: -30)) > 0)
+        let want = ShotStyle.colour(3)
+        // Left of the digit, inside the (now larger) circle.
+        let inside = s.at(after, 200 - 14, 200)
+        #expect(abs(inside.r - Int(want.r)) <= 3 && abs(inside.g - Int(want.g)) <= 3 && abs(inside.b - Int(want.b)) <= 3,
+                "inside the circle reads \(inside), the colour is \(want)")
+        _ = circle
+    }
+}
+
+/// The toolbar carried by its plate, as the product paints it (task 1196, 5).
+@MainActor
+struct ShotOffscreenToolbarCarryTests {
+    @Test func theToolbarIsPaintedWhereItWasCarriedWithGlassFromThere() throws {
+        let s = try ShotStage()
+        s.move(60, 60)
+        s.drag([(60, 60), (540, 450)])
+        s.wait(1)
+        let before = try #require(s.session.editor.layout)
+        let auto = s.shot("h0-toolbar-automatic")
+        // Take hold of the padding at the plate's top left corner and carry
+        // it up into the selection, over the page's text.
+        let grab = (Double(before.bar.x + 1) / s.scale, Double(before.bar.y + 1) / s.scale)
+        s.move(grab.0, grab.1)
+        s.press(grab.0, grab.1)
+        s.move(grab.0 + 40, grab.1 - 120)
+        s.move(grab.0 + 80, grab.1 - 240)
+        s.release(grab.0 + 80, grab.1 - 240)
+        s.wait(1)
+        let after = try #require(s.session.editor.layout)
+        #expect(after.bar.x == before.bar.x + Int(80 * s.scale) && after.bar.y == before.bar.y - Int(240 * s.scale))
+        let moved = s.shot("h1-toolbar-carried-into-the-selection")
+        // The cell of the first tool is painted at its new place: it is not
+        // the picture there, to some bytes.
+        let cell = try s.cell(.tool(.rect))
+        let rect = CGRect(
+            x: Double(cell.x) / s.scale, y: Double(cell.y) / s.scale, width: Double(cell.w) / s.scale, height: Double(cell.h) / s.scale)
+        #expect(s.differing(moved, in: rect) > 100, "the toolbar is drawn there")
+        // And not where it was: the same pixels as before the move have
+        // been given back (the outside of the selection, dimmed as ever).
+        let old = CGRect(
+            x: Double(before.bar.x) / s.scale, y: Double(before.bar.y) / s.scale + 4, width: 100, height: 20)
+        #expect(s.at(moved, Double(old.minX) + 20, Double(old.minY) + 8) != s.at(auto, Double(old.minX) + 20, Double(old.minY) + 8))
+    }
+}
+
+/// The magnifier as the product paints it (task 1196, 7).
+@MainActor
+struct ShotOffscreenMagnifierTests {
+    /// The bitmap pixel at `(x, y)` of `pixels`.
+    private func px(_ s: ShotStage, _ pixels: [UInt8], _ x: Int, _ y: Int) -> [Int] {
+        let i = (y * s.width + x) * 4
+        return [Int(pixels[i]), Int(pixels[i + 1]), Int(pixels[i + 2])]
+    }
+
+    /// Where the enlarged picture is: the plate's, less its padding.
+    private func image(_ plate: PixelRect, scale: Double) -> PixelRect {
+        let m = ShotMagnifier.Metrics(scale: scale, textHeight: 0)
+        return PixelRect(plate.x + m.pad, plate.y + m.pad, m.image, m.image)
+    }
+
+    @Test func theMiddleCellIsThePixelUnderThePointerAndItsNeighboursAreTheirOwn() throws {
+        let s = try ShotStage()
+        // The right edge of the first blue bar of the light page: x = 85.5
+        // points is pixel 171, the last of the bar; 172 is the page's white.
+        s.move(85.5, 320)
+        s.wait(1)
+        let p = s.shot("m1-magnifier-at-the-edge-of-a-bar")
+        let plate = try #require(s.session.magnifierPlate(on: 0))
+        let img = image(plate, scale: s.scale)
+        let m = ShotMagnifier.Metrics(scale: s.scale, textHeight: 0)
+        // Inside a cell, away from the lines round it.
+        func cell(_ dx: Int) -> [Int] {
+            px(s, p, img.x + (m.cells / 2 + dx) * m.cell + m.cell / 2, img.y + (m.cells / 2) * m.cell + m.cell / 2)
+        }
+        #expect(cell(0) == [0x2F, 0x6F, 0xED], "the pixel under the pointer, from the frozen picture")
+        #expect(cell(-1) == [0x2F, 0x6F, 0xED], "pixel 170, still the bar")
+        #expect(cell(1) == [255, 255, 255], "pixel 172, the page")
+        #expect(cell(3) == [255, 255, 255])
+        // And the plate is where the rule puts it: right of and below.
+        #expect(plate.x > 171 && plate.y > 640)
+        #expect(plate.w == m.plateWidth)
+    }
+
+    @Test func theGridLinesLieOnTheCellBoundaries() throws {
+        let s = try ShotStage()
+        s.move(300, 320)
+        s.wait(1)
+        let p = s.shot("m2-magnifier-grid")
+        let plate = try #require(s.session.magnifierPlate(on: 0))
+        let img = image(plate, scale: s.scale)
+        let m = ShotMagnifier.Metrics(scale: s.scale, textHeight: 0)
+        // On the page's white (x 300 is inside the chart's white), a grid
+        // line is darker than the cell beside it, and the cell is not.
+        let a = ShotLook.Colour.magnifierGrid.a
+        let line = px(s, p, img.x + 3 * m.cell, img.y + m.cell + m.cell / 2)
+        let beside = px(s, p, img.x + 3 * m.cell + m.cell / 2, img.y + m.cell + m.cell / 2)
+        #expect(beside == [255, 255, 255] || beside[0] == beside[1], "the cell is the picture: \(beside)")
+        #expect(line[0] < beside[0] || a == 0, "the line is darker: \(line) against \(beside)")
+    }
+
+    @Test func itIsUpWhileARegionIsDraggedAndGoneOnceItIsChosen() throws {
+        let s = try ShotStage()
+        s.move(100, 500)
+        #expect(s.session.magnifierPlate(on: 0) != nil, "before there is a region")
+        s.press(100, 500)
+        s.move(160, 540)
+        s.move(300, 600)
+        #expect(s.session.magnifierPlate(on: 0) != nil, "while it is dragged out")
+        _ = s.shot("m3-magnifier-while-dragging")
+        s.release(300, 600)
+        s.wait(1)
+        #expect(s.session.editor.selection != nil)
+        #expect(s.session.magnifierPlate(on: 0) == nil, "chosen: it is for annotating now")
+    }
+
+    @Test func copyPutsTheColourOnTheClipboardSaysSoAndGoesBack() throws {
+        let s = try ShotStage()
+        s.move(85.5, 320)
+        s.wait(1)
+        let before = s.paint()
+        let board = NSPasteboard(name: NSPasteboard.Name("polter.test.\(UUID().uuidString)"))
+        board.clearContents()
+        #expect(s.session.copyColour(to: board))
+        #expect(board.string(forType: .string) == "#2F6FED")
+        let plate = try #require(s.session.magnifierPlate(on: 0))
+        let during = s.shot("m4-magnifier-copied")
+        // The row under the picture changed: "Copied" where the colour was.
+        let m = ShotMagnifier.Metrics(scale: s.scale, textHeight: 0)
+        let row = PixelRect(plate.x, plate.y + m.pad + m.image, plate.w, plate.h - m.pad - m.image)
+        func differs(_ a: [UInt8], _ b: [UInt8]) -> Bool {
+            for y in row.y..<row.bottom {
+                for x in row.x..<row.right where px(s, a, x, y) != px(s, b, x, y) { return true }
+            }
+            return false
+        }
+        #expect(differs(before, during))
+        s.wait(1)
+        let after = s.paint()
+        #expect(!differs(before, after), "a second later it is the colour again")
+        // Nothing to copy once the region is chosen: the clipboard is left.
+        s.drag([(60, 60), (540, 450)])
+        s.wait(1)
+        board.clearContents()
+        board.setString("kept", forType: .string)
+        #expect(!s.session.copyColour(to: board))
+        #expect(board.string(forType: .string) == "kept")
+    }
+}
+
+/// A page that is made up, taller than the selection, scrolled by the wheel
+/// the session turns, and photographed through the selection.
+@MainActor
+final class FakePage: ShotFrameSource {
+    let width: Int
+    let height: Int
+    let view: Int
+    let bytes: [UInt8]
+    /// How far down the page the view is, in pixels.
+    var offset = 0
+    /// What a wheel step of one point is, in pixels.
+    let scale: Double
+    var wheels: [Int] = []
+    var frames = 0
+
+    init(width: Int, height: Int, view: Int, scale: Double) {
+        self.width = width
+        self.height = height
+        self.view = view
+        self.scale = scale
+        // Every row different, and every column: nothing in it repeats.
+        var state: UInt64 = 0x9E3779B97F4A7C15
+        var b = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                state = state &* 6364136223846793005 &+ 1442695040888963407
+                let v = UInt8(truncatingIfNeeded: state >> 33)
+                let i = (y * width + x) * 4
+                b[i] = v
+                b[i + 1] = UInt8(truncatingIfNeeded: Int(v) &* 3 &+ y)
+                b[i + 2] = UInt8(truncatingIfNeeded: Int(v) &+ x)
+            }
+        }
+        bytes = b
+    }
+
+    /// The wheel: down by `points`, to the bottom and no further.
+    func wheel(_ points: Int) {
+        wheels.append(points)
+        offset = min(offset + Int((Double(points) * scale).rounded()), height - view)
+    }
+
+    nonisolated func frame(completion: @escaping ([UInt8]?) -> Void) {
+        DispatchQueue.main.async { [self] in
+            MainActor.assumeIsolated {
+                frames += 1
+                let start = offset * width * 4
+                completion(Array(bytes[start..<(start + view * width * 4)]))
+            }
+        }
+    }
+}
+
+@MainActor
+struct ShotOffscreenAutoScrollTests {
+    final class Ending: ShotSessionDelegate {
+        var cancelled = 0
+        var result: ShotSession.Result?
+        func sessionDidCancel(_ session: ShotSession) { cancelled += 1 }
+        func sessionDidFinish(_ session: ShotSession, with finished: ShotSession.Result) { result = finished }
+    }
+
+    /// A stage with the light window chosen and a page behind it.
+    private func ready(pageHeight: Int, trusted: Bool = true) throws -> Rig {
+        let s = try ShotStage()
+        s.move(60, 60)
+        s.drag([(60, 60), (300, 300)])
+        s.wait(1)
+        let selection = try #require(s.session.editor.selection?.rect)
+        let page = FakePage(width: selection.w, height: pageHeight, view: selection.h, scale: s.scale)
+        let parked = Parked()
+        s.session.scroller = ShotSession.Scroller(
+            trusted: { trusted },
+            pointer: { CGPoint(x: 11, y: 22) },
+            park: { parked.at.append($0) },
+            wheel: { page.wheel($0) })
+        s.session.frameSource = { _ in page }
+        s.session.autoSettle = 0.004
+        s.session.autoLook = 0.004
+        let ending = Ending()
+        s.session.delegate = ending
+        return Rig(stage: s, page: page, ending: ending, parked: parked)
+    }
+
+    final class Parked { var at: [CGPoint] = [] }
+
+    /// A stage, the page behind it, what the session said when it ended,
+    /// and where the pointer was put.
+    struct Rig {
+        var stage: ShotStage
+        var page: FakePage
+        var ending: Ending
+        var parked: Parked
+    }
+
+    private func wait(_ seconds: TimeInterval = 240, until done: () -> Bool) async throws {
+        let end = Date().addingTimeInterval(seconds)
+        while !done(), Date() < end { try await Task.sleep(nanoseconds: 20_000_000) }
+    }
+
+    private func rows(_ image: ComposedImage) -> [UInt8] {
+        guard let cg = image.cgImage(), let bytes = ShotRenderer.rgbx(of: cg) else { return [] }
+        return bytes
+    }
+
+    @Test func theProgramScrollsToTheBottomAndTheWholePageIsTheResult() async throws {
+        let rig = try ready(pageHeight: 3100)
+        let (s, page, ending, parked) = (rig.stage, rig.page, rig.ending, rig.parked)
+        let selection = try #require(s.session.editor.selection?.rect)
+        try s.click(.long)
+        // The pointer went to the middle of the selection, in points.
+        #expect(parked.at.first == CGPoint(x: Double(selection.x + selection.w / 2) / s.scale, y: Double(selection.y + selection.h / 2) / s.scale))
+        try await wait { ending.result != nil }
+        let result = try #require(ending.result, "it finished by itself")
+        #expect(result.isLong)
+        #expect(result.image.height == 3100, "the whole page, to the last row: \(result.image.height)")
+        // And it is the page, row for row.
+        let got = rows(result.image)
+        #expect(got.count == page.bytes.count)
+        var wrong = 0
+        for i in stride(from: 0, to: min(got.count, page.bytes.count), by: 4)
+        where got[i] != page.bytes[i] || got[i + 1] != page.bytes[i + 1] || got[i + 2] != page.bytes[i + 2] { wrong += 1 }
+        #expect(wrong == 0, "\(wrong) pixels differ from the page")
+        // It scrolled in the steps the rule says, and put the pointer back.
+        let step = ShotAutoScroll.step(height: selection.h, scale: s.scale)
+        #expect(Set(page.wheels) == [step])
+        #expect(parked.at.last == CGPoint(x: 11, y: 22), "the pointer is where it was")
+        #expect(page.offset == page.height - page.view, "at the bottom")
+    }
+
+    @Test func aPageShorterThanTheSelectionIsOneFrameAndNothingIsScrolledForever() async throws {
+        let s = try ShotStage()
+        s.move(60, 60)
+        s.drag([(60, 60), (300, 300)])
+        let selection = try #require(s.session.editor.selection?.rect)
+        let (_, page, ending, _) = (s, FakePage(width: selection.w, height: selection.h, view: selection.h, scale: s.scale), Ending(), Parked())
+        s.session.delegate = ending
+        s.session.scroller = ShotSession.Scroller(trusted: { true }, pointer: { .zero }, park: { _ in }, wheel: { page.wheel($0) })
+        s.session.frameSource = { _ in page }
+        s.session.autoSettle = 0.004
+        s.session.autoLook = 0.004
+        try s.click(.long)
+        try await wait { ending.result != nil }
+        #expect(ending.result?.image.height == selection.h)
+        #expect(page.wheels.count == ShotAutoScroll.bottomAfter, "it stopped after the few steps that added nothing")
+    }
+
+    @Test func aPersonsOwnScrollingDuringItIsFollowedByWhatActuallyMoved() async throws {
+        let rig = try ready(pageHeight: 2900)
+        let (s, page, ending, _) = (rig.stage, rig.page, rig.ending, rig.parked)
+        let before = page.wheel
+        _ = before
+        // Somebody turns the wheel too, now and then, between our steps.
+        var count = 0
+        let selection = try #require(s.session.editor.selection?.rect)
+        s.session.scroller.wheel = { points in
+            count += 1
+            page.wheel(points)
+            if count % 3 == 0 { page.offset = min(page.offset + 40, page.height - page.view) }
+        }
+        _ = selection
+        try s.click(.long)
+        try await wait { ending.result != nil }
+        let result = try #require(ending.result)
+        #expect(result.image.height == 2900, "the shift that happened is the one that is joined: \(result.image.height)")
+    }
+
+    @Test func escapeEndsItAtOnceAndNothingMoreIsScrolled() async throws {
+        let rig = try ready(pageHeight: 6000)
+        let (s, page, ending, parked) = (rig.stage, rig.page, rig.ending, rig.parked)
+        try s.click(.long)
+        try await wait { page.wheels.count >= 3 }
+        let wheels = page.wheels.count
+        #expect(wheels >= 3 && ending.result == nil)
+        // Esc: the session's own key path.
+        s.session.key(.escape, mods: [])
+        #expect(ending.cancelled == 1)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(page.wheels.count <= wheels + 1, "no more wheel after the end: \(wheels) then \(page.wheels.count)")
+        #expect(parked.at.last == CGPoint(x: 11, y: 22), "the pointer is put back on a cancel too")
+    }
+
+    @Test func withoutThePermissionNothingIsScrolledAndThePersonIsTold() async throws {
+        let rig = try ready(pageHeight: 3000, trusted: false)
+        let (s, page, ending, _) = (rig.stage, rig.page, rig.ending, rig.parked)
+        try s.click(.long)
+        try await wait { page.frames >= 3 }
+        #expect(page.wheels.isEmpty, "the wheel is not turned without the permission")
+        #expect(ending.result == nil && ending.cancelled == 0, "and it waits for the person")
+        #expect(page.frames > 0, "frames are taken on a clock, as before")
+        _ = s.shot("l1-long-needs-permission-status")
+        // The person scrolls; Done keeps what was joined.
+        page.offset = 150
+        let seen = page.frames
+        try await wait { page.frames >= seen + 3 }
+        try s.click(.done)
+        #expect(ending.result?.image.height ?? 0 > page.view)
+    }
+
+    @Test func theStatusSaysItIsScrollingAndHowTallThePictureIs() async throws {
+        let rig = try ready(pageHeight: 6000)
+        let (s, page, ending, _) = (rig.stage, rig.page, rig.ending, rig.parked)
+        try s.click(.long)
+        try await wait { page.wheels.count >= 4 }
+        _ = s.shot("l2-long-scrolling-status")
+        let label = s.session.labelRects.first?.count ?? 0
+        #expect(label >= 2, "the size and the status line are on screen")
+        try s.click(.done)
+        #expect(ending.result != nil)
     }
 }

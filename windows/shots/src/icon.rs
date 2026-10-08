@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn every_icon_lands_where_the_generator_says() {
-        assert_eq!(look::ICONS.len(), 20, "fifteen buttons and five sizes of T");
+        assert_eq!(look::ICONS.len(), 21, "sixteen buttons and five sizes of T");
         let mut exact = 0;
         let mut total = 0;
         for icon in look::ICONS {

@@ -42,6 +42,9 @@ final class ShotSession {
         /// window, and that window's bounds in the display's own pixels.
         var window: ShotWindow?
         var windowRect: PixelRect?
+        /// Whether a copy also goes to the Downloads folder: the person
+        /// pressed Save rather than Done.
+        var saveCopy = false
     }
 
     private static let logger = Logger(
@@ -125,10 +128,12 @@ final class ShotSession {
     /// The labels each display had on it the last time it was painted --
     /// the size, the hover text, the status, the tag. Over them the pointer
     /// is an arrow, as it is over the toolbar.
-    private var labelRects: [[PixelRect]] = []
+    private(set) var labelRects: [[PixelRect]] = []
     /// Whether the text box's caret is in the showing half of its blink.
     private var caretOn = true
     private var caretTimer: Timer?
+    /// Until when the magnifier says "Copied" where the colour's text is.
+    private var copiedUntil: TimeInterval = 0
     /// The modifiers held at the last move of the pointer.
     private var lastMods: ShotMods = []
     /// The toolbar button the mouse went down on and is still down on.
@@ -158,6 +163,48 @@ final class ShotSession {
     /// What time it is, in seconds. The system's clock, except in a test
     /// that paints a display into a bitmap and wants a fade over with.
     var clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+
+    /// How the session turns the wheel for a long screenshot and where it
+    /// puts the pointer to do it: the system's, except in a test that
+    /// scrolls a made-up page.
+    struct Scroller {
+        /// Whether the system lets this app post wheel events. Asked
+        /// without asking the person: the system's own prompt must not
+        /// appear in the middle of a screenshot.
+        var trusted: () -> Bool
+        var pointer: () -> CGPoint
+        var park: (CGPoint) -> Void
+        /// Scroll the page under the pointer down by this many points.
+        var wheel: (Int) -> Void
+
+        static let system = Scroller(
+            trusted: { AXIsProcessTrusted() },
+            pointer: { CGEvent(source: nil)?.location ?? .zero },
+            park: { CGWarpMouseCursorPosition($0) },
+            wheel: { points in
+                // Down the page: the content moves up, which is a negative
+                // wheel.
+                CGEvent(
+                    scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                    wheel1: -Int32(points), wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
+            })
+    }
+    var scroller = Scroller.system
+    /// Where frames of the live screen come from, when not from the screen.
+    var frameSource: ((_ selection: PixelRect) -> ShotFrameSource)?
+    /// How long a scroll is given before the first look, and how far apart
+    /// the looks are while the page has not held still.
+    var autoSettle: TimeInterval = 0.12
+    var autoLook: TimeInterval = 0.06
+    private static let autoLooks = 10
+    /// Bumped whenever the program's scrolling is over, so that a step
+    /// still waiting for its frame knows it is not wanted.
+    private var autoGeneration = 0
+    /// Where the pointer was before it was put on the selection to scroll.
+    private var pointerBefore: CGPoint?
+    /// Where the program scrolls: the middle of the selection, in the
+    /// system's global points.
+    private var scrollCentre = CGPoint.zero
 
     /// Everything the editor holds that is not where the sharp part is.
     /// While only the selection moves this does not change, and then only
@@ -192,8 +239,17 @@ final class ShotSession {
     /// A long screenshot being taken.
     private struct Long {
         var stitcher: ShotStitcher
-        var capture: ShotLiveCapture
-        var timer: Timer
+        var capture: ShotFrameSource
+        /// Taking frames on a clock, for the person who scrolls by hand.
+        /// False while the program scrolls: it takes a frame after each
+        /// step.
+        var ticking = false
+        /// The program scrolls, and has not decided to stop. Nil when the
+        /// person scrolls (`denied`) or after it has stopped.
+        var auto: ShotAutoScroll?
+        /// The program could not be allowed to scroll (no Accessibility
+        /// permission), so it is the person who does.
+        var denied = false
         /// What the last frame that said something was.
         var last: ShotStitcher.Step = .unchanged
         var frames = 0
@@ -299,7 +355,12 @@ final class ShotSession {
         let under = overlays.first(where: { $0.window.frame.contains(mouse) }) ?? overlays.first
         pointerDisplay = overlays.firstIndex(where: { $0.window.frame.contains(mouse) })
         // The first frame is already the right one: nothing fades in when
-        // the screen is frozen (9.8.7).
+        // the screen is frozen (9.8.7). That includes the window under the
+        // pointer: it is asked of where the pointer is now, not of where it
+        // was when it last moved -- until then the editor knew of no
+        // pointer, and the blue frame waited for the first mouse move
+        // (task 1196, 6).
+        seedPointer(atCocoa: mouse)
         settleFocus()
         for overlay in overlays { overlay.window.orderFrontRegardless() }
         under?.window.makeKey()
@@ -311,6 +372,19 @@ final class ShotSession {
             guard let window = note.object as? NSWindow else { return }
             self?.windowBecameKey(window)
         }
+    }
+
+    /// The pointer is at `mouse`, in the system's screen coordinates
+    /// (`NSEvent.mouseLocation`: points, origin at the bottom left of the
+    /// primary display, y upwards): the editor is told, as though the
+    /// pointer had just moved there.
+    func seedPointer(atCocoa mouse: CGPoint, primaryHeight: CGFloat? = nil) {
+        let height = primaryHeight ?? NSScreen.screens.first?.frame.height ?? 0
+        let global = CGPoint(x: mouse.x, y: height - mouse.y)
+        guard let p = space.pixel(ofGlobal: global), let index = space.display(at: global) else { return }
+        pointer = p
+        pointerDisplay = index
+        _ = editor.pointerMove(to: p, mods: [])
     }
 
     /// A window of this application became key while the picture is up: if
@@ -350,7 +424,7 @@ final class ShotSession {
 
     /// Take everything down. The frozen pictures go with this object.
     private func close() {
-        long?.timer.invalidate()
+        endAutoScroll()
         long = nil
         frameTimer?.invalidate()
         frameTimer = nil
@@ -411,6 +485,17 @@ final class ShotSession {
         func px(_ points: Double) -> Int { Int((points * scale).rounded(.up)) }
         var rects = fades[index].touched
         if let box = textBoxExtent(on: index) { rects.append(box) }
+        if let plate = magnifierPlate(on: index) {
+            let m = ShotChrome.margins(scale: scale)
+            rects.append(PixelRect(
+                left: plate.x - m.x, top: plate.y - m.top, right: plate.right + m.x, bottom: plate.bottom + m.bottom))
+        }
+        if let forming = editor.forming, forming.display == index {
+            // The size of the region being dragged out, where it will be
+            // once it is a selection.
+            let r = forming.rect
+            rects.append(PixelRect(left: r.x - px(8), top: r.y - px(40), right: r.x + px(260), bottom: r.y + px(40)))
+        }
         if let selection = editor.selection, selection.display == index {
             // The size, above the selection or just inside its top edge.
             let r = selection.rect
@@ -485,6 +570,7 @@ final class ShotSession {
         case .undo: state.enabled = editor.canUndo && !editor.isLong
         case .redo: state.enabled = editor.canRedo && !editor.isLong
         case .long: state.selected = editor.isLong
+        case .save: break
         case .cancel: break
         case .done: state.isDone = true
         }
@@ -555,6 +641,50 @@ final class ShotSession {
         }
     }
 
+    // MARK: The magnifier
+
+    /// The pointer's pixel on display `index` while the magnifier is up
+    /// there.
+    private func magnifierPointer(on index: Int) -> PixelPoint? {
+        guard editor.showsMagnifier, pointerDisplay == index, let pointer,
+              space.displays.indices.contains(index), space.displays[index].rect.contains(pointer) else { return nil }
+        return pointer
+    }
+
+    /// Where the magnifier's plate is on display `index` now, nil when it is
+    /// not up.
+    func magnifierPlate(on index: Int) -> PixelRect? {
+        guard let p = magnifierPointer(on: index) else { return nil }
+        let scale = space.displays[index].scale
+        let font = ShotRenderer.uiFont(scale: scale)
+        let m = ShotMagnifier.Metrics(
+            scale: scale, textHeight: Int((CTFontGetAscent(font) + CTFontGetDescent(font)).rounded(.up)))
+        return ShotMagnifier.place(
+            pointer: p, plate: (m.plateWidth, m.plateHeight),
+            offset: ShotStyle.px(Int(ShotLook.Size.magnifierOffset), scale: scale), display: space.displays[index].rect)
+    }
+
+    /// Cmd+C while the magnifier is up: the colour of the pixel under the
+    /// pointer, as `#RRGGBB`, onto the clipboard. The screenshot goes on.
+    /// Returns whether there was anything to copy.
+    @discardableResult
+    func copyColour(to pasteboard: NSPasteboard = .general) -> Bool {
+        guard let index = pointerDisplay, let p = magnifierPointer(on: index),
+              let colour = frozen[index].colour(at: p) else { return false }
+        pasteboard.clearContents()
+        pasteboard.setString(ShotMagnifier.hex(colour), forType: .string)
+        Self.logger.info("screenshot: the colour \(ShotMagnifier.hex(colour), privacy: .public) was copied")
+        let flash = ShotLook.TransitionMs.copiedFlash / 1000
+        copiedUntil = clock() + flash
+        repaint()
+        // Back to the colour's text when the flash is over.
+        DispatchQueue.main.asyncAfter(deadline: .now() + flash) { [weak self] in
+            guard let self, !self.overlays.isEmpty else { return }
+            self.repaint()
+        }
+        return true
+    }
+
     // MARK: From the views
 
     func pointerDown(at local: CGPoint, on index: Int, mods: ShotMods, double: Bool) {
@@ -574,7 +704,7 @@ final class ShotSession {
         // that takes the toolbar away.
         if let button = editor.layout?.button(at: p), cellState(of: button).enabled {
             pressed = button
-            if button == .cancel || button == .done {
+            if button == .cancel || button == .done || button == .save {
                 // These two end the screenshot, so they act when the button
                 // is let go, over the same button: pressed, they show it
                 // (9.8.4), and a press that slides off them is taken back.
@@ -599,7 +729,11 @@ final class ShotSession {
             pointerDisplay = index
             repaint()
         }
-        perform(editor.pointerMove(to: p, mods: mods))
+        let effect = editor.pointerMove(to: p, mods: mods)
+        perform(effect)
+        // The magnifier follows the pointer whether or not the editor has
+        // anything to say about the move.
+        if effect == .none, editor.showsMagnifier { repaint() }
         cursor(at: local, on: index).set()
     }
 
@@ -627,11 +761,18 @@ final class ShotSession {
     }
 
     func key(_ event: NSEvent, on index: Int) {
-        let input = EditorKey.Input.of(keyCode: event.keyCode, characters: event.charactersIgnoringModifiers)
-        let mods = ShotMods(event.modifierFlags.intersection(.deviceIndependentFlagsMask))
+        key(
+            EditorKey.Input.of(keyCode: event.keyCode, characters: event.charactersIgnoringModifiers),
+            mods: ShotMods(event.modifierFlags.intersection(.deviceIndependentFlagsMask)))
+    }
+
+    /// A key, as the editor reads keys: what the keyboard path does once
+    /// the event has been read, and what a test calls.
+    func key(_ input: EditorKey.Input, mods: ShotMods) {
+        if ShotMagnifier.isCopyKey(input, mods: mods), copyColour() { return }
         let before = editor.items.count
         let (key, effect) = editor.key(input, mods: mods, measure: measure)
-        Self.logger.debug("screenshot: key \(event.keyCode, privacy: .public) mods=\(mods.rawValue, privacy: .public) annotations=\(before, privacy: .public) -> \(String(describing: key), privacy: .public)")
+        Self.logger.debug("screenshot: key \(String(describing: input), privacy: .public) mods=\(mods.rawValue, privacy: .public) annotations=\(before, privacy: .public) -> \(String(describing: key), privacy: .public)")
         perform(effect)
     }
 
@@ -643,7 +784,7 @@ final class ShotSession {
         switch editor.cursor(at: p, mods: lastMods) {
         case .tool: return .crosshair
         case .arrow: return .arrow
-        case .move: return editor.isMovingItem ? .closedHand : .openHand
+        case .move: return editor.isMovingItem || editor.isMovingToolbar ? .closedHand : .openHand
         case .upDown: return .resizeUpDown
         case .leftRight: return .resizeLeftRight
         case .diagonal: return Self.diagonal(northWest: true)
@@ -674,6 +815,8 @@ final class ShotSession {
             cancel()
         case .finish:
             finish()
+        case .save:
+            finish(saveCopy: true)
         case .long:
             startLong()
         case .leaveLong:
@@ -736,7 +879,7 @@ final class ShotSession {
         // It was `fontPx * 4` whatever was typed, stopped only by the
         // display: at the largest size, low in the selection, it lay over
         // the toolbar (task 1104).
-        guard let rect = editor.textRect(lines: ShotTextBox.lines(in: box.text), measure: measure) else {
+        guard let rect = editor.textRect(lines: ShotTextBox.lines(in: box.text), text: box.text, measure: measure) else {
             perform(editor.endText("", measure: measure))
             return
         }
@@ -886,9 +1029,20 @@ final class ShotSession {
     /// the caret is on is the one in view (`ShotTextScroll.place`). Geometry
     /// only, so it is safe while an input method is composing.
     private func fitText() {
-        guard let typing, let selection = editor.selection,
-              let rect = editor.textRect(lines: typing.text.laidOutLines, measure: measure) else { return }
-        typing.place(space.local(rect, on: selection.display))
+        guard let typing, let selection = editor.selection else { return }
+        // The box's width follows what is in it, and how many lines the
+        // text wraps to follows the box's width: place it for the lines
+        // there are without wrapping, look again, and place it for those.
+        // Settled in one or two turns -- the width only stops following the
+        // text at the selection's edge, and that is where a line wraps.
+        var lines = ShotTextBox.lines(in: typing.text.string)
+        for _ in 0..<4 {
+            guard let rect = editor.textRect(lines: lines, text: typing.text.string, measure: measure) else { return }
+            typing.place(space.local(rect, on: selection.display))
+            let laid = typing.text.laidOutLines
+            if laid == lines { break }
+            lines = laid
+        }
     }
 
     /// Close the text box and hand what was typed to the editor, which
@@ -939,20 +1093,39 @@ final class ShotSession {
     /// to sit inside a selection as tall as the display is not in them.
     private func startLong() {
         guard let selection = editor.selection, displays.indices.contains(selection.display),
-              let stitcher = ShotStitcher(width: selection.rect.w, height: selection.rect.h),
-              let displayID = ShotCapture.displayID(of: displays[selection.display].screen) else {
+              let stitcher = ShotStitcher(width: selection.rect.w, height: selection.rect.h) else {
             Self.logger.error("screenshot: a long screenshot could not be started")
             return
         }
-        let capture = ShotLiveCapture(
-            displayID: displayID,
-            region: space.local(selection.rect, on: selection.display),
-            pixels: .init(selection.rect.w, selection.rect.h),
-            overlayNumbers: overlays.map(\.window.windowNumber))
-        let timer = Timer(timeInterval: Self.longInterval, repeats: true) { [weak self] _ in self?.longTick() }
-        RunLoop.main.add(timer, forMode: .common)
-        long = Long(stitcher: stitcher, capture: capture, timer: timer)
-        Self.logger.info("screenshot: long screenshot started, frames of \(selection.rect.w, privacy: .public)x\(selection.rect.h, privacy: .public) every \(Int(Self.longInterval * 1000), privacy: .public) ms")
+        let capture: ShotFrameSource
+        if let frameSource {
+            capture = frameSource(selection.rect)
+        } else if let displayID = ShotCapture.displayID(of: displays[selection.display].screen) {
+            capture = ShotLiveCapture(
+                displayID: displayID,
+                region: space.local(selection.rect, on: selection.display),
+                pixels: .init(selection.rect.w, selection.rect.h),
+                overlayNumbers: overlays.map(\.window.windowNumber))
+        } else {
+            Self.logger.error("screenshot: a long screenshot could not be started")
+            return
+        }
+        var taking = Long(stitcher: stitcher, capture: capture)
+        if scroller.trusted() {
+            // The program scrolls to the bottom, a step at a time.
+            taking.auto = ShotAutoScroll()
+            long = taking
+            Self.logger.info("screenshot: long screenshot started, frames of \(selection.rect.w, privacy: .public)x\(selection.rect.h, privacy: .public); the program scrolls")
+            beginAutoScroll(selection)
+        } else {
+            // No permission to turn the wheel: the person does, as before,
+            // and frames are taken on a clock.
+            taking.denied = true
+            taking.ticking = true
+            long = taking
+            scheduleTick(generation: autoGeneration)
+            Self.logger.info("screenshot: long screenshot started, frames of \(selection.rect.w, privacy: .public)x\(selection.rect.h, privacy: .public) every \(Int(Self.longInterval * 1000), privacy: .public) ms; the person scrolls (no Accessibility permission)")
+        }
         repaint()
     }
 
@@ -960,14 +1133,128 @@ final class ShotSession {
     /// again.
     private func stopLong() {
         guard let long else { return }
-        long.timer.invalidate()
+        endAutoScroll()
         self.long = nil
         Self.logger.info("screenshot: long screenshot left without finishing: \(long.frames, privacy: .public) frame(s), \(long.lost, privacy: .public) dropped, \(long.stitcher.totalHeight, privacy: .public) px discarded")
         repaint()
     }
 
+    /// Put the pointer on the middle of the selection -- where the wheel
+    /// goes -- and take the first frame; the scrolling starts from it.
+    private func beginAutoScroll(_ selection: ShotEditor.Selection) {
+        let display = displays[selection.display]
+        let region = space.local(selection.rect, on: selection.display)
+        scrollCentre = CGPoint(x: display.frame.minX + region.midX, y: display.frame.minY + region.midY)
+        pointerBefore = scroller.pointer()
+        scroller.park(scrollCentre)
+        let generation = autoGeneration
+        steadyFrame(generation: generation) { [weak self] first in
+            guard let self, generation == self.autoGeneration else { return }
+            guard first == .first else {
+                // A region that never holds still (a video, a spinner) is
+                // not scrolled: nothing could be joined to it. The first
+                // frame it gave is the picture.
+                self.autoStopped(.lost)
+                return
+            }
+            self.autoStep(generation: generation)
+        }
+    }
+
+    /// One step: scroll, give the page a moment, take a frame, decide.
+    private func autoStep(generation: Int) {
+        guard generation == autoGeneration, let taking = long, taking.auto != nil,
+              let selection = editor.selection else { return }
+        let display = space.displays[selection.display]
+        // Back on the selection each time: the wheel goes to whatever is
+        // under the pointer, and the person may have moved it.
+        scroller.park(scrollCentre)
+        scroller.wheel(ShotAutoScroll.step(height: selection.rect.h, scale: display.scale))
+        DispatchQueue.main.asyncAfter(deadline: .now() + autoSettle) { [weak self] in
+            guard let self, generation == self.autoGeneration else { return }
+            self.steadyFrame(generation: generation) { step in
+                guard generation == self.autoGeneration, var taking = self.long, var auto = taking.auto else { return }
+                let stop = auto.record(step, full: taking.stitcher.isFull)
+                taking.auto = auto
+                self.long = taking
+                // The height so far, in the status line.
+                self.repaint()
+                if let stop {
+                    self.autoStopped(stop)
+                } else {
+                    self.autoStep(generation: generation)
+                }
+            }
+        }
+    }
+
+    /// Take frames until one is the same as the one before it, and say what
+    /// joining it did. A region still moving after every look is `.lost`:
+    /// nothing could be joined. The frame goes to the stitcher, and the
+    /// counts the status line and the log show are kept.
+    private func steadyFrame(generation: Int, looks: Int = 0, then: @escaping (ShotStitcher.Step) -> Void) {
+        guard let capture = long?.capture else { return }
+        capture.frame { [weak self] frame in
+            guard let self, generation == self.autoGeneration, var taking = self.long else { return }
+            guard let frame else {
+                then(.lost)
+                return
+            }
+            let step = taking.stitcher.offer(frame)
+            taking.frames += 1
+            if step == .lost { taking.lost += 1 }
+            if step == .moving { taking.moving += 1 }
+            taking.last = step == .unchanged || step == .moving ? taking.last : step
+            self.long = taking
+            guard step == .moving else {
+                then(step)
+                return
+            }
+            guard looks + 1 < Self.autoLooks else {
+                then(.lost)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.autoLook) {
+                self.steadyFrame(generation: generation, looks: looks + 1, then: then)
+            }
+        }
+    }
+
+    /// The program has scrolled as far as it will: the bottom, the height
+    /// limit, or a page it cannot follow. The picture is what was joined.
+    private func autoStopped(_ stop: ShotAutoScroll.Stop) {
+        let height = long?.stitcher.totalHeight ?? 0
+        Self.logger.info("screenshot: automatic scrolling stopped at \(String(describing: stop), privacy: .public), \(height, privacy: .public) px joined")
+        if stop == .lost {
+            ShotToast.show(ShotWords.translate("The page could not be followed any further, so the picture ends here."))
+        }
+        finish()
+    }
+
+    /// The program's scrolling is over, or never was: nothing still waiting
+    /// for a frame is wanted, and the pointer goes back where it was.
+    private func endAutoScroll() {
+        autoGeneration += 1
+        if let pointerBefore {
+            scroller.park(pointerBefore)
+            self.pointerBefore = nil
+        }
+        if long?.auto != nil { long?.auto = nil }
+    }
+
+    /// Take a frame every `longInterval` while the person scrolls. Stopped by
+    /// `endAutoScroll` (every way out of the mode goes through it), which
+    /// bumps the generation.
+    private func scheduleTick(generation: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.longInterval) { [weak self] in
+            guard let self, generation == self.autoGeneration, self.long?.ticking == true else { return }
+            self.longTick()
+            self.scheduleTick(generation: generation)
+        }
+    }
+
     /// Take one frame of the selection as it is on the live screen and hand
-    /// it to the stitcher.
+    /// it to the stitcher: the person is scrolling.
     private func longTick() {
         guard let capture = long?.capture else { return }
         capture.frame { [weak self] frame in
@@ -991,7 +1278,7 @@ final class ShotSession {
             }
             if step == .full && long.last != .full {
                 Self.logger.info("screenshot: long screenshot reached the \(ShotStitcher.maxHeight, privacy: .public) px limit; no more is added")
-                long.timer.invalidate()
+                long.ticking = false
             }
             long.last = shown
             self.long = long
@@ -1002,11 +1289,10 @@ final class ShotSession {
     // MARK: Finishing
 
     /// Done: compose the image and hand it over.
-    private func finish() {
+    private func finish(saveCopy: Bool = false) {
         commitText()
         guard let export = editor.export(), frozen.indices.contains(export.selection.display) else { return }
         let taken = long
-        long?.timer.invalidate()
         long = nil
         if let taken {
             Self.logger.info("screenshot: long screenshot finished: \(taken.frames, privacy: .public) frame(s), \(taken.lost, privacy: .public) dropped for want of overlap, \(taken.moving, privacy: .public) held back (still moving), \(taken.stitcher.totalHeight, privacy: .public) px tall")
@@ -1047,7 +1333,8 @@ final class ShotSession {
             // window records the same rectangle (11).
             windowRect: window
                 .flatMap { space.wholePixels(ofGlobal: $0.frame, on: index) }
-                .map { space.displayLocal($0, on: index) }))
+                .map { space.displayLocal($0, on: index) },
+            saveCopy: saveCopy))
     }
 
     // MARK: Drawing
@@ -1196,15 +1483,37 @@ final class ShotSession {
             let line = ShotStyle.px(Int(forming != nil ? ShotLook.Size.selectionLine : ShotLook.Size.windowLine), scale: scale)
             ShotRenderer.frame(focus, accent, thickness: line, in: ctx)
         }
-        guard let selection else { return }
+        // The size of what is being dragged out is shown while it is
+        // dragged, not only after the button comes up (task 1196, 8).
+        if labelRects.indices.contains(index) { labelRects[index] = [] }
 
         // Everything from here on is glass, cut from this display's picture.
         let glass = (prepared.indices.contains(index) ? prepared[index] : nil).map {
             ShotChrome.Glass(prepared: $0, origin: whole.origin, scale: scale)
         }
         let surface = ShotChrome.Surface(scale: scale, glass: glass, access: access)
+        // The magnifier is the last thing painted, over everything, whichever
+        // way this function leaves (declared before the others, so run after
+        // them: with the clip they set gone).
+        defer {
+            if let p = magnifierPointer(on: index), frozen.indices.contains(index) {
+                ShotRenderer.drawMagnifier(
+                    frozen: frozen[index], pointer: p, copied: now < copiedUntil, display: whole, on: surface, in: ctx)
+            }
+        }
+        guard let sized = selection ?? forming else { return }
         var labels: [PixelRect] = []
         defer { if labelRects.indices.contains(index) { labelRects[index] = labels } }
+        if selection == nil {
+            ctx.saveGState()
+            ctx.addRect(cg(whole))
+            ctx.addRect(cg(sized))
+            ctx.clip(using: .evenOdd)
+            labels.append(drawSizeLabel(of: sized, whole: whole, surface: surface, in: ctx))
+            ctx.restoreGState()
+            return
+        }
+        guard let selection else { return }
 
         if long == nil {
             if let marked = editor.marked {
@@ -1241,16 +1550,7 @@ final class ShotSession {
         ctx.addRect(cg(selection))
         ctx.clip(using: .evenOdd)
 
-        // The selection's size, in pixels of the image: above its top left
-        // corner, or just inside it when there is no room above.
-        let sizeParts: [ShotRenderer.LabelPart] = [.words("\(selection.w) × \(selection.h)")]
-        let sizeLabel = ShotRenderer.labelSize(sizeParts, style: .size, scale: scale)
-        let sizeOffset = ShotStyle.px(Int(ShotLook.Size.sizeLabelOffset), scale: scale)
-        let sizeY = selection.y - whole.y >= sizeLabel.h + sizeOffset
-            ? selection.y - sizeLabel.h - sizeOffset
-            : selection.y + ShotStyle.px(Int(ShotLook.Size.sizeLabelInset), scale: scale)
-        labels.append(ShotRenderer.label(
-            sizeParts, style: .size, at: PixelPoint(selection.x, sizeY), within: whole, on: surface, in: ctx))
+        labels.append(drawSizeLabel(of: selection, whole: whole, surface: surface, in: ctx))
 
         guard let layout = editor.layout else { return }
         if layout.plate.intersect(selection) != nil {
@@ -1288,6 +1588,22 @@ final class ShotSession {
                 long, at: PixelPoint(layout.plate.x, below), selection: selection, display: whole,
                 surface: surface, in: ctx))
         }
+    }
+
+    /// The size of a selection, or of a region being dragged out, in pixels
+    /// of the image: above its top left corner, or just inside it when there
+    /// is no room above.
+    private func drawSizeLabel(
+        of selection: PixelRect, whole: PixelRect, surface: ShotChrome.Surface, in ctx: CGContext
+    ) -> PixelRect {
+        let scale = surface.scale
+        let parts: [ShotRenderer.LabelPart] = [.words("\(selection.w) × \(selection.h)")]
+        let label = ShotRenderer.labelSize(parts, style: .size, scale: scale)
+        let offset = ShotStyle.px(Int(ShotLook.Size.sizeLabelOffset), scale: scale)
+        let y = selection.y - whole.y >= label.h + offset
+            ? selection.y - label.h - offset
+            : selection.y + ShotStyle.px(Int(ShotLook.Size.sizeLabelInset), scale: scale)
+        return ShotRenderer.label(parts, style: .size, at: PixelPoint(selection.x, y), within: whole, on: surface, in: ctx)
     }
 
     /// What the overlay draws for the text box, which has no ground of its
@@ -1391,10 +1707,15 @@ final class ShotSession {
             parts.append(.words(ShotWords.translate("The picture keeps changing, so nothing can be added."), dim: true))
         case .lost: parts.append(.words(ShotWords.translate("Scroll slower"), dim: true))
         case .full: parts.append(.words(ShotWords.translate("The height limit was reached."), dim: true))
+        case _ where long.auto != nil:
+            parts.append(.words(
+                ShotWords.translate("Scrolling down… Enter keeps what is joined so far, Esc cancels."), dim: true))
         default:
             if long.stitcher.totalHeight <= selection.h {
                 parts.append(.words(
-                    ShotWords.translate("Scroll down slowly. What comes into view is added at the bottom."), dim: true))
+                    ShotWords.translate(long.denied
+                        ? "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand."
+                        : "Scroll down slowly. What comes into view is added at the bottom."), dim: true))
             }
         }
         let plate = ShotRenderer.label(parts, style: .status, at: at, within: display, on: surface, in: ctx)

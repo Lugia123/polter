@@ -3524,3 +3524,27 @@ msgstr "选择…"
 #: windows/host/src/general_ui.rs
 msgid "Not set"
 msgstr "未设置"
+
+#: src/input/screenshot.zig
+msgid "Saved to Downloads: {name}"
+msgstr "已保存到“下载”：{name}"
+
+#: src/input/screenshot.zig
+msgid "The picture could not be saved."
+msgstr "图片没能保存。"
+
+#: src/input/screenshot.zig
+msgid "Copied"
+msgstr "已复制"
+
+#: src/input/screenshot.zig
+msgid "Scrolling down… Enter keeps what is joined so far, Esc cancels."
+msgstr "正在向下滚动…回车保留已接好的部分，Esc 取消。"
+
+#: src/input/screenshot.zig
+msgid "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand."
+msgstr "自动滚动需要“辅助功能”权限，请慢慢向下手动滚动。"
+
+#: src/input/screenshot.zig
+msgid "The page could not be followed any further, so the picture ends here."
+msgstr "页面没能再跟下去，图片到此为止。"

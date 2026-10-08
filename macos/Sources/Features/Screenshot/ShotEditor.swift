@@ -74,6 +74,8 @@ struct ShotEditor {
         case cancel
         /// Compose and deliver (`export`).
         case finish
+        /// The same, and a copy for the Downloads folder.
+        case save
         /// Long-screenshot mode was entered (`isLong`): open the selection
         /// to the live screen and start taking frames.
         case long
@@ -93,6 +95,9 @@ struct ShotEditor {
         case pickRegion(down: PixelPoint)
         case resizeRegion(PixelHandle)
         case moveRegion(last: PixelPoint)
+        /// The toolbar being carried by a grip on its plate: `grab` is from
+        /// the plate's top left to where it was taken hold of.
+        case moveToolbar(grab: PixelPoint)
         /// A rectangle, ellipse, line, arrow or mosaic being drawn.
         case draw(start: PixelPoint)
         /// A pen or highlighter stroke being drawn.
@@ -158,7 +163,15 @@ struct ShotEditor {
     private(set) var hover: (display: Int, rect: PixelRect)?
     /// A region being dragged out, before the button comes up.
     private(set) var forming: (rect: PixelRect, display: Int)?
-    private(set) var selection: Selection?
+    private(set) var selection: Selection? {
+        // A new choice of region is a new screenshot as far as the toolbar
+        // is concerned: it goes back to where it is put by itself.
+        didSet { if selection == nil { toolbarOrigin = nil } }
+    }
+    /// Where the person put the toolbar, the plate's top left, until the
+    /// region is chosen again. Nil: where it puts itself, beside the
+    /// selection.
+    private(set) var toolbarOrigin: PixelPoint?
     private(set) var items: [Annotation] = []
     private var undoStack: [[Annotation]] = []
     private var redoStack: [[Annotation]] = []
@@ -208,7 +221,15 @@ struct ShotEditor {
             if case .mosaic = item.shape { return true }
             return false
         }
-        let indexed = items.enumerated().map { (index: $0.offset, item: $0.element) }
+        var indexed = items.enumerated().map { (index: $0.offset, item: $0.element) }
+        // A number whose sentence is being typed is drawn in the colour and
+        // size the box has now, as it will be once the box is closed: the
+        // circle used to change only when the box did (task 1196).
+        if let box = textBox, box.caption, let i = box.editing, indexed.indices.contains(i) {
+            if indexed[i].item.colour != box.colour { indexed[i].item.custom = nil }
+            indexed[i].item.colour = box.colour
+            indexed[i].item.level = box.level
+        }
         return indexed.filter { isMosaic($0.item) } + indexed.filter { !isMosaic($0.item) }
     }
 
@@ -232,7 +253,8 @@ struct ShotEditor {
         guard let selection, displays.indices.contains(selection.display) else { return nil }
         let display = displays[selection.display]
         return ShotToolbarGrid.layout(
-            selection: selection.rect, display: display.rect, scale: display.scale, props: props)
+            selection: selection.rect, display: display.rect, scale: display.scale, props: props,
+            placed: toolbarOrigin)
     }
 
     private func display(at p: PixelPoint) -> Int? {
@@ -333,8 +355,13 @@ struct ShotEditor {
     /// What the pointer looks like at `p` (9.8.11A.4).
     func cursor(at p: PixelPoint, mods: ShotMods) -> Cursor {
         guard let sel = selection else { return .tool }
-        if isLong || textBox != nil { return .tool }
-        if layout?.covers(p) == true { return .arrow }
+        if isMovingToolbar { return .move }
+        if isLong || textBox != nil {
+            // The toolbar can still be taken by its plate.
+            if let layout, layout.covers(p), layout.button(at: p) == nil, textBox == nil { return .move }
+            return .tool
+        }
+        if let layout, layout.covers(p) { return layout.button(at: p) == nil ? .move : .arrow }
         if tool != .select && !mods.contains(.command) { return .tool }
         func of(_ handle: PixelHandle) -> Cursor {
             let edge = handle.edges
@@ -431,20 +458,35 @@ struct ShotEditor {
         guard let selection, displays.indices.contains(selection.display) else { return [] }
         let display = displays[selection.display]
         let l = ShotToolbarGrid.layout(
-            selection: selection.rect, display: display.rect, scale: display.scale, props: .font)
+            selection: selection.rect, display: display.rect, scale: display.scale, props: .font,
+            placed: toolbarOrigin)
         return [l.bar] + (l.props.map { [$0] } ?? [])
     }
 
-    /// Where the open text box is, for a text of `lines` lines
-    /// (specification 9.3; `ShotTextBox.rect` for the rule). Nil with no
-    /// box open.
-    func textRect(lines: Int, measure: TextMeasure) -> PixelRect? {
+    /// Where the open text box is, for `text`, which is `lines` lines once
+    /// wrapped (specification 9.3; `ShotTextBox.rect` for the rule). Nil
+    /// with no box open.
+    ///
+    /// A number's sentence is centred on its circle by the height of what
+    /// is in it, as it is when it is drawn (`Annotation.captionOrigin`): the
+    /// box was once started on the height of a font rather than of a line,
+    /// so an empty one sat lower than the circle it belonged to and a
+    /// written one did not.
+    func textRect(lines: Int, text: String, measure: TextMeasure) -> PixelRect? {
         guard let box = textBox, let selection, displays.indices.contains(selection.display) else { return nil }
         let display = displays[selection.display]
-        let minW = ShotTextBox.minWidth(
-            fontPx: ShotStyle.fontPx(level: box.level, scale: display.scale), scale: display.scale)
+        let fontPx = ShotStyle.fontPx(level: box.level, scale: display.scale)
+        let minW = ShotTextBox.minWidth(fontPx: fontPx, scale: display.scale)
+        let line = textLine(level: box.level, measure: measure)
+        var at = box.at
+        if box.caption, let i = box.editing, items.indices.contains(i), case let .number(_, centre, _, _) = items[i].shape {
+            at = Annotation.captionOrigin(
+                at: centre, level: box.level, scale: display.scale, captionHeight: max(lines, 1) * line)
+        }
+        let widths = text.components(separatedBy: "\n").map { $0.isEmpty ? 0 : measure.size(of: $0, fontPx: fontPx).w }
         return ShotTextBox.rect(
-            at: box.at, lines: lines, line: textLine(level: box.level, measure: measure), minW: minW,
+            at: at, lines: lines, line: line, minW: minW,
+            wanted: ShotTextBox.wanted(lineWidths: widths, fontPx: fontPx),
             selection: selection.rect, display: display.rect, keepClear: textKeepClear)
     }
 
@@ -524,6 +566,7 @@ struct ShotEditor {
             case .long: return leaveLong()
             case .cancel: return .cancel
             case .done: return .finish
+            case .save: return .save
             default: return .none
             }
         }
@@ -534,6 +577,7 @@ struct ShotEditor {
         case .long: return enterLong()
         case .cancel: return .cancel
         case .done: return .finish
+        case .save: return .save
         case let .colour(c): return setColour(c)
         case let .level(l): return setLevel(l, measure: measure)
         }
@@ -563,7 +607,8 @@ struct ShotEditor {
         if isLong {
             // The selection is the live screen and clicks in it are not
             // ours; of the overlay, only the toolbar answers.
-            guard let button = layout?.button(at: p) else { return .none }
+            guard let layout, layout.covers(p) else { return .none }
+            guard let button = layout.button(at: p) else { return beginToolbarDrag(at: p) }
             return press(button, measure: measure)
         }
         if textBox != nil {
@@ -580,7 +625,7 @@ struct ShotEditor {
         }
         if let layout {
             if let button = layout.button(at: p) { return press(button, measure: measure) }
-            if layout.covers(p) { return .none }
+            if layout.covers(p) { return beginToolbarDrag(at: p) }
         }
 
         let scale = self.scale
@@ -665,6 +710,35 @@ struct ShotEditor {
         return .capture
     }
 
+    /// A press on the plate between its cells: take hold of the whole plate,
+    /// both rows, and carry it. The toolbar can be in the way of what is to
+    /// be written on the picture, and a full-screen screenshot has nowhere
+    /// else to put it (task 1196, 5).
+    private mutating func beginToolbarDrag(at p: PixelPoint) -> Effect {
+        guard let layout else { return .none }
+        drag = .moveToolbar(grab: PixelPoint(p.x - layout.bar.x, p.y - layout.bar.y))
+        return .capture
+    }
+
+    /// Whether the magnifier is up: while the region is being chosen --
+    /// before there is one, and the whole of a drag that makes, moves or
+    /// resizes it -- and not once it is chosen and being annotated, nor
+    /// while a text is typed or frames are taken.
+    var showsMagnifier: Bool {
+        if isLong || textBox != nil { return false }
+        if selection == nil { return true }
+        switch drag {
+        case .resizeRegion, .moveRegion: return true
+        default: return false
+        }
+    }
+
+    /// Whether the toolbar is being carried.
+    var isMovingToolbar: Bool {
+        if case .moveToolbar = drag { return true }
+        return false
+    }
+
     /// The shape a drag from `start` to `end` draws with the current tool.
     private func drawn(from start: PixelPoint, to end: PixelPoint, shift: Bool) -> Annotation? {
         let colour = prefs.colour(of: tool), level = prefs.level(of: tool)
@@ -721,6 +795,14 @@ struct ShotEditor {
                 selection = sel
             }
 
+        case let .moveToolbar(grab):
+            guard let selection else { break }
+            let display = displays[selection.display]
+            let next = ShotToolbarGrid.clamp(
+                origin: PixelPoint(p.x - grab.x, p.y - grab.y), display: display.rect, scale: display.scale)
+            if next == toolbarOrigin { return .none }
+            toolbarOrigin = next
+
         case let .draw(start):
             live = drawn(from: start, to: p, shift: mods.contains(.shift))
 
@@ -773,7 +855,7 @@ struct ShotEditor {
             }
             forming = nil
             hover = nil
-        case .resizeRegion, .moveRegion:
+        case .resizeRegion, .moveRegion, .moveToolbar:
             break
         case .draw, .stroke:
             let made = live
@@ -918,6 +1000,8 @@ struct ShotEditor {
             effect = .cancel
         case .finish:
             effect = .finish
+        case .save:
+            effect = .save
         // While frames are taken nothing else is a command.
         case _ where isLong:
             effect = .none

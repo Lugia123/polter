@@ -59,6 +59,8 @@
       "parts": [ { "paint": "stroke", "d": "M15.5 4.5 20 9l-4.5 4.5M20 9H9.75a5.25 5.25 0 0 0 0 10.5H14" } ] },
     { "key": "long", "name": "Long Screenshot",
       "parts": [ { "paint": "stroke", "d": "M4 9.5V6a2.5 2.5 0 0 1 2.5-2.5h11A2.5 2.5 0 0 1 20 6v3.5M4 18a2.5 2.5 0 0 0 2.5 2.5h11A2.5 2.5 0 0 0 20 18M4 12.9v1.7M20 12.9v1.7M12 7.5v9M8.5 13 12 16.5 15.5 13" } ] },
+    { "key": "save", "name": "Save",
+      "parts": [ { "paint": "stroke", "d": "M6 3.5h10.2L20.5 7.8V18a2.5 2.5 0 0 1-2.5 2.5H6A2.5 2.5 0 0 1 3.5 18V6A2.5 2.5 0 0 1 6 3.5ZM7.5 3.5v4.5h7V3.5M7 20.5v-6.5h10v6.5" } ] },
     { "key": "cancel", "name": "Cancel",
       "parts": [ { "paint": "stroke", "d": "M5.5 5.5l13 13M18.5 5.5l-13 13" } ] },
     { "key": "done", "name": "Done",
@@ -75,7 +77,7 @@
       "parts": [ { "paint": "stroke", "d": "M4 6.39V3.5h16v2.89M12 3.5v17M8.64 20.5h6.72" } ] }
   ],
 
-  "toolbar_icons": ["select", "rect", "ellipse", "line", "arrow", "pen", "highlighter", "text", "number", "mosaic", "undo", "redo", "long", "cancel", "done"],
+  "toolbar_icons": ["select", "rect", "ellipse", "line", "arrow", "pen", "highlighter", "text", "number", "mosaic", "undo", "redo", "long", "save", "cancel", "done"],
   "font_icons": ["font1", "font2", "font3", "font4", "font5"],
 
   "size": {
@@ -118,7 +120,16 @@
     "selection_knob": 7,
     "window_line": 2,
     "mosaic_frame": 16,
-    "mosaic_frame_line": 1
+    "mosaic_frame_line": 1,
+    "magnifier_cells": 15,
+    "magnifier_cell": 8,
+    "magnifier_offset": 16,
+    "magnifier_pad": 8,
+    "magnifier_image_radius": 6,
+    "magnifier_grid_line": 0.5,
+    "magnifier_centre_line": 1.5,
+    "magnifier_row_gap": 6,
+    "magnifier_swatch": 12
   },
 
   "levels": {
@@ -157,7 +168,11 @@
     "caret_edge_light":  { "hex": "#FFFFFF", "alpha": 0.75 },
     "frame_light":       { "hex": "#FFFFFF", "alpha": 0.85 },
     "grip_fill":         { "hex": "#FFFFFF", "alpha": 1 },
-    "grip_shadow":       { "hex": "#000000", "alpha": 0.60 }
+    "grip_shadow":       { "hex": "#000000", "alpha": 0.60 },
+    "magnifier_grid":    { "hex": "#000000", "alpha": 0.22 },
+    "magnifier_centre_outer": { "hex": "#000000", "alpha": 0.85 },
+    "magnifier_centre_inner": { "hex": "#FFFFFF", "alpha": 1 },
+    "magnifier_off_screen":   { "hex": "#202020", "alpha": 1 }
   },
 
   "glass": {
@@ -184,7 +199,8 @@
     "window_switch": 120,
     "drag_start": 120,
     "grip_hover": 80,
-    "tip_delay": 500
+    "tip_delay": 500,
+    "copied_flash": 900
   },
 
   "text_box": {

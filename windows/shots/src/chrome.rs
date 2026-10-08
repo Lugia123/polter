@@ -89,6 +89,7 @@ pub fn icon_of(button: Button) -> Option<&'static str> {
         Button::Undo => "undo",
         Button::Redo => "redo",
         Button::Long => "long",
+        Button::Save => "save",
         Button::Cancel => "cancel",
         Button::Done => "done",
         Button::Colour(_) | Button::Level(_) => return None,
@@ -543,11 +544,11 @@ mod tests {
         }
         assert!(icons.get("no such icon", 56, 2.0).is_none());
         // Asked for again, it is the one already drawn.
-        assert_eq!(icons.drawn.len(), 20);
-        icons.get("rect", 56, 2.0);
-        assert_eq!(icons.drawn.len(), 20);
-        icons.get("rect", 42, 1.5);
         assert_eq!(icons.drawn.len(), 21);
+        icons.get("rect", 56, 2.0);
+        assert_eq!(icons.drawn.len(), 21);
+        icons.get("rect", 42, 1.5);
+        assert_eq!(icons.drawn.len(), 22);
     }
 
     #[test]

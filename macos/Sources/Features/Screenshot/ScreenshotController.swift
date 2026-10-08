@@ -334,6 +334,11 @@ final class ScreenshotController: ShotSessionDelegate {
         }
         let name = url.lastPathComponent
 
+        // Save: a copy for the person to keep, with the screenshot's name.
+        // Everything else goes on as for Done, so a paste and an agent that
+        // reads the picture find what they always do.
+        if result.saveCopy { saveCopy(png: png, named: name) }
+
         // A long screenshot is also cut into tiles: the pieces a CLI can
         // read without shrinking them. One tile would be the picture itself.
         var tiles: [ShotSidecar.Tile] = []
@@ -412,6 +417,24 @@ final class ScreenshotController: ShotSessionDelegate {
         // had the focus is one the person has to delete when it was meant
         // for another. They paste it, and the paste is what sends the path
         // -- a long one's tiles -- and the line remembered above.
+    }
+
+    /// Put a copy of the picture in the Downloads folder and say so, briefly.
+    private func saveCopy(png: Data, named name: String) {
+        guard let folder = ShotStore.downloadsDirectory() else {
+            Self.logger.error("screenshot: the system has no Downloads folder; no copy was saved")
+            ShotToast.show(ShotWords.translate("The picture could not be saved."))
+            return
+        }
+        do {
+            let url = try ShotStore.saveCopy(png: png, named: name, in: folder)
+            Self.logger.info("screenshot: a copy was saved to \(url.path, privacy: .public)")
+            ShotToast.show(ShotWords.translate("Saved to Downloads: {name}").replacingOccurrences(
+                of: "{name}", with: url.lastPathComponent))
+        } catch {
+            Self.logger.error("screenshot: could not save a copy to \(folder.path, privacy: .public): \(String(describing: error), privacy: .public)")
+            ShotToast.show(ShotWords.translate("The picture could not be saved."))
+        }
     }
 
     /// The words of the annotation line in the app's language. The English

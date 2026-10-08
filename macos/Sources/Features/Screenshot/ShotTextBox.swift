@@ -32,6 +32,17 @@ enum ShotTextBox {
         max(fontPx * minEms, ShotStyle.px(minWidth, scale: scale))
     }
 
+    /// How much wider than its widest line a box is, so that the character
+    /// being typed has room before the box has grown: half the font's height.
+    static func slack(fontPx: Int) -> Int { (fontPx + 1) / 2 }
+
+    /// How wide the text in a box wants it: the widest of its lines as the
+    /// host measures them, and the slack. `lineWidths` is one entry per
+    /// line break, not per wrapped line.
+    static func wanted(lineWidths: [Int], fontPx: Int) -> Int {
+        (lineWidths.max() ?? 0) + slack(fontPx: fontPx)
+    }
+
     /// How many lines `text` is: one, and one more for each line break.
     static func lines(in text: String) -> Int {
         1 + text.filter { $0 == "\n" }.count
@@ -63,18 +74,22 @@ enum ShotTextBox {
 
     /// The box for a text at `at` holding `lines` lines of height `line`.
     ///
-    /// Its width runs to the selection's right edge and is at least `minW`
-    /// (stopped at the display's edge). Its height is a whole number of
+    /// Its width follows what is in it: `wanted` (`wanted(lineWidths:fontPx:)`),
+    /// at least `minW`, and no more than runs to the selection's right edge
+    /// (stopped at the display's edge). An empty box is `minW` wide; it
+    /// used to run to the selection's right edge whatever was in it, which
+    /// at a large selection was a dashed line across the screen. Its height is a whole number of
     /// lines: as many as the text has, but no more than fit above the
     /// selection's bottom edge -- or the display's, for a text that is not
     /// in the selection at all -- and above the top of any of `keepClear`
     /// below it. Never less than one line.
     static func rect(
-        at: PixelPoint, lines: Int, line: Int, minW: Int,
+        at: PixelPoint, lines: Int, line: Int, minW: Int, wanted: Int,
         selection: PixelRect, display: PixelRect, keepClear: [PixelRect]
     ) -> PixelRect {
         let line = max(line, 1)
-        let w = max(min(max(selection.right - at.x, minW), display.right - at.x), 1)
+        let reach = max(selection.right - at.x, minW)
+        let w = max(min(max(wanted, minW), reach, display.right - at.x), 1)
         let inSelection = at.y >= selection.y && at.y < selection.bottom
         var limit = inSelection ? selection.bottom : display.bottom
         // Below the text's first row, or holding it: one that holds it

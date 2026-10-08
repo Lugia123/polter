@@ -2180,10 +2180,11 @@ msgstr ""
 msgid "Revert"
 msgstr ""
 
+# Machine translation (2026-10-08), not reviewed by a speaker.
 #: windows/host/src/roles_ui.rs:2039 windows/host/src/roles_ui.rs:2711
 #: windows/host/src/settings_ui.rs:1014
 msgid "Save"
-msgstr ""
+msgstr "저장"
 
 #: windows/host/src/roles_ui.rs:2241
 msgid ""
@@ -2568,3 +2569,33 @@ msgstr "선택…"
 #: windows/host/src/general_ui.rs
 msgid "Not set"
 msgstr "설정 안 됨"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Saved to Downloads: {name}"
+msgstr "다운로드에 저장됨: {name}"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The picture could not be saved."
+msgstr "이미지를 저장할 수 없습니다."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Copied"
+msgstr "복사됨"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scrolling down… Enter keeps what is joined so far, Esc cancels."
+msgstr "아래로 스크롤하는 중… Enter는 지금까지 이어 붙인 부분을 유지하고, Esc는 취소합니다."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand."
+msgstr "자동 스크롤에는 손쉬운 사용 권한이 필요하므로 아래로 천천히 직접 스크롤하세요."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The page could not be followed any further, so the picture ends here."
+msgstr "페이지를 더 이상 따라갈 수 없어 이미지는 여기서 끝납니다."

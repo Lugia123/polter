@@ -3400,3 +3400,27 @@ msgstr ""
 #: windows/host/src/general_ui.rs
 msgid "Not set"
 msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Saved to Downloads: {name}"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "The picture could not be saved."
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Copied"
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Scrolling down… Enter keeps what is joined so far, Esc cancels."
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand."
+msgstr ""
+
+#: src/input/screenshot.zig
+msgid "The page could not be followed any further, so the picture ends here."
+msgstr ""

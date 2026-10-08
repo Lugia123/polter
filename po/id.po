@@ -2160,10 +2160,11 @@ msgstr ""
 msgid "Revert"
 msgstr ""
 
+# Machine translation (2026-10-08), not reviewed by a speaker.
 #: windows/host/src/roles_ui.rs:2039 windows/host/src/roles_ui.rs:2711
 #: windows/host/src/settings_ui.rs:1014
 msgid "Save"
-msgstr ""
+msgstr "Simpan"
 
 #: windows/host/src/roles_ui.rs:2241
 msgid ""
@@ -2548,3 +2549,33 @@ msgstr "Pilih…"
 #: windows/host/src/general_ui.rs
 msgid "Not set"
 msgstr "Belum diatur"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Saved to Downloads: {name}"
+msgstr "Disimpan di Unduhan: {name}"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The picture could not be saved."
+msgstr "Gambar tidak dapat disimpan."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Copied"
+msgstr "Disalin"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scrolling down… Enter keeps what is joined so far, Esc cancels."
+msgstr "Menggulir ke bawah… Enter mempertahankan yang sudah tergabung, Esc membatalkan."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand."
+msgstr "Menggulir otomatis memerlukan izin Aksesibilitas, jadi gulir perlahan ke bawah secara manual."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The page could not be followed any further, so the picture ends here."
+msgstr "Halaman tidak dapat diikuti lebih jauh, jadi gambar berakhir di sini."

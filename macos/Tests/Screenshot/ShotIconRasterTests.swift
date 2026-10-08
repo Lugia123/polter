@@ -15,7 +15,7 @@ struct ShotIconRasterTests {
     private let count = 0.02
 
     @Test func everyIconLandsWhereTheGeneratorSays() {
-        #expect(ShotLook.icons.count == 20, "fifteen buttons and five sizes of T")
+        #expect(ShotLook.icons.count == 21, "sixteen buttons and five sizes of T")
         var exact = 0
         var total = 0
         for icon in ShotLook.icons {

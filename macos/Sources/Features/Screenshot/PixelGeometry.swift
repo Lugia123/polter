@@ -180,8 +180,10 @@ enum PixelGeometry {
     }
 
     /// Where a bar of `size` goes: under the selection, right edges aligned;
-    /// above when there is no room under; inside its bottom edge when there
-    /// is room for neither.
+    /// above when there is no room under; inside its bottom edge, centred on
+    /// the selection, when there is room for neither -- the selection is as
+    /// tall as the display, and right-aligned the bar would sit in the
+    /// corner (task 1196, 5).
     static func toolbarOrigin(for selection: PixelRect, bar size: (w: Int, h: Int), within display: PixelRect, gap: Int) -> PixelPoint {
         let y: Int
         if selection.bottom + gap + size.h <= display.bottom {
@@ -191,7 +193,9 @@ enum PixelGeometry {
         } else {
             y = selection.bottom - gap - size.h
         }
-        let x = max(min(selection.right - size.w, display.right - size.w), display.x)
+        let inside = selection.bottom + gap + size.h > display.bottom && selection.y - gap - size.h < display.y
+        let wanted = inside ? selection.x + (selection.w - size.w) / 2 : selection.right - size.w
+        let x = max(min(wanted, display.right - size.w), display.x)
         return PixelPoint(x, y)
     }
 

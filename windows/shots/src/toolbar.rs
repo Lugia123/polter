@@ -18,6 +18,8 @@ pub enum Button {
     Undo,
     Redo,
     Long,
+    /// Finish as Done does, and keep a copy in Downloads (#1197).
+    Save,
     Cancel,
     Done,
     /// A colour swatch on the property row.
@@ -41,7 +43,7 @@ const ROW: [&[Button]; 5] = [
         Button::Tool(Tool::Mosaic),
     ],
     &[Button::Undo, Button::Redo],
-    &[Button::Long],
+    &[Button::Long, Button::Save],
     &[Button::Cancel, Button::Done],
 ];
 
@@ -104,9 +106,23 @@ fn row_gap(scale: f64) -> i32 {
 /// or inside its bottom edge (`geom::toolbar_origin`). `props` is which
 /// property row to show.
 pub fn layout(selection: Rect, monitor: Rect, scale: f64, props: Props) -> Layout {
-    let px = |points: f64| style::px_f(points, scale);
     let (width, height) = footprint(scale);
-    let origin = crate::geom::toolbar_origin(selection, (width, height), monitor, px(size::OFFSET));
+    let origin = crate::geom::toolbar_origin(selection, (width, height), monitor, style::px_f(size::OFFSET, scale));
+    layout_at(origin, scale, props)
+}
+
+/// Where the toolbar's top-left corner may be put by hand: the whole
+/// footprint stays on `monitor`.
+pub fn keep_on(origin: Point, monitor: Rect, scale: f64) -> Point {
+    let (w, h) = footprint(scale);
+    Point::new(origin.x.min(monitor.right() - w).max(monitor.x), origin.y.min(monitor.bottom() - h).max(monitor.y))
+}
+
+/// The toolbar with its top-left corner at `origin`, wherever that came from:
+/// beside the selection ([`layout`]) or where the user dragged it.
+pub fn layout_at(origin: Point, scale: f64, props: Props) -> Layout {
+    let px = |points: f64| style::px_f(points, scale);
+    let (width, _) = footprint(scale);
     let row_h = row_height(scale);
     let (cell, step) = (px(size::BUTTON), px(size::BUTTON) + px(size::GAP));
     let mut buttons = Vec::new();
@@ -174,6 +190,7 @@ pub fn name(button: Button, props: Props) -> &'static str {
         Button::Undo => "Undo",
         Button::Redo => "Redo",
         Button::Long => LONG,
+        Button::Save => "Save",
         Button::Cancel => "Cancel",
         Button::Done => "Done",
         Button::Colour(c) => COLOUR_NAMES[c as usize % COLOUR_NAMES.len()],
@@ -224,6 +241,16 @@ pub fn long_hint(last: crate::stitch::Step, added: bool, restless: bool) -> Opti
     }
 }
 pub const LONG_FULL: &str = "The height limit was reached.";
+/// What the status line says while the program scrolls (shared msgids,
+/// `src/input/screenshot.zig`).
+pub const LONG_AUTO: &str = "Scrolling down\u{2026} Enter keeps what is joined so far, Esc cancels.";
+/// The notice when the program had to stop because the page could not be followed.
+pub const LONG_FOLLOWED: &str = "The page could not be followed any further, so the picture ends here.";
+/// The save notices: that it was saved (`{name}` is the file), that it was not.
+pub const SAVED: &str = "Saved to Downloads: {name}";
+pub const SAVE_FAILED: &str = "The picture could not be saved.";
+/// The magnifier's flash after Ctrl+C.
+pub const COPIED: &str = "Copied";
 /// The notice when the hotkey cannot be registered: its title and its body.
 pub const HOTKEY_FAILED: &str = "The screenshot shortcut could not be registered";
 pub const HOTKEY_TAKEN: &str =
@@ -236,11 +263,12 @@ pub fn words() -> Vec<&'static str> {
         all.push(name(Button::Level(0), props));
     }
     all.extend(Tool::ALL.iter().map(|t| name(Button::Tool(*t), Props::None)));
-    for b in [Button::Undo, Button::Redo, Button::Long, Button::Cancel, Button::Done] {
+    for b in [Button::Undo, Button::Redo, Button::Long, Button::Save, Button::Cancel, Button::Done] {
         all.push(name(b, Props::None));
     }
     all.extend(COLOUR_NAMES);
     all.extend([FONT_MISSING, LONG_HINT, LONG_SLOWER, LONG_FULL, LONG_RESTLESS, HOTKEY_FAILED, HOTKEY_TAKEN]);
+    all.extend([LONG_AUTO, LONG_FOLLOWED, SAVED, SAVE_FAILED, COPIED]);
     let l = crate::annot::EN;
     all.extend([
         l.header, l.text, l.rect, l.ellipse, l.line, l.arrow, l.pen, l.highlighter, l.mosaic, l.separator, l.see,
@@ -261,6 +289,7 @@ pub fn shortcut(button: Button) -> Option<String> {
         Button::Redo => Some("Ctrl+Shift+Z".into()),
         Button::Cancel => Some("Esc".into()),
         Button::Done => Some("Enter".into()),
+        Button::Save => Some("Ctrl+S".into()),
         Button::Colour(c) => Some((c + 1).to_string()),
         Button::Long | Button::Level(_) => None,
     }
@@ -288,11 +317,11 @@ mod tests {
     }
 
     #[test]
-    fn the_first_row_is_the_specified_fifteen_in_order() {
+    fn the_first_row_is_the_specified_sixteen_in_order() {
         let l = layout(SEL, MON, 1.0, Props::None);
         let row: Vec<Button> = l.buttons.iter().map(|(b, _)| *b).collect();
         let mut expected: Vec<Button> = Tool::ALL.iter().map(|t| Button::Tool(*t)).collect();
-        expected.extend([Button::Undo, Button::Redo, Button::Long, Button::Cancel, Button::Done]);
+        expected.extend([Button::Undo, Button::Redo, Button::Long, Button::Save, Button::Cancel, Button::Done]);
         assert_eq!(row, expected);
         assert!(l.buttons.windows(2).all(|w| w[0].1.right() <= w[1].1.x), "left to right, not overlapping");
         assert!(l.props.is_none());
@@ -302,15 +331,16 @@ mod tests {
     fn buttons_sit_on_the_grid_with_wider_gaps_between_groups() {
         let l = layout(SEL, MON, 1.0, Props::None);
         let x = |b: Button| l.rect_of(b).unwrap().x;
-        assert_eq!(footprint(1.0), (2 * 6 + 15 * 28 + 10 * 4 + 4 * 12, 2 * 40), "520 x 80: one plate, nothing between its rows");
-        assert_eq!(l.bar, Rect::new(SEL.right() - 520, SEL.bottom() + 8, 520, 40));
+        assert_eq!(footprint(1.0), (2 * 6 + 16 * 28 + 11 * 4 + 4 * 12, 2 * 40), "552 x 80: one plate, nothing between its rows");
+        assert_eq!(l.bar, Rect::new(SEL.right() - 552, SEL.bottom() + 8, 552, 40));
         assert_eq!(l.rect_of(Button::Tool(Tool::Select)), Some(Rect::new(l.bar.x + 6, l.bar.y + 6, 28, 28)));
         // Select | Rect: a group gap.  Rect, Ellipse: an ordinary one.
         assert_eq!(x(Button::Tool(Tool::Rect)) - x(Button::Tool(Tool::Select)), 28 + 12);
         assert_eq!(x(Button::Tool(Tool::Ellipse)) - x(Button::Tool(Tool::Rect)), 28 + 4);
         assert_eq!(x(Button::Undo) - x(Button::Tool(Tool::Mosaic)), 28 + 12);
         assert_eq!(x(Button::Long) - x(Button::Redo), 28 + 12);
-        assert_eq!(x(Button::Cancel) - x(Button::Long), 28 + 12);
+        assert_eq!(x(Button::Save) - x(Button::Long), 28 + 4, "Long and Save are one group");
+        assert_eq!(x(Button::Cancel) - x(Button::Save), 28 + 12);
         assert_eq!(l.rect_of(Button::Done).unwrap().right(), l.bar.right() - 6, "the last button ends at the padding");
     }
 
@@ -319,7 +349,7 @@ mod tests {
         let l = layout(SEL, MON, 1.5, Props::Stroke);
         assert_eq!(l.rect_of(Button::Tool(Tool::Select)).unwrap().w, 42);
         assert_eq!(l.rect_of(Button::Colour(0)).unwrap().w, 42, "a colour has a whole cell");
-        assert_eq!(footprint(1.5).0, 2 * 9 + 15 * 42 + 10 * 6 + 4 * 18);
+        assert_eq!(footprint(1.5).0, 2 * 9 + 16 * 42 + 11 * 6 + 4 * 18);
     }
 
     #[test]
@@ -342,20 +372,20 @@ mod tests {
         let row = l.props.unwrap();
         // Directly under the first row and as wide: one plate.
         assert_eq!(row, Rect::new(l.bar.x, l.bar.bottom(), l.bar.w, 40));
-        assert_eq!(l.plate(), Rect::new(l.bar.x, l.bar.y, 520, 80));
-        assert_eq!(layout(SEL, MON, 1.0, Props::None).plate(), Rect::new(l.bar.x, l.bar.y, 520, 40));
+        assert_eq!(l.plate(), Rect::new(l.bar.x, l.bar.y, 552, 80));
+        assert_eq!(layout(SEL, MON, 1.0, Props::None).plate(), Rect::new(l.bar.x, l.bar.y, 552, 40));
         for (b, r) in &l.buttons {
             if matches!(b, Button::Colour(_) | Button::Level(_)) {
                 assert!(r.x >= row.x + 6 && r.right() <= row.right() - 6 && r.y >= row.y && r.bottom() <= row.bottom(), "{b:?}");
                 assert_eq!((r.w, r.h), (28, 28), "{b:?}: a whole cell");
             }
         }
-        // The contents are at the left: 464 of the 520 points.
+        // The contents are at the left: 464 of the 552 points.
         assert_eq!(l.rect_of(Button::Level(4)).unwrap().right() + 6 - row.x, 2 * 6 + 9 * 28 + 8 * 4 + 12 + 5 * 28 + 4 * 4);
         assert_eq!(l.rect_of(Button::Colour(0)), Some(Rect::new(row.x + 6, row.y + 6, 28, 28)));
         let block = layout(SEL, MON, 1.0, Props::Block);
         assert_eq!(block.rect_of(Button::Level(0)).unwrap().x, block.bar.x + 6, "with no swatches the steps start at the left");
-        assert_eq!(block.props.unwrap().w, 520, "and the plate is as wide all the same");
+        assert_eq!(block.props.unwrap().w, 552, "and the plate is as wide all the same");
     }
 
     /// The grid at 200%, in pixels: arithmetic, so it is exact (§9.8.13 B).
@@ -363,19 +393,19 @@ mod tests {
     fn at_two_hundred_percent_every_cell_is_on_the_grid_to_the_pixel() {
         let l = layout(SEL, MON, 2.0, Props::Font);
         let first: Vec<Rect> = l.buttons.iter().filter(|(b, _)| !matches!(b, Button::Colour(_) | Button::Level(_))).map(|(_, r)| *r).collect();
-        assert_eq!(first.len(), 15);
+        assert_eq!(first.len(), 16);
         assert!(first.iter().all(|r| r.y == first[0].y && (r.w, r.h) == (56, 56)));
         // Within a group 64 apart, across groups 80: 1 / 9 / 2 / 1 / 2.
         let steps: Vec<i32> = first.windows(2).map(|w| w[1].x - w[0].x).collect();
-        assert_eq!(steps, [80, 64, 64, 64, 64, 64, 64, 64, 64, 80, 64, 80, 80, 64]);
+        assert_eq!(steps, [80, 64, 64, 64, 64, 64, 64, 64, 64, 80, 64, 80, 64, 80, 64]);
         let second: Vec<Rect> = l.buttons.iter().filter(|(b, _)| matches!(b, Button::Colour(_) | Button::Level(_))).map(|(_, r)| *r).collect();
         assert!(second.iter().all(|r| r.y == second[0].y && (r.w, r.h) == (56, 56)));
         let steps: Vec<i32> = second.windows(2).map(|w| w[1].x - w[0].x).collect();
         assert_eq!(steps, [64, 64, 64, 64, 64, 64, 64, 64, 80, 64, 64, 64, 64], "nine colours, a group gap, five steps");
-        // Both rows start at the plate's left edge and 12, the plate is 1040
+        // Both rows start at the plate's left edge and 12, the plate is 1104
         // wide and 160 tall, and the second row's cells are 24 under the first's.
         assert_eq!((first[0].x, second[0].x), (l.bar.x + 12, l.bar.x + 12));
-        assert_eq!((l.plate().w, l.plate().h, layout(SEL, MON, 2.0, Props::None).plate().h), (1040, 160, 80));
+        assert_eq!((l.plate().w, l.plate().h, layout(SEL, MON, 2.0, Props::None).plate().h), (1104, 160, 80));
         assert_eq!(second[0].y, first[0].bottom() + 24);
     }
 

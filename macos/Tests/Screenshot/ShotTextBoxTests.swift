@@ -41,7 +41,7 @@ struct ShotTextBoxTests {
         let at = Box.origin(click: Pt(1450, 650), line: line, minW: minW, selection: selection, keepClear: keep)
         #expect(at == Pt(1450, 650), "there is room: the text starts where it was pressed")
         func box(_ lines: Int) -> PixelRect {
-            Box.rect(at: at, lines: lines, line: line, minW: minW, selection: selection, display: display, keepClear: keep)
+            Box.rect(at: at, lines: lines, line: line, minW: minW, wanted: 100_000, selection: selection, display: display, keepClear: keep)
         }
         #expect(box(1) == PixelRect(1450, 650, 800, line))
         // It grows a line at a time and stops at the selection's bottom.
@@ -77,7 +77,7 @@ struct ShotTextBoxTests {
                             let at = Box.origin(click: click, line: line, minW: minW, selection: selection, keepClear: keep)
                             for typed in [1, 2, 3, 50] {
                                 let b = Box.rect(
-                                    at: at, lines: typed, line: line, minW: minW,
+                                    at: at, lines: typed, line: line, minW: minW, wanted: 100_000,
                                     selection: selection, display: display, keepClear: keep)
                                 let what: Comment =
                                     "scale \(scale) selection \(selection) level \(level) click \(click) lines \(typed): \(b)"
@@ -127,7 +127,7 @@ struct ShotTextBoxTests {
         let display = PixelRect(0, 0, 1920, 1080)
         let selection = PixelRect(left: 100, top: 100, right: 700, bottom: 500)
         func box(_ at: Pt, _ lines: Int, _ keep: [PixelRect] = []) -> PixelRect {
-            Box.rect(at: at, lines: lines, line: 30, minW: 120, selection: selection, display: display, keepClear: keep)
+            Box.rect(at: at, lines: lines, line: 30, minW: 120, wanted: 100_000, selection: selection, display: display, keepClear: keep)
         }
         // Left behind above the selection when it was moved: the selection
         // is not its floor, the display is.
@@ -145,11 +145,30 @@ struct ShotTextBoxTests {
         #expect(!Box.onToolbar(Pt(360, 560), keepClear: [bar]))
     }
 
+    @Test func theWidthFollowsWhatIsTypedAndStopsAtTheSelectionsEdge() {
+        let display = PixelRect(0, 0, 1920, 1080)
+        let selection = PixelRect(left: 100, top: 100, right: 700, bottom: 500)
+        func width(_ at: Pt, wanted: Int) -> Int {
+            Box.rect(at: at, lines: 1, line: 30, minW: 120, wanted: wanted, selection: selection, display: display, keepClear: []).w
+        }
+        // Empty: the narrowest, not a line across the selection.
+        #expect(width(Pt(300, 200), wanted: Box.wanted(lineWidths: [], fontPx: 24)) == 120)
+        #expect(Box.wanted(lineWidths: [], fontPx: 24) == 12)
+        // Typed: the widest line and the slack.
+        #expect(Box.wanted(lineWidths: [50, 180, 90], fontPx: 24) == 192)
+        #expect(width(Pt(300, 200), wanted: 192) == 192)
+        // Never past the selection's right edge, nor the display's.
+        #expect(width(Pt(300, 200), wanted: 5000) == 400)
+        #expect(width(Pt(1900, 200), wanted: 5000) == 20)
+        // A text left past the selection's edge: the least, as before.
+        #expect(width(Pt(690, 200), wanted: 192) == 120)
+    }
+
     @Test func theWidthRunsToTheSelectionsEdgeAndIsNeverTooNarrowToTypeIn() {
         let display = PixelRect(0, 0, 1920, 1080)
         let selection = PixelRect(left: 100, top: 100, right: 700, bottom: 500)
         func width(_ at: Pt) -> Int {
-            Box.rect(at: at, lines: 1, line: 30, minW: 120, selection: selection, display: display, keepClear: []).w
+            Box.rect(at: at, lines: 1, line: 30, minW: 120, wanted: 100_000, selection: selection, display: display, keepClear: []).w
         }
         #expect(width(Pt(300, 200)) == 400)
         // Past the selection's right edge (a text left there): the least.

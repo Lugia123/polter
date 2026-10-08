@@ -232,4 +232,35 @@ struct ShotStoreTests {
         let url = try ShotStore.write(png: Data([1]), to: dir, date: date(), timeZone: utc)
         #expect(url.lastPathComponent == "20261006-153012-124.png")
     }
+
+    // MARK: A copy for the person (task 1196, 9)
+
+    @Test func aCopyKeepsTheScreenshotsNameAndNumbersARepeat() {
+        var taken: Set<String> = []
+        #expect(ShotStore.copyName(of: "20261006-153012-123.png") { taken.contains($0) } == "20261006-153012-123.png")
+        taken = ["20261006-153012-123.png"]
+        #expect(ShotStore.copyName(of: "20261006-153012-123.png") { taken.contains($0) } == "20261006-153012-123 2.png")
+        taken.insert("20261006-153012-123 2.png")
+        #expect(ShotStore.copyName(of: "20261006-153012-123.png") { taken.contains($0) } == "20261006-153012-123 3.png")
+    }
+
+    @Test func savingACopyNeverOverwritesAndIsTheirOwnFile() throws {
+        let dir = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let name = "20261006-153012-123.png"
+        let first = try ShotStore.saveCopy(png: Data([1]), named: name, in: dir)
+        let second = try ShotStore.saveCopy(png: Data([2]), named: name, in: dir)
+        #expect(first.lastPathComponent == name)
+        #expect(second.lastPathComponent == "20261006-153012-123 2.png")
+        #expect(try Data(contentsOf: first) == Data([1]), "the first is untouched")
+        #expect(try Data(contentsOf: second) == Data([2]))
+        // Not one of ours to clean up by name: the person's file keeps
+        // the screenshot's name and the cleanup never looks in that folder,
+        // but the numbered one must not be mistaken for a tile either.
+        #expect(!ShotStore.isOurs(second.lastPathComponent))
+    }
+
+    @Test func theDownloadsFolderIsTheSystemsAnswer() {
+        #expect(ShotStore.downloadsDirectory()?.lastPathComponent == "Downloads")
+    }
 }

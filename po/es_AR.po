@@ -2205,10 +2205,11 @@ msgstr ""
 msgid "Revert"
 msgstr ""
 
+# Machine translation (2026-10-08), not reviewed by a speaker.
 #: windows/host/src/roles_ui.rs:2039 windows/host/src/roles_ui.rs:2711
 #: windows/host/src/settings_ui.rs:1014
 msgid "Save"
-msgstr ""
+msgstr "Guardar"
 
 #: windows/host/src/roles_ui.rs:2241
 msgid ""
@@ -2593,3 +2594,33 @@ msgstr "Elegir…"
 #: windows/host/src/general_ui.rs
 msgid "Not set"
 msgstr "Sin definir"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Saved to Downloads: {name}"
+msgstr "Guardado en Descargas: {name}"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The picture could not be saved."
+msgstr "No se pudo guardar la imagen."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Copied"
+msgstr "Copiado"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scrolling down… Enter keeps what is joined so far, Esc cancels."
+msgstr "Desplazando hacia abajo… Intro conserva lo unido hasta ahora, Esc cancela."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand."
+msgstr "Desplazar por ti requiere el permiso de Accesibilidad; desplázate despacio hacia abajo a mano."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The page could not be followed any further, so the picture ends here."
+msgstr "No se pudo seguir la página más allá, así que la imagen termina aquí."

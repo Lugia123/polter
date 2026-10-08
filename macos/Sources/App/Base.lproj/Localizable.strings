@@ -661,3 +661,9 @@
 "Screenshot Shortcut" = "Screenshot Shortcut";
 "Change it with a keybind line in the config file." = "Change it with a keybind line in the config file.";
 "Choose…" = "Choose…";
+"Saved to Downloads: {name}" = "Saved to Downloads: {name}";
+"The picture could not be saved." = "The picture could not be saved.";
+"Copied" = "Copied";
+"Scrolling down… Enter keeps what is joined so far, Esc cancels." = "Scrolling down… Enter keeps what is joined so far, Esc cancels.";
+"Scrolling for you needs the Accessibility permission, so scroll down slowly by hand." = "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand.";
+"The page could not be followed any further, so the picture ends here." = "The page could not be followed any further, so the picture ends here.";

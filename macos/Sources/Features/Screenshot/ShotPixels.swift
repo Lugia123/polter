@@ -41,6 +41,31 @@ struct FrozenImage {
         ShotPixels.blit(into: &dst, covering: dstRect, from: rgbx, covering: rect)
     }
 
+    /// The colour of the pixel at `p`, from this picture itself -- the
+    /// frozen original, not what is drawn over it -- or nil when `p` is not
+    /// on the display.
+    func colour(at p: PixelPoint) -> ShotStyle.RGB? {
+        guard rect.contains(p) else { return nil }
+        let i = pixelOffset(p.x, p.y)
+        return ShotStyle.RGB(r: rgbx[i], g: rgbx[i + 1], b: rgbx[i + 2])
+    }
+
+    /// The pixels of `r` as rows of R, G, B, X, top row first. A pixel that
+    /// is not on the display is `outside`.
+    func patch(_ r: PixelRect, outside: ShotStyle.RGB) -> [UInt8] {
+        var out = [UInt8](repeating: 255, count: max(r.w, 0) * max(r.h, 0) * 4)
+        for y in 0..<max(r.h, 0) {
+            for x in 0..<max(r.w, 0) {
+                let c = colour(at: PixelPoint(r.x + x, r.y + y)) ?? outside
+                let i = (y * r.w + x) * 4
+                out[i] = c.r
+                out[i + 1] = c.g
+                out[i + 2] = c.b
+            }
+        }
+        return out
+    }
+
     fileprivate func pixelOffset(_ x: Int, _ y: Int) -> Int {
         ((y - rect.y) * rect.w + (x - rect.x)) * 4
     }

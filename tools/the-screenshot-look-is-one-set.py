@@ -4,7 +4,7 @@
 **Why this exists.** The frozen-screen overlay is drawn by two hosts and is
 meant to be one overlay (`dev-docs/poltergeist/screenshot.md`, 9.8). Its
 first version was two hand-written copies of the same shapes, five of whose
-fifteen icons were glyphs of whichever system font each host had. The icons'
+sixteen icons were glyphs of whichever system font each host had. The icons'
 ink ran from 8 to 16 points wide and from 6 to 20 tall, the two platforms
 differed from each other, and every test was green: nothing compared them.
 
@@ -30,7 +30,7 @@ arrangement goes quietly wrong are what this gate looks for:
      failure too.
   5. **The five sizes of T stop being five sizes.** Each is wider and taller
      than the one before.
-  6. **The toolbar loses an icon.** Fifteen buttons and five sizes; a set of
+  6. **The toolbar loses an icon.** Sixteen buttons and five sizes; a set of
      no icons is never a pass.
 
 NOT CHECKED
@@ -56,7 +56,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, ".."))
 GENERATOR = os.path.join(HERE, "gen-screenshot-look.py")
 
-TOOLBAR = 15
+TOOLBAR = 16
 SIZES = 5
 # How far a box may be from the one the data pins for it, in artboard units.
 PINNED = 0.002

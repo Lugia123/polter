@@ -6,6 +6,8 @@ enum ToolbarButton: Equatable, Hashable {
     case undo
     case redo
     case long
+    /// Done, and a copy in the Downloads folder as well (task 1196, 9).
+    case save
     case cancel
     case done
     /// A colour swatch on the property row.
@@ -49,7 +51,7 @@ enum ShotToolbarGrid {
             .tool(.highlighter), .tool(.text), .tool(.number), .tool(.mosaic),
         ],
         [.undo, .redo],
-        [.long],
+        [.long, .save],
         [.cancel, .done],
     ]
 
@@ -101,13 +103,28 @@ enum ShotToolbarGrid {
         return (width, rowHeight * 2 + rowGapPx(scale))
     }
 
+    /// `origin` as the top left of the plate, brought back inside `display`
+    /// as far as both rows need: the toolbar is dragged by whoever is
+    /// taking the screenshot and is never dragged off the screen.
+    static func clamp(origin: PixelPoint, display: PixelRect, scale: Double) -> PixelPoint {
+        let size = footprint(scale: scale)
+        return PixelPoint(
+            max(min(origin.x, display.right - size.w), display.x),
+            max(min(origin.y, display.bottom - size.h), display.y))
+    }
+
     /// Lay the toolbar out beside `selection` on `display`: below it, or
-    /// above, or inside its bottom edge. `props` is which property row to
-    /// show.
-    static func layout(selection: PixelRect, display: PixelRect, scale: Double, props: AnnotationTool.Props) -> Layout {
+    /// above, or inside its bottom edge -- or, once it has been dragged,
+    /// where it was put (`placed`, the plate's top left). `props` is which
+    /// property row to show.
+    static func layout(
+        selection: PixelRect, display: PixelRect, scale: Double, props: AnnotationTool.Props,
+        placed: PixelPoint? = nil
+    ) -> Layout {
         func px(_ points: Int) -> Int { ShotStyle.px(points, scale: scale) }
         let size = footprint(scale: scale)
-        let origin = PixelGeometry.toolbarOrigin(for: selection, bar: size, within: display, gap: px(offset))
+        let origin = placed.map { clamp(origin: $0, display: display, scale: scale) }
+            ?? PixelGeometry.toolbarOrigin(for: selection, bar: size, within: display, gap: px(offset))
         let rowHeight = px(button) + px(padding) * 2
 
         var buttons: [Layout.Placed] = []
@@ -168,6 +185,7 @@ enum ShotToolbarGrid {
         case .undo: return "Undo"
         case .redo: return "Redo"
         case .long: return "Long Screenshot"
+        case .save: return "Save"
         case .cancel: return "Cancel"
         case .done: return "Done"
         case let .colour(c): return colourNames[((c % colourNames.count) + colourNames.count) % colourNames.count]
@@ -189,6 +207,7 @@ enum ShotToolbarGrid {
         case .redo: return "⇧⌘Z"
         case .cancel: return "Esc"
         case .done: return "Enter"
+        case .save: return "⌘S"
         case let .colour(c): return "\(c + 1)"
         case .long, .level: return nil
         }
@@ -209,6 +228,8 @@ enum EditorKey: Equatable {
     case cancel
     /// Take the selection as it is.
     case finish
+    /// Take the selection as it is, and keep a copy in the Downloads folder.
+    case save
     case undo
     case redo
     /// Pick up a tool.
@@ -253,6 +274,9 @@ enum EditorKey: Equatable {
             return .cancel
         case .enter:
             return hasSelection && plain ? .finish : .ignored
+        case .letter("s") where mods == [.command] && hasSelection,
+             .letter("S") where mods == [.command] && hasSelection:
+            return .save
         case .letter("z") where mods == [.command], .letter("Z") where mods == [.command]:
             return .undo
         case .letter("z") where mods == [.command, .shift], .letter("Z") where mods == [.command, .shift]:

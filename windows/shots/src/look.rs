@@ -122,6 +122,15 @@ pub mod size {
     pub const WINDOW_LINE: f64 = 2.0;
     pub const MOSAIC_FRAME: f64 = 16.0;
     pub const MOSAIC_FRAME_LINE: f64 = 1.0;
+    pub const MAGNIFIER_CELLS: f64 = 15.0;
+    pub const MAGNIFIER_CELL: f64 = 8.0;
+    pub const MAGNIFIER_OFFSET: f64 = 16.0;
+    pub const MAGNIFIER_PAD: f64 = 8.0;
+    pub const MAGNIFIER_IMAGE_RADIUS: f64 = 6.0;
+    pub const MAGNIFIER_GRID_LINE: f64 = 0.5;
+    pub const MAGNIFIER_CENTRE_LINE: f64 = 1.5;
+    pub const MAGNIFIER_ROW_GAP: f64 = 6.0;
+    pub const MAGNIFIER_SWATCH: f64 = 12.0;
 }
 
 pub mod glass {
@@ -149,6 +158,7 @@ pub mod transition_ms {
     pub const DRAG_START: f64 = 120.0;
     pub const GRIP_HOVER: f64 = 80.0;
     pub const TIP_DELAY: f64 = 500.0;
+    pub const COPIED_FLASH: f64 = 900.0;
 }
 
 pub mod text_box {
@@ -226,6 +236,10 @@ pub mod colour {
     pub const FRAME_LIGHT: Rgba = Rgba { r: 0xFF, g: 0xFF, b: 0xFF, a: 0.85 };
     pub const GRIP_FILL: Rgba = Rgba { r: 0xFF, g: 0xFF, b: 0xFF, a: 1.0 };
     pub const GRIP_SHADOW: Rgba = Rgba { r: 0x00, g: 0x00, b: 0x00, a: 0.6 };
+    pub const MAGNIFIER_GRID: Rgba = Rgba { r: 0x00, g: 0x00, b: 0x00, a: 0.22 };
+    pub const MAGNIFIER_CENTRE_OUTER: Rgba = Rgba { r: 0x00, g: 0x00, b: 0x00, a: 0.85 };
+    pub const MAGNIFIER_CENTRE_INNER: Rgba = Rgba { r: 0xFF, g: 0xFF, b: 0xFF, a: 1.0 };
+    pub const MAGNIFIER_OFF_SCREEN: Rgba = Rgba { r: 0x20, g: 0x20, b: 0x20, a: 1.0 };
 }
 
 const SELECT_0: &[Cmd] = &[
@@ -472,6 +486,26 @@ const LONG_0: &[Cmd] = &[
     Cmd::Line(12.0, 16.5),
     Cmd::Line(15.5, 13.0),
 ];
+const SAVE_0: &[Cmd] = &[
+    Cmd::Move(6.0, 3.5),
+    Cmd::Line(16.2, 3.5),
+    Cmd::Line(20.5, 7.8),
+    Cmd::Line(20.5, 18.0),
+    Cmd::Cubic(20.5, 19.38071, 19.38071, 20.5, 18.0, 20.5),
+    Cmd::Line(6.0, 20.5),
+    Cmd::Cubic(4.61929, 20.5, 3.5, 19.38071, 3.5, 18.0),
+    Cmd::Line(3.5, 6.0),
+    Cmd::Cubic(3.5, 4.61929, 4.61929, 3.5, 6.0, 3.5),
+    Cmd::Close,
+    Cmd::Move(7.5, 3.5),
+    Cmd::Line(7.5, 8.0),
+    Cmd::Line(14.5, 8.0),
+    Cmd::Line(14.5, 3.5),
+    Cmd::Move(7.0, 20.5),
+    Cmd::Line(7.0, 14.0),
+    Cmd::Line(17.0, 14.0),
+    Cmd::Line(17.0, 20.5),
+];
 const CANCEL_0: &[Cmd] = &[
     Cmd::Move(5.5, 5.5),
     Cmd::Line(18.5, 18.5),
@@ -702,6 +736,18 @@ pub const ICONS: &[Icon] = &[
         ],
     },
     Icon {
+        key: "save",
+        name: "Save",
+        parts: &[
+            Part { paint: Paint::Stroke, width: 1.75, opacity: 1.0, cmds: SAVE_0 },
+        ],
+        ink: &[
+            Ink { scale: 1.0, cell: 28, x: 6, y: 6, w: 16, h: 16, count: 150 },
+            Ink { scale: 1.5, cell: 42, x: 9, y: 9, w: 24, h: 24, count: 318 },
+            Ink { scale: 2.0, cell: 56, x: 12, y: 12, w: 32, h: 32, count: 485 },
+        ],
+    },
+    Icon {
         key: "cancel",
         name: "Cancel",
         parts: &[
@@ -787,7 +833,7 @@ pub const ICONS: &[Icon] = &[
     },
 ];
 
-pub const TOOLBAR_ICONS: [&str; 15] = ["select", "rect", "ellipse", "line", "arrow", "pen", "highlighter", "text", "number", "mosaic", "undo", "redo", "long", "cancel", "done"];
+pub const TOOLBAR_ICONS: [&str; 16] = ["select", "rect", "ellipse", "line", "arrow", "pen", "highlighter", "text", "number", "mosaic", "undo", "redo", "long", "save", "cancel", "done"];
 pub const FONT_ICONS: [&str; 5] = ["font1", "font2", "font3", "font4", "font5"];
 
 /// The icon called `key`, if there is one.

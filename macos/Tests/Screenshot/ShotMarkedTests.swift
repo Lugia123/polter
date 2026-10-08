@@ -190,7 +190,10 @@ struct ShotMarkedTests {
         #expect(rig.editor.cursor(at: Pt(900, 400), mods: []) == .arrow)
         // Over the toolbar: an arrow.
         let bar = try #require(rig.editor.layout).plate
-        #expect(rig.editor.cursor(at: Pt(bar.x + 3, bar.y + 3), mods: []) == .arrow)
+        let cell = try #require(rig.editor.layout?.rect(of: .undo))
+        #expect(rig.editor.cursor(at: Pt(cell.x + 3, cell.y + 3), mods: []) == .arrow)
+        // And a hand on the plate between its cells, which carries it.
+        #expect(rig.editor.cursor(at: Pt(bar.x + 3, bar.y + 3), mods: []) == .move)
         // With an annotation selected the selection's knobs are away, so
         // its corner is nothing special.
         #expect(rig.editor.cursor(at: Pt(1400, 800), mods: []) == .tool)

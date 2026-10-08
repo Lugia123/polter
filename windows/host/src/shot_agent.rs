@@ -347,7 +347,7 @@ fn frame_of(rect: Rect, panes: &[Rect]) -> Option<Vec<u8>> {
 }
 
 /// Turn the wheel one notch down at the pointer.
-fn wheel_down() {
+pub(crate) fn wheel_down() {
     let input = INPUT {
         r#type: INPUT_MOUSE,
         Anonymous: INPUT_0 {

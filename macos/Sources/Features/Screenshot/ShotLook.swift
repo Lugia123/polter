@@ -119,6 +119,15 @@ enum ShotLook {
         static let windowLine: Double = 2.0
         static let mosaicFrame: Double = 16.0
         static let mosaicFrameLine: Double = 1.0
+        static let magnifierCells: Double = 15.0
+        static let magnifierCell: Double = 8.0
+        static let magnifierOffset: Double = 16.0
+        static let magnifierPad: Double = 8.0
+        static let magnifierImageRadius: Double = 6.0
+        static let magnifierGridLine: Double = 0.5
+        static let magnifierCentreLine: Double = 1.5
+        static let magnifierRowGap: Double = 6.0
+        static let magnifierSwatch: Double = 12.0
     }
 
     enum Glass {
@@ -146,6 +155,7 @@ enum ShotLook {
         static let dragStart: Double = 120.0
         static let gripHover: Double = 80.0
         static let tipDelay: Double = 500.0
+        static let copiedFlash: Double = 900.0
     }
 
     enum TextBox {
@@ -222,6 +232,10 @@ enum ShotLook {
         static let frameLight = RGBA(r: 0xFF, g: 0xFF, b: 0xFF, a: 0.85)
         static let gripFill = RGBA(r: 0xFF, g: 0xFF, b: 0xFF, a: 1.0)
         static let gripShadow = RGBA(r: 0x00, g: 0x00, b: 0x00, a: 0.6)
+        static let magnifierGrid = RGBA(r: 0x00, g: 0x00, b: 0x00, a: 0.22)
+        static let magnifierCentreOuter = RGBA(r: 0x00, g: 0x00, b: 0x00, a: 0.85)
+        static let magnifierCentreInner = RGBA(r: 0xFF, g: 0xFF, b: 0xFF, a: 1.0)
+        static let magnifierOffScreen = RGBA(r: 0x20, g: 0x20, b: 0x20, a: 1.0)
     }
 
     /// Every icon, in the order of the data file.
@@ -601,6 +615,36 @@ enum ShotLook {
                 Ink(scale: 2.0, cell: 56, x: 13, y: 12, w: 30, h: 32, count: 378),
             ]),
         Icon(
+            key: "save",
+            name: "Save",
+            parts: [
+                Part(paint: .stroke, width: 1.75, opacity: 1.0, cmds: [
+                    .move(6.0, 3.5),
+                    .line(16.2, 3.5),
+                    .line(20.5, 7.8),
+                    .line(20.5, 18.0),
+                    .cubic(20.5, 19.38071, 19.38071, 20.5, 18.0, 20.5),
+                    .line(6.0, 20.5),
+                    .cubic(4.61929, 20.5, 3.5, 19.38071, 3.5, 18.0),
+                    .line(3.5, 6.0),
+                    .cubic(3.5, 4.61929, 4.61929, 3.5, 6.0, 3.5),
+                    .close,
+                    .move(7.5, 3.5),
+                    .line(7.5, 8.0),
+                    .line(14.5, 8.0),
+                    .line(14.5, 3.5),
+                    .move(7.0, 20.5),
+                    .line(7.0, 14.0),
+                    .line(17.0, 14.0),
+                    .line(17.0, 20.5),
+                ]),
+            ],
+            ink: [
+                Ink(scale: 1.0, cell: 28, x: 6, y: 6, w: 16, h: 16, count: 150),
+                Ink(scale: 1.5, cell: 42, x: 9, y: 9, w: 24, h: 24, count: 318),
+                Ink(scale: 2.0, cell: 56, x: 12, y: 12, w: 32, h: 32, count: 485),
+            ]),
+        Icon(
             key: "cancel",
             name: "Cancel",
             parts: [
@@ -733,7 +777,7 @@ enum ShotLook {
             ]),
     ]
 
-    static let toolbarIcons: [String] = ["select", "rect", "ellipse", "line", "arrow", "pen", "highlighter", "text", "number", "mosaic", "undo", "redo", "long", "cancel", "done"]
+    static let toolbarIcons: [String] = ["select", "rect", "ellipse", "line", "arrow", "pen", "highlighter", "text", "number", "mosaic", "undo", "redo", "long", "save", "cancel", "done"]
     static let fontIcons: [String] = ["font1", "font2", "font3", "font4", "font5"]
 
     /// The icon called `key`, if there is one.

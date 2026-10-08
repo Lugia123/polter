@@ -44,6 +44,35 @@ pub fn write_new(
     ))
 }
 
+/// Write `bytes` to `dir/name`, creating `dir` if needed -- **or, when that
+/// name is taken, to `<stem> 2.<ext>`, `<stem> 3.<ext>`, ... (as on macOS) -- never over a file that
+/// is there**: the directory is the person's own (Downloads), and what is in
+/// it was not made by this program. Returns the path written.
+pub fn write_copy(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
+        _ => (name, String::new()),
+    };
+    for n in 1..=1000 {
+        let file = if n == 1 { name.to_string() } else { format!("{stem} {n}{ext}") };
+        let path = dir.join(file);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut f) => {
+                if let Err(e) = f.write_all(bytes) {
+                    drop(f);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(e);
+                }
+                return Ok(path);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("a thousand names like {name} in {} were taken", dir.display())))
+}
+
 /// Where shots go: `configured` (`screenshot-directory`) when it is set,
 /// with a leading `~/` or `~\` replaced by `home`; otherwise `default`.
 ///
@@ -170,5 +199,24 @@ pub(crate) mod tests {
         assert_eq!(e.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(asked, ATTEMPTS);
         assert_eq!(std::fs::read(s.0.join("20261006-153012-005.png")).unwrap(), b"first");
+    }
+
+    /// #1197 item 9: the copy in Downloads never replaces what is there.
+    #[test]
+    fn a_copy_never_replaces_a_file_that_is_there() {
+        let dir = std::env::temp_dir().join(format!("polter-copy-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = write_copy(&dir, "shot.png", b"one").unwrap();
+        let second = write_copy(&dir, "shot.png", b"two").unwrap();
+        let third = write_copy(&dir, "shot.png", b"three").unwrap();
+        assert_eq!(first.file_name().unwrap(), "shot.png");
+        assert_eq!(second.file_name().unwrap(), "shot 2.png");
+        assert_eq!(third.file_name().unwrap(), "shot 3.png");
+        assert_eq!(std::fs::read(&first).unwrap(), b"one", "the first is untouched");
+        assert_eq!(std::fs::read(&third).unwrap(), b"three");
+        let bare = write_copy(&dir, "noext", b"x").unwrap();
+        assert_eq!(write_copy(&dir, "noext", b"y").unwrap().file_name().unwrap(), "noext 2");
+        assert_eq!(bare.file_name().unwrap(), "noext");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

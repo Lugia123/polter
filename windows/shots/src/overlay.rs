@@ -25,6 +25,8 @@ pub const VK_RIGHT: u16 = 0x27;
 pub const VK_DOWN: u16 = 0x28;
 pub const VK_DELETE: u16 = 0x2E;
 pub const VK_Z: u16 = 0x5A;
+pub const VK_C: u16 = 0x43;
+pub const VK_S: u16 = 0x53;
 /// `[` and `]` on a US layout.
 pub const VK_OEM_4: u16 = 0xDB;
 pub const VK_OEM_6: u16 = 0xDD;
@@ -43,6 +45,10 @@ pub enum Key {
     Colour(u8),
     /// One step thinner/smaller (-1) or thicker/larger (+1).
     Step(i8),
+    /// Put the colour under the pointer on the clipboard (the magnifier's).
+    CopyColour,
+    /// Done, and a copy in Downloads.
+    Save,
     /// Delete the selected annotation.
     Delete,
     /// Move the selected annotation by this many pixels.
@@ -61,6 +67,8 @@ impl Key {
             Key::Tool(_) => "tool",
             Key::Colour(_) => "colour",
             Key::Step(_) => "step",
+            Key::CopyColour => "copy-colour",
+            Key::Save => "save",
             Key::Delete => "delete",
             Key::Nudge(..) => "nudge",
             Key::Ignored => "ignored",
@@ -86,6 +94,8 @@ pub fn key(vk: u16, mods: Mods, has_selection: bool) -> Key {
     match vk {
         VK_ESCAPE => Key::Cancel,
         VK_RETURN if has_selection && plain => Key::Finish,
+        VK_C if mods == CTRL => Key::CopyColour,
+        VK_S if mods == CTRL && has_selection => Key::Save,
         VK_Z if mods == CTRL => Key::Undo,
         VK_Z if mods == Mods::CTRL_SHIFT => Key::Redo,
         VK_LEFT if plain || mods == SHIFT => Key::Nudge(-step, 0),

@@ -242,17 +242,21 @@ pub fn move_by(sel: Rect, delta: Point, bounds: Rect) -> Rect {
 /// Where the toolbar goes: under the selection, or above it when there is no
 /// room under, or inside its bottom edge when there is no room above either
 /// (a selection as tall as the monitor). Its right edge lines up with the
-/// selection's, pulled back onto the monitor.
+/// selection's, pulled back onto the monitor -- **except inside the bottom
+/// edge, where it is centred on the selection** (#1197, as on macOS): there
+/// the selection is the whole screen and a bar in its corner is one more
+/// thing in the way.
 pub fn toolbar_origin(sel: Rect, bar: (i32, i32), monitor: Rect, gap: i32) -> Point {
     let (bw, bh) = bar;
-    let y = if sel.bottom() + gap + bh <= monitor.bottom() {
-        sel.bottom() + gap
+    let (y, inside) = if sel.bottom() + gap + bh <= monitor.bottom() {
+        (sel.bottom() + gap, false)
     } else if sel.y - gap - bh >= monitor.y {
-        sel.y - gap - bh
+        (sel.y - gap - bh, false)
     } else {
-        sel.bottom() - gap - bh
+        (sel.bottom() - gap - bh, true)
     };
-    let x = (sel.right() - bw).min(monitor.right() - bw).max(monitor.x);
+    let x = if inside { sel.x + (sel.w - bw) / 2 } else { sel.right() - bw };
+    let x = x.min(monitor.right() - bw).max(monitor.x);
     Point::new(x, y)
 }
 
@@ -449,7 +453,7 @@ mod tests {
         // No room below: above.
         assert_eq!(toolbar_origin(R(100, 1000, 600, 420), bar, PRIMARY, 8), P(340, 952));
         // The whole monitor selected: inside the bottom edge.
-        assert_eq!(toolbar_origin(PRIMARY, bar, PRIMARY, 8), P(2200, 1392));
+        assert_eq!(toolbar_origin(PRIMARY, bar, PRIMARY, 8), P(1100, 1392), "inside: centred, not at the right");
     }
 
     #[test]

@@ -231,4 +231,42 @@ enum ShotStore {
         }
         throw WriteError.noFreeName
     }
+
+    // MARK: A copy for the person
+
+    /// The folder Save puts a copy in: the system's Downloads, asked of the
+    /// system and not written down as `~/Downloads` -- it is somewhere else
+    /// for someone who moved it. Nil when the system has none.
+    static func downloadsDirectory(fileManager: FileManager = .default) -> URL? {
+        fileManager.urls(for: .downloadsDirectory, in: .userDomainMask).first
+    }
+
+    /// The name a copy of the screenshot called `name` goes by in a folder
+    /// of the person's own files: `name` itself, or -- when `taken` says
+    /// that is a file already -- `stem 2.png`, `stem 3.png` and so on, the
+    /// way Finder numbers them. **Nothing there is ever overwritten.**
+    static func copyName(of name: String, taken: (String) -> Bool) -> String {
+        if !taken(name) { return name }
+        let stem = name.hasSuffix(".png") ? String(name.dropLast(4)) : name
+        var n = 2
+        while taken("\(stem) \(n).png") { n += 1 }
+        return "\(stem) \(n).png"
+    }
+
+    /// Write a copy of `png` into `directory` under `copyName(of: name)`.
+    /// Not owner-only like the screenshot directory's files: it is the
+    /// person's own file, in the folder they keep such things in, and gets
+    /// what any file made there gets.
+    static func saveCopy(
+        png: Data, named name: String, in directory: URL, fileManager: FileManager = .default
+    ) throws -> URL {
+        let chosen = copyName(of: name) {
+            fileManager.fileExists(atPath: directory.appendingPathComponent($0).path)
+        }
+        let url = directory.appendingPathComponent(chosen)
+        // Written without replacing: a file that appeared since the name
+        // was chosen is a failure, not a loss.
+        try png.write(to: url, options: .withoutOverwriting)
+        return url
+    }
 }

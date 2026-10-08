@@ -677,3 +677,9 @@
 "Screenshot Shortcut" = "截图快捷键";
 "Change it with a keybind line in the config file." = "在配置文件的 keybind 里修改。";
 "Choose…" = "选择…";
+"Saved to Downloads: {name}" = "已保存到“下载”：{name}";
+"The picture could not be saved." = "图片没能保存。";
+"Copied" = "已复制";
+"Scrolling down… Enter keeps what is joined so far, Esc cancels." = "正在向下滚动…回车保留已接好的部分，Esc 取消。";
+"Scrolling for you needs the Accessibility permission, so scroll down slowly by hand." = "自动滚动需要“辅助功能”权限，请慢慢向下手动滚动。";
+"The page could not be followed any further, so the picture ends here." = "页面没能再跟下去，图片到此为止。";

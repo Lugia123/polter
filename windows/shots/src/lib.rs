@@ -29,6 +29,7 @@
 
 pub mod agent;
 pub mod annot;
+pub mod autoscroll;
 pub mod chrome;
 pub mod dclick;
 pub mod dib;
@@ -37,6 +38,7 @@ pub mod encode;
 pub mod geom;
 pub mod glass;
 pub mod icon;
+pub mod magnifier;
 pub mod look;
 pub mod motion;
 pub mod name;
@@ -49,6 +51,7 @@ pub mod store;
 pub mod style;
 pub mod sweep;
 pub mod textbox;
+pub mod toast;
 pub mod toolbar;
 
 /// Pixels, top row first, four bytes each in R, G, B, A order, not

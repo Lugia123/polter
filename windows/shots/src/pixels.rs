@@ -69,6 +69,16 @@ impl Frozen {
         glass.frame_layers(dst, dst_rect, &self.bgrx, layers, area);
     }
 
+    /// The colour of the pixel at `p` (virtual-screen pixels), as R, G, B;
+    /// `None` outside this picture.
+    pub fn rgb_at(&self, p: crate::geom::Point) -> Option<(u8, u8, u8)> {
+        if !self.rect.contains(p) {
+            return None;
+        }
+        let b = self.pixel(p.x, p.y);
+        Some((b[2], b[1], b[0]))
+    }
+
     fn pixel(&self, x: i32, y: i32) -> &[u8] {
         let at = ((y - self.rect.y) as usize * self.rect.w as usize + (x - self.rect.x) as usize) * 4;
         &self.bgrx[at..at + 4]

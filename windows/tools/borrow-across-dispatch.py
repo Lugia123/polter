@@ -78,6 +78,11 @@ KNOWN = {
                   "WM_MOUSEMOVE; nothing sent during create or move reaches "
                   "it, so it all falls to DefWindowProc. Adding a WM_SIZE or "
                   "WM_WINDOWPOSCHANGED arm that borrows makes this a crash.",
+    "shot.rs": "show_toast: the `borrow_mut` that stores the toast is its own "
+               "statement and has ended before `ShowWindow`; toast_proc's "
+               "WM_PAINT takes a shared `borrow`, which nothing live conflicts "
+               "with. Moving the ShowWindow/SetTimer into the `with` closure "
+               "would make the paint a double borrow.",
 }
 
 # `settings_ui.rs` used to be in KNOWN. **Its reason was wrong, and the page

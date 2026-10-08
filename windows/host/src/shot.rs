@@ -197,6 +197,8 @@ struct Session {
     /// together in milliseconds, and how many pixels the windows were given:
     /// said once, when the session ends.
     frames: (u32, f64, f64, u64),
+    /// Until when the magnifier says the colour was copied (`tick_ms`).
+    copied_until: u64,
 }
 
 /// A long screenshot in progress: the frames stitched so far, and what the
@@ -213,6 +215,13 @@ struct LongShot {
     /// Frames held back because the screen was still changing
     /// (`Stitcher::offer`). Not dropped: the next steady one is joined.
     moving: u32,
+    /// The program turns the wheel (#1197): what to do after each frame.
+    auto: polter_shots::autoscroll::AutoScroll,
+    /// Where the pointer was before it was put over the region; given
+    /// back when the long screenshot ends.
+    pointer_before: Option<POINT>,
+    /// Where the wheel goes (`autoscroll::wheel_point`).
+    wheel_at: Point,
 }
 
 /// One progress line for every this many frames of a long screenshot.
@@ -231,6 +240,10 @@ const MOVING_INTERVAL_MS: u32 = 16;
 /// The overlay window's timer that shows a tooltip once the pointer has
 /// rested on a cell for `look::transition_ms::TIP_DELAY`.
 const TIMER_TIP: usize = 4;
+/// The overlay window's timer that takes "Copied" off the magnifier.
+const TIMER_COPIED: usize = 6;
+/// How long it stays, in milliseconds.
+const COPIED_MS: u32 = look::transition_ms::COPIED_FLASH as u32;
 /// How often, in milliseconds.
 const LONG_INTERVAL_MS: u32 = 120;
 
@@ -240,6 +253,8 @@ thread_local! {
 
 /// Whether the bundled annotation font was found and loaded.
 static FONT_OK: AtomicBool = AtomicBool::new(false);
+/// Set by Save: `finish` also puts a copy of the picture in Downloads.
+static SAVE_COPY: AtomicBool = AtomicBool::new(false);
 /// Whether the text box is open, for the message pump (`keys_are_raw`).
 static TEXT_OPEN: AtomicBool = AtomicBool::new(false);
 
@@ -365,8 +380,15 @@ pub fn init() {
             hCursor: LoadCursorW(None, IDC_CROSS).unwrap_or_default(),
             ..Default::default()
         };
-        // absence: means it was not reached -- both classes registered
-        if RegisterClassExW(&wc) == 0 || RegisterClassExW(&overlay) == 0 {
+        let toast = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(toast_proc),
+            hInstance: hinst.into(),
+            lpszClassName: w!("PolterShotToast"),
+            ..Default::default()
+        };
+        // absence: means it was not reached -- all three classes registered
+        if RegisterClassExW(&wc) == 0 || RegisterClassExW(&overlay) == 0 || RegisterClassExW(&toast) == 0 {
             // process-wide: screenshots are one facility for the whole process
             plogf!("[shot] RegisterClassExW failed (err={}); screenshots are unavailable", GetLastError().0);
             return;
@@ -808,6 +830,7 @@ pub(crate) unsafe fn grab(screen: HDC, rect: Rect) -> Option<Frozen> {
 /// Open a session: freeze the screen and put an overlay on every monitor.
 /// Nothing is selected, whatever the trigger was.
 fn begin() {
+    SAVE_COPY.store(false, Ordering::Release);
     // absence: means it was not reached -- no session was open, and the
     // `[shot] begin` line that follows says so
     if ACTIVE.swap(true, Ordering::AcqRel) {
@@ -948,6 +971,7 @@ fn begin() {
                     tip: (None, false),
                     tones: tones(),
                     frames: (0, 0.0, 0.0, 0),
+                    copied_until: 0,
                 })
         });
         // Where the pointer is, before the first frame: the window under it
@@ -1556,7 +1580,17 @@ unsafe fn compose_into(s: &Session, i: usize, canvas: &Canvas, clear: &[(Rect, u
 
         let hide = e.text_box().and_then(|t| t.editing);
         let mosaic = |it: &Item| matches!(it.shape, Shape::Mosaic(_));
-        let drawn = e.draw_order().into_iter().filter(|(_, it)| !mosaic(it));
+        // A number being given its sentence is drawn as it will be closed.
+        let edited = e.number_in_edit();
+        let order = e.draw_order();
+        let shown: Vec<(usize, &Item)> = order
+            .into_iter()
+            .map(|(i, it)| match &edited {
+                Some((n, copy)) if *n == i => (i, copy),
+                _ => (i, it),
+            })
+            .collect();
+        let drawn = shown.into_iter().filter(|(_, it)| !mosaic(it));
         let live = e.live().filter(|it| !mosaic(it)).map(|it| (usize::MAX, it));
         draw_items(canvas, drawn.chain(live), scale, hide);
         // What reaches out of the selection will not be in the picture: it
@@ -1653,6 +1687,35 @@ unsafe fn compose_into(s: &Session, i: usize, canvas: &Canvas, clear: &[(Rect, u
             let tag = chrome::pointer_tag(at, words.size(&text), scale, mon.rect);
             plate(tag.plate);
             words.put(tag.text, &text, tones.ink);
+        }
+        // The magnifier: last, over everything but the pointer.
+        if let Some(at) = e.magnifier().filter(|p| mon.rect.contains(*p)) {
+            let params = &polter_shots::magnifier::LOOK;
+            let coords = polter_shots::magnifier::coordinates(at, mon.rect);
+            let colour = mon.frozen.rgb_at(at);
+            let code = colour.map(polter_shots::magnifier::hex).unwrap_or_default();
+            let said = if s.copied_until > tick_ms() { format!("{code}  {}", tr(toolbar::COPIED)) } else { code };
+            let (c, h) = (words.size(&coords), words.size(&said));
+            let swatch = style::px_f(params.swatch, scale);
+            let between = style::px_f(params.gap, scale);
+            let second = swatch + between + h.0;
+            let line_h = h.1.max(swatch);
+            let text = (c.0.max(second), c.1 + between + line_h);
+            let size = polter_shots::magnifier::plate_size(params, text, scale);
+            let offset = style::px_f(params.offset, scale);
+            let plate_rect = polter_shots::magnifier::place(at, size, mon.rect, offset);
+            plate(plate_rect);
+            let picture = polter_shots::magnifier::picture_at(plate_rect, params, scale);
+            let samples = polter_shots::magnifier::sample(&mon.frozen, at, params.cells);
+            polter_shots::magnifier::draw_picture(canvas.bits(), mon.rect, picture, &samples, params, scale);
+            let top = picture.bottom() + style::px_f(params.gap, scale);
+            let left = plate_rect.x + (plate_rect.w - text.0) / 2;
+            words.put(Point::new(left, top), &coords, tones.ink);
+            let line = top + c.1 + between;
+            if let Some(rgb) = colour {
+                pixels::blend(canvas.bits(), mon.rect, Rect::new(left, line + (line_h - swatch) / 2, swatch, swatch), rgb, 256);
+            }
+            words.put(Point::new(left + swatch + between, line + (line_h - h.1) / 2), &said, tones.ink);
         }
     }
 }
@@ -1917,6 +1980,11 @@ fn perform(hwnd: HWND, effect: Effect) {
         Effect::OpenText => open_edit(),
         Effect::RestyleText => restyle_edit(),
         Effect::CommitText => commit_edit(),
+        Effect::CopyColour => copy_colour(hwnd),
+        Effect::Save => {
+            SAVE_COPY.store(true, Ordering::Release);
+            finish();
+        }
     }
 }
 
@@ -1975,6 +2043,11 @@ unsafe extern "system" fn overlay_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
         }
         WM_TIMER if wp.0 == TIMER_MOVING => {
             let _ = unsafe { RedrawWindow(Some(hwnd), None, None, RDW_INTERNALPAINT) };
+            return LRESULT(0);
+        }
+        WM_TIMER if wp.0 == TIMER_COPIED => {
+            let _ = unsafe { KillTimer(Some(hwnd), TIMER_COPIED) };
+            repaint();
             return LRESULT(0);
         }
         WM_TIMER if wp.0 == TIMER_TIP => {
@@ -2061,8 +2134,27 @@ fn start_long() {
         return;
     };
     let Some(stitcher) = Stitcher::new(sel.w as usize, sel.h as usize) else { return };
-    with(|s| s.long = Some(LongShot { stitcher, hwnd, rect: sel, last: Step::Unchanged, frames: 0, lost: 0, moving: 0 }));
+    // The wheel goes to the window under the pointer: the middle of the
+    // region, off the toolbar if that lies over it.
+    let wheel_at = polter_shots::autoscroll::wheel_point(sel, bar);
+    let mut before = POINT::default();
+    let pointer_before = unsafe { GetCursorPos(&mut before) }.is_ok().then_some(before);
+    with(|s| {
+        s.long = Some(LongShot {
+            stitcher,
+            hwnd,
+            rect: sel,
+            last: Step::Unchanged,
+            frames: 0,
+            lost: 0,
+            moving: 0,
+            auto: polter_shots::autoscroll::AutoScroll::new(),
+            pointer_before,
+            wheel_at,
+        })
+    });
     unsafe {
+        let _ = SetCursorPos(wheel_at.x, wheel_at.y);
         let o = mon_rect.origin();
         let local = sel.relative_to(o);
         let region = CreateRectRgn(0, 0, mon_rect.w, mon_rect.h);
@@ -2097,6 +2189,13 @@ fn start_long() {
     repaint();
 }
 
+/// The pointer goes back to where the person had it.
+fn give_back_pointer(long: &LongShot) {
+    if let Some(p) = long.pointer_before {
+        let _ = unsafe { SetCursorPos(p.x, p.y) };
+    }
+}
+
 /// Leave long-screenshot mode without finishing: cover the selection again.
 fn stop_long() {
     let Some((long, overlays)) =
@@ -2106,6 +2205,7 @@ fn stop_long() {
     };
     unsafe {
         let _ = KillTimer(Some(long.hwnd), TIMER_LONG);
+        give_back_pointer(&long);
         SetWindowRgn(long.hwnd, None, true);
         for h in overlays {
             if !h.0.is_null() {
@@ -2139,6 +2239,7 @@ fn long_tick() {
         frame
     };
     let Some(frame) = frame else { return };
+    let mut verdict = polter_shots::autoscroll::Verdict::Wait;
     let changed = with(|s| {
         let long = s.long.as_mut()?;
         // Only a frame that is the one before it, pixel for pixel, is
@@ -2173,6 +2274,7 @@ fn long_tick() {
             && long.moving == toolbar::LONG_RESTLESS_AFTER
             && toolbar::long_restless(long.stitcher.never_steady(), long.moving);
         let changed = shown != long.last || matches!(step, Step::Added(_)) || restless;
+        verdict = long.auto.after_frame(step, tick_ms());
         if step == Step::Full && long.last != Step::Full {
             // process-wide: the overlay is not a terminal window
             plogf!("[shot] long screenshot reached the {} px limit; no more is added", polter_shots::stitch::MAX_HEIGHT);
@@ -2187,6 +2289,42 @@ fn long_tick() {
     .unwrap_or(false);
     if changed {
         repaint();
+    }
+    use polter_shots::autoscroll::Verdict;
+    match verdict {
+        Verdict::Wait => {}
+        Verdict::Wheel => {
+            // Every notch from where the wheel is meant to go: the person's
+            // own pointer may have wandered off the page since the last.
+            if let Some(at) = with(|s| s.long.as_ref().map(|l| l.wheel_at)).flatten() {
+                unsafe {
+                    let _ = SetCursorPos(at.x, at.y);
+                }
+                crate::shot_agent::wheel_down();
+                with(|s| {
+                    if let Some(l) = &mut s.long {
+                        l.auto.turned(tick_ms());
+                    }
+                });
+            }
+        }
+        Verdict::Stop(why) => {
+            // process-wide: the overlay is not a terminal window
+            plogf!("[shot] long screenshot scrolled by the program: stopped at the {why:?}; finishing with what is joined");
+            if let Some((hwnd, mon, dpi)) = with(|s| {
+                let l = s.long.as_ref()?;
+                let m = s.mons.iter().find(|m| m.hwnd == l.hwnd)?;
+                Some((l.hwnd, m.rect, m.dpi))
+            })
+            .flatten()
+            {
+                perform(hwnd, Effect::Finish);
+                // The picture ends here, and the person is told why.
+                if why == polter_shots::autoscroll::Stopped::Lost {
+                    show_toast(&tr(toolbar::LONG_FOLLOWED), mon, dpi);
+                }
+            }
+        }
     }
 }
 
@@ -2207,7 +2345,14 @@ unsafe fn draw_long_status(
     let added = long.stitcher.total_height() > long.rect.h as usize;
     let restless = toolbar::long_restless(long.stitcher.never_steady(), long.moving);
     let said = format!("{} {} px", tr(toolbar::LONG), long.stitcher.total_height());
-    let hint = toolbar::long_hint(long.last, added, restless).map(|h| format!(" — {}", tr(h))).unwrap_or_default();
+    // The program turns the wheel: "scroll slowly" is no advice to give.
+    // What it says while it works is `toolbar::LONG_AUTO`.
+    let hint = match toolbar::long_hint(long.last, added, restless) {
+        Some(toolbar::LONG_SLOWER | toolbar::LONG_HINT) | None => Some(toolbar::LONG_AUTO),
+        other => other,
+    }
+    .map(|h| format!(" — {}", tr(h)))
+    .unwrap_or_default();
     let (a, b) = (words.size(&said), words.size(&hint));
     let (tag, dot) = chrome::status(plate, 0, (a.0 + b.0, a.1.max(b.1)), scale, monitor);
     if let Some(mut on) = Surface::new(canvas.bits(), canvas.rect) {
@@ -2263,7 +2408,7 @@ fn open_edit() {
     // As tall as what is in it and inside the selection (`textbox`). It was
     // `font_px * 4` whatever was typed, stopped only by the monitor: 264 px
     // at the largest size on a 144 DPI screen, over the toolbar (task 1104).
-    let Some(rect) = with(|s| s.editor.text_rect(textbox::lines(&tb.text), &Gdi)).flatten() else {
+    let Some(rect) = with(|s| s.editor.text_rect(&tb.text, &Gdi)).flatten() else {
         // The editor has a box the host cannot place: end it, as below.
         commit_edit();
         return;
@@ -2380,7 +2525,20 @@ fn fit_edit() {
     // The control's own count: with ES_AUTOHSCROLL a line is never wrapped,
     // so this is the line breaks and one.
     let lines = unsafe { SendMessageW(edit, EM_GETLINECOUNT, None, None).0 }.max(1) as i32;
-    let Some(rect) = with(|s| s.editor.text_rect(lines, &Gdi)).flatten() else {
+    // The text as it is now, with what an input method is composing where
+    // the caret is: the box is as wide as the longest line of it.
+    let text = unsafe {
+        let mut units = vec![0u16; GetWindowTextLengthW(edit).max(0) as usize + 1];
+        let n = GetWindowTextW(edit, &mut units).max(0) as usize;
+        units.truncate(n);
+        let comp = with(|s| s.edit.as_ref().map(|e| (e.typed.comp.clone(), e.typed.sel.0))).flatten();
+        if let Some((comp, at)) = comp.filter(|c| !c.0.is_empty()) {
+            let at = at.min(units.len());
+            units.splice(at..at, comp);
+        }
+        String::from_utf16_lossy(&units)
+    };
+    let Some(rect) = with(|s| s.editor.text_rect(&text, &Gdi)).flatten() else {
         return;
     };
     if rect == was {
@@ -2621,6 +2779,8 @@ fn ime_composition(edit: HWND, flags: u32) {
     }
     if committed.is_empty() {
         read_edit(edit);
+        // What is being composed is as wide as what is typed.
+        fit_edit();
     } else {
         committed.push(0);
         // Read back by `edit_proc` after it, as anything typed is.
@@ -2930,6 +3090,177 @@ pub(crate) fn control_window() -> HWND {
     HWND(CONTROL.load(Ordering::Acquire) as *mut c_void)
 }
 
+/// Ctrl+C with the magnifier up: the colour under the pointer, as `#RRGGBB`
+/// text, goes on the clipboard and the magnifier says so for a moment. The
+/// screenshot goes on.
+fn copy_colour(hwnd: HWND) {
+    let Some(code) = with(|s| {
+        let at = s.editor.magnifier()?;
+        let mon = s.mons.iter().find(|m| m.rect.contains(at))?;
+        mon.frozen.rgb_at(at).map(polter_shots::magnifier::hex)
+    })
+    .flatten() else {
+        return;
+    };
+    let units: Vec<u8> = code.encode_utf16().chain(Some(0)).flat_map(|u| u.to_le_bytes()).collect();
+    let ok = unsafe {
+        let control = HWND(CONTROL.load(Ordering::Acquire) as *mut c_void);
+        let mut ok = false;
+        if OpenClipboard(Some(control)).is_ok() {
+            let _ = EmptyClipboard();
+            ok = set_clipboard(13, &units); // CF_UNICODETEXT
+            let _ = CloseClipboard();
+        }
+        ok
+    };
+    // process-wide: the overlay is not a terminal window
+    plogf!("[shot] magnifier: colour {code} copied={ok}");
+    if ok {
+        with(|s| s.copied_until = tick_ms() + u64::from(COPIED_MS));
+        unsafe { SetTimer(Some(hwnd), TIMER_COPIED, COPIED_MS, None) };
+        repaint();
+    }
+}
+
+// ------------------------------------------------------------- toast
+
+/// The notice that outlives the session (`polter_shots::toast`): a window of
+/// its own, shown without taking the keyboard, that takes itself away.
+struct Toast {
+    hwnd: HWND,
+    canvas: Canvas,
+}
+
+thread_local! {
+    static TOAST: RefCell<Option<Toast>> = const { RefCell::new(None) };
+}
+
+const TIMER_TOAST_END: usize = 1;
+
+unsafe extern "system" fn toast_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
+                TOAST.with(|t| {
+                    if let Some(t) = t.borrow().as_ref().filter(|t| t.hwnd == hwnd) {
+                        let _ = BitBlt(hdc, 0, 0, t.canvas.rect.w, t.canvas.rect.h, Some(t.canvas.dc), 0, 0, SRCCOPY);
+                    }
+                });
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+            WM_TIMER if wp.0 == TIMER_TOAST_END => {
+                close_toast();
+                LRESULT(0)
+            }
+            // Never the keyboard, never the mouse: a click goes to what is under it.
+            WM_MOUSEACTIVATE => LRESULT(3), // MA_NOACTIVATE
+            WM_NCHITTEST => LRESULT(-1),    // HTTRANSPARENT
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+}
+
+fn close_toast() {
+    if let Some(t) = TOAST.with(|t| t.borrow_mut().take()) {
+        unsafe {
+            let _ = KillTimer(Some(t.hwnd), TIMER_TOAST_END);
+            let _ = DestroyWindow(t.hwnd);
+        }
+    }
+}
+
+/// Show `text` on a small glass plate in the bottom-right corner of
+/// `monitor` for `toast::SHOW_MS`. The plate is made of what is on the
+/// screen under it, blurred, as the overlay's own plates are -- so it looks
+/// like them; the window has the plate's rounded shape.
+fn show_toast(text: &str, monitor: Rect, dpi: u32) {
+    close_toast();
+    unsafe {
+        let screen = GetDC(None);
+        let made = (|| {
+            let scale = f64::from(dpi.max(96)) / 96.0;
+            // Measured on a canvas of no size of its own.
+            let probe = Canvas::new(screen, Rect::new(0, 0, 1, 1))?;
+            let (lines, sizes) = {
+                let words = Words::on(&probe, dpi);
+                let lines = polter_shots::toast::wrap(text, style::px_f(polter_shots::toast::MAX_WIDTH, scale), |s| words.size(s).0);
+                let sizes: Vec<(i32, i32)> = lines.iter().map(|l| words.size(l)).collect();
+                (lines, sizes)
+            };
+            let plate = polter_shots::toast::plate_size(&sizes, scale);
+            let rect = polter_shots::toast::place(plate, monitor, scale);
+            let canvas = Canvas::new(screen, rect)?;
+            let frozen = grab(screen, rect)?;
+            frozen.show(canvas.bits(), rect);
+            let glass = frozen.glass(scale, !less_transparency())?;
+            let tones = tones();
+            if let Some(mut on) = Surface::new(canvas.bits(), rect) {
+                chrome::label(&mut on, &glass, rect, scale, &tones);
+            }
+            {
+                let words = Words::on(&canvas, dpi);
+                let (px, py) = (style::px_f(look::size::SIZE_LABEL_PAD_X, scale), style::px_f(look::size::SIZE_LABEL_PAD_Y, scale));
+                let mut y = rect.y + py;
+                for (line, size) in lines.iter().zip(&sizes) {
+                    words.put(Point::new(rect.x + px, y), line, tones.ink);
+                    y += size.1;
+                }
+            }
+            Some((rect, canvas, scale))
+        })();
+        ReleaseDC(None, screen);
+        let Some((rect, canvas, scale)) = made else {
+            // process-wide: the toast is for the whole process
+            plogf!("[shot] toast: could not be made for {text:?}");
+            return;
+        };
+        let hinst = GetModuleHandleW(None).unwrap_or_default();
+        let hwnd = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            w!("PolterShotToast"),
+            w!("Polter"),
+            WS_POPUP,
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            None,
+            None,
+            Some(hinst.into()),
+            None,
+        );
+        let Ok(hwnd) = hwnd else {
+            // process-wide: the toast is for the whole process
+            plogf!("[shot] toast: no window (err={})", GetLastError().0);
+            return;
+        };
+        let r = style::px_f(look::size::LABEL_RADIUS, scale) * 2;
+        let region = CreateRoundRectRgn(0, 0, rect.w + 1, rect.h + 1, r, r);
+        SetWindowRgn(hwnd, Some(region), true);
+        TOAST.with(|t| *t.borrow_mut() = Some(Toast { hwnd, canvas }));
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        SetTimer(Some(hwnd), TIMER_TOAST_END, polter_shots::toast::SHOW_MS, None);
+        // process-wide: the toast is for the whole process
+        plogf!("[shot] toast: {text:?} at {rect:?} for {} ms", polter_shots::toast::SHOW_MS);
+    }
+}
+
+/// The person's Downloads folder, as the system knows it (it can be moved);
+/// never a path written into the program.
+fn downloads_dir() -> Option<std::path::PathBuf> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{FOLDERID_Downloads, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+    unsafe {
+        let p = SHGetKnownFolderPath(&FOLDERID_Downloads, KF_FLAG_DEFAULT, None).ok()?;
+        let path = p.to_string().ok().map(std::path::PathBuf::from);
+        CoTaskMemFree(Some(p.0 as *const c_void));
+        path
+    }
+}
+
 /// Put one format on the open clipboard. The block is the clipboard's once
 /// `SetClipboardData` takes it, and ours to free until then.
 unsafe fn set_clipboard(format: u32, bytes: &[u8]) -> bool {
@@ -3006,6 +3337,7 @@ fn finish() {
     let long = with(|s| s.long.take()).flatten();
     if let Some(l) = &long {
         let _ = unsafe { KillTimer(Some(l.hwnd), TIMER_LONG) };
+        give_back_pointer(l);
         // process-wide: the overlay is not a terminal window
         plogf!(
             "[shot] long screenshot finished: {} frame(s), {} dropped for want of overlap, {} held back as still moving, {} px tall",
@@ -3109,9 +3441,32 @@ fn finish() {
         Err(why) => {
             // process-wide: the overlay is not a terminal window
             plogf!("[shot] done {}x{} but NOT saved: {why}. On the clipboard: {on_clipboard}", size.0, size.1);
+            if SAVE_COPY.swap(false, Ordering::AcqRel) {
+                show_toast(&tr(toolbar::SAVE_FAILED), mon.rect, mon.dpi);
+            }
             return;
         }
     };
+    // Save: the same picture, once more, in the person's Downloads folder
+    // under the same name, over nothing that is there (`store::write_copy`).
+    if SAVE_COPY.swap(false, Ordering::AcqRel) {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        match downloads_dir().ok_or_else(|| "the Downloads folder is not known".to_string()).and_then(|d| {
+            polter_shots::store::write_copy(&d, &name, &png).map_err(|e| format!("{}: {e}", d.display()))
+        }) {
+            Ok(copy) => {
+                // process-wide: the overlay is not a terminal window
+                plogf!("[shot] save: a copy is {}", copy.display());
+                let file = copy.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                show_toast(&polter_shots::toast::with_name(&tr(toolbar::SAVED), &file), mon.rect, mon.dpi);
+            }
+            Err(why) => {
+                // process-wide: the overlay is not a terminal window
+                plogf!("[shot] save: the copy in Downloads was NOT written: {why}");
+                show_toast(&tr(toolbar::SAVE_FAILED), mon.rect, mon.dpi);
+            }
+        }
+    }
     let taken = taken.get();
     let image_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     // The tiles beside it: `<name>-1.png`, `-2.png`, ...

@@ -94,6 +94,11 @@ pub enum Effect {
     OpenText,
     /// The text box's colour or size changed; restyle it.
     RestyleText,
+    /// Finish as Done does, and also keep a copy in the Downloads folder.
+    Save,
+    /// Put the colour under the pointer on the clipboard and say so
+    /// (`Editor::magnifier`).
+    CopyColour,
     /// Close the text box and keep what is in it: [`Editor::close_text`],
     /// then read the box and destroy it, then [`Editor::end_text`].
     CommitText,
@@ -104,6 +109,8 @@ enum Drag {
     PickRegion { down: Point },
     ResizeRegion(Handle),
     MoveRegion { last: Point },
+    /// The toolbar held by its plate; `grab` is from its corner to the pointer.
+    MoveBar { grab: Point },
     /// A rectangle, ellipse, line, arrow or mosaic being drawn.
     Draw { start: Point },
     /// A pen or highlighter stroke being drawn.
@@ -137,6 +144,9 @@ pub struct Editor {
     /// Where the pointer was last seen.
     pointer: Option<Point>,
     long: bool,
+    /// Where the user dragged the toolbar to (its top-left corner). Until
+    /// then, and again with the next selection, it sits beside the selection.
+    bar_at: Option<Point>,
 }
 
 /// What the pointer looks like (§9.8.11A.4).
@@ -204,6 +214,7 @@ impl Editor {
             hover_grip: None,
             pointer: None,
             long: false,
+            bar_at: None,
         }
     }
 
@@ -252,22 +263,54 @@ impl Editor {
     /// What the text box has to stay off: both rows of the toolbar as they
     /// are while a text is typed (`textbox`).
     pub fn text_keep_clear(&self) -> Vec<Rect> {
-        let Some(s) = self.selection else { return Vec::new() };
-        let Some(mon) = self.monitors.get(s.monitor) else { return Vec::new() };
-        let l = toolbar::layout(s.rect, mon.rect, mon.scale, Props::Font);
+        if self.selection.is_none() {
+            return Vec::new();
+        }
+        let Some(l) = self.bar_layout(Props::Font) else { return Vec::new() };
         let mut out = vec![l.bar];
         out.extend(l.props);
         out
     }
 
-    /// Where the open text box is, for a text of `lines` lines: specification
+    /// Where the open text box is, for the text `text` (line breaks `\n` or CR LF): specification
     /// §9.3, and `textbox::rect` for the rule. `None` with no box open.
-    pub fn text_rect(&self, lines: i32, m: &dyn Measure) -> Option<Rect> {
+    pub fn text_rect(&self, text: &str, m: &dyn Measure) -> Option<Rect> {
         let t = self.text.as_ref()?;
         let s = self.selection?;
         let mon = self.monitors.get(s.monitor)?;
-        let min_w = textbox::min_width(style::font_px(t.level, mon.scale), mon.scale);
-        Some(textbox::rect(t.at, lines, self.text_line(t.level, m), min_w, s.rect, mon.rect, &self.text_keep_clear()))
+        let font = style::font_px(t.level, mon.scale);
+        let min_w = textbox::min_width(font, mon.scale);
+        let line = self.text_line(t.level, m);
+        let lines = textbox::lines(&text.replace("\r\n", "\n"));
+        let widest = text.split('\n').map(|l| m.text(l.trim_end_matches('\r'), font).0).max().unwrap_or(0);
+        let content_w = textbox::width_for(widest, min_w, font);
+        Some(textbox::rect(self.text_start(t, lines, line), lines, line, content_w, min_w, s.rect, mon.rect, &self.text_keep_clear()))
+    }
+
+    /// Where the box's top-left is, for `lines` lines of height `line`. A
+    /// number's sentence is centred on its circle at the box's own height
+    /// -- the same place the finished sentence is drawn (`annot::caption_at`)
+    /// -- and at the box's own size, not the size the number had when it
+    /// was last closed: so an empty box and a full one are level with the
+    /// circle alike, and a new colour or size moves it at once.
+    fn text_start(&self, t: &TextBox, lines: i32, line: i32) -> Point {
+        let centre = match t.editing.and_then(|i| self.items.get(i)).map(|i| &i.shape) {
+            Some(Shape::Number { at, .. }) if t.caption => *at,
+            _ => return t.at,
+        };
+        annot::caption_at(centre, t.level, self.scale(), lines.max(1) * line)
+    }
+
+    /// The number being given its sentence, as it will look when it is
+    /// closed: the colour and size now chosen on the property row, which
+    /// the item itself takes only at the close. Its index, and a copy.
+    pub fn number_in_edit(&self) -> Option<(usize, Item)> {
+        let t = self.text.as_ref().filter(|t| t.caption)?;
+        let i = t.editing?;
+        let mut item = self.items.get(i)?.clone();
+        item.colour = t.colour;
+        item.level = t.level;
+        Some((i, item))
     }
 
     /// Where a new text starts for a press at `p`: the press, pulled into
@@ -289,6 +332,24 @@ impl Editor {
         self.pointer
     }
 
+    /// Where the magnifier is shown, if it is: at the pointer, while there
+    /// is no selection (hovering, or dragging one out) and while the
+    /// selection is dragged by a handle or by its middle. Not once it is
+    /// settled and annotating begins, nor in a long screenshot.
+    pub fn magnifier(&self) -> Option<Point> {
+        let p = self.pointer?;
+        self.monitor_at(p)?;
+        if self.long || self.text.is_some() {
+            return None;
+        }
+        let shown = match self.drag {
+            Drag::PickRegion { .. } | Drag::ResizeRegion(_) | Drag::MoveRegion { .. } => true,
+            Drag::None => self.selection.is_none(),
+            _ => false,
+        };
+        shown.then_some(p)
+    }
+
     /// The part of monitor `index` shown as it is, the rest being glass
     /// (`glass::hole`): the selection, else the window under the pointer.
     pub fn hole(&self, index: usize) -> Option<Rect> {
@@ -306,7 +367,7 @@ impl Editor {
     /// Whether `button` can be pressed now.
     fn enabled(&self, button: Button) -> bool {
         if self.long {
-            return matches!(button, Button::Long | Button::Cancel | Button::Done);
+            return matches!(button, Button::Long | Button::Save | Button::Cancel | Button::Done);
         }
         match button {
             Button::Undo => self.can_undo(),
@@ -410,11 +471,19 @@ impl Editor {
     /// What the pointer looks like at `p` (§9.8.11A.4).
     pub fn cursor(&self, p: Point, mods: Mods) -> Cursor {
         let Some(sel) = self.selection else { return Cursor::Tool };
-        if self.long || self.text.is_some() {
+        if self.text.is_some() {
             return Cursor::Tool;
         }
-        if self.layout().is_some_and(|l| l.covers(p)) {
-            return Cursor::Arrow;
+        if self.long {
+            return match self.layout().filter(|l| l.covers(p)) {
+                Some(l) if l.button_at(p).is_none() => Cursor::Move,
+                Some(_) => Cursor::Arrow,
+                None => Cursor::Tool,
+            };
+        }
+        if let Some(l) = self.layout().filter(|l| l.covers(p)) {
+            // The plate between the cells takes hold of the whole toolbar.
+            return if l.button_at(p).is_some() { Cursor::Arrow } else { Cursor::Move };
         }
         if self.tool != Tool::Select && !mods.ctrl {
             return Cursor::Tool;
@@ -497,9 +566,18 @@ impl Editor {
 
     /// Where the toolbar is, once there is a selection.
     pub fn layout(&self) -> Option<Layout> {
+        self.bar_layout(self.props())
+    }
+
+    /// The toolbar showing property row `props`: where it was dragged to,
+    /// else beside the selection.
+    fn bar_layout(&self, props: Props) -> Option<Layout> {
         let s = self.selection?;
         let m = self.monitors.get(s.monitor)?;
-        Some(toolbar::layout(s.rect, m.rect, m.scale, self.props()))
+        Some(match self.bar_at {
+            Some(at) => toolbar::layout_at(toolbar::keep_on(at, m.rect, m.scale), m.scale, props),
+            None => toolbar::layout(s.rect, m.rect, m.scale, props),
+        })
     }
 
     fn rects(&self) -> Vec<Rect> {
@@ -656,7 +734,7 @@ impl Editor {
             return Effect::None;
         }
         self.pressed = Some(button);
-        if matches!(button, Button::Cancel | Button::Done) {
+        if matches!(button, Button::Cancel | Button::Done | Button::Save) {
             return Effect::Repaint;
         }
         match self.press(button, m) {
@@ -672,6 +750,7 @@ impl Editor {
                 Button::Long => self.leave_long(),
                 Button::Cancel => Effect::Cancel,
                 Button::Done => Effect::Finish,
+                Button::Save => Effect::Save,
                 _ => Effect::None,
             };
         }
@@ -682,6 +761,7 @@ impl Editor {
             Button::Long => self.enter_long(),
             Button::Cancel => Effect::Cancel,
             Button::Done => Effect::Finish,
+            Button::Save => Effect::Save,
             Button::Colour(c) => self.set_colour(c),
             Button::Level(l) => self.set_level(l, m),
         }
@@ -695,9 +775,18 @@ impl Editor {
         if self.long {
             // The selection is the live screen and clicks in it are not
             // ours; of the overlay, only the toolbar answers.
-            return match self.layout().and_then(|l| l.button_at(p)) {
+            let layout = self.layout();
+            return match layout.as_ref().and_then(|l| l.button_at(p)) {
                 Some(b) => self.press_down(b, m),
-                None => Effect::None,
+                // The toolbar can be moved in a long screenshot too: it may
+                // be over what is being scrolled.
+                None => match layout.filter(|l| l.covers(p)) {
+                    Some(l) => {
+                        self.drag = Drag::MoveBar { grab: Point::new(p.x - l.bar.x, p.y - l.bar.y) };
+                        Effect::Capture
+                    }
+                    None => Effect::None,
+                },
             };
         }
         if self.text.is_some() {
@@ -717,7 +806,9 @@ impl Editor {
                 return self.press_down(b, m);
             }
             if layout.covers(p) {
-                return Effect::None;
+                // Held by the plate, not a cell: the toolbar moves.
+                self.drag = Drag::MoveBar { grab: Point::new(p.x - layout.bar.x, p.y - layout.bar.y) };
+                return Effect::Capture;
             }
         }
         let scale = self.scale();
@@ -760,6 +851,7 @@ impl Editor {
                 // that would be a way to lose them all by a slip.
                 Hit::Outside if self.items.is_empty() => {
                     self.selection = None;
+                    self.bar_at = None;
                     self.hover = self.window_at(p).map(|s| (s.monitor, s.rect));
                     self.drag = Drag::PickRegion { down: p };
                     Effect::Capture
@@ -855,14 +947,15 @@ impl Editor {
                 }
                 let hover = self.window_at(p).map(|s| (s.monitor, s.rect));
                 if hover == self.hover {
-                    return Effect::None;
+                    // The magnifier follows the pointer.
+                    return if self.magnifier().is_some() { Effect::Repaint } else { Effect::None };
                 }
                 self.hover = hover;
             }
             Drag::PickRegion { down } => {
                 let down = *down;
                 if !geom::is_drag(down, p) {
-                    return Effect::None;
+                    return Effect::Repaint;
                 }
                 // Confined to the monitor the drag started on.
                 let Some(m) = geom::monitor_at(&monitors, down) else { return Effect::None };
@@ -882,6 +975,15 @@ impl Editor {
                     sel.rect = geom::move_by(sel.rect, delta, monitors[sel.monitor]);
                     sel.window = None;
                 }
+            }
+            Drag::MoveBar { grab } => {
+                let (grab, sel) = (*grab, self.selection);
+                let Some(m) = sel.and_then(|s| self.monitors.get(s.monitor)) else { return Effect::None };
+                let at = toolbar::keep_on(Point::new(p.x - grab.x, p.y - grab.y), m.rect, m.scale);
+                if self.bar_at == Some(at) {
+                    return Effect::None;
+                }
+                self.bar_at = Some(at);
             }
             Drag::Draw { start } => {
                 let start = *start;
@@ -927,11 +1029,11 @@ impl Editor {
                     // Cancel and Done act here, if the button comes up on
                     // the cell it went down on; let go elsewhere, it was
                     // not meant.
-                    Some(b @ (Button::Cancel | Button::Done)) if self.layout().and_then(|l| l.button_at(p)) == Some(b) => {
-                        if b == Button::Cancel {
-                            Effect::Cancel
-                        } else {
-                            Effect::Finish
+                    Some(b @ (Button::Cancel | Button::Done | Button::Save)) if self.layout().and_then(|l| l.button_at(p)) == Some(b) => {
+                        match b {
+                            Button::Cancel => Effect::Cancel,
+                            Button::Save => Effect::Save,
+                            _ => Effect::Finish,
                         }
                     }
                     // The cell is no longer held: that is something to show.
@@ -940,6 +1042,7 @@ impl Editor {
                 };
             }
             Drag::PickRegion { .. } => {
+                self.bar_at = None;
                 self.selection = match self.forming.take() {
                     Some((rect, monitor)) => Some(Selection { rect, monitor, window: None }),
                     // A click: the window under it, as it was frozen. Asked
@@ -949,7 +1052,7 @@ impl Editor {
                 };
                 self.hover = None;
             }
-            Drag::ResizeRegion(_) | Drag::MoveRegion { .. } => {}
+            Drag::ResizeRegion(_) | Drag::MoveRegion { .. } | Drag::MoveBar { .. } => {}
             Drag::Draw { .. } | Drag::Stroke => {
                 if let Some(item) = self.live.take().filter(|i| !i.is_degenerate()) {
                     self.checkpoint();
@@ -1122,6 +1225,7 @@ impl Editor {
         }
         if self.selection.is_some() || self.forming.is_some() {
             self.selection = None;
+            self.bar_at = None;
             self.forming = None;
             self.live = None;
             self.drag = Drag::None;
@@ -1141,6 +1245,7 @@ impl Editor {
         let effect = match key {
             Key::Cancel => Effect::Cancel,
             Key::Finish => Effect::Finish,
+            Key::Save => Effect::Save,
             // While frames are taken nothing else is a command.
             _ if self.long => Effect::None,
             Key::Undo => self.undo(),
@@ -1167,6 +1272,7 @@ impl Editor {
                 }
                 None => Effect::None,
             },
+            Key::CopyColour => if self.magnifier().is_some() { Effect::CopyColour } else { Effect::None },
             Key::Ignored => Effect::None,
         };
         (key, effect)
@@ -1211,6 +1317,11 @@ mod tests {
             let widest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as i32;
             (widest * 10, lines.len() as i32 * font_px)
         }
+    }
+
+    /// `n` empty lines.
+    fn lines_of(n: usize) -> String {
+        "\n".repeat(n - 1)
     }
 
     const MON: Rect = Rect::new(0, 0, 2560, 1440);
@@ -1910,14 +2021,14 @@ mod tests {
         letter(&mut e, 'T');
         assert_eq!(click(&mut e, P(500, 699)), Effect::OpenText);
         assert_eq!(e.text_box().map(|t| t.at), Some(P(500, 682)), "one line above the bottom edge");
-        assert_eq!(e.text_rect(1, &Fake), Some(Rect::new(500, 682, 800, 18)));
+        assert_eq!(e.text_rect(&lines_of(1), &Fake).map(|r| (r.x, r.y, r.h)), Some((500, 682, 18)));
         // There is no room under it: more lines scroll, the box does not grow.
-        assert_eq!(e.text_rect(5, &Fake), Some(Rect::new(500, 682, 800, 18)));
+        assert_eq!(e.text_rect(&lines_of(5), &Fake).map(|r| (r.x, r.y, r.h)), Some((500, 682, 18)));
         // A bigger size is a taller line, and the text moves up to hold it.
         assert_eq!(press(&mut e, Button::Level(4)), Effect::RestyleText);
         assert_eq!(e.text_box().map(|t| (t.at, t.level)), Some((P(500, 656), 4)));
-        let b = e.text_rect(1, &Fake).unwrap();
-        assert_eq!(b, Rect::new(500, 656, 800, 44));
+        let b = e.text_rect(&lines_of(1), &Fake).unwrap();
+        assert_eq!((b.x, b.y, b.h), (500, 656, 44));
         for r in e.text_keep_clear() {
             assert_eq!(b.intersect(r), None, "the toolbar is under the selection, the box is in it");
         }
@@ -1933,11 +2044,11 @@ mod tests {
         click(&mut e, P(500, 300));
         press(&mut e, Button::Level(4));
         assert_eq!(e.text_box().map(|t| t.at), Some(P(500, 300)), "there was room: it did not move");
-        assert_eq!(e.text_rect(1, &Fake), Some(Rect::new(500, 300, 800, 44)));
-        assert_eq!(e.text_rect(3, &Fake), Some(Rect::new(500, 300, 800, 132)));
+        assert_eq!(e.text_rect(&lines_of(1), &Fake).map(|r| (r.x, r.y, r.h)), Some((500, 300, 44)));
+        assert_eq!(e.text_rect(&lines_of(3), &Fake).map(|r| (r.x, r.y, r.h)), Some((500, 300, 132)));
         // 400 px to the bottom edge is nine lines of 44 and a bit: nine.
-        assert_eq!(e.text_rect(99, &Fake), Some(Rect::new(500, 300, 800, 396)));
-        assert_eq!(e.text_rect(1, &Fake).map(|r| r.h), Some(e.text_line(4, &Fake)));
+        assert_eq!(e.text_rect(&lines_of(99), &Fake).map(|r| (r.x, r.y, r.h)), Some((500, 300, 396)));
+        assert_eq!(e.text_rect(&lines_of(1), &Fake).map(|r| r.h), Some(e.text_line(4, &Fake)));
     }
 
     #[test]
@@ -1953,7 +2064,7 @@ mod tests {
         // Its place is the annotation's, which other things were drawn
         // around: one line, even though that line now ends below the edge.
         assert_eq!(e.text_box().map(|t| (t.at, t.editing)), Some((P(500, 682), Some(0))));
-        assert_eq!(e.text_rect(3, &Fake), Some(Rect::new(500, 682, 800, 44)));
+        assert_eq!(e.text_rect(&lines_of(3), &Fake).map(|r| (r.x, r.y, r.h)), Some((500, 682, 44)));
     }
 
     #[test]
@@ -2175,7 +2286,8 @@ mod tests {
         assert_eq!(e.tool(), Tool::Rect);
         // Between two buttons: the toolbar swallows it; nothing is drawn.
         let r = e.layout().unwrap().rect_of(Button::Tool(Tool::Rect)).unwrap();
-        assert_eq!(click(&mut e, P(r.right() + 1, r.y + 3)), Effect::None);
+        // (It takes hold of the toolbar, which moves if the pointer does.)
+        assert_eq!(click(&mut e, P(r.right() + 1, r.y + 3)), Effect::Capture);
         drag(&mut e, P(r.right() + 1, r.y + 3), P(r.right() + 60, r.y + 60));
         assert!(e.items().is_empty());
         assert_eq!(press(&mut e, Button::Done), Effect::Finish);
@@ -2201,10 +2313,11 @@ mod tests {
         letter(&mut e, 'V');
         let gap = P(pen.right() + 1, pen.y + 3);
         assert_eq!(e.layout().unwrap().button_at(gap), None);
-        assert_eq!(e.double_click(gap, NONE, &Fake), Effect::None, "nor does one between two buttons");
+        assert_eq!(e.double_click(gap, NONE, &Fake), Effect::Capture, "nor does one between two buttons: it holds the toolbar");
+        e.pointer_up(gap);
         // Between two buttons nothing is drawn and nothing is moved.
         letter(&mut e, 'R');
-        assert_eq!(e.pointer_down(gap, NONE, &Fake), Effect::None);
+        assert_eq!(e.pointer_down(gap, NONE, &Fake), Effect::Capture);
         e.pointer_up(gap);
         drag(&mut e, gap, P(pen.right() + 60, pen.y - 200));
         assert!(e.items().is_empty());
@@ -2368,5 +2481,215 @@ mod tests {
         click(&mut e, P(3100, 300));
         type_text(&mut e, "abc");
         assert_eq!(e.items()[0].shape, Shape::Text { at: P(3100, 300), text: "abc".into(), size: (30, 36) }, "18 pt at 200%");
+    }
+
+    /// #1197 item 6: the window under the pointer is the clear one from the
+    /// first frame. The host tells the editor where the pointer is when the
+    /// session opens, and nothing has to move after that.
+    #[test]
+    fn the_window_under_the_pointer_is_known_before_the_mouse_moves() {
+        let mut e = fresh();
+        assert_eq!(e.hover(), None, "nothing is told yet");
+        e.pointer_move(P(500, 300), NONE);
+        assert_eq!(e.hover(), Some((0, WIN)));
+        assert_eq!(e.hole(0), Some(WIN), "the hole is the window, in the first frame");
+    }
+
+    /// #1197 item 8: a size can be read at every moment of dragging out,
+    /// resizing and moving: the rectangle the host measures changes with
+    /// each move.
+    #[test]
+    fn the_rectangle_to_measure_follows_every_move_of_a_drag() {
+        let mut e = fresh();
+        e.pointer_down(P(100, 100), NONE, &Fake);
+        e.pointer_move(P(200, 180), NONE);
+        assert_eq!(e.forming().map(|f| (f.0.w, f.0.h)), Some((100, 80)));
+        e.pointer_move(P(300, 380), NONE);
+        assert_eq!(e.forming().map(|f| (f.0.w, f.0.h)), Some((200, 280)));
+        e.pointer_up(P(300, 380));
+        let sel = e.selection().unwrap().rect;
+        e.pointer_down(P(sel.x + sel.w / 2, sel.y + sel.h / 2), NONE, &Fake);
+        e.pointer_move(P(sel.x + sel.w / 2 + 40, sel.y + sel.h / 2), NONE);
+        e.pointer_move(P(sel.x + sel.w / 2 + 80, sel.y + sel.h / 2), NONE);
+        assert_eq!(e.selection().map(|s| s.rect.x), Some(sel.x + 80));
+    }
+
+    /// #1197 item 4, in the editor: empty, the box is the least wide; it
+    /// widens with the longest line and stops at the selection's edge.
+    #[test]
+    fn the_text_box_is_as_wide_as_its_longest_line_up_to_the_selection() {
+        let mut e = selected();
+        e.pointer_down(P(520, 320), NONE, &Fake);
+        e.key(b'T' as u16, NONE, &Fake);
+        click(&mut e, P(520, 320));
+        let w = |e: &Editor, s: &str| e.text_rect(s, &Fake).unwrap().w;
+        let (empty, short, longer) = (w(&e, ""), w(&e, "abcd"), w(&e, "abcdefgh"));
+        assert!(empty < 800 && empty <= short && short < longer, "{empty} {short} {longer}");
+        assert_eq!(w(&e, &"x".repeat(500)), WIN.right() - e.text_box().unwrap().at.x, "to the edge, no further");
+        assert_eq!(w(&e, "ab\ncdefgh\nij"), w(&e, "cdefgh"), "the longest line counts, not the total");
+    }
+
+    /// #1197 items 2 and 3: while a number's sentence is typed, the circle
+    /// is drawn in the colour and size on the property row, and the box is
+    /// level with it -- empty or not.
+    #[test]
+    fn a_number_in_edit_wears_the_chosen_colour_and_size_and_its_box_is_level() {
+        let mut e = selected();
+        letter(&mut e, 'N');
+        click(&mut e, P(500, 300));
+        let centre = |e: &Editor, text: &str| {
+            let b = e.text_rect(text, &Fake).unwrap();
+            (b.y + b.h / 2, b.h)
+        };
+        assert_eq!(centre(&e, "").0, 300, "empty: level with the circle");
+        assert_eq!(centre(&e, "x").0, 300, "typed: the same");
+        let (_, was) = e.number_in_edit().map(|(i, it)| (i, (it.colour, it.level))).unwrap();
+        assert_ne!(was, (3, 4));
+        press(&mut e, Button::Colour(3));
+        press(&mut e, Button::Level(4));
+        let (i, shown) = e.number_in_edit().unwrap();
+        assert_eq!((i, shown.colour, shown.level), (0, 3, 4), "what is drawn while typing");
+        assert_eq!((e.items()[0].colour, e.items()[0].level), was, "the annotation itself changes when it is closed");
+        let b = e.text_rect("", &Fake).unwrap();
+        assert_eq!(b.y + b.h / 2, 300, "a bigger size keeps the box level with its circle");
+        assert!(b.h > centre(&e, "").1 - 1);
+        type_text(&mut e, "ok");
+        assert_eq!((e.items()[0].colour, e.items()[0].level), (3, 4));
+        assert!(e.number_in_edit().is_none());
+    }
+
+    /// #1197 item 5: the toolbar is held by its plate and dragged; it stays
+    /// on the monitor, and stays where it was put while the selection moves
+    /// -- until the next selection.
+    #[test]
+    fn the_toolbar_can_be_dragged_by_its_plate_and_stays_where_it_is_put() {
+        let mut e = selected();
+        let before = e.layout().unwrap();
+        let gap = P(before.bar.x + 2, before.bar.y + 2);
+        assert_eq!(before.button_at(gap), None, "the corner of the plate is no cell");
+        assert_eq!(e.cursor(gap, NONE), Cursor::Move);
+        let cell = before.rect_of(Button::Tool(Tool::Pen)).unwrap();
+        assert_eq!(e.cursor(P(cell.x + 2, cell.y + 2), NONE), Cursor::Arrow);
+
+        assert_eq!(e.pointer_down(gap, NONE, &Fake), Effect::Capture);
+        e.pointer_move(P(gap.x + 100, gap.y - 150), NONE);
+        e.pointer_up(P(gap.x + 100, gap.y - 150));
+        let after = e.layout().unwrap();
+        assert_eq!((after.bar.x, after.bar.y), (before.bar.x + 100, before.bar.y - 150));
+        assert_eq!(after.buttons.len(), before.buttons.len());
+
+        // Not off the screen, on any side.
+        e.pointer_down(P(after.bar.x + 2, after.bar.y + 2), NONE, &Fake);
+        e.pointer_move(P(-5000, -5000), NONE);
+        e.pointer_up(P(-5000, -5000));
+        let corner = e.layout().unwrap().bar;
+        assert_eq!((corner.x, corner.y), (MON.x, MON.y));
+        let g = P(corner.x + 2, corner.y + 2);
+        e.pointer_down(g, NONE, &Fake);
+        e.pointer_move(P(99999, 99999), NONE);
+        e.pointer_up(P(99999, 99999));
+        let far = e.layout().unwrap();
+        assert!(far.plate().right() <= MON.right() && far.bar.y + toolbar::footprint(1.0).1 <= MON.bottom());
+
+        // It does not follow the selection any more.
+        let at = e.layout().unwrap().bar;
+        drag(&mut e, P(850, 300), P(800, 300));
+        assert_eq!(e.layout().unwrap().bar, at, "same place after the selection moved");
+    }
+
+    /// And it goes back beside the selection for the next one.
+    #[test]
+    fn the_toolbar_is_beside_the_selection_again_for_the_next_one() {
+        let mut e = selected();
+        let beside = e.layout().unwrap().bar;
+        let g = P(beside.x + 2, beside.y + 2);
+        e.pointer_down(g, NONE, &Fake);
+        e.pointer_move(P(g.x + 300, g.y), NONE);
+        e.pointer_up(P(g.x + 300, g.y));
+        assert_ne!(e.layout().unwrap().bar, beside);
+        e.right_click();
+        assert!(e.selection().is_none());
+        click(&mut e, P(500, 300));
+        assert_eq!(e.layout().unwrap().bar, beside);
+    }
+
+    /// #1197 item 7: the magnifier is there while hovering without a
+    /// selection and for the whole of dragging one out, by a handle or by
+    /// its middle; and not once annotating begins.
+    #[test]
+    fn the_magnifier_follows_the_pointer_until_the_selection_is_settled() {
+        let mut e = fresh();
+        assert_eq!(e.magnifier(), None, "the host has not told where the pointer is");
+        assert_eq!(e.pointer_move(P(100, 100), NONE), Effect::Repaint, "hovering repaints every move");
+        assert_eq!(e.pointer_move(P(101, 100), NONE), Effect::Repaint);
+        assert_eq!(e.magnifier(), Some(P(101, 100)));
+        e.pointer_down(P(100, 100), NONE, &Fake);
+        assert_eq!(e.magnifier(), Some(P(100, 100)), "pressed");
+        e.pointer_move(P(300, 300), NONE);
+        assert_eq!(e.magnifier(), Some(P(300, 300)), "dragging out");
+        e.pointer_up(P(300, 300));
+        assert!(e.selection().is_some());
+        assert_eq!(e.magnifier(), None, "settled");
+        // By a handle and by the middle.
+        let sel = e.selection().unwrap().rect;
+        e.pointer_down(P(sel.right(), sel.bottom()), NONE, &Fake);
+        e.pointer_move(P(sel.right() + 20, sel.bottom() + 20), NONE);
+        assert_eq!(e.magnifier(), Some(P(sel.right() + 20, sel.bottom() + 20)), "by a handle");
+        e.pointer_up(P(sel.right() + 20, sel.bottom() + 20));
+        assert_eq!(e.magnifier(), None);
+        let sel = e.selection().unwrap().rect;
+        e.pointer_down(P(sel.x + 40, sel.y + 40), NONE, &Fake);
+        e.pointer_move(P(sel.x + 50, sel.y + 50), NONE);
+        assert!(e.magnifier().is_some(), "by the middle");
+        e.pointer_up(P(sel.x + 50, sel.y + 50));
+        assert_eq!(e.magnifier(), None);
+        // Annotating: a drawing tool's drag does not show it.
+        letter(&mut e, 'R');
+        let sel = e.selection().unwrap().rect;
+        e.pointer_down(P(sel.x + 20, sel.y + 20), NONE, &Fake);
+        e.pointer_move(P(sel.x + 60, sel.y + 60), NONE);
+        assert_eq!(e.magnifier(), None);
+    }
+
+    /// Ctrl+C copies the colour only while the magnifier is shown.
+    #[test]
+    fn ctrl_c_copies_the_colour_only_while_the_magnifier_is_shown() {
+        let mut e = fresh();
+        e.pointer_move(P(100, 100), NONE);
+        assert_eq!(e.key(overlay::VK_C, CTRL, &Fake), (Key::CopyColour, Effect::CopyColour));
+        assert_eq!(e.key(overlay::VK_C, NONE, &Fake).1, Effect::None, "C alone is not a command");
+        click(&mut e, P(500, 300));
+        assert_eq!(e.key(overlay::VK_C, CTRL, &Fake), (Key::CopyColour, Effect::None), "settled: nothing to copy");
+    }
+
+    /// #1197 item 9: Save is Done and a copy; like Done it acts when the
+    /// button comes up on it, works from Ctrl+S, and is there in a long one.
+    #[test]
+    fn save_acts_on_release_on_the_button_and_by_ctrl_s() {
+        let mut e = selected();
+        let r = e.layout().unwrap().rect_of(Button::Save).unwrap();
+        let on = P(r.x + 2, r.y + 2);
+        assert_eq!(e.pointer_down(on, NONE, &Fake), Effect::Repaint, "held, not yet acting");
+        assert_eq!(e.pointer_up(on), Effect::Save);
+        e.pointer_down(on, NONE, &Fake);
+        assert_ne!(e.pointer_up(P(r.x + 200, r.y + 2)), Effect::Save, "let go elsewhere: not meant");
+        assert_eq!(e.key(overlay::VK_S, CTRL, &Fake), (Key::Save, Effect::Save));
+        assert_eq!(e.key(overlay::VK_S, NONE, &Fake).1, Effect::None);
+        press(&mut e, Button::Long);
+        assert_eq!(e.pointer_down(on, NONE, &Fake), Effect::Repaint);
+        assert_eq!(e.pointer_up(on), Effect::Save, "also while frames are taken");
+    }
+
+    /// #1197 item 5, long: the toolbar can be held by its plate there too.
+    #[test]
+    fn the_toolbar_can_be_moved_in_a_long_screenshot_too() {
+        let mut e = selected();
+        press(&mut e, Button::Long);
+        let bar = e.layout().unwrap().bar;
+        let g = P(bar.x + 2, bar.y + 2);
+        assert_eq!(e.pointer_down(g, NONE, &Fake), Effect::Capture);
+        e.pointer_move(P(g.x - 50, g.y), NONE);
+        e.pointer_up(P(g.x - 50, g.y));
+        assert_eq!(e.layout().unwrap().bar.x, bar.x - 50);
     }
 }

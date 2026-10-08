@@ -679,15 +679,15 @@ struct ShotEditorTests {
         rig.letter("T")
         #expect(rig.click(Pt(500, 699)) == .openText)
         #expect(rig.editor.textBox?.at == Pt(500, 682), "one line above the bottom edge")
-        #expect(rig.editor.textRect(lines: 1, measure: rig.measure) == PixelRect(500, 682, 800, 18))
+        #expect(rig.editor.textRect(lines: 1, text: "", measure: rig.measure) == PixelRect(500, 682, 72, 18))
         // There is no room under it: more lines scroll, the box does not grow.
-        #expect(rig.editor.textRect(lines: 5, measure: rig.measure) == PixelRect(500, 682, 800, 18))
+        #expect(rig.editor.textRect(lines: 5, text: "", measure: rig.measure) == PixelRect(500, 682, 72, 18))
         // A bigger size is a taller line, and the text moves up to hold it.
         #expect(rig.touch(.level(4)) == .restyleText)
         #expect(rig.editor.textBox?.at == Pt(500, 656))
         #expect(rig.editor.textBox?.level == 4)
-        let box = rig.editor.textRect(lines: 1, measure: rig.measure)
-        #expect(box == PixelRect(500, 656, 800, 44))
+        let box = rig.editor.textRect(lines: 1, text: "", measure: rig.measure)
+        #expect(box == PixelRect(500, 656, 176, 44))
         #expect(rig.editor.textKeepClear.count == 2)
         #expect(rig.editor.textKeepClear.allSatisfy { box?.intersect($0) == nil },
                 "the toolbar is under the selection, the box is in it")
@@ -702,11 +702,11 @@ struct ShotEditorTests {
         rig.click(Pt(500, 300))
         rig.touch(.level(4))
         #expect(rig.editor.textBox?.at == Pt(500, 300), "there was room: it did not move")
-        #expect(rig.editor.textRect(lines: 1, measure: rig.measure) == PixelRect(500, 300, 800, 44))
-        #expect(rig.editor.textRect(lines: 3, measure: rig.measure) == PixelRect(500, 300, 800, 132))
+        #expect(rig.editor.textRect(lines: 1, text: "", measure: rig.measure) == PixelRect(500, 300, 176, 44))
+        #expect(rig.editor.textRect(lines: 3, text: "", measure: rig.measure) == PixelRect(500, 300, 176, 132))
         // 400 px to the bottom edge is nine lines of 44 and a bit: nine.
-        #expect(rig.editor.textRect(lines: 99, measure: rig.measure) == PixelRect(500, 300, 800, 396))
-        #expect(rig.editor.textRect(lines: 1, measure: rig.measure)?.h
+        #expect(rig.editor.textRect(lines: 99, text: "", measure: rig.measure) == PixelRect(500, 300, 176, 396))
+        #expect(rig.editor.textRect(lines: 1, text: "", measure: rig.measure)?.h
             == rig.editor.textLine(level: 4, measure: rig.measure))
     }
 
@@ -723,7 +723,7 @@ struct ShotEditorTests {
         // around: one line, even though that line now ends below the edge.
         #expect(rig.editor.textBox?.at == Pt(500, 682))
         #expect(rig.editor.textBox?.editing == 0)
-        #expect(rig.editor.textRect(lines: 3, measure: rig.measure) == PixelRect(500, 682, 800, 44))
+        #expect(rig.editor.textRect(lines: 3, text: "", measure: rig.measure) == PixelRect(500, 682, 176, 44))
     }
 
     @Test func aClickOutsideTheBoxCommitsAndDoesNothingElse() {
@@ -997,6 +997,200 @@ struct ShotEditorTests {
         #expect(rig.item(2)?.level == 2)
     }
 
+    // MARK: Numbers being typed (task 1196)
+
+    /// A host whose lines are taller than the font, as the real one's are.
+    private struct TallMeasure: TextMeasure {
+        func size(of text: String, fontPx: Int) -> Annotation.PixelSize {
+            let lines = text.components(separatedBy: "\n")
+            return .init((lines.map(\.count).max() ?? 0) * 10, lines.count * fontPx * 3 / 2)
+        }
+    }
+
+    @Test func aNumbersSentenceBoxIsCentredOnItsCircleWhetherOrNotAnythingIsTypedYet() {
+        let rig = Rig.selected()
+        rig.letter("N")
+        #expect(rig.click(Pt(700, 300)) == .openText)
+        let tall = TallMeasure()
+        let level = rig.editor.textBox?.level ?? 0
+        let font = ShotStyle.fontPx(level: level, scale: 1)
+        let line = font * 3 / 2
+        // Empty, one line, and three: each centred on y = 300 by the height
+        // of what is in it, which is the rule the written sentence is drawn
+        // by (`Annotation.captionOrigin`).
+        for (text, lines) in [("", 1), ("abc", 1), ("a\nb\nc", 3)] {
+            let box = rig.editor.textRect(lines: lines, text: text, measure: tall)
+            #expect(box?.y == 300 - lines * line / 2, "\(lines) line(s), text \(text.debugDescription)")
+            #expect(box.map { $0.y + $0.h / 2 } == 300 - (lines * line / 2) + lines * line / 2)
+        }
+        // The same top the sentence has once it is written.
+        rig.editor.endText("abc", measure: tall)
+        guard case let .number(_, at, _, size)? = rig.shape(0) else { Issue.record("no number"); return }
+        #expect(size.h == line)
+        #expect(Annotation.captionOrigin(at: at, level: level, scale: 1, captionHeight: size.h).y == 300 - line / 2)
+    }
+
+    @Test func aNumbersCircleTakesTheColourAndSizeAsSoonAsTheyAreChosenWhileItsSentenceIsTyped() {
+        let rig = Rig.selected()
+        rig.letter("N")
+        rig.click(Pt(700, 300))
+        let before = rig.items[0]
+        #expect(rig.editor.drawOrder.first?.item.colour == before.colour)
+        #expect(rig.touch(.colour(3)) == .restyleText)
+        #expect(rig.editor.drawOrder.first?.item.colour == 3, "the circle is drawn in it now")
+        #expect(rig.items[0].colour == before.colour, "what is kept waits for the box to close")
+        #expect(rig.touch(.level(4)) == .restyleText)
+        #expect(rig.editor.drawOrder.first?.item.level == 4)
+        #expect(Annotation.numberRadius(level: 4, scale: 1) > Annotation.numberRadius(level: before.level, scale: 1))
+        rig.type("x")
+        #expect(rig.style(0) == [3, 4], "and it is what stays")
+        // Edited again, a drawing that is not yet changed is not changed.
+        rig.letter("V")
+        #expect(rig.double(Pt(700, 300)) == .openText)
+        rig.touch(.colour(5))
+        #expect(rig.editor.drawOrder.first?.item.colour == 5)
+        #expect(rig.items[0].colour == 3)
+        rig.type("x")
+        #expect(rig.items[0].colour == 5)
+        rig.undo()
+        #expect(rig.items[0].colour == 3, "one step back is the colour it had")
+    }
+
+    // MARK: Carrying the toolbar (task 1196, 5)
+
+    @Test func theToolbarIsCarriedByItsPlateAndStaysWhereItWasPut() throws {
+        let rig = Rig.selected()
+        let first = try #require(rig.editor.layout)
+        // A spot of the plate that is no cell: the corner of the padding.
+        let grab = Pt(first.bar.x + 1, first.bar.y + 1)
+        #expect(first.covers(grab) && first.button(at: grab) == nil)
+        #expect(rig.editor.cursor(at: grab, mods: []) == .move, "an open hand over the plate")
+        let cell = try #require(first.rect(of: .tool(.rect)))
+        #expect(rig.editor.cursor(at: Pt(cell.x + 2, cell.y + 2), mods: []) == .arrow, "and still an arrow over a cell")
+        #expect(rig.down(grab) == .capture)
+        #expect(rig.editor.isMovingToolbar)
+        #expect(rig.move(Pt(grab.x + 120, grab.y - 300)) == .repaint)
+        let moved = try #require(rig.editor.layout)
+        #expect(moved.bar.x == first.bar.x + 120 && moved.bar.y == first.bar.y - 300)
+        #expect(moved.buttons.map(\.rect.x) == first.buttons.map { $0.rect.x + 120 }, "both rows' cells went with it")
+        #expect(rig.up(Pt(grab.x + 120, grab.y - 300)) == .release)
+        #expect(rig.editor.cursor(at: Pt(grab.x + 120, grab.y - 300), mods: []) == .move)
+        // The selection is moved about and the toolbar does not follow it.
+        rig.letter("V")
+        rig.drag(Pt(800, 500), Pt(820, 520))
+        #expect(rig.editor.layout?.bar == moved.bar)
+        // Nothing was drawn by the press that carried it.
+        #expect(rig.items.isEmpty)
+    }
+
+    @Test func theToolbarCannotBeCarriedOffTheScreen() throws {
+        let rig = Rig.selected()
+        let first = try #require(rig.editor.layout)
+        let grab = Pt(first.bar.x + 1, first.bar.y + 1)
+        rig.down(grab)
+        rig.move(Pt(-5000, -5000))
+        var layout = try #require(rig.editor.layout)
+        #expect(layout.bar.x == 0 && layout.bar.y == 0)
+        rig.move(Pt(9000, 9000))
+        layout = try #require(rig.editor.layout)
+        #expect(layout.plate.right == Rig.display.right && layout.bar.y + ShotToolbarGrid.footprint(scale: 1).h == Rig.display.bottom)
+        rig.up(Pt(9000, 9000))
+    }
+
+    @Test func aNewChoiceOfRegionPutsTheToolbarBackWhereItPutsItself() throws {
+        let rig = Rig.selected()
+        let auto = try #require(rig.editor.layout)
+        let grab = Pt(auto.bar.x + 1, auto.bar.y + 1)
+        rig.down(grab)
+        rig.move(Pt(grab.x + 50, grab.y - 100))
+        rig.up(Pt(grab.x + 50, grab.y - 100))
+        #expect(rig.editor.layout?.bar != auto.bar)
+        // Out of the selection, out of the screenshot's choice, and in again.
+        rig.rightClick()
+        rig.rightClick()
+        #expect(rig.editor.selection == nil)
+        rig.click(Pt(500, 300))
+        #expect(rig.editor.layout?.bar == auto.bar)
+    }
+
+    @Test func theToolbarCanBeCarriedWhileALongScreenshotIsTaken() throws {
+        let rig = Rig.selected()
+        rig.press(.long)
+        #expect(rig.editor.isLong)
+        let first = try #require(rig.editor.layout)
+        let grab = Pt(first.bar.x + 1, first.bar.y + 1)
+        #expect(rig.down(grab) == .capture)
+        rig.move(Pt(grab.x + 30, grab.y))
+        #expect(rig.editor.layout?.bar.x == first.bar.x + 30)
+        rig.up(Pt(grab.x + 30, grab.y))
+    }
+
+    // MARK: Save (task 1196, 9)
+
+    @Test func saveIsDoneWithACopyAndHasItsOwnKey() {
+        let rig = Rig.selected()
+        #expect(rig.press(.save) == .save)
+        #expect(rig.key(.letter("s"), [.command]) == .save)
+        #expect(rig.key(.letter("S"), [.command]) == .save)
+        // Cmd+S means nothing with nothing selected, and a bare S is no tool.
+        #expect(Rig.fresh().key(.letter("s"), [.command]) == .none)
+        #expect(rig.key(.letter("s"), [.command, .shift]) == .none)
+        #expect(rig.key(.letter("s")) == .none)
+        // It is on the toolbar between Long Screenshot and Cancel.
+        let order = rig.editor.layout?.buttons.map(\.button) ?? []
+        let at = order.firstIndex(of: .save) ?? -1
+        #expect(at > 0 && order[at - 1] == .long && order[at + 1] == .cancel)
+    }
+
+    @Test func saveWorksWhileALongScreenshotIsTaken() {
+        let rig = Rig.selected()
+        rig.press(.long)
+        #expect(rig.editor.isLong)
+        #expect(rig.press(.save) == .save)
+        #expect(rig.key(.letter("s"), [.command]) == .save, "as Enter finishes it")
+        #expect(rig.key(.letter("r")) == .none, "no tool keys while frames are taken")
+    }
+
+    // MARK: The magnifier (task 1196, 7)
+
+    @Test func theMagnifierIsUpOnlyWhileTheRegionIsBeingChosen() {
+        let rig = Rig.fresh()
+        #expect(rig.editor.showsMagnifier, "before there is a region")
+        rig.down(Pt(500, 300))
+        #expect(rig.editor.showsMagnifier, "with the button down, before it is a drag")
+        rig.move(Pt(600, 400))
+        rig.move(Pt(900, 700))
+        #expect(rig.editor.showsMagnifier, "while it is dragged out")
+        rig.up(Pt(900, 700))
+        #expect(rig.editor.selection != nil)
+        #expect(!rig.editor.showsMagnifier, "chosen")
+        // Resizing and moving it bring the magnifier back for the drag.
+        let sel = rig.editor.selection?.rect ?? PixelRect(0, 0, 0, 0)
+        rig.down(Pt(sel.right, sel.bottom))
+        rig.move(Pt(sel.right + 30, sel.bottom + 30))
+        #expect(rig.editor.showsMagnifier, "resizing")
+        rig.up(Pt(sel.right + 30, sel.bottom + 30))
+        #expect(!rig.editor.showsMagnifier)
+        let moved = rig.editor.selection?.rect ?? PixelRect(0, 0, 0, 0)
+        rig.down(Pt(moved.x + moved.w / 2, moved.y + moved.h / 2))
+        rig.move(Pt(moved.x + moved.w / 2 + 10, moved.y + moved.h / 2 + 10))
+        #expect(rig.editor.showsMagnifier, "moving")
+        rig.up(Pt(moved.x + moved.w / 2 + 10, moved.y + moved.h / 2 + 10))
+        #expect(!rig.editor.showsMagnifier)
+        // Drawing, typing and frames being taken have none.
+        rig.letter("R")
+        rig.down(Pt(moved.x + 20, moved.y + 20))
+        rig.move(Pt(moved.x + 60, moved.y + 60))
+        #expect(!rig.editor.showsMagnifier, "drawing")
+        rig.up(Pt(moved.x + 60, moved.y + 60))
+        rig.letter("T")
+        rig.click(Pt(moved.x + 100, moved.y + 100))
+        #expect(rig.editor.textBox != nil && !rig.editor.showsMagnifier, "typing")
+        rig.end("")
+        rig.press(.long)
+        #expect(!rig.editor.showsMagnifier, "a long screenshot")
+    }
+
     // MARK: Stepping back
 
     @Test func theRightButtonStepsBackInTheSpecifiedOrder() {
@@ -1038,9 +1232,10 @@ struct ShotEditorTests {
         let rig = Rig.selected()
         #expect(rig.press(.tool(.rect)) == .repaint)
         #expect(rig.editor.tool == .rect)
-        // Between two buttons: the toolbar swallows it; nothing is drawn.
+        // Between two buttons: the toolbar takes it and the plate is carried
+        // (task 1196); nothing is drawn.
         let r = try #require(rig.editor.layout?.rect(of: .tool(.rect)))
-        #expect(rig.down(Pt(r.right + 1, r.y + 3)) == .none)
+        #expect(rig.down(Pt(r.right + 1, r.y + 3)) == .capture)
         rig.up(Pt(r.right + 1, r.y + 3))
         rig.drag(Pt(r.right + 1, r.y + 3), Pt(r.right + 60, r.y + 60))
         #expect(rig.items.isEmpty)
@@ -1062,13 +1257,15 @@ struct ShotEditorTests {
         #expect(rig.double(Pt(pen.x + 2, pen.y + 2)) == .repaint)
         #expect(rig.editor.tool == .pen)
         rig.letter("V")
-        #expect(rig.double(Pt(pen.right + 1, pen.y + 3)) == .none, "nor does one between two buttons")
-        // Between two buttons nothing is drawn and nothing is moved.
+        #expect(rig.double(Pt(pen.right + 1, pen.y + 3)) == .capture, "one between two buttons takes hold of the plate")
+        rig.up(Pt(pen.right + 1, pen.y + 3))
+        // Between two buttons nothing is drawn and the selection is not moved.
         rig.letter("R")
-        #expect(rig.down(Pt(pen.right + 1, pen.y + 3)) == .none)
+        #expect(rig.down(Pt(pen.right + 1, pen.y + 3)) == .capture)
         rig.up(Pt(pen.right + 1, pen.y + 3))
         rig.drag(Pt(pen.right + 1, pen.y + 3), Pt(pen.right + 60, pen.y - 200))
         #expect(rig.items.isEmpty)
+        #expect(rig.editor.selection?.rect == display)
     }
 
     @Test func pickingAToolLetsGoOfTheSelectedAnnotation() {

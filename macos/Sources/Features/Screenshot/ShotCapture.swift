@@ -117,7 +117,15 @@ enum ShotCapture {
 /// Taking frames of one part of one display as it is *now*, with this app's
 /// overlay left out: what a long screenshot is stitched from
 /// (`dev-docs/poltergeist/screenshot.md`, 9.6).
-final class ShotLiveCapture {
+/// Where a long screenshot's frames come from: the live screen, or -- in a
+/// test -- a page that is made up.
+protocol ShotFrameSource: AnyObject {
+    /// Take one frame as rows of R, G, B, X, or nil when there is none.
+    /// Called back on the main thread.
+    func frame(completion: @escaping ([UInt8]?) -> Void)
+}
+
+final class ShotLiveCapture: ShotFrameSource {
     private let displayID: CGDirectDisplayID
     /// The part to take, in the display's own points.
     private let region: CGRect

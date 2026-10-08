@@ -125,6 +125,7 @@ enum ShotChrome {
         case .undo: return .icon("undo")
         case .redo: return .icon("redo")
         case .long: return .icon("long")
+        case .save: return .icon("save")
         case .cancel: return .icon("cancel")
         case .done: return .icon("done")
         case let .colour(c): return .swatch(ShotStyle.colour(c))

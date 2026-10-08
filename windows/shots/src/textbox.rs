@@ -73,17 +73,26 @@ pub fn origin(click: Point, line: i32, min_w: i32, selection: Rect, keep_clear: 
     Point::new(x, y)
 }
 
-/// The box for a text at `at` holding `lines` lines of height `line`.
+/// How wide the box is for text whose widest line is `widest` pixels: that
+/// and room for the caret and for a letter more, never narrower than
+/// `min_w`. The box follows what is typed; it is not as wide as the
+/// selection to begin with (#1197).
+pub fn width_for(widest: i32, min_w: i32, font_px: i32) -> i32 {
+    (widest + (font_px + 1) / 2).max(min_w)
+}
+
+/// The box for a text at `at` holding `lines` lines of height `line`, whose
+/// content is `content_w` wide (`width_for`).
 ///
-/// Its width runs to the selection's right edge, and is at least `min_w`
-/// (stopped at the monitor's edge). Its height is a whole number of lines:
+/// Its width is `content_w`, at least `min_w`, and **never past the
+/// selection's right edge** (stopped at the monitor's edge). Its height is a whole number of lines:
 /// as many as the text has, but no more than fit above the selection's
 /// bottom edge -- or the monitor's, for a text that is not in the selection
 /// at all -- and above the top of any of `keep_clear` below it. Never less
 /// than one line: what is being typed has to be seen.
-pub fn rect(at: Point, lines: i32, line: i32, min_w: i32, selection: Rect, monitor: Rect, keep_clear: &[Rect]) -> Rect {
+pub fn rect(at: Point, lines: i32, line: i32, content_w: i32, min_w: i32, selection: Rect, monitor: Rect, keep_clear: &[Rect]) -> Rect {
     let line = line.max(1);
-    let w = (selection.right() - at.x).max(min_w).min(monitor.right() - at.x).max(1);
+    let w = content_w.min(selection.right() - at.x).max(min_w).min(monitor.right() - at.x).max(1);
     let in_selection = at.y >= selection.y && at.y < selection.bottom();
     let mut limit = if in_selection { selection.bottom() } else { monitor.bottom() };
     for r in keep_clear {
@@ -491,6 +500,8 @@ pub fn draw_caret(dst: &mut [u8], dst_rect: Rect, caret: Rect, clip: Rect, rgb: 
 
 #[cfg(test)]
 mod tests {
+    /// A content wider than any selection: the box runs to its edge.
+    const WIDE: i32 = 100_000;
     use super::*;
     use crate::style::{Props, FONTS, LEVELS};
     use crate::toolbar;
@@ -530,12 +541,12 @@ mod tests {
         let line = line_of(font);
         let at = origin(Point::new(1450, 650), line, min_width(font, scale), selection, &keep);
         assert_eq!(at, Point::new(1450, 650), "there is room: the text starts where it was pressed");
-        let one = rect(at, 1, line, min_width(font, scale), selection, monitor, &keep);
+        let one = rect(at, 1, line, WIDE, min_width(font, scale), selection, monitor, &keep);
         assert_eq!(one, Rect::new(1450, 650, 800, line));
         // It grows a line at a time and stops at the selection's bottom.
-        let two = rect(at, 2, line, min_width(font, scale), selection, monitor, &keep);
+        let two = rect(at, 2, line, WIDE, min_width(font, scale), selection, monitor, &keep);
         assert_eq!(two.h, (2 * line).min((800 - 650) / line * line));
-        let many = rect(at, 40, line, min_width(font, scale), selection, monitor, &keep);
+        let many = rect(at, 40, line, WIDE, min_width(font, scale), selection, monitor, &keep);
         assert_eq!(many.h, (800 - 650) / line * line);
         assert!(many.bottom() <= selection.bottom());
         for r in &keep {
@@ -565,7 +576,7 @@ mod tests {
                             }
                             let at = origin(click, line, min_w, selection, &keep);
                             for typed in [1, 2, 3, 50] {
-                                let b = rect(at, typed, line, min_w, selection, monitor, &keep);
+                                let b = rect(at, typed, line, WIDE, min_w, selection, monitor, &keep);
                                 let what = format!("scale {scale} selection {selection:?} level {level} click {click:?} lines {typed}: {b:?}");
                                 assert!(within(b, selection), "{what}");
                                 assert_eq!(b.h % line, 0, "{what}");
@@ -615,19 +626,19 @@ mod tests {
         let selection = Rect::from_ltrb(100, 100, 700, 500);
         // Left behind above the selection when it was moved: the selection
         // is not its floor, the monitor is.
-        let above = rect(Point::new(200, 20), 99, 30, 120, selection, monitor, &[]);
+        let above = rect(Point::new(200, 20), 99, 30, WIDE, 120, selection, monitor, &[]);
         assert_eq!((above.y, above.h), (20, (1080 - 20) / 30 * 30));
         // Beside the toolbar's top: it ends there.
         let bar = Rect::new(300, 508, 400, 40);
-        let beside = rect(Point::new(350, 20), 99, 30, 120, selection, monitor, &[bar]);
+        let beside = rect(Point::new(350, 20), 99, 30, WIDE, 120, selection, monitor, &[bar]);
         assert_eq!(beside.bottom(), 20 + (508 - 20) / 30 * 30);
         assert!(beside.bottom() <= bar.y);
         // A toolbar off to the side of the box is no floor.
-        let aside = rect(Point::new(720, 20), 2, 30, 120, selection, monitor, &[Rect::new(900, 30, 100, 40)]);
+        let aside = rect(Point::new(720, 20), 2, 30, WIDE, 120, selection, monitor, &[Rect::new(900, 30, 100, 40)]);
         assert_eq!(aside.h, 60);
         // Sitting on the toolbar already: one line, and the press is the
         // toolbar's all the same.
-        let on = rect(Point::new(350, 520), 3, 30, 120, selection, monitor, &[bar]);
+        let on = rect(Point::new(350, 520), 3, 30, WIDE, 120, selection, monitor, &[bar]);
         assert_eq!(on.h, 30);
         assert!(on_toolbar(Point::new(360, 525), &[bar]));
         assert!(!on_toolbar(Point::new(360, 560), &[bar]));
@@ -644,7 +655,7 @@ mod tests {
         let selection = Rect::from_ltrb(1350, 300, 2250, 720);
         let keep = bars(selection, monitor, scale);
         let font = style::font_px(4, scale);
-        let large = rect(Point::new(1450, 704), 1, 96, min_width(font, scale), selection, monitor, &keep);
+        let large = rect(Point::new(1450, 704), 1, 96, WIDE, min_width(font, scale), selection, monitor, &keep);
         assert_eq!(large, Rect::new(1450, 704, 800, 96), "the box the log gave");
         for p in [Point::new(1560, 762), Point::new(2220, 762), Point::new(2000, 745), Point::new(2000, 790)] {
             assert!(large.contains(p) && on_toolbar(p, &keep), "{p:?}");
@@ -975,14 +986,28 @@ mod tests {
     fn the_width_runs_to_the_selections_edge_and_is_never_too_narrow_to_type_in() {
         let monitor = Rect::new(0, 0, 1920, 1080);
         let selection = Rect::from_ltrb(100, 100, 700, 500);
-        assert_eq!(rect(Point::new(300, 200), 1, 30, 120, selection, monitor, &[]).w, 400);
+        assert_eq!(rect(Point::new(300, 200), 1, 30, WIDE, 120, selection, monitor, &[]).w, 400);
         // Past the selection's right edge (a text left there): the least.
-        assert_eq!(rect(Point::new(690, 200), 1, 30, 120, selection, monitor, &[]).w, 120);
+        assert_eq!(rect(Point::new(690, 200), 1, 30, WIDE, 120, selection, monitor, &[]).w, 120);
         // At the monitor's edge there is only what there is.
-        assert_eq!(rect(Point::new(1900, 200), 1, 30, 120, selection, monitor, &[]).w, 20);
+        assert_eq!(rect(Point::new(1900, 200), 1, 30, WIDE, 120, selection, monitor, &[]).w, 20);
         for (level, points) in FONTS.iter().enumerate() {
             assert_eq!(min_width(style::font_px(level as u8, 1.0), 1.0), (*points as i32 * MIN_EMS).max(40));
         }
+    }
+
+    /// #1197 item 4: the box is as wide as what is in it, from the least
+    /// width up to the selection's edge, and never past it.
+    #[test]
+    fn the_width_follows_the_content_and_stops_at_the_selections_edge() {
+        let monitor = Rect::new(0, 0, 1920, 1080);
+        let selection = Rect::from_ltrb(100, 100, 700, 500);
+        let at = Point::new(300, 200);
+        let w = |content| rect(at, 1, 30, content, 120, selection, monitor, &[]).w;
+        assert_eq!(w(width_for(0, 120, 24)), 120, "empty: the least");
+        assert_eq!(w(width_for(200, 120, 24)), 212, "the words and room for a letter more");
+        assert_eq!(w(width_for(5000, 120, 24)), 400, "not past the selection");
+        assert!(w(width_for(200, 120, 24)) < w(width_for(300, 120, 24)), "wider as it is typed");
     }
 
     #[test]

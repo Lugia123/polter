@@ -89,7 +89,13 @@ struct PixelGeometryTests {
         #expect(PixelGeometry.toolbarOrigin(for: selection, bar: bar, within: display, gap: 16) == Pt(600, 816))
         let low = PixelRect(400, 800, 800, 760)
         #expect(PixelGeometry.toolbarOrigin(for: low, bar: bar, within: display, gap: 16) == Pt(600, 704))
-        #expect(PixelGeometry.toolbarOrigin(for: display, bar: bar, within: display, gap: 16) == Pt(1400, 1504))
+        // Inside the bottom edge, centred on the selection: as tall as the
+        // display there is nowhere else, and the corner is the worst place.
+        #expect(PixelGeometry.toolbarOrigin(for: display, bar: bar, within: display, gap: 16) == Pt(700, 1504))
+        let tall = PixelRect(400, 0, 800, 1600)
+        #expect(PixelGeometry.toolbarOrigin(for: tall, bar: bar, within: display, gap: 16) == Pt(500, 1504))
+        // Under and above stay right-aligned.
+        #expect(PixelGeometry.toolbarOrigin(for: low, bar: bar, within: display, gap: 16).x == 600)
         // Exactly enough room under is room.
         let snug = PixelRect(400, 200, 800, 1304)
         #expect(PixelGeometry.toolbarOrigin(for: snug, bar: bar, within: display, gap: 16).y == 1520)

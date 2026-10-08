@@ -2192,10 +2192,11 @@ msgstr ""
 msgid "Revert"
 msgstr ""
 
+# Machine translation (2026-10-08), not reviewed by a speaker.
 #: windows/host/src/roles_ui.rs:2039 windows/host/src/roles_ui.rs:2711
 #: windows/host/src/settings_ui.rs:1014
 msgid "Save"
-msgstr ""
+msgstr "Сақтау"
 
 #: windows/host/src/roles_ui.rs:2241
 msgid ""
@@ -2580,3 +2581,33 @@ msgstr "Таңдау…"
 #: windows/host/src/general_ui.rs
 msgid "Not set"
 msgstr "Орнатылмаған"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Saved to Downloads: {name}"
+msgstr "Жүктемелерге сақталды: {name}"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The picture could not be saved."
+msgstr "Суретті сақтау мүмкін болмады."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Copied"
+msgstr "Көшірілді"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scrolling down… Enter keeps what is joined so far, Esc cancels."
+msgstr "Төмен айналдыру… Enter осы уақытқа дейін біріктірілгенді қалдырады, Esc бас тартады."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand."
+msgstr "Автоматты айналдыру үшін «Қолжетімділік» рұқсаты қажет, сондықтан баяу төмен қолмен айналдырыңыз."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig
+msgid "The page could not be followed any further, so the picture ends here."
+msgstr "Бетті әрі қарай қадағалау мүмкін болмады, сондықтан сурет осында аяқталады."
