@@ -366,7 +366,6 @@ final class ScreenshotController: ShotSessionDelegate {
         } else {
             source = .region(selectionRect: result.selection)
         }
-        let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let meta = ShotSidecar.Meta(
             image: name,
             taken: .init(now, timeZone: .current),
@@ -377,7 +376,7 @@ final class ScreenshotController: ShotSessionDelegate {
             display: .init(
                 index: result.display, width: result.displaySize.w, height: result.displaySize.h,
                 scale: result.scale),
-            appearance: dark ? "dark" : "light",
+            appearance: ShotAppearance.system,
             source: source,
             terminal: session.terminal,
             previous: result.window.flatMap {

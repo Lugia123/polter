@@ -26,8 +26,10 @@ final class ImagePasteService {
     /// carries on exactly as it did before this existed.
     ///
     /// The path is escaped the way a dropped file's is, and it is the whole
-    /// of the paste: no trailing space and no newline, because Codex takes
-    /// a paste as an image only when it is exactly one path.
+    /// of the paste: no newline, and no trailing space when nothing follows
+    /// it, because Codex takes a paste as an image only when it is exactly
+    /// one path. When something does follow -- a screenshot taken here has a
+    /// line, or more tiles -- one space ends it (`ImagePaste.separator`).
     func pastedPath(
         from pasteboard: NSPasteboard,
         pasteImage: Bool,
@@ -46,7 +48,9 @@ final class ImagePasteService {
         }) {
             // A long screenshot taken here answers with its first tile;
             // the rest are `followUps`.
-            return Ghostty.Shell.escape(saved.pastes.first.path)
+            let path = Ghostty.Shell.escape(saved.pastes.first.path)
+            // Something follows it: set it off from what comes next.
+            return saved.pastes.later.isEmpty ? path : path + ImagePaste.separator
         }
 
         guard let png = pasteboard.ghosttyImagePNG() else {
@@ -86,12 +90,12 @@ final class ImagePasteService {
         guard let saved = cache.reusable(changeCount: pasteboard.changeCount, fileExists: {
             FileManager.default.fileExists(atPath: $0.path)
         }) else { return [] }
-        return saved.pastes.later.map {
+        return ImagePaste.separated(saved.pastes.later.map {
             switch $0 {
             case let .tile(url): return Ghostty.Shell.escape(url.path)
             case let .line(line): return line
             }
-        }
+        })
     }
 
     /// An image paste into `pane` begins. What an earlier one still owes

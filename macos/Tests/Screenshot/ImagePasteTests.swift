@@ -160,3 +160,23 @@ struct ImagePasteTests {
         #expect(!runs.isCurrent(a, in: "c"))
     }
 }
+
+/// What goes between the pastes of a screenshot taken here (task 1198).
+struct ImagePasteSeparatorTests {
+    @Test func everyPieceButTheLastEndsInOneSpace() {
+        #expect(ImagePaste.separated([]) == [])
+        #expect(ImagePaste.separated(["/a.png"]) == ["/a.png"], "alone, it is exactly its path")
+        #expect(ImagePaste.separated(["/a.png", "/b.png", "line"]) == ["/a.png ", "/b.png ", "line"])
+    }
+
+    @Test func noTwoNeighboursRunTogether() {
+        for n in 1...9 {
+            let pieces = (1...n).map { "/t\($0).png" }
+            let sent = ImagePaste.separated(pieces)
+            for (a, b) in zip(sent, sent.dropFirst()) {
+                #expect(a.hasSuffix(ImagePaste.separator) && !b.hasPrefix(ImagePaste.separator), "\(a)|\(b)")
+            }
+            #expect(!(sent.last ?? "").hasSuffix(" "))
+        }
+    }
+}

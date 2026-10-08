@@ -897,7 +897,8 @@ struct ShotOffscreenTextBoxTests {
         let box = view.frame
         let caret = try #require(view.caret(fontSize: 18))
         func lined(_ x: CGFloat) -> Bool {
-            let c = s.at(red, Double(x), Double(box.maxY) - 1)
+            // (The line is lifted by the halo's reach off the box's bottom edge.)
+            let c = s.at(red, Double(x), Double(box.maxY) - 3)
             return c.r == 0xE6 && c.g == 0x28 && c.b == 0x28
         }
         #expect(lined(caret.minX - 4) && lined(caret.minX - 20) && lined(caret.minX - 36), "under the composition")
@@ -1729,6 +1730,21 @@ struct ShotOffscreenAutoScrollTests {
         #expect(ending.result?.image.height ?? 0 > page.view)
     }
 
+    @Test func byHandTheHintToScrollSlowerComesWithTheFirstFrameThatCouldNotBeJoined() async throws {
+        let rig = try ready(pageHeight: 3000, trusted: false)
+        let (s, page) = (rig.stage, rig.page)
+        try s.click(.long)
+        #expect(s.session.longHint == "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand.")
+        // A first steady frame, then the page jumps by more than the view
+        // is tall: nothing in the next frame overlaps the last one.
+        try await wait { page.frames >= 2 }
+        #expect(s.session.longHint?.hasPrefix("Scrolling for you") == true, "nothing was lost yet")
+        page.offset = page.view + 200
+        try await wait { s.session.longHint == "Scroll slower" }
+        #expect(s.session.longHint == "Scroll slower", "said at once, not when the picture ends")
+        #expect(rig.ending.result == nil)
+    }
+
     @Test func theStatusSaysItIsScrollingAndHowTallThePictureIs() async throws {
         let rig = try ready(pageHeight: 6000)
         let (s, page, ending, _) = (rig.stage, rig.page, rig.ending, rig.parked)
@@ -1739,5 +1755,82 @@ struct ShotOffscreenAutoScrollTests {
         #expect(label >= 2, "the size and the status line are on screen")
         try s.click(.done)
         #expect(ending.result != nil)
+    }
+}
+
+/// The line under a composition: the specified one only (task 1198).
+@MainActor
+struct ShotOffscreenCompositionLineTests {
+    private func luma(_ c: (r: Int, g: Int, b: Int)) -> Int { (c.r * 299 + c.g * 587 + c.b * 114) / 1000 }
+
+    /// White on the white page: the case the line has to be readable in.
+    private func whiteOnWhite(systemLine: Bool = true) throws -> (ShotStage, ShotTextScroll, [UInt8]) {
+        let s = try ShotStage()
+        s.move(60, 60)
+        s.drag([(60, 60), (540, 450)])
+        try s.click(.tool(.text))
+        s.wait(1)
+        try s.click(.colour(8))
+        s.wait(1)
+        s.move(320, 380)
+        s.press(320, 380)
+        s.release(320, 380)
+        s.wait(1)
+        let view = try #require(s.session.textBoxView)
+        view.text.insertText("白字", replacementRange: NSRange(location: NSNotFound, length: 0))
+        // What an input method hands over: the clause with the system's own
+        // underline, in its own colour.
+        let composing = NSAttributedString(string: "ni hao", attributes: [
+            .underlineStyle: NSUnderlineStyle.thick.rawValue,
+            .underlineColor: NSColor(srgbRed: 0.1, green: 0.4, blue: 1, alpha: 1),
+        ])
+        view.text.setMarkedText(
+            composing, selectedRange: NSRange(location: 6, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        // And whatever else puts an underline on the composition: on the
+        // text itself, in the system's blue.
+        let range = view.text.markedRange()
+        if systemLine { view.text.textStorage?.addAttributes([
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .underlineColor: NSColor(srgbRed: 0.1, green: 0.4, blue: 1, alpha: 1),
+        ], range: range) }
+        view.text.needsDisplay = true
+        s.wait(1)
+        return (s, view, s.shot("n1-composition-line-white-on-white"))
+    }
+
+    @Test func theSystemsUnderlineIsNotDrawnOnlyTheSpecifiedLine() throws {
+        // The same composition with and without an underline of the system's
+        // on it paints the same pixels: that line adds nothing.
+        let (s, view, with) = try whiteOnWhite(systemLine: true)
+        let (_, _, without) = try whiteOnWhite(systemLine: false)
+        let box = view.frame
+        var different = 0
+        for y in Int((box.minY - 4) * s.scale)..<Int((box.maxY + 4) * s.scale) {
+            for x in Int(box.minX * s.scale)..<Int(box.maxX * s.scale) {
+                let i = (y * s.width + x) * 4
+                if with[i] != without[i] || with[i + 1] != without[i + 1] || with[i + 2] != without[i + 2] { different += 1 }
+            }
+        }
+        #expect(different == 0, "\(different) pixels differ: the system's line is drawn")
+    }
+
+    @Test func theLineIsWhiteWithItsHaloVisibleOnAllSidesNotCutByTheBox() throws {
+        let (s, view, p) = try whiteOnWhite()
+        let box = view.frame
+        let caret = try #require(view.caret(fontSize: 18))
+        // Along the composition, find a column between letters where there
+        // is a white row -- the line -- with dark both above and below it:
+        // the halo on both sides, inside the box.
+        var found = false
+        for x in stride(from: Double(caret.minX) - 60, to: Double(caret.minX) - 4, by: 1) {
+            var y = Double(box.minY)
+            while y < Double(box.maxY) - 1 {
+                let here = luma(s.at(p, x, y))
+                let above = luma(s.at(p, x, y - 1.5)), below = luma(s.at(p, x, y + 1.5))
+                if here >= 250 && above <= 235 && below <= 235 && y > Double(box.maxY) - 8 { found = true }
+                y += 0.5
+            }
+        }
+        #expect(found, "white line with a dark halo above and below it, inside the box (box \(box))")
     }
 }

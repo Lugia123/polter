@@ -1691,6 +1691,33 @@ final class ShotSession {
         place(image, of: painted)
     }
 
+    /// The sentence under the long screenshot's height, as a msgid, or nil
+    /// for none. **"Scroll slower" is there from the first frame that could
+    /// not be joined**: `last` is that frame's answer and is kept until a
+    /// frame that adds something, so the person scrolling by hand is told
+    /// while it is happening and not when the picture ends.
+    private static func longHint(of long: Long, selectionHeight: Int) -> String? {
+        switch long.last {
+        case _ where long.stitcher.isRestless(held: long.moving):
+            return "The picture keeps changing, so nothing can be added."
+        case .lost: return "Scroll slower"
+        case .full: return "The height limit was reached."
+        case _ where long.auto != nil:
+            return "Scrolling down… Enter keeps what is joined so far, Esc cancels."
+        default:
+            guard long.stitcher.totalHeight <= selectionHeight else { return nil }
+            return long.denied
+                ? "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand."
+                : "Scroll down slowly. What comes into view is added at the bottom."
+        }
+    }
+
+    /// The hint now, for a test.
+    var longHint: String? {
+        guard let long, let selection = editor.selection else { return nil }
+        return Self.longHint(of: long, selectionHeight: selection.rect.h)
+    }
+
     /// Under the toolbar: how tall the picture is so far and what the last
     /// frame meant; and beside the selection, a small copy of the picture.
     private func drawLongStatus(
@@ -1702,21 +1729,8 @@ final class ShotSession {
         var parts: [ShotRenderer.LabelPart] = [
             .dot, .words(ShotWords.translate("Long Screenshot")), .words("\(long.stitcher.totalHeight) px"),
         ]
-        switch long.last {
-        case _ where long.stitcher.isRestless(held: long.moving):
-            parts.append(.words(ShotWords.translate("The picture keeps changing, so nothing can be added."), dim: true))
-        case .lost: parts.append(.words(ShotWords.translate("Scroll slower"), dim: true))
-        case .full: parts.append(.words(ShotWords.translate("The height limit was reached."), dim: true))
-        case _ where long.auto != nil:
-            parts.append(.words(
-                ShotWords.translate("Scrolling down… Enter keeps what is joined so far, Esc cancels."), dim: true))
-        default:
-            if long.stitcher.totalHeight <= selection.h {
-                parts.append(.words(
-                    ShotWords.translate(long.denied
-                        ? "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand."
-                        : "Scroll down slowly. What comes into view is added at the bottom."), dim: true))
-            }
+        if let hint = Self.longHint(of: long, selectionHeight: selection.h) {
+            parts.append(.words(ShotWords.translate(hint), dim: true))
         }
         let plate = ShotRenderer.label(parts, style: .status, at: at, within: display, on: surface, in: ctx)
 

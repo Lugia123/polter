@@ -161,6 +161,43 @@ struct ShotMarkedTests {
         _ = rig.editor.pointerUp(at: Pt(700, 800))
     }
 
+    @Test func insideASelectedHollowShapeIsStillTheShapesAHandThatCarriesIt() throws {
+        for kind in [AnnotationTool.rect, AnnotationTool.ellipse] {
+            let rig = Rig()
+            rig.draw(kind, Pt(400, 300), Pt(700, 500), select: Pt(400, 400))
+            #expect(rig.editor.selected != nil)
+            let inside = Pt(550, 400)
+            // Off the line, well inside: a hand, and a press carries it.
+            #expect(rig.editor.cursor(at: inside, mods: []) == .move, "\(kind)")
+            if kind == .rect { #expect(rig.editor.cursor(at: Pt(480, 300), mods: []) == .move, "and on its line, still") }
+            // Outside it (a corner of the ellipse's box is outside it).
+            #expect(rig.editor.cursor(at: Pt(1000, 400), mods: []) != .move)
+            if kind == .ellipse { #expect(rig.editor.cursor(at: Pt(405, 305), mods: []) != .move, "the box's corner") }
+            let before = rig.editor.items[0]
+            _ = rig.editor.pointerDown(at: inside, mods: [], measure: rig.measure)
+            #expect(rig.editor.isMovingItem, "\(kind)")
+            _ = rig.editor.pointerMove(to: Pt(600, 450), mods: [])
+            _ = rig.editor.pointerUp(at: Pt(600, 450))
+            #expect(rig.editor.items[0] != before, "carried")
+            #expect(rig.editor.selection != nil && rig.editor.items.count == 1)
+        }
+    }
+
+    @Test func somethingDrawnInsideASelectedShapeStillWinsOverIt() throws {
+        let rig = Rig()
+        rig.draw(.rect, Pt(400, 300), Pt(900, 700), select: Pt(400, 500))
+        rig.pick(.tool(.line))
+        rig.drag(Pt(500, 400), Pt(700, 400))
+        rig.pick(.tool(.select))
+        rig.click(Pt(400, 500))
+        // On the line inside: an arrow (a press would select it), not the
+        // big shape's hand.
+        #expect(rig.editor.cursor(at: Pt(600, 400), mods: []) == .arrow)
+        _ = rig.editor.pointerDown(at: Pt(600, 400), mods: [], measure: rig.measure)
+        _ = rig.editor.pointerUp(at: Pt(600, 400))
+        #expect(rig.editor.selected == 1)
+    }
+
     @Test func thePointerSaysWhatAPressWouldDo() throws {
         let rig = Rig()
         // Nothing selected, the select tool: the selection's knobs.

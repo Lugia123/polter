@@ -76,7 +76,53 @@ pub enum Piece<'a> {
     Line(&'a str),
 }
 
+/// What goes between one pasted piece and the next (#1198). **Each piece is a
+/// paste of its own, and the line editor behind them joins what they
+/// carry**: the path and the `[screenshot annotations …]` line, or two
+/// tiles' paths, arrived as `…752.png[…` and `…-1.png…-2.png`. A path is
+/// followed by this when anything follows it; the line, which is last, has
+/// nothing before it. One place to change.
+pub const SEPARATOR: &str = " ";
+
+/// One piece of text to paste, and when (milliseconds after the first).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Text {
+    pub delay_ms: u64,
+    /// `true` for the annotation line (or the long screenshot's), `false`
+    /// for a tile's path: for the log.
+    pub is_line: bool,
+    pub text: String,
+}
+
 impl<'a> Saved<'a> {
+    /// The text of each paste, ready to send: `quote` turns a path into what
+    /// a shell takes. The first is what answers the paste itself. **Between
+    /// any two adjacent pieces, when the texts are put one after the other,
+    /// there is [`SEPARATOR`]**: after every path that something follows,
+    /// and never before the line.
+    pub fn texts(&self, quote: impl Fn(&Path) -> String) -> (String, Vec<Text>) {
+        let (first, later) = self.pastes();
+        let mut pieces: Vec<Text> = later
+            .iter()
+            .map(|(delay_ms, p)| match p {
+                Piece::Tile(path) => Text { delay_ms: *delay_ms, is_line: false, text: quote(path) },
+                Piece::Line(line) => Text { delay_ms: *delay_ms, is_line: true, text: (*line).to_string() },
+            })
+            .collect();
+        let mut first = quote(first);
+        // A path is followed by the separator when anything follows it.
+        if !pieces.is_empty() {
+            first.push_str(SEPARATOR);
+        }
+        let n = pieces.len();
+        for (i, p) in pieces.iter_mut().enumerate() {
+            if !p.is_line && i + 1 < n {
+                p.text.push_str(SEPARATOR);
+            }
+        }
+        (first, pieces)
+    }
+
     /// What pasting this is: the path that answers the paste itself, and
     /// what follows it, each with how long after the paste it is due.
     ///
@@ -448,5 +494,31 @@ mod tests {
         r.remember(7, p.clone(), Vec::new(), None);
         r.remember(0, p, Vec::new(), None);
         assert_eq!(r.lookup(7), None);
+    }
+
+    /// #1198: the pieces, laid end to end the way the line editor sees them,
+    /// are separated: a path, a space, the line; tile, space, tile.
+    #[test]
+    fn adjacent_pieces_are_separated_and_the_line_has_no_leading_space() {
+        let q = |p: &Path| p.display().to_string();
+        let whole = PathBuf::from("C:\\s\\752.png");
+        let plain = Saved { path: &whole, tiles: &[], note: None };
+        assert_eq!(plain.texts(q), ("C:\\s\\752.png".to_string(), vec![]), "nothing follows: nothing added");
+        let noted = Saved { path: &whole, tiles: &[], note: Some("[notes] 1") };
+        let (first, later) = noted.texts(q);
+        assert_eq!(first, "C:\\s\\752.png ");
+        assert_eq!(later.len(), 1);
+        assert_eq!(later[0].text, "[notes] 1");
+        assert!(later[0].is_line);
+        let tiles: Vec<PathBuf> = (1..=3).map(|i| PathBuf::from(format!("C:\\s\\752-{i}.png"))).collect();
+        let long = Saved { path: &whole, tiles: &tiles, note: Some("[long] 3") };
+        let (first, later) = long.texts(q);
+        let all: String = std::iter::once(first).chain(later.iter().map(|t| t.text.clone())).collect();
+        assert_eq!(all, "C:\\s\\752-1.png C:\\s\\752-2.png C:\\s\\752-3.png [long] 3");
+        // Without a line the last tile has nothing after it.
+        let bare = Saved { path: &whole, tiles: &tiles, note: None };
+        let (first, later) = bare.texts(q);
+        let all: String = std::iter::once(first).chain(later.iter().map(|t| t.text.clone())).collect();
+        assert_eq!(all, "C:\\s\\752-1.png C:\\s\\752-2.png C:\\s\\752-3.png");
     }
 }

@@ -377,6 +377,9 @@ struct ShotEditor {
         if let i = Annotation.hitTest(items, at: p, scale: scale) {
             return selected == i ? .move : .arrow
         }
+        // Inside the selected hollow shape, off its line and off whatever
+        // else is drawn there: still the shape's, so a hand.
+        if let i = selected, items.indices.contains(i), items[i].interiorContains(p) { return .move }
         if knobs, case let .handle(handle) = PixelGeometry.hit(sel.rect, at: p, grip: ShotStyle.px(6, scale: scale)) {
             return of(handle)
         }
@@ -645,6 +648,13 @@ struct ShotEditor {
             }
             if let i = Annotation.hitTest(items, at: p, scale: scale) {
                 selected = i
+                drag = .moveItem(index: i, last: p, before: items, changed: false)
+                return .capture
+            }
+            // Inside the selected hollow shape, off its line and off
+            // everything else drawn there: it is carried, as the hand over
+            // it says (anything drawn inside it was hit above and wins).
+            if let i = selected, items.indices.contains(i), items[i].interiorContains(p) {
                 drag = .moveItem(index: i, last: p, before: items, changed: false)
                 return .capture
             }

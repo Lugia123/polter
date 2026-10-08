@@ -166,6 +166,22 @@ impl Item {
         }
     }
 
+    /// Whether `p` is inside what this outlines: a rectangle's or an ellipse's
+    /// inside, which [`Self::hit`] does not take (they are hollow, and what is
+    /// inside them can be selected). **Only the selected annotation is held
+    /// by its inside** (`Editor`): that is the second of two clicks.
+    pub fn holds(&self, p: Point) -> bool {
+        match &self.shape {
+            Shape::Rect(r) => r.contains(p),
+            Shape::Ellipse(r) => {
+                let (a, b) = (r.w as f64 / 2.0, r.h as f64 / 2.0);
+                let (x, y) = (p.x as f64 - (r.x as f64 + a), p.y as f64 - (r.y as f64 + b));
+                a > 0.0 && b > 0.0 && (x / a).powi(2) + (y / b).powi(2) <= 1.0
+            }
+            _ => false,
+        }
+    }
+
     /// The same annotation moved by `(dx, dy)`.
     pub fn moved(&self, dx: i32, dy: i32) -> Item {
         let m = |p: &Point| Point::new(p.x + dx, p.y + dy);

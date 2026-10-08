@@ -33,6 +33,20 @@ struct ImagePasteServiceTests {
         ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).sorted()
     }
 
+    /// What a POSIX shell makes of `text` typed at a prompt, one word per
+    /// element (no globbing, nothing run).
+    private func shellWords(_ text: String) throws -> [String] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "set -f; for a in \(text); do printf '%s\\n' \"$a\"; done"]
+        let out = Pipe()
+        process.standardOutput = out
+        try process.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (String(bytes: data, encoding: .utf8) ?? "").split(separator: "\n").map(String.init)
+    }
+
     /// What the terminal would receive, with the escaping undone.
     private func unescaped(_ path: String) -> String {
         path.replacingOccurrences(of: "\\", with: "")
@@ -191,9 +205,13 @@ struct ImagePasteServiceTests {
         service.remember(changeCount: pasteboard.changeCount, url: url, tiles: tiles, annotations: nil)
 
         let pasted = try #require(service.pastedPath(from: pasteboard, pasteImage: true, directory: directory))
-        #expect(unescaped(pasted) == tiles[0].path, "the first tile, not the whole picture")
-        #expect(service.followUps(for: pasteboard).map(unescaped) == [tiles[1].path, tiles[2].path])
+        #expect(unescaped(pasted) == tiles[0].path + " ", "the first tile, not the whole picture, set off from the next")
+        // Each path but the last ends in one space; the last is exactly its
+        // path, so that a paste that is alone is exactly one path.
+        #expect(service.followUps(for: pasteboard).map(unescaped) == [tiles[1].path + " ", tiles[2].path])
         #expect(files(in: directory).count == 4, "nothing written by the paste")
+        let stream = pasted + service.followUps(for: pasteboard).joined()
+        #expect(try shellWords(stream) == tiles.map(\.path), "three paths, not one run-together: \(stream)")
 
         // A tile deleted: its path is not pasted. The clipboard's image is
         // saved afresh, as any image is, and nothing follows it.
@@ -201,6 +219,7 @@ struct ImagePasteServiceTests {
         let fresh = try #require(service.pastedPath(from: pasteboard, pasteImage: true, directory: directory))
         #expect(!tiles.map(\.path).contains(unescaped(fresh)))
         #expect(unescaped(fresh) != url.path)
+        #expect(!fresh.hasSuffix(" "), "nothing follows it, so nothing is after it")
         #expect(service.followUps(for: pasteboard).isEmpty)
     }
 
@@ -217,9 +236,9 @@ struct ImagePasteServiceTests {
         service.remember(changeCount: pasteboard.changeCount, url: url, annotations: "the line")
 
         let pasted = try #require(service.pastedPath(from: pasteboard, pasteImage: true, directory: directory))
-        #expect(unescaped(pasted) == url.path)
+        #expect(unescaped(pasted) == url.path + " ", "the line follows, so a space ends the path")
         #expect(files(in: directory).count == 1)
-        #expect(service.followUps(for: pasteboard) == ["the line"])
+        #expect(service.followUps(for: pasteboard) == ["the line"], "and the line starts with nothing")
 
         // Finishing a screenshot pastes nothing, so this is the only way it
         // reaches a terminal -- and it may be pasted into several. Each
@@ -228,6 +247,11 @@ struct ImagePasteServiceTests {
         #expect(again == pasted)
         #expect(files(in: directory).count == 1)
         #expect(service.followUps(for: pasteboard) == ["the line"])
+
+        // Everything the terminal is given, one paste after another, is
+        // words a shell can split: the path is one of them, as is each path.
+        let stream = pasted + service.followUps(for: pasteboard).joined()
+        #expect(try shellWords(stream) == [url.path, "the", "line"], "the path is not run into the line: \(stream)")
 
         // Something else is copied: the line belongs to the old image.
         pasteboard.clearContents()

@@ -269,7 +269,7 @@ final class ShotAgentHost {
     }
 
     private static var appearance: String {
-        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? "dark" : "light"
+        ShotAppearance.system
     }
 
     // MARK: Writing

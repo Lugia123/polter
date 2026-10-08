@@ -148,14 +148,30 @@ final class ShotHaloLayout: NSLayoutManager {
         let shown = NSIntersectionRange(glyphs, glyphsToShow)
         guard shown.length > 0 else { return }
         let thick = CGFloat(ShotLook.TextBox.markedLine)
+        // Far enough above the bottom of its line that the halo under it is
+        // inside the box: the box is the view's whole drawing area, and a
+        // line against its bottom edge lost the lower half of its halo --
+        // which is the half that shows white-on-white (task 1198).
+        let lift = (CGFloat(ShotLook.TextBox.haloFarSigma) * 1.6).rounded(.up)
         ink.setFill()
         enumerateEnclosingRects(
             forGlyphRange: shown, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: container
         ) { rect, _ in
-            // Against the bottom of its line.
-            NSRect(x: rect.minX + origin.x, y: rect.maxY + origin.y - thick, width: rect.width, height: thick).fill()
+            NSRect(
+                x: rect.minX + origin.x, y: rect.maxY + origin.y - thick - lift, width: rect.width, height: thick
+            ).fill()
         }
     }
+
+    /// **No other line is drawn under anything.** An input method marks its
+    /// composition with an underline of its own -- the system's, in its own
+    /// colour -- and white on white that blue line was all that could be
+    /// seen of the composition. The only line is the specified one, drawn
+    /// above with the glyphs and with their halo.
+    override func underlineGlyphRange(
+        _ glyphRange: NSRange, underlineType underlineVal: NSUnderlineStyle, lineFragmentRect lineRect: NSRect,
+        lineFragmentGlyphRange lineGlyphRange: NSRange, containerOrigin: NSPoint
+    ) {}
 
     override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         guard let halo, let ctx = NSGraphicsContext.current?.cgContext else {

@@ -996,6 +996,23 @@ mod tests {
         }
     }
 
+    /// #1198: what a repaint of the box covers takes in the halo of the
+    /// composition's underline, which is drawn inside the box and spreads
+    /// `halo_reach` past it: nothing of it is cut off by the rectangle that
+    /// is invalidated (`damage`), at any scale, at any edge of the box.
+    #[test]
+    fn the_repaint_covers_the_underlines_halo_at_every_edge_of_the_box() {
+        for scale in [1.0, 1.25, 1.5, 2.0, 3.0] {
+            let b = Rect::new(300, 200, 160, 40);
+            let reach = halo_reach(scale);
+            // The most the halo of anything inside the box reaches.
+            let halo = Rect::new(b.x - reach, b.y - reach, b.w + 2 * reach, b.h + 2 * reach);
+            let d = damage(b, scale);
+            assert_eq!(d.intersect(halo), Some(halo), "{scale}: the halo is inside what is repainted");
+            assert!(d.x < halo.x && d.y < halo.y && d.right() > halo.right() && d.bottom() > halo.bottom(), "{scale}: with the frame");
+        }
+    }
+
     /// #1197 item 4: the box is as wide as what is in it, from the least
     /// width up to the selection's edge, and never past it.
     #[test]

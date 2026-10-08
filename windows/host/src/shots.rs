@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use polter_shots::name::Stamp;
-use polter_shots::paste::{Piece, Reuse};
+use polter_shots::paste::Reuse;
 use windows::core::w;
 use windows::Win32::Foundation::{HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
@@ -243,33 +243,33 @@ pub fn image_text(pane: u64) -> Option<String> {
         // rather than itself -- and the rest follow, each a paste of its own
         // into **this** pane, by id: a pane closed before a piece is due
         // gets none of what is left, and no other pane gets it instead.
-        let (first, later) = saved.pastes();
+        // Each piece ends with the separator when something follows it
+        // (`Saved::texts`): the terminal's line editor joins what the pastes
+        // carry, and `path[notes]` is not a path and a line.
+        let (first, later) = saved.texts(|p| polter_droppath::quote(&p.to_string_lossy()));
         logf!(
-            "[clip] read pane={} -> image: reusing {} (clipboard sequence {} unchanged); pasting {}, then {} more \
+            "[clip] read pane={} -> image: reusing {} (clipboard sequence {} unchanged); pasting {:?}, then {} more \
              piece(s), one every {} ms ({} tile(s) in all, a line of text: {}); {} piece(s) of an earlier paste \
              into this pane dropped",
             pane,
             saved.path.display(),
             seq,
-            first.display(),
+            first,
             later.len(),
             polter_shots::paste::SECOND_PASTE_DELAY_MS,
             saved.tiles.len(),
             saved.note.is_some(),
             dropped
         );
-        for (delay_ms, piece) in later {
-            match piece {
-                Piece::Tile(path) => {
-                    crate::shot::paste_later(pane, polter_droppath::quote(&path.to_string_lossy()), delay_ms, "tile path")
-                }
-                Piece::Line(line) => {
-                    let what = if saved.tiles.is_empty() { "annotation line" } else { "long-screenshot line" };
-                    crate::shot::paste_later(pane, line.to_string(), delay_ms, what)
-                }
-            }
+        for piece in later {
+            let what = match (piece.is_line, saved.tiles.is_empty()) {
+                (false, _) => "tile path",
+                (true, true) => "annotation line",
+                (true, false) => "long-screenshot line",
+            };
+            crate::shot::paste_later(pane, piece.text, piece.delay_ms, what);
         }
-        return Some(polter_droppath::quote(&first.to_string_lossy()));
+        return Some(first);
     }
     let Some(dir) = dir() else {
         logf!("[clip] read pane={} -> image: no screenshot-directory and no LOCALAPPDATA, so nowhere to save it", pane);

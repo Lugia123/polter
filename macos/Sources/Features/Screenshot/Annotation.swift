@@ -183,6 +183,26 @@ struct Annotation: Equatable {
         }
     }
 
+    /// Whether `p` is inside this annotation's outline when that outline is
+    /// all it has: a hollow rectangle or ellipse. Not a hit (`hit` is by the
+    /// stroke, so that what is drawn inside stays clickable), but where the
+    /// shape *is* once it is the selected one -- the pointer over it is a
+    /// hand, and a press there carries it (task 1198). False for everything
+    /// else: those are hit anywhere they are, or on their line.
+    func interiorContains(_ p: PixelPoint) -> Bool {
+        switch shape {
+        case let .rect(r):
+            return r.contains(p)
+        case let .ellipse(r):
+            let a = Double(r.w) / 2, b = Double(r.h) / 2
+            guard a > 0, b > 0 else { return false }
+            let x = Double(p.x) - (Double(r.x) + a), y = Double(p.y) - (Double(r.y) + b)
+            return (x / a) * (x / a) + (y / b) * (y / b) <= 1
+        default:
+            return false
+        }
+    }
+
     private static func distance(_ a: PixelPoint, _ b: PixelPoint) -> Double {
         let dx = Double(a.x - b.x), dy = Double(a.y - b.y)
         return (dx * dx + dy * dy).squareRoot()

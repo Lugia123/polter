@@ -40,6 +40,27 @@ enum ImagePaste {
         return .nothing
     }
 
+    /// What goes between one thing pasted and the next (task 1198).
+    ///
+    /// A screenshot taken here is pasted as several pastes -- a long one's
+    /// tiles, then its line -- each its own, so that every path is exactly
+    /// one thing a CLI can take for an image. Nothing was between them: a
+    /// shell or an agent's input box got `…-1.png/…-2.png` and
+    /// `….png[annotations …`, which is no path at all.
+    ///
+    /// **A path that something follows ends in one space**, as Finder
+    /// leaves a file dragged into a terminal, which every CLI takes as the
+    /// path of the file. The last piece has none, and so a paste that is
+    /// alone -- a plain image on the clipboard -- is exactly its path, as
+    /// before. The line starts with nothing: the space before it is the
+    /// path's.
+    static let separator = " "
+
+    /// `pieces`, each but the last given the separator.
+    static func separated(_ pieces: [String]) -> [String] {
+        pieces.enumerated().map { $0.offset == pieces.count - 1 ? $0.element : $0.element + separator }
+    }
+
     /// The file written for the image that was on the clipboard at one change
     /// count, so that pasting the same image twice writes one file.
     struct Cache: Equatable {

@@ -505,6 +505,11 @@ impl Editor {
             Some(_) => return Cursor::Arrow,
             None => {}
         }
+        // The inside of the selected rectangle or ellipse carries it too
+        // (§9.8.11A.4), though only its line is hit by a first click.
+        if self.selected_holds(p) {
+            return Cursor::Move;
+        }
         if self.knobs() {
             if let Hit::Handle(h) = geom::hit(sel.rect, p, style::px(6, scale)) {
                 return of(h);
@@ -578,6 +583,12 @@ impl Editor {
             Some(at) => toolbar::layout_at(toolbar::keep_on(at, m.rect, m.scale), m.scale, props),
             None => toolbar::layout(s.rect, m.rect, m.scale, props),
         })
+    }
+
+    /// Whether `p` is inside the selected annotation's outline (a rectangle
+    /// or an ellipse), where it is held although it is not on the line.
+    fn selected_holds(&self, p: Point) -> bool {
+        self.selected.and_then(|i| self.items.get(i)).is_some_and(|it| it.holds(p))
     }
 
     fn rects(&self) -> Vec<Rect> {
@@ -830,6 +841,10 @@ impl Editor {
             }
             if let Some(i) = annot::hit_test(&self.items, p, scale) {
                 self.selected = Some(i);
+                self.drag = Drag::MoveItem { index: i, last: p, before: self.items.clone(), changed: false };
+                return Effect::Capture;
+            }
+            if let Some(i) = self.selected.filter(|_| self.selected_holds(p)) {
                 self.drag = Drag::MoveItem { index: i, last: p, before: self.items.clone(), changed: false };
                 return Effect::Capture;
             }
@@ -1589,7 +1604,12 @@ mod tests {
         click(&mut e, P(500, 340));
         assert_eq!(e.selected(), Some(0), "clicked the first rectangle's left edge");
         click(&mut e, P(550, 340));
-        assert_eq!(e.selected(), None, "its inside is not it");
+        assert_eq!(e.selected(), Some(0), "its inside holds it while it is selected (#1198)");
+        assert_eq!(e.items().len(), 2, "and a click there draws nothing");
+        click(&mut e, P(650, 450));
+        assert_eq!(e.selected(), None, "empty space lets go of it");
+        click(&mut e, P(550, 340));
+        assert_eq!(e.selected(), None, "the inside of one that is not selected is not it");
         drag(&mut e, P(700, 340), P(720, 350));
         assert_eq!(e.selected(), Some(1));
         assert_eq!(rect_of(&e, 1), Rect::new(720, 310, 100, 80));
@@ -2691,5 +2711,43 @@ mod tests {
         e.pointer_move(P(g.x - 50, g.y), NONE);
         e.pointer_up(P(g.x - 50, g.y));
         assert_eq!(e.layout().unwrap().bar.x, bar.x - 50);
+    }
+
+    /// #1198: inside a selected rectangle or ellipse -- not on its line -- the
+    /// pointer is the mover's and a drag moves it; inside one that is not
+    /// selected it is not, and a press there is the selection's own.
+    #[test]
+    fn inside_a_selected_hollow_shape_it_is_held_and_inside_an_unselected_one_it_is_not() {
+        for tool in ['R', 'O'] {
+            let mut e = selected();
+            letter(&mut e, tool);
+            drag(&mut e, P(500, 300), P(700, 450));
+            assert_eq!(e.items().len(), 1);
+            letter(&mut e, 'V');
+            let inside = P(600, 375);
+            // Not selected yet: the inside is the selection's, not the shape's.
+            e.pointer_down(inside, NONE, &Fake);
+            e.pointer_up(inside);
+            assert_eq!(e.selected(), None, "{tool}: the inside of an unselected one selects nothing");
+            // Selected by its line (the rectangle's top edge, the ellipse's left end).
+            let on_line = if tool == 'R' { P(600, 300) } else { P(500, 375) };
+            click(&mut e, on_line);
+            assert_eq!(e.selected(), Some(0), "{tool}");
+            assert_eq!(e.cursor(inside, NONE), Cursor::Move, "{tool}: inside, the mover's pointer");
+            assert_eq!(e.cursor(P(10, 10), NONE) == Cursor::Move, false);
+            let before = e.items()[0].clone();
+            e.pointer_down(inside, NONE, &Fake);
+            e.pointer_move(P(inside.x + 30, inside.y + 20), NONE);
+            e.pointer_up(P(inside.x + 30, inside.y + 20));
+            assert_eq!(e.items()[0], before.moved(30, 20), "{tool}: a drag from inside moves it");
+            assert_eq!(e.selected(), Some(0));
+        }
+        // An ellipse's box corner is outside the ellipse: not held.
+        let mut e = selected();
+        letter(&mut e, 'O');
+        drag(&mut e, P(500, 300), P(700, 450));
+        letter(&mut e, 'V');
+        click(&mut e, P(500, 375));
+        assert_ne!(e.cursor(P(503, 303), NONE), Cursor::Move, "the corner of an ellipse's box is not inside it");
     }
 }
