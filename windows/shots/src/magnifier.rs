@@ -90,14 +90,52 @@ pub fn plate_size(p: &Params, text: (i32, i32), scale: f64) -> (i32, i32) {
     (pic.max(text.0) + 2 * pad, pad + pic + px_f(p.gap, scale) + text.1 + pad)
 }
 
-/// Where the plate goes: right of the pointer and below it, flipped to the
-/// other side of the pointer where it would run off `monitor`, on both axes
-/// independently.
+/// Which side of the pointer the plate is on, on each axis: `true` is the
+/// other side than the default (right, below). What the session remembers
+/// from one pointer move to the next ([`place_from`]).
+pub type Flipped = (bool, bool);
+
+/// One axis of the plate: `p` is the pointer, `len` the plate, `[lo, hi)`
+/// the monitor. The default side is after the pointer (`p + offset`), the
+/// other before it. Returns where the plate starts and which side it is on.
+///
+/// - Leaving the default side takes only that it does not fit.
+/// - **Coming back to it takes one more `offset` of room**, so a pointer
+///   that rests on the line where it just fits, and shakes a pixel, does
+///   not make the plate jump from one side to the other and back.
+/// - A side that does not hold the plate is left whatever else is true.
+fn axis(p: i32, len: i32, lo: i32, hi: i32, offset: i32, flipped: bool) -> (i32, bool) {
+    let after = p + offset;
+    let before = p - offset - len;
+    let after_fits = after + len <= hi;
+    let before_fits = before >= lo;
+    let flipped = if flipped {
+        // Back to the default only with room to spare, or when this side is full.
+        !(after_fits && after + offset + len <= hi || !before_fits)
+    } else {
+        !after_fits
+    };
+    // On a monitor too small to hold it either way, the plate is clamped
+    // inside, the top-left winning over the bottom-right.
+    let at = if flipped { before } else { after };
+    (at.min(hi - len).max(lo), flipped)
+}
+
+/// Where the plate goes, for a pointer that was where `from` says the plate
+/// was: right of the pointer and below it, the other side of the pointer
+/// where it would run off `monitor`, on both axes independently, and kept
+/// on the side it is on until there is room to spare for the other
+/// (`axis`). Returns the plate and the sides it is on now: what to hand back
+/// at the next move.
+pub fn place_from(pointer: Point, size: (i32, i32), monitor: Rect, offset: i32, from: Flipped) -> (Rect, Flipped) {
+    let (x, fx) = axis(pointer.x, size.0, monitor.x, monitor.right(), offset, from.0);
+    let (y, fy) = axis(pointer.y, size.1, monitor.y, monitor.bottom(), offset, from.1);
+    (Rect::new(x, y, size.0, size.1), (fx, fy))
+}
+
+/// Where the plate goes with no memory: the first placement.
 pub fn place(pointer: Point, size: (i32, i32), monitor: Rect, offset: i32) -> Rect {
-    let x = if pointer.x + offset + size.0 <= monitor.right() { pointer.x + offset } else { pointer.x - offset - size.0 };
-    let y = if pointer.y + offset + size.1 <= monitor.bottom() { pointer.y + offset } else { pointer.y - offset - size.1 };
-    // On a monitor too small to hold it either way: at least its top-left.
-    Rect::new(x.max(monitor.x), y.max(monitor.y), size.0, size.1)
+    place_from(pointer, size, monitor, offset, (false, false)).0
 }
 
 /// The rectangle of the picture inside a plate at `plate`.
@@ -329,5 +367,223 @@ mod tests {
             let image = crate::Image::from_bgrx(rect.w as u32, rect.h as u32, &out).unwrap();
             std::fs::write(format!("{dir}/magnifier-{tag}pct.png"), crate::encode::png(&image).unwrap()).unwrap();
         }
+    }
+
+    // ---- the corners and the hysteresis (#1199 follow-up; as macOS)
+
+    /// The four corners, as a person sees them: the pointer 5 px from each
+    /// corner of a 700x470 piece of screen, at 100% and 150%.
+    ///
+    ///     SHOT_CHROME_DIR=/tmp/out cargo test --release -p polter-shots magnifier::tests::corners -- --ignored
+    #[test]
+    #[ignore = "writes pictures, run by hand"]
+    fn corners_of_the_screen_pictured_for_a_person_to_look_at() {
+        use crate::chrome::{label, Tones};
+        use crate::glass::Glass;
+        use crate::paint::Surface;
+        let Ok(dir) = std::env::var("SHOT_CHROME_DIR") else { return };
+        for (scale, tag) in [(1.0, "100"), (1.5, "150")] {
+            let rect = Rect::new(0, 0, (700.0 * scale) as i32, (470.0 * scale) as i32);
+            let mut bgrx = vec![255u8; rect.w as usize * rect.h as usize * 4];
+            for (i, px) in bgrx.chunks_exact_mut(4).enumerate() {
+                let (x, y) = ((i % rect.w as usize) as i32, (i / rect.w as usize) as i32);
+                let on = ((x / 3) + (y / 3)) % 2 == 0;
+                let c: (u8, u8, u8) = match (x / (60.0 * scale) as i32 % 4, on) {
+                    (0, _) => (230, 40, 40),
+                    (1, true) => (45, 184, 77),
+                    (2, true) => (47, 111, 237),
+                    _ => (247, 247, 249),
+                };
+                px[..3].copy_from_slice(&[c.2, c.1, c.0]);
+            }
+            let frozen = Frozen::new(rect, bgrx.clone()).unwrap();
+            let glass = Glass::new(rect, &bgrx, scale).unwrap();
+            let p = LOOK;
+            let d = 5;
+            for (name, at) in [
+                ("top-left", Point::new(d, d)),
+                ("top-right", Point::new(rect.w - 1 - d, d)),
+                ("bottom-left", Point::new(d, rect.h - 1 - d)),
+                ("bottom-right", Point::new(rect.w - 1 - d, rect.h - 1 - d)),
+            ] {
+                let mut out = bgrx.clone();
+                let text = ((90.0 * scale) as i32, (36.0 * scale) as i32);
+                let size = plate_size(&p, text, scale);
+                let (plate, _) = place_from(at, size, rect, px_f(p.offset, scale), (false, false));
+                if let Some(mut on) = Surface::new(&mut out, rect) {
+                    label(&mut on, &glass, plate, scale, &Tones::LOOK);
+                }
+                let picture = picture_at(plate, &p, scale);
+                draw_picture(&mut out, rect, picture, &sample(&frozen, at, p.cells), &p, scale);
+                let swatch = (14.0 * scale) as i32;
+                let top = picture.bottom() + px_f(p.gap, scale) + (18.0 * scale) as i32 + 4;
+                pixels::blend(&mut out, rect, Rect::new(plate.x + px_f(p.pad, scale), top, swatch, swatch), frozen.rgb_at(at).unwrap(), 256);
+                // The pointer's pixel, marked, so that the gap can be seen.
+                pixels::blend(&mut out, rect, Rect::new(at.x - 1, at.y - 1, 3, 3), (0, 0, 0), 256);
+                let image = crate::Image::from_bgrx(rect.w as u32, rect.h as u32, &out).unwrap();
+                std::fs::write(format!("{dir}/corner-{name}-{tag}pct.png"), crate::encode::png(&image).unwrap()).unwrap();
+            }
+        }
+    }
+
+    /// One pointer and one plate size give the same sides however many
+    /// times the frame is composed: the session keeps them in a cell that
+    /// is written where the plate is placed (`shot.rs`), so this holds it up.
+    #[test]
+    fn placing_again_with_what_was_returned_changes_nothing() {
+        let m = Rect::new(0, 0, 1920, 1080);
+        let mut was = (false, false);
+        for x in (0..1920).step_by(7).chain((0..1920).step_by(7).rev()) {
+            for y in [3, 540, 1076] {
+                let (plate, now) = place_from(Point::new(x, y), SIZE, m, OFF, was);
+                assert_eq!(place_from(Point::new(x, y), SIZE, m, OFF, now), (plate, now), "({x}, {y})");
+                was = now;
+            }
+        }
+    }
+
+
+    const OFF: i32 = size::MAGNIFIER_OFFSET as i32;
+    const SIZE: (i32, i32) = (220, 300);
+
+    fn contains(m: Rect, r: Rect) -> bool {
+        r.x >= m.x && r.y >= m.y && r.right() <= m.right() && r.bottom() <= m.bottom()
+    }
+
+    #[test]
+    fn at_every_corner_and_edge_the_plate_is_inside_clear_of_the_pointer_and_one_offset_away() {
+        let m = Rect::new(100, 50, 1440, 900);
+        let (r, b) = (m.right() - 1, m.bottom() - 1);
+        for d in [0, 1, 5] {
+            // (pointer, which axes flip)
+            let cases = [
+                (Point::new(m.x + d, m.y + d), (false, false)),
+                (Point::new(r - d, m.y + d), (true, false)),
+                (Point::new(m.x + d, b - d), (false, true)),
+                (Point::new(r - d, b - d), (true, true)),
+                (Point::new(m.x + m.w / 2, m.y + d), (false, false)),
+                (Point::new(m.x + m.w / 2, b - d), (false, true)),
+                (Point::new(m.x + d, m.y + m.h / 2), (false, false)),
+                (Point::new(r - d, m.y + m.h / 2), (true, false)),
+            ];
+            for (p, flips) in cases {
+                let (plate, now) = place_from(p, SIZE, m, OFF, (false, false));
+                assert!(contains(m, plate), "{p:?} -> {plate:?}");
+                assert!(!plate.contains(p), "{p:?} is under {plate:?}");
+                assert_eq!(now, flips, "{p:?}");
+                // Exactly one offset from the pointer on each axis, on whichever side.
+                let gap_x = if now.0 { p.x - plate.right() } else { plate.x - p.x };
+                let gap_y = if now.1 { p.y - plate.bottom() } else { plate.y - p.y };
+                assert_eq!((gap_x, gap_y), (OFF, OFF), "{p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_pointer_shaking_on_the_line_where_the_plate_just_fits_does_not_make_it_jump() {
+        let m = Rect::new(0, 0, 1920, 1080);
+        // The pointer x where the default side just fits, and a pixel either way.
+        let edge = m.right() - OFF - SIZE.0;
+        let mut flips = 0;
+        let mut was = (false, false);
+        let mut last = None;
+        for i in 0..40 {
+            let p = Point::new(edge + (i % 2), 500);
+            let (plate, now) = place_from(p, SIZE, m, OFF, was);
+            if let Some(l) = last {
+                if l != now.0 {
+                    flips += 1;
+                }
+            }
+            last = Some(now.0);
+            was = now;
+            assert!(contains(m, plate));
+        }
+        assert!(flips <= 1, "{flips} jumps");
+        // Without memory the same shake does jump every time.
+        let jumps = (0..40).filter(|i| place(Point::new(edge + 1 - (i % 2), 500), SIZE, m, OFF).x != place(Point::new(edge + 1, 500), SIZE, m, OFF).x).count();
+        assert!(jumps >= 20, "the shake is on the line: {jumps}");
+    }
+
+    #[test]
+    fn the_way_out_and_the_way_back_are_an_offset_apart() {
+        let m = Rect::new(0, 0, 1920, 1080);
+        let out = (0..m.right()).find(|x| place_from(Point::new(*x, 500), SIZE, m, OFF, (false, false)).1 .0).unwrap();
+        // Back from the flipped side, moving left: the first x that is default again.
+        let back = (0..out).rev().find(|x| !place_from(Point::new(*x, 500), SIZE, m, OFF, (true, false)).1 .0).unwrap();
+        assert!(out - back >= OFF, "out at {out}, back at {back}");
+        // The same on the vertical axis.
+        let out = (0..m.bottom()).find(|y| place_from(Point::new(500, *y), SIZE, m, OFF, (false, false)).1 .1).unwrap();
+        let back = (0..out).rev().find(|y| !place_from(Point::new(500, *y), SIZE, m, OFF, (false, true)).1 .1).unwrap();
+        assert!(out - back >= OFF, "out at {out}, back at {back}");
+    }
+
+    #[test]
+    fn a_side_that_cannot_hold_the_plate_is_always_left() {
+        let m = Rect::new(0, 0, 1920, 1080);
+        // Flipped, at the left edge: before-side cannot hold it, so the plate goes after.
+        let (_, now) = place_from(Point::new(10, 500), SIZE, m, OFF, (true, true));
+        assert_eq!(now, (false, false));
+        // Where the default side fits but with no room to spare, and the
+        // other side does not fit at all: the plate must not stay on the
+        // side that has none.
+        let narrow = Rect::new(0, 0, 300, 800);
+        let (plate, now) = place_from(Point::new(50, 400), SIZE, narrow, OFF, (true, false));
+        assert_eq!(now.0, false, "a full side is left even without room to spare on the other");
+        assert!(contains(narrow, plate));
+        // Not flipped, at the right edge: goes before.
+        let (_, now) = place_from(Point::new(1915, 1075), SIZE, m, OFF, (false, false));
+        assert_eq!(now, (true, true));
+    }
+
+    #[test]
+    fn on_a_monitor_too_small_for_it_the_plate_is_still_on_it() {
+        let m = Rect::new(10, 20, 200, 250);
+        for p in [Point::new(10, 20), Point::new(209, 269), Point::new(100, 100)] {
+            let (plate, _) = place_from(p, SIZE, m, OFF, (false, false));
+            assert_eq!((plate.x, plate.y), (m.x, m.y), "{p:?}: the top-left wins");
+        }
+    }
+
+    #[test]
+    fn a_pointer_outside_the_monitor_still_gets_a_plate_inside_it() {
+        let m = Rect::new(0, 0, 1920, 1080);
+        for from in [(false, false), (true, true)] {
+            let (plate, _) = place_from(Point::new(m.right() + 2 * OFF + 10, m.bottom() + 2 * OFF + 10), SIZE, m, OFF, from);
+            assert!(contains(m, plate), "{plate:?}: not past the right and bottom edges");
+        }
+    }
+
+    #[test]
+    fn a_long_walk_keeps_the_plate_on_the_monitor_and_off_the_pointer() {
+        let m = Rect::new(0, 0, 1280, 800);
+        let mut seed = 0x2545F491u32;
+        let mut next = |n: i32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % n as u32) as i32
+        };
+        let mut p = Point::new(640, 400);
+        let mut was = (false, false);
+        for _ in 0..5000 {
+            p = Point::new((p.x + next(41) - 20).clamp(0, m.w - 1), (p.y + next(41) - 20).clamp(0, m.h - 1));
+            let (plate, now) = place_from(p, SIZE, m, OFF, was);
+            was = now;
+            assert!(contains(m, plate), "{p:?} -> {plate:?}");
+            assert!(!plate.contains(p), "{p:?} under {plate:?}");
+        }
+    }
+
+    #[test]
+    fn a_cell_off_the_monitor_is_the_off_screen_colour() {
+        let samples = sample(&frozen(), Point::new(0, 0), 3);
+        assert_eq!(samples[0], None);
+        let mut dst = vec![0u8; 100 * 100 * 4];
+        let picture = Rect::new(0, 0, 3 * 10, 3 * 10);
+        draw_picture(&mut dst, Rect::new(0, 0, 100, 100), picture, &samples, &Params { cells: 3, cell: 10.0, ..LOOK }, 1.0);
+        let o = colour::MAGNIFIER_OFF_SCREEN;
+        let px = &dst[(5 * 100 + 5) * 4..][..4];
+        assert_eq!((px[2], px[1], px[0]), (o.r, o.g, o.b), "the first cell, off the monitor");
     }
 }

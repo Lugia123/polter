@@ -53,20 +53,55 @@ enum ShotMagnifier {
         var plateHeight: Int { pad + image + gap + 2 * rowHeight + pad }
     }
 
+    /// Which side of the pointer the plate is on, per axis: false is the
+    /// default (right of it, below it), true the other side.
+    struct Flip: Equatable {
+        var x = false
+        var y = false
+    }
+
+    /// Where the plate is and which sides it is on.
+    struct Placement: Equatable {
+        var rect: PixelRect
+        var flip: Flip
+    }
+
     /// Where the plate goes for a pointer at `pointer`: right of it and
     /// below it, `offset` away; on the other side of it when that would
     /// leave the display, and never covering the pixel the pointer is on
-    /// unless the display is too small to avoid it.
+    /// unless the display is too small to avoid it. In a corner both
+    /// axes flip: the bottom right one puts it above and to the left.
+    ///
+    /// **A side is kept once taken** (`previous`): going back to the default
+    /// side takes `offset` more room than leaving it did. Without that a
+    /// pointer resting on the line where the plate flips, and moving a
+    /// pixel either way, made it jump to the other side of the pointer and
+    /// back. The flip has one more way out: when the side taken no longer
+    /// fits, the other is used whatever the room.
+    static func placement(
+        pointer: PixelPoint, plate: (w: Int, h: Int), offset: Int, display: PixelRect, previous: Flip = Flip()
+    ) -> Placement {
+        func side(
+            at p: Int, size: Int, from low: Int, to high: Int, was flipped: Bool
+        ) -> (at: Int, flipped: Bool) {
+            let after = p + offset, before = p - offset - size
+            let afterFits = after + size <= high, beforeFits = before >= low
+            let flip = flipped ? (!(after + size + offset <= high) && beforeFits) : !afterFits
+            return (flip ? before : after, flip)
+        }
+        let h = side(at: pointer.x, size: plate.w, from: display.x, to: display.right, was: previous.x)
+        let v = side(at: pointer.y, size: plate.h, from: display.y, to: display.bottom, was: previous.y)
+        let x = max(min(h.at, display.right - plate.w), display.x)
+        let y = max(min(v.at, display.bottom - plate.h), display.y)
+        return Placement(rect: PixelRect(x, y, plate.w, plate.h), flip: Flip(x: h.flipped, y: v.flipped))
+    }
+
+    /// `placement` with nothing remembered: where the plate is the first
+    /// time, or for a pointer that has only ever been here.
     static func place(
         pointer: PixelPoint, plate: (w: Int, h: Int), offset: Int, display: PixelRect
     ) -> PixelRect {
-        var x = pointer.x + offset
-        if x + plate.w > display.right { x = pointer.x - offset - plate.w }
-        var y = pointer.y + offset
-        if y + plate.h > display.bottom { y = pointer.y - offset - plate.h }
-        x = max(min(x, display.right - plate.w), display.x)
-        y = max(min(y, display.bottom - plate.h), display.y)
-        return PixelRect(x, y, plate.w, plate.h)
+        placement(pointer: pointer, plate: plate, offset: offset, display: display).rect
     }
 
     /// `#RRGGBB`, upper case: what the copy key puts on the clipboard.

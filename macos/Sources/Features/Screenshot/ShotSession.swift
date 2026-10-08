@@ -132,6 +132,10 @@ final class ShotSession {
     /// Whether the text box's caret is in the showing half of its blink.
     private var caretOn = true
     private var caretTimer: Timer?
+    /// Which side of the pointer the magnifier's plate has taken, per
+    /// display, kept so that a side is not given up the moment the pointer
+    /// is a pixel away from where it was taken (`ShotMagnifier.placement`).
+    private var magnifierFlip: [ShotMagnifier.Flip] = []
     /// Until when the magnifier says "Copied" where the colour's text is.
     private var copiedUntil: TimeInterval = 0
     /// The modifiers held at the last move of the pointer.
@@ -384,6 +388,7 @@ final class ShotSession {
         guard let p = space.pixel(ofGlobal: global), let index = space.display(at: global) else { return }
         pointer = p
         pointerDisplay = index
+        moveMagnifier()
         _ = editor.pointerMove(to: p, mods: [])
     }
 
@@ -655,13 +660,33 @@ final class ShotSession {
     /// not up.
     func magnifierPlate(on index: Int) -> PixelRect? {
         guard let p = magnifierPointer(on: index) else { return nil }
+        return magnifierPlacement(for: p, on: index, previous: flipTaken(on: index)).rect
+    }
+
+    private func flipTaken(on index: Int) -> ShotMagnifier.Flip {
+        magnifierFlip.indices.contains(index) ? magnifierFlip[index] : ShotMagnifier.Flip()
+    }
+
+    private func magnifierPlacement(
+        for p: PixelPoint, on index: Int, previous: ShotMagnifier.Flip
+    ) -> ShotMagnifier.Placement {
         let scale = space.displays[index].scale
         let font = ShotRenderer.uiFont(scale: scale)
         let m = ShotMagnifier.Metrics(
             scale: scale, textHeight: Int((CTFontGetAscent(font) + CTFontGetDescent(font)).rounded(.up)))
-        return ShotMagnifier.place(
+        return ShotMagnifier.placement(
             pointer: p, plate: (m.plateWidth, m.plateHeight),
-            offset: ShotStyle.px(Int(ShotLook.Size.magnifierOffset), scale: scale), display: space.displays[index].rect)
+            offset: ShotStyle.px(Int(ShotLook.Size.magnifierOffset), scale: scale),
+            display: space.displays[index].rect, previous: previous)
+    }
+
+    /// The pointer has moved: which sides the plate is on now, as one move
+    /// of the pointer decides it. Called once for each move, and not by
+    /// whatever only asks where the plate is.
+    private func moveMagnifier() {
+        if magnifierFlip.count != displays.count { magnifierFlip = displays.map { _ in ShotMagnifier.Flip() } }
+        guard let index = pointerDisplay, let p = magnifierPointer(on: index) else { return }
+        magnifierFlip[index] = magnifierPlacement(for: p, on: index, previous: magnifierFlip[index]).flip
     }
 
     /// Cmd+C while the magnifier is up: the colour of the pixel under the
@@ -699,6 +724,7 @@ final class ShotSession {
         pointerDisplay = index
         let p = space.pixel(ofLocal: local, on: index)
         pointer = p
+        moveMagnifier()
         // The button the press is on shows it for as long as it is held
         // (9.8.4). Looked up before the editor acts: a press may be the one
         // that takes the toolbar away.
@@ -727,8 +753,10 @@ final class ShotSession {
             // Onto another display: with no window under the pointer the
             // editor has nothing to say, and the display is all sharp.
             pointerDisplay = index
+            moveMagnifier()
             repaint()
         }
+        moveMagnifier()
         let effect = editor.pointerMove(to: p, mods: mods)
         perform(effect)
         // The magnifier follows the pointer whether or not the editor has

@@ -199,6 +199,13 @@ struct Session {
     frames: (u32, f64, f64, u64),
     /// Until when the magnifier says the colour was copied (`tick_ms`).
     copied_until: u64,
+    /// Which side of the pointer the magnifier's plate is on, on each axis,
+    /// and on which monitor: what it keeps from one frame to the next so
+    /// that a pointer resting on the line where it just fits does not make
+    /// it jump (`magnifier::place_from`). Written where the plate is placed,
+    /// which is idempotent for one pointer and one plate size; reset when
+    /// the monitor it was on no longer shows the magnifier.
+    magnifier_side: std::cell::Cell<(usize, polter_shots::magnifier::Flipped)>,
 }
 
 /// A long screenshot in progress: the frames stitched so far, and what the
@@ -972,6 +979,7 @@ fn begin() {
                     tones: tones(),
                     frames: (0, 0.0, 0.0, 0),
                     copied_until: 0,
+                    magnifier_side: std::cell::Cell::new((0, (false, false))),
                 })
         });
         // Where the pointer is, before the first frame: the window under it
@@ -1696,6 +1704,9 @@ unsafe fn compose_into(s: &Session, i: usize, canvas: &Canvas, clear: &[(Rect, u
             words.put(tag.text, &text, tones.ink);
         }
         // The magnifier: last, over everything but the pointer.
+        if e.magnifier().filter(|p| mon.rect.contains(*p)).is_none() && s.magnifier_side.get().0 == i {
+            s.magnifier_side.set((i, (false, false)));
+        }
         if let Some(at) = e.magnifier().filter(|p| mon.rect.contains(*p)) {
             let params = &polter_shots::magnifier::LOOK;
             let coords = polter_shots::magnifier::coordinates(at, mon.rect);
@@ -1710,7 +1721,12 @@ unsafe fn compose_into(s: &Session, i: usize, canvas: &Canvas, clear: &[(Rect, u
             let text = (c.0.max(second), c.1 + between + line_h);
             let size = polter_shots::magnifier::plate_size(params, text, scale);
             let offset = style::px_f(params.offset, scale);
-            let plate_rect = polter_shots::magnifier::place(at, size, mon.rect, offset);
+            let from = match s.magnifier_side.get() {
+                (m, flipped) if m == i => flipped,
+                _ => (false, false),
+            };
+            let (plate_rect, flipped) = polter_shots::magnifier::place_from(at, size, mon.rect, offset, from);
+            s.magnifier_side.set((i, flipped));
             plate(plate_rect);
             let picture = polter_shots::magnifier::picture_at(plate_rect, params, scale);
             let samples = polter_shots::magnifier::sample(&mon.frozen, at, params.cells);

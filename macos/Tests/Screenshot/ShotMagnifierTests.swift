@@ -111,3 +111,131 @@ struct ShotMagnifierTests {
         #expect(patch.count == 3 * 3 * 4)
     }
 }
+
+/// Where the plate goes in the corners and along the lines where it flips
+/// (task 1198, the magnifier's placement).
+struct ShotMagnifierPlacementTests {
+    typealias Pt = PixelPoint
+    private let display = PixelRect(0, 0, 2400, 1400)
+    private let plate = (w: 272, h: 430)
+    private let offset = 32
+
+    private func place(_ x: Int, _ y: Int, _ previous: ShotMagnifier.Flip = .init()) -> ShotMagnifier.Placement {
+        ShotMagnifier.placement(pointer: Pt(x, y), plate: plate, offset: offset, display: display, previous: previous)
+    }
+
+    @Test func inEveryCornerAndOnEveryEdgeThePlateIsOnTheDisplayAndOffThePointer() {
+        let last = Pt(display.right - 1, display.bottom - 1)
+        let xs = [0, 1, 5, 1200, last.x - 5, last.x - 1, last.x]
+        let ys = [0, 1, 5, 700, last.y - 5, last.y - 1, last.y]
+        for x in xs {
+            for y in ys {
+                let r = place(x, y).rect
+                #expect(display.intersect(r) == r, "on the display at \(x),\(y): \(r)")
+                #expect(!r.contains(Pt(x, y)), "the pointer's pixel is free at \(x),\(y)")
+                // The gap to the pointer is the offset, on whichever side.
+                let gapX = r.x >= x ? r.x - x : x - r.right
+                let gapY = r.y >= y ? r.y - y : y - r.bottom
+                #expect(gapX == offset && gapY == offset, "gap \(gapX),\(gapY) at \(x),\(y)")
+            }
+        }
+    }
+
+    @Test func theBottomRightCornerPutsItAboveAndToTheLeft() {
+        let p = place(2399, 1399)
+        #expect(p.flip == .init(x: true, y: true))
+        #expect(p.rect == PixelRect(2399 - 32 - 272, 1399 - 32 - 430, 272, 430))
+        #expect(place(0, 0).flip == .init())
+        #expect(place(2399, 0).flip == .init(x: true, y: false))
+        #expect(place(0, 1399).flip == .init(x: false, y: true))
+    }
+
+    @Test func aDisplayAsBigAsTwoPlatesHasNoPlaceWhereNeitherSideFits() {
+        // Neither side fits only where the room is under twice (offset +
+        // plate): 608 px across, 924 px down. At exactly that every pointer
+        // has a side.
+        let exact = PixelRect(0, 0, 608, 924)
+        for x in stride(from: 0, to: exact.w, by: 3) {
+            for y in stride(from: 0, to: exact.h, by: 3) {
+                let r = ShotMagnifier.place(pointer: Pt(x, y), plate: plate, offset: offset, display: exact)
+                #expect(exact.intersect(r) == r && !r.contains(Pt(x, y)), "\(x),\(y)")
+            }
+        }
+        // Smaller, the plate is clamped on the display (and may cover the
+        // pointer): never off it.
+        let small = PixelRect(0, 0, 560, 880)
+        for x in stride(from: 0, to: small.w, by: 5) {
+            for y in stride(from: 0, to: small.h, by: 5) {
+                let r = ShotMagnifier.place(pointer: Pt(x, y), plate: plate, offset: offset, display: small)
+                #expect(small.intersect(r) == r, "\(x),\(y): \(r)")
+            }
+        }
+    }
+
+    @Test func aSideKeptIsGivenUpWhenItNoLongerFits() {
+        // Taken on the left at the right edge; carried to the left edge,
+        // where the left no longer fits: back to the right whatever the
+        // room is at the right.
+        #expect(place(100, 500, .init(x: true, y: false)).flip.x == false)
+        #expect(place(500, 100, .init(x: false, y: true)).flip.y == false)
+        // On a display too narrow for the usual room to go back, with the
+        // left not fitting but the right just fitting: the right.
+        let narrow = PixelRect(0, 0, 420, 1400)
+        let held = ShotMagnifier.placement(
+            pointer: Pt(100, 500), plate: plate, offset: offset, display: narrow, previous: .init(x: true, y: false))
+        #expect(held.flip.x == false && held.rect.x == 100 + offset)
+        // Where the left still fits and the right is only just enough, it is kept.
+        #expect(place(display.right - offset - plate.w - 1, 500, .init(x: true, y: false)).flip.x == true)
+    }
+
+    @Test func aPointerOnTheLineWhereItFlipsDoesNotMakeItJump() {
+        // The line: where the plate would just not fit on the right.
+        let line = display.right - offset - plate.w
+        func sides(_ path: [Int], remembering: Bool) -> [Bool] {
+            var flip = ShotMagnifier.Flip()
+            return path.map { x in
+                let now = ShotMagnifier.placement(
+                    pointer: Pt(x, 500), plate: plate, offset: offset, display: display,
+                    previous: remembering ? flip : .init())
+                flip = now.flip
+                return now.flip.x
+            }
+        }
+        // A pixel either way, forty times.
+        let jitter = (0..<40).map { line + ($0 % 2 == 0 ? 0 : 1) }
+        func changes(_ s: [Bool]) -> Int { zip(s, s.dropFirst()).filter { $0 != $1 }.count }
+        #expect(changes(sides(jitter, remembering: false)) == 39, "forgetting, it jumps every time")
+        #expect(changes(sides(jitter, remembering: true)) <= 1, "remembering, it settles")
+        // Out to the edge and back, a pixel at a time: one flip each way,
+        // and the way back is `offset` further from the edge than the way out.
+        let out = Array(stride(from: line - 100, through: line + 100, by: 1))
+        let there = sides(out, remembering: true)
+        #expect(changes(there) == 1)
+        let flippedAt = out[there.firstIndex(of: true) ?? 0]
+        let back = Array(out.reversed())
+        let returning = sides(back, remembering: true)
+        // Starting flipped (as the walk out ended), find where it lets go.
+        var flip = ShotMagnifier.Flip(x: true, y: false)
+        var letGoAt = Int.min
+        for x in back {
+            flip = ShotMagnifier.placement(pointer: Pt(x, 500), plate: plate, offset: offset, display: display, previous: flip).flip
+            if !flip.x { letGoAt = x; break }
+        }
+        #expect(flippedAt - letGoAt >= offset, "out at \(flippedAt), back at \(letGoAt)")
+        #expect(returning.last == false)
+    }
+
+    @Test func eachMoveOfAWalkKeepsThePlateOnTheDisplayAndOffThePointer() {
+        var flip = ShotMagnifier.Flip()
+        var seed: UInt64 = 7
+        var p = Pt(1200, 700)
+        for _ in 0..<5000 {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            let dx = Int((seed >> 33) % 41) - 20, dy = Int((seed >> 13) % 41) - 20
+            p = Pt(min(max(p.x + dx * 9, 0), 2399), min(max(p.y + dy * 9, 0), 1399))
+            let now = ShotMagnifier.placement(pointer: p, plate: plate, offset: offset, display: display, previous: flip)
+            flip = now.flip
+            #expect(display.intersect(now.rect) == now.rect && !now.rect.contains(p), "\(p) \(now.rect)")
+        }
+    }
+}

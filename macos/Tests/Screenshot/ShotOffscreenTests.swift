@@ -1834,3 +1834,96 @@ struct ShotOffscreenCompositionLineTests {
         #expect(found, "white line with a dark halo above and below it, inside the box (box \(box))")
     }
 }
+
+/// The magnifier at the corners and edges of the screen (task 1198): every
+/// one of them whole, on the screen, off the pointer's pixel, `offset` away,
+/// with what is off the screen painted in the off-screen colour.
+@MainActor
+struct ShotOffscreenMagnifierCornerTests {
+    private struct Spot {
+        var name: String
+        /// The pointer's pixel.
+        var x: Int
+        var y: Int
+        var drag = false
+    }
+
+    private let spots = [
+        Spot(name: "k1-top-left-0px", x: 0, y: 0),
+        Spot(name: "k2-top-right-1px", x: 2398, y: 1),
+        Spot(name: "k3-bottom-left-5px", x: 5, y: 1394),
+        Spot(name: "k4-bottom-right-0px", x: 2399, y: 1399),
+        Spot(name: "k5-top-edge-middle", x: 1200, y: 0),
+        Spot(name: "k6-bottom-edge-middle", x: 1200, y: 1399),
+        Spot(name: "k7-left-edge-middle", x: 0, y: 700),
+        Spot(name: "k8-right-edge-middle", x: 2399, y: 700),
+        Spot(name: "k9-bottom-right-while-dragging-with-size-label", x: 2399, y: 1399, drag: true),
+    ]
+
+    @Test func everyCornerAndEdgeIsWholeOnTheScreenOffThePointerAndOffsetAway() throws {
+        let dir = ProcessInfo.processInfo.environment["SHOT_RENDER_DIR"].map { URL(fileURLWithPath: $0) }
+        for spot in spots {
+            let s = try ShotStage()
+            let at = (Double(spot.x) / s.scale + 0.25, Double(spot.y) / s.scale + 0.25)
+            if spot.drag {
+                s.move(1010, 520)
+                s.press(1010, 520)
+                s.move(1100, 600)
+            } else {
+                s.move(at.0, at.1)
+            }
+            s.move(at.0, at.1)
+            s.wait(1)
+            let p = s.shot(spot.name)
+            let display = PixelRect(0, 0, s.width, s.height)
+            let plate = try #require(s.session.magnifierPlate(on: 0), Comment(rawValue: spot.name))
+            let pointer = PixelPoint(spot.x, spot.y)
+            #expect(display.intersect(plate) == plate, "\(spot.name): whole, on the screen: \(plate)")
+            #expect(!plate.contains(pointer), "\(spot.name): the pointer's pixel is free")
+            let offset = ShotStyle.px(Int(ShotLook.Size.magnifierOffset), scale: s.scale)
+            let gapX = plate.x >= pointer.x ? plate.x - pointer.x : pointer.x - plate.right
+            let gapY = plate.y >= pointer.y ? plate.y - pointer.y : pointer.y - plate.bottom
+            #expect(gapX == offset && gapY == offset, "\(spot.name): \(gapX),\(gapY) from the pointer, the data says \(offset)")
+
+            // The cells that are off the screen are the off-screen colour;
+            // the one in the middle is the screen's own pixel.
+            let m = ShotMagnifier.Metrics(scale: s.scale, textHeight: 0)
+            let image = (x: plate.x + m.pad, y: plate.y + m.pad)
+            let sample = ShotMagnifier.sample(around: pointer)
+            let off = ShotLook.Colour.magnifierOffScreen
+            var offCells = 0
+            for row in 0..<m.cells {
+                for column in 0..<m.cells {
+                    let inside = display.contains(PixelPoint(sample.x + column, sample.y + row))
+                    if inside { continue }
+                    offCells += 1
+                    let cy: Int = image.y + row * m.cell + m.cell / 2
+                    let cx: Int = image.x + column * m.cell + m.cell / 2
+                    let i: Int = (cy * s.width + cx) * 4
+                    let read = [Int(p[i]), Int(p[i + 1]), Int(p[i + 2])]
+                    #expect(read == [Int(off.r), Int(off.g), Int(off.b)],
+                            "\(spot.name): cell \(column),\(row) is off the screen and not its colour")
+                }
+            }
+            // As many cells as the sample reaches off the screen, and at a
+            // corner or an edge there are some.
+            let onScreen = display.intersect(sample).map { $0.w * $0.h } ?? 0
+            #expect(offCells == m.cells * m.cells - onScreen, "\(spot.name): \(offCells) off-screen cells")
+            let atEdge = spot.x < 7 || spot.x > 2392 || spot.y < 7 || spot.y > 1392
+            #expect(atEdge == (offCells > 0), "\(spot.name): \(offCells)")
+
+            // A crop of 480 x 320 points round the plate, for a phone.
+            if let dir {
+                let w = Int(480 * s.scale), h = Int(320 * s.scale)
+                let left = max(min(plate.x + plate.w / 2 - w / 2, s.width - w), 0)
+                let top = max(min(plate.y + plate.h / 2 - h / 2, s.height - h), 0)
+                var out = [UInt8](repeating: 0, count: w * h * 4)
+                for y in 0..<h {
+                    let from = ((top + y) * s.width + left) * 4
+                    out.replaceSubrange((y * w * 4)..<((y + 1) * w * 4), with: p[from..<(from + w * 4)])
+                }
+                ShotStage.write(out, width: w, height: h, to: dir.appendingPathComponent(spot.name + "-crop.png"))
+            }
+        }
+    }
+}
