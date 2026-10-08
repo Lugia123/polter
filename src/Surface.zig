@@ -2914,13 +2914,13 @@ pub fn setFontSize(self: *Surface, size: font.face.DesiredSize) !void {
         self.renderer_thread.mailbox,
         rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
         .{
-        .font_grid = .{
-            .grid = font_grid,
-            .set = &self.app.font_grid_set,
-            .old_key = self.font_grid_key,
-            .new_key = font_grid_key,
+            .font_grid = .{
+                .grid = font_grid,
+                .set = &self.app.font_grid_set,
+                .old_key = self.font_grid_key,
+                .new_key = font_grid_key,
+            },
         },
-    },
     );
 
     // Once we've sent the key we can replace our key
@@ -4344,11 +4344,24 @@ test "holding cmd to switch away is not somebody typing here" {
 /// actually measured is spelled out at `key_arrived` in `rpc.zig` -- the
 /// message is a fact about a surface, not a claim about a person.
 pub fn poltergeistMayType(self: *Surface) !void {
-    if (self.child_exited) {
-        log.info("poltergeist: text dropped, the child process has exited", .{});
-        return error.ChildExited;
-    }
+    return self.mayTypeAs(.agent);
+}
 
+/// Who is asking to put characters into the line. An agent's text keeps out
+/// of the way of a person; the person's own menu click is not an agent
+/// intruding, and must not be held back by the person's own keystrokes
+/// (#1202: a role picked from the menu of a tab opened seconds ago was
+/// refused as `UserPresent` -- by the keys that opened and used the tab --
+/// and the only trace was an info line).
+pub const Typist = enum { agent, person };
+
+/// The judgement, without a `Surface` (one cannot be built in a test).
+/// A person is refused only for what is really in the way: the child gone,
+/// or half a line in front of them that the text would be typed into the
+/// middle of. The keyboard clock is for agents.
+fn mayType(who: Typist, child_exited: bool, since_key_ms: ?i64, draft_outstanding: bool) !void {
+    // Why each refusal exists (moved here from the one function that used
+    // to hold them all):
     // Never interrupt someone who is currently using this terminal. A
     // notice landing mid-sentence would both corrupt what they were writing
     // and submit it. Skipping costs nothing: the sampler says the same
@@ -4372,18 +4385,6 @@ pub fn poltergeistMayType(self: *Surface) !void {
     // `rpc.zig`.
     //
     // The clock must be the one `keyCallback` stamps with.
-    if (self.last_key_time) |last| {
-        const now: std.Io.Timestamp = .now(global.io(), .boot);
-        if (last.durationTo(now).toMilliseconds() < notice_quiet_keyboard_ms) {
-            log.info(
-                "poltergeist: notice deferred, a key reached this surface " ++
-                    "in the last {d}ms",
-                .{notice_quiet_keyboard_ms},
-            );
-            return error.UserPresent;
-        }
-    }
-
     // **And the half the clock above cannot see**, which is the half the
     // user reported: text typed and not yet submitted, however long ago.
     // Eleven seconds of thinking mid-sentence is enough to get past the
@@ -4402,14 +4403,48 @@ pub fn poltergeistMayType(self: *Surface) !void {
     // supervisor told only "UserPresent" waits for a thing that is not
     // going to happen, which is the state task 572 was filed about: the
     // sentence said "try again shortly" and no amount of shortly helped.
-    if (self.poltergeist_draft.outstanding) {
-        log.info(
-            "poltergeist: notice deferred, this terminal has unsubmitted text " ++
-                "in its input line",
-            .{},
-        );
-        return error.DraftInLine;
+    if (child_exited) return error.ChildExited;
+    if (who == .agent) {
+        if (since_key_ms) |ms| if (ms < notice_quiet_keyboard_ms) return error.UserPresent;
     }
+    if (draft_outstanding) return error.DraftInLine;
+}
+
+test "a role picked from the menu is not refused for the keys that opened the tab (#1202)" {
+    const testing = std.testing;
+    try testing.expectError(error.UserPresent, mayType(.agent, false, 2000, false));
+    try mayType(.person, false, 2000, false);
+    try mayType(.person, false, null, false);
+    try testing.expectError(error.DraftInLine, mayType(.person, false, null, true));
+    try testing.expectError(error.DraftInLine, mayType(.agent, false, null, true));
+    try testing.expectError(error.ChildExited, mayType(.person, true, null, false));
+    try mayType(.agent, false, notice_quiet_keyboard_ms, false);
+    try mayType(.agent, false, null, false);
+}
+
+pub fn mayTypeAs(self: *Surface, who: Typist) !void {
+    // The judgement is `mayType`'s, so that what the test pins is what runs;
+    // this only measures the clock and says why in the log. The three
+    // refusals below are the reasons it can give, and the comments are
+    // where each is argued.
+    const since_key_ms: ?i64 = if (self.last_key_time) |last|
+        last.durationTo(.now(global.io(), .boot)).toMilliseconds()
+    else
+        null;
+    mayType(who, self.child_exited, since_key_ms, self.poltergeist_draft.outstanding) catch |err| {
+        switch (err) {
+            error.ChildExited => log.info("poltergeist: text dropped, the child process has exited", .{}),
+            error.UserPresent => log.info(
+                "poltergeist: notice deferred, a key reached this surface in the last {d}ms",
+                .{notice_quiet_keyboard_ms},
+            ),
+            error.DraftInLine => log.warn(
+                "poltergeist: text deferred, this terminal has unsubmitted text in its input line (asked by {s})",
+                .{@tagName(who)},
+            ),
+        }
+        return err;
+    };
 }
 
 /// How long to wait between the text of a `terminal_send` and the return
@@ -4442,6 +4477,10 @@ fn submitDelayMs() u64 {
 }
 
 pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void {
+    return self.typePoltergeistTextAs(text, submit, .agent);
+}
+
+pub fn typePoltergeistTextAs(self: *Surface, text: []const u8, submit: bool, who: Typist) !void {
     if (text.len == 0) return;
 
     // **The end of a bracketed paste, refused whatever the target is
@@ -4500,7 +4539,7 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
     //
     // Note where this sits: after the checks on the *text* above, which are
     // about what was asked for, and before any of it is sent.
-    try self.poltergeistMayType();
+    try self.mayTypeAs(who);
 
     // **Both branches send the text framed when the target has bracketed
     // paste on -- the single-line one too.** `textCallback` is
@@ -4754,8 +4793,8 @@ pub fn occlusionCallback(self: *Surface, visible: bool) !void {
         self.renderer_thread.mailbox,
         rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
         .{
-        .visible = visible,
-    },
+            .visible = visible,
+        },
     );
 
     try self.queueRender();
@@ -4779,8 +4818,8 @@ pub fn focusCallback(self: *Surface, focused: bool) !void {
         self.renderer_thread.mailbox,
         rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
         .{
-        .focus = focused,
-    },
+            .focus = focused,
+        },
     );
 
     if (!focused) unfocused: {
@@ -7291,10 +7330,10 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
 
             .render => {
                 _ = rendererpkg.Thread.send(
-        self.renderer_thread.mailbox,
-        rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
-        .{ .crash = {} },
-    );
+                    self.renderer_thread.mailbox,
+                    rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
+                    .{ .crash = {} },
+                );
                 self.queueRender() catch |err| {
                     // Not a big deal if this fails.
                     log.warn("failed to notify renderer of crash message err={}", .{err});

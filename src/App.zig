@@ -2491,8 +2491,13 @@ fn startRoleIn(
     by: poltergeistpkg.Bus.Id,
     choice: LaunchChoice,
     line: []const u8,
+    who: Surface.Typist,
 ) anyerror!void {
     const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
+
+    // Asked before the role is recorded: a launch that cannot be typed must
+    // not leave the terminal wearing a role it never started (#1202).
+    try surface.mayTypeAs(who);
 
     // Wearing the role, the launch recorded for `terminal_capabilities`
     // (copied now: an edit to the role later does not reach a CLI that is
@@ -2508,7 +2513,7 @@ fn startRoleIn(
     self.wakePersonaWaits(id);
     self.refreshPoltergeistTabs();
 
-    try surface.typePoltergeistText(line, true);
+    try surface.typePoltergeistTextAs(line, true, who);
 }
 
 /// A request has come from terminal `id` (`rpc.arrived`): if a role launch
@@ -2576,7 +2581,7 @@ pub fn launchPersona(
         if (self.personas.takeLaunch(self.poltergeistElapsedMs())) |taken| {
             var p = taken;
             defer p.deinit();
-            try self.startRoleIn(new, p.by, .{ .key = p.key, .cli = p.cli }, p.line);
+            try self.startRoleIn(new, p.by, .{ .key = p.key, .cli = p.cli }, p.line, .agent);
         }
     }
     return opened;
@@ -2614,7 +2619,7 @@ fn markAgentOpened(self: *App, id: poltergeistpkg.Bus.Id, by: poltergeistpkg.Bus
 pub fn claimPendingLaunch(self: *App, surface: *Surface) void {
     var p = self.personas.takeLaunch(self.poltergeistElapsedMs()) orelse return;
     defer p.deinit();
-    self.startRoleIn(surface.id, p.by, .{ .key = p.key, .cli = p.cli }, p.line) catch |err| {
+    self.startRoleIn(surface.id, p.by, .{ .key = p.key, .cli = p.cli }, p.line, .agent) catch |err| {
         log.warn("poltergeist: could not start role {s} in its terminal err={}", .{ p.key, err });
     };
 }
@@ -2665,9 +2670,13 @@ pub fn choosePersona(self: *App, id: poltergeistpkg.Bus.Id, arg: []const u8) any
     defer arena.deinit();
     const aa = arena.allocator();
 
-    if (!new_tab and surface.isAtShellPrompt()) {
+    // Half a line in front of the person is not "at the prompt" for this:
+    // the launch would be typed into the middle of it, so it gets a tab.
+    if (!new_tab and surface.isAtShellPrompt() and !surface.poltergeist_draft.outstanding) {
         const choice = try self.resolveLaunch(aa, key, cli);
-        try self.startRoleIn(id, id, choice, try launchLine(aa, choice));
+        // The person's own click: the keys that opened this tab are not an
+        // agent intruding (#1202).
+        try self.startRoleIn(id, id, choice, try launchLine(aa, choice), .person);
         return .started_here;
     }
     _ = try self.launchPersona(aa, id, key, cli, "", .tab);
