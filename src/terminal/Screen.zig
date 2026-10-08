@@ -3624,6 +3624,45 @@ fn promptClickLine(self: *Screen, click_pin: Pin) PromptClickMove {
     return .{ .left = count, .right = 0 };
 }
 
+/// Whether the input the shell is holding -- the cells marked as input
+/// (OSC 133 B) from the start of the command up to the cursor -- has any text
+/// in it. `true` for an empty prompt, and for a line typed and backspaced
+/// empty (the shell overwrites with spaces, which are blank).
+///
+/// **Only the cells before the cursor count.** What a shell draws after it --
+/// an autosuggestion's grey text, a right-hand prompt -- is also marked as
+/// input but is not something the person has written; typing at the cursor
+/// does not land in it.
+///
+/// A line that wraps, or a prompt with continuation rows, is walked upwards
+/// the way `promptClickLine` walks it. **Without OSC 133 there is nothing to
+/// go by and this says the input is blank only when the cursor is not on an
+/// input cell at all** -- callers that need a prompt ask `cursorIsAtPrompt`
+/// first. Reads cell memory and nothing else: the caller holds the lock that
+/// keeps the screen still, and nothing here leaves the terminal.
+pub fn inputBeforeCursorIsBlank(self: *Screen) bool {
+    const cursor_pin = self.cursor.page_pin.*;
+    var row_it = cursor_pin.rowIterator(.left_up, null);
+    while (row_it.next()) |row_pin| {
+        const rac = row_pin.rowAndCell();
+        const cells = row_pin.node.page().getCells(rac.row);
+        const is_cursor_row = row_pin.node == cursor_pin.node and
+            row_pin.y == cursor_pin.y;
+        const end_len: usize = if (is_cursor_row) @min(cursor_pin.x, cells.len) else cells.len;
+
+        for (cells[0..end_len]) |cell| {
+            if (cell.semantic_content != .input) continue;
+            if (cell.hasText() and cell.codepoint() != ' ') return false;
+        }
+
+        // Rows above belong to the same input only while this one continues
+        // them: a soft wrap, or a continuation row of the prompt.
+        if (!rac.row.wrap_continuation and
+            rac.row.semantic_prompt != .prompt_continuation) break;
+    }
+    return true;
+}
+
 /// Dump the screen to a string. The writer given should be buffered;
 /// this function does not attempt to efficiently write and generally writes
 /// one byte at a time.
@@ -11798,6 +11837,85 @@ test "Screen setAttribute splits page on OutOfSpace at max styles" {
         node_before_set.prev != null or
         s.cursor.page_pin.node != original_node;
     try testing.expect(page_was_split);
+}
+
+test "Screen: a line typed and backspaced empty holds no text (#1202)" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 5, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    s.cursorSetSemanticContent(.{ .prompt = .initial });
+    try s.testWriteString("> ");
+    s.cursorSetSemanticContent(.{ .input = .clear_explicit });
+    try testing.expect(s.inputBeforeCursorIsBlank());
+    try s.testWriteString("ab");
+    try testing.expect(!s.inputBeforeCursorIsBlank());
+    // The way a shell erases: the cursor goes back and spaces overwrite,
+    // still as input.
+    s.cursorAbsolute(2, 0);
+    try s.testWriteString("  ");
+    s.cursorAbsolute(2, 0);
+    // A real terminal stores the blank as a space; make sure these are.
+    for (2..4) |x| {
+        const cell = s.pages.pin(.{ .active = .{ .x = @intCast(x), .y = 0 } }).?.rowAndCell().cell;
+        cell.content.codepoint = .{ .data = ' ' };
+    }
+    try testing.expect(s.inputBeforeCursorIsBlank());
+    // And blanks the person typed themselves, before the cursor, are not text.
+    s.cursorAbsolute(4, 0);
+    try testing.expect(s.inputBeforeCursorIsBlank());
+}
+
+test "Screen: real text before the cursor is a draft (#1202)" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 5, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    s.cursorSetSemanticContent(.{ .prompt = .initial });
+    try s.testWriteString("> ");
+    s.cursorSetSemanticContent(.{ .input = .clear_explicit });
+    try s.testWriteString("ls");
+    try testing.expect(!s.inputBeforeCursorIsBlank());
+}
+
+test "Screen: an autosuggestion after the cursor is not a draft (#1202)" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 5, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    s.cursorSetSemanticContent(.{ .prompt = .initial });
+    try s.testWriteString("> ");
+    s.cursorSetSemanticContent(.{ .input = .clear_explicit });
+    // Drawn as input, then the cursor moved back to where typing lands.
+    try s.testWriteString("grey");
+    s.cursorAbsolute(2, 0);
+    try testing.expect(s.inputBeforeCursorIsBlank());
+}
+
+test "Screen: inputBeforeCursorIsBlank walks a wrapped line (#1202)" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 6, .rows = 5, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    s.cursorSetSemanticContent(.{ .prompt = .initial });
+    try s.testWriteString("> ");
+    s.cursorSetSemanticContent(.{ .input = .clear_explicit });
+    // Fills the first row and wraps; the cursor ends on the second row with
+    // nothing before it on that row but the wrapped tail of blanks.
+    try s.testWriteString("abcd       ");
+    try testing.expect(!s.inputBeforeCursorIsBlank());
 }
 
 test "Screen: promptClickMove line right basic" {

@@ -107,6 +107,17 @@ pub const Draft = struct {
             else => {},
         };
 
+        // **A chord is a command to the line, not text in it.** macOS hands
+        // ctrl+l, ctrl+r, ctrl+a ... an `utf8` of the plain letter (the
+        // control character is stripped on purpose, see `ghosttyCharacters`),
+        // so without this line each of them marked the terminal as holding
+        // an unsubmitted draft -- and since only return, ctrl+c, ctrl+u or
+        // ctrl+d clear it, a tab where somebody pressed ctrl+l once refused
+        // every role picked from its menu for good (#1202). Moving around a
+        // line, searching history or clearing the screen adds nothing to it.
+        // ctrl with alt is AltGr on Windows, and that types real text.
+        if ((event.mods.ctrl and !event.mods.alt) or event.mods.super) return;
+
         // Something was typed. `utf8` is what the key generated, so this is
         // the same fact the program itself received -- and it is checked for
         // a printable byte rather than merely being non-empty, because
@@ -150,6 +161,22 @@ test "text typed and not submitted is outstanding" {
     // seconds after the last of those three, the ten-second guard beside
     // this one has stopped objecting and this one has not. That gap is the
     // defect this was written for.
+    try std.testing.expect(d.outstanding);
+}
+
+test "a control chord is a command to the line, not text in it (#1202)" {
+    var d: Draft = .{};
+    // ctrl+l, ctrl+r, ctrl+a as macOS delivers them: the plain letter.
+    for ([_]inputpkg.Key{ .key_l, .key_r, .key_a, .key_e, .key_w }) |k| {
+        d.note(.{ .action = .press, .key = k, .mods = .{ .ctrl = true }, .utf8 = "x" });
+    }
+    try std.testing.expect(!d.outstanding);
+    // AltGr arrives as ctrl+alt and types a character.
+    d.note(.{ .action = .press, .key = .key_q, .mods = .{ .ctrl = true, .alt = true }, .utf8 = "@" });
+    try std.testing.expect(d.outstanding);
+    d = .{};
+    // Typed text on top of them is still a draft.
+    d.note(typed("h"));
     try std.testing.expect(d.outstanding);
 }
 

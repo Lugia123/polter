@@ -1318,6 +1318,36 @@ pub fn isAtShellPrompt(self: *Surface) bool {
     return self.io.terminal.cursorIsAtPrompt();
 }
 
+/// Whether `who` is to treat this terminal's input line as holding a draft.
+///
+/// An agent is told what the key events say (`poltergeist_draft`), which
+/// errs towards "yes" on purpose. A person's own click is told what is on
+/// the screen: the flag stays set after a line is backspaced empty or
+/// cleared with ctrl+w, and a person who sees an empty prompt and picks a
+/// role must get the role there, not a new tab (#1202). The flag is the
+/// gate: no draft recorded, nothing to look at.
+pub fn draftFor(self: *Surface, who: Typist) bool {
+    if (!self.poltergeist_draft.outstanding) return false;
+    return switch (who) {
+        .agent => true,
+        .person => self.inputLineHoldsText(),
+    };
+}
+
+/// Whether the text before the cursor, in the shell's input cells, is more
+/// than blanks (`Screen.inputBeforeCursorIsBlank`).
+///
+/// **The renderer lock is held for the read and for nothing else**: it reads
+/// cell memory, allocates nothing, and calls nothing that reaches the
+/// window system, the main thread or the mailbox. `isAtShellPrompt` above
+/// takes the same lock the same way. Anything that can call back into the
+/// UI must stay outside it.
+pub fn inputLineHoldsText(self: *Surface) bool {
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    defer self.renderer_state.mutex.unlock(global.io());
+    return !self.io.terminal.screens.active.inputBeforeCursorIsBlank();
+}
+
 /// True if the surface requires confirmation to quit. This should be called
 /// by apprt to determine if the surface should confirm before quitting.
 pub fn needsConfirmQuit(self: *Surface) bool {
@@ -4431,7 +4461,7 @@ pub fn mayTypeAs(self: *Surface, who: Typist) !void {
         last.durationTo(.now(global.io(), .boot)).toMilliseconds()
     else
         null;
-    mayType(who, self.child_exited, since_key_ms, self.poltergeist_draft.outstanding) catch |err| {
+    mayType(who, self.child_exited, since_key_ms, self.draftFor(who)) catch |err| {
         switch (err) {
             error.ChildExited => log.info("poltergeist: text dropped, the child process has exited", .{}),
             error.UserPresent => log.info(

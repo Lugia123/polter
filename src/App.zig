@@ -2672,7 +2672,7 @@ pub fn choosePersona(self: *App, id: poltergeistpkg.Bus.Id, arg: []const u8) any
 
     // Half a line in front of the person is not "at the prompt" for this:
     // the launch would be typed into the middle of it, so it gets a tab.
-    if (!new_tab and surface.isAtShellPrompt() and !surface.poltergeist_draft.outstanding) {
+    if (!new_tab and surface.isAtShellPrompt() and !surface.draftFor(.person)) {
         const choice = try self.resolveLaunch(aa, key, cli);
         // The person's own click: the keys that opened this tab are not an
         // agent intruding (#1202).
