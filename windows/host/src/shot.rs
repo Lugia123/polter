@@ -304,11 +304,6 @@ const TIMER_NOTES: usize = 1;
 static KEYS_LOGGED: AtomicU32 = AtomicU32::new(0);
 const KEY_LOG_CAP: u32 = 200;
 
-/// Whether the message `edit_proc` last passed on was a character, Backspace
-/// or Delete: a change read back after it joins the run of typing before it
-/// (`polter_shots::undo`).
-static TYPING: AtomicBool = AtomicBool::new(false);
-
 /// Whether `PolterShotText` is registered (`register_text_class`).
 static TEXT_CLASS: AtomicBool = AtomicBool::new(false);
 
@@ -2797,9 +2792,9 @@ fn read_edit(edit: HWND) {
             // Something happened: the caret is shown, whatever half of its
             // blink it was in.
             e.caret_on = true;
-            // What changed it, as `edit_proc` last saw: one step of undo.
-            let kind = if TYPING.load(Ordering::Relaxed) { polter_shots::undo::Kind::Typing } else { polter_shots::undo::Kind::Other };
-            e.history.record(&e.typed.units, e.typed.sel, kind);
+            // One step of undo, or the next of a run of typing: decided
+            // from the texts alone (`polter_shots::undo`).
+            e.history.record(&e.typed.units, e.typed.sel);
         }
     });
     repaint_text_box();
@@ -3040,12 +3035,6 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             step_history(hwnd, redo);
             return LRESULT(0);
         }
-        TYPING.store(
-            // A character (Backspace, Tab and Enter among them: the control
-            // takes those as characters) or the Delete key.
-            (msg == WM_CHAR && (wp.0 >= 32 || matches!(wp.0, 8 | 9 | 13))) || (msg == WM_KEYDOWN && wp.0 == 0x2E),
-            Ordering::Relaxed,
-        );
         // What those two keys leave behind as characters: Escape, and the
         // line feed Ctrl+Enter makes.
         if msg == WM_CHAR && (wp.0 == 27 || wp.0 == 10) {
