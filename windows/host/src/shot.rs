@@ -231,9 +231,10 @@ struct LongShot {
     moving: u32,
     /// The program turns the wheel (#1197): what to do after each frame.
     auto: polter_shots::autoscroll::AutoScroll,
-    /// Where the pointer was before it was put over the region; given
-    /// back when the long screenshot ends.
-    pointer_before: Option<POINT>,
+    /// Where the pointer was before it was put over the region. **Given
+    /// back by whatever ends the long screenshot, the session dropping it
+    /// included** (`PointerGuard`), not by the exits that remembered to.
+    pointer: polter_shots::autoscroll::PointerGuard<fn(Point)>,
     /// Where the wheel goes (`autoscroll::wheel_point`).
     wheel_at: Point,
 }
@@ -2222,7 +2223,10 @@ fn start_long() {
     // region, off the toolbar if that lies over it.
     let wheel_at = polter_shots::autoscroll::wheel_point(sel, bar);
     let mut before = POINT::default();
-    let pointer_before = unsafe { GetCursorPos(&mut before) }.is_ok().then_some(before);
+    let pointer_before = unsafe { GetCursorPos(&mut before) }.is_ok().then_some(Point::new(before.x, before.y));
+    fn put_back(p: Point) {
+        let _ = unsafe { SetCursorPos(p.x, p.y) };
+    }
     with(|s| {
         s.long = Some(LongShot {
             stitcher,
@@ -2233,7 +2237,7 @@ fn start_long() {
             lost: 0,
             moving: 0,
             auto: polter_shots::autoscroll::AutoScroll::new(),
-            pointer_before,
+            pointer: polter_shots::autoscroll::PointerGuard::new(pointer_before, put_back),
             wheel_at,
         })
     });
@@ -2273,23 +2277,16 @@ fn start_long() {
     repaint();
 }
 
-/// The pointer goes back to where the person had it.
-fn give_back_pointer(long: &LongShot) {
-    if let Some(p) = long.pointer_before {
-        let _ = unsafe { SetCursorPos(p.x, p.y) };
-    }
-}
-
 /// Leave long-screenshot mode without finishing: cover the selection again.
 fn stop_long() {
-    let Some((long, overlays)) =
+    let Some((mut long, overlays)) =
         with(|s| s.long.take().map(|l| (l, s.mons.iter().map(|m| m.hwnd).collect::<Vec<_>>()))).flatten()
     else {
         return;
     };
     unsafe {
         let _ = KillTimer(Some(long.hwnd), TIMER_LONG);
-        give_back_pointer(&long);
+        long.pointer.release();
         SetWindowRgn(long.hwnd, None, true);
         for h in overlays {
             if !h.0.is_null() {
@@ -3498,9 +3495,10 @@ fn finish() {
     let Some(export) = with(|s| s.editor.export()).flatten() else { return };
     // A long screenshot's frames, taken out before the windows go.
     let long = with(|s| s.long.take()).flatten();
-    if let Some(l) = &long {
+    let mut long = long;
+    if let Some(l) = &mut long {
         let _ = unsafe { KillTimer(Some(l.hwnd), TIMER_LONG) };
-        give_back_pointer(l);
+        l.pointer.release();
         // process-wide: the overlay is not a terminal window
         plogf!(
             "[shot] long screenshot finished: {} frame(s), {} dropped for want of overlap, {} held back as still moving, {} px tall",

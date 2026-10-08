@@ -19,6 +19,40 @@ pub const STILL_LIMIT: u32 = 4;
 /// Notches in a row whose frame could not be joined: give up, keep what is joined.
 pub const BLIND_LIMIT: u32 = 4;
 
+/// The person's pointer, which a long screenshot takes over the region for
+/// the wheel and has to give back **however it ends** (task 1200: it went
+/// back on Enter and not on Esc, because the giving back hung on one exit).
+///
+/// The giving back is done by `release`, once, and by `Drop` if nobody
+/// called it, so an exit that was never written is still an exit that
+/// gives it back: Esc, the bottom, the height limit, a page that cannot be
+/// followed, the frozen picture closed, the session going away. `restore`
+/// is what moves the pointer (the host's `SetCursorPos`).
+pub struct PointerGuard<F: FnMut(Point)> {
+    was: Option<Point>,
+    restore: F,
+}
+
+impl<F: FnMut(Point)> PointerGuard<F> {
+    /// `was`: where the pointer was, if that could be read.
+    pub fn new(was: Option<Point>, restore: F) -> PointerGuard<F> {
+        PointerGuard { was, restore }
+    }
+
+    /// Give the pointer back now. A second call, and the drop after it, do nothing.
+    pub fn release(&mut self) {
+        if let Some(p) = self.was.take() {
+            (self.restore)(p);
+        }
+    }
+}
+
+impl<F: FnMut(Point)> Drop for PointerGuard<F> {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 /// Why it stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stopped {
@@ -196,5 +230,27 @@ mod tests {
         let bar = Rect::new(300, 100, 400, 320);
         let p = wheel_point(region, Some(bar));
         assert!(region.contains(p) && !bar.contains(p), "{p:?}");
+    }
+
+    #[test]
+    fn the_pointer_is_given_back_once_on_every_way_out() {
+        use std::cell::RefCell;
+        let moves = RefCell::new(Vec::new());
+        let guard = || PointerGuard::new(Some(Point::new(7, 9)), |p| moves.borrow_mut().push(p));
+        // Dropped without a word: Esc, a session that goes away, any exit
+        // nobody wrote a line for.
+        drop(guard());
+        assert_eq!(moves.borrow().len(), 1, "dropped");
+        // Released, as the finish and the leaving do, and then dropped.
+        let mut g = guard();
+        g.release();
+        assert_eq!(moves.borrow().len(), 2, "released");
+        g.release();
+        drop(g);
+        assert_eq!(moves.borrow().len(), 2, "once, however many ways it is asked");
+        assert!(moves.borrow().iter().all(|p| *p == Point::new(7, 9)));
+        // A pointer that could not be read is not moved anywhere.
+        drop(PointerGuard::new(None, |p| moves.borrow_mut().push(p)));
+        assert_eq!(moves.borrow().len(), 2);
     }
 }
