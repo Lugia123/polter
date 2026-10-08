@@ -150,6 +150,9 @@ struct EditCtl {
     typed: Typed,
     /// Whether the caret is in the shown half of its blink.
     caret_on: bool,
+    /// Undo and redo, as many steps as there are changes: the control's own
+    /// is one level, and joins a paste to the typing before it (task 1200).
+    history: polter_shots::undo::History,
 }
 
 /// One screenshot in progress. What it *does* is `editor`
@@ -199,6 +202,10 @@ struct Session {
     frames: (u32, f64, f64, u64),
     /// Until when the magnifier says the colour was copied (`tick_ms`).
     copied_until: u64,
+    /// Whether the last frame composed showed "Copied": the log says when it
+    /// begins to and when it stops, so that a screenshot taken later than the
+    /// flash is told from a flash that was never drawn (task 1200).
+    copied_shown: std::cell::Cell<bool>,
     /// Which side of the pointer the magnifier's plate is on, on each axis,
     /// and on which monitor: what it keeps from one frame to the next so
     /// that a pointer resting on the line where it just fits does not make
@@ -296,6 +303,11 @@ const TIMER_NOTES: usize = 1;
 /// How many `[shot] key` lines have been written (see `log_key`).
 static KEYS_LOGGED: AtomicU32 = AtomicU32::new(0);
 const KEY_LOG_CAP: u32 = 200;
+
+/// Whether the message `edit_proc` last passed on was a character, Backspace
+/// or Delete: a change read back after it joins the run of typing before it
+/// (`polter_shots::undo`).
+static TYPING: AtomicBool = AtomicBool::new(false);
 
 /// Whether `PolterShotText` is registered (`register_text_class`).
 static TEXT_CLASS: AtomicBool = AtomicBool::new(false);
@@ -979,6 +991,7 @@ fn begin() {
                     tones: tones(),
                     frames: (0, 0.0, 0.0, 0),
                     copied_until: 0,
+                    copied_shown: std::cell::Cell::new(false),
                     magnifier_side: std::cell::Cell::new((0, (false, false))),
                 })
         });
@@ -1033,10 +1046,53 @@ fn begin() {
         // The keyboard, for Esc, Enter and the text tool. A hotkey press
         // grants the right to take the foreground; a mouse trigger may not,
         // and then the first click on the overlay does it instead.
-        let took = SetForegroundWindow(first).as_bool();
+        let (took, how) = take_foreground(first);
         let _ = SetFocus(Some(first));
         // process-wide: one session at a time for the whole process
-        plogf!("[shot] overlays shown; SetForegroundWindow={took}; annotation font loaded={}", font_ok());
+        plogf!("[shot] overlays shown; SetForegroundWindow={took} ({how}); annotation font loaded={}", font_ok());
+    }
+}
+
+/// Make `hwnd` the foreground window and say whether it is, **read back
+/// from the system** (`GetForegroundWindow`) and not taken from what
+/// `SetForegroundWindow` claims, with what it took.
+///
+/// A hotkey press gives the process the right to; a mouse trigger from the
+/// low-level hook does not (task 1200, Windows 11 build 26200: `Esc` went to
+/// the window behind and the picture stayed). Then, in this order: the
+/// plain request; the request from a thread that shares the foreground
+/// thread's input queue (`AttachThreadInput`, undone at once); and last a
+/// tap of Alt, which the system counts as input and which makes the request
+/// allowed -- last because the window that had the keyboard sees the key.
+fn take_foreground(hwnd: HWND) -> (bool, &'static str) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_MENU};
+    unsafe {
+        let ours = || GetForegroundWindow() == hwnd;
+        let _ = SetForegroundWindow(hwnd);
+        if ours() {
+            return (true, "plain");
+        }
+        let fg = GetForegroundWindow();
+        let theirs = if fg.0.is_null() { 0 } else { GetWindowThreadProcessId(fg, None) };
+        let mine = windows::Win32::System::Threading::GetCurrentThreadId();
+        if theirs != 0 && theirs != mine {
+            let attached = windows::Win32::System::Threading::AttachThreadInput(mine, theirs, true).as_bool();
+            let _ = BringWindowToTop(hwnd);
+            let _ = SetForegroundWindow(hwnd);
+            if attached {
+                let _ = windows::Win32::System::Threading::AttachThreadInput(mine, theirs, false);
+            }
+            if ours() {
+                return (true, "attached to the foreground thread's input");
+            }
+        }
+        keybd_event(VK_MENU.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
+        keybd_event(VK_MENU.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+        let _ = SetForegroundWindow(hwnd);
+        if ours() {
+            return (true, "after a tap of Alt");
+        }
+        (false, "refused every way")
     }
 }
 
@@ -1712,7 +1768,12 @@ unsafe fn compose_into(s: &Session, i: usize, canvas: &Canvas, clear: &[(Rect, u
             let coords = polter_shots::magnifier::coordinates(at, mon.rect);
             let colour = mon.frozen.rgb_at(at);
             let code = colour.map(polter_shots::magnifier::hex).unwrap_or_default();
-            let said = if s.copied_until > tick_ms() { format!("{code}  {}", tr(toolbar::COPIED)) } else { code };
+            let flash = s.copied_until > tick_ms();
+            if flash != s.copied_shown.replace(flash) {
+                // process-wide: the overlay is not a terminal window
+                plogf!("[shot] magnifier: the word \"{}\" is {} on the plate", tr(toolbar::COPIED), if flash { "drawn" } else { "taken off" });
+            }
+            let said = if flash { format!("{code}  {}", tr(toolbar::COPIED)) } else { code };
             let (c, h) = (words.size(&coords), words.size(&said));
             let swatch = style::px_f(params.swatch, scale);
             let between = style::px_f(params.gap, scale);
@@ -2485,7 +2546,14 @@ fn open_edit() {
         const EM_SETSEL: u32 = 0x00B1;
         let end = GetWindowTextLengthW(edit).max(0);
         SendMessageW(edit, EM_SETSEL, Some(WPARAM(end as usize)), Some(LPARAM(end as isize)));
-        with(|s| s.edit = Some(EditCtl { hwnd: edit, font, rect, typed: Typed::default(), caret_on: true }));
+        with(|s| s.edit = Some(EditCtl {
+            hwnd: edit,
+            font,
+            rect,
+            typed: Typed::default(),
+            caret_on: true,
+            history: polter_shots::undo::History::new(initial[..initial.len() - 1].to_vec(), (initial.len() - 1, initial.len() - 1)),
+        }));
         log_edit(rect, textbox::lines(&tb.text), "opened");
         // The one time the input method is wanted: see `keys_are_raw`.
         TEXT_OPEN.store(true, Ordering::Release);
@@ -2729,21 +2797,26 @@ fn read_edit(edit: HWND) {
             // Something happened: the caret is shown, whatever half of its
             // blink it was in.
             e.caret_on = true;
+            // What changed it, as `edit_proc` last saw: one step of undo.
+            let kind = if TYPING.load(Ordering::Relaxed) { polter_shots::undo::Kind::Typing } else { polter_shots::undo::Kind::Other };
+            e.history.record(&e.typed.units, e.typed.sel, kind);
         }
     });
     repaint_text_box();
     place_ime(edit);
 }
 
-/// Where the caret is drawn: its rectangle on the virtual screen, the box,
-/// and the height of a line.
+/// Where the input method is told the caret is -- where what it composes
+/// begins (`View::ime_anchor`) -- as a rectangle on the virtual screen, the
+/// box, and the height of a line.
 fn caret_place() -> Option<(Rect, Rect, i32)> {
     with(|s| {
         let (e, tb) = (s.edit.as_ref()?, s.editor.text_box()?);
         let scale = s.editor.scale();
         let line = s.editor.text_line(tb.level, &Gdi);
         let v = textbox::view(&e.typed, e.rect.w, line, style::font_px(tb.level, scale), scale, &Gdi);
-        Some((Rect::new(v.caret.x + e.rect.x, v.caret.y + e.rect.y, v.caret.w, v.caret.h), e.rect, line))
+        let at = v.ime_anchor();
+        Some((Rect::new(at.x + e.rect.x, at.y + e.rect.y, at.w, at.h), e.rect, line))
     })
     .flatten()
 }
@@ -2919,6 +2992,27 @@ fn commit_edit() {
     repaint();
 }
 
+/// One step back (or forward) in the box's own history: the text and the
+/// selection it had go into the control, which the box then follows as for
+/// any other change. Nothing, if there is no step.
+fn step_history(edit: HWND, redo: bool) {
+    const EM_SETSEL: u32 = 0x00B1;
+    let snap = with(|s| {
+        let e = s.edit.as_mut().filter(|e| e.hwnd == edit)?;
+        if redo { e.history.redo() } else { e.history.undo() }
+    })
+    .flatten();
+    let Some(snap) = snap else { return };
+    unsafe {
+        let mut text = snap.units.clone();
+        text.push(0);
+        SendMessageW(edit, WM_SETTEXT, None, Some(LPARAM(text.as_ptr() as isize)));
+        SendMessageW(edit, EM_SETSEL, Some(WPARAM(snap.sel.0)), Some(LPARAM(snap.sel.1 as isize)));
+    }
+    fit_edit();
+    read_edit(edit);
+}
+
 /// Whether `hwnd` is the text box the session holds. `commit_edit` takes it
 /// out of the session before it destroys the window, so for a box that is
 /// being destroyed (up to and including `WM_NCDESTROY`) this is false.
@@ -2938,6 +3032,20 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             commit_edit();
             return LRESULT(0);
         }
+        // Ctrl+Z and Ctrl+Y (and Ctrl+Shift+Z) are the overlay's own
+        // history, not the control's one level: they arrive as the control
+        // characters SUB and EM. Not passed on.
+        if msg == WM_CHAR && (wp.0 == 26 || wp.0 == 25) {
+            let redo = wp.0 == 25 || GetKeyState(VK_SHIFT.0 as i32) < 0;
+            step_history(hwnd, redo);
+            return LRESULT(0);
+        }
+        TYPING.store(
+            // A character (Backspace, Tab and Enter among them: the control
+            // takes those as characters) or the Delete key.
+            (msg == WM_CHAR && (wp.0 >= 32 || matches!(wp.0, 8 | 9 | 13))) || (msg == WM_KEYDOWN && wp.0 == 0x2E),
+            Ordering::Relaxed,
+        );
         // What those two keys leave behind as characters: Escape, and the
         // line feed Ctrl+Enter makes.
         if msg == WM_CHAR && (wp.0 == 27 || wp.0 == 10) {

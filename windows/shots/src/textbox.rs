@@ -208,6 +208,21 @@ pub struct View {
     pub underline: Option<Rect>,
 }
 
+impl View {
+    /// Where the input method is told the text it is composing begins:
+    /// **the start of the composition, not its caret**. The candidate window
+    /// opens where it is told, and an input method that opens it at the
+    /// composition's end puts it a whole string of letters to the right of
+    /// where the person is looking (task 1200: six letters, 44 px, on the
+    /// first run on Windows 11). With nothing composing it is the caret.
+    pub fn ime_anchor(&self) -> Rect {
+        match self.underline {
+            Some(u) => Rect::new(u.x, self.caret.y, self.caret.w, self.caret.h),
+            None => self.caret,
+        }
+    }
+}
+
 use crate::style::px_f as px;
 
 /// So much of a colour, in parts of 256.
@@ -786,6 +801,9 @@ mod tests {
         assert_eq!(v.text, "ab\nabni'haocd");
         assert_eq!(v.underline, Some(Rect::new(20, 29 + 29 - 2, 60, 2)));
         assert_eq!(v.caret.x, 80);
+        // What the input method is told is where the composition begins.
+        assert_eq!(v.ime_anchor().x, 20);
+        assert_eq!((v.ime_anchor().y, v.ime_anchor().h), (v.caret.y, v.caret.h));
         // The input method's caret in the middle of it.
         t.comp_caret = 2;
         assert_eq!(view(&t, 400, 29, 20, 1.0, &Half).caret.x, 40);
@@ -805,6 +823,7 @@ mod tests {
         // Nothing composing: nothing moves, nothing is underlined.
         let v = view(&typed("abcdefghij", (10, 10)), 60, 29, 20, 1.0, &Half);
         assert_eq!((v.origin.x, v.underline), (0, None));
+        assert_eq!(v.ime_anchor(), v.caret, "the caret when nothing is composing");
     }
 
     #[test]

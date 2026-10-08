@@ -53,6 +53,7 @@ pub mod sweep;
 pub mod textbox;
 pub mod toast;
 pub mod toolbar;
+pub mod undo;
 
 /// Pixels, top row first, four bytes each in R, G, B, A order, not
 /// premultiplied. `rgba.len() == width * height * 4`.
