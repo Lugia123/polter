@@ -183,6 +183,11 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .group = try requireString(aa, params, "group"),
         } },
 
+        .group_rename => .{ .group_rename = .{
+            .group = try requireString(aa, params, "group"),
+            .to = try requireString(aa, params, "to"),
+        } },
+
         .group_add => .{ .group_add = .{
             .group = try requireString(aa, params, "group"),
             .id = try requireId(params),

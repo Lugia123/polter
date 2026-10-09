@@ -48,7 +48,7 @@ io: std.Io,
 /// Owned: the tree borrows it.
 dir: []const u8,
 
-tree: daylog.Tree,
+tree: daylog.GroupTree,
 
 /// What one line says happened.
 ///
@@ -84,6 +84,7 @@ pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error
         .io = io,
         .dir = dir,
         .tree = .{
+            .owner = .tasks,
             .alloc = alloc,
             .io = io,
             .dir = dir,
@@ -95,6 +96,11 @@ pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error
             .probe = null,
         },
     };
+}
+
+/// Let go of the open day file. The next write opens what is then there.
+pub fn closeHandles(self: *TaskLog) void {
+    self.tree.close();
 }
 
 pub fn deinit(self: *TaskLog) void {
@@ -243,7 +249,7 @@ pub fn history(
     // `days` sorts newest first, which is the direction a chat log is
     // walked and the wrong one here: the numbering has to start at the
     // oldest line or it would move every time a new day began.
-    std.mem.reverse(daylog.Tree.DayFile, days.items);
+    std.mem.reverse(daylog.GroupTree.DayFile, days.items);
 
     var seq: u64 = 0;
     walk: for (days.items) |day| {
@@ -392,7 +398,7 @@ fn restoreGroup(self: *TaskLog, tasks: *Tasks, seg: []const u8) void {
     // `daysIn` sorts newest first, which is the direction paging back
     // wants and the wrong one for a replay: an event only means anything
     // after the ones before it.
-    std.mem.reverse(daylog.Tree.DayFile, days.items);
+    std.mem.reverse(daylog.GroupTree.DayFile, days.items);
 
     for (days.items) |day| {
         const path = self.tree.partPathIn(self.alloc, seg, day.day, day.part) catch continue;

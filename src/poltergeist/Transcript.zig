@@ -106,7 +106,7 @@ id: u64,
 /// nothing saying they belong together.
 settled: bool = false,
 
-tree: daylog.Tree,
+tree: daylog.TerminalTree,
 
 /// The first row not yet written down.
 ///
@@ -221,6 +221,7 @@ pub fn open(
         .name = name,
         .id = id,
         .tree = .{
+            .owner = .transcript,
             .alloc = alloc,
             .io = io,
             .dir = dir,

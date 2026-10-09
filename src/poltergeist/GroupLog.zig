@@ -100,7 +100,7 @@ dir: []const u8,
 /// Borrowed only for its path arithmetic and its directory listing --
 /// nothing here holds a file open. `probe` is null because the lines this
 /// reads are dated, not numbered.
-tree: daylog.Tree,
+tree: daylog.GroupTree,
 
 /// One group as the disk remembers it.
 ///
@@ -124,6 +124,7 @@ pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error
         .io = io,
         .dir = dir,
         .tree = .{
+            .owner = .chat,
             .alloc = alloc,
             .io = io,
             .dir = dir,
@@ -462,7 +463,7 @@ fn saySomething(
     const dir = try std.fs.path.join(alloc, &.{ state_dir, "chat" });
     defer alloc.free(dir);
 
-    var tree: daylog.Tree = .{ .alloc = alloc, .io = io, .dir = dir };
+    var tree: daylog.GroupTree = .{ .owner = .chat, .alloc = alloc, .io = io, .dir = dir };
     defer tree.deinit();
 
     const line = try std.fmt.allocPrint(

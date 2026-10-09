@@ -244,6 +244,7 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 | `set_watch(id, watch?)`                        | 目标与是否监督       | ok / 拒绝原因 | 仅总管   |
 | `group_post(group, text)`                      | 群名与文本           | ok            | 成员     |
 | `group_create(group)` / `group_destroy(group)` | 群名                 | ok / 拒绝原因 | 仅总管   |
+| `group_rename(group, to)`                      | 现名与新名           | ok / 拒绝原因 | 仅总管   |
 | `group_add(group, id, history)`                | 群名/终端/是否给历史 | ok / 拒绝原因 | 仅总管   |
 | `group_remove(group, id)`                      | 群名与终端           | ok / 拒绝原因 | 仅总管   |
 | `group_compact(group, through, summary)`       | 群名/截止 seq/摘要   | ok / 拒绝原因 | 仅总管   |
@@ -309,6 +310,10 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 群的归属没变：只有建群的那个总管能销毁它、增删成员、改 brief；**但群里的成员照常说话**，成员身份和归属是两回事。
 
 销毁另有一条与归属无关的闸：**群里还有开着的终端就不销毁**，`group_destroy` 返回 `GroupActive`。判据是群成员名单与此刻真实开着的终端有没有交集（`Chat.isActive`），不是名单本身——名单会因为终端关掉而腐烂，交集不会。理由是删它会不会影响到人：空群没有人可打扰，有终端在里面的群，删掉会把它们从一个正在工作的对话里踢出去，连带这个群的任务面板一起没。先 `group_remove` 把人请出去，它就是一个普通的空群了。注意 `group_create` 会把建群的那个终端放进群里，所以总管自己还开着的时候它建的群是活跃的。
+
+**改名（`group_rename(group, to)`）**：还是同一个群——任务号一个不变，成员、各自的可见范围（floor/footing）、已读位置、brief、建群者、聊天记录都跟着走。**群的名字就是它的身份（没有 id）**，所以改名要把每一处用到旧名的地方真的改成新名，磁盘上也一样。归属规则与 `group_set_brief`/`group_destroy` 相同（仅建群的总管；重启后恢复的无主群按 `ownsGroup` 处理）；**与销毁不同，群里有终端时允许改名**，因为没有人被踢出去。新名字过的是 `Chat.isValidName`，与 `group_create` 同一个函数。拒绝各有具名失败码：`NoSuchGroup`、`GroupExists`（新名已是一个活群）、`RenameBlocked`（盘上已有该名字的记录——销毁过的同名群的目录还在，改名上去会让两段历史共用一个名字）、`BadName`、`NotYours`、`RenameFailed`（记录没能搬过去，什么都没改）。新旧同名成功且什么也不做。用户（群聊页）本期不能改名。
+
+**磁盘上怎么改（`GroupRename.zig`）**：不原地改。`chat/` `tasks/` `stats/` 下该群的目录和共用流（`chat/chat.jsonl`、`.1`）里该群的行，先另写一份到 `<state>/rename-work/`（只替换每行顶层 `group` 字段值那几个字节，其余字节原样），再和旧的逐行对账（行数、消息条数与最大 seq、任务回放出的任务数/号/状态、别的群的行逐字节相同），对上了才换上；被换下的旧文件整份 `rename` 进 `<state>/rename-backup/<毫秒>-<旧>-to-<新>/`，**程序永不删它**。换上是多步 `rename`，所以先写意图记录 `<state>/rename-intent.json`（`staging`→`staged`→`swapping`），做完才撤；启动时在任何日志打开之前 `GroupRename.recover` 发现未完成的就续完（一律向前续：换上之前出错整体放弃、磁盘没变）。`rename-intent.lock` 防两个实例同时动手。换上前运行中的日志句柄先关掉（`group_stores.Handle`），否则后续写入会跟着被挪走的文件落进备份。**所有按群名做键/路径的存储登记在 `group_stores.zig` 一处**，改名按它逐项处理，新增一项而不处理会编不过；内存里的表另有闸 `tools/group-names-are-registered.py`。仍然写着旧名的东西：改名前插件已按旧名订阅的 `wants.groups`（订阅方自己改）、`session.json`（`session_recall` 的回放材料，不动）。
 
 收件箱按总管分区：两个总管管两摊活，共用一个箱子会让彼此收到对方的报告——**双倍打扰**。
 

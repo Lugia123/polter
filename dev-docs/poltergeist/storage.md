@@ -46,7 +46,7 @@
 | --- | --- | --- | --- | --- |
 | **流** | `chat/chat.jsonl`（+`.1`） | 机器 | 8MB 轮转，留两代 | **只有核心自己**（`ChatLog` 的回填比对） |
 | **记录** | `chat/<群>/<日期>.jsonl` | 人和 AI | 按天，**什么都不删** | `group_history`、`less`、`grep`、`jq` |
-| **群壳** | `chat/<群>/group.json` | 机器 | 一个群一个，整份重写 | 启动时 `GroupLog.restore`，用来把群列表放回去 |
+| **群壳** | `chat/<群>/group.json` | 机器 | 一个群一个，整份重写 | 启动时 `GroupLog.restore`，用来把群列表放回去。 |
 
 群壳那一行是**唯一被读回程序里的东西**，因此群列表就是这些目录本身：
 群名从目录名解回来（`daylog.decodeSegment`，和写进去的 `encodeSegment` 同一个文件），

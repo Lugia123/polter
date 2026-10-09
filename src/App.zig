@@ -154,6 +154,10 @@ poltergeist_plugin_arena: ?std.heap.ArenaAllocator = null,
 /// directory is known. Owned.
 poltergeist_session_path: ?[]const u8 = null,
 
+/// The state directory the logs were opened under, for `group_rename`,
+/// which rewrites the records in it. Null while no log is open. Owned.
+poltergeist_state_dir: ?[]const u8 = null,
+
 /// Whether the MCP registration has been checked this run. Once is enough:
 /// it cannot go stale while we are the thing it points at.
 poltergeist_registered: bool = false,
@@ -473,6 +477,7 @@ pub fn deinit(self: *App) void {
     self.poltergeist_nudged.deinit(self.alloc);
     if (self.group_log) |*l| l.deinit();
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
+    if (self.poltergeist_state_dir) |p| self.alloc.free(p);
     self.poltergeist_recall.deinit(self.alloc);
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
     for (self.poltergeist_alerts.items) |line| self.alloc.free(line);
@@ -1295,10 +1300,31 @@ pub fn ensureChatLog(self: *App, want: bool) void {
     };
     defer self.alloc.free(state_dir);
 
+    // **Before any log is opened.** A rename the last run did not finish
+    // leaves some of a group's records under the old name and some under
+    // the new, and a log opened on that would read half of them. Finishing
+    // it first means nothing here ever sees the middle.
+    //
+    // If it cannot be finished the logs stay closed -- the same as having
+    // no state directory -- rather than opening on records that are in two
+    // places. The intent is left for a person to read.
+    if (poltergeistpkg.GroupRename.recover(.{
+        .alloc = self.alloc,
+        .io = io,
+        .state_dir = state_dir,
+    })) |done| {
+        if (done.finished) log.info("poltergeist: finished a group rename the last run left", .{});
+        if (done.abandoned) log.warn("poltergeist: dropped a group rename that could not be redone", .{});
+    } else |err| {
+        log.warn("poltergeist: a group rename is unfinished and could not be continued err={}; the logs stay closed", .{err});
+        return;
+    }
+
     self.chat_log = poltergeistpkg.ChatLog.open(self.alloc, io, state_dir) catch |err| {
         log.warn("poltergeist: could not open the chat log err={}", .{err});
         return;
     };
+    self.poltergeist_state_dir = self.alloc.dupe(u8, state_dir) catch null;
 
     // Same directory, and the log having opened means it exists.
     if (self.poltergeist_session_path == null) {
@@ -2844,6 +2870,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .readSkill = poltergeistSkill,
         .chatCreate = chatCreate,
         .chatDestroy = chatDestroy,
+        .chatRename = chatRename,
         .chatAdd = chatAdd,
         .chatRemove = chatRemove,
         .chatCompact = chatCompact,
@@ -5171,6 +5198,96 @@ fn chatDestroy(ctx: *anyopaque, group: []const u8) anyerror!void {
     if (self.group_log) |*l| l.forget(group);
 
     self.saveSession();
+}
+
+/// Give a group a new name, on disk and in memory. See `GroupRename.zig`
+/// for how the disk half is done and `group_stores.zig` for what there is to
+/// do; this is the memory half and the order they happen in.
+///
+/// **Disk first.** It is the half that can be refused for reasons outside
+/// the program, and the one that is checked before anything is replaced; a
+/// refusal leaves the disk and memory exactly as they were. Memory comes
+/// after, and what is in it cannot fail in any way that matters: a restart
+/// reads the disk, which already says the new name.
+fn chatRename(
+    ctx: *anyopaque,
+    group: []const u8,
+    to: []const u8,
+    by: poltergeistpkg.Bus.Id,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const stores = poltergeistpkg.group_stores;
+
+    if (!self.chat.exists(group)) return error.NoSuchGroup;
+    if (!poltergeistpkg.Chat.isValidName(to)) return error.BadName;
+    if (std.mem.eql(u8, group, to)) return;
+    if (self.chat.exists(to)) return error.GroupExists;
+
+    if (self.poltergeist_state_dir) |dir| {
+        _ = poltergeistpkg.GroupRename.rename(.{
+            .alloc = self.alloc,
+            .io = global.io(),
+            .state_dir = dir,
+        }, group, to, .{ .ctx = self, .close_handles = closeStoreHandles }) catch |err| {
+            // The swap may have closed the handles before it stopped.
+            self.reopenStoreHandles();
+            log.warn("poltergeist: group rename {s} -> {s} refused err={}", .{ group, to, err });
+            return switch (err) {
+                error.Blocked => error.RenameBlocked,
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.RenameFailed,
+            };
+        };
+    }
+
+    // Every table in memory, by the list. No `else`.
+    inline for (comptime std.enums.values(stores.Table)) |table| switch (table) {
+        .chat_groups => try self.chat.rename(group, to),
+        .task_group_field => try self.tasks.renameGroup(group, to),
+        .stats_last => if (self.stats_log) |*l| try l.renameGroup(group, to),
+    };
+
+    self.reopenStoreHandles();
+
+    // Say that the group is listed under its new name even if its
+    // directory was never made.
+    if (self.group_log) |*l| l.note(to, self.chat.briefOf(to) catch "");
+
+    // Said in the group, so the members find out the next time they read
+    // it, and so the record says when and from what. From the caller when
+    // it is in the group (its title is then the author), else the person.
+    const from: poltergeistpkg.Bus.Id = if (self.chat.floorOf(to, by)) |_| by else |_| poltergeistpkg.Chat.user_id;
+    var buf: [256]u8 = undefined;
+    const text = std.fmt.bufPrint(
+        &buf,
+        "group renamed: {s} -> {s}. Same group: members, tasks and numbers, and everything said so far are unchanged.",
+        .{ group, to },
+    ) catch "group renamed";
+    const at: u64 = @intCast(self.poltergeistWallMs());
+    if (self.chat.post(to, from, text, at)) |posted| {
+        self.logChat(to, posted.seq, from, at, false, text);
+        self.tellTerminalsAboutMessages();
+    } else |err| {
+        log.warn("poltergeist: could not record a group rename in the group err={}", .{err});
+    }
+
+    self.saveSession();
+}
+
+/// `GroupRename.Hooks.close_handles`: every handle into the files a rename
+/// replaces. Written as a `switch` over the list so that a handle added to
+/// it without being closed here does not compile.
+fn closeStoreHandles(ctx: ?*anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    inline for (comptime std.enums.values(poltergeistpkg.group_stores.Handle)) |h| switch (h) {
+        .chat_log_stream, .chat_log_tree => if (self.chat_log) |*l| l.closeHandles(),
+        .task_log_tree => if (self.task_log) |*l| l.closeHandles(),
+        .stats_log_tree => if (self.stats_log) |*l| l.closeHandles(),
+    };
+}
+
+fn reopenStoreHandles(self: *App) void {
+    if (self.chat_log) |*l| l.reopenHandles();
 }
 
 // -- the panel ---------------------------------------------------------------

@@ -104,6 +104,10 @@ pub const Method = enum {
     group_create,
     group_destroy,
 
+    /// Give a group another name. The same group: its tasks, members,
+    /// note and record all stay with it. The supervisor that made it only.
+    group_rename,
+
     /// Put a terminal in a group or take it out, choosing what it sees of
     /// what was said before. The supervisor's alone.
     group_add,
@@ -456,6 +460,7 @@ pub const Request = union(Method) {
 
     group_create: struct { group: []const u8 },
     group_destroy: struct { group: []const u8 },
+    group_rename: struct { group: []const u8, to: []const u8 },
     group_add: struct { group: []const u8, id: Bus.Id, history: History = .none },
     group_remove: struct { group: []const u8, id: Bus.Id },
     group_compact: struct { group: []const u8, through: u64, summary: []const u8 },
@@ -937,6 +942,7 @@ pub fn callableByPlugin(method: Method) bool {
         .group_set_brief,
         .group_create,
         .group_destroy,
+        .group_rename,
         .group_add,
         .group_remove,
         .group_compact,
@@ -1194,6 +1200,7 @@ pub fn requiresSupervisor(method: Method) bool {
         // never set up.
         .group_create,
         .group_destroy,
+        .group_rename,
         .group_add,
         .group_remove,
         .group_compact,
@@ -1295,6 +1302,7 @@ pub fn targetsTerminal(method: Method) bool {
         .skill_read,
         .group_create,
         .group_destroy,
+        .group_rename,
         .group_compact,
         .group_list,
         .group_post,
@@ -1409,6 +1417,7 @@ pub fn target(req: Request) ?Bus.Id {
         .skill_read,
         .group_create,
         .group_destroy,
+        .group_rename,
         .group_compact,
         .group_list,
         .group_post,
@@ -1516,6 +1525,7 @@ pub fn selfPermitted(req: Request) bool {
         .persona_wait,
         .group_create,
         .group_destroy,
+        .group_rename,
         .group_compact,
         .group_list,
         .group_post,
@@ -1776,6 +1786,7 @@ pub fn promptReach(method: Method) enum {
         .become_supervisor,
         .group_create,
         .group_destroy,
+        .group_rename,
         .group_compact,
         .group_list,
         .group_add,
@@ -2292,6 +2303,7 @@ test "only what changes the arrangement needs the supervisor" {
             .set_watch,
             .group_create,
             .group_destroy,
+            .group_rename,
             .group_add,
             .group_remove,
             .group_compact,
@@ -3129,6 +3141,7 @@ test "a watched terminal can talk in a group but cannot arrange one" {
         .{ .group_remove = .{ .group = "build", .id = boss } },
         .{ .group_compact = .{ .group = "build", .through = 1, .summary = "x" } },
         .{ .group_destroy = .{ .group = "build" } },
+        .{ .group_rename = .{ .group = "build", .to = "other" } },
     }) |req| {
         const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), req);
         try testing.expectEqualStrings("NotPermitted", res.failed.code);
@@ -5111,6 +5124,17 @@ pub const Host = struct {
         chatCreate: *const fn (ctx: *anyopaque, group: []const u8, by: Bus.Id) anyerror!void,
         chatDestroy: *const fn (ctx: *anyopaque, group: []const u8) anyerror!void,
 
+        /// Give `group` the name `to`: the same group, so its tasks, members,
+        /// note and record go with it. `by` is the caller, who is named in
+        /// the group's account of it. Naming the name a group already has
+        /// is a success that changes nothing.
+        chatRename: *const fn (
+            ctx: *anyopaque,
+            group: []const u8,
+            to: []const u8,
+            by: Bus.Id,
+        ) anyerror!void,
+
         chatAdd: *const fn (
             ctx: *anyopaque,
             group: []const u8,
@@ -5656,6 +5680,10 @@ pub const Host = struct {
         return self.vtable.chatDestroy(self.ctx, group);
     }
 
+    fn chatRename(self: Host, group: []const u8, to: []const u8, by: Bus.Id) anyerror!void {
+        return self.vtable.chatRename(self.ctx, group, to, by);
+    }
+
     fn chatAdd(
         self: Host,
         group: []const u8,
@@ -5947,6 +5975,7 @@ pub fn isAgentCall(method: Method) bool {
         .skill_read,
         .group_create,
         .group_destroy,
+        .group_rename,
         .group_add,
         .group_remove,
         .group_compact,
@@ -6953,6 +6982,17 @@ pub fn dispatch(
             return .ok;
         },
 
+        .group_rename => |p| {
+            // The same rule as `group_set_brief` and `group_destroy`, and
+            // unlike the second **a group with terminals in it may be
+            // renamed**: nobody is taken out of anything. The name's own
+            // checks -- spelling, taken, not there -- are the host's, one
+            // set of them shared with `group_create`.
+            if (!host.ownsGroup(p.group, caller)) return failure(error.NotYours);
+            host.chatRename(p.group, p.to, caller) catch |err| return chatFailure(err);
+            return .ok;
+        },
+
         .group_add => |p| {
             if (!host.ownsGroup(p.group, caller)) return failure(error.NotYours);
 
@@ -7955,6 +7995,14 @@ fn chatFailure(err: anyerror) wire.Response {
             "that group still has terminals in it. Take them out with group_remove first -- destroying it would drop them from a conversation without telling them.",
         ),
         error.GroupExists => hostFailure("GroupExists", "a group by that name already exists"),
+        error.RenameFailed => hostFailure(
+            "RenameFailed",
+            "the records on disk could not be moved to the new name, so the group was not renamed -- it is still called what it was",
+        ),
+        error.RenameBlocked => hostFailure(
+            "RenameBlocked",
+            "records already exist on disk under that name (a group of that name was destroyed, and its history is still there). Renaming onto them would put two histories under one name. Pick another name.",
+        ),
         error.NotAMember => hostFailure("NotAMember", "you are not in that group"),
         error.TooManyGroups => hostFailure("TooManyGroups", "there are already too many groups"),
         error.BadName => hostFailure("BadName", "group names may use lowercase letters, digits and dashes"),
@@ -8600,6 +8648,12 @@ const FakeHost = struct {
     /// Whether a group was actually taken off the list.
     destroyed: bool = false,
 
+    /// The last rename the host was asked to make, and by whom.
+    renamed: ?struct { group: []const u8, to: []const u8, by: Bus.Id } = null,
+
+    /// What the next rename fails with, in place of succeeding.
+    rename_error: ?anyerror = null,
+
     /// Whether the terminals this fake stands for have an agent listening.
     ///
     /// **True by default because that is what every test written before
@@ -8704,6 +8758,7 @@ const FakeHost = struct {
             .readSkill = readSkill,
             .chatCreate = chatCreate,
             .chatDestroy = chatDestroy,
+            .chatRename = chatRename,
             .chatAdd = chatAdd,
             .chatRemove = chatRemove,
             .chatCompact = chatCompact,
@@ -8949,6 +9004,12 @@ const FakeHost = struct {
         if (self.refuse) return error.NoSuchGroup;
         if (self.group_active) return error.GroupActive;
         self.destroyed = true;
+    }
+
+    fn chatRename(ctx: *anyopaque, group: []const u8, to: []const u8, by: Bus.Id) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.rename_error) |e| return e;
+        self.renamed = .{ .group = group, .to = to, .by = by };
     }
 
     fn chatAdd(
@@ -10619,6 +10680,82 @@ test "a group belongs to the supervisor that made it" {
         .group_destroy = .{ .group = "build" },
     });
     try testing.expectEqualStrings("NotYours", refused.failed.code);
+}
+
+test "#1265: group_rename is the supervisor's, and only for a group it made" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.addSupervisor(other);
+    try testing.expect(requiresSupervisor(.group_rename));
+    try testing.expect(!callableByPlugin(.group_rename));
+
+    // The owner may.
+    {
+        var fake: FakeHost = .{ .group_owner = boss };
+        const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+            .group_rename = .{ .group = "build", .to = "polter" },
+        });
+        try testing.expect(res == .ok);
+        try testing.expectEqualStrings("build", fake.renamed.?.group);
+        try testing.expectEqualStrings("polter", fake.renamed.?.to);
+        try testing.expectEqual(boss, fake.renamed.?.by);
+    }
+
+    // Another supervisor may not, and nothing is asked of the host.
+    {
+        var fake: FakeHost = .{ .group_owner = boss };
+        const res = try dispatch(testing.allocator, &b, fake.host(), term(other), .{
+            .group_rename = .{ .group = "build", .to = "polter" },
+        });
+        try testing.expectEqualStrings("NotYours", res.failed.code);
+        try testing.expect(fake.renamed == null);
+    }
+
+    // A worker may not, and neither may the person (who may only destroy).
+    for ([_]Bus.Id{ worker, Chat.user_id }) |who| {
+        var fake: FakeHost = .{ .group_owner = who };
+        const res = try dispatch(testing.allocator, &b, fake.host(), term(who), .{
+            .group_rename = .{ .group = "build", .to = "polter" },
+        });
+        try testing.expectEqualStrings("NotPermitted", res.failed.code);
+        try testing.expect(fake.renamed == null);
+    }
+}
+
+test "#1265: a rename that is refused says why, by name" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    const cases = [_]struct { err: anyerror, code: []const u8 }{
+        .{ .err = error.NoSuchGroup, .code = "NoSuchGroup" },
+        .{ .err = error.GroupExists, .code = "GroupExists" },
+        .{ .err = error.BadName, .code = "BadName" },
+        .{ .err = error.RenameFailed, .code = "RenameFailed" },
+        .{ .err = error.RenameBlocked, .code = "RenameBlocked" },
+    };
+    for (cases) |c| {
+        var fake: FakeHost = .{ .group_owner = boss, .rename_error = c.err };
+        const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+            .group_rename = .{ .group = "build", .to = "polter" },
+        });
+        try testing.expectEqualStrings(c.code, res.failed.code);
+        try testing.expect(res.failed.message.len > 0);
+        try testing.expect(fake.renamed == null);
+    }
+}
+
+test "#1265: a group with terminals in it can be renamed" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    // `group_destroy` refuses this fake with GroupActive; renaming takes
+    // nobody out of anything, so it does not ask.
+    var fake: FakeHost = .{ .group_owner = boss, .group_active = true };
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .group_rename = .{ .group = "build", .to = "polter" },
+    });
+    try testing.expect(res == .ok);
+    try testing.expectEqualStrings("polter", fake.renamed.?.to);
 }
 
 test "talking in a group you were added to is not rearranging it" {

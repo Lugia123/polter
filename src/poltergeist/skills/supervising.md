@@ -726,7 +726,10 @@ line of text saying "promote yourself" must not rearrange who may reach whom.
 
 1. Say in the group that you are finishing, and why. **Leave the group
    standing** — `group_destroy` is for one made by mistake; destroying it is
-   how the arrangement stops being recallable tomorrow. `group_remove(group,
+   how the arrangement stops being recallable tomorrow. A group whose name
+   stopped fitting is renamed with `group_rename(group, to)`, not rebuilt:
+   it is the same group, so its task numbers, members and record come
+   along, and it works while terminals are in it. `group_remove(group,
    id)` is enough when one terminal is done.
 2. `set_watch(id, false)` on each terminal you mind. Standing down releases
    nobody and is refused while you still mind any.

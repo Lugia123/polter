@@ -40,7 +40,7 @@ const daylog = @import("daylog.zig");
 // the day files themselves -- lives in `daylog.zig` rather than here,
 // because the terminal transcript writes the same shape and there must be
 // one rule about it rather than two. See that file's header.
-const Tree = daylog.Tree;
+const Tree = daylog.GroupTree;
 const openAppend = daylog.openAppend;
 const encodeGroup = daylog.encodeSegment;
 const dayOf = daylog.dayOf;
@@ -98,6 +98,11 @@ path: []const u8,
 
 file: std.Io.File,
 written: u64,
+
+/// Whether `file` is open. False between `closeHandles` and
+/// `reopenHandles`, and after a reopen that failed: `append` then writes
+/// nothing, because a closed descriptor's number can be anybody's by then.
+stream_open: bool = true,
 
 /// The log's own sequence number: global, monotonic, shared by every
 /// group, and recovered from the file rather than restarted.
@@ -196,6 +201,7 @@ pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Error!ChatLog {
         .written = written,
         .next_seq = 1,
         .tree = .{
+            .owner = .chat,
             .alloc = alloc,
             .io = io,
             .dir = dir,
@@ -336,10 +342,35 @@ fn parseLineStrict(arena: Allocator, bytes: []const u8) Allocator.Error!?Line {
 
 pub fn deinit(self: *ChatLog) void {
     self.tree.deinit();
-    self.file.close(self.io);
+    if (self.stream_open) self.file.close(self.io);
     self.alloc.free(self.path);
     self.alloc.free(self.dir);
     self.* = undefined;
+}
+
+/// Let go of every open file: the stream and the day file being appended to.
+///
+/// For a rename, which replaces the files these point at. A handle kept
+/// across it follows the file it was opened on -- into the backup.
+pub fn closeHandles(self: *ChatLog) void {
+    self.tree.close();
+    if (self.stream_open) self.file.close(self.io);
+    self.stream_open = false;
+}
+
+/// Open the stream again, from whatever is now there. The numbering is the
+/// log's own and does not move: a rename changes a field in a line, never
+/// a seq. The day file reopens by itself at the next write.
+pub fn reopenHandles(self: *ChatLog) void {
+    if (self.stream_open) return;
+
+    self.file = openAppend(self.io, self.path) catch |err| {
+        log.warn("chat log: could not reopen the stream err={}", .{err});
+        return;
+    };
+    self.stream_open = true;
+    self.written = if (self.file.stat(self.io)) |st| st.size else |_| 0;
+    self.patchTornTail();
 }
 
 /// Write one message down, and say where it landed.
@@ -360,6 +391,10 @@ pub fn append(
     summary: bool,
     text: []const u8,
 ) u64 {
+    if (!self.stream_open) {
+        self.reopenHandles();
+        if (!self.stream_open) return 0;
+    }
     self.rotateIfFull();
 
     // Taken before anything can go wrong, and never given back. A gap in

@@ -384,6 +384,7 @@ test "the supervising skill names the tools it tells you to use" {
     for ([_][]const u8{
         "group_create",
         "group_set_brief",
+        "group_rename",
         "group_add",
         "set_watch",
         "become_supervisor",

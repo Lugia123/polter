@@ -21,6 +21,8 @@ pub const login_path = @import("login_path.zig");
 pub const ChatLog = @import("ChatLog.zig");
 pub const Feed = @import("Feed.zig");
 pub const GroupLog = @import("GroupLog.zig");
+pub const GroupRename = @import("GroupRename.zig");
+pub const group_stores = @import("group_stores.zig");
 pub const daylog = @import("daylog.zig");
 pub const Fingerprint = @import("Fingerprint.zig");
 pub const inventory = @import("inventory.zig");
@@ -75,6 +77,8 @@ test {
     _ = ChatLog;
     _ = Feed;
     _ = GroupLog;
+    _ = GroupRename;
+    _ = group_stores;
     _ = daylog;
     _ = Fingerprint;
     _ = inventory;

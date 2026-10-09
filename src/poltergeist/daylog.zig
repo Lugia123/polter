@@ -18,6 +18,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const internal_os = @import("../os/main.zig");
+const group_stores = @import("group_stores.zig");
 const Allocator = std.mem.Allocator;
 
 const log = std.log.scoped(.poltergeist);
@@ -93,387 +94,405 @@ pub fn openAppend(io: std.Io, path: []const u8) !std.Io.File {
 // rather than to build a mechanism for it.
 
 /// The record: one directory per group, one file per day, under `dir`.
-pub const Tree = struct {
-    /// Given a file and its length, the largest sequence number in it.
-    pub const Probe = *const fn (
+pub fn Tree(comptime Owner: type) type {
+    return struct {
+        const TreeSelf = @This();
+
+        /// Given a file and its length, the largest sequence number in it.
+        pub const Probe = *const fn (
+            alloc: Allocator,
+            io: std.Io,
+            file: std.Io.File,
+            end: u64,
+        ) ?u64;
+
+        /// **Who this tree belongs to, and no default.** A tree cannot be built
+        /// without naming its owner, and a tree of groups' records names one of
+        /// `group_stores.Root` -- so a new place that files things under a group's
+        /// name has to add itself to that list, which is the list `group_rename`
+        /// walks. See `group_stores.zig`.
+        owner: Owner,
+
         alloc: Allocator,
         io: std.Io,
-        file: std.Io.File,
-        end: u64,
-    ) ?u64;
 
-    alloc: Allocator,
-    io: std.Io,
+        /// The root the per-name directories hang under -- `<state>/chat` for
+        /// the chat record, `<state>/terminals` for the terminal transcript.
+        /// Borrowed from whoever owns the tree.
+        dir: []const u8,
 
-    /// The root the per-name directories hang under -- `<state>/chat` for
-    /// the chat record, `<state>/terminals` for the terminal transcript.
-    /// Borrowed from whoever owns the tree.
-    dir: []const u8,
+        /// What this tree calls itself in a warning. Borrowed and static.
+        label: []const u8 = "day log",
 
-    /// What this tree calls itself in a warning. Borrowed and static.
-    label: []const u8 = "day log",
+        /// How to read the highest sequence number back out of a finished
+        /// file, or null when the lines here carry no such number.
+        ///
+        /// A tree stores whatever bytes it is handed, so it cannot know what a
+        /// sequence number looks like in them -- the chat record numbers every
+        /// line and needs `head` to find where to resume filling in; a
+        /// terminal transcript numbers nothing and never asks. Null is the
+        /// honest answer for the second: `head` then says "cannot tell", which
+        /// is exactly what its callers already have to handle.
+        probe: ?Probe = null,
 
-    /// How to read the highest sequence number back out of a finished
-    /// file, or null when the lines here carry no such number.
-    ///
-    /// A tree stores whatever bytes it is handed, so it cannot know what a
-    /// sequence number looks like in them -- the chat record numbers every
-    /// line and needs `head` to find where to resume filling in; a
-    /// terminal transcript numbers nothing and never asks. Null is the
-    /// honest answer for the second: `head` then says "cannot tell", which
-    /// is exactly what its callers already have to handle.
-    probe: ?Probe = null,
+        /// The day file being appended to, if any.
+        ///
+        /// One at a time rather than one per group: messages arrive one at a
+        /// time, and the open a group switch costs is nothing beside the work
+        /// that produced the message.
+        cur: ?Cur = null,
 
-    /// The day file being appended to, if any.
-    ///
-    /// One at a time rather than one per group: messages arrive one at a
-    /// time, and the open a group switch costs is nothing beside the work
-    /// that produced the message.
-    cur: ?Cur = null,
+        /// Reading and writing fail the way the stream's do: once out loud,
+        /// then quietly.
+        warned: bool = false,
 
-    /// Reading and writing fail the way the stream's do: once out loud,
-    /// then quietly.
-    warned: bool = false,
-
-    const Cur = struct {
-        /// The raw group name, so that a switch is noticed without
-        /// encoding every message's group a second time. Owned.
-        group: []const u8,
-        day: u32,
-        part: u32,
-        file: std.Io.File,
-        written: u64,
-    };
-
-    /// One file in a group's directory, as its name says it is.
-    pub const DayFile = struct {
-        day: u32,
-        part: u32,
-
-        /// Newest first, which is the direction `history` walks.
-        fn newestFirst(_: void, a: DayFile, b: DayFile) bool {
-            if (a.day != b.day) return a.day > b.day;
-            return a.part > b.part;
-        }
-    };
-
-    pub const Days = std.ArrayListUnmanaged(DayFile);
-
-    const Opened = struct { file: std.Io.File, written: u64 };
-
-    /// A wall against a day that never stops. Eight gigabytes in one group
-    /// on one day is not a case worth carrying code for; past it the last
-    /// part simply keeps growing, which loses nothing.
-    const max_parts: u32 = 1000;
-
-    pub fn deinit(self: *Tree) void {
-        self.close();
-        self.* = undefined;
-    }
-
-    pub fn close(self: *Tree) void {
-        if (self.cur) |*c| {
-            c.file.close(self.io);
-            self.alloc.free(c.group);
-        }
-        self.cur = null;
-    }
-
-    /// Put one already-rendered line into its group's file for the day.
-    ///
-    /// Handed the bytes `append` has just written to the stream rather than
-    /// rendering them again: the two files then hold the same line byte for
-    /// byte, and there is no second renderer to drift.
-    ///
-    /// **Every failure here is a warning and nothing else, deliberately.**
-    /// The stream is what the archive follows and what hands out seq; a full
-    /// disk or an unwritable directory must not turn "the record is worse
-    /// off" into "the message is gone". It is also why a later reader should
-    /// not "fix" this by propagating the error: a gap left here is found and
-    /// filled by `backfill` on the next start, because how far the record
-    /// goes is measured off the files rather than remembered.
-    pub fn write(self: *Tree, group: []const u8, at_ms: i64, line: []const u8) void {
-        self.ensure(group, dayOf(at_ms), line.len) catch |err| {
-            self.warnOnce(err);
-            return;
+        const Cur = struct {
+            /// The raw group name, so that a switch is noticed without
+            /// encoding every message's group a second time. Owned.
+            group: []const u8,
+            day: u32,
+            part: u32,
+            file: std.Io.File,
+            written: u64,
         };
 
-        const c = &self.cur.?;
-        c.file.writePositionalAll(self.io, line, c.written) catch |err| {
-            self.warnOnce(err);
-            // Closed rather than kept: reopening on the next message is
-            // the cheapest thing that can recover a handle which has gone
-            // bad underneath us.
+        /// One file in a group's directory, as its name says it is.
+        pub const DayFile = struct {
+            day: u32,
+            part: u32,
+
+            /// Newest first, which is the direction `history` walks.
+            fn newestFirst(_: void, a: DayFile, b: DayFile) bool {
+                if (a.day != b.day) return a.day > b.day;
+                return a.part > b.part;
+            }
+        };
+
+        pub const Days = std.ArrayListUnmanaged(DayFile);
+
+        const Opened = struct { file: std.Io.File, written: u64 };
+
+        /// A wall against a day that never stops. Eight gigabytes in one group
+        /// on one day is not a case worth carrying code for; past it the last
+        /// part simply keeps growing, which loses nothing.
+        const max_parts: u32 = 1000;
+
+        pub fn deinit(self: *TreeSelf) void {
             self.close();
-            return;
-        };
-        c.written += line.len;
-    }
+            self.* = undefined;
+        }
 
-    /// Leave `cur` open on the file this message belongs in.
-    pub fn ensure(self: *Tree, group: []const u8, day: u32, want: usize) !void {
-        if (self.cur) |*c| {
-            if (c.day == day and std.mem.eql(u8, c.group, group)) {
-                if (c.written + want <= day_bytes) return;
-
-                // The day is not over, so the day does not end here. It
-                // carries on in the part beside it, and nothing is moved
-                // aside or dropped to make room.
-                const opened = try self.openPart(group, day, c.part + 1);
+        pub fn close(self: *TreeSelf) void {
+            if (self.cur) |*c| {
                 c.file.close(self.io);
-                c.file = opened.file;
-                c.part += 1;
-                c.written = opened.written;
+                self.alloc.free(c.group);
+            }
+            self.cur = null;
+        }
+
+        /// Put one already-rendered line into its group's file for the day.
+        ///
+        /// Handed the bytes `append` has just written to the stream rather than
+        /// rendering them again: the two files then hold the same line byte for
+        /// byte, and there is no second renderer to drift.
+        ///
+        /// **Every failure here is a warning and nothing else, deliberately.**
+        /// The stream is what the archive follows and what hands out seq; a full
+        /// disk or an unwritable directory must not turn "the record is worse
+        /// off" into "the message is gone". It is also why a later reader should
+        /// not "fix" this by propagating the error: a gap left here is found and
+        /// filled by `backfill` on the next start, because how far the record
+        /// goes is measured off the files rather than remembered.
+        pub fn write(self: *TreeSelf, group: []const u8, at_ms: i64, line: []const u8) void {
+            self.ensure(group, dayOf(at_ms), line.len) catch |err| {
+                self.warnOnce(err);
                 return;
+            };
+
+            const c = &self.cur.?;
+            c.file.writePositionalAll(self.io, line, c.written) catch |err| {
+                self.warnOnce(err);
+                // Closed rather than kept: reopening on the next message is
+                // the cheapest thing that can recover a handle which has gone
+                // bad underneath us.
+                self.close();
+                return;
+            };
+            c.written += line.len;
+        }
+
+        /// Leave `cur` open on the file this message belongs in.
+        pub fn ensure(self: *TreeSelf, group: []const u8, day: u32, want: usize) !void {
+            if (self.cur) |*c| {
+                if (c.day == day and std.mem.eql(u8, c.group, group)) {
+                    if (c.written + want <= day_bytes) return;
+
+                    // The day is not over, so the day does not end here. It
+                    // carries on in the part beside it, and nothing is moved
+                    // aside or dropped to make room.
+                    const opened = try self.openPart(group, day, c.part + 1);
+                    c.file.close(self.io);
+                    c.file = opened.file;
+                    c.part += 1;
+                    c.written = opened.written;
+                    return;
+                }
             }
-        }
 
-        self.close();
+            self.close();
 
-        // How far into the day the parts have got. Probed rather than
-        // assumed, because a restart in the middle of a busy day has to
-        // land on the end of it and not on top of its beginning.
-        var part: u32 = 1;
-        var opened = try self.openPart(group, day, part);
-        while (opened.written + want > day_bytes and part < max_parts) {
-            opened.file.close(self.io);
-            part += 1;
-            opened = try self.openPart(group, day, part);
-        }
-        errdefer opened.file.close(self.io);
+            // How far into the day the parts have got. Probed rather than
+            // assumed, because a restart in the middle of a busy day has to
+            // land on the end of it and not on top of its beginning.
+            var part: u32 = 1;
+            var opened = try self.openPart(group, day, part);
+            while (opened.written + want > day_bytes and part < max_parts) {
+                opened.file.close(self.io);
+                part += 1;
+                opened = try self.openPart(group, day, part);
+            }
+            errdefer opened.file.close(self.io);
 
-        const owned = try self.alloc.dupe(u8, group);
-        self.cur = .{
-            .group = owned,
-            .day = day,
-            .part = part,
-            .file = opened.file,
-            .written = opened.written,
-        };
-    }
-
-    /// Open one part for appending, making the group's directory if it is
-    /// not there yet.
-    pub fn openPart(self: *Tree, group: []const u8, day: u32, part: u32) !Opened {
-        const path = try self.partPath(self.alloc, group, day, part);
-        defer self.alloc.free(path);
-
-        if (std.fs.path.dirname(path)) |parent| {
-            std.Io.Dir.cwd().createDirPath(self.io, parent) catch |err| switch (err) {
-                error.PathAlreadyExists => {},
-                else => return err,
+            const owned = try self.alloc.dupe(u8, group);
+            self.cur = .{
+                .group = owned,
+                .day = day,
+                .part = part,
+                .file = opened.file,
+                .written = opened.written,
             };
         }
 
-        const file = try openAppend(self.io, path);
-        errdefer file.close(self.io);
+        /// Open one part for appending, making the group's directory if it is
+        /// not there yet.
+        pub fn openPart(self: *TreeSelf, group: []const u8, day: u32, part: u32) !Opened {
+            const path = try self.partPath(self.alloc, group, day, part);
+            defer self.alloc.free(path);
 
-        var written = if (file.stat(self.io)) |st| st.size else |_| 0;
-
-        // The same invariant the stream keeps, for the same reason: a
-        // newline ends a line and nothing else does, so a run that died
-        // mid-write does not get its half line joined onto the next one.
-        if (written > 0) {
-            var last: [1]u8 = undefined;
-            const n = file.readPositionalAll(self.io, &last, written - 1) catch 0;
-            if (n == 1 and last[0] != '\n') {
-                file.writePositionalAll(self.io, "\n", written) catch {};
-                written += 1;
+            if (std.fs.path.dirname(path)) |parent| {
+                std.Io.Dir.cwd().createDirPath(self.io, parent) catch |err| switch (err) {
+                    error.PathAlreadyExists => {},
+                    else => return err,
+                };
             }
+
+            const file = try openAppend(self.io, path);
+            errdefer file.close(self.io);
+
+            var written = if (file.stat(self.io)) |st| st.size else |_| 0;
+
+            // The same invariant the stream keeps, for the same reason: a
+            // newline ends a line and nothing else does, so a run that died
+            // mid-write does not get its half line joined onto the next one.
+            if (written > 0) {
+                var last: [1]u8 = undefined;
+                const n = file.readPositionalAll(self.io, &last, written - 1) catch 0;
+                if (n == 1 and last[0] != '\n') {
+                    file.writePositionalAll(self.io, "\n", written) catch {};
+                    written += 1;
+                }
+            }
+
+            return .{ .file = file, .written = written };
         }
 
-        return .{ .file = file, .written = written };
-    }
-
-    /// `<dir>/<encoded group>/<YYYY-MM-DD>.jsonl`, or `.partN.jsonl` past
-    /// the first. Caller owns it.
-    pub fn partPath(
-        self: *const Tree,
-        alloc: Allocator,
-        group: []const u8,
-        day: u32,
-        part: u32,
-    ) Allocator.Error![]u8 {
-        const seg = try encodeSegment(alloc, group);
-        defer alloc.free(seg);
-        return self.partPathIn(alloc, seg, day, part);
-    }
-
-    /// The same, for a directory name that is already encoded.
-    ///
-    /// The pair to `daysIn`: a reader that walked the tree has the encoded
-    /// segment in hand and no way back to the name it came from, and
-    /// encoding it a second time would spell it `%25`-something. Caller
-    /// owns the result.
-    pub fn partPathIn(
-        self: *const Tree,
-        alloc: Allocator,
-        seg: []const u8,
-        day: u32,
-        part: u32,
-    ) Allocator.Error![]u8 {
-        var buf: [64]u8 = undefined;
-        return std.fs.path.join(alloc, &.{ self.dir, seg, nameOf(&buf, .{
-            .day = day,
-            .part = part,
-        }) });
-    }
-
-    /// What a day file is called.
-    fn nameOf(buf: *[64]u8, d: DayFile) []const u8 {
-        var ymd: [16]u8 = undefined;
-        return (if (d.part <= 1)
-            std.fmt.bufPrint(buf, "{s}.jsonl", .{dayName(&ymd, d.day)})
-        else
-            std.fmt.bufPrint(buf, "{s}.part{d}.jsonl", .{ dayName(&ymd, d.day), d.part })) catch
-            unreachable;
-    }
-
-    /// `YYYY-MM-DD` out of the packed `YYYYMMDD` a day is carried as.
-    ///
-    /// Packed as one integer rather than carried as a string because it is
-    /// also the sort key `history` walks by, and comparing two `u32` needs
-    /// nothing to own or free.
-    fn dayName(buf: *[16]u8, day: u32) []const u8 {
-        return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
-            day / 10000,
-            (day / 100) % 100,
-            day % 100,
-        }) catch unreachable;
-    }
-
-    /// The day file `name` is, or null when it is not one.
-    fn parseDayFile(name: []const u8) ?DayFile {
-        if (!std.mem.endsWith(u8, name, ".jsonl")) return null;
-        const stem = name[0 .. name.len - ".jsonl".len];
-        if (stem.len < 10) return null;
-
-        const day = parseDay(stem[0..10]) orelse return null;
-        const rest = stem[10..];
-        if (rest.len == 0) return .{ .day = day, .part = 1 };
-
-        if (!std.mem.startsWith(u8, rest, ".part")) return null;
-        const n = std.fmt.parseUnsigned(u32, rest[".part".len..], 10) catch return null;
-
-        // `.part1` is not a name this writes, so a file called that came
-        // from somewhere else and would sort into the same place as the
-        // day's first part.
-        if (n < 2) return null;
-        return .{ .day = day, .part = n };
-    }
-
-    /// `YYYY-MM-DD` back into the packed integer, or null.
-    fn parseDay(s: []const u8) ?u32 {
-        if (s.len != 10 or s[4] != '-' or s[7] != '-') return null;
-        const y = std.fmt.parseUnsigned(u32, s[0..4], 10) catch return null;
-        const m = std.fmt.parseUnsigned(u32, s[5..7], 10) catch return null;
-        const d = std.fmt.parseUnsigned(u32, s[8..10], 10) catch return null;
-        if (m < 1 or m > 12 or d < 1 or d > 31) return null;
-        return y * 10000 + m * 100 + d;
-    }
-
-    /// Every day file a group has, newest first. Caller owns the list.
-    pub fn days(self: *const Tree, alloc: Allocator, group: []const u8) Allocator.Error!Days {
-        const seg = try encodeSegment(alloc, group);
-        defer alloc.free(seg);
-        return self.daysIn(alloc, seg);
-    }
-
-    /// The same, for a directory name that is already encoded.
-    pub fn daysIn(self: *const Tree, alloc: Allocator, seg: []const u8) Allocator.Error!Days {
-        var out: Days = .empty;
-        errdefer out.deinit(alloc);
-
-        const path = try std.fs.path.join(alloc, &.{ self.dir, seg });
-        defer alloc.free(path);
-
-        // A group nothing was ever said in has no directory, and that is
-        // an answer rather than a failure: it has no days.
-        var d = std.Io.Dir.cwd().openDir(self.io, path, .{ .iterate = true }) catch return out;
-        defer d.close(self.io);
-
-        var it = d.iterate();
-        while (it.next(self.io) catch null) |entry| {
-            if (entry.kind == .directory) continue;
-            const parsed = parseDayFile(entry.name) orelse continue;
-            try out.append(alloc, parsed);
+        /// `<dir>/<encoded group>/<YYYY-MM-DD>.jsonl`, or `.partN.jsonl` past
+        /// the first. Caller owns it.
+        pub fn partPath(
+            self: *const TreeSelf,
+            alloc: Allocator,
+            group: []const u8,
+            day: u32,
+            part: u32,
+        ) Allocator.Error![]u8 {
+            const seg = try encodeSegment(alloc, group);
+            defer alloc.free(seg);
+            return self.partPathIn(alloc, seg, day, part);
         }
 
-        std.mem.sort(DayFile, out.items, {}, DayFile.newestFirst);
-        return out;
-    }
-
-    /// The highest seq the record already holds, or null when that cannot
-    /// be worked out.
-    ///
-    /// Null is a real answer and the callers are written to know it. The
-    /// only thing that reads this is `backfill`, and filling in from a
-    /// floor nobody is sure of would write a second copy of messages that
-    /// are already there. A record short by a stretch is fixed by the next
-    /// start; a record holding everything twice is fixed by nothing.
-    pub fn head(self: *Tree) ?u64 {
-        if (self.probe == null) return null;
-        var d = std.Io.Dir.cwd().openDir(self.io, self.dir, .{ .iterate = true }) catch
-            return null;
-        defer d.close(self.io);
-
-        var best: u64 = 0;
-        var it = d.iterate();
-        while (it.next(self.io) catch null) |entry| {
-            // `readdir` reports `unknown` on some filesystems, and the flat
-            // stream files live in this directory too.
-            const kind = if (entry.kind != .unknown) entry.kind else k: {
-                const st = d.statFile(self.io, entry.name, .{
-                    .follow_symlinks = false,
-                }) catch continue;
-                break :k st.kind;
-            };
-            if (kind != .directory) continue;
-
-            const got = self.groupHead(entry.name) orelse return null;
-            best = @max(best, got);
+        /// The same, for a directory name that is already encoded.
+        ///
+        /// The pair to `daysIn`: a reader that walked the tree has the encoded
+        /// segment in hand and no way back to the name it came from, and
+        /// encoding it a second time would spell it `%25`-something. Caller
+        /// owns the result.
+        pub fn partPathIn(
+            self: *const TreeSelf,
+            alloc: Allocator,
+            seg: []const u8,
+            day: u32,
+            part: u32,
+        ) Allocator.Error![]u8 {
+            var buf: [64]u8 = undefined;
+            return std.fs.path.join(alloc, &.{ self.dir, seg, nameOf(&buf, .{
+                .day = day,
+                .part = part,
+            }) });
         }
-        return best;
-    }
 
-    /// The highest seq in one group's newest day file, or null when it
-    /// holds lines but none that can be read.
-    ///
-    /// The newest file is enough: the record is written in seq order, so a
-    /// group's largest number is always in its last file.
-    pub fn groupHead(self: *Tree, seg: []const u8) ?u64 {
-        var list = self.daysIn(self.alloc, seg) catch return null;
-        defer list.deinit(self.alloc);
+        /// What a day file is called.
+        fn nameOf(buf: *[64]u8, d: DayFile) []const u8 {
+            var ymd: [16]u8 = undefined;
+            return (if (d.part <= 1)
+                std.fmt.bufPrint(buf, "{s}.jsonl", .{dayName(&ymd, d.day)})
+            else
+                std.fmt.bufPrint(buf, "{s}.part{d}.jsonl", .{ dayName(&ymd, d.day), d.part })) catch
+                unreachable;
+        }
 
-        // A directory with no day files in it is not part of the record.
-        if (list.items.len == 0) return 0;
+        /// `YYYY-MM-DD` out of the packed `YYYYMMDD` a day is carried as.
+        ///
+        /// Packed as one integer rather than carried as a string because it is
+        /// also the sort key `history` walks by, and comparing two `u32` needs
+        /// nothing to own or free.
+        fn dayName(buf: *[16]u8, day: u32) []const u8 {
+            return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+                day / 10000,
+                (day / 100) % 100,
+                day % 100,
+            }) catch unreachable;
+        }
 
-        var buf: [64]u8 = undefined;
-        const path = std.fs.path.join(self.alloc, &.{
-            self.dir,
-            seg,
-            nameOf(&buf, list.items[0]),
-        }) catch return null;
-        defer self.alloc.free(path);
+        /// The day file `name` is, or null when it is not one.
+        fn parseDayFile(name: []const u8) ?DayFile {
+            if (!std.mem.endsWith(u8, name, ".jsonl")) return null;
+            const stem = name[0 .. name.len - ".jsonl".len];
+            if (stem.len < 10) return null;
 
-        const file = std.Io.Dir.openFileAbsolute(self.io, path, .{}) catch return null;
-        defer file.close(self.io);
+            const day = parseDay(stem[0..10]) orelse return null;
+            const rest = stem[10..];
+            if (rest.len == 0) return .{ .day = day, .part = 1 };
 
-        const probe = self.probe orelse return null;
-        const end = if (file.stat(self.io)) |st| st.size else |_| return null;
-        if (end == 0) return 0;
-        return probe(self.alloc, self.io, file, end);
-    }
+            if (!std.mem.startsWith(u8, rest, ".part")) return null;
+            const n = std.fmt.parseUnsigned(u32, rest[".part".len..], 10) catch return null;
 
-    fn warnOnce(self: *Tree, err: anyerror) void {
-        if (self.warned) return;
-        self.warned = true;
-        log.warn(
-            "{s}: could not write the record under {s} err={}",
-            .{ self.label, self.dir, err },
-        );
-    }
-};
+            // `.part1` is not a name this writes, so a file called that came
+            // from somewhere else and would sort into the same place as the
+            // day's first part.
+            if (n < 2) return null;
+            return .{ .day = day, .part = n };
+        }
+
+        /// `YYYY-MM-DD` back into the packed integer, or null.
+        fn parseDay(s: []const u8) ?u32 {
+            if (s.len != 10 or s[4] != '-' or s[7] != '-') return null;
+            const y = std.fmt.parseUnsigned(u32, s[0..4], 10) catch return null;
+            const m = std.fmt.parseUnsigned(u32, s[5..7], 10) catch return null;
+            const d = std.fmt.parseUnsigned(u32, s[8..10], 10) catch return null;
+            if (m < 1 or m > 12 or d < 1 or d > 31) return null;
+            return y * 10000 + m * 100 + d;
+        }
+
+        /// Every day file a group has, newest first. Caller owns the list.
+        pub fn days(self: *const TreeSelf, alloc: Allocator, group: []const u8) Allocator.Error!Days {
+            const seg = try encodeSegment(alloc, group);
+            defer alloc.free(seg);
+            return self.daysIn(alloc, seg);
+        }
+
+        /// The same, for a directory name that is already encoded.
+        pub fn daysIn(self: *const TreeSelf, alloc: Allocator, seg: []const u8) Allocator.Error!Days {
+            var out: Days = .empty;
+            errdefer out.deinit(alloc);
+
+            const path = try std.fs.path.join(alloc, &.{ self.dir, seg });
+            defer alloc.free(path);
+
+            // A group nothing was ever said in has no directory, and that is
+            // an answer rather than a failure: it has no days.
+            var d = std.Io.Dir.cwd().openDir(self.io, path, .{ .iterate = true }) catch return out;
+            defer d.close(self.io);
+
+            var it = d.iterate();
+            while (it.next(self.io) catch null) |entry| {
+                if (entry.kind == .directory) continue;
+                const parsed = parseDayFile(entry.name) orelse continue;
+                try out.append(alloc, parsed);
+            }
+
+            std.mem.sort(DayFile, out.items, {}, DayFile.newestFirst);
+            return out;
+        }
+
+        /// The highest seq the record already holds, or null when that cannot
+        /// be worked out.
+        ///
+        /// Null is a real answer and the callers are written to know it. The
+        /// only thing that reads this is `backfill`, and filling in from a
+        /// floor nobody is sure of would write a second copy of messages that
+        /// are already there. A record short by a stretch is fixed by the next
+        /// start; a record holding everything twice is fixed by nothing.
+        pub fn head(self: *TreeSelf) ?u64 {
+            if (self.probe == null) return null;
+            var d = std.Io.Dir.cwd().openDir(self.io, self.dir, .{ .iterate = true }) catch
+                return null;
+            defer d.close(self.io);
+
+            var best: u64 = 0;
+            var it = d.iterate();
+            while (it.next(self.io) catch null) |entry| {
+                // `readdir` reports `unknown` on some filesystems, and the flat
+                // stream files live in this directory too.
+                const kind = if (entry.kind != .unknown) entry.kind else k: {
+                    const st = d.statFile(self.io, entry.name, .{
+                        .follow_symlinks = false,
+                    }) catch continue;
+                    break :k st.kind;
+                };
+                if (kind != .directory) continue;
+
+                const got = self.groupHead(entry.name) orelse return null;
+                best = @max(best, got);
+            }
+            return best;
+        }
+
+        /// The highest seq in one group's newest day file, or null when it
+        /// holds lines but none that can be read.
+        ///
+        /// The newest file is enough: the record is written in seq order, so a
+        /// group's largest number is always in its last file.
+        pub fn groupHead(self: *TreeSelf, seg: []const u8) ?u64 {
+            var list = self.daysIn(self.alloc, seg) catch return null;
+            defer list.deinit(self.alloc);
+
+            // A directory with no day files in it is not part of the record.
+            if (list.items.len == 0) return 0;
+
+            var buf: [64]u8 = undefined;
+            const path = std.fs.path.join(self.alloc, &.{
+                self.dir,
+                seg,
+                nameOf(&buf, list.items[0]),
+            }) catch return null;
+            defer self.alloc.free(path);
+
+            const file = std.Io.Dir.openFileAbsolute(self.io, path, .{}) catch return null;
+            defer file.close(self.io);
+
+            const probe = self.probe orelse return null;
+            const end = if (file.stat(self.io)) |st| st.size else |_| return null;
+            if (end == 0) return 0;
+            return probe(self.alloc, self.io, file, end);
+        }
+
+        fn warnOnce(self: *TreeSelf, err: anyerror) void {
+            if (self.warned) return;
+            self.warned = true;
+            log.warn(
+                "{s}: could not write the record under {s} err={}",
+                .{ self.label, self.dir, err },
+            );
+        }
+    };
+}
+
+/// The record of things filed under a group's name.
+pub const GroupTree = Tree(group_stores.Root);
+
+/// Whose terminal transcripts are filed under a terminal's name.
+pub const TerminalOwner = enum { transcript };
+pub const TerminalTree = Tree(TerminalOwner);
 
 /// A group name as one path segment, and nothing else.
 ///
@@ -1097,26 +1116,26 @@ test "the day a moment belongs to is also the order the days sort in" {
 test "a day file's name says which day and which part it is" {
     var buf: [64]u8 = undefined;
 
-    const first = Tree.nameOf(&buf, .{ .day = 20260828, .part = 1 });
+    const first = GroupTree.nameOf(&buf, .{ .day = 20260828, .part = 1 });
     try testing.expectEqualStrings("2026-08-28.jsonl", first);
 
-    const second = Tree.nameOf(&buf, .{ .day = 20260828, .part = 2 });
+    const second = GroupTree.nameOf(&buf, .{ .day = 20260828, .part = 2 });
     try testing.expectEqualStrings("2026-08-28.part2.jsonl", second);
 
     // And back again, because listing a directory is how the parts of a
     // day are found.
-    const parsed = Tree.parseDayFile("2026-08-28.part2.jsonl").?;
+    const parsed = GroupTree.parseDayFile("2026-08-28.part2.jsonl").?;
     try testing.expectEqual(@as(u32, 20260828), parsed.day);
     try testing.expectEqual(@as(u32, 2), parsed.part);
 
-    try testing.expectEqual(@as(u32, 1), Tree.parseDayFile("2026-08-28.jsonl").?.part);
+    try testing.expectEqual(@as(u32, 1), GroupTree.parseDayFile("2026-08-28.jsonl").?.part);
 
     // `.part1` is not a name this writes, so a file called that came from
     // somewhere else and must not sort on top of the day's first part.
-    try testing.expect(Tree.parseDayFile("2026-08-28.part1.jsonl") == null);
-    try testing.expect(Tree.parseDayFile("2026-08-28.txt") == null);
-    try testing.expect(Tree.parseDayFile("notes.jsonl") == null);
-    try testing.expect(Tree.parseDayFile("2026-13-28.jsonl") == null);
+    try testing.expect(GroupTree.parseDayFile("2026-08-28.part1.jsonl") == null);
+    try testing.expect(GroupTree.parseDayFile("2026-08-28.txt") == null);
+    try testing.expect(GroupTree.parseDayFile("notes.jsonl") == null);
+    try testing.expect(GroupTree.parseDayFile("2026-13-28.jsonl") == null);
 }
 
 test "a tree whose lines carry no number says so rather than guessing" {
@@ -1125,7 +1144,7 @@ test "a tree whose lines carry no number says so rather than guessing" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var tree: Tree = .{ .alloc = alloc, .io = io, .dir = ".", .label = "test log" };
+    var tree: GroupTree = .{ .owner = .chat, .alloc = alloc, .io = io, .dir = ".", .label = "test log" };
     defer tree.deinit();
 
     // No probe means the lines here hold no sequence number, and `head`

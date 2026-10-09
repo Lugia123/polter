@@ -392,6 +392,32 @@ pub fn forgetGroup(self: *Tasks, group: []const u8) void {
     }
 }
 
+/// File a group's tasks under a new name. Task ids, titles, owners and
+/// states are untouched: it is the same panel, under another heading.
+///
+/// All or nothing. The new names are allocated before the first old one is
+/// let go, so running out of memory leaves every task where it was.
+pub fn renameGroup(self: *Tasks, old: []const u8, new: []const u8) Allocator.Error!void {
+    var fresh: std.ArrayListUnmanaged([]u8) = .empty;
+    defer fresh.deinit(self.alloc);
+    errdefer for (fresh.items) |g| self.alloc.free(g);
+
+    for (self.list.items) |t| {
+        if (!std.mem.eql(u8, t.group, old)) continue;
+        const g = try self.alloc.dupe(u8, new);
+        errdefer self.alloc.free(g);
+        try fresh.append(self.alloc, g);
+    }
+
+    var next: usize = 0;
+    for (self.list.items) |*t| {
+        if (!std.mem.eql(u8, t.group, old)) continue;
+        self.alloc.free(t.group);
+        t.group = fresh.items[next];
+        next += 1;
+    }
+}
+
 // -- the two views, which are two functions on purpose ----------------------
 //
 // The person at the keyboard and a worker are not asking the same question,
@@ -764,6 +790,35 @@ test "a group going takes its tasks with it" {
     const other = try t.inGroup(testing.allocator, "ops");
     defer testing.allocator.free(other);
     try testing.expectEqual(@as(usize, 1), other.len);
+}
+
+test "#1265: renaming a group re-files its tasks and keeps every number" {
+    var t = testTasks();
+    defer t.deinit();
+
+    const one = try t.create("old", "one", .feature);
+    try t.assign(one, worker_a);
+    const two = try t.create("old", "two", .bug);
+    try t.close(two);
+    const other = try t.create("ops", "elsewhere", .bug);
+
+    try t.renameGroup("old", "new");
+
+    const moved = try t.inGroup(testing.allocator, "new");
+    defer testing.allocator.free(moved);
+    try testing.expectEqual(@as(usize, 2), moved.len);
+    try testing.expectEqual(one, moved[0].id);
+    try testing.expectEqual(two, moved[1].id);
+    try testing.expectEqual(worker_a, t.get(one).?.owner);
+    try testing.expectEqual(State.closed, t.get(two).?.state);
+
+    const left = try t.inGroup(testing.allocator, "old");
+    defer testing.allocator.free(left);
+    try testing.expectEqual(@as(usize, 0), left.len);
+
+    // Another group's task did not move, and numbering carries on.
+    try testing.expectEqualStrings("ops", t.get(other).?.group);
+    try testing.expectEqual(other + 1, try t.create("new", "three", .bug));
 }
 
 test "a restored task keeps its number and pushes the counter past it" {

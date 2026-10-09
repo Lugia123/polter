@@ -51,7 +51,7 @@ io: std.Io,
 /// Owned: the tree borrows it.
 dir: []const u8,
 
-tree: daylog.Tree,
+tree: daylog.GroupTree,
 
 /// When each group was last written down.
 ///
@@ -152,6 +152,7 @@ pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error
         .io = io,
         .dir = dir,
         .tree = .{
+            .owner = .stats,
             .alloc = alloc,
             .io = io,
             .dir = dir,
@@ -173,6 +174,29 @@ pub fn deinit(self: *StatsLog) void {
     self.tree.deinit();
     self.alloc.free(self.dir);
     self.* = undefined;
+}
+
+/// The group has a new name: its clock goes with it. Memory only -- the
+/// lines on disk are `GroupRename`'s.
+///
+/// Without this the renamed group looks as though it has never had a line,
+/// and is written one at the next sweep instead of at the next hour.
+pub fn renameGroup(self: *StatsLog, old: []const u8, new: []const u8) Allocator.Error!void {
+    const entry = self.last.getEntry(old) orelse return;
+    const at = entry.value_ptr.*;
+
+    const owned = try self.alloc.dupe(u8, new);
+    errdefer self.alloc.free(owned);
+    try self.last.ensureUnusedCapacity(self.alloc, 1);
+
+    const removed = self.last.fetchRemove(old).?;
+    self.alloc.free(removed.key);
+    self.last.putAssumeCapacity(owned, at);
+}
+
+/// Let go of the open day file. The next write opens what is then there.
+pub fn closeHandles(self: *StatsLog) void {
+    self.tree.close();
 }
 
 /// Whether `group` is due a line at `at_ms`.
@@ -402,4 +426,30 @@ test "a group whose name is not a directory name still round-trips" {
     const body = try readAll(alloc, io, &l, "a/b");
     defer alloc.free(body);
     try testing.expect(std.mem.indexOf(u8, body, "\"group\":\"a/b\"") != null);
+}
+
+test "#1267: a renamed group keeps its clock" {
+    var l: StatsLog = .{
+        .alloc = std.testing.allocator,
+        .io = undefined,
+        .dir = "",
+        .tree = undefined,
+    };
+    defer {
+        var it = l.last.keyIterator();
+        while (it.next()) |k| std.testing.allocator.free(k.*);
+        l.last.deinit(std.testing.allocator);
+    }
+
+    l.remember("old", 1_000);
+    try std.testing.expect(!l.due("old", 1_000 + 1));
+
+    try l.renameGroup("old", "new");
+    try std.testing.expect(!l.due("new", 1_000 + 1));
+    try std.testing.expect(l.due("old", 1_000 + 1));
+    try std.testing.expect(l.due("new", 1_000 + every_ms));
+
+    // A group that never had a line has nothing to carry.
+    try l.renameGroup("never", "other");
+    try std.testing.expect(l.due("other", 5));
 }

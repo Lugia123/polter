@@ -455,6 +455,34 @@ pub fn destroy(self: *Chat, name: []const u8) Error!void {
     group.deinit(self.alloc);
 }
 
+/// Give a group a new name. It is the same group: its members, what each
+/// can see, where each has read to, its note, its owner and its messages
+/// are all kept, because nothing is copied -- the one entry is re-keyed.
+///
+/// The check on the new name is `isValidName`, the same function `create`
+/// uses. Renaming to the name it already has succeeds and changes nothing.
+///
+/// Memory only. What is on disk under the old name is `GroupRename`'s, and
+/// it has already been dealt with by the time this is called.
+///
+/// Nothing can fail after the group leaves the table: every allocation
+/// happens first, so a refusal leaves the group exactly where it was.
+pub fn rename(self: *Chat, old: []const u8, new: []const u8) Error!void {
+    if (!self.groups.contains(old)) return error.NoSuchGroup;
+    if (!isValidName(new)) return error.BadName;
+    if (std.mem.eql(u8, old, new)) return;
+    if (self.groups.contains(new)) return error.GroupExists;
+
+    const owned = try self.alloc.dupe(u8, new);
+    errdefer self.alloc.free(owned);
+    try self.groups.ensureUnusedCapacity(self.alloc, 1);
+
+    var group = self.groups.fetchRemove(old).?.value;
+    self.alloc.free(group.name);
+    group.name = owned;
+    self.groups.putAssumeCapacity(owned, group);
+}
+
 /// Put a terminal in a group, deciding what it sees of what came before.
 pub fn add(
     self: *Chat,
@@ -559,6 +587,82 @@ pub fn sharesGroup(self: *const Chat, one: Id, other: Id) bool {
 /// kept.
 pub fn peers(self: *const Chat) Bus.Peers {
     return .{ .ctx = self, .shareFn = sharesGroupOpaque };
+}
+
+test "#1265: a renamed group is the same group" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("old", boss);
+    try chat.add("old", a, .none, .{ .cwd = "/work", .title = "worker" });
+    _ = try chat.setBrief("old", "the note");
+    const first = try chat.post("old", boss, "before", 1);
+    _ = try chat.post("old", boss, "second", 2);
+    chat.setLogFloor("old", a, 77);
+    const floor_before = try chat.floorOf("old", a);
+
+    try chat.rename("old", "new");
+
+    // Not under the old name any more, and not under two names.
+    try testing.expect(!chat.exists("old"));
+    try testing.expect(chat.exists("new"));
+    try testing.expectEqual(@as(u32, 1), chat.groups.count());
+
+    // Members, their floors, the note, the owner: all of it came along.
+    try testing.expectEqualStrings("the note", try chat.briefOf("new"));
+    try testing.expectEqual(boss, chat.groups.get("new").?.created_by);
+    const floor_after = try chat.floorOf("new", a);
+    try testing.expectEqual(floor_before, floor_after);
+    try testing.expectEqual(@as(u64, 77), floor_after.log_seq);
+    try testing.expectEqualStrings("/work", chat.footingOf("new", a).?.cwd);
+    try testing.expectEqualStrings("worker", chat.footingOf("new", a).?.title);
+
+    // The words said before the rename are readable under the new name.
+    const batch = try chat.read(testing.allocator, "new", boss, 0, .unlimited);
+    defer testing.allocator.free(batch.messages);
+    try testing.expectEqual(@as(usize, 2), batch.messages.len);
+    try testing.expectEqualStrings("before", batch.messages[0].text);
+    try testing.expectEqual(first.seq, batch.messages[0].seq);
+
+    // And the next message carries on the same numbering.
+    const next = try chat.post("new", boss, "after", 3);
+    try testing.expectEqual(first.seq + 2, next.seq);
+}
+
+test "#1265: renaming is refused by name, and a refusal changes nothing" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("old", boss);
+    try chat.create("taken", boss);
+    _ = try chat.setBrief("old", "kept");
+
+    try testing.expectError(error.NoSuchGroup, chat.rename("nope", "fresh"));
+    try testing.expectError(error.BadName, chat.rename("old", "Has Spaces"));
+    try testing.expectError(error.BadName, chat.rename("old", "../escape"));
+    try testing.expectError(error.BadName, chat.rename("old", ""));
+    try testing.expectError(error.GroupExists, chat.rename("old", "taken"));
+
+    try testing.expect(chat.exists("old"));
+    try testing.expect(chat.exists("taken"));
+    try testing.expectEqualStrings("kept", try chat.briefOf("old"));
+
+    // Same name: a success that does nothing.
+    try chat.rename("old", "old");
+    try testing.expect(chat.exists("old"));
+}
+
+test "#1265: a group with terminals in it can be renamed" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("old", boss);
+    try chat.add("old", a, .all, .{});
+    try chat.add("old", b, .all, .{});
+    try chat.rename("old", "new");
+
+    var live = [_]Id{ a, b };
+    try testing.expect(chat.isActive("new", &live));
 }
 
 fn sharesGroupOpaque(ctx: ?*const anyopaque, supervisor: Id, terminal: Id) bool {
