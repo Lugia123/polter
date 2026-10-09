@@ -1536,11 +1536,13 @@ const Chat = struct {
     /// words, because "delete" is the word people read as "last night's
     /// conversation is gone".
     ///
-    /// A refusal is shown rather than swallowed. Rearranging groups is the
-    /// supervisor's, and this view runs with whatever standing the terminal
-    /// it was started in has -- so in a terminal that is not a supervisor
-    /// the host says no, and the person has to be told that rather than
-    /// left watching a key do nothing.
+    /// A refusal is shown rather than swallowed. In the tab the app opened
+    /// for the chat this is the person's own request and the host lets it
+    /// through (`rpc.userMay`); run by hand in some other terminal, this
+    /// view has that terminal's standing, and the host says no unless it is
+    /// a supervisor. A group with terminals still in it is refused to
+    /// everyone. Either way the person is told rather than left watching a
+    /// key do nothing.
     fn forgetGroup(self: *Chat, name: []const u8) void {
         var buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(

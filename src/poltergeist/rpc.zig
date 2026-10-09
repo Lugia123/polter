@@ -1041,6 +1041,31 @@ pub fn offeredAsTool(method: Method) bool {
     };
 }
 
+/// What the person at the keyboard may do that is otherwise a supervisor's.
+///
+/// One thing: take a group off the list. The chat view is where the person
+/// sees the groups and `d` is the key it offers for it, and until this was
+/// here that key answered "only a supervisor may do this" to the one party
+/// who outranks every supervisor. It was refused because the view's request
+/// arrives as `Chat.user_id`, which is no supervisor.
+///
+/// **Not a terminal's to claim.** `user_id` is never sent by a caller: the
+/// app substitutes it for a surface it opened itself to run the chat, and
+/// for nothing else. An agent that wants a group gone is still a terminal
+/// and still has to be the supervisor that made it.
+///
+/// Whether the group can go at all is unchanged and asked further down: one
+/// with terminals in it still answers `GroupActive`, for the person as for
+/// anyone.
+fn userMay(caller: Bus.Caller, method: Method) bool {
+    const id = caller.terminalId() orelse return false;
+    if (id != Chat.user_id) return false;
+    return switch (method) {
+        .group_destroy => true,
+        else => false,
+    };
+}
+
 pub fn requiresSupervisor(method: Method) bool {
     return switch (method) {
         // Every terminal may ask about itself.
@@ -1838,7 +1863,7 @@ pub fn authorize(bus: *const Bus, caller: Bus.Caller, req: Request) Error!void {
     // the parity being claimed -- one rule, one answer -- and an earlier
     // "you are not a terminal" would hide it behind a second explanation.
     const supervisor = if (caller.terminalId()) |id| bus.isSupervisor(id) else false;
-    if (requiresSupervisor(method) and !supervisor) {
+    if (requiresSupervisor(method) and !supervisor and !userMay(caller, method)) {
         return error.NotPermitted;
     }
 
@@ -3107,6 +3132,67 @@ test "a watched terminal can talk in a group but cannot arrange one" {
     }) |req| {
         const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), req);
         try testing.expectEqualStrings("NotPermitted", res.failed.code);
+    }
+}
+
+test "the person at the keyboard may take a group off the list, a worker may not" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    // The chat view's request arrives as the user. An empty group goes,
+    // though the user is no supervisor and did not make it.
+    {
+        var fake: FakeHost = .{ .group_owner = boss };
+        const res = try dispatch(
+            testing.allocator,
+            &b,
+            fake.host(),
+            term(Chat.user_id),
+            .{ .group_destroy = .{ .group = "build" } },
+        );
+        try testing.expect(res == .ok);
+        try testing.expect(fake.destroyed);
+    }
+
+    // One with terminals in it is refused to the person as to anyone.
+    {
+        var fake: FakeHost = .{ .group_active = true };
+        const res = try dispatch(
+            testing.allocator,
+            &b,
+            fake.host(),
+            term(Chat.user_id),
+            .{ .group_destroy = .{ .group = "build" } },
+        );
+        try testing.expectEqualStrings("GroupActive", res.failed.code);
+        try testing.expect(!fake.destroyed);
+    }
+
+    // The opening is that one method. Making a group is still refused.
+    {
+        var fake: FakeHost = .{};
+        const res = try dispatch(
+            testing.allocator,
+            &b,
+            fake.host(),
+            term(Chat.user_id),
+            .{ .group_create = .{ .group = "mine" } },
+        );
+        try testing.expectEqualStrings("NotPermitted", res.failed.code);
+    }
+
+    // And a worker is still refused the one that was opened.
+    {
+        var fake: FakeHost = .{};
+        const res = try dispatch(
+            testing.allocator,
+            &b,
+            fake.host(),
+            term(worker),
+            .{ .group_destroy = .{ .group = "build" } },
+        );
+        try testing.expectEqualStrings("NotPermitted", res.failed.code);
+        try testing.expect(!fake.destroyed);
     }
 }
 
@@ -6858,7 +6944,11 @@ pub fn dispatch(
         },
 
         .group_destroy => |p| {
-            if (!host.ownsGroup(p.group, caller)) return failure(error.NotYours);
+            // The person may let go of any group, whoever made it: the
+            // ownership rule is between supervisors.
+            if (caller != Chat.user_id and !host.ownsGroup(p.group, caller)) {
+                return failure(error.NotYours);
+            }
             host.chatDestroy(p.group) catch |err| return chatFailure(err);
             return .ok;
         },
