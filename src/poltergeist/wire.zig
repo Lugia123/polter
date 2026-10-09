@@ -913,6 +913,14 @@ pub const Response = union(enum) {
         next: u64 = 0,
     },
     groups: []const rpc.ChatGroupInfo,
+
+    /// A group listing that is not the whole truth: the logs are closed, so
+    /// what is on disk is not in it. `warning` says why. A separate case, not
+    /// a field on `groups`, so that the ordinary listing stays what it was.
+    groups_noted: struct {
+        groups: []const rpc.ChatGroupInfo,
+        warning: []const u8,
+    },
     members: []const rpc.ChatMember,
     plugins: []const rpc.PluginView,
     actions: []const rpc.actions.Entry,
@@ -1102,48 +1110,15 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.endArray();
         },
 
-        .groups => |list| {
-            try s.objectField("ok");
-            try s.write(true);
-            try s.objectField("groups");
-            try s.beginArray();
-            for (list) |g| {
-                try s.beginObject();
-                try s.objectField("name");
-                try s.write(g.name);
+        .groups => |list| try writeGroups(&s, list),
+        .groups_noted => |v| {
+            try writeGroups(&s, v.groups);
 
-                // Only written when there is one, so a member's listing
-                // does not carry an empty field that invites the question
-                // of what it would have said.
-                if (g.brief.len > 0) {
-                    try s.objectField("brief");
-                    try s.write(g.brief);
-                }
-
-                // Next to the preview it explains, in the words `group_post`
-                // uses for its own cut: what was written and what is here.
-                if (g.brief_given) |given| {
-                    try s.objectField("brief_cut");
-                    try s.beginObject();
-                    try s.objectField("given");
-                    try s.write(given);
-                    try s.objectField("kept");
-                    try s.write(g.brief.len);
-                    try s.endObject();
-                }
-
-                // The same rule, pointed the other way: written only when
-                // it is false, because a listing where every entry says
-                // `joined: true` is a field that has never told anybody
-                // anything. False means the group is there and the caller
-                // is not in it -- which is what a restart leaves.
-                if (!g.joined) {
-                    try s.objectField("joined");
-                    try s.write(false);
-                }
-                try s.endObject();
-            }
-            try s.endArray();
+            // Beside the list it qualifies and named for what it is: the
+            // list is *not* the whole truth, and a reader who takes it for
+            // the whole truth is the one this field exists for.
+            try s.objectField("warning");
+            try s.write(v.warning);
         },
         .messages => |v| {
             try s.objectField("ok");
@@ -1748,6 +1723,50 @@ const testing = std.testing;
 
 fn parse(bytes: []const u8) ParseError!Parsed {
     return parseRequest(testing.allocator, bytes);
+}
+
+fn writeGroups(s: *std.json.Stringify, list: []const rpc.ChatGroupInfo) !void {
+    try s.objectField("ok");
+    try s.write(true);
+    try s.objectField("groups");
+    try s.beginArray();
+    for (list) |g| {
+        try s.beginObject();
+        try s.objectField("name");
+        try s.write(g.name);
+
+        // Only written when there is one, so a member's listing
+        // does not carry an empty field that invites the question
+        // of what it would have said.
+        if (g.brief.len > 0) {
+            try s.objectField("brief");
+            try s.write(g.brief);
+        }
+
+        // Next to the preview it explains, in the words `group_post`
+        // uses for its own cut: what was written and what is here.
+        if (g.brief_given) |given| {
+            try s.objectField("brief_cut");
+            try s.beginObject();
+            try s.objectField("given");
+            try s.write(given);
+            try s.objectField("kept");
+            try s.write(g.brief.len);
+            try s.endObject();
+        }
+
+        // The same rule, pointed the other way: written only when
+        // it is false, because a listing where every entry says
+        // `joined: true` is a field that has never told anybody
+        // anything. False means the group is there and the caller
+        // is not in it -- which is what a restart leaves.
+        if (!g.joined) {
+            try s.objectField("joined");
+            try s.write(false);
+        }
+        try s.endObject();
+    }
+    try s.endArray();
 }
 
 test "a request with no params parses" {

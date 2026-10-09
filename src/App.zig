@@ -158,6 +158,21 @@ poltergeist_session_path: ?[]const u8 = null,
 /// which rewrites the records in it. Null while no log is open. Owned.
 poltergeist_state_dir: ?[]const u8 = null,
 
+/// Why the logs are not open, when something went wrong opening them.
+/// Owned. Null when they are open, and when they were never asked for.
+///
+/// **This exists so that a short list is not mistaken for a true one.** With
+/// the logs closed the groups that are on disk are not loaded, and the list
+/// that comes back is empty -- which reads, to the supervisor asking, as "you
+/// have no groups". It is told this instead (`group_list`'s `warning`), and
+/// the person is told once where they will see it.
+poltergeist_log_problem: ?[]const u8 = null,
+
+/// Whether a start has already waited for another process's rename. Once
+/// is enough: `ensureChatLog` runs again for every window, and a window
+/// opened later should not freeze for as long again.
+poltergeist_waited_for_rename: bool = false,
+
 /// Whether the MCP registration has been checked this run. Once is enough:
 /// it cannot go stale while we are the thing it points at.
 poltergeist_registered: bool = false,
@@ -478,6 +493,7 @@ pub fn deinit(self: *App) void {
     if (self.group_log) |*l| l.deinit();
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
     if (self.poltergeist_state_dir) |p| self.alloc.free(p);
+    if (self.poltergeist_log_problem) |p| self.alloc.free(p);
     self.poltergeist_recall.deinit(self.alloc);
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
     for (self.poltergeist_alerts.items) |line| self.alloc.free(line);
@@ -1308,22 +1324,40 @@ pub fn ensureChatLog(self: *App, want: bool) void {
     // If it cannot be finished the logs stay closed -- the same as having
     // no state directory -- rather than opening on records that are in two
     // places. The intent is left for a person to read.
-    if (poltergeistpkg.GroupRename.recover(.{
+    //
+    // **`Locked` is waited for.** The lock is the kernel's, so it is only
+    // ever held by a process that is alive -- another Polter in the middle
+    // of renaming a group, which is a matter of seconds. Giving up at once
+    // is what once made every group vanish on a start that came a moment
+    // too early. Once, and not for every window.
+    const wait: poltergeistpkg.GroupRename.Wait = if (self.poltergeist_waited_for_rename)
+        .{ .max_ms = 0 }
+    else
+        .{};
+    self.poltergeist_waited_for_rename = true;
+    if (poltergeistpkg.GroupRename.recoverWaiting(.{
         .alloc = self.alloc,
         .io = io,
         .state_dir = state_dir,
-    })) |done| {
+    }, wait)) |done| {
         if (done.finished) log.info("poltergeist: finished a group rename the last run left", .{});
         if (done.abandoned) log.warn("poltergeist: dropped a group rename that could not be redone", .{});
     } else |err| {
         log.warn("poltergeist: a group rename is unfinished and could not be continued err={}; the logs stay closed", .{err});
+        self.noteLogProblem(state_dir, switch (err) {
+            error.Locked => "another Polter process is in the middle of renaming a group and did not finish within the time allowed",
+            error.Anomaly => "a group rename was left in a state this version does not know how to continue from",
+            else => "an unfinished group rename could not be finished",
+        });
         return;
     }
 
     self.chat_log = poltergeistpkg.ChatLog.open(self.alloc, io, state_dir) catch |err| {
         log.warn("poltergeist: could not open the chat log err={}", .{err});
+        self.noteLogProblem(state_dir, "the chat log could not be opened");
         return;
     };
+    self.clearLogProblem();
     self.poltergeist_state_dir = self.alloc.dupe(u8, state_dir) catch null;
 
     // Same directory, and the log having opened means it exists.
@@ -1375,6 +1409,45 @@ pub fn ensureChatLog(self: *App, want: bool) void {
     // The log has just opened, which is the earliest moment there is
     // anything for an archive plugin to follow.
     self.ensureResidents();
+}
+
+/// Remember that the logs are closed and why, and tell the person once.
+///
+/// Called with the state directory so the text can name the place to look.
+/// What it says is the same to the supervisor (`group_list`) and to the
+/// person: nothing was lost, the groups on disk are not loaded, nothing is
+/// being recorded, and what to do about it.
+fn noteLogProblem(self: *App, state_dir: []const u8, why: []const u8) void {
+    const text = std.fmt.allocPrint(
+        self.alloc,
+        "Polter could not open its records: {s}. Nothing on disk was changed or lost, but " ++
+            "the groups saved in {s} are NOT loaded and nothing new is being recorded; " ++
+            "groups made now exist only in memory. Quit every Polter and start one again; " ++
+            "if this stays, do not delete anything in that directory (see rename-intent.json, " ++
+            "rename-work and rename-backup there).",
+        .{ why, state_dir },
+    ) catch return;
+
+    const first = self.poltergeist_log_problem == null;
+    if (self.poltergeist_log_problem) |old| self.alloc.free(old);
+    self.poltergeist_log_problem = text;
+
+    if (first) {
+        const line = self.alloc.dupe(u8, text) catch return;
+        self.poltergeistAlert(line);
+    }
+}
+
+fn clearLogProblem(self: *App) void {
+    if (self.poltergeist_log_problem) |old| self.alloc.free(old);
+    self.poltergeist_log_problem = null;
+}
+
+/// `Host.logProblem`.
+fn logProblem(ctx: *anyopaque, alloc: Allocator) anyerror!?[]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const text = self.poltergeist_log_problem orelse return null;
+    return try alloc.dupe(u8, text);
 }
 
 /// Put last night's group shells back into the chat.
@@ -2871,6 +2944,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .chatCreate = chatCreate,
         .chatDestroy = chatDestroy,
         .chatRename = chatRename,
+        .logProblem = logProblem,
         .chatAdd = chatAdd,
         .chatRemove = chatRemove,
         .chatCompact = chatCompact,
@@ -5476,7 +5550,12 @@ fn taskHistory(
 
     // Nothing was ever written down, so there is nothing behind the panel
     // to page back into.
-    const l = if (self.task_log) |*v| v else return .{ .events = &.{}, .more = false };
+    const l = if (self.task_log) |*v| v else {
+        // Not "no history": the records are closed because something went
+        // wrong, which is a different answer.
+        if (self.poltergeist_log_problem != null) return error.LogsClosed;
+        return .{ .events = &.{}, .more = false };
+    };
 
     // A member kept out of what was said is kept out of what was done.
     //
@@ -6140,7 +6219,10 @@ fn chatHistory(
 
     // No log on disk, so there is nothing behind the group to page back
     // into.
-    const l = if (self.chat_log) |*v| v else return .{ .lines = &.{}, .more = false };
+    const l = if (self.chat_log) |*v| v else {
+        if (self.poltergeist_log_problem != null) return error.LogsClosed;
+        return .{ .lines = &.{}, .more = false };
+    };
 
     // This member was kept out of something, but nothing says which line
     // on disk that bar sits at -- the messages predate the log, or were

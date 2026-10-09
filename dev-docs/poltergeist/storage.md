@@ -234,3 +234,14 @@
 - [plugins.md](plugins.md) — 插件：协议、声明、凭据、身份。
 - [boundary.md](boundary.md) — 什么是功能、什么是扩展。
 - [mcp.md](mcp.md) — `group_history` 在工具面上的形状。
+
+## 改名留下的东西
+
+`group_rename`（见 [mcp.md](mcp.md)）会在状态目录下留下：
+
+- `rename-backup/<毫秒>-<旧>-to-<新>/`：被换下的旧文件，整份、不改一个字节；**程序不删**，确认无误后手删。
+- `rename-intent.json`：只在改名进行中存在。启动时发现它说明上次没做完，`GroupRename.recover` 在任何日志打开之前续完。
+- `rename-work/`：新文件的暂存，改名结束即删。
+- `rename-intent.lock`：**一直留在盘上**，是操作系统独占锁的载体（持有者死了内核就放，所以它在盘上不说明任何事）。判断“有没有没做完的改名”只看 `rename-intent.json`。
+
+日志没能打开（锁等了 10 秒仍被占、意图读不了、换上遇到不认识的状态、`chat/` 打不开）时，盘上的群**没有**被加载，也不会有新的落盘；这件事会在 `group_list` 的 `warning`、`group_history`/`task_history` 的 `LogsClosed` 和一条给用户的提示里说出来，而不是回一个看起来正常的空列表。

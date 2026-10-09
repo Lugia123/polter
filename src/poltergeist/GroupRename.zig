@@ -99,8 +99,7 @@ pub const Options = struct {
     /// Tests: stop (as though killed) at the Nth durable step.
     crash_at: ?usize = null,
 
-    /// Tests: pretend to be this process, and read the clock as this.
-    pid: ?u32 = null,
+    /// Tests: read the clock as this.
     now_ms: ?i64 = null,
 
     /// Tests: damage the new files after they are written and before they
@@ -160,7 +159,8 @@ pub fn rename(
     try run.lock();
     defer run.unlock();
 
-    if (try run.exists(try run.path(&.{intent_name}))) return error.Locked;
+    // An unfinished rename is not something to start another on top of.
+    if (try run.exists(try run.path(&.{intent_name}))) return error.Anomaly;
     try run.checkTargetFree(new);
 
     const stamp = run.nowMs();
@@ -186,11 +186,18 @@ pub fn recover(opts: Options) Error!Recovered {
     var run: Run = .init(opts);
     defer run.deinit();
 
-    const ipath = try run.path(&.{intent_name});
-    if (!try run.exists(ipath)) return .{};
+    // No state directory yet is a first run: nothing to finish, and
+    // nowhere to put a lock.
+    if (!try run.exists(opts.state_dir)) return .{};
 
+    // The lock before the look at the intent, so that a rename another
+    // process is in the middle of is waited for and not mistaken for
+    // "nothing to do" by one that has just not written its intent yet.
     try run.lock();
     defer run.unlock();
+
+    const ipath = try run.path(&.{intent_name});
+    if (!try run.exists(ipath)) return .{};
 
     const intent = run.readIntent(ipath) orelse {
         // An intent that cannot be read says nothing about what to do.
@@ -217,6 +224,44 @@ pub fn recover(opts: Options) Error!Recovered {
 
     try run.finish(intent.from, intent.to, intent.backup, .{});
     return .{ .finished = true };
+}
+
+pub const Wait = struct {
+    /// The longest to wait for a rename another process is in the middle of.
+    ///
+    /// A rename is sub-second to a few seconds of work: on a copy of the
+    /// largest real group (a few MB of chat, the 13MB shared stream) the
+    /// slowest took 3.2 s in a Debug build, which is the slow build. Ten
+    /// seconds is three times that, and still short enough that a start
+    /// held up by it is a start that waited, not one that looks hung.
+    max_ms: u64 = 10_000,
+
+    /// How often to look again.
+    step_ms: u64 = 100,
+};
+
+/// `recover`, waiting for the lock if somebody else has it.
+///
+/// `Locked` now means one thing: a live process holds the lock -- the
+/// kernel lets go of a dead one's -- and a live process holding it is
+/// renaming a group right now. Waiting for it to finish is the right
+/// response, and giving up at once is what turned a held lock into every
+/// group disappearing. After `max_ms` the lock is still held and `Locked`
+/// is returned; what to do then is the caller's, and it must not be to carry
+/// on quietly.
+pub fn recoverWaiting(opts: Options, wait: Wait) Error!Recovered {
+    var waited: u64 = 0;
+    while (true) {
+        return recover(opts) catch |err| switch (err) {
+            error.Locked => {
+                if (waited >= wait.max_ms) return err;
+                opts.io.sleep(.fromMilliseconds(@intCast(wait.step_ms)), .awake) catch return err;
+                waited += wait.step_ms;
+                continue;
+            },
+            else => return err,
+        };
+    }
 }
 
 // -- the run ------------------------------------------------------------------
@@ -247,7 +292,7 @@ const Run = struct {
     arena: std.heap.ArenaAllocator,
     n: usize = 0,
     report: Report = .{},
-    locked: bool = false,
+    lock_file: ?std.Io.File = null,
 
     fn init(o: Options) Run {
         return .{ .o = o, .arena = .init(o.alloc) };
@@ -293,70 +338,77 @@ const Run = struct {
     // -- the lock ---------------------------------------------------------
 
     fn ownPid(self: *Run) u32 {
-        if (self.o.pid) |p| return p;
+        _ = self;
         if (builtin.os.tag == .windows) return std.os.windows.GetCurrentProcessId();
         return @intCast(std.c.getpid());
     }
 
-    /// `rename-intent.lock`, made exclusively. A lock whose process is gone
-    /// is taken over; one whose process is alive is `Locked`.
+    /// Where in the lock file the holder writes who it is. **Not byte 0:**
+    /// on Windows the lock is a byte-range lock on byte 0, and a range lock
+    /// there is mandatory -- another process reading the locked byte is
+    /// refused. Everything past it can be read by anyone.
+    const holder_at: u64 = 16;
+    const holder_len: usize = 64;
+
+    /// The lock on renaming, held for as long as `lock_file` is open.
     ///
-    /// A lock a killed run left behind is the ordinary case at a recovery,
-    /// which is why it can be taken over and why the check is on the
-    /// process rather than on the file's being there.
+    /// **The operating system holds it, not this program.** `rename-intent.lock`
+    /// is opened and locked exclusively and not-blocking
+    /// (`flock(LOCK_EX|LOCK_NB)` on POSIX, an exclusive `LockFileEx`-style
+    /// range lock on Windows -- `std.Io.File.tryLock` does both), and the
+    /// lock lives exactly as long as the open handle. A process that exits,
+    /// is killed or crashes closes its handles, and the kernel lets go: the
+    /// next process gets the lock straight away, with nothing to compare.
+    ///
+    /// What this replaces compared a pid and a timestamp written in the
+    /// file. On Windows it did not look at the pid at all and went by the
+    /// age -- ten minutes -- so a host killed mid-rename could not be
+    /// started again, and could not recover its own half-done rename,
+    /// for ten minutes.
+    ///
+    /// **The file is never deleted.** Deleting it is how two processes end
+    /// up each holding "the" lock on a different file: one waits on the old
+    /// one, the other makes a new one. A lock file left on disk says nothing
+    /// about whether a rename was left half-done; only `rename-intent.json`
+    /// does, and that is what `recover` looks at.
+    ///
+    /// What is written in it (the holder's pid and the time) is for the log
+    /// line that says who is in the way, and for nothing else.
     fn lock(self: *Run) Error!void {
         const p = try self.path(&.{lock_name});
-        const me = try self.print("{d} {d}\n", .{ self.ownPid(), self.nowMs() });
 
-        var tries: usize = 0;
-        while (tries < 2) : (tries += 1) {
-            if (std.Io.Dir.cwd().createFile(self.o.io, p, .{ .exclusive = true })) |f| {
-                defer f.close(self.o.io);
-                f.writeStreamingAll(self.o.io, me) catch {
-                    std.Io.Dir.cwd().deleteFile(self.o.io, p) catch {};
-                    return error.Failed;
-                };
-                self.locked = true;
-                return;
-            } else |err| switch (err) {
-                error.PathAlreadyExists => {},
-                else => {
-                    // No state directory to hold a lock in is not a lock.
-                    log.warn("group rename: could not make the lock err={}", .{err});
-                    return error.Failed;
-                },
-            }
-
-            if (!self.lockIsStale(p)) return error.Locked;
-            std.Io.Dir.cwd().deleteFile(self.o.io, p) catch return error.Locked;
-        }
-        return error.Locked;
-    }
-
-    fn lockIsStale(self: *Run, p: []const u8) bool {
-        const bytes = std.Io.Dir.readFileAlloc(.cwd(), self.o.io, p, self.a(), .limited(256)) catch return false;
-        var it = std.mem.tokenizeAny(u8, bytes, " \n");
-        const pid = std.fmt.parseUnsigned(u32, it.next() orelse return false, 10) catch return false;
-        const at = std.fmt.parseInt(i64, it.next() orelse return false, 10) catch return false;
-
-        // A rename takes seconds. A lock older than this is a dead one
-        // whatever the process table says (a pid can be reused).
-        if (self.nowMs() - at > 10 * std.time.ms_per_min) return true;
-
-        if (builtin.os.tag == .windows) return false;
-        if (pid == self.ownPid()) return false;
-        std.posix.kill(@intCast(pid), @enumFromInt(0)) catch |err| switch (err) {
-            error.ProcessNotFound => return true,
-            else => return false,
+        const f = std.Io.Dir.cwd().createFile(self.o.io, p, .{ .read = true, .truncate = false }) catch |err| {
+            // No state directory to hold a lock in is not a lock.
+            log.warn("group rename: could not open the lock file err={}", .{err});
+            return error.Failed;
         };
-        return false;
+
+        const got = f.tryLock(self.o.io, .exclusive) catch |err| {
+            f.close(self.o.io);
+            log.warn("group rename: could not lock {s} err={}", .{ p, err });
+            return error.Failed;
+        };
+        if (!got) {
+            var who: [holder_len]u8 = undefined;
+            const n = f.readPositionalAll(self.o.io, &who, holder_at) catch 0;
+            log.warn("group rename: another process holds the rename lock ({s})", .{std.mem.trim(u8, who[0..n], " \n\x00")});
+            f.close(self.o.io);
+            return error.Locked;
+        }
+
+        var line: [holder_len]u8 = @splat(' ');
+        const text = std.fmt.bufPrint(&line, "{d} {d}\n", .{ self.ownPid(), self.nowMs() }) catch line[0..0];
+        _ = text;
+        f.writePositionalAll(self.o.io, &line, holder_at) catch {};
+
+        self.lock_file = f;
     }
 
     fn unlock(self: *Run) void {
-        if (!self.locked) return;
-        const p = self.path(&.{lock_name}) catch return;
-        std.Io.Dir.cwd().deleteFile(self.o.io, p) catch {};
-        self.locked = false;
+        const f = self.lock_file orelse return;
+        f.unlock(self.o.io);
+        f.close(self.o.io);
+        self.lock_file = null;
     }
 
     // -- the intent -------------------------------------------------------
@@ -1318,7 +1370,7 @@ test "#1267: a rename moves the records to the new name and rewrites only this g
 
     // Nothing left over: no intent, no lock, no work directory; and the
     // old files are in the backup.
-    for ([_][]const u8{ intent_name, lock_name, work_name }) |n| {
+    for ([_][]const u8{ intent_name, work_name }) |n| {
         const p = try std.fs.path.join(alloc, &.{ state, n });
         defer alloc.free(p);
         try testing.expect(!pathExists(io, p));
@@ -1406,12 +1458,12 @@ test "#1267: a name that already has records on disk is refused and nothing move
         alloc.free(state);
     }
     try build(alloc, io, state);
-    const before = try digest(alloc, io, state, &.{});
+    const before = try digest(alloc, io, state, &.{lock_name});
 
     // `beta` has a directory in every root, as a destroyed group would.
     try testing.expectError(error.Blocked, rename(testOpts(alloc, io, state), "alpha", "beta", .{}));
 
-    const after = try digest(alloc, io, state, &.{});
+    const after = try digest(alloc, io, state, &.{lock_name});
     try testing.expectEqualSlices(u8, &before, &after);
 }
 
@@ -1509,13 +1561,13 @@ test "#1267: a check that fails leaves the disk as it was" {
         alloc.free(state);
     }
     try build(alloc, io, state);
-    const before = try digest(alloc, io, state, &.{});
+    const before = try digest(alloc, io, state, &.{lock_name});
 
     for ([_]Sabotage{ .drop_line, .change_text, .change_other_group, .drop_task_event }) |how| {
         var o = testOpts(alloc, io, state);
         o.sabotage = how;
         try testing.expectError(error.Failed, rename(o, "alpha", "gamma", .{}));
-        const after = try digest(alloc, io, state, &.{});
+        const after = try digest(alloc, io, state, &.{lock_name});
         try testing.expectEqualSlices(u8, &before, &after);
     }
 }
@@ -1550,7 +1602,6 @@ test "#1267: every stopping point is recoverable, and lands where an uninterrupt
         var o = testOpts(alloc, io, state);
         o.crash_at = stop;
         // A process that is gone, so its lock can be taken over.
-        o.pid = 2_000_000_000;
         if (rename(o, "alpha", "gamma", .{})) |_| {
             // Ran to the end without being stopped: there are no more
             // points to try.
@@ -1584,7 +1635,7 @@ test "#1267: every stopping point is recoverable, and lands where an uninterrupt
         }
 
         // Nothing left over, and a second recovery has nothing to do.
-        for ([_][]const u8{ intent_name, lock_name, work_name }) |n| {
+        for ([_][]const u8{ intent_name, work_name }) |n| {
             const p = try std.fs.path.join(alloc, &.{ state, n });
             defer alloc.free(p);
             try testing.expect(!pathExists(io, p));
@@ -1596,7 +1647,18 @@ test "#1267: every stopping point is recoverable, and lands where an uninterrupt
     try testing.expect(stop < 200);
 }
 
-test "#1267: a lock held by a live process refuses, and a dead one is taken over" {
+/// Open the lock file the way the rename does and take the lock: a second
+/// holder, in this process.
+fn holdLock(io: std.Io, state: []const u8) !std.Io.File {
+    var buf: [512]u8 = undefined;
+    const p = try std.fmt.bufPrint(&buf, "{s}/{s}", .{ state, lock_name });
+    const f = try std.Io.Dir.cwd().createFile(io, p, .{ .read = true, .truncate = false });
+    errdefer f.close(io);
+    try testing.expect(try f.tryLock(io, .exclusive));
+    return f;
+}
+
+test "#1276: a lock somebody holds refuses a rename, and one let go does not" {
     const alloc = testing.allocator;
     var threaded: std.Io.Threaded = .init(alloc, .{});
     defer threaded.deinit();
@@ -1609,23 +1671,167 @@ test "#1267: a lock held by a live process refuses, and a dead one is taken over
     }
     try build(alloc, io, state);
 
-    const lock_path = try std.fs.path.join(alloc, &.{ state, lock_name });
-    defer alloc.free(lock_path);
-
-    // Held by this very process.
-    const mine = try std.fmt.allocPrint(alloc, "{d} {d}\n", .{ @as(u32, @intCast(std.c.getpid())), @as(i64, 1_800_000_000_000) });
-    defer alloc.free(mine);
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = lock_path, .data = mine });
-    const before = try digest(alloc, io, state, &.{});
-    var o = testOpts(alloc, io, state);
-    o.pid = 1; // somebody else asking
-    try testing.expectError(error.Locked, rename(o, "alpha", "gamma", .{}));
-    const after = try digest(alloc, io, state, &.{});
+    // Held by another open file description: what a second process holding
+    // it looks like to the kernel. (Whether the kernel lets go when that
+    // process dies is the kernel's, and is not tested here; the next two
+    // tests are about what the program does with a lock file nobody holds.)
+    const holder = try holdLock(io, state);
+    const before = try digest(alloc, io, state, live_only);
+    try testing.expectError(error.Locked, rename(testOpts(alloc, io, state), "alpha", "gamma", .{}));
+    const after = try digest(alloc, io, state, live_only);
     try testing.expectEqualSlices(u8, &before, &after);
 
-    // Held by nobody.
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = lock_path, .data = "2000000000 1800000000000\n" });
+    holder.unlock(io);
+    holder.close(io);
     _ = try rename(testOpts(alloc, io, state), "alpha", "gamma", .{});
+}
+
+test "#1276: a lock file nobody holds is not a lock, whatever it says" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const state = try scratch(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+    try build(alloc, io, state);
+
+    // What a killed holder leaves: the file, naming a process that is long
+    // gone -- and, to be sure the contents are not what decides, naming one
+    // that is this very process, and a time of a moment ago.
+    const lock_path = try std.fs.path.join(alloc, &.{ state, lock_name });
+    defer alloc.free(lock_path);
+    const mine = try std.fmt.allocPrint(alloc, "{d} {d}\n", .{ @as(u32, @intCast(std.c.getpid())), @as(i64, 1_800_000_000_000) });
+    defer alloc.free(mine);
+    for ([_][]const u8{ "2000000000 1\n", mine, "garbage" }) |content| {
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = lock_path, .data = content });
+        const state2 = try scratch(alloc, io);
+        defer {
+            std.Io.Dir.cwd().deleteTree(io, state2) catch {};
+            alloc.free(state2);
+        }
+        try build(alloc, io, state2);
+        const lp = try std.fs.path.join(alloc, &.{ state2, lock_name });
+        defer alloc.free(lp);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = lp, .data = content });
+        _ = try rename(testOpts(alloc, io, state2), "alpha", "gamma", .{});
+    }
+}
+
+/// Stop a rename after its intent is written and the new files are begun,
+/// the way a kill would, and leave a lock file behind as one would.
+fn killMidStaging(alloc: Allocator, io: std.Io, state: []const u8) !void {
+    var o = testOpts(alloc, io, state);
+    o.crash_at = 4;
+    try testing.expectError(error.InjectedCrash, rename(o, "alpha", "gamma", .{}));
+    const written = try readAll(alloc, io, &.{ state, intent_name });
+    defer alloc.free(written);
+    try testing.expect(std.mem.indexOf(u8, written, "\"staging\"") != null);
+}
+
+test "#1276: a rename killed mid-staging is finished at the next start, whatever the lock file says" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const state = try scratch(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+    try build(alloc, io, state);
+    try killMidStaging(alloc, io, state);
+
+    // The lock file the dead process left, with a time that is "now" -- the
+    // case the age rule got wrong on Windows.
+    const lock_path = try std.fs.path.join(alloc, &.{ state, lock_name });
+    defer alloc.free(lock_path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = lock_path, .data = "23424 1800000000000\n" });
+
+    const done = try recoverWaiting(testOpts(alloc, io, state), .{ .max_ms = 0 });
+    try testing.expect(done.finished);
+
+    const live = try std.fs.path.join(alloc, &.{ state, "chat", "gamma" });
+    defer alloc.free(live);
+    try testing.expect(pathExists(io, live));
+    const old = try std.fs.path.join(alloc, &.{ state, "chat", "alpha" });
+    defer alloc.free(old);
+    try testing.expect(!pathExists(io, old));
+}
+
+const Release = struct {
+    file: std.Io.File,
+    io: std.Io,
+    after_ms: i64,
+
+    fn run(self: *Release) void {
+        self.io.sleep(.fromMilliseconds(self.after_ms), .awake) catch {};
+        self.file.unlock(self.io);
+        self.file.close(self.io);
+    }
+};
+
+test "#1276: a start waits for a rename in progress and carries on when it ends" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const state = try scratch(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+    try build(alloc, io, state);
+    try killMidStaging(alloc, io, state);
+
+    // Somebody else is holding the lock, and lets go in a moment.
+    var rel: Release = .{ .file = try holdLock(io, state), .io = io, .after_ms = 150 };
+    const t = try std.Thread.spawn(.{}, Release.run, .{&rel});
+
+    const started = daylog.nowMs(io);
+    const done = try recoverWaiting(testOpts(alloc, io, state), .{ .max_ms = 5_000, .step_ms = 10 });
+    const took = daylog.nowMs(io) - started;
+    t.join();
+
+    try testing.expect(done.finished);
+    // It did wait for the holder, and did not wait for the whole allowance.
+    try testing.expect(took >= 100);
+    try testing.expect(took < 4_000);
+}
+
+test "#1276: a holder that never lets go ends the wait with Locked, and nothing is touched" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const state = try scratch(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+    try build(alloc, io, state);
+    try killMidStaging(alloc, io, state);
+
+    const holder = try holdLock(io, state);
+    defer {
+        holder.unlock(io);
+        holder.close(io);
+    }
+    const before = try digest(alloc, io, state, &.{lock_name});
+
+    const started = daylog.nowMs(io);
+    try testing.expectError(error.Locked, recoverWaiting(testOpts(alloc, io, state), .{ .max_ms = 200, .step_ms = 20 }));
+    const took = daylog.nowMs(io) - started;
+    try testing.expect(took >= 180);
+
+    const after = try digest(alloc, io, state, &.{lock_name});
+    try testing.expectEqualSlices(u8, &before, &after);
 }
 
 test "#1267: an unreadable intent is not acted on" {
@@ -1643,12 +1849,12 @@ test "#1267: an unreadable intent is not acted on" {
     const ip = try std.fs.path.join(alloc, &.{ state, intent_name });
     defer alloc.free(ip);
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ip, .data = "{not json" });
-    const before = try digest(alloc, io, state, &.{});
+    const before = try digest(alloc, io, state, &.{lock_name});
 
     try testing.expectError(error.Anomaly, recover(testOpts(alloc, io, state)));
-    try testing.expectError(error.Locked, rename(testOpts(alloc, io, state), "alpha", "gamma", .{}));
+    try testing.expectError(error.Anomaly, rename(testOpts(alloc, io, state), "alpha", "gamma", .{}));
 
-    const after = try digest(alloc, io, state, &.{});
+    const after = try digest(alloc, io, state, &.{lock_name});
     try testing.expectEqualSlices(u8, &before, &after);
 }
 
@@ -1669,7 +1875,6 @@ test "#1267: a swap that finds a state it does not know stops" {
     // entry by hand: staged, source and backup all exist.
     var o = testOpts(alloc, io, state);
     o.crash_at = 10; // the intent has just been marked `swapping`
-    o.pid = 2_000_000_000;
     try testing.expectError(error.InjectedCrash, rename(o, "alpha", "gamma", .{}));
     const written = try readAll(alloc, io, &.{ state, intent_name });
     defer alloc.free(written);
@@ -1904,7 +2109,7 @@ fn crashPoints(alloc: Allocator, io: std.Io, fixture: []const u8, g: []const u8)
         std.Io.Dir.cwd().deleteTree(io, probe_dir) catch {};
         try copyTree(alloc, io, fixture, probe_dir);
 
-        const o: Options = .{ .alloc = alloc, .io = io, .state_dir = probe_dir, .now_ms = 1_800_000_000_000, .crash_at = stop, .pid = 2_000_000_000 };
+        const o: Options = .{ .alloc = alloc, .io = io, .state_dir = probe_dir, .now_ms = 1_800_000_000_000, .crash_at = stop };
         if (rename(o, g, "zz-probe", .{})) |_| break else |err| try testing.expectEqual(error.InjectedCrash, err);
         points += 1;
 

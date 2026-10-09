@@ -5128,6 +5128,16 @@ pub const Host = struct {
         /// note and record go with it. `by` is the caller, who is named in
         /// the group's account of it. Naming the name a group already has
         /// is a success that changes nothing.
+        /// Why the logs are closed, when they are closed *because something
+        /// went wrong* -- null when they are open, and also when there is no
+        /// state directory or the config switched them off, which are
+        /// choices and not faults. The text is the caller's allocator's.
+        ///
+        /// A listing that is short because the logs would not open looks
+        /// exactly like a listing of a machine with no groups, and the one
+        /// reading it cannot tell which it is looking at. This is how it can.
+        logProblem: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator) anyerror!?[]const u8,
+
         chatRename: *const fn (
             ctx: *anyopaque,
             group: []const u8,
@@ -5678,6 +5688,10 @@ pub const Host = struct {
 
     fn chatDestroy(self: Host, group: []const u8) anyerror!void {
         return self.vtable.chatDestroy(self.ctx, group);
+    }
+
+    fn logProblem(self: Host, alloc: std.mem.Allocator) anyerror!?[]const u8 {
+        return self.vtable.logProblem(self.ctx, alloc);
     }
 
     fn chatRename(self: Host, group: []const u8, to: []const u8, by: Bus.Id) anyerror!void {
@@ -7088,9 +7102,20 @@ pub fn dispatch(
             // Cutting briefs rather than paging groups, because the list of
             // groups is what a supervisor needs whole after a restart, and
             // the brief is what it needs only for the one it has picked.
+            //
+            // **And the logs not being open is said.** When they would not
+            // open, the groups that are on disk are not in this list, and an
+            // empty list is then not "there are none" but "none were
+            // loaded". The same list, with the reason beside it.
+            const problem = host.logProblem(alloc) catch null;
+
             if (p.group) |want| {
-                for (groups) |g| if (std.mem.eql(u8, g.name, want))
-                    return .{ .groups = try alloc.dupe(ChatGroupInfo, &.{g}) };
+                for (groups) |g| if (std.mem.eql(u8, g.name, want)) {
+                    const one = try alloc.dupe(ChatGroupInfo, &.{g});
+                    if (problem) |why| return .{ .groups_noted = .{ .groups = one, .warning = why } };
+                    return .{ .groups = one };
+                };
+                if (problem) |why| return hostFailure("LogsClosed", why);
                 return hostFailure("NoSuchGroup", "no group by that name");
             }
             for (groups) |*g| {
@@ -7100,6 +7125,7 @@ pub fn dispatch(
                 g.brief_given = g.brief.len;
                 g.brief = g.brief[0..end];
             }
+            if (problem) |why| return .{ .groups_noted = .{ .groups = groups, .warning = why } };
             return .{ .groups = groups };
         },
 
@@ -7999,6 +8025,10 @@ fn chatFailure(err: anyerror) wire.Response {
             "RenameFailed",
             "the records on disk could not be moved to the new name, so the group was not renamed -- it is still called what it was",
         ),
+        error.LogsClosed => hostFailure(
+            "LogsClosed",
+            "the records are not open (a group rename could not be finished at start-up); group_list says why. Nothing is lost on disk.",
+        ),
         error.RenameBlocked => hostFailure(
             "RenameBlocked",
             "records already exist on disk under that name (a group of that name was destroyed, and its history is still there). Renaming onto them would put two histories under one name. Pick another name.",
@@ -8108,6 +8138,7 @@ fn parseKind(name: []const u8) ?Tasks.Kind {
 /// worker can act on, and "no group by that name" is not.
 fn taskFailure(err: anyerror) wire.Response {
     return switch (err) {
+        error.LogsClosed => chatFailure(err),
         error.BadKind => hostFailure(
             "BadParams",
             "that is not a kind anybody may ask for. The four are: feature, bug, " ++
@@ -8648,6 +8679,9 @@ const FakeHost = struct {
     /// Whether a group was actually taken off the list.
     destroyed: bool = false,
 
+    /// Why the logs are closed, for the tests that want them to be.
+    log_problem: ?[]const u8 = null,
+
     /// The last rename the host was asked to make, and by whom.
     renamed: ?struct { group: []const u8, to: []const u8, by: Bus.Id } = null,
 
@@ -8759,6 +8793,7 @@ const FakeHost = struct {
             .chatCreate = chatCreate,
             .chatDestroy = chatDestroy,
             .chatRename = chatRename,
+            .logProblem = logProblem,
             .chatAdd = chatAdd,
             .chatRemove = chatRemove,
             .chatCompact = chatCompact,
@@ -9004,6 +9039,12 @@ const FakeHost = struct {
         if (self.refuse) return error.NoSuchGroup;
         if (self.group_active) return error.GroupActive;
         self.destroyed = true;
+    }
+
+    fn logProblem(ctx: *anyopaque, alloc: std.mem.Allocator) anyerror!?[]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const why = self.log_problem orelse return null;
+        return try alloc.dupe(u8, why);
     }
 
     fn chatRename(ctx: *anyopaque, group: []const u8, to: []const u8, by: Bus.Id) anyerror!void {
@@ -10741,6 +10782,51 @@ test "#1265: a rename that is refused says why, by name" {
         try testing.expectEqualStrings(c.code, res.failed.code);
         try testing.expect(res.failed.message.len > 0);
         try testing.expect(fake.renamed == null);
+    }
+}
+
+test "#1276: closed logs are an answer by name for the history tools too, not an empty page" {
+    try testing.expectEqualStrings("LogsClosed", chatFailure(error.LogsClosed).failed.code);
+    try testing.expectEqualStrings("LogsClosed", taskFailure(error.LogsClosed).failed.code);
+}
+
+test "#1276: a listing made while the logs are closed says why, and one made otherwise does not" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var b = try testBus(alloc);
+    defer b.deinit();
+
+    // Closed, and nothing in memory: an empty list that is not "no groups".
+    {
+        var fake: FakeHost = .{ .groups = &.{}, .log_problem = "a group rename was left unfinished" };
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .group_list = .{} });
+        try testing.expect(res == .groups_noted);
+        try testing.expectEqual(@as(usize, 0), res.groups_noted.groups.len);
+
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        try wire.writeResponse(&out.writer, res);
+        try testing.expect(std.mem.indexOf(u8, out.written(), "\"warning\":\"a group rename was left unfinished\"") != null);
+        try testing.expect(std.mem.indexOf(u8, out.written(), "\"groups\":[]") != null);
+    }
+
+    // Closed, asking after one group by name: not "no such group" either.
+    {
+        var fake: FakeHost = .{ .groups = &.{}, .log_problem = "why" };
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .group_list = .{ .group = "gone" } });
+        try testing.expectEqualStrings("LogsClosed", res.failed.code);
+        try testing.expectEqualStrings("why", res.failed.message);
+    }
+
+    // Open: the listing as it always was, with nothing added to it.
+    {
+        var fake: FakeHost = .{ .groups = &.{} };
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .group_list = .{} });
+        try testing.expect(res == .groups);
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        try wire.writeResponse(&out.writer, res);
+        try testing.expect(std.mem.indexOf(u8, out.written(), "warning") == null);
     }
 }
 
