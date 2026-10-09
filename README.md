@@ -15,6 +15,7 @@
   <a href="#built-in-ai-screenshots--annotations">AI Screenshots</a> ·
   <a href="#compared-to-alternatives">Comparisons</a> ·
   <a href="#faq">FAQ</a> ·
+  <a href="#contact">Contact</a> ·
   <a href="README_CN.md">中文版</a>
 </p>
 
@@ -158,6 +159,16 @@ No. `steipete/poltergeist` is a file watcher and build tool, and its wrapper com
 
 **7. How do I write a plugin?**
 A directory, a `plugin.json`, and an executable. Twenty lines of shell is a complete plugin.
+
+### Contact
+
+*   **Email:** [xugf@bestfunc.com](mailto:xugf@bestfunc.com)
+*   **Bugs and feature requests:** [GitHub Issues](https://github.com/Lugia123/polter/issues)
+*   **Feishu (Lark) discussion group:** scan to join.
+
+<p>
+  <img src="docs/feishu-group.png" alt="QR code for the Polter discussion group on Feishu" width="240">
+</p>
 
 ### Relationship to Ghostty
 

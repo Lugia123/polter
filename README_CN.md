@@ -15,6 +15,7 @@
   <a href="#专为-ai-设计的截图工具">AI 专属截图</a> ·
   <a href="#竞品对比">竞品对比</a> ·
   <a href="#常见问题-faq">FAQ</a> ·
+  <a href="#联系方式">联系方式</a> ·
   <a href="README.md">English</a>
 </p>
 
@@ -157,6 +158,16 @@ mv Polter.app /Applications/
 
 **7. 我该怎么写插件？**
 一个目录、一个 `plugin.json`，外加一个可执行文件。20 行 shell 脚本就能写一个完整的插件。
+
+### 联系方式
+
+*   **邮箱：** [xugf@bestfunc.com](mailto:xugf@bestfunc.com)
+*   **Bug 与功能建议：** [GitHub Issues](https://github.com/Lugia123/polter/issues)
+*   **飞书讨论群：** 扫码加入。
+
+<p>
+  <img src="docs/feishu-group.png" alt="Polter 飞书讨论群二维码" width="240">
+</p>
 
 ### 和 Ghostty 终端的关系
 

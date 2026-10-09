@@ -429,6 +429,10 @@ if(!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches))
   footer .wrap{display:flex;flex-wrap:wrap;gap:8px 24px;align-items:center}
   footer a{color:var(--mist)}
   footer .r{margin-left:auto}
+  .contact{display:flex;flex-wrap:wrap;gap:20px 28px;align-items:center;justify-content:center;margin-top:44px;text-align:left}
+  .contact img{border-radius:12px;background:#fff;display:block}
+  .contact p{margin:0 0 8px;font-size:16px}
+  .contact a{color:inherit;text-decoration:underline}
 
   @media(max-width:900px){
     .nav nav a:not(.get){display:none}
@@ -1280,6 +1284,13 @@ mv Polter.app /Applications/</pre>
         <span data-lang="zh">下载最新版本</span><span data-lang="en">Download the latest release</span></a>
       <a class="btn btn-ghost" href="https://github.com/Lugia123/polter">GitHub</a>
     </div>
+    <div class="contact" id="contact">
+      <img src="feishu-group.png" width="260" height="282" loading="lazy" alt="Polter Feishu discussion group QR code">
+      <div class="contact-t">
+        <p><span data-lang="zh">飞书讨论群：扫码加入。</span><span data-lang="en">Feishu (Lark) discussion group: scan to join.</span></p>
+        <p><span data-lang="zh">邮箱：</span><span data-lang="en">Email: </span><a href="mailto:xugf@bestfunc.com">xugf@bestfunc.com</a></p>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -1290,6 +1301,7 @@ mv Polter.app /Applications/</pre>
     <span>Polter</span>
     <span>MIT</span>
     <a href="https://github.com/Lugia123/polter">GitHub</a>
+    <a href="mailto:xugf@bestfunc.com">xugf@bestfunc.com</a>
     <span class="r" data-lang="zh">本项目不隶属于 Ghostty 官方。</span>
     <span class="r" data-lang="en">This project is not affiliated with the Ghostty project.</span>
   </div>
