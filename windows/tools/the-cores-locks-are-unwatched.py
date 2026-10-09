@@ -114,8 +114,21 @@ LOCK_GATE = os.path.join(HERE, "lock-reentry.py")
 # having traced every caller of both functions, which was not done. This
 # account is a record of an unwatched area; the count of risky sites within
 # it stays unknown, and these two are inside that unknown, not outside it.
-CALLS = 102
-SPLIT = {"lockUncancelable": 51, "unlock": 51}
+#
+# 102 -> 104 (#1202), re-read 2026-10-09 by the same method. The pair is
+# ours: `inputLineHoldsText`, which reads the input cells before the cursor
+# so a person picking a role is judged by what is on the line. **Its callers
+# were enumerated, which is more than the four above got**: the only way in
+# is `draftFor(.person)`, and `.person` is passed from exactly one place,
+# `App.choosePersona`. There the first use is the right-hand side of
+# `surface.isAtShellPrompt() and ...`, and `isAtShellPrompt` has just taken
+# and released this same lock in the same frame -- so the lock is not held
+# on the way in, or that line would already have hung. The two later uses
+# (`mayTypeAs` from `startRoleIn`, and again inside `typePoltergeistTextAs`)
+# are further down that same call. The `.agent` paths never reach it.
+# Not done: nothing here was run under a held lock to see it hang.
+CALLS = 104
+SPLIT = {"lockUncancelable": 52, "unlock": 52}
 
 # Claim 2. Down is a safety regression; up means somebody found another.
 CAREFUL_SITES = 2
