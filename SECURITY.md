@@ -11,6 +11,15 @@ answer is "nothing does that".
 against the commit this file was written on and drift; the surrounding function
 names do not.
 
+**Revised 2026-10-10** for three things that had changed underneath it: a
+supervisor may now answer permission prompts in some terminals, agents may
+take screenshots, and the roadmap no longer promises that Polter will never
+use a network. The sections on those were rewritten against the code. **The
+line numbers everywhere else were not re-checked** on that pass and are older
+than several releases; go by the function names.
+
+[中文版](SECURITY_CN.md)
+
 ---
 
 ## Scope
@@ -62,7 +71,13 @@ renderer is Ghostty's and should go to Ghostty.
   Check for Updates -- there is no background or scheduled check. It is an
   anonymous HTTPS GET: GitHub sees your IP address and a User-Agent naming the
   program (on macOS the system default, which includes the OS version), and
-  no account or local data. The socket is local, always.
+  no account or local data. The socket is local.
+
+  **That is true of every release so far and is no longer a promise about
+  later ones.** `ROADMAP.md` ("Across machines") plans direct links between
+  machines a person has paired, off until switched on. None of it exists in
+  any release. When it does, it gets a threat model of its own in this file
+  before it ships, and this paragraph is rewritten rather than left standing.
 
 ---
 
@@ -149,6 +164,11 @@ Reading another terminal's screen, typing into one, and making groups all
 require the supervisor role, and only the user hands that out
 (`src/config/Config.zig:1289-1294`).
 
+**One exception, and it is not small: screenshots.** The screenshot tools are
+open to any agent holding a token, supervisor or not, for as long as
+`screenshot-agent-access` allows it — and it allows it by default. See
+[Screenshots](#screenshots).
+
 ### Typing into a terminal
 
 `terminal_send` goes through `Surface.typePoltergeistText`
@@ -156,9 +176,37 @@ require the supervisor role, and only the user hands that out
 end-of-paste sequence, whatever the target is doing (`src/Surface.zig:3733-3737`),
 and multi-line text when the target does not have bracketed paste on
 (`src/Surface.zig:3770-3773`). It is otherwise the ordinary paste path, framed
-the way a paste is framed. **There is no tool that answers a permission prompt
-on another agent's behalf, and adding one is out of scope by decision**
-(`dev-docs/poltergeist/mcp.md:22`).
+the way a paste is framed.
+
+### Answering another agent's permission prompt
+
+**Until 2026-09-08 this file said there was no tool for this and never would
+be. There is one now**, `terminal_answer_prompt`, and the argument that was
+made against it is the reason for its shape (`authorize` in
+`src/poltergeist/rpc.zig` keeps both halves in its comment).
+
+- It is a supervisor's tool, and it works only on a terminal whose switch is
+  on (`Bus.Entry.may_authorise`). Otherwise it answers `AuthoriseOff`, and the
+  keys that answer a box — return, the arrows, tab — are refused at that
+  terminal too.
+- **In a terminal you started yourself the switch is off** until you turn it
+  on from that terminal's own menu (`Agents → Let a Supervisor Answer Prompts
+  Here`). No tool can turn it on; `setMayAuthorise` refuses everybody but the
+  user.
+- **In a tab or a split a supervisor opened, it is on from the start**
+  (`Bus.markOpenedByAgent`, since 0.9.1684), and you can switch it off there.
+  A terminal a plain worker opened carries no grant.
+- A plugin cannot call the tool at all, and nobody may answer their *own*
+  prompt through it (`selfPermitted`).
+
+**What that default opens, said plainly:** a supervisor can open a terminal in
+a directory and take "Yes, and don't ask again" there, which is a standing
+permission for every agent that runs in that directory afterwards. There is no
+setting that turns the default off; the per-terminal switch is the way back.
+
+`terminal_send` is not behind the switch. It types text and cannot press
+return, and it is an ordinary logged call rather than a way round anything —
+but it is a published route, not an absent one.
 
 Text from a plugin that is printed onto a screen or into a log is stripped of
 every byte below `0x20`, `DEL`, and the C1 range first
@@ -210,9 +258,14 @@ Everything lives under `$XDG_STATE_HOME/polter` (`LOCALAPPDATA` on Windows).
 | Chat stream (machine) | `chat/chat.jsonl` (+`.1`) | 8MB, two generations |
 | Chat record (people) | `chat/<group>/<date>.jsonl` | **none** |
 | Terminal transcript | `terminals/<id>-<title>/<date>.jsonl` | **none** |
+| Task panel events | `tasks/<group>/<date>.jsonl` | **none** |
+| Hourly statistics | `stats/<group>/<date>.jsonl` | **none** |
+| Screenshots and pasted images | `shots/<timestamp>.png` and a `.json` beside each | **removed after 7 days**, at startup |
+| Saved projects, the last session's arrangement | `projects/`, `session.json` | overwritten in place |
 
-- **There is no retention period and nothing prunes any of it.** The two
-  day-file records are never rotated and never trimmed; a day past 8MB
+- **There is no retention period and nothing prunes the records.** Screenshots
+  are the one exception, below. The day-file records are never rotated and
+  never trimmed; a day past 8MB
   continues in a `.partN` file beside itself rather than moving anything aside
   (`src/config/Config.zig:1500-1503`, `:1544-1545`;
   `dev-docs/poltergeist/storage.md`).
@@ -222,12 +275,20 @@ Everything lives under `$XDG_STATE_HOME/polter` (`LOCALAPPDATA` on Windows).
   (`src/config/Config.zig:1539-1543`). Treat these files the way you treat your
   shell history.
 - Both records are created `0o600` on POSIX (`src/poltergeist/daylog.zig:49-56`).
+- **Screenshots** are written `0o600` in a `0o700` directory on POSIX. Files in
+  that directory older than seven days are deleted when the app starts, and
+  only files whose names match the pattern Polter itself writes — so pointing
+  `screenshot-directory` at a folder of your own does not put your files at
+  risk (`dev-docs/poltergeist/screenshot.md` §5). A mosaic is applied before
+  anything is written: the unblurred picture is never on disk or on the
+  clipboard. What the `.json` beside a screenshot holds is every annotation's
+  text and position, which display and window it was of, and who took it.
 - Both can be turned off: `poltergeist-chat-log` and `poltergeist-terminal-log`,
   each defaulting to on (`src/config/Config.zig:1511`, `:1548`).
 - Screen sampling is off unless asked for: `poltergeist-watch` defaults to
   `false` (`src/config/Config.zig:1332`).
 - **No telemetry, ever.** Nothing about you or your terminals is sent
-  anywhere; Polter has no account and no service of its own (`ROADMAP.md`,
+  anywhere; Polter has no account, no cloud service and no relay (`ROADMAP.md`,
   "What this will not become"). The one outbound request -- Check for
   Updates, when you choose it -- is described under "Anything over a network"
   above.
@@ -245,12 +306,50 @@ not been measured on a Windows machine.
 
 ---
 
+## Screenshots
+
+Since 0.9.1728 Polter takes screenshots, and agents can ask for them.
+
+- **Any agent with a token may capture, not only a supervisor.** The tools
+  that list what is on screen, capture a display, a window or a region, take a
+  long screenshot, and draw on an existing one are refused on the user's
+  setting and not on standing (`requiresSupervisor` in
+  `src/poltergeist/rpc.zig` answers `false` for all of them). The setting is
+  `screenshot-agent-access`, and **it defaults to `allow`**
+  (`src/config/Config.zig`). Set it to `deny`, or use Settings → General →
+  Screenshot, and every one of them is refused with a sentence saying why.
+- **What can be captured is whatever is on your screen**, not only Polter's
+  own windows: another application's window, a password manager left open, a
+  message that happened to be visible. A capture made by an agent appears with
+  no interface on screen. Each one is recorded with who took it (`by` in the
+  `.json`), and that record is a file, not a notification — nothing tells you
+  at the moment it happens.
+- **A picture is content like any other.** What is in a screenshot goes into
+  the model that asked for it, so text on your screen is one more way for
+  text to reach an agent. See [Prompt injection](#prompt-injection).
+- **Two global triggers for the person.** A hotkey, and a held pair of
+  modifier keys with a click, both system-wide. On Windows the click is
+  swallowed; on macOS it also reaches the application under the pointer.
+  `screenshot-mouse-trigger` changes or disables the second.
+- **macOS permissions.** Screen Recording, without which nothing can be
+  captured, and Accessibility, which automatic scrolling for a long
+  screenshot uses (`ShotSession` and `ShotAgentHost` both ask
+  `AXIsProcessTrusted`). Windows asks for none.
+
+**Not verified:** the file permissions and the seven-day removal on Windows
+are stated from the specification and have not been read back on a machine.
+
+---
+
 ## Prompt injection
 
 **A supervisor reads other terminals' screens, and what it reads goes into its
 context. Anything that can put text on one of those screens can put text in
 front of the supervising model** — a file being `cat`ed, a dependency's build
-output, a web page a worker fetched, a commit message.
+output, a web page a worker fetched, a commit message. Two newer routes carry
+the same risk: what a hooked agent CLI says at the end of a turn is passed to
+its supervisor as text, and a screenshot puts whatever was on the screen in
+front of the agent that asked for it.
 
 Polter does not sanitise this and cannot: the content is the product. This is
 stated as a known limitation in
@@ -306,6 +405,12 @@ Stated because the absence of a claim is easy to read as a claim:
 - **The reachability rules have unit tests but no adversarial testing.**
   `src/poltergeist/rpc.zig` carries tests for each refusal; nobody has gone
   looking for a way around the set of them.
+- **The line numbers in this file have not been re-checked** since it was
+  first written, apart from the sections revised on 2026-10-10, which cite
+  functions instead.
+- **Nobody has gone looking for what an agent can learn from screenshots it
+  is allowed to take by default.** The setting exists; the consequences of its
+  default have been reasoned about, not tested.
 - **Linux is unverified.** The GTK app builds and nobody has run a supervised
   session on it (`ROADMAP.md`), so none of the above has been exercised there.
 - **The Windows behaviour above is read from the code**, and only the pipe DACL

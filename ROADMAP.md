@@ -1,5 +1,7 @@
 # Roadmap
 
+[中文版](ROADMAP_CN.md)
+
 Polter's aim, stated once so the rest can be measured against it: **a
 cross-platform tool that orchestrates several AI coding agents on their own,
 and a fast terminal.** Something that serves neither half does not belong
