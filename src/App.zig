@@ -1344,11 +1344,7 @@ pub fn ensureChatLog(self: *App, want: bool) void {
         if (done.abandoned) log.warn("poltergeist: dropped a group rename that could not be redone", .{});
     } else |err| {
         log.warn("poltergeist: a group rename is unfinished and could not be continued err={}; the logs stay closed", .{err});
-        self.noteLogProblem(state_dir, switch (err) {
-            error.Locked => "another Polter process is in the middle of renaming a group and did not finish within the time allowed",
-            error.Anomaly => "a group rename was left in a state this version does not know how to continue from",
-            else => "an unfinished group rename could not be finished",
-        });
+        self.noteLogProblem(state_dir, poltergeistpkg.GroupRename.startupProblem(err));
         return;
     }
 
@@ -1418,23 +1414,23 @@ pub fn ensureChatLog(self: *App, want: bool) void {
 /// person: nothing was lost, the groups on disk are not loaded, nothing is
 /// being recorded, and what to do about it.
 fn noteLogProblem(self: *App, state_dir: []const u8, why: []const u8) void {
-    const text = std.fmt.allocPrint(
-        self.alloc,
-        "Polter could not open its records: {s}. Nothing on disk was changed or lost, but " ++
-            "the groups saved in {s} are NOT loaded and nothing new is being recorded; " ++
-            "groups made now exist only in memory. Quit every Polter and start one again; " ++
-            "if this stays, do not delete anything in that directory (see rename-intent.json, " ++
-            "rename-work and rename-backup there).",
-        .{ why, state_dir },
-    ) catch return;
+    const text = poltergeistpkg.GroupRename.problemText(self.alloc, state_dir, why) catch return;
 
     const first = self.poltergeist_log_problem == null;
     if (self.poltergeist_log_problem) |old| self.alloc.free(old);
     self.poltergeist_log_problem = text;
 
+    // **Queued, never shown from here.** This runs inside `Surface.init`
+    // (through `ensureChatLog`), where `addSurface` has already put the
+    // surface in the list but its core does not exist yet; `poltergeistAlert`
+    // would reach for `surfaces.items[0].core()` and take it for a live
+    // terminal. On Windows that was the host dying at start with 0xc0000005
+    // whenever a rename could not be continued. The queue is drained at the
+    // end of that same `Surface.init` (`flushPoltergeistAlerts`), when there
+    // is somewhere to print.
     if (first) {
         const line = self.alloc.dupe(u8, text) catch return;
-        self.poltergeistAlert(line);
+        self.poltergeist_alerts.append(self.alloc, line) catch self.alloc.free(line);
     }
 }
 
@@ -5306,11 +5302,7 @@ fn chatRename(
             // The swap may have closed the handles before it stopped.
             self.reopenStoreHandles();
             log.warn("poltergeist: group rename {s} -> {s} refused err={}", .{ group, to, err });
-            return switch (err) {
-                error.Blocked => error.RenameBlocked,
-                error.OutOfMemory => error.OutOfMemory,
-                else => error.RenameFailed,
-            };
+            return poltergeistpkg.GroupRename.refusal(err);
         };
     }
 

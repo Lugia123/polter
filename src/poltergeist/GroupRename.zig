@@ -87,6 +87,61 @@ pub const Error = error{
     InjectedCrash,
 } || Allocator.Error;
 
+/// What a caller of `rename` tells its own caller, one name for each way it
+/// can fail, and **a `switch` with no `else`** so that a new failure cannot
+/// be reported as some other one by default. Before this, `Locked` -- another
+/// Polter in the middle of renaming -- was answered as "the records could not
+/// be moved", which the log contradicted and the caller could not act on.
+pub const Refusal = error{
+    RenameBlocked,
+    RenameBusy,
+    RenameUnfinished,
+    RenameFailed,
+    OutOfMemory,
+};
+
+pub fn refusal(err: Error) Refusal {
+    return switch (err) {
+        error.Blocked => error.RenameBlocked,
+        error.Locked => error.RenameBusy,
+        // An earlier rename is on disk unfinished (`rename-intent.json`),
+        // or the swap met a state it does not know: not "could not be
+        // moved" -- nothing was tried.
+        error.Anomaly => error.RenameUnfinished,
+        error.Failed => error.RenameFailed,
+        error.InjectedCrash => error.RenameFailed,
+        error.OutOfMemory => error.OutOfMemory,
+    };
+}
+
+/// What to say, to the supervisor and to the person, when `recover` could
+/// not be finished at start and the logs stay closed. Also exhaustive.
+pub fn startupProblem(err: Error) []const u8 {
+    return switch (err) {
+        error.Locked => "another Polter process is in the middle of renaming a group and did not finish within the time allowed",
+        error.Anomaly => "a group rename was left in a state this version does not know how to continue from",
+        error.Failed => "an unfinished group rename could not be finished",
+        error.Blocked => "an unfinished group rename is blocked by records already under its new name",
+        error.InjectedCrash => "a group rename was stopped",
+        error.OutOfMemory => "there was not enough memory to finish a group rename",
+    };
+}
+
+/// The whole sentence the supervisor (`group_list`'s `warning`) and the
+/// person are given when the records could not be opened. Pure, so that what
+/// is said can be checked without a window to say it in.
+pub fn problemText(alloc: Allocator, state_dir: []const u8, why: []const u8) Allocator.Error![]u8 {
+    return std.fmt.allocPrint(
+        alloc,
+        "Polter could not open its records: {s}. Nothing on disk was changed or lost, but " ++
+            "the groups saved in {s} are NOT loaded and nothing new is being recorded; " ++
+            "groups made now exist only in memory. Quit every Polter and start one again; " ++
+            "if this stays, do not delete anything in that directory (see rename-intent.json, " ++
+            "rename-work and rename-backup there).",
+        .{ why, state_dir },
+    );
+}
+
 pub const Phase = enum { staging, staged, swapping };
 
 pub const Options = struct {
@@ -2176,4 +2231,77 @@ test "#1267: the replayed panel has to match as well as the lines" {
     const cut2 = std.mem.lastIndexOf(u8, bytes[0 .. cut - 1], "\n").? + 1;
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = f, .data = bytes[0..cut2] });
     try testing.expectError(error.Failed, run.checkTasks("alpha", "gamma", "alpha", "gamma"));
+}
+
+test "#1282: every way a rename can be refused is reported as itself" {
+    try testing.expectEqual(error.RenameBlocked, refusal(error.Blocked));
+    try testing.expectEqual(error.RenameBusy, refusal(error.Locked));
+    try testing.expectEqual(error.RenameUnfinished, refusal(error.Anomaly));
+    try testing.expectEqual(error.RenameFailed, refusal(error.Failed));
+    try testing.expectEqual(error.OutOfMemory, refusal(error.OutOfMemory));
+
+    // And what really happens: a live holder is Busy, an unfinished rename
+    // on disk is Unfinished -- neither is "could not be moved".
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const state = try scratch(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+    try build(alloc, io, state);
+
+    const holder = try holdLock(io, state);
+    const busy = rename(testOpts(alloc, io, state), "alpha", "gamma", .{});
+    try testing.expectError(error.Locked, busy);
+    try testing.expectEqual(error.RenameBusy, refusal(if (busy) |_| unreachable else |e| e));
+    holder.unlock(io);
+    holder.close(io);
+
+    const ip = try std.fs.path.join(alloc, &.{ state, intent_name });
+    defer alloc.free(ip);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ip, .data = "{\"phase\":\"bogus\"}" });
+    const unfinished = rename(testOpts(alloc, io, state), "alpha", "gamma", .{});
+    try testing.expectError(error.Anomaly, unfinished);
+    try testing.expectEqual(error.RenameUnfinished, refusal(if (unfinished) |_| unreachable else |e| e));
+}
+
+test "#1282: an intent nobody can read gives a problem that says what and where" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const state = try scratch(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+    try build(alloc, io, state);
+
+    // Exactly what the Windows test machine did to the host at start.
+    const ip = try std.fs.path.join(alloc, &.{ state, intent_name });
+    defer alloc.free(ip);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ip, .data = "{\"op\":\"group_rename\",\"from\":\"x\",\"to\":\"y\",\"phase\":\"bogus\"}" });
+    const before = try digest(alloc, io, state, &.{lock_name});
+
+    const err = recoverWaiting(testOpts(alloc, io, state), .{ .max_ms = 0 });
+    try testing.expectError(error.Anomaly, err);
+
+    const text = try problemText(alloc, state, startupProblem(error.Anomaly));
+    defer alloc.free(text);
+    try testing.expect(std.mem.indexOf(u8, text, "does not know how to continue") != null);
+    try testing.expect(std.mem.indexOf(u8, text, state) != null);
+    try testing.expect(std.mem.indexOf(u8, text, "NOT loaded") != null);
+
+    // Nothing was touched while finding out.
+    const after = try digest(alloc, io, state, &.{lock_name});
+    try testing.expectEqualSlices(u8, &before, &after);
+
+    // Every cause has words of its own.
+    const causes = [_]Error{ error.Locked, error.Anomaly, error.Failed, error.Blocked, error.InjectedCrash, error.OutOfMemory };
+    for (causes, 0..) |a, i| for (causes[i + 1 ..]) |b| {
+        try testing.expect(!std.mem.eql(u8, startupProblem(a), startupProblem(b)));
+    };
 }

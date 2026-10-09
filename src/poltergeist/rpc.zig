@@ -8029,6 +8029,14 @@ fn chatFailure(err: anyerror) wire.Response {
             "LogsClosed",
             "the records are not open (a group rename could not be finished at start-up); group_list says why. Nothing is lost on disk.",
         ),
+        error.RenameUnfinished => hostFailure(
+            "RenameUnfinished",
+            "an earlier group rename was left unfinished on disk and has not been continued, so no new one was started. Nothing was changed. Restart Polter; if it comes back, the state directory's rename-intent.json says what it was.",
+        ),
+        error.RenameBusy => hostFailure(
+            "RenameBusy",
+            "another Polter process is renaming a group right now (it holds the rename lock). Nothing was changed; try again in a few seconds.",
+        ),
         error.RenameBlocked => hostFailure(
             "RenameBlocked",
             "records already exist on disk under that name (a group of that name was destroyed, and its history is still there). Renaming onto them would put two histories under one name. Pick another name.",
@@ -10773,6 +10781,8 @@ test "#1265: a rename that is refused says why, by name" {
         .{ .err = error.BadName, .code = "BadName" },
         .{ .err = error.RenameFailed, .code = "RenameFailed" },
         .{ .err = error.RenameBlocked, .code = "RenameBlocked" },
+        .{ .err = error.RenameBusy, .code = "RenameBusy" },
+        .{ .err = error.RenameUnfinished, .code = "RenameUnfinished" },
     };
     for (cases) |c| {
         var fake: FakeHost = .{ .group_owner = boss, .rename_error = c.err };
