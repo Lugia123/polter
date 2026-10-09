@@ -30,10 +30,17 @@ struct ConfigFormWriteTests {
     /// own path in force (`/tmp/Ghostty/…`), and nothing makes that one --
     /// `/tmp` is emptied on a restart -- so the `open` answered -1 and all
     /// three tests here failed before reaching what they are about.
+    ///
+    /// The file itself is made too, empty, once the lock is held by nobody
+    /// else's write: the core keeps a backup of the file *as it was* before
+    /// the first write, and a file that was not there has nothing to keep,
+    /// so the backup the first test asks for was (rightly) nil.
     private func openLock(beside host: String) -> Int32 {
-        try? FileManager.default.createDirectory(
+        let files = FileManager.default
+        try? files.createDirectory(
             atPath: (host as NSString).deletingLastPathComponent,
             withIntermediateDirectories: true)
+        if !files.fileExists(atPath: host) { files.createFile(atPath: host, contents: Data()) }
         return open(host + ".form-write-test.lock", O_CREAT | O_RDWR, 0o600)
     }
 
