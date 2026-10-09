@@ -24,6 +24,19 @@ import Testing
 @MainActor
 @Suite(.serialized)
 struct ConfigFormWriteTests {
+    /// The lock beside the host's config file, with the directory made
+    /// first. `tools/mac-xctest-run.sh` starts the host on a file in a
+    /// directory it has just made; `zig build test` leaves the test plan's
+    /// own path in force (`/tmp/Ghostty/…`), and nothing makes that one --
+    /// `/tmp` is emptied on a restart -- so the `open` answered -1 and all
+    /// three tests here failed before reaching what they are about.
+    private func openLock(beside host: String) -> Int32 {
+        try? FileManager.default.createDirectory(
+            atPath: (host as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true)
+        return open(host + ".form-write-test.lock", O_CREAT | O_RDWR, 0o600)
+    }
+
     private func canonical(_ p: String) -> String {
         URL(fileURLWithPath: p).resolvingSymlinksInPath().standardizedFileURL.path
     }
@@ -51,7 +64,7 @@ struct ConfigFormWriteTests {
         // Taken before the first read, not just the first write: another
         // host process may be holding the file in a state it made on
         // purpose (the config-error test below writes a broken line).
-        let lock = open(host + ".form-write-test.lock", O_CREAT | O_RDWR, 0o600)
+        let lock = openLock(beside: host)
         try #require(lock >= 0)
         flock(lock, LOCK_EX)
         defer {
@@ -131,7 +144,7 @@ struct ConfigFormWriteTests {
         let host = try #require(delegate.ghostty.configPath)
         let temporary = [canonical(NSTemporaryDirectory()), "/private/tmp/", "/tmp/"]
         try #require(temporary.contains { canonical(host).hasPrefix($0) }, "\(host) is not a temporary file")
-        let lock = open(host + ".form-write-test.lock", O_CREAT | O_RDWR, 0o600)
+        let lock = openLock(beside: host)
         try #require(lock >= 0)
         flock(lock, LOCK_EX)
         defer {
@@ -178,7 +191,7 @@ struct ConfigFormWriteTests {
         try #require(temporary.contains { canonical(host).hasPrefix($0) }, "\(host) is not a temporary file")
 
         let url = URL(fileURLWithPath: host)
-        let lock = open(host + ".form-write-test.lock", O_CREAT | O_RDWR, 0o600)
+        let lock = openLock(beside: host)
         try #require(lock >= 0)
         flock(lock, LOCK_EX)
         defer {

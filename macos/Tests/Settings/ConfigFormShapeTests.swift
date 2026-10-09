@@ -19,7 +19,7 @@ struct ConfigFormShapeTests {
                   "shortcuts":[{"action":"screenshot","label":"Screenshot","summary":"Take one.","aliases":["capture"]}]}],
      "items":[
       {"key":"screenshot-mouse-trigger","group":"screenshot","label":"Mouse Trigger","summary":"S","control":"choice",
-       "choices":["","cmd+shift","ctrl+shift"],"choice_labels":["Off",null,null],"choice_template":"%s + Double-Click",
+       "choices":["","cmd+shift","ctrl+shift"],"choice_labels":["Off",null,null],"choice_template":"%s + Click",
        "on":null,"off":null,"aliases":["double-click"],"min":null,"max":null,"default":"cmd+shift","value":"cmd+shift",
        "doc":null,"source":{"kind":"default","path":null,"line":null},"readonly":null},
       {"key":"screenshot-directory","group":"screenshot","label":"Folder","summary":"S","control":"directory",
@@ -57,7 +57,7 @@ struct ConfigFormShapeTests {
     struct Tongue: CustomTestStringConvertible, Sendable {
         var table: String
         var off: String
-        var doubleClick: String
+        var click: String
         var notSet: String
         var mouseTrigger: String
         var screenshot: String
@@ -69,11 +69,11 @@ struct ConfigFormShapeTests {
         var testDescription: String { table }
 
         static let english = Tongue(
-            table: "Base", off: "Off", doubleClick: "Double-Click", notSet: "Not set",
+            table: "Base", off: "Off", click: "Click", notSet: "Not set",
             mouseTrigger: "Mouse Trigger", screenshot: "Screenshot", pasteImages: "Paste Images as Files",
             isEnglish: true)
         static let chinese = Tongue(
-            table: "zh-Hans", off: "已关", doubleClick: "双击", notSet: "未设置",
+            table: "zh-Hans", off: "已关", click: "单击", notSet: "未设置",
             mouseTrigger: "鼠标触发", screenshot: "截图", pasteImages: "粘贴图片时存成文件并粘贴路径",
             isEnglish: false)
         static let all = [english, chinese]
@@ -100,7 +100,7 @@ struct ConfigFormShapeTests {
         // Named: its name. Not named: the value, until the host spells it.
         #expect(ConfigFormRules.choiceTitle("", of: trigger, bundle: words) == tongue.off)
         // Not named: spelled by the host, through the item's template.
-        #expect(ConfigFormRules.choiceTitle("cmd+shift", of: trigger, bundle: words) == "⇧⌘ + \(tongue.doubleClick)")
+        #expect(ConfigFormRules.choiceTitle("cmd+shift", of: trigger, bundle: words) == "⇧⌘ + \(tongue.click)")
         #expect(form.items.first { $0.key == "screenshot-directory" }?.control == .directory)
         #expect(form.items.first { $0.key == "screenshot-agent-access" }?.control == .toggle)
         // A control this build does not draw is shown read-only.
@@ -126,7 +126,7 @@ struct ConfigFormShapeTests {
 
     @Test func theNewFieldsAreRead() {
         let trigger = item("screenshot-mouse-trigger")
-        #expect(trigger.choiceTemplate == "%s + Double-Click")
+        #expect(trigger.choiceTemplate == "%s + Click")
         #expect(trigger.aliases == ["double-click"])
         #expect(item("screenshot-agent-access").on == "allow")
         #expect(item("screenshot-agent-access").off == "deny")
@@ -183,8 +183,8 @@ struct ConfigFormShapeTests {
     func aChoiceWithNoNameIsSpelledThroughTheTemplate(_ tongue: Tongue) throws {
         let words = try #require(tongue.bundle, "no \(tongue.table) table")
         let trigger = item("screenshot-mouse-trigger")
-        #expect(ConfigFormRules.choiceTitle("ctrl+shift", of: trigger, bundle: words) == "⌃⇧ + \(tongue.doubleClick)")
-        #expect(ConfigFormRules.choiceTitle("cmd+shift", of: trigger, bundle: words) == "⇧⌘ + \(tongue.doubleClick)")
+        #expect(ConfigFormRules.choiceTitle("ctrl+shift", of: trigger, bundle: words) == "⌃⇧ + \(tongue.click)")
+        #expect(ConfigFormRules.choiceTitle("cmd+shift", of: trigger, bundle: words) == "⇧⌘ + \(tongue.click)")
         #expect(ConfigFormRules.choiceTitle("", of: trigger, bundle: words) == tongue.off)
         // A value the template cannot spell is shown as it is written.
         #expect(ConfigFormRules.choiceTitle("sideways", of: trigger, bundle: words) == "sideways")
@@ -202,7 +202,7 @@ struct ConfigFormShapeTests {
         trigger.value = "super+ctrl+shift"
         #expect(ConfigFormRules.choices(of: trigger) == ["", "cmd+shift", "ctrl+shift", "super+ctrl+shift"])
         #expect(ConfigFormRules.choiceTitle("super+ctrl+shift", of: trigger, bundle: words)
-            == "⌃⇧⌘ + \(tongue.doubleClick)")
+            == "⌃⇧⌘ + \(tongue.click)")
         #expect(ConfigFormRules.choices(of: item("font-size")) == ["13"])
     }
 
@@ -248,7 +248,7 @@ struct ConfigFormShapeTests {
             name: tongue.mouseTrigger,
             aliases: tongue.isEnglish ? ["double-click"] : ["double-click", "Mouse Trigger"],
             key: "screenshot-mouse-trigger", summary: "S",
-            choices: [tongue.off, "⇧⌘ + \(tongue.doubleClick)", "⌃⇧ + \(tongue.doubleClick)"],
+            choices: [tongue.off, "⇧⌘ + \(tongue.click)", "⌃⇧ + \(tongue.click)"],
             group: GeneralGroup.screenshot.title))
         // A row says which group it is in, so `font size` finds the size
         // under Font; All Options is not a group anybody names.
