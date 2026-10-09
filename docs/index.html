@@ -5,126 +5,1305 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Polter — 让一个 Claude Code 会话去管另外几个</title>
 <meta name="description" content="A terminal for running Claude Code sessions in parallel: one session supervises the others over MCP — reads their screens, types into them, and is told how long each has been still. A fork of Ghostty. No account, no API key.">
-<meta property="og:title" content="Polter">
-<meta property="og:image" content="poster-en.jpg">
+<link rel="canonical" href="https://lugia123.github.io/polter/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://lugia123.github.io/polter/">
+<meta property="og:title" content="Polter: put one Claude Code session in charge of the others">
+<meta property="og:description" content="A terminal for running several coding agents in parallel. One Claude Code session is the supervisor: over MCP it reads the others' screens, types into them, and is told how long each has been still.">
+<meta property="og:image" content="https://lugia123.github.io/polter/poster-en.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Polter",
+ "description":"A terminal for running several coding agents in parallel. One Claude Code session is the supervisor: over MCP it reads the others' screens, types into them, and is told how long each has been still. A fork of Ghostty.",
+ "applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Windows",
+ "license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,
+ "url":"https://lugia123.github.io/polter/","codeRepository":"https://github.com/Lugia123/polter",
+ "downloadUrl":"https://github.com/Lugia123/polter/releases/latest"}
+</script>
 <link rel="icon" href="icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<script>
+/* 动效只在脚本可用且用户没有要求减少动效时打开；否则整页是静态的完整内容 */
+if(!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches))
+  document.documentElement.className='anim';
+</script>
 <style>
   :root{
-    --bg:#0A0A0C;
-    --line:#26262B;
-    --ink:#EDEBE5;
-    --ink-2:#8E8C86;
-    --indigo:#6F68F0;
-    --sans:'Inter','Noto Sans SC',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    /* 取自应用图标：靛蓝底、米白窗口、三枚状态色块 */
+    --indigo:#4035C9;
+    --indigo-hi:#8E86FF;
+    --night:#131032;
+    --night-2:#1D1947;
+    --paper:#F5F3EC;
+    --ink:#17152B;
+    --ink-2:#5D5A72;
+    --mist:#B9B5DA;
+    --mint:#2ED3A6;
+    --coral:#FF6A5A;
+    --amber:#FFC247;
+    --sans:'Geist','Noto Sans SC',-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei UI','Segoe UI',sans-serif;
+    --mono:'Geist Mono',ui-monospace,'SF Mono',Menlo,Consolas,'Noto Sans SC',monospace;
+    --nav-h:56px;
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  html,body{background:var(--bg);color:var(--ink)}
-  body{font-family:var(--sans);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;
-       min-height:100vh;display:flex;flex-direction:column}
-  .wrap{width:100%;max-width:1120px;margin:0 auto;padding:0 20px}
-
-  header .wrap{display:flex;align-items:center;gap:12px;height:64px}
-  header img{width:24px;height:24px;border-radius:6px}
-  header b{font-weight:700;letter-spacing:-.01em}
-  header nav{margin-left:auto;display:flex;align-items:center;gap:18px;font-size:14px}
-  header a{color:var(--ink-2);text-decoration:none}
-  header a:hover{color:var(--ink)}
-  .lang{border:1px solid var(--line);color:var(--ink);background:none;font:inherit;font-size:13px;
-        padding:3px 12px;border-radius:999px;cursor:pointer}
-  .lang:hover{border-color:var(--ink-2)}
-
-  main{flex:1;display:flex;flex-direction:column;justify-content:center;padding:12px 0 40px}
-  .stage{position:relative;display:flex;flex-direction:column}
-  .player{border:1px solid var(--line);border-radius:14px;overflow:hidden;
-          background:#000;aspect-ratio:16/9;max-width:100%}
-  video{display:block;width:100%;height:100%;object-fit:cover}
-  .sound{position:absolute;right:14px;bottom:14px;display:flex;align-items:center;gap:7px;
-         border:1px solid rgba(255,255,255,.18);background:rgba(10,10,12,.66);color:var(--ink);
-         backdrop-filter:blur(6px);font:500 13px var(--sans);padding:6px 13px;border-radius:999px;
-         cursor:pointer}
-  .sound:hover{background:rgba(10,10,12,.85)}
-  .sound svg{width:15px;height:15px}
-
-  .under{margin-top:28px;display:flex;flex-wrap:wrap;align-items:center;gap:16px 28px}
-  .under h1{font-size:clamp(19px,2.4vw,24px);font-weight:700;letter-spacing:-.015em;flex:1 1 360px}
-  .under h1 span{display:block;margin-top:2px;font-size:14px;font-weight:400;color:var(--ink-2);letter-spacing:0}
-  .cta{display:flex;gap:10px;flex-wrap:wrap}
-  .btn{display:inline-block;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:500;
-       text-decoration:none;border:1px solid var(--indigo);transition:.15s;white-space:nowrap}
-  .btn-p{background:var(--indigo);color:#fff}
-  .btn-p:hover{opacity:.88}
-  .btn-s{color:var(--ink);border-color:var(--line)}
-  .btn-s:hover{border-color:var(--ink-2)}
-
-  footer{padding:24px 0 36px;font-size:12px;color:var(--ink-2)}
-  footer a{color:var(--ink-2)}
-
+  html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+  body{font-family:var(--sans);font-size:18px;line-height:1.6;color:var(--ink);background:var(--night);
+       -webkit-font-smoothing:antialiased;overflow-x:hidden}
+  img,video{display:block;max-width:100%}
+  a{color:inherit}
+  code,kbd,pre{font-family:var(--mono);font-size:.9em}
+  :focus-visible{outline:3px solid var(--amber);outline-offset:3px;border-radius:6px}
   html[lang="zh"] [data-lang="en"],
-  html[lang="en"] [data-lang="zh"]{display:none}
+  html[lang="en"] [data-lang="zh"]{display:none!important}
+
+  .wrap{width:100%;max-width:1200px;margin:0 auto;padding:0 24px}
+  .narrow{max-width:880px}
+
+  /* 分段：底色各自声明，间距统一由 .sec 给 */
+  .sec{padding:clamp(88px,13vh,168px) 0;position:relative}
+  .on-paper{background:var(--paper);color:var(--ink)}
+  .on-night{background:var(--night);color:#fff}
+  .on-indigo{background:var(--indigo);color:#fff}
+  [id]{scroll-margin-top:var(--nav-h)}
+
+  h1,h2,h3{font-weight:800;letter-spacing:-.03em;line-height:1.08;text-wrap:balance}
+  html[lang="zh"] h1,html[lang="zh"] h2,html[lang="zh"] h3{font-weight:900;letter-spacing:-.01em;line-height:1.2}
+  h2{font-size:clamp(34px,5.4vw,76px)}
+  h3{font-size:clamp(22px,2.2vw,30px);letter-spacing:-.02em}
+  .lead{font-size:clamp(19px,1.7vw,24px);line-height:1.55;max-width:34em}
+  .on-paper .lead,.on-paper p{color:var(--ink-2)}
+  .on-paper strong,.on-paper h2,.on-paper h3{color:var(--ink)}
+  .on-night .lead,.on-night p{color:var(--mist)}
+  .on-indigo p{color:#DAD7FF}
+  .nb{display:inline-block;white-space:nowrap}
+  .center{text-align:center}
+  .center .lead{margin-left:auto;margin-right:auto}
+  .head{margin-bottom:clamp(40px,6vh,72px)}
+  .head .lead{margin-top:24px}
+
+  /* 滚动淡入 */
+  html.anim .rv{opacity:0;transform:translateY(32px);transition:opacity .9s cubic-bezier(.2,.7,.2,1),transform .9s cubic-bezier(.2,.7,.2,1)}
+  html.anim .rv.in{opacity:1;transform:none}
+
+  /* 导航 */
+  .nav{position:fixed;inset:0 0 auto 0;z-index:50;height:var(--nav-h);
+       background:rgba(19,16,50,.72);-webkit-backdrop-filter:saturate(1.6) blur(18px);backdrop-filter:saturate(1.6) blur(18px);
+       border-bottom:1px solid rgba(255,255,255,.08);color:#fff}
+  .nav .wrap{display:flex;align-items:center;gap:10px;height:100%}
+  .brand{display:flex;align-items:center;gap:10px;text-decoration:none;font-weight:700;letter-spacing:-.01em}
+  .brand img{width:26px;height:26px;border-radius:7px}
+  .nav nav{margin-left:auto;display:flex;align-items:center;gap:22px;font-size:14px}
+  .nav nav a{color:var(--mist);text-decoration:none}
+  .nav nav a:hover{color:#fff}
+  .lang{border:1px solid rgba(255,255,255,.24);color:#fff;background:none;font:500 13px var(--sans);
+        padding:5px 13px;border-radius:999px;cursor:pointer;margin-left:16px}
+  .lang:hover{border-color:#fff}
+  .nav .get{background:#fff;color:var(--ink);font:600 13px var(--sans);padding:6px 15px;border-radius:999px;text-decoration:none}
+
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:14px 28px;border-radius:999px;font-size:17px;font-weight:600;
+       text-decoration:none;white-space:nowrap;transition:transform .15s,background .15s}
+  .btn:active{transform:scale(.97)}
+  .btn-light{background:#fff;color:var(--indigo)}
+  .btn-light:hover{background:var(--paper)}
+  .btn-ghost{color:#fff;box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.5)}
+  .btn-ghost:hover{box-shadow:inset 0 0 0 1.5px #fff}
+  .btn-indigo{background:var(--indigo);color:#fff}
+  .btn-indigo:hover{background:#3329B4}
+
+  /* Hero */
+  .hero{background:
+          radial-gradient(90% 60% at 18% 0%,rgba(142,134,255,.55),transparent 62%),
+          linear-gradient(180deg,var(--indigo) 0%,var(--indigo) 46%,var(--night) 100%);
+        color:#fff;padding:calc(var(--nav-h) + clamp(56px,11vh,120px)) 0 clamp(72px,10vh,120px);position:relative;overflow:hidden}
+  .hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+        background-image:linear-gradient(rgba(255,255,255,.07) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.07) 1px,transparent 1px);
+        background-size:72px 72px;-webkit-mask-image:radial-gradient(70% 55% at 50% 22%,#000,transparent);mask-image:radial-gradient(70% 55% at 50% 22%,#000,transparent)}
+  .hero .wrap{position:relative}
+  .hero-icon{width:84px;height:84px;border-radius:20px;margin:0 auto 28px;box-shadow:0 18px 50px rgba(10,6,60,.45)}
+  .hero h1{font-size:clamp(38px,6.6vw,92px);max-width:13em;margin:0 auto}
+  html[lang="zh"] .hero h1{max-width:11em}
+  .hero .tag{margin:28px auto 0;font-size:clamp(20px,2vw,26px);font-weight:600;color:#fff;max-width:30em}
+  .cta{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;margin-top:36px}
+  .film{margin-top:clamp(56px,9vh,96px);position:relative}
+  .player{border-radius:clamp(14px,2vw,26px);overflow:hidden;background:#000;aspect-ratio:16/9;
+          box-shadow:0 40px 120px rgba(5,3,30,.6),0 0 0 1px rgba(255,255,255,.12);will-change:transform;transform-origin:50% 0}
+  .player video{width:100%;height:100%;object-fit:cover}
+  .sound{position:absolute;right:16px;bottom:16px;display:flex;align-items:center;gap:8px;
+         border:1px solid rgba(255,255,255,.22);background:rgba(19,16,50,.7);color:#fff;
+         -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);font:500 14px var(--sans);padding:8px 16px;border-radius:999px;cursor:pointer}
+  .sound:hover{background:rgba(19,16,50,.92)}
+  .sound svg{width:16px;height:16px}
+  .film-cap{margin-top:18px;font-size:15px;color:var(--mist);text-align:center}
+
+  /* 痛点 */
+
+  /* 总管如何工作：粘性叙事 */
+  .scene{background:var(--night);color:#fff;position:relative}
+  .scene .pin{padding:clamp(88px,13vh,168px) 0}
+  .scene.live .grid{align-items:start}
+  .scene .wrap{max-width:1360px}
+  .scene .grid{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,8fr);gap:clamp(28px,4vw,64px);align-items:center}
+  .scene .kicker{font-size:clamp(34px,4.6vw,64px);margin-bottom:clamp(24px,4vh,48px)}
+  .caps{display:grid;gap:28px}
+  .cap h3{color:#fff;margin-bottom:10px;display:flex;align-items:flex-start;gap:12px}
+  .cap h3::before{content:"";width:12px;height:12px;border-radius:4px;background:var(--c,var(--indigo-hi));flex:none;margin-top:calc(.6em - 6px)}
+  /* 轮播：标题条可点，说明区与图各占固定位置，切换时整屏高度不变 */
+  .cap{position:relative;padding:0 0 14px}
+  .desc p{color:var(--mist);font-size:18px;max-width:30em}
+  .descs{display:grid;gap:20px;margin-top:8px}
+  .scene.live .caps{gap:6px}
+  .scene.live .cap{-webkit-tap-highlight-color:transparent;cursor:pointer;opacity:.42;transition:opacity .3s;border-radius:8px}
+  .scene.live .cap:hover{opacity:.75}
+  .scene.live .cap.on{opacity:1}
+  .scene.live .cap h3{margin-bottom:0}
+  .scene.live .cap::after{content:"";position:absolute;left:0;right:0;bottom:4px;height:3px;border-radius:2px;background:currentColor;opacity:.14}
+  .scene.live .cap.on::before{content:"";position:absolute;left:0;bottom:4px;height:3px;border-radius:2px;background:var(--c,currentColor);width:100%;z-index:1}
+  .scene.live.playing .cap.on::before{animation:fill var(--dwell,5s) linear both}
+  @keyframes fill{from{width:0}to{width:100%}}
+  .scene.live .descs{gap:0;margin-top:18px}
+  .scene.live .desc{grid-area:1/1;opacity:0;visibility:hidden}
+  .scene.live .desc.on{opacity:1;visibility:visible}
+  html.anim .scene.live .desc{transition:opacity .4s}
+  /* 图里的状态：到了那一步才出现 / 到了那一步就撤掉。两种都只动透明度，位置一直占着 */
+  .swap{display:grid}
+  .swap>*{grid-area:1/1}
+  .scene.s1 [data-until="1"],.scene.s2 [data-until="2"]{opacity:0;visibility:hidden}
+  .scene.live [data-from]{opacity:0;visibility:hidden}
+  .scene.live.s0 [data-from="0"],.scene.live.s1 [data-from="1"],.scene.live.s2 [data-from="2"],
+  .scene.live.s3 [data-from="3"],.scene.live.s4 [data-from="4"]{opacity:1;visibility:visible}
+  html.anim .scene.live [data-from],html.anim .scene.live [data-until]{transition:opacity .4s}
+
+  /* 窗口示意：灰条 + 状态色块，沿用图标里的画法 */
+  .win{background:var(--paper);border-radius:18px;box-shadow:0 40px 120px rgba(0,0,0,.5);overflow:hidden;color:var(--ink);font-family:var(--mono);font-size:clamp(14px,1.15vw,17px)}
+  .win-bar{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid #DEDACD}
+  .win-bar .p{width:22px;height:22px;border-radius:6px;background:var(--indigo);color:#fff;font:700 14px/22px var(--sans);text-align:center}
+  .win-bar span{font:500 13px var(--sans);color:var(--ink-2)}
+  .win-body{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:12px;padding:12px;background:#E9E6DA}
+  .pane{background:#fff;border-radius:10px;padding:16px;position:relative;min-height:clamp(112px,19vh,190px);box-shadow:0 0 0 2px transparent;transition:box-shadow .35s,opacity .35s}
+  .pane-h{display:flex;align-items:center;gap:6px;font-size:max(13px,.9em);color:var(--ink-2);margin-bottom:10px}
+  .pane-h b{font-weight:500;color:var(--ink)}
+  .pane-h .who{margin-left:auto;font-family:var(--sans);font-size:1em}
+  .sup{background:var(--night);color:#fff;grid-row:span 2;min-height:260px}
+  .sup .pane-h,.sup .pane-h b{color:#fff}
+  .sup .flag{color:var(--amber)}
+  .log{list-style:none;display:grid;gap:.8em;font-size:1em;line-height:1.45}
+  .log li{color:#DAD7FF}
+  .log .warn{color:var(--amber)}
+  .log .ok{color:var(--mint)}
+  .workers{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .bars{display:grid;gap:8px}
+  .bars i{display:block;height:10px;border-radius:5px;background:#DEDACD}
+  .bars i:nth-child(1){width:78%}.bars i:nth-child(2){width:52%}.bars i:nth-child(3){width:66%}
+  .chip{display:inline-block;font:600 max(13px,.9em)/1 var(--sans);padding:.5em .7em;border-radius:6px;margin-top:12px;color:var(--ink)}
+  .chip.mint{background:var(--mint)}.chip.coral{background:var(--coral);color:#fff}.chip.amber{background:var(--amber)}
+  .prompt{font-size:.92em;line-height:1.5;color:var(--ink)}
+  .prompt em{font-style:normal;color:var(--ink-2)}
+  .typed{margin-top:12px;font-size:.92em;color:var(--indigo);border-top:1px dashed #DEDACD;padding-top:8px}
+  .scene[data-step="0"] .p2,.scene[data-step="1"] .p2{box-shadow:0 0 0 3px var(--indigo-hi)}
+  .scene[data-step="2"] .p4{box-shadow:0 0 0 3px var(--indigo-hi)}
+  .scene[data-step="3"] .p3{box-shadow:0 0 0 3px var(--coral)}
+  .scene[data-step="4"] .p4{box-shadow:0 0 0 3px var(--mint)}
+  .scene[data-step="4"] .p3{box-shadow:0 0 0 3px var(--amber)}
+
+  /* 痛点一屏：同一套窗格语言，浅底深窗 */
+  .why-scene{background:var(--paper);color:var(--ink)}
+  .why-scene .cap h3{color:var(--ink)}
+  .why-scene .desc p{color:var(--ink-2)}
+  .win-bar .night-tag span{color:var(--amber)}
+  .win.dark{background:var(--night);color:#fff;box-shadow:0 40px 110px rgba(23,21,43,.35)}
+  .win.dark .win-bar{border-bottom-color:rgba(255,255,255,.1)}
+  .win.dark .win-bar>span{color:var(--mist)}
+  .win.dark .demo-tag{background:#fff}
+  .win.dark .demo-tag span{color:var(--ink)}
+  .win.dark .win-body{background:#0C0A24}
+  .win.dark .pane{background:var(--night-2);color:#fff}
+  .win.dark .pane-h{color:var(--mist)}
+  .win.dark .pane-h b{color:#fff}
+  .win.dark .bars i{background:rgba(255,255,255,.2)}
+  .win.dark .prompt{color:#fff}
+  .win.dark .prompt em{color:var(--mist)}
+  .win.dark .pane.sup{background:var(--indigo)}
+  .night-tag{margin-left:8px;color:var(--amber)!important}
+  .seat{display:grid;grid-row:span 2}
+  .seat>.pane{grid-area:1/1;min-height:260px}
+  .pane.empty{display:flex;align-items:center;justify-content:center;text-align:center;background:none!important;
+              box-shadow:inset 0 0 0 2px rgba(255,255,255,.22);color:var(--mist)!important;font-family:var(--sans);font-size:1.05em}
+  .chip.grey{background:#A9A493;color:var(--ink)}
+  .why-scene.s1 .w2 .bars i,.why-scene.s2 .w3 .bars i{background:rgba(255,255,255,.09)}
+  .why-scene[data-step="1"] .w2{box-shadow:0 0 0 3px #A9A493}
+  .why-scene[data-step="2"] .w3{box-shadow:0 0 0 3px var(--coral)}
+  .why-scene[data-step="2"] .pane.empty{box-shadow:inset 0 0 0 2px var(--coral);color:#fff!important}
+  /* data-until：到了那一步就撤掉（静态模式下各步都已到，直接是最终状态） */
+
+  /* 解决方案：标题、一句话、一张示意 */
+  .sol .lead{color:#fff}
+  .sol-win{max-width:1080px;margin:0 auto;will-change:transform;transform-origin:50% 0}
+  .sol-win .sup{display:flex;flex-direction:column;gap:14px}
+  .sol-win .sup .pane-h{margin-bottom:0}
+  .tools{display:flex;flex-wrap:wrap;gap:8px}
+  .tool{font:600 max(13px,.9em)/1.2 var(--sans);padding:.6em .8em;border-radius:9px;background:#fff;color:var(--ink)}
+  .notice{margin-top:auto;display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:12px 14px;border-radius:10px;background:var(--coral);color:#fff;font:600 max(13px,.92em)/1.3 var(--sans)}
+  .notice b{background:#fff;color:var(--ink);padding:4px 8px;border-radius:6px;font-weight:700}
+  .sol-win .pane.stuck{box-shadow:0 0 0 3px var(--coral)}
+
+  .point{max-width:44em;margin-bottom:28px}
+  .point h3{font-size:clamp(24px,2.4vw,34px);margin-bottom:12px}
+
+  /* 示意图角标：凡是演示内容都带它 */
+  .demo-tag{margin-left:auto;font:600 13px/1 var(--sans);font-style:normal;padding:6px 10px;border-radius:999px;background:var(--ink);color:#fff;letter-spacing:.02em}
+  .cap-img .demo-tag{position:absolute;right:16px;top:16px}
+  .cap-img>.bars:first-of-type{padding-right:120px}
+  .win-bar .demo-tag span{color:#fff;font:inherit}
+
+  /* 团队管理：设计示意（对话 / 任务看板 / 统计视图） */
+  .board{will-change:transform;transform-origin:50% 0;font-family:var(--sans)}
+  .views{display:grid;grid-template-columns:minmax(0,6fr) minmax(0,5fr) minmax(0,5fr);gap:12px;padding:12px;background:#E9E6DA}
+  .view{background:#fff;border-radius:12px;padding:clamp(16px,1.8vw,26px);display:flex;flex-direction:column;gap:clamp(12px,1.5vw,20px);min-height:clamp(340px,44vh,460px)}
+  .view-h{font:700 clamp(17px,1.5vw,22px)/1.2 var(--sans);color:var(--ink);letter-spacing:-.01em}
+  .view.chat{background:var(--night)}
+  .view.chat .view-h{color:#fff}
+  .av{flex:none;width:30px;height:30px;border-radius:9px;background:#E9E6DA;color:var(--ink);font:700 14px/30px var(--mono);text-align:center}
+  .av.sup-av{background:var(--indigo);color:var(--amber)}
+  .view.chat .av:not(.sup-av){background:var(--night-2);color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.16)}
+  .msg{display:flex;gap:12px;align-items:flex-start}
+  .msg>div{flex:1;display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
+  .ln{display:block;height:10px;border-radius:5px;background:#DEDACD;flex:none}
+  .view.chat .ln{background:rgba(255,255,255,.2)}
+  .msg .ln{flex:0 0 auto}
+  .tk{font:600 13px/1 var(--mono);padding:5px 8px;border-radius:6px;background:var(--amber);color:var(--ink);flex:none}
+  .tk.done{background:var(--mint)}
+  .msg .tk{margin-right:100%}
+  .row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:12px;align-items:center;padding-bottom:clamp(12px,1.5vw,20px);border-bottom:1px solid #ECE9DD}
+  .row .chip{margin-top:0}
+  .row .ln{width:100%}
+  .view-note{margin-top:auto;font-size:14px;line-height:1.5}
+  .on-night .view-note{color:var(--ink-2)}
+  .st-l{font:600 13px/1 var(--sans);color:var(--ink-2)}
+  .stack{display:flex;gap:4px;height:16px}
+  .stack i{border-radius:5px}
+  .idle-bars{display:grid;gap:8px}
+  .idle-bars span{display:flex;align-items:center;gap:10px}
+  .idle-bars .av{width:24px;height:24px;border-radius:7px;font-size:13px;line-height:24px}
+  .idle-bars i{height:10px;border-radius:5px;background:#CFCBBD}
+  .cols{display:flex;align-items:flex-end;gap:6px;flex:1;min-height:70px}
+  .cols i{flex:1;border-radius:5px 5px 0 0;background:var(--indigo)}
+  .after{margin-top:clamp(32px,5vh,56px);text-align:center}
+  .after p{max-width:40em;margin:0 auto}
+  .after .keys{justify-content:center}
+  .scene p code{color:#fff;background:rgba(255,255,255,.1);padding:2px 7px;border-radius:6px;overflow-wrap:anywhere}
+  .keys{display:flex;gap:8px;flex-wrap:wrap;margin-top:20px}
+  kbd{display:inline-block;font-size:15px;padding:6px 12px;border-radius:8px;background:rgba(255,255,255,.1);box-shadow:inset 0 -2px 0 rgba(255,255,255,.14);color:#fff}
+  .on-paper kbd{background:#fff;box-shadow:inset 0 -2px 0 #D5D1C2,0 0 0 1px #DEDACD;color:var(--ink)}
+
+  /* 角色与项目 */
+  .rp{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+  .panel{background:#fff;border-radius:28px;padding:clamp(28px,3.4vw,52px);display:flex;flex-direction:column;gap:18px}
+  .panel.dark{background:var(--night);color:#fff}
+  .panel.dark h3{color:#fff}.panel.dark p{color:var(--mist)}
+  .panel h3{font-size:clamp(28px,3.2vw,46px)}
+  .slots{display:grid;gap:10px;margin-top:auto;padding-top:20px}
+  .slot{display:flex;align-items:center;gap:14px;padding:16px 18px;border-radius:14px;background:var(--paper);font-weight:600;color:var(--ink)}
+  .panel.dark .slot{background:var(--night-2);color:#fff}
+  .slot i{width:34px;height:10px;border-radius:5px;flex:none}
+  .more{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:24px}
+  .more .tile{grid-column:auto;display:flex;flex-direction:column;gap:12px;padding:clamp(28px,3vw,44px);border-radius:28px}
+  .more .tile h3{margin:0;font-size:clamp(24px,2.4vw,34px)}
+  .more .tile.hooks{background:var(--indigo)}
+  .more .tile.hooks h3{color:#fff}
+  .more .tile.hooks p{color:#DAD7FF}
+  .flow,.plugs,.four,.seg{margin-top:auto;padding-top:16px}
+  .flow{display:flex;align-items:center;gap:10px}
+  .node{font:600 15px/1 var(--mono);padding:12px 14px;border-radius:12px;background:#fff;color:var(--ink);flex:none}
+  .node.p{background:var(--night);color:#fff;font-family:var(--sans);font-weight:700}
+  .node.sup-n{background:var(--night);color:var(--amber)}
+  .wire{flex:1;height:3px;border-radius:2px;background:repeating-linear-gradient(90deg,#fff 0 8px,transparent 8px 14px);max-width:120px}
+  .plugs{display:flex;gap:8px;flex-wrap:wrap}
+  .plugs i{width:38px;height:38px;border-radius:11px;background:var(--paper);box-shadow:inset 0 0 0 2px #DEDACD}
+  .plugs i:nth-child(3n+1){background:var(--mint);box-shadow:none}
+  .plugs i:nth-child(3n+2){background:var(--amber);box-shadow:none}
+  .four{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .four>span{padding:12px 14px;border-radius:12px;background:var(--paper);font:600 15px/1.2 var(--sans);color:var(--ink)}
+  .seg{display:flex}
+  .seg span{padding:11px 20px;font:600 15px/1 var(--sans);background:var(--paper);color:var(--ink-2)}
+  .seg span:first-child{border-radius:12px 0 0 12px}.seg span:last-child{border-radius:0 12px 12px 0}
+  .seg .on{background:var(--indigo);color:#fff}
+
+  /* 截图 */
+  .demo{display:grid;grid-template-columns:minmax(0,6fr) minmax(0,5fr);gap:24px;align-items:stretch}
+  .cap-img{background:#fff;border-radius:24px;padding:22px;position:relative;min-height:340px;box-shadow:0 0 0 1px #E4E0D2}
+  .cap-img .bars i{height:12px;border-radius:6px}
+  .cap-img .blk{height:92px;border-radius:12px;background:#ECE9DD;margin:18px 0}
+  .cap-img .fake-btn{display:inline-block;width:132px;height:40px;border-radius:10px;background:var(--indigo);margin-left:26px}
+  .mark{position:absolute;left:30px;bottom:20px;width:172px;height:64px;border:3px solid var(--coral);border-radius:8px}
+  .mark b{position:absolute;left:-14px;top:-14px;width:28px;height:28px;border-radius:50%;background:var(--coral);color:#fff;font:700 15px/28px var(--sans);text-align:center}
+  .note{position:absolute;left:226px;bottom:36px;background:var(--coral);color:#fff;font:600 15px/1.3 var(--sans);padding:7px 12px;border-radius:8px;max-width:calc(100% - 246px)}
+  .cap-data{background:var(--night);color:#fff;border-radius:24px;padding:26px;font-family:var(--mono);font-size:14px;display:flex;flex-direction:column;gap:14px}
+  .cap-data .file{color:var(--amber)}
+  .cap-data dl{display:grid;grid-template-columns:auto 1fr;gap:10px 18px}
+  .cap-data dt{color:var(--mist)}
+  .cap-data dd{color:#fff;overflow-wrap:anywhere}
+  .cap-data small{margin-top:auto;font:400 14px/1.5 var(--sans);color:var(--mist)}
+  .tiles{display:grid;grid-template-columns:repeat(6,1fr);gap:24px;margin-top:24px}
+  .tile{background:#fff;border-radius:24px;padding:30px;grid-column:span 2}
+  .tile.wide{grid-column:span 3}
+  .tile h3{margin-bottom:10px}
+  .tile p{font-size:17px}
+  .tile .keys{margin:0 0 14px}
+  .tile p.aside{margin-top:12px;font-size:15px;padding-left:14px;border-left:3px solid #DEDACD}
+
+  /* 护栏 */
+  .wont{list-style:none;display:grid;grid-template-columns:1fr 1fr;gap:clamp(24px,4vh,40px) clamp(32px,5vw,80px)}
+  .wont h3{font-size:clamp(26px,3vw,42px);color:#fff}
+  .wont p{margin-top:10px;font-size:19px;max-width:36em}
+  .wont li{padding-top:clamp(24px,4vh,40px);border-top:1px solid rgba(255,255,255,.25)}
+  .wont code{background:rgba(255,255,255,.16);padding:2px 7px;border-radius:6px;color:#fff}
+
+  /* 隐私与设置 */
+  .priv{display:grid;grid-template-columns:minmax(0,6fr) minmax(0,5fr);gap:clamp(32px,6vw,96px);align-items:start}
+  .dirs{display:grid;grid-template-columns:auto minmax(0,1fr);gap:0 24px;align-items:baseline}
+  .dirs dt,.dirs dd{padding:18px 0;border-bottom:1px solid rgba(255,255,255,.14)}
+  .dirs dt code{color:var(--amber);font-size:17px}
+  .dirs dd{color:var(--mist);font-size:17px}
+  .set-head{margin:clamp(56px,9vh,96px) 0 20px}
+  .set-head h3{color:#fff}
+  .set-head code{font-size:.85em;background:rgba(255,255,255,.1);padding:2px 8px;border-radius:6px}
+  .set{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .set div{background:var(--night-2);border-radius:18px;padding:22px 24px}
+  .set code{color:var(--amber);font-size:15px;overflow-wrap:anywhere}
+  .set p{margin-top:6px;font-size:16px}
+  .on-night p code,.on-night li code{color:#fff;background:rgba(255,255,255,.1);padding:2px 7px;border-radius:6px;overflow-wrap:anywhere}
+  .on-paper p code,.on-paper li code,.on-paper td code{background:#E9E6DA;padding:2px 7px;border-radius:6px;color:var(--ink);overflow-wrap:anywhere}
+
+  /* 上手 */
+  .pre-req{margin-top:24px;padding:20px 24px;border-radius:18px;background:#fff;font-size:17px;max-width:none}
+  .steps a{color:var(--indigo)}
+  .steps{list-style:none;counter-reset:s;display:grid;gap:0;border-top:1px solid #DEDACD}
+  .steps li{counter-increment:s;display:grid;grid-template-columns:clamp(56px,8vw,120px) minmax(0,1fr);gap:16px;padding:clamp(24px,4vh,40px) 0;border-bottom:1px solid #DEDACD;align-items:baseline}
+  .steps li::before{content:counter(s);font-size:clamp(40px,5vw,72px);font-weight:800;line-height:1;color:var(--indigo);letter-spacing:-.04em}
+  .steps h3{margin-bottom:8px}
+  .steps p{font-size:18px;max-width:36em}
+
+  /* 对比表 */
+  .src{margin-top:16px;font-size:15px}
+  .lacks{margin-top:36px;max-width:46em;font-size:18px}
+  .lacks strong{color:#fff}
+  .cmp{width:100%;border-collapse:collapse;font-size:15px;line-height:1.45}
+  .cmp a{color:#fff}
+  .cmp code{background:rgba(255,255,255,.1);padding:1px 6px;border-radius:5px}
+  .cmp th,.cmp td{text-align:left;padding:18px 14px;vertical-align:top;border-bottom:1px solid rgba(255,255,255,.12)}
+  .cmp thead th{font-size:17px;color:#fff;border-bottom-color:rgba(255,255,255,.3)}
+  .cmp tbody th{color:#fff;font-weight:700;width:13%}
+  .cmp td{color:var(--mist)}
+  .cmp .us{background:var(--indigo);color:#fff}
+  .cmp thead .us{border-radius:16px 16px 0 0}
+  .cmp tbody tr:last-child .us{border-radius:0 0 16px 16px;border-bottom:0}
+  .cmp td .k{display:none}
+
+  /* 下载 */
+  .os{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+  .os article{background:#fff;border-radius:24px;padding:30px;display:flex;flex-direction:column;gap:10px}
+  .os h3{font-size:28px}
+  .os code{font-size:14px;overflow-wrap:anywhere;color:var(--indigo)}
+  .os p{font-size:16px}
+  .how{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:24px}
+  .how article{background:#fff;border-radius:24px;padding:30px}
+  .how h3{margin-bottom:12px}
+  .how p{font-size:16px}
+  .how p+p,.how pre+p{margin-top:14px}
+  pre{background:var(--night);color:#fff;border-radius:14px;padding:18px 20px;font-size:14px;line-height:1.7;overflow-x:auto;margin-top:14px}
+
+  /* FAQ */
+  .faq details{border-bottom:1px solid #DEDACD}
+  .faq details:first-of-type{border-top:1px solid #DEDACD}
+  .faq summary{list-style:none;cursor:pointer;padding:26px 44px 26px 0;font-size:clamp(20px,2vw,26px);font-weight:700;color:var(--ink);position:relative;letter-spacing:-.01em}
+  .faq summary::-webkit-details-marker{display:none}
+  .faq summary::after{content:"+";position:absolute;right:4px;top:20px;font-size:30px;font-weight:400;color:var(--indigo);transition:transform .2s}
+  .faq details[open] summary::after{transform:rotate(45deg)}
+  .faq details p{padding:0 0 28px;max-width:40em}
+
+  /* 收尾 + 页脚 */
+  .outro h2{font-size:clamp(38px,6.4vw,88px)}
+  footer{background:var(--night);color:var(--mist);padding:36px 0 48px;font-size:14px;border-top:1px solid rgba(255,255,255,.1)}
+  footer .wrap{display:flex;flex-wrap:wrap;gap:8px 24px;align-items:center}
+  footer a{color:var(--mist)}
+  footer .r{margin-left:auto}
+
+  @media(max-width:900px){
+    .nav nav a:not(.get){display:none}
+    .lang{margin-left:0}
+    .rp,.more,.demo,.priv,.how,.wont,.set,.views{grid-template-columns:minmax(0,1fr)}
+    .view{min-height:0}
+    .cols{min-height:90px}
+    .os{grid-template-columns:minmax(0,1fr)}
+    .tiles{grid-template-columns:minmax(0,1fr)}
+    .tile,.tile.wide{grid-column:auto}
+    .scene .grid{grid-template-columns:minmax(0,1fr);gap:24px}
+    .scene .kicker{font-size:30px;margin-bottom:14px}
+    .scene .right{order:-1}
+    .cap p{font-size:16px}
+    .win{font-size:13px;border-radius:14px}
+    .win-body{grid-template-columns:minmax(0,1fr);gap:8px;padding:8px}
+    .sup{grid-row:auto;min-height:0}
+    .seat{grid-row:auto}
+    .seat>.pane{min-height:74px}
+    .workers{gap:8px}
+    .pane{padding:9px;min-height:92px}
+    .prompt,.typed{font-size:13px}
+    .log{gap:5px;font-size:13px}
+    .pane-h{margin-bottom:7px}
+    .chip{margin-top:7px}
+    /* 对比表在窄屏按行拆成卡片，不横向滚动 */
+    .cmp,.cmp tbody,.cmp tr,.cmp th,.cmp td{display:block;width:auto}
+    .cmp thead{display:none}
+    .cmp tbody tr{padding:8px 0 20px;border-bottom:1px solid rgba(255,255,255,.2)}
+    .cmp tbody th{width:auto;font-size:22px;border:0;padding:18px 0 10px}
+    .cmp td{border:0;padding:10px 14px;display:grid;grid-template-columns:104px minmax(0,1fr);gap:12px}
+    .cmp td .k{display:block;color:#fff;font-weight:600}
+    .cmp .us,.cmp tbody tr:last-child .us{border-radius:12px}
+  }
   @media(max-width:560px){
-    header nav a{display:none}
-    main{justify-content:flex-start;padding-top:8px}
-    .player{border-radius:10px}
+    body{font-size:17px}
+    .wrap{padding:0 20px}
+    .btn{padding:13px 22px;font-size:16px}
+    .hero-icon{width:68px;height:68px;border-radius:16px}
     /* 窄屏时视频字幕离右下角太近，按钮挪到视频下方 */
-    .sound{position:static;margin:10px 0 0 auto}
-    .under{margin-top:18px}
+    .sound{position:static;margin:12px auto 0;width:max-content}
+    .note{left:30px;bottom:96px;max-width:calc(100% - 60px)}
+    .cap-img{min-height:380px}
+    .steps li{grid-template-columns:44px minmax(0,1fr)}
+    footer .r{margin-left:0}
   }
 </style>
 </head>
 <body>
 
-<header>
+<header class="nav">
   <div class="wrap">
-    <img src="icon.png" alt="">
-    <b>Polter</b>
+    <a class="brand" href="#top"><img src="icon.png" alt="" width="26" height="26">Polter</a>
     <nav>
+      <a href="#how"><span data-lang="zh">总管</span><span data-lang="en">Supervisor</span></a>
+      <a href="#features"><span data-lang="zh">核心功能</span><span data-lang="en">Features</span></a>
+      <a href="#screenshots"><span data-lang="zh">AI 专属截图</span><span data-lang="en">AI Screenshots</span></a>
+      <a href="#quick-start"><span data-lang="zh">快速上手</span><span data-lang="en">Quick Start</span></a>
+      <a href="#compare"><span data-lang="zh">竞品对比</span><span data-lang="en">Comparisons</span></a>
+      <a href="#faq">FAQ</a>
       <a href="https://github.com/Lugia123/polter">GitHub</a>
-      <button class="lang" id="lang" type="button"></button>
+      <a class="get" href="#download"><span data-lang="zh">下载</span><span data-lang="en">Download</span></a>
     </nav>
+    <button class="lang" id="lang" type="button"></button>
   </div>
 </header>
 
-<main>
-  <div class="wrap">
-    <div class="stage">
-      <div class="player">
+<main id="top">
+
+<!-- ───────── Hero + 介绍片 ───────── -->
+<section class="hero">
+  <div class="wrap center">
+    <img class="hero-icon" src="icon.png" alt="Polter" width="84" height="84">
+    <h1 data-lang="zh"><span class="nb">让一个</span><span class="nb">&nbsp;Claude Code&nbsp;</span><span class="nb">会话</span><span class="nb">成为</span><span class="nb">其他 AI 的</span><span class="nb">“包工头”。</span></h1>
+    <h1 data-lang="en">Put one Claude Code session in charge of the others.</h1>
+    <p class="tag" data-lang="zh">专为 AI 智能体打造的终端复用器与大管家。</p>
+    <p class="tag" data-lang="en">A terminal multiplexer and orchestrator for AI agents.</p>
+    <div class="cta">
+      <a class="btn btn-light" href="https://github.com/Lugia123/polter/releases/latest">
+        <span data-lang="zh">下载最新版本</span><span data-lang="en">Download the latest release</span></a>
+      <a class="btn btn-ghost" href="https://github.com/Lugia123/polter">GitHub</a>
+    </div>
+
+    <div class="film" id="film">
+      <div class="player" data-px>
         <!-- 浏览器只允许静音自动播放；声音由按钮打开 -->
-        <video id="v" autoplay muted loop playsinline preload="auto"></video>
+        <video id="v" autoplay muted loop playsinline preload="metadata"></video>
       </div>
       <button class="sound" id="sound" type="button"></button>
     </div>
+    <p class="film-cap" data-lang="zh">73 秒演示视频：给你的 AI 找个总管。</p>
+    <p class="film-cap" data-lang="en">The 80-second film: give your AI agents a supervisor.</p>
+  </div>
+</section>
 
-    <div class="under">
-      <h1 data-lang="zh">让一个 Claude Code 会话去管另外几个。
-        <span>macOS 与 Windows · MIT · 基于 Ghostty 的 fork · 不要账号，不要 API key</span></h1>
-      <h1 data-lang="en">Put one Claude Code session in charge of the others.
-        <span>macOS and Windows · MIT · a fork of Ghostty · no account, no API key</span></h1>
-      <div class="cta">
-        <a class="btn btn-p" href="https://github.com/Lugia123/polter/releases/latest">
-          <span data-lang="zh">下载</span><span data-lang="en">Download</span></a>
-        <a class="btn btn-s" href="https://github.com/Lugia123/polter">GitHub</a>
+<!-- ───────── 痛点（自动轮播 + 点击切换；无脚本时是静态的最终状态） ───────── -->
+<section class="scene why-scene s0 s1 s2" id="why" data-step="2">
+  <div class="pin">
+    <div class="wrap">
+      <div class="grid">
+        <div class="left">
+          <h2 class="kicker" data-lang="zh">痛点。</h2>
+          <h2 class="kicker" data-lang="en">The problem.</h2>
+          <div class="caps">
+            <div class="cap on" style="--c:var(--mint)">
+              <h3 data-lang="zh">难以管理</h3><h3 data-lang="en">Hard to manage</h3>
+            </div>
+            <div class="cap" style="--c:#A9A493">
+              <h3 data-lang="zh">中途停摆</h3><h3 data-lang="en">Stopping halfway</h3>
+            </div>
+            <div class="cap" style="--c:var(--coral)">
+              <h3 data-lang="zh">卡在提示前发呆</h3><h3 data-lang="en">Stuck waiting for input</h3>
+            </div>
+          </div>
+          <div class="descs">
+            <div class="desc on">
+              <p data-lang="zh">同时开好几个 Claude Code 或 Codex 窗口，非常难以管理。</p>
+              <p data-lang="en">Running multiple Claude Code or Codex windows at the same time is hard to manage.</p>
+            </div>
+            <div class="desc">
+              <p data-lang="zh">这些 AI“打工人”经常在长任务中途停摆。</p>
+              <p data-lang="en">Sub-agents often stop working halfway through a long task.</p>
+            </div>
+            <div class="desc">
+              <p data-lang="zh">通宵干活，往往两三个小时后就卡在某个需要确认的提示前发呆。</p>
+              <p data-lang="en">An overnight job gets stuck after a few hours, waiting for input.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="right">
+          <!-- 示意图：不是真实截图 -->
+          <div class="win dark" role="img" aria-label="Illustration: four agent terminals, some of them stalled, and nobody watching">
+            <div class="win-bar"><i class="p">P</i><span>Polter</span><span class="night-tag" data-from="2"><span data-lang="zh">☾ 通宵</span><span data-lang="en">☾ overnight</span></span><em class="demo-tag"><span data-lang="zh">示意</span><span data-lang="en">Illustration</span></em></div>
+            <div class="win-body">
+              <div class="seat">
+                <div class="pane empty"><span data-lang="zh">没人盯着</span><span data-lang="en">Nobody watching</span></div>
+              </div>
+              <div class="workers">
+                <div class="pane w1">
+                  <div class="pane-h"><b>1</b><span class="who">claude</span></div>
+                  <div class="bars"><i></i><i></i><i></i></div>
+                  <span class="chip mint"><span data-lang="zh">在干活</span><span data-lang="en">working</span></span>
+                </div>
+                <div class="pane w2">
+                  <div class="pane-h"><b>2</b><span class="who">codex</span></div>
+                  <div class="bars"><i></i><i></i></div>
+                  <div class="swap">
+                    <div data-until="1"><span class="chip mint"><span data-lang="zh">在干活</span><span data-lang="en">working</span></span></div>
+                    <div data-from="1"><span class="chip grey"><span data-lang="zh">停了</span><span data-lang="en">stopped</span></span></div>
+                  </div>
+                </div>
+                <div class="pane w3">
+                  <div class="pane-h"><b>3</b><span class="who">claude</span></div>
+                  <div class="swap">
+                    <div data-until="2">
+                      <div class="bars"><i></i><i></i><i></i></div>
+                      <span class="chip mint"><span data-lang="zh">在干活</span><span data-lang="en">working</span></span>
+                    </div>
+                    <div data-from="2">
+                      <div class="prompt">Do you want to proceed?<br><em>❯ 1. Yes &nbsp; 2. No</em></div>
+                      <span class="chip coral"><span data-lang="zh">发呆</span><span data-lang="en">waiting for input</span></span>
+                    </div>
+                  </div>
+                </div>
+                <div class="pane w4">
+                  <div class="pane-h"><b>4</b><span class="who">codex</span></div>
+                  <div class="bars"><i></i><i></i></div>
+                  <span class="chip mint"><span data-lang="zh">在干活</span><span data-lang="en">working</span></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
+</section>
+
+<!-- ───────── 解决方案：为什么选 Polter（设计示意） ───────── -->
+<section class="sec on-indigo sol" id="solution">
+  <div class="wrap">
+    <div class="head center rv">
+      <h2 data-lang="zh"><span class="nb">指定其中一个</span><span class="nb">作为“总管”。</span></h2>
+      <h2 data-lang="en">One agent acts as the Supervisor.</h2>
+      <p class="lead" data-lang="zh">它其实就是一个普通的 Claude Code，但 Polter 给了它特殊的工具来管理其他标签页。</p>
+      <p class="lead" data-lang="en">This supervisor is a normal Claude Code session that is given special tools to manage all other tabs (Workers).</p>
+    </div>
+
+    <!-- 示意图：不是真实截图 -->
+    <div class="win sol-win" data-px role="img" aria-label="Illustration: a supervisor tab with its tools, three worker tabs, and Polter telling the supervisor that one of them has stopped moving">
+      <div class="win-bar"><i class="p">P</i><span>Polter</span><em class="demo-tag"><span data-lang="zh">示意</span><span data-lang="en">Illustration</span></em></div>
+      <div class="win-body">
+        <div class="pane sup">
+          <div class="pane-h"><span class="flag">⚑</span><b><span data-lang="zh">总管</span><span data-lang="en">Supervisor</span></b><span class="who">claude</span></div>
+          <div class="tools">
+            <span class="tool"><span data-lang="zh">读屏幕文字</span><span data-lang="en">reads screens</span></span>
+            <span class="tool"><span data-lang="zh">敲键盘</span><span data-lang="en">types</span></span>
+            <span class="tool"><span data-lang="zh">新建标签页</span><span data-lang="en">opens tabs</span></span>
+          </div>
+          <div class="notice"><b>Polter</b><span data-lang="zh">标签 3 不再发生变化</span><span data-lang="en">tab 3 has stopped moving</span></div>
+        </div>
+        <div class="workers">
+          <div class="pane">
+            <div class="pane-h"><b>1</b><span class="who">claude</span></div>
+            <div class="bars"><i></i><i></i></div>
+            <span class="chip mint"><span data-lang="zh">在干活</span><span data-lang="en">working</span></span>
+          </div>
+          <div class="pane">
+            <div class="pane-h"><b>2</b><span class="who">codex</span></div>
+            <div class="bars"><i></i><i></i></div>
+            <span class="chip mint"><span data-lang="zh">在干活</span><span data-lang="en">working</span></span>
+          </div>
+          <div class="pane stuck">
+            <div class="pane-h"><b>3</b><span class="who">claude</span></div>
+            <div class="prompt">Do you want to proceed?<br><em>❯ 1. Yes &nbsp; 2. No</em></div>
+            <span class="chip coral"><span data-lang="zh">没动静</span><span data-lang="en">not moving</span></span>
+          </div>
+          <div class="pane">
+            <div class="pane-h"><b>4</b><span class="who">codex</span></div>
+            <div class="bars"><i></i><i></i></div>
+            <span class="chip mint"><span data-lang="zh">在干活</span><span data-lang="en">working</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── 总管如何工作（自动轮播 + 点击切换；无脚本/减少动效时是静态的最终状态） ───────── -->
+<section class="scene s0 s1 s2 s3 s4" id="how" data-step="4">
+  <div class="pin">
+    <div class="wrap">
+      <div class="grid">
+        <div class="left">
+          <h2 class="kicker" data-lang="zh">聪明的总管。</h2>
+          <h2 class="kicker" data-lang="en">Smart Supervisor.</h2>
+          <div class="caps">
+            <div class="cap on" style="--c:var(--indigo-hi)">
+              <h3 data-lang="zh">读屏幕</h3><h3 data-lang="en">It reads the screen</h3>
+            </div>
+            <div class="cap" style="--c:var(--indigo-hi)">
+              <h3 data-lang="zh">替它们敲键盘</h3><h3 data-lang="en">It types</h3>
+            </div>
+            <div class="cap" style="--c:var(--indigo-hi)">
+              <h3 data-lang="zh">新建标签页</h3><h3 data-lang="en">It opens new tabs</h3>
+            </div>
+            <div class="cap" style="--c:var(--coral)">
+              <h3 data-lang="zh">发呆检测</h3><h3 data-lang="en">Idle Detection</h3>
+            </div>
+            <div class="cap" style="--c:var(--mint)">
+              <h3 data-lang="zh">安全权限</h3><h3 data-lang="en">Safe Permissions</h3>
+            </div>
+          </div>
+          <div class="descs">
+            <div class="desc on">
+              <p data-lang="zh">总管可以读取任何标签页屏幕上的纯文本——是真正的文字，不是截图识别。</p>
+              <p data-lang="en">The supervisor agent can read the text on any tab — real text, not screenshots.</p>
+            </div>
+            <div class="desc">
+              <p data-lang="zh">能在任意标签页里输入指令。</p>
+              <p data-lang="en">It types commands into any tab.</p>
+            </div>
+            <div class="desc">
+              <p data-lang="zh">还能新建标签页启动新的打工人。</p>
+              <p data-lang="en">And it opens new tabs to start new agents.</p>
+            </div>
+            <div class="desc">
+              <p data-lang="zh">Polter 会计算每个屏幕有多久没动静了，一旦卡死，立刻通报给总管。</p>
+              <p data-lang="en">Polter tracks how long each screen has been inactive and tells the supervisor if a worker is stuck.</p>
+            </div>
+            <div class="desc">
+              <p data-lang="zh">总管只能在它自己创建的标签页里自动回答权限请求，你也可以手动对特定标签页放权（<code>Agent → 允许总管在此回答提示</code>）。</p>
+              <p data-lang="en">The supervisor can only answer permission prompts in tabs it opened itself. You can manually allow it in specific tabs via <code>Agents → Let a Supervisor Answer Prompts Here</code>.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="right">
+          <!-- 示意图：不是真实截图 -->
+          <div class="win" role="img" aria-label="Illustration: one supervisor tab and four worker tabs">
+            <div class="win-bar"><i class="p">P</i><span>Polter</span><em class="demo-tag"><span data-lang="zh">示意</span><span data-lang="en">Illustration</span></em></div>
+            <div class="win-body">
+              <div class="pane sup">
+                <div class="pane-h"><span class="flag">⚑</span><b><span data-lang="zh">总管</span><span data-lang="en">Supervisor</span></b><span class="who">claude</span></div>
+                <ul class="log">
+                  <li data-from="0"><span data-lang="zh">› 读取 标签 2 的屏幕文字</span><span data-lang="en">› read the text on tab 2</span></li>
+                  <li data-from="1"><span data-lang="zh">› 在 标签 2 里输入指令</span><span data-lang="en">› type a command into tab 2</span></li>
+                  <li data-from="2"><span data-lang="zh">› 新建 标签 4，启动新的打工人</span><span data-lang="en">› open tab 4, start a new agent</span></li>
+                  <li data-from="3" class="warn"><span data-lang="zh">! 标签 3 没动静 </span><span data-lang="en">! tab 3 inactive for </span><span class="idle">03:00</span></li>
+                  <li data-from="4" class="ok"><span data-lang="zh">✓ 标签 4 是自己开的：回答提示</span><span data-lang="en">✓ tab 4 is its own: answer the prompt</span></li>
+                </ul>
+              </div>
+              <div class="workers">
+                <div class="pane p1">
+                  <div class="pane-h"><b>1</b><span class="who">claude</span></div>
+                  <div class="bars"><i></i><i></i><i></i></div>
+                  <span class="chip mint"><span data-lang="zh">在干活</span><span data-lang="en">working</span></span>
+                </div>
+                <div class="pane p2">
+                  <div class="pane-h"><b>2</b><span class="who">codex</span></div>
+                  <div class="bars"><i></i><i></i></div>
+                  <div class="typed" data-from="1"><span data-lang="zh">❯ 总管输入的指令</span><span data-lang="en">❯ typed by the supervisor</span></div>
+                </div>
+                <div class="pane p3">
+                  <div class="pane-h"><b>3</b><span class="who">claude</span></div>
+                  <div class="prompt">Do you want to proceed?<br><em>❯ 1. Yes &nbsp; 2. No</em></div>
+                  <span class="chip coral" data-from="3"><span data-lang="zh">没动静 </span><span data-lang="en">inactive </span><span class="idle">03:00</span></span>
+                </div>
+                <div class="pane p4" data-from="2">
+                  <div class="pane-h"><b>4</b><span class="who"><span data-lang="zh">总管开的</span><span data-lang="en">opened by supervisor</span></span></div>
+                  <div class="bars"><i></i><i></i></div>
+                  <span class="chip mint" data-from="4">Yes ✓</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── 团队管理（设计示意，不是真实截图） ───────── -->
+<section class="sec on-night team" id="features">
+  <div class="wrap">
+    <div class="head center rv">
+      <h2 data-lang="zh"><span class="nb">拉一个群聊、</span><span class="nb">分发任务、</span><span class="nb">接收工作汇报。</span></h2>
+      <h2 data-lang="en">A group chat, assigned tasks, and reports.</h2>
+      <p class="lead" data-lang="zh"><strong>团队管理：</strong>这个任务面板就算你重启终端也依然在。</p>
+      <p class="lead" data-lang="en"><strong>Team Management:</strong> this task panel survives a terminal restart.</p>
+    </div>
+
+    <div class="win board" data-px role="img" aria-label="Illustration: the conversation, the task panel and the stats view">
+      <div class="win-bar"><i class="p">P</i><span><span data-lang="zh">Agent → 终端对话</span><span data-lang="en">Agents → Terminal Conversations</span></span><em class="demo-tag"><span data-lang="zh">示意</span><span data-lang="en">Illustration</span></em></div>
+      <div class="views">
+        <!-- 对话 -->
+        <div class="view chat">
+          <div class="view-h"><span data-lang="zh">对话</span><span data-lang="en">Conversation</span></div>
+          <div class="msg"><b class="av sup-av">⚑</b><div><span class="tk">#1</span><i class="ln" style="width:82%"></i><i class="ln" style="width:56%"></i></div></div>
+          <div class="msg"><b class="av">1</b><div><i class="ln" style="width:64%"></i></div></div>
+          <div class="msg"><b class="av sup-av">⚑</b><div><span class="tk">#2</span><i class="ln" style="width:74%"></i><i class="ln" style="width:38%"></i></div></div>
+          <div class="msg"><b class="av">2</b><div><span class="tk done">#2 ✓</span><i class="ln" style="width:70%"></i><i class="ln" style="width:48%"></i></div></div>
+          <div class="msg"><b class="av">1</b><div><span class="tk done">#1 ✓</span><i class="ln" style="width:52%"></i></div></div>
+        </div>
+        <!-- 任务面板 -->
+        <div class="view tasks">
+          <div class="view-h"><span data-lang="zh">任务看板</span><span data-lang="en">Task panel</span></div>
+          <div class="row"><span class="tk">#1</span><i class="ln"></i><b class="av">1</b><span class="chip mint"><span data-lang="zh">干完了</span><span data-lang="en">done</span></span></div>
+          <div class="row"><span class="tk">#2</span><i class="ln"></i><b class="av">2</b><span class="chip mint"><span data-lang="zh">干完了</span><span data-lang="en">done</span></span></div>
+          <div class="row"><span class="tk">#3</span><i class="ln"></i><b class="av">3</b><span class="chip amber"><span data-lang="zh">在干</span><span data-lang="en">open</span></span></div>
+          <div class="row"><span class="tk">#4</span><i class="ln"></i><b class="av">4</b><span class="chip amber"><span data-lang="zh">在干</span><span data-lang="en">open</span></span></div>
+          <p class="view-note" data-lang="zh">任务面板仅仅记录谁在干什么，以及干完了没有。</p>
+          <p class="view-note" data-lang="en">The panel merely holds who is on what, and whether it's done.</p>
+        </div>
+        <!-- 统计 -->
+        <div class="view stats">
+          <div class="view-h"><span data-lang="zh">统计视图</span><span data-lang="en">Stats</span></div>
+          <div class="st-l"><span data-lang="zh">任务状态</span><span data-lang="en">Task status</span></div>
+          <div class="stack"><i style="flex:2;background:var(--mint)"></i><i style="flex:2;background:var(--amber)"></i></div>
+          <div class="st-l"><span data-lang="zh">发呆时长</span><span data-lang="en">Idle time</span></div>
+          <div class="idle-bars">
+            <span><b class="av">1</b><i style="width:18%"></i></span>
+            <span><b class="av">2</b><i style="width:34%"></i></span>
+            <span><b class="av">3</b><i style="width:86%;background:var(--coral)"></i></span>
+            <span><b class="av">4</b><i style="width:12%"></i></span>
+          </div>
+          <div class="st-l"><span data-lang="zh">每小时</span><span data-lang="en">Per hour</span></div>
+          <div class="cols"><i style="height:30%"></i><i style="height:62%"></i><i style="height:88%"></i><i style="height:54%"></i><i style="height:70%"></i><i style="height:36%"></i><i style="height:46%"></i><i style="height:22%"></i></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="after rv">
+      <p data-lang="zh">去 <code>Agent → 终端对话</code>（或运行 <code>polter +chat</code>）看它们的聊天记录。按 <code>tab</code> 或 <code>shift+tab</code> 可切换对话、任务看板和统计视图。</p>
+      <p data-lang="en">Go to <code>Agents → Terminal Conversations</code> (or run <code>polter +chat</code>) to see what they discussed. Press <code>tab</code> or <code>shift+tab</code> to cycle views: the conversation, the task panel, and the night's stats.</p>
+      <div class="keys"><kbd>tab</kbd><kbd>shift+tab</kbd></div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── 其余核心功能 ───────── -->
+<section class="sec on-paper" id="roles">
+  <div class="wrap">
+    <div class="head rv">
+      <h2 data-lang="zh">角色与项目。</h2>
+      <h2 data-lang="en">Roles &amp; Projects.</h2>
+    </div>
+    <div class="rp">
+      <article class="panel rv">
+        <h3 data-lang="zh">角色 (Role)</h3><h3 data-lang="en">Roles</h3>
+        <p data-lang="zh">把常用的 AI 启动参数（技能、提示词、模型）保存为“角色”。</p>
+        <p data-lang="en">Save your favorite agent settings (skills, prompts, models) as Roles.</p>
+        <div class="slots">
+          <div class="slot"><i style="background:var(--mint)"></i><span data-lang="zh">技能</span><span data-lang="en">Skills</span></div>
+          <div class="slot"><i style="background:var(--coral)"></i><span data-lang="zh">提示词</span><span data-lang="en">Prompts</span></div>
+          <div class="slot"><i style="background:var(--amber)"></i><span data-lang="zh">模型</span><span data-lang="en">Models</span></div>
+        </div>
+      </article>
+      <article class="panel dark rv">
+        <h3 data-lang="zh">项目</h3><h3 data-lang="en">Projects</h3>
+        <p data-lang="zh">通过“项目”功能可以保存当前所有的标签页、目录和历史记录，下次一键恢复（支持 macOS 和 Windows）。</p>
+        <p data-lang="en">Save your workspace (tabs, directories, history) as Projects and load them later (macOS and Windows only).</p>
+        <div class="slots">
+          <div class="slot"><i style="background:var(--indigo-hi)"></i><span data-lang="zh">标签页</span><span data-lang="en">Tabs</span></div>
+          <div class="slot"><i style="background:var(--indigo-hi)"></i><span data-lang="zh">目录</span><span data-lang="en">Directories</span></div>
+          <div class="slot"><i style="background:var(--indigo-hi)"></i><span data-lang="zh">历史记录</span><span data-lang="en">History</span></div>
+        </div>
+      </article>
+    </div>
+
+    <div class="more">
+      <article class="tile hooks rv">
+        <h3 data-lang="zh">消息钩子 (Hooks)</h3><h3 data-lang="en">Hooks</h3>
+        <p data-lang="zh">由角色启动的 Claude Code 会在一轮对话结束时，主动告诉 Polter 它说了什么。总管会直接收到通知，而不是被动等待静止的屏幕。（目前仅限 Claude Code；其它工具依然通过监听屏幕活动来监控）。</p>
+        <p data-lang="en">A Claude Code started from a Role tells Polter when its turn ends and what it said. The supervisor is notified directly, rather than waiting to read a still screen. (Claude Code only; other CLIs are monitored by screen activity).</p>
+        <div class="flow" aria-hidden="true">
+          <span class="node">claude</span><i class="wire"></i><span class="node p">P</span><i class="wire"></i><span class="node sup-n">⚑</span>
+        </div>
+      </article>
+      <article class="tile rv">
+        <h3 data-lang="zh">内置插件</h3><h3 data-lang="en">Plugins</h3>
+        <p data-lang="zh">发行版开箱即带 7 个配置插件。</p>
+        <p data-lang="en">Polter ships with 7 provisioning plugins out of the box.</p>
+        <div class="plugs" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      </article>
+      <article class="tile rv">
+        <h3 data-lang="zh">统一设置</h3><h3 data-lang="en">One Settings Window</h3>
+        <p data-lang="zh">角色、项目、插件和配置文件全部在一个设置窗口中集中管理。</p>
+        <p data-lang="en">Roles, projects, plugins, and configs are managed in one place (<code>Settings…</code>).</p>
+        <div class="four" aria-hidden="true">
+          <span><span data-lang="zh">角色</span><span data-lang="en">Roles</span></span>
+          <span><span data-lang="zh">项目</span><span data-lang="en">Projects</span></span>
+          <span><span data-lang="zh">插件</span><span data-lang="en">Plugins</span></span>
+          <span><span data-lang="zh">配置文件</span><span data-lang="en">Configs</span></span>
+        </div>
+      </article>
+      <article class="tile rv">
+        <h3 data-lang="zh">中英双语</h3><h3 data-lang="en">Multilingual</h3>
+        <p data-lang="zh">菜单和窗口会自动跟随系统语言，也可以在 <code>Language</code> 中手动切换。</p>
+        <p data-lang="en">UI supports English and Chinese (follows your system setting or the <code>Language</code> menu).</p>
+        <div class="seg" aria-hidden="true"><span class="on">中文</span><span>English</span></div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── AI 专属截图 ───────── -->
+<section class="sec on-paper" id="screenshots" style="padding-top:0">
+  <div class="wrap">
+    <div class="head rv">
+      <h2 data-lang="zh"><span class="nb">专为 AI 设计的</span><span class="nb">截图工具。</span></h2>
+      <h2 data-lang="en">A screenshot tool built for AI.</h2>
+      <p class="lead" data-lang="zh">Polter 内置的截图工具，最大的特点是标注是可读的数据。</p>
+      <p class="lead" data-lang="en">Polter comes with a built-in screenshot tool specifically designed for AI workflows.</p>
+    </div>
+
+    <div class="point rv">
+      <h3 data-lang="zh">标注是可读的数据</h3>
+      <h3 data-lang="en">Your annotations are readable data</h3>
+      <p data-lang="zh">每张图旁边都有一个 <code>.json</code> 文件，记录了你写的字、框的位置和编号。粘给 AI 时，标注文字随图片一起以纯文本送达，AI 不需要再从图里“肉眼认字”。</p>
+      <p data-lang="en">The text you write and the boxes you draw are saved as readable data. A <code>.json</code> file is created next to every screenshot. When you paste the image to the AI, your annotations are sent alongside it as pure text, meaning the AI doesn't need to guess or use OCR to read your handwriting.</p>
+    </div>
+
+    <!-- 示意图：标注在左，随图送达的文字在右 -->
+    <div class="demo rv">
+      <div class="cap-img" aria-hidden="true">
+        <em class="demo-tag"><span data-lang="zh">示意</span><span data-lang="en">Illustration</span></em>
+        <div class="bars"><i></i><i></i></div>
+        <div class="blk"></div>
+        <div class="bars"><i></i></div>
+        <span class="fake-btn" style="position:absolute;left:24px;bottom:32px"></span>
+        <span class="mark"><b>1</b></span>
+        <span class="note"><span data-lang="zh">这个按钮没对齐</span><span data-lang="en">This button is misaligned</span></span>
+      </div>
+      <div class="cap-data">
+        <span class="file">.json</span>
+        <dl>
+          <dt data-lang="zh">编号</dt><dt data-lang="en">number</dt><dd>1</dd>
+          <dt data-lang="zh">你写的字</dt><dt data-lang="en">your text</dt>
+          <dd><span data-lang="zh">这个按钮没对齐</span><span data-lang="en">This button is misaligned</span></dd>
+          <dt data-lang="zh">框的位置</dt><dt data-lang="en">box position</dt><dd>▭</dd>
+        </dl>
+        <small data-lang="zh">示意图。标注文字随图片一起以纯文本送达。</small>
+        <small data-lang="en">Illustration. Your annotations are sent alongside the image as pure text.</small>
+      </div>
+    </div>
+
+    <div class="tiles">
+      <article class="tile wide rv">
+        <h3 data-lang="zh">全局触发</h3><h3 data-lang="en">Trigger Anywhere</h3>
+        <div class="keys"><kbd>⌘⇧0</kbd><kbd>Ctrl+Shift+0</kbd></div>
+        <p data-lang="zh">快捷键（Mac <code>⌘⇧0</code>，Windows <code>Ctrl+Shift+0</code>）。</p>
+        <p data-lang="en">Press <code>⌘⇧0</code> (Mac) or <code>Ctrl+Shift+0</code> (Windows). Works globally.</p>
+        <p class="aside" data-lang="zh">注意：在 Windows 上，该热键极易与系统的“切换输入语言”快捷键冲突，特别是安装了多个中文输入法时。</p>
+        <p class="aside" data-lang="en">Note: on Windows, if you have multiple Chinese input methods, this shortcut might be occupied by the system's “switch input language” hotkey.</p>
+      </article>
+      <article class="tile wide rv">
+        <h3 data-lang="zh">鼠标触发</h3><h3 data-lang="en">Mouse Trigger</h3>
+        <div class="keys"><kbd>⌘⇧ + click</kbd><kbd>Ctrl+Shift + click</kbd></div>
+        <p data-lang="zh">按住 <code>⌘⇧</code> (Mac) 或 <code>Ctrl+Shift</code> (Windows) 单击鼠标。</p>
+        <p data-lang="en">Hold <code>⌘⇧</code> (Mac) or <code>Ctrl+Shift</code> (Windows) and click your mouse.</p>
+        <p class="aside" data-lang="zh">注意：这是系统级拦截。在 Windows 上该点击会被 Polter 吞掉；但在 Mac 上点击会穿透到底层应用，比如在浏览器里可能会误点开链接。你可以在设置里通过 <code>screenshot-mouse-trigger</code> 修改或设为 <code>none</code>。</p>
+        <p class="aside" data-lang="en">Note: this is a system-wide hook. On Windows, Polter swallows the click. On macOS, the click passes through to the app below, which might open links. You can change this behavior or disable it via the <code>screenshot-mouse-trigger</code> setting.</p>
+      </article>
+      <article class="tile rv">
+        <h3 data-lang="zh">智能选区与长截图</h3><h3 data-lang="en">Smart Select &amp; Scrolling Pages</h3>
+        <p data-lang="zh">自动吸附窗口或自由框选。点击“长截图”，程序会自动向下滚动拼接长网页或代码。</p>
+        <p data-lang="en">Auto-selects windows or free-drags. Click “Long Screenshot” to automatically scroll and stitch a long webpage or code file.</p>
+      </article>
+      <article class="tile rv">
+        <h3 data-lang="zh">丰富的标注</h3><h3 data-lang="en">Rich Editable Annotations</h3>
+        <p data-lang="zh">矩形、箭头、文字、编号，以及不可还原的马赛克（原图只留在内存，绝不写进硬盘或剪贴板）。</p>
+        <p data-lang="en">Add text, arrows, numbers, or boxes. Includes an irreversible mosaic blur (the unblurred original is only in memory, never written to disk or clipboard).</p>
+      </article>
+      <article class="tile rv">
+        <h3 data-lang="zh">总管也能自行截图</h3><h3 data-lang="en">Agent-Controlled Captures</h3>
+        <p data-lang="zh">总管可以通过 MCP 工具列出窗口、静默截图、截长图或自行画标注。</p>
+        <p data-lang="en">Your Supervisor agent can use MCP tools to list windows, take screenshots, capture long pages, or draw annotations.</p>
+        <p class="aside" data-lang="zh">如果你注重隐私，可以通过 <code>screenshot-agent-access</code> 设置关闭它，默认是允许的。</p>
+        <p class="aside" data-lang="en">If you want strict privacy, you can disable this via the <code>screenshot-agent-access</code> setting; it is allowed by default.</p>
+      </article>
+      <article class="tile wide rv">
+        <h3 data-lang="zh">权限要求</h3><h3 data-lang="en">Permissions Required</h3>
+        <p data-lang="zh"><strong>macOS 需要同时授予「屏幕录制」和「辅助功能」权限。</strong>辅助功能用于自动滚动和 agent 的 <code>screenshot_long</code> 工具；不授权的话，长截图会自动退化为手动滚动，且 agent 请求长截图会直接报错。Windows 版不需要任何权限。</p>
+        <p data-lang="en"><strong>macOS requires both “Screen Recording” and “Accessibility” permissions.</strong> Accessibility is needed for auto-scrolling and the agent's <code>screenshot_long</code> tool. Without it, scrolling falls back to manual, and agent long captures will fail. Windows requires no permissions.</p>
+      </article>
+      <article class="tile wide rv">
+        <h3 data-lang="zh">自动清理</h3><h3 data-lang="en">Auto-Cleanup</h3>
+        <p data-lang="zh">每次启动时，截图目录里超过 7 天且符合截图命名规则的文件（包含粘贴进来的剪贴板图片）会被自动清理。</p>
+        <p data-lang="en">Every time Polter starts, screenshots older than 7 days that match the naming convention (including pasted clipboard images) are automatically deleted from the screenshot folder.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── 安全护栏 ───────── -->
+<section class="sec on-indigo" id="guardrails">
+  <div class="wrap">
+    <div class="head rv">
+      <h2 data-lang="zh"><span class="nb">Polter&nbsp;</span><span class="nb">绝对不做的事。</span></h2>
+      <h2 data-lang="en">What Polter won't do.</h2>
+    </div>
+    <ul class="wont">
+      <li class="rv">
+        <h3 data-lang="zh"><span class="nb">不会成为</span><span class="nb">绕过权限的后门。</span></h3><h3 data-lang="en">Won't bypass your permissions.</h3>
+        <p data-lang="zh"><code>terminal_send</code> 只通过粘贴通道发送纯文本，控制字节会被转成空格。它无法强迫 AI 去做被禁止的操作。</p>
+        <p data-lang="en"><code>terminal_send</code> sends text only, down the paste path, with control bytes turned into spaces. It cannot force an agent to bypass its own permissions.</p>
+      </li>
+      <li class="rv">
+        <h3 data-lang="zh">不会乱答提示。</h3><h3 data-lang="en">Won't answer unexpected prompts.</h3>
+        <p data-lang="zh">除了总管自己开的窗口，它不会去别的窗口帮你胡乱回答权限确认。</p>
+        <p data-lang="en">It only answers permission prompts in tabs the supervisor opened itself (unless you authorize otherwise).</p>
+      </li>
+      <li class="rv">
+        <h3 data-lang="zh"><span class="nb">不会破解</span><span class="nb">终端锁定。</span></h3><h3 data-lang="en">Won't undo your locks.</h3>
+        <p data-lang="zh">终端画面的锁定 (hold) 和防护 (shield) 只能由你设置和解除，AI 无法解锁。</p>
+        <p data-lang="en">The terminal UI hold and shield are yours to set and yours to lift. An agent cannot unlock them.</p>
+      </li>
+      <li class="rv">
+        <h3 data-lang="zh"><span class="nb">不会变成</span><span class="nb">复杂的任务系统。</span></h3><h3 data-lang="en">Won't grow into a task system.</h3>
+        <p data-lang="zh">任务面板仅仅记录谁在干什么，以及干完了没有。</p>
+        <p data-lang="en">The panel merely holds who is on what, and whether it's done.</p>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<!-- ───────── 隐私与设置 ───────── -->
+<section class="sec on-night" id="privacy">
+  <div class="wrap">
+    <div class="priv">
+      <div class="rv">
+        <h2 data-lang="zh"><span class="nb">所有数据</span><span class="nb">留在本地。</span></h2>
+        <h2 data-lang="en">All data stays on your computer.</h2>
+        <p class="lead" style="margin-top:24px" data-lang="zh">Polter 不会自动发送任何信息到云端。你可以把它当成普通的 shell 历史记录对待。所有文件都在 <code>$XDG_STATE_HOME/polter/</code> 目录下：</p>
+        <p class="lead" style="margin-top:24px" data-lang="en">Nothing is redacted or sent to the cloud by Polter. Think of it like your normal shell history. Files land in <code>$XDG_STATE_HOME/polter/</code>:</p>
+      </div>
+      <dl class="dirs rv">
+        <dt><code>chat/</code></dt>
+        <dd><span data-lang="zh">智能体之间的对话。</span><span data-lang="en">What the agents said to each other.</span></dd>
+        <dt><code>terminals/</code></dt>
+        <dd><span data-lang="zh">每个终端里的事件记录。</span><span data-lang="en">Transcripts of what happened in each terminal.</span></dd>
+        <dt><code>tasks/</code></dt>
+        <dd><span data-lang="zh">任务面板的每一次变更。</span><span data-lang="en">Every change to the task panel.</span></dd>
+        <dt><code>stats/</code></dt>
+        <dd><span data-lang="zh">每个群组每小时的统计。</span><span data-lang="en">One line per group per hour.</span></dd>
+      </dl>
+    </div>
+
+    <div class="set-head rv">
+      <h3 data-lang="zh">几个值得了解的核心设置</h3>
+      <h3 data-lang="en">You can change settings in the <code>Settings…</code> menu. Some useful ones:</h3>
+    </div>
+    <div class="set">
+      <div class="rv">
+        <code>poltergeist-watch</code>
+        <p data-lang="zh">是否允许屏幕采样。默认关闭；总管可针对单个终端打开。</p>
+        <p data-lang="en">Allows screen sampling (off by default; supervisor turns it on with <code>set_watch</code>).</p>
+      </div>
+      <div class="rv">
+        <code>poltergeist-quiescence-after</code>
+        <p data-lang="zh">屏幕发呆多久后才会通知总管（这是一个时长配置，例如默认 3 分钟）。</p>
+        <p data-lang="en">A duration (e.g., 3 minutes by default) for how long a screen stays still before notifying the supervisor.</p>
+      </div>
+      <div class="rv">
+        <code>poltergeist-register-mcp</code>
+        <p data-lang="zh">是否在启动时注册 MCP 服务（默认开启）。</p>
+        <p data-lang="en">Whether to register the MCP server at startup (on by default).</p>
+      </div>
+      <div class="rv">
+        <code>screenshot-directory</code>
+        <p data-lang="zh">截图的保存目录。如果你的 agent 被限制只能读取工作区内的文件，可以把截图路径指向你的项目目录。</p>
+        <p data-lang="en">Where screenshots are saved. Extremely useful to point into your project directory if your agent cannot read files outside its workspace.</p>
+      </div>
+      <div class="rv">
+        <code>screenshot-agent-access</code>
+        <p data-lang="zh">是否允许 agent 使用 MCP 截图工具。</p>
+        <p data-lang="en">Whether agents are allowed to use screenshot MCP tools.</p>
+      </div>
+      <div class="rv">
+        <code>clipboard-paste-image</code>
+        <p data-lang="zh">粘贴图片时，是否将其转换为文件路径交由 CLI 读取。</p>
+        <p data-lang="en">Whether pasting an image into the terminal turns it into a file path for the CLI to read.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── 快速上手 ───────── -->
+<section class="sec on-paper" id="quick-start">
+  <div class="wrap narrow">
+    <div class="head rv">
+      <h2 data-lang="zh">快速上手。</h2>
+      <h2 data-lang="en">Quick Start.</h2>
+      <p class="pre-req" data-lang="zh"><strong>前置条件：</strong>你需要有一个智能体 CLI（命令行工具）在你的系统 <code>PATH</code> 环境变量中，<strong>且在 Polter 启动的那一刻就存在</strong>。目前仅针对 Claude Code 进行了深度测试。</p>
+      <p class="pre-req" data-lang="en"><strong>Prerequisites:</strong> an agent CLI, on your <code>PATH</code>, and on it <strong>at the moment Polter starts</strong>. Only tested deeply with Claude Code.</p>
+    </div>
+    <ol class="steps">
+      <li class="rv"><div>
+        <h3 data-lang="zh">启动 Claude Code</h3><h3 data-lang="en">Start Claude Code</h3>
+        <p data-lang="zh">打开一个 Polter 标签页，<code>cd</code> 到你的代码目录，启动 Claude Code。</p>
+        <p data-lang="en">Open a tab in Polter, <code>cd</code> to your project folder, and start Claude Code.</p>
+      </div></li>
+      <li class="rv"><div>
+        <h3 data-lang="zh">任命总管</h3><h3 data-lang="en">Set the Supervisor</h3>
+        <p data-lang="zh">点击菜单栏：<code>Agent → 设当前终端为总管</code>。</p>
+        <p data-lang="en">Go to the menu: <code>Agents → Make This Terminal a Supervisor</code>.</p>
+      </div></li>
+      <li class="rv"><div>
+        <h3 data-lang="zh">测试连接</h3><h3 data-lang="en">Test the Connection</h3>
+        <p data-lang="zh">对它说：<em>“调用 <code>me</code> 工具，告诉我它说了什么。”</em>如果它回复给你一串终端 ID，说明连接成功！（如果它说没有这个工具，请停下来并查看 <a href="#faq">FAQ</a>。）</p>
+        <p data-lang="en">Ask the agent: <em>“Call the <code>me</code> tool and tell me what it says.”</em> If it replies with a terminal ID, you are ready! (If it says it has no such tool, stop here and check the <a href="#faq">FAQ</a>.)</p>
+      </div></li>
+      <li class="rv"><div>
+        <h3 data-lang="zh">下发任务</h3><h3 data-lang="en">Give the Command</h3>
+        <p data-lang="zh">直接告诉总管你想做什么项目。接下来它会自己建群、开标签页、分配任务。</p>
+        <p data-lang="en">Tell the supervisor what you want to build. It will handle opening tabs and assigning tasks on its own.</p>
+      </div></li>
+      <li class="rv"><div>
+        <h3 data-lang="zh">查阅进度</h3><h3 data-lang="en">Review Later</h3>
+        <p data-lang="zh">把它挂在后台。之后你可以去 <code>Agent → 终端对话</code>（或运行 <code>polter +chat</code>）看它们的聊天记录。按 <code>tab</code> 或 <code>shift+tab</code> 可切换对话、任务看板和统计视图。</p>
+        <p data-lang="en">Let it work. Later, go to <code>Agents → Terminal Conversations</code> (or run <code>polter +chat</code>) to see what they discussed. Press <code>tab</code> or <code>shift+tab</code> to cycle views: the conversation, the task panel, and the night's stats.</p>
+      </div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- ───────── 竞品对比 ───────── -->
+<section class="sec on-night" id="compare">
+  <div class="wrap">
+    <div class="head rv">
+      <h2 data-lang="zh">竞品对比。</h2>
+      <h2 data-lang="en">Compared to alternatives.</h2>
+      <p class="src" data-lang="zh">以下其他列的数据来源于对应项目官方文档，读于 2026-10-04。</p>
+      <p class="src" data-lang="en">Data read on 2026-10-04, based on each project's official docs.</p>
+    </div>
+    <table class="cmp">
+      <thead>
+        <tr>
+          <th scope="col"><span data-lang="zh">对比项</span><span data-lang="en">Feature</span></th>
+          <th scope="col" class="us">Polter</th>
+          <th scope="col">tmux</th>
+          <th scope="col">Claude Code <span data-lang="zh">(子智能体)</span><span data-lang="en">(Sub-agents)</span></th>
+          <th scope="col"><a href="https://github.com/smtg-ai/claude-squad">Claude Squad</a></th>
+          <th scope="col"><a href="https://github.com/manaflow-ai/cmux">cmux</a></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row"><span data-lang="zh">它是啥？</span><span data-lang="en">What is it?</span></th>
+          <td class="us"><span class="k">Polter</span><span><span data-lang="zh">内置 MCP 的终端 (Ghostty fork)</span><span data-lang="en">Terminal (Ghostty fork) with MCP server</span></span></td>
+          <td><span class="k">tmux</span><span><span data-lang="zh">终端复用器</span><span data-lang="en">Terminal multiplexer</span></span></td>
+          <td><span class="k">Claude Code</span><span><span data-lang="zh">Claude Code 会话内部功能</span><span data-lang="en">Feature inside one Claude Code session</span></span></td>
+          <td><span class="k">Claude Squad</span><span><span data-lang="zh">基于 tmux 和 git 工作区的 TUI</span><span data-lang="en">TUI using tmux and git worktrees</span></span></td>
+          <td><span class="k">cmux</span><span><span data-lang="zh">基于 Ghostty 的 macOS 终端</span><span data-lang="en">Ghostty-based macOS terminal</span></span></td>
+        </tr>
+        <tr>
+          <th scope="row"><span data-lang="zh">谁来监督 AI？</span><span data-lang="en">Who watches agents?</span></th>
+          <td class="us"><span class="k">Polter</span><span><span data-lang="zh">另一个 AI (总管)</span><span data-lang="en">Another AI (Supervisor)</span></span></td>
+          <td><span class="k">tmux</span><span><span data-lang="zh">你自己</span><span data-lang="en">You</span></span></td>
+          <td><span class="k">Claude Code</span><span><span data-lang="zh">父级会话</span><span data-lang="en">The parent AI session</span></span></td>
+          <td><span class="k">Claude Squad</span><span><span data-lang="zh">你，在同一个窗口里</span><span data-lang="en">You, in one window</span></span></td>
+          <td><span class="k">cmux</span><span><span data-lang="zh">你 (通过通知提示音)</span><span data-lang="en">You (via notifications)</span></span></td>
+        </tr>
+        <tr>
+          <th scope="row"><span data-lang="zh">工作节点是啥？</span><span data-lang="en">What is a worker?</span></th>
+          <td class="us"><span class="k">Polter</span><span><span data-lang="zh">终端里的独立会话</span><span data-lang="en">Independent session in a terminal tab</span></span></td>
+          <td><span class="k">tmux</span><span><span data-lang="zh">你在窗格里启动的任何东西</span><span data-lang="en">Whatever runs in a pane</span></span></td>
+          <td><span class="k">Claude Code</span><span><span data-lang="zh">父会话的子智能体</span><span data-lang="en">A sub-agent of the parent session</span></span></td>
+          <td><span class="k">Claude Squad</span><span><span data-lang="zh">自己工作区里的独立会话</span><span data-lang="en">Independent session in a git worktree</span></span></td>
+          <td><span class="k">cmux</span><span><span data-lang="zh">你在窗格里启动的任何东西</span><span data-lang="en">Whatever runs in a pane</span></span></td>
+        </tr>
+        <tr>
+          <th scope="row"><span data-lang="zh">画面不动时？</span><span data-lang="en">If it stops moving?</span></th>
+          <td class="us"><span class="k">Polter</span><span><span data-lang="zh">总管会被告知它发呆了多久</span><span data-lang="en">Supervisor is told how long it’s been idle</span></span></td>
+          <td><span class="k">tmux</span><span><span data-lang="zh">状态栏高亮并响铃 (需配置)</span><span data-lang="en">Bell rings (if configured)</span></span></td>
+          <td><span class="k">Claude Code</span><span>—</span></td>
+          <td><span class="k">Claude Squad</span><span>—</span></td>
+          <td><span class="k">cmux</span><span><span data-lang="zh">响铃 (当 agent 发信号时)</span><span data-lang="en">Notification rings</span></span></td>
+        </tr>
+        <tr>
+          <th scope="row"><span data-lang="zh">文件隔离？</span><span data-lang="en">File isolation?</span></th>
+          <td class="us"><span class="k">Polter</span><span><span data-lang="zh">无 (共享当前代码库)</span><span data-lang="en">None (they share your checkout)</span></span></td>
+          <td><span class="k">tmux</span><span><span data-lang="zh">无</span><span data-lang="en">None</span></span></td>
+          <td><span class="k">Claude Code</span><span><span data-lang="zh">父目录 (或按要求新建工作区)</span><span data-lang="en">Parent directory (or worktree if asked)</span></span></td>
+          <td><span class="k">Claude Squad</span><span><span data-lang="zh">每个智能体有独立的 git 工作区</span><span data-lang="en">Separate git worktree and branch each</span></span></td>
+          <td><span class="k">cmux</span><span><span data-lang="zh">无</span><span data-lang="en">None</span></span></td>
+        </tr>
+        <tr>
+          <th scope="row"><span data-lang="zh">支持平台</span><span data-lang="en">Platforms</span></th>
+          <td class="us"><span class="k">Polter</span><span>macOS, Windows</span></td>
+          <td><span class="k">tmux</span><span><span data-lang="zh">类 Unix 系统</span><span data-lang="en">Unix-like systems</span></span></td>
+          <td><span class="k">Claude Code</span><span><span data-lang="zh">能跑 Claude Code 的地方</span><span data-lang="en">Wherever Claude Code runs</span></span></td>
+          <td><span class="k">Claude Squad</span><span><span data-lang="zh">需要 tmux 和 <code>gh</code></span><span data-lang="en">Requires tmux and <code>gh</code></span></span></td>
+          <td><span class="k">cmux</span><span>macOS</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="lacks rv" data-lang="zh"><strong>Polter 没有的功能：</strong>它不会为工作节点提供独立的 worktree，也没有 cmux 那样的浏览器面板。如果你非常需要基于任务的文件隔离，Claude Squad 的架构是专门为你打造的。</p>
+    <p class="lacks rv" data-lang="en"><strong>What Polter does not have:</strong> it gives workers no worktree of their own, and it has no browser pane (which cmux has). If isolation per task is what you need, Claude Squad's model is the one built for it.</p>
+  </div>
+</section>
+
+<!-- ───────── 下载安装 ───────── -->
+<section class="sec on-paper" id="download">
+  <div class="wrap">
+    <div class="head center rv">
+      <h2 data-lang="zh">下载安装。</h2>
+      <h2 data-lang="en">Download &amp; Install.</h2>
+      <div class="cta">
+        <a class="btn btn-indigo" href="https://github.com/Lugia123/polter/releases/latest">
+          <span data-lang="zh">点击此处下载最新版本</span><span data-lang="en">Download the latest release here</span></a>
+      </div>
+    </div>
+    <div class="os">
+      <article class="rv">
+        <h3>macOS 13+</h3>
+        <code>Polter-*-macos-universal.zip</code>
+        <p data-lang="zh">原生支持 Apple 芯片和 Intel。</p>
+        <p data-lang="en">Apple Silicon and Intel supported.</p>
+      </article>
+      <article class="rv">
+        <h3>Windows 10+</h3>
+        <code>Polter-*-windows-x64.zip</code>
+        <p data-lang="zh">已实现 76 个核心操作中的 70 个（数据截至 2026-09-21）。</p>
+        <p data-lang="en">70 out of 76 core actions implemented (as of 2026-09-21; see <code>dev-docs/windows/status.md</code>).</p>
+      </article>
+      <article class="rv">
+        <h3>Linux</h3>
+        <p data-lang="zh"><strong>无现成安装包。</strong>需从源码编译。（截图功能此版本暂未实现）。</p>
+        <p data-lang="en"><strong>No pre-built binary.</strong> You must build from source. (Screenshot feature not yet available).</p>
+      </article>
+    </div>
+    <div class="how">
+      <article class="rv">
+        <h3 data-lang="zh">macOS 用户必看</h3><h3 data-lang="en">For macOS users</h3>
+        <p data-lang="zh">目前的安装包没有签名，会被苹果 Gatekeeper 拦截。请打开终端，输入以下命令解除隔离：</p>
+        <p data-lang="en">The builds are currently unsigned, so Apple's Gatekeeper will block it. Run this in your terminal to allow it:</p>
+<pre>unzip Polter-*-macos-universal.zip
+xattr -dr com.apple.quarantine Polter.app
+mv Polter.app /Applications/</pre>
+        <p data-lang="zh"><strong>重要提示：</strong>请从“访达 (Finder)”或“程序坞 (Dock)”中双击打开 Polter，不要通过终端命令启动，以确保它能正确读取你 <code>PATH</code> 中的 AI 工具环境变量。</p>
+        <p data-lang="en"><strong>Important:</strong> open Polter from your Finder or Dock, not from the terminal, so it can correctly find your agent tools on your <code>PATH</code>.</p>
+      </article>
+      <article class="rv">
+        <h3 data-lang="zh">Windows 用户必看</h3><h3 data-lang="en">For Windows users</h3>
+        <p data-lang="zh">解压后直接运行 <code>polter-host.exe</code>，请把其他文件（DLL 和 share 文件夹）跟它放在同一个目录下。</p>
+        <p data-lang="en">Unzip the folder and run <code>polter-host.exe</code>. Keep all other files (like DLLs and <code>share/</code>) in the same folder.</p>
+        <p data-lang="zh">如果遇到 Windows SmartScreen 拦截，点击“详细信息 → 仍要运行”即可。</p>
+        <p data-lang="en">If Windows SmartScreen warns you, click “Run anyway”.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── FAQ ───────── -->
+<section class="sec on-paper faq" id="faq" style="padding-top:0">
+  <div class="wrap narrow">
+    <div class="head rv">
+      <h2 data-lang="zh">常见问题。</h2>
+      <h2 data-lang="en">FAQ.</h2>
+    </div>
+    <details open>
+      <summary><span data-lang="zh">AI 说它没有 “polter 工具” 怎么办？</span><span data-lang="en">The agent says it has no “polter tools”. What's wrong?</span></summary>
+      <p data-lang="zh">三种可能：插件被禁用了；Polter 启动时 <code>claude</code> 命令不在 <code>PATH</code> 中；或者你在设置里把 <code>poltergeist-register-mcp</code> 关了。注册表指向的是最后一次启动的构建版本。</p>
+      <p data-lang="en">Three causes: the plugin is off, <code>claude</code> wasn't on your <code>PATH</code> when Polter started, or <code>poltergeist-register-mcp</code> is off. The registration points at whichever build started last.</p>
+    </details>
+    <details>
+      <summary><span data-lang="zh">除了 Claude Code 还能用别的 AI 工具吗？</span><span data-lang="en">Does it work with other AI tools besides Claude Code?</span></summary>
+      <p data-lang="zh">服务端用的是标准 MCP 协议，任何 MCP 客户端都能接进来，自带了 7 个配置插件。但目前只针对 Claude Code 做了深度测试，其它工具请当作未测试对待。</p>
+      <p data-lang="en">The server uses standard MCP, so any MCP client can run it, and 7 provisioning plugins ship with it. However, we have only tested it deeply with Claude Code. Treat the rest as untested.</p>
+    </details>
+    <details>
+      <summary><span data-lang="zh">这不就是 tmux 吗？</span><span data-lang="en">Isn't this just tmux?</span></summary>
+      <p data-lang="zh">不是。<code>tmux</code> 只是帮你分屏，盯着屏幕的活儿还得你干。Polter 的作用是把其它节点的发呆时间汇报给某一个智能体，并允许它读取别的屏幕和敲键盘。</p>
+      <p data-lang="en">No. <code>tmux</code> arranges panes and leaves the watching to you. Polter tells one agent how long each of the others has been still and lets it read their screens and type into them.</p>
+    </details>
+    <details>
+      <summary><span data-lang="zh">Claude Code 已经有子智能体了，我还需要这个吗？</span><span data-lang="en">Claude Code already has sub-agents. Do I need this?</span></summary>
+      <p data-lang="zh">如果你只是想在一个会话内拆分任务，确实不需要。子智能体从属于父会话；但 Polter 的工作节点是完全独立的终端会话，总管可以跨终端管理它们。</p>
+      <p data-lang="en">Not if all you want is to split one job up inside one session. A sub-agent belongs to its parent session. A Polter worker is an independent session in its own terminal, and the supervisor can read its screen and is told how long it has been still.</p>
+    </details>
+    <details>
+      <summary><span data-lang="zh">它怎么知道 agent 卡住了？</span><span data-lang="en">How does it know an agent is stuck?</span></summary>
+      <p data-lang="zh">它并不知道。它只测量一件事——屏幕有多久没有发生变化——且不解析任何 CLI 的输出。到底是卡住了还是在思考，由总管自己来判断。</p>
+      <p data-lang="en">It doesn't. It measures one thing—how long a screen has been unchanged—and parses no CLI's output. Whether that means it's stuck or just thinking is the supervisor's call.</p>
+    </details>
+    <details>
+      <summary><span data-lang="zh">这个项目和 Poltergeist 有关系吗？</span><span data-lang="en">Is this related to Poltergeist?</span></summary>
+      <p data-lang="zh">没有。<code>steipete/poltergeist</code> 是一个文件监视器和构建工具，它的命令也叫 <code>polter</code>。这两个项目除了共用“幽灵”主题外毫无关联，这里的 <code>poltergeist-*</code> 仅仅是本项目的设置项前缀。</p>
+      <p data-lang="en">No. <code>steipete/poltergeist</code> is a file watcher and build tool, and its wrapper command is also called <code>polter</code>. The two projects share a ghost theme and nothing else; <code>poltergeist-*</code> here is only the prefix of this project's settings.</p>
+    </details>
+    <details>
+      <summary><span data-lang="zh">我该怎么写插件？</span><span data-lang="en">How do I write a plugin?</span></summary>
+      <p data-lang="zh">一个目录、一个 <code>plugin.json</code>，外加一个可执行文件。20 行 shell 脚本就能写一个完整的插件。</p>
+      <p data-lang="en">A directory, a <code>plugin.json</code>, and an executable. Twenty lines of shell is a complete plugin.</p>
+    </details>
+  </div>
+</section>
+
+<!-- ───────── 收尾 ───────── -->
+<section class="sec on-indigo outro">
+  <div class="wrap center rv">
+    <h2 data-lang="zh"><span class="nb">给你的 AI&nbsp;</span><span class="nb">找个总管。</span></h2>
+    <h2 data-lang="en">Give your AI agents a supervisor.</h2>
+    <div class="cta">
+      <a class="btn btn-light" href="https://github.com/Lugia123/polter/releases/latest">
+        <span data-lang="zh">下载最新版本</span><span data-lang="en">Download the latest release</span></a>
+      <a class="btn btn-ghost" href="https://github.com/Lugia123/polter">GitHub</a>
+    </div>
+  </div>
+</section>
+
 </main>
 
 <footer>
   <div class="wrap">
-    <p data-lang="zh">让它成为一个好终端的一切都是 <a href="https://github.com/ghostty-org/ghostty">Ghostty</a> 的功劳。Polter 与 Ghostty 项目无关联。</p>
-    <p data-lang="en">Everything that makes this a good terminal is <a href="https://github.com/ghostty-org/ghostty">Ghostty</a>'s doing. Polter is not affiliated with the Ghostty project.</p>
+    <span>Polter</span>
+    <span>MIT</span>
+    <a href="https://github.com/Lugia123/polter">GitHub</a>
+    <span class="r" data-lang="zh">本项目不隶属于 Ghostty 官方。</span>
+    <span class="r" data-lang="en">This project is not affiliated with the Ghostty project.</span>
   </div>
 </footer>
 
 <script>
 (function(){
   var html=document.documentElement,v=document.getElementById('v'),
-      langBtn=document.getElementById('lang'),snd=document.getElementById('sound');
+      langBtn=document.getElementById('lang'),snd=document.getElementById('sound'),
+      anim=html.classList.contains('anim');
   var ICON_OFF='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="m23 9-6 6M17 9l6 6"/></svg>',
       ICON_ON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>';
 
+  function play(){var p=v.play(); if(p&&p.catch)p.catch(function(){});}
   function paintSound(){
     var zh=html.lang==='zh';
     snd.innerHTML=v.muted
@@ -141,7 +1320,7 @@
     if(v.getAttribute('src')!==src){
       v.poster='poster-'+l+'.jpg';
       v.src=src;
-      var p=v.play(); if(p&&p.catch)p.catch(function(){});
+      play();
     }
     paintSound();
     try{localStorage.setItem('polter-lang',l)}catch(e){}
@@ -149,17 +1328,126 @@
 
   var saved=null;
   try{saved=localStorage.getItem('polter-lang')}catch(e){}
-  // ?lang=en / ?lang=zh 优先于记住的选择：README 的两种语言各自链到自己的片子
-  var asked=(location.search.match(/[?&]lang=(zh|en)(&|$)/)||[])[1];
-  setLang(asked||saved||((navigator.language||'').toLowerCase().indexOf('zh')===0?'zh':'en'));
+  // ?lang=en / ?lang=zh（README 里写的是 zh-CN）优先于记住的选择：两种语言的 README 各自链到自己的片子
+  var asked=(location.search.match(/[?&]lang=(zh|en)/i)||[])[1];
+  setLang((asked&&asked.toLowerCase())||saved||((navigator.language||'').toLowerCase().indexOf('zh')===0?'zh':'en'));
 
   langBtn.addEventListener('click',function(){setLang(html.lang==='zh'?'en':'zh')});
   snd.addEventListener('click',function(){
     v.muted=!v.muted;
     if(!v.muted){v.currentTime=0;}
-    var p=v.play(); if(p&&p.catch)p.catch(function(){});
+    play();
     paintSound();
   });
+
+  // ── 两处轮播：自动播放 + 点击 / 方向键 / 左右滑动切换 ──
+  var DWELL=5000,canIO=('IntersectionObserver' in window);
+  if(!canIO)html.classList.remove('anim'),anim=false;
+  var cars=[].map.call(document.querySelectorAll('.scene'),function(el,ci){
+    var caps=el.querySelectorAll('.cap'),descs=el.querySelectorAll('.desc'),N=caps.length,
+        panel=el.querySelector('.right'),grid=el.querySelector('.grid'),
+        c={el:el,cur:-1,seen:!canIO},timer=0;
+    el.classList.add('live');
+    el.style.setProperty('--dwell',DWELL+'ms');
+    panel.id=panel.id||('car-panel-'+ci);
+    panel.setAttribute('role','tabpanel');
+    caps[0].parentNode.setAttribute('role','tablist');
+    caps[0].parentNode.setAttribute('aria-orientation','vertical');
+    function go(n){
+      n=(n+N)%N; if(n===c.cur)return; c.cur=n;
+      el.setAttribute('data-step',n);
+      for(var i=0;i<N;i++){
+        el.classList.toggle('s'+i,i<=n);
+        caps[i].classList.toggle('on',i===n);
+        caps[i].setAttribute('aria-selected',i===n?'true':'false');
+        caps[i].tabIndex=i===n?0:-1;
+        if(descs[i])descs[i].classList.toggle('on',i===n);
+      }
+    }
+    function plan(){
+      clearTimeout(timer);
+      var run=anim&&c.seen&&!document.hidden; // 只有离开视口或切到后台才停表
+      el.classList.toggle('playing',run);
+      if(run)timer=setTimeout(function(){go(c.cur+1);plan();},DWELL);
+    }
+    function pick(n){ // 用户自己切的：从这一步接着播，停留时间重新计
+      go(n);
+      el.classList.remove('playing'); void el.offsetWidth;
+      plan();
+    }
+    c.paint=function(){panel.setAttribute('aria-label',html.lang==='zh'?'示意图':'Illustration');};
+    [].forEach.call(caps,function(cap,i){
+      cap.setAttribute('role','tab');
+      cap.setAttribute('aria-controls',panel.id);
+      cap.addEventListener('click',function(){pick(i)});
+      cap.addEventListener('keydown',function(e){
+        var k=e.key,to=-1;
+        if(k==='ArrowDown'||k==='ArrowRight')to=c.cur+1;
+        else if(k==='ArrowUp'||k==='ArrowLeft')to=c.cur-1;
+        else if(k==='Home')to=0; else if(k==='End')to=N-1;
+        else if(k==='Enter'||k===' ')to=i;
+        if(to<0&&k!=='ArrowUp'&&k!=='ArrowLeft')return;
+        e.preventDefault(); pick(to); caps[c.cur].focus();
+      });
+    });
+    var x0=null,y0=0;
+    panel.addEventListener('touchstart',function(e){x0=e.touches[0].clientX;y0=e.touches[0].clientY;},{passive:true});
+    panel.addEventListener('touchend',function(e){
+      if(x0===null)return;
+      var dx=e.changedTouches[0].clientX-x0,dy=e.changedTouches[0].clientY-y0; x0=null;
+      if(Math.abs(dx)>40&&Math.abs(dx)>Math.abs(dy)*1.5)pick(c.cur+(dx<0?1:-1));
+    },{passive:true});
+    // 窗格比视口高时比例到不了阈值，所以同时看露出来的高度
+    if(canIO)new IntersectionObserver(function(es){
+      var e=es[es.length-1];
+      c.seen=e.isIntersecting&&(e.intersectionRatio>=.3||e.intersectionRect.height>=window.innerHeight*.4);
+      plan();
+    },{threshold:[0,.1,.2,.3,.4,.5,.75,1]}).observe(grid);
+    c.plan=plan;
+    go(0); c.paint(); plan();
+    return c;
+  });
+  document.addEventListener('visibilitychange',function(){cars.forEach(function(c){c.plan()})});
+  langBtn.addEventListener('click',function(){cars.forEach(function(c){c.paint()})});
+
+  // 示意图里的静止计时
+  var how=cars.filter(function(c){return c.el.id==='how'})[0],
+      idle=how.el.querySelectorAll('.idle'),sec=180;
+  setInterval(function(){
+    if(how.cur<3)return;
+    sec++;
+    var s=('0'+Math.floor(sec/60)).slice(-2)+':'+('0'+sec%60).slice(-2);
+    for(var i=0;i<idle.length;i++)idle[i].textContent=s;
+  },1000);
+
+  if(!anim)return;
+
+  // 滚动淡入
+  var io=new IntersectionObserver(function(es){
+    es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});
+  },{rootMargin:'0px 0px -8% 0px'});
+  [].forEach.call(document.querySelectorAll('.rv'),function(el){io.observe(el)});
+
+  // 片子滚出视口就停，回来再播
+  new IntersectionObserver(function(es){
+    if(es[0].isIntersecting)play(); else v.pause();
+  }).observe(v);
+
+  // 入场缩放
+  var px=document.querySelectorAll('[data-px]'),ticking=false;
+  function frame(){
+    ticking=false;
+    var vh=window.innerHeight;
+    for(var i=0;i<px.length;i++){
+      var t=px[i].parentNode.getBoundingClientRect().top,
+          q=Math.min(1,Math.max(0,(vh-t)/(vh*.85)));
+      px[i].style.transform='scale('+(.86+.14*q).toFixed(4)+')';
+    }
+  }
+  function onScroll(){if(!ticking){ticking=true;requestAnimationFrame(frame);}}
+  window.addEventListener('scroll',onScroll,{passive:true});
+  window.addEventListener('resize',onScroll);
+  frame();
 })();
 </script>
 </body>

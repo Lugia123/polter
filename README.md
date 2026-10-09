@@ -1,163 +1,175 @@
 <h1 align="center">
-  <img src="images/icons/icon_256.png" alt="" width="128">
+  <img src="images/icons/icon_256.png" alt="Polter Logo" width="128">
   <br>Polter
 </h1>
 
 <p align="center">
-  <b>Put one Claude Code session in charge of the others.</b><br>
-  <sub>A terminal for running several coding agents in parallel. One session is the
-  supervisor: over MCP it reads the text on the others' screens, types into them,
-  opens new tabs, and minds them while you're asleep.<br>
-  Polter itself has no account and no API key, and makes no network calls of its
-  own — except one request to GitHub, and only when you choose Check for Updates.</sub>
+  <b>A terminal multiplexer and orchestrator for AI agents.</b><br>
+  <sub>Put one Claude Code session in charge of the others. Polter is a terminal that lets you run multiple coding agents in parallel. One agent acts as the Supervisor: via MCP, it reads the screens of other tabs, types into them, opens new tabs, and manages them while you step away.</sub>
 </p>
 
 <p align="center">
-  <a href="#download">Download</a> ·
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#compared-to">Compared to</a> ·
-  <a href="#settings">Settings</a> ·
+  <a href="#download--install">Download</a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#key-features">Features</a> ·
+  <a href="#built-in-ai-screenshots--annotations">AI Screenshots</a> ·
+  <a href="#compared-to-alternatives">Comparisons</a> ·
   <a href="#faq">FAQ</a> ·
-  <a href="README_CN.md">中文</a>
+  <a href="README_CN.md">中文版</a>
 </p>
 
 <p align="center">
   <a href="https://lugia123.github.io/polter/?lang=en"><img src="docs/poster-en.jpg" alt="Polter: give your AI agents a supervisor. Click to watch the 80-second film." width="72%"></a><br>
-  <sub><a href="https://lugia123.github.io/polter/?lang=en">▶ Watch the 80-second film</a></sub>
+  <sub><a href="https://lugia123.github.io/polter/?lang=en">▶ Watch the 80-second demo video</a></sub>
 </p>
 
 <p align="center">
-  <img src="images/screenshots/group-chat.png" alt="A group chat with several worker terminals, showing a supervisor handing out numbered tasks" width="46%">
-  <img src="images/screenshots/group-total.png" alt="The statistics view: which tasks are waiting and how long each terminal has been still" width="52%">
+  <img src="images/screenshots/group-chat.png" alt="A group chat with several worker terminals" width="46%">
+  <img src="images/screenshots/group-total.png" alt="The statistics view showing task status" width="52%">
 </p>
 
 ---
 
-### What it does
+### Why Polter? (The Problem & Solution)
 
-Several Claude Code and Codex windows at once are hard to coordinate, sub-agents stop partway through a long run, and an overnight job tends to knock off after two hours. Polter is a terminal with an MCP server built in, so that one agent can orchestrate the rest. You mark one tab as the **supervisor**. It's an ordinary Claude Code session, with these added:
+Running multiple Claude Code or Codex windows at the same time is hard to manage. Sub-agents often stop working halfway through a long task, or an overnight job gets stuck after a few hours waiting for input. 
 
-- Read the text on any tab's screen (text, not screenshots)
-- Type into any tab
-- Open new tabs and splits, and start agents in them
-- Make a group chat, hand out tasks, take reports; the panel survives a restart
-- Get told how long any tab's screen has been still
+**The Solution:** Polter is a Ghostty-based terminal with a built-in MCP (Model Context Protocol) server. You set one terminal tab as the **Supervisor**. This supervisor is a normal Claude Code session that is given special tools to manage all other tabs (Workers). 
 
-A worker is not a sub-agent. It's an independent session in its own terminal, and what it did lands on disk line by line — you can `grep` it in the morning.
+Workers are not sub-agents; they are independent terminal sessions, and their output lands on disk line by line (you can `grep` it in the morning). 
 
-The supervisor is not polling. Polter pushes a notice when a screen has stopped moving, so what a quiet night costs in tokens follows how often something stalled, not how long the job ran.
+The supervisor is not polling. Polter actively pushes a notice when a screen has stopped moving, so what a quiet night costs in tokens follows how often a worker stalled, not how long the job ran.
 
-### What else is in it
+### Key Features
 
-- **Roles.** A role is a saved way to start an agent CLI: which of its skills and MCP servers it keeps, what it is told on top of its system prompt, which model. They live under `Agents → Role`, and a supervisor can start its own workers wearing one.
-- **Projects.** `Project → Save as Project…` keeps a tab — its splits, each pane's directory, command history and scrollback — and `Load Project…` brings it back. macOS and Windows; not on Linux.
-- **Who may answer a prompt.** A supervisor may answer permission prompts in the terminals it opened itself, and in no others unless you say so, one terminal at a time (`Agents → Let a Supervisor Answer Prompts Here`). No tool can switch it on, and you can switch it off in a terminal the supervisor opened.
-- **One settings window.** Roles, projects, plugins and the config file, in one place and the same on both platforms (`Settings…`).
-- **Hooks.** A Claude Code started from a role tells Polter when a turn ends and what it said, so the supervisor is told rather than left to read a still screen. Claude Code only; every other CLI is still watched by its screen.
-- **English and Chinese.** The menus and windows follow the system language, or the one picked under `Language`.
+*   **Smart Supervisor:** The supervisor agent can read the text on any tab (real text, not screenshots), type commands into any tab, and open new tabs to start new agents.
+*   **Team Management:** It can create a group chat, assign tasks, and receive reports. This task panel survives a terminal restart.
+*   **Idle Detection:** Polter tracks how long each screen has been inactive and tells the supervisor if a worker is stuck.
+*   **Roles & Projects:** Save your favorite agent settings (skills, prompts, models) as Roles. Save your workspace (tabs, directories, history) as Projects and load them later (macOS and Windows only).
+*   **Hooks:** A Claude Code started from a Role tells Polter when its turn ends and what it said. The supervisor is notified directly, rather than waiting to read a still screen. (Claude Code only; other CLIs are monitored by screen activity).
+*   **Plugins:** Polter ships with 7 provisioning plugins out of the box.
+*   **Safe Permissions:** The supervisor can only answer permission prompts in tabs it opened itself. You can manually allow it in specific tabs via `Agents → Let a Supervisor Answer Prompts Here`.
+*   **One Settings Window:** Roles, projects, plugins, and configs are managed in one place (`Settings…`).
+*   **Multilingual:** UI supports English and Chinese (follows your system setting or the `Language` menu).
 
-### Download
+### Built-in AI Screenshots & Annotations
 
-[**Latest release**](https://github.com/Lugia123/polter/releases/latest)
+Polter comes with a built-in screenshot tool specifically designed for AI workflows. 
+Unlike normal screenshot tools, **the text you write and the boxes you draw are saved as readable data.** A `.json` file is created next to every screenshot. When you paste the image to the AI, your annotations are sent alongside it as pure text, meaning the AI doesn't need to guess or use OCR to read your handwriting.
 
-| | |
-| --- | --- |
-| **macOS 13+** | `Polter-*-macos-universal.zip`, Apple Silicon and Intel in one bundle |
-| **Windows 10+** | `Polter-*-windows-x64.zip`, 70 of the core's 76 actions implemented, 4 refused by name, 2 owed (2026-09-21; how these are counted: `dev-docs/windows/status.md` §2.2 item 2) |
-| **Linux** | No binary. Build from source. |
+*   **Trigger Anywhere:** Press `⌘⇧0` (Mac) or `Ctrl+Shift+0` (Windows). Works globally. *(Note: On Windows, if you have multiple Chinese input methods, this shortcut might be occupied by the system's "switch input language" hotkey).*
+*   **Mouse Trigger:** Hold `⌘⇧` (Mac) or `Ctrl+Shift` (Windows) and click your mouse. *(Note: This is a system-wide hook. On Windows, Polter swallows the click. On macOS, the click passes through to the app below, which might open links. You can change this behavior or disable it via the `screenshot-mouse-trigger` setting).*
+*   **Smart Select & Scrolling Pages:** Auto-selects windows or free-drags. Click "Long Screenshot" to automatically scroll and stitch a long webpage or code file.
+*   **Rich Editable Annotations:** Add text, arrows, numbers, or boxes. Includes an irreversible mosaic blur (the unblurred original is only in memory, never written to disk or clipboard).
+*   **Agent-Controlled Captures:** Your Supervisor agent can use MCP tools to list windows, take screenshots, capture long pages, or draw annotations. *(If you want strict privacy, you can disable this via the `screenshot-agent-access` setting; it is allowed by default).*
+*   **Permissions Required:** **macOS requires both "Screen Recording" and "Accessibility" permissions.** (Accessibility is needed for auto-scrolling and the agent's `screenshot_long` tool. Without it, scrolling falls back to manual, and agent long captures will fail). Windows requires no permissions.
+*   **Auto-Cleanup:** Every time Polter starts, screenshots older than 7 days that match the naming convention (including pasted clipboard images) are automatically deleted from the screenshot folder.
 
-The **macOS** builds are unsigned, so Gatekeeper will stop them:
+### Download & Install
 
+[**Download the latest release here**](https://github.com/Lugia123/polter/releases/latest)
+
+| OS | File | Note |
+| --- | --- | --- |
+| **macOS 13+** | `Polter-*-macos-universal.zip` | Apple Silicon and Intel supported. |
+| **Windows 10+** | `Polter-*-windows-x64.zip` | 70 out of 76 core actions implemented (as of 2026-09-21; see `dev-docs/windows/status.md`). |
+| **Linux** | No pre-built binary. | You must build from source. (Screenshot feature not yet available). |
+
+**For macOS users:**
+The builds are currently unsigned, so Apple's Gatekeeper will block it. Run this in your terminal to allow it:
 ```sh
 unzip Polter-*-macos-universal.zip
 xattr -dr com.apple.quarantine Polter.app
 mv Polter.app /Applications/
 ```
+*Important: Open Polter from your Finder or Dock, not from the terminal, so it can correctly find your agent tools on your `PATH`.*
 
-Then **open it from Finder or the Dock, not from a terminal** — the `PATH` differs, and the provisioning plugin won't find your agent CLI.
-
-On **Windows**, unzip and run `polter-host.exe`, keeping everything else in the zip beside it — the DLLs, `polter-cli.exe` and `share/`. SmartScreen will ask you to click "Run anyway".
+**For Windows users:**
+Unzip the folder and run `polter-host.exe`. Keep all other files (like DLLs and `share/`) in the same folder. If Windows SmartScreen warns you, click "Run anyway".
 
 ### Prerequisites
+An agent CLI, on your `PATH`, and on it **at the moment Polter starts**. Only tested deeply with Claude Code.
 
-An agent CLI, on your `PATH`, and on it at the moment Polter starts. Only tested with Claude Code.
+### Quick Start
 
-### Quick start
+1. **Start Claude Code:** Open a tab in Polter, `cd` to your project folder, and start Claude Code.
+2. **Set the Supervisor:** Go to the menu: `Agents → Make This Terminal a Supervisor`.
+3. **Test the Connection:** Ask the agent: *"Call the `me` tool and tell me what it says."* If it replies with a terminal ID, you are ready! *(If it says it has no such tool, stop here and check the [FAQ](#faq)).*
+4. **Give the Command:** Tell the supervisor what you want to build. It will handle opening tabs and assigning tasks on its own. 
+5. **Review Later:** Let it work. Later, go to `Agents → Terminal Conversations` (or run `polter +chat`) to see what they discussed. Press `tab` or `shift+tab` to cycle views: the conversation, the task panel, and the night's stats.
 
-**1. Open a tab and start Claude Code in it.** `cd` to the directory you want it working in.
+### Compared to Alternatives
 
-**2. Mark that tab as the supervisor.** `Agents → Make This Terminal a Supervisor`. Polter then types a line into that tab telling the agent to read its `supervising` skill.
+*(Data read on 2026-10-04, based on each project's official docs)*
 
-Before going further, check the tools are there. Ask it:
-
-> Call the `me` tool and tell me what it says.
-
-A terminal id back means you're set. If it says it has no such tool, stop here and see the [FAQ](#faq).
-
-**3. Tell it what the job is.** Making the group, opening tabs, claiming them, timing them — all its own. You don't quote terminal ids and you don't name tools.
-
-**4. Go to bed.** Come back to `Agents → Terminal Conversations` (or `polter +chat`) to read what they said. `tab` and `shift+tab` cycle three views: the conversation, the task panel, and the night's account.
-
-### Compared to
-
-Polter's own column is what this repository does. The other columns are from each project's own README or manual, read on 2026-10-04.
-
-| | Polter | tmux | Claude Code sub-agents | [Claude Squad](https://github.com/smtg-ai/claude-squad) | [cmux](https://github.com/manaflow-ai/cmux) |
+| Feature | Polter | tmux | Claude Code (Sub-agents) | [Claude Squad](https://github.com/smtg-ai/claude-squad) | [cmux](https://github.com/manaflow-ai/cmux) |
 | --- | --- | --- | --- | --- | --- |
-| What it is | A terminal (a Ghostty fork) with an MCP server in it | A terminal multiplexer | A feature inside one Claude Code session | A TUI over tmux and git worktrees | A Ghostty-based macOS terminal |
-| Who watches the agents | Another agent, the supervisor | You | The parent session | You, in one window | You, by notification rings and a sidebar |
-| A worker is | Its own session in its own terminal | Whatever you start in a pane | A sub-agent of the parent | Its own session in its own worktree | Whatever you start in a pane |
-| When one stops moving | The supervisor is told how long it has been still | A highlight in the status line and a bell, if you set `monitor-silence` | — | — | A ring, when the agent signals it |
-| Isolation between workers | None of its own; they share your checkout | None | The parent's directory, or a worktree if you ask for one | A git worktree and branch each | None |
-| Platforms | macOS, Windows | Unix-like systems | Wherever Claude Code runs | Needs tmux and `gh` | macOS |
+| **What is it?** | Terminal (Ghostty fork) with MCP server | Terminal multiplexer | Feature inside one Claude Code session | TUI using tmux and git worktrees | Ghostty-based macOS terminal |
+| **Who watches agents?** | Another AI (Supervisor) | You | The parent AI session | You, in one window | You (via notifications) |
+| **What is a worker?** | Independent session in a terminal tab | Whatever runs in a pane | A sub-agent of the parent session | Independent session in a git worktree | Whatever runs in a pane |
+| **If it stops moving?** | Supervisor is told how long it’s been idle | Bell rings (if configured) | — | — | Notification rings |
+| **File Isolation?** | None (They share your checkout) | None | Parent directory (or worktree if asked) | Separate git worktree and branch each | None |
+| **Platforms** | macOS, Windows | Unix-like systems | Wherever Claude Code runs | Requires tmux and `gh` | macOS |
 
-What Polter does not have, from that table: it gives workers no worktree of their own, and it has no browser pane, which cmux has. If isolation per task is what you need, Claude Squad's model is the one built for it.
+**What Polter does not have:** It gives workers no worktree of their own, and it has no browser pane (which cmux has). If isolation per task is what you need, Claude Squad's model is the one built for it.
 
-### Settings
+### Privacy & Settings
 
-Everything has a working default; you can run it without touching any of them. The ones worth knowing:
+All data stays on your computer. Nothing is redacted or sent to the cloud by Polter. Think of it like your normal shell history. Files land in `$XDG_STATE_HOME/polter/`:
+*   `chat/`: What the agents said to each other.
+*   `terminals/`: Transcripts of what happened in each terminal.
+*   `tasks/`: Every change to the task panel.
+*   `stats/`: One line per group per hour.
 
-| Setting | What it does |
-| --- | --- |
-| `poltergeist-watch` | Whether terminal screens are sampled. Off by default; the supervisor turns it on per terminal with `set_watch`. |
-| `poltergeist-quiescence-after` | How long a screen stays still before the supervisor is told |
-| `poltergeist-register-mcp` | Whether to register the MCP server at startup. On by default. |
+You can change settings in the `Settings…` menu. Some useful ones:
+*   `poltergeist-watch`: Allows screen sampling (Off by default; supervisor turns it on with `set_watch`).
+*   `poltergeist-quiescence-after`: A duration (e.g., 3 minutes by default) for how long a screen stays still before notifying the supervisor.
+*   `poltergeist-register-mcp`: Whether to register the MCP server at startup (On by default).
+*   `screenshot-directory`: Where screenshots are saved. Extremely useful to point into your project directory if your agent cannot read files outside its workspace.
+*   `screenshot-agent-access`: Whether agents are allowed to use screenshot MCP tools.
+*   `clipboard-paste-image`: Whether pasting an image into the terminal turns it into a file path for the CLI to read.
 
-Everything lands under `$XDG_STATE_HOME/polter/`: `chat/` is what the agents said to each other, `terminals/` is what happened in each terminal, `tasks/` is every change to the panel, `stats/` is one line per group per hour. Nothing is redacted — treat it like your shell history.
+### Guardrails (What Polter WON'T do)
 
-### What it doesn't do today
-
-- **Won't answer a permission prompt in a terminal you started, unless you said it may there.** It tells you instead. In a terminal the supervisor opened, it may.
-- **Won't let an agent undo a lock you set.** The hold and the shield are yours to set and yours to lift.
-- **Won't grow into a task system.** The panel holds who is on what, and whether it's done.
-- **Won't be a way around an agent's own permissions.** `terminal_send` sends text only, down the paste path, with control bytes turned into spaces.
+*   **Won't bypass your permissions.** `terminal_send` sends text only, down the paste path, with control bytes turned into spaces. It cannot force an agent to bypass its own permissions.
+*   **Won't answer unexpected prompts.** It only answers permission prompts in tabs the supervisor opened itself (unless you authorize otherwise).
+*   **Won't undo your locks.** The terminal UI hold and shield are yours to set and yours to lift. An agent cannot unlock them.
+*   **Won't grow into a task system.** The panel merely holds who is on what, and whether it's done.
 
 ### FAQ
 
-**The agent says it has no polter tools.** Three causes: the plugin is off, `claude` wasn't on `PATH` when Polter started, or `poltergeist-register-mcp` is off. The registration points at whichever build started last.
+**1. The agent says it has no "polter tools". What's wrong?**
+Three causes: the plugin is off, `claude` wasn't on your `PATH` when Polter started, or `poltergeist-register-mcp` is off. The registration points at whichever build started last.
 
-**Does it work with other CLIs?** The server is plain MCP, so any MCP client can run it, and seven provisioning plugins ship with it. Only tested with Claude Code — treat the rest as untested.
+**2. Does it work with other AI tools besides Claude Code?**
+The server uses standard MCP, so any MCP client can run it, and 7 provisioning plugins ship with it. However, we have only tested it deeply with Claude Code. Treat the rest as untested.
 
-**Isn't this tmux?** No. tmux arranges panes and leaves the watching to you. Polter tells one agent how long each of the others has been still and lets it read their screens and type into them.
+**3. Isn't this just tmux?**
+No. `tmux` arranges panes and leaves the watching to you. Polter tells one agent how long each of the others has been still and lets it read their screens and type into them.
 
-**How does it know an agent is stuck?** It doesn't. It measures one thing — how long a screen has been unchanged — and parses no CLI's output. Whether that's stuck or thinking is the supervisor's call.
+**4. Claude Code already has sub-agents. Do I need this?**
+Not if all you want is to split one job up inside one session. A sub-agent belongs to its parent session. A Polter worker is an independent session in its own terminal, and the supervisor can read its screen and is told how long it has been still.
 
-**Is this related to Poltergeist?** No. [steipete/poltergeist](https://github.com/steipete/poltergeist) is a file watcher and build tool, and its wrapper command is also called `polter`. The two projects share a ghost and nothing else; `poltergeist-*` here is only the prefix of this project's settings.
+**5. How does it know an agent is stuck?**
+It doesn't. It measures one thing—how long a screen has been unchanged—and parses no CLI's output. Whether that means it's stuck or just thinking is the supervisor's call.
 
-**How do I write a plugin?** A directory, a `plugin.json`, and an executable. Twenty lines of shell is a complete plugin.
+**6. Is this related to Poltergeist?**
+No. `steipete/poltergeist` is a file watcher and build tool, and its wrapper command is also called `polter`. The two projects share a ghost theme and nothing else; `poltergeist-*` here is only the prefix of this project's settings.
+
+**7. How do I write a plugin?**
+A directory, a `plugin.json`, and an executable. Twenty lines of shell is a complete plugin.
 
 ### Relationship to Ghostty
 
-Everything that makes this a good terminal is [Ghostty](https://github.com/ghostty-org/ghostty)'s doing. Polter is a fork, not a rewrite: the renderer, the VT implementation, the font stack and the native UI are all theirs, and upstream changes get merged in.
+Everything that makes this a good terminal is [Ghostty](https://github.com/ghostty-org/ghostty)'s doing. Polter is a fork, not a rewrite: the renderer, the VT implementation, the font stack, and the native UI are all theirs, and upstream changes get merged in.
 
 So everything about the terminal itself belongs upstream: escape sequences, performance, configuration, keybindings, `libghostty`. See [ghostty.org/docs](https://ghostty.org/docs) and read `ghostty` as `polter`.
 
-What Polter adds is `src/poltergeist/`, the MCP tool surface, the chat TUI, terminal transcripts and the plugin host. This project is not affiliated with the Ghostty project — don't file bugs found here over there unless they reproduce on upstream Ghostty.
+What Polter adds is `src/poltergeist/`, the MCP tool surface, the chat TUI, terminal transcripts, and the plugin host. This project is not affiliated with the Ghostty project — don't file bugs found here over there unless they reproduce on upstream Ghostty.
 
-Building is in [`dev-docs/preview-manual.md`](dev-docs/preview-manual.md); the design reasoning is under [`dev-docs/poltergeist/`](dev-docs/poltergeist/README.md).
+Building instructions are in [`dev-docs/preview-manual.md`](dev-docs/preview-manual.md); design reasoning is under [`dev-docs/poltergeist/`](dev-docs/poltergeist/README.md).
 
-MIT, same as upstream.
+License: MIT, same as upstream.
 
 ---
-
-Thanks to the [LINUX DO](https://linux.do) community, where Polter was first shared.
+*Thanks to the [LINUX DO](https://linux.do) community, where Polter was first shared.*
