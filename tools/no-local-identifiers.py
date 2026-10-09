@@ -282,6 +282,15 @@ KNOWN = {
     # policy that will not say where to report is not one.
     "SECURITY.md":
         "links to this fork's issue tracker and its security advisory page",
+    # The Chinese translation of the above carries the same three links, and
+    # was pushed to the public repository on 2026-10-10 one commit before this
+    # line existed: whoever ran this gate on that commit read only its
+    # `scanned N` line through a grep and never saw the three HITs under it.
+    # The links are public addresses of this repository, so nothing leaked --
+    # but a gate whose output is filtered down to its summary is not being run.
+    "SECURITY_CN.md":
+        "the translation of SECURITY.md, with the same links to this fork's "
+        "issue tracker and its security advisory page",
     # The .pot is generated: the id is its Project-Id-Version and the package
     # name in the header comment, both written by the extractor from the
     # bundle id. Editing it by hand would be undone by the next extraction.
