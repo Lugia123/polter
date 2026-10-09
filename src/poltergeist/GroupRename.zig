@@ -85,6 +85,12 @@ pub const Error = error{
 
     /// A test stopped the process here, as a kill would.
     InjectedCrash,
+
+    /// The rename was begun and could not be finished *now*, and the disk
+    /// could not be put back either: part of it is moved, or the intent
+    /// could not be cleared. The next start finishes it (`recover`). The
+    /// caller must not say "nothing changed".
+    Deferred,
 } || Allocator.Error;
 
 /// What a caller of `rename` tells its own caller, one name for each way it
@@ -96,6 +102,7 @@ pub const Refusal = error{
     RenameBlocked,
     RenameBusy,
     RenameUnfinished,
+    RenameDeferred,
     RenameFailed,
     OutOfMemory,
 };
@@ -109,6 +116,7 @@ pub fn refusal(err: Error) Refusal {
         // moved" -- nothing was tried.
         error.Anomaly => error.RenameUnfinished,
         error.Failed => error.RenameFailed,
+        error.Deferred => error.RenameDeferred,
         error.InjectedCrash => error.RenameFailed,
         error.OutOfMemory => error.OutOfMemory,
     };
@@ -122,6 +130,7 @@ pub fn startupProblem(err: Error) []const u8 {
         error.Anomaly => "a group rename was left in a state this version does not know how to continue from",
         error.Failed => "an unfinished group rename could not be finished",
         error.Blocked => "an unfinished group rename is blocked by records already under its new name",
+        error.Deferred => "a group rename was started and could not be finished; it will be finished when Polter next starts",
         error.InjectedCrash => "a group rename was stopped",
         error.OutOfMemory => "there was not enough memory to finish a group rename",
     };
@@ -133,9 +142,9 @@ pub fn startupProblem(err: Error) []const u8 {
 pub fn problemText(alloc: Allocator, state_dir: []const u8, why: []const u8) Allocator.Error![]u8 {
     return std.fmt.allocPrint(
         alloc,
-        "Polter could not open its records: {s}. Nothing on disk was changed or lost, but " ++
-            "the groups saved in {s} are NOT loaded and nothing new is being recorded; " ++
-            "groups made now exist only in memory. Quit every Polter and start one again; " ++
+        "Polter's records are closed: {s}. Nothing on disk is lost, but the records in {s} " ++
+            "are closed: groups saved there are not (all) loaded, and nothing new is " ++
+            "being recorded; groups made now exist only in memory. Quit every Polter and start one again; " ++
             "if this stays, do not delete anything in that directory (see rename-intent.json, " ++
             "rename-work and rename-backup there).",
         .{ why, state_dir },
@@ -160,7 +169,49 @@ pub const Options = struct {
     /// Tests: damage the new files after they are written and before they
     /// are checked, to see that the check is what stops the swap.
     sabotage: ?Sabotage = null,
+
+    /// Tests (at most four): make an operation fail the way a file held open by someone
+    /// else does on Windows (a sharing violation, which std reports as
+    /// `AccessDenied`).
+    faults: []const Fault = &.{},
 };
+
+pub const Fault = struct {
+    kind: OpKind,
+
+    /// How many matching operations go through before it starts failing.
+    skip: u32 = 0,
+
+    /// How many times in a row it fails before it works. `maxInt` is
+    /// "never works".
+    times: u32,
+};
+
+/// What `retried` can be asked to do. Every write, move and delete of a file
+/// in here goes through one of these, so that they all behave the same when
+/// somebody else has the file open.
+pub const OpKind = enum { write_atomic, write_file, delete_file, delete_tree, rename };
+
+/// How hard to try again when a file is held open by someone else.
+///
+/// On Windows a file another process has open without sharing delete (an
+/// antivirus scanner, the search indexer, a backup agent, or a person with
+/// the file open in an editor) cannot be replaced, renamed or deleted until
+/// they let go, and the error is the same one a real permission problem
+/// gives. Those holds last tens to a few hundred milliseconds. 20 tries 50
+/// ms apart is a second: long enough to ride out a scan, short enough that a
+/// real permission problem is reported while somebody is still looking at
+/// the screen. Done on every platform (it costs nothing when the first try
+/// works, and is how it is tested), though it is Windows that needs it.
+pub const retry_attempts: u32 = 20;
+pub const retry_step_ms: i64 = 50;
+
+fn isBusy(err: anyerror) bool {
+    return switch (err) {
+        error.AccessDenied, error.FileBusy, error.AntivirusInterference => true,
+        else => false,
+    };
+}
 
 pub const Sabotage = enum { drop_line, change_text, change_other_group, drop_task_event };
 
@@ -227,11 +278,29 @@ pub fn rename(
         // Up to here the old files were only read. Put the disk back to
         // what it was: our own work directory and our own intent. (A test's
         // pretend kill cleans up nothing, as a real one would not.)
-        if (err != error.InjectedCrash) run.abandon();
+        if (err == error.InjectedCrash) return err;
+        if (!run.abandon()) return error.Deferred;
         return err;
     };
 
-    try run.finish(old, new, backup, hooks);
+    run.finish(old, new, backup, hooks) catch |err| switch (err) {
+        // A pretend kill leaves everything, as a real one would.
+        error.InjectedCrash => return err,
+        // A state it does not know: leave all of it for a person.
+        error.Anomaly => return err,
+        else => {
+            // Nothing moved yet: the old files are all where they were, so
+            // the intent and the work can simply be taken away, and the
+            // answer is the truth -- it was not renamed. This is the case a
+            // file held open by someone else (an intent being replaced
+            // while a scanner reads it) used to turn into "failed" on the
+            // screen and "renamed" at the next start.
+            if (!run.moved and run.abandon()) return err;
+            // Otherwise it is half done, or could not be undone: the next
+            // start finishes it, and the answer must say so.
+            return error.Deferred;
+        },
+    };
     return report;
 }
 
@@ -269,7 +338,7 @@ pub fn recover(opts: Options) Error!Recovered {
                 else => {
                     // The old files were never touched; drop the attempt.
                     log.warn("group rename: could not redo {s} -> {s} ({}); dropped", .{ intent.from, intent.to, err });
-                    run.abandon();
+                    if (!run.abandon()) return error.Deferred;
                     return .{ .abandoned = true };
                 },
             };
@@ -348,6 +417,16 @@ const Run = struct {
     n: usize = 0,
     report: Report = .{},
     lock_file: ?std.Io.File = null,
+
+    /// Whether any item has been moved into the backup yet. Until one has,
+    /// the old files are all still where they were and a failure can put
+    /// everything back; after, it can only go on.
+    moved: bool = false,
+
+    /// How many injected faults have been used, and how many operations of
+    /// the faulted kind have gone by (`Options.fault`).
+    faults_done: [4]u32 = @splat(0),
+    fault_seen: [4]u32 = @splat(0),
 
     fn init(o: Options) Run {
         return .{ .o = o, .arena = .init(o.alloc) };
@@ -507,34 +586,93 @@ const Run = struct {
         return .{ .from = from, .to = to, .phase = phase, .backup = backup, .started_ms = started };
     }
 
-    fn removeIntent(self: *Run) void {
-        const p = self.path(&.{intent_name}) catch return;
-        std.Io.Dir.cwd().deleteFile(self.o.io, p) catch {};
+    fn removeIntent(self: *Run) Error!void {
+        const p = try self.path(&.{intent_name});
+        try self.retried(.{ .delete_file = p });
     }
 
     /// Atomic and owner-only, like the other small files in here.
     fn writeAtomic(self: *Run, name: []const u8, bytes: []const u8) Error!void {
-        var d = std.Io.Dir.cwd().openDir(self.o.io, self.o.state_dir, .{}) catch return error.Failed;
-        defer d.close(self.o.io);
-
-        var atomic = d.createFileAtomic(self.o.io, name, .{
-            .permissions = if (builtin.os.tag != .windows and std.posix.mode_t != u0)
-                .fromMode(0o600)
-            else
-                .default_file,
-            .replace = true,
-        }) catch return error.Failed;
-        defer atomic.deinit(self.o.io);
-
-        atomic.file.writeStreamingAll(self.o.io, bytes) catch return error.Failed;
-        atomic.replace(self.o.io) catch return error.Failed;
+        try self.retried(.{ .write_atomic = .{ .name = name, .bytes = bytes } });
     }
 
-    /// Our own work directory and our own intent -- never a record.
-    fn abandon(self: *Run) void {
-        const w = self.path(&.{work_name}) catch return;
-        std.Io.Dir.cwd().deleteTree(self.o.io, w) catch {};
-        self.removeIntent();
+    const Op = union(OpKind) {
+        write_atomic: struct { name: []const u8, bytes: []const u8 },
+        write_file: struct { path: []const u8, data: []const u8 },
+        delete_file: []const u8,
+        delete_tree: []const u8,
+        rename: struct { from: []const u8, to: []const u8 },
+    };
+
+    fn once(self: *Run, op: Op) anyerror!void {
+        for (self.o.faults, 0..) |f, i| {
+            if (f.kind != std.meta.activeTag(op)) continue;
+            self.fault_seen[i] +|= 1;
+            if (self.fault_seen[i] > f.skip and self.faults_done[i] < f.times) {
+                self.faults_done[i] +|= 1;
+                return error.AccessDenied;
+            }
+        }
+        const io = self.o.io;
+        switch (op) {
+            .write_atomic => |w| {
+                var d = try std.Io.Dir.cwd().openDir(io, self.o.state_dir, .{});
+                defer d.close(io);
+
+                var atomic = try d.createFileAtomic(io, w.name, .{
+                    .permissions = if (builtin.os.tag != .windows and std.posix.mode_t != u0)
+                        .fromMode(0o600)
+                    else
+                        .default_file,
+                    .replace = true,
+                });
+                defer atomic.deinit(io);
+
+                try atomic.file.writeStreamingAll(io, w.bytes);
+                try atomic.replace(io);
+            },
+            .write_file => |w| try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = w.path, .data = w.data }),
+            .delete_file => |p| std.Io.Dir.cwd().deleteFile(io, p) catch |err| switch (err) {
+                // Gone is what was asked for.
+                error.FileNotFound => {},
+                else => return err,
+            },
+            .delete_tree => |p| try std.Io.Dir.cwd().deleteTree(io, p),
+            .rename => |r| try std.Io.Dir.renameAbsolute(r.from, r.to, io),
+        }
+    }
+
+    /// One operation on a file, tried again if somebody else has it open
+    /// (`retry_attempts`, `retry_step_ms`), and `Failed` if it still will not
+    /// go. **Every write, move and delete of a file in here is this**, so
+    /// that a sharing violation is handled in one place and not forgotten in
+    /// the one that happens to be reached on somebody's machine.
+    fn retried(self: *Run, op: Op) Error!void {
+        var tries: u32 = 0;
+        while (true) {
+            self.once(op) catch |err| {
+                if (isBusy(err) and tries + 1 < retry_attempts) {
+                    tries += 1;
+                    self.o.io.sleep(.fromMilliseconds(retry_step_ms), .awake) catch {};
+                    continue;
+                }
+                log.warn("group rename: {s} failed after {d} tries err={}", .{ @tagName(op), tries + 1, err });
+                return error.Failed;
+            };
+            return;
+        }
+    }
+
+    /// Put the disk back to what it was before this rename began: our own
+    /// work directory and our own intent, never a record. **True only when
+    /// both are really gone.** If either cannot be removed, the next start
+    /// would find the intent and finish the rename -- so a caller that has
+    /// said "it was not renamed" would be wrong, and has to say so instead.
+    fn abandon(self: *Run) bool {
+        const w = self.path(&.{work_name}) catch return false;
+        self.retried(.{ .delete_tree = w }) catch return false;
+        self.removeIntent() catch return false;
+        return true;
     }
 
     // -- checking the target ----------------------------------------------
@@ -555,7 +693,7 @@ const Run = struct {
     fn stageAndCheck(self: *Run, old: []const u8, new: []const u8) Error!Report {
         self.report = .{};
         const w = try self.path(&.{work_name});
-        std.Io.Dir.cwd().deleteTree(self.o.io, w) catch return error.Failed;
+        try self.retried(.{ .delete_tree = w });
         std.Io.Dir.cwd().createDirPath(self.o.io, w) catch return error.Failed;
 
         const old_seg = daylog.encodeSegment(self.a(), old) catch return error.OutOfMemory;
@@ -634,7 +772,7 @@ const Run = struct {
                 bytes;
             self.report.files += 1;
 
-            std.Io.Dir.cwd().writeFile(self.o.io, .{ .sub_path = to, .data = out }) catch return error.Failed;
+            try self.retried(.{ .write_file = .{ .path = to, .data = out } });
             try self.tick();
         }
     }
@@ -657,7 +795,7 @@ const Run = struct {
 
         const to = try self.path(&.{ work_name, "stream", std.fs.path.basename(stream.path()) });
         std.Io.Dir.cwd().createDirPath(self.o.io, std.fs.path.dirname(to).?) catch return error.Failed;
-        std.Io.Dir.cwd().writeFile(self.o.io, .{ .sub_path = to, .data = r.bytes }) catch return error.Failed;
+        try self.retried(.{ .write_file = .{ .path = to, .data = r.bytes } });
         self.report.files += 1;
         try self.tick();
     }
@@ -975,13 +1113,16 @@ const Run = struct {
             .{ old, new, new },
         );
         const rp = try std.fs.path.join(self.a(), &.{ backup, "README.txt" });
-        std.Io.Dir.cwd().writeFile(self.o.io, .{ .sub_path = rp, .data = readme }) catch return error.Failed;
+        try self.retried(.{ .write_file = .{ .path = rp, .data = readme } });
 
         for (try self.items(old, new, backup)) |item| try self.swapItem(item);
 
         const w = try self.path(&.{work_name});
-        std.Io.Dir.cwd().deleteTree(self.o.io, w) catch {};
-        self.removeIntent();
+        // What is left is only the staging directory, which the next rename
+        // clears first. The intent is the one that matters: with every item
+        // swapped, a start that finds it finishes nothing and removes it.
+        self.retried(.{ .delete_tree = w }) catch {};
+        self.removeIntent() catch |err| log.warn("group rename: the rename is done but its intent could not be removed ({}); the next start clears it", .{err});
         try self.tick();
     }
 
@@ -1010,7 +1151,8 @@ const Run = struct {
             if (std.fs.path.dirname(item.backup)) |parent| {
                 std.Io.Dir.cwd().createDirPath(self.o.io, parent) catch return error.Failed;
             }
-            std.Io.Dir.renameAbsolute(item.src, item.backup, self.o.io) catch return error.Failed;
+            try self.retried(.{ .rename = .{ .from = item.src, .to = item.backup } });
+            self.moved = true;
             try self.tick();
             return self.swapItem(item);
         }
@@ -1019,7 +1161,8 @@ const Run = struct {
             if (std.fs.path.dirname(item.dest)) |parent| {
                 std.Io.Dir.cwd().createDirPath(self.o.io, parent) catch return error.Failed;
             }
-            std.Io.Dir.renameAbsolute(item.staged, item.dest, self.o.io) catch return error.Failed;
+            try self.retried(.{ .rename = .{ .from = item.staged, .to = item.dest } });
+            self.moved = true;
             try self.tick();
             return;
         }
@@ -2293,15 +2436,153 @@ test "#1282: an intent nobody can read gives a problem that says what and where"
     defer alloc.free(text);
     try testing.expect(std.mem.indexOf(u8, text, "does not know how to continue") != null);
     try testing.expect(std.mem.indexOf(u8, text, state) != null);
-    try testing.expect(std.mem.indexOf(u8, text, "NOT loaded") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "records are closed") != null);
 
     // Nothing was touched while finding out.
     const after = try digest(alloc, io, state, &.{lock_name});
     try testing.expectEqualSlices(u8, &before, &after);
 
     // Every cause has words of its own.
-    const causes = [_]Error{ error.Locked, error.Anomaly, error.Failed, error.Blocked, error.InjectedCrash, error.OutOfMemory };
+    const causes = [_]Error{ error.Locked, error.Anomaly, error.Failed, error.Blocked, error.Deferred, error.InjectedCrash, error.OutOfMemory };
     for (causes, 0..) |a, i| for (causes[i + 1 ..]) |b| {
         try testing.expect(!std.mem.eql(u8, startupProblem(a), startupProblem(b)));
     };
+}
+
+// -- a file somebody else has open ------------------------------------------------
+
+fn faulted(alloc: Allocator, io: std.Io, state: []const u8, f: []const Fault) Options {
+    var o = testOpts(alloc, io, state);
+    o.faults = f;
+    return o;
+}
+
+fn quiet(alloc: Allocator, io: std.Io) !struct { state: []u8, before: [Sha256.digest_length]u8 } {
+    const state = try scratch(alloc, io);
+    try build(alloc, io, state);
+    return .{ .state = state, .before = try digest(alloc, io, state, live_only) };
+}
+
+fn absent(io: std.Io, alloc: Allocator, state: []const u8, name: []const u8) !bool {
+    const p = try std.fs.path.join(alloc, &.{ state, name });
+    defer alloc.free(p);
+    return !pathExists(io, p);
+}
+
+test "#1285: a file held open for a moment is waited out, wherever it is" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Each kind of operation, failing three times (a scan in progress) and
+    // then working: the rename goes through as if nothing had happened.
+    for ([_]OpKind{ .write_atomic, .write_file, .rename, .delete_file, .delete_tree }) |kind| {
+        const q = try quiet(alloc, io);
+        defer {
+            std.Io.Dir.cwd().deleteTree(io, q.state) catch {};
+            alloc.free(q.state);
+        }
+        _ = try rename(faulted(alloc, io, q.state, &.{.{ .kind = kind, .times = 3 }}), "alpha", "gamma", .{});
+        try testing.expect(try absent(io, alloc, q.state, "chat/alpha"));
+        const g = try std.fs.path.join(alloc, &.{ q.state, "chat", "gamma" });
+        defer alloc.free(g);
+        try testing.expect(pathExists(io, g));
+        try testing.expect(try absent(io, alloc, q.state, intent_name));
+        try testing.expect(try absent(io, alloc, q.state, work_name));
+    }
+}
+
+test "#1285: a refused rename leaves nothing that would make it happen at the next start" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const q = try quiet(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, q.state) catch {};
+        alloc.free(q.state);
+    }
+
+    // The intent is written once, then cannot be replaced -- somebody has it
+    // open and does not let go. This is the case from the Windows machine.
+    const err = rename(faulted(alloc, io, q.state, &.{.{ .kind = .write_atomic, .skip = 1, .times = std.math.maxInt(u32) }}), "alpha", "gamma", .{});
+    try testing.expectError(error.Failed, err);
+
+    // "It is still called what it was" has to be true: no intent, no work
+    // directory, the records where they were...
+    try testing.expect(try absent(io, alloc, q.state, intent_name));
+    try testing.expect(try absent(io, alloc, q.state, work_name));
+    const after = try digest(alloc, io, q.state, live_only);
+    try testing.expectEqualSlices(u8, &q.before, &after);
+
+    // ...and so a start finds nothing to finish.
+    const done = try recover(testOpts(alloc, io, q.state));
+    try testing.expect(!done.finished and !done.abandoned);
+    const live = try digest(alloc, io, q.state, live_only);
+    try testing.expectEqualSlices(u8, &q.before, &live);
+}
+
+test "#1285: when the intent cannot be cleared the answer says the rename is still to come" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const q = try quiet(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, q.state) catch {};
+        alloc.free(q.state);
+    }
+
+    // The intent cannot be replaced, and cannot be removed either. Nothing
+    // can be put back, and the next start will find the intent and finish
+    // the rename: so the answer is not "failed, nothing changed".
+    const err = rename(faulted(alloc, io, q.state, &.{
+        .{ .kind = .write_atomic, .skip = 1, .times = std.math.maxInt(u32) },
+        .{ .kind = .delete_file, .times = std.math.maxInt(u32) },
+    }), "alpha", "gamma", .{});
+    try testing.expectError(error.Deferred, err);
+    try testing.expect(!try absent(io, alloc, q.state, intent_name));
+
+    // And it is what the next start does.
+    const done = try recover(testOpts(alloc, io, q.state));
+    try testing.expect(done.finished);
+    try testing.expect(try absent(io, alloc, q.state, "chat/alpha"));
+    const g = try std.fs.path.join(alloc, &.{ q.state, "chat", "gamma" });
+    defer alloc.free(g);
+    try testing.expect(pathExists(io, g));
+}
+
+test "#1285: a move that stops half way is deferred, and the next start finishes it" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const reference = try quiet(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, reference.state) catch {};
+        alloc.free(reference.state);
+    }
+    _ = try rename(testOpts(alloc, io, reference.state), "alpha", "gamma", .{});
+    const want = try digest(alloc, io, reference.state, live_only);
+
+    const q = try quiet(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, q.state) catch {};
+        alloc.free(q.state);
+    }
+
+    // The first item goes into the backup; the next will not move. Nothing
+    // can be put back from here.
+    const err = rename(faulted(alloc, io, q.state, &.{.{ .kind = .rename, .skip = 1, .times = std.math.maxInt(u32) }}), "alpha", "gamma", .{});
+    try testing.expectError(error.Deferred, err);
+    try testing.expectEqual(error.RenameDeferred, refusal(error.Deferred));
+
+    const done = try recover(testOpts(alloc, io, q.state));
+    try testing.expect(done.finished);
+    const got = try digest(alloc, io, q.state, live_only);
+    try testing.expectEqualSlices(u8, &want, &got);
 }

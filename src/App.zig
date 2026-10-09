@@ -173,6 +173,12 @@ poltergeist_log_problem: ?[]const u8 = null,
 /// opened later should not freeze for as long again.
 poltergeist_waited_for_rename: bool = false,
 
+/// The one-shot thread that says the records are closed a second time, a few
+/// seconds after the first window opens (`noteLogProblem`), and the flag that
+/// tells it to give up when the app is going away. Joined in `deinit`.
+poltergeist_late_alert: ?std.Thread = null,
+poltergeist_stopping: std.atomic.Value(bool) = .init(false),
+
 /// Whether the MCP registration has been checked this run. Once is enough:
 /// it cannot go stale while we are the thing it points at.
 poltergeist_registered: bool = false,
@@ -462,6 +468,11 @@ pub fn init(
 }
 
 pub fn deinit(self: *App) void {
+    // First: the late-alert thread posts into our mailbox, and must be gone
+    // before anything it could touch is.
+    self.poltergeist_stopping.store(true, .release);
+    if (self.poltergeist_late_alert) |t| t.join();
+
     // Clean up all our surfaces
     for (self.surfaces.items) |surface| surface.deinit();
     self.surfaces.deinit(self.alloc);
@@ -1416,7 +1427,6 @@ pub fn ensureChatLog(self: *App, want: bool) void {
 fn noteLogProblem(self: *App, state_dir: []const u8, why: []const u8) void {
     const text = poltergeistpkg.GroupRename.problemText(self.alloc, state_dir, why) catch return;
 
-    const first = self.poltergeist_log_problem == null;
     if (self.poltergeist_log_problem) |old| self.alloc.free(old);
     self.poltergeist_log_problem = text;
 
@@ -1428,10 +1438,72 @@ fn noteLogProblem(self: *App, state_dir: []const u8, why: []const u8) void {
     // whenever a rename could not be continued. The queue is drained at the
     // end of that same `Surface.init` (`flushPoltergeistAlerts`), when there
     // is somewhere to print.
-    if (first) {
-        const line = self.alloc.dupe(u8, text) catch return;
+    //
+    // **Once per window**: every window's init runs `ensureChatLog` and gets
+    // here again, so every window is told, not only the first. With no window
+    // there is no `Surface.init` and so no call at all; the problem is
+    // recorded the moment the first window opens, and `group_list` says so
+    // to anyone who asks before that.
+    if (self.alloc.dupe(u8, text)) |line| {
         self.poltergeist_alerts.append(self.alloc, line) catch self.alloc.free(line);
+    } else |_| {}
+
+    // **And once more, later.** What is printed during `Surface.init` goes
+    // into the terminal before the program in it has started, and on Windows
+    // the pseudoconsole that starts it clears the screen as it does: the
+    // plugin line that printed a second later survived, this one did not.
+    // (That is the reading of a real-machine report, not something seen from
+    // here; the delay is `late_alert_ms`, and what to look for on the
+    // machine is in the task report.) Posted from a thread, to the mailbox,
+    // the way a plugin's failure is -- the path already known to reach the
+    // screen -- and shown by `poltergeistAlert`, which is safe by then.
+    if (self.poltergeist_late_alert == null) {
+        if (self.alloc.dupe(u8, text)) |line| {
+            if (std.Thread.spawn(.{}, lateAlertMain, .{ self, line })) |t| {
+                self.poltergeist_late_alert = t;
+            } else |_| self.alloc.free(line);
+        } else |_| {}
     }
+}
+
+/// How long after the problem is found before it is said again. Longer than
+/// the moment a shell takes to start and clear its screen, short enough to
+/// be read as part of starting up. **A guess until it is measured on the
+/// Windows machine**; the number lives here so that adjusting it is one line.
+const late_alert_ms: i64 = 3000;
+
+fn lateAlertMain(self: *App, line: []u8) void {
+    defer self.alloc.free(line);
+
+    var waited: i64 = 0;
+    while (waited < late_alert_ms) : (waited += 100) {
+        if (self.poltergeist_stopping.load(.acquire)) return;
+        std.Io.sleep(global.io(), .fromMilliseconds(100), .awake) catch return;
+    }
+    if (self.poltergeist_stopping.load(.acquire)) return;
+
+    submitPoltergeistAlert(@ptrCast(self), line);
+}
+
+/// Stop recording, and say why. Used when a rename is left to be finished at
+/// the next start: see `chatRename`.
+fn closeRecordsAfterDeferredRename(self: *App, state_dir: []const u8) void {
+    // `state_dir` is `poltergeist_state_dir`, which is freed below.
+    const dir = self.alloc.dupe(u8, state_dir) catch return;
+    defer self.alloc.free(dir);
+
+    if (self.chat_log) |*l| l.deinit();
+    self.chat_log = null;
+    if (self.task_log) |*l| l.deinit();
+    self.task_log = null;
+    if (self.stats_log) |*l| l.deinit();
+    self.stats_log = null;
+    if (self.group_log) |*l| l.deinit();
+    self.group_log = null;
+    if (self.poltergeist_state_dir) |p| self.alloc.free(p);
+    self.poltergeist_state_dir = null;
+
+    self.noteLogProblem(dir, poltergeistpkg.GroupRename.startupProblem(error.Deferred));
 }
 
 fn clearLogProblem(self: *App) void {
@@ -5302,6 +5374,14 @@ fn chatRename(
             // The swap may have closed the handles before it stopped.
             self.reopenStoreHandles();
             log.warn("poltergeist: group rename {s} -> {s} refused err={}", .{ group, to, err });
+
+            // **Begun and not finishable now.** The disk is part way (or its
+            // intent could not be cleared), and the next start will carry the
+            // rename through. Until then nothing may be written into the old
+            // place: a write by the old name would make a directory there
+            // for the restart to trip over. So the records are closed, and
+            // the person and the supervisor are told why.
+            if (err == error.Deferred) self.closeRecordsAfterDeferredRename(dir);
             return poltergeistpkg.GroupRename.refusal(err);
         };
     }

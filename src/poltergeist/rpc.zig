@@ -6054,6 +6054,54 @@ pub fn dispatch(
     who: Bus.Caller,
     req: Request,
 ) std.mem.Allocator.Error!wire.Response {
+    const res = try dispatchOne(alloc, bus, host, who, req);
+    return explainMissingGroup(alloc, host, req, res);
+}
+
+/// Whether a request names a group, found by looking at what it carries
+/// rather than by a list somebody has to remember to extend: a new tool with
+/// a `group` in its parameters is covered by `explainMissingGroup` without
+/// anyone having to think of it, and `switch (req)` with no `else` is what
+/// makes every variant be looked at.
+fn namesAGroup(req: Request) bool {
+    return switch (req) {
+        inline else => |payload| comptime blk: {
+            const T = @TypeOf(payload);
+            break :blk @typeInfo(T) == .@"struct" and @hasField(T, "group");
+        },
+    };
+}
+
+/// **One place that turns "no group by that name" into the truth when the
+/// records are closed.** With the logs not open the groups saved on disk are
+/// not loaded, so every tool that looks a group up by name says it is not
+/// there -- which a caller reads as "it is gone", not as "it was not loaded,
+/// and here is why". Done once, on the way out, for every request that names
+/// a group (`namesAGroup`), instead of in each arm: an arm added next year
+/// is covered without anyone remembering to.
+fn explainMissingGroup(
+    alloc: std.mem.Allocator,
+    host: Host,
+    req: Request,
+    res: wire.Response,
+) std.mem.Allocator.Error!wire.Response {
+    switch (res) {
+        .failed => |f| if (!std.mem.eql(u8, f.code, "NoSuchGroup")) return res,
+        else => return res,
+    }
+    if (!namesAGroup(req)) return res;
+
+    const why = (host.logProblem(alloc) catch return res) orelse return res;
+    return hostFailure("LogsClosed", why);
+}
+
+fn dispatchOne(
+    alloc: std.mem.Allocator,
+    bus: *Bus,
+    host: Host,
+    who: Bus.Caller,
+    req: Request,
+) std.mem.Allocator.Error!wire.Response {
     arrived(bus, host, who);
     authorize(bus, who, req) catch |err| return failure(err);
 
@@ -8028,6 +8076,10 @@ fn chatFailure(err: anyerror) wire.Response {
         error.LogsClosed => hostFailure(
             "LogsClosed",
             "the records are not open (a group rename could not be finished at start-up); group_list says why. Nothing is lost on disk.",
+        ),
+        error.RenameDeferred => hostFailure(
+            "RenameDeferred",
+            "the rename was started and could not be finished now, and could not be undone: it will be finished the next time Polter starts. The group is not renamed in this session, and Polter has stopped recording until then (group_list says so). Restart Polter.",
         ),
         error.RenameUnfinished => hostFailure(
             "RenameUnfinished",
@@ -10783,6 +10835,7 @@ test "#1265: a rename that is refused says why, by name" {
         .{ .err = error.RenameBlocked, .code = "RenameBlocked" },
         .{ .err = error.RenameBusy, .code = "RenameBusy" },
         .{ .err = error.RenameUnfinished, .code = "RenameUnfinished" },
+        .{ .err = error.RenameDeferred, .code = "RenameDeferred" },
     };
     for (cases) |c| {
         var fake: FakeHost = .{ .group_owner = boss, .rename_error = c.err };
@@ -10798,6 +10851,54 @@ test "#1265: a rename that is refused says why, by name" {
 test "#1276: closed logs are an answer by name for the history tools too, not an empty page" {
     try testing.expectEqualStrings("LogsClosed", chatFailure(error.LogsClosed).failed.code);
     try testing.expectEqualStrings("LogsClosed", taskFailure(error.LogsClosed).failed.code);
+}
+
+test "#1285: while the records are closed, no tool says a group is gone when it was only not loaded" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var b = try testBus(alloc);
+    defer b.deinit();
+    try b.addSupervisor(boss);
+
+    const requests = [_]Request{
+        .{ .group_read = .{ .group = "build" } },
+        .{ .group_history = .{ .group = "build" } },
+        .{ .group_post = .{ .group = "build", .text = "hi" } },
+        .{ .group_add = .{ .group = "build", .id = worker } },
+        .{ .group_remove = .{ .group = "build", .id = worker } },
+        .{ .group_set_brief = .{ .group = "build", .text = "x" } },
+        .{ .group_rename = .{ .group = "build", .to = "other" } },
+        .{ .group_members = .{ .group = "build" } },
+        .{ .task_list = .{ .group = "build" } },
+        .{ .task_history = .{ .group = "build" } },
+        .{ .task_create = .{ .group = "build", .title = "t", .kind = "bug" } },
+    };
+
+    var covered: usize = 0;
+    for (requests) |req| {
+        // The control: the same request on a host that says no such group
+        // and has nothing to say about the records.
+        var plain: FakeHost = .{ .refuse = true, .rename_error = error.NoSuchGroup };
+        const control = try dispatch(alloc, &b, plain.host(), term(boss), req);
+        if (control != .failed or !std.mem.eql(u8, control.failed.code, "NoSuchGroup")) continue;
+
+        // With the records closed, the same answer carries the reason.
+        var closed: FakeHost = .{ .refuse = true, .rename_error = error.NoSuchGroup, .log_problem = "the records are closed" };
+        const res = try dispatch(alloc, &b, closed.host(), term(boss), req);
+        try testing.expectEqualStrings("LogsClosed", res.failed.code);
+        try testing.expectEqualStrings("the records are closed", res.failed.message);
+        covered += 1;
+    }
+    // Enough of them reach NoSuchGroup that this is not vacuous.
+    try testing.expect(covered >= 6);
+
+    // Other failures are not rewritten, and neither is anything when the
+    // records are open.
+    var closed: FakeHost = .{ .refuse = true, .log_problem = "the records are closed" };
+    const refused = try dispatch(alloc, &b, closed.host(), term(worker), .{ .group_create = .{ .group = "mine" } });
+    try testing.expectEqualStrings("NotPermitted", refused.failed.code);
 }
 
 test "#1276: a listing made while the logs are closed says why, and one made otherwise does not" {
