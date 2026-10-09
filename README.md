@@ -164,11 +164,6 @@ A directory, a `plugin.json`, and an executable. Twenty lines of shell is a comp
 
 *   **Email:** [xugf@bestfunc.com](mailto:xugf@bestfunc.com)
 *   **Bugs and feature requests:** [GitHub Issues](https://github.com/Lugia123/polter/issues)
-*   **Feishu (Lark) discussion group:** scan to join.
-
-<p>
-  <img src="docs/feishu-group.png" alt="QR code for the Polter discussion group on Feishu" width="240">
-</p>
 
 ### Relationship to Ghostty
 

@@ -163,11 +163,6 @@ mv Polter.app /Applications/
 
 *   **邮箱：** [xugf@bestfunc.com](mailto:xugf@bestfunc.com)
 *   **Bug 与功能建议：** [GitHub Issues](https://github.com/Lugia123/polter/issues)
-*   **飞书讨论群：** 扫码加入。
-
-<p>
-  <img src="docs/feishu-group.png" alt="Polter 飞书讨论群二维码" width="240">
-</p>
 
 ### 和 Ghostty 终端的关系
 
