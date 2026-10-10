@@ -224,41 +224,6 @@ stdenv.mkDerivation (finalAttrs: {
         mainProgram = "test";
       };
     };
-    build-example-c-vt-build-info = stdenv.mkDerivation {
-      name = "build-example-c-vt-build-info";
-      version = finalAttrs.version;
-      src = ../example/c-vt-build-info/src;
-      doInstallCheck = true;
-      nativeBuildInputs = [pkg-config];
-      nativeInstallCheckInputs = [versionCheckHook];
-      buildInputs = [finalAttrs.finalPackage];
-      buildPhase = ''
-        runHook preBuildHooks
-
-        cc -o test main.c \
-          ''$(pkg-config --cflags --libs libghostty-vt)
-
-        runHook postBuildHooks
-      '';
-      installPhase = ''
-        runHook preInstallHooks
-
-        mkdir -p "$out/bin";
-        cp -a test "$out/bin/test";
-
-        runHook postInstallHooks
-      '';
-      installCheckPhase = ''
-        runHook preInstallCheckHooks
-
-        ${linkCheck "$out/bin/test" "libghostty-vt"}
-
-        runHook postInstallCheckHooks
-      '';
-      meta = {
-        mainProgram = "test";
-      };
-    };
   };
 
   meta = {

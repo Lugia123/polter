@@ -19,7 +19,7 @@ pub const blueprint_compiler_help =
     \\version {f} or newer of `blueprint-compiler` as a
     \\build-time dependency. Please install it, ensure that it
     \\is available on your PATH, and then retry building Ghostty.
-    \\See `HACKING.md` for more details.
+    \\See `dev-docs/preview-manual.md` for more details.
     \\
     \\This message should *not* appear for normal users, who
     \\should build Ghostty from official release tarballs instead.

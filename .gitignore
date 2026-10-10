@@ -20,7 +20,6 @@ CMakeFiles/
 build.zig.zon.bak
 /result*
 /.nixos-test-history
-example/*.wasm
 test/ghostty
 test/cases/**/*.actual.png
 flatpak/builddir/

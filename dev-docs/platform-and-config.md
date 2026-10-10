@@ -215,7 +215,7 @@ pub const must_draw_from_app_thread = true;
 - 路径规则是 `src/apprt/gtk/ui/{major}.{minor}/{name}.blp`，目录名是该 blueprint 需要的**最低 libadwaita 版本**，不是项目整体的最低要求（`src/apprt/gtk/build/gresource.zig:12-15`）。目前有 `1.0`/`1.2`/`1.3`/`1.4`/`1.5` 五个目录、21 个 `.blp` 文件。
 - 注册表硬编码在 `src/apprt/gtk/build/gresource.zig:33-55`，共 21 条。同名可有多版本，例如 `clipboard-confirmation-dialog` 有 1.0 与 1.4 两版（`:34-35`）、`debug-warning` 有 1.2 与 1.3 两版（`:38-39`）。
 - `blueprint()` 是 comptime 函数，在注册表里找不到对应项直接 `@compileError("invalid blueprint")`（`:103-123`）。
-- 需要 `blueprint-compiler` 0.16.0 或更新版本（`src/apprt/gtk/build/blueprint.zig:31-35`，`HACKING.md:48`）。
+- 需要 `blueprint-compiler` 0.16.0 或更新版本（`src/apprt/gtk/build/blueprint.zig:36-40`）。
 - 主题样式是 `src/apprt/gtk/css/` 下的四个文件：`style.css`、`style-dark.css`、`style-hc.css`、`style-hc-dark.css`。
 
 ### 窗口协议与外围
@@ -418,20 +418,20 @@ CLI 参数也能通过 `zig build run` 转发：`app_runtime` 非 `.none` 时走
 
 ### 输入栈的手工验证矩阵
 
-`HACKING.md:262-265` 定义「输入栈」是从按键事件开始、到文本编码发送到 pty 结束的部分，不包括渲染文本（那属于字体或渲染栈）。`HACKING.md:267-270` 是硬性要求：修改输入栈的任何部分，都必须手工验证下列全部输入用例，项目目前完全没有自动化这部分。
+这份清单继承自上游的开发说明（原文件已从本仓删除，经过见 [upstream-cleanup.md](upstream-cleanup.md)），本节是它在仓库里唯一的一份。「输入栈」指从按键事件开始、到文本编码发送到 pty 结束的部分，不包括渲染文本（那属于字体或渲染栈）。硬性要求：修改输入栈的任何部分，都必须手工验证下列全部输入用例，项目目前完全没有自动化这部分。
 
-Linux IME 测试矩阵四个维度（`HACKING.md:284-287`）：
+Linux IME 测试矩阵四个维度：
 
 1. Wayland、X11
 2. ibus、fcitx、none
 3. 死键输入（如西班牙语）、CJK（如日语）、Emoji、Unicode Hex
 4. ibus 版本 1.5.29、1.5.30、1.5.31（各自行为略有不同）
 
-死键用例（`HACKING.md:294-313`）：西语布局下依次按 `'`、`a`，应显示 `á`；取消用例是 `'` → Esc → `a`，应显示不带音符的 `a`。注释说明 ibus 与 fcitx 会显示 preedit 而 none 不会，但送进 pty 的文本必须正确。
+死键用例：西语布局下依次按 `'`、`a`，应显示 `á`；取消用例是 `'` → Esc → `a`，应显示不带音符的 `a`。注释说明 ibus 与 fcitx 会显示 preedit 而 none 不会，但送进 pty 的文本必须正确。
 
-CJK 用例（`HACKING.md:315-333`）：按 `Ctrl+Shift` 切到平假名，美式物理布局下输入 `konn` 应在 preedit 看到 `こん`，Enter 后终端显示 `こん`；另需测试 preedit 激活时切换输入法应当提交文本。
+CJK 用例：按 `Ctrl+Shift` 切到平假名，美式物理布局下输入 `konn` 应在 preedit 看到 `こん`，Enter 后终端显示 `こん`；另需测试 preedit 激活时切换输入法应当提交文本。
 
-`HACKING.md:272` 与 `:289-292` 自己标注这份清单是 work in progress、可能不完备。
+上游原文自己标注这份清单是 work in progress、可能不完备。
 
 ## 常见坑 / 注意事项
 
@@ -448,7 +448,6 @@ CJK 用例（`HACKING.md:315-333`）：按 `Ctrl+Shift` 切到平假名，美式
 
 ## 延伸阅读
 
-- [HACKING.md](../HACKING.md) —— 额外依赖与输入栈手工测试清单
 - [macos/AGENTS.md](../macos/AGENTS.md) —— macOS 构建纪律与 AppleScript 规范
 - [AGENTS.md](../AGENTS.md) —— 仓库级 agent 指南（根 `CLAUDE.md` 是它的符号链接）
 - `dev-docs/architecture.md`、`dev-docs/terminal-core.md`、`dev-docs/rendering-and-font.md`、`dev-docs/preview-manual.md`

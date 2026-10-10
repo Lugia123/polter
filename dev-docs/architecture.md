@@ -375,7 +375,7 @@ child ─▶ pty ─▶ io-gather ─▶ io-reader (parse)
 ## 延伸阅读
 
 - 根 [AGENTS.md](../AGENTS.md) 的 Repository Map 与 Architecture at a Glance 两节（`CLAUDE.md` 是指向它的符号链接）。
-- [HACKING.md](../HACKING.md)：环境依赖、日志与 lint。
+- [preview-manual.md](preview-manual.md)：环境依赖、日志与 lint。
 - [src/terminal/c/AGENTS.md](../src/terminal/c/AGENTS.md)、[macos/AGENTS.md](../macos/AGENTS.md)、[src/inspector/AGENTS.md](../src/inspector/AGENTS.md)。
 - 其余四篇：[terminal-core.md](terminal-core.md)、[rendering-and-font.md](rendering-and-font.md)、[platform-and-config.md](platform-and-config.md)、[preview-manual.md](preview-manual.md)。
 - 写作规范见 [\_conventions.md](_conventions.md)。

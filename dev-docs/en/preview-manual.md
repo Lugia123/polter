@@ -35,18 +35,17 @@ so does [`dev-docs/README.md:20`](../README.md).
 - The application runtime (apprt), the Swift side under `macos/`, the
   configuration system, the internals of keybindings — see
   [`platform-and-config.md`](../platform-and-config.md).
-- The contribution process and the AI policy — see
-  [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and
-  [`AI_POLICY.md`](../../AI_POLICY.md). Not repeated here.
+- The contribution process and the AI rules — see
+  [`CONTRIBUTING.md`](../../CONTRIBUTING.md), which has a section on AI
+  assistance. Not repeated here.
 - The end-user configuration reference, which lives on the upstream site and
   not in this repository.
 
 ## How much to trust the commands in here
 
 Every command below is annotated with where in the repository it came from:
-`build.zig`, `src/build/*.zig`, `AGENTS.md`, `macos/AGENTS.md`, `HACKING.md`,
-the various subdirectory `AGENTS.md` files, and
-`.github/workflows/test.yml`.
+`build.zig`, `src/build/*.zig`, `AGENTS.md`, `macos/AGENTS.md`, the various
+subdirectory `AGENTS.md` files, and `.github/workflows/test.yml`.
 
 This document was first written on a machine with no zig installed, so at the
 time every command here had been read out of a build script and nothing more.
@@ -81,7 +80,6 @@ Xcode, which makes it a two-stage build: Zig first, Xcode second.
 | `src/build/Config.zig`            | 803   | Every `-D` option and its default                                   |
 | `src/build/GhosttyXcodebuild.zig` | 203   | The xcodebuild / open / xctest steps for the macOS app              |
 | `macos/build.nu`                  | 32    | The recommended build script for the macOS app                      |
-| `HACKING.md`                      | 487   | Dependencies, logging, lint, Valgrind, the Nix VMs                  |
 | `AGENTS.md`                       | 39    | The shortest command table, for agents (`CLAUDE.md` symlinks to it) |
 | `Makefile`                        | 28    | Only `clean` is of any use day to day                               |
 | `nix/devShell.nix`                | 247   | The reference point for tool versions                               |
@@ -106,25 +104,27 @@ re-run the command when you want the number.
 ### Linux / FreeBSD
 
 - Building from a Git checkout needs one extra dependency,
-  `blueprint-compiler` (0.16.0 or newer, `HACKING.md:43-48`).
+  `blueprint-compiler` (0.16.0 or newer,
+  `src/apprt/gtk/build/blueprint.zig:36-40`).
 - On these two platforms `app_runtime` already defaults to `gtk`
   (`src/apprt/runtime.zig:16-19`), so there is no need to pass
   `-Dapp-runtime=gtk`.
 - The full list of GTK runtime dependencies has not been checked item by item
   (not verified: only `blueprint-compiler` was confirmed, plus `libadwaita` and
   `gtk4` as listed at `nix/devShell.nix:145-146`). This document deliberately
-  gives no distribution package-manager command; take `HACKING.md` and
-  `nix/devShell.nix` as authoritative.
+  gives no distribution package-manager command; take `nix/devShell.nix` as
+  authoritative.
 
 ### macOS
 
 - Building the macOS app requires Xcode, the macOS SDK and the Metal Toolchain
-  to all be installed (`HACKING.md:50-53`).
+  to all be installed.
 - Development on main requires **Xcode 26 and the macOS 26 SDK** — but not that
-  you are running macOS 26. Xcode 26 on macOS 15 is fine
-  (`HACKING.md:63-68`).
+  you are running macOS 26. Xcode 26 on macOS 15 is fine. This
+  and the previous point come from upstream's development notes; nothing in
+  the tree states them.
 - Having the wrong Xcode selected is a common problem; switch with
-  `xcode-select` (`HACKING.md:55-61`):
+  `xcode-select`:
 
 ```sh
 sudo xcode-select --switch /Applications/Xcode.app
@@ -146,8 +146,8 @@ sudo xcode-select -s /Applications/Xcode_26.6.app
   (`:120`), `hyperfine` (`:126`), `nushell` (`:140`), `blueprint-compiler`
   (`:144`). `valgrind` (`:161`) and `poop` (`:203`) are in the Linux branch
   only; `swiftlint` (`:206`) is in the Darwin branch only.
-- Lint tool versions must match the devShell. `HACKING.md:140`, `:165` and
-  `:200` all make the same point.
+- Lint tool versions must match the devShell. CI runs the devShell's versions,
+  and a different version formats differently enough for CI to reject it.
 
 ## The shortest path to a preview
 
@@ -289,7 +289,7 @@ pkg-config files are `share/pkgconfig/libghostty-vt.pc` and
 ## The switches that shorten the loop
 
 - Develop against a debug build. That is already Zig's default: run
-  `zig build` and pass **no** `-Doptimize` flag at all (`HACKING.md:25-27`).
+  `zig build` and pass **no** `-Doptimize` flag at all (`src/build/Config.zig:231`).
 - When the change is confined to the Zig core and you do not need an app
   bundle, skip the Xcode build (`AGENTS.md:7-10`; CI does the same,
   `.github/workflows/test.yml:1155`):
@@ -392,7 +392,7 @@ whether `xcodebuild` is on `PATH`; otherwise it requires
 Ghostty defines two log destinations, `stderr` and `macos` (the latter does
 nothing off macOS). Combine them with commas, turn one off with a `no-` prefix,
 and mix enabling and disabling freely; `true` turns everything on and `false`
-turns everything off (`HACKING.md:114-124`).
+turns everything off (`src/build/mdgen/ghostty_1_footer.md:40-51`).
 
 ```sh
 GHOSTTY_LOG=stderr,no-macos zig build run
@@ -411,8 +411,7 @@ disabled so it cannot contaminate the output (`src/global.zig:141`).
 ### Log level, and what startup prints
 
 - `log_level` is `.debug` in Debug builds and `.info` in every other build mode
-  (`src/main_ghostty.zig:208-211`); `HACKING.md:109-112` describes the same
-  thing. The comment at `src/main_ghostty.zig:202-207` explains why
+  (`src/main_ghostty.zig:208-211`). The comment at `src/main_ghostty.zig:202-207` explains why
   `GHOSTTY_LOG` is not used to lower it: debug logging is expensive to compute
   and has to be optimised out of non-Debug builds.
 - Startup emits a batch of info lines: version, build optimize, runtime,
@@ -422,13 +421,14 @@ disabled so it cannot contaminate the output (`src/global.zig:141`).
 
 ### How to read the logs per platform
 
-- The macOS unified log (`HACKING.md:107`):
+- The macOS unified log:
 
 ```sh
 sudo log stream --level debug --predicate 'subsystem=="com.mitchellh.ghostty"'
 ```
 
-- A Linux systemd user service (`HACKING.md:103-104`):
+- A Linux systemd user service (the unit template is
+  `dist/linux/systemd.service.in`):
 
 ```sh
 journalctl --user --unit app-com.mitchellh.ghostty.service
@@ -576,15 +576,15 @@ no new checker was written for it.
 zig build run-valgrind
 ```
 
-Source: the step is declared at `build.zig:63-66` and described at
-`HACKING.md:238-255`.
+Source: the step is declared at `build.zig:63-66`. Zig cannot see leaks inside
+third-party C libraries, which is what Valgrind is for on Linux.
 
 It first rebuilds the executable with a baseline CPU target
 (`build.zig:301-310`), then runs it with a fixed argument set:
 `valgrind --leak-check=full --num-callers=50 --suppressions=<repo>/valgrind.supp --gen-suppressions=all`
 (`build.zig:312-317`). The suppression file `valgrind.supp` is in the
 repository root and is 2441 lines. As with `run`, anything after `--` is
-appended as configuration arguments (`build.zig:320`, `HACKING.md:257-258`).
+appended as configuration arguments (`build.zig:320`).
 
 **Limitation**: the whole Valgrind branch is wrapped in
 `if (config.app_runtime != .none)` (`build.zig:300`), so under the default
@@ -675,16 +675,16 @@ swiftlint lint --strict --fix
 alejandra .
 ```
 
-Sources: the first three are from `AGENTS.md:15-17`. The SwiftLint command in
-`HACKING.md:197` is `swiftlint lint --fix` without `--strict`, and
-`HACKING.md:210-212` gives the `--strict` check-only form. `alejandra .` is
-only needed when you changed a `.nix` file (`HACKING.md:159-163`). The
+Sources: the first three are from the Commands section of the root
+`AGENTS.md`. To check with SwiftLint without fixing, use
+`swiftlint lint --strict`. `alejandra .` is only needed when you changed a
+`.nix` file. The
 corresponding CI checks are `zig fmt --check .`
 (`.github/workflows/test.yml:1653`), `prettier --check .` (`:1714`),
 `swiftlint lint --strict` (`:1744`) and `alejandra --check .` (`:1772`).
 
-Shell scripts go through ShellCheck. The command is quoted verbatim from
-`HACKING.md:183-186` (CI's version adds `--color=always`,
+Shell scripts go through ShellCheck. The command is the one CI runs (CI's
+version adds `--color=always`,
 `.github/workflows/test.yml:1829-1833`):
 
 ```sh
@@ -693,13 +693,12 @@ shellcheck --check-sourced --severity=warning $(find . \( -name "*.sh" -o -name 
 
 The rest:
 
-- Nix users prefix everything with `nix develop -c <tool> ...`
-  (`HACKING.md:142-146`, `:153-157`, `:171-178`, `:202-212`). Tool versions
-  must match `nix/devShell.nix` (`HACKING.md:140`, `:165`, `:200`).
+- Nix users prefix everything with `nix develop -c <tool> ...`. Tool versions
+  must match `nix/devShell.nix`.
 - After changing `build.zig.zon`, run
   `./nix/build-support/check-zig-cache.sh --update`. It writes
   `nix/zigCacheHash.nix`, which has to be committed alongside
-  (`HACKING.md:225-232`).
+  (`nix/build-support/check-zig-cache.sh:37`).
 - After changing i18n strings, run `zig build update-translations`
   (`build.zig:76-79`, `:388-394`). Note that with `-Di18n=false` this step
   errors outright with "cannot update translations when i18n is disabled"
@@ -736,8 +735,8 @@ The rest:
   `src/build/GhosttyXcodebuild.zig:56-60` and keep only `PATH`. The CI comment
   warns about the same thing (`.github/workflows/test.yml:1158-1160`).
 - **The wrong Xcode is selected** — switch with
-  `sudo xcode-select --switch /Applications/Xcode.app` (`HACKING.md:55-61`);
-  main needs Xcode 26 and the macOS 26 SDK (`HACKING.md:65`).
+  `sudo xcode-select --switch /Applications/Xcode.app`; main needs Xcode 26
+  and the macOS 26 SDK.
 - **`zig build test` inexplicably runs Xcode on macOS** — without
   `-Dtest-filter` it attaches an xctest dependency (`build.zig:292-295`). Pass
   `-Dtest-filter=""` to avoid it.
@@ -765,13 +764,7 @@ The rest:
 - **`zig build run-valgrind` is a no-op on macOS** — the whole branch is
   wrapped in `app_runtime != .none` (`build.zig:300`).
 - **CI fails after you changed `build.zig.zon`** — the Zig cache hash has
-  drifted; run `./nix/build-support/check-zig-cache.sh --update`
-  (`HACKING.md:221-232`).
-- **The `/gh-issue` command mentioned at `HACKING.md:83` does not exist** —
-  `.agents/` currently holds exactly two things,
-  `.agents/commands/review-branch` and
-  `.agents/skills/writing-commit-messages/SKILL.md`. That paragraph is out of
-  date.
+  drifted; run `./nix/build-support/check-zig-cache.sh --update`.
 - **The hard rule against filing issues has been retired.** At the stamped
   commit it was real and sat at `AGENTS.md:34-39`, the
   `## Issue and PR Guidelines` section: never create an issue, never create a
@@ -909,19 +902,19 @@ This section points the way and no further.
 - Desktop-environment VMs: `nix run .#<vmtype>`, where `<vmtype>` is a filename
   under `nix/vm` with the `.nix` suffix removed, excluding anything prefixed
   `common` or `create`. The source directory is mounted into the VM at
-  `/tmp/shared` (`HACKING.md:350-360`).
+  `/tmp/shared` (the VM list is at `flake.nix:148-153`).
 - Integration tests: `nix run .#checks.<system>.<test-name>.driver`, where
   `<system>` is `x86_64-linux` or `aarch64-linux` and `<test-name>` comes from
-  `nix/tests.nix`. `nix flake check` runs all of them
-  (`HACKING.md:441-451`).
-- Running these on macOS requires a Linux builder enabled in nix-darwin;
-  interactive and SSH debugging details are at `HACKING.md:453` and the
-  sections that follow it.
+  `nix/tests.nix`. `nix flake check` runs all of them.
+- Running these on macOS requires a Linux builder enabled in nix-darwin. To
+  debug a test interactively, run
+  `nix run .#checks.<system>.<test-name>.driverInteractive` and call
+  `start_all()` in the Python console it opens; some test VMs forward an SSH
+  port (`sshPort` in `nix/tests.nix`).
 
 ## Further reading
 
-- In this repository: [`HACKING.md`](../../HACKING.md),
-  [`AGENTS.md`](../../AGENTS.md),
+- In this repository: [`AGENTS.md`](../../AGENTS.md),
   [`macos/AGENTS.md`](../../macos/AGENTS.md),
   [`src/benchmark/AGENTS.md`](../../src/benchmark/AGENTS.md),
   [`src/inspector/AGENTS.md`](../../src/inspector/AGENTS.md),

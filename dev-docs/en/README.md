@@ -96,7 +96,6 @@ The index to all of it, also in Chinese, is [`../README.md`](../README.md).
   rule. English.
 - Subdirectories carry their own `AGENTS.md`, whose rules apply to that subtree:
   [`macos/AGENTS.md`](../../macos/AGENTS.md),
-  [`example/AGENTS.md`](../../example/AGENTS.md),
   [`src/benchmark/AGENTS.md`](../../src/benchmark/AGENTS.md),
   [`src/inspector/AGENTS.md`](../../src/inspector/AGENTS.md),
   [`src/terminal/c/AGENTS.md`](../../src/terminal/c/AGENTS.md),

@@ -19,12 +19,12 @@
 - VT 解析、`Screen`/`PageList`/`Page`、kitty 与 OSC 协议 —— 见 [terminal-core.md](terminal-core.md)。
 - 渲染后端、着色器、字体与字形（glyph）栈 —— 见 [rendering-and-font.md](rendering-and-font.md)。
 - 应用运行时（apprt）、`macos/` Swift 侧、配置系统、键绑定内部结构 —— 见 [platform-and-config.md](platform-and-config.md)。
-- 贡献流程与 AI 使用政策 —— 见 [CONTRIBUTING.md](../CONTRIBUTING.md)、[AI_POLICY.md](../AI_POLICY.md)，本文不复述。
+- 贡献流程与 AI 使用政策 —— 见 [CONTRIBUTING.md](../CONTRIBUTING.md)（AI 使用规则是其中一节），本文不复述。
 - 面向最终用户的配置项手册（在上游站点，不在本仓库）。
 
 ## 关于本文命令的可信度声明
 
-本文列出的每条命令都标注了仓库内出处（`build.zig`、`src/build/*.zig`、`AGENTS.md`、`macos/AGENTS.md`、`HACKING.md`、各子目录 `AGENTS.md`、`.github/workflows/test.yml`）。
+本文列出的每条命令都标注了仓库内出处（`build.zig`、`src/build/*.zig`、`AGENTS.md`、`macos/AGENTS.md`、各子目录 `AGENTS.md`、`.github/workflows/test.yml`）。
 
 本文最初写于一台没有 zig 的机器上，那时所有命令都只是从构建脚本读出来的。后来装了 zig 0.16.0 并实际跑过其中相当一部分，所以现在分两类：
 
@@ -45,7 +45,6 @@ Ghostty 的核心是 Zig，`zig build` 是唯一构建入口（`build.zig:19`）
 | `src/build/Config.zig`            | 803  | 全部 `-D` 选项的定义与默认值                       |
 | `src/build/GhosttyXcodebuild.zig` | 203  | macOS app 的 xcodebuild / open / xctest step       |
 | `macos/build.nu`                  | 32   | 推荐的 macOS app 构建脚本                          |
-| `HACKING.md`                      | 487  | 依赖、日志、lint、Valgrind、Nix VM                 |
 | `AGENTS.md`                       | 39   | agent 用的最短命令表（`CLAUDE.md` 是它的符号链接） |
 | `Makefile`                        | 28   | 只有 `clean` 对日常开发有用                        |
 | `nix/devShell.nix`                | 247  | 工具版本的对齐基准                                 |
@@ -64,15 +63,15 @@ Ghostty 的核心是 Zig，`zig build` 是唯一构建入口（`build.zig:19`）
 
 ### Linux / FreeBSD
 
-- 从 Git checkout 构建需要额外依赖 `blueprint-compiler`（0.16.0 或更新，`HACKING.md:43-48`）。
+- 从 Git checkout 构建需要额外依赖 `blueprint-compiler`（0.16.0 或更新，`src/apprt/gtk/build/blueprint.zig:36-40`）。
 - 这两个平台上 `app_runtime` 默认就是 `gtk`（`src/apprt/runtime.zig:16-19`），不需要显式加 `-Dapp-runtime=gtk`。
-- GTK 侧的完整运行时依赖清单未逐条核实（未核实：只核实了 `blueprint-compiler`，以及 `nix/devShell.nix:145-146` 列了 `libadwaita` 与 `gtk4`）。本文不给发行版包管理器的安装命令，请以 `HACKING.md` 与 `nix/devShell.nix` 为准。
+- GTK 侧的完整运行时依赖清单未逐条核实（未核实：只核实了 `blueprint-compiler`，以及 `nix/devShell.nix:145-146` 列了 `libadwaita` 与 `gtk4`）。本文不给发行版包管理器的安装命令，请以 `nix/devShell.nix` 为准。
 
 ### macOS
 
-- 构建 macOS app 需要 Xcode、macOS SDK 和 Metal Toolchain 都已安装（`HACKING.md:50-53`）。
-- main 分支开发要求 **Xcode 26 和 macOS 26 SDK**；但不要求你跑在 macOS 26 上，Xcode 26 装在 macOS 15 也行（`HACKING.md:63-68`）。
-- 选错 Xcode 版本是常见问题，用 `xcode-select` 切换（`HACKING.md:55-61`）：
+- 构建 macOS app 需要 Xcode、macOS SDK 和 Metal Toolchain 都已安装。
+- main 分支开发要求 **Xcode 26 和 macOS 26 SDK**；但不要求你跑在 macOS 26 上，Xcode 26 装在 macOS 15 也行。这一条和上一条来自上游的开发说明，仓库里没有对应的代码出处。
+- 选错 Xcode 版本是常见问题，用 `xcode-select` 切换：
 
 ```sh
 sudo xcode-select --switch /Applications/Xcode.app
@@ -88,7 +87,7 @@ sudo xcode-select -s /Applications/Xcode_26.6.app
 
 - 仓库根 `.envrc` 在检测到 nix 时执行 `use flake`，并 watch `nix/{devShell,package,wraptest}.nix`（`.envrc:1-6`）。
 - `nix/devShell.nix` 提供并锁定工具版本：`pandoc`（`:105`）、`zig`（`:108`）、`prettier`（`:116`）、`alejandra`（`:117`）、`shellcheck`（`:120`）、`hyperfine`（`:126`）、`nushell`（`:140`）、`blueprint-compiler`（`:144`）。`valgrind`（`:161`）与 `poop`（`:203`）只在 Linux 分支，`swiftlint`（`:206`）只在 Darwin 分支。
-- lint 工具版本必须与 devShell 对齐，`HACKING.md:140`、`:165`、`:200` 三处都强调了这一点。
+- lint 工具版本必须与 devShell 对齐：CI 用的就是 devShell 里的版本，版本不同时本地格式化的结果会被 CI 判为不合格。
 
 ## 最短预览路径
 
@@ -174,7 +173,7 @@ zig build -Demit-lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall
 
 ## 加速迭代的关键开关
 
-- 开发用 debug 构建，这已是 Zig 默认，直接 `zig build` 且**不要**加任何 `-Doptimize` 标志（`HACKING.md:25-27`）。
+- 开发用 debug 构建，这已是 Zig 默认，直接 `zig build` 且**不要**加任何 `-Doptimize` 标志（`src/build/Config.zig:231`）。
 - 只改 Zig 核心、不需要 app bundle 时，跳过 Xcode 构建（`AGENTS.md:7-10`；CI 也这么干，`.github/workflows/test.yml:1155`）：
 
 ```sh
@@ -240,7 +239,7 @@ zig build -Demit-macos-app=false
 
 ### GHOSTTY_LOG
 
-Ghostty 定义两个日志目标：`stderr` 与 `macos`（后者在非 macOS 上无效）。用逗号组合多个目标，用 `no-` 前缀关闭，可以同时启用和关闭；设为 `true` 全开、`false` 全关（`HACKING.md:114-124`）。
+Ghostty 定义两个日志目标：`stderr` 与 `macos`（后者在非 macOS 上无效）。用逗号组合多个目标，用 `no-` 前缀关闭，可以同时启用和关闭；设为 `true` 全开、`false` 全关（`src/build/mdgen/ghostty_1_footer.md:40-51`）。
 
 ```sh
 GHOSTTY_LOG=stderr,no-macos zig build run
@@ -252,18 +251,18 @@ GHOSTTY_LOG=stderr,no-macos zig build run
 
 ### 日志级别与启动信息
 
-- Debug 构建的 `log_level` 是 `.debug`，其他构建模式是 `.info`（`src/main_ghostty.zig:208-211`）；`HACKING.md:109-112` 描述的是同一件事。`src/main_ghostty.zig:202-207` 的注释解释了为什么不靠 `GHOSTTY_LOG` 来降级：debug 日志计算代价高，需要保证在非 Debug 构建里被优化掉。
+- Debug 构建的 `log_level` 是 `.debug`，其他构建模式是 `.info`（`src/main_ghostty.zig:208-211`）。`src/main_ghostty.zig:202-207` 的注释解释了为什么不靠 `GHOSTTY_LOG` 来降级：debug 日志计算代价高，需要保证在非 Debug 构建里被优化掉。
 - 启动时会打出一批 info 日志：version、build optimize、runtime、font_backend、renderer、libxev default backend（`src/global.zig:167-178`）。想确认自己跑的到底是哪个构建，看这几行最快。
 
 ### 平台查看方式
 
-- macOS 统一日志（`HACKING.md:107`）：
+- macOS 统一日志：
 
 ```sh
 sudo log stream --level debug --predicate 'subsystem=="com.mitchellh.ghostty"'
 ```
 
-- Linux systemd user service（`HACKING.md:103-104`）：
+- Linux systemd user service（单元文件模板是 `dist/linux/systemd.service.in`）：
 
 ```sh
 journalctl --user --unit app-com.mitchellh.ghostty.service
@@ -368,9 +367,9 @@ GHOSTTY_LZ4_SLOW=1 zig build test -Dtest-filter="lz4 differential"
 zig build run-valgrind
 ```
 
-出处：step 声明在 `build.zig:63-66`，说明见 `HACKING.md:238-255`。
+出处：step 声明在 `build.zig:63-66`。Zig 查不出第三方 C 库的泄漏，所以 Linux 上用 Valgrind 来查。
 
-实现上它先用 baseline CPU target 重建可执行文件（`build.zig:301-310`），再用固定参数集运行：`valgrind --leak-check=full --num-callers=50 --suppressions=<repo>/valgrind.supp --gen-suppressions=all`（`build.zig:312-317`）。抑制文件 `valgrind.supp` 在仓库根（2441 行）。和 `run` 一样，`--` 之后可以追加配置参数（`build.zig:320`、`HACKING.md:257-258`）。
+实现上它先用 baseline CPU target 重建可执行文件（`build.zig:301-310`），再用固定参数集运行：`valgrind --leak-check=full --num-callers=50 --suppressions=<repo>/valgrind.supp --gen-suppressions=all`（`build.zig:312-317`）。抑制文件 `valgrind.supp` 在仓库根（2441 行）。和 `run` 一样，`--` 之后可以追加配置参数（`build.zig:320`）。
 
 **限制**：整个 Valgrind 分支被 `if (config.app_runtime != .none)` 包住（`build.zig:300`），所以 macOS 默认配置下 `run-valgrind` 不会挂任何依赖，等于空跑；实际只在 Linux 有意义（`nix/devShell.nix:161` 也只在 Linux 分支提供 `valgrind`）。
 
@@ -431,9 +430,9 @@ swiftlint lint --strict --fix
 alejandra .
 ```
 
-出处：前三条见 `AGENTS.md:15-17`；`HACKING.md:197` 给的 SwiftLint 命令是不带 `--strict` 的 `swiftlint lint --fix`，`HACKING.md:210-212` 给了只检查不修复的 `--strict` 版本；`alejandra .` 只在改了 `.nix` 文件时需要（`HACKING.md:159-163`）。CI 对应的检查是 `zig fmt --check .`（`.github/workflows/test.yml:1653`）、`prettier --check .`（`:1714`）、`swiftlint lint --strict`（`:1744`）、`alejandra --check .`（`:1772`）。
+出处：前三条见根 `AGENTS.md` 的 Commands 一节；SwiftLint 只检查不修复时用 `swiftlint lint --strict`；`alejandra .` 只在改了 `.nix` 文件时需要。CI 对应的检查是 `zig fmt --check .`（`.github/workflows/test.yml:1653`）、`prettier --check .`（`:1714`）、`swiftlint lint --strict`（`:1744`）、`alejandra --check .`（`:1772`）。
 
-Shell 脚本用 ShellCheck，命令原样引自 `HACKING.md:183-186`（CI 版多一个 `--color=always`，`.github/workflows/test.yml:1829-1833`）：
+Shell 脚本用 ShellCheck，命令与 CI 相同（CI 版多一个 `--color=always`，`.github/workflows/test.yml:1829-1833`）：
 
 ```sh
 shellcheck --check-sourced --severity=warning $(find . \( -name "*.sh" -o -name "*.bash" \) -type f ! -path "./zig-out/*" ! -path "./macos/build/*" ! -path "./.git/*" | sort)
@@ -441,8 +440,8 @@ shellcheck --check-sourced --severity=warning $(find . \( -name "*.sh" -o -name 
 
 其余情形：
 
-- Nix 用户统一加前缀 `nix develop -c <tool> ...`（`HACKING.md:142-146`、`:153-157`、`:171-178`、`:202-212`）。工具版本要与 `nix/devShell.nix` 对齐（`HACKING.md:140`、`:165`、`:200`）。
-- 改了 `build.zig.zon` 之后跑 `./nix/build-support/check-zig-cache.sh --update`，它会写出 `nix/zigCacheHash.nix`，需要一并提交（`HACKING.md:225-232`）。
+- Nix 用户统一加前缀 `nix develop -c <tool> ...`。工具版本要与 `nix/devShell.nix` 对齐。
+- 改了 `build.zig.zon` 之后跑 `./nix/build-support/check-zig-cache.sh --update`，它会写出 `nix/zigCacheHash.nix`，需要一并提交（`nix/build-support/check-zig-cache.sh:37`）。
 - 改了 i18n 字符串跑 `zig build update-translations`（`build.zig:76-79`、`:388-394`）；注意 `-Di18n=false` 时这个 step 会直接报错 "cannot update translations when i18n is disabled"（`build.zig:392-394`）。⚠️ 这个 step 要 **gettext 0.24 以上**（Windows host 按 Rust 抽取），版本太旧时会报「语言“Rust”未知」并中止；普通 `zig build` 只用 `msgfmt`，不受影响。细节见 [po/README_CONTRIBUTORS.md](../po/README_CONTRIBUTORS.md)。
 - 发布相关的 `zig build dist` 与 `zig build distcheck`（`build.zig:112`、`:114`）；产物路径未核实（本文未构建过）。
 - 贡献流程见 [CONTRIBUTING.md](../CONTRIBUTING.md)，本文不复述。
@@ -453,14 +452,13 @@ shellcheck --check-sourced --severity=warning $(find . \( -name "*.sh" -o -name 
 - **macOS 上 `zig-out/bin/ghostty` 不是终端本体** — `app_runtime` 默认 `.none`（`src/apprt/runtime.zig:20-23`），直接跑只会打印 `Usage: ghostty +<action> [flags]` 和一段说明然后 `exit(0)`（`src/main_ghostty.zig:77-96`）。真正的终端在 `Ghostty.app`，说明里给出的命令行启动方式是 `open -na Ghostty.app --args --foo=bar --baz=qux`（`src/main_ghostty.zig:86-87`）。
 - **改了 `src/` 但 macOS app 行为没变** — 忘了先跑 `zig build -Demit-macos-app=false` 刷新 `macos/GhosttyKit.xcframework`（`macos/AGENTS.md:4-6`、`src/build/GhosttyXCFramework.zig:40-41`）。
 - **手敲 `xcodebuild` 报怪错** — Nix 环境变量污染。用 `macos/build.nu`（`env -i`，`macos/build.nu:22-24`），或参考 `src/build/GhosttyXcodebuild.zig:56-60` 只保留 `PATH`；CI 注释同样警告（`.github/workflows/test.yml:1158-1160`）。
-- **Xcode 版本选错** — 用 `sudo xcode-select --switch /Applications/Xcode.app` 切换（`HACKING.md:55-61`）；main 分支需要 Xcode 26 与 macOS 26 SDK（`HACKING.md:65`）。
+- **Xcode 版本选错** — 用 `sudo xcode-select --switch /Applications/Xcode.app` 切换；main 分支需要 Xcode 26 与 macOS 26 SDK。
 - **`zig build test` 在 macOS 上莫名去跑 Xcode** — 不带 `-Dtest-filter` 时会附加 xctest 依赖（`build.zig:292-295`），传 `-Dtest-filter=""` 规避。
 - **`-Demit-docs` 悄悄关掉了** — 默认只有 PATH 里找得到 `pandoc` 才为真；而且只要已经在 emit bench / test-exe / helpgen / lib-vt，就一律为假（`src/build/Config.zig:435-454`）。文档由 `pandoc` 生成（`src/build/GhosttyDocs.zig:60` 与 `src/build/GhosttyDocs.zig:75`）；不 emit docs 且目标是 Darwin 时会安装一个占位目录，因为 Xcode 工程期望 `share/man` 存在（`build.zig:90-97`、`src/build/GhosttyDocs.zig:111-116`）。
 - **「libghostty」这个名字有歧义** — `-Demit-lib-vt` 产出的是终端库 libghostty-vt（`src/lib_vt.zig`，头文件在 `include/ghostty/vt/`）。macOS 侧那个历史同名物只是 GUI 与核心之间的胶水，`build.zig:189-191` 的注释原话是 "This is NOT libghostty (even though its named that for historical reasons)"，它的头文件是 `include/ghostty.h`。
 - **`zig build run` 在 macOS 上不等于「像用户那样启动」** — 它设了 `GHOSTTY_MAC_LAUNCH_SOURCE=zig_run`（`src/build/GhosttyXcodebuild.zig:159`），而 `launchedFromDesktop()` 只在该值为 `"app"` 时返回真（`src/os/desktop.zig:28-35`），这会影响 `probableCliEnvironment()` 一类启发式（`src/config/Config.zig:5196-5207`）。要复现「从 Finder 启动」的行为，请用 `open` 打开 app bundle。
 - **`zig build run-valgrind` 在 macOS 上是空操作** — 整个分支被 `app_runtime != .none` 包住（`build.zig:300`）。
-- **改完 `build.zig.zon` 后 CI 挂** — Zig 缓存哈希漂移，跑 `./nix/build-support/check-zig-cache.sh --update`（`HACKING.md:221-232`）。
-- **`HACKING.md:83` 提到的 `/gh-issue` 命令并不存在** — `.agents/` 下当前只有 `.agents/commands/review-branch` 与 `.agents/skills/writing-commit-messages/SKILL.md` 两个文件，该段文档已过时。
+- **改完 `build.zig.zon` 后 CI 挂** — Zig 缓存哈希漂移，跑 `./nix/build-support/check-zig-cache.sh --update`。
 - **「永远不要创建 issue / PR」那条铁律已经退役** — 在本文头部那个 commit 上它确实是 `AGENTS.md:34-39` 的 `## Issue and PR Guidelines` 一节，但该节已由 `438a2e352` 按仓主指示删除。提交信息给了理由：这条规则来自上游（`00c33eaf7`），而在本仓它两个方向都不再匹配——上游已经完全关闭 issue 创建，它要守的东西由对面守着了；同时它的写法是无条件的，把本仓自己的 tracker 也一并盖住，而仓主想给自己的项目立一条记录是一件普通的请求。那条无条件的禁令没有回来。至于今天该往哪儿提、能不能提，以 `AGENTS.md` 自己写的为准——本文不复述，因为一条规则被转述进第二个文件之后，改的人只会改一处。这里写出来而不是直接删掉，是因为在别处见过这条规则的人需要知道它是被有意退役的，不是丢了。
 
 ## 在没有完整 Xcode 的 macOS 上开发
@@ -540,11 +538,11 @@ zig build test -Dtarget=x86_64-linux-gnu -Dapp-runtime=none -Demit-test-exe
 
 本文只指路，不展开。
 
-- 桌面环境 VM：`nix run .#<vmtype>`，`<vmtype>` 是 `nix/vm` 目录下去掉 `.nix` 后缀的文件名，排除以 `common` 或 `create` 为前缀的文件；源码目录会挂到 VM 的 `/tmp/shared`（`HACKING.md:350-360`）。
-- 集成测试：`nix run .#checks.<system>.<test-name>.driver`，`<system>` 取 `x86_64-linux` 或 `aarch64-linux`，`<test-name>` 来自 `nix/tests.nix`；`nix flake check` 跑全部（`HACKING.md:441-451`）。
-- macOS 上运行这些需要在 nix-darwin 里启用 Linux builder，交互式与 SSH 调试细节见 `HACKING.md:453` 及其后续章节。
+- 桌面环境 VM：`nix run .#<vmtype>`，`<vmtype>` 是 `nix/vm` 目录下去掉 `.nix` 后缀的文件名，排除以 `common` 或 `create` 为前缀的文件；源码目录会挂到 VM 的 `/tmp/shared`（VM 列表在 `flake.nix:148-153`）。
+- 集成测试：`nix run .#checks.<system>.<test-name>.driver`，`<system>` 取 `x86_64-linux` 或 `aarch64-linux`，`<test-name>` 来自 `nix/tests.nix`；`nix flake check` 跑全部。
+- macOS 上运行这些需要在 nix-darwin 里启用 Linux builder，交互式调试用 `nix run .#checks.<system>.<test-name>.driverInteractive`，在弹出的 Python 控制台里执行 `start_all()`；部分测试 VM 开了 SSH 端口转发（`nix/tests.nix` 里的 `sshPort`）。
 
 ## 延伸阅读
 
-- 仓库内：[HACKING.md](../HACKING.md)、[AGENTS.md](../AGENTS.md)、[macos/AGENTS.md](../macos/AGENTS.md)、[src/benchmark/AGENTS.md](../src/benchmark/AGENTS.md)、[src/inspector/AGENTS.md](../src/inspector/AGENTS.md)、[src/terminal/compress/AGENTS.md](../src/terminal/compress/AGENTS.md)、[po/README_CONTRIBUTORS.md](../po/README_CONTRIBUTORS.md)
+- 仓库内：[AGENTS.md](../AGENTS.md)、[macos/AGENTS.md](../macos/AGENTS.md)、[src/benchmark/AGENTS.md](../src/benchmark/AGENTS.md)、[src/inspector/AGENTS.md](../src/inspector/AGENTS.md)、[src/terminal/compress/AGENTS.md](../src/terminal/compress/AGENTS.md)、[po/README_CONTRIBUTORS.md](../po/README_CONTRIBUTORS.md)
 - 同目录：[README.md](README.md)、[architecture.md](architecture.md)、[terminal-core.md](terminal-core.md)、[rendering-and-font.md](rendering-and-font.md)、[platform-and-config.md](platform-and-config.md)、[\_conventions.md](_conventions.md)

@@ -49,10 +49,15 @@ has not been shown to test anything. The cheapest version: break the thing on
 purpose, watch the test go red, put it back. Say in the commit message that you
 did.
 
-## Understanding your own code
+## AI assistance, and understanding your own code
 
-The one rule inherited from upstream that matters most here, because this
-project is itself written with a lot of AI assistance:
+Polter is itself written with heavy AI assistance, and says so. That is not an
+exemption from anything below: these rules apply to this fork's own commits as
+much as to a patch from a stranger. They are inherited from upstream Ghostty's
+AI policy and kept because they are right.
+
+**Disclose it.** Say which tool you used (Claude Code, Cursor, and so on) and
+how much of the work was AI-assisted. All AI use, in any form.
 
 **You must be able to explain what your change does, and how it interacts with
 the rest of the system, without an AI tool in front of you.** Using AI to write
@@ -60,9 +65,14 @@ code is fine — interrogate an agent about the codebase until you understand th
 edge cases. Submitting code you cannot explain is not fine, and it is visible
 almost immediately in review.
 
-[`AI_POLICY.md`](AI_POLICY.md) has the full policy, inherited from Ghostty and
-applying here unchanged. Its first rule is disclosure: say which tool you used
-and how much of the work was AI-assisted.
+**Issues and discussions need a person in the loop too.** Text an AI produced
+has to be read and edited by you before you post it. AI is verbose; trim it to
+what you actually found.
+
+**No AI-generated media** — art, images, video, audio. Text and code only.
+
+None of this is an anti-AI stance. Whoever reads your pull request is a person,
+and unchecked work moves the cost of checking it onto them.
 
 ## Commits
 

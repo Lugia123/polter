@@ -338,7 +338,6 @@ OpenGL 侧是 `src/renderer/shaders/glsl/` 下 10 个文件，按 pipeline 成�
 ## 延伸阅读
 
 - [../AGENTS.md](../AGENTS.md)（根目录 `CLAUDE.md` 是指向它的符号链接）
-- [../HACKING.md](../HACKING.md)
 - [../src/benchmark/AGENTS.md](../src/benchmark/AGENTS.md)
 - [../src/font/sprite/draw/README.md](../src/font/sprite/draw/README.md)
 - docs 内：[architecture.md](architecture.md)、[terminal-core.md](terminal-core.md)、[platform-and-config.md](platform-and-config.md)、[preview-manual.md](preview-manual.md)

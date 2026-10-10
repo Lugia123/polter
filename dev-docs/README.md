@@ -7,7 +7,7 @@
 
 **权威来源永远是代码本身。** 文档只是一张加速理解的地图：它会滞后于代码，也可能在重构后指错行号。任何文档描述与源码冲突时，以源码为准，并顺手更新文档顶部的 commit 标注。
 
-用户向的文档在上游站点，不在这里；仓库内的贡献流程见 [CONTRIBUTING.md](../CONTRIBUTING.md)，环境搭建与 lint 细节见 [HACKING.md](../HACKING.md)。
+用户向的文档在上游站点，不在这里；仓库内的贡献流程见 [CONTRIBUTING.md](../CONTRIBUTING.md)，环境搭建与 lint 细节见 [preview-manual.md](preview-manual.md)。
 
 ## 文档列表
 
@@ -20,6 +20,8 @@
 - [project-scrollback.md](project-scrollback.md) — **项目自动保存**：结构（布局、分屏、cwd）与每个 pane 的 scrollback。要点是这不是一个序列化任务：`src/terminal/snapshot/` 已经是**双向**的，`Decoder.next` 能把历史页 prepend 进一个活着的 `Terminal`，缺的只是产品接线。⚠️ 里面最容易漏的一条不是终端层，是**项目文件格式在本仓被实现了三遍**（`src/Project.zig` 有测试没有产品调用者、`windows/host/src/project.rs`、`macos/Sources/Features/Projects/`），加一个字段要加三遍，而**漏了任意一份都不会有闸变红**（三份现在就已经漂移了，见 issue #23）。另有三条顺序约束，写反的表现都是「静默地少恢复」。
   ⚠️ **这件事不能是「存盘那一刻抓一次」**：强制重启、掉电、崩溃都没有那一刻，而那正是用户最希望历史还在的场合。所以它是**自动保存**，而自动保存缺的第一块不是定时器 —— 是 **tab 与项目的绑定，那个东西现在全仓都不存在**（「存成项目」是一次性导出，tab 存完不记得自己属于哪个项目）。§3.5 给了三步落地顺序和「自动保存会把误操作变成永久的」怎么办。
 - [disabled-tests.md](disabled-tests.md) — **无条件禁用的测试有哪几条、为什么停着、有没有重新打开的条件**（写作时 6 条，有条件的 0 条）。含「一条禁用测试有三种看不见」那张表——第三档（没编译，因而任何计数里都不出现）只能靠静态匹配数与运行时名单对不上才发现，**只数 `skipped` 找不全**。
+- [linux-packaging.md](linux-packaging.md) — **继承自上游的 Linux 打包说明，本仓目前不发 Linux 包**，留作日后规划用。原先是仓库根的打包文档；里面的下载地址、签名公钥都是上游的。
+- [upstream-cleanup.md](upstream-cleanup.md) — **清理记录**：2026-10-10 从仓库里删掉了哪些上游 Ghostty 的说明文档与示例目录、各自并到了哪里、哪些引用因此悬空。**合并上游前先读这一篇**——上游改到这些文件时会报 modify/delete 冲突，默认解法和要停下来看的几种情况都写在里面。
 - [preview-manual.md](preview-manual.md) — 怎么构建、怎么跑起来、怎么快速迭代、怎么看日志和调试。**构建与运行命令以本篇为唯一权威**，其他篇只做一行引用。
 - [poltergeist/](poltergeist/README.md) — Poltergeist 能力层：让一个「总管」终端照看多个 AI 终端。**代码已落地**（`src/poltergeist/`），**整条链路已在真机上跑过**：一个总管带三个工作终端、分派任务、按屏幕静止催办、群聊汇报，全程走的就是这套工具面。逐项验证情况见 [poltergeist/README.md](poltergeist/README.md)，还差什么见 [poltergeist/gaps.md](poltergeist/gaps.md)。本批文档的写作规范见 [poltergeist/\_spec.md](poltergeist/_spec.md)。
 - [windows/](windows/design.md) — Windows 移植的设计与开发文档：用 Rust 写壳、走已有的 `embedded` apprt（macOS 的 Swift 应用走的就是它）。**步 1–4 已落地**：POSIX 假设修完（是五处，不是四处——第五处 `localtime_r` 要修完前四处才在链接阶段现形，而且它溢出了 Polter）、C API 有了 `GHOSTTY_PLATFORM_WIN32`、WGL 填进了 `embedded` 的空分支。**步 3（TSF）已在真机验过**，是这条路上最大的风险，结论是约 470 行、不是主体。DLL 在 Windows 上加载并调通了，但**屏幕上还没画出任何东西**。见 [windows/design.md](windows/design.md)（为什么这么做）、[windows/development.md](windows/development.md)（怎么动手）与 [windows/status.md](windows/status.md)（**走到哪了、还欠什么**）。
@@ -51,4 +53,4 @@
 ## 与仓库内其他文档的关系
 
 - 根 [AGENTS.md](../AGENTS.md)（`CLAUDE.md` 是指向它的符号链接）是给 agent 的入口索引，只放最短路径，细节一律指向本目录。
-- 各子目录还有自己的 `AGENTS.md`，规则对该子树生效，改到哪个目录就先读哪个：[macos/AGENTS.md](../macos/AGENTS.md)、[example/AGENTS.md](../example/AGENTS.md)、[src/benchmark/AGENTS.md](../src/benchmark/AGENTS.md)、[src/inspector/AGENTS.md](../src/inspector/AGENTS.md)、[src/terminal/c/AGENTS.md](../src/terminal/c/AGENTS.md)、[src/terminal/snapshot/AGENTS.md](../src/terminal/snapshot/AGENTS.md)、[src/terminal/compress/AGENTS.md](../src/terminal/compress/AGENTS.md)、[src/terminal/apc/glyph/AGENTS.md](../src/terminal/apc/glyph/AGENTS.md)、[test/fuzz-libghostty/AGENTS.md](../test/fuzz-libghostty/AGENTS.md)。
+- 各子目录还有自己的 `AGENTS.md`，规则对该子树生效，改到哪个目录就先读哪个：[macos/AGENTS.md](../macos/AGENTS.md)、[src/benchmark/AGENTS.md](../src/benchmark/AGENTS.md)、[src/inspector/AGENTS.md](../src/inspector/AGENTS.md)、[src/terminal/c/AGENTS.md](../src/terminal/c/AGENTS.md)、[src/terminal/snapshot/AGENTS.md](../src/terminal/snapshot/AGENTS.md)、[src/terminal/compress/AGENTS.md](../src/terminal/compress/AGENTS.md)、[src/terminal/apc/glyph/AGENTS.md](../src/terminal/apc/glyph/AGENTS.md)、[test/fuzz-libghostty/AGENTS.md](../test/fuzz-libghostty/AGENTS.md)。

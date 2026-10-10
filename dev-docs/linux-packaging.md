@@ -1,4 +1,14 @@
-# Packaging Ghostty for Distribution
+# Linux 打包与分发（继承自上游）
+
+> **继承自上游 Ghostty，本仓目前不发 Linux 包，留作日后规划用。**
+> 下面的正文是上游打包说明的原文（原先在仓库根，清理时并到这里，经过见
+> [upstream-cleanup.md](upstream-cleanup.md)）。文中的下载地址、签名公钥、
+> 发布页都是**上游 Ghostty 的**，不是 Polter 的；Polter 没有源码 tarball 发布渠道。
+> 「Zig Version」一节里写的版本号是上游写作时的例子，实际要求以 `build.zig`
+> 的 `required_zig` 为准。`nix/`、`flake.nix`、`snap/`、`flatpak/`、`dist/`
+> 这些打包目录在本仓原样保留。
+
+## Packaging Ghostty for Distribution
 
 Ghostty relies on downstream package maintainers to distribute Ghostty to
 end-users. This document provides guidance to package maintainers on how to
@@ -9,7 +19,7 @@ package Ghostty for distribution.
 > This document is only accurate for the Ghostty source alongside it.
 > **Do not use this document for older or newer versions of Ghostty!** If
 > you are reading this document in a different version of Ghostty, please
-> find the `PACKAGING.md` file alongside that version.
+> find the packaging document alongside that version.
 
 ## Source Tarballs
 

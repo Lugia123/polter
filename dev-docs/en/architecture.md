@@ -720,7 +720,8 @@ read it with: `subsystem=="com.mitchellh.ghostty"`
 
 - The Repository Map and Architecture at a Glance sections of the root
   [`AGENTS.md`](../../AGENTS.md) (`CLAUDE.md` is a symlink to it).
-- [`HACKING.md`](../../HACKING.md): environment dependencies, logging and lint.
+- [`preview-manual.md`](preview-manual.md): environment dependencies, logging
+  and lint.
 - [`src/terminal/c/AGENTS.md`](../../src/terminal/c/AGENTS.md),
   [`macos/AGENTS.md`](../../macos/AGENTS.md),
   [`src/inspector/AGENTS.md`](../../src/inspector/AGENTS.md).

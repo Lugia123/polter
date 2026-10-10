@@ -15,7 +15,7 @@
 
 - 具体技术内容。架构见 [architecture.md](architecture.md)，终端核心见 [terminal-core.md](terminal-core.md)，渲染与字体见 [rendering-and-font.md](rendering-and-font.md)，平台与配置见 [platform-and-config.md](platform-and-config.md)。
 - 构建与运行命令。唯一权威是 [preview-manual.md](preview-manual.md)。
-- 代码贡献流程、CLA、AI 使用政策。见 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AI_POLICY.md](../AI_POLICY.md)。
+- 代码贡献流程、CLA、AI 使用政策。见 [CONTRIBUTING.md](../CONTRIBUTING.md)（AI 使用规则是其中一节）。
 - Zig / Swift 源码本身的编码风格。那不属于 `dev-docs/`。
 
 ## 最高铁律：反幻觉
@@ -24,7 +24,7 @@
 
 1. **路径先验证再落笔。** 提到任何路径前先 `test -e` 或 Read 确认存在。
 2. **符号先 grep 再引用。** 提到函数、类型、字段名前先找到定义位置，并给出 `路径:行号`。
-3. **命令必须有出处。** 每条命令要能在 `build.zig`、`src/build/Config.zig`、[HACKING.md](../HACKING.md)、根 [AGENTS.md](../AGENTS.md) 或某个子目录 `AGENTS.md` 中找到依据，或你实际跑过。
+3. **命令必须有出处。** 每条命令要能在 `build.zig`、`src/build/Config.zig`、根 [AGENTS.md](../AGENTS.md) 或某个子目录 `AGENTS.md` 中找到依据，或你实际跑过。
 4. **禁止用"典型终端模拟器一般怎么做"补写细节。** 不确定就去读代码；读不出来就标注，不要编。
 5. **禁止编造运行结果。** 没跑过的命令不许写它的输出。
 
@@ -93,7 +93,7 @@
 
 文件名小写连字符、`.md` 结尾。编码 UTF-8、LF 换行、文件末尾留一个换行（与 `.editorconfig` 一致）。
 
-`dev-docs/` 会被 Prettier 检查（[HACKING.md](../HACKING.md) 的 Prettier 一节说明非 Zig 资源用 Prettier lint，CI 会因格式不合格失败），所以要遵守 Prettier 默认风格：无行尾空格、无序列表用 `-`、有序列表用 `1.`、表格不能破损。提交前跑：
+`dev-docs/` 会被 Prettier 检查（非 Zig 资源用 Prettier lint，CI 的检查是 `prettier --check .`，格式不合格会失败），所以要遵守 Prettier 默认风格：无行尾空格、无序列表用 `-`、有序列表用 `1.`、表格不能破损。提交前跑：
 
 ```sh
 prettier -w dev-docs/
@@ -126,7 +126,7 @@ prettier -w dev-docs/
 2. `## 关键文件地图`（表格：路径 | 行数量级 | 职责）
 3. 主体若干 `##` 章节
 4. `## 常见坑 / 注意事项`
-5. `## 延伸阅读`（指向仓库内其他 `AGENTS.md`、[HACKING.md](../HACKING.md)、其他 docs 篇目）
+5. `## 延伸阅读`（指向仓库内其他 `AGENTS.md`、其他 docs 篇目）
 
 ## 标题层级
 
@@ -154,7 +154,7 @@ prettier -w dev-docs/
 - 行号必须是你当前读到的真实行号。
 - 引用容易移动的实现细节时，同时给出符号名，形如：`App.create()`（`src/App.zig:77`）。
 - 不要给指向源码的引用加 Markdown 链接，一律纯反引号文本——文件移动后链接会烂掉，而 Prettier 无法校验。
-- 引用仓库内其他 Markdown 文档时才用相对链接：`[HACKING.md](../HACKING.md)`、`[src/benchmark/AGENTS.md](../src/benchmark/AGENTS.md)`。
+- 引用仓库内其他 Markdown 文档时才用相对链接：`[CONTRIBUTING.md](../CONTRIBUTING.md)`、`[src/benchmark/AGENTS.md](../src/benchmark/AGENTS.md)`。
 
 ## 代码块
 
@@ -183,7 +183,7 @@ prettier -w dev-docs/
   ```
 
 - 描述平台差异时必须写清「哪个平台 / 哪个构建选项」。例如：macOS 默认 `app_runtime = .none`，Linux 与 FreeBSD 默认 `.gtk`（`src/apprt/runtime.zig:14-24`）。
-- 不要复述 [CONTRIBUTING.md](../CONTRIBUTING.md) 的贡献流程和 [AI_POLICY.md](../AI_POLICY.md) 的政策，只做链接。
+- 不要复述 [CONTRIBUTING.md](../CONTRIBUTING.md) 的贡献流程和 AI 使用规则，只做链接。
 - 不要写"未来会如何"的路线图内容，除非 README 或代码注释里有明确出处。
 
 ## 交叉引用与去重
@@ -271,6 +271,6 @@ $ zig build --release=fast --run
 ## 延伸阅读
 
 - [README.md](README.md) — 文档索引
-- [HACKING.md](../HACKING.md) — 依赖、日志、lint、Nix VM
+- [preview-manual.md](preview-manual.md) — 依赖、日志、lint、Nix VM
 - [AGENTS.md](../AGENTS.md) — agent 入口索引
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — 贡献流程

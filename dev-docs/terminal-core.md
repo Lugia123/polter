@@ -360,15 +360,11 @@ GHOSTTY_LZ4_SLOW=1 zig build test -Dtest-filter="lz4 differential"
 7. 改 `include/ghostty/vt/` 里任何枚举都要补 `_MAX_VALUE` 哨兵（`AGENTS.md:25-26`）。
 8. 压缩不是所有平台都有：非 64 位、非 Linux/Darwin 上 `canReclaim` 返回 false（`src/terminal/mem.zig:44-60`），`Terminal.compress` 相应返回 `unsupported`（`src/terminal/Terminal.zig:2603-2617`）。
 
-## example/：C API 的活文档
+## C API 的示例：在上游，不在本仓
 
-每个示例是独立项目，自带 `build.zig`、`build.zig.zon`、`README.md` 和 `src/main.c`（或 `.zig`）；CI 通过 `example/*/build.zig.zon` 自动发现，新增示例不用改 workflow 文件（`example/AGENTS.md:3-6`）。仓库当前有 27 个含 `build.zig.zon` 的示例目录。
+上游 Ghostty 在仓库根有一个示例目录，每个示例是一个独立的小项目，演示 libghostty-vt 的一组 C API；本仓在 2026-10-10 把它整个删掉了（经过与合上游时的处理见 [upstream-cleanup.md](upstream-cleanup.md)）。要看示例，去上游仓库。
 
-示例源码用 Doxygen `@snippet` 机制：用 `//! [snippet-name]` 包住相关代码，头文件里写 `@snippet <dir>/src/main.c my-snippet` 而不是内联 `@code` 块。文档明令「绝不要在头文件里内联复制示例代码」，改示例时必须与 `include/ghostty/vt/` 的头文件保持标记同步（`example/AGENTS.md:18-33`）。
-
-实际引用点：`include/ghostty/vt.h:49-62` 用 `@ref` 列出全部完整示例（`c-vt-build-info`、`c-vt`、`c-vt-encode-key`、`c-vt-encode-mouse`、`c-vt-paste`、`c-vt-sgr`、`c-vt-formatter`、`c-vt-grid-traverse`、`c-vt-grid-ref-tracked`、`c-vt-compression`）；`include/ghostty/vt/terminal.h:41-42` 与 `:52-53` 则用 `@snippet` 直接嵌入 `c-vt-stream` 和 `c-vt-compression` 的片段。
-
-其他约定：可执行文件名用下划线（`c_vt_encode_focus` 而非连字符）；所有 C 示例通过 `lazyDependency("ghostty", ...)` 链接 `ghostty-vt`；`build.zig` 遵循统一模板；新增示例要生成新的唯一 fingerprint 并保持 `minimum_zig_version` 一致（`example/AGENTS.md:10-16`、`:35-39`）。
+留下的痕迹：`include/ghostty/vt.h` 与 `include/ghostty/vt/` 下的头文件仍然用 Doxygen 的 `@snippet`、`@example`、`@ref` 按路径引用那些示例源码（例如 `include/ghostty/vt.h:53-63`）。这些指令刻意没有改，为的是合上游时头文件不起冲突；代价是在本仓生成 C API 文档时示例片段会缺。本仓不发布 C API 文档。
 
 ## 与 Ghostty 应用的衔接点
 
@@ -381,6 +377,5 @@ Ghostty 应用**不**使用 `stream_terminal.Handler`，而是用自己的 handl
 - [src/terminal/compress/AGENTS.md](../src/terminal/compress/AGENTS.md) — codec 优先级、测试与 benchmark
 - [src/terminal/snapshot/AGENTS.md](../src/terminal/snapshot/AGENTS.md) — 快照健壮性原则
 - [src/terminal/apc/glyph/AGENTS.md](../src/terminal/apc/glyph/AGENTS.md) — glyph 协议规范来源
-- [example/AGENTS.md](../example/AGENTS.md) — 示例项目与 Doxygen snippet 约定
 - [src/benchmark/AGENTS.md](../src/benchmark/AGENTS.md) — `ghostty-bench` 的通用工作流（本篇未展开）
 - 其他篇目：`dev-docs/architecture.md`、`dev-docs/rendering-and-font.md`、`dev-docs/platform-and-config.md`、`dev-docs/preview-manual.md`

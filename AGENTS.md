@@ -2,6 +2,11 @@
 
 A file for [guiding coding agents](https://agents.md/).
 
+**This repository is Polter: a terminal that supervises the AI agents running
+in other terminals.** It is a fork of Ghostty, so the terminal emulator
+underneath is Ghostty's; what this repository adds, and what it is for, is the
+supervising — `src/poltergeist/`, the MCP tools, the group chat, the task panel.
+
 ## Commands
 
 - **Build:** `zig build`
@@ -102,7 +107,7 @@ Inside `src/`: `main_ghostty.zig` (entrypoint), `App.zig` / `Surface.zig`
 `font/`, `config/`, `input/`, `cli/`, `build/`.
 
 Nested `AGENTS.md` files carry rules for their own subtree; read the nearest
-one before editing. They exist under `macos/`, `example/`, `src/benchmark/`,
+one before editing. They exist under `macos/`, `src/benchmark/`,
 `src/inspector/`, `src/terminal/c/`, `src/terminal/snapshot/`,
 `src/terminal/compress/`, `src/terminal/apc/glyph/`, `test/fuzz-libghostty/`.
 
