@@ -73,7 +73,7 @@ Unlike normal screenshot tools, **the text you write and the boxes you draw are 
 | OS | File | Note |
 | --- | --- | --- |
 | **macOS 13+** | `Polter-*-macos-universal.zip` | Apple Silicon and Intel supported. |
-| **Windows 10+** | `Polter-*-windows-x64.zip` | 70 out of 76 core actions implemented (as of 2026-09-21; see `dev-docs/windows/status.md`). |
+| **Windows 10+** | `Polter-*-windows-x64.zip` | x64. Unzip and run, no installer and no permissions needed. |
 | **Linux** | No pre-built binary. | You must build from source. (Screenshot feature not yet available). |
 
 **For macOS users:**

@@ -72,7 +72,7 @@ Polter 内置的截图工具最大的特点是：**标注是可读的数据**。
 | 操作系统 | 文件包 | 备注 |
 | --- | --- | --- |
 | **macOS 13+** | `Polter-*-macos-universal.zip` | 原生支持 Apple 芯片和 Intel。 |
-| **Windows 10+** | `Polter-*-windows-x64.zip` | 已实现 76 个核心操作中的 70 个（数据截至 2026-09-21）。 |
+| **Windows 10+** | `Polter-*-windows-x64.zip` | x64。解压即用，无需安装，也不需要任何权限。 |
 | **Linux** | 无现成安装包 | 需从源码编译。（截图功能此版本暂未实现）。 |
 
 **macOS 用户必看：**
