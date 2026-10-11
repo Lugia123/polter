@@ -46,7 +46,7 @@ final class ControlRoomCoreSource: ControlRoomSnapshotSource {
     typealias Fetch = (_ buffer: UnsafeMutablePointer<CChar>?, _ capacity: Int) -> Int
 
     /// Posted when the core says the control room's snapshot changed.
-    static let changed = Notification.Name("com.lugia.polter.controlRoomChanged")
+    static let changed = Notification.Name("PolterControlRoomChanged")
 
     var onChange: (() -> Void)?
 
