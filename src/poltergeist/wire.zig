@@ -317,6 +317,10 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                 // takes on a bare return -- so a caller that omits it gets the
                 // same thing a person pressing return would.
                 .choice = @intCast(@min(try optionalU64(params, "choice", 1), 255)),
+                // Both or neither. One on its own is a caller that meant to
+                // be checked and would not be.
+                .state_at_ms = try momentWith(params, "state_at_ms", "event_at_ms"),
+                .event_at_ms = try momentWith(params, "event_at_ms", "state_at_ms"),
             },
         },
 
@@ -617,6 +621,19 @@ fn optionalMaybeU64(
     };
 }
 
+/// One of a pair of moments that mean something only together: absent when
+/// both are, refused when only this one or only the other is there.
+fn momentWith(
+    params: ?std.json.ObjectMap,
+    key: []const u8,
+    other: []const u8,
+) ParseError!?u64 {
+    const mine = try optionalMaybeU64(params, key);
+    const theirs = try optionalMaybeU64(params, other);
+    if ((mine == null) != (theirs == null)) return error.BadParams;
+    return mine;
+}
+
 fn optionalU64(
     params: ?std.json.ObjectMap,
     key: []const u8,
@@ -802,9 +819,14 @@ pub const AgentView = struct {
     /// How long it has been in `agent.state`. Null when nothing has said
     /// anything, so there is no state to have been in.
     since_ms: ?u64,
+    /// When it entered that state, and when it was last heard from, on the
+    /// clock `terminal_answer_prompt` checks them against. Moments, where
+    /// `since_ms` is a length of time. Null with `since_ms`.
+    state_at_ms: ?u64,
+    event_at_ms: ?u64,
 
     /// A terminal whose agent has never said anything through hooks.
-    pub const none: AgentView = .{ .agent = .none, .since_ms = null };
+    pub const none: AgentView = .{ .agent = .none, .since_ms = null, .state_at_ms = null, .event_at_ms = null };
 };
 
 /// What `terminal_turn` answers.
@@ -1062,7 +1084,7 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.objectField("id");
             try writeId(&s, t.id);
             try s.objectField("agent");
-            try writeAgent(&s, t.agent, null);
+            try writeAgent(&s, .{ .agent = t.agent, .since_ms = null, .state_at_ms = null, .event_at_ms = null });
 
             // `null` rather than absent: this tool was asked for exactly
             // this, and "there is none" is its answer.
@@ -1688,21 +1710,30 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
     }
 
     try s.objectField("agent");
-    try writeAgent(s, info.agent.agent, info.agent.since_ms);
+    try writeAgent(s, info.agent);
 
     try s.endObject();
 }
 
 /// One terminal's agent state. `since_ms` is left out where the caller has
 /// no clock reading to give.
-fn writeAgent(s: *std.json.Stringify, a: Bus.Agent, since_ms: ?u64) std.Io.Writer.Error!void {
+fn writeAgent(s: *std.json.Stringify, view: AgentView) std.Io.Writer.Error!void {
+    const a = view.agent;
     try s.beginObject();
     try s.objectField("hooks");
     try s.write(@tagName(a.hooks));
     try s.objectField("state");
     try s.write(@tagName(a.state));
-    if (since_ms) |ms| {
+    if (view.since_ms) |ms| {
         try s.objectField("since_ms");
+        try s.write(ms);
+    }
+    if (view.state_at_ms) |ms| {
+        try s.objectField("state_at_ms");
+        try s.write(ms);
+    }
+    if (view.event_at_ms) |ms| {
+        try s.objectField("event_at_ms");
         try s.write(ms);
     }
     // Absent when nothing said them, on `quiet_ms`'s terms.
@@ -2610,5 +2641,29 @@ test "wire: a screenshot call carries each parameter as the JSON it arrived as" 
     ));
     try testing.expectError(error.BadParams, parseRequestLeaky(arena.allocator(),
         \\{"method":"screenshot_windows","params":{"display":0}}
+    ));
+}
+
+test "ControlRoom answer_prompt: the two moments are taken together or not at all" {
+    var both = try parse(
+        \\{"id":1,"method":"terminal_answer_prompt","params":{"id":"0x0000000000002222","state_at_ms":1000,"event_at_ms":3000}}
+    );
+    defer both.deinit();
+    try testing.expectEqual(@as(?u64, 1000), both.value.terminal_answer_prompt.state_at_ms);
+    try testing.expectEqual(@as(?u64, 3000), both.value.terminal_answer_prompt.event_at_ms);
+
+    var neither = try parse(
+        \\{"id":1,"method":"terminal_answer_prompt","params":{"id":"0x0000000000002222","choice":2}}
+    );
+    defer neither.deinit();
+    try testing.expect(neither.value.terminal_answer_prompt.state_at_ms == null);
+    try testing.expect(neither.value.terminal_answer_prompt.event_at_ms == null);
+    try testing.expectEqual(@as(u8, 2), neither.value.terminal_answer_prompt.choice);
+
+    try testing.expectError(error.BadParams, parse(
+        \\{"id":1,"method":"terminal_answer_prompt","params":{"id":"0x0000000000002222","state_at_ms":1000}}
+    ));
+    try testing.expectError(error.BadParams, parse(
+        \\{"id":1,"method":"terminal_answer_prompt","params":{"id":"0x0000000000002222","event_at_ms":1000}}
     ));
 }

@@ -557,7 +557,19 @@ pub const Request = union(Method) {
     /// What is assumed about the box is written on the tool description and
     /// on the dispatch arm, because it is an assumption rather than a fact
     /// about anything in this repository.
-    terminal_answer_prompt: struct { id: Bus.Id, choice: u8 = 1 },
+    ///
+    /// `state_at_ms` and `event_at_ms` are the prompt the caller looked at,
+    /// as `terminal_list` gave them: with them, nothing is pressed unless
+    /// that prompt is the one still there (`Bus.promptStanding`). Without
+    /// them this is what it always was, a count pressed blind. `wire` takes
+    /// both or neither; they are fields here rather than one optional pair
+    /// because a parameter is accepted by being a field of this struct.
+    terminal_answer_prompt: struct {
+        id: Bus.Id,
+        choice: u8 = 1,
+        state_at_ms: ?u64 = null,
+        event_at_ms: ?u64 = null,
+    },
 
     /// `layout` is the shape, already re-serialised to JSON by `wire`.
     terminal_layout: struct { id: Bus.Id, layout: []const u8 },
@@ -6810,6 +6822,24 @@ fn dispatchOne(
                     "the number has to match what is on the screen.",
             );
 
+            // **Before the first arrow, not before the return.** A box that
+            // has been replaced is not one to walk a highlight around in
+            // either.
+            if (p.state_at_ms != null or p.event_at_ms != null) {
+                // One without the other cannot be the prompt anybody saw.
+                const standing = if (p.state_at_ms) |state_at|
+                    (if (p.event_at_ms) |event_at| bus.promptStanding(p.id, state_at, event_at, host.nowMs()) else false)
+                else
+                    false;
+                if (!standing) return hostFailure(
+                    "PromptGone",
+                    "the prompt you looked at is not the one in that terminal now -- it was " ++
+                        "answered, replaced by another, or the screen has moved since it was " ++
+                        "drawn -- so no key was sent. Read the terminal and terminal_list again; " ++
+                        "`state_at_ms` and `event_at_ms` there are the ones to pass.",
+                );
+            }
+
             var step: u8 = 1;
             while (step < p.choice) : (step += 1) {
                 _ = host.sendKey(p.id, "arrow_down") catch |err| return switch (err) {
@@ -7811,9 +7841,15 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         .agent = if (e.agent.hooks == .none) .{
             .agent = e.agent,
             .since_ms = null,
+            .state_at_ms = null,
+            .event_at_ms = null,
         } else .{
             .agent = e.agent,
             .since_ms = host.nowMs() -| e.agent.since_ms,
+            // The two moments themselves, not how long ago: what a caller
+            // hands back to say which prompt it saw.
+            .state_at_ms = e.agent.since_ms,
+            .event_at_ms = e.agent.eventMs(),
         },
     };
 }
@@ -13989,7 +14025,7 @@ test "hooks: terminal_list carries the agent state, and leaves it out with no ho
     var w: std.Io.Writer = .fixed(&out);
     try wire.writeResponse(&w, after);
     try testing.expect(std.mem.indexOf(u8, w.buffered(),
-        \\"agent":{"hooks":"live","state":"awaiting_approval","since_ms":3000,"session_id":"sess-1","cli":"claude-code","detail":"Bash","note":"zig build test","waiting_on_background":false}
+        \\"agent":{"hooks":"live","state":"awaiting_approval","since_ms":3000,"state_at_ms":1000,"event_at_ms":1000,"session_id":"sess-1","cli":"claude-code","detail":"Bash","note":"zig build test","waiting_on_background":false}
     ) != null);
 }
 
@@ -14520,4 +14556,87 @@ test "screenshot: a plugin has none of these" {
         try testing.expect(!requiresSupervisor(m));
         try testing.expect(offeredAsTool(m));
     }
+}
+
+test "ControlRoom answer_prompt: given the prompt it saw, it presses nothing once that prompt is gone" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{ .now_ms = 1_000 };
+    fake.key_outcome = .written;
+    try b.setMayAuthorise(worker, true, .user);
+
+    var first = hookEvent(.awaiting_approval);
+    first.note = "rm -rf dist/";
+    _ = try dispatch(alloc, &b, fake.host(), term(worker), .{ .agent_event = first });
+
+    // What terminal_list says about it is what gets handed back.
+    fake.now_ms = 2_000;
+    const listed = (try dispatch(alloc, &b, fake.host(), term(worker), .me)).me.agent;
+    try testing.expectEqual(@as(?u64, 1_000), listed.state_at_ms);
+    try testing.expectEqual(@as(?u64, 1_000), listed.event_at_ms);
+
+    // A different box takes its place before the answer is sent.
+    fake.now_ms = 3_000;
+    var second = hookEvent(.awaiting_approval);
+    second.note = "git push --force";
+    _ = try dispatch(alloc, &b, fake.host(), term(worker), .{ .agent_event = second });
+
+    fake.now_ms = 4_000;
+    const refused = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_answer_prompt = .{
+        .id = worker,
+        .choice = 2,
+        .state_at_ms = listed.state_at_ms.?,
+        .event_at_ms = listed.event_at_ms.?,
+    } });
+    // Said first, so that an answer of `ok` fails here as an assertion and
+    // not further down as a field that is not there.
+    try testing.expect(refused == .failed);
+    try testing.expectEqualStrings("PromptGone", refused.failed.code);
+    // Not the return, and not the arrow before it either.
+    try testing.expect(fake.keyed == null);
+
+    // With the moments of the box that is there now, it goes through.
+    const taken = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_answer_prompt = .{
+        .id = worker,
+        .choice = 1,
+        .state_at_ms = 3_000,
+        .event_at_ms = 3_000,
+    } });
+    try testing.expect(taken == .ok);
+    try testing.expectEqualStrings("enter", fake.keyed.?.key);
+}
+
+test "ControlRoom answer_prompt: without the prompt it saw, it is what it always was" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{ .now_ms = 1_000 };
+    fake.key_outcome = .written;
+    try b.setMayAuthorise(worker, true, .user);
+
+    // No hooks at all, nothing waiting on anything: still pressed, blind.
+    const taken = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .terminal_answer_prompt = .{ .id = worker, .choice = 1 },
+    });
+    try testing.expect(taken == .ok);
+    try testing.expectEqualStrings("enter", fake.keyed.?.key);
+
+    // The same terminal, asked with moments: there is no prompt to match.
+    fake.keyed = null;
+    const refused = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_answer_prompt = .{
+        .id = worker,
+        .choice = 1,
+        .state_at_ms = 0,
+        .event_at_ms = 0,
+    } });
+    // Said first, so that an answer of `ok` fails here as an assertion and
+    // not further down as a field that is not there.
+    try testing.expect(refused == .failed);
+    try testing.expectEqualStrings("PromptGone", refused.failed.code);
+    try testing.expect(fake.keyed == null);
 }

@@ -669,7 +669,9 @@ agent 在等审批，用户仍然得去翻 tab。
   一轮不收一句话（`NothingToReplyTo`）。
 - 三样都走 agent 打字的同一条路：那个终端 10 秒内有键到过就拒绝（`UserPresent`），输入行里有没提交的
   字就拒绝（`DraftInLine`）。
-- MCP 的 `terminal_answer_prompt` **还没有**这道守卫，它仍然是数着格子盲发。
+- MCP 的 `terminal_answer_prompt` 也有这道守卫了，但是**可选的**：调用方带上 `terminal_list` 里那个终端的
+  `state_at_ms` 与 `event_at_ms`（两个都给或都不给）才核对，不符回 `PromptGone` 且不发键；不带就和以前
+  一样数着格子盲发。参数名没有叫 `since_ms`：`terminal_list` 里的 `since_ms` 是时长，不是时刻。
 
 三条约束：
 

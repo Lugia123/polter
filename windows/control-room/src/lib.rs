@@ -4,8 +4,31 @@
 //! | module | what |
 //! |---|---|
 //! | [`look`] | what it looks like: sizes, colours, durations, light and dark (generated) |
+//! | [`snapshot`] | the core's snapshot, read; an unknown glyph is an error |
+//! | [`list`] | the rows in their two sections, what each says, where the selection goes |
+//! | [`layout`] | where everything in the list panel is; the time band's pieces; the chip's spring |
+//! | [`pulse`] | which waiting glyph breathes |
+//! | [`act`] | the person's acts as requests to the core, and what a refusal says |
+//! | [`json`] | just enough JSON for the above |
+//!
+//! **Nothing in here decides what the control room says.** Which rows there
+//! are, their order, which need the person, how many, which glyph -- all of
+//! that arrives worked out in the snapshot, and a line here that compared a
+//! kind or counted rows would be the host deciding it a second time.
+//! `tools/control-room-hosts-do-not-decide.py` reads this crate for exactly
+//! that, and `tools/control-room-hosts-agree.py` holds what it draws to what
+//! the macOS host draws from the same snapshot.
 
+pub mod act;
+pub mod json;
+pub mod layout;
+pub mod list;
 pub mod look;
+pub mod pulse;
+pub mod snapshot;
+
+#[cfg(test)]
+mod fixture_tests;
 
 #[cfg(test)]
 mod tests {
