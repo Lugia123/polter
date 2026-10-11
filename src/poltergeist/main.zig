@@ -13,6 +13,7 @@
 pub const Resident = @import("Resident.zig");
 pub const Bus = @import("Bus.zig");
 pub const Chat = @import("Chat.zig");
+pub const Attention = @import("Attention.zig");
 pub const actions = @import("actions.zig");
 pub const keys = @import("keys.zig");
 pub const draft = @import("draft.zig");
@@ -65,6 +66,7 @@ pub const screen = @import("screen.zig");
 // Adding an import above means adding a line here.
 test {
     _ = @import("server_test.zig");
+    _ = Attention;
     _ = actions;
     _ = keys;
     _ = draft;
