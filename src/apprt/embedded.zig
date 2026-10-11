@@ -2062,6 +2062,23 @@ pub const CAPI = struct {
         return json.len;
     }
 
+    /// The control room's snapshot, as JSON: everything it draws, already
+    /// sorted and counted (`src/poltergeist/ControlRoom.zig` has the shape).
+    /// Same buffer rule as `ghostty_surface_persona_face`.
+    ///
+    /// **Fetch it on `GHOSTTY_ACTION_CONTROL_ROOM_CHANGED` and at no other
+    /// time.** It changes only then, so there is nothing a timer would
+    /// find. Zero bytes means no snapshot has been worked out yet -- the
+    /// first tick has not happened -- which is not the same as an empty
+    /// control room, and an apprt should draw nothing rather than that.
+    export fn ghostty_app_control_snapshot(
+        app: *App,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        return copyJsonOut(app.core_app.controlSnapshotJson(), buf, cap);
+    }
+
     /// Write `json` into the caller's buffer by the persona buffer rule:
     /// the real length back, one NUL after it when it fits.
     fn copyJsonOut(json: []const u8, buf: ?[*]u8, cap: usize) usize {

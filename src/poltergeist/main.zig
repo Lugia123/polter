@@ -13,6 +13,8 @@
 pub const Resident = @import("Resident.zig");
 pub const Bus = @import("Bus.zig");
 pub const Chat = @import("Chat.zig");
+pub const ControlRoom = @import("ControlRoom.zig");
+pub const ControlWake = @import("ControlWake.zig");
 pub const Attention = @import("Attention.zig");
 pub const actions = @import("actions.zig");
 pub const keys = @import("keys.zig");
@@ -76,6 +78,8 @@ test {
     _ = Bus;
     _ = agent_event;
     _ = Chat;
+    _ = ControlRoom;
+    _ = ControlWake;
     _ = ChatLog;
     _ = Feed;
     _ = GroupLog;

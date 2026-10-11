@@ -1204,6 +1204,16 @@ typedef struct {
   ghostty_action_poltergeist_layout_out_s* out;
 } ghostty_action_poltergeist_layout_s;
 
+// apprt.action.ControlRoomChanged
+//
+// The control room's snapshot changed: fetch it with
+// ghostty_app_control_snapshot. Sent when something changed and at no other
+// time, at most four times a second -- there is nothing to poll for. `rev`
+// is the snapshot's own `rev`.
+typedef struct {
+  uint64_t rev;
+} ghostty_action_control_room_changed_s;
+
 // apprt.action.HistoryFilename
 //
 // Fired once, synchronously, when the surface is created (not on a
@@ -1373,6 +1383,7 @@ typedef enum {
   GHOSTTY_ACTION_POLTERGEIST_GROUPING,
   GHOSTTY_ACTION_SCREENSHOT,
   GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT,
+  GHOSTTY_ACTION_CONTROL_ROOM_CHANGED,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1424,6 +1435,7 @@ typedef union {
   ghostty_action_poltergeist_layout_s poltergeist_layout;
   ghostty_action_poltergeist_screenshot_s poltergeist_screenshot;
   ghostty_action_history_filename_s history_filename;
+  ghostty_action_control_room_changed_s control_room_changed;
 } ghostty_action_u;
 
 typedef struct {
@@ -1553,6 +1565,13 @@ GHOSTTY_API uintptr_t ghostty_app_personas(ghostty_app_t, ghostty_persona_s*, ui
 // Polter changes none of them. `stale` is NOT an empty list -- an interface
 // that draws them the same way tells the user nothing is installed here.
 GHOSTTY_API uintptr_t ghostty_app_persona_hosts(ghostty_app_t, char*, uintptr_t);
+
+// The control room's snapshot, as JSON (src/poltergeist/ControlRoom.zig has
+// the shape): every row, count, order and glyph already decided. Same buffer
+// rule as ghostty_surface_persona_face. Fetch it when
+// GHOSTTY_ACTION_CONTROL_ROOM_CHANGED arrives and at no other time; zero
+// bytes means none has been worked out yet. App thread only.
+GHOSTTY_API uintptr_t ghostty_app_control_snapshot(ghostty_app_t, char*, uintptr_t);
 
 // The role library and the agent CLIs a role can start. Buffers follow the
 // persona rule above: the real length back, one NUL after it when it fits.

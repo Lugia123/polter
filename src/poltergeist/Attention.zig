@@ -128,6 +128,10 @@ pub const Process = union(enum) {
     running,
     /// The agent went away on its own and left the terminal; when.
     agent_exited: u64,
+    /// The agent is no longer there, since when, and nothing says whether
+    /// it failed or the person closed it. Not a failure: what its hooks
+    /// last said no longer holds, and the screen is what is left to read.
+    agent_left: u64,
     /// The terminal itself is gone, or the user closed the agent.
     gone,
 };
@@ -179,6 +183,15 @@ pub const Facts = struct {
     held: bool,
     shielded: bool,
 
+    /// What the bus does not keep, and whoever asks it for `Facts` supplies.
+    pub const Outside = struct {
+        process: Process,
+        seen_ms: ?u64,
+        raised_ms: ?u64,
+
+        pub const none: Outside = .{ .process = .running, .seen_ms = null, .raised_ms = null };
+    };
+
     /// A plain terminal nothing is known about.
     pub const none: Facts = .{
         .id = 0,
@@ -224,7 +237,7 @@ pub fn classify(f: Facts, t: Thresholds, now_ms: u64) Status {
     var c: Core = decided: {
         // A process that is gone overrules whatever the hooks last said.
         switch (f.process) {
-            .running => {},
+            .running, .agent_left => {},
             .agent_exited => |at| break :decided .{
                 .kind = .failed,
                 .since_ms = at,
@@ -239,7 +252,7 @@ pub fn classify(f: Facts, t: Thresholds, now_ms: u64) Status {
             },
         }
 
-        if (f.hooks == .live) {
+        if (f.hooks == .live and f.process == .running) {
             const kind: Kind, const since: u64 = switch (f.state) {
                 .awaiting_approval => .{ .needs_approval, f.state_since_ms },
                 .awaiting_input => .{ .needs_answer, f.state_since_ms },
@@ -259,7 +272,9 @@ pub fn classify(f: Facts, t: Thresholds, now_ms: u64) Status {
             break :decided .{ .kind = kind, .since_ms = since, .source = .hook, .age_ms = hook_age };
         }
 
-        if (f.hooks == .expected and now_ms -| f.expected_ms >= t.hooks_expected_ms) {
+        if (f.hooks == .expected and f.process == .running and
+            now_ms -| f.expected_ms >= t.hooks_expected_ms)
+        {
             break :decided .{
                 .kind = .suspect_stuck,
                 .since_ms = f.expected_ms +| t.hooks_expected_ms,
@@ -356,6 +371,42 @@ fn stuckSince(f: Facts, t: Thresholds, now_ms: u64) ?u64 {
     };
 
     return @max(at, f.state_since_ms);
+}
+
+/// The next moment `classify` could answer differently with no event in
+/// between -- a threshold being crossed -- or null when only an event can
+/// change it. What lets the caller sleep until then instead of polling.
+pub fn nextChange(f: Facts, t: Thresholds, now_ms: u64) ?u64 {
+    const at: u64 = at: {
+        switch (f.process) {
+            .running => {},
+            .agent_left => break :at stillAt(f, t, now_ms) orelse return null,
+            .agent_exited, .gone => return null,
+        }
+        if (f.hooks == .live) {
+            if (f.state != .in_turn) return null;
+            var at = stillAt(f, t, now_ms) orelse return null;
+            if (t.calls_silent_ms != 0) if (f.call_silent_ms) |silent| {
+                at = @max(at, (now_ms -| silent) +| t.calls_silent_ms);
+            };
+            break :at @max(at, f.state_since_ms);
+        }
+        if (f.hooks == .expected) {
+            const due = f.expected_ms +| t.hooks_expected_ms;
+            if (due > now_ms) break :at due;
+            return null;
+        }
+        break :at stillAt(f, t, now_ms) orelse return null;
+    };
+    return if (at > now_ms) at else null;
+}
+
+/// When a measured screen will have been still for T1.
+fn stillAt(f: Facts, t: Thresholds, now_ms: u64) ?u64 {
+    return switch (f.screen) {
+        .still_ms => |ms| (now_ms -| ms) +| t.screen_still_ms,
+        .unmeasured, .unreadable => null,
+    };
 }
 
 /// "Known, leave it": until the state changes again, or until a time.
@@ -676,6 +727,78 @@ test "Attention: an agent that exited is a failure whatever its hooks last said"
     const gone = classify(f, T, now);
     try testing.expectEqual(Kind.idle, gone.kind);
     try testing.expect(!gone.alive);
+}
+
+test "Attention: an agent that left for no known reason is not called a failure" {
+    var f = hooked(1, .awaiting_approval, 40 * min);
+    f.process = .{ .agent_left = 90 * min };
+    // The approval it was waiting on went with it; nothing measures the screen.
+    const s = classify(f, T, now);
+    try testing.expectEqual(Kind.idle, s.kind);
+    try testing.expect(s.alive);
+
+    f.screen = .{ .still_ms = 1 * min };
+    try testing.expectEqual(Kind.working, classify(f, T, now).kind);
+    f.screen = .{ .still_ms = 9 * min };
+    try testing.expectEqual(Kind.quiet_unknown, classify(f, T, now).kind);
+}
+
+/// The same facts `dt` later, with no event in between.
+fn later(f: Facts, dt: u64) Facts {
+    var out = f;
+    switch (out.screen) {
+        .still_ms => |*ms| ms.* += dt,
+        .unmeasured, .unreadable => {},
+    }
+    if (out.call_silent_ms) |*ms| ms.* += dt;
+    return out;
+}
+
+test "Attention: the next change is the threshold, and nothing changes before it" {
+    var turn = hooked(1, .in_turn, 90 * min);
+    turn.screen = .{ .still_ms = 1 * min };
+    turn.call_silent_ms = 5 * min;
+
+    var plain: Facts = .none;
+    plain.screen = .{ .still_ms = 1 * min };
+
+    var promised: Facts = .none;
+    promised.hooks = .expected;
+    promised.expected_ms = now - 1000;
+
+    var left = hooked(2, .in_turn, 90 * min);
+    left.process = .{ .agent_left = 95 * min };
+    left.screen = .{ .still_ms = 2 * min };
+
+    const cases = [_]struct { Facts, u64 }{
+        .{ turn, now + 10 * min }, // T2 is the later of the two clocks
+        .{ plain, now + 2 * min },
+        .{ promised, now - 1000 + Bus.hooks_expected_timeout_ms },
+        .{ left, now + 1 * min },
+    };
+    for (cases) |c| {
+        const f, const want = c;
+        const at = nextChange(f, T, now) orelse return error.TestExpectedAWake;
+        try testing.expectEqual(want, at);
+        const before_it = classify(later(f, at - 1 - now), T, at - 1);
+        const at_it = classify(later(f, at - now), T, at);
+        try testing.expectEqual(classify(f, T, now).kind, before_it.kind);
+        try testing.expect(at_it.kind != before_it.kind);
+        // And once crossed there is nothing further to wait for.
+        try testing.expectEqual(@as(?u64, null), nextChange(later(f, at - now), T, at));
+    }
+}
+
+test "Attention: what only an event can change has no next change" {
+    try testing.expectEqual(@as(?u64, null), nextChange(Facts.none, T, now));
+    try testing.expectEqual(@as(?u64, null), nextChange(hooked(1, .awaiting_approval, 0), T, now));
+    try testing.expectEqual(@as(?u64, null), nextChange(hooked(1, .ended, 0), T, now));
+    // In a turn with nothing measuring the screen: no clock to cross.
+    try testing.expectEqual(@as(?u64, null), nextChange(hooked(1, .in_turn, 0), T, now));
+    var dead = hooked(1, .in_turn, 0);
+    dead.screen = .{ .still_ms = 0 };
+    dead.process = .gone;
+    try testing.expectEqual(@as(?u64, null), nextChange(dead, T, now));
 }
 
 test "Attention: in a turn, still for T1 and silent for T2, is suspect" {

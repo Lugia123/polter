@@ -4219,6 +4219,18 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             true
         }
 
+        // owed: 1366 -- the control room is not built on this host yet.
+        ffi::ACTION_CONTROL_ROOM_CHANGED => {
+            // process-wide: the control room is one per process, and the
+            // notice names no window
+            alogf!(
+                origin,
+                "[action] control_room_changed: not built yet (task 1366) -- nothing on this host \
+                 draws the control room, so there is nobody to fetch the snapshot this announces."
+            );
+            false
+        }
+
         // owed: 286 -- reviewed and deferred; there is no transparency to toggle.
         ffi::ACTION_TOGGLE_BACKGROUND_OPACITY => {
             alogf!(

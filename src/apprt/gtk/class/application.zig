@@ -820,6 +820,7 @@ pub const Application = extern struct {
             .toggle_poltergeist_chat,
             .screenshot,
             .poltergeist_screenshot,
+            .control_room_changed,
 
             // Poltergeist's own UI is macOS-only so far, and the tab mark
             // is part of it. GTK keeps its tabs unmarked rather than

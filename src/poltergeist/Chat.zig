@@ -21,6 +21,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Bus = @import("Bus.zig");
+const Attention = @import("Attention.zig");
 
 pub const Id = Bus.Id;
 
@@ -226,6 +227,17 @@ const Group = struct {
     /// look like a group nobody has ever used.
     last_ms: u64 = 0,
 
+    /// What the person has said about this group in the control room. This
+    /// is what is written down and comes back.
+    marks: Marks = .none,
+
+    /// When, on the bus's clock and in this run, the person last looked and
+    /// last snoozed. Null for a mark that came back off disk: nothing that
+    /// has happened in this run has been seen yet, and a restart is a
+    /// change of state as far as a snooze is concerned.
+    seen_run_ms: ?u64 = null,
+    snoozed_run_ms: ?u64 = null,
+
     fn deinit(self: *Group, alloc: Allocator) void {
         for (self.log.items) |m| m.release(alloc);
         self.log.deinit(alloc);
@@ -420,6 +432,75 @@ pub const Kept = struct {
         return self.kept < self.given;
     }
 };
+
+/// What the person has said about a group: that they looked at it, and that
+/// they want it left alone for now. Times are the wall clock's, because
+/// this is what is written to disk and read back in another run.
+pub const Marks = struct {
+    seen_ms: ?u64,
+    snooze: Snooze,
+
+    pub const none: Marks = .{ .seen_ms = null, .snooze = .none };
+
+    pub const Snooze = union(enum) {
+        none,
+        /// Set at this time; ends when the group's state next changes.
+        next_event: u64,
+        until: struct { at_ms: u64, until_ms: u64 },
+    };
+};
+
+pub fn marksOf(self: *const Chat, name: []const u8) Error!Marks {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    return group.marks;
+}
+
+/// The person looked at this group. `now_ms` is the bus's clock, `wall_ms`
+/// the real one; both are kept, because what there is to have seen is
+/// timed on the first and what is written down has to be the second.
+pub fn markSeen(self: *Chat, name: []const u8, now_ms: u64, wall_ms: u64) Error!void {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    group.marks.seen_ms = wall_ms;
+    group.seen_run_ms = now_ms;
+}
+
+/// When the person last looked, on the bus's clock, or null if they have
+/// not in this run.
+pub fn seenRunMs(self: *const Chat, name: []const u8) ?u64 {
+    const group = self.groups.getPtr(name) orelse return null;
+    return group.seen_run_ms;
+}
+
+pub fn setSnooze(self: *Chat, name: []const u8, snooze: Marks.Snooze, now_ms: u64) Error!void {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    group.marks.snooze = snooze;
+    group.snoozed_run_ms = if (snooze == .none) null else now_ms;
+}
+
+/// The group's snooze in the terms `Attention` judges it in: on the bus's
+/// clock, as of now.
+pub fn snoozeOf(self: *const Chat, name: []const u8, now_ms: u64, wall_ms: u64) Attention.Snooze {
+    const group = self.groups.getPtr(name) orelse return .none;
+    return switch (group.marks.snooze) {
+        .none => .none,
+        .next_event => .{ .until_change = group.snoozed_run_ms orelse 0 },
+        .until => |u| .{ .until_ms = now_ms +| (u.until_ms -| wall_ms) },
+    };
+}
+
+/// Put back what the disk remembered of the person's marks on a group.
+pub fn restoreMarks(self: *Chat, name: []const u8, marks: Marks) Error!void {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    group.marks = marks;
+    group.seen_run_ms = null;
+    group.snoozed_run_ms = null;
+}
+
+/// When anything was last said in this group; the wall clock's.
+pub fn lastMsOf(self: *const Chat, name: []const u8) u64 {
+    const group = self.groups.getPtr(name) orelse return 0;
+    return group.last_ms;
+}
 
 /// Who made this group.
 ///
@@ -2774,4 +2855,49 @@ test "named messages that fall off the end or are compacted are freed" {
     _ = try chat.postMentioning("build", boss, "three", &.{a}, 2);
     try testing.expectEqual(@as(usize, 1), chat.groups.getPtr("build").?.log.items[0].mentions.len);
     _ = try chat.compact("build", 3, "summary", boss, 3);
+}
+
+test "ControlRoom marks: seen and snooze are kept per group and survive a rename" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.create("build", 7);
+
+    try testing.expectEqual(Marks.none, try chat.marksOf("build"));
+    try testing.expectEqual(@as(?u64, null), chat.seenRunMs("build"));
+    try testing.expectError(error.NoSuchGroup, chat.markSeen("nope", 1, 2));
+
+    try chat.markSeen("build", 5_000, 1_700_000_000_000);
+    try chat.setSnooze("build", .{ .next_event = 1_700_000_000_500 }, 5_500);
+    try chat.rename("build", "nightly");
+
+    const m = try chat.marksOf("nightly");
+    try testing.expectEqual(@as(?u64, 1_700_000_000_000), m.seen_ms);
+    try testing.expectEqual(@as(?u64, 5_000), chat.seenRunMs("nightly"));
+    try testing.expectEqual(Attention.Snooze{ .until_change = 5_500 }, chat.snoozeOf("nightly", 6_000, 0));
+}
+
+test "ControlRoom marks: a timed snooze is carried from the wall clock onto the bus clock" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.create("build", 7);
+
+    const wall: u64 = 1_700_000_000_000;
+    try chat.setSnooze("build", .{ .until = .{ .at_ms = wall, .until_ms = wall + 90_000 } }, 1_000);
+    try testing.expectEqual(Attention.Snooze{ .until_ms = 4_000 + 60_000 }, chat.snoozeOf("build", 4_000, wall + 30_000));
+    // Past it on the wall clock: over, whatever the bus clock says.
+    try testing.expectEqual(Attention.Snooze{ .until_ms = 4_000 }, chat.snoozeOf("build", 4_000, wall + 99_000));
+
+    try chat.setSnooze("build", .none, 5_000);
+    try testing.expectEqual(Attention.Snooze.none, chat.snoozeOf("build", 6_000, wall));
+}
+
+test "ControlRoom marks: marks that came back off disk have seen nothing in this run" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.restoreShell("build", "", 0);
+    try chat.restoreMarks("build", .{ .seen_ms = 1_700_000_000_000, .snooze = .{ .next_event = 1_700_000_000_000 } });
+
+    try testing.expectEqual(@as(?u64, 1_700_000_000_000), (try chat.marksOf("build")).seen_ms);
+    try testing.expectEqual(@as(?u64, null), chat.seenRunMs("build"));
+    try testing.expectEqual(Attention.Snooze{ .until_change = 0 }, chat.snoozeOf("build", 9_000, 1_700_000_100_000));
 }
