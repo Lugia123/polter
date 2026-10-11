@@ -763,6 +763,50 @@ pub fn dayOf(at_ms: i64) u32 {
         md.day_index + 1;
 }
 
+/// What to add to a wall-clock time to get the reader's own time of day, in
+/// milliseconds, as of that moment.
+///
+/// Worked out from the calendar fields `localtime_r` fills rather than read
+/// off `gmtoff`: the Windows CRT's `struct tm` stops before that member, and
+/// this has to give the same answer `dayOf` does on every platform. Zero
+/// when the clock cannot be read, which is `dayOf`'s fallback to UTC.
+pub fn localOffsetMs(at_ms: i64) i64 {
+    const secs: i64 = @divFloor(at_ms, std.time.ms_per_s);
+
+    var tm: Tm = undefined;
+    if (localtime_r(&secs, &tm) == null) return 0;
+
+    // Days since 1970-01-01 of a civil date (the usual era arithmetic).
+    const m: i64 = @as(i64, tm.mon) + 1;
+    const y: i64 = @as(i64, tm.year) + 1900 - @as(i64, if (m <= 2) 1 else 0);
+    const era = @divFloor(y, 400);
+    const yoe = y - era * 400;
+    const doy = @divFloor(153 * @mod(m + 9, 12) + 2, 5) + @as(i64, tm.mday) - 1;
+    const doe = yoe * 365 + @divFloor(yoe, 4) - @divFloor(yoe, 100) + doy;
+    const days = era * 146097 + doe - 719468;
+
+    const local = days * std.time.s_per_day +
+        @as(i64, tm.hour) * 3600 + @as(i64, tm.min) * 60 + @as(i64, tm.sec);
+    return (local - secs) * std.time.ms_per_s;
+}
+
+test "ControlRoom local offset: the day it gives is the day dayOf names" {
+    const moments = [_]i64{ 0, 951_782_400_000, 1_700_000_000_000, 1_709_251_199_000, 1_735_689_600_000 };
+    for (moments) |at| {
+        const offset = localOffsetMs(at);
+        // Whole minutes, and no further from UTC than any zone is.
+        try std.testing.expectEqual(@as(i64, 0), @mod(offset, std.time.ms_per_min));
+        try std.testing.expect(@abs(offset) <= 14 * std.time.ms_per_hour);
+
+        const shifted: u64 = @intCast(@divFloor(at + offset, std.time.ms_per_s));
+        const epoch: std.time.epoch.EpochSeconds = .{ .secs = shifted };
+        const yd = epoch.getEpochDay().calculateYearDay();
+        const md = yd.calculateMonthDay();
+        const day = @as(u32, yd.year) * 10000 + @as(u32, md.month.numeric()) * 100 + md.day_index + 1;
+        try std.testing.expectEqual(dayOf(at), day);
+    }
+}
+
 /// `YYYY-MM-DD HH:MM:SS`, in the reader's own timezone.
 ///
 /// Here rather than in the one file that needs it, because this file

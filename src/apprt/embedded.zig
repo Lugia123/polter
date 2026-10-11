@@ -2079,6 +2079,28 @@ pub const CAPI = struct {
         return copyJsonOut(app.core_app.controlSnapshotJson(), buf, cap);
     }
 
+    /// Something the person did in the control room: one JSON request
+    /// (`src/poltergeist/ControlAct.zig` has them, and every refusal). False,
+    /// with the refusal's name in `err`, when it was not done -- and then
+    /// nothing was: no key reached any terminal.
+    ///
+    /// The request does not say who is asking. Calling this *is* being the
+    /// person at the control room, which is why it is an export and not a
+    /// tool: an agent has no way to reach it.
+    export fn ghostty_app_control_act(
+        app: *App,
+        json: [*]const u8,
+        len: usize,
+        err: ?[*]u8,
+        cap: usize,
+    ) bool {
+        app.core_app.controlAct(json[0..len]) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
     /// Write `json` into the caller's buffer by the persona buffer rule:
     /// the real length back, one NUL after it when it fits.
     fn copyJsonOut(json: []const u8, buf: ?[*]u8, cap: usize) usize {
