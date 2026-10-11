@@ -142,6 +142,13 @@ pub const ACTION_POLTERGEIST_SCREENSHOT: u32 = 77;
 /// builds the control room on this host.
 pub const ACTION_CONTROL_ROOM_CHANGED: u32 = 78;
 
+/// `Action.Key.toggle_poltergeist_control_room`, appended after
+/// `control_room_changed` (task 1375; `dev-docs/poltergeist/control-room.md`,
+/// 3.1). ⚠️ **Appended, like every one before it.** Only the ordinal is
+/// here: the control room is not built on this host, so the arm in
+/// `cb_action` answers that and the palette hides the row.
+pub const ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM: u32 = 79;
+
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
 // **Every ordinal below was counted twice, from two files that are generated

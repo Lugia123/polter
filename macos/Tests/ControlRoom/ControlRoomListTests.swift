@@ -16,9 +16,13 @@ struct ControlRoomListTests {
     // MARK: What a row says
 
     @Test func othersAreSaidOnlyWhenThereAreSome() {
+        // The words are the translation table's; what is this code's is
+        // whether anything is said, and that the number said is the one given.
         #expect(ControlRoomList.othersText(0) == nil)
-        #expect(ControlRoomList.othersText(1) == "还有 1 个")
-        #expect(ControlRoomList.othersText(3) == "还有 3 个")
+        let one = ControlRoomList.othersText(1) ?? ""
+        #expect(one.contains("1"))
+        let three = ControlRoomList.othersText(3) ?? ""
+        #expect(three.contains("3") && !three.contains("1"))
     }
 
     @Test func theTooltipIsTheWholeDetailAndThereIsNoneForNoDetail() {
@@ -94,7 +98,9 @@ struct ControlRoomListTests {
     @Test func aGroupUnderTheSameSupervisorPointsAtTheRowThatHasTheReason() throws {
         let made = try ControlRoomList.decode(snapshot: snapshot)
         let row = made.waiting[1]
-        #expect(row.detail == "同一个总管，见 web-app")
+        // It names the other row and does not repeat the reason ("限流").
+        #expect(row.detail.contains("web-app"))
+        #expect(!row.detail.contains("限流"))
         #expect(row.detailIsCode == false)
     }
 

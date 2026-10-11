@@ -153,13 +153,13 @@ struct ControlRoomListView: View {
 
     private var header: some View {
         HStack(spacing: 0) {
-            Text("\(list.waitingCount) 个群在等你")
+            Text(String(localized: "\(String(list.waitingCount)) groups waiting for you", comment: "总控台：左栏标题，N 是核心给的数"))
                 .fontWeight(Look.weight(Look.Font.weightEmphasis))
             Spacer(minLength: CGFloat(Look.Side.rowItemGap))
             Button(action: onNewGroup) {
                 HStack(spacing: CGFloat(Look.Side.headerItemGap)) {
                     Image(systemName: "plus")
-                    Text("新建群")
+                    Text(String(localized: "New Group", comment: "总控台：左栏右上的按钮"))
                 }
                 .foregroundStyle(theme.textSecondary.color)
             }
@@ -169,7 +169,7 @@ struct ControlRoomListView: View {
     }
 
     private var quietHeader: some View {
-        Text("\(list.quietCount) 个群不用你管")
+        Text(String(localized: "\(String(list.quietCount)) groups need nothing from you", comment: "总控台：左栏第二段的标题"))
             .foregroundStyle(theme.textSecondary.color)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, CGFloat(Look.Side.headerPaddingX))
@@ -206,7 +206,7 @@ struct ControlRoomListView: View {
                         .fontWeight(Look.weight(Look.Font.weightStrong))
                         .foregroundStyle(ink.minutes)
                         .frame(minWidth: CGFloat(Look.Side.minutesWidth), alignment: .trailing)
-                    Text("分")
+                    Text(String(localized: "min", comment: "总控台：等了几分钟，数字后面的单位"))
                         .foregroundStyle(theme.textSecondary.color)
                         .frame(width: CGFloat(Look.Side.minutesUnitWidth), alignment: .trailing)
                 }
@@ -273,9 +273,9 @@ struct ControlRoomListView: View {
 
     private func bandHeader(_ band: ControlRoomList.TimeBand) -> some View {
         HStack {
-            Text("今天让你等过的").foregroundStyle(theme.textSecondary.color)
+            Text(String(localized: "Kept you waiting today", comment: "总控台：左栏底部时间带的标题")).foregroundStyle(theme.textSecondary.color)
             Spacer()
-            Text("\(band.totalMinutes) 分").fontWeight(Look.weight(Look.Font.weightEmphasis))
+            Text(String(localized: "\(String(band.totalMinutes)) min", comment: "总控台：今天累计让你等了多少分钟")).fontWeight(Look.weight(Look.Font.weightEmphasis))
         }
         .frame(maxHeight: .infinity)
         .overlay(alignment: .top) {
@@ -319,7 +319,7 @@ struct ControlRoomListView: View {
         HStack {
             Text(band.startLabel)
             Spacer()
-            Text("现在")
+            Text(String(localized: "now", comment: "总控台：时间带的右端"))
         }
         .foregroundStyle(theme.textTertiary.color)
         .frame(maxHeight: .infinity, alignment: .bottom)

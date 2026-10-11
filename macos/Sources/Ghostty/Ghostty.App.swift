@@ -800,6 +800,17 @@ extension Ghostty {
             case GHOSTTY_ACTION_TOGGLE_VISIBILITY:
                 toggleVisibility(app, target: target)
 
+            case GHOSTTY_ACTION_CONTROL_ROOM_CHANGED:
+                // The only thing that makes the control room fetch. Whoever
+                // is listening takes the snapshot; nobody polls for it.
+                NotificationCenter.default.post(name: ControlRoomCoreSource.changed, object: nil)
+
+            case GHOSTTY_ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM:
+                // A key binding or the command palette; the menu item calls
+                // the same method directly.
+                guard let appDelegate = NSApplication.shared.delegate as? AppDelegate else { return false }
+                appDelegate.poltergeistToggleControlRoom(nil)
+
             case GHOSTTY_ACTION_SCREENSHOT:
                 // From the command palette or a keybind that is not the
                 // registered hotkey. The controller reads for itself whether

@@ -7025,6 +7025,7 @@ pub fn performAction(
         .toggle_visibility => _ = try rt_app.performAction(.app, .toggle_visibility, {}),
         .check_for_updates => _ = try rt_app.performAction(.app, .check_for_updates, {}),
         .screenshot => _ = try rt_app.performAction(.app, .screenshot, {}),
+        .poltergeist_toggle_control_room => _ = try rt_app.performAction(.app, .toggle_poltergeist_control_room, {}),
         .show_gtk_inspector => _ = try rt_app.performAction(.app, .show_gtk_inspector, {}),
         .undo => _ = try rt_app.performAction(.app, .undo, {}),
 

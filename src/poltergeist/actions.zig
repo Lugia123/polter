@@ -130,6 +130,7 @@ pub fn selfSafeTag(tag: std.meta.Tag(inputpkg.Binding.Action)) bool {
         .poltergeist_toggle_authorise,
         .poltergeist_toggle_worker_mentions,
         .poltergeist_toggle_chat,
+        .poltergeist_toggle_control_room,
 
         // The four persona actions. Same footing as the five above: an
         // agent cannot reach them at all (`governed` matches the

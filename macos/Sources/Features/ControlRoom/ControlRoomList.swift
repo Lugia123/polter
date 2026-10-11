@@ -90,7 +90,7 @@ struct ControlRoomList: Equatable {
 extension ControlRoomList {
     /// The "N more" at the end of a waiting row; nil when there are none.
     static func othersText(_ others: Int) -> String? {
-        others > 0 ? "还有 \(others) 个" : nil
+        others > 0 ? String(localized: "\(String(others)) more", comment: "总控台：同一个群里还有几个终端也在等") : nil
     }
 
     /// What the pointer shows for a row whose detail may be cut short: the
@@ -191,7 +191,7 @@ extension ControlRoomList {
     /// one row, and the others point at it (`control-room.md`, 4.4).
     static func detail(of group: ControlRoomSnapshot.Group) -> String {
         if let other = group.same_as {
-            return "同一个总管，见 \(other)"
+            return String(localized: "Same supervisor: see \(other)", comment: "总控台：一个总管管几个群时，其余几行指向带停因的那一行")
         }
         return group.reason.text
     }

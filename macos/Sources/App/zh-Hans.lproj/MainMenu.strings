@@ -62,6 +62,7 @@
 
 /* 智能体 —— 这几项是 Polter 自己的 */
 "pg0-Mn-Ma1.title" = "智能体";
+"pgK-Cr-Rm1.title" = "总控台";
 "pg1-Ch-At1.title" = "终端群聊";
 "pg3-Su-Pv1.title" = "将此终端设为总管";
 "pg4-Wa-Tc1.title" = "监督此终端";

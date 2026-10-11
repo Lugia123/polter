@@ -4231,6 +4231,17 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             false
         }
 
+        // owed: 1375 -- the control room is not built on this host yet.
+        ffi::ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM => {
+            // process-wide: there is one control room in the application
+            alogf!(
+                origin,
+                "[action] toggle_poltergeist_control_room: not built yet (task 1375) -- this host \
+                 has no control room to go to."
+            );
+            false
+        }
+
         // owed: 286 -- reviewed and deferred; there is no transparency to toggle.
         ffi::ACTION_TOGGLE_BACKGROUND_OPACITY => {
             alogf!(

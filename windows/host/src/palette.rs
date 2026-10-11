@@ -369,6 +369,12 @@ struct Unavailable {
 // `HostGap` at the same time.
 const UNAVAILABLE: &[Unavailable] = &[
     Unavailable {
+        key: "poltergeist_toggle_control_room",
+        blocked_on: "toggle_poltergeist_control_room",
+        why: "The control room is built on macOS only so far (task 1375). There is no control \
+              room on this host to go to; the row comes back with the control room.",
+    },
+    Unavailable {
         key: "show_gtk_inspector",
         blocked_on: "show_gtk_inspector",
         why: "GTK's own debugger. `Binding.zig` says of it: \"Has no effect on macOS.\" \

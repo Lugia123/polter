@@ -461,6 +461,11 @@ pub const Action = union(Key) {
     /// polls is doing work the core has already said is not there to do.
     control_room_changed: ControlRoomChanged,
 
+    /// Go to the control room, opening it if it is not open
+    /// (`dev-docs/poltergeist/control-room.md`). There is one in the
+    /// application; the apprt owns which window it is in.
+    toggle_poltergeist_control_room,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -547,6 +552,7 @@ pub const Action = union(Key) {
         screenshot,
         poltergeist_screenshot,
         control_room_changed,
+        toggle_poltergeist_control_room,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");

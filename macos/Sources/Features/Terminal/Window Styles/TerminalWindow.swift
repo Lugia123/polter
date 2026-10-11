@@ -832,10 +832,23 @@ extension TerminalWindow {
         // Get the target from an existing menu item. The native tab context menu items
         // target the specific window/controller that was right-clicked, not the focused one.
         // We need to use that same target so validation and action use the correct tab.
-        let targetController = menu.items
+        let targetWindow = menu.items
             .first { $0.action == NSSelectorFromString("performClose:") }
             .flatMap { $0.target as? NSWindow }
-            .flatMap { $0.windowController as? TerminalController }
+        let targetController = targetWindow.flatMap { $0.windowController as? TerminalController }
+
+        // The control room's tab is not a terminal, so it gets none of the
+        // items below. With no controller to aim them at they would go to
+        // the first responder -- the *selected* tab's terminal -- and
+        // "Make This Terminal a Supervisor" on the tab under the pointer
+        // would act on a different one. Items left from an earlier opening
+        // of this menu are taken out for the same reason.
+        if targetWindow?.windowController is ControlRoomController {
+            for item in menu.items.reversed() where Self.isOurTabMenuItem(item) {
+                menu.removeItem(item)
+            }
+            return
+        }
 
         // Close tabs to the right
         let item = NSMenuItem(title: String(localized: "Close Tabs to the Right", comment: "标签页右键菜单／标题栏"), action: #selector(TerminalController.closeTabsOnTheRight(_:)), keyEquivalent: "")
@@ -858,6 +871,14 @@ extension TerminalWindow {
         appendTabModifierSection(to: menu, target: targetController)
         appendProjectSection(to: menu, target: targetController)
         appendAgentSection(to: menu, target: targetController)
+    }
+
+    /// One of the items this class adds to the tab's context menu, as
+    /// opposed to the system's own. Every identifier we give one starts
+    /// with one of these two.
+    private static func isOurTabMenuItem(_ item: NSMenuItem) -> Bool {
+        guard let identifier = item.identifier?.rawValue else { return false }
+        return identifier.hasPrefix("com.mitchellh.ghostty.") || identifier.hasPrefix("com.lugia.polter.")
     }
 
     private func isTabContextMenu(_ menu: NSMenu) -> Bool {

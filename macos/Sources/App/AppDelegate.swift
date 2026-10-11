@@ -82,6 +82,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuCommandPalette: NSMenuItem?
 
     @IBOutlet private var menuPoltergeistChat: NSMenuItem?
+    @IBOutlet private var menuPoltergeistControlRoom: NSMenuItem?
     @IBOutlet private var menuPoltergeistSupervisor: NSMenuItem?
     @IBOutlet private var menuPoltergeistWatch: NSMenuItem?
     @IBOutlet private var menuPoltergeistShield: NSMenuItem?
@@ -1226,6 +1227,13 @@ class AppDelegate: NSObject,
         quickController.toggle()
     }
 
+    /// Go to the control room, opening it if it is closed. On the app
+    /// delegate and not on a terminal controller because it needs no
+    /// terminal: it has to work with no window open.
+    @IBAction func poltergeistToggleControlRoom(_ sender: Any?) {
+        ControlRoomController.show(ghostty)
+    }
+
     @IBAction func takeScreenshot(_ sender: Any) {
         ScreenshotController.shared.trigger()
     }
@@ -1454,6 +1462,7 @@ extension AppDelegate {
         // menu shows no shortcut at all -- which is the point of them being
         // in the menu. If somebody does bind one, it shows up here.
         syncMenuShortcut(config, action: "poltergeist_toggle_chat", menuItem: self.menuPoltergeistChat)
+        syncMenuShortcut(config, action: "poltergeist_toggle_control_room", menuItem: self.menuPoltergeistControlRoom)
         syncMenuShortcut(config, action: "poltergeist_supervisor", menuItem: self.menuPoltergeistSupervisor)
         syncMenuShortcut(config, action: "poltergeist_toggle_watch", menuItem: self.menuPoltergeistWatch)
         syncMenuShortcut(config, action: "poltergeist_toggle_shielded", menuItem: self.menuPoltergeistShield)

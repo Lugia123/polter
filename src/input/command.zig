@@ -607,6 +607,12 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Open a terminal showing what the terminals have said to each other."),
         }},
 
+        .poltergeist_toggle_control_room => comptime &.{.{
+            .action = .poltergeist_toggle_control_room,
+            .title = i18n.N_("Control Room"),
+            .description = i18n.N_("Go to the tab that lists every group by who is waiting for you, opening it if it is closed."),
+        }},
+
         .equalize_splits => comptime &.{.{
             .action = .equalize_splits,
             .title = i18n.N_("Equalize Splits"),

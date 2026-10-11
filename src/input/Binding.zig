@@ -774,6 +774,16 @@ pub const Action = union(enum) {
     /// other.
     poltergeist_toggle_chat,
 
+    /// Go to the control room: the one tab that lists every group by who is
+    /// waiting for you (`dev-docs/poltergeist/control-room.md`). There is
+    /// one in the application. If it is open this selects it, wherever it
+    /// is; if it is not, this opens it. It can be closed like any tab and
+    /// this brings it back.
+    ///
+    /// An app action: it needs no terminal, so it works with no window
+    /// open. macOS only so far.
+    poltergeist_toggle_control_room,
+
     /// Put this terminal into a persona: the tools, skills and upstream MCP
     /// slots the user declared under that key in `personas.json`.
     ///
@@ -1570,6 +1580,7 @@ pub const Action = union(enum) {
             .check_for_updates,
             .show_gtk_inspector,
             .screenshot,
+            .poltergeist_toggle_control_room,
             => .app,
 
             // These are app but can be special-cased in a surface context.

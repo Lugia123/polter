@@ -7,10 +7,15 @@ import GhosttyKit
 /// A classic, tabbed terminal experience.
 class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Controller {
     override var windowNibName: NSNib.Name? {
-        let defaultValue = "Terminal"
+        guard let appDelegate = NSApp.delegate as? AppDelegate else { return "Terminal" }
+        return Self.windowNibName(for: appDelegate.ghostty.config)
+    }
 
-        guard let appDelegate = NSApp.delegate as? AppDelegate else { return defaultValue }
-        let config = appDelegate.ghostty.config
+    /// The nib for the titlebar style the configuration asks for. Static so
+    /// that a tab which is not a terminal (the control room) gets the same
+    /// window class as the terminal tabs it sits among.
+    static func windowNibName(for config: Ghostty.Config) -> NSNib.Name {
+        let defaultValue = "Terminal"
 
         // If we have no window decorations, there's no reason to do anything but
         // the default titlebar (because there will be no titlebar).

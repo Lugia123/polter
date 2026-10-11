@@ -683,3 +683,15 @@
 "Scrolling down… Enter keeps what is joined so far, Esc cancels." = "正在向下滚动…回车保留已接好的部分，Esc 取消。";
 "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand." = "自动滚动需要“辅助功能”权限，请慢慢向下手动滚动。";
 "The page could not be followed any further, so the picture ends here." = "页面没能再跟下去，图片到此为止。";
+
+/* 总控台 */
+"Control Room" = "总控台";
+"%@ groups waiting for you" = "%@ 个群在等你";
+"%@ groups need nothing from you" = "%@ 个群不用你管";
+"New Group" = "新建群";
+"min" = "分";
+"%@ min" = "%@ 分";
+"%@ more" = "还有 %@ 个";
+"Same supervisor: see %@" = "同一个总管，见 %@";
+"Kept you waiting today" = "今天让你等过的";
+"now" = "现在";
