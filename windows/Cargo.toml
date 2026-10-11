@@ -41,7 +41,7 @@
 # knowing where the crate lives.
 [workspace]
 resolver = "2"
-members = ["host", "split-tree", "droppath", "cliargs", "urlpolicy", "projectname", "settings-shell", "shots"]
+members = ["host", "split-tree", "droppath", "cliargs", "urlpolicy", "projectname", "settings-shell", "shots", "control-room"]
 
 # **Profiles must live here, not in a member.** Cargo ignores a member's
 # `[profile]` inside a workspace and only says so as a warning -- the symptom

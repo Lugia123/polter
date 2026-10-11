@@ -1,0 +1,294 @@
+{
+  "version": 1,
+  "_": [
+    "What the control room looks like (dev-docs/poltergeist/control-room.md, 3.5).",
+    "This file is data. tools/gen-control-room-look.py turns it into",
+    "windows/control-room/src/look.rs and macos/Sources/Features/ControlRoom/ControlRoomLook.swift;",
+    "tools/the-control-room-look-is-one-set.py is red when either is out of step.",
+    "",
+    "Lengths are points, times are seconds. These are readings off the design, not off a product.",
+    "Every value names where it was read (`src`, a key of `sources`); a group's `_src` covers the",
+    "values in it that name none. A value the user has not ruled on carries `tentative`, with the",
+    "other candidate, so that ruling on it is one edit here and both hosts follow.",
+    "",
+    "A colour is `#RRGGBB`, or `#RRGGBB@a` with a from 0 to 1."
+  ],
+
+  "sources": {
+    "v13-grid": "design v13, GRID.md",
+    "v14-grid": "design v14, GRID.md",
+    "v14-changes": "design v14, CHANGES.md",
+    "v14-palette": "design v14, CHANGES.md (the palette tables)",
+    "v17-changes": "design v17, CHANGES.md",
+    "v17-tokens": "design v17, src/tokens-l.css and src/tokens-d.css",
+    "v17-style": "design v17, src/style.css",
+    "v17-anim": "design v17, src/anim.py",
+    "v17-contrast": "design v17, src/contrast.md (measured off the rendered pictures)"
+  },
+
+  "numbers": {
+    "font": {
+      "_src": "v14-grid",
+      "_doc": "Type sizes. Nothing is set smaller than `min`.",
+      "min": 13,
+      "body": { "v": 13, "doc": "Body text, tab titles, the terminal." },
+      "group_name": { "v": 15, "doc": "A group's name in the list." },
+      "minutes": { "v": 20, "doc": "How many minutes it has waited. Bold, so it counts as large text." },
+      "weight_body": 400,
+      "weight_group_name": 500,
+      "weight_emphasis": { "v": 600, "doc": "The selected tab, a status word, a title." },
+      "weight_strong": { "v": 700, "doc": "The selected group's name, the minutes." },
+      "line_height_ui": { "v": 1.4, "doc": "A multiple of the size." },
+      "line_height_terminal": 20
+    },
+    "line": {
+      "_src": "v14-grid",
+      "_doc": "The only two widths there are.",
+      "hairline": { "v": 0.5, "doc": "Every edge, separator and highlight." },
+      "stroke": { "v": 1, "doc": "The plus and the cross; the rail of the time band." }
+    },
+    "radius": {
+      "_src": "v14-grid",
+      "window": { "v": 14, "doc": "The system's; drawn as 14 in the design." },
+      "side_panel": 12,
+      "row": { "v": 6, "doc": "12 = 6 + 6: concentric with the panel through its padding." },
+      "supervisor_outer": 12,
+      "supervisor_inner": { "v": 8, "doc": "The terminal inside the supervisor's frame: 12 - 4." },
+      "worker": 8,
+      "plain": 8,
+      "window_tab": { "v": 12, "doc": "A capsule 24 high." },
+      "window_tab_track": { "v": 14, "src": "v17-style" }
+    },
+    "space": {
+      "_src": "v14-grid",
+      "window_edge": { "v": 8, "doc": "From the window's edge to anything." },
+      "between_frames": 8,
+      "frame_to_content": 12,
+      "supervisor_bezel": { "v": 4, "doc": "The supervisor's border, and its gap to the terminal inside." },
+      "side_panel_padding": 6,
+      "terminal_text_inset": { "v": 20, "doc": "Left and right of the terminal's text." },
+      "terminal_text_bottom": 14
+    },
+    "window_tab": {
+      "_src": "v14-grid",
+      "_doc": "A window tab holds three things: close, title, one status glyph.",
+      "height": 24,
+      "track_height": 28,
+      "track_padding": { "v": 2, "src": "v17-style" },
+      "close": 16,
+      "glyph": 14,
+      "side_slot": { "v": 16, "doc": "The width kept on each side, so the title stays centred." },
+      "padding_x": { "v": 8, "src": "v17-style" },
+      "column_gap": { "v": 6, "src": "v17-style" },
+      "working_glyph_shown": {
+        "v": false,
+        "src": "v14-changes",
+        "doc": "Whether a working terminal's spinner is drawn on a window tab. Off, so that every glyph in the row of tabs is one to look at.",
+        "tentative": { "alt": true, "why": "The design drew it; the supervisor chose not to. The user has not ruled." }
+      }
+    },
+    "side": {
+      "_src": "v14-grid",
+      "_doc": "The group list.",
+      "width": 308,
+      "header_height": 32,
+      "header_padding_x": 12,
+      "row_height": { "v": 60, "doc": "A group that is waiting for you: two lines." },
+      "row_gap": 8,
+      "row_padding_x": { "v": 12, "src": "v17-style" },
+      "row_padding_y": { "v": 8, "src": "v17-style" },
+      "quiet_row_height": { "v": 28, "doc": "A group that needs nothing: one line." },
+      "minutes_width": 28,
+      "minutes_unit_width": 16,
+      "glyph": 14,
+      "time_lane_height": 12,
+      "time_segment_height": 6
+    },
+    "pane": {
+      "_src": "v17-style",
+      "_doc": "The three frames a split can wear.",
+      "bar_height": 32,
+      "bar_padding_x": 12,
+      "supervisor_bar_padding_x": 8,
+      "bar_gap": 8,
+      "supervisor_border": { "v": 4, "src": "v14-changes" },
+      "supervisor_floats": { "v": true, "src": "v14-changes", "doc": "It has a shadow; the other two do not." },
+      "worker_line": { "v": 0.5, "src": "v14-changes" },
+      "worker_band_has_line_below": { "v": false, "src": "v14-changes" },
+      "plain_has_line": { "v": false, "src": "v14-changes" },
+      "frame_shadow_y": { "v": 8, "src": "v17-tokens" },
+      "frame_shadow_blur": { "v": 24, "src": "v17-tokens" }
+    },
+    "stack_tab": {
+      "_src": "v14-grid",
+      "_doc": "The tabs over a cell that holds several terminals.",
+      "inset": {
+        "v": 20,
+        "src": "v13-grid",
+        "doc": "From the content's left and right edges to a tab's body: corner 8 + straight 4 + arc 8. Also the terminal text's inset.",
+        "tentative": { "alt": 16, "why": "At 16 the arc's foot meets the end of the corner and the two read as one S." }
+      },
+      "reverse_arc_radius": { "v": 8, "doc": "The arcs that join the current tab's foot to the content." },
+      "corner_radius": 8,
+      "height": 28,
+      "strip_height": 32,
+      "overlap_below": { "v": 0.5, "doc": "How far the current tab's fill runs past its foot, to cover the strip's line." },
+      "padding_x": { "v": 12, "src": "v17-style" },
+      "gap": { "v": 8, "src": "v17-style" },
+      "separator_height": { "v": 12, "src": "v17-style" },
+      "add_button": { "v": 28, "src": "v17-style" },
+      "outlined": { "v": false, "src": "v14-changes" }
+    },
+    "status": {
+      "_src": "v14-changes",
+      "_doc": "The four status glyphs and how they move. Nothing moves under Reduce Motion.",
+      "artboard": { "v": 14, "src": "v14-grid" },
+      "waiting_pulse_period": { "v": 2.4, "doc": "Only the one that has waited longest pulses." },
+      "waiting_pulse_min_opacity": 0.5,
+      "problem_shake_distance": { "v": 2, "doc": "Left and right, once, on entering the state." },
+      "problem_shake_duration": 0.3,
+      "working_spin_period": 1.2,
+      "working_spin_steps": { "v": 8, "doc": "It steps; it does not turn smoothly." }
+    },
+    "selection": {
+      "_src": "v17-anim",
+      "_doc": "The selected row of the group list: a chip at rest, glass while it slides.",
+      "edge_band": { "v": 2.5, "src": "v17-changes", "doc": "The width of the faint band just inside the chip's edge." },
+      "spring_period": 0.36,
+      "spring_damping": {
+        "v": 0.72,
+        "doc": "Below 1, so it overshoots (about 4%) and settles.",
+        "tentative": { "alt": 1, "why": "Whether the chip overshoots at all has not been ruled on; 1 is critically damped." }
+      },
+      "lift_in": { "v": 0.07, "doc": "How long the chip takes to lift when it starts to move." },
+      "lift_scale_row": 0.025,
+      "lift_scale_window_tab": { "v": 0.08, "doc": "The window tab's chip is the system's to draw; this is what the design hoped for." },
+      "stretch_along": { "v": 0.1, "doc": "At most, with speed, along the direction of travel." },
+      "squeeze_across": { "v": 0.03, "src": "v17-changes" },
+      "centre_zoom": { "v": 0.04, "doc": "The middle of the chip while lifted." },
+      "refraction_shown": {
+        "v": true,
+        "src": "v17-changes",
+        "doc": "Whether the chip's edge bends what is under it.",
+        "tentative": { "alt": false, "why": "The other candidate keeps the lift and the slide and drops the refraction. Whether it can be done live is unverified." }
+      },
+      "refraction_band_rest": 3,
+      "refraction_band_moving": 6,
+      "refraction_strength_rest": { "v": 0.25, "doc": "A fraction of the band's width; strongest at the edge, falling off as the square." },
+      "refraction_strength_moving": 0.36
+    }
+  },
+
+  "themed": {
+    "_src": "v17-anim",
+    "selection_tint": { "light": 0.72, "dark": 0.11, "doc": "How much white the chip mixes in, at rest." },
+    "selection_tint_moving": { "light": 0.5, "dark": 0.08 },
+    "selection_edge": { "light": -0.05, "dark": 0.07, "doc": "The band inside the edge: darker when negative, lighter when positive." },
+    "selection_shadow_y": { "light": 1.2, "dark": 1.2 },
+    "selection_shadow_blur": { "light": 1.6, "dark": 2.0, "doc": "As the design's animation takes it; its still pictures use about twice this as a CSS blur." },
+    "selection_shadow_alpha": { "light": 0.2, "dark": 0.45 },
+    "selection_shadow_moving_y": { "light": 3.0, "dark": 3.0 },
+    "selection_shadow_moving_blur": { "light": 4.0, "dark": 4.5 },
+    "selection_shadow_moving_alpha": { "light": 0.16, "dark": 0.4 },
+    "selection_halo_blur": { "light": 4.0, "dark": 4.0, "doc": "A second shadow with no offset." },
+    "selection_halo_alpha": { "light": 0.08, "dark": 0.2 },
+    "selection_halo_moving_blur": { "light": 7.0, "dark": 7.0 },
+    "selection_halo_moving_alpha": { "light": 0.08, "dark": 0.22 },
+    "side_panel_shadow_alpha": { "light": 0.08, "dark": 0.25, "src": "v17-tokens" },
+    "supervisor_shadow_alpha": { "light": 0.1, "dark": 0.3, "src": "v17-tokens" }
+  },
+
+  "colors": {
+    "_src": "v17-tokens",
+    "text": { "light": "#202223", "dark": "#EFF2F6", "doc": "Main text." },
+    "text_secondary": { "light": "#545557", "dark": "#B4B8BB" },
+    "text_tertiary": { "light": "#616365", "dark": "#95999C", "doc": "The time band's axis." },
+    "window_base": { "light": "#E4E6E9", "dark": "#121416", "src": "v14-palette", "doc": "The window's ground. The design lays two faint blooms over it." },
+    "terminal_background": { "light": "#FCFDFF", "dark": "#22272E" },
+    "terminal_text": { "light": "#242729", "dark": "#DEE1E8" },
+    "terminal_bold": { "light": "#0D1012", "dark": "#F3F7FE" },
+    "terminal_dim": { "light": "#616467", "dark": "#A1A5AB" },
+    "worker_band": { "light": "#E4E6E9", "dark": "#33373D" },
+
+    "attention": { "light": "#0079B3", "dark": "#40BEFD", "doc": "Blue, something for you: the glyph of waiting and of done-and-unseen." },
+    "attention_text": { "light": "#035B88", "dark": "#40BEFD", "doc": "The same blue as a word or a number." },
+    "problem": { "light": "#DB1C22", "dark": "#FC4F4E", "doc": "Red, something is wrong: the glyph." },
+    "problem_text": { "light": "#AC0311", "dark": "#FC4F4E", "doc": "The same red as a word or a number. See `text_on` for where the word is not red." },
+    "working": { "light": "#545557", "dark": "#B4B8BB", "doc": "Neutral: the spinner." },
+
+    "line_faint": { "light": "#000000@0.09", "dark": "#FFFFFF@0.08" },
+    "line": { "light": "#000000@0.16", "dark": "#FFFFFF@0.15" },
+    "window_tab_track": { "light": "#000000@0.065", "dark": "#000000@0.3" },
+    "window_tab_hover": { "light": "#000000@0.05", "dark": "#FFFFFF@0.06" },
+    "close_background": { "light": "#000000@0.09", "dark": "#FFFFFF@0.14" },
+    "side_panel": { "light": "#FFFFFF@0.5", "dark": "#FFFFFF@0.055", "doc": "Over a background blur of 30." },
+    "side_panel_highlight": { "light": "#FFFFFF", "dark": "#FFFFFF@0.14", "doc": "A hairline along the top edge." },
+    "side_panel_edge": { "light": "#000000@0.09", "dark": "#000000@0.5" },
+    "supervisor_bezel": { "light": "#D6D9DD@0.78", "dark": "#FFFFFF@0.14", "doc": "Over a background blur of 30." },
+    "supervisor_highlight": { "light": "#FFFFFF", "dark": "#FFFFFF@0.22" },
+    "supervisor_edge": { "light": "#000000@0.12", "dark": "#000000@0.55" },
+    "supervisor_edge_focused": { "light": "#000000@0.38", "dark": "#FFFFFF@0.4", "doc": "Light: the outer edge darkens. Dark: a ring is added just inside it." },
+    "supervisor_terminal_edge": { "light": "#000000@0.1", "dark": "#000000@0.4" },
+    "worker_edge": { "light": "#000000@0.22", "dark": "#000000@0.6" },
+    "worker_edge_inner": { "light": "#000000@0", "dark": "#FFFFFF@0.1", "doc": "Dark only." },
+    "stack_tab_separator": { "light": "#000000@0.16", "dark": "#FFFFFF@0.15" },
+
+    "surface_row": { "light": "#F4F6F8", "dark": "#1F2225", "src": "v17-contrast", "doc": "Measured: an unselected row as it comes out over the panel. For contrast, not for painting." },
+    "surface_row_selected": { "light": "#FDFDFD", "dark": "#3C4043", "src": "v17-contrast", "doc": "Measured: the chip." },
+    "surface_window_tab": { "light": "#D9DBDE", "dark": "#0F1112", "src": "v17-contrast", "doc": "Measured: an unselected window tab on its track." },
+    "surface_window_tab_selected": { "light": "#F3F4F5", "dark": "#282829", "src": "v17-contrast", "doc": "Measured." },
+    "surface_supervisor_bar": { "light": "#DBDEE2", "dark": "#3C3F43", "src": "v17-contrast", "doc": "Measured: the supervisor's title bar." }
+  },
+
+  "strings": {
+    "symbol": {
+      "_src": "v14-changes",
+      "_doc": "The system symbols the glyphs are. Working is the system's progress spinner, which has no symbol name.",
+      "waiting": "bubble.left.fill",
+      "problem": "exclamationmark.triangle.fill",
+      "done_unseen": "circle.fill"
+    }
+  },
+
+  "text_on": {
+    "_src": "v17-changes",
+    "_doc": [
+      "Which colour a status word is written in, by the surface it sits on.",
+      "Dark red text does not reach 4.5 on the lighter dark surfaces, and lightening the red makes it",
+      "another colour. So there the word is written in the main text colour and the red is left to the",
+      "glyph and the minutes. That is the whole of this table, and the hosts read it rather than decide."
+    ],
+    "tentative": { "alt": "problem_text everywhere", "why": "The other candidate accepts a contrast of about 3. The user has not ruled." },
+    "threshold": 4.5,
+    "role": "problem_text",
+    "fallback": "text",
+    "surfaces": {
+      "row": { "surface": "surface_row", "light": "problem_text", "dark": "problem_text" },
+      "row_selected": { "surface": "surface_row_selected", "light": "problem_text", "dark": "text" },
+      "window_tab_selected": { "surface": "surface_window_tab_selected", "light": "problem_text", "dark": "text" },
+      "supervisor_bar": { "surface": "surface_supervisor_bar", "light": "problem_text", "dark": "text" },
+      "worker_band": { "surface": "worker_band", "light": "problem_text", "dark": "text" },
+      "terminal": { "surface": "terminal_background", "light": "problem_text", "dark": "problem_text" }
+    }
+  },
+
+  "contrast": {
+    "_doc": [
+      "What is drawn on what, for the contrast report (`gen-control-room-look.py --contrast`).",
+      "`text` needs 4.5, `large` (20 pt bold) and `glyph` need 3. `problem_word` is the status word",
+      "after `text_on`."
+    ],
+    "text": 4.5,
+    "large": 3,
+    "glyph": 3,
+    "pairs": [
+      { "on": "surface_row", "text": ["text", "text_secondary", "text_tertiary", "attention_text", "problem_word"], "large": ["attention_text", "problem_text"], "glyph": ["attention", "problem", "working"] },
+      { "on": "surface_row_selected", "text": ["text", "text_secondary", "attention_text", "problem_word"], "large": ["attention_text", "problem_text"], "glyph": ["attention", "problem", "working"] },
+      { "on": "surface_window_tab", "text": ["text_secondary"], "glyph": ["attention", "problem", "working"] },
+      { "on": "surface_window_tab_selected", "text": ["text"], "glyph": ["attention", "problem", "working"] },
+      { "on": "surface_supervisor_bar", "text": ["text", "text_secondary", "attention_text", "problem_word"], "glyph": ["attention", "problem", "working"] },
+      { "on": "worker_band", "text": ["terminal_bold", "terminal_dim", "attention_text", "problem_word"], "glyph": ["attention", "problem", "working"] },
+      { "on": "terminal_background", "text": ["terminal_text", "terminal_bold", "terminal_dim", "attention_text", "problem_word"], "glyph": ["attention", "problem", "working"] }
+    ]
+  }
+}

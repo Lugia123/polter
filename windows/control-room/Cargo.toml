@@ -1,0 +1,15 @@
+[package]
+name = "polter-control-room"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# What the control room is, apart from the window that draws it
+# (dev-docs/poltergeist/control-room.md, 3.4): the host cannot be tested off
+# Windows, so whatever can be wrong without looking wrong lives out here.
+#
+# For now that is one thing: `look`, generated from
+# `src/input/control-room-look.json`. The macOS host has the same data.
+#
+# No dependencies.
+[dependencies]
