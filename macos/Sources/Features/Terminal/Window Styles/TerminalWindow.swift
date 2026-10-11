@@ -176,6 +176,12 @@ class TerminalWindow: NSWindow {
         tab.accessoryView = stackView
         refreshTabAccessory()
 
+        // The tab's status glyph. One snapshot serves every window: this
+        // listens to it and never asks the core for one of its own.
+        tabStatusListening = ControlRoomFeed.shared(appDelegate.ghostty).listen { [weak self] _ in
+            self?.refreshTabStatus()
+        }
+
         // Get our saved level
         level = UserDefaults.ghostty.value(forKey: Self.defaultLevelKey) as? NSWindow.Level ?? .normal
     }
@@ -225,6 +231,10 @@ class TerminalWindow: NSWindow {
             tabBarDidDisappear()
         }
         viewModel.isMainWindow = true
+
+        // This tab is now the one in front, which can move the breathing
+        // glyph to another tab of the group.
+        (tabGroup?.windows ?? [self]).forEach { ($0 as? TerminalWindow)?.refreshTabStatus() }
     }
 
     override func resignMain() {
@@ -358,16 +368,59 @@ class TerminalWindow: NSWindow {
         case .poltergeistMark: return poltergeistMarkLabel
         case .keyEquivalent: return keyEquivalentLabel
         case .resetZoom: return resetZoomTabButton
+        case .status: return tabStatusView
         }
+    }
+
+    /// What this tab's terminals want from the person, as the core's
+    /// control-room snapshot gives it. Read from the snapshot everyone
+    /// shares; this window never fetches one.
+    private var tabStatus: ControlRoomPulse.TabStatus = .none {
+        didSet {
+            guard tabStatus != oldValue else { return }
+            refreshTabAccessory()
+        }
+    }
+
+    private lazy var tabStatusView: NSHostingView<ControlRoomGlyph> = {
+        let view = NSHostingView(rootView: ControlRoomGlyph(
+            shown: .none, size: CGFloat(ControlRoomLook.WindowTab.glyph)))
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.isHidden = true
+        return view
+    }()
+
+    private var tabStatusListening: AnyCancellable?
+
+    /// Work this tab's glyph out again from the snapshot already in hand.
+    /// Called when a snapshot arrives and when the tab in front changes --
+    /// which moves the breathing glyph without the core having said
+    /// anything.
+    func refreshTabStatus() {
+        guard let appDelegate = NSApp.delegate as? AppDelegate else { return }
+        let group: AnyObject = tabGroup ?? self
+        let front: NSWindow = tabGroup?.selectedWindow ?? self
+        // The same three numbers the core is told for this window
+        // (`Ghostty.App.poltergeistGrouping`).
+        tabStatus = ControlRoomPulse.status(
+            ofTab: ControlRoomPulse.id(UInt64(UInt(bitPattern: ObjectIdentifier(self)))),
+            inWindow: ControlRoomPulse.id(UInt64(UInt(bitPattern: ObjectIdentifier(group)))),
+            showing: ControlRoomPulse.id(UInt64(UInt(bitPattern: ObjectIdentifier(front)))),
+            in: ControlRoomFeed.shared(appDelegate.ghostty).latest)
     }
 
     /// Make the accessory stack show what `TabAccessory` says it should.
     private func refreshTabAccessory() {
         poltergeistMarkLabel.stringValue = TabAccessory.markText(poltergeistMark)
 
+        tabStatusView.rootView = ControlRoomGlyph(
+            shown: tabStatus.shown, pulses: tabStatus.pulses,
+            size: CGFloat(ControlRoomLook.WindowTab.glyph))
+
         let visible = TabAccessory.visibleItems(.init(
             poltergeistMark: poltergeistMark,
-            surfaceIsZoomed: surfaceIsZoomed))
+            surfaceIsZoomed: surfaceIsZoomed,
+            status: tabStatus.shown))
         for item in TabAccessory.Item.allCases {
             tabAccessoryView(for: item).isHidden = !visible.contains(item)
         }

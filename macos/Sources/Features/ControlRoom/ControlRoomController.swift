@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import GhosttyKit
 import SwiftUI
 
@@ -36,10 +37,62 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         TerminalController.windowNibName(for: ghostty.config)
     }
 
-    init(_ ghostty: Ghostty.App, source: ControlRoomSnapshotSource, selection: String? = nil) {
+    private var seen: ControlRoomSeenTracker?
+    private var watchingSelection: AnyCancellable?
+
+    init(_ ghostty: Ghostty.App, selection: String? = nil) {
         self.ghostty = ghostty
-        self.model = ControlRoomModel(source: source, selection: selection)
+        // The list is only ever on screen while this tab is the one in
+        // front, so the tab "showing" in its window is its own -- which no
+        // terminal is in, so the glyph that breathes here is simply the
+        // longest-waiting one.
+        var ownTab: () -> String? = { nil }
+        self.model = ControlRoomModel(
+            feed: ControlRoomFeed.shared(ghostty), selection: selection, showing: { ownTab() })
         super.init(window: nil)
+        ownTab = { [weak self] in
+            self?.window.map { ControlRoomPulse.id(UInt64(UInt(bitPattern: ObjectIdentifier($0)))) }
+        }
+
+        // Looking at a row for a moment, with this in front, marks its
+        // group seen. See `ControlRoomSeenTracker`.
+        let actions = ControlRoomActions.core(ghostty)
+        let tracker = ControlRoomSeenTracker(
+            later: { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) },
+            isInFront: { [weak self] in self?.isInFront ?? false },
+            markSeen: { group in
+                do {
+                    try actions.perform(.seen(group: group))
+                } catch {
+                    Ghostty.logger.warning("control room: seen was refused: \(String(describing: error), privacy: .public)")
+                }
+            })
+        seen = tracker
+        watchingSelection = model.$selection
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                // After the change has landed, so the row read is the new one.
+                DispatchQueue.main.async { self?.noteSelection() }
+            }
+    }
+
+    /// Whether the person can be looking at the list: this tab is the one
+    /// in front in the window that has the keyboard, in the application
+    /// that is active.
+    private var isInFront: Bool {
+        guard let window else { return false }
+        return NSApp.isActive && window.isKeyWindow
+    }
+
+    private func noteSelection() {
+        let row = model.list?.rows.first { $0.id == model.selection }
+        seen?.selectionChanged(to: row)
+    }
+
+    /// Coming to the front with a row already selected is a chance to look
+    /// at it that selecting it earlier, behind something else, was not.
+    func windowDidBecomeKey(_ notification: Notification) {
+        noteSelection()
     }
 
     @available(*, unavailable)
@@ -60,7 +113,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             shared?.select()
 
         case .openAsFirstTab:
-            let controller = ControlRoomController(ghostty, source: coreSource(ghostty))
+            let controller = ControlRoomController(ghostty)
             shared = controller
             guard let window = controller.window, let parent else { return }
             let first = parent.tabGroup?.windows.first ?? parent
@@ -74,17 +127,9 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             relabel()
 
         case .openInOwnWindow:
-            let controller = ControlRoomController(ghostty, source: coreSource(ghostty))
+            let controller = ControlRoomController(ghostty)
             shared = controller
             controller.showWindowSafely(nil)
-        }
-    }
-
-    /// The core's snapshot, fetched when the core says it changed.
-    fileprivate static func coreSource(_ ghostty: Ghostty.App) -> ControlRoomSnapshotSource {
-        ControlRoomCoreSource { [weak ghostty] buffer, capacity in
-            guard let app = ghostty?.app else { return 0 }
-            return Int(ghostty_app_control_snapshot(app, buffer, UInt(capacity)))
         }
     }
 
@@ -108,7 +153,19 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         super.windowDidLoad()
         guard let window else { return }
 
-        window.title = String(localized: "Control Room", comment: "总控台：窗口与标签页的标题")
+        // Two strings: the title bar names the application too, the tab
+        // has room only for the name.
+        let name = String(localized: "Control Room", comment: "总控台：标签页上的名字")
+        window.title = String(localized: "Polter — Control Room", comment: "总控台：窗口标题栏")
+        window.tab.title = name
+        // A terminal window with a title-bar font configured writes the
+        // window's title onto the tab as an attributed string, which the
+        // tab prefers to its plain title. Keep its attributes, change its
+        // words.
+        if let styled = window.tab.attributedTitle {
+            let attributes = styled.length > 0 ? styled.attributes(at: 0, effectiveRange: nil) : [:]
+            window.tab.attributedTitle = NSAttributedString(string: name, attributes: attributes)
+        }
         let content = KeyForwardingHostingView(rootView: ControlRoomView(model: model, detail: detail))
         content.onKeyEquivalent = { [weak self] in self?.goToTab(for: $0) ?? false }
         window.contentView = content
@@ -261,21 +318,52 @@ final class ControlRoomRestoration: NSObject, NSWindowRestoration {
         // The kept selection is checked against the list when the first
         // snapshot arrives (`ControlRoomModel`): at this point in a launch
         // the core may not have one.
-        let controller = ControlRoomController.restored(
-            appDelegate.ghostty,
-            source: ControlRoomController.coreSource(appDelegate.ghostty),
-            selection: kept?.selection)
+        let controller = ControlRoomController.restored(appDelegate.ghostty, selection: kept?.selection)
         completionHandler(controller.window, nil)
     }
 }
 
 extension ControlRoomController {
     /// The control room the system is restoring; it becomes the one.
-    fileprivate static func restored(
-        _ ghostty: Ghostty.App, source: ControlRoomSnapshotSource, selection: String?
-    ) -> ControlRoomController {
-        let controller = ControlRoomController(ghostty, source: source, selection: selection)
+    fileprivate static func restored(_ ghostty: Ghostty.App, selection: String?) -> ControlRoomController {
+        let controller = ControlRoomController(ghostty, selection: selection)
         shared = controller
         return controller
+    }
+}
+
+// MARK: - The core, for everything above
+
+extension ControlRoomFeed {
+    private static var forApp: ControlRoomFeed?
+
+    /// The one feed in the application: the control room's list and every
+    /// terminal window's tab glyph listen to this, so the core is asked
+    /// once per change however many windows are open.
+    static func shared(_ ghostty: Ghostty.App) -> ControlRoomFeed {
+        if let forApp { return forApp }
+        let feed = ControlRoomFeed { [weak ghostty] buffer, capacity in
+            guard let app = ghostty?.app else { return 0 }
+            return Int(ghostty_app_control_snapshot(app, buffer, UInt(capacity)))
+        }
+        forApp = feed
+        return feed
+    }
+}
+
+extension ControlRoomActions {
+    /// Actions carried out by the core. Calling this is being the person:
+    /// the core has no field for who is asking.
+    static func core(_ ghostty: Ghostty.App) -> ControlRoomActions {
+        ControlRoomActions { [weak ghostty] json in
+            guard let app = ghostty?.app else { return "NoCore" }
+            var refusal = [CChar](repeating: 0, count: 64)
+            let done = json.withUnsafeBytes { bytes in
+                ghostty_app_control_act(
+                    app, bytes.bindMemory(to: CChar.self).baseAddress, UInt(bytes.count),
+                    &refusal, UInt(refusal.count))
+            }
+            return done ? nil : String(cString: refusal)
+        }
     }
 }

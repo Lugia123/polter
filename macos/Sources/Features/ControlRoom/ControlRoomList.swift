@@ -10,12 +10,10 @@ import Foundation
 /// host compares no kinds and counts no rows; it draws what it is given.
 /// That is why the counts are fields and not `waiting.count`.
 ///
-/// It is made from the core's snapshot by `init(snapshot:)`, which copies
-/// and never works anything out. Three things a row or the panel shows are
-/// **not in the snapshot yet** and are this file's guesses at what it will
-/// need: which glyph pulses (`Row.pulses`), and the whole of today's
-/// waiting (`timeBand`). `ControlRoomList.sample` is the design's own
-/// example, with those filled in, for drawing the panel before they exist.
+/// It is made from the core's snapshot by `init(snapshot:showing:)`, which
+/// copies and tests equality and never works anything else out.
+/// `ControlRoomList.sample` is the design's own example, for still pictures
+/// and tests.
 struct ControlRoomList: Equatable {
     /// What the core says to draw for a status: its `Attention.Shown`.
     enum Shown: String, Equatable, CaseIterable {
@@ -41,11 +39,28 @@ struct ControlRoomList: Equatable {
         var waitedMin: Int?
         /// How many other terminals of this group are also waiting.
         var others: Int
-        /// This is the one glyph that pulses: the longest-waiting. The core
-        /// picks it, because picking it is a comparison.
+        /// This is the one glyph that pulses: the longest-waiting that is
+        /// not already in front of the person. The core lists the
+        /// candidates in order (`ControlRoomPulse`); which is first is an
+        /// equality test.
         var pulses: Bool
+        /// The core says nobody has looked at this since it stopped.
+        var unseen: Bool = false
+        /// What an action on this row hands back so the core can tell
+        /// whether the row is still what was on screen: whose state it is
+        /// and the two moments it was drawn from. Nil where there is no
+        /// terminal behind the row.
+        var target: Target?
 
         var name: String { id }
+    }
+
+    /// The terminal a row is about, and when. Both times are on the core's
+    /// own clock and are only ever handed back, never compared here.
+    struct Target: Equatable {
+        var terminal: String
+        var sinceMs: UInt64
+        var eventMs: UInt64?
     }
 
     /// One stretch of the day in which a group kept the person waiting.
@@ -61,8 +76,12 @@ struct ControlRoomList: Equatable {
         var spans: [Span]
     }
 
+    /// Today's waiting. **Wall-clock time**, unlike the rest of the list:
+    /// its `nowMs` is its own and is the only "now" its spans are measured
+    /// against.
     struct TimeBand: Equatable {
         var startMs: UInt64
+        var nowMs: UInt64
         /// What the left end of the axis says, e.g. `09:00`.
         var startLabel: String
         /// Minutes the person was kept waiting today, all groups together.
@@ -70,14 +89,13 @@ struct ControlRoomList: Equatable {
         var lanes: [Lane]
     }
 
-    var nowMs: UInt64
     /// "N groups are waiting for you". The core's number, not `waiting.count`.
     var waitingCount: Int
     var waiting: [Row]
     /// "N groups need nothing from you". Also the core's.
     var quietCount: Int
     var quiet: [Row]
-    /// Nil until the snapshot carries it; the panel then has no band.
+    /// Nil when the snapshot carries none; the panel then has no band.
     var timeBand: TimeBand?
 
     /// Every row in the order it is listed, which is the order the up and
@@ -122,9 +140,52 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var text: String
     }
 
+    struct Attention: Decodable, Equatable {
+        var since_ms: UInt64
+        var terminal: String?
+        var event_ms: UInt64?
+    }
+
+    /// One window tab and the one glyph it carries.
+    struct Tab: Decodable, Equatable {
+        var window: String?
+        var tab: String
+        var shown: ControlRoomList.Shown
+    }
+
+    /// A terminal waiting for the person. See `ControlRoomPulse`.
+    struct Pulse: Decodable, Equatable {
+        var terminal: String
+        var window: String?
+        var tab: String?
+        var group: String?
+    }
+
+    struct Span: Decodable, Equatable {
+        var from_ms: UInt64
+        var to_ms: UInt64
+        var ongoing: Bool
+    }
+
+    struct Lane: Decodable, Equatable {
+        var name: String
+        var spans: [Span]
+    }
+
+    struct Band: Decodable, Equatable {
+        var start_ms: UInt64
+        var start_label: String
+        var now_ms: UInt64
+        var total_min: Int
+        var lanes: [Lane]
+    }
+
     struct Group: Decodable, Equatable {
         var name: String
         var needs_me: Bool
+        /// Absent in snapshots from before the core said it.
+        var unseen: Bool?
+        var attention: Attention?
         var shown: ControlRoomList.Shown
         /// The words beside the glyph, already in the person's language.
         var text: String
@@ -135,11 +196,64 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     }
 
     var rev: UInt64
-    var now_ms: UInt64
     var groups_needing_me: Int
     var groups_other: Int
     /// Already in the order to draw them.
     var groups: [Group]
+    /// The three below are newer than the rest; a snapshot without them
+    /// draws no tab glyphs, breathes nothing and has no band.
+    var tabs: [Tab]?
+    var pulses: [Pulse]?
+    var band: Band?
+}
+
+/// Which waiting glyph breathes.
+///
+/// The core lists every terminal waiting for the person, longest first.
+/// **The one that breathes is the first of them the person is not already
+/// looking at** -- the first not in the tab its window is showing. Finding
+/// it is walking a list and testing equality; which waited longest was
+/// decided when the list was ordered.
+enum ControlRoomPulse {
+    typealias Pulse = ControlRoomSnapshot.Pulse
+
+    /// In a list of every group (the control room): the first not in
+    /// `showing`, the tab that is in front.
+    static func first(of pulses: [Pulse], notIn showing: String?) -> Pulse? {
+        pulses.first { showing == nil || $0.tab != showing }
+    }
+
+    /// Among one window's tabs: the first in that window and not in the tab
+    /// it is showing.
+    static func first(of pulses: [Pulse], inWindow window: String, notIn showing: String?) -> Pulse? {
+        pulses.first { $0.window == window && (showing == nil || $0.tab != showing) }
+    }
+
+    /// What one window tab carries: the glyph the core gives that tab, and
+    /// whether it is the one that breathes among its window's tabs.
+    struct TabStatus: Equatable {
+        var shown: ControlRoomList.Shown
+        var pulses: Bool
+
+        static let none = TabStatus(shown: .none, pulses: false)
+    }
+
+    /// The status of `tab`, which is in `window`, whose tab in front is
+    /// `showing` -- all three as the core spells them. A tab the snapshot
+    /// does not list (the control room's own, or a terminal the core has
+    /// not placed yet) carries nothing.
+    static func status(ofTab tab: String, inWindow window: String, showing: String?,
+                       in snapshot: ControlRoomSnapshot?) -> TabStatus {
+        guard let snapshot, let entry = snapshot.tabs?.first(where: { $0.tab == tab }) else { return .none }
+        let breathing = first(of: snapshot.pulses ?? [], inWindow: window, notIn: showing)
+        return TabStatus(shown: entry.shown, pulses: breathing != nil && breathing?.tab == tab)
+    }
+
+    /// The id the core writes for a window or a tab: `0x` and sixteen hex
+    /// digits.
+    static func id(_ raw: UInt64) -> String {
+        "0x" + String(repeating: "0", count: 16 - String(raw, radix: 16).count) + String(raw, radix: 16)
+    }
 }
 
 extension ControlRoomList.Shown: Decodable {
@@ -164,8 +278,10 @@ extension ControlRoomList.Shown: Decodable {
 extension ControlRoomList {
     /// The list a snapshot describes. A copy: the rows keep the snapshot's
     /// order, each goes in the section its own `needs_me` says, and the two
-    /// counts are the snapshot's.
-    init(snapshot: ControlRoomSnapshot) {
+    /// counts are the snapshot's. `showing` is the tab in front in the
+    /// window that draws this list, which decides only which glyph breathes.
+    init(snapshot: ControlRoomSnapshot, showing: String? = nil) {
+        let breathing = ControlRoomPulse.first(of: snapshot.pulses ?? [], notIn: showing)?.group
         let rows = snapshot.groups.map { group in
             (group.needs_me, Row(
                 id: group.name,
@@ -176,15 +292,29 @@ extension ControlRoomList {
                 detailIsCode: group.same_as == nil && group.reason.from == "hook_note",
                 waitedMin: group.waited_min,
                 others: group.more,
-                pulses: false))
+                pulses: breathing != nil && breathing == group.name,
+                unseen: group.unseen ?? false,
+                target: group.attention.flatMap { attention in
+                    attention.terminal.map {
+                        Target(terminal: $0, sinceMs: attention.since_ms, eventMs: attention.event_ms)
+                    }
+                }))
         }
         self.init(
-            nowMs: snapshot.now_ms,
             waitingCount: snapshot.groups_needing_me,
             waiting: rows.filter { $0.0 }.map { $0.1 },
             quietCount: snapshot.groups_other,
             quiet: rows.filter { !$0.0 }.map { $0.1 },
-            timeBand: nil)
+            timeBand: snapshot.band.map { band in
+                TimeBand(
+                    startMs: band.start_ms, nowMs: band.now_ms, startLabel: band.start_label,
+                    totalMinutes: band.total_min,
+                    lanes: band.lanes.map { lane in
+                        Lane(name: lane.name, spans: lane.spans.map {
+                            Span(fromMs: $0.from_ms, toMs: $0.to_ms, ongoing: $0.ongoing)
+                        })
+                    })
+            })
     }
 
     /// One supervisor minding several groups waits once: the reason is on
@@ -196,8 +326,8 @@ extension ControlRoomList {
         return group.reason.text
     }
 
-    static func decode(snapshot json: Data) throws -> ControlRoomList {
-        ControlRoomList(snapshot: try JSONDecoder().decode(ControlRoomSnapshot.self, from: json))
+    static func decode(snapshot json: Data, showing: String? = nil) throws -> ControlRoomList {
+        ControlRoomList(snapshot: try JSONDecoder().decode(ControlRoomSnapshot.self, from: json), showing: showing)
     }
 }
 
@@ -281,7 +411,10 @@ struct ControlRoomListLayout: Equatable {
     /// A span is clipped to the band, and one that ends before it starts or
     /// lies wholly outside is dropped.
     static func segments(_ lane: ControlRoomList.Lane, band: ControlRoomList.TimeBand,
-                         now nowMs: UInt64, width: CGFloat) -> [(x: CGFloat, width: CGFloat, ongoing: Bool)] {
+                         width: CGFloat) -> [(x: CGFloat, width: CGFloat, ongoing: Bool)] {
+        // The band's own now: it is on the wall clock and the rest of the
+        // snapshot is not.
+        let nowMs = band.nowMs
         guard nowMs > band.startMs, width > 0 else { return [] }
         let total = CGFloat(nowMs - band.startMs)
         return lane.spans.compactMap { span in
@@ -340,7 +473,6 @@ extension ControlRoomList {
                         toMs: start + UInt64((from + width) / 100 * total), ongoing: ongoing)
         }
         return ControlRoomList(
-            nowMs: now,
             waitingCount: 3,
             waiting: [
                 Row(id: "web-app", shown: .needsYou, word: "等批准", detail: "rm -rf dist/ && npm run build",
@@ -358,7 +490,7 @@ extension ControlRoomList {
                     detailIsCode: false, waitedMin: nil, others: 0, pulses: false),
             ],
             timeBand: TimeBand(
-                startMs: start, startLabel: "09:00", totalMinutes: 47,
+                startMs: start, nowMs: now, startLabel: "09:00", totalMinutes: 47,
                 lanes: [
                     Lane(name: "web-app", spans: [span(44, 5), span(93, 7, ongoing: true)]),
                     Lane(name: "billing", spans: [span(14, 8), span(62, 4), span(81, 19, ongoing: true)]),

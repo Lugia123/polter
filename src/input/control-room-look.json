@@ -203,6 +203,12 @@
         "doc": "Whether the chip's edge bends what is under it.",
         "tentative": { "alt": false, "why": "The other candidate keeps the lift and the slide and drops the refraction. Whether it can be done live is unverified." }
       },
+      "seen_after": {
+        "v": 1.5,
+        "src": "undesigned",
+        "doc": "How long a row stays selected, with the control room in front, before its group counts as seen.",
+        "tentative": { "alt": 0, "why": "0 marks it seen the moment it is selected, so arrowing past a row would clear it." }
+      },
       "refraction_band_rest": 3,
       "refraction_band_moving": 6,
       "refraction_strength_rest": { "v": 0.25, "doc": "A fraction of the band's width; strongest at the edge, falling off as the square." },

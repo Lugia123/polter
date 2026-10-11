@@ -695,3 +695,16 @@
 "Same supervisor: see %@" = "同一个总管，见 %@";
 "Kept you waiting today" = "今天让你等过的";
 "now" = "现在";
+"Polter — Control Room" = "Polter — 总控台";
+"That prompt has changed. Nothing was sent." = "提示已经换了，什么都没有发出去。";
+"It is not waiting for a reply right now." = "它现在没有在等回话。";
+"It has moved on since this was shown. Nothing was sent." = "它的状态已经变了，什么都没有发出去。";
+"There is nothing to send." = "没有可发的内容。";
+"Someone typed in that terminal a moment ago. Nothing was sent." = "那个终端刚刚有人打过字，什么都没有发出去。";
+"That terminal has text waiting in its input line. Nothing was sent." = "那个终端的输入行里还有没提交的字，什么都没有发出去。";
+"The program in that terminal has ended." = "那个终端里的程序已经结束了。";
+"The key did not reach the program." = "按键没有送到程序。";
+"That terminal is no longer there." = "那个终端已经不在了。";
+"That group is no longer there." = "那个群已经不在了。";
+"That time has already passed." = "那个时间已经过了。";
+"Nothing was done (%@)." = "没有执行（%@）。";

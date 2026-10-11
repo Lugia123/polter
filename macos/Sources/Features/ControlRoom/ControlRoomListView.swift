@@ -296,7 +296,7 @@ struct ControlRoomListView: View {
                 .frame(width: CGFloat(Look.Side.timeLaneLabelWidth), alignment: .leading)
             GeometryReader { proxy in
                 let segments = ControlRoomListLayout.segments(
-                    lane, band: band, now: list.nowMs, width: proxy.size.width)
+                    lane, band: band, width: proxy.size.width)
                 ZStack(alignment: .leading) {
                     theme.line.color
                         .frame(height: CGFloat(Look.Line.stroke))

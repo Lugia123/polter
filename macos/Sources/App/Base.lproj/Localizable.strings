@@ -679,3 +679,16 @@
 "Same supervisor: see %@" = "Same supervisor: see %@";
 "Kept you waiting today" = "Kept you waiting today";
 "now" = "now";
+"Polter — Control Room" = "Polter — Control Room";
+"That prompt has changed. Nothing was sent." = "That prompt has changed. Nothing was sent.";
+"It is not waiting for a reply right now." = "It is not waiting for a reply right now.";
+"It has moved on since this was shown. Nothing was sent." = "It has moved on since this was shown. Nothing was sent.";
+"There is nothing to send." = "There is nothing to send.";
+"Someone typed in that terminal a moment ago. Nothing was sent." = "Someone typed in that terminal a moment ago. Nothing was sent.";
+"That terminal has text waiting in its input line. Nothing was sent." = "That terminal has text waiting in its input line. Nothing was sent.";
+"The program in that terminal has ended." = "The program in that terminal has ended.";
+"The key did not reach the program." = "The key did not reach the program.";
+"That terminal is no longer there." = "That terminal is no longer there.";
+"That group is no longer there." = "That group is no longer there.";
+"That time has already passed." = "That time has already passed.";
+"Nothing was done (%@)." = "Nothing was done (%@).";

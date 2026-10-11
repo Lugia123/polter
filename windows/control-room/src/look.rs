@@ -320,6 +320,10 @@ pub mod selection {
     /// TENTATIVE (other candidate: false). The other candidate keeps the lift and the slide and drops the refraction. Whether it can be done live is unverified.
     /// Source: design v17, CHANGES.md.
     pub const REFRACTION_SHOWN: bool = true;
+    /// How long a row stays selected, with the control room in front, before its group counts as seen.
+    /// TENTATIVE (other candidate: 0). 0 marks it seen the moment it is selected, so arrowing past a row would clear it.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const SEEN_AFTER: f64 = 1.5;
     /// Source: design v17, src/anim.py.
     pub const REFRACTION_BAND_REST: f64 = 3.0;
     /// Source: design v17, src/anim.py.
@@ -623,5 +627,6 @@ pub const TENTATIVE: &[&str] = &[
     "stack_tab.inset",
     "selection.spring_damping",
     "selection.refraction_shown",
+    "selection.seen_after",
     "text_on.problem_text",
 ];

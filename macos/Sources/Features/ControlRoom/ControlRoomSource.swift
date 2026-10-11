@@ -2,76 +2,70 @@ import AppKit
 import Combine
 import Foundation
 
-/// Where the control room's list comes from.
+/// The control room's snapshot, fetched once and handed to everyone who
+/// draws from it.
 ///
-/// **Asked only when told.** `snapshot()` is called once when the control
-/// room opens and after that only from `onChange`, which the source calls
-/// when the core says the snapshot changed. Nothing here may poll: a control
-/// room that nothing is happening in must not wake once
-/// (`dev-docs/poltergeist/control-room.md`, 5.4 and 13.2). That is why this
-/// has no publisher that ticks, no interval, and no "refresh".
+/// **Asked only when told, and once however many are listening.** The
+/// control room's list and every terminal window's tab glyph draw from the
+/// same snapshot. When the core says it changed -- a notification, posted on
+/// the main thread by whoever receives `CONTROL_ROOM_CHANGED` -- this
+/// fetches it one time, decodes it one time, and gives the result to each
+/// listener. A listener that arrives later is given what is already here
+/// and causes no fetch. Nothing in here may poll: a control room nothing is
+/// happening in must not wake once (`dev-docs/poltergeist/control-room.md`,
+/// 5.4 and 13.2).
 ///
-/// `ControlRoomCoreSource` is the real one: the core's
-/// `ghostty_app_control_snapshot`, fetched on its `CONTROL_ROOM_CHANGED`.
-protocol ControlRoomSnapshotSource: AnyObject {
-    /// The list as it is now, or nil when there is none yet. **Nil is not
-    /// an empty list**: the core has not worked a snapshot out, and the
-    /// control room draws nothing rather than "0 groups waiting".
-    func snapshot() -> ControlRoomList?
-
-    /// Set by whoever shows the list. The source calls it, on the main
-    /// thread, each time the snapshot has changed.
-    var onChange: (() -> Void)? { get set }
-}
-
-/// The design's example, standing in for the core in tests and still
-/// pictures. It never changes, so it never calls `onChange`.
-final class ControlRoomSampleSource: ControlRoomSnapshotSource {
-    var onChange: (() -> Void)?
-
-    func snapshot() -> ControlRoomList? { .sample }
-}
-
-/// The core's snapshot.
-///
-/// It is told the snapshot changed by a notification -- posted, on the main
-/// thread, by whoever receives the core's `CONTROL_ROOM_CHANGED` -- and only
-/// then calls `onChange`, whose owner fetches. There is no other path to a
-/// fetch in here.
-///
-/// The fetch itself is handed in as a closure with the core's buffer rule
-/// (write into the buffer if it fits, always return the real length), so
-/// that everything but the one C call can be run without the core.
-final class ControlRoomCoreSource: ControlRoomSnapshotSource {
+/// The fetch is handed in as a closure with the core's buffer rule (write
+/// into the buffer if it fits, always return the real length), so that
+/// everything but the one C call can be run without the core.
+final class ControlRoomFeed {
     typealias Fetch = (_ buffer: UnsafeMutablePointer<CChar>?, _ capacity: Int) -> Int
+    typealias Listener = (ControlRoomSnapshot) -> Void
 
     /// Posted when the core says the control room's snapshot changed.
     static let changed = Notification.Name("PolterControlRoomChanged")
 
-    var onChange: (() -> Void)?
+    /// The last snapshot that could be read; nil until there is one.
+    /// **Nil is not an empty control room**: the core has not worked one
+    /// out yet, and whoever draws from this draws nothing.
+    private(set) var latest: ControlRoomSnapshot?
 
     private let fetch: Fetch
     private let center: NotificationCenter
     private var observer: NSObjectProtocol?
+    private var listeners: [UUID: Listener] = [:]
 
     init(center: NotificationCenter = .default, fetch: @escaping Fetch) {
         self.fetch = fetch
         self.center = center
         // No queue: it runs where it is posted, which is the main thread.
         observer = center.addObserver(forName: Self.changed, object: nil, queue: nil) { [weak self] _ in
-            self?.onChange?()
+            self?.refresh()
         }
+        // Whatever the core already has. After this, only a notice fetches.
+        refresh()
     }
 
     deinit {
         if let observer { center.removeObserver(observer) }
     }
 
-    func snapshot() -> ControlRoomList? {
-        guard let json = Self.read(fetch) else { return nil }
-        // A snapshot this build cannot read is not an empty control room
-        // either: nil, and the caller keeps what it had.
-        return try? ControlRoomList.decode(snapshot: json)
+    /// Be handed every snapshot from now on, and the current one at once if
+    /// there is one. Keep the token; the listening stops when it goes away.
+    func listen(_ listener: @escaping Listener) -> AnyCancellable {
+        let id = UUID()
+        listeners[id] = listener
+        if let latest { listener(latest) }
+        return AnyCancellable { [weak self] in self?.listeners[id] = nil }
+    }
+
+    /// One fetch, one decode, everyone told. A notice with nothing readable
+    /// behind it changes nothing: the listeners keep what they have.
+    private func refresh() {
+        guard let json = Self.read(fetch),
+              let snapshot = try? JSONDecoder().decode(ControlRoomSnapshot.self, from: json) else { return }
+        latest = snapshot
+        for listener in listeners.values { listener(snapshot) }
     }
 
     /// The bytes the core has, or nil when it has none. Asks for the length
@@ -94,23 +88,19 @@ final class ControlRoomModel: ObservableObject {
     @Published private(set) var list: ControlRoomList?
     @Published var selection: String?
 
-    private let source: ControlRoomSnapshotSource
+    private var listening: AnyCancellable?
 
-    init(source: ControlRoomSnapshotSource, selection: String? = nil) {
-        self.source = source
-        self.list = source.snapshot()
+    /// `showing` answers which tab is in front in the control room's own
+    /// window, as the core spells it; it decides only which glyph breathes.
+    init(feed: ControlRoomFeed, selection: String? = nil, showing: @escaping () -> String? = { nil }) {
         self.selection = selection
-        source.onChange = { [weak self] in self?.refresh() }
-    }
-
-    /// Take the snapshot again. Called by the source's notice and by
-    /// nothing else.
-    private func refresh() {
-        // A notice with nothing readable behind it keeps what is shown.
-        guard let next = source.snapshot() else { return }
-        list = next
-        // A group that is no longer listed cannot stay selected.
-        selection = ControlRoomRules.restoredSelection(selection, in: next.rows)
+        listening = feed.listen { [weak self] snapshot in
+            guard let self else { return }
+            let next = ControlRoomList(snapshot: snapshot, showing: showing())
+            self.list = next
+            // A group that is no longer listed cannot stay selected.
+            self.selection = ControlRoomRules.restoredSelection(self.selection, in: next.rows)
+        }
     }
 }
 

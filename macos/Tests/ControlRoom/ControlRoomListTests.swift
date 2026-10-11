@@ -73,7 +73,6 @@ struct ControlRoomListTests {
         #expect(row.detailIsCode == true)
         #expect(row.waitedMin == 4)
         #expect(row.others == 1)
-        #expect(made.nowMs == 6_000_000)
     }
 
     @Test func theCountsAreTheSnapshotsAndNotTheNumberOfRows() throws {
@@ -112,7 +111,68 @@ struct ControlRoomListTests {
         }
     }
 
-    @Test func aSnapshotCarriesNoTimeBandYetSoTheListHasNone() throws {
+    // MARK: The core's own fixture
+
+    /// The snapshot the core's tests build and check against the code that
+    /// writes it. Read from the tree, so a change of shape there is seen here.
+    static func fixture() throws -> Data {
+        let here = URL(fileURLWithPath: #filePath).resolvingSymlinksInPath()
+        let root = here.deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        return try Data(contentsOf: root.appendingPathComponent("src/poltergeist/testdata/control_snapshot.json"))
+    }
+
+    @Test func theCoresFixtureDecodesIntoItsSevenGroups() throws {
+        let made = try ControlRoomList.decode(snapshot: Self.fixture())
+        let waiting = made.waiting.map(\.id)
+        #expect(waiting == ["web-app", "web-app-docs", "billing", "docs-site"])
+        let quiet = made.quiet.map(\.id)
+        #expect(quiet == ["infra", "design-system", "notes"])
+        #expect(made.waitingCount == 4)
+        #expect(made.quietCount == 3)
+    }
+
+    @Test func theRowThatBreathesIsTheFirstInTheCoresListNotAlreadyInFront() throws {
+        // The fixture's list: billing's terminal (tab …22), then web-app's
+        // (tab …21, row web-app-docs), then two with no row.
+        let nothingInFront = try ControlRoomList.decode(snapshot: Self.fixture())
+        let breathing = nothingInFront.rows.filter(\.pulses).map(\.id)
+        #expect(breathing == ["billing"])
+
+        // With billing's own tab in front it is not billing: the person is
+        // already looking at that one. The next in the list is.
+        let billingInFront = try ControlRoomList.decode(
+            snapshot: Self.fixture(), showing: "0x0000000000000022")
+        let next = billingInFront.rows.filter(\.pulses).map(\.id)
+        #expect(next == ["web-app-docs"])
+    }
+
+    @Test func aRowCarriesBackTheMomentsItWasDrawnFrom() throws {
+        let made = try ControlRoomList.decode(snapshot: Self.fixture())
+        let target = made.waiting[0].target
+        #expect(target?.terminal == "0x00000000000000a1")
+        #expect(target?.sinceMs == 5_760_000)
+        #expect(target?.eventMs != nil)
+    }
+
+    @Test func theBandIsTheCoresAndKeepsItsOwnClock() throws {
+        let made = try ControlRoomList.decode(snapshot: Self.fixture())
+        let band = try #require(made.timeBand)
+        #expect(band.startLabel == "06:00")
+        #expect(band.totalMinutes == 19)
+        #expect(band.nowMs == 1_700_006_000_000)
+        let lanes = band.lanes.map(\.name)
+        #expect(lanes == ["billing", "docs-site", "web-app", "web-app-docs"])
+        // Measured against the band's now (wall clock), a span still going
+        // ends at the right-hand edge. Against the snapshot's other clock
+        // (6 000 000) there would be no band at all.
+        let pieces = ControlRoomListLayout.segments(band.lanes[0], band: band, width: 100)
+        #expect(pieces.count == 1)
+        let end = pieces[0].x + pieces[0].width
+        #expect(abs(end - 100) < 0.001)
+    }
+
+    @Test func aSnapshotWithoutABandGivesAListWithNone() throws {
         let made = try ControlRoomList.decode(snapshot: snapshot)
         #expect(made.timeBand == nil)
         let layout = ControlRoomListLayout(list: made, height: 600)
@@ -198,11 +258,13 @@ struct ControlRoomListTests {
 
     // MARK: Today's waiting
 
-    private let band = ControlRoomList.TimeBand(startMs: 1_000, startLabel: "09:00", totalMinutes: 0, lanes: [])
+    private func band(now: UInt64) -> ControlRoomList.TimeBand {
+        .init(startMs: 1_000, nowMs: now, startLabel: "09:00", totalMinutes: 0, lanes: [])
+    }
 
     @Test func aSpanIsDrawnInProportionToTheDaySoFar() {
         let lane = ControlRoomList.Lane(name: "a", spans: [.init(fromMs: 1_250, toMs: 1_500, ongoing: false)])
-        let pieces = ControlRoomListLayout.segments(lane, band: band, now: 2_000, width: 200)
+        let pieces = ControlRoomListLayout.segments(lane, band: band(now: 2_000), width: 200)
         #expect(pieces.count == 1)
         #expect(pieces[0].x == 50)
         #expect(pieces[0].width == 50)
@@ -211,7 +273,7 @@ struct ControlRoomListTests {
 
     @Test func aSpanStillGoingRunsToNow() {
         let lane = ControlRoomList.Lane(name: "a", spans: [.init(fromMs: 1_800, toMs: 1_800, ongoing: true)])
-        let pieces = ControlRoomListLayout.segments(lane, band: band, now: 2_000, width: 200)
+        let pieces = ControlRoomListLayout.segments(lane, band: band(now: 2_000), width: 200)
         #expect(pieces.count == 1)
         #expect(pieces[0].x == 160)
         #expect(pieces[0].width == 40)
@@ -225,13 +287,13 @@ struct ControlRoomListTests {
             .init(fromMs: 1_400, toMs: 1_400, ongoing: false),   // no length
             .init(fromMs: 100, toMs: 900, ongoing: false),       // wholly before
         ])
-        let pieces = ControlRoomListLayout.segments(lane, band: band, now: 2_000, width: 100)
+        let pieces = ControlRoomListLayout.segments(lane, band: band(now: 2_000), width: 100)
         #expect(pieces.count == 2)
         #expect(pieces[0].x == 0)
         #expect(pieces[0].width == 10)
         #expect(pieces[1].x == 90)
         #expect(pieces[1].width == 10)
-        let noDay = ControlRoomListLayout.segments(lane, band: band, now: 1_000, width: 100)
+        let noDay = ControlRoomListLayout.segments(lane, band: band(now: 1_000), width: 100)
         #expect(noDay.isEmpty)
     }
 

@@ -321,6 +321,10 @@ enum ControlRoomLook {
         /// TENTATIVE (other candidate: false). The other candidate keeps the lift and the slide and drops the refraction. Whether it can be done live is unverified.
         /// Source: design v17, CHANGES.md.
         static let refractionShown: Bool = true
+        /// How long a row stays selected, with the control room in front, before its group counts as seen.
+        /// TENTATIVE (other candidate: 0). 0 marks it seen the moment it is selected, so arrowing past a row would clear it.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let seenAfter: Double = 1.5
         /// Source: design v17, src/anim.py.
         static let refractionBandRest: Double = 3.0
         /// Source: design v17, src/anim.py.
@@ -619,6 +623,7 @@ enum ControlRoomLook {
         "stack_tab.inset",
         "selection.spring_damping",
         "selection.refraction_shown",
+        "selection.seen_after",
         "text_on.problem_text",
     ]
 }

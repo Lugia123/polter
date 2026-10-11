@@ -803,7 +803,7 @@ extension Ghostty {
             case GHOSTTY_ACTION_CONTROL_ROOM_CHANGED:
                 // The only thing that makes the control room fetch. Whoever
                 // is listening takes the snapshot; nobody polls for it.
-                NotificationCenter.default.post(name: ControlRoomCoreSource.changed, object: nil)
+                NotificationCenter.default.post(name: ControlRoomFeed.changed, object: nil)
 
             case GHOSTTY_ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM:
                 // A key binding or the command palette; the menu item calls

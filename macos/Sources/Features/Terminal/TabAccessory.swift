@@ -35,6 +35,11 @@ enum TabAccessory {
         case keyEquivalent
         /// The button that undoes a split zoom.
         case resetZoom
+        /// What the tab's terminals want from the person: one of the
+        /// control room's status glyphs, as the core's snapshot gives it
+        /// for this tab (`control-room.md`, 3.5 item 4). Last, so it is the
+        /// thing at the tab's trailing edge.
+        case status
     }
 
     /// Everything the slot's contents depend on.
@@ -43,6 +48,24 @@ enum TabAccessory {
         var poltergeistMark: String = ""
         /// Whether a split in this tab is zoomed.
         var surfaceIsZoomed: Bool = false
+        /// The glyph the core gives this tab; `.none` for none.
+        var status: ControlRoomList.Shown = .none
+    }
+
+    /// Whether a status is drawn on a window tab at all.
+    ///
+    /// Working is not, so that every glyph in a row of tabs is one worth a
+    /// look -- unless the look table's switch says otherwise (it is marked
+    /// tentative there). The core already leaves working out of what it
+    /// gives a tab; this is the same rule on the side that draws, so that a
+    /// snapshot from a core that did not would still be drawn the way the
+    /// table says.
+    static func drawsOnWindowTab(_ status: ControlRoomList.Shown) -> Bool {
+        switch status {
+        case .needsYou, .trouble, .doneUnseen: return true
+        case .working: return ControlRoomLook.WindowTab.workingGlyphShown
+        case .none: return false
+        }
     }
 
     /// The mark as it is drawn. The core's mark ends in its own space,
@@ -66,6 +89,8 @@ enum TabAccessory {
                 return !markText(state.poltergeistMark).isEmpty
             case .resetZoom:
                 return state.surfaceIsZoomed
+            case .status:
+                return drawsOnWindowTab(state.status)
             }
         }
     }
