@@ -160,6 +160,41 @@ pub mod side {
     pub const TIME_LANE_HEIGHT: f64 = 12.0;
     /// Source: design v14, GRID.md.
     pub const TIME_SEGMENT_HEIGHT: f64 = 6.0;
+    /// Source: design v17, src/style.css.
+    pub const TIME_SEGMENT_RADIUS: f64 = 2.0;
+    /// A lane's height once it carries its group's name: 13 pt text does not fit the design's 12.
+    /// TENTATIVE (other candidate: 12). The design draws three unlabelled lanes 12 high and does not say which group each is. 12 is the design's height, with no label.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const TIME_LANE_LABELLED_HEIGHT: f64 = 16.0;
+    /// The column at a lane's left end that holds the start of its group's name.
+    /// TENTATIVE (other candidate: 0). 0 is the design: no label.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const TIME_LANE_LABEL_WIDTH: f64 = 64.0;
+    /// Source: design v17, src/style.css.
+    pub const TIME_AXIS_HEIGHT: f64 = 24.0;
+    /// Source: design v17, src/style.css.
+    pub const TIME_BAND_PADDING_BOTTOM: f64 = 6.0;
+    /// Below the last waiting row's own gap.
+    /// Source: design v17, src/style.css.
+    pub const SEPARATOR_SPACE_ABOVE: f64 = 8.0;
+    /// Source: design v17, src/style.css.
+    pub const SEPARATOR_SPACE_BELOW: f64 = 4.0;
+    /// The name and the minutes.
+    /// Source: design v17, src/style.css.
+    pub const ROW_LINE1_HEIGHT: f64 = 24.0;
+    /// The glyph, the status word, the detail.
+    /// Source: design v17, src/style.css.
+    pub const ROW_LINE2_HEIGHT: f64 = 20.0;
+    /// Source: design v17, src/style.css.
+    pub const ROW_ITEM_GAP: f64 = 8.0;
+    /// Between a glyph and its word.
+    /// Source: design v17, src/style.css.
+    pub const STATUS_WORD_GAP: f64 = 5.0;
+    /// Source: design v17, src/style.css.
+    pub const QUIET_ITEM_GAP: f64 = 6.0;
+    /// Between the plus and `new group`.
+    /// Source: design v17, src/style.css.
+    pub const HEADER_ITEM_GAP: f64 = 4.0;
 }
 
 /// The three frames a split can wear.
@@ -238,6 +273,20 @@ pub mod status {
     /// It steps; it does not turn smoothly.
     /// Source: design v14, CHANGES.md.
     pub const WORKING_SPIN_STEPS: f64 = 8.0;
+    /// One of the spinner's short lines, on the artboard.
+    /// Source: design v17, src/build.py (the glyphs' paths).
+    pub const WORKING_SPOKE_WIDTH: f64 = 1.4;
+    /// Source: design v17, src/build.py (the glyphs' paths).
+    pub const WORKING_SPOKE_LENGTH: f64 = 3.3;
+    /// From the artboard's edge to a line's outer end.
+    /// Source: design v17, src/build.py (the glyphs' paths).
+    pub const WORKING_SPOKE_INSET: f64 = 1.5;
+    /// The faintest line; the brightest is 1 and the rest step up to it.
+    /// Source: design v17, src/build.py (the glyphs' paths).
+    pub const WORKING_SPOKE_MIN_OPACITY: f64 = 0.16;
+    /// The dot's diameter on the artboard: a size smaller than the other glyphs.
+    /// Source: design v17, src/build.py (the glyphs' paths).
+    pub const DONE_UNSEEN_DOT: f64 = 6.0;
 }
 
 /// The selected row of the group list: a chip at rest, glass while it slides.
@@ -282,11 +331,12 @@ pub mod selection {
     pub const REFRACTION_STRENGTH_MOVING: f64 = 0.36;
 }
 
-/// The system symbols the glyphs are. Working is the system's progress spinner, which has no symbol name.
+/// The system symbols the glyphs are. Working is the system's progress spinner, which has no symbol name. `held` is the supervisor's ruling (the design says only `a pause glyph`).
 pub mod symbol {
     pub const WAITING: &str = "bubble.left.fill";
     pub const PROBLEM: &str = "exclamationmark.triangle.fill";
     pub const DONE_UNSEEN: &str = "circle.fill";
+    pub const HELD: &str = "pause.fill";
 }
 
 /// Everything that has a light value and a dark one.
@@ -568,6 +618,8 @@ pub const fn theme(dark: bool) -> &'static Theme {
 /// Each is one value in the data; ruling on it is one edit there.
 pub const TENTATIVE: &[&str] = &[
     "window_tab.working_glyph_shown",
+    "side.time_lane_labelled_height",
+    "side.time_lane_label_width",
     "stack_tab.inset",
     "selection.spring_damping",
     "selection.refraction_shown",

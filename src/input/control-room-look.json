@@ -23,6 +23,9 @@
     "v17-tokens": "design v17, src/tokens-l.css and src/tokens-d.css",
     "v17-style": "design v17, src/style.css",
     "v17-anim": "design v17, src/anim.py",
+    "v17-build": "design v17, src/build.py (the glyphs' paths)",
+    "supervisor": "the supervisor's ruling, not a design file",
+    "undesigned": "not in the design: chosen while building the mac list, to be ruled on",
     "v17-contrast": "design v17, src/contrast.md (measured off the rendered pictures)"
   },
 
@@ -102,7 +105,30 @@
       "minutes_unit_width": 16,
       "glyph": 14,
       "time_lane_height": 12,
-      "time_segment_height": 6
+      "time_segment_height": 6,
+      "time_segment_radius": { "v": 2, "src": "v17-style" },
+      "time_lane_labelled_height": {
+        "v": 16,
+        "src": "undesigned",
+        "doc": "A lane's height once it carries its group's name: 13 pt text does not fit the design's 12.",
+        "tentative": { "alt": 12, "why": "The design draws three unlabelled lanes 12 high and does not say which group each is. 12 is the design's height, with no label." }
+      },
+      "time_lane_label_width": {
+        "v": 64,
+        "src": "undesigned",
+        "doc": "The column at a lane's left end that holds the start of its group's name.",
+        "tentative": { "alt": 0, "why": "0 is the design: no label." }
+      },
+      "time_axis_height": { "v": 24, "src": "v17-style" },
+      "time_band_padding_bottom": { "v": 6, "src": "v17-style" },
+      "separator_space_above": { "v": 8, "src": "v17-style", "doc": "Below the last waiting row's own gap." },
+      "separator_space_below": { "v": 4, "src": "v17-style" },
+      "row_line1_height": { "v": 24, "src": "v17-style", "doc": "The name and the minutes." },
+      "row_line2_height": { "v": 20, "src": "v17-style", "doc": "The glyph, the status word, the detail." },
+      "row_item_gap": { "v": 8, "src": "v17-style" },
+      "status_word_gap": { "v": 5, "src": "v17-style", "doc": "Between a glyph and its word." },
+      "quiet_item_gap": { "v": 6, "src": "v17-style" },
+      "header_item_gap": { "v": 4, "src": "v17-style", "doc": "Between the plus and `new group`." }
     },
     "pane": {
       "_src": "v17-style",
@@ -148,7 +174,12 @@
       "problem_shake_distance": { "v": 2, "doc": "Left and right, once, on entering the state." },
       "problem_shake_duration": 0.3,
       "working_spin_period": 1.2,
-      "working_spin_steps": { "v": 8, "doc": "It steps; it does not turn smoothly." }
+      "working_spin_steps": { "v": 8, "doc": "It steps; it does not turn smoothly." },
+      "working_spoke_width": { "v": 1.4, "src": "v17-build", "doc": "One of the spinner's short lines, on the artboard." },
+      "working_spoke_length": { "v": 3.3, "src": "v17-build" },
+      "working_spoke_inset": { "v": 1.5, "src": "v17-build", "doc": "From the artboard's edge to a line's outer end." },
+      "working_spoke_min_opacity": { "v": 0.16, "src": "v17-build", "doc": "The faintest line; the brightest is 1 and the rest step up to it." },
+      "done_unseen_dot": { "v": 6, "src": "v17-build", "doc": "The dot's diameter on the artboard: a size smaller than the other glyphs." }
     },
     "selection": {
       "_src": "v17-anim",
@@ -243,10 +274,11 @@
   "strings": {
     "symbol": {
       "_src": "v14-changes",
-      "_doc": "The system symbols the glyphs are. Working is the system's progress spinner, which has no symbol name.",
+      "_doc": "The system symbols the glyphs are. Working is the system's progress spinner, which has no symbol name. `held` is the supervisor's ruling (the design says only `a pause glyph`).",
       "waiting": "bubble.left.fill",
       "problem": "exclamationmark.triangle.fill",
-      "done_unseen": "circle.fill"
+      "done_unseen": "circle.fill",
+      "held": "pause.fill"
     }
   },
 

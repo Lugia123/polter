@@ -161,6 +161,41 @@ enum ControlRoomLook {
         static let timeLaneHeight: Double = 12.0
         /// Source: design v14, GRID.md.
         static let timeSegmentHeight: Double = 6.0
+        /// Source: design v17, src/style.css.
+        static let timeSegmentRadius: Double = 2.0
+        /// A lane's height once it carries its group's name: 13 pt text does not fit the design's 12.
+        /// TENTATIVE (other candidate: 12). The design draws three unlabelled lanes 12 high and does not say which group each is. 12 is the design's height, with no label.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let timeLaneLabelledHeight: Double = 16.0
+        /// The column at a lane's left end that holds the start of its group's name.
+        /// TENTATIVE (other candidate: 0). 0 is the design: no label.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let timeLaneLabelWidth: Double = 64.0
+        /// Source: design v17, src/style.css.
+        static let timeAxisHeight: Double = 24.0
+        /// Source: design v17, src/style.css.
+        static let timeBandPaddingBottom: Double = 6.0
+        /// Below the last waiting row's own gap.
+        /// Source: design v17, src/style.css.
+        static let separatorSpaceAbove: Double = 8.0
+        /// Source: design v17, src/style.css.
+        static let separatorSpaceBelow: Double = 4.0
+        /// The name and the minutes.
+        /// Source: design v17, src/style.css.
+        static let rowLine1Height: Double = 24.0
+        /// The glyph, the status word, the detail.
+        /// Source: design v17, src/style.css.
+        static let rowLine2Height: Double = 20.0
+        /// Source: design v17, src/style.css.
+        static let rowItemGap: Double = 8.0
+        /// Between a glyph and its word.
+        /// Source: design v17, src/style.css.
+        static let statusWordGap: Double = 5.0
+        /// Source: design v17, src/style.css.
+        static let quietItemGap: Double = 6.0
+        /// Between the plus and `new group`.
+        /// Source: design v17, src/style.css.
+        static let headerItemGap: Double = 4.0
     }
 
     /// The three frames a split can wear.
@@ -239,6 +274,20 @@ enum ControlRoomLook {
         /// It steps; it does not turn smoothly.
         /// Source: design v14, CHANGES.md.
         static let workingSpinSteps: Double = 8.0
+        /// One of the spinner's short lines, on the artboard.
+        /// Source: design v17, src/build.py (the glyphs' paths).
+        static let workingSpokeWidth: Double = 1.4
+        /// Source: design v17, src/build.py (the glyphs' paths).
+        static let workingSpokeLength: Double = 3.3
+        /// From the artboard's edge to a line's outer end.
+        /// Source: design v17, src/build.py (the glyphs' paths).
+        static let workingSpokeInset: Double = 1.5
+        /// The faintest line; the brightest is 1 and the rest step up to it.
+        /// Source: design v17, src/build.py (the glyphs' paths).
+        static let workingSpokeMinOpacity: Double = 0.16
+        /// The dot's diameter on the artboard: a size smaller than the other glyphs.
+        /// Source: design v17, src/build.py (the glyphs' paths).
+        static let doneUnseenDot: Double = 6.0
     }
 
     /// The selected row of the group list: a chip at rest, glass while it slides.
@@ -283,11 +332,12 @@ enum ControlRoomLook {
         static let refractionStrengthMoving: Double = 0.36
     }
 
-    /// The system symbols the glyphs are. Working is the system's progress spinner, which has no symbol name.
+    /// The system symbols the glyphs are. Working is the system's progress spinner, which has no symbol name. `held` is the supervisor's ruling (the design says only `a pause glyph`).
     enum Symbol {
         static let waiting: String = "bubble.left.fill"
         static let problem: String = "exclamationmark.triangle.fill"
         static let doneUnseen: String = "circle.fill"
+        static let held: String = "pause.fill"
     }
 
     /// Everything that has a light value and a dark one.
@@ -564,6 +614,8 @@ enum ControlRoomLook {
     /// Each is one value in the data; ruling on it is one edit there.
     static let tentative: [String] = [
         "window_tab.working_glyph_shown",
+        "side.time_lane_labelled_height",
+        "side.time_lane_label_width",
         "stack_tab.inset",
         "selection.spring_damping",
         "selection.refraction_shown",
