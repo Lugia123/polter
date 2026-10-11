@@ -77,6 +77,7 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 const daylog = @import("daylog.zig");
+const Marks = @import("Chat.zig").Marks;
 
 const log = std.log.scoped(.poltergeist);
 
@@ -115,6 +116,10 @@ pub const Shell = struct {
     /// whose files this cannot read. Zero sorts to the bottom of the
     /// inactive half, which is where a group nobody can date belongs.
     last_ms: u64,
+
+    /// What the person had said about it in the control room. `none` for
+    /// every record written before there was one.
+    marks: Marks,
 };
 
 pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error!GroupLog {
@@ -147,7 +152,29 @@ pub fn deinit(self: *GroupLog) void {
 /// spoken in come back at all: it has no day files, so the directory this
 /// makes is the only trace it leaves.
 pub fn note(self: *GroupLog, name: []const u8, brief: []const u8) void {
-    self.writeMeta(name, brief, true);
+    // The file is rewritten whole, so what it said about anything else has
+    // to be read first or this would erase it.
+    var marks: Marks = .none;
+    if (self.readMeta(self.alloc, name)) |m| {
+        self.alloc.free(m.brief);
+        marks = m.marks;
+    }
+    self.writeMeta(name, brief, true, marks);
+}
+
+/// Write down what the person said about a group in the control room,
+/// leaving its note and its place in the list as they were.
+pub fn mark(self: *GroupLog, name: []const u8, marks: Marks) void {
+    var kept: ?[]u8 = null;
+    defer if (kept) |k| self.alloc.free(k);
+    var listed = true;
+
+    if (self.readMeta(self.alloc, name)) |m| {
+        kept = m.brief;
+        listed = m.listed;
+    }
+
+    self.writeMeta(name, if (kept) |k| k else "", listed, marks);
 }
 
 /// Take a group off the list, leaving every word ever said in it in place.
@@ -158,15 +185,17 @@ pub fn note(self: *GroupLog, name: []const u8, brief: []const u8) void {
 pub fn forget(self: *GroupLog, name: []const u8) void {
     var kept: ?[]u8 = null;
     defer if (kept) |k| self.alloc.free(k);
+    var marks: Marks = .none;
 
     if (self.readMeta(self.alloc, name)) |m| {
         kept = m.brief;
+        marks = m.marks;
     }
 
-    self.writeMeta(name, if (kept) |k| k else "", false);
+    self.writeMeta(name, if (kept) |k| k else "", false, marks);
 }
 
-fn writeMeta(self: *GroupLog, name: []const u8, brief: []const u8, listed: bool) void {
+fn writeMeta(self: *GroupLog, name: []const u8, brief: []const u8, listed: bool, marks: Marks) void {
     const seg = daylog.encodeSegment(self.alloc, name) catch return;
     defer self.alloc.free(seg);
 
@@ -185,7 +214,7 @@ fn writeMeta(self: *GroupLog, name: []const u8, brief: []const u8, listed: bool)
     defer buf.deinit();
 
     var s: std.json.Stringify = .{ .writer = &buf.writer, .options = .{} };
-    render(&s, brief, listed) catch |err| {
+    render(&s, brief, listed, marks) catch |err| {
         warn(err);
         return;
     };
@@ -220,7 +249,7 @@ fn writeMeta(self: *GroupLog, name: []const u8, brief: []const u8, listed: bool)
 
 const meta_name = "group.json";
 
-fn render(s: *std.json.Stringify, brief: []const u8, listed: bool) std.Io.Writer.Error!void {
+fn render(s: *std.json.Stringify, brief: []const u8, listed: bool, marks: Marks) std.Io.Writer.Error!void {
     try s.beginObject();
     if (brief.len > 0) {
         try s.objectField("brief");
@@ -234,6 +263,34 @@ fn render(s: *std.json.Stringify, brief: []const u8, listed: bool) std.Io.Writer
         try s.objectField("listed");
         try s.write(false);
     }
+
+    // Each only when there is one, so a group nobody has marked has the
+    // file it always had.
+    if (marks.seen_ms) |ms| {
+        try s.objectField("seen_ms");
+        try s.write(ms);
+    }
+    switch (marks.snooze) {
+        .none => {},
+        .next_event => |at| {
+            try s.objectField("snooze");
+            try s.beginObject();
+            try s.objectField("at_ms");
+            try s.write(at);
+            try s.objectField("until");
+            try s.write("next_event");
+            try s.endObject();
+        },
+        .until => |u| {
+            try s.objectField("snooze");
+            try s.beginObject();
+            try s.objectField("at_ms");
+            try s.write(u.at_ms);
+            try s.objectField("until");
+            try s.write(u.until_ms);
+            try s.endObject();
+        },
+    }
     try s.endObject();
 }
 
@@ -242,7 +299,39 @@ const Meta = struct {
     /// with no note and a group whose note is empty are the same group.
     brief: []u8,
     listed: bool,
+    marks: Marks,
 };
+
+fn msOf(v: std.json.Value) ?u64 {
+    return switch (v) {
+        .integer => |n| if (n >= 0) @intCast(n) else null,
+        else => null,
+    };
+}
+
+/// What the file says of the person's marks. Anything missing or not in
+/// the shape `render` writes is no mark, never an error: every file from
+/// before these fields existed is exactly that.
+fn marksIn(obj: std.json.ObjectMap) Marks {
+    var out: Marks = .none;
+    if (obj.get("seen_ms")) |v| out.seen_ms = msOf(v);
+
+    const snooze = switch (obj.get("snooze") orelse std.json.Value.null) {
+        .object => |o| o,
+        else => return out,
+    };
+    const at = msOf(snooze.get("at_ms") orelse .null) orelse return out;
+    switch (snooze.get("until") orelse std.json.Value.null) {
+        .string => |v| if (std.mem.eql(u8, v, "next_event")) {
+            out.snooze = .{ .next_event = at };
+        },
+        .integer => |v| if (v >= 0) {
+            out.snooze = .{ .until = .{ .at_ms = at, .until_ms = @intCast(v) } };
+        },
+        else => {},
+    }
+    return out;
+}
 
 /// What `group.json` says, or null when there is no readable one.
 ///
@@ -299,6 +388,7 @@ fn readMetaIn(self: *const GroupLog, alloc: Allocator, seg: []const u8) ?Meta {
     return .{
         .brief = alloc.dupe(u8, brief) catch return null,
         .listed = listed,
+        .marks = marksIn(obj),
     };
 }
 
@@ -358,6 +448,7 @@ pub fn restore(self: *GroupLog, alloc: Allocator) Allocator.Error![]Shell {
             .name = name,
             .brief = brief,
             .last_ms = self.lastSpokeIn(seg),
+            .marks = if (meta) |m| m.marks else .none,
         });
     }
 
@@ -663,4 +754,102 @@ test "a directory the tree did not write is not a group" {
 
     try testing.expectEqual(@as(usize, 1), shells.len);
     try testing.expectEqualStrings("real", shells[0].name);
+}
+
+fn shellNamed(shells: []const Shell, name: []const u8) ?Shell {
+    for (shells) |s| if (std.mem.eql(u8, s.name, name)) return s;
+    return null;
+}
+
+test "ControlRoom marks: a group that was seen is still seen after it is read back" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const state = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+
+    const seen: Marks = .{ .seen_ms = 1_700_000_000_123, .snooze = .none };
+    const snoozed: Marks = .{ .seen_ms = null, .snooze = .{ .next_event = 1_700_000_000_456 } };
+    const timed: Marks = .{
+        .seen_ms = 1_700_000_000_001,
+        .snooze = .{ .until = .{ .at_ms = 1_700_000_000_002, .until_ms = 1_700_000_900_000 } },
+    };
+    {
+        var gl = try GroupLog.open(alloc, io, state);
+        defer gl.deinit();
+        gl.note("build", "the build");
+        gl.mark("build", seen);
+        gl.note("research", "");
+        gl.mark("research", snoozed);
+        gl.note("nightly", "");
+        gl.mark("nightly", timed);
+        gl.note("plain", "");
+
+        // Changing the note afterwards rewrites the file and keeps the marks.
+        gl.note("build", "the build, again");
+    }
+
+    var gl = try GroupLog.open(alloc, io, state);
+    defer gl.deinit();
+    const shells = try gl.restore(alloc);
+    defer free(alloc, shells);
+
+    const build = shellNamed(shells, "build") orelse return error.TestGroupMissing;
+    try testing.expectEqual(seen, build.marks);
+    try testing.expectEqualStrings("the build, again", build.brief);
+    try testing.expectEqual(snoozed, (shellNamed(shells, "research") orelse return error.TestGroupMissing).marks);
+    try testing.expectEqual(timed, (shellNamed(shells, "nightly") orelse return error.TestGroupMissing).marks);
+    try testing.expectEqual(Marks.none, (shellNamed(shells, "plain") orelse return error.TestGroupMissing).marks);
+}
+
+test "ControlRoom marks: a record from before there were marks reads back with none" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const state = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+
+    // The three files the old code wrote, byte for byte, and one with marks
+    // in shapes this never writes.
+    const old = [_]struct { []const u8, []const u8 }{
+        .{ "noted", "{\"brief\":\"last night\"}" },
+        .{ "bare", "{}" },
+        .{ "odd", "{\"brief\":\"x\",\"seen_ms\":\"soon\",\"snooze\":{\"until\":\"next_event\"}}" },
+    };
+    for (old) |o| {
+        const dir = try std.fs.path.join(alloc, &.{ state, "chat", o[0] });
+        defer alloc.free(dir);
+        try std.Io.Dir.cwd().createDirPath(io, dir);
+        var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+        defer d.close(io);
+        try d.writeFile(io, .{ .sub_path = meta_name, .data = o[1] });
+    }
+
+    var gl = try GroupLog.open(alloc, io, state);
+    defer gl.deinit();
+    const shells = try gl.restore(alloc);
+    defer free(alloc, shells);
+
+    try testing.expectEqual(@as(usize, 3), shells.len);
+    for (shells) |s| try testing.expectEqual(Marks.none, s.marks);
+    const noted = shellNamed(shells, "noted") orelse return error.TestGroupMissing;
+    try testing.expectEqualStrings("last night", noted.brief);
+
+    // And writing a note into one of them adds no mark fields.
+    gl.note("bare", "now noted");
+    const path = try std.fs.path.join(alloc, &.{ state, "chat", "bare", meta_name });
+    defer alloc.free(path);
+    const bytes = try std.Io.Dir.readFileAlloc(.cwd(), io, path, alloc, .limited(4096));
+    defer alloc.free(bytes);
+    try testing.expectEqualStrings("{\"brief\":\"now noted\"}", bytes);
 }

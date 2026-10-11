@@ -1679,6 +1679,10 @@ fn childExited(self: *Surface, info: apprt.surface.Message.ChildExited) void {
 
         log.warn("abnormal process exit detected, showing error message", .{});
 
+        // The one way a terminal's process ending is known to be a failure
+        // rather than the person closing it; the control room reads it.
+        self.app.poltergeist.noteLeft(self.id, .failed, self.app.poltergeistElapsedMs());
+
         // Try and show a GUI message. If it returns true, don't do anything else.
         if (self.rt_app.performAction(
             .{ .surface = self },

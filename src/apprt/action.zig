@@ -452,6 +452,15 @@ pub const Action = union(Key) {
     /// `ghostty_app_poltergeist_screenshot_complete`.
     poltergeist_screenshot: PoltergeistScreenshot,
 
+    /// The control room's snapshot is not the one the apprt last fetched.
+    /// See `dev-docs/poltergeist/control-room.md`, section 5.4.
+    ///
+    /// App-scoped. **This is the only thing that tells an apprt to fetch
+    /// `ghostty_app_control_snapshot`**: it is sent when something changed
+    /// and at no other time, at most four times a second, so an apprt that
+    /// polls is doing work the core has already said is not there to do.
+    control_room_changed: ControlRoomChanged,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -537,6 +546,7 @@ pub const Action = union(Key) {
         poltergeist_grouping,
         screenshot,
         poltergeist_screenshot,
+        control_room_changed,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -2308,6 +2318,13 @@ pub const PoltergeistTabPanes = extern struct {
 /// always zero and the tool reports them as null. **That is a live path
 /// with a user, not a defensive branch** -- and null there has to keep
 /// meaning "nobody said", never "they are not together".
+/// Sync with: ghostty_action_control_room_changed_s
+pub const ControlRoomChanged = extern struct {
+    /// The snapshot's `rev`. One that is not above the last the apprt
+    /// fetched is a notice it has already acted on.
+    rev: u64,
+};
+
 pub const PoltergeistGrouping = extern struct {
     /// Written by the apprt before it returns. Never read by it.
     window: *u64,

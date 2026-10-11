@@ -93,6 +93,24 @@ stats_log: ?poltergeistpkg.StatsLog = null,
 /// line falls rather than a compromise.
 group_log: ?poltergeistpkg.GroupLog = null,
 
+/// The control room's snapshot and what says when it changed
+/// (`dev-docs/poltergeist/control-room.md`, 5.4).
+control_room: poltergeistpkg.ControlRoom,
+
+/// Something happened that the snapshot may not show yet. Read and cleared
+/// by `tick`, which is the one place it is worked out.
+control_dirty: bool = false,
+
+/// The wake thread saying its moment has come. Set off the app thread.
+control_due: std.atomic.Value(bool) = .init(false),
+
+/// Started the first time there is a moment to wait for, so a session that
+/// never has one never has the thread.
+control_wake: ?poltergeistpkg.ControlWake = null,
+
+/// T1 for the control room: `poltergeist-quiescence-after`.
+control_still_ms: u64 = (poltergeistpkg.Sampler.Config{}).quiescence_ms,
+
 /// When it is acceptable to disturb the user. Null means any hour.
 ///
 /// Only scheduling questions respect it; an authorisation prompt goes out
@@ -464,6 +482,7 @@ pub fn init(
         .poltergeist_feed = .init(alloc, global.io()),
         .chat = .init(alloc, .{}),
         .tasks = .init(alloc, .{}),
+        .control_room = .init(alloc),
     };
 }
 
@@ -472,6 +491,11 @@ pub fn deinit(self: *App) void {
     // before anything it could touch is.
     self.poltergeist_stopping.store(true, .release);
     if (self.poltergeist_late_alert) |t| t.join();
+
+    // The same for the control room's wake thread, which calls the apprt's
+    // `wakeup`: gone before the surfaces, so it cannot fire into a close.
+    if (self.control_wake) |*w| w.stop();
+    self.control_wake = null;
 
     // Clean up all our surfaces
     for (self.surfaces.items) |surface| surface.deinit();
@@ -511,6 +535,7 @@ pub fn deinit(self: *App) void {
     self.poltergeist_alerts.deinit(self.alloc);
     if (self.poltergeist_log_dir) |d| self.alloc.free(d);
     self.chat_surfaces.deinit(self.alloc);
+    self.control_room.deinit();
     self.chat.deinit();
     self.tasks.deinit();
     self.poltergeist.deinit();
@@ -544,6 +569,119 @@ pub fn destroy(self: *App) void {
 pub fn tick(self: *App, rt_app: *apprt.App) !void {
     // Drain our mailbox
     try self.drainMailbox(rt_app);
+
+    // After it, so that everything this tick changed is in one snapshot.
+    self.controlRoomTick(rt_app);
+}
+
+/// Say that the control room's snapshot may be out of date. Cheap, and
+/// safe from anywhere on the app thread: the working-out waits for `tick`.
+pub fn controlRoomTouch(self: *App) void {
+    if (self.control_dirty) return;
+    self.control_dirty = true;
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
+}
+
+/// The wake thread's whole job: raise the flag and get `tick` called.
+fn controlRoomDue(ctx: *anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (self.poltergeist_stopping.load(.acquire)) return;
+    self.control_due.store(true, .release);
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
+}
+
+/// Bring the control room's snapshot up to date if anything may have
+/// changed it, tell the apprt if it did, and set the next wake.
+///
+/// **Two ways in and no third.** Something happened on this thread
+/// (`control_dirty`), or the moment `ControlRoom` asked to be woken at has
+/// come (`control_due`). There is no interval: with neither, this returns
+/// having read two flags.
+fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
+    if (self.poltergeist_stopping.load(.acquire)) return;
+    const due = self.control_due.swap(false, .acq_rel);
+    const dirty = self.control_dirty;
+    if (!due and !dirty) return;
+    self.control_dirty = false;
+
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const now_ms = self.poltergeistElapsedMs();
+    var terminals: std.ArrayListUnmanaged(poltergeistpkg.ControlRoom.Terminal) = .empty;
+    for (self.surfaces.items) |v| {
+        const surface: *Surface = v.core();
+        const id = poltergeistpkg.Bus.idOf(surface);
+        if (self.isChatSurface(id)) continue;
+
+        // Which window and tab it is in is the apprt's to say, as it is for
+        // `terminal_list`; zero is "did not say".
+        var window: u64 = 0;
+        var tab: u64 = 0;
+        _ = rt_app.performAction(
+            .{ .surface = surface },
+            .poltergeist_grouping,
+            .{ .window = &window, .tab = &tab },
+        ) catch {};
+
+        terminals.append(alloc, .{
+            .id = id,
+            .title = self.footingOf(alloc, id).title,
+            .window = if (window == 0) null else window,
+            .tab = if (tab == 0) null else tab,
+            // A terminal whose process has ended is there to look at and
+            // not to work in. Whether it ended badly is the bus's note
+            // (`Surface.childExited`); `facts` reads it when this says
+            // nothing more exact.
+            .process = if (!surface.child_exited)
+                .running
+            else if (self.poltergeist.get(id)) |e|
+                (if (e.left) |l| switch (l.why) {
+                    .failed => poltergeistpkg.Attention.Process{ .agent_exited = l.at_ms },
+                    .unknown => .gone,
+                } else .gone)
+            else
+                .gone,
+            .agent_present = self.agentPresent(id),
+        }) catch return;
+    }
+
+    const outcome = self.control_room.refresh(.{
+        .bus = &self.poltergeist,
+        .chat = &self.chat,
+        .terminals = terminals.items,
+        .thresholds = .from(
+            .{ .quiescence_ms = self.control_still_ms },
+            self.poltergeist.config,
+        ),
+        .now_ms = now_ms,
+        .wall_ms = @intCast(@max(0, self.poltergeistWallMs())),
+    }, if (dirty) .event else .timer) catch |err| {
+        log.warn("control room: could not work out the snapshot err={}", .{err});
+        return;
+    };
+
+    if (outcome.notify) |rev| {
+        _ = rt_app.performAction(.app, .control_room_changed, .{ .rev = rev }) catch |err| {
+            log.warn("control room: could not tell the apprt err={}", .{err});
+        };
+    }
+
+    if (outcome.wake_ms != null and self.control_wake == null) {
+        self.control_wake = .{ .io = global.io(), .fire = controlRoomDue, .ctx = self };
+        self.control_wake.?.start() catch |err| {
+            log.warn("control room: no wake thread, thresholds will show late err={}", .{err});
+            self.control_wake = null;
+        };
+    }
+    if (self.control_wake) |*w| w.arm(outcome.wake_ms, now_ms);
+}
+
+/// The control room's snapshot as JSON; `ControlRoom.zig` has the shape.
+/// Borrowed until the next `tick`. Empty before the first one.
+pub fn controlSnapshotJson(self: *const App) []const u8 {
+    return self.control_room.json;
 }
 
 /// Update the configuration associated with the app. This can only be
@@ -567,6 +705,9 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
         config.@"poltergeist-supervisor-stand-down";
     self.poltergeist.config.calls_silent_after_ms =
         config.@"poltergeist-calls-silent-after".duration / std.time.ns_per_ms;
+    self.control_still_ms =
+        config.@"poltergeist-quiescence-after".duration / std.time.ns_per_ms;
+    self.controlRoomTouch();
 
     self.poltergeist_task_idle_ms =
         config.@"poltergeist-task-idle-after".duration / std.time.ns_per_ms;
@@ -5265,6 +5406,8 @@ fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) any
 /// Cheap: each surface compares the mark it last set and does nothing when
 /// it has not moved, so this can be called whenever anything happens.
 pub fn refreshPoltergeistTabs(self: *App) void {
+    // Whatever moved a tab's mark moved the control room too.
+    self.controlRoomTouch();
     for (self.surfaces.items) |rt_surface| {
         rt_surface.core().updatePoltergeistTabMark();
     }
@@ -6597,6 +6740,7 @@ pub fn addSurface(
     rt_surface: *apprt.Surface,
 ) Allocator.Error!void {
     try self.surfaces.append(self.alloc, rt_surface);
+    self.controlRoomTouch();
 
     // Deliberately not registering with the Poltergeist bus here. Both
     // apprts call this *before* the core surface exists -- GTK's `core()`
@@ -6634,6 +6778,7 @@ pub fn deleteSurface(self: *App, rt_surface: *apprt.Surface) void {
     while (i < self.surfaces.items.len) {
         if (self.surfaces.items[i] == rt_surface) {
             _ = self.surfaces.swapRemove(i);
+            self.controlRoomTouch();
             continue;
         }
 
@@ -6672,6 +6817,10 @@ pub fn needsConfirmQuit(self: *const App) bool {
 /// Drain the mailbox.
 fn drainMailbox(self: *App, rt_app: *apprt.App) !void {
     while (self.mailbox.pop(global.io())) |message| {
+        // Anything that arrives here may have changed what the control
+        // room shows, and working out that it did not is cheaper than a
+        // list of which messages can.
+        self.control_dirty = true;
         if (comptime std.log.logEnabled(.debug, .app)) {
             switch (message) {
                 // these tend to be way too verbose for normal debugging
@@ -6698,7 +6847,7 @@ fn drainMailbox(self: *App, rt_app: *apprt.App) !void {
                     "poltergeist: sampling could not start for terminal 0x{x}; it is marked watched with nothing measuring it",
                     .{msg.from},
                 );
-                self.poltergeist.noteSampling(msg.from, msg.started);
+                self.poltergeist.noteSampling(msg.from, msg.started, self.poltergeistElapsedMs());
             },
             .poltergeist_request => |p| self.poltergeistRequest(p),
             .poltergeist_alert => |line| self.poltergeistAlert(line),

@@ -46,6 +46,7 @@ GROUP_NAME_FILES = {
     "src/cli/chat.zig": "the chat page: names groups to the socket; holds no storage",
     "src/poltergeist/Chat.zig": "the table of groups (group_stores.Table.chat_groups)",
     "src/poltergeist/ChatLog.zig": "the record and the stream (group_stores.Root.chat, Stream.*)",
+    "src/poltergeist/ControlRoom.zig": "works a snapshot out of Chat on every change; names appear in it and are stored nowhere",
     "src/poltergeist/Feed.zig": "an event in flight to plugins; not stored",
     "src/poltergeist/GroupLog.zig": "group.json inside chat/<group>/ (group_stores.Root.chat)",
     "src/poltergeist/GroupRename.zig": "the rename itself",

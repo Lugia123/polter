@@ -1,0 +1,666 @@
+{
+  "rev": 1,
+  "now_ms": 6000000,
+  "needs_me": 4,
+  "groups_needing_me": 4,
+  "groups_other": 3,
+  "groups": [
+    {
+      "name": "web-app",
+      "brief": "",
+      "last_ms": 0,
+      "seen_ms": null,
+      "snooze": {
+        "until": "none",
+        "at_ms": null,
+        "until_ms": null
+      },
+      "steward": "0x00000000000000a1",
+      "attention": {
+        "kind": "needs_approval",
+        "under": "needs_approval",
+        "since_ms": 5760000,
+        "source": "hook",
+        "age_ms": 240000,
+        "terminal": "0x00000000000000a1",
+        "worker": null
+      },
+      "needs_me": true,
+      "unseen": false,
+      "shown": "needs_you",
+      "word": "needs_approval",
+      "text": "等批准",
+      "waited_min": 4,
+      "reason": {
+        "from": "hook_note",
+        "text": "Bash(rm -rf dist/ && npm run build)",
+        "missing": null
+      },
+      "more": 1,
+      "same_as": "web-app-docs",
+      "members": [
+        {
+          "id": "0x00000000000000a1",
+          "role": "steward",
+          "title": "web-app",
+          "kind": "needs_approval",
+          "since_ms": 5760000,
+          "source": "hook",
+          "age_ms": 240000,
+          "shown": "needs_you",
+          "word": "needs_approval",
+          "text": "等批准",
+          "screen": "unmeasured",
+          "alive": true,
+          "duty": "on",
+          "held": false,
+          "shielded": false
+        },
+        {
+          "id": "0x00000000000000b1",
+          "role": "worker",
+          "title": "web-app worker",
+          "kind": "needs_approval",
+          "since_ms": 5970000,
+          "source": "hook",
+          "age_ms": 30000,
+          "shown": "needs_you",
+          "word": "needs_approval",
+          "text": "等批准",
+          "screen": "unmeasured",
+          "alive": true,
+          "duty": "on",
+          "held": false,
+          "shielded": false
+        }
+      ]
+    },
+    {
+      "name": "web-app-docs",
+      "brief": "",
+      "last_ms": 1700000000000,
+      "seen_ms": null,
+      "snooze": {
+        "until": "none",
+        "at_ms": null,
+        "until_ms": null
+      },
+      "steward": "0x00000000000000a1",
+      "attention": {
+        "kind": "needs_approval",
+        "under": "needs_approval",
+        "since_ms": 5760000,
+        "source": "hook",
+        "age_ms": 240000,
+        "terminal": "0x00000000000000a1",
+        "worker": null
+      },
+      "needs_me": true,
+      "unseen": false,
+      "shown": "needs_you",
+      "word": "needs_approval",
+      "text": "等批准",
+      "waited_min": 4,
+      "reason": {
+        "from": "hook_note",
+        "text": "Bash(rm -rf dist/ && npm run build)",
+        "missing": null
+      },
+      "more": 0,
+      "same_as": null,
+      "members": [
+        {
+          "id": "0x00000000000000a1",
+          "role": "steward",
+          "title": "web-app",
+          "kind": "needs_approval",
+          "since_ms": 5760000,
+          "source": "hook",
+          "age_ms": 240000,
+          "shown": "needs_you",
+          "word": "needs_approval",
+          "text": "等批准",
+          "screen": "unmeasured",
+          "alive": true,
+          "duty": "on",
+          "held": false,
+          "shielded": false
+        }
+      ]
+    },
+    {
+      "name": "billing",
+      "brief": "",
+      "last_ms": 0,
+      "seen_ms": null,
+      "snooze": {
+        "until": "none",
+        "at_ms": null,
+        "until_ms": null
+      },
+      "steward": "0x00000000000000a2",
+      "attention": {
+        "kind": "needs_answer",
+        "under": "needs_answer",
+        "since_ms": 5340000,
+        "source": "hook",
+        "age_ms": 660000,
+        "terminal": "0x00000000000000a2",
+        "worker": null
+      },
+      "needs_me": true,
+      "unseen": false,
+      "shown": "needs_you",
+      "word": "needs_answer",
+      "text": "等回答",
+      "waited_min": 11,
+      "reason": {
+        "from": "hook_note",
+        "text": "发票编号用哪一种格式？",
+        "missing": null
+      },
+      "more": 0,
+      "same_as": null,
+      "members": [
+        {
+          "id": "0x00000000000000a2",
+          "role": "steward",
+          "title": "billing",
+          "kind": "needs_answer",
+          "since_ms": 5340000,
+          "source": "hook",
+          "age_ms": 660000,
+          "shown": "needs_you",
+          "word": "needs_answer",
+          "text": "等回答",
+          "screen": "unmeasured",
+          "alive": true,
+          "duty": "on",
+          "held": false,
+          "shielded": false
+        }
+      ]
+    },
+    {
+      "name": "docs-site",
+      "brief": "",
+      "last_ms": 0,
+      "seen_ms": null,
+      "snooze": {
+        "until": "none",
+        "at_ms": null,
+        "until_ms": null
+      },
+      "steward": "0x00000000000000a3",
+      "attention": {
+        "kind": "failed",
+        "under": "failed",
+        "since_ms": 5880000,
+        "source": "hook",
+        "age_ms": 120000,
+        "terminal": "0x00000000000000a3",
+        "worker": null
+      },
+      "needs_me": true,
+      "unseen": false,
+      "shown": "trouble",
+      "word": "failed",
+      "text": "出错",
+      "waited_min": 2,
+      "reason": {
+        "from": "hook_detail",
+        "text": "rate_limit：resets 13:40",
+        "missing": null
+      },
+      "more": 0,
+      "same_as": null,
+      "members": [
+        {
+          "id": "0x00000000000000a3",
+          "role": "steward",
+          "title": "docs-site",
+          "kind": "failed",
+          "since_ms": 5880000,
+          "source": "hook",
+          "age_ms": 120000,
+          "shown": "trouble",
+          "word": "failed",
+          "text": "出错",
+          "screen": "unmeasured",
+          "alive": true,
+          "duty": "on",
+          "held": false,
+          "shielded": false
+        }
+      ]
+    },
+    {
+      "name": "infra",
+      "brief": "",
+      "last_ms": 0,
+      "seen_ms": null,
+      "snooze": {
+        "until": "none",
+        "at_ms": null,
+        "until_ms": null
+      },
+      "steward": "0x00000000000000a4",
+      "attention": {
+        "kind": "done_unseen",
+        "under": "done_unseen",
+        "since_ms": 4200000,
+        "source": "hook",
+        "age_ms": 1800000,
+        "terminal": "0x00000000000000a4",
+        "worker": null
+      },
+      "needs_me": false,
+      "unseen": true,
+      "shown": "done_unseen",
+      "word": "done_unseen",
+      "text": "做完了，没看",
+      "waited_min": null,
+      "reason": {
+        "from": "last_turn",
+        "text": "要不要现在切流量？",
+        "missing": null
+      },
+      "more": 0,
+      "same_as": null,
+      "members": [
+        {
+          "id": "0x00000000000000a4",
+          "role": "steward",
+          "title": "infra",
+          "kind": "done_unseen",
+          "since_ms": 4200000,
+          "source": "hook",
+          "age_ms": 1800000,
+          "shown": "done_unseen",
+          "word": "done_unseen",
+          "text": "做完了，没看",
+          "screen": "unmeasured",
+          "alive": true,
+          "duty": "on",
+          "held": false,
+          "shielded": false
+        }
+      ]
+    },
+    {
+      "name": "design-system",
+      "brief": "",
+      "last_ms": 0,
+      "seen_ms": null,
+      "snooze": {
+        "until": "none",
+        "at_ms": null,
+        "until_ms": null
+      },
+      "steward": "0x00000000000000a5",
+      "attention": {
+        "kind": "working",
+        "under": "working",
+        "since_ms": 5700000,
+        "source": "hook",
+        "age_ms": 300000,
+        "terminal": "0x00000000000000a5",
+        "worker": null
+      },
+      "needs_me": false,
+      "unseen": false,
+      "shown": "working",
+      "word": "working",
+      "text": "在干活",
+      "waited_min": null,
+      "reason": {
+        "from": "none",
+        "text": "",
+        "missing": null
+      },
+      "more": 0,
+      "same_as": null,
+      "members": [
+        {
+          "id": "0x00000000000000a5",
+          "role": "steward",
+          "title": "design-system",
+          "kind": "working",
+          "since_ms": 5700000,
+          "source": "hook",
+          "age_ms": 300000,
+          "shown": "working",
+          "word": "working",
+          "text": "在干活",
+          "screen": "unmeasured",
+          "alive": true,
+          "duty": "on",
+          "held": false,
+          "shielded": false
+        },
+        {
+          "id": "0x00000000000000b5",
+          "role": "worker",
+          "title": "tokens",
+          "kind": "idle",
+          "since_ms": 0,
+          "source": "none",
+          "age_ms": null,
+          "shown": "none",
+          "word": "off_duty",
+          "text": "下班",
+          "screen": "unmeasured",
+          "alive": true,
+          "duty": "off",
+          "held": false,
+          "shielded": false
+        }
+      ]
+    },
+    {
+      "name": "notes",
+      "brief": "",
+      "last_ms": 0,
+      "seen_ms": null,
+      "snooze": {
+        "until": "none",
+        "at_ms": null,
+        "until_ms": null
+      },
+      "steward": "0x00000000000000a6",
+      "attention": {
+        "kind": "idle",
+        "under": "idle",
+        "since_ms": 600000,
+        "source": "hook",
+        "age_ms": 5400000,
+        "terminal": "0x00000000000000a6",
+        "worker": null
+      },
+      "needs_me": false,
+      "unseen": false,
+      "shown": "none",
+      "word": "none",
+      "text": "",
+      "waited_min": null,
+      "reason": {
+        "from": "none",
+        "text": "",
+        "missing": null
+      },
+      "more": 0,
+      "same_as": null,
+      "members": [
+        {
+          "id": "0x00000000000000a6",
+          "role": "steward",
+          "title": "notes",
+          "kind": "idle",
+          "since_ms": 600000,
+          "source": "hook",
+          "age_ms": 5400000,
+          "shown": "none",
+          "word": "none",
+          "text": "",
+          "screen": "unmeasured",
+          "alive": true,
+          "duty": "on",
+          "held": false,
+          "shielded": false
+        }
+      ]
+    }
+  ],
+  "ungrouped": [
+    {
+      "id": "0x00000000000000c1",
+      "title": "zsh — ~/work",
+      "attention": {
+        "kind": "needs_approval",
+        "under": "needs_approval",
+        "since_ms": 5940000,
+        "source": "hook",
+        "age_ms": 60000,
+        "terminal": "0x00000000000000c1",
+        "worker": null
+      },
+      "needs_me": true,
+      "unseen": false,
+      "shown": "needs_you",
+      "word": "needs_approval",
+      "text": "等批准",
+      "waited_min": 1,
+      "reason": {
+        "from": "hook_note",
+        "text": "Bash(git push)",
+        "missing": null
+      }
+    }
+  ],
+  "terminals": [
+    {
+      "id": "0x00000000000000a1",
+      "title": "web-app",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000021",
+      "kind": "needs_approval",
+      "since_ms": 5760000,
+      "source": "hook",
+      "age_ms": 240000,
+      "shown": "needs_you",
+      "word": "needs_approval",
+      "text": "等批准",
+      "screen": "unmeasured",
+      "alive": true,
+      "duty": "on",
+      "held": false,
+      "shielded": false
+    },
+    {
+      "id": "0x00000000000000a2",
+      "title": "billing",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000022",
+      "kind": "needs_answer",
+      "since_ms": 5340000,
+      "source": "hook",
+      "age_ms": 660000,
+      "shown": "needs_you",
+      "word": "needs_answer",
+      "text": "等回答",
+      "screen": "unmeasured",
+      "alive": true,
+      "duty": "on",
+      "held": false,
+      "shielded": false
+    },
+    {
+      "id": "0x00000000000000a3",
+      "title": "docs-site",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000023",
+      "kind": "failed",
+      "since_ms": 5880000,
+      "source": "hook",
+      "age_ms": 120000,
+      "shown": "trouble",
+      "word": "failed",
+      "text": "出错",
+      "screen": "unmeasured",
+      "alive": true,
+      "duty": "on",
+      "held": false,
+      "shielded": false
+    },
+    {
+      "id": "0x00000000000000a4",
+      "title": "infra",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000024",
+      "kind": "done_unseen",
+      "since_ms": 4200000,
+      "source": "hook",
+      "age_ms": 1800000,
+      "shown": "done_unseen",
+      "word": "done_unseen",
+      "text": "做完了，没看",
+      "screen": "unmeasured",
+      "alive": true,
+      "duty": "on",
+      "held": false,
+      "shielded": false
+    },
+    {
+      "id": "0x00000000000000a5",
+      "title": "design-system",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000025",
+      "kind": "working",
+      "since_ms": 5700000,
+      "source": "hook",
+      "age_ms": 300000,
+      "shown": "working",
+      "word": "working",
+      "text": "在干活",
+      "screen": "unmeasured",
+      "alive": true,
+      "duty": "on",
+      "held": false,
+      "shielded": false
+    },
+    {
+      "id": "0x00000000000000a6",
+      "title": "notes",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000026",
+      "kind": "idle",
+      "since_ms": 600000,
+      "source": "hook",
+      "age_ms": 5400000,
+      "shown": "none",
+      "word": "none",
+      "text": "",
+      "screen": "unmeasured",
+      "alive": true,
+      "duty": "on",
+      "held": false,
+      "shielded": false
+    },
+    {
+      "id": "0x00000000000000b1",
+      "title": "web-app worker",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000021",
+      "kind": "needs_approval",
+      "since_ms": 5970000,
+      "source": "hook",
+      "age_ms": 30000,
+      "shown": "needs_you",
+      "word": "needs_approval",
+      "text": "等批准",
+      "screen": "unmeasured",
+      "alive": true,
+      "duty": "on",
+      "held": false,
+      "shielded": false
+    },
+    {
+      "id": "0x00000000000000b5",
+      "title": "tokens",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000025",
+      "kind": "idle",
+      "since_ms": 0,
+      "source": "none",
+      "age_ms": null,
+      "shown": "none",
+      "word": "off_duty",
+      "text": "下班",
+      "screen": "unmeasured",
+      "alive": true,
+      "duty": "off",
+      "held": false,
+      "shielded": false
+    },
+    {
+      "id": "0x00000000000000c1",
+      "title": "zsh — ~/work",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000027",
+      "kind": "needs_approval",
+      "since_ms": 5940000,
+      "source": "hook",
+      "age_ms": 60000,
+      "shown": "needs_you",
+      "word": "needs_approval",
+      "text": "等批准",
+      "screen": "unmeasured",
+      "alive": true,
+      "duty": "on",
+      "held": false,
+      "shielded": false
+    },
+    {
+      "id": "0x00000000000000c2",
+      "title": "zsh",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000027",
+      "kind": "idle",
+      "since_ms": 0,
+      "source": "none",
+      "age_ms": null,
+      "shown": "none",
+      "word": "none",
+      "text": "",
+      "screen": "unmeasured",
+      "alive": true,
+      "duty": "on",
+      "held": false,
+      "shielded": false
+    }
+  ],
+  "tabs": [
+    {
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000021",
+      "shown": "needs_you",
+      "terminal": "0x00000000000000a1"
+    },
+    {
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000022",
+      "shown": "needs_you",
+      "terminal": "0x00000000000000a2"
+    },
+    {
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000023",
+      "shown": "trouble",
+      "terminal": "0x00000000000000a3"
+    },
+    {
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000024",
+      "shown": "done_unseen",
+      "terminal": "0x00000000000000a4"
+    },
+    {
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000025",
+      "shown": "none",
+      "terminal": null
+    },
+    {
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000026",
+      "shown": "none",
+      "terminal": null
+    },
+    {
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000027",
+      "shown": "needs_you",
+      "terminal": "0x00000000000000c1"
+    }
+  ]
+}

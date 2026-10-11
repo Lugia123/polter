@@ -23,6 +23,7 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
 const Sampler = @import("Sampler.zig");
+const Attention = @import("Attention.zig");
 const AgentEvent = @import("agent_event.zig");
 
 /// A terminal's identity. This is `Surface.id`, which Ghostty already
@@ -166,6 +167,19 @@ pub const Role = enum {
     watched,
 };
 
+/// An agent that is no longer in its terminal.
+pub const Left = struct {
+    why: Why,
+    at_ms: u64,
+
+    pub const Why = enum {
+        /// It ended on its own, with an error.
+        failed,
+        /// It is gone and nothing says whether it failed or was closed.
+        unknown,
+    };
+};
+
 /// Whether a terminal is still expected to be working.
 pub const Duty = enum {
     /// On duty. Quiescence here is worth telling the supervisor about.
@@ -294,6 +308,11 @@ pub const Agent = struct {
     /// When `state` last changed, on the bus's clock.
     since_ms: u64,
 
+    /// When a hook event last arrived, or null if none ever has. Not the
+    /// same as `since_ms`: an event that repeats the state it is already in
+    /// moves this and not that, and the age of what is known is read here.
+    last_event_ms: ?u64,
+
     /// When `hooks` became `expected`, for the timeout.
     expected_ms: u64,
 
@@ -314,6 +333,7 @@ pub const Agent = struct {
         .state = .idle,
         .since_ms = 0,
         .expected_ms = 0,
+        .last_event_ms = null,
         .session_id = .{},
         .cli = .{},
         .detail = .{},
@@ -565,6 +585,14 @@ pub const Entry = struct {
     /// `Sampling`. Only meaningful while the terminal is watched, and only
     /// read through `samplingOf`, which says so.
     sampling: ?Sampling = null,
+
+    /// When the sampling was found to have failed, while `sampling` says
+    /// `failed`.
+    sampling_failed_ms: ?u64 = null,
+
+    /// That this terminal's agent went away, when, and whether anything
+    /// said why; see `noteLeft`. Null while nothing says it has.
+    left: ?Left = null,
 
     /// When this terminal's agent last called a Polter tool, or null if it
     /// never has; see `noteCall`.
@@ -1015,6 +1043,7 @@ pub fn watch(self: *Bus, id: Id, by: ?Id) WatchError!void {
     // sample (`Host.setWatching`, `Surface.setPoltergeistWatching`), and
     // the answer comes back later -- or never. Unconfirmed until it does.
     e.sampling = .starting;
+    e.sampling_failed_ms = null;
 }
 
 /// What is known of the sampling behind a watch (task 731).
@@ -1044,9 +1073,65 @@ pub const Sampling = enum {
 /// `samplingOf`, which is the one place that asks whether it is watched:
 /// an answer arriving after the watch it belonged to has ended is never
 /// shown, and the next watch starts from `starting` again (`watch`).
-pub fn noteSampling(self: *Bus, id: Id, started: bool) void {
+pub fn noteSampling(self: *Bus, id: Id, started: bool, now_ms: u64) void {
     const e = self.entries.getPtr(id) orelse return;
     e.sampling = if (started) .running else .failed;
+    e.sampling_failed_ms = if (started) null else now_ms;
+}
+
+/// Record that this terminal's agent is no longer there.
+///
+/// `failed` only when something said so -- the process ended on its own
+/// with an error. Everything else is `unknown`, and stays unknown: an agent
+/// the person quit and one that died quietly look the same from here.
+/// Undone by the next hook event, which only an agent that is there sends.
+pub fn noteLeft(self: *Bus, id: Id, why: Left.Why, now_ms: u64) void {
+    const e = self.entries.getPtr(id) orelse return;
+    // The first word on it stands: a failure is not downgraded to unknown
+    // by the connection closing a moment later.
+    if (e.left) |l| if (l.why == .failed or why == .unknown) return;
+    e.left = .{ .why = why, .at_ms = now_ms };
+}
+
+/// Everything the bus knows that decides what this terminal wants from the
+/// person, taken at one moment. A terminal the bus has never heard of is a
+/// plain one that is not there.
+pub fn facts(self: *const Bus, id: Id, now_ms: u64, outside: Attention.Facts.Outside) Attention.Facts {
+    const e = self.entries.get(id) orelse {
+        var f: Attention.Facts = .none;
+        f.id = id;
+        f.process = .gone;
+        return f;
+    };
+    return .{
+        .id = id,
+        .hooks = e.agent.hooks,
+        .state = e.agent.state,
+        .state_since_ms = e.agent.since_ms,
+        .expected_ms = e.agent.expected_ms,
+        .last_event_ms = e.agent.last_event_ms,
+        .waiting_on_background = e.agent.waiting_on_background,
+        .screen = .of(
+            self.samplingOf(id),
+            self.quietMs(id, now_ms),
+            e.sampling_failed_ms orelse now_ms,
+        ),
+        .call_silent_ms = self.callSilentMs(id, now_ms),
+        // What the caller saw of the process outranks what was noted here:
+        // it is looking at the terminal now.
+        .process = switch (outside.process) {
+            .running => if (e.left) |l| switch (l.why) {
+                .failed => .{ .agent_exited = l.at_ms },
+                .unknown => .{ .agent_left = l.at_ms },
+            } else .running,
+            .agent_exited, .agent_left, .gone => outside.process,
+        },
+        .duty = e.duty,
+        .seen_ms = outside.seen_ms,
+        .raised_ms = outside.raised_ms,
+        .held = e.held,
+        .shielded = e.shielded,
+    };
 }
 
 /// What is known of the sampling behind this terminal's watch, or null
@@ -1377,6 +1462,7 @@ pub fn agentEvent(
             a.hooks = .expected;
             a.expected_ms = now_ms;
             a.since_ms = now_ms;
+            e.left = null;
             if (ev.cli.len > 0) a.cli.set(ev.cli);
             return false;
         },
@@ -1395,6 +1481,11 @@ pub fn agentEvent(
 
     a.state = state;
     a.since_ms = now_ms;
+    a.last_event_ms = now_ms;
+
+    // An agent that speaks is there, whatever was concluded when it went
+    // quiet.
+    e.left = null;
     a.detail.set(ev.detail);
     a.note.set(ev.note);
     a.waiting_on_background = ev.event == .turn_ended and ev.waiting_on_background;
@@ -4083,4 +4174,80 @@ test "hooks 879: a turn that ended and then saw the screen move is reported quie
         "[poltergeist] 0x0000000000002222 quiet 40s (last event: turn ended 60s ago)",
         line,
     );
+}
+
+test "ControlRoom facts: everything the bus knows of a terminal, at one moment" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
+    b.noteQuiet(worker, 500, 2_000);
+    b.noteCall(worker, 1_500);
+    try b.setHeld(worker, true, .user);
+
+    const f = b.facts(worker, 3_000, .none);
+    try testing.expectEqual(worker, f.id);
+    try testing.expectEqual(Hooks.live, f.hooks);
+    try testing.expectEqual(AgentState.in_turn, f.state);
+    try testing.expectEqual(@as(u64, 1_000), f.state_since_ms);
+    try testing.expectEqual(@as(?u64, 1_000), f.last_event_ms);
+    try testing.expectEqual(Attention.Screen{ .still_ms = 1_500 }, f.screen);
+    try testing.expectEqual(@as(?u64, 1_500), f.call_silent_ms);
+    try testing.expectEqual(Duty.on, f.duty);
+    try testing.expect(f.held);
+    try testing.expect(!f.shielded);
+    try testing.expectEqual(Attention.Process.running, f.process);
+
+    // What the caller supplies is passed through untouched.
+    const seen = b.facts(worker, 3_000, .{ .process = .running, .seen_ms = 7, .raised_ms = 9 });
+    try testing.expectEqual(@as(?u64, 7), seen.seen_ms);
+    try testing.expectEqual(@as(?u64, 9), seen.raised_ms);
+}
+
+test "ControlRoom facts: a sampler that failed is a failure with a time, not a still screen" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    // Asked for and not yet answered: not measured, and not a fault.
+    try testing.expectEqual(Attention.Screen.unmeasured, b.facts(worker, 10, .none).screen);
+
+    b.noteSampling(worker, false, 4_000);
+    try testing.expectEqual(Attention.Screen{ .unreadable = 4_000 }, b.facts(worker, 9_000, .none).screen);
+
+    b.noteSampling(worker, true, 5_000);
+    try testing.expectEqual(Attention.Screen{ .still_ms = 0 }, b.facts(worker, 9_000, .none).screen);
+
+    // The supervisor is not sampled at all.
+    try testing.expectEqual(Attention.Screen.unmeasured, b.facts(boss, 9_000, .none).screen);
+}
+
+test "ControlRoom facts: an agent that left is a failure only when something said so" {
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
+
+    b.noteLeft(worker, .unknown, 2_000);
+    try testing.expectEqual(Attention.Process{ .agent_left = 2_000 }, b.facts(worker, 3_000, .none).process);
+
+    // Said to have failed: that stands, and a later "gone" does not soften it.
+    b.noteLeft(worker, .failed, 2_500);
+    b.noteLeft(worker, .unknown, 2_700);
+    try testing.expectEqual(Attention.Process{ .agent_exited = 2_500 }, b.facts(worker, 3_000, .none).process);
+
+    // The caller is looking at the terminal now, and outranks the note.
+    const gone = b.facts(worker, 3_000, .{ .process = .gone, .seen_ms = null, .raised_ms = null });
+    try testing.expectEqual(Attention.Process.gone, gone.process);
+
+    // An agent that speaks again is there.
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 4_000);
+    try testing.expectEqual(Attention.Process.running, b.facts(worker, 5_000, .none).process);
+}
+
+test "ControlRoom facts: a terminal the bus never heard of is not there" {
+    var b = try hookedBus();
+    defer b.deinit();
+    const f = b.facts(0xdead, 1_000, .none);
+    try testing.expectEqual(@as(Id, 0xdead), f.id);
+    try testing.expectEqual(Attention.Process.gone, f.process);
+    try testing.expectEqual(Hooks.none, f.hooks);
 }

@@ -9852,7 +9852,7 @@ test "terminal_list says whether anything is measuring under a watch (task 731)"
     try testing.expect(std.mem.indexOf(u8, out.written(), "\"sampling\":\"starting\"") != null);
 
     // The IO thread could not: still marked, and now said to be empty.
-    b.noteSampling(worker, false);
+    b.noteSampling(worker, false, 0);
     const failed = try listed(alloc, &b, fake.host());
     try testing.expect(failed.watching);
     try testing.expectEqual(@as(?Bus.Sampling, .failed), failed.sampling);
@@ -9878,12 +9878,12 @@ test "terminal_list says whether anything is measuring under a watch (task 731)"
 
     // And the answer itself, when it does arrive.
     _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .set_watch = .{ .id = worker, .watch = true } });
-    b.noteSampling(worker, true);
+    b.noteSampling(worker, true, 0);
     try testing.expectEqual(@as(?Bus.Sampling, .running), (try listed(alloc, &b, fake.host())).sampling);
 
     // Let go: gone, and an answer arriving late does not bring it back.
     _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .set_watch = .{ .id = worker, .watch = false } });
-    b.noteSampling(worker, false);
+    b.noteSampling(worker, false, 0);
     try testing.expect((try listed(alloc, &b, fake.host())).sampling == null);
 }
 

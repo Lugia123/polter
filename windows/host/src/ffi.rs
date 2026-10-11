@@ -135,6 +135,13 @@ pub const ACTION_SCREENSHOT: u32 = 76;
 /// out struct, its accessor and the arm in `cb_action` are task 1088's.
 pub const ACTION_POLTERGEIST_SCREENSHOT: u32 = 77;
 
+/// `Action.Key.control_room_changed`, appended after `poltergeist_screenshot`
+/// (task 1366; `dev-docs/poltergeist/control-room.md`, 5.4). ⚠️ **Appended,
+/// like every one before it.** Only the ordinal is here: the payload is one
+/// `uint64_t rev`, and the arm in `cb_action` belongs to the task that
+/// builds the control room on this host.
+pub const ACTION_CONTROL_ROOM_CHANGED: u32 = 78;
+
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
 // **Every ordinal below was counted twice, from two files that are generated
