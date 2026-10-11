@@ -166,10 +166,15 @@ class TerminalWindow: NSWindow {
         stackView.setHuggingPriority(.defaultHigh, for: .horizontal)
         stackView.spacing = 4
         stackView.alignment = .centerY
-        stackView.addArrangedSubview(tabColorIndicator)
-        stackView.addArrangedSubview(keyEquivalentLabel)
-        stackView.addArrangedSubview(resetZoomTabButton)
+        for item in TabAccessory.Item.allCases {
+            stackView.addArrangedSubview(tabAccessoryView(for: item))
+        }
+
+        // The only assignment of this slot. Whatever else wants to be beside
+        // the title is a `TabAccessory.Item` in this stack, not a second
+        // writer (#67).
         tab.accessoryView = stackView
+        refreshTabAccessory()
 
         // Get our saved level
         level = UserDefaults.ghostty.value(forKey: Self.defaultLevelKey) as? NSWindow.Level ?? .normal
@@ -322,6 +327,52 @@ class TerminalWindow: NSWindow {
         }
     }
 
+    // MARK: Tab Accessory
+
+    /// The Poltergeist mark shown beside this tab's title; empty for none.
+    ///
+    /// It is one item in the tab's accessory stack. Setting it shows or
+    /// hides that item and leaves the rest of the stack alone.
+    var poltergeistMark: String = "" {
+        didSet {
+            guard poltergeistMark != oldValue else { return }
+            refreshTabAccessory()
+        }
+    }
+
+    /// The label that draws the Poltergeist mark.
+    private lazy var poltergeistMarkLabel: NSTextField = {
+        let label = NSTextField(labelWithString: "")
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.alignment = .center
+        label.isHidden = true
+        return label
+    }()
+
+    /// The view for each thing in the tab's accessory stack. Exhaustive on
+    /// purpose: a new `TabAccessory.Item` does not compile until it has a
+    /// view here.
+    private func tabAccessoryView(for item: TabAccessory.Item) -> NSView {
+        switch item {
+        case .colorIndicator: return tabColorIndicator
+        case .poltergeistMark: return poltergeistMarkLabel
+        case .keyEquivalent: return keyEquivalentLabel
+        case .resetZoom: return resetZoomTabButton
+        }
+    }
+
+    /// Make the accessory stack show what `TabAccessory` says it should.
+    private func refreshTabAccessory() {
+        poltergeistMarkLabel.stringValue = TabAccessory.markText(poltergeistMark)
+
+        let visible = TabAccessory.visibleItems(.init(
+            poltergeistMark: poltergeistMark,
+            surfaceIsZoomed: surfaceIsZoomed))
+        for item in TabAccessory.Item.allCases {
+            tabAccessoryView(for: item).isHidden = !visible.contains(item)
+        }
+    }
+
     // MARK: Tab Key Equivalents
 
     var keyEquivalent: String? {
@@ -356,7 +407,7 @@ class TerminalWindow: NSWindow {
         didSet {
             // Show/hide our reset zoom button depending on if we're zoomed.
             // We want to show it if we are zoomed.
-            resetZoomTabButton.isHidden = !surfaceIsZoomed
+            refreshTabAccessory()
 
             DispatchQueue.main.async {
                 self.viewModel.isSurfaceZoomed = self.surfaceIsZoomed

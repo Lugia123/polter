@@ -928,31 +928,24 @@ class BaseTerminalController: NSWindowController,
             bell: bell && ghostty.config.bellFeatures.contains(.title))
     }
 
-    /// Put the mark in the tab's own accessory slot.
+    /// Put the mark beside the tab's title, where the title is not.
     ///
-    /// **`NSWindowTab.accessoryView` is a place the title is not**, which
-    /// is the whole point. Composing the mark into the title string meant
-    /// sharing one field with the program running in the terminal: it
-    /// renames itself on `cd`, the composed string goes back through the
-    /// same pipe, and the mark is either erased or applied twice. That is
-    /// not a race to be tightened, it is two owners for one value.
+    /// **The mark is not in the title string**, which is the whole point.
+    /// Composing it into the title meant sharing one field with the program
+    /// running in the terminal: it renames itself on `cd`, the composed
+    /// string goes back through the same pipe, and the mark is either
+    /// erased or applied twice. That is not a race to be tightened, it is
+    /// two owners for one value.
     ///
-    /// A tab with nothing to say gets its accessory taken away rather than
-    /// an empty view left in place, so the tab bar's own spacing is what a
-    /// tab without a mark looks like.
+    /// **This does not assign `NSWindowTab.accessoryView`.** That slot is
+    /// the window's, which composes the mark with everything else that
+    /// lives there (`TabAccessory`). Assigning it from here was the same
+    /// mistake one level up: an empty mark cleared the shortcut hint, the
+    /// colour dot and the reset-zoom button with it (#67). A window that is
+    /// not a `TerminalWindow` -- the quick terminal's panel -- has no tab
+    /// to show a mark on.
     private func applyPoltergeistMarkToTab(_ mark: String) {
-        guard let window else { return }
-        let trimmed = mark.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else {
-            window.tab.accessoryView = nil
-            return
-        }
-
-        let label = NSTextField(labelWithString: trimmed)
-        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        label.alignment = .center
-        label.sizeToFit()
-        window.tab.accessoryView = label
+        (window as? TerminalWindow)?.poltergeistMark = mark
     }
 
     private func titleDidChange(to: String) {
