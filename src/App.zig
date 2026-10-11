@@ -644,9 +644,11 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
             else
                 .gone,
             .agent_present = self.agentPresent(id),
+            .still_ms = surface.poltergeist_threshold_ms,
         }) catch return;
     }
 
+    const wall_ms = self.poltergeistWallMs();
     const outcome = self.control_room.refresh(.{
         .bus = &self.poltergeist,
         .chat = &self.chat,
@@ -656,7 +658,8 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
             self.poltergeist.config,
         ),
         .now_ms = now_ms,
-        .wall_ms = @intCast(@max(0, self.poltergeistWallMs())),
+        .wall_ms = @intCast(@max(0, wall_ms)),
+        .local_offset_ms = poltergeistpkg.daylog.localOffsetMs(wall_ms),
     }, if (dirty) .event else .timer) catch |err| {
         log.warn("control room: could not work out the snapshot err={}", .{err});
         return;
@@ -676,6 +679,59 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         };
     }
     if (self.control_wake) |*w| w.arm(outcome.wake_ms, now_ms);
+}
+
+/// Something the person did in the control room (`ControlAct.zig` has the
+/// request and every refusal). An error is the refusal's name, and means
+/// nothing was done: no key, no text, no mark.
+///
+/// **The person, by construction.** This is reached from the host's own
+/// window through `ghostty_app_control_act` and from nowhere else; no agent
+/// has a tool that arrives here, and the request has no field to say who
+/// is asking.
+pub fn controlAct(self: *App, json: []const u8) anyerror!void {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+
+    const act = try poltergeistpkg.ControlAct.parse(arena.allocator(), json);
+    // Whatever comes of it, what the control room shows may have moved.
+    defer self.controlRoomTouch();
+
+    try poltergeistpkg.ControlAct.perform(
+        act,
+        &self.poltergeist,
+        &self.chat,
+        .{
+            .ctx = self,
+            .sendKey = controlActKey,
+            .sendText = controlActText,
+            .persist = controlActPersist,
+        },
+        self.poltergeistElapsedMs(),
+        @intCast(@max(0, self.poltergeistWallMs())),
+    );
+}
+
+/// One key into a terminal for the control room, by the road an agent's
+/// key takes: not while somebody is typing there, not into a line with a
+/// draft in it, and not counted as sent unless the program received it.
+fn controlActKey(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, key: []const u8) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
+    try surface.poltergeistMayType();
+    if (try surface.sendPoltergeistKey(key) != .written) return error.KeyFailed;
+}
+
+/// A line typed and submitted, by `terminal_send`'s road and its guards.
+fn controlActText(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, text: []const u8) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
+    try surface.typePoltergeistText(text, true);
+}
+
+fn controlActPersist(ctx: *anyopaque, group: []const u8, marks: poltergeistpkg.Chat.Marks) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (self.group_log) |*l| l.mark(group, marks);
 }
 
 /// The control room's snapshot as JSON; `ControlRoom.zig` has the shape.
@@ -5534,6 +5590,7 @@ fn chatRename(
         .chat_groups => try self.chat.rename(group, to),
         .task_group_field => try self.tasks.renameGroup(group, to),
         .stats_last => if (self.stats_log) |*l| try l.renameGroup(group, to),
+        .control_waits => try self.control_room.renameGroup(group, to),
     };
 
     self.reopenStoreHandles();

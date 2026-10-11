@@ -23,7 +23,8 @@
         "source": "hook",
         "age_ms": 240000,
         "terminal": "0x00000000000000a1",
-        "worker": null
+        "worker": null,
+        "event_ms": 5760000
       },
       "needs_me": true,
       "unseen": false,
@@ -93,7 +94,8 @@
         "source": "hook",
         "age_ms": 240000,
         "terminal": "0x00000000000000a1",
-        "worker": null
+        "worker": null,
+        "event_ms": 5760000
       },
       "needs_me": true,
       "unseen": false,
@@ -146,7 +148,8 @@
         "source": "hook",
         "age_ms": 660000,
         "terminal": "0x00000000000000a2",
-        "worker": null
+        "worker": null,
+        "event_ms": 5340000
       },
       "needs_me": true,
       "unseen": false,
@@ -199,7 +202,8 @@
         "source": "hook",
         "age_ms": 120000,
         "terminal": "0x00000000000000a3",
-        "worker": null
+        "worker": null,
+        "event_ms": 5880000
       },
       "needs_me": true,
       "unseen": false,
@@ -252,7 +256,8 @@
         "source": "hook",
         "age_ms": 1800000,
         "terminal": "0x00000000000000a4",
-        "worker": null
+        "worker": null,
+        "event_ms": 4200000
       },
       "needs_me": false,
       "unseen": true,
@@ -305,7 +310,8 @@
         "source": "hook",
         "age_ms": 300000,
         "terminal": "0x00000000000000a5",
-        "worker": null
+        "worker": null,
+        "event_ms": 5700000
       },
       "needs_me": false,
       "unseen": false,
@@ -375,7 +381,8 @@
         "source": "hook",
         "age_ms": 5400000,
         "terminal": "0x00000000000000a6",
-        "worker": null
+        "worker": null,
+        "event_ms": 600000
       },
       "needs_me": false,
       "unseen": false,
@@ -422,7 +429,8 @@
         "source": "hook",
         "age_ms": 60000,
         "terminal": "0x00000000000000c1",
-        "worker": null
+        "worker": null,
+        "event_ms": 5940000
       },
       "needs_me": true,
       "unseen": false,
@@ -445,6 +453,7 @@
       "tab": "0x0000000000000021",
       "kind": "needs_approval",
       "since_ms": 5760000,
+      "event_ms": 5760000,
       "source": "hook",
       "age_ms": 240000,
       "shown": "needs_you",
@@ -463,6 +472,7 @@
       "tab": "0x0000000000000022",
       "kind": "needs_answer",
       "since_ms": 5340000,
+      "event_ms": 5340000,
       "source": "hook",
       "age_ms": 660000,
       "shown": "needs_you",
@@ -481,6 +491,7 @@
       "tab": "0x0000000000000023",
       "kind": "failed",
       "since_ms": 5880000,
+      "event_ms": 5880000,
       "source": "hook",
       "age_ms": 120000,
       "shown": "trouble",
@@ -499,6 +510,7 @@
       "tab": "0x0000000000000024",
       "kind": "done_unseen",
       "since_ms": 4200000,
+      "event_ms": 4200000,
       "source": "hook",
       "age_ms": 1800000,
       "shown": "done_unseen",
@@ -517,6 +529,7 @@
       "tab": "0x0000000000000025",
       "kind": "working",
       "since_ms": 5700000,
+      "event_ms": 5700000,
       "source": "hook",
       "age_ms": 300000,
       "shown": "working",
@@ -535,6 +548,7 @@
       "tab": "0x0000000000000026",
       "kind": "idle",
       "since_ms": 600000,
+      "event_ms": 600000,
       "source": "hook",
       "age_ms": 5400000,
       "shown": "none",
@@ -553,6 +567,7 @@
       "tab": "0x0000000000000021",
       "kind": "needs_approval",
       "since_ms": 5970000,
+      "event_ms": 5970000,
       "source": "hook",
       "age_ms": 30000,
       "shown": "needs_you",
@@ -571,6 +586,7 @@
       "tab": "0x0000000000000025",
       "kind": "idle",
       "since_ms": 0,
+      "event_ms": null,
       "source": "none",
       "age_ms": null,
       "shown": "none",
@@ -589,6 +605,7 @@
       "tab": "0x0000000000000027",
       "kind": "needs_approval",
       "since_ms": 5940000,
+      "event_ms": 5940000,
       "source": "hook",
       "age_ms": 60000,
       "shown": "needs_you",
@@ -607,6 +624,7 @@
       "tab": "0x0000000000000027",
       "kind": "idle",
       "since_ms": 0,
+      "event_ms": null,
       "source": "none",
       "age_ms": null,
       "shown": "none",
@@ -662,5 +680,84 @@
       "shown": "needs_you",
       "terminal": "0x00000000000000c1"
     }
-  ]
+  ],
+  "pulses": [
+    {
+      "terminal": "0x00000000000000a2",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000022",
+      "group": "billing"
+    },
+    {
+      "terminal": "0x00000000000000a1",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000021",
+      "group": "web-app-docs"
+    },
+    {
+      "terminal": "0x00000000000000c1",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000027",
+      "group": null
+    },
+    {
+      "terminal": "0x00000000000000b1",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000021",
+      "group": null
+    }
+  ],
+  "band": {
+    "start_ms": 1699999200000,
+    "start_label": "06:00",
+    "now_ms": 1700006000000,
+    "total_min": 19,
+    "lanes": [
+      {
+        "name": "billing",
+        "spans": [
+          {
+            "from_ms": 1700005340000,
+            "to_ms": 1700006000000,
+            "ongoing": true
+          }
+        ]
+      },
+      {
+        "name": "docs-site",
+        "spans": [
+          {
+            "from_ms": 1700003000000,
+            "to_ms": 1700003480000,
+            "ongoing": false
+          },
+          {
+            "from_ms": 1700005880000,
+            "to_ms": 1700006000000,
+            "ongoing": true
+          }
+        ]
+      },
+      {
+        "name": "web-app",
+        "spans": [
+          {
+            "from_ms": 1700005760000,
+            "to_ms": 1700006000000,
+            "ongoing": true
+          }
+        ]
+      },
+      {
+        "name": "web-app-docs",
+        "spans": [
+          {
+            "from_ms": 1700005760000,
+            "to_ms": 1700006000000,
+            "ongoing": true
+          }
+        ]
+      }
+    ]
+  }
 }

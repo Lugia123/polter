@@ -328,6 +328,13 @@ pub const Agent = struct {
     /// No hooks, nothing known. Written out rather than defaulted field by
     /// field, so a field added here has to be given a value in this one
     /// place and every entry starts from it.
+    /// When the last event arrived. The notices that say "N seconds ago"
+    /// and the rule about a screen drawing an event mean this, not how long
+    /// the state has lasted.
+    pub fn eventMs(self: Agent) u64 {
+        return self.last_event_ms orelse self.since_ms;
+    }
+
     pub const none: Agent = .{
         .hooks = .none,
         .state = .idle,
@@ -1477,10 +1484,10 @@ pub fn agentEvent(
     // Any event is the hooks working, so `expected` resolves. A
     // `hooks_silent` line still in the box goes below with everything
     // else: each event either clears the slot or replaces it.
+    const before = a.*;
     a.hooks = .live;
 
     a.state = state;
-    a.since_ms = now_ms;
     a.last_event_ms = now_ms;
 
     // An agent that speaks is there, whatever was concluded when it went
@@ -1488,6 +1495,16 @@ pub fn agentEvent(
     e.left = null;
     a.detail.set(ev.detail);
     a.note.set(ev.note);
+
+    // **`since_ms` moves when the state does, and not when it is said
+    // again.** A supervisor pressing a working agent starts another turn
+    // inside the one it is in, and an agent left waiting is announced more
+    // than once; resetting the clock on each would make the one that has
+    // waited longest look like the newest. Waiting on a *different* thing
+    // is a change -- a second permission box is not the first one still
+    // open -- so for the two waiting states what is waited on is part of
+    // the state. When an event arrived at all is `last_event_ms`.
+    if (!sameState(before, a.*)) a.since_ms = now_ms;
     a.waiting_on_background = ev.event == .turn_ended and ev.waiting_on_background;
 
     if (ev.event == .turn_ended) try self.keepTurn(id, ev, now_ms);
@@ -1504,6 +1521,38 @@ pub fn agentEvent(
     a.pending = kind;
     a.handed = 0;
     return true;
+}
+
+/// Whether an event left the agent in the state it was already in.
+fn sameState(was: Agent, is: Agent) bool {
+    if (was.hooks != .live or was.state != is.state) return false;
+    return switch (is.state) {
+        .awaiting_approval, .awaiting_input => sameText(was.detail.get(), is.detail.get()) and
+            sameText(was.note.get(), is.note.get()),
+        .idle, .in_turn, .ended, .failed => true,
+    };
+}
+
+fn sameText(a: ?[]const u8, b: ?[]const u8) bool {
+    return std.mem.eql(u8, a orelse "", b orelse "");
+}
+
+/// Whether the prompt a caller saw is the one still standing in this
+/// terminal: the agent is waiting on an approval, it has been since
+/// `since_ms`, nothing has been heard from it after `event_ms`, and -- where
+/// the screen is measured -- the screen has not moved since the box was
+/// drawn. The last is what catches a box the person dismissed at the
+/// terminal, which fires no hook at all (#879).
+///
+/// Everything that types an answer into a prompt on the person's behalf
+/// asks this first, and sends nothing when it says no.
+pub fn promptStanding(self: *const Bus, id: Id, since_ms: u64, event_ms: u64, now_ms: u64) bool {
+    const e = self.entries.get(id) orelse return false;
+    const a = e.agent;
+    if (a.hooks != .live or a.state != .awaiting_approval) return false;
+    if (a.since_ms != since_ms) return false;
+    if (a.last_event_ms == null or a.last_event_ms.? != event_ms) return false;
+    return self.quietExplained(id, now_ms);
 }
 
 fn keepTurn(self: *Bus, id: Id, ev: AgentEvent.Event, now_ms: u64) Allocator.Error!void {
@@ -1903,7 +1952,7 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers)
                             id,
                             self.quietMs(id, now_ms) / std.time.ms_per_s,
                             stateWords(e.agent.state),
-                            (now_ms -| e.agent.since_ms) / std.time.ms_per_s,
+                            (now_ms -| e.agent.eventMs()) / std.time.ms_per_s,
                         },
                     ) else if (in_turn) w.print(
                         "{s}0x{x:0>16} quiet {d}s (in turn {d}m)",
@@ -2077,7 +2126,7 @@ fn quietExplained(self: *const Bus, id: Id, now_ms: u64) bool {
     if (a.hooks != .live or !stateExplains(a.state)) return false;
     if (!self.observed(id)) return true;
     const still_since = now_ms -| self.quietMs(id, now_ms);
-    return still_since <= a.since_ms + event_redraw_grace_ms;
+    return still_since <= a.eventMs() + event_redraw_grace_ms;
 }
 
 /// Whether being in this state is a reason for the screen to be still.
@@ -2115,7 +2164,7 @@ fn writeAgent(
     turn: ?Turn,
     now_ms: u64,
 ) std.Io.Writer.Error!void {
-    const ago_s = (now_ms -| a.since_ms) / std.time.ms_per_s;
+    const ago_s = (now_ms -| a.eventMs()) / std.time.ms_per_s;
     switch (kind) {
         .turn_ended => {
             try w.print("{s}0x{x:0>16} turn ended {d}s ago", .{ sep, id, ago_s });
@@ -4250,4 +4299,89 @@ test "ControlRoom facts: a terminal the bus never heard of is not there" {
     try testing.expectEqual(@as(Id, 0xdead), f.id);
     try testing.expectEqual(Attention.Process.gone, f.process);
     try testing.expectEqual(Hooks.none, f.hooks);
+}
+
+test "ControlRoom since: a state said again does not start its clock again" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    // Pressed twice while it works: one turn, as far as waiting goes.
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 9_000);
+    try testing.expectEqual(@as(u64, 1_000), b.agentOf(worker).since_ms);
+    try testing.expectEqual(@as(?u64, 9_000), b.agentOf(worker).last_event_ms);
+
+    // Announced again, waiting on the same thing: it has waited since the
+    // first time.
+    var ask = hookEv(.awaiting_input);
+    ask.note = "which format?";
+    _ = try b.agentEvent(worker, ask, 20_000);
+    _ = try b.agentEvent(worker, ask, 80_000);
+    try testing.expectEqual(@as(u64, 20_000), b.agentOf(worker).since_ms);
+    try testing.expectEqual(@as(u64, 20_000), b.facts(worker, 90_000, .none).state_since_ms);
+    try testing.expectEqual(@as(?u64, 80_000), b.facts(worker, 90_000, .none).last_event_ms);
+
+    // A different state does.
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 95_000);
+    try testing.expectEqual(@as(u64, 95_000), b.agentOf(worker).since_ms);
+}
+
+test "ControlRoom since: waiting on a different thing is a different wait" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    var first = hookEv(.awaiting_approval);
+    first.detail = "Bash";
+    first.note = "rm -rf dist/";
+    var second = hookEv(.awaiting_approval);
+    second.detail = "Bash";
+    second.note = "git push";
+
+    _ = try b.agentEvent(worker, first, 1_000);
+    _ = try b.agentEvent(worker, second, 5_000);
+    try testing.expectEqual(@as(u64, 5_000), b.agentOf(worker).since_ms);
+}
+
+test "ControlRoom since: the notices still count from when the event arrived" {
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
+    _ = try b.agentEvent(worker, hookEv(.turn_ended), 10_000);
+    _ = try b.agentEvent(worker, hookEv(.turn_ended), 50_000);
+
+    var buf: [512]u8 = undefined;
+    const line = b.drain(boss, 53_000, &buf, .none) orelse return error.TestNothingInTheBox;
+    // Three seconds since it was last said, not forty-three since the first.
+    try testing.expect(std.mem.indexOf(u8, line, "turn ended 3s ago") != null);
+}
+
+test "ControlRoom prompt: the one a caller saw, and no other" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    var first = hookEv(.awaiting_approval);
+    first.note = "rm -rf dist/";
+    _ = try b.agentEvent(worker, first, 1_000);
+    try testing.expect(b.promptStanding(worker, 1_000, 1_000, 2_000));
+
+    // Not the time it was seen at.
+    try testing.expect(!b.promptStanding(worker, 999, 1_000, 2_000));
+    try testing.expect(!b.promptStanding(worker, 1_000, 999, 2_000));
+    // Not a terminal nobody knows.
+    try testing.expect(!b.promptStanding(0xdead, 1_000, 1_000, 2_000));
+
+    // Announced again: the same wait, and a later event than the one seen.
+    _ = try b.agentEvent(worker, first, 3_000);
+    try testing.expect(!b.promptStanding(worker, 1_000, 1_000, 4_000));
+    try testing.expect(b.promptStanding(worker, 1_000, 3_000, 4_000));
+
+    // Answered at the terminal, which no hook reports: the screen moved
+    // after the box was drawn, and that is all there is to go on.
+    b.noteSampling(worker, true, 3_000);
+    b.noteQuiet(worker, 0, 20_000);
+    try testing.expect(!b.promptStanding(worker, 1_000, 3_000, 21_000));
+
+    // No longer waiting on an approval at all.
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 30_000);
+    try testing.expect(!b.promptStanding(worker, 30_000, 30_000, 31_000));
 }

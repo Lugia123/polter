@@ -1573,6 +1573,15 @@ GHOSTTY_API uintptr_t ghostty_app_persona_hosts(ghostty_app_t, char*, uintptr_t)
 // bytes means none has been worked out yet. App thread only.
 GHOSTTY_API uintptr_t ghostty_app_control_snapshot(ghostty_app_t, char*, uintptr_t);
 
+// Something the person did in the control room: one JSON request
+// (src/poltergeist/ControlAct.zig lists them and every refusal). False, with
+// the refusal's name in `err` (NUL-terminated, cut to `cap`), when it was not
+// done -- and then no key reached any terminal. The request carries the
+// `since_ms` and `event_ms` of the row it was made on; the core refuses when
+// they no longer hold. There is no field for who is asking: calling this is
+// being the person. App thread only.
+GHOSTTY_API bool ghostty_app_control_act(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+
 // The role library and the agent CLIs a role can start. Buffers follow the
 // persona rule above: the real length back, one NUL after it when it fits.
 // The bool calls write the failing error's name into `err` (NUL-terminated,

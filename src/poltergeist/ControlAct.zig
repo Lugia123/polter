@@ -1,0 +1,504 @@
+//! What the person does in the control room: one request, checked against
+//! what is true now, and carried out or refused by name.
+//!
+//! **A click is aimed at what was on screen when it was made**, and that
+//! may no longer be there. So a request that would press a key in somebody
+//! else's terminal hands back the two moments the row was drawn from --
+//! `since_ms` and `event_ms`, both in the snapshot -- and nothing is sent
+//! unless they still hold (dev-docs/poltergeist/control-room.md, 7.1). A
+//! refusal sends no key at all, not the first half of one.
+//!
+//! **Who is asking is not in the request.** This is reached through
+//! `ghostty_app_control_act`, which only the host can call, from the window
+//! the person is looking at; there is no field a caller could fill in to
+//! claim to be them.
+//!
+//! ## The request
+//!
+//! ```
+//! {"act":"seen",     "group":"web-app"}
+//! {"act":"snooze",   "group":"web-app"}                 until it changes
+//! {"act":"snooze",   "group":"web-app","until_ms":N}    until then (wall)
+//! {"act":"unsnooze", "group":"web-app"}
+//! {"act":"approve",  "terminal":"0x…","since_ms":N,"event_ms":N}
+//! {"act":"refuse",   "terminal":"0x…","since_ms":N,"event_ms":N}
+//! {"act":"reply",    "terminal":"0x…","since_ms":N,"text":"…"}
+//! ```
+//!
+//! ## The refusals
+//!
+//! | act | refused with | when |
+//! |---|---|---|
+//! | any | `BadRequest` | not JSON, no such `act`, a field missing or of the wrong type |
+//! | seen, snooze, unsnooze | `NoSuchGroup` | the group is not there |
+//! | snooze | `SnoozeInThePast` | `until_ms` is not after now |
+//! | approve, refuse, reply | `UnknownTerminal` | the terminal is not there |
+//! | approve, refuse | `PromptGone` | it is not waiting on an approval; or `since_ms` / `event_ms` are not the ones it has now; or its screen has moved since the box was drawn |
+//! | reply | `NothingToReplyTo` | it is not waiting on an answer, finished, or failed -- a box or a turn in progress is not somewhere to type a sentence |
+//! | reply | `Stale` | `since_ms` is not the one it has now |
+//! | reply | `EmptyText` | nothing but whitespace |
+//! | approve, refuse, reply | `UserPresent` | a key reached that terminal in the last ten seconds |
+//! | approve, refuse, reply | `DraftInLine` | there is unsubmitted text in its input line |
+//! | approve, refuse, reply | `ChildExited` | its process has ended |
+//! | approve, refuse | `KeyFailed` | the key did not reach the program |
+//!
+//! The last four are the terminal's own, from the path every agent's text
+//! takes; they are not decided here.
+
+const ControlAct = @This();
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Bus = @import("Bus.zig");
+const Chat = @import("Chat.zig");
+
+pub const Id = Bus.Id;
+
+pub const Prompt = struct {
+    terminal: Id,
+    since_ms: u64,
+    event_ms: u64,
+};
+
+pub const Act = union(enum) {
+    seen: []const u8,
+    snooze: struct { group: []const u8, until_ms: ?u64 },
+    unsnooze: []const u8,
+    approve: Prompt,
+    refuse: Prompt,
+    reply: struct { terminal: Id, since_ms: u64, text: []const u8 },
+};
+
+pub const Refusal = error{
+    BadRequest,
+    NoSuchGroup,
+    SnoozeInThePast,
+    UnknownTerminal,
+    PromptGone,
+    NothingToReplyTo,
+    Stale,
+    EmptyText,
+};
+
+/// The keys an approval and a refusal are. One key each, and neither
+/// counts options: return takes the one highlighted, escape declines.
+pub const approve_key = "enter";
+pub const refuse_key = "escape";
+
+/// What carrying an act out needs from outside this file.
+pub const Host = struct {
+    ctx: *anyopaque,
+    /// Press one key in a terminal, through the guards an agent's key goes
+    /// through, and fail unless it reached the program.
+    sendKey: *const fn (ctx: *anyopaque, id: Id, key: []const u8) anyerror!void,
+    /// Type a line into a terminal and submit it, through the same guards.
+    sendText: *const fn (ctx: *anyopaque, id: Id, text: []const u8) anyerror!void,
+    /// Write a group's marks down.
+    persist: *const fn (ctx: *anyopaque, group: []const u8, marks: Chat.Marks) void,
+};
+
+fn fieldOf(obj: std.json.ObjectMap, name: []const u8) Refusal!std.json.Value {
+    return obj.get(name) orelse error.BadRequest;
+}
+
+fn textOf(obj: std.json.ObjectMap, name: []const u8) Refusal![]const u8 {
+    return switch (try fieldOf(obj, name)) {
+        .string => |s| s,
+        else => error.BadRequest,
+    };
+}
+
+fn msOf(obj: std.json.ObjectMap, name: []const u8) Refusal!u64 {
+    return switch (try fieldOf(obj, name)) {
+        .integer => |n| if (n >= 0) @intCast(n) else error.BadRequest,
+        else => error.BadRequest,
+    };
+}
+
+fn idOf(obj: std.json.ObjectMap, name: []const u8) Refusal!Id {
+    const s = try textOf(obj, name);
+    if (s.len != 18 or !std.mem.startsWith(u8, s, "0x")) return error.BadRequest;
+    return std.fmt.parseInt(u64, s[2..], 16) catch error.BadRequest;
+}
+
+/// Read a request. What it returns borrows from `arena`.
+pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Act {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.BadRequest,
+    };
+    const obj = switch (parsed) {
+        .object => |o| o,
+        else => return error.BadRequest,
+    };
+
+    const Name = enum { seen, snooze, unsnooze, approve, refuse, reply };
+    const name = std.meta.stringToEnum(Name, try textOf(obj, "act")) orelse return error.BadRequest;
+    return switch (name) {
+        .seen => .{ .seen = try textOf(obj, "group") },
+        .unsnooze => .{ .unsnooze = try textOf(obj, "group") },
+        .snooze => .{ .snooze = .{
+            .group = try textOf(obj, "group"),
+            .until_ms = if (obj.get("until_ms")) |v| switch (v) {
+                .null => null,
+                else => try msOf(obj, "until_ms"),
+            } else null,
+        } },
+        .approve => .{ .approve = try promptOf(obj) },
+        .refuse => .{ .refuse = try promptOf(obj) },
+        .reply => .{ .reply = .{
+            .terminal = try idOf(obj, "terminal"),
+            .since_ms = try msOf(obj, "since_ms"),
+            .text = try textOf(obj, "text"),
+        } },
+    };
+}
+
+fn promptOf(obj: std.json.ObjectMap) Refusal!Prompt {
+    return .{
+        .terminal = try idOf(obj, "terminal"),
+        .since_ms = try msOf(obj, "since_ms"),
+        .event_ms = try msOf(obj, "event_ms"),
+    };
+}
+
+/// Carry one act out, or refuse it. `now_ms` is the bus's clock, `wall_ms`
+/// the real one.
+pub fn perform(
+    act: Act,
+    bus: *const Bus,
+    chat: *Chat,
+    host: Host,
+    now_ms: u64,
+    wall_ms: u64,
+) anyerror!void {
+    switch (act) {
+        .seen => |group| {
+            chat.markSeen(group, now_ms, wall_ms) catch return error.NoSuchGroup;
+            host.persist(host.ctx, group, try chat.marksOf(group));
+        },
+        .snooze => |s| {
+            if (!chat.exists(s.group)) return error.NoSuchGroup;
+            const snooze: Chat.Marks.Snooze = if (s.until_ms) |until| until: {
+                if (until <= wall_ms) return error.SnoozeInThePast;
+                break :until .{ .until = .{ .at_ms = wall_ms, .until_ms = until } };
+            } else .{ .next_event = wall_ms };
+            try chat.setSnooze(s.group, snooze, now_ms);
+            host.persist(host.ctx, s.group, try chat.marksOf(s.group));
+        },
+        .unsnooze => |group| {
+            chat.setSnooze(group, .none, now_ms) catch return error.NoSuchGroup;
+            host.persist(host.ctx, group, try chat.marksOf(group));
+        },
+        .approve => |p| {
+            try standing(bus, p, now_ms);
+            try host.sendKey(host.ctx, p.terminal, approve_key);
+        },
+        .refuse => |p| {
+            try standing(bus, p, now_ms);
+            try host.sendKey(host.ctx, p.terminal, refuse_key);
+        },
+        .reply => |r| {
+            const text = std.mem.trim(u8, r.text, " \t\r\n");
+            if (text.len == 0) return error.EmptyText;
+            const e = bus.get(r.terminal) orelse return error.UnknownTerminal;
+            const a = e.agent;
+            const open = a.hooks == .live and switch (a.state) {
+                .awaiting_input, .ended, .failed => true,
+                // A permission box takes keys, not a sentence, and a turn
+                // in progress is not waiting to be told anything.
+                .awaiting_approval, .in_turn, .idle => false,
+            };
+            if (!open) return error.NothingToReplyTo;
+            if (a.since_ms != r.since_ms) return error.Stale;
+            try host.sendText(host.ctx, r.terminal, text);
+        },
+    }
+}
+
+/// The guard on anything that answers a prompt: the one the person saw is
+/// the one still there.
+fn standing(bus: *const Bus, p: Prompt, now_ms: u64) Refusal!void {
+    if (bus.get(p.terminal) == null) return error.UnknownTerminal;
+    if (!bus.promptStanding(p.terminal, p.since_ms, p.event_ms, now_ms)) return error.PromptGone;
+}
+
+// -- tests ------------------------------------------------------------------
+
+const testing = std.testing;
+const AgentEvent = @import("agent_event.zig");
+
+/// A host that only writes down what it was asked to do.
+const Recorder = struct {
+    keys: std.ArrayListUnmanaged([]const u8) = .empty,
+    texts: std.ArrayListUnmanaged([]const u8) = .empty,
+    persisted: std.ArrayListUnmanaged(Chat.Marks) = .empty,
+    refuse_with: ?anyerror = null,
+
+    fn deinit(self: *Recorder) void {
+        self.keys.deinit(testing.allocator);
+        self.texts.deinit(testing.allocator);
+        self.persisted.deinit(testing.allocator);
+    }
+
+    fn host(self: *Recorder) Host {
+        return .{ .ctx = self, .sendKey = sendKey, .sendText = sendText, .persist = persist };
+    }
+
+    fn sendKey(ctx: *anyopaque, _: Id, key: []const u8) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        try self.keys.append(testing.allocator, key);
+    }
+
+    fn sendText(ctx: *anyopaque, _: Id, text: []const u8) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        try self.texts.append(testing.allocator, text);
+    }
+
+    fn persist(ctx: *anyopaque, _: []const u8, marks: Chat.Marks) void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        self.persisted.append(testing.allocator, marks) catch {};
+    }
+};
+
+const term: Id = 0xa1;
+const wall: u64 = 1_700_000_000_000;
+
+const Bench = struct {
+    bus: Bus,
+    chat: Chat,
+    rec: Recorder = .{},
+
+    fn init() !Bench {
+        var b: Bench = .{ .bus = .init(testing.allocator, .{}), .chat = .init(testing.allocator, .{}) };
+        errdefer b.deinit();
+        try b.bus.addSupervisor(term);
+        try b.chat.create("web-app", term);
+        return b;
+    }
+
+    fn deinit(self: *Bench) void {
+        self.rec.deinit();
+        self.chat.deinit();
+        self.bus.deinit();
+    }
+
+    fn hook(self: *Bench, kind: AgentEvent.Kind, note: ?[]const u8, at_ms: u64) !void {
+        var ev: AgentEvent.Event = .none;
+        ev.event = kind;
+        ev.note = note;
+        _ = try self.bus.agentEvent(term, ev, at_ms);
+    }
+
+    fn act(self: *Bench, json: []const u8, now_ms: u64) !void {
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        const parsed = try parse(arena.allocator(), json);
+        try perform(parsed, &self.bus, &self.chat, self.rec.host(), now_ms, wall + now_ms);
+    }
+};
+
+test "ControlRoom act: approving the prompt that is there presses return, once" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try b.hook(.awaiting_approval, "Bash(rm -rf dist/)", 1_000);
+
+    try b.act(
+        \\{"act":"approve","terminal":"0x00000000000000a1","since_ms":1000,"event_ms":1000}
+    , 5_000);
+    try testing.expectEqual(@as(usize, 1), b.rec.keys.items.len);
+    try testing.expectEqualStrings("enter", b.rec.keys.items[0]);
+    try testing.expectEqual(@as(usize, 0), b.rec.texts.items.len);
+}
+
+test "ControlRoom act: refusing presses escape" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try b.hook(.awaiting_approval, "Bash(rm -rf dist/)", 1_000);
+
+    try b.act(
+        \\{"act":"refuse","terminal":"0x00000000000000a1","since_ms":1000,"event_ms":1000}
+    , 5_000);
+    try testing.expectEqual(@as(usize, 1), b.rec.keys.items.len);
+    try testing.expectEqualStrings("escape", b.rec.keys.items[0]);
+}
+
+test "ControlRoom act: the prompt has changed, so no key is sent" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try b.hook(.awaiting_approval, "Bash(rm -rf dist/)", 1_000);
+    // The row was drawn. Then a different box took its place.
+    try b.hook(.awaiting_approval, "Bash(git push --force)", 4_000);
+
+    const seen_then =
+        \\{"act":"approve","terminal":"0x00000000000000a1","since_ms":1000,"event_ms":1000}
+    ;
+    try testing.expectError(error.PromptGone, b.act(seen_then, 5_000));
+    try testing.expectEqual(@as(usize, 0), b.rec.keys.items.len);
+
+    // Refusing what is no longer there is refused the same way.
+    try testing.expectError(error.PromptGone, b.act(
+        \\{"act":"refuse","terminal":"0x00000000000000a1","since_ms":1000,"event_ms":1000}
+    , 5_000));
+    try testing.expectEqual(@as(usize, 0), b.rec.keys.items.len);
+}
+
+test "ControlRoom act: a prompt that was answered already takes no key" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try b.hook(.awaiting_approval, "Bash(x)", 1_000);
+    // It went on with its turn.
+    try b.hook(.turn_started, null, 2_000);
+
+    try testing.expectError(error.PromptGone, b.act(
+        \\{"act":"approve","terminal":"0x00000000000000a1","since_ms":1000,"event_ms":1000}
+    , 5_000));
+    // Not even with the moments it has now: it is not waiting on a box.
+    try testing.expectError(error.PromptGone, b.act(
+        \\{"act":"approve","terminal":"0x00000000000000a1","since_ms":2000,"event_ms":2000}
+    , 5_000));
+    try testing.expectEqual(@as(usize, 0), b.rec.keys.items.len);
+
+    try testing.expectError(error.UnknownTerminal, b.act(
+        \\{"act":"approve","terminal":"0x00000000000000ff","since_ms":1000,"event_ms":1000}
+    , 5_000));
+}
+
+test "ControlRoom act: what the terminal refuses is the answer, by its own name" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try b.hook(.awaiting_approval, "Bash(x)", 1_000);
+
+    b.rec.refuse_with = error.DraftInLine;
+    try testing.expectError(error.DraftInLine, b.act(
+        \\{"act":"approve","terminal":"0x00000000000000a1","since_ms":1000,"event_ms":1000}
+    , 5_000));
+    b.rec.refuse_with = error.UserPresent;
+    try b.hook(.awaiting_input, "which?", 6_000);
+    try testing.expectError(error.UserPresent, b.act(
+        \\{"act":"reply","terminal":"0x00000000000000a1","since_ms":6000,"text":"the second"}
+    , 7_000));
+}
+
+test "ControlRoom act: a reply goes to an agent that is waiting to be told something" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try b.hook(.awaiting_input, "which format?", 1_000);
+
+    try b.act(
+        \\{"act":"reply","terminal":"0x00000000000000a1","since_ms":1000,"text":"  the second one\n"}
+    , 5_000);
+    try testing.expectEqual(@as(usize, 1), b.rec.texts.items.len);
+    try testing.expectEqual(@as(usize, 0), b.rec.keys.items.len);
+
+    // Said again by the agent: the same wait, and still answerable.
+    try b.hook(.awaiting_input, "which format?", 6_000);
+    try b.act(
+        \\{"act":"reply","terminal":"0x00000000000000a1","since_ms":1000,"text":"the second"}
+    , 7_000);
+    try testing.expectEqual(@as(usize, 2), b.rec.texts.items.len);
+}
+
+test "ControlRoom act: a reply is not typed into a box, a turn, or a state that has moved on" {
+    var b = try Bench.init();
+    defer b.deinit();
+
+    try b.hook(.awaiting_approval, "Bash(x)", 1_000);
+    try testing.expectError(error.NothingToReplyTo, b.act(
+        \\{"act":"reply","terminal":"0x00000000000000a1","since_ms":1000,"text":"yes"}
+    , 2_000));
+
+    try b.hook(.turn_started, null, 3_000);
+    try testing.expectError(error.NothingToReplyTo, b.act(
+        \\{"act":"reply","terminal":"0x00000000000000a1","since_ms":3000,"text":"hurry"}
+    , 4_000));
+
+    try b.hook(.turn_ended, null, 5_000);
+    try testing.expectError(error.Stale, b.act(
+        \\{"act":"reply","terminal":"0x00000000000000a1","since_ms":1000,"text":"go on"}
+    , 6_000));
+    try testing.expectError(error.EmptyText, b.act(
+        \\{"act":"reply","terminal":"0x00000000000000a1","since_ms":5000,"text":"  \n"}
+    , 6_000));
+    try testing.expectEqual(@as(usize, 0), b.rec.texts.items.len);
+
+    try b.act(
+        \\{"act":"reply","terminal":"0x00000000000000a1","since_ms":5000,"text":"go on"}
+    , 6_000);
+    try testing.expectEqual(@as(usize, 1), b.rec.texts.items.len);
+}
+
+test "ControlRoom act: seen and snooze change the group's marks and are written down" {
+    var b = try Bench.init();
+    defer b.deinit();
+
+    try b.act(
+        \\{"act":"seen","group":"web-app"}
+    , 5_000);
+    try testing.expectEqual(@as(?u64, wall + 5_000), (try b.chat.marksOf("web-app")).seen_ms);
+    try testing.expectEqual(@as(?u64, 5_000), b.chat.seenRunMs("web-app"));
+
+    try b.act(
+        \\{"act":"snooze","group":"web-app"}
+    , 6_000);
+    try testing.expectEqual(Chat.Marks.Snooze{ .next_event = wall + 6_000 }, (try b.chat.marksOf("web-app")).snooze);
+
+    try b.act(
+        \\{"act":"snooze","group":"web-app","until_ms":1700000090000}
+    , 7_000);
+    try testing.expectEqual(
+        Chat.Marks.Snooze{ .until = .{ .at_ms = wall + 7_000, .until_ms = wall + 90_000 } },
+        (try b.chat.marksOf("web-app")).snooze,
+    );
+
+    try b.act(
+        \\{"act":"unsnooze","group":"web-app"}
+    , 8_000);
+    try testing.expectEqual(Chat.Marks.Snooze.none, (try b.chat.marksOf("web-app")).snooze);
+
+    // Each of the four was handed on to be written, as it stood then.
+    try testing.expectEqual(@as(usize, 4), b.rec.persisted.items.len);
+    try testing.expectEqual(Chat.Marks.Snooze.none, b.rec.persisted.items[3].snooze);
+    try testing.expectEqual(@as(?u64, wall + 5_000), b.rec.persisted.items[3].seen_ms);
+    // And none of them touched a terminal.
+    try testing.expectEqual(@as(usize, 0), b.rec.keys.items.len);
+}
+
+test "ControlRoom act: a mark on a group that is not there, or a snooze into the past, is refused" {
+    var b = try Bench.init();
+    defer b.deinit();
+
+    try testing.expectError(error.NoSuchGroup, b.act(
+        \\{"act":"seen","group":"nope"}
+    , 1_000));
+    try testing.expectError(error.NoSuchGroup, b.act(
+        \\{"act":"snooze","group":"nope"}
+    , 1_000));
+    try testing.expectError(error.NoSuchGroup, b.act(
+        \\{"act":"unsnooze","group":"nope"}
+    , 1_000));
+    try testing.expectError(error.SnoozeInThePast, b.act(
+        \\{"act":"snooze","group":"web-app","until_ms":1700000000500}
+    , 1_000));
+    try testing.expectEqual(@as(usize, 0), b.rec.persisted.items.len);
+}
+
+test "ControlRoom act: a request that is not one is refused before anything is looked at" {
+    var b = try Bench.init();
+    defer b.deinit();
+    const bad = [_][]const u8{
+        "not json",
+        "[]",
+        "{}",
+        "{\"act\":\"archive\",\"group\":\"web-app\"}",
+        "{\"act\":\"seen\"}",
+        "{\"act\":\"approve\",\"terminal\":\"161\",\"since_ms\":1,\"event_ms\":1}",
+        "{\"act\":\"approve\",\"terminal\":\"0x00000000000000a1\",\"since_ms\":1}",
+        "{\"act\":\"approve\",\"terminal\":\"0x00000000000000a1\",\"since_ms\":-1,\"event_ms\":1}",
+        "{\"act\":\"reply\",\"terminal\":\"0x00000000000000a1\",\"since_ms\":1}",
+    };
+    for (bad) |json| try testing.expectError(error.BadRequest, b.act(json, 1_000));
+    try testing.expectEqual(@as(usize, 0), b.rec.keys.items.len);
+}

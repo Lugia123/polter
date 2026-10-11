@@ -70,6 +70,10 @@ pub const Table = enum {
 
     /// `StatsLog.last`.
     stats_last,
+
+    /// `ControlRoom.waits`: today's waiting, by the name of the group that
+    /// caused it.
+    control_waits,
 };
 
 /// An open file or directory handle that points into a place a rename

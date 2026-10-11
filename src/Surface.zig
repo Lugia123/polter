@@ -255,6 +255,10 @@ poltergeist_draft: poltergeistpkg.draft.Draft = .{},
 /// instead of guessed at beforehand.
 poltergeist_keys_written: u64 = 0,
 
+/// This terminal's own quiescence threshold, when it has been given one
+/// (`setPoltergeistThreshold`); null while it uses the configured one.
+poltergeist_threshold_ms: ?u64 = null,
+
 /// The per-session token given to this surface's child process at spawn
 /// (`GHOSTTY_HISTORY_TOKEN`), so shell integration can prove OSC 60
 /// (command capture, see `termio/stream_handler.zig`) came from code that
@@ -4215,6 +4219,9 @@ pub fn setPoltergeistWatching(self: *Surface, watching: bool) void {
 }
 
 pub fn setPoltergeistThreshold(self: *Surface, ms: u64) void {
+    // Kept here as well as sent to the IO thread, because the control room
+    // judges "still" on the app thread and has to use the same figure.
+    self.poltergeist_threshold_ms = ms;
     // `.unlocked`: this runs on the app thread from an agent request, which
     // holds no terminal lock. Claiming otherwise would have queueIo skip
     // taking it.
