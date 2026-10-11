@@ -32,7 +32,7 @@ The "Who" column comes from `requiresSupervisor` in `rpc.zig`. "Any terminal" on
 | `terminal_keys` | none | The modifier and key names `terminal_key` accepts | Any terminal |
 | `terminal_action` | `id`, `action` | Success or a refusal code. `action` is a keybinding action: `new_tab`, `close_surface`, `new_split:right` | Any terminal |
 | `terminal_actions` | none | Every action `terminal_action` takes, and which want a value after the colon | Any terminal |
-| `terminal_answer_prompt` | `id`, `choice?` | Success or `AuthoriseOff`. `choice` counts down from the highlighted option, default 1 | Supervisor only, and the target's authorise switch must be on |
+| `terminal_answer_prompt` | `id`, `choice?`, `state_at_ms?`, `event_at_ms?` | Success, `AuthoriseOff`, or `PromptGone`. `choice` counts down from the highlighted option, default 1. With the two moments from `terminal_list` (both or neither), no key is sent unless the prompt you saw is still the one there | Supervisor only, and the target's authorise switch must be on |
 | `terminal_open` | `cwd`, `watch?`, `place?` | `placed` (split or tab) and `watch` (not_asked / watching / refused). Carries `id` when the terminal is ready. A split carries `pending: true` and no `id` | Supervisor only |
 | `terminal_layout` | `id`, `layout` | The resulting layout tree with a terminal id in every cell. Answers `Unsupported` on Linux | Supervisor only |
 | `terminal_capabilities` | `id` | That terminal's `role`, `started`, `cli`, `polter` and `standing` (which includes `watched_by`, `may_authorise`, `shielded`, `held`) | Supervisor only |

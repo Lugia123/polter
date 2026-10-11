@@ -8,8 +8,12 @@ publish = false
 # (dev-docs/poltergeist/control-room.md, 3.4): the host cannot be tested off
 # Windows, so whatever can be wrong without looking wrong lives out here.
 #
-# For now that is one thing: `look`, generated from
-# `src/input/control-room-look.json`. The macOS host has the same data.
+# `look` is generated from `src/input/control-room-look.json`; the macOS host
+# has the same data. The rest reads the core's snapshot and says where things
+# go: the same job `macos/Sources/Features/ControlRoom/ControlRoomList.swift`
+# does, held to the same answers by `tools/control-room-hosts-agree.py`.
 #
-# No dependencies.
+# No dependencies, and that includes a JSON library: `src/json.rs` reads the
+# one document this needs. `cargo test -p polter-control-room` therefore runs
+# anywhere, with nothing to fetch.
 [dependencies]

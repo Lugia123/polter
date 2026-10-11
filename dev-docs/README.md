@@ -31,6 +31,7 @@
   [windows/layout-criteria.md](windows/layout-criteria.md)（`terminal_layout` 一次给出整份形状，六格 + 406 的 id 归属三格，**含「① 不绿则 ②③ 不算数」那条地板**）、
   [windows/worker-placement-criteria.md](windows/worker-placement-criteria.md)（worker 摆在哪，附五条欠账）。
   ⚠️ 另有一份**不是判据**的表：[windows/c-api-surface-bindings.md](windows/c-api-surface-bindings.md)（C API 的 `ghostty_surface_*` 导出里，宿主接了哪些、剩下的 22 条各是什么；**一次定性，没有闸，也没有一条被真机验过**）。
+  另有一份**方案**（只写了没做）：[windows/control-room.md](windows/control-room.md)（总控台在 Windows 宿主里放哪、用什么画；推荐先做成独立顶层窗口，附「没有终端的标签页」的冲击表与必须上测试机才能验的十二条）。
   ⚠️ 判据里的键位一律以 `Keybinds.init` 的 `!isDarwin()` 分支为准——**判据写错键位的表现和功能真坏了一样：按下去没反应。**
 
 - [macos/driving-the-mac-app.md](macos/driving-the-mac-app.md) — **mac 上等效 argus 的那条驱动通道**：用系统自带的 `screencapture` + `osascript` + 辅助功能 API 截图、读菜单树、点菜单项，驱动脚本是 `tools/mac-drive.sh`。在 macOS 26.5.1 上实测，含六格地板。

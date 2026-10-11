@@ -32,7 +32,7 @@ Polter 是一个内置 MCP server 的终端。跑在某个标签页里的 agent 
 | `terminal_keys` | 无 | `terminal_key` 认的修饰键名和键名 | 任何终端 |
 | `terminal_action` | `id`, `action` | 成功或拒绝码。`action` 是快捷键动作名，如 `new_tab`、`close_surface`、`new_split:right` | 任何终端 |
 | `terminal_actions` | 无 | `terminal_action` 认的全部动作，以及哪些要带冒号后的值 | 任何终端 |
-| `terminal_answer_prompt` | `id`, `choice?` | 成功或 `AuthoriseOff`。`choice` 从高亮项往下数，默认 1 | 仅总管，且目标终端的授权开关要开着 |
+| `terminal_answer_prompt` | `id`, `choice?`, `state_at_ms?`, `event_at_ms?` | 成功、`AuthoriseOff` 或 `PromptGone`。`choice` 从高亮项往下数，默认 1。带上 `terminal_list` 里读到的两个时刻（要么都给要么都不给），你看到的那个提示不在了就一个键都不发 | 仅总管，且目标终端的授权开关要开着 |
 | `terminal_open` | `cwd`, `watch?`, `place?` | `placed`（split 或 tab）、`watch`（not_asked / watching / refused）。新终端已就绪时带 `id`，分屏带 `pending: true` 不带 `id` | 仅总管 |
 | `terminal_layout` | `id`, `layout` | 排好之后的布局树，每格带终端 id。Linux 上答 `Unsupported` | 仅总管 |
 | `terminal_capabilities` | `id` | 那个终端的 `role`、`started`、`cli`、`polter`、`standing`（含 `watched_by`、`may_authorise`、`shielded`、`held`） | 仅总管 |

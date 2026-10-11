@@ -1807,3 +1807,93 @@ test "ControlRoom snapshot: a worker minded outside any group is listed on its o
     try testing.expectEqual(@as(usize, 1), s.needs_me);
     try testing.expectEqual(@as(?u64, 1 * min), s.ungrouped[0].attention.event_ms);
 }
+
+/// The size section 13.2 of the design names: 32 groups, 128 terminals, with
+/// a bit of everything in them.
+fn benchWorld() !World {
+    var w: World = .init();
+    errdefer w.deinit();
+
+    const kinds = [_]AgentEvent.Kind{ .awaiting_approval, .awaiting_input, .turn_failed, .turn_ended, .turn_started, .session_started };
+    var names: [32][16]u8 = undefined;
+    for (0..32) |g| {
+        const name = try std.fmt.bufPrint(&names[g], "group-{d:0>2}", .{g});
+        const boss: Id = 0x1000 + g;
+        try w.steward(boss, "supervisor", 0x100 + g, name);
+        try w.hook(boss, kinds[g % kinds.len], "Bash(rm -rf dist/ && npm run build)", (40 + g) * min);
+        for (0..3) |n| {
+            const id: Id = 0x2000 + g * 4 + n;
+            try w.worker(id, "worker", 0x100 + g, boss, name);
+            try w.hook(id, kinds[(g + n + 1) % kinds.len], "Edit(src/app.ts)", (50 + n) * min);
+            w.bus.noteSampling(id, true, 60 * min);
+            w.bus.noteQuiet(id, (g % 5) * min, 90 * min);
+            w.bus.noteCall(id, 80 * min);
+        }
+    }
+    return w;
+}
+
+test "ControlRoom bench: 32 groups and 128 terminals, worked out and written" {
+    // Not a gate: it asserts only that the world is the size it says, and
+    // prints how long things took. The figure that means anything is the
+    // release one:
+    //
+    //   zig build test -Doptimize=ReleaseFast -Dtest-filter="ControlRoom bench" \
+    //     -Demit-macos-app=false -Demit-xcframework=false --summary all
+    const builtin = @import("builtin");
+    const rounds: usize = if (builtin.mode == .Debug) 20 else 2000;
+
+    var w = try benchWorld();
+    defer w.deinit();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const Lap = struct {
+        fn ns(clock: std.Io, from: std.Io.Timestamp) u64 {
+            const now: std.Io.Timestamp = .now(clock, .awake);
+            return @intCast(from.durationTo(now).nanoseconds);
+        }
+    };
+
+    var build_ns: u64 = 0;
+    var write_ns: u64 = 0;
+    var refresh_ns: u64 = 0;
+    var bytes: usize = 0;
+    for (0..rounds) |_| {
+        _ = arena.reset(.retain_capacity);
+        const t0: std.Io.Timestamp = .now(io, .awake);
+        const built = try build(arena.allocator(), w.input(fixture_now));
+        build_ns += Lap.ns(io, t0);
+
+        const t1: std.Io.Timestamp = .now(io, .awake);
+        const json = try writeAlloc(arena.allocator(), built.snapshot, .{});
+        write_ns += Lap.ns(io, t1);
+        bytes = json.len;
+
+        try testing.expectEqual(@as(usize, 32), built.snapshot.groups.len);
+        try testing.expectEqual(@as(usize, 128), built.snapshot.terminals.len);
+    }
+
+    // The whole of what one event costs: work it out, write the compared
+    // form, compare, write the full form.
+    //
+    // On the allocator a release build runs on, not the testing one: that
+    // one checks every allocation, and was most of the figure when this
+    // was first measured on it.
+    var room: ControlRoom = .init(std.heap.smp_allocator);
+    defer room.deinit();
+    for (0..rounds) |i| {
+        const t0: std.Io.Timestamp = .now(io, .awake);
+        _ = try room.refresh(w.input(fixture_now + i), .event);
+        refresh_ns += Lap.ns(io, t0);
+    }
+
+    std.debug.print(
+        "\nControlRoom bench ({t}, {d} rounds): build {d} us, write {d} us ({d} bytes), refresh {d} us\n",
+        .{ builtin.mode, rounds, build_ns / rounds / 1000, write_ns / rounds / 1000, bytes, refresh_ns / rounds / 1000 },
+    );
+}

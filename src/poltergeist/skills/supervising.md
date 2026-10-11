@@ -591,7 +591,10 @@ compacted.
 agent, not a detail to settle afterwards, because afterwards is too late: a
 worker stopped on a permission prompt stays stopped until somebody answers it.
 In a terminal you opened yourself, that can be you: `terminal_answer_prompt`
-is on there from the start, unless the user has switched it off. In a terminal
+is on there from the start, unless the user has switched it off. Give it the
+`state_at_ms` and `event_at_ms` you read off `terminal_list` when you looked at
+the box, and it presses nothing if that box is no longer the one there
+(`PromptGone`) — without them it counts blind into whatever is on screen now. In a terminal
 the user started it is refused until they switch it on from that terminal's own
 right-click menu — you cannot switch it on, and asking again will not change
 it. Being allowed to answer is not a reason to leave a worker to stop every
