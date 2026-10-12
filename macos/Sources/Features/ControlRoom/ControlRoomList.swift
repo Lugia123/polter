@@ -163,6 +163,9 @@ struct ControlRoomList: Equatable {
     /// "N groups need nothing from you". Also the core's.
     var quietCount: Int
     var quiet: [Row]
+    /// The allowance block at the bottom, as the core says it; nil when
+    /// the snapshot has none, and then nothing is drawn there.
+    var quota: ControlRoomQuota?
 
     /// Every row in the order it is listed, which is the order the up and
     /// down keys walk.
@@ -337,6 +340,10 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     /// draws no tab glyphs, breathes nothing and has no band.
     var tabs: [Tab]?
     var pulses: [Pulse]?
+    /// How much of each account's allowance is used. Newer than the rest:
+    /// a snapshot without it draws no block. One with a word in it this
+    /// does not know is not read at all.
+    var quota: ControlRoomQuota?
 }
 
 /// Which waiting glyph breathes.
@@ -449,7 +456,8 @@ extension ControlRoomList {
             waitingCount: snapshot.groups_needing_me,
             waiting: rows.filter { $0.0 }.map { $0.1 },
             quietCount: snapshot.groups_other,
-            quiet: rows.filter { !$0.0 }.map { $0.1 })
+            quiet: rows.filter { !$0.0 }.map { $0.1 },
+            quota: snapshot.quota)
     }
 
     static func decode(snapshot json: Data, showing: String? = nil) throws -> ControlRoomList {
@@ -534,6 +542,10 @@ struct ControlRoomListLayout: Equatable {
     var fits: [String: ControlRoomAskFit]
     var separator: CGRect
     var quietHeader: CGRect
+    /// The allowance block: against the bottom of the panel whatever the
+    /// list above it holds, so that it is there when the list is long. No
+    /// height when the list has none.
+    var quota: CGRect
 
     /// How wide what a row waits on is: the row, less its padding and the
     /// column the glyph stands in.
@@ -598,6 +610,8 @@ struct ControlRoomListLayout: Equatable {
         }
         rows = frames
 
+        let quotaH = list.quota.map { ControlRoomQuotaLayout(quota: $0).height } ?? 0
+        quota = CGRect(x: pad, y: height - pad - quotaH, width: inner, height: quotaH)
     }
 
     /// Where the selection chip rests for a row; nil for a row not listed.

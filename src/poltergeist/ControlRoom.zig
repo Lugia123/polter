@@ -102,7 +102,11 @@
 //!                             the tab that window is showing (and, for a
 //!                             glyph in a tab bar or a pane, in that
 //!                             window). `group` is the row that is about
-//!                             it. A host tests equality and nothing else. }
+//!                             it. A host tests equality and nothing else.
+//!   "quota": { … }            how much of each account's allowance is
+//!                             used: the block at the bottom of the list.
+//!                             `quota.zig` has the shape. Its moments are
+//!                             wall clock }
 //! ```
 //!
 //! **Nothing here says how long anything has waited**, and nothing draws
@@ -125,6 +129,7 @@ const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const AgentEvent = @import("agent_event.zig");
 const ShellSteps = @import("ShellSteps.zig");
+const quota = @import("quota.zig");
 const Tasks = @import("Tasks.zig");
 
 pub const Id = Bus.Id;
@@ -271,6 +276,10 @@ pub const Input = struct {
     thresholds: Attention.Thresholds,
     /// The task panel: what a group that is working says it is doing.
     tasks: *const Tasks,
+    /// What was last read of each account's allowance (`QuotaWatch`). No
+    /// default: a caller that forgot it would show "no number yet" for
+    /// ever, which is also what a machine with no agent on it shows.
+    quota: []const quota.Reading,
     /// The bus's clock, and the real one.
     now_ms: u64,
     wall_ms: u64,
@@ -562,6 +571,8 @@ pub const Snapshot = struct {
     /// it by asking "is this the tab I am showing" and "is this my window",
     /// which are equalities; the order, which is a comparison, is here.
     pulses: []const Pulse,
+    /// The allowance block at the bottom of the list (`quota.zig`).
+    quota: quota.Out,
 };
 
 pub fn writeAlloc(alloc: Allocator, snapshot: Snapshot, options: std.json.Stringify.Options) Allocator.Error![]u8 {
@@ -592,6 +603,8 @@ fn stripped(arena: Allocator, s: Snapshot) Allocator.Error!Snapshot {
     const terminals = try arena.dupe(TerminalOut, s.terminals);
     for (terminals) |*t| t.age_ms = null;
     out.terminals = terminals;
+
+    out.quota = try quota.stripped(arena, s.quota);
 
     return out;
 }
@@ -1226,6 +1239,12 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         if (r.row.needs_me) lone_needing += 1;
     }
 
+    // The allowance counts on the wall clock, since that is the clock its
+    // resets are on; the wake is on the bus's. A machine that slept wakes
+    // late for these, and catches up on the next thing that happens.
+    const allowance = try quota.build(arena, in.quota, in.wall_ms);
+    if (allowance.wake_ms) |at| wake.consider(in.now_ms +| (at -| in.wall_ms));
+
     return .{
         .snapshot = .{
             .rev = 0,
@@ -1239,6 +1258,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .terminals = terminals.items,
             .tabs = tabs.items,
             .pulses = pulses,
+            .quota = allowance.out,
         },
         .wake_ms = wake.at,
     };
@@ -1261,6 +1281,7 @@ const World = struct {
     tasks: Tasks,
     open: std.ArrayListUnmanaged(Terminal) = .empty,
     wall_ms: u64 = 1_700_000_000_000,
+    quota: []const quota.Reading = &.{},
 
     fn init() World {
         return .{
@@ -1344,6 +1365,7 @@ const World = struct {
             .terminals = self.open.items,
             .thresholds = T,
             .tasks = &self.tasks,
+            .quota = self.quota,
             .now_ms = now_ms,
             .wall_ms = self.wall_ms + now_ms,
         };
@@ -1408,8 +1430,33 @@ fn fixtureWorld() !World {
     // And a plain shell, which is in no list but `terminals`.
     try w.terminal(0xc2, "zsh", 0x27);
 
+    // One account close to its limit and one with room.
+    w.quota = &fixture_quota;
+
     return w;
 }
+
+const fixture_wall: u64 = 1_700_000_000_000 + fixture_now;
+const fixture_quota = [_]quota.Reading{
+    .{
+        .family = .claude,
+        .state = .have,
+        .windows = .{
+            .{ .span = .five_hour, .used = 92, .resets_ms = fixture_wall + 40 * min },
+            .{ .span = .seven_day, .used = 30, .resets_ms = fixture_wall + 3 * std.time.ms_per_day },
+        },
+        .at_ms = fixture_wall - 2 * min,
+    },
+    .{
+        .family = .codex,
+        .state = .have,
+        .windows = .{
+            .{ .span = .five_hour, .used = 20, .resets_ms = fixture_wall + 2 * std.time.ms_per_hour },
+            null,
+        },
+        .at_ms = fixture_wall - 5 * min,
+    },
+};
 
 fn fixtureRoom(w: *const World) !ControlRoom {
     _ = w;
@@ -2121,6 +2168,9 @@ test "ControlRoom what: a working group says its own started task, and nothing w
 test "ControlRoom snapshot: nothing in it says how long, and nothing wakes it to count minutes" {
     var w = try fixtureWorld();
     defer w.deinit();
+    // The one thing that does count down is an allowance close to its
+    // limit, which has a test of its own below.
+    w.quota = &.{};
     var room = try fixtureRoom(&w);
     defer room.deinit();
 
@@ -2142,6 +2192,54 @@ test "ControlRoom snapshot: nothing in it says how long, and nothing wakes it to
     }
     try testing.expect(room.recomputes - before < 10);
     try testing.expectEqual(@as(usize, 0), notices);
+}
+
+test "ControlRoom quota: an allowance close to its limit is woken for once a minute, and an ordinary one not at all" {
+    var w = try fixtureWorld();
+    defer w.deinit();
+    var room = try fixtureRoom(&w);
+    defer room.deinit();
+
+    // Forty minutes to the reset: forty changes of the number, the reset
+    // itself, and nothing between them.
+    _ = try room.refresh(w.input(fixture_now), .event);
+    try testing.expect(std.mem.indexOf(u8, room.json, "\"when\":{\"form\":\"minutes\",\"n\":40}") != null);
+    var before = room.recomputes;
+    var t: u64 = fixture_now;
+    var notices: usize = 0;
+    while (t < fixture_now + 39 * min + 30_000) : (t += 1_000) {
+        const out = try room.refresh(w.input(t), .timer);
+        if (out.notify != null) notices += 1;
+    }
+    const counted = notices;
+    try testing.expectEqual(@as(usize, 39), counted);
+    try testing.expect(room.recomputes - before < 50);
+    try testing.expect(std.mem.indexOf(u8, room.json, "\"when\":{\"form\":\"minutes\",\"n\":1}") != null);
+
+    // An account with room, its number just taken: most of an hour of
+    // looking again finds nothing to say.
+    const calm = [_]quota.Reading{
+        .{
+            .family = .claude,
+            .state = .have,
+            .windows = .{ .{ .span = .five_hour, .used = 30, .resets_ms = fixture_wall + 4 * std.time.ms_per_hour }, null },
+            .at_ms = fixture_wall,
+        },
+    };
+    w.quota = &calm;
+    var again = try fixtureRoom(&w);
+    defer again.deinit();
+    _ = try again.refresh(w.input(fixture_now), .event);
+    before = again.recomputes;
+    t = fixture_now;
+    notices = 0;
+    while (t < fixture_now + 59 * min) : (t += 1_000) {
+        const out = try again.refresh(w.input(t), .timer);
+        if (out.notify != null) notices += 1;
+    }
+    const quiet = notices;
+    try testing.expectEqual(@as(usize, 0), quiet);
+    try testing.expect(again.recomputes - before < 10);
 }
 
 test "ControlRoom snapshot: a terminal with its own idea of still is judged by it" {

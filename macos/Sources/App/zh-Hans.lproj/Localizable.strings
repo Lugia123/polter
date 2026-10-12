@@ -730,3 +730,28 @@
 "Command took %@." = "命令用了 %@。";
 "Command took %@ and exited with code %@." = "命令用了 %1$@，退出码 %2$@。";
 "Update Polter and Restart" = "更新 Polter 并重启";
+
+/* 总控台：左栏底部的额度（control-room.md 3.6）。家的名字 Claude、Codex 不翻 */
+"5-hour" = "5 小时";
+"7-day" = "7 天";
+"30-day" = "30 天";
+"%@ h ago" = "%@ 小时前";
+"%@ d ago" = "%@ 天前";
+"Allowance used" = "额度已用";
+"Allowance" = "额度";
+"No numbers yet" = "还没有数";
+"No numbers yet. Once a session has run, this shows how much is used." = "还没有数。有会话跑过以后，这里显示用了多少。";
+"reset" = "已恢复";
+"unreadable" = "读不到";
+"%@, %@" = "%1$@，%2$@";
+"%@ %@ %@ used" = "%1$@ %2$@已用 %3$@";
+"%@ %@ used" = "%1$@ 已用 %2$@";
+"%@ %@ allowance used up" = "%1$@ %2$@的额度用完了";
+"%@ allowance used up" = "%@ 的额度用完了";
+"back in %@ min" = "%@ 分钟后恢复";
+"back in %@ h" = "%@ 小时后恢复";
+"back in %@ d" = "%@ 天后恢复";
+"back at %@" = "%@ 恢复";
+"%@ has room." = "%@ 还有余量。";
+"as of %@" = "%@ 的数";
+"%@: this account's allowance could not be read." = "读不到 %@ 的额度。";

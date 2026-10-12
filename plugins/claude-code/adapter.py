@@ -44,6 +44,20 @@ read, or a role whose `--settings` is a file it cannot merge into, or no
 "some hooks" -- that would make the same state mean different things on
 different terminals.
 
+The status line (`dev-docs/poltergeist/control-room.md` 3.6): wherever it
+configures hooks, and not on Windows, `launch` also sets `statusLine` in that
+same `--settings` to `'<polter>' +statusline --cli claude-code`. Claude Code
+hands a status line command how much of the account's allowance is used
+(`rate_limits`, measured on 2.1.296), and that is the only place Polter can
+read it. **The person's own status line still runs and still shows**: the
+one this session would have used -- the role's own, else the project's local
+settings, the project's, the user's -- is passed on in the environment as
+`POLTER_STATUSLINE_CHAIN`, and `+statusline` runs it with the same input and
+lets its output through untouched. Its other fields (`padding`, …) are kept.
+The user's settings files are read and never written. Not on Windows: a
+status line has no exec form, it is a line for whichever shell Claude Code
+finds there, and one string is not quoted the same for all of them (#888).
+
 Which launch flag switches off which kind of thing was measured, not read
 (claude 2.1.278, each with a control that the rest still worked):
 
@@ -95,6 +109,10 @@ HOOK_EVENTS = (
     ("PermissionRequest", None),
     ("Notification", "idle_prompt|elicitation_dialog"),
 )
+
+# How the person's own status line command reaches `polter +statusline`
+# (`cli/statusline.zig` reads the same name).
+STATUSLINE_CHAIN_ENV = "POLTER_STATUSLINE_CHAIN"
 
 # Seconds Claude Code gives one hook. `+hook` answers in milliseconds or
 # gives up; this only bounds a Polter that has stopped answering.
@@ -574,6 +592,10 @@ def launch(req):
             merged[event] = (list(before) if isinstance(before, list) else []) + entries
         settings["hooks"] = merged
 
+    env = {}
+    if hooks and os.name != "nt":
+        settings["statusLine"], env = status_line_for(req, settings)
+
     argv = ["claude"]
     if settings:
         argv += ["--settings", json.dumps(settings, ensure_ascii=False)]
@@ -590,7 +612,7 @@ def launch(req):
     answer = {
         "version": CONTRACT_VERSION,
         "argv": argv,
-        "env": {},
+        "env": env,
         "summary": "%d skill(s) and %d MCP server(s) switched off" % (off["skill"], off["mcp"]),
         "notes": notes,
     }
@@ -645,6 +667,45 @@ def hooks_for(req, settings_file, notes):
             entry = {"matcher": matcher, "hooks": entry["hooks"]}
         out[event] = [entry]
     return out
+
+
+def own_status_line(value):
+    """`value` when it is a status line Claude Code would run, else None."""
+    if not isinstance(value, dict) or value.get("type") != "command":
+        return None
+    command = value.get("command")
+    if not isinstance(command, str) or not command:
+        return None
+    return value
+
+
+def status_line_for(req, settings):
+    """The `statusLine` to set, and the environment that goes with it.
+
+    Ours stands where the person's would have been, carrying every field of
+    theirs but the command; theirs is found the way Claude Code would have
+    found it and handed on by name. `hooks_for` has already said yes, so
+    there is a `polter` and the settings are inline.
+    """
+    own = own_status_line(settings.get("statusLine"))
+    if own is None:
+        home = req.get("home") or os.path.expanduser("~")
+        cwd = req.get("cwd") or None
+        files = []
+        if cwd:
+            files.append(os.path.join(cwd, ".claude", "settings.local.json"))
+            files.append(os.path.join(cwd, ".claude", "settings.json"))
+        files.append(os.path.join(home, ".claude", "settings.json"))
+        for path in files:
+            value, _ = read_json(path)
+            own = own_status_line(value.get("statusLine") if isinstance(value, dict) else None)
+            if own is not None:
+                break
+    line = dict(own) if own is not None else {}
+    line["type"] = "command"
+    line["command"] = "'%s' +statusline --cli claude-code" % req["polter"].replace("'", "'\\''")
+    env = {STATUSLINE_CHAIN_ENV: own["command"]} if own is not None else {}
+    return line, env
 
 
 def split_settings(args, notes):

@@ -45,7 +45,10 @@ height follows what it waits on, by the nominal count of lines; how what each
 waiting row waits on is fitted (the lines each step gets, the steps said only
 as a number), and the fitting rule itself on fourteen made-up commands; the
 nominal count on six strings; and
-where the arrow keys take the selection from every row.
+where the arrow keys take the selection from every row; and the allowance
+block as each side read it -- every account opened out and every one in the
+line, word for word and number for number, each of their windows -- and how
+high each side makes the block and where its parts start.
 
 **NOT COMPARED, and why.**
 
@@ -64,6 +67,10 @@ where the arrow keys take the selection from every row.
     told only the tab; the crate is told the window too. Each front is
     asked with the window that tab is in, which is the only way a host asks.
   * Translated text. Both sides print the English they start from.
+  * Where the allowance block stands in the panel, and anything it says in
+    words. `windows/control-room` reads the block and adds up its height;
+    the Windows host does not draw it yet, so there is no rectangle there
+    to compare the macOS one with.
   * Anything drawn. This compares numbers and strings, not pixels.
   * That the app links these files the way the package does. It is the same
     source; it is not the same binary.
@@ -94,6 +101,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLending.swift",
+    "macos/Sources/Features/ControlRoom/ControlRoomQuota.swift",
     "macos/Sources/Features/Terminal/TabAccessory.swift",
 ]
 CRATE = "windows/control-room"
@@ -283,6 +291,37 @@ do {
         let loan = lending.loan.map { "\($0.group),\($0.terminal)" } ?? "-"
         print("lend \(n) \(quote(name)) does=[\(effects.joined(separator: " "))] shows=\(shows) loan=\(loan)")
     }
+}
+
+func windowsText(_ ws: [ControlRoomQuota.Window]) -> String {
+    ws.map { "\($0.span.rawValue):\($0.used):\($0.live):\($0.resets_ms)" }.joined(separator: ",")
+}
+func agoText(_ a: ControlRoomQuota.Ago?) -> String { a.map { "\($0.unit.rawValue):\($0.n)" } ?? "-" }
+if let q = list.quota {
+    for a in q.alerts {
+        print("quota alert family=\(a.family.rawValue) level=\(a.level.rawValue) span=\(a.span.rawValue) "
+            + "used=\(a.used) resets=\(a.resets_ms) when=\(a.when.form.rawValue):\(a.when.n) "
+            + "stale=\(agoText(a.stale)) way_out=\(a.way_out?.rawValue ?? "-") at=\(a.at_ms) "
+            + "windows=\(windowsText(a.windows))")
+    }
+    if let line = q.line {
+        print("quota line label=\(line.label.rawValue) entries=\(line.entries.count)")
+        for e in line.entries {
+            print("quota entry family=\(e.family.rawValue) state=\(e.state.rawValue) "
+                + "used=\(e.used.map { String($0) } ?? "-") span=\(e.span?.rawValue ?? "-") "
+                + "stale=\(agoText(e.stale)) at=\(e.at_ms.map { String($0) } ?? "-") "
+                + "windows=\(windowsText(e.windows))")
+        }
+    } else {
+        print("quota line none")
+    }
+    let ql = ControlRoomQuotaLayout(quota: q)
+    for p in ql.parts {
+        print("quota part y=\(f(p.y)) h=\(f(p.height)) note=\(p.note)")
+    }
+    print("quota height=\(f(ql.height)) line_y=\(ql.lineY.map { f($0) } ?? "-")")
+} else {
+    print("quota none")
 }
 
 let lay = ControlRoomListLayout(list: list, height: CGFloat(height))

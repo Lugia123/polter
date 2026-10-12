@@ -12,6 +12,7 @@ use polter_control_room::act::{Act, SeenMarker};
 use polter_control_room::layout::{self, ListLayout, Rect};
 use polter_control_room::list::{self, List, Row};
 use polter_control_room::pulse::{self, Scope};
+use polter_control_room::quota;
 use polter_control_room::look::selection;
 use polter_control_room::snapshot::{self, Shown};
 
@@ -252,6 +253,58 @@ fn main() {
             let loan = lending.loan().map_or("-".to_string(), |l| format!("{},{}", l.group, l.terminal));
             println!("lend {n} {} does=[{}] shows={shows} loan={loan}", quote(name), effects.join(" "));
         }
+    }
+
+    match &snap.quota {
+        Some(q) => {
+            let windows = |ws: &[quota::Window]| {
+                ws.iter()
+                    .map(|w| format!("{}:{}:{}:{}", w.span.name(), w.used, w.live, w.resets_ms))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            let ago = |a: &Option<quota::Ago>| a.map_or("-".to_string(), |a| format!("{}:{}", a.unit.name(), a.n));
+            for a in &q.alerts {
+                println!(
+                    "quota alert family={} level={} span={} used={} resets={} when={}:{} stale={} way_out={} at={} windows={}",
+                    a.family.name(),
+                    a.level.name(),
+                    a.span.name(),
+                    a.used,
+                    a.resets_ms,
+                    a.when.form.name(),
+                    a.when.n,
+                    ago(&a.stale),
+                    a.way_out.map_or("-", |f| f.name()),
+                    a.at_ms,
+                    windows(&a.windows),
+                );
+            }
+            match &q.line {
+                Some(line) => {
+                    println!("quota line label={} entries={}", line.label.name(), line.entries.len());
+                    for e in &line.entries {
+                        println!(
+                            "quota entry family={} state={} used={} span={} stale={} at={} windows={}",
+                            e.family.name(),
+                            e.state.name(),
+                            e.used.map_or("-".to_string(), |n| n.to_string()),
+                            e.span.map_or("-", |s| s.name()),
+                            ago(&e.stale),
+                            e.at_ms.map_or("-".to_string(), |n| n.to_string()),
+                            windows(&e.windows),
+                        );
+                    }
+                }
+                None => println!("quota line none"),
+            }
+            let ql = quota::layout(q);
+            for (y, h, note) in &ql.parts {
+                println!("quota part y={y:.3} h={h:.3} note={note}");
+            }
+            println!("quota height={:.3} line_y={}", ql.height, ql.line_y.map_or("-".to_string(), |y| format!("{y:.3}")));
+        }
+        None => println!("quota none"),
     }
 
     let lay = ListLayout::new(&l, height);

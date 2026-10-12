@@ -118,6 +118,12 @@ exec form 下 `command` 可以是带空格的绝对路径，`args` 每项就是�
    hook 本身会掩盖它要揭示的沉默。
 2. 在 `Notification` 这类观察型事件上，MCP 还没连上时它**不等、直接跳过**（官方文档原话），静默丢事件。
 
+**同一个对象里还有一条 `statusLine`**（2026-10-13，[control-room.md](control-room.md) 3.6）：凡是带了 hooks
+的启动，并且不在 Windows 上，`statusLine` 被设成 `'<polter>' +statusline --cli claude-code`，为的是读
+Claude Code 交给状态栏命令的额度。用户原来的状态栏命令经环境变量 `POLTER_STATUSLINE_CHAIN` 串接，输出
+逐字节不变；`launch` 回复里的 `env` 从这一条起不再恒为空。它不是 hook：没有 exec 形式，是交给 shell 的
+一行，所以 polter 的路径按 `sh` 的规矩加单引号；也不经 socket，`+statusline` 只写一个文件。
+
 ### 3.3 `polter +hook`：底层唯一的入口
 
 新的 CLI 子命令（`src/cli/`），职责只有一件：

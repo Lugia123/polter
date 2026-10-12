@@ -8,7 +8,8 @@ import SwiftUI
 /// **Nothing here says how long.** The minutes on each row and the band of
 /// today's waiting along the bottom were taken out (the user, 2026-10-13:
 /// they do nothing but tell you that you have been slow). The bottom left
-/// is left empty.
+/// holds how much of each account's allowance is used
+/// (`ControlRoomQuotaView`), which is something to act on.
 ///
 /// It draws a `ControlRoomList` and decides nothing about it. Every size and
 /// colour is `ControlRoomLook`'s, and every position is
@@ -65,6 +66,9 @@ struct ControlRoomListView: View {
                 }
                 ForEach(list.quiet) { row in
                     quietRow(row).place(layout.rows[row.id] ?? .zero)
+                }
+                if let quota = list.quota {
+                    ControlRoomQuotaView(quota: quota, still: still).place(layout.quota)
                 }
             }
         }
