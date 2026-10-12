@@ -1347,8 +1347,9 @@ pub fn isAtShellPrompt(self: *Surface) bool {
 ///
 /// An agent is told what the key events say (`poltergeist_draft`), which
 /// errs towards "yes" on purpose. A person's own click is told what is on
-/// the screen: the flag stays set after a line is backspaced empty or
-/// cleared with ctrl+w, and a person who sees an empty prompt and picks a
+/// the screen: the flag can stay set after a line is emptied -- cleared
+/// with ctrl+w, or backspaced empty after a key `Draft` cannot count past
+/// -- and a person who sees an empty prompt and picks a
 /// role must get the role there, not a new tab (#1202). The flag is the
 /// gate: no draft recorded, nothing to look at.
 pub fn draftFor(self: *Surface, who: Typist) bool {
@@ -4772,7 +4773,7 @@ pub fn typePoltergeistTextAs(self: *Surface, text: []const u8, submit: bool, who
     // would land inside it, which is the reported defect with Poltergeist
     // rather than the user holding the pen.
     if (!submit) {
-        self.poltergeist_draft.outstanding = true;
+        self.poltergeist_draft.left();
         return;
     }
 
@@ -4829,7 +4830,7 @@ pub fn typePoltergeistTextAs(self: *Surface, text: []const u8, submit: bool, who
         .utf8 = "\r",
     });
     if (!returnWasWritten(effect, written_before, self.poltergeist_keys_written)) {
-        if (effect != .closed) self.poltergeist_draft.outstanding = true;
+        if (effect != .closed) self.poltergeist_draft.left();
         log.warn(
             "poltergeist: text was typed but its return did not reach the program (effect={s}); " ++
                 "the line is left as an unsubmitted draft",

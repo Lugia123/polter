@@ -40,9 +40,20 @@
 //!
 //! # What it costs, and why that is the acceptable direction
 //!
-//! It errs towards believing there is a draft. Backspacing a line empty
-//! leaves this set, because nothing here counts characters; so does typing
-//! into a full-screen program that has no input line at all.
+//! It errs towards believing there is a draft: typing into a full-screen
+//! program that has no input line at all leaves this set.
+//!
+//! **Backspacing a line empty clears it, but only when that can be known.**
+//! It used to leave it set "because nothing here counts characters", and
+//! the cost was measured on the Windows machine (2026-10-13): one `x`, one
+//! backspace, an empty line on screen, and a notice about a worker stopped
+//! on an approval held back for four minutes and fourteen seconds -- until
+//! somebody happened to press return there. So characters are counted, for
+//! as long as counting is sound: nothing but characters typed at the end
+//! of the line and plain backspaces. The first key that could have put
+//! text in the line unseen, or moved where a backspace lands -- tab, an
+//! arrow, a history chord, a pasted line break -- ends the counting until
+//! a return, and from then on it is the old rule (`Draft.exact`).
 //!
 //! **The cost of a wrong `true` is a late message. The cost of a wrong
 //! `false` is the defect the user reported.** And a wrong `true` does not
@@ -70,6 +81,49 @@ pub const Draft = struct {
     /// Whether text has been typed that has not been submitted or abandoned.
     outstanding: bool = false,
 
+    /// How many characters the line is known to hold at most. Only read
+    /// while `exact`.
+    ///
+    /// **At most, and that is the direction it may be wrong in.** It counts
+    /// code points, and one backspace takes off one: a character made of
+    /// several is deleted by a single backspace and leaves the count high,
+    /// which says "still a draft" about an empty line -- a late message. A
+    /// count that ran low would say "empty" about a line with text in it,
+    /// which is the defect this file exists for.
+    typed: u32 = 0,
+
+    /// Whether `typed` can be believed: since the line was last empty,
+    /// nothing has reached it but characters and plain backspaces. False
+    /// from the first key that could have changed the line in a way this
+    /// cannot count, until the line is submitted or abandoned.
+    exact: bool = true,
+
+    /// The line is the program's again: submitted, or abandoned.
+    fn empty(self: *Draft) void {
+        self.* = .{};
+    }
+
+    /// Text went into the line.
+    fn added(self: *Draft, utf8: []const u8) void {
+        self.outstanding = true;
+        self.typed +|= characters(utf8);
+    }
+
+    /// Something happened to the line that cannot be counted. It says
+    /// nothing about whether there is a draft, only that a run of
+    /// backspaces can no longer prove there is none.
+    fn uncounted(self: *Draft) void {
+        self.exact = false;
+    }
+
+    /// There is text in the line and nothing is known about how much: what
+    /// a caller says when it put the text there itself and the return that
+    /// should have submitted it did not arrive.
+    pub fn left(self: *Draft) void {
+        self.outstanding = true;
+        self.exact = false;
+    }
+
     /// Fold one key event into the answer.
     ///
     /// **Only presses.** A release is not somebody typing, and the burst of
@@ -78,17 +132,23 @@ pub const Draft = struct {
     /// comment. Nothing here is set by a modifier on its own either: this
     /// signal is narrower than the clock beside it, not another copy of it.
     pub fn note(self: *Draft, event: inputpkg.KeyEvent) void {
-        if (event.action != .press) return;
+        // **A held key counts.** This asked for presses only, and a held
+        // letter is one press and then repeats: four characters in the line
+        // and one in the count would let a single backspace say "empty".
+        if (event.action == .release) return;
 
         // Submitted. Whatever was in the line has been handed to the
         // program, and the line is the program's business again.
         switch (event.key) {
             .enter, .numpad_enter => {
-                self.outstanding = false;
+                self.empty();
                 return;
             },
             else => {},
         }
+
+        // A modifier on its own puts nothing in the line and moves nothing.
+        if (event.key.modifier()) return;
 
         // Abandoned. These three are what a person actually presses to get
         // rid of a line they have decided against: interrupt, kill-line,
@@ -101,7 +161,7 @@ pub const Draft = struct {
         // reported defect in the other, so it does not guess.
         if (event.mods.ctrl) switch (event.key) {
             .key_c, .key_u, .key_d => {
-                self.outstanding = false;
+                self.empty();
                 return;
             },
             else => {},
@@ -116,7 +176,37 @@ pub const Draft = struct {
         // every role picked from its menu for good (#1202). Moving around a
         // line, searching history or clearing the screen adds nothing to it.
         // ctrl with alt is AltGr on Windows, and that types real text.
-        if ((event.mods.ctrl and !event.mods.alt) or event.mods.super) return;
+        //
+        // **But it may have changed the line all the same** -- ctrl+y puts
+        // back what was killed, ctrl+r brings a line out of history, ctrl+w
+        // takes a word -- so the count stops being something to believe.
+        if ((event.mods.ctrl and !event.mods.alt) or event.mods.super) {
+            self.uncounted();
+            return;
+        }
+
+        // A key that is being composed with belongs to the input method:
+        // its backspace takes a letter out of the candidate, not out of the
+        // line. What the composition commits arrives through `noteText` and
+        // is counted there; until then the candidate is text in front of
+        // the person all the same, and says so as it always has.
+        if (event.composing) {
+            if (printable(event.utf8)) self.outstanding = true;
+            return;
+        }
+
+        // One character off the end -- if the end is where it lands and the
+        // count is the line. Alt makes it a word; that is not one.
+        if (event.key == .backspace) {
+            if (event.mods.alt) {
+                self.uncounted();
+                return;
+            }
+            if (!self.outstanding or !self.exact) return;
+            self.typed -|= 1;
+            if (self.typed == 0) self.empty();
+            return;
+        }
 
         // Something was typed. `utf8` is what the key generated, so this is
         // the same fact the program itself received -- and it is checked for
@@ -125,7 +215,22 @@ pub const Draft = struct {
         // sequences. Continuation bytes of a multi-byte character are
         // >= 0x80 and count, which is the point: a character is a character
         // whatever alphabet it is in.
-        if (printable(event.utf8)) self.outstanding = true;
+        if (printable(event.utf8)) {
+            self.added(event.utf8);
+            return;
+        }
+
+        // A key the layout could not name and that typed nothing: what an
+        // input method's own keystrokes look like on the way past. Nothing
+        // is known and nothing is concluded.
+        if (event.key == .unidentified) return;
+
+        // **Everything else may have changed the line unseen, or moved
+        // where the next backspace lands**: tab completes, the arrows walk
+        // through history and along the line, delete takes the character
+        // ahead. None of them says there is a draft -- that would be #1202
+        // again -- only that backspaces can no longer prove there is none.
+        self.uncounted();
     }
 
     /// Text put into the line without a key event: a paste, an input
@@ -145,10 +250,30 @@ pub const Draft = struct {
         if (text.len == 0) return;
         const last = text[text.len - 1];
         if (last == '\r' or last == '\n') {
-            self.outstanding = false;
+            self.empty();
             return;
         }
-        if (printable(text)) self.outstanding = true;
+        if (!printable(text)) return;
+        self.added(text);
+        // Several lines, a tab, an escape: what the program makes of those
+        // is its own business, and it is not "one character each".
+        for (text) |b| if (b < 0x20 or b == 0x7f) {
+            self.uncounted();
+            break;
+        };
+    }
+
+    /// How many characters a backspace each would be needed for, at most:
+    /// code points, leaving out what is not text.
+    fn characters(utf8: []const u8) u32 {
+        var n: u32 = 0;
+        for (utf8) |b| {
+            if (b < 0x20 or b == 0x7f) continue;
+            // A continuation byte is part of the character before it.
+            if (b & 0xc0 == 0x80) continue;
+            n +|= 1;
+        }
+        return n;
     }
 
     fn printable(utf8: []const u8) bool {
@@ -281,5 +406,148 @@ test "notice delivery: text that did not come through a key is a draft too" {
     // Nothing, and nothing printable, is not a draft.
     d.noteText("");
     d.noteText("\x1b[A");
+    try std.testing.expect(!d.outstanding);
+}
+
+fn pressed(key: inputpkg.Key, mods: inputpkg.Mods) inputpkg.KeyEvent {
+    return .{ .action = .press, .key = key, .mods = mods };
+}
+
+test "a line typed and backspaced empty is no draft" {
+    // The Windows machine, 2026-10-13: one `x`, one backspace, and a notice
+    // held back for four minutes behind an empty line.
+    var d: Draft = .{};
+    d.note(typed("x"));
+    try std.testing.expect(d.outstanding);
+    d.note(pressed(.backspace, .{}));
+    try std.testing.expect(!d.outstanding);
+
+    // As many backspaces as characters, and not one fewer.
+    d.note(typed("a"));
+    d.note(typed("b"));
+    d.note(typed("c"));
+    d.note(pressed(.backspace, .{}));
+    d.note(pressed(.backspace, .{}));
+    try std.testing.expect(d.outstanding);
+    d.note(pressed(.backspace, .{}));
+    try std.testing.expect(!d.outstanding);
+
+    // A backspace at an empty line is nothing, and leaves the next line
+    // countable.
+    d.note(pressed(.backspace, .{}));
+    d.note(typed("y"));
+    d.note(pressed(.backspace, .{}));
+    try std.testing.expect(!d.outstanding);
+}
+
+test "a held key is as many characters as it repeated" {
+    var d: Draft = .{};
+    d.note(typed("a"));
+    var again = typed("a");
+    again.action = .repeat;
+    d.note(again);
+    d.note(again);
+    d.note(pressed(.backspace, .{}));
+    try std.testing.expect(d.outstanding);
+    var held = pressed(.backspace, .{});
+    held.action = .repeat;
+    d.note(held);
+    try std.testing.expect(d.outstanding);
+    d.note(held);
+    try std.testing.expect(!d.outstanding);
+}
+
+test "text that came without keys is counted by its characters" {
+    var d: Draft = .{};
+    // Two characters, six bytes: an input method's commit.
+    d.noteText("\u{4f60}\u{597d}");
+    d.note(pressed(.backspace, .{}));
+    try std.testing.expect(d.outstanding);
+    d.note(pressed(.backspace, .{}));
+    try std.testing.expect(!d.outstanding);
+
+    // A paste and a typed character after it.
+    d.noteText("ab");
+    d.note(typed("c"));
+    d.note(pressed(.backspace, .{}));
+    d.note(pressed(.backspace, .{}));
+    try std.testing.expect(d.outstanding);
+    d.note(pressed(.backspace, .{}));
+    try std.testing.expect(!d.outstanding);
+}
+
+test "backspaces prove nothing once the line could have changed unseen" {
+    // Each of these can put text in the line, take an unknown amount out,
+    // or move where a backspace lands. After one, only a return clears.
+    const unseen = [_]inputpkg.KeyEvent{
+        pressed(.tab, .{}), // completion
+        pressed(.arrow_up, .{}), // history
+        pressed(.arrow_left, .{}), // the backspace lands elsewhere
+        pressed(.arrow_right, .{}), // accepts a suggestion
+        pressed(.delete, .{}),
+        pressed(.home, .{}),
+        pressed(.key_y, .{ .ctrl = true }), // yank
+        pressed(.key_r, .{ .ctrl = true }), // history search
+        pressed(.backspace, .{ .alt = true }), // a word
+    };
+    for (unseen) |key| {
+        var d: Draft = .{};
+        d.note(typed("g"));
+        d.note(typed("i"));
+        d.note(key);
+        d.note(pressed(.backspace, .{}));
+        d.note(pressed(.backspace, .{}));
+        d.note(pressed(.backspace, .{}));
+        try std.testing.expect(d.outstanding);
+        // And before anything was typed, the same: a line recalled from
+        // history is not emptied by deleting the one character typed after.
+        var e: Draft = .{};
+        e.note(key);
+        try std.testing.expect(!e.outstanding);
+        e.note(typed("x"));
+        e.note(pressed(.backspace, .{}));
+        try std.testing.expect(e.outstanding);
+        // A return is still what clears it, and counting starts over.
+        e.note(pressed(.enter, .{}));
+        try std.testing.expect(!e.outstanding);
+        e.note(typed("x"));
+        e.note(pressed(.backspace, .{}));
+        try std.testing.expect(!e.outstanding);
+    }
+
+    // A paste with a line break inside it.
+    var d: Draft = .{};
+    d.noteText("one\ntwo");
+    for (0..16) |_| d.note(pressed(.backspace, .{}));
+    try std.testing.expect(d.outstanding);
+
+    // Text a caller left there itself.
+    var l: Draft = .{};
+    l.left();
+    l.note(typed("x"));
+    l.note(pressed(.backspace, .{}));
+    try std.testing.expect(l.outstanding);
+}
+
+test "a modifier, a key being composed with, and a key that typed nothing leave the count alone" {
+    var d: Draft = .{};
+    d.note(typed("a"));
+    // Shift going down before the next letter is not "something unseen".
+    d.note(pressed(.shift_left, .{ .shift = true }));
+    d.note(typed("B"));
+    // The input method's own backspace takes a letter out of the candidate.
+    var composing = pressed(.backspace, .{});
+    composing.composing = true;
+    d.note(composing);
+    d.note(composing);
+    try std.testing.expect(d.outstanding);
+    // The candidate itself is something half-written, and is not counted.
+    var candidate = typed("ni");
+    candidate.composing = true;
+    d.note(candidate);
+    d.note(.{ .action = .press, .key = .unidentified });
+    d.note(pressed(.backspace, .{}));
+    try std.testing.expect(d.outstanding);
+    d.note(pressed(.backspace, .{}));
     try std.testing.expect(!d.outstanding);
 }

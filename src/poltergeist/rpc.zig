@@ -8208,8 +8208,11 @@ fn chatFailure(err: anyerror) wire.Response {
 ///      window, and the sentence is still on the screen.
 ///
 /// **Neither reads the input line, and (2) is not a way of reading it.** It
-/// counts what went in -- the same key events (1) times -- so backspacing a
-/// line empty leaves it set. Reading the line is what cannot be done here:
+/// counts what went in -- the same key events (1) times -- and takes one
+/// off for each plain backspace, for as long as nothing but characters and
+/// backspaces has reached the line; after a tab, an arrow or a history
+/// chord it stops counting, and backspacing that line empty leaves it set.
+/// Reading the line is what cannot be done here:
 /// an agent CLI draws its own prompt, so the cursor is never at column zero,
 /// and this runs on a thread that does not hold the renderer lock.
 /// `poltergeist/draft.zig` argues all of it, including why OSC 133 does not
@@ -8258,8 +8261,10 @@ const draft_in_line =
     "something, and it now tells you whether it landed -- if it answers " ++
     "that the key reached the program, this refusal is gone; if it answers " ++
     "that nothing received the key, a person has to go to that machine. " ++
-    "Note that this never read the input line: it counts what went in, so " ++
-    "backspacing a line empty also leaves it set.";
+    "Note that this never read the input line: it counts what went in and " ++
+    "what plain backspaces took out, and stops counting at the first tab, " ++
+    "arrow or history key -- so a line emptied after one of those is still " ++
+    "reported as holding text.";
 
 /// Said when the host has the tools but this build has not wired them up.
 ///
