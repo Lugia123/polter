@@ -721,6 +721,28 @@
 "The supervisor's terminal is no longer open." = "总管的终端已经不在了。";
 "The supervisor's terminal is in its own tab." = "总管的终端在它自己的标签页里。";
 
+/* 总控台：新建群、给没有总管的群启动总管 */
+"A group's name is lowercase letters, digits and dashes, 48 at most." = "群名只能用小写字母、数字和短横线，最长 48 个。";
+"There is already a group by that name." = "已经有一个叫这个名字的群了。";
+"There is no room for another group." = "群的数量已经到上限了。";
+"Group name" = "群名";
+"This group already has a supervisor." = "这个群已经有总管了。";
+"A supervisor is already being started for this group." = "这个群的总管正在启动。";
+"There is no role that makes a supervisor. Add one in the role library." = "角色库里没有总管角色，请先在角色库里加一个。";
+"That role does not make a supervisor." = "这个角色不是总管角色。";
+"That directory is not there." = "这个目录不存在。";
+"No tab could be opened for it." = "没能为它开出标签页。";
+"Polter could not find its own program to start the role with." = "Polter 找不到自己的程序，没法用它启动角色。";
+"Starting the supervisor…" = "正在启动总管…";
+"The supervisor did not start: its tab never opened." = "总管没有启动：它的标签页没有开出来。";
+"The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why." = "总管没有启动：标签页开了，但里面没有 agent 连上来。原因在它的标签页里。";
+"The supervisor did not start: its tab was closed first." = "总管没有启动：它的标签页先被关掉了。";
+"The supervisor did not start." = "总管没有启动。";
+"Directory" = "目录";
+"Choose" = "选择";
+"Start Supervisor" = "启动总管";
+"Where the tab starts" = "新标签页所在的目录";
+
 /* 终端进程退出的提示条、命令结束的通知、命令面板里的更新项：原先是裸赋值的英文，没进过这张表 */
 "Process exited after **`%@`**. Press any key to close the terminal." = "进程运行 **`%@`** 后退出了。按任意键关闭终端。";
 "Process exited. Press any key to close the terminal." = "进程已退出。按任意键关闭终端。";
@@ -755,3 +777,6 @@
 "%@ has room." = "%@ 还有余量。";
 "as of %@" = "%@ 的数";
 "%@: this account's allowance could not be read." = "读不到 %@ 的额度。";
+
+/* 分屏框：worker 那一格的标题带上，名字后面说明身份的字 */
+"Worker" = "worker";

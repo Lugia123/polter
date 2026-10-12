@@ -499,6 +499,94 @@ struct ControlRoomListTests {
         #expect(said == 0)
     }
 
+    // MARK: One slide, written out
+
+    @Test func aChipSlidesOnlyWhenThereIsSomewhereToComeFromAndMotionIsAllowed() {
+        let was = CGRect(x: 0, y: 0, width: 293, height: 24)
+        let now = CGRect(x: 588, y: 0, width: 292, height: 24)
+        let slides = ControlRoomChipSlide.plan(from: was, to: now, reduceMotion: false)
+        #expect(slides == .slide(dx: -587.5, dy: 0))
+        // Reduce Motion: it is simply there.
+        let reduced = ControlRoomChipSlide.plan(from: was, to: now, reduceMotion: true)
+        #expect(reduced == .jump)
+        let fromNowhere = ControlRoomChipSlide.plan(from: nil, to: now, reduceMotion: false)
+        #expect(fromNowhere == .jump)
+        let toItself = ControlRoomChipSlide.plan(from: now, to: now, reduceMotion: false)
+        #expect(toItself == .jump)
+        // Down a list is a slide as much as along a bar.
+        let down = ControlRoomChipSlide.plan(from: CGRect(x: 6, y: 38, width: 368, height: 100),
+                                             to: CGRect(x: 6, y: 146, width: 368, height: 80), reduceMotion: false)
+        #expect(down == .slide(dx: 0, dy: -98))
+    }
+
+    @Test func theSlideIsOverWhenItStaysWithinTheTablesFractionOfItsEnd() {
+        let end = ControlRoomChipSlide.duration
+        // The design: "still at about 0.45 s".
+        #expect(end > 0.38 && end < 0.47)
+        let after = stride(from: end, through: end + 2, by: 0.001)
+            .map { abs(1 - ControlRoomChipSpring.progress(at: $0)) }
+            .max()!
+        #expect(after <= Look.Selection.settledWithin)
+        let justBefore = abs(1 - ControlRoomChipSpring.progress(at: end - 0.002))
+        #expect(justBefore > Look.Selection.settledWithin)
+    }
+
+    @Test func theChipIsUpForTheWayAndDownByTheTimeItIsStill() {
+        let lands = ControlRoomChipSlide.landsAt
+        // It starts down with three tenths of the way still to go.
+        let gone = ControlRoomChipSpring.progress(at: lands)
+        #expect(abs(gone - (1 - Look.Selection.liftLandsWithRemaining)) < 0.01)
+        #expect(lands > Look.Selection.liftIn && lands < ControlRoomChipSlide.duration)
+
+        let atStart = ControlRoomChipSlide.lift(at: 0)
+        #expect(atStart == 0)
+        let halfUp = ControlRoomChipSlide.lift(at: Look.Selection.liftIn / 2)
+        #expect(abs(halfUp - 0.5) < 0.001)
+        let up = ControlRoomChipSlide.lift(at: (Look.Selection.liftIn + lands) / 2)
+        #expect(up == 1)
+        let atEnd = ControlRoomChipSlide.lift(at: ControlRoomChipSlide.duration)
+        #expect(atEnd == 0)
+        // And it only comes down once it has started to.
+        let falling = stride(from: lands, through: ControlRoomChipSlide.duration, by: 0.005)
+            .map { ControlRoomChipSlide.lift(at: $0) }
+        let neverRises = zip(falling, falling.dropFirst()).allSatisfy { $0 >= $1 }
+        #expect(neverRises)
+    }
+
+    @Test func aSlideStartsWhereTheChipWasAndEndsExactlyAtRest() {
+        let scale = Look.Selection.liftScaleWindowTab
+        let samples = ControlRoomChipSlide.samples(dx: -587.5, dy: 0, liftScale: scale)
+        let expected = Int((ControlRoomChipSlide.duration * Look.Selection.slideSamplesPerSecond).rounded(.up)) + 1
+        #expect(samples.count == expected)
+        #expect(samples.first == .init(dx: -587.5, dy: 0, along: 1, across: 1))
+        // The last is rest itself, not nearly: when the animation is taken
+        // off, nothing may jump.
+        #expect(samples.last == .init(dx: 0, dy: 0, along: 1, across: 1))
+
+        // It passes its place by about 4% of the way and comes back.
+        let furthestPast = samples.map(\.dx).max()!
+        #expect(furthestPast > 587.5 * 0.03 && furthestPast < 587.5 * 0.05)
+
+        // In the air it is larger by the table's lift, longer along the way
+        // by no more than the stretch, and never wider across than lifted.
+        let longest = samples.map(\.along).max()!
+        #expect(longest > 1 + scale)
+        #expect(longest <= (1 + scale) * (1 + Look.Selection.stretchAlong))
+        let widest = samples.map(\.across).max()!
+        #expect(widest <= 1 + scale)
+        let narrowest = samples.map(\.across).min()!
+        #expect(narrowest >= 1 - Look.Selection.squeezeAcross)
+    }
+
+    @Test func theSpringsSpeedIsHowFastItsProgressChanges() {
+        for t in [0.02, 0.1, 0.2, 0.3] {
+            let h = 1e-6
+            let measured = (ControlRoomChipSpring.progress(at: t + h) - ControlRoomChipSpring.progress(at: t - h)) / (2 * h)
+            let said = ControlRoomChipSpring.speed(at: t)
+            #expect(abs(measured - said) < 1e-4)
+        }
+    }
+
     // MARK: The glyphs' motion
 
     @Test func thePulseGoesFromFullToTheTablesMinimumAndBack() {

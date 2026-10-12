@@ -71,10 +71,11 @@ pub mod radius {
     /// The terminal inside the supervisor's frame: 12 - 4.
     /// Source: design v14, GRID.md.
     pub const SUPERVISOR_INNER: f64 = 8.0;
-    /// Source: design v14, GRID.md.
-    pub const WORKER: f64 = 8.0;
-    /// Source: design v14, GRID.md.
-    pub const PLAIN: f64 = 8.0;
+    /// 8 until v15: everything 8 from the window's edge is 12.
+    /// Source: design v15, GRID.md.
+    pub const WORKER: f64 = 12.0;
+    /// Source: design v15, GRID.md.
+    pub const PLAIN: f64 = 12.0;
     /// A capsule 24 high.
     /// Source: design v14, GRID.md.
     pub const WINDOW_TAB: f64 = 12.0;
@@ -191,6 +192,15 @@ pub mod pane {
     pub const SUPERVISOR_BAR_PADDING_X: f64 = 8.0;
     /// Source: design v17, src/style.css.
     pub const BAR_GAP: f64 = 8.0;
+    /// Between a pane's name and the word for what it is. Measured 9 to 10 between the ink; the boxes are 8 apart.
+    /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
+    pub const NAME_ROLE_GAP: f64 = 8.0;
+    /// An ordinary terminal's title, from its pane's left edge. Measured: ink at 13.
+    /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
+    pub const PLAIN_TITLE_INSET_X: f64 = 12.0;
+    /// The title is centred in a band this high at the top of the pane, with nothing drawn behind it. Measured: ink from 9 to 22 below the pane's top.
+    /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
+    pub const PLAIN_TITLE_BAND_HEIGHT: f64 = 32.0;
     /// Source: design v14, CHANGES.md.
     pub const SUPERVISOR_BORDER: f64 = 4.0;
     /// It has a shadow; the other two do not.
@@ -234,6 +244,10 @@ pub mod stack_tab {
     pub const SEPARATOR_HEIGHT: f64 = 12.0;
     /// Source: design v17, src/style.css.
     pub const ADD_BUTTON: f64 = 28.0;
+    /// The narrowest a tab is squeezed to before the rest go behind a `more` menu at the right end. 68 is the design's three-letter tab: padding 12 + three cells + gap 8 + glyph 14 + padding 12.
+    /// TENTATIVE (other candidate: 104). 104 is the design's eight-letter tab. The design draws no squeezed strip; where squeezing stops has not been ruled on.
+    /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
+    pub const MIN_WIDTH: f64 = 68.0;
     /// Source: design v14, CHANGES.md.
     pub const OUTLINED: bool = false;
 }
@@ -319,7 +333,7 @@ pub mod status {
     pub const DONE_UNSEEN_DOT: f64 = 6.0;
 }
 
-/// The selected row of the group list: a chip at rest, glass while it slides.
+/// The selected row of the group list and the selected window tab: a chip at rest, glass while it slides.
 pub mod selection {
     /// The width of the faint band just inside the chip's edge.
     /// Source: design v17, CHANGES.md.
@@ -335,9 +349,22 @@ pub mod selection {
     pub const LIFT_IN: f64 = 0.07;
     /// Source: design v17, src/anim.py.
     pub const LIFT_SCALE_ROW: f64 = 0.025;
-    /// The window tab's chip is the system's to draw; this is what the design hoped for.
+    /// The window tab's chip is the system's own piece of glass; this is how much of it the slide adds while it is in the air.
     /// Source: design v17, src/anim.py.
     pub const LIFT_SCALE_WINDOW_TAB: f64 = 0.08;
+    /// The chip starts back down when this much of the way is still to go.
+    /// Source: design v17, CHANGES.md.
+    pub const LIFT_LANDS_WITH_REMAINING: f64 = 0.3;
+    /// The slide is over once it stays this close to its end, as a fraction of the way: 0.41 s with the period and damping above; the design says about 0.45.
+    /// Source: design v17, CHANGES.md.
+    pub const SETTLED_WITHIN: f64 = 0.005;
+    /// The window tab's slide is handed to the system written out as this many positions a second.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const SLIDE_SAMPLES_PER_SECOND: f64 = 120.0;
+    /// Whether the row's chip is the system's glass while it sits still. Off: at rest it is a plain bright piece with nothing live behind it, and the glass is only there for the slide.
+    /// TENTATIVE (other candidate: true). Glass that sits still is recomposited whenever what is behind it changes; the one measurement of glass over a scrolling terminal found a cost in full screen. The user has not ruled.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const GLASS_AT_REST: bool = false;
     /// At most, with speed, along the direction of travel.
     /// Source: design v17, src/anim.py.
     pub const STRETCH_ALONG: f64 = 0.1;
@@ -346,8 +373,8 @@ pub mod selection {
     /// The middle of the chip while lifted.
     /// Source: design v17, src/anim.py.
     pub const CENTRE_ZOOM: f64 = 0.04;
-    /// Whether the chip's edge bends what is under it.
-    /// TENTATIVE (other candidate: false). The other candidate keeps the lift and the slide and drops the refraction. Whether it can be done live is unverified.
+    /// Whether the chip's edge bends what is under it while it slides. It is the system's glass that bends it, where the system has one (macOS 26); nothing here moves pixels itself.
+    /// TENTATIVE (other candidate: false). The other candidate keeps the lift and the slide and drops the refraction. What the system's glass looks like over the rows has not been seen in a window.
     /// Source: design v17, CHANGES.md.
     pub const REFRACTION_SHOWN: bool = true;
     /// How long a row stays selected, with the control room in front, before its group counts as seen.
@@ -655,7 +682,9 @@ pub const TENTATIVE: &[&str] = &[
     "side.ask_max_lines",
     "side.ask_max_steps",
     "stack_tab.inset",
+    "stack_tab.min_width",
     "selection.spring_damping",
+    "selection.glass_at_rest",
     "selection.refraction_shown",
     "selection.seen_after",
     "text_on.problem_text",

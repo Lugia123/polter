@@ -55,8 +55,53 @@ struct ControlRoomList: Equatable {
         /// and the two moments it was drawn from. Nil where there is no
         /// terminal behind the row.
         var target: Target?
+        /// Whether this group has a supervisor and what starting one would
+        /// use, as the core says it. Nil in a list made by hand.
+        var start: SupervisorStart?
 
         var name: String { id }
+    }
+
+    /// What the core says about a group's supervisor (`ControlRoom.zig`,
+    /// `SupervisorOut`). **Whether one can be started is `canStart`, the
+    /// core's word**: a host shows the button on that and works nothing
+    /// out from `state`, which only picks the sentence.
+    struct SupervisorStart: Equatable {
+        enum State: String, Equatable, Decodable {
+            case present, absent, starting, failed
+        }
+
+        /// Why the last try made no supervisor.
+        enum Failure: String, Equatable, Decodable {
+            case none
+            case terminalNeverOpened = "terminal_never_opened"
+            case agentNeverConnected = "agent_never_connected"
+            case terminalClosed = "terminal_closed"
+        }
+
+        var state: State
+        var canStart: Bool
+        var failed: Failure
+        /// The role it is started in unless the person picks another.
+        var role: String?
+        /// Where it is started unless the person picks elsewhere.
+        var cwd: String
+    }
+
+    /// A role a supervisor can be started in.
+    struct SupervisorRole: Equatable, Identifiable {
+        var key: String
+        var name: String
+        var id: String { key }
+
+        /// The name to show. The role Polter ships is named in English in
+        /// the core and shown in the person's language, as the role
+        /// library shows it.
+        var displayName: String {
+            key == "polter-supervisor"
+                ? String(localized: "Polter Supervisor", comment: "角色库：内置角色名，Polter 总管")
+                : name
+        }
     }
 
     /// Who a row is about, as the core says it (`ControlRoom.zig`,
@@ -166,6 +211,11 @@ struct ControlRoomList: Equatable {
     /// The allowance block at the bottom, as the core says it; nil when
     /// the snapshot has none, and then nothing is drawn there.
     var quota: ControlRoomQuota?
+    /// The roles a supervisor can be started in, in the core's order.
+    var supervisorRoles: [SupervisorRole] = []
+    /// Whether there is a choice of role to offer. The core's word, not
+    /// `supervisorRoles.count`.
+    var chooseSupervisorRole: Bool = false
 
     /// Every row in the order it is listed, which is the order the up and
     /// down keys walk.
@@ -301,8 +351,47 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var text: String
     }
 
+    /// One open terminal, as much of it as its pane's frame shows
+    /// (`PaneFrame`).
+    struct Terminal: Decodable, Equatable {
+        /// Which of the three frames its pane wears, as the core spells
+        /// them. A value this does not know is an error, as with `shown`.
+        enum Pane: String, Decodable, Equatable, CaseIterable {
+            /// A border all round, its top edge thickened into the title bar.
+            case supervisor
+            /// A line all round and a band for the title.
+            case worker
+            /// No line and no band: the title on the terminal's own ground.
+            case plain
+        }
+
+        var id: String
+        var title: String
+        var shown: ControlRoomList.Shown
+        var text: String
+        /// Absent in a snapshot from before the core said it; such a
+        /// terminal is drawn as an ordinary one.
+        var pane: Pane?
+    }
+
+    /// See `ControlRoomList.SupervisorStart`.
+    struct Supervisor: Decodable, Equatable {
+        var state: ControlRoomList.SupervisorStart.State
+        var can_start: Bool
+        var failed: ControlRoomList.SupervisorStart.Failure
+        var role: String?
+        var cwd: String
+    }
+
+    struct SupervisorRole: Decodable, Equatable {
+        var key: String
+        var name: String
+    }
+
     struct Group: Decodable, Equatable {
         var name: String
+        /// Absent in snapshots from before the core said it.
+        var supervisor: Supervisor?
         /// The group's terminals. Absent in a snapshot cut down by hand.
         var members: [Member]?
         /// The terminal that is this group's supervisor, as the core names
@@ -344,6 +433,12 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     /// a snapshot without it draws no block. One with a word in it this
     /// does not know is not read at all.
     var quota: ControlRoomQuota?
+    /// Every open terminal, for the frame its pane wears (`PaneFrame`).
+    var terminals: [Terminal]?
+    /// Absent in snapshots from before a supervisor could be started here:
+    /// then there is no role to start one in and nothing is offered.
+    var supervisor_roles: [SupervisorRole]?
+    var choose_supervisor_role: Bool?
 }
 
 /// Which waiting glyph breathes.
@@ -450,6 +545,10 @@ extension ControlRoomList {
                     attention.terminal.map {
                         Target(terminal: $0, sinceMs: attention.since_ms, eventMs: attention.event_ms)
                     }
+                },
+                start: group.supervisor.map {
+                    SupervisorStart(state: $0.state, canStart: $0.can_start, failed: $0.failed,
+                                    role: $0.role, cwd: $0.cwd)
                 }))
         }
         self.init(
@@ -457,7 +556,9 @@ extension ControlRoomList {
             waiting: rows.filter { $0.0 }.map { $0.1 },
             quietCount: snapshot.groups_other,
             quiet: rows.filter { !$0.0 }.map { $0.1 },
-            quota: snapshot.quota)
+            quota: snapshot.quota,
+            supervisorRoles: (snapshot.supervisor_roles ?? []).map { SupervisorRole(key: $0.key, name: $0.name) },
+            chooseSupervisorRole: snapshot.choose_supervisor_role ?? false)
     }
 
     static func decode(snapshot json: Data, showing: String? = nil) throws -> ControlRoomList {
@@ -648,6 +749,114 @@ enum ControlRoomChipSpring {
     static func overshoot(damping: Double = ControlRoomLook.Selection.springDamping) -> Double {
         guard damping < 1 else { return 0 }
         return exp(-damping * Double.pi / (1 - damping * damping).squareRoot())
+    }
+
+    /// How fast progress is changing at `t` seconds, per second.
+    static func speed(at t: Double,
+                      period: Double = ControlRoomLook.Selection.springPeriod,
+                      damping: Double = ControlRoomLook.Selection.springDamping) -> Double {
+        guard t > 0, period > 0 else { return 0 }
+        let omega = 2 * Double.pi / period
+        guard damping < 1 else { return omega * omega * t * exp(-omega * t) }
+        let wd = omega * (1 - damping * damping).squareRoot()
+        return exp(-damping * omega * t) * omega * omega / wd * sin(wd * t)
+    }
+
+    /// When it first has only `remaining` of the way left to go.
+    static func reaches(remaining: Double,
+                        period: Double = ControlRoomLook.Selection.springPeriod,
+                        damping: Double = ControlRoomLook.Selection.springDamping) -> Double {
+        let step = period / 1000
+        var t = 0.0
+        while t < period * 20, progress(at: t, period: period, damping: damping) < 1 - remaining { t += step }
+        return t
+    }
+
+    /// After how long it stays within `within` of its end.
+    static func settles(within: Double = ControlRoomLook.Selection.settledWithin,
+                        period: Double = ControlRoomLook.Selection.springPeriod,
+                        damping: Double = ControlRoomLook.Selection.springDamping) -> Double {
+        guard period > 0, within > 0 else { return 0 }
+        let step = period / 1000
+        // Walk back from well past the end to the last moment it was out.
+        var t = period * 20
+        while t > 0, abs(1 - progress(at: t, period: period, damping: damping)) <= within { t -= step }
+        return t + step
+    }
+}
+
+/// One selection chip's move from where it was to where it is now, written
+/// out: whether it moves at all, and if so where it is, and how it is
+/// stretched, at every moment until it is still.
+///
+/// The row's chip is animated by SwiftUI and takes only `Plan` and the two
+/// times from here. The window tab's chip is the system's own glass, which
+/// can only be handed positions, so it takes `samples` (`WindowTabChipSlide`).
+enum ControlRoomChipSlide {
+    typealias Look = ControlRoomLook.Selection
+
+    enum Plan: Equatable {
+        /// The chip is simply at the new place: Reduce Motion, nowhere to
+        /// come from, or nowhere to go.
+        case jump
+        /// It slides in from this far away (where it was, less where it is).
+        case slide(dx: Double, dy: Double)
+    }
+
+    static func plan(from: CGRect?, to: CGRect, reduceMotion: Bool) -> Plan {
+        guard !reduceMotion, let from else { return .jump }
+        let dx = Double(from.midX - to.midX), dy = Double(from.midY - to.midY)
+        guard dx != 0 || dy != 0 else { return .jump }
+        return .slide(dx: dx, dy: dy)
+    }
+
+    /// When the chip starts back down.
+    static let landsAt: Double = ControlRoomChipSpring.reaches(remaining: Look.liftLandsWithRemaining)
+    /// When it is still.
+    static let duration: Double = ControlRoomChipSpring.settles()
+
+    /// How far the chip is lifted at `t`: up to 1 in `lift_in`, there until
+    /// `landsAt`, and down again by the time it is still.
+    static func lift(at t: Double) -> Double {
+        let lands = landsAt, end = duration
+        if t <= 0 || t >= end { return 0 }
+        if t < Look.liftIn { return t / Look.liftIn }
+        if t <= lands { return 1 }
+        let x = (t - lands) / (end - lands)
+        // Eased, so that it does not drop off a corner.
+        return 1 - x * x * (3 - 2 * x)
+    }
+
+    struct Sample: Equatable {
+        /// From where it will rest, in points.
+        var dx: Double
+        var dy: Double
+        /// Along the way it is going, and across it; 1 is its own size.
+        var along: Double
+        var across: Double
+    }
+
+    /// The chip at `t` seconds into a slide of (`dx`, `dy`).
+    static func sample(at t: Double, dx: Double, dy: Double, liftScale: Double) -> Sample {
+        let left = 1 - ControlRoomChipSpring.progress(at: t)
+        let lifted = 1 + liftScale * lift(at: t)
+        // Fastest is what an undamped spring of this period would reach.
+        let fastest = 2 * Double.pi / Look.springPeriod
+        let quick = min(1, abs(ControlRoomChipSpring.speed(at: t)) / fastest)
+        return Sample(dx: dx * left, dy: dy * left,
+                      along: lifted * (1 + Look.stretchAlong * quick),
+                      across: lifted * (1 - Look.squeezeAcross * quick))
+    }
+
+    /// The whole slide, `slide_samples_per_second` of them, the last one at
+    /// rest exactly.
+    static func samples(dx: Double, dy: Double, liftScale: Double) -> [Sample] {
+        let count = max(2, Int((duration * Look.slideSamplesPerSecond).rounded(.up)) + 1)
+        var all = (0 ..< count - 1).map {
+            sample(at: Double($0) / Look.slideSamplesPerSecond, dx: dx, dy: dy, liftScale: liftScale)
+        }
+        all.append(Sample(dx: 0, dy: 0, along: 1, across: 1))
+        return all
     }
 }
 

@@ -235,6 +235,9 @@ class TerminalWindow: NSWindow {
         // This tab is now the one in front, which can move the breathing
         // glyph to another tab of the group.
         (tabGroup?.windows ?? [self]).forEach { ($0 as? TerminalWindow)?.refreshTabStatus() }
+
+        // And the selected tab's glass slides here from the tab that was.
+        WindowTabChipSlide.selected(self)
     }
 
     override func resignMain() {

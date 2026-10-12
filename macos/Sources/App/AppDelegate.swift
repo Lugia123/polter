@@ -943,17 +943,52 @@ class AppDelegate: NSObject,
     }
 
     @objc private func ghosttyNewTab(_ notification: Notification) {
-        guard let surfaceView = notification.object as? Ghostty.SurfaceView else { return }
-        guard let window = surfaceView.window else { return }
-
-        // We only want to listen to new tabs if the focused parent is
-        // a regular terminal controller.
-        guard window.windowController is TerminalController else { return }
-
         let configAny = notification.userInfo?[Ghostty.Notification.NewSurfaceConfigKey]
         let config = configAny as? Ghostty.SurfaceConfiguration
 
-        _ = TerminalController.newTab(ghostty, from: window, withBaseConfig: config)
+        // Where it goes is `ControlRoomRules.newTab`; what is gathered here
+        // is only what that asks about.
+        let surfaceView = notification.object as? Ghostty.SurfaceView
+        let home = surfaceView?.homeWindow
+        let controlRoom = ControlRoomController.shared
+        let beside = controlRoom?.terminalTabBeside
+        let frontmost = TerminalController.preferredParent?.window
+        let plan = ControlRoomRules.newTab(
+            asker: surfaceView.map { (lent: ControlRoomLender.shared.isLent($0), hasHome: home != nil) },
+            controlRoomInFront: controlRoom?.window?.isKeyWindow ?? false,
+            tabsBesideControlRoom: beside != nil,
+            anyTerminalWindow: frontmost != nil)
+
+        func window(_ which: ControlRoomRules.NewTab.Home) -> NSWindow? {
+            switch which {
+            case .askers: return home
+            case .controlRooms: return beside
+            case .frontmost: return frontmost
+            }
+        }
+
+        let parent: NSWindow?
+        let inFront: Bool
+        switch plan {
+        case .refused:
+            return
+        case .ownWindow:
+            _ = TerminalController.newWindow(ghostty, withBaseConfig: config)
+            return
+        case let .inFront(of: which):
+            parent = window(which)
+            inFront = true
+        case let .behind(which):
+            parent = window(which)
+            inFront = false
+        }
+        guard let parent else { return }
+
+        // We only want to listen to new tabs if the focused parent is
+        // a regular terminal controller.
+        guard parent.windowController is TerminalController else { return }
+
+        _ = TerminalController.newTab(ghostty, from: parent, withBaseConfig: config, inFront: inFront)
     }
 
     private func setDockBadge() {

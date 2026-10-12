@@ -23,7 +23,18 @@
 //! {"act":"approve",  "terminal":"0x…","since_ms":N,"event_ms":N}
 //! {"act":"refuse",   "terminal":"0x…","since_ms":N,"event_ms":N}
 //! {"act":"reply",    "terminal":"0x…","since_ms":N,"text":"…"}
+//! {"act":"new_group","name":"web-app"}
+//! {"act":"start_supervisor","group":"web-app"}          the snapshot's role
+//!                                                       and directory
+//! {"act":"start_supervisor","group":"web-app","role":"…","cwd":"/…"}
 //! ```
+//!
+//! `start_supervisor` opens a tab, starts the role's CLI in it, and holds
+//! "this terminal is `group`'s supervisor" for the agent that connects from
+//! it. **It returns when the tab has been asked for, not when there is a
+//! supervisor**: what becomes of it is the group's `supervisor` in the
+//! snapshot (`starting`, then `present` or `failed`). A refusal below means
+//! nothing was started.
 //!
 //! ## The refusals
 //!
@@ -41,6 +52,16 @@
 //! | approve, refuse, reply | `DraftInLine` | there is unsubmitted text in its input line |
 //! | approve, refuse, reply | `ChildExited` | its process has ended |
 //! | approve, refuse | `KeyFailed` | the key did not reach the program |
+//! | new_group | `BadName` | the name is empty, longer than 48, or has anything but `a-z`, `0-9` and `-` in it |
+//! | new_group | `GroupExists` | there is one by that name |
+//! | new_group | `TooManyGroups` | the list is full |
+//! | start_supervisor | `NoSuchGroup` | the group is not there |
+//! | start_supervisor | `HasSupervisor` | it has one |
+//! | start_supervisor | `AlreadyStarting` | one is on its way |
+//! | start_supervisor | `NoSupervisorRole` | no role was named and there is none to default to |
+//! | start_supervisor | `NoSuchPersona`, `NotASupervisorRole`, `NoCli` | the role named is not there, does not make a supervisor, or has no CLI to start |
+//! | start_supervisor | `NotAbsolute`, `NoSuchDirectory`, `NotADirectory` | the directory |
+//! | start_supervisor | `OpenFailed` | no tab could be opened |
 //!
 //! The last four are the terminal's own, from the path every agent's text
 //! takes; they are not decided here.
@@ -67,6 +88,9 @@ pub const Act = union(enum) {
     approve: Prompt,
     refuse: Prompt,
     reply: struct { terminal: Id, since_ms: u64, text: []const u8 },
+    new_group: []const u8,
+    /// Empty `role` and `cwd` are "the one the snapshot names".
+    start_supervisor: struct { group: []const u8, role: []const u8, cwd: []const u8 },
 };
 
 pub const Refusal = error{
@@ -78,6 +102,10 @@ pub const Refusal = error{
     NothingToReplyTo,
     Stale,
     EmptyText,
+    BadName,
+    GroupExists,
+    HasSupervisor,
+    AlreadyStarting,
 };
 
 /// The keys an approval and a refusal are. One key each, and neither
@@ -95,6 +123,15 @@ pub const Host = struct {
     sendText: *const fn (ctx: *anyopaque, id: Id, text: []const u8) anyerror!void,
     /// Write a group's marks down.
     persist: *const fn (ctx: *anyopaque, group: []const u8, marks: Chat.Marks) void,
+    /// Make a group, the way the person makes one anywhere else: they are
+    /// in it, and it is written down so it is there in the morning.
+    createGroup: *const fn (ctx: *anyopaque, name: []const u8) anyerror!void,
+    /// The terminal that is this group's supervisor, as the snapshot says
+    /// it; null when it has none.
+    stewardOf: *const fn (ctx: *anyopaque, group: []const u8) ?Id,
+    /// Open a tab and start a supervisor for `group` in it. Empty `role`
+    /// and `cwd` are the snapshot's.
+    startSupervisor: *const fn (ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8) anyerror!void,
 };
 
 fn fieldOf(obj: std.json.ObjectMap, name: []const u8) Refusal!std.json.Value {
@@ -132,7 +169,7 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
         else => return error.BadRequest,
     };
 
-    const Name = enum { seen, snooze, unsnooze, approve, refuse, reply };
+    const Name = enum { seen, snooze, unsnooze, approve, refuse, reply, new_group, start_supervisor };
     const name = std.meta.stringToEnum(Name, try textOf(obj, "act")) orelse return error.BadRequest;
     return switch (name) {
         .seen => .{ .seen = try textOf(obj, "group") },
@@ -150,6 +187,12 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
             .terminal = try idOf(obj, "terminal"),
             .since_ms = try msOf(obj, "since_ms"),
             .text = try textOf(obj, "text"),
+        } },
+        .new_group => .{ .new_group = try textOf(obj, "name") },
+        .start_supervisor => .{ .start_supervisor = .{
+            .group = try textOf(obj, "group"),
+            .role = if (obj.get("role")) |_| try textOf(obj, "role") else "",
+            .cwd = if (obj.get("cwd")) |_| try textOf(obj, "cwd") else "",
         } },
     };
 }
@@ -213,6 +256,23 @@ pub fn perform(
             if (a.since_ms != r.since_ms) return error.Stale;
             try host.sendText(host.ctx, r.terminal, text);
         },
+        .new_group => |raw| {
+            // What was typed, less the space round it. Nothing else is
+            // done to it: a name that is not allowed is refused and said,
+            // not turned into one the person did not type.
+            // Whether it is a name, and whether it is taken, are the chat's
+            // to say when it makes the group (`Chat.create`).
+            const name = std.mem.trim(u8, raw, " \t\r\n");
+            try host.createGroup(host.ctx, name);
+        },
+        .start_supervisor => |s| {
+            if (!chat.exists(s.group)) return error.NoSuchGroup;
+            if (host.stewardOf(host.ctx, s.group) != null) return error.HasSupervisor;
+            // Asked here as well as where the start is recorded, so that a
+            // second press is refused before anything is opened for it.
+            if (chat.startOf(s.group, now_ms).state == .starting) return error.AlreadyStarting;
+            try host.startSupervisor(host.ctx, s.group, s.role, s.cwd);
+        },
     }
 }
 
@@ -234,15 +294,54 @@ const Recorder = struct {
     texts: std.ArrayListUnmanaged([]const u8) = .empty,
     persisted: std.ArrayListUnmanaged(Chat.Marks) = .empty,
     refuse_with: ?anyerror = null,
+    /// The chat a made group goes into, as the real host's does.
+    chat: ?*Chat = null,
+    steward: ?Id = null,
+    started: std.ArrayListUnmanaged(Started) = .empty,
+
+    const Started = struct { group: []const u8, role: []const u8, cwd: []const u8 };
 
     fn deinit(self: *Recorder) void {
         self.keys.deinit(testing.allocator);
         self.texts.deinit(testing.allocator);
         self.persisted.deinit(testing.allocator);
+        for (self.started.items) |st| {
+            testing.allocator.free(st.group);
+            testing.allocator.free(st.role);
+            testing.allocator.free(st.cwd);
+        }
+        self.started.deinit(testing.allocator);
     }
 
     fn host(self: *Recorder) Host {
-        return .{ .ctx = self, .sendKey = sendKey, .sendText = sendText, .persist = persist };
+        return .{
+            .ctx = self,
+            .sendKey = sendKey,
+            .sendText = sendText,
+            .persist = persist,
+            .createGroup = createGroup,
+            .stewardOf = stewardOf,
+            .startSupervisor = startSupervisor,
+        };
+    }
+
+    fn createGroup(ctx: *anyopaque, name: []const u8) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        try self.chat.?.create(name, Chat.user_id);
+    }
+
+    fn stewardOf(ctx: *anyopaque, _: []const u8) ?Id {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        return self.steward;
+    }
+
+    fn startSupervisor(ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        // Copied: the request they point into is gone when the act returns.
+        const a = testing.allocator;
+        try self.started.append(a, .{ .group = try a.dupe(u8, group), .role = try a.dupe(u8, role), .cwd = try a.dupe(u8, cwd) });
     }
 
     fn sendKey(ctx: *anyopaque, _: Id, key: []const u8) anyerror!void {
@@ -296,6 +395,7 @@ const Bench = struct {
         var arena: std.heap.ArenaAllocator = .init(testing.allocator);
         defer arena.deinit();
         const parsed = try parse(arena.allocator(), json);
+        self.rec.chat = &self.chat;
         try perform(parsed, &self.bus, &self.chat, self.rec.host(), now_ms, wall + now_ms);
     }
 };
@@ -501,4 +601,83 @@ test "ControlRoom act: a request that is not one is refused before anything is l
     };
     for (bad) |json| try testing.expectError(error.BadRequest, b.act(json, 1_000));
     try testing.expectEqual(@as(usize, 0), b.rec.keys.items.len);
+}
+
+test "ControlRoom start: a new group is made by the name that was typed, or refused by name" {
+    var b = try Bench.init();
+    defer b.deinit();
+
+    try b.act(
+        \\{"act":"new_group","name":"  billing-2 \n"}
+    , 1_000);
+    try testing.expect(b.chat.exists("billing-2"));
+    // The person made it, and is in it.
+    try testing.expectEqual(Chat.user_id, try b.chat.createdBy("billing-2"));
+
+    try testing.expectError(error.GroupExists, b.act(
+        \\{"act":"new_group","name":"web-app"}
+    , 1_000));
+    // Not turned into a name nobody typed.
+    for ([_][]const u8{ "", "   ", "Web App", "web_app", "群", "a" ** 49 }) |bad| {
+        var buf: [128]u8 = undefined;
+        const json = try std.fmt.bufPrint(&buf, "{{\"act\":\"new_group\",\"name\":\"{s}\"}}", .{bad});
+        try testing.expectError(error.BadName, b.act(json, 1_000));
+    }
+    try testing.expectEqual(@as(usize, 2), b.chat.groups.count());
+
+    b.rec.refuse_with = error.TooManyGroups;
+    try testing.expectError(error.TooManyGroups, b.act(
+        \\{"act":"new_group","name":"one-more"}
+    , 1_000));
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"new_group"}
+    , 1_000));
+}
+
+test "ControlRoom start: a supervisor is started for a group that has none, once" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try b.chat.restoreShell("nightly", "", 0);
+
+    // No such group, and one that is minded: nothing is opened for either.
+    try testing.expectError(error.NoSuchGroup, b.act(
+        \\{"act":"start_supervisor","group":"nope"}
+    , 1_000));
+    b.rec.steward = term;
+    try testing.expectError(error.HasSupervisor, b.act(
+        \\{"act":"start_supervisor","group":"web-app"}
+    , 1_000));
+    try testing.expectEqual(@as(usize, 0), b.rec.started.items.len);
+
+    // With nothing named, the host is handed nothing to override with.
+    b.rec.steward = null;
+    try b.act(
+        \\{"act":"start_supervisor","group":"nightly"}
+    , 1_000);
+    try testing.expectEqual(@as(usize, 1), b.rec.started.items.len);
+    try testing.expectEqualStrings("", b.rec.started.items[0].role);
+    try testing.expectEqualStrings("", b.rec.started.items[0].cwd);
+
+    // One is on its way (the real host records that as it opens the tab):
+    // a second press opens nothing.
+    try b.chat.beginStart("nightly", 1_000, 11_000);
+    try testing.expectError(error.AlreadyStarting, b.act(
+        \\{"act":"start_supervisor","group":"nightly","role":"night-lead","cwd":"/work"}
+    , 2_000));
+    try testing.expectEqual(@as(usize, 1), b.rec.started.items.len);
+
+    // It failed: trying again is allowed, and what was picked is handed on.
+    try b.act(
+        \\{"act":"start_supervisor","group":"nightly","role":"night-lead","cwd":"/work"}
+    , 11_001);
+    try testing.expectEqual(@as(usize, 2), b.rec.started.items.len);
+
+    // What the host refuses is the answer, by its own name.
+    b.rec.refuse_with = error.NoSuchDirectory;
+    try testing.expectError(error.NoSuchDirectory, b.act(
+        \\{"act":"start_supervisor","group":"nightly","cwd":"/gone"}
+    , 11_002));
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"start_supervisor","group":"nightly","role":7}
+    , 11_002));
 }
