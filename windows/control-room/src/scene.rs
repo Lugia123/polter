@@ -185,12 +185,29 @@ pub fn glyph_color(theme: &Theme, shown: Shown) -> Rgba {
     }
 }
 
+/// Which rows are written the way a selected row is: its name heavier, its
+/// status word in the colour that reads on the chip.
+///
+/// At rest it is the selected row and no other. While the chip slides it is
+/// on neither row, so the panel is built twice: once with `Nobody`, which
+/// is what shows outside the chip, and once with `Every`, which the host
+/// draws through the chip's own outline. What is under the chip then reads
+/// as selected and what is not does not, and the line between the two is
+/// the chip's edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lit {
+    Selection,
+    Every,
+    Nobody,
+}
+
 /// What `build` is told that the list does not hold.
 pub struct View<'a> {
     pub theme: &'a Theme,
     /// Device pixels to the point.
     pub scale: f64,
     pub selection: Option<&'a str>,
+    pub lit: Lit,
     /// Where the chip is right now; `layout.chip(selection)` when it is at
     /// rest, somewhere on the way when it is sliding.
     pub chip: Option<Rect>,
@@ -198,6 +215,17 @@ pub struct View<'a> {
     pub lift: f64,
     /// The row whose glyph breathes (`pulse::pulsing_row`).
     pub pulsing: Option<&'a str>,
+}
+
+impl View<'_> {
+    /// Whether this row is written as a selected one.
+    fn lit(&self, id: &str) -> bool {
+        match self.lit {
+            Lit::Selection => self.selection == Some(id),
+            Lit::Every => true,
+            Lit::Nobody => false,
+        }
+    }
 }
 
 /// The list panel, top to bottom, in the order to paint it.
@@ -214,8 +242,11 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
         edge: Some(over(panel, theme.side_panel_edge, hairline(view.scale).1)),
     });
 
-    // The chip goes under everything it lights.
+    // The chip goes under everything it lights, and its shadow under it.
     if let Some(chip) = view.chip {
+        for (rect, radius, color) in crate::tabstrip::shadow(chip, radius::ROW, panel, theme, view.lift, 1.0) {
+            out.push(Item::Round { rect, radius, color, edge: None });
+        }
         let color = chip_color(theme, view.lift);
         let edge = theme.selection_edge;
         let toward = if edge < 0.0 { BLACK } else { WHITE };
@@ -279,7 +310,7 @@ fn glyph_column(rect: Rect) -> (f64, f64) {
 /// its name alone, a step back.
 fn quiet_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View) {
     let theme = view.theme;
-    let selected = view.selection == Some(row.id.as_str());
+    let selected = view.lit(&row.id);
     let said = quiet_text(row);
     let idle = row.shown == Shown::None && said.is_empty();
     let (glyph_x, text_x) = glyph_column(rect);
@@ -322,7 +353,7 @@ fn quiet_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View) {
 /// came from the same, so nothing here measures.
 fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, fit: &AskFit, view: &View, tr: &dyn Fn(&str) -> String) {
     let theme = view.theme;
-    let selected = view.selection == Some(row.id.as_str());
+    let selected = view.lit(&row.id);
     let word_ink = ink(theme, row.shown, selected);
     let (glyph_x, text_x) = glyph_column(rect);
     let top = rect.y + side::ROW_PADDING_Y;
@@ -695,7 +726,7 @@ mod tests {
 
     fn scene(list: &List, selection: Option<&str>, dark: bool, scale: f64, pulsing: Option<&str>) -> Vec<Item> {
         let at = ListLayout::new(list, 900.0);
-        let view = View { theme: look::theme(dark), scale, selection, chip: at.chip(selection), lift: 0.0, pulsing };
+        let view = View { theme: look::theme(dark), scale, selection, lit: Lit::Selection, chip: at.chip(selection), lift: 0.0, pulsing };
         build(list, &at, &view, &same)
     }
 
@@ -1014,11 +1045,68 @@ mod tests {
         assert_eq!(rounds(&scene(&l, None, false, 1.0, None)), 0);
         let items = scene(&l, Some(&first), false, 1.0, None);
         assert_eq!(rounds(&items), 1);
-        // The panel, then the chip, then everything else.
+        // The panel, then the chip's shadow, then the chip, then
+        // everything else.
         assert!(matches!(items[0], Item::Round { radius, .. } if radius == radius::SIDE_PANEL));
-        assert!(matches!(items[1], Item::Round { radius, .. } if radius == radius::ROW));
+        let chip = items.iter().position(|i| matches!(i, Item::Round { radius, .. } if *radius == radius::ROW)).unwrap();
+        assert!(chip >= 2, "no shadow under the chip");
+        for under in &items[1..chip] {
+            assert!(matches!(under, Item::Round { radius, edge: None, .. } if *radius > radius::ROW), "{under:?}");
+        }
+        assert!(items[chip + 1..].iter().all(|i| !matches!(i, Item::Round { .. })));
         let at = ListLayout::new(&l, 900.0);
-        assert_eq!(rect_of(&items[1]), at.chip(Some(&first)).unwrap());
+        assert_eq!(rect_of(&items[chip]), at.chip(Some(&first)).unwrap());
+    }
+
+    #[test]
+    fn a_lifted_chips_shadow_reaches_further_down() {
+        let l = list();
+        let first = l.waiting[0].id.clone();
+        let at = ListLayout::new(&l, 900.0);
+        let chip = at.chip(Some(&first)).unwrap();
+        let lowest = |lift: f64| {
+            let view = View { theme: look::theme(false), scale: 1.0, selection: Some(&first), lit: Lit::Selection, chip: Some(chip), lift, pulsing: None };
+            build(&l, &at, &view, &same)
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Round { rect, radius, .. } if *radius > radius::ROW && *radius < radius::SIDE_PANEL => Some(rect.y + rect.h),
+                    _ => None,
+                })
+                .fold(f64::MIN, f64::max)
+        };
+        assert!(lowest(0.0) > chip.y + chip.h);
+        assert!(lowest(1.0) > lowest(0.0));
+    }
+
+    #[test]
+    fn under_a_sliding_chip_every_row_reads_selected_and_outside_it_none_does() {
+        // The two passes a host draws while the chip is between rows.
+        let l = list();
+        let (first, second) = (l.waiting[0].id.clone(), l.waiting[1].id.clone());
+        let at = ListLayout::new(&l, 900.0);
+        let names = |lit: Lit| {
+            let view = View { theme: look::theme(true), scale: 1.0, selection: Some(&second), lit, chip: at.chip(Some(&second)), lift: 1.0, pulsing: None };
+            let items = build(&l, &at, &view, &same);
+            [&first, &second].map(|id| {
+                items.iter().find_map(|i| match i {
+                    Item::Line { parts, .. } => parts.iter().find_map(|p| match &p.piece {
+                        Piece::Words { text, style } if text == id => Some(style.weight),
+                        _ => None,
+                    }),
+                    _ => None,
+                })
+            })
+        };
+        assert_eq!(names(Lit::Selection), [Some(font::WEIGHT_GROUP_NAME), Some(font::WEIGHT_STRONG)]);
+        assert_eq!(names(Lit::Every), [Some(font::WEIGHT_STRONG), Some(font::WEIGHT_STRONG)]);
+        assert_eq!(names(Lit::Nobody), [Some(font::WEIGHT_GROUP_NAME), Some(font::WEIGHT_GROUP_NAME)]);
+        // Both passes have the chip in them, in the same place: what
+        // differs is only how the rows are written.
+        let chips = |lit: Lit| {
+            let view = View { theme: look::theme(true), scale: 1.0, selection: Some(&second), lit, chip: at.chip(Some(&second)), lift: 1.0, pulsing: None };
+            build(&l, &at, &view, &same).into_iter().filter(|i| matches!(i, Item::Round { radius, .. } if *radius == radius::ROW)).count()
+        };
+        assert_eq!((chips(Lit::Every), chips(Lit::Nobody)), (1, 1));
     }
 
     #[test]

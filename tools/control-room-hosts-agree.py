@@ -40,7 +40,12 @@ holds none; every window tab the snapshot lists -- its glyph, whether that
 glyph is drawn on a tab at all, and whether it breathes, for the same
 fronts -- a tab it does not list, and for each of the five glyphs whether a
 window tab draws it; which rows are marked seen by being looked at, and
-after how long; the panel's size and every rectangle in it -- a waiting row's
+after how long; the selection chip's slide -- whether it moves at all (from
+one tab to another, with motion off, from nowhere, to where it already is),
+when it starts back down and when it is still, and at sixteen moments of a
+slide along the tab bar and of one down the list how far it has to go, how
+it is stretched, how far it is lifted and whether it is over, to six
+places; the panel's size and every rectangle in it -- a waiting row's
 height follows what it waits on, by the nominal count of lines; how what each
 waiting row waits on is fitted (the lines each step gets, the steps said only
 as a number), and the fitting rule itself on fourteen made-up commands; the
@@ -324,6 +329,32 @@ for from in ids {
     for step in [-1, 1] {
         let to = ControlRoomList.move(from, by: step, in: list.rows) ?? "-"
         print("move from=\(from ?? "-") step=\(step) to=\(to)")
+    }
+}
+// The chip's slide: whether it moves, when it starts down, when it is
+// still, and where it is at the same moments on both sides.
+func g(_ v: Double) -> String { String(format: "%.6f", v) }
+func planName(_ p: ControlRoomChipSlide.Plan) -> String {
+    switch p {
+    case .jump: return "jump"
+    case let .slide(dx, dy): return "slide dx=\(g(dx)) dy=\(g(dy))"
+    }
+}
+let tabWas = CGRect(x: 0, y: 0, width: 293, height: 24), tabNow = CGRect(x: 588, y: 0, width: 292, height: 24)
+let rowWas = CGRect(x: 6, y: 38, width: 368, height: 100), rowNow = CGRect(x: 6, y: 146, width: 368, height: 80)
+print("slide plan tab still=false \(planName(ControlRoomChipSlide.plan(from: tabWas, to: tabNow, reduceMotion: false)))")
+print("slide plan tab still=true \(planName(ControlRoomChipSlide.plan(from: tabWas, to: tabNow, reduceMotion: true)))")
+print("slide plan row still=false \(planName(ControlRoomChipSlide.plan(from: rowWas, to: rowNow, reduceMotion: false)))")
+print("slide plan nowhere still=false \(planName(ControlRoomChipSlide.plan(from: nil, to: tabNow, reduceMotion: false)))")
+print("slide plan same still=false \(planName(ControlRoomChipSlide.plan(from: tabNow, to: tabNow, reduceMotion: false)))")
+print("slide lands_at=\(g(ControlRoomChipSlide.landsAt)) duration=\(g(ControlRoomChipSlide.duration))")
+let moments: [Double] = [0, 0.01, 0.035, 0.07, 0.1, 0.11, 0.15, 0.2, 0.26, 0.3, 0.36, 0.4, 0.405, 0.41, 0.5, 1]
+for (name, dx, dy, scale) in [("tab", -587.5, 0.0, ControlRoomLook.Selection.liftScaleWindowTab),
+                              ("row", 0.0, -98.0, ControlRoomLook.Selection.liftScaleRow)] {
+    for t in moments {
+        let s = ControlRoomChipSlide.sample(at: t, dx: dx, dy: dy, liftScale: scale)
+        print("slide \(name) t=\(g(t)) dx=\(g(s.dx)) dy=\(g(s.dy)) along=\(g(s.along)) across=\(g(s.across)) "
+            + "lift=\(g(ControlRoomChipSlide.lift(at: t))) over=\(t >= ControlRoomChipSlide.duration)")
     }
 }
 '''

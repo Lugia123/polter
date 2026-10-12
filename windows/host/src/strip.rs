@@ -34,10 +34,147 @@ use crate::{logf, plogf, wlogf};
 use crate::i18n::{n_, tr};
 use crate::menu::{draw_menu_button, show_root_menu};
 use crate::tabs::{self, TabId};
+use polter_control_room::layout::Rect as ChipRect;
+use polter_control_room::look::{self, Rgba};
 use polter_control_room::rules::{self, Kind};
+use polter_control_room::{slide, tabstrip};
 
 /// Height of the strip in unscaled pixels.
 pub const STRIP_H: i32 = 30;
+
+/// The strip's own ground, as GDI writes a colour (blue high). The track
+/// and the chip are worked out from it (`strip_ground`).
+const STRIP_GROUND: u32 = 0x00201f1d;
+
+fn strip_ground() -> Rgba {
+    Rgba { r: (STRIP_GROUND & 0xff) as u8, g: ((STRIP_GROUND >> 8) & 0xff) as u8, b: ((STRIP_GROUND >> 16) & 0xff) as u8, a: 1.0 }
+}
+
+/// The timer that redraws the strip while the selected tab's chip slides.
+/// It exists only for the length of one slide (`chip_tick` stops it).
+const TIMER_CHIP: usize = 0xC41F;
+
+/// The chip's slide along the strip. Where it ends is not kept: it ends on
+/// the selected tab, wherever the strip has that tab at the frame drawn.
+struct ChipSlide {
+    from: ChipRect,
+    started: std::time::Instant,
+    /// How many times its timer has fired, for the line that says it stopped.
+    ticks: u32,
+}
+
+/// The chip at the frame being painted.
+struct ChipNow {
+    chip: Option<ChipRect>,
+    lift: f64,
+}
+
+fn rect_f(r: &RECT) -> ChipRect {
+    ChipRect { x: r.left as f64, y: r.top as f64, w: (r.right - r.left) as f64, h: (r.bottom - r.top) as f64 }
+}
+
+/// To whole pixels. At rest a chip's numbers are whole already
+/// (`tabstrip`); on its way they are rounded here, edge by edge.
+fn rect_px(r: ChipRect) -> RECT {
+    RECT { left: r.x.round() as i32, top: r.y.round() as i32, right: (r.x + r.w).round() as i32, bottom: (r.y + r.h).round() as i32 }
+}
+
+fn fill_rgba(hdc: HDC, r: &RECT, c: Rgba) {
+    fill(hdc, r, (c.r as u32) | ((c.g as u32) << 8) | ((c.b as u32) << 16));
+}
+
+/// The strip's font at the weight a selected tab's title is set in. The
+/// caller deletes it; an invalid handle means "use the plain one".
+fn emphasised(plain: HGDIOBJ) -> HFONT {
+    let mut lf = LOGFONTW::default();
+    let got = unsafe { GetObjectW(plain, std::mem::size_of::<LOGFONTW>() as i32, Some(&mut lf as *mut _ as *mut core::ffi::c_void)) };
+    if got == 0 {
+        return HFONT::default();
+    }
+    lf.lfWeight = look::font::WEIGHT_EMPHASIS as i32;
+    unsafe { CreateFontIndirectW(&lf) }
+}
+
+/// Where the selected tab's chip is at this paint, starting a slide when
+/// the selected tab is not the one the chip was last drawn on.
+///
+/// **By `TabId`, like everything else here.** A tab that was reordered is
+/// still the same tab, so the chip stays on it and nothing slides; a chip
+/// whose old tab is gone has nowhere to come from and is simply there.
+/// Whether it slides at all, where it is on the way and when it is over are
+/// `polter_control_room::slide`'s.
+fn chip_now(frame: HWND, active: Option<TabId>, rest: Option<ChipRect>, slots: &[Slot], sh: f64, scale: f64) -> ChipNow {
+    let Some(rest) = rest else {
+        with_ui(frame, |u| {
+            u.chip = None;
+            u.slide = None;
+        });
+        return ChipNow { chip: None, lift: 0.0 };
+    };
+    let animations = crate::control_room_source::animations_on();
+    let lift_scale = look::selection::LIFT_SCALE_WINDOW_TAB;
+    let (now, started) = with_ui(frame, |u| {
+        let mut started = false;
+        if u.chip != active {
+            // Where it was: on its way already, or resting on the old tab.
+            let old = u.chip.and_then(|id| slots.iter().find(|s| s.id == id)).map(|s| tabstrip::chip(rect_f(&s.rect), sh, scale));
+            let from = match (&u.slide, old) {
+                (Some(sl), Some(old)) => Some(slide::Run { from: sl.from, to: old, lift_scale }.frame(sl.started.elapsed().as_secs_f64()).chip),
+                (_, old) => old,
+            };
+            u.chip = active;
+            u.slide = match (slide::plan(from, rest, animations), from) {
+                (slide::Plan::Slide { .. }, Some(from)) => Some(ChipSlide { from, started: std::time::Instant::now(), ticks: 0 }),
+                _ => None,
+            };
+            started = u.slide.is_some();
+        }
+        let now = match &u.slide {
+            Some(sl) => {
+                let f = slide::Run { from: sl.from, to: rest, lift_scale }.frame(sl.started.elapsed().as_secs_f64());
+                ChipNow { chip: Some(f.chip), lift: f.lift }
+            }
+            None => ChipNow { chip: Some(rest), lift: 0.0 },
+        };
+        (now, started)
+    });
+    if started {
+        unsafe { SetTimer(Some(frame), TIMER_CHIP, 16, Some(chip_tick)) };
+        wlogf!(frame, "[strip] chip slide started");
+    }
+    now
+}
+
+/// One frame of the chip's slide. **Stops itself**: the first tick after
+/// the slide is over kills the timer, whether or not the strip is being
+/// painted -- a minimised window's timer must not outlive its slide.
+unsafe extern "system" fn chip_tick(frame: HWND, _msg: u32, id: usize, _time: u32) {
+    let ended = with_ui(frame, |u| {
+        let Some(sl) = u.slide.as_mut() else { return Some((0, 0.0)) };
+        sl.ticks += 1;
+        let t = sl.started.elapsed().as_secs_f64();
+        if !slide::over(t) {
+            return None;
+        }
+        let said = (sl.ticks, t);
+        u.slide = None;
+        Some(said)
+    });
+    if let Some((ticks, t)) = ended {
+        let _ = unsafe { KillTimer(Some(frame), id) };
+        // absence: means it has not stopped -- after `chip slide started`,
+        // no line of this kind is a slide timer still running.
+        wlogf!(frame, "[strip] chip slide over after {} tick(s), {:.0} ms; its timer is stopped", ticks, t * 1000.0);
+    }
+    // Only the strip: the panes below it are not this timer's to redraw.
+    let scale = tabs::scale_of(frame);
+    let mut rc = RECT::default();
+    unsafe {
+        let _ = GetClientRect(frame, &mut rc);
+        rc.bottom = strip_h(scale);
+        let _ = InvalidateRect(Some(frame), Some(&rc), false);
+    }
+}
 
 /// Widest a tab gets when there is room, and the narrowest it is squeezed to
 /// before the overflow policy has to do something else.
@@ -401,6 +538,10 @@ struct Interaction {
     scroll: i32,
     /// The in-place rename editor, when one is open, and what it is renaming.
     editing: Option<(isize, TabId)>,
+    /// The tab the chip was last drawn on, and its slide to the one that is
+    /// selected now, while there is one (`chip_now`).
+    chip: Option<TabId>,
+    slide: Option<ChipSlide>,
     /// How many times **this** strip has actually painted. **"The strip was
     /// asked to repaint" and "the strip painted" are different claims**, and
     /// a strip that vanishes could be either; only a counter tells them
@@ -425,7 +566,7 @@ struct Interaction {
 
 impl Interaction {
     const fn new() -> Self {
-        Interaction { drag: Drag::Idle, hover: Hit::None, scroll: 0, editing: None, paints: 0 }
+        Interaction { drag: Drag::Idle, hover: Hit::None, scroll: 0, editing: None, chip: None, slide: None, paints: 0 }
     }
 }
 
@@ -1033,7 +1174,7 @@ pub fn paint(frame: HWND) {
         let bmp = CreateCompatibleBitmap(hdc, rc.right.max(1), sh.max(1));
         let old = SelectObject(mem, bmp.into());
 
-        fill(mem, &strip, 0x00201f1d);
+        fill(mem, &strip, STRIP_GROUND);
 
         let (tabs_now, active) = tabs::strip_snapshot(frame);
         let colours = tabs::tab_colors(frame);
@@ -1052,70 +1193,42 @@ pub fn paint(frame: HWND) {
         let font = GetStockObject(DEFAULT_GUI_FONT);
         let old_font = SelectObject(mem, font);
 
-        for (i, slot) in slots.iter().enumerate() {
-            // Scrolled off either end: nothing to draw.
-            if slot.rect.right < 0 || slot.rect.left > rc.right {
-                continue;
-            }
-            let is_active = i == active;
-            let is_hover = matches!(hover, Hit::Tab(h) | Hit::Close(h) if h == slot.id);
-            let is_dragged = dragging == Some(slot.id);
+        // **What the strip looks like is the control room's look**
+        // (`polter_control_room::tabstrip`): a track a step darker than the
+        // strip, a bright chip on the selected tab, and nothing behind the
+        // others. Where each is, how round and which colour are asked for;
+        // this file places them on its own slots and decides none of it.
+        // The strip is the same dark colour whatever the system's setting,
+        // so it is the dark table's.
+        let theme = look::theme(true);
+        let ground = strip_ground();
+        let shf = sh as f64;
+        let active_id = slots.get(active).map(|s| s.id);
+        let rest = slots.get(active).map(|s| tabstrip::chip(rect_f(&s.rect), shf, scale));
+        let now = chip_now(frame, active_id, rest, &slots, shf, scale);
 
-            let bg = if is_dragged {
-                0x00504f4d
-            } else if is_active {
-                0x00403f3d
-            } else if is_hover {
-                0x00302f2d
-            } else {
-                0x00282725
-            };
-            fill(mem, &slot.rect, bg);
+        if let (Some(first), Some(last)) = (slots.first(), slots.last()) {
+            let t = tabstrip::track(first.rect.left as f64, last.rect.right as f64, shf, scale);
+            crate::control_room::round(mem, rect_px(t), tabstrip::corner(t, scale, true) as i32, tabstrip::track_color(ground, theme), None);
+        }
 
-            // The tab's colour, if it has one: a bar along the top edge.
-            // **Looked up by id**, not by the loop counter -- the colours
-            // come from a second snapshot and the two lists are only in the
-            // same order until they are not.
-            let colour = colours
-                .iter()
-                .find(|(cid, _)| *cid == slot.id)
-                .map(|(_, c)| *c)
-                .unwrap_or(0) as usize;
-            if colour > 0 && colour < TAB_COLORS.len() {
-                let bar = RECT {
-                    left: slot.rect.left,
-                    top: slot.rect.top,
-                    right: slot.rect.right,
-                    bottom: slot.rect.top + (3.0 * scale).max(2.0) as i32,
-                };
-                fill(mem, &bar, TAB_COLORS[colour].1);
-            }
-
-            // The active tab gets a lit edge along the bottom -- the cheapest
-            // mark that reads as "this one" even at a glance.
-            if is_active {
-                let underline = RECT {
-                    left: slot.rect.left,
-                    top: slot.rect.bottom - (2.0 * scale) as i32,
-                    right: slot.rect.right,
-                    bottom: slot.rect.bottom,
-                };
-                fill(mem, &underline, 0x00c8a35a);
-            }
-
-            SetTextColor(
-                mem,
-                COLORREF(if is_active { 0x00ffffff } else { 0x00a0a0a0 }),
-            );
+        // Everything on one tab but what is behind it: the status glyph,
+        // the title, the close cross. Drawn once for every tab the way an
+        // unselected tab is written, and once more through the chip's
+        // outline the way the selected one is, so that what the chip is
+        // over reads as selected and the line between the two is its edge.
+        let draw_tab = |i: usize, slot: &Slot, on_chip: bool, bold: HFONT| {
+            let title = tabstrip::title_color(theme, on_chip);
+            SetTextColor(mem, COLORREF((title.r as u32) | ((title.g as u32) << 8) | ((title.b as u32) << 16)));
             let label = tabs_now
                 .get(i)
-                .map(|(_, t)| format!(" {}: {}", i + 1, t))
+                .map(|(_, t)| format!("{}: {}", i + 1, t))
                 .unwrap_or_default();
             let mut wide: Vec<u16> = label.encode_utf16().collect();
             let right_edge = if slot.close.right > slot.close.left {
                 slot.close.left - 2
             } else {
-                slot.rect.right - (6.0 * scale) as i32
+                slot.rect.right - (look::window_tab::PADDING_X * scale).round() as i32
             };
             // The one status glyph this tab carries, at the right of its
             // title: which glyph, whether it is drawn at all and whether it
@@ -1124,17 +1237,23 @@ pub fn paint(frame: HWND) {
             let showing = tabs_now.get(active).map(|(id, _)| id.0);
             let right_edge = crate::control_room::draw_tab_glyph(mem, frame, slot.id.0, showing, right_edge, sh, scale);
             let mut tr = RECT {
-                left: slot.rect.left + (4.0 * scale) as i32,
+                left: slot.rect.left + (look::window_tab::PADDING_X * scale).round() as i32,
                 top: 0,
                 right: right_edge,
                 bottom: sh,
             };
-            DrawTextW(
-                mem,
-                &mut wide,
-                &mut tr,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-            );
+            // A tab always has its number, so this is never an empty string
+            // -- which `USER32` must not be handed (task 1439).
+            if !wide.is_empty() && tr.right > tr.left {
+                let before = SelectObject(mem, if on_chip && !bold.is_invalid() { bold.into() } else { font });
+                DrawTextW(
+                    mem,
+                    &mut wide,
+                    &mut tr,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                );
+                SelectObject(mem, before);
+            }
 
             // The close glyph: two strokes, drawn rather than a font
             // character, so it lines up at any DPI.
@@ -1187,6 +1306,106 @@ pub fn paint(frame: HWND) {
                 let _ = LineTo(mem, x0 - 1, y1 + 1);
                 SelectObject(mem, old_pen);
                 let _ = DeleteObject(pen.into());
+            }
+        };
+
+        let no_font = HFONT::default();
+        for (i, slot) in slots.iter().enumerate() {
+            // Scrolled off either end: nothing to draw.
+            if slot.rect.right < 0 || slot.rect.left > rc.right {
+                continue;
+            }
+            let is_active = i == active;
+            let is_hover = matches!(hover, Hit::Tab(h) | Hit::Close(h) if h == slot.id);
+            let is_dragged = dragging == Some(slot.id);
+
+            // Nothing behind a tab that is not selected -- unless the
+            // pointer is over it, or it is in the hand.
+            let behind = if is_dragged {
+                Some(tabstrip::dragged_color(ground, theme))
+            } else if is_hover && !is_active {
+                Some(tabstrip::hover_color(ground, theme))
+            } else {
+                None
+            };
+            if let Some(color) = behind {
+                let pill = tabstrip::chip(rect_f(&slot.rect), shf, scale);
+                crate::control_room::round(mem, rect_px(pill), tabstrip::corner(pill, scale, false) as i32, color, None);
+            }
+
+            // A short line after a tab with nothing behind it, when the
+            // next has nothing behind it either and the chip is not there.
+            let next = slots.get(i + 1);
+            let plain = |s: &Slot| dragging != Some(s.id) && !matches!(hover, Hit::Tab(h) | Hit::Close(h) if h == s.id);
+            let line = tabstrip::separator(slot.rect.right as f64, shf, scale);
+            let under_chip = now.chip.is_some_and(|c| line.x >= c.x - 1.0 && line.x <= c.x + c.w);
+            if behind.is_none() && next.is_some_and(plain) && !under_chip {
+                fill_rgba(mem, &rect_px(line), tabstrip::separator_color(ground, theme));
+            }
+
+            draw_tab(i, slot, false, no_font);
+        }
+
+        // The chip, over everything drawn so far: its shadow, then itself.
+        if let Some(chip) = now.chip {
+            let radius = tabstrip::corner(chip, scale, false);
+            for (piece, r, color) in tabstrip::shadow(chip, radius, tabstrip::track_color(ground, theme), theme, now.lift, scale) {
+                crate::control_room::round(mem, rect_px(piece), r as i32, color, None);
+            }
+            let box_ = rect_px(chip);
+            crate::control_room::round(
+                mem,
+                box_,
+                radius as i32,
+                tabstrip::chip_color(ground, theme, now.lift),
+                Some(tabstrip::chip_edge(ground, theme, now.lift)),
+            );
+
+            // And what is on it, written as selected, through its outline.
+            let d = radius as i32 * 2;
+            let outline = CreateRoundRectRgn(box_.left, box_.top, box_.right + 1, box_.bottom + 1, d, d);
+            if !outline.is_invalid() {
+                let bold = emphasised(font);
+                let saved = SaveDC(mem);
+                SelectClipRgn(mem, Some(outline));
+                for (i, slot) in slots.iter().enumerate() {
+                    if slot.rect.right >= box_.left && slot.rect.left <= box_.right {
+                        draw_tab(i, slot, true, bold);
+                    }
+                }
+                let _ = RestoreDC(mem, saved);
+                let _ = DeleteObject(outline.into());
+                if !bold.is_invalid() {
+                    let _ = DeleteObject(bold.into());
+                }
+            }
+        }
+
+        // The tab's colour, if it has one: a bar along the top of where its
+        // chip would be, clear of the round ends. **Looked up by id**, not
+        // by the loop counter -- the colours come from a second snapshot
+        // and the two lists are only in the same order until they are not.
+        // Last, so that the chip does not cover the selected tab's.
+        for slot in slots.iter() {
+            if slot.rect.right < 0 || slot.rect.left > rc.right {
+                continue;
+            }
+            let colour = colours
+                .iter()
+                .find(|(cid, _)| *cid == slot.id)
+                .map(|(_, c)| *c)
+                .unwrap_or(0) as usize;
+            if colour > 0 && colour < TAB_COLORS.len() {
+                let pill = tabstrip::chip(rect_f(&slot.rect), shf, scale);
+                let inset = tabstrip::corner(pill, scale, false) as i32;
+                let top = pill.y as i32;
+                let bar = RECT {
+                    left: slot.rect.left + inset,
+                    top,
+                    right: (slot.rect.right - inset).max(slot.rect.left + inset),
+                    bottom: top + (3.0 * scale).max(2.0) as i32,
+                };
+                fill(mem, &bar, TAB_COLORS[colour].1);
             }
         }
 

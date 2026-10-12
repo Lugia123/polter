@@ -248,23 +248,9 @@ impl Room {
     }
 }
 
-/// Where the chip is `t` seconds into a slide from one row to another: the
-/// spring's progress between the two rectangles. It passes the far one a
-/// little and comes back.
-pub fn chip_between(from: Rect, to: Rect, t: f64) -> Rect {
-    let p = spring::progress(t);
-    let mix = |a: f64, b: f64| a + (b - a) * p;
-    Rect { x: mix(from.x, to.x), y: mix(from.y, to.y), w: mix(from.w, to.w), h: mix(from.h, to.h) }
-}
-
-/// Whether a slide that began `t` seconds ago has come to rest: within a
-/// hundredth of the way for good, which for this spring is after its second
-/// period.
-pub fn chip_settled(t: f64) -> bool {
-    t >= 2.0 * crate::look::selection::SPRING_PERIOD
-}
-
-/// The chip's slide, as numbers: an under-damped spring from 0 to 1.
+/// The chip's slide, as numbers: an under-damped spring from 0 to 1. Where
+/// the chip is at a moment of a slide, and when the slide is over, is
+/// `crate::slide`.
 pub mod spring {
     use crate::look::selection;
 

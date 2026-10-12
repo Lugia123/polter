@@ -13,6 +13,7 @@ use polter_control_room::layout::{self, ListLayout, Rect};
 use polter_control_room::list::{self, List, Row};
 use polter_control_room::pulse::{self, Scope};
 use polter_control_room::look::selection;
+use polter_control_room::slide;
 use polter_control_room::snapshot::{self, Shown};
 
 /// What steps want, for the fitting rule: one sentence short and long, a
@@ -285,6 +286,40 @@ fn main() {
         for step in [-1i64, 1] {
             let to = list::move_selection(&l, from.as_deref(), step).unwrap_or("-");
             println!("move from={} step={step} to={to}", from.as_deref().unwrap_or("-"));
+        }
+    }
+
+    // The chip's slide: whether it moves, when it starts down, when it is
+    // still, and where it is at the same moments on both sides.
+    let plan_name = |p: slide::Plan| match p {
+        slide::Plan::Jump => "jump".to_string(),
+        slide::Plan::Slide { dx, dy } => format!("slide dx={dx:.6} dy={dy:.6}"),
+    };
+    let tab_was = Rect { x: 0.0, y: 0.0, w: 293.0, h: 24.0 };
+    let tab_now = Rect { x: 588.0, y: 0.0, w: 292.0, h: 24.0 };
+    let row_was = Rect { x: 6.0, y: 38.0, w: 368.0, h: 100.0 };
+    let row_now = Rect { x: 6.0, y: 146.0, w: 368.0, h: 80.0 };
+    // "still" is the person asking for no motion: Reduce Motion there, the
+    // system's animations off here.
+    println!("slide plan tab still=false {}", plan_name(slide::plan(Some(tab_was), tab_now, true)));
+    println!("slide plan tab still=true {}", plan_name(slide::plan(Some(tab_was), tab_now, false)));
+    println!("slide plan row still=false {}", plan_name(slide::plan(Some(row_was), row_now, true)));
+    println!("slide plan nowhere still=false {}", plan_name(slide::plan(None, tab_now, true)));
+    println!("slide plan same still=false {}", plan_name(slide::plan(Some(tab_now), tab_now, true)));
+    println!("slide lands_at={:.6} duration={:.6}", slide::lands_at(), slide::duration());
+    const MOMENTS: [f64; 16] = [0.0, 0.01, 0.035, 0.07, 0.1, 0.11, 0.15, 0.2, 0.26, 0.3, 0.36, 0.4, 0.405, 0.41, 0.5, 1.0];
+    for (name, dx, dy, scale) in [("tab", -587.5, 0.0, selection::LIFT_SCALE_WINDOW_TAB), ("row", 0.0, -98.0, selection::LIFT_SCALE_ROW)] {
+        for t in MOMENTS {
+            let s = slide::sample(t, dx, dy, scale);
+            println!(
+                "slide {name} t={t:.6} dx={:.6} dy={:.6} along={:.6} across={:.6} lift={:.6} over={}",
+                s.dx,
+                s.dy,
+                s.along,
+                s.across,
+                slide::lift(t),
+                slide::over(t)
+            );
         }
     }
 }

@@ -691,18 +691,19 @@ fn the_chip_leaves_one_row_and_comes_to_rest_on_the_other() {
     let l = list();
     let at = ListLayout::new(&l, 900.0);
     let (from, to) = (at.rows[0].1, at.rows[2].1);
-    assert_eq!(layout::chip_between(from, to, 0.0), from);
-    let rest = layout::chip_between(from, to, 5.0);
-    assert!((rest.y - to.y).abs() < 0.01 && (rest.h - to.h).abs() < 0.01, "{rest:?}");
-    // On the way it passes the far row a little: that is the overshoot.
-    let furthest = (0..200).map(|n| layout::chip_between(from, to, n as f64 * 0.005).y).fold(f64::MIN, f64::max);
-    assert!(furthest > to.y, "{furthest} never passes {}", to.y);
-    assert!(!layout::chip_settled(0.0));
-    assert!(!layout::chip_settled(crate::look::selection::SPRING_PERIOD));
-    assert!(layout::chip_settled(2.0 * crate::look::selection::SPRING_PERIOD));
-    // Settled means it is where it is going, to within a hundredth of the way.
-    let settled = layout::chip_between(from, to, 2.0 * crate::look::selection::SPRING_PERIOD);
-    assert!((settled.y - to.y).abs() <= 0.01 * (to.y - from.y).abs(), "{settled:?}");
+    let run = crate::slide::Run { from, to, lift_scale: crate::look::selection::LIFT_SCALE_ROW };
+    assert_eq!(run.frame(0.0).chip, from);
+    // On the way its middle passes the far row's a little: that is the
+    // overshoot.
+    let middle = |r: layout::Rect| r.y + r.h / 2.0;
+    let furthest = (0..200).map(|n| middle(run.frame(n as f64 * 0.005).chip)).fold(f64::MIN, f64::max);
+    assert!(furthest > middle(to), "{furthest} never passes {}", middle(to));
+    assert!(!run.frame(0.0).last);
+    assert!(!run.frame(crate::slide::lands_at()).last);
+    // Over means it is on the row itself, not near it.
+    let rest = run.frame(crate::slide::duration());
+    assert!(rest.last);
+    assert_eq!(rest.chip, to);
 }
 
 #[test]
