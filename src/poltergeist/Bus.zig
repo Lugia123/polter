@@ -313,8 +313,22 @@ pub const Agent = struct {
     /// moves this and not that, and the age of what is known is read here.
     last_event_ms: ?u64,
 
-    /// When `hooks` became `expected`, for the timeout.
+    /// When `hooks` became `expected`, for the timeout. **A moment that
+    /// happened, always** -- see `expected_said`.
     expected_ms: u64,
+
+    /// That the hooks did not come has been put in the box for this wait.
+    ///
+    /// This used to be said by moving `expected_ms` to the end of time,
+    /// "out of reach" of the comparison in `considerAgents`. It was not out
+    /// of reach of anything else that reads it: the control room took it as
+    /// when the hooks were due, asked to be woken then, and the wake
+    /// thread's `@intCast` of the distance took the application down
+    /// (2026-10-13, after a supervisor was started whose CLI never spoke).
+    /// It also un-said the fault -- "expected thirty seconds ago and
+    /// nothing came" stopped being true of a terminal whose hooks were now
+    /// expected in the year five hundred million. Two facts, two fields.
+    expected_said: bool,
 
     session_id: Small(96),
     cli: Small(32),
@@ -346,6 +360,7 @@ pub const Agent = struct {
         .state = .idle,
         .since_ms = 0,
         .expected_ms = 0,
+        .expected_said = false,
         .last_event_ms = null,
         .session_id = .{},
         .cli = .{},
@@ -1724,12 +1739,12 @@ pub fn considerAgents(self: *Bus, now_ms: u64) bool {
     while (it.next()) |kv| {
         const e = kv.value_ptr;
         const a = &e.agent;
-        if (a.hooks != .expected) continue;
+        if (a.hooks != .expected or a.expected_said) continue;
         if (now_ms -| a.expected_ms < hooks_expected_timeout_ms) continue;
 
-        // Said once. Moving `expected_ms` out of reach rather than adding
-        // a flag: the state is still `expected`, which is the truth.
-        a.expected_ms = std.math.maxInt(u64);
+        // Said once. The state is still `expected`, which is the truth, and
+        // so is when it began.
+        a.expected_said = true;
         if (e.role != .watched or e.duty == .off) continue;
         a.pending = .hooks_silent;
         a.handed = 0;
