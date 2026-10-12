@@ -555,7 +555,9 @@
 "Hours I May Be Disturbed" = "Hours I May Be Disturbed";
 "When you may be asked, as HH:MM-HH:MM; empty is any time." = "When you may be asked, as HH:MM-HH:MM; empty is any time.";
 "Supervisor May Stand Down" = "Supervisor May Stand Down";
+"Supervisor May Answer Prompts" = "Supervisor May Answer Prompts";
 "Let a supervisor whose work is done take itself off duty." = "Let a supervisor whose work is done take itself off duty.";
+"Let a supervisor answer workers' permission prompts." = "Let a supervisor answer workers' permission prompts.";
 "Keep Chat Log" = "Keep Chat Log";
 "Write what the terminals say to each other to disk." = "Write what the terminals say to each other to disk.";
 "Keep Terminal Transcripts" = "Keep Terminal Transcripts";

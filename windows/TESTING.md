@@ -55,11 +55,11 @@ info(i18n): loaded catalog locale=zh_CN entries=… path=…\share\locale\zh_CN\
 | --- | --- | --- |
 | 兜底哨兵在不在 | `Test-Path share\terminfo\ghostty.terminfo` | `True` |
 | 翻译打了几份 | `(Get-ChildItem share\locale -Recurse -Filter *.mo).Count` | **34** |
-| 中文那份是不是这棵树的 | `(Get-ChildItem share\locale\zh_CN\LC_MESSAGES\*.mo).Length` | **67770** |
+| 中文那份是不是这棵树的 | `(Get-ChildItem share\locale\zh_CN\LC_MESSAGES\*.mo).Length` | **67930** |
 
 **任何一行不对，就是包没打全，别往下测** —— 之后看到的每一个「没做」都可能只是这一件事。**三样都对、上面两行日志也都在，界面仍然是英文** —— 那才是产品的问题，请照第六节报回来。
 
-> 那 34 和 67770 是从源码树量的（2026-10-13，72af59caf）：`po\` 下 34 份翻译各出一个 `.mo`，中文那份由 GNU gettext-tools 1.0 的 `msgfmt` 编出来是 67,770 字节。**中文那个数跟着 `po\zh_CN.po` 走，加一条译文就变**，所以它只对这一个提交成立；包里的 `MANIFEST.txt` 写着那一包自己的数时，以它为准。**换一个大版本的 `msgfmt` 可能给出别的字节数**，所以对不上先问打包的人用的是哪个版本，再当成缺陷。
+> 那 34 和 67930 是从源码树量的（2026-10-13，14213b6a8 之后重新生成 po 的那一次）：`po\` 下 34 份翻译各出一个 `.mo`，中文那份由 GNU gettext-tools 1.0 的 `msgfmt` 编出来是 67,930 字节。**中文那个数跟着 `po\zh_CN.po` 走，加一条译文就变**，所以它只对这一个提交成立；包里的 `MANIFEST.txt` 写着那一包自己的数时，以它为准。**换一个大版本的 `msgfmt` 可能给出别的字节数**，所以对不上先问打包的人用的是哪个版本，再当成缺陷。
 
 插件目录不用你准备：程序自己在 `%LOCALAPPDATA%\polter\plugins` 下建。
 

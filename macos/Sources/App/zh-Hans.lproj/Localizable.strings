@@ -571,7 +571,9 @@
 "Hours I May Be Disturbed" = "可打扰时段";
 "When you may be asked, as HH:MM-HH:MM; empty is any time." = "什么时候可以问你，写成 HH:MM-HH:MM；留空表示随时。";
 "Supervisor May Stand Down" = "总管可自行卸任";
+"Supervisor May Answer Prompts" = "总管可代答确认";
 "Let a supervisor whose work is done take itself off duty." = "允许做完事的总管自己卸任。";
+"Let a supervisor answer workers' permission prompts." = "允许总管回答 worker 的权限确认。";
 "Keep Chat Log" = "保存群聊记录";
 "Write what the terminals say to each other to disk." = "把终端之间的对话写到磁盘上。";
 "Keep Terminal Transcripts" = "保存终端记录";

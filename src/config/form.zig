@@ -180,6 +180,7 @@ pub const table = [_]Item{
     .{ .key = .@"poltergeist-group-quiet-after", .group = .polter, .label = i18n.N_("Quiet Group Reminder"), .summary = i18n.N_("How long a group may be silent before it is mentioned.") },
     .{ .key = .@"poltergeist-notify-window", .group = .polter, .label = i18n.N_("Hours I May Be Disturbed"), .summary = i18n.N_("When you may be asked, as HH:MM-HH:MM; empty is any time.") },
     .{ .key = .@"poltergeist-supervisor-stand-down", .group = .polter, .label = i18n.N_("Supervisor May Stand Down"), .summary = i18n.N_("Let a supervisor whose work is done take itself off duty.") },
+    .{ .key = .@"poltergeist-may-authorise", .group = .polter, .label = i18n.N_("Supervisor May Answer Prompts"), .summary = i18n.N_("Let a supervisor answer workers' permission prompts.") },
     .{ .key = .@"poltergeist-chat-log", .group = .polter, .label = i18n.N_("Keep Chat Log"), .summary = i18n.N_("Write what the terminals say to each other to disk.") },
     .{ .key = .@"poltergeist-terminal-log", .group = .polter, .label = i18n.N_("Keep Terminal Transcripts"), .summary = i18n.N_("Keep a transcript of what ran in each terminal.") },
     .{ .key = .language, .group = .polter, .label = i18n.N_("Language"), .summary = i18n.N_("The interface language; empty follows the system.") },

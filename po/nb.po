@@ -10,7 +10,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-12 23:49+0800\n"
+"POT-Creation-Date: 2026-10-13 02:15+0800\n"
 "PO-Revision-Date: 2026-08-12 21:34+0200\n"
 "Last-Translator: Uzair Aftab <u@uzaaft.me>\n"
 "Language-Team: Norwegian Bokmal <l10n-no@lister.huftis.org>\n"
@@ -34,13 +34,13 @@ msgstr "Gi tilgang til utklippstavlen"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:17
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:17
-#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:201
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:202
 msgid "Deny"
 msgstr "Avslå"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:18
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:18
-#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:200
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:201
 msgid "Allow"
 msgstr "Tillat"
 
@@ -2180,76 +2180,84 @@ msgid "Let a supervisor whose work is done take itself off duty."
 msgstr ""
 
 #: src/config/form.zig:183
-msgid "Keep Chat Log"
+msgid "Supervisor May Answer Prompts"
 msgstr ""
 
 #: src/config/form.zig:183
+msgid "Let a supervisor answer workers' permission prompts."
+msgstr ""
+
+#: src/config/form.zig:184
+msgid "Keep Chat Log"
+msgstr ""
+
+#: src/config/form.zig:184
 msgid "Write what the terminals say to each other to disk."
 msgstr ""
 
-#: src/config/form.zig:184
+#: src/config/form.zig:185
 msgid "Keep Terminal Transcripts"
 msgstr ""
 
-#: src/config/form.zig:184
+#: src/config/form.zig:185
 msgid "Keep a transcript of what ran in each terminal."
 msgstr ""
 
-#: src/config/form.zig:185 windows/host/src/language.rs:291
+#: src/config/form.zig:186 windows/host/src/language.rs:291
 msgid "Language"
 msgstr ""
 
-#: src/config/form.zig:185
+#: src/config/form.zig:186
 msgid "The interface language; empty follows the system."
 msgstr ""
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:188
+#: src/config/form.zig:189
 msgid "Paste Images as Files"
 msgstr "Lim inn bilder som filer"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:188
+#: src/config/form.zig:189
 msgid "Save a pasted image as a file and paste its path."
 msgstr "Lagre et innlimt bilde som en fil og lim inn banen."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:189
+#: src/config/form.zig:190
 msgid "Screenshot Folder"
 msgstr "Mappe for skjermbilder"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:189
+#: src/config/form.zig:190
 msgid "Where screenshots and pasted images are saved."
 msgstr "Hvor skjermbilder og innlimte bilder lagres."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:190
+#: src/config/form.zig:191
 msgid "Mouse Trigger"
 msgstr "Museutløser"
 
 # Machine translation (2026-10-07), not reviewed by a speaker.
-#: src/config/form.zig:190
+#: src/config/form.zig:191
 msgid "Hold these keys and click to take a screenshot."
 msgstr "Hold disse tastene og klikk for å ta et skjermbilde."
 
-#: src/config/form.zig:191 windows/settings-shell/src/plugins.rs:52
+#: src/config/form.zig:192 windows/settings-shell/src/plugins.rs:52
 msgid "Off"
 msgstr ""
 
 # Machine translation (2026-10-07), not reviewed by a speaker.
-#: src/config/form.zig:198
+#: src/config/form.zig:199
 #, c-format
 msgid "%s + Click"
 msgstr "%s + klikk"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:199
+#: src/config/form.zig:200
 msgid "Let Agents Take Screenshots"
 msgstr "La agenter ta skjermbilder"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:199
+#: src/config/form.zig:200
 msgid "Agents may capture the screen with the screenshot tools."
 msgstr "Agenter kan ta bilde av skjermen med skjermbildeverktøyene."
 
@@ -2463,15 +2471,15 @@ msgstr ""
 msgid "{} lines in all."
 msgstr ""
 
-#: windows/host/src/main.rs:6332
+#: windows/host/src/main.rs:6358
 msgid "No reason was recorded."
 msgstr ""
 
-#: windows/host/src/main.rs:6338
+#: windows/host/src/main.rs:6364
 msgid "Polter could not open its first terminal and will close."
 msgstr ""
 
-#: windows/host/src/main.rs:6340
+#: windows/host/src/main.rs:6366
 #, rust-format
 msgid "The full log is at {}"
 msgstr ""
@@ -3340,7 +3348,7 @@ msgstr ""
 msgid "Report it as still after"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:753 windows/control-room/src/scene.rs:31
+#: windows/host/src/roles_ui.rs:753
 msgid "min"
 msgstr ""
 
@@ -3645,22 +3653,22 @@ msgstr ""
 msgid "On"
 msgstr ""
 
-#: windows/control-room/src/lend.rs:294
+#: windows/control-room/src/lend.rs:327
 msgid "The supervisor's terminal is no longer open."
 msgstr ""
 
-#: windows/control-room/src/lend.rs:296
+#: windows/control-room/src/lend.rs:329 windows/control-room/src/list.rs:53
 msgid "Supervisor"
 msgstr ""
 
-#: windows/control-room/src/list.rs:67
+#: windows/control-room/src/list.rs:51
 #, rust-format
 msgid "{} more"
 msgstr ""
 
-#: windows/control-room/src/list.rs:68
+#: windows/control-room/src/list.rs:56
 #, rust-format
-msgid "Same supervisor: see {}"
+msgid "{}, via the supervisor"
 msgstr ""
 
 #: windows/control-room/src/rules.rs:83
@@ -3673,44 +3681,40 @@ msgid "{} groups waiting for you"
 msgstr ""
 
 #: windows/control-room/src/scene.rs:30
+msgid "No group is waiting for you"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:31
 #, rust-format
 msgid "{} groups need nothing from you"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:32
-msgid "Kept you waiting today"
-msgstr ""
-
 #: windows/control-room/src/scene.rs:33
-#, rust-format
-msgid "{} min"
-msgstr ""
-
-#: windows/control-room/src/scene.rs:34
-msgid "now"
-msgstr ""
-
-#: windows/control-room/src/scene.rs:36
 #, rust-format
 msgid "The control room's data could not be read ({})."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:38
+#: windows/control-room/src/scene.rs:35
 msgid "Nothing has been worked out yet."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:39
+#: windows/control-room/src/scene.rs:36
 msgid "Select a group on the left."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:40
+#: windows/control-room/src/scene.rs:37
 msgid "This group has no supervisor."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:41
+#: windows/control-room/src/scene.rs:38
 msgid "The supervisor's terminal is in its own tab."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:42
+#: windows/control-room/src/scene.rs:39
 msgid "Go to Its Tab"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:40
+#, rust-format
+msgid "{} more steps"
 msgstr ""
