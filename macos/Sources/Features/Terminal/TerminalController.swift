@@ -450,7 +450,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     static func newTab(
         _ ghostty: Ghostty.App,
         from parent: NSWindow? = nil,
-        withBaseConfig baseConfig: Ghostty.SurfaceConfiguration? = nil
+        withBaseConfig baseConfig: Ghostty.SurfaceConfiguration? = nil,
+        inFront: Bool = true
     ) -> TerminalController? {
         // Making sure that we're dealing with a TerminalController. If not,
         // then we just create a new window.
@@ -510,6 +511,16 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             case "current": fallthrough
             default:
                 tabCreated = parent.addTabbedWindowSafely(window, ordered: .above)
+            }
+            if tabCreated && !inFront {
+                // **A tab, and nothing brought in front** (`ControlRoomRules.newTab`):
+                // the person is looking at the control room. Its terminal
+                // is running already -- the surface was made with the
+                // controller -- and the tab shows it when it is selected.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    controller.relabelTabs()
+                }
+                return controller
             }
             if tabCreated {
                 // We set the selectedWindow early here because we want the next window

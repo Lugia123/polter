@@ -140,6 +140,56 @@ final class ControlRoomModel: ObservableObject {
     /// taken back.
     var askForTerminal: () -> Void = {}
 
+    /// Sends what the person does about a group. Handed in by whoever has
+    /// the core (`ControlRoomController`); without it nothing is done and
+    /// the person is told so.
+    var perform: (ControlRoomActions.Act) throws -> Void = { _ in
+        throw ControlRoomActions.Refusal(name: "NoCore")
+    }
+    /// Why the last "start a supervisor" was not done, and for which
+    /// group: said on the right-hand side, under the button, until they
+    /// try again or look at another group.
+    @Published private(set) var startRefusal: (group: String, message: String)?
+    /// A group the person has just made, until the core lists it.
+    private var madeGroup: String?
+
+    /// Make a group by the name the person typed. Returns what to tell
+    /// them when it was not made; nil when it was -- and then it is
+    /// selected as soon as the core lists it.
+    func newGroup(named name: String) -> String? {
+        do {
+            try perform(.newGroup(name: name))
+        } catch let refusal as ControlRoomActions.Refusal {
+            return refusal.message
+        } catch {
+            return ControlRoomActions.Refusal(name: "Refused").message
+        }
+        // The core trims what was typed and makes nothing else of it.
+        madeGroup = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        selectMadeGroup()
+        return nil
+    }
+
+    private func selectMadeGroup() {
+        guard let made = ControlRoomRules.madeGroupToSelect(madeGroup, in: list?.rows ?? []) else { return }
+        madeGroup = nil
+        choose(made)
+    }
+
+    /// Start a supervisor for `group`. A nil role or directory is the one
+    /// the core named. What becomes of it arrives in the next list; a
+    /// refusal is kept to be shown.
+    func startSupervisor(for group: String, role: String?, cwd: String?) {
+        do {
+            try perform(.startSupervisor(group: group, role: role, cwd: cwd))
+            startRefusal = nil
+        } catch let refusal as ControlRoomActions.Refusal {
+            startRefusal = (group, refusal.message)
+        } catch {
+            startRefusal = (group, ControlRoomActions.Refusal(name: "Refused").message)
+        }
+    }
+
     private var listening: AnyCancellable?
 
     /// `showing` answers which tab is in front in the control room's own
@@ -157,6 +207,7 @@ final class ControlRoomModel: ObservableObject {
             self.hasOpened = true
             if !start.isThePersons { self.selectionIsThePersons = false }
             if self.selection != start.id { self.selection = start.id }
+            self.selectMadeGroup()
         }
     }
 }

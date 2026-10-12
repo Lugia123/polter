@@ -99,6 +99,9 @@ pub const Error = error{
     TooManyGroups,
     BadName,
 
+    /// A supervisor is already being started for this group.
+    AlreadyStarting,
+
     /// Nothing to say, or nothing to compact.
     Empty,
 
@@ -238,10 +241,22 @@ const Group = struct {
     seen_run_ms: ?u64 = null,
     snoozed_run_ms: ?u64 = null,
 
+    /// The directory this group's supervisor was last working in. Owned;
+    /// empty when nobody has said. It is written down (`GroupLog`) and
+    /// comes back, because the morning after is when it is asked for: the
+    /// group is there, its supervisor is not, and the person is about to
+    /// start one.
+    supervisor_dir: []const u8 = "",
+
+    /// A supervisor the person is starting for this group from the control
+    /// room, until it is one or has failed to be. This run's only.
+    start: ?Start = null,
+
     fn deinit(self: *Group, alloc: Allocator) void {
         for (self.log.items) |m| m.release(alloc);
         self.log.deinit(alloc);
         if (self.brief.len > 0) alloc.free(self.brief);
+        if (self.supervisor_dir.len > 0) alloc.free(self.supervisor_dir);
 
         var it = self.members.valueIterator();
         while (it.next()) |m| m.footing.deinit(alloc);
@@ -770,6 +785,162 @@ pub fn exists(self: *const Chat, name: []const u8) bool {
     return self.groups.contains(name);
 }
 
+// -- a supervisor being started from the control room -------------------------
+
+/// A supervisor on its way to a group: asked for in the control room, not
+/// one yet.
+///
+/// It is three waits in a row, and each can fail on its own: for the tab
+/// (`terminal` is null), for the agent in it to connect, and then nothing --
+/// the terminal is put in the group and this is cleared. **A wait that ran
+/// out is not cleared**: it stays, reading as failed, so the control room
+/// can say which wait it was instead of going back to a button as though
+/// nothing had been tried.
+pub const Start = struct {
+    /// The terminal it is being started in; null until the tab exists.
+    terminal: ?Id,
+    /// Past this, the wait it is in has failed.
+    deadline_ms: u64,
+    /// Set when it failed for a reason that is not a wait running out.
+    failed: StartFailure = .none,
+};
+
+/// Why a start did not make a supervisor.
+pub const StartFailure = enum {
+    none,
+    /// The tab for it never appeared.
+    terminal_never_opened,
+    /// The tab is there and no agent connected from it: the CLI did not
+    /// start, or started and never reached Polter.
+    agent_never_connected,
+    /// Its terminal was closed before the agent connected.
+    terminal_closed,
+};
+
+/// What the control room shows of a start.
+pub const StartView = struct {
+    state: enum { none, starting, failed },
+    failed: StartFailure,
+    terminal: ?Id,
+    /// When a start that is still waiting stops waiting; null otherwise.
+    /// What the snapshot asks to be woken at.
+    deadline_ms: ?u64,
+
+    pub const none: StartView = .{ .state = .none, .failed = .none, .terminal = null, .deadline_ms = null };
+};
+
+/// Where `name`'s start stands at `now_ms`.
+pub fn startOf(self: *const Chat, name: []const u8, now_ms: u64) StartView {
+    const group = self.groups.getPtr(name) orelse return .none;
+    const s = group.start orelse return .none;
+    if (s.failed != .none) return .{ .state = .failed, .failed = s.failed, .terminal = s.terminal, .deadline_ms = null };
+    if (now_ms > s.deadline_ms) return .{
+        .state = .failed,
+        .failed = if (s.terminal == null) .terminal_never_opened else .agent_never_connected,
+        .terminal = s.terminal,
+        .deadline_ms = null,
+    };
+    return .{ .state = .starting, .failed = .none, .terminal = s.terminal, .deadline_ms = s.deadline_ms };
+}
+
+/// Begin a start: the tab has been asked for and is waited for until
+/// `deadline_ms`. Refused while one is still waiting; one that failed is
+/// replaced, which is what trying again is.
+pub fn beginStart(self: *Chat, name: []const u8, now_ms: u64, deadline_ms: u64) Error!void {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    if (self.startOf(name, now_ms).state == .starting) return error.AlreadyStarting;
+    group.start = .{ .terminal = null, .deadline_ms = deadline_ms };
+}
+
+/// The tab exists: it is `terminal`, and its agent is waited for until
+/// `deadline_ms`.
+pub fn startOpened(self: *Chat, name: []const u8, terminal: Id, deadline_ms: u64) void {
+    const group = self.groups.getPtr(name) orelse return;
+    const s = if (group.start) |*v| v else return;
+    if (s.failed != .none) return;
+    s.terminal = terminal;
+    s.deadline_ms = deadline_ms;
+}
+
+/// The group whose start is still waiting for its tab, if there is one.
+/// A terminal that has just appeared for the person's launch is that tab.
+pub fn startAwaitingTerminal(self: *const Chat, now_ms: u64) ?[]const u8 {
+    var it = self.groups.valueIterator();
+    while (it.next()) |g| {
+        const s = g.start orelse continue;
+        if (s.terminal == null and s.failed == .none and now_ms <= s.deadline_ms) return g.name;
+    }
+    return null;
+}
+
+/// The group `terminal` is being started as the supervisor of, while that
+/// is still being waited for.
+pub fn startingIn(self: *const Chat, terminal: Id, now_ms: u64) ?[]const u8 {
+    var it = self.groups.valueIterator();
+    while (it.next()) |g| {
+        const s = g.start orelse continue;
+        if (s.terminal != null and s.terminal.? == terminal and s.failed == .none and
+            now_ms <= s.deadline_ms) return g.name;
+    }
+    return null;
+}
+
+/// The start is over: it made a supervisor, or the person's next try
+/// replaces it.
+pub fn endStart(self: *Chat, name: []const u8) void {
+    const group = self.groups.getPtr(name) orelse return;
+    group.start = null;
+}
+
+/// The start failed, for a reason that is not a wait running out.
+pub fn failStart(self: *Chat, name: []const u8, why: StartFailure) void {
+    const group = self.groups.getPtr(name) orelse return;
+    if (group.start) |*s| {
+        if (s.failed == .none) s.failed = why;
+    }
+}
+
+/// Where `name`'s supervisor was last working; empty when nobody said.
+pub fn supervisorDirOf(self: *const Chat, name: []const u8) []const u8 {
+    const group = self.groups.getPtr(name) orelse return "";
+    return group.supervisor_dir;
+}
+
+/// Record where `name`'s supervisor is working. An empty directory is not
+/// a record and changes nothing. True when it changed.
+pub fn setSupervisorDir(self: *Chat, name: []const u8, dir: []const u8) Error!bool {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    if (dir.len == 0 or std.mem.eql(u8, group.supervisor_dir, dir)) return false;
+    const owned = try self.alloc.dupe(u8, dir);
+    if (group.supervisor_dir.len > 0) self.alloc.free(group.supervisor_dir);
+    group.supervisor_dir = owned;
+    return true;
+}
+
+/// The directory most of `name`'s terminals are working in; empty when
+/// none of them has said. Between two equally common ones, the one that
+/// sorts first -- so the same group gives the same answer every time.
+pub fn commonDirOf(self: *const Chat, name: []const u8) []const u8 {
+    const group = self.groups.getPtr(name) orelse return "";
+    var best: []const u8 = "";
+    var best_n: usize = 0;
+    var it = group.members.valueIterator();
+    while (it.next()) |m| {
+        const dir = m.footing.cwd;
+        if (dir.len == 0) continue;
+        var n: usize = 0;
+        var jt = group.members.valueIterator();
+        while (jt.next()) |o| {
+            if (std.mem.eql(u8, o.footing.cwd, dir)) n += 1;
+        }
+        if (n > best_n or (n == best_n and std.mem.lessThan(u8, dir, best))) {
+            best = dir;
+            best_n = n;
+        }
+    }
+    return best;
+}
+
 /// Forget a terminal everywhere, for example because it closed.
 pub fn forget(self: *Chat, id: Id) void {
     var it = self.groups.valueIterator();
@@ -777,6 +948,11 @@ pub fn forget(self: *Chat, id: Id) void {
         if (g.members.fetchRemove(id)) |kv| {
             var m = kv.value;
             m.footing.deinit(self.alloc);
+        }
+        // A supervisor that was on its way here in that terminal is not
+        // coming.
+        if (g.start) |*s| {
+            if (s.terminal != null and s.terminal.? == id and s.failed == .none) s.failed = .terminal_closed;
         }
     }
 }
@@ -2900,4 +3076,92 @@ test "ControlRoom marks: marks that came back off disk have seen nothing in this
     try testing.expectEqual(@as(?u64, 1_700_000_000_000), (try chat.marksOf("build")).seen_ms);
     try testing.expectEqual(@as(?u64, null), chat.seenRunMs("build"));
     try testing.expectEqual(Attention.Snooze{ .until_change = 0 }, chat.snoozeOf("build", 9_000, 1_700_000_100_000));
+}
+
+test "ControlRoom start: a supervisor on its way waits for its tab, then for its agent, and each wait can run out" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.restoreShell("build", "", 0);
+
+    try testing.expectEqual(StartView.none, chat.startOf("build", 1_000));
+    try testing.expectError(error.NoSuchGroup, chat.beginStart("nope", 1_000, 11_000));
+
+    try chat.beginStart("build", 1_000, 11_000);
+    try testing.expectEqualStrings("build", chat.startAwaitingTerminal(2_000).?);
+    const waiting = chat.startOf("build", 2_000);
+    try testing.expect(waiting.state == .starting);
+    try testing.expectEqual(@as(?Id, null), waiting.terminal);
+    try testing.expectEqual(@as(?u64, 11_000), waiting.deadline_ms);
+    // A second press while the first is still waiting starts nothing.
+    try testing.expectError(error.AlreadyStarting, chat.beginStart("build", 2_000, 12_000));
+
+    // The tab never came.
+    const no_tab = chat.startOf("build", 11_001);
+    try testing.expect(no_tab.state == .failed);
+    try testing.expectEqual(StartFailure.terminal_never_opened, no_tab.failed);
+    try testing.expectEqual(@as(?[]const u8, null), chat.startAwaitingTerminal(11_001));
+
+    // Trying again replaces what failed.
+    try chat.beginStart("build", 12_000, 22_000);
+    chat.startOpened("build", 0xa1, 72_000);
+    try testing.expectEqual(@as(?[]const u8, null), chat.startAwaitingTerminal(13_000));
+    try testing.expectEqualStrings("build", chat.startingIn(0xa1, 13_000).?);
+    try testing.expectEqual(@as(?[]const u8, null), chat.startingIn(0xa2, 13_000));
+    const opened = chat.startOf("build", 13_000);
+    try testing.expect(opened.state == .starting);
+    try testing.expectEqual(@as(?Id, 0xa1), opened.terminal);
+
+    // The tab is there and nobody connected from it.
+    const silent = chat.startOf("build", 72_001);
+    try testing.expect(silent.state == .failed);
+    try testing.expectEqual(StartFailure.agent_never_connected, silent.failed);
+    try testing.expectEqual(@as(?[]const u8, null), chat.startingIn(0xa1, 72_001));
+
+    chat.endStart("build");
+    try testing.expectEqual(StartView.none, chat.startOf("build", 72_001));
+}
+
+test "ControlRoom start: closing the terminal a supervisor was starting in fails the start, and it survives a rename" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.restoreShell("build", "", 0);
+    try chat.beginStart("build", 1_000, 11_000);
+    chat.startOpened("build", 0xa1, 61_000);
+
+    try chat.rename("build", "nightly");
+    try testing.expectEqualStrings("nightly", chat.startingIn(0xa1, 2_000).?);
+
+    chat.forget(0xa2);
+    try testing.expect(chat.startOf("nightly", 2_000).state == .starting);
+    chat.forget(0xa1);
+    const closed = chat.startOf("nightly", 2_000);
+    try testing.expect(closed.state == .failed);
+    try testing.expectEqual(StartFailure.terminal_closed, closed.failed);
+    // And stays that, however long ago the deadline was.
+    try testing.expectEqual(StartFailure.terminal_closed, chat.startOf("nightly", 999_000).failed);
+}
+
+test "ControlRoom start: where a supervisor is started -- the last one's directory, kept, and what most members are in" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.restoreShell("build", "", 0);
+
+    try testing.expectEqualStrings("", chat.supervisorDirOf("build"));
+    try testing.expectEqualStrings("", chat.commonDirOf("build"));
+
+    try testing.expect(try chat.setSupervisorDir("build", "/work/repo"));
+    // Nothing known is not a record, and the same again is not a change.
+    try testing.expect(!try chat.setSupervisorDir("build", ""));
+    try testing.expect(!try chat.setSupervisorDir("build", "/work/repo"));
+    try testing.expectEqualStrings("/work/repo", chat.supervisorDirOf("build"));
+    try chat.rename("build", "nightly");
+    try testing.expectEqualStrings("/work/repo", chat.supervisorDirOf("nightly"));
+
+    try chat.add("nightly", 0xb1, .all, .{ .cwd = "/z/one", .title = "" });
+    try chat.add("nightly", 0xb2, .all, .{ .cwd = "/a/two", .title = "" });
+    // One each: the one that sorts first, every time.
+    try testing.expectEqualStrings("/a/two", chat.commonDirOf("nightly"));
+    try chat.add("nightly", 0xb3, .all, .{ .cwd = "/z/one", .title = "" });
+    try chat.add("nightly", 0xb4, .all, .{});
+    try testing.expectEqualStrings("/z/one", chat.commonDirOf("nightly"));
 }

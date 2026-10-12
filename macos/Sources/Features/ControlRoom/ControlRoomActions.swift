@@ -16,7 +16,9 @@ import Foundation
 /// **Nothing in the control room sends `approve`, `refuse` or `reply`
 /// today.** The rows only tell (the user, 2026-10-12); the three acts stay
 /// here because the core still takes them (`ControlAct.zig`) and this is
-/// the one place that knows how to write them. What is sent is `seen`.
+/// the one place that knows how to write them. What is sent is `seen`,
+/// and the two the person does about a group rather than to a terminal:
+/// `new_group` and `start_supervisor`.
 struct ControlRoomActions {
     /// Sends one request. Returns nil when it was done, or the refusal's
     /// name as the core wrote it.
@@ -32,6 +34,11 @@ struct ControlRoomActions {
         case approve(ControlRoomList.Target)
         case refuse(ControlRoomList.Target)
         case reply(ControlRoomList.Target, text: String)
+        /// Make a group by the name that was typed.
+        case newGroup(name: String)
+        /// Start a supervisor for a group that has none. A nil role or
+        /// directory is the one the core's snapshot names.
+        case startSupervisor(group: String, role: String? = nil, cwd: String? = nil)
     }
 
     /// Why an action was not done. `name` is the core's word for it and is
@@ -77,6 +84,42 @@ struct ControlRoomActions {
             case "SnoozeInThePast":
                 return String(localized: "That time has already passed.",
                               comment: "总控台：先放着到某个时刻，但时刻已过")
+            case "BadName":
+                return String(localized: "A group's name is lowercase letters, digits and dashes, 48 at most.",
+                              comment: "总控台：新建群时名字不合规则（空的也是）")
+            case "GroupExists":
+                return String(localized: "There is already a group by that name.",
+                              comment: "总控台：新建群时重名")
+            case "TooManyGroups":
+                return String(localized: "There is no room for another group.",
+                              comment: "总控台：新建群时群的数量到了上限")
+            case "HasSupervisor":
+                return String(localized: "This group already has a supervisor.",
+                              comment: "总控台：启动总管时这个群已经有总管了")
+            case "AlreadyStarting":
+                return String(localized: "A supervisor is already being started for this group.",
+                              comment: "总控台：启动总管时已经有一个在启动")
+            case "NoSupervisorRole":
+                return String(localized: "There is no role that makes a supervisor. Add one in the role library.",
+                              comment: "总控台：启动总管时角色库里没有总管角色")
+            case "NoSuchPersona":
+                return String(localized: "That role no longer exists.",
+                              comment: "角色库保存失败时显示的原因")
+            case "NotASupervisorRole":
+                return String(localized: "That role does not make a supervisor.",
+                              comment: "总控台：启动总管时选的角色不是总管角色")
+            case "NoCli":
+                return String(localized: "This role isn't set up for any agent CLI yet. Pick one in the role library.",
+                              comment: "角色启动失败时显示的原因")
+            case "NotAbsolute", "NoSuchDirectory", "NotADirectory":
+                return String(localized: "That directory is not there.",
+                              comment: "总控台：启动总管时选的目录不存在")
+            case "OpenFailed", "NoRuntime":
+                return String(localized: "No tab could be opened for it.",
+                              comment: "总控台：启动总管时开不出标签页")
+            case "NoExecutable":
+                return String(localized: "Polter could not find its own program to start the role with.",
+                              comment: "总控台：启动总管时找不到 Polter 自己的可执行文件")
             default:
                 return String(localized: "Nothing was done (\(name)).",
                               comment: "总控台：核心拒绝了动作，原因是括号里的名字")
@@ -103,6 +146,15 @@ struct ControlRoomActions {
             // A reply is checked against `since_ms` only: the core's table
             // has no `event_ms` for it.
             return ["act": "reply", "terminal": target.terminal, "since_ms": target.sinceMs, "text": text]
+        case .newGroup(let name):
+            return ["act": "new_group", "name": name]
+        case .startSupervisor(let group, let role, let cwd):
+            // Left out when the person picked neither: the core then uses
+            // the ones its snapshot named.
+            var request: [String: Any] = ["act": "start_supervisor", "group": group]
+            if let role { request["role"] = role }
+            if let cwd { request["cwd"] = cwd }
+            return request
         }
     }
 

@@ -35,6 +35,31 @@
 //!       "snooze": {"until":"none","at_ms":null,"until_ms":null},
 //!                             until: none | next_event | time
 //!       "steward": "0x00000000000000a1" | null,
+//!       "supervisor": {
+//!         "state": "present",     present | absent | starting | failed.
+//!                                 starting and failed are a supervisor
+//!                                 the person asked for from the control
+//!                                 room (ControlAct.zig, start_supervisor)
+//!         "can_start": false,     whether the control room offers to
+//!                                 start one: there is none, none is on
+//!                                 its way, and there is a role to start
+//!                                 it in. A host shows the button on this
+//!                                 and on nothing else
+//!         "terminal": "0x…"|null, the terminal one is being started in
+//!         "failed": "none",       none | terminal_never_opened |
+//!                                 agent_never_connected | terminal_closed
+//!         "role": "polter-supervisor" | null,
+//!                                 the role it is started in unless the
+//!                                 person picks another; null with no
+//!                                 supervisor role at all
+//!         "cwd": "/Users/me/work",
+//!         "cwd_from": "last_supervisor" },
+//!                                 where it is started unless the person
+//!                                 picks elsewhere, and how that was
+//!                                 arrived at: last_supervisor (where this
+//!                                 group's supervisor last worked, kept
+//!                                 across restarts) | members (what most of
+//!                                 its terminals are in) | home | none
 //!       "attention": {
 //!         "kind": "needs_approval",     Attention.Kind
 //!         "under": "needs_approval",    what it is when not snoozed
@@ -94,6 +119,13 @@
 //!       "window":"0x…"|null, "tab":"0x…"|null } ],
 //!   "tabs": [ { "window":"0x…"|null, "tab":"0x…",
 //!       "shown":…, "terminal":"0x…"|null } ],
+//!   "supervisor_roles": [ {"key":"polter-supervisor",
+//!       "name":"Polter Supervisor"} ],
+//!                             the roles a supervisor can be started in,
+//!                             in the order to offer them
+//!   "choose_supervisor_role": false,
+//!                             whether there is a choice to offer: more
+//!                             than one. A host does not count them
 //!   "pulses": [ { "terminal":"0x…", "window":"0x…"|null,
 //!       "tab":"0x…"|null, "group":"billing"|null } ],
 //!                             every terminal waiting for the person,
@@ -271,9 +303,22 @@ pub const Input = struct {
     thresholds: Attention.Thresholds,
     /// The task panel: what a group that is working says it is doing.
     tasks: *const Tasks,
+    /// The roles a supervisor can be started in from the control room, in
+    /// the order to offer them; the first is the one used unless the person
+    /// picks. Empty when there is none, and then nothing can be started.
+    supervisor_roles: []const SupervisorRole,
+    /// The person's home directory, where a supervisor is started when
+    /// nothing says better. Empty when it is not known.
+    home: []const u8,
     /// The bus's clock, and the real one.
     now_ms: u64,
     wall_ms: u64,
+};
+
+/// A role that makes the terminal it starts in a supervisor.
+pub const SupervisorRole = struct {
+    key: []const u8,
+    name: []const u8,
 };
 
 // -- what comes out ---------------------------------------------------------
@@ -467,6 +512,22 @@ pub const Member = struct {
     shielded: bool,
 };
 
+/// Whether a group has a supervisor, and what starting one would use.
+/// Everything a host needs to offer "start a supervisor" and nothing it
+/// has to work out.
+pub const SupervisorOut = struct {
+    state: State,
+    can_start: bool,
+    terminal: ?Hex,
+    failed: Chat.StartFailure,
+    role: ?[]const u8,
+    cwd: []const u8,
+    cwd_from: CwdFrom,
+
+    pub const State = enum { present, absent, starting, failed };
+    pub const CwdFrom = enum { none, last_supervisor, members, home };
+};
+
 pub const GroupRow = struct {
     name: []const u8,
     brief: []const u8,
@@ -474,6 +535,7 @@ pub const GroupRow = struct {
     seen_ms: ?u64,
     snooze: SnoozeOut,
     steward: ?Hex,
+    supervisor: SupervisorOut,
     attention: AttentionOut,
     needs_me: bool,
     unseen: bool,
@@ -555,6 +617,8 @@ pub const Snapshot = struct {
     ungrouped: []const LoneRow,
     terminals: []const TerminalOut,
     tabs: []const Tab,
+    supervisor_roles: []const SupervisorRole,
+    choose_supervisor_role: bool,
     /// Every "waiting for you" terminal, longest-waiting first. **The one
     /// glyph that breathes in a window is the first of these that is not
     /// in the tab that window is showing** -- and, for a glyph that stands
@@ -887,14 +951,64 @@ fn rowDisplay(a: Attention, about: ?Attention.Status) RowDisplay {
 }
 
 fn stewardOf(in: Input, name: []const u8, members: []const Id) ?Id {
-    const by = in.chat.createdBy(name) catch Chat.user_id;
-    if (by != Chat.user_id and in.bus.isSupervisor(by) and
+    return stewardAmong(in.bus, in.chat, name, members);
+}
+
+fn stewardAmong(bus: *const Bus, chat: *const Chat, name: []const u8, members: []const Id) ?Id {
+    const by = chat.createdBy(name) catch Chat.user_id;
+    if (by != Chat.user_id and bus.isSupervisor(by) and
         std.mem.indexOfScalar(Id, members, by) != null) return by;
     // Nobody who made it is minding it: whoever in it is a supervisor.
     for (members) |id| {
-        if (id != Chat.user_id and in.bus.isSupervisor(id)) return id;
+        if (id != Chat.user_id and bus.isSupervisor(id)) return id;
     }
     return null;
+}
+
+/// The terminal that is `name`'s supervisor, by the rule the snapshot
+/// uses, for whoever has to answer between two snapshots: an act that is
+/// refused when a group already has one. Null when it has none, and when
+/// it could not be worked out.
+pub fn stewardOfGroup(arena: Allocator, bus: *const Bus, chat: *const Chat, name: []const u8) ?Id {
+    const members = chat.membersOf(arena, name) catch return null;
+    return stewardAmong(bus, chat, name, members);
+}
+
+/// What the control room says of `name`'s supervisor: there is one, one is
+/// on its way, the last try failed, or there is none -- and what starting
+/// one would use. `steward` is the answer `stewardOf` gave.
+fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wake: *Wake) Allocator.Error!SupervisorOut {
+    const start = in.chat.startOf(name, in.now_ms);
+    // Past its deadline a start reads as failed, and nothing else happens
+    // at that moment to say so.
+    if (start.deadline_ms) |at| wake.consider(at +| 1);
+
+    const state: SupervisorOut.State = if (steward != null) .present else switch (start.state) {
+        .none => .absent,
+        .starting => .starting,
+        .failed => .failed,
+    };
+
+    const last = in.chat.supervisorDirOf(name);
+    const common = in.chat.commonDirOf(name);
+    const cwd: struct { dir: []const u8, from: SupervisorOut.CwdFrom } = if (last.len > 0)
+        .{ .dir = last, .from = .last_supervisor }
+    else if (common.len > 0)
+        .{ .dir = common, .from = .members }
+    else if (in.home.len > 0)
+        .{ .dir = in.home, .from = .home }
+    else
+        .{ .dir = "", .from = .none };
+
+    return .{
+        .state = state,
+        .can_start = (state == .absent or state == .failed) and in.supervisor_roles.len > 0,
+        .terminal = if (state == .starting or state == .failed) .opt(start.terminal) else null,
+        .failed = if (state == .failed) start.failed else .none,
+        .role = if (in.supervisor_roles.len > 0) try arena.dupe(u8, in.supervisor_roles[0].key) else null,
+        .cwd = try arena.dupe(u8, cwd.dir),
+        .cwd_from = cwd.from,
+    };
 }
 
 const Pending = struct {
@@ -1054,6 +1168,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .seen_ms = marks.seen_ms,
             .snooze = .of(marks.snooze),
             .steward = .opt(steward_id),
+            .supervisor = try supervisorOf(arena, in, name, steward_id, &wake),
             .attention = .of(a, in.bus),
             .needs_me = Attention.needsMe(a),
             .unseen = Attention.unseen(a),
@@ -1238,6 +1353,15 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .ungrouped = lone_rows,
             .terminals = terminals.items,
             .tabs = tabs.items,
+            .supervisor_roles = roles: {
+                const out = try arena.alloc(SupervisorRole, in.supervisor_roles.len);
+                for (in.supervisor_roles, out) |r, *o| o.* = .{
+                    .key = try arena.dupe(u8, r.key),
+                    .name = try arena.dupe(u8, r.name),
+                };
+                break :roles out;
+            },
+            .choose_supervisor_role = in.supervisor_roles.len > 1,
             .pulses = pulses,
         },
         .wake_ms = wake.at,
@@ -1261,6 +1385,8 @@ const World = struct {
     tasks: Tasks,
     open: std.ArrayListUnmanaged(Terminal) = .empty,
     wall_ms: u64 = 1_700_000_000_000,
+    roles: []const SupervisorRole = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor" }},
+    home: []const u8 = "/Users/me",
 
     fn init() World {
         return .{
@@ -1344,6 +1470,8 @@ const World = struct {
             .terminals = self.open.items,
             .thresholds = T,
             .tasks = &self.tasks,
+            .supervisor_roles = self.roles,
+            .home = self.home,
             .now_ms = now_ms,
             .wall_ms = self.wall_ms + now_ms,
         };
@@ -2331,4 +2459,139 @@ test "ControlRoom bench: 32 groups and 128 terminals, worked out and written" {
         "\nControlRoom bench ({t}, {d} rounds): build {d} us, write {d} us ({d} bytes), refresh {d} us\n",
         .{ builtin.mode, rounds, build_ns / rounds / 1000, write_ns / rounds / 1000, bytes, refresh_ns / rounds / 1000 },
     );
+}
+
+test "ControlRoom start: a group with no supervisor says one can be started, in which role and where" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    // Back from last night: nobody in it. And one somebody minds.
+    try w.chat.restoreShell("nightly", "", 0);
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+
+    var s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
+    const absent = (try rowNamed(s, "nightly")).supervisor;
+    try testing.expectEqual(SupervisorOut.State.absent, absent.state);
+    try testing.expect(absent.can_start);
+    try testing.expectEqualStrings("polter-supervisor", absent.role.?);
+    // Nothing better is known than home.
+    try testing.expectEqualStrings("/Users/me", absent.cwd);
+    try testing.expectEqual(SupervisorOut.CwdFrom.home, absent.cwd_from);
+    try testing.expectEqual(@as(?Hex, null), absent.terminal);
+
+    const present = (try rowNamed(s, "web-app")).supervisor;
+    try testing.expectEqual(SupervisorOut.State.present, present.state);
+    try testing.expect(!present.can_start);
+
+    try testing.expectEqual(@as(usize, 1), s.supervisor_roles.len);
+    try testing.expect(!s.choose_supervisor_role);
+
+    // What most of its terminals are in beats home; where its supervisor
+    // last worked beats both.
+    try w.terminal(0xb1, "one", 0x22);
+    try w.chat.add("nightly", 0xb1, .all, .{ .cwd = "/work/api", .title = "" });
+    s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
+    try testing.expectEqualStrings("/work/api", (try rowNamed(s, "nightly")).supervisor.cwd);
+    try testing.expectEqual(SupervisorOut.CwdFrom.members, (try rowNamed(s, "nightly")).supervisor.cwd_from);
+    // A worker in it is not a supervisor of it.
+    try testing.expect((try rowNamed(s, "nightly")).supervisor.can_start);
+
+    _ = try w.chat.setSupervisorDir("nightly", "/work/repo");
+    s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
+    try testing.expectEqualStrings("/work/repo", (try rowNamed(s, "nightly")).supervisor.cwd);
+    try testing.expectEqual(SupervisorOut.CwdFrom.last_supervisor, (try rowNamed(s, "nightly")).supervisor.cwd_from);
+
+    // Two roles is a choice, in the order given; none is nothing to start.
+    w.roles = &.{
+        .{ .key = "polter-supervisor", .name = "Polter Supervisor" },
+        .{ .key = "night-lead", .name = "Night Lead" },
+    };
+    s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
+    try testing.expect(s.choose_supervisor_role);
+    try testing.expectEqualStrings("night-lead", s.supervisor_roles[1].key);
+    try testing.expectEqualStrings("polter-supervisor", (try rowNamed(s, "nightly")).supervisor.role.?);
+
+    w.roles = &.{};
+    w.home = "";
+    _ = try w.chat.setSupervisorDir("web-app", "/x");
+    try w.chat.restoreShell("empty", "", 0);
+    s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
+    const none = (try rowNamed(s, "empty")).supervisor;
+    try testing.expectEqual(SupervisorOut.State.absent, none.state);
+    try testing.expect(!none.can_start);
+    try testing.expectEqual(@as(?[]const u8, null), none.role);
+    try testing.expectEqualStrings("", none.cwd);
+    try testing.expectEqual(SupervisorOut.CwdFrom.none, none.cwd_from);
+}
+
+test "ControlRoom start: one on its way is not offered again, and the snapshot wakes itself to say it failed" {
+    var w: World = .init();
+    defer w.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    try w.chat.restoreShell("nightly", "", 0);
+    _ = try room.refresh(w.input(1_000), .event);
+
+    try w.chat.beginStart("nightly", 2_000, 11_000);
+    var out = try room.refresh(w.input(2_000), .event);
+    try testing.expect(out.notify != null);
+    {
+        const read = try std.json.parseFromSlice(Snapshot, testing.allocator, room.json, .{});
+        defer read.deinit();
+        const sup = (try rowNamed(read.value, "nightly")).supervisor;
+        try testing.expectEqual(SupervisorOut.State.starting, sup.state);
+        try testing.expect(!sup.can_start);
+        try testing.expectEqual(@as(?Hex, null), sup.terminal);
+    }
+    // Nothing will happen at the deadline but the deadline: woken for it.
+    try testing.expectEqual(@as(?u64, 11_001), out.wake_ms);
+
+    // The tab came; now the agent is waited for.
+    try w.terminal(0xa9, "zsh", 0x29);
+    w.chat.startOpened("nightly", 0xa9, 61_000);
+    out = try room.refresh(w.input(3_000), .event);
+    try testing.expectEqual(@as(?u64, 61_001), out.wake_ms);
+    {
+        const read = try std.json.parseFromSlice(Snapshot, testing.allocator, room.json, .{});
+        defer read.deinit();
+        const sup = (try rowNamed(read.value, "nightly")).supervisor;
+        try testing.expectEqual(SupervisorOut.State.starting, sup.state);
+        try testing.expectEqual(@as(u64, 0xa9), sup.terminal.?.id);
+    }
+
+    // It never connected. The timer alone says so, and it is offered again.
+    out = try room.refresh(w.input(61_001), .timer);
+    try testing.expect(out.notify != null);
+    try testing.expectEqual(@as(?u64, null), out.wake_ms);
+    {
+        const read = try std.json.parseFromSlice(Snapshot, testing.allocator, room.json, .{});
+        defer read.deinit();
+        const sup = (try rowNamed(read.value, "nightly")).supervisor;
+        try testing.expectEqual(SupervisorOut.State.failed, sup.state);
+        try testing.expectEqual(Chat.StartFailure.agent_never_connected, sup.failed);
+        try testing.expect(sup.can_start);
+        try testing.expectEqual(@as(u64, 0xa9), sup.terminal.?.id);
+    }
+
+    // It did connect, was made a supervisor and put in the group: present,
+    // whatever is left of the start.
+    try w.chat.beginStart("nightly", 62_000, 72_000);
+    w.chat.startOpened("nightly", 0xa9, 122_000);
+    try w.bus.addSupervisor(0xa9);
+    try w.chat.add("nightly", 0xa9, .all, .{});
+    out = try room.refresh(w.input(63_000), .event);
+    {
+        const read = try std.json.parseFromSlice(Snapshot, testing.allocator, room.json, .{});
+        defer read.deinit();
+        const row = try rowNamed(read.value, "nightly");
+        try testing.expectEqual(SupervisorOut.State.present, row.supervisor.state);
+        try testing.expect(!row.supervisor.can_start);
+        try testing.expectEqual(@as(u64, 0xa9), row.steward.?.id);
+        try testing.expectEqual(@as(?Hex, null), row.supervisor.terminal);
+    }
 }

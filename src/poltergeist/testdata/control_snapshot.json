@@ -17,6 +17,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a1",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "needs_approval",
         "under": "needs_approval",
@@ -100,6 +109,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a1",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "needs_approval",
         "under": "needs_approval",
@@ -166,6 +184,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a7",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "needs_approval",
         "under": "needs_approval",
@@ -247,6 +274,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a2",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "needs_answer",
         "under": "needs_answer",
@@ -311,6 +347,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a3",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "failed",
         "under": "failed",
@@ -375,6 +420,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a4",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "done_unseen",
         "under": "done_unseen",
@@ -439,6 +493,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a5",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "working",
         "under": "working",
@@ -520,6 +583,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a6",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "idle",
         "under": "idle",
@@ -889,6 +961,13 @@
       "terminal": "0x00000000000000b7"
     }
   ],
+  "supervisor_roles": [
+    {
+      "key": "polter-supervisor",
+      "name": "Polter Supervisor"
+    }
+  ],
+  "choose_supervisor_role": false,
   "pulses": [
     {
       "terminal": "0x00000000000000a2",
