@@ -38,6 +38,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     }
 
     private var seen: ControlRoomSeenTracker?
+    private var rowActs: ControlRoomRowActs?
     private var watchingSelection: AnyCancellable?
     private var watchingList: AnyCancellable?
 
@@ -74,6 +75,22 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
                 }
             })
         seen = tracker
+
+        // Approve and refuse on a row: sent to the core with the row's own
+        // two moments, and a refusal said on the row.
+        let acts = ControlRoomRowActs(
+            later: { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) },
+            perform: { act in
+                do {
+                    try actions.perform(act)
+                } catch {
+                    Ghostty.logger.warning("control room: a row's act was refused: \(String(describing: error), privacy: .public)")
+                    throw error
+                }
+            })
+        acts.onChange = { [weak self] notices in self?.model.notices = notices }
+        rowActs = acts
+        model.act = { [weak acts] kind, row in acts?.press(kind, on: row) }
         watchingSelection = model.$selection
             .removeDuplicates()
             .sink { [weak self] _ in
@@ -303,6 +320,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         }
         let content = KeyForwardingHostingView(rootView: ControlRoomView(model: model, detail: detail))
         content.onKeyEquivalent = { [weak self] in self?.goToTab(for: $0) ?? false }
+        content.onKeyDown = { [weak self] in self?.actOnSelectedRow(for: $0) ?? false }
         window.contentView = content
 
         // All three are needed for the system to bring it back.
@@ -312,7 +330,69 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     }
 
     func window(_ window: NSWindow, willEncodeRestorableState state: NSCoder) {
-        ControlRoomRestoration.encode(ControlRoomRules.Restorable(selection: model.selection), into: state)
+        let group = window.tabGroup
+        let tabbed = (group?.windows.count ?? 1) > 1
+        ControlRoomRestoration.encode(ControlRoomRules.Restorable(
+            selection: model.selection,
+            tabbed: tabbed,
+            inFront: !tabbed || group?.selectedWindow === window), into: state)
+    }
+
+    /// "Close All Windows": this one with them.
+    static func closeWithAllWindows() {
+        shared?.window?.close()
+    }
+
+    // MARK: Coming back after a restart
+
+    private var rejoining: NSObjectProtocol?
+
+    /// Go back into the group of terminal tabs it was a tab of, once the
+    /// terminal windows have been restored (`ControlRoomRules.groupToRejoin`).
+    /// Windows are restored before the application has finished launching,
+    /// in no order this can rely on, so this waits for that moment and does
+    /// not try while they are still arriving.
+    fileprivate func rejoinAfterRestore(_ kept: ControlRoomRules.Restorable?) {
+        guard kept?.tabbed == true else { return }
+        // Restored into an application that is already up (it does not
+        // happen today): there is no moment to wait for.
+        if NSRunningApplication.current.isFinishedLaunching {
+            DispatchQueue.main.async { [weak self] in self?.rejoin(kept) }
+            return
+        }
+        rejoining = NotificationCenter.default.addObserver(
+            forName: NSApplication.didFinishLaunchingNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            if let rejoining = self.rejoining { NotificationCenter.default.removeObserver(rejoining) }
+            self.rejoining = nil
+            // After the launch has settled what the restored windows are.
+            DispatchQueue.main.async { self.rejoin(kept) }
+        }
+    }
+
+    private func rejoin(_ kept: ControlRoomRules.Restorable?) {
+        guard let window else { return }
+        // One window per group of terminal tabs: its first tab.
+        var firsts: [NSWindow] = []
+        for controller in TerminalController.all {
+            guard let terminal = controller.window else { continue }
+            let first = terminal.tabGroup?.windows.first ?? terminal
+            if first !== window, !firsts.contains(where: { $0 === first }) { firsts.append(first) }
+        }
+        let alone = (window.tabGroup?.windows.count ?? 1) <= 1
+        guard let at = ControlRoomRules.groupToRejoin(
+            wasTabbed: kept?.tabbed, alone: alone, frame: window.frame, groups: firsts.map(\.frame))
+        else { return }
+        let first = firsts[at]
+        guard first.tabbingMode != .disallowed else { return }
+        let selected = first.tabGroup?.selectedWindow ?? first
+        window.tabbingIdentifier = first.tabbingIdentifier
+        guard first.addTabbedWindowSafely(window, ordered: .below) else { return }
+        // In front if it was; otherwise the tab the system restored in
+        // front stays there.
+        first.tabGroup?.selectedWindow = kept?.inFront == true ? window : selected
+        Self.relabel()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -347,6 +427,22 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             window.tabGroup?.selectedWindow = windows[index]
             windows[index].makeKeyAndOrderFront(nil)
         }
+        return true
+    }
+
+    // MARK: Approving and refusing from the keyboard
+
+    /// A key nothing in the list took (the list has the keyboard; a
+    /// terminal on the right would have taken it itself). See
+    /// `ControlRoomRules.rowAct`.
+    private func actOnSelectedRow(for event: NSEvent) -> Bool {
+        let relevant: NSEvent.ModifierFlags = [.command, .control, .option]
+        guard let kind = ControlRoomRules.rowAct(
+            key: event.charactersIgnoringModifiers ?? "",
+            modifiers: event.modifierFlags.intersection(relevant).rawValue),
+              let row = model.selectedRow, ControlRoomRowActs.act(kind, on: row) != nil
+        else { return false }
+        model.press(kind, on: row)
         return true
     }
 
@@ -413,6 +509,13 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
 /// only a terminal would otherwise have understood.
 private final class KeyForwardingHostingView<Content: View>: NSHostingView<Content> {
     var onKeyEquivalent: ((NSEvent) -> Bool)?
+    /// A key press that came up the responder chain unhandled.
+    var onKeyDown: ((NSEvent) -> Bool)?
+
+    override func keyDown(with event: NSEvent) {
+        if onKeyDown?(event) == true { return }
+        super.keyDown(with: event)
+    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.type == .keyDown, onKeyEquivalent?(event) == true { return true }
@@ -457,6 +560,7 @@ final class ControlRoomRestoration: NSObject, NSWindowRestoration {
         // snapshot arrives (`ControlRoomModel`): at this point in a launch
         // the core may not have one.
         let controller = ControlRoomController.restored(appDelegate.ghostty, selection: kept?.selection)
+        controller.rejoinAfterRestore(kept)
         completionHandler(controller.window, nil)
     }
 }

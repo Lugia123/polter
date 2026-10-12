@@ -173,3 +173,95 @@ final class ControlRoomSeenTracker {
         }
     }
 }
+
+/// Approve and refuse, pressed on a row of the list (`control-room.md`,
+/// 3.2).
+///
+/// **A press acts on the terminal the row is about and on nothing else**:
+/// it does not select the row, so it does not bring that group's supervisor
+/// to the right-hand side, and it does not count as looking at the row.
+/// What it sends is the row's own `since_ms` and `event_ms`, so a press on
+/// a prompt that has changed since the row was drawn is refused by the core
+/// and nothing reaches the terminal. A refusal is said on the row, in the
+/// core's sentence for it, and goes away by itself.
+///
+/// A row that says "and N more" is still about one terminal -- the one the
+/// core put in `attention.terminal` -- and that is the one a press answers.
+///
+/// Whether a row can be approved at all is the core's word (`approvable`);
+/// nothing here reads the row's kind.
+final class ControlRoomRowActs {
+    enum Kind: Equatable {
+        case approve
+        case refuse
+
+        /// The icon of the screenshot toolbar that stands for it: its tick
+        /// and its cross (`ShotLook.icons`). One set of two drawings in the
+        /// application, not a second pair that looks nearly the same.
+        var toolbarIcon: String {
+            switch self {
+            case .approve: return "done"
+            case .refuse: return "cancel"
+            }
+        }
+    }
+
+    typealias Later = (_ after: TimeInterval, _ work: @escaping () -> Void) -> Void
+
+    private let perform: (ControlRoomActions.Act) throws -> Void
+    private let later: Later
+    private let linger: TimeInterval
+    /// Counts what was said on each row, so that a sentence's own timer
+    /// cannot take away a later one.
+    private var said: [String: Int] = [:]
+
+    /// Why the last press on a row was not done, by row; told through
+    /// `onChange` whenever it changes.
+    private(set) var notices: [String: String] = [:] {
+        didSet { if notices != oldValue { onChange(notices) } }
+    }
+    var onChange: ([String: String]) -> Void = { _ in }
+
+    init(linger: TimeInterval = ControlRoomLook.Side.actNoticeSeconds,
+         later: @escaping Later,
+         perform: @escaping (ControlRoomActions.Act) throws -> Void) {
+        self.linger = linger
+        self.later = later
+        self.perform = perform
+    }
+
+    /// What a press of `kind` on `row` sends; nil when the core does not
+    /// say the row can be approved, or there is no terminal behind it.
+    static func act(_ kind: Kind, on row: ControlRoomList.Row) -> ControlRoomActions.Act? {
+        guard row.approvable, let target = row.target else { return nil }
+        switch kind {
+        case .approve: return .approve(target)
+        case .refuse: return .refuse(target)
+        }
+    }
+
+    func press(_ kind: Kind, on row: ControlRoomList.Row) {
+        guard let act = Self.act(kind, on: row) else { return }
+        do {
+            try perform(act)
+            // Done: the row changes with the next snapshot. Anything said
+            // about an earlier press is out of date.
+            say(nil, on: row.id)
+        } catch let refusal as ControlRoomActions.Refusal {
+            say(refusal.message, on: row.id)
+        } catch {
+            say(ControlRoomActions.Refusal(name: "Refused").message, on: row.id)
+        }
+    }
+
+    private func say(_ words: String?, on row: String) {
+        let mine = (said[row] ?? 0) + 1
+        said[row] = mine
+        notices[row] = words
+        guard words != nil else { return }
+        later(linger) { [weak self] in
+            guard let self, self.said[row] == mine else { return }
+            self.notices[row] = nil
+        }
+    }
+}
