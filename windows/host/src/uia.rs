@@ -136,6 +136,10 @@ const KIND_MENU_BUTTON: i32 = 7;
 /// The keybind page and its rows. Appended, never inserted; see above.
 const KIND_KEYBINDS: i32 = 8;
 const KIND_KEYBINDS_ITEM: i32 = 9;
+/// The control room's panel and one group's row in it. The row's third
+/// part is `scene::stable_id` of the group's name -- never its place.
+const KIND_CONTROL_ROOM: i32 = 10;
+const KIND_CONTROL_ROOM_ROW: i32 = 11;
 
 // ------------------------------------------------------------- text reading
 
@@ -1980,6 +1984,262 @@ impl ISelectionItemProvider_Impl for PaletteItem_Impl {
     fn SelectionContainer(&self) -> WResult<IRawElementProviderSimple> {
         Ok(PaletteRoot { hwnd: self.hwnd }.into())
     }
+}
+
+// ----------------------------------------------------- the control room
+//
+// **The panel draws its rows itself and has no child windows**, the keybind
+// page's situation exactly: left to the default provider a client finds the
+// window and nothing in it. What is here is the groups, each a list item
+// that says what its row says (`scene::spoken`: the group, which of the four
+// states, what it waits on, how long) and whether it is the selected one.
+//
+// **A row is named by its group, never by its place.** The list is the
+// core's and is re-sent whenever anything changes; "the third row" is a
+// different group a moment later (`a-position-is-not-an-identity.py`).
+//
+// ⚠️ **NOT IN THE TREE**: the two section headers, the time band, and the
+// right side with its button. **No event is raised** when the selection or a
+// row changes; a client that asks again is told the truth, one that waits to
+// be told is not.
+//
+// The rows come from `control_room::uia_rows`, which is behind a lock: these
+// methods run on UI Automation's thread, and the panel's own state lives on
+// the window's.
+
+#[implement(IRawElementProviderSimple, IRawElementProviderFragment, IRawElementProviderFragmentRoot)]
+struct ControlRoomRoot {
+    hwnd: isize,
+}
+
+#[implement(IRawElementProviderSimple, IRawElementProviderFragment, ISelectionItemProvider)]
+struct ControlRoomRow {
+    hwnd: isize,
+    /// The group's name.
+    group: String,
+}
+
+impl ControlRoomRoot {
+    fn hwnd(&self) -> HWND {
+        HWND(self.hwnd as *mut core::ffi::c_void)
+    }
+    fn row(&self, group: &str) -> IRawElementProviderFragment {
+        ControlRoomRow { hwnd: self.hwnd, group: group.to_string() }.into()
+    }
+}
+
+impl ControlRoomRow {
+    fn hwnd(&self) -> HWND {
+        HWND(self.hwnd as *mut core::ffi::c_void)
+    }
+    /// This group's row as last painted, or `None` if it is no longer
+    /// listed.
+    fn row(&self) -> Option<crate::control_room::UiaRow> {
+        crate::control_room::uia_rows().into_iter().find(|r| r.group == self.group)
+    }
+    fn sibling(&self, group: &str) -> IRawElementProviderFragment {
+        ControlRoomRow { hwnd: self.hwnd, group: group.to_string() }.into()
+    }
+}
+
+impl IRawElementProviderSimple_Impl for ControlRoomRoot_Impl {
+    fn ProviderOptions(&self) -> WResult<ProviderOptions> {
+        Ok(ProviderOptions_ServerSideProvider)
+    }
+    fn GetPatternProvider(&self, _id: UIA_PATTERN_ID) -> WResult<IUnknown> {
+        // no pattern: the same reason `TabList` and the palette give --
+        // SelectionPattern would be correct and its SAFEARRAY cannot be
+        // exercised here. Each row answers SelectionItemPattern, which is
+        // what a client needs to read which group is selected and select
+        // another.
+        Err(gone())
+    }
+    fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> WResult<VARIANT> {
+        Ok(match id {
+            UIA_ControlTypePropertyId => variant_i4(UIA_ListControlTypeId.0),
+            UIA_NamePropertyId => variant_bstr("Control room groups"),
+            UIA_AutomationIdPropertyId => variant_bstr("control-room"),
+            // Asked of Windows, never assumed; see `window_enabled`.
+            UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
+            UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
+            _ => variant_empty(),
+        })
+    }
+    fn HostRawElementProvider(&self) -> WResult<IRawElementProviderSimple> {
+        unsafe { UiaHostProviderFromHwnd(self.hwnd()) }
+    }
+}
+
+impl IRawElementProviderFragment_Impl for ControlRoomRoot_Impl {
+    fn Navigate(&self, direction: NavigateDirection) -> WResult<IRawElementProviderFragment> {
+        let rows = crate::control_room::uia_rows();
+        match direction {
+            NavigateDirection_FirstChild => rows.first().map(|r| self.row(&r.group)).ok_or_else(gone),
+            NavigateDirection_LastChild => rows.last().map(|r| self.row(&r.group)).ok_or_else(gone),
+            _ => Err(gone()),
+        }
+    }
+    fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
+        // Keyed by the panel's own window handle, as the palette's is: there
+        // is one in the process.
+        runtime_id(self.hwnd as u32, KIND_CONTROL_ROOM, 0)
+    }
+    fn BoundingRectangle(&self) -> WResult<UiaRect> {
+        Ok(window_rect(self.hwnd()))
+    }
+    fn GetEmbeddedFragmentRoots(&self) -> WResult<*mut SAFEARRAY> {
+        empty_i4_array()
+    }
+    fn SetFocus(&self) -> WResult<()> {
+        Ok(())
+    }
+    fn FragmentRoot(&self) -> WResult<IRawElementProviderFragmentRoot> {
+        Ok(ControlRoomRoot { hwnd: self.hwnd }.into())
+    }
+}
+
+impl IRawElementProviderFragmentRoot_Impl for ControlRoomRoot_Impl {
+    fn ElementProviderFromPoint(&self, x: f64, y: f64) -> WResult<IRawElementProviderFragment> {
+        // The rectangles are the ones the last paint drew with
+        // (`UiaRow::rect`), so this is a read of that geometry and not a
+        // second copy of it.
+        let mut p = windows::Win32::Foundation::POINT { x: x as i32, y: y as i32 };
+        if !unsafe { windows::Win32::Graphics::Gdi::ScreenToClient(self.hwnd(), &mut p) }.as_bool() {
+            return Err(gone());
+        }
+        crate::control_room::uia_rows()
+            .iter()
+            .find(|r| p.x >= r.rect.0 && p.x < r.rect.2 && p.y >= r.rect.1 && p.y < r.rect.3)
+            .map(|r| self.row(&r.group))
+            .ok_or_else(gone)
+    }
+    fn GetFocus(&self) -> WResult<IRawElementProviderFragment> {
+        crate::control_room::uia_rows().iter().find(|r| r.selected).map(|r| self.row(&r.group)).ok_or_else(gone)
+    }
+}
+
+impl IRawElementProviderSimple_Impl for ControlRoomRow_Impl {
+    fn ProviderOptions(&self) -> WResult<ProviderOptions> {
+        Ok(ProviderOptions_ServerSideProvider)
+    }
+    fn GetPatternProvider(&self, id: UIA_PATTERN_ID) -> WResult<IUnknown> {
+        if id == UIA_SelectionItemPatternId {
+            let p: ISelectionItemProvider = ControlRoomRow { hwnd: self.hwnd, group: self.group.clone() }.into();
+            return Ok(p.into());
+        }
+        Err(gone())
+    }
+    fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> WResult<VARIANT> {
+        // A group that is no longer listed is gone, not blank.
+        let Some(row) = self.row() else {
+            return Err(gone());
+        };
+        Ok(match id {
+            UIA_ControlTypePropertyId => variant_i4(UIA_ListItemControlTypeId.0),
+            UIA_NamePropertyId => variant_bstr(&row.name),
+            // The group's name: the one stable thing a row has.
+            UIA_AutomationIdPropertyId => variant_bstr(&row.group),
+            // Asked of Windows, never assumed; see `window_enabled`.
+            UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
+            UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
+            // Every listed row is drawn: the list does not scroll.
+            UIA_IsOffscreenPropertyId => variant_bool(false),
+            _ => variant_empty(),
+        })
+    }
+    fn HostRawElementProvider(&self) -> WResult<IRawElementProviderSimple> {
+        Err(gone())
+    }
+}
+
+impl IRawElementProviderFragment_Impl for ControlRoomRow_Impl {
+    fn Navigate(&self, direction: NavigateDirection) -> WResult<IRawElementProviderFragment> {
+        // Who is beside this group *now*, asked each time and answered by
+        // name: `uia_neighbours` walks the list for the group itself.
+        let Some((before, after)) = crate::control_room::uia_neighbours(&self.group) else {
+            return Err(gone());
+        };
+        match direction {
+            NavigateDirection_Parent => {
+                let r: IRawElementProviderFragment = ControlRoomRoot { hwnd: self.hwnd }.into();
+                Ok(r)
+            }
+            NavigateDirection_NextSibling => after.map(|g| self.sibling(&g)).ok_or_else(gone),
+            NavigateDirection_PreviousSibling => before.map(|g| self.sibling(&g)).ok_or_else(gone),
+            _ => Err(gone()),
+        }
+    }
+    fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
+        runtime_id(self.hwnd as u32, KIND_CONTROL_ROOM_ROW, polter_control_room::scene::stable_id(&self.group))
+    }
+    fn BoundingRectangle(&self) -> WResult<UiaRect> {
+        let zero = UiaRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 };
+        // Asked of the panel, which answers with the rectangle its last
+        // paint drew this row in. Nothing is worked out here.
+        let Some(r) = crate::control_room::uia_row_rect(&self.group) else {
+            return Ok(zero);
+        };
+        let mut origin = windows::Win32::Foundation::POINT { x: r.left, y: r.top };
+        if unsafe { windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd(), &mut origin) }.as_bool() {
+            return Ok(UiaRect {
+                left: origin.x as f64,
+                top: origin.y as f64,
+                width: (r.right - r.left) as f64,
+                height: (r.bottom - r.top) as f64,
+            });
+        }
+        // The window went between the paint and this call.
+        Ok(zero)
+    }
+    fn GetEmbeddedFragmentRoots(&self) -> WResult<*mut SAFEARRAY> {
+        empty_i4_array()
+    }
+    fn SetFocus(&self) -> WResult<()> {
+        Ok(())
+    }
+    fn FragmentRoot(&self) -> WResult<IRawElementProviderFragmentRoot> {
+        Ok(ControlRoomRoot { hwnd: self.hwnd }.into())
+    }
+}
+
+impl ISelectionItemProvider_Impl for ControlRoomRow_Impl {
+    /// Selecting a row is what clicking it is. Posted: this call is on UI
+    /// Automation's thread and the selection belongs to the window's.
+    fn Select(&self) -> WResult<()> {
+        if self.row().is_none() {
+            return Err(gone());
+        }
+        if crate::control_room::uia_select(&self.group) {
+            Ok(())
+        } else {
+            Err(gone())
+        }
+    }
+    fn AddToSelection(&self) -> WResult<()> {
+        ISelectionItemProvider_Impl::Select(self)
+    }
+    fn RemoveFromSelection(&self) -> WResult<()> {
+        Err(gone())
+    }
+    fn IsSelected(&self) -> WResult<windows_core::BOOL> {
+        Ok(self.row().is_some_and(|r| r.selected).into())
+    }
+    fn SelectionContainer(&self) -> WResult<IRawElementProviderSimple> {
+        Ok(ControlRoomRoot { hwnd: self.hwnd }.into())
+    }
+}
+
+/// `WM_GETOBJECT` for the control room's panel. Called from
+/// `control_room.rs`'s own window procedure.
+pub fn on_get_object_control_room(hwnd: HWND, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
+    if lp.0 as i32 != UiaRootObjectId {
+        return None;
+    }
+    let provider: IRawElementProviderSimple = ControlRoomRoot { hwnd: hwnd.0 as isize }.into();
+    // process-wide: there is one control room for the process, and this
+    // line is about its panel rather than about any terminal window
+    plogf!("[uia] control room WM_GETOBJECT -> root provider");
+    Some(unsafe { UiaReturnRawElementProvider(hwnd, wp, lp, &provider) })
 }
 
 // ------------------------------------------------------- the keybind page

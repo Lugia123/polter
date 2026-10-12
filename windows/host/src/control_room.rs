@@ -22,22 +22,18 @@
 //!
 //! # Not done in this file yet
 //!
-//!  * **No keyboard way out.** With the panel focused the terminal's key
-//!    path is not running, so no binding fires: up, down and Enter are
-//!    handled here and nothing else is. Leaving is a click on another tab.
-//!    (`dev-docs/windows/control-room.md` 2.1 has the plan: `ghostty_app_key`
-//!    and a closed table of tab bindings.)
-//!  * **No UI Automation provider.** A screen reader finds the tab and
-//!    nothing in it.
+//!  * **UI Automation reaches the rows and nothing else** (`uia.rs`): each
+//!    group is a list item with what it says and whether it is selected.
+//!    The headers, the time band and the right side are not in the tree,
+//!    and no event is raised when the selection or a row changes.
 //!  * **No soft shadows, and no refraction on the chip**: GDI has no blur.
 //!  * **The selection is kept for the life of the process only**, not across
 //!    a restart.
-//!  * **Which group is selected when it first opens** is whichever was
-//!    selected last, or none: "the first group with an agent in it" needs a
-//!    field the snapshot does not carry in this tree yet.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::Mutex;
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -49,7 +45,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use polter_control_room::act::{self, Dwell, SeenMarker};
 use polter_control_room::glyph::{self, Outline};
 use polter_control_room::layout::{self, ListLayout, Rect, Room};
-use polter_control_room::list::{self, List};
+use polter_control_room::list::{self, List, Selection};
 use polter_control_room::look::{self, selection, side, status, Rgba, Theme};
 use polter_control_room::pulse;
 use polter_control_room::scene::{self, Align, Face, Item, Part, Piece, Side, Style, View};
@@ -58,10 +54,45 @@ use polter_control_room::snapshot::Shown;
 use polter_split_tree::Rect as TreeRect;
 
 use crate::control_room_source::{self as source, Data};
-use crate::i18n::tr;
+use crate::i18n::{n_, tr};
 use crate::{plogf, wlogf};
 
 const CLASS: PCWSTR = w!("PolterControlRoom");
+
+// **Every sentence the control room says, written out once more so the
+// translation template can find them.** The words live in
+// `polter_control_room` (`scene::msg`, `list::msg`, `rules::msg`) and reach
+// `tr` as values, and the template is made by reading *this* directory for
+// string literals inside `tr(…)` and `n_(…)` (`src/build/GhosttyI18n.zig`):
+// a sentence that is a literal only in another crate is never extracted, and
+// then is English on every machine with nothing to say why. A test in that
+// crate (`rules::tests`) reads this file and fails when one of its sentences
+// is not here.
+const _: &[&str] = &[
+    n_("Control Room"),
+    n_("Polter — Control Room"),
+    n_("Polter"),
+    n_("{} groups waiting for you"),
+    n_("{} groups need nothing from you"),
+    // TRANSLATORS: the unit after a number of minutes, as short as it goes.
+    n_("min"),
+    n_("Kept you waiting today"),
+    // TRANSLATORS: {} is a number of minutes.
+    n_("{} min"),
+    // TRANSLATORS: the right-hand end of a time axis.
+    n_("now"),
+    // TRANSLATORS: {} is a technical reason, not translated.
+    n_("The control room's data could not be read ({})."),
+    n_("Nothing has been worked out yet."),
+    n_("Select a group on the left."),
+    n_("This group has no supervisor."),
+    n_("The supervisor's terminal is in its own tab."),
+    n_("Go to Its Tab"),
+    // TRANSLATORS: {} is how many other terminals of the group are waiting.
+    n_("{} more"),
+    // TRANSLATORS: {} is another group's name.
+    n_("Same supervisor: see {}"),
+];
 
 /// The chip's slide: one frame every 16 ms while it is in the air.
 const TIMER_SLIDE: usize = 1;
@@ -84,18 +115,98 @@ struct State {
     slide: Option<Slide>,
     seen: SeenMarker,
     dwell: Option<Dwell>,
+    /// Which group is selected and whose choice that was
+    /// (`list::Selection` has the whole rule).
+    selection: Selection,
+    /// An Alt chord was just performed here, so the `WM_SYSCHAR` that
+    /// follows it is not an unknown menu mnemonic to beep at.
+    swallow_syschar: bool,
+}
+
+/// One row as a UI Automation client is told about it.
+///
+/// **Owned, and behind a lock rather than in the `thread_local` above**:
+/// a provider is called on UI Automation's own thread, where this window's
+/// state does not exist. The list is rewritten at the end of every paint,
+/// so what a client reads is what is on screen.
+#[derive(Clone)]
+pub struct UiaRow {
+    /// The group's name, which is its identity -- never its place.
+    pub group: String,
+    /// What the row says when read out (`scene::spoken`).
+    pub name: String,
+    pub selected: bool,
+    /// In the panel's client pixels: left, top, right, bottom.
+    pub rect: (i32, i32, i32, i32),
+}
+
+static UIA_ROWS: Mutex<Vec<UiaRow>> = Mutex::new(Vec::new());
+/// The panel's window, for a provider's thread; 0 when there is none.
+static PANEL: AtomicIsize = AtomicIsize::new(0);
+/// The group a client asked to have selected, on its way to the window's
+/// thread.
+static UIA_SELECT: Mutex<Option<String>> = Mutex::new(None);
+
+/// Posted to the panel when `UIA_SELECT` has something in it.
+const WM_ROOM_SELECT: u32 = WM_APP + 61;
+
+/// The rows as they were last painted. Safe from any thread.
+pub fn uia_rows() -> Vec<UiaRow> {
+    UIA_ROWS.lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+/// Where a group's row was last painted, in the panel's client pixels;
+/// none for a group that is not listed. **The one place a client's
+/// rectangle comes from**: it is the rectangle the paint drew the row in.
+pub fn uia_row_rect(group: &str) -> Option<RECT> {
+    let rows = UIA_ROWS.lock().ok()?;
+    let r = rows.iter().find(|r| r.group == group)?;
+    Some(RECT { left: r.rect.0, top: r.rect.1, right: r.rect.2, bottom: r.rect.3 })
+}
+
+/// The groups listed just before and just after `group`, by name. Found by
+/// walking the list for the group itself, never by adding to a position:
+/// the list is re-sent whenever anything changes, and a position is only
+/// right for the list it was taken from.
+pub fn uia_neighbours(group: &str) -> Option<(Option<String>, Option<String>)> {
+    let rows = UIA_ROWS.lock().ok()?;
+    let mut before: Option<&UiaRow> = None;
+    let mut it = rows.iter();
+    while let Some(row) = it.next() {
+        if row.group == group {
+            return Some((before.map(|r| r.group.clone()), it.next().map(|r| r.group.clone())));
+        }
+        before = Some(row);
+    }
+    None
+}
+
+/// Select a group for a UI Automation client. Safe from any thread: the
+/// selecting happens on the window's own, by a posted message. False when
+/// there is no panel to tell.
+pub fn uia_select(group: &str) -> bool {
+    let panel = PANEL.load(Ordering::Acquire);
+    if panel == 0 {
+        return false;
+    }
+    if let Ok(mut pending) = UIA_SELECT.lock() {
+        *pending = Some(group.to_string());
+    }
+    unsafe { PostMessageW(Some(HWND(panel as *mut c_void)), WM_ROOM_SELECT, WPARAM(0), LPARAM(0)) }.is_ok()
 }
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
-    /// The selected group, by name. **Outside `State` on purpose**: closing
-    /// the control room's tab destroys the panel, and opening it again
-    /// should find the same group selected.
-    static SELECTION: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// The group the person last selected, by name. **Outside `State` on
+    /// purpose**: closing the control room's tab destroys the panel, and
+    /// opening it again should find the same group selected. A selection
+    /// the core made for them is not kept: a control room reopened with no
+    /// choice of the person's own starts on the core's group again.
+    static KEPT: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 fn selection() -> Option<String> {
-    SELECTION.with(|s| s.borrow().clone())
+    STATE.with(|s| s.borrow().as_ref().and_then(|st| st.selection.current().map(str::to_string)))
 }
 
 fn panel() -> Option<HWND> {
@@ -146,13 +257,22 @@ pub fn create(frame: HWND, hinst: HINSTANCE, bounds: TreeRect) -> Option<HWND> {
                 return None;
             }
         };
+        PANEL.store(hwnd.0 as isize, Ordering::Release);
+        let kept = KEPT.with(|k| k.borrow().clone());
         STATE.with(|s| {
-            *s.borrow_mut() =
-                Some(State { hwnd: hwnd.0 as isize, slide: None, seen: SeenMarker::default(), dwell: None })
+            *s.borrow_mut() = Some(State {
+                hwnd: hwnd.0 as isize,
+                slide: None,
+                seen: SeenMarker::default(),
+                dwell: None,
+                selection: Selection::opened(kept),
+                swallow_syschar: false,
+            })
         });
-        // A group that went away while the control room was closed must not
-        // leave a selection pointing at nothing.
-        reconcile_selection();
+        // The snapshot there already is, if there is one, is this control
+        // room's first: a group that went away while it was closed is
+        // dropped, and with nothing selected it starts where the core says.
+        take_snapshot();
         arm_seen(hwnd);
         Some(hwnd)
     }
@@ -169,7 +289,7 @@ pub fn destroy(hwnd: HWND) {
 /// A new snapshot is in `control_room_source`.
 pub fn snapshot_changed() {
     let Some(hwnd) = panel() else { return };
-    reconcile_selection();
+    take_snapshot();
     // A row that has just become unseen while it sits selected is worth a
     // wait of its own -- but never by cutting short one already running.
     let waiting = STATE.with(|s| s.borrow().as_ref().is_some_and(|st| st.dwell.is_some()));
@@ -191,16 +311,18 @@ pub fn tick() {
     }
 }
 
-/// Drop a selection the list no longer has.
-fn reconcile_selection() {
-    let kept = selection();
-    let now = source::with(|data| match data {
-        Data::Ready(r) => list::restored_selection(&r.list, kept.as_deref()).map(str::to_string),
-        // Nothing to check it against: keep it until there is.
-        Data::NotYet => kept.clone(),
-        Data::Unreadable(_) => kept.clone(),
+/// Tell the selection about the snapshot there is now. With none that can
+/// be read there is nothing to check it against, and it stands.
+fn take_snapshot() {
+    source::with(|data| match data {
+        Data::Ready(r) => STATE.with(|s| {
+            if let Some(st) = s.borrow_mut().as_mut() {
+                st.selection.snapshot(&r.list, r.snapshot.open_on.as_deref());
+            }
+        }),
+        Data::NotYet => {}
+        Data::Unreadable(_) => {}
     });
-    SELECTION.with(|s| *s.borrow_mut() = now);
 }
 
 // ------------------------------------------------------------------ geometry
@@ -264,7 +386,13 @@ fn select(hwnd: HWND, id: Option<String>) {
         Data::NotYet => None,
         Data::Unreadable(_) => None,
     });
-    SELECTION.with(|s| *s.borrow_mut() = id.clone());
+    // The person's own choice, and what a reopened control room starts on.
+    KEPT.with(|k| *k.borrow_mut() = id.clone());
+    STATE.with(|s| {
+        if let Some(st) = s.borrow_mut().as_mut() {
+            st.selection.choose(id.clone());
+        }
+    });
     let slides = match ends {
         Some((Some(from), Some(to))) if source::animations_on() => Some(Slide { from, to, started: std::time::Instant::now() }),
         _ => None,
@@ -290,7 +418,11 @@ fn select(hwnd: HWND, id: Option<String>) {
 /// Tell the marker what is selected now, and start its wait if it asks for
 /// one.
 fn arm_seen(hwnd: HWND) {
-    let selected = selection();
+    // A group the core selected for the person is on screen and is not a
+    // look: the marker is told nothing is selected until they choose it.
+    let selected = STATE
+        .with(|s| s.borrow().as_ref().and_then(|st| st.selection.is_a_look().then(|| st.selection.current().map(str::to_string))))
+        .flatten();
     let dwell = source::with(|data| {
         let row = match data {
             Data::Ready(r) => selected.as_deref().and_then(|id| r.list.row(id)),
@@ -372,6 +504,30 @@ fn point(lp: LPARAM) -> (i32, i32) {
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_ERASEBKGND => LRESULT(1),
+        // The panel draws its rows itself and has no child windows, so the
+        // default provider has nothing to list: a client would find the
+        // window and no rows in it.
+        WM_GETOBJECT => match crate::uia::on_get_object_control_room(hwnd, wp, lp) {
+            Some(r) => r,
+            None => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+        },
+        WM_ROOM_SELECT => {
+            let wanted = UIA_SELECT.lock().ok().and_then(|mut p| p.take());
+            // Only a group that is listed now: the client's list may be a
+            // snapshot old.
+            let listed = wanted.filter(|g| {
+                source::with(|data| match data {
+                    Data::Ready(r) => r.list.row(g).is_some(),
+                    Data::NotYet => false,
+                    Data::Unreadable(_) => false,
+                })
+            });
+            match listed {
+                Some(group) => select(hwnd, Some(group)),
+                None => wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] a UI Automation client asked for a group that is not listed; nothing selected"),
+            }
+            LRESULT(0)
+        }
         WM_PAINT => {
             paint(hwnd);
             LRESULT(0)
@@ -411,6 +567,34 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             if key == VK_RETURN.0 {
                 go_to_supervisor(hwnd);
+                return LRESULT(0);
+            }
+            // Not the list's: a binding, perhaps (`control_room_keys.rs`).
+            if crate::control_room_keys::handle(hwnd, wp, lp) {
+                return LRESULT(0);
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        }
+        // A key with Alt held arrives as this, and the default bindings for
+        // "go to tab N" are Alt chords. **One not performed goes on to
+        // `DefWindowProcW`**: Alt+F4 and the window menu live there.
+        WM_SYSKEYDOWN => {
+            if crate::control_room_keys::handle(hwnd, wp, lp) {
+                STATE.with(|s| {
+                    if let Some(st) = s.borrow_mut().as_mut() {
+                        st.swallow_syschar = true;
+                    }
+                });
+                return LRESULT(0);
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        }
+        // The character half of an Alt chord this window just performed.
+        // Left to `DefWindowProcW` it is an unknown menu mnemonic, and that
+        // is a beep.
+        WM_SYSCHAR => {
+            let swallow = STATE.with(|s| s.borrow_mut().as_mut().is_some_and(|st| std::mem::take(&mut st.swallow_syschar)));
+            if swallow {
                 return LRESULT(0);
             }
             unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
@@ -463,6 +647,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     *st = None;
                 }
             });
+            // A client holding a row of a panel that is gone is told it is
+            // gone, not handed the last list.
+            let _ = PANEL.compare_exchange(hwnd.0 as isize, 0, Ordering::AcqRel, Ordering::Acquire);
+            if let Ok(mut rows) = UIA_ROWS.lock() {
+                rows.clear();
+            }
             // process-wide: the panel is one per process
             plogf!("[control-room] panel destroyed");
             LRESULT(0)
@@ -595,6 +785,17 @@ fn paint(hwnd: HWND) {
 
         // The list panel.
         let at = Px { scale: g.scale, ox: (g.room.panel.x * g.scale).round() as i32, oy: (g.room.panel.y * g.scale).round() as i32 };
+        // With no list to draw there are no rows to tell a client about.
+        let readable = source::with(|data| match data {
+            Data::Ready(_) => true,
+            Data::NotYet => false,
+            Data::Unreadable(_) => false,
+        });
+        if !readable {
+            if let Ok(mut rows) = UIA_ROWS.lock() {
+                rows.clear();
+            }
+        }
         let (items, right) = source::with(|data| match data {
             Data::Ready(r) => {
                 let list: &List = &r.list;
@@ -604,6 +805,23 @@ fn paint(hwnd: HWND) {
                 let pulsing = pulse::pulsing_row(&r.snapshot.pulses, window.as_deref(), None);
                 let view = View { theme, scale: g.scale, selection: selected.as_deref(), chip, lift, pulsing };
                 let row = selected.as_deref().and_then(|id| list.row(id));
+                // What a UI Automation client is told, from the same list and
+                // the same layout this paint draws.
+                let spoken: Vec<UiaRow> = list
+                    .rows()
+                    .filter_map(|r| {
+                        let rc = at.rect(lay.chip(Some(&r.id))?);
+                        Some(UiaRow {
+                            group: r.id.clone(),
+                            name: scene::spoken(r, &translate),
+                            selected: selected.as_deref() == Some(r.id.as_str()),
+                            rect: (rc.left, rc.top, rc.right, rc.bottom),
+                        })
+                    })
+                    .collect();
+                if let Ok(mut rows) = UIA_ROWS.lock() {
+                    *rows = spoken;
+                }
                 (
                     scene::build(list, &lay, &view, &translate),
                     scene::build_right(row, g.room.right.w, g.room.right.h, theme, g.scale, &translate),

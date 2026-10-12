@@ -102,10 +102,34 @@ enum Enable {
 }
 
 fn row_enabled(r: &Row) -> bool {
-    match r.enabled {
+    let by_state = match r.enabled {
         Enable::Yes => true,
         Enable::No => false,
         Enable::WhenReopenable => crate::reopen::can_reopen(),
+    };
+    by_state && offered_in_front(r)
+}
+
+/// Whether the row can be done with the tab that is in front.
+///
+/// **With the control room's tab in front there is no terminal**, and a row
+/// that acts on one used to stay lit and do nothing when chosen -- the
+/// binding was asked for on a null surface and came back false. Greyed is
+/// the true thing to show: "this exists, not now". Which rows those are is
+/// `polter_control_room::rules::menu_row_offered`; nothing is decided here.
+fn offered_in_front(r: &Row) -> bool {
+    use polter_control_room::rules::{self, Kind};
+    let Some(action) = r.action else {
+        // A submenu or a separator: its rows answer for themselves.
+        return true;
+    };
+    match crate::tabs::front_kind(crate::tabs::overlay_frame()) {
+        Some(Kind::ControlRoom) => rules::menu_row_offered(
+            action,
+            crate::keys::is_host_action(action),
+            !crate::tabs::any_surface().is_null(),
+        ),
+        Some(Kind::Terminal) | None => true,
     }
 }
 

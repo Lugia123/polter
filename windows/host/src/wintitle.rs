@@ -46,6 +46,10 @@ struct Entry {
     program: String,
     /// What the person called this window, if they did.
     over: Option<String>,
+    /// The control room's window title while its tab is the one in front of
+    /// this window. It names the window over both of the others; the rule
+    /// is `polter_control_room::rules::caption`.
+    room: Option<String>,
 }
 
 static TITLES: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
@@ -58,11 +62,13 @@ static TITLES: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 fn resolve(frame: isize) -> Option<String> {
     let g = TITLES.lock().ok()?;
     let e = g.iter().find(|e| e.frame == frame)?;
-    match &e.over {
-        Some(t) => Some(t.clone()),
-        None if !e.program.is_empty() => Some(e.program.clone()),
-        None => None,
+    // A window nothing has named yet keeps the caption it was made with --
+    // unless the control room has been in front of it, when "nothing" has to
+    // be painted too (see `set_control_room`).
+    if e.room.is_none() && e.over.is_none() && e.program.is_empty() {
+        return None;
     }
+    Some(polter_control_room::rules::caption(e.room.as_deref(), e.over.as_deref(), &e.program).to_string())
 }
 
 /// Put `text` on the frame's caption.
@@ -87,7 +93,7 @@ fn store_then_paint(frame: HWND, edit: impl FnOnce(&mut Entry)) {
         match g.iter_mut().find(|e| e.frame == key) {
             Some(e) => edit(e),
             None => {
-                let mut e = Entry { frame: key, program: String::new(), over: None };
+                let mut e = Entry { frame: key, program: String::new(), over: None, room: None };
                 edit(&mut e);
                 g.push(e);
             }
@@ -139,6 +145,32 @@ pub fn set_override(frame: HWND, title: &str) -> bool {
             true
         }
     }
+}
+
+/// The control room's tab came to the front of this window (`Some`, its
+/// window title) or left it (`None`).
+///
+/// **Called from every layout, and it does nothing unless that changed** --
+/// a layout is the one place every tab switch passes through, and most
+/// layouts are not one.
+pub fn set_control_room(frame: HWND, title: Option<String>) {
+    let key = frame.0 as isize;
+    let changed = {
+        let Ok(g) = TITLES.lock() else { return };
+        g.iter().find(|e| e.frame == key).map(|e| e.room.clone()).unwrap_or(None) != title
+    };
+    if !changed {
+        return;
+    }
+    let leaving = title.is_none();
+    store_then_paint(frame, |e| e.room = title);
+    if leaving && resolve(key).is_none() {
+        // Nothing in this window has named itself, so there is nothing for
+        // `store_then_paint` to paint -- and the caption would go on saying
+        // "Control Room" over a terminal.
+        paint(frame, polter_control_room::rules::caption(None, None, ""));
+    }
+    wlogf!(frame, "[title] control room {} the front of this window", if leaving { "left" } else { "came to" });
 }
 
 /// This window is gone.

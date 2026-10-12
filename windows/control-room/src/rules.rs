@@ -79,6 +79,47 @@ pub fn can_be_renamed(kind: Kind) -> bool {
 pub mod msg {
     pub const TAB_TITLE: &str = "Control Room";
     pub const WINDOW_TITLE: &str = "Polter — Control Room";
+    /// What a window says before any program in it has named itself.
+    pub const NO_TITLE: &str = "Polter";
+}
+
+/// What a window's caption says. `room` is the control room's window title
+/// when its tab is the one in front, `over` a title somebody set for the
+/// window, `program` what the program in it last announced (empty for
+/// nothing yet).
+///
+/// The control room in front names the window whatever else was set: the
+/// other two are about a terminal, and it is not the one being looked at.
+/// They come back the moment another tab is in front -- and a window that
+/// has nothing to come back to says the product's name, never the control
+/// room's left behind.
+pub fn caption<'a>(room: Option<&'a str>, over: Option<&'a str>, program: &'a str) -> &'a str {
+    if let Some(room) = room {
+        return room;
+    }
+    if let Some(over) = over {
+        return over;
+    }
+    if program.is_empty() {
+        msg::NO_TITLE
+    } else {
+        program
+    }
+}
+
+/// Rows of the host's own menus (`__polter_*`) that act on the terminal tab
+/// in front and so are greyed on the control room's.
+pub const HOST_ROWS_ON_A_TERMINAL: &[&str] = &["__polter_save_project"];
+
+/// Whether a menu row can be chosen with the control room's tab in front.
+/// `host_row` is a row the host performs itself (its action starts
+/// `__polter_`); the rest are the core's bindings, which `reach` sorts.
+pub fn menu_row_offered(action: &str, host_row: bool, any_terminal: bool) -> bool {
+    if host_row {
+        !HOST_ROWS_ON_A_TERMINAL.contains(&action)
+    } else {
+        crate::reach::offered(action, any_terminal)
+    }
 }
 
 #[cfg(test)]
@@ -95,6 +136,70 @@ mod tests {
     fn two_already_open_is_never_answered_with_a_third() {
         for open in 1..5 {
             assert_eq!(trigger(open), Trigger::Select, "with {open} open");
+        }
+    }
+
+    #[test]
+    fn the_control_room_in_front_names_the_window_and_gives_the_name_back() {
+        let room = Some(msg::WINDOW_TITLE);
+        assert_eq!(caption(room, None, ""), msg::WINDOW_TITLE);
+        assert_eq!(caption(room, Some("mine"), "vim"), msg::WINDOW_TITLE);
+        // Another tab in front: what was there before, in its old order.
+        assert_eq!(caption(None, Some("mine"), "vim"), "mine");
+        assert_eq!(caption(None, None, "vim"), "vim");
+        // Nothing to come back to is the product's name, not the room's.
+        assert_eq!(caption(None, None, ""), "Polter");
+        assert_ne!(msg::TAB_TITLE, msg::WINDOW_TITLE);
+    }
+
+    #[test]
+    fn on_the_control_room_a_menu_row_is_offered_only_if_it_can_be_done_there() {
+        // The host's own rows, bar the one that saves the terminal tab in front.
+        assert!(menu_row_offered("__polter_settings", true, false));
+        assert!(menu_row_offered("__polter_load_project", true, false));
+        assert!(!menu_row_offered("__polter_save_project", true, true));
+        // The core's: a tab action yes, an app action with a terminal
+        // somewhere, a terminal's own never.
+        assert!(menu_row_offered("new_tab", false, false));
+        assert!(menu_row_offered("quit", false, true));
+        assert!(!menu_row_offered("quit", false, false));
+        assert!(!menu_row_offered("copy_to_clipboard", false, true));
+        assert!(!menu_row_offered("new_split:right", false, true));
+    }
+
+    /// The sentences in a source's `pub mod msg { … }`.
+    fn sentences(src: &str) -> Vec<String> {
+        let Some(start) = src.find("pub mod msg {") else { return Vec::new() };
+        let body = &src[start..];
+        let end = body.find("\n}").unwrap_or(body.len());
+        body[..end]
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim();
+                let rest = l.strip_prefix("pub const ")?;
+                let value = rest.split_once("&str = \"")?.1;
+                Some(value.strip_suffix("\";")?.to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_sentence_the_control_room_says_is_where_the_translation_template_reads() {
+        // The template is made from string literals in `windows/host/src`
+        // (`src/build/GhosttyI18n.zig`). These sentences are literals here
+        // and values there, so the host repeats each one inside `n_(…)`.
+        let host = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../host/src/control_room.rs"));
+        let mut all = Vec::new();
+        for src in [include_str!("rules.rs"), include_str!("scene.rs"), include_str!("list.rs")] {
+            all.extend(sentences(src));
+        }
+        // A reader that stopped matching would find nothing to miss.
+        assert!(all.len() >= 16, "only {} sentences were read: {all:?}", all.len());
+        assert!(all.contains(&msg::TAB_TITLE.to_string()));
+        assert!(all.contains(&crate::scene::msg::GO_TO_ITS_TAB.to_string()));
+        assert!(all.contains(&crate::list::msg::OTHERS.to_string()));
+        for sentence in all {
+            assert!(host.contains(&format!("n_(\"{sentence}\")")), "not marked for translation in the host: {sentence:?}");
         }
     }
 

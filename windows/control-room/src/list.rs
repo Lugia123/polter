@@ -172,6 +172,64 @@ pub fn opening_selection<'a>(
     }
 }
 
+/// Which group is selected, and whether the person chose it: the whole life
+/// of a control room's selection, so that a host holds one of these and
+/// decides nothing.
+///
+/// It is made when the control room opens, told about every snapshot, and
+/// told when the person selects a row. A selection the core made for them
+/// (`open_on`) is drawn like any other and is **not a look**: it does not
+/// start the wait that marks a group seen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selection {
+    current: Option<String>,
+    persons: bool,
+    /// No snapshot has been seen since this was opened.
+    opening: bool,
+}
+
+impl Selection {
+    /// A control room that has just opened. `kept` is what was selected the
+    /// last time one was open, if anything: that was the person's choice
+    /// and still is.
+    pub fn opened(kept: Option<String>) -> Selection {
+        Selection { persons: kept.is_some(), current: kept, opening: true }
+    }
+
+    /// A snapshot has arrived. A selection whose group is no longer listed
+    /// is dropped; then, for the first snapshot since opening and only with
+    /// nothing selected, the core's `open_on` is taken.
+    pub fn snapshot(&mut self, list: &List, open_on: Option<&str>) {
+        let kept = restored_selection(list, self.current.as_deref()).map(str::to_string);
+        if kept.is_none() {
+            // Whatever is selected next, the person has not chosen it yet.
+            self.persons = false;
+        }
+        let (now, persons) = opening_selection(kept.as_deref(), self.opening, open_on);
+        // The core names a group it lists; one it does not list is not
+        // selected, rather than left pointing at nothing.
+        let now = restored_selection(list, now).map(str::to_string);
+        self.persons = now.is_some() && persons && (kept.is_none() || self.persons);
+        self.current = now;
+        self.opening = false;
+    }
+
+    /// The person selected a row (a click, an arrow key), or cleared it.
+    pub fn choose(&mut self, id: Option<String>) {
+        self.persons = id.is_some();
+        self.current = id;
+    }
+
+    pub fn current(&self) -> Option<&str> {
+        self.current.as_deref()
+    }
+
+    /// Whether having this selected is the person looking at it.
+    pub fn is_a_look(&self) -> bool {
+        self.current.is_some() && self.persons
+    }
+}
+
 /// The selection to start with after a restart: the one that was kept, if
 /// that group is still listed. A group that went away overnight must not
 /// leave a selection pointing at nothing.

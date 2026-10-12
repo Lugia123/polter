@@ -534,3 +534,81 @@ fn a_rows_supervisor_is_the_one_the_core_named() {
     assert_ne!(without, FIXTURE);
     assert!(matches!(snapshot::decode(&without), Err(DecodeError::Field(f)) if f.ends_with(".steward")));
 }
+
+// -- the selection's life -----------------------------------------------------------
+
+#[test]
+fn a_control_room_that_opens_with_nothing_selected_starts_on_the_cores_group_and_that_is_not_a_look() {
+    let s = snapshot::decode(FIXTURE).unwrap();
+    let l = List::from_snapshot(&s);
+    let mut sel = list::Selection::opened(None);
+    assert_eq!(sel.current(), None);
+    sel.snapshot(&l, s.open_on.as_deref());
+    assert_eq!(sel.current(), Some("web-app"));
+    assert!(!sel.is_a_look());
+    // The person selecting that same row makes it one.
+    sel.choose(Some("web-app".into()));
+    assert!(sel.is_a_look());
+}
+
+#[test]
+fn only_the_first_snapshot_after_opening_selects_for_the_person() {
+    let s = snapshot::decode(FIXTURE).unwrap();
+    let l = List::from_snapshot(&s);
+    let mut sel = list::Selection::opened(None);
+    sel.snapshot(&l, None);
+    assert_eq!(sel.current(), None);
+    // A later snapshot that does name a group is too late.
+    sel.snapshot(&l, s.open_on.as_deref());
+    assert_eq!(sel.current(), None);
+    // And clearing the selection later does not bring the core's back.
+    let mut sel = list::Selection::opened(None);
+    sel.snapshot(&l, s.open_on.as_deref());
+    sel.choose(None);
+    sel.snapshot(&l, s.open_on.as_deref());
+    assert_eq!(sel.current(), None);
+}
+
+#[test]
+fn what_was_selected_before_stands_and_is_still_the_persons() {
+    let s = snapshot::decode(FIXTURE).unwrap();
+    let l = List::from_snapshot(&s);
+    let mut sel = list::Selection::opened(Some("billing".into()));
+    assert!(sel.is_a_look());
+    sel.snapshot(&l, s.open_on.as_deref());
+    assert_eq!(sel.current(), Some("billing"));
+    assert!(sel.is_a_look());
+    sel.snapshot(&l, s.open_on.as_deref());
+    assert_eq!(sel.current(), Some("billing"));
+}
+
+#[test]
+fn a_selection_whose_group_went_away_is_dropped_and_what_replaces_it_is_not_a_look() {
+    let s = snapshot::decode(FIXTURE).unwrap();
+    let l = List::from_snapshot(&s);
+    // Kept from last time, gone since: the opening snapshot takes the core's.
+    let mut sel = list::Selection::opened(Some("gone-overnight".into()));
+    sel.snapshot(&l, s.open_on.as_deref());
+    assert_eq!(sel.current(), Some("web-app"));
+    assert!(!sel.is_a_look());
+    // Selected by the person, then the group goes while it is open: nothing.
+    let mut sel = list::Selection::opened(None);
+    sel.snapshot(&l, None);
+    sel.choose(Some("billing".into()));
+    let mut fewer = l.clone();
+    fewer.waiting.retain(|r| r.id != "billing");
+    fewer.quiet.retain(|r| r.id != "billing");
+    sel.snapshot(&fewer, s.open_on.as_deref());
+    assert_eq!(sel.current(), None);
+    assert!(!sel.is_a_look());
+}
+
+#[test]
+fn a_group_the_core_names_but_does_not_list_is_not_selected() {
+    let s = snapshot::decode(FIXTURE).unwrap();
+    let l = List::from_snapshot(&s);
+    let mut sel = list::Selection::opened(None);
+    sel.snapshot(&l, Some("not-in-the-list"));
+    assert_eq!(sel.current(), None);
+    assert!(!sel.is_a_look());
+}

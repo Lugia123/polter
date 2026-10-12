@@ -102,6 +102,7 @@
 mod capture;
 mod close_scope;
 mod control_room;
+mod control_room_keys;
 mod control_room_source;
 mod ctxmenu;
 mod divider;
@@ -4955,11 +4956,53 @@ pub fn binding_on(surface: ffi::Surface, name: &str) -> bool {
 /// through the accelerator table is its own change. Written down here so the
 /// next reader sees an assumption instead of an answer.
 pub fn binding(name: &str) -> bool {
-    let s = tabs::active_surface(tabs::overlay_frame());
+    let frame = tabs::overlay_frame();
+    let s = tabs::active_surface(frame);
     if s.is_null() {
-        return false;
+        return binding_without_a_terminal(frame, name);
     }
     unsafe { (api().surface_binding_action)(s, name.as_ptr(), name.len()) }
+}
+
+/// A binding asked for while the window in front has no terminal in front:
+/// the control room's tab, or no tab at all.
+///
+/// **It used to be `return false`, without a word**, which is the right
+/// answer for exactly one of three kinds of action
+/// (`polter_control_room::reach` has the three and the tests):
+///
+///  * the host's own -- a tab, a window, the palette: done here;
+///  * the application's: any terminal there is performs it, and which one
+///    makes no difference;
+///  * a terminal's: refused, and now it says so.
+fn binding_without_a_terminal(frame: HWND, name: &str) -> bool {
+    use polter_control_room::reach::{self, Needs};
+    if frame.0.is_null() {
+        // process-wide: there is no window, so no window can be meant
+        plogf!("[action] binding {:?} asked for with no window; nothing done", name);
+        return false;
+    }
+    match reach::needs(name) {
+        Needs::Nothing(host) => {
+            wlogf!(frame, "[action] binding {:?} with no terminal in front -> the host's own: {:?}", name, host);
+            tabs::perform_hosted(frame, host, "a binding with no terminal in front");
+            true
+        }
+        Needs::AnyTerminal => {
+            let any = tabs::any_surface();
+            if any.is_null() {
+                wlogf!(frame, "[action] binding {:?} with no terminal in front: app-scoped, but the application has no terminal to perform it on; nothing done", name);
+                return false;
+            }
+            let ok = unsafe { (api().surface_binding_action)(any, name.as_ptr(), name.len()) };
+            wlogf!(frame, "[action] binding {:?} with no terminal in front: app-scoped, performed on another terminal -> {}", name, ok);
+            ok
+        }
+        Needs::Terminal => {
+            wlogf!(frame, "[action] binding {:?} refused: it acts on the terminal in front, and the tab in front has none", name);
+            false
+        }
+    }
 }
 
 // ------------------------------------------------------------- gl probe
@@ -5240,6 +5283,7 @@ fn load_api() -> Option<Api> {
             surface_poltergeist_id: sym!(internal, "ghostty_surface_poltergeist_id"),
             app_control_snapshot: sym!(internal, "ghostty_app_control_snapshot"),
             app_control_act: sym!(internal, "ghostty_app_control_act"),
+            app_key: sym!(internal, "ghostty_app_key"),
             surface_persona_launch: sym!(internal, "ghostty_surface_persona_launch"),
             app_plugin_list: sym!(internal, "ghostty_app_plugin_list"),
             app_plugin_test: sym!(internal, "ghostty_app_plugin_test"),

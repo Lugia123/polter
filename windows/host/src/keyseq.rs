@@ -130,6 +130,12 @@ pub(crate) fn mods_label(mods: i32) -> String {
     s
 }
 
+/// A physical key's name as `ghostty.h` has it, without the prefix
+/// (`DIGIT_1`, `TAB`, `T`); none for an ordinal the header does not have.
+pub(crate) fn key_name(key: u32) -> Option<&'static str> {
+    key_names().get(key as usize).map(String::as_str)
+}
+
 pub(crate) fn key_label(tag: i32, key: u32) -> String {
     if tag == TRIGGER_UNICODE {
         return char::from_u32(key)

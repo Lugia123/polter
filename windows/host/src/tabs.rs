@@ -2339,6 +2339,18 @@ pub fn layout(frame: HWND) {
         let _ = InvalidateRect(Some(frame), None, false);
     }
 
+    // The window's caption follows the control room in and out of the
+    // front. From here for the dividers' reason just below: every way a tab
+    // comes to the front ends in a layout.
+    crate::wintitle::set_control_room(
+        frame,
+        match room {
+            Some((_, Some(_))) => Some(tr(rules::msg::WINDOW_TITLE)),
+            Some((_, None)) => None,
+            None => None,
+        },
+    );
+
     // **The dividers follow the panes, from here and nowhere else.**
     //
     // This was originally hooked to the frame's `WM_SIZE`, which is one of
@@ -4597,6 +4609,54 @@ fn move_tab_to_new_window(
         left
     );
     true
+}
+
+/// Any terminal's surface in the application, null when there is none. For
+/// an app-scoped action, which any of them performs alike.
+// window-free: any terminal in the process will do; that is the point
+pub fn any_surface() -> Surface {
+    let found = with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes().iter())
+            .map(|p| p.surface)
+            .find(|s| *s != 0)
+    });
+    match found {
+        Some(s) => s as Surface,
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Do one of the host's own actions on `frame`: what a key, a menu row or a
+/// palette entry asks for when there is no terminal in front to ask the
+/// core through (`polter_control_room::reach`).
+///
+/// **On the window's thread.** Each arm goes where the same action from a
+/// terminal ends up: the tab ops through the queue, closing through the
+/// paths that ask.
+pub fn perform_hosted(frame: HWND, what: polter_control_room::reach::Host, from: &'static str) {
+    use polter_control_room::reach::Host;
+    match what {
+        Host::GotoTab(n) => post_op(frame, Op::GotoTab(n.min(i32::MAX as u32) as i32), from),
+        Host::LastTab => post_op(frame, Op::GotoTab(GOTO_TAB_LAST), from),
+        Host::NextTab => post_op(frame, Op::GotoTab(GOTO_TAB_NEXT), from),
+        Host::PreviousTab => post_op(frame, Op::GotoTab(GOTO_TAB_PREVIOUS), from),
+        Host::NewTab => post_op(frame, Op::NewTab(None), from),
+        // The tab in front, asking first if anything in it would be lost --
+        // for the control room's own tab nothing would.
+        Host::CloseTab => {
+            crate::winid::close_requested(frame, crate::winid::CloseVia::Menu);
+            close_tab_mode_asking(frame, CLOSE_TAB_THIS);
+        }
+        // The window's own close, so it asks exactly as its X does.
+        Host::CloseWindow => unsafe {
+            let _ = PostMessageW(Some(frame), WM_CLOSE, WPARAM(0), LPARAM(0));
+        },
+        Host::NewWindow => post_op(frame, Op::NewWindow, from),
+        Host::CommandPalette => crate::palette::request_toggle(Some(frame)),
+        Host::ControlRoom => post_op(frame, Op::ToggleControlRoom, from),
+    }
 }
 
 /// Every control-room tab in the application, as `(frame, tab)`.

@@ -1722,6 +1722,10 @@ pub struct Api {
     /// has been worked out yet. App thread only; asked for when
     /// `ACTION_CONTROL_ROOM_CHANGED` arrives and at no other time.
     pub app_control_snapshot: unsafe extern "C" fn(App, *mut u8, usize) -> usize,
+    /// `ghostty_app_key(app, event)`: a key with no terminal to send it to.
+    /// The core performs the binding when it is app-scoped (or global) and
+    /// answers true; a surface-scoped one is left alone and answers false.
+    pub app_key: unsafe extern "C" fn(App, KeyEvent) -> bool,
     /// `ghostty_app_control_act(app, json, len, err, cap)`: something the
     /// person did in the control room. False with the refusal's name in
     /// `err` when it was not done. App thread only.

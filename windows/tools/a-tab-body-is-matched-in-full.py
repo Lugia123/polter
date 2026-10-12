@@ -38,9 +38,9 @@ removed.
   * `Kind` in a file that reaches it some way other than naming
     `polter_control_room::rules` (a re-export, an alias). The settings pages
     have enums of their own called `Kind`, so the name alone cannot be read.
-  * A wildcard nested inside a tuple or `Some(..)` pattern alongside a variant
-    of another enum. The arms are read as text, at the top level of the
-    `match` only.
+  * A wildcard nested inside a tuple pattern, or inside anything deeper than
+    `Some(_)`. The arms are read as text, at the top level of the `match`
+    only; a bare `_` and `Some(_)` are the two spellings that are caught.
 
 `probe self-test` plants each offender in a scratch source and checks it is
 caught, and that the shapes the host actually uses are not.
@@ -79,7 +79,9 @@ def rules_for(code):
     return variant, forbidden
 
 
-WILDCARD = re.compile(r"(?:^|[,}\n])\s*_\s*(?:=>|if\b)")
+# A bare `_`, or `Some(_)`: over an `Option<Kind>` that second one takes every
+# kind there will ever be, exactly as the first does over a `Kind`.
+WILDCARD = re.compile(r"(?:^|[,}\n|])\s*(?:_|Some\(\s*_\s*\))\s*(?:=>|if\b|\|)")
 FIELDS = ("tree", "panes", "focused")
 
 # Below this the reading is not believable: the host matches a tab's kind in
@@ -231,6 +233,10 @@ def self_test():
         ("a wildcard arm after a block arm",
          GOOD + "fn f(t:&Tab){ match t.kind() {\n Kind::Terminal => { a(); }\n _ => {}\n } }\n", 1),
         ("a guarded wildcard", GOOD + "fn f(t:&Tab){ match t.kind() { Kind::Terminal => 1, _ if x => 2, Kind::ControlRoom => 3 } }\n", 1),
+        ("Some(_) over an optional kind",
+         GOOD + "fn f(){ match tabs::front_kind(frame) {\n Some(Kind::ControlRoom) => {}\n Some(_) => {}\n None => {}\n } }\n", 1),
+        ("Some(_) as one side of an or-pattern",
+         GOOD + "fn f(){ match tabs::front_kind(frame) { Some(Kind::ControlRoom) => {}, Some(_) | None => {} } }\n", 1),
         ("if let", GOOD + "fn f(t:&Tab){ if let Body::Terminal(x) = &t.body { } }\n", 1),
         ("while let", GOOD + "fn f(t:&Tab){ while let Front::Pane(p) = t.front() { } }\n", 1),
         ("matches!", GOOD + "fn f(t:&Tab)->bool{ matches!(t.kind(), Kind::Terminal) }\n", 1),

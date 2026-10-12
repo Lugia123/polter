@@ -77,7 +77,7 @@ pub struct RoomTab  { pub hwnd: isize }   // 面板的子窗口；全应用至�
 | `tab.kind()` → `Kind::Terminal` / `Kind::ControlRoom` | 要按种类分开走的（关闭、改名、搬窗口、UIA、菜单） | 调用处 match，两支都写 |
 
 `Body`、`Front`、`Kind` 在宿主里一律穷举 match。`windows/tools/a-tab-body-is-matched-in-full.py` 读
-`windows/host/src/*.rs`：对这三个类型不许出现 `_ =>`、`if let`、`while let`、`matches!`、`let … else`，
+`windows/host/src/*.rs`：对这三个类型不许出现 `_ =>`、`Some(_) =>`、`if let`、`while let`、`matches!`、`let … else`，
 `Tab` 上也不许再出现 `tree` / `panes` / `focused` 字段。以后加第三种标签页时，每一处都是编译错误，
 编译器点名。
 
@@ -194,6 +194,51 @@ mac 的做法是「终端不离开它所在标签页的分屏树，搬的只是�
 | ④ | 鼠标把标签页拖出 / 拖进（所有标签页）；右栏真终端的跨窗口情形 | 手势的状态机（放进 crate） | 全部 |
 | ⑤ | 动画收尾（明暗、转圈、晃动的定时器与「不动时不醒」）、高对比度、右栏的任务 / 群聊 / 统计页签 | 定时器开关的规则 | 帧率、唤醒次数 |
 
+### 2.5 没有终端在前面时还能做什么：三类动作，和键盘的那张封闭的表
+
+键到的是拿着键盘的那个窗口，绑定由核心在那个终端上执行。总控台的面板不是终端，所以不管的话，它在前面时
+配置里绑的每个键都是死的；菜单行和命令面板的条目也一样，它们同样是「在前面那个终端上执行」。
+
+规则全在 `polter_control_room::reach`（在 mac 上测），宿主只问和转交。一个动作按名字分三类：
+
+| 类 | 是哪些 | 宿主怎么做 |
+|---|---|---|
+| **宿主自己的** | 封闭的一张单子（下表） | 不经终端，直接走宿主已有的入口（`tabs::perform_hosted`） |
+| **应用的** | 核心划给应用的那些：`quit`、`open_config`、`reload_config`、`close_all_windows`、`check_for_updates`、`toggle_quick_terminal`、`toggle_visibility`、`screenshot`、`undo`、`redo`…… 一条测试读 `Binding.zig` 的 `Action.scope`，这份单子和它不是同一个集合就红 | 键：交给 `ghostty_app_key`，核心自己比对、自己执行。菜单 / 命令面板：借应用里任意一个终端执行（哪个都一样）；一个终端都没有时置灰 |
+| **终端的** | 其余全部：复制、粘贴、分屏、搜索、字号、监管开关…… | 键不响应；菜单置灰；命令面板里选了就打一行拒绝（以前是安静地返回 false） |
+
+**宿主自己的那张单子，以及键盘上问配置的是哪几个**（`reach::Host` 与 `reach::KEYED`）：
+
+| 动作 | 宿主做什么 | 键盘问配置吗 |
+|---|---|---|
+| `goto_tab:1` … `goto_tab:8` | 切到第 N 个标签页（超过就是最后一个） | 问 |
+| `last_tab`、`next_tab`、`previous_tab` | 切标签页 | 问 |
+| `new_tab` | 开一个终端标签页 | 问 |
+| `close_tab` / `close_tab:this` | 关前面这个标签页（就是总控台自己，不问） | 问 |
+| `close_window` | 走窗口自己的关闭，问法和点叉一样 | 问 |
+| `toggle_command_palette` | 开命令面板 | 问 |
+| `new_window`、`poltergeist_toggle_control_room` | 开新窗口；去总控台（已经在前面，等于不动） | 不问：这两个是应用级的，`ghostty_app_key` 先一步处理了。留在单子里是给菜单和命令面板用的 |
+
+**为什么是这些**：都是「标签栏是干什么的」那几件事，每一件宿主都已有不需要终端的入口。**为什么没有那些**：
+
+- `close_tab:other` / `close_tab:right`：要逐个问别的标签页里的终端，留给终端标签页去做。
+- `move_tab`、`move_tab_to_new_window`、`toggle_tab_overview`：各有自己的规则还没写（一个没有终端的标签页挪到哪、
+  概览里它是什么）。`move_tab_to_new_window` 在右键菜单里是有的。
+- 一切关于终端的：没有终端。
+- `keys.rs` 的加速键表（四行）**没有动**：它只在终端有焦点时跑，那四行又都是分屏和最大化。
+
+**键是怎么对上的。** 核心只在 surface 上把键对到绑定（`ghostty_surface_key`），而在那里执行还会把没绑定的键
+**打进那个终端**，所以不能借一个终端来问。于是宿主问配置「这个动作现在绑的是什么」，自己比。比法是核心
+`Binding.Set.getEvent` 的前三步：先按物理键位加修饰键，再按不带修饰打出来的字符加修饰键，修饰键要正好相等。
+物理键位用的码表不是抄的：`reach` 直接读核心的 `src/input/keycodes.zig`（Windows 那一列）。每次按键都重新问
+配置、不缓存，所以改绑以后立刻跟着走。
+
+**对不上的（已知）**：键序列和键表里的绑定、`catch_all`、带参数的动作的 `performable` 绑定（带参数的动作只能
+用反查，而反查表里没有它们）；带参数的动作一个动作只认一个键（不带参数的认它的每一个键）。
+
+**Alt 和弦**：默认的「切到第 N 个」是 `Alt+数字`，到的是 `WM_SYSKEYDOWN`。面板执行了就吞掉随后的 `WM_SYSCHAR`
+（不然是一声「咚」）；没执行的原样交给 `DefWindowProcW`，`Alt+F4` 和系统菜单在那里。
+
 ## 3. 用什么画
 
 **GDI，和宿主其它界面一样；不引入 Direct2D，不用 WebView2。**
@@ -292,10 +337,10 @@ mac 上能验的只有 `polter-control-room` 的测试、两道闸和交叉编�
 11. 任务栏数字出现、归零时消失。
 12. 测试机是 Server 2022：没有显卡驱动时走的软件渲染对左栏没有影响（它不用 OpenGL），但要确认。
 
-## 10. 第一块做成了什么、没做什么，和 Windows 真机验证清单
+## 10. 做成了什么、没做什么，和 Windows 真机验证清单
 
-**没有一条在 Windows 上跑过。** 在 mac 上验到的是：逻辑 crate 的测试、变异体、两套闸、宿主交叉编译与
-Debug 构建链接成功。凡是要窗口的都算没验。
+**没有一条在 Windows 上跑过。** 在 mac 上验到的是：逻辑 crate 的测试、变异体、两套闸、核心那三条读宿主
+源码的测试、宿主交叉编译与 Debug 构建链接成功。凡是要窗口的都算没验。
 
 做成的（代码在）：
 
@@ -308,58 +353,81 @@ Debug 构建链接成功。凡是要窗口的都算没验。
 - 标签栏：每个终端标签页右端的状态图形与明暗（`pulse::tab_status` / `draws_on_window_tab`）。
 - 选中停留即已看（`act::SeenMarker`）。
 - 动画的钟只在画面上有会动的东西时存在（明暗、转圈），没有时自己停。
+- **默认选中**（第二块）：打开后的第一份快照、且没有选中时，选核心给的 `open_on`；已有选中不换；自动选中的
+  不算人看过，不开始「已看」的计时，直到人自己选它（`list::Selection`）。人选过的那个在关掉再开时还在。
+- **键盘出口**（第二块）：§2.5。焦点在面板上时，面板自己的键（上、下、回车）之外，先交 `ghostty_app_key`，
+  再比那张封闭的表（`control_room_keys.rs`）。
+- **菜单置灰**（第二块）：总控台在前面时，需要终端的行置灰（`rules::menu_row_offered`）；宿主自己的照常；
+  应用级的借任意一个终端执行。`main.rs` 的 `binding` 在没有终端在前时不再安静地返回 false：三类各有一行日志。
+- **窗口标题**（第二块）：总控台在前面时是「Polter — Control Room」（译过的），换到别的标签页还回去；没有可还的
+  就是「Polter」（`rules::caption`）。标签上只写名字。
+- **UIA**（第二块）：面板有自己的提供者——一个列表，每个群一个列表项，名字是这一行说的话（群名、状态的字、
+  停因、等了几分钟、还有几个），`SelectionItem` 给出是否选中并可选中。按群名认行，不按位置。
 
 没做的：
 
 | 没做 | 现状 | 归哪一块 |
 |---|---|---|
-| 焦点在总控台上时的键盘出口 | 只有上、下、回车；别的键（切标签页、关标签页、命令面板、总控台开关）都不响应，离开要用鼠标点别的标签页 | ② |
-| 需要终端的菜单项置灰 | 没做：在总控台标签页上点「复制」「分屏」等菜单项是安静地什么都不发生（`binding` 对空 surface 返回 false）；分屏类经队列到达的会打一行拒绝 | ② |
-| 面板的 UIA 提供者 | 读屏软件读到一个有名字、没有内容的标签页 | ② |
-| 打开时默认选中第一个有 AI 的群 | 没接：这棵树的快照里没有那个字段（核心那边在加 `open_on`）。现在是上次选中的那个，没有就不选 | 等核心字段合过来 |
-| 选中跨重启保留 | 只在进程存活期间记着 | ② |
-| 窗口标题「Polter — 总控台」 | 没改窗口标题 | ② |
+| 中文 | 每一句界面文字都已在宿主里用 `n_(…)` 标了（`control_room.rs` 顶上那张表，逻辑 crate 的一条测试保证不漏），**翻译模板能提取了，但我没有跑 `zig build update-translations`，也没有手改 `po/`**：那一步会重写全部 37 个目录，而且会把 `po/` 里手加的旁支 crate 条目（`windows/settings-shell/…` 那批）移进废弃块——生成步骤只扫 `windows/host/src`。所以 Windows 上这些句子现在仍显示英文 | 要总管定怎么跑 |
+| UIA 的其余部分 | 两段的标题、时间带、右栏和它的按钮不在树里；选中或行变化时不发事件（客户端再问一次能读到，等通知的等不到） | ⑤ |
+| 键盘上对不上的 | 键序列 / 键表里的绑定、`catch_all`、带参数动作的 `performable` 绑定；`close_tab:other`、`move_tab` 等不在表里（§2.5） | 有需要再加 |
+| 选中跨重启保留 | 只在进程存活期间记着 | ⑤ |
 | 投影、选中片的折射 | 没有：GDI 没有模糊 | ⑤ |
 | 出问题图形进入时晃一次 | 没有 | ⑤ |
 | 配置里指定窗口主题时跟配置 | 只读系统的亮暗设置；系统切换后要等下一次重画（点一下、或有新快照） | ⑤ |
-| 中文 | 新加的句子（「Control Room」、两段标题、右栏三句等）不在 `po/` 里，显示英文 | 要有人往 `po/` 里加 |
-| 任务栏数字、高对比度、右栏真终端、鼠标拖出 | 没做 | ②③④⑤ |
+| 任务栏数字、高对比度、右栏真终端、鼠标拖出 | 没做 | ③④⑤ |
 
 与 mac 画出来不一样、已知的：第一行里群名（15）与分钟数（20）是各自在行高里上下居中，mac 是按基线对齐；
 大的圆角矩形（面板、右栏的框）用 GDI 自带的圆角，没有抗锯齿，小的（选中片、图形、时间段）有。
 
 **真机验证清单（16 步）。** 读数默认取宿主日志里的行（引号里是要找的字）；★ 要一个在等批准的终端，
-造法同 mac 清单（在被测实例的窗格里跑 `polter +hook --cli claude-code PermissionRequest`）。
+造法同 mac 清单（在被测实例的窗格里跑 `polter +hook --cli claude-code PermissionRequest`）。键位写的是
+默认绑定。
 
-1. Agents 菜单 → Control Room。读：`[control-room] opened as` 一行，末尾是 `tab 1 of N`；
-   `control room ->` 一行的宽高等于内容区；UIA 树第一个 TabItem 的名字是 Control Room。
-2. 切到一个终端标签页，再点一次那个菜单项。读：`already open as … went to it`；状态行里标签页数没变；
-   没有 `BUG:` 开头的 `[control-room]` 行。
-3. 开第二个窗口，在它里面点那个菜单项。读：同上一行，且第一个窗口到了前台；两个窗口的状态行里
-   `room=1` 只有一处，另一处是 `room=0`。
-4. 建两个以上的群。读：每次变化一行 `fetch #N: rev R`；截图里行的顺序、两段标题里的数与同一时刻
-   `group_list` 一致。
-5. 没有群在等、没有群在干活时静置 60 秒。读：这 60 秒里没有新的 `fetch #` 行；`animation clock stopped`
-   之后没有 `started`。
-6. ★ 让终端甲等批准。读：`fetch #` 只多 1 行；截图里甲的标签页右端有气泡，总控台标签页右端没有图形。
-7. ★ 再让乙等批准，停在第三个标签页。读：`animation clock started`；隔 0.6 秒截三张，只有一个图形的
-   亮度在变；切到那个标签页后换成另一个在变。
-8. 系统设置里关掉动画效果后重做第 7 步。读：没有 `animation clock started`；三张截图相同。
-9. 点一行，再按上、下键。读：每次一行 `selected Some("…")`；截图里亮片就在那一行；按到头不越界。
-10. 让一个群做完一轮没看：选中它停 2 秒；另选一个再快速路过它；选中它后把别的程序切到前台 3 秒。
-    读：依次是 `seen sent for`、没有 `seen sent`、`seen not sent … in_front=false`。
-11. 选中有总管的群，点「Go to Its Tab」（再做一次：按回车）。读：`go to supervisor … -> true`，
-    `[tab] active ->` 是总管的标签页，不点鼠标直接打字字出现。选中没有总管的群：右栏是一句话，没有按钮。
-12. 总控台在前面时：点标签栏的 `+`；右键总控台标签页；双击它。读：`new_tab, queued directly` 并多一个
-    终端标签页；`[tabmenu] shown … items=4`；`that tab is not renamed`，没有输入框出现。
-13. 点总控台标签页的叉；再从菜单开回来。读：没有确认框，`is the control room; destroying its panel`、
-    `panel destroyed`；开回来后选中的还是原来那一行。另：一个终端里跑着程序时关整个窗口，确认框只出一次。
-14. 右键总控台标签页 → Move Tab to New Window。读：`moved … out to w2; N tab(s) left here`；新窗口只有
-    它且画面正常；在新窗口点 `+` 出终端；关掉只含它的窗口不问；回原窗口再开，出现在第一位。
-15. 100% / 125% / 150% / 200% 各起一次干净的进程，亮、暗各截一张。读：量最小的字不小于同一缩放下菜单
-    的字；0.5 的线是 1 像素（100% 下颜色淡一半）；行里的字左缘在一条竖线上；图形边缘没有锯齿。
-16. 总控台在前面时读键盘焦点（`GetGUIThreadInfo` 的 `hwndFocus`）。读：是类名 `PolterControlRoom` 的窗口，
-    日志里有 `the control room's panel taking focus`。然后切到终端标签页用中文输入法打一个词：组字正常。
+1. Agents 菜单 → Control Room。读：`[control-room] opened as` 一行，末尾是 `tab 1 of N`；`control room ->`
+   的宽高等于内容区；`[title] control room came to the front`，窗口标题（`GetWindowText`）是
+   Polter — Control Room，标签上是 Control Room。
+2. 切到终端标签页再点一次那个菜单项；再开第二个窗口在里面点。读：`already open as … went to it`（第二次
+   第一个窗口到了前台）；两个窗口的状态行里 `room=1` 只有一处；没有 `BUG:` 开头的 `[control-room]` 行。
+3. 干净的进程，先建一个有 agent 的群，再第一次打开总控台，什么都不点等 3 秒，然后点那一行。读：亮片在
+   核心 `open_on` 的那一行（截图），这期间**没有** `selected` 行、**没有** `seen sent`；点了以后才有 `selected`，
+   它是做完没看的群时 1.5 秒后有 `seen sent for`。
+4. 建两个以上的群，再静置 60 秒（没有群在等、没有群在干活）。读：每次变化一行 `fetch #N: rev R`；截图里
+   行的顺序、两段标题里的数与同一时刻 `group_list` 一致；静置期间没有新的 `fetch #`，
+   `animation clock stopped` 之后没有 `started`。
+5. ★ 让终端甲等批准，再让乙等批准并停在第三个标签页。读：甲那次 `fetch #` 只多 1 行，甲的标签页右端有
+   气泡、总控台标签页没有图形；两个都等时 `animation clock started`，隔 0.6 秒截三张只有一个图形的亮度在变。
+6. 系统设置里关掉动画效果后重做第 5 步的后半。读：没有 `animation clock started`；三张截图相同。
+7. 点一行，按上、下键；再对一个做完没看的群：选中停 2 秒、另选一个再快速路过它、选中后把别的程序切到
+   前台 3 秒。读：每次一行 `selected Some("…")`，亮片在那一行，按到头不越界；后三种依次是 `seen sent for`、
+   没有 `seen sent`、`seen not sent … in_front=false`。
+8. 选中有总管的群，点「Go to Its Tab」（再做一次：按回车）。读：`go to supervisor … -> true`，
+   `[tab] active ->` 是总管的标签页，不点鼠标直接打字字出现。选中没有总管的群：右栏是一句话，没有按钮。
+9. 焦点在总控台上（`GetGUIThreadInfo` 的 `hwndFocus` 是类名 `PolterControlRoom` 的窗口），依次按：Ctrl+Tab、
+   （点回总控台）Alt+2、Alt+1、Ctrl+Shift+T、（点回）Ctrl+Shift+P 再 Esc、总控台的开关键、Ctrl+Shift+C、
+   Alt+空格、最后 Ctrl+Shift+W。读：各一行 `[control-room] key … -> NextTab` / `GotoTab(2)` / `GotoTab(1)` /
+   `NewTab` / `CommandPalette` / `app_key=true` / `not a binding the control room answers` /（系统菜单出现）/
+   `CloseTab`，前几个后面跟着对应的 `[tab] active ->`。**人听**：Alt+数字没有「咚」的一声。
+10. 配置里加 `keybind = ctrl+n=new_tab` 并重载，焦点在总控台上按 Ctrl+N。读：`-> NewTab`。删掉那一行重载后
+    再按：`not a binding the control room answers`。
+11. 总控台在前面时打开 `≡` 菜单。读（截图）：复制、粘贴、各分屏项、「Save as Project…」是灰的；New Tab、
+    New Window、Settings、Control Room 是亮的；`[menu] built … N greyed` 那行的 N 比终端在前时大。点 New Tab：
+    `binding "new_tab" with no terminal in front -> the host's own: NewTab`。点重载配置：
+    `app-scoped, performed on another terminal -> true`。命令面板里选「Copy to Clipboard」：
+    `refused: it acts on the terminal in front`。
+12. 从总控台切到一个终端标签页再切回。读：`[title] control room left the front`，标题变回那个窗口原来的
+    （程序报过标题就是它，没报过是 Polter）；切回是 `came to` 和 Polter — Control Room。
+13. 总控台在前面：点标签栏的 `+`；右键它；双击它；点它的叉；再从菜单开回来。读：`new_tab, queued directly`；
+    `[tabmenu] shown … items=4`；`that tab is not renamed`，没有输入框；没有确认框，
+    `is the control room; destroying its panel`、`panel destroyed`；开回来选中的还是人上次选的那一行。
+14. 右键总控台标签页 → Move Tab to New Window。读：`moved … out to w2; N tab(s) left here`；新窗口只有它且
+    画面正常、标题对；在新窗口点 `+` 出终端；关掉只含它的窗口不问；回原窗口再开，出现在第一位。
+15. 100% / 125% / 150% / 200% 各起一次干净的进程，亮、暗各截一张。读：量最小的字不小于同一缩放下菜单的字；
+    0.5 的线是 1 像素（100% 下颜色淡一半）；行里的字左缘在一条竖线上；图形边缘没有锯齿。
+16. 总控台在前面时取 UIA 树（`windows/tools/uia-tree-dump.ps1`）。读：面板下有一个名为 Control room groups 的
+    List，每个群一个 ListItem，Name 是那一行的字（群名、状态的字、停因、分钟），`IsSelected` 为真的只有
+    选中的那一个；对另一项调 `Select`：日志出 `selected Some("…")`，亮片过去。然后切到终端标签页用中文
+    输入法打一个词：组字正常。
 
 ## 已经有的
 
@@ -369,12 +437,13 @@ Debug 构建链接成功。凡是要窗口的都算没验。
 |---|---|
 | `look` | 外观表（生成的） |
 | `snapshot` | 读核心的快照；未知的图形是错误，不画成空白；不读核心的类别 |
-| `list` | 两段、每行说什么、选中怎么移动、重启后的选中 |
+| `list` | 两段、每行说什么、选中怎么移动、重启后的选中；选中的一生（`Selection`：谁选的、算不算看过） |
 | `layout` | 面板里每样东西在哪；时间带的每一段；选中片的弹簧 |
 | `pulse` | 哪个等你的图形在明暗；一个窗口标签页带哪个图形、画不画（「在干活」按外观表的暂定项不画） |
 | `act` | 用户动作编成请求；每种拒绝说什么 |
-| `rules` | 总控台的标签页：全应用一个、开在哪、关它问不问、记不记进重开单、能不能改名；编号写成快照的写法 |
-| `scene` | 面板画的每一样东西：矩形、字（字体、字重、颜色）、图形，宿主照着画 |
+| `rules` | 总控台的标签页：全应用一个、开在哪、关它问不问、记不记进重开单、能不能改名；编号写成快照的写法；窗口标题听谁的；菜单行在它上面出不出 |
+| `reach` | 没有终端在前面时一个动作归哪一类；按下的键是那张封闭的表里的哪一个（§2.5） |
+| `scene` | 面板画的每一样东西：矩形、字（字体、字重、颜色）、图形，宿主照着画；一行被读出来时说什么 |
 | `glyph` | 四个状态图形在 14 单位画板上的形状 |
 
 两道闸（仓根 `tools/`）：

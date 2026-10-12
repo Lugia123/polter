@@ -387,6 +387,44 @@ fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View, tr: &dyn
     });
 }
 
+/// What a row says when it is read out rather than looked at: the group,
+/// which of the four it is, what it waits on, how long, and how many others
+/// -- the same things the row draws, in the order it draws them, with the
+/// glyph's meaning carried by the status word beside it.
+pub fn spoken(row: &Row, tr: &dyn Fn(&str) -> String) -> String {
+    let mut parts = vec![row.id.clone()];
+    if !row.word.is_empty() {
+        parts.push(row.word.clone());
+    }
+    let detail = match &row.detail {
+        Detail::Reason(text) => text.clone(),
+        Detail::SameAs(other) => list::fill(&tr(list::msg::SAME_SUPERVISOR), other),
+    };
+    if !detail.is_empty() {
+        parts.push(detail);
+    }
+    if let Some(minutes) = row.waited_min {
+        parts.push(list::fill(&tr(msg::BAND_TOTAL), &minutes.to_string()));
+    }
+    if let Some((template, n)) = list::others(row.others) {
+        parts.push(list::fill(&tr(template), &n));
+    }
+    parts.join(", ")
+}
+
+/// A number that stands for a group's name where an interface wants a
+/// number for identity (a UI Automation runtime id). The name is the
+/// identity; this is FNV-1a over it, so the same group is the same number
+/// in every snapshot and its place in the list never is.
+pub fn stable_id(name: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in name.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 /// Whether anything in a scene moves while nothing changes: a glyph that
 /// breathes, or the spinner. A host keeps a clock running only while this
 /// is so, and otherwise is not woken at all.
@@ -712,6 +750,50 @@ mod tests {
         };
         assert_eq!(colour_of(Some(&row.id)), Some(dark.problem_text_on_row_selected));
         assert_ne!(dark.problem_text_on_row_selected, dark.problem_text_on_row);
+    }
+
+    #[test]
+    fn a_row_read_out_says_what_the_row_draws() {
+        let l = list();
+        for row in l.rows() {
+            let said = spoken(row, &same);
+            assert!(said.starts_with(&row.id), "{said}");
+            if !row.word.is_empty() {
+                assert!(said.contains(&row.word), "{said} leaves out the status word {:?}", row.word);
+            }
+            if let Detail::Reason(text) = &row.detail {
+                assert!(said.contains(text.as_str()), "{said}");
+            }
+            if let Some(minutes) = row.waited_min {
+                assert!(said.contains(&format!("{minutes} min")), "{said}");
+            }
+            if row.others > 0 {
+                assert!(said.contains(&format!("{} more", row.others)), "{said}");
+            }
+            assert!(!said.contains(", ,") && !said.ends_with(", "), "{said}");
+        }
+        // Two rows are never read out the same.
+        let all: Vec<String> = l.rows().map(|r| spoken(r, &same)).collect();
+        for i in 0..all.len() {
+            for j in i + 1..all.len() {
+                assert_ne!(all[i], all[j]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_group_is_the_same_number_wherever_it_is_listed_and_two_groups_are_two() {
+        let l = list();
+        assert_eq!(stable_id("web-app"), stable_id("web-app"));
+        let ids: Vec<u64> = l.rows().map(|r| stable_id(&r.id)).collect();
+        for i in 0..ids.len() {
+            for j in i + 1..ids.len() {
+                assert_ne!(ids[i], ids[j]);
+            }
+        }
+        // FNV-1a's own published value, so the function is the one it says.
+        assert_eq!(stable_id(""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(stable_id("a"), 0xaf63_dc4c_8601_ec8c);
     }
 
     #[test]
