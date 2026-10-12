@@ -451,7 +451,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         _ ghostty: Ghostty.App,
         from parent: NSWindow? = nil,
         withBaseConfig baseConfig: Ghostty.SurfaceConfiguration? = nil,
-        inFront: Bool = true
+        inFront: Bool = true,
+        activates: Bool = true
     ) -> TerminalController? {
         // Making sure that we're dealing with a TerminalController. If not,
         // then we just create a new window.
@@ -553,8 +554,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             }
 
             // We also activate our app so that it becomes front. This may be
-            // necessary for the dock menu.
-            NSApp.activate(ignoringOtherApps: true)
+            // necessary for the dock menu. Not for a tab an agent asked for
+            // while the app is behind another (`ControlRoomRules.newTabActivates`).
+            if activates {
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
 
         // It takes an event loop cycle until the macOS tabGroup state becomes

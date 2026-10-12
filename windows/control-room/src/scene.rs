@@ -167,6 +167,9 @@ pub fn place_line(left: i32, right: i32, parts: &[(Side, i32, i32)]) -> Vec<Opti
 pub enum Piece {
     Words { text: String, style: Style },
     Glyph { shown: Shown, color: Rgba, size: f64, pulses: bool },
+    /// The glyph of a terminal the person is holding (`glyph::held`): not a
+    /// status, never moving, and only in a pane's title.
+    Held { color: Rgba, size: f64 },
 }
 
 /// One part of a line. A host measures the words; that is the one thing
@@ -659,6 +662,7 @@ pub fn all_text(items: &[Item]) -> Vec<&str> {
                     match &part.piece {
                         Piece::Words { text, .. } => out.push(text.as_str()),
                         Piece::Glyph { .. } => {}
+                        Piece::Held { .. } => {}
                     }
                 }
             }
@@ -676,6 +680,7 @@ pub fn moves(items: &[Item]) -> bool {
         Item::Line { parts, .. } => parts.iter().any(|p| match &p.piece {
             Piece::Glyph { shown, pulses, .. } => *pulses || *shown == Shown::Working,
             Piece::Words { .. } => false,
+            Piece::Held { .. } => false,
         }),
         Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => false,
     })
@@ -1173,6 +1178,7 @@ mod tests {
             Item::Line { parts, .. } => parts.iter().any(|p| match &p.piece {
                 Piece::Glyph { .. } => true,
                 Piece::Words { .. } => false,
+                Piece::Held { .. } => false,
             }),
             Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => false,
         }

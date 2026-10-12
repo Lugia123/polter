@@ -291,39 +291,51 @@ struct ControlRoomListTests {
         #expect(other == [])
     }
 
-    @Test func theBarOverTheRightSideSaysSupervisorOnlyOfASupervisor() {
-        let title = ControlRoomList.SupervisorTitle(name: "zsh", shown: .needsYou, word: "等批准")
-        var row = ControlRoomList.Row(
-            id: "terminal:0x1", shown: .needsYou, word: "等批准", waiter: .init(is: .terminal, name: ""),
-            what: .none, others: 0, pulses: false, supervisor: title,
-            alone: .init(terminal: "0x1", title: "zsh", pane: .plain))
-        // An ordinary agent on its own: its name, and no title to hang the
-        // word "Supervisor" on.
-        let plain = ControlRoomList.detailBar(row: row, selection: row.id, holdsTerminal: true, title: title)
-        #expect(plain.title == nil)
-        #expect(plain.caption == "zsh")
-        row.alone?.pane = .worker
-        let worker = ControlRoomList.detailBar(row: row, selection: row.id, holdsTerminal: true, title: title)
-        #expect(worker.title == nil)
-        // A supervisor that has made no group is one.
-        row.alone?.pane = .supervisor
-        let supervisor = ControlRoomList.detailBar(row: row, selection: row.id, holdsTerminal: true, title: title)
-        #expect(supervisor.title == title)
-        #expect(supervisor.caption == nil)
-        // A group's row is as it was: the title with a terminal, the
-        // group's name with a sentence.
-        row.alone = nil
-        row.id = "web-app"
-        let group = ControlRoomList.detailBar(row: row, selection: "web-app", holdsTerminal: true, title: title)
-        #expect(group.title == title)
-        let sentence = ControlRoomList.detailBar(row: row, selection: "web-app", holdsTerminal: false, title: nil)
-        #expect(sentence.title == nil)
-        #expect(sentence.caption == "web-app")
-        // A lone row with a sentence is named by its title, never its id.
-        row.alone = .init(terminal: "0x1", title: "zsh", pane: .plain)
-        row.id = "terminal:0x1"
-        let closed = ControlRoomList.detailBar(row: row, selection: row.id, holdsTerminal: false, title: nil)
-        #expect(closed.caption == "zsh")
+    @Test func theBarOverTheRightSideSaysWhatALoneTerminalIsAndNotAlwaysSupervisor() throws {
+        // The title a lone terminal's row carries says whose word follows
+        // its name: the frame its own pane wears, as the core says it.
+        var snapshot = try JSONDecoder().decode(ControlRoomSnapshot.self, from: Self.fixture())
+        let plainRow = try #require(ControlRoomList(snapshot: snapshot).rows.first { $0.alone != nil })
+        #expect(plainRow.supervisor == .init(name: "zsh — ~/work", shown: .needsYou, word: "等批准", says: .plain))
+        // An ordinary agent has no word after its name; a worker has its
+        // own; and neither is called a supervisor.
+        let noWord = PaneFrame.roleWord(.plain)
+        #expect(noWord == nil)
+        let workers = PaneFrame.roleWord(.worker)
+        let supervisors = PaneFrame.roleWord(.supervisor)
+        #expect(workers != nil && workers != supervisors)
+
+        // The core lists a terminal in no group as a worker somebody minds,
+        // or as a supervisor that has made no group: the title follows.
+        for kind in [ControlRoomSnapshot.Terminal.Pane.worker, .supervisor] {
+            let at = try #require(snapshot.terminals?.firstIndex { $0.id == "0x00000000000000c1" })
+            snapshot.terminals?[at].pane = kind
+            let row = try #require(ControlRoomList(snapshot: snapshot).rows.first { $0.alone != nil })
+            #expect(row.supervisor?.says == kind)
+            #expect(row.alone?.pane == kind)
+        }
+        // One the core does not list among its terminals is an ordinary one.
+        snapshot.terminals = []
+        let unlisted = try #require(ControlRoomList(snapshot: snapshot).rows.first { $0.alone != nil })
+        #expect(unlisted.supervisor?.says == .plain)
+
+        // A group's supervisor says nothing of its own: the frame's word stands.
+        let group = try #require(ControlRoomList(snapshot: snapshot).rows.first { $0.id == "web-app" })
+        let groupsTitle = try #require(group.supervisor)
+        #expect(groupsTitle.says == nil)
+
+        // With a terminal on the right the bar has the title, whatever the
+        // row is; with a sentence it has the row's name -- a lone
+        // terminal's title, never its id.
+        let title = try #require(plainRow.supervisor)
+        let holding = ControlRoomList.detailBar(row: plainRow, selection: plainRow.id, holdsTerminal: true, title: title)
+        #expect(holding.title == title)
+        #expect(holding.caption == nil)
+        let closed = ControlRoomList.detailBar(row: plainRow, selection: plainRow.id, holdsTerminal: false, title: nil)
+        #expect(closed.title == nil)
+        #expect(closed.caption == "zsh — ~/work")
+        let groups = ControlRoomList.detailBar(row: group, selection: "web-app", holdsTerminal: false, title: nil)
+        #expect(groups.caption == "web-app")
     }
 
     @Test func lookingAtALoneTerminalsRowMarksNothingSeen() {
@@ -385,9 +397,10 @@ struct ControlRoomListTests {
     @Test func aRowWithNobodyToNameOrNoStatusWordGivesTheNameTheRoom() {
         let nobody = ControlRoomLine1.fit(width: 322, gap: 8, name: 300, who: nil, word: 40)
         #expect(nobody == .init(name: 274, who: nil))
-        // No status word takes no room and no gap.
+        // No status word still keeps its gap: the Windows host's rule to
+        // the point, and a waiting row always has a word.
         let wordless = ControlRoomLine1.fit(width: 322, gap: 8, name: 400, who: nil, word: 0)
-        #expect(wordless == .init(name: 322, who: nil))
+        #expect(wordless == .init(name: 314, who: nil))
         // Nothing is ever a negative width.
         let tiny = ControlRoomLine1.fit(width: 30, gap: 8, name: 80, who: 50, word: 40)
         #expect(tiny == .init(name: 0, who: nil))

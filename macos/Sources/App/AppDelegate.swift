@@ -988,7 +988,12 @@ class AppDelegate: NSObject,
         // a regular terminal controller.
         guard parent.windowController is TerminalController else { return }
 
-        _ = TerminalController.newTab(ghostty, from: parent, withBaseConfig: config, inFront: inFront)
+        // An agent's tab does not pull the application in front of
+        // whatever the person is using; theirs does.
+        let answerWanted = notification.userInfo?[Ghostty.Notification.NewTabAnswerWantedKey] as? Bool ?? false
+        let activates = ControlRoomRules.newTabActivates(answerWanted: answerWanted, appIsActive: NSApp.isActive)
+        _ = TerminalController.newTab(
+            ghostty, from: parent, withBaseConfig: config, inFront: inFront, activates: activates)
     }
 
     private func setDockBadge() {

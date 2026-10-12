@@ -85,18 +85,13 @@ struct ControlRoomList: Equatable {
     /// "Supervisor", status) while it holds a group's supervisor, and
     /// otherwise one name and nothing more.
     ///
-    /// **A terminal with a row of its own is given the title only when the
-    /// core says its pane is a supervisor's.** The bar writes "Supervisor"
-    /// after every title it is handed, and a worker or an ordinary agent
-    /// under that word would be the control room saying something false;
-    /// so those get their name alone, and their status stays on the row.
-    /// 暂定: the bar should say what each is, which is a change to the
-    /// frame itself.
+    /// A terminal with a row of its own has a title like any other; what
+    /// follows its name is that terminal's own word -- "Worker", or nothing
+    /// for an ordinary agent -- because its title says so (`says`), not
+    /// because anything here looked at what it is.
     static func detailBar(row: Row?, selection: String?, holdsTerminal: Bool,
                           title: SupervisorTitle?) -> (title: SupervisorTitle?, caption: String?) {
-        let name = row?.name ?? selection
-        guard holdsTerminal else { return (nil, name) }
-        if let alone = row?.alone, alone.pane != .supervisor { return (nil, name) }
+        guard holdsTerminal else { return (nil, row?.name ?? selection) }
         return (title, nil)
     }
 
@@ -236,6 +231,11 @@ struct ControlRoomList: Equatable {
         var name: String
         var shown: Shown
         var word: String
+        /// Whose word follows the name on the bar, when it is not the
+        /// frame's own: the control room has one frame -- a supervisor's --
+        /// and shows in it a terminal that may be a worker or neither. Nil
+        /// for "what the frame is", which is every title but those.
+        var says: ControlRoomSnapshot.Terminal.Pane?
     }
 
     /// The terminal a row is about, and when. Both times are on the core's
@@ -416,6 +416,55 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         /// Absent in a snapshot from before the core said it; such a
         /// terminal is drawn as an ordinary one.
         var pane: Pane?
+
+        /// What the right end of its pane's title draws: the glyph and the
+        /// words, as the core worked them out (`ControlRoom.zig`, `Bar`).
+        /// **A host draws this pair and makes none of its own** out of
+        /// `shown`, `text` and whether the terminal is held: which of them
+        /// wins is the core's rule.
+        struct Bar: Decodable, Equatable {
+            /// The five a row draws, and `held`, which only a title does. A
+            /// value this does not know is an error, as with `shown`.
+            enum Shown: String, Decodable, Equatable, CaseIterable {
+                case needsYou = "needs_you"
+                case trouble
+                case doneUnseen = "done_unseen"
+                case working
+                case none
+                case held
+
+                /// The same glyph, for a status that is not a pane's.
+                init(_ status: ControlRoomList.Shown) {
+                    switch status {
+                    case .needsYou: self = .needsYou
+                    case .trouble: self = .trouble
+                    case .doneUnseen: self = .doneUnseen
+                    case .working: self = .working
+                    case .none: self = .none
+                    }
+                }
+
+                /// The status glyph this is; nil for `held`, which is not
+                /// one of the four.
+                var status: ControlRoomList.Shown? {
+                    switch self {
+                    case .needsYou: return .needsYou
+                    case .trouble: return .trouble
+                    case .doneUnseen: return .doneUnseen
+                    case .working: return .working
+                    case .none: return ControlRoomList.Shown.none
+                    case .held: return nil
+                    }
+                }
+            }
+
+            var shown: Shown
+            var text: String
+        }
+
+        /// Absent in a snapshot from before the core said it; the title
+        /// then says the terminal's status, as it did before.
+        var bar: Bar?
     }
 
     /// See `ControlRoomList.SupervisorStart`.
@@ -594,6 +643,11 @@ extension ControlRoomList {
     init(snapshot: ControlRoomSnapshot, showing: String? = nil) {
         let first = ControlRoomPulse.first(of: snapshot.pulses ?? [], notIn: showing)
         let breathing = first?.group
+        // Which frame a terminal's own pane wears, as the core says it for
+        // that terminal; plain for one it does not list.
+        func pane(of terminal: String) -> ControlRoomSnapshot.Terminal.Pane {
+            snapshot.terminals?.first { $0.id == terminal }?.pane ?? .plain
+        }
         // A terminal on its own, after the groups, in the section its own
         // `needs_me` says -- the same test a group's row is put by.
         let lone = (snapshot.ungrouped ?? []).map { one in
@@ -608,15 +662,14 @@ extension ControlRoomList {
                 // this row when that one is in no group and is this terminal.
                 pulses: first != nil && first?.group == nil && first?.terminal == one.id,
                 unseen: one.unseen ?? false,
-                supervisor: SupervisorTitle(name: one.title, shown: one.shown, word: one.text),
+                supervisor: SupervisorTitle(name: one.title, shown: one.shown, word: one.text, says: pane(of: one.id)),
                 target: one.attention.flatMap { attention in
                     attention.terminal.map {
                         Target(terminal: $0, sinceMs: attention.since_ms, eventMs: attention.event_ms)
                     }
                 },
                 start: nil,
-                alone: Alone(terminal: one.id, title: one.title,
-                             pane: snapshot.terminals?.first { $0.id == one.id }?.pane ?? .plain)))
+                alone: Alone(terminal: one.id, title: one.title, pane: pane(of: one.id))))
         }
         let groups = snapshot.groups.map { group in
             (group.needs_me, Row(
@@ -743,8 +796,10 @@ enum ControlRoomLine1 {
     /// Widths are what each would take alone on a line; `who` nil when
     /// there is nobody to name. `gap` is the space between two things.
     static func fit(width: Double, gap: Double, name: Double, who: Double?, word: Double) -> Fit {
-        // The status word and the gap before it come off the right.
-        let trail = width - (word > 0 ? word + gap : 0)
+        // The status word and the gap before it come off the right -- the
+        // gap whether or not there is a word, as the Windows host's
+        // `place_line` has it, so that the two are one rule to the point.
+        let trail = width - word - gap
         let drawnName = max(0, min(name, trail))
         guard let who, who > 0 else { return Fit(name: drawnName, who: nil) }
         // What the name wanted, not what it got: a name that is cut has

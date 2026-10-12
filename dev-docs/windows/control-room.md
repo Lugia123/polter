@@ -643,7 +643,11 @@ Windows 借出的那一格没有离开它的窗口，动作带着它的表面，
 16. 回归：左栏上下键、点行选中、「已看」那一行日志、Alt 组合键、放大缩小窗口、125% 下以上 2–8 步再走一遍；
     开着输入框时关掉总控台标签页、关窗口，不崩、无 `Application Error`。
 
-### 12.7 新增的可翻译字串（还没进 `po/`，合并后统一重出）
+### 12.7 新增的可翻译字串（已进 `po/`）
+
+**2026-10-13 在合并后的主线上重出过**：下面这批全部进了模板，`zh_CN` 都填了（照 mac 的 `zh-Hans`）。它们在
+源头本来就用 `n_` 标着、宿主画的时候走 `tr`，所以先前是英文只因为没进 `po/`，不是代码没包。其余语言没有译文，
+显示英文。
 
 `+ ` 后面的 `New Group`；`Starting the supervisor…`；`The supervisor did not start: its tab never opened.`；
 `The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why.`；

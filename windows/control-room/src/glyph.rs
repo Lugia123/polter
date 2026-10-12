@@ -39,6 +39,13 @@ fn cut(outline: Outline) -> Shape {
 /// The shapes of a glyph, in the order to fill them. `spin_step` is which
 /// of the spinner's lines is brightest (`pulse::spin_step`); the others
 /// ignore it. Nothing for `Shown::None`.
+/// The glyph of a terminal the person is holding: two bars, as the design
+/// draws them on the status glyphs' own artboard (`06-panes`). The macOS
+/// host's `PaneHeldGlyph` is the same two from the same numbers.
+pub fn held() -> Vec<Shape> {
+    vec![full(Outline::RoundRect(3.8, 3.0, 2.4, 8.0, 0.8)), full(Outline::RoundRect(7.8, 3.0, 2.4, 8.0, 0.8))]
+}
+
 pub fn shapes(shown: Shown, spin_step: usize) -> Vec<Shape> {
     let a = status::ARTBOARD;
     match shown {
