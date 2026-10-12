@@ -169,6 +169,13 @@ class SurfaceScrollView: NSView {
 
         // Fill entire bounds with scroll view
         scrollView.frame = bounds
+
+        // The surface view may have been taken by another scroll view: the
+        // control room borrows it, and the pane it came from is laid out
+        // once more before SwiftUI takes this view down. It is that other
+        // one's to size from then on; sizing it here would tell the
+        // terminal a size it is not drawn at.
+        guard surfaceView.superview === documentView else { return }
         surfaceView.frame.size = scrollView.bounds.size
 
         // We only set the width of the documentView here, as the height depends

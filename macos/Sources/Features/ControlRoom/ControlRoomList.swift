@@ -182,6 +182,9 @@ struct ControlRoomSnapshot: Decodable, Equatable {
 
     struct Group: Decodable, Equatable {
         var name: String
+        /// The terminal that is this group's supervisor, as the core names
+        /// it; nil when the group has none.
+        var steward: String?
         var needs_me: Bool
         /// Absent in snapshots from before the core said it.
         var unseen: Bool?

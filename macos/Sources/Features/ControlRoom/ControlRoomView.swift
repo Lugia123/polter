@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// The control room's tab: the group list on the left, and on the right the
-/// place the selected group's supervisor will go.
+/// selected group's supervisor -- its terminal, or a sentence saying why
+/// there is none.
 struct ControlRoomView: View {
     typealias Look = ControlRoomLook
 
@@ -19,8 +20,15 @@ struct ControlRoomView: View {
                 // No snapshot yet: the list's place, with nothing in it.
                 Color.clear.frame(width: CGFloat(Look.Side.width))
             }
-            DetailHost(container: detail)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ZStack {
+                // Always there, so the terminal's view is never rebuilt by
+                // a redraw of this one.
+                DetailHost(container: detail)
+                if model.detail.terminal == nil {
+                    ControlRoomDetailMessage(detail: model.detail, askFor: model.askForTerminal)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .padding(edge)
         .background(Look.theme(scheme).windowBase.color)

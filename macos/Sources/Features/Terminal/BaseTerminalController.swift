@@ -343,6 +343,9 @@ class BaseTerminalController: NSWindowController,
             focusedSurface = nil
         }
         syncSurfaceTreeOcclusionState()
+        // A terminal the control room has borrowed may just have lost its
+        // place here.
+        ControlRoomLender.shared.treesChanged()
     }
 
     /// Update all surfaces with the focus state. This ensures that libghostty has an accurate view about
@@ -350,6 +353,10 @@ class BaseTerminalController: NSWindowController,
     func syncFocusToSurfaceTree() {
         var newlyFocused: Ghostty.SurfaceView?
         for surfaceView in surfaceTree {
+            // A terminal lent to the control room has its view in that
+            // window, and the control room says whether it has the keyboard.
+            if ControlRoomLender.shared.isLent(surfaceView) { continue }
+
             // Our focus state requires that this window is key and our currently
             // focused surface is the surface in this view.
             let focused: Bool = (window?.isKeyWindow ?? false) &&
@@ -1274,6 +1281,10 @@ class BaseTerminalController: NSWindowController,
     func windowWillClose(_ notification: Notification) {
         guard let window else { return }
 
+        // If the control room has one of this window's terminals, it has
+        // nowhere to give it back to from here on.
+        ControlRoomLender.shared.windowClosing(self)
+
         for surfaceView in surfaceTree {
             cancelPendingClipboardConfirmation(for: surfaceView)
         }
@@ -1302,7 +1313,8 @@ class BaseTerminalController: NSWindowController,
         // If when we become key our first responder is the window itself, then we
         // want to move focus to our focused terminal surface. This works around
         // various weirdness with moving surfaces around.
-        if let window, window.firstResponder == window, let focusedSurface {
+        if let window, window.firstResponder == window, let focusedSurface,
+           !ControlRoomLender.shared.isLent(focusedSurface) {
             DispatchQueue.main.async {
                 Ghostty.moveFocus(to: focusedSurface)
             }
@@ -1328,6 +1340,8 @@ class BaseTerminalController: NSWindowController,
     private func syncSurfaceTreeOcclusionState() {
         let visible = self.window?.occlusionState.contains(.visible) ?? false
         for view in surfaceTree {
+            // Lent to the control room: it is seen there, not here.
+            if ControlRoomLender.shared.isLent(view) { continue }
             if let surface = view.surface, view.isWindowVisible != visible {
                 ghostty_surface_set_occlusion(surface, visible)
                 view.isWindowVisible = visible

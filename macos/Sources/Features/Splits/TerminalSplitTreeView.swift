@@ -94,11 +94,22 @@ private struct TerminalSplitLeaf: View {
     @State private var dropState: DropState = .idle
     @State private var isSelfDragging: Bool = false
 
+    /// Whether the control room has this pane's terminal just now.
+    @ObservedObject private var lender = ControlRoomLender.shared
+
     var body: some View {
         GeometryReader { geometry in
-            Ghostty.InspectableSurface(
-                surfaceView: surfaceView,
-                isSplit: isSplit)
+            Group {
+                if lender.lentID == surfaceView.id {
+                    // The view is on the control room's right-hand side;
+                    // the pane keeps its place in the tree.
+                    ControlRoomLentPlaceholder(surfaceView: surfaceView)
+                } else {
+                    Ghostty.InspectableSurface(
+                        surfaceView: surfaceView,
+                        isSplit: isSplit)
+                }
+            }
             .background {
                 // If we're dragging ourself, we hide the entire drop zone. This makes
                 // it so that a released drop animates back to its source properly

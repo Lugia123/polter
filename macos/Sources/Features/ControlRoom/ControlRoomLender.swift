@@ -1,0 +1,191 @@
+import AppKit
+import Combine
+import GhosttyKit
+import SwiftUI
+
+/// The one terminal the control room has on loan, as the rest of the
+/// application needs to know it (`ControlRoomLending` decides; this is the
+/// part with views in it).
+///
+/// **The terminal never leaves its tab's split tree.** What moves is its
+/// view: the pane it lives in draws a placeholder while this says it is
+/// lent, and the control room puts the view on its right-hand side. So
+/// everything that finds a terminal through its tree -- closing it,
+/// splitting it, saving the window -- goes on working, and giving it back is
+/// only saying it is no longer lent.
+///
+/// Two things do follow the view and not the tree, and have to be told:
+///
+///   * its own tab's controller keeps every terminal in its tree told
+///     whether it has the keyboard and whether it can be seen, from its own
+///     window. For the lent one those are the control room's to say
+///     (`BaseTerminalController` skips it; `ControlRoomController` says).
+///   * `view.window` is now the control room's. Code that wants the window
+///     the terminal belongs to asks `homeWindow`.
+final class ControlRoomLender: ObservableObject {
+    static let shared = ControlRoomLender()
+
+    /// The lent terminal's view id; nil when nothing is lent. What a pane
+    /// watches to know whether to draw itself or the placeholder.
+    @Published private(set) var lentID: UUID?
+    private(set) weak var lent: Ghostty.SurfaceView?
+
+    /// The person asked for it back from the placeholder.
+    var onReclaim: ((Ghostty.SurfaceView) -> Void)?
+    /// Its place in its own tab is gone.
+    var onHomeGone: ((Ghostty.SurfaceView) -> Void)?
+
+    func isLent(_ view: Ghostty.SurfaceView) -> Bool {
+        lent === view
+    }
+
+    func markLent(_ view: Ghostty.SurfaceView) {
+        lent = view
+        lentID = view.id
+    }
+
+    func markReturned() {
+        lent = nil
+        lentID = nil
+    }
+
+    func reclaim(_ view: Ghostty.SurfaceView) {
+        guard isLent(view) else { return }
+        onReclaim?(view)
+    }
+
+    /// A terminal controller's tree changed. If the lent terminal is in no
+    /// tree once things have settled -- a move between trees takes it out of
+    /// one before putting it in the other -- its home is gone.
+    func treesChanged() {
+        guard lent != nil else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let lent = self.lent,
+                  BaseTerminalController.controller(owning: lent) == nil else { return }
+            self.onHomeGone?(lent)
+        }
+    }
+
+    /// A terminal window is closing. Its tree is not emptied when it does,
+    /// so this is the only word that the lent terminal's home went with it.
+    func windowClosing(_ controller: BaseTerminalController) {
+        guard let lent, controller.surfaceTree.contains(lent) else { return }
+        onHomeGone?(lent)
+    }
+
+    /// The id the core gives a terminal, as the snapshot writes it; nil for
+    /// a view with no terminal behind it.
+    static func terminal(of view: Ghostty.SurfaceView) -> String? {
+        guard let surface = view.surface else { return nil }
+        let id = ghostty_surface_poltergeist_id(surface)
+        return id == 0 ? nil : ControlRoomPulse.id(id)
+    }
+
+    /// The view of the terminal the core calls `terminal`, if a tab holds
+    /// it. An equality test over what is open; nothing is worked out.
+    static func surface(for terminal: String) -> Ghostty.SurfaceView? {
+        for window in NSApp.windows {
+            guard let controller = window.windowController as? BaseTerminalController else { continue }
+            for view in controller.surfaceTree where Self.terminal(of: view) == terminal {
+                return view
+            }
+        }
+        return nil
+    }
+
+    /// Tell the core whether the terminal can be seen, as its own tab's
+    /// controller would.
+    static func setVisible(_ view: Ghostty.SurfaceView, _ visible: Bool) {
+        guard let surface = view.surface, view.isWindowVisible != visible else { return }
+        ghostty_surface_set_occlusion(surface, visible)
+        view.isWindowVisible = visible
+    }
+}
+
+extension Ghostty.SurfaceView {
+    /// The window this terminal belongs to: its own tab's. The same as
+    /// `window` except while the control room has borrowed the view.
+    var homeWindow: NSWindow? {
+        guard ControlRoomLender.shared.isLent(self) else { return window }
+        return BaseTerminalController.controller(owning: self)?.window
+    }
+}
+
+/// What a pane draws while its terminal is in the control room: where it
+/// went, and one press to have it back.
+struct ControlRoomLentPlaceholder: View {
+    typealias Look = ControlRoomLook
+
+    let surfaceView: Ghostty.SurfaceView
+
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let theme = Look.theme(scheme)
+        VStack(spacing: CGFloat(Look.Side.rowGap)) {
+            Text(String(localized: "This terminal is in the Control Room.", comment: "总控台：终端被借到总控台时，原处占位上的说明"))
+                .foregroundStyle(theme.textSecondary.color)
+            Button {
+                ControlRoomLender.shared.reclaim(surfaceView)
+            } label: {
+                Text(String(localized: "Bring It Back", comment: "总控台：原处占位上把终端要回来的按钮"))
+                    .foregroundStyle(theme.attentionText.color)
+            }
+            .buttonStyle(.plain)
+        }
+        .font(.system(size: CGFloat(Look.Font.body)))
+        .multilineTextAlignment(.center)
+        .padding(CGFloat(Look.Space.frameToContent))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(theme.terminalBackground.color)
+        // The whole pane takes the press, not only the words.
+        .contentShape(Rectangle())
+        .onTapGesture { ControlRoomLender.shared.reclaim(surfaceView) }
+    }
+}
+
+/// What the right-hand side says when there is no terminal on it.
+struct ControlRoomDetailMessage: View {
+    typealias Look = ControlRoomLook
+
+    let detail: ControlRoomLending.Detail
+    let askFor: () -> Void
+
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let theme = Look.theme(scheme)
+        VStack(spacing: CGFloat(Look.Side.rowGap)) {
+            Text(Self.words(for: detail))
+                .foregroundStyle(theme.textSecondary.color)
+            if case .takenBack = detail {
+                Button(action: askFor) {
+                    Text(String(localized: "Show It Here", comment: "总控台：终端被要回原处以后，右栏上把它再放过来的按钮"))
+                        .foregroundStyle(theme.attentionText.color)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .font(.system(size: CGFloat(Look.Font.body)))
+        .multilineTextAlignment(.center)
+        .padding(CGFloat(Look.Space.frameToContent))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// One sentence for each way of having no terminal to show. Never
+    /// empty: a blank right-hand side reads as something broken.
+    static func words(for detail: ControlRoomLending.Detail) -> String {
+        switch detail {
+        case .nothingSelected:
+            return String(localized: "Select a group to see its supervisor.", comment: "总控台：没有选中任何群时右栏的说明")
+        case .noSupervisor:
+            return String(localized: "This group has no supervisor.", comment: "总控台：选中的群没有总管时右栏的说明")
+        case .supervisorGone:
+            return String(localized: "The supervisor's terminal is no longer open.", comment: "总控台：总管的终端已经关掉时右栏的说明")
+        case .takenBack:
+            return String(localized: "The supervisor's terminal is in its own tab.", comment: "总控台：终端被要回原处以后右栏的说明")
+        case .terminal:
+            return ""
+        }
+    }
+}

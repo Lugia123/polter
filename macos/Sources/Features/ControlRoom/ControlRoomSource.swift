@@ -87,6 +87,12 @@ final class ControlRoomModel: ObservableObject {
     /// Nil until the core has a snapshot.
     @Published private(set) var list: ControlRoomList?
     @Published var selection: String?
+    /// What the right-hand side shows. Written by whoever runs the lending
+    /// (`ControlRoomController`); the views only read it.
+    @Published var detail: ControlRoomLending.Detail = .nothingSelected
+    /// The person asked, on the right-hand side, for the terminal they had
+    /// taken back.
+    var askForTerminal: () -> Void = {}
 
     private var listening: AnyCancellable?
 
@@ -104,14 +110,13 @@ final class ControlRoomModel: ObservableObject {
     }
 }
 
-/// The right-hand side of the control room, which will hold the selected
+/// The right-hand side of the control room, which holds the selected
 /// group's supervisor: its real terminal, lent by the tab it lives in and
 /// given back afterwards (`control-room.md`, 7.3).
 ///
-/// **Only the holding is here.** Taking a terminal's view out of its own
-/// tab, telling the core it moved, and putting it back where it was are the
-/// lender's work and are not written yet. This is the socket they plug
-/// into, so that building them does not mean reopening the control room.
+/// **Only the holding is here.** Which terminal, when it comes and when it
+/// goes back is `ControlRoomLending`; taking its view out of its own tab
+/// and putting it back is `ControlRoomController` with `ControlRoomLender`.
 protocol ControlRoomDetailHosting: AnyObject {
     /// The group whose pane is being shown; nil when the side is empty.
     var hostedGroup: String? { get }
@@ -127,7 +132,7 @@ protocol ControlRoomDetailHosting: AnyObject {
     func giveBack() -> NSView?
 }
 
-/// The empty container on the right.
+/// The container on the right.
 final class ControlRoomDetailContainer: NSView, ControlRoomDetailHosting {
     private(set) var hostedGroup: String?
     private var hosted: NSView?

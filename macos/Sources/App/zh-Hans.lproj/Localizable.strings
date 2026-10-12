@@ -708,3 +708,12 @@
 "That group is no longer there." = "那个群已经不在了。";
 "That time has already passed." = "那个时间已经过了。";
 "Nothing was done (%@)." = "没有执行（%@）。";
+
+/* 总控台：右栏的总管终端 */
+"This terminal is in the Control Room." = "这个终端现在在总控台里。";
+"Bring It Back" = "拿回来";
+"Show It Here" = "放到这里";
+"Select a group to see its supervisor." = "选一个群，这里显示它的总管。";
+"This group has no supervisor." = "这个群没有总管。";
+"The supervisor's terminal is no longer open." = "总管的终端已经不在了。";
+"The supervisor's terminal is in its own tab." = "总管的终端在它自己的标签页里。";

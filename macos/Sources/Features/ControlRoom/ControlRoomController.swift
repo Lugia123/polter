@@ -39,6 +39,12 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
 
     private var seen: ControlRoomSeenTracker?
     private var watchingSelection: AnyCancellable?
+    private var watchingList: AnyCancellable?
+
+    /// Which terminal is on the right-hand side, and what has to happen to
+    /// it next. Every change goes through `lend(_:)`.
+    private var lending = ControlRoomLending()
+    private let lender = ControlRoomLender.shared
 
     init(_ ghostty: Ghostty.App, selection: String? = nil) {
         self.ghostty = ghostty
@@ -74,6 +80,22 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
                 // After the change has landed, so the row read is the new one.
                 DispatchQueue.main.async { self?.noteSelection() }
             }
+
+        // The right-hand side follows the selection and the snapshot: a
+        // supervisor that changed or went away arrives as a new list.
+        watchingList = model.$list
+            .sink { [weak self] _ in
+                DispatchQueue.main.async { self?.syncDetail() }
+            }
+        model.askForTerminal = { [weak self] in self?.lend(.askedFor) }
+        lender.onReclaim = { [weak self] view in
+            guard let terminal = ControlRoomLender.terminal(of: view) else { return }
+            self?.lend(.reclaimed(terminal: terminal))
+        }
+        lender.onHomeGone = { [weak self] view in
+            guard let self, let terminal = self.lending.loan?.terminal, self.lender.isLent(view) else { return }
+            self.lend(.homeGone(terminal: terminal))
+        }
     }
 
     /// Whether the person can be looking at the list: this tab is the one
@@ -87,12 +109,125 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     private func noteSelection() {
         let row = model.list?.rows.first { $0.id == model.selection }
         seen?.selectionChanged(to: row)
+        syncDetail()
     }
 
     /// Coming to the front with a row already selected is a chance to look
     /// at it that selecting it earlier, behind something else, was not.
     func windowDidBecomeKey(_ notification: Notification) {
         noteSelection()
+        syncLentFocus()
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        syncLentFocus()
+    }
+
+    /// This tab going behind another, or coming back in front. A terminal
+    /// is only borrowed while the person can see it here: behind another
+    /// tab it would be a placeholder in its own tab for nobody's benefit --
+    /// and that other tab may be the terminal's own.
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        if isVisible {
+            syncDetail()
+        } else {
+            lend(.closing)
+        }
+    }
+
+    private var isVisible: Bool {
+        window?.occlusionState.contains(.visible) ?? false
+    }
+
+    // MARK: The supervisor's terminal
+
+    /// Bring the right-hand side up to date with the selection and the
+    /// snapshot. Which terminal is a group's supervisor is the core's word;
+    /// whether a tab still holds it is looked up, not judged.
+    private func syncDetail() {
+        guard isVisible else { return }
+        let group = model.selection
+        let supervisor = group.flatMap { ControlRoomFeed.shared(ghostty).latest?.supervisor(of: $0) }
+        let present = supervisor.map { ControlRoomLender.surface(for: $0) != nil } ?? false
+        lend(.selected(group: group, supervisor: supervisor, present: present))
+    }
+
+    /// Hand `event` to the lending and do what it says, in order.
+    private func lend(_ event: ControlRoomLending.Event) {
+        for effect in lending.handle(event) {
+            switch effect {
+            case let .borrow(loan): borrow(loan)
+            case let .giveBack(_, toHome, focus): giveBack(toHome: toHome, focus: focus)
+            }
+        }
+        if model.detail != lending.detail { model.detail = lending.detail }
+    }
+
+    private func borrow(_ loan: ControlRoomLending.Loan) {
+        guard let view = ControlRoomLender.surface(for: loan.terminal) else {
+            // Gone between being looked up and being taken.
+            _ = lending.handle(.homeGone(terminal: loan.terminal))
+            return
+        }
+        // Its pane draws the placeholder from here on.
+        lender.markLent(view)
+
+        // Sized to the right-hand side before the terminal is in it, so the
+        // first size the terminal is told is the one it will keep.
+        let host = NSHostingView(rootView: Ghostty.SurfaceWrapper(surfaceView: view).environmentObject(ghostty))
+        host.frame = detail.bounds
+        detail.host(host, for: loan.group)
+        detail.layoutSubtreeIfNeeded()
+
+        ControlRoomLender.setVisible(view, isVisible)
+        // The keyboard stays where it is: the person is walking the list.
+        // A click in the terminal takes it.
+    }
+
+    private func giveBack(toHome: Bool, focus: Bool) {
+        guard let view = lender.lent else {
+            detail.giveBack()
+            return
+        }
+        // Give up the keyboard here first, so the terminal is told it lost
+        // it before it is told anything by its own window.
+        if view.isFirstResponder { window?.makeFirstResponder(nil) }
+        view.focusDidChange(false)
+
+        detail.giveBack()
+        // Its pane draws the terminal again from here on.
+        lender.markReturned()
+
+        guard toHome, let home = BaseTerminalController.controller(owning: view) else { return }
+        // Once its pane has taken the view back.
+        DispatchQueue.main.async { [weak home, weak view] in
+            guard let home, let view, let window = home.window else { return }
+            ControlRoomLender.setVisible(view, window.occlusionState.contains(.visible))
+            if focus {
+                home.focusedSurface = view
+                window.makeKeyAndOrderFront(nil)
+                Ghostty.moveFocus(to: view)
+            } else if home.focusedSurface === view, view.window === window {
+                // Its window lost its first responder when the view left;
+                // put it back so that coming to that tab finds the keyboard
+                // where it was. The window is not made key.
+                window.makeFirstResponder(view)
+                home.syncFocusToSurfaceTree()
+            }
+        }
+    }
+
+    /// The lent terminal has the keyboard only while this window does and
+    /// the terminal is what is focused in it.
+    private func syncLentFocus() {
+        guard let view = lender.lent, let window else { return }
+        view.focusDidChange(window.isKeyWindow && view.isFirstResponder)
+    }
+
+    /// The application is quitting: put the terminal back first, so that
+    /// everything that runs at quit finds it in its own tab.
+    func applicationWillTerminate() {
+        lend(.closing)
     }
 
     @available(*, unavailable)
@@ -181,7 +316,10 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     }
 
     func windowWillClose(_ notification: Notification) {
+        lend(.closing)
         detail.giveBack()
+        lender.onReclaim = nil
+        lender.onHomeGone = nil
         if Self.shared === self { Self.shared = nil }
         // The tabs that remain move up one.
         DispatchQueue.main.async { Self.relabel() }
