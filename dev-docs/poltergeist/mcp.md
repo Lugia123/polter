@@ -19,7 +19,7 @@
 - 静止时长怎么测出来、成本多少、阈值怎么定 —— 见 [sensing.md](sensing.md)。本章只消费这一个标量。
 - 监督关系怎么建立、「按住」是什么、确认策略、通知时间段、停掉监控 —— 见 [supervisor.md](supervisor.md)。
 - 竞态守卫在总管侧的完整规则（用户正在打字、输入框非空、总管自我注入）—— 见 [supervisor.md](supervisor.md)。本章只给注入侧的机械保证。
-- 安全边界，含 R2「明确不做自动点 yes」为什么不留任何口子 —— 见 [supervisor.md](supervisor.md)。本章的 `terminal_send` 只是通用文本注入原语，工具面里没有、也不会有任何「替对方回答权限询问」的专用工具。
+- 安全边界，含 R2「明确不做自动点 yes」为什么不留任何口子 —— 见 [supervisor.md](supervisor.md)。本章的 `terminal_send` 只是通用文本注入原语。~~工具面里没有、也不会有任何「替对方回答权限询问」的专用工具。~~ **这句话 2026-09-08 起不成立**：有 `terminal_answer_prompt`，并且 2026-10-12 起它对每个终端默认可用（用户能按终端关、按配置全关、或护住）；规则与用户原话见 [supervisor.md](supervisor.md) 的「两类确认」。
 - 群聊 / 私信的**界面**怎么画 —— 见 [chatui.md](chatui.md)。本章只定义消息的工具面与送达语义。
 - tab 合并与状态标记落到 macOS / GTK —— 见 [tabs.md](tabs.md)。
 - 写作规范与术语表 —— 见 [\_spec.md](_spec.md)。

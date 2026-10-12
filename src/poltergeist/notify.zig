@@ -177,6 +177,117 @@ pub fn published(event: Event) Feed.Event {
 /// A plugin is a notification channel exactly when it subscribed to
 /// `terminal.quiet` -- which is a thing its own manifest says, in the one
 /// place that decides what it is handed.
+/// What came of putting a system notification in front of the person -- the
+/// operating system's own (Notification Centre on macOS, the tray balloon
+/// on Windows), which needs no plugin.
+///
+/// A supervisor that says a worker needs the person is owed the truth about
+/// whether the person was told. **Only `handed` says one went out, and even
+/// that is "handed to the system"**: whether it is shown is the system's --
+/// on macOS the person must have allowed Polter's notifications, and that
+/// is theirs to allow; nothing here asks for it on their behalf or can see
+/// the answer.
+pub const System = enum {
+    /// This call does not send one: only `authorisation` does.
+    not_asked,
+    /// Handed to the system.
+    handed,
+    /// The caller is not a terminal, so there is no window to raise it from.
+    no_terminal,
+    /// The host did not take it.
+    not_taken,
+    /// One went out less than a second ago, or this very one less than five.
+    rate_limited,
+
+    /// The sentence for the reply; empty for `not_asked`.
+    pub fn sentence(self: System) []const u8 {
+        return switch (self) {
+            .not_asked => "",
+            .handed => "A system notification was handed to the operating system (whether it is " ++
+                "shown is the system's: on macOS the person must have allowed Polter's notifications).",
+            .no_terminal => "No system notification: this call did not come from a terminal, so " ++
+                "there is no window to raise one from.",
+            .not_taken => "No system notification: this build's window layer did not take it.",
+            .rate_limited => "No system notification: one went out a moment ago and they are " ++
+                "limited to one a second (the same one, to one in five).",
+        };
+    }
+
+    pub fn wentOut(self: System) bool {
+        return self == .handed;
+    }
+
+    /// What a window's answer (`Surface.Raised`) comes to here. Taken as
+    /// `anytype` so that this file does not import the surface; the switch
+    /// is exhaustive over whatever it is handed, so a fourth answer over
+    /// there does not compile until it has been given a sentence here.
+    pub fn ofRaised(raised: anytype) System {
+        return switch (raised) {
+            .handed => .handed,
+            .not_taken => .not_taken,
+            .rate_limited => .rate_limited,
+        };
+    }
+};
+
+test "a window that did not raise the notification is never reported as one that did" {
+    const Raised = enum { handed, not_taken, rate_limited };
+    try testing.expectEqual(System.handed, System.ofRaised(Raised.handed));
+    try testing.expectEqual(System.not_taken, System.ofRaised(Raised.not_taken));
+    try testing.expectEqual(System.rate_limited, System.ofRaised(Raised.rate_limited));
+    for (std.enums.values(Raised)) |r| {
+        try testing.expectEqual(r == .handed, System.ofRaised(r).wentOut());
+    }
+}
+
+/// The whole reply to `notify_user`: what came of the system notification,
+/// then what came of the plugins, each said separately so that one channel
+/// working is never read as both.
+pub fn reply(alloc: std.mem.Allocator, system: System, plugins: []const u8) std.mem.Allocator.Error![]const u8 {
+    const first = system.sentence();
+    if (first.len == 0) return alloc.dupe(u8, plugins);
+    return std.fmt.allocPrint(alloc, "{s} Plugins: {s}", .{ first, plugins });
+}
+
+test "only a notification that was handed over is reported as one" {
+    for (std.enums.values(System)) |s| {
+        const said = s.sentence();
+        switch (s) {
+            .not_asked => try testing.expectEqualStrings("", said),
+            .handed => {
+                try testing.expect(s.wentOut());
+                try testing.expect(std.mem.startsWith(u8, said, "A system notification was handed"));
+                try testing.expect(std.mem.indexOf(u8, said, "No system notification") == null);
+            },
+            .no_terminal, .not_taken, .rate_limited => {
+                try testing.expect(!s.wentOut());
+                try testing.expect(std.mem.startsWith(u8, said, "No system notification: "));
+                try testing.expect(std.mem.indexOf(u8, said, "was handed") == null);
+            },
+        }
+    }
+}
+
+test "the reply says each channel separately" {
+    const a = testing.allocator;
+    const nobody = "nobody was told: no notification plugin is switched on.";
+
+    const both = try reply(a, .handed, nobody);
+    defer a.free(both);
+    try testing.expect(std.mem.startsWith(u8, both, "A system notification was handed"));
+    try testing.expect(std.mem.endsWith(u8, both, "Plugins: " ++ nobody));
+
+    const neither = try reply(a, .rate_limited, nobody);
+    defer a.free(neither);
+    try testing.expect(std.mem.startsWith(u8, neither, "No system notification: "));
+    try testing.expect(std.mem.endsWith(u8, neither, "Plugins: " ++ nobody));
+
+    // A call that sends none says nothing about it, as before.
+    const plain = try reply(a, .not_asked, nobody);
+    defer a.free(plain);
+    try testing.expectEqualStrings(nobody, plain);
+}
+
 pub fn count(plugins: []const Plugin.Manifest, e: Plugin.Event) usize {
     var n: usize = 0;
     for (plugins) |manifest| {

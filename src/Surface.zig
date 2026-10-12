@@ -4162,9 +4162,14 @@ fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
     // A refused notice is not an error worth propagating: the sampler will
     // say the same thing again on its repeat interval.
     self.typePoltergeistText(text, true) catch |err| switch (err) {
-        error.ChildExited,
+        // The person is at this terminal. What was in the notice about a
+        // worker stopped on a question is offered again as soon as
+        // anything drives a delivery, rather than an interval later
+        // (`Bus.deliveryRefused`); the rest comes round as it always has.
         error.UserPresent,
         error.DraftInLine,
+        => self.app.poltergeist.deliveryRefused(self.id, self.app.chat.peers()),
+        error.ChildExited,
         error.UnsafeText,
         => {},
         else => return err,
@@ -8228,6 +8233,18 @@ fn completeKittyClipboardRead(
 }
 
 fn showDesktopNotification(self: *Surface, title: [:0]const u8, body: [:0]const u8) !void {
+    _ = try self.raiseDesktopNotification(title, body);
+}
+
+/// What became of a desktop notification raised from this terminal's
+/// window.
+pub const Raised = enum { handed, not_taken, rate_limited };
+
+/// Raise a desktop notification from this terminal's window, under the two
+/// limits below, and say what became of it. `showDesktopNotification` is
+/// this for a program in the terminal, which has nobody to tell; Polter's
+/// own "the supervisor needs you" (`App.notifyUser`) reads the answer.
+pub fn raiseDesktopNotification(self: *Surface, title: [:0]const u8, body: [:0]const u8) !Raised {
     // Wyhash is used to hash the contents of the desktop notification to limit
     // how fast identical notifications can be sent sequentially.
     const hash_algorithm = std.hash.Wyhash;
@@ -8239,7 +8256,7 @@ fn showDesktopNotification(self: *Surface, title: [:0]const u8, body: [:0]const 
     if (self.app.last_notification_time) |last| {
         if (last.durationTo(now).toSeconds() < 1) {
             log.warn("rate limiting desktop notifications", .{});
-            return;
+            return .rate_limited;
         }
     }
 
@@ -8256,14 +8273,14 @@ fn showDesktopNotification(self: *Surface, title: [:0]const u8, body: [:0]const 
         if (self.app.last_notification_digest == new_digest) {
             if (last.durationTo(now).toSeconds() < 5) {
                 log.warn("suppressing identical desktop notification", .{});
-                return;
+                return .rate_limited;
             }
         }
     }
 
     self.app.last_notification_time = now;
     self.app.last_notification_digest = new_digest;
-    _ = try self.rt_app.performAction(
+    const taken = try self.rt_app.performAction(
         .{ .surface = self },
         .desktop_notification,
         .{
@@ -8271,6 +8288,7 @@ fn showDesktopNotification(self: *Surface, title: [:0]const u8, body: [:0]const 
             .body = body,
         },
     );
+    return if (taken) .handed else .not_taken;
 }
 
 fn crashThreadState(self: *Surface) crash.sentry.ThreadState {

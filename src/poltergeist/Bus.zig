@@ -413,14 +413,31 @@ pub const Entry = struct {
     opened_by_agent: bool = false,
 
     /// Whether a supervisor may answer a permission prompt in this terminal
-    /// on its behalf.
+    /// on its behalf. `null` is "the person has not said for this terminal",
+    /// and then the answer is the bus's default (`Config.may_authorise`),
+    /// which is **on**.
     ///
-    /// **Off by default, and the default is the point.** A worker stopped on
-    /// a permission prompt stays stopped until a person answers it -- that
-    /// was this program's rule, argued in `rpc.authorize`, and it is still
-    /// the behaviour of every terminal whose user has not said otherwise.
-    /// What changed on 2026-09-08 is that the user may now say otherwise,
-    /// per terminal, from the tab's own menu.
+    /// **On by default, for every terminal** -- the user's decision of
+    /// 2026-10-12 ("所有worker的等待/授权/应该全部丢给总管 ... 首先是这个改成
+    /// 默认开"), confirmed the next day for all terminals and not only the
+    /// minded ones ("对所有终端"). The arrangement it serves: a worker that
+    /// stops on a prompt is the supervisor's to deal with, the supervisor
+    /// answers what is plainly within the work and brings the rest to the
+    /// person, and the person is seldom sent to a worker's terminal at all.
+    ///
+    /// It was off by default from 2026-09-08, when the switch was made, and
+    /// on only in a terminal a supervisor had opened (2026-10-04). Both of
+    /// those are history; `markOpenedByAgent` grants nothing now, because
+    /// there is nothing left to grant.
+    ///
+    /// **How the person says no.** Three ways, from narrowest to widest:
+    /// this switch, off, on the terminal's own menu (kept for the life of
+    /// that terminal); the shield, which keeps every tool out of the
+    /// terminal altogether; and `poltergeist-may-authorise = false` in the
+    /// configuration, which makes off the default again for every terminal
+    /// and is the one of the three that outlasts a restart -- a terminal's
+    /// identity does not, so a choice kept on one has nothing to come back
+    /// to.
     ///
     /// **What it opens, in full.** With this on, a supervisor may answer
     /// *either* option -- the one-off `Yes` and the persistent
@@ -454,24 +471,11 @@ pub const Entry = struct {
     /// published, logged bypass rather than a silent one**. See the note on
     /// `rpc.authorize`.
     ///
-    /// **On from the start in a terminal a supervisor opened**
-    /// (`markOpenedByAgent`), by the user's decision of 2026-10-04. Every
-    /// line above is about a terminal the person started themselves, and it
-    /// still holds there: off until they switch it on, and no tool switches
-    /// it on. A tab or a split a supervisor opened is a different thing --
-    /// the supervisor put the agent in it and is the one minding it, and a
-    /// worker stopped on a box at three in the morning with nobody allowed
-    /// to answer is the night the whole arrangement exists to prevent. So
-    /// the grant is made once, by the program, at the moment the terminal is
-    /// recorded as agent-opened; it is not something a supervisor can ask
-    /// for afterwards, and `setMayAuthorise` still refuses everybody but the
-    /// user -- who can switch it off again from the same menu.
-    ///
-    /// ⚠️ **What that default opens**, in the words used above: a supervisor
-    /// can open a terminal in a directory and take `Yes, and don't ask
-    /// again` there, which is a standing permission for every agent that
+    /// ⚠️ **What the default opens**, in the words used above: any
+    /// supervisor can take `Yes, and don't ask again` in any terminal that
+    /// is not shielded, which is a standing permission for every agent that
     /// runs in that directory afterwards.
-    may_authorise: bool = false,
+    may_authorise: ?bool = null,
 
     /// Whether the workers this supervisor minds may name each other in a
     /// group post and be typed into directly (`dev-docs/poltergeist/mentions.md`
@@ -692,6 +696,12 @@ pub const Config = struct {
     /// that is worth a line; `poltergeist-calls-silent-after`. Zero says
     /// nothing about it at all. See `Entry.last_call_ms`.
     calls_silent_after_ms: u64 = 15 * std.time.ms_per_min,
+
+    /// What `Entry.may_authorise` is for a terminal whose person has not
+    /// said: whether a supervisor may answer its permission prompts.
+    /// `poltergeist-may-authorise`. On, by the user's decision of
+    /// 2026-10-12; see `Entry.may_authorise`.
+    may_authorise: bool = true,
 };
 
 alloc: Allocator,
@@ -738,16 +748,18 @@ pub fn unregister(self: *Bus, id: Id) void {
 /// (`Entry.opened_by_agent`). Registers it if the bus has not heard of it
 /// yet: a terminal the tool surface has just made is usually exactly that.
 ///
-/// **When `by` is a supervisor, that supervisor may answer the new
-/// terminal's permission prompts from the start** -- see
-/// `Entry.may_authorise`. Decided on who is asking *now*: a terminal a
-/// plain worker opened carries no grant, and one that becomes a supervisor
-/// later does not go back and collect it.
+/// **It grants nothing.** From 2026-10-04 a terminal a supervisor opened
+/// started with `Entry.may_authorise` on while every other terminal started
+/// with it off; since 2026-10-12 it is on for every terminal that has not
+/// been told otherwise, so who opened one no longer comes into it -- and
+/// with `poltergeist-may-authorise = false` it is off here as everywhere,
+/// which is what somebody who set that asked for. `by` is still taken: it
+/// is who the record says opened it.
 pub fn markOpenedByAgent(self: *Bus, id: Id, by: Id) Allocator.Error!void {
+    _ = by;
     try self.register(id);
     const e = self.entries.getPtr(id).?;
     e.opened_by_agent = true;
-    if (self.isSupervisor(by)) e.may_authorise = true;
 }
 
 /// Whether an agent opened this terminal. False for one the bus has never
@@ -1304,14 +1316,39 @@ pub fn minderOf(self: *const Bus, id: Id) ?Id {
 
 /// Whether a supervisor may answer a permission prompt in this terminal.
 ///
-/// **A terminal the bus has never registered answers `false`**, which is the
-/// opposite default from `isShielded` and deliberately so: an unknown id is
-/// open to being *read and typed into*, because carrying no mark is the open
-/// case -- but answering somebody's permission prompt is not something a
-/// terminal falls into by not being registered.
+/// The person's own choice for this terminal when they have made one, and
+/// otherwise the default (`Config.may_authorise`, on). **A terminal the bus
+/// has never registered gets the default too**: it used to answer `false`,
+/// on the grounds that answering somebody's prompt is not something a
+/// terminal falls into by not being registered -- but the default is now a
+/// thing the user chose for every terminal, and an unregistered one is a
+/// terminal nobody has said otherwise about.
 pub fn mayAuthorise(self: *const Bus, id: Id) bool {
-    const e = self.entries.get(id) orelse return false;
-    return e.may_authorise;
+    const e = self.entries.get(id) orelse return self.config.may_authorise;
+    return e.may_authorise orelse self.config.may_authorise;
+}
+
+/// Why a supervisor may or may not answer this terminal's prompt, as the
+/// notice about that prompt says it.
+pub const Answer = enum {
+    allowed,
+    /// The person switched it off, here or in the configuration.
+    off,
+    /// Nothing reaches a shielded terminal, this included.
+    shielded,
+
+    pub fn word(self: Answer) []const u8 {
+        return switch (self) {
+            .allowed => "allowed",
+            .off => "off",
+            .shielded => "shielded",
+        };
+    }
+};
+
+pub fn answer(self: *const Bus, id: Id) Answer {
+    if (self.isShielded(id)) return .shielded;
+    return if (self.mayAuthorise(id)) .allowed else .off;
 }
 
 /// Whether the tool surface may reach this terminal at all.
@@ -1875,6 +1912,62 @@ pub fn drain(self: *Bus, to: Id, now_ms: u64, buf: []u8, peers: Peers) ?[]u8 {
 /// cannot even read. `peers` settles the terminals nobody has claimed; see
 /// `hears`.
 pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers) ?[]u8 {
+    return self.takeSome(to, now_ms, buf, how, peers, false);
+}
+
+/// Whether an agent's notice is about somebody stopped on a question: an
+/// approval or an answer it is waiting for.
+fn isWaiting(kind: AgentNotice) bool {
+    return switch (kind) {
+        .awaiting_approval, .awaiting_input => true,
+        .turn_ended, .turn_failed, .hooks_silent => false,
+    };
+}
+
+/// A waiting notice nobody has been handed yet.
+fn freshlyWaiting(e: *const Entry) bool {
+    const kind = e.agent.pending orelse return false;
+    return isWaiting(kind) and e.agent.handed == 0;
+}
+
+/// Whether `to`'s box holds a waiting notice it has not been handed.
+pub fn hasFreshWaiting(self: *const Bus, to: Id, peers: Peers) bool {
+    const minder = self.entries.get(to) orelse return false;
+    if (minder.role != .supervisor) return false;
+    const alone = self.supervisorCount() <= 1;
+    var it = self.entries.iterator();
+    while (it.next()) |kv| {
+        if (!freshlyWaiting(kv.value_ptr)) continue;
+        if (hears(to, kv.key_ptr.*, kv.value_ptr, alone, peers)) return true;
+    }
+    return false;
+}
+
+/// A notice typed into `to` was refused -- the person was typing there, or
+/// had an unsent line. Whatever waiting notices were in it are made fresh
+/// again, so the next thing that drives a delivery offers them at once
+/// rather than an interval later.
+///
+/// Only the waiting ones: a quiet report that was refused comes round
+/// again on the interval, as it always has, and is not worth interrupting
+/// somebody the moment they stop typing.
+pub fn deliveryRefused(self: *Bus, to: Id, peers: Peers) void {
+    const minder = self.entries.get(to) orelse return;
+    if (minder.role != .supervisor) return;
+    const alone = self.supervisorCount() <= 1;
+    var it = self.entries.iterator();
+    while (it.next()) |kv| {
+        const e = kv.value_ptr;
+        const kind = e.agent.pending orelse continue;
+        if (!isWaiting(kind)) continue;
+        if (!hears(to, kv.key_ptr.*, e, alone, peers)) continue;
+        e.agent.handed -|= 1;
+    }
+}
+
+/// `take`, or -- with `only_waiting` -- just the waiting notices nobody has
+/// been handed, leaving everything else in the box exactly as it was.
+fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers, only_waiting: bool) ?[]u8 {
     // Only a supervisor has a box. Said here rather than left to the
     // caller, because the rule below hands an unclaimed terminal's report
     // to a lone supervisor that asks -- so a terminal that has just stood
@@ -1899,6 +1992,7 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers)
     while (it.next()) |kv| {
         const e = kv.value_ptr;
         if (e.pending == null and !e.silent_pending and e.agent.pending == null) continue;
+        if (only_waiting and !freshlyWaiting(e)) continue;
 
         // Not this supervisor's terminal. Left in the box for whoever is
         // minding it, rather than dropped.
@@ -1915,12 +2009,12 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers)
         // **Only the stillness that followed the event**: see
         // `quietExplained`. One that began after the screen moved again is
         // reported, with the event it outlived beside it.
-        if (e.pending) |kind| if (kind != .resumed and self.quietExplained(id, now_ms)) {
+        if (!only_waiting) if (e.pending) |kind| if (kind != .resumed and self.quietExplained(id, now_ms)) {
             e.pending = null;
             e.handed_over = 0;
         };
 
-        if (e.pending) |kind| {
+        if (!only_waiting) if (e.pending) |kind| {
             total += 1;
 
             switch (how) {
@@ -1983,14 +2077,14 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers)
                 };
                 listed += 1;
             }
-        }
+        };
 
         // The second clock, as its own entry: see `considerCalls`. The
         // screen's figure rides along in brackets when there is one,
         // because "no tool call, and the screen changed three seconds ago"
         // is the case this exists for and should read as that without the
         // supervisor having to go and compare two entries.
-        if (e.silent_pending) {
+        if (!only_waiting and e.silent_pending) {
             total += 1;
 
             switch (how) {
@@ -2049,7 +2143,7 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers)
             if (listed < max_listed) {
                 const sep = if (listed == 0) " " else ", ";
                 const mark = w.end;
-                writeAgent(&w, sep, id, kind, e.agent, self.turns.get(id), now_ms) catch {
+                writeAgent(&w, sep, id, kind, e.agent, self.turns.get(id), now_ms, self.answer(id)) catch {
                     w.end = mark;
                     break;
                 };
@@ -2066,7 +2160,7 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers)
     // Fetched again rather than reusing `minder`: `take` walks the map,
     // and a map that grew moved every pointer into it.
     if (self.entries.getPtr(to)) |box| {
-        if (box.memo_len > 0) {
+        if (!only_waiting and box.memo_len > 0) {
             total += 1;
 
             // Wound back if it did not fit whole: a failed `print` fills
@@ -2163,6 +2257,7 @@ fn writeAgent(
     a: Agent,
     turn: ?Turn,
     now_ms: u64,
+    may: Answer,
 ) std.Io.Writer.Error!void {
     const ago_s = (now_ms -| a.eventMs()) / std.time.ms_per_s;
     switch (kind) {
@@ -2181,9 +2276,16 @@ fn writeAgent(
             .{ sep, id, a.detail.get() orelse "(no error type)" },
         ),
         .awaiting_approval => {
+            // **The two moments and the switch, before the note.** They are
+            // what `terminal_answer_prompt` takes as its guard, written with
+            // its own parameter names so they can be copied across, and
+            // whether answering is open at all -- so a supervisor reading
+            // this line knows both without a `terminal_list` in between.
+            // Before the note because the note is what gets cut when the
+            // line is full.
             try w.print(
-                "{s}0x{x:0>16} awaiting approval {s}",
-                .{ sep, id, a.detail.get() orelse "(no tool name)" },
+                "{s}0x{x:0>16} awaiting approval {s} [state_at_ms={d} event_at_ms={d} answer={s}]",
+                .{ sep, id, a.detail.get() orelse "(no tool name)", a.since_ms, a.eventMs(), may.word() },
             );
             if (a.note.get()) |note| {
                 try w.writeAll(": ");
@@ -2229,10 +2331,24 @@ fn fitTail(w: *std.Io.Writer, s: []const u8, full_len: usize, reserve: usize) st
 /// box does not count as having been shown anything, so a terminal going
 /// quiet a second after a silent tick is not made to wait another full
 /// interval.
+///
+/// **A worker stopped on a question does not wait for the interval.** The
+/// interval answers "how often may a supervisor be interrupted about
+/// terminals that have gone still", and a terminal that is still because
+/// it is asking for an approval is not that: every minute it waits is a
+/// minute of work not done, and the person's rule (2026-10-12) is that
+/// these go to the supervisor at once. So a waiting notice nobody has been
+/// handed is handed over now, on its own, and neither spends nor resets
+/// the interval: whatever else is in the box comes round when it would
+/// have. Its repeats, if the supervisor does nothing, are on the interval
+/// like anything else.
 pub fn drainIfDue(self: *Bus, to: Id, now_ms: u64, buf: []u8, peers: Peers) ?[]u8 {
     const minder = self.entries.getPtr(to) orelse return null;
     if (minder.last_delivery_ms) |last| {
-        if (now_ms -| last < self.config.notice_interval_ms) return null;
+        if (now_ms -| last < self.config.notice_interval_ms) {
+            if (!self.hasFreshWaiting(to, peers)) return null;
+            return self.takeSome(to, now_ms, buf, .hand_over, peers, true);
+        }
     }
 
     const line = self.take(to, now_ms, buf, .hand_over, peers) orelse return null;
@@ -3474,59 +3590,41 @@ test "shielding a supervisor is allowed, and says nothing about holding it" {
     try testing.expect(!b.isShielded(boss) and b.get(boss).?.held);
 }
 
-test "only the user may let a supervisor answer prompts, and it starts off" {
+test "a supervisor may answer prompts in every terminal until the person says otherwise, and only the person can say" {
     var b = testBus();
     defer b.deinit();
     try b.register(worker);
 
-    // **Off to begin with.** The rule this switch relaxes is the one that
-    // held for every terminal before it existed, so the terminal that has
-    // never been switched behaves exactly as it did.
-    try testing.expect(!b.mayAuthorise(worker));
+    // **On to begin with**, for a terminal nobody has said anything about
+    // (the user's decision, 2026-10-12, for every terminal).
+    try testing.expect(b.mayAuthorise(worker));
+    try testing.expectEqual(Answer.allowed, b.answer(worker));
 
-    // A supervisor cannot grant itself the thing the switch governs. This
-    // is the whole of the protection: without it, the first move of any
-    // supervisor that wanted to answer a prompt would be to turn the
-    // switch on.
+    // The person switches it off, and it is off.
+    try b.setMayAuthorise(worker, false, .user);
+    try testing.expect(!b.mayAuthorise(worker));
+    try testing.expectEqual(Answer.off, b.answer(worker));
+
+    // A supervisor cannot switch it back on. This is the whole of the
+    // protection: without it, the first move of any supervisor that met a
+    // terminal the person had closed to it would be to open it again.
     try testing.expectError(
         error.NotPermitted,
         b.setMayAuthorise(worker, true, .supervisor),
     );
     try testing.expect(!b.mayAuthorise(worker));
 
+    // Nor can it switch one off, for that matter: the switch is the
+    // person's in both directions.
     try b.setMayAuthorise(worker, true, .user);
-    try testing.expect(b.mayAuthorise(worker));
-
-    try b.setMayAuthorise(worker, false, .user);
-    try testing.expect(!b.mayAuthorise(worker));
-}
-
-test "a terminal a supervisor opened lets a supervisor answer its prompts from the start" {
-    var b = testBus();
-    defer b.deinit();
-    try b.addSupervisor(boss);
-
-    // The supervisor opened it: the grant is there before anybody has
-    // touched a menu.
-    try b.markOpenedByAgent(worker, boss);
-    try testing.expect(b.openedByAgent(worker));
-    try testing.expect(b.mayAuthorise(worker));
-
-    // It is a default, not a lock: the user switches it off like any other,
-    // and marking the same terminal again is the only thing that would put
-    // it back -- which happens once, when it is opened.
-    try b.setMayAuthorise(worker, false, .user);
-    try testing.expect(!b.mayAuthorise(worker));
-
-    // And still nothing an agent can do afterwards turns it on.
     try testing.expectError(
         error.NotPermitted,
-        b.setMayAuthorise(worker, true, .supervisor),
+        b.setMayAuthorise(worker, false, .supervisor),
     );
-    try testing.expect(!b.mayAuthorise(worker));
+    try testing.expect(b.mayAuthorise(worker));
 }
 
-test "a terminal opened by an agent that is not a supervisor carries no grant" {
+test "who opened a terminal does not come into whether its prompts may be answered" {
     var b = testBus();
     defer b.deinit();
     try b.addSupervisor(boss);
@@ -3534,34 +3632,69 @@ test "a terminal opened by an agent that is not a supervisor carries no grant" {
     const opened: Id = 0x7002;
     try b.register(plain);
 
-    // `terminal_open` is not a supervisor's alone. A worker that opens a
-    // terminal has opened it -- it may close it without a question -- and
-    // that is all: no supervisor asked for this one.
+    // Opened by a supervisor, opened by a plain worker, started by the
+    // person: all three are the default.
+    try b.markOpenedByAgent(worker, boss);
     try b.markOpenedByAgent(opened, plain);
-    try testing.expect(b.openedByAgent(opened));
-    try testing.expect(!b.mayAuthorise(opened));
+    try testing.expect(b.openedByAgent(worker) and b.openedByAgent(opened));
+    try testing.expect(b.mayAuthorise(worker) and b.mayAuthorise(opened) and b.mayAuthorise(plain));
 
-    // Becoming a supervisor afterwards does not go back for it.
-    try b.addSupervisor(plain);
-    try testing.expect(!b.mayAuthorise(opened));
-
-    // And the terminal the person started is as it always was.
-    try b.register(worker);
+    // And being opened by a supervisor does not undo the person's no: it
+    // used to be the one thing that put the switch on, and marking a
+    // terminal again must not put it back.
+    try b.setMayAuthorise(worker, false, .user);
+    try b.markOpenedByAgent(worker, boss);
     try testing.expect(!b.mayAuthorise(worker));
 }
 
-test "an unregistered terminal does not let anyone answer its prompts" {
+test "an unregistered terminal gets the default, and has no switch to set" {
     var b = testBus();
     defer b.deinit();
 
-    // **The opposite default from `isShielded`, on purpose.** Carrying no
-    // mark means open to being reached; it does not mean open to having
-    // somebody's permission prompt answered for them.
-    try testing.expect(!b.mayAuthorise(0xDEAD));
+    try testing.expect(b.mayAuthorise(0xDEAD));
     try testing.expectError(
         error.UnknownTerminal,
-        b.setMayAuthorise(0xDEAD, true, .user),
+        b.setMayAuthorise(0xDEAD, false, .user),
     );
+}
+
+test "with the default set to off in the configuration every terminal starts closed, and the person opens one" {
+    // What outlasts a restart: a bus is made new each time and a terminal's
+    // id with it, so the one place a "no" can be kept is the configuration.
+    // A new bus given that configuration must not come up open.
+    var b: Bus = .init(testing.allocator, .{ .may_authorise = false });
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try b.register(worker);
+
+    try testing.expect(!b.mayAuthorise(worker));
+    try testing.expect(!b.mayAuthorise(0xDEAD));
+    try testing.expectEqual(Answer.off, b.answer(worker));
+
+    // Not opened by a supervisor opening it, either: somebody who set the
+    // default to off said so about every terminal.
+    try b.markOpenedByAgent(0x7002, boss);
+    try testing.expect(!b.mayAuthorise(0x7002));
+
+    // The person's own choice for one terminal still stands over it.
+    try b.setMayAuthorise(worker, true, .user);
+    try testing.expect(b.mayAuthorise(worker));
+
+    // And the other way round: a "no" on one terminal is not lifted by the
+    // default being on, when the configuration is read again.
+    try b.setMayAuthorise(worker, false, .user);
+    b.config.may_authorise = true;
+    try testing.expect(!b.mayAuthorise(worker));
+    try testing.expect(b.mayAuthorise(0x7002));
+}
+
+test "a shielded terminal's notice says shielded, whatever the switch says" {
+    var b = testBus();
+    defer b.deinit();
+    try b.register(worker);
+    try b.setShielded(worker, true, .user);
+    try testing.expect(b.mayAuthorise(worker));
+    try testing.expectEqual(Answer.shielded, b.answer(worker));
 }
 
 test "the two switches are independent" {
@@ -4067,9 +4200,131 @@ test "hooks: failed and awaiting approval read as themselves" {
     _ = try b.agentEvent(worker, ask, 0);
     const two = b.drain(boss, 0, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 awaiting approval Bash: zig build test",
+        "[poltergeist] 0x0000000000002222 awaiting approval Bash [state_at_ms=0 event_at_ms=0 answer=allowed]: zig build test",
         two,
     );
+}
+
+test "hooks: a worker stopped on a question is handed over at once, inside the interval, and on its own" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+
+    // The supervisor has just been handed something, so the interval has a
+    // minute to run.
+    _ = b.report(worker, quiet(60_000), 0);
+    _ = b.drainIfDue(boss, 0, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(b.drainIfDue(boss, 1_000, &buf, .none) == null);
+
+    // Another quiet report, five seconds in: held for the interval, as ever.
+    _ = b.report(worker, quiet(65_000), 5_000);
+    try testing.expect(b.drainIfDue(boss, 5_000, &buf, .none) == null);
+
+    // Then the worker stops on an approval, ten seconds in.
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    ask.note = "rm -rf dist";
+    _ = try b.agentEvent(worker, ask, 10_000);
+    try testing.expect(b.hasFreshWaiting(boss, .none));
+    const line = b.drainIfDue(boss, 10_000, &buf, .none) orelse return error.TestExpectedNotice;
+    // The two moments are the ones `promptStanding` holds a later answer
+    // to, under the names `terminal_answer_prompt` takes them by.
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 awaiting approval Bash [state_at_ms=10000 event_at_ms=10000 answer=allowed]: rm -rf dist",
+        line,
+    );
+    try testing.expect(b.promptStanding(worker, 10_000, 10_000, 10_000));
+
+    // Handed once: it does not come again a second later.
+    try testing.expect(!b.hasFreshWaiting(boss, .none));
+    try testing.expect(b.drainIfDue(boss, 11_000, &buf, .none) == null);
+
+    // And it neither spent nor reset the interval: the quiet report that
+    // was being held comes when it would have, a minute after the first
+    // hand-over -- with the approval beside it, as its repeat.
+    try testing.expect(b.drainIfDue(boss, 59_000, &buf, .none) == null);
+    const due = b.drainIfDue(boss, 60_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, due, "awaiting approval") != null);
+}
+
+test "hooks: waiting for an answer is urgent too, and a turn that merely ended is not" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    _ = b.report(worker, quiet(60_000), 0);
+    _ = b.drainIfDue(boss, 0, &buf, .none) orelse return error.TestExpectedNotice;
+
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
+    var done = hookEv(.turn_ended);
+    done.text = "done";
+    done.text_bytes = 4;
+    _ = try b.agentEvent(worker, done, 2_000);
+    try testing.expect(!b.hasFreshWaiting(boss, .none));
+    try testing.expect(b.drainIfDue(boss, 2_000, &buf, .none) == null);
+
+    var asks = hookEv(.awaiting_input);
+    asks.detail = "which branch?";
+    _ = try b.agentEvent(worker, asks, 3_000);
+    const line = b.drainIfDue(boss, 3_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings("[poltergeist] 0x0000000000002222 awaiting input which branch?", line);
+}
+
+test "hooks: a waiting notice the supervisor's terminal refused is offered again at once, not an interval later" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    _ = b.report(worker, quiet(60_000), 0);
+    _ = b.drainIfDue(boss, 0, &buf, .none) orelse return error.TestExpectedNotice;
+
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    _ = try b.agentEvent(worker, ask, 10_000);
+    _ = b.drainIfDue(boss, 10_000, &buf, .none) orelse return error.TestExpectedNotice;
+
+    // The person was typing in the supervisor's terminal: the line was
+    // never typed. Without being told, the bus believes it was delivered.
+    try testing.expect(b.drainIfDue(boss, 15_000, &buf, .none) == null);
+    b.deliveryRefused(boss, .none);
+    const again = b.drainIfDue(boss, 15_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, again, "awaiting approval Bash") != null);
+
+    // Refused as many times as it takes, it is never dropped for having
+    // been "handed over" too often: a refusal is not a hand-over.
+    for (0..10) |n| {
+        b.deliveryRefused(boss, .none);
+        const t = 20_000 + @as(u64, @intCast(n)) * 5_000;
+        _ = b.drainIfDue(boss, t, &buf, .none) orelse return error.TestExpectedNotice;
+    }
+    try testing.expectEqual(AgentNotice.awaiting_approval, b.get(worker).?.agent.pending.?);
+}
+
+test "hooks: the notice about a prompt says when answering it is not open" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    try b.setMayAuthorise(worker, false, .user);
+
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Edit";
+    _ = try b.agentEvent(worker, ask, 7);
+    const line = b.drain(boss, 7, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 awaiting approval Edit [state_at_ms=7 event_at_ms=7 answer=off]",
+        line,
+    );
+}
+
+test "hooks: a long note is what gets cut, never the guard" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    ask.note = "x" ** 400;
+    _ = try b.agentEvent(worker, ask, 123_456);
+    const line = b.drain(boss, 123_456, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "[state_at_ms=123456 event_at_ms=123456 answer=allowed]") != null);
+    try testing.expect(std.mem.endsWith(u8, line, "\u{2026}"));
 }
 
 test "hooks: a new turn makes the last one's notice stale" {

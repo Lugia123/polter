@@ -764,6 +764,10 @@ pub const Action = union(enum) {
     /// `Bus.Entry.may_authorise` argues the whole of it, including what the
     /// switch does *not* stop.
     ///
+    /// **Every terminal starts with it on** (2026-10-12; the default for
+    /// all of them is `poltergeist-may-authorise`), so this is mostly how
+    /// you say no for one terminal, and how you take that back.
+    ///
     /// Yours alone, like the hold and the shield. ⚠️ **And, unlike them, it
     /// has no command-palette entry**: an agent can open another terminal's
     /// palette with `terminal_key` and type into it, so a palette entry

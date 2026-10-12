@@ -382,7 +382,8 @@ whose CLI supports it reports on itself, and then the line can say
 
     [poltergeist] 0x0000000000002222 turn ended 12s ago: "Fixed #845, full suite …", 0x0000000000004444 failed rate_limit
 
-and `awaiting approval Bash: …`, `awaiting input idle_prompt`. Unlike
+and `awaiting approval Bash [state_at_ms=… event_at_ms=… answer=allowed]: …`,
+`awaiting input idle_prompt`. Unlike
 everything above these are not arithmetic: the CLI said it. The quote is only
 the start of the answer; `terminal_turn(id)` has the whole of it, up to 16 KB,
 and says when it was cut. While one of these stands, that terminal is not also
@@ -402,7 +403,71 @@ Your own silence cannot come to you — if you are stuck you would not read it �
 so it goes on your tab instead: your flag turns hollow, ⚑ to ⚐, for the person
 to see.
 
-Then:
+### A worker waiting on a prompt is yours to deal with
+
+The person's rule, in their words (2026-10-12): a worker's waiting and its
+permission prompts all go to the supervisor; the supervisor is the one that
+handles them and tells the person. In nearly every case nobody should have to
+go to the worker's terminal at all.
+
+**`awaiting approval` and `awaiting input` do not wait for the interval.**
+Every other line is held to `poltergeist-notice-interval`; these two are
+handed to you at the next five-second tick, on their own, and the rest of the
+box keeps its turn. If you were typing when it came, it is handed again as
+soon as you stop — it is not lost. That is for a worker you are watching.
+**A terminal nobody watches reports to nobody**: its prompt shows on its row
+in the control room and nowhere else, so nobody is told until the person
+looks. If it is your worker, watch it.
+
+The line carries what you need to act:
+
+    [poltergeist] 0x0000000000002222 awaiting approval Bash [state_at_ms=1760000000000 event_at_ms=1760000000350 answer=allowed]: rm -rf build/
+
+`answer=` is whether you may: `allowed`, `off` (the person switched it off
+for that terminal, or for all of them), `shielded` (out of reach of every
+tool). Then, in this order:
+
+1. **`terminal_read(id)`.** Always, whatever the line said. The note is the
+   start of what is being asked; the screen is all of it, and it is where
+   you count the options.
+2. **Judge it.** Yours to answer when it is inside the task you gave and you
+   would have typed that command yourself. **Not** yours: anything that
+   reaches outside the work (deleting what the task did not make, pushing,
+   publishing, spending, credentials, another person's files), anything you
+   do not understand, and the persistent option — `Yes, and don't ask again`
+   writes a standing permission into that directory's configuration and
+   every worker that runs there afterwards stops being asked. Take the plain
+   `Yes` unless the person has said otherwise. A question that is not a
+   permission box (`awaiting input`) you answer with `terminal_send` if you
+   know the answer from the task; a guess is worse than a delay.
+3. **`terminal_answer_prompt(id, choice, state_at_ms, event_at_ms)`**, copying
+   the two moments straight off the line. With them nothing is pressed unless
+   that prompt is the one still there; without them the count is pressed blind
+   into whatever is on screen now. `choice` counts from the highlighted
+   option, starting at 1.
+4. **If you may not, or it did not take** — `answer=off` or `shielded`,
+   `AuthoriseOff`, `Shielded`, the worker's own agent refusing an answer that
+   did not come from its user, or a question that is the person's by step 2:
+   `notify_user(reason: "authorisation", …)` naming the terminal and what it
+   is asking, **and say the same in your own terminal**, with what you would
+   answer and why. The group goes to the top of the control room and the
+   system raises a notification; the reply tells you which of those actually
+   happened. `PromptGone` is neither — somebody answered, or the box changed:
+   read again.
+5. **When the person answers you**, carry it out: answer the box if they
+   said to and you now can, or tell the worker what was decided with
+   `terminal_send`. If they went and answered it themselves the state
+   changes under you — `terminal_list`, not memory, says where it stands.
+   Then read the worker once more to see it moved.
+
+**An agent with no hooks tells you none of this.** There is no `awaiting`
+line for it, only `quiet` after its threshold, and a permission box and an
+agent thinking are the same stillness. `terminal_read` when it goes quiet;
+if it is a box, steps 2 to 5 are the same, except there are no moments to
+copy — so read, answer, and read again at once to see that the option you
+meant is the one that was taken.
+
+For everything else in the box:
 
 1. **Look.** `terminal_read` gives you the screen; `reading-a-terminal` is
    how to tell the states apart.
@@ -448,13 +513,12 @@ that restarts it — not before you have seen the first take. The
 stands — four jobs in four directories cannot be set up that way. `cwd` must
 be an absolute path that exists. `watch: true` claims it as it appears.
 
-**Start workers with `claude --permission-mode auto`.** Not because it is
-tidier: it is the only route. A supervisor cannot press `shift+tab` to reach
-that mode afterwards — `terminal_key` will not take it, because the key
-parser reads `tab` as a printable character and does not count `shift` as
-part of a chord. So a worker started without it stops at the first permission
-prompt, and stays stopped until a person is fetched at whatever hour it
-happens.
+**Start workers with `claude --permission-mode auto`.** A worker started
+without it stops at every permission prompt, and each stop is a notice to
+you, a read, a judgement and an answer — work you chose by leaving the flag
+off. If you did leave it off, `terminal_key(id, "shift+tab")` cycles the CLI
+into that mode afterwards (it is a key, not text: `terminal_send` cannot
+carry it).
 
 ### Starting a worker from a role
 
@@ -590,16 +654,16 @@ compacted.
 **Start it in a mode that can run unattended.** This is part of starting an
 agent, not a detail to settle afterwards, because afterwards is too late: a
 worker stopped on a permission prompt stays stopped until somebody answers it.
-In a terminal you opened yourself, that can be you: `terminal_answer_prompt`
-is on there from the start, unless the user has switched it off. Give it the
-`state_at_ms` and `event_at_ms` you read off `terminal_list` when you looked at
-the box, and it presses nothing if that box is no longer the one there
-(`PromptGone`) — without them it counts blind into whatever is on screen now. In a terminal
-the user started it is refused until they switch it on from that terminal's own
-right-click menu — you cannot switch it on, and asking again will not change
+That somebody is you, in every terminal, whoever opened it:
+`terminal_answer_prompt` is allowed from the start (the steps are under
+"A worker waiting on a prompt is yours to deal with"). It is refused only
+where the user has said no — switched it off for that terminal, shielded it,
+or turned the default off — and there it stays off until they switch it on
+from that terminal's own
+right-click menu; you cannot switch it on, and asking again will not change
 it. Being allowed to answer is not a reason to leave a worker to stop every
 few minutes, and for the terminals where you may not, plan for the
-default: the notification that fetches somebody goes out at whatever hour it
+cost: the notification that fetches somebody goes out at whatever hour it
 happens, since `authorisation` is
 the one reason that ignores the user's quiet window. So the choice is between
 work that runs through the night and work that waits for a person to wake up,
@@ -609,10 +673,8 @@ is turned on, so leaving the command bare is choosing the stopping kind without
 meaning to.
 
 **If you did leave it bare, you can still fix it**: `terminal_key(id, "shift+tab")`
-is how those CLIs cycle into that mode, at any terminal you can reach. ⚠️ It did
-not work until task 372 — `tab` and `shift+tab` were both refused as "that is
-text, use terminal_send", and no text can carry shift+tab, so the instruction
-above had no remedy once the command had been typed. Which flag turns it on is your knowledge of the CLI you picked, and
+is how those CLIs cycle into that mode, at any terminal you can reach. Which
+flag turns it on at the start is your knowledge of the CLI you picked, and
 it is one more reason to pick the one you know.
 
 The cost of the mode is the user's to weigh, not yours to decide for them: if
@@ -796,15 +858,23 @@ tool here reads it; tell the person the path.
 
 `notify_user` asks for the person to be told, and the reason matters:
 
-- **`authorisation`** — a permission prompt you may not answer: a terminal
-  you did not open whose user has not switched on `terminal_answer_prompt`
-  for it, or one where they switched it off. Nobody may answer it for them,
-  so these go at any hour. Send as soon as you have looked and seen it.
+- **`authorisation`** — a worker's prompt that has to go to the person: one
+  you may not answer (they switched `terminal_answer_prompt` off there, or
+  shielded the terminal), one the worker's own agent would not take from you,
+  or one that is theirs to decide. These go at any hour, and with this
+  reason the operating system's own notification is raised from your window
+  as well, plugin or no plugin. Send as soon as you have looked and seen it,
+  and say in your own terminal what is being asked — that is where they will
+  come to answer you.
 - **`scheduling`** — something you *could* decide. Not sent during the user's
   quiet hours; decide it and say so in the group. That is what unattended
   means.
 
-**Read what it gives back**: it says whether the message went anywhere. If
+**Read what it gives back**: it says whether the message went anywhere, the
+system notification and the plugins each in their own sentence. "Handed to
+the operating system" is as far as Polter can see — whether it was shown is
+the system's, and on macOS the person must have allowed Polter's
+notifications. If
 nobody was told, waiting for an answer is waiting for nothing. A supervisor
 that cries wolf at 3am is one whose next notification gets ignored.
 
@@ -897,21 +967,21 @@ theirs takes effect.
 **One thing there is no tool for, and will not be**: you cannot hold a terminal
 to its work or release one that is held.
 
-**And one that depends on the user, per terminal.** Answering another agent's
+**And one the user can take away, per terminal.** Answering another agent's
 permission prompt used to be in that first list. It is now
-`terminal_answer_prompt`. It is on from the start in a terminal a supervisor
-opened, and refused everywhere else unless the user has switched it on for
-that terminal from its own right-click menu — a switch nothing you can call
-will set, and one the user can switch off in a terminal you opened. With it
-off, the answer is what it always was: say which terminal is
-stopped and on what, and do not type `yes` into it.
+`terminal_answer_prompt`, and since 2026-10-12 it is allowed in every
+terminal from the start. The user can switch it off for a terminal from that
+terminal's own right-click menu, shield the terminal, or turn the default off
+for all of them (`poltergeist-may-authorise`) — and nothing you can call
+undoes any of the three. Where they have, say which terminal is
+stopped and on what with `notify_user`, and do not type `yes` into it.
 
 ⚠️ **Two things about that switch you should know before you meet it.** With
 it on, the option you take may be the persistent one — `Yes, and don't ask
 again` writes a standing permission into that directory's configuration, and
 every worker that runs there afterwards stops being asked. Read the screen and
 count the options before you answer. And with it *off*, the keys that answer a
-box are refused too — return, the arrows, tab — while `ctrl+c` and `escape`
+box are refused too — return and the arrows — while `tab`, `ctrl+c` and `escape`
 still go through, so you can still interrupt something; what you cannot do is
 answer for somebody.
 

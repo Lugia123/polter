@@ -179,6 +179,17 @@ pub const Polter = struct {
     supervisor: bool = false,
 
     /// Let a supervisor answer this terminal's permission prompts.
+    ///
+    /// **It only ever adds.** `true` switches it on for the terminal the
+    /// role is started in; `false` leaves the terminal as the person's
+    /// default has it (`poltergeist-may-authorise`, on unless they turned
+    /// it off) and is **not** a refusal. Every role saved before 2026-10-12
+    /// carries an explicit `false`, written when off was the default and
+    /// meaning nothing more than "not ticked"; reading those as "refuse"
+    /// would switch the supervisor off in every terminal started from a
+    /// saved role, on the strength of a tick nobody withheld. A terminal
+    /// that must not be answered for is shielded, or switched off from its
+    /// own menu.
     may_authorise: bool = false,
 
     /// Out of reach of every tool, a supervisor's included.

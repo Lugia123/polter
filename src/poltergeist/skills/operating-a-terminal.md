@@ -159,8 +159,10 @@ The whole shape, in order. Suppose `./start.sh` is running next door.
    changed the code — read the error and fix it; do not restart it in a loop.
 
 Two things throughout. **It is not your terminal**: if a person is sitting
-at it, you are typing over them. And **you cannot answer a prompt on its
-behalf** — a permission question is the user's, and no tool answers it.
+at it, you are typing over them. And **a prompt in it is not yours to
+answer** — a permission question in a terminal you are merely operating
+belongs to whoever is minding it: its supervisor, with
+`terminal_answer_prompt` (see `supervising`), or the user.
 
 ## Polter's own switches are not actions
 

@@ -759,6 +759,8 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
         config.@"poltergeist-notice-interval".duration / std.time.ns_per_ms;
     self.poltergeist.config.stand_down_allowed =
         config.@"poltergeist-supervisor-stand-down";
+    self.poltergeist.config.may_authorise =
+        config.@"poltergeist-may-authorise";
     self.poltergeist.config.calls_silent_after_ms =
         config.@"poltergeist-calls-silent-after".duration / std.time.ns_per_ms;
     self.control_still_ms =
@@ -2970,11 +2972,12 @@ fn markAgentOpened(self: *App, id: poltergeistpkg.Bus.Id, by: poltergeistpkg.Bus
         return;
     };
     // Said in the same words the menu switch logs, so one grep finds every
-    // way the switch came to be on.
-    const granted = self.poltergeist.mayAuthorise(id);
-    log.info("poltergeist: terminal {x} was opened by an agent ({x}); supervisor may answer prompts here: {}", .{ id, by, granted });
+    // state the switch was in. Being opened by an agent no longer changes
+    // it (`Bus.markOpenedByAgent`): this is the default, read back.
+    const may = self.poltergeist.mayAuthorise(id);
+    log.info("poltergeist: terminal {x} was opened by an agent ({x}); supervisor may answer prompts here: {}", .{ id, by, may });
     // The menu item shows the switch, and reads it off the tab's mark.
-    if (granted) self.refreshPoltergeistTabs();
+    if (may) self.refreshPoltergeistTabs();
 }
 
 /// Called by a surface at the end of its `init`, the first moment it can be
@@ -4111,9 +4114,11 @@ fn poltergeistSend(
 /// in it is a record with a hole the size of the judgement. Every write to a
 /// terminal whose switch is off goes in the log, without exception.
 ///
-/// ⚠️ **Which means this line appears on ordinary work**, several times a
-/// night, on a terminal nobody has switched anything on for -- that is the
-/// default state. It is accepted rather than tuned away, and `could_answer`
+/// ⚠️ **Which means this line appears on ordinary work** at such a terminal.
+/// It used to be most terminals -- the switch was off until somebody
+/// switched it on -- and since 2026-10-12 it is only the ones the person
+/// has switched off, where the record matters most: they said no, and this
+/// is what was typed there anyway. It is accepted rather than tuned away, and `could_answer`
 /// is what makes it bearable: the record is complete and *sorted*, so a
 /// reader greps the flag rather than reading everything. **The flag labels;
 /// it never decides.** Getting it wrong costs one line's filing and nobody's
@@ -6144,6 +6149,7 @@ fn notifyUser(
     title: []const u8,
     body: []const u8,
     id: poltergeistpkg.Bus.Id,
+    from: poltergeistpkg.Bus.Id,
 ) anyerror![]const u8 {
     const self: *App = @ptrCast(@alignCast(ctx));
 
@@ -6152,6 +6158,59 @@ fn notifyUser(
             .authorisation
         else
             .scheduling;
+
+    // **The system's own notification, for a worker that needs the person**
+    // (the user's decision, 2026-10-13: "要"). It needs no plugin, so the
+    // default installation -- where no plugin subscribes and the answer
+    // below is "nobody was told" -- still reaches somebody. Raised from the
+    // caller's window: the person is being called to the supervisor, which
+    // is where the question is put to them.
+    //
+    // Not held to `desktop-notifications`: that switch is about programs
+    // running in a terminal raising notifications with an escape sequence,
+    // and this is Polter's own.
+    const system: poltergeistpkg.notify.System = switch (reason) {
+        .scheduling => .not_asked,
+        .authorisation => self.raiseSystemNotification(from, title, body),
+    };
+    const plugins = try self.notifyPlugins(alloc, reason, title, body, id);
+    defer alloc.free(plugins);
+    return poltergeistpkg.notify.reply(alloc, system, plugins);
+}
+
+/// Raise the operating system's notification from `from`'s window and say
+/// what became of it. Never fails: a notification that could not be raised
+/// is an answer, not an error.
+fn raiseSystemNotification(
+    self: *App,
+    from: poltergeistpkg.Bus.Id,
+    title: []const u8,
+    body: []const u8,
+) poltergeistpkg.notify.System {
+    // A caller that is not a terminal carries `Bus.not_a_terminal`, which no
+    // surface is ever given, so it is simply not found.
+    const surface = self.findSurfaceByID(from) orelse return .no_terminal;
+    const title_z = self.alloc.dupeZ(u8, title) catch return .not_taken;
+    defer self.alloc.free(title_z);
+    const body_z = self.alloc.dupeZ(u8, body) catch return .not_taken;
+    defer self.alloc.free(body_z);
+    const raised = surface.raiseDesktopNotification(title_z, body_z) catch |err| {
+        log.warn("poltergeist: could not raise a system notification err={}", .{err});
+        return .not_taken;
+    };
+    return poltergeistpkg.notify.System.ofRaised(raised);
+}
+
+/// The plugin half of `notifyUser`: who subscribed, whether the hour allows
+/// it, and how many of them are up. A sentence the caller owns.
+fn notifyPlugins(
+    self: *App,
+    alloc: Allocator,
+    reason: poltergeistpkg.notify.Reason,
+    title: []const u8,
+    body: []const u8,
+    id: poltergeistpkg.Bus.Id,
+) anyerror![]const u8 {
 
     var name_buf: [256]u8 = undefined;
     var name_fixed: std.heap.FixedBufferAllocator = .init(&name_buf);

@@ -32,7 +32,7 @@ Polter 是一个内置 MCP server 的终端。跑在某个标签页里的 agent 
 | `terminal_keys` | 无 | `terminal_key` 认的修饰键名和键名 | 任何终端 |
 | `terminal_action` | `id`, `action` | 成功或拒绝码。`action` 是快捷键动作名，如 `new_tab`、`close_surface`、`new_split:right` | 任何终端 |
 | `terminal_actions` | 无 | `terminal_action` 认的全部动作，以及哪些要带冒号后的值 | 任何终端 |
-| `terminal_answer_prompt` | `id`, `choice?`, `state_at_ms?`, `event_at_ms?` | 成功、`AuthoriseOff` 或 `PromptGone`。`choice` 从高亮项往下数，默认 1。带上 `terminal_list` 里读到的两个时刻（要么都给要么都不给），你看到的那个提示不在了就一个键都不发 | 仅总管，且目标终端的授权开关要开着 |
+| `terminal_answer_prompt` | `id`, `choice?`, `state_at_ms?`, `event_at_ms?` | 成功、`AuthoriseOff` 或 `PromptGone`。`choice` 从高亮项往下数，默认 1。带上 `terminal_list` 里读到的两个时刻（要么都给要么都不给），你看到的那个提示不在了就一个键都不发 | 仅总管，且目标终端的授权开关要开着（默认开着，除非用户关掉） |
 | `terminal_open` | `cwd`, `watch?`, `place?` | `placed`（split 或 tab）、`watch`（not_asked / watching / refused）。新终端已就绪时带 `id`，分屏带 `pending: true` 不带 `id` | 仅总管 |
 | `terminal_layout` | `id`, `layout` | 排好之后的布局树，每格带终端 id。Linux 上答 `Unsupported` | 仅总管 |
 | `terminal_capabilities` | `id` | 那个终端的 `role`、`started`、`cli`、`polter`、`standing`（含 `watched_by`、`may_authorise`、`shielded`、`held`） | 仅总管 |
@@ -89,7 +89,7 @@ Polter 是一个内置 MCP server 的终端。跑在某个标签页里的 agent 
 | `clock_out` | `id`, `reason?` | 标记这个终端今天收工，之后它静下来不再上报。用户按住的终端答 `TerminalHeld` | 仅总管 |
 | `clock_in` | `id` | 让终端回到在岗状态 | 仅总管 |
 | `notices` | 无 | 还没看过的上报：哪些终端静了多久，哪些又动了。读一次清一次 | 仅总管 |
-| `notify_user` | `reason`, `title`, `body?`, `id?` | 通知有没有真的发出去。`reason` 取 `authorisation` 或 `scheduling` | 仅总管 |
+| `notify_user` | `reason`, `title`, `body?`, `id?` | 通知有没有真的发出去。`reason` 取 `authorisation` 或 `scheduling`。取 `authorisation` 时还会发一条操作系统自己的通知，返回值里和插件分开说 | 仅总管 |
 | `session_recall` | 无 | 重启前记下的安排：有哪些群，各终端当时在哪干活、叫什么 | 仅总管 |
 | `config_get` | `key?` | 用户的配置，只读 | 仅总管 |
 
@@ -137,7 +137,7 @@ Polter 是一个内置 MCP server 的终端。跑在某个标签页里的 agent 
 - **被监视（watched）**：某个总管用 `set_watch` 收了它，或者用户在标签页菜单里手动开了监视。
 - **屏蔽（shielded）**：用户设的。工具接口上谁都读不了它、打不进字。
 - **按住（held）**：用户设的。这个终端不许被 `clock_out`。
-- **授权开关（may_authorise）**：总管能不能替这个终端回答权限确认框。
+- **授权开关（may_authorise）**：总管能不能替这个终端回答权限确认框。每个终端默认开着，除非用户说了不。
 
 后三个只有用户能设能撤。源码在 `Entry.shielded` 的注释里给了理由：被管的一方自己能撤掉的保证，等于没有保证。工具接口里没有读写「按住」的方法，总管只能在 `terminal_list` 里看到 `held` 这个字段。
 
@@ -164,7 +164,7 @@ Polter 是一个内置 MCP server 的终端。跑在某个标签页里的 agent 
 | `Shielded` | 目标被用户屏蔽 |
 | `Supervised` | 目标带监视标记，调用方不是总管 |
 | `NotYours` | 东西是别的总管的：它建的群，或者它已经收走的终端 |
-| `AuthoriseOff` | 目标终端的授权开关没开 |
+| `AuthoriseOff` | 用户把目标终端的授权开关关掉了（只关这一个，或在配置里对全部关掉） |
 | `TerminalHeld` | 想让一个被用户按住的终端收工 |
 | `AlreadyWatched` | 正被监视的终端想把自己升成总管 |
 | `UnknownTerminal` | 没有这个 id 的终端 |
@@ -204,12 +204,13 @@ Polter 测两个时长：屏幕多久没变（`quiet_ms`），和那个终端里
 
 代价是总管每次都得自己读屏、自己判断，Polter 不给现成的状态。想要「忙 / 完成 / 等你」这种直接结论的话，这个工具给不了。
 
-### 不替别人的 agent 点「同意」，除非用户放开
+### 用户说了不的地方，不替别人的 agent 点「同意」
 
 `terminal_answer_prompt` 要同时满足两个条件：调用方是总管，目标终端的授权开关开着。
 
-- 总管自己开出来的终端（`terminal_open`、`role_launch`、`terminal_layout` 里新建的窗格），开关一开始就是开的，用户可以关掉。
-- 其余终端，开关默认关着。只有用户能从那个终端自己的右键菜单打开。它没有快捷键，命令面板里也没有，因为 `terminal_key` 能按任何组合键，有快捷键就等于 agent 能自己开门。
+- **每个终端的开关一开始就是开的**，不管是谁开的（2026-10-12 起；此前只有总管自己开出来的终端是开的）。worker 的确认归总管处理：它能判断的自己回答，其余的用 `notify_user` 提到用户面前。
+- 用户可以从某个终端自己的右键菜单把它关掉、把那个终端护起来，或者用 `poltergeist-may-authorise = false` 对全部终端关掉默认值。关掉之后只有用户能再打开。它没有快捷键，命令面板里也没有，因为 `terminal_key` 能按任何组合键，有快捷键就等于 agent 能自己开门。
+- 单个终端的「关」只到那个终端关闭为止；能跨过重启的是配置那一行。
 - 任何终端都不能通过这个工具回答自己的确认框。
 - 插件完全调不了这个工具。
 
@@ -217,11 +218,11 @@ Polter 测两个时长：屏幕多久没变（`quiet_ms`），和那个终端里
 
 这里有个缺口，源码自己公开写着。开关关着的时候，`terminal_send` 发一个 `1` 加回车，仍然能把确认框答掉。它堵不上：派任务本身就是「一段文字加一个回车」，拒掉这个就等于总管什么都说不了。源码的说法是，这个开关拦住了专用工具和随手按键，留下一条公开且有日志的旁路。所以它比「做不到」要弱。
 
-开关开着的时候，总管两个选项都能选，包括「以后不再询问」。后一个会在那个目录的配置里写下长期许可，之后在那个目录跑的 agent 都不会再被问。Polter 只负责发按键，分不清总管按的是哪一个。
+开关开着的时候——这是默认状态，对每个没被护住的终端都是——总管两个选项都能选，包括「以后不再询问」。后一个会在那个目录的配置里写下长期许可，之后在那个目录跑的 agent 都不会再被问。Polter 只负责发按键，分不清总管按的是哪一个。
 
 ### 不替用户解锁
 
-工具接口里没有解除屏蔽、解除按住、打开授权开关的方法。`role_put` 改角色时动到 `supervisor`、`may_authorise`、`shielded` 三项也会被拒。`config_get` 只读，改配置是用户的事。
+工具接口里没有解除屏蔽、解除按住的方法，也没有把用户关掉的授权开关重新打开的方法。`role_put` 改角色时动到 `supervisor`、`may_authorise`、`shielded` 三项也会被拒。`config_get` 只读，改配置是用户的事。
 
 ### 不隔离文件，不跟模型说话
 

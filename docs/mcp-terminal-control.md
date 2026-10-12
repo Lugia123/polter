@@ -32,7 +32,7 @@ The "Who" column comes from `requiresSupervisor` in `rpc.zig`. "Any terminal" on
 | `terminal_keys` | none | The modifier and key names `terminal_key` accepts | Any terminal |
 | `terminal_action` | `id`, `action` | Success or a refusal code. `action` is a keybinding action: `new_tab`, `close_surface`, `new_split:right` | Any terminal |
 | `terminal_actions` | none | Every action `terminal_action` takes, and which want a value after the colon | Any terminal |
-| `terminal_answer_prompt` | `id`, `choice?`, `state_at_ms?`, `event_at_ms?` | Success, `AuthoriseOff`, or `PromptGone`. `choice` counts down from the highlighted option, default 1. With the two moments from `terminal_list` (both or neither), no key is sent unless the prompt you saw is still the one there | Supervisor only, and the target's authorise switch must be on |
+| `terminal_answer_prompt` | `id`, `choice?`, `state_at_ms?`, `event_at_ms?` | Success, `AuthoriseOff`, or `PromptGone`. `choice` counts down from the highlighted option, default 1. With the two moments from `terminal_list` (both or neither), no key is sent unless the prompt you saw is still the one there | Supervisor only, and the target's authorise switch must be on (it is, unless the user turned it off) |
 | `terminal_open` | `cwd`, `watch?`, `place?` | `placed` (split or tab) and `watch` (not_asked / watching / refused). Carries `id` when the terminal is ready. A split carries `pending: true` and no `id` | Supervisor only |
 | `terminal_layout` | `id`, `layout` | The resulting layout tree with a terminal id in every cell. Answers `Unsupported` on Linux | Supervisor only |
 | `terminal_capabilities` | `id` | That terminal's `role`, `started`, `cli`, `polter` and `standing` (which includes `watched_by`, `may_authorise`, `shielded`, `held`) | Supervisor only |
@@ -89,7 +89,7 @@ The panel holds who is on what and whether it's done. Acceptance criteria and th
 | `clock_out` | `id`, `reason?` | Marks a terminal done for the day so its quiet spells stop being reported. `TerminalHeld` for one the user is holding | Supervisor only |
 | `clock_in` | `id` | Puts a terminal back on duty | Supervisor only |
 | `notices` | none | Reports not yet seen: which terminals went quiet and for how long, which came back. Reading clears them | Supervisor only |
-| `notify_user` | `reason`, `title`, `body?`, `id?` | Whether the message went anywhere. `reason` is `authorisation` or `scheduling` | Supervisor only |
+| `notify_user` | `reason`, `title`, `body?`, `id?` | Whether the message went anywhere. `reason` is `authorisation` or `scheduling`. With `authorisation` the operating system's own notification is raised too, and the reply says so separately from the plugins | Supervisor only |
 | `session_recall` | none | The arrangement written down before a restart: groups, and where each terminal was working and what it was called | Supervisor only |
 | `config_get` | `key?` | The user's configuration, read only | Supervisor only |
 
@@ -137,7 +137,7 @@ This is the part that matters most. The rules live in `authorize` in `rpc.zig`, 
 - **Watched**: a supervisor claimed it with `set_watch`, or the user switched watching on by hand from the tab's menu.
 - **Shielded**: set by the user. Nothing reads it or types into it through the tool surface.
 - **Held**: set by the user. The terminal can't be clocked out.
-- **Authorise switch** (`may_authorise`): whether a supervisor may answer this terminal's permission prompts.
+- **Authorise switch** (`may_authorise`): whether a supervisor may answer this terminal's permission prompts. On in every terminal unless the user said otherwise.
 
 The last three are the user's alone to set and lift. The comment on `Entry.shielded` gives the reason: a guarantee the supervised party can lift is no guarantee. There is no tool that reads or writes the hold. A supervisor sees `held` on the terminal's row in `terminal_list` and that is all.
 
@@ -164,7 +164,7 @@ One more rule has nothing to do with standing: most tools can't be aimed at the 
 | `Shielded` | The user has shielded the target |
 | `Supervised` | The target carries a supervision mark and the caller isn't a supervisor |
 | `NotYours` | It belongs to another supervisor: a group it made or a terminal it has claimed |
-| `AuthoriseOff` | The target's authorise switch is off |
+| `AuthoriseOff` | The user has switched the target's authorise switch off (for that terminal, or for all of them in the configuration) |
 | `TerminalHeld` | Clocking out a terminal the user is holding |
 | `AlreadyWatched` | A watched terminal tried to make itself a supervisor |
 | `UnknownTerminal` | No terminal by that id |
@@ -204,12 +204,13 @@ Both numbers land in the supervisor's `notices`. The tool's own description is b
 
 The cost is that the supervisor has to read the screen and make the call every time. If you want a ready-made "busy / done / needs you" state, this tool doesn't give you one.
 
-### It doesn't press "yes" for another agent unless the user allowed it
+### It doesn't press "yes" for another agent where the user said no
 
 `terminal_answer_prompt` needs two things at once: the caller is a supervisor, and the target's authorise switch is on.
 
-- In a terminal the supervisor opened itself (`terminal_open`, `role_launch`, a new pane in `terminal_layout`) the switch starts on. The user can turn it off.
-- Everywhere else it starts off, and only the user can turn it on, from that terminal's own right-click menu. It has no keybinding and no command-palette entry, because `terminal_key` can press any chord and a keybinding would be a door an agent could open for itself.
+- **The switch starts on in every terminal**, whoever opened it (since 2026-10-12; before that it was on only in terminals a supervisor had opened). A worker's prompts are the supervisor's to deal with: it answers the ones it can judge, and takes the rest to the user with `notify_user`.
+- The user can turn it off for one terminal from that terminal's own right-click menu, shield the terminal, or turn the default off for every terminal with `poltergeist-may-authorise = false`. Only the user can turn it back on. It has no keybinding and no command-palette entry, because `terminal_key` can press any chord and a keybinding would be a door an agent could open for itself.
+- A per-terminal "off" lasts until that terminal closes; the configuration line is the one that survives a restart.
 - No terminal can answer its own prompt through this tool.
 - A plugin can't call it at all.
 
@@ -217,11 +218,11 @@ With the switch off, `terminal_key` also refuses the six keys that move through 
 
 There is a gap here and the source states it openly. With the switch off, `terminal_send` can still put a `1` and a return into that terminal and answer the box. That can't be closed: assigning a task is itself text plus a return, and refusing one refuses the other. In the source's words, the switch stops the dedicated tool and the casual keypress and leaves a bypass that is published and logged. That is a weaker claim than "can't be done."
 
-With the switch on, a supervisor can take either option, including "don't ask again." That one writes a standing permission into the directory's configuration, so agents that run there afterwards stop being asked. Polter sends keys and can't tell which option the supervisor took.
+With the switch on — the default, for every terminal that is not shielded — a supervisor can take either option, including "don't ask again." That one writes a standing permission into the directory's configuration, so agents that run there afterwards stop being asked. Polter sends keys and can't tell which option the supervisor took.
 
 ### It doesn't unlock anything for the user
 
-The tool surface has no method to lift a shield, lift a hold, or turn the authorise switch on. `role_put` refuses a write that touches `supervisor`, `may_authorise` or `shielded`. `config_get` is read only. Changing settings is the user's.
+The tool surface has no method to lift a shield, lift a hold, or turn the authorise switch back on once the user has turned it off. `role_put` refuses a write that touches `supervisor`, `may_authorise` or `shielded`. `config_get` is read only. Changing settings is the user's.
 
 ### It doesn't isolate files or talk to a model
 

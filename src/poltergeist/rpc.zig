@@ -1994,9 +1994,12 @@ pub fn authorize(bus: *const Bus, caller: Bus.Caller, req: Request) Error!void {
     // and the second is the one that makes the first worth anything.
     //
     // The rule this enforces is the user's: a supervisor may answer a
-    // worker's permission prompt only where the user has said so, from that
-    // terminal's own right-click menu. `Bus.setMayAuthorise` takes `.user` and
-    // nothing else, so there is no order of calls that grants it here.
+    // worker's permission prompt everywhere except where the user has said
+    // no -- for one terminal, from that terminal's own right-click menu, or
+    // for all of them in the configuration (2026-10-12: it used to be the
+    // other way round, off until switched on). `Bus.setMayAuthorise` takes
+    // `.user` and nothing else, so there is no order of calls that undoes a
+    // no here.
     switch (req) {
         // The dedicated tool. Nothing subtle: the switch is the whole
         // condition.
@@ -2179,14 +2182,17 @@ pub fn errorMessage(err: Error) []const u8 {
             "is watching it -- and only a supervisor may reach a marked terminal. " ++
             "Terminals carrying no mark are open to you. If co-ordinating is your job, " ++
             "call become_supervisor and try again; otherwise ask the user",
-        error.AuthoriseOff => "the user has not allowed a supervisor to answer that " ++
-            "terminal's permission prompts. A terminal a supervisor opened starts " ++
-            "with it on; this one either was not opened by a supervisor or has had " ++
-            "it switched off. It is off until they switch it on from that " ++
+        error.AuthoriseOff => "the user has switched off a supervisor answering that " ++
+            "terminal's permission prompts. Every terminal starts with it on, so " ++
+            "this is a decision of theirs: for this terminal, or for all of them " ++
+            "in the configuration (`poltergeist-may-authorise = false`). It is off " ++
+            "until they switch it on from that " ++
             "terminal's own right-click menu, or the app menu, and nothing here can " ++
             "switch it on -- not being a " ++
             "supervisor, not asking again. A worker stopped on a prompt therefore stays " ++
-            "stopped: say so, name the terminal, and let the person answer it. " ++
+            "stopped until the person answers it: call notify_user with `reason: " ++
+            "authorisation`, name the terminal and what it is asking, and say the same " ++
+            "in your own terminal. " ++
             "**This also refused a key**: with the switch off, the keys that answer a " ++
             "box -- return and the arrows -- are refused at that terminal, while ctrl+c " ++
             "and escape still go through, so interrupting something is unaffected.",
@@ -3833,8 +3839,10 @@ test "nothing answers another terminal's prompt around the user's switch" {
     try b.addSupervisor(boss);
     try b.register(worker);
 
-    // The switch is off: this is the state every terminal is in until its
-    // user says otherwise.
+    // On until the person says otherwise (2026-10-12) -- so this is a
+    // terminal whose person has said otherwise.
+    try testing.expect(b.mayAuthorise(worker));
+    try b.setMayAuthorise(worker, false, .user);
     try testing.expect(!b.mayAuthorise(worker));
 
     try testing.expectError(error.AuthoriseOff, authorize(&b, term(boss), .{
@@ -5245,6 +5253,12 @@ pub const Host = struct {
             title: []const u8,
             body: []const u8,
             id: Bus.Id,
+            /// The terminal that asked, `Bus.not_a_terminal` when the caller
+            /// is not one. The
+            /// system notification is raised from its window: the person
+            /// is being called to the supervisor, which is where the
+            /// question will be put to them.
+            from: Bus.Id,
         ) anyerror![]const u8,
 
         /// Last night's arrangement, as JSON. Empty when there is none.
@@ -5621,8 +5635,9 @@ pub const Host = struct {
         title: []const u8,
         body: []const u8,
         id: Bus.Id,
+        from: Bus.Id,
     ) anyerror![]const u8 {
-        return self.vtable.notifyUser(self.ctx, alloc, reason, title, body, id);
+        return self.vtable.notifyUser(self.ctx, alloc, reason, title, body, id, from);
     }
 
     fn sessionRecall(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
@@ -6190,7 +6205,7 @@ fn dispatchOne(
                 .standing = .{
                     .supervisor = e.role == .supervisor,
                     .watched_by = e.watched_by,
-                    .may_authorise = e.may_authorise,
+                    .may_authorise = bus.mayAuthorise(p.id),
                     .shielded = e.shielded,
                     .held = e.held,
                 },
@@ -6251,7 +6266,7 @@ fn dispatchOne(
         },
 
         .notify_user => |p| {
-            const said = host.notifyUser(alloc, p.reason, p.title, p.body, p.id) catch
+            const said = host.notifyUser(alloc, p.reason, p.title, p.body, p.id, caller) catch
                 return hostFailure("NotifyFailed", "could not attempt to notify");
             return .{ .text = said };
         },
@@ -9249,6 +9264,7 @@ const FakeHost = struct {
         reason: []const u8,
         _: []const u8,
         _: []const u8,
+        _: Bus.Id,
         _: Bus.Id,
     ) anyerror![]const u8 {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));

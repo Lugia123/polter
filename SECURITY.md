@@ -187,22 +187,42 @@ made against it is the reason for its shape (`authorize` in
 
 - It is a supervisor's tool, and it works only on a terminal whose switch is
   on (`Bus.Entry.may_authorise`). Otherwise it answers `AuthoriseOff`, and the
-  keys that answer a box — return, the arrows, tab — are refused at that
-  terminal too.
-- **In a terminal you started yourself the switch is off** until you turn it
-  on from that terminal's own menu (`Agents → Let a Supervisor Answer Prompts
-  Here`). No tool can turn it on; `setMayAuthorise` refuses everybody but the
-  user.
-- **In a tab or a split a supervisor opened, it is on from the start**
-  (`Bus.markOpenedByAgent`, since 0.9.1684), and you can switch it off there.
-  A terminal a plain worker opened carries no grant.
+  keys that answer a box — return and the arrows — are refused at that
+  terminal too. (This file used to list `tab` among them. It never was:
+  `answersAPrompt` in `src/poltergeist/rpc.zig` is the list.)
+- **The switch is on in every terminal from the start** — one you started
+  yourself, one a supervisor opened, one a worker opened. That is a decision
+  of 2026-10-12 and the reverse of what this file said before it, when the
+  switch was off everywhere except in terminals a supervisor had opened.
+- **Three ways to say no, and no tool undoes any of them.** For one terminal:
+  that terminal's own menu (`Agents → Let a Supervisor Answer Prompts Here`);
+  `setMayAuthorise` refuses everybody but the user. For one terminal,
+  against every tool and not only this one: shield it. For all of them:
+  `poltergeist-may-authorise = false` in the configuration, after which a
+  terminal is answered for only where you switch it on.
 - A plugin cannot call the tool at all, and nobody may answer their *own*
   prompt through it (`selfPermitted`).
 
-**What that default opens, said plainly:** a supervisor can open a terminal in
-a directory and take "Yes, and don't ask again" there, which is a standing
-permission for every agent that runs in that directory afterwards. There is no
-setting that turns the default off; the per-terminal switch is the way back.
+**What that default opens, said plainly:** out of the box, any supervisor can
+answer the permission prompt of any terminal that is not shielded — including
+terminals it did not open and you started by hand — and it can take "Yes, and
+don't ask again" there, which is a standing permission for every agent that
+runs in that directory afterwards. Becoming a supervisor is open to any
+terminal that is not being minded (`become_supervisor`), so this is not a
+power reserved to an agent you appointed. Polter sends the keys and cannot
+tell which option was taken; what it adds is that the prompt named in the
+call must be the one still standing (`state_at_ms` / `event_at_ms`), and
+that the call is logged.
+
+**What a per-terminal "no" does not survive:** it lasts until that terminal
+closes. A terminal's number is not kept across a restart, so a terminal
+restored afterwards starts from the default again. A refusal that has to
+outlast a restart is the configuration line, or the shield on a role.
+
+And the gap that was always there is still there: with the switch off,
+`terminal_send` can put `1` and a return into the terminal. That cannot be
+refused without refusing the assignment of work, so it is logged instead
+(`App.noteAnswerSwitchNotConsulted`).
 
 `terminal_send` is not behind the switch. It types text and cannot press
 return, and it is an ordinary logged call rather than a way round anything —

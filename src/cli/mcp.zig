@@ -442,7 +442,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "notify_user",
-        .description = "Ask for the person to be told something. Use `reason: authorisation` when a terminal is stopped on a permission prompt -- those go out at any hour, because the terminal is stopped until somebody answers and that somebody may have to be the user. (You may be able to answer it yourself with terminal_answer_prompt; that depends on a per-terminal switch only the user can set.) Use `reason: scheduling` for questions you could answer yourself (keep going, change tack, give up); those are held back during the hours the user set aside, and handed back to you to decide. **Read the reply**: it says whether the message actually went anywhere. If it did not, do not sit waiting for an answer. Supervisor only.",
+        .description = "Ask for the person to be told something. Use `reason: authorisation` when a terminal is stopped on a permission prompt -- those go out at any hour, because the terminal is stopped until somebody answers and that somebody may have to be the user. (Answer it yourself first with terminal_answer_prompt when the box is one you can judge: that is allowed in every terminal unless the user has switched it off there or shielded it. This is for the ones you cannot -- refused with `AuthoriseOff`, the worker's own agent would not take your answer, or the question is the person's to decide.) **With `authorisation` the operating system's own notification is raised as well**, from your window, with no plugin needed Use `reason: scheduling` for questions you could answer yourself (keep going, change tack, give up); those are held back during the hours the user set aside, and handed back to you to decide. **Read the reply**: it says whether the message actually went anywhere, the system notification and the plugins each in their own sentence. If it did not, do not sit waiting for an answer. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"reason":{"type":"string","enum":["authorisation","scheduling"]},"title":{"type":"string"},"body":{"type":"string"},"id":{"type":"string","description":"The terminal this is about, if it is about one"}},"required":["reason","title"]}
         ,
@@ -743,14 +743,14 @@ const tools = [_]Tool{
             "agent CLI: a build, a server, a log to tail are all ordinary uses. " ++
             "**When it is an agent, start it in a mode that can run unattended** " ++
             "-- an auto mode, off by default in most CLIs. A worker stopped on a " ++
-            "permission prompt stays stopped until somebody answers it, and " ++
-            "whether that somebody can be you is the user's call, one terminal at " ++
-            "a time. **A terminal you open as a supervisor starts with it on**; " ++
-            "the user can switch it off, and anywhere else " ++
+            "permission prompt stays stopped until somebody answers it. **That " ++
+            "somebody can be you, in every terminal, unless the user has said " ++
+            "otherwise** -- switched it off for that terminal, shielded it, or " ++
+            "turned the default off in the configuration. Where they have, " ++
             "terminal_answer_prompt is refused with `AuthoriseOff` until " ++
             "they switch it on from that terminal's own right-click menu, and nothing you " ++
             "can call switches it on. With it off, the keys that answer a box " ++
-            "(return, the arrows, tab) are refused at that terminal too. " ++
+            "(return and the arrows) are refused at that terminal too. " ++
             "terminal_send is not behind that switch -- but it types text and " ++
             "cannot press return, because the paste path it uses turns every " ++
             "control byte into a space, and it is an ordinary logged call like any " ++
@@ -814,7 +814,9 @@ const tools = [_]Tool{
             "supervisor that started it to watch, where a click opens it, how long it " ++
             "may be still. **supervisor, may_authorise and shielded are the user's to " ++
             "set**: a write that changes any of them from what the role has now (off, " ++
-            "for a new role) is refused as NotPermitted. A built-in role's key is " ++
+            "for a new role) is refused as NotPermitted. `may_authorise` in a role only " ++
+            "ever adds: off there means \"as the user's default has it\", which is on " ++
+            "unless they turned it off, not \"refuse\". A built-in role's key is " ++
             "refused as BuiltinRole. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"role":{"type":"object","description":"One role, in the shape role_list returns."}},"required":["role"],"additionalProperties":false}
@@ -932,28 +934,33 @@ const tools = [_]Tool{
         .name = "terminal_answer_prompt",
         .description = "Answer a permission prompt that has stopped another terminal -- " ++
             "the `Do you want to proceed? 1. Yes / 2. Yes, and don't ask again / 3. No` " ++
-            "box a worker sits on until somebody answers it. **On from the start in " ++
-            "a terminal a supervisor opened** (terminal_open, role_launch, a new pane " ++
-            "in terminal_layout), unless the user has switched it off there. **Off " ++
-            "for every other terminal until the user switches it on for that one**, " ++
-            "from that terminal's own " ++
+            "box a worker sits on until somebody answers it. **Allowed in every " ++
+            "terminal from the start**, whoever opened it, because a worker's " ++
+            "prompts are the supervisor's to deal with. **Not allowed where the " ++
+            "user has said no**: switched it off for that terminal, shielded the " ++
+            "terminal, or turned the default off in the configuration " ++
+            "(`poltergeist-may-authorise`). Only they can change any of those -- " ++
+            "the switch is in that terminal's own " ++
             "right-click menu; nothing you can call switches it on, and asking again " ++
             "will not " ++
-            "change it. With it off you get `AuthoriseOff`, and the right move is to " ++
-            "say which terminal is stopped and let the person answer -- that is what " ++
-            "this program did for every terminal before the switch existed. `choice` " ++
+            "change it. Where they have you get `AuthoriseOff` (or `Shielded`), and the " ++
+            "right move is notify_user with `reason: authorisation`, naming the " ++
+            "terminal and what it is asking, and saying the same in your own " ++
+            "terminal. The notice that told you about the prompt already says which " ++
+            "it will be: `answer=allowed`, `answer=off` or `answer=shielded`. `choice` " ++
             "counts the options from the highlighted one, starting at 1, and defaults " ++
             "to 1: it walks down with the arrow keys and presses return, so **read the " ++
             "terminal first** -- a wrong count takes a different option and reports " ++
             "success. **Pass `state_at_ms` and `event_at_ms` from that terminal's `agent` " ++
-            "in terminal_list** (both, as you read them when you looked) and nothing is " ++
+            "in terminal_list, or from the notice that told you, which carries the same " ++
+            "two** (both, as you read them when you looked) and nothing is " ++
             "pressed unless that prompt is the one still there: answered meanwhile, " ++
             "replaced by another box, or a screen that has moved since it was drawn all " ++
             "come back as `PromptGone` with no key sent, and you look again. Without them " ++
             "the count is pressed blind into whatever is there now. They are moments, not " ++
             "the `since_ms` beside them, which is a length of time. " ++
             "⚠️ Note what the switch covers: with it off, this tool and the " ++
-            "keys that answer a box (return, the arrows, tab) are refused at that " ++
+            "keys that answer a box (return and the arrows) are refused at that " ++
             "terminal, while ctrl+c and escape still go through. Same reach rule as " ++
             "terminal_read. Never at your own terminal: your own prompt is yours.",
         .schema =

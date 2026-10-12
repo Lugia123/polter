@@ -12,7 +12,7 @@ polter-<构建号>\
     share\
         terminfo\ghostty.terminfo      <- 核心的兜底哨兵（本包里不走这条路，仍要带）
         ghostty\                       <- 插件、主题、shell 集成
-        locale\                        <- 界面翻译，32 个 .mo；必须和 ghostty\ 并排
+        locale\                        <- 界面翻译，34 个 .mo；必须和 ghostty\ 并排
 ```
 
 **`share\` 底下那三样是一组，不能挑着拷**，而它们各自是被**不同的东西**找到的 —— 这一段值得读，因为漏掉任何一样都不会有人报错：
@@ -54,12 +54,12 @@ info(i18n): loaded catalog locale=zh_CN entries=… path=…\share\locale\zh_CN\
 | 核什么 | 命令 | 应当是 |
 | --- | --- | --- |
 | 兜底哨兵在不在 | `Test-Path share\terminfo\ghostty.terminfo` | `True` |
-| 翻译打了几份 | `(Get-ChildItem share\locale -Recurse -Filter *.mo).Count` | **32** |
-| 中文那份是不是这棵树的 | `(Get-ChildItem share\locale\zh_CN\LC_MESSAGES\*.mo).Length` | **30959** |
+| 翻译打了几份 | `(Get-ChildItem share\locale -Recurse -Filter *.mo).Count` | **34** |
+| 中文那份是不是这棵树的 | `(Get-ChildItem share\locale\zh_CN\LC_MESSAGES\*.mo).Length` | **67770** |
 
 **任何一行不对，就是包没打全，别往下测** —— 之后看到的每一个「没做」都可能只是这一件事。**三样都对、上面两行日志也都在，界面仍然是英文** —— 那才是产品的问题，请照第六节报回来。
 
-> 那 32 和 30959 是从源码树量的：`po\` 下 32 份翻译各出一个 `.mo`，中文那份由 GNU gettext 0.21 的 `msgfmt` 编出来是 30,959 字节。**换一个大版本的 `msgfmt` 可能给出别的字节数**，所以对不上先问打包的人用的是哪个版本，再当成缺陷。
+> 那 34 和 67770 是从源码树量的（2026-10-13，72af59caf）：`po\` 下 34 份翻译各出一个 `.mo`，中文那份由 GNU gettext-tools 1.0 的 `msgfmt` 编出来是 67,770 字节。**中文那个数跟着 `po\zh_CN.po` 走，加一条译文就变**，所以它只对这一个提交成立；包里的 `MANIFEST.txt` 写着那一包自己的数时，以它为准。**换一个大版本的 `msgfmt` 可能给出别的字节数**，所以对不上先问打包的人用的是哪个版本，再当成缺陷。
 
 插件目录不用你准备：程序自己在 `%LOCALAPPDATA%\polter\plugins` 下建。
 

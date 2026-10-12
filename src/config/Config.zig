@@ -1639,6 +1639,34 @@ command: ?Command = null,
 /// sleep.
 @"poltergeist-supervisor-stand-down": bool = true,
 
+/// Whether a supervisor may answer a permission prompt in another terminal
+/// -- the `terminal_answer_prompt` tool and the keys that take an option in
+/// one -- when you have not said otherwise for that terminal.
+///
+/// On by default. A worker that stops on "Do you want to proceed?" is then
+/// the supervisor's to deal with: it answers what is plainly part of the
+/// work and brings the rest to you, so you are seldom sent to a worker's
+/// terminal at all.
+///
+/// **What that opens, said plainly.** Any terminal you have made a
+/// supervisor can take either answer in the prompt of any terminal that is
+/// not shielded, including "Yes, and don't ask again" -- which writes a
+/// standing permission into that directory, so every agent that runs there
+/// afterwards stops being asked. Polter cannot tell which of the two was
+/// pressed; it sends keys.
+///
+/// Three ways to say no, narrowest first: the terminal's own menu item
+/// ("Let a Supervisor Answer This Terminal's Prompts"), which lasts as long
+/// as that terminal does; the shield ("Keep Agents Out of This Terminal"),
+/// which keeps every tool out of it; and setting this to `false`, which
+/// makes off the starting point for every terminal again and is the one
+/// that is still in force after a restart. With this `false` the menu item
+/// switches a single terminal on.
+///
+/// Only you can change any of the three: no tool, key binding or command
+/// palette entry reaches them.
+@"poltergeist-may-authorise": bool = true,
+
 /// Write what the terminals say to each other to disk.
 ///
 /// The conversation in memory is a working set: it trims as it grows, and

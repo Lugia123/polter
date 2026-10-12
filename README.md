@@ -49,7 +49,7 @@ The supervisor is not polling. Polter actively pushes a notice when a screen has
 *   **Roles & Projects:** Save your favorite agent settings (skills, prompts, models) as Roles. Save your workspace (tabs, directories, history) as Projects and load them later (macOS and Windows only).
 *   **Hooks:** A Claude Code started from a Role tells Polter when its turn ends and what it said. The supervisor is notified directly, rather than waiting to read a still screen. (Claude Code only; other CLIs are monitored by screen activity).
 *   **Plugins:** Polter ships with 7 provisioning plugins out of the box.
-*   **Safe Permissions:** The supervisor can only answer permission prompts in tabs it opened itself. You can manually allow it in specific tabs via `Agents → Let a Supervisor Answer Prompts Here`.
+*   **Prompts go to the supervisor:** A worker stopped on a permission prompt is the supervisor's to deal with, in every tab: it answers the ones it can judge and brings the rest to you, with a system notification. You say no per tab (`Agents → Let a Supervisor Answer Prompts Here`), by shielding the tab, or for all of them (`poltergeist-may-authorise = false`).
 *   **One Settings Window:** Roles, projects, plugins, and configs are managed in one place (`Settings…`).
 *   **Multilingual:** UI supports English and Chinese (follows your system setting or the `Language` menu).
 
@@ -133,7 +133,7 @@ You can change settings in the `Settings…` menu. Some useful ones:
 ### Guardrails (What Polter WON'T do)
 
 *   **Won't bypass your permissions.** `terminal_send` sends text only, down the paste path, with control bytes turned into spaces. It cannot force an agent to bypass its own permissions.
-*   **Won't answer unexpected prompts.** It only answers permission prompts in tabs the supervisor opened itself (unless you authorize otherwise).
+*   **Answers prompts only where you let it — and by default that is everywhere.** Out of the box a supervisor may answer the permission prompts of any tab that is not shielded, including "don't ask again". Untick `Let a Supervisor Answer Prompts Here` on a tab, shield it, or set `poltergeist-may-authorise = false`, and those prompts wait for you. No tool can undo any of the three.
 *   **Won't undo your locks.** The terminal UI hold and shield are yours to set and yours to lift. An agent cannot unlock them.
 *   **Won't grow into a task system.** The panel merely holds who is on what, and whether it's done.
 

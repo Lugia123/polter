@@ -704,8 +704,8 @@ if(!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches))
               <p data-lang="en">Polter tracks how long each screen has been inactive and tells the supervisor if a worker is stuck.</p>
             </div>
             <div class="desc">
-              <p data-lang="zh">总管只能在它自己创建的标签页里自动回答权限请求，你也可以手动对特定标签页放权（<code>Agent → 允许总管在此回答提示</code>）。</p>
-              <p data-lang="en">The supervisor can only answer permission prompts in tabs it opened itself. You can manually allow it in specific tabs via <code>Agents → Let a Supervisor Answer Prompts Here</code>.</p>
+              <p data-lang="zh">worker 停在权限确认上，由总管处理：能判断的自己回答，判断不了的提到你面前并发系统通知。不想让它答，可以在那个标签页关掉（<code>Agent → 允许总管在此回答提示</code>）、把标签页护起来，或者对全部关掉（<code>poltergeist-may-authorise = false</code>）。</p>
+              <p data-lang="en">A worker stopped on a permission prompt is the supervisor's to deal with: it answers the ones it can judge and brings the rest to you, with a system notification. To say no, switch it off on that tab (<code>Agents → Let a Supervisor Answer Prompts Here</code>), shield the tab, or switch it off for all of them (<code>poltergeist-may-authorise = false</code>).</p>
             </div>
           </div>
         </div>
@@ -722,7 +722,7 @@ if(!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches))
                   <li data-from="1"><span data-lang="zh">› 在 标签 2 里输入指令</span><span data-lang="en">› type a command into tab 2</span></li>
                   <li data-from="2"><span data-lang="zh">› 新建 标签 4，启动新的打工人</span><span data-lang="en">› open tab 4, start a new agent</span></li>
                   <li data-from="3" class="warn"><span data-lang="zh">! 标签 3 没动静 </span><span data-lang="en">! tab 3 inactive for </span><span class="idle">03:00</span></li>
-                  <li data-from="4" class="ok"><span data-lang="zh">✓ 标签 4 是自己开的：回答提示</span><span data-lang="en">✓ tab 4 is its own: answer the prompt</span></li>
+                  <li data-from="4" class="ok"><span data-lang="zh">✓ 标签 4 在等确认：读屏，回答</span><span data-lang="en">✓ tab 4 is on a prompt: read it, answer it</span></li>
                 </ul>
               </div>
               <div class="workers">
@@ -982,9 +982,9 @@ if(!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches))
         <p data-lang="en"><code>terminal_send</code> sends text only, down the paste path, with control bytes turned into spaces. It cannot force an agent to bypass its own permissions.</p>
       </li>
       <li class="rv">
-        <h3 data-lang="zh">不会乱答提示。</h3><h3 data-lang="en">Won't answer unexpected prompts.</h3>
-        <p data-lang="zh">除了总管自己开的窗口，它不会去别的窗口帮你胡乱回答权限确认。</p>
-        <p data-lang="en">It only answers permission prompts in tabs the supervisor opened itself (unless you authorize otherwise).</p>
+        <h3 data-lang="zh">只在你允许的地方回答提示。</h3><h3 data-lang="en">Answers prompts only where you let it.</h3>
+        <p data-lang="zh">默认是所有没被护住的标签页，包括「以后不再询问」。在标签页上关掉开关、把它护起来，或者设 <code>poltergeist-may-authorise = false</code>，那些确认就等你来答；这三样没有任何工具能撤销。</p>
+        <p data-lang="en">By default that is every tab that is not shielded, "don't ask again" included. Switch it off on a tab, shield it, or set <code>poltergeist-may-authorise = false</code>, and those prompts wait for you; no tool can undo any of the three.</p>
       </li>
       <li class="rv">
         <h3 data-lang="zh"><span class="nb">不会破解</span><span class="nb">终端锁定。</span></h3><h3 data-lang="en">Won't undo your locks.</h3>
