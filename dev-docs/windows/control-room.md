@@ -191,5 +191,6 @@ mac 上能验的只有 `polter-control-room` 的测试、两道闸和交叉编�
 两道闸（仓根 `tools/`）：
 
 - `control-room-hosts-agree.py`：同一份夹具，mac 的 `ControlRoomList.swift` 与这个 crate 各算一遍，逐行
-  比较。`pulses` 与时间带还没比，因为 mac 侧还没从快照里读它们。
+  比较，含哪一行/哪个终端在呼吸（`pulses`）与时间带的每一条泳道、每一段的 x 和宽。没比的：`unseen` 与
+  `tabs`（这个 crate 还没读它们）、快照顶层的 `now_ms`（mac 的列表不留它）。
 - `control-room-hosts-do-not-decide.py`：两边的源码里不许读核心的类别、不许数行、不许排序。

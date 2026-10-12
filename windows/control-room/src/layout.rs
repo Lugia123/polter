@@ -36,8 +36,7 @@ impl ListLayout {
         Self::with_lanes(list, height, list.band.lanes.len())
     }
 
-    /// The same, for a band with `lane_count` lanes. Apart from `new` this
-    /// is for the comparison with a host that does not draw the band yet.
+    /// The same, for a band with `lane_count` lanes.
     pub fn with_lanes(list: &List, height: f64, lane_count: usize) -> ListLayout {
         let pad = space::SIDE_PANEL_PADDING;
         let width = side::WIDTH;

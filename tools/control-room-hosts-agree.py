@@ -20,18 +20,27 @@ and compares what they say, line by line.
 Both read `src/poltergeist/testdata/control_snapshot.json`, the fixture a
 Zig test holds to what `ControlRoom.zig` actually produces.
 
-**What is compared**: the clock; the two counts in the headers; every row --
-its section, its place, its glyph, its words, its detail, whether the detail
-is set as code, its minutes, its "N more"; the panel's size and every
-rectangle in it; and where the arrow keys take the selection from every row.
+**What is compared**: the two counts in the headers; every row -- its
+section, its place, its glyph, its words, its detail, whether the detail is
+set as code, its minutes, its "N more", and the terminal and two moments an
+act on it hands back; which row of the list breathes, with nothing in front
+and with each tab that holds a waiting terminal in front; which terminal
+breathes among one window's tabs, for the same fronts, and in a window that
+holds none; the time band -- its start, its own now, its label, its minutes,
+every lane and span, and every piece of every lane as the x and width it is
+drawn at; the panel's size and every rectangle in it, lanes included; and
+where the arrow keys take the selection from every row.
 
 **NOT COMPARED, and why.**
 
-  * `pulses` and the time band. The macOS host does not read either from the
-    snapshot yet (`pulses: false`, `timeBand: nil` in `init(snapshot:)`), so
-    there is nothing on that side to compare with. The layout is therefore
-    compared with no lanes. When the macOS side takes them, add them to both
-    dumps -- until then the Windows crate's own tests are all that hold them.
+  * The snapshot's own `now_ms`. The macOS list does not keep it (the band
+    carries its own, which is compared), so one side has nothing to print.
+  * `unseen` and `tabs`. The macOS host reads both; `windows/control-room`
+    declares neither, so there is nothing on that side to compare with.
+    When the crate takes them, add them to both dumps.
+  * A front tab that is not in the window asked about. The macOS list is
+    told only the tab; the crate is told the window too. Each front is
+    asked with the window that tab is in, which is the only way a host asks.
   * Translated text. Both sides print the English they start from.
   * Anything drawn. This compares numbers and strings, not pixels.
   * That the app links these files the way the package does. It is the same
@@ -113,8 +122,11 @@ func shownName(_ s: ControlRoomList.Shown) -> String {
 
 func row(_ section: String, _ r: ControlRoomList.Row) {
     let waited = r.waitedMin.map(String.init) ?? "-"
+    let since = r.target.map { String($0.sinceMs) } ?? "-"
+    let event = r.target?.eventMs.map { String($0) } ?? "-"
     print("row section=\(section) id=\(r.id) shown=\(shownName(r.shown)) word=\(quote(r.word)) "
-        + "detail=\(quote(r.detail)) code=\(r.detailIsCode) waited=\(waited) others=\(r.others)")
+        + "detail=\(quote(r.detail)) code=\(r.detailIsCode) waited=\(waited) others=\(r.others) "
+        + "terminal=\(r.target?.terminal ?? "-") since=\(since) event=\(event)")
 }
 
 let args = CommandLine.arguments
@@ -123,18 +135,41 @@ guard args.count == 3, let height = Double(args[2]) else {
     exit(2)
 }
 let data = try Data(contentsOf: URL(fileURLWithPath: args[1]))
-let list: ControlRoomList
+let snapshot: ControlRoomSnapshot
 do {
-    list = try ControlRoomList.decode(snapshot: data)
+    snapshot = try JSONDecoder().decode(ControlRoomSnapshot.self, from: data)
 } catch {
     FileHandle.standardError.write(Data("the snapshot does not decode: \(error)\n".utf8))
     exit(1)
 }
+let list = ControlRoomList(snapshot: snapshot)
 
-print("now_ms \(list.nowMs)")
 print("count waiting=\(list.waitingCount) quiet=\(list.quietCount)")
 for r in list.waiting { row("waiting", r) }
 for r in list.quiet { row("quiet", r) }
+
+// Which glyph breathes: with nothing in front, and with each tab that
+// holds a waiting terminal in front.
+let pulses = snapshot.pulses ?? []
+var fronts: [String?] = [nil]
+var windows: [String] = []
+for p in pulses {
+    if let tab = p.tab, !fronts.contains(tab) { fronts.append(tab) }
+    if let window = p.window, !windows.contains(window) { windows.append(window) }
+}
+// And a window none of them is in.
+windows.append("0x00000000000000ff")
+print("pulses \(pulses.count)")
+for front in fronts {
+    let breathing = ControlRoomList(snapshot: snapshot, showing: front).rows.filter { $0.pulses }.map { $0.id }
+    print("pulse list showing=\(front ?? "-") rows=\(breathing.isEmpty ? "-" : breathing.joined(separator: ","))")
+}
+for window in windows {
+    for front in fronts {
+        let p = ControlRoomPulse.first(of: pulses, inWindow: window, notIn: front)
+        print("pulse window=\(window) showing=\(front ?? "-") terminal=\(p?.terminal ?? "-") tab=\(p?.tab ?? "-")")
+    }
+}
 
 let lay = ControlRoomListLayout(list: list, height: CGFloat(height))
 print("size w=\(f(lay.size.width)) h=\(f(lay.size.height))")
@@ -149,7 +184,28 @@ for r in list.rows {
 rect("separator", lay.separator)
 rect("quiet_header", lay.quietHeader)
 rect("band_header", lay.bandHeader)
+for (n, lane) in lay.lanes.enumerated() { rect("lane:\(n)", lane) }
 rect("axis", lay.axis)
+
+if let band = list.timeBand {
+    print("band start_ms=\(band.startMs) now_ms=\(band.nowMs) start_label=\(quote(band.startLabel)) "
+        + "total_min=\(band.totalMinutes) lanes=\(band.lanes.count)")
+    for (n, lane) in band.lanes.enumerated() {
+        print("lane \(n) name=\(quote(lane.name)) spans=\(lane.spans.count)")
+        for s in lane.spans {
+            print("span lane=\(n) from_ms=\(s.fromMs) to_ms=\(s.toMs) ongoing=\(s.ongoing)")
+        }
+        // Drawn in the lane's own rectangle; a lane the layout has no
+        // rectangle for is a disagreement the `rect lane:` lines show.
+        let track = ControlRoomListLayout.trackWidth(lane: n < lay.lanes.count ? lay.lanes[n].width : 0)
+        print("track lane=\(n) w=\(f(track))")
+        for g in ControlRoomListLayout.segments(lane, band: band, width: track) {
+            print("segment lane=\(n) x=\(f(g.x)) w=\(f(g.width)) ongoing=\(g.ongoing)")
+        }
+    }
+} else {
+    print("band none")
+}
 
 let ids: [String?] = [nil] + list.rows.map { Optional($0.id) }
 for from in ids {
@@ -264,8 +320,8 @@ def main():
         return 1
 
     print(f"compared {n} lines: the macOS host and the Windows host agree")
-    print("NOT COMPARED: pulses, the time band (the macOS host does not read them "
-          "from the snapshot yet); translated text; anything drawn.")
+    print("NOT COMPARED: the snapshot's own now_ms (the macOS list does not keep it); "
+          "unseen, tabs (windows/control-room reads neither); translated text; anything drawn.")
     return 0
 
 
