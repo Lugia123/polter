@@ -543,6 +543,122 @@ mac 上能验的只有 `polter-control-room` 的测试、两道闸和交叉编�
 `tabs::layout` 把每格的子窗口挪到标题下面，父窗口在子窗口让出来的地方画框（`pane_frames.rs`）；终端自己的
 角是方的，没有投影，没有定时器。**没有在真机上跑过。**
 
+## 12. 新建群、启动总管，和真机第三轮的宿主侧问题（任务 #1453）
+
+**编过了，没有在任何一台 Windows 上跑过。** 规则在逻辑 crate 里有测试，与 mac 的同一批用例由对照闸逐行比；
+宿主那一层（输入框、菜单、选目录、开标签页不切过去）只有交叉编译。规格是
+`dev-docs/poltergeist/control-room.md` §6.4，下面只写 Windows 这边怎么做的、哪里不一样。
+
+### 12.1 做了什么
+
+| 事 | 怎么做的 | 在哪 |
+|---|---|---|
+| 「新建群」 | 左栏标题行右端 `+ 新建群`。点了以后标题行原地变成输入框：**系统自己的 EDIT 控件**，所以输入法照平常那样在里面组字。回车建、Esc 取消、点别处或标签页被切走也算取消。核心拒绝时那句话写在输入框正下方（盖在第一行上），输入框留着 | 位置：`scene::new_group_hit` / `name_field` / `name_note`；窗口：`control_room.rs` 的 `begin_naming` / `submit_name` / `name_proc` |
+| 建成后选中 | 等核心下一份快照列出它再选中（`rules::made_group_to_select`），名字按核心的做法只去首尾空白 | `control_room.rs` 的 `select_made`，在 `snapshot_changed` 里 |
+| 没有总管的群 | 右栏那句话按核心的 `state` / `failed` 换（没有总管 / 正在启动 / 三种没等到 / 没有更具体的原因），两行高。**下面出不出东西只看核心的 `can_start`**：角色（核心说有得选才出，点了弹菜单）、目录（点了开系统的选文件夹）、「启动总管」按钮；当场被拒的原因写在按钮下面 | `scene::no_supervisor_words` / `build_start`；`control_room.rs` 的 `start_scene` / `choose_role` / `choose_directory` / `start_supervisor` |
+| 开标签页去哪、切不切过去 | 与 mac 同一条规则 `rules::new_tab`（对照闸比了 40 格）：被借到右栏的终端要的标签页开在它自己的窗口、**不切过去**；应用自己要的（总控台启动总管）在总控台在前、旁边有终端标签页时开在总控台那个窗口、不切过去；其余照旧 | `main.rs` 的 `ACTION_NEW_TAB`；`tabs.rs` 的 `NewTab::behind`、`asker_facts`、`new_tab_facts` |
+| 群名被挤没（第三轮缺陷 3） | 见 12.3 | `scene::place_line` |
+| 等宽字 | 装了 Cascadia Mono 就用它，没有才用 Consolas。见 12.3 | `uifont::mono_face` |
+| 「允许总管代答」的勾（缺陷 4 的宿主一半） | 新标签页在收到第一条 `poltergeist_mark` 之前，按配置 `poltergeist-may-authorise` 画（核心给每个新终端的起点就是它），不再一律画成关 | `tabs.rs` 的 `may_authorise_until_marked` |
+| 新标签页标题先是 `…\powershell.exe` | 标题是带盘符、以 `.exe` 结尾的完整路径时，显示成程序名（`powershell`）。暂定 | `rules::shown_title`，用在 `apply_pane_title` |
+
+### 12.2 借出的总管调 `terminal_open`：Windows 上原来是什么样（读代码定性，没有真机读数）
+
+**不是 mac 修之前那样。** mac 是「回 ok、没有终端」：视图在总控台的窗口里，开标签页的处理只认终端窗口。
+Windows 借出的那一格没有离开它的窗口，动作带着它的表面，宿主找得到窗口，**标签页开得出来**——但
+`create_tab_with` 把新标签页设成了前面那个，于是人正看着总控台，被一把拉到新标签页上，右栏借着的总管也随之还回去。
+现在这一格走 `rules::new_tab` 的「开在后面」。
+
+真正「回 ok 而没开出来」的另有一处，这一轮顺带看到并改了：**不带终端的新标签页请求**（应用自己要的——总控台
+启动总管就是）原先在 `ACTION_NEW_TAB` 里直接被拒（「这个动作没有指明窗口」），回的是「没做」，所以核心回
+`OpenFailed`。也就是说**在这次改动之前，Windows 上「启动总管」必然失败**，那句话是「开不出标签页」。
+能写成测试的是规则本身（`where_a_tab_the_core_asked_for_goes`，对照闸 40 格）；宿主里「不切过去」那几行没有测试。
+
+### 12.3 第三轮的宿主侧问题：查到的原因
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 成员标题长时那一行的群名整个不见 | 那一行里群名被排成「左右两边排完剩下的地方」，谁在等与状态的字都不缩；谁在等一长，剩下的地方是零，群名就不画。**不是 #1450 改 `paint_line` 时碰到的那一处**：那次只管住了左边的字不压右边，群名当时不算左边的字 | 排字的先后搬进 crate 并有测试（`place_line`）：状态的字整个留着；群名排第二，只被状态的字截；谁在等拿剩下的，从左边截、末尾省略号，一点地方都没有就不画。宿主只量字宽、照着画 |
+| 同样的场面在 mac 上 | **mac 也会挤群名**，只是挤法不同：谁在等与状态的字都是 `fixedSize`，群名是 `lineLimit(1)` 截尾，所以群名被压成「we…」直到只剩省略号（`ControlRoomListView.waitingRow`）。没有在 mac 上造过这个场面，这是读布局代码的结论；没有改 mac | 要不要把 mac 也改成「截的是谁在等」，留给定夺 |
+| 字整体小两号（群名 13 对 15、命令 11 对 13） | **字号没取错，换算也没错**：两边要的都是 15 与 13（`font.group_name` / `font.body`），Windows 是 `CreateFontW(-15)` / `(-13)` 乘缩放。差在**字体**：Consolas 同字号下字宽 0.55、x 高 0.49，mac 的等宽字是 0.60 / 0.53，所以看上去小一号多；设计的 41 字一行也是按 0.6 算的。（这几个度量是字体本身的数，凭资料写的，没有在测试机上量；「原因是字体」因此是推断，换了字体以后第 13 步的读数才是证据） | 等宽字改用 Cascadia Mono（字宽 0.586，Windows 11 自带），没装才回到 Consolas；日志里有一行说用的是哪个。**界面字（Segoe UI）没有动** |
+| 「还有 N 步」比上面的步骤大一号 | 同上：那一行是界面字 13，上面的步骤是 Consolas 13 | 随上一条 |
+| 状态的字比旁边的字大而粗 | 两者字号相同（13）。状态的字是 600，设计如此，mac 上苹方有 600 这一档；Windows 的中文落到微软雅黑，**雅黑没有 600，系统给的是 700 的粗体**，所以显得又粗又大。**这是推断**，没有在真机上换字重证实 | **没有改**。两个办法都偏离设计：中文下把 600 降成 400（状态的字不再加重，只靠颜色），或保持现状。留给定夺 |
+| 气泡小一号（约 11 对 14） | Windows 画的是设计稿自己的路径：气泡在 14 的画板上本来就只有 11 宽。mac 用的是系统符号 `bubble.left.fill` 缩放到占满 14 的框。**偏离设计的是 mac** | **没有改**。要统一成 mac 的大小，是把图形按墨迹外框放大到占满 14；要统一成设计稿，是改 mac。留给定夺 |
+| 英文界面里状态的字是中文 | 那些字是核心写死的中文（`Attention.Word.text()` 返回字面量，没有走翻译），快照里的 `text` 就是它；两边宿主原样画，所以 mac 的英文界面也一样 | 不在宿主：要核心把那十二个词接进翻译。没修 |
+| 新标签页标题先显示 `powershell.exe` 全路径 | 控制台的初始标题就是被启动程序的完整路径，shell 自己设标题之前一直是它；宿主原样用 | 见 12.1 最后一行 |
+
+**任何字不小于 13**：这一轮新加的字全是 13（`font.body`）；`uifont::make` 另有「不小于系统菜单字号」的下限。
+
+### 12.4 与 mac 不一样、没做的
+
+- 名字输入框是系统的 EDIT：没有占位字「群名」；描边是面板画的一圈、不是输入框自己的；失去焦点就取消（mac 留着）。
+- 「新建群」的点击范围是标题行右边五分之二（只有宿主量得出字宽，暂定）。
+- 右栏那几样是靠左排的（mac 居中），角色是一行字加「选择…」、点了弹菜单（mac 是下拉框）。
+- 目录太长时从末尾截（mac 从开头截）。
+- 后面开出来的标签页：建的时候子窗口先显示再被这次布局藏掉，可能闪一下；它第一次被点到前面时才第一次排版。
+- 一个终端窗口都没有时应用自己要标签页：mac 开新窗口，Windows 回「没开」（这个宿主没有「没有窗口」时开窗的路）。
+- 没有接 UI Automation：新按钮、输入框下面的那句话、右栏的三样，读屏都读不到（输入框本身是系统控件，读得到）。
+- 新增的字串没有进翻译目录（`po/`），现在都是英文；清单在本节末。
+
+### 12.5 判据
+
+- `cargo test -p polter-control-room`：144 → 162。35 个文件形式的变异体全部红在断言行，没有编译错误冒充；其中一个
+  第一遍**没有红**（把 `can_start` 偷偷从 `state` 推出来），补了「状态与 `can_start` 不一致」的用例以后红。
+- 对照闸 252 → 320 行一致：每个群的总管状态、角色表、有没有得选、建成的群何时选中、开标签页去向 40 格、
+  15 个拒绝原因的英文原话。把 Windows 的去向规则改坏一处，闸红，点名 2 行 `new_tab`。
+- 交叉编译 `check` / `check --tests` / `build --release` 都过，警告仍是 10 条。宿主的测试没有跑。
+- **没有自动判据的**：输入框的创建与子类化、焦点来去、`WM_CTLCOLOREDIT`、菜单、选目录、`ACTION_NEW_TAB` 里按规则
+  分派的那一段、`behind`、勾的起点、字体探测。
+
+### 12.6 Windows 真机验证清单（#1453，16 步）
+
+1. 打开总控台。左栏标题行右端有 `+ 新建群`（英文 `+ New Group`），与每行文字的右缘对齐；日志有一行
+   `[uifont] the control room's fixed-width face: …`，记下是哪个字体。
+2. 点 `+ 新建群`：标题行变成一个带描边的输入框，**光标在里面闪**，直接打字进得去；`[control-room] new group: naming`。
+3. 在输入框里切到中文输入法打几个字：候选窗出现、能上屏。再清掉，打 `Web App` 回车：输入框下面出现那句
+   「名字只能是小写字母、数字和短横线…」（现在是英文），输入框还在、键盘还在里面；日志 `refused: BadName`。
+4. 空着回车（同一句）；打一个已有的群名回车（「已经有这个名字的群」）；Esc：输入框消失、标题行回来、键盘回到列表
+   （上下键能动）。再点开，然后点一下列表里的某一行：输入框消失，那一行被选中。
+5. 打 `scratch-1` 回车：输入框消失，新群出现在列表里并**被选中**；日志先 `made; selected when the core lists it`。
+   右栏是 `scratch-1`、「这个群没有总管。」、目录一行、「启动总管」按钮。
+6. 只有一个总管角色时没有「角色」那一行；在角色库里再建一个带总管标记、配了 CLI 的角色后，那一行出现，
+   点它弹出菜单、选另一个、那一行的名字跟着变。
+7. 点目录那一行：系统的选文件夹窗口，开在当前显示的目录；选一个，那一行跟着变（主目录显示成 `~`）。
+8. 点「启动总管」：右栏变「正在启动总管…」，**标签栏多出一个标签页而前面仍是总控台**；日志
+   `[action] new_tab -> Behind(ControlRooms) done=true`、`[tab] created behind the tab in front`。agent 连上后右栏变成
+   它的终端（借过来了）。点过去那个标签页看：终端大小对、里面是那个 CLI。
+9. 失败三格：启动后立刻关掉那个标签页（「它的标签页先被关掉了」）；把角色的 CLI 改成不存在的命令再启动（60 秒后
+   「没有 agent 连上」）；目录选一个随后删掉的（当场，按钮下面「那个目录不存在」）。每种之后按钮都还在、能再点。
+10. 借着总管时，让它调 `terminal_open`（`auto` 与 `tab` 各一次）和 `role_launch`：多出标签页、**总控台仍在前、右栏的
+    总管还在**、返回里有 id；日志 `new_tab -> Behind(Askers)`。不借着时（在它自己的标签页里）调：照旧切过去。
+11. 没有任何群被选中、总控台不在前面时，从菜单「用角色启动」一个角色：照旧在前面开。
+12. 缺陷 3：让一个标题很长的 worker 等批准（`title` 设成 60 个字符）。应：那一行的**群名完整**、「等批准」完整，
+    中间的「<标题>，经总管」被从左边截、带省略号；群名也很长时（48 个字符）群名截到状态字前、谁在等不见。
+13. 对着第三轮的图量：群名与命令的字高（应接近 mac 的 15 / 13）、「还有 3 步」与上面步骤同大；一行命令能放下
+    41 个字符左右。记下状态的字是不是仍然比旁边粗一号（12.3，没改）与气泡宽度（没改）。
+14. 缺陷 4：全新启动、还没有任何 MCP 调用时开 ≡ → Agents：`Let a Supervisor Answer Prompts Here` **勾着**
+    （配置默认）；配置里写 `poltergeist-may-authorise = false` 重启后，同一处不勾。点一下之后看 `poltergeist_mark` 的
+    `authorise=` 与勾一致。
+15. 新开一个标签页：标题先是 `powershell`（不是全路径），shell 起来后换成它自己的。
+16. 回归：左栏上下键、点行选中、「已看」那一行日志、Alt 组合键、放大缩小窗口、125% 下以上 2–8 步再走一遍；
+    开着输入框时关掉总控台标签页、关窗口，不崩、无 `Application Error`。
+
+### 12.7 新增的可翻译字串（还没进 `po/`，合并后统一重出）
+
+`+ ` 后面的 `New Group`；`Starting the supervisor…`；`The supervisor did not start: its tab never opened.`；
+`The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why.`；
+`The supervisor did not start: its tab was closed first.`；`The supervisor did not start.`；`Directory`；
+`Start Supervisor`；`Where the tab starts`；
+`A group's name is lowercase letters, digits and dashes, 48 at most.`；`There is already a group by that name.`；
+`There is no room for another group.`；`This group already has a supervisor.`；
+`A supervisor is already being started for this group.`；
+`There is no role that makes a supervisor. Add one in the role library.`；`That role does not make a supervisor.`；
+`This role isn't set up for any agent CLI yet. Pick one in the role library.`；`That directory is not there.`；
+`No tab could be opened for it.`；`Polter could not find its own program to start the role with.`；
+以及 #1450 的 `Worker`。共 21 条。另有四条模板里已经有：`Role`、`Choose…`、`Polter Supervisor`、
+`That role no longer exists.`。英文原话与 mac 的 `Localizable.strings` 逐字相同（拒绝原因那 12 句由对照闸守着），
+中文可以直接照 mac 的 `zh-Hans` 抄。
+
 ## 已经有的
 
 `windows/control-room`（零依赖，`cargo test -p polter-control-room` 在任何机器上都能跑）：

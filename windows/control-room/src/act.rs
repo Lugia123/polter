@@ -5,6 +5,7 @@
 //! asking: calling `ghostty_app_control_act` is being the person.
 
 use crate::json::quote;
+use crate::n_;
 use crate::list::Row;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +19,11 @@ pub enum Act<'a> {
     Approve { row: &'a Row },
     Refuse { row: &'a Row },
     Reply { row: &'a Row, text: &'a str },
+    /// Make a group by the name that was typed.
+    NewGroup { name: &'a str },
+    /// Start a supervisor for a group that has none. No role or no
+    /// directory is the one the core's snapshot names.
+    StartSupervisor { group: &'a str, role: Option<&'a str>, cwd: Option<&'a str> },
 }
 
 /// The request for an act, or none when the row has nothing to send it
@@ -39,6 +45,20 @@ pub fn encode(act: &Act) -> Option<String> {
             row.since_ms,
             quote(text)
         ),
+        Act::NewGroup { name } => format!("{{\"act\":\"new_group\",\"name\":{}}}", quote(name)),
+        Act::StartSupervisor { group, role, cwd } => {
+            // Left out when the person picked neither: the core then uses
+            // the ones its snapshot named.
+            let mut out = format!("{{\"act\":\"start_supervisor\",\"group\":{}", quote(group));
+            if let Some(role) = role {
+                out.push_str(&format!(",\"role\":{}", quote(role)));
+            }
+            if let Some(cwd) = cwd {
+                out.push_str(&format!(",\"cwd\":{}", quote(cwd)));
+            }
+            out.push('}');
+            out
+        }
     })
 }
 
@@ -66,6 +86,21 @@ pub enum Refusal {
     DraftInLine,
     ChildExited,
     KeyFailed,
+    /// A new group's name is not one a group can have (an empty one too).
+    BadName,
+    GroupExists,
+    TooManyGroups,
+    HasSupervisor,
+    AlreadyStarting,
+    NoSupervisorRole,
+    NoSuchPersona,
+    NotASupervisorRole,
+    NoCli,
+    /// The directory to start in is not there, or is not one.
+    NoSuchDirectory,
+    /// No tab could be opened for it.
+    OpenFailed,
+    NoExecutable,
     /// A name this build does not know. Shown as it came, never dropped.
     Other,
 }
@@ -85,6 +120,18 @@ impl Refusal {
             "DraftInLine" => Refusal::DraftInLine,
             "ChildExited" => Refusal::ChildExited,
             "KeyFailed" => Refusal::KeyFailed,
+            "BadName" => Refusal::BadName,
+            "GroupExists" => Refusal::GroupExists,
+            "TooManyGroups" => Refusal::TooManyGroups,
+            "HasSupervisor" => Refusal::HasSupervisor,
+            "AlreadyStarting" => Refusal::AlreadyStarting,
+            "NoSupervisorRole" => Refusal::NoSupervisorRole,
+            "NoSuchPersona" => Refusal::NoSuchPersona,
+            "NotASupervisorRole" => Refusal::NotASupervisorRole,
+            "NoCli" => Refusal::NoCli,
+            "NotAbsolute" | "NoSuchDirectory" | "NotADirectory" => Refusal::NoSuchDirectory,
+            "OpenFailed" | "NoRuntime" => Refusal::OpenFailed,
+            "NoExecutable" => Refusal::NoExecutable,
             _ => Refusal::Other,
         }
     }
@@ -105,6 +152,20 @@ impl Refusal {
             Refusal::DraftInLine => "That terminal has unsent text in its input line. Nothing was sent; go to the terminal.",
             Refusal::ChildExited => "The program in that terminal has ended.",
             Refusal::KeyFailed => "The key did not reach the program. Go to the terminal.",
+            // The sentences below are the macOS host's, word for word
+            // (`ControlRoomActions.Refusal.message`).
+            Refusal::BadName => n_("A group's name is lowercase letters, digits and dashes, 48 at most."),
+            Refusal::GroupExists => n_("There is already a group by that name."),
+            Refusal::TooManyGroups => n_("There is no room for another group."),
+            Refusal::HasSupervisor => n_("This group already has a supervisor."),
+            Refusal::AlreadyStarting => n_("A supervisor is already being started for this group."),
+            Refusal::NoSupervisorRole => n_("There is no role that makes a supervisor. Add one in the role library."),
+            Refusal::NoSuchPersona => n_("That role no longer exists."),
+            Refusal::NotASupervisorRole => n_("That role does not make a supervisor."),
+            Refusal::NoCli => n_("This role isn't set up for any agent CLI yet. Pick one in the role library."),
+            Refusal::NoSuchDirectory => n_("That directory is not there."),
+            Refusal::OpenFailed => n_("No tab could be opened for it."),
+            Refusal::NoExecutable => n_("Polter could not find its own program to start the role with."),
             Refusal::Other => "It was not done ({}).",
         }
     }

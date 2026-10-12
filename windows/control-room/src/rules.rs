@@ -27,6 +27,89 @@ pub fn trigger(open: usize) -> Trigger {
     }
 }
 
+/// A group the person has just made is selected once the core lists it --
+/// not before: the list on screen when the answer comes back may be the one
+/// from before the group existed, and a selection that names no row is
+/// dropped (`list::restored_selection`). `awaited` is the name they gave it;
+/// the answer is that name when a row has it. The macOS host's
+/// `madeGroupToSelect`.
+pub fn made_group_to_select<'a>(awaited: Option<&'a str>, list: &crate::list::List) -> Option<&'a str> {
+    let awaited = awaited?;
+    list.row(awaited).map(|_| awaited)
+}
+
+/// The name a new group is awaited under: what was typed, as the core
+/// keeps it -- it trims the ends and makes nothing else of it.
+pub fn made_group_name(typed: &str) -> &str {
+    typed.trim()
+}
+
+/// Which window a tab the core asked for goes into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Home {
+    /// The window of the terminal the tab was asked from -- its own tab's,
+    /// wherever it is being shown at the moment.
+    Askers,
+    /// The window whose tabs the control room sits among.
+    ControlRooms,
+    /// The terminal window the person used last.
+    Frontmost,
+}
+
+/// Where a tab the core asked for goes. The macOS host's
+/// `ControlRoomRules.newTab`, with the same answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewTab {
+    /// Beside the terminal it was asked from, and in front: what a key and
+    /// a menu item have always done.
+    InFront(Home),
+    /// As a tab of that window, **without being brought in front**: the
+    /// person is looking at the control room and stays there.
+    Behind(Home),
+    /// In a window of its own: there is no terminal window to put a tab in.
+    OwnWindow,
+    /// Not opened, and the core is told so. Nothing holds the terminal it
+    /// was asked from.
+    Refused,
+}
+
+/// `asker` is the terminal the tab was asked from, when there is one:
+/// whether the control room is showing it, and whether a window still holds
+/// it. With no asker the request came from the application itself -- the
+/// control room starting a supervisor is one -- and the three facts after
+/// it say where there is room.
+pub fn new_tab(asker: Option<(bool, bool)>, control_room_in_front: bool, tabs_beside_control_room: bool, any_terminal_window: bool) -> NewTab {
+    if let Some((lent, has_home)) = asker {
+        if !has_home {
+            return NewTab::Refused;
+        }
+        return if lent { NewTab::Behind(Home::Askers) } else { NewTab::InFront(Home::Askers) };
+    }
+    if control_room_in_front && tabs_beside_control_room {
+        return NewTab::Behind(Home::ControlRooms);
+    }
+    if any_terminal_window {
+        NewTab::InFront(Home::Frontmost)
+    } else {
+        NewTab::OwnWindow
+    }
+}
+
+/// What a tab is called when its shell's title is the path of the program
+/// that was started in it: that program's name. A console's title starts
+/// as the full path of what was launched (`C:\WINDOWS\...\powershell.exe`)
+/// and stays that until the shell sets its own; any other title is kept as
+/// it came. 暂定.
+pub fn shown_title(title: &str) -> &str {
+    let lower = title.to_ascii_lowercase();
+    let is_path = lower.ends_with(".exe") && title.contains('\\') && title.as_bytes().get(1) == Some(&b':');
+    if !is_path {
+        return title;
+    }
+    let name = &title[title.rfind('\\').map_or(0, |i| i + 1)..];
+    &name[..name.len() - ".exe".len()]
+}
+
 /// Where a new control-room tab goes among its window's tabs. Only at
 /// creation: the person may move it afterwards and it stays moved.
 pub const OPENS_AT: usize = 0;
@@ -192,11 +275,15 @@ mod tests {
         }
         // A reader that stopped matching would find nothing to complain of.
         assert!(marked >= 16, "only {marked} sentences were read");
-        // Not marked, on purpose: `act::Refusal::message`. Nothing shows a
-        // refusal to the person now -- the one act the control room sends is
-        // "seen", and a refusal of that goes to the log -- so those
-        // sentences have no place in a translator's list until something
-        // does show them.
+        // Not marked, on purpose: the refusals of `act::Refusal::message`
+        // that nothing shows to the person -- of "seen", which goes to the
+        // log. The ones that are shown, of making a group and of starting a
+        // supervisor, are marked there, each inside its own `n_(…)`.
+        let refusals = include_str!("act.rs");
+        for shown in ["Refusal::BadName =>", "Refusal::GroupExists =>", "Refusal::OpenFailed =>", "Refusal::NoSuchDirectory =>"] {
+            let line = refusals.lines().find(|l| l.trim_start().starts_with(shown)).unwrap_or_else(|| panic!("no arm {shown}"));
+            assert!(line.contains("=> n_(\""), "act.rs: not marked for translation: {line}");
+        }
     }
 
     /// Rust source with `//` comments taken out, so that a sentence about
