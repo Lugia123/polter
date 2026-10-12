@@ -7,8 +7,8 @@
 //! | [`snapshot`] | the core's snapshot, read; an unknown glyph is an error |
 //! | [`list`] | the rows in their two sections, what each says, where the selection goes |
 //! | [`layout`] | where everything in the list panel is; the time band's pieces; the chip's spring |
-//! | [`pulse`] | which waiting glyph breathes |
-//! | [`act`] | the person's acts as requests to the core, and what a refusal says |
+//! | [`pulse`] | which waiting glyph breathes; what a window tab carries and whether it is drawn |
+//! | [`act`] | the person's acts as requests to the core, what a refusal says, when looking marks a group seen |
 //! | [`json`] | just enough JSON for the above |
 //!
 //! **Nothing in here decides what the control room says.** Which rows there

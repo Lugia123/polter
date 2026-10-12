@@ -12,21 +12,28 @@ and compares what they say, line by line.
 
   * Windows: `windows/control-room` (a crate with no dependencies), through
     `examples/dump.rs`.
-  * macOS: `macos/Sources/Features/ControlRoom/ControlRoomList.swift` and
-    `ControlRoomLook.swift` -- **the same source files the app compiles**,
-    linked into a throwaway SwiftPM package with a `main.swift` that prints
-    the same lines. No app is built and nothing is launched.
+  * macOS: `ControlRoomList.swift`, `ControlRoomLook.swift` and
+    `ControlRoomActions.swift` from `macos/Sources/Features/ControlRoom/`,
+    and `macos/Sources/Features/Terminal/TabAccessory.swift` -- **the same
+    source files the app compiles**, linked into a throwaway SwiftPM package
+    with a `main.swift` that prints the same lines. No app is built and
+    nothing is launched.
 
 Both read `src/poltergeist/testdata/control_snapshot.json`, the fixture a
 Zig test holds to what `ControlRoom.zig` actually produces.
 
 **What is compared**: the two counts in the headers; every row -- its
 section, its place, its glyph, its words, its detail, whether the detail is
-set as code, its minutes, its "N more", and the terminal and two moments an
-act on it hands back; which row of the list breathes, with nothing in front
+set as code, its minutes, its "N more", whether the core says nobody has
+looked at it, and the terminal and two moments an act on it hands back;
+which row of the list breathes, with nothing in front
 and with each tab that holds a waiting terminal in front; which terminal
 breathes among one window's tabs, for the same fronts, and in a window that
-holds none; the time band -- its start, its own now, its label, its minutes,
+holds none; every window tab the snapshot lists -- its glyph, whether that
+glyph is drawn on a tab at all, and whether it breathes, for the same
+fronts -- a tab it does not list, and for each of the five glyphs whether a
+window tab draws it; which rows are marked seen by being looked at, and
+after how long; the time band -- its start, its own now, its label, its minutes,
 every lane and span, and every piece of every lane as the x and width it is
 drawn at; the panel's size and every rectangle in it, lanes included; and
 where the arrow keys take the selection from every row.
@@ -35,9 +42,12 @@ where the arrow keys take the selection from every row.
 
   * The snapshot's own `now_ms`. The macOS list does not keep it (the band
     carries its own, which is compared), so one side has nothing to print.
-  * `unseen` and `tabs`. The macOS host reads both; `windows/control-room`
-    declares neither, so there is nothing on that side to compare with.
-    When the crate takes them, add them to both dumps.
+  * What is around the seen rule: that the selection moving on, or the
+    control room not being in front, calls the mark off. Each side's own
+    tests hold that; here the wait is over at once and it is in front.
+  * A snapshot with no `unseen` or no `tabs`. The macOS host reads one as
+    nothing unseen and no tabs; `windows/control-room` refuses it, as it
+    does one with no `pulses` or `band`. The fixture has all four.
   * A front tab that is not in the window asked about. The macOS list is
     told only the tab; the crate is told the window too. Each front is
     asked with the window that tab is in, which is the only way a host asks.
@@ -69,6 +79,8 @@ FIXTURE = "src/poltergeist/testdata/control_snapshot.json"
 SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomList.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLook.swift",
+    "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
+    "macos/Sources/Features/Terminal/TabAccessory.swift",
 ]
 CRATE = "windows/control-room"
 HEIGHT = "800"
@@ -126,7 +138,7 @@ func row(_ section: String, _ r: ControlRoomList.Row) {
     let event = r.target?.eventMs.map { String($0) } ?? "-"
     print("row section=\(section) id=\(r.id) shown=\(shownName(r.shown)) word=\(quote(r.word)) "
         + "detail=\(quote(r.detail)) code=\(r.detailIsCode) waited=\(waited) others=\(r.others) "
-        + "terminal=\(r.target?.terminal ?? "-") since=\(since) event=\(event)")
+        + "unseen=\(r.unseen) terminal=\(r.target?.terminal ?? "-") since=\(since) event=\(event)")
 }
 
 let args = CommandLine.arguments
@@ -169,6 +181,41 @@ for window in windows {
         let p = ControlRoomPulse.first(of: pulses, inWindow: window, notIn: front)
         print("pulse window=\(window) showing=\(front ?? "-") terminal=\(p?.terminal ?? "-") tab=\(p?.tab ?? "-")")
     }
+}
+
+// What each window tab carries, for the same fronts; then a tab the core
+// does not list, and every glyph there is.
+let tabs = snapshot.tabs ?? []
+print("tabs \(tabs.count)")
+for t in tabs {
+    print("tab \(t.tab) window=\(t.window ?? "-") shown=\(shownName(t.shown)) "
+        + "draws=\(TabAccessory.drawsOnWindowTab(t.shown))")
+    guard let window = t.window else { continue }
+    for front in fronts {
+        let st = ControlRoomPulse.status(ofTab: t.tab, inWindow: window, showing: front, in: snapshot)
+        print("tab_status tab=\(t.tab) showing=\(front ?? "-") shown=\(shownName(st.shown)) pulses=\(st.pulses)")
+    }
+}
+let unlisted = ControlRoomPulse.status(
+    ofTab: "0x00000000000000fe", inWindow: windows[0], showing: nil, in: snapshot)
+print("tab_status tab=unlisted showing=- shown=\(shownName(unlisted.shown)) pulses=\(unlisted.pulses)")
+for s in ControlRoomList.Shown.allCases {
+    print("tab_draws shown=\(shownName(s)) draws=\(TabAccessory.drawsOnWindowTab(s))")
+}
+
+// Looking at a row: which are marked seen, and after how long. The wait is
+// over at once and the control room is in front.
+for r in list.rows {
+    var said = "-"
+    let tracker = ControlRoomSeenTracker(
+        later: { after, work in
+            said = "after=\(f(CGFloat(after)))"
+            work()
+        },
+        isInFront: { true },
+        markSeen: { said += " marks=\($0)" })
+    tracker.selectionChanged(to: r)
+    print("seen row=\(r.id) \(said)")
 }
 
 let lay = ControlRoomListLayout(list: list, height: CGFloat(height))
@@ -321,7 +368,8 @@ def main():
 
     print(f"compared {n} lines: the macOS host and the Windows host agree")
     print("NOT COMPARED: the snapshot's own now_ms (the macOS list does not keep it); "
-          "unseen, tabs (windows/control-room reads neither); translated text; anything drawn.")
+          "a snapshot with no unseen or no tabs; what calls a seen mark off; "
+          "translated text; anything drawn.")
     return 0
 
 

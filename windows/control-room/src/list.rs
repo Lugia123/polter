@@ -34,6 +34,8 @@ pub struct Row {
     pub waited_min: Option<u64>,
     /// How many other terminals of this group are also waiting.
     pub others: u64,
+    /// The core says nobody has looked at this since it stopped.
+    pub unseen: bool,
     /// What an act on this row sends home (`act`).
     pub terminal: Option<String>,
     pub since_ms: u64,
@@ -81,6 +83,7 @@ impl List {
                 detail_is_code: g.same_as.is_none() && g.reason.from == "hook_note",
                 waited_min: g.waited_min,
                 others: g.more,
+                unseen: g.unseen,
                 terminal: g.terminal.clone(),
                 since_ms: g.since_ms,
                 event_ms: g.event_ms,

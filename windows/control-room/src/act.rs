@@ -123,3 +123,46 @@ impl Refusal {
         matches!(self, Refusal::DraftInLine | Refusal::UserPresent | Refusal::KeyFailed)
     }
 }
+
+/// Looking at a group marks it seen: a row the core says nobody has looked
+/// at, left selected with the control room in front for
+/// `look::selection::SEEN_AFTER` seconds.
+///
+/// This holds no clock. `selection_changed` hands back a `Dwell` when there
+/// is something to wait for; the host waits and then asks `due`, which says
+/// no if the selection has moved on meanwhile.
+#[derive(Debug, Default)]
+pub struct SeenMarker {
+    /// Counts selections, so that a wait can tell whether it is still about
+    /// the current one.
+    generation: u64,
+    selected: Option<String>,
+}
+
+/// One wait, for one selection of one group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dwell {
+    generation: u64,
+    pub group: String,
+}
+
+impl SeenMarker {
+    /// The selection is now `row` (none for none). Call it on every change,
+    /// and again when the control room comes to the front with a row
+    /// already selected.
+    pub fn selection_changed(&mut self, row: Option<&Row>) -> Option<Dwell> {
+        self.generation += 1;
+        self.selected = row.map(|r| r.id.clone());
+        // Only a row the core says has not been looked at is worth saying
+        // anything about.
+        let row = row.filter(|r| r.unseen)?;
+        Some(Dwell { generation: self.generation, group: row.id.clone() })
+    }
+
+    /// The wait is over: the act to send, or none when the selection moved
+    /// or the control room is not what the person is looking at.
+    pub fn due<'a>(&self, dwell: &'a Dwell, in_front: bool) -> Option<Act<'a>> {
+        let still = self.generation == dwell.generation && self.selected.as_deref() == Some(dwell.group.as_str());
+        (still && in_front).then_some(Act::Seen { group: &dwell.group })
+    }
+}

@@ -1,11 +1,11 @@
 //! Against the core's own fixture: the snapshot `ControlRoom.zig` builds and
 //! a Zig test holds to the code. The same file the macOS side decodes.
 
-use crate::act::{self, Act, Refusal};
+use crate::act::{self, Act, Refusal, SeenMarker};
 use crate::layout::{self, ListLayout};
 use crate::list::{self, Detail, List};
-use crate::look::{line, side, space};
-use crate::pulse::{self, Scope};
+use crate::look::{line, side, space, window_tab};
+use crate::pulse::{self, Scope, TabStatus};
 use crate::snapshot::{self, DecodeError, Shown};
 
 const FIXTURE: &str = include_str!(concat!(
@@ -256,6 +256,96 @@ fn exactly_one_row_breathes_whatever_tab_is_showing() {
         let breathing = l.rows().filter(|r| Some(r.id.as_str()) == row).map(|r| r.id.as_str()).collect::<Vec<_>>();
         assert!(breathing.len() <= 1, "{breathing:?} with {showing:?} showing");
     }
+}
+
+// -- what a window tab carries --------------------------------------------------
+
+#[test]
+fn a_tab_carries_the_glyph_the_core_gave_it_and_one_of_them_breathes() {
+    let s = snapshot::decode(FIXTURE).unwrap();
+    let window = "0x0000000000000010";
+    let tab = |n: u8| format!("0x00000000000000{n:02x}");
+    let status = |t: u8, showing: Option<u8>| {
+        pulse::tab_status(Some(&s), &tab(t), window, showing.map(tab).as_deref())
+    };
+
+    assert_eq!(s.tabs.len(), 7);
+    // Looking at a tab nothing waits in: billing's breathes, the others do not.
+    assert_eq!(status(0x22, Some(0x26)), TabStatus { shown: Shown::NeedsYou, pulses: true });
+    assert_eq!(status(0x21, Some(0x26)), TabStatus { shown: Shown::NeedsYou, pulses: false });
+    assert_eq!(status(0x23, Some(0x26)), TabStatus { shown: Shown::Trouble, pulses: false });
+    assert_eq!(status(0x24, Some(0x26)), TabStatus { shown: Shown::DoneUnseen, pulses: false });
+    assert_eq!(status(0x25, Some(0x26)), TabStatus { shown: Shown::None, pulses: false });
+
+    // Looking at billing's own tab: it keeps its glyph and the next one breathes.
+    assert_eq!(status(0x22, Some(0x22)), TabStatus { shown: Shown::NeedsYou, pulses: false });
+    assert_eq!(status(0x21, Some(0x22)), TabStatus { shown: Shown::NeedsYou, pulses: true });
+
+    // In another window nothing of this one breathes, but the glyph is the tab's.
+    let elsewhere = pulse::tab_status(Some(&s), &tab(0x22), "0x0000000000000099", None);
+    assert_eq!(elsewhere, TabStatus { shown: Shown::NeedsYou, pulses: false });
+
+    // A tab the core does not list, and any tab before the first snapshot.
+    assert_eq!(status(0x7f, None), TabStatus::NONE);
+    assert_eq!(pulse::tab_status(None, &tab(0x22), window, None), TabStatus::NONE);
+}
+
+#[test]
+fn a_tabs_glyph_this_build_does_not_know_is_an_error_too() {
+    let at = FIXTURE.find("\"tabs\"").expect("the fixture has tabs");
+    let odd = format!("{}{}", &FIXTURE[..at], FIXTURE[at..].replacen("\"shown\": \"trouble\"", "\"shown\": \"on_fire\"", 1));
+    assert_ne!(odd, FIXTURE);
+    assert_eq!(snapshot::decode(&odd), Err(DecodeError::UnknownShown("on_fire".into())));
+
+    let cut = FIXTURE.replacen("\"unseen\"", "\"unsee\"", 1);
+    assert_eq!(snapshot::decode(&cut), Err(DecodeError::Field("groups[0].unseen".into())));
+    let cut = FIXTURE.replacen("\"tabs\"", "\"tab_list\"", 1);
+    assert_eq!(snapshot::decode(&cut), Err(DecodeError::Field("snapshot.tabs".into())));
+}
+
+#[test]
+fn working_is_drawn_on_a_window_tab_only_if_the_look_says_so() {
+    assert!(pulse::draws_on_window_tab(Shown::NeedsYou));
+    assert!(pulse::draws_on_window_tab(Shown::Trouble));
+    assert!(pulse::draws_on_window_tab(Shown::DoneUnseen));
+    assert!(!pulse::draws_on_window_tab(Shown::None));
+    assert_eq!(pulse::draws_on_window_tab(Shown::Working), window_tab::WORKING_GLYPH_SHOWN);
+}
+
+// -- done, and nobody has looked ------------------------------------------------
+
+#[test]
+fn unseen_is_the_cores_word_for_each_row() {
+    let l = list();
+    let unseen: Vec<&str> = l.rows().filter(|r| r.unseen).map(|r| r.id.as_str()).collect();
+    assert_eq!(unseen, ["infra"]);
+}
+
+#[test]
+fn looking_at_an_unseen_row_long_enough_marks_it_seen() {
+    let l = list();
+    let infra = l.row("infra").unwrap();
+    let billing = l.row("billing").unwrap();
+    let mut marker = SeenMarker::default();
+
+    // A row somebody has looked at already starts no wait.
+    assert_eq!(marker.selection_changed(Some(billing)), None);
+    assert_eq!(marker.selection_changed(None), None);
+
+    // An unseen one does, and when the wait is over it is the seen act.
+    let dwell = marker.selection_changed(Some(infra)).expect("infra is unseen");
+    assert_eq!(dwell.group, "infra");
+    assert_eq!(marker.due(&dwell, true), Some(Act::Seen { group: "infra" }));
+    // Not while the control room is behind something else.
+    assert_eq!(marker.due(&dwell, false), None);
+
+    // Arrowing past it: the wait that was started is no longer about anything.
+    marker.selection_changed(Some(billing));
+    assert_eq!(marker.due(&dwell, true), None);
+    // Coming back starts a new one; the old one stays dead.
+    let again = marker.selection_changed(Some(infra)).unwrap();
+    assert_eq!(marker.due(&dwell, true), None);
+    assert_eq!(marker.due(&again, true), Some(Act::Seen { group: "infra" }));
 }
 
 // -- what the person does -----------------------------------------------------

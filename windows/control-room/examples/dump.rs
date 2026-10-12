@@ -8,10 +8,12 @@
 //! disagreeing about what one snapshot looks like.
 
 use polter_control_room::json::quote;
+use polter_control_room::act::{Act, SeenMarker};
 use polter_control_room::layout::{self, ListLayout, Rect};
 use polter_control_room::list::{self, Detail, List, Row};
 use polter_control_room::pulse::{self, Scope};
-use polter_control_room::snapshot;
+use polter_control_room::look::selection;
+use polter_control_room::snapshot::{self, Shown};
 
 fn rect(name: &str, r: Rect) {
     println!("rect {name} x={:.3} y={:.3} w={:.3} h={:.3}", r.x, r.y, r.w, r.h);
@@ -31,13 +33,14 @@ fn row(section: &str, r: &Row) {
     let event = r.terminal.as_ref().and(r.event_ms).map_or("-".to_string(), |m| m.to_string());
     println!(
         "row section={section} id={} shown={} word={} detail={} code={} waited={waited} others={} \
-         terminal={} since={since} event={event}",
+         unseen={} terminal={} since={since} event={event}",
         r.id,
         r.shown.name(),
         quote(&r.word),
         quote(&detail),
         r.detail_is_code,
         r.others,
+        r.unseen,
         r.terminal.as_deref().unwrap_or("-")
     );
 }
@@ -105,6 +108,50 @@ fn main() {
                 p.and_then(|p| p.tab.as_deref()).unwrap_or("-")
             );
         }
+    }
+
+    // What each window tab carries, for the same fronts; then a tab the
+    // core does not list, and every glyph there is.
+    println!("tabs {}", snap.tabs.len());
+    for t in &snap.tabs {
+        println!(
+            "tab {} window={} shown={} draws={}",
+            t.tab,
+            t.window.as_deref().unwrap_or("-"),
+            t.shown.name(),
+            pulse::draws_on_window_tab(t.shown)
+        );
+        let Some(window) = t.window.as_deref() else { continue };
+        for front in &fronts {
+            let tab = front.map(|(f, _)| f);
+            let st = pulse::tab_status(Some(&snap), &t.tab, window, tab);
+            println!(
+                "tab_status tab={} showing={} shown={} pulses={}",
+                t.tab,
+                tab.unwrap_or("-"),
+                st.shown.name(),
+                st.pulses
+            );
+        }
+    }
+    let unlisted = pulse::tab_status(Some(&snap), "0x00000000000000fe", windows[0], None);
+    println!("tab_status tab=unlisted showing=- shown={} pulses={}", unlisted.shown.name(), unlisted.pulses);
+    for s in [Shown::NeedsYou, Shown::Trouble, Shown::DoneUnseen, Shown::Working, Shown::None] {
+        println!("tab_draws shown={} draws={}", s.name(), pulse::draws_on_window_tab(s));
+    }
+
+    // Looking at a row: which are marked seen, and after how long. The
+    // wait is over at once and the control room is in front.
+    for r in l.rows() {
+        let mut marker = SeenMarker::default();
+        let said = match marker.selection_changed(Some(r)) {
+            None => "-".to_string(),
+            Some(dwell) => match marker.due(&dwell, true) {
+                Some(Act::Seen { group }) => format!("after={:.3} marks={group}", selection::SEEN_AFTER),
+                _ => format!("after={:.3}", selection::SEEN_AFTER),
+            },
+        };
+        println!("seen row={} {said}", r.id);
     }
 
     let lay = ListLayout::new(&l, height);

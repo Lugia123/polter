@@ -49,6 +49,8 @@ pub struct Reason {
 pub struct Group {
     pub name: String,
     pub needs_me: bool,
+    /// The core says nobody has looked at this since it stopped.
+    pub unseen: bool,
     pub shown: Shown,
     /// The words beside the glyph, already in the person's language.
     pub text: String,
@@ -62,6 +64,14 @@ pub struct Group {
     pub terminal: Option<String>,
     pub since_ms: u64,
     pub event_ms: Option<u64>,
+}
+
+/// One window tab and the one glyph it carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tab {
+    pub window: Option<String>,
+    pub tab: String,
+    pub shown: Shown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +116,8 @@ pub struct Snapshot {
     pub groups_other: u64,
     /// Already in the order to draw them.
     pub groups: Vec<Group>,
+    /// Every window tab the core has placed, each with its glyph.
+    pub tabs: Vec<Tab>,
     pub pulses: Vec<Pulse>,
     pub band: Band,
 }
@@ -179,6 +191,7 @@ fn group(v: &Value, path: &str) -> Res<Group> {
     Ok(Group {
         name: text(v, path, "name")?,
         needs_me: boolean(v, path, "needs_me")?,
+        unseen: boolean(v, path, "unseen")?,
         shown: Shown::parse(&shown).ok_or(DecodeError::UnknownShown(shown))?,
         text: text(v, path, "text")?,
         waited_min: opt_int(v, path, "waited_min")?,
@@ -201,6 +214,17 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
     let mut groups = Vec::new();
     for (i, g) in list(&v, root, "groups")?.iter().enumerate() {
         groups.push(group(g, &format!("groups[{i}]"))?);
+    }
+
+    let mut tabs = Vec::new();
+    for (i, t) in list(&v, root, "tabs")?.iter().enumerate() {
+        let path = format!("tabs[{i}]");
+        let shown = text(t, &path, "shown")?;
+        tabs.push(Tab {
+            window: opt_text(t, &path, "window")?,
+            tab: text(t, &path, "tab")?,
+            shown: Shown::parse(&shown).ok_or(DecodeError::UnknownShown(shown))?,
+        });
     }
 
     let mut pulses = Vec::new();
@@ -237,6 +261,7 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
         groups_needing_me: int(&v, root, "groups_needing_me")?,
         groups_other: int(&v, root, "groups_other")?,
         groups,
+        tabs,
         pulses,
         band: Band {
             start_ms: int(b, "band", "start_ms")?,
