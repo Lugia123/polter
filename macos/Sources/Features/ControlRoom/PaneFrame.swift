@@ -40,6 +40,12 @@ enum PaneFrame {
         init(_ supervisor: ControlRoomList.SupervisorTitle) {
             self.init(name: supervisor.name, shown: .init(supervisor.shown), word: supervisor.word, says: supervisor.says)
         }
+
+        /// The word after the name on the bar of a frame that is `wears`:
+        /// the title's own when it brings one, the frame's otherwise.
+        func roleWord(in wears: Kind) -> String? {
+            PaneFrame.roleWord(says ?? wears)
+        }
     }
 
     /// What one pane wears.

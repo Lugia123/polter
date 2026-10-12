@@ -204,6 +204,46 @@ struct PaneFrameTests {
         #expect(PaneHeldGlyph.bars.count == 2)
     }
 
+    // MARK: The word after the name, when the title brings its own
+
+    @Test func aControlRoomTitleBringsItsOwnWordAcross() {
+        // The control room has one frame -- a supervisor's -- and shows in it
+        // a terminal that may be a worker or neither. Whose word follows the
+        // name comes with the title, and must still be there on the bar.
+        for says in PaneFrame.Kind.allCases {
+            let from = ControlRoomList.SupervisorTitle(name: "lone", shown: .needsYou, word: "等批准", says: says)
+            let title = Title(from)
+            #expect(title.says == says, "\(says)")
+            #expect(title == Title(name: "lone", shown: .needsYou, word: "等批准", says: says))
+            // In the supervisor's frame it says what the title says it is.
+            #expect(title.roleWord(in: .supervisor) == PaneFrame.roleWord(says), "\(says)")
+        }
+        // An ordinary terminal in the supervisor's frame says nothing; a
+        // worker there says it is a worker, not a supervisor.
+        let plain = Title(ControlRoomList.SupervisorTitle(name: "zsh", shown: .none, word: "", says: .plain))
+        #expect(plain.roleWord(in: .supervisor) == nil)
+        let worker = Title(ControlRoomList.SupervisorTitle(name: "w", shown: .none, word: "", says: .worker))
+        #expect(worker.roleWord(in: .supervisor) == PaneFrame.roleWord(.worker))
+        #expect(worker.roleWord(in: .supervisor) != PaneFrame.roleWord(.supervisor))
+    }
+
+    @Test func aTitleThatBringsNoWordSaysWhatItsFrameIsAndAPaneOfASplitNeverBringsOne() throws {
+        // A group's supervisor in the control room: no word of its own.
+        let group = Title(ControlRoomList.SupervisorTitle(name: "web-app", shown: .working, word: "在干活"))
+        #expect(group.says == nil)
+        #expect(group.roleWord(in: .supervisor) == PaneFrame.roleWord(.supervisor))
+        // Every pane of a split: the frame is what it is.
+        let all = try terminals()
+        for terminal in all {
+            let drawn = try #require(PaneFrame.drawn(terminal: terminal.id, ownName: "", at: split, in: all))
+            #expect(drawn.title.says == nil, "\(terminal.id)")
+            #expect(drawn.title.roleWord(in: drawn.wears) == PaneFrame.roleWord(drawn.wears), "\(terminal.id)")
+        }
+        let unlisted = try #require(PaneFrame.drawn(terminal: nil, ownName: "fish", at: split, in: all))
+        #expect(unlisted.title.says == nil)
+        #expect(Title(name: "t", shown: .none, word: "").says == nil)
+    }
+
     // MARK: The ground
 
     @Test func theGroundShowsAsSoonAsOnePaneIsFramed() {

@@ -269,7 +269,7 @@ struct PaneFrameBar: View {
                         .truncationMode(.middle)
                     // The title's own word when it brings one; the frame's
                     // otherwise (`SupervisorTitle.says`).
-                    if let role = PaneFrame.roleWord(title.says ?? wears) {
+                    if let role = title.roleWord(in: wears) {
                         Text(role)
                             .foregroundStyle(secondaryColor(theme))
                             .fixedSize()
