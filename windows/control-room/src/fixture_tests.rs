@@ -134,6 +134,16 @@ fn the_selection_walks_the_rows_and_stops_at_the_ends() {
     assert_eq!(list::restored_selection(&l, Some("billing")), Some("billing"));
     assert_eq!(list::restored_selection(&l, Some("gone")), None);
     assert_eq!(list::restored_selection(&l, None), None);
+
+    // Opening with nothing selected starts on the core's group, which is
+    // not the person's choice; a selection that stands is left alone; and
+    // later, nothing is selected for them.
+    let s = snapshot::decode(FIXTURE).unwrap();
+    assert_eq!(s.open_on.as_deref(), Some("web-app"));
+    assert_eq!(list::opening_selection(None, true, s.open_on.as_deref()), (Some("web-app"), false));
+    assert_eq!(list::opening_selection(Some("billing"), true, s.open_on.as_deref()), (Some("billing"), true));
+    assert_eq!(list::opening_selection(None, false, s.open_on.as_deref()), (None, true));
+    assert_eq!(list::opening_selection(None, true, None), (None, true));
 }
 
 // -- where things are ---------------------------------------------------------

@@ -152,4 +152,44 @@ enum ControlRoomRules {
         guard let kept, rows.contains(where: { $0.id == kept }) else { return nil }
         return kept
     }
+
+    /// What becomes of "new split" asked of a terminal.
+    enum NewSplit: Equatable {
+        /// Split it.
+        case split
+        /// Not done, and the person who pressed the key hears so.
+        case refuseAloud
+        /// Not done; whoever asked through the core is answered by the
+        /// core, which opens a tab instead and says why.
+        case refuseToTheCore
+    }
+
+    /// A terminal the control room has borrowed is not split: the new pane
+    /// would open in its own tab, which is behind the control room, where
+    /// the person who pressed the key cannot see it. `lent` is whether the
+    /// control room has it; `answerWanted` is whether the request came with
+    /// somewhere to write the answer (an agent's, through the core) rather
+    /// than from a key.
+    static func newSplit(lent: Bool, answerWanted: Bool) -> NewSplit {
+        guard lent else { return .split }
+        return answerWanted ? .refuseToTheCore : .refuseAloud
+    }
+
+    /// What is selected once a snapshot has arrived, and whose choice it
+    /// is. `current` is what is selected already (after
+    /// `restoredSelection`); `opening` is true for the first snapshot the
+    /// control room sees since it was opened; `openOn` is the group the
+    /// core says to start on.
+    ///
+    /// A selection that stands is never replaced. With none, the control
+    /// room that has just opened starts on the core's group -- and that is
+    /// nobody's choice: the person has not looked at that row by its being
+    /// selected for them, so it does not count towards "seen". Later, with
+    /// nothing selected, nothing is selected for them: the row they were
+    /// on went away, and jumping to another would be a surprise.
+    static func selection(current: String?, opening: Bool, openOn: String?) -> (id: String?, isThePersons: Bool) {
+        if let current { return (current, true) }
+        guard opening, let openOn else { return (nil, true) }
+        return (openOn, false)
+    }
 }

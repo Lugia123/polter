@@ -88,6 +88,11 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
                 DispatchQueue.main.async { self?.syncDetail() }
             }
         model.askForTerminal = { [weak self] in self?.lend(.askedFor) }
+        // Selecting the row that is already selected changes nothing the
+        // sink above would see, and still means the person is on it now.
+        model.onChoose = { [weak self] in
+            DispatchQueue.main.async { self?.noteSelection() }
+        }
         lender.onReclaim = { [weak self] view in
             guard let terminal = ControlRoomLender.terminal(of: view) else { return }
             self?.lend(.reclaimed(terminal: terminal))
@@ -107,8 +112,9 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     }
 
     private func noteSelection() {
-        let row = model.list?.rows.first { $0.id == model.selection }
-        seen?.selectionChanged(to: row)
+        // A row the control room opened on by itself is not being looked
+        // at until the person selects it.
+        seen?.selectionChanged(to: model.rowBeingLookedAt)
         syncDetail()
     }
 

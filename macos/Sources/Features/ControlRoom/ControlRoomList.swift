@@ -201,6 +201,10 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     var rev: UInt64
     var groups_needing_me: Int
     var groups_other: Int
+    /// The group to start on when the control room opens with nothing
+    /// selected. The core's choice: which is first and which have an agent
+    /// in them are both its to say.
+    var open_on: String?
     /// Already in the order to draw them.
     var groups: [Group]
     /// The three below are newer than the rest; a snapshot without them

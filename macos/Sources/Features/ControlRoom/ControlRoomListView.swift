@@ -83,7 +83,12 @@ struct ControlRoomListView: View {
     /// Selecting is one call whether it came from a click or a key, so both
     /// slide the chip the same way.
     private func select(_ id: String?) {
-        guard id != selection else { return }
+        guard id != selection else {
+            // Already there, and still the person's doing: a row the
+            // control room opened on is theirs once they press it.
+            selection = id
+            return
+        }
         if moves {
             withAnimation(spring) { selection = id }
         } else {

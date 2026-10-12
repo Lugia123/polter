@@ -64,6 +64,21 @@ fn main() {
     let l = List::from_snapshot(&snap);
 
     println!("count waiting={} quiet={}", l.waiting_count, l.quiet_count);
+
+    // Where a control room opens, and whose choice the selection then is.
+    let open_on = snap.open_on.as_deref();
+    println!("open_on {}", open_on.unwrap_or("-"));
+    let first = l.waiting.first().or(l.quiet.first()).map(|r| r.id.as_str());
+    for (current, opening) in [(None, true), (None, false), (first, true), (first, false)] {
+        let (id, persons) = list::opening_selection(current, opening, open_on);
+        println!(
+            "opening current={} opening={} selects={} persons={}",
+            current.unwrap_or("-"),
+            opening,
+            id.unwrap_or("-"),
+            persons
+        );
+    }
     for r in &l.waiting {
         row("waiting", r);
     }

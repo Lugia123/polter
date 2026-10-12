@@ -86,7 +86,37 @@ final class ControlRoomFeed {
 final class ControlRoomModel: ObservableObject {
     /// Nil until the core has a snapshot.
     @Published private(set) var list: ControlRoomList?
-    @Published var selection: String?
+    /// The selected group. Read by everything; **written by the person
+    /// through `choose`**, and by the two rules that may set it without
+    /// them (a kept selection whose group is gone, and the group to open
+    /// on).
+    @Published private(set) var selection: String?
+    /// Whether the selection is one the person made -- a click, an arrow
+    /// key, or what they had selected before a restart -- and not the row
+    /// the control room opened on by itself. Only the person's own counts
+    /// as looking at a row.
+    private(set) var selectionIsThePersons = true
+    /// False until the first snapshot since this control room was opened.
+    private var hasOpened = false
+
+    /// Told after every `choose`, including one that selects the row
+    /// already selected: that is how a row the control room opened on
+    /// becomes one the person is looking at.
+    var onChoose: () -> Void = {}
+
+    /// The person selected `id` (nil for nothing).
+    func choose(_ id: String?) {
+        selectionIsThePersons = true
+        if selection != id { selection = id }
+        onChoose()
+    }
+
+    /// The selected row, when looking at it is the person's doing; nil
+    /// when nothing is selected or the control room picked it.
+    var rowBeingLookedAt: ControlRoomList.Row? {
+        guard selectionIsThePersons else { return nil }
+        return list?.rows.first { $0.id == selection }
+    }
     /// What the right-hand side shows. Written by whoever runs the lending
     /// (`ControlRoomController`); the views only read it.
     @Published var detail: ControlRoomLending.Detail = .nothingSelected
@@ -105,7 +135,12 @@ final class ControlRoomModel: ObservableObject {
             let next = ControlRoomList(snapshot: snapshot, showing: showing())
             self.list = next
             // A group that is no longer listed cannot stay selected.
-            self.selection = ControlRoomRules.restoredSelection(self.selection, in: next.rows)
+            let kept = ControlRoomRules.restoredSelection(self.selection, in: next.rows)
+            let start = ControlRoomRules.selection(
+                current: kept, opening: !self.hasOpened, openOn: snapshot.open_on)
+            self.hasOpened = true
+            if !start.isThePersons { self.selectionIsThePersons = false }
+            if self.selection != start.id { self.selection = start.id }
         }
     }
 }
