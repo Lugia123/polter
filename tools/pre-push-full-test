@@ -15,6 +15,13 @@ the full one, and "remember not to pass the flag" is not a guard. So:
     mode it ran in (`integrity: full` or `integrity: sampled 1/N`). A run
     whose output does not contain `integrity: full`, or does contain
     `integrity: sampled`, fails here even if every test passed.
+  * **The macOS host's logic tests run** (`tools/mac-logic-tests`): the Swift
+    tests that need no host, in a package built outside the tree. Nothing is
+    started and no window is put on screen, so it belongs in a run that must
+    not interrupt whoever is using the machine. Its own summary line is
+    printed; a failed test, a file its list does not know, or a run of no
+    tests fails this script. Off macOS it is said to be not run, and that is
+    not a failure: there is no Swift host to test there.
   * **Both gate sets run**, `tools/*.py` and `windows/tools/*.py`, every
     script, and the leak gate's `scanned N tracked files` is reported: a
     count that dropped is how a gate that stopped looking shows up.
@@ -27,7 +34,8 @@ failure with a stack instead of a build that never returns.
 
 Run:  tools/pre-push-full-test [extra zig build args]
       (from the repository root; extra args go to `zig build test`)
-Exit: 0 only when the tests passed with full checks and every gate passed;
+Exit: 0 only when the tests passed with full checks, the macOS logic tests
+      passed, and every gate passed;
       2 when refused before running anything.
 """
 
@@ -110,6 +118,24 @@ def main() -> int:
     else:
         print("integrity: full (read from the test output)")
 
+    # The macOS host's logic tests. After the Zig run so that the two builds
+    # do not fight over the machine; before the gates, which are quick.
+    if sys.platform == "darwin":
+        m = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "mac-logic-tests")],
+                           cwd=ROOT, capture_output=True, text=True)
+        said = [l for l in (m.stdout + m.stderr).splitlines() if l.startswith(("OK:", "FAIL:"))]
+        with open(log_path, "a", encoding="utf-8") as log:
+            log.write(f"\n## tools/mac-logic-tests: exit {m.returncode}\n{m.stdout}{m.stderr}")
+        print(f"mac logic tests: exit {m.returncode}; {said[-1] if said else 'it said neither OK nor FAIL'}")
+        if m.returncode != 0:
+            problems.append(f"tools/mac-logic-tests exited {m.returncode} (1 = a test failed or the "
+                            f"package did not build, 2 = its list and the tree disagree or no test ran, "
+                            f"3 = no swift)")
+        elif not said or not said[-1].startswith("OK:"):
+            problems.append("tools/mac-logic-tests exited 0 without saying OK")
+    else:
+        print("mac logic tests: NOT RUN -- this is not macOS, and they are the macOS host's")
+
     gates = sorted(glob.glob(os.path.join(ROOT, "tools", "*.py"))) + \
         sorted(glob.glob(os.path.join(ROOT, "windows", "tools", "*.py")))
     failed = []
@@ -141,7 +167,7 @@ def main() -> int:
             print(f"FAIL: {pr}")
         print(f"(full log: {os.path.relpath(log_path, ROOT)})")
         return 1
-    print("OK: full tests with every integrity check, and every gate, passed")
+    print("OK: full tests with every integrity check, the macOS logic tests, and every gate, passed")
     return 0
 
 
