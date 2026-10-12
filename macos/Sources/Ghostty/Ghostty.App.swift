@@ -2443,7 +2443,9 @@ extension Ghostty {
             // A macOS "tab" is this controller's own window; what the user
             // sees as tabs are windows in a tab group. So the panes sharing a
             // tab with this surface are the leaves of this controller's tree.
-            let panes = controller.surfaceTree.root?.leaves().count ?? 0
+            // Panes, not terminals: what is asked is how much room the tab
+            // has, and terminals stacked behind another take none.
+            let panes = controller.surfaceTree.shownLeaves().count
             guard panes > 0 else { return false }
             cell.pointee = UInt32(panes)
             return true

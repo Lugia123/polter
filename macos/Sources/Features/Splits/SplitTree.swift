@@ -10,6 +10,29 @@ struct SplitTree<ViewType: NSView & Codable & Identifiable> {
     /// size of the view area where the splits are shown.
     let zoomed: Node?
 
+    /// The panes that hold more than one terminal (control-room.md, 12.6.2).
+    ///
+    /// **A leaf is still one view: the one its pane is showing.** The others
+    /// stacked behind it are here, not in the tree, so everything that walks
+    /// nodes -- layout, focus, resizing, zoom, the stored form -- sees
+    /// exactly what it saw before there were stacks. A pane with one
+    /// terminal has no entry: it is not "a stack of one", it is a leaf.
+    ///
+    /// Every function in this file that returns a tree carries this along
+    /// (`derived`), and `SplitStackTests` holds each of them to it: a tree
+    /// rebuilt from its root and nothing else would drop the terminals
+    /// behind without a word, and they would go on running with no pane.
+    let stacks: [Stack]
+
+    /// One pane's terminals, in the order of their tabs.
+    struct Stack {
+        /// Which of `members` the pane is showing: the view in its leaf.
+        let shown: ViewType.ID
+        /// Every terminal of the pane, the shown one among them. Always
+        /// more than one.
+        let members: [ViewType]
+    }
+
     /// A single node in the tree is either a leaf node (a view) or a split (has a
     /// left/right or top/bottom).
     indirect enum Node: Codable {
@@ -66,6 +89,14 @@ struct SplitTree<ViewType: NSView & Codable & Identifiable> {
 
     enum SplitError: Error {
         case viewNotFound
+        /// The view is already somewhere in this tree.
+        case viewAlreadyPresent
+        /// The view is the only terminal of its pane: there is nothing to
+        /// show instead of it, or to take it out from.
+        case notStacked
+        /// A node was to be replaced by one without a pane that has
+        /// terminals stacked behind it.
+        case stackedPaneReplaced
     }
 
     enum NewDirection {
@@ -101,11 +132,35 @@ extension SplitTree {
     }
 
     init() {
-        self.init(root: nil, zoomed: nil)
+        self.init(root: nil, zoomed: nil, stacks: [])
     }
 
     init(view: ViewType) {
-        self.init(root: .leaf(view: view), zoomed: nil)
+        self.init(root: .leaf(view: view), zoomed: nil, stacks: [])
+    }
+
+    /// A tree made from nodes, with one terminal to a pane.
+    ///
+    /// **For a tree built from scratch** -- restored from a project, laid out
+    /// for an agent, made in a test. To change the root or the zoom of a
+    /// tree that already exists, use `zooming(_:)` or one of the operations
+    /// below: they keep its stacks, and this cannot.
+    init(root: Node?, zoomed: Node?) {
+        self.init(root: root, zoomed: zoomed, stacks: [])
+    }
+
+    /// This tree with another root and zoom, and the stacks whose pane is
+    /// still in it. What every operation in this file ends with.
+    private func derived(root: Node?, zoomed: Node?) -> Self {
+        let shown = Set((root?.shownLeaves() ?? []).map { ObjectIdentifier($0) })
+        return .init(root: root, zoomed: zoomed, stacks: stacks.filter { stack in
+            stack.members.contains { $0.id == stack.shown && shown.contains(ObjectIdentifier($0)) }
+        })
+    }
+
+    /// This tree with `node` zoomed, or with nothing zoomed for nil.
+    func zooming(_ node: Node?) -> Self {
+        derived(root: root, zoomed: node)
     }
 
     /// Checks if the tree contains the specified node.
@@ -124,7 +179,7 @@ extension SplitTree {
     /// This will always reset the zoomed state of the tree.
     func inserting(view: ViewType, at: ViewType, direction: NewDirection) throws -> Self {
         guard let root else { throw SplitError.viewNotFound }
-        return .init(
+        return derived(
             root: try root.inserting(view: view, at: at, direction: direction),
             zoomed: nil)
     }
@@ -138,12 +193,22 @@ extension SplitTree {
 
     /// Remove a node from the tree. If the node being removed is part of a split,
     /// the sibling node takes the place of the parent split.
+    ///
+    /// **A pane with terminals stacked behind it does not go when the one
+    /// it shows does**: the next one in the stack takes its place in the
+    /// same pane, and the pane goes only with its last terminal. Removing a
+    /// split takes every terminal under it, the ones behind included
+    /// (`removed(by:)` says which).
     func removing(_ target: Node) -> Self {
         guard let root else { return self }
 
+        if case .leaf(let view) = target, stack(of: view) != nil, root.node(view: view) != nil {
+            return (try? removing(member: view)) ?? self
+        }
+
         // If we're removing the root itself, return an empty tree
         if root == target {
-            return .init(root: nil, zoomed: nil)
+            return .init(root: nil, zoomed: nil, stacks: [])
         }
 
         // Otherwise, try to remove from the tree
@@ -152,7 +217,7 @@ extension SplitTree {
         // Update zoomed if it was the removed node
         let newZoomed = (zoomed == target) ? nil : zoomed
 
-        return .init(root: newRoot, zoomed: newZoomed)
+        return derived(root: newRoot, zoomed: newZoomed)
     }
 
     /// Replace a node in the tree with a new node.
@@ -167,10 +232,19 @@ extension SplitTree {
         // Replace the node
         let newRoot = try root.replacingNode(at: path, with: newNode)
 
+        // A pane that has terminals stacked behind it has to still be there
+        // afterwards: its stack hangs off the view it shows, and replacing
+        // that view by this road would leave the ones behind with no pane.
+        // (Resizing, the one caller, replaces a split by the same split.)
+        let kept = Set(newRoot.shownLeaves().map { ObjectIdentifier($0) })
+        for view in node.shownLeaves() where stack(of: view) != nil && !kept.contains(ObjectIdentifier(view)) {
+            throw SplitError.stackedPaneReplaced
+        }
+
         // Update zoomed if it was the replaced node
         let newZoomed = (zoomed == node) ? newNode : zoomed
 
-        return .init(root: newRoot, zoomed: newZoomed)
+        return derived(root: newRoot, zoomed: newZoomed)
     }
 
     /// Find the next view to focus based on the current focused node and direction
@@ -180,7 +254,7 @@ extension SplitTree {
         switch direction {
         case .previous:
             // For previous, we traverse in order and find the previous leaf from our leftmost
-            let allLeaves = root.leaves()
+            let allLeaves = root.shownLeaves()
             let currentView = currentNode.leftmostLeaf()
             guard let currentIndex = allLeaves.firstIndex(where: { $0 === currentView }) else {
                 // Shouldn't be possible leftmostLeaf can't return something that doesn't exist!
@@ -191,7 +265,7 @@ extension SplitTree {
 
         case .next:
             // For previous, we traverse in order and find the next leaf from our rightmost
-            let allLeaves = root.leaves()
+            let allLeaves = root.shownLeaves()
             let currentView = currentNode.rightmostLeaf()
             guard let currentIndex = allLeaves.firstIndex(where: { $0 === currentView }) else {
                 return nil
@@ -236,7 +310,7 @@ extension SplitTree {
     func equalized() -> Self {
         guard let root else { return self }
         let newRoot = root.equalize()
-        return .init(root: newRoot, zoomed: zoomed)
+        return derived(root: newRoot, zoomed: zoomed)
     }
 
     /// Resize a node in the tree by the given pixel amount in the specified direction.
@@ -329,7 +403,7 @@ extension SplitTree {
 
         // Replace the split node with the new one
         let newRoot = try root.replacingNode(at: splitPath, with: .split(newSplit))
-        return .init(root: newRoot, zoomed: nil)
+        return derived(root: newRoot, zoomed: nil)
     }
 
     /// Returns the total bounds of the split hierarchy using NSView bounds.
@@ -377,9 +451,24 @@ extension SplitTree: Codable {
         } else {
             self.zoomed = nil
         }
+
+        // Version 1 has no stacks: every pane it stores holds one terminal.
+        self.stacks = []
     }
 
     func encode(to encoder: Encoder) throws {
+        // **Refused, not written without them.** The stored form has
+        // nowhere to put a stack yet (12.6.2, step 2), and version 1 written
+        // from a tree that has one would store the terminal each pane is
+        // showing and silently leave out the rest -- which then come back
+        // as nothing. Nothing can make a stack before there is a form to
+        // store it in; this is what says so if something does.
+        guard stacks.isEmpty else {
+            throw EncodingError.invalidValue(stacks, EncodingError.Context(
+                codingPath: encoder.codingPath,
+                debugDescription: "a SplitTree with stacked terminals cannot be stored in version 1"))
+        }
+
         var container = encoder.container(keyedBy: CodingKeys.self)
 
         // Encode version
@@ -1166,27 +1255,39 @@ extension SplitTree.Node {
 // MARK: SplitTree Sequences
 
 extension SplitTree.Node {
-    /// Returns all leaf views in this subtree
-    func leaves() -> [ViewType] {
+    /// The view each pane under this node is showing, in order. **One to a
+    /// pane**: terminals stacked behind are not here, because a node does
+    /// not know about them -- ask the tree (`members(under:)`).
+    ///
+    /// This was `leaves()`, and a node was a `Sequence` of the same. Both
+    /// read as "every terminal under here", and once a pane can hold more
+    /// than one that is no longer what they give. So the name says which it
+    /// is, and the `Sequence` is gone: a `for view in node` left over from
+    /// before would compile and quietly skip the terminals behind -- the
+    /// ones a close has to ask about.
+    func shownLeaves() -> [ViewType] {
         switch self {
         case .leaf(let view):
             return [view]
 
         case .split(let split):
-            return split.left.leaves() + split.right.leaves()
+            return split.left.shownLeaves() + split.right.shownLeaves()
         }
     }
 }
 
+/// **Every terminal in the tree**, the ones stacked behind included: pane
+/// by pane in the order of the panes, and inside a pane in the order of its
+/// tabs.
+///
+/// "Is this terminal in this tab", "does anything here have a process
+/// running", "find the terminal with this id" are all asked through this
+/// (`contains`, `first(where:)`, `for … in`), and for every one of them
+/// leaving out a terminal because it is behind another is the wrong answer
+/// that nothing reports. What is on screen is `shownLeaves()`.
 extension SplitTree: Sequence {
     func makeIterator() -> [ViewType].Iterator {
-        return root?.leaves().makeIterator() ?? [].makeIterator()
-    }
-}
-
-extension SplitTree.Node: Sequence {
-    func makeIterator() -> [ViewType].Iterator {
-        return leaves().makeIterator()
+        return members().makeIterator()
     }
 }
 
@@ -1201,18 +1302,154 @@ extension SplitTree: Collection {
     }
 
     var endIndex: Int {
-        return root?.leaves().count ?? 0
+        return members().count
     }
 
     subscript(position: Int) -> ViewType {
         precondition(position >= 0 && position < endIndex, "Index out of bounds")
-        let leaves = root?.leaves() ?? []
-        return leaves[position]
+        return members()[position]
     }
 
     func index(after i: Int) -> Int {
         precondition(i < endIndex, "Cannot increment index beyond endIndex")
         return i + 1
+    }
+}
+
+// MARK: SplitTree Stacks
+
+extension SplitTree {
+    /// The view each pane is showing, in order: what is on screen (or
+    /// would be, were nothing zoomed).
+    func shownLeaves() -> [ViewType] {
+        root?.shownLeaves() ?? []
+    }
+
+    /// Every terminal in the tree. See the `Sequence` conformance.
+    func members() -> [ViewType] {
+        guard let root else { return [] }
+        return members(under: root)
+    }
+
+    /// Every terminal under `node`: each pane's whole stack.
+    func members(under node: Node) -> [ViewType] {
+        guard !stacks.isEmpty else { return node.shownLeaves() }
+        return node.shownLeaves().flatMap { view in stack(of: view)?.members ?? [view] }
+    }
+
+    /// The terminals that `removing(node)` takes out of the tree: for a
+    /// pane, the one it shows (what is behind it stays, and one of them
+    /// takes its place); for a split, every terminal under it.
+    ///
+    /// What closing a node has to ask about before it does it.
+    func removed(by node: Node) -> [ViewType] {
+        if case .leaf(let view) = node { return [view] }
+        return members(under: node)
+    }
+
+    /// The stack `view` is in -- shown or behind -- or nil when its pane
+    /// holds only it, or it is not in this tree.
+    func stack(of view: ViewType) -> Stack? {
+        stacks.first { $0.members.contains { $0 === view } }
+    }
+
+    /// The view shown in the pane `view` belongs to: itself, unless it is
+    /// stacked behind another. Nil when it is not in this tree.
+    func shown(for view: ViewType) -> ViewType? {
+        if let stack = stack(of: view) {
+            return stack.members.first { $0.id == stack.shown }
+        }
+        return root?.node(view: view) != nil ? view : nil
+    }
+
+    /// Whether `view` is what its pane is showing.
+    func isShown(_ view: ViewType) -> Bool {
+        shown(for: view) === view
+    }
+
+    /// The node that was zoomed, found again in `newRoot` by where it was.
+    /// A node is compared by the views under it, so changing the view of a
+    /// pane inside the zoomed node makes it a different node at the same
+    /// place.
+    private func zoomedNode(in newRoot: Node) -> Node? {
+        guard let zoomed, let root, let path = root.path(to: zoomed) else { return nil }
+        return newRoot.node(at: path)
+    }
+
+    /// This tree with the pane showing `old` showing `new` instead, and
+    /// `stacks` for its stacks. Zoom follows the pane.
+    private func swapping(_ old: ViewType, for new: ViewType, stacks: [Stack]) throws -> Self {
+        guard let root, let path = root.path(to: .leaf(view: old)) else { throw SplitError.viewNotFound }
+        let newRoot = try root.replacingNode(at: path, with: .leaf(view: new))
+        return .init(root: newRoot, zoomed: zoomedNode(in: newRoot), stacks: stacks)
+    }
+
+    /// Put `view` into the pane `target` is in, behind nothing: it becomes
+    /// the one the pane shows, and its tab is the last. `target` may be the
+    /// pane's shown terminal or one behind it.
+    func stacking(_ view: ViewType, onto target: ViewType) throws -> Self {
+        guard !contains(where: { $0 === view }) else { throw SplitError.viewAlreadyPresent }
+        guard let front = shown(for: target) else { throw SplitError.viewNotFound }
+
+        let members = (stack(of: front)?.members ?? [front]) + [view]
+        let others = stacks.filter { stack in !stack.members.contains { $0 === front } }
+        return try swapping(front, for: view, stacks: others + [Stack(shown: view.id, members: members)])
+    }
+
+    /// Bring `view`, which is stacked behind another, to the front of its
+    /// pane. Showing what is already shown changes nothing.
+    func showing(_ view: ViewType) throws -> Self {
+        guard let stack = stack(of: view) else {
+            throw root?.node(view: view) == nil ? SplitError.viewNotFound : SplitError.notStacked
+        }
+        guard let front = stack.members.first(where: { $0.id == stack.shown }) else {
+            throw SplitError.viewNotFound
+        }
+        if front === view { return self }
+
+        let others = stacks.filter { other in !other.members.contains { $0 === view } }
+        return try swapping(front, for: view, stacks: others + [Stack(shown: view.id, members: stack.members)])
+    }
+
+    /// Take `view` out of the tree by itself, wherever in its pane it is.
+    ///
+    /// The one a pane shows is followed by the next tab of its stack (the
+    /// one before it, for the last); with one terminal left the pane is an
+    /// ordinary leaf again and its stack is gone from the table. A pane's
+    /// only terminal takes the pane with it, as `removing(_:)` always has.
+    func removing(member view: ViewType) throws -> Self {
+        guard let stack = stack(of: view) else {
+            guard let node = root?.node(view: view) else { throw SplitError.viewNotFound }
+            return removing(node)
+        }
+        guard let at = stack.members.firstIndex(where: { $0 === view }),
+              let front = stack.members.first(where: { $0.id == stack.shown }) else {
+            throw SplitError.viewNotFound
+        }
+
+        var members = stack.members
+        members.remove(at: at)
+        let next = front === view ? members[Swift.min(at, members.count - 1)] : front
+        let others = stacks.filter { other in !other.members.contains { $0 === view } }
+        let kept = members.count > 1 ? others + [Stack(shown: next.id, members: members)] : others
+
+        if front === view {
+            return try swapping(view, for: next, stacks: kept)
+        }
+        return .init(root: root, zoomed: zoomed, stacks: kept)
+    }
+
+    /// Take `view` out of its stack and make it a pane of its own beside
+    /// the pane it was in. Like every new split, this resets the zoom.
+    func unstacking(_ view: ViewType, direction: NewDirection) throws -> Self {
+        guard stack(of: view) != nil else {
+            throw root?.node(view: view) == nil ? SplitError.viewNotFound : SplitError.notStacked
+        }
+        let without = try removing(member: view)
+        guard let pane = stack(of: view)?.members.first(where: { $0 !== view && without.isShown($0) }) else {
+            throw SplitError.viewNotFound
+        }
+        return try without.inserting(view: view, at: pane, direction: direction)
     }
 }
 

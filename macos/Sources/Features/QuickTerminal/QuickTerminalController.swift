@@ -363,7 +363,7 @@ class QuickTerminalController: BaseTerminalController {
            let ghostty_app = ghostty.app {
             if let tree = restorationState?.surfaceTree, !tree.isEmpty {
                 surfaceTree = tree
-                let view = tree.first(where: { $0.id.uuidString == restorationState?.focusedSurface }) ?? tree.first!
+                let view = tree.first(where: { $0.id.uuidString == restorationState?.focusedSurface }) ?? tree.shownLeaves().first!
                 focusedSurface = view
                 // Add a short delay to check if the correct surface is focused.
                 // Each SurfaceWrapper defaults its FocusedValue to itself; without this delay,
