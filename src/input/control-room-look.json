@@ -174,7 +174,7 @@
     },
     "selection": {
       "_src": "v17-anim",
-      "_doc": "The selected row of the group list: a chip at rest, glass while it slides.",
+      "_doc": "The selected row of the group list and the selected window tab: a chip at rest, glass while it slides.",
       "edge_band": { "v": 2.5, "src": "v17-changes", "doc": "The width of the faint band just inside the chip's edge." },
       "spring_period": 0.36,
       "spring_damping": {
@@ -184,15 +184,24 @@
       },
       "lift_in": { "v": 0.07, "doc": "How long the chip takes to lift when it starts to move." },
       "lift_scale_row": 0.025,
-      "lift_scale_window_tab": { "v": 0.08, "doc": "The window tab's chip is the system's to draw; this is what the design hoped for." },
+      "lift_scale_window_tab": { "v": 0.08, "doc": "The window tab's chip is the system's own piece of glass; this is how much of it the slide adds while it is in the air." },
+      "lift_lands_with_remaining": { "v": 0.3, "src": "v17-changes", "doc": "The chip starts back down when this much of the way is still to go." },
+      "settled_within": { "v": 0.005, "src": "v17-changes", "doc": "The slide is over once it stays this close to its end, as a fraction of the way: 0.41 s with the period and damping above; the design says about 0.45." },
+      "slide_samples_per_second": { "v": 120, "src": "undesigned", "doc": "The window tab's slide is handed to the system written out as this many positions a second." },
+      "glass_at_rest": {
+        "v": false,
+        "src": "undesigned",
+        "doc": "Whether the row's chip is the system's glass while it sits still. Off: at rest it is a plain bright piece with nothing live behind it, and the glass is only there for the slide.",
+        "tentative": { "alt": true, "why": "Glass that sits still is recomposited whenever what is behind it changes; the one measurement of glass over a scrolling terminal found a cost in full screen. The user has not ruled." }
+      },
       "stretch_along": { "v": 0.1, "doc": "At most, with speed, along the direction of travel." },
       "squeeze_across": { "v": 0.03, "src": "v17-changes" },
       "centre_zoom": { "v": 0.04, "doc": "The middle of the chip while lifted." },
       "refraction_shown": {
         "v": true,
         "src": "v17-changes",
-        "doc": "Whether the chip's edge bends what is under it.",
-        "tentative": { "alt": false, "why": "The other candidate keeps the lift and the slide and drops the refraction. Whether it can be done live is unverified." }
+        "doc": "Whether the chip's edge bends what is under it while it slides. It is the system's glass that bends it, where the system has one (macOS 26); nothing here moves pixels itself.",
+        "tentative": { "alt": false, "why": "The other candidate keeps the lift and the slide and drops the refraction. What the system's glass looks like over the rows has not been seen in a window." }
       },
       "seen_after": {
         "v": 1.5,

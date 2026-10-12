@@ -31,18 +31,33 @@ struct ControlRoomListView: View {
     var list: ControlRoomList
     @Binding var selection: String?
     var onNewGroup: () -> Void = {}
-    /// Whether the chip's edge bends what is under it. Off, and nothing
-    /// reads it yet: the table's `refractionShown` is still tentative, and
-    /// the lift, the slide and the overshoot come first.
-    var refraction: Bool = false
+    /// Whether the chip is the system's glass while it slides, which bends
+    /// what is under its edge. The table's to say; a still picture turns
+    /// it off, because the system's glass cannot be drawn off screen.
+    var refraction: Bool = Look.Selection.refractionShown
     /// Stops every motion, as Reduce Motion does. For still pictures.
     var still: Bool = false
 
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// 0 at rest, 1 while the chip is in the air.
-    @State private var lift: CGFloat = 0
+    @State private var lift: CGFloat
     @State private var landing: DispatchWorkItem?
+
+    /// `midSlide` draws the chip as it is in the air, this far from its
+    /// row, and moves nothing: for still pictures of the slide.
+    init(list: ControlRoomList, selection: Binding<String?>, onNewGroup: @escaping () -> Void = {},
+         refraction: Bool = Look.Selection.refractionShown, still: Bool = false, midSlide: CGSize? = nil) {
+        self.list = list
+        self._selection = selection
+        self.onNewGroup = onNewGroup
+        self.refraction = refraction
+        self.still = still
+        self.away = midSlide ?? .zero
+        self._lift = State(initialValue: midSlide == nil ? 0 : 1)
+    }
+
+    private let away: CGSize
 
     private var theme: Look.Theme { Look.theme(scheme) }
     private var moves: Bool { !still && !reduceMotion }
@@ -53,7 +68,7 @@ struct ControlRoomListView: View {
                                                needed: ControlRoomAskText.needed)
             ZStack(alignment: .topLeading) {
                 if let chip = layout.chip(for: selection) {
-                    self.chip.place(chip)
+                    self.chip.place(chip.offsetBy(dx: away.width, dy: away.height))
                 }
                 header.place(layout.header)
                 ForEach(list.waiting) { row in
@@ -93,15 +108,17 @@ struct ControlRoomListView: View {
     /// Selecting is one call whether it came from a click or a key, so both
     /// slide the chip the same way.
     private func select(_ id: String?) {
-        guard id != selection else {
-            // Already there, and still the person's doing: a row the
-            // control room opened on is theirs once they press it.
-            selection = id
-            return
+        let layout = ControlRoomListLayout(list: list, height: 0, needed: ControlRoomAskText.needed)
+        let plan = id.flatMap { layout.chip(for: $0) }.map {
+            ControlRoomChipSlide.plan(from: layout.chip(for: selection), to: $0, reduceMotion: !moves)
         }
-        if moves {
+        if case .slide = plan {
             withAnimation(spring) { selection = id }
         } else {
+            // Nothing to slide from or to, or Reduce Motion: it is simply
+            // there. Also a row pressed again, which is still the person's
+            // doing: a row the control room opened on is theirs once they
+            // press it.
             selection = id
         }
     }
@@ -116,7 +133,7 @@ struct ControlRoomListView: View {
         }
         landing = land
         // It starts down with the last of the way still to go.
-        DispatchQueue.main.asyncAfter(deadline: .now() + Look.Selection.springPeriod / 2, execute: land)
+        DispatchQueue.main.asyncAfter(deadline: .now() + ControlRoomChipSlide.landsAt, execute: land)
     }
 
     private func mix(_ rest: Double, _ moving: Double) -> Double {
@@ -131,6 +148,7 @@ struct ControlRoomListView: View {
         let edge = theme.selectionEdge
         return shape
             .fill(Color.white.opacity(mix(theme.selectionTint, theme.selectionTintMoving)))
+            .background(glass(in: shape))
             .overlay(
                 shape.strokeBorder((edge < 0 ? Color.black : Color.white).opacity(abs(edge)),
                                    lineWidth: CGFloat(Look.Selection.edgeBand))
@@ -146,6 +164,19 @@ struct ControlRoomListView: View {
                       mix(theme.selectionShadowY, theme.selectionShadowMovingY))])
             )
             .scaleEffect(1 + CGFloat(Look.Selection.liftScaleRow) * lift)
+    }
+
+    /// The system's glass under the chip's tint: only while the chip is in
+    /// the air, unless the table says at rest too. Sitting still there is
+    /// nothing live behind the chip, so nothing is recomposited when the
+    /// terminal beside it scrolls.
+    @ViewBuilder
+    private func glass(in shape: RoundedRectangle) -> some View {
+        if #available(macOS 26.0, *), refraction, !still, lift > 0 || Look.Selection.glassAtRest {
+            Color.clear
+                .glassEffect(.clear, in: shape)
+                .opacity(Look.Selection.glassAtRest ? 1 : Double(lift))
+        }
     }
 
     // MARK: Pieces
