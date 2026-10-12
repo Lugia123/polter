@@ -1039,20 +1039,15 @@ test "menu labels reach the palette" {
         /// `null` for a label that is not in the catalogue at all, which is
         /// the ordinary case for the two menus that still hold Chinese
         /// literals -- there the label already *is* the rendered word.
-        fn zhFor(po: []const u8, msgid: []const u8) ?[]const u8 {
-            var i: usize = 0;
-            while (std.mem.indexOfPos(u8, po, i, "\nmsgid \"")) |at| {
-                const from = at + "\nmsgid \"".len;
-                const end = std.mem.indexOfScalarPos(u8, po, from, '"') orelse return null;
-                i = end + 1;
-                if (!std.mem.eql(u8, po[from..end], msgid)) continue;
-                const sat = std.mem.indexOfPos(u8, po, end, "\nmsgstr \"") orelse continue;
-                const sfrom = sat + "\nmsgstr \"".len;
-                const send = std.mem.indexOfScalarPos(u8, po, sfrom, '"') orelse continue;
-                if (send == sfrom) return null;
-                return po[sfrom..send];
-            }
-            return null;
+        ///
+        /// Read by gettext's rules (`i18n.po_text.lookup`). The search this
+        /// replaces matched `msgid "<label>"` on one line, so a label long
+        /// enough to be folded would have read as "not in the catalogue" --
+        /// which is this function's ordinary answer, and nothing would
+        /// have said so.
+        fn zhFor(a: Allocator, catalogue: []const u8, msgid: []const u8) !?[]const u8 {
+            const said = (try i18n.po_text.lookup(a, catalogue, msgid)) orelse return null;
+            return if (said.len == 0) null else said;
         }
 
         /// Does this look like a binding string rather than prose?
@@ -1330,7 +1325,7 @@ test "menu labels reach the palette" {
             // What the person reads. For the two menus that still hold
             // Chinese literals that is the label itself; for `menu.rs` it is
             // what the catalogue says the msgid means.
-            const typed = H.zhFor(po, row.label) orelse row.label;
+            const typed = (try H.zhFor(alloc, po, row.label)) orelse row.label;
 
             // **Two ways to be findable, and the first is the stronger one.**
             // When the row's msgid *is* the command's title, the two render to
