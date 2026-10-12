@@ -233,6 +233,130 @@ pub fn pressed_action(pressed: &Pressed, bindings: &[(String, Trigger)]) -> Opti
     find(true).or_else(|| find(false))
 }
 
+/// Which tab a key bound to `goto_tab` goes to, **read off the key**: the
+/// digit it is. `goto_tab:N` as `KEYED` spells it, for 1 to 8.
+///
+/// # Why the key has to be asked
+///
+/// The configuration has two ways of saying what an action is bound to and
+/// neither says this. The reverse lookup takes the whole name
+/// (`goto_tab:2`) but leaves out every `performable` binding, and off macOS
+/// **the default `alt+1` … `alt+8` are performable** -- so it answers
+/// "unbound" for exactly the keys a person presses (task 1439: Alt+2 on the
+/// control room was "not a binding the control room answers", with
+/// `alt+2=goto_tab:2` in `+list-keybinds`). The forward listing has every
+/// binding, performable or not, but carries the action's tag only:
+/// `goto_tab`, sixteen times, with nothing to tell 3 from 7.
+///
+/// What the listing does carry is the key, and in the default set and in
+/// every sensible one the digit on the key is the tab. So that is what is
+/// read.
+///
+/// # What this gets wrong, and what it leaves alone
+///
+///  * `alt+1=goto_tab:5` goes to tab 1. Nothing here can know better until
+///    the listing carries the argument (a change to the core's
+///    `ghostty_config_keybind`, not made here).
+///  * A key that is not a digit (`ctrl+j=goto_tab:3`) is not guessed at:
+///    none. If it is not performable the reverse lookup still finds it.
+pub fn goto_tab_of(trigger: &Trigger) -> Option<&'static str> {
+    let digit = match &trigger.key {
+        Key::Unicode(cp) => char::from_u32(*cp).and_then(|c| c.to_digit(10)),
+        Key::Physical(name) => name.strip_prefix("DIGIT_").and_then(|d| d.parse::<u32>().ok()),
+    }?;
+    let name = format!("goto_tab:{digit}");
+    KEYED.iter().copied().find(|k| *k == name)
+}
+
+/// What became of a key the core took as an app-scoped binding, from what
+/// the host's own action callback saw come back while the key was with it.
+///
+/// **The core's "taken" is not "done".** `ghostty_app_key` answers true
+/// when the key is such a binding; the thing bound is then asked of the
+/// host as an action, and the host may be unable to do it. A log that says
+/// "performed" on the first answer alone said it over a new window that was
+/// never made (task 1439).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppKeyOutcome {
+    /// Every action that came back was carried out.
+    Done,
+    /// At least one was not. Its own line in the log says which and why.
+    NotDone,
+    /// Nothing came back: the core did it without the host (a reload, a
+    /// binding that does nothing here), or did nothing. Not known which.
+    NothingAsked,
+}
+
+impl AppKeyOutcome {
+    pub fn sentence(self) -> &'static str {
+        match self {
+            AppKeyOutcome::Done => "the host carried it out",
+            AppKeyOutcome::NotDone => "NOT carried out, see the [action] / [ops] line above",
+            AppKeyOutcome::NothingAsked => "nothing was asked of the host, so what it did is not known here",
+        }
+    }
+}
+
+pub fn app_key_outcome(actions: u32, refused: u32) -> AppKeyOutcome {
+    if refused > 0 {
+        AppKeyOutcome::NotDone
+    } else if actions > 0 {
+        AppKeyOutcome::Done
+    } else {
+        AppKeyOutcome::NothingAsked
+    }
+}
+
+/// One action of the configuration's forward listing: its tag, and every
+/// key bound to it. `sequence` when any of them is the first step of a key
+/// sequence, in which case none of them can be told from that one.
+#[derive(Debug, Clone)]
+pub struct Listed {
+    pub action: String,
+    pub sequence: bool,
+    pub triggers: Vec<Trigger>,
+}
+
+/// What the configuration binds each action of `KEYED` to, from the two
+/// things a host can ask it: the forward listing (`listed`, by tag, every
+/// binding) and the reverse lookup (`reverse`, by whole name, one key, and
+/// never a performable one).
+///
+/// **This is here, and not in the host, because it is where Alt+2 was
+/// lost** (task 1439). The host built this list itself; the tests here were
+/// handed a list written out by hand in which `goto_tab:2` was already
+/// bound to its key, so they tested the comparison and never the building.
+/// The building asked only the reverse lookup for `goto_tab:N`, and off
+/// macOS the reverse lookup does not have it.
+pub fn bindings(listed: &[Listed], reverse: &dyn Fn(&str) -> Option<Trigger>) -> Vec<(String, Trigger)> {
+    let mut out: Vec<(String, Trigger)> = Vec::new();
+    let unsequenced = |tag: &str| listed.iter().find(|l| l.action == tag && !l.sequence);
+    for action in KEYED {
+        match unsequenced(action) {
+            // An action with no argument: its tag is its whole name, and the
+            // listing has every key it is bound to.
+            Some(row) => out.extend(row.triggers.iter().map(|t| (action.to_string(), t.clone()))),
+            // An action with an argument. The one key the reverse lookup
+            // gives for the whole name; and for `goto_tab`, the keys of the
+            // listing whose digit is this tab (`goto_tab_of`).
+            None => {
+                if let Some(t) = reverse(action) {
+                    out.push((action.to_string(), t));
+                }
+                if let Some(row) = unsequenced("goto_tab") {
+                    for t in &row.triggers {
+                        let known = out.iter().any(|(a, have)| a == action && have == t);
+                        if goto_tab_of(t) == Some(*action) && !known {
+                            out.push((action.to_string(), t.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 // The core's own key table, read rather than copied: which native code is
 // which key is one fact, and it lives in `src/input/keycodes.zig`.
 const KEYCODES: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/input/keycodes.zig"));
@@ -475,6 +599,114 @@ mod tests {
         assert_eq!(pressed_action(&press(0x14, 't', mods::CTRL | mods::SHIFT), &b), Some(Host::NewTab));
         assert_eq!(pressed_action(&press(0x11, 'w', mods::CTRL | mods::SHIFT), &b), Some(Host::CloseTab));
         assert_eq!(pressed_action(&press(0x19, 'p', mods::CTRL | mods::SHIFT), &b), Some(Host::CommandPalette));
+    }
+
+    // -- what became of an app-scoped key (task 1439) ---------------------------
+
+    #[test]
+    fn a_key_the_core_took_is_called_done_only_when_the_host_did_what_came_back() {
+        assert_eq!(app_key_outcome(1, 0), AppKeyOutcome::Done);
+        assert_eq!(app_key_outcome(3, 0), AppKeyOutcome::Done);
+        // One refusal among several is not done, and none at all is not known.
+        assert_eq!(app_key_outcome(1, 1), AppKeyOutcome::NotDone);
+        assert_eq!(app_key_outcome(3, 1), AppKeyOutcome::NotDone);
+        assert_eq!(app_key_outcome(0, 0), AppKeyOutcome::NothingAsked);
+        // Only the first of the three says it was carried out.
+        assert!(AppKeyOutcome::Done.sentence().contains("carried it out"));
+        for other in [AppKeyOutcome::NotDone, AppKeyOutcome::NothingAsked] {
+            assert!(!other.sentence().contains("carried it out"), "{other:?}");
+        }
+    }
+
+    // -- building the list (task 1439) -----------------------------------------
+
+    const CONFIG_ZIG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/config/Config.zig"));
+
+    /// What the core hands a Windows host for the default configuration:
+    /// the forward listing by tag, and a reverse lookup that has no
+    /// performable binding in it.
+    fn windows_default_listing() -> Vec<Listed> {
+        let mut goto = Vec::new();
+        for n in 1..=8u32 {
+            goto.push(physical(&format!("DIGIT_{n}"), mods::ALT));
+            goto.push(unicode(char::from_digit(n, 10).unwrap(), mods::ALT));
+        }
+        let row = |action: &str, triggers: Vec<Trigger>| Listed { action: action.into(), sequence: false, triggers };
+        vec![
+            row("goto_tab", goto),
+            row("last_tab", vec![unicode('9', mods::ALT)]),
+            row("next_tab", vec![physical("TAB", mods::CTRL), physical("PAGE_DOWN", mods::CTRL)]),
+            row("previous_tab", vec![physical("TAB", mods::CTRL | mods::SHIFT), physical("PAGE_UP", mods::CTRL)]),
+            row("new_tab", vec![unicode('t', mods::CTRL | mods::SHIFT)]),
+            row("close_tab", vec![unicode('w', mods::CTRL | mods::SHIFT)]),
+            row("toggle_command_palette", vec![unicode('p', mods::CTRL | mods::SHIFT)]),
+        ]
+    }
+
+    /// The reverse lookup off macOS: `close_tab:this` is there, no
+    /// `goto_tab:N` is.
+    fn windows_default_reverse(action: &str) -> Option<Trigger> {
+        match action {
+            "close_tab:this" => Some(unicode('w', mods::CTRL | mods::SHIFT)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn the_default_goto_tab_keys_are_performable_off_macos_which_is_why_the_reverse_lookup_lacks_them() {
+        // The premise of everything below, read from the core rather than
+        // remembered: between the comment that opens the goto-tab loop and
+        // the last_tab binding that follows it, both bindings are flagged
+        // performable everywhere but Darwin.
+        let from = CONFIG_ZIG.find("// Cmd/Alt+N for goto tab N").expect("the goto-tab defaults have moved");
+        let block = &CONFIG_ZIG[from..];
+        let block = &block[..block.find(".{ .last_tab = {} }").expect("last_tab no longer follows goto_tab")];
+        assert_eq!(block.matches(".{ .goto_tab = (i - start) + 1 }").count(), 2);
+        assert_eq!(block.matches(".performable = !builtin.target.os.tag.isDarwin()").count(), 2);
+    }
+
+    #[test]
+    fn alt_and_a_digit_goes_to_that_tab_from_what_a_windows_host_is_actually_given() {
+        let b = bindings(&windows_default_listing(), &windows_default_reverse);
+        for n in 1..=8u32 {
+            let digit = char::from_digit(n, 10).unwrap();
+            // By position, and by the character on a layout whose digit row
+            // is somewhere else.
+            assert_eq!(pressed_action(&press(0x01 + n, digit, mods::ALT), &b), Some(Host::GotoTab(n)), "alt+{n}");
+            assert_eq!(pressed_action(&press(0x70, digit, mods::ALT), &b), Some(Host::GotoTab(n)), "alt+{n} by character");
+        }
+        assert_eq!(pressed_action(&press(0x0a, '9', mods::ALT), &b), Some(Host::LastTab));
+        assert_eq!(pressed_action(&press(0x0f, '\t', mods::CTRL), &b), Some(Host::NextTab));
+        assert_eq!(pressed_action(&press(0x11, 'w', mods::CTRL | mods::SHIFT), &b), Some(Host::CloseTab));
+        // The digit without Alt, and Alt with Ctrl, are nothing.
+        assert_eq!(pressed_action(&press(0x03, '2', 0), &b), None);
+        assert_eq!(pressed_action(&press(0x03, '2', mods::ALT | mods::CTRL), &b), None);
+    }
+
+    #[test]
+    fn the_tab_a_goto_key_goes_to_is_the_digit_on_it_and_a_key_with_no_digit_is_not_guessed() {
+        assert_eq!(goto_tab_of(&unicode('3', mods::ALT)), Some("goto_tab:3"));
+        assert_eq!(goto_tab_of(&physical("DIGIT_7", mods::CTRL)), Some("goto_tab:7"));
+        // 9 and 0 are not tabs this list goes to; a letter says nothing.
+        assert_eq!(goto_tab_of(&unicode('9', mods::ALT)), None);
+        assert_eq!(goto_tab_of(&physical("DIGIT_0", mods::ALT)), None);
+        assert_eq!(goto_tab_of(&unicode('j', mods::CTRL)), None);
+        assert_eq!(goto_tab_of(&physical("TAB", mods::CTRL)), None);
+
+        // `ctrl+j=goto_tab:3`, not performable: the reverse lookup has it
+        // and it is used; the listing's `j` is not guessed into anything.
+        let listed = vec![Listed { action: "goto_tab".into(), sequence: false, triggers: vec![unicode('j', mods::CTRL)] }];
+        let reverse = |a: &str| (a == "goto_tab:3").then(|| unicode('j', mods::CTRL));
+        let b = bindings(&listed, &reverse);
+        assert_eq!(b, vec![("goto_tab:3".to_string(), unicode('j', mods::CTRL))]);
+    }
+
+    #[test]
+    fn a_goto_tab_reached_through_a_sequence_is_left_alone() {
+        // The listing has only the first step of a sequence, so no key of
+        // that row can be told from it.
+        let listed = vec![Listed { action: "goto_tab".into(), sequence: true, triggers: vec![unicode('2', mods::ALT)] }];
+        assert!(bindings(&listed, &|_| None).is_empty());
     }
 
     #[test]

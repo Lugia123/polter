@@ -433,6 +433,42 @@ pub fn stable_id(name: &str) -> u64 {
     hash
 }
 
+/// Whether a piece of text is something to draw or to measure. **A host
+/// asks this before it hands the text to the system, every time.**
+///
+/// A scene carries empty text on purpose: a group nobody is waiting on has
+/// a status with no word (the core's `none`), and a wait can come with no
+/// reason. Leaving the part in keeps a row's columns where they are. But
+/// "draw these zero characters" is not a harmless request on Windows --
+/// `DrawTextW` given a count of 0 and the pointer an empty buffer has reads
+/// through the pointer, inside `USER32`, on Windows 11 build 26200. The
+/// control room's first real machine died of it on every opening that had
+/// such a row (task 1439).
+pub fn draws(text: &str) -> bool {
+    !text.is_empty()
+}
+
+/// Every piece of text a scene asks a host for, drawn or measured: the
+/// `Text` items and the words of every line.
+pub fn all_text(items: &[Item]) -> Vec<&str> {
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            Item::Text { text, .. } => out.push(text.as_str()),
+            Item::Line { parts, .. } => {
+                for part in parts {
+                    match &part.piece {
+                        Piece::Words { text, .. } => out.push(text.as_str()),
+                        Piece::Glyph { .. } => {}
+                    }
+                }
+            }
+            Item::Fill { .. } | Item::Round { .. } => {}
+        }
+    }
+    out
+}
+
 /// Whether anything in a scene moves while nothing changes: a glyph that
 /// breathes, or the spinner. A host keeps a clock running only while this
 /// is so, and otherwise is not woken at all.
@@ -688,6 +724,32 @@ mod tests {
             }
         }
         out
+    }
+
+    /// What the first real machine died of (task 1439): the scene of the
+    /// core's own fixture asks for text that has no characters in it, and
+    /// a host that passes that to `DrawTextW` is gone. So the scene really
+    /// does carry such text -- this is the case, not a supposition -- and
+    /// `draws` is the question that stops it at the host's door.
+    #[test]
+    fn a_scene_carries_text_with_nothing_in_it_and_a_host_is_told_not_to_draw_it() {
+        let list = list();
+        let items = scene(&list, None, false, 1.0, None);
+        let all = all_text(&items);
+        let empty = all.iter().filter(|t| t.is_empty()).count();
+        assert!(empty > 0, "the fixture no longer has a row with a wordless status or a reasonless wait; this test needs one");
+        // Every one of them is refused, and nothing with a character in it is.
+        for text in &all {
+            assert_eq!(draws(text), !text.is_empty(), "{text:?}");
+        }
+        assert_eq!(all.iter().filter(|t| !draws(t)).count(), empty);
+        // The right side too, for every row that can be selected.
+        for row in list.rows() {
+            let right = build_right(&Detail_::NoSupervisor { group: row.id.clone() }, Some(row), 600.0, 600.0, look::theme(false), 1.0, false, &same);
+            for text in all_text(&right.items) {
+                assert_eq!(draws(text), !text.is_empty(), "{text:?}");
+            }
+        }
     }
 
     #[test]

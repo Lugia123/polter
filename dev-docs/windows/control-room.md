@@ -234,7 +234,24 @@ mac 的做法是「终端不离开它所在标签页的分屏树，搬的只是�
 配置、不缓存，所以改绑以后立刻跟着走。
 
 **对不上的（已知）**：键序列和键表里的绑定、`catch_all`、带参数的动作的 `performable` 绑定（带参数的动作只能
-用反查，而反查表里没有它们）；带参数的动作一个动作只认一个键（不带参数的认它的每一个键）。
+用反查，而反查表里没有它们）——**`goto_tab` 除外**；带参数的动作一个动作只认一个键（不带参数的认它的每一个键）。
+
+**`goto_tab` 是怎么对上的（#1439）。** 默认的 `Alt+1…8` 在 mac 以外带 `performable`（`Config.zig` 里
+「Cmd/Alt+N for goto tab N」那一段），所以反查 `goto_tab:2` 的回答是「没绑」；正查的表有全部十六个键，但只给
+动作的标签 `goto_tab`，分不出 3 和 7。真机第一轮 Alt+2 得到的就是 `not a binding the control room answers`。
+现在的做法：正查表里 `goto_tab` 的每个键，**键上的数字是几就去第几个**（`reach::goto_tab_of`，1–8）；反查查得到
+的照旧用。拼表的规则整个在 `reach::bindings`，宿主只转交——上一版的测试拿的是一张手写的、已经拼好的表，
+所以比较那一步是测过的，拼表这一步从来没被测到。**暂定，有一处会错**：`alt+1=goto_tab:5` 这种键和标签页不同号
+的绑定会去第 1 个；不是数字的键（`ctrl+j=goto_tab:3`）不猜，带 `performable` 的话就对不上。要根治得让核心的
+`ghostty_config_keybind` 把参数也带出来，那是核心的改动，没做。
+
+**应用级的键做成没有，日志怎么说（#1439）。** `ghostty_app_key` 回真只表示「这是个应用级绑定，核心接了」；
+事情本身是核心再以动作的形式交回宿主做的，而应用级动作**不带窗口**。真机第一轮 Ctrl+Shift+N：动作回来是
+「new_window，谁也不是」，宿主没处放，没排队；面板那一行却写「the core performed it」。现在：面板把键交给核心
+的那一刻记下自己是哪个窗口（`control_room_keys::asking`，只在那一次调用期间有值），没带窗口的 `new_window`
+就用它；动作回调把「做成没有」数给它，日志按数出来的写三种之一（`reach::app_key_outcome`）：
+`the host carried it out` / `NOT carried out, see the [action] / [ops] line above` /
+`nothing was asked of the host, so what it did is not known here`。
 
 **Alt 和弦**：默认的「切到第 N 个」是 `Alt+数字`，到的是 `WM_SYSKEYDOWN`。面板执行了就吞掉随后的 `WM_SYSCHAR`
 （不然是一声「咚」）；没执行的原样交给 `DefWindowProcW`，`Alt+F4` 和系统菜单在那里。
@@ -339,7 +356,22 @@ mac 上能验的只有 `polter-control-room` 的测试、两道闸和交叉编�
 
 ## 10. 做成了什么、没做什么，和 Windows 真机验证清单
 
-**没有一条在 Windows 上跑过。** 在 mac 上验到的是：逻辑 crate 的测试、变异体、两套闸、核心那三条读宿主
+**真机跑过一轮**（2026-10-13，#1437，Windows 11 26200，包 72af59caf；全文
+`Polter_Pub/assets/control-room-design/verify-win-01/RESULTS.md`）。没有群时的面板、标签页模型、多数键、
+标签栏图形与明暗、菜单置灰、标题、UIA、移到新窗口成立；三处不成立，下面是查到的原因和改法（#1439）。
+**改完以后还没有在 Windows 上跑过**，所以下面每一条的「修了」都只到 mac 上验得到的地方。
+
+| 真机上看到的 | 原因（读代码查的） | 改了什么 | mac 上钉住的 |
+|---|---|---|---|
+| 面板里一有带状态的行，宿主就崩：`USER32.dll` `0xc0000005` 偏移 `0x24a82`，日志停在 `opened as` | 面板用 `DrawTextW` 画字、`GetTextExtentPoint32W` 量字，交的是「指针 + 字数」。场景里**本来就有空字符串**：没人等的群状态词是空的（核心的 `none`），等待也可能没有停因。空的 `Vec<u16>` 是字数 0 加一个不指向任何东西的指针（`0x2`），这个版本的 `USER32` 会顺着它读。**不是图形**：标签栏用的是同一个 `draw_glyph`，它没事；「无人看管」的行有字，所以不崩。截图工具栏之前死过同一件事（#1199，`shot.rs`） | `control_room.rs` 里画字、量字各只剩一处（`draw_text`、`text_width`），先问 `scene::draws`，空的不交；面板第一次画完打一行 `first paint drawn` | 逻辑层一条测试：核心的夹具场景里**确实**有空字符串，`draws` 全部拦下；闸 `control-room-hands-user32-no-empty-text.py`：这个文件里两个调用只在那两个函数里、且在提问之后 |
+| Alt+2：`not a binding the control room answers` | 见 §2.5：默认绑定带 `performable`，反查表里没有 | 同上节 | `reach` 四条测试，其中一条读 `Config.zig` 核对「带 `performable`」这个前提 |
+| Ctrl+Shift+N：没有新窗口，日志说核心做了 | 见 §2.5：应用级动作不带窗口；日志把「核心接了」写成「做了」 | 同上节 | `reach::app_key_outcome` 的测试；接线（记下窗口、回调计数）要真机验 |
+
+⚠ **崩溃的原因没有在真机上证实**：没有 dump，`USER32` 内部会读那个指针是从两次同样特征的崩溃和代码读出来的
+（#1199 那次也没有重跑证实）。如果第二轮还崩，`first paint drawn` 那一行在不在，能分出是死在画里还是画完以后。
+宿主里另外三十多处 `DrawTextW` 没有逐个查过会不会收到空字符串。
+
+在 mac 上验到的是：逻辑 crate 的测试、变异体、两套闸、核心那三条读宿主
 源码的测试、宿主交叉编译与 Debug 构建链接成功。凡是要窗口的都算没验。
 
 做成的（代码在）：
@@ -400,7 +432,8 @@ mac 上能验的只有 `polter-control-room` 的测试、两道闸和交叉编�
 | 中文的两处尾巴 | 「分」这个单位和设置页共用 msgid `min`，那边译的是「分钟」，所以分钟数后面现在是「分钟」，设计的列宽是按一个字留的；生成后 zh_CN 里还有 8 条未译，都不是总控台的（见交付说明） | 要人定 |
 | 跨窗口的总管 | 不搬，见上表 | ④ |
 | UIA 的其余部分 | 两段的标题、时间带、右栏和它的按钮不在树里；选中或行变化时不发事件（客户端再问一次能读到，等通知的等不到） | ⑤ |
-| 键盘上对不上的 | 键序列 / 键表里的绑定、`catch_all`、带参数动作的 `performable` 绑定；`close_tab:other`、`move_tab` 等不在表里（§2.5） | 有需要再加 |
+| 键盘上对不上的 | 键序列 / 键表里的绑定、`catch_all`、带参数动作的 `performable` 绑定（`goto_tab` 按键上的数字认，键和标签页不同号时会错）；`close_tab:other`、`move_tab` 等不在表里（§2.5） | 有需要再加；根治要核心的列表带参数 |
+| 宿主其它地方的空字符串 | 面板以外三十多处 `DrawTextW` 没有逐个查过 | 另开一单 |
 | 选中跨重启保留 | 只在进程存活期间记着 | ⑤ |
 | 投影、选中片的折射 | 没有：GDI 没有模糊 | ⑤ |
 | 出问题图形进入时晃一次 | 没有 | ⑤ |
@@ -415,7 +448,7 @@ mac 上能验的只有 `polter-control-room` 的测试、两道闸和交叉编�
 默认绑定。界面语言设成中文跑一遍、英文跑一遍。
 
 1. Agents 菜单 → 总控台；切到终端标签页再点一次；开第二个窗口在里面点。读：`[control-room] opened as …
-   tab 1 of N`；窗口标题（`GetWindowText`）是「Polter — 总控台」、标签上是「总控台」；后两次是
+   tab 1 of N`，紧接着一行 `first paint drawn: … item(s)`（**没有这一行就是死在画里**）；窗口标题（`GetWindowText`）是「Polter — 总控台」、标签上是「总控台」；后两次是
    `already open as … went to it`，两个窗口的状态行里 `room=1` 只有一处；没有 `BUG:` 开头的行。
 2. 干净的进程，先建一个有 agent 的群，再第一次打开总控台，不点等 3 秒，然后点那一行。读：亮片在核心
    `open_on` 的那一行，这期间没有 `selected`、没有 `seen sent`；点了才有。
@@ -439,6 +472,8 @@ mac 上能验的只有 `polter-control-room` 的测试、两道闸和交叉编�
 9. 焦点在总控台上（列表），依次按：Ctrl+Tab、（点回）Alt+2、Alt+1、Ctrl+Shift+T、（点回）Ctrl+Shift+P 再
     Esc、总控台的开关键、Ctrl+Shift+C、Alt+空格。读：各一行 `[control-room] key … -> NextTab` / `GotoTab(2)`
     / `GotoTab(1)` / `NewTab` / `CommandPalette` / `app_key=true` / `not a binding…` /（系统菜单出现）。
+    再按 Ctrl+Shift+N：`[action] new_window requested (… asked by a key on this window's control room)`，
+    面板那行以 `the host carried it out` 结尾，**真的多一个窗口**。
     **人听**：Alt+数字没有「咚」。配置里加 `keybind = ctrl+n=new_tab` 重载后按 Ctrl+N：`-> NewTab`。
 10. 总控台在前面、键盘在列表时打开 `≡` 菜单。读：复制、粘贴、分屏、「存成项目」是灰的，新标签页、新窗口、
     设置、总控台是亮的；点新标签页：`with no terminal in front -> the host's own: NewTab`。点进右栏的终端

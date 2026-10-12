@@ -2848,6 +2848,22 @@ fn queue_from(origin: Option<HWND>, op: tabs::Op, from: &'static str) -> bool {
     }
 }
 
+/// What the core is handed as the action callback: `cb_action`, and then
+/// the answer passed on to a key that is waiting for it.
+///
+/// A key the control room handed to the core wants to know what became of
+/// it (`control_room_keys::asking`, task 1439): the core's "taken" is not
+/// "done", and the only place that knows whether the host did the thing is
+/// here. At any other time, and on any other thread, `answered` tells
+/// nobody. **`cb_action` itself is unchanged and is still the one place
+/// that answers an action** -- the gates and the core's tests read it by
+/// that name.
+extern "C" fn action_cb_told(app: App, target: Target, action: Action) -> bool {
+    let carried_out = cb_action(app, target, action);
+    control_room_keys::answered(carried_out);
+    carried_out
+}
+
 // unused-arg: `_app` is the app handle this host already holds; the target
 // and the action carry everything an arm needs. Nothing the core computed is
 // being thrown away with it.
@@ -3672,13 +3688,23 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // this line can be about: the new one does not exist yet. When
             // the action is app-targeted there is no asking window either,
             // and the line says that rather than naming a plausible one.
-            match origin {
-                Some(from) => wlogf!(from, "[action] new_window requested"),
+            //
+            // **Unless a control room is the one asking** (task 1439). A key
+            // pressed on the panel goes to the core with no surface, the
+            // binding is app-scoped, and the action comes back for the app:
+            // nobody's. The window whose panel had the key is known for the
+            // length of that call, and it is the one that asked.
+            // carries no terminal: this *asks* which window it is -- there
+            // is no surface to pass, which is the whole reason for asking.
+            let asked_from_panel = if origin.is_none() { control_room_keys::asking() } else { None };
+            match (origin, asked_from_panel) {
+                (Some(from), _) => wlogf!(from, "[action] new_window requested"),
+                (None, Some(from)) => wlogf!(from, "[action] new_window requested (target tag={}: no surface; asked by a key on this window's control room)", target.tag),
                 // process-wide: an app-targeted action names no window, and
                 // the window it is about to make does not exist yet
-                None => plogf!("[action] new_window requested (target tag={})", target.tag),
+                (None, None) => plogf!("[action] new_window requested (target tag={})", target.tag),
             }
-            queue_from(origin, Op::NewWindow, "new_window action")
+            queue_from(origin.or(asked_from_panel), Op::NewWindow, "new_window action")
         }
 
         // **The window comes from the action's own target.** The stand-in
@@ -6671,7 +6697,7 @@ fn main() {
         userdata: std::ptr::null_mut(),
         supports_selection_clipboard: false,
         wakeup_cb: cb_wakeup,
-        action_cb: cb_action,
+        action_cb: action_cb_told,
         read_clipboard_cb: cb_read_clipboard,
         confirm_read_clipboard_cb: cb_confirm_read_clipboard,
         write_clipboard_cb: cb_write_clipboard,

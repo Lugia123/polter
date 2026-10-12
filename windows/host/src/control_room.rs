@@ -36,7 +36,7 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Mutex;
 
 use windows::core::{w, PCWSTR};
@@ -116,6 +116,10 @@ pub struct UiaRow {
 static UIA_ROWS: Mutex<Vec<UiaRow>> = Mutex::new(Vec::new());
 /// The panel's window, for a provider's thread; 0 when there is none.
 static PANEL: AtomicIsize = AtomicIsize::new(0);
+
+/// Whether the panel there is now has finished a paint (`paint` says so in
+/// the log, once a panel).
+static PAINTED: AtomicBool = AtomicBool::new(false);
 /// The group a client asked to have selected, on its way to the window's
 /// thread.
 static UIA_SELECT: Mutex<Option<String>> = Mutex::new(None);
@@ -320,6 +324,7 @@ pub fn create(frame: HWND, hinst: HINSTANCE, bounds: TreeRect) -> Option<HWND> {
             }
         };
         PANEL.store(hwnd.0 as isize, Ordering::Release);
+        PAINTED.store(false, Ordering::Release);
         let kept = KEPT.with(|k| k.borrow().clone());
         STATE.with(|s| {
             *s.borrow_mut() = Some(State {
@@ -941,6 +946,22 @@ fn paint(hwnd: HWND) {
         }
 
         drop(fonts);
+        // Once a panel: the last thing a paint does before it is on screen.
+        // A panel that opened and never says this died drawing (task 1439
+        // had nothing after `opened as`, and four runs to learn that much).
+        // absence: depends -- after an `opened as` with no line of this
+        // kind, the panel never finished a paint; on any later paint of the
+        // same panel the silence is only "not the first".
+        if !PAINTED.swap(true, Ordering::AcqRel) {
+            wlogf!(
+                GetAncestor(hwnd, GA_ROOT),
+                "[control-room] first paint drawn: {} item(s) in the list, {} on the right, {}x{}",
+                items.len(),
+                right.items.len(),
+                rc.right,
+                rc.bottom
+            );
+        }
         let _ = BitBlt(hdc, 0, 0, rc.right, rc.bottom, Some(mem), 0, 0, SRCCOPY);
         SelectObject(mem, old);
         let _ = DeleteObject(bmp.into());
@@ -970,25 +991,53 @@ unsafe fn paint_items(dc: HDC, at: Px, items: &[Item], fonts: &mut Fonts, t: f64
                 round(dc, at.rect(*rect), at.len(*radius), *color, *edge)
             },
             Item::Text { rect, text, style, align } => unsafe {
-                let mut r = at.rect(*rect);
-                let font = fonts.get(style);
-                let old = SelectObject(dc, font.into());
-                SetTextColor(dc, rgb(style.color));
-                let mut wide: Vec<u16> = text.encode_utf16().collect();
+                let r = at.rect(*rect);
                 let how = match align {
                     Align::Left => DT_LEFT,
                     Align::Right => DT_RIGHT,
                     Align::Centre => DT_CENTER,
                 };
-                DrawTextW(dc, &mut wide, &mut r, how | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-                SelectObject(dc, old);
+                draw_text(dc, fonts.get(style), style.color, text, r, how | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
             },
             Item::Line { rect, parts } => unsafe { paint_line(dc, at, at.rect(*rect), parts, fonts, t) },
         }
     }
 }
 
+/// The one place this file hands words to the system to be drawn.
+///
+/// **Words that are not there are not handed over** -- `scene::draws`. The
+/// call takes a counted slice, an empty string is a count of 0 and a pointer
+/// to nothing, and `USER32` on Windows 11 build 26200 reads through that
+/// pointer: an access violation inside `USER32.dll`, in the middle of
+/// `WM_PAINT`, with nothing in the log after the line that opened the panel.
+/// That is how the control room died on its first real machine (task 1439,
+/// four openings out of four), as soon as a row had a status the core gives
+/// no word for, or a wait it gives no reason for. The screenshot overlay
+/// died of the same thing before it (task 1199, `shot.rs`).
+///
+/// `windows/tools/control-room-hands-user32-no-empty-text.py` holds this
+/// file to it: `DrawTextW` and `GetTextExtentPoint32W` appear here and in
+/// `text_width`, behind the question, and nowhere else.
+unsafe fn draw_text(dc: HDC, font: HFONT, color: Rgba, text: &str, mut r: RECT, how: DRAW_TEXT_FORMAT) {
+    if !scene::draws(text) {
+        return;
+    }
+    unsafe {
+        let old = SelectObject(dc, font.into());
+        SetTextColor(dc, rgb(color));
+        let mut wide: Vec<u16> = text.encode_utf16().collect();
+        DrawTextW(dc, &mut wide, &mut r, how);
+        SelectObject(dc, old);
+    }
+}
+
+/// How wide `text` is in `font`. Nothing is as wide as nothing, and is not
+/// asked about (`draw_text`).
 unsafe fn text_width(dc: HDC, font: HFONT, text: &str) -> i32 {
+    if !scene::draws(text) {
+        return 0;
+    }
     unsafe {
         let old = SelectObject(dc, font.into());
         let wide: Vec<u16> = text.encode_utf16().collect();
@@ -1006,16 +1055,11 @@ unsafe fn part_width(dc: HDC, at: Px, part: &Part, fonts: &mut Fonts) -> i32 {
     }
 }
 
-unsafe fn paint_piece(dc: HDC, at: Px, piece: &Piece, mut r: RECT, fonts: &mut Fonts, t: f64, ellipsis: bool) {
+unsafe fn paint_piece(dc: HDC, at: Px, piece: &Piece, r: RECT, fonts: &mut Fonts, t: f64, ellipsis: bool) {
     match piece {
         Piece::Words { text, style } => unsafe {
-            let font = fonts.get(style);
-            let old = SelectObject(dc, font.into());
-            SetTextColor(dc, rgb(style.color));
-            let mut wide: Vec<u16> = text.encode_utf16().collect();
             let cut = if ellipsis { DT_END_ELLIPSIS } else { DT_NOCLIP };
-            DrawTextW(dc, &mut wide, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | cut);
-            SelectObject(dc, old);
+            draw_text(dc, fonts.get(style), style.color, text, r, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | cut);
         },
         Piece::Glyph { shown, color, size, pulses } => {
             let side = at.len(*size);
