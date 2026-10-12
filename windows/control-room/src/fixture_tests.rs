@@ -434,3 +434,93 @@ fn every_refusal_the_core_names_has_something_to_say() {
     assert!(Refusal::DraftInLine.offers_the_terminal());
     assert!(!Refusal::PromptGone.offers_the_terminal());
 }
+
+// -- the tab's content area, the chip's slide, the clock ------------------------
+
+#[test]
+fn the_two_sides_fill_the_tab_with_the_tables_margins() {
+    let room = layout::Room::new(1000.0, 700.0);
+    let edge = space::WINDOW_EDGE;
+    assert_eq!(room.panel, layout::Rect { x: edge, y: edge, w: side::WIDTH, h: 700.0 - 2.0 * edge });
+    // The gap between the two frames, and the same margin on the far side.
+    assert_eq!(room.right.x, edge + side::WIDTH + space::BETWEEN_FRAMES);
+    assert_eq!(room.right.x + room.right.w, 1000.0 - edge);
+    assert_eq!((room.right.y, room.right.h), (room.panel.y, room.panel.h));
+    // A window too narrow for a right side has none, not a negative one.
+    assert_eq!(layout::Room::new(200.0, 10.0).right.w, 0.0);
+    assert_eq!(layout::Room::new(200.0, 10.0).panel.h, 0.0);
+}
+
+#[test]
+fn a_point_is_in_the_row_drawn_there_and_in_none_between_rows() {
+    let l = list();
+    let at = ListLayout::new(&l, 900.0);
+    for (name, r) in &at.rows {
+        assert_eq!(at.row_at(r.x + 1.0, r.y + 1.0), Some(name.as_str()));
+        assert_eq!(at.row_at(r.x + r.w - 1.0, r.y + r.h - 1.0), Some(name.as_str()));
+    }
+    // The header, the gap under the first waiting row, and outside the panel.
+    assert_eq!(at.row_at(at.header.x + 1.0, at.header.y + 1.0), None);
+    let first = at.rows[0].1;
+    assert_eq!(at.row_at(first.x + 1.0, first.y + first.h + side::ROW_GAP / 2.0), None);
+    assert_eq!(at.row_at(-1.0, first.y + 1.0), None);
+}
+
+#[test]
+fn the_chip_leaves_one_row_and_comes_to_rest_on_the_other() {
+    let l = list();
+    let at = ListLayout::new(&l, 900.0);
+    let (from, to) = (at.rows[0].1, at.rows[2].1);
+    assert_eq!(layout::chip_between(from, to, 0.0), from);
+    let rest = layout::chip_between(from, to, 5.0);
+    assert!((rest.y - to.y).abs() < 0.01 && (rest.h - to.h).abs() < 0.01, "{rest:?}");
+    // On the way it passes the far row a little: that is the overshoot.
+    let furthest = (0..200).map(|n| layout::chip_between(from, to, n as f64 * 0.005).y).fold(f64::MIN, f64::max);
+    assert!(furthest > to.y, "{furthest} never passes {}", to.y);
+    assert!(!layout::chip_settled(0.0));
+    assert!(!layout::chip_settled(crate::look::selection::SPRING_PERIOD));
+    assert!(layout::chip_settled(2.0 * crate::look::selection::SPRING_PERIOD));
+    // Settled means it is where it is going, to within a hundredth of the way.
+    let settled = layout::chip_between(from, to, 2.0 * crate::look::selection::SPRING_PERIOD);
+    assert!((settled.y - to.y).abs() <= 0.01 * (to.y - from.y).abs(), "{settled:?}");
+}
+
+#[test]
+fn a_breathing_glyph_goes_down_to_the_tables_least_and_back_once_a_period() {
+    use crate::look::status;
+    let period = status::WAITING_PULSE_PERIOD;
+    assert_eq!(pulse::opacity(0.0), 1.0);
+    assert!((pulse::opacity(period / 2.0) - status::WAITING_PULSE_MIN_OPACITY).abs() < 1e-9);
+    assert!((pulse::opacity(period) - 1.0).abs() < 1e-9);
+    assert!((pulse::opacity(period * 7.25) - pulse::opacity(period * 0.25)).abs() < 1e-9);
+    for n in 0..100 {
+        let o = pulse::opacity(n as f64 * 0.031);
+        assert!((status::WAITING_PULSE_MIN_OPACITY - 1e-9..=1.0 + 1e-9).contains(&o), "{o}");
+    }
+}
+
+#[test]
+fn the_spinner_steps_through_every_line_once_a_turn() {
+    use crate::look::status;
+    let steps = status::WORKING_SPIN_STEPS as usize;
+    let per = status::WORKING_SPIN_PERIOD / status::WORKING_SPIN_STEPS;
+    for n in 0..steps {
+        assert_eq!(pulse::spin_step((n as f64 + 0.5) * per), n);
+    }
+    assert_eq!(pulse::spin_step(status::WORKING_SPIN_PERIOD + per * 0.5), 0);
+}
+
+#[test]
+fn a_rows_supervisor_is_the_one_the_core_named() {
+    let s = snapshot::decode(FIXTURE).unwrap();
+    let l = List::from_snapshot(&s);
+    assert!(s.groups.iter().any(|g| g.steward.is_some()));
+    for g in &s.groups {
+        assert_eq!(l.row(&g.name).unwrap().steward, g.steward);
+    }
+    // A group with none says so with null, and a snapshot without the field
+    // at all is not read as "none".
+    let without = FIXTURE.replacen("\"steward\": \"0x00000000000000a1\",", "", 1);
+    assert_ne!(without, FIXTURE);
+    assert!(matches!(snapshot::decode(&without), Err(DecodeError::Field(f)) if f.ends_with(".steward")));
+}

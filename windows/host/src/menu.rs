@@ -322,6 +322,16 @@ const VIEW_ROWS: &[Row] = &[
 ];
 
 const AGENTS_ROWS: &[Row] = &[
+    // The core's own binding, so the row carries whatever key the
+    // configuration gives it. It reaches this host as
+    // `ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM`, which queues
+    // `tabs::Op::ToggleControlRoom`.
+    //
+    // ⚠️ A binding is performed on the terminal in front, and with the
+    // control room's own tab in front there is none: there the row does
+    // nothing -- which is also what going to the tab already in front is.
+    act(n_("Control Room"), "poltergeist_toggle_control_room"),
+    sep(),
     // §3.2 called this `poltergeist_conversations`; the core publishes
     // `poltergeist_toggle_chat`.
     // The chat is a TUI (`polter +chat`), so opening it is opening a terminal

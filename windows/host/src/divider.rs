@@ -202,7 +202,7 @@ pub fn sync(frame: HWND) {
     }
 
     // Pure read under the lock; every window call happens after it is dropped.
-    let (wanted, panes, zoomed): (Vec<(Vec<Branch>, Axis, RECT)>, usize, bool) = {
+    let (wanted, panes, zoomed): (Vec<(Vec<Branch>, Axis, RECT)>, usize, bool) = 'wanted: {
         // **The scale is read before the guard is taken**, not out of it:
         // `scale_of` locks, and taking the lock while already holding it is
         // the five-second hang this file's header is about.
@@ -216,14 +216,21 @@ pub fn sync(frame: HWND) {
         let Some(tab) = win.tabs.get(win.active) else {
             return;
         };
+        // **The control room has no splits, so it wants no dividers** --
+        // which is an empty list, not an early return: the tab that was in
+        // front before it may have left some on screen, and what is below
+        // takes away whatever is not wanted.
+        let Some(term) = tab.terminal() else {
+            break 'wanted (Vec::new(), 0, false);
+        };
         // Recorded so the log can carry the whole claim: for a tree of P
         // panes with nothing zoomed, there are exactly P-1 boundaries. Two
         // numbers on one line is a check anyone can do; "N dividers" alone
         // needs a second source to mean anything.
-        let panes = tab.tree.panes().len();
-        let zoomed = tab.tree.zoomed().is_some();
+        let panes = term.tree.panes().len();
+        let zoomed = term.tree.zoomed().is_some();
         let t = scaled_thickness(frame) as f64;
-        let rects = tab.tree
+        let rects = term.tree
             .dividers(bounds, t)
             .into_iter()
             .map(|d| {
@@ -425,10 +432,14 @@ fn drag_to(frame: HWND, idx: usize) {
             say("that window has no active tab");
             return;
         };
-        match tab.tree.resize_at(&path, position, bounds) {
+        let Some(term) = tab.terminal_mut() else {
+            say("the tab in front is the control room, which has no splits");
+            return;
+        };
+        match term.tree.resize_at(&path, position, bounds) {
             Ok(next) => {
-                let same = next == tab.tree;
-                tab.tree = next;
+                let same = next == term.tree;
+                term.tree = next;
                 !same
             }
             Err(e) => {

@@ -34,6 +34,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use polter_control_room::rules::{self, Kind};
 use polter_split_tree::{Focus, NewSplit, PaneId, Placement, Rect as TreeRect, Side, Tree};
 
 use crate::ffi::*;
@@ -120,12 +121,54 @@ pub struct Pane {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct TabId(pub u64);
 
-/// One tab: a tree of panes, which of them has focus, and a label.
-pub struct Tab {
-    pub id: TabId,
+/// What a terminal tab holds: a tree of panes, and which of them has focus.
+pub struct Terminal {
     pub tree: Tree,
     pub panes: Vec<Pane>,
     pub focused: PaneId,
+}
+
+/// What the control room's tab holds: the one window its panel is drawn in.
+/// **No surface, no pane, no tree** -- which is the whole reason `Body`
+/// exists.
+pub struct RoomTab {
+    /// The panel's child window (`control_room.rs`). `isize` for the reason
+    /// `Pane::hwnd` is.
+    pub hwnd: isize,
+}
+
+/// What is inside a tab.
+///
+/// **`tree`, `panes` and `focused` used to be fields of `Tab`**, and every
+/// one of the 87 places that read them assumed a tab is a terminal. They
+/// moved in here so that none of those places compiles without saying what
+/// it does for a tab that has no terminal in it
+/// (`dev-docs/windows/control-room.md`, 2.1 has each of them by kind).
+///
+/// ⚠️ **Matched in full wherever it is matched**: no `_ =>`, no `if let`,
+/// no `matches!`. A third kind of tab must be a compile error at every one
+/// of them, not a quiet fall into whichever arm was written second.
+/// `windows/tools/a-tab-body-is-matched-in-full.py` reads for that.
+pub enum Body {
+    Terminal(Terminal),
+    ControlRoom(RoomTab),
+}
+
+/// What gets the keyboard and the content area when a tab is in front.
+pub enum Front<'a> {
+    /// The tab's focused pane.
+    Pane(&'a Pane),
+    /// The control room's panel.
+    Room(isize),
+    /// A terminal tab whose focused pane is not among its panes: a tab
+    /// mid-teardown, or one whose last pane has gone.
+    NoPane,
+}
+
+/// One tab: what is in it, and a label.
+pub struct Tab {
+    pub id: TabId,
+    pub body: Body,
     pub title: String,
     /// The tab's colour: 0 for none, otherwise an index into the strip's
     /// palette. **Stored on the tab, not in a side table keyed by position**
@@ -203,11 +246,81 @@ pub struct Tab {
 }
 
 impl Tab {
-    fn pane(&self, id: PaneId) -> Option<&Pane> {
-        self.panes.iter().find(|p| p.id == id)
+    /// Which kind of tab this is, for the questions whose answer depends on
+    /// it. The answers themselves are `polter_control_room::rules`.
+    pub fn kind(&self) -> Kind {
+        match &self.body {
+            Body::Terminal(_) => Kind::Terminal,
+            Body::ControlRoom(_) => Kind::ControlRoom,
+        }
     }
+
+    /// **The terminals in this tab.** A control room has none, and that is
+    /// the true answer for everything that looks a terminal up by its
+    /// surface, its window or its id: it is not in there.
+    pub fn panes(&self) -> &[Pane] {
+        match &self.body {
+            Body::Terminal(t) => &t.panes,
+            Body::ControlRoom(_) => &[],
+        }
+    }
+
+    pub fn panes_mut(&mut self) -> &mut [Pane] {
+        match &mut self.body {
+            Body::Terminal(t) => &mut t.panes,
+            Body::ControlRoom(_) => &mut [],
+        }
+    }
+
+    /// **The split tree, for whoever is about to split, zoom or resize.**
+    /// `None` for a control room, and the caller has to say what it does
+    /// then -- there is nothing here to fall back to.
+    pub fn terminal(&self) -> Option<&Terminal> {
+        match &self.body {
+            Body::Terminal(t) => Some(t),
+            Body::ControlRoom(_) => None,
+        }
+    }
+
+    pub fn terminal_mut(&mut self) -> Option<&mut Terminal> {
+        match &mut self.body {
+            Body::Terminal(t) => Some(t),
+            Body::ControlRoom(_) => None,
+        }
+    }
+
+    /// What gets the keyboard and the content area when this tab is in
+    /// front.
+    pub fn front(&self) -> Front<'_> {
+        match &self.body {
+            Body::Terminal(t) => match t.panes.iter().find(|p| p.id == t.focused) {
+                Some(p) => Front::Pane(p),
+                None => Front::NoPane,
+            },
+            Body::ControlRoom(r) => Front::Room(r.hwnd),
+        }
+    }
+
+    /// The focused pane's id; none in a control room.
+    pub fn focused(&self) -> Option<PaneId> {
+        self.terminal().map(|t| t.focused)
+    }
+
+    fn pane(&self, id: PaneId) -> Option<&Pane> {
+        self.panes().iter().find(|p| p.id == id)
+    }
+
+    /// The focused pane of a terminal tab. **`None` covers two things** --
+    /// a control room, and a terminal tab with no such pane -- so it is for
+    /// callers that want a *terminal* and have nothing to do without one
+    /// (a surface to send a binding to). Whoever is deciding where the
+    /// keyboard goes asks `front`, which keeps the two apart.
     fn focused_pane(&self) -> Option<&Pane> {
-        self.pane(self.focused)
+        match self.front() {
+            Front::Pane(p) => Some(p),
+            Front::Room(_) => None,
+            Front::NoPane => None,
+        }
     }
 }
 
@@ -346,6 +459,15 @@ pub enum Op {
     MoveTabToNewWindow {
         tab: TabId,
     },
+
+    /// `toggle_poltergeist_control_room`: go to the control room, opening it
+    /// as this window's first tab when the application has none.
+    ///
+    /// **Queued**, for `NewTab`'s reason: opening it makes a window. The
+    /// key binding arrives through the core on whichever thread it is on;
+    /// the menu and the command palette queue the same op, so there is one
+    /// way in.
+    ToggleControlRoom,
 }
 
 impl Op {
@@ -383,6 +505,7 @@ impl Op {
             Op::PoltergeistClose { .. } => "PoltergeistClose",
 
             Op::MoveTabToNewWindow { .. } => "MoveTabToNewWindow",
+            Op::ToggleControlRoom => "ToggleControlRoom",
         }
     }
 }
@@ -554,14 +677,22 @@ impl WindowState {
             .collect();
         let active_id = tabs.get(*active).map(|t| t.id.0).unwrap_or(0);
         format!(
-            "frame=0x{:x} id={} tabs=[{}] active={} n={} panes={} ops={} min={}x{} max={}x{} \
+            "frame=0x{:x} id={} tabs=[{}] active={} n={} panes={} room={} ops={} min={}x{} max={}x{} \
              prefullscreen={} scale={:.2} initial={} lastcwd={} lastlayout={}",
             frame,
             id,
             listed.join(","),
             active_id,
             tabs.len(),
-            tabs.get(*active).map(|t| t.panes.len()).unwrap_or(0),
+            tabs.get(*active).map(|t| t.panes().len()).unwrap_or(0),
+            // How many of this window's tabs are the control room: 1 in at
+            // most one window of the process, 0 everywhere else.
+            tabs.iter()
+                .filter(|t| match t.kind() {
+                    Kind::Terminal => false,
+                    Kind::ControlRoom => true,
+                })
+                .count(),
             ops.len(),
             min_w,
             min_h,
@@ -1901,11 +2032,12 @@ pub fn layout(frame: HWND) {
     // Pure work under the lock, Windows calls after it: `SetWindowPos` sends
     // WM_SIZE back into this thread, which takes the same lock.
     #[allow(clippy::type_complexity)]
-    let (place, hide, orphans, shape_changed): (
+    let (place, hide, orphans, shape_changed, room): (
         Vec<(PaneId, HWND, TreeRect)>,
         Vec<(PaneId, HWND)>,
         Vec<PaneId>,
         bool,
+        Option<(HWND, Option<TreeRect>)>,
     ) = {
         let mut orphans: Vec<PaneId> = Vec::new();
         let Some(mut win) = window(frame) else {
@@ -1917,6 +2049,7 @@ pub fn layout(frame: HWND) {
         };
         let mut place = Vec::new();
         let mut hide = Vec::new();
+        let mut room: Option<(HWND, Option<TreeRect>)> = None;
         // **This window's tabs, not every tab in the process.** While there
         // was one window the two were the same list, and iterating all of
         // them was correct by accident. With two, the accident becomes a
@@ -1930,12 +2063,23 @@ pub fn layout(frame: HWND) {
         // there. Worth knowing before wording the next comment in a critical
         // section.)
         for (i, tab) in win.tabs.iter().enumerate() {
+            let term = match &tab.body {
+                Body::Terminal(term) => term,
+                // The control room's panel fills the content area when its
+                // tab is in front and is hidden when it is not. It is not a
+                // pane and goes in neither list: those carry a `PaneId` and
+                // end in a call to the core about a surface.
+                Body::ControlRoom(r) => {
+                    room = Some((HWND(r.hwnd as *mut c_void), (i == win.active).then_some(bounds)));
+                    continue;
+                }
+            };
             if i != win.active {
-                hide.extend(tab.panes.iter().map(|p| (p.id, HWND(p.hwnd as *mut c_void))));
+                hide.extend(term.panes.iter().map(|p| (p.id, HWND(p.hwnd as *mut c_void))));
                 continue;
             }
-            let laid = tab.tree.layout(bounds);
-            for p in tab.panes.iter() {
+            let laid = term.tree.layout(bounds);
+            for p in term.panes.iter() {
                 let hw = HWND(p.hwnd as *mut c_void);
                 match laid.iter().find(|(id, _)| *id == p.id) {
                     Some((_, Placement::Visible(r))) => place.push((p.id, hw, *r)),
@@ -1992,12 +2136,21 @@ pub fn layout(frame: HWND) {
             for (id, _) in &hide {
                 out.push_str(&format!(":{id}"));
             }
+            // The control room's panel is part of the shape too: switching
+            // to its tab and back changes what is on screen and no pane.
+            match &room {
+                Some((_, Some(r))) => {
+                    out.push_str(&format!(";room@{},{},{},{}", r.x as i32, r.y as i32, r.w as i32, r.h as i32))
+                }
+                Some((_, None)) => out.push_str(";room:h"),
+                None => {}
+            }
             out
         };
         let shape_changed = win.last_layout.as_deref() != Some(shape.as_str());
         win.last_layout = Some(shape);
 
-        (place, hide, orphans, shape_changed)
+        (place, hide, orphans, shape_changed, room)
     };
 
     for id in orphans {
@@ -2146,6 +2299,42 @@ pub fn layout(frame: HWND) {
             if !s.is_null() {
                 unsafe { (crate::api().surface_refresh)(s) };
             }
+        }
+        // The control room's panel, which is a window of ours and no
+        // surface: placed or hidden, and told to paint, and that is all.
+        match room {
+            Some((hw, Some(r))) => {
+                let res = SetWindowPos(
+                    hw,
+                    None,
+                    r.x as i32,
+                    r.y as i32,
+                    (r.w as i32).max(1),
+                    (r.h as i32).max(1),
+                    SWP_NOZORDER | SWP_SHOWWINDOW,
+                );
+                // absence: depends -- see `verbose` above.
+                if verbose {
+                    logf!(
+                        "[layout #{}] control room -> {}x{}+{}+{} ({})",
+                        n,
+                        r.w as i32,
+                        r.h as i32,
+                        r.x as i32,
+                        r.y as i32,
+                        if res.is_ok() { "ok" } else { "SetWindowPos FAILED" }
+                    );
+                }
+                let _ = InvalidateRect(Some(hw), None, false);
+            }
+            Some((hw, None)) => {
+                let was = ShowWindow(hw, SW_HIDE).as_bool();
+                // absence: depends -- see `verbose` above.
+                if verbose {
+                    logf!("[layout #{}] control room -> hide (was visible: {})", n, was);
+                }
+            }
+            None => {}
         }
         let _ = InvalidateRect(Some(frame), None, false);
     }
@@ -2486,9 +2675,7 @@ pub fn create_tab_with(
         };
         win.tabs.push(Tab {
             id: tab_id,
-            tree: Tree::with_pane(id),
-            panes: vec![pane],
-            focused: id,
+            body: Body::Terminal(Terminal { tree: Tree::with_pane(id), panes: vec![pane], focused: id }),
             title: "shell".to_string(),
             color: 0,
             role: 0,
@@ -2555,6 +2742,9 @@ fn apply_layout(
         let Some(tab) = win.tabs.get(idx) else {
             return Err("that window has no tab to lay out".into());
         };
+        if tab.terminal().is_none() {
+            return Err("the tab in front is the control room, which has no panes to lay out".into());
+        }
         // **Both numberings, taken together.** The shape names surfaces --
         // the only handle the caller has -- and the tree is built from pane
         // ids, so the pairing has to come from one snapshot: two lookups a
@@ -2562,7 +2752,7 @@ fn apply_layout(
         (
             bounds,
             idx,
-            tab.panes.iter().map(|p| (p.id, p.surface)).collect::<Vec<(PaneId, usize)>>(),
+            tab.panes().iter().map(|p| (p.id, p.surface)).collect::<Vec<(PaneId, usize)>>(),
         )
     };
 
@@ -2661,10 +2851,18 @@ fn apply_layout(
             }
             return Err("that tab went while the layout was being built".into());
         };
+        // Checked to be a terminal tab when the shape was read; a tab that
+        // is not one now is a different tab at that index.
+        let Some(term) = tab.terminal_mut() else {
+            for p in made.drain(..) {
+                free_pane(p.id, p.hwnd, p.surface);
+            }
+            return Err("that tab went while the layout was being built".into());
+        };
         for p in made.drain(..) {
-            tab.panes.push(p);
+            term.panes.push(p);
         }
-        tab.tree = tree.clone();
+        term.tree = tree.clone();
     }
 
     layout(frame);
@@ -2749,7 +2947,15 @@ fn split_pane(
             wlogf!(frame, "[split] refused: tab {} is not in this window", idx);
             return false;
         };
-        (bounds, idx, acting_pane(tab, at), tab.tree.clone())
+        let Some(term) = tab.terminal() else {
+            wlogf!(
+                frame,
+                "[split] refused: the tab in front is the control room, which has no pane to split \
+                 (not passed on to another tab: the split would open where nobody is looking)"
+            );
+            return false;
+        };
+        (bounds, idx, acting_pane(term, at), term.tree.clone())
     };
 
     let id = take_id();
@@ -2787,11 +2993,11 @@ fn split_pane(
         match window(frame) {
             // The tab chosen when the split was worked out, not whichever is
             // active now -- the same rule the read above used.
-            Some(mut win) => match win.tabs.get_mut(tab_idx) {
-                Some(tab) => {
-                    tab.tree = new_tree;
-                    tab.panes.push(pane);
-                    tab.focused = id;
+            Some(mut win) => match win.tabs.get_mut(tab_idx).and_then(|t| t.terminal_mut()) {
+                Some(term) => {
+                    term.tree = new_tree;
+                    term.panes.push(pane);
+                    term.focused = id;
                 }
                 None => {
                     wlogf!(
@@ -2872,7 +3078,12 @@ fn close_pane(frame: HWND, id: PaneId) -> bool {
             wlogf!(frame, "[pane] close {} refused: no tab in this window has it", id);
             return false;
         };
-        let tab = &mut win.tabs[idx];
+        // A tab that holds a pane is a terminal tab; `pane` above found it
+        // through `panes()`, which is empty for anything else.
+        let Some(tab) = win.tabs[idx].terminal_mut() else {
+            wlogf!(frame, "[pane] close {} BUG: tab {} owns it but is not a terminal tab", id, idx);
+            return false;
+        };
         let Some(pos) = tab.panes.iter().position(|p| p.id == id) else {
             wlogf!(
                 frame,
@@ -3019,7 +3230,7 @@ fn surface_needs_confirm(surface: usize) -> bool {
 fn tab_confirm_flags(frame: HWND, id: TabId) -> Vec<bool> {
     let Some(win) = window(frame) else { return Vec::new() };
     let Some(tab) = win.tabs.iter().find(|t| t.id == id) else { return Vec::new() };
-    tab.panes.iter().map(|p| surface_needs_confirm(p.surface)).collect()
+    tab.panes().iter().map(|p| surface_needs_confirm(p.surface)).collect()
 }
 
 /// The per-surface answers for every tab in a window.
@@ -3027,7 +3238,7 @@ fn window_confirm_flags(frame: HWND) -> Vec<bool> {
     let Some(win) = window(frame) else { return Vec::new() };
     win.tabs
         .iter()
-        .flat_map(|t| t.panes.iter())
+        .flat_map(|t| t.panes().iter())
         .map(|p| surface_needs_confirm(p.surface))
         .collect()
 }
@@ -3142,7 +3353,7 @@ pub fn tool_close_refused(frame: HWND, tab: TabId, scope: i32, confirm: bool) ->
         let win = window(frame)?;
         let at = win.tabs.iter().position(|t| t.id == tab)?;
         let busy: Vec<bool> =
-            win.tabs.iter().map(|t| t.panes.iter().any(|p| surface_needs_confirm(p.surface))).collect();
+            win.tabs.iter().map(|t| t.panes().iter().any(|p| surface_needs_confirm(p.surface))).collect();
         (at, busy)
     };
     let going = crate::close_scope::tool_victims(scope, at, busy.len());
@@ -3251,7 +3462,7 @@ pub fn close_tabs_asking(frame: HWND, anchor: TabId, scope: crate::close_scope::
         let Some(at) = win.tabs.iter().position(|t| t.id == anchor) else { return false };
         let ids: Vec<TabId> = win.tabs.iter().map(|t| t.id).collect();
         let busy: Vec<bool> =
-            win.tabs.iter().map(|t| t.panes.iter().any(|p| surface_needs_confirm(p.surface))).collect();
+            win.tabs.iter().map(|t| t.panes().iter().any(|p| surface_needs_confirm(p.surface))).collect();
         (at, ids, busy)
     };
     let subject = match scope {
@@ -3333,7 +3544,7 @@ pub fn close_tab(frame: HWND, id: TabId) {
 pub fn set_scrollback_slot(frame: HWND, pane: PaneId, slot: crate::journal::Journaled) {
     let Some(mut win) = window(frame) else { return };
     for t in win.tabs.iter_mut() {
-        if let Some(p) = t.panes.iter_mut().find(|p| p.id == pane) {
+        if let Some(p) = t.panes_mut().iter_mut().find(|p| p.id == pane) {
             p.scrollback = Some(slot);
             return;
         }
@@ -3392,7 +3603,9 @@ pub struct TabInfo {
     /// be the *only* pane a caller could see, which is how a split tab came
     /// to have one accessible document that moved from half to half as focus
     /// did; `panes` below is what a caller enumerating the tab must use.
-    pub pane: PaneId,
+    ///
+    /// `None` for the control room's tab, which has no pane at all.
+    pub pane: Option<PaneId>,
     /// **Every pane of this tab**, not just the focused one.
     ///
     /// In `Tab::panes` order, which is the order they were created in. Not
@@ -3445,9 +3658,9 @@ pub fn tab_infos(frame: HWND) -> (Vec<TabInfo>, usize) {
                         .as_ref()
                         .map(|p| p.text.clone())
                         .unwrap_or_else(|| t.title.clone()),
-                    pane: t.focused,
+                    pane: t.focused(),
                     panes: t
-                        .panes
+                        .panes()
                         .iter()
                         .map(|p| PaneInfo { id: p.id, hwnd: p.hwnd })
                         .collect(),
@@ -3478,7 +3691,7 @@ pub fn surface_of_tab_pane(frame: HWND, tab: TabId, pane: PaneId) -> Surface {
         w.tabs
             .iter()
             .find(|t| t.id == tab)
-            .and_then(|t| t.panes.iter().find(|p| p.id == pane))
+            .and_then(|t| t.panes().iter().find(|p| p.id == pane))
             .map(|p| p.surface)
     });
     match found {
@@ -3593,7 +3806,7 @@ fn take_pending_cwd(surface: usize) -> Option<String> {
 /// panes, each its own directory) needs and did not have anywhere to go.
 fn apply_pane_cwd(tabs: &mut [Tab], surface: usize, cwd: &str) -> bool {
     for tab in tabs.iter_mut() {
-        if let Some(pane) = tab.panes.iter_mut().find(|p| p.surface == surface) {
+        if let Some(pane) = tab.panes_mut().iter_mut().find(|p| p.surface == surface) {
             pane.cwd = Some(cwd.to_string());
             tab.cwd = Some(cwd.to_string());
             return true;
@@ -3611,7 +3824,7 @@ pub fn cwd_of_pane(id: PaneId) -> Option<String> {
     with_windows(|ws| {
         ws.iter()
             .flat_map(|w| w.tabs.iter())
-            .flat_map(|t| t.panes.iter())
+            .flat_map(|t| t.panes().iter())
             .find(|p| p.id == id)
             .and_then(|p| p.cwd.clone())
     })
@@ -3639,7 +3852,7 @@ pub fn set_history_filename_for_surface(surface: Surface, filename: String) -> b
     let landed = with_windows_mut(|ws| {
         for win in ws.iter_mut() {
             for tab in win.tabs.iter_mut() {
-                if let Some(pane) = tab.panes.iter_mut().find(|p| p.surface == key) {
+                if let Some(pane) = tab.panes_mut().iter_mut().find(|p| p.surface == key) {
                     pane.history = Some(filename.clone());
                     return true;
                 }
@@ -3666,7 +3879,7 @@ pub fn history_of_pane(id: PaneId) -> Option<String> {
     with_windows(|ws| {
         ws.iter()
             .flat_map(|w| w.tabs.iter())
-            .flat_map(|t| t.panes.iter())
+            .flat_map(|t| t.panes().iter())
             .find(|p| p.id == id)
             .and_then(|p| p.history.clone())
     })
@@ -3785,7 +3998,7 @@ pub fn mark_for_surface(surface: Surface) -> Option<Mark> {
     with_windows(|ws| {
         ws.iter()
             .flat_map(|w| w.tabs.iter())
-            .find(|t| t.panes.iter().any(|p| p.surface == key))
+            .find(|t| t.panes().iter().any(|p| p.surface == key))
             .map(|t| Mark {
                 role: t.role,
                 shielded: t.shielded,
@@ -3816,13 +4029,13 @@ pub fn shielded_pane_hwnds() -> Vec<isize> {
 
 /// `shielded_pane_hwnds` over the tabs it is given.
 fn shielded_hwnds_of<'a>(tabs: impl Iterator<Item = &'a Tab>) -> Vec<isize> {
-    tabs.flat_map(|t| t.panes.iter()).filter(|p| p.shielded).map(|p| p.hwnd).filter(|h| *h != 0).collect()
+    tabs.flat_map(|t| t.panes().iter()).filter(|p| p.shielded).map(|p| p.hwnd).filter(|h| *h != 0).collect()
 }
 
 /// Record on the pane showing `surface` whether its terminal is shielded.
 /// `false` when no pane of `tab` shows it.
 fn mark_pane_shielded(tab: &mut Tab, surface: usize, shielded: bool) -> bool {
-    match tab.panes.iter_mut().find(|p| p.surface == surface) {
+    match tab.panes_mut().iter_mut().find(|p| p.surface == surface) {
         Some(pane) => {
             pane.shielded = shielded;
             true
@@ -3843,7 +4056,7 @@ pub fn persona_for_surface(surface: Surface) -> Option<crate::personas::TabPerso
     with_windows(|ws| {
         ws.iter()
             .flat_map(|w| w.tabs.iter())
-            .find(|t| t.panes.iter().any(|p| p.surface == key))
+            .find(|t| t.panes().iter().any(|p| p.surface == key))
             .and_then(|t| t.persona.clone())
     })
 }
@@ -3859,7 +4072,7 @@ pub fn set_persona_for_surface(
     with_windows_mut(|ws| {
         for win in ws.iter_mut() {
             for tab in win.tabs.iter_mut() {
-                if tab.panes.iter().any(|p| p.surface == key) {
+                if tab.panes().iter().any(|p| p.surface == key) {
                     tab.persona = persona;
                     return true;
                 }
@@ -3922,6 +4135,10 @@ pub fn rename_tab(frame: HWND, id: TabId, title: String, by: NamedBy) {
     let renamed = {
         if let Some(mut w) = window(frame) {
             match w.tabs.iter_mut().find(|t| t.id == id) {
+                // The control room's name is fixed; nothing offers to
+                // change it, and a rename that arrives anyway is refused
+                // (the line is below, outside the guard).
+                Some(tab) if !rules::can_be_renamed(tab.kind()) => false,
                 Some(tab) => {
                     tab.title = title.clone();
                     tab.title_override = Some(PinnedTitle { text: title.clone(), by });
@@ -3937,6 +4154,11 @@ pub fn rename_tab(frame: HWND, id: TabId, title: String, by: NamedBy) {
         let _ = InvalidateRect(Some(frame), None, false);
     }
     // Outside the block, same rule as the other four.
+    if !renamed {
+        // not-gated: the condition is the event. Either the tab went, or it
+        // is the control room, whose name is not anybody's to change.
+        wlogf!(frame, "[tab] rename of {:?} not applied: the tab is gone, or it is the control room", id);
+    }
     if renamed {
         crate::uia::tab_renamed(frame, id, &title);
     }
@@ -4020,9 +4242,9 @@ pub enum ShellTitle {
 /// whatever the strip happened to display because a different pane in the
 /// same tab had focus and a name (see `Pane::title`'s doc comment).
 fn apply_pane_title(tabs: &mut [Tab], surface: usize, title: &str) -> Option<(usize, Option<NamedBy>)> {
-    let idx = tabs.iter().position(|t| t.panes.iter().any(|p| p.surface == surface))?;
+    let idx = tabs.iter().position(|t| t.panes().iter().any(|p| p.surface == surface))?;
     let tab = &mut tabs[idx];
-    if let Some(pane) = tab.panes.iter_mut().find(|p| p.surface == surface) {
+    if let Some(pane) = tab.panes_mut().iter_mut().find(|p| p.surface == surface) {
         pane.title = Some(title.to_string());
     }
     if let Some(pinned) = &tab.title_override {
@@ -4060,7 +4282,7 @@ pub fn title_of_pane(id: PaneId) -> Option<String> {
     with_windows(|ws| {
         ws.iter()
             .flat_map(|w| w.tabs.iter())
-            .flat_map(|t| t.panes.iter())
+            .flat_map(|t| t.panes().iter())
             .find(|p| p.id == id)
             .and_then(|p| p.title.clone())
     })
@@ -4102,16 +4324,14 @@ mod pane_metadata_tests {
         assert!(!mark_pane_shielded(&mut tabs[0], 0x30, false));
         assert_eq!(shielded_hwnds_of(tabs.iter()), [0x300]);
         // A pane with no window yet has nothing to paint over.
-        tabs[1].panes[0].hwnd = 0;
+        tabs[1].panes_mut()[0].hwnd = 0;
         assert!(shielded_hwnds_of(tabs.iter()).is_empty());
     }
 
     fn test_tab(panes: Vec<Pane>) -> Tab {
         Tab {
             id: TabId(0),
-            tree: Tree::new(),
-            focused: 0,
-            panes,
+            body: Body::Terminal(Terminal { tree: Tree::new(), focused: 0, panes }),
             title: String::new(),
             color: 0,
             role: 0,
@@ -4144,9 +4364,9 @@ mod pane_metadata_tests {
         assert!(apply_pane_cwd(&mut tabs, 20, "/repo/b"));
         assert!(apply_pane_cwd(&mut tabs, 30, "/repo/c"));
 
-        assert_eq!(tabs[0].panes[0].cwd.as_deref(), Some("/repo/a"));
-        assert_eq!(tabs[0].panes[1].cwd.as_deref(), Some("/repo/b"));
-        assert_eq!(tabs[0].panes[2].cwd.as_deref(), Some("/repo/c"));
+        assert_eq!(tabs[0].panes()[0].cwd.as_deref(), Some("/repo/a"));
+        assert_eq!(tabs[0].panes()[1].cwd.as_deref(), Some("/repo/b"));
+        assert_eq!(tabs[0].panes()[2].cwd.as_deref(), Some("/repo/c"));
 
         // tab.cwd is unchanged behaviour, not this fix's job: still
         // whichever pane reported last, for `reopen.rs`'s sake.
@@ -4170,9 +4390,9 @@ mod pane_metadata_tests {
         assert_eq!(apply_pane_title(&mut tabs, 20, "make -j8"), Some((0, None)));
         assert_eq!(apply_pane_title(&mut tabs, 30, "ssh box"), Some((0, None)));
 
-        assert_eq!(tabs[0].panes[0].title.as_deref(), Some("vim"));
-        assert_eq!(tabs[0].panes[1].title.as_deref(), Some("make -j8"));
-        assert_eq!(tabs[0].panes[2].title.as_deref(), Some("ssh box"));
+        assert_eq!(tabs[0].panes()[0].title.as_deref(), Some("vim"));
+        assert_eq!(tabs[0].panes()[1].title.as_deref(), Some("make -j8"));
+        assert_eq!(tabs[0].panes()[2].title.as_deref(), Some("ssh box"));
 
         // tab.title, same as tab.cwd above, is still "whichever reported
         // last" -- unchanged behaviour for the strip to show.
@@ -4192,7 +4412,7 @@ mod pane_metadata_tests {
         let result = apply_pane_title(&mut tabs, 10, "vim");
         assert_eq!(result, Some((0, Some(NamedBy::User))));
         assert_eq!(tabs[0].title_override.as_ref().unwrap().text, "my build");
-        assert_eq!(tabs[0].panes[0].title.as_deref(), Some("vim"));
+        assert_eq!(tabs[0].panes()[0].title.as_deref(), Some("vim"));
     }
 }
 
@@ -4303,7 +4523,12 @@ fn move_tab_to_new_window(
         if ws[src].active >= ws[src].tabs.len() && !ws[src].tabs.is_empty() {
             ws[src].active = ws[src].tabs.len() - 1;
         }
-        let hwnds: Vec<isize> = tab.panes.iter().map(|p| p.hwnd).collect();
+        // Every child window the tab owns moves with it: a terminal tab's
+        // panes, or the control room's one panel.
+        let hwnds: Vec<isize> = match &tab.body {
+            Body::Terminal(t) => t.panes.iter().map(|p| p.hwnd).collect(),
+            Body::ControlRoom(r) => vec![r.hwnd],
+        };
         let n = ws[src].tabs.len();
         let Some(dst) = ws.iter().position(|w| w.frame == dest.0 as isize) else {
             // The frame was made but never registered. Put the tab back
@@ -4348,7 +4573,7 @@ fn move_tab_to_new_window(
     let (from_scale, to_scale) = (scale_of(frame), scale_of(dest));
     if from_scale != to_scale {
         let surfaces: Vec<usize> = window(dest)
-            .and_then(|w| w.tabs.first().map(|t| t.panes.iter().map(|p| p.surface).collect()))
+            .and_then(|w| w.tabs.first().map(|t| t.panes().iter().map(|p| p.surface).collect()))
             .unwrap_or_default();
         for s in surfaces {
             unsafe {
@@ -4371,6 +4596,157 @@ fn move_tab_to_new_window(
         crate::winid::tag(dest),
         left
     );
+    true
+}
+
+/// Every control-room tab in the application, as `(frame, tab)`.
+///
+/// **There is at most one, and this is how that is known rather than
+/// assumed**: it is looked for across every window each time, under the one
+/// lock, instead of being remembered in a variable that a moved or closed
+/// tab would leave pointing at nothing.
+// window-free: the control room is one per process; finding which window
+// holds it is the question
+pub fn control_rooms() -> Vec<(HWND, TabId)> {
+    with_windows(|ws| {
+        let mut found = Vec::new();
+        for w in ws.iter() {
+            for t in w.tabs.iter() {
+                match t.kind() {
+                    Kind::Terminal => {}
+                    Kind::ControlRoom => found.push((HWND(w.frame as *mut c_void), t.id)),
+                }
+            }
+        }
+        found
+    })
+}
+
+/// `toggle_poltergeist_control_room`, on the window's thread: what
+/// `rules::trigger` says, done.
+fn toggle_control_room(frame: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
+    let open = control_rooms();
+    match rules::trigger(open.len()) {
+        rules::Trigger::Select => select_control_room(frame, &open),
+        rules::Trigger::OpenAsFirstTab => {
+            let sh = strip_h(scale_of(frame));
+            let Some(bounds) = content_bounds(frame, sh) else {
+                wlogf!(frame, "[control-room] not opened: this window has no content area yet");
+                return;
+            };
+            let tab_id = TabId(take_id());
+            let Some(panel) = crate::control_room::create(frame, hinst, bounds) else {
+                wlogf!(frame, "[control-room] not opened: its panel could not be created");
+                return;
+            };
+            // **Asked again with the panel in hand.** Making a window pumps
+            // messages, and the rule is one in the application: the answer
+            // that acts is the one taken in the same critical section that
+            // inserts the tab.
+            let inserted = with_windows_mut(|ws| {
+                let already = ws.iter().flat_map(|w| w.tabs.iter()).any(|t| match t.kind() {
+                    Kind::Terminal => false,
+                    Kind::ControlRoom => true,
+                });
+                if already {
+                    return false;
+                }
+                let Some(win) = ws.iter_mut().find(|w| w.frame == frame.0 as isize) else {
+                    return false;
+                };
+                let at = rules::OPENS_AT.min(win.tabs.len());
+                win.tabs.insert(
+                    at,
+                    Tab {
+                        id: tab_id,
+                        body: Body::ControlRoom(RoomTab { hwnd: panel.0 as isize }),
+                        title: tr(rules::msg::TAB_TITLE),
+                        color: 0,
+                        role: 0,
+                        shielded: false,
+                        held: false,
+                        may_authorise: false,
+                        worker_mentions: false,
+                        persona: None,
+                        cwd: None,
+                        title_override: None,
+                    },
+                );
+                win.active = at;
+                true
+            });
+            if !inserted {
+                wlogf!(
+                    frame,
+                    "[control-room] not opened: one appeared while its panel was being made, or this \
+                     window went; destroying the spare panel and going to the one there is"
+                );
+                crate::control_room::destroy(panel);
+                select_control_room(frame, &control_rooms());
+                return;
+            }
+            layout(frame);
+            focus_active(frame);
+            wlogf!(frame, "[control-room] opened as {:?}, tab 1 of {}", tab_id, count(frame));
+            crate::uia::tabs_changed(frame);
+            unsafe {
+                let _ = InvalidateRect(Some(frame), None, false);
+            }
+        }
+    }
+}
+
+/// Go to the control room that is already open, wherever it is.
+fn select_control_room(asked_in: HWND, open: &[(HWND, TabId)]) {
+    let Some((home, tab)) = open.first().copied() else {
+        wlogf!(asked_in, "[control-room] nothing to go to: it is not open");
+        return;
+    };
+    if open.len() > 1 {
+        wlogf!(asked_in, "[control-room] BUG: {} control rooms are open; going to the first", open.len());
+    }
+    activate_tab(home, tab);
+    if home != asked_in {
+        unsafe {
+            let _ = ShowWindow(home, SW_RESTORE);
+            let _ = SetForegroundWindow(home);
+        }
+    }
+    wlogf!(asked_in, "[control-room] already open as {:?} in {}; went to it", tab, crate::winid::tag(home));
+}
+
+/// Go to the terminal the core names `key` (a snapshot's `steward`): bring
+/// its window forward, make its tab active, and give its pane the keyboard.
+/// False when no terminal here has that name.
+// window-free: keyed by a terminal's id, which is unique in the process
+pub fn go_to_terminal(key: &str) -> bool {
+    // The surfaces first, then the question to the core with the lock gone:
+    // this file holds its lock across no call into the core.
+    let surfaces: Vec<(usize, isize)> = with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes().iter())
+            .map(|p| (p.surface, p.hwnd))
+            .collect()
+    });
+    let found = surfaces.into_iter().find(|(s, _)| {
+        *s != 0 && rules::key(unsafe { (api().surface_poltergeist_id)(*s as Surface) }) == key
+    });
+    let Some((_, hwnd)) = found else {
+        // process-wide: the terminal named is in no window, which is the report
+        plogf!("[control-room] go to terminal {}: no pane here is that terminal", key);
+        return false;
+    };
+    let pane = HWND(hwnd as *mut c_void);
+    if let Some((frame, _, _)) = pane_of(pane) {
+        unsafe {
+            let _ = ShowWindow(frame, SW_RESTORE);
+            let _ = SetForegroundWindow(frame);
+        }
+    }
+    // Makes the pane's tab active and focuses the pane, the way a click on
+    // it does.
+    focus_pane_at(pane);
     true
 }
 
@@ -4397,7 +4773,7 @@ fn move_tab_to_new_window(
 /// `None` means the index names no tab, which is worth a different sentence
 /// at the call site rather than a zero folded into the same one.
 pub fn tab_pane_count(frame: HWND, tab_idx: usize) -> Option<(TabId, usize)> {
-    window(frame).and_then(|w| w.tabs.get(tab_idx).map(|t| (t.id, t.panes.len())))
+    window(frame).and_then(|w| w.tabs.get(tab_idx).map(|t| (t.id, t.panes().len())))
 }
 
 /// Give the keyboard, and with it the IME, to the active tab.
@@ -4443,12 +4819,12 @@ pub fn tab_pane_count(frame: HWND, tab_idx: usize) -> Option<(TabId, usize)> {
 /// focused child by this reckoning.
 fn focus_verdict(frame: HWND, want: PaneId) -> (bool, bool) {
     let model = window(frame)
-        .and_then(|w| w.tabs.get(w.active).map(|t| t.focused == want))
+        .and_then(|w| w.tabs.get(w.active).map(|t| t.focused() == Some(want)))
         .unwrap_or(false);
     let wanted_hwnd = window(frame).and_then(|w| {
         w.tabs
             .get(w.active)
-            .and_then(|t| t.panes.iter().find(|p| p.id == want).map(|p| p.hwnd))
+            .and_then(|t| t.panes().iter().find(|p| p.id == want).map(|p| p.hwnd))
     });
     let win32 = match wanted_hwnd {
         Some(h) => unsafe { GetFocus() }.0 as isize == h,
@@ -4458,17 +4834,43 @@ fn focus_verdict(frame: HWND, want: PaneId) -> (bool, bool) {
 }
 
 pub fn focus_active(frame: HWND) {
+    // What is in front, as an owned answer: the guard must be gone before
+    // any window call below.
+    enum Target {
+        Pane(isize),
+        Room(isize),
+        Nothing,
+    }
+    let target = match window(frame) {
+        Some(w) => match w.tabs.get(w.active).map(|t| t.front()) {
+            Some(Front::Pane(p)) => Target::Pane(p.hwnd),
+            Some(Front::Room(hwnd)) => Target::Room(hwnd),
+            Some(Front::NoPane) => Target::Nothing,
+            None => Target::Nothing,
+        },
+        None => Target::Nothing,
+    };
     let child = {
-        let found = window(frame)
-            .and_then(|w| w.tabs.get(w.active).and_then(|t| t.focused_pane()).map(|p| p.hwnd));
-        match found {
-            Some(hwnd) => HWND(hwnd as *mut c_void),
+        match target {
+            // **The control room's panel takes the keyboard itself.** It is
+            // a window with its own procedure and no surface, so none of
+            // what is below applies: no terminal to tell it has focus, and
+            // the input method's document is handed back by the panel's own
+            // `WM_SETFOCUS` (the contract `palette.rs` writes down).
+            Target::Room(hwnd) => {
+                wlogf!(frame, "[focus] the control room's panel taking focus");
+                unsafe {
+                    let _ = SetFocus(Some(HWND(hwnd as *mut c_void)));
+                }
+                return;
+            }
+            Target::Pane(hwnd) => HWND(hwnd as *mut c_void),
             // **The quiet one.** Every caller carries on as if the keyboard
             // moved, and one of them then prints a line saying it did. There
             // is no pane to focus here -- a tab mid-teardown, or a window
             // whose last pane has gone -- and saying so is what stops the
             // line downstream from being the only record.
-            None => {
+            Target::Nothing => {
                 wlogf!(
                     frame,
                     "[focus] nothing to focus: the active tab has no focused pane; \
@@ -4515,7 +4917,7 @@ pub fn focus_active(frame: HWND) {
         // one of these three, and without a pair here the third one would be
         // the one nobody could see.
         let id = window(frame)
-            .and_then(|w| w.tabs.get(w.active).map(|t| t.focused))
+            .and_then(|w| w.tabs.get(w.active).and_then(|t| t.focused()))
             .unwrap_or(0);
         wlogf!(frame, "[focus] pane {} taking focus (host asked)", id);
         unsafe { (api().surface_set_focus)(s, true) };
@@ -4537,6 +4939,16 @@ pub fn active_hwnd(frame: HWND) -> HWND {
     }
 }
 
+/// What kind of tab `id` is; none when this window has no such tab.
+pub fn kind_of(frame: HWND, id: TabId) -> Option<Kind> {
+    window(frame).and_then(|w| w.tabs.iter().find(|t| t.id == id).map(|t| t.kind()))
+}
+
+/// What kind of tab is in front of this window; none when it has no tabs.
+pub fn front_kind(frame: HWND) -> Option<Kind> {
+    window(frame).and_then(|w| w.tabs.get(w.active).map(|t| t.kind()))
+}
+
 /// How many tabs are in **one window**.
 pub fn count(frame: HWND) -> usize {
     window(frame).map(|w| w.tabs.len()).unwrap_or(0)
@@ -4551,7 +4963,7 @@ pub fn pane_place(hwnd: HWND) -> Option<(HWND, bool)> {
         ws.iter().find_map(|w| {
             w.tabs
                 .iter()
-                .position(|t| t.panes.iter().any(|p| p.hwnd == key))
+                .position(|t| t.panes().iter().any(|p| p.hwnd == key))
                 .map(|i| (HWND(w.frame as *mut c_void), i == w.active))
         })
     })
@@ -4566,7 +4978,7 @@ pub fn surface_showing(surface: usize) -> Option<bool> {
         ws.iter().find_map(|w| {
             w.tabs
                 .iter()
-                .position(|t| t.panes.iter().any(|p| p.surface == surface))
+                .position(|t| t.panes().iter().any(|p| p.surface == surface))
                 .map(|i| i == w.active)
         })
     })
@@ -4621,7 +5033,7 @@ pub fn active_surface(frame: HWND) -> Surface {
 pub fn frame_of_pane(pane: PaneId) -> Option<HWND> {
     with_windows(|ws| {
         ws.iter()
-            .find(|w| w.tabs.iter().any(|t| t.panes.iter().any(|p| p.id == pane)))
+            .find(|w| w.tabs.iter().any(|t| t.panes().iter().any(|p| p.id == pane)))
             .map(|w| HWND(w.frame as *mut c_void))
     })
 }
@@ -4643,7 +5055,7 @@ pub fn frame_of_surface(surface: Surface) -> Option<HWND> {
             .find(|w| {
                 w.tabs
                     .iter()
-                    .any(|t| t.panes.iter().any(|p| p.surface == key))
+                    .any(|t| t.panes().iter().any(|p| p.surface == key))
             })
             .map(|w| HWND(w.frame as *mut c_void))
     })
@@ -4665,7 +5077,7 @@ pub fn tab_of_surface(surface: Surface) -> Option<(HWND, TabId)> {
         ws.iter().find_map(|w| {
             w.tabs
                 .iter()
-                .find(|t| t.panes.iter().any(|p| p.surface == key))
+                .find(|t| t.panes().iter().any(|p| p.surface == key))
                 .map(|t| (HWND(w.frame as *mut c_void), t.id))
         })
     })
@@ -4689,7 +5101,7 @@ pub fn grouping_of_surface(surface: Surface) -> Option<(u64, u64)> {
         ws.iter().find_map(|w| {
             w.tabs
                 .iter()
-                .find(|t| t.panes.iter().any(|p| p.surface == key))
+                .find(|t| t.panes().iter().any(|p| p.surface == key))
                 .map(|t| (w.id, t.id.0))
         })
     })
@@ -4707,7 +5119,7 @@ pub fn pane_id_of_surface(surface: Surface) -> Option<PaneId> {
     with_windows(|ws| {
         ws.iter()
             .flat_map(|w| w.tabs.iter())
-            .flat_map(|t| t.panes.iter())
+            .flat_map(|t| t.panes().iter())
             .find(|p| p.surface == key)
             .map(|p| p.id)
     })
@@ -4726,8 +5138,29 @@ pub fn pane_id_of_surface(surface: Surface) -> Option<PaneId> {
 /// focused pane, which is what every caller did before -- and what a
 /// keybinding means, since a keybinding names the surface it came from and
 /// that surface is the focused one.
-fn acting_pane(tab: &Tab, at: Option<PaneId>) -> PaneId {
+fn acting_pane(tab: &Terminal, at: Option<PaneId>) -> PaneId {
     at.filter(|p| tab.tree.contains(*p)).unwrap_or(tab.focused)
+}
+
+/// Whether the tab in front of `frame` is the control room -- and if it is,
+/// the line that says an action on a split was refused there.
+///
+/// **Refused, not passed on to the nearest terminal** (暂定,
+/// `dev-docs/windows/control-room.md` 2.1): a split made that way opens in a
+/// tab nobody is looking at.
+fn front_has_no_splits(frame: HWND, what: &str) -> bool {
+    let room = window(frame)
+        .and_then(|w| {
+            w.tabs.get(w.active).map(|t| match t.kind() {
+                Kind::Terminal => false,
+                Kind::ControlRoom => true,
+            })
+        })
+        .unwrap_or(false);
+    if room {
+        wlogf!(frame, "[split] {} refused: the tab in front is the control room, which has no splits", what);
+    }
+    room
 }
 
 /// Which tab an action lands on: **the one holding the pane it named**, and
@@ -4746,7 +5179,7 @@ fn acting_pane(tab: &Tab, at: Option<PaneId>) -> PaneId {
 /// picks `win.active` itself is the shape this exists to stop.
 fn acting_tab(win: &WindowState, at: Option<PaneId>) -> usize {
     if let Some(p) = at {
-        if let Some(i) = win.tabs.iter().position(|t| t.tree.contains(p)) {
+        if let Some(i) = win.tabs.iter().position(|t| t.terminal().is_some_and(|term| term.tree.contains(p))) {
             return i;
         }
     }
@@ -4771,8 +5204,8 @@ pub fn panes_in_tab_of_surface(surface: Surface) -> Option<usize> {
     with_windows(|ws| {
         ws.iter()
             .flat_map(|w| w.tabs.iter())
-            .find(|t| t.panes.iter().any(|p| p.surface == key))
-            .map(|t| t.panes.len())
+            .find(|t| t.panes().iter().any(|p| p.surface == key))
+            .map(|t| t.panes().len())
     })
 }
 
@@ -4790,7 +5223,7 @@ pub fn pane_hwnd_of_surface(surface: Surface) -> Option<HWND> {
     with_windows(|ws| {
         ws.iter()
             .flat_map(|w| w.tabs.iter())
-            .flat_map(|t| t.panes.iter())
+            .flat_map(|t| t.panes().iter())
             .find(|p| p.surface == key)
             .map(|p| HWND(p.hwnd as *mut c_void))
     })
@@ -4804,7 +5237,7 @@ pub fn surface_of(hwnd: HWND) -> Surface {
     let found = with_windows(|ws| {
         ws.iter()
             .flat_map(|w| w.tabs.iter())
-            .flat_map(|t| t.panes.iter())
+            .flat_map(|t| t.panes().iter())
             .find(|p| p.hwnd == key)
             .map(|p| p.surface)
     });
@@ -4849,7 +5282,7 @@ pub fn pane_of(hwnd: HWND) -> Option<(HWND, usize, PaneId)> {
     with_windows(|ws| {
         for win in ws.iter() {
             for (i, tab) in win.tabs.iter().enumerate() {
-                for p in tab.panes.iter() {
+                for p in tab.panes().iter() {
                     if p.hwnd == key {
                         return Some((HWND(win.frame as *mut c_void), i, p.id));
                     }
@@ -4938,8 +5371,10 @@ pub fn focus_pane_at(hwnd: HWND) {
             );
             return;
         };
-        let was = (win.active, win.tabs.get(win.active).map(|t| t.focused));
-        let Some(tab) = win.tabs.get_mut(tab_idx) else {
+        let was = (win.active, win.tabs.get(win.active).and_then(|t| t.focused()));
+        // `pane_of` found this pane in this tab, so it is a terminal tab; a
+        // tab at that index that is not one is a different tab.
+        let Some(tab) = win.tabs.get_mut(tab_idx).and_then(|t| t.terminal_mut()) else {
             break 'commit None;
         };
         tab.focused = id;
@@ -5069,7 +5504,8 @@ fn free_pane(id: PaneId, hwnd: isize, surface: usize) {
 fn destroy_tab_at(frame: HWND, idx: usize) {
     // Both come out of the one critical section: the panes to free, and what
     // `reopen.rs` should be told once the guard is gone.
-    let (doomed, remembered): (Vec<(PaneId, isize, usize)>, Option<(TabId, String, String)>) = {
+    #[allow(clippy::type_complexity)]
+    let (doomed, room, remembered): (Vec<(PaneId, isize, usize)>, Option<isize>, Option<(TabId, String, String)>) = {
         let Some(mut win) = window(frame) else {
             wlogf!(frame, "[tab] destroy at {} refused: that window is gone", idx);
             return;
@@ -5093,16 +5529,27 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
         // starting -- so restoring the program's old title produces a name
         // that is visibly wrong for one frame and then gone. Only a name the
         // person chose is theirs to get back.
-        let remembered = Some((
-            tab.id,
-            tab.title_override.as_ref().map(|p| p.text.clone()).unwrap_or_default(),
-            tab.cwd.clone().unwrap_or_default(),
-        ));
+        //
+        // **Not the control room.** It has no directory to come back in,
+        // and it comes back through its own menu item; `remember` would
+        // refuse it for the empty cwd, loudly, on every close.
+        let remembered = rules::remembered_when_closed(tab.kind()).then(|| {
+            (
+                tab.id,
+                tab.title_override.as_ref().map(|p| p.text.clone()).unwrap_or_default(),
+                tab.cwd.clone().unwrap_or_default(),
+            )
+        });
         if win.active >= win.tabs.len() && !win.tabs.is_empty() {
             win.active = win.tabs.len() - 1;
         }
+        let room = match &tab.body {
+            Body::Terminal(_) => None,
+            Body::ControlRoom(r) => Some(r.hwnd),
+        };
         (
-            tab.panes.iter().map(|p| (p.id, p.hwnd, p.surface)).collect(),
+            tab.panes().iter().map(|p| (p.id, p.hwnd, p.surface)).collect(),
+            room,
             remembered,
         )
     };
@@ -5114,6 +5561,13 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
     logf!("[close] tab index {} -> {} pane(s)", idx, doomed.len());
     for (id, hwnd, surface) in doomed {
         free_pane(id, hwnd, surface);
+    }
+    if let Some(hwnd) = room {
+        // The panel is a window of ours with no surface behind it. What it
+        // showed is the core's and is asked for again when it reopens;
+        // which group was selected is kept by `control_room.rs`, not here.
+        wlogf!(frame, "[close] tab index {} is the control room; destroying its panel", idx);
+        crate::control_room::destroy(HWND(hwnd as *mut c_void));
     }
     logf!("[close] tab index {} panes gone; laying out", idx);
     layout(frame);
@@ -5238,7 +5692,7 @@ pub fn surface_of_pane(pane: u64) -> Surface {
     with_windows(|ws| {
         ws.iter()
             .flat_map(|w| w.tabs.iter())
-            .flat_map(|t| t.panes.iter())
+            .flat_map(|t| t.panes().iter())
             .find(|p| p.id == pane)
             .map(|p| p.surface as Surface)
             .unwrap_or(std::ptr::null_mut())
@@ -5496,6 +5950,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
             Op::MoveTabToNewWindow { tab } => {
                 move_tab_to_new_window(frame, hinst, tab);
             }
+            Op::ToggleControlRoom => toggle_control_room(frame, hinst),
             // The scoped close an agent asked for. Every branch names the
             // tab by identity; see the variant's own note for why.
             Op::PoltergeistClose { tab, scope } => match scope {
@@ -5715,6 +6170,9 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 wlogf!(frame, "[ops] NewSplit finished: split={}", ok as u8);
             }
             Op::GotoSplit(v, at) => {
+                if front_has_no_splits(frame, "goto_split") {
+                    continue;
+                }
                 // `ghostty_action_goto_split_e`
                 let f = match v {
                     0 => Focus::Previous,
@@ -5728,6 +6186,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     window(frame).and_then(|w| {
                         w.tabs
                             .get(w.active)
+                            .and_then(|t| t.terminal())
                             .and_then(|t| t.tree.focus_target(f, acting_pane(t, at)))
                     })
                 };
@@ -5743,7 +6202,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                         let recorded = match window(frame) {
                             Some(mut win) => {
                                 let a = win.active;
-                                match win.tabs.get_mut(a) {
+                                match win.tabs.get_mut(a).and_then(|t| t.terminal_mut()) {
                                     Some(tab) => {
                                         tab.focused = id;
                                         true
@@ -5794,6 +6253,9 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 }
             }
             Op::ResizeSplit(amount, dir, at) => {
+                if front_has_no_splits(frame, "resize_split") {
+                    continue;
+                }
                 // `ghostty_action_resize_split_direction_e`
                 let side = match dir {
                     0 => Side::Up,
@@ -5804,7 +6266,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 let out = {
                     let Some(win) = window(frame) else { continue };
                     let sh = strip_h(win.scale);
-                    let cur = win.tabs.get(win.active);
+                    let cur = win.tabs.get(win.active).and_then(|t| t.terminal());
                     match (content_bounds(frame, sh), cur) {
                         (Some(b), Some(tab)) => {
                             let p = acting_pane(tab, at);
@@ -5819,7 +6281,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                             {
                                 if let Some(mut win) = window(frame) {
                                     let a = win.active;
-                                    if let Some(tab) = win.tabs.get_mut(a) {
+                                    if let Some(tab) = win.tabs.get_mut(a).and_then(|t| t.terminal_mut()) {
                                         tab.tree = t;
                                     }
                                 }
@@ -5832,10 +6294,13 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 }
             }
             Op::EqualizeSplits => {
+                if front_has_no_splits(frame, "equalize_splits") {
+                    continue;
+                }
                 {
                     if let Some(mut win) = window(frame) {
                         let a = win.active;
-                        if let Some(tab) = win.tabs.get_mut(a) {
+                        if let Some(tab) = win.tabs.get_mut(a).and_then(|t| t.terminal_mut()) {
                             tab.tree = tab.tree.equalize();
                         }
                     }
@@ -5844,13 +6309,16 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 wlogf!(frame, "[split] equalized");
             }
             Op::ToggleSplitZoom(at) => {
+                if front_has_no_splits(frame, "toggle_split_zoom") {
+                    continue;
+                }
                 let zoomed = {
                     // **The toggle happens inside the closure**, because the
                     // guard owns the lock and a `&mut Tab` cannot leave it.
                     window(frame)
                         .and_then(|mut w| {
                             let a = w.active;
-                            w.tabs.get_mut(a).map(|tab| {
+                            w.tabs.get_mut(a).and_then(|t| t.terminal_mut()).map(|tab| {
                                 tab.tree = tab.tree.toggle_zoom(acting_pane(tab, at));
                                 tab.tree.zoomed()
                             })

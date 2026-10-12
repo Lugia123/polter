@@ -993,12 +993,14 @@ impl IRawElementProviderFragmentRoot_Impl for WindowRoot_Impl {
         // around them. **Answering with the focused pane rather than
         // refusing** -- the area does belong to this tab, and a client that
         // gets nothing here concludes the window has no content at all.
-        Ok(Document {
-            frame: self.frame,
-            tab: t.id,
-            pane: t.pane,
+        //
+        // The control room's tab has no pane to answer with. Its tab item is
+        // the one element this provider has for it, until the panel has a
+        // provider of its own.
+        match t.pane {
+            Some(pane) => Ok(Document { frame: self.frame, tab: t.id, pane }.into()),
+            None => Ok(TabItem { frame: self.frame, tab: t.id }.into()),
         }
-        .into())
     }
 
     /// **The focused pane, and here that is the whole answer** -- unlike
@@ -1009,13 +1011,10 @@ impl IRawElementProviderFragmentRoot_Impl for WindowRoot_Impl {
     fn GetFocus(&self) -> WResult<IRawElementProviderFragment> {
         let frame = self.hwnd();
         let (tabs_now, active) = tabs::tab_infos(frame);
-        match tabs_now.get(active) {
-            Some(t) => Ok(Document {
-                frame: self.frame,
-                tab: t.id,
-                pane: t.pane,
-            }
-            .into()),
+        match tabs_now.get(active).map(|t| (t.id, t.pane)) {
+            Some((tab, Some(pane))) => Ok(Document { frame: self.frame, tab, pane }.into()),
+            // The control room's tab: no document, so its tab item.
+            Some((tab, None)) => Ok(TabItem { frame: self.frame, tab }.into()),
             None => Err(gone()),
         }
     }
@@ -1533,7 +1532,7 @@ impl IRawElementProviderSimple_Impl for Document_Impl {
             // stood would have had two elements answering true -- which a
             // screen reader resolves by believing the first one it finds.
             UIA_HasKeyboardFocusPropertyId => {
-                variant_bool(idx == active && tabs_now[idx].pane == self.pane)
+                variant_bool(idx == active && tabs_now[idx].pane == Some(self.pane))
             }
             // Asked of Windows, never assumed; see `window_enabled`.
             UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
@@ -2433,13 +2432,15 @@ pub fn tabs_changed(frame: HWND) {
 /// tracking what was previously announced. **That is exactly true of the
 /// element being named**: it is the one gaining focus. The element losing it
 /// is not announced at all, which is what UIA's focus model expects.
-pub fn active_tab_changed(frame: HWND, tab: TabId, pane: PaneId) {
+pub fn active_tab_changed(frame: HWND, tab: TabId, pane: Option<PaneId>) {
     if !announce_gate(frame, "focus change") {
         return;
     }
     let f = frame.0 as isize;
     let item: IRawElementProviderSimple = TabItem { frame: f, tab }.into();
-    let doc: IRawElementProviderSimple = Document { frame: f, tab, pane }.into();
+    // The control room's tab has no document under it: the tab item alone
+    // is told about.
+    let doc: Option<IRawElementProviderSimple> = pane.map(|pane| Document { frame: f, tab, pane }.into());
 
     let was = variant_bool(false);
     let now = variant_bool(true);
@@ -2453,12 +2454,14 @@ pub fn active_tab_changed(frame: HWND, tab: TabId, pane: PaneId) {
             &was,
             &now,
         );
-        let _ = UiaRaiseAutomationPropertyChangedEvent(
-            &doc,
-            UIA_HasKeyboardFocusPropertyId,
-            &was,
-            &now,
-        );
+        if let Some(doc) = &doc {
+            let _ = UiaRaiseAutomationPropertyChangedEvent(
+                doc,
+                UIA_HasKeyboardFocusPropertyId,
+                &was,
+                &now,
+            );
+        }
     }
     wlogf!(frame, "[uia] focus change raised for tab {}", tab.0);
 }

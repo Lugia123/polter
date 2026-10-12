@@ -34,6 +34,7 @@ use crate::{logf, plogf, wlogf};
 use crate::i18n::{n_, tr};
 use crate::menu::{draw_menu_button, show_root_menu};
 use crate::tabs::{self, TabId};
+use polter_control_room::rules::{self, Kind};
 
 /// Height of the strip in unscaled pixels.
 pub const STRIP_H: i32 = 30;
@@ -543,10 +544,20 @@ pub fn on_button_down(frame: HWND, x: i32, y: i32) {
         // Straight to the core's own action, the same one the keyboard bind
         // reaches. The strip does not know how to make a tab and should not
         // learn.
-        Hit::New => {
-            let ok = crate::binding("new_tab");
-            wlogf!(frame, "[strip] click -> new_tab, binding_action = {}", ok);
-        }
+        Hit::New => match tabs::front_kind(frame) {
+            // A binding is performed on the terminal in front, and the
+            // control room's tab has none: there the `+` queues the tab
+            // itself. Without this a window holding only the control room
+            // has a `+` that does nothing.
+            Some(Kind::ControlRoom) => {
+                wlogf!(frame, "[strip] click -> new_tab, queued directly (the control room is in front)");
+                tabs::post_op(frame, tabs::Op::NewTab(None), "strip + on the control room");
+            }
+            Some(Kind::Terminal) | None => {
+                let ok = crate::binding("new_tab");
+                wlogf!(frame, "[strip] click -> new_tab, binding_action = {}", ok);
+            }
+        },
         Hit::Overflow => {
             show_overflow_menu(frame, g.overflow.unwrap_or_default());
             return;
@@ -777,6 +788,13 @@ pub fn on_button_up(frame: HWND, x: i32, y: i32) {
 pub fn on_double_click(frame: HWND, x: i32, y: i32) {
     let g = slots(frame);
     if let Hit::Tab(id) = hit(&g, x, y) {
+        // The control room's name is not anybody's to change, so no box
+        // opens over it.
+        let renames = tabs::kind_of(frame, id).is_some_and(rules::can_be_renamed);
+        if !renames {
+            wlogf!(frame, "[strip] double click on {:?}: that tab is not renamed (the control room, or gone)", id);
+            return;
+        }
         if let Some(slot) = g.slots.iter().find(|s| s.id == id) {
             begin_rename(frame, id, slot.rect);
         }
@@ -1099,6 +1117,12 @@ pub fn paint(frame: HWND) {
             } else {
                 slot.rect.right - (6.0 * scale) as i32
             };
+            // The one status glyph this tab carries, at the right of its
+            // title: which glyph, whether it is drawn at all and whether it
+            // breathes are the control room's rules, not this file's. The
+            // title gives up the room the glyph takes.
+            let showing = tabs_now.get(active).map(|(id, _)| id.0);
+            let right_edge = crate::control_room::draw_tab_glyph(mem, frame, slot.id.0, showing, right_edge, sh, scale);
             let mut tr = RECT {
                 left: slot.rect.left + (4.0 * scale) as i32,
                 top: 0,
@@ -1425,6 +1449,22 @@ impl TabCmd {
     /// Safe to leave out here because a row's command id is
     /// `TAB_ID_BASE + <its index in TAB_MENU>` -- its position in the table,
     /// not its position on screen -- so removing one shifts no other id.
+    /// Whether the row is on the control room's own tab. Only what acts on
+    /// a tab as a tab: everything else here is about the terminal inside
+    /// one, and it has none.
+    fn on_control_room(self) -> bool {
+        match self {
+            TabCmd::Close | TabCmd::CloseOthers | TabCmd::CloseRight | TabCmd::MoveToNewWindow => true,
+            TabCmd::Rename
+            | TabCmd::Supervisor
+            | TabCmd::Watch
+            | TabCmd::Shield
+            | TabCmd::WorkerMentions
+            | TabCmd::SaveProject
+            | TabCmd::LoadProject => false,
+        }
+    }
+
     fn on_menu(self, supervisor: bool) -> bool {
         match self {
             TabCmd::WorkerMentions => supervisor,
@@ -1534,7 +1574,16 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
         }
 
         let mut items = 0usize;
+        // The control room's tab gets the rows that act on a tab and
+        // nothing else: no separators, no colour.
+        let room = match tabs::kind_of(frame, target.id) {
+            Some(Kind::ControlRoom) => true,
+            Some(Kind::Terminal) | None => false,
+        };
         for (i, row) in TAB_MENU.iter().enumerate() {
+            if room && !row.is_some_and(|cmd| cmd.on_control_room()) {
+                continue;
+            }
             let Some(cmd) = row else {
                 let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
                 // The colour submenu goes after the second separator, which
@@ -1700,7 +1749,15 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
         // the host primitive here would work and would be a second route to
         // the same effect, which is the asymmetry that left three of the four
         // close paths looking complete.
-        TabCmd::MoveToNewWindow => tabs::binding_on_tab(frame, id, "move_tab_to_new_window"),
+        TabCmd::MoveToNewWindow => match tabs::kind_of(frame, id) {
+            // The core's binding is performed on a terminal of the tab; the
+            // control room's tab has none, so its move is queued here.
+            Some(Kind::ControlRoom) => {
+                tabs::post_op(frame, tabs::Op::MoveTabToNewWindow { tab: id }, "tab menu on the control room");
+                true
+            }
+            Some(Kind::Terminal) | None => tabs::binding_on_tab(frame, id, "move_tab_to_new_window"),
+        },
         // **The tab that was right-clicked**, not the one in front.
         TabCmd::SaveProject => {
             let there = tabs::strip_snapshot(frame).0.iter().any(|(t, _)| *t == id);

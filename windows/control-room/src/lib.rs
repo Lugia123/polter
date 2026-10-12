@@ -9,6 +9,9 @@
 //! | [`layout`] | where everything in the list panel is; the time band's pieces; the chip's spring |
 //! | [`pulse`] | which waiting glyph breathes; what a window tab carries and whether it is drawn |
 //! | [`act`] | the person's acts as requests to the core, what a refusal says, when looking marks a group seen |
+//! | [`rules`] | the control room's tab: one in the application, where it opens, what closing it involves |
+//! | [`scene`] | everything the panel draws, as a list of rectangles, words and glyphs for a host to paint |
+//! | [`glyph`] | the four status glyphs as shapes on the design's artboard |
 //! | [`json`] | just enough JSON for the above |
 //!
 //! **Nothing in here decides what the control room says.** Which rows there
@@ -20,11 +23,14 @@
 //! the macOS host draws from the same snapshot.
 
 pub mod act;
+pub mod glyph;
 pub mod json;
 pub mod layout;
 pub mod list;
 pub mod look;
 pub mod pulse;
+pub mod rules;
+pub mod scene;
 pub mod snapshot;
 
 #[cfg(test)]

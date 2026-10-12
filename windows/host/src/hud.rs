@@ -581,7 +581,7 @@ fn pane_rect_for(surface: usize) -> Option<RECT> {
         crate::tabs::with_windows(|ws| {
             ws.iter()
                 .flat_map(|w| w.tabs.iter())
-                .flat_map(|t| t.panes.iter())
+                .flat_map(|t| t.panes().iter())
                 .find(|p| p.surface == surface)
                 .map(|p| HWND(p.hwnd as *mut c_void))
         })?
@@ -604,7 +604,7 @@ fn prune_and_count() -> usize {
         crate::tabs::with_windows(|ws| {
             ws.iter()
                 .flat_map(|w| w.tabs.iter())
-                .flat_map(|t| t.panes.iter())
+                .flat_map(|t| t.panes().iter())
                 .map(|p| p.surface)
                 .collect()
         })

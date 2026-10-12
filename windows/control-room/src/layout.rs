@@ -82,11 +82,54 @@ impl ListLayout {
         ListLayout { width, height, header, rows, separator, quiet_header, band_header, lanes, axis }
     }
 
+    /// The row under a point of the panel, by its group's name.
+    pub fn row_at(&self, x: f64, y: f64) -> Option<&str> {
+        self.rows
+            .iter()
+            .find(|(_, r)| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+            .map(|(name, _)| name.as_str())
+    }
+
     /// Where the selection chip rests for a row; none for a row not listed.
     pub fn chip(&self, id: Option<&str>) -> Option<Rect> {
         let id = id?;
         self.rows.iter().find(|(name, _)| name == id).map(|(_, r)| *r)
     }
+}
+
+/// The control room's two sides inside its tab, whose content area is
+/// `width` by `height`: the list panel on the left, and what is left for the
+/// selected group on the right.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Room {
+    pub panel: Rect,
+    pub right: Rect,
+}
+
+impl Room {
+    pub fn new(width: f64, height: f64) -> Room {
+        let edge = space::WINDOW_EDGE;
+        let h = (height - 2.0 * edge).max(0.0);
+        let panel = Rect { x: edge, y: edge, w: side::WIDTH, h };
+        let x = panel.x + panel.w + space::BETWEEN_FRAMES;
+        Room { panel, right: Rect { x, y: edge, w: (width - x - edge).max(0.0), h } }
+    }
+}
+
+/// Where the chip is `t` seconds into a slide from one row to another: the
+/// spring's progress between the two rectangles. It passes the far one a
+/// little and comes back.
+pub fn chip_between(from: Rect, to: Rect, t: f64) -> Rect {
+    let p = spring::progress(t);
+    let mix = |a: f64, b: f64| a + (b - a) * p;
+    Rect { x: mix(from.x, to.x), y: mix(from.y, to.y), w: mix(from.w, to.w), h: mix(from.h, to.h) }
+}
+
+/// Whether a slide that began `t` seconds ago has come to rest: within a
+/// hundredth of the way for good, which for this spring is after its second
+/// period.
+pub fn chip_settled(t: f64) -> bool {
+    t >= 2.0 * crate::look::selection::SPRING_PERIOD
 }
 
 /// How wide the part of a lane that draws time is, once the name at its

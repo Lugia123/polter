@@ -188,3 +188,9 @@ path = "../shots"
 
 [dependencies.polter-settings-shell]
 path = "../settings-shell"
+
+# The control room's rules: what its tab is, what its panel draws and where,
+# which glyph breathes. The host paints what this says and decides nothing
+# (`tools/control-room-hosts-do-not-decide.py` reads `control_room*.rs`).
+[dependencies.polter-control-room]
+path = "../control-room"

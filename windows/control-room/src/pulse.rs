@@ -6,7 +6,7 @@
 //! is walk it asking two things that are equalities: is this the tab I am
 //! showing, and is this my window. Nothing here compares a time.
 
-use crate::look::window_tab;
+use crate::look::{status, window_tab};
 use crate::snapshot::{Pulse, Shown, Snapshot};
 
 /// Where a glyph is drawn.
@@ -69,6 +69,23 @@ pub fn tab_status(snapshot: Option<&Snapshot>, tab: &str, window: &str, showing_
     };
     let breathing = pulsing(&snapshot.pulses, Some(window), showing_tab, Scope::Window);
     TabStatus { shown: entry.shown, pulses: breathing.is_some_and(|p| p.tab.as_deref() == Some(tab)) }
+}
+
+/// How much of a breathing glyph is there at `t` seconds: all of it, down to
+/// the table's least, and back, once a period. The macOS host's
+/// `ControlRoomGlyph.pulse(at:)` is the same curve.
+pub fn opacity(t: f64) -> f64 {
+    let period = status::WAITING_PULSE_PERIOD;
+    let phase = t.rem_euclid(period) / period;
+    let dip = (1.0 - (2.0 * std::f64::consts::PI * phase).cos()) / 2.0;
+    1.0 - (1.0 - status::WAITING_PULSE_MIN_OPACITY) * dip
+}
+
+/// Which of the spinner's lines is brightest at `t` seconds. It steps.
+pub fn spin_step(t: f64) -> usize {
+    let steps = status::WORKING_SPIN_STEPS;
+    let phase = t.rem_euclid(status::WORKING_SPIN_PERIOD) / status::WORKING_SPIN_PERIOD;
+    (phase * steps) as usize % steps as usize
 }
 
 /// Whether a status is drawn on a window tab at all.

@@ -36,6 +36,8 @@ pub struct Row {
     pub others: u64,
     /// The core says nobody has looked at this since it stopped.
     pub unseen: bool,
+    /// The group's supervisor, as the core names that terminal.
+    pub steward: Option<String>,
     /// What an act on this row sends home (`act`).
     pub terminal: Option<String>,
     pub since_ms: u64,
@@ -84,6 +86,7 @@ impl List {
                 waited_min: g.waited_min,
                 others: g.more,
                 unseen: g.unseen,
+                steward: g.steward.clone(),
                 terminal: g.terminal.clone(),
                 since_ms: g.since_ms,
                 event_ms: g.event_ms,

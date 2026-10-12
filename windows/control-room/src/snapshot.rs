@@ -58,6 +58,10 @@ pub struct Group {
     pub reason: Reason,
     pub more: u64,
     pub same_as: Option<String>,
+    /// The terminal that is this group's supervisor, none when it has none.
+    /// The core's choice; a host finds that terminal by equality and never
+    /// picks one out of the members itself.
+    pub steward: Option<String>,
     /// The terminal the row is about and the two moments it was drawn
     /// from: what an act on this row hands back (`act`). Opaque; a host
     /// only ever tests them for equality or sends them home.
@@ -201,6 +205,7 @@ fn group(v: &Value, path: &str) -> Res<Group> {
         },
         more: int(v, path, "more")?,
         same_as: opt_text(v, path, "same_as")?,
+        steward: opt_text(v, path, "steward")?,
         terminal: opt_text(attention, &at, "terminal")?,
         since_ms: int(attention, &at, "since_ms")?,
         event_ms: opt_int(attention, &at, "event_ms")?,

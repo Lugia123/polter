@@ -775,6 +775,12 @@ impl Action {
         (text, out)
     }
 
+    /// `ghostty_action_control_room_changed_s { uint64_t rev; }`: the `rev`
+    /// of the snapshot the notice is about.
+    pub fn as_control_room_changed(&self) -> u64 {
+        u64::from_ne_bytes(self.payload[0..8].try_into().unwrap())
+    }
+
     pub fn as_poltergeist_tab_panes(&self) -> *mut u32 {
         usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *mut u32
     }
@@ -1711,6 +1717,15 @@ pub struct Api {
     /// `terminal_list` reports for this surface, written `0x{:016x}`. 0 for
     /// null. The `Surface` handle itself is a pointer and is not this.
     pub surface_poltergeist_id: unsafe extern "C" fn(Surface) -> u64,
+    /// `ghostty_app_control_snapshot(app, buf, cap)`: the control room's
+    /// snapshot as JSON, by the persona buffer rule. Zero bytes means none
+    /// has been worked out yet. App thread only; asked for when
+    /// `ACTION_CONTROL_ROOM_CHANGED` arrives and at no other time.
+    pub app_control_snapshot: unsafe extern "C" fn(App, *mut u8, usize) -> usize,
+    /// `ghostty_app_control_act(app, json, len, err, cap)`: something the
+    /// person did in the control room. False with the refusal's name in
+    /// `err` when it was not done. App thread only.
+    pub app_control_act: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> bool,
     /// `ghostty_surface_persona_launch(surface, key, len, cli, len, err, cap)`.
     pub surface_persona_launch:
         unsafe extern "C" fn(Surface, *const u8, usize, *const u8, usize, *mut u8, usize) -> bool,

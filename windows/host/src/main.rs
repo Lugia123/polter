@@ -101,6 +101,8 @@
 
 mod capture;
 mod close_scope;
+mod control_room;
+mod control_room_source;
 mod ctxmenu;
 mod divider;
 mod dnd;
@@ -4219,27 +4221,33 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             true
         }
 
-        // owed: 1366 -- the control room is not built on this host yet.
+        // The snapshot changed. Fetched once for the whole host, on the
+        // window's thread, and never on a timer: every window's tab strip
+        // draws from it, so it is fetched whether or not the control room's
+        // own tab is open.
         ffi::ACTION_CONTROL_ROOM_CHANGED => {
             // process-wide: the control room is one per process, and the
-            // notice names no window
-            alogf!(
-                origin,
-                "[action] control_room_changed: not built yet (task 1366) -- nothing on this host \
-                 draws the control room, so there is nobody to fetch the snapshot this announces."
-            );
-            false
+            // notice names no window. No line here: `control_room_source`
+            // writes one per fetch, and several notices are one fetch.
+            let rev = action.as_control_room_changed();
+            // carries no terminal: the snapshot is the application's; what
+            // the notice carries is the snapshot's `rev`, which goes along
+            control_room_source::announce(rev);
+            true
         }
 
-        // owed: 1375 -- the control room is not built on this host yet.
+        // Go to the control room, opening it as the first tab of the window
+        // in front when there is none. Queued: opening it makes a window.
         ffi::ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM => {
-            // process-wide: there is one control room in the application
-            alogf!(
-                origin,
-                "[action] toggle_poltergeist_control_room: not built yet (task 1375) -- this host \
-                 has no control room to go to."
-            );
-            false
+            // process-wide: there is one control room in the application;
+            // the window in front is only where a new one would open
+            //
+            // carries no terminal: the action names none -- it is app-scoped
+            // in the core -- and the window is the one in front
+            let frame = tabs::overlay_frame();
+            alogf!(origin, "[action] toggle_poltergeist_control_room -> queued for {}", winid::tag(frame));
+            tabs::post_op(frame, tabs::Op::ToggleControlRoom, "toggle_poltergeist_control_room");
+            true
         }
 
         // owed: 286 -- reviewed and deferred; there is no transparency to toggle.
@@ -4623,6 +4631,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             inspector::WM_POLTER_INSPECTOR_OP => {
                 let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
                 inspector::run_ops(hinst);
+                LRESULT(0)
+            }
+
+            // The core said the control room's snapshot changed. Fetched
+            // here, on the thread the export has to be called on.
+            control_room_source::WM_POLTER_CONTROL_ROOM => {
+                control_room_source::on_message();
                 LRESULT(0)
             }
 
@@ -5223,6 +5238,8 @@ fn load_api() -> Option<Api> {
             app_persona_delete: sym!(internal, "ghostty_app_persona_delete"),
             app_agent_clis: sym!(internal, "ghostty_app_agent_clis"),
             surface_poltergeist_id: sym!(internal, "ghostty_surface_poltergeist_id"),
+            app_control_snapshot: sym!(internal, "ghostty_app_control_snapshot"),
+            app_control_act: sym!(internal, "ghostty_app_control_act"),
             surface_persona_launch: sym!(internal, "ghostty_surface_persona_launch"),
             app_plugin_list: sym!(internal, "ghostty_app_plugin_list"),
             app_plugin_test: sym!(internal, "ghostty_app_plugin_test"),

@@ -72,9 +72,12 @@ fn snapshot_and_surfaces(frame: HWND, id: TabId, name: String, saved_at: i64) ->
     let (root, surfaces) = tabs::with_windows(|ws| {
         let win = ws.iter().find(|w| w.frame == frame.0 as isize)?;
         let tab = win.tabs.iter().find(|t| t.id == id)?;
-        let node = tab.tree.root()?;
+        // A project is a terminal tab's split tree. The control room has
+        // none, and saving it is not offered; asked anyway, there is
+        // nothing to save.
+        let node = tab.terminal()?.tree.root()?;
         let meta: std::collections::HashMap<polter_split_tree::PaneId, (SavedLeaf, LeafPane)> = tab
-            .panes
+            .panes()
             .iter()
             .map(|p| {
                 (
