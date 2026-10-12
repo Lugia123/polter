@@ -693,6 +693,11 @@
 "%@ groups waiting for you" = "%@ 个群在等你";
 "No group is waiting for you" = "没有群在等你";
 "%@ groups need nothing from you" = "%@ 个群不用你管";
+"%@ group waiting for you" = "%@ 个群在等你";
+"%@ waiting for you" = "%@ 个在等你";
+"%@ group needs nothing from you" = "%@ 个群不用你管";
+"%@ needs nothing from you" = "%@ 个不用你管";
+"%@ need nothing from you" = "%@ 个不用你管";
 "New Group" = "新建群";
 "%@ more" = "还有 %@ 个";
 "%@, via the supervisor" = "%@，经总管";

@@ -205,8 +205,9 @@ struct ControlRoomListTests {
         #expect(waiting == ["web-app", "web-app-docs", "mobile", "billing", "docs-site", "terminal:0x00000000000000c1"])
         let quiet = made.quiet.map(\.id)
         #expect(quiet == ["infra", "design-system", "notes"])
-        // The counts are of groups, and are the core's.
-        #expect(made.waitingCount == 5)
+        // The counts are the core's, and are of the rows under each
+        // heading: six wait, the lone terminal among them.
+        #expect(made.waitingCount == 6)
         #expect(made.quietCount == 3)
     }
 

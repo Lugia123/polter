@@ -246,12 +246,33 @@ struct ControlRoomList: Equatable {
         var eventMs: UInt64?
     }
 
-    /// "N groups are waiting for you". The core's number, not `waiting.count`.
+    /// How many rows are under the first heading. The core's number, not
+    /// `waiting.count`: the rows of groups, and of lone terminals when
+    /// they are listed.
     var waitingCount: Int
     var waiting: [Row]
-    /// "N groups need nothing from you". Also the core's.
+    /// How many rows are under the second heading. Also the core's.
     var quietCount: Int
     var quiet: [Row]
+    /// What each heading says, as the core put it (`ControlRoom.zig`,
+    /// `HeaderOut`); nil in a list made by hand or from an older snapshot,
+    /// and then the heading is written from the count alone, as it was.
+    var waitingHeader: Header?
+    var quietHeader: Header?
+
+    /// A heading: how many rows, whether every one is a group, and which
+    /// grammatical number that is. **All three are the core's.** A host
+    /// picks a sentence by `of` and `number` and puts `count` in it; it
+    /// does not add the groups to the lone terminals, and it does not
+    /// compare the count with one to find the singular.
+    struct Header: Equatable, Decodable {
+        enum Of: String, Equatable, Decodable { case groups, rows }
+        enum Number: String, Equatable, Decodable { case none, one, other }
+
+        var count: Int
+        var of: Of
+        var number: Number
+    }
     /// The allowance block at the bottom, as the core says it; nil when
     /// the snapshot has none, and then nothing is drawn there.
     var quota: ControlRoomQuota?
@@ -298,6 +319,49 @@ extension ControlRoomList {
         waiting == 0
             ? String(localized: "No group is waiting for you", comment: "总控台：左栏标题，没有群在等的时候")
             : String(localized: "\(String(waiting)) groups waiting for you", comment: "总控台：左栏标题，N 是核心给的数")
+    }
+
+    /// The first heading as the core says it: so many waiting, called
+    /// groups only when every one of them is a group, and "1 group" where
+    /// the core says the number is one.
+    static func headerText(_ header: Header) -> String {
+        let n = String(header.count)
+        switch (header.number, header.of) {
+        case (.none, _):
+            return String(localized: "No group is waiting for you", comment: "总控台：左栏标题，没有群在等的时候")
+        case (.one, .groups):
+            return String(localized: "\(n) group waiting for you", comment: "总控台：左栏标题，正好一个群在等（英文单数）")
+        case (.other, .groups):
+            return String(localized: "\(n) groups waiting for you", comment: "总控台：左栏标题，N 是核心给的数")
+        case (.one, .rows), (.other, .rows):
+            return String(localized: "\(n) waiting for you", comment: "总控台：左栏标题，在等的里有不在任何群里的终端，所以不说「群」")
+        }
+    }
+
+    /// The second heading, by the same rule.
+    static func quietHeaderText(_ header: Header) -> String {
+        let n = String(header.count)
+        switch (header.number, header.of) {
+        case (.one, .groups):
+            return String(localized: "\(n) group needs nothing from you", comment: "总控台：左栏第二段的标题，正好一个群（英文单数）")
+        case (.none, .groups), (.other, .groups):
+            return String(localized: "\(n) groups need nothing from you", comment: "总控台：左栏第二段的标题")
+        case (.one, .rows):
+            return String(localized: "\(n) needs nothing from you", comment: "总控台：左栏第二段的标题，正好一行、而且不是群（英文单数）")
+        case (.none, .rows), (.other, .rows):
+            return String(localized: "\(n) need nothing from you", comment: "总控台：左栏第二段的标题，里面有不在任何群里的终端，所以不说「群」")
+        }
+    }
+
+    /// The heading of a list: the core's when it gave one, otherwise the
+    /// count of groups, written as it always was.
+    var waitingHeaderText: String {
+        waitingHeader.map(Self.headerText) ?? Self.headerText(waiting: waitingCount)
+    }
+
+    var quietHeaderText: String {
+        quietHeader.map(Self.quietHeaderText)
+            ?? String(localized: "\(String(quietCount)) groups need nothing from you", comment: "总控台：左栏第二段的标题")
     }
 
     /// The line that stands for the steps of a command that are not shown;
@@ -477,6 +541,12 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     var needs_me: Int?
     var groups_needing_me: Int
     var groups_other: Int
+    /// What the list's two headings say, for a host that draws the lone
+    /// terminals' rows among the groups' -- which this one does. Absent in
+    /// snapshots from before the core said it, and in one whose lone rows
+    /// were taken out by hand: then the headings count groups.
+    var header_waiting: ControlRoomList.Header?
+    var header_quiet: ControlRoomList.Header?
     /// The group to start on when the control room opens with nothing
     /// selected. The core's choice: which is first and which have an agent
     /// in them are both its to say.
@@ -641,10 +711,16 @@ extension ControlRoomList {
         }
         let rows = groups + lone
         self.init(
-            waitingCount: snapshot.groups_needing_me,
+            // The heading's count where the core gave one -- it covers the
+            // lone terminals' rows too -- and the groups' otherwise. The
+            // layout goes by the same number: with nobody waiting there is
+            // one heading and no line under it.
+            waitingCount: snapshot.header_waiting?.count ?? snapshot.groups_needing_me,
             waiting: rows.filter { $0.0 }.map { $0.1 },
-            quietCount: snapshot.groups_other,
+            quietCount: snapshot.header_quiet?.count ?? snapshot.groups_other,
             quiet: rows.filter { !$0.0 }.map { $0.1 },
+            waitingHeader: snapshot.header_waiting,
+            quietHeader: snapshot.header_quiet,
             quota: snapshot.quota,
             supervisorRoles: (snapshot.supervisor_roles ?? []).map { SupervisorRole(key: $0.key, name: $0.name) },
             chooseSupervisorRole: snapshot.choose_supervisor_role ?? false)

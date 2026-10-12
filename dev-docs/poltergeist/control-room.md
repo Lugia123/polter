@@ -882,6 +882,13 @@ agent 在等审批，用户仍然得去翻 tab。
   **宿主出不出「启动总管」按钮只看 `can_start`**，不从 `state` 推；`state` 与 `failed` 只用来挑右栏那句话。
   `role` 与 `cwd` 是人不另选时用的默认值，`cwd_from` 说这个目录是怎么来的。要不要出角色选择看
   `choose_supervisor_role`，宿主不数 `supervisor_roles` 有几个。
+- **两句标题说什么：`header_waiting` / `header_quiet`（任务 #1469）。** 每项是 `count`（这句标题下面有几行）、
+  `of`（`groups`：全是群，写「N 个群…」；`rows`：里面有不在任何群里的终端，写「N 个…」不带「群」字）、
+  `number`（`none` / `one` / `other`，英文的单复数照它选句子，宿主不拿数去和 1 比），外加两个分项 `groups`、
+  `alone`。`header_waiting.count` 与 `needs_me`（Dock 上的数）是同一个数。**这是给「把单独终端也画成一行」的宿主
+  用的**——mac 现在这样画，标题却还在数群，于是真机上是标题 1、下面 3 行、Dock 3。只画群的宿主（今天的
+  Windows 面板）继续用 `groups_needing_me` / `groups_other`，与它画出来的行数一致；两边画的不一样，各自对得上
+  自己的行，对照闸不比这一条（闸的说明里写了原因）。Windows 将来画这类行时，改读这一组即可。
 - **打开时停在哪个群：`open_on`。** 总控台打开而没有选中时选它：按列表顺序第一个「里面有 AI」的群；所有群都是空的
   就是第一个群；一个群都没有是 `null`。「有 AI」是核心的判断，与「单独的终端算不算 agent」是同一条：群里有一个
   开着的终端是总管、或被总管看着、或它的 agent 说过话、或有 agent 连着。一个只加了普通 shell 的群、成员的标签页

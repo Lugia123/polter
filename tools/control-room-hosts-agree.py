@@ -73,6 +73,15 @@ high each side makes the block and where its parts start.
 
 **NOT COMPARED, and why.**
 
+  * The headings of a list that has the lone terminals' rows in it. The
+    macOS list draws those rows and takes its two headings from the core's
+    `header_waiting` / `header_quiet` (so many rows, not all of them
+    groups: "6 waiting for you"). The Windows panel does not draw them, and
+    its headings are `groups_needing_me` / `groups_other` ("5 groups…").
+    Each is true to what it draws and they are different sentences, so
+    there is nothing to hold equal. What is compared is the two counts with
+    those rows taken out, where both sides count groups.
+
   * The snapshot's own `now_ms`. The macOS list does not keep it, so one
     side has nothing to print.
   * The words "who is waiting" becomes ("Supervisor", "<name>, via the
@@ -219,6 +228,11 @@ do {
 let whole = snapshot
 var groupsOnly = snapshot
 groupsOnly.ungrouped = nil
+// And with them the two headings the core writes for a list that has those
+// rows (`header_waiting` / `header_quiet`): they count the lone terminals,
+// and the Windows panel's headings count what it draws, which is groups.
+groupsOnly.header_waiting = nil
+groupsOnly.header_quiet = nil
 let list = ControlRoomList(snapshot: groupsOnly)
 
 print("count waiting=\(list.waitingCount) quiet=\(list.quietCount)")

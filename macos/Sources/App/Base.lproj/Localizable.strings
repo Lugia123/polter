@@ -677,6 +677,11 @@
 "%@ groups waiting for you" = "%@ groups waiting for you";
 "No group is waiting for you" = "No group is waiting for you";
 "%@ groups need nothing from you" = "%@ groups need nothing from you";
+"%@ group waiting for you" = "%@ group waiting for you";
+"%@ waiting for you" = "%@ waiting for you";
+"%@ group needs nothing from you" = "%@ group needs nothing from you";
+"%@ needs nothing from you" = "%@ needs nothing from you";
+"%@ need nothing from you" = "%@ need nothing from you";
 "New Group" = "New Group";
 "%@ more" = "%@ more";
 "%@, via the supervisor" = "%@, via the supervisor";

@@ -598,7 +598,9 @@ struct ControlRoomStartTests {
 
     @Test func theCoresFixtureSaysEveryGroupHasASupervisorAndNamesOneRole() throws {
         let list = try ControlRoomList.decode(snapshot: ControlRoomListTests.fixture())
-        for row in list.rows {
+        // The groups' rows: a terminal on its own has no supervisor to
+        // start, and its row says nothing about one.
+        for row in list.rows where row.alone == nil {
             let start = try #require(row.start)
             #expect(start.state == .present)
             #expect(!start.canStart)
