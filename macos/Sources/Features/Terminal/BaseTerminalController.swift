@@ -1304,6 +1304,12 @@ class BaseTerminalController: NSWindowController,
 
         for surfaceView in surfaceTree {
             cancelPendingClipboardConfirmation(for: surfaceView)
+            // The terminals outlive this for as long as the close can be
+            // undone, and the core hears of a terminal going only when it
+            // is destroyed. What was waiting on one of them is told now.
+            if let surface = surfaceView.surface {
+                ghostty_surface_poltergeist_tab_closed(surface)
+            }
         }
 
         // Emit a final bell-state transition so any observers can clear state

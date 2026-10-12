@@ -3026,3 +3026,41 @@ test "ControlRoom seen: what a supervisor with no group raises is withdrawn by l
         try testing.expect((try rowOf(s, 0xa1)).needs_me);
     }
 }
+
+test "ControlRoom start: closing the tab fails the start in the very next snapshot, while the terminal is still there" {
+    // A host that keeps a closed tab for undo does not destroy the
+    // terminal, so nothing "forgets" it. The control room said "starting"
+    // for fifteen to forty-odd seconds after the tab was gone.
+    var w: World = .init();
+    defer w.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    try w.chat.restoreShell("nightly", "", 0, .none);
+    try w.terminal(0xa9, "zsh", 0x29);
+    try w.chat.beginStart("nightly", 1_000, 11_000);
+    w.chat.startOpened("nightly", 0xa9, 61_000);
+    var out = try room.refresh(w.input(2_000), .event);
+    try testing.expectEqual(@as(?u64, 61_001), out.wake_ms);
+
+    // The tab is closed three seconds in. The terminal is still open as
+    // far as the core can tell -- it is in `terminals` below.
+    try testing.expect(w.chat.startTerminalClosed(0xa9));
+    out = try room.refresh(w.input(5_000), .event);
+    try testing.expect(out.notify != null);
+    {
+        const read = try std.json.parseFromSlice(Snapshot, testing.allocator, room.json, .{});
+        defer read.deinit();
+        const sup = (try rowNamed(read.value, "nightly")).supervisor;
+        try testing.expectEqual(SupervisorOut.State.failed, sup.state);
+        try testing.expectEqual(Chat.StartFailure.terminal_closed, sup.failed);
+        try testing.expect(sup.can_start);
+        try testing.expectEqual(@as(usize, 1), read.value.terminals.len);
+    }
+    // Nothing is left to wait for.
+    try testing.expectEqual(@as(?u64, null), out.wake_ms);
+
+    // Said once; a terminal nothing was starting in says nothing.
+    try testing.expect(!w.chat.startTerminalClosed(0xa9));
+    try testing.expect(!w.chat.startTerminalClosed(0xb0));
+}

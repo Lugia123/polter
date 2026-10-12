@@ -4507,6 +4507,14 @@ test "holding cmd to switch away is not somebody typing here" {
     }));
 }
 
+/// This terminal's tab was closed and the terminal kept (the host can
+/// still undo the close). A supervisor the control room was starting here
+/// is not going to be one: said now rather than when the terminal is
+/// finally destroyed (`Chat.startTerminalClosed`).
+pub fn poltergeistTabClosed(self: *Surface) void {
+    if (self.app.chat.startTerminalClosed(self.id)) self.app.controlRoomTouch();
+}
+
 /// Whether Poltergeist may put characters into this terminal's input line
 /// right now, as the one answer both callers get.
 ///
