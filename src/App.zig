@@ -6172,9 +6172,31 @@ fn notifyUser(
         .scheduling => .not_asked,
         .authorisation => self.raiseSystemNotification(from, title, body),
     };
+    // **And the control room**: the caller's group is one that is waiting
+    // for the person from now, in the supervisor's own words, without the
+    // minute a worker's prompt otherwise spends being the supervisor's
+    // (`Bus.raise`). Only for `authorisation`: a scheduling question is one
+    // the supervisor could answer itself.
+    const raised: poltergeistpkg.notify.Raised = switch (reason) {
+        .scheduling => .not_asked,
+        .authorisation => raised: {
+            const said = if (body.len == 0)
+                try alloc.dupe(u8, title)
+            else
+                try std.fmt.allocPrint(alloc, "{s}: {s}", .{ title, body });
+            defer alloc.free(said);
+            const took = self.poltergeist.raise(from, self.poltergeistElapsedMs(), said) catch |err| {
+                log.warn("poltergeist: could not record what was raised err={}", .{err});
+                break :raised .not_a_terminal;
+            };
+            if (!took) break :raised .not_a_terminal;
+            self.controlRoomTouch();
+            break :raised .shown;
+        },
+    };
     const plugins = try self.notifyPlugins(alloc, reason, title, body, id);
     defer alloc.free(plugins);
-    return poltergeistpkg.notify.reply(alloc, system, plugins);
+    return poltergeistpkg.notify.reply(alloc, raised, system, plugins);
 }
 
 /// Raise the operating system's notification from `from`'s window and say

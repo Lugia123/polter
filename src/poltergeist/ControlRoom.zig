@@ -58,7 +58,9 @@
 //!       "reason": {"from":"hook_note","text":"rm -rf dist/ && npm ci",
 //!                  "missing":null},
 //!                             from: hook_note | hook_detail | process |
-//!                             clocks | hooks | last_turn | task | none.
+//!                             clocks | hooks | last_turn | task | raised |
+//!                             none. `raised` is the supervisor's own
+//!                             sentence from `notify_user`.
 //!                             When the line could not be had, text is
 //!                             empty and `missing` says which kind of
 //!                             missing: empty_note | empty_detail |
@@ -349,7 +351,9 @@ pub const Reason = struct {
     /// Why there is no text, when there should have been.
     missing: ?Missing,
 
-    pub const From = enum { hook_note, hook_detail, process, clocks, hooks, last_turn, task, none };
+    /// `raised`: what the supervisor said when it put this in front of the
+    /// person (`notify_user`, `authorisation`; `Bus.raise`).
+    pub const From = enum { hook_note, hook_detail, process, clocks, hooks, last_turn, task, raised, none };
     pub const Missing = enum { empty_note, empty_detail, no_turn_kept, self_report_text };
 
     pub const none: Reason = .{ .from = .none, .text = "", .missing = null };
@@ -625,11 +629,19 @@ fn statusOf(in: Input, id: Id, seen_ms: ?u64, wake: *Wake) Attention.Status {
     if (open) |t| if (t.still_ms) |ms| {
         thresholds.screen_still_ms = ms;
     };
+    // What this terminal has put in front of the person and they have not
+    // looked at since (`Bus.raise`). Said from the later of that moment and
+    // the start of the state it is in now: `classify` lets a raise stand
+    // only for the state it was made in, and a supervisor that raises and
+    // then ends its turn has not taken it back.
+    const raised_ms: ?u64 = if (in.bus.raisedOf(id, seen_ms)) |r|
+        @max(r.at_ms, in.bus.agentOf(id).since_ms)
+    else
+        null;
     const f = in.bus.facts(id, in.now_ms, .{
         .process = if (open) |t| t.process else .gone,
         .seen_ms = seen_ms,
-        // The agent's own report is the next piece; nothing raises yet.
-        .raised_ms = null,
+        .raised_ms = raised_ms,
     });
     wake.consider(Attention.nextChange(f, thresholds, in.now_ms));
     return Attention.classify(f, thresholds, in.now_ms);
@@ -712,7 +724,14 @@ fn reasonOf(
             return .{ .from = .hook_note, .text = try arena.dupe(u8, note), .missing = null };
         },
         .needs_answer => {
-            if (s.source == .self_report) return .lacking(.none, .self_report_text);
+            if (s.source == .self_report) {
+                // The supervisor's own sentence. Asked for whatever the
+                // person has seen: this row is a self-report because the
+                // raise stands, and `statusOf` is what decided that.
+                const r = in.bus.raisedOf(s.id, null) orelse return .lacking(.none, .self_report_text);
+                if (r.text.len == 0) return .lacking(.raised, .self_report_text);
+                return .{ .from = .raised, .text = try arena.dupe(u8, r.text), .missing = null };
+            }
             if (agent.note.get()) |note| return .{ .from = .hook_note, .text = try arena.dupe(u8, note), .missing = null };
             // No note: the hook said only that it is waiting. What it asked
             // is how its last turn ended.
@@ -790,6 +809,10 @@ fn whatOf(arena: Allocator, in: Input, s: Attention.Status, reason: Reason) Allo
             .literal => return .{ .form = .code, .lines = try one(arena, text), .cut = how },
         }
     }
+    if (s.kind == .needs_answer and reason.from == .raised) {
+        // What the supervisor said the person is needed for, whole.
+        return .{ .form = .words, .lines = try one(arena, reason.text), .cut = .none };
+    }
     if (s.kind == .needs_answer) {
         // A dialog's question, whole.
         if (asked) |a| {
@@ -819,7 +842,7 @@ fn whatOf(arena: Allocator, in: Input, s: Attention.Status, reason: Reason) Allo
             const whole = std.mem.trim(u8, turn.text, " \t\r\n");
             break :how if (whole.len > reason.text.len) .head else .none;
         },
-        .process, .clocks, .hooks, .task, .none => .none,
+        .process, .clocks, .hooks, .task, .raised, .none => .none,
     };
     return .{ .form = .words, .lines = try one(arena, reason.text), .cut = how };
 }
@@ -957,7 +980,9 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
 
             // A worker's first minute is its supervisor's; the row changes
             // when that minute is up.
-            if (!is_steward and s.alive and s.duty == .on) switch (s.kind) {
+            // (A prompt its supervisor may not answer never had that
+            // minute, so there is nothing to wake for.)
+            if (!is_steward and s.alive and s.duty == .on and Attention.firstMinuteIsTheSupervisors(s)) switch (s.kind) {
                 .needs_approval, .failed => wake.consider(s.since_ms +| in.thresholds.bubble_after_ms +| 1),
                 else => {},
             };
@@ -1611,6 +1636,94 @@ test "ControlRoom snapshot: each window tab gets the highest glyph of what is in
         try testing.expectEqual(want[2], if (tab.terminal) |t| t.id else null);
     }
     try testing.expectEqual(w.open.items.len, s.terminals.len);
+}
+
+test "ControlRoom snapshot: what a supervisor raises is waiting for the person at once, in its words, until they look" {
+    var w: World = .init();
+    defer w.deinit();
+    try w.steward(0xa1, "api", 0x21, "api");
+    try w.hook(0xa1, .turn_started, null, 10 * min);
+    try w.worker(0xb1, "api worker", 0x21, 0xa1, "api");
+    // The worker stops on a prompt; inside its first minute the group is
+    // still the supervisor's business and the row says working.
+    try w.approval(0xb1, "Bash", "git push --force", 20 * min);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const at = 20 * min + 5_000;
+    {
+        const row = try rowNamed((try build(arena.allocator(), w.input(at))).snapshot, "api");
+        try testing.expect(!row.needs_me);
+    }
+
+    // The supervisor reads it, decides it is the person's, and says so.
+    const said = "api worker wants to force-push main: yours to decide";
+    try testing.expect(try w.bus.raise(0xa1, at, said));
+    {
+        const s = (try build(arena.allocator(), w.input(at + 1))).snapshot;
+        const row = try rowNamed(s, "api");
+        try testing.expect(row.needs_me);
+        try testing.expectEqual(Attention.Kind.needs_answer, row.attention.kind);
+        try testing.expectEqual(Waiter.Is.supervisor, row.waiter.is);
+        try testing.expectEqual(Reason.From.raised, row.reason.from);
+        try testing.expectEqualStrings(said, row.reason.text);
+        try testing.expectEqual(What.Form.words, row.what.form);
+        try testing.expectEqual(@as(usize, 1), row.what.lines.len);
+        try testing.expectEqualStrings(said, row.what.lines[0]);
+        try testing.expectEqual(@as(usize, 1), s.groups_needing_me);
+    }
+
+    // It does not lapse because the supervisor's turn ended after it spoke
+    // -- which is what a supervisor does next.
+    try w.hook(0xa1, .turn_ended, "told the person", at + 2_000);
+    {
+        const row = try rowNamed((try build(arena.allocator(), w.input(at + 3_000))).snapshot, "api");
+        try testing.expect(row.needs_me);
+        try testing.expectEqual(Reason.From.raised, row.reason.from);
+    }
+
+    // The person looks. What is left is what is actually so: the worker's
+    // prompt, still inside its first minute, and a supervisor that is done.
+    try w.chat.markSeen("api", at + 4_000, w.wall_ms + at + 4_000);
+    {
+        const row = try rowNamed((try build(arena.allocator(), w.input(at + 5_000))).snapshot, "api");
+        try testing.expect(row.reason.from != .raised);
+        try testing.expect(row.attention.kind != .needs_answer);
+    }
+
+    // A terminal the bus does not know raises nothing.
+    try testing.expect(!try w.bus.raise(0xdead, at, "x"));
+}
+
+test "ControlRoom snapshot: a prompt the supervisor may not answer is the person's without the minute" {
+    var w: World = .init();
+    defer w.deinit();
+    try w.steward(0xa1, "api", 0x21, "api");
+    try w.hook(0xa1, .turn_started, null, 10 * min);
+    try w.worker(0xb1, "api worker", 0x21, 0xa1, "api");
+    try w.approval(0xb1, "Bash", "npm ci", 20 * min);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const at = 20 * min + 5_000;
+
+    // Allowed, the default: the supervisor's minute, and the core asks to
+    // be woken when it is up.
+    {
+        const b = try build(arena.allocator(), w.input(at));
+        try testing.expect(!(try rowNamed(b.snapshot, "api")).needs_me);
+        try testing.expectEqual(@as(?u64, 20 * min + T.bubble_after_ms + 1), b.wake_ms);
+    }
+
+    // The person switches it off for that terminal: it is theirs now.
+    try w.bus.setMayAuthorise(0xb1, false, .user);
+    {
+        const b = try build(arena.allocator(), w.input(at));
+        const row = try rowNamed(b.snapshot, "api");
+        try testing.expect(row.needs_me);
+        try testing.expectEqual(Attention.Kind.needs_approval, row.attention.kind);
+        try testing.expectEqual(Waiter.Is.worker_via_supervisor, row.waiter.is);
+        // And nothing is waited for: there was no minute.
+        try testing.expect(b.wake_ms == null or b.wake_ms.? != 20 * min + T.bubble_after_ms + 1);
+    }
 }
 
 test "ControlRoom snapshot: seen in a group takes its finished turn off the list" {

@@ -716,6 +716,16 @@ turns: std.AutoHashMapUnmanaged(Id, Turn) = .empty,
 /// `Entry` for the reason `turns` is.
 asks: std.AutoHashMapUnmanaged(Id, []u8) = .empty,
 
+/// What a supervisor has put in front of the person and not yet had looked
+/// at: `notify_user` with `authorisation`, by the terminal that called it.
+/// The sentence is owned; outside `Entry` for the reason `turns` is.
+raises: std.AutoHashMapUnmanaged(Id, RaiseKept) = .empty,
+
+const RaiseKept = struct { at_ms: u64, text: []u8 };
+
+/// A supervisor saying "this needs the person": when, and in what words.
+pub const Raise = struct { at_ms: u64, text: []const u8 };
+
 /// There may be several supervisors, each minding its own piece of work.
 /// What is one at a time is the other direction: a watched terminal has at
 /// most one minder, because two of them nudging one input box is, to the
@@ -732,6 +742,9 @@ pub fn deinit(self: *Bus) void {
     var asks = self.asks.valueIterator();
     while (asks.next()) |a| self.alloc.free(a.*);
     self.asks.deinit(self.alloc);
+    var raises = self.raises.valueIterator();
+    while (raises.next()) |r| self.alloc.free(r.text);
+    self.raises.deinit(self.alloc);
     self.entries.deinit(self.alloc);
     self.* = undefined;
 }
@@ -751,6 +764,42 @@ pub fn unregister(self: *Bus, id: Id) void {
     _ = self.entries.remove(id);
     if (self.turns.fetchRemove(id)) |kv| self.alloc.free(kv.value.text);
     if (self.asks.fetchRemove(id)) |kv| self.alloc.free(kv.value);
+    if (self.raises.fetchRemove(id)) |kv| self.alloc.free(kv.value.text);
+}
+
+/// Record that the supervisor in `id` has put something in front of the
+/// person (`notify_user`, `authorisation`): its group is one that is
+/// waiting for them from this moment, in these words, without the minute a
+/// worker's prompt otherwise spends being the supervisor's.
+///
+/// **One at a time, and the newest.** A second call replaces the first: the
+/// supervisor is one terminal and the person answers it in one place.
+///
+/// **It stands until the person has looked** -- `raisedOf` is asked with
+/// when they last did. Not until the supervisor's next turn: the notice
+/// Polter types into a supervisor starts a turn of its own, and a raise
+/// that lapsed on that would be gone before anybody had read it. Also
+/// gone when the terminal is (`unregister`).
+///
+/// A terminal the bus has not registered raises nothing: there is no row
+/// for it to be on.
+pub fn raise(self: *Bus, id: Id, at_ms: u64, text: []const u8) Allocator.Error!bool {
+    if (!self.entries.contains(id)) return false;
+    const kept = try self.alloc.dupe(u8, text);
+    errdefer self.alloc.free(kept);
+    const gop = try self.raises.getOrPut(self.alloc, id);
+    if (gop.found_existing) self.alloc.free(gop.value_ptr.text);
+    gop.value_ptr.* = .{ .at_ms = at_ms, .text = kept };
+    return true;
+}
+
+/// What this terminal has raised and the person has not looked at since:
+/// `seen_ms` is when they last looked at it, null for never. Borrowed:
+/// valid until the next `raise` or `unregister` for it.
+pub fn raisedOf(self: *const Bus, id: Id, seen_ms: ?u64) ?Raise {
+    const r = self.raises.get(id) orelse return null;
+    if (seen_ms) |seen| if (seen > r.at_ms) return null;
+    return .{ .at_ms = r.at_ms, .text = r.text };
 }
 
 /// Record that the agent in `by` opened this terminal
@@ -1157,6 +1206,7 @@ pub fn facts(self: *const Bus, id: Id, now_ms: u64, outside: Attention.Facts.Out
         .duty = e.duty,
         .seen_ms = outside.seen_ms,
         .raised_ms = outside.raised_ms,
+        .answer = self.answer(id),
         .held = e.held,
         .shielded = e.shielded,
     };

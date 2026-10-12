@@ -180,6 +180,10 @@ pub const Facts = struct {
     seen_ms: ?u64,
     /// When the agent last said, in its own report, that it needs an answer.
     raised_ms: ?u64,
+    /// Whether a supervisor may answer this terminal's permission prompt
+    /// (`Bus.answer`). It decides whose a prompt is in its first minute
+    /// (`ofGroup`).
+    answer: Bus.Answer,
     held: bool,
     shielded: bool,
 
@@ -207,6 +211,7 @@ pub const Facts = struct {
         .duty = .on,
         .seen_ms = null,
         .raised_ms = null,
+        .answer = .allowed,
         .held = false,
         .shielded = false,
     };
@@ -225,6 +230,8 @@ pub const Status = struct {
     /// Whether the terminal is still there.
     alive: bool,
     duty: Bus.Duty,
+    /// Whether a supervisor may answer this terminal's prompt.
+    answer: Bus.Answer,
     /// Modifiers. They take no part in any merging here.
     held: bool,
     shielded: bool,
@@ -342,6 +349,7 @@ pub fn classify(f: Facts, t: Thresholds, now_ms: u64) Status {
         .screen = f.screen,
         .alive = f.process != .gone,
         .duty = f.duty,
+        .answer = f.answer,
         .held = f.held,
         .shielded = f.shielded,
     };
@@ -477,8 +485,12 @@ pub fn ofGroup(g: Group, t: Thresholds, now_ms: u64) Attention {
             .needs_approval, .failed => {},
             else => continue,
         }
-        // The supervisor gets the first minute to deal with it.
-        if (now_ms -| w.since_ms <= t.bubble_after_ms) continue;
+        // The supervisor gets the first minute to deal with it -- when
+        // there is something it can do. A prompt it may not answer (the
+        // person switched that off, or shielded the terminal) is the
+        // person's from the first second: a minute spent waiting for
+        // somebody who is not allowed to act is a minute of nothing.
+        if (firstMinuteIsTheSupervisors(w) and now_ms -| w.since_ms <= t.bubble_after_ms) continue;
 
         var a = ofTerminal(w);
         a.what = .{ .worker = w.id };
@@ -508,6 +520,19 @@ pub fn ofGroup(g: Group, t: Thresholds, now_ms: u64) Attention {
 
     if (g.snooze.holds(a.since_ms, now_ms)) a.kind = .snoozed;
     return a;
+}
+
+/// Whether a worker's trouble is its supervisor's to deal with before it is
+/// shown to the person. A failure always is. A permission prompt is when
+/// the supervisor may answer it.
+pub fn firstMinuteIsTheSupervisors(w: Status) bool {
+    return switch (w.kind) {
+        .needs_approval => switch (w.answer) {
+            .allowed => true,
+            .off, .shielded => false,
+        },
+        .needs_answer, .failed, .suspect_stuck, .done_unseen, .quiet_unknown, .working, .idle, .unattended, .snoozed => true,
+    };
 }
 
 pub fn needsMe(a: Attention) bool {
@@ -983,6 +1008,29 @@ test "Attention: a worker's first minute is its supervisor's to handle" {
     const a = ofGroup(g, T, now);
     try testing.expectEqual(Kind.working, a.kind);
     try testing.expectEqual(What.own, a.what);
+}
+
+test "Attention: a prompt the supervisor may not answer is the person's from the first second" {
+    const fresh = now - 30 * std.time.ms_per_s;
+    // Allowed: the minute is the supervisor's, and the group is working.
+    var w = status(3, .awaiting_approval, fresh);
+    try testing.expectEqual(Bus.Answer.allowed, w.answer);
+    const steward = status(1, .in_turn, 40 * min);
+    try testing.expectEqual(Kind.working, ofGroup(.{ .steward = steward, .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now).kind);
+
+    // Switched off, or shielded: nobody but the person can, so it is theirs now.
+    for ([_]Bus.Answer{ .off, .shielded }) |no| {
+        w.answer = no;
+        const a = ofGroup(.{ .steward = steward, .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now);
+        try testing.expectEqual(Kind.needs_approval, a.kind);
+        try testing.expectEqual(What{ .worker = 3 }, a.what);
+    }
+
+    // A failure is not something to answer: its first minute stays the
+    // supervisor's whatever the switch says.
+    var failed = status(4, .failed, fresh);
+    failed.answer = .off;
+    try testing.expectEqual(Kind.working, ofGroup(.{ .steward = steward, .workers = &.{failed}, .snooze = .none, .last_ms = 0 }, T, now).kind);
 }
 
 test "Attention: only approval and failure bubble, and not past a higher supervisor" {

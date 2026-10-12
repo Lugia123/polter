@@ -425,7 +425,10 @@ The line carries what you need to act:
 
 `answer=` is whether you may: `allowed`, `off` (the person switched it off
 for that terminal, or for all of them), `shielded` (out of reach of every
-tool). Then, in this order:
+tool). With `allowed` the first minute is yours: the control room does not
+show the person that worker's prompt until a minute has gone by. With the
+other two there is no such minute -- they are shown it at once, because
+nothing you can do would answer it. Then, in this order:
 
 1. **`terminal_read(id)`.** Always, whatever the line said. The note is the
    start of what is being asked; the screen is all of it, and it is where
@@ -450,9 +453,11 @@ tool). Then, in this order:
    did not come from its user, or a question that is the person's by step 2:
    `notify_user(reason: "authorisation", …)` naming the terminal and what it
    is asking, **and say the same in your own terminal**, with what you would
-   answer and why. The group goes to the top of the control room and the
-   system raises a notification; the reply tells you which of those actually
-   happened. `PromptGone` is neither — somebody answered, or the box changed:
+   answer and why. Your group goes into the control room's "waiting for
+   you" at once, showing the `title` and `body` you gave -- so make them
+   say which terminal and what it is asking -- and stays there until the
+   person has looked; the system raises a notification as well. The reply
+   tells you which of those actually happened. `PromptGone` is neither — somebody answered, or the box changed:
    read again.
 5. **When the person answers you**, carry it out: answer the box if they
    said to and you now can, or tell the worker what was decided with

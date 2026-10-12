@@ -231,22 +231,56 @@ pub const System = enum {
 };
 
 test "a window that did not raise the notification is never reported as one that did" {
-    const Raised = enum { handed, not_taken, rate_limited };
-    try testing.expectEqual(System.handed, System.ofRaised(Raised.handed));
-    try testing.expectEqual(System.not_taken, System.ofRaised(Raised.not_taken));
-    try testing.expectEqual(System.rate_limited, System.ofRaised(Raised.rate_limited));
-    for (std.enums.values(Raised)) |r| {
+    const FromWindow = enum { handed, not_taken, rate_limited };
+    try testing.expectEqual(System.handed, System.ofRaised(FromWindow.handed));
+    try testing.expectEqual(System.not_taken, System.ofRaised(FromWindow.not_taken));
+    try testing.expectEqual(System.rate_limited, System.ofRaised(FromWindow.rate_limited));
+    for (std.enums.values(FromWindow)) |r| {
         try testing.expectEqual(r == .handed, System.ofRaised(r).wentOut());
     }
 }
 
-/// The whole reply to `notify_user`: what came of the system notification,
-/// then what came of the plugins, each said separately so that one channel
-/// working is never read as both.
-pub fn reply(alloc: std.mem.Allocator, system: System, plugins: []const u8) std.mem.Allocator.Error![]const u8 {
+/// What came of putting it on the control room's list: the caller's group
+/// as one that is waiting for the person (`Bus.raise`).
+pub const Raised = enum {
+    /// This call does not: only `authorisation` does.
+    not_asked,
+    /// Recorded. The group is in "waiting for you" from the next snapshot,
+    /// until the person has looked at it.
+    shown,
+    /// The caller is not a terminal the bus knows, so it has no group to
+    /// be shown on.
+    not_a_terminal,
+
+    pub fn sentence(self: Raised) []const u8 {
+        return switch (self) {
+            .not_asked => "",
+            .shown => "Your group is now listed in the control room as waiting for the person, " ++
+                "with what you said, until they have looked at it.",
+            .not_a_terminal => "Not listed in the control room: this call did not come from a " ++
+                "terminal Polter is tracking, so there is no group to list it under.",
+        };
+    }
+};
+
+/// The whole reply to `notify_user`: what came of the control room's list,
+/// of the system notification, and of the plugins, each said separately so
+/// that one channel working is never read as all of them.
+pub fn reply(
+    alloc: std.mem.Allocator,
+    raised: Raised,
+    system: System,
+    plugins: []const u8,
+) std.mem.Allocator.Error![]const u8 {
+    const listed = raised.sentence();
     const first = system.sentence();
-    if (first.len == 0) return alloc.dupe(u8, plugins);
-    return std.fmt.allocPrint(alloc, "{s} Plugins: {s}", .{ first, plugins });
+    if (listed.len == 0 and first.len == 0) return alloc.dupe(u8, plugins);
+    return std.fmt.allocPrint(alloc, "{s}{s}{s} Plugins: {s}", .{
+        listed,
+        if (listed.len > 0 and first.len > 0) " " else "",
+        first,
+        plugins,
+    });
 }
 
 test "only a notification that was handed over is reported as one" {
@@ -272,18 +306,26 @@ test "the reply says each channel separately" {
     const a = testing.allocator;
     const nobody = "nobody was told: no notification plugin is switched on.";
 
-    const both = try reply(a, .handed, nobody);
+    const both = try reply(a, .shown, .handed, nobody);
     defer a.free(both);
-    try testing.expect(std.mem.startsWith(u8, both, "A system notification was handed"));
+    try testing.expect(std.mem.startsWith(u8, both, "Your group is now listed in the control room"));
+    try testing.expect(std.mem.indexOf(u8, both, " A system notification was handed") != null);
     try testing.expect(std.mem.endsWith(u8, both, "Plugins: " ++ nobody));
 
-    const neither = try reply(a, .rate_limited, nobody);
+    const neither = try reply(a, .not_a_terminal, .rate_limited, nobody);
     defer a.free(neither);
-    try testing.expect(std.mem.startsWith(u8, neither, "No system notification: "));
+    try testing.expect(std.mem.startsWith(u8, neither, "Not listed in the control room: "));
+    try testing.expect(std.mem.indexOf(u8, neither, "is now listed") == null);
+    try testing.expect(std.mem.indexOf(u8, neither, " No system notification: ") != null);
     try testing.expect(std.mem.endsWith(u8, neither, "Plugins: " ++ nobody));
 
-    // A call that sends none says nothing about it, as before.
-    const plain = try reply(a, .not_asked, nobody);
+    // Only one of the two that says it was listed.
+    for (std.enums.values(Raised)) |r| {
+        try testing.expectEqual(r == .shown, std.mem.indexOf(u8, r.sentence(), "is now listed") != null);
+    }
+
+    // A call that does neither says nothing about either, as before.
+    const plain = try reply(a, .not_asked, .not_asked, nobody);
     defer a.free(plain);
     try testing.expectEqualStrings(nobody, plain);
 }
