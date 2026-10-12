@@ -181,3 +181,68 @@ struct ControlRoomRulesTests {
         #expect(ControlRoomRules.listTakesKeyboard(firstResponderIsTheWindow: false) == false)
     }
 }
+
+/// Where a tab the core asked for goes, and which group is selected once
+/// the person has made one.
+struct ControlRoomNewTabTests {
+    typealias Rules = ControlRoomRules
+
+    /// Every answer to the three questions that are only about the
+    /// application.
+    private static let rooms: [(Bool, Bool, Bool)] = [true, false].flatMap { front in
+        [true, false].flatMap { beside in [true, false].map { any in (front, beside, any) } }
+    }
+
+    @Test func aTabAskedFromATerminalTheControlRoomHasBorrowedOpensInItsOwnWindowBehind() {
+        // The defect: this used to open nothing at all, and say it had.
+        for (front, beside, any) in Self.rooms {
+            let plan = Rules.newTab(asker: (lent: true, hasHome: true), controlRoomInFront: front,
+                                    tabsBesideControlRoom: beside, anyTerminalWindow: any)
+            #expect(plan == .behind(.askers))
+        }
+    }
+
+    @Test func aTabAskedFromATerminalInItsOwnTabOpensBesideItInFrontAsItAlwaysDid() {
+        for (front, beside, any) in Self.rooms {
+            let plan = Rules.newTab(asker: (lent: false, hasHome: true), controlRoomInFront: front,
+                                    tabsBesideControlRoom: beside, anyTerminalWindow: any)
+            #expect(plan == .inFront(of: .askers))
+        }
+    }
+
+    @Test func aTabAskedFromATerminalNoWindowHoldsIsRefusedAndNotSilentlyDropped() {
+        for lent in [true, false] {
+            let plan = Rules.newTab(asker: (lent: lent, hasHome: false), controlRoomInFront: true,
+                                    tabsBesideControlRoom: true, anyTerminalWindow: true)
+            #expect(plan == .refused)
+        }
+    }
+
+    @Test func aTabTheApplicationAsksForGoesBesideTheControlRoomBehindItWhileThatIsInFront() {
+        // The control room starting a supervisor: the person stays where
+        // they are.
+        let beside = Rules.newTab(asker: nil, controlRoomInFront: true,
+                                  tabsBesideControlRoom: true, anyTerminalWindow: true)
+        #expect(beside == .behind(.controlRooms))
+        // Alone in its window: the terminal window used last takes it.
+        let elsewhere = Rules.newTab(asker: nil, controlRoomInFront: true,
+                                     tabsBesideControlRoom: false, anyTerminalWindow: true)
+        #expect(elsewhere == .inFront(of: .frontmost))
+        // Not in front: an ordinary new tab.
+        let ordinary = Rules.newTab(asker: nil, controlRoomInFront: false,
+                                    tabsBesideControlRoom: true, anyTerminalWindow: true)
+        #expect(ordinary == .inFront(of: .frontmost))
+        // No terminal window anywhere: one of its own.
+        let none = Rules.newTab(asker: nil, controlRoomInFront: true,
+                                tabsBesideControlRoom: false, anyTerminalWindow: false)
+        #expect(none == .ownWindow)
+    }
+
+    @Test func aGroupThePersonMadeIsSelectedOnlyOnceTheCoreListsIt() {
+        let rows = ControlRoomList.sample.rows
+        #expect(Rules.madeGroupToSelect("billing", in: rows) == "billing")
+        // Not listed yet: the list on screen is from before it existed.
+        #expect(Rules.madeGroupToSelect("brand-new", in: rows) == nil)
+        #expect(Rules.madeGroupToSelect(nil, in: rows) == nil)
+    }
+}

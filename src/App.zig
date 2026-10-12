@@ -111,6 +111,10 @@ control_wake: ?poltergeistpkg.ControlWake = null,
 /// T1 for the control room: `poltergeist-quiescence-after`.
 control_still_ms: u64 = (poltergeistpkg.Sampler.Config{}).quiescence_ms,
 
+/// The person's home directory, once it has been asked for. Owned unless
+/// empty. See `controlHome`.
+control_home: ?[]const u8 = null,
+
 /// When it is acceptable to disturb the user. Null means any hour.
 ///
 /// Only scheduling questions respect it; an authorisation prompt goes out
@@ -536,6 +540,7 @@ pub fn deinit(self: *App) void {
     if (self.poltergeist_log_dir) |d| self.alloc.free(d);
     self.chat_surfaces.deinit(self.alloc);
     self.control_room.deinit();
+    if (self.control_home) |h| if (h.len > 0) self.alloc.free(h);
     self.chat.deinit();
     self.tasks.deinit();
     self.poltergeist.deinit();
@@ -648,6 +653,16 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         }) catch return;
     }
 
+    // The roles a supervisor can be started in: the ones that make a
+    // terminal a supervisor and have a CLI to start. In the set's order,
+    // which puts the one Polter ships first.
+    self.ensurePersonas();
+    var roles: std.ArrayListUnmanaged(poltergeistpkg.ControlRoom.SupervisorRole) = .empty;
+    for (self.personas.set.personas) |p| {
+        if (!p.polter.supervisor or p.clis.len == 0) continue;
+        roles.append(alloc, .{ .key = p.key, .name = p.name }) catch return;
+    }
+
     const wall_ms = self.poltergeistWallMs();
     const outcome = self.control_room.refresh(.{
         .bus = &self.poltergeist,
@@ -658,6 +673,8 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
             self.poltergeist.config,
         ),
         .tasks = &self.tasks,
+        .supervisor_roles = roles.items,
+        .home = self.controlHome(),
         .now_ms = now_ms,
         .wall_ms = @intCast(@max(0, wall_ms)),
     }, if (dirty) .event else .timer) catch |err| {
@@ -706,6 +723,9 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
             .sendKey = controlActKey,
             .sendText = controlActText,
             .persist = controlActPersist,
+            .createGroup = controlActCreateGroup,
+            .stewardOf = controlActStewardOf,
+            .startSupervisor = controlActStartSupervisor,
         },
         self.poltergeistElapsedMs(),
         @intCast(@max(0, self.poltergeistWallMs())),
@@ -732,6 +752,171 @@ fn controlActText(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, text: []const u8) 
 fn controlActPersist(ctx: *anyopaque, group: []const u8, marks: poltergeistpkg.Chat.Marks) void {
     const self: *App = @ptrCast(@alignCast(ctx));
     if (self.group_log) |*l| l.mark(group, marks);
+}
+
+/// The person's home directory, looked up once: where the control room
+/// offers to start a supervisor when nothing says better. Empty when it
+/// cannot be found.
+fn controlHome(self: *App) []const u8 {
+    if (self.control_home) |h| return h;
+    self.control_home = "";
+    var environ_map = global.environMap() catch return "";
+    defer environ_map.deinit();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const found = (internal_os.home(global.io(), &environ_map, &buf) catch null) orelse return "";
+    self.control_home = self.alloc.dupe(u8, found) catch "";
+    return self.control_home.?;
+}
+
+/// A group made from the control room: the person's, made the way every
+/// other group is.
+fn controlActCreateGroup(ctx: *anyopaque, name: []const u8) anyerror!void {
+    try chatCreate(ctx, name, poltergeistpkg.Chat.user_id);
+}
+
+fn controlActStewardOf(ctx: *anyopaque, group: []const u8) ?poltergeistpkg.Bus.Id {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    return poltergeistpkg.ControlRoom.stewardOfGroup(arena.allocator(), &self.poltergeist, &self.chat, group);
+}
+
+/// Start a supervisor for `group` from the control room: a tab, the role's
+/// CLI typed into it, and "this terminal is `group`'s supervisor" held
+/// until the agent connects from it (`controlStartConnected`).
+///
+/// **Nobody's terminal is asking**, which is what sets this apart from
+/// `launchPersona`: the launch is the person's (`Chat.user_id`), the tab
+/// is asked of the application rather than of a terminal, and the new
+/// terminal is the person's own, not one an agent opened.
+///
+/// 暂定: a role set up for several CLIs is started in the first of them.
+/// The control room offers a role and a directory, not a third choice.
+fn controlActStartSupervisor(
+    ctx: *anyopaque,
+    group: []const u8,
+    role_asked: []const u8,
+    cwd_asked: []const u8,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const Chat = poltergeistpkg.Chat;
+    const Store = poltergeistpkg.PersonaStore;
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The role: the one named, or the first that makes a supervisor --
+    // the one the snapshot named as the default.
+    self.ensurePersonas();
+    const p = if (role_asked.len > 0)
+        self.personas.set.find(role_asked) orelse return error.NoSuchPersona
+    else for (self.personas.set.personas) |candidate| {
+        if (candidate.polter.supervisor and candidate.clis.len > 0) break candidate;
+    } else return error.NoSupervisorRole;
+    if (!p.polter.supervisor) return error.NotASupervisorRole;
+    if (p.clis.len == 0) return error.NoCli;
+
+    // The directory: the one named, or the snapshot's, by the same order.
+    const cwd: []const u8 = if (cwd_asked.len > 0) cwd_asked else cwd: {
+        const last = self.chat.supervisorDirOf(group);
+        if (last.len > 0) break :cwd last;
+        const common = self.chat.commonDirOf(group);
+        if (common.len > 0) break :cwd common;
+        break :cwd self.controlHome();
+    };
+    var dir_z: [:0]const u8 = "";
+    if (cwd.len > 0) {
+        if (!std.fs.path.isAbsolute(cwd)) return error.NotAbsolute;
+        var dir = std.Io.Dir.openDirAbsolute(global.io(), cwd, .{}) catch
+            return error.NoSuchDirectory;
+        defer dir.close(global.io());
+        const stat = dir.stat(global.io()) catch return error.NoSuchDirectory;
+        if (stat.kind != .directory) return error.NotADirectory;
+        dir_z = try alloc.dupeZ(u8, cwd);
+    }
+
+    const rt_app = self.poltergeist_rt_app orelse return error.NoRuntime;
+    const choice = try self.resolveLaunch(alloc, p.key, p.clis[0].cli);
+    const line = try launchLine(alloc, choice);
+    const now_ms = self.poltergeistElapsedMs();
+
+    // From here a refusal has something to take back.
+    try self.chat.beginStart(group, now_ms, now_ms + Store.pending_launch_ms);
+    errdefer self.chat.endStart(group);
+    try self.personas.expectLaunch(choice.key, choice.cli, line, Chat.user_id, now_ms);
+    errdefer self.personas.dropLaunch();
+
+    var before: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty;
+    for (self.surfaces.items) |v| try before.put(alloc, v.core().id, {});
+
+    // Asked of the application. A host that only puts a tab beside a
+    // terminal says it did nothing, and is asked again with one.
+    var asked = rt_app.performAction(.app, .new_tab, .{ .working_directory = dir_z }) catch false;
+    if (!asked) for (self.surfaces.items) |v| {
+        if (self.isChatSurface(v.core().id)) continue;
+        asked = rt_app.performAction(
+            .{ .surface = v.core() },
+            .new_tab,
+            .{ .working_directory = dir_z },
+        ) catch false;
+        break;
+    };
+    try tabWasAsked(asked);
+
+    // A host that makes the tab inside the call has already had it claim
+    // the launch (`claimPendingLaunch`). One that had not: it is this
+    // terminal's now, the same way.
+    for (self.surfaces.items) |v| {
+        const id = v.core().id;
+        if (before.contains(id) or self.isChatSurface(id)) continue;
+        if (self.personas.takeLaunch(now_ms)) |taken| {
+            var launch = taken;
+            defer launch.deinit();
+            try self.startRoleIn(id, launch.by, .{ .key = launch.key, .cli = launch.cli }, launch.line, .agent);
+            self.controlStartOpened(id);
+        }
+        break;
+    }
+    log.info("control room: starting a supervisor for a group in role {s}", .{choice.key});
+}
+
+/// The terminal a control-room start was waiting for is `id`: from now it
+/// is the agent in it that is waited for.
+fn controlStartOpened(self: *App, id: poltergeistpkg.Bus.Id) void {
+    const now_ms = self.poltergeistElapsedMs();
+    const group = self.chat.startAwaitingTerminal(now_ms) orelse return;
+    self.chat.startOpened(group, id, now_ms + poltergeistpkg.PersonaStore.standing_wait_ms);
+    self.controlRoomTouch();
+}
+
+/// An agent has connected from `id`. If the control room started it there
+/// to be a group's supervisor and it now is one, it goes into that group
+/// -- which is what makes it the group's supervisor in the snapshot, and
+/// what the control room then shows on its right-hand side.
+///
+/// Only a terminal that *is* a supervisor: the standing comes from the
+/// role (`PersonaStore.claimStanding`), and a role whose standing ran out
+/// leaves the start to fail by its own deadline rather than putting a
+/// plain agent in charge of a group.
+fn controlStartConnected(self: *App, id: poltergeistpkg.Bus.Id) void {
+    const group = self.chat.startingIn(id, self.poltergeistElapsedMs()) orelse return;
+    if (!self.poltergeist.isSupervisor(id)) return;
+
+    chatAdd(self, group, id, .all) catch |err| {
+        log.warn("control room: could not put the supervisor it started in its group err={}", .{err});
+        return;
+    };
+    self.chat.endStart(group);
+    log.info("control room: the supervisor it started connected and is in its group", .{});
+    self.controlRoomTouch();
+}
+
+/// Remember where a group's supervisor is working, in memory and on disk,
+/// when that is known and has changed.
+fn noteSupervisorDir(self: *App, group: []const u8, dir: []const u8) void {
+    const changed = self.chat.setSupervisorDir(group, dir) catch return;
+    if (!changed) return;
+    if (self.group_log) |*l| l.supervisorDir(group, dir);
 }
 
 /// The control room's snapshot as JSON; `ControlRoom.zig` has the shape.
@@ -1764,6 +1949,7 @@ fn restoreChatGroups(self: *App) void {
     for (shells) |shell| {
         if (back >= ceiling) break;
         self.chat.restoreShell(shell.name, shell.brief, shell.last_ms) catch continue;
+        _ = self.chat.setSupervisorDir(shell.name, shell.supervisor_dir) catch false;
         back += 1;
     }
 
@@ -2896,6 +3082,9 @@ fn poltergeistAgentArrived(
     const applied = self.personas.claimStanding(bus, id, self.poltergeistElapsedMs()) orelse return;
     defer self.refreshPoltergeistTabs();
     defer self.saveSession();
+    // After the standing: a supervisor the control room started is put in
+    // its group once it is one.
+    self.controlStartConnected(id);
 
     const surface = self.findSurfaceByID(id) orelse return;
     if (applied.watched_by != null) surface.setPoltergeistWatching(true);
@@ -2939,6 +3128,9 @@ pub fn launchPersona(
     // surface synchronously runs its `init` -- and so the claim -- inside
     // the call.
     try self.personas.expectLaunch(choice.key, choice.cli, line, by, self.poltergeistElapsedMs());
+    // A launch whose terminal was refused must not wait for the next
+    // terminal anybody opens.
+    errdefer self.personas.dropLaunch();
     const opened = try poltergeistOpenTerminal(self, alloc, cwd, by, where);
     if (opened.id) |new| {
         // Claimed already when the surface was made inside the call; if not,
@@ -2986,8 +3178,15 @@ fn markAgentOpened(self: *App, id: poltergeistpkg.Bus.Id, by: poltergeistpkg.Bus
 pub fn claimPendingLaunch(self: *App, surface: *Surface) void {
     var p = self.personas.takeLaunch(self.poltergeistElapsedMs()) orelse return;
     defer p.deinit();
+    // The person's launch from the control room: this is the terminal its
+    // group has been waiting for, whether or not the role starts in it.
+    const from_control_room = p.by == poltergeistpkg.Chat.user_id;
+    if (from_control_room) self.controlStartOpened(surface.id);
     self.startRoleIn(surface.id, p.by, .{ .key = p.key, .cli = p.cli }, p.line, .agent) catch |err| {
         log.warn("poltergeist: could not start role {s} in its terminal err={}", .{ p.key, err });
+        if (from_control_room) if (self.chat.startingIn(surface.id, self.poltergeistElapsedMs())) |group| {
+            self.chat.failStart(group, .agent_never_connected);
+        };
     };
 }
 
@@ -5357,11 +5556,11 @@ fn poltergeistOpenTerminal(
         break :placed .split;
     };
 
-    if (placed != .split) _ = rt_app.performAction(
+    if (placed != .split) try tabWasAsked(rt_app.performAction(
         .{ .surface = surface },
         .new_tab,
         .{ .working_directory = dir_z },
-    ) catch return error.OpenFailed;
+    ) catch false);
 
     for (self.surfaces.items) |v| {
         const id = v.core().id;
@@ -5380,6 +5579,27 @@ fn poltergeistOpenTerminal(
         return .{ .id = id, .placed = placed };
     }
     return .{ .id = null, .placed = placed };
+}
+
+/// What the apprt's answer to "open a tab" means to whoever asked for a
+/// terminal. `performed` is that answer: false when it asked nobody for a
+/// tab -- and then there is none and none is coming.
+///
+/// **It used to be thrown away**, and a request that opened nothing was
+/// answered `{"ok":true,"placed":"tab"}` with no id. That is also what a
+/// tab the runtime has not made *yet* looks like, so the caller waited for
+/// a terminal that was never asked for (a supervisor whose terminal the
+/// control room had borrowed, six times in a row, 2026-10-13).
+fn tabWasAsked(performed: bool) error{OpenFailed}!void {
+    if (!performed) {
+        log.warn("poltergeist: the apprt opened no tab for the terminal that was asked for", .{});
+        return error.OpenFailed;
+    }
+}
+
+test "poltergeist: a tab the apprt did not open is a failure, not a terminal that is on its way" {
+    try tabWasAsked(true);
+    try std.testing.expectError(error.OpenFailed, tabWasAsked(false));
 }
 
 fn poltergeistOpenTerminals(
@@ -5458,6 +5678,14 @@ fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) any
     // group made at midnight and never spoken in would otherwise leave no
     // directory at all, and would not be in the list in the morning.
     if (self.group_log) |*l| l.note(group, "");
+
+    // Made by a supervisor: where it is working is where this group's
+    // supervisor works.
+    if (by != poltergeistpkg.Chat.user_id and self.poltergeist.isSupervisor(by)) {
+        var buf: [2048]u8 = undefined;
+        var fixed: std.heap.FixedBufferAllocator = .init(&buf);
+        self.noteSupervisorDir(group, self.footingOf(fixed.allocator(), by).cwd);
+    }
 
     self.saveSession();
 }
@@ -5884,6 +6112,9 @@ fn chatAdd(
 
     try self.chat.add(group, id, history, footing);
 
+    // A supervisor joining is where this group's supervisor works now.
+    if (self.poltergeist.isSupervisor(id)) self.noteSupervisorDir(group, footing.cwd);
+
     // `history: none` means nothing from before now, and "before now"
     // includes the file. The group in memory cannot say where that reaches
     // -- after a restart it is empty while `chat.jsonl` still holds last
@@ -6232,7 +6463,6 @@ fn notifyPlugins(
     body: []const u8,
     id: poltergeistpkg.Bus.Id,
 ) anyerror![]const u8 {
-
     var name_buf: [256]u8 = undefined;
     var name_fixed: std.heap.FixedBufferAllocator = .init(&name_buf);
     const terminal_name = if (id != 0)

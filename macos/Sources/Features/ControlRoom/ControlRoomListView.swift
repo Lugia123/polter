@@ -22,27 +22,51 @@ import SwiftUI
 /// goes into the terminal. `tools/control-room-rows-only-tell.py` holds
 /// this.
 ///
-/// Not wired to anything yet: the list is whatever it is handed, and the
-/// new-group button does nothing.
+/// The one button is "new group": pressing it puts a field for the name
+/// where the header was. Return makes the group, Escape gives up, and a
+/// name the core refuses is said under the field, which stays.
 struct ControlRoomListView: View {
     typealias Look = ControlRoomLook
     typealias Row = ControlRoomList.Row
 
     var list: ControlRoomList
     @Binding var selection: String?
-    var onNewGroup: () -> Void = {}
-    /// Whether the chip's edge bends what is under it. Off, and nothing
-    /// reads it yet: the table's `refractionShown` is still tentative, and
-    /// the lift, the slide and the overshoot come first.
-    var refraction: Bool = false
+    /// Make a group by this name. Returns what to tell the person when it
+    /// was not made; nil when it was.
+    var onNewGroup: (String) -> String? = { _ in nil }
+    /// Whether the chip is the system's glass while it slides, which bends
+    /// what is under its edge. The table's to say; a still picture turns
+    /// it off, because the system's glass cannot be drawn off screen.
+    var refraction: Bool = Look.Selection.refractionShown
     /// Stops every motion, as Reduce Motion does. For still pictures.
     var still: Bool = false
 
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// 0 at rest, 1 while the chip is in the air.
-    @State private var lift: CGFloat = 0
+    @State private var lift: CGFloat
     @State private var landing: DispatchWorkItem?
+    /// The person pressed "new group" and has not made one or given up.
+    @State private var naming = false
+    @State private var newName = ""
+    /// Why the name as typed made no group.
+    @State private var nameRefusal: String?
+    @FocusState private var nameHasKeyboard: Bool
+
+    /// `midSlide` draws the chip as it is in the air, this far from its
+    /// row, and moves nothing: for still pictures of the slide.
+    init(list: ControlRoomList, selection: Binding<String?>, onNewGroup: @escaping (String) -> String? = { _ in nil },
+         refraction: Bool = Look.Selection.refractionShown, still: Bool = false, midSlide: CGSize? = nil) {
+        self.list = list
+        self._selection = selection
+        self.onNewGroup = onNewGroup
+        self.refraction = refraction
+        self.still = still
+        self.away = midSlide ?? .zero
+        self._lift = State(initialValue: midSlide == nil ? 0 : 1)
+    }
+
+    private let away: CGSize
 
     private var theme: Look.Theme { Look.theme(scheme) }
     private var moves: Bool { !still && !reduceMotion }
@@ -53,9 +77,13 @@ struct ControlRoomListView: View {
                                                needed: ControlRoomAskText.needed)
             ZStack(alignment: .topLeading) {
                 if let chip = layout.chip(for: selection) {
-                    self.chip.place(chip)
+                    self.chip.place(chip.offsetBy(dx: away.width, dy: away.height))
                 }
-                header.place(layout.header)
+                if naming {
+                    nameField.place(layout.header)
+                } else {
+                    header.place(layout.header)
+                }
                 ForEach(list.waiting) { row in
                     waitingRow(row, fit: layout.fits[row.id] ?? .none).place(layout.rows[row.id] ?? .zero)
                 }
@@ -65,6 +93,13 @@ struct ControlRoomListView: View {
                 }
                 ForEach(list.quiet) { row in
                     quietRow(row).place(layout.rows[row.id] ?? .zero)
+                }
+                // Last, so it lies over the rows: it is there only until
+                // the name is put right.
+                if naming, let nameRefusal {
+                    nameNote(nameRefusal)
+                        .frame(width: layout.header.width, alignment: .leading)
+                        .offset(x: layout.header.minX, y: layout.header.maxY)
                 }
             }
         }
@@ -93,15 +128,17 @@ struct ControlRoomListView: View {
     /// Selecting is one call whether it came from a click or a key, so both
     /// slide the chip the same way.
     private func select(_ id: String?) {
-        guard id != selection else {
-            // Already there, and still the person's doing: a row the
-            // control room opened on is theirs once they press it.
-            selection = id
-            return
+        let layout = ControlRoomListLayout(list: list, height: 0, needed: ControlRoomAskText.needed)
+        let plan = id.flatMap { layout.chip(for: $0) }.map {
+            ControlRoomChipSlide.plan(from: layout.chip(for: selection), to: $0, reduceMotion: !moves)
         }
-        if moves {
+        if case .slide = plan {
             withAnimation(spring) { selection = id }
         } else {
+            // Nothing to slide from or to, or Reduce Motion: it is simply
+            // there. Also a row pressed again, which is still the person's
+            // doing: a row the control room opened on is theirs once they
+            // press it.
             selection = id
         }
     }
@@ -116,7 +153,7 @@ struct ControlRoomListView: View {
         }
         landing = land
         // It starts down with the last of the way still to go.
-        DispatchQueue.main.asyncAfter(deadline: .now() + Look.Selection.springPeriod / 2, execute: land)
+        DispatchQueue.main.asyncAfter(deadline: .now() + ControlRoomChipSlide.landsAt, execute: land)
     }
 
     private func mix(_ rest: Double, _ moving: Double) -> Double {
@@ -131,6 +168,7 @@ struct ControlRoomListView: View {
         let edge = theme.selectionEdge
         return shape
             .fill(Color.white.opacity(mix(theme.selectionTint, theme.selectionTintMoving)))
+            .background(glass(in: shape))
             .overlay(
                 shape.strokeBorder((edge < 0 ? Color.black : Color.white).opacity(abs(edge)),
                                    lineWidth: CGFloat(Look.Selection.edgeBand))
@@ -146,6 +184,19 @@ struct ControlRoomListView: View {
                       mix(theme.selectionShadowY, theme.selectionShadowMovingY))])
             )
             .scaleEffect(1 + CGFloat(Look.Selection.liftScaleRow) * lift)
+    }
+
+    /// The system's glass under the chip's tint: only while the chip is in
+    /// the air, unless the table says at rest too. Sitting still there is
+    /// nothing live behind the chip, so nothing is recomposited when the
+    /// terminal beside it scrolls.
+    @ViewBuilder
+    private func glass(in shape: RoundedRectangle) -> some View {
+        if #available(macOS 26.0, *), refraction, !still, lift > 0 || Look.Selection.glassAtRest {
+            Color.clear
+                .glassEffect(.clear, in: shape)
+                .opacity(Look.Selection.glassAtRest ? 1 : Double(lift))
+        }
     }
 
     // MARK: Pieces
@@ -171,7 +222,7 @@ struct ControlRoomListView: View {
             Text(ControlRoomList.headerText(waiting: list.waitingCount))
                 .fontWeight(Look.weight(Look.Font.weightEmphasis))
             Spacer(minLength: CGFloat(Look.Side.rowItemGap))
-            Button(action: onNewGroup) {
+            Button(action: beginNaming) {
                 HStack(spacing: CGFloat(Look.Side.headerItemGap)) {
                     Image(systemName: "plus")
                     Text(String(localized: "New Group", comment: "总控台：左栏右上的按钮"))
@@ -181,6 +232,65 @@ struct ControlRoomListView: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, CGFloat(Look.Side.headerPaddingX))
+    }
+
+    // MARK: A new group
+
+    private func beginNaming() {
+        newName = ""
+        nameRefusal = nil
+        naming = true
+        // After the field is there to take it.
+        DispatchQueue.main.async { nameHasKeyboard = true }
+    }
+
+    private func endNaming() {
+        naming = false
+        nameRefusal = nil
+        nameHasKeyboard = false
+    }
+
+    private func submitName() {
+        nameRefusal = onNewGroup(newName)
+        if nameRefusal == nil {
+            endNaming()
+        } else {
+            // Still theirs to put right.
+            nameHasKeyboard = true
+        }
+    }
+
+    /// Where the header was: the name of the group being made.
+    private var nameField: some View {
+        let shape = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row), style: .continuous)
+        return TextField(
+            String(localized: "Group name", comment: "总控台：新建群时输入框里的占位字"),
+            text: $newName)
+            .textFieldStyle(.plain)
+            .font(.system(size: CGFloat(Look.Font.body), design: .monospaced))
+            .focused($nameHasKeyboard)
+            .onSubmit(submitName)
+            .onExitCommand(perform: endNaming)
+            .padding(.horizontal, CGFloat(Look.Side.rowPaddingX))
+            .frame(maxHeight: .infinity)
+            .background(shape.strokeBorder(theme.attentionText.color, lineWidth: CGFloat(Look.Line.hairline)))
+            .padding(.horizontal, CGFloat(Look.Side.headerPaddingX) - CGFloat(Look.Side.rowPaddingX))
+            .accessibilityLabel(String(localized: "New Group", comment: "总控台：左栏右上的按钮"))
+    }
+
+    /// Why the name made no group, under the field.
+    private func nameNote(_ text: String) -> some View {
+        Text(text)
+            .foregroundStyle(theme.problemTextOnRow.color)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, CGFloat(Look.Side.rowPaddingX))
+            .padding(.vertical, CGFloat(Look.Side.rowPaddingY))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row), style: .continuous)
+                    .fill(theme.windowBase.color))
+            .padding(.horizontal, CGFloat(Look.Side.headerPaddingX) - CGFloat(Look.Side.rowPaddingX))
     }
 
     private var quietHeader: some View {

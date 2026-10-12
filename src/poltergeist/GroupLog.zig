@@ -120,6 +120,10 @@ pub const Shell = struct {
     /// What the person had said about it in the control room. `none` for
     /// every record written before there was one.
     marks: Marks,
+
+    /// The directory its supervisor was last working in; empty for every
+    /// record written before that was kept, and for a group nobody minded.
+    supervisor_dir: []const u8,
 };
 
 pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error!GroupLog {
@@ -154,27 +158,41 @@ pub fn deinit(self: *GroupLog) void {
 pub fn note(self: *GroupLog, name: []const u8, brief: []const u8) void {
     // The file is rewritten whole, so what it said about anything else has
     // to be read first or this would erase it.
-    var marks: Marks = .none;
-    if (self.readMeta(self.alloc, name)) |m| {
-        self.alloc.free(m.brief);
-        marks = m.marks;
-    }
-    self.writeMeta(name, brief, true, marks);
+    const was = self.readMeta(self.alloc, name);
+    defer if (was) |m| m.free(self.alloc);
+    self.writeMeta(name, .{
+        .brief = brief,
+        .listed = true,
+        .marks = if (was) |m| m.marks else .none,
+        .supervisor_dir = if (was) |m| m.supervisor_dir else "",
+    });
 }
 
 /// Write down what the person said about a group in the control room,
 /// leaving its note and its place in the list as they were.
 pub fn mark(self: *GroupLog, name: []const u8, marks: Marks) void {
-    var kept: ?[]u8 = null;
-    defer if (kept) |k| self.alloc.free(k);
-    var listed = true;
+    const was = self.readMeta(self.alloc, name);
+    defer if (was) |m| m.free(self.alloc);
+    self.writeMeta(name, .{
+        .brief = if (was) |m| m.brief else "",
+        .listed = if (was) |m| m.listed else true,
+        .marks = marks,
+        .supervisor_dir = if (was) |m| m.supervisor_dir else "",
+    });
+}
 
-    if (self.readMeta(self.alloc, name)) |m| {
-        kept = m.brief;
-        listed = m.listed;
-    }
-
-    self.writeMeta(name, if (kept) |k| k else "", listed, marks);
+/// Write down where a group's supervisor is working, leaving everything
+/// else as it was. It is what the control room offers to start the next
+/// one in, the morning after.
+pub fn supervisorDir(self: *GroupLog, name: []const u8, dir: []const u8) void {
+    const was = self.readMeta(self.alloc, name);
+    defer if (was) |m| m.free(self.alloc);
+    self.writeMeta(name, .{
+        .brief = if (was) |m| m.brief else "",
+        .listed = if (was) |m| m.listed else true,
+        .marks = if (was) |m| m.marks else .none,
+        .supervisor_dir = dir,
+    });
 }
 
 /// Take a group off the list, leaving every word ever said in it in place.
@@ -183,19 +201,28 @@ pub fn mark(self: *GroupLog, name: []const u8, marks: Marks) void {
 /// list is not saying it was never for anything, and putting it back should
 /// not lose what it was for.
 pub fn forget(self: *GroupLog, name: []const u8) void {
-    var kept: ?[]u8 = null;
-    defer if (kept) |k| self.alloc.free(k);
-    var marks: Marks = .none;
-
-    if (self.readMeta(self.alloc, name)) |m| {
-        kept = m.brief;
-        marks = m.marks;
-    }
-
-    self.writeMeta(name, if (kept) |k| k else "", false, marks);
+    const was = self.readMeta(self.alloc, name);
+    defer if (was) |m| m.free(self.alloc);
+    self.writeMeta(name, .{
+        .brief = if (was) |m| m.brief else "",
+        .listed = false,
+        .marks = if (was) |m| m.marks else .none,
+        .supervisor_dir = if (was) |m| m.supervisor_dir else "",
+    });
 }
 
-fn writeMeta(self: *GroupLog, name: []const u8, brief: []const u8, listed: bool, marks: Marks) void {
+/// Everything one `group.json` says. **No defaults**: the file is rewritten
+/// whole by every writer, so a writer that carried three of these over and
+/// forgot the fourth would erase it without a word. Here it does not
+/// compile.
+const Entry = struct {
+    brief: []const u8,
+    listed: bool,
+    marks: Marks,
+    supervisor_dir: []const u8,
+};
+
+fn writeMeta(self: *GroupLog, name: []const u8, entry: Entry) void {
     const seg = daylog.encodeSegment(self.alloc, name) catch return;
     defer self.alloc.free(seg);
 
@@ -214,7 +241,7 @@ fn writeMeta(self: *GroupLog, name: []const u8, brief: []const u8, listed: bool,
     defer buf.deinit();
 
     var s: std.json.Stringify = .{ .writer = &buf.writer, .options = .{} };
-    render(&s, brief, listed, marks) catch |err| {
+    render(&s, entry) catch |err| {
         warn(err);
         return;
     };
@@ -249,11 +276,21 @@ fn writeMeta(self: *GroupLog, name: []const u8, brief: []const u8, listed: bool,
 
 const meta_name = "group.json";
 
-fn render(s: *std.json.Stringify, brief: []const u8, listed: bool, marks: Marks) std.Io.Writer.Error!void {
+fn render(s: *std.json.Stringify, entry: Entry) std.Io.Writer.Error!void {
+    const brief = entry.brief;
+    const listed = entry.listed;
+    const marks = entry.marks;
     try s.beginObject();
     if (brief.len > 0) {
         try s.objectField("brief");
         try s.write(brief);
+    }
+
+    // Only when somebody said: a group nobody minded has the file it
+    // always had.
+    if (entry.supervisor_dir.len > 0) {
+        try s.objectField("supervisor_dir");
+        try s.write(entry.supervisor_dir);
     }
 
     // Only when it is false. Being in the list is what a group directory
@@ -300,6 +337,14 @@ const Meta = struct {
     brief: []u8,
     listed: bool,
     marks: Marks,
+    /// Owned by the caller's allocator, like `brief`. Empty when the file
+    /// names none.
+    supervisor_dir: []u8,
+
+    fn free(self: Meta, alloc: Allocator) void {
+        alloc.free(self.brief);
+        alloc.free(self.supervisor_dir);
+    }
 };
 
 fn msOf(v: std.json.Value) ?u64 {
@@ -385,10 +430,20 @@ fn readMetaIn(self: *const GroupLog, alloc: Allocator, seg: []const u8) ?Meta {
         else => true,
     };
 
+    const supervisor_dir: []const u8 = switch (obj.get("supervisor_dir") orelse std.json.Value.null) {
+        .string => |v| v,
+        else => "",
+    };
+
+    const owned_brief = alloc.dupe(u8, brief) catch return null;
     return .{
-        .brief = alloc.dupe(u8, brief) catch return null,
+        .brief = owned_brief,
         .listed = listed,
         .marks = marksIn(obj),
+        .supervisor_dir = alloc.dupe(u8, supervisor_dir) catch {
+            alloc.free(owned_brief);
+            return null;
+        },
     };
 }
 
@@ -403,6 +458,7 @@ pub fn restore(self: *GroupLog, alloc: Allocator) Allocator.Error![]Shell {
         for (out.items) |s| {
             alloc.free(s.name);
             alloc.free(s.brief);
+            alloc.free(s.supervisor_dir);
         }
         out.deinit(alloc);
     }
@@ -432,7 +488,7 @@ pub fn restore(self: *GroupLog, alloc: Allocator) Allocator.Error![]Shell {
         errdefer alloc.free(name);
 
         const meta = self.readMetaIn(alloc, seg);
-        defer if (meta) |m| alloc.free(m.brief);
+        defer if (meta) |m| m.free(alloc);
 
         if (meta) |m| if (!m.listed) {
             alloc.free(name);
@@ -444,11 +500,18 @@ pub fn restore(self: *GroupLog, alloc: Allocator) Allocator.Error![]Shell {
             continue;
         };
 
+        const supervisor_dir = alloc.dupe(u8, if (meta) |m| m.supervisor_dir else "") catch {
+            alloc.free(name);
+            alloc.free(brief);
+            continue;
+        };
+
         try out.append(alloc, .{
             .name = name,
             .brief = brief,
             .last_ms = self.lastSpokeIn(seg),
             .marks = if (meta) |m| m.marks else .none,
+            .supervisor_dir = supervisor_dir,
         });
     }
 
@@ -459,6 +522,7 @@ pub fn free(alloc: Allocator, shells: []Shell) void {
     for (shells) |s| {
         alloc.free(s.name);
         alloc.free(s.brief);
+        alloc.free(s.supervisor_dir);
     }
     alloc.free(shells);
 }
@@ -677,7 +741,7 @@ test "a group put back on the list keeps the note it had" {
     // Off the list, and the note survived being taken off it.
     {
         const m = gl.readMeta(alloc, "build").?;
-        defer alloc.free(m.brief);
+        defer m.free(alloc);
         try testing.expect(!m.listed);
         try testing.expectEqualStrings("why this group exists", m.brief);
     }
@@ -852,4 +916,49 @@ test "ControlRoom marks: a record from before there were marks reads back with n
     const bytes = try std.Io.Dir.readFileAlloc(.cwd(), io, path, alloc, .limited(4096));
     defer alloc.free(bytes);
     try testing.expectEqualStrings("{\"brief\":\"now noted\"}", bytes);
+}
+
+test "ControlRoom start: where a group's supervisor worked is written down and outlives every other write to the file" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const state = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+
+    var gl = try GroupLog.open(alloc, io, state);
+    defer gl.deinit();
+
+    gl.note("build", "why");
+    gl.supervisorDir("build", "/work/repo");
+    {
+        const shells = try gl.restore(alloc);
+        defer free(alloc, shells);
+        try testing.expectEqual(@as(usize, 1), shells.len);
+        try testing.expectEqualStrings("/work/repo", shells[0].supervisor_dir);
+        // What was there before it is still there.
+        try testing.expectEqualStrings("why", shells[0].brief);
+    }
+
+    // Each of the other three writers rewrites the whole file.
+    gl.note("build", "why, again");
+    gl.mark("build", .{ .seen_ms = 1_700_000_000_000, .snooze = .none });
+    gl.forget("build");
+    gl.note("build", "why, again");
+
+    const shells = try gl.restore(alloc);
+    defer free(alloc, shells);
+    try testing.expectEqual(@as(usize, 1), shells.len);
+    try testing.expectEqualStrings("/work/repo", shells[0].supervisor_dir);
+    try testing.expectEqual(@as(?u64, 1_700_000_000_000), shells[0].marks.seen_ms);
+
+    // A group nobody minded has none, and its file does not say the word.
+    gl.note("quiet", "");
+    const m = gl.readMeta(alloc, "quiet").?;
+    defer m.free(alloc);
+    try testing.expectEqualStrings("", m.supervisor_dir);
 }
