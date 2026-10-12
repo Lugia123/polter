@@ -693,6 +693,9 @@
 "That time has already passed." = "That time has already passed.";
 "Nothing was done (%@)." = "Nothing was done (%@).";
 
+/* 总控台：右栏总管框标题条上，名字后面说明身份的字 */
+"Supervisor" = "Supervisor";
+
 /* 总控台：行上的勾，批准这一次 */
 "Approve" = "Approve";
 

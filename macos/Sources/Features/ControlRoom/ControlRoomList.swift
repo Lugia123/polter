@@ -50,6 +50,9 @@ struct ControlRoomList: Equatable {
         /// terminal now. The two buttons are shown by this and by nothing
         /// read off the row here.
         var approvable: Bool = false
+        /// What the title of the supervisor's frame says, when the core
+        /// names a supervisor for this group (`SupervisorTitle`).
+        var supervisor: SupervisorTitle?
         /// What an action on this row hands back so the core can tell
         /// whether the row is still what was on screen: whose state it is
         /// and the two moments it was drawn from. Nil where there is no
@@ -57,6 +60,24 @@ struct ControlRoomList: Equatable {
         var target: Target?
 
         var name: String { id }
+    }
+
+    /// The title bar of a supervisor's frame on the right-hand side
+    /// (`control-room.md`, 3.5, item 6): its name on the left, and on the
+    /// right its status -- the glyph, the word, how long it has waited.
+    ///
+    /// Everything in it is the core's. The name is the terminal's title as
+    /// the snapshot lists it among the group's members. The status is the
+    /// supervisor's own: when the group's row is about the supervisor
+    /// itself (the same terminal -- an equality), it is what the row says,
+    /// minutes included; when the row is about one of its workers, it is
+    /// what the member entry says, which has a glyph and a word and no
+    /// minutes. Nothing is counted or compared to get any of it.
+    struct SupervisorTitle: Equatable {
+        var name: String
+        var shown: Shown
+        var word: String
+        var waitedMin: Int?
     }
 
     /// The terminal a row is about, and when. Both times are on the core's
@@ -184,8 +205,18 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var lanes: [Lane]
     }
 
+    /// One terminal of a group, as much of it as a title bar shows.
+    struct Member: Decodable, Equatable {
+        var id: String
+        var title: String
+        var shown: ControlRoomList.Shown
+        var text: String
+    }
+
     struct Group: Decodable, Equatable {
         var name: String
+        /// The group's terminals. Absent in a snapshot cut down by hand.
+        var members: [Member]?
         /// The terminal that is this group's supervisor, as the core names
         /// it; nil when the group has none.
         var steward: String?
@@ -204,6 +235,9 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     }
 
     var rev: UInt64
+    /// "N waiting for you": terminals, each once. The number on the Dock
+    /// icon. Absent in a snapshot cut down by hand.
+    var needs_me: Int?
     var groups_needing_me: Int
     var groups_other: Int
     /// The group to start on when the control room opens with nothing
@@ -288,6 +322,21 @@ extension ControlRoomList.Shown: Decodable {
 }
 
 extension ControlRoomList {
+    /// What the title of `group`'s supervisor frame says; nil when the core
+    /// names no supervisor, or lists no such member.
+    static func supervisorTitle(of group: ControlRoomSnapshot.Group) -> SupervisorTitle? {
+        guard let steward = group.steward,
+              let member = group.members?.first(where: { $0.id == steward }) else { return nil }
+        if group.attention?.terminal == steward {
+            // The row is about the supervisor: the row's own words.
+            return SupervisorTitle(
+                name: member.title, shown: group.shown, word: group.text, waitedMin: group.waited_min)
+        }
+        return SupervisorTitle(name: member.title, shown: member.shown, word: member.text, waitedMin: nil)
+    }
+}
+
+extension ControlRoomList {
     /// The list a snapshot describes. A copy: the rows keep the snapshot's
     /// order, each goes in the section its own `needs_me` says, and the two
     /// counts are the snapshot's. `showing` is the tab in front in the
@@ -307,6 +356,7 @@ extension ControlRoomList {
                 pulses: breathing != nil && breathing == group.name,
                 unseen: group.unseen ?? false,
                 approvable: group.approvable ?? false,
+                supervisor: Self.supervisorTitle(of: group),
                 target: group.attention.flatMap { attention in
                     attention.terminal.map {
                         Target(terminal: $0, sinceMs: attention.since_ms, eventMs: attention.event_ms)

@@ -179,6 +179,20 @@ enum ControlRoomRules {
         return kept
     }
 
+    /// What the Dock icon's badge says; nil for no badge.
+    ///
+    /// The number is the core's `needs_me` -- terminals that cannot move
+    /// until the person does something, each counted once, by the core --
+    /// written as it came. None waiting is no badge. With nobody waiting,
+    /// the badge is whatever it was before this number existed: how many
+    /// windows rang their bell, when the person asked for that (`bells` is
+    /// that text, already made). 暂定: waiting comes before bells and the
+    /// two are never added together -- they count different things.
+    static func dockBadge(needsMe: Int?, bells: String?) -> String? {
+        guard let needsMe, needsMe != 0 else { return bells }
+        return String(needsMe)
+    }
+
     /// The key that approves or refuses the selected row, pressed while
     /// the list has the keyboard: Y and N, with no modifier (shift is let
     /// through, so that Caps Lock does not matter). 暂定. Return is left

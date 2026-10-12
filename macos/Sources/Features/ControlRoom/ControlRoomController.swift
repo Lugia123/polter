@@ -39,6 +39,9 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
 
     private var seen: ControlRoomSeenTracker?
     private var rowActs: ControlRoomRowActs?
+    /// Watches which view has this window's keyboard: the frame on the
+    /// right says whether its terminal does.
+    private var watchingResponder: NSKeyValueObservation?
     private var watchingSelection: AnyCancellable?
     private var watchingList: AnyCancellable?
 
@@ -220,6 +223,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         detail.giveBack()
         // Its pane draws the terminal again from here on.
         lender.markReturned()
+        if model.detailHasKeyboard { model.detailHasKeyboard = false }
 
         guard toHome, let home = BaseTerminalController.controller(owning: view) else { return }
         // Its own window hands it the keyboard once the view is back in
@@ -237,8 +241,13 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// The lent terminal has the keyboard only while this window does and
     /// the terminal is what is focused in it.
     private func syncLentFocus() {
-        guard let view = lender.lent, let window else { return }
-        view.focusDidChange(window.isKeyWindow && view.isFirstResponder)
+        guard let view = lender.lent, let window else {
+            if model.detailHasKeyboard { model.detailHasKeyboard = false }
+            return
+        }
+        let has = window.isKeyWindow && view.isFirstResponder
+        view.focusDidChange(has)
+        if model.detailHasKeyboard != has { model.detailHasKeyboard = has }
     }
 
     /// The application is quitting: put the terminal back first, so that
@@ -321,6 +330,9 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         let content = KeyForwardingHostingView(rootView: ControlRoomView(model: model, detail: detail))
         content.onKeyEquivalent = { [weak self] in self?.goToTab(for: $0) ?? false }
         content.onKeyDown = { [weak self] in self?.actOnSelectedRow(for: $0) ?? false }
+        watchingResponder = window.observe(\.firstResponder) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.syncLentFocus() }
+        }
         window.contentView = content
 
         // All three are needed for the system to bring it back.

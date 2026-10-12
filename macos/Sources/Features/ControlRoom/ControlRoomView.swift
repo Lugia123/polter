@@ -24,12 +24,20 @@ struct ControlRoomView: View {
                 // No snapshot yet: the list's place, with nothing in it.
                 Color.clear.frame(width: CGFloat(Look.Side.width))
             }
-            ZStack {
-                // Always there, so the terminal's view is never rebuilt by
-                // a redraw of this one.
-                DetailHost(container: detail)
-                if model.detail.terminal == nil {
-                    ControlRoomDetailMessage(detail: model.detail, askFor: model.askForTerminal)
+            // The supervisor's frame, whatever is in it: the terminal, or
+            // a sentence saying why there is none.
+            ControlRoomSupervisorFrame(
+                title: model.supervisorTitle,
+                caption: model.detail.terminal == nil ? model.selection : nil,
+                focused: model.detailHasKeyboard
+            ) {
+                ZStack {
+                    // Always there, so the terminal's view is never
+                    // rebuilt by a redraw of this one.
+                    DetailHost(container: detail)
+                    if model.detail.terminal == nil {
+                        ControlRoomDetailMessage(detail: model.detail, askFor: model.askForTerminal)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

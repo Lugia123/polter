@@ -118,6 +118,17 @@ final class ControlRoomModel: ObservableObject {
         list?.rows.first { $0.id == selection }
     }
 
+    /// Whether the terminal on the right-hand side has the keyboard: its
+    /// frame's edge says so. Written by `ControlRoomController`.
+    @Published var detailHasKeyboard = false
+
+    /// The title of the frame on the right while it holds a terminal; nil
+    /// while it holds a sentence.
+    var supervisorTitle: ControlRoomList.SupervisorTitle? {
+        guard detail.terminal != nil else { return nil }
+        return selectedRow?.supervisor
+    }
+
     /// Told after every `choose`, including one that selects the row
     /// already selected: that is how a row the control room opened on
     /// becomes one the person is looking at.
@@ -190,6 +201,22 @@ protocol ControlRoomDetailHosting: AnyObject {
 final class ControlRoomDetailContainer: NSView, ControlRoomDetailHosting {
     private(set) var hostedGroup: String?
     private var hosted: NSView?
+
+    /// The terminal sits inside the supervisor's frame with its corners
+    /// rounded (`ControlRoomSupervisorFrame`). Rounded here, on the layer
+    /// that holds the terminal's own, because that is what clips it.
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = CGFloat(ControlRoomLook.Radius.supervisorInner)
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported for this view")
+    }
 
     @discardableResult
     func host(_ view: NSView, for group: String) -> NSView? {

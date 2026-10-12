@@ -357,7 +357,7 @@ struct ControlRoomListView: View {
     }
 }
 
-private extension InsettableShape {
+extension InsettableShape {
     /// Shadows that fall outside the shape and nowhere under it.
     ///
     /// The shapes they belong to are see-through, and a plain `.shadow`

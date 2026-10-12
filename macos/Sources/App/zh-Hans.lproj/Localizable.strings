@@ -709,6 +709,9 @@
 "That time has already passed." = "那个时间已经过了。";
 "Nothing was done (%@)." = "没有执行（%@）。";
 
+/* 总控台：右栏总管框标题条上，名字后面说明身份的字 */
+"Supervisor" = "总管";
+
 /* 总控台：行上的勾，批准这一次 */
 "Approve" = "批准";
 
