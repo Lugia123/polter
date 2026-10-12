@@ -91,7 +91,13 @@
 //!   "ungrouped": [ { "id", "title", "attention", "needs_me", "unseen",
 //!       "shown", "word", "text", "waiter", "reason", "what" } ],
 //!   "terminals": [ { the member fields but `role`, and "event_ms",
-//!       "window":"0x…"|null, "tab":"0x…"|null } ],
+//!       "window":"0x…"|null, "tab":"0x…"|null,
+//!       "pane":"supervisor"|"worker"|"plain" } ],
+//!                             `pane` is which of the three frames this
+//!                             terminal's pane wears in its own tab: the
+//!                             terminal minding others, one being minded,
+//!                             or neither. A host draws the frame it is
+//!                             told and asks no role
 //!   "tabs": [ { "window":"0x…"|null, "tab":"0x…",
 //!       "shown":…, "terminal":"0x…"|null } ],
 //!   "pulses": [ { "terminal":"0x…", "window":"0x…"|null,
@@ -502,11 +508,31 @@ pub const LoneRow = struct {
     what: What,
 };
 
+/// Which of the three frames a terminal's pane wears in its own tab
+/// (dev-docs/poltergeist/control-room.md, 12.6).
+pub const Pane = enum {
+    /// It is minding others.
+    supervisor,
+    /// Somebody is minding it.
+    worker,
+    /// Neither: a shell, or an agent nobody minds.
+    plain,
+
+    pub fn of(role: Bus.Role) Pane {
+        return switch (role) {
+            .supervisor => .supervisor,
+            .watched => .worker,
+            .none => .plain,
+        };
+    }
+};
+
 pub const TerminalOut = struct {
     id: Hex,
     title: []const u8,
     window: ?Hex,
     tab: ?Hex,
+    pane: Pane,
     kind: Attention.Kind,
     since_ms: u64,
     event_ms: ?u64,
@@ -1109,6 +1135,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .title = try arena.dupe(u8, t.title),
             .window = .opt(t.window),
             .tab = .opt(t.tab),
+            .pane = .of(in.bus.roleOf(t.id)),
             .kind = s.kind,
             .since_ms = s.since_ms,
             .event_ms = in.bus.agentOf(t.id).last_event_ms,
@@ -2241,6 +2268,28 @@ test "ControlRoom snapshot: a worker minded outside any group is listed on its o
     try testing.expect(s.ungrouped[0].needs_me);
     try testing.expectEqual(@as(usize, 1), s.needs_me);
     try testing.expectEqual(@as(?u64, 1 * min), s.ungrouped[0].attention.event_ms);
+}
+
+test "ControlRoom terminals: each says which frame its pane wears" {
+    var w: World = .init();
+    defer w.deinit();
+    try w.terminal(0xa1, "boss", 0x21);
+    try w.bus.addSupervisor(0xa1);
+    try w.terminal(0xb1, "minded", 0x21);
+    try w.bus.watch(0xb1, 0xa1);
+    try w.terminal(0xc1, "zsh", 0x21);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const s = (try build(arena.allocator(), w.input(2 * min))).snapshot;
+    try testing.expectEqual(@as(usize, 3), s.terminals.len);
+    const Want = struct { u64, Pane };
+    for ([_]Want{ .{ 0xa1, .supervisor }, .{ 0xb1, .worker }, .{ 0xc1, .plain } }) |want| {
+        const got: ?Pane = for (s.terminals) |t| {
+            if (t.id.id == want[0]) break t.pane;
+        } else null;
+        try testing.expectEqual(@as(?Pane, want[1]), got);
+    }
 }
 
 /// The size section 13.2 of the design names: 32 groups, 128 terminals, with

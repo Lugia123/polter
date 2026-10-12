@@ -4,16 +4,14 @@ import SwiftUI
 /// side (`control-room.md`, 3.5, item 6): a border all round, its top edge
 /// thickened into a title bar, floating over the window's ground.
 ///
-/// **Only the control room draws this.** The splits of an ordinary terminal
-/// tab are not touched; the three frames for those are a later piece
-/// (`v0.10.md`, B6), and so are the stacked tabs the design puts where this
-/// title bar is.
+/// **The frame itself is `PaneFrameView`**, which the panes of a split
+/// terminal tab draw too (`PaneFrameSplit`); this is that view as a
+/// supervisor's, with the design's terminal ground inside. The stacked
+/// tabs the design puts where the title bar is are a later piece.
 ///
-/// Every size and colour is `ControlRoomLook`'s. The title is a
-/// `ControlRoomList.SupervisorTitle`, which is the core's words.
+/// The title is a `ControlRoomList.SupervisorTitle`, which is the core's
+/// words.
 struct ControlRoomSupervisorFrame<Content: View>: View {
-    typealias Look = ControlRoomLook
-
     /// What the bar says while the frame holds a terminal.
     var title: ControlRoomList.SupervisorTitle?
     /// What it says while the frame holds a sentence: the group's name, or
@@ -23,108 +21,8 @@ struct ControlRoomSupervisorFrame<Content: View>: View {
     var focused: Bool
     @ViewBuilder var content: () -> Content
 
-    @Environment(\.colorScheme) private var scheme
-
     var body: some View {
-        let theme = Look.theme(scheme)
-        let bezel = CGFloat(Look.Space.supervisorBezel)
-        let hairline = CGFloat(Look.Line.hairline)
-        let outer = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.supervisorOuter), style: .continuous)
-        let inner = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.supervisorInner), style: .continuous)
-        VStack(spacing: 0) {
-            ControlRoomSupervisorBar(title: title, caption: caption)
-                .frame(height: CGFloat(Look.Pane.barHeight))
-                .padding(.horizontal, bezel + CGFloat(Look.Pane.supervisorBarPaddingX))
-            content()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(theme.terminalBackground.color)
-                .clipShape(inner)
-                .overlay(inner.strokeBorder(theme.supervisorTerminalEdge.color, lineWidth: hairline))
-                .padding([.horizontal, .bottom], bezel)
-        }
-        .background(
-            outer
-                .fill(theme.supervisorBezel.color)
-                .overlay(
-                    // A highlight along the top edge only.
-                    outer.strokeBorder(theme.supervisorHighlight.color, lineWidth: hairline)
-                        .mask(alignment: .top) { Rectangle().frame(height: CGFloat(Look.Radius.supervisorOuter)) }
-                )
-        )
-        // The line round it, deeper while the terminal has the keyboard.
-        .background(
-            outer.inset(by: -hairline)
-                .strokeBorder((focused ? theme.supervisorEdgeFocused : theme.supervisorEdge).color, lineWidth: hairline)
-        )
-        .background(
-            outer.shadowOutside(Look.Pane.supervisorFloats
-                ? [(theme.supervisorShadowAlpha, Look.Pane.frameShadowBlur / 2, Look.Pane.frameShadowY)]
-                : [])
-        )
-    }
-}
-
-/// The title bar: the name and what it is on the left; on the right its
-/// status -- the glyph and the word. Not how long it has waited: that was
-/// here once and told the person nothing they could act on.
-struct ControlRoomSupervisorBar: View {
-    typealias Look = ControlRoomLook
-
-    var title: ControlRoomList.SupervisorTitle?
-    var caption: String?
-
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        let theme = Look.theme(scheme)
-        HStack(spacing: CGFloat(Look.Pane.barGap)) {
-            if let title {
-                Text(title.name)
-                    .font(.system(size: CGFloat(Look.Font.body), design: .monospaced))
-                    .fontWeight(Look.weight(Look.Font.weightEmphasis))
-                    .foregroundStyle(theme.text.color)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(String(localized: "Supervisor", comment: "总控台：右栏总管框标题条上，名字后面说明身份的字"))
-                    .foregroundStyle(theme.textSecondary.color)
-                    .fixedSize()
-                Spacer(minLength: CGFloat(Look.Pane.barGap))
-                status(title, theme: theme)
-            } else {
-                Text(caption ?? "")
-                    .font(.system(size: CGFloat(Look.Font.body), design: .monospaced))
-                    .foregroundStyle(theme.textSecondary.color)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 0)
-            }
-        }
-        .font(.system(size: CGFloat(Look.Font.body)))
-        .monospacedDigit()
-        .accessibilityElement(children: .combine)
-    }
-
-    @ViewBuilder
-    private func status(_ title: ControlRoomList.SupervisorTitle, theme: Look.Theme) -> some View {
-        if title.shown != .none || !title.word.isEmpty {
-            HStack(spacing: CGFloat(Look.Side.statusWordGap)) {
-                ControlRoomGlyph(shown: title.shown)
-                Text(title.word)
-                    .fontWeight(Look.weight(Look.Font.weightEmphasis))
-                    .foregroundStyle(wordColor(title.shown, theme: theme))
-                    .fixedSize()
-            }
-        }
-    }
-
-    /// The colour of the status word on this bar: the table's, including
-    /// where a red word is not red.
-    private func wordColor(_ shown: ControlRoomList.Shown, theme: Look.Theme) -> Color {
-        switch shown {
-        case .needsYou, .doneUnseen: return theme.attentionText.color
-        case .trouble: return theme.problemTextOnSupervisorBar.color
-        case .working, .none: return theme.textSecondary.color
-        }
+        PaneFrameView(wears: .supervisor, title: title, caption: caption, focused: focused, content: content)
     }
 }
 

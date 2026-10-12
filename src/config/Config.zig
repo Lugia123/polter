@@ -1667,6 +1667,24 @@ command: ?Command = null,
 /// palette entry reaches them.
 @"poltergeist-may-authorise": bool = true,
 
+/// Draw each pane of a split with the frame of what is in it.
+///
+/// With this on, a tab that is split draws every pane as a card with a
+/// title: a supervisor's pane has a thick border whose top is its title
+/// bar, a worker's has a thin line round it and a title band, and an
+/// ordinary terminal's has its title written on its own background. The
+/// title bar says which terminal it is and, for an agent, what it is doing
+/// just now. A tab with a single ordinary terminal in it is drawn as it
+/// always was; a supervisor or a worker wears its frame even alone. The
+/// quick terminal is never framed.
+///
+/// A title takes room from the terminal under it, so a framed pane is two
+/// rows or so shorter than it would be. Set this to `false` to draw splits
+/// the way they were before there were frames.
+///
+/// macOS only for now.
+@"poltergeist-pane-frames": bool = true,
+
 /// Write what the terminals say to each other to disk.
 ///
 /// The conversation in memory is a working set: it trims as it grows, and
