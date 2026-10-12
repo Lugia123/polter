@@ -51,8 +51,6 @@ pub struct Group {
     pub needs_me: bool,
     /// The core says nobody has looked at this since it stopped.
     pub unseen: bool,
-    /// Approve and refuse can be asked of this row's terminal now.
-    pub approvable: bool,
     pub shown: Shown,
     /// The words beside the glyph, already in the person's language.
     pub text: String,
@@ -201,7 +199,6 @@ fn group(v: &Value, path: &str) -> Res<Group> {
         name: text(v, path, "name")?,
         needs_me: boolean(v, path, "needs_me")?,
         unseen: boolean(v, path, "unseen")?,
-        approvable: boolean(v, path, "approvable")?,
         shown: Shown::parse(&shown).ok_or(DecodeError::UnknownShown(shown))?,
         text: text(v, path, "text")?,
         waited_min: opt_int(v, path, "waited_min")?,

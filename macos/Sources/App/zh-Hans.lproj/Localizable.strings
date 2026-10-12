@@ -709,11 +709,8 @@
 "That time has already passed." = "那个时间已经过了。";
 "Nothing was done (%@)." = "没有执行（%@）。";
 
-/* 总控台：行上的勾，批准这一次 */
-"Approve" = "批准";
-
-/* 总控台：行上的叉，拒绝这一次 */
-"Refuse" = "拒绝";
+/* 总控台：右栏总管框标题条上，名字后面说明身份的字 */
+"Supervisor" = "总管";
 
 /* 总控台：右栏的总管终端 */
 "This terminal is in the Control Room." = "这个终端现在在总控台里。";

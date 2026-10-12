@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import UserNotifications
 import OSLog
@@ -126,6 +127,10 @@ class AppDelegate: NSObject,
 
     /// The global undo manager for app-level state such as window restoration.
     lazy var undoManager = ExpiringUndoManager()
+
+    /// Listens for the control room's snapshot: the Dock badge is its
+    /// "N waiting for you".
+    private var waitingBadge: AnyCancellable?
 
     /// The current state of the quick terminal.
     private var quickTerminalControllerState: QuickTerminalState = .uninitialized
@@ -362,6 +367,13 @@ class AppDelegate: NSObject,
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The Dock icon says how many terminals are waiting for the person,
+        // whenever the core says that changed. The label is set directly:
+        // nothing here asks for permission to notify.
+        waitingBadge = ControlRoomFeed.shared(ghostty).listen { [weak self] _ in
+            self?.setDockBadge()
+        }
+
         // System settings overrides
         UserDefaults.ghostty.register(defaults: [
             // Disable this so that repeated key events make it through to our terminal views.
@@ -949,7 +961,10 @@ class AppDelegate: NSObject,
             .compactMap { $0.windowController as? BaseTerminalController }
             .reduce(0) { $0 + ($1.bell ? 1 : 0) }
         let wantsBadge = ghostty.config.bellFeatures.contains(.attention) && bellCount > 0
-        let label = wantsBadge ? (bellCount > 99 ? "99+" : String(bellCount)) : nil
+        let bells = wantsBadge ? (bellCount > 99 ? "99+" : String(bellCount)) : nil
+        // "N waiting for you" comes first; the number is the core's.
+        let label = ControlRoomRules.dockBadge(
+            needsMe: ControlRoomFeed.shared(ghostty).latest?.needs_me, bells: bells)
         NSApp.dockTile.badgeLabel = label
         NSApp.dockTile.display()
     }

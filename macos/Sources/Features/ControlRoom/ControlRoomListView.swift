@@ -8,6 +8,14 @@ import SwiftUI
 /// colour is `ControlRoomLook`'s, and every position is
 /// `ControlRoomListLayout`'s; this file has no numbers of its own.
 ///
+/// **A row has nothing to press but itself.** It says that somebody is
+/// waiting and for what; it does not answer for the person. Approve and
+/// refuse buttons were on the waiting rows for one build and were taken
+/// off (the user, 2026-10-12): a row is too small to show what would be
+/// approved, and what an agent asks is often not a yes or a no. The person
+/// goes into the terminal. `tools/control-room-rows-only-tell.py` holds
+/// this.
+///
 /// Not wired to anything yet: the list is whatever it is handed, and the
 /// new-group button does nothing.
 struct ControlRoomListView: View {
@@ -17,11 +25,6 @@ struct ControlRoomListView: View {
     var list: ControlRoomList
     @Binding var selection: String?
     var onNewGroup: () -> Void = {}
-    /// Why an approve or a refuse on a row was not done, by row, while it
-    /// is being said.
-    var notices: [String: String] = [:]
-    /// Approve or refuse, pressed on a row.
-    var onAct: (ControlRoomRowActs.Kind, Row) -> Void = { _, _ in }
     /// Whether the chip's edge bends what is under it. Off, and nothing
     /// reads it yet: the table's `refractionShown` is still tentative, and
     /// the lift, the slide and the overshoot come first.
@@ -224,41 +227,23 @@ struct ControlRoomListView: View {
             .frame(height: CGFloat(Look.Side.rowLine1Height))
             Spacer(minLength: 0)
             HStack(spacing: CGFloat(Look.Side.rowItemGap)) {
-                if let notice = notices[row.id] {
-                    // Why the last press was not done. A whole sentence,
-                    // so it has the line to itself beside the glyph: the
-                    // word, the detail and the buttons come back when it
-                    // goes.
+                HStack(spacing: CGFloat(Look.Side.statusWordGap)) {
                     ControlRoomGlyph(shown: row.shown, pulses: row.pulses, still: still)
-                    Text(notice)
-                        .foregroundStyle(theme.text.color)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    HStack(spacing: CGFloat(Look.Side.statusWordGap)) {
-                        ControlRoomGlyph(shown: row.shown, pulses: row.pulses, still: still)
-                        Text(row.word)
-                            .fontWeight(Look.weight(Look.Font.weightEmphasis))
-                            .foregroundStyle(ink.word)
-                            .fixedSize()
-                    }
-                    Text(row.detail)
-                        .font(.system(size: CGFloat(Look.Font.body), design: row.detailIsCode ? .monospaced : .default))
+                    Text(row.word)
+                        .fontWeight(Look.weight(Look.Font.weightEmphasis))
+                        .foregroundStyle(ink.word)
+                        .fixedSize()
+                }
+                Text(row.detail)
+                    .font(.system(size: CGFloat(Look.Font.body), design: row.detailIsCode ? .monospaced : .default))
+                    .foregroundStyle(theme.textSecondary.color)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let others = ControlRoomList.othersText(row.others) {
+                    Text(others)
                         .foregroundStyle(theme.textSecondary.color)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if let others = ControlRoomList.othersText(row.others) {
-                        Text(others)
-                            .foregroundStyle(theme.textSecondary.color)
-                            .fixedSize()
-                    }
-                    // The core's word, not this row's kind. The detail
-                    // gives way; these do not shrink.
-                    if row.approvable {
-                        ControlRoomActButtons(tint: theme.text.color, quiet: theme.textSecondary.color) { onAct($0, row) }
-                    }
+                        .fixedSize()
                 }
             }
             .frame(height: CGFloat(Look.Side.rowLine2Height))
@@ -270,9 +255,6 @@ struct ControlRoomListView: View {
         .help(ControlRoomList.tooltip(for: row) ?? "")
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
-        // The row reads as one thing; its two buttons are its actions, by
-        // name, for whoever cannot aim at them.
-        .controlRoomRowActions(row.approvable) { onAct($0, row) }
     }
 
     private func quietRow(_ row: Row) -> some View {
@@ -357,7 +339,7 @@ struct ControlRoomListView: View {
     }
 }
 
-private extension InsettableShape {
+extension InsettableShape {
     /// Shadows that fall outside the shape and nowhere under it.
     ///
     /// The shapes they belong to are see-through, and a plain `.shadow`
@@ -390,18 +372,6 @@ private extension View {
 }
 
 private extension View {
-    /// Approve and refuse as named accessibility actions of a row.
-    @ViewBuilder
-    func controlRoomRowActions(_ shown: Bool, _ press: @escaping (ControlRoomRowActs.Kind) -> Void) -> some View {
-        if shown {
-            self
-                .accessibilityAction(named: Text(ControlRoomActButtons.name(.approve))) { press(.approve) }
-                .accessibilityAction(named: Text(ControlRoomActButtons.name(.refuse))) { press(.refuse) }
-        } else {
-            self
-        }
-    }
-
     /// Takes the keyboard, so that the arrow keys walk the rows, without
     /// the system's ring around the whole column: the selected row already
     /// says where the keyboard is.

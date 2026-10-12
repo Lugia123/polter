@@ -38,7 +38,9 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     }
 
     private var seen: ControlRoomSeenTracker?
-    private var rowActs: ControlRoomRowActs?
+    /// Watches which view has this window's keyboard: the frame on the
+    /// right says whether its terminal does.
+    private var watchingResponder: NSKeyValueObservation?
     private var watchingSelection: AnyCancellable?
     private var watchingList: AnyCancellable?
 
@@ -76,21 +78,6 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             })
         seen = tracker
 
-        // Approve and refuse on a row: sent to the core with the row's own
-        // two moments, and a refusal said on the row.
-        let acts = ControlRoomRowActs(
-            later: { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) },
-            perform: { act in
-                do {
-                    try actions.perform(act)
-                } catch {
-                    Ghostty.logger.warning("control room: a row's act was refused: \(String(describing: error), privacy: .public)")
-                    throw error
-                }
-            })
-        acts.onChange = { [weak self] notices in self?.model.notices = notices }
-        rowActs = acts
-        model.act = { [weak acts] kind, row in acts?.press(kind, on: row) }
         watchingSelection = model.$selection
             .removeDuplicates()
             .sink { [weak self] _ in
@@ -220,6 +207,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         detail.giveBack()
         // Its pane draws the terminal again from here on.
         lender.markReturned()
+        if model.detailHasKeyboard { model.detailHasKeyboard = false }
 
         guard toHome, let home = BaseTerminalController.controller(owning: view) else { return }
         // Its own window hands it the keyboard once the view is back in
@@ -237,8 +225,13 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// The lent terminal has the keyboard only while this window does and
     /// the terminal is what is focused in it.
     private func syncLentFocus() {
-        guard let view = lender.lent, let window else { return }
-        view.focusDidChange(window.isKeyWindow && view.isFirstResponder)
+        guard let view = lender.lent, let window else {
+            if model.detailHasKeyboard { model.detailHasKeyboard = false }
+            return
+        }
+        let has = window.isKeyWindow && view.isFirstResponder
+        view.focusDidChange(has)
+        if model.detailHasKeyboard != has { model.detailHasKeyboard = has }
     }
 
     /// The application is quitting: put the terminal back first, so that
@@ -320,7 +313,9 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         }
         let content = KeyForwardingHostingView(rootView: ControlRoomView(model: model, detail: detail))
         content.onKeyEquivalent = { [weak self] in self?.goToTab(for: $0) ?? false }
-        content.onKeyDown = { [weak self] in self?.actOnSelectedRow(for: $0) ?? false }
+        watchingResponder = window.observe(\.firstResponder) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.syncLentFocus() }
+        }
         window.contentView = content
 
         // All three are needed for the system to bring it back.
@@ -430,22 +425,6 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         return true
     }
 
-    // MARK: Approving and refusing from the keyboard
-
-    /// A key nothing in the list took (the list has the keyboard; a
-    /// terminal on the right would have taken it itself). See
-    /// `ControlRoomRules.rowAct`.
-    private func actOnSelectedRow(for event: NSEvent) -> Bool {
-        let relevant: NSEvent.ModifierFlags = [.command, .control, .option]
-        guard let kind = ControlRoomRules.rowAct(
-            key: event.charactersIgnoringModifiers ?? "",
-            modifiers: event.modifierFlags.intersection(relevant).rawValue),
-              let row = model.selectedRow, ControlRoomRowActs.act(kind, on: row) != nil
-        else { return false }
-        model.press(kind, on: row)
-        return true
-    }
-
     // MARK: Closing
 
     /// The system asking this tab's window to close. Never closes here: the
@@ -509,13 +488,6 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
 /// only a terminal would otherwise have understood.
 private final class KeyForwardingHostingView<Content: View>: NSHostingView<Content> {
     var onKeyEquivalent: ((NSEvent) -> Bool)?
-    /// A key press that came up the responder chain unhandled.
-    var onKeyDown: ((NSEvent) -> Bool)?
-
-    override func keyDown(with event: NSEvent) {
-        if onKeyDown?(event) == true { return }
-        super.keyDown(with: event)
-    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.type == .keyDown, onKeyEquivalent?(event) == true { return true }

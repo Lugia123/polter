@@ -99,23 +99,20 @@ final class ControlRoomModel: ObservableObject {
     /// False until the first snapshot since this control room was opened.
     private var hasOpened = false
 
-    /// Why an approve or a refuse on a row was not done, by row, while it
-    /// is being said (`ControlRoomRowActs`).
-    @Published var notices: [String: String] = [:]
-    /// Approve or refuse, pressed on a row. Set by whoever can reach the
-    /// core; nothing happens without it.
-    var act: (ControlRoomRowActs.Kind, ControlRoomList.Row) -> Void = { _, _ in }
-
-    /// A press of approve or refuse on `row`. **It acts and does nothing
-    /// else**: the row is not selected by it, so the right-hand side does
-    /// not change and the row is not counted as looked at.
-    func press(_ kind: ControlRoomRowActs.Kind, on row: ControlRoomList.Row) {
-        act(kind, row)
-    }
-
     /// The selected row, whoever selected it.
     var selectedRow: ControlRoomList.Row? {
         list?.rows.first { $0.id == selection }
+    }
+
+    /// Whether the terminal on the right-hand side has the keyboard: its
+    /// frame's edge says so. Written by `ControlRoomController`.
+    @Published var detailHasKeyboard = false
+
+    /// The title of the frame on the right while it holds a terminal; nil
+    /// while it holds a sentence.
+    var supervisorTitle: ControlRoomList.SupervisorTitle? {
+        guard detail.terminal != nil else { return nil }
+        return selectedRow?.supervisor
     }
 
     /// Told after every `choose`, including one that selects the row
@@ -190,6 +187,22 @@ protocol ControlRoomDetailHosting: AnyObject {
 final class ControlRoomDetailContainer: NSView, ControlRoomDetailHosting {
     private(set) var hostedGroup: String?
     private var hosted: NSView?
+
+    /// The terminal sits inside the supervisor's frame with its corners
+    /// rounded (`ControlRoomSupervisorFrame`). Rounded here, on the layer
+    /// that holds the terminal's own, because that is what clips it.
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = CGFloat(ControlRoomLook.Radius.supervisorInner)
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported for this view")
+    }
 
     @discardableResult
     func host(_ view: NSView, for group: String) -> NSView? {
