@@ -325,6 +325,18 @@ fn working_is_drawn_on_a_window_tab_only_if_the_look_says_so() {
 // -- done, and nobody has looked ------------------------------------------------
 
 #[test]
+fn approvable_is_the_cores_word_for_each_row() {
+    let l = list();
+    let rows: Vec<&str> = l.rows().filter(|r| r.approvable).map(|r| r.id.as_str()).collect();
+    assert_eq!(rows, ["web-app", "web-app-docs"]);
+    // Each of them has a terminal and the two moments an act hands back.
+    assert!(l.rows().filter(|r| r.approvable).all(|r| r.terminal.is_some() && r.event_ms.is_some()));
+    // And a snapshot that does not say is refused, not read as "no".
+    let cut = FIXTURE.replacen("\"approvable\"", "\"aprovable\"", 1);
+    assert_eq!(snapshot::decode(&cut), Err(DecodeError::Field("groups[0].approvable".into())));
+}
+
+#[test]
 fn unseen_is_the_cores_word_for_each_row() {
     let l = list();
     let unseen: Vec<&str> = l.rows().filter(|r| r.unseen).map(|r| r.id.as_str()).collect();

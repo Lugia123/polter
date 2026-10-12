@@ -115,18 +115,27 @@ enum ControlRoomRules {
 
     // MARK: Across a restart
 
-    /// What is kept: that it was open (the state existing at all), and
-    /// which group was selected. Nothing else -- the list is the core's and
-    /// is asked for again.
+    /// What is kept: that it was open (the state existing at all), which
+    /// group was selected, and whether it was a tab among terminal tabs
+    /// and the one in front. Nothing else -- the list is the core's and is
+    /// asked for again.
     struct Restorable: Codable, Equatable {
         static let currentVersion = 1
 
         var version: Int
         var selection: String?
+        /// It was a tab beside terminal tabs, not a window of its own. Nil
+        /// in a state written before this was kept: then it stays wherever
+        /// the system puts it.
+        var tabbed: Bool?
+        /// It was the tab in front in its group.
+        var inFront: Bool?
 
-        init(selection: String?) {
+        init(selection: String?, tabbed: Bool? = nil, inFront: Bool? = nil) {
             self.version = Self.currentVersion
             self.selection = selection
+            self.tabbed = tabbed
+            self.inFront = inFront
         }
 
         func encoded() -> Data? {
@@ -145,12 +154,45 @@ enum ControlRoomRules {
         }
     }
 
+    /// Which of the restored groups of terminal tabs the control room goes
+    /// back into, as an index into `groups`; nil to stay a window of its
+    /// own.
+    ///
+    /// The system puts restored windows back into their tab groups by a
+    /// name the windows share, and the control room's window does not get
+    /// the terminals' name on its own (it is given it when it is opened as
+    /// a tab) -- so it comes back alone, in the place its group was. Tabs
+    /// of one group are one frame, so "its group" is the one restored to
+    /// the frame the control room was restored to. With no such group --
+    /// those tabs were closed before the restart, or it was a window of
+    /// its own -- it stays alone.
+    static func groupToRejoin(wasTabbed: Bool?, alone: Bool, frame: CGRect, groups: [CGRect]) -> Int? {
+        guard wasTabbed == true, alone else { return nil }
+        return groups.firstIndex(of: frame)
+    }
+
     /// The selection to start with after a restart: the one that was kept,
     /// if that group is still listed; otherwise none. A group that went
     /// away overnight must not leave a selection pointing at nothing.
     static func restoredSelection(_ kept: String?, in rows: [ControlRoomList.Row]) -> String? {
         guard let kept, rows.contains(where: { $0.id == kept }) else { return nil }
         return kept
+    }
+
+    /// The key that approves or refuses the selected row, pressed while
+    /// the list has the keyboard: Y and N, with no modifier (shift is let
+    /// through, so that Caps Lock does not matter). 暂定. Return is left
+    /// alone -- it is to become "go into the terminal" -- and the
+    /// command-key pairs that would read naturally are taken: with Return
+    /// it is full screen. `modifiers` is the raw value of the command,
+    /// control and option flags that were down.
+    static func rowAct(key: String, modifiers: UInt) -> ControlRoomRowActs.Kind? {
+        guard modifiers == 0 else { return nil }
+        switch key.lowercased() {
+        case "y": return .approve
+        case "n": return .refuse
+        default: return nil
+        }
     }
 
     /// What becomes of "new split" asked of a terminal.

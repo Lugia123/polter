@@ -65,6 +65,17 @@ struct ControlRoomHomecoming: Equatable {
     static func homeComesForward(lent: Bool) -> Bool {
         !lent
     }
+
+    /// Whether, after something changed the layout of a lent terminal's
+    /// own tab, the pane that had the keyboard there is handed it again.
+    /// Changing the layout rebuilds the panes, and the window's keyboard
+    /// falls to nothing; ordinarily the terminal the action was about is
+    /// focused next, which is not done for a lent one. So the pane that
+    /// had it gets it back -- unless that pane is the lent terminal, whose
+    /// keyboard is in the control room.
+    static func focusedPaneKeepsKeyboard(focusedPaneIsLent: Bool) -> Bool {
+        !focusedPaneIsLent
+    }
 }
 
 /// Search bars that were open on a terminal when it moved.

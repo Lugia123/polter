@@ -45,6 +45,10 @@
 //!                                       what an act on this row hands
 //!                                       back (ControlAct.zig)
 //!       "needs_me": true, "unseen": false,
+//!       "approvable": true,   approve and refuse can be asked of this
+//!                             row's terminal (`attention.terminal`) now:
+//!                             it is waiting on an approval. What a host
+//!                             shows the two buttons by
 //!       "shown": "needs_you",   needs_you | trouble | done_unseen |
 //!                               working | none
 //!       "word": "needs_approval", "text": "等批准",
@@ -405,6 +409,10 @@ pub const GroupRow = struct {
     attention: AttentionOut,
     needs_me: bool,
     unseen: bool,
+    /// Approve and refuse can be asked of the terminal this row is about:
+    /// it is waiting on an approval. A host shows the two buttons by this
+    /// and not by reading `word` or `attention.kind`.
+    approvable: bool,
     shown: Attention.Shown,
     word: Attention.Word,
     text: []const u8,
@@ -421,6 +429,10 @@ pub const LoneRow = struct {
     attention: AttentionOut,
     needs_me: bool,
     unseen: bool,
+    /// Approve and refuse can be asked of the terminal this row is about:
+    /// it is waiting on an approval. A host shows the two buttons by this
+    /// and not by reading `word` or `attention.kind`.
+    approvable: bool,
     shown: Attention.Shown,
     word: Attention.Word,
     text: []const u8,
@@ -711,6 +723,13 @@ fn waitedMin(a: Attention, now_ms: u64, wake: *Wake) ?u64 {
     return waited / min_ms;
 }
 
+/// Whether approve and refuse can be asked of the terminal a row is about.
+/// A row put off is `snoozed`, and one that bubbled up from a worker is
+/// about that worker: both come out right from the kind and the terminal.
+fn approvable(a: Attention) bool {
+    return a.kind == .needs_approval and a.terminal != null;
+}
+
 const RowDisplay = struct { shown: Attention.Shown, word: Attention.Word };
 
 /// What a row draws: the attention's kind, in the words of the terminal it
@@ -881,6 +900,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .attention = .of(a, in.bus),
             .needs_me = Attention.needsMe(a),
             .unseen = Attention.unseen(a),
+            .approvable = approvable(a),
             .shown = d.shown,
             .word = d.word,
             .text = d.word.text(),
@@ -960,6 +980,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .attention = .of(a, in.bus),
             .needs_me = Attention.needsMe(a),
             .unseen = Attention.unseen(a),
+            .approvable = approvable(a),
             .shown = rd.shown,
             .word = rd.word,
             .text = rd.word.text(),
@@ -1878,6 +1899,38 @@ test "ControlRoom open_on: a group whose agent's terminal is closed counts as em
     const s = (try build(arena.allocator(), w.input(2 * min))).snapshot;
     try testing.expectEqualStrings("aaa-closed", s.groups[0].name);
     try testing.expectEqualStrings("bbb-open", s.open_on.?);
+}
+
+test "ControlRoom approvable: only a row waiting on an approval, and not once it is put off" {
+    var w: World = .init();
+    defer w.deinit();
+    try w.steward(0xa1, "asks", 0x21, "approval");
+    try w.hook(0xa1, .awaiting_approval, "Bash(x)", 1 * min);
+    try w.steward(0xa2, "wonders", 0x22, "question");
+    try w.hook(0xa2, .awaiting_input, null, 1 * min);
+    try w.steward(0xa3, "broke", 0x23, "failed");
+    try w.hook(0xa3, .turn_failed, "rate_limit", 1 * min);
+    try w.steward(0xa4, "done", 0x24, "finished");
+    try w.hook(0xa4, .turn_ended, "done", 1 * min);
+    try w.steward(0xa5, "later", 0x25, "put-off");
+    try w.hook(0xa5, .awaiting_approval, "Bash(y)", 1 * min);
+    try w.chat.setSnooze("put-off", .{ .next_event = w.wall_ms + 2 * min }, 2 * min);
+    // On its own, outside any group.
+    try w.terminal(0xb1, "stray", 0x26);
+    try w.bus.watch(0xb1, 0xa1);
+    try w.hook(0xb1, .awaiting_approval, "Bash(z)", 1 * min);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const s = (try build(arena.allocator(), w.input(3 * min))).snapshot;
+
+    try testing.expect((try rowNamed(s, "approval")).approvable);
+    try testing.expect(!(try rowNamed(s, "question")).approvable);
+    try testing.expect(!(try rowNamed(s, "failed")).approvable);
+    try testing.expect(!(try rowNamed(s, "finished")).approvable);
+    try testing.expect(!(try rowNamed(s, "put-off")).approvable);
+    try testing.expectEqual(@as(usize, 1), s.ungrouped.len);
+    try testing.expect(s.ungrouped[0].approvable);
 }
 
 test "ControlRoom snapshot: a worker minded outside any group is listed on its own" {

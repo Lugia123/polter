@@ -33,7 +33,7 @@ fn row(section: &str, r: &Row) {
     let event = r.terminal.as_ref().and(r.event_ms).map_or("-".to_string(), |m| m.to_string());
     println!(
         "row section={section} id={} shown={} word={} detail={} code={} waited={waited} others={} \
-         unseen={} terminal={} since={since} event={event}",
+         unseen={} approvable={} terminal={} since={since} event={event}",
         r.id,
         r.shown.name(),
         quote(&r.word),
@@ -41,6 +41,7 @@ fn row(section: &str, r: &Row) {
         r.detail_is_code,
         r.others,
         r.unseen,
+        r.approvable,
         r.terminal.as_deref().unwrap_or("-")
     );
 }

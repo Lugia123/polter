@@ -693,6 +693,12 @@
 "That time has already passed." = "That time has already passed.";
 "Nothing was done (%@)." = "Nothing was done (%@).";
 
+/* 总控台：行上的勾，批准这一次 */
+"Approve" = "Approve";
+
+/* 总控台：行上的叉，拒绝这一次 */
+"Refuse" = "Refuse";
+
 /* 总控台：右栏的总管终端 */
 "This terminal is in the Control Room." = "This terminal is in the Control Room.";
 "Bring It Back" = "Bring It Back";

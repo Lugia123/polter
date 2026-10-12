@@ -762,8 +762,16 @@ class BaseTerminalController: NSWindowController,
         }
 
         // Lent to the control room: the person is looking at it there, and
-        // the keyboard stays there. Only the tree changed.
-        guard ControlRoomHomecoming.homeComesForward(lent: ControlRoomLender.shared.isLent(target)) else { return }
+        // the keyboard stays there. Only the tree changed -- which rebuilt
+        // the panes here, so the one that had this window's keyboard is
+        // handed it again (the window is not made key).
+        guard ControlRoomHomecoming.homeComesForward(lent: ControlRoomLender.shared.isLent(target)) else {
+            if let focusedSurface, ControlRoomHomecoming.focusedPaneKeepsKeyboard(
+                focusedPaneIsLent: ControlRoomLender.shared.isLent(focusedSurface)) {
+                DispatchQueue.main.async { Ghostty.moveFocus(to: focusedSurface) }
+            }
+            return
+        }
 
         // Move focus to our window. Importantly this ensures that if we click the
         // reset zoom button in a tab bar of an unfocused tab that we become focused.

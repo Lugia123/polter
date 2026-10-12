@@ -167,10 +167,22 @@ enum ControlRoomLook {
         /// TENTATIVE (other candidate: 12). The design draws three unlabelled lanes 12 high and does not say which group each is. 12 is the design's height, with no label.
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
         static let timeLaneLabelledHeight: Double = 16.0
-        /// The column at a lane's left end that holds its group's name: twelve characters of the 13 pt monospaced face, which is the whole of most names. A longer one is cut at the end.
+        /// The column at a lane's left end that holds its group's name: thirteen characters of the 13 pt monospaced system face, measured (one is 8.04 wide), which is the whole of most names. A longer one is cut at the end.
         /// TENTATIVE (other candidate: 0). 0 is the design: no label.
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
-        static let timeLaneLabelWidth: Double = 96.0
+        static let timeLaneLabelWidth: Double = 112.0
+        /// The square a row's approve or refuse button is pressed in. The screenshot toolbar's button, whose tick and cross these are.
+        /// TENTATIVE (other candidate: 24). 24 stays inside the row's second line and its padding; 28 is the toolbar's own size and overlaps the line above by four.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let actButton: Double = 28.0
+        /// Between the two buttons. The screenshot toolbar's gap.
+        /// TENTATIVE (other candidate: 8). 8 is this list's own gap between a row's items.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let actButtonGap: Double = 4.0
+        /// How long a row says why an approve or a refuse was not done, in place of its detail.
+        /// TENTATIVE (other candidate: 6). Long enough to read a sentence twice.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let actNoticeSeconds: Double = 4.0
         /// Source: design v17, src/style.css.
         static let timeAxisHeight: Double = 24.0
         /// Source: design v17, src/style.css.
@@ -620,6 +632,9 @@ enum ControlRoomLook {
         "window_tab.working_glyph_shown",
         "side.time_lane_labelled_height",
         "side.time_lane_label_width",
+        "side.act_button",
+        "side.act_button_gap",
+        "side.act_notice_seconds",
         "stack_tab.inset",
         "selection.spring_damping",
         "selection.refraction_shown",

@@ -36,6 +36,9 @@ pub struct Row {
     pub others: u64,
     /// The core says nobody has looked at this since it stopped.
     pub unseen: bool,
+    /// The core says approve and refuse can be asked of this row's
+    /// terminal now: the two buttons are shown by this and nothing else.
+    pub approvable: bool,
     /// What an act on this row sends home (`act`).
     pub terminal: Option<String>,
     pub since_ms: u64,
@@ -84,6 +87,7 @@ impl List {
                 waited_min: g.waited_min,
                 others: g.more,
                 unseen: g.unseen,
+                approvable: g.approvable,
                 terminal: g.terminal.clone(),
                 since_ms: g.since_ms,
                 event_ms: g.event_ms,

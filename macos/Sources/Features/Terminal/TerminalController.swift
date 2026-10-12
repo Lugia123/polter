@@ -1034,6 +1034,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         let undoManager = (NSApp.delegate as? AppDelegate)?.undoManager
         undoManager?.beginUndoGrouping()
         all.forEach { $0.closeWindowImmediately() }
+        // The control room is a window too, and has nothing running in it
+        // to ask about.
+        ControlRoomController.closeWithAllWindows()
         undoManager?.setActionName("Close All Windows")
         undoManager?.endUndoGrouping()
     }
