@@ -16,8 +16,6 @@ import SwiftUI
 /// which of the three, and what the title says, is the core's
 /// (`PaneFrame`).
 struct PaneFrameView<Content: View>: View {
-    typealias Look = ControlRoomLook
-
     var wears: PaneFrame.Kind
     /// What the bar says while the frame holds a terminal.
     var title: PaneFrame.Title?
@@ -27,124 +25,194 @@ struct PaneFrameView<Content: View>: View {
     var focused: Bool
     /// The ground of what is inside; nil for the design's terminal ground.
     var well: Color?
+    /// See `PaneFrameChrome.cover`.
+    var cover: Color?
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        content().modifier(PaneFrameChrome(wears: wears, title: title, caption: caption, focused: focused, well: well, cover: cover))
+    }
+}
+
+/// A frame, put round a view **without changing which view it is**.
+///
+/// What is framed keeps its identity through every change of `wears` --
+/// from no frame to one, from one frame to another, and back. That is the
+/// whole reason this is one chain of modifiers whose values change, and not
+/// a choice between a framed view and a bare one: a choice is two places in
+/// SwiftUI's tree, and moving between them unmakes what was in one and
+/// makes it again in the other.
+///
+/// **What that cost when it was a choice** (task 1461). A terminal's view is
+/// an `NSView` that outlives SwiftUI's; whatever holds it for SwiftUI
+/// (`SurfaceScrollView`) takes it for its own when it is made. The split
+/// view is rebuilt whole whenever the tree changes shape, and the old one
+/// is still handed the new facts on its way out -- a pane that was alone is
+/// now one of two, so it is framed. With a choice, that made a second
+/// holder inside the view being thrown away, which took the terminal from
+/// the holder just made for the new one; then it was thrown away. The
+/// terminal was in no window: a blank pane on the commonest action there
+/// is, splitting a tab that had one terminal in it.
+///
+/// So: nothing here may be an `if` round `content`. Everything a frame
+/// draws is behind it or over it, and what changes is how much room is
+/// kept clear round it.
+struct PaneFrameChrome: ViewModifier {
+    typealias Look = ControlRoomLook
+
+    /// Which frame; nil for none, and then nothing is drawn and no room is
+    /// kept: what is framed is laid out and painted as if this were not
+    /// here.
+    var wears: PaneFrame.Kind?
+    var title: PaneFrame.Title?
+    var caption: String?
+    var focused: Bool
+    var well: Color?
     /// The colour of what the frame sits on, when the corners of what is
     /// inside have to be covered rather than clipped: a terminal's own
     /// view is not clipped by a SwiftUI shape, so its corners are painted
     /// over. Nil where something else clips it (the control room rounds
     /// the layer that holds the terminal).
     var cover: Color?
-    @ViewBuilder var content: () -> Content
+    /// Kept clear outside the frame, on every side.
+    var outside: CGFloat = 0
 
     @Environment(\.colorScheme) private var scheme
 
-    var body: some View {
+    func body(content: Content) -> some View {
         let theme = Look.theme(scheme)
+        content
+            .overlay { overContent(theme).allowsHitTesting(false) }
+            .padding(Self.room(for: wears))
+            .background { behind(theme) }
+            .overlay { overFrame(theme).allowsHitTesting(false) }
+            .padding(outside)
+    }
+
+    /// The room a frame keeps between its own edge and what is inside:
+    /// the title above, and a supervisor's border on the other three sides.
+    static func room(for wears: PaneFrame.Kind?) -> EdgeInsets {
         switch wears {
-        case .supervisor: supervisor(theme)
-        case .worker: worker(theme)
-        case .plain: plain(theme)
+        case .supervisor:
+            let bezel = CGFloat(Look.Space.supervisorBezel)
+            return EdgeInsets(top: CGFloat(Look.Pane.barHeight), leading: bezel, bottom: bezel, trailing: bezel)
+        case .worker:
+            return EdgeInsets(top: CGFloat(Look.Pane.barHeight), leading: 0, bottom: 0, trailing: 0)
+        case .plain:
+            return EdgeInsets(top: CGFloat(Look.Pane.plainTitleBandHeight), leading: 0, bottom: 0, trailing: 0)
+        case nil:
+            return EdgeInsets()
         }
     }
 
-    private func bar() -> PaneFrameBar {
-        PaneFrameBar(wears: wears, title: title, caption: caption)
+    private var hairline: CGFloat { CGFloat(Look.Line.hairline) }
+
+    private func ground(_ theme: Look.Theme) -> Color {
+        well ?? theme.terminalBackground.color
     }
 
-    private func supervisor(_ theme: Look.Theme) -> some View {
-        let bezel = CGFloat(Look.Space.supervisorBezel)
-        let hairline = CGFloat(Look.Line.hairline)
-        let outer = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.supervisorOuter), style: .continuous)
-        let inner = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.supervisorInner), style: .continuous)
-        return VStack(spacing: 0) {
-            bar()
-                .frame(height: CGFloat(Look.Pane.barHeight))
-                .padding(.horizontal, bezel + CGFloat(Look.Pane.supervisorBarPaddingX))
-            content()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(well ?? theme.terminalBackground.color)
-                .clipShape(inner)
-                .overlay {
+    /// Over what is inside, and exactly its size: a supervisor's terminal
+    /// has its corners rounded and a line round it.
+    @ViewBuilder
+    private func overContent(_ theme: Look.Theme) -> some View {
+        if wears == .supervisor {
+            let inner = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.supervisorInner), style: .continuous)
+            ZStack {
+                if let cover {
+                    // The bezel is not quite opaque, so what shows in a
+                    // corner is the bezel over the ground: paint both.
+                    PaneFrameCorners(radius: CGFloat(Look.Radius.supervisorInner), top: true).cover(cover)
+                    PaneFrameCorners(radius: CGFloat(Look.Radius.supervisorInner), top: true)
+                        .cover(theme.supervisorBezel.color)
+                }
+                inner.strokeBorder(theme.supervisorTerminalEdge.color, lineWidth: hairline)
+            }
+        }
+    }
+
+    /// Behind everything: the frame's own ground, the size of the frame.
+    @ViewBuilder
+    private func behind(_ theme: Look.Theme) -> some View {
+        switch wears {
+        case .supervisor:
+            let outer = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.supervisorOuter), style: .continuous)
+            let inner = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.supervisorInner), style: .continuous)
+            ZStack {
+                outer.shadowOutside(Look.Pane.supervisorFloats
+                    ? [(theme.supervisorShadowAlpha, Look.Pane.frameShadowBlur / 2, Look.Pane.frameShadowY)]
+                    : [])
+                // The line round it, deeper while the terminal has the keyboard.
+                outer.inset(by: -hairline)
+                    .strokeBorder((focused ? theme.supervisorEdgeFocused : theme.supervisorEdge).color, lineWidth: hairline)
+                outer.fill(theme.supervisorBezel.color)
+                // A highlight along the top edge only.
+                outer.strokeBorder(theme.supervisorHighlight.color, lineWidth: hairline)
+                    .mask(alignment: .top) { Rectangle().frame(height: CGFloat(Look.Radius.supervisorOuter)) }
+                // The ground of what is inside, where it is.
+                inner.fill(ground(theme)).padding(Self.room(for: .supervisor))
+            }
+        case .worker:
+            let line = CGFloat(Look.Pane.workerLine)
+            let shape = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.worker), style: .continuous)
+            ZStack {
+                shape.inset(by: -line).strokeBorder(theme.workerEdge.color, lineWidth: line)
+                // The terminal's ground all over, and the band across the top of it.
+                VStack(spacing: 0) {
+                    theme.workerBand.color
+                        .frame(height: CGFloat(Look.Pane.barHeight))
+                        .overlay(alignment: .bottom) {
+                            if Look.Pane.workerBandHasLineBelow {
+                                Rectangle().fill(theme.lineFaint.color).frame(height: hairline)
+                            }
+                        }
+                    Spacer(minLength: 0)
+                }
+                .background(ground(theme))
+                .clipShape(shape)
+            }
+        case .plain:
+            RoundedRectangle(cornerRadius: CGFloat(Look.Radius.plain), style: .continuous).fill(ground(theme))
+        case nil:
+            EmptyView()
+        }
+    }
+
+    /// Over the whole frame: its title, and what rounds the corners of a
+    /// terminal that reaches the frame's own bottom edge.
+    @ViewBuilder
+    private func overFrame(_ theme: Look.Theme) -> some View {
+        if let wears {
+            let padding: CGFloat = switch wears {
+            case .supervisor: CGFloat(Look.Space.supervisorBezel) + CGFloat(Look.Pane.supervisorBarPaddingX)
+            case .worker: CGFloat(Look.Pane.barPaddingX)
+            case .plain: CGFloat(Look.Pane.plainTitleInsetX)
+            }
+            ZStack {
+                VStack(spacing: 0) {
+                    PaneFrameBar(wears: wears, title: title, caption: caption)
+                        .frame(height: Self.room(for: wears).top)
+                        .padding(.horizontal, padding)
+                    Spacer(minLength: 0)
+                }
+                switch wears {
+                case .supervisor:
+                    EmptyView()
+                case .worker:
+                    let shape = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.worker), style: .continuous)
                     if let cover {
-                        // The bezel is not quite opaque, so what shows in a
-                        // corner is the bezel over the ground: paint both.
-                        PaneFrameCorners(radius: CGFloat(Look.Radius.supervisorInner), top: true).cover(cover)
-                        PaneFrameCorners(radius: CGFloat(Look.Radius.supervisorInner), top: true)
-                            .cover(theme.supervisorBezel.color)
+                        PaneFrameCorners(radius: CGFloat(Look.Radius.worker), top: false).cover(cover)
+                    }
+                    // Inside the edge: there in the dark theme only.
+                    shape.strokeBorder(theme.workerEdgeInner.color, lineWidth: CGFloat(Look.Pane.workerLine))
+                case .plain:
+                    let shape = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.plain), style: .continuous)
+                    if let cover {
+                        PaneFrameCorners(radius: CGFloat(Look.Radius.plain), top: false).cover(cover)
+                    }
+                    if Look.Pane.plainHasLine {
+                        shape.strokeBorder(theme.lineFaint.color, lineWidth: hairline)
                     }
                 }
-                .overlay(inner.strokeBorder(theme.supervisorTerminalEdge.color, lineWidth: hairline))
-                .padding([.horizontal, .bottom], bezel)
-        }
-        .background(
-            outer
-                .fill(theme.supervisorBezel.color)
-                .overlay(
-                    // A highlight along the top edge only.
-                    outer.strokeBorder(theme.supervisorHighlight.color, lineWidth: hairline)
-                        .mask(alignment: .top) { Rectangle().frame(height: CGFloat(Look.Radius.supervisorOuter)) }
-                )
-        )
-        // The line round it, deeper while the terminal has the keyboard.
-        .background(
-            outer.inset(by: -hairline)
-                .strokeBorder((focused ? theme.supervisorEdgeFocused : theme.supervisorEdge).color, lineWidth: hairline)
-        )
-        .background(
-            outer.shadowOutside(Look.Pane.supervisorFloats
-                ? [(theme.supervisorShadowAlpha, Look.Pane.frameShadowBlur / 2, Look.Pane.frameShadowY)]
-                : [])
-        )
-    }
-
-    private func worker(_ theme: Look.Theme) -> some View {
-        let line = CGFloat(Look.Pane.workerLine)
-        let radius = CGFloat(Look.Radius.worker)
-        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        return VStack(spacing: 0) {
-            bar()
-                .frame(height: CGFloat(Look.Pane.barHeight))
-                .padding(.horizontal, CGFloat(Look.Pane.barPaddingX))
-                .background(theme.workerBand.color)
-                .overlay(alignment: .bottom) {
-                    if Look.Pane.workerBandHasLineBelow {
-                        Rectangle().fill(theme.lineFaint.color).frame(height: CGFloat(Look.Line.hairline))
-                    }
-                }
-            content()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .background(well ?? theme.terminalBackground.color)
-        .clipShape(shape)
-        .overlay {
-            if let cover {
-                PaneFrameCorners(radius: radius, top: false).cover(cover)
-            }
-        }
-        // Inside the edge: there in the dark theme only.
-        .overlay(shape.strokeBorder(theme.workerEdgeInner.color, lineWidth: line))
-        .background(shape.inset(by: -line).strokeBorder(theme.workerEdge.color, lineWidth: line))
-    }
-
-    private func plain(_ theme: Look.Theme) -> some View {
-        let radius = CGFloat(Look.Radius.plain)
-        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        return VStack(spacing: 0) {
-            bar()
-                .frame(height: CGFloat(Look.Pane.plainTitleBandHeight))
-                .padding(.horizontal, CGFloat(Look.Pane.plainTitleInsetX))
-            content()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .background(well ?? theme.terminalBackground.color)
-        .clipShape(shape)
-        .overlay {
-            if let cover {
-                PaneFrameCorners(radius: radius, top: false).cover(cover)
-            }
-        }
-        .overlay {
-            if Look.Pane.plainHasLine {
-                shape.strokeBorder(theme.lineFaint.color, lineWidth: CGFloat(Look.Line.hairline))
             }
         }
     }
