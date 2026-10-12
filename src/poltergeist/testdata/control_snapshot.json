@@ -4,6 +4,20 @@
   "needs_me": 6,
   "groups_needing_me": 5,
   "groups_other": 3,
+  "header_waiting": {
+    "count": 6,
+    "of": "rows",
+    "number": "other",
+    "groups": 5,
+    "alone": 1
+  },
+  "header_quiet": {
+    "count": 3,
+    "of": "groups",
+    "number": "other",
+    "groups": 3,
+    "alone": 0
+  },
   "open_on": "web-app",
   "groups": [
     {

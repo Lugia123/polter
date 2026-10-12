@@ -229,7 +229,7 @@ struct ControlRoomListView: View {
 
     private var header: some View {
         HStack(spacing: 0) {
-            Text(ControlRoomList.headerText(waiting: list.waitingCount))
+            Text(list.waitingHeaderText)
                 .fontWeight(Look.weight(Look.Font.weightEmphasis))
             Spacer(minLength: CGFloat(Look.Side.rowItemGap))
             Button(action: beginNaming) {
@@ -322,7 +322,7 @@ struct ControlRoomListView: View {
     }
 
     private var quietHeader: some View {
-        Text(String(localized: "\(String(list.quietCount)) groups need nothing from you", comment: "总控台：左栏第二段的标题"))
+        Text(list.quietHeaderText)
             .foregroundStyle(theme.textSecondary.color)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, CGFloat(Look.Side.headerPaddingX))

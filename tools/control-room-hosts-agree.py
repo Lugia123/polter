@@ -79,6 +79,15 @@ high each side makes the block and where its parts start.
 
 **NOT COMPARED, and why.**
 
+  * The headings of a list that has the lone terminals' rows in it. The
+    macOS list takes its two headings from the core's `header_waiting` /
+    `header_quiet` (so many rows, not all of them groups: "6 waiting for
+    you"). The Windows panel draws those rows too and its headings are
+    still `groups_needing_me` / `groups_other` ("5 groups…"): that is a
+    known difference, to be closed by the Windows side reading the same
+    two. Until then the macOS list is made without them here, so that both
+    sides print the groups' counts.
+
   * The snapshot's own `now_ms`. The macOS list does not keep it, so one
     side has nothing to print.
   * The words "who is waiting" becomes ("Supervisor", "<name>, via the
@@ -221,7 +230,15 @@ do {
 // that breathes are compared with them in. What each of those rows is on
 // its own is compared again below (`lone`).
 let whole = snapshot
-let list = ControlRoomList(snapshot: snapshot)
+// The two headings the core writes for a list that has those rows
+// (`header_waiting` / `header_quiet`) count the lone terminals. The Windows
+// panel draws the rows now and still takes its headings from the groups'
+// counts, so the headings are left out of what is compared until it does
+// not: see NOT COMPARED.
+var noHeadings = snapshot
+noHeadings.header_waiting = nil
+noHeadings.header_quiet = nil
+let list = ControlRoomList(snapshot: noHeadings)
 
 print("count waiting=\(list.waitingCount) quiet=\(list.quietCount)")
 

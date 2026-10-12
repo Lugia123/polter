@@ -17,6 +17,7 @@
 //!
 //! ```
 //! {"act":"seen",     "group":"web-app"}
+//! {"act":"seen",     "terminal":"0x…"}                  a terminal in no group
 //! {"act":"snooze",   "group":"web-app"}                 until it changes
 //! {"act":"snooze",   "group":"web-app","until_ms":N}    until then (wall)
 //! {"act":"unsnooze", "group":"web-app"}
@@ -42,6 +43,7 @@
 //! |---|---|---|
 //! | any | `BadRequest` | not JSON, no such `act`, a field missing or of the wrong type |
 //! | seen, snooze, unsnooze | `NoSuchGroup` | the group is not there |
+//! | seen (a terminal) | `UnknownTerminal` | the terminal is not there |
 //! | snooze | `SnoozeInThePast` | `until_ms` is not after now |
 //! | approve, refuse, reply | `UnknownTerminal` | the terminal is not there |
 //! | approve, refuse | `PromptGone` | it is not waiting on an approval; or `since_ms` / `event_ms` are not the ones it has now; or its screen has moved since the box was drawn |
@@ -83,6 +85,8 @@ pub const Prompt = struct {
 
 pub const Act = union(enum) {
     seen: []const u8,
+    /// The person looked at the row of a terminal that is in no group.
+    seen_terminal: Id,
     snooze: struct { group: []const u8, until_ms: ?u64 },
     unsnooze: []const u8,
     approve: Prompt,
@@ -172,7 +176,11 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
     const Name = enum { seen, snooze, unsnooze, approve, refuse, reply, new_group, start_supervisor };
     const name = std.meta.stringToEnum(Name, try textOf(obj, "act")) orelse return error.BadRequest;
     return switch (name) {
-        .seen => .{ .seen = try textOf(obj, "group") },
+        // One or the other: a row is a group's or a lone terminal's.
+        .seen => if (obj.get("terminal")) |_|
+            (if (obj.get("group")) |_| return error.BadRequest else .{ .seen_terminal = try idOf(obj, "terminal") })
+        else
+            .{ .seen = try textOf(obj, "group") },
         .unsnooze => .{ .unsnooze = try textOf(obj, "group") },
         .snooze => .{ .snooze = .{
             .group = try textOf(obj, "group"),
@@ -209,7 +217,7 @@ fn promptOf(obj: std.json.ObjectMap) Refusal!Prompt {
 /// the real one.
 pub fn perform(
     act: Act,
-    bus: *const Bus,
+    bus: *Bus,
     chat: *Chat,
     host: Host,
     now_ms: u64,
@@ -220,6 +228,9 @@ pub fn perform(
             chat.markSeen(group, now_ms, wall_ms) catch return error.NoSuchGroup;
             host.persist(host.ctx, group, try chat.marksOf(group));
         },
+        // Nothing to write down: the mark is the terminal's, and a
+        // terminal's id does not outlive the run (`Bus.Entry.seen_ms`).
+        .seen_terminal => |id| if (!bus.markSeen(id, now_ms)) return error.UnknownTerminal,
         .snooze => |s| {
             if (!chat.exists(s.group)) return error.NoSuchGroup;
             const snooze: Chat.Marks.Snooze = if (s.until_ms) |until| until: {
@@ -680,4 +691,33 @@ test "ControlRoom start: a supervisor is started for a group that has none, once
     try testing.expectError(error.BadRequest, b.act(
         \\{"act":"start_supervisor","group":"nightly","role":7}
     , 11_002));
+}
+
+test "ControlRoom act: a terminal in no group is marked seen by its own id" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try testing.expectEqual(@as(?u64, null), b.bus.seenOf(term));
+
+    try b.act(
+        \\{"act":"seen","terminal":"0x00000000000000a1"}
+    , 5_000);
+    try testing.expectEqual(@as(?u64, 5_000), b.bus.seenOf(term));
+    // Nothing is written down for it, and no key goes anywhere.
+    try testing.expectEqual(@as(usize, 0), b.rec.persisted.items.len);
+    try testing.expectEqual(@as(usize, 0), b.rec.keys.items.len);
+    // A group's seen is still a group's.
+    try testing.expectEqual(@as(?u64, null), b.chat.seenRunMs("web-app"));
+
+    try testing.expectError(error.UnknownTerminal, b.act(
+        \\{"act":"seen","terminal":"0x00000000000000ff"}
+    , 6_000));
+    // A row is one or the other; both, or a terminal that is not an id, is
+    // not a request.
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"seen","group":"web-app","terminal":"0x00000000000000a1"}
+    , 6_000));
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"seen","terminal":"161"}
+    , 6_000));
+    try testing.expectEqual(@as(?u64, 5_000), b.bus.seenOf(term));
 }

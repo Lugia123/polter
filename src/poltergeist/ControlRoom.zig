@@ -24,6 +24,25 @@
 //!   "groups_needing_me": 4,   rows in `groups` with needs_me, in a row
 //!                             from the top. The list's header
 //!   "groups_other": 3,        the rest of `groups`
+//!   "header_waiting": {"count": 5, "of": "rows", "number": "other",
+//!                      "groups": 4, "alone": 1},
+//!   "header_quiet":   {"count": 3, "of": "groups", "number": "other",
+//!                      "groups": 3, "alone": 0},
+//!                             what the list's two headings say, for a host
+//!                             that draws a lone terminal's row among the
+//!                             groups'. count: the rows under that heading
+//!                             -- for header_waiting the same number as
+//!                             needs_me. of: groups (every one of them is a
+//!                             group: "N groups …") | rows (a lone terminal
+//!                             is among them: "N waiting …", no word for
+//!                             what they are). number: none | one | other,
+//!                             so that "1 group" and "3 groups" are the
+//!                             host's two sentences and not its arithmetic.
+//!                             groups / alone: the two that count is the
+//!                             sum of, for a host that says them apart.
+//!                             A host that draws only the groups' rows goes
+//!                             by groups_needing_me / groups_other instead,
+//!                             and is as true to what it draws
 //!   "open_on": "web-app" | null,
 //!                             the group a control room that opens with
 //!                             nothing selected selects: the first row
@@ -119,6 +138,8 @@
 //!           "screen":"unmeasured"|"unreadable"|"measured",
 //!           "alive":true, "duty":"on"|"off",
 //!           "held":false, "shielded":false } ] } ],
+//!                             (a row of `ungrouped` is marked seen by its
+//!                             terminal: {"act":"seen","terminal":"0x…"})
 //!   "ungrouped": [ { "id", "title", "attention", "needs_me", "unseen",
 //!       "shown", "word", "text", "waiter", "reason", "what" } ],
 //!   "terminals": [ { the member fields but `role`, and "event_ms",
@@ -690,12 +711,51 @@ pub const Pulse = struct {
     group: ?[]const u8,
 };
 
+/// What one of the list's two headings says: how many rows are under it,
+/// whether they are all groups, and which grammatical number that is.
+///
+/// **Here because a host was writing it from half the facts.** The heading
+/// said "1 group waiting for you" over three rows with a 3 on the Dock: the
+/// host had begun to draw lone terminals' rows and went on counting groups
+/// (2026-10-13). A count a host can only get right by adding two fields
+/// and comparing the sum with one is a count the core should have said.
+pub const HeaderOut = struct {
+    count: usize,
+    of: Of,
+    number: Number,
+    /// The two that `count` is the sum of: the rows that are groups, and
+    /// the rows that are lone terminals. For a host that wants to say them
+    /// apart; `count`, `of` and `number` are for one that does not.
+    groups: usize,
+    alone: usize,
+
+    pub const Of = enum { groups, rows };
+    pub const Number = enum { none, one, other };
+
+    fn over(groups: usize, alone: usize) HeaderOut {
+        const count = groups + alone;
+        return .{
+            .count = count,
+            .of = if (alone == 0) .groups else .rows,
+            .number = switch (count) {
+                0 => .none,
+                1 => .one,
+                else => .other,
+            },
+            .groups = groups,
+            .alone = alone,
+        };
+    }
+};
+
 pub const Snapshot = struct {
     rev: u64,
     now_ms: u64,
     needs_me: usize,
     groups_needing_me: usize,
     groups_other: usize,
+    header_waiting: HeaderOut,
+    header_quiet: HeaderOut,
     /// The row a control room opening with nothing selected starts on.
     /// The first, in the order below, of the groups that have an agent in
     /// them (`hasAgent`); the first group when every one is empty; null
@@ -1318,7 +1378,9 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
     var statuses: std.ArrayListUnmanaged(Attention.Status) = .empty;
     for (sorted) |t| {
         const in_group = grouped.get(t.id);
-        const s = statusOf(in, t.id, if (in_group) |seen| seen else null, &wake);
+        // In a group: looked at through its group. On its own: through its
+        // own row (`Bus.markSeen`).
+        const s = statusOf(in, t.id, if (in_group) |seen| seen else in.bus.seenOf(t.id), &wake);
         try statuses.append(arena, s);
 
         const d = Attention.display(s);
@@ -1353,19 +1415,23 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         const a = Attention.ofTerminal(s);
         const rd = rowDisplay(a, s);
         const reason: Reason = if (a.kind == s.kind) try reasonOf(arena, in, s, null, &wake) else .none;
-        try lone.append(arena, .{ .attention = a, .row = .{
-            .id = .{ .id = t.id },
-            .title = try arena.dupe(u8, t.title),
-            .attention = .of(a, in.bus),
-            .needs_me = Attention.needsMe(a),
-            .unseen = Attention.unseen(a),
-            .shown = rd.shown,
-            .word = rd.word,
-            .text = rd.word.text(),
-            .waiter = if (Attention.needsMe(a)) .{ .is = .terminal, .name = "" } else .none,
-            .reason = reason,
-            .what = try whatOf(arena, in, s, reason),
-        } });
+        try lone.append(arena, .{
+            .attention = a,
+            .row = .{
+                .id = .{ .id = t.id },
+                .title = try arena.dupe(u8, t.title),
+                .attention = .of(a, in.bus),
+                .needs_me = Attention.needsMe(a),
+                // As for a group's row: looking at it changes it.
+                .unseen = Attention.unseen(a) or reason.from == .raised,
+                .shown = rd.shown,
+                .word = rd.word,
+                .text = rd.word.text(),
+                .waiter = if (Attention.needsMe(a)) .{ .is = .terminal, .name = "" } else .none,
+                .reason = reason,
+                .what = try whatOf(arena, in, s, reason),
+            },
+        });
     }
     std.mem.sort(Lone, lone.items, {}, loneBefore);
 
@@ -1459,6 +1525,8 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .needs_me = needing + lone_needing,
             .groups_needing_me = needing,
             .groups_other = group_rows.len - needing,
+            .header_waiting = .over(needing, lone_needing),
+            .header_quiet = .over(group_rows.len - needing, lone_rows.len - lone_needing),
             .open_on = open_on,
             .groups = group_rows,
             .ungrouped = lone_rows,
@@ -2923,4 +2991,161 @@ test "ControlRoom wake: hooks that never came are said once, and there is no mom
     try testing.expectEqual(@as(usize, 1), read.value.ungrouped.len);
     try testing.expectEqual(Attention.Kind.suspect_stuck, read.value.ungrouped[0].attention.kind);
     try testing.expectEqual(Attention.Source.hook_missing, read.value.ungrouped[0].attention.source);
+}
+
+test "ControlRoom header: with terminals on their own among the rows, the heading, the rows and the Dock are one number" {
+    // What was on a real window: "1 group waiting for you", three rows
+    // under it, and 3 on the Dock.
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    try w.approval(0xa1, "Bash", "npm ci", 1 * min);
+    // Two agents nobody minds, in no group, each stopped on a prompt.
+    try w.terminal(0xc1, "one", 0x22);
+    try w.approval(0xc1, "Bash", "git push", 1 * min);
+    try w.terminal(0xc2, "two", 0x23);
+    try w.approval(0xc2, "Bash", "rm -rf dist", 1 * min);
+    // And one that needs nothing, with a group that needs nothing.
+    try w.terminal(0xc3, "three", 0x24);
+    try w.hook(0xc3, .session_started, null, 1 * min);
+    try w.steward(0xa2, "notes", 0x25, "notes");
+    try w.hook(0xa2, .session_started, null, 1 * min);
+
+    var s = (try build(arena.allocator(), w.input(2 * min))).snapshot;
+    var waiting_rows: usize = 0;
+    var quiet_rows: usize = 0;
+    for (s.groups) |g| {
+        if (g.needs_me) waiting_rows += 1 else quiet_rows += 1;
+    }
+    for (s.ungrouped) |t| {
+        if (t.needs_me) waiting_rows += 1 else quiet_rows += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), waiting_rows);
+
+    // The three places, one number.
+    try testing.expectEqual(waiting_rows, s.header_waiting.count);
+    try testing.expectEqual(s.needs_me, s.header_waiting.count);
+    // Not all of them are groups, so the heading does not call them that.
+    try testing.expectEqual(HeaderOut.Of.rows, s.header_waiting.of);
+    try testing.expectEqual(HeaderOut.Number.other, s.header_waiting.number);
+    try testing.expectEqual(@as(usize, 1), s.header_waiting.groups);
+    try testing.expectEqual(@as(usize, 2), s.header_waiting.alone);
+
+    // The second heading is held to the same.
+    try testing.expectEqual(quiet_rows, s.header_quiet.count);
+    try testing.expectEqual(@as(usize, 2), s.header_quiet.count);
+    try testing.expectEqual(HeaderOut.Of.rows, s.header_quiet.of);
+
+    // A host that draws only the groups' rows still has its own two
+    // numbers, and they are still only the groups.
+    try testing.expectEqual(@as(usize, 1), s.groups_needing_me);
+    try testing.expectEqual(@as(usize, 1), s.groups_other);
+
+    // Only groups under a heading: it says "groups", and one is "one".
+    var only: World = .init();
+    defer only.deinit();
+    try only.steward(0xa1, "web-app", 0x21, "web-app");
+    try only.approval(0xa1, "Bash", "npm ci", 1 * min);
+    s = (try build(arena.allocator(), only.input(2 * min))).snapshot;
+    try testing.expectEqual(HeaderOut{ .count = 1, .of = .groups, .number = .one, .groups = 1, .alone = 0 }, s.header_waiting);
+    try testing.expectEqual(HeaderOut{ .count = 0, .of = .groups, .number = .none, .groups = 0, .alone = 0 }, s.header_quiet);
+
+    // One lone terminal waiting and nothing else: one, and not a group.
+    var lone: World = .init();
+    defer lone.deinit();
+    try lone.terminal(0xc1, "one", 0x22);
+    try lone.approval(0xc1, "Bash", "git push", 1 * min);
+    s = (try build(arena.allocator(), lone.input(2 * min))).snapshot;
+    try testing.expectEqual(HeaderOut{ .count = 1, .of = .rows, .number = .one, .groups = 0, .alone = 1 }, s.header_waiting);
+    try testing.expectEqual(@as(usize, 1), s.needs_me);
+    try testing.expectEqual(@as(usize, 0), s.groups_needing_me);
+}
+
+test "ControlRoom seen: a terminal on its own is looked at through its own row" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    // An agent nobody minds, in no group, finishes a turn.
+    try w.terminal(0xc1, "stray", 0x21);
+    try w.hook(0xc1, .turn_started, null, 1 * min);
+    try w.hook(0xc1, .turn_ended, "done", 2 * min);
+    {
+        const s = (try build(arena.allocator(), w.input(3 * min))).snapshot;
+        try testing.expectEqual(@as(usize, 1), s.ungrouped.len);
+        try testing.expectEqual(Attention.Kind.done_unseen, s.ungrouped[0].attention.kind);
+        try testing.expect(s.ungrouped[0].unseen);
+    }
+
+    // The person looks at its row. It is no longer something not looked at.
+    try testing.expect(w.bus.markSeen(0xc1, 3 * min));
+    {
+        const s = (try build(arena.allocator(), w.input(4 * min))).snapshot;
+        try testing.expect(!s.ungrouped[0].unseen);
+        try testing.expect(s.ungrouped[0].attention.kind != .done_unseen);
+    }
+
+    // It finishes another turn afterwards: that one has not been looked at.
+    try w.hook(0xc1, .turn_started, null, 5 * min);
+    try w.hook(0xc1, .turn_ended, "done again", 6 * min);
+    {
+        const s = (try build(arena.allocator(), w.input(7 * min))).snapshot;
+        try testing.expect(s.ungrouped[0].unseen);
+    }
+
+    // A terminal the bus does not know has no row to look at.
+    try testing.expect(!w.bus.markSeen(0xdead, 7 * min));
+}
+
+test "ControlRoom seen: what a supervisor with no group raises is withdrawn by looking at its row" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    // A supervisor minding a worker, neither in any group.
+    try w.terminal(0xa1, "boss", 0x21);
+    try w.bus.addSupervisor(0xa1);
+    try w.hook(0xa1, .session_started, null, 1 * min);
+    const said = "the worker wants to force-push: yours to decide";
+    try testing.expect(try w.bus.raise(0xa1, 2 * min, said));
+
+    const rowOf = struct {
+        fn of(s: Snapshot, id: u64) !LoneRow {
+            for (s.ungrouped) |r| if (r.id.id == id) return r;
+            return error.TestRowMissing;
+        }
+    }.of;
+    {
+        const s = (try build(arena.allocator(), w.input(2 * min + 1))).snapshot;
+        const row = try rowOf(s, 0xa1);
+        try testing.expect(row.needs_me);
+        try testing.expectEqual(Reason.From.raised, row.reason.from);
+        try testing.expectEqualStrings(said, row.reason.text);
+        // Looking at it is what withdraws it, and the row says so: this is
+        // what a host starts its "seen" clock on.
+        try testing.expect(row.unseen);
+        try testing.expectEqual(@as(usize, 1), s.header_waiting.count);
+    }
+
+    try testing.expect(w.bus.markSeen(0xa1, 3 * min));
+    {
+        const s = (try build(arena.allocator(), w.input(3 * min + 1))).snapshot;
+        const row = try rowOf(s, 0xa1);
+        try testing.expect(row.reason.from != .raised);
+        try testing.expect(!row.needs_me);
+        try testing.expect(!row.unseen);
+        try testing.expectEqual(@as(usize, 0), s.needs_me);
+    }
+
+    // Raised again after that: there again.
+    try testing.expect(try w.bus.raise(0xa1, 4 * min, "and now this"));
+    {
+        const s = (try build(arena.allocator(), w.input(4 * min + 1))).snapshot;
+        try testing.expect((try rowOf(s, 0xa1)).needs_me);
+    }
 }

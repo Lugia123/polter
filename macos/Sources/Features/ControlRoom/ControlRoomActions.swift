@@ -28,6 +28,8 @@ struct ControlRoomActions {
 
     enum Act: Equatable {
         case seen(group: String)
+        /// The person looked at the row of a terminal that is in no group.
+        case seenTerminal(String)
         /// Until its state changes; or, with a time, until then (wall clock).
         case snooze(group: String, untilMs: UInt64? = nil)
         case unsnooze(group: String)
@@ -132,6 +134,8 @@ struct ControlRoomActions {
         switch act {
         case .seen(let group):
             return ["act": "seen", "group": group]
+        case .seenTerminal(let terminal):
+            return ["act": "seen", "terminal": terminal]
         case .snooze(let group, let untilMs):
             var request: [String: Any] = ["act": "snooze", "group": group]
             if let untilMs { request["until_ms"] = untilMs }
@@ -164,6 +168,20 @@ struct ControlRoomActions {
         // and the core answers for that.
         if let eventMs = target.eventMs { request["event_ms"] = eventMs }
         return request
+    }
+
+    /// What "this row has been looked at" is said as, for the row with this
+    /// id among `rows`; nil when no such row is listed any more.
+    ///
+    /// A group's row is seen by the group's name. A terminal that is in no
+    /// group has no group to name, and for as long as only the first was
+    /// sent, what such a terminal finished stayed "not looked at" and what
+    /// it raised could not be withdrawn. Which kind a row is the list
+    /// already says (`alone`); nothing is worked out from its id.
+    static func seen(rowId: String, in rows: [ControlRoomList.Row]) -> Act? {
+        guard let row = rows.first(where: { $0.id == rowId }) else { return nil }
+        if let alone = row.alone { return .seenTerminal(alone.terminal) }
+        return .seen(group: row.id)
     }
 
     /// Do it. Success says nothing; a refusal is thrown, by name.
@@ -225,9 +243,11 @@ final class ControlRoomSeenTracker {
         selected = row?.id
         selectedUnseen = row?.unseen ?? false
         // Only a row the core says has not been looked at is worth saying
-        // anything about -- and only a group's: `seen` names a group, and a
-        // terminal on its own is in none.
-        guard let row, row.unseen, row.alone == nil else { return }
+        // anything about. A group's and a lone terminal's alike: which of
+        // the two is said at the end is `ControlRoomActions.seen(rowId:in:)`.
+        // (A lone terminal's row was left out here while `seen` could only
+        // name a group; it can name a terminal now.)
+        guard let row, row.unseen else { return }
         wait(for: row.id)
     }
 
@@ -251,7 +271,7 @@ final class ControlRoomSeenTracker {
         }
         let was = selectedUnseen
         selectedUnseen = row?.unseen ?? false
-        guard let row, row.unseen, !was, row.alone == nil else { return }
+        guard let row, row.unseen, !was else { return }
         generation += 1
         wait(for: row.id)
     }
