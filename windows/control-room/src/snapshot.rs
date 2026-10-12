@@ -283,6 +283,71 @@ impl Pane {
     }
 }
 
+/// The glyph at the right end of a pane's title: the five a row draws, and
+/// `Held`, which only a title does (`ControlRoom.zig`, `Bar`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarShown {
+    NeedsYou,
+    Trouble,
+    DoneUnseen,
+    Working,
+    None,
+    /// The person is holding the terminal, and nobody is waiting on it.
+    Held,
+}
+
+impl BarShown {
+    pub const ALL: [BarShown; 6] =
+        [BarShown::NeedsYou, BarShown::Trouble, BarShown::DoneUnseen, BarShown::Working, BarShown::None, BarShown::Held];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BarShown::Held => "held",
+            BarShown::NeedsYou => Shown::NeedsYou.name(),
+            BarShown::Trouble => Shown::Trouble.name(),
+            BarShown::DoneUnseen => Shown::DoneUnseen.name(),
+            BarShown::Working => Shown::Working.name(),
+            BarShown::None => Shown::None.name(),
+        }
+    }
+
+    fn parse(s: &str) -> Option<BarShown> {
+        BarShown::ALL.into_iter().find(|v| v.name() == s)
+    }
+
+    /// The same glyph, for a status that is not a pane's.
+    pub fn of(status: Shown) -> BarShown {
+        match status {
+            Shown::NeedsYou => BarShown::NeedsYou,
+            Shown::Trouble => BarShown::Trouble,
+            Shown::DoneUnseen => BarShown::DoneUnseen,
+            Shown::Working => BarShown::Working,
+            Shown::None => BarShown::None,
+        }
+    }
+
+    /// The status glyph this is; none for `Held`, which is not one of them.
+    pub fn status(self) -> Option<Shown> {
+        match self {
+            BarShown::NeedsYou => Some(Shown::NeedsYou),
+            BarShown::Trouble => Some(Shown::Trouble),
+            BarShown::DoneUnseen => Some(Shown::DoneUnseen),
+            BarShown::Working => Some(Shown::Working),
+            BarShown::None => Some(Shown::None),
+            BarShown::Held => None,
+        }
+    }
+}
+
+/// What the right end of a pane's title draws, as the core worked it out.
+/// **A host draws this pair and makes none of its own** out of the status
+/// and whether the terminal is held: which of them wins is the core's rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bar {
+    pub shown: BarShown,
+    pub text: String,
+}
+
 /// One open terminal, as much of it as its pane's frame shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Terminal {
@@ -294,6 +359,9 @@ pub struct Terminal {
     /// None in a snapshot from before the core said it; such a terminal is
     /// drawn as an ordinary one.
     pub pane: Option<Pane>,
+    /// None in a snapshot from before the core said it; the title then
+    /// says the terminal's status, as it did before.
+    pub bar: Option<Bar>,
 }
 
 /// One window tab and the one glyph it carries.
@@ -515,12 +583,24 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
                     Some(Pane::parse(&name).ok_or(DecodeError::UnknownValue(format!("{path}.pane={name}")))?)
                 }
             };
+            let bar = match t.get("bar") {
+                None => None,
+                Some(b) => {
+                    let at = format!("{path}.bar");
+                    let name = text(b, &at, "shown")?;
+                    Some(Bar {
+                        shown: BarShown::parse(&name).ok_or(DecodeError::UnknownValue(format!("{at}.shown={name}")))?,
+                        text: text(b, &at, "text")?,
+                    })
+                }
+            };
             terminals.push(Terminal {
                 id: text(t, &path, "id")?,
                 title: text(t, &path, "title")?,
                 shown: Shown::parse(&shown).ok_or(DecodeError::UnknownShown(shown))?,
                 text: text(t, &path, "text")?,
                 pane,
+                bar,
             });
         }
     }

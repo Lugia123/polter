@@ -44,7 +44,8 @@ window tab draws it; which frame the pane of every terminal wears
 one it does not and none at all, in a split tab, alone in its tab, with the
 setting off and in the quick terminal: the frame, the name, the glyph and
 the word -- whether the tab's ground then shows, and the English word for
-what each frame is; what the core says of every group's
+what each frame is -- the glyph and the word being the pair the core gives
+for the title's right end, `held` among them; what the core says of every group's
 supervisor (its state, whether one can be started, why the last try made
 none, the role and the directory), the roles one can be started in and
 whether there is a choice; when a group just made is selected; where a tab
@@ -321,7 +322,7 @@ for (placeName, place) in panePlaces {
         let d = PaneFrame.drawn(terminal: id, ownName: "own", at: place, in: terminals)
         if let d {
             print("pane place=\(placeName) terminal=\(id ?? "-") wears=\(d.wears.rawValue) "
-                + "name=\(quote(d.title.name)) shown=\(shownName(d.title.shown)) word=\(quote(d.title.word))")
+                + "name=\(quote(d.title.name)) shown=\(d.title.shown.rawValue) word=\(quote(d.title.word))")
         } else {
             print("pane place=\(placeName) terminal=\(id ?? "-") wears=-")
         }
