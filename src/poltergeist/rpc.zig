@@ -6007,6 +6007,10 @@ pub fn showsAnAgent(req: Request) bool {
             .turn_failed,
             .awaiting_approval,
             .awaiting_input,
+            // The status line saying it wrote the allowance file. Not a
+            // hook, and the bus does nothing with it -- but only a CLI
+            // that is running calls its status line, so it is there.
+            .allowance_written,
             => true,
         },
         else => true,

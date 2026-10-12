@@ -7,6 +7,8 @@ const internal_os = @import("../os/main.zig");
 const quota = @import("../poltergeist/quota.zig");
 const QuotaWatch = @import("../poltergeist/QuotaWatch.zig");
 const daylog = @import("../poltergeist/daylog.zig");
+const AgentEvent = @import("../poltergeist/agent_event.zig");
+const hook = @import("hook.zig");
 
 const log = std.log.scoped(.statusline);
 
@@ -64,12 +66,23 @@ pub fn run(alloc: Allocator) !u8 {
     const io = global.io();
 
     const dir = QuotaWatch.dropDir(aa, io, &env) catch null;
+    // The Polter this terminal is in, when it is in one.
+    const polter: ?Polter = if (env.get("GHOSTTY_POLTER_SOCKET")) |socket|
+        (if (env.get("GHOSTTY_POLTER_TOKEN")) |token| .{ .socket = socket, .token = token } else null)
+    else
+        null;
     return runWith(aa, io, env.get(chain_env), dir, @intCast(@max(0, daylog.nowMs(io))), .{
         .lang = .of(env.get("LC_ALL"), env.get("LC_MESSAGES"), env.get("LANG")),
         // https://no-color.org: set to anything but empty.
         .color = if (env.get("NO_COLOR")) |v| v.len == 0 else true,
-    });
+    }, polter);
 }
+
+/// Where to say that the allowance was written.
+pub const Polter = struct {
+    socket: []const u8,
+    token: []const u8,
+};
 
 /// How the line this writes itself is written.
 pub const Own = struct {
@@ -86,6 +99,7 @@ pub fn runWith(
     drop_dir: ?[]const u8,
     now_ms: u64,
     own: Own,
+    polter: ?Polter,
 ) u8 {
     // Read before anything else can fail, so the CLI's pipe is always
     // drained.
@@ -107,9 +121,18 @@ pub fn runWith(
         log.warn("+statusline: its own line was not written err={t}", .{err});
     };
 
-    if (drop_dir) |dir| keep(aa, io, dir, payload, now_ms) catch |err| {
-        log.warn("+statusline: the allowance was not kept err={t}", .{err});
-    };
+    if (drop_dir) |dir| {
+        if (keep(aa, io, dir, payload, now_ms)) |kept| {
+            // **Said, because nobody is watching the file.** Polter reads
+            // it when something happens in a terminal, and this may be
+            // written after the last thing that did. Only when something
+            // was written, and never held against the status line: a
+            // Polter that does not answer costs a log line.
+            if (kept) if (polter) |p| tell(io, p);
+        } else |err| {
+            log.warn("+statusline: the allowance was not kept err={t}", .{err});
+        }
+    }
 
     if (child) |*c| {
         const term = c.wait(io) catch return 1;
@@ -162,9 +185,20 @@ fn say(aa: Allocator, io: std.Io, payload: []const u8, now_ms: u64, own: Own) !v
 /// Nothing is written when it says nothing -- before a session's first
 /// answer, and always for an account that pays by the token -- so the last
 /// number stays and grows old, which is what it is.
-fn keep(aa: Allocator, io: std.Io, dir: []const u8, payload: []const u8, now_ms: u64) !void {
-    const windows = quota.fromClaudeStatus(aa, payload) orelse return;
+/// Keep the allowance the payload carries. False when it carries none --
+/// a session that has not been answered yet -- and nothing was written.
+fn keep(aa: Allocator, io: std.Io, dir: []const u8, payload: []const u8, now_ms: u64) !bool {
+    const windows = quota.fromClaudeStatus(aa, payload) orelse return false;
     try QuotaWatch.writeDrop(aa, io, dir, .claude, windows, now_ms);
+    return true;
+}
+
+fn tell(io: std.Io, polter: Polter) void {
+    var ev: AgentEvent.Event = .none;
+    ev.event = .allowance_written;
+    hook.deliver(io, polter.socket, polter.token, ev) catch |err| {
+        log.warn("+statusline: Polter was not told the allowance was written err={t}", .{err});
+    };
 }
 
 // -- tests ------------------------------------------------------------------
@@ -197,7 +231,7 @@ fn runChild(alloc: Allocator, chain: ?[]const u8, drop_dir: ?[]const u8, payload
         _ = sys.close(out_pipe[1]);
         var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
         var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-        const code = runWith(arena.allocator(), threaded.io(), chain, drop_dir, 1_700_000_000_000, .{ .lang = .zh, .color = false });
+        const code = runWith(arena.allocator(), threaded.io(), chain, drop_dir, 1_700_000_000_000, .{ .lang = .zh, .color = false }, null);
         std.c._exit(code);
     }
 
