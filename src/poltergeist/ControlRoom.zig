@@ -138,6 +138,8 @@
 //!           "screen":"unmeasured"|"unreadable"|"measured",
 //!           "alive":true, "duty":"on"|"off",
 //!           "held":false, "shielded":false } ] } ],
+//!                             (a row of `ungrouped` is marked seen by its
+//!                             terminal: {"act":"seen","terminal":"0x…"})
 //!   "ungrouped": [ { "id", "title", "attention", "needs_me", "unseen",
 //!       "shown", "word", "text", "waiter", "reason", "what" } ],
 //!   "terminals": [ { the member fields but `role`, and "event_ms",
@@ -1328,7 +1330,9 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
     var statuses: std.ArrayListUnmanaged(Attention.Status) = .empty;
     for (sorted) |t| {
         const in_group = grouped.get(t.id);
-        const s = statusOf(in, t.id, if (in_group) |seen| seen else null, &wake);
+        // In a group: looked at through its group. On its own: through its
+        // own row (`Bus.markSeen`).
+        const s = statusOf(in, t.id, if (in_group) |seen| seen else in.bus.seenOf(t.id), &wake);
         try statuses.append(arena, s);
 
         const d = Attention.display(s);
@@ -1362,19 +1366,23 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         const a = Attention.ofTerminal(s);
         const rd = rowDisplay(a, s);
         const reason: Reason = if (a.kind == s.kind) try reasonOf(arena, in, s, null, &wake) else .none;
-        try lone.append(arena, .{ .attention = a, .row = .{
-            .id = .{ .id = t.id },
-            .title = try arena.dupe(u8, t.title),
-            .attention = .of(a, in.bus),
-            .needs_me = Attention.needsMe(a),
-            .unseen = Attention.unseen(a),
-            .shown = rd.shown,
-            .word = rd.word,
-            .text = rd.word.text(),
-            .waiter = if (Attention.needsMe(a)) .{ .is = .terminal, .name = "" } else .none,
-            .reason = reason,
-            .what = try whatOf(arena, in, s, reason),
-        } });
+        try lone.append(arena, .{
+            .attention = a,
+            .row = .{
+                .id = .{ .id = t.id },
+                .title = try arena.dupe(u8, t.title),
+                .attention = .of(a, in.bus),
+                .needs_me = Attention.needsMe(a),
+                // As for a group's row: looking at it changes it.
+                .unseen = Attention.unseen(a) or reason.from == .raised,
+                .shown = rd.shown,
+                .word = rd.word,
+                .text = rd.word.text(),
+                .waiter = if (Attention.needsMe(a)) .{ .is = .terminal, .name = "" } else .none,
+                .reason = reason,
+                .what = try whatOf(arena, in, s, reason),
+            },
+        });
     }
     std.mem.sort(Lone, lone.items, {}, loneBefore);
 
@@ -2931,4 +2939,90 @@ test "ControlRoom header: with terminals on their own among the rows, the headin
     try testing.expectEqual(HeaderOut{ .count = 1, .of = .rows, .number = .one, .groups = 0, .alone = 1 }, s.header_waiting);
     try testing.expectEqual(@as(usize, 1), s.needs_me);
     try testing.expectEqual(@as(usize, 0), s.groups_needing_me);
+}
+
+test "ControlRoom seen: a terminal on its own is looked at through its own row" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    // An agent nobody minds, in no group, finishes a turn.
+    try w.terminal(0xc1, "stray", 0x21);
+    try w.hook(0xc1, .turn_started, null, 1 * min);
+    try w.hook(0xc1, .turn_ended, "done", 2 * min);
+    {
+        const s = (try build(arena.allocator(), w.input(3 * min))).snapshot;
+        try testing.expectEqual(@as(usize, 1), s.ungrouped.len);
+        try testing.expectEqual(Attention.Kind.done_unseen, s.ungrouped[0].attention.kind);
+        try testing.expect(s.ungrouped[0].unseen);
+    }
+
+    // The person looks at its row. It is no longer something not looked at.
+    try testing.expect(w.bus.markSeen(0xc1, 3 * min));
+    {
+        const s = (try build(arena.allocator(), w.input(4 * min))).snapshot;
+        try testing.expect(!s.ungrouped[0].unseen);
+        try testing.expect(s.ungrouped[0].attention.kind != .done_unseen);
+    }
+
+    // It finishes another turn afterwards: that one has not been looked at.
+    try w.hook(0xc1, .turn_started, null, 5 * min);
+    try w.hook(0xc1, .turn_ended, "done again", 6 * min);
+    {
+        const s = (try build(arena.allocator(), w.input(7 * min))).snapshot;
+        try testing.expect(s.ungrouped[0].unseen);
+    }
+
+    // A terminal the bus does not know has no row to look at.
+    try testing.expect(!w.bus.markSeen(0xdead, 7 * min));
+}
+
+test "ControlRoom seen: what a supervisor with no group raises is withdrawn by looking at its row" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    // A supervisor minding a worker, neither in any group.
+    try w.terminal(0xa1, "boss", 0x21);
+    try w.bus.addSupervisor(0xa1);
+    try w.hook(0xa1, .session_started, null, 1 * min);
+    const said = "the worker wants to force-push: yours to decide";
+    try testing.expect(try w.bus.raise(0xa1, 2 * min, said));
+
+    const rowOf = struct {
+        fn of(s: Snapshot, id: u64) !LoneRow {
+            for (s.ungrouped) |r| if (r.id.id == id) return r;
+            return error.TestRowMissing;
+        }
+    }.of;
+    {
+        const s = (try build(arena.allocator(), w.input(2 * min + 1))).snapshot;
+        const row = try rowOf(s, 0xa1);
+        try testing.expect(row.needs_me);
+        try testing.expectEqual(Reason.From.raised, row.reason.from);
+        try testing.expectEqualStrings(said, row.reason.text);
+        // Looking at it is what withdraws it, and the row says so: this is
+        // what a host starts its "seen" clock on.
+        try testing.expect(row.unseen);
+        try testing.expectEqual(@as(usize, 1), s.header_waiting.count);
+    }
+
+    try testing.expect(w.bus.markSeen(0xa1, 3 * min));
+    {
+        const s = (try build(arena.allocator(), w.input(3 * min + 1))).snapshot;
+        const row = try rowOf(s, 0xa1);
+        try testing.expect(row.reason.from != .raised);
+        try testing.expect(!row.needs_me);
+        try testing.expect(!row.unseen);
+        try testing.expectEqual(@as(usize, 0), s.needs_me);
+    }
+
+    // Raised again after that: there again.
+    try testing.expect(try w.bus.raise(0xa1, 4 * min, "and now this"));
+    {
+        const s = (try build(arena.allocator(), w.input(4 * min + 1))).snapshot;
+        try testing.expect((try rowOf(s, 0xa1)).needs_me);
+    }
 }

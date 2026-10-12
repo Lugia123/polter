@@ -69,9 +69,12 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         let tracker = ControlRoomSeenTracker(
             later: { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) },
             isInFront: { [weak self] in self?.isInFront ?? false },
-            markSeen: { group in
+            markSeen: { [weak self] group in
                 do {
-                    try actions.perform(.seen(group: group))
+                    // A group's row by its name, a lone terminal's by its
+                    // terminal (`ControlRoomActions.seen(rowId:in:)`).
+                    guard let act = ControlRoomActions.seen(rowId: group, in: self?.model.list?.rows ?? []) else { return }
+                    try actions.perform(act)
                 } catch {
                     Ghostty.logger.warning("control room: seen was refused: \(String(describing: error), privacy: .public)")
                 }

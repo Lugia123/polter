@@ -387,6 +387,18 @@ pub const Entry = struct {
     role: Role = .none,
     duty: Duty = .on,
 
+    /// When the person last looked at this terminal's own row in the
+    /// control room, on the bus's clock; null for never (`markSeen`).
+    ///
+    /// For a terminal in no group: a group's row is looked at through the
+    /// group (`Chat.markSeen`), and that had nowhere to go for a row that
+    /// is about one terminal -- so what it had finished stayed "not looked
+    /// at", and what it had raised could not be withdrawn. **Not written
+    /// down**: a terminal's id is new at every start, so a mark kept
+    /// against one would name nothing afterwards; it lasts as long as the
+    /// terminal does.
+    seen_ms: ?u64 = null,
+
     /// The user is holding this terminal to its work: it may not be
     /// clocked off.
     ///
@@ -813,6 +825,21 @@ pub fn raise(self: *Bus, id: Id, at_ms: u64, text: []const u8) Allocator.Error!b
     if (gop.found_existing) self.alloc.free(gop.value_ptr.text);
     gop.value_ptr.* = .{ .at_ms = at_ms, .text = kept };
     return true;
+}
+
+/// The person looked at this terminal's own row. False for a terminal the
+/// bus does not know: there is no row to have looked at.
+pub fn markSeen(self: *Bus, id: Id, now_ms: u64) bool {
+    const e = self.entries.getPtr(id) orelse return false;
+    e.seen_ms = now_ms;
+    return true;
+}
+
+/// When the person last looked at this terminal's own row; null for never
+/// and for a terminal the bus does not know.
+pub fn seenOf(self: *const Bus, id: Id) ?u64 {
+    const e = self.entries.get(id) orelse return null;
+    return e.seen_ms;
 }
 
 /// What this terminal has raised and the person has not looked at since:

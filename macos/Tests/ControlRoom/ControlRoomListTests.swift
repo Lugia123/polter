@@ -327,9 +327,11 @@ struct ControlRoomListTests {
         #expect(closed.caption == "zsh")
     }
 
-    @Test func lookingAtALoneTerminalsRowMarksNothingSeen() {
-        // `seen` names a group, and this row is in none: nothing is asked
-        // of the core under a name that is not a group's.
+    @Test func lookingAtALoneTerminalsRowIsToldLikeAGroups() {
+        // This used to assert the opposite -- nothing was asked of the core
+        // for a row in no group, because `seen` could only name a group. It
+        // can name a terminal now (task 1469), so the row is looked at by
+        // the same rule; what is then sent is `ControlRoomActions.seen`.
         var waits = 0
         var marked: [String] = []
         let tracker = ControlRoomSeenTracker(
@@ -337,18 +339,18 @@ struct ControlRoomListTests {
         var row = ControlRoomList.Row(
             id: "terminal:0x1", shown: .doneUnseen, word: "", waiter: .none, what: .none, others: 0, pulses: false,
             unseen: true, alone: .init(terminal: "0x1", title: "zsh", pane: .plain))
+        // Selected while not looked at: told once.
         tracker.selectionChanged(to: row)
+        #expect(marked == ["terminal:0x1"])
+        // Looked at, then it stops again while still selected: told again.
         row.unseen = false
         tracker.listChanged(to: row)
         row.unseen = true
         tracker.listChanged(to: row)
-        #expect(waits == 0)
-        #expect(marked == [])
-        // The same row as a group's is marked, so the test can fail.
-        row.alone = nil
-        row.id = "web-app"
-        tracker.selectionChanged(to: row)
-        #expect(marked == ["web-app"])
+        #expect(waits == 2)
+        #expect(marked == ["terminal:0x1", "terminal:0x1"])
+        // And what it is told as is the terminal, not a group by that id.
+        #expect(ControlRoomActions.seen(rowId: row.id, in: [row]) == .seenTerminal("0x1"))
     }
 
     // MARK: The first line of a waiting row
