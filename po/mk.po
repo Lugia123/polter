@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 05:25+0800\n"
+"POT-Creation-Date: 2026-10-13 05:58+0800\n"
 "PO-Revision-Date: 2026-08-30 12:23+0200\n"
 "Last-Translator: Andrej Daskalov <andrej.daskalov@gmail.com>\n"
 "Language-Team: Macedonian\n"
@@ -2353,7 +2353,7 @@ msgstr ""
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: windows/host/src/general_ui.rs:1213 windows/host/src/general_ui.rs:1379
-#: windows/control-room/src/scene.rs:55
+#: windows/control-room/src/scene.rs:52
 msgid "Choose…"
 msgstr "Избери…"
 
@@ -2727,7 +2727,7 @@ msgid "No Role"
 msgstr ""
 
 #: windows/host/src/personas.rs:602 windows/host/src/personas.rs:1017
-#: windows/control-room/src/scene.rs:53
+#: windows/control-room/src/scene.rs:50
 msgid "Role"
 msgstr ""
 
@@ -3170,7 +3170,7 @@ msgid "Rename"
 msgstr ""
 
 #: windows/host/src/roles.rs:34 windows/host/src/roles.rs:1163
-#: windows/control-room/src/scene.rs:60
+#: windows/control-room/src/scene.rs:57
 msgid "Polter Supervisor"
 msgstr ""
 
@@ -3204,7 +3204,7 @@ msgid ""
 "the file first."
 msgstr ""
 
-#: windows/host/src/roles.rs:686 windows/control-room/src/act.rs:163
+#: windows/host/src/roles.rs:686 windows/control-room/src/act.rs:167
 msgid "That role no longer exists."
 msgstr ""
 
@@ -3220,7 +3220,7 @@ msgstr ""
 msgid "This role isn't set up for that agent CLI."
 msgstr ""
 
-#: windows/host/src/roles.rs:690 windows/control-room/src/act.rs:165
+#: windows/host/src/roles.rs:690 windows/control-room/src/act.rs:169
 msgid ""
 "This role isn't set up for any agent CLI yet. Pick one in the role library."
 msgstr ""
@@ -3686,43 +3686,43 @@ msgstr ""
 msgid "On"
 msgstr ""
 
-#: windows/control-room/src/act.rs:157
+#: windows/control-room/src/act.rs:161
 msgid "A group's name is lowercase letters, digits and dashes, 48 at most."
 msgstr ""
 
-#: windows/control-room/src/act.rs:158
+#: windows/control-room/src/act.rs:162
 msgid "There is already a group by that name."
 msgstr ""
 
-#: windows/control-room/src/act.rs:159
+#: windows/control-room/src/act.rs:163
 msgid "There is no room for another group."
 msgstr ""
 
-#: windows/control-room/src/act.rs:160
+#: windows/control-room/src/act.rs:164
 msgid "This group already has a supervisor."
 msgstr ""
 
-#: windows/control-room/src/act.rs:161
+#: windows/control-room/src/act.rs:165
 msgid "A supervisor is already being started for this group."
 msgstr ""
 
-#: windows/control-room/src/act.rs:162
+#: windows/control-room/src/act.rs:166
 msgid "There is no role that makes a supervisor. Add one in the role library."
 msgstr ""
 
-#: windows/control-room/src/act.rs:164
+#: windows/control-room/src/act.rs:168
 msgid "That role does not make a supervisor."
 msgstr ""
 
-#: windows/control-room/src/act.rs:166
+#: windows/control-room/src/act.rs:170
 msgid "That directory is not there."
 msgstr ""
 
-#: windows/control-room/src/act.rs:167
+#: windows/control-room/src/act.rs:171
 msgid "No tab could be opened for it."
 msgstr ""
 
-#: windows/control-room/src/act.rs:168
+#: windows/control-room/src/act.rs:172
 msgid "Polter could not find its own program to start the role with."
 msgstr ""
 
@@ -3730,16 +3730,55 @@ msgstr ""
 msgid "The supervisor's terminal is no longer open."
 msgstr ""
 
-#: windows/control-room/src/lend.rs:329 windows/control-room/src/list.rs:60
+#: windows/control-room/src/lend.rs:329 windows/control-room/src/list.rs:103
 msgid "Supervisor"
 msgstr ""
 
-#: windows/control-room/src/list.rs:58
+#: windows/control-room/src/list.rs:90
+msgid "No group is waiting for you"
+msgstr ""
+
+#: windows/control-room/src/list.rs:91
+#, rust-format
+msgid "{} group waiting for you"
+msgstr ""
+
+#: windows/control-room/src/list.rs:92
+#, rust-format
+msgid "{} groups waiting for you"
+msgstr ""
+
+#: windows/control-room/src/list.rs:95
+#, rust-format
+msgid "{} waiting for you"
+msgstr ""
+
+#: windows/control-room/src/list.rs:96
+#, rust-format
+msgid "{} group needs nothing from you"
+msgstr ""
+
+#: windows/control-room/src/list.rs:97
+#, rust-format
+msgid "{} groups need nothing from you"
+msgstr ""
+
+#: windows/control-room/src/list.rs:98
+#, rust-format
+msgid "{} needs nothing from you"
+msgstr ""
+
+#: windows/control-room/src/list.rs:99
+#, rust-format
+msgid "{} need nothing from you"
+msgstr ""
+
+#: windows/control-room/src/list.rs:101
 #, rust-format
 msgid "{} more"
 msgstr ""
 
-#: windows/control-room/src/list.rs:63
+#: windows/control-room/src/list.rs:106
 #, rust-format
 msgid "{}, via the supervisor"
 msgstr ""
@@ -3752,95 +3791,89 @@ msgstr ""
 msgid "Polter — Control Room"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:29
-#, rust-format
-msgid "{} groups waiting for you"
-msgstr ""
-
 #: windows/control-room/src/scene.rs:30
-msgid "No group is waiting for you"
-msgstr ""
-
-#: windows/control-room/src/scene.rs:31
-#, rust-format
-msgid "{} groups need nothing from you"
-msgstr ""
-
-#: windows/control-room/src/scene.rs:33
 #, rust-format
 msgid "The control room's data could not be read ({})."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:35
+#: windows/control-room/src/scene.rs:32
 msgid "Nothing has been worked out yet."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:36
+#: windows/control-room/src/scene.rs:33
 msgid "Select a group on the left."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:37
+#: windows/control-room/src/scene.rs:34
 msgid "This group has no supervisor."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:38
+#: windows/control-room/src/scene.rs:35
 msgid "The supervisor's terminal is in its own tab."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:39
+#: windows/control-room/src/scene.rs:36
 msgid "Go to Its Tab"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:40
+#: windows/control-room/src/scene.rs:37
 #, rust-format
 msgid "{} more steps"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:42
+#: windows/control-room/src/scene.rs:39
 msgid "New Group"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:45
+#: windows/control-room/src/scene.rs:42
 msgid "Starting the supervisor…"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:46
+#: windows/control-room/src/scene.rs:43
 msgid "The supervisor did not start: its tab never opened."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:48
+#: windows/control-room/src/scene.rs:45
 msgid ""
 "The supervisor did not start: its tab opened, but no agent connected from "
 "it. Its tab shows why."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:49
+#: windows/control-room/src/scene.rs:46
 msgid "The supervisor did not start: its tab was closed first."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:50
+#: windows/control-room/src/scene.rs:47
 msgid ""
 "The supervisor did not start: its agent CLI was not found. Its tab shows why."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:51
+#: windows/control-room/src/scene.rs:48
 msgid ""
 "The supervisor did not start: its agent CLI could not be started. Its tab "
 "shows why."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:52
+#: windows/control-room/src/scene.rs:49
 msgid "The supervisor did not start."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:54
+#: windows/control-room/src/scene.rs:51
 msgid "Directory"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:56
+#: windows/control-room/src/scene.rs:53
 msgid "Start Supervisor"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:58
+#: windows/control-room/src/scene.rs:55
 msgid "Where the tab starts"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:60
+msgid "This terminal is no longer open."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:61
+msgid "This terminal is in its own tab."
 msgstr ""

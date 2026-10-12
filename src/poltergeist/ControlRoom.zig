@@ -1338,7 +1338,13 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
                 // a raise that did not say so here could never be withdrawn --
                 // which is what it was (the Windows machine, 2026-10-13: five
                 // seconds on the row, in front, and no `seen` was ever sent).
-                .unseen = Attention.unseen(a) or reason.from == .raised,
+                //
+                // **Wherever in the row the raise is.** This asked whether
+                // the raise was the row's reason, so one standing behind a
+                // worker's prompt -- "1 more" -- was never looked at however
+                // long the person looked (the same machine, the same day:
+                // eight seconds, in front, and it stayed until the end).
+                .unseen = Attention.unseen(a) or raiseStandsIn(in, steward, workers.items),
                 .shown = d.shown,
                 .word = d.word,
                 .text = d.word.text(),
@@ -1556,6 +1562,25 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
 /// A terminal that is itself waiting on the person.
 fn waiting(s: Attention.Status) bool {
     return s.alive and s.duty == .on and s.kind.needsMe();
+}
+
+/// Whether this terminal is waiting on something it raised (`Bus.raise`)
+/// and the person has not looked at since. The same question `reasonOf`
+/// asks before it takes the raise's words, and `statusOf` is what decided
+/// it: a status is a self-reported "needs an answer" because a raise
+/// stands.
+fn raiseStands(in: Input, s: Attention.Status) bool {
+    if (!waiting(s)) return false;
+    if (s.kind != .needs_answer or s.source != .self_report) return false;
+    return in.bus.raisedOf(s.id, null) != null;
+}
+
+/// Whether anything in a group's row is: its supervisor or any worker,
+/// whichever of them the row happens to be about.
+fn raiseStandsIn(in: Input, steward: ?Attention.Status, workers: []const Attention.Status) bool {
+    if (steward) |s| if (raiseStands(in, s)) return true;
+    for (workers) |w| if (raiseStands(in, w)) return true;
+    return false;
 }
 
 // -- tests ------------------------------------------------------------------
@@ -2040,6 +2065,49 @@ test "ControlRoom snapshot: what a supervisor raises is waiting for the person a
 
     // A terminal the bus does not know raises nothing.
     try testing.expect(!try w.bus.raise(0xdead, at, "x"));
+}
+
+test "ControlRoom snapshot: a raise standing behind a worker's prompt is still withdrawn by looking" {
+    var w: World = .init();
+    defer w.deinit();
+    try w.steward(0xa1, "api", 0x21, "api");
+    try w.hook(0xa1, .turn_started, null, 10 * min);
+    try w.worker(0xb1, "api worker", 0x21, 0xa1, "api");
+    // The worker's prompt has had its minute: the row is about it.
+    try w.approval(0xb1, "Bash", "git push --force", 20 * min);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const at = 21 * min + 5_000;
+    {
+        const row = try rowNamed((try build(arena.allocator(), w.input(at))).snapshot, "api");
+        try testing.expect(row.needs_me);
+        try testing.expectEqual(Attention.Kind.needs_approval, row.attention.kind);
+        try testing.expectEqual(@as(usize, 0), row.more);
+        // A prompt is not withdrawn by being looked at.
+        try testing.expect(!row.unseen);
+    }
+
+    // Now the supervisor raises it as well. The row stays about the prompt;
+    // the raise is the "1 more".
+    try testing.expect(try w.bus.raise(0xa1, at, "the worker has waited a minute: yours"));
+    {
+        const row = try rowNamed((try build(arena.allocator(), w.input(at + 1))).snapshot, "api");
+        try testing.expectEqual(Attention.Kind.needs_approval, row.attention.kind);
+        try testing.expect(row.reason.from != .raised);
+        try testing.expectEqual(@as(usize, 1), row.more);
+        // Looking changes this row, and it says so.
+        try testing.expect(row.unseen);
+    }
+
+    // The person looks: the raise goes, the prompt stays.
+    try w.chat.markSeen("api", at + 4_000, w.wall_ms + at + 4_000);
+    {
+        const row = try rowNamed((try build(arena.allocator(), w.input(at + 5_000))).snapshot, "api");
+        try testing.expectEqual(Attention.Kind.needs_approval, row.attention.kind);
+        try testing.expect(row.needs_me);
+        try testing.expectEqual(@as(usize, 0), row.more);
+        try testing.expect(!row.unseen);
+    }
 }
 
 test "ControlRoom snapshot: a prompt the supervisor may not answer is the person's without the minute" {
@@ -3242,4 +3310,31 @@ test "ControlRoom start: closing the tab fails the start in the very next snapsh
     // Said once; a terminal nothing was starting in says nothing.
     try testing.expect(!w.chat.startTerminalClosed(0xa9));
     try testing.expect(!w.chat.startTerminalClosed(0xb0));
+}
+
+test "may-authorise off in the configuration: a worker's prompt is the person's at once, not after its supervisor's minute" {
+    var w: World = .init();
+    defer w.deinit();
+    w.bus.config.may_authorise = false;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    try w.steward(0xa1, "api", 0x21, "api");
+    try w.hook(0xa1, .turn_started, null, 10 * min);
+    try w.worker(0xb1, "api worker", 0x21, 0xa1, "api");
+    try w.approval(0xb1, "Bash", "git push --force", 20 * min);
+
+    // Five seconds in. With the gate open this row would still be the
+    // supervisor's business; shut, there is nobody who may answer it but
+    // the person.
+    const s = (try build(arena.allocator(), w.input(20 * min + 5_000))).snapshot;
+    const row = try rowNamed(s, "api");
+    try testing.expect(row.needs_me);
+    try testing.expectEqual(Attention.Kind.needs_approval, row.attention.kind);
+    try testing.expectEqual(@as(usize, 1), s.needs_me);
+
+    // The same world with the gate open, so that this can fail.
+    w.bus.config.may_authorise = true;
+    const open = (try build(arena.allocator(), w.input(20 * min + 5_000))).snapshot;
+    try testing.expect(!(try rowNamed(open, "api")).needs_me);
 }

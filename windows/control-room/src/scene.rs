@@ -26,9 +26,6 @@ use crate::snapshot::Shown;
 pub mod msg {
     use crate::n_;
 
-    pub const WAITING_HEADER: &str = n_("{} groups waiting for you");
-    pub const NONE_WAITING_HEADER: &str = n_("No group is waiting for you");
-    pub const QUIET_HEADER: &str = n_("{} groups need nothing from you");
     /// The snapshot could not be read. `{}` is what was wrong with it.
     pub const UNREADABLE: &str = n_("The control room's data could not be read ({}).");
     /// No snapshot has been worked out yet.
@@ -399,10 +396,9 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
             let button = Rect { w: (all.x + all.w - button.x).max(0.0), ..button };
             out.push(Item::Text {
                 rect: Rect { w: (button.x - side::ROW_ITEM_GAP - all.x).max(0.0), ..all },
-                text: if list.waiting_count == 0 {
-                    tr(msg::NONE_WAITING_HEADER)
-                } else {
-                    list::fill(&tr(msg::WAITING_HEADER), &list.waiting_count.to_string())
+                text: {
+                    let (words, n) = list.waiting_heading();
+                    list::fill(&tr(words), &n)
                 },
                 style: Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.text) },
                 align: Align::Left,
@@ -421,7 +417,10 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
         out.push(hair(at.separator, panel));
         out.push(Item::Text {
             rect: inset_x(at.quiet_header, side::HEADER_PADDING_X),
-            text: list::fill(&tr(msg::QUIET_HEADER), &list.quiet_count.to_string()),
+            text: {
+                let (words, n) = list.quiet_heading();
+                list::fill(&tr(words), &n)
+            },
             style: body(theme.text_secondary),
             align: Align::Left,
         });
@@ -1363,11 +1362,26 @@ mod tests {
     #[test]
     fn the_header_numbers_are_the_cores_and_not_how_many_rows_there_are() {
         let mut l = list();
-        l.waiting_count = 41;
-        l.quiet_count = 17;
+        use crate::snapshot::{Header, HeaderNumber, HeaderOf};
+        l.waiting_header = Some(Header { count: 41, of: HeaderOf::Groups, number: HeaderNumber::Other });
+        l.quiet_header = Some(Header { count: 17, of: HeaderOf::Groups, number: HeaderNumber::Other });
         let said = texts(&scene(&l, None, false, 1.0, None));
         assert!(said.contains(&"41 groups waiting for you".to_string()), "{said:?}");
         assert!(said.contains(&"17 groups need nothing from you".to_string()), "{said:?}");
+        // With terminals in no group under them, neither says "group".
+        l.waiting_header = Some(Header { count: 41, of: HeaderOf::Rows, number: HeaderNumber::Other });
+        l.quiet_header = Some(Header { count: 1, of: HeaderOf::Rows, number: HeaderNumber::One });
+        let said = texts(&scene(&l, None, false, 1.0, None));
+        assert!(said.contains(&"41 waiting for you".to_string()), "{said:?}");
+        assert!(said.contains(&"1 needs nothing from you".to_string()), "{said:?}");
+        // From a core that writes no heading, the groups' counts as before.
+        l.waiting_header = None;
+        l.quiet_header = None;
+        l.waiting_count = 2;
+        l.quiet_count = 5;
+        let said = texts(&scene(&l, None, false, 1.0, None));
+        assert!(said.contains(&"2 groups waiting for you".to_string()), "{said:?}");
+        assert!(said.contains(&"5 groups need nothing from you".to_string()), "{said:?}");
     }
 
     #[test]

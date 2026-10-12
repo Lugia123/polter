@@ -7,7 +7,7 @@
 //! `ControlRoomList.swift` is the same thing, and
 //! `tools/control-room-hosts-agree.py` holds the two to one answer.
 
-use crate::snapshot::{Cut, Form, Shown, Snapshot, SupervisorRole, SupervisorStart, Waiter, WaiterIs, What};
+use crate::snapshot::{Cut, Form, Header, HeaderNumber, HeaderOf, Shown, Snapshot, SupervisorRole, SupervisorStart, Waiter, WaiterIs, What};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -63,12 +63,17 @@ impl Row {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct List {
     pub now_ms: u64,
-    /// "N groups are waiting for you". The core's number.
+    /// How many are waiting, by the core's count: the first heading's
+    /// when the core wrote one, otherwise the groups'.
     pub waiting_count: u64,
     pub waiting: Vec<Row>,
-    /// "N groups need nothing from you". Also the core's.
+    /// How many need nothing. Also the core's.
     pub quiet_count: u64,
     pub quiet: Vec<Row>,
+    /// The two headings as the core writes them; none from a core that
+    /// does not, and the headings are then the groups' counts.
+    pub waiting_header: Option<Header>,
+    pub quiet_header: Option<Header>,
     /// The roles a supervisor can be started in, in the core's order.
     pub supervisor_roles: Vec<SupervisorRole>,
     /// Whether there is a choice of role to offer. The core's word.
@@ -79,6 +84,19 @@ pub struct List {
 /// translation and then `fill`s it. `{}` is where the one argument goes.
 pub mod msg {
     use crate::n_;
+
+    // The list's two headings. The sentences are the macOS host's, word
+    // for word (`ControlRoomList.headerText`, `quietHeaderText`).
+    pub const NONE_WAITING_HEADER: &str = n_("No group is waiting for you");
+    pub const ONE_GROUP_WAITING_HEADER: &str = n_("{} group waiting for you");
+    pub const WAITING_HEADER: &str = n_("{} groups waiting for you");
+    /// Some of those waiting are terminals in no group, so it does not say
+    /// "group".
+    pub const ROWS_WAITING_HEADER: &str = n_("{} waiting for you");
+    pub const ONE_GROUP_QUIET_HEADER: &str = n_("{} group needs nothing from you");
+    pub const QUIET_HEADER: &str = n_("{} groups need nothing from you");
+    pub const ONE_ROW_QUIET_HEADER: &str = n_("{} needs nothing from you");
+    pub const ROWS_QUIET_HEADER: &str = n_("{} need nothing from you");
 
     pub const OTHERS: &str = n_("{} more");
     /// Who is waiting, when it is the group's supervisor itself.
@@ -93,7 +111,49 @@ pub fn fill(template: &str, arg: &str) -> String {
     template.replacen("{}", arg, 1)
 }
 
+/// The first heading as the core says it, untranslated, with the argument
+/// `fill` puts in: so many waiting, called groups only when every one of
+/// them is a group, and "1 group" where the core says the number is one.
+/// The number handed in is the number written; the form is `number`'s.
+pub fn waiting_heading(h: &Header) -> (&'static str, String) {
+    let template = match (h.number, h.of) {
+        (HeaderNumber::None, _) => msg::NONE_WAITING_HEADER,
+        (HeaderNumber::One, HeaderOf::Groups) => msg::ONE_GROUP_WAITING_HEADER,
+        (HeaderNumber::Other, HeaderOf::Groups) => msg::WAITING_HEADER,
+        (HeaderNumber::One | HeaderNumber::Other, HeaderOf::Rows) => msg::ROWS_WAITING_HEADER,
+    };
+    (template, h.count.to_string())
+}
+
+/// The second heading, by the same rule.
+pub fn quiet_heading(h: &Header) -> (&'static str, String) {
+    let template = match (h.number, h.of) {
+        (HeaderNumber::One, HeaderOf::Groups) => msg::ONE_GROUP_QUIET_HEADER,
+        (HeaderNumber::None | HeaderNumber::Other, HeaderOf::Groups) => msg::QUIET_HEADER,
+        (HeaderNumber::One, HeaderOf::Rows) => msg::ONE_ROW_QUIET_HEADER,
+        (HeaderNumber::None | HeaderNumber::Other, HeaderOf::Rows) => msg::ROWS_QUIET_HEADER,
+    };
+    (template, h.count.to_string())
+}
+
 impl List {
+    /// The first heading of this list: the core's when it gave one,
+    /// otherwise the count of groups, written as it always was.
+    pub fn waiting_heading(&self) -> (&'static str, String) {
+        match &self.waiting_header {
+            Some(h) => waiting_heading(h),
+            None if self.waiting_count == 0 => (msg::NONE_WAITING_HEADER, String::new()),
+            None => (msg::WAITING_HEADER, self.waiting_count.to_string()),
+        }
+    }
+
+    pub fn quiet_heading(&self) -> (&'static str, String) {
+        match &self.quiet_header {
+            Some(h) => quiet_heading(h),
+            None => (msg::QUIET_HEADER, self.quiet_count.to_string()),
+        }
+    }
+
     pub fn from_snapshot(s: &Snapshot) -> List {
         let mut waiting = Vec::new();
         let mut quiet = Vec::new();
@@ -148,10 +208,12 @@ impl List {
         }
         List {
             now_ms: s.now_ms,
-            waiting_count: s.groups_needing_me,
+            waiting_count: s.header_waiting.map_or(s.groups_needing_me, |h| h.count),
             waiting,
-            quiet_count: s.groups_other,
+            quiet_count: s.header_quiet.map_or(s.groups_other, |h| h.count),
             quiet,
+            waiting_header: s.header_waiting,
+            quiet_header: s.header_quiet,
             supervisor_roles: s.supervisor_roles.clone(),
             choose_supervisor_role: s.choose_supervisor_role,
         }

@@ -66,7 +66,10 @@ own (`ungrouped`) -- its row's identity, the section it goes in, its title,
 glyph and words, who waits and for what with every line, what an act on it
 hands back, and the terminal the right-hand side then shows; which rows are
 marked seen by being looked at, and
-after how long; the selection chip's slide -- whether it moves at all (from
+after how long, and the request marking each row seen sends (a group's
+name, or the terminal of a row that is in no group); the list's two
+headings -- the count, what the rows are called and the form of the number
+as the core wrote them, and the English sentence each side makes of that; the selection chip's slide -- whether it moves at all (from
 one tab to another, with motion off, from nowhere, to where it already is),
 when it starts back down and when it is still, and at sixteen moments of a
 slide along the tab bar and of one down the list how far it has to go, how
@@ -82,15 +85,6 @@ line, word for word and number for number, each of their windows -- and how
 high each side makes the block and where its parts start.
 
 **NOT COMPARED, and why.**
-
-  * The headings of a list that has the lone terminals' rows in it. The
-    macOS list takes its two headings from the core's `header_waiting` /
-    `header_quiet` (so many rows, not all of them groups: "6 waiting for
-    you"). The Windows panel draws those rows too and its headings are
-    still `groups_needing_me` / `groups_other` ("5 groups…"): that is a
-    known difference, to be closed by the Windows side reading the same
-    two. Until then the macOS list is made without them here, so that both
-    sides print the groups' counts.
 
   * The snapshot's own `now_ms`. The macOS list does not keep it, so one
     side has nothing to print.
@@ -234,17 +228,16 @@ do {
 // that breathes are compared with them in. What each of those rows is on
 // its own is compared again below (`lone`).
 let whole = snapshot
-// The two headings the core writes for a list that has those rows
-// (`header_waiting` / `header_quiet`) count the lone terminals. The Windows
-// panel draws the rows now and still takes its headings from the groups'
-// counts, so the headings are left out of what is compared until it does
-// not: see NOT COMPARED.
-var noHeadings = snapshot
-noHeadings.header_waiting = nil
-noHeadings.header_quiet = nil
-let list = ControlRoomList(snapshot: noHeadings)
+let list = ControlRoomList(snapshot: snapshot)
 
 print("count waiting=\(list.waitingCount) quiet=\(list.quietCount)")
+// The two headings: what the core wrote (`header_waiting` /
+// `header_quiet`, which count the lone terminals), and the sentence each
+// side makes of it -- in English, as each side's table has it.
+for (name, h, says) in [("waiting", list.waitingHeader, list.waitingHeaderText), ("quiet", list.quietHeader, list.quietHeaderText)] {
+    let core = h.map { "\($0.count) of=\($0.of.rawValue) number=\($0.number.rawValue)" } ?? "-"
+    print("heading \(name) core=\(core) says=\(quote(says))")
+}
 
 // Where a control room opens, and whose choice the selection then is.
 print("open_on \(snapshot.open_on ?? "-")")
@@ -443,6 +436,14 @@ for r in list.rows {
         markSeen: { said += " marks=\($0)" })
     tracker.selectionChanged(to: r)
     print("seen row=\(r.id) \(said)")
+}
+// What marking a row seen sends, for every row as if nobody had looked at
+// it: a group's by the group's name, a lone terminal's by the terminal.
+for r in list.rows {
+    let sends = ControlRoomActions.seen(rowId: r.id, in: list.rows)
+        .flatMap { try? JSONSerialization.data(withJSONObject: ControlRoomActions.request(for: $0), options: [.sortedKeys]) }
+        .map { String(decoding: $0, as: UTF8.self) } ?? "-"
+    print("seen_sends row=\(r.id) \(sends)")
 }
 
 // Which terminal is shown on the right, through one script of events: what

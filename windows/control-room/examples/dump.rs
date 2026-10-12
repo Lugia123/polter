@@ -8,7 +8,7 @@
 //! disagreeing about what one snapshot looks like.
 
 use polter_control_room::json::quote;
-use polter_control_room::act::{Act, Refusal, SeenMarker};
+use polter_control_room::act::{self, Act, Refusal, SeenMarker};
 use polter_control_room::rules;
 use polter_control_room::layout::{self, ListLayout, Rect};
 use polter_control_room::list::{self, List, Row};
@@ -97,6 +97,11 @@ fn main() {
     let l = List::from_snapshot(&snap);
 
     println!("count waiting={} quiet={}", l.waiting_count, l.quiet_count);
+    // The two headings: what the core wrote, and the sentence made of it.
+    for (name, h, (words, n)) in [("waiting", l.waiting_header, l.waiting_heading()), ("quiet", l.quiet_header, l.quiet_heading())] {
+        let core = h.map_or("-".to_string(), |h| format!("{} of={} number={}", h.count, h.of.name(), h.number.name()));
+        println!("heading {name} core={core} says={}", quote(&polter_control_room::list::fill(words, &n)));
+    }
 
     // Where a control room opens, and whose choice the selection then is.
     let open_on = snap.open_on.as_deref();
@@ -390,10 +395,24 @@ fn main() {
             None => "-".to_string(),
             Some(dwell) => match marker.due(&dwell, true) {
                 Some(Act::Seen { group }) => format!("after={:.3} marks={group}", selection::SEEN_AFTER),
+                Some(Act::SeenTerminal { terminal }) => format!("after={:.3} marks_terminal={terminal}", selection::SEEN_AFTER),
                 _ => format!("after={:.3}", selection::SEEN_AFTER),
             },
         };
         println!("seen row={} {said}", r.id);
+    }
+    // What marking a row seen sends, for every row as if nobody had looked
+    // at it: a group's by the group's name, a lone terminal's by the
+    // terminal.
+    for r in l.rows() {
+        let mut unseen = r.clone();
+        unseen.unseen = true;
+        let mut marker = SeenMarker::default();
+        let sends = marker
+            .selection_changed(Some(&unseen))
+            .and_then(|dwell| marker.due(&dwell, true).and_then(|a| act::encode(&a)))
+            .unwrap_or("-".to_string());
+        println!("seen_sends row={} {sends}", r.id);
     }
 
     // Which terminal is shown on the right, through one script of events:

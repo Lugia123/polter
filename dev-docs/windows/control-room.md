@@ -677,7 +677,8 @@ Windows 借出的那一格没有离开它的窗口，动作带着它的表面，
 | 选中它 | 右栏放的是**它自己**的终端：借出、还回、切走还回、点进去打字，全是群的总管那一套，没有另一套 | `Row::steward` 就是它自己，`lend` 不用知道它是哪一类 |
 | 右栏的标题条 | 它的标题，后面跟它那一格的框的身份：没建群的总管写「Supervisor」、被看管的写「Worker」、普通的不写。框仍是总管的框（总控台只有这一种） | `scene::build_right` |
 | 它不在右栏时 | 关掉了：「This terminal is no longer open.」；在它自己的标签页或别的窗口：「This terminal is in its own tab.」（后者照旧带「Go to Its Tab」）。不说「总管」，不出「启动总管」 | 同上 |
-| 看过 | **不发**。`seen` 认的是群名，它不在任何群里；选中它、停多久都不向核心要任何东西 | `act::SeenMarker` |
+| 看过 | 与群的行**同一条规则**（没看过、选中、总控台在前面、停够时间）；只是发出去的请求点的是终端：`{"act":"seen","terminal":"0x…"}`，群的行照旧发 `"group"`。发哪一种看那一行是不是单独的终端（`Row::alone`），不从行的身份里猜（#1475；#1471 那一版是「不发」，因为核心当时只认群名） | `act::SeenMarker`、`Act::SeenTerminal` |
+| 两句标题 | 照核心写的 `header_waiting` / `header_quiet`（`count`、`of`、`number`）：下面全是群时写「N groups…」，正好一个写「1 group…」；里面有单独的终端时不写「group」，N 是 `count`（含它们）。单复数是核心的 `number` 说的，不从数里算。核心没给这两项的旧快照，照 `groups_needing_me` / `groups_other` 写，与从前一样（#1475） | `list::waiting_heading`、`list::quiet_heading` |
 | 哪一行在呼吸 | 核心列出的第一个在等的终端如果不在任何群里，呼吸的就是它那一行 | `pulse::pulsing_row_id` |
 | 上下键 | 走得到：它是列表里的一行 | `list::move_selection`，没有改 |
 | 空标题 | 终端还没有标题时，行上与右栏都不把空字串交给系统画 | `scene` 里的 `draws` |
@@ -690,16 +691,31 @@ Windows 借出的那一格没有离开它的窗口，动作带着它的表面，
 
 与 mac 不一样、没做的：
 
-- **标题上的数**。mac 的标题（#1469）在有单独终端在等时写「N 个在等你」（N 含它们）；Windows 的标题行仍写
-  「N groups waiting for you」、N 只数群。所以现在 Windows 上会出现「标题说 5、下面 6 行」。等 #1469 进主线后照同一规则改。
 - 右栏标题条右端画的是它的状态；它被按住时不写「被按住」（那一对只给分屏框的标题用，mac 的总控台也一样）。
-- 两句新话还没进翻译目录：`This terminal is no longer open.`、`This terminal is in its own tab.`。
 
 判据：`cargo test -p polter-control-room` 193 → 201（8 条：照 mac 的五个场面 5 条，场景 3 条）；另有 9 条原有的用例
 原先假设「行都是群」，按新的事实改了期望。19 个文件形式的变异体全部红在断言行或闸点名的行。对照闸 384 → 402 行一致。
 **没有自动判据的**：宿主那一行改动，以及「选中它以后右栏真的借到了它的终端」。
 
-### 13.1 Windows 真机验证清单（#1471，9 步）
+**#1475 接上的三处**（同样编过、没在 Windows 上跑过）：上表「看过」「两句标题」两行；对照闸现在把两句标题也两边都带着比
+（核心写的那三项，加每一边据此写出的英文句子），另加「每一行当作没看过时，标成看过发出去的请求」——402 → 413 行。
+`cargo test -p polter-control-room` 201 → 208；23 个文件形式的变异体全部红在断言行或闸点名的行。新句子与 mac 的表逐字相同
+（`{}` 对 `%@`），连同上面两句「This terminal …」一共七句进了 `po/`，`zh_CN` 已填：
+
+| 英文 | zh_CN |
+|---|---|
+| `{} group waiting for you` | `{} 个群在等你` |
+| `{} waiting for you` | `{} 个在等你` |
+| `{} group needs nothing from you` | `{} 个群不用你管` |
+| `{} needs nothing from you` | `{} 个不用你管` |
+| `{} need nothing from you` | `{} 个不用你管` |
+| `This terminal is no longer open.` | `这个终端已经不在了。` |
+| `This terminal is in its own tab.` | `这个终端在它自己的标签页里。` |
+
+**没有自动判据的**：宿主里「等够了就发」那几行（`seen_due`）本身没改，只是日志里点的从群名换成了行的身份；
+核心收到按终端的 `seen` 以后那一行真的不再是「做完了，没看」，要真机看。
+
+### 13.1 Windows 真机验证清单（#1471 的 9 步，第 3 步按 #1475 改过，另加第 10、11 步）
 
 造场面：一个标签页 N 里起一个 agent，不加进任何群、也不让任何总管看管它（或者：让一个终端 `become_supervisor` 而不建群）；
 用假的 hook 事件让它等批准（同第三轮清单 §0）。另备一个有总管的群作对照。
@@ -708,7 +724,9 @@ Windows 借出的那一格没有离开它的窗口，动作带着它的表面，
    字是「等批准」、下面是那条命令；任务栏上的数与这一段的行数相同。
 2. 点那一行。应：亮片过去；右栏是 N 的终端（`[control-room] showing terminal … for "terminal:0x…"`），标题条写 N 的标题，
    **没有「Supervisor」**；点进去能打字，切到别的标签页再切回，终端还回去又借回来。
-3. 停在那一行 5 秒、再切到别的程序再回来。应：日志里**没有** `seen sent`，也没有 `seen … refused`（它不发）。
+3. 让 N 做完一件事停下（图形变成「做完了，没看」），选中它那一行、总控台在前面停 2 秒。应：日志有
+   `[control-room] seen sent for "terminal:0x…"`，没有 `seen … refused`；随后那一行的图形不再是「没看」。
+   切到别的程序时选中它：`seen not sent … in_front=false`。
 4. 上下键从上一行走到它、再走到下一段的第一行；Enter 去它的标签页。
 5. 让 N 成为没建群的总管（`become_supervisor`），再让别的总管看管另一个不在群里的终端 W。应：选中前者标题条写
    「Supervisor」，选中后者写「Worker」。
@@ -717,6 +735,10 @@ Windows 借出的那一格没有离开它的窗口，动作带着它的表面，
 7. 把 N 的标签页拖到另一个窗口，回总控台选中它。应：「This terminal is in its own tab.」加「Go to Its Tab」，点了过去。
 8. 只有它在等、没有任何群在等时：它是唯一呼吸的那一行；有群等得更久时呼吸的是那个群。
 9. 一个刚开、还没有标题的终端成了这类行：行上名字是空的但不崩，事件日志无 `Application Error`。
+10. 标题：只有群在等时写「N groups waiting for you」（中文「N 个群在等你」），正好一个群时英文是「1 group waiting for you」；
+    N 再加上在等的单独终端时写「N waiting for you」（「N 个在等你」），N 等于那一段的行数，也等于任务栏上的数。
+    没有任何一行在等：「No group is waiting for you」，没有第二句标题也没有那条线。
+11. 第二句标题同理：全是群「N groups need nothing from you」；里面有不在等的单独终端「N need nothing from you」。
 
 ## 已经有的
 
