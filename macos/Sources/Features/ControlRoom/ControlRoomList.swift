@@ -46,10 +46,6 @@ struct ControlRoomList: Equatable {
         var pulses: Bool
         /// The core says nobody has looked at this since it stopped.
         var unseen: Bool = false
-        /// The core says approve and refuse can be asked of this row's
-        /// terminal now. The two buttons are shown by this and by nothing
-        /// read off the row here.
-        var approvable: Bool = false
         /// What the title of the supervisor's frame says, when the core
         /// names a supervisor for this group (`SupervisorTitle`).
         var supervisor: SupervisorTitle?
@@ -223,7 +219,6 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var needs_me: Bool
         /// Absent in snapshots from before the core said it.
         var unseen: Bool?
-        var approvable: Bool?
         var attention: Attention?
         var shown: ControlRoomList.Shown
         /// The words beside the glyph, already in the person's language.
@@ -355,7 +350,6 @@ extension ControlRoomList {
                 others: group.more,
                 pulses: breathing != nil && breathing == group.name,
                 unseen: group.unseen ?? false,
-                approvable: group.approvable ?? false,
                 supervisor: Self.supervisorTitle(of: group),
                 target: group.attention.flatMap { attention in
                     attention.terminal.map {

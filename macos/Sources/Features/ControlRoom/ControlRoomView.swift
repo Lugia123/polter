@@ -17,9 +17,7 @@ struct ControlRoomView: View {
             if let list = model.list {
                 ControlRoomListView(
                     list: list,
-                    selection: Binding(get: { model.selection }, set: { model.choose($0) }),
-                    notices: model.notices,
-                    onAct: { kind, row in model.press(kind, on: row) })
+                    selection: Binding(get: { model.selection }, set: { model.choose($0) }))
             } else {
                 // No snapshot yet: the list's place, with nothing in it.
                 Color.clear.frame(width: CGFloat(Look.Side.width))

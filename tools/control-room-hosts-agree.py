@@ -29,8 +29,7 @@ own choice, for a control room just opened and one long open, with and
 without a selection standing; every row -- its
 section, its place, its glyph, its words, its detail, whether the detail is
 set as code, its minutes, its "N more", whether the core says nobody has
-looked at it, whether the core says it can be approved or refused, and the
-terminal and two moments an act on it hands back;
+looked at it, and the terminal and two moments an act on it hands back;
 which row of the list breathes, with nothing in front
 and with each tab that holds a waiting terminal in front; which terminal
 breathes among one window's tabs, for the same fronts, and in a window that
@@ -50,8 +49,8 @@ where the arrow keys take the selection from every row.
   * What is around the seen rule: that the selection moving on, or the
     control room not being in front, calls the mark off. Each side's own
     tests hold that; here the wait is over at once and it is in front.
-  * A snapshot with no `unseen`, no `approvable` or no `tabs`. The macOS host
-    reads one as nothing unseen, nothing to approve and no tabs; `windows/control-room` refuses it, as it
+  * A snapshot with no `unseen` or no `tabs`. The macOS host reads one as
+    nothing unseen and no tabs; `windows/control-room` refuses it, as it
     does one with no `pulses` or `band`. The fixture has all four.
   * A front tab that is not in the window asked about. The macOS list is
     told only the tab; the crate is told the window too. Each front is
@@ -144,7 +143,7 @@ func row(_ section: String, _ r: ControlRoomList.Row) {
     let event = r.target?.eventMs.map { String($0) } ?? "-"
     print("row section=\(section) id=\(r.id) shown=\(shownName(r.shown)) word=\(quote(r.word)) "
         + "detail=\(quote(r.detail)) code=\(r.detailIsCode) waited=\(waited) others=\(r.others) "
-        + "unseen=\(r.unseen) approvable=\(r.approvable) terminal=\(r.target?.terminal ?? "-") since=\(since) event=\(event)")
+        + "unseen=\(r.unseen) terminal=\(r.target?.terminal ?? "-") since=\(since) event=\(event)")
 }
 
 let args = CommandLine.arguments

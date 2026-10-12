@@ -99,20 +99,6 @@ final class ControlRoomModel: ObservableObject {
     /// False until the first snapshot since this control room was opened.
     private var hasOpened = false
 
-    /// Why an approve or a refuse on a row was not done, by row, while it
-    /// is being said (`ControlRoomRowActs`).
-    @Published var notices: [String: String] = [:]
-    /// Approve or refuse, pressed on a row. Set by whoever can reach the
-    /// core; nothing happens without it.
-    var act: (ControlRoomRowActs.Kind, ControlRoomList.Row) -> Void = { _, _ in }
-
-    /// A press of approve or refuse on `row`. **It acts and does nothing
-    /// else**: the row is not selected by it, so the right-hand side does
-    /// not change and the row is not counted as looked at.
-    func press(_ kind: ControlRoomRowActs.Kind, on row: ControlRoomList.Row) {
-        act(kind, row)
-    }
-
     /// The selected row, whoever selected it.
     var selectedRow: ControlRoomList.Row? {
         list?.rows.first { $0.id == selection }

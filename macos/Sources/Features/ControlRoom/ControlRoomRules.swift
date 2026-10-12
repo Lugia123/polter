@@ -193,22 +193,6 @@ enum ControlRoomRules {
         return String(needsMe)
     }
 
-    /// The key that approves or refuses the selected row, pressed while
-    /// the list has the keyboard: Y and N, with no modifier (shift is let
-    /// through, so that Caps Lock does not matter). 暂定. Return is left
-    /// alone -- it is to become "go into the terminal" -- and the
-    /// command-key pairs that would read naturally are taken: with Return
-    /// it is full screen. `modifiers` is the raw value of the command,
-    /// control and option flags that were down.
-    static func rowAct(key: String, modifiers: UInt) -> ControlRoomRowActs.Kind? {
-        guard modifiers == 0 else { return nil }
-        switch key.lowercased() {
-        case "y": return .approve
-        case "n": return .refuse
-        default: return nil
-        }
-    }
-
     /// What becomes of "new split" asked of a terminal.
     enum NewSplit: Equatable {
         /// Split it.

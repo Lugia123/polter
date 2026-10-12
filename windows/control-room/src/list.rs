@@ -38,9 +38,6 @@ pub struct Row {
     pub unseen: bool,
     /// The group's supervisor, as the core names that terminal.
     pub steward: Option<String>,
-    /// The core says approve and refuse can be asked of this row's
-    /// terminal now: the two buttons are shown by this and nothing else.
-    pub approvable: bool,
     /// What an act on this row sends home (`act`).
     pub terminal: Option<String>,
     pub since_ms: u64,
@@ -90,7 +87,6 @@ impl List {
                 others: g.more,
                 unseen: g.unseen,
                 steward: g.steward.clone(),
-                approvable: g.approvable,
                 terminal: g.terminal.clone(),
                 since_ms: g.since_ms,
                 event_ms: g.event_ms,
