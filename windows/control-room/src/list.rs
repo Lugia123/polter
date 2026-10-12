@@ -33,6 +33,31 @@ pub struct Row {
     /// Whether this group has a supervisor and what starting one would
     /// use, as the core says it.
     pub start: Option<SupervisorStart>,
+    /// Set on a row that is a terminal on its own, in no group (the
+    /// snapshot's `ungrouped`): which terminal, its title, and its frame.
+    pub alone: Option<Alone>,
+}
+
+/// A terminal that is in no group and has a row of its own: a supervisor
+/// that has made no group yet, a worker minded outside any group, an agent
+/// nobody minds. The core lists them; which they are is not asked here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alone {
+    pub terminal: String,
+    pub title: String,
+    /// Which frame its own pane wears, as the core says it for that
+    /// terminal; plain when the core does not list it.
+    pub pane: crate::snapshot::Pane,
+}
+
+impl Row {
+    /// What the row is called: the group's name, or the terminal's title.
+    pub fn name(&self) -> &str {
+        match &self.alone {
+            Some(alone) => &alone.title,
+            None => &self.id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,8 +111,36 @@ impl List {
                 since_ms: g.since_ms,
                 event_ms: g.event_ms,
                 start: g.supervisor.clone(),
+                alone: None,
             };
             if g.needs_me {
+                waiting.push(row);
+            } else {
+                quiet.push(row);
+            }
+        }
+        // A terminal on its own, after the groups, in the section its own
+        // `needs_me` says -- the same test a group's row is put by.
+        for one in &s.ungrouped {
+            let pane = s.terminals.iter().find(|t| t.id == one.id).and_then(|t| t.pane).unwrap_or(crate::snapshot::Pane::Plain);
+            let row = Row {
+                id: one.row_id(),
+                shown: one.shown,
+                word: one.text.clone(),
+                waiter: one.waiter.clone(),
+                what: one.what.clone(),
+                others: 0,
+                unseen: one.unseen,
+                // What the right-hand side shows for this row is the
+                // terminal itself: it is its own "supervisor" there.
+                steward: Some(one.id.clone()),
+                terminal: one.terminal.clone(),
+                since_ms: one.since_ms,
+                event_ms: one.event_ms,
+                start: None,
+                alone: Some(Alone { terminal: one.id.clone(), title: one.title.clone(), pane }),
+            };
+            if one.needs_me {
                 waiting.push(row);
             } else {
                 quiet.push(row);

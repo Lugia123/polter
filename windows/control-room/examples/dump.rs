@@ -118,6 +118,17 @@ fn main() {
     for r in &l.quiet {
         row("quiet", r);
     }
+    // What each row is called, and for a terminal in no group which
+    // terminal it is and which frame its own pane wears.
+    for r in l.rows() {
+        println!(
+            "rowname id={} name={} alone={} pane={}",
+            r.id,
+            quote(r.name()),
+            r.alone.as_ref().map_or("-", |a| a.terminal.as_str()),
+            r.alone.as_ref().map_or("-", |a| a.pane.name())
+        );
+    }
 
     // The terminals in no group, each with a row of its own.
     let alone = match polter_control_room::lone::decode(&text) {
@@ -209,7 +220,8 @@ fn main() {
     for front in &fronts {
         let tab = front.map(|(t, _)| t);
         let window = front.and_then(|(_, w)| w);
-        let row = pulse::pulsing_row(&snap.pulses, window, tab).and_then(|name| l.row(name));
+        let breathing = pulse::pulsing_row_id(&snap.pulses, window, tab);
+        let row = breathing.as_deref().and_then(|id| l.row(id));
         println!("pulse list showing={} rows={}", tab.unwrap_or("-"), row.map_or("-", |r| r.id.as_str()));
     }
     for window in &windows {

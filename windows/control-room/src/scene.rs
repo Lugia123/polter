@@ -56,6 +56,10 @@ pub mod msg {
     pub const WHERE_THE_TAB_STARTS: &str = n_("Where the tab starts");
     /// The role Polter ships, as the role library shows it.
     pub const POLTER_SUPERVISOR: &str = n_("Polter Supervisor");
+    /// The right side, for a row that is a terminal in no group: it is
+    /// itself what would be shown there. The macOS host's sentences.
+    pub const TERMINAL_GONE: &str = n_("This terminal is no longer open.");
+    pub const TERMINAL_IN_ITS_OWN_TAB: &str = n_("This terminal is in its own tab.");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,7 +481,7 @@ fn quiet_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View) {
         });
     }
     let name = words(
-        row.id.clone(),
+        row.name().to_string(),
         Style {
             size: font::BODY,
             weight: if selected { font::WEIGHT_STRONG } else { font::WEIGHT_BODY },
@@ -527,7 +531,7 @@ fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, fit: &AskFit, view: &
     // First line: the name; at the right, who is waiting and then which of
     // the four it is.
     let mut first = vec![words(
-        row.id.clone(),
+        row.name().to_string(),
         Style {
             size: font::GROUP_NAME,
             weight: if selected { font::WEIGHT_STRONG } else { font::WEIGHT_GROUP_NAME },
@@ -606,7 +610,7 @@ fn waiter_parts(row: &Row, theme: &Theme, tr: &dyn Fn(&str) -> String) -> Vec<Pa
 /// others -- the same things the row draws, with the glyph's meaning carried
 /// by the status word.
 pub fn spoken(row: &Row, tr: &dyn Fn(&str) -> String) -> String {
-    let mut parts = vec![row.id.clone()];
+    let mut parts = vec![row.name().to_string()];
     let who = waiter_words(row, tr);
     if !who.is_empty() {
         parts.push(who);
@@ -917,15 +921,23 @@ pub fn build_right(
             h: pane::BAR_HEIGHT,
         };
         // The name and what it is on the left; its state on the right.
-        let mut parts = vec![
-            words(
-                loan.group.clone(),
-                Style { size: font::BODY, weight: font::WEIGHT_STRONG, face: Face::Mono, color: theme.text },
-                Side::Lead,
-                0.0,
-            ),
-            words(tr(lend_msg::SUPERVISOR), body(theme.text_secondary), Side::Lead, pane::BAR_GAP),
-        ];
+        // A group's row: the group and "Supervisor". A terminal on its own:
+        // its title, and the word for the frame its own pane wears -- none
+        // for an ordinary one. The frame here is a supervisor's either way.
+        let alone = row.and_then(|r| r.alone.as_ref());
+        let mut parts = vec![words(
+            alone.map_or(loan.group.clone(), |a| a.title.clone()),
+            Style { size: font::BODY, weight: font::WEIGHT_STRONG, face: Face::Mono, color: theme.text },
+            Side::Lead,
+            0.0,
+        )];
+        let role = match alone {
+            Some(a) => crate::pane::role_word(a.pane),
+            None => Some(lend_msg::SUPERVISOR),
+        };
+        if let Some(role) = role {
+            parts.push(words(tr(role), body(theme.text_secondary), Side::Lead, pane::BAR_GAP));
+        }
         if let Some(row) = row {
             let word_ink = match row.shown {
                 Shown::NeedsYou | Shown::DoneUnseen => theme.attention_text,
@@ -961,13 +973,21 @@ pub fn build_right(
     let line_h = side::HEADER_HEIGHT;
     let inner_w = (width - 2.0 * pad).max(0.0);
     let line_at = |n: f64| Rect { x: pad, y: pad + n * line_h, w: inner_w, h: line_h };
+    // A terminal with a row of its own has no supervisor to speak of: it
+    // is itself what this side would show. It goes by its title, and what
+    // is said of it is said of a terminal.
+    let alone = row.and_then(|r| r.alone.as_ref());
     let name = |items: &mut Vec<Item>, group: &str| {
-        items.push(Item::Text {
-            rect: line_at(0.0),
-            text: group.to_string(),
-            style: Style { size: font::GROUP_NAME, weight: font::WEIGHT_STRONG, face: Face::Mono, color: theme.terminal_bold },
-            align: Align::Left,
-        })
+        let text = alone.map_or(group, |a| a.title.as_str());
+        // A terminal may have no title yet; nothing empty is handed over.
+        if draws(text) {
+            items.push(Item::Text {
+                rect: line_at(0.0),
+                text: text.to_string(),
+                style: Style { size: font::GROUP_NAME, weight: font::WEIGHT_STRONG, face: Face::Mono, color: theme.terminal_bold },
+                align: Align::Left,
+            })
+        }
     };
     let says = |items: &mut Vec<Item>, at: f64, sentence: &str| {
         items.push(Item::Text { rect: line_at(at), text: tr(sentence), style: body(theme.terminal_dim), align: Align::Left })
@@ -983,24 +1003,27 @@ pub fn build_right(
             name(&mut items, group);
             items.push(Item::Block {
                 rect: Rect { x: pad, y: pad + line_h, w: inner_w, h: 2.0 * side::ASK_LINE_HEIGHT },
-                text: tr(no_supervisor_words(row.and_then(|r| r.start.as_ref()))),
+                text: tr(match alone {
+                    Some(_) => msg::TERMINAL_GONE,
+                    None => no_supervisor_words(row.and_then(|r| r.start.as_ref())),
+                }),
                 style: body(theme.terminal_dim),
                 lines: 2,
             });
         }
         Detail_::SupervisorGone { group } => {
             name(&mut items, group);
-            says(&mut items, 1.0, lend_msg::GONE);
+            says(&mut items, 1.0, if alone.is_some() { msg::TERMINAL_GONE } else { lend_msg::GONE });
         }
         // In its own tab, by the person's choice: said, and left there.
         Detail_::TakenBack(loan) => {
             name(&mut items, &loan.group);
-            says(&mut items, 1.0, msg::IN_ITS_OWN_TAB);
+            says(&mut items, 1.0, if alone.is_some() { msg::TERMINAL_IN_ITS_OWN_TAB } else { msg::IN_ITS_OWN_TAB });
         }
         // In another window: said, with the way there.
         Detail_::Elsewhere(loan) => {
             name(&mut items, &loan.group);
-            says(&mut items, 1.0, msg::IN_ITS_OWN_TAB);
+            says(&mut items, 1.0, if alone.is_some() { msg::TERMINAL_IN_ITS_OWN_TAB } else { msg::IN_ITS_OWN_TAB });
             // A button the width of the list's rows would be lost on a wide
             // side; it is as wide as a tab and sits on the content's left
             // edge.
@@ -1349,7 +1372,7 @@ mod tests {
         let said = texts(&scene(&l, None, false, 1.0, None));
         let mut last = 0;
         for row in l.rows() {
-            let at = said.iter().position(|t| *t == row.id).unwrap_or_else(|| panic!("{} is not drawn", row.id));
+            let at = said.iter().position(|t| t == row.name()).unwrap_or_else(|| panic!("{} is not drawn", row.id));
             assert!(at >= last, "{} is drawn out of order", row.id);
             last = at;
         }
@@ -1487,7 +1510,7 @@ mod tests {
         let l = list();
         for row in l.rows() {
             let said = spoken(row, &same);
-            assert!(said.starts_with(&row.id), "{said}");
+            assert!(said.starts_with(row.name()), "{said}");
             if !row.word.is_empty() {
                 assert!(said.contains(&row.word), "{said} leaves out the status word {:?}", row.word);
             }
@@ -1711,7 +1734,7 @@ mod tests {
                 .find_map(|i| match i {
                     Item::Line { parts, .. } => parts
                         .iter()
-                        .any(|p| matches!(&p.piece, Piece::Words { text, style } if *text == row.id && style.size == font::GROUP_NAME))
+                        .any(|p| matches!(&p.piece, Piece::Words { text, style } if text == row.name() && style.size == font::GROUP_NAME))
                         .then_some(parts),
                     Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => None,
                 })
@@ -1891,5 +1914,110 @@ mod tests {
         // What it offers starts under the sentence, which has two lines.
         let top = said.directory.unwrap().y;
         assert!(top >= space::FRAME_TO_CONTENT + side::HEADER_HEIGHT + 2.0 * side::ASK_LINE_HEIGHT);
+    }
+
+    // ---- a terminal in no group: its row, and the right side (task 1471)
+
+    const LONE: &str = "terminal:0x00000000000000c1";
+
+    fn lone_row(pane: crate::snapshot::Pane) -> Row {
+        let mut row = list().row(LONE).unwrap().clone();
+        row.alone.as_mut().unwrap().pane = pane;
+        row
+    }
+
+    #[test]
+    fn a_lone_terminals_row_is_drawn_under_its_title_never_its_id() {
+        let l = list();
+        let said = texts(&scene(&l, None, false, 1.0, None));
+        assert!(said.contains(&"zsh — ~/work".to_string()), "{said:?}");
+        assert!(!said.iter().any(|t| t.contains("terminal:0x")), "{said:?}");
+        // It waits like any other row: its status word and what it waits on.
+        assert!(said.contains(&"git push".to_string()), "{said:?}");
+        // Read out, it is its title too, and says nobody is beside it.
+        let spoken = spoken(l.row(LONE).unwrap(), &same);
+        assert!(spoken.starts_with("zsh — ~/work, 等批准"), "{spoken}");
+        // It is selected by its row's identity, and lit like any other.
+        let at = ListLayout::new(&l, 900.0);
+        assert!(at.chip(Some(LONE)).is_some());
+        let lit = scene(&l, Some(LONE), false, 1.0, None);
+        let weights: Vec<f64> = lit
+            .iter()
+            .filter_map(|i| match i {
+                Item::Line { parts, .. } => parts.iter().find_map(|p| match &p.piece {
+                    Piece::Words { text, style } if text == "zsh — ~/work" => Some(style.weight),
+                    Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } => None,
+                }),
+                Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => None,
+            })
+            .collect();
+        assert_eq!(weights, [font::WEIGHT_STRONG]);
+    }
+
+    #[test]
+    fn the_bar_over_the_right_side_says_what_a_lone_terminal_is_and_not_always_supervisor() {
+        use crate::snapshot::Pane;
+        let bar = |row: &Row| -> Vec<String> {
+            let loan = crate::lend::Loan { group: row.id.clone(), terminal: row.steward.clone().unwrap() };
+            let r = right(&Detail_::Terminal(loan), Some(row), false);
+            r.items
+                .iter()
+                .find_map(|i| match i {
+                    Item::Line { parts, .. } => Some(
+                        parts
+                            .iter()
+                            .filter_map(|p| match &p.piece {
+                                Piece::Words { text, .. } => Some(text.clone()),
+                                Piece::Glyph { .. } | Piece::Held { .. } => None,
+                            })
+                            .collect(),
+                    ),
+                    Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => None,
+                })
+                .unwrap()
+        };
+        // An ordinary agent: its title and its state, and no word between.
+        assert_eq!(bar(&lone_row(Pane::Plain)), ["zsh — ~/work", "等批准"]);
+        // A worker somebody minds says so; a supervisor with no group too.
+        assert_eq!(bar(&lone_row(Pane::Worker)), ["zsh — ~/work", "Worker", "等批准"]);
+        assert_eq!(bar(&lone_row(Pane::Supervisor)), ["zsh — ~/work", "Supervisor", "等批准"]);
+        // A group's supervisor: the group's name and "Supervisor", as ever.
+        let l = list();
+        let group = l.row("web-app").unwrap();
+        assert_eq!(bar(group)[..2], ["web-app".to_string(), "Supervisor".to_string()]);
+        // Never the row's identity.
+        assert!(!bar(&lone_row(Pane::Plain)).iter().any(|t| t.contains("terminal:")));
+    }
+
+    #[test]
+    fn what_the_right_side_says_of_a_lone_terminal_that_is_not_shown_is_said_of_a_terminal() {
+        let row = lone_row(crate::snapshot::Pane::Plain);
+        let loan = crate::lend::Loan { group: row.id.clone(), terminal: "0x00000000000000c1".to_string() };
+        let said = |d: &Detail_, row: Option<&Row>| -> Vec<String> { all_text(&right(d, row, false).items).into_iter().map(str::to_string).collect() };
+        for (detail, sentence) in [
+            (Detail_::SupervisorGone { group: row.id.clone() }, msg::TERMINAL_GONE),
+            (Detail_::NoSupervisor { group: row.id.clone() }, msg::TERMINAL_GONE),
+            (Detail_::TakenBack(loan.clone()), msg::TERMINAL_IN_ITS_OWN_TAB),
+            (Detail_::Elsewhere(loan.clone()), msg::TERMINAL_IN_ITS_OWN_TAB),
+        ] {
+            let texts = said(&detail, Some(&row));
+            assert!(texts.contains(&sentence.to_string()), "{detail:?}: {texts:?}");
+            // Under its title, not its row's identity; nothing about a supervisor.
+            assert_eq!(texts[0], "zsh — ~/work", "{detail:?}");
+            assert!(!texts.iter().any(|t| t.contains("terminal:0x") || t.contains("supervisor")), "{detail:?}: {texts:?}");
+        }
+        // The same for a group is said of its supervisor, under the group's name.
+        let l = list();
+        let group = l.row("web-app").unwrap();
+        let texts = said(&Detail_::SupervisorGone { group: "web-app".to_string() }, Some(group));
+        assert_eq!(texts, ["web-app", crate::lend::msg::GONE]);
+        // Nothing is offered to start for it, whatever the right side shows.
+        let view = StartView { home: "", ..Default::default() };
+        assert_eq!(build_start(&Detail_::NoSupervisor { group: row.id.clone() }, Some(&row), 600.0, look::theme(false), &view, &same), Start::default());
+        // A lone terminal with no title yet: no empty words are handed over.
+        let mut untitled = row.clone();
+        untitled.alone.as_mut().unwrap().title.clear();
+        let texts = said(&Detail_::SupervisorGone { group: row.id.clone() }, Some(&untitled));
+        assert!(texts.iter().all(|t| draws(t)), "{texts:?}");
     }
 }

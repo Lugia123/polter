@@ -102,12 +102,10 @@ high each side makes the block and where its parts start.
     draws. On Windows that is arithmetic in the crate (`pane::frame_px`,
     `well_px`, `build`); on macOS it is SwiftUI's layout, with nothing to
     print. The crate's own tests hold it.
-  * Where a lone terminal's row stands in the list, its rectangle, and
-    whether it is the row that breathes. The macOS host draws these rows
-    after the groups'; the Windows panel does not draw them yet
-    (`windows/control-room/src/lone.rs` reads them and stops there), so on
-    that side there is no list with them in it to lay out. Everything else
-    above is therefore compared with those rows left out of both lists.
+  * What the right-hand side says for a terminal in no group that is not
+    shown (closed, or in its own tab), and the word after its name on the
+    bar. On Windows that is the crate's scene; on macOS it is in the view.
+    Each side's own tests hold the same sentences and the same word.
   * Anything drawn. This compares numbers and strings, not pixels.
   * That the app links these files the way the package does. It is the same
     source; it is not the same binary.
@@ -218,14 +216,12 @@ do {
     FileHandle.standardError.write(Data("the snapshot does not decode: \(error)\n".utf8))
     exit(1)
 }
-// The groups' rows are compared as they always were, without the terminals
-// that are in no group: the Windows panel does not draw those yet, so its
-// list, its layout and its arrow keys do not have them. They are compared
-// on their own below (`lone`).
+// The whole list, the terminals that are in no group among its rows: both
+// hosts draw those now, so the list, its layout, its arrow keys and the row
+// that breathes are compared with them in. What each of those rows is on
+// its own is compared again below (`lone`).
 let whole = snapshot
-var groupsOnly = snapshot
-groupsOnly.ungrouped = nil
-let list = ControlRoomList(snapshot: groupsOnly)
+let list = ControlRoomList(snapshot: snapshot)
 
 print("count waiting=\(list.waitingCount) quiet=\(list.quietCount)")
 
@@ -238,6 +234,11 @@ for (current, opening) in [(nil, true), (nil, false), (firstRow, true), (firstRo
 }
 for r in list.waiting { row("waiting", r) }
 for r in list.quiet { row("quiet", r) }
+// What each row is called, and for a terminal in no group which terminal it
+// is and which frame its own pane wears.
+for r in list.rows {
+    print("rowname id=\(r.id) name=\(quote(r.name)) alone=\(r.alone?.terminal ?? "-") pane=\(r.alone?.pane.rawValue ?? "-")")
+}
 // The terminals in no group, each with a row of its own: as the list the
 // macOS host draws has them, after the groups'.
 let everything = ControlRoomList(snapshot: whole)
@@ -289,7 +290,7 @@ for p in pulses {
 windows.append("0x00000000000000ff")
 print("pulses \(pulses.count)")
 for front in fronts {
-    let breathing = ControlRoomList(snapshot: groupsOnly, showing: front).rows.filter { $0.pulses }.map { $0.id }
+    let breathing = ControlRoomList(snapshot: snapshot, showing: front).rows.filter { $0.pulses }.map { $0.id }
     print("pulse list showing=\(front ?? "-") rows=\(breathing.isEmpty ? "-" : breathing.joined(separator: ","))")
 }
 for window in windows {

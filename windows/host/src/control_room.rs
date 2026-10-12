@@ -1391,7 +1391,10 @@ fn paint(hwnd: HWND) {
                 let lay = list_layout(hwnd, list, g.room.panel.h);
                 let (chip, lift, sliding) = chip_now(&lay, selected.as_deref());
                 let window = crate::tabs::window(GetAncestor(hwnd, GA_ROOT)).map(|w| polter_control_room::rules::key(w.id));
-                let pulsing = pulse::pulsing_row(&r.snapshot.pulses, window.as_deref(), None);
+                // By the row's identity: a group's name, or the row of a
+                // terminal that is in no group.
+                let pulsing = pulse::pulsing_row_id(&r.snapshot.pulses, window.as_deref(), None);
+                let pulsing = pulsing.as_deref();
                 // Whether a group is being named is the same in both passes:
                 // the field's outline and what says why a name made no
                 // group do not change while the chip is on its way.

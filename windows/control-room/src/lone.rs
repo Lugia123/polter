@@ -8,11 +8,12 @@
 //! waiting. Which terminals these are, and what each says, is the core's;
 //! this reads it and decides nothing.
 //!
-//! **Read here and not drawn yet.** The macOS host draws these rows after
-//! the groups' (`ControlRoomList.init(snapshot:)`); the Windows panel does
-//! not, and `List` does not hold them. This is the half that can be held to
-//! the macOS host's answers today (`tools/control-room-hosts-agree.py`), so
-//! that when the panel draws them it draws the same thing.
+//! **This is the reading.** What becomes of them is `list::List`: each is a
+//! row after the groups' rows, in the section its own `needs_me` says, as
+//! the macOS host has it (`ControlRoomList.init(snapshot:)`), and the panel
+//! draws it like any other row. Before task 1471 the Windows panel did not:
+//! an agent in no group could wait for an approval and the control room
+//! showed nothing of it.
 
 use crate::json::{self, Value};
 use crate::snapshot::{boolean, field, int, list, opt_int, opt_text, text, Cut, DecodeError, Form, Shown, Waiter, WaiterIs, What};
@@ -71,7 +72,7 @@ pub fn decode(json_text: &str) -> Result<Vec<Lone>, DecodeError> {
     Ok(out)
 }
 
-fn lone(v: &Value, path: &str) -> Result<Lone, DecodeError> {
+pub(crate) fn lone(v: &Value, path: &str) -> Result<Lone, DecodeError> {
     let shown = text(v, path, "shown")?;
     let attention = field(v, path, "attention")?;
     let at = format!("{path}.attention");

@@ -404,6 +404,9 @@ pub struct Snapshot {
     /// Every open terminal, for the frame its pane wears. Empty in a
     /// snapshot that lists none.
     pub terminals: Vec<Terminal>,
+    /// The terminals that are in no group and have a row of their own, in
+    /// the core's order (`lone`). Empty in a snapshot that lists none.
+    pub ungrouped: Vec<crate::lone::Lone>,
     /// The roles a supervisor can be started in, in the core's order.
     /// Empty in a snapshot from before one could be started here.
     pub supervisor_roles: Vec<SupervisorRole>,
@@ -605,6 +608,13 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
         }
     }
 
+    let mut ungrouped = Vec::new();
+    if v.get("ungrouped").is_some() {
+        for (i, one) in list(&v, root, "ungrouped")?.iter().enumerate() {
+            ungrouped.push(crate::lone::lone(one, &format!("ungrouped[{i}]"))?);
+        }
+    }
+
     let mut supervisor_roles = Vec::new();
     if v.get("supervisor_roles").is_some() {
         for (i, r) in list(&v, root, "supervisor_roles")?.iter().enumerate() {
@@ -632,6 +642,7 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
             Some(q) => Some(crate::quota::decode(q, "quota")?),
         },
         terminals,
+        ungrouped,
         supervisor_roles,
         choose_supervisor_role,
     })

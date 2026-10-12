@@ -218,8 +218,9 @@ impl SeenMarker {
         self.selected = row.map(|r| r.id.clone());
         self.selected_unseen = row.is_some_and(|r| r.unseen);
         // Only a row the core says has not been looked at is worth saying
-        // anything about.
-        let row = row.filter(|r| r.unseen)?;
+        // anything about -- and only a group's: `seen` names a group, and a
+        // terminal on its own is in none.
+        let row = row.filter(|r| r.unseen && r.alone.is_none())?;
         Some(Dwell { generation: self.generation, group: row.id.clone() })
     }
 
@@ -238,7 +239,7 @@ impl SeenMarker {
         }
         let was = self.selected_unseen;
         self.selected_unseen = row.is_some_and(|r| r.unseen);
-        let row = row.filter(|r| r.unseen && !was)?;
+        let row = row.filter(|r| r.unseen && !was && r.alone.is_none())?;
         self.generation += 1;
         Some(Dwell { generation: self.generation, group: row.id.clone() })
     }
