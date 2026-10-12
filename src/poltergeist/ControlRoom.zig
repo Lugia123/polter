@@ -2764,3 +2764,40 @@ test "ControlRoom start: one on its way is not offered again, and the snapshot w
         try testing.expectEqual(@as(?Hex, null), row.supervisor.terminal);
     }
 }
+
+test "ControlRoom wake: hooks that never came are said once, and there is no moment left to wake for" {
+    // The crash: a supervisor was started, its CLI never spoke, and thirty
+    // seconds on the bus said so once -- by moving the moment the hooks
+    // were expected to the end of time. That number came out of here as
+    // the next thing to wake for, and the wake thread could not hold it.
+    var w: World = .init();
+    defer w.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    try w.terminal(0xa1, "zsh", 0x21);
+    try w.hook(0xa1, .hooks_expected, null, 10_000);
+
+    // While the thirty seconds run, their end is the moment to wake at.
+    var out = try room.refresh(w.input(11_000), .event);
+    try testing.expectEqual(@as(?u64, 10_000 + Bus.hooks_expected_timeout_ms), out.wake_ms);
+
+    // They ran out. The bus says so, once.
+    const late = 10_000 + Bus.hooks_expected_timeout_ms + 1_000;
+    _ = w.bus.considerAgents(late);
+    try testing.expect(!w.bus.considerAgents(late + 60_000));
+    // When they were expected is still when they were expected.
+    try testing.expectEqual(@as(u64, 10_000), w.bus.agentOf(0xa1).expected_ms);
+
+    // Nothing will change on its own now: no wake, and above all not one
+    // at the end of time.
+    out = try room.refresh(w.input(late), .event);
+    try testing.expectEqual(@as(?u64, null), out.wake_ms);
+
+    // And it is still what it is: hooks that were promised and did not come.
+    const read = try std.json.parseFromSlice(Snapshot, testing.allocator, room.json, .{});
+    defer read.deinit();
+    try testing.expectEqual(@as(usize, 1), read.value.ungrouped.len);
+    try testing.expectEqual(Attention.Kind.suspect_stuck, read.value.ungrouped[0].attention.kind);
+    try testing.expectEqual(Attention.Source.hook_missing, read.value.ungrouped[0].attention.source);
+}

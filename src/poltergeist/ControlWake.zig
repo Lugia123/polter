@@ -61,13 +61,61 @@ pub fn arm(self: *ControlWake, at_ms: ?u64, now_ms: u64) void {
     }
     self.armed_ms = at_ms;
     self.deadline = if (at_ms) |at| .fromNow(self.io, .{
-        .raw = .fromMilliseconds(@intCast(at -| now_ms)),
+        .raw = .fromMilliseconds(waitMs(at, now_ms)),
         // The clock the bus counts on: it stops while the machine sleeps,
         // and so does everything this is waiting for.
         .clock = .awake,
     }) else null;
     self.mutex.unlock(self.io);
     self.poke();
+}
+
+/// The longest this will wait. Nothing it is asked about is further off
+/// than a snooze, and a snooze "until next year" is as good as asked for
+/// again after a restart.
+pub const longest_wait_ms: u64 = 366 * std.time.ms_per_day;
+
+/// How long to sleep for a moment `at_ms` away, for the clock's signed
+/// type: never negative, never more than `longest_wait_ms`.
+///
+/// **Safe for any two numbers.** This was `@intCast(at -| now_ms)`, which
+/// is only right while every caller hands in a moment near now -- and one
+/// did not (a sentinel of `maxInt(u64)`, see `Bus.Agent.expected_said`).
+/// In a debug build that is a panic on the app thread; in a release build
+/// it is whatever the wrapped number happens to be. Woken early, the
+/// caller works out again what there is to wait for; that is all an early
+/// wake costs.
+pub fn waitMs(at_ms: u64, now_ms: u64) i64 {
+    return @intCast(@min(at_ms -| now_ms, longest_wait_ms));
+}
+
+test "ControlRoom wake thread: any moment at all can be asked for" {
+    try testing.expectEqual(@as(i64, 30), waitMs(1_030, 1_000));
+    // Already past is now, not a negative wait.
+    try testing.expectEqual(@as(i64, 0), waitMs(1_000, 5_000));
+    // The end of time, and everything past what the clock's type holds.
+    const longest: i64 = @intCast(longest_wait_ms);
+    try testing.expectEqual(longest, waitMs(std.math.maxInt(u64), 0));
+    try testing.expectEqual(longest, waitMs(std.math.maxInt(u64), 1_000));
+    try testing.expectEqual(longest, waitMs(@as(u64, std.math.maxInt(i64)) + 1, 0));
+    try testing.expectEqual(longest, waitMs(longest_wait_ms + 1, 0));
+    try testing.expectEqual(longest - 1, waitMs(longest_wait_ms - 1, 0));
+
+    // And through the door it was a crash at: armed for the end of time,
+    // the thread simply does not fire.
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var c: Counter = .{};
+    var w: ControlWake = .{ .io = io, .fire = Counter.fire, .ctx = &c };
+    try w.start();
+    defer w.stop();
+    w.arm(std.math.maxInt(u64), 1_000);
+    try Io.sleep(io, .fromMilliseconds(50), .awake);
+    try testing.expectEqual(@as(u32, 0), c.fired.load(.monotonic));
+    // Still armable for something real afterwards.
+    w.arm(1_020, 1_000);
+    try waitFor(io, &c, 1, 5_000);
 }
 
 fn poke(self: *ControlWake) void {

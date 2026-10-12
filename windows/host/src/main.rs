@@ -3497,7 +3497,38 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 "[action] new_tab cwd={}",
                 cwd.as_deref().unwrap_or("(inherited)")
             );
-            queue_from(origin, Op::NewTab(cwd), "new_tab action")
+            // Where it goes and whether it comes in front is a rule both
+            // hosts share (`rules::new_tab`). **A tab the application
+            // itself asks for used to be refused here** -- it names no
+            // surface, so there was no window to queue it against -- and
+            // the control room starting a supervisor is exactly that.
+            use polter_control_room::rules::{new_tab, Home, NewTab as To};
+            // The request may name no surface at all (the application's own).
+            // carries no terminal: it asks where the one control room is
+            let facts = tabs::new_tab_facts();
+            let asker = target_surface(&target).map(tabs::asker_facts);
+            let to = new_tab(asker, facts.control_room.is_some(), facts.tabs_beside, facts.any_terminal_window);
+            let behind = |frame: HWND| {
+                tabs::post_op(frame, Op::NewTabWith(tabs::NewTab { cwd: cwd.clone(), behind: true, ..Default::default() }), "new_tab action");
+                true
+            };
+            // carries no terminal: the window the person used last, for a
+            // tab nobody's terminal asked for
+            let front = tabs::overlay_frame();
+            let done = match to {
+                To::InFront(Home::Askers) => queue_from(origin, Op::NewTab(cwd.clone()), "new_tab action"),
+                To::Behind(Home::Askers) => origin.is_some_and(behind),
+                To::Behind(Home::ControlRooms) | To::Behind(Home::Frontmost) => facts.control_room.is_some_and(behind),
+                To::InFront(Home::Frontmost) | To::InFront(Home::ControlRooms) => {
+                    queue_from((!front.0.is_null()).then_some(front), Op::NewTab(cwd.clone()), "new_tab action")
+                }
+                // No terminal window at all. This host has no window-less
+                // state to open one from: not opened, and the core is told.
+                To::OwnWindow => false,
+                To::Refused => false,
+            };
+            alogf!(origin, "[action] new_tab -> {:?} done={}", to, done);
+            done
         }
         // **Posted, not queued** -- see `WM_ASK_CLOSE_TAB`. The window's
         // procedure asks (if anything in the tabs going is busy) and closes.

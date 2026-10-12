@@ -31,6 +31,7 @@ const internal_os = @import("../os/main.zig");
 const global = @import("../global.zig");
 const daylog = @import("daylog.zig");
 const quota = @import("quota.zig");
+const ControlWake = @import("ControlWake.zig");
 
 const log = std.log.scoped(.poltergeist);
 
@@ -143,10 +144,15 @@ fn pause(self: *QuotaWatch, ms: u64) bool {
     const stopping = self.stopping;
     self.mutex.unlock(self.io);
     if (stopping) return false;
-    self.io.futexWaitTimeout(u32, &self.generation.raw, seen, .{ .duration = .{
-        .raw = .fromMilliseconds(@intCast(ms)),
-        .clock = .awake,
-    } }) catch return false;
+    self.io.futexWaitTimeout(u32, &self.generation.raw, seen, .{
+        .duration = .{
+            // Through the same clamp the control room's wake uses: `ms` is a
+            // setting today, and this must not be the line that finds out when
+            // it stops being one.
+            .raw = .fromMilliseconds(ControlWake.waitMs(ms, 0)),
+            .clock = .awake,
+        },
+    }) catch return false;
     return self.generation.load(.acquire) == seen;
 }
 

@@ -69,3 +69,44 @@ pub fn make(dpi: i32, px: i32, weight: i32, face: PCWSTR) -> HFONT {
         )
     }
 }
+
+/// The face the control room sets names, commands and paths in.
+///
+/// **Cascadia Mono where it is installed, Consolas where it is not.** The
+/// design's sizes are for a face whose letters are six tenths of its size
+/// wide (41 to a line of 322 at 13); Consolas is narrower and lower at the
+/// same size -- 0.55 wide -- so a group's name set at 15 read as 13 and a
+/// command at 13 as 11 beside the interface's face (task 1444). Cascadia
+/// Mono is 0.586 wide and ships with Windows 11; Consolas is on every
+/// Windows. Asked once.
+pub fn mono_face() -> PCWSTR {
+    use std::sync::OnceLock;
+    use windows::core::w;
+    use windows::Win32::Foundation::LPARAM;
+    use windows::Win32::Graphics::Gdi::{EnumFontFamiliesExW, GetDC, ReleaseDC, LOGFONTW, TEXTMETRICW};
+    static CASCADIA: OnceLock<bool> = OnceLock::new();
+    unsafe extern "system" fn found(_: *const LOGFONTW, _: *const TEXTMETRICW, _: u32, seen: LPARAM) -> i32 {
+        unsafe { *(seen.0 as *mut bool) = true };
+        0
+    }
+    let has = *CASCADIA.get_or_init(|| {
+        let mut seen = false;
+        let mut want = LOGFONTW { lfCharSet: DEFAULT_CHARSET, ..Default::default() };
+        for (to, from) in want.lfFaceName.iter_mut().zip("Cascadia Mono".encode_utf16()) {
+            *to = from;
+        }
+        unsafe {
+            let dc = GetDC(None);
+            EnumFontFamiliesExW(dc, &want, Some(found), LPARAM(&mut seen as *mut bool as isize), 0);
+            ReleaseDC(None, dc);
+        }
+        // process-wide: which faces are installed is the machine's
+        plogf!("[uifont] the control room's fixed-width face: {}", if seen { "Cascadia Mono" } else { "Consolas (Cascadia Mono is not installed)" });
+        seen
+    });
+    if has {
+        w!("Cascadia Mono")
+    } else {
+        w!("Consolas")
+    }
+}

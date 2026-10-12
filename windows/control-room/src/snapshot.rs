@@ -150,6 +150,82 @@ pub struct Reason {
     pub text: String,
 }
 
+/// Where a group stands with a supervisor (`ControlRoom.zig`,
+/// `SupervisorOut`). It only picks the sentence: whether one can be started
+/// is `can_start`, the core's word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupervisorState {
+    Present,
+    Absent,
+    Starting,
+    Failed,
+}
+
+impl SupervisorState {
+    pub fn name(self) -> &'static str {
+        match self {
+            SupervisorState::Present => "present",
+            SupervisorState::Absent => "absent",
+            SupervisorState::Starting => "starting",
+            SupervisorState::Failed => "failed",
+        }
+    }
+
+    fn parse(s: &str) -> Option<SupervisorState> {
+        [SupervisorState::Present, SupervisorState::Absent, SupervisorState::Starting, SupervisorState::Failed]
+            .into_iter()
+            .find(|v| v.name() == s)
+    }
+}
+
+/// Why the last try made no supervisor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartFailure {
+    None,
+    TerminalNeverOpened,
+    AgentNeverConnected,
+    TerminalClosed,
+}
+
+impl StartFailure {
+    pub fn name(self) -> &'static str {
+        match self {
+            StartFailure::None => "none",
+            StartFailure::TerminalNeverOpened => "terminal_never_opened",
+            StartFailure::AgentNeverConnected => "agent_never_connected",
+            StartFailure::TerminalClosed => "terminal_closed",
+        }
+    }
+
+    fn parse(s: &str) -> Option<StartFailure> {
+        [StartFailure::None, StartFailure::TerminalNeverOpened, StartFailure::AgentNeverConnected, StartFailure::TerminalClosed]
+            .into_iter()
+            .find(|v| v.name() == s)
+    }
+}
+
+/// What the core says about a group's supervisor and what starting one
+/// would use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupervisorStart {
+    pub state: SupervisorState,
+    /// Whether the button is offered. A host shows it on this and works
+    /// nothing out from `state`.
+    pub can_start: bool,
+    pub failed: StartFailure,
+    /// The role it is started in unless the person picks another.
+    pub role: Option<String>,
+    /// Where it is started unless the person picks elsewhere.
+    pub cwd: String,
+}
+
+/// A role a supervisor can be started in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupervisorRole {
+    pub key: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Group {
     pub name: String,
@@ -174,6 +250,9 @@ pub struct Group {
     pub terminal: Option<String>,
     pub since_ms: u64,
     pub event_ms: Option<u64>,
+    /// None in a snapshot from before the core said it; then nothing is
+    /// offered.
+    pub supervisor: Option<SupervisorStart>,
 }
 
 /// Which of the three frames a terminal's pane wears in its own tab, as the
@@ -257,6 +336,12 @@ pub struct Snapshot {
     /// Every open terminal, for the frame its pane wears. Empty in a
     /// snapshot that lists none.
     pub terminals: Vec<Terminal>,
+    /// The roles a supervisor can be started in, in the core's order.
+    /// Empty in a snapshot from before one could be started here.
+    pub supervisor_roles: Vec<SupervisorRole>,
+    /// Whether there is a choice of role to offer: the core's word, not
+    /// the length of the list.
+    pub choose_supervisor_role: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,6 +426,21 @@ fn group(v: &Value, path: &str) -> Res<Group> {
         }
     }
     let at = format!("{path}.attention");
+    let supervisor = match v.get("supervisor") {
+        None => None,
+        Some(s) => {
+            let sp = format!("{path}.supervisor");
+            let state = text(s, &sp, "state")?;
+            let failed = text(s, &sp, "failed")?;
+            Some(SupervisorStart {
+                state: SupervisorState::parse(&state).ok_or(DecodeError::UnknownValue(format!("{sp}.state={state}")))?,
+                can_start: boolean(s, &sp, "can_start")?,
+                failed: StartFailure::parse(&failed).ok_or(DecodeError::UnknownValue(format!("{sp}.failed={failed}")))?,
+                role: opt_text(s, &sp, "role")?,
+                cwd: text(s, &sp, "cwd")?,
+            })
+        }
+    };
     Ok(Group {
         name: text(v, path, "name")?,
         needs_me: boolean(v, path, "needs_me")?,
@@ -366,6 +466,7 @@ fn group(v: &Value, path: &str) -> Res<Group> {
         terminal: opt_text(attention, &at, "terminal")?,
         since_ms: int(attention, &at, "since_ms")?,
         event_ms: opt_int(attention, &at, "event_ms")?,
+        supervisor,
     })
 }
 
@@ -424,6 +525,18 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
         }
     }
 
+    let mut supervisor_roles = Vec::new();
+    if v.get("supervisor_roles").is_some() {
+        for (i, r) in list(&v, root, "supervisor_roles")?.iter().enumerate() {
+            let path = format!("supervisor_roles[{i}]");
+            supervisor_roles.push(SupervisorRole { key: text(r, &path, "key")?, name: text(r, &path, "name")? });
+        }
+    }
+    let choose_supervisor_role = match v.get("choose_supervisor_role") {
+        None => false,
+        Some(_) => boolean(&v, root, "choose_supervisor_role")?,
+    };
+
     Ok(Snapshot {
         rev: int(&v, root, "rev")?,
         now_ms: int(&v, root, "now_ms")?,
@@ -439,5 +552,7 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
             Some(q) => Some(crate::quota::decode(q, "quota")?),
         },
         terminals,
+        supervisor_roles,
+        choose_supervisor_role,
     })
 }

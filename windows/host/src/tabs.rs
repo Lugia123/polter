@@ -2765,6 +2765,74 @@ pub struct NewTab {
     /// being opened, and nowhere else -- the same rule `Ghostty.App.swift`'s
     /// `openChat` states.
     pub chat: bool,
+    /// The tab is added to its window **without being brought in front**:
+    /// the person is looking at the control room and stays there
+    /// (`polter_control_room::rules::new_tab`). Its strip shows it; it is
+    /// laid out and takes the keyboard when it is clicked.
+    pub behind: bool,
+}
+
+/// What `rules::new_tab` asks about the window a tab was asked from: whether
+/// the control room is showing that terminal, and whether a window still
+/// holds it.
+// window-free: a scan over every window for a surface, which is unique in the process
+pub fn asker_facts(surface: Surface) -> (bool, bool) {
+    with_windows(|ws| {
+        for w in ws.iter() {
+            if let Some(p) = w.tabs.iter().flat_map(|t| t.panes().iter()).find(|p| p.surface == surface as usize) {
+                return (w.shown_on_loan().is_some_and(|l| l.pane == p.id), true);
+            }
+        }
+        (false, false)
+    })
+}
+
+/// What `rules::new_tab` asks when the application itself wants a tab.
+pub struct NewTabFacts {
+    /// The window whose tab in front is the control room, when there is one.
+    pub control_room: Option<HWND>,
+    /// That window has a terminal tab beside the control room.
+    pub tabs_beside: bool,
+    /// Some window has a terminal tab.
+    pub any_terminal_window: bool,
+}
+
+// window-free: a scan over every window for the control room, of which the process has one
+pub fn new_tab_facts() -> NewTabFacts {
+    with_windows(|ws| {
+        let is_terminal = |t: &Tab| match t.kind() {
+            Kind::Terminal => true,
+            Kind::ControlRoom => false,
+        };
+        let room = ws.iter().find(|w| w.tabs.get(w.active).is_some_and(|t| !is_terminal(t)));
+        NewTabFacts {
+            control_room: room.map(|w| HWND(w.frame as *mut c_void)),
+            tabs_beside: room.is_some_and(|w| w.tabs.iter().any(is_terminal)),
+            any_terminal_window: ws.iter().any(|w| w.tabs.iter().any(is_terminal)),
+        }
+    })
+}
+
+/// Whether a supervisor may answer a new terminal's prompts until the core
+/// says otherwise: the configuration's `poltergeist-may-authorise`, which
+/// is what the core starts every terminal with.
+///
+/// **A new tab used to start with this off**, and the menu item that shows
+/// it is drawn from the tab: so until the terminal's first
+/// `poltergeist_mark` arrived -- which can be never, for a shell no agent
+/// runs in -- "Let a Supervisor Answer Prompts Here" was unticked while the
+/// core had it on (task 1444, defect 4). Off when the setting cannot be
+/// read, which is what it was.
+fn may_authorise_until_marked() -> bool {
+    let cfg = crate::config_handle();
+    let Some(api) = crate::api_opt() else { return false };
+    if cfg.is_null() {
+        return false;
+    }
+    let mut on = false;
+    let key = "poltergeist-may-authorise";
+    let read = unsafe { (api.config_get)(cfg, &mut on as *mut bool as *mut c_void, key.as_ptr(), key.len()) };
+    read && on
 }
 
 /// A new tab whose shell starts in `cwd`. `create_tab` is this with `None`.
@@ -2796,6 +2864,8 @@ pub fn create_tab_with(
     // constructed* while the guard for that value's destination was held.
     let id = take_id();
     let tab_id = TabId(take_id());
+    let behind = spec.behind;
+    let may_authorise = may_authorise_until_marked();
     let Some(pane) = create_pane(frame, app, hinst, id, bounds, spec) else {
         return false;
     };
@@ -2825,17 +2895,21 @@ pub fn create_tab_with(
             role: 0,
             shielded: false,
             held: false,
-            may_authorise: false,
+            may_authorise,
             worker_mentions: false,
             persona: None,
             cwd: initial_cwd,
             title_override: None,
         });
-        win.active = win.tabs.len() - 1;
+        // Behind: the tab in front stays in front. The new one is at the
+        // end, so the index of the one in front has not moved.
+        if !behind {
+            win.active = win.tabs.len() - 1;
+        }
     }
     layout(frame);
     focus_active(frame);
-    wlogf!(frame, "[tab] created; count now {}", count(frame));
+    wlogf!(frame, "[tab] created{}; count now {}", if behind { " behind the tab in front" } else { "" }, count(frame));
     // **After the guard above is gone, and that is load-bearing.** Raising a
     // UIA event can call straight back into `uia.rs`, which takes this
     // module's lock -- and taking it twice on one thread hangs rather than
@@ -4412,6 +4486,8 @@ pub enum ShellTitle {
 fn apply_pane_title(tabs: &mut [Tab], surface: usize, title: &str) -> Option<(usize, Option<NamedBy>)> {
     let idx = tabs.iter().position(|t| t.panes().iter().any(|p| p.surface == surface))?;
     let tab = &mut tabs[idx];
+    // A console's first title is the path of what was started in it.
+    let title = rules::shown_title(title);
     if let Some(pane) = tab.panes_mut().iter_mut().find(|p| p.surface == surface) {
         pane.title = Some(title.to_string());
     }

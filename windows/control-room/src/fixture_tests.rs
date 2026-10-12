@@ -823,3 +823,162 @@ fn a_group_the_core_names_but_does_not_list_is_not_selected() {
     assert_eq!(sel.current(), None);
     assert!(!sel.is_a_look());
 }
+
+// ---- a new group, and a supervisor for a group that has none (task 1453)
+
+#[test]
+fn the_fixture_says_where_every_group_stands_with_a_supervisor_and_which_roles_start_one() {
+    use crate::snapshot::{StartFailure, SupervisorState};
+    let s = snapshot::decode(FIXTURE).unwrap();
+    assert_eq!(s.groups.len(), 8);
+    for g in &s.groups {
+        let start = g.supervisor.as_ref().unwrap_or_else(|| panic!("{} says nothing of its supervisor", g.name));
+        // Every group of the fixture has one, so none can be started.
+        assert_eq!((start.state, start.can_start, start.failed), (SupervisorState::Present, false, StartFailure::None), "{}", g.name);
+        assert_eq!(start.role.as_deref(), Some("polter-supervisor"));
+        assert_eq!(start.cwd, "/Users/me");
+    }
+    let roles: Vec<(&str, &str)> = s.supervisor_roles.iter().map(|r| (r.key.as_str(), r.name.as_str())).collect();
+    assert_eq!(roles, [("polter-supervisor", "Polter Supervisor")]);
+    assert!(!s.choose_supervisor_role);
+    // And the list carries all three to whoever draws.
+    let l = List::from_snapshot(&s);
+    assert!(l.rows().all(|r| r.start.is_some()));
+    assert_eq!(l.supervisor_roles, s.supervisor_roles);
+    assert_eq!(l.choose_supervisor_role, s.choose_supervisor_role);
+}
+
+#[test]
+fn what_the_core_says_of_a_supervisor_is_read_as_said_and_an_unknown_word_is_an_error() {
+    use crate::snapshot::{StartFailure, SupervisorState};
+    let first = |from: &str, to: &str| FIXTURE.replacen(from, to, 1);
+    let read = |json: String| snapshot::decode(&json).unwrap().groups[0].supervisor.clone().unwrap();
+    let absent = read(first("\"state\": \"present\",\n        \"can_start\": false", "\"state\": \"absent\",\n        \"can_start\": true"));
+    assert_eq!((absent.state, absent.can_start), (SupervisorState::Absent, true));
+    // `can_start` is read, not worked out from the state: a group with no
+    // supervisor that the core says none can be started for, and one whose
+    // last try failed that it says can be tried again.
+    let odd = read(first("\"state\": \"present\"", "\"state\": \"starting\""));
+    assert_eq!((odd.state, odd.can_start), (SupervisorState::Starting, false));
+    let held = read(first("\"state\": \"present\"", "\"state\": \"absent\""));
+    assert_eq!((held.state, held.can_start), (SupervisorState::Absent, false));
+    let again = read(first("\"state\": \"present\",\n        \"can_start\": false", "\"state\": \"failed\",\n        \"can_start\": true"));
+    assert_eq!((again.state, again.can_start), (SupervisorState::Failed, true));
+    let failed = read(first("\"state\": \"present\"", "\"state\": \"failed\"").replacen("\"failed\": \"none\"", "\"failed\": \"agent_never_connected\"", 1));
+    assert_eq!((failed.state, failed.failed), (SupervisorState::Failed, StartFailure::AgentNeverConnected));
+    let no_role = read(first("\"role\": \"polter-supervisor\"", "\"role\": null"));
+    assert_eq!(no_role.role, None);
+    assert!(matches!(snapshot::decode(&first("\"state\": \"present\"", "\"state\": \"maybe\"")), Err(DecodeError::UnknownValue(_))));
+    assert!(matches!(snapshot::decode(&first("\"failed\": \"none\"", "\"failed\": \"gave_up\"")), Err(DecodeError::UnknownValue(_))));
+    assert!(snapshot::decode(&first("\"choose_supervisor_role\": false", "\"choose_supervisor_role\": true")).unwrap().choose_supervisor_role);
+}
+
+#[test]
+fn a_snapshot_from_before_a_supervisor_could_be_started_offers_nothing() {
+    // Older cores wrote neither the group's `supervisor` nor the roles.
+    let mut old = String::new();
+    let mut rest = FIXTURE;
+    while let Some(at) = rest.find("      \"supervisor\": {") {
+        old.push_str(&rest[..at]);
+        let end = rest[at..].find("},\n").unwrap() + at + "},\n".len();
+        rest = &rest[end..];
+    }
+    old.push_str(rest);
+    let at = old.find("  \"supervisor_roles\"").unwrap();
+    let end = old[at..].find("\"choose_supervisor_role\": false,\n").unwrap() + at + "\"choose_supervisor_role\": false,\n".len();
+    let old = format!("{}{}", &old[..at], &old[end..]);
+    let s = snapshot::decode(&old).unwrap();
+    assert_eq!(s.groups.len(), 8);
+    assert!(s.groups.iter().all(|g| g.supervisor.is_none()));
+    assert!(s.supervisor_roles.is_empty() && !s.choose_supervisor_role);
+}
+
+#[test]
+fn making_a_group_and_starting_a_supervisor_are_requests_the_core_reads() {
+    assert_eq!(act::encode(&Act::NewGroup { name: " web app\"x " }).unwrap(), r#"{"act":"new_group","name":" web app\"x "}"#);
+    // What the person did not pick is left out, for the core to fill in.
+    let start = |role, cwd| act::encode(&Act::StartSupervisor { group: "web-app", role, cwd }).unwrap();
+    assert_eq!(start(None, None), r#"{"act":"start_supervisor","group":"web-app"}"#);
+    assert_eq!(start(Some("reviewer"), None), r#"{"act":"start_supervisor","group":"web-app","role":"reviewer"}"#);
+    assert_eq!(start(None, Some(r"C:\src")), r#"{"act":"start_supervisor","group":"web-app","cwd":"C:\\src"}"#);
+    assert_eq!(start(Some("r"), Some("/x")), r#"{"act":"start_supervisor","group":"web-app","role":"r","cwd":"/x"}"#);
+    for request in [start(Some("r"), Some("/x")), act::encode(&Act::NewGroup { name: "a" }).unwrap()] {
+        assert!(crate::json::parse(&request).is_ok(), "{request}");
+    }
+}
+
+#[test]
+fn each_way_of_not_making_a_group_or_not_starting_a_supervisor_has_its_own_sentence() {
+    let names = [
+        "BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting", "NoSupervisorRole", "NoSuchPersona",
+        "NotASupervisorRole", "NoCli", "NoSuchDirectory", "OpenFailed", "NoExecutable",
+    ];
+    let mut said: Vec<&str> = names.iter().map(|n| Refusal::parse(n).message()).collect();
+    assert!(names.iter().all(|n| Refusal::parse(n) != Refusal::Other), "{names:?}");
+    assert!(said.iter().all(|m| !m.contains("{}") && m.ends_with('.')));
+    said.sort_unstable();
+    said.dedup();
+    assert_eq!(said.len(), names.len(), "two of them say the same thing");
+    // The three ways a directory is not there are one sentence; so are the two ways no tab opens.
+    assert_eq!(Refusal::parse("NotAbsolute"), Refusal::NoSuchDirectory);
+    assert_eq!(Refusal::parse("NotADirectory"), Refusal::NoSuchDirectory);
+    assert_eq!(Refusal::parse("NoRuntime"), Refusal::OpenFailed);
+    assert_eq!(Refusal::parse("BadName").message(), "A group's name is lowercase letters, digits and dashes, 48 at most.");
+    // None of them is put right by looking again or by going to a terminal.
+    assert!(names.iter().all(|n| !Refusal::parse(n).means_look_again() && !Refusal::parse(n).offers_the_terminal()));
+}
+
+#[test]
+fn a_group_just_made_is_selected_when_the_core_lists_it_and_not_before() {
+    use crate::rules::{made_group_name, made_group_to_select};
+    let l = list();
+    assert_eq!(made_group_to_select(Some("billing"), &l), Some("billing"));
+    assert_eq!(made_group_to_select(Some("not-yet"), &l), None);
+    assert_eq!(made_group_to_select(None, &l), None);
+    // The core trims what was typed and makes nothing else of it.
+    assert_eq!(made_group_name("  billing \n"), "billing");
+    assert_eq!(made_group_name("Bill ing"), "Bill ing");
+    assert_eq!(made_group_to_select(Some(made_group_name(" billing ")), &l), Some("billing"));
+}
+
+#[test]
+fn where_a_tab_the_core_asked_for_goes() {
+    use crate::rules::{new_tab, Home, NewTab};
+    // (lent, has a home)
+    assert_eq!(new_tab(Some((true, true)), true, true, true), NewTab::Behind(Home::Askers));
+    assert_eq!(new_tab(Some((false, true)), true, true, true), NewTab::InFront(Home::Askers));
+    // Nothing holds it: not opened, whatever else is so.
+    for lent in [false, true] {
+        for facts in [(false, false, false), (true, true, true)] {
+            assert_eq!(new_tab(Some((lent, false)), facts.0, facts.1, facts.2), NewTab::Refused);
+        }
+    }
+    // The application itself -- the control room starting a supervisor.
+    assert_eq!(new_tab(None, true, true, true), NewTab::Behind(Home::ControlRooms));
+    assert_eq!(new_tab(None, true, true, false), NewTab::Behind(Home::ControlRooms));
+    assert_eq!(new_tab(None, true, false, true), NewTab::InFront(Home::Frontmost));
+    assert_eq!(new_tab(None, false, true, true), NewTab::InFront(Home::Frontmost));
+    assert_eq!(new_tab(None, false, false, false), NewTab::OwnWindow);
+    assert_eq!(new_tab(None, true, false, false), NewTab::OwnWindow);
+    // An asker's own answer does not depend on where the control room is.
+    for a in [false, true] {
+        for b in [false, true] {
+            for c in [false, true] {
+                assert_eq!(new_tab(Some((true, true)), a, b, c), NewTab::Behind(Home::Askers));
+                assert_eq!(new_tab(Some((false, true)), a, b, c), NewTab::InFront(Home::Askers));
+            }
+        }
+    }
+}
+
+#[test]
+fn a_title_that_is_the_path_of_the_program_started_is_shown_as_its_name() {
+    use crate::rules::shown_title;
+    assert_eq!(shown_title(r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe"), "powershell");
+    assert_eq!(shown_title(r"C:\Program Files\PowerShell\7\pwsh.EXE"), "pwsh");
+    assert_eq!(shown_title(r"D:\tools\cmd.exe"), "cmd");
+    // Anything a shell or a program set is kept as it came.
+    for kept in ["powershell.exe", "zsh — ~/work", r"C:\Users\me\src", r"vim C:\x\notes.exe.txt", "", "claude", r"\\server\share\x.exe", "git commit -m x.exe"] {
+        assert_eq!(shown_title(kept), kept);
+    }
+}
