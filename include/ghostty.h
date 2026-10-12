@@ -913,10 +913,26 @@ typedef struct {
   const char* pwd;
 } ghostty_action_pwd_s;
 
+// apprt.action.NewTab.Result
+//
+// UNANSWERED is zero on purpose: a cell the apprt did not write says the
+// apprt said nothing, and the caller goes by the action's return value.
+typedef enum {
+  GHOSTTY_ACTION_NEW_TAB_RESULT_UNANSWERED,
+  GHOSTTY_ACTION_NEW_TAB_RESULT_WILL_OPEN,
+  GHOSTTY_ACTION_NEW_TAB_RESULT_REFUSED,
+} ghostty_action_new_tab_result_e;
+
 // Where a new tab should start. Empty means "wherever it would have
 // started anyway", which is what a keybinding or a menu item passes.
+//
+// `result` is NULL when nobody needs an answer (a key, a menu item). When it
+// is not, somebody is waiting to hear whether a terminal will be opened: an
+// apprt that will not open one writes REFUSED rather than telling the person
+// in a dialog nobody asked for.
 typedef struct {
   const char* working_directory;
+  ghostty_action_new_tab_result_e* result;
 } ghostty_action_new_tab_s;
 
 // apprt.action.OpenConfig

@@ -1309,7 +1309,9 @@ pub const Surface = struct {
     }
 
     pub fn textCallback(self: *Surface, text: []const u8) void {
-        _ = self.core_surface.textCallback(text) catch |err| {
+        // The host's text entry: an input method's committed text, and
+        // anything else the person put in without a key.
+        _ = self.core_surface.textFromPerson(text) catch |err| {
             log.err("error in key callback err={}", .{err});
             return;
         };

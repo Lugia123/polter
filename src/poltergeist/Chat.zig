@@ -343,6 +343,11 @@ pub fn restoreShell(
     name: []const u8,
     brief: []const u8,
     last_ms: u64,
+    /// What the person had said about it in the control room, off the same
+    /// record. **Not optional**: these were written down from the start and
+    /// read back by nobody, so a snooze "until four" ended at every restart
+    /// and nothing looked wrong. A caller with none to give says `.none`.
+    marks: Marks,
 ) Error!void {
     // Already here means this is a second start of the same run, or a
     // group the supervisor has just made. Either way what is in memory is
@@ -363,6 +368,10 @@ pub fn restoreShell(
     // written, and was reported then. Telling anybody now would be
     // reporting a restart as if it were an edit.
     if (brief.len > 0) _ = try self.setBrief(name, brief);
+
+    // As marks that came back, not as marks made now: nothing that happens
+    // in this run has been looked at yet (`restoreMarks`).
+    try self.restoreMarks(name, marks);
 }
 
 /// Whether anybody is working in this group right now.
@@ -1817,7 +1826,7 @@ test "a shell left by a restart is invisible to the one who has to take it up" {
 
     // What `restoreShell` leaves: the group exists and only the user is in
     // it.
-    try chat.restoreShell("windows-port", "the port", 1_000);
+    try chat.restoreShell("windows-port", "the port", 1_000, .none);
 
     {
         const mine = try chat.groupsFor(alloc, boss, &.{});
@@ -2198,7 +2207,7 @@ test "a restored shell has its name and its note and nobody in it" {
     var chat = testChat();
     defer chat.deinit();
 
-    try chat.restoreShell("build", "\u{591c}\u{73ed}\u{90a3}\u{644a}\u{6d3b}", 1_700_000_000_000);
+    try chat.restoreShell("build", "\u{591c}\u{73ed}\u{90a3}\u{644a}\u{6d3b}", 1_700_000_000_000, .none);
 
     try testing.expect(chat.exists("build"));
     try testing.expectEqualStrings("\u{591c}\u{73ed}\u{90a3}\u{644a}\u{6d3b}", try chat.briefOf("build"));
@@ -2224,7 +2233,7 @@ test "a restored shell does not overwrite the live group of the same name" {
     _ = try chat.setBrief("build", "live");
     try chat.add("build", a, .none, .{});
 
-    try testing.expectError(error.GroupExists, chat.restoreShell("build", "stale", 1));
+    try testing.expectError(error.GroupExists, chat.restoreShell("build", "stale", 1, .none));
 
     try testing.expectEqualStrings("live", try chat.briefOf("build"));
     try testing.expect(chat.isMember("build", a));
@@ -2236,12 +2245,12 @@ test "groups with somebody in them sort above groups with nobody" {
 
     // `quiet` spoke most recently of the three and still sorts last: it
     // has no terminals in it. That is the whole rule in one case.
-    try chat.restoreShell("quiet", "", 900);
+    try chat.restoreShell("quiet", "", 900, .none);
 
-    try chat.restoreShell("older", "", 100);
+    try chat.restoreShell("older", "", 100, .none);
     try chat.add("older", a, .all, .{});
 
-    try chat.restoreShell("newer", "", 200);
+    try chat.restoreShell("newer", "", 200, .none);
     try chat.add("newer", b, .all, .{});
 
     const list = try chat.groupsFor(testing.allocator, user_id, &.{ a, b });
@@ -2264,8 +2273,8 @@ test "who is active is counted from the terminals, not from the user" {
     // the one the obvious mistake fails: the person is put in every group
     // as it is made, so counting members would make both of these active,
     // hand the decision to the times, and put `loud` first.
-    try chat.restoreShell("loud", "", 900);
-    try chat.restoreShell("quiet", "", 100);
+    try chat.restoreShell("loud", "", 900, .none);
+    try chat.restoreShell("quiet", "", 100, .none);
     try chat.add("quiet", a, .all, .{});
 
     try testing.expect(!chat.isActive("loud", &.{a}));
@@ -2295,9 +2304,9 @@ test "a member whose terminal is gone does not make its group active" {
     // are the ones named here: `create` puts the terminal that made the
     // group in it, which is a member like any other and would blur what
     // this test is about.
-    try chat.restoreShell("stale", "", 100);
+    try chat.restoreShell("stale", "", 100, .none);
     try chat.add("stale", a, .all, .{});
-    try chat.restoreShell("busy", "", 100);
+    try chat.restoreShell("busy", "", 100, .none);
     try chat.add("busy", b, .all, .{});
 
     const live: []const Id = &.{b};
@@ -3070,7 +3079,7 @@ test "ControlRoom marks: a timed snooze is carried from the wall clock onto the 
 test "ControlRoom marks: marks that came back off disk have seen nothing in this run" {
     var chat = testChat();
     defer chat.deinit();
-    try chat.restoreShell("build", "", 0);
+    try chat.restoreShell("build", "", 0, .none);
     try chat.restoreMarks("build", .{ .seen_ms = 1_700_000_000_000, .snooze = .{ .next_event = 1_700_000_000_000 } });
 
     try testing.expectEqual(@as(?u64, 1_700_000_000_000), (try chat.marksOf("build")).seen_ms);
@@ -3081,7 +3090,7 @@ test "ControlRoom marks: marks that came back off disk have seen nothing in this
 test "ControlRoom start: a supervisor on its way waits for its tab, then for its agent, and each wait can run out" {
     var chat = testChat();
     defer chat.deinit();
-    try chat.restoreShell("build", "", 0);
+    try chat.restoreShell("build", "", 0, .none);
 
     try testing.expectEqual(StartView.none, chat.startOf("build", 1_000));
     try testing.expectError(error.NoSuchGroup, chat.beginStart("nope", 1_000, 11_000));
@@ -3124,7 +3133,7 @@ test "ControlRoom start: a supervisor on its way waits for its tab, then for its
 test "ControlRoom start: closing the terminal a supervisor was starting in fails the start, and it survives a rename" {
     var chat = testChat();
     defer chat.deinit();
-    try chat.restoreShell("build", "", 0);
+    try chat.restoreShell("build", "", 0, .none);
     try chat.beginStart("build", 1_000, 11_000);
     chat.startOpened("build", 0xa1, 61_000);
 
@@ -3144,7 +3153,7 @@ test "ControlRoom start: closing the terminal a supervisor was starting in fails
 test "ControlRoom start: where a supervisor is started -- the last one's directory, kept, and what most members are in" {
     var chat = testChat();
     defer chat.deinit();
-    try chat.restoreShell("build", "", 0);
+    try chat.restoreShell("build", "", 0, .none);
 
     try testing.expectEqualStrings("", chat.supervisorDirOf("build"));
     try testing.expectEqualStrings("", chat.commonDirOf("build"));
@@ -3164,4 +3173,26 @@ test "ControlRoom start: where a supervisor is started -- the last one's directo
     try chat.add("nightly", 0xb3, .all, .{ .cwd = "/z/one", .title = "" });
     try chat.add("nightly", 0xb4, .all, .{});
     try testing.expectEqualStrings("/z/one", chat.commonDirOf("nightly"));
+}
+
+test "ControlRoom marks: a group comes back from disk with what the person had said about it" {
+    var chat = testChat();
+    defer chat.deinit();
+    const wall: u64 = 1_700_000_000_000;
+    try chat.restoreShell("build", "", 0, .{
+        .seen_ms = wall,
+        .snooze = .{ .until = .{ .at_ms = wall, .until_ms = wall + 3_600_000 } },
+    });
+
+    // Still put aside until the hour is up, across the restart...
+    try testing.expectEqual(@as(?u64, wall), (try chat.marksOf("build")).seen_ms);
+    try testing.expectEqual(Attention.Snooze{ .until_ms = 5_000 + 1_800_000 }, chat.snoozeOf("build", 5_000, wall + 1_800_000));
+    // ...and nothing in this run has been looked at: what finishes after
+    // the restart is not already seen because something was seen before it.
+    try testing.expectEqual(@as(?u64, null), chat.seenRunMs("build"));
+
+    // A group nobody marked comes back with none.
+    try chat.restoreShell("quiet", "", 0, .none);
+    try testing.expectEqual(Marks.none, try chat.marksOf("quiet"));
+    try testing.expectEqual(Attention.Snooze.none, chat.snoozeOf("quiet", 5_000, wall));
 }

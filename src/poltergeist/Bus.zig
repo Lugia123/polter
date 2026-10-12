@@ -325,6 +325,12 @@ pub const Agent = struct {
     pending: ?AgentNotice,
     handed: u8,
 
+    /// When `pending` was last handed over, on the bus's clock. Read only
+    /// while `handed` is not zero. It is what keeps a notice that went out
+    /// on its own a moment ago from riding out again in the next scheduled
+    /// box (`takeSome`).
+    handed_ms: u64,
+
     /// No hooks, nothing known. Written out rather than defaulted field by
     /// field, so a field added here has to be given a value in this one
     /// place and every entry starts from it.
@@ -348,6 +354,7 @@ pub const Agent = struct {
         .waiting_on_background = false,
         .pending = null,
         .handed = 0,
+        .handed_ms = 0,
     };
 };
 
@@ -2209,7 +2216,16 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
         // What the agent said about itself: see `agentEvent`. Its own slot
         // for `silent_pending`'s reason -- it can be true alongside either
         // of the others.
-        if (e.agent.pending) |kind| {
+        if (e.agent.pending) |kind| said: {
+            // **A repeat is an interval after the hand-over it repeats.** A
+            // waiting notice goes out at once, on its own, without touching
+            // the schedule -- so the scheduled box could come due a second
+            // later and say the same sentence again. It did: the same line
+            // twice in a supervisor's terminal twenty seconds apart
+            // (2026-10-13). Left in the box, it rides the next one.
+            if (how == .hand_over and !only_waiting and isWaiting(kind) and e.agent.handed > 0 and
+                now_ms -| e.agent.handed_ms < self.config.notice_interval_ms) break :said;
+
             total += 1;
 
             switch (how) {
@@ -2218,6 +2234,7 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
                     e.agent.handed = 0;
                 },
                 .hand_over => {
+                    e.agent.handed_ms = now_ms;
                     e.agent.handed +|= 1;
                     if (e.agent.handed >= max_hand_overs) {
                         e.agent.pending = null;
@@ -4325,12 +4342,51 @@ test "hooks: a worker stopped on a question is handed over at once, inside the i
     try testing.expect(!b.hasFreshWaiting(boss, .none));
     try testing.expect(b.drainIfDue(boss, 11_000, &buf, .none) == null);
 
-    // And it neither spent nor reset the interval: the quiet report that
-    // was being held comes when it would have, a minute after the first
-    // hand-over -- with the approval beside it, as its repeat.
+    // And it neither spent nor reset the interval: the scheduled box comes
+    // due a minute after the first hand-over, as it would have. **The
+    // approval is not in it**: that went out fifty seconds ago, and saying
+    // it again now would be the same sentence twice inside one interval.
+    // (The quiet report is not in it either -- the prompt explains the
+    // stillness -- so there is nothing to hand over and nobody is
+    // interrupted.)
     try testing.expect(b.drainIfDue(boss, 59_000, &buf, .none) == null);
-    const due = b.drainIfDue(boss, 60_000, &buf, .none) orelse return error.TestExpectedNotice;
-    try testing.expect(std.mem.indexOf(u8, due, "awaiting approval") != null);
+    try testing.expect(b.drainIfDue(boss, 60_000, &buf, .none) == null);
+
+    // Its repeat comes a whole interval after it was first said: still
+    // waiting, still nobody has answered.
+    try testing.expect(b.drainIfDue(boss, 69_000, &buf, .none) == null);
+    const repeat = b.drainIfDue(boss, 70_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, repeat, "awaiting approval") != null);
+}
+
+test "notice delivery: a waiting notice handed over a moment ago is not said again by the box that comes due right after" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+
+    // The interval has all but run out when the worker stops on a prompt.
+    _ = b.report(worker, quiet(60_000), 0);
+    _ = b.drainIfDue(boss, 0, &buf, .none) orelse return error.TestExpectedNotice;
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    _ = try b.agentEvent(worker, ask, 58_000);
+    const first = b.drainIfDue(boss, 58_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, first, "awaiting approval Bash") != null);
+
+    // Two seconds later the scheduled box is due. There is nothing else in
+    // it, so nothing is typed at all -- not the same line a second time.
+    try testing.expect(b.drainIfDue(boss, 60_000, &buf, .none) == null);
+    try testing.expect(b.drainIfDue(boss, 61_000, &buf, .none) == null);
+
+    // It is not lost: an interval after it was said, it is said again.
+    const again = b.drainIfDue(boss, 118_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, again, "awaiting approval Bash") != null);
+
+    // A supervisor that asks for its box is never held back by this.
+    _ = try b.agentEvent(worker, ask, 200_000);
+    _ = b.drainIfDue(boss, 200_000, &buf, .none) orelse return error.TestExpectedNotice;
+    const asked = b.drain(boss, 200_500, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, asked, "awaiting approval Bash") != null);
 }
 
 test "hooks: waiting for an answer is urgent too, and a turn that merely ended is not" {

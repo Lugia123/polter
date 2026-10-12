@@ -128,6 +128,29 @@ pub const Draft = struct {
         if (printable(event.utf8)) self.outstanding = true;
     }
 
+    /// Text put into the line without a key event: a paste, an input
+    /// method's committed text, dictation, the emoji picker.
+    ///
+    /// **These never reached `note`**, so a line written entirely through
+    /// an input method -- every line of Chinese -- was no draft at all as
+    /// far as this could tell, and a notice was typed onto the end of it
+    /// (measured on the Windows machine, 2026-10-13: `echo half-a-line`
+    /// went in through the input method, and the log has no "unsubmitted
+    /// text" line for it).
+    ///
+    /// Text that ends in a line break is taken as submitted: a shell with
+    /// bracketed paste off runs it on arrival. Anything else printable is
+    /// sitting in the line.
+    pub fn noteText(self: *Draft, text: []const u8) void {
+        if (text.len == 0) return;
+        const last = text[text.len - 1];
+        if (last == '\r' or last == '\n') {
+            self.outstanding = false;
+            return;
+        }
+        if (printable(text)) self.outstanding = true;
+    }
+
     fn printable(utf8: []const u8) bool {
         // **An escape sequence is not typed text, and it is full of
         // printable bytes.** `\x1b[D` ends in `[` and `D`, so a scan for a
@@ -235,5 +258,28 @@ test "what the clock beside it counts and this does not" {
     d.note(.{ .action = .press, .key = .arrow_left });
     d.note(.{ .action = .press, .key = .arrow_left, .utf8 = "\x1b[D" });
     d.note(.{ .action = .press, .key = .backspace, .utf8 = "\x7f" });
+    try std.testing.expect(!d.outstanding);
+}
+
+test "notice delivery: text that did not come through a key is a draft too" {
+    // An input method's committed text, a paste: no key event carries it.
+    var d: Draft = .{};
+    d.noteText("echo half-a-line");
+    try std.testing.expect(d.outstanding);
+    // The return that submits it is a key, and clears it as ever.
+    d.note(.{ .action = .press, .key = .enter, .utf8 = "\r" });
+    try std.testing.expect(!d.outstanding);
+
+    // Chinese, which only ever arrives this way.
+    d.noteText("\xe4\xbd\xa0\xe5\xa5\xbd");
+    try std.testing.expect(d.outstanding);
+
+    // Pasted with its line break: the shell ran it.
+    d.noteText("ls -la\n");
+    try std.testing.expect(!d.outstanding);
+
+    // Nothing, and nothing printable, is not a draft.
+    d.noteText("");
+    d.noteText("\x1b[A");
     try std.testing.expect(!d.outstanding);
 }
