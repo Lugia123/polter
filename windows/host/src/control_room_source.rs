@@ -134,6 +134,9 @@ fn fetch() {
     DATA.with(|d| *d.borrow_mut() = data);
     redraw_everything();
     crate::control_room::snapshot_changed();
+    // The frames round the panes of a split tab say what the snapshot says
+    // of each terminal.
+    crate::pane_frames::snapshot_changed();
 }
 
 fn read() -> Data {

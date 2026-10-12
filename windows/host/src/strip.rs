@@ -1466,9 +1466,21 @@ pub fn paint(frame: HWND) {
     // on the screen forever**, and the symptom is a `ShowWindow(SW_HIDE)`
     // that looks like it did nothing. `WS_CLIPCHILDREN` on the frame keeps
     // this fill off the visible panes.
+    //
+    // **With frames round the panes, what they do not cover is the frames**
+    // -- the ground between them and each pane's title (`pane_frames.rs`).
+    // It says whether it painted; when the tab in front has no frames it
+    // did not, and the area is cleared as it always was.
+    //
+    // **Only when this paint reaches below the strip.** The chip's slide
+    // asks for the strip alone to be redrawn, sixty times a second
+    // (`chip_tick`); nothing under the strip can be drawn in such a paint,
+    // and making the frames' picture for it -- a bitmap the size of the
+    // content area, every frame drawn into it -- would be thrown away each
+    // time.
     let mut below = rc;
     below.top = sh;
-    if below.bottom > below.top {
+    if below.bottom > below.top && ps.rcPaint.bottom > sh && !crate::pane_frames::paint(frame, hdc, below) {
         fill(hdc, &below, 0x00201f1d);
     }
 

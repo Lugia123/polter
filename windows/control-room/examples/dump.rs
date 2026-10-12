@@ -11,6 +11,7 @@ use polter_control_room::json::quote;
 use polter_control_room::act::{Act, SeenMarker};
 use polter_control_room::layout::{self, ListLayout, Rect};
 use polter_control_room::list::{self, List, Row};
+use polter_control_room::pane;
 use polter_control_room::pulse::{self, Scope};
 use polter_control_room::quota;
 use polter_control_room::look::selection;
@@ -184,6 +185,44 @@ fn main() {
     println!("tab_status tab=unlisted showing=- shown={} pulses={}", unlisted.shown.name(), unlisted.pulses);
     for s in [Shown::NeedsYou, Shown::Trouble, Shown::DoneUnseen, Shown::Working, Shown::None] {
         println!("tab_draws shown={} draws={}", s.name(), pulse::draws_on_window_tab(s));
+    }
+
+    // The frame each pane of a split terminal tab wears: every terminal the
+    // core lists, one it does not and none at all, in each place a pane can
+    // be; then the word for what each frame is.
+    let mut ids: Vec<Option<String>> = snap.terminals.iter().map(|t| Some(t.id.clone())).collect();
+    ids.push(Some("0x00000000000000fe".to_string()));
+    ids.push(None);
+    println!("panes {}", snap.terminals.len());
+    let places = [
+        ("split", pane::Place { enabled: true, quick_terminal: false, alone: false }),
+        ("alone", pane::Place { enabled: true, quick_terminal: false, alone: true }),
+        ("off", pane::Place { enabled: false, quick_terminal: false, alone: false }),
+        ("quick", pane::Place { enabled: true, quick_terminal: true, alone: false }),
+    ];
+    for (place_name, place) in places {
+        let mut all = Vec::new();
+        for id in &ids {
+            let d = pane::drawn(id.as_deref(), "own", place, Some(&snap.terminals));
+            match &d {
+                Some(d) => println!(
+                    "pane place={place_name} terminal={} wears={} name={} shown={} word={}",
+                    id.as_deref().unwrap_or("-"),
+                    d.wears.name(),
+                    quote(&d.title.name),
+                    d.title.shown.name(),
+                    quote(&d.title.word)
+                ),
+                None => println!("pane place={place_name} terminal={} wears=-", id.as_deref().unwrap_or("-")),
+            }
+            all.push(d);
+        }
+        println!("pane_ground place={place_name} shows={}", pane::ground_shows(&all));
+    }
+    let nothing = pane::drawn(Some("0x00000000000000a1"), "own", places[0].1, None);
+    println!("pane no-snapshot wears={} name={}", nothing.as_ref().map_or("-", |d| d.wears.name()), quote(nothing.as_ref().map_or("", |d| &d.title.name)));
+    for w in snapshot::Pane::ALL {
+        println!("pane_role wears={} word={}", w.name(), pane::role_word(w).map_or("-".to_string(), quote));
     }
 
     // Looking at a row: which are marked seen, and after how long. The

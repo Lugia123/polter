@@ -15,6 +15,7 @@
 //! | [`slide`] | the selection chip's move from one place to the next, a frame at a time, and when it is over |
 //! | [`tabstrip`] | the window tab strip's track and the chip on the selected tab, in whole pixels |
 //! | [`scene`] | everything the panel draws, as a list of rectangles, words and glyphs for a host to paint |
+//! | [`pane`] | which frame a pane of a split terminal tab wears, where it and the terminal in it go, and what it draws |
 //! | [`glyph`] | the four status glyphs as shapes on the design's artboard |
 //! | [`json`] | just enough JSON for the above |
 //!
@@ -42,6 +43,7 @@ pub mod layout;
 pub mod lend;
 pub mod list;
 pub mod look;
+pub mod pane;
 pub mod pulse;
 pub mod quota;
 pub mod reach;

@@ -125,6 +125,7 @@ mod notify;
 mod overlay;
 mod osk;
 mod palette;
+mod pane_frames;
 mod personas;
 mod plugins;
 mod general_ui;
