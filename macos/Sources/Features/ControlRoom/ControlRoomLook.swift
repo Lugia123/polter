@@ -31,9 +31,6 @@ enum ControlRoomLook {
         /// A group's name in the list.
         /// Source: design v14, GRID.md.
         static let groupName: Double = 15.0
-        /// How many minutes it has waited. Bold, so it counts as large text.
-        /// Source: design v14, GRID.md.
-        static let minutes: Double = 20.0
         /// Source: design v14, GRID.md.
         static let weightBody: Double = 400.0
         /// Source: design v14, GRID.md.
@@ -41,7 +38,7 @@ enum ControlRoomLook {
         /// The selected tab, a status word, a title.
         /// Source: design v14, GRID.md.
         static let weightEmphasis: Double = 600.0
-        /// The selected group's name, the minutes.
+        /// The selected group's name.
         /// Source: design v14, GRID.md.
         static let weightStrong: Double = 700.0
         /// A multiple of the size.
@@ -133,15 +130,13 @@ enum ControlRoomLook {
 
     /// The group list.
     enum Side {
-        /// Source: design v14, GRID.md.
-        static let width: Double = 308.0
+        /// Wide enough that what a row waits on is 322 across: 41 characters of the terminal's face, which is one step of most commands. The user, 2026-10-13: "A is better, it can be wider".
+        /// Source: design v18, direction A: src/v18.css and CHANGES.md.
+        static let width: Double = 380.0
         /// Source: design v14, GRID.md.
         static let headerHeight: Double = 32.0
         /// Source: design v14, GRID.md.
         static let headerPaddingX: Double = 12.0
-        /// A group that is waiting for you: two lines.
-        /// Source: design v14, GRID.md.
-        static let rowHeight: Double = 60.0
         /// Source: design v14, GRID.md.
         static let rowGap: Double = 8.0
         /// Source: design v17, src/style.css.
@@ -152,40 +147,29 @@ enum ControlRoomLook {
         /// Source: design v14, GRID.md.
         static let quietRowHeight: Double = 28.0
         /// Source: design v14, GRID.md.
-        static let minutesWidth: Double = 28.0
-        /// Source: design v14, GRID.md.
-        static let minutesUnitWidth: Double = 16.0
-        /// Source: design v14, GRID.md.
         static let glyph: Double = 14.0
-        /// Source: design v14, GRID.md.
-        static let timeLaneHeight: Double = 12.0
-        /// Source: design v14, GRID.md.
-        static let timeSegmentHeight: Double = 6.0
-        /// Source: design v17, src/style.css.
-        static let timeSegmentRadius: Double = 2.0
-        /// A lane's height once it carries its group's name: 13 pt text does not fit the design's 12.
-        /// TENTATIVE (other candidate: 12). The design draws three unlabelled lanes 12 high and does not say which group each is. 12 is the design's height, with no label.
-        /// Source: not in the design: chosen while building the mac list, to be ruled on.
-        static let timeLaneLabelledHeight: Double = 16.0
-        /// The column at a lane's left end that holds its group's name: thirteen characters of the 13 pt monospaced system face, measured (one is 8.04 wide), which is the whole of most names. A longer one is cut at the end.
-        /// TENTATIVE (other candidate: 0). 0 is the design: no label.
-        /// Source: not in the design: chosen while building the mac list, to be ruled on.
-        static let timeLaneLabelWidth: Double = 112.0
-        /// Source: design v17, src/style.css.
-        static let timeAxisHeight: Double = 24.0
-        /// Source: design v17, src/style.css.
-        static let timeBandPaddingBottom: Double = 6.0
         /// Below the last waiting row's own gap.
         /// Source: design v17, src/style.css.
         static let separatorSpaceAbove: Double = 8.0
         /// Source: design v17, src/style.css.
         static let separatorSpaceBelow: Double = 4.0
-        /// The name and the minutes.
-        /// Source: design v17, src/style.css.
+        /// The glyph, the name, who is waiting and the status word. A waiting row is this, then its lines of what it waits on, inside `row_padding_y` above and below: 60, 80 or 100 high for one, two or three lines.
+        /// Source: design v18, direction A: src/v18.css and CHANGES.md.
         static let rowLine1Height: Double = 24.0
-        /// The glyph, the status word, the detail.
-        /// Source: design v17, src/style.css.
-        static let rowLine2Height: Double = 20.0
+        /// One line of what a row waits on.
+        /// Source: design v18, direction A: src/v18.css and CHANGES.md.
+        static let askLineHeight: Double = 20.0
+        /// How many lines what a row waits on may wrap to. A sentence takes up to this many and ends in an ellipsis. A command of this many steps or fewer gives every step a line first, and what is left over to the steps that need a second.
+        /// TENTATIVE (other candidate: 4). The design's direction B drew four. The user chose A, which draws three.
+        /// Source: design v18, direction A: src/v18.css and CHANGES.md.
+        static let askMaxLines: Double = 3.0
+        /// A command of more steps than `ask_max_lines` is not cut to that many lines: every step keeps one line, cut at its end, so the start of every step shows. Past this many the last line says how many steps are not shown, rather than dropping them without a word.
+        /// TENTATIVE (other candidate: 3). 3 is the design's cap applied to steps as well, which hides the fourth step of a command behind an ellipsis -- the step that may be the dangerous one. The supervisor ruled that out; where the ceiling is, nobody has.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let askMaxSteps: Double = 6.0
+        /// How many characters of the terminal's face one line of what a row waits on holds: the count a host uses when it has no font to measure with. A wide character is two.
+        /// Source: design v18, direction A: src/v18.css and CHANGES.md.
+        static let askCellsPerLine: Double = 41.0
         /// Source: design v17, src/style.css.
         static let rowItemGap: Double = 8.0
         /// Between a glyph and its word.
@@ -618,8 +602,8 @@ enum ControlRoomLook {
     /// Each is one value in the data; ruling on it is one edit there.
     static let tentative: [String] = [
         "window_tab.working_glyph_shown",
-        "side.time_lane_labelled_height",
-        "side.time_lane_label_width",
+        "side.ask_max_lines",
+        "side.ask_max_steps",
         "stack_tab.inset",
         "selection.spring_damping",
         "selection.refraction_shown",

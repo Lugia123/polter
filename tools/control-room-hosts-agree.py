@@ -39,7 +39,11 @@ holds none; every window tab the snapshot lists -- its glyph, whether that
 glyph is drawn on a tab at all, and whether it breathes, for the same
 fronts -- a tab it does not list, and for each of the five glyphs whether a
 window tab draws it; which rows are marked seen by being looked at, and
-after how long; the panel's size and every rectangle in it; and
+after how long; the panel's size and every rectangle in it -- a waiting row's
+height follows what it waits on, by the nominal count of lines; how what each
+waiting row waits on is fitted (the lines each step gets, the steps said only
+as a number), and the fitting rule itself on fourteen made-up commands; the
+nominal count on six strings; and
 where the arrow keys take the selection from every row.
 
 **NOT COMPARED, and why.**
@@ -288,6 +292,28 @@ for r in list.rows {
         continue
     }
     rect("row:\(r.id)", frame)
+}
+for r in list.waiting {
+    let fit = lay.fits[r.id] ?? .none
+    print("fit id=\(r.id) lines=\(fit.lines.map(String.init).joined(separator: "+")) hidden=\(fit.hidden) drawn=\(fit.drawn)")
+}
+print("ask w=\(f(ControlRoomListLayout.askWidth))")
+let fits: [[Int]] = [
+    [], [1], [2], [5], [1, 1], [3, 1], [1, 3], [2, 2], [1, 1, 1], [4, 4, 4], [2, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1], [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9],
+]
+for wanted in fits {
+    let fit = ControlRoomAskFit.fit(needed: wanted)
+    print("fit-of \(wanted.map(String.init).joined(separator: "+")) "
+        + "lines=\(fit.lines.map(String.init).joined(separator: "+")) hidden=\(fit.hidden) drawn=\(fit.drawn)")
+}
+let nominal = [
+    "", "git push", "rm -rf dist/ .cache/ node_modules/.vite && x",
+    "01234567890123456789012345678901234567890", "012345678901234567890123456789012345678901",
+    "发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号？",
+]
+for text in nominal {
+    print("nominal \(quote(text)) lines=\(ControlRoomList.nominalLines(text))")
 }
 rect("separator", lay.separator)
 rect("quiet_header", lay.quietHeader)

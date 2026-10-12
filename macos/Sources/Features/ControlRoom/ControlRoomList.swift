@@ -145,7 +145,59 @@ extension ControlRoomList {
         others > 0 ? String(localized: "\(String(others)) more", comment: "总控台：同一个群里还有几个终端也在等") : nil
     }
 
-    /// What the pointer shows for a row whose detail may be cut short: the
+    /// Who is waiting, as the row writes it at its right: "Supervisor", or
+    /// the worker's name and that the person reaches it through the
+    /// supervisor. Which of them is the core's word (`waiter.is`); this
+    /// only puts it in the person's language. Nil when there is nothing to
+    /// say: a row nobody waits on, or a terminal in no group.
+    static func waiterText(_ waiter: Waiter) -> String? {
+        switch waiter.is {
+        case .supervisor:
+            return String(localized: "Supervisor", comment: "总控台：在等的是这个群的总管自己")
+        case .workerViaSupervisor:
+            return String(localized: "\(waiter.name), via the supervisor", comment: "总控台：在等的是总管手下的一个 worker，%@ 是它的名字")
+        case .worker:
+            return waiter.name
+        case .none, .terminal:
+            return nil
+        }
+    }
+
+    /// The list's header: how many groups are waiting, by the core's
+    /// count, or that none is.
+    static func headerText(waiting: Int) -> String {
+        waiting == 0
+            ? String(localized: "No group is waiting for you", comment: "总控台：左栏标题，没有群在等的时候")
+            : String(localized: "\(String(waiting)) groups waiting for you", comment: "总控台：左栏标题，N 是核心给的数")
+    }
+
+    /// The line that stands for the steps of a command that are not shown;
+    /// nil when every step is.
+    static func hiddenStepsText(_ hidden: Int) -> String? {
+        hidden > 0 ? String(localized: "\(String(hidden)) more steps", comment: "总控台：命令太长，后面还有几步没显示") : nil
+    }
+
+    /// What a row that needs nothing says after its name: what the group
+    /// is doing when the core knows, the status word when it does not, and
+    /// nothing for a group with neither.
+    static func quietText(_ row: Row) -> String {
+        row.what.lines.isEmpty ? row.word : row.what.lines.joined(separator: " ")
+    }
+
+    /// What a row says when it is read out rather than looked at: which
+    /// group, who is waiting, which of the four it is, and what it waits
+    /// on -- every step, whole, whatever the row had room to draw -- then
+    /// how many others.
+    static func spoken(_ row: Row) -> String {
+        var parts = [row.name]
+        if let who = waiterText(row.waiter) { parts.append(who) }
+        if !row.word.isEmpty { parts.append(row.word) }
+        parts.append(contentsOf: row.what.lines.filter { !$0.isEmpty })
+        if let others = othersText(row.others) { parts.append(others) }
+        return parts.joined(separator: ", ")
+    }
+
+    /// What the pointer shows for a row whose lines may be cut short: the
     /// whole of it. Nil when there is nothing that could have been cut.
     static func tooltip(for row: Row) -> String? {
         row.what.lines.isEmpty ? nil : row.what.whole
@@ -377,6 +429,66 @@ extension ControlRoomList {
 /// Where everything in the list panel is, in the panel's own points with
 /// the origin at its top left. Sizes come from `ControlRoomLook`; this adds
 /// only the arithmetic, so that the view places things and never measures.
+/// How much of what a row waits on is drawn: how many lines each step
+/// gets, and how many steps are said only as a number.
+///
+/// **The rule** (`control-room.md`, 3.5): what is cut is the end of a line,
+/// never a step. A sentence wraps to `ask_max_lines` and ends in an
+/// ellipsis. A command of that many steps or fewer gives each step a line
+/// first and what is left over to the earliest steps that need a second. A
+/// command of more steps than that keeps one line a step -- the row grows --
+/// up to `ask_max_steps`; past that the last line says how many steps are
+/// not shown. So a step is either on the row from its first character or
+/// counted on it, and none goes without a word.
+struct ControlRoomAskFit: Equatable {
+    /// How many lines each step that is shown is drawn on, in order.
+    var lines: [Int]
+    /// Steps that are not shown and are said as a number instead.
+    var hidden: Int
+
+    static let none = ControlRoomAskFit(lines: [], hidden: 0)
+
+    /// Every line this takes on the row, the one that says `hidden` among
+    /// them.
+    var drawn: Int { lines.reduce(0, +) + (hidden > 0 ? 1 : 0) }
+
+    /// `needed` is how many lines each step would take with all the room
+    /// it wanted, in order: a measurement, which is the host's to make.
+    static func fit(needed: [Int]) -> ControlRoomAskFit {
+        let maxLines = Int(ControlRoomLook.Side.askMaxLines)
+        let maxSteps = Int(ControlRoomLook.Side.askMaxSteps)
+        let steps = needed.count
+        guard steps > 0 else { return .none }
+        if steps > maxSteps {
+            // One line is kept for the number.
+            return ControlRoomAskFit(lines: Array(repeating: 1, count: maxSteps - 1), hidden: steps - (maxSteps - 1))
+        }
+        var lines = Array(repeating: 1, count: steps)
+        var spare = maxLines - steps
+        for at in needed.indices where spare > 0 {
+            let more = min(spare, max(needed[at], 1) - 1)
+            lines[at] += more
+            spare -= more
+        }
+        return ControlRoomAskFit(lines: lines, hidden: 0)
+    }
+}
+
+extension ControlRoomList {
+    /// How many lines `text` takes with no font to measure it by: so many
+    /// cells to a line (`ask_cells_per_line`), a wide character two. What
+    /// the two hosts are held to one answer with, and what a test lays a
+    /// list out by; a host that draws measures with its own font.
+    static func nominalLines(_ text: String) -> Int {
+        let perLine = Int(ControlRoomLook.Side.askCellsPerLine)
+        var cells = 0
+        for scalar in text.unicodeScalars {
+            cells += scalar.value >= 0x2E80 ? 2 : 1
+        }
+        return max(1, (cells + perLine - 1) / perLine)
+    }
+}
+
 struct ControlRoomListLayout: Equatable {
     typealias Look = ControlRoomLook
 
@@ -384,10 +496,32 @@ struct ControlRoomListLayout: Equatable {
     var header: CGRect
     /// The waiting rows and then the quiet ones, keyed by `Row.id`.
     var rows: [String: CGRect]
+    /// How what each waiting row waits on is fitted, by `Row.id`. The row's
+    /// height came from this, so whatever draws the row draws by it too.
+    var fits: [String: ControlRoomAskFit]
     var separator: CGRect
     var quietHeader: CGRect
 
-    init(list: ControlRoomList, height: CGFloat) {
+    /// How wide what a row waits on is: the row, less its padding and the
+    /// column the glyph stands in.
+    static var askWidth: CGFloat {
+        CGFloat(Look.Side.width) - 2 * CGFloat(Look.Space.sidePanelPadding) - 2 * CGFloat(Look.Side.rowPaddingX)
+            - CGFloat(Look.Side.glyph) - CGFloat(Look.Side.rowItemGap)
+    }
+
+    /// How high a waiting row is: its first line, the lines of what it
+    /// waits on, and one more when other terminals of the group wait too.
+    static func rowHeight(fit: ControlRoomAskFit, others: Int) -> CGFloat {
+        let lines = fit.drawn + (others > 0 ? 1 : 0)
+        return 2 * CGFloat(Look.Side.rowPaddingY) + CGFloat(Look.Side.rowLine1Height)
+            + CGFloat(lines) * CGFloat(Look.Side.askLineHeight)
+    }
+
+    /// `needed` says how many lines one step would take with all the room
+    /// it wanted, and whether it is set in the terminal's face: the host's
+    /// measurement. Left out, the nominal count stands in.
+    init(list: ControlRoomList, height: CGFloat,
+         needed: (String, Bool) -> Int = { text, _ in ControlRoomList.nominalLines(text) }) {
         let pad = CGFloat(Look.Space.sidePanelPadding)
         let width = CGFloat(Look.Side.width)
         let inner = width - 2 * pad
@@ -401,17 +535,30 @@ struct ControlRoomListLayout: Equatable {
         y += headerH
 
         var frames: [String: CGRect] = [:]
+        var fitted: [String: ControlRoomAskFit] = [:]
         for row in list.waiting {
-            frames[row.id] = CGRect(x: pad, y: y, width: inner, height: CGFloat(Look.Side.rowHeight))
-            y += CGFloat(Look.Side.rowHeight) + gap
+            let fit = ControlRoomAskFit.fit(needed: row.what.lines.map { needed($0, row.what.isCode) })
+            let rowH = Self.rowHeight(fit: fit, others: row.others)
+            fitted[row.id] = fit
+            frames[row.id] = CGRect(x: pad, y: y, width: inner, height: rowH)
+            y += rowH + gap
         }
+        fits = fitted
 
-        y += CGFloat(Look.Side.separatorSpaceAbove)
-        separator = CGRect(x: pad + padX, y: y, width: inner - 2 * padX, height: CGFloat(Look.Line.hairline))
-        y += CGFloat(Look.Line.hairline) + CGFloat(Look.Side.separatorSpaceBelow)
+        if list.waitingCount == 0 {
+            // The core says nobody is waiting: the one header says so, and
+            // the groups follow it with no line and no second header
+            // between. Both are kept, with no height, where they would be.
+            separator = CGRect(x: pad + padX, y: y, width: inner - 2 * padX, height: 0)
+            quietHeader = CGRect(x: pad, y: y, width: inner, height: 0)
+        } else {
+            y += CGFloat(Look.Side.separatorSpaceAbove)
+            separator = CGRect(x: pad + padX, y: y, width: inner - 2 * padX, height: CGFloat(Look.Line.hairline))
+            y += CGFloat(Look.Line.hairline) + CGFloat(Look.Side.separatorSpaceBelow)
 
-        quietHeader = CGRect(x: pad, y: y, width: inner, height: headerH)
-        y += headerH
+            quietHeader = CGRect(x: pad, y: y, width: inner, height: headerH)
+            y += headerH
+        }
         for row in list.quiet {
             frames[row.id] = CGRect(x: pad, y: y, width: inner, height: CGFloat(Look.Side.quietRowHeight))
             y += CGFloat(Look.Side.quietRowHeight)

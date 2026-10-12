@@ -687,14 +687,12 @@
 /* 总控台 */
 "Control Room" = "总控台";
 "%@ groups waiting for you" = "%@ 个群在等你";
+"No group is waiting for you" = "没有群在等你";
 "%@ groups need nothing from you" = "%@ 个群不用你管";
 "New Group" = "新建群";
-"min" = "分";
-"%@ min" = "%@ 分";
 "%@ more" = "还有 %@ 个";
-"Same supervisor: see %@" = "同一个总管，见 %@";
-"Kept you waiting today" = "今天让你等过的";
-"now" = "现在";
+"%@, via the supervisor" = "%@，经总管";
+"%@ more steps" = "还有 %@ 步";
 "Polter — Control Room" = "Polter — 总控台";
 "That prompt has changed. Nothing was sent." = "提示已经换了，什么都没有发出去。";
 "It is not waiting for a reply right now." = "它现在没有在等回话。";

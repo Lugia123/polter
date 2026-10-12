@@ -671,14 +671,12 @@
 /* 总控台 */
 "Control Room" = "Control Room";
 "%@ groups waiting for you" = "%@ groups waiting for you";
+"No group is waiting for you" = "No group is waiting for you";
 "%@ groups need nothing from you" = "%@ groups need nothing from you";
 "New Group" = "New Group";
-"min" = "min";
-"%@ min" = "%@ min";
 "%@ more" = "%@ more";
-"Same supervisor: see %@" = "Same supervisor: see %@";
-"Kept you waiting today" = "Kept you waiting today";
-"now" = "now";
+"%@, via the supervisor" = "%@, via the supervisor";
+"%@ more steps" = "%@ more steps";
 "Polter — Control Room" = "Polter — Control Room";
 "That prompt has changed. Nothing was sent." = "That prompt has changed. Nothing was sent.";
 "It is not waiting for a reply right now." = "It is not waiting for a reply right now.";

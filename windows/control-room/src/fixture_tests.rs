@@ -2,7 +2,7 @@
 //! a Zig test holds to the code. The same file the macOS side decodes.
 
 use crate::act::{self, Act, Refusal, SeenMarker};
-use crate::layout::{self, ListLayout};
+use crate::layout::{self, AskFit, ListLayout};
 use crate::list::{self, List};
 use crate::look::{line, side, space, window_tab};
 use crate::pulse::{self, Scope, TabStatus};
@@ -202,14 +202,26 @@ fn the_panel_is_laid_out_from_the_look_and_nothing_else() {
     let inner = side::WIDTH - 2.0 * pad;
 
     assert_eq!(lay.header, layout::Rect { x: pad, y: pad, w: inner, h: side::HEADER_HEIGHT });
-    // Five waiting rows, each a row and a gap below the header.
+    // Five waiting rows below the header, each as high as what it waits on
+    // and a gap apart: 40 for the first line and the padding, 20 a line.
+    let high = |id: &str| lay.chip(Some(id)).unwrap().h;
     let first = lay.chip(Some("web-app")).unwrap();
     assert_eq!(first.y, pad + side::HEADER_HEIGHT);
-    assert_eq!(first.h, side::ROW_HEIGHT);
+    // Three steps, and a line for "1 more".
+    assert_eq!(high("web-app"), 120.0);
+    assert_eq!(high("web-app-docs"), 100.0);
+    // One step, too long for one line.
+    assert_eq!(high("mobile"), 80.0);
+    assert_eq!(high("billing"), 80.0);
+    assert_eq!(high("docs-site"), 60.0);
     let fourth = lay.chip(Some("docs-site")).unwrap();
-    assert_eq!(fourth.y, first.y + 4.0 * (side::ROW_HEIGHT + side::ROW_GAP));
+    assert_eq!(fourth.y, first.y + 120.0 + 100.0 + 80.0 + 80.0 + 4.0 * side::ROW_GAP);
+    assert_eq!(lay.fit("web-app"), Some(&AskFit { lines: vec![1, 1, 1], hidden: 0 }));
+    assert_eq!(lay.fit("mobile"), Some(&AskFit { lines: vec![2], hidden: 0 }));
+    assert_eq!(lay.fit("infra"), None);
+    assert_eq!(layout::ask_width(), 322.0);
 
-    let below = fourth.y + side::ROW_HEIGHT + side::ROW_GAP + side::SEPARATOR_SPACE_ABOVE;
+    let below = fourth.y + 60.0 + side::ROW_GAP + side::SEPARATOR_SPACE_ABOVE;
     assert_eq!(lay.separator.y, below);
     assert_eq!(lay.separator.h, line::HAIRLINE);
     assert_eq!(lay.quiet_header.y, below + line::HAIRLINE + side::SEPARATOR_SPACE_BELOW);
@@ -220,6 +232,89 @@ fn the_panel_is_laid_out_from_the_look_and_nothing_else() {
     assert_eq!(lay.chip(Some("notes")).unwrap().y, infra.y + 2.0 * side::QUIET_ROW_HEIGHT);
     assert_eq!(lay.chip(Some("gone")), None);
     assert_eq!(lay.chip(None), None);
+}
+
+#[test]
+fn when_the_core_says_nobody_waits_the_groups_follow_the_one_header() {
+    // The core's count, whatever rows there are: 0 means no line and no
+    // second header, and the rows that follow start where they would be.
+    let none = FIXTURE.replacen("\"groups_needing_me\": 5", "\"groups_needing_me\": 0", 1);
+    assert_ne!(none, FIXTURE);
+    let l = List::from_snapshot(&snapshot::decode(&none).unwrap());
+    let lay = ListLayout::new(&l, 800.0);
+    assert_eq!(lay.quiet_header.h, 0.0);
+    assert_eq!(lay.separator.h, 0.0);
+    let after = lay.chip(Some("docs-site")).unwrap();
+    assert_eq!(lay.chip(Some("infra")).unwrap().y, after.y + after.h + side::ROW_GAP);
+    let with = ListLayout::new(&list(), 800.0);
+    assert_eq!(with.quiet_header.h, side::HEADER_HEIGHT);
+}
+
+#[test]
+fn a_row_is_as_high_as_the_host_measured_it_to_be() {
+    // A host with a font says every step wants four lines: a sentence gets
+    // the three there are, a command of three steps one line each.
+    let l = list();
+    let lay = ListLayout::measured(&l, 800.0, &|_, _| 4);
+    assert_eq!(lay.fit("billing"), Some(&AskFit { lines: vec![3], hidden: 0 }));
+    assert_eq!(lay.chip(Some("billing")).unwrap().h, 100.0);
+    assert_eq!(lay.fit("web-app-docs"), Some(&AskFit { lines: vec![1, 1, 1], hidden: 0 }));
+    // Told which face it is set in.
+    let asked = std::cell::RefCell::new(Vec::new());
+    ListLayout::measured(&l, 800.0, &|text, code| {
+        asked.borrow_mut().push((text.to_string(), code));
+        1
+    });
+    let asked = asked.into_inner();
+    assert!(asked.contains(&("&& npm ci".to_string(), true)));
+    assert!(asked.iter().any(|(text, code)| text.starts_with("发票") && !code));
+}
+
+#[test]
+fn what_is_cut_is_the_end_of_a_line_and_never_a_step() {
+    let max_lines = side::ASK_MAX_LINES as usize;
+    let max_steps = side::ASK_MAX_STEPS as usize;
+    assert_eq!((max_lines, max_steps), (3, 6));
+
+    assert_eq!(AskFit::fit(&[]), AskFit::default());
+    // A sentence: as many lines as it wants, up to the ceiling.
+    assert_eq!(AskFit::fit(&[1]).lines, [1]);
+    assert_eq!(AskFit::fit(&[2]).lines, [2]);
+    assert_eq!(AskFit::fit(&[9]).lines, [3]);
+    // Each step a line first; what is left to the earliest that needs it.
+    assert_eq!(AskFit::fit(&[3, 1]).lines, [2, 1]);
+    assert_eq!(AskFit::fit(&[1, 3]).lines, [1, 2]);
+    assert_eq!(AskFit::fit(&[2, 2]).lines, [2, 1]);
+    assert_eq!(AskFit::fit(&[9, 9, 9]).lines, [1, 1, 1]);
+
+    // **Every step has a line, however long each is and however many there
+    // are, until the second ceiling; past it the ones not shown are counted.**
+    for steps in 1..=20 {
+        for want in [1, 2, 9] {
+            let fit = AskFit::fit(&vec![want; steps]);
+            assert!(fit.lines.iter().all(|n| *n >= 1), "{steps} steps wanting {want}: {fit:?}");
+            assert_eq!(fit.lines.len() + fit.hidden, steps, "{steps} steps wanting {want}: a step is neither shown nor counted");
+            if steps <= max_steps {
+                assert_eq!(fit.hidden, 0, "{steps} steps: {fit:?}");
+            } else {
+                assert_eq!(fit.drawn(), max_steps, "{steps} steps: {fit:?}");
+            }
+            if steps <= max_lines {
+                assert!(fit.drawn() <= max_lines, "{steps} steps wanting {want}: {fit:?}");
+            }
+        }
+    }
+    // More steps than lines: the row grows by a line a step.
+    assert_eq!(AskFit::fit(&[2, 1, 1, 1]), AskFit { lines: vec![1, 1, 1, 1], hidden: 0 });
+    assert_eq!(layout::row_height(&AskFit::fit(&[1, 1, 1, 1]), 0), 120.0);
+    assert_eq!(AskFit::fit(&[1; 7]), AskFit { lines: vec![1; 5], hidden: 2 });
+
+    assert_eq!(layout::nominal_lines(""), 1);
+    assert_eq!(layout::nominal_lines(&"x".repeat(41)), 1);
+    assert_eq!(layout::nominal_lines(&"x".repeat(42)), 2);
+    // A wide character is two cells.
+    assert_eq!(layout::nominal_lines(&"票".repeat(20)), 1);
+    assert_eq!(layout::nominal_lines(&"票".repeat(21)), 2);
 }
 
 #[test]

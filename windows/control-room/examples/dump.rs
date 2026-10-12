@@ -9,11 +9,39 @@
 
 use polter_control_room::json::quote;
 use polter_control_room::act::{Act, SeenMarker};
-use polter_control_room::layout::{ListLayout, Rect};
+use polter_control_room::layout::{self, ListLayout, Rect};
 use polter_control_room::list::{self, List, Row};
 use polter_control_room::pulse::{self, Scope};
 use polter_control_room::look::selection;
 use polter_control_room::snapshot::{self, Shown};
+
+/// What steps want, for the fitting rule: one sentence short and long, a
+/// command at, under and over each of the two ceilings.
+const FITS: &[&[usize]] = &[
+    &[],
+    &[1],
+    &[2],
+    &[5],
+    &[1, 1],
+    &[3, 1],
+    &[1, 3],
+    &[2, 2],
+    &[1, 1, 1],
+    &[4, 4, 4],
+    &[2, 1, 1, 1],
+    &[1, 1, 1, 1, 1, 1],
+    &[1, 1, 1, 1, 1, 1, 1],
+    &[9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9],
+];
+
+const NOMINAL: &[&str] = &[
+    "",
+    "git push",
+    "rm -rf dist/ .cache/ node_modules/.vite && x",
+    "01234567890123456789012345678901234567890",
+    "012345678901234567890123456789012345678901",
+    "发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号？",
+];
 
 fn rect(name: &str, r: Rect) {
     println!("rect {name} x={:.3} y={:.3} w={:.3} h={:.3}", r.x, r.y, r.w, r.h);
@@ -230,6 +258,22 @@ fn main() {
     rect("header", lay.header);
     for (id, r) in &lay.rows {
         rect(&format!("row:{id}"), *r);
+    }
+    // How what each waiting row waits on is fitted, by the nominal count.
+    for (id, fit) in &lay.fits {
+        let lines: Vec<String> = fit.lines.iter().map(|n| n.to_string()).collect();
+        println!("fit id={id} lines={} hidden={} drawn={}", lines.join("+"), fit.hidden, fit.drawn());
+    }
+    println!("ask w={:.3}", layout::ask_width());
+    // The rule itself, away from the fixture: what each step wants, in.
+    for wanted in FITS {
+        let fit = layout::AskFit::fit(wanted);
+        let w: Vec<String> = wanted.iter().map(|n| n.to_string()).collect();
+        let l: Vec<String> = fit.lines.iter().map(|n| n.to_string()).collect();
+        println!("fit-of {} lines={} hidden={} drawn={}", w.join("+"), l.join("+"), fit.hidden, fit.drawn());
+    }
+    for text in NOMINAL {
+        println!("nominal {} lines={}", quote(text), layout::nominal_lines(text));
     }
     rect("separator", lay.separator);
     rect("quiet_header", lay.quiet_header);

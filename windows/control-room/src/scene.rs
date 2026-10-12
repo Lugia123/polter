@@ -27,6 +27,7 @@ pub mod msg {
     use crate::n_;
 
     pub const WAITING_HEADER: &str = n_("{} groups waiting for you");
+    pub const NONE_WAITING_HEADER: &str = n_("No group is waiting for you");
     pub const QUIET_HEADER: &str = n_("{} groups need nothing from you");
     /// The snapshot could not be read. `{}` is what was wrong with it.
     pub const UNREADABLE: &str = n_("The control room's data could not be read ({}).");
@@ -221,7 +222,11 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
 
     out.push(Item::Text {
         rect: inset_x(at.header, side::HEADER_PADDING_X),
-        text: list::fill(&tr(msg::WAITING_HEADER), &list.waiting_count.to_string()),
+        text: if list.waiting_count == 0 {
+            tr(msg::NONE_WAITING_HEADER)
+        } else {
+            list::fill(&tr(msg::WAITING_HEADER), &list.waiting_count.to_string())
+        },
         style: Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.text) },
         align: Align::Left,
     });
@@ -232,13 +237,15 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
         }
     }
 
-    out.push(hair(at.separator, panel));
-    out.push(Item::Text {
-        rect: inset_x(at.quiet_header, side::HEADER_PADDING_X),
-        text: list::fill(&tr(msg::QUIET_HEADER), &list.quiet_count.to_string()),
-        style: body(theme.text_secondary),
-        align: Align::Left,
-    });
+    if at.quiet_header.h > 0.0 {
+        out.push(hair(at.separator, panel));
+        out.push(Item::Text {
+            rect: inset_x(at.quiet_header, side::HEADER_PADDING_X),
+            text: list::fill(&tr(msg::QUIET_HEADER), &list.quiet_count.to_string()),
+            style: body(theme.text_secondary),
+            align: Align::Left,
+        });
+    }
 
     for row in &list.quiet {
         let Some(rect) = at.chip(Some(&row.id)) else { continue };
@@ -332,7 +339,7 @@ fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View, tr: &dyn
     // user's ruling, 2026-10-12): a row is too small to show what is being
     // agreed to, and what is being asked is often not a yes or a no.
     out.push(Item::Line {
-        rect: Rect { x: inner.x, y: inner.y + inner.h - side::ROW_LINE2_HEIGHT, w: inner.w, h: side::ROW_LINE2_HEIGHT },
+        rect: Rect { x: inner.x, y: line1.y + line1.h, w: inner.w, h: side::ASK_LINE_HEIGHT },
         parts,
     });
 }

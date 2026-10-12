@@ -247,24 +247,165 @@ struct ControlRoomListTests {
 
     // MARK: Where things are
 
-    /// The design's panel is 824 high; these are its GRID readings, moved
-    /// from window coordinates (the panel is at 8, 68) to the panel's own.
-    @Test func theWaitingRowsAreWhereTheDesignPutThem() {
+    /// The design's panel (v18, direction A) is 380 wide and 824 high. A
+    /// waiting row is 40 and 20 a line of what it waits on; by the nominal
+    /// count the sample's four are three lines, three, two and one.
+    @Test func theWaitingRowsAreAsHighAsWhatTheyWaitOn() {
         let layout = ControlRoomListLayout(list: list, height: 824)
-        #expect(layout.size == CGSize(width: 308, height: 824))
-        #expect(layout.header == CGRect(x: 6, y: 6, width: 296, height: 32))
-        #expect(layout.rows["billing"] == CGRect(x: 6, y: 38, width: 296, height: 60))
-        #expect(layout.rows["web-app"] == CGRect(x: 6, y: 106, width: 296, height: 60))
-        #expect(layout.rows["mobile"] == CGRect(x: 6, y: 174, width: 296, height: 60))
-        #expect(layout.rows["docs-site"] == CGRect(x: 6, y: 242, width: 296, height: 60))
+        #expect(layout.size == CGSize(width: 380, height: 824))
+        #expect(layout.header == CGRect(x: 6, y: 6, width: 368, height: 32))
+        #expect(layout.rows["billing"] == CGRect(x: 6, y: 38, width: 368, height: 100))
+        #expect(layout.rows["web-app"] == CGRect(x: 6, y: 146, width: 368, height: 100))
+        #expect(layout.rows["mobile"] == CGRect(x: 6, y: 254, width: 368, height: 80))
+        #expect(layout.rows["docs-site"] == CGRect(x: 6, y: 342, width: 368, height: 60))
+        #expect(ControlRoomListLayout.askWidth == 322)
+        #expect(layout.fits["web-app"] == ControlRoomAskFit(lines: [1, 1, 1], hidden: 0))
+        #expect(layout.fits["billing"] == ControlRoomAskFit(lines: [3], hidden: 0))
+        #expect(layout.fits["infra"] == nil)
     }
 
     @Test func theQuietSectionFollowsTheSeparator() {
         let layout = ControlRoomListLayout(list: list, height: 824)
-        #expect(layout.separator == CGRect(x: 18, y: 318, width: 272, height: 0.5))
-        #expect(layout.quietHeader == CGRect(x: 6, y: 322.5, width: 296, height: 32))
-        #expect(layout.rows["infra"] == CGRect(x: 6, y: 354.5, width: 296, height: 28))
-        #expect(layout.rows["design-system"] == CGRect(x: 6, y: 382.5, width: 296, height: 28))
+        #expect(layout.separator == CGRect(x: 18, y: 418, width: 344, height: 0.5))
+        #expect(layout.quietHeader == CGRect(x: 6, y: 422.5, width: 368, height: 32))
+        #expect(layout.rows["infra"] == CGRect(x: 6, y: 454.5, width: 368, height: 28))
+        #expect(layout.rows["design-system"] == CGRect(x: 6, y: 482.5, width: 368, height: 28))
+    }
+
+    @Test func whenTheCoreSaysNobodyWaitsTheGroupsFollowTheOneHeader() {
+        var nobody = list
+        nobody.quiet = list.rows
+        nobody.waiting = []
+        nobody.waitingCount = 0
+        let layout = ControlRoomListLayout(list: nobody, height: 824)
+        #expect(layout.quietHeader.height == 0)
+        #expect(layout.separator.height == 0)
+        #expect(layout.rows["billing"] == CGRect(x: 6, y: 38, width: 368, height: 28))
+        // The core's count, not the rows: a list that says 2 with no rows
+        // in it still has its second header.
+        nobody.waitingCount = 2
+        let said = ControlRoomListLayout(list: nobody, height: 824)
+        #expect(said.quietHeader.height == 32)
+        let none = ControlRoomList.headerText(waiting: 0)
+        #expect(!none.contains("0"))
+        let some = ControlRoomList.headerText(waiting: 4)
+        #expect(some.contains("4"))
+    }
+
+    @Test func aRowIsAsHighAsTheHostMeasuredItAndTheMeasureIsToldTheFace() {
+        var asked: [String: Bool] = [:]
+        let layout = ControlRoomListLayout(list: list, height: 824) { text, code in
+            asked[text] = code
+            return 4
+        }
+        // A sentence gets the three lines there are; three steps one each.
+        #expect(layout.fits["docs-site"] == ControlRoomAskFit(lines: [3], hidden: 0))
+        #expect(layout.rows["docs-site"]?.height == 100)
+        #expect(layout.fits["web-app"] == ControlRoomAskFit(lines: [1, 1, 1], hidden: 0))
+        #expect(asked["&& npm ci"] == true)
+        #expect(asked["调用次数用完了，13:40 恢复。"] == false)
+    }
+
+    @Test func anotherTerminalWaitingIsALineOfItsOwn() {
+        var more = list
+        more.waiting[3].others = 2
+        let layout = ControlRoomListLayout(list: more, height: 824)
+        #expect(layout.rows["docs-site"]?.height == 80)
+    }
+
+    // MARK: What is cut
+
+    @Test func whatIsCutIsTheEndOfALineAndNeverAStep() {
+        let maxLines = Int(Look.Side.askMaxLines)
+        let maxSteps = Int(Look.Side.askMaxSteps)
+        #expect(maxLines == 3 && maxSteps == 6)
+        #expect(ControlRoomAskFit.fit(needed: []) == .none)
+        // A sentence: as many lines as it wants, up to the ceiling.
+        #expect(ControlRoomAskFit.fit(needed: [2]).lines == [2])
+        #expect(ControlRoomAskFit.fit(needed: [9]).lines == [3])
+        // Each step a line first; what is left to the earliest that needs it.
+        #expect(ControlRoomAskFit.fit(needed: [3, 1]).lines == [2, 1])
+        #expect(ControlRoomAskFit.fit(needed: [1, 3]).lines == [1, 2])
+        #expect(ControlRoomAskFit.fit(needed: [2, 2]).lines == [2, 1])
+        #expect(ControlRoomAskFit.fit(needed: [9, 9, 9]).lines == [1, 1, 1])
+        // More steps than lines: the row grows by a line a step.
+        #expect(ControlRoomAskFit.fit(needed: [2, 1, 1, 1]) == ControlRoomAskFit(lines: [1, 1, 1, 1], hidden: 0))
+        #expect(ControlRoomAskFit.fit(needed: Array(repeating: 1, count: 7))
+            == ControlRoomAskFit(lines: [1, 1, 1, 1, 1], hidden: 2))
+
+        // **Every step has a line or is counted, however long and however
+        // many.**
+        for steps in 1...20 {
+            for want in [1, 2, 9] {
+                let fit = ControlRoomAskFit.fit(needed: Array(repeating: want, count: steps))
+                let every = fit.lines.allSatisfy { $0 >= 1 }
+                #expect(every, "\(steps) steps wanting \(want): \(fit)")
+                let shown = fit.lines.endIndex
+                #expect(shown + fit.hidden == steps, "\(steps) steps wanting \(want): a step is neither shown nor counted")
+                if steps <= maxSteps {
+                    #expect(fit.hidden == 0)
+                } else {
+                    #expect(fit.drawn == maxSteps)
+                }
+                if steps <= maxLines {
+                    #expect(fit.drawn <= maxLines)
+                }
+            }
+        }
+        #expect(ControlRoomList.hiddenStepsText(0) == nil)
+        let two = ControlRoomList.hiddenStepsText(2) ?? ""
+        #expect(two.contains("2"))
+    }
+
+    @Test func withNoFontALineIsFortyOneCellsAndAWideCharacterIsTwo() {
+        #expect(ControlRoomList.nominalLines("") == 1)
+        #expect(ControlRoomList.nominalLines(String(repeating: "x", count: 41)) == 1)
+        #expect(ControlRoomList.nominalLines(String(repeating: "x", count: 42)) == 2)
+        #expect(ControlRoomList.nominalLines(String(repeating: "票", count: 20)) == 1)
+        #expect(ControlRoomList.nominalLines(String(repeating: "票", count: 21)) == 2)
+    }
+
+    // MARK: Who waits, in words
+
+    @Test func whoWaitsIsSaidFromTheCoresWordAndNothingElse() {
+        typealias Waiter = ControlRoomList.Waiter
+        #expect(ControlRoomList.waiterText(Waiter(is: .none, name: "x")) == nil)
+        #expect(ControlRoomList.waiterText(Waiter(is: .terminal, name: "x")) == nil)
+        let own = ControlRoomList.waiterText(Waiter(is: .supervisor, name: "")) ?? ""
+        #expect(!own.isEmpty && !own.contains("ios-build"))
+        let through = ControlRoomList.waiterText(Waiter(is: .workerViaSupervisor, name: "ios-build")) ?? ""
+        #expect(through.contains("ios-build") && through != "ios-build")
+        #expect(ControlRoomList.waiterText(Waiter(is: .worker, name: "lint")) == "lint")
+    }
+
+    @Test func aRowReadOutSaysWhichGroupWhoWaitsAndEveryStepWhole() {
+        for row in list.rows {
+            let said = ControlRoomList.spoken(row)
+            #expect(said.hasPrefix(row.id))
+            if let who = ControlRoomList.waiterText(row.waiter) {
+                #expect(said.contains(who), "\(said) does not say who is waiting")
+            }
+            if !row.word.isEmpty { #expect(said.contains(row.word)) }
+            for line in row.what.lines {
+                #expect(said.contains(line), "\(said) leaves out \(line)")
+            }
+        }
+        // Nine steps: the row draws five and a number; read out, all nine.
+        let nine = (1...9).map { "&& ./step-\($0).sh" }
+        var long = list.waiting[1]
+        long.what = .init(form: .command, lines: nine)
+        let said = ControlRoomList.spoken(long)
+        let all = nine.allSatisfy { said.contains($0) }
+        #expect(all)
+    }
+
+    @Test func aGroupThatNeedsNothingSaysWhatItIsDoingOrItsStatusOrNothing() {
+        let doing = ControlRoomList.quietText(list.quiet[1])
+        #expect(doing == "在改按钮的三种尺寸")
+        var unknown = list.quiet[1]
+        unknown.what = .none
+        #expect(ControlRoomList.quietText(unknown) == "在干活")
+        #expect(ControlRoomList.quietText(list.quiet[3]) == "")
     }
 
     @Test func theChipRestsExactlyOnItsRowAndNowhereForARowNotListed() {

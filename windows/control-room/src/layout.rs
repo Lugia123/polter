@@ -16,6 +16,80 @@ pub struct Rect {
     pub h: f64,
 }
 
+/// How much of what a row waits on is drawn: how many lines each step gets,
+/// and how many steps are said only as a number.
+///
+/// **The rule** (control-room.md, 3.5): what is cut is the end of a line,
+/// never a step. A sentence wraps to `ASK_MAX_LINES` and ends in an
+/// ellipsis. A command of that many steps or fewer gives each step a line
+/// first and what is left over to the earliest steps that need a second. A
+/// command of more steps than that keeps one line a step -- the row grows --
+/// up to `ASK_MAX_STEPS`; past that the last line says how many steps are
+/// not shown. So a step is either on the row from its first character or
+/// counted on it, and none goes without a word. The macOS host's
+/// `ControlRoomAskFit` is the same rule.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AskFit {
+    /// How many lines each step that is shown is drawn on, in order.
+    pub lines: Vec<usize>,
+    /// Steps that are not shown and are said as a number instead.
+    pub hidden: usize,
+}
+
+impl AskFit {
+    /// Every line this takes on the row, the one that says `hidden` among
+    /// them.
+    pub fn drawn(&self) -> usize {
+        self.lines.iter().sum::<usize>() + usize::from(self.hidden > 0)
+    }
+
+    /// `needed` is how many lines each step would take with all the room it
+    /// wanted, in order: a measurement, which is the host's to make.
+    pub fn fit(needed: &[usize]) -> AskFit {
+        let max_lines = side::ASK_MAX_LINES as usize;
+        let max_steps = side::ASK_MAX_STEPS as usize;
+        let steps = needed.len();
+        if steps == 0 {
+            return AskFit::default();
+        }
+        if steps > max_steps {
+            // One line is kept for the number.
+            return AskFit { lines: vec![1; max_steps - 1], hidden: steps - (max_steps - 1) };
+        }
+        let mut lines = vec![1; steps];
+        let mut spare = max_lines.saturating_sub(steps);
+        for (at, want) in needed.iter().enumerate() {
+            let more = spare.min(want.max(&1) - 1);
+            lines[at] += more;
+            spare -= more;
+        }
+        AskFit { lines, hidden: 0 }
+    }
+}
+
+/// How many lines `text` takes with no font to measure it by: so many cells
+/// to a line (`ASK_CELLS_PER_LINE`), a wide character two. What the two
+/// hosts are held to one answer with; a host that draws measures with its
+/// own font and hands that to `ListLayout::measured`.
+pub fn nominal_lines(text: &str) -> usize {
+    let per_line = side::ASK_CELLS_PER_LINE as usize;
+    let cells: usize = text.chars().map(|c| if c as u32 >= 0x2E80 { 2 } else { 1 }).sum();
+    cells.div_ceil(per_line).max(1)
+}
+
+/// How wide what a row waits on is: the row, less its padding and the
+/// column the glyph stands in.
+pub fn ask_width() -> f64 {
+    side::WIDTH - 2.0 * space::SIDE_PANEL_PADDING - 2.0 * side::ROW_PADDING_X - side::GLYPH - side::ROW_ITEM_GAP
+}
+
+/// How high a waiting row is: its first line, the lines of what it waits
+/// on, and one more when other terminals of the group wait too.
+pub fn row_height(fit: &AskFit, others: u64) -> f64 {
+    let lines = fit.drawn() + usize::from(others > 0);
+    2.0 * side::ROW_PADDING_Y + side::ROW_LINE1_HEIGHT + lines as f64 * side::ASK_LINE_HEIGHT
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListLayout {
     pub width: f64,
@@ -23,12 +97,23 @@ pub struct ListLayout {
     pub header: Rect,
     /// The waiting rows and then the quiet ones, by `Row::id`.
     pub rows: Vec<(String, Rect)>,
+    /// How what each waiting row waits on is fitted, by `Row::id`. The
+    /// row's height came from this, so whatever draws the row draws by it.
+    pub fits: Vec<(String, AskFit)>,
     pub separator: Rect,
     pub quiet_header: Rect,
 }
 
 impl ListLayout {
+    /// Laid out by the nominal count of lines.
     pub fn new(list: &List, height: f64) -> ListLayout {
+        Self::measured(list, height, &|text, _| nominal_lines(text))
+    }
+
+    /// `needed` says how many lines one step would take with all the room
+    /// it wanted, and whether it is set in the terminal's face: the host's
+    /// measurement.
+    pub fn measured(list: &List, height: f64, needed: &dyn Fn(&str, bool) -> usize) -> ListLayout {
         let pad = space::SIDE_PANEL_PADDING;
         let width = side::WIDTH;
         let inner = width - 2.0 * pad;
@@ -40,23 +125,36 @@ impl ListLayout {
         y += header_h;
 
         let mut rows = Vec::new();
+        let mut fits = Vec::new();
         for row in &list.waiting {
-            rows.push((row.id.clone(), Rect { x: pad, y, w: inner, h: side::ROW_HEIGHT }));
-            y += side::ROW_HEIGHT + side::ROW_GAP;
+            let code = crate::list::is_code(&row.what);
+            let wanted: Vec<usize> = row.what.lines.iter().map(|line| needed(line, code)).collect();
+            let fit = AskFit::fit(&wanted);
+            let row_h = row_height(&fit, row.others);
+            rows.push((row.id.clone(), Rect { x: pad, y, w: inner, h: row_h }));
+            fits.push((row.id.clone(), fit));
+            y += row_h + side::ROW_GAP;
         }
 
-        y += side::SEPARATOR_SPACE_ABOVE;
-        let separator = Rect { x: pad + pad_x, y, w: inner - 2.0 * pad_x, h: line::HAIRLINE };
-        y += line::HAIRLINE + side::SEPARATOR_SPACE_BELOW;
-
-        let quiet_header = Rect { x: pad, y, w: inner, h: header_h };
-        y += header_h;
+        let (separator, quiet_header) = if list.waiting_count == 0 {
+            // The core says nobody is waiting: the one header says so, and
+            // the groups follow it with no line and no second header
+            // between. Both are kept, with no height, where they would be.
+            (Rect { x: pad + pad_x, y, w: inner - 2.0 * pad_x, h: 0.0 }, Rect { x: pad, y, w: inner, h: 0.0 })
+        } else {
+            y += side::SEPARATOR_SPACE_ABOVE;
+            let separator = Rect { x: pad + pad_x, y, w: inner - 2.0 * pad_x, h: line::HAIRLINE };
+            y += line::HAIRLINE + side::SEPARATOR_SPACE_BELOW;
+            let quiet_header = Rect { x: pad, y, w: inner, h: header_h };
+            y += header_h;
+            (separator, quiet_header)
+        };
         for row in &list.quiet {
             rows.push((row.id.clone(), Rect { x: pad, y, w: inner, h: side::QUIET_ROW_HEIGHT }));
             y += side::QUIET_ROW_HEIGHT;
         }
 
-        ListLayout { width, height, header, rows, separator, quiet_header }
+        ListLayout { width, height, header, rows, fits, separator, quiet_header }
     }
 
     /// The row under a point of the panel, by its group's name.
@@ -65,6 +163,12 @@ impl ListLayout {
             .iter()
             .find(|(_, r)| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
             .map(|(name, _)| name.as_str())
+    }
+
+    /// How what a waiting row waits on is fitted; none for a row that is
+    /// not a waiting one.
+    pub fn fit(&self, id: &str) -> Option<&AskFit> {
+        self.fits.iter().find(|(name, _)| name == id).map(|(_, f)| f)
     }
 
     /// Where the selection chip rests for a row; none for a row not listed.

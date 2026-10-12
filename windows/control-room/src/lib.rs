@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn nothing_is_set_below_the_smallest_size() {
-        let sizes = [look::font::BODY, look::font::GROUP_NAME, look::font::MINUTES];
+        let sizes = [look::font::BODY, look::font::GROUP_NAME];
         assert!(look::font::MIN >= 13.0);
         assert!(sizes.iter().all(|s| *s >= look::font::MIN));
     }
