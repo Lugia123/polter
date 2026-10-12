@@ -199,21 +199,15 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         lender.markReturned()
 
         guard toHome, let home = BaseTerminalController.controller(owning: view) else { return }
-        // Once its pane has taken the view back.
-        DispatchQueue.main.async { [weak home, weak view] in
-            guard let home, let view, let window = home.window else { return }
+        // Its own window hands it the keyboard once the view is back in
+        // it, which is when its pane next draws and not now: a tab behind
+        // this one draws later. `settle` is asked again when the view
+        // arrives and when that window becomes key.
+        lender.goingHome(view, wanted: focus)
+        DispatchQueue.main.async { [weak home, weak view, lender] in
+            guard let home, let view, let window = home.window, !lender.isLent(view) else { return }
             ControlRoomLender.setVisible(view, window.occlusionState.contains(.visible))
-            if focus {
-                home.focusedSurface = view
-                window.makeKeyAndOrderFront(nil)
-                Ghostty.moveFocus(to: view)
-            } else if home.focusedSurface === view, view.window === window {
-                // Its window lost its first responder when the view left;
-                // put it back so that coming to that tab finds the keyboard
-                // where it was. The window is not made key.
-                window.makeFirstResponder(view)
-                home.syncFocusToSurfaceTree()
-            }
+            lender.settle(view)
         }
     }
 

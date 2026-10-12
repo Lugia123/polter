@@ -63,7 +63,7 @@ struct ControlRoomListView: View {
         .font(.system(size: CGFloat(Look.Font.body)))
         .monospacedDigit()
         .foregroundStyle(theme.text.color)
-        .focusable()
+        .controlRoomListFocus()
         .onMoveCommand { direction in
             switch direction {
             case .up: select(ControlRoomList.move(selection, by: -1, in: list.rows))
@@ -355,5 +355,19 @@ private extension View {
     func place(_ rect: CGRect) -> some View {
         frame(width: rect.width, height: rect.height)
             .offset(x: rect.minX, y: rect.minY)
+    }
+}
+
+private extension View {
+    /// Takes the keyboard, so that the arrow keys walk the rows, without
+    /// the system's ring around the whole column: the selected row already
+    /// says where the keyboard is.
+    @ViewBuilder
+    func controlRoomListFocus() -> some View {
+        if #available(macOS 14.0, *) {
+            focusable().focusEffectDisabled()
+        } else {
+            focusable()
+        }
     }
 }

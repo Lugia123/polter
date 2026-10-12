@@ -167,10 +167,10 @@ enum ControlRoomLook {
         /// TENTATIVE (other candidate: 12). The design draws three unlabelled lanes 12 high and does not say which group each is. 12 is the design's height, with no label.
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
         static let timeLaneLabelledHeight: Double = 16.0
-        /// The column at a lane's left end that holds the start of its group's name.
+        /// The column at a lane's left end that holds its group's name: twelve characters of the 13 pt monospaced face, which is the whole of most names. A longer one is cut at the end.
         /// TENTATIVE (other candidate: 0). 0 is the design: no label.
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
-        static let timeLaneLabelWidth: Double = 64.0
+        static let timeLaneLabelWidth: Double = 96.0
         /// Source: design v17, src/style.css.
         static let timeAxisHeight: Double = 24.0
         /// Source: design v17, src/style.css.

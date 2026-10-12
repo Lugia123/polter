@@ -166,10 +166,10 @@ pub mod side {
     /// TENTATIVE (other candidate: 12). The design draws three unlabelled lanes 12 high and does not say which group each is. 12 is the design's height, with no label.
     /// Source: not in the design: chosen while building the mac list, to be ruled on.
     pub const TIME_LANE_LABELLED_HEIGHT: f64 = 16.0;
-    /// The column at a lane's left end that holds the start of its group's name.
+    /// The column at a lane's left end that holds its group's name: twelve characters of the 13 pt monospaced face, which is the whole of most names. A longer one is cut at the end.
     /// TENTATIVE (other candidate: 0). 0 is the design: no label.
     /// Source: not in the design: chosen while building the mac list, to be ruled on.
-    pub const TIME_LANE_LABEL_WIDTH: f64 = 64.0;
+    pub const TIME_LANE_LABEL_WIDTH: f64 = 96.0;
     /// Source: design v17, src/style.css.
     pub const TIME_AXIS_HEIGHT: f64 = 24.0;
     /// Source: design v17, src/style.css.

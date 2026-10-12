@@ -22,6 +22,11 @@ import SwiftUI
 ///     (`BaseTerminalController` skips it; `ControlRoomController` says).
 ///   * `view.window` is now the control room's. Code that wants the window
 ///     the terminal belongs to asks `homeWindow`.
+///
+/// And one thing follows the view late: its own window's keyboard. That
+/// window lost its first responder when the view left, and gets the view
+/// back only when its pane next draws. `settle` hands the keyboard over
+/// when the view has arrived (`ControlRoomHomecoming`).
 final class ControlRoomLender: ObservableObject {
     static let shared = ControlRoomLender()
 
@@ -39,14 +44,61 @@ final class ControlRoomLender: ObservableObject {
         lent === view
     }
 
+    /// Terminals given back whose own window has not handed them the
+    /// keyboard yet.
+    private var homecoming = ControlRoomHomecoming()
+    /// Search bars open on a terminal when it changed views.
+    private var movedSearches = ControlRoomMovedSearches<Ghostty.SurfaceView.SearchState>()
+
     func markLent(_ view: Ghostty.SurfaceView) {
+        if let terminal = Self.terminal(of: view) { homecoming.cancelled(terminal) }
+        if let search = view.searchState { movedSearches.moved(search) }
         lent = view
         lentID = view.id
     }
 
     func markReturned() {
+        if let search = lent?.searchState { movedSearches.moved(search) }
         lent = nil
         lentID = nil
+    }
+
+    /// `view` was given back and its own tab is still there. `wanted`
+    /// when the person asked for it back from that tab.
+    func goingHome(_ view: Ghostty.SurfaceView, wanted: Bool) {
+        guard let terminal = Self.terminal(of: view) else { return }
+        homecoming.returned(terminal, wanted: wanted)
+    }
+
+    /// Something happened that may let `view`'s own window hand it the
+    /// keyboard: the view moved into a window, or that window became key.
+    /// Asked as often as that happens; does something once per return.
+    func settle(_ view: Ghostty.SurfaceView) {
+        guard !homecoming.awaited.isEmpty, !isLent(view),
+              let terminal = Self.terminal(of: view),
+              let home = BaseTerminalController.controller(owning: view),
+              let window = home.window else { return }
+        let steps = homecoming.settle(terminal, home: .init(
+            attached: view.window === window,
+            isFocusedPane: home.focusedSurface === view,
+            keyboardIsUnclaimed: window.firstResponder == nil || window.firstResponder === window))
+        guard !steps.isEmpty else { return }
+        for step in steps {
+            switch step {
+            case .makeKey:
+                home.focusedSurface = view
+                window.makeKeyAndOrderFront(nil)
+            case .takeKeyboard:
+                window.makeFirstResponder(view)
+            }
+        }
+        home.syncFocusToSurfaceTree()
+    }
+
+    /// Whether the bar of `search`, appearing now, may take the keyboard:
+    /// not when it appears only because its terminal changed views.
+    func searchMayTakeKeyboard(_ search: Ghostty.SurfaceView.SearchState) -> Bool {
+        movedSearches.mayTakeKeyboard(search)
     }
 
     func reclaim(_ view: Ghostty.SurfaceView) {
@@ -62,6 +114,7 @@ final class ControlRoomLender: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self, let lent = self.lent,
                   BaseTerminalController.controller(owning: lent) == nil else { return }
+            if let terminal = Self.terminal(of: lent) { self.homecoming.cancelled(terminal) }
             self.onHomeGone?(lent)
         }
     }

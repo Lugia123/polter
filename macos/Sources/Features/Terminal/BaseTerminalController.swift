@@ -761,6 +761,10 @@ class BaseTerminalController: NSWindowController,
             surfaceTree = SplitTree(root: surfaceTree.root, zoomed: targetNode)
         }
 
+        // Lent to the control room: the person is looking at it there, and
+        // the keyboard stays there. Only the tree changed.
+        guard ControlRoomHomecoming.homeComesForward(lent: ControlRoomLender.shared.isLent(target)) else { return }
+
         // Move focus to our window. Importantly this ensures that if we click the
         // reset zoom button in a tab bar of an unfocused tab that we become focused.
         window?.makeKeyAndOrderFront(nil)
@@ -808,8 +812,13 @@ class BaseTerminalController: NSWindowController,
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
         guard surfaceTree.contains(target) else { return }
 
-        // Bring the window to front and focus the surface.
-        window?.makeKeyAndOrderFront(nil)
+        // Bring the window to front and focus the surface. A terminal lent
+        // to the control room is shown there, so that is the window.
+        if ControlRoomHomecoming.homeComesForward(lent: ControlRoomLender.shared.isLent(target)) {
+            window?.makeKeyAndOrderFront(nil)
+        } else {
+            target.window?.makeKeyAndOrderFront(nil)
+        }
 
         // We use a small delay to ensure this runs after any UI cleanup
         // (e.g., command palette restoring focus to its original surface).
@@ -1319,6 +1328,10 @@ class BaseTerminalController: NSWindowController,
                 Ghostty.moveFocus(to: focusedSurface)
             }
         }
+
+        // A terminal the control room gave back while this window was not
+        // in front gets the keyboard now, if it is back in its pane.
+        for view in surfaceTree { ControlRoomLender.shared.settle(view) }
 
         // Becoming key can race with responder updates when activating a window.
         // Sync on the next runloop so split focus has settled first.

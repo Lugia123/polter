@@ -114,9 +114,9 @@
         "tentative": { "alt": 12, "why": "The design draws three unlabelled lanes 12 high and does not say which group each is. 12 is the design's height, with no label." }
       },
       "time_lane_label_width": {
-        "v": 64,
+        "v": 96,
         "src": "undesigned",
-        "doc": "The column at a lane's left end that holds the start of its group's name.",
+        "doc": "The column at a lane's left end that holds its group's name: twelve characters of the 13 pt monospaced face, which is the whole of most names. A longer one is cut at the end.",
         "tentative": { "alt": 0, "why": "0 is the design: no label." }
       },
       "time_axis_height": { "v": 24, "src": "v17-style" },

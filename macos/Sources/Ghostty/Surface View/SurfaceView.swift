@@ -421,7 +421,11 @@ extension Ghostty {
                 .clipShape(clipShape)
                 .shadow(radius: 4)
                 .onAppear {
-                    isSearchFieldFocused = true
+                    // Not when the bar appears only because the control
+                    // room moved its terminal to another view.
+                    if ControlRoomLender.shared.searchMayTakeKeyboard(searchState) {
+                        isSearchFieldFocused = true
+                    }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .ghosttySearchFocus)) { notification in
                     guard notification.object as? SurfaceView === surfaceView else { return }

@@ -978,6 +978,18 @@ extension Ghostty {
                 userInfo: nil))
         }
 
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard window != nil else { return }
+            // Back in its own tab after the control room had it: that
+            // window can hand it the keyboard now. After this change to
+            // the view tree is done, not in the middle of it.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                ControlRoomLender.shared.settle(self)
+            }
+        }
+
         override func viewDidChangeBackingProperties() {
             super.viewDidChangeBackingProperties()
 
