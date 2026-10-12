@@ -77,6 +77,57 @@ pub fn nominal_lines(text: &str) -> usize {
     cells.div_ceil(per_line).max(1)
 }
 
+/// Break `text` into lines, given how much of a string fits on one.
+///
+/// `fits` is the host's measurement: how many characters from the start of
+/// what it is handed fit in the width a row gives. A line breaks after the
+/// last space that fits and drops it; with no space to break at -- a path,
+/// a long flag -- it breaks where the room ends. Text that is empty is one
+/// empty line: a step has a line whether or not there is anything on it.
+///
+/// A host that draws with a system call that wraps for it does not need
+/// this. GDI's wraps at the font's own line height, not the row's
+/// (`ASK_LINE_HEIGHT`), so the Windows host breaks lines here and draws
+/// them one at a time.
+pub fn wrap(text: &str, fits: &dyn Fn(&str) -> usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text.trim_end();
+    // A measurement that says "nothing fits" still moves one character on,
+    // or this would never end.
+    while !rest.is_empty() && out.len() < 1000 {
+        let total = rest.chars().count();
+        let n = fits(rest).clamp(1, total);
+        if n >= total {
+            break;
+        }
+        let end: usize = rest.char_indices().nth(n).map_or(rest.len(), |(at, _)| at);
+        let head = &rest[..end];
+        // After the last space that fits, unless the very next character is
+        // one (then the whole of `head` is a word's end already).
+        let next_is_space = rest[end..].starts_with(char::is_whitespace);
+        let cut = if next_is_space { end } else { head.rfind(char::is_whitespace).map_or(end, |at| if at == 0 { end } else { at }) };
+        out.push(rest[..cut].trim_end().to_string());
+        rest = rest[cut..].trim_start();
+    }
+    out.push(rest.to_string());
+    out
+}
+
+/// What is drawn on each of the `lines` lines a step has: its wrapped
+/// lines, and when there are more of them than that, **all of the rest on
+/// the last one** -- the host draws that line cut at its end with an
+/// ellipsis, so what is lost is the end of a line and never a line from the
+/// middle. Fewer than `lines` when the text is shorter.
+pub fn block_lines(text: &str, lines: usize, fits: &dyn Fn(&str) -> usize) -> Vec<String> {
+    let lines = lines.max(1);
+    let mut all = wrap(text, fits);
+    if all.len() > lines {
+        let rest = all.split_off(lines - 1).join(" ");
+        all.push(rest);
+    }
+    all
+}
+
 /// How wide what a row waits on is: the row, less its padding and the
 /// column the glyph stands in.
 pub fn ask_width() -> f64 {

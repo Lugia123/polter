@@ -167,23 +167,21 @@ fn detail() -> Detail {
 fn sync_loan(hwnd: HWND) {
     let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
     let showing = unsafe { IsWindowVisible(hwnd) }.as_bool();
-    let event = if !showing {
-        // Another tab of this window is in front, or the window is going.
-        Event::Closing
-    } else {
-        let group = selection();
-        let supervisor = source::with(|data| match data {
-            Data::Ready(r) => group.as_deref().and_then(|id| r.list.row(id)).and_then(|row| row.steward.clone()),
-            Data::NotYet => None,
-            Data::Unreadable(_) => None,
-        });
-        let place = match supervisor.as_deref().and_then(crate::tabs::place_of_terminal) {
-            Some((home, _)) if home == frame => Place::Here,
-            Some(_) => Place::Elsewhere,
-            None => Place::Gone,
-        };
-        Event::Selected { group, supervisor, place }
+    let group = selection();
+    let supervisor = source::with(|data| match data {
+        Data::Ready(r) => group.as_deref().and_then(|id| r.list.row(id)).and_then(|row| row.steward.clone()),
+        Data::NotYet => None,
+        Data::Unreadable(_) => None,
+    });
+    let place = match supervisor.as_deref().and_then(crate::tabs::place_of_terminal) {
+        Some((home, _)) if home == frame => Place::Here,
+        Some(_) => Place::Elsewhere,
+        None => Place::Gone,
     };
+    // Another tab of this window in front, or not shown yet: nothing is
+    // borrowed, and the right side still says what is selected (task 1441
+    // -- it used to be told "closing", and forgot).
+    let event = if showing { Event::Selected { group, supervisor, place } } else { Event::OutOfSight { group, supervisor, place } };
     let effects = STATE.with(|s| s.borrow_mut().as_mut().map(|st| st.lending.handle(event)).unwrap_or_default());
     if effects.is_empty() {
         return;
@@ -358,12 +356,12 @@ pub fn destroy(hwnd: HWND) {
 pub fn snapshot_changed() {
     let Some(hwnd) = panel() else { return };
     take_snapshot();
-    // A row that has just become unseen while it sits selected is worth a
-    // wait of its own -- but never by cutting short one already running.
-    let waiting = STATE.with(|s| s.borrow().as_ref().is_some_and(|st| st.dwell.is_some()));
-    if !waiting {
-        arm_seen(hwnd);
-    }
+    // A row that stops while the person is on it is seen like any other:
+    // the wait starts when the core first says "not looked at", and a row
+    // that was already unseen is left alone, or every list would start the
+    // wait over (`SeenMarker::list_changed`; a wait already running is
+    // never cut short by this).
+    list_changed(hwnd);
     // The supervisor the core names may have changed, or gone.
     sync_loan(hwnd);
     unsafe {
@@ -443,13 +441,19 @@ fn chip_now(at: &ListLayout, selected: Option<&str>) -> (Option<Rect>, f64) {
 
 fn select(hwnd: HWND, id: Option<String>) {
     if id == selection() {
+        // The same row again changes nothing on the left. The right side is
+        // still asked: with nothing to do it does nothing, and a row that
+        // was lit with the right side behind it (task 1441) could not be
+        // brought up to date by clicking it, which is the first thing a
+        // person tries.
+        sync_loan(hwnd);
         return;
     }
     let g = geometry(hwnd);
     // Both ends of the slide, from the one layout the list has now.
     let ends = source::with(|data| match data {
         Data::Ready(r) => {
-            let at = ListLayout::new(&r.list, g.room.panel.h);
+            let at = list_layout(hwnd, &r.list, g.room.panel.h);
             let from = chip_now(&at, selection().as_deref()).0;
             Some((from, at.chip(id.as_deref())))
         }
@@ -515,6 +519,32 @@ fn arm_seen(hwnd: HWND) {
         } else {
             let _ = KillTimer(Some(hwnd), TIMER_SEEN);
         }
+    }
+}
+
+/// A new list has arrived: tell the marker the selected row as it is now,
+/// and start a wait if that is news.
+fn list_changed(hwnd: HWND) {
+    let selected = STATE
+        .with(|s| s.borrow().as_ref().and_then(|st| st.selection.is_a_look().then(|| st.selection.current().map(str::to_string))))
+        .flatten();
+    let dwell = source::with(|data| {
+        let row = match data {
+            Data::Ready(r) => selected.as_deref().and_then(|id| r.list.row(id)),
+            Data::NotYet => None,
+            Data::Unreadable(_) => None,
+        };
+        STATE.with(|s| s.borrow_mut().as_mut().and_then(|st| st.seen.list_changed(row)))
+    });
+    // None is "nothing new": whatever wait is running goes on.
+    let Some(dwell) = dwell else { return };
+    STATE.with(|s| {
+        if let Some(st) = s.borrow_mut().as_mut() {
+            st.dwell = Some(dwell);
+        }
+    });
+    unsafe {
+        SetTimer(Some(hwnd), TIMER_SEEN, (selection::SEEN_AFTER * 1000.0) as u32, None);
     }
 }
 
@@ -604,6 +634,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         // because this arrives from inside `tabs::layout`.
         WM_SHOWWINDOW => {
             request_sync();
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        }
+        // **And the way it is actually shown.** `tabs::layout` hides the
+        // panel with `ShowWindow`, which sends the message above, and shows
+        // it with `SetWindowPos(.., SWP_SHOWWINDOW)`, which does not: the
+        // panel heard that it had gone and never that it was back (task
+        // 1441: back from another tab, and on first opening, the right side
+        // said "select a group" beside a lit row). This message comes for
+        // both, and says which in its flags.
+        WM_WINDOWPOSCHANGED => {
+            let pos = lp.0 as *const WINDOWPOS;
+            if !pos.is_null() {
+                let flags = unsafe { (*pos).flags };
+                if flags.contains(SWP_SHOWWINDOW) || flags.contains(SWP_HIDEWINDOW) {
+                    request_sync();
+                }
+            }
+            // `DefWindowProcW` is what turns this into `WM_SIZE`.
             unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
         }
         WM_ROOM_SYNC => {
@@ -755,7 +803,7 @@ fn click(hwnd: HWND, x: i32, y: i32) {
     let (px, py) = (x as f64 / g.scale, y as f64 / g.scale);
     // A row of the list.
     let row = source::with(|data| match data {
-        Data::Ready(r) => ListLayout::new(&r.list, g.room.panel.h)
+        Data::Ready(r) => list_layout(hwnd, &r.list, g.room.panel.h)
             .row_at(px - g.room.panel.x, py - g.room.panel.y)
             .map(str::to_string),
         Data::NotYet => None,
@@ -891,7 +939,7 @@ fn paint(hwnd: HWND) {
         let (items, right) = source::with(|data| match data {
             Data::Ready(r) => {
                 let list: &List = &r.list;
-                let lay = ListLayout::new(list, g.room.panel.h);
+                let lay = list_layout(hwnd, list, g.room.panel.h);
                 let (chip, lift) = chip_now(&lay, selected.as_deref());
                 let window = crate::tabs::window(GetAncestor(hwnd, GA_ROOT)).map(|w| polter_control_room::rules::key(w.id));
                 let pulsing = pulse::pulsing_row(&r.snapshot.pulses, window.as_deref(), None);
@@ -1000,6 +1048,25 @@ unsafe fn paint_items(dc: HDC, at: Px, items: &[Item], fonts: &mut Fonts, t: f64
                 draw_text(dc, fonts.get(style), style.color, text, r, how | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
             },
             Item::Line { rect, parts } => unsafe { paint_line(dc, at, at.rect(*rect), parts, fonts, t) },
+            // Running text, a line at a time: GDI's own wrapping sets lines
+            // at the font's height, and the row was laid out at the
+            // design's (`ASK_LINE_HEIGHT`). Where the lines break is
+            // `layout::block_lines`, with this font's own measurement --
+            // the same one the row's height came from (`list_layout`).
+            Item::Block { rect, text, style, lines } => unsafe {
+                let r = at.rect(*rect);
+                let font = fonts.get(style);
+                let width = r.right - r.left;
+                let shown = layout::block_lines(text, *lines, &|s| fit_chars(dc, font, s, width));
+                let each = (r.bottom - r.top) / (*lines).max(1) as i32;
+                for (i, line) in shown.iter().enumerate() {
+                    let top = r.top + i as i32 * each;
+                    let box_ = RECT { left: r.left, top, right: r.right, bottom: top + each };
+                    // Only the last can be longer than the box: it carries
+                    // everything that did not fit, and is cut at its end.
+                    draw_text(dc, font, style.color, line, box_, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+                }
+            },
         }
     }
 }
@@ -1029,6 +1096,63 @@ unsafe fn draw_text(dc: HDC, font: HFONT, color: Rgba, text: &str, mut r: RECT, 
         let mut wide: Vec<u16> = text.encode_utf16().collect();
         DrawTextW(dc, &mut wide, &mut r, how);
         SelectObject(dc, old);
+    }
+}
+
+/// How many characters from the start of `text` fit in `width` pixels of
+/// `font`. Nothing is asked about nothing (`draw_text`).
+unsafe fn fit_chars(dc: HDC, font: HFONT, text: &str, width: i32) -> usize {
+    if !scene::draws(text) {
+        return 0;
+    }
+    unsafe {
+        let old = SelectObject(dc, font.into());
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let mut fit = 0i32;
+        let mut size = SIZE::default();
+        // A pointer and a count, as everywhere here: `text` is not empty
+        // (asked above), so the pointer is to something.
+        let _ = GetTextExtentExPointW(dc, PCWSTR(wide.as_ptr()), wide.len() as i32, width.max(0), Some(&mut fit), None, &mut size);
+        SelectObject(dc, old);
+        // The answer is in UTF-16 units; the question was in characters.
+        let mut units = 0usize;
+        let mut chars = 0usize;
+        for c in text.chars() {
+            units += c.len_utf16();
+            if units > fit.max(0) as usize {
+                break;
+            }
+            chars += 1;
+        }
+        chars
+    }
+}
+
+/// The list's layout, with what each waiting row waits on measured in the
+/// fonts it will be drawn in, at this window's scale: how many lines a step
+/// takes is how many `layout::wrap` makes of it with `fit_chars`. **Every
+/// place that needs the layout asks here** -- the paint, the slide's two
+/// ends, the click, the rows a screen reader is told -- so that they agree
+/// about how high a row is.
+fn list_layout(hwnd: HWND, list: &List, height: f64) -> ListLayout {
+    let scale = unsafe { GetDpiForWindow(hwnd) }.max(96) as f64 / 96.0;
+    let width = (layout::ask_width() * scale).round() as i32;
+    let mut fonts = Fonts { dpi: (scale * 96.0).round() as i32, made: Vec::new() };
+    let face = |code: bool| Style {
+        size: look::font::BODY,
+        weight: look::font::WEIGHT_BODY,
+        face: if code { Face::Mono } else { Face::Ui },
+        color: Rgba { r: 0, g: 0, b: 0, a: 1.0 },
+    };
+    let (ui, mono) = (fonts.get(&face(false)), fonts.get(&face(true)));
+    unsafe {
+        let dc = GetDC(Some(hwnd));
+        let lay = ListLayout::measured(list, height, &|text, code| {
+            let font = if code { mono } else { ui };
+            layout::wrap(text, &|s| fit_chars(dc, font, s, width)).len()
+        });
+        ReleaseDC(Some(hwnd), dc);
+        lay
     }
 }
 

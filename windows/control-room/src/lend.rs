@@ -83,10 +83,21 @@ pub enum Event {
     /// The terminal's place in its own tab is gone: the pane, the tab or
     /// the window was closed.
     HomeGone { terminal: String },
-    /// The control room is going away, or out of sight: its tab or its
-    /// window is closing, the application is quitting, or another tab of
-    /// its window was brought in front of it.
+    /// The control room is going away: its tab or its window is closing,
+    /// or the application is quitting.
     Closing,
+    /// The same three things as `Selected`, while the control room is out
+    /// of sight (another tab of its window is in front of it, or it has
+    /// not been shown yet): nothing is borrowed and whatever was is put
+    /// back -- but what the right side *says* is kept true, so that it is
+    /// right the moment it is seen, and so that `Selected` on coming back
+    /// borrows again.
+    ///
+    /// This used to be `Closing`, which forgets the selection. On the first
+    /// real machine (task 1441) the list came back from behind another tab
+    /// with its row still lit and the right side saying "select a group".
+    /// The macOS host's `outOfSight`.
+    OutOfSight { group: Option<String>, supervisor: Option<String>, place: Place },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +184,28 @@ impl Lending {
                 self.declined = None;
                 self.detail = Detail::NothingSelected;
                 self.return_loan()
+            }
+
+            Event::OutOfSight { group, supervisor, place } => {
+                self.declined = None;
+                let back = self.return_loan();
+                let Some(group) = group else {
+                    self.detail = Detail::NothingSelected;
+                    return back;
+                };
+                let Some(supervisor) = supervisor else {
+                    self.detail = Detail::NoSupervisor { group };
+                    return back;
+                };
+                let wanted = Loan { group: group.clone(), terminal: supervisor };
+                self.detail = match place {
+                    // In its own tab, which is where the person would find
+                    // it now; coming back into sight asks for it here.
+                    Place::Here => Detail::TakenBack(wanted),
+                    Place::Elsewhere => Detail::Elsewhere(wanted),
+                    Place::Gone => Detail::SupervisorGone { group },
+                };
+                back
             }
         }
     }
@@ -324,6 +357,58 @@ mod tests {
             vec![back("t1", true, false), Effect::Borrow(loan("b", "t2"))]
         );
         assert_eq!(l.loan(), Some(&loan("b", "t2")));
+    }
+
+    fn out_of_sight(group: &str, supervisor: Option<&str>, place: Place) -> Event {
+        Event::OutOfSight { group: Some(group.into()), supervisor: supervisor.map(str::to_string), place }
+    }
+
+    /// Task 1441, on the machine: switch to another tab and back, and the
+    /// list still had its row lit while the right side said "select a
+    /// group" and the terminal never came back.
+    #[test]
+    fn behind_another_tab_the_terminal_goes_home_and_coming_back_borrows_it_again() {
+        let mut l = Lending::default();
+        l.handle(selected("a", Some("t1"), Place::Here));
+        // Out of sight: home it goes, without the keyboard -- and the right
+        // side goes on saying whose it is, not "nothing selected".
+        assert_eq!(l.handle(out_of_sight("a", Some("t1"), Place::Here)), vec![back("t1", true, false)]);
+        assert_eq!(l.loan(), None);
+        assert_eq!(l.detail(), &Detail::TakenBack(loan("a", "t1")));
+        // Said again while still hidden: nothing more to do.
+        assert_eq!(l.handle(out_of_sight("a", Some("t1"), Place::Here)), Vec::new());
+        // Back in sight, the same selection: borrowed again.
+        assert_eq!(l.handle(selected("a", Some("t1"), Place::Here)), vec![Effect::Borrow(loan("a", "t1"))]);
+        assert_eq!(l.detail(), &Detail::Terminal(loan("a", "t1")));
+    }
+
+    /// The other half of the same report: a control room that opens with a
+    /// group already selected for it, before it has ever been shown.
+    #[test]
+    fn out_of_sight_from_the_start_says_what_is_selected_and_borrows_nothing() {
+        let mut l = Lending::default();
+        assert_eq!(l.handle(out_of_sight("a", Some("t1"), Place::Here)), Vec::new());
+        assert_eq!(l.detail(), &Detail::TakenBack(loan("a", "t1")));
+        assert_eq!(l.handle(out_of_sight("a", Some("t1"), Place::Elsewhere)), Vec::new());
+        assert_eq!(l.detail(), &Detail::Elsewhere(loan("a", "t1")));
+        assert_eq!(l.handle(out_of_sight("a", Some("t1"), Place::Gone)), Vec::new());
+        assert_eq!(l.detail(), &Detail::SupervisorGone { group: "a".into() });
+        assert_eq!(l.handle(out_of_sight("a", None, Place::Gone)), Vec::new());
+        assert_eq!(l.detail(), &Detail::NoSupervisor { group: "a".into() });
+        assert_eq!(l.handle(Event::OutOfSight { group: None, supervisor: None, place: Place::Gone }), Vec::new());
+        assert_eq!(l.detail(), &Detail::NothingSelected);
+    }
+
+    /// A terminal the person took back is theirs to ask for again; going
+    /// out of sight and coming back is asking.
+    #[test]
+    fn going_out_of_sight_forgets_that_the_person_took_it_back() {
+        let mut l = Lending::default();
+        l.handle(selected("a", Some("t1"), Place::Here));
+        l.handle(Event::Reclaimed { terminal: "t1".into() });
+        assert_eq!(l.handle(selected("a", Some("t1"), Place::Here)), Vec::new());
+        l.handle(out_of_sight("a", Some("t1"), Place::Here));
+        assert_eq!(l.handle(selected("a", Some("t1"), Place::Here)), vec![Effect::Borrow(loan("a", "t1"))]);
     }
 
     #[test]

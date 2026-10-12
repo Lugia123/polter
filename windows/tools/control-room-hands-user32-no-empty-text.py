@@ -17,11 +17,12 @@ did (task 1199).
 **The rule.** In `windows/host/src/control_room.rs`:
 
   1. `DrawTextW(` appears in `draw_text` and nowhere else;
-     `GetTextExtentPoint32W(` in `text_width` and nowhere else.
-  2. Each of those two functions asks `scene::draws(text)` and returns when
+     `GetTextExtentPoint32W(` in `text_width` and nowhere else;
+     `GetTextExtentExPointW(` in `fit_chars` and nowhere else.
+  2. Each of those three functions asks `scene::draws(text)` and returns when
      the answer is no, **before** the call.
   3. No other call that takes text to draw or measure (`TextOutW`,
-     `ExtTextOutW`, `DrawTextExW`, `TabbedTextOutW`, `GetTextExtentExPointW`)
+     `ExtTextOutW`, `DrawTextExW`, `TabbedTextOutW`)
      is in the file at all: a new one goes through the two above or is added
      here with its own question.
 
@@ -46,7 +47,7 @@ did (task 1199).
 caught, and that the file as it should be is not.
 
 Run:  python3 windows/tools/control-room-hands-user32-no-empty-text.py
-Exit: 0, with `scanned 1 file` and the two calls counted (2, not 0);
+Exit: 0, with `scanned 1 file` and the three calls counted (3, not 0);
       non-zero otherwise.
 """
 
@@ -62,8 +63,9 @@ FILE = os.path.join("windows", "host", "src", "control_room.rs")
 HOMES = {
     "DrawTextW": "draw_text",
     "GetTextExtentPoint32W": "text_width",
+    "GetTextExtentExPointW": "fit_chars",
 }
-OTHERS = ("TextOutW", "ExtTextOutW", "DrawTextExW", "TabbedTextOutW", "GetTextExtentExPointW")
+OTHERS = ("TextOutW", "ExtTextOutW", "DrawTextExW", "TabbedTextOutW")
 QUESTION = re.compile(r"if\s+!\s*scene::draws\(\s*text\s*\)\s*\{\s*return\b[^;]*;\s*\}")
 
 
@@ -194,6 +196,18 @@ unsafe fn text_width(dc: HDC, font: HFONT, text: &str) -> i32 {
         size.cx
     }
 }
+unsafe fn fit_chars(dc: HDC, font: HFONT, text: &str, width: i32) -> usize {
+    if !scene::draws(text) {
+        return 0;
+    }
+    unsafe {
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let mut fit = 0i32;
+        let mut size = SIZE::default();
+        let _ = GetTextExtentExPointW(dc, &wide, width, Some(&mut fit), None, &mut size);
+        fit as usize
+    }
+}
 unsafe fn paint_piece(dc: HDC, text: &str, r: RECT) {
     // DrawTextW(dc, ...) in a comment is not a call
     unsafe { draw_text(dc, font, color, text, r, DT_LEFT) };
@@ -224,7 +238,9 @@ def self_test():
          GOOD + "\nfn other(dc: HDC, w: &[u16]) { unsafe { let _ = TextOutW(dc, 0, 0, w); } }\n", 1),
         ("no DrawTextW left to read",
          GOOD.replace("DrawTextW(dc, &mut wide, &mut r, how);", "", 1), 1),
-        ("an empty file", "", 2),
+        ("the question taken out of fit_chars",
+         GOOD.replace("    if !scene::draws(text) {\n        return 0;\n    }\n    unsafe {\n        let wide: Vec<u16> = text.encode_utf16().collect();\n        let mut fit", "    unsafe {\n        let wide: Vec<u16> = text.encode_utf16().collect();\n        let mut fit", 1), 1),
+        ("an empty file", "", 3),
     ]
     bad = 0
     for name, src, want in cases:
@@ -236,9 +252,9 @@ def self_test():
                 print(f"    {g}")
     # And the count the real run reports is the number of guarded calls.
     _, calls = findings(GOOD)
-    if calls != 2:
+    if calls != 3:
         bad += 1
-        print(f"SELF-TEST FAILED: the good file has 2 guarded calls, counted {calls}")
+        print(f"SELF-TEST FAILED: the good file has 3 guarded calls, counted {calls}")
     return bad
 
 

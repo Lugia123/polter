@@ -16,7 +16,7 @@
 //! the same numbers.
 
 use crate::lend::{msg as lend_msg, Detail as Detail_};
-use crate::layout::{ListLayout, Rect};
+use crate::layout::{AskFit, ListLayout, Rect};
 use crate::list::{self, List, Row};
 use crate::look::{font, line, pane, radius, selection, side, space, Rgba, Theme};
 use crate::snapshot::Shown;
@@ -37,6 +37,7 @@ pub mod msg {
     pub const NO_SUPERVISOR: &str = n_("This group has no supervisor.");
     pub const IN_ITS_OWN_TAB: &str = n_("The supervisor's terminal is in its own tab.");
     pub const GO_TO_ITS_TAB: &str = n_("Go to Its Tab");
+    pub const HIDDEN_STEPS: &str = n_("{} more steps");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +103,10 @@ pub enum Item {
     Text { rect: Rect, text: String, style: Style, align: Align },
     /// Several parts on one line, centred up and down.
     Line { rect: Rect, parts: Vec<Part> },
+    /// Running text in a box `lines` lines high: wrapped at the box's
+    /// width, and when there is more than fits, the last line ends in an
+    /// ellipsis. `rect.h` is `lines` times the line height the layout used.
+    Block { rect: Rect, text: String, style: Style, lines: usize },
 }
 
 /// One colour laid over another: `top` at its own alpha times `amount`.
@@ -232,8 +237,8 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
     });
 
     for row in &list.waiting {
-        if let Some(rect) = at.chip(Some(&row.id)) {
-            waiting_row(&mut out, row, rect, view, tr);
+        if let (Some(rect), Some(fit)) = (at.chip(Some(&row.id)), at.fit(&row.id)) {
+            waiting_row(&mut out, row, rect, fit, view, tr);
         }
     }
 
@@ -249,45 +254,96 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
 
     for row in &list.quiet {
         let Some(rect) = at.chip(Some(&row.id)) else { continue };
-        let selected = view.selection == Some(row.id.as_str());
-        let color = if selected { theme.text } else { theme.text_secondary };
-        let mut parts = vec![words(
-            row.id.clone(),
-            Style {
-                size: font::BODY,
-                weight: if selected { font::WEIGHT_EMPHASIS } else { font::WEIGHT_BODY },
-                face: Face::Mono,
-                color,
-            },
-            Side::Rest,
-            0.0,
-        )];
-        parts.push(words(row.word.clone(), body(color), Side::Trail, side::ROW_ITEM_GAP));
-        if row.shown != Shown::None {
-            parts.push(Part {
-                piece: Piece::Glyph { shown: row.shown, color: glyph_color(theme, row.shown), size: side::GLYPH, pulses: false },
-                side: Side::Trail,
-                gap: side::QUIET_ITEM_GAP,
-            });
-        }
-        out.push(Item::Line { rect: inset_x(rect, side::ROW_PADDING_X), parts });
+        quiet_row(&mut out, row, rect, view);
     }
 
     out
 }
 
-fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View, tr: &dyn Fn(&str) -> String) {
+/// What a row that needs nothing says after its name: what the group is
+/// doing when the core knows, the status word when it does not, and nothing
+/// for a group with neither. The macOS host's `quietText`.
+pub fn quiet_text(row: &Row) -> String {
+    if row.what.lines.is_empty() { row.word.clone() } else { list::drawn(&row.what).join(" ") }
+}
+
+/// The column every row's glyph stands in, so that the eye runs down one
+/// line of them: where it starts, and where what follows it starts.
+fn glyph_column(rect: Rect) -> (f64, f64) {
+    let x = rect.x + side::ROW_PADDING_X;
+    (x, x + side::GLYPH + side::ROW_ITEM_GAP)
+}
+
+/// A group that needs nothing: the glyph in the same column as every other
+/// row's, the name, and what it is doing. A group with nothing to say is
+/// its name alone, a step back.
+fn quiet_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View) {
+    let theme = view.theme;
+    let selected = view.selection == Some(row.id.as_str());
+    let said = quiet_text(row);
+    let idle = row.shown == Shown::None && said.is_empty();
+    let (glyph_x, text_x) = glyph_column(rect);
+    let right = rect.x + rect.w - side::ROW_PADDING_X;
+    if row.shown != Shown::None {
+        out.push(Item::Line {
+            rect: Rect { x: glyph_x, y: rect.y, w: side::GLYPH, h: rect.h },
+            parts: vec![Part {
+                piece: Piece::Glyph { shown: row.shown, color: glyph_color(theme, row.shown), size: side::GLYPH, pulses: false },
+                side: Side::Lead,
+                gap: 0.0,
+            }],
+        });
+    }
+    let name = words(
+        row.id.clone(),
+        Style {
+            size: font::BODY,
+            weight: if selected { font::WEIGHT_STRONG } else { font::WEIGHT_BODY },
+            face: Face::Mono,
+            color: if idle && !selected { theme.text_secondary } else { theme.text },
+        },
+        // The name is what a quiet row is: it keeps its width, and what the
+        // group is doing takes what is left.
+        if said.is_empty() { Side::Rest } else { Side::Lead },
+        0.0,
+    );
+    let mut parts = vec![name];
+    if !said.is_empty() {
+        parts.push(words(said, body(theme.text_secondary), Side::Rest, side::ROW_ITEM_GAP));
+    }
+    out.push(Item::Line { rect: Rect { x: text_x, y: rect.y, w: (right - text_x).max(0.0), h: rect.h }, parts });
+}
+
+/// A group that is waiting (control-room.md, 3.2): the glyph in its column;
+/// the name, and at the right who is waiting and for which of the four;
+/// then what it is waiting for, the heaviest thing on the row -- a sentence
+/// in the interface's face, a command in the terminal's, one step to a
+/// line. `fit` is how many lines each step has (`AskFit`); the row's height
+/// came from the same, so nothing here measures.
+fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, fit: &AskFit, view: &View, tr: &dyn Fn(&str) -> String) {
     let theme = view.theme;
     let selected = view.selection == Some(row.id.as_str());
     let word_ink = ink(theme, row.shown, selected);
-    let inner = Rect {
-        x: rect.x + side::ROW_PADDING_X,
-        y: rect.y + side::ROW_PADDING_Y,
-        w: (rect.w - 2.0 * side::ROW_PADDING_X).max(0.0),
-        h: (rect.h - 2.0 * side::ROW_PADDING_Y).max(0.0),
-    };
+    let (glyph_x, text_x) = glyph_column(rect);
+    let top = rect.y + side::ROW_PADDING_Y;
+    let width = (rect.x + rect.w - side::ROW_PADDING_X - text_x).max(0.0);
 
-    // First line: the name, and who is waiting.
+    out.push(Item::Line {
+        rect: Rect { x: glyph_x, y: top, w: side::GLYPH, h: side::ROW_LINE1_HEIGHT },
+        parts: vec![Part {
+            piece: Piece::Glyph {
+                shown: row.shown,
+                color: glyph_color(theme, row.shown),
+                size: side::GLYPH,
+                pulses: view.pulsing == Some(row.id.as_str()),
+            },
+            side: Side::Lead,
+            gap: 0.0,
+        }],
+    });
+
+    // First line: the name; at the right, who is waiting and then which of
+    // the four it is.
     let mut first = vec![words(
         row.id.clone(),
         Style {
@@ -299,49 +355,66 @@ fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View, tr: &dyn
         Side::Rest,
         0.0,
     )];
-    let who = waiter_words(row, tr);
-    if !who.is_empty() {
-        first.push(words(who, body(theme.text_secondary), Side::Trail, side::ROW_ITEM_GAP));
-    }
-    let line1 = Rect { x: inner.x, y: inner.y, w: inner.w, h: side::ROW_LINE1_HEIGHT };
-    out.push(Item::Line { rect: line1, parts: first });
+    first.extend(waiter_parts(row, theme, tr));
+    first.push(words(row.word.clone(), Style { weight: font::WEIGHT_EMPHASIS, ..body(word_ink) }, Side::Trail, side::ROW_ITEM_GAP));
+    out.push(Item::Line { rect: Rect { x: text_x, y: top, w: width, h: side::ROW_LINE1_HEIGHT }, parts: first });
 
-    // Second line: the glyph, which of the four it is, and what it waits on.
-    // NOT YET THE NEW LAYOUT: the steps of a command are run together on
-    // this one line. The design sets one step to a line under the name
-    // (control-room.md, 3.5); `row.what.lines` is already cut that way.
-    let detail = list::drawn(&row.what).join(" ");
-    let mut parts = vec![
-        Part {
-            piece: Piece::Glyph {
-                shown: row.shown,
-                color: glyph_color(theme, row.shown),
-                size: side::GLYPH,
-                pulses: view.pulsing == Some(row.id.as_str()),
-            },
-            side: Side::Lead,
-            gap: 0.0,
-        },
-        words(row.word.clone(), Style { weight: font::WEIGHT_EMPHASIS, ..body(word_ink) }, Side::Lead, side::STATUS_WORD_GAP),
-        words(
-            detail,
-            Style { face: if list::is_code(&row.what) { Face::Mono } else { Face::Ui }, ..body(theme.text_secondary) },
-            Side::Rest,
-            side::ROW_ITEM_GAP,
-        ),
-    ];
+    // What it waits on: the steps that have lines, each in a box of its own
+    // lines. The rest are counted below.
+    let code = list::is_code(&row.what);
+    let ask = Style { face: if code { Face::Mono } else { Face::Ui }, ..body(theme.text) };
+    let mut y = top + side::ROW_LINE1_HEIGHT;
+    for (step, lines) in list::drawn(&row.what).into_iter().zip(fit.lines.iter().copied()) {
+        let h = lines as f64 * side::ASK_LINE_HEIGHT;
+        out.push(Item::Block { rect: Rect { x: text_x, y, w: width, h }, text: step, style: ask, lines });
+        y += h;
+    }
+    let mut note = |text: String| {
+        out.push(Item::Text {
+            rect: Rect { x: text_x, y, w: width, h: side::ASK_LINE_HEIGHT },
+            text,
+            style: body(theme.text_secondary),
+            align: Align::Left,
+        });
+        y += side::ASK_LINE_HEIGHT;
+    };
+    if fit.hidden > 0 {
+        note(list::fill(&tr(msg::HIDDEN_STEPS), &fit.hidden.to_string()));
+    }
+    // 暂定: a line of its own under what the row waits on. The design drew
+    // no row with a second thing waiting.
     if let Some((template, n)) = list::others(row.others) {
-        parts.push(words(list::fill(&tr(template), &n), body(theme.text_secondary), Side::Trail, side::ROW_ITEM_GAP));
+        note(list::fill(&tr(template), &n));
     }
     // **Nothing on a row can be pressed.** A row says that somebody is
     // waiting and for what; the person goes to the terminal to answer. A
     // tick and a cross were here for a day and were taken out again (the
     // user's ruling, 2026-10-12): a row is too small to show what is being
     // agreed to, and what is being asked is often not a yes or a no.
-    out.push(Item::Line {
-        rect: Rect { x: inner.x, y: line1.y + line1.h, w: inner.w, h: side::ASK_LINE_HEIGHT },
-        parts,
-    });
+}
+
+/// Who is waiting, as the parts of a line's right end: the worker's name in
+/// the terminal's face, the words round it in the interface's.
+fn waiter_parts(row: &Row, theme: &Theme, tr: &dyn Fn(&str) -> String) -> Vec<Part> {
+    let Some((template, name)) = list::waiter(&row.waiter) else { return Vec::new() };
+    let said = tr(template);
+    let ui = body(theme.text_secondary);
+    let mono = Style { face: Face::Mono, ..ui };
+    // The template has the name's place in it, or it is the whole of what
+    // is said ("Supervisor").
+    let Some((before, after)) = said.split_once("{}") else {
+        return vec![words(said, ui, Side::Trail, side::ROW_ITEM_GAP)];
+    };
+    // Left to right; a trailing part's gap is on its left.
+    let mut parts = Vec::new();
+    let mut gap = side::ROW_ITEM_GAP;
+    for (text, style) in [(before.to_string(), ui), (name, mono), (after.to_string(), ui)] {
+        if draws(&text) {
+            parts.push(words(text, style, Side::Trail, gap));
+            gap = 0.0;
+        }
+    }
+    parts
 }
 
 /// What a row says when it is read out rather than looked at: the group,
@@ -399,7 +472,7 @@ pub fn all_text(items: &[Item]) -> Vec<&str> {
     let mut out = Vec::new();
     for item in items {
         match item {
-            Item::Text { text, .. } => out.push(text.as_str()),
+            Item::Text { text, .. } | Item::Block { text, .. } => out.push(text.as_str()),
             Item::Line { parts, .. } => {
                 for part in parts {
                     match &part.piece {
@@ -423,7 +496,7 @@ pub fn moves(items: &[Item]) -> bool {
             Piece::Glyph { shown, pulses, .. } => *pulses || *shown == Shown::Working,
             Piece::Words { .. } => false,
         }),
-        Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } => false,
+        Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => false,
     })
 }
 
@@ -630,7 +703,7 @@ mod tests {
         let mut out = Vec::new();
         for item in items {
             match item {
-                Item::Text { style, .. } => out.push(*style),
+                Item::Text { style, .. } | Item::Block { style, .. } => out.push(*style),
                 Item::Line { parts, .. } => {
                     for p in parts {
                         if let Piece::Words { style, .. } = &p.piece {
@@ -646,7 +719,7 @@ mod tests {
 
     fn rect_of(item: &Item) -> Rect {
         match item {
-            Item::Fill { rect, .. } | Item::Round { rect, .. } | Item::Text { rect, .. } | Item::Line { rect, .. } => *rect,
+            Item::Fill { rect, .. } | Item::Round { rect, .. } | Item::Text { rect, .. } | Item::Line { rect, .. } | Item::Block { rect, .. } => *rect,
         }
     }
 
@@ -654,7 +727,7 @@ mod tests {
         let mut out = Vec::new();
         for item in items {
             match item {
-                Item::Text { text, .. } => out.push(text.clone()),
+                Item::Text { text, .. } | Item::Block { text, .. } => out.push(text.clone()),
                 Item::Line { parts, .. } => {
                     for p in parts {
                         if let Piece::Words { text, .. } = &p.piece {
@@ -675,11 +748,15 @@ mod tests {
     /// `draws` is the question that stops it at the host's door.
     #[test]
     fn a_scene_carries_text_with_nothing_in_it_and_a_host_is_told_not_to_draw_it() {
-        let list = list();
+        // What the machine had: a status the core gives no word for
+        // (`Attention.Word.none` is the empty string), on a row that is
+        // drawn with its word at the right end whatever the word is.
+        let mut list = list();
+        list.waiting[0].word = String::new();
         let items = scene(&list, None, false, 1.0, None);
         let all = all_text(&items);
         let empty = all.iter().filter(|t| t.is_empty()).count();
-        assert!(empty > 0, "the fixture no longer has a row with a wordless status or a reasonless wait; this test needs one");
+        assert!(empty > 0, "a row with a wordless status no longer puts an empty text in the scene; this test needs a case that does");
         // Every one of them is refused, and nothing with a character in it is.
         for text in &all {
             assert_eq!(draws(text), !text.is_empty(), "{text:?}");
@@ -737,7 +814,7 @@ mod tests {
                         assert_eq!(color.a, 1.0);
                         assert!(edge.is_none_or(|e| e.a == 1.0));
                     }
-                    Item::Text { .. } | Item::Line { .. } => {}
+                    Item::Text { .. } | Item::Line { .. } | Item::Block { .. } => {}
                 }
             }
         }
@@ -753,28 +830,158 @@ mod tests {
         }
     }
 
+    fn is_glyph(item: &Item) -> bool {
+        match item {
+            Item::Line { parts, .. } => parts.iter().any(|p| match &p.piece {
+                Piece::Glyph { .. } => true,
+                Piece::Words { .. } => false,
+            }),
+            Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => false,
+        }
+    }
+
     #[test]
-    fn the_words_of_every_row_and_header_start_on_one_line() {
-        // The grid: the panel's padding plus the row's, which the headers
-        // share. A row's words and a header's start at the same x.
+    fn every_glyph_stands_in_one_column_and_every_rows_words_start_on_one_line() {
+        // The grid (control-room.md, 3.2): the glyphs of every row, waiting
+        // or not, stand on one vertical line -- the one the headers start
+        // on -- and what a row says starts a glyph and a gap to its right.
         let l = list();
-        let want = space::SIDE_PANEL_PADDING + side::ROW_PADDING_X;
+        let column = space::SIDE_PANEL_PADDING + side::ROW_PADDING_X;
+        let words_at = column + side::GLYPH + side::ROW_ITEM_GAP;
+        let right = side::WIDTH - column;
         assert_eq!(side::ROW_PADDING_X, side::HEADER_PADDING_X);
-        let mut lines = 0;
+        let (mut glyphs, mut lines, mut blocks) = (0, 0, 0);
         for item in scene(&l, None, false, 1.0, None) {
             match &item {
+                Item::Line { rect, .. } if is_glyph(&item) => {
+                    assert_eq!(rect.x, column, "{item:?}");
+                    assert_eq!(rect.w, side::GLYPH, "{item:?}");
+                    glyphs += 1;
+                }
                 Item::Line { rect, .. } => {
-                    assert_eq!(rect.x, want, "{item:?}");
-                    assert_eq!(rect.x + rect.w, side::WIDTH - want, "{item:?}");
+                    assert_eq!(rect.x, words_at, "{item:?}");
+                    assert_eq!(rect.x + rect.w, right, "{item:?}");
                     lines += 1;
                 }
-                Item::Text { rect, align: Align::Left, .. } => assert_eq!(rect.x, want, "{item:?}"),
-                Item::Text { rect, align: Align::Right, .. } => assert_eq!(rect.x + rect.w, side::WIDTH - want, "{item:?}"),
-                Item::Text { .. } | Item::Fill { .. } | Item::Round { .. } => {}
+                Item::Block { rect, .. } => {
+                    assert_eq!(rect.x, words_at, "{item:?}");
+                    assert_eq!(rect.x + rect.w, right, "{item:?}");
+                    blocks += 1;
+                }
+                // A header starts in the glyphs' column; a note under what
+                // a row waits on starts with the row's words.
+                Item::Text { rect, .. } => assert!(rect.x == column || rect.x == words_at, "{item:?}"),
+                Item::Fill { .. } | Item::Round { .. } => {}
             }
         }
-        // Two lines for each waiting row and one for each quiet one.
-        assert_eq!(lines, 2 * l.waiting.len() + l.quiet.len());
+        // One line of words a row; a glyph for every waiting row and for
+        // the quiet ones that have one; a block for every step drawn.
+        assert_eq!(lines, l.waiting.len() + l.quiet.len());
+        assert_eq!(glyphs, l.waiting.len() + l.quiet.iter().filter(|r| r.shown != Shown::None).count());
+        let at = ListLayout::new(&l, 900.0);
+        let steps: usize = l.waiting.iter().map(|r| at.fit(&r.id).unwrap().lines.len()).sum();
+        assert_eq!(blocks, steps);
+        assert!(blocks > l.waiting.len(), "the fixture has a command of several steps; each is its own block");
+    }
+
+    #[test]
+    fn what_a_row_waits_on_is_one_step_to_a_block_and_fills_the_row_the_layout_made() {
+        let l = list();
+        let at = ListLayout::new(&l, 900.0);
+        let items = scene(&l, None, false, 1.0, None);
+        for row in &l.waiting {
+            let rect = at.chip(Some(&row.id)).unwrap();
+            let fit = at.fit(&row.id).unwrap();
+            let inside: Vec<&Item> = items
+                .iter()
+                .filter(|i| {
+                    let r = rect_of(i);
+                    r.y >= rect.y && r.y + r.h <= rect.y + rect.h + 1e-9 && r.x > rect.x
+                })
+                .collect();
+            let blocks: Vec<(&String, usize, Rect)> = inside
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Block { text, lines, rect, .. } => Some((text, *lines, *rect)),
+                    Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Line { .. } => None,
+                })
+                .collect();
+            // The steps the fit gives lines to, in order, each with its own
+            // lines and exactly that high.
+            let drawn = list::drawn(&row.what);
+            assert_eq!(blocks.len(), fit.lines.len(), "{}", row.id);
+            for (((text, lines, r), want), step) in blocks.iter().zip(&fit.lines).zip(&drawn) {
+                assert_eq!(*text, step, "{}", row.id);
+                assert_eq!(lines, want, "{}", row.id);
+                assert_eq!(r.h, *want as f64 * side::ASK_LINE_HEIGHT, "{}", row.id);
+            }
+            // Top to bottom with nothing between and nothing left over: the
+            // last thing drawn ends where the row's padding begins.
+            let bottom = inside.iter().map(|i| rect_of(i)).map(|r| r.y + r.h).fold(0.0, f64::max);
+            assert!((bottom - (rect.y + rect.h - side::ROW_PADDING_Y)).abs() < 1e-9, "{}: {bottom} in {rect:?}", row.id);
+            // And it is set in the primary colour: it is the heaviest thing
+            // on the row.
+            for i in &inside {
+                if let Item::Block { style, .. } = i {
+                    assert_eq!(style.color, look::theme(false).text);
+                    assert_eq!(style.face == Face::Mono, list::is_code(&row.what));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn steps_that_are_not_shown_are_counted_on_the_row_and_so_are_the_others_waiting() {
+        let mut l = list();
+        let row = &mut l.waiting[0];
+        row.what.lines = (1..=8).map(|n| format!("&& step{n}")).collect();
+        row.others = 2;
+        let id = row.id.clone();
+        let at = ListLayout::new(&l, 900.0);
+        let fit = at.fit(&id).unwrap();
+        assert_eq!((fit.lines.len(), fit.hidden), (5, 3));
+        let said = texts(&scene(&l, None, false, 1.0, None));
+        assert!(said.contains(&"3 more steps".to_string()), "{said:?}");
+        assert!(said.contains(&"2 more".to_string()), "{said:?}");
+        // The sixth step and after are not drawn; the first five are.
+        assert!(said.contains(&"&& step5".to_string()) && !said.contains(&"&& step6".to_string()));
+    }
+
+    #[test]
+    fn who_is_waiting_is_at_the_right_with_the_workers_name_in_the_terminals_face() {
+        let l = list();
+        let items = scene(&l, None, false, 1.0, None);
+        let row = l.waiting.iter().find(|r| !r.waiter.name.is_empty()).expect("the fixture has a worker waiting");
+        let mut found = false;
+        for item in &items {
+            let Item::Line { parts, .. } = item else { continue };
+            for p in parts {
+                if let Piece::Words { text, style } = &p.piece {
+                    if *text == row.waiter.name {
+                        assert_eq!(style.face, Face::Mono);
+                        assert_eq!(p.side, Side::Trail);
+                        found = true;
+                    } else if p.side == Side::Trail {
+                        assert_eq!(style.face, Face::Ui, "{text:?}");
+                    }
+                }
+            }
+        }
+        assert!(found, "{} is not on its row", row.waiter.name);
+    }
+
+    #[test]
+    fn a_quiet_row_says_what_the_group_is_doing_after_its_name() {
+        let mut l = list();
+        let row = &mut l.quiet[0];
+        row.word = "working".into();
+        row.what.lines.clear();
+        row.what.cut = crate::snapshot::Cut::None;
+        assert_eq!(quiet_text(row), "working");
+        row.what.lines = vec!["fix the login page".into()];
+        assert_eq!(quiet_text(row), "fix the login page");
+        let said = texts(&scene(&l, None, false, 1.0, None));
+        assert!(said.contains(&"fix the login page".to_string()));
     }
 
     #[test]

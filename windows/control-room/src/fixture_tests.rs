@@ -3,6 +3,55 @@
 
 use crate::act::{self, Act, Refusal, SeenMarker};
 use crate::layout::{self, AskFit, ListLayout};
+
+/// A fixed-pitch measurement: `n` characters to a line.
+fn cells(n: usize) -> impl Fn(&str) -> usize {
+    move |text: &str| text.chars().count().min(n)
+}
+
+#[test]
+fn a_line_breaks_after_the_last_space_that_fits_and_inside_a_word_only_when_it_must() {
+    let w = |text: &str, n: usize| layout::wrap(text, &cells(n));
+    assert_eq!(w("npm run build", 40), ["npm run build"]);
+    assert_eq!(w("npm run build", 9), ["npm run", "build"]);
+    // The space the break falls on is dropped, not carried to the next line.
+    assert_eq!(w("aaaa bbbb", 4), ["aaaa", "bbbb"]);
+    assert_eq!(w("aaaa bbbb", 5), ["aaaa", "bbbb"]);
+    // No space to break at: where the room ends.
+    assert_eq!(w("node_modules/.vite/deps", 10), ["node_modul", "es/.vite/d", "eps"]);
+    // A leading space is not a place to break (the line would be empty).
+    assert_eq!(w(" abcdefgh", 4), [" abc", "defg", "h"]);
+    // Nothing is one empty line, and nothing is lost or repeated.
+    assert_eq!(w("", 10), [""]);
+    for n in 1..30 {
+        let text = "rm -rf dist/ .cache/ node_modules/.vite && npm ci && npm run build -- --mode production";
+        let joined: String = w(text, n).concat();
+        assert_eq!(joined.replace(' ', ""), text.replace(' ', ""), "at {n} to a line");
+        assert!(w(text, n).iter().all(|l| l.chars().count() <= n), "at {n} to a line");
+    }
+    // A measurement that says nothing fits still ends.
+    assert_eq!(layout::wrap("abc", &|_| 0), ["a", "b", "c"]);
+    // Wide characters are the host's to measure; here each is one.
+    assert_eq!(w("发票编号要按租户分开", 4), ["发票编号", "要按租户", "分开"]);
+}
+
+#[test]
+fn what_does_not_fit_in_a_steps_lines_is_all_on_its_last_line_for_the_host_to_cut() {
+    let b = |text: &str, lines: usize, n: usize| layout::block_lines(text, lines, &cells(n));
+    // Fits: as wrapped.
+    assert_eq!(b("npm run build", 3, 9), ["npm run", "build"]);
+    // Does not: the lines before the last as wrapped, the rest whole on the
+    // last -- cut there, never a line dropped from the middle.
+    assert_eq!(b("aa bb cc dd ee", 2, 2), ["aa", "bb cc dd ee"]);
+    assert_eq!(b("aa bb cc dd ee", 1, 2), ["aa bb cc dd ee"]);
+    assert_eq!(b("aa bb cc dd ee", 0, 2), ["aa bb cc dd ee"]);
+    assert_eq!(b("", 3, 9), [""]);
+    // The number of lines a step needs is how many `wrap` makes of it, and
+    // a step given that many loses nothing.
+    let text = "rm -rf dist/ .cache/ node_modules/.vite && npm ci";
+    let needed = layout::wrap(text, &cells(12)).len();
+    assert_eq!(b(text, needed, 12), layout::wrap(text, &cells(12)));
+}
 use crate::list::{self, List};
 use crate::look::{line, side, space, window_tab};
 use crate::pulse::{self, Scope, TabStatus};

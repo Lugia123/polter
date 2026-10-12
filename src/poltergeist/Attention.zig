@@ -469,10 +469,13 @@ pub fn ofTerminal(s: Status) Attention {
 pub fn ofGroup(g: Group, t: Thresholds, now_ms: u64) Attention {
     var any_alive = false;
     var best: ?Attention = null;
+    // Whether there is a supervisor to give a worker's first minute to.
+    var minded = false;
 
     if (g.steward) |s| {
         if (s.alive) {
             any_alive = true;
+            minded = s.duty == .on;
             best = ofTerminal(s);
         }
     }
@@ -490,7 +493,11 @@ pub fn ofGroup(g: Group, t: Thresholds, now_ms: u64) Attention {
         // person switched that off, or shielded the terminal) is the
         // person's from the first second: a minute spent waiting for
         // somebody who is not allowed to act is a minute of nothing.
-        if (firstMinuteIsTheSupervisors(w) and now_ms -| w.since_ms <= t.bubble_after_ms) continue;
+        //
+        // And when there is somebody to give it to: a group with no
+        // supervisor, or one whose supervisor has gone or clocked off, has
+        // nobody who would use the minute (the user's ruling, 2026-10-13).
+        if (minded and firstMinuteIsTheSupervisors(w) and now_ms -| w.since_ms <= t.bubble_after_ms) continue;
 
         var a = ofTerminal(w);
         a.what = .{ .worker = w.id };
@@ -1031,6 +1038,30 @@ test "Attention: a prompt the supervisor may not answer is the person's from the
     var failed = status(4, .failed, fresh);
     failed.answer = .off;
     try testing.expectEqual(Kind.working, ofGroup(.{ .steward = steward, .workers = &.{failed}, .snooze = .none, .last_ms = 0 }, T, now).kind);
+}
+
+test "Attention: with no supervisor to give it to, a worker's first minute is the person's" {
+    const fresh = now - 30 * std.time.ms_per_s;
+    const w = status(3, .awaiting_approval, fresh);
+    const failed = status(4, .failed, fresh);
+
+    // No supervisor at all.
+    for ([_]Status{ w, failed }) |worker| {
+        const a = ofGroup(.{ .steward = null, .workers = &.{worker}, .snooze = .none, .last_ms = 0 }, T, now);
+        try testing.expectEqual(worker.kind, a.kind);
+        try testing.expectEqual(What{ .worker = worker.id }, a.what);
+    }
+
+    // One that has clocked off, and one whose terminal is gone.
+    var off = status(1, .in_turn, 40 * min);
+    off.duty = .off;
+    try testing.expectEqual(Kind.needs_approval, ofGroup(.{ .steward = off, .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now).kind);
+    var gone = status(1, .in_turn, 40 * min);
+    gone.alive = false;
+    try testing.expectEqual(Kind.needs_approval, ofGroup(.{ .steward = gone, .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now).kind);
+
+    // One that is there and on duty keeps its minute.
+    try testing.expectEqual(Kind.working, ofGroup(.{ .steward = status(1, .in_turn, 40 * min), .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now).kind);
 }
 
 test "Attention: only approval and failure bubble, and not past a higher supervisor" {
