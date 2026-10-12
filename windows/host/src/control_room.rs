@@ -578,7 +578,7 @@ fn seen_due(hwnd: HWND) {
         let st = st.as_mut()?;
         let dwell = st.dwell.take()?;
         let request = st.seen.due(&dwell, front).and_then(|a| act::encode(&a));
-        request.map(|r| (r, dwell.group))
+        request.map(|r| (r, dwell.row))
     });
     let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
     match request {

@@ -55,7 +55,7 @@ fn what_does_not_fit_in_a_steps_lines_is_all_on_its_last_line_for_the_host_to_cu
 use crate::list::{self, List};
 use crate::look::{line, side, space, window_tab};
 use crate::pulse::{self, Scope, TabStatus};
-use crate::snapshot::{self, DecodeError, Form, Shown, WaiterIs};
+use crate::snapshot::{self, DecodeError, Form, Header, HeaderNumber, HeaderOf, Shown, WaiterIs};
 
 /// The row of the fixture's one terminal that is in no group.
 const LONE: &str = "terminal:0x00000000000000c1";
@@ -67,6 +67,19 @@ const FIXTURE: &str = include_str!(concat!(
 
 fn list() -> List {
     List::from_snapshot(&snapshot::decode(FIXTURE).expect("the fixture decodes"))
+}
+
+/// The fixture with its two headings replaced by the ones given, or taken
+/// out: what a core that writes none sends.
+fn with_headers(waiting: Option<&str>, quiet: Option<&str>) -> String {
+    let mut out = FIXTURE.to_string();
+    for (key, new) in [("header_waiting", waiting), ("header_quiet", quiet)] {
+        let from = out.find(&format!("  \"{key}\": {{")).expect("the fixture has the heading");
+        let to = from + out[from..].find("},\n").expect("the heading ends") + 3;
+        let put = new.map_or(String::new(), |h| format!("  \"{key}\": {h},\n"));
+        out.replace_range(from..to, &put);
+    }
+    out
 }
 
 // -- reading it ---------------------------------------------------------------
@@ -220,14 +233,18 @@ fn the_rows_keep_the_snapshots_order_in_two_sections() {
 #[test]
 fn the_counts_shown_are_the_ones_handed_in() {
     // A snapshot that says 9 and 0 is drawn as 9 and 0, whatever it holds.
-    let odd = FIXTURE
-        .replacen("\"groups_needing_me\": 5", "\"groups_needing_me\": 9", 1)
-        .replacen("\"groups_other\": 3", "\"groups_other\": 0", 1);
+    let odd = with_headers(Some(r#"{"count":9,"of":"groups","number":"other"}"#), Some(r#"{"count":0,"of":"groups","number":"none"}"#));
     let l = List::from_snapshot(&snapshot::decode(&odd).unwrap());
     assert_eq!(l.waiting_count, 9);
     assert_eq!(l.quiet_count, 0);
     assert_eq!(l.waiting.len(), 6);
     assert_eq!(l.quiet.len(), 3);
+    // From a core that writes no headings the two are the groups' counts.
+    let old = with_headers(None, None)
+        .replacen("\"groups_needing_me\": 5", "\"groups_needing_me\": 9", 1)
+        .replacen("\"groups_other\": 3", "\"groups_other\": 0", 1);
+    let l = List::from_snapshot(&snapshot::decode(&old).unwrap());
+    assert_eq!((l.waiting_count, l.quiet_count), (9, 0));
 }
 
 #[test]
@@ -362,8 +379,7 @@ fn the_panel_is_laid_out_from_the_look_and_nothing_else() {
 fn when_the_core_says_nobody_waits_the_groups_follow_the_one_header() {
     // The core's count, whatever rows there are: 0 means no line and no
     // second header, and the rows that follow start where they would be.
-    let none = FIXTURE.replacen("\"groups_needing_me\": 5", "\"groups_needing_me\": 0", 1);
-    assert_ne!(none, FIXTURE);
+    let none = with_headers(Some(r#"{"count":0,"of":"groups","number":"none"}"#), Some(r#"{"count":9,"of":"rows","number":"other"}"#));
     let l = List::from_snapshot(&snapshot::decode(&none).unwrap());
     let lay = ListLayout::new(&l, 800.0);
     assert_eq!(lay.quiet_header.h, 0.0);
@@ -571,7 +587,7 @@ fn looking_at_an_unseen_row_long_enough_marks_it_seen() {
 
     // An unseen one does, and when the wait is over it is the seen act.
     let dwell = marker.selection_changed(Some(infra)).expect("infra is unseen");
-    assert_eq!(dwell.group, "infra");
+    assert_eq!(dwell.row, "infra");
     assert_eq!(marker.due(&dwell, true), Some(Act::Seen { group: "infra" }));
     // Not while the control room is behind something else.
     assert_eq!(marker.due(&dwell, false), None);
@@ -1107,25 +1123,156 @@ fn a_lone_terminals_row_says_which_frame_its_own_pane_wears() {
 }
 
 #[test]
-fn looking_at_a_lone_terminals_row_marks_nothing_seen() {
-    // `seen` names a group, and this row is in none: nothing is asked of
-    // the core under a name that is not a group's.
+fn looking_at_a_lone_terminals_row_for_a_moment_marks_it_like_any_other() {
+    // The same marker, the same wait, the same check of being in front:
+    // only what is sent names the terminal, since there is no group to.
     let l = list();
     let mut row = l.row(LONE).unwrap().clone();
     row.unseen = true;
     let mut marker = SeenMarker::default();
-    assert_eq!(marker.selection_changed(Some(&row)), None);
+    let dwell = marker.selection_changed(Some(&row)).expect("a lone terminal's unseen row is waited for");
+    assert_eq!(dwell.row, LONE);
+    assert_eq!(marker.due(&dwell, false), None);
+    assert_eq!(marker.due(&dwell, true), Some(Act::SeenTerminal { terminal: "0x00000000000000c1" }));
+    // The request names the terminal and no group.
+    assert_eq!(act::encode(&marker.due(&dwell, true).unwrap()).unwrap(), r#"{"act":"seen","terminal":"0x00000000000000c1"}"#);
+    // It stops while the person is on it: seen, then not, begins a wait.
     let mut seen = row.clone();
     seen.unseen = false;
     assert_eq!(marker.list_changed(Some(&seen)), None);
+    let again = marker.list_changed(Some(&row)).expect("it stopped while selected");
+    assert_eq!(marker.due(&again, true), Some(Act::SeenTerminal { terminal: "0x00000000000000c1" }));
+    // Already unseen, another list starts nothing over.
     assert_eq!(marker.list_changed(Some(&row)), None);
-    // The same row as a group's is waited for, so the test can fail.
+    // The selection moves on: the wait is no longer about anything.
+    marker.selection_changed(l.row("notes"));
+    assert_eq!(marker.due(&again, true), None);
+    // A group's row is still seen by the group's name.
     row.alone = None;
     row.id = "web-app".to_string();
     let dwell = marker.selection_changed(Some(&row)).expect("a group's unseen row is waited for");
     assert_eq!(act::encode(&marker.due(&dwell, true).unwrap()).unwrap(), r#"{"act":"seen","group":"web-app"}"#);
-    let mut stopped = row.clone();
-    stopped.unseen = false;
-    assert_eq!(marker.list_changed(Some(&stopped)), None);
-    assert!(marker.list_changed(Some(&row)).is_some());
+}
+
+#[test]
+fn a_row_seen_is_what_the_list_says_it_is_and_not_what_its_id_looks_like() {
+    // A group may not be named "terminal:…", but nothing here leans on
+    // that: a row with no `alone` is a group's whatever it is called.
+    let l = list();
+    let mut row = l.row("infra").unwrap().clone();
+    row.unseen = true;
+    row.id = "terminal:0x1".to_string();
+    let mut marker = SeenMarker::default();
+    let dwell = marker.selection_changed(Some(&row)).unwrap();
+    assert_eq!(marker.due(&dwell, true), Some(Act::Seen { group: "terminal:0x1" }));
+}
+
+// -- the two headings (the macOS host's `ControlRoomHeaderTests`) -------------
+
+fn header(count: u64, of: HeaderOf, number: HeaderNumber) -> Header {
+    Header { count, of, number }
+}
+
+fn said((words, n): (&'static str, String)) -> String {
+    list::fill(words, &n)
+}
+
+#[test]
+fn the_heading_is_the_cores_count_and_not_the_groups_when_lone_terminals_are_listed() {
+    // One group waits and two terminals on their own do: the heading says
+    // three, as the taskbar does, and does not call them groups.
+    let json = with_headers(Some(r#"{"count":3,"of":"rows","number":"other"}"#), Some(r#"{"count":1,"of":"rows","number":"one"}"#));
+    let l = List::from_snapshot(&snapshot::decode(&json).unwrap());
+    assert_eq!(l.waiting_count, 3);
+    assert_eq!(l.quiet_count, 1);
+    assert_eq!(l.waiting_header, Some(header(3, HeaderOf::Rows, HeaderNumber::Other)));
+    let first = said(l.waiting_heading());
+    assert_eq!(first, said(list::waiting_heading(&header(3, HeaderOf::Rows, HeaderNumber::Other))));
+    assert_eq!(first, "3 waiting for you");
+    assert!(!first.to_lowercase().contains("group"));
+    assert_eq!(said(l.quiet_heading()), "1 needs nothing from you");
+}
+
+#[test]
+fn every_form_of_the_first_heading_is_its_own_sentence() {
+    let none = said(list::waiting_heading(&header(0, HeaderOf::Groups, HeaderNumber::None)));
+    let one_group = said(list::waiting_heading(&header(1, HeaderOf::Groups, HeaderNumber::One)));
+    let groups = said(list::waiting_heading(&header(4, HeaderOf::Groups, HeaderNumber::Other)));
+    let rows = said(list::waiting_heading(&header(4, HeaderOf::Rows, HeaderNumber::Other)));
+    let all = [&none, &one_group, &groups, &rows];
+    for (i, a) in all.iter().enumerate() {
+        for b in &all[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+    // One group is "group", several are "groups": the core said which, and
+    // it is not worked out from the count here.
+    assert_eq!(one_group, "1 group waiting for you");
+    assert_eq!(groups, "4 groups waiting for you");
+    assert_eq!(rows, "4 waiting for you");
+    assert_eq!(none, "No group is waiting for you");
+    assert!(!none.contains('0'));
+    // Nobody waiting is said the same way whatever the rows would be called.
+    assert_eq!(said(list::waiting_heading(&header(0, HeaderOf::Rows, HeaderNumber::None))), none);
+    // One row that is not a group is still not called one.
+    assert_eq!(said(list::waiting_heading(&header(1, HeaderOf::Rows, HeaderNumber::One))), "1 waiting for you");
+    // The number handed in is the number written, whatever it is: the form
+    // is `number`'s to say.
+    let odd = said(list::waiting_heading(&header(7, HeaderOf::Groups, HeaderNumber::One)));
+    assert_eq!(odd, "7 group waiting for you");
+}
+
+#[test]
+fn the_second_heading_follows_the_same_rule() {
+    let one_group = said(list::quiet_heading(&header(1, HeaderOf::Groups, HeaderNumber::One)));
+    let groups = said(list::quiet_heading(&header(3, HeaderOf::Groups, HeaderNumber::Other)));
+    let one_row = said(list::quiet_heading(&header(1, HeaderOf::Rows, HeaderNumber::One)));
+    let rows = said(list::quiet_heading(&header(3, HeaderOf::Rows, HeaderNumber::Other)));
+    assert_eq!(one_group, "1 group needs nothing from you");
+    assert_eq!(groups, "3 groups need nothing from you");
+    assert_eq!(one_row, "1 needs nothing from you");
+    assert_eq!(rows, "3 need nothing from you");
+    // None is written with its number, as several are.
+    assert_eq!(said(list::quiet_heading(&header(0, HeaderOf::Groups, HeaderNumber::None))), "0 groups need nothing from you");
+    assert_eq!(said(list::quiet_heading(&header(0, HeaderOf::Rows, HeaderNumber::None))), "0 need nothing from you");
+}
+
+#[test]
+fn a_snapshot_without_the_headings_is_written_from_the_groups_as_it_always_was() {
+    let old = with_headers(None, None)
+        .replacen("\"groups_needing_me\": 5", "\"groups_needing_me\": 5", 1)
+        .replacen("\"groups_other\": 3", "\"groups_other\": 8", 1);
+    let s = snapshot::decode(&old).unwrap();
+    assert_eq!((s.header_waiting, s.header_quiet), (None, None));
+    let l = List::from_snapshot(&s);
+    assert_eq!(l.waiting_header, None);
+    assert_eq!((l.waiting_count, l.quiet_count), (5, 8));
+    assert_eq!(said(l.waiting_heading()), "5 groups waiting for you");
+    assert_eq!(said(l.quiet_heading()), "8 groups need nothing from you");
+    // And none waiting, from such a core, is the sentence with no number.
+    let none = with_headers(None, None).replacen("\"groups_needing_me\": 5", "\"groups_needing_me\": 0", 1);
+    let l = List::from_snapshot(&snapshot::decode(&none).unwrap());
+    assert_eq!(said(l.waiting_heading()), "No group is waiting for you");
+}
+
+#[test]
+fn the_cores_fixture_says_six_waiting_and_three_groups_that_need_nothing() {
+    let l = list();
+    assert_eq!(l.waiting_header, Some(header(6, HeaderOf::Rows, HeaderNumber::Other)));
+    assert_eq!(l.quiet_header, Some(header(3, HeaderOf::Groups, HeaderNumber::Other)));
+    // The heading and the rows under it are the same number.
+    assert_eq!(l.waiting.len(), 6);
+    assert_eq!(l.quiet.len(), 3);
+    assert_eq!(said(l.waiting_heading()), "6 waiting for you");
+    assert_eq!(said(l.quiet_heading()), "3 groups need nothing from you");
+}
+
+#[test]
+fn a_heading_in_a_word_this_build_does_not_know_is_not_read() {
+    let odd = with_headers(Some(r#"{"count":2,"of":"tabs","number":"other"}"#), None);
+    assert_eq!(snapshot::decode(&odd), Err(DecodeError::UnknownValue("header_waiting.of=tabs".into())));
+    let odd = with_headers(None, Some(r#"{"count":2,"of":"rows","number":"two"}"#));
+    assert_eq!(snapshot::decode(&odd), Err(DecodeError::UnknownValue("header_quiet.number=two".into())));
+    let cut = with_headers(Some(r#"{"of":"rows","number":"other"}"#), None);
+    assert_eq!(snapshot::decode(&cut), Err(DecodeError::Field("header_waiting.count".into())));
 }

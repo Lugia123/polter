@@ -380,6 +380,69 @@ pub struct Pulse {
     pub group: Option<String>,
 }
 
+/// One of the list's two headings, as the core writes it: how many rows
+/// are under it, whether every one of them is a group, and which form of
+/// the number the sentence takes. Nothing here is worked out from `count`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Header {
+    pub count: u64,
+    pub of: HeaderOf,
+    pub number: HeaderNumber,
+}
+
+/// What the rows under a heading are called.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderOf {
+    /// Every one is a group.
+    Groups,
+    /// Some are terminals in no group: the heading does not say "group".
+    Rows,
+}
+
+impl HeaderOf {
+    pub fn parse(s: &str) -> Option<HeaderOf> {
+        Some(match s {
+            "groups" => HeaderOf::Groups,
+            "rows" => HeaderOf::Rows,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HeaderOf::Groups => "groups",
+            HeaderOf::Rows => "rows",
+        }
+    }
+}
+
+/// Which form of the number a heading's sentence takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderNumber {
+    None,
+    One,
+    Other,
+}
+
+impl HeaderNumber {
+    pub fn parse(s: &str) -> Option<HeaderNumber> {
+        Some(match s {
+            "none" => HeaderNumber::None,
+            "one" => HeaderNumber::One,
+            "other" => HeaderNumber::Other,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HeaderNumber::None => "none",
+            HeaderNumber::One => "one",
+            HeaderNumber::Other => "other",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     pub rev: u64,
@@ -389,6 +452,12 @@ pub struct Snapshot {
     /// Rows waiting: "N groups are waiting for you".
     pub groups_needing_me: u64,
     pub groups_other: u64,
+    /// The first heading, as the core writes it: the rows waiting, the
+    /// terminals in no group among them. None in a snapshot from a core
+    /// that does not say; the heading is then the groups' count.
+    pub header_waiting: Option<Header>,
+    /// The second heading, by the same rule.
+    pub header_quiet: Option<Header>,
     /// The group to start on when the control room opens with nothing
     /// selected: the core's choice of first and of which have an agent.
     pub open_on: Option<String>,
@@ -541,6 +610,20 @@ fn group(v: &Value, path: &str) -> Res<Group> {
     })
 }
 
+/// A heading the core wrote, or none where the snapshot has none. One that
+/// is there and says a word this build does not know is not read at all:
+/// a heading written from a guess would be a wrong number said plainly.
+fn header(v: &Value, key: &str) -> Res<Option<Header>> {
+    let Some(h) = v.get(key) else { return Ok(None) };
+    let of = text(h, key, "of")?;
+    let number = text(h, key, "number")?;
+    Ok(Some(Header {
+        count: int(h, key, "count")?,
+        of: HeaderOf::parse(&of).ok_or(DecodeError::UnknownValue(format!("{key}.of={of}")))?,
+        number: HeaderNumber::parse(&number).ok_or(DecodeError::UnknownValue(format!("{key}.number={number}")))?,
+    }))
+}
+
 pub fn decode(json_text: &str) -> Res<Snapshot> {
     let v = json::parse(json_text).map_err(DecodeError::Json)?;
     let root = "snapshot";
@@ -633,6 +716,8 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
         needs_me: int(&v, root, "needs_me")?,
         groups_needing_me: int(&v, root, "groups_needing_me")?,
         groups_other: int(&v, root, "groups_other")?,
+        header_waiting: header(&v, "header_waiting")?,
+        header_quiet: header(&v, "header_quiet")?,
         open_on: opt_text(&v, root, "open_on")?,
         groups,
         tabs,
