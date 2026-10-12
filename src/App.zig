@@ -26,6 +26,10 @@ const poltergeistpkg = @import("poltergeist/main.zig");
 /// to each other can produce a burst; being told once about all of it is
 /// what a person would want too.
 const chat_notice_gap_ms = 30 * std.time.ms_per_s;
+
+/// A little past the end of the gap, so the sweep that comes back for a
+/// message does not arrive a millisecond early and wait again.
+const chat_notice_retry_margin_ms = 250;
 const terminal = @import("terminal/main.zig");
 const internal_os = @import("os/main.zig");
 
@@ -602,6 +606,9 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
         self.notice_retry_ms = null;
         if (!self.poltergeist_stopping.load(.acquire)) {
             self.deliverPoltergeistNotices(self.poltergeistElapsedMs());
+            // And the groups: a message that arrived while its reader had
+            // just been told about another, or whose notice was refused.
+            self.tellTerminalsAboutMessages();
         }
     }
 
@@ -7034,6 +7041,13 @@ fn tellTerminalsAboutMessages(self: *App) void {
                 chat_notice_gap_ms,
                 role,
             )) {
+                // Told too recently, with something still waiting: this
+                // sweep only runs when somebody posts, so without coming
+                // back the message that arrived inside the gap is never
+                // announced at all.
+                if (self.chat.notifyWaitMs(name, surface.id, now_ms, chat_notice_gap_ms, role)) |ms| {
+                    self.noticeRetryIn(ms + chat_notice_retry_margin_ms);
+                }
                 continue;
             }
 
