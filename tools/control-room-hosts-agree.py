@@ -51,7 +51,12 @@ whether there is a choice; when a group just made is selected; where a tab
 the core asked for goes, for every asker and every place the control room
 can be (forty cases); the English of what the person is told for each of
 fifteen names the core gives for not making a group or not starting a
-supervisor; every terminal that is in no group and has a row of its
+supervisor; how the first line of a waiting row is shared out when it
+is too narrow -- the status word whole, the group's name cut only by it, who
+is waiting in what is left and not at all when nothing is
+(`ControlRoomLine1.fit` and `scene::place_line`), on sixteen made-up rows:
+who gets how wide and which of them is cut; every terminal that is in no
+group and has a row of its
 own (`ungrouped`) -- its row's identity, the section it goes in, its title,
 glyph and words, who waits and for what with every line, what an act on it
 hands back, and the terminal the right-hand side then shows; which rows are
@@ -249,6 +254,21 @@ for r in alone {
     for (n, line) in r.what.drawn.enumerated() {
         print("lone what row=\(r.id) n=\(n) line=\(quote(line))")
     }
+}
+// The first line of a waiting row, when it is too narrow for the name, who
+// is waiting and the status word: who keeps its width and who gives way.
+// The same cases on both sides, in the same units.
+let line1: [(Int, Int, Int?, Int)] = [
+    (80, 0, 100, 40), (80, 0, 400, 40), (500, 0, 90, 40), (274, 0, 90, 40), (266, 0, 90, 40), (265, 0, 90, 40),
+    (250, 0, 90, 40), (300, 0, nil, 40), (400, 0, nil, 40), (66, 0, 67, 40), (187, 0, 510, 40), (465, 0, 149, 40),
+    (80, 292, 50, 40), (10, 262, 50, 40), (80, 0, 400, 0), (400, 0, nil, 0),
+]
+for (name, narrower, who, word) in line1 {
+    let width = 322 - narrower
+    let fit = ControlRoomLine1.fit(width: Double(width), gap: 8, name: Double(name), who: who.map(Double.init), word: Double(word))
+    let whoSays = fit.who.map { "\(Int($0)) cut=\($0 < Double(who ?? 0))" } ?? "-"
+    print("line1 width=\(width) name=\(name) who=\(who.map(String.init) ?? "-") word=\(word) "
+        + "-> name=\(Int(fit.name)) cut=\(fit.name < Double(name)) who=\(whoSays)")
 }
 // The bare id is not a row, and a group's row is not one of these.
 let bare = whole.ungrouped?.contains { ControlRoomList.rowId(ofTerminal: $0.id) == "0x00000000000000c1" } == true ? "0x00000000000000c1" : "-"

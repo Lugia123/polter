@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 04:37+0800\n"
+"POT-Creation-Date: 2026-10-13 04:59+0800\n"
 "PO-Revision-Date: 2026-08-31 21:45+0200\n"
 "Last-Translator: Марко Костић <marko.m.kostic@gmail.com>\n"
 "Language-Team: Language SR\n"
@@ -345,17 +345,17 @@ msgid "Quit Ghostty?"
 msgstr "Изаћи из Ghostty-ја?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
-#: windows/host/src/tabs.rs:3441
+#: windows/host/src/tabs.rs:3515
 msgid "Close Tab?"
 msgstr "Да затворим језичак?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
-#: windows/host/src/tabs.rs:3442
+#: windows/host/src/tabs.rs:3516
 msgid "Close Window?"
 msgstr "Да затворим прозор?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
-#: windows/host/src/tabs.rs:3443
+#: windows/host/src/tabs.rs:3517
 msgid "Close Split?"
 msgstr "Затворити разделу?"
 
@@ -364,17 +364,17 @@ msgid "All terminal sessions will be terminated."
 msgstr "Све сесије терминала биће прекинуте."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
-#: windows/host/src/tabs.rs:3451
+#: windows/host/src/tabs.rs:3525
 msgid "All terminal sessions in this tab will be terminated."
 msgstr "Све сесије терминала у овом језичку биће прекинуте."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
-#: windows/host/src/tabs.rs:3452
+#: windows/host/src/tabs.rs:3526
 msgid "All terminal sessions in this window will be terminated."
 msgstr "Све сесије терминала у овом прозору биће прекинуте."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
-#: windows/host/src/tabs.rs:3453
+#: windows/host/src/tabs.rs:3527
 msgid "The currently running process in this split will be terminated."
 msgstr "Тренутно покренут процес у овој раздели биће прекинут."
 
@@ -1013,7 +1013,7 @@ msgid "Open a terminal showing what the terminals have said to each other."
 msgstr ""
 
 #: src/input/command.zig:612 windows/host/src/menu.rs:364
-#: windows/control-room/src/rules.rs:82
+#: windows/control-room/src/rules.rs:165
 msgid "Control Room"
 msgstr ""
 
@@ -1100,20 +1100,20 @@ msgid "Close the current tab."
 msgstr "Затвори тренутни језичак."
 
 #: src/input/command.zig:679 windows/host/src/strip.rs:1590
-#: windows/host/src/tabs.rs:3444
+#: windows/host/src/tabs.rs:3518
 msgid "Close Other Tabs"
 msgstr "Затвори друге језичке"
 
-#: src/input/command.zig:680 windows/host/src/tabs.rs:3461
+#: src/input/command.zig:680 windows/host/src/tabs.rs:3535
 msgid "Close all tabs in this window except the current one."
 msgstr "Затвори све језичке у овом прозору изузев тренутног."
 
 #: src/input/command.zig:684 windows/host/src/strip.rs:1591
-#: windows/host/src/tabs.rs:3445
+#: windows/host/src/tabs.rs:3519
 msgid "Close Tabs to the Right"
 msgstr "Затвори језичке удесно"
 
-#: src/input/command.zig:685 windows/host/src/tabs.rs:3462
+#: src/input/command.zig:685 windows/host/src/tabs.rs:3536
 msgid "Close all tabs to the right of the current one."
 msgstr "Затвори све језичке десно од тренутног."
 
@@ -2314,6 +2314,7 @@ msgstr ""
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: windows/host/src/general_ui.rs:1213 windows/host/src/general_ui.rs:1379
+#: windows/control-room/src/scene.rs:53
 msgid "Choose…"
 msgstr "Изабери…"
 
@@ -2462,15 +2463,15 @@ msgstr ""
 msgid "{} lines in all."
 msgstr ""
 
-#: windows/host/src/main.rs:6359
+#: windows/host/src/main.rs:6390
 msgid "No reason was recorded."
 msgstr ""
 
-#: windows/host/src/main.rs:6365
+#: windows/host/src/main.rs:6396
 msgid "Polter could not open its first terminal and will close."
 msgstr ""
 
-#: windows/host/src/main.rs:6367
+#: windows/host/src/main.rs:6398
 #, rust-format
 msgid "The full log is at {}"
 msgstr ""
@@ -2687,6 +2688,7 @@ msgid "No Role"
 msgstr ""
 
 #: windows/host/src/personas.rs:602 windows/host/src/personas.rs:1017
+#: windows/control-room/src/scene.rs:51
 msgid "Role"
 msgstr ""
 
@@ -2894,7 +2896,7 @@ msgstr ""
 
 #: windows/host/src/projects_ui.rs:557 windows/host/src/roles_ui.rs:732
 #: windows/settings-shell/src/general.rs:77
-#: windows/control-room/src/rules.rs:85
+#: windows/control-room/src/rules.rs:168
 msgid "Polter"
 msgstr ""
 
@@ -3129,6 +3131,7 @@ msgid "Rename"
 msgstr ""
 
 #: windows/host/src/roles.rs:34 windows/host/src/roles.rs:1163
+#: windows/control-room/src/scene.rs:58
 msgid "Polter Supervisor"
 msgstr ""
 
@@ -3162,7 +3165,7 @@ msgid ""
 "the file first."
 msgstr ""
 
-#: windows/host/src/roles.rs:686
+#: windows/host/src/roles.rs:686 windows/control-room/src/act.rs:163
 msgid "That role no longer exists."
 msgstr ""
 
@@ -3178,7 +3181,7 @@ msgstr ""
 msgid "This role isn't set up for that agent CLI."
 msgstr ""
 
-#: windows/host/src/roles.rs:690
+#: windows/host/src/roles.rs:690 windows/control-room/src/act.rs:165
 msgid ""
 "This role isn't set up for any agent CLI yet. Pick one in the role library."
 msgstr ""
@@ -3644,20 +3647,60 @@ msgstr ""
 msgid "On"
 msgstr ""
 
+#: windows/control-room/src/act.rs:157
+msgid "A group's name is lowercase letters, digits and dashes, 48 at most."
+msgstr ""
+
+#: windows/control-room/src/act.rs:158
+msgid "There is already a group by that name."
+msgstr ""
+
+#: windows/control-room/src/act.rs:159
+msgid "There is no room for another group."
+msgstr ""
+
+#: windows/control-room/src/act.rs:160
+msgid "This group already has a supervisor."
+msgstr ""
+
+#: windows/control-room/src/act.rs:161
+msgid "A supervisor is already being started for this group."
+msgstr ""
+
+#: windows/control-room/src/act.rs:162
+msgid "There is no role that makes a supervisor. Add one in the role library."
+msgstr ""
+
+#: windows/control-room/src/act.rs:164
+msgid "That role does not make a supervisor."
+msgstr ""
+
+#: windows/control-room/src/act.rs:166
+msgid "That directory is not there."
+msgstr ""
+
+#: windows/control-room/src/act.rs:167
+msgid "No tab could be opened for it."
+msgstr ""
+
+#: windows/control-room/src/act.rs:168
+msgid "Polter could not find its own program to start the role with."
+msgstr ""
+
 #: windows/control-room/src/lend.rs:327
 msgid "The supervisor's terminal is no longer open."
 msgstr ""
 
-#: windows/control-room/src/lend.rs:329 windows/control-room/src/list.rs:53
+#: windows/control-room/src/lend.rs:329 windows/control-room/src/list.rs:60
 msgid "Supervisor"
 msgstr ""
 
-#: windows/control-room/src/list.rs:51
+#: windows/control-room/src/list.rs:58
 #, rust-format
 msgid "{} more"
 msgstr ""
 
-#: windows/control-room/src/list.rs:56
+#: windows/control-room/src/list.rs:63
 #, rust-format
 msgid "{}, via the supervisor"
 msgstr ""
@@ -3666,7 +3709,7 @@ msgstr ""
 msgid "Worker"
 msgstr ""
 
-#: windows/control-room/src/rules.rs:83
+#: windows/control-room/src/rules.rs:166
 msgid "Polter — Control Room"
 msgstr ""
 
@@ -3712,4 +3755,42 @@ msgstr ""
 #: windows/control-room/src/scene.rs:40
 #, rust-format
 msgid "{} more steps"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:42
+msgid "New Group"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:45
+msgid "Starting the supervisor…"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:46
+msgid "The supervisor did not start: its tab never opened."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:48
+msgid ""
+"The supervisor did not start: its tab opened, but no agent connected from "
+"it. Its tab shows why."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:49
+msgid "The supervisor did not start: its tab was closed first."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:50
+msgid "The supervisor did not start."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:52
+msgid "Directory"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:54
+msgid "Start Supervisor"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:56
+msgid "Where the tab starts"
 msgstr ""

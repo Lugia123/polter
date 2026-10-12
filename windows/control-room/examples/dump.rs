@@ -153,6 +153,37 @@ fn main() {
             println!("lone what row={} n={n} line={}", one.row_id(), quote(line));
         }
     }
+    // The first line of a waiting row, when it is too narrow for the name,
+    // who is waiting and the status word: the same cases on both sides, in
+    // the same units, laid out the way `scene` lays that line out -- the
+    // name leading, who is waiting squeezed, the status word trailing.
+    const LINE1: [(i32, i32, Option<i32>, i32); 16] = [
+        (80, 0, Some(100), 40), (80, 0, Some(400), 40), (500, 0, Some(90), 40), (274, 0, Some(90), 40),
+        (266, 0, Some(90), 40), (265, 0, Some(90), 40), (250, 0, Some(90), 40), (300, 0, None, 40),
+        (400, 0, None, 40), (66, 0, Some(67), 40), (187, 0, Some(510), 40), (465, 0, Some(149), 40),
+        (80, 292, Some(50), 40), (10, 262, Some(50), 40), (80, 0, Some(400), 0), (400, 0, None, 0),
+    ];
+    for (name, narrower, who, word) in LINE1 {
+        use polter_control_room::scene::{place_line, Side};
+        let width = 322 - narrower;
+        let mut parts = vec![(Side::Lead, 0, name)];
+        if let Some(w) = who {
+            parts.push((Side::Squeezed, 8, w));
+        }
+        parts.push((Side::Trail, 8, word));
+        let placed = place_line(0, width, &parts);
+        let got_name = placed[0].map_or((0, name > 0), |p| (p.right - p.left, p.cut));
+        let who_says = match who.and_then(|_| placed[1]) {
+            Some(p) => format!("{} cut={}", p.right - p.left, p.cut),
+            None => "-".to_string(),
+        };
+        println!(
+            "line1 width={width} name={name} who={} word={word} -> name={} cut={} who={who_says}",
+            who.map_or("-".to_string(), |w| w.to_string()),
+            got_name.0,
+            got_name.1
+        );
+    }
     println!("lone shows bare-id={} group={}", polter_control_room::lone::shown_for(&alone, "0x00000000000000c1").unwrap_or("-"), polter_control_room::lone::shown_for(&alone, "web-app").unwrap_or("-"));
 
     // Which glyph breathes: with nothing in front, and with each tab that

@@ -1095,12 +1095,12 @@ extension Ghostty {
                 var config = SurfaceConfiguration()
                 config.workingDirectory = requested
                 answer?.pointee = GHOSTTY_ACTION_NEW_TAB_RESULT_WILL_OPEN
+                var info: [AnyHashable: Any] = [Notification.NewTabAnswerWantedKey: answer != nil]
+                if requested != nil { info[Notification.NewSurfaceConfigKey] = config }
                 NotificationCenter.default.post(
                     name: Notification.ghosttyNewTab,
                     object: nil,
-                    userInfo: requested == nil ? [:] : [
-                        Notification.NewSurfaceConfigKey: config,
-                    ]
+                    userInfo: info
                 )
                 return true
 
@@ -1154,6 +1154,7 @@ extension Ghostty {
                     object: surfaceView,
                     userInfo: [
                         Notification.NewSurfaceConfigKey: config,
+                        Notification.NewTabAnswerWantedKey: answer != nil,
                     ]
                 )
                 return true

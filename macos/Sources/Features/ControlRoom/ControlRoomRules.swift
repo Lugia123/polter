@@ -316,6 +316,23 @@ enum ControlRoomRules {
         return anyTerminalWindow ? .inFront(of: .frontmost) : .ownWindow
     }
 
+    /// Whether opening a tab brings the application in front of whatever
+    /// the person is using.
+    ///
+    /// A tab the person asked for -- a key, a menu item, the Dock's menu --
+    /// does, as it always has. One an agent asked for does not: with the
+    /// application behind another, the tab opens where it would have and
+    /// the application stays behind. It used to come forward every time,
+    /// taking the keyboard from whatever the person was typing into, each
+    /// time an agent opened a terminal for itself.
+    ///
+    /// `answerWanted` is whether the request came with somewhere to write
+    /// an answer: an agent's does and a key press's does not
+    /// (`apprt.action.NewTab.result`).
+    static func newTabActivates(answerWanted: Bool, appIsActive: Bool) -> Bool {
+        !answerWanted || appIsActive
+    }
+
     /// What is selected once a snapshot has arrived, and whose choice it
     /// is. `current` is what is selected already (after
     /// `restoredSelection`); `opening` is true for the first snapshot the

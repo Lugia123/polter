@@ -342,6 +342,11 @@ extension Ghostty.Notification {
     /// Used to pass a configuration along when creating a new tab/window/split.
     static let NewSurfaceConfigKey = "com.mitchellh.ghostty.newSurfaceConfig"
 
+    /// With `ghosttyNewTab`: whether whoever asked for the tab is waiting
+    /// for an answer (a `Bool`). An agent is and a key press is not, which
+    /// is how the two are told apart (`ControlRoomRules.newTabActivates`).
+    static let NewTabAnswerWantedKey = "polter.newTabAnswerWanted"
+
     /// Posted when a new split is requested. The sending object will be the surface that had focus. The
     /// userdata has one key "direction" with the direction to split to.
     static let ghosttyNewSplit = Notification.Name("com.mitchellh.ghostty.newSplit")
