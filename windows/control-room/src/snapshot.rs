@@ -39,6 +39,84 @@ impl Shown {
     }
 }
 
+/// Who is waiting, as the core says it. A host turns this into words and
+/// never works it out from `steward` and `terminal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaiterIs {
+    /// Nobody is: the row is not about a terminal.
+    None,
+    /// The group's supervisor itself.
+    Supervisor,
+    /// One of the supervisor's workers; the person reaches it through the
+    /// supervisor.
+    WorkerViaSupervisor,
+    /// A worker of a group that has no supervisor.
+    Worker,
+    /// A terminal that is in no group.
+    Terminal,
+}
+
+impl WaiterIs {
+    pub fn name(self) -> &'static str {
+        match self {
+            WaiterIs::None => "none",
+            WaiterIs::Supervisor => "supervisor",
+            WaiterIs::WorkerViaSupervisor => "worker_via_supervisor",
+            WaiterIs::Worker => "worker",
+            WaiterIs::Terminal => "terminal",
+        }
+    }
+
+    fn parse(s: &str) -> Option<WaiterIs> {
+        [WaiterIs::None, WaiterIs::Supervisor, WaiterIs::WorkerViaSupervisor, WaiterIs::Worker, WaiterIs::Terminal]
+            .into_iter()
+            .find(|v| v.name() == s)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waiter {
+    pub is: WaiterIs,
+    /// What that terminal is called. Empty for the supervisor and for none.
+    pub name: String,
+}
+
+/// What kind of thing is being waited on: how its lines are set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Form {
+    /// Nothing to say.
+    None,
+    /// A shell command, one step to a line.
+    Command,
+    /// Something to be read letter by letter that is not a shell command.
+    Code,
+    /// A sentence.
+    Words,
+}
+
+impl Form {
+    pub fn name(self) -> &'static str {
+        match self {
+            Form::None => "none",
+            Form::Command => "command",
+            Form::Code => "code",
+            Form::Words => "words",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Form> {
+        [Form::None, Form::Command, Form::Code, Form::Words].into_iter().find(|v| v.name() == s)
+    }
+}
+
+/// What is being waited on, whole: the core cuts nothing off. `lines` is
+/// one step of a command each, or the one sentence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct What {
+    pub form: Form,
+    pub lines: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reason {
     pub from: String,
@@ -54,8 +132,9 @@ pub struct Group {
     pub shown: Shown,
     /// The words beside the glyph, already in the person's language.
     pub text: String,
-    pub waited_min: Option<u64>,
+    pub waiter: Waiter,
     pub reason: Reason,
+    pub what: What,
     pub more: u64,
     pub same_as: Option<String>,
     /// The terminal that is this group's supervisor, none when it has none.
@@ -86,29 +165,6 @@ pub struct Pulse {
     pub group: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
-    pub from_ms: u64,
-    pub to_ms: u64,
-    pub ongoing: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Lane {
-    pub name: String,
-    pub spans: Vec<Span>,
-}
-
-/// "Kept you waiting today". Wall clock throughout.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Band {
-    pub start_ms: u64,
-    pub start_label: String,
-    pub now_ms: u64,
-    pub total_min: u64,
-    pub lanes: Vec<Lane>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     pub rev: u64,
@@ -126,7 +182,6 @@ pub struct Snapshot {
     /// Every window tab the core has placed, each with its glyph.
     pub tabs: Vec<Tab>,
     pub pulses: Vec<Pulse>,
-    pub band: Band,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +193,8 @@ pub enum DecodeError {
     Field(String),
     /// A `shown` this build has no glyph for.
     UnknownShown(String),
+    /// A `waiter.is` or a `what.form` this build has no words or face for.
+    UnknownValue(String),
 }
 
 type Res<T> = Result<T, DecodeError>;
@@ -194,6 +251,19 @@ fn group(v: &Value, path: &str) -> Res<Group> {
     let shown = text(v, path, "shown")?;
     let reason = field(v, path, "reason")?;
     let attention = field(v, path, "attention")?;
+    let waiter = field(v, path, "waiter")?;
+    let waiter_at = format!("{path}.waiter");
+    let is = text(waiter, &waiter_at, "is")?;
+    let what = field(v, path, "what")?;
+    let what_at = format!("{path}.what");
+    let form = text(what, &what_at, "form")?;
+    let mut lines = Vec::new();
+    for (i, l) in list(what, &what_at, "lines")?.iter().enumerate() {
+        match l {
+            Value::Str(s) => lines.push(s.clone()),
+            _ => return Err(DecodeError::Field(format!("{what_at}.lines[{i}]"))),
+        }
+    }
     let at = format!("{path}.attention");
     Ok(Group {
         name: text(v, path, "name")?,
@@ -201,7 +271,14 @@ fn group(v: &Value, path: &str) -> Res<Group> {
         unseen: boolean(v, path, "unseen")?,
         shown: Shown::parse(&shown).ok_or(DecodeError::UnknownShown(shown))?,
         text: text(v, path, "text")?,
-        waited_min: opt_int(v, path, "waited_min")?,
+        waiter: Waiter {
+            is: WaiterIs::parse(&is).ok_or(DecodeError::UnknownValue(format!("{waiter_at}.is={is}")))?,
+            name: text(waiter, &waiter_at, "name")?,
+        },
+        what: What {
+            form: Form::parse(&form).ok_or(DecodeError::UnknownValue(format!("{what_at}.form={form}")))?,
+            lines,
+        },
         reason: Reason {
             from: text(reason, &format!("{path}.reason"), "from")?,
             text: text(reason, &format!("{path}.reason"), "text")?,
@@ -246,22 +323,6 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
         });
     }
 
-    let b = field(&v, root, "band")?;
-    let mut lanes = Vec::new();
-    for (i, l) in list(b, "band", "lanes")?.iter().enumerate() {
-        let path = format!("band.lanes[{i}]");
-        let mut spans = Vec::new();
-        for (j, s) in list(l, &path, "spans")?.iter().enumerate() {
-            let sp = format!("{path}.spans[{j}]");
-            spans.push(Span {
-                from_ms: int(s, &sp, "from_ms")?,
-                to_ms: int(s, &sp, "to_ms")?,
-                ongoing: boolean(s, &sp, "ongoing")?,
-            });
-        }
-        lanes.push(Lane { name: text(l, &path, "name")?, spans });
-    }
-
     Ok(Snapshot {
         rev: int(&v, root, "rev")?,
         now_ms: int(&v, root, "now_ms")?,
@@ -272,12 +333,5 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
         groups,
         tabs,
         pulses,
-        band: Band {
-            start_ms: int(b, "band", "start_ms")?,
-            start_label: text(b, "band", "start_label")?,
-            now_ms: int(b, "band", "now_ms")?,
-            total_min: int(b, "band", "total_min")?,
-            lanes,
-        },
     })
 }

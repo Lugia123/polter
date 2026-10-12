@@ -24,13 +24,14 @@ private final class FakeCore {
     }
 }
 
-private func snapshot(waiting: Int = 11, groups: String = "billing") -> String {
+private func snapshot(more: Int = 11, groups: String = "billing") -> String {
     """
     { "rev": 2, "now_ms": 1, "needs_me": 1, "groups_needing_me": 1, "groups_other": 0, "groups": [
       { "name": "\(groups)", "needs_me": true, "unseen": false, "shown": "needs_you", "text": "等回答",
-        "waited_min": \(waiting),
+        "waiter": {"is": "supervisor", "name": ""},
         "reason": {"from": "hook_detail", "text": "「发票编号要按租户分开吗？」", "missing": null},
-        "more": 0, "same_as": null } ] }
+        "what": {"form": "words", "lines": ["「发票编号要按租户分开吗？」"]},
+        "more": \(more), "same_as": null } ] }
     """
 }
 
@@ -64,14 +65,14 @@ struct ControlRoomFeedTests {
         core.json = snapshot()
         let feed = ControlRoomFeed(center: center, fetch: core.fetch)
         let model = ControlRoomModel(feed: feed)
-        #expect(model.list?.waiting.first?.waitedMin == 11)
+        #expect(model.list?.waiting.first?.others == 11)
 
         core.json = #"{"rev": 3, "groups": "not a list"}"#
         center.post(name: ControlRoomFeed.changed, object: nil)
-        #expect(model.list?.waiting.first?.waitedMin == 11)
+        #expect(model.list?.waiting.first?.others == 11)
         core.json = ""
         center.post(name: ControlRoomFeed.changed, object: nil)
-        #expect(model.list?.waiting.first?.waitedMin == 11)
+        #expect(model.list?.waiting.first?.others == 11)
     }
 
     @Test func itFetchesOnTheNoticeAndOnlyThen() {
@@ -81,16 +82,16 @@ struct ControlRoomFeedTests {
         let feed = ControlRoomFeed(center: center, fetch: core.fetch)
         let model = ControlRoomModel(feed: feed)
         #expect(core.reads == 1)
-        #expect(model.list?.waiting.first?.waitedMin == 11)
+        #expect(model.list?.waiting.first?.others == 11)
 
         // The core's bytes change and nobody says so: nothing is fetched.
-        core.json = snapshot(waiting: 12)
+        core.json = snapshot(more: 12)
         #expect(core.reads == 1)
-        #expect(model.list?.waiting.first?.waitedMin == 11)
+        #expect(model.list?.waiting.first?.others == 11)
 
         center.post(name: ControlRoomFeed.changed, object: nil)
         #expect(core.reads == 2)
-        #expect(model.list?.waiting.first?.waitedMin == 12)
+        #expect(model.list?.waiting.first?.others == 12)
 
         // Another notification altogether is not a notice.
         center.post(name: Notification.Name("something-else"), object: nil)
@@ -256,8 +257,8 @@ struct ControlRoomSeenTests {
     }
 
     private func row(_ id: String, unseen: Bool = true) -> ControlRoomList.Row {
-        .init(id: id, shown: .doneUnseen, word: "", detail: "", detailIsCode: false,
-              waitedMin: nil, others: 0, pulses: false, unseen: unseen)
+        .init(id: id, shown: .doneUnseen, word: "", waiter: .none, what: .none,
+              others: 0, pulses: false, unseen: unseen)
     }
 
     @Test func aRowLookedAtForTheDwellIsMarkedSeenOnce() {

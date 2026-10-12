@@ -7,7 +7,6 @@
 
 use crate::list::List;
 use crate::look::{line, side, space};
-use crate::snapshot::{Band, Lane};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
@@ -26,18 +25,10 @@ pub struct ListLayout {
     pub rows: Vec<(String, Rect)>,
     pub separator: Rect,
     pub quiet_header: Rect,
-    pub band_header: Rect,
-    pub lanes: Vec<Rect>,
-    pub axis: Rect,
 }
 
 impl ListLayout {
     pub fn new(list: &List, height: f64) -> ListLayout {
-        Self::with_lanes(list, height, list.band.lanes.len())
-    }
-
-    /// The same, for a band with `lane_count` lanes.
-    pub fn with_lanes(list: &List, height: f64, lane_count: usize) -> ListLayout {
         let pad = space::SIDE_PANEL_PADDING;
         let width = side::WIDTH;
         let inner = width - 2.0 * pad;
@@ -65,21 +56,7 @@ impl ListLayout {
             y += side::QUIET_ROW_HEIGHT;
         }
 
-        // The time band hangs from the bottom: its own padding, the axis,
-        // one lane per group, and its header on top.
-        let lane_h = side::TIME_LANE_LABELLED_HEIGHT;
-        let axis_h = side::TIME_AXIS_HEIGHT;
-        let band_x = pad + pad_x;
-        let band_w = inner - 2.0 * pad_x;
-        let axis_top = height - pad - side::TIME_BAND_PADDING_BOTTOM - axis_h;
-        let axis = Rect { x: band_x, y: axis_top, w: band_w, h: axis_h };
-        let lanes_top = axis_top - lane_count as f64 * lane_h;
-        let lanes = (0..lane_count)
-            .map(|n| Rect { x: band_x, y: lanes_top + n as f64 * lane_h, w: band_w, h: lane_h })
-            .collect();
-        let band_header = Rect { x: band_x, y: lanes_top - header_h, w: band_w, h: header_h };
-
-        ListLayout { width, height, header, rows, separator, quiet_header, band_header, lanes, axis }
+        ListLayout { width, height, header, rows, separator, quiet_header }
     }
 
     /// The row under a point of the panel, by its group's name.
@@ -130,42 +107,6 @@ pub fn chip_between(from: Rect, to: Rect, t: f64) -> Rect {
 /// period.
 pub fn chip_settled(t: f64) -> bool {
     t >= 2.0 * crate::look::selection::SPRING_PERIOD
-}
-
-/// How wide the part of a lane that draws time is, once the name at its
-/// left end and the gap after it are taken off.
-pub fn track_width(lane_width: f64) -> f64 {
-    (lane_width - side::TIME_LANE_LABEL_WIDTH - side::ROW_ITEM_GAP).max(0.0)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Segment {
-    pub x: f64,
-    pub w: f64,
-    pub ongoing: bool,
-}
-
-/// The pieces of one lane, as x and width inside a track `width` wide. A
-/// span is clipped to the band, and one that ends before it starts or lies
-/// wholly outside is dropped.
-pub fn segments(lane: &Lane, band: &Band, width: f64) -> Vec<Segment> {
-    let now = band.now_ms;
-    if now <= band.start_ms || width <= 0.0 {
-        return Vec::new();
-    }
-    let total = (now - band.start_ms) as f64;
-    lane.spans
-        .iter()
-        .filter_map(|span| {
-            let from = span.from_ms.max(band.start_ms);
-            let to = (if span.ongoing { now } else { span.to_ms }).min(now);
-            (to > from).then(|| Segment {
-                x: (from - band.start_ms) as f64 / total * width,
-                w: (to - from) as f64 / total * width,
-                ongoing: span.ongoing,
-            })
-        })
-        .collect()
 }
 
 /// The chip's slide, as numbers: an under-damped spring from 0 to 1.

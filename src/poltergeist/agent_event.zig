@@ -56,7 +56,10 @@ pub const Event = struct {
     /// details.
     note: ?[]const u8,
 
-    /// A finished turn's final answer, at most `max_text_bytes`.
+    /// The long text an event carries, at most `max_text_bytes`: a finished
+    /// turn's final answer; for an approval, the whole of what is to be
+    /// approved -- the command, every step of it -- where `note` has only
+    /// its first line's worth.
     text: ?[]const u8,
 
     /// How long `text` was before it was cut; equal to its length when it
@@ -167,6 +170,12 @@ fn claudeCode(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error
         const tool = try requireString(obj, "tool_name");
         ev.detail = tool;
         ev.note = try oneLine(arena, try approvalSummary(obj, tool));
+        // And all of it, as it was written: the control room cuts a
+        // command into its steps, which a first 120 characters cannot be.
+        if (try approvalWhole(obj, tool)) |whole| {
+            ev.text = cutBytes(whole, max_text_bytes);
+            ev.text_bytes = whole.len;
+        }
     } else if (std.mem.eql(u8, hook, "Notification")) {
         const kind = try requireString(obj, "notification_type");
         if (!std.mem.eql(u8, kind, "idle_prompt") and
@@ -186,10 +195,40 @@ fn approvalSummary(obj: std.json.ObjectMap, tool: []const u8) Error!?[]const u8 
         .object => |o| o,
         else => return null,
     };
-    const shell = std.mem.eql(u8, tool, "Bash") or std.mem.eql(u8, tool, "PowerShell");
-    const key = if (shell) "command" else "file_path";
+    const key = if (isShellTool(tool)) "command" else "file_path";
     const s = (try optionalString(input, key)) orelse return null;
     return prefixChars(s, summary_chars);
+}
+
+/// All of what an approval is for: the command, or the file.
+fn approvalWhole(obj: std.json.ObjectMap, tool: []const u8) Error!?[]const u8 {
+    const input = switch (obj.get("tool_input") orelse return null) {
+        .object => |o| o,
+        else => return null,
+    };
+    const key = if (isShellTool(tool)) "command" else "file_path";
+    return try optionalString(input, key);
+}
+
+/// The tools whose input is a command line.
+fn isShellTool(tool: []const u8) bool {
+    return std.mem.eql(u8, tool, "Bash") or std.mem.eql(u8, tool, "PowerShell");
+}
+
+/// What kind of thing a tool asks approval for, by the tool's name as an
+/// event's `detail` carries it.
+pub const ToolKind = enum {
+    /// A command in a POSIX shell, which can be cut into steps.
+    shell,
+    /// Anything else: a file, or a command in a shell with other rules
+    /// (PowerShell's quoting is not the one `ShellSteps` knows). Shown as
+    /// it is, in one piece.
+    literal,
+};
+
+pub fn toolKind(tool: ?[]const u8) ToolKind {
+    const name = tool orelse return .literal;
+    return if (std.mem.eql(u8, name, "Bash")) .shell else .literal;
 }
 
 fn requireString(obj: std.json.ObjectMap, key: []const u8) Error![]const u8 {

@@ -65,7 +65,8 @@ struct ControlRoomSupervisorFrame<Content: View>: View {
 }
 
 /// The title bar: the name and what it is on the left; on the right its
-/// status -- the glyph, the word, how long it has waited.
+/// status -- the glyph and the word. Not how long it has waited: that was
+/// here once and told the person nothing they could act on.
 struct ControlRoomSupervisorBar: View {
     typealias Look = ControlRoomLook
 
@@ -113,11 +114,6 @@ struct ControlRoomSupervisorBar: View {
                     .foregroundStyle(wordColor(title.shown, theme: theme))
                     .fixedSize()
             }
-        }
-        if let minutes = title.waitedMin {
-            Text(String(localized: "\(String(minutes)) min", comment: "总控台：今天累计让你等了多少分钟"))
-                .foregroundStyle(theme.textSecondary.color)
-                .fixedSize()
         }
     }
 

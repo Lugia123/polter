@@ -57,13 +57,6 @@ struct ControlRoomListView: View {
                 ForEach(list.quiet) { row in
                     quietRow(row).place(layout.rows[row.id] ?? .zero)
                 }
-                if let band = list.timeBand {
-                    bandHeader(band).place(layout.bandHeader)
-                    ForEach(Array(band.lanes.enumerated()), id: \.offset) { n, lane in
-                        self.lane(lane, in: band).place(layout.lanes[n])
-                    }
-                    axis(band).place(layout.axis)
-                }
             }
         }
         .frame(width: CGFloat(Look.Side.width))
@@ -213,16 +206,6 @@ struct ControlRoomListView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: CGFloat(Look.Side.rowItemGap))
-                if let minutes = row.waitedMin {
-                    Text("\(minutes)")
-                        .font(.system(size: CGFloat(Look.Font.minutes)))
-                        .fontWeight(Look.weight(Look.Font.weightStrong))
-                        .foregroundStyle(ink.minutes)
-                        .frame(minWidth: CGFloat(Look.Side.minutesWidth), alignment: .trailing)
-                    Text(String(localized: "min", comment: "总控台：等了几分钟，数字后面的单位"))
-                        .foregroundStyle(theme.textSecondary.color)
-                        .frame(width: CGFloat(Look.Side.minutesUnitWidth), alignment: .trailing)
-                }
             }
             .frame(height: CGFloat(Look.Side.rowLine1Height))
             Spacer(minLength: 0)
@@ -234,8 +217,8 @@ struct ControlRoomListView: View {
                         .foregroundStyle(ink.word)
                         .fixedSize()
                 }
-                Text(row.detail)
-                    .font(.system(size: CGFloat(Look.Font.body), design: row.detailIsCode ? .monospaced : .default))
+                Text(row.what.lines.joined(separator: " "))
+                    .font(.system(size: CGFloat(Look.Font.body), design: row.what.isCode ? .monospaced : .default))
                     .foregroundStyle(theme.textSecondary.color)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -280,62 +263,6 @@ struct ControlRoomListView: View {
         .onTapGesture { select(row.id) }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
-    }
-
-    // MARK: Today's waiting
-
-    private func bandHeader(_ band: ControlRoomList.TimeBand) -> some View {
-        HStack {
-            Text(String(localized: "Kept you waiting today", comment: "总控台：左栏底部时间带的标题")).foregroundStyle(theme.textSecondary.color)
-            Spacer()
-            Text(String(localized: "\(String(band.totalMinutes)) min", comment: "总控台：今天累计让你等了多少分钟")).fontWeight(Look.weight(Look.Font.weightEmphasis))
-        }
-        .frame(maxHeight: .infinity)
-        .overlay(alignment: .top) {
-            theme.lineFaint.color.frame(height: CGFloat(Look.Line.hairline))
-        }
-    }
-
-    /// One group's lane: the start of its name, then when today it kept
-    /// the person waiting. The design does not say which lane is whose; the
-    /// name is this build's answer and is marked tentative in the table.
-    private func lane(_ lane: ControlRoomList.Lane, in band: ControlRoomList.TimeBand) -> some View {
-        HStack(spacing: CGFloat(Look.Side.rowItemGap)) {
-            Text(lane.name)
-                .font(.system(size: CGFloat(Look.Font.min), design: .monospaced))
-                .foregroundStyle(theme.textSecondary.color)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(width: CGFloat(Look.Side.timeLaneLabelWidth), alignment: .leading)
-            GeometryReader { proxy in
-                let segments = ControlRoomListLayout.segments(
-                    lane, band: band, width: proxy.size.width)
-                ZStack(alignment: .leading) {
-                    theme.line.color
-                        .frame(height: CGFloat(Look.Line.stroke))
-                    ForEach(Array(segments.enumerated()), id: \.offset) { _, piece in
-                        RoundedRectangle(cornerRadius: CGFloat(Look.Side.timeSegmentRadius))
-                            .fill((piece.ongoing ? theme.text : theme.textSecondary).color)
-                            .frame(width: piece.width, height: CGFloat(Look.Side.timeSegmentHeight))
-                            .offset(x: piece.x)
-                    }
-                }
-                .frame(maxHeight: .infinity)
-            }
-        }
-        .help(lane.name)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(lane.name)
-    }
-
-    private func axis(_ band: ControlRoomList.TimeBand) -> some View {
-        HStack {
-            Text(band.startLabel)
-            Spacer()
-            Text(String(localized: "now", comment: "总控台：时间带的右端"))
-        }
-        .foregroundStyle(theme.textTertiary.color)
-        .frame(maxHeight: .infinity, alignment: .bottom)
     }
 }
 

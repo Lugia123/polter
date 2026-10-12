@@ -25,11 +25,11 @@ struct ControlRoomListTests {
         #expect(three.contains("3") && !three.contains("1"))
     }
 
-    @Test func theTooltipIsTheWholeDetailAndThereIsNoneForNoDetail() {
-        let cut = ControlRoomList.tooltip(for: list.waiting[0])
-        #expect(cut == "rm -rf dist/ && npm run build")
-        let quiet = ControlRoomList.tooltip(for: list.quiet[0])
-        #expect(quiet == nil)
+    @Test func theTooltipIsEveryStepWholeAndThereIsNoneForNothing() {
+        let command = ControlRoomList.tooltip(for: list.waiting[1])
+        #expect(command == "rm -rf dist/ .cache/ node_modules/.vite\n&& npm ci\n&& npm run build -- --mode production")
+        let nothing = ControlRoomList.tooltip(for: list.quiet[3])
+        #expect(nothing == nil)
     }
 
     @Test func theCountsShownAreTheOnesHandedIn() {
@@ -37,7 +37,7 @@ struct ControlRoomListTests {
         var odd = list
         odd.waitingCount = 7
         odd.quietCount = 0
-        #expect(odd.waiting.count == 3)
+        #expect(odd.waiting.count == 4)
         #expect(odd.waitingCount == 7)
         #expect(odd.quietCount == 0)
     }
@@ -52,14 +52,18 @@ struct ControlRoomListTests {
       "groups": [
         { "name": "web-app", "brief": "", "steward": "0x00000000000000a1",
           "needs_me": true, "unseen": false, "shown": "needs_you", "word": "needs_approval", "text": "等批准",
-          "waited_min": 4, "reason": {"from": "hook_note", "text": "Bash(rm -rf dist/)", "missing": null},
+          "waiter": {"is": "worker_via_supervisor", "name": "ios-build"},
+          "reason": {"from": "hook_note", "text": "Bash(rm -rf dist/ && npm ci)", "missing": null},
+          "what": {"form": "command", "lines": ["rm -rf dist/", "&& npm ci"]},
           "more": 1, "same_as": null, "members": [] },
         { "name": "infra", "needs_me": false, "unseen": true, "shown": "done_unseen", "word": "done_unseen",
-          "text": "做完了，没看", "waited_min": null,
-          "reason": {"from": "last_turn", "text": "", "missing": "no_turn_kept"}, "more": 0, "same_as": null },
+          "text": "做完了，没看", "waiter": {"is": "none", "name": ""},
+          "reason": {"from": "last_turn", "text": "", "missing": "no_turn_kept"},
+          "what": {"form": "none", "lines": []}, "more": 0, "same_as": null },
         { "name": "web-app-docs", "needs_me": true, "unseen": false, "shown": "trouble", "word": "failed",
-          "text": "出错", "waited_min": 4, "reason": {"from": "hook_detail", "text": "限流", "missing": null},
-          "more": 0, "same_as": "web-app" }
+          "text": "出错", "waiter": {"is": "supervisor", "name": ""},
+          "reason": {"from": "hook_detail", "text": "限流", "missing": null},
+          "what": {"form": "words", "lines": ["限流"]}, "more": 0, "same_as": "web-app" }
       ], "ungrouped": [], "terminals": [], "tabs": [] }
     """.utf8)
 
@@ -69,9 +73,12 @@ struct ControlRoomListTests {
         #expect(row.id == "web-app")
         #expect(row.shown == .needsYou)
         #expect(row.word == "等批准")
-        #expect(row.detail == "Bash(rm -rf dist/)")
-        #expect(row.detailIsCode == true)
-        #expect(row.waitedMin == 4)
+        // Who is waiting and for what are the core's, copied: the steps as
+        // it cut them, none joined and none dropped.
+        #expect(row.waiter == ControlRoomList.Waiter(is: .workerViaSupervisor, name: "ios-build"))
+        #expect(row.what.form == .command)
+        #expect(row.what.lines == ["rm -rf dist/", "&& npm ci"])
+        #expect(row.what.isCode == true)
         #expect(row.others == 1)
     }
 
@@ -90,17 +97,36 @@ struct ControlRoomListTests {
         #expect(waiting == ["web-app", "web-app-docs"])
         let quiet = made.quiet.map(\.id)
         #expect(quiet == ["infra"])
-        #expect(made.quiet[0].waitedMin == nil)
-        #expect(made.quiet[0].detail == "")
+        #expect(made.quiet[0].waiter == .none)
+        #expect(made.quiet[0].what == .none)
     }
 
-    @Test func aGroupUnderTheSameSupervisorPointsAtTheRowThatHasTheReason() throws {
+    @Test func whetherItIsSetAsCodeIsTheCoresFormAndNotWhereTheWordsCameFrom() throws {
+        // The second waiting row's words came from a hook too, and are a
+        // sentence: the core says `words`.
         let made = try ControlRoomList.decode(snapshot: snapshot)
         let row = made.waiting[1]
-        // It names the other row and does not repeat the reason ("限流").
-        #expect(row.detail.contains("web-app"))
-        #expect(!row.detail.contains("限流"))
-        #expect(row.detailIsCode == false)
+        #expect(row.what.form == .words)
+        #expect(row.what.isCode == false)
+        #expect(row.waiter.is == .supervisor)
+    }
+
+    @Test func aSnapshotThatDoesNotSayWhoWaitsOrForWhatIsNotRead() {
+        // Not read as "nobody" and "nothing": a row that silently lost what
+        // it waits on would look like a group with nothing to say.
+        let text = String(bytes: snapshot, encoding: .utf8) ?? ""
+        for field in ["\"waiter\"", "\"what\""] {
+            let cut = text.replacingOccurrences(of: field, with: "\"gone\"")
+            #expect(cut != text)
+            #expect(throws: DecodingError.self) {
+                try ControlRoomList.decode(snapshot: Data(cut.utf8))
+            }
+        }
+        let odd = text.replacingOccurrences(of: "\"form\": \"command\"", with: "\"form\": \"poem\"")
+        #expect(odd != text)
+        #expect(throws: DecodingError.self) {
+            try ControlRoomList.decode(snapshot: Data(odd.utf8))
+        }
     }
 
     @Test func aGlyphTheHostDoesNotKnowIsAnErrorNotABlank() {
@@ -122,14 +148,46 @@ struct ControlRoomListTests {
         return try Data(contentsOf: root.appendingPathComponent("src/poltergeist/testdata/control_snapshot.json"))
     }
 
-    @Test func theCoresFixtureDecodesIntoItsSevenGroups() throws {
+    @Test func theCoresFixtureDecodesIntoItsEightGroups() throws {
         let made = try ControlRoomList.decode(snapshot: Self.fixture())
         let waiting = made.waiting.map(\.id)
-        #expect(waiting == ["web-app", "web-app-docs", "billing", "docs-site"])
+        #expect(waiting == ["web-app", "web-app-docs", "mobile", "billing", "docs-site"])
         let quiet = made.quiet.map(\.id)
         #expect(quiet == ["infra", "design-system", "notes"])
-        #expect(made.waitingCount == 4)
+        #expect(made.waitingCount == 5)
         #expect(made.quietCount == 3)
+    }
+
+    @Test func theCoresFixtureSaysWhoWaitsAndForWhat() throws {
+        let made = try ControlRoomList.decode(snapshot: Self.fixture())
+        let web = try #require(made.rows.first { $0.id == "web-app" })
+        #expect(web.waiter.is == .supervisor)
+        #expect(web.what.form == .command)
+        #expect(web.what.lines == [
+            "rm -rf dist/ .cache/ node_modules/.vite", "&& npm ci", "&& npm run build -- --mode production",
+        ])
+        let mobile = try #require(made.rows.first { $0.id == "mobile" })
+        #expect(mobile.waiter == ControlRoomList.Waiter(is: .workerViaSupervisor, name: "ios-build"))
+        let billing = try #require(made.rows.first { $0.id == "billing" })
+        #expect(billing.what.form == .words)
+        #expect(billing.what.isCode == false)
+        // Nobody waits on a row that needs nothing; it may still say what
+        // the group is doing.
+        let design = try #require(made.rows.first { $0.id == "design-system" })
+        #expect(design.waiter == .none)
+        #expect(design.what.lines == ["改按钮的三种尺寸"])
+        let notes = try #require(made.rows.first { $0.id == "notes" })
+        #expect(notes.what == .none)
+    }
+
+    @Test func nothingInTheCoresFixtureSaysHowLong() throws {
+        // The minutes and the band of today's waiting were taken out (the
+        // user's ruling, 2026-10-13).
+        let text = String(bytes: try Self.fixture(), encoding: .utf8) ?? ""
+        #expect(!text.isEmpty)
+        for gone in ["waited_min", "\"band\"", "total_min", "\"lanes\"", "\"spans\""] {
+            #expect(!text.contains(gone), "the fixture says \(gone) again")
+        }
     }
 
     @Test func theRowThatBreathesIsTheFirstInTheCoresListNotAlreadyInFront() throws {
@@ -155,36 +213,12 @@ struct ControlRoomListTests {
         #expect(target?.eventMs != nil)
     }
 
-    @Test func theBandIsTheCoresAndKeepsItsOwnClock() throws {
-        let made = try ControlRoomList.decode(snapshot: Self.fixture())
-        let band = try #require(made.timeBand)
-        #expect(band.startLabel == "06:00")
-        #expect(band.totalMinutes == 19)
-        #expect(band.nowMs == 1_700_006_000_000)
-        let lanes = band.lanes.map(\.name)
-        #expect(lanes == ["billing", "docs-site", "web-app", "web-app-docs"])
-        // Measured against the band's now (wall clock), a span still going
-        // ends at the right-hand edge. Against the snapshot's other clock
-        // (6 000 000) there would be no band at all.
-        let pieces = ControlRoomListLayout.segments(band.lanes[0], band: band, width: 100)
-        #expect(pieces.count == 1)
-        let end = pieces[0].x + pieces[0].width
-        #expect(abs(end - 100) < 0.001)
-    }
-
-    @Test func aSnapshotWithoutABandGivesAListWithNone() throws {
-        let made = try ControlRoomList.decode(snapshot: snapshot)
-        #expect(made.timeBand == nil)
-        let layout = ControlRoomListLayout(list: made, height: 600)
-        #expect(layout.lanes.isEmpty)
-    }
-
     // MARK: Where the selection goes
 
     @Test func arrowKeysWalkTheListedOrderAcrossBothSections() {
         let rows = list.rows
         let order = rows.map(\.id)
-        #expect(order == ["web-app", "billing", "docs-site", "infra", "design-system"])
+        #expect(order == ["billing", "web-app", "mobile", "docs-site", "infra", "design-system", "search", "notes"])
         let down = ControlRoomList.move("docs-site", by: 1, in: rows)
         #expect(down == "infra")
         let up = ControlRoomList.move("infra", by: -1, in: rows)
@@ -193,20 +227,20 @@ struct ControlRoomListTests {
 
     @Test func theSelectionStopsAtTheEnds() {
         let rows = list.rows
-        let top = ControlRoomList.move("web-app", by: -1, in: rows)
-        #expect(top == "web-app")
-        let bottom = ControlRoomList.move("design-system", by: 1, in: rows)
-        #expect(bottom == "design-system")
+        let top = ControlRoomList.move("billing", by: -1, in: rows)
+        #expect(top == "billing")
+        let bottom = ControlRoomList.move("notes", by: 1, in: rows)
+        #expect(bottom == "notes")
     }
 
     @Test func withNothingSelectedAStepLandsOnTheNearEnd() {
         let rows = list.rows
         let down = ControlRoomList.move(nil, by: 1, in: rows)
-        #expect(down == "web-app")
+        #expect(down == "billing")
         let up = ControlRoomList.move(nil, by: -1, in: rows)
-        #expect(up == "design-system")
+        #expect(up == "notes")
         let gone = ControlRoomList.move("no-such-group", by: 1, in: rows)
-        #expect(gone == "web-app")
+        #expect(gone == "billing")
         let empty = ControlRoomList.move("web-app", by: 1, in: [])
         #expect(empty == nil)
     }
@@ -219,17 +253,18 @@ struct ControlRoomListTests {
         let layout = ControlRoomListLayout(list: list, height: 824)
         #expect(layout.size == CGSize(width: 308, height: 824))
         #expect(layout.header == CGRect(x: 6, y: 6, width: 296, height: 32))
-        #expect(layout.rows["web-app"] == CGRect(x: 6, y: 38, width: 296, height: 60))
-        #expect(layout.rows["billing"] == CGRect(x: 6, y: 106, width: 296, height: 60))
-        #expect(layout.rows["docs-site"] == CGRect(x: 6, y: 174, width: 296, height: 60))
+        #expect(layout.rows["billing"] == CGRect(x: 6, y: 38, width: 296, height: 60))
+        #expect(layout.rows["web-app"] == CGRect(x: 6, y: 106, width: 296, height: 60))
+        #expect(layout.rows["mobile"] == CGRect(x: 6, y: 174, width: 296, height: 60))
+        #expect(layout.rows["docs-site"] == CGRect(x: 6, y: 242, width: 296, height: 60))
     }
 
     @Test func theQuietSectionFollowsTheSeparator() {
         let layout = ControlRoomListLayout(list: list, height: 824)
-        #expect(layout.separator == CGRect(x: 18, y: 250, width: 272, height: 0.5))
-        #expect(layout.quietHeader == CGRect(x: 6, y: 254.5, width: 296, height: 32))
-        #expect(layout.rows["infra"] == CGRect(x: 6, y: 286.5, width: 296, height: 28))
-        #expect(layout.rows["design-system"] == CGRect(x: 6, y: 314.5, width: 296, height: 28))
+        #expect(layout.separator == CGRect(x: 18, y: 318, width: 272, height: 0.5))
+        #expect(layout.quietHeader == CGRect(x: 6, y: 322.5, width: 296, height: 32))
+        #expect(layout.rows["infra"] == CGRect(x: 6, y: 354.5, width: 296, height: 28))
+        #expect(layout.rows["design-system"] == CGRect(x: 6, y: 382.5, width: 296, height: 28))
     }
 
     @Test func theChipRestsExactlyOnItsRowAndNowhereForARowNotListed() {
@@ -238,70 +273,6 @@ struct ControlRoomListTests {
         #expect(layout.chip(for: "infra") == layout.rows["infra"])
         #expect(layout.chip(for: nil) == nil)
         #expect(layout.chip(for: "no-such-group") == nil)
-    }
-
-    @Test func theTimeBandHangsFromTheBottomWhateverTheHeight() {
-        let heights: [CGFloat] = [824, 600]
-        for height in heights {
-            let layout = ControlRoomListLayout(list: list, height: height)
-            let laneH = CGFloat(Look.Side.timeLaneLabelledHeight)
-            let floor = height - 12
-            #expect(layout.axis.maxY == floor)
-            #expect(layout.axis.height == 24)
-            #expect(layout.lanes.count == 3)
-            #expect(layout.lanes[2].maxY == layout.axis.minY)
-            #expect(layout.lanes[0].minY == layout.axis.minY - 3 * laneH)
-            #expect(layout.bandHeader.maxY == layout.lanes[0].minY)
-            #expect(layout.bandHeader.height == 32)
-        }
-    }
-
-    // MARK: Today's waiting
-
-    private func band(now: UInt64) -> ControlRoomList.TimeBand {
-        .init(startMs: 1_000, nowMs: now, startLabel: "09:00", totalMinutes: 0, lanes: [])
-    }
-
-    @Test func aSpanIsDrawnInProportionToTheDaySoFar() {
-        let lane = ControlRoomList.Lane(name: "a", spans: [.init(fromMs: 1_250, toMs: 1_500, ongoing: false)])
-        let pieces = ControlRoomListLayout.segments(lane, band: band(now: 2_000), width: 200)
-        #expect(pieces.count == 1)
-        #expect(pieces[0].x == 50)
-        #expect(pieces[0].width == 50)
-        #expect(pieces[0].ongoing == false)
-    }
-
-    @Test func aSpanStillGoingRunsToNow() {
-        let lane = ControlRoomList.Lane(name: "a", spans: [.init(fromMs: 1_800, toMs: 1_800, ongoing: true)])
-        let pieces = ControlRoomListLayout.segments(lane, band: band(now: 2_000), width: 200)
-        #expect(pieces.count == 1)
-        #expect(pieces[0].x == 160)
-        #expect(pieces[0].width == 40)
-        #expect(pieces[0].ongoing == true)
-    }
-
-    @Test func spansAreClippedToTheBandAndEmptyOnesDropped() {
-        let lane = ControlRoomList.Lane(name: "a", spans: [
-            .init(fromMs: 500, toMs: 1_100, ongoing: false),     // starts before the band
-            .init(fromMs: 1_900, toMs: 2_600, ongoing: false),   // ends after now
-            .init(fromMs: 1_400, toMs: 1_400, ongoing: false),   // no length
-            .init(fromMs: 100, toMs: 900, ongoing: false),       // wholly before
-        ])
-        let pieces = ControlRoomListLayout.segments(lane, band: band(now: 2_000), width: 100)
-        #expect(pieces.count == 2)
-        #expect(pieces[0].x == 0)
-        #expect(pieces[0].width == 10)
-        #expect(pieces[1].x == 90)
-        #expect(pieces[1].width == 10)
-        let noDay = ControlRoomListLayout.segments(lane, band: band(now: 1_000), width: 100)
-        #expect(noDay.isEmpty)
-    }
-
-    @Test func theNameAtALanesLeftEndComesOffItsTrack() {
-        let track = ControlRoomListLayout.trackWidth(lane: 272)
-        #expect(track == 272 - CGFloat(Look.Side.timeLaneLabelWidth) - CGFloat(Look.Side.rowItemGap))
-        let tiny = ControlRoomListLayout.trackWidth(lane: 10)
-        #expect(tiny == 0)
     }
 
     // MARK: How the chip moves

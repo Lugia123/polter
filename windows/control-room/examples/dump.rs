@@ -9,8 +9,8 @@
 
 use polter_control_room::json::quote;
 use polter_control_room::act::{Act, SeenMarker};
-use polter_control_room::layout::{self, ListLayout, Rect};
-use polter_control_room::list::{self, Detail, List, Row};
+use polter_control_room::layout::{ListLayout, Rect};
+use polter_control_room::list::{self, List, Row};
 use polter_control_room::pulse::{self, Scope};
 use polter_control_room::look::selection;
 use polter_control_room::snapshot::{self, Shown};
@@ -20,29 +20,29 @@ fn rect(name: &str, r: Rect) {
 }
 
 fn row(section: &str, r: &Row) {
-    // Untranslated on both sides: the sentence is the same English key
-    // the macOS host starts from.
-    let detail = match &r.detail {
-        Detail::Reason(text) => text.clone(),
-        Detail::SameAs(other) => list::fill(list::msg::SAME_SUPERVISOR, other),
-    };
-    let waited = r.waited_min.map_or("-".to_string(), |m| m.to_string());
     // The two moments go with the terminal: with no terminal behind the
     // row there is nothing an act would hand back.
     let since = r.terminal.as_ref().map_or("-".to_string(), |_| r.since_ms.to_string());
     let event = r.terminal.as_ref().and(r.event_ms).map_or("-".to_string(), |m| m.to_string());
     println!(
-        "row section={section} id={} shown={} word={} detail={} code={} waited={waited} others={} \
+        "row section={section} id={} shown={} word={} who={} name={} form={} code={} lines={} others={} \
          unseen={} terminal={} since={since} event={event}",
         r.id,
         r.shown.name(),
         quote(&r.word),
-        quote(&detail),
-        r.detail_is_code,
+        r.waiter.is.name(),
+        quote(&r.waiter.name),
+        r.what.form.name(),
+        list::is_code(&r.what),
+        r.what.lines.len(),
         r.others,
         r.unseen,
         r.terminal.as_deref().unwrap_or("-")
     );
+    // What it waits on, every line of it and whole.
+    for (n, line) in r.what.lines.iter().enumerate() {
+        println!("what id={} n={n} line={}", r.id, quote(line));
+    }
 }
 
 fn main() {
@@ -233,34 +233,7 @@ fn main() {
     }
     rect("separator", lay.separator);
     rect("quiet_header", lay.quiet_header);
-    rect("band_header", lay.band_header);
-    for (n, lane) in lay.lanes.iter().enumerate() {
-        rect(&format!("lane:{n}"), *lane);
-    }
-    rect("axis", lay.axis);
 
-    let band = &l.band;
-    println!(
-        "band start_ms={} now_ms={} start_label={} total_min={} lanes={}",
-        band.start_ms,
-        band.now_ms,
-        quote(&band.start_label),
-        band.total_min,
-        band.lanes.len()
-    );
-    for (n, lane) in band.lanes.iter().enumerate() {
-        println!("lane {n} name={} spans={}", quote(&lane.name), lane.spans.len());
-        for s in &lane.spans {
-            println!("span lane={n} from_ms={} to_ms={} ongoing={}", s.from_ms, s.to_ms, s.ongoing);
-        }
-        let track = layout::track_width(lay.lanes.get(n).map_or(0.0, |r| r.w));
-        println!("track lane={n} w={track:.3}");
-        for g in layout::segments(lane, band, track) {
-            println!("segment lane={n} x={:.3} w={:.3} ongoing={}", g.x, g.w, g.ongoing);
-        }
-    }
-
-    // Where the arrow keys take the selection, from every row and from none.
     let ids: Vec<Option<String>> =
         std::iter::once(None).chain(l.rows().map(|r| Some(r.id.clone()))).collect();
     for from in &ids {

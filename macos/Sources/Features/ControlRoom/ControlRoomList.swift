@@ -30,13 +30,14 @@ struct ControlRoomList: Equatable {
         var shown: Shown
         /// The words beside the glyph: which one of the four it is.
         var word: String
-        /// What it is waiting on. Empty when there is nothing to say.
-        var detail: String
-        /// The detail is a command or a path, set in the terminal's face.
-        var detailIsCode: Bool
-        /// Whole minutes it has waited, as the core counted them; nil on a
-        /// row that is not waiting for the person.
-        var waitedMin: Int?
+        /// Who the row is about: the group's supervisor, or one of its
+        /// workers by name. The core's word; nothing here works it out.
+        var waiter: Waiter
+        /// What it is waiting for -- or, on a row that needs nothing, what
+        /// it is doing -- in the pieces it is drawn in. The core says
+        /// whether it is a command or words, and where a command's steps
+        /// are.
+        var what: What
         /// How many other terminals of this group are also waiting.
         var others: Int
         /// This is the one glyph that pulses: the longest-waiting that is
@@ -58,22 +59,62 @@ struct ControlRoomList: Equatable {
         var name: String { id }
     }
 
+    /// Who a row is about, as the core says it (`ControlRoom.zig`,
+    /// `Waiter`). A host turns `is` into words and never into a decision.
+    struct Waiter: Equatable {
+        enum Is: String, Equatable, Decodable {
+            case none
+            case supervisor
+            case workerViaSupervisor = "worker_via_supervisor"
+            case worker
+            case terminal
+        }
+
+        var `is`: Is
+        /// The worker's name when it is a worker; empty otherwise.
+        var name: String
+
+        static let none = Waiter(is: .none, name: "")
+    }
+
+    /// What a row says under its name (`ControlRoom.zig`, `What`): all of
+    /// it, already cut into the lines it is drawn on.
+    struct What: Equatable {
+        enum Form: String, Equatable, Decodable {
+            case none
+            /// A shell command: one step to a line, in the terminal's face.
+            case command
+            /// Something literal in one piece, in the terminal's face.
+            case code
+            /// A sentence.
+            case words
+        }
+
+        var form: Form
+        var lines: [String]
+
+        static let none = What(form: .none, lines: [])
+
+        /// Set in the terminal's face.
+        var isCode: Bool { form == .command || form == .code }
+        /// Everything it says, for a tooltip and for VoiceOver.
+        var whole: String { lines.joined(separator: "\n") }
+    }
+
     /// The title bar of a supervisor's frame on the right-hand side
     /// (`control-room.md`, 3.5, item 6): its name on the left, and on the
-    /// right its status -- the glyph, the word, how long it has waited.
+    /// right its status -- the glyph and the word.
     ///
     /// Everything in it is the core's. The name is the terminal's title as
-    /// the snapshot lists it among the group's members. The status is the
-    /// supervisor's own: when the group's row is about the supervisor
-    /// itself (the same terminal -- an equality), it is what the row says,
-    /// minutes included; when the row is about one of its workers, it is
-    /// what the member entry says, which has a glyph and a word and no
-    /// minutes. Nothing is counted or compared to get any of it.
+    /// the snapshot lists it among the group's members, and the status is
+    /// that member's own glyph and word -- the supervisor's, whether the
+    /// group's row is about it or about one of its workers. Nothing is
+    /// counted or compared to get any of it, and nothing in it says how
+    /// long.
     struct SupervisorTitle: Equatable {
         var name: String
         var shown: Shown
         var word: String
-        var waitedMin: Int?
     }
 
     /// The terminal a row is about, and when. Both times are on the core's
@@ -84,40 +125,12 @@ struct ControlRoomList: Equatable {
         var eventMs: UInt64?
     }
 
-    /// One stretch of the day in which a group kept the person waiting.
-    struct Span: Equatable {
-        var fromMs: UInt64
-        var toMs: UInt64
-        /// It is still waiting now.
-        var ongoing: Bool
-    }
-
-    struct Lane: Equatable {
-        var name: String
-        var spans: [Span]
-    }
-
-    /// Today's waiting. **Wall-clock time**, unlike the rest of the list:
-    /// its `nowMs` is its own and is the only "now" its spans are measured
-    /// against.
-    struct TimeBand: Equatable {
-        var startMs: UInt64
-        var nowMs: UInt64
-        /// What the left end of the axis says, e.g. `09:00`.
-        var startLabel: String
-        /// Minutes the person was kept waiting today, all groups together.
-        var totalMinutes: Int
-        var lanes: [Lane]
-    }
-
     /// "N groups are waiting for you". The core's number, not `waiting.count`.
     var waitingCount: Int
     var waiting: [Row]
     /// "N groups need nothing from you". Also the core's.
     var quietCount: Int
     var quiet: [Row]
-    /// Nil when the snapshot carries none; the panel then has no band.
-    var timeBand: TimeBand?
 
     /// Every row in the order it is listed, which is the order the up and
     /// down keys walk.
@@ -135,7 +148,7 @@ extension ControlRoomList {
     /// What the pointer shows for a row whose detail may be cut short: the
     /// whole of it. Nil when there is nothing that could have been cut.
     static func tooltip(for row: Row) -> String? {
-        row.detail.isEmpty ? nil : row.detail
+        row.what.lines.isEmpty ? nil : row.what.whole
     }
 
     /// The row the selection lands on after an arrow key. It stops at the
@@ -182,23 +195,14 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var group: String?
     }
 
-    struct Span: Decodable, Equatable {
-        var from_ms: UInt64
-        var to_ms: UInt64
-        var ongoing: Bool
-    }
-
-    struct Lane: Decodable, Equatable {
+    struct Waiter: Decodable, Equatable {
+        var `is`: ControlRoomList.Waiter.Is
         var name: String
-        var spans: [Span]
     }
 
-    struct Band: Decodable, Equatable {
-        var start_ms: UInt64
-        var start_label: String
-        var now_ms: UInt64
-        var total_min: Int
-        var lanes: [Lane]
+    struct What: Decodable, Equatable {
+        var form: ControlRoomList.What.Form
+        var lines: [String]
     }
 
     /// One terminal of a group, as much of it as a title bar shows.
@@ -223,7 +227,10 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var shown: ControlRoomList.Shown
         /// The words beside the glyph, already in the person's language.
         var text: String
-        var waited_min: Int?
+        /// Absent in a snapshot cut down by hand: then nobody is named and
+        /// nothing is said.
+        var waiter: Waiter
+        var what: What
         var reason: Reason
         var more: Int
         var same_as: String?
@@ -245,7 +252,6 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     /// draws no tab glyphs, breathes nothing and has no band.
     var tabs: [Tab]?
     var pulses: [Pulse]?
-    var band: Band?
 }
 
 /// Which waiting glyph breathes.
@@ -322,12 +328,11 @@ extension ControlRoomList {
     static func supervisorTitle(of group: ControlRoomSnapshot.Group) -> SupervisorTitle? {
         guard let steward = group.steward,
               let member = group.members?.first(where: { $0.id == steward }) else { return nil }
-        if group.attention?.terminal == steward {
-            // The row is about the supervisor: the row's own words.
-            return SupervisorTitle(
-                name: member.title, shown: group.shown, word: group.text, waitedMin: group.waited_min)
-        }
-        return SupervisorTitle(name: member.title, shown: member.shown, word: member.text, waitedMin: nil)
+        // Always the supervisor's own member, as the core wrote it. Whether
+        // the row is about the supervisor or about one of its workers is
+        // not asked here: the core says who waits (`waiter`), and the
+        // member's glyph and word are the supervisor's either way.
+        return SupervisorTitle(name: member.title, shown: member.shown, word: member.text)
     }
 }
 
@@ -343,10 +348,8 @@ extension ControlRoomList {
                 id: group.name,
                 shown: group.shown,
                 word: group.text,
-                detail: Self.detail(of: group),
-                // A hook's note is a tool and what it was given.
-                detailIsCode: group.same_as == nil && group.reason.from == "hook_note",
-                waitedMin: group.waited_min,
+                waiter: Waiter(is: group.waiter.is, name: group.waiter.name),
+                what: What(form: group.what.form, lines: group.what.lines),
                 others: group.more,
                 pulses: breathing != nil && breathing == group.name,
                 unseen: group.unseen ?? false,
@@ -361,26 +364,7 @@ extension ControlRoomList {
             waitingCount: snapshot.groups_needing_me,
             waiting: rows.filter { $0.0 }.map { $0.1 },
             quietCount: snapshot.groups_other,
-            quiet: rows.filter { !$0.0 }.map { $0.1 },
-            timeBand: snapshot.band.map { band in
-                TimeBand(
-                    startMs: band.start_ms, nowMs: band.now_ms, startLabel: band.start_label,
-                    totalMinutes: band.total_min,
-                    lanes: band.lanes.map { lane in
-                        Lane(name: lane.name, spans: lane.spans.map {
-                            Span(fromMs: $0.from_ms, toMs: $0.to_ms, ongoing: $0.ongoing)
-                        })
-                    })
-            })
-    }
-
-    /// One supervisor minding several groups waits once: the reason is on
-    /// one row, and the others point at it (`control-room.md`, 4.4).
-    static func detail(of group: ControlRoomSnapshot.Group) -> String {
-        if let other = group.same_as {
-            return String(localized: "Same supervisor: see \(other)", comment: "总控台：一个总管管几个群时，其余几行指向带停因的那一行")
-        }
-        return group.reason.text
+            quiet: rows.filter { !$0.0 }.map { $0.1 })
     }
 
     static func decode(snapshot json: Data, showing: String? = nil) throws -> ControlRoomList {
@@ -402,9 +386,6 @@ struct ControlRoomListLayout: Equatable {
     var rows: [String: CGRect]
     var separator: CGRect
     var quietHeader: CGRect
-    var bandHeader: CGRect
-    var lanes: [CGRect]
-    var axis: CGRect
 
     init(list: ControlRoomList, height: CGFloat) {
         let pad = CGFloat(Look.Space.sidePanelPadding)
@@ -437,50 +418,11 @@ struct ControlRoomListLayout: Equatable {
         }
         rows = frames
 
-        // The time band hangs from the bottom: its own padding, the axis,
-        // one lane per group, and its header on top.
-        let laneH = CGFloat(Look.Side.timeLaneLabelledHeight)
-        let axisH = CGFloat(Look.Side.timeAxisHeight)
-        let bandX = pad + padX
-        let bandW = inner - 2 * padX
-        let count = CGFloat(list.timeBand?.lanes.count ?? 0)
-        let axisTop = height - pad - CGFloat(Look.Side.timeBandPaddingBottom) - axisH
-        axis = CGRect(x: bandX, y: axisTop, width: bandW, height: axisH)
-        let lanesTop = axisTop - count * laneH
-        lanes = (0..<Int(count)).map {
-            CGRect(x: bandX, y: lanesTop + CGFloat($0) * laneH, width: bandW, height: laneH)
-        }
-        bandHeader = CGRect(x: bandX, y: lanesTop - headerH, width: bandW, height: headerH)
     }
 
     /// Where the selection chip rests for a row; nil for a row not listed.
     func chip(for id: String?) -> CGRect? {
         id.flatMap { rows[$0] }
-    }
-
-    /// How wide the part of a lane that draws time is, once the name at its
-    /// left end and the gap after it are taken off.
-    static func trackWidth(lane width: CGFloat) -> CGFloat {
-        max(width - CGFloat(Look.Side.timeLaneLabelWidth) - CGFloat(Look.Side.rowItemGap), 0)
-    }
-
-    /// The pieces of one lane, as x and width inside a lane `width` wide.
-    /// A span is clipped to the band, and one that ends before it starts or
-    /// lies wholly outside is dropped.
-    static func segments(_ lane: ControlRoomList.Lane, band: ControlRoomList.TimeBand,
-                         width: CGFloat) -> [(x: CGFloat, width: CGFloat, ongoing: Bool)] {
-        // The band's own now: it is on the wall clock and the rest of the
-        // snapshot is not.
-        let nowMs = band.nowMs
-        guard nowMs > band.startMs, width > 0 else { return [] }
-        let total = CGFloat(nowMs - band.startMs)
-        return lane.spans.compactMap { span in
-            let from = max(span.fromMs, band.startMs)
-            let to = min(span.ongoing ? nowMs : span.toMs, nowMs)
-            guard to > from else { return nil }
-            let x = CGFloat(from - band.startMs) / total * width
-            return (x, CGFloat(to - from) / total * width, span.ongoing)
-        }
     }
 }
 
@@ -518,40 +460,37 @@ enum ControlRoomChipSpring {
 // MARK: - Made-up data
 
 extension ControlRoomList {
-    /// The design's own example, with the parts the snapshot does not carry
-    /// yet. For still pictures and tests; nothing reads it in a running app.
+    /// The design's own example (v18, direction A), for still pictures and
+    /// tests: four groups waiting, four that need nothing.
     static let sample: ControlRoomList = {
-        let minute: UInt64 = 60_000
-        let start: UInt64 = 9 * 60 * minute
-        let now: UInt64 = start + 400 * minute
-        func span(_ from: Double, _ width: Double, ongoing: Bool = false) -> Span {
-            let total = Double(now - start)
-            return Span(fromMs: start + UInt64(from / 100 * total),
-                        toMs: start + UInt64((from + width) / 100 * total), ongoing: ongoing)
-        }
+        let supervisor = Waiter(is: .supervisor, name: "")
         return ControlRoomList(
-            waitingCount: 3,
+            waitingCount: 4,
             waiting: [
-                Row(id: "web-app", shown: .needsYou, word: "等批准", detail: "rm -rf dist/ && npm run build",
-                    detailIsCode: true, waitedMin: 4, others: 1, pulses: false),
-                Row(id: "billing", shown: .needsYou, word: "等回答", detail: "「发票编号要按租户分开吗？」",
-                    detailIsCode: false, waitedMin: 11, others: 0, pulses: true),
-                Row(id: "docs-site", shown: .trouble, word: "出错", detail: "限流，13:40 重置",
-                    detailIsCode: false, waitedMin: 2, others: 0, pulses: false),
+                Row(id: "billing", shown: .needsYou, word: "等回答", waiter: supervisor,
+                    what: What(form: .words, lines: [
+                        "发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号；改的那几天新开的发票先用哪一种，财务对账的报表是不是也要跟着改，还是等月底结账以后再统一处理？",
+                    ]), others: 0, pulses: true),
+                Row(id: "web-app", shown: .needsYou, word: "等批准", waiter: supervisor,
+                    what: What(form: .command, lines: [
+                        "rm -rf dist/ .cache/ node_modules/.vite", "&& npm ci", "&& npm run build -- --mode production",
+                    ]), others: 0, pulses: false),
+                Row(id: "mobile", shown: .needsYou, word: "等批准",
+                    waiter: Waiter(is: .workerViaSupervisor, name: "ios-build"),
+                    what: What(form: .command, lines: ["git push --force-with-lease origin release/2.4"]),
+                    others: 0, pulses: false),
+                Row(id: "docs-site", shown: .trouble, word: "出错", waiter: supervisor,
+                    what: What(form: .words, lines: ["调用次数用完了，13:40 恢复。"]), others: 0, pulses: false),
             ],
-            quietCount: 2,
+            quietCount: 4,
             quiet: [
-                Row(id: "infra", shown: .doneUnseen, word: "做完了，没看", detail: "",
-                    detailIsCode: false, waitedMin: nil, others: 0, pulses: false),
-                Row(id: "design-system", shown: .working, word: "在干活", detail: "",
-                    detailIsCode: false, waitedMin: nil, others: 0, pulses: false),
-            ],
-            timeBand: TimeBand(
-                startMs: start, nowMs: now, startLabel: "09:00", totalMinutes: 47,
-                lanes: [
-                    Lane(name: "web-app", spans: [span(44, 5), span(93, 7, ongoing: true)]),
-                    Lane(name: "billing", spans: [span(14, 8), span(62, 4), span(81, 19, ongoing: true)]),
-                    Lane(name: "docs-site", spans: [span(27, 6), span(96.5, 3.5, ongoing: true)]),
-                ]))
+                Row(id: "infra", shown: .doneUnseen, word: "做完了，没看", waiter: .none,
+                    what: What(form: .words, lines: ["迁移脚本写完了，12 条测试全过"]), others: 0, pulses: false),
+                Row(id: "design-system", shown: .working, word: "在干活", waiter: .none,
+                    what: What(form: .words, lines: ["在改按钮的三种尺寸"]), others: 0, pulses: false),
+                Row(id: "search", shown: .working, word: "在干活", waiter: .none,
+                    what: What(form: .words, lines: ["在重建搜索索引，跑到第 2 步，共 5 步"]), others: 0, pulses: false),
+                Row(id: "notes", shown: .none, word: "", waiter: .none, what: .none, others: 0, pulses: false),
+            ])
     }()
 }

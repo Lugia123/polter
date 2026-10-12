@@ -6,7 +6,7 @@
 //! | [`look`] | what it looks like: sizes, colours, durations, light and dark (generated) |
 //! | [`snapshot`] | the core's snapshot, read; an unknown glyph is an error |
 //! | [`list`] | the rows in their two sections, what each says, where the selection goes |
-//! | [`layout`] | where everything in the list panel is; the time band's pieces; the chip's spring |
+//! | [`layout`] | where everything in the list panel is; the chip's spring |
 //! | [`pulse`] | which waiting glyph breathes; what a window tab carries and whether it is drawn |
 //! | [`act`] | the person's acts as requests to the core, what a refusal says, when looking marks a group seen |
 //! | [`lend`] | which terminal is shown on the right, and what happens to it when anything changes |

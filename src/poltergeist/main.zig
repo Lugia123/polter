@@ -16,6 +16,7 @@ pub const Chat = @import("Chat.zig");
 pub const ControlAct = @import("ControlAct.zig");
 pub const ControlRoom = @import("ControlRoom.zig");
 pub const ControlWake = @import("ControlWake.zig");
+pub const ShellSteps = @import("ShellSteps.zig");
 pub const Attention = @import("Attention.zig");
 pub const actions = @import("actions.zig");
 pub const keys = @import("keys.zig");
@@ -82,6 +83,7 @@ test {
     _ = ControlAct;
     _ = ControlRoom;
     _ = ControlWake;
+    _ = ShellSteps;
     _ = ChatLog;
     _ = Feed;
     _ = GroupLog;

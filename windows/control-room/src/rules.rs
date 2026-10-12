@@ -191,7 +191,7 @@ mod tests {
             }
         }
         // A reader that stopped matching would find nothing to complain of.
-        assert!(marked >= 19, "only {marked} sentences were read");
+        assert!(marked >= 16, "only {marked} sentences were read");
         // Not marked, on purpose: `act::Refusal::message`. Nothing shows a
         // refusal to the person now -- the one act the control room sends is
         // "seen", and a refusal of that goes to the log -- so those

@@ -657,9 +657,9 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
             .{ .quiescence_ms = self.control_still_ms },
             self.poltergeist.config,
         ),
+        .tasks = &self.tasks,
         .now_ms = now_ms,
         .wall_ms = @intCast(@max(0, wall_ms)),
-        .local_offset_ms = poltergeistpkg.daylog.localOffsetMs(wall_ms),
     }, if (dirty) .event else .timer) catch |err| {
         log.warn("control room: could not work out the snapshot err={}", .{err});
         return;
@@ -5590,7 +5590,6 @@ fn chatRename(
         .chat_groups => try self.chat.rename(group, to),
         .task_group_field => try self.tasks.renameGroup(group, to),
         .stats_last => if (self.stats_log) |*l| try l.renameGroup(group, to),
-        .control_waits => try self.control_room.renameGroup(group, to),
     };
 
     self.reopenStoreHandles();

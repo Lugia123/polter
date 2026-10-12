@@ -16,8 +16,8 @@
 //! the same numbers.
 
 use crate::lend::{msg as lend_msg, Detail as Detail_};
-use crate::layout::{self, ListLayout, Rect};
-use crate::list::{self, Detail, List, Row};
+use crate::layout::{ListLayout, Rect};
+use crate::list::{self, List, Row};
 use crate::look::{font, line, pane, radius, selection, side, space, Rgba, Theme};
 use crate::snapshot::Shown;
 
@@ -28,10 +28,6 @@ pub mod msg {
 
     pub const WAITING_HEADER: &str = n_("{} groups waiting for you");
     pub const QUIET_HEADER: &str = n_("{} groups need nothing from you");
-    pub const MINUTES_UNIT: &str = n_("min");
-    pub const BAND_HEADER: &str = n_("Kept you waiting today");
-    pub const BAND_TOTAL: &str = n_("{} min");
-    pub const NOW: &str = n_("now");
     /// The snapshot could not be read. `{}` is what was wrong with it.
     pub const UNREADABLE: &str = n_("The control room's data could not be read ({}).");
     /// No snapshot has been worked out yet.
@@ -156,17 +152,22 @@ fn words(text: impl Into<String>, style: Style, side: Side, gap: f64) -> Part {
     Part { piece: Piece::Words { text: text.into(), style }, side, gap }
 }
 
-/// The colour of a status word and of the minutes beside it. Where the
-/// word is not red is the table's to say (`text_on`).
-fn ink(theme: &Theme, shown: Shown, selected: bool) -> (Rgba, Rgba) {
+/// The colour of a status word. Where the word is not red is the table's
+/// to say (`text_on`).
+fn ink(theme: &Theme, shown: Shown, selected: bool) -> Rgba {
     match shown {
-        Shown::NeedsYou | Shown::DoneUnseen => (theme.attention_text, theme.attention_text),
-        Shown::Trouble => (
-            if selected { theme.problem_text_on_row_selected } else { theme.problem_text_on_row },
-            theme.problem_text,
-        ),
-        Shown::Working | Shown::None => (theme.text_secondary, theme.text_secondary),
+        Shown::NeedsYou | Shown::DoneUnseen => theme.attention_text,
+        Shown::Trouble => {
+            if selected { theme.problem_text_on_row_selected } else { theme.problem_text_on_row }
+        }
+        Shown::Working | Shown::None => theme.text_secondary,
     }
+}
+
+/// Who is waiting, in the person's language; empty when there is nothing to
+/// say. Which words is `list::waiter`'s; this only translates and fills.
+fn waiter_words(row: &Row, tr: &dyn Fn(&str) -> String) -> String {
+    list::waiter(&row.waiter).map_or(String::new(), |(template, arg)| list::fill(&tr(template), &arg))
 }
 
 /// The colour a glyph is filled with.
@@ -265,59 +266,13 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
         out.push(Item::Line { rect: inset_x(rect, side::ROW_PADDING_X), parts });
     }
 
-    // Today's waiting, hung from the bottom.
-    let band = &list.band;
-    out.push(hair(at.band_header, panel));
-    out.push(Item::Text {
-        rect: at.band_header,
-        text: tr(msg::BAND_HEADER),
-        style: body(theme.text_secondary),
-        align: Align::Left,
-    });
-    out.push(Item::Text {
-        rect: at.band_header,
-        text: list::fill(&tr(msg::BAND_TOTAL), &band.total_min.to_string()),
-        style: Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.text) },
-        align: Align::Right,
-    });
-    for (lane, rect) in band.lanes.iter().zip(at.lanes.iter()) {
-        out.push(Item::Text {
-            rect: Rect { x: rect.x, y: rect.y, w: side::TIME_LANE_LABEL_WIDTH, h: rect.h },
-            text: lane.name.clone(),
-            style: Style { size: font::MIN, weight: font::WEIGHT_BODY, face: Face::Mono, color: theme.text_secondary },
-            align: Align::Left,
-        });
-        let track_x = rect.x + side::TIME_LANE_LABEL_WIDTH + side::ROW_ITEM_GAP;
-        let track_w = layout::track_width(rect.w);
-        let mid = rect.y + rect.h / 2.0;
-        out.push(fill(
-            Rect { x: track_x, y: mid - line::STROKE / 2.0, w: track_w, h: line::STROKE },
-            over(panel, theme.line, 1.0),
-        ));
-        for piece in layout::segments(lane, band, track_w) {
-            out.push(Item::Round {
-                rect: Rect {
-                    x: track_x + piece.x,
-                    y: mid - side::TIME_SEGMENT_HEIGHT / 2.0,
-                    w: piece.w,
-                    h: side::TIME_SEGMENT_HEIGHT,
-                },
-                radius: side::TIME_SEGMENT_RADIUS,
-                color: if piece.ongoing { theme.text } else { theme.text_secondary },
-                edge: None,
-            });
-        }
-    }
-    out.push(Item::Text { rect: at.axis, text: band.start_label.clone(), style: body(theme.text_tertiary), align: Align::Left });
-    out.push(Item::Text { rect: at.axis, text: tr(msg::NOW), style: body(theme.text_tertiary), align: Align::Right });
-
     out
 }
 
 fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View, tr: &dyn Fn(&str) -> String) {
     let theme = view.theme;
     let selected = view.selection == Some(row.id.as_str());
-    let (word_ink, minutes_ink) = ink(theme, row.shown, selected);
+    let word_ink = ink(theme, row.shown, selected);
     let inner = Rect {
         x: rect.x + side::ROW_PADDING_X,
         y: rect.y + side::ROW_PADDING_Y,
@@ -325,7 +280,7 @@ fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View, tr: &dyn
         h: (rect.h - 2.0 * side::ROW_PADDING_Y).max(0.0),
     };
 
-    // First line: the name, and how long it has waited.
+    // First line: the name, and who is waiting.
     let mut first = vec![words(
         row.id.clone(),
         Style {
@@ -337,31 +292,18 @@ fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View, tr: &dyn
         Side::Rest,
         0.0,
     )];
-    let line1 = Rect { x: inner.x, y: inner.y, w: inner.w, h: side::ROW_LINE1_HEIGHT };
-    out.push(Item::Line { rect: line1, parts: std::mem::take(&mut first) });
-    if let Some(minutes) = row.waited_min {
-        // Two fixed columns at the right end, so the numbers of every row
-        // end on one line whatever their width.
-        let unit_x = line1.x + line1.w - side::MINUTES_UNIT_WIDTH;
-        out.push(Item::Text {
-            rect: Rect { x: unit_x - side::MINUTES_WIDTH, y: line1.y, w: side::MINUTES_WIDTH, h: line1.h },
-            text: minutes.to_string(),
-            style: Style { size: font::MINUTES, weight: font::WEIGHT_STRONG, face: Face::Ui, color: minutes_ink },
-            align: Align::Right,
-        });
-        out.push(Item::Text {
-            rect: Rect { x: unit_x, y: line1.y, w: side::MINUTES_UNIT_WIDTH, h: line1.h },
-            text: tr(msg::MINUTES_UNIT),
-            style: body(theme.text_secondary),
-            align: Align::Right,
-        });
+    let who = waiter_words(row, tr);
+    if !who.is_empty() {
+        first.push(words(who, body(theme.text_secondary), Side::Trail, side::ROW_ITEM_GAP));
     }
+    let line1 = Rect { x: inner.x, y: inner.y, w: inner.w, h: side::ROW_LINE1_HEIGHT };
+    out.push(Item::Line { rect: line1, parts: first });
 
     // Second line: the glyph, which of the four it is, and what it waits on.
-    let detail = match &row.detail {
-        Detail::Reason(text) => text.clone(),
-        Detail::SameAs(other) => list::fill(&tr(list::msg::SAME_SUPERVISOR), other),
-    };
+    // NOT YET THE NEW LAYOUT: the steps of a command are run together on
+    // this one line. The design sets one step to a line under the name
+    // (control-room.md, 3.5); `row.what.lines` is already cut that way.
+    let detail = row.what.lines.join(" ");
     let mut parts = vec![
         Part {
             piece: Piece::Glyph {
@@ -376,7 +318,7 @@ fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View, tr: &dyn
         words(row.word.clone(), Style { weight: font::WEIGHT_EMPHASIS, ..body(word_ink) }, Side::Lead, side::STATUS_WORD_GAP),
         words(
             detail,
-            Style { face: if row.detail_is_code { Face::Mono } else { Face::Ui }, ..body(theme.text_secondary) },
+            Style { face: if list::is_code(&row.what) { Face::Mono } else { Face::Ui }, ..body(theme.text_secondary) },
             Side::Rest,
             side::ROW_ITEM_GAP,
         ),
@@ -396,24 +338,20 @@ fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View, tr: &dyn
 }
 
 /// What a row says when it is read out rather than looked at: the group,
-/// which of the four it is, what it waits on, how long, and how many others
-/// -- the same things the row draws, in the order it draws them, with the
-/// glyph's meaning carried by the status word beside it.
+/// who is waiting, which of the four it is, what it waits on, and how many
+/// others -- the same things the row draws, with the glyph's meaning carried
+/// by the status word.
 pub fn spoken(row: &Row, tr: &dyn Fn(&str) -> String) -> String {
     let mut parts = vec![row.id.clone()];
+    let who = waiter_words(row, tr);
+    if !who.is_empty() {
+        parts.push(who);
+    }
     if !row.word.is_empty() {
         parts.push(row.word.clone());
     }
-    let detail = match &row.detail {
-        Detail::Reason(text) => text.clone(),
-        Detail::SameAs(other) => list::fill(&tr(list::msg::SAME_SUPERVISOR), other),
-    };
-    if !detail.is_empty() {
-        parts.push(detail);
-    }
-    if let Some(minutes) = row.waited_min {
-        parts.push(list::fill(&tr(msg::BAND_TOTAL), &minutes.to_string()));
-    }
+    // Every step, whole: nothing read out is cut short.
+    parts.extend(row.what.lines.iter().filter(|l| !l.is_empty()).cloned());
     if let Some((template, n)) = list::others(row.others) {
         parts.push(list::fill(&tr(template), &n));
     }
@@ -551,9 +489,6 @@ pub fn build_right(
                 });
             }
             parts.push(words(row.word.clone(), Style { weight: font::WEIGHT_EMPHASIS, ..body(word_ink) }, Side::Trail, side::STATUS_WORD_GAP));
-            if let Some(minutes) = row.waited_min {
-                parts.push(words(list::fill(&tr(msg::BAND_TOTAL), &minutes.to_string()), body(theme.text_secondary), Side::Trail, pane::BAR_GAP));
-            }
         }
         items.push(Item::Line { rect: bar, parts });
         // The terminal's own ground, for the moment before the terminal's
@@ -765,11 +700,6 @@ mod tests {
                     lines += 1;
                 }
                 Item::Text { rect, align: Align::Left, .. } => assert_eq!(rect.x, want, "{item:?}"),
-                // The minutes stand one fixed column in from the right edge,
-                // so that the unit after them ends on it.
-                Item::Text { rect, align: Align::Right, style, .. } if style.size == font::MINUTES => {
-                    assert_eq!(rect.x + rect.w, side::WIDTH - want - side::MINUTES_UNIT_WIDTH, "{item:?}")
-                }
                 Item::Text { rect, align: Align::Right, .. } => assert_eq!(rect.x + rect.w, side::WIDTH - want, "{item:?}"),
                 Item::Text { .. } | Item::Fill { .. } | Item::Round { .. } => {}
             }
@@ -879,11 +809,12 @@ mod tests {
             if !row.word.is_empty() {
                 assert!(said.contains(&row.word), "{said} leaves out the status word {:?}", row.word);
             }
-            if let Detail::Reason(text) = &row.detail {
-                assert!(said.contains(text.as_str()), "{said}");
+            // Every step of what it waits on, none dropped.
+            for line in &row.what.lines {
+                assert!(said.contains(line.as_str()), "{said} leaves out {line:?}");
             }
-            if let Some(minutes) = row.waited_min {
-                assert!(said.contains(&format!("{minutes} min")), "{said}");
+            if let Some((template, arg)) = list::waiter(&row.waiter) {
+                assert!(said.contains(&list::fill(template, &arg)), "{said} does not say who is waiting");
             }
             if row.others > 0 {
                 assert!(said.contains(&format!("{} more", row.others)), "{said}");

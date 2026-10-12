@@ -28,11 +28,18 @@ matching the taskbar badge the first time the core's rule moves.
      badge is `needs_me`.
   3. Sorting. The rows come in order, and `pulses` comes in order.
   4. Comparing times to pick a winner: `min_by` / `max_by` and their kin.
+  5. Working out whether the one waiting is the supervisor: `steward`
+     compared with a terminal (`terminal`, `attention`, `about`) on one
+     line. The core says who waits (`waiter.is`: the supervisor itself, a
+     worker through it, a worker of a group with none, a terminal alone),
+     and a host that compares the two ids has its own answer for the day
+     the core's rule about a worker's first minute moves. Finding the
+     supervisor's member by its id (`$0.id == steward`) is not this.
 
-Counting *lanes* is not refused: how many lanes the band has is how tall it
-is, which is layout. Neither is the index of the last row (`rows.count - 1`,
-`rows.len() - 1`): that is where the arrow key stops, not a number anybody is
-shown.
+Counting the *lines* of what a row waits on is not refused: how many there
+are is how tall the row is, which is layout. Neither is the index of the last
+row (`rows.count - 1`, `rows.len() - 1`): that is where the arrow key stops,
+not a number anybody is shown.
 
 **NOT CHECKED.**
 
@@ -73,12 +80,19 @@ ROWS = r"(?:waiting|quiet|groups|rows(?:\(\))?)"
 
 LAST_INDEX = re.compile(r"\s*\)?\s*-\s*1\b")
 
+# `steward` on one side of a comparison and a terminal on the other.
+TERMINAL = r"(?:terminal|attention|about)\b"
+IS_SUPERVISOR = re.compile(
+    r"\bsteward\b[^;\n]*[=!]=[^;\n]*" + TERMINAL + r"|" + TERMINAL + r"[^;\n]*[=!]=[^;\n]*\bsteward\b")
+WHO = "works out whether the supervisor is the one waiting"
+
 RUST_RULES = [
     ("reads the core's kind", re.compile(r'"(?:kind|under)"|\.\s*(?:kind|under)\b')),
     ("counts rows", re.compile(ROWS + r"\s*\.\s*(?:len|count)\s*\(")),
     ("counts rows", re.compile(ROWS + r"\b[^;\n]*\.\s*filter\s*\([^;\n]*\.\s*count\s*\(")),
     ("sorts", re.compile(r"\.\s*sort(?:_by|_by_key|_unstable|_unstable_by|_unstable_by_key)?\s*\(")),
     ("picks a winner by comparing", re.compile(r"\.\s*(?:min|max)_by(?:_key)?\s*\(")),
+    (WHO, IS_SUPERVISOR),
 ]
 SWIFT_RULES = [
     ("reads the core's kind", re.compile(r'"(?:kind|under)"|\.\s*(?:kind|under)\b|\bvar\s+(?:kind|under)\b')),
@@ -86,6 +100,7 @@ SWIFT_RULES = [
     ("counts rows", re.compile(r"\b" + ROWS + r"\b[^\n]*\.\s*filter\b[^\n]*\.\s*count\b")),
     ("sorts", re.compile(r"\.\s*(?:sort|sorted)\s*[\(\{]")),
     ("picks a winner by comparing", re.compile(r"\.\s*(?:min|max)\s*\(\s*by\s*:")),
+    (WHO, IS_SUPERVISOR),
 ]
 
 
@@ -132,9 +147,13 @@ def self_test():
         'if group.kind == "failed" { }',
         'rows.sort_by(|a, b| a.since_ms.cmp(&b.since_ms));',
         'let first = pulses.iter().min_by_key(|p| p.since_ms);',
+        'let own = row.steward == row.terminal;',
+        'if g.terminal.as_deref() != g.steward.as_deref() { via() }',
     ]
     rust_ok = [
-        'let lanes = list.band.lanes.len();',
+        'let lines = row.what.lines.len();',
+        'match w.is { WaiterIs::Supervisor => own(), _ => other() }',
+        'let loan = Loan { group: with.id.clone(), terminal: with.steward.clone().unwrap() };',
         'for row in &list.waiting {',
         'waiting_count: s.groups_needing_me,',
         'if g.needs_me { waiting.push(row); }',
@@ -149,9 +168,13 @@ def self_test():
         'var kind: String',
         'if group.kind == "failed" {',
         'let rows = snapshot.groups.sorted { $0.name < $1.name }',
+        'if group.attention?.terminal == steward {',
+        'let own = group.steward == row.target?.terminal',
     ]
     swift_ok = [
-        'let count = CGFloat(list.timeBand?.lanes.count ?? 0)',
+        'let count = CGFloat(row.what.lines.count)',
+        'let member = group.members?.first(where: { $0.id == steward })',
+        'if row.waiter.is == .supervisor { return supervisor }',
         'waiting: rows.filter { $0.0 }.map { $0.1 },',
         'waitingCount: snapshot.groups_needing_me,',
         '/// not `waiting.count`',
@@ -212,7 +235,7 @@ def main():
     print(f"scanned {len(rust) + len(swift)} files ({len(rust)} Rust, {len(swift)} Swift)")
     if bad:
         print(f"FAIL: {bad} line(s) where a host decides what the snapshot already says. "
-              "Read the field the core sends (`shown`, `text`, `needs_me`, "
+              "Read the field the core sends (`shown`, `text`, `needs_me`, `waiter`, "
               "`groups_needing_me`, `groups_other`, the order of `groups` and `pulses`) "
               "instead of working it out.")
         return 1
