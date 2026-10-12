@@ -93,10 +93,12 @@ struct ControlRoomSupervisorTitleTests {
 
     @Test func theNumberIsReadFromTheSnapshotsNeedsMe() throws {
         let snapshot = try snapshot()
-        #expect(snapshot.needs_me == 5)
-        // Not the count of rows, which is another number.
+        // Every row that waits is one: the five groups the list's header
+        // counts, and one terminal that is in no group. The Dock's number
+        // is the core's, and the host adds nothing up to get it.
         #expect(snapshot.groups_needing_me == 5)
+        #expect(snapshot.needs_me == 6)
         #expect(snapshot.groups.count == 8)
-        #expect(ControlRoomRules.dockBadge(needsMe: snapshot.needs_me, bells: nil) == "5")
+        #expect(ControlRoomRules.dockBadge(needsMe: snapshot.needs_me, bells: nil) == "6")
     }
 }

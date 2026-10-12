@@ -119,6 +119,16 @@ ASSIGN = re.compile(
     r'stringValue|toolTip|label)\s*=\s*"'
 )
 
+# `text = "Process exited. Press any key..."`: a bare name, no dot. A `let
+# title: String` filled in by an `if` and handed to a call two lines later,
+# or a struct's own `text` set in its `init` and drawn by a view elsewhere.
+# The bar a terminal shows when its process ends was English in a Chinese
+# build that way (a real window, 2026-10-13), with this file green: the
+# literal met no call and no dotted assignment. Only at the start of a
+# statement, and only these three names, which are what the words on screen
+# are called; `self.` in front is the dotted form above.
+BARE_ASSIGN = re.compile(r'^\s*(text|title|body)\s*=\s*"')
+
 
 def swift_literal_at(line: str, start: int):
     r"""The whole Swift string literal beginning at `start`, or None.
@@ -167,6 +177,10 @@ def visible_literals(line: str):
         if text is not None:
             yield m.group(1).rstrip("(").rstrip(":").split("(")[0], text
     for m in ASSIGN.finditer(line):
+        text = swift_literal_at(line, m.end())
+        if text is not None:
+            yield m.group(1), text
+    for m in BARE_ASSIGN.finditer(line):
         text = swift_literal_at(line, m.end())
         if text is not None:
             yield m.group(1), text
@@ -284,6 +298,10 @@ def self_test() -> None:
     assert not is_formatting_only(r"Version: \(v)"), "probe: a real word was called formatting"
     assert looks_like_an_identifier("poltergeist_toggle_held"), "probe: identifier not seen"
     assert not looks_like_an_identifier("Update Available"), "probe: a sentence called an identifier"
+    bare = list(visible_literals('                text = "Process exited. Press any key to close the terminal."'))
+    assert bare == [("text", "Process exited. Press any key to close the terminal.")], f"probe: a bare assignment not seen: {bare}"
+    assert not list(visible_literals('        let key = "title"')), "probe: a constant called a bare assignment"
+    assert not list(visible_literals('            subtitle = "x"')), "probe: another name called a bare assignment"
 
     sample = 'Text("Update Available")'
     assert list(visible_literals(sample)), "probe: a visible literal was not matched"

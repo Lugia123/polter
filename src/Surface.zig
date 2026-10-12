@@ -1681,7 +1681,9 @@ fn childExited(self: *Surface, info: apprt.surface.Message.ChildExited) void {
             if (info.exit_code == 0) break :runtime;
         }
 
-        log.warn("abnormal process exit detected, showing error message", .{});
+        // Which terminal: several end in one test, and a line that does not
+        // say has been read as being about the wrong one.
+        log.warn("abnormal process exit detected, showing error message terminal=0x{x:0>16}", .{self.id});
 
         // The one way a terminal's process ending is known to be a failure
         // rather than the person closing it; the control room reads it.

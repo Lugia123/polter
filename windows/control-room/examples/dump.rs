@@ -68,7 +68,8 @@ fn row(section: &str, r: &Row) {
         r.terminal.as_deref().unwrap_or("-")
     );
     // What it waits on, every line of it and whole.
-    for (n, line) in r.what.lines.iter().enumerate() {
+    println!("cut id={} cut={}", r.id, r.what.cut.name());
+    for (n, line) in list::drawn(&r.what).iter().enumerate() {
         println!("what id={} n={n} line={}", r.id, quote(line));
     }
 }

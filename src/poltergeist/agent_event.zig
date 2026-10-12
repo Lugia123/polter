@@ -182,6 +182,19 @@ fn claudeCode(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error
             !std.mem.eql(u8, kind, "elicitation_dialog")) return error.Ignored;
         ev.event = .awaiting_input;
         ev.detail = kind;
+        // A dialog's message is the question itself, so it is carried: a
+        // first line of it, and all of it. `idle_prompt` says only that
+        // the agent is waiting ("Claude is waiting for your input"); what
+        // it asked is the end of its last turn, which `Stop` already sent.
+        if (std.mem.eql(u8, kind, "elicitation_dialog")) {
+            if (try optionalString(obj, "message")) |message| {
+                if (message.len > 0) {
+                    ev.note = try oneLine(arena, prefixChars(message, summary_chars));
+                    ev.text = cutBytes(message, max_text_bytes);
+                    ev.text_bytes = message.len;
+                }
+            }
+        }
     } else return error.UnknownEvent;
 
     return ev;
@@ -494,6 +507,34 @@ test "prefixChars counts characters, not bytes" {
     try testing.expectEqualStrings("ab", prefixChars("abc", 2));
     try testing.expectEqualStrings("中文", prefixChars("中文字", 2));
     try testing.expectEqualStrings("", prefixChars("", 5));
+}
+
+test "claude-code Notification: a dialog's question is carried whole, an idle prompt's boilerplate is not" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Longer than the summary and than the 160 bytes the bus keeps of a note.
+    var question: std.ArrayListUnmanaged(u8) = .empty;
+    for (0..40) |_| try question.appendSlice(a, "发票编号要按租户分开吗？");
+    const payload = try std.fmt.allocPrint(a,
+        \\{{"session_id":"s","hook_event_name":"Notification","message":"{s}","notification_type":"elicitation_dialog"}}
+    , .{question.items});
+    const ev = try translate(a, "claude-code", "Notification", payload);
+    try testing.expectEqual(Kind.awaiting_input, ev.event);
+    try testing.expect(ev.text != null);
+    try testing.expect(ev.note != null);
+    try testing.expectEqualStrings(question.items, ev.text.?);
+    try testing.expectEqual(@as(u64, question.items.len), ev.text_bytes);
+    try testing.expect(ev.note.?.len < question.items.len);
+    try testing.expect(std.mem.startsWith(u8, question.items, ev.note.?));
+
+    const idle = try translate(a, "claude-code", "Notification",
+        \\{"session_id":"s","hook_event_name":"Notification","message":"Claude is waiting for your input",
+        \\ "notification_type":"idle_prompt"}
+    );
+    try testing.expectEqual(Kind.awaiting_input, idle.event);
+    try testing.expect(idle.note == null);
+    try testing.expect(idle.text == null);
 }
 
 test "cutBytes never ends inside a character" {

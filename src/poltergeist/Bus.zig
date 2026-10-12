@@ -701,8 +701,9 @@ entries: std.AutoHashMapUnmanaged(Id, Entry) = .empty,
 /// The last finished turn of each terminal that has had one; see `Turn`.
 turns: std.AutoHashMapUnmanaged(Id, Turn) = .empty,
 
-/// The whole of what each terminal is waiting to have approved, while it
-/// is waiting. Owned; outside `Entry` for the reason `turns` is.
+/// The whole of what each terminal is waiting on, while it is waiting:
+/// what is to be approved, or the question a dialog asks. Owned; outside
+/// `Entry` for the reason `turns` is.
 asks: std.AutoHashMapUnmanaged(Id, []u8) = .empty,
 
 /// There may be several supervisors, each minding its own piece of work.
@@ -1574,7 +1575,11 @@ pub fn askOf(self: *const Bus, id: Id) ?[]const u8 {
 /// An approval's whole text is kept while the approval stands; any other
 /// event means it no longer does.
 fn keepAsk(self: *Bus, id: Id, ev: AgentEvent.Event) Allocator.Error!void {
-    const whole: ?[]const u8 = if (ev.event == .awaiting_approval) ev.text else null;
+    // What is to be approved, or the question a dialog asks.
+    const whole: ?[]const u8 = switch (ev.event) {
+        .awaiting_approval, .awaiting_input => ev.text,
+        else => null,
+    };
     const text = whole orelse {
         if (self.asks.fetchRemove(id)) |kv| self.alloc.free(kv.value);
         return;

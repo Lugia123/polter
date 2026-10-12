@@ -18,9 +18,12 @@
 //!                             than the two ages, changes
 //!   "now_ms": 6000000,        the clock every *_ms below is on, except
 //!                             last_ms / seen_ms / snooze, which are wall
-//!   "needs_me": 3,            "N waiting for you": terminals, each once
+//!   "needs_me": 5,            rows that wait, a group's or a lone terminal's:
+//!                             groups_needing_me plus the rows of
+//!                             `ungrouped` with needs_me. The Dock's number
 //!   "groups_needing_me": 4,   rows in `groups` with needs_me, in a row
-//!   "groups_other": 3,        from the top; the rest
+//!                             from the top. The list's header
+//!   "groups_other": 3,        the rest of `groups`
 //!   "open_on": "web-app" | null,
 //!                             the group a control room that opens with
 //!                             nothing selected selects: the first row
@@ -61,11 +64,18 @@
 //!                             missing: empty_note | empty_detail |
 //!                             no_turn_kept | self_report_text
 //!       "what": {"form":"command",
-//!                "lines":["rm -rf dist/","&& npm ci"]},
+//!                "lines":["rm -rf dist/","&& npm ci"],
+//!                "cut":"none"},
 //!                             the same thing in the pieces it is drawn
-//!                             in, whole. form: none | command | code |
-//!                             words. A command is one step to a line; a
-//!                             host shows as many lines as it has room for
+//!                             in. form: none | command | code | words. A
+//!                             command is one step to a line; a host shows
+//!                             as many lines as it has room for.
+//!                             cut says whether lines is all of it: none |
+//!                             tail (the start of something longer: a
+//!                             summary, the whole not sent) | head (the end
+//!                             of something longer: the last paragraph of
+//!                             a turn). A host marks where the rest is and
+//!                             never shows a part as the whole
 //!       "more": 1,            other terminals in the group also waiting
 //!       "same_as": "billing" | null,
 //!                             same supervisor as that group's row, which
@@ -371,6 +381,20 @@ pub const Reason = struct {
 pub const What = struct {
     form: Form,
     lines: []const []const u8,
+    /// Whether `lines` is all of it. A host must not show a part as the
+    /// whole: it marks where the rest would be.
+    cut: Cut,
+
+    pub const Cut = enum {
+        /// `lines` is everything that was said.
+        none,
+        /// `lines` is the start of something longer, or may be: a summary
+        /// that reached its limit, with the whole not sent.
+        tail,
+        /// `lines` is the end of something longer: the last paragraph of a
+        /// turn, where a question asked in prose is.
+        head,
+    };
 
     pub const Form = enum {
         /// Nothing to say: `lines` is empty and a host draws no line.
@@ -386,7 +410,7 @@ pub const What = struct {
         words,
     };
 
-    pub const none: What = .{ .form = .none, .lines = &.{} };
+    pub const none: What = .{ .form = .none, .lines = &.{}, .cut = .none };
 };
 
 /// Who is waiting: the terminal a waiting row is about, as one of the things
@@ -630,6 +654,41 @@ fn lastLine(text: []const u8) []const u8 {
     return "";
 }
 
+/// The last paragraph of what the agent said, on one line: where a question
+/// asked in prose is, all of it. `rest` says whether anything came before.
+fn lastParagraph(arena: Allocator, text: []const u8) Allocator.Error!struct { text: []const u8, rest: bool } {
+    const all = std.mem.trimEnd(u8, text, " \t\r\n");
+    var start: usize = 0;
+    var i: usize = all.len;
+    // Back to the last line that is empty or only spaces.
+    var line_end = all.len;
+    while (i > 0) : (i -= 1) {
+        if (all[i - 1] != '\n') continue;
+        if (std.mem.trim(u8, all[i..line_end], " \t\r").len == 0) {
+            start = line_end;
+            break;
+        }
+        line_end = i - 1;
+    }
+    const para = std.mem.trim(u8, all[start..], " \t\r\n");
+    const out = try arena.dupe(u8, para);
+    for (out) |*c| if (c.* == '\n' or c.* == '\r' or c.* == '\t') {
+        c.* = ' ';
+    };
+    return .{ .text = out, .rest = std.mem.trim(u8, all[0..start], " \t\r\n").len > 0 };
+}
+
+/// Whether a hook's one-line note may be less than what was said: it is as
+/// long as the bus keeps one (`Bus.Agent.note`), or as the summary `+hook`
+/// makes (`AgentEvent.summary_chars`). A note shorter than both is whole.
+fn noteMayBeCut(note: []const u8) bool {
+    if (note.len + 4 > note_bytes) return true;
+    return (std.unicode.utf8CountCodepoints(note) catch note.len) >= AgentEvent.summary_chars;
+}
+
+/// How many bytes of a note the bus keeps.
+const note_bytes = @typeInfo(@FieldType(@FieldType(Bus.Agent, "note"), "buf")).array.len;
+
 fn cut(text: []const u8, limit: usize) []const u8 {
     if (text.len <= limit) return text;
     var n = limit;
@@ -654,8 +713,13 @@ fn reasonOf(
         },
         .needs_answer => {
             if (s.source == .self_report) return .lacking(.none, .self_report_text);
-            const note = agent.note.get() orelse return .lacking(.hook_note, .empty_note);
-            return .{ .from = .hook_note, .text = try arena.dupe(u8, note), .missing = null };
+            if (agent.note.get()) |note| return .{ .from = .hook_note, .text = try arena.dupe(u8, note), .missing = null };
+            // No note: the hook said only that it is waiting. What it asked
+            // is how its last turn ended.
+            const turn = in.bus.turnOf(s.id) orelse return .lacking(.hook_note, .empty_note);
+            const line = lastLine(turn.text);
+            if (line.len == 0) return .lacking(.hook_note, .empty_note);
+            return .{ .from = .last_turn, .text = try arena.dupe(u8, line), .missing = null };
         },
         .failed => {
             if (s.source == .process) return .{ .from = .process, .text = Reason.words.process_exited, .missing = null };
@@ -710,19 +774,54 @@ fn workingOn(arena: Allocator, in: Input, id: Id, group: ?[]const u8) ?[]const u
 
 /// A row's `what`: its reason, in the pieces it is drawn in.
 fn whatOf(arena: Allocator, in: Input, s: Attention.Status, reason: Reason) Allocator.Error!What {
+    // All of what the hook sent, when it sent all of it. One that reached
+    // the limit `+hook` cuts at may have had more.
+    const asked = in.bus.askOf(s.id);
+    const asked_cut: What.Cut = if (asked) |a| (if (a.len + 4 > AgentEvent.max_text_bytes) .tail else .none) else .none;
+    const note_cut: What.Cut = if (reason.from == .hook_note and noteMayBeCut(reason.text)) .tail else .none;
+
     if (s.kind == .needs_approval) {
         const agent = in.bus.agentOf(s.id);
-        // The whole of what is to be approved when the hook sent it; the
-        // one-line summary otherwise.
-        const asked = in.bus.askOf(s.id) orelse reason.text;
-        if (asked.len == 0) return .none;
+        const text = asked orelse reason.text;
+        if (text.len == 0) return .none;
+        const how: What.Cut = if (asked != null) asked_cut else note_cut;
         switch (AgentEvent.toolKind(agent.detail.get())) {
-            .shell => return .{ .form = .command, .lines = try ShellSteps.split(arena, try arena.dupe(u8, asked)) },
-            .literal => return .{ .form = .code, .lines = try one(arena, asked) },
+            .shell => return .{ .form = .command, .lines = try ShellSteps.split(arena, try arena.dupe(u8, text)), .cut = how },
+            .literal => return .{ .form = .code, .lines = try one(arena, text), .cut = how },
+        }
+    }
+    if (s.kind == .needs_answer) {
+        // A dialog's question, whole.
+        if (asked) |a| {
+            if (a.len > 0) return .{ .form = .words, .lines = try one(arena, a), .cut = asked_cut };
+        }
+        // A question asked in prose: the paragraph its last turn ended on,
+        // all of that paragraph, and said to be the end of something when
+        // there was more before it.
+        if (reason.from == .last_turn) {
+            if (in.bus.turnOf(s.id)) |turn| {
+                const para = try lastParagraph(arena, turn.text);
+                if (para.text.len > 0) {
+                    const shortened = turn.text_bytes > turn.text.len;
+                    return .{ .form = .words, .lines = try one(arena, para.text), .cut = if (para.rest or shortened) .head else .none };
+                }
+            }
         }
     }
     if (reason.text.len == 0) return .none;
-    return .{ .form = .words, .lines = try one(arena, reason.text) };
+    // Everything else is the reason line. A last line is the end of a turn;
+    // a hook's note may have been cut.
+    const how: What.Cut = switch (reason.from) {
+        .hook_note => note_cut,
+        .hook_detail => if (noteMayBeCut(in.bus.agentOf(s.id).note.get() orelse "")) .tail else .none,
+        .last_turn => how: {
+            const turn = in.bus.turnOf(s.id) orelse break :how .none;
+            const whole = std.mem.trim(u8, turn.text, " \t\r\n");
+            break :how if (whole.len > reason.text.len) .head else .none;
+        },
+        .process, .clocks, .hooks, .task, .none => .none,
+    };
+    return .{ .form = .words, .lines = try one(arena, reason.text), .cut = how };
 }
 
 fn one(arena: Allocator, text: []const u8) Allocator.Error![]const []const u8 {
@@ -953,13 +1052,17 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
     for (rows.items, 0..) |*r, i| {
         if (r.attention.what != .own) continue;
         const t = r.attention.terminal orelse continue;
-        var lead = i;
+        // The first of them in the list leads unless a later one was
+        // spoken in more recently. Starting from this row instead would
+        // leave two groups nobody has spoken in each leading itself, and
+        // neither pointing at the other.
+        var lead: ?usize = null;
         for (rows.items, 0..) |o, j| {
             if (o.attention.what != .own or o.attention.terminal == null) continue;
             if (o.attention.terminal.? != t) continue;
-            if (o.row.last_ms > rows.items[lead].row.last_ms) lead = j;
+            if (lead == null or o.row.last_ms > rows.items[lead.?].row.last_ms) lead = j;
         }
-        if (lead != i) r.row.same_as = rows.items[lead].row.name;
+        if (lead.? != i) r.row.same_as = rows.items[lead.?].row.name;
     }
 
     // Terminals on their own (4.6): a supervisor with no group, and an
@@ -1075,26 +1178,34 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         if (r.has_agent) break r.row.name;
     } else if (rows.items.len > 0) rows.items[0].row.name else null;
 
-    // The count, from the one function that counts.
-    var counted: std.ArrayListUnmanaged(Attention) = .empty;
+    // The counts. **One meaning for every number the person is shown**:
+    // a row that waits is one, whether it is a group's or a lone
+    // terminal's. So `needs_me` -- the Dock -- is `groups_needing_me` --
+    // the list's header -- plus the lone terminals that wait, and with no
+    // lone terminal waiting the two are the same number.
+    //
+    // It used to count the terminals behind the rows, each once, so that
+    // one supervisor minding three groups was 1. On a real window that
+    // read as four rows under "4 groups waiting for you" and a 3 on the
+    // Dock, with no way to tell which was right (verify-cr-03). 暂定.
     var needing: usize = 0;
     const group_rows = try arena.alloc(GroupRow, rows.items.len);
     for (rows.items, group_rows) |r, *out| {
         out.* = r.row;
-        try counted.append(arena, r.attention);
         if (r.row.needs_me) needing += 1;
     }
+    var lone_needing: usize = 0;
     const lone_rows = try arena.alloc(LoneRow, lone.items.len);
     for (lone.items, lone_rows) |r, *out| {
         out.* = r.row;
-        try counted.append(arena, r.attention);
+        if (r.row.needs_me) lone_needing += 1;
     }
 
     return .{
         .snapshot = .{
             .rev = 0,
             .now_ms = in.now_ms,
-            .needs_me = Attention.needsMeCount(counted.items),
+            .needs_me = needing + lone_needing,
             .groups_needing_me = needing,
             .groups_other = group_rows.len - needing,
             .open_on = open_on,
@@ -1342,17 +1453,19 @@ test "ControlRoom snapshot: rows come sorted, counted, and with what they draw" 
     try testing.expectEqual(@as(usize, 3), s.groups_other);
 }
 
-test "ControlRoom snapshot: one supervisor in two groups is counted once" {
+test "ControlRoom snapshot: one supervisor in two groups is two rows, and one of them points at the other" {
     var w = try fixtureWorld();
     defer w.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const s = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
 
-    // 0xa1 (two rows), 0xb7, 0xa2, 0xa3, and the lone 0xc1: five terminals,
-    // six rows.
-    try testing.expectEqual(@as(usize, 5), s.needs_me);
+    // Five groups wait and one lone terminal does: six rows, and six on
+    // the Dock. 0xa1 is behind two of them and is counted with each.
+    try testing.expectEqual(@as(usize, 5), s.groups_needing_me);
     try testing.expectEqual(@as(usize, 1), s.ungrouped.len);
+    try testing.expect(s.ungrouped[0].needs_me);
+    try testing.expectEqual(@as(usize, 6), s.needs_me);
 
     // The row spoken in last carries the reason; the other points at it.
     const main = try rowNamed(s, "web-app");
@@ -1360,6 +1473,48 @@ test "ControlRoom snapshot: one supervisor in two groups is counted once" {
     try testing.expectEqualStrings("web-app-docs", main.same_as.?);
     try testing.expectEqual(@as(?[]const u8, null), docs.same_as);
     try testing.expectEqual(main.attention.terminal.?.id, docs.attention.terminal.?.id);
+}
+
+test "ControlRoom snapshot: the number on the Dock is the number of rows that wait" {
+    // What a real window showed (verify-cr-03): four rows under "4 groups
+    // waiting for you" and a 3 on the Dock. One supervisor minds two groups
+    // and has failed; another group's supervisor and its worker have both
+    // failed; a fourth group's only member has.
+    var w: World = .init();
+    defer w.deinit();
+    var failed: AgentEvent.Event = .none;
+    failed.event = .turn_failed;
+    failed.detail = "rate_limit";
+    try w.steward(0xa1, "A", 0x21, "docs-site");
+    try w.chat.create("web-app", 0xa1);
+    try w.steward(0xa2, "B", 0x22, "billing");
+    try w.worker(0xb3, "W3", 0x23, 0xa2, "billing");
+    try w.chat.create("notes", Chat.user_id);
+    try w.terminal(0xd1, "N1", 0x24);
+    try w.bus.watch(0xd1, 0xa2);
+    try w.chat.add("notes", 0xd1, .all, .{});
+    for ([_]Id{ 0xa1, 0xa2, 0xb3, 0xd1 }) |id| _ = try w.bus.agentEvent(id, failed, 10 * min);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const s = (try build(arena.allocator(), w.input(100 * min))).snapshot;
+
+    var rows: usize = 0;
+    for (s.groups) |g| {
+        if (g.needs_me) rows += 1;
+    }
+    try testing.expectEqual(@as(usize, 4), rows);
+    try testing.expectEqual(@as(usize, 4), s.groups_needing_me);
+    // **The one meaning**: every row the person is shown as waiting, a
+    // group's or a lone terminal's, is one.
+    try testing.expectEqual(@as(usize, 4), s.needs_me);
+
+    // Two rows, one supervisor, neither group spoken in: one of the two
+    // still points at the other.
+    const docs = try rowNamed(s, "docs-site");
+    const web = try rowNamed(s, "web-app");
+    try testing.expectEqual(docs.attention.terminal.?.id, web.attention.terminal.?.id);
+    try testing.expect((docs.same_as == null) != (web.same_as == null));
 }
 
 test "ControlRoom snapshot: the reason line, and which kind of missing when there is none" {
@@ -1488,7 +1643,7 @@ test "ControlRoom snapshot: a timed snooze ends on its own, and the core knows w
     const row = try rowNamed(during.snapshot, "billing");
     try testing.expectEqual(Attention.Kind.snoozed, row.attention.kind);
     try testing.expect(!row.needs_me);
-    try testing.expectEqual(@as(usize, 4), during.snapshot.needs_me);
+    try testing.expectEqual(@as(usize, 5), during.snapshot.needs_me);
     try testing.expectEqual(@as(?u64, fixture_now + 20_000), during.wake_ms);
 
     const after = try build(arena.allocator(), w.input(fixture_now + 20_000));
@@ -1751,6 +1906,73 @@ test "ControlRoom what: a command longer than the hook's summary is whole, every
     // Once it is no longer waiting, what it was waiting for is not kept.
     try w.hook(0xa1, .turn_started, null, 3 * min);
     try testing.expectEqual(@as(?[]const u8, null), w.bus.askOf(0xa1));
+}
+
+test "ControlRoom what: a question is whole, and a part of one is never passed off as all of it" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A dialog: the hook sends a first line and all of it. Longer than the
+    // 160 bytes the bus keeps of a note.
+    var long: std.ArrayListUnmanaged(u8) = .empty;
+    for (0..30) |_| try long.appendSlice(a, "发票编号要按租户分开吗？");
+    try w.steward(0xa1, "one", 0x21, "dialog");
+    var dialog: AgentEvent.Event = .none;
+    dialog.event = .awaiting_input;
+    dialog.note = AgentEvent.prefixChars(long.items, AgentEvent.summary_chars);
+    dialog.text = long.items;
+    dialog.text_bytes = long.items.len;
+    _ = try w.bus.agentEvent(0xa1, dialog, 10 * min);
+
+    // Asked in prose: the turn ends on a question and the hook then says
+    // only that it is waiting.
+    try w.steward(0xa2, "two", 0x22, "prose");
+    try w.hook(0xa2, .turn_ended, "迁移脚本写完了，12 条测试全过。\n\n有两件事要你定：\n先切一半流量，还是一次切完？", 10 * min);
+    try w.hook(0xa2, .awaiting_input, null, 11 * min);
+
+    // The same, when the question is all there was.
+    try w.steward(0xa3, "three", 0x23, "only");
+    try w.hook(0xa3, .turn_ended, "先切一半流量，还是一次切完？\n", 10 * min);
+    try w.hook(0xa3, .awaiting_input, null, 11 * min);
+
+    // A note as long as the bus keeps one and nothing else: it may have
+    // been cut, and the row says so.
+    try w.steward(0xa4, "four", 0x24, "capped");
+    try w.hook(0xa4, .awaiting_input, "x" ** 200, 10 * min);
+    // A short note is all of it.
+    try w.steward(0xa5, "five", 0x25, "short");
+    try w.hook(0xa5, .awaiting_input, "用哪个分支？", 10 * min);
+
+    const s = (try build(a, w.input(100 * min))).snapshot;
+
+    const whole = (try rowNamed(s, "dialog")).what;
+    try testing.expectEqual(What.Form.words, whole.form);
+    try testing.expectEqualStrings(long.items, whole.lines[0]);
+    try testing.expectEqual(What.Cut.none, whole.cut);
+    try testing.expect(whole.lines[0].len > 160);
+
+    const prose = try rowNamed(s, "prose");
+    try testing.expectEqual(Reason.From.last_turn, prose.reason.from);
+    try testing.expectEqualStrings("有两件事要你定： 先切一半流量，还是一次切完？", prose.what.lines[0]);
+    try testing.expectEqual(What.Cut.head, prose.what.cut);
+
+    const only = (try rowNamed(s, "only")).what;
+    try testing.expectEqualStrings("先切一半流量，还是一次切完？", only.lines[0]);
+    try testing.expectEqual(What.Cut.none, only.cut);
+
+    const capped = (try rowNamed(s, "capped")).what;
+    try testing.expectEqual(@as(usize, 160), capped.lines[0].len);
+    try testing.expectEqual(What.Cut.tail, capped.cut);
+
+    try testing.expectEqual(What.Cut.none, (try rowNamed(s, "short")).what.cut);
+
+    // The question is forgotten with the wait: a new turn, and nothing of
+    // it is left to show beside whatever comes next.
+    try w.hook(0xa1, .turn_started, null, 101 * min);
+    try testing.expect(w.bus.askOf(0xa1) == null);
 }
 
 test "ControlRoom what: a working group says its own started task, and nothing when it has none" {

@@ -131,6 +131,33 @@ struct ControlRoomLendingTests {
 
     // MARK: Going back
 
+    @Test func outOfSightNothingIsBorrowedAndWhatItSaysIsStillTrue() {
+        var world = World("a1", "a2")
+        world.select("web-app", "a1")
+        #expect(world.inRoom == ["a1"])
+        // Behind another tab: the terminal goes home, without the keyboard,
+        // and the right side says where it is rather than "select a group".
+        let effects = world.send(.outOfSight(group: "web-app", supervisor: "a1", present: true))
+        #expect(effects == [.giveBack(terminal: "a1", toHome: true, focus: false)])
+        #expect(world.inRoom.isEmpty)
+        #expect(world.lending.detail == .takenBack(Loan(group: "web-app", terminal: "a1")))
+        // Still out of sight, the selection or the snapshot changes: the
+        // sentence follows, and nothing is borrowed.
+        #expect(world.send(.outOfSight(group: "notes", supervisor: nil, present: false)) == [])
+        #expect(world.lending.detail == .noSupervisor(group: "notes"))
+        #expect(world.send(.outOfSight(group: "infra", supervisor: "a9", present: false)) == [])
+        #expect(world.lending.detail == .supervisorGone(group: "infra"))
+        #expect(world.send(.outOfSight(group: nil, supervisor: nil, present: false)) == [])
+        #expect(world.lending.detail == .nothingSelected)
+        #expect(world.inRoom.isEmpty)
+        // Back in sight: it is borrowed again, not left "taken back" --
+        // the person never took it back.
+        _ = world.send(.outOfSight(group: "web-app", supervisor: "a1", present: true))
+        world.select("web-app", "a1")
+        #expect(world.inRoom == ["a1"])
+        #expect(world.lending.detail == .terminal(Loan(group: "web-app", terminal: "a1")))
+    }
+
     @Test func closingTheControlRoomPutsTheTerminalBack() {
         var world = World("a1")
         world.select("web-app", "a1")

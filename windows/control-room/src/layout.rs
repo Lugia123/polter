@@ -128,7 +128,7 @@ impl ListLayout {
         let mut fits = Vec::new();
         for row in &list.waiting {
             let code = crate::list::is_code(&row.what);
-            let wanted: Vec<usize> = row.what.lines.iter().map(|line| needed(line, code)).collect();
+            let wanted: Vec<usize> = crate::list::drawn(&row.what).iter().map(|line| needed(line, code)).collect();
             let fit = AskFit::fit(&wanted);
             let row_h = row_height(&fit, row.others);
             rows.push((row.id.clone(), Rect { x: pad, y, w: inner, h: row_h }));

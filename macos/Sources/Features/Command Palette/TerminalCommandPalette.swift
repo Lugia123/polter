@@ -96,7 +96,7 @@ struct TerminalCommandPaletteView: View {
             // convey it'll go all the way through.
             let title: String
             if case .updateAvailable = updateViewModel.state {
-                title = "Update Polter and Restart"
+                title = String(localized: "Update Polter and Restart", comment: "命令面板里装更新的那一项")
             } else {
                 title = updateViewModel.text
             }

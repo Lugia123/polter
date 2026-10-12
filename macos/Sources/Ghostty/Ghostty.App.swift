@@ -2113,11 +2113,11 @@ extension Ghostty {
                 if actions.contains(.notify) {
                     let title: String
                     if v.exit_code < 0 {
-                        title = "Command Finished"
+                        title = String(localized: "Command Finished", comment: "命令结束的系统通知标题：不知道成没成")
                     } else if v.exit_code == 0 {
-                        title = "Command Succeeded"
+                        title = String(localized: "Command Succeeded", comment: "命令结束的系统通知标题：成功")
                     } else {
-                        title = "Command Failed"
+                        title = String(localized: "Command Failed", comment: "命令结束的系统通知标题：失败")
                     }
 
                     let body: String
@@ -2129,9 +2129,9 @@ extension Ghostty {
                         )
                     )
                     if v.exit_code < 0 {
-                        body = "Command took \(formattedDuration)."
+                        body = String(localized: "Command took \(formattedDuration).", comment: "命令结束的系统通知正文，%@ 是用时")
                     } else {
-                        body = "Command took \(formattedDuration) and exited with code \(v.exit_code)."
+                        body = String(localized: "Command took \(formattedDuration) and exited with code \(String(v.exit_code)).", comment: "命令结束的系统通知正文，%1$@ 是用时，%2$@ 是退出码")
                     }
 
                     showDesktopNotification(

@@ -71,6 +71,13 @@ struct ControlRoomLending: Equatable {
         /// window is closing, the application is quitting, or another tab
         /// of its window was brought in front of it.
         case closing
+        /// The same three things as `selected`, while the control room is
+        /// out of sight (behind another tab, or not on screen): nothing is
+        /// borrowed, and whatever was is put back -- but what the right
+        /// side *says* is kept true, so that it is right the moment it is
+        /// seen. It used to say "select a group" with a group selected,
+        /// from a restart until the window was brought forward.
+        case outOfSight(group: String?, supervisor: String?, present: Bool)
     }
 
     /// What is on loan now.
@@ -114,6 +121,22 @@ struct ControlRoomLending: Equatable {
             declined = nil
             detail = .nothingSelected
             return returnLoan()
+
+        case let .outOfSight(group, supervisor, present):
+            declined = nil
+            let back = returnLoan()
+            guard let group else {
+                detail = .nothingSelected
+                return back
+            }
+            guard let supervisor else {
+                detail = .noSupervisor(group: group)
+                return back
+            }
+            // Its terminal is in its own tab, which is where the person
+            // would find it now; coming back into sight asks for it here.
+            detail = present ? .takenBack(Loan(group: group, terminal: supervisor)) : .supervisorGone(group: group)
+            return back
         }
     }
 

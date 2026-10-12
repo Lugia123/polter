@@ -1,7 +1,7 @@
 {
   "rev": 1,
   "now_ms": 6000000,
-  "needs_me": 5,
+  "needs_me": 6,
   "groups_needing_me": 5,
   "groups_other": 3,
   "open_on": "web-app",
@@ -47,7 +47,8 @@
           "rm -rf dist/ .cache/ node_modules/.vite",
           "&& npm ci",
           "&& npm run build -- --mode production"
-        ]
+        ],
+        "cut": "none"
       },
       "more": 1,
       "same_as": "web-app-docs",
@@ -129,7 +130,8 @@
           "rm -rf dist/ .cache/ node_modules/.vite",
           "&& npm ci",
           "&& npm run build -- --mode production"
-        ]
+        ],
+        "cut": "none"
       },
       "more": 0,
       "same_as": null,
@@ -192,7 +194,8 @@
         "form": "command",
         "lines": [
           "git push --force-with-lease origin release/2.4"
-        ]
+        ],
+        "cut": "none"
       },
       "more": 0,
       "same_as": null,
@@ -272,7 +275,8 @@
         "form": "words",
         "lines": [
           "发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号？"
-        ]
+        ],
+        "cut": "none"
       },
       "more": 0,
       "same_as": null,
@@ -335,7 +339,8 @@
         "form": "words",
         "lines": [
           "rate_limit：resets 13:40"
-        ]
+        ],
+        "cut": "none"
       },
       "more": 0,
       "same_as": null,
@@ -398,7 +403,8 @@
         "form": "words",
         "lines": [
           "要不要现在切流量？"
-        ]
+        ],
+        "cut": "head"
       },
       "more": 0,
       "same_as": null,
@@ -461,7 +467,8 @@
         "form": "words",
         "lines": [
           "改按钮的三种尺寸"
-        ]
+        ],
+        "cut": "none"
       },
       "more": 0,
       "same_as": null,
@@ -539,7 +546,8 @@
       },
       "what": {
         "form": "none",
-        "lines": []
+        "lines": [],
+        "cut": "none"
       },
       "more": 0,
       "same_as": null,
@@ -596,7 +604,8 @@
         "form": "command",
         "lines": [
           "git push"
-        ]
+        ],
+        "cut": "none"
       }
     }
   ],

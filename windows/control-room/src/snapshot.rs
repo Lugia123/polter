@@ -109,12 +109,39 @@ impl Form {
     }
 }
 
-/// What is being waited on, whole: the core cuts nothing off. `lines` is
-/// one step of a command each, or the one sentence.
+/// Whether `lines` is all of it. A host marks where the rest would be and
+/// never shows a part as the whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cut {
+    /// Everything that was said.
+    None,
+    /// The start of something longer, or it may be.
+    Tail,
+    /// The end of something longer.
+    Head,
+}
+
+impl Cut {
+    pub fn name(self) -> &'static str {
+        match self {
+            Cut::None => "none",
+            Cut::Tail => "tail",
+            Cut::Head => "head",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Cut> {
+        [Cut::None, Cut::Tail, Cut::Head].into_iter().find(|v| v.name() == s)
+    }
+}
+
+/// What is being waited on. `lines` is one step of a command each, or the
+/// one sentence; `cut` is the core's word for whether that is all of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct What {
     pub form: Form,
     pub lines: Vec<String>,
+    pub cut: Cut,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,6 +284,7 @@ fn group(v: &Value, path: &str) -> Res<Group> {
     let what = field(v, path, "what")?;
     let what_at = format!("{path}.what");
     let form = text(what, &what_at, "form")?;
+    let cut = text(what, &what_at, "cut")?;
     let mut lines = Vec::new();
     for (i, l) in list(what, &what_at, "lines")?.iter().enumerate() {
         match l {
@@ -278,6 +306,7 @@ fn group(v: &Value, path: &str) -> Res<Group> {
         what: What {
             form: Form::parse(&form).ok_or(DecodeError::UnknownValue(format!("{what_at}.form={form}")))?,
             lines,
+            cut: Cut::parse(&cut).ok_or(DecodeError::UnknownValue(format!("{what_at}.cut={cut}")))?,
         },
         reason: Reason {
             from: text(reason, &format!("{path}.reason"), "from")?,

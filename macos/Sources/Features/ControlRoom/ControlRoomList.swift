@@ -90,15 +90,47 @@ struct ControlRoomList: Equatable {
             case words
         }
 
+        /// Whether `lines` is all of it (`ControlRoom.zig`, `What.Cut`).
+        enum Cut: String, Equatable, Decodable {
+            /// Everything that was said.
+            case none
+            /// The start of something longer, or it may be.
+            case tail
+            /// The end of something longer.
+            case head
+        }
+
+        /// The core's word for whether this is all of it. Never left out:
+        /// a part shown as the whole is the thing this exists to stop.
+        var cut: Cut
         var form: Form
         var lines: [String]
 
-        static let none = What(form: .none, lines: [])
+        static let none = What(cut: .none, form: .none, lines: [])
+
+        /// The mark that stands where the rest would be.
+        static let ellipsis = "…"
+
+        /// The lines as a row sets them: the core's, with the mark before
+        /// the first when what came before is missing and after the last
+        /// when what came after is. Everything that draws, measures or
+        /// reads out a row uses these, so a part is marked wherever it
+        /// appears.
+        var drawn: [String] {
+            guard !lines.isEmpty else { return lines }
+            var out = lines
+            switch cut {
+            case .none: break
+            case .head: out[out.startIndex] = Self.ellipsis + " " + out[out.startIndex]
+            case .tail: out[out.endIndex - 1] += " " + Self.ellipsis
+            }
+            return out
+        }
 
         /// Set in the terminal's face.
         var isCode: Bool { form == .command || form == .code }
         /// Everything it says, for a tooltip and for VoiceOver.
-        var whole: String { lines.joined(separator: "\n") }
+        var whole: String { drawn.joined(separator: "\n") }
     }
 
     /// The title bar of a supervisor's frame on the right-hand side
@@ -181,7 +213,7 @@ extension ControlRoomList {
     /// is doing when the core knows, the status word when it does not, and
     /// nothing for a group with neither.
     static func quietText(_ row: Row) -> String {
-        row.what.lines.isEmpty ? row.word : row.what.lines.joined(separator: " ")
+        row.what.lines.isEmpty ? row.word : row.what.drawn.joined(separator: " ")
     }
 
     /// What a row says when it is read out rather than looked at: which
@@ -192,7 +224,7 @@ extension ControlRoomList {
         var parts = [row.name]
         if let who = waiterText(row.waiter) { parts.append(who) }
         if !row.word.isEmpty { parts.append(row.word) }
-        parts.append(contentsOf: row.what.lines.filter { !$0.isEmpty })
+        parts.append(contentsOf: row.what.drawn.filter { !$0.isEmpty })
         if let others = othersText(row.others) { parts.append(others) }
         return parts.joined(separator: ", ")
     }
@@ -253,6 +285,7 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     }
 
     struct What: Decodable, Equatable {
+        var cut: ControlRoomList.What.Cut
         var form: ControlRoomList.What.Form
         var lines: [String]
     }
@@ -401,7 +434,7 @@ extension ControlRoomList {
                 shown: group.shown,
                 word: group.text,
                 waiter: Waiter(is: group.waiter.is, name: group.waiter.name),
-                what: What(form: group.what.form, lines: group.what.lines),
+                what: What(cut: group.what.cut, form: group.what.form, lines: group.what.lines),
                 others: group.more,
                 pulses: breathing != nil && breathing == group.name,
                 unseen: group.unseen ?? false,
@@ -537,7 +570,7 @@ struct ControlRoomListLayout: Equatable {
         var frames: [String: CGRect] = [:]
         var fitted: [String: ControlRoomAskFit] = [:]
         for row in list.waiting {
-            let fit = ControlRoomAskFit.fit(needed: row.what.lines.map { needed($0, row.what.isCode) })
+            let fit = ControlRoomAskFit.fit(needed: row.what.drawn.map { needed($0, row.what.isCode) })
             let rowH = Self.rowHeight(fit: fit, others: row.others)
             fitted[row.id] = fit
             frames[row.id] = CGRect(x: pad, y: y, width: inner, height: rowH)
@@ -615,28 +648,28 @@ extension ControlRoomList {
             waitingCount: 4,
             waiting: [
                 Row(id: "billing", shown: .needsYou, word: "等回答", waiter: supervisor,
-                    what: What(form: .words, lines: [
+                    what: What(cut: .none, form: .words, lines: [
                         "发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号；改的那几天新开的发票先用哪一种，财务对账的报表是不是也要跟着改，还是等月底结账以后再统一处理？",
                     ]), others: 0, pulses: true),
                 Row(id: "web-app", shown: .needsYou, word: "等批准", waiter: supervisor,
-                    what: What(form: .command, lines: [
+                    what: What(cut: .none, form: .command, lines: [
                         "rm -rf dist/ .cache/ node_modules/.vite", "&& npm ci", "&& npm run build -- --mode production",
                     ]), others: 0, pulses: false),
                 Row(id: "mobile", shown: .needsYou, word: "等批准",
                     waiter: Waiter(is: .workerViaSupervisor, name: "ios-build"),
-                    what: What(form: .command, lines: ["git push --force-with-lease origin release/2.4"]),
+                    what: What(cut: .none, form: .command, lines: ["git push --force-with-lease origin release/2.4"]),
                     others: 0, pulses: false),
                 Row(id: "docs-site", shown: .trouble, word: "出错", waiter: supervisor,
-                    what: What(form: .words, lines: ["调用次数用完了，13:40 恢复。"]), others: 0, pulses: false),
+                    what: What(cut: .none, form: .words, lines: ["调用次数用完了，13:40 恢复。"]), others: 0, pulses: false),
             ],
             quietCount: 4,
             quiet: [
                 Row(id: "infra", shown: .doneUnseen, word: "做完了，没看", waiter: .none,
-                    what: What(form: .words, lines: ["迁移脚本写完了，12 条测试全过"]), others: 0, pulses: false),
+                    what: What(cut: .none, form: .words, lines: ["迁移脚本写完了，12 条测试全过"]), others: 0, pulses: false),
                 Row(id: "design-system", shown: .working, word: "在干活", waiter: .none,
-                    what: What(form: .words, lines: ["在改按钮的三种尺寸"]), others: 0, pulses: false),
+                    what: What(cut: .none, form: .words, lines: ["在改按钮的三种尺寸"]), others: 0, pulses: false),
                 Row(id: "search", shown: .working, word: "在干活", waiter: .none,
-                    what: What(form: .words, lines: ["在重建搜索索引，跑到第 2 步，共 5 步"]), others: 0, pulses: false),
+                    what: What(cut: .none, form: .words, lines: ["在重建搜索索引，跑到第 2 步，共 5 步"]), others: 0, pulses: false),
                 Row(id: "notes", shown: .none, word: "", waiter: .none, what: .none, others: 0, pulses: false),
             ])
     }()

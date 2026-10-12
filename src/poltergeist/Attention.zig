@@ -534,8 +534,14 @@ pub fn sort(items: []Attention) void {
     }.lt);
 }
 
-/// "N waiting for you": the terminals behind the rows that need the person,
-/// each counted once. One supervisor minding three groups is one (4.4).
+/// The terminals behind the rows that need the person, each counted once:
+/// one supervisor minding three groups is one (4.4).
+///
+/// **Not the number the person is shown.** The control room's `needs_me`
+/// counted this way until a real window showed four rows and a 3 on the
+/// Dock; it now counts rows (`ControlRoom.build`). This stays for whoever
+/// wants "how many terminals" -- a notification that must not fire three
+/// times for one supervisor.
 pub fn needsMeCount(rows: []const Attention) usize {
     var n: usize = 0;
     for (rows, 0..) |a, i| {

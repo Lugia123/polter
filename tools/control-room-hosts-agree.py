@@ -29,8 +29,9 @@ own choice, for a control room just opened and one long open, with and
 without a selection standing; every row -- its
 section, its place, its glyph, its words, who is waiting (which of the
 core's five answers, and the name), what it waits on (which of the core's
-four forms, whether that is set as code, how many lines, and every line
-whole), its "N more", whether the core says nobody has
+four forms, whether that is set as code, how many lines, whether the core
+says that is all of it, and every line as the row sets it, the mark for a
+missing part included), its "N more", whether the core says nobody has
 looked at it, and the terminal and two moments an act on it hands back;
 which row of the list breathes, with nothing in front
 and with each tab that holds a waiting terminal in front; which terminal
@@ -152,7 +153,8 @@ func row(_ section: String, _ r: ControlRoomList.Row) {
         + "who=\(r.waiter.is.rawValue) name=\(quote(r.waiter.name)) form=\(r.what.form.rawValue) "
         + "code=\(r.what.isCode) lines=\(r.what.lines.count) others=\(r.others) "
         + "unseen=\(r.unseen) terminal=\(r.target?.terminal ?? "-") since=\(since) event=\(event)")
-    for (n, line) in r.what.lines.enumerated() {
+    print("cut id=\(r.id) cut=\(r.what.cut.rawValue)")
+    for (n, line) in r.what.drawn.enumerated() {
         print("what id=\(r.id) n=\(n) line=\(quote(line))")
     }
 }

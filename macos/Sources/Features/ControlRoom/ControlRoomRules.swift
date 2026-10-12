@@ -188,6 +188,14 @@ enum ControlRoomRules {
     /// windows rang their bell, when the person asked for that (`bells` is
     /// that text, already made). 暂定: waiting comes before bells and the
     /// two are never added together -- they count different things.
+    /// Whether the list should take the keyboard when the control room
+    /// becomes the key window. Only when the window itself is first
+    /// responder, which is nobody: a terminal the person clicked into, the
+    /// list itself, a text field -- all of those keep it.
+    static func listTakesKeyboard(firstResponderIsTheWindow: Bool) -> Bool {
+        firstResponderIsTheWindow
+    }
+
     static func dockBadge(needsMe: Int?, bells: String?) -> String? {
         guard let needsMe, needsMe != 0 else { return bells }
         return String(needsMe)

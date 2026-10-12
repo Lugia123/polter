@@ -7,7 +7,7 @@
 //! `ControlRoomList.swift` is the same thing, and
 //! `tools/control-room-hosts-agree.py` holds the two to one answer.
 
-use crate::snapshot::{Form, Shown, Snapshot, Waiter, WaiterIs, What};
+use crate::snapshot::{Cut, Form, Shown, Snapshot, Waiter, WaiterIs, What};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -130,10 +130,36 @@ pub fn waiter(w: &Waiter) -> Option<(&'static str, String)> {
     }
 }
 
-/// What the pointer shows for a row whose lines may be cut short: the whole
-/// of it, a step to a line. None when there is nothing that could be cut.
+/// The mark that stands where the rest would be.
+pub const ELLIPSIS: &str = "…";
+
+/// The lines as a row sets them: the core's, with the mark before the first
+/// when what came before is missing and after the last when what came after
+/// is. Everything that draws, measures or reads out a row uses these, so a
+/// part is marked wherever it appears. The macOS host's `What.drawn`.
+pub fn drawn(what: &What) -> Vec<String> {
+    let mut out = what.lines.clone();
+    match what.cut {
+        Cut::None => {}
+        Cut::Head => {
+            if let Some(first) = out.first_mut() {
+                *first = format!("{ELLIPSIS} {first}");
+            }
+        }
+        Cut::Tail => {
+            if let Some(last) = out.last_mut() {
+                last.push(' ');
+                last.push_str(ELLIPSIS);
+            }
+        }
+    }
+    out
+}
+
+/// What the pointer shows for a row whose lines may be cut short: all the
+/// row was given, a step to a line. None when there is nothing to show.
 pub fn tooltip(row: &Row) -> Option<String> {
-    (!row.what.lines.is_empty()).then(|| row.what.lines.join("\n"))
+    (!row.what.lines.is_empty()).then(|| drawn(&row.what).join("\n"))
 }
 
 /// The row the selection lands on after an arrow key. It stops at the ends,

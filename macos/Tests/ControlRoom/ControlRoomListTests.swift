@@ -54,16 +54,16 @@ struct ControlRoomListTests {
           "needs_me": true, "unseen": false, "shown": "needs_you", "word": "needs_approval", "text": "等批准",
           "waiter": {"is": "worker_via_supervisor", "name": "ios-build"},
           "reason": {"from": "hook_note", "text": "Bash(rm -rf dist/ && npm ci)", "missing": null},
-          "what": {"form": "command", "lines": ["rm -rf dist/", "&& npm ci"]},
+          "what": {"cut": "none", "form": "command", "lines": ["rm -rf dist/", "&& npm ci"]},
           "more": 1, "same_as": null, "members": [] },
         { "name": "infra", "needs_me": false, "unseen": true, "shown": "done_unseen", "word": "done_unseen",
           "text": "做完了，没看", "waiter": {"is": "none", "name": ""},
           "reason": {"from": "last_turn", "text": "", "missing": "no_turn_kept"},
-          "what": {"form": "none", "lines": []}, "more": 0, "same_as": null },
+          "what": {"cut": "none", "form": "none", "lines": []}, "more": 0, "same_as": null },
         { "name": "web-app-docs", "needs_me": true, "unseen": false, "shown": "trouble", "word": "failed",
           "text": "出错", "waiter": {"is": "supervisor", "name": ""},
           "reason": {"from": "hook_detail", "text": "限流", "missing": null},
-          "what": {"form": "words", "lines": ["限流"]}, "more": 0, "same_as": "web-app" }
+          "what": {"cut": "none", "form": "words", "lines": ["限流"]}, "more": 0, "same_as": "web-app" }
       ], "ungrouped": [], "terminals": [], "tabs": [] }
     """.utf8)
 
@@ -111,6 +111,45 @@ struct ControlRoomListTests {
         #expect(row.waiter.is == .supervisor)
     }
 
+    @Test func aPartIsMarkedWhereTheRestWouldBeAndNeverShownAsTheWhole() throws {
+        typealias What = ControlRoomList.What
+        let whole = What(cut: .none, form: .words, lines: ["用哪个分支？"])
+        #expect(whole.drawn == ["用哪个分支？"])
+        // The end of a turn: something came before it.
+        let end = What(cut: .head, form: .words, lines: ["先切一半，还是一次切完？"])
+        #expect(end.drawn == ["… 先切一半，还是一次切完？"])
+        // A summary that reached its limit: something may come after, and
+        // the mark goes after the last step, not after each.
+        let start = What(cut: .tail, form: .command, lines: ["rm -rf dist/", "&& npm ci --prefer-off"])
+        #expect(start.drawn == ["rm -rf dist/", "&& npm ci --prefer-off …"])
+        #expect(What(cut: .tail, form: .none, lines: []).drawn.isEmpty)
+
+        // Everything that shows a row shows the mark: read out, the
+        // pointer's tooltip, the line of a row that needs nothing.
+        var row = list.waiting[0]
+        row.what = end
+        #expect(ControlRoomList.spoken(row).contains("… 先切一半"))
+        #expect(ControlRoomList.tooltip(for: row) == "… 先切一半，还是一次切完？")
+        #expect(ControlRoomList.quietText(row) == "… 先切一半，还是一次切完？")
+        // And the row is as high as the marked lines, not the bare ones.
+        var asked: [String] = []
+        var marked = list
+        marked.waiting[0] = row
+        _ = ControlRoomListLayout(list: marked, height: 824) { text, _ in
+            asked.append(text)
+            return 1
+        }
+        #expect(asked.contains("… 先切一半，还是一次切完？"))
+
+        // The core's word, copied: the fixture's "done, not looked at" row
+        // is the last line of a longer turn.
+        let made = try ControlRoomList.decode(snapshot: Self.fixture())
+        let infra = try #require(made.rows.first { $0.id == "infra" })
+        #expect(infra.what.cut == .head)
+        let web = try #require(made.rows.first { $0.id == "web-app" })
+        #expect(web.what.cut == .none)
+    }
+
     @Test func aSnapshotThatDoesNotSayWhoWaitsOrForWhatIsNotRead() {
         // Not read as "nobody" and "nothing": a row that silently lost what
         // it waits on would look like a group with nothing to say.
@@ -126,6 +165,16 @@ struct ControlRoomListTests {
         #expect(odd != text)
         #expect(throws: DecodingError.self) {
             try ControlRoomList.decode(snapshot: Data(odd.utf8))
+        }
+        // Whether it is all of it has to be said too: left out, or a word
+        // this build does not know, is not read as "all of it".
+        for bad in ["\"cut\": \"none\", \"form\": \"command\"": "\"form\": \"command\"",
+                    "\"cut\": \"none\", \"form\": \"words\"": "\"cut\": \"middle\", \"form\": \"words\""] {
+            let cut = text.replacingOccurrences(of: bad.key, with: bad.value)
+            #expect(cut != text)
+            #expect(throws: DecodingError.self) {
+                try ControlRoomList.decode(snapshot: Data(cut.utf8))
+            }
         }
     }
 
@@ -393,7 +442,7 @@ struct ControlRoomListTests {
         // Nine steps: the row draws five and a number; read out, all nine.
         let nine = (1...9).map { "&& ./step-\($0).sh" }
         var long = list.waiting[1]
-        long.what = .init(form: .command, lines: nine)
+        long.what = .init(cut: .none, form: .command, lines: nine)
         let said = ControlRoomList.spoken(long)
         let all = nine.allSatisfy { said.contains($0) }
         #expect(all)

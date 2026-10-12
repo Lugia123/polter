@@ -31,9 +31,10 @@ extension Ghostty {
                     formatter.unitOptions = .providedUnit
                 }
                 formatter.locale = .init(identifier: "en_US")
-                text = "Process exited after **`\(formatter.string(from: measure))`**. Press any key to close the terminal."
+                // On one line: the strings gate reads the call and its literal together.
+                text = String(localized: "Process exited after **`\(formatter.string(from: measure))`**. Press any key to close the terminal.", comment: "终端进程很快就退出时，终端底部的提示条；%@ 是运行了多久，两边的 ** 和反引号是 Markdown，要原样留着")
             } else {
-                text = "Process exited. Press any key to close the terminal."
+                text = String(localized: "Process exited. Press any key to close the terminal.", comment: "终端进程退出后，终端底部的提示条")
             }
             self.level = level
         }

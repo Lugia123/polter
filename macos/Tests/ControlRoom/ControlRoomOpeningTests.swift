@@ -13,7 +13,7 @@ struct ControlRoomOpeningTests {
         let rows = groups.map {
             """
             { "name": "\($0)", "needs_me": false, "unseen": true, "shown": "done_unseen", "text": "做完了，没看",
-              "waiter": {"is": "none", "name": ""}, "what": {"form": "none", "lines": []},
+              "waiter": {"is": "none", "name": ""}, "what": {"cut": "none", "form": "none", "lines": []},
               "reason": {"from": "none", "text": "", "missing": null},
               "more": 0, "same_as": null }
             """

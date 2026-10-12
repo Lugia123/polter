@@ -24,7 +24,8 @@ fn the_fixture_is_read_and_the_counts_are_the_ones_written_in_it() {
     let s = snapshot::decode(FIXTURE).unwrap();
     assert_eq!(s.rev, 1);
     assert_eq!(s.now_ms, 6_000_000);
-    assert_eq!(s.needs_me, 5);
+    // Every row that waits is one: five groups, and a terminal in no group.
+    assert_eq!(s.needs_me, 6);
     assert_eq!(s.groups_needing_me, 5);
     assert_eq!(s.groups_other, 3);
     assert_eq!(s.groups.len(), 8);
@@ -39,6 +40,63 @@ fn nothing_in_the_snapshot_says_how_long() {
     for gone in ["waited_min", "\"band\"", "total_min", "lanes", "spans"] {
         assert!(!FIXTURE.contains(gone), "the fixture says {gone} again");
     }
+}
+
+#[test]
+fn a_part_is_marked_where_the_rest_would_be_and_never_shown_as_the_whole() {
+    use crate::snapshot::{Cut, What};
+    let what = |cut, lines: &[&str]| What { form: Form::Words, lines: lines.iter().map(|l| l.to_string()).collect(), cut };
+    assert_eq!(list::drawn(&what(Cut::None, &["which branch?"])), ["which branch?"]);
+    // The end of a turn: something came before it.
+    assert_eq!(list::drawn(&what(Cut::Head, &["half first, or all at once?"])), ["… half first, or all at once?"]);
+    // A summary that reached its limit: the mark goes after the last step.
+    assert_eq!(list::drawn(&what(Cut::Tail, &["rm -rf dist/", "&& npm ci --pre"])), ["rm -rf dist/", "&& npm ci --pre …"]);
+    assert!(list::drawn(&what(Cut::Tail, &[])).is_empty());
+
+    // The core's word, copied; and whatever shows the row shows the mark.
+    let l = list();
+    let infra = l.row("infra").unwrap();
+    assert_eq!(infra.what.cut, Cut::Head);
+    assert_eq!(list::tooltip(infra).as_deref(), Some("… 要不要现在切流量？"));
+    assert_eq!(l.row("web-app").unwrap().what.cut, Cut::None);
+
+    // Left out, or a word this build does not know, is not "all of it".
+    let gone = FIXTURE.replacen("\"cut\": \"none\"", "\"cat\": \"none\"", 1);
+    assert_eq!(snapshot::decode(&gone), Err(DecodeError::Field("groups[0].what.cut".into())));
+    let odd = FIXTURE.replacen("\"cut\": \"none\"", "\"cut\": \"middle\"", 1);
+    assert_eq!(snapshot::decode(&odd), Err(DecodeError::UnknownValue("groups[0].what.cut=middle".into())));
+}
+
+#[test]
+fn a_row_that_stops_while_the_person_is_on_it_is_seen_after_the_same_wait() {
+    let l = list();
+    let mut working = l.row("infra").unwrap().clone();
+    working.unseen = false;
+    let stopped = l.row("infra").unwrap().clone();
+    assert!(stopped.unseen);
+
+    let mut marker = SeenMarker::default();
+    assert_eq!(marker.selection_changed(Some(&working)), None);
+    assert_eq!(marker.list_changed(Some(&working)), None);
+    // It finishes, the selection not having moved: one wait.
+    let wait = marker.list_changed(Some(&stopped)).expect("a wait begins");
+    assert_eq!(marker.due(&wait, true), Some(Act::Seen { group: "infra" }));
+    assert_eq!(marker.due(&wait, false), None);
+    // More lists before it is over do not begin it again, and do not
+    // cancel it.
+    assert_eq!(marker.list_changed(Some(&stopped)), None);
+    assert_eq!(marker.due(&wait, true), Some(Act::Seen { group: "infra" }));
+    // Seen, then stopped a second time: a second wait.
+    assert_eq!(marker.list_changed(Some(&working)), None);
+    assert!(marker.list_changed(Some(&stopped)).is_some());
+
+    // The person moves on before the wait is over: nothing is sent.
+    let wait = marker.selection_changed(Some(&working)).or(marker.list_changed(Some(&stopped))).unwrap();
+    marker.selection_changed(l.row("notes"));
+    assert_eq!(marker.due(&wait, true), None);
+    // A list in which the selection is another row is a change of selection.
+    assert!(marker.list_changed(Some(&stopped)).is_some());
+    assert_eq!(marker.list_changed(None), None);
 }
 
 #[test]

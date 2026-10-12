@@ -265,7 +265,7 @@ struct ControlRoomListView: View {
                 }
                 .frame(height: CGFloat(Look.Side.rowLine1Height))
                 // Only the steps that have lines: the rest are counted below.
-                ForEach(Array(zip(row.what.lines, fit.lines).enumerated()), id: \.offset) { _, step in
+                ForEach(Array(zip(row.what.drawn, fit.lines).enumerated()), id: \.offset) { _, step in
                     ControlRoomAskText(text: step.0, code: row.what.isCode, lines: step.1)
                 }
                 if let hidden = ControlRoomList.hiddenStepsText(fit.hidden) {

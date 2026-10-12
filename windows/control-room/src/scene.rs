@@ -310,7 +310,7 @@ fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View, tr: &dyn
     // NOT YET THE NEW LAYOUT: the steps of a command are run together on
     // this one line. The design sets one step to a line under the name
     // (control-room.md, 3.5); `row.what.lines` is already cut that way.
-    let detail = row.what.lines.join(" ");
+    let detail = list::drawn(&row.what).join(" ");
     let mut parts = vec![
         Part {
             piece: Piece::Glyph {
@@ -358,7 +358,7 @@ pub fn spoken(row: &Row, tr: &dyn Fn(&str) -> String) -> String {
         parts.push(row.word.clone());
     }
     // Every step, whole: nothing read out is cut short.
-    parts.extend(row.what.lines.iter().filter(|l| !l.is_empty()).cloned());
+    parts.extend(list::drawn(&row.what).into_iter().filter(|l| !l.is_empty()));
     if let Some((template, n)) = list::others(row.others) {
         parts.push(list::fill(&tr(template), &n));
     }

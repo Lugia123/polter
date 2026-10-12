@@ -150,6 +150,10 @@ final class ControlRoomSeenTracker {
     /// still about the current one.
     private var generation = 0
     private var selected: String?
+    /// Whether the selected row was unseen the last time it was heard of:
+    /// what tells "it has just stopped, in front of the person" from "it is
+    /// still as it was".
+    private var selectedUnseen = false
 
     init(dwell: TimeInterval = ControlRoomLook.Selection.seenAfter,
          later: @escaping Later,
@@ -167,11 +171,40 @@ final class ControlRoomSeenTracker {
     func selectionChanged(to row: ControlRoomList.Row?) {
         generation += 1
         selected = row?.id
+        selectedUnseen = row?.unseen ?? false
         // Only a row the core says has not been looked at is worth saying
         // anything about.
         guard let row, row.unseen else { return }
+        wait(for: row.id)
+    }
+
+    /// A new list has arrived. `row` is the selected row as it is now (nil
+    /// for none, and for a row the person did not select themselves).
+    ///
+    /// **A row that stops while the person is on it is seen like any
+    /// other**: they selected it, the control room is in front, and its
+    /// supervisor's terminal is beside the list -- they watched it finish.
+    /// So the moment starts when the core first says "not looked at", and
+    /// the same wait and the same check of being in front follow. Without
+    /// this the row stayed unseen until the person selected something else
+    /// and came back (verify-cr-03). A row that was already unseen is left
+    /// alone: every list would otherwise start the moment over and it
+    /// would never pass.
+    func listChanged(to row: ControlRoomList.Row?) {
+        guard row?.id == selected else {
+            // The selection is not what it was: a change like any other.
+            selectionChanged(to: row)
+            return
+        }
+        let was = selectedUnseen
+        selectedUnseen = row?.unseen ?? false
+        guard let row, row.unseen, !was else { return }
+        generation += 1
+        wait(for: row.id)
+    }
+
+    private func wait(for group: String) {
         let mine = generation
-        let group = row.id
         later(dwell) { [weak self] in
             guard let self, self.generation == mine, self.selected == group, self.isInFront() else { return }
             self.markSeen(group)
