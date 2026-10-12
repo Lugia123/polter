@@ -2704,14 +2704,44 @@ pub const PoltergeistScreenshot = struct {
 pub const NewTab = struct {
     working_directory: [:0]const u8 = "",
 
+    /// Written by the apprt before it returns, when it can say; never read
+    /// by it. Null when nobody is asking -- a keybinding does not need an
+    /// answer, and an apprt may tell the two apart by this.
+    ///
+    /// **Why the return value was not enough.** "Performed" is also what an
+    /// apprt answers a key press it dealt with by telling the person no --
+    /// tabs are off in this window, this is the quick terminal -- because a
+    /// key that was dealt with must not fall through to the program. For an
+    /// agent's `terminal_open` that same answer read as "the tab is on its
+    /// way", and there was none.
+    result: ?*Result = null,
+
+    /// Sync with: ghostty_action_new_tab_result_e
+    ///
+    /// `unanswered` is first so that zero is what a cell nobody wrote reads
+    /// as: an apprt that does not know about the cell has said nothing, and
+    /// the caller goes by the return value as it always did. It is not
+    /// "refused" -- on the Windows host that would turn every tab an agent
+    /// asks for into a failure.
+    pub const Result = enum(c_int) {
+        unanswered,
+        /// The apprt has taken it on: a tab, or a window where there are no
+        /// tabs, will hold a new terminal.
+        will_open,
+        /// No terminal will be opened for this.
+        refused,
+    };
+
     // Sync with: ghostty_action_new_tab_s
     pub const C = extern struct {
         working_directory: [*:0]const u8,
+        result: ?*Result,
     };
 
     pub fn cval(self: NewTab) C {
         return .{
             .working_directory = self.working_directory.ptr,
+            .result = self.result,
         };
     }
 

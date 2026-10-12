@@ -223,6 +223,38 @@ enum ControlRoomRules {
         return answerWanted ? .refuseToTheCore : .refuseAloud
     }
 
+    /// What becomes of "new tab" asked of a terminal whose window may not
+    /// take one.
+    enum NewTabAnswer: Equatable {
+        /// Go on and open it.
+        case open
+        /// Not opened; whoever asked through the core is told so, and the
+        /// person is shown nothing -- they did not ask.
+        case refuseToTheCore(String)
+        /// Not opened; the person pressed the key and is told why.
+        case tellThePerson
+    }
+
+    /// `homeTakesTabs` is whether the terminal's own window is an ordinary
+    /// terminal window (the quick terminal is not); `decorations` is
+    /// whether windows have a title bar to put tabs in; `answerWanted` is
+    /// whether the request came with somewhere to write the answer (an
+    /// agent's, through the core) rather than from a key.
+    ///
+    /// **A window that takes no tabs used to answer an agent with a dialog
+    /// on the person's screen and "done"**, so `terminal_open` came back ok
+    /// with no terminal. A borrowed terminal is refused to the core even
+    /// with no answer wanted: its window is behind the control room, and a
+    /// dialog about it would be about something the person cannot see.
+    static func newTabAnswer(lent: Bool, homeTakesTabs: Bool, decorations: Bool, answerWanted: Bool) -> NewTabAnswer {
+        if homeTakesTabs, decorations { return .open }
+        let why = decorations
+            ? "the terminal's own window takes no tabs"
+            : "tabs are off: windows have no decorations"
+        if answerWanted || lent { return .refuseToTheCore(why) }
+        return .tellThePerson
+    }
+
     /// A group the person has just made is selected once the core lists
     /// it -- not before: the list that is on screen when the answer comes
     /// back may be the one from before the group existed, and a selection

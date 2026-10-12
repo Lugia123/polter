@@ -73,6 +73,12 @@
 //!                                       what an act on this row hands
 //!                                       back (ControlAct.zig)
 //!       "needs_me": true, "unseen": false,
+//!                             unseen: looking at the row changes it -- it
+//!                             stopped and has not been looked at, or its
+//!                             supervisor raised it (`notify_user`) and the
+//!                             person has not looked since. What a host
+//!                             starts its "seen" clock on; a row can be
+//!                             both needs_me and unseen
 //!       "shown": "needs_you",   needs_you | trouble | done_unseen |
 //!                               working | none
 //!       "word": "needs_approval", "text": "等批准",
@@ -1187,27 +1193,37 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             const title = if (find(in.terminals, who.id)) |t| try arena.dupe(u8, t.title) else "";
             break :waiter .{ .is = if (steward_id != null) .worker_via_supervisor else .worker, .name = title };
         } else .none;
-        try rows.append(arena, .{ .attention = a, .has_agent = has_agent, .row = .{
-            .name = try arena.dupe(u8, name),
-            .brief = try arena.dupe(u8, in.chat.briefOf(name) catch ""),
-            .last_ms = last_ms,
-            .seen_ms = marks.seen_ms,
-            .snooze = .of(marks.snooze),
-            .steward = .opt(steward_id),
-            .supervisor = try supervisorOf(arena, in, name, steward_id, &wake),
-            .attention = .of(a, in.bus),
-            .needs_me = Attention.needsMe(a),
-            .unseen = Attention.unseen(a),
-            .shown = d.shown,
-            .word = d.word,
-            .text = d.word.text(),
-            .waiter = waiter,
-            .reason = reason,
-            .what = if (about) |who| try whatOf(arena, in, who, reason) else .none,
-            .more = more,
-            .same_as = null,
-            .members = members.items,
-        } });
+        try rows.append(arena, .{
+            .attention = a,
+            .has_agent = has_agent,
+            .row = .{
+                .name = try arena.dupe(u8, name),
+                .brief = try arena.dupe(u8, in.chat.briefOf(name) catch ""),
+                .last_ms = last_ms,
+                .seen_ms = marks.seen_ms,
+                .snooze = .of(marks.snooze),
+                .steward = .opt(steward_id),
+                .supervisor = try supervisorOf(arena, in, name, steward_id, &wake),
+                .attention = .of(a, in.bus),
+                .needs_me = Attention.needsMe(a),
+                // **Looking at this row changes it**: it stopped and nobody has
+                // looked, or its supervisor raised it "until they have looked".
+                // A host starts its "seen" clock on this and on nothing else, so
+                // a raise that did not say so here could never be withdrawn --
+                // which is what it was (the Windows machine, 2026-10-13: five
+                // seconds on the row, in front, and no `seen` was ever sent).
+                .unseen = Attention.unseen(a) or reason.from == .raised,
+                .shown = d.shown,
+                .word = d.word,
+                .text = d.word.text(),
+                .waiter = waiter,
+                .reason = reason,
+                .what = if (about) |who| try whatOf(arena, in, who, reason) else .none,
+                .more = more,
+                .same_as = null,
+                .members = members.items,
+            },
+        });
     }
 
     std.mem.sort(Pending, rows.items, {}, pendingBefore);
@@ -1817,6 +1833,9 @@ test "ControlRoom snapshot: what a supervisor raises is waiting for the person a
         const s = (try build(arena.allocator(), w.input(at + 1))).snapshot;
         const row = try rowNamed(s, "api");
         try testing.expect(row.needs_me);
+        // And looking at it is what withdraws it, so the row says so: this
+        // is what a host starts its "seen" clock on.
+        try testing.expect(row.unseen);
         try testing.expectEqual(Attention.Kind.needs_answer, row.attention.kind);
         try testing.expectEqual(Waiter.Is.supervisor, row.waiter.is);
         try testing.expectEqual(Reason.From.raised, row.reason.from);
@@ -1843,6 +1862,9 @@ test "ControlRoom snapshot: what a supervisor raises is waiting for the person a
         const row = try rowNamed((try build(arena.allocator(), w.input(at + 5_000))).snapshot, "api");
         try testing.expect(row.reason.from != .raised);
         try testing.expect(row.attention.kind != .needs_answer);
+        // Nothing left for looking to change: a worker's prompt is not
+        // withdrawn by being looked at.
+        try testing.expect(!row.unseen);
     }
 
     // A terminal the bus does not know raises nothing.
@@ -2519,7 +2541,7 @@ test "ControlRoom start: a group with no supervisor says one can be started, in 
     defer room.deinit();
 
     // Back from last night: nobody in it. And one somebody minds.
-    try w.chat.restoreShell("nightly", "", 0);
+    try w.chat.restoreShell("nightly", "", 0, .none);
     try w.steward(0xa1, "web-app", 0x21, "web-app");
 
     var s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
@@ -2567,7 +2589,7 @@ test "ControlRoom start: a group with no supervisor says one can be started, in 
     w.roles = &.{};
     w.home = "";
     _ = try w.chat.setSupervisorDir("web-app", "/x");
-    try w.chat.restoreShell("empty", "", 0);
+    try w.chat.restoreShell("empty", "", 0, .none);
     s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
     const none = (try rowNamed(s, "empty")).supervisor;
     try testing.expectEqual(SupervisorOut.State.absent, none.state);
@@ -2583,7 +2605,7 @@ test "ControlRoom start: one on its way is not offered again, and the snapshot w
     var room: ControlRoom = .init(testing.allocator);
     defer room.deinit();
 
-    try w.chat.restoreShell("nightly", "", 0);
+    try w.chat.restoreShell("nightly", "", 0, .none);
     _ = try room.refresh(w.input(1_000), .event);
 
     try w.chat.beginStart("nightly", 2_000, 11_000);

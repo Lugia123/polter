@@ -108,6 +108,17 @@ control_due: std.atomic.Value(bool) = .init(false),
 /// never has one never has the thread.
 control_wake: ?poltergeistpkg.ControlWake = null,
 
+/// When a refused notice is to be offered again, on the bus's clock; null
+/// when none is waiting. See `noticeRetryIn`.
+notice_retry_ms: ?u64 = null,
+
+/// The retry thread saying its moment has come. Set off the app thread.
+notice_due: std.atomic.Value(bool) = .init(false),
+
+/// Started the first time a notice is refused, so a session in which none
+/// ever is never has the thread.
+notice_wake: ?poltergeistpkg.ControlWake = null,
+
 /// T1 for the control room: `poltergeist-quiescence-after`.
 control_still_ms: u64 = (poltergeistpkg.Sampler.Config{}).quiescence_ms,
 
@@ -500,6 +511,8 @@ pub fn deinit(self: *App) void {
     // `wakeup`: gone before the surfaces, so it cannot fire into a close.
     if (self.control_wake) |*w| w.stop();
     self.control_wake = null;
+    if (self.notice_wake) |*w| w.stop();
+    self.notice_wake = null;
 
     // Clean up all our surfaces
     for (self.surfaces.items) |surface| surface.deinit();
@@ -575,8 +588,68 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
     // Drain our mailbox
     try self.drainMailbox(rt_app);
 
+    // A notice that was refused in its supervisor's terminal, come back
+    // for. Before the snapshot, like everything else that can move it.
+    if (self.notice_due.swap(false, .acq_rel)) {
+        self.notice_retry_ms = null;
+        if (!self.poltergeist_stopping.load(.acquire)) {
+            self.deliverPoltergeistNotices(self.poltergeistElapsedMs());
+        }
+    }
+
     // After it, so that everything this tick changed is in one snapshot.
     self.controlRoomTick(rt_app);
+}
+
+/// Come back in `delay_ms` and offer the supervisors their boxes again: a
+/// notice was refused in one of their terminals (`Surface.typePoltergeistNotice`)
+/// and nothing else is certain to drive a delivery when the refusal lifts.
+///
+/// One wake for all of them, at the earliest moment anybody asked for. A
+/// retry that is refused again asks again, so a person who keeps typing
+/// pushes it back ten seconds at a time and nothing is typed under them.
+/// There is no upper bound and none is wanted: each retry costs one refused
+/// attempt, and the notice is about somebody who is still waiting.
+pub fn noticeRetryIn(self: *App, delay_ms: u64) void {
+    const now_ms = self.poltergeistElapsedMs();
+    self.notice_retry_ms = earlierRetry(self.notice_retry_ms, now_ms, now_ms +| delay_ms);
+
+    if (self.notice_wake == null) {
+        self.notice_wake = .{ .io = global.io(), .fire = noticeRetryDue, .ctx = self };
+        self.notice_wake.?.start() catch |err| {
+            log.warn("poltergeist: no retry thread; a refused notice waits for the next report err={}", .{err});
+            self.notice_wake = null;
+            return;
+        };
+    }
+    self.notice_wake.?.arm(self.notice_retry_ms, now_ms);
+}
+
+/// The retry that stands after another is asked for: the earlier of the
+/// two, unless the one standing is already in the past (it fired, or is
+/// about to) and so is no longer a moment to wait for.
+fn earlierRetry(standing: ?u64, now_ms: u64, asked: u64) u64 {
+    const at = standing orelse return asked;
+    if (at <= now_ms) return asked;
+    return @min(at, asked);
+}
+
+test "notice delivery: several refusals share one wake, at the earliest moment asked for" {
+    try std.testing.expectEqual(@as(u64, 8_000), earlierRetry(null, 1_000, 8_000));
+    // A later ask does not push an earlier one back...
+    try std.testing.expectEqual(@as(u64, 8_000), earlierRetry(8_000, 2_000, 12_000));
+    // ...an earlier one pulls it forward...
+    try std.testing.expectEqual(@as(u64, 5_000), earlierRetry(8_000, 2_000, 5_000));
+    // ...and one that has passed is not a moment to keep.
+    try std.testing.expectEqual(@as(u64, 19_000), earlierRetry(8_000, 9_000, 19_000));
+}
+
+/// The retry thread's whole job: raise the flag and get `tick` called.
+fn noticeRetryDue(ctx: *anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (self.poltergeist_stopping.load(.acquire)) return;
+    self.notice_due.store(true, .release);
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
 }
 
 /// Say that the control room's snapshot may be out of date. Cheap, and
@@ -851,17 +924,23 @@ fn controlActStartSupervisor(
 
     // Asked of the application. A host that only puts a tab beside a
     // terminal says it did nothing, and is asked again with one.
-    var asked = rt_app.performAction(.app, .new_tab, .{ .working_directory = dir_z }) catch false;
+    var answer: apprt.action.NewTab.Result = .unanswered;
+    var asked = rt_app.performAction(
+        .app,
+        .new_tab,
+        .{ .working_directory = dir_z, .result = &answer },
+    ) catch false;
     if (!asked) for (self.surfaces.items) |v| {
         if (self.isChatSurface(v.core().id)) continue;
+        answer = .unanswered;
         asked = rt_app.performAction(
             .{ .surface = v.core() },
             .new_tab,
-            .{ .working_directory = dir_z },
+            .{ .working_directory = dir_z, .result = &answer },
         ) catch false;
         break;
     };
-    try tabWasAsked(asked);
+    try tabWasAsked(asked, answer);
 
     // A host that makes the tab inside the call has already had it claim
     // the launch (`claimPendingLaunch`). One that had not: it is this
@@ -1948,7 +2027,7 @@ fn restoreChatGroups(self: *App) void {
     var back: usize = 0;
     for (shells) |shell| {
         if (back >= ceiling) break;
-        self.chat.restoreShell(shell.name, shell.brief, shell.last_ms) catch continue;
+        self.chat.restoreShell(shell.name, shell.brief, shell.last_ms, shell.marks) catch continue;
         _ = self.chat.setSupervisorDir(shell.name, shell.supervisor_dir) catch false;
         back += 1;
     }
@@ -5556,11 +5635,15 @@ fn poltergeistOpenTerminal(
         break :placed .split;
     };
 
-    if (placed != .split) try tabWasAsked(rt_app.performAction(
-        .{ .surface = surface },
-        .new_tab,
-        .{ .working_directory = dir_z },
-    ) catch false);
+    if (placed != .split) {
+        var answer: apprt.action.NewTab.Result = .unanswered;
+        const performed = rt_app.performAction(
+            .{ .surface = surface },
+            .new_tab,
+            .{ .working_directory = dir_z, .result = &answer },
+        ) catch false;
+        try tabWasAsked(performed, answer);
+    }
 
     for (self.surfaces.items) |v| {
         const id = v.core().id;
@@ -5590,16 +5673,29 @@ fn poltergeistOpenTerminal(
 /// tab the runtime has not made *yet* looks like, so the caller waited for
 /// a terminal that was never asked for (a supervisor whose terminal the
 /// control room had borrowed, six times in a row, 2026-10-13).
-fn tabWasAsked(performed: bool) error{OpenFailed}!void {
-    if (!performed) {
-        log.warn("poltergeist: the apprt opened no tab for the terminal that was asked for", .{});
+///
+/// `answer` is what the apprt wrote when it can say more than that
+/// (`apprt.action.NewTab.Result`): it "performs" a request it turned down by
+/// telling the person, and only the cell says so.
+fn tabWasAsked(performed: bool, answer: apprt.action.NewTab.Result) error{OpenFailed}!void {
+    if (!performed or answer == .refused) {
+        log.warn(
+            "poltergeist: the apprt opened no tab for the terminal that was asked for (performed={}, answer={s})",
+            .{ performed, @tagName(answer) },
+        );
         return error.OpenFailed;
     }
 }
 
 test "poltergeist: a tab the apprt did not open is a failure, not a terminal that is on its way" {
-    try tabWasAsked(true);
-    try std.testing.expectError(error.OpenFailed, tabWasAsked(false));
+    // An apprt that says nothing more is taken at its word, as before...
+    try tabWasAsked(true, .unanswered);
+    try tabWasAsked(true, .will_open);
+    try std.testing.expectError(error.OpenFailed, tabWasAsked(false, .unanswered));
+    // ...and one that dealt with the request by turning it down has not
+    // opened anything, whatever it returned.
+    try std.testing.expectError(error.OpenFailed, tabWasAsked(true, .refused));
+    try std.testing.expectError(error.OpenFailed, tabWasAsked(false, .refused));
 }
 
 fn poltergeistOpenTerminals(

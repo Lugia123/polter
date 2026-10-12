@@ -246,3 +246,48 @@ struct ControlRoomNewTabTests {
         #expect(Rules.madeGroupToSelect(nil, in: rows) == nil)
     }
 }
+
+/// A new tab asked of a terminal whose window may not take one: who is told.
+struct ControlRoomNewTabAnswerTests {
+    typealias Rules = ControlRoomRules
+
+    @Test func anOrdinaryTerminalWindowWithATitleBarOpensItWhoeverAsked() {
+        for lent in [true, false] {
+            for wanted in [true, false] {
+                let answer = Rules.newTabAnswer(lent: lent, homeTakesTabs: true, decorations: true, answerWanted: wanted)
+                #expect(answer == .open)
+            }
+        }
+    }
+
+    @Test func anAgentIsToldNoAndThePersonIsShownNothing() {
+        // The two that used to answer "done" with a dialog and no terminal.
+        let quick = Rules.newTabAnswer(lent: false, homeTakesTabs: false, decorations: true, answerWanted: true)
+        let bare = Rules.newTabAnswer(lent: false, homeTakesTabs: true, decorations: false, answerWanted: true)
+        for answer in [quick, bare] {
+            guard case .refuseToTheCore = answer else {
+                Issue.record("an agent's request was not refused to the core: \(answer)")
+                continue
+            }
+        }
+        // And they say which it was.
+        #expect(quick != bare)
+    }
+
+    @Test func aKeyPressIsStillAnsweredToThePerson() {
+        let quick = Rules.newTabAnswer(lent: false, homeTakesTabs: false, decorations: true, answerWanted: false)
+        #expect(quick == .tellThePerson)
+        let bare = Rules.newTabAnswer(lent: false, homeTakesTabs: true, decorations: false, answerWanted: false)
+        #expect(bare == .tellThePerson)
+    }
+
+    @Test func aBorrowedTerminalIsNeverAnsweredWithADialogAboutAWindowBehindTheControlRoom() {
+        for wanted in [true, false] {
+            let answer = Rules.newTabAnswer(lent: true, homeTakesTabs: false, decorations: true, answerWanted: wanted)
+            guard case .refuseToTheCore = answer else {
+                Issue.record("a borrowed terminal was answered with \(answer)")
+                continue
+            }
+        }
+    }
+}

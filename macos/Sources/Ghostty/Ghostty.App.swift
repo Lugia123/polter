@@ -1062,6 +1062,14 @@ extension Ghostty {
         /// False when no tab was asked of anybody: the core then answers
         /// whoever wanted the terminal that it was not opened, instead of
         /// "done" with nothing there.
+        ///
+        /// **And the answer cell, when there is one** (`action.result`):
+        /// somebody other than the person is waiting to hear -- an agent's
+        /// `terminal_open`. The two places a key press is answered with a
+        /// dialog (tabs are off, this is the quick terminal) are answered
+        /// to that caller with REFUSED and no dialog: the person did not
+        /// ask for anything. The return value stays "performed" in those
+        /// for a key, so the key does not fall through to the program.
         private static func newTab(
             _ app: ghostty_app_t,
             target: ghostty_target_s,
@@ -1075,11 +1083,18 @@ extension Ghostty {
                 let s = String(cString: $0)
                 return s.isEmpty ? nil : s
             }
+            let answer = action.result
+            func refuse(_ why: String) -> Bool {
+                Ghostty.logger.warning("new tab refused: \(why, privacy: .public)")
+                answer?.pointee = GHOSTTY_ACTION_NEW_TAB_RESULT_REFUSED
+                return false
+            }
 
             switch target.tag {
             case GHOSTTY_TARGET_APP:
                 var config = SurfaceConfiguration()
                 config.workingDirectory = requested
+                answer?.pointee = GHOSTTY_ACTION_NEW_TAB_RESULT_WILL_OPEN
                 NotificationCenter.default.post(
                     name: Notification.ghosttyNewTab,
                     object: nil,
@@ -1096,24 +1111,32 @@ extension Ghostty {
                 // Asked of the window the terminal belongs to, which is not
                 // the one its view is in while the control room has it.
                 guard let home = surfaceView.homeWindow else {
-                    Ghostty.logger.warning("new tab refused: no window holds the terminal it was asked from")
-                    return false
+                    return refuse("no window holds the terminal it was asked from")
                 }
-                // A borrowed terminal whose own window takes no tabs (the
-                // quick terminal): nobody would be asked, and nobody would
-                // tell the person, whose eyes are on the control room.
-                if ControlRoomLender.shared.isLent(surfaceView), !(home.windowController is TerminalController) {
-                    Ghostty.logger.warning("new tab refused: the terminal is in the control room and its own window takes no tabs")
-                    return false
-                }
-                guard appState.config.windowDecorations else {
-                    let alert = NSAlert()
-                    alert.messageText = String(localized: "Tabs are disabled", comment: "核心发起的提醒框")
-                    alert.informativeText = String(localized: "Enable window decorations to use tabs", comment: "核心发起的提醒框")
-                    alert.addButton(withTitle: String(localized: "OK", comment: "核心发起的提醒框"))
-                    alert.alertStyle = .warning
-                    _ = alert.runModal()
-                    return true
+                let lent = ControlRoomLender.shared.isLent(surfaceView)
+                switch ControlRoomRules.newTabAnswer(
+                    lent: lent,
+                    homeTakesTabs: home.windowController is TerminalController,
+                    decorations: appState.config.windowDecorations,
+                    answerWanted: answer != nil) {
+                case .open:
+                    break
+                case .refuseToTheCore(let why):
+                    return refuse(why)
+                case .tellThePerson:
+                    // A key or a menu item, in a window that takes no tabs.
+                    // The quick terminal says so itself when it hears the
+                    // notification below; with decorations off it is said
+                    // here.
+                    guard appState.config.windowDecorations else {
+                        let alert = NSAlert()
+                        alert.messageText = String(localized: "Tabs are disabled", comment: "核心发起的提醒框")
+                        alert.informativeText = String(localized: "Enable window decorations to use tabs", comment: "核心发起的提醒框")
+                        alert.addButton(withTitle: String(localized: "OK", comment: "核心发起的提醒框"))
+                        alert.alertStyle = .warning
+                        _ = alert.runModal()
+                        return true
+                    }
                 }
 
                 // Inherited first, then overridden: everything else about
@@ -1123,6 +1146,9 @@ extension Ghostty {
                     from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_TAB))
                 if let requested { config.workingDirectory = requested }
 
+                if home.windowController is TerminalController {
+                    answer?.pointee = GHOSTTY_ACTION_NEW_TAB_RESULT_WILL_OPEN
+                }
                 NotificationCenter.default.post(
                     name: Notification.ghosttyNewTab,
                     object: surfaceView,

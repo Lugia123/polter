@@ -235,6 +235,11 @@ last_key_time: ?std.Io.Timestamp = null,
 /// See `poltergeist/draft.zig` for what it can and cannot see.
 poltergeist_draft: poltergeistpkg.draft.Draft = .{},
 
+/// A notice typed into this terminal was refused -- somebody at the
+/// keyboard, or a draft in the line -- and has not been typed since.
+/// What says a key that empties the line has something to bring back.
+poltergeist_notice_refused: bool = false,
+
 /// How many key presses this surface has encoded and handed to the pty.
 ///
 /// **Only `sendPoltergeistKey` reads it, and it reads a difference rather
@@ -1043,6 +1048,16 @@ pub fn init(
     // A terminal the tool surface asked for, made after the request
     // returned: an agent opened it (#989).
     app.claimAgentOpened(self);
+
+    // **Say where this terminal stands before anything has happened to it.**
+    // The apprt draws its menu from the last mark it was sent, and one was
+    // only sent when something changed -- so a terminal nothing had happened
+    // to yet showed "let a supervisor answer prompts here" unticked while
+    // the core had it on, which is the default (the Windows machine,
+    // 2026-10-13: unticked until that terminal's first tool call). The
+    // comparison starts from "everything off", so this sends exactly when
+    // the terminal starts out as anything else.
+    self.updatePoltergeistTabMark();
 
     // We are no longer the first surface
     app.first = false;
@@ -3229,7 +3244,14 @@ pub fn keyCallback(
     // restored by the injected-key paths below, for the reason on the field
     // itself: they are not evidence of a person, and they are text in the
     // line.
+    const draft_was = self.poltergeist_draft.outstanding;
     self.poltergeist_draft.note(event);
+
+    // A notice that was refused because of that draft comes back once the
+    // keyboard has been quiet after this key.
+    if (draftJustCleared(self.poltergeist_notice_refused, draft_was, self.poltergeist_draft.outstanding)) {
+        self.app.noticeRetryIn(notice_quiet_keyboard_ms + notice_retry_margin_ms);
+    }
 
     // Setup our inspector event if we have an inspector.
     var insp_ev: ?inspectorpkg.KeyEvent = if (self.inspector != null) ev: {
@@ -4161,6 +4183,10 @@ test "poltergeist mark prefix fits every combination" {
 /// multi-line pastes. So the newline is sent afterwards as its own key
 /// event, which is what a real return keypress looks like.
 fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
+    // Whatever becomes of this one, it is no longer the refusal that was
+    // waiting; a new refusal below says so again.
+    self.poltergeist_notice_refused = false;
+
     // A refused notice is not an error worth propagating: the sampler will
     // say the same thing again on its repeat interval.
     self.typePoltergeistText(text, true) catch |err| switch (err) {
@@ -4170,12 +4196,97 @@ fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
         // (`Bus.deliveryRefused`); the rest comes round as it always has.
         error.UserPresent,
         error.DraftInLine,
-        => self.app.poltergeist.deliveryRefused(self.id, self.app.chat.peers()),
+        => {
+            self.app.poltergeist.deliveryRefused(self.id, self.app.chat.peers());
+
+            // **And something has to come back for it.** "Offered again as
+            // soon as anything drives a delivery" was true and not enough:
+            // deliveries are driven by reports from watched terminals, and
+            // with the worker sitting on its prompt the next one is its
+            // quiet report a minute on. Measured on the Windows machine
+            // (2026-10-13): a key in the supervisor's terminal two seconds
+            // after the worker asked, and the notice arrived seventy
+            // seconds late. So the refusal sets its own wake -- for when
+            // the keyboard has been quiet long enough, or, with a draft in
+            // the line, for after the key that clears it (`keyCallback`).
+            self.poltergeist_notice_refused = true;
+            const since_key_ms: ?i64 = if (self.last_key_time) |last|
+                last.durationTo(.now(global.io(), .boot)).toMilliseconds()
+            else
+                null;
+            if (noticeRetryDelayMs(err, since_key_ms)) |ms| self.app.noticeRetryIn(ms);
+            return;
+        },
         error.ChildExited,
         error.UnsafeText,
+        // Said in the log where it happened; the line is marked as a draft,
+        // so nothing more is typed onto it.
+        error.NotSubmitted,
         => {},
         else => return err,
     };
+}
+
+/// A printed line starts at the left edge; with the cursor anywhere else it
+/// is given a line break first.
+fn alertNeedsOwnLine(cursor_x: usize) bool {
+    return cursor_x != 0;
+}
+
+test "notice delivery: a printed alert starts on a line of its own" {
+    const testing = std.testing;
+    try testing.expect(!alertNeedsOwnLine(0));
+    // After a prompt, or after what the person has typed at one.
+    try testing.expect(alertNeedsOwnLine(2));
+    try testing.expect(alertNeedsOwnLine(119));
+}
+
+/// A little past the moment the guard would let a notice through, so the
+/// retry does not arrive a millisecond early and get refused again.
+const notice_retry_margin_ms = 250;
+
+/// When to try a refused notice again, in milliseconds from now; null when
+/// no amount of waiting helps.
+///
+/// `UserPresent` clears by itself: `notice_quiet_keyboard_ms` after the last
+/// key. `DraftInLine` does not -- it clears when a return, or one of the
+/// chords that abandon a line, reaches the terminal -- so there is nothing
+/// to set a clock for; `draftJustCleared` is what brings that one back.
+fn noticeRetryDelayMs(err: anyerror, since_key_ms: ?i64) ?u64 {
+    return switch (err) {
+        error.UserPresent => {
+            const since: u64 = if (since_key_ms) |ms| @intCast(@max(0, ms)) else 0;
+            return (notice_quiet_keyboard_ms -| since) + notice_retry_margin_ms;
+        },
+        else => null,
+    };
+}
+
+/// Whether a key has just emptied a line that a refused notice was waiting
+/// on. The key itself counts as somebody at the keyboard, so the notice
+/// still waits out the quiet time after it.
+fn draftJustCleared(notice_refused: bool, was_outstanding: bool, is_outstanding: bool) bool {
+    return notice_refused and was_outstanding and !is_outstanding;
+}
+
+test "notice delivery: a refused notice sets its own time to come back, and a draft waits for the key that clears it" {
+    const testing = std.testing;
+    // A key two seconds ago: eight more, and a little.
+    try testing.expectEqual(@as(?u64, 8_000 + notice_retry_margin_ms), noticeRetryDelayMs(error.UserPresent, 2_000));
+    // Never a negative wait, and never one that has already passed.
+    try testing.expectEqual(@as(?u64, notice_retry_margin_ms), noticeRetryDelayMs(error.UserPresent, 60_000));
+    try testing.expectEqual(@as(?u64, notice_quiet_keyboard_ms + notice_retry_margin_ms), noticeRetryDelayMs(error.UserPresent, null));
+    // A draft does not clear by waiting.
+    try testing.expectEqual(@as(?u64, null), noticeRetryDelayMs(error.DraftInLine, 2_000));
+    try testing.expectEqual(@as(?u64, null), noticeRetryDelayMs(error.ChildExited, 2_000));
+
+    // The return that submits the line is what brings it back...
+    try testing.expect(draftJustCleared(true, true, false));
+    // ...not a key typed into the draft, not a key at an empty line, and
+    // not when no notice was waiting.
+    try testing.expect(!draftJustCleared(true, true, true));
+    try testing.expect(!draftJustCleared(true, false, false));
+    try testing.expect(!draftJustCleared(false, true, false));
 }
 
 /// Put a line on the screen for the person to read.
@@ -4203,6 +4314,17 @@ fn showPoltergeistAlert(self: *Surface, text: []const u8) !void {
     {
         self.renderer_state.mutex.lockUncancelable(global.io());
         defer self.renderer_state.mutex.unlock(global.io());
+
+        // **On a line of its own.** It used to start wherever the cursor
+        // was, which at a prompt is after whatever the person has typed:
+        // `echo half-a-line[poltergeist] 0x… awaiting approval …`, read on
+        // the Windows machine (2026-10-13) as a notice typed into a draft.
+        // It was not typed -- nothing here reaches the program's input --
+        // but glued to the line it could not be told apart from text that
+        // was.
+        if (alertNeedsOwnLine(self.io.terminal.screens.active.cursor.x)) {
+            try self.io.terminal.printString("\n");
+        }
 
         // The trailing newline is a carriage return too, so whatever the
         // shell prints next starts at column zero rather than after this.
@@ -4266,6 +4388,10 @@ pub const TypeError = error{
     /// bracketed paste, so there is no way to hand it over as text rather
     /// than as commands.
     UnbracketedMultiline,
+
+    /// The text was typed and the return that submits it did not become
+    /// bytes for the program. The line is left marked as a draft.
+    NotSubmitted,
 };
 
 /// Whether a key event is evidence that a person is at this terminal.
@@ -4672,11 +4798,45 @@ pub fn typePoltergeistTextAs(self: *Surface, text: []const u8, submit: bool, who
     const stamp = self.last_key_time;
     defer self.last_key_time = stamp;
 
-    _ = try self.keyCallback(.{
+    // **The text and its return are one thing to whoever asked, and only
+    // the counter says whether the second half happened.** `keyCallback`
+    // answers "consumed" for a return a keybinding took as readily as for
+    // one that became bytes, and it clears the draft flag on the way past
+    // either way -- so a return that never reached the program used to
+    // leave a line of text sitting there, reported as sent, with the flag
+    // saying the line was empty. The next notice was then typed onto the
+    // end of it.
+    const written_before = self.poltergeist_keys_written;
+    const effect = try self.keyCallback(.{
         .action = .press,
         .key = .enter,
         .utf8 = "\r",
     });
+    if (!returnWasWritten(effect, written_before, self.poltergeist_keys_written)) {
+        if (effect != .closed) self.poltergeist_draft.outstanding = true;
+        log.warn(
+            "poltergeist: text was typed but its return did not reach the program (effect={s}); " ++
+                "the line is left as an unsubmitted draft",
+            .{@tagName(effect)},
+        );
+        return error.NotSubmitted;
+    }
+}
+
+/// Whether the return after a typed line became bytes for the program:
+/// `keyCallback` consumed it *and* the count of keys encoded moved. Consumed
+/// with the count standing still is a keybinding having taken it.
+fn returnWasWritten(effect: InputEffect, written_before: u64, written_after: u64) bool {
+    return effect == .consumed and written_after != written_before;
+}
+
+test "notice delivery: a typed line counts as sent only when its return became bytes" {
+    const testing = std.testing;
+    try testing.expect(returnWasWritten(.consumed, 4, 5));
+    // A keybinding took the return: consumed, and nothing was written.
+    try testing.expect(!returnWasWritten(.consumed, 4, 4));
+    try testing.expect(!returnWasWritten(.ignored, 4, 4));
+    try testing.expect(!returnWasWritten(.closed, 4, 4));
 }
 
 /// Press a key in this terminal as if the user had.
@@ -4810,6 +4970,22 @@ pub fn textCallback(self: *Surface, text: []const u8) !void {
     defer crash.sentry.thread_state = null;
 
     try self.completeClipboardPaste(text, true);
+}
+
+/// Text the person put in without a key event: an input method's committed
+/// text, dictation, the emoji picker. What an apprt's text entry point
+/// calls.
+///
+/// **It is the person at the keyboard, and `keyCallback` never saw it.** So
+/// the two things that function notes for Poltergeist are noted here: that
+/// somebody is at this terminal (the clock `mayType` reads), and -- in
+/// `completeClipboardPaste`, where every text that is not a key goes
+/// through -- that the line now holds something unsubmitted. Without the
+/// first, a person composing a sentence through an input method was, as far
+/// as a notice could tell, not there at all.
+pub fn textFromPerson(self: *Surface, text: []const u8) !void {
+    if (text.len > 0) self.last_key_time = .now(global.io(), .boot);
+    try self.textCallback(text);
 }
 
 /// Callback for when the surface is fully visible or not, regardless
@@ -7963,6 +8139,12 @@ fn completeClipboardPaste(
             vec,
         ), .unlocked);
     };
+
+    // What was just written sits in the line until a return says otherwise
+    // -- whoever pasted it, and however it got here (`Draft.noteText`).
+    // Poltergeist's own text comes through here too: when it submits, its
+    // return is a key and clears this again.
+    self.poltergeist_draft.noteText(data);
 }
 
 /// Send a Kitty clipboard-protocol paste event when mode 5522 is enabled.

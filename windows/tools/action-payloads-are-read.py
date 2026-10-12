@@ -100,10 +100,17 @@ def main() -> int:
         arms[m.group(1)] = cb[start : start + (nxt.start() if nxt else len(cb) - start)]
         arm_start[m.group(1)] = m.start()
 
-    probe_ok = struct_fields(header, "ghostty_action_new_tab_s") == 1
+    # Two structs whose field counts are known, so that the reader is seen to
+    # count and not merely to find something. `new_tab` was the one-field
+    # probe until it grew an answer cell (`result`, task 1451); it is still
+    # here because it is the struct this gate was written about.
+    probe_ok = (
+        struct_fields(header, "ghostty_action_pwd_s") == 1
+        and struct_fields(header, "ghostty_action_new_tab_s") == 2
+    )
     print(
         "probe self-test:",
-        "OK (a one-field payload struct is seen as carrying something)"
+        "OK (a one-field payload struct is seen as carrying something, and a two-field one as two)"
         if probe_ok
         else "FAILED -- the header reader is broken, so nothing below means anything",
     )

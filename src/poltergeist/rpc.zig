@@ -6439,6 +6439,7 @@ fn dispatchOne(
 
                 error.UserPresent => hostFailure("UserPresent", key_arrived),
                 error.DraftInLine => hostFailure("DraftInLine", draft_in_line),
+                error.NotSubmitted => hostFailure("NotSubmitted", not_submitted),
 
                 else => hostFailure("SendFailed", "could not type into that terminal"),
             };
@@ -6704,6 +6705,7 @@ fn dispatchOne(
                 // next one.
                 error.UserPresent => hostFailure("UserPresent", key_arrived),
                 error.DraftInLine => hostFailure("DraftInLine", draft_in_line),
+                error.NotSubmitted => hostFailure("NotSubmitted", not_submitted),
 
                 error.ChildExited => hostFailure(
                     "ChildExited",
@@ -8211,6 +8213,13 @@ const key_arrived =
 /// until a return or a ctrl+u reaches that terminal, and the old sentence
 /// ended by telling the reader to "try again shortly", which for this half
 /// is advice to wait for something that is not going to happen.
+/// The text went in and the return after it did not reach the program.
+const not_submitted =
+    "the text was typed into that terminal but the return that submits it did not reach " ++
+    "the program there (a keybinding took the key, or nothing encoded it). The text is " ++
+    "sitting in its input line, unsubmitted: read the terminal before sending anything " ++
+    "else, and submit or clear the line with terminal_key (enter, or ctrl+u).";
+
 const draft_in_line =
     "that terminal has characters in its input line that were neither " ++
     "submitted with return nor abandoned with ctrl+c, ctrl+u or ctrl+d -- " ++

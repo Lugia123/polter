@@ -693,7 +693,12 @@ impl Action {
         (scope, confirm, result)
     }
 
-    /// `ghostty_action_new_tab_s { const char* working_directory; }`.
+    /// `ghostty_action_new_tab_s { const char* working_directory;
+    /// new_tab_result_e* result; }`.
+    ///
+    /// `result` is not written here: left alone it reads `UNANSWERED`, and
+    /// the core goes by what the action returned, which is what this host
+    /// has always answered with.
     ///
     /// ⚠️ **Nothing read this until it was found missing.** The arm queued a
     /// payload-less op, so every tab this host opened started wherever the

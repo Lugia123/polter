@@ -637,7 +637,7 @@ test "ControlRoom start: a new group is made by the name that was typed, or refu
 test "ControlRoom start: a supervisor is started for a group that has none, once" {
     var b = try Bench.init();
     defer b.deinit();
-    try b.chat.restoreShell("nightly", "", 0);
+    try b.chat.restoreShell("nightly", "", 0, .none);
 
     // No such group, and one that is minded: nothing is opened for either.
     try testing.expectError(error.NoSuchGroup, b.act(
