@@ -7,7 +7,7 @@
 //! `ControlRoomList.swift` is the same thing, and
 //! `tools/control-room-hosts-agree.py` holds the two to one answer.
 
-use crate::snapshot::{Cut, Form, Shown, Snapshot, Waiter, WaiterIs, What};
+use crate::snapshot::{Cut, Form, Shown, Snapshot, SupervisorRole, SupervisorStart, Waiter, WaiterIs, What};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -30,6 +30,9 @@ pub struct Row {
     pub terminal: Option<String>,
     pub since_ms: u64,
     pub event_ms: Option<u64>,
+    /// Whether this group has a supervisor and what starting one would
+    /// use, as the core says it.
+    pub start: Option<SupervisorStart>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +44,10 @@ pub struct List {
     /// "N groups need nothing from you". Also the core's.
     pub quiet_count: u64,
     pub quiet: Vec<Row>,
+    /// The roles a supervisor can be started in, in the core's order.
+    pub supervisor_roles: Vec<SupervisorRole>,
+    /// Whether there is a choice of role to offer. The core's word.
+    pub choose_supervisor_role: bool,
 }
 
 /// The English of what this crate says; a host passes each through its
@@ -78,6 +85,7 @@ impl List {
                 terminal: g.terminal.clone(),
                 since_ms: g.since_ms,
                 event_ms: g.event_ms,
+                start: g.supervisor.clone(),
             };
             if g.needs_me {
                 waiting.push(row);
@@ -91,6 +99,8 @@ impl List {
             waiting,
             quiet_count: s.groups_other,
             quiet,
+            supervisor_roles: s.supervisor_roles.clone(),
+            choose_supervisor_role: s.choose_supervisor_role,
         }
     }
 

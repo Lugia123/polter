@@ -44,7 +44,14 @@ window tab draws it; which frame the pane of every terminal wears
 one it does not and none at all, in a split tab, alone in its tab, with the
 setting off and in the quick terminal: the frame, the name, the glyph and
 the word -- whether the tab's ground then shows, and the English word for
-what each frame is; which rows are marked seen by being looked at, and
+what each frame is; what the core says of every group's
+supervisor (its state, whether one can be started, why the last try made
+none, the role and the directory), the roles one can be started in and
+whether there is a choice; when a group just made is selected; where a tab
+the core asked for goes, for every asker and every place the control room
+can be (forty cases); the English of what the person is told for each of
+fifteen names the core gives for not making a group or not starting a
+supervisor; which rows are marked seen by being looked at, and
 after how long; the panel's size and every rectangle in it -- a waiting row's
 height follows what it waits on, by the nominal count of lines; how what each
 waiting row waits on is fitted (the lines each step gets, the steps said only
@@ -237,6 +244,50 @@ let unlisted = ControlRoomPulse.status(
 print("tab_status tab=unlisted showing=- shown=\(shownName(unlisted.shown)) pulses=\(unlisted.pulses)")
 for s in ControlRoomList.Shown.allCases {
     print("tab_draws shown=\(shownName(s)) draws=\(TabAccessory.drawsOnWindowTab(s))")
+}
+
+// A group's supervisor, a group just made, where a new tab goes, and what a
+// refusal of either act says.
+for r in list.rows {
+    if let s = r.start {
+        print("start id=\(r.id) state=\(s.state.rawValue) can=\(s.canStart) failed=\(s.failed.rawValue) "
+            + "role=\(s.role ?? "-") cwd=\(quote(s.cwd))")
+    } else {
+        print("start id=\(r.id) -")
+    }
+}
+print("start_roles choose=\(list.chooseSupervisorRole)")
+for role in list.supervisorRoles {
+    print("start_role key=\(role.key) name=\(quote(role.name))")
+}
+for awaited in ["billing", "not-yet", nil] as [String?] {
+    print("made awaited=\(awaited ?? "-") select=\(ControlRoomRules.madeGroupToSelect(awaited, in: list.rows) ?? "-")")
+}
+let tabAskers: [(lent: Bool, hasHome: Bool)?] = [nil, (false, false), (false, true), (true, false), (true, true)]
+func homeName(_ h: ControlRoomRules.NewTab.Home) -> String {
+    switch h {
+    case .askers: return "askers"
+    case .controlRooms: return "control_rooms"
+    case .frontmost: return "frontmost"
+    }
+}
+for asker in tabAskers {
+    for bits in 0..<8 {
+        let (front, beside, any) = (bits & 4 != 0, bits & 2 != 0, bits & 1 != 0)
+        let to: String
+        switch ControlRoomRules.newTab(asker: asker, controlRoomInFront: front, tabsBesideControlRoom: beside, anyTerminalWindow: any) {
+        case .inFront(let h): to = "in_front(\(homeName(h)))"
+        case .behind(let h): to = "behind(\(homeName(h)))"
+        case .ownWindow: to = "own_window"
+        case .refused: to = "refused"
+        }
+        let who = asker.map { "lent=\($0.lent),home=\($0.hasHome)" } ?? "app"
+        print("new_tab asker=\(who) front=\(front) beside=\(beside) any=\(any) -> \(to)")
+    }
+}
+for name in ["BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting", "NoSupervisorRole", "NoSuchPersona",
+             "NotASupervisorRole", "NoCli", "NotAbsolute", "NoSuchDirectory", "NotADirectory", "OpenFailed", "NoRuntime", "NoExecutable"] {
+    print("refusal \(name) says=\(quote(ControlRoomActions.Refusal(name: name).message))")
 }
 
 // The frame each pane of a split terminal tab wears.

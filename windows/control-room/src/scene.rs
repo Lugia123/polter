@@ -38,6 +38,24 @@ pub mod msg {
     pub const IN_ITS_OWN_TAB: &str = n_("The supervisor's terminal is in its own tab.");
     pub const GO_TO_ITS_TAB: &str = n_("Go to Its Tab");
     pub const HIDDEN_STEPS: &str = n_("{} more steps");
+    /// The one button of the list: at the right end of its header.
+    pub const NEW_GROUP: &str = n_("New Group");
+    /// What the right side says of a group with no supervisor, by what the
+    /// core says became of starting one. The macOS host's sentences.
+    pub const STARTING: &str = n_("Starting the supervisor…");
+    pub const NEVER_OPENED: &str = n_("The supervisor did not start: its tab never opened.");
+    #[rustfmt::skip]
+    pub const NEVER_CONNECTED: &str = n_("The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why.");
+    pub const CLOSED_FIRST: &str = n_("The supervisor did not start: its tab was closed first.");
+    pub const DID_NOT_START: &str = n_("The supervisor did not start.");
+    pub const ROLE: &str = n_("Role");
+    pub const DIRECTORY: &str = n_("Directory");
+    pub const CHOOSE: &str = n_("Choose…");
+    pub const START_SUPERVISOR: &str = n_("Start Supervisor");
+    /// The directory, when the core names none: the new tab's own.
+    pub const WHERE_THE_TAB_STARTS: &str = n_("Where the tab starts");
+    /// The role Polter ships, as the role library shows it.
+    pub const POLTER_SUPERVISOR: &str = n_("Polter Supervisor");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +91,76 @@ pub enum Side {
     Trail,
     /// Whatever is left between the two, cut short with an ellipsis.
     Rest,
+    /// From the right like `Trail`, but only in the room the leading and
+    /// trailing parts leave: the first to give way. One that does not fit
+    /// is cut short with an ellipsis, and with no room at all is left out.
+    /// Of several, the leftmost gives way first.
+    Squeezed,
+}
+
+/// Where one part of a line is painted, in the host's pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placed {
+    pub left: i32,
+    pub right: i32,
+    /// It has less room than its words: they end in an ellipsis.
+    pub cut: bool,
+}
+
+/// Where each part of a line goes between `left` and `right`, given what a
+/// host measured: its side, the gap before it and its width. None for a
+/// part there is no room for.
+///
+/// **What keeps its width, in order**: the trailing parts, all of them;
+/// then the leading parts, up to where the trailing ones begin; then the
+/// squeezed ones, from the right, in what is left; and the rest between.
+/// So on a waiting row the status word is whole, the group's name is cut
+/// only by the status word, and who is waiting is what gives way to a long
+/// name -- never the other way round, which is how a row once showed a
+/// worker's whole title and no group at all (task 1444, defect 3).
+pub fn place_line(left: i32, right: i32, parts: &[(Side, i32, i32)]) -> Vec<Option<Placed>> {
+    let mut out = vec![None; parts.len()];
+    let mut trail = right;
+    for (i, (side, gap, width)) in parts.iter().enumerate().rev() {
+        if *side == Side::Trail {
+            out[i] = Some(Placed { left: trail - width, right: trail, cut: false });
+            trail -= width + gap;
+        }
+    }
+    let mut lead = left;
+    for (i, (side, gap, width)) in parts.iter().enumerate() {
+        if *side == Side::Lead {
+            lead += gap;
+            let end = (lead + width).min(trail);
+            if end > lead {
+                out[i] = Some(Placed { left: lead, right: end, cut: end < lead + width });
+            }
+            lead += width;
+        }
+    }
+    let mut end = trail;
+    let mut room = true;
+    for (i, (side, gap, width)) in parts.iter().enumerate().rev() {
+        if *side == Side::Squeezed && room {
+            let has = (end - (lead + gap)).min(*width);
+            if has <= 0 {
+                // Nothing further left fits either.
+                room = false;
+                continue;
+            }
+            out[i] = Some(Placed { left: end - has, right: end, cut: has < *width });
+            end -= has + gap;
+        }
+    }
+    for (i, (side, gap, _)) in parts.iter().enumerate() {
+        if *side == Side::Rest {
+            let from = lead + gap;
+            if end > from {
+                out[i] = Some(Placed { left: from, right: end, cut: true });
+            }
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -198,6 +286,40 @@ pub struct View<'a> {
     pub lift: f64,
     /// The row whose glyph breathes (`pulse::pulsing_row`).
     pub pulsing: Option<&'a str>,
+    /// The person pressed "new group" and has not made one or given up:
+    /// the header is the field for its name.
+    pub naming: Option<Naming<'a>>,
+}
+
+/// A group being named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Naming<'a> {
+    /// Why the name as typed made no group; said under the field.
+    pub refusal: Option<&'a str>,
+}
+
+/// Where pressing makes a new group: the right end of the header, where
+/// the words are. 暂定: the right two fifths of the header, since only a
+/// host can measure the words.
+pub fn new_group_hit(header: Rect) -> Rect {
+    let w = header.w * 0.4;
+    Rect { x: header.x + header.w - w, y: header.y, w, h: header.h }
+}
+
+/// The field a new group is named in, where the header was: its outline,
+/// and inside it where the host puts what is typed.
+pub fn name_field(header: Rect) -> (Rect, Rect) {
+    let outline = inset_x(header, side::HEADER_PADDING_X - side::ROW_PADDING_X);
+    let h = side::ASK_LINE_HEIGHT;
+    let typed = Rect { y: outline.y + (outline.h - h) / 2.0, h, ..inset_x(outline, side::ROW_PADDING_X) };
+    (outline, typed)
+}
+
+/// Where the reason a name made no group is said: under the field, over
+/// the rows, two lines of it.
+pub fn name_note(header: Rect) -> Rect {
+    let (outline, _) = name_field(header);
+    Rect { y: outline.y + outline.h, h: 2.0 * side::ASK_LINE_HEIGHT + 2.0 * side::ROW_PADDING_Y, ..outline }
 }
 
 /// The list panel, top to bottom, in the order to paint it.
@@ -225,16 +347,29 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
     let (hair_h, hair_strength) = hairline(view.scale);
     let hair = |r: Rect, under: Rgba| fill(Rect { x: r.x, y: r.y, w: r.w, h: hair_h }, over(under, theme.line_faint, hair_strength));
 
-    out.push(Item::Text {
-        rect: inset_x(at.header, side::HEADER_PADDING_X),
-        text: if list.waiting_count == 0 {
-            tr(msg::NONE_WAITING_HEADER)
-        } else {
-            list::fill(&tr(msg::WAITING_HEADER), &list.waiting_count.to_string())
-        },
-        style: Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.text) },
-        align: Align::Left,
-    });
+    match view.naming {
+        // The field's outline; what is typed in it is the host's own
+        // control, put where `name_field` says.
+        Some(_) => out.push(Item::Round { rect: name_field(at.header).0, radius: radius::ROW, color: panel, edge: Some(theme.attention_text) }),
+        None => {
+            let all = inset_x(at.header, side::HEADER_PADDING_X);
+            // The one button of the list, at the header's right end; the
+            // header's own words have what is to its left.
+            let button = new_group_hit(at.header);
+            let button = Rect { w: (all.x + all.w - button.x).max(0.0), ..button };
+            out.push(Item::Text {
+                rect: Rect { w: (button.x - side::ROW_ITEM_GAP - all.x).max(0.0), ..all },
+                text: if list.waiting_count == 0 {
+                    tr(msg::NONE_WAITING_HEADER)
+                } else {
+                    list::fill(&tr(msg::WAITING_HEADER), &list.waiting_count.to_string())
+                },
+                style: Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.text) },
+                align: Align::Left,
+            });
+            out.push(Item::Text { rect: button, text: format!("+ {}", tr(msg::NEW_GROUP)), style: body(theme.text_secondary), align: Align::Right });
+        }
+    }
 
     for row in &list.waiting {
         if let (Some(rect), Some(fit)) = (at.chip(Some(&row.id)), at.fit(&row.id)) {
@@ -255,6 +390,19 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
     for row in &list.quiet {
         let Some(rect) = at.chip(Some(&row.id)) else { continue };
         quiet_row(&mut out, row, rect, view);
+    }
+
+    // Last, so it lies over the rows: it is there only until the name is
+    // put right.
+    if let Some(Naming { refusal: Some(why) }) = view.naming {
+        let note = name_note(at.header);
+        out.push(Item::Round { rect: note, radius: radius::ROW, color: theme.window_base, edge: None });
+        out.push(Item::Block {
+            rect: Rect { x: note.x + side::ROW_PADDING_X, y: note.y + side::ROW_PADDING_Y, w: (note.w - 2.0 * side::ROW_PADDING_X).max(0.0), h: 2.0 * side::ASK_LINE_HEIGHT },
+            text: why.to_string(),
+            style: body(theme.problem_text_on_row),
+            lines: 2,
+        });
     }
 
     out
@@ -352,7 +500,9 @@ fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, fit: &AskFit, view: &
             face: Face::Mono,
             color: theme.text,
         },
-        Side::Rest,
+        // The name keeps its place: only the status word cuts it short,
+        // and who is waiting takes what the two leave (`place_line`).
+        Side::Lead,
         0.0,
     )];
     first.extend(waiter_parts(row, theme, tr));
@@ -403,14 +553,14 @@ fn waiter_parts(row: &Row, theme: &Theme, tr: &dyn Fn(&str) -> String) -> Vec<Pa
     // The template has the name's place in it, or it is the whole of what
     // is said ("Supervisor").
     let Some((before, after)) = said.split_once("{}") else {
-        return vec![words(said, ui, Side::Trail, side::ROW_ITEM_GAP)];
+        return vec![words(said, ui, Side::Squeezed, side::ROW_ITEM_GAP)];
     };
     // Left to right; a trailing part's gap is on its left.
     let mut parts = Vec::new();
     let mut gap = side::ROW_ITEM_GAP;
     for (text, style) in [(before.to_string(), ui), (name, mono), (after.to_string(), ui)] {
         if draws(&text) {
-            parts.push(words(text, style, Side::Trail, gap));
+            parts.push(words(text, style, Side::Squeezed, gap));
             gap = 0.0;
         }
     }
@@ -543,6 +693,156 @@ pub struct Right {
     pub terminal: Option<Rect>,
 }
 
+/// What the person has picked for the supervisor about to be started, and
+/// what the last press came to. All of it is about one group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StartView<'a> {
+    /// The roles the core lists, and whether it says there is a choice.
+    pub roles: &'a [crate::snapshot::SupervisorRole],
+    pub choose_role: bool,
+    /// What they picked; none while they have picked nothing, and then it
+    /// is the core's (`start.role`, `start.cwd`).
+    pub role: Option<&'a str>,
+    pub cwd: Option<&'a str>,
+    /// Why the last press of "Start Supervisor" did nothing.
+    pub refusal: Option<&'a str>,
+    /// The person's home directory, shown as `~`.
+    pub home: &'a str,
+}
+
+/// What starting a supervisor offers under the right side's sentence, and
+/// where each thing to press is.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Start {
+    pub items: Vec<Item>,
+    /// The role's line, when there is a choice of role.
+    pub role: Option<Rect>,
+    /// The directory's line: pressing it picks another.
+    pub directory: Option<Rect>,
+    /// "Start Supervisor".
+    pub start: Option<Rect>,
+}
+
+/// What the right side says of a group with no supervisor: which sentence
+/// is the core's word (`state`, `failed`).
+pub fn no_supervisor_words(start: Option<&crate::snapshot::SupervisorStart>) -> &'static str {
+    use crate::snapshot::{StartFailure as F, SupervisorState as S};
+    match start.map(|s| (s.state, s.failed)) {
+        Some((S::Starting, _)) => msg::STARTING,
+        Some((S::Failed, F::TerminalNeverOpened)) => msg::NEVER_OPENED,
+        Some((S::Failed, F::AgentNeverConnected)) => msg::NEVER_CONNECTED,
+        Some((S::Failed, F::TerminalClosed)) => msg::CLOSED_FIRST,
+        Some((S::Failed, F::None)) => msg::DID_NOT_START,
+        Some((S::Present, _)) | Some((S::Absent, _)) | None => msg::NO_SUPERVISOR,
+    }
+}
+
+/// A directory as it is shown: the home directory as `~`. Either slash
+/// ends the home directory's name.
+pub fn shown_directory(path: &str, home: &str, tr: &dyn Fn(&str) -> String) -> String {
+    if path.is_empty() {
+        return tr(msg::WHERE_THE_TAB_STARTS);
+    }
+    if home.is_empty() {
+        return path.to_string();
+    }
+    if path == home {
+        return "~".to_string();
+    }
+    match path.strip_prefix(home) {
+        Some(rest) if rest.starts_with('/') || rest.starts_with('\\') => format!("~{rest}"),
+        Some(_) | None => path.to_string(),
+    }
+}
+
+/// The name a role is shown under.
+pub fn role_name(role: &crate::snapshot::SupervisorRole, tr: &dyn Fn(&str) -> String) -> String {
+    if role.key == "polter-supervisor" {
+        tr(msg::POLTER_SUPERVISOR)
+    } else {
+        role.name.clone()
+    }
+}
+
+/// How far down the right side the sentence of a group with no supervisor
+/// ends: where what starting one offers begins.
+fn start_top() -> f64 {
+    space::FRAME_TO_CONTENT + side::HEADER_HEIGHT + 2.0 * side::ASK_LINE_HEIGHT + side::ROW_GAP
+}
+
+/// What the right side offers for the selected group when it has no
+/// supervisor: the role (only when the core says there is a choice), the
+/// directory, and the button -- **only when the core says one can be
+/// started** (`can_start`). Nothing otherwise.
+///
+/// This is on the right side, not on a row: a row still has nothing to
+/// press but itself.
+pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Theme, view: &StartView, tr: &dyn Fn(&str) -> String) -> Start {
+    let Detail_::NoSupervisor { .. } = detail else { return Start::default() };
+    let Some(start) = row.and_then(|r| r.start.as_ref()) else { return Start::default() };
+    if !start.can_start {
+        return Start::default();
+    }
+    let pad = space::FRAME_TO_CONTENT;
+    let line_h = side::HEADER_HEIGHT;
+    let w = (width - 2.0 * pad).min(side::WIDTH * 1.5).max(0.0);
+    let mut y = start_top();
+    let mut out = Start::default();
+    let label = |text: &str| words(tr(text), body(theme.terminal_dim), Side::Lead, 0.0);
+
+    if view.choose_role {
+        let key = view.role.or(start.role.as_deref());
+        let name = key.and_then(|k| view.roles.iter().find(|r| r.key == k)).map(|r| role_name(r, tr)).unwrap_or_default();
+        let rect = Rect { x: pad, y, w, h: line_h };
+        let mut parts = vec![label(msg::ROLE)];
+        if draws(&name) {
+            parts.push(words(name, Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.terminal_text) }, Side::Lead, side::ROW_ITEM_GAP));
+        }
+        parts.push(words(tr(msg::CHOOSE), body(theme.attention_text), Side::Trail, side::ROW_ITEM_GAP));
+        out.items.push(Item::Line { rect, parts });
+        out.role = Some(rect);
+        y += line_h;
+    }
+
+    let rect = Rect { x: pad, y, w, h: line_h };
+    out.items.push(Item::Line {
+        rect,
+        parts: vec![
+            label(msg::DIRECTORY),
+            words(
+                shown_directory(view.cwd.unwrap_or(&start.cwd), view.home, tr),
+                Style { face: Face::Mono, ..body(theme.terminal_text) },
+                Side::Rest,
+                side::ROW_ITEM_GAP,
+            ),
+            words(tr(msg::CHOOSE), body(theme.attention_text), Side::Trail, side::ROW_ITEM_GAP),
+        ],
+    });
+    out.directory = Some(rect);
+    y += line_h + side::ROW_GAP;
+
+    let button = Rect { x: pad, y, w: side::WIDTH / 2.0, h: line_h };
+    out.items.push(Item::Round { rect: button, radius: radius::ROW, color: theme.terminal_background, edge: Some(theme.attention_text) });
+    out.items.push(Item::Text {
+        rect: button,
+        text: tr(msg::START_SUPERVISOR),
+        style: Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.attention_text) },
+        align: Align::Centre,
+    });
+    out.start = Some(button);
+    y += line_h + side::ROW_GAP;
+
+    if let Some(why) = view.refusal.filter(|w| draws(w)) {
+        out.items.push(Item::Block {
+            rect: Rect { x: pad, y, w, h: 2.0 * side::ASK_LINE_HEIGHT },
+            text: why.to_string(),
+            style: body(theme.problem_text_on_terminal),
+            lines: 2,
+        });
+    }
+    out
+}
+
 /// Where the terminal sits inside the right-hand side when it is shown:
 /// under the frame's title bar, inside its border.
 pub fn terminal_rect(width: f64, height: f64) -> Rect {
@@ -641,9 +941,16 @@ pub fn build_right(
         Detail_::NothingSelected => {
             items.push(Item::Text { rect: line_at(0.0), text: tr(msg::NO_SELECTION), style: body(theme.text_secondary), align: Align::Left });
         }
+        // Which sentence is the core's word; some are long, so it has two
+        // lines. What starting one offers goes under it (`build_start`).
         Detail_::NoSupervisor { group } => {
             name(&mut items, group);
-            says(&mut items, 1.0, msg::NO_SUPERVISOR);
+            items.push(Item::Block {
+                rect: Rect { x: pad, y: pad + line_h, w: inner_w, h: 2.0 * side::ASK_LINE_HEIGHT },
+                text: tr(no_supervisor_words(row.and_then(|r| r.start.as_ref()))),
+                style: body(theme.terminal_dim),
+                lines: 2,
+            });
         }
         Detail_::SupervisorGone { group } => {
             name(&mut items, group);
@@ -695,7 +1002,7 @@ mod tests {
 
     fn scene(list: &List, selection: Option<&str>, dark: bool, scale: f64, pulsing: Option<&str>) -> Vec<Item> {
         let at = ListLayout::new(list, 900.0);
-        let view = View { theme: look::theme(dark), scale, selection, chip: at.chip(selection), lift: 0.0, pulsing };
+        let view = View { theme: look::theme(dark), scale, selection, chip: at.chip(selection), lift: 0.0, pulsing, naming: None };
         build(list, &at, &view, &same)
     }
 
@@ -870,6 +1177,9 @@ mod tests {
                 }
                 // A header starts in the glyphs' column; a note under what
                 // a row waits on starts with the row's words.
+                // The one thing set from the right: "new group", which ends
+                // where every row's words end.
+                Item::Text { rect, align: Align::Right, .. } => assert_eq!(rect.x + rect.w, right, "{item:?}"),
                 Item::Text { rect, .. } => assert!(rect.x == column || rect.x == words_at, "{item:?}"),
                 Item::Fill { .. } | Item::Round { .. } => {}
             }
@@ -959,9 +1269,11 @@ mod tests {
                 if let Piece::Words { text, style } = &p.piece {
                     if *text == row.waiter.name {
                         assert_eq!(style.face, Face::Mono);
-                        assert_eq!(p.side, Side::Trail);
+                        // From the right, and the first to give way to a
+                        // long group name (`place_line`).
+                        assert_eq!(p.side, Side::Squeezed);
                         found = true;
-                    } else if p.side == Side::Trail {
+                    } else if p.side == Side::Trail || p.side == Side::Squeezed {
                         assert_eq!(style.face, Face::Ui, "{text:?}");
                     }
                 }
@@ -1242,5 +1554,248 @@ mod tests {
     fn a_list_that_could_not_be_read_is_a_sentence_and_not_an_empty_panel() {
         let items = build_message(side::WIDTH, 400.0, look::theme(false), 1.0, "why".into());
         assert_eq!(texts(&items), vec!["why".to_string()]);
+    }
+
+    // ---- a line's parts: what keeps its width (task 1444, defect 3)
+
+    #[test]
+    fn a_long_worker_title_never_takes_the_groups_name_off_its_row() {
+        use Side::*;
+        // name, "<worker>" + ", via the supervisor", status word; 322 wide.
+        let parts = |name: i32, who: i32| [(Lead, 0, name), (Squeezed, 8, who), (Squeezed, 0, 120), (Trail, 8, 48)];
+        // Everything fits: each at its width, the waiter against the word.
+        let fit = place_line(0, 322, &parts(60, 70));
+        assert_eq!(fit[0], Some(Placed { left: 0, right: 60, cut: false }));
+        assert_eq!(fit[3], Some(Placed { left: 274, right: 322, cut: false }));
+        assert_eq!(fit[2], Some(Placed { left: 146, right: 266, cut: false }));
+        assert_eq!(fit[1], Some(Placed { left: 76, right: 146, cut: false }));
+        // A worker's title far too long for the row: the name is whole, the
+        // word is whole, and the title is what is cut.
+        let long = place_line(0, 322, &parts(60, 400));
+        assert_eq!(long[0], Some(Placed { left: 0, right: 60, cut: false }));
+        assert_eq!(long[3], Some(Placed { left: 274, right: 322, cut: false }));
+        assert_eq!(long[2], Some(Placed { left: 146, right: 266, cut: false }));
+        assert_eq!(long[1], Some(Placed { left: 68, right: 146, cut: true }));
+        // A long name too: it is cut only where the status word begins,
+        // and who is waiting has no room and is left out.
+        let both = place_line(0, 322, &parts(300, 400));
+        assert_eq!(both[0], Some(Placed { left: 0, right: 266, cut: true }));
+        assert_eq!(both[3], Some(Placed { left: 274, right: 322, cut: false }));
+        assert_eq!((both[1], both[2]), (None, None));
+        // Nothing is ever placed outside the line or over the status word.
+        for name in [0, 40, 200, 266, 267, 900] {
+            for who in [0, 30, 200, 900] {
+                let placed = place_line(10, 332, &parts(name, who));
+                for (i, p) in placed.iter().enumerate() {
+                    let Some(p) = p else { continue };
+                    assert!(p.left >= 10 && p.right <= 332 && p.left < p.right, "{name} {who}: {placed:?}");
+                    assert!(i == 3 || p.right <= placed[3].unwrap().left, "{name} {who}: {placed:?}");
+                }
+                assert!(placed[0].is_some() || name == 0, "the name is gone at {name} {who}: {placed:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_rest_of_a_line_is_what_the_others_leave_as_it_always_was() {
+        use Side::*;
+        let placed = place_line(0, 300, &[(Lead, 0, 50), (Rest, 8, 999), (Trail, 8, 40)]);
+        assert_eq!(placed[1], Some(Placed { left: 58, right: 252, cut: true }));
+        // With no room between them it is not drawn.
+        let none = place_line(0, 100, &[(Lead, 0, 70), (Rest, 8, 999), (Trail, 8, 40)]);
+        assert_eq!(none[1], None);
+        assert_eq!(none[0], Some(Placed { left: 0, right: 52, cut: true }));
+    }
+
+    #[test]
+    fn on_a_waiting_row_the_name_leads_and_only_who_is_waiting_gives_way() {
+        let l = list();
+        let items = scene(&l, None, false, 1.0, None);
+        for row in &l.waiting {
+            let line = items
+                .iter()
+                .find_map(|i| match i {
+                    Item::Line { parts, .. } => parts
+                        .iter()
+                        .any(|p| matches!(&p.piece, Piece::Words { text, style } if *text == row.id && style.size == font::GROUP_NAME))
+                        .then_some(parts),
+                    Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => None,
+                })
+                .unwrap_or_else(|| panic!("{} has no first line", row.id));
+            assert_eq!(line[0].side, Side::Lead, "{}", row.id);
+            assert_eq!(line.last().unwrap().side, Side::Trail, "{}", row.id);
+            assert!(line[1..line.len() - 1].iter().all(|p| p.side == Side::Squeezed), "{}: {line:?}", row.id);
+        }
+    }
+
+    // ---- a new group
+
+    fn naming_scene(refusal: Option<&str>) -> Vec<Item> {
+        let l = list();
+        let at = ListLayout::new(&l, 900.0);
+        let view = View { theme: look::theme(false), scale: 1.0, selection: None, chip: None, lift: 0.0, pulsing: None, naming: Some(Naming { refusal }) };
+        build(&l, &at, &view, &same)
+    }
+
+    #[test]
+    fn the_header_ends_in_the_one_button_and_naming_a_group_puts_a_field_where_it_was() {
+        let l = list();
+        let at = ListLayout::new(&l, 900.0);
+        let said = texts(&scene(&l, None, false, 1.0, None));
+        assert!(said.contains(&"+ New Group".to_string()), "{said:?}");
+        // Where it is pressed is inside the header, at its right end.
+        let hit = new_group_hit(at.header);
+        assert_eq!((hit.x + hit.w, hit.y, hit.h), (at.header.x + at.header.w, at.header.y, at.header.h));
+        assert!(hit.x > at.header.x + at.header.w / 2.0);
+
+        let naming = naming_scene(None);
+        let said = texts(&naming);
+        assert!(!said.contains(&"+ New Group".to_string()) && !said.iter().any(|t| t.contains("waiting for you")), "{said:?}");
+        let (outline, typed) = name_field(at.header);
+        assert!(naming.iter().any(|i| matches!(i, Item::Round { rect, edge: Some(e), .. } if *rect == outline && *e == look::theme(false).attention_text)));
+        // What is typed sits inside the outline, a line high, in its middle.
+        assert!(typed.x > outline.x && typed.x + typed.w < outline.x + outline.w);
+        assert_eq!(typed.y - outline.y, outline.y + outline.h - (typed.y + typed.h));
+        assert_eq!(typed.h, side::ASK_LINE_HEIGHT);
+    }
+
+    #[test]
+    fn why_a_name_made_no_group_is_said_under_the_field_over_the_rows_and_last() {
+        let l = list();
+        let at = ListLayout::new(&l, 900.0);
+        let why = "There is already a group by that name.";
+        let items = naming_scene(Some(why));
+        let Some(Item::Block { rect, text, style, .. }) = items.last() else { panic!("the note is not last: {:?}", items.last()) };
+        assert_eq!(text, why);
+        assert_eq!(style.color, look::theme(false).problem_text_on_row);
+        let note = name_note(at.header);
+        assert_eq!(note.y, at.header.y + at.header.h);
+        assert!(rect.y >= note.y && rect.y + rect.h <= note.y + note.h && rect.x >= note.x);
+        // Without a refusal there is no note at all.
+        assert!(!texts(&naming_scene(None)).contains(&why.to_string()));
+    }
+
+    // ---- starting a supervisor
+
+    fn start_row(state: crate::snapshot::SupervisorState, can_start: bool, failed: crate::snapshot::StartFailure) -> Row {
+        let mut row = list().quiet[0].clone();
+        row.start = Some(crate::snapshot::SupervisorStart { state, can_start, failed, role: Some("polter-supervisor".into()), cwd: "/Users/me/work".into() });
+        row
+    }
+
+    fn roles() -> Vec<crate::snapshot::SupervisorRole> {
+        vec![
+            crate::snapshot::SupervisorRole { key: "polter-supervisor".into(), name: "Polter Supervisor".into() },
+            crate::snapshot::SupervisorRole { key: "reviewer".into(), name: "Reviewer".into() },
+        ]
+    }
+
+    #[test]
+    fn which_sentence_a_group_with_no_supervisor_gets_is_the_cores_word() {
+        use crate::snapshot::{StartFailure as F, SupervisorState as S};
+        let says = |s, f| no_supervisor_words(start_row(s, true, f).start.as_ref());
+        assert_eq!(says(S::Absent, F::None), msg::NO_SUPERVISOR);
+        assert_eq!(says(S::Starting, F::None), msg::STARTING);
+        assert_eq!(says(S::Failed, F::TerminalNeverOpened), msg::NEVER_OPENED);
+        assert_eq!(says(S::Failed, F::AgentNeverConnected), msg::NEVER_CONNECTED);
+        assert_eq!(says(S::Failed, F::TerminalClosed), msg::CLOSED_FIRST);
+        assert_eq!(says(S::Failed, F::None), msg::DID_NOT_START);
+        assert_eq!(no_supervisor_words(None), msg::NO_SUPERVISOR);
+        // And it is what the right side draws.
+        let row = start_row(S::Failed, true, F::TerminalClosed);
+        let detail = Detail_::NoSupervisor { group: row.id.clone() };
+        let right = build_right(&detail, Some(&row), 600.0, 600.0, look::theme(false), 1.0, false, &same);
+        assert!(all_text(&right.items).contains(&msg::CLOSED_FIRST));
+    }
+
+    #[test]
+    fn the_button_is_there_only_when_the_core_says_one_can_be_started() {
+        use crate::snapshot::{StartFailure as F, SupervisorState as S};
+        let all = roles();
+        let view = StartView { roles: &all, choose_role: false, home: "/Users/me", ..Default::default() };
+        let theme = look::theme(false);
+        let offered = |row: Option<&Row>, detail: &Detail_| build_start(detail, row, 600.0, theme, &view, &same);
+        let row = start_row(S::Absent, true, F::None);
+        let detail = Detail_::NoSupervisor { group: row.id.clone() };
+        let shown = offered(Some(&row), &detail);
+        assert!(shown.start.is_some() && shown.directory.is_some());
+        assert!(all_text(&shown.items).contains(&msg::START_SUPERVISOR));
+        // Not on the state: the core's `can_start` alone.
+        for (state, can) in [(S::Absent, false), (S::Starting, false), (S::Failed, false), (S::Present, false)] {
+            let row = start_row(state, can, F::None);
+            assert_eq!(offered(Some(&row), &detail), Start::default(), "{state:?}");
+        }
+        let failed = start_row(S::Failed, true, F::AgentNeverConnected);
+        assert!(offered(Some(&failed), &detail).start.is_some());
+        // A row the core says nothing about, no row, and any other detail.
+        let mut silent = row.clone();
+        silent.start = None;
+        assert_eq!(offered(Some(&silent), &detail), Start::default());
+        assert_eq!(offered(None, &detail), Start::default());
+        assert_eq!(offered(Some(&row), &Detail_::NothingSelected), Start::default());
+        assert_eq!(offered(Some(&row), &Detail_::SupervisorGone { group: row.id.clone() }), Start::default());
+    }
+
+    #[test]
+    fn the_role_is_offered_only_when_the_core_says_there_is_a_choice() {
+        use crate::snapshot::{StartFailure as F, SupervisorState as S};
+        let all = roles();
+        let row = start_row(S::Absent, true, F::None);
+        let detail = Detail_::NoSupervisor { group: row.id.clone() };
+        let theme = look::theme(false);
+        // Two roles listed and the core says no choice: none is offered.
+        let one = build_start(&detail, Some(&row), 600.0, theme, &StartView { roles: &all, choose_role: false, home: "", ..Default::default() }, &same);
+        assert_eq!(one.role, None);
+        assert!(!all_text(&one.items).contains(&msg::ROLE));
+        let two = build_start(&detail, Some(&row), 600.0, theme, &StartView { roles: &all, choose_role: true, home: "", ..Default::default() }, &same);
+        assert!(two.role.is_some());
+        // The core's role until the person picks another; Polter's own under its shown name.
+        assert!(all_text(&two.items).contains(&msg::POLTER_SUPERVISOR));
+        let picked = build_start(&detail, Some(&row), 600.0, theme, &StartView { roles: &all, choose_role: true, role: Some("reviewer"), home: "", ..Default::default() }, &same);
+        assert!(all_text(&picked.items).contains(&"Reviewer") && !all_text(&picked.items).contains(&msg::POLTER_SUPERVISOR));
+        // The three things to press do not overlap, top to bottom.
+        let (r, d, s) = (two.role.unwrap(), two.directory.unwrap(), two.start.unwrap());
+        assert!(r.y + r.h <= d.y && d.y + d.h <= s.y);
+    }
+
+    #[test]
+    fn the_directory_is_the_cores_until_another_is_picked_and_home_is_a_tilde() {
+        use crate::snapshot::{StartFailure as F, SupervisorState as S};
+        let row = start_row(S::Absent, true, F::None);
+        let detail = Detail_::NoSupervisor { group: row.id.clone() };
+        let theme = look::theme(false);
+        let shown = |cwd: Option<&str>, home: &str| {
+            let s = build_start(&detail, Some(&row), 600.0, theme, &StartView { cwd, home, ..Default::default() }, &same);
+            all_text(&s.items).into_iter().map(str::to_string).collect::<Vec<_>>()
+        };
+        assert!(shown(None, "/Users/me").contains(&"~/work".to_string()));
+        assert!(shown(Some("/srv/x"), "/Users/me").contains(&"/srv/x".to_string()));
+        assert_eq!(shown_directory("/Users/me", "/Users/me", &same), "~");
+        assert_eq!(shown_directory("C:\\Users\\me\\src", "C:\\Users\\me", &same), "~\\src");
+        // Another directory that only starts with the same letters is not under home.
+        assert_eq!(shown_directory("/Users/meg/x", "/Users/me", &same), "/Users/meg/x");
+        assert_eq!(shown_directory("", "/Users/me", &same), msg::WHERE_THE_TAB_STARTS);
+        assert_eq!(shown_directory("/x", "", &same), "/x");
+    }
+
+    #[test]
+    fn why_a_press_did_nothing_is_said_under_the_button_and_nothing_empty_is_drawn() {
+        use crate::snapshot::{StartFailure as F, SupervisorState as S};
+        let row = start_row(S::Absent, true, F::None);
+        let detail = Detail_::NoSupervisor { group: row.id.clone() };
+        let theme = look::theme(false);
+        let why = "That directory is not there.";
+        let said = build_start(&detail, Some(&row), 600.0, theme, &StartView { refusal: Some(why), home: "", ..Default::default() }, &same);
+        let Some(Item::Block { rect, text, .. }) = said.items.last() else { panic!("{:?}", said.items.last()) };
+        assert_eq!(text, why);
+        assert!(rect.y >= said.start.unwrap().y + said.start.unwrap().h);
+        for refusal in [None, Some("")] {
+            let s = build_start(&detail, Some(&row), 600.0, theme, &StartView { refusal, choose_role: true, home: "", ..Default::default() }, &same);
+            assert!(all_text(&s.items).iter().all(|t| draws(t)), "{refusal:?}");
+            assert!(!matches!(s.items.last(), Some(Item::Block { .. })));
+        }
+        // What it offers starts under the sentence, which has two lines.
+        let top = said.directory.unwrap().y;
+        assert!(top >= space::FRAME_TO_CONTENT + side::HEADER_HEIGHT + 2.0 * side::ASK_LINE_HEIGHT);
     }
 }

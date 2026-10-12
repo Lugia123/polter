@@ -8,7 +8,8 @@
 //! disagreeing about what one snapshot looks like.
 
 use polter_control_room::json::quote;
-use polter_control_room::act::{Act, SeenMarker};
+use polter_control_room::act::{Act, Refusal, SeenMarker};
+use polter_control_room::rules;
 use polter_control_room::layout::{self, ListLayout, Rect};
 use polter_control_room::list::{self, List, Row};
 use polter_control_room::pane;
@@ -183,6 +184,60 @@ fn main() {
     println!("tab_status tab=unlisted showing=- shown={} pulses={}", unlisted.shown.name(), unlisted.pulses);
     for s in [Shown::NeedsYou, Shown::Trouble, Shown::DoneUnseen, Shown::Working, Shown::None] {
         println!("tab_draws shown={} draws={}", s.name(), pulse::draws_on_window_tab(s));
+    }
+
+    // A group's supervisor: where each group stands and what starting one
+    // would use, the roles, and whether there is a choice of them.
+    for r in l.rows() {
+        match &r.start {
+            Some(s) => println!(
+                "start id={} state={} can={} failed={} role={} cwd={}",
+                r.id,
+                s.state.name(),
+                s.can_start,
+                s.failed.name(),
+                s.role.as_deref().unwrap_or("-"),
+                quote(&s.cwd)
+            ),
+            None => println!("start id={} -", r.id),
+        }
+    }
+    println!("start_roles choose={}", l.choose_supervisor_role);
+    for role in &l.supervisor_roles {
+        println!("start_role key={} name={}", role.key, quote(&role.name));
+    }
+    // A group just made: selected when it is listed, not before.
+    for awaited in [Some("billing"), Some("not-yet"), None] {
+        println!("made awaited={} select={}", awaited.unwrap_or("-"), rules::made_group_to_select(awaited, &l).unwrap_or("-"));
+    }
+    // Where a tab the core asked for goes, for every asker and every place
+    // the control room can be.
+    let askers = [None, Some((false, false)), Some((false, true)), Some((true, false)), Some((true, true))];
+    for asker in askers {
+        for bits in 0..8u8 {
+            let (front, beside, any) = (bits & 4 != 0, bits & 2 != 0, bits & 1 != 0);
+            let home = |h: rules::Home| match h {
+                rules::Home::Askers => "askers",
+                rules::Home::ControlRooms => "control_rooms",
+                rules::Home::Frontmost => "frontmost",
+            };
+            let to = match rules::new_tab(asker, front, beside, any) {
+                rules::NewTab::InFront(h) => format!("in_front({})", home(h)),
+                rules::NewTab::Behind(h) => format!("behind({})", home(h)),
+                rules::NewTab::OwnWindow => "own_window".to_string(),
+                rules::NewTab::Refused => "refused".to_string(),
+            };
+            let who = asker.map_or("app".to_string(), |(lent, has_home)| format!("lent={lent},home={has_home}"));
+            println!("new_tab asker={who} front={front} beside={beside} any={any} -> {to}");
+        }
+    }
+    // What the person is told when a group was not made or a supervisor
+    // not started, by the core's name for why.
+    for name in [
+        "BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting", "NoSupervisorRole", "NoSuchPersona",
+        "NotASupervisorRole", "NoCli", "NotAbsolute", "NoSuchDirectory", "NotADirectory", "OpenFailed", "NoRuntime", "NoExecutable",
+    ] {
+        println!("refusal {name} says={}", quote(Refusal::parse(name).message()));
     }
 
     // The frame each pane of a split terminal tab wears: every terminal the

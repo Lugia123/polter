@@ -43,7 +43,7 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_DOWN, VK_RETURN, VK_UP};
+use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use polter_control_room::act::{self, Dwell, SeenMarker};
@@ -52,6 +52,7 @@ use polter_control_room::layout::{self, ListLayout, Rect, Room};
 use polter_control_room::lend::{Detail, Effect, Event, Lending, Place};
 use polter_control_room::list::{self, List, Selection};
 use polter_control_room::look::{self, selection, side, status, Rgba, Theme};
+use polter_control_room::rules;
 use polter_control_room::pulse;
 use polter_control_room::scene::{self, Align, Face, Item, Part, Piece, Side, Style, View};
 use polter_control_room::snapshot::Shown;
@@ -304,7 +305,10 @@ pub fn create(frame: HWND, hinst: HINSTANCE, bounds: TreeRect) -> Option<HWND> {
             WINDOW_EX_STYLE(0),
             CLASS,
             PCWSTR::null(),
-            WS_CHILD | WS_CLIPSIBLINGS,
+            // Its children are clipped out of its own painting: the field a
+            // new group is named in is one, and a paint is one blit of the
+            // whole panel.
+            WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
             bounds.x as i32,
             bounds.y as i32,
             (bounds.w as i32).max(1),
@@ -362,6 +366,8 @@ pub fn snapshot_changed() {
     // wait over (`SeenMarker::list_changed`; a wait already running is
     // never cut short by this).
     list_changed(hwnd);
+    // A group the person just made is selected as soon as it is listed.
+    select_made(hwnd);
     // The supervisor the core names may have changed, or gone.
     sync_loan(hwnd);
     unsafe {
@@ -597,6 +603,351 @@ fn go_to_supervisor(hwnd: HWND) {
     }
 }
 
+// --------------------------------------- a new group, and a supervisor for one
+//
+// The two things the person does about a group rather than to a terminal
+// (`control-room.md`, 6.4). What they say, where they are and when they are
+// offered is `polter_control_room` -- `scene::name_field`, `build_start`,
+// `rules::made_group_to_select`, `act::Refusal` -- and is tested there. Here
+// is the part that needs a window: a field to type a name in, a menu of
+// roles, the system's folder picker.
+
+/// The field a new group's name is typed in: the system's own edit control,
+/// so that an input method composes in it as it does anywhere else.
+struct NameField {
+    edit: isize,
+    font: isize,
+    brush: isize,
+    old_proc: isize,
+    /// Why the name as typed made no group.
+    refusal: Option<String>,
+}
+
+/// What the person picked for the supervisor about to be started, for one
+/// group, and what the last press came to.
+#[derive(Default, Clone)]
+struct StartPicks {
+    group: Option<String>,
+    role: Option<String>,
+    cwd: Option<String>,
+    refusal: Option<String>,
+}
+
+thread_local! {
+    static NAMING: RefCell<Option<NameField>> = const { RefCell::new(None) };
+    /// A group the person has just made, until the core lists it.
+    static AWAITED: RefCell<Option<String>> = const { RefCell::new(None) };
+    static PICKS: RefCell<StartPicks> = RefCell::new(StartPicks::default());
+}
+
+/// The field's window, when a group is being named. **A copy, taken with the
+/// borrow already over**: what is done with it next -- giving it the
+/// keyboard, reading it, destroying it -- sends messages back into this
+/// thread, and `name_proc` reads `NAMING` on every one of them.
+fn name_edit() -> Option<isize> {
+    NAMING.with(|n| n.borrow().as_ref().map(|f| f.edit))
+}
+
+/// Stop naming: what the field held, for the caller to let go of, with
+/// `NAMING` already empty and not borrowed.
+fn take_name_field() -> Option<NameField> {
+    NAMING.with(|n| n.borrow_mut().take())
+}
+
+/// The field said Return (1) or Escape / lost the keyboard (0). Posted, so
+/// that the field is not destroyed inside its own procedure.
+const WM_ROOM_NAME: u32 = WM_APP + 64;
+
+/// `EM_SETLIMITTEXT`, which the `windows` crate keeps with the common
+/// controls rather than with the messages.
+const EM_SETLIMITTEXT: u32 = 0x00C5;
+
+/// What to tell the person for the core's name of why something was not
+/// done.
+fn refusal_words(name: &str) -> String {
+    list::fill(&tr(act::Refusal::parse(name).message()), name)
+}
+
+fn panel_origin(g: &Geometry) -> Px {
+    Px { scale: g.scale, ox: (g.room.panel.x * g.scale).round() as i32, oy: (g.room.panel.y * g.scale).round() as i32 }
+}
+
+/// "New group" was pressed: put the field where the header was and give it
+/// the keyboard.
+fn begin_naming(hwnd: HWND) {
+    if let Some(edit) = name_edit() {
+        unsafe {
+            let _ = SetFocus(Some(HWND(edit as *mut c_void)));
+        }
+        return;
+    }
+    let g = geometry(hwnd);
+    // With no list there is no header to put it in.
+    let header = source::with(|data| match data {
+        Data::Ready(r) => Some(list_layout(hwnd, &r.list, g.room.panel.h).header),
+        Data::NotYet => None,
+        Data::Unreadable(_) => None,
+    });
+    let Some(header) = header else { return };
+    let at = panel_origin(&g).rect(scene::name_field(header).1);
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    unsafe {
+        let hinst: HINSTANCE = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).map(Into::into).unwrap_or_default();
+        let made = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("EDIT"),
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+            at.left,
+            at.top,
+            (at.right - at.left).max(1),
+            (at.bottom - at.top).max(1),
+            Some(hwnd),
+            None,
+            Some(hinst),
+            None,
+        );
+        let edit = match made {
+            Ok(h) => h,
+            Err(e) => {
+                wlogf!(frame, "[control-room] new group: the name field could not be made: {e:?}");
+                return;
+            }
+        };
+        let dpi = (g.scale * 96.0).round() as i32;
+        let font = crate::uifont::make(dpi, look::font::BODY.round() as i32, look::font::WEIGHT_BODY.round() as i32, crate::uifont::mono_face());
+        SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        // A group's name is 48 at most; a little more can be typed, so that
+        // the core is the one to say it is too long.
+        SendMessageW(edit, EM_SETLIMITTEXT, Some(WPARAM(64)), Some(LPARAM(0)));
+        let brush = CreateSolidBrush(rgb(scene::panel_color(look::theme(dark()))));
+        // The control's own procedure is on record before ours is put in
+        // front of it: ours passes on to it from its first message.
+        let old_proc = GetWindowLongPtrW(edit, GWLP_WNDPROC);
+        NAMING.with(|n| {
+            *n.borrow_mut() = Some(NameField { edit: edit.0 as isize, font: font.0 as isize, brush: brush.0 as isize, old_proc, refusal: None })
+        });
+        let proc_: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT = name_proc;
+        SetWindowLongPtrW(edit, GWLP_WNDPROC, proc_ as usize as isize);
+        let _ = SetFocus(Some(edit));
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+    wlogf!(frame, "[control-room] new group: naming");
+}
+
+/// Take the field away. `focus` hands the keyboard back to the panel.
+fn end_naming(hwnd: HWND, focus: bool) {
+    let Some(field) = take_name_field() else { return };
+    unsafe {
+        if focus {
+            let _ = SetFocus(Some(hwnd));
+        }
+        let _ = DestroyWindow(HWND(field.edit as *mut c_void));
+        let _ = DeleteObject(HFONT(field.font as *mut c_void).into());
+        let _ = DeleteObject(HBRUSH(field.brush as *mut c_void).into());
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// Return in the field: make the group. A name the core refuses is said
+/// under the field, which stays.
+fn submit_name(hwnd: HWND) {
+    // Copied out in a statement of its own: nothing of `NAMING` is held
+    // past this line, and what follows sends messages.
+    let edit = name_edit();
+    let Some(edit) = edit else { return };
+    let mut buf = [0u16; 128];
+    let n = unsafe { GetWindowTextW(HWND(edit as *mut c_void), &mut buf) }.max(0) as usize;
+    let name = String::from_utf16_lossy(&buf[..n.min(buf.len())]);
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let Some(request) = act::encode(&act::Act::NewGroup { name: &name }) else { return };
+    match source::act(&request) {
+        Ok(()) => {
+            let made = rules::made_group_name(&name).to_string();
+            AWAITED.with(|a| *a.borrow_mut() = Some(made.clone()));
+            wlogf!(frame, "[control-room] new group {:?} made; selected when the core lists it", made);
+            end_naming(hwnd, true);
+            select_made(hwnd);
+        }
+        Err(why) => {
+            wlogf!(frame, "[control-room] new group {:?} refused: {}", name, why);
+            NAMING.with(|n| {
+                if let Some(f) = n.borrow_mut().as_mut() {
+                    f.refusal = Some(refusal_words(&why));
+                }
+            });
+            unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
+        }
+    }
+}
+
+/// Select the group the person just made, once the core lists it.
+fn select_made(hwnd: HWND) {
+    let awaited = AWAITED.with(|a| a.borrow().clone());
+    let listed = source::with(|data| match data {
+        Data::Ready(r) => rules::made_group_to_select(awaited.as_deref(), &r.list).map(str::to_string),
+        Data::NotYet => None,
+        Data::Unreadable(_) => None,
+    });
+    if let Some(group) = listed {
+        AWAITED.with(|a| *a.borrow_mut() = None);
+        select(hwnd, Some(group));
+    }
+}
+
+unsafe extern "system" fn name_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let old = NAMING.with(|n| n.borrow().as_ref().map(|f| f.old_proc));
+    let parent = unsafe { GetParent(hwnd) }.unwrap_or_default();
+    unsafe {
+        match msg {
+            WM_KEYDOWN if wp.0 as u16 == VK_RETURN.0 => {
+                let _ = PostMessageW(Some(parent), WM_ROOM_NAME, WPARAM(1), LPARAM(0));
+                return LRESULT(0);
+            }
+            WM_KEYDOWN if wp.0 as u16 == VK_ESCAPE.0 => {
+                let _ = PostMessageW(Some(parent), WM_ROOM_NAME, WPARAM(0), LPARAM(0));
+                return LRESULT(0);
+            }
+            // Otherwise the edit control beeps on Return and Escape.
+            WM_CHAR if wp.0 == 0x0D || wp.0 == 0x1B => return LRESULT(0),
+            // Clicking anywhere else, or the tab going behind, gives up.
+            WM_KILLFOCUS => {
+                let _ = PostMessageW(Some(parent), WM_ROOM_NAME, WPARAM(0), LPARAM(1));
+            }
+            _ => {}
+        }
+        match old {
+            Some(old) => CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(old), hwnd, msg, wp, lp),
+            None => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+}
+
+/// What the person picked for `group`; nothing when their picks are about
+/// another group.
+fn picks_for(group: Option<&str>) -> StartPicks {
+    PICKS.with(|p| {
+        let p = p.borrow();
+        if group.is_some() && p.group.as_deref() == group {
+            p.clone()
+        } else {
+            StartPicks::default()
+        }
+    })
+}
+
+fn pick(group: &str, change: impl FnOnce(&mut StartPicks)) {
+    PICKS.with(|p| {
+        let mut p = p.borrow_mut();
+        if p.group.as_deref() != Some(group) {
+            *p = StartPicks { group: Some(group.to_string()), ..Default::default() };
+        }
+        change(&mut p);
+    });
+}
+
+/// What starting a supervisor offers for the selected group just now.
+fn start_scene(g: &Geometry, theme: &Theme) -> scene::Start {
+    let detail = detail();
+    let selected = selection();
+    let picks = picks_for(selected.as_deref());
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    source::with(|data| {
+        let ready = match data {
+            Data::Ready(r) => r,
+            Data::NotYet => return scene::Start::default(),
+            Data::Unreadable(_) => return scene::Start::default(),
+        };
+        let row = selected.as_deref().and_then(|id| ready.list.row(id));
+        let view = scene::StartView {
+            roles: &ready.list.supervisor_roles,
+            choose_role: ready.list.choose_supervisor_role,
+            role: picks.role.as_deref(),
+            cwd: picks.cwd.as_deref(),
+            refusal: picks.refusal.as_deref(),
+            home: &home,
+        };
+        scene::build_start(&detail, row, g.room.right.w, theme, &view, &|s| tr(s))
+    })
+}
+
+/// The role's line was pressed: a menu of the roles the core lists.
+fn choose_role(hwnd: HWND, group: &str) {
+    let roles: Vec<(String, String)> = source::with(|data| match data {
+        Data::Ready(r) => r.list.supervisor_roles.iter().map(|role| (role.key.clone(), scene::role_name(role, &|s| tr(s)))).collect(),
+        Data::NotYet => Vec::new(),
+        Data::Unreadable(_) => Vec::new(),
+    });
+    if roles.is_empty() {
+        return;
+    }
+    let chosen = unsafe {
+        let Ok(menu) = CreatePopupMenu() else { return };
+        for (i, (_, name)) in roles.iter().enumerate() {
+            let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+            let _ = AppendMenuW(menu, MF_STRING, i + 1, PCWSTR(wide.as_ptr()));
+        }
+        let mut at = POINT::default();
+        let _ = GetCursorPos(&mut at);
+        let picked = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, at.x, at.y, None, hwnd, None);
+        let _ = DestroyMenu(menu);
+        picked.0 as usize
+    };
+    if let Some((key, _)) = chosen.checked_sub(1).and_then(|i| roles.get(i)) {
+        pick(group, |p| p.role = Some(key.clone()));
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
+}
+
+/// The directory's line was pressed: the system's folder picker, opened
+/// where the supervisor would start now.
+fn choose_directory(hwnd: HWND, group: &str) {
+    let from = picks_for(Some(group)).cwd.or_else(|| {
+        source::with(|data| match data {
+            Data::Ready(r) => r.list.row(group).and_then(|row| row.start.as_ref()).map(|s| s.cwd.clone()),
+            Data::NotYet => None,
+            Data::Unreadable(_) => None,
+        })
+    });
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    if let Some(dir) = crate::general_ui::pick_folder(frame, from.as_deref().unwrap_or("")) {
+        pick(group, |p| p.cwd = Some(dir));
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
+}
+
+/// "Start Supervisor" was pressed. What becomes of it arrives in the next
+/// snapshot; a refusal is kept to be said under the button.
+fn start_supervisor(hwnd: HWND, group: &str) {
+    let picks = picks_for(Some(group));
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let Some(request) = act::encode(&act::Act::StartSupervisor { group, role: picks.role.as_deref(), cwd: picks.cwd.as_deref() }) else { return };
+    match source::act(&request) {
+        Ok(()) => {
+            wlogf!(frame, "[control-room] start supervisor for {:?} (role {:?}, in {:?}) taken", group, picks.role, picks.cwd);
+            pick(group, |p| p.refusal = None);
+        }
+        Err(why) => {
+            wlogf!(frame, "[control-room] start supervisor for {:?} refused: {}", group, why);
+            let words = refusal_words(&why);
+            pick(group, |p| p.refusal = Some(words));
+        }
+    }
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+fn inside(r: Rect, x: f64, y: f64) -> bool {
+    x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
+}
+
 // -------------------------------------------------------------------- wndproc
 
 fn point(lp: LPARAM) -> (i32, i32) {
@@ -657,6 +1008,32 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_ROOM_SYNC => {
             sync_loan(hwnd);
             LRESULT(0)
+        }
+        // The name field said Return (1), or Escape / lost the keyboard (0).
+        WM_ROOM_NAME => {
+            if wp.0 == 1 {
+                submit_name(hwnd);
+            } else {
+                // Having lost the keyboard, it does not take it back.
+                end_naming(hwnd, lp.0 == 0);
+            }
+            LRESULT(0)
+        }
+        // The field is drawn on the panel's own colour, in its ink.
+        WM_CTLCOLOREDIT => {
+            let brush = NAMING.with(|n| n.borrow().as_ref().map(|f| f.brush));
+            match brush {
+                Some(brush) => {
+                    let theme = look::theme(dark());
+                    let dc = HDC(wp.0 as *mut c_void);
+                    unsafe {
+                        SetTextColor(dc, rgb(theme.text));
+                        SetBkColor(dc, rgb(scene::panel_color(theme)));
+                    }
+                    LRESULT(brush)
+                }
+                None => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+            }
         }
         WM_PAINT => {
             paint(hwnd);
@@ -781,6 +1158,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     *st = None;
                 }
             });
+            // The name field goes with the panel (the system destroys the
+            // child); what it held is let go of here.
+            if let Some(field) = take_name_field() {
+                unsafe {
+                    let _ = DeleteObject(HFONT(field.font as *mut c_void).into());
+                    let _ = DeleteObject(HBRUSH(field.brush as *mut c_void).into());
+                }
+            }
             // Whatever was shown on the right is no longer shown: it never
             // left its own tab, so that is all "giving it back" is.
             crate::tabs::set_lent(unsafe { GetAncestor(hwnd, GA_ROOT) }, None);
@@ -809,6 +1194,17 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         Data::NotYet => None,
         Data::Unreadable(_) => None,
     });
+    // "New group", at the right end of the list's header. Before the rows:
+    // while a name is being put right, what says why lies over the first.
+    let pressed_new = source::with(|data| match data {
+        Data::Ready(r) => inside(scene::new_group_hit(list_layout(hwnd, &r.list, g.room.panel.h).header), px - g.room.panel.x, py - g.room.panel.y),
+        Data::NotYet => false,
+        Data::Unreadable(_) => false,
+    });
+    if pressed_new {
+        begin_naming(hwnd);
+        return;
+    }
     if row.is_some() {
         select(hwnd, row);
         return;
@@ -817,6 +1213,23 @@ fn click(hwnd: HWND, x: i32, y: i32) {
     let detail = detail();
     let selected = selection();
     let theme = look::theme(dark());
+    // What starting a supervisor offers, when the core says one can be.
+    let offered = start_scene(&g, theme);
+    let (rx, ry) = (px - g.room.right.x, py - g.room.right.y);
+    if let Some(group) = selected.clone() {
+        if offered.start.is_some_and(|r| inside(r, rx, ry)) {
+            start_supervisor(hwnd, &group);
+            return;
+        }
+        if offered.role.is_some_and(|r| inside(r, rx, ry)) {
+            choose_role(hwnd, &group);
+            return;
+        }
+        if offered.directory.is_some_and(|r| inside(r, rx, ry)) {
+            choose_directory(hwnd, &group);
+            return;
+        }
+    }
     let go = source::with(|data| {
         let row = match data {
             Data::Ready(r) => selected.as_deref().and_then(|id| r.list.row(id)),
@@ -877,7 +1290,7 @@ impl Fonts {
         }
         // `uifont::make` never goes below the system's menu font at this
         // DPI, whatever size is asked for.
-        let face = if mono { w!("Consolas") } else { w!("Segoe UI") };
+        let face = if mono { crate::uifont::mono_face() } else { w!("Segoe UI") };
         let f = crate::uifont::make(self.dpi, key.0, key.1, face);
         self.made.push((key, f));
         f
@@ -912,6 +1325,9 @@ fn paint(hwnd: HWND) {
     let translate = |s: &str| tr(s);
     let detail = detail();
     let in_terminal = crate::tabs::keyboard_in_lent(unsafe { GetAncestor(hwnd, GA_ROOT) });
+    // Whether a new group is being named, and why the name made none.
+    let naming: Option<Option<String>> = NAMING.with(|n| n.borrow().as_ref().map(|f| f.refusal.clone()));
+    let offered = start_scene(&g, theme);
 
     // Everything is drawn once, into memory, and blitted: the chip's slide
     // repaints sixty times a second.
@@ -943,7 +1359,15 @@ fn paint(hwnd: HWND) {
                 let (chip, lift) = chip_now(&lay, selected.as_deref());
                 let window = crate::tabs::window(GetAncestor(hwnd, GA_ROOT)).map(|w| polter_control_room::rules::key(w.id));
                 let pulsing = pulse::pulsing_row(&r.snapshot.pulses, window.as_deref(), None);
-                let view = View { theme, scale: g.scale, selection: selected.as_deref(), chip, lift, pulsing };
+                let view = View {
+                    theme,
+                    scale: g.scale,
+                    selection: selected.as_deref(),
+                    chip,
+                    lift,
+                    pulsing,
+                    naming: naming.as_ref().map(|refusal| scene::Naming { refusal: refusal.as_deref() }),
+                };
                 let row = selected.as_deref().and_then(|id| list.row(id));
                 // What a UI Automation client is told, from the same list and
                 // the same layout this paint draws.
@@ -991,6 +1415,9 @@ fn paint(hwnd: HWND) {
         if g.room.right.w > 0.0 {
             let at = Px { scale: g.scale, ox: (g.room.right.x * g.scale).round() as i32, oy: (g.room.right.y * g.scale).round() as i32 };
             paint_items(mem, at, &right.items, &mut fonts, t);
+            // Under the sentence of a group with no supervisor: what
+            // starting one offers.
+            paint_items(mem, at, &offered.items, &mut fonts, t);
         }
 
         drop(fonts);
@@ -1209,64 +1636,15 @@ unsafe fn paint_piece(dc: HDC, at: Px, piece: &Piece, r: RECT, fonts: &mut Fonts
     }
 }
 
-/// One line of parts: the leading ones from the left, the trailing ones
-/// from the right, and the rest in what is left between them.
+/// One line of parts. Where each goes, and which of them gives way when
+/// they do not all fit, is `scene::place_line`, which is tested; this
+/// measures the words and paints.
 unsafe fn paint_line(dc: HDC, at: Px, r: RECT, parts: &[Part], fonts: &mut Fonts, t: f64) {
-    // Where the trailing parts begin: a leading part stops there. In a
-    // line as wide as the list's rows it never gets that far; in the title
-    // of a narrow pane a long name would otherwise be written over the
-    // pane's state. One that would is cut short with an ellipsis, and one
-    // with no room at all is not drawn.
-    let mut limit = r.right;
-    for part in parts {
-        match part.side {
-            Side::Trail => limit -= unsafe { part_width(dc, at, part, fonts) } + at.len(part.gap),
-            Side::Lead => {}
-            Side::Rest => {}
-        }
-    }
-    let mut lead = r.left;
-    for part in parts {
-        match part.side {
-            Side::Lead => {
-                lead += at.len(part.gap);
-                let w = unsafe { part_width(dc, at, part, fonts) };
-                let right = (lead + w).min(limit);
-                if right > lead {
-                    let box_ = RECT { left: lead, top: r.top, right, bottom: r.bottom };
-                    unsafe { paint_piece(dc, at, &part.piece, box_, fonts, t, right < lead + w) };
-                }
-                lead += w;
-            }
-            Side::Trail => {}
-            Side::Rest => {}
-        }
-    }
-    let mut trail = r.right;
-    for part in parts.iter().rev() {
-        match part.side {
-            Side::Trail => {
-                let w = unsafe { part_width(dc, at, part, fonts) };
-                let box_ = RECT { left: trail - w, top: r.top, right: trail, bottom: r.bottom };
-                unsafe { paint_piece(dc, at, &part.piece, box_, fonts, t, false) };
-                trail -= w + at.len(part.gap);
-            }
-            Side::Lead => {}
-            Side::Rest => {}
-        }
-    }
-    for part in parts {
-        match part.side {
-            Side::Rest => {
-                let left = lead + at.len(part.gap);
-                if trail > left {
-                    let box_ = RECT { left, top: r.top, right: trail, bottom: r.bottom };
-                    unsafe { paint_piece(dc, at, &part.piece, box_, fonts, t, true) };
-                }
-            }
-            Side::Lead => {}
-            Side::Trail => {}
-        }
+    let measured: Vec<(Side, i32, i32)> = parts.iter().map(|p| (p.side, at.len(p.gap), unsafe { part_width(dc, at, p, fonts) })).collect();
+    for (part, placed) in parts.iter().zip(scene::place_line(r.left, r.right, &measured)) {
+        let Some(placed) = placed else { continue };
+        let box_ = RECT { left: placed.left, top: r.top, right: placed.right, bottom: r.bottom };
+        unsafe { paint_piece(dc, at, &part.piece, box_, fonts, t, placed.cut) };
     }
 }
 

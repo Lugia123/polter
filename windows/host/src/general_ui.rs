@@ -1500,7 +1500,7 @@ fn say_status(text: String, warn: bool) {
 
 /// The system's folder picker, opened at `start` when that is a folder.
 /// `None` when it was cancelled or could not be shown.
-fn pick_folder(owner: HWND, start: &str) -> Option<String> {
+pub(crate) fn pick_folder(owner: HWND, start: &str) -> Option<String> {
     use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
     use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, SIGDN_FILESYSPATH};
     unsafe {
