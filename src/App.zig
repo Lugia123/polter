@@ -2813,7 +2813,7 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     // parked: `dispatch` does it for everything else, but a slot process's
     // `persona_wait` may be held instead of dispatched, and that is as much
     // the agent arriving as its sidecar's first call.
-    poltergeistpkg.rpc.arrived(&self.poltergeist, self.poltergeistHost(), caller);
+    poltergeistpkg.rpc.arrived(&self.poltergeist, self.poltergeistHost(), caller, pending.request);
 
     if (pending.request == .persona_wait) {
         if (self.parkPersonaWait(pending, caller)) return;
