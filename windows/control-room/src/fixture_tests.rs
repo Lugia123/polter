@@ -1284,3 +1284,35 @@ fn a_heading_in_a_word_this_build_does_not_know_is_not_read() {
     let cut = with_headers(Some(r#"{"of":"rows","number":"other"}"#), None);
     assert_eq!(snapshot::decode(&cut), Err(DecodeError::Field("header_waiting.count".into())));
 }
+
+// -- the title over the terminal on the right ---------------------------------
+
+#[test]
+fn the_title_of_a_groups_frame_is_its_supervisors_own_terminal() {
+    use crate::list::SupervisorTitle;
+    let l = list();
+    // The supervisor's own glyph and word, whoever the row is about.
+    assert_eq!(
+        l.row("mobile").unwrap().title,
+        Some(SupervisorTitle { name: "mobile".into(), shown: Shown::None, word: String::new() })
+    );
+    assert_eq!(l.row("mobile").unwrap().shown, Shown::NeedsYou);
+    assert_eq!(
+        l.row("billing").unwrap().title,
+        Some(SupervisorTitle { name: "billing".into(), shown: Shown::NeedsYou, word: "等回答".into() })
+    );
+    // Two groups under one supervisor both name that terminal.
+    assert_eq!(l.row("web-app-docs").unwrap().title.as_ref().unwrap().name, "web-app");
+    // A terminal on its own is its own title.
+    let lone = l.row(LONE).unwrap();
+    assert_eq!(lone.title.as_ref().unwrap().name, lone.alone.as_ref().unwrap().title);
+    assert_eq!(lone.title.as_ref().unwrap().shown, lone.shown);
+    // A core that lists no terminals gives a group's frame no title.
+    let none = List::from_snapshot(&{
+        let mut s = snapshot::decode(FIXTURE).unwrap();
+        s.terminals.clear();
+        s
+    });
+    assert_eq!(none.row("billing").unwrap().title, None);
+    assert!(none.row(LONE).unwrap().title.is_some());
+}

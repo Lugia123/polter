@@ -401,6 +401,14 @@ fn main() {
         };
         println!("seen row={} {said}", r.id);
     }
+    // What the title of the frame on the right says while it holds each
+    // row's terminal: that terminal's own name, glyph and word.
+    for r in l.rows() {
+        match &r.title {
+            Some(t) => println!("frame_title row={} name={} shown={} word={}", r.id, quote(&t.name), t.shown.name(), quote(&t.word)),
+            None => println!("frame_title row={} -", r.id),
+        }
+    }
     // What marking a row seen sends, for every row as if nobody had looked
     // at it: a group's by the group's name, a lone terminal's by the
     // terminal.

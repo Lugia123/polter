@@ -3434,6 +3434,31 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // a tool call naming a pane used to split whichever pane had
             // focus, and say in the log that it had split.
             let at = target_surface(&target).and_then(tabs::pane_id_of_surface);
+            // **Refused now if it would be refused later.** The core reads
+            // the answer the moment this returns: "will split" makes it
+            // wait for a terminal in that tab, anything else makes it open
+            // a tab instead and tell whoever asked. A split from the pane
+            // shown in the control room used to be answered "will", queued,
+            // and then refused when its turn came -- so a supervisor on
+            // loan that asked for a worker was told one had been opened and
+            // nothing was (fourth run on a real machine, defect 1).
+            if let Some(frame) = origin {
+                let (answer, why) = tabs::split_answer(frame, at);
+                if !answer.will() {
+                    alogf!(
+                        origin,
+                        "[split] refused when asked: {} -- not queued, and the core is not told it will split ({:?})",
+                        why.unwrap_or_default(),
+                        answer
+                    );
+                    // The verdict the core reads is `result`, which is left
+                    // as it came. What this returns is what it returned
+                    // when the same split was queued and refused later: a
+                    // key that asked for it is still a key that was taken,
+                    // not one to be typed into the terminal.
+                    return true;
+                }
+            }
             let queued = queue_from(origin, Op::NewSplit(dir, cwd, at), "new_split action");
             if queued && !result.is_null() {
                 // `ghostty_action_new_split_result_e`: 1 == SPLIT.

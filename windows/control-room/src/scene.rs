@@ -924,12 +924,15 @@ pub fn build_right(
             h: pane::BAR_HEIGHT,
         };
         // The name and what it is on the left; its state on the right.
-        // A group's row: the group and "Supervisor". A terminal on its own:
-        // its title, and the word for the frame its own pane wears -- none
-        // for an ordinary one. The frame here is a supervisor's either way.
+        // A group's row: the supervisor terminal's own title and
+        // "Supervisor". A terminal on its own: its title, and the word for
+        // the frame its own pane wears -- none for an ordinary one. The
+        // frame here is a supervisor's either way. Where the core lists no
+        // such terminal there is only the group's name to write.
         let alone = row.and_then(|r| r.alone.as_ref());
+        let title = row.and_then(|r| r.title.as_ref());
         let mut parts = vec![words(
-            alone.map_or(loan.group.clone(), |a| a.title.clone()),
+            title.map_or(loan.group.clone(), |t| t.name.clone()),
             Style { size: font::BODY, weight: font::WEIGHT_STRONG, face: Face::Mono, color: theme.text },
             Side::Lead,
             0.0,
@@ -941,21 +944,26 @@ pub fn build_right(
         if let Some(role) = role {
             parts.push(words(tr(role), body(theme.text_secondary), Side::Lead, pane::BAR_GAP));
         }
-        if let Some(row) = row {
-            let word_ink = match row.shown {
+        // The state is the terminal's own -- the supervisor's -- and not
+        // the row's, which may be about one of its workers.
+        if let Some(title) = title {
+            let word_ink = match title.shown {
                 Shown::NeedsYou | Shown::DoneUnseen => theme.attention_text,
                 // Where the word is not red is the table's to say.
                 Shown::Trouble => theme.problem_text_on_supervisor_bar,
                 Shown::Working | Shown::None => theme.text_secondary,
             };
-            if row.shown != Shown::None {
+            if title.shown != Shown::None {
                 parts.push(Part {
-                    piece: Piece::Glyph { shown: row.shown, color: glyph_color(theme, row.shown), size: side::GLYPH, pulses: false },
+                    piece: Piece::Glyph { shown: title.shown, color: glyph_color(theme, title.shown), size: side::GLYPH, pulses: false },
                     side: Side::Trail,
                     gap: pane::BAR_GAP,
                 });
             }
-            parts.push(words(row.word.clone(), Style { weight: font::WEIGHT_EMPHASIS, ..body(word_ink) }, Side::Trail, side::STATUS_WORD_GAP));
+            // Nothing to say is nothing drawn: not an empty string handed on.
+            if draws(&title.word) {
+                parts.push(words(title.word.clone(), Style { weight: font::WEIGHT_EMPHASIS, ..body(word_ink) }, Side::Trail, side::STATUS_WORD_GAP));
+            }
         }
         items.push(Item::Line { rect: bar, parts });
         // The terminal's own ground, for the moment before the terminal's
@@ -2005,10 +2013,26 @@ mod tests {
         // A worker somebody minds says so; a supervisor with no group too.
         assert_eq!(bar(&lone_row(Pane::Worker)), ["zsh — ~/work", "Worker", "等批准"]);
         assert_eq!(bar(&lone_row(Pane::Supervisor)), ["zsh — ~/work", "Supervisor", "等批准"]);
-        // A group's supervisor: the group's name and "Supervisor", as ever.
+        // A group's supervisor: that terminal's own title and "Supervisor".
         let l = list();
         let group = l.row("web-app").unwrap();
         assert_eq!(bar(group)[..2], ["web-app".to_string(), "Supervisor".to_string()]);
+        // The terminal's title, not the group's name, where they differ.
+        let mut renamed = l.row("billing").unwrap().clone();
+        renamed.title.as_mut().unwrap().name = "claude — ~/billing".to_string();
+        assert_eq!(bar(&renamed), ["claude — ~/billing", "Supervisor", "等回答"]);
+        // The state is the supervisor's own and not the row's: in `mobile`
+        // a worker waits for approval while the supervisor has nothing to
+        // say, and the bar over the supervisor says nothing.
+        let mobile = l.row("mobile").unwrap();
+        assert_eq!(mobile.word, "等批准");
+        assert_eq!(bar(mobile), ["mobile", "Supervisor"]);
+        // A supervisor the core lists no terminal for: the group's name is
+        // all there is to write.
+        let mut unlisted = mobile.clone();
+        unlisted.title = None;
+        unlisted.id = "mobile-group".to_string();
+        assert_eq!(bar(&unlisted), ["mobile-group", "Supervisor"]);
         // Never the row's identity.
         assert!(!bar(&lone_row(Pane::Plain)).iter().any(|t| t.contains("terminal:")));
     }

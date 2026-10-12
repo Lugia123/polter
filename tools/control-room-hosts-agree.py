@@ -66,7 +66,9 @@ own (`ungrouped`) -- its row's identity, the section it goes in, its title,
 glyph and words, who waits and for what with every line, what an act on it
 hands back, and the terminal the right-hand side then shows; which rows are
 marked seen by being looked at, and
-after how long, and the request marking each row seen sends (a group's
+after how long, what the title of the frame on the right says while it
+holds each row's terminal (that terminal's own name, glyph and word -- the
+supervisor's, not the row's), and the request marking each row seen sends (a group's
 name, or the terminal of a row that is in no group); the list's two
 headings -- the count, what the rows are called and the form of the number
 as the core wrote them, and the English sentence each side makes of that; the selection chip's slide -- whether it moves at all (from
@@ -436,6 +438,15 @@ for r in list.rows {
         markSeen: { said += " marks=\($0)" })
     tracker.selectionChanged(to: r)
     print("seen row=\(r.id) \(said)")
+}
+// What the title of the frame on the right says while it holds each row's
+// terminal: that terminal's own name, glyph and word.
+for r in list.rows {
+    if let t = r.supervisor {
+        print("frame_title row=\(r.id) name=\(quote(t.name)) shown=\(shownName(t.shown)) word=\(quote(t.word))")
+    } else {
+        print("frame_title row=\(r.id) -")
+    }
 }
 // What marking a row seen sends, for every row as if nobody had looked at
 // it: a group's by the group's name, a lone terminal's by the terminal.

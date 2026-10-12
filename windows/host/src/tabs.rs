@@ -3165,21 +3165,15 @@ fn split_pane(
             wlogf!(frame, "[split] refused: tab {} is not in this window", idx);
             return false;
         };
-        let Some(term) = tab.terminal() else {
-            wlogf!(
-                frame,
-                "[split] refused: the tab in front is the control room, which has no pane to split \
-                 (not passed on to another tab: the split would open where nobody is looking)"
-            );
+        // The same answer the action was given when it was asked for
+        // (`split_answer`), asked again now that its turn has come: the
+        // control room may have taken the pane in between.
+        let (answer, acting) = split_answer_in(&win, at);
+        let (Some(term), true) = (tab.terminal(), answer.will()) else {
+            wlogf!(frame, "[split] refused: {}", split_refusal(answer, acting));
             return false;
         };
         let acting = acting_pane(term, at);
-        // Not from the terminal the control room is showing: the split
-        // would open in its own tab, where nobody is looking.
-        if !polter_control_room::lend::may_split(win.shown_on_loan().is_some_and(|l| l.pane == acting)) {
-            wlogf!(frame, "[split] refused: pane {} is shown in the control room; a split would open in its own tab, out of sight", acting);
-            return false;
-        }
         (bounds, idx, acting, term.tree.clone())
     };
 
@@ -5500,6 +5494,42 @@ pub fn pane_id_of_surface(surface: Surface) -> Option<PaneId> {
             .find(|p| p.surface == key)
             .map(|p| p.id)
     })
+}
+
+/// Whether a split aimed at `at` in `win` will be made, and from which pane
+/// (none when the tab it would go in has no pane).
+fn split_answer_in(win: &WindowState, at: Option<PaneId>) -> (polter_control_room::lend::SplitAnswer, Option<PaneId>) {
+    use polter_control_room::lend::SplitAnswer;
+    let acting = win.tabs.get(acting_tab(win, at)).and_then(|t| t.terminal()).map(|term| acting_pane(term, at));
+    let on_loan = acting.is_some_and(|p| win.shown_on_loan().is_some_and(|l| l.pane == p));
+    (SplitAnswer::to(acting.is_some(), on_loan), acting)
+}
+
+/// The line that says why a split was not made.
+fn split_refusal(answer: polter_control_room::lend::SplitAnswer, acting: Option<PaneId>) -> String {
+    use polter_control_room::lend::SplitAnswer;
+    match (answer, acting) {
+        (SplitAnswer::OnLoan, Some(p)) => {
+            format!("pane {} is shown in the control room; a split would open in its own tab, out of sight", p)
+        }
+        _ => "the tab in front is the control room, which has no pane to split \
+              (not passed on to another tab: the split would open where nobody is looking)"
+            .to_string(),
+    }
+}
+
+/// What to answer an action that asks for a split in `frame`, aimed at
+/// `at`: decided now, from the window as it is, so that the core is not
+/// told "will split" about a split that is going to be refused
+/// (`lend::SplitAnswer`). The second value is the line for the log when the
+/// answer is no.
+pub fn split_answer(frame: HWND, at: Option<PaneId>) -> (polter_control_room::lend::SplitAnswer, Option<String>) {
+    let Some(win) = window(frame) else {
+        // No such window: the op would find none either, and says so.
+        return (polter_control_room::lend::SplitAnswer::Will, None);
+    };
+    let (answer, acting) = split_answer_in(&win, at);
+    (answer, (!answer.will()).then(|| split_refusal(answer, acting)))
 }
 
 /// The pane an op should act on: the one it named, or the focused one.

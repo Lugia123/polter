@@ -227,6 +227,18 @@ fn tab_shows_close(tw: i32, scale: f64) -> bool {
 /// Room the overflow button takes when there is one.
 const OVERFLOW_W: i32 = 22;
 
+/// Room the `+` takes, which it always does: it is the same width as the
+/// overflow button.
+///
+/// **The tabs do not get this room.** They used to: the tabs were laid out
+/// across the whole strip and the `+` was then pinned over the right end of
+/// whatever was there, so once the tabs filled the strip the last one had
+/// the `+` drawn over its close cross (ten tabs on a real machine, fourth
+/// run: "the last tab's cross cannot be seen").
+fn new_w(scale: f64) -> i32 {
+    (OVERFLOW_W as f64 * scale) as i32
+}
+
 /// How the tabs are sized, and whether the strip overflows.
 ///
 /// **This function is the overflow policy** (decided: compress, then scroll,
@@ -247,7 +259,8 @@ pub fn layout(strip_w: i32, scale: f64, n: usize, inset: i32) -> (i32, bool) {
     if n == 0 {
         return (min_w, false);
     }
-    let avail = (strip_w - inset).max(1);
+    // What the `+` stands on is not the tabs' to fill.
+    let avail = (strip_w - inset - new_w(scale)).max(1);
     let n = n as i32;
     // Does it fit at the narrowest we are willing to draw?
     if n * min_w > avail {
@@ -272,10 +285,12 @@ fn extent(scale: f64, strip_w: i32, tw: i32, n: usize, overflowing: bool, inset:
     // The button's width is gone from the visible span too, not just from the
     // tabs' start: leaving it in here scrolls the strip 46px past its end,
     // and the symptom is a last tab that cannot be reached.
+    // Nor is the `+`'s, for the same reason: scrolled to its end, the
+    // strip has to bring the last tab out from under it.
     let visible = if overflowing {
-        strip_w - inset - (OVERFLOW_W as f64 * scale) as i32
+        strip_w - inset - new_w(scale) - (OVERFLOW_W as f64 * scale) as i32
     } else {
-        strip_w - inset
+        strip_w - inset - new_w(scale)
     };
     (content, (content - visible).max(0))
 }
@@ -2823,7 +2838,8 @@ mod menu_inset_tests {
             with_button < without,
             "5 tabs in 1000px must be narrower once 46px is spent: {with_button} vs {without}",
         );
-        assert_eq!(with_button, (1000 - 46) / 5);
+        // The 22 is the `+`, which the tabs do not stand under either.
+        assert_eq!(with_button, (1000 - 46 - 22) / 5);
     }
 
     /// **The trap, as a unit test.** Right-clicking the Nth tab must resolve
@@ -3090,6 +3106,39 @@ mod close_affordance_tests {
                 tab_shows_close(tw, scale),
                 "at scale {scale} the narrowest tab is {tw}px and loses its close cross",
             );
+        }
+    }
+
+    /// **Nor may anything be drawn over it.** The `+` is pinned to the
+    /// strip's right end once the tabs reach it; the tabs have to stop short
+    /// of where it stands, and a strip scrolled to its end has to show the
+    /// whole of the last tab beside it.
+    #[test]
+    fn the_new_tab_button_never_stands_on_a_tab_that_is_scrolled_fully_into_view() {
+        use super::{extent, menu_w, new_rect, strip_h, tab_x};
+        for &scale in &[1.0f64, 1.25, 1.5, 2.0, 3.0] {
+            for strip_w in (300..2600).step_by(37) {
+                for n in 1usize..40 {
+                    let inset = menu_w(scale);
+                    let (tw, overflowing) = layout(strip_w, scale, n, inset);
+                    let (_, max_scroll) = extent(scale, strip_w, tw, n, overflowing, inset);
+                    // A strip that does not overflow has no `»` and nothing
+                    // to scroll: the tabs fit beside the `+` as they are.
+                    assert!(overflowing || max_scroll == 0, "scale {scale}, strip {strip_w}, {n} tabs of {tw}: scrolls by {max_scroll} without overflowing");
+                    // Scrolled to the end, which is also "not scrolled" for a
+                    // strip that does not overflow.
+                    let after_tabs = tab_x(inset, n, tw, max_scroll);
+                    let new = new_rect(strip_w, scale, strip_h(scale), after_tabs, overflowing, inset);
+                    let last_right = tab_x(inset, n - 1, tw, max_scroll) + tw - 1;
+                    if strip_w - inset > 4 * new.right.saturating_sub(new.left) {
+                        assert!(
+                            last_right <= new.left,
+                            "scale {scale}, strip {strip_w}, {n} tabs of {tw}: the last tab ends at {last_right} and the + starts at {}",
+                            new.left
+                        );
+                    }
+                }
+            }
         }
     }
 
