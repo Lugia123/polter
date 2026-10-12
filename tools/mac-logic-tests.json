@@ -1,0 +1,100 @@
+{
+  "_": [
+    "Which files go into the package `tools/mac-logic-tests` builds, and why the rest do not.",
+    "Every .swift file under a `watched` directory has to be in `in` or in `out` (with `why`) of `sources` or `tests`;",
+    "one that is in neither makes the script fail and name it. Files from elsewhere may be listed in `sources.in` when a test needs them.",
+    "An entry is a path, or an object: `path`, and to take only part of a file `from` / `until` (each a string found on exactly one line;",
+    "`from` is the first line taken, `until` the first line not taken), `drop` (whole lines to remove), `prepend` (lines to put first).",
+    "A part is copied, not linked; a marker that is no longer there is a failure. Say with `why` what a part or an exclusion costs."
+  ],
+  "watched": [
+    "macos/Sources/Features/ControlRoom",
+    "macos/Tests/ControlRoom",
+    "macos/Tests/Splits"
+  ],
+  "stubs": [
+    "tools/mac-logic-tests-stubs/GhosttyStandIn.swift"
+  ],
+  "sources": {
+    "in": [
+      "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomGlyph.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomHomecoming.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomLending.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomList.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomListView.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomLook.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomQuota.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomQuotaView.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomSource.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomSupervisorFrame.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomView.swift",
+      "macos/Sources/Features/ControlRoom/PaneFrame.swift",
+      "macos/Sources/Features/ControlRoom/PaneFrameView.swift",
+      "macos/Sources/Features/Splits/SplitTree.swift",
+      "macos/Sources/Helpers/Extensions/Array+Extension.swift",
+      "macos/Sources/Features/Terminal/TabAccessory.swift",
+      {
+        "path": "macos/Sources/Features/Splits/PoltergeistLayoutShape.swift",
+        "until": "extension SplitTree<Ghostty.SurfaceView>.Node {",
+        "why": "the parser and the shape are taken; what follows the marker reads a real terminal's surface handle"
+      },
+      {
+        "path": "macos/Sources/Features/Splits/TerminalSplitTreeView.swift",
+        "from": "enum TerminalSplitDropZone: String, Equatable {",
+        "prepend": [
+          "import SwiftUI"
+        ],
+        "why": "only the drop zone's arithmetic, which is the end of the file; the views before it hold live terminals"
+      },
+      "macos/Sources/Features/Projects/ProjectScrollback.swift",
+      {
+        "path": "macos/Sources/Features/Projects/ProjectDocument.swift",
+        "until": "// MARK: - Capture",
+        "drop": [
+          "import GhosttyKit"
+        ],
+        "why": "the document's encoding and decoding are taken; from the marker on it captures live terminals. No test in the tree uses it yet: the tests that pin a project file's bytes are on a branch (StoredBytesTests), and will need exactly this part"
+      }
+    ],
+    "out": [
+      {
+        "path": "macos/Sources/Features/ControlRoom/ControlRoomController.swift",
+        "why": "imports GhosttyKit: it is the window controller, and holds the core's app and the terminals' views"
+      },
+      {
+        "path": "macos/Sources/Features/ControlRoom/ControlRoomLender.swift",
+        "why": "imports GhosttyKit: it moves a real terminal view between windows"
+      },
+      {
+        "path": "macos/Sources/Features/ControlRoom/PaneFrameSplit.swift",
+        "why": "needs Ghostty.App, the real SurfaceView and BaseTerminalController: it is where a frame is put round a live pane. The frame itself (PaneFrameView.swift) and the rule for which frame (PaneFrame.swift) are in"
+      }
+    ]
+  },
+  "tests": {
+    "in": [
+      "macos/Tests/ControlRoom/ControlRoomFeedTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomHomecomingTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomLendingTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomListTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomOpeningTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomQuotaTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomRestartTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomRulesTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomSupervisorTitleTests.swift",
+      "macos/Tests/ControlRoom/PaneFrameChromeTests.swift",
+      "macos/Tests/ControlRoom/PaneFrameTests.swift",
+      "macos/Tests/Splits/PoltergeistLayoutShapeTests.swift",
+      "macos/Tests/Splits/SplitTreeTests.swift",
+      "macos/Tests/Splits/TerminalSplitDropZoneTests.swift"
+    ],
+    "out": [
+      {
+        "path": "macos/Tests/Splits/CloseSplitOfferTests.swift",
+        "why": "asks Ghostty.SurfaceView.closeSplitIsOffered, a static of the real terminal view (SurfaceView_AppKit.swift), which the package cannot compile"
+      }
+    ]
+  }
+}
