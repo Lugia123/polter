@@ -887,6 +887,14 @@ fn what_the_core_says_of_a_supervisor_is_read_as_said_and_an_unknown_word_is_an_
     assert_eq!((again.state, again.can_start), (SupervisorState::Failed, true));
     let failed = read(first("\"state\": \"present\"", "\"state\": \"failed\"").replacen("\"failed\": \"none\"", "\"failed\": \"agent_never_connected\"", 1));
     assert_eq!((failed.state, failed.failed), (SupervisorState::Failed, StartFailure::AgentNeverConnected));
+    // The two a launcher reports itself are read like the rest: every word
+    // the core writes, and what each is read back as.
+    for reason in StartFailure::ALL {
+        let with = read(first("\"state\": \"present\"", "\"state\": \"failed\"").replacen("\"failed\": \"none\"", &format!("\"failed\": \"{}\"", reason.name()), 1));
+        assert_eq!(with.failed, reason, "{}", reason.name());
+    }
+    let named: Vec<&str> = StartFailure::ALL.iter().map(|r| r.name()).collect();
+    assert_eq!(named, ["none", "terminal_never_opened", "agent_never_connected", "terminal_closed", "cli_not_found", "cli_did_not_start"]);
     let no_role = read(first("\"role\": \"polter-supervisor\"", "\"role\": null"));
     assert_eq!(no_role.role, None);
     assert!(matches!(snapshot::decode(&first("\"state\": \"present\"", "\"state\": \"maybe\"")), Err(DecodeError::UnknownValue(_))));

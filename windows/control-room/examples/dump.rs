@@ -283,6 +283,29 @@ fn main() {
             None => println!("start id={} -", r.id),
         }
     }
+    // What the right-hand side says of a group with no supervisor, for
+    // every reason the core gives for the last try having made none -- the
+    // two a launcher reports itself among them -- and while one is on its
+    // way.
+    {
+        use polter_control_room::scene::no_supervisor_words;
+        use polter_control_room::snapshot::{StartFailure, SupervisorStart, SupervisorState};
+        let start = |state, failed, can_start| SupervisorStart { state, can_start, failed, role: None, cwd: String::new() };
+        for failed in StartFailure::ALL {
+            println!(
+                "start_says state=failed failed={} says={}",
+                failed.name(),
+                quote(no_supervisor_words(Some(&start(SupervisorState::Failed, failed, true))))
+            );
+        }
+        for state in [SupervisorState::Starting, SupervisorState::Absent] {
+            println!(
+                "start_says state={} failed=none says={}",
+                state.name(),
+                quote(no_supervisor_words(Some(&start(state, StartFailure::None, false))))
+            );
+        }
+    }
     println!("start_roles choose={}", l.choose_supervisor_role);
     for role in &l.supervisor_roles {
         println!("start_role key={} name={}", role.key, quote(&role.name));

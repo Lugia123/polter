@@ -66,7 +66,12 @@
 //!                                 and on nothing else
 //!         "terminal": "0x…"|null, the terminal one is being started in
 //!         "failed": "none",       none | terminal_never_opened |
-//!                                 agent_never_connected | terminal_closed
+//!                                 agent_never_connected | terminal_closed |
+//!                                 cli_not_found | cli_did_not_start
+//!                                 the last two are `+launch` saying so
+//!                                 itself, at once: its CLI is not there
+//!                                 to run, or something else stopped it
+//!                                 before the CLI ran
 //!         "role": "polter-supervisor" | null,
 //!                                 the role it is started in unless the
 //!                                 person picks another; null with no
@@ -2954,6 +2959,57 @@ test "ControlRoom start: one on its way is not offered again, and the snapshot w
         try testing.expectEqual(@as(u64, 0xa9), row.steward.?.id);
         try testing.expectEqual(@as(?Hex, null), row.supervisor.terminal);
     }
+}
+
+test "ControlRoom start: a launcher that says its CLI did not start fails the start at once, with that reason" {
+    var w: World = .init();
+    defer w.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    try w.chat.restoreShell("nightly", "", 0, .none);
+    try w.chat.beginStart("nightly", 2_000, 11_000);
+    try w.terminal(0xa9, "zsh", 0x29);
+    w.chat.startOpened("nightly", 0xa9, 61_000);
+    var out = try room.refresh(w.input(3_000), .event);
+    // Waiting for the agent, and woken for nothing sooner than the minute.
+    try testing.expectEqual(@as(?u64, 61_001), out.wake_ms);
+
+    // One second in, `+launch` says the CLI is not there to run. What the
+    // app does with that (`App.poltergeistLaunchFailed`): the group that
+    // terminal was being started for fails, for the reason given.
+    const group = w.chat.startingIn(0xa9, 4_000) orelse return error.NothingWasStartingThere;
+    try testing.expectEqualStrings("nightly", group);
+    w.chat.failStart(group, Chat.startFailureOf(.not_found));
+
+    out = try room.refresh(w.input(4_000), .event);
+    try testing.expect(out.notify != null);
+    {
+        const read = try std.json.parseFromSlice(Snapshot, testing.allocator, room.json, .{});
+        defer read.deinit();
+        const sup = (try rowNamed(read.value, "nightly")).supervisor;
+        // Failed now, fifty-seven seconds before the timer could say so.
+        try testing.expectEqual(SupervisorOut.State.failed, sup.state);
+        try testing.expectEqual(Chat.StartFailure.cli_not_found, sup.failed);
+        // Offered again, and the tab that says why is still named.
+        try testing.expect(sup.can_start);
+        try testing.expectEqual(@as(u64, 0xa9), sup.terminal.?.id);
+    }
+    // Nothing is left to wait for.
+    try testing.expectEqual(@as(?u64, null), out.wake_ms);
+    // The reason stands when the minute comes round: the timer's own
+    // reason does not replace the one the launcher gave.
+    _ = try room.refresh(w.input(61_001), .timer);
+    try testing.expectEqual(Chat.StartFailure.cli_not_found, w.chat.startOf("nightly", 61_001).failed);
+
+    // The other kind, on another try.
+    try w.chat.beginStart("nightly", 70_000, 80_000);
+    w.chat.startOpened("nightly", 0xa9, 130_000);
+    w.chat.failStart("nightly", Chat.startFailureOf(.failed));
+    try testing.expectEqual(Chat.StartFailure.cli_did_not_start, w.chat.startOf("nightly", 71_000).failed);
+    // And a terminal nothing was being started in fails nothing.
+    const nobody = w.chat.startingIn(0xb7, 71_000);
+    try testing.expectEqual(@as(?[]const u8, null), nobody);
 }
 
 test "ControlRoom wake: hooks that never came are said once, and there is no moment left to wake for" {

@@ -555,6 +555,15 @@ pub fn holdStanding(
     });
 }
 
+/// The launch that was holding a standing for `id` started no agent
+/// (`+launch` said so): what it held is dropped now, instead of sitting
+/// until it runs out -- where a `claude` typed into that terminal by hand
+/// inside the minute would have claimed a supervisor's standing meant for
+/// an agent that never existed. Answers whether anything was held.
+pub fn dropStanding(self: *PersonaStore, id: Bus.Id) bool {
+    return self.standings.remove(id);
+}
+
 /// What is held for `id` and still able to be claimed, or null.
 pub fn heldStanding(self: *const PersonaStore, id: Bus.Id, now_ms: u64) ?PendingStanding {
     const s = self.standings.get(id) orelse return null;
