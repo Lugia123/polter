@@ -550,6 +550,15 @@ extension Ghostty {
             )
         }
 
+        /// Whether the panes of a split wear their frames (`poltergeist-pane-frames`).
+        var poltergeistPaneFrames: Bool {
+            guard let config = self.config else { return true }
+            var v = true
+            let key = "poltergeist-pane-frames"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v
+        }
+
         var splitDividerColor: Color {
             let backgroundColor = NSColor(backgroundColor)
             let isLightBackground = backgroundColor.isLightColor

@@ -730,3 +730,6 @@
 "Command took %@." = "命令用了 %@。";
 "Command took %@ and exited with code %@." = "命令用了 %1$@，退出码 %2$@。";
 "Update Polter and Restart" = "更新 Polter 并重启";
+
+/* 分屏框：worker 那一格的标题带上，名字后面说明身份的字 */
+"Worker" = "worker";

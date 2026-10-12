@@ -298,6 +298,29 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var text: String
     }
 
+    /// One open terminal, as much of it as its pane's frame shows
+    /// (`PaneFrame`).
+    struct Terminal: Decodable, Equatable {
+        /// Which of the three frames its pane wears, as the core spells
+        /// them. A value this does not know is an error, as with `shown`.
+        enum Pane: String, Decodable, Equatable, CaseIterable {
+            /// A border all round, its top edge thickened into the title bar.
+            case supervisor
+            /// A line all round and a band for the title.
+            case worker
+            /// No line and no band: the title on the terminal's own ground.
+            case plain
+        }
+
+        var id: String
+        var title: String
+        var shown: ControlRoomList.Shown
+        var text: String
+        /// Absent in a snapshot from before the core said it; such a
+        /// terminal is drawn as an ordinary one.
+        var pane: Pane?
+    }
+
     struct Group: Decodable, Equatable {
         var name: String
         /// The group's terminals. Absent in a snapshot cut down by hand.
@@ -337,6 +360,8 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     /// draws no tab glyphs, breathes nothing and has no band.
     var tabs: [Tab]?
     var pulses: [Pulse]?
+    /// Every open terminal, for the frame its pane wears (`PaneFrame`).
+    var terminals: [Terminal]?
 }
 
 /// Which waiting glyph breathes.
