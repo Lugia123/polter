@@ -43,6 +43,19 @@ struct PaneStack: Equatable {
     /// Which member is in front: an index into `members`.
     var current: Int
     var plainStyle: PlainStyle = .band
+    /// The members that have a glyph to show, **the most pressing first**:
+    /// indices into `members`, in the order the core merges several
+    /// terminals into one glyph by (`Attention.top`: the highest glyph,
+    /// and among equals the one that has waited longest). The core's
+    /// order, handed in -- nothing here ranks one glyph over another.
+    ///
+    /// What it is for: when some tabs are behind `more`, the first of
+    /// these that is among them is the glyph `more` carries, so that a
+    /// terminal waiting behind the dots is not waiting unseen.
+    var urgent: [Int] = []
+    /// The least a tab is cut to; nil for the table's. Only for pictures
+    /// of the other candidate, like `plainStyle`.
+    var minTabWidth: CGFloat?
 
     /// The member in front; the first when `current` is out of range.
     var showing: Member? {
@@ -64,7 +77,8 @@ struct PaneStack: Equatable {
 ///  3. When they do not fit at that either, the ones there is no room for
 ///     go behind a `more` button at the right end of the tabs. The current
 ///     tab is never one of them: its place is kept before any other is
-///     given one.
+///     given one. The tabs that stay then share the room there is by
+///     rule 2.
 ///  4. The status at the right end gives way before the current tab does:
 ///     where the two cannot both be had, the status is not drawn. And a
 ///     current tab that does not fit even alone is cut to what there is.
@@ -100,6 +114,15 @@ struct PaneStackStripLayout: Equatable {
     /// when there is no room for it or nothing to say.
     var status: ClosedRange<CGFloat>?
 
+    /// The member whose glyph `more` carries: the first of `urgent` -- the
+    /// core's order, most pressing first -- that is behind it. Nil when
+    /// nothing is behind `more`, or nothing behind it has a glyph. A walk
+    /// down a list and a test of membership: which is more pressing was
+    /// settled when the list was ordered.
+    func behindMore(urgent: [Int]) -> Int? {
+        urgent.first { hidden.contains($0) }
+    }
+
     /// How wide a tab's name wants it with no font to measure by: so many
     /// cells of `nominal_cell_width`, a wide character two, between the
     /// tab's paddings, and room for its glyph when it has one.
@@ -119,9 +142,11 @@ struct PaneStackStripLayout: Equatable {
     ///   - current: which is in front.
     ///   - width: the strip's, between the content's edges.
     ///   - status: how wide the status at the right end is; 0 for none.
-    init(wants: [CGFloat], current: Int, width: CGFloat, status: CGFloat) {
+    ///   - minWidth: the least a tab is cut to. The table's, unless a
+    ///     picture is being made of the other candidate.
+    init(wants: [CGFloat], current: Int, width: CGFloat, status: CGFloat,
+         minWidth: CGFloat = CGFloat(Look.StackTab.minWidth)) {
         let t = Look.StackTab.self
-        let minWidth = CGFloat(t.minWidth)
         let leading = CGFloat(t.inset)
         let add = CGFloat(t.addButton)
         let more = CGFloat(t.moreButton)
@@ -175,6 +200,12 @@ struct PaneStackStripLayout: Equatable {
                 hidden = wants.indices.filter { !shown.contains($0) }
                 // Too wide even alone: it is cut to what there is.
                 widths[front] = max(0, min(least[front], fitsWithMore))
+                // Those that stayed were counted at their least; what room
+                // is left over goes back to them, the widest cut first as
+                // before, so that a strip with tabs behind `more` is not
+                // also a strip of names cut shorter than they need be.
+                let back = Self.capped(taken.map { wants[$0] }, to: fitsWithMore - widths[front], noLessThan: minWidth)
+                for (n, i) in taken.enumerated() { widths[i] = back[n] }
             }
         }
 

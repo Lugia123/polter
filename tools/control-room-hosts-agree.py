@@ -68,8 +68,10 @@ line, word for word and number for number, each of their windows -- and how
 high each side makes the block and where its parts start; and the strip of
 tabs over a pane that holds a stack -- on eighteen made-up stacks, where each
 tab is and how wide, which is in front, where a hairline stands, which are
-cut short, which go behind `more`, where `more`, the plus and the status are
--- and a tab's nominal width for five names.
+cut short, which go behind `more`, where `more`, the plus and the status are,
+the same stacks with the other candidate for the least width, and which
+member's glyph `more` carries for three orders the core might hand in -- and
+a tab's nominal width for five names.
 
 **NOT COMPARED, and why.**
 
@@ -455,6 +457,13 @@ for (n, c) in stripCases.enumerated() {
     let status = sl.status.map { "\(f($0.lowerBound))..\(f($0.upperBound))" } ?? "-"
     print("strip \(n) tabs=[\(tabs.joined(separator: " "))] hidden=[\(sl.hidden.map(String.init).joined(separator: ","))] "
         + "more=\(sl.moreX.map { f($0) } ?? "-") add=\(f(sl.addX)) status=\(status)")
+}
+for (n, c) in stripCases.enumerated() {
+    let sl = PaneStackStripLayout(wants: c.0, current: c.1, width: c.2, status: c.3, minWidth: 68)
+    let widths = sl.tabs.map { "\($0.member):\(f($0.width))" }
+    let table = PaneStackStripLayout(wants: c.0, current: c.1, width: c.2, status: c.3)
+    let carried = [[6, 4, 0, 2], [0, 2, 4, 9, 11], []].map { table.behindMore(urgent: $0).map(String.init) ?? "-" }
+    print("strip \(n) at68=[\(widths.joined(separator: " "))] hidden68=\(sl.hidden.count) carries=\(carried.joined(separator: "/"))")
 }
 for name in ["", "api", "frontend", "任务", "billing-worker"] {
     print("strip nominal \(quote(name)) plain=\(f(PaneStackStripLayout.nominalWidth(name: name, glyph: false))) "

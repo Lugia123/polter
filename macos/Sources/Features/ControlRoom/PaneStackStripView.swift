@@ -110,7 +110,8 @@ struct PaneStackStripView: View {
     var body: some View {
         GeometryReader { proxy in
             let layout = Layout(wants: stack.members.map(Self.wanted), current: stack.current,
-                                width: proxy.size.width, status: Self.statusWidth(title))
+                                width: proxy.size.width, status: Self.statusWidth(title),
+                                minWidth: stack.minTabWidth ?? CGFloat(Look.StackTab.minWidth))
             let tabH = CGFloat(Look.StackTab.height)
             let top = CGFloat(Look.StackTab.stripHeight) - tabH
             ZStack(alignment: .topLeading) {
@@ -136,10 +137,7 @@ struct PaneStackStripView: View {
                         .offset(x: tab.x, y: top)
                 }
                 if let moreX = layout.moreX {
-                    button("ellipsis", label: String(localized: "More tabs", comment: "分屏框：层叠标签条上排不下的标签收在这个按钮后面")) {
-                        actions.more(layout.hidden)
-                    }
-                    .offset(x: moreX, y: top)
+                    more(layout).offset(x: moreX, y: top)
                 }
                 button("plus", label: String(localized: "Add a terminal to this pane", comment: "分屏框：层叠标签条末尾的加号")) {
                     actions.add()
@@ -183,6 +181,37 @@ struct PaneStackStripView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(member.name)
         .accessibilityAddTraits(current ? [.isButton, .isSelected] : .isButton)
+    }
+
+    /// `more`: the dots, and beside them the glyph of the most pressing
+    /// terminal behind them -- the core's choice of which
+    /// (`PaneStackStripLayout.behindMore`). The glyph's place is kept when
+    /// there is none.
+    private func more(_ layout: Layout) -> some View {
+        let label = String(localized: "More tabs", comment: "分屏框：层叠标签条上排不下的标签收在这个按钮后面")
+        let behind = layout.behindMore(urgent: stack.urgent).map { stack.members[$0] }
+        return Button {
+            actions.more(layout.hidden)
+        } label: {
+            HStack(spacing: CGFloat(Look.StackTab.moreGlyphGap)) {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: CGFloat(Look.Font.body)))
+                    .foregroundStyle(otherInk)
+                    .frame(width: CGFloat(Look.Side.glyph))
+                Color.clear
+                    .frame(width: CGFloat(Look.Side.glyph), height: CGFloat(Look.Side.glyph))
+                    .overlay {
+                        if let behind {
+                            ControlRoomGlyph(shown: behind.shown, still: still)
+                        }
+                    }
+            }
+            .frame(width: CGFloat(Look.StackTab.moreButton), height: CGFloat(Look.StackTab.height))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(behind.map { "\(label): \($0.name)" } ?? label)
+        .accessibilityLabel(behind.map { "\(label), \($0.name)" } ?? label)
     }
 
     private func button(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {

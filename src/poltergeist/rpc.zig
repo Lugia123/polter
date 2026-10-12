@@ -5954,9 +5954,37 @@ fn roleWriteFailure(err: anyerror) wire.Response {
 /// Called by `dispatch` and, for the requests the app holds instead of
 /// dispatching (`persona_wait`), by the app itself. Claiming is take-once,
 /// so the second call is nothing.
-pub fn arrived(bus: *Bus, host: Host, who: Bus.Caller) void {
+///
+/// **Not every request from that terminal is the agent** (`showsAnAgent`):
+/// the one `+launch` sends on its own account, before there is an agent,
+/// claims nothing.
+pub fn arrived(bus: *Bus, host: Host, who: Bus.Caller, req: Request) void {
+    if (!showsAnAgent(req)) return;
     const id = who.terminalId() orelse return;
     host.vtable.agentArrived(host.ctx, bus, id);
+}
+
+/// Whether a request from a terminal shows that the agent a launch started
+/// there is running.
+///
+/// Every request does but one. `hooks_expected` is sent by `+launch`
+/// itself, **before** it starts the CLI (`cli/launch.zig`, `expectHooks`)
+/// -- so it arrives whether or not the CLI then starts, and it used to
+/// claim the launch's standing all the same. Measured on a Mac (task 1460,
+/// twice): a launch whose CLI was not installed left a shell with one line
+/// on it, `could not start claude (FileNotFound)`, that was a supervisor
+/// within a second -- a flag on its tab, its group's supervisor in the
+/// control room -- and the sentence for an agent that never connected
+/// could not appear for any CLI launched with hooks, because every such
+/// launch had "connected" before its CLI existed.
+///
+/// Every other `agent_event` is a hook, run by the CLI: that one is
+/// running. Everything else comes from the agent's sidecar.
+pub fn showsAnAgent(req: Request) bool {
+    return switch (req) {
+        .agent_event => |ev| ev.event != .hooks_expected,
+        else => true,
+    };
 }
 
 /// Whether a request of this kind is an agent calling a tool, as opposed to
@@ -6129,7 +6157,7 @@ fn dispatchOne(
     who: Bus.Caller,
     req: Request,
 ) std.mem.Allocator.Error!wire.Response {
-    arrived(bus, host, who);
+    arrived(bus, host, who, req);
     authorize(bus, who, req) catch |err| return failure(err);
 
     // Everything below this line that names a terminal has already been
@@ -13187,6 +13215,91 @@ test "launched standing: nothing is given until the agent connects, then before 
     }));
     try testing.expectEqual(@as(?persona.Capabilities.PendingStanding, null), after.persona.pending_standing);
     try testing.expect(after.standing.supervisor);
+}
+
+test "launched standing: the launcher saying hooks are expected is not the agent connecting" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh } };
+
+    // A supervisor role, launched in `fresh` (`App.startRoleIn`).
+    try store.setPersona(fresh, "lead");
+    try store.holdStanding(fresh, fresh, standing_roles[0].polter, 0);
+
+    // **`+launch` says hooks are expected, and then its CLI does not
+    // start**: not installed, not runnable. That one request is all this
+    // terminal ever sends. It is heard -- the bus now expects hooks from
+    // here -- and it is not an agent.
+    fake.now_ms = 500;
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = hookEvent(.hooks_expected) });
+    try testing.expectEqual(Bus.Hooks.expected, bus.entries.get(fresh).?.agent.hooks);
+    const supervisor_after_launcher = bus.isSupervisor(fresh);
+    try testing.expect(!supervisor_after_launcher);
+
+    // Still held, for the agent, for the time it has left: nothing was
+    // spent on the launcher.
+    const caps = try expectCaps(try dispatch(alloc, &bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = fresh },
+    }));
+    const held = caps.persona.pending_standing orelse return error.StandingWasSpentOnTheLauncher;
+    try testing.expect(held.want.supervisor);
+    try testing.expectEqual(PersonaStore.standing_wait_ms - 500, held.expires_in_ms);
+
+    // And it runs out like any launch whose agent never came: the terminal
+    // is never a supervisor, which is what lets whoever started it say so.
+    fake.now_ms = PersonaStore.standing_wait_ms + 1;
+    const late = try expectCaps(try dispatch(alloc, &bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = fresh },
+    }));
+    try testing.expectEqual(@as(?persona.Capabilities.PendingStanding, null), late.persona.pending_standing);
+    const supervisor_at_the_end = bus.isSupervisor(fresh);
+    try testing.expect(!supervisor_at_the_end);
+}
+
+test "launched standing: a hook from the CLI is the agent, after the launcher's word was not" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh } };
+    try bus.addSupervisor(boss);
+
+    // A worker role this time, launched by the supervisor (`role_launch`):
+    // the same rule on the other path.
+    try store.setPersona(fresh, "hand");
+    try store.holdStanding(fresh, boss, standing_roles[1].polter, 0);
+
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = hookEvent(.hooks_expected) });
+    const watched_after_launcher = bus.entries.get(fresh).?.watched_by;
+    try testing.expectEqual(@as(?Bus.Id, null), watched_after_launcher);
+
+    // The CLI started and ran its first hook. A CLI whose sidecar is slow,
+    // or that has none, is still an agent that is there.
+    fake.now_ms = 1_000;
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = hookEvent(.session_started) });
+    const watched_after_hook = bus.entries.get(fresh).?.watched_by;
+    try testing.expectEqual(@as(?Bus.Id, boss), watched_after_hook);
+}
+
+test "launched standing: only the launcher's own word is not an agent" {
+    // Exhaustive over what a hook can say, so that an event added to
+    // `AgentEvent.Kind` is one somebody has put on a side.
+    for (std.enums.values(AgentEvent.Kind)) |kind| {
+        const shows = showsAnAgent(.{ .agent_event = hookEvent(kind) });
+        try testing.expectEqual(kind != .hooks_expected, shows);
+    }
+    try testing.expect(showsAnAgent(.me));
+    try testing.expect(showsAnAgent(.terminal_list));
 }
 
 test "launched standing: an agent that connects after it ran out gets nothing" {

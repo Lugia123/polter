@@ -114,19 +114,17 @@ private struct PaneFramed: ViewModifier {
         let drawn = PaneFrame.drawn(
             terminal: ControlRoomLender.terminal(of: surfaceView), ownName: surfaceView.title,
             at: place, in: source.terminals)
-        if let drawn {
-            PaneFrameView(
-                wears: drawn.wears, title: drawn.title, caption: nil,
-                focused: lastFocused?.value === surfaceView,
-                well: ghostty.config.backgroundColor,
-                cover: Look.theme(scheme).windowBase.color
-            ) { content }
-            .padding(PaneFrameSplit.inset)
-        } else {
-            // Nothing of this pane's own, but its neighbours are framed:
-            // it keeps the same gap. With no ground it is as it ever was.
-            content.padding(ground ? PaneFrameSplit.inset : 0)
-        }
+        // **One chain, whatever the pane wears** -- never a choice between a
+        // framed pane and a bare one: see `PaneFrameChrome` for what a
+        // choice here did to the terminal (task 1461). A pane with nothing
+        // of its own whose neighbours are framed keeps the same gap; with
+        // no ground it is as it ever was.
+        content.modifier(PaneFrameChrome(
+            wears: drawn?.wears, title: drawn?.title, caption: nil,
+            focused: lastFocused?.value === surfaceView,
+            well: ghostty.config.backgroundColor,
+            cover: Look.theme(scheme).windowBase.color,
+            outside: drawn != nil || ground ? PaneFrameSplit.inset : 0))
     }
 }
 

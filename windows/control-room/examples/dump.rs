@@ -420,6 +420,17 @@ fn main() {
             sl.status.map_or("-".to_string(), |(a, b)| format!("{a:.3}..{b:.3}")),
         );
     }
+    // The other candidate for the least width, and what `more` carries for
+    // three orders the core might hand in.
+    for (n, (wants, current, width, status)) in stackstrip::CASES.iter().enumerate() {
+        let sl = stackstrip::layout_with(wants, *current, *width, *status, 68.0);
+        let widths: Vec<String> = sl.tabs.iter().map(|t| format!("{}:{:.3}", t.member, t.width)).collect();
+        let carried: Vec<String> = [&[6usize, 4, 0, 2][..], &[0, 2, 4, 9, 11], &[]]
+            .iter()
+            .map(|urgent| stackstrip::behind_more(&stackstrip::layout(wants, *current, *width, *status), urgent).map_or("-".to_string(), |i| i.to_string()))
+            .collect();
+        println!("strip {n} at68=[{}] hidden68={} carries={}", widths.join(" "), sl.hidden.len(), carried.join("/"));
+    }
     for name in ["", "api", "frontend", "任务", "billing-worker"] {
         println!("strip nominal {} plain={:.3} glyph={:.3}", quote(name), stackstrip::nominal_width(name, false), stackstrip::nominal_width(name, true));
     }

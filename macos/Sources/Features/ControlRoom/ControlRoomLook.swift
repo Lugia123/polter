@@ -251,17 +251,20 @@ enum ControlRoomLook {
         /// The least between the plus and the status at the right end.
         /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
         static let statusGap: Double = 8.0
-        /// The `more` button that stands for the tabs there was no room for: as wide as the plus, between the last tab and the plus.
-        /// TENTATIVE (other candidate: 0). The design draws no strip with more tabs than fit. The other way is to scroll the strip and have no button.
+        /// The `more` button that stands for the tabs there was no room for, between the last tab and the plus: the dots, and beside them the place for the glyph of the most pressing terminal among those it stands for (6 + dots 14 + 4 + glyph 14 + 6). The place is kept whether or not there is a glyph, so that the strip does not move when one of them starts waiting.
+        /// TENTATIVE (other candidate: 28). The design draws no strip with more tabs than fit. 28 is the dots alone, as wide as the plus, with nothing to say that somebody behind them is waiting.
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
-        static let moreButton: Double = 28.0
+        static let moreButton: Double = 44.0
+        /// Between the dots and the glyph beside them.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let moreGlyphGap: Double = 4.0
         /// How wide one character of a tab's name is taken to be where there is no font to measure with: what the two hosts are held to one answer by. A wide character is two.
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
         static let nominalCellWidth: Double = 8.0
-        /// The narrowest a tab is squeezed to before the rest go behind a `more` menu at the right end. 68 is the design's three-letter tab: padding 12 + three cells + gap 8 + glyph 14 + padding 12.
-        /// TENTATIVE (other candidate: 104). 104 is the design's eight-letter tab. The design draws no squeezed strip; where squeezing stops has not been ruled on.
+        /// The narrowest a tab is squeezed to before the rest go behind a `more` menu at the right end. 104 is the design's eight-letter tab: at that a name keeps seven characters and its ellipsis.
+        /// TENTATIVE (other candidate: 68). 68 is the design's three-letter tab (padding 12 + three cells + gap 8 + glyph 14 + padding 12): more tabs stay on the strip, and each is one letter and an ellipsis. The design draws no squeezed strip; where squeezing stops has not been ruled on.
         /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
-        static let minWidth: Double = 68.0
+        static let minWidth: Double = 104.0
         /// Source: design v14, CHANGES.md.
         static let outlined: Bool = false
     }

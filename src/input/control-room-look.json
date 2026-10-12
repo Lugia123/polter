@@ -162,13 +162,14 @@
       "add_button": { "v": 28, "src": "v17-style" },
       "trailing": { "v": 12, "src": "v15-panes", "doc": "From the status at the right end of the strip to the strip's right edge. In a supervisor's frame this is measured inside the border, like `inset`." },
       "status_gap": { "v": 8, "src": "v15-panes", "doc": "The least between the plus and the status at the right end." },
-      "more_button": { "v": 28, "src": "undesigned", "doc": "The `more` button that stands for the tabs there was no room for: as wide as the plus, between the last tab and the plus.", "tentative": { "alt": 0, "why": "The design draws no strip with more tabs than fit. The other way is to scroll the strip and have no button." } },
+      "more_button": { "v": 44, "src": "undesigned", "doc": "The `more` button that stands for the tabs there was no room for, between the last tab and the plus: the dots, and beside them the place for the glyph of the most pressing terminal among those it stands for (6 + dots 14 + 4 + glyph 14 + 6). The place is kept whether or not there is a glyph, so that the strip does not move when one of them starts waiting.", "tentative": { "alt": 28, "why": "The design draws no strip with more tabs than fit. 28 is the dots alone, as wide as the plus, with nothing to say that somebody behind them is waiting." } },
+      "more_glyph_gap": { "v": 4, "src": "undesigned", "doc": "Between the dots and the glyph beside them." },
       "nominal_cell_width": { "v": 8, "src": "undesigned", "doc": "How wide one character of a tab's name is taken to be where there is no font to measure with: what the two hosts are held to one answer by. A wide character is two." },
       "min_width": {
-        "v": 68,
+        "v": 104,
         "src": "v15-panes",
-        "doc": "The narrowest a tab is squeezed to before the rest go behind a `more` menu at the right end. 68 is the design's three-letter tab: padding 12 + three cells + gap 8 + glyph 14 + padding 12.",
-        "tentative": { "alt": 104, "why": "104 is the design's eight-letter tab. The design draws no squeezed strip; where squeezing stops has not been ruled on." }
+        "doc": "The narrowest a tab is squeezed to before the rest go behind a `more` menu at the right end. 104 is the design's eight-letter tab: at that a name keeps seven characters and its ellipsis.",
+        "tentative": { "alt": 68, "why": "68 is the design's three-letter tab (padding 12 + three cells + gap 8 + glyph 14 + padding 12): more tabs stay on the strip, and each is one letter and an ellipsis. The design draws no squeezed strip; where squeezing stops has not been ruled on." }
       },
       "outlined": { "v": false, "src": "v14-changes" }
     },

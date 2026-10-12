@@ -8,7 +8,7 @@ import Testing
 ///
 /// With the table as it is: the first tab starts 20 in, the plus is 28,
 /// 12 is kept at the right end, a status takes its width and 8 before it,
-/// `more` is 28, and a tab is not cut below 68.
+/// `more` is 44, and a tab is not cut below 104.
 struct PaneStackStripTests {
     typealias Layout = PaneStackStripLayout
     typealias Look = ControlRoomLook
@@ -22,8 +22,8 @@ struct PaneStackStripTests {
         #expect(Look.StackTab.addButton == 28)
         #expect(Look.StackTab.trailing == 12)
         #expect(Look.StackTab.statusGap == 8)
-        #expect(Look.StackTab.moreButton == 28)
-        #expect(Look.StackTab.minWidth == 68)
+        #expect(Look.StackTab.moreButton == 44)
+        #expect(Look.StackTab.minWidth == 104)
     }
 
     // MARK: 1. Everything fits
@@ -83,63 +83,98 @@ struct PaneStackStripTests {
     }
 
     @Test func theTabInFrontIsNotCut() {
-        // The same four with a long one in front: it keeps its 200, and
-        // the other long one gives up the difference.
-        let l = Layout(wants: [200, 60, 200, 60], current: 0, width: 460, status: 0)
-        #expect(widths(l) == [200, 60, 80, 60])
+        // 440 for the tabs with a long one in front: it keeps its 200, the
+        // short ones their 60, and the other long one what is left.
+        let l = Layout(wants: [200, 60, 200, 60], current: 0, width: 500, status: 0)
+        #expect(widths(l) == [200, 60, 120, 60])
         #expect(l.tabs.map(\.squeezed) == [false, false, true, false])
     }
 
     @Test func cuttingStopsAtTheLeastWidth() {
-        // 276 for the tabs: 68 + 68 + 68 + the 72 in front. One less and
-        // they no longer all fit.
-        let fits = Layout(wants: [200, 72, 200, 200], current: 1, width: 336, status: 0)
-        #expect(widths(fits) == [68, 72, 68, 68])
+        // 384 for the tabs: 104 + 104 + 104 + the 72 in front. One less
+        // and they no longer all fit.
+        let fits = Layout(wants: [200, 72, 200, 200], current: 1, width: 444, status: 0)
+        #expect(widths(fits) == [104, 72, 104, 104])
         #expect(fits.hidden.isEmpty)
-        let over = Layout(wants: [200, 72, 200, 200], current: 1, width: 335, status: 0)
+        let over = Layout(wants: [200, 72, 200, 200], current: 1, width: 443, status: 0)
         #expect(!over.hidden.isEmpty)
+    }
+
+    @Test func theLeastWidthCanBeTheOtherCandidate() {
+        // The same four at 68: they still fit where at 104 they did not.
+        let narrow = Layout(wants: [200, 72, 200, 200], current: 1, width: 336, status: 0, minWidth: 68)
+        #expect(widths(narrow) == [68, 72, 68, 68])
+        let table = Layout(wants: [200, 72, 200, 200], current: 1, width: 336, status: 0)
+        #expect(!table.hidden.isEmpty)
     }
 
     // MARK: 3. The rest go behind `more`
 
     @Test func whatThereIsNoRoomForGoesBehindMoreAndTheOneInFrontNeverDoes() {
-        // Eight tabs of 100, the seventh in front, 340 for the tabs --
-        // 312 once `more` has its 28. The one in front takes 100; three
-        // more at 68 make 304, and a fourth would not fit.
-        let l = Layout(wants: Array(repeating: 100, count: 8), current: 6, width: 400, status: 0)
-        #expect(members(l) == [0, 1, 2, 6])
-        #expect(widths(l) == [68, 68, 68, 100])
-        #expect(xs(l) == [20, 88, 156, 224])
-        #expect(l.hidden == [3, 4, 5, 7])
-        #expect(l.moreX == 324)
-        #expect(l.addX == 352)
+        // Eight tabs of 150, the seventh in front, 400 wide: 340 for the
+        // tabs, 296 once `more` has its 44. The one in front takes its
+        // 150; one more at 104 makes 254, and another would not fit.
+        let l = Layout(wants: Array(repeating: 150, count: 8), current: 6, width: 400, status: 0)
+        #expect(members(l) == [0, 6])
+        // It was counted at 104 to see whether it fits, and is given the
+        // 146 there turned out to be.
+        #expect(widths(l) == [146, 150])
+        #expect(xs(l) == [20, 166])
+        #expect(l.hidden == [1, 2, 3, 4, 5, 7])
+        #expect(l.moreX == 316)
+        #expect(l.addX == 360)
         #expect(l.tabs.last?.current == true)
 
-        // `more` has to have its own 28: at 436 wide a fourth tab would
-        // fit in the 376 there is without it, and does not in the 348
-        // there is with it.
-        let tight = Layout(wants: Array(repeating: 100, count: 8), current: 6, width: 436, status: 0)
-        #expect(members(tight) == [0, 1, 2, 6])
+        // `more` has to have its own 44: at 418 wide a second tab beside
+        // the one in front would fit in the 358 there is without it, and
+        // does not in the 314 there is with it.
+        let tight = Layout(wants: Array(repeating: 150, count: 8), current: 6, width: 418, status: 0)
+        #expect(members(tight) == [0, 6])
+        // With 164 left beside the one in front, the other is whole.
+        #expect(widths(tight) == [150, 150])
     }
 
     @Test func theTabsKeepTheStacksOrder() {
         // In front is the second: it stays second, not last.
-        let l = Layout(wants: Array(repeating: 100, count: 8), current: 1, width: 400, status: 0)
-        #expect(members(l) == [0, 1, 2, 3])
-        #expect(l.tabs.map(\.current) == [false, true, false, false])
-        #expect(l.hidden == [4, 5, 6, 7])
+        let l = Layout(wants: Array(repeating: 150, count: 8), current: 1, width: 520, status: 0)
+        #expect(members(l) == [0, 1, 2])
+        // 416 beside `more`: the one in front whole, 133 each for the two.
+        #expect(widths(l) == [133, 150, 133])
+        #expect(l.tabs.map(\.current) == [false, true, false])
+        #expect(l.hidden == [3, 4, 5, 6, 7])
+    }
+
+    // MARK: What `more` carries
+
+    @Test func moreCarriesTheFirstOfTheCoresOrderThatIsBehindIt() {
+        // Behind `more`: 1, 2, 3, 4, 5 and 7.
+        let l = Layout(wants: Array(repeating: 150, count: 8), current: 6, width: 400, status: 0)
+        // The core says 6 is the most pressing, then 4, then 0, then 2.
+        // 6 is on the strip; 4 is the first of them that is not.
+        #expect(l.behindMore(urgent: [6, 4, 0, 2]) == 4)
+        // The order is the core's and is not second-guessed: 2 before 4.
+        #expect(l.behindMore(urgent: [0, 2, 4]) == 2)
+        // Everything pressing is on the strip already, or nothing is.
+        #expect(l.behindMore(urgent: [6, 0]) == nil)
+        #expect(l.behindMore(urgent: []) == nil)
+    }
+
+    @Test func withNothingBehindMoreItCarriesNothing() {
+        let l = Layout(wants: [100, 60, 60], current: 1, width: 400, status: 0)
+        #expect(l.hidden.isEmpty)
+        #expect(l.behindMore(urgent: [0, 1, 2]) == nil)
     }
 
     // MARK: 4. The status gives way, then the tab itself
 
     @Test func theStatusGivesWayBeforeTheTabInFront() {
         // With the status there would be 72 for a tab that wants 120.
-        let l = Layout(wants: [120, 80], current: 0, width: 200, status: 60)
+        let l = Layout(wants: [120, 150], current: 0, width: 200, status: 60)
         #expect(l.status == nil)
-        // Without it there is 140, 112 beside `more`: the one in front
+        // Without it there is 140, 96 beside `more`: the one in front
         // alone, cut to that, and the other behind `more`.
         #expect(members(l) == [0])
-        #expect(widths(l) == [112])
+        #expect(widths(l) == [96])
         #expect(l.hidden == [1])
         #expect(l.tabs[0].squeezed)
     }

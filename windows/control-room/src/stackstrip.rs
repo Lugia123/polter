@@ -17,7 +17,8 @@
 //!     to `min_width` and no further. The tab in front is not cut.
 //!  3. When they do not fit at that either, the ones there is no room for
 //!     go behind a `more` button at the right end of the tabs. The tab in
-//!     front is never one of them.
+//!     front is never one of them. The tabs that stay then share the room
+//!     there is by rule 2.
 //!  4. The status at the right end gives way before the tab in front
 //!     does; and a tab in front that does not fit even alone is cut to
 //!     what there is.
@@ -106,6 +107,21 @@ pub fn capped(wants: &[f64], total: f64, least: f64) -> Vec<f64> {
 /// strip's, between the content's edges; `status` is how wide the status
 /// at the right end is, 0 for none.
 pub fn layout(wants: &[f64], current: usize, width: f64, status: f64) -> Layout {
+    layout_with(wants, current, width, status, t::MIN_WIDTH)
+}
+
+/// The member whose glyph `more` carries: the first of `urgent` -- the
+/// members that have a glyph to show, **in the core's order, most pressing
+/// first** -- that is behind it. None when nothing is behind `more`, or
+/// nothing behind it has a glyph. A walk down a list and a test of
+/// membership: nothing here ranks one glyph over another.
+pub fn behind_more(layout: &Layout, urgent: &[usize]) -> Option<usize> {
+    urgent.iter().copied().find(|i| layout.hidden.contains(i))
+}
+
+/// `layout`, with the least a tab is cut to given rather than read from
+/// the table: for pictures of the other candidate.
+pub fn layout_with(wants: &[f64], current: usize, width: f64, status: f64, min_width: f64) -> Layout {
     let front = if current < wants.len() { current } else { 0 };
     let room = |status: f64, more: bool| {
         let mut r = width - t::INSET - t::ADD_BUTTON - t::TRAILING;
@@ -129,11 +145,11 @@ pub fn layout(wants: &[f64], current: usize, width: f64, status: f64) -> Layout 
 
     if wants.iter().sum::<f64>() > fits {
         let least: Vec<f64> =
-            wants.iter().enumerate().map(|(i, w)| if i == front { *w } else { w.min(t::MIN_WIDTH) }).collect();
+            wants.iter().enumerate().map(|(i, w)| if i == front { *w } else { w.min(min_width) }).collect();
         if least.iter().sum::<f64>() <= fits {
             let mut others = wants.to_vec();
             others.remove(front);
-            let mut cut = capped(&others, fits - front_wants, t::MIN_WIDTH);
+            let mut cut = capped(&others, fits - front_wants, min_width);
             cut.insert(front, front_wants);
             widths = cut;
         } else {
@@ -154,6 +170,13 @@ pub fn layout(wants: &[f64], current: usize, width: f64, status: f64) -> Layout 
             hidden = (0..wants.len()).filter(|i| !shown.contains(i)).collect();
             // Too wide even alone: it is cut to what there is.
             widths[front] = least[front].min(fits_with_more).max(0.0);
+            // Those that stayed were counted at their least; what room is
+            // left over goes back to them, the widest cut first as before.
+            let stayed: Vec<usize> = shown.iter().copied().filter(|i| *i != front).collect();
+            let back = capped(&stayed.iter().map(|i| wants[*i]).collect::<Vec<_>>(), fits_with_more - widths[front], min_width);
+            for (n, i) in stayed.iter().enumerate() {
+                widths[*i] = back[n];
+            }
         }
     }
 
@@ -222,7 +245,7 @@ mod tests {
 
     #[test]
     fn the_numbers_these_tests_add_up_with() {
-        assert_eq!((t::INSET, t::ADD_BUTTON, t::TRAILING, t::STATUS_GAP, t::MORE_BUTTON, t::MIN_WIDTH), (20.0, 28.0, 12.0, 8.0, 28.0, 68.0));
+        assert_eq!((t::INSET, t::ADD_BUTTON, t::TRAILING, t::STATUS_GAP, t::MORE_BUTTON, t::MIN_WIDTH), (20.0, 28.0, 12.0, 8.0, 44.0, 104.0));
     }
 
     #[test]
@@ -254,37 +277,54 @@ mod tests {
 
     #[test]
     fn the_tab_in_front_is_not_cut() {
-        let l = layout(&[200.0, 60.0, 200.0, 60.0], 0, 460.0, 0.0);
-        assert_eq!(widths(&l), [200.0, 60.0, 80.0, 60.0]);
+        let l = layout(&[200.0, 60.0, 200.0, 60.0], 0, 500.0, 0.0);
+        assert_eq!(widths(&l), [200.0, 60.0, 120.0, 60.0]);
     }
 
     #[test]
-    fn cutting_stops_at_the_least_width() {
-        let fits = layout(&[200.0, 72.0, 200.0, 200.0], 1, 336.0, 0.0);
-        assert_eq!(widths(&fits), [68.0, 72.0, 68.0, 68.0]);
+    fn cutting_stops_at_the_least_width_and_the_least_can_be_the_other_candidate() {
+        let fits = layout(&[200.0, 72.0, 200.0, 200.0], 1, 444.0, 0.0);
+        assert_eq!(widths(&fits), [104.0, 72.0, 104.0, 104.0]);
         assert!(fits.hidden.is_empty());
-        assert!(!layout(&[200.0, 72.0, 200.0, 200.0], 1, 335.0, 0.0).hidden.is_empty());
+        assert!(!layout(&[200.0, 72.0, 200.0, 200.0], 1, 443.0, 0.0).hidden.is_empty());
+        // At 68 the same four still fit where at 104 they did not.
+        assert_eq!(widths(&layout_with(&[200.0, 72.0, 200.0, 200.0], 1, 336.0, 0.0, 68.0)), [68.0, 72.0, 68.0, 68.0]);
+        assert!(!layout(&[200.0, 72.0, 200.0, 200.0], 1, 336.0, 0.0).hidden.is_empty());
     }
 
     #[test]
     fn what_there_is_no_room_for_goes_behind_more_and_the_one_in_front_never_does() {
-        let l = layout(&[100.0; 8], 6, 400.0, 0.0);
-        assert_eq!(members(&l), [0, 1, 2, 6]);
-        assert_eq!(widths(&l), [68.0, 68.0, 68.0, 100.0]);
-        assert_eq!(l.hidden, [3, 4, 5, 7]);
-        assert_eq!((l.more_x, l.add_x), (Some(324.0), 352.0));
-        // `more` has its own 28: a fourth tab would fit without it.
-        assert_eq!(members(&layout(&[100.0; 8], 6, 436.0, 0.0)), [0, 1, 2, 6]);
+        let l = layout(&[150.0; 8], 6, 400.0, 0.0);
+        assert_eq!(members(&l), [0, 6]);
+        // Counted at 104 to see whether it fits; given the 146 there is.
+        assert_eq!(widths(&l), [146.0, 150.0]);
+        assert_eq!(l.hidden, [1, 2, 3, 4, 5, 7]);
+        assert_eq!((l.more_x, l.add_x), (Some(316.0), 360.0));
+        // `more` has its own 44: a second tab would fit without it.
+        assert_eq!(members(&layout(&[150.0; 8], 6, 418.0, 0.0)), [0, 6]);
         // And the tabs keep the stack's order.
-        let second = layout(&[100.0; 8], 1, 400.0, 0.0);
-        assert_eq!(members(&second), [0, 1, 2, 3]);
+        let second = layout(&[150.0; 8], 1, 520.0, 0.0);
+        assert_eq!(members(&second), [0, 1, 2]);
+        assert_eq!(widths(&second), [133.0, 150.0, 133.0]);
+    }
+
+    #[test]
+    fn more_carries_the_first_of_the_cores_order_that_is_behind_it() {
+        let l = layout(&[150.0; 8], 6, 400.0, 0.0);
+        assert_eq!(behind_more(&l, &[6, 4, 0, 2]), Some(4));
+        // The order is the core's and is not second-guessed.
+        assert_eq!(behind_more(&l, &[0, 2, 4]), Some(2));
+        assert_eq!(behind_more(&l, &[6, 0]), None);
+        assert_eq!(behind_more(&l, &[]), None);
+        let roomy = layout(&[100.0, 60.0, 60.0], 1, 400.0, 0.0);
+        assert_eq!(behind_more(&roomy, &[0, 1, 2]), None);
     }
 
     #[test]
     fn the_status_gives_way_before_the_tab_in_front_and_then_the_tab_itself() {
-        let l = layout(&[120.0, 80.0], 0, 200.0, 60.0);
+        let l = layout(&[120.0, 150.0], 0, 200.0, 60.0);
         assert_eq!(l.status, None);
-        assert_eq!((members(&l), widths(&l), l.hidden.clone()), (vec![0], vec![112.0], vec![1]));
+        assert_eq!((members(&l), widths(&l), l.hidden.clone()), (vec![0], vec![96.0], vec![1]));
         let roomy = layout(&[120.0, 80.0], 0, 330.0, 60.0);
         assert_eq!(roomy.status, Some((258.0, 318.0)));
         assert_eq!(widths(&roomy), [120.0, 80.0]);
