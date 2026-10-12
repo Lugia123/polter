@@ -148,7 +148,7 @@ fn dpi_of(hwnd: HWND) -> i32 {
 /// The terminal's `background`, read when it is painted so a reloaded config
 /// is followed. `None` when it cannot be read; the caller then paints the
 /// whole window the divider colour, which is the old look, not a hole.
-fn terminal_background() -> Option<COLORREF> {
+pub(crate) fn terminal_background() -> Option<COLORREF> {
     let cfg = crate::config_handle();
     if cfg.is_null() {
         return None;
@@ -559,7 +559,13 @@ extern "system" fn div_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
 
                     // See `LINE`: the whole window is the hit area, only the
                     // middle of it is the line.
-                    let line_rc = match terminal_background() {
+                    // Between two framed panes the divider lies in the gap,
+                    // which is the frames' ground: it is that colour all
+                    // over, and shows its line only under the pointer. The
+                    // gap is what is seen; the window is still what is
+                    // grabbed.
+                    let ground = crate::pane_frames::ground_color(GetParent(hwnd).unwrap_or_default());
+                    let line_rc = match ground.or_else(terminal_background) {
                         Some(bg) => {
                             let back = CreateSolidBrush(bg);
                             FillRect(hdc, &rc, back);
@@ -568,9 +574,11 @@ extern "system" fn div_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
                         }
                         None => rc,
                     };
-                    let brush = CreateSolidBrush(line_col);
-                    FillRect(hdc, &line_rc, brush);
-                    let _ = DeleteObject(brush.into());
+                    if ground.is_none() || hot {
+                        let brush = CreateSolidBrush(line_col);
+                        FillRect(hdc, &line_rc, brush);
+                        let _ = DeleteObject(brush.into());
+                    }
                     let _ = EndPaint(hwnd, &ps);
                 }
                 LRESULT(0)

@@ -13,6 +13,7 @@
 //! | [`reach`] | what can still be done with no terminal in front: which actions, and which key is which |
 //! | [`rules`] | the control room's tab: one in the application, where it opens, what closing it involves |
 //! | [`scene`] | everything the panel draws, as a list of rectangles, words and glyphs for a host to paint |
+//! | [`pane`] | which frame a pane of a split terminal tab wears, where it and the terminal in it go, and what it draws |
 //! | [`glyph`] | the four status glyphs as shapes on the design's artboard |
 //! | [`json`] | just enough JSON for the above |
 //!
@@ -40,6 +41,7 @@ pub mod layout;
 pub mod lend;
 pub mod list;
 pub mod look;
+pub mod pane;
 pub mod pulse;
 pub mod reach;
 pub mod rules;

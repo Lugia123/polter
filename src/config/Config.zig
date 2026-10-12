@@ -1682,7 +1682,9 @@ command: ?Command = null,
 /// rows or so shorter than it would be. Set this to `false` to draw splits
 /// the way they were before there were frames.
 ///
-/// macOS only for now.
+/// On macOS and Windows. On Windows the terminal itself keeps square
+/// corners, so a worker's and an ordinary terminal's frame is round at the
+/// top only, and no frame has a shadow.
 @"poltergeist-pane-frames": bool = true,
 
 /// Write what the terminals say to each other to disk.

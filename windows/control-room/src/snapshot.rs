@@ -176,6 +176,47 @@ pub struct Group {
     pub event_ms: Option<u64>,
 }
 
+/// Which of the three frames a terminal's pane wears in its own tab, as the
+/// core spells them (`pane::drawn` says whether one is drawn at all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    /// A border all round, its top edge thickened into the title bar.
+    Supervisor,
+    /// A line all round and a band for the title.
+    Worker,
+    /// No line and no band: the title on the terminal's own ground.
+    Plain,
+}
+
+impl Pane {
+    pub const ALL: [Pane; 3] = [Pane::Supervisor, Pane::Worker, Pane::Plain];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Pane::Supervisor => "supervisor",
+            Pane::Worker => "worker",
+            Pane::Plain => "plain",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Pane> {
+        Pane::ALL.into_iter().find(|v| v.name() == s)
+    }
+}
+
+/// One open terminal, as much of it as its pane's frame shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Terminal {
+    pub id: String,
+    pub title: String,
+    pub shown: Shown,
+    /// The words beside the glyph, already in the person's language.
+    pub text: String,
+    /// None in a snapshot from before the core said it; such a terminal is
+    /// drawn as an ordinary one.
+    pub pane: Option<Pane>,
+}
+
 /// One window tab and the one glyph it carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tab {
@@ -209,6 +250,9 @@ pub struct Snapshot {
     /// Every window tab the core has placed, each with its glyph.
     pub tabs: Vec<Tab>,
     pub pulses: Vec<Pulse>,
+    /// Every open terminal, for the frame its pane wears. Empty in a
+    /// snapshot that lists none.
+    pub terminals: Vec<Terminal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,6 +396,30 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
         });
     }
 
+    // The one list a snapshot may be without: it is newer than the rest, and
+    // a pane whose terminal is not listed is drawn as an ordinary one.
+    let mut terminals = Vec::new();
+    if v.get("terminals").is_some() {
+        for (i, t) in list(&v, root, "terminals")?.iter().enumerate() {
+            let path = format!("terminals[{i}]");
+            let shown = text(t, &path, "shown")?;
+            let pane = match t.get("pane") {
+                None => None,
+                Some(_) => {
+                    let name = text(t, &path, "pane")?;
+                    Some(Pane::parse(&name).ok_or(DecodeError::UnknownValue(format!("{path}.pane={name}")))?)
+                }
+            };
+            terminals.push(Terminal {
+                id: text(t, &path, "id")?,
+                title: text(t, &path, "title")?,
+                shown: Shown::parse(&shown).ok_or(DecodeError::UnknownShown(shown))?,
+                text: text(t, &path, "text")?,
+                pane,
+            });
+        }
+    }
+
     Ok(Snapshot {
         rev: int(&v, root, "rev")?,
         now_ms: int(&v, root, "now_ms")?,
@@ -362,5 +430,6 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
         groups,
         tabs,
         pulses,
+        terminals,
     })
 }

@@ -1,0 +1,710 @@
+//! The frame a pane of a split terminal tab wears
+//! (`dev-docs/poltergeist/control-room.md`, 12.6 and 12.6.1; the design's
+//! `06-panes`).
+//!
+//! Three things, each without a window:
+//!
+//!  1. **Whether a pane wears a frame, and which** -- [`drawn`]. Which of
+//!     the three is the core's answer and arrives as `pane` on each of the
+//!     snapshot's `terminals`, with the title, the glyph and the word beside
+//!     it. What is decided here is only whether one is drawn at all, which
+//!     is about where the pane is. The same table as the macOS host's
+//!     `PaneFrame.drawn`, held to the same answers by
+//!     `tools/control-room-hosts-agree.py`.
+//!  2. **Where the frame and the terminal in it go**, in device pixels --
+//!     [`frame_px`] and [`well_px`]. A pane here is a child window, so the
+//!     terminal has to be moved out of the way of its own title; the split
+//!     tree is not told, and still tiles the whole content area.
+//!  3. **What the frame draws** -- [`build`], as the items `scene` draws the
+//!     control room from, for the same painter.
+//!
+//! **What a Windows frame does not have** that the design and the macOS
+//! host do: the corners of the terminal itself are square (a child window
+//! is a rectangle, and cutting one to a shape costs a region per resize),
+//! so a worker's and an ordinary terminal's frame is round at the top and
+//! square at the bottom; a supervisor's is round outside and square
+//! inside. Nothing has a shadow: a scene has no item for one.
+
+use crate::layout::Rect;
+use crate::look::{font, pane, radius, side, space, Rgba, Theme};
+use crate::scene::{self, Face, Item, Part, Piece, Side, Style};
+use crate::snapshot::{Shown, Terminal};
+
+pub use crate::snapshot::Pane as Wears;
+
+/// The English of the word after a pane's name that says what it is; a host
+/// translates it. An ordinary terminal has none.
+pub mod msg {
+    use crate::n_;
+
+    pub const WORKER: &str = n_("Worker");
+}
+
+/// The name, the glyph and the word.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Title {
+    pub name: String,
+    pub shown: Shown,
+    pub word: String,
+}
+
+/// What one pane wears.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Drawn {
+    pub wears: Wears,
+    pub title: Title,
+}
+
+/// Where a pane is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Place {
+    /// `poltergeist-pane-frames`.
+    pub enabled: bool,
+    /// It is in the quick terminal, which is never framed.
+    pub quick_terminal: bool,
+    /// It is the only pane showing in its tab: the tab is not split, or
+    /// this pane is zoomed to fill it.
+    pub alone: bool,
+}
+
+/// What the pane of `terminal` wears at `place`; none when it is drawn as
+/// it was before there were frames.
+///
+/// - A terminal `terminals` (the snapshot's) does not list -- one the core
+///   has not placed yet, or no snapshot at all -- is an ordinary one, under
+///   the name its own pane has (`own_name`), with nothing to say.
+/// - An ordinary terminal alone in its tab wears nothing: the window's tab
+///   already says which it is. A supervisor or a worker wears its frame
+///   even alone.
+pub fn drawn(terminal: Option<&str>, own_name: &str, place: Place, terminals: Option<&[Terminal]>) -> Option<Drawn> {
+    if !place.enabled || place.quick_terminal {
+        return None;
+    }
+    let listed = terminal.and_then(|id| terminals?.iter().find(|t| t.id == id));
+    let drawn = match listed {
+        Some(t) => Drawn {
+            wears: t.pane.unwrap_or(Wears::Plain),
+            title: Title { name: t.title.clone(), shown: t.shown, word: t.text.clone() },
+        },
+        None => Drawn { wears: Wears::Plain, title: Title { name: own_name.to_string(), shown: Shown::None, word: String::new() } },
+    };
+    if drawn.wears == Wears::Plain && place.alone {
+        return None;
+    }
+    Some(drawn)
+}
+
+/// Whether the tab's ground shows between and around its panes: it does as
+/// soon as one pane of it wears a frame. With none framed the panes meet at
+/// the divider, as they always did.
+pub fn ground_shows(panes: &[Option<Drawn>]) -> bool {
+    panes.iter().any(|p| p.is_some())
+}
+
+/// The word after the name that says what the pane is, in English; none
+/// for an ordinary terminal, which says nothing.
+pub fn role_word(wears: Wears) -> Option<&'static str> {
+    match wears {
+        Wears::Supervisor => Some(crate::lend::msg::SUPERVISOR),
+        Wears::Worker => Some(msg::WORKER),
+        Wears::Plain => None,
+    }
+}
+
+// ---------------------------------------------------------------- pixels
+
+/// A rectangle in device pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Px {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl Px {
+    pub fn right(&self) -> i32 {
+        self.x + self.w
+    }
+    pub fn bottom(&self) -> i32 {
+        self.y + self.h
+    }
+}
+
+/// A length of the table's, in device pixels at `scale` to the point. The
+/// same rounding the scene's painter does, so that what is placed and what
+/// is painted meet.
+pub fn len_px(points: f64, scale: f64) -> i32 {
+    (points * scale).round() as i32
+}
+
+/// How thick a worker's line is: half a point, and never less than one
+/// device pixel.
+pub fn line_px(scale: f64) -> i32 {
+    len_px(pane::WORKER_LINE, scale).max(1)
+}
+
+/// Where the frame of the pane in `cell` goes, when the tab's ground shows.
+///
+/// `cell` is the rectangle the split tree gave the pane and `bounds` the
+/// area the tree tiles. The frame keeps half the gap between two frames
+/// clear on every side that faces another pane, and the whole distance to
+/// the window's edge on every side that is the edge of `bounds` -- so two
+/// frames are `between_frames` apart and the outermost are `window_edge`
+/// from the window, at every scale, and the tree is told nothing.
+pub fn frame_px(cell: Px, bounds: Px, scale: f64) -> Px {
+    let half = len_px(space::BETWEEN_FRAMES / 2.0, scale);
+    let edge = len_px(space::WINDOW_EDGE, scale);
+    let left = if cell.x <= bounds.x { edge } else { half };
+    let top = if cell.y <= bounds.y { edge } else { half };
+    let right = if cell.right() >= bounds.right() { edge } else { half };
+    let bottom = if cell.bottom() >= bounds.bottom() { edge } else { half };
+    Px { x: cell.x + left, y: cell.y + top, w: (cell.w - left - right).max(1), h: (cell.h - top - bottom).max(1) }
+}
+
+/// Where the terminal's own window goes inside a frame: under the title,
+/// and inside whatever the frame draws round it.
+pub fn well_px(frame: Px, wears: Wears, scale: f64) -> Px {
+    let (side, top, bottom) = match wears {
+        Wears::Supervisor => {
+            let b = len_px(pane::SUPERVISOR_BORDER, scale);
+            (b, len_px(pane::BAR_HEIGHT, scale), b)
+        }
+        Wears::Worker => {
+            let l = line_px(scale);
+            (l, len_px(pane::BAR_HEIGHT, scale), l)
+        }
+        Wears::Plain => (0, len_px(pane::PLAIN_TITLE_BAND_HEIGHT, scale), 0),
+    };
+    Px { x: frame.x + side, y: frame.y + top, w: (frame.w - 2 * side).max(1), h: (frame.h - top - bottom).max(1) }
+}
+
+// ----------------------------------------------------------------- scene
+
+/// What `build` is told that the pane does not hold.
+pub struct View<'a> {
+    pub theme: &'a Theme,
+    /// Device pixels to the point.
+    pub scale: f64,
+    /// The terminal in the frame has the keyboard.
+    pub focused: bool,
+    /// The ground of the terminal in it: what its title is written on when
+    /// the frame is an ordinary terminal's, and what shows for the moment
+    /// before the terminal's window is over its place.
+    pub well: Rgba,
+}
+
+/// The frame of one pane, in points from the frame's own top left; `frame`
+/// is its size in device pixels (`frame_px`). The terminal's window covers
+/// `well_px` of it; everything else is this.
+pub fn build(frame: Px, drawn: &Drawn, view: &View, tr: &dyn Fn(&str) -> String) -> Vec<Item> {
+    let scale = view.scale.max(0.1);
+    let theme = view.theme;
+    let pt = |px: i32| px as f64 / scale;
+    let (w, h) = (pt(frame.w), pt(frame.h));
+    let whole = Rect { x: 0.0, y: 0.0, w, h };
+    // The terminal's place, from the same arithmetic that places it.
+    let at = well_px(Px { x: 0, y: 0, w: frame.w, h: frame.h }, drawn.wears, scale);
+    let well = Rect { x: pt(at.x), y: pt(at.y), w: pt(at.w), h: pt(at.h) };
+
+    let mut items = Vec::new();
+    let (bar, name_ink, second_ink, name_weight, trouble_ink) = match drawn.wears {
+        Wears::Supervisor => {
+            // A thick border whose top edge is the title bar; the edge
+            // darkens (lightens, in the dark) while the terminal in it has
+            // the keyboard.
+            let bezel = scene::over(theme.window_base, theme.supervisor_bezel, 1.0);
+            let edge = if view.focused { theme.supervisor_edge_focused } else { theme.supervisor_edge };
+            items.push(Item::Round { rect: whole, radius: radius::SUPERVISOR_OUTER, color: bezel, edge: Some(scene::over(bezel, edge, 1.0)) });
+            let x = pane::SUPERVISOR_BORDER + pane::SUPERVISOR_BAR_PADDING_X;
+            (
+                Rect { x, y: 0.0, w: (w - 2.0 * x).max(0.0), h: pane::BAR_HEIGHT },
+                theme.text,
+                theme.text_secondary,
+                font::WEIGHT_EMPHASIS,
+                theme.problem_text_on_supervisor_bar,
+            )
+        }
+        Wears::Worker => {
+            // The band is the frame's own colour, so the frame is drawn in
+            // it and the terminal's ground laid over the rest.
+            let edge = scene::over(theme.worker_band, theme.worker_edge, scene::hairline(scale).1);
+            items.push(Item::Round { rect: whole, radius: radius::WORKER, color: theme.worker_band, edge: Some(edge) });
+            (
+                Rect { x: pane::BAR_PADDING_X, y: 0.0, w: (w - 2.0 * pane::BAR_PADDING_X).max(0.0), h: pane::BAR_HEIGHT },
+                theme.terminal_bold,
+                theme.terminal_dim,
+                font::WEIGHT_EMPHASIS,
+                theme.problem_text_on_worker_band,
+            )
+        }
+        Wears::Plain => {
+            // No line and no band: the terminal's ground, all of it.
+            items.push(Item::Round { rect: whole, radius: radius::PLAIN, color: view.well, edge: None });
+            (
+                Rect {
+                    x: pane::PLAIN_TITLE_INSET_X,
+                    y: 0.0,
+                    w: (w - 2.0 * pane::PLAIN_TITLE_INSET_X).max(0.0),
+                    h: pane::PLAIN_TITLE_BAND_HEIGHT,
+                },
+                theme.terminal_dim,
+                theme.terminal_dim,
+                font::WEIGHT_BODY,
+                theme.problem_text_on_terminal,
+            )
+        }
+    };
+    // The terminal's ground, for the moment before its window is there.
+    items.push(Item::Fill { rect: well, color: view.well });
+
+    // The name and what it is on the left; its state on the right. Words
+    // that are not there are not put in the line at all.
+    let ui = |color: Rgba, weight: f64| Style { size: font::BODY, weight, face: Face::Ui, color };
+    let mut parts = Vec::new();
+    if scene::draws(&drawn.title.name) {
+        parts.push(Part {
+            piece: Piece::Words {
+                text: drawn.title.name.clone(),
+                style: Style { size: font::BODY, weight: name_weight, face: Face::Mono, color: name_ink },
+            },
+            side: Side::Lead,
+            gap: 0.0,
+        });
+    }
+    if let Some(role) = role_word(drawn.wears) {
+        parts.push(Part {
+            piece: Piece::Words { text: tr(role), style: ui(second_ink, font::WEIGHT_BODY) },
+            side: Side::Lead,
+            gap: pane::NAME_ROLE_GAP,
+        });
+    }
+    let shown = drawn.title.shown;
+    if shown != Shown::None {
+        parts.push(Part {
+            piece: Piece::Glyph { shown, color: scene::glyph_color(theme, shown), size: side::GLYPH, pulses: false },
+            side: Side::Trail,
+            gap: pane::BAR_GAP,
+        });
+    }
+    if scene::draws(&drawn.title.word) {
+        let ink = match shown {
+            Shown::NeedsYou | Shown::DoneUnseen => theme.attention_text,
+            // Where the word is not red is the table's to say.
+            Shown::Trouble => trouble_ink,
+            Shown::Working | Shown::None => second_ink,
+        };
+        parts.push(Part {
+            piece: Piece::Words { text: drawn.title.word.clone(), style: ui(ink, font::WEIGHT_EMPHASIS) },
+            side: Side::Trail,
+            gap: side::STATUS_WORD_GAP,
+        });
+    }
+    if !parts.is_empty() {
+        items.push(Item::Line { rect: bar, parts });
+    }
+    items
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::look;
+    use crate::snapshot;
+
+    const FIXTURE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/poltergeist/testdata/control_snapshot.json"));
+
+    fn terminals() -> Vec<Terminal> {
+        snapshot::decode(FIXTURE).unwrap().terminals
+    }
+
+    const SPLIT: Place = Place { enabled: true, quick_terminal: false, alone: false };
+    const ALONE: Place = Place { enabled: true, quick_terminal: false, alone: true };
+
+    const SUPERVISOR: &str = "0x00000000000000a1";
+    const WORKER: &str = "0x00000000000000b1";
+    const WAITING_SHELL: &str = "0x00000000000000c1";
+    const SHELL: &str = "0x00000000000000c2";
+
+    fn title(name: &str, shown: Shown, word: &str) -> Title {
+        Title { name: name.to_string(), shown, word: word.to_string() }
+    }
+
+    fn wears(id: &str, place: Place) -> Option<Wears> {
+        drawn(Some(id), "", place, Some(&terminals())).map(|d| d.wears)
+    }
+
+    // ---- which of the three (the same cases as PaneFrameTests.swift)
+
+    #[test]
+    fn the_fixture_says_which_frame_every_terminal_wears() {
+        use Wears::*;
+        let all: Vec<Option<Wears>> = terminals().iter().map(|t| t.pane).collect();
+        let want = [Supervisor, Supervisor, Supervisor, Supervisor, Supervisor, Supervisor, Supervisor, Worker, Worker, Worker, Plain, Plain];
+        assert_eq!(all, want.map(Some));
+    }
+
+    #[test]
+    fn a_pane_wears_the_frame_the_core_names_for_its_terminal() {
+        assert_eq!(wears(SUPERVISOR, SPLIT), Some(Wears::Supervisor));
+        assert_eq!(wears(WORKER, SPLIT), Some(Wears::Worker));
+        assert_eq!(wears(SHELL, SPLIT), Some(Wears::Plain));
+    }
+
+    #[test]
+    fn the_title_is_the_terminals_own_name_glyph_and_word() {
+        let all = terminals();
+        let b = drawn(Some(WORKER), "not this", SPLIT, Some(&all)).unwrap();
+        assert_eq!(b.title, title("web-app worker", Shown::NeedsYou, "等批准"));
+        // Not the first one listed, and not another terminal's.
+        let c = drawn(Some(SHELL), "not this", SPLIT, Some(&all)).unwrap();
+        assert_eq!(c.title, title("zsh", Shown::None, ""));
+    }
+
+    #[test]
+    fn an_ordinary_terminal_that_waits_says_so() {
+        let c = drawn(Some(WAITING_SHELL), "", SPLIT, Some(&terminals()));
+        assert_eq!(c, Some(Drawn { wears: Wears::Plain, title: title("zsh — ~/work", Shown::NeedsYou, "等批准") }));
+    }
+
+    // ---- alone in its tab
+
+    #[test]
+    fn an_ordinary_terminal_alone_in_its_tab_wears_nothing() {
+        assert_eq!(drawn(Some(SHELL), "zsh", ALONE, Some(&terminals())), None);
+    }
+
+    #[test]
+    fn a_supervisor_wears_its_frame_even_alone() {
+        assert_eq!(wears(SUPERVISOR, ALONE), Some(Wears::Supervisor));
+    }
+
+    #[test]
+    fn a_worker_wears_its_frame_even_alone() {
+        assert_eq!(wears(WORKER, ALONE), Some(Wears::Worker));
+    }
+
+    // ---- off, and the quick terminal
+
+    #[test]
+    fn with_the_setting_off_nothing_is_framed() {
+        for alone in [false, true] {
+            let place = Place { enabled: false, quick_terminal: false, alone };
+            for id in [SUPERVISOR, WORKER, SHELL] {
+                assert_eq!(drawn(Some(id), "zsh", place, Some(&terminals())), None, "{id} alone={alone}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_quick_terminal_is_never_framed() {
+        let place = Place { enabled: true, quick_terminal: true, alone: false };
+        for id in [SUPERVISOR, WORKER, SHELL] {
+            assert_eq!(drawn(Some(id), "zsh", place, Some(&terminals())), None, "{id}");
+        }
+    }
+
+    // ---- a terminal the snapshot does not list
+
+    #[test]
+    fn a_terminal_the_core_has_not_listed_is_an_ordinary_one_under_its_own_name() {
+        let all = terminals();
+        let plain = Some(Drawn { wears: Wears::Plain, title: title("fish", Shown::None, "") });
+        assert_eq!(drawn(Some("0x00000000000000ff"), "fish", SPLIT, Some(&all)), plain);
+        assert_eq!(drawn(None, "fish", SPLIT, Some(&all)), plain);
+        assert_eq!(drawn(Some(SUPERVISOR), "fish", SPLIT, None), plain);
+        // And alone, that is nothing.
+        assert_eq!(drawn(None, "fish", ALONE, Some(&all)), None);
+    }
+
+    #[test]
+    fn a_snapshot_from_before_the_core_said_which_frame_draws_an_ordinary_one() {
+        let old = FIXTURE.replace("\"pane\": \"supervisor\",", "").replace("\"pane\": \"worker\",", "").replace("\"pane\": \"plain\",", "");
+        let all = snapshot::decode(&old).unwrap().terminals;
+        assert!(all.iter().all(|t| t.pane.is_none()));
+        let d = drawn(Some(SUPERVISOR), "", SPLIT, Some(&all));
+        assert_eq!(d, Some(Drawn { wears: Wears::Plain, title: title("web-app", Shown::NeedsYou, "等批准") }));
+    }
+
+    #[test]
+    fn a_snapshot_that_lists_no_terminals_at_all_still_reads() {
+        let v = crate::json::parse(FIXTURE).unwrap();
+        assert!(v.get("terminals").is_some());
+        // Cut the list out by name: what an older core wrote.
+        let at = FIXTURE.find("\"terminals\"").unwrap();
+        let end = FIXTURE[at..].find("\n  ],").unwrap() + at + "\n  ],".len();
+        let without = format!("{}{}", &FIXTURE[..at], &FIXTURE[end..]);
+        let read = snapshot::decode(&without).unwrap();
+        assert!(read.terminals.is_empty());
+        assert_eq!(read.groups.len(), 8);
+    }
+
+    #[test]
+    fn a_frame_the_host_does_not_know_is_an_error_not_an_ordinary_terminal() {
+        let odd = FIXTURE.replacen("\"pane\": \"worker\"", "\"pane\": \"stacked\"", 1);
+        assert!(matches!(snapshot::decode(&odd), Err(snapshot::DecodeError::UnknownValue(_))));
+    }
+
+    // ---- the ground
+
+    #[test]
+    fn the_ground_shows_as_soon_as_one_pane_is_framed() {
+        let framed = Some(Drawn { wears: Wears::Worker, title: title("w", Shown::None, "") });
+        assert!(ground_shows(&[None, framed.clone()]));
+        assert!(ground_shows(&[framed]));
+        assert!(!ground_shows(&[None]));
+        assert!(!ground_shows(&[None, None]));
+        assert!(!ground_shows(&[]));
+    }
+
+    #[test]
+    fn an_ordinary_terminal_has_no_word_for_what_it_is() {
+        assert_eq!(role_word(Wears::Plain), None);
+        assert!(role_word(Wears::Supervisor).is_some());
+        assert!(role_word(Wears::Worker).is_some());
+        assert_ne!(role_word(Wears::Supervisor), role_word(Wears::Worker));
+    }
+
+    // ---- pixels
+
+    const SCALES: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
+
+    /// The design's `06` layout as the split tree would tile a content area
+    /// `w` by `h` at `x, y`: a column on the left, and on the right one
+    /// pane over two side by side.
+    fn cells(b: Px) -> [Px; 4] {
+        let (lw, th) = (b.w / 2, b.h * 5 / 9);
+        let rw = b.w - lw;
+        [
+            Px { x: b.x, y: b.y, w: lw, h: b.h },
+            Px { x: b.x + lw, y: b.y, w: rw, h: th },
+            Px { x: b.x + lw, y: b.y + th, w: rw / 2, h: b.h - th },
+            Px { x: b.x + lw + rw / 2, y: b.y + th, w: rw - rw / 2, h: b.h - th },
+        ]
+    }
+
+    #[test]
+    fn two_frames_are_the_tables_gap_apart_and_the_outermost_its_edge_from_the_window_at_every_scale() {
+        for scale in SCALES {
+            let b = Px { x: 0, y: len_px(36.0, scale), w: len_px(1440.0, scale) + 1, h: len_px(840.0, scale) + 3 };
+            let [left, top, low_left, low_right] = cells(b).map(|c| frame_px(c, b, scale));
+            let gap = len_px(space::BETWEEN_FRAMES, scale);
+            let edge = len_px(space::WINDOW_EDGE, scale);
+            // Whole pixels, and the same number everywhere.
+            assert_eq!(gap, 2 * len_px(space::BETWEEN_FRAMES / 2.0, scale), "at {scale}");
+            assert_eq!(top.x - left.right(), gap, "at {scale}");
+            assert_eq!(low_left.x - left.right(), gap, "at {scale}");
+            assert_eq!(low_right.x - low_left.right(), gap, "at {scale}");
+            assert_eq!(low_left.y - top.bottom(), gap, "at {scale}");
+            assert_eq!(low_right.y - top.bottom(), gap, "at {scale}");
+            assert_eq!(left.x - b.x, edge, "at {scale}");
+            assert_eq!(left.y - b.y, edge, "at {scale}");
+            assert_eq!(b.bottom() - left.bottom(), edge, "at {scale}");
+            assert_eq!(b.right() - top.right(), edge, "at {scale}");
+            assert_eq!(top.y - b.y, edge, "at {scale}");
+            assert_eq!(b.right() - low_right.right(), edge, "at {scale}");
+            assert_eq!(b.bottom() - low_right.bottom(), edge, "at {scale}");
+            assert_eq!(b.bottom() - low_left.bottom(), edge, "at {scale}");
+        }
+    }
+
+    #[test]
+    fn a_pane_alone_keeps_the_edge_on_all_four_sides() {
+        for scale in SCALES {
+            let b = Px { x: 0, y: 40, w: 1001, h: 701 };
+            let f = frame_px(b, b, scale);
+            let edge = len_px(space::WINDOW_EDGE, scale);
+            assert_eq!((f.x - b.x, f.y - b.y, b.right() - f.right(), b.bottom() - f.bottom()), (edge, edge, edge, edge), "at {scale}");
+        }
+    }
+
+    #[test]
+    fn the_terminal_sits_under_the_title_and_inside_what_its_frame_draws() {
+        for scale in SCALES {
+            let f = Px { x: 13, y: 57, w: 701, h: 523 };
+            let bar = len_px(pane::BAR_HEIGHT, scale);
+            let b = len_px(pane::SUPERVISOR_BORDER, scale);
+            let s = well_px(f, Wears::Supervisor, scale);
+            assert_eq!((s.x - f.x, s.y - f.y, f.right() - s.right(), f.bottom() - s.bottom()), (b, bar, b, b), "supervisor at {scale}");
+            let l = line_px(scale);
+            assert!(l >= 1);
+            let k = well_px(f, Wears::Worker, scale);
+            assert_eq!((k.x - f.x, k.y - f.y, f.right() - k.right(), f.bottom() - k.bottom()), (l, bar, l, l), "worker at {scale}");
+            let band = len_px(pane::PLAIN_TITLE_BAND_HEIGHT, scale);
+            let p = well_px(f, Wears::Plain, scale);
+            assert_eq!((p.x - f.x, p.y - f.y, f.right() - p.right(), f.bottom() - p.bottom()), (0, band, 0, 0), "plain at {scale}");
+        }
+        // The title is 32 points whatever is in it: 32, 40, 48 pixels.
+        assert_eq!([1.0, 1.25, 1.5].map(|s| len_px(pane::BAR_HEIGHT, s)), [32, 40, 48]);
+        assert_eq!([1.0, 1.25, 1.5].map(|s| len_px(pane::SUPERVISOR_BORDER, s)), [4, 5, 6]);
+        assert_eq!([1.0, 1.25, 1.5, 2.0].map(line_px), [1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn a_cell_too_small_for_its_frame_still_gets_a_window_with_a_size() {
+        for w in Wears::ALL {
+            let f = frame_px(Px { x: 0, y: 0, w: 3, h: 3 }, Px { x: 0, y: 0, w: 100, h: 100 }, 1.5);
+            let t = well_px(f, w, 1.5);
+            assert!(f.w >= 1 && f.h >= 1 && t.w >= 1 && t.h >= 1, "{w:?}");
+        }
+    }
+
+    // ---- what a frame draws
+
+    fn same(s: &str) -> String {
+        s.to_string()
+    }
+
+    fn view(dark: bool, scale: f64, focused: bool) -> View<'static> {
+        View { theme: look::theme(dark), scale, focused, well: Rgba { r: 1, g: 2, b: 3, a: 1.0 } }
+    }
+
+    fn a(wears: Wears, name: &str, shown: Shown, word: &str) -> Drawn {
+        Drawn { wears, title: title(name, shown, word) }
+    }
+
+    fn words(items: &[Item]) -> Vec<String> {
+        scene::all_text(items).into_iter().map(str::to_string).collect()
+    }
+
+    fn fills(items: &[Item]) -> Vec<(Rect, Rgba)> {
+        items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Fill { rect, color } => Some((*rect, *color)),
+                Item::Round { .. } | Item::Text { .. } | Item::Line { .. } | Item::Block { .. } => None,
+            })
+            .collect()
+    }
+
+    fn first_round(items: &[Item]) -> (Rect, f64, Rgba, Option<Rgba>) {
+        match &items[0] {
+            Item::Round { rect, radius, color, edge } => (*rect, *radius, *color, *edge),
+            other => panic!("a frame starts with its shape, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_title_says_the_name_what_it_is_and_its_state_and_an_ordinary_one_not_what_it_is() {
+        let f = Px { x: 0, y: 0, w: 700, h: 500 };
+        let v = view(false, 1.0, false);
+        assert_eq!(words(&build(f, &a(Wears::Supervisor, "web-app", Shown::NeedsYou, "等批准"), &v, &same)), ["web-app", "Supervisor", "等批准"]);
+        assert_eq!(words(&build(f, &a(Wears::Worker, "api", Shown::Trouble, "出错"), &v, &same)), ["api", "Worker", "出错"]);
+        assert_eq!(words(&build(f, &a(Wears::Plain, "zsh", Shown::None, ""), &v, &same)), ["zsh"]);
+        // The word for what it is goes through the host's translation.
+        let zh = |s: &str| if s == "Worker" { "worker".to_string() } else { s.to_string() };
+        assert_eq!(words(&build(f, &a(Wears::Worker, "api", Shown::None, ""), &v, &zh)), ["api", "worker"]);
+    }
+
+    #[test]
+    fn nothing_empty_is_ever_handed_to_a_host_to_draw() {
+        let f = Px { x: 0, y: 0, w: 700, h: 500 };
+        for wears in Wears::ALL {
+            for (name, shown, word) in [("", Shown::None, ""), ("x", Shown::Working, ""), ("", Shown::NeedsYou, "等批准")] {
+                let items = build(f, &a(wears, name, shown, word), &view(true, 1.25, false), &same);
+                assert!(scene::all_text(&items).iter().all(|t| scene::draws(t)), "{wears:?} {name:?} {word:?}");
+            }
+        }
+        // An ordinary terminal with no name and no state has no title line.
+        let bare = build(f, &a(Wears::Plain, "", Shown::None, ""), &view(false, 1.0, false), &same);
+        assert!(bare.iter().all(|i| !matches!(i, Item::Line { .. })));
+    }
+
+    #[test]
+    fn the_ground_laid_for_the_terminal_is_exactly_where_the_terminal_is_put() {
+        for scale in SCALES {
+            for wears in Wears::ALL {
+                let f = Px { x: 40, y: 90, w: 703, h: 511 };
+                let items = build(f, &a(wears, "n", Shown::None, ""), &view(false, scale, false), &same);
+                let (rect, color) = fills(&items)[0];
+                assert_eq!(color, view(false, scale, false).well);
+                // As the painter turns points into pixels, from the frame's corner.
+                let px = |v: f64| (v * scale).round() as i32;
+                let painted = Px { x: f.x + px(rect.x), y: f.y + px(rect.y), w: px(rect.x + rect.w) - px(rect.x), h: px(rect.y + rect.h) - px(rect.y) };
+                assert_eq!(painted, well_px(f, wears, scale), "{wears:?} at {scale}");
+            }
+        }
+    }
+
+    #[test]
+    fn each_frame_has_its_own_shape_and_the_supervisors_edge_changes_with_the_keyboard() {
+        let f = Px { x: 0, y: 0, w: 700, h: 500 };
+        let d = |w| a(w, "n", Shown::None, "");
+        for dark in [false, true] {
+            let theme = look::theme(dark);
+            let v = view(dark, 1.0, false);
+            let (rect, r, color, edge) = first_round(&build(f, &d(Wears::Supervisor), &v, &same));
+            assert_eq!((rect.w, rect.h, r), (700.0, 500.0, radius::SUPERVISOR_OUTER));
+            assert_eq!(color, scene::over(theme.window_base, theme.supervisor_bezel, 1.0));
+            let (_, _, _, focused) = first_round(&build(f, &d(Wears::Supervisor), &view(dark, 1.0, true), &same));
+            assert_ne!(edge, focused, "dark={dark}");
+            assert_eq!(focused, Some(scene::over(color, theme.supervisor_edge_focused, 1.0)));
+
+            let (_, r, color, edge) = first_round(&build(f, &d(Wears::Worker), &v, &same));
+            assert_eq!((r, color), (radius::WORKER, theme.worker_band));
+            assert!(edge.is_some());
+            // A worker's does not change with the keyboard.
+            assert_eq!(build(f, &d(Wears::Worker), &v, &same), build(f, &d(Wears::Worker), &view(dark, 1.0, true), &same));
+
+            // An ordinary terminal's is its own ground, with no line.
+            let (_, r, color, edge) = first_round(&build(f, &d(Wears::Plain), &v, &same));
+            assert_eq!((r, color, edge), (radius::PLAIN, v.well, None));
+        }
+    }
+
+    #[test]
+    fn a_red_word_is_red_only_where_the_table_says() {
+        let f = Px { x: 0, y: 0, w: 700, h: 500 };
+        let ink = |wears: Wears, dark: bool| -> Rgba {
+            let items = build(f, &a(wears, "n", Shown::Trouble, "出错"), &view(dark, 1.0, false), &same);
+            items
+                .iter()
+                .find_map(|i| match i {
+                    Item::Line { parts, .. } => parts.iter().find_map(|p| match &p.piece {
+                        Piece::Words { text, style } if text == "出错" => Some(style.color),
+                        Piece::Words { .. } | Piece::Glyph { .. } => None,
+                    }),
+                    Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => None,
+                })
+                .unwrap()
+        };
+        for dark in [false, true] {
+            let t = look::theme(dark);
+            assert_eq!(ink(Wears::Supervisor, dark), t.problem_text_on_supervisor_bar);
+            assert_eq!(ink(Wears::Worker, dark), t.problem_text_on_worker_band);
+            assert_eq!(ink(Wears::Plain, dark), t.problem_text_on_terminal);
+        }
+        // Which is not one colour three times, in the dark.
+        assert_ne!(ink(Wears::Worker, true), ink(Wears::Plain, true));
+    }
+
+    #[test]
+    fn nothing_in_a_frame_moves_so_no_clock_runs_for_it() {
+        let f = Px { x: 0, y: 0, w: 700, h: 500 };
+        for wears in Wears::ALL {
+            let items = build(f, &a(wears, "n", Shown::NeedsYou, "等批准"), &view(false, 1.0, false), &same);
+            let pulses = items.iter().any(|i| match i {
+                Item::Line { parts, .. } => parts.iter().any(|p| matches!(&p.piece, Piece::Glyph { pulses: true, .. })),
+                Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => false,
+            });
+            assert!(!pulses, "{wears:?}");
+        }
+    }
+
+    #[test]
+    fn nothing_is_set_below_the_smallest_size() {
+        let f = Px { x: 0, y: 0, w: 700, h: 500 };
+        for wears in Wears::ALL {
+            let items = build(f, &a(wears, "n", Shown::Trouble, "出错"), &view(false, 1.0, false), &same);
+            for item in &items {
+                if let Item::Line { parts, .. } = item {
+                    for p in parts {
+                        if let Piece::Words { style, .. } = &p.piece {
+                            assert!(style.size >= font::MIN);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -640,6 +640,10 @@ pub struct WindowState {
     /// puts its window while the control room's tab is in front. With any
     /// other tab in front this is not looked at -- see `shown_on_loan`.
     pub lent: Option<Lent>,
+    /// The frames round the panes of the tab in front, as the last layout
+    /// left them (`pane_frames.rs`): what the frame window paints where its
+    /// panes are not, and what a change of the snapshot is compared with.
+    pub pane_frames: crate::pane_frames::Frames,
 }
 
 /// One pane on loan to the control room.
@@ -716,6 +720,7 @@ impl WindowState {
             last_pane_cwd,
             last_layout,
             lent,
+            pane_frames,
         } = self;
         let listed: Vec<String> = tabs
             .iter()
@@ -724,7 +729,7 @@ impl WindowState {
         let active_id = tabs.get(*active).map(|t| t.id.0).unwrap_or(0);
         format!(
             "frame=0x{:x} id={} tabs=[{}] active={} n={} panes={} room={} lent={} ops={} min={}x{} max={}x{} \
-             prefullscreen={} scale={:.2} initial={} lastcwd={} lastlayout={}",
+             prefullscreen={} scale={:.2} initial={} lastcwd={} frames={} lastlayout={}",
             frame,
             id,
             listed.join(","),
@@ -764,6 +769,18 @@ impl WindowState {
             match last_pane_cwd {
                 Some(c) => c.as_str(),
                 None => "none",
+            },
+            // The frames round the panes of the tab in front: `none` when
+            // nothing there is framed, otherwise each showing pane and the
+            // frame it wears (`7:supervisor,9:plain`).
+            match pane_frames.ground {
+                true => pane_frames
+                    .panes
+                    .iter()
+                    .map(|p| format!("{}:{}", p.pane, p.drawn.as_ref().map_or("-", |d| d.wears.name())))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                false => "none".to_string(),
             },
             // Rendered whole rather than summarised, for the same reason the
             // tab list is: this is the value the per-pane layout lines are
@@ -1776,6 +1793,7 @@ pub(crate) fn add_window(frame: HWND) {
             last_pane_cwd: None,
             last_layout: None,
             lent: None,
+            pane_frames: Default::default(),
         });
         Some(ws.len())
     });
@@ -2082,6 +2100,9 @@ pub fn content_bounds(frame: HWND, sh: i32) -> Option<TreeRect> {
 /// `STRIP_H` is added and subtracted here. When the strip becomes a drawn,
 /// draggable thing, none of the tree code changes.
 pub fn layout(frame: HWND) {
+    // Which terminal each pane is, and whether panes wear frames at all:
+    // asked of the core before the lock is taken, not under it.
+    let asked = crate::pane_frames::Asked::ask(frame);
     // Pure work under the lock, Windows calls after it: `SetWindowPos` sends
     // WM_SIZE back into this thread, which takes the same lock.
     #[allow(clippy::type_complexity)]
@@ -2121,6 +2142,9 @@ pub fn layout(frame: HWND) {
             (w >= 1.0 && h >= 1.0).then(|| TreeRect::new(bounds.x + px(side.x + t.x), bounds.y + px(side.y + t.y), w, h))
         });
         let mut lent_placed: Option<HWND> = None;
+        // The frames of the tab in front; none when that is not a
+        // terminal's tab.
+        let mut frames = crate::pane_frames::Frames::default();
         // **This window's tabs, not every tab in the process.** While there
         // was one window the two were the same list, and iterating all of
         // them was correct by accident. With two, the accident becomes a
@@ -2162,10 +2186,28 @@ pub fn layout(frame: HWND) {
                 continue;
             }
             let laid = term.tree.layout(bounds);
+            // **A pane that wears a frame is moved out of its title's way.**
+            // The tree still tiles the whole of `bounds`; where each pane's
+            // window goes inside the cell the tree gave it is
+            // `polter_control_room::pane`, and with nothing framed that is
+            // the cell itself.
+            let showing: Vec<(PaneId, TreeRect, String)> = laid
+                .iter()
+                .filter_map(|(id, at)| {
+                    let cell = at.rect()?;
+                    let own = term.panes.iter().find(|p| p.id == *id).and_then(|p| p.title.clone());
+                    Some((*id, cell, own.unwrap_or_else(|| tab.title.clone())))
+                })
+                .collect();
+            let (worked_out, windows) = asked.work_out(&showing, bounds, win.scale.max(0.1));
+            frames = worked_out;
             for p in term.panes.iter() {
                 let hw = HWND(p.hwnd as *mut c_void);
                 match laid.iter().find(|(id, _)| *id == p.id) {
-                    Some((_, Placement::Visible(r))) => place.push((p.id, hw, *r)),
+                    Some((_, Placement::Visible(r))) => {
+                        let at = windows.iter().find(|(id, _)| *id == p.id).map_or(*r, |(_, w)| *w);
+                        place.push((p.id, hw, at))
+                    }
                     Some((_, Placement::Hidden)) => hide.push((p.id, hw)),
 
                     // **Absent is not the same as hidden**, and the previous
@@ -2232,6 +2274,7 @@ pub fn layout(frame: HWND) {
         };
         let shape_changed = win.last_layout.as_deref() != Some(shape.as_str());
         win.last_layout = Some(shape);
+        win.pane_frames = frames;
 
         (place, hide, orphans, shape_changed, room, lent_placed)
     };
@@ -5078,6 +5121,9 @@ fn focus_verdict(frame: HWND, want: PaneId) -> (bool, bool) {
 }
 
 pub fn focus_active(frame: HWND) {
+    // A supervisor's frame says whether the keyboard is in it, and every
+    // way the keyboard moves between panes ends here.
+    crate::pane_frames::repaint(frame);
     // What is in front, as an owned answer: the guard must be gone before
     // any window call below.
     enum Target {

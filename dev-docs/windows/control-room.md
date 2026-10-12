@@ -513,6 +513,13 @@ mac 上能验的只有 `polter-control-room` 的测试、两道闸和交叉编�
     `IsSelected` 只有选中的那个为真；**任何一行下面都没有子节点、没有 Invoke**；对另一项调 `Select`：日志出
     `selected Some("…")`。然后切到终端标签页用中文输入法打一个词：组字正常。
 
+## 11. 普通终端标签页的三种分屏框
+
+不在总控台里，但用的是总控台的规则 crate 与画手，所以记在这里一句：做法、与 mac 不一样的地方、动了哪些
+文件、14 步真机清单，都在 `dev-docs/poltergeist/control-room.md` §12.6.3。一句话的版本：分屏树不知道有框，
+`tabs::layout` 把每格的子窗口挪到标题下面，父窗口在子窗口让出来的地方画框（`pane_frames.rs`）；终端自己的
+角是方的，没有投影，没有定时器。**没有在真机上跑过。**
+
 ## 已经有的
 
 `windows/control-room`（零依赖，`cargo test -p polter-control-room` 在任何机器上都能跑）：

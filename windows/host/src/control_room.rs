@@ -1018,6 +1018,21 @@ fn paint(hwnd: HWND) {
     }
 }
 
+/// Paint a scene that is not the control room's own: the frames round the
+/// panes of a split tab (`pane_frames.rs`), into `dc`, with the scene's
+/// origin at `ox, oy` in its pixels. Here because this file is the one
+/// place words are handed to the system (`draw_text`).
+///
+/// # Safety
+/// `dc` must be a live device context.
+pub(crate) unsafe fn paint_scene(dc: HDC, scale: f64, ox: i32, oy: i32, items: &[Item]) {
+    let mut fonts = Fonts { dpi: (scale * 96.0).round() as i32, made: Vec::new() };
+    unsafe {
+        SetBkMode(dc, TRANSPARENT);
+        paint_items(dc, Px { scale, ox, oy }, items, &mut fonts, source::clock());
+    }
+}
+
 unsafe fn fill_rect(dc: HDC, r: &RECT, color: Rgba) {
     unsafe {
         let brush = CreateSolidBrush(rgb(color));
@@ -1197,14 +1212,30 @@ unsafe fn paint_piece(dc: HDC, at: Px, piece: &Piece, r: RECT, fonts: &mut Fonts
 /// One line of parts: the leading ones from the left, the trailing ones
 /// from the right, and the rest in what is left between them.
 unsafe fn paint_line(dc: HDC, at: Px, r: RECT, parts: &[Part], fonts: &mut Fonts, t: f64) {
+    // Where the trailing parts begin: a leading part stops there. In a
+    // line as wide as the list's rows it never gets that far; in the title
+    // of a narrow pane a long name would otherwise be written over the
+    // pane's state. One that would is cut short with an ellipsis, and one
+    // with no room at all is not drawn.
+    let mut limit = r.right;
+    for part in parts {
+        match part.side {
+            Side::Trail => limit -= unsafe { part_width(dc, at, part, fonts) } + at.len(part.gap),
+            Side::Lead => {}
+            Side::Rest => {}
+        }
+    }
     let mut lead = r.left;
     for part in parts {
         match part.side {
             Side::Lead => {
                 lead += at.len(part.gap);
                 let w = unsafe { part_width(dc, at, part, fonts) };
-                let box_ = RECT { left: lead, top: r.top, right: lead + w, bottom: r.bottom };
-                unsafe { paint_piece(dc, at, &part.piece, box_, fonts, t, false) };
+                let right = (lead + w).min(limit);
+                if right > lead {
+                    let box_ = RECT { left: lead, top: r.top, right, bottom: r.bottom };
+                    unsafe { paint_piece(dc, at, &part.piece, box_, fonts, t, right < lead + w) };
+                }
                 lead += w;
             }
             Side::Trail => {}

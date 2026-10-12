@@ -39,7 +39,12 @@ breathes among one window's tabs, for the same fronts, and in a window that
 holds none; every window tab the snapshot lists -- its glyph, whether that
 glyph is drawn on a tab at all, and whether it breathes, for the same
 fronts -- a tab it does not list, and for each of the five glyphs whether a
-window tab draws it; which rows are marked seen by being looked at, and
+window tab draws it; which frame the pane of every terminal wears
+(`PaneFrame.drawn` and `pane::drawn`) -- every terminal the snapshot lists,
+one it does not and none at all, in a split tab, alone in its tab, with the
+setting off and in the quick terminal: the frame, the name, the glyph and
+the word -- whether the tab's ground then shows, and the English word for
+what each frame is; which rows are marked seen by being looked at, and
 after how long; the panel's size and every rectangle in it -- a waiting row's
 height follows what it waits on, by the nominal count of lines; how what each
 waiting row waits on is fitted (the lines each step gets, the steps said only
@@ -64,6 +69,10 @@ where the arrow keys take the selection from every row.
     told only the tab; the crate is told the window too. Each front is
     asked with the window that tab is in, which is the only way a host asks.
   * Translated text. Both sides print the English they start from.
+  * Where a pane's frame and the terminal in it go, and what the frame
+    draws. On Windows that is arithmetic in the crate (`pane::frame_px`,
+    `well_px`, `build`); on macOS it is SwiftUI's layout, with nothing to
+    print. The crate's own tests hold it.
   * Anything drawn. This compares numbers and strings, not pixels.
   * That the app links these files the way the package does. It is the same
     source; it is not the same binary.
@@ -94,6 +103,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLending.swift",
+    "macos/Sources/Features/ControlRoom/PaneFrame.swift",
     "macos/Sources/Features/Terminal/TabAccessory.swift",
 ]
 CRATE = "windows/control-room"
@@ -227,6 +237,38 @@ let unlisted = ControlRoomPulse.status(
 print("tab_status tab=unlisted showing=- shown=\(shownName(unlisted.shown)) pulses=\(unlisted.pulses)")
 for s in ControlRoomList.Shown.allCases {
     print("tab_draws shown=\(shownName(s)) draws=\(TabAccessory.drawsOnWindowTab(s))")
+}
+
+// The frame each pane of a split terminal tab wears.
+let terminals = snapshot.terminals ?? []
+var paneIDs: [String?] = terminals.map { $0.id }
+paneIDs.append("0x00000000000000fe")
+paneIDs.append(nil)
+print("panes \(terminals.count)")
+let panePlaces: [(String, PaneFrame.Place)] = [
+    ("split", .init(enabled: true, quickTerminal: false, alone: false)),
+    ("alone", .init(enabled: true, quickTerminal: false, alone: true)),
+    ("off", .init(enabled: false, quickTerminal: false, alone: false)),
+    ("quick", .init(enabled: true, quickTerminal: true, alone: false)),
+]
+for (placeName, place) in panePlaces {
+    var all: [PaneFrame.Drawn?] = []
+    for id in paneIDs {
+        let d = PaneFrame.drawn(terminal: id, ownName: "own", at: place, in: terminals)
+        if let d {
+            print("pane place=\(placeName) terminal=\(id ?? "-") wears=\(d.wears.rawValue) "
+                + "name=\(quote(d.title.name)) shown=\(shownName(d.title.shown)) word=\(quote(d.title.word))")
+        } else {
+            print("pane place=\(placeName) terminal=\(id ?? "-") wears=-")
+        }
+        all.append(d)
+    }
+    print("pane_ground place=\(placeName) shows=\(PaneFrame.groundShows(all))")
+}
+let noSnapshot = PaneFrame.drawn(terminal: "0x00000000000000a1", ownName: "own", at: panePlaces[0].1, in: nil)
+print("pane no-snapshot wears=\(noSnapshot?.wears.rawValue ?? "-") name=\(quote(noSnapshot?.title.name ?? ""))")
+for w in PaneFrame.Kind.allCases {
+    print("pane_role wears=\(w.rawValue) word=\(PaneFrame.roleWord(w).map(quote) ?? "-")")
 }
 
 // Looking at a row: which are marked seen, and after how long. The wait is
