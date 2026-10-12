@@ -258,7 +258,24 @@ test {
 const CFData = macos.foundation.Data;
 const CFString = macos.foundation.String;
 
-test {
+/// The environment variable that lets the test below run.
+const test_env = "POLTER_TEST_KEYMAP";
+
+test "KeymapDarwin: the current layout can be read" {
+    // **Not run unless asked for.** Reading the keyboard layout makes this
+    // process a client of the window server, and on its way in the system
+    // asks the privacy database whether the process may listen to input
+    // events (`kTCCServiceListenEvent`, a silent preflight). A test binary
+    // is nobody: the question is filed under whichever application started
+    // the shell it runs in -- the copy of Polter the person is using. This
+    // test had no name, so no filter left it out, and every `zig build
+    // test` on the machine asked once: 165 times in one night of agents.
+    // It asserts nothing (what follows it is commented out, because it
+    // depends on the layout the person has chosen), so it is opt-in:
+    //
+    //     POLTER_TEST_KEYMAP=1 zig build test -Dtest-filter=KeymapDarwin
+    if (std.c.getenv(test_env) == null) return error.SkipZigTest;
+
     var keymap = try init();
     defer keymap.deinit();
 

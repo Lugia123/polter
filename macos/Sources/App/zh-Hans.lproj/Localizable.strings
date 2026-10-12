@@ -746,6 +746,8 @@
 "The supervisor did not start: its tab never opened." = "总管没有启动：它的标签页没有开出来。";
 "The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why." = "总管没有启动：标签页开了，但里面没有 agent 连上来。原因在它的标签页里。";
 "The supervisor did not start: its tab was closed first." = "总管没有启动：它的标签页先被关掉了。";
+"The supervisor did not start: its agent CLI was not found. Its tab shows why." = "总管没有启动：没有找到它的 agent CLI。原因在它的标签页里。";
+"The supervisor did not start: its agent CLI could not be started. Its tab shows why." = "总管没有启动：它的 agent CLI 没能启动。原因在它的标签页里。";
 "The supervisor did not start." = "总管没有启动。";
 "Directory" = "目录";
 "Choose" = "选择";

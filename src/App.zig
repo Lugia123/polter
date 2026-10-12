@@ -3211,6 +3211,28 @@ fn poltergeistAgentArrived(
     if (applied.want.quiet_ms) |ms| surface.setPoltergeistThreshold(ms);
 }
 
+/// `+launch` in terminal `id` says its CLI did not start (`rpc`,
+/// `launchFailed`). Nothing waits on an agent from there any longer: the
+/// standing a role launch held for it is dropped, and a group the control
+/// room was starting a supervisor for in that terminal has failed -- now,
+/// with the reason `+launch` gave, and not a minute from now with the one
+/// reason a timer can give.
+fn poltergeistLaunchFailed(
+    ctx: *anyopaque,
+    _: *poltergeistpkg.Bus,
+    id: poltergeistpkg.Bus.Id,
+    why: poltergeistpkg.agent_event.LaunchFailure,
+) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    _ = self.personas.dropStanding(id);
+    defer self.refreshPoltergeistTabs();
+
+    const group = self.chat.startingIn(id, self.poltergeistElapsedMs()) orelse return;
+    self.chat.failStart(group, poltergeistpkg.Chat.startFailureOf(why));
+    log.info("control room: the supervisor it was starting did not start; its launcher said so ({t})", .{why});
+    self.controlRoomTouch();
+}
+
 /// Open a terminal for a role and start the role there: a tab or a split,
 /// placed by `poltergeistOpenTerminal` exactly as `terminal_open` places
 /// one, so the two tools cannot disagree about what `auto`, `tab` and
@@ -3509,6 +3531,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .personaFace = poltergeistPersonaFace,
         .terminalCapabilities = poltergeistTerminalCapabilities,
         .agentArrived = poltergeistAgentArrived,
+        .launchFailed = poltergeistLaunchFailed,
         .personaCatalog = poltergeistPersonaCatalog,
         .personaPut = poltergeistPersonaPut,
         .personaDelete = poltergeistPersonaDelete,

@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""Run the macOS host's logic tests without starting the application.
+
+**Why this exists.** The app's own test target needs a host: running it
+starts a Polter, which takes the screen from whoever is using the machine,
+so nobody runs it day to day. What everybody did instead was build a small
+SwiftPM package in a scratch directory, link the source files that need no
+host into it beside their tests, and `swift test` -- each in their own way,
+with their own idea of which files to leave out. Two things came of that in
+one night: a test that had been red on the main line since another branch
+added a kind of row, which nobody knew because nobody's package had both
+halves; and a merge with no conflict in it that did not compile. So the
+package is built here, one way, from a list that is in the repository.
+
+**What it does.**
+
+ 1. Reads `tools/mac-logic-tests.json`: which source files and which test
+    files go into the package, and for every one that does not, why not.
+ 2. **Checks the list against the tree.** Every `.swift` file under a
+    watched directory has to be on one side of the list or the other. A
+    file the list does not know is a failure that names it -- a new file is
+    not left out without a word. So is a listed file that is not there.
+ 3. Builds the package outside the repository (a temporary directory),
+    linking each file to the one in the tree. A file that goes in only in
+    part is copied instead, between the markers the list gives; a marker
+    that is no longer in the file is a failure, not a shorter file.
+ 4. Runs `swift test` and reports how many tests ran.
+
+**What it proves and what it does not.** The tests run against the same
+source text the app compiles. They do not run against the app: the module
+is built on its own, the files left out are the ones that touch a terminal
+or the core, and where a stand-in is used (`tools/mac-logic-tests-stubs/`)
+the test is about the code round the stand-in. Nothing is started and no
+window is put on screen.
+
+Run:  tools/mac-logic-tests                  check the list, build, run
+      tools/mac-logic-tests --check-list     only check the list (no build)
+      tools/mac-logic-tests --keep           leave the package behind and say where
+                                             (it is a few hundred MB; without this
+                                             nothing is left, passed or failed)
+      tools/mac-logic-tests --filter NAME    pass --filter to swift test
+      tools/mac-logic-tests --list FILE      another list (for this script's own floor)
+Exit: 0 when the list covers the tree and every test passed, with at least
+      one test run; 1 when a test failed or the package did not build;
+      2 when the list and the tree disagree, a marker is missing, **or no
+      test ran** (a run of nothing is not a pass); 3 when `swift` is not there.
+
+NOT CHECKED: that the app links these files as the package does; anything
+drawn; anything that needs a terminal, the core or a window on screen (see
+the `out` entries of the list for which files those are).
+"""
+
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.normpath(os.path.join(HERE, ".."))
+LIST = os.path.join(HERE, "mac-logic-tests.json")
+
+PACKAGE = """// swift-tools-version:5.9
+import PackageDescription
+
+// Written by tools/mac-logic-tests. The module is called Ghostty so that the
+// tests' `@testable import Ghostty` is the line the app's test target has.
+let package = Package(
+    name: "Ghostty",
+    platforms: [.macOS(.v13)],
+    targets: [
+        .target(name: "Ghostty", path: "Sources/Ghostty",
+                swiftSettings: [.enableUpcomingFeature("BareSlashRegexLiterals")]),
+        .testTarget(name: "GhosttyTests", dependencies: ["Ghostty"], path: "Tests/GhosttyTests"),
+    ]
+)
+"""
+
+
+class Disagreement(Exception):
+    """The list and the tree do not say the same thing."""
+
+
+def entry_path(entry):
+    return entry if isinstance(entry, str) else entry["path"]
+
+
+def load(path):
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    for key in ("watched", "sources", "tests"):
+        if key not in data:
+            raise Disagreement("%s has no `%s`" % (os.path.relpath(path, ROOT), key))
+    return data
+
+
+def check(data, root=ROOT):
+    """Every problem with the list, as sentences; and how many files it places."""
+    problems = []
+    placed = {}
+    for side in ("sources", "tests"):
+        for where in ("in", "out"):
+            for entry in data[side].get(where, []):
+                p = entry_path(entry)
+                if p in placed:
+                    problems.append("%s is listed twice (%s and %s.%s)" % (p, placed[p], side, where))
+                placed[p] = "%s.%s" % (side, where)
+                if where == "out" and (isinstance(entry, str) or not entry.get("why", "").strip()):
+                    problems.append("%s is left out without saying why" % p)
+                if not os.path.isfile(os.path.join(root, p)):
+                    problems.append("%s is listed (%s.%s) and is not in the tree" % (p, side, where))
+    for p in data.get("stubs", []):
+        if not os.path.isfile(os.path.join(root, p)):
+            problems.append("the stand-in %s is not in the tree" % p)
+
+    seen = 0
+    for directory in data["watched"]:
+        full = os.path.join(root, directory)
+        if not os.path.isdir(full):
+            problems.append("the watched directory %s is not in the tree" % directory)
+            continue
+        for base, _dirs, files in os.walk(full):
+            for name in sorted(files):
+                if not name.endswith(".swift"):
+                    continue
+                seen += 1
+                rel = os.path.relpath(os.path.join(base, name), root)
+                if rel not in placed:
+                    problems.append(
+                        "%s is in a watched directory and on neither side of the list: add it to "
+                        "`in`, or to `out` with a reason" % rel)
+    return problems, len(placed), seen
+
+
+def part_of(text, entry, path):
+    """The lines of `text` the entry asks for. A marker that is gone is an error."""
+    lines = text.split("\n")
+    start, end = 0, len(lines)
+    if "from" in entry:
+        hits = [i for i, l in enumerate(lines) if entry["from"] in l]
+        if len(hits) != 1:
+            raise Disagreement("%s: the `from` marker %r is there %d times, not once" % (path, entry["from"], len(hits)))
+        start = hits[0]
+    if "until" in entry:
+        hits = [i for i, l in enumerate(lines) if entry["until"] in l]
+        if len(hits) != 1:
+            raise Disagreement("%s: the `until` marker %r is there %d times, not once" % (path, entry["until"], len(hits)))
+        end = hits[0]
+    if start >= end:
+        raise Disagreement("%s: its `from` marker is not before its `until` marker" % path)
+    kept = lines[start:end]
+    for drop in entry.get("drop", []):
+        before = len(kept)
+        kept = [l for l in kept if l.strip() != drop]
+        if len(kept) == before:
+            raise Disagreement("%s: the line to drop, %r, is not in the part taken" % (path, drop))
+    head = "\n".join(entry.get("prepend", []))
+    return (head + "\n" if head else "") + "\n".join(kept) + "\n"
+
+
+def build(data, work):
+    src = os.path.join(work, "Sources", "Ghostty")
+    tst = os.path.join(work, "Tests", "GhosttyTests")
+    os.makedirs(src)
+    os.makedirs(tst)
+    with open(os.path.join(work, "Package.swift"), "w") as f:
+        f.write(PACKAGE)
+
+    names = {}
+
+    def place(entry, into):
+        p = entry_path(entry)
+        name = os.path.basename(p)
+        if name in names:
+            raise Disagreement("%s and %s have the same file name; the package is flat" % (p, names[name]))
+        names[name] = p
+        full = os.path.join(ROOT, p)
+        partial = not isinstance(entry, str) and any(k in entry for k in ("from", "until", "drop", "prepend"))
+        if partial:
+            with open(full, encoding="utf-8") as f:
+                text = part_of(f.read(), entry, p)
+            with open(os.path.join(into, name), "w", encoding="utf-8") as f:
+                f.write("// PART OF %s, copied by tools/mac-logic-tests. Not the whole file.\n" % p)
+                f.write(text)
+        else:
+            os.symlink(full, os.path.join(into, name))
+
+    for entry in data["sources"].get("in", []):
+        place(entry, src)
+    for p in data.get("stubs", []):
+        place(p, src)
+    for entry in data["tests"].get("in", []):
+        place(entry, tst)
+    return len(data["sources"].get("in", [])), len(data["tests"].get("in", []))
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    keep = "--keep" in args
+    check_only = "--check-list" in args
+    list_path = LIST
+    extra = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--list" and i + 1 < len(args):
+            list_path = os.path.abspath(args[i + 1])
+            i += 1
+        elif args[i] == "--filter" and i + 1 < len(args):
+            extra += ["--filter", args[i + 1]]
+            i += 1
+        elif args[i] not in ("--keep", "--check-list"):
+            print("mac-logic-tests: unknown argument %s" % args[i])
+            return 2
+        i += 1
+
+    try:
+        data = load(list_path)
+    except (OSError, ValueError, Disagreement) as e:
+        print("FAIL: the list could not be read: %s" % e)
+        return 2
+
+    problems, placed, seen = check(data)
+    if seen == 0:
+        problems.append("no .swift file was found under the watched directories: nothing was checked")
+    if problems:
+        for p in problems:
+            print("  " + p)
+        print("FAIL: %d place(s) where %s and the tree disagree." % (len(problems), os.path.relpath(list_path, ROOT)))
+        return 2
+    n_src = len(data["sources"].get("in", []))
+    n_tst = len(data["tests"].get("in", []))
+    n_out = len(data["sources"].get("out", [])) + len(data["tests"].get("out", []))
+    print("list: %d swift files under %d watched directories, every one placed; "
+          "%d source and %d test files go in, %d are left out with a reason."
+          % (seen, len(data["watched"]), n_src, n_tst, n_out))
+    if check_only:
+        print("OK: the list covers the tree. Nothing was built.")
+        print("NOT CHECKED: that the package builds or that any test passes (run without --check-list).")
+        return 0
+
+    if n_tst == 0:
+        print("FAIL: the list puts no test file in the package. A run of nothing is not a pass.")
+        return 2
+    swift = shutil.which("swift")
+    if swift is None:
+        print("FAIL: no `swift` on PATH. These tests were not run.")
+        return 3
+
+    work = tempfile.mkdtemp(prefix="polter-mac-logic-tests-")
+    try:
+        try:
+            build(data, work)
+        except Disagreement as e:
+            print("  %s" % e)
+            print("FAIL: the package could not be put together from the list.")
+            return 2
+
+        started = time.time()
+        p = subprocess.run([swift, "test", *extra], cwd=work, capture_output=True, text=True)
+        took = time.time() - started
+        out = p.stdout + p.stderr
+        log = os.path.join(work, "swift-test.log")
+        with open(log, "w") as f:
+            f.write(out)
+
+        # Swift Testing's own last word: "Test run with N tests in M suites passed|failed".
+        ran = re.findall(r"Test run with (\d+) tests? in (\d+) suites? (passed|failed)", out)
+        issues = [l.strip() for l in out.splitlines() if "recorded an issue" in l]
+        errors = [l.strip() for l in out.splitlines() if re.search(r"\berror:", l)]
+
+        if p.returncode != 0 or issues or (ran and ran[-1][2] == "failed"):
+            shown = issues or errors
+            for l in shown[:40]:
+                print("  " + l[:400])
+            if len(shown) > 40:
+                print("  ... and %d more" % (len(shown) - 40))
+            if not ran:
+                print("FAIL: the package did not build (swift exited %d, %d error line(s)); no test ran. %.0f s."
+                      % (p.returncode, len(errors), took))
+            else:
+                print("FAIL: %s tests in %s suites ran and %d expectation(s) failed (swift exited %d). %.0f s."
+                      % (ran[-1][0], ran[-1][1], len(issues), p.returncode, took))
+            print("(run again with --keep to have the package and the whole output left behind)")
+            return 1
+        if not ran or int(ran[-1][0]) == 0:
+            print("FAIL: swift exited 0 and no test ran. A run of nothing is not a pass. %.0f s." % took)
+            return 2
+        print("OK: %s tests in %s suites passed (%d source files, %d test files). %.0f s."
+              % (ran[-1][0], ran[-1][1], n_src, n_tst, took))
+        print("NOT CHECKED: the app itself; anything that needs a terminal, the core or a window; "
+              "the %d files the list leaves out." % n_out)
+        return 0
+    finally:
+        if keep:
+            print("left behind: %s (the whole output is in swift-test.log there)" % work)
+        else:
+            shutil.rmtree(work, ignore_errors=True)
+            # SwiftPM leaves two empty lock files beside the package, named
+            # after its path. A run a commit, for months, is a lot of them.
+            for lock in glob.glob(os.path.join(tempfile.gettempdir(), "*" + os.path.basename(work) + "_.build*.lock")):
+                try:
+                    os.remove(lock)
+                except OSError:
+                    pass
+
+
+if __name__ == "__main__":
+    sys.exit(main())

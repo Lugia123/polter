@@ -1773,6 +1773,10 @@ GHOSTTY_API bool ghostty_surface_persona_launch(ghostty_surface_t, const char*, 
 // every tool takes, written "0x%016llx". 0 for NULL; no terminal has 0. The
 // surface handle is a pointer and is not this.
 GHOSTTY_API uint64_t ghostty_surface_poltergeist_id(ghostty_surface_t);
+// The tab this terminal is in was closed while the terminal is kept alive
+// (so that the close can be undone). A host that destroys the terminal with
+// its tab does not need this.
+GHOSTTY_API void ghostty_surface_poltergeist_tab_closed(ghostty_surface_t);
 // Whether the read whose `state` this is -- the pointer read_clipboard_cb
 // was handed -- is the person pasting, rather than a program reading the
 // clipboard (OSC 52, Kitty) or listing it. Both arrive asking for

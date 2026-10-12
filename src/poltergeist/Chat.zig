@@ -830,7 +830,23 @@ pub const StartFailure = enum {
     agent_never_connected,
     /// Its terminal was closed before the agent connected.
     terminal_closed,
+    /// `+launch` said so itself, in the tab: the CLI's program is not
+    /// there to run.
+    cli_not_found,
+    /// `+launch` said so itself: something else stopped it before the CLI
+    /// ran. The tab has the line that says what.
+    cli_did_not_start,
 };
+
+/// The reason a start failed for, when its launcher said its CLI did not
+/// start. A mapping and nothing else, here so that it can be tested
+/// without an app.
+pub fn startFailureOf(why: @import("agent_event.zig").LaunchFailure) StartFailure {
+    return switch (why) {
+        .not_found => .cli_not_found,
+        .failed => .cli_did_not_start,
+    };
+}
 
 /// What the control room shows of a start.
 pub const StartView = struct {
@@ -964,12 +980,35 @@ pub fn forget(self: *Chat, id: Id) void {
             var m = kv.value;
             m.footing.deinit(self.alloc);
         }
-        // A supervisor that was on its way here in that terminal is not
-        // coming.
+    }
+    // A supervisor that was on its way here in that terminal is not coming.
+    _ = self.startTerminalClosed(id);
+}
+
+/// The terminal a supervisor was being started in has been closed: the
+/// start has failed, now, whatever is left of its wait. True when there
+/// was such a start.
+///
+/// **Its own door, apart from `forget`.** `forget` is the terminal being
+/// destroyed, and on macOS that is not when its tab is closed: the tab is
+/// kept, terminal and all, for as long as the close can be undone. So the
+/// person closed the tab, the control room went on saying "starting" over
+/// a tab that was no longer there, and the sentence that it had been
+/// closed arrived whenever the terminal was finally let go -- fifteen to
+/// forty-odd seconds later on a real window (2026-10-13). The host says
+/// when the tab closes; this is what it says it to.
+pub fn startTerminalClosed(self: *Chat, id: Id) bool {
+    var any = false;
+    var it = self.groups.valueIterator();
+    while (it.next()) |g| {
         if (g.start) |*s| {
-            if (s.terminal != null and s.terminal.? == id and s.failed == .none) s.failed = .terminal_closed;
+            if (s.terminal != null and s.terminal.? == id and s.failed == .none) {
+                s.failed = .terminal_closed;
+                any = true;
+            }
         }
     }
+    return any;
 }
 
 /// Say something to a group.

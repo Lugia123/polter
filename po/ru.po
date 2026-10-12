@@ -10,7 +10,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 05:49+0800\n"
+"POT-Creation-Date: 2026-10-13 05:58+0800\n"
 "PO-Revision-Date: 2026-09-16 15:45+0200\n"
 "Last-Translator: derVedro <dervedro@googlemail.com>\n"
 "Language-Team: Russian\n"
@@ -2324,7 +2324,7 @@ msgstr ""
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
 #: windows/host/src/general_ui.rs:1213 windows/host/src/general_ui.rs:1379
-#: windows/control-room/src/scene.rs:50
+#: windows/control-room/src/scene.rs:52
 msgid "Choose…"
 msgstr "Выбрать…"
 
@@ -2698,7 +2698,7 @@ msgid "No Role"
 msgstr ""
 
 #: windows/host/src/personas.rs:602 windows/host/src/personas.rs:1017
-#: windows/control-room/src/scene.rs:48
+#: windows/control-room/src/scene.rs:50
 msgid "Role"
 msgstr ""
 
@@ -3141,7 +3141,7 @@ msgid "Rename"
 msgstr ""
 
 #: windows/host/src/roles.rs:34 windows/host/src/roles.rs:1163
-#: windows/control-room/src/scene.rs:55
+#: windows/control-room/src/scene.rs:57
 msgid "Polter Supervisor"
 msgstr ""
 
@@ -3815,25 +3815,36 @@ msgid "The supervisor did not start: its tab was closed first."
 msgstr ""
 
 #: windows/control-room/src/scene.rs:47
-msgid "The supervisor did not start."
+msgid ""
+"The supervisor did not start: its agent CLI was not found. Its tab shows why."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:48
+msgid ""
+"The supervisor did not start: its agent CLI could not be started. Its tab "
+"shows why."
 msgstr ""
 
 #: windows/control-room/src/scene.rs:49
-msgid "Directory"
+msgid "The supervisor did not start."
 msgstr ""
 
 #: windows/control-room/src/scene.rs:51
-msgid "Start Supervisor"
+msgid "Directory"
 msgstr ""
 
 #: windows/control-room/src/scene.rs:53
+msgid "Start Supervisor"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:55
 msgid "Where the tab starts"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:58
+#: windows/control-room/src/scene.rs:60
 msgid "This terminal is no longer open."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:59
+#: windows/control-room/src/scene.rs:61
 msgid "This terminal is in its own tab."
 msgstr ""

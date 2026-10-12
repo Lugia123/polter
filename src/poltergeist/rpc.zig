@@ -4934,6 +4934,18 @@ pub const Host = struct {
             id: Bus.Id,
         ) void,
 
+        /// `+launch` in terminal `id` says the CLI it was to start did not
+        /// start. Whatever was waiting on an agent from that terminal stops
+        /// waiting now and says why: the standing a role launch was holding
+        /// (`PersonaStore.dropStanding`), and the group the control room
+        /// was starting a supervisor for.
+        launchFailed: *const fn (
+            ctx: *anyopaque,
+            bus: *Bus,
+            id: Bus.Id,
+            why: AgentEvent.LaunchFailure,
+        ) void,
+
         /// Whether an agent is listening in this terminal right now.
         ///
         /// **A fact, not a policy.** What to do about a `false` is decided
@@ -5967,7 +5979,9 @@ pub fn arrived(bus: *Bus, host: Host, who: Bus.Caller, req: Request) void {
 /// Whether a request from a terminal shows that the agent a launch started
 /// there is running.
 ///
-/// Every request does but one. `hooks_expected` is sent by `+launch`
+/// Every request does but two, and both are `+launch` speaking for itself:
+/// `launch_failed`, which says outright that there is no agent, and
+/// `hooks_expected`. `hooks_expected` is sent by `+launch`
 /// itself, **before** it starts the CLI (`cli/launch.zig`, `expectHooks`)
 /// -- so it arrives whether or not the CLI then starts, and it used to
 /// claim the launch's standing all the same. Measured on a Mac (task 1460,
@@ -5982,7 +5996,19 @@ pub fn arrived(bus: *Bus, host: Host, who: Bus.Caller, req: Request) void {
 /// running. Everything else comes from the agent's sidecar.
 pub fn showsAnAgent(req: Request) bool {
     return switch (req) {
-        .agent_event => |ev| ev.event != .hooks_expected,
+        // Exhaustive, with no `else`: a kind added to `AgentEvent.Kind`
+        // does not compile until somebody has said whether hearing it
+        // means an agent is there.
+        .agent_event => |ev| switch (ev.event) {
+            .hooks_expected, .launch_failed => false,
+            .session_started,
+            .turn_started,
+            .turn_ended,
+            .turn_failed,
+            .awaiting_approval,
+            .awaiting_input,
+            => true,
+        },
         else => true,
     };
 }
@@ -6355,6 +6381,11 @@ fn dispatchOne(
             // `not_a_terminal` must never become an entry with a state.
             const id = who.terminalId() orelse return failure(error.NotATerminal);
             _ = try bus.agentEvent(id, ev, host.nowMs());
+            // After the bus has taken back what the launch said to expect:
+            // whoever was waiting for an agent from here is told now.
+            if (ev.event == .launch_failed) {
+                host.vtable.launchFailed(host.ctx, bus, id, AgentEvent.LaunchFailure.parse(ev.detail));
+            }
             return .ok;
         },
 
@@ -8629,6 +8660,9 @@ const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 const FakeHost = struct {
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
 
+    /// What `launchFailed` was last told.
+    launch_failed: ?struct { id: Bus.Id, why: AgentEvent.LaunchFailure } = null,
+
     /// The screenshot tools: what the user's switch says, what the apprt
     /// answers to each kind of request, and what it was last asked.
     shot_allowed: bool = true,
@@ -8919,6 +8953,7 @@ const FakeHost = struct {
             .personaFace = personaFace,
             .terminalCapabilities = terminalCapabilities,
             .agentArrived = agentArrived,
+            .launchFailed = launchFailed,
             .personaCatalog = personaCatalog,
             .personaPut = personaPut,
             .personaDelete = personaDelete,
@@ -9501,6 +9536,16 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         const store = self.personas orelse return;
         _ = store.claimStanding(bus, id, self.now_ms);
+    }
+
+    /// The store's half of what the app does; the app's other half -- the
+    /// group a supervisor was being started for -- is recorded, since there
+    /// is no chat here to fail it in.
+    fn launchFailed(ctx: *anyopaque, _: *Bus, id: Bus.Id, why: AgentEvent.LaunchFailure) void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.launch_failed = .{ .id = id, .why = why };
+        const store = self.personas orelse return;
+        _ = store.dropStanding(id);
     }
 
     fn personaCatalog(_: *anyopaque, _: std.mem.Allocator) anyerror![]const u8 {
@@ -13296,10 +13341,126 @@ test "launched standing: only the launcher's own word is not an agent" {
     // `AgentEvent.Kind` is one somebody has put on a side.
     for (std.enums.values(AgentEvent.Kind)) |kind| {
         const shows = showsAnAgent(.{ .agent_event = hookEvent(kind) });
-        try testing.expectEqual(kind != .hooks_expected, shows);
+        // The two a launcher sends for itself are the two that are not.
+        try testing.expectEqual(kind != .hooks_expected and kind != .launch_failed, shows);
     }
     try testing.expect(showsAnAgent(.me));
     try testing.expect(showsAnAgent(.terminal_list));
+}
+
+fn launchFailedEvent(detail: ?[]const u8) AgentEvent.Event {
+    var ev = hookEvent(.launch_failed);
+    ev.session_id = null;
+    ev.detail = detail;
+    return ev;
+}
+
+test "launched standing: a launcher that says its CLI did not start gives the standing up at once" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh } };
+
+    // A supervisor role launched in `fresh`; `+launch` says hooks are
+    // expected and then finds the CLI is not installed.
+    try store.setPersona(fresh, "lead");
+    try store.holdStanding(fresh, fresh, standing_roles[0].polter, 0);
+    fake.now_ms = 400;
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = hookEvent(.hooks_expected) });
+    fake.now_ms = 500;
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = launchFailedEvent("not_found") });
+
+    // The host was told, with the kind of failure the launcher named.
+    const told = fake.launch_failed orelse return error.HostWasNotTold;
+    try testing.expectEqual(fresh, told.id);
+    try testing.expectEqual(AgentEvent.LaunchFailure.not_found, told.why);
+
+    // Nothing is held any more -- now, not when the minute is up.
+    const caps = try expectCaps(try dispatch(alloc, &bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = fresh },
+    }));
+    try testing.expectEqual(@as(?persona.Capabilities.PendingStanding, null), caps.persona.pending_standing);
+    // And no hooks are expected from a CLI that never ran.
+    const hooks = bus.agentOf(fresh).hooks;
+    try testing.expectEqual(Bus.Hooks.none, hooks);
+    // Saying it failed is not an agent arriving, either.
+    const supervisor_after_failure = bus.isSupervisor(fresh);
+    try testing.expect(!supervisor_after_failure);
+
+    // A `claude` typed into that terminal by hand, inside the minute the
+    // standing would have waited: it is an agent, and it is not the one a
+    // supervisor's standing was for.
+    fake.now_ms = 5_000;
+    try testing.expectEqual(Bus.Role.none, try roleIn(try dispatch(alloc, &bus, fake.host(), term(fresh), .me)));
+    const supervisor_by_hand = bus.isSupervisor(fresh);
+    try testing.expect(!supervisor_by_hand);
+}
+
+test "launched standing: a worker's launch that failed is not handed to its supervisor later" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh } };
+
+    // `role_launch` by the supervisor, a role that is watched. The
+    // launcher fails before it has said anything else -- no adapter -- and
+    // names a kind this build does not know.
+    try store.setPersona(fresh, "hand");
+    try store.holdStanding(fresh, boss, standing_roles[1].polter, 0);
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = launchFailedEvent("out_of_luck") });
+
+    // Still a failure, of the kind that is not "not found".
+    const told = fake.launch_failed orelse return error.HostWasNotTold;
+    try testing.expectEqual(AgentEvent.LaunchFailure.failed, told.why);
+    // The bus keeps nothing for a terminal that only ever failed to start.
+    const listed = bus.entries.contains(fresh);
+    try testing.expect(!listed);
+
+    // Whatever runs there next is not minded on that launch's account.
+    fake.now_ms = 2_000;
+    try testing.expectEqual(Bus.Role.none, try roleIn(try dispatch(alloc, &bus, fake.host(), term(fresh), .me)));
+    const minded = bus.minds(boss, fresh);
+    try testing.expect(!minded);
+}
+
+test "launched standing: with no word from the launcher the standing waits out its minute as before" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh } };
+
+    // A CLI that started and went quiet, or left at once for reasons of
+    // its own: the launcher has nothing to report, and nothing is told.
+    try store.setPersona(fresh, "lead");
+    try store.holdStanding(fresh, fresh, standing_roles[0].polter, 0);
+    fake.now_ms = 400;
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = hookEvent(.hooks_expected) });
+    const told = fake.launch_failed != null;
+    try testing.expect(!told);
+
+    fake.now_ms = PersonaStore.standing_wait_ms - 1;
+    const caps = try expectCaps(try dispatch(alloc, &bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = fresh },
+    }));
+    const still_held = caps.persona.pending_standing != null;
+    try testing.expect(still_held);
+    const hooks = bus.agentOf(fresh).hooks;
+    try testing.expectEqual(Bus.Hooks.expected, hooks);
 }
 
 test "launched standing: an agent that connects after it ran out gets nothing" {

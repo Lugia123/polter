@@ -730,6 +730,8 @@
 "The supervisor did not start: its tab never opened." = "The supervisor did not start: its tab never opened.";
 "The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why." = "The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why.";
 "The supervisor did not start: its tab was closed first." = "The supervisor did not start: its tab was closed first.";
+"The supervisor did not start: its agent CLI was not found. Its tab shows why." = "The supervisor did not start: its agent CLI was not found. Its tab shows why.";
+"The supervisor did not start: its agent CLI could not be started. Its tab shows why." = "The supervisor did not start: its agent CLI could not be started. Its tab shows why.";
 "The supervisor did not start." = "The supervisor did not start.";
 "Directory" = "Directory";
 "Choose" = "Choose";

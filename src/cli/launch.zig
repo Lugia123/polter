@@ -69,6 +69,45 @@ pub const Options = struct {
 pub fn run(alloc: Allocator) !u8 {
     const io = global.io();
 
+    // **A launch that starts nothing says so to this terminal's Polter**,
+    // which may be waiting on an agent from here: a role's standing is
+    // held for it, and the control room may be showing "starting the
+    // supervisor" for it. The line on the screen says why to whoever
+    // looks at the tab; this says it to what cannot look.
+    var progress: Progress = .{};
+    const code = start(alloc, &progress) catch |err| {
+        if (!progress.started) reportFailed(io, &progress);
+        return err;
+    };
+    if (!progress.started) reportFailed(io, &progress);
+    return code;
+}
+
+/// How far a launch got, for what is said when it gets no further.
+const Progress = struct {
+    /// The CLI is running (or, where there is no `exec`, was started): what
+    /// this process returns from here on is the CLI's doing, not a launch
+    /// that failed. **Set only once the system has started it**; a CLI that
+    /// starts and exits at once is not a launch that failed -- a real one
+    /// may leave straight away for reasons of its own (`--version`, a
+    /// sign-in it wants first), and the minute's wait for an agent is what
+    /// answers for that.
+    started: bool = false,
+    why: AgentEvent.LaunchFailure = .failed,
+    /// The CLI's key, once it is known which one.
+    cli: [64]u8 = undefined,
+    cli_len: usize = 0,
+
+    fn noteCli(self: *Progress, key: []const u8) void {
+        const n = @min(key.len, self.cli.len);
+        @memcpy(self.cli[0..n], key[0..n]);
+        self.cli_len = n;
+    }
+};
+
+fn start(alloc: Allocator, progress: *Progress) !u8 {
+    const io = global.io();
+
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();
     const aa = arena.allocator();
@@ -155,6 +194,7 @@ pub fn run(alloc: Allocator) !u8 {
     var env = try global.environMap();
     defer env.deinit();
 
+    progress.noteCli(choice.cli);
     const adapters = agent_cli.discover(aa, io, &env);
     const adapter = agent_cli.find(adapters, choice.cli) orelse {
         try whyNoAdapter(aa, io, &env, choice.cli, err_out);
@@ -204,6 +244,8 @@ pub fn run(alloc: Allocator) !u8 {
 
     if (comptime std.process.can_replace) {
         const err = std.process.replace(io, .{ .argv = launch.argv, .environ_map = &env });
+        // It only comes back when the CLI was not started.
+        if (err == error.FileNotFound) progress.why = .not_found;
         try err_out.print("Polter: could not start {s} ({t}).", .{ launch.argv[0], err });
         if (err == error.FileNotFound) try err_out.print(" Is {s} installed?", .{adapter.bin});
         try err_out.writeAll("\n");
@@ -228,11 +270,14 @@ pub fn run(alloc: Allocator) !u8 {
         .stdout = .inherit,
         .stderr = .inherit,
     }) catch |err| {
+        if (err == error.FileNotFound) progress.why = .not_found;
         try err_out.print("Polter: could not start {s} ({t}).", .{ launch.argv[0], err });
         if (err == error.FileNotFound) try err_out.print(" Is {s} installed?", .{adapter.bin});
         try err_out.writeAll("\n");
         return 127;
     };
+    // The system started it. Whatever it exits with from here is its own.
+    progress.started = true;
     const term = child.wait(io) catch |err| {
         try err_out.print("Polter: lost track of {s} ({t}).\n", .{ launch.argv[0], err });
         return 1;
@@ -261,6 +306,26 @@ fn mcpExecutable(aa: Allocator, io: std.Io) ?[]const u8 {
     const host = std.fs.path.join(aa, &.{ dir, "polter-host.exe" }) catch return null;
     std.Io.Dir.cwd().access(io, host, .{}) catch return null;
     return host;
+}
+
+/// Tell this terminal's Polter the launch started nothing, and which kind
+/// of nothing. Best effort, like `expectHooks`: outside Polter there is
+/// nobody to tell, and the line on the screen has already said it.
+///
+/// This also takes back `hooks_expected`, if that was said: no hooks are
+/// coming from a CLI that never ran (`Bus.agentEvent`).
+fn reportFailed(io: std.Io, progress: *const Progress) void {
+    var env = global.environMap() catch return;
+    defer env.deinit();
+    const socket_path = env.get("GHOSTTY_POLTER_SOCKET") orelse return;
+    const token = env.get("GHOSTTY_POLTER_TOKEN") orelse return;
+    var ev: AgentEvent.Event = .none;
+    ev.event = .launch_failed;
+    ev.cli = progress.cli[0..progress.cli_len];
+    ev.detail = @tagName(progress.why);
+    hook.deliver(io, socket_path, token, ev) catch |err| {
+        std.log.scoped(.launch).warn("could not say the launch failed err={t}", .{err});
+    };
 }
 
 fn expectHooks(io: std.Io, env: *const std.process.Environ.Map, cli: []const u8) void {

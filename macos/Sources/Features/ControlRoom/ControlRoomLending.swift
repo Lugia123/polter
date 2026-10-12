@@ -191,6 +191,64 @@ struct ControlRoomLending: Equatable {
     }
 }
 
+extension ControlRoomLending {
+    /// One sentence for each way of having no terminal to show. Never
+    /// empty: a blank right-hand side reads as something broken.
+    ///
+    /// Here and not in the view that draws it, so that it can be held to
+    /// the Windows host's sentences (`tools/control-room-hosts-agree.py`).
+    static func words(for detail: ControlRoomLending.Detail,
+                      start: ControlRoomList.SupervisorStart? = nil, alone: Bool = false) -> String {
+        if alone {
+            // A terminal with a row of its own has no supervisor to speak
+            // of: it is itself what the right-hand side would show.
+            switch detail {
+            case .noSupervisor, .supervisorGone:
+                return String(localized: "This terminal is no longer open.", comment: "总控台：选中的是一个不在任何群里的终端，它已经关掉时右栏的说明")
+            case .takenBack:
+                return String(localized: "This terminal is in its own tab.", comment: "总控台：选中的是一个不在任何群里的终端，它被要回原处以后右栏的说明")
+            case .nothingSelected, .terminal:
+                break
+            }
+        }
+        switch detail {
+        case .nothingSelected:
+            return String(localized: "Select a group to see its supervisor.", comment: "总控台：没有选中任何群时右栏的说明")
+        case .noSupervisor:
+            // Which of these it is is the core's word (`state`, `failed`).
+            switch (start?.state, start?.failed) {
+            case (.starting, _):
+                return String(localized: "Starting the supervisor…", comment: "总控台：点了启动总管以后，总管还没连上的那一段，右栏的说明")
+            case (.failed, .terminalNeverOpened):
+                return String(localized: "The supervisor did not start: its tab never opened.",
+                              comment: "总控台：启动总管失败，标签页没开出来")
+            case (.failed, .agentNeverConnected):
+                return String(localized: "The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why.",
+                              comment: "总控台：启动总管失败，标签页开了但里面的 agent 没有连上 Polter")
+            case (.failed, .terminalClosed):
+                return String(localized: "The supervisor did not start: its tab was closed first.",
+                              comment: "总控台：启动总管失败，标签页在 agent 连上之前被关掉了")
+            case (.failed, .cliNotFound):
+                return String(localized: "The supervisor did not start: its agent CLI was not found. Its tab shows why.",
+                              comment: "总控台：启动总管失败，启动器自己报的：agent CLI 的程序找不到")
+            case (.failed, .cliDidNotStart):
+                return String(localized: "The supervisor did not start: its agent CLI could not be started. Its tab shows why.",
+                              comment: "总控台：启动总管失败，启动器自己报的：agent CLI 没能启动")
+            case (.failed, _):
+                return String(localized: "The supervisor did not start.", comment: "总控台：启动总管失败，没有更具体的原因")
+            default:
+                return String(localized: "This group has no supervisor.", comment: "总控台：选中的群没有总管时右栏的说明")
+            }
+        case .supervisorGone:
+            return String(localized: "The supervisor's terminal is no longer open.", comment: "总控台：总管的终端已经关掉时右栏的说明")
+        case .takenBack:
+            return String(localized: "The supervisor's terminal is in its own tab.", comment: "总控台：终端被要回原处以后右栏的说明")
+        case .terminal:
+            return ""
+        }
+    }
+}
+
 extension ControlRoomSnapshot {
     /// The supervisor the core names for `group`; nil when it names none or
     /// lists no such group.
