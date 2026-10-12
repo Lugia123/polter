@@ -319,6 +319,48 @@ pub fn may_split(on_loan: bool) -> bool {
     !on_loan
 }
 
+/// What a host answers when it is asked for a split, at the moment it is
+/// asked -- before anything is queued.
+///
+/// **The answer is the core's cue.** The core reads it there and then: told
+/// "will split" it waits for a terminal to appear in that tab, and told
+/// anything else it opens a tab instead and says so to whoever asked
+/// (`placed: "tab"`, `fallback: "split_refused"`). A host that says "will"
+/// and finds out later that it will not has told an agent its worker was
+/// opened when nothing was (Windows, fourth run on a real machine: a
+/// supervisor shown in the control room asked for a worker, and none came).
+/// So what would refuse the split later is asked now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitAnswer {
+    /// It will be made.
+    Will,
+    /// The tab the split would go in has no pane to split: it is the
+    /// control room.
+    NoPane,
+    /// The pane is the one shown in the control room (`may_split`).
+    OnLoan,
+}
+
+impl SplitAnswer {
+    /// `has_pane`: the tab the split is aimed at is a terminal's.
+    /// `on_loan`: the pane it is aimed at is shown in the control room.
+    pub fn to(has_pane: bool, on_loan: bool) -> SplitAnswer {
+        if !has_pane {
+            SplitAnswer::NoPane
+        } else if !may_split(on_loan) {
+            SplitAnswer::OnLoan
+        } else {
+            SplitAnswer::Will
+        }
+    }
+
+    /// Whether the core is told the split will be made, and the split is
+    /// queued. The two are one decision: never one without the other.
+    pub fn will(self) -> bool {
+        self == SplitAnswer::Will
+    }
+}
+
 /// The English of what the right-hand side says when it shows a sentence; a
 /// host translates each.
 pub mod msg {
@@ -519,6 +561,25 @@ mod tests {
         assert_eq!(close_of(true, false), CloseOf::ThePane);
         assert_eq!(close_of(false, true), CloseOf::ThePane);
         assert_eq!(close_of(false, false), CloseOf::ThePane);
+    }
+
+    #[test]
+    fn a_split_that_would_be_refused_is_refused_when_it_is_asked_for() {
+        // An ordinary pane of a terminal's tab: it will be made.
+        assert_eq!(SplitAnswer::to(true, false), SplitAnswer::Will);
+        assert!(SplitAnswer::to(true, false).will());
+        // The pane shown in the control room: the core is not told "will",
+        // so it opens a tab instead and says so.
+        assert_eq!(SplitAnswer::to(true, true), SplitAnswer::OnLoan);
+        assert!(!SplitAnswer::to(true, true).will());
+        // The control room's own tab has nothing to split, on loan or not.
+        assert_eq!(SplitAnswer::to(false, false), SplitAnswer::NoPane);
+        assert_eq!(SplitAnswer::to(false, true), SplitAnswer::NoPane);
+        assert!(!SplitAnswer::to(false, false).will());
+        // It is the same test the split itself is refused by.
+        for on_loan in [false, true] {
+            assert_eq!(SplitAnswer::to(true, on_loan).will(), may_split(on_loan));
+        }
     }
 
     #[test]

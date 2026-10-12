@@ -36,6 +36,20 @@ pub struct Row {
     /// Set on a row that is a terminal on its own, in no group (the
     /// snapshot's `ungrouped`): which terminal, its title, and its frame.
     pub alone: Option<Alone>,
+    /// What the title of the frame on the right says while it holds this
+    /// row's terminal; none when the core lists no such terminal.
+    pub title: Option<SupervisorTitle>,
+}
+
+/// What the frame's title says of the terminal in it: that terminal's own
+/// name, glyph and word, as the core wrote them for it -- the supervisor's,
+/// whether the group's row is about it or about one of its workers. The
+/// macOS host's `ControlRoomList.SupervisorTitle`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupervisorTitle {
+    pub name: String,
+    pub shown: Shown,
+    pub word: String,
 }
 
 /// A terminal that is in no group and has a row of its own: a supervisor
@@ -172,6 +186,14 @@ impl List {
                 event_ms: g.event_ms,
                 start: g.supervisor.clone(),
                 alone: None,
+                // Always the supervisor's own terminal, as the core wrote
+                // it. Whether the row is about the supervisor or about one
+                // of its workers is not asked here.
+                title: g.steward.as_ref().and_then(|id| s.terminals.iter().find(|t| &t.id == id)).map(|t| SupervisorTitle {
+                    name: t.title.clone(),
+                    shown: t.shown,
+                    word: t.text.clone(),
+                }),
             };
             if g.needs_me {
                 waiting.push(row);
@@ -199,6 +221,7 @@ impl List {
                 event_ms: one.event_ms,
                 start: None,
                 alone: Some(Alone { terminal: one.id.clone(), title: one.title.clone(), pane }),
+                title: Some(SupervisorTitle { name: one.title.clone(), shown: one.shown, word: one.text.clone() }),
             };
             if one.needs_me {
                 waiting.push(row);
