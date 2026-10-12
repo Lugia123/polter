@@ -209,6 +209,10 @@ pub struct Snapshot {
     /// Every window tab the core has placed, each with its glyph.
     pub tabs: Vec<Tab>,
     pub pulses: Vec<Pulse>,
+    /// How much of each account's allowance is used (`quota`). None in a
+    /// snapshot from a core that does not say; one that says it in a word
+    /// this build does not know is not read at all.
+    pub quota: Option<crate::quota::Quota>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,18 +230,18 @@ pub enum DecodeError {
 
 type Res<T> = Result<T, DecodeError>;
 
-fn field<'a>(v: &'a Value, path: &str, key: &str) -> Res<&'a Value> {
+pub(crate) fn field<'a>(v: &'a Value, path: &str, key: &str) -> Res<&'a Value> {
     v.get(key).ok_or_else(|| DecodeError::Field(format!("{path}.{key}")))
 }
 
-fn int(v: &Value, path: &str, key: &str) -> Res<u64> {
+pub(crate) fn int(v: &Value, path: &str, key: &str) -> Res<u64> {
     match field(v, path, key)? {
         Value::Int(n) => Ok(*n),
         _ => Err(DecodeError::Field(format!("{path}.{key}"))),
     }
 }
 
-fn opt_int(v: &Value, path: &str, key: &str) -> Res<Option<u64>> {
+pub(crate) fn opt_int(v: &Value, path: &str, key: &str) -> Res<Option<u64>> {
     match field(v, path, key)? {
         Value::Null => Ok(None),
         Value::Int(n) => Ok(Some(*n)),
@@ -245,21 +249,21 @@ fn opt_int(v: &Value, path: &str, key: &str) -> Res<Option<u64>> {
     }
 }
 
-fn boolean(v: &Value, path: &str, key: &str) -> Res<bool> {
+pub(crate) fn boolean(v: &Value, path: &str, key: &str) -> Res<bool> {
     match field(v, path, key)? {
         Value::Bool(b) => Ok(*b),
         _ => Err(DecodeError::Field(format!("{path}.{key}"))),
     }
 }
 
-fn text(v: &Value, path: &str, key: &str) -> Res<String> {
+pub(crate) fn text(v: &Value, path: &str, key: &str) -> Res<String> {
     match field(v, path, key)? {
         Value::Str(s) => Ok(s.clone()),
         _ => Err(DecodeError::Field(format!("{path}.{key}"))),
     }
 }
 
-fn opt_text(v: &Value, path: &str, key: &str) -> Res<Option<String>> {
+pub(crate) fn opt_text(v: &Value, path: &str, key: &str) -> Res<Option<String>> {
     match field(v, path, key)? {
         Value::Null => Ok(None),
         Value::Str(s) => Ok(Some(s.clone())),
@@ -267,7 +271,7 @@ fn opt_text(v: &Value, path: &str, key: &str) -> Res<Option<String>> {
     }
 }
 
-fn list<'a>(v: &'a Value, path: &str, key: &str) -> Res<&'a [Value]> {
+pub(crate) fn list<'a>(v: &'a Value, path: &str, key: &str) -> Res<&'a [Value]> {
     match field(v, path, key)? {
         Value::Arr(items) => Ok(items),
         _ => Err(DecodeError::Field(format!("{path}.{key}"))),
@@ -362,5 +366,9 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
         groups,
         tabs,
         pulses,
+        quota: match v.get("quota") {
+            None => None,
+            Some(q) => Some(crate::quota::decode(q, "quota")?),
+        },
     })
 }

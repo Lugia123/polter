@@ -477,3 +477,220 @@ struct ControlRoomActionsTests {
         #expect(message.contains("SomethingNew"))
     }
 }
+
+/// Making a group and starting a supervisor from the control room: what is
+/// asked of the core, what a refusal says, and what the core's answer
+/// about a group's supervisor becomes.
+struct ControlRoomStartTests {
+    typealias Actions = ControlRoomActions
+
+    private func sent(_ act: Actions.Act) throws -> [String: Any] {
+        var captured = Data()
+        try Actions { json in
+            captured = json
+            return nil
+        }.perform(act)
+        return try #require(try JSONSerialization.jsonObject(with: captured) as? [String: Any])
+    }
+
+    @Test func aNewGroupIsAskedForByTheNameAsTyped() throws {
+        let json = try sent(.newGroup(name: " web-app "))
+        #expect(json["act"] as? String == "new_group")
+        // Trimming and checking are the core's.
+        #expect(json["name"] as? String == " web-app ")
+        #expect(json.count == 2)
+    }
+
+    @Test func startingASupervisorSendsOnlyWhatThePersonPicked() throws {
+        let plain = try sent(.startSupervisor(group: "nightly"))
+        #expect(plain["act"] as? String == "start_supervisor")
+        #expect(plain["group"] as? String == "nightly")
+        // Neither picked: the core uses what its snapshot named.
+        #expect(plain.count == 2)
+
+        let picked = try sent(.startSupervisor(group: "nightly", role: "night-lead", cwd: "/work/repo"))
+        #expect(picked["role"] as? String == "night-lead")
+        #expect(picked["cwd"] as? String == "/work/repo")
+    }
+
+    @Test func everyRefusalOfTheTwoHasASentenceThatIsNotTheCatchAll() {
+        let names = ["BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting",
+                     "NoSupervisorRole", "NoSuchPersona", "NotASupervisorRole", "NoCli",
+                     "NoSuchDirectory", "OpenFailed", "NoExecutable"]
+        let messages = names.map { Actions.Refusal(name: $0).message }
+        #expect(Set(messages).count == names.count)
+        for (name, message) in zip(names, messages) {
+            #expect(!message.isEmpty)
+            #expect(!message.contains(name))
+        }
+        // The three ways a directory is not one say the same thing.
+        let absolute = Actions.Refusal(name: "NotAbsolute").message
+        #expect(absolute == Actions.Refusal(name: "NoSuchDirectory").message)
+        #expect(absolute == Actions.Refusal(name: "NotADirectory").message)
+    }
+
+    private static func supervised(groups: [(name: String, supervisor: String)], roles: String, choose: Bool) -> String {
+        let rows = groups.map { group in
+            """
+            { "name": "\(group.name)", "needs_me": false, "unseen": false, "shown": "none", "text": "",
+              "supervisor": \(group.supervisor),
+              "waiter": {"is": "none", "name": ""},
+              "reason": {"from": "none", "text": "", "missing": null},
+              "what": {"cut": "none", "form": "none", "lines": []},
+              "more": 0, "same_as": null }
+            """
+        }.joined(separator: ",")
+        return """
+        { "rev": 2, "now_ms": 1, "needs_me": 0, "groups_needing_me": 0, "groups_other": \(groups.count),
+          "groups": [\(rows)], "supervisor_roles": \(roles), "choose_supervisor_role": \(choose) }
+        """
+    }
+
+    private static let absent = """
+    {"state":"absent","can_start":true,"terminal":null,"failed":"none",
+     "role":"polter-supervisor","cwd":"/work/repo","cwd_from":"last_supervisor"}
+    """
+
+    @Test func whatTheCoreSaysAboutAGroupsSupervisorIsCopiedAndNothingIsWorkedOut() throws {
+        let failed = """
+        {"state":"failed","can_start":true,"terminal":"0x00000000000000a9","failed":"agent_never_connected",
+         "role":"polter-supervisor","cwd":"","cwd_from":"none"}
+        """
+        // "Starting" with the button still offered is not a state the core
+        // writes; it is here to show the button follows `can_start` alone.
+        let odd = """
+        {"state":"starting","can_start":true,"terminal":null,"failed":"none","role":null,"cwd":"","cwd_from":"none"}
+        """
+        let json = Self.supervised(
+            groups: [("nightly", Self.absent), ("billing", failed), ("odd", odd)],
+            roles: #"[{"key":"polter-supervisor","name":"Polter Supervisor"},{"key":"night-lead","name":"Night Lead"}]"#,
+            choose: true)
+        let list = try ControlRoomList.decode(snapshot: Data(json.utf8))
+
+        let nightly = try #require(list.rows.first { $0.id == "nightly" }?.start)
+        #expect(nightly.state == .absent)
+        #expect(nightly.canStart)
+        #expect(nightly.role == "polter-supervisor")
+        #expect(nightly.cwd == "/work/repo")
+
+        let billing = try #require(list.rows.first { $0.id == "billing" }?.start)
+        #expect(billing.state == .failed)
+        #expect(billing.failed == .agentNeverConnected)
+        #expect(billing.canStart)
+
+        let strange = try #require(list.rows.first { $0.id == "odd" }?.start)
+        #expect(strange.state == .starting)
+        #expect(strange.canStart)
+        #expect(strange.role == nil)
+
+        #expect(list.supervisorRoles.map(\.key) == ["polter-supervisor", "night-lead"])
+        #expect(list.chooseSupervisorRole)
+        // A role the person made is shown by the name they gave it.
+        #expect(list.supervisorRoles[1].displayName == "Night Lead")
+    }
+
+    @Test func aSnapshotFromBeforeASupervisorCouldBeStartedOffersNothing() throws {
+        let list = try ControlRoomList.decode(snapshot: Data(snapshot().utf8))
+        #expect(list.rows.first?.start == nil)
+        #expect(list.supervisorRoles.isEmpty)
+        #expect(!list.chooseSupervisorRole)
+    }
+
+    @Test func theCoresFixtureSaysEveryGroupHasASupervisorAndNamesOneRole() throws {
+        let list = try ControlRoomList.decode(snapshot: ControlRoomListTests.fixture())
+        for row in list.rows {
+            let start = try #require(row.start)
+            #expect(start.state == .present)
+            #expect(!start.canStart)
+        }
+        #expect(list.supervisorRoles.map(\.key) == ["polter-supervisor"])
+        #expect(!list.chooseSupervisorRole)
+    }
+
+    @Test func theSentenceOnTheRightSaysWhichWaitFailed() {
+        typealias Start = ControlRoomList.SupervisorStart
+        let detail = ControlRoomLending.Detail.noSupervisor(group: "nightly")
+        func words(_ state: Start.State, _ failed: Start.Failure) -> String {
+            ControlRoomDetailMessage.words(
+                for: detail, start: Start(state: state, canStart: false, failed: failed, role: nil, cwd: ""))
+        }
+        let all = [
+            ControlRoomDetailMessage.words(for: detail),
+            words(.absent, .none), words(.starting, .none), words(.failed, .none),
+            words(.failed, .terminalNeverOpened), words(.failed, .agentNeverConnected), words(.failed, .terminalClosed),
+        ]
+        // With nothing said and with "absent" it is the same sentence; the
+        // other five are each their own, and none is blank.
+        #expect(all[0] == all[1])
+        #expect(Set(all).count == 6)
+        #expect(all.allSatisfy { !$0.isEmpty })
+    }
+
+    @Test func aGroupThePersonMakesIsSelectedWhenTheCoreListsItAndARefusalIsHandedBack() {
+        let center = NotificationCenter()
+        let core = FakeCore()
+        core.json = snapshot()
+        // Kept: the model does not hold the feed.
+        let feed = ControlRoomFeed(center: center, fetch: core.fetch)
+        let model = ControlRoomModel(feed: feed)
+        #expect(model.selection == nil)
+
+        // Without the core handed in, nothing is done and that is said.
+        #expect(model.newGroup(named: "nightly") != nil)
+
+        var asked: [ControlRoomActions.Act] = []
+        var answer: String?
+        model.perform = { act in
+            asked.append(act)
+            if let answer { throw ControlRoomActions.Refusal(name: answer) }
+        }
+
+        answer = "GroupExists"
+        let refused = model.newGroup(named: "billing")
+        #expect(refused == ControlRoomActions.Refusal(name: "GroupExists").message)
+        #expect(model.selection == nil)
+
+        answer = nil
+        let made = model.newGroup(named: " nightly ")
+        #expect(made == nil)
+        #expect(asked.last == .newGroup(name: " nightly "))
+        // The list on screen is from before it existed: nothing is selected yet.
+        #expect(model.selection == nil)
+
+        core.json = snapshot(groups: "nightly")
+        center.post(name: ControlRoomFeed.changed, object: nil)
+        #expect(model.selection == "nightly")
+        #expect(model.selectionIsThePersons)
+    }
+
+    @Test func aRefusedStartIsKeptToBeShownAndClearedByOneThatIsTaken() {
+        let core = FakeCore()
+        core.json = snapshot()
+        let model = ControlRoomModel(feed: ControlRoomFeed(center: NotificationCenter(), fetch: core.fetch))
+        var answer: String? = "NoSuchDirectory"
+        var asked: [ControlRoomActions.Act] = []
+        model.perform = { act in
+            asked.append(act)
+            if let answer { throw ControlRoomActions.Refusal(name: answer) }
+        }
+
+        model.startSupervisor(for: "billing", role: nil, cwd: "/gone")
+        #expect(model.startRefusal?.group == "billing")
+        #expect(model.startRefusal?.message == ControlRoomActions.Refusal(name: "NoSuchDirectory").message)
+        #expect(asked.last == .startSupervisor(group: "billing", role: nil, cwd: "/gone"))
+
+        answer = nil
+        model.startSupervisor(for: "billing", role: nil, cwd: nil)
+        #expect(model.startRefusal == nil)
+    }
+
+    @Test func theDirectoryIsShownWithHomeAsATilde() {
+        typealias View = ControlRoomStartSupervisor
+        #expect(View.shown("/Users/me", home: "/Users/me") == "~")
+        #expect(View.shown("/Users/me/work/repo", home: "/Users/me") == "~/work/repo")
+        // A sibling whose name only starts the same is not under home.
+        #expect(View.shown("/Users/meadow", home: "/Users/me") == "/Users/meadow")
+        #expect(View.shown("/srv/app", home: "/Users/me") == "/srv/app")
+        #expect(!View.shown("", home: "/Users/me").isEmpty)
+    }
+}

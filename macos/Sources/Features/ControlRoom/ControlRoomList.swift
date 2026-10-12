@@ -55,8 +55,53 @@ struct ControlRoomList: Equatable {
         /// and the two moments it was drawn from. Nil where there is no
         /// terminal behind the row.
         var target: Target?
+        /// Whether this group has a supervisor and what starting one would
+        /// use, as the core says it. Nil in a list made by hand.
+        var start: SupervisorStart?
 
         var name: String { id }
+    }
+
+    /// What the core says about a group's supervisor (`ControlRoom.zig`,
+    /// `SupervisorOut`). **Whether one can be started is `canStart`, the
+    /// core's word**: a host shows the button on that and works nothing
+    /// out from `state`, which only picks the sentence.
+    struct SupervisorStart: Equatable {
+        enum State: String, Equatable, Decodable {
+            case present, absent, starting, failed
+        }
+
+        /// Why the last try made no supervisor.
+        enum Failure: String, Equatable, Decodable {
+            case none
+            case terminalNeverOpened = "terminal_never_opened"
+            case agentNeverConnected = "agent_never_connected"
+            case terminalClosed = "terminal_closed"
+        }
+
+        var state: State
+        var canStart: Bool
+        var failed: Failure
+        /// The role it is started in unless the person picks another.
+        var role: String?
+        /// Where it is started unless the person picks elsewhere.
+        var cwd: String
+    }
+
+    /// A role a supervisor can be started in.
+    struct SupervisorRole: Equatable, Identifiable {
+        var key: String
+        var name: String
+        var id: String { key }
+
+        /// The name to show. The role Polter ships is named in English in
+        /// the core and shown in the person's language, as the role
+        /// library shows it.
+        var displayName: String {
+            key == "polter-supervisor"
+                ? String(localized: "Polter Supervisor", comment: "角色库：内置角色名，Polter 总管")
+                : name
+        }
     }
 
     /// Who a row is about, as the core says it (`ControlRoom.zig`,
@@ -163,6 +208,14 @@ struct ControlRoomList: Equatable {
     /// "N groups need nothing from you". Also the core's.
     var quietCount: Int
     var quiet: [Row]
+    /// The allowance block at the bottom, as the core says it; nil when
+    /// the snapshot has none, and then nothing is drawn there.
+    var quota: ControlRoomQuota?
+    /// The roles a supervisor can be started in, in the core's order.
+    var supervisorRoles: [SupervisorRole] = []
+    /// Whether there is a choice of role to offer. The core's word, not
+    /// `supervisorRoles.count`.
+    var chooseSupervisorRole: Bool = false
 
     /// Every row in the order it is listed, which is the order the up and
     /// down keys walk.
@@ -298,8 +351,47 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var text: String
     }
 
+    /// One open terminal, as much of it as its pane's frame shows
+    /// (`PaneFrame`).
+    struct Terminal: Decodable, Equatable {
+        /// Which of the three frames its pane wears, as the core spells
+        /// them. A value this does not know is an error, as with `shown`.
+        enum Pane: String, Decodable, Equatable, CaseIterable {
+            /// A border all round, its top edge thickened into the title bar.
+            case supervisor
+            /// A line all round and a band for the title.
+            case worker
+            /// No line and no band: the title on the terminal's own ground.
+            case plain
+        }
+
+        var id: String
+        var title: String
+        var shown: ControlRoomList.Shown
+        var text: String
+        /// Absent in a snapshot from before the core said it; such a
+        /// terminal is drawn as an ordinary one.
+        var pane: Pane?
+    }
+
+    /// See `ControlRoomList.SupervisorStart`.
+    struct Supervisor: Decodable, Equatable {
+        var state: ControlRoomList.SupervisorStart.State
+        var can_start: Bool
+        var failed: ControlRoomList.SupervisorStart.Failure
+        var role: String?
+        var cwd: String
+    }
+
+    struct SupervisorRole: Decodable, Equatable {
+        var key: String
+        var name: String
+    }
+
     struct Group: Decodable, Equatable {
         var name: String
+        /// Absent in snapshots from before the core said it.
+        var supervisor: Supervisor?
         /// The group's terminals. Absent in a snapshot cut down by hand.
         var members: [Member]?
         /// The terminal that is this group's supervisor, as the core names
@@ -337,6 +429,16 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     /// draws no tab glyphs, breathes nothing and has no band.
     var tabs: [Tab]?
     var pulses: [Pulse]?
+    /// How much of each account's allowance is used. Newer than the rest:
+    /// a snapshot without it draws no block. One with a word in it this
+    /// does not know is not read at all.
+    var quota: ControlRoomQuota?
+    /// Every open terminal, for the frame its pane wears (`PaneFrame`).
+    var terminals: [Terminal]?
+    /// Absent in snapshots from before a supervisor could be started here:
+    /// then there is no role to start one in and nothing is offered.
+    var supervisor_roles: [SupervisorRole]?
+    var choose_supervisor_role: Bool?
 }
 
 /// Which waiting glyph breathes.
@@ -443,13 +545,20 @@ extension ControlRoomList {
                     attention.terminal.map {
                         Target(terminal: $0, sinceMs: attention.since_ms, eventMs: attention.event_ms)
                     }
+                },
+                start: group.supervisor.map {
+                    SupervisorStart(state: $0.state, canStart: $0.can_start, failed: $0.failed,
+                                    role: $0.role, cwd: $0.cwd)
                 }))
         }
         self.init(
             waitingCount: snapshot.groups_needing_me,
             waiting: rows.filter { $0.0 }.map { $0.1 },
             quietCount: snapshot.groups_other,
-            quiet: rows.filter { !$0.0 }.map { $0.1 })
+            quiet: rows.filter { !$0.0 }.map { $0.1 },
+            quota: snapshot.quota,
+            supervisorRoles: (snapshot.supervisor_roles ?? []).map { SupervisorRole(key: $0.key, name: $0.name) },
+            chooseSupervisorRole: snapshot.choose_supervisor_role ?? false)
     }
 
     static func decode(snapshot json: Data, showing: String? = nil) throws -> ControlRoomList {
@@ -534,6 +643,10 @@ struct ControlRoomListLayout: Equatable {
     var fits: [String: ControlRoomAskFit]
     var separator: CGRect
     var quietHeader: CGRect
+    /// The allowance block: against the bottom of the panel whatever the
+    /// list above it holds, so that it is there when the list is long. No
+    /// height when the list has none.
+    var quota: CGRect
 
     /// How wide what a row waits on is: the row, less its padding and the
     /// column the glyph stands in.
@@ -598,6 +711,8 @@ struct ControlRoomListLayout: Equatable {
         }
         rows = frames
 
+        let quotaH = list.quota.map { ControlRoomQuotaLayout(quota: $0).height } ?? 0
+        quota = CGRect(x: pad, y: height - pad - quotaH, width: inner, height: quotaH)
     }
 
     /// Where the selection chip rests for a row; nil for a row not listed.

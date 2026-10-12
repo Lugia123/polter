@@ -17,6 +17,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a1",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "needs_approval",
         "under": "needs_approval",
@@ -100,6 +109,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a1",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "needs_approval",
         "under": "needs_approval",
@@ -166,6 +184,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a7",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "needs_approval",
         "under": "needs_approval",
@@ -247,6 +274,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a2",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "needs_answer",
         "under": "needs_answer",
@@ -311,6 +347,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a3",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "failed",
         "under": "failed",
@@ -375,6 +420,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a4",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "done_unseen",
         "under": "done_unseen",
@@ -439,6 +493,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a5",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "working",
         "under": "working",
@@ -520,6 +583,15 @@
         "until_ms": null
       },
       "steward": "0x00000000000000a6",
+      "supervisor": {
+        "state": "present",
+        "can_start": false,
+        "terminal": null,
+        "failed": "none",
+        "role": "polter-supervisor",
+        "cwd": "/Users/me",
+        "cwd_from": "home"
+      },
       "attention": {
         "kind": "idle",
         "under": "idle",
@@ -615,6 +687,7 @@
       "title": "web-app",
       "window": "0x0000000000000010",
       "tab": "0x0000000000000021",
+      "pane": "supervisor",
       "kind": "needs_approval",
       "since_ms": 5760000,
       "event_ms": 5760000,
@@ -634,6 +707,7 @@
       "title": "billing",
       "window": "0x0000000000000010",
       "tab": "0x0000000000000022",
+      "pane": "supervisor",
       "kind": "needs_answer",
       "since_ms": 5340000,
       "event_ms": 5340000,
@@ -653,6 +727,7 @@
       "title": "docs-site",
       "window": "0x0000000000000010",
       "tab": "0x0000000000000023",
+      "pane": "supervisor",
       "kind": "failed",
       "since_ms": 5880000,
       "event_ms": 5880000,
@@ -672,6 +747,7 @@
       "title": "infra",
       "window": "0x0000000000000010",
       "tab": "0x0000000000000024",
+      "pane": "supervisor",
       "kind": "done_unseen",
       "since_ms": 4200000,
       "event_ms": 4200000,
@@ -691,6 +767,7 @@
       "title": "design-system",
       "window": "0x0000000000000010",
       "tab": "0x0000000000000025",
+      "pane": "supervisor",
       "kind": "working",
       "since_ms": 5700000,
       "event_ms": 5700000,
@@ -710,6 +787,7 @@
       "title": "notes",
       "window": "0x0000000000000010",
       "tab": "0x0000000000000026",
+      "pane": "supervisor",
       "kind": "idle",
       "since_ms": 600000,
       "event_ms": 600000,
@@ -729,6 +807,7 @@
       "title": "mobile",
       "window": "0x0000000000000010",
       "tab": "0x0000000000000028",
+      "pane": "supervisor",
       "kind": "idle",
       "since_ms": 1200000,
       "event_ms": 1200000,
@@ -748,6 +827,7 @@
       "title": "web-app worker",
       "window": "0x0000000000000010",
       "tab": "0x0000000000000021",
+      "pane": "worker",
       "kind": "needs_approval",
       "since_ms": 5970000,
       "event_ms": 5970000,
@@ -767,6 +847,7 @@
       "title": "tokens",
       "window": "0x0000000000000010",
       "tab": "0x0000000000000025",
+      "pane": "worker",
       "kind": "idle",
       "since_ms": 0,
       "event_ms": null,
@@ -786,6 +867,7 @@
       "title": "ios-build",
       "window": "0x0000000000000010",
       "tab": "0x0000000000000028",
+      "pane": "worker",
       "kind": "needs_approval",
       "since_ms": 5820000,
       "event_ms": 5820000,
@@ -805,6 +887,7 @@
       "title": "zsh — ~/work",
       "window": "0x0000000000000010",
       "tab": "0x0000000000000027",
+      "pane": "plain",
       "kind": "needs_approval",
       "since_ms": 5940000,
       "event_ms": 5940000,
@@ -824,6 +907,7 @@
       "title": "zsh",
       "window": "0x0000000000000010",
       "tab": "0x0000000000000027",
+      "pane": "plain",
       "kind": "idle",
       "since_ms": 0,
       "event_ms": null,
@@ -889,6 +973,13 @@
       "terminal": "0x00000000000000b7"
     }
   ],
+  "supervisor_roles": [
+    {
+      "key": "polter-supervisor",
+      "name": "Polter Supervisor"
+    }
+  ],
+  "choose_supervisor_role": false,
   "pulses": [
     {
       "terminal": "0x00000000000000a2",
@@ -920,5 +1011,59 @@
       "tab": "0x0000000000000021",
       "group": null
     }
-  ]
+  ],
+  "quota": {
+    "near_percent": 80,
+    "alerts": [
+      {
+        "family": "claude",
+        "level": "near",
+        "span": "five_hour",
+        "used": 92,
+        "resets_ms": 1700008400000,
+        "when": {
+          "form": "minutes",
+          "n": 40
+        },
+        "stale": null,
+        "way_out": null,
+        "at_ms": 1700005880000,
+        "windows": [
+          {
+            "span": "five_hour",
+            "used": 92,
+            "live": true,
+            "resets_ms": 1700008400000
+          },
+          {
+            "span": "seven_day",
+            "used": 30,
+            "live": true,
+            "resets_ms": 1700265200000
+          }
+        ]
+      }
+    ],
+    "line": {
+      "label": "used",
+      "entries": [
+        {
+          "family": "codex",
+          "state": "fresh",
+          "used": 20,
+          "span": "five_hour",
+          "stale": null,
+          "at_ms": 1700005700000,
+          "windows": [
+            {
+              "span": "five_hour",
+              "used": 20,
+              "live": true,
+              "resets_ms": 1700013200000
+            }
+          ]
+        }
+      ]
+    }
+  }
 }

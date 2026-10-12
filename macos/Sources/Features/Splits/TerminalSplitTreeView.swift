@@ -40,12 +40,14 @@ struct TerminalSplitTreeView: View {
             // the tree structure of splits it could result in bad behaviors.
             // See: https://github.com/ghostty-org/ghostty/issues/7546
             .id(node.structuralIdentity)
+            .paneFrameScope(tree)
         }
     }
 }
 
 private struct TerminalSplitSubtreeView: View {
     @EnvironmentObject var ghostty: Ghostty.App
+    @Environment(\.paneFrameGround) private var paneFrameGround
 
     let node: SplitTree<Ghostty.SurfaceView>.Node
     var isRoot: Bool = false
@@ -69,7 +71,7 @@ private struct TerminalSplitSubtreeView: View {
                 }, set: {
                     action(.resize(.init(node: node, ratio: $0)))
                 }),
-                dividerColor: ghostty.config.splitDividerColor,
+                dividerColor: paneFrameGround ? .clear : ghostty.config.splitDividerColor,
                 resizeIncrements: .init(width: 1, height: 1),
                 left: {
                     TerminalSplitSubtreeView(node: split.left, action: action)
@@ -110,6 +112,7 @@ private struct TerminalSplitLeaf: View {
                         isSplit: isSplit)
                 }
             }
+            .paneFramed(surfaceView)
             .background {
                 // If we're dragging ourself, we hide the entire drop zone. This makes
                 // it so that a released drop animates back to its source properly

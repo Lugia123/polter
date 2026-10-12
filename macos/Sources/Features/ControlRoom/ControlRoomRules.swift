@@ -223,6 +223,67 @@ enum ControlRoomRules {
         return answerWanted ? .refuseToTheCore : .refuseAloud
     }
 
+    /// A group the person has just made is selected once the core lists
+    /// it -- not before: the list that is on screen when the answer comes
+    /// back may be the one from before the group existed, and a selection
+    /// that names no row is dropped (`restoredSelection`). `awaited` is the
+    /// name they gave it; the answer is that name when a row has it.
+    static func madeGroupToSelect(_ awaited: String?, in rows: [ControlRoomList.Row]) -> String? {
+        guard let awaited, rows.contains(where: { $0.id == awaited }) else { return nil }
+        return awaited
+    }
+
+    /// Where a tab the core asked for goes.
+    enum NewTab: Equatable {
+        /// Beside the terminal it was asked from, and in front: what a key
+        /// and a menu item have always done.
+        case inFront(of: Home)
+        /// In a terminal window, as a tab of it, **without being brought in
+        /// front**: the person is looking at the control room and stays
+        /// there.
+        case behind(Home)
+        /// In a window of its own: there is no terminal window to put a
+        /// tab in.
+        case ownWindow
+        /// Not opened, and the core is told so. Nothing holds the terminal
+        /// it was asked from.
+        case refused
+
+        enum Home: Equatable {
+            /// The window of the terminal the tab was asked from -- its own
+            /// tab's, wherever its view is at the moment.
+            case askers
+            /// The terminal tabs the control room sits among.
+            case controlRooms
+            /// The terminal window the person used last.
+            case frontmost
+        }
+    }
+
+    /// `asker` is the terminal the tab was asked from, when there is one:
+    /// whether the control room has borrowed it, and whether a terminal
+    /// window still holds it. With no asker the request came from the
+    /// application itself -- the control room starting a supervisor is one --
+    /// and the three facts after it say where there is room.
+    ///
+    /// **A borrowed terminal's tab goes into its own window, behind.** Its
+    /// view is in the control room's window, which takes no terminal tabs;
+    /// asking that window for a tab opened nothing at all and answered
+    /// "done" (the supervisor's `terminal_open`, 2026-10-13).
+    static func newTab(
+        asker: (lent: Bool, hasHome: Bool)?,
+        controlRoomInFront: Bool,
+        tabsBesideControlRoom: Bool,
+        anyTerminalWindow: Bool
+    ) -> NewTab {
+        if let asker {
+            guard asker.hasHome else { return .refused }
+            return asker.lent ? .behind(.askers) : .inFront(of: .askers)
+        }
+        if controlRoomInFront, tabsBesideControlRoom { return .behind(.controlRooms) }
+        return anyTerminalWindow ? .inFront(of: .frontmost) : .ownWindow
+    }
+
     /// What is selected once a snapshot has arrived, and whose choice it
     /// is. `current` is what is selected already (after
     /// `restoredSelection`); `opening` is true for the first snapshot the

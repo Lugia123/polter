@@ -32,6 +32,8 @@ pub const daylog = @import("daylog.zig");
 pub const Fingerprint = @import("Fingerprint.zig");
 pub const inventory = @import("inventory.zig");
 pub const provision = @import("provision.zig");
+pub const quota = @import("quota.zig");
+pub const QuotaWatch = @import("QuotaWatch.zig");
 pub const rpc = @import("rpc.zig");
 pub const Sampler = @import("Sampler.zig");
 pub const Server = @import("Server.zig");
@@ -95,6 +97,8 @@ test {
     _ = notes;
     _ = StatsLog;
     _ = notify;
+    _ = quota;
+    _ = QuotaWatch;
     _ = persona;
     _ = PersonaStore;
     _ = PersonaWaits;

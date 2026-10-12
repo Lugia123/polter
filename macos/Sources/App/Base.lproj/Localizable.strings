@@ -705,6 +705,28 @@
 "The supervisor's terminal is no longer open." = "The supervisor's terminal is no longer open.";
 "The supervisor's terminal is in its own tab." = "The supervisor's terminal is in its own tab.";
 
+/* 总控台：新建群、给没有总管的群启动总管 */
+"A group's name is lowercase letters, digits and dashes, 48 at most." = "A group's name is lowercase letters, digits and dashes, 48 at most.";
+"There is already a group by that name." = "There is already a group by that name.";
+"There is no room for another group." = "There is no room for another group.";
+"Group name" = "Group name";
+"This group already has a supervisor." = "This group already has a supervisor.";
+"A supervisor is already being started for this group." = "A supervisor is already being started for this group.";
+"There is no role that makes a supervisor. Add one in the role library." = "There is no role that makes a supervisor. Add one in the role library.";
+"That role does not make a supervisor." = "That role does not make a supervisor.";
+"That directory is not there." = "That directory is not there.";
+"No tab could be opened for it." = "No tab could be opened for it.";
+"Polter could not find its own program to start the role with." = "Polter could not find its own program to start the role with.";
+"Starting the supervisor…" = "Starting the supervisor…";
+"The supervisor did not start: its tab never opened." = "The supervisor did not start: its tab never opened.";
+"The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why." = "The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why.";
+"The supervisor did not start: its tab was closed first." = "The supervisor did not start: its tab was closed first.";
+"The supervisor did not start." = "The supervisor did not start.";
+"Directory" = "Directory";
+"Choose" = "Choose";
+"Start Supervisor" = "Start Supervisor";
+"Where the tab starts" = "Where the tab starts";
+
 /* 终端进程退出的提示条、命令结束的通知、命令面板里的更新项：原先是裸赋值的英文，没进过这张表 */
 "Process exited after **`%@`**. Press any key to close the terminal." = "Process exited after **`%@`**. Press any key to close the terminal.";
 "Process exited. Press any key to close the terminal." = "Process exited. Press any key to close the terminal.";
@@ -714,3 +736,31 @@
 "Command took %@." = "Command took %@.";
 "Command took %@ and exited with code %@." = "Command took %@ and exited with code %@.";
 "Update Polter and Restart" = "Update Polter and Restart";
+
+/* 总控台：左栏底部的额度（control-room.md 3.6）。家的名字 Claude、Codex 不翻 */
+"5-hour" = "5-hour";
+"7-day" = "7-day";
+"30-day" = "30-day";
+"%@ h ago" = "%@ h ago";
+"%@ d ago" = "%@ d ago";
+"Allowance used" = "Allowance used";
+"Allowance" = "Allowance";
+"No numbers yet" = "No numbers yet";
+"No numbers yet. Once a session has run, this shows how much is used." = "No numbers yet. Once a session has run, this shows how much is used.";
+"reset" = "reset";
+"unreadable" = "unreadable";
+"%@, %@" = "%@, %@";
+"%@ %@ %@ used" = "%@ %@ %@ used";
+"%@ %@ used" = "%@ %@ used";
+"%@ %@ allowance used up" = "%@ %@ allowance used up";
+"%@ allowance used up" = "%@ allowance used up";
+"back in %@ min" = "back in %@ min";
+"back in %@ h" = "back in %@ h";
+"back in %@ d" = "back in %@ d";
+"back at %@" = "back at %@";
+"%@ has room." = "%@ has room.";
+"as of %@" = "as of %@";
+"%@: this account's allowance could not be read." = "%@: this account's allowance could not be read.";
+
+/* 分屏框：worker 那一格的标题带上，名字后面说明身份的字 */
+"Worker" = "Worker";

@@ -1105,3 +1105,124 @@ test "agent_cli hooks: an unreadable version, or no Polter path, gets no hooks a
     try testing.expect(!nowhere.launch.hooks);
     try testing.expect(std.mem.indexOf(u8, nowhere.notes, "did not say where Polter is") != null);
 }
+
+// -- the status line (control-room.md 3.6) -------------------------------------
+
+/// The value of one variable in a `launch` answer's environment.
+fn launchEnv(l: Launch, name: []const u8) ?[]const u8 {
+    for (l.env) |kv| if (std.mem.eql(u8, kv[0], name)) return kv[1];
+    return null;
+}
+
+fn writeHomeSettings(aa: Allocator, io: std.Io, rig: HookRig, json: []const u8) !void {
+    const path = try std.fmt.allocPrint(aa, "{s}/.claude/settings.json", .{rig.home});
+    var f = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer f.close(io);
+    try f.writeStreamingAll(io, json);
+}
+
+test "agent_cli status line: with the hooks goes Polter's status line, and with nobody's to stand in for, nothing is chained" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rig = try hookRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    const a = (try askHooks(aa, io, rig, .{ .version = "2.1.296 (Claude Code)" })) orelse return error.SkipZigTest;
+    const line = (a.settings.?.get("statusLine") orelse return error.TestExpectedStatusLine).object;
+    try testing.expectEqualStrings("command", line.get("type").?.string);
+    // One line of `sh`, the apostrophe in the path closed and reopened.
+    try testing.expectEqualStrings(
+        "'/Applications/It'\\''s Polter/polter' +statusline --cli claude-code",
+        line.get("command").?.string,
+    );
+    const chained = launchEnv(a.launch, "POLTER_STATUSLINE_CHAIN");
+    try testing.expect(chained == null);
+}
+
+test "agent_cli status line: the person's own is handed on whole, and its other fields stay on the line" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rig = try hookRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    const theirs = "~/.claude/statusline.sh --who '我' \"$HOME\" | cut -c1-80";
+    try writeHomeSettings(aa, io, rig, try std.fmt.allocPrint(
+        aa,
+        "{{\"statusLine\":{{\"type\":\"command\",\"command\":{f},\"padding\":0,\"refreshInterval\":5}}}}",
+        .{std.json.fmt(theirs, .{})},
+    ));
+
+    const a = (try askHooks(aa, io, rig, .{ .version = "2.1.296 (Claude Code)" })) orelse return error.SkipZigTest;
+    const line = a.settings.?.get("statusLine").?.object;
+    try testing.expect(std.mem.endsWith(u8, line.get("command").?.string, " +statusline --cli claude-code"));
+    const padding = line.get("padding").?.integer;
+    try testing.expectEqual(@as(i64, 0), padding);
+    try testing.expectEqual(@as(i64, 5), line.get("refreshInterval").?.integer);
+    const chained = launchEnv(a.launch, "POLTER_STATUSLINE_CHAIN") orelse return error.TestExpectedChain;
+    try testing.expectEqualStrings(theirs, chained);
+
+    // The role's own, given inline, comes before the file.
+    const role = (try askHooks(aa, io, rig, .{
+        .version = "2.1.296 (Claude Code)",
+        .args = &.{ "--settings", "{\"statusLine\":{\"type\":\"command\",\"command\":\"echo role\"}}" },
+    })) orelse return error.SkipZigTest;
+    const from_role = launchEnv(role.launch, "POLTER_STATUSLINE_CHAIN") orelse return error.TestExpectedChain;
+    try testing.expectEqualStrings("echo role", from_role);
+    try testing.expectEqual(@as(usize, 1), role.settings_count);
+}
+
+test "agent_cli status line: where there are no hooks there is no status line either, and the person's is left alone" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rig = try hookRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+    try writeHomeSettings(aa, io, rig, "{\"statusLine\":{\"type\":\"command\",\"command\":\"echo mine\"}}");
+
+    const old = (try askHooks(aa, io, rig, .{ .version = "2.1.144 (Claude Code)" })) orelse return error.SkipZigTest;
+    const set = old.settings.?.get("statusLine") != null;
+    try testing.expect(!set);
+    try testing.expect(launchEnv(old.launch, "POLTER_STATUSLINE_CHAIN") == null);
+}
+
+test "agent_cli status line: the line it writes is one sh reads back as the Polter it was given, apostrophe and space and all" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rig = try hookRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    // A stand-in Polter at a path a shell would cut in three, that says what
+    // it was run with.
+    const dir = try std.fmt.allocPrint(aa, "{s}/It's Polter", .{rig.root});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    const polter = try std.fmt.allocPrint(aa, "{s}/polter", .{dir});
+    {
+        var f = try std.Io.Dir.cwd().createFile(io, polter, .{ .permissions = .fromMode(0o755) });
+        defer f.close(io);
+        try f.writeStreamingAll(io, "#!/bin/sh\nprintf '%s|' \"$@\"\n");
+    }
+
+    const a = (try askHooks(aa, io, rig, .{ .version = "2.1.296 (Claude Code)", .polter = polter })) orelse return error.SkipZigTest;
+    const command = a.settings.?.get("statusLine").?.object.get("command").?.string;
+    const ran = try std.process.run(aa, io, .{ .argv = &.{ "/bin/sh", "-c", command } });
+    try testing.expectEqualStrings("+statusline|--cli|claude-code|", ran.stdout);
+}

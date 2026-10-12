@@ -17,7 +17,8 @@ struct ControlRoomView: View {
             if let list = model.list {
                 ControlRoomListView(
                     list: list,
-                    selection: Binding(get: { model.selection }, set: { model.choose($0) }))
+                    selection: Binding(get: { model.selection }, set: { model.choose($0) }),
+                    onNewGroup: { model.newGroup(named: $0) })
             } else {
                 // No snapshot yet: the list's place, with nothing in it.
                 Color.clear.frame(width: CGFloat(Look.Side.width))
@@ -34,7 +35,17 @@ struct ControlRoomView: View {
                     // rebuilt by a redraw of this one.
                     DetailHost(container: detail)
                     if model.detail.terminal == nil {
-                        ControlRoomDetailMessage(detail: model.detail, askFor: model.askForTerminal)
+                        ControlRoomDetailMessage(
+                            detail: model.detail,
+                            askFor: model.askForTerminal,
+                            start: model.selectedRow?.start,
+                            roles: model.list?.supervisorRoles ?? [],
+                            chooseRole: model.list?.chooseSupervisorRole ?? false,
+                            refusal: model.startRefusal.flatMap { $0.group == model.selection ? $0.message : nil },
+                            onStart: { role, cwd in
+                                guard let group = model.selection else { return }
+                                model.startSupervisor(for: group, role: role, cwd: cwd)
+                            })
                     }
                 }
             }
