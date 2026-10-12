@@ -18,6 +18,7 @@ use polter_control_room::quota;
 use polter_control_room::look::selection;
 use polter_control_room::slide;
 use polter_control_room::snapshot::{self, Shown};
+use polter_control_room::stackstrip;
 
 /// What steps want, for the fitting rule: one sentence short and long, a
 /// command at, under and over each of the two ceilings.
@@ -400,6 +401,27 @@ fn main() {
             println!("quota height={:.3} line_y={}", ql.height, ql.line_y.map_or("-".to_string(), |y| format!("{y:.3}")));
         }
         None => println!("quota none"),
+    }
+
+    for (n, (wants, current, width, status)) in stackstrip::CASES.iter().enumerate() {
+        let sl = stackstrip::layout(wants, *current, *width, *status);
+        let tabs: Vec<String> = sl
+            .tabs
+            .iter()
+            .map(|t| format!("{}@{:.3}+{:.3}{}{}{}", t.member, t.x, t.width, if t.current { "*" } else { "" }, if t.separator_before { "|" } else { "" }, if t.squeezed { "~" } else { "" }))
+            .collect();
+        let hidden: Vec<String> = sl.hidden.iter().map(|i| i.to_string()).collect();
+        println!(
+            "strip {n} tabs=[{}] hidden=[{}] more={} add={:.3} status={}",
+            tabs.join(" "),
+            hidden.join(","),
+            sl.more_x.map_or("-".to_string(), |x| format!("{x:.3}")),
+            sl.add_x,
+            sl.status.map_or("-".to_string(), |(a, b)| format!("{a:.3}..{b:.3}")),
+        );
+    }
+    for name in ["", "api", "frontend", "任务", "billing-worker"] {
+        println!("strip nominal {} plain={:.3} glyph={:.3}", quote(name), stackstrip::nominal_width(name, false), stackstrip::nominal_width(name, true));
     }
 
     let lay = ListLayout::new(&l, height);

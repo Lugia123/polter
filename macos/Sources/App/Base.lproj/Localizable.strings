@@ -764,3 +764,7 @@
 
 /* 分屏框：worker 那一格的标题带上，名字后面说明身份的字 */
 "Worker" = "Worker";
+
+/* 分屏框：层叠标签条（control-room.md 12.6.2）。还没有接线 */
+"More tabs" = "More tabs";
+"Add a terminal to this pane" = "Add a terminal to this pane";

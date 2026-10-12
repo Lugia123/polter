@@ -244,6 +244,19 @@ pub mod stack_tab {
     pub const SEPARATOR_HEIGHT: f64 = 12.0;
     /// Source: design v17, src/style.css.
     pub const ADD_BUTTON: f64 = 28.0;
+    /// From the status at the right end of the strip to the strip's right edge. In a supervisor's frame this is measured inside the border, like `inset`.
+    /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
+    pub const TRAILING: f64 = 12.0;
+    /// The least between the plus and the status at the right end.
+    /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
+    pub const STATUS_GAP: f64 = 8.0;
+    /// The `more` button that stands for the tabs there was no room for: as wide as the plus, between the last tab and the plus.
+    /// TENTATIVE (other candidate: 0). The design draws no strip with more tabs than fit. The other way is to scroll the strip and have no button.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const MORE_BUTTON: f64 = 28.0;
+    /// How wide one character of a tab's name is taken to be where there is no font to measure with: what the two hosts are held to one answer by. A wide character is two.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const NOMINAL_CELL_WIDTH: f64 = 8.0;
     /// The narrowest a tab is squeezed to before the rest go behind a `more` menu at the right end. 68 is the design's three-letter tab: padding 12 + three cells + gap 8 + glyph 14 + padding 12.
     /// TENTATIVE (other candidate: 104). 104 is the design's eight-letter tab. The design draws no squeezed strip; where squeezing stops has not been ruled on.
     /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
@@ -682,6 +695,7 @@ pub const TENTATIVE: &[&str] = &[
     "side.ask_max_lines",
     "side.ask_max_steps",
     "stack_tab.inset",
+    "stack_tab.more_button",
     "stack_tab.min_width",
     "selection.spring_damping",
     "selection.glass_at_rest",

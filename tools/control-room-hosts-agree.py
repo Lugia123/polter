@@ -65,7 +65,11 @@ nominal count on six strings; and
 where the arrow keys take the selection from every row; and the allowance
 block as each side read it -- every account opened out and every one in the
 line, word for word and number for number, each of their windows -- and how
-high each side makes the block and where its parts start.
+high each side makes the block and where its parts start; and the strip of
+tabs over a pane that holds a stack -- on eighteen made-up stacks, where each
+tab is and how wide, which is in front, where a hairline stands, which are
+cut short, which go behind `more`, where `more`, the plus and the status are
+-- and a tab's nominal width for five names.
 
 **NOT COMPARED, and why.**
 
@@ -123,6 +127,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLending.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomQuota.swift",
+    "macos/Sources/Features/ControlRoom/PaneStackStrip.swift",
     "macos/Sources/Features/ControlRoom/PaneFrame.swift",
     "macos/Sources/Features/Terminal/TabAccessory.swift",
 ]
@@ -420,6 +425,40 @@ if let q = list.quota {
     print("quota height=\(f(ql.height)) line_y=\(ql.lineY.map { f($0) } ?? "-")")
 } else {
     print("quota none")
+}
+
+let stripCases: [([CGFloat], Int, CGFloat, CGFloat)] = [
+    ([], 0, 400, 0),
+    ([60], 0, 300, 0),
+    ([100, 60, 60], 1, 400, 50),
+    ([60, 60, 60, 60], 0, 600, 0),
+    ([60, 60, 60, 60], 2, 600, 0),
+    ([60, 60, 60, 60], 3, 600, 0),
+    ([200, 60, 200, 60], 1, 460, 0),
+    ([200, 60, 200, 60], 0, 460, 0),
+    ([200, 72, 200, 200], 1, 336, 0),
+    ([200, 72, 200, 200], 1, 335, 0),
+    ([100, 100, 100, 100, 100, 100, 100, 100], 6, 400, 0),
+    ([100, 100, 100, 100, 100, 100, 100, 100], 1, 400, 0),
+    ([120, 80], 0, 200, 60),
+    ([120, 80], 0, 330, 60),
+    ([60, 60], 7, 400, 0),
+    ([94, 70, 48, 126, 56, 150, 78], 3, 520, 70),
+    ([94, 70, 48, 126, 56, 150, 78, 94, 56, 142, 78, 56], 9, 520, 70),
+    ([300], 0, 100, 40),
+]
+for (n, c) in stripCases.enumerated() {
+    let sl = PaneStackStripLayout(wants: c.0, current: c.1, width: c.2, status: c.3)
+    let tabs = sl.tabs.map { t in
+        "\(t.member)@\(f(t.x))+\(f(t.width))\(t.current ? "*" : "")\(t.separatorBefore ? "|" : "")\(t.squeezed ? "~" : "")"
+    }
+    let status = sl.status.map { "\(f($0.lowerBound))..\(f($0.upperBound))" } ?? "-"
+    print("strip \(n) tabs=[\(tabs.joined(separator: " "))] hidden=[\(sl.hidden.map(String.init).joined(separator: ","))] "
+        + "more=\(sl.moreX.map { f($0) } ?? "-") add=\(f(sl.addX)) status=\(status)")
+}
+for name in ["", "api", "frontend", "任务", "billing-worker"] {
+    print("strip nominal \(quote(name)) plain=\(f(PaneStackStripLayout.nominalWidth(name: name, glyph: false))) "
+        + "glyph=\(f(PaneStackStripLayout.nominalWidth(name: name, glyph: true)))")
 }
 
 let lay = ControlRoomListLayout(list: list, height: CGFloat(height))

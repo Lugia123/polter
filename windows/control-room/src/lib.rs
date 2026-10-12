@@ -51,6 +51,7 @@ pub mod rules;
 pub mod scene;
 pub mod slide;
 pub mod snapshot;
+pub mod stackstrip;
 pub mod tabstrip;
 
 #[cfg(test)]

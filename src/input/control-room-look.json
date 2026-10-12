@@ -160,6 +160,10 @@
       "gap": { "v": 8, "src": "v17-style" },
       "separator_height": { "v": 12, "src": "v17-style" },
       "add_button": { "v": 28, "src": "v17-style" },
+      "trailing": { "v": 12, "src": "v15-panes", "doc": "From the status at the right end of the strip to the strip's right edge. In a supervisor's frame this is measured inside the border, like `inset`." },
+      "status_gap": { "v": 8, "src": "v15-panes", "doc": "The least between the plus and the status at the right end." },
+      "more_button": { "v": 28, "src": "undesigned", "doc": "The `more` button that stands for the tabs there was no room for: as wide as the plus, between the last tab and the plus.", "tentative": { "alt": 0, "why": "The design draws no strip with more tabs than fit. The other way is to scroll the strip and have no button." } },
+      "nominal_cell_width": { "v": 8, "src": "undesigned", "doc": "How wide one character of a tab's name is taken to be where there is no font to measure with: what the two hosts are held to one answer by. A wide character is two." },
       "min_width": {
         "v": 68,
         "src": "v15-panes",

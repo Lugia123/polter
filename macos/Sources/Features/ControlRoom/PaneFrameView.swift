@@ -33,6 +33,12 @@ struct PaneFrameView<Content: View>: View {
     /// over. Nil where something else clips it (the control room rounds
     /// the layer that holds the terminal).
     var cover: Color?
+    /// The terminals this pane holds, when it holds more than the one it
+    /// shows: the title gives way to a strip of tabs (`PaneStackStripView`).
+    /// **Nothing passes one yet** -- no pane holds a stack (12.6.2) -- and
+    /// without one this view is what it was.
+    var stack: PaneStack?
+    var stackActions = PaneStackActions()
     @ViewBuilder var content: () -> Content
 
     @Environment(\.colorScheme) private var scheme
@@ -50,15 +56,27 @@ struct PaneFrameView<Content: View>: View {
         PaneFrameBar(wears: wears, title: title, caption: caption)
     }
 
+    /// The strip of tabs that stands where the bar would.
+    private func strip(_ stack: PaneStack, _ theme: Look.Theme) -> PaneStackStripView {
+        PaneStackStripView(stack: stack, wears: wears, title: title,
+                           well: well ?? theme.terminalBackground.color, actions: stackActions)
+    }
+
     private func supervisor(_ theme: Look.Theme) -> some View {
         let bezel = CGFloat(Look.Space.supervisorBezel)
         let hairline = CGFloat(Look.Line.hairline)
         let outer = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.supervisorOuter), style: .continuous)
         let inner = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.supervisorInner), style: .continuous)
         return VStack(spacing: 0) {
-            bar()
-                .frame(height: CGFloat(Look.Pane.barHeight))
-                .padding(.horizontal, bezel + CGFloat(Look.Pane.supervisorBarPaddingX))
+            if let stack {
+                // Between the content's edges: the tabs are measured from
+                // where the terminal starts, inside the border.
+                strip(stack, theme).padding(.horizontal, bezel)
+            } else {
+                bar()
+                    .frame(height: CGFloat(Look.Pane.barHeight))
+                    .padding(.horizontal, bezel + CGFloat(Look.Pane.supervisorBarPaddingX))
+            }
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(well ?? theme.terminalBackground.color)
@@ -101,15 +119,19 @@ struct PaneFrameView<Content: View>: View {
         let radius = CGFloat(Look.Radius.worker)
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         return VStack(spacing: 0) {
-            bar()
-                .frame(height: CGFloat(Look.Pane.barHeight))
-                .padding(.horizontal, CGFloat(Look.Pane.barPaddingX))
-                .background(theme.workerBand.color)
-                .overlay(alignment: .bottom) {
-                    if Look.Pane.workerBandHasLineBelow {
-                        Rectangle().fill(theme.lineFaint.color).frame(height: CGFloat(Look.Line.hairline))
+            if let stack {
+                strip(stack, theme).background(theme.workerBand.color)
+            } else {
+                bar()
+                    .frame(height: CGFloat(Look.Pane.barHeight))
+                    .padding(.horizontal, CGFloat(Look.Pane.barPaddingX))
+                    .background(theme.workerBand.color)
+                    .overlay(alignment: .bottom) {
+                        if Look.Pane.workerBandHasLineBelow {
+                            Rectangle().fill(theme.lineFaint.color).frame(height: CGFloat(Look.Line.hairline))
+                        }
                     }
-                }
+            }
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -129,9 +151,16 @@ struct PaneFrameView<Content: View>: View {
         let radius = CGFloat(Look.Radius.plain)
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         return VStack(spacing: 0) {
-            bar()
-                .frame(height: CGFloat(Look.Pane.plainTitleBandHeight))
-                .padding(.horizontal, CGFloat(Look.Pane.plainTitleInsetX))
+            if let stack {
+                // The design drew no ordinary terminal with a stack: with
+                // a band like a worker's, or with none (`PlainStyle`).
+                strip(stack, theme)
+                    .background(stack.plainStyle == .band ? theme.workerBand.color : Color.clear)
+            } else {
+                bar()
+                    .frame(height: CGFloat(Look.Pane.plainTitleBandHeight))
+                    .padding(.horizontal, CGFloat(Look.Pane.plainTitleInsetX))
+            }
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
