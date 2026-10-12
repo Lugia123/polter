@@ -43,8 +43,14 @@ pub const Options = struct {
 /// **The person's own status line is exactly what it was.** When they had
 /// one, it is run with the same bytes on its stdin and its stdout and
 /// stderr go straight to the CLI -- they are never read here, so they
-/// cannot be changed here -- and its exit code is this command's. When
-/// they had none, this writes nothing.
+/// cannot be changed here -- and its exit code is this command's. Not a
+/// byte is added to it.
+///
+/// When they had none, the line would be an empty one: the CLI keeps a row
+/// for a status line whatever the command prints (measured on Claude Code
+/// 2.1.296: one blank row under the input box, with no output and with a
+/// failing exit code alike). So this says in it, briefly, what it has just
+/// read -- `quota.statusText` -- and nothing when it has read nothing.
 pub fn run(alloc: Allocator) !u8 {
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();
@@ -58,8 +64,18 @@ pub fn run(alloc: Allocator) !u8 {
     const io = global.io();
 
     const dir = QuotaWatch.dropDir(aa, io, &env) catch null;
-    return runWith(aa, io, env.get(chain_env), dir, @intCast(@max(0, daylog.nowMs(io))));
+    return runWith(aa, io, env.get(chain_env), dir, @intCast(@max(0, daylog.nowMs(io))), .{
+        .lang = .of(env.get("LC_ALL"), env.get("LC_MESSAGES"), env.get("LANG")),
+        // https://no-color.org: set to anything but empty.
+        .color = if (env.get("NO_COLOR")) |v| v.len == 0 else true,
+    });
 }
+
+/// How the line this writes itself is written.
+pub const Own = struct {
+    lang: quota.Lang,
+    color: bool,
+};
 
 /// Everything `run` does once it has its environment, so a test can drive
 /// the real path. Reads stdin; writes nothing to stdout itself.
@@ -69,6 +85,7 @@ pub fn runWith(
     chain: ?[]const u8,
     drop_dir: ?[]const u8,
     now_ms: u64,
+    own: Own,
 ) u8 {
     // Read before anything else can fail, so the CLI's pipe is always
     // drained.
@@ -80,8 +97,15 @@ pub fn runWith(
         return 0;
     };
 
-    // Theirs first, so that it is not kept waiting on ours.
-    var child: ?std.process.Child = if (chain) |command| start(io, command, payload) else null;
+    // Theirs first, so that it is not kept waiting on ours. An empty
+    // command is nobody's.
+    const theirs: ?[]const u8 = if (chain) |c| (if (c.len > 0) c else null) else null;
+    var child: ?std.process.Child = if (theirs) |command| start(io, command, payload) else null;
+
+    // Only where there is no status line of theirs for it to be added to.
+    if (theirs == null) say(aa, io, payload, now_ms, own) catch |err| {
+        log.warn("+statusline: its own line was not written err={t}", .{err});
+    };
 
     if (drop_dir) |dir| keep(aa, io, dir, payload, now_ms) catch |err| {
         log.warn("+statusline: the allowance was not kept err={t}", .{err});
@@ -100,7 +124,6 @@ pub fn runWith(
 /// Run the person's own status line with the bytes this one was given.
 /// Its stdout and stderr are the CLI's, untouched.
 fn start(io: std.Io, command: []const u8, payload: []const u8) ?std.process.Child {
-    if (command.len == 0) return null;
     // Only configured where a status line is a line of `sh`; see the
     // adapter.
     if (builtin.os.tag == .windows) return null;
@@ -122,6 +145,17 @@ fn start(io: std.Io, command: []const u8, payload: []const u8) ?std.process.Chil
         child.stdin = null;
     }
     return child;
+}
+
+/// The row the CLI keeps for a status line, when nobody else's is in it:
+/// how much of each window is used.
+fn say(aa: Allocator, io: std.Io, payload: []const u8, now_ms: u64, own: Own) !void {
+    const windows = quota.fromClaudeStatus(aa, payload) orelse return;
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try quota.statusText(&w, windows, now_ms, own.lang, own.color);
+    if (w.buffered().len == 0) return;
+    try std.Io.File.stdout().writeStreamingAll(io, w.buffered());
 }
 
 /// Leave what the input says of the allowance where the app reads it.
@@ -163,7 +197,7 @@ fn runChild(alloc: Allocator, chain: ?[]const u8, drop_dir: ?[]const u8, payload
         _ = sys.close(out_pipe[1]);
         var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
         var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-        const code = runWith(arena.allocator(), threaded.io(), chain, drop_dir, 1_700_000_000_000);
+        const code = runWith(arena.allocator(), threaded.io(), chain, drop_dir, 1_700_000_000_000, .{ .lang = .zh, .color = false });
         std.c._exit(code);
     }
 
@@ -254,7 +288,7 @@ test "+statusline: its exit code is the person's command's" {
     try testing.expectEqualStrings("out", ran.stdout);
 }
 
-test "+statusline: with no status line to stand in for it writes nothing, and still keeps the allowance" {
+test "+statusline: with no status line to stand in for, the row says how much is used, and the allowance is still kept" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const alloc = testing.allocator;
     var threaded: std.Io.Threaded = .init(alloc, .{});
@@ -264,16 +298,35 @@ test "+statusline: with no status line to stand in for it writes nothing, and st
     defer alloc.free(dir);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
+    // The input's two windows end an hour and four and a half days after
+    // the moment the child is told it is.
     const ran = try runChild(alloc, null, dir, status_input);
     defer alloc.free(ran.stdout);
     try testing.expectEqual(@as(u8, 0), ran.code);
-    const said = ran.stdout.len;
-    try testing.expectEqual(@as(usize, 0), said);
+    try testing.expectEqualStrings("额度 5 小时 61% · 7 天 12%\n", ran.stdout);
+
+    // An empty command is nobody's status line either.
+    const empty = try runChild(alloc, "", dir, status_input);
+    defer alloc.free(empty.stdout);
+    try testing.expectEqualStrings("额度 5 小时 61% · 7 天 12%\n", empty.stdout);
 
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();
     const kept = QuotaWatch.readClaude(arena.allocator(), io, dir) != null;
     try testing.expect(kept);
+}
+
+test "+statusline: with nothing known of the allowance the row is left empty, as it was" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const alloc = testing.allocator;
+    // A session before its first answer, and input that is not JSON.
+    for ([_][]const u8{ "{\"session_id\":\"s2\",\"version\":\"2.1.296\"}", "not { json", "" }) |input| {
+        const ran = try runChild(alloc, null, null, input);
+        defer alloc.free(ran.stdout);
+        try testing.expectEqual(@as(u8, 0), ran.code);
+        const said = ran.stdout.len;
+        try testing.expectEqual(@as(usize, 0), said);
+    }
 }
 
 test "+statusline: input that says nothing of the allowance leaves the last number alone" {

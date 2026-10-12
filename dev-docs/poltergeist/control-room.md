@@ -510,13 +510,22 @@ agent、要不要让某个群先停、还要多久恢复。**一行是一个账�
   **只对 Polter 按角色启动的会话**，适配器在带 hooks 的同一个 `--settings` 里把 `statusLine` 设成
   `'<polter>' +statusline --cli claude-code`（`plugins/claude-code/adapter.py`；条件与 hooks 完全相同，
   没带 hooks 的会话也不带它）。`+statusline`（`src/cli/statusline.zig`）把额度写进
-  `<状态目录>/quota/claude.json`，别的什么都不做。
+  `<状态目录>/quota/claude.json`。
   - **用户原来的状态栏照旧。**适配器按 Claude Code 自己的先后找到这个会话本来会用的那一条（角色自带的
     `--settings`、项目的 `settings.local.json`、项目的 `settings.json`、用户的 `~/.claude/settings.json`），
     把它的命令放进环境变量 `POLTER_STATUSLINE_CHAIN`，它的其它字段（`padding` 等）原样留在 `statusLine` 上。
     `+statusline` 用同一份 stdin 起它，它的 stdout 和 stderr 直接就是 Claude Code 的——这边不读，所以
     改不了；退出码也是它的。有一条测试在真进程上量：一条带颜色、非 UTF-8 字节、NUL、不以换行结尾的输出
     逐字节不变，它读到的 stdin 也逐字节不变。**用户的设置文件只读不写。**
+  - **用户没有自己的状态栏时，这一行由 Polter 写一句短的额度**（暂定，2026-10-13）。原因是量出来的：
+    Claude Code 2.1.296 只要配了 `statusLine` 就在输入框下面留一行，命令不输出、退出码非零都照留——
+    不写就是每个按角色启动的会话多一行空白。写的是刚从 stdin 读到的那几段，规则与左栏那一块相同
+    （`quota.statusText`）：平常只有每段的百分比（「额度 5 小时 61% · 7 天 12%」）；过八成的那一段
+    带上还有多久恢复，并且只有这一段是红的；用完的那一段不写数，写「用完了」；已过恢复时刻的那一段
+    不写；什么都没有时一个字节都不输出——所以一个会话在第一次应答之前，这一行仍是空的。中英文看
+    `LC_ALL`、`LC_MESSAGES`、`LANG`（以 `zh` 开头是中文，否则英文）；在 mac 上量到的是：进程启动后
+    `LANG` 总是系统的语言与地区，终端里另设的 `LANG` 不起作用（原因没查），`LC_ALL`、`LC_MESSAGES` 盖得过。
+    设了 `NO_COLOR` 就不上色。**有用户命令时一个字节都不加。**
   - 用户自己手开的 claude 没有这一条，也就没有数：这一家显示上一次的数并慢慢变旧，或者「还没有数」。
   - Windows 上不带：状态栏没有 exec 形式，是交给当地 shell 的一行，同一个字符串在 Git Bash 和 PowerShell
     里引号的写法不一样（#888 同类）。
@@ -532,13 +541,13 @@ agent、要不要让某个群先停、还要多久恢复。**一行是一个账�
 
 **没验证的：**
 
-- 没有在真 app 里看过这一块（离屏渲染与设计稿并排过，`build-08/`）；真实会话下从 statusLine 到左栏这一整条
-  没有走过。
-- 用户没有自己的状态栏时，Polter 的那一条什么都不输出。Claude Code 对一条空的状态栏会不会留一行空白，
-  没有看过。
+- 没有在真 app 里看过这一块（离屏渲染与设计稿并排过，`build-08/`）。真实的 Claude Code 会话里，从状态栏到
+  落盘文件、再由核心读成这一块里的一项，2026-10-13 走通过（任务 #1455、#1458）；最后一段——app 里的线程
+  读到它、左栏画出来——没有走过。
 - Claude Code 用哪个 shell 跑状态栏命令没有证实；`+statusline` 用 `/bin/sh -c` 跑用户原来的那一条。用户的
   命令如果依赖别的 shell 的写法，结果可能不同。
-- `+statusline` 每次刷新起一个进程（状态栏在 agent 说话时一秒刷新几次）。花多少时间没有量。
+- `+statusline` 每次刷新起一个进程（状态栏在 agent 说话时一秒刷新几次）：Debug 构建量到每次中位数 79 ms，
+  基本是进程启动；Release 没量。
 - 列表很长时，行会画到这一块底下：列表本身还不会滚，也不裁剪，这是现状，不是这一块引入的。
 - Codex 续接一个更早日期的会话时，那个文件不在最近三个日期目录里，新数读不到。
 - Windows 宿主不画这一块；`windows/control-room` 读得进它、算得出它的高度，对照闸逐项比过。

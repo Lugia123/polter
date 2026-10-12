@@ -54,6 +54,9 @@ one this session would have used -- the role's own, else the project's local
 settings, the project's, the user's -- is passed on in the environment as
 `POLTER_STATUSLINE_CHAIN`, and `+statusline` runs it with the same input and
 lets its output through untouched. Its other fields (`padding`, …) are kept.
+With no status line of the person's to stand in for, `+statusline` writes the
+row itself -- a few words on how much is used -- because Claude Code keeps a
+row for a status line whatever the command prints.
 The user's settings files are read and never written. Not on Windows: a
 status line has no exec form, it is a line for whichever shell Claude Code
 finds there, and one string is not quoted the same for all of them (#888).

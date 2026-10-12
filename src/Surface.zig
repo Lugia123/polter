@@ -4198,6 +4198,8 @@ fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
         error.DraftInLine,
         => {
             self.app.poltergeist.deliveryRefused(self.id, self.app.chat.peers());
+            // The same for a group's "N new messages": not typed, so not told.
+            self.app.chat.noticeRefused(self.id);
 
             // **And something has to come back for it.** "Offered again as
             // soon as anything drives a delivery" was true and not enough:

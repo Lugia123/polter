@@ -155,6 +155,12 @@ const Member = struct {
     /// When it was last told this group had messages, for rate limiting.
     last_told_ms: ?u64 = null,
 
+    /// The newest message this member has been told is waiting. A sweep
+    /// tells it again only about something newer: sweeps now also run when
+    /// a notice is come back for, and without this every one of them would
+    /// say "N new messages" about the same N.
+    told_seq: u64 = 0,
+
     /// What it takes to find this terminal again after a restart.
     ///
     /// Recorded by the host when the member joins, because these are facts
@@ -1046,6 +1052,7 @@ pub fn markTold(self: *Chat, name: []const u8, id: Id, now_ms: u64) void {
     const group = self.groups.getPtr(name) orelse return;
     const who = group.members.getPtr(id) orelse return;
     who.last_told_ms = now_ms;
+    who.told_seq = group.head();
 }
 
 /// Record where a message landed in the log.
@@ -1113,6 +1120,17 @@ fn utf8Cut(text: []const u8, limit: usize) []const u8 {
     return text[0..i];
 }
 
+/// Whether anything `who` may see and has not been handed, written by
+/// somebody other than `id`, comes before `seq`.
+fn unreadBefore(group: *const Group, who: Member, id: Id, seq: u64) bool {
+    for (group.log.items) |m| {
+        if (m.seq >= seq) break;
+        if (m.seq <= who.cursor or m.seq <= who.floor) continue;
+        if (m.from != id) return true;
+    }
+    return false;
+}
+
 fn append(
     self: *Chat,
     group: *Group,
@@ -1143,8 +1161,20 @@ fn append(
         .mentions = named,
     });
 
-    // The sender has seen its own message by definition.
-    if (group.members.getPtr(from)) |m| m.cursor = seq;
+    // The sender has seen its own message by definition -- **and nothing
+    // else by posting it.** This used to set the cursor to the new message
+    // outright, which also claimed on the sender's behalf everything between
+    // where it had read to and here: a message that arrived after its last
+    // read and before its own next post was skipped by every later read
+    // that did not name a `since`, and `unread` stopped counting it, so no
+    // notice ever came for it either. Three in one night, one of them a
+    // delivery (2026-10-13). So the cursor moves only when nothing the
+    // sender may see, from anybody else, lies before this message unread.
+    // Left where it was, the next read hands over what was missed, and the
+    // sender's own words after it.
+    if (group.members.getPtr(from)) |m| {
+        if (!unreadBefore(group, m.*, from, seq)) m.cursor = seq;
+    }
 
     // Never backwards. The clock arrives as a parameter here and a caller
     // replaying old lines into a live group would otherwise make the group
@@ -1620,11 +1650,52 @@ pub fn shouldNotify(
     const group = self.groups.getPtr(name) orelse return false;
     const who = group.members.getPtr(id) orelse return false;
 
+    // Nothing has arrived since it was last told: once is enough.
+    if (group.head() <= who.told_seq) return false;
+
     if (who.last_told_ms) |last| {
         if (now_ms -| last < gap_ms) return false;
     }
     who.last_told_ms = now_ms;
+    who.told_seq = group.head();
     return true;
+}
+
+/// A notice typed into `id` was refused: whatever it was told is waiting,
+/// it was not told. The gap still runs from the attempt; when it is over,
+/// the sweep that comes back says it again.
+pub fn noticeRefused(self: *Chat, id: Id) void {
+    var it = self.groups.valueIterator();
+    while (it.next()) |g| {
+        if (g.members.getPtr(id)) |m| m.told_seq = 0;
+    }
+}
+
+/// How long until `id` may be told about this group, when it has something
+/// worth being told about and was told too recently; null when there is
+/// nothing to wait for -- nothing waiting, or it may be told now.
+///
+/// **`shouldNotify` saying no is two different answers**, and only one of
+/// them ends by itself. Nothing is swept again until the next post, so a
+/// message that arrived inside the gap was simply never announced (the
+/// night of 2026-10-13: two messages twenty-two seconds apart, one notice).
+/// Whoever sweeps comes back after this long.
+pub fn notifyWaitMs(
+    self: *const Chat,
+    name: []const u8,
+    id: Id,
+    now_ms: u64,
+    gap_ms: u64,
+    role: Bus.Role,
+) ?u64 {
+    if (self.waking(name, id, role) == 0) return null;
+    const group = self.groups.getPtr(name) orelse return null;
+    const who = group.members.getPtr(id) orelse return null;
+    if (group.head() <= who.told_seq) return null;
+    const last = who.last_told_ms orelse return null;
+    const since = now_ms -| last;
+    if (since >= gap_ms) return null;
+    return gap_ms - since;
 }
 
 /// The line a terminal is given when a group has messages waiting.
@@ -3195,4 +3266,112 @@ test "ControlRoom marks: a group comes back from disk with what the person had s
     try chat.restoreShell("quiet", "", 0, .none);
     try testing.expectEqual(Marks.none, try chat.marksOf("quiet"));
     try testing.expectEqual(Attention.Snooze.none, chat.snoozeOf("quiet", 5_000, wall));
+}
+
+test "group cursor: posting does not carry the poster past what it had not read" {
+    // The night this is from: three messages reached a supervisor between
+    // its last read and its own next post, and it never saw any of them --
+    // one of them a delivery.
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.create("build", boss);
+    try chat.add("build", a, .all, .{});
+
+    // The supervisor reads up to n.
+    const n = (try chat.post("build", a, "started", 0)).seq;
+    {
+        const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited)).messages;
+        defer testing.allocator.free(got);
+        try testing.expectEqual(n, got[got.len - 1].seq);
+    }
+
+    // A worker posts n+1; before reading it, the supervisor posts n+2.
+    const missed = (try chat.post("build", a, "delivered: all green", 1)).seq;
+    const own = (try chat.post("build", boss, "next task is out", 2)).seq;
+    try testing.expectEqual(n + 1, missed);
+    try testing.expectEqual(n + 2, own);
+
+    // It is still unread, and still counted as such...
+    try testing.expectEqual(@as(usize, 1), chat.unread("build", boss));
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", boss, .supervisor));
+
+    // ...and a read that says nothing about where to start hands it over.
+    const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited)).messages;
+    defer testing.allocator.free(got);
+    try testing.expect(got.len >= 1);
+    try testing.expectEqual(missed, got[0].seq);
+    try testing.expectEqualStrings("delivered: all green", got[0].text);
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", boss));
+
+    // Nothing is handed over twice afterwards.
+    const again = (try chat.read(testing.allocator, "build", boss, null, .unlimited)).messages;
+    defer testing.allocator.free(again);
+    try testing.expectEqual(@as(usize, 0), again.len);
+}
+
+test "group cursor: a poster that was up to date stays up to date, and is not handed its own words back" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.create("build", boss);
+    try chat.add("build", a, .all, .{});
+
+    _ = try chat.post("build", a, "one", 0);
+    {
+        const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited)).messages;
+        defer testing.allocator.free(got);
+    }
+    // Nothing unread in between: its own post, and the one after, move it.
+    _ = try chat.post("build", boss, "two", 1);
+    _ = try chat.post("build", boss, "three", 2);
+    const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited)).messages;
+    defer testing.allocator.free(got);
+    try testing.expectEqual(@as(usize, 0), got.len);
+
+    // A member kept out of what came before it (`history: none`) is not
+    // held back by messages it may not see.
+    try chat.add("build", b, .none, .{});
+    _ = try chat.post("build", b, "hello", 3);
+    const none = (try chat.read(testing.allocator, "build", b, null, .unlimited)).messages;
+    defer testing.allocator.free(none);
+    try testing.expectEqual(@as(usize, 0), none.len);
+}
+
+test "group notice: a message that arrives inside the gap is told when the gap is over, not never" {
+    // 7119 and 7120 were twenty-two seconds apart. The second fell inside
+    // the thirty-second gap after the first one's notice, and nothing ever
+    // came back for it.
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.create("build", boss);
+    try chat.add("build", a, .all, .{});
+    const gap: u64 = 30_000;
+
+    _ = try chat.post("build", a, "one", 1_000);
+    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 1_000, gap, .supervisor));
+    try testing.expect(chat.shouldNotify("build", boss, 1_000, gap, .supervisor));
+
+    // Twenty-two seconds later, another. Not told now...
+    _ = try chat.post("build", a, "two", 23_000);
+    try testing.expect(!chat.shouldNotify("build", boss, 23_000, gap, .supervisor));
+    // ...and that is a wait with an end, which the caller comes back at.
+    try testing.expectEqual(@as(?u64, 8_000), chat.notifyWaitMs("build", boss, 23_000, gap, .supervisor));
+    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 31_000, gap, .supervisor));
+    try testing.expect(chat.shouldNotify("build", boss, 31_000, gap, .supervisor));
+
+    // Told about everything there is: a sweep that comes round again --
+    // they run without a post now -- says nothing and waits for nothing.
+    try testing.expect(!chat.shouldNotify("build", boss, 90_000, gap, .supervisor));
+    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 90_000, gap, .supervisor));
+    // Unless that notice never reached it: then it was not told.
+    chat.noticeRefused(boss);
+    try testing.expect(chat.shouldNotify("build", boss, 90_000, gap, .supervisor));
+
+    // Nothing worth waking for is not a wait: a watched terminal named in
+    // nothing, and a reader that has read it all.
+    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 32_000, gap, .watched));
+    {
+        const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited)).messages;
+        defer testing.allocator.free(got);
+    }
+    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 32_000, gap, .supervisor));
 }
