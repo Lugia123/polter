@@ -24,6 +24,12 @@ pub const Kind = enum {
     turn_failed,
     awaiting_approval,
     awaiting_input,
+    /// Not a hook either: `polter +statusline` saying it has just written
+    /// the allowance it was handed (`QuotaWatch`). It says nothing about
+    /// what the agent is doing and changes nothing the bus keeps -- it is
+    /// here because it comes from the same place by the same road, and a
+    /// request of its own would be that road built twice.
+    allowance_written,
 };
 
 /// The most of a final answer that is carried. `terminal_turn` hands out

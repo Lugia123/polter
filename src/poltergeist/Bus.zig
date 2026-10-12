@@ -1596,6 +1596,11 @@ pub fn agentEvent(
     ev: AgentEvent.Event,
     now_ms: u64,
 ) Allocator.Error!bool {
+    // About a file, not about the agent: nothing here is touched, not even
+    // "when it was last heard from" -- that clock is what says a prompt on
+    // screen is still the one that was asked about.
+    if (ev.event == .allowance_written) return false;
+
     try self.register(id);
     const e = self.entries.getPtr(id).?;
     const a = &e.agent;
@@ -1618,6 +1623,7 @@ pub fn agentEvent(
             if (ev.cli.len > 0) a.cli.set(ev.cli);
             return false;
         },
+        .allowance_written => return false,
         .session_started => .{ .idle, null },
         .turn_started => .{ .in_turn, null },
         .turn_ended => .{ .ended, .turn_ended },
@@ -4823,4 +4829,33 @@ test "ControlRoom prompt: the one a caller saw, and no other" {
     // No longer waiting on an approval at all.
     _ = try b.agentEvent(worker, hookEv(.turn_started), 30_000);
     try testing.expect(!b.promptStanding(worker, 30_000, 30_000, 31_000));
+}
+
+test "hooks: the status line saying it wrote the allowance changes nothing the bus keeps" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    // A worker stopped on a prompt, as the control room and the guard on
+    // answering it both read it.
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    _ = try b.agentEvent(worker, ask, 10_000);
+    const before = b.agentOf(worker);
+    try testing.expect(b.promptStanding(worker, 10_000, 10_000, 11_000));
+
+    // Its status line refreshes a second later and says a file was written.
+    try testing.expect(!try b.agentEvent(worker, hookEv(.allowance_written), 11_000));
+    const after = b.agentOf(worker);
+    try testing.expectEqual(before.state, after.state);
+    try testing.expectEqual(before.since_ms, after.since_ms);
+    // Not "heard from": the prompt on screen is still the one asked about.
+    try testing.expectEqual(before.last_event_ms, after.last_event_ms);
+    try testing.expectEqual(before.pending, after.pending);
+    try testing.expect(b.promptStanding(worker, 10_000, 10_000, 12_000));
+
+    // And from a terminal the bus has never heard of, it makes no entry:
+    // a status line is not an agent's hook.
+    const stranger: Id = 0x7777;
+    try testing.expect(!try b.agentEvent(stranger, hookEv(.allowance_written), 12_000));
+    try testing.expect(b.get(stranger) == null);
 }

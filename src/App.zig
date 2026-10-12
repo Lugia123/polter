@@ -683,6 +683,18 @@ fn controlRoomDue(ctx: *anyopaque) void {
     if (self.poltergeist_rt_app) |rt| rt.wakeup();
 }
 
+/// The one that reads the allowance files, made the first time it is
+/// wanted.
+fn quotaWatch(self: *App) *poltergeistpkg.QuotaWatch {
+    if (self.quota_watch == null) self.quota_watch = .{
+        .alloc = self.alloc,
+        .io = global.io(),
+        .fire = quotaChanged,
+        .ctx = self,
+    };
+    return &self.quota_watch.?;
+}
+
 /// The allowance thread's whole job on this side: say that there is a new
 /// number and get `tick` called.
 fn quotaChanged(ctx: *anyopaque) void {
@@ -708,15 +720,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
 
     // Something happened in a terminal, which is when an allowance moves:
     // have the files read. Not when the only news is that they were read.
-    if (self.control_dirty) {
-        if (self.quota_watch == null) self.quota_watch = .{
-            .alloc = self.alloc,
-            .io = global.io(),
-            .fire = quotaChanged,
-            .ctx = self,
-        };
-        self.quota_watch.?.kick();
-    }
+    if (self.control_dirty) self.quotaWatch().kick();
     self.control_dirty = false;
 
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
@@ -2865,6 +2869,12 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     if (pending.request == .agent_event) {
         _ = self.poltergeist.considerAgents(now_ms);
         self.deliverPoltergeistNotices(now_ms);
+
+        // The status line has written a new allowance: read it now. It is
+        // the only thing that will ever say so -- the file is not watched,
+        // and whatever else happens in a terminal may have happened before
+        // it was written.
+        if (pending.request.agent_event.event == .allowance_written) self.quotaWatch().written();
     }
 
     // Parked: the apprt answers it later, through
