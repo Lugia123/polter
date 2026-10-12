@@ -253,6 +253,52 @@ enum ControlRoomLook {
         static let outlined: Bool = false
     }
 
+    /// The allowance block at the bottom of the list: a hairline, then one opened-out part for each account at or past the limit line, then the one line. 38.5 high on an ordinary day, 88.5 with one account close, 112.5 with one used up and a way out named.
+    enum Quota {
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let paddingX: Double = 12.0
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let paddingBottom: Double = 6.0
+        /// Under the hairline that closes the list above.
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let separatorSpaceBelow: Double = 4.0
+        /// The one line: the label at the left, each account and its number at the right.
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let lineHeight: Double = 28.0
+        /// Between two accounts in the one line.
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let entryGap: Double = 16.0
+        /// The least between the label and the accounts.
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let labelGap: Double = 12.0
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let alertPaddingTop: Double = 4.0
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let alertPaddingBottom: Double = 6.0
+        /// Which account and which window and how much, and at the right when it comes back.
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let alertTitleHeight: Double = 24.0
+        /// Between the triangle and the words, when it is all gone.
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let alertGlyphGap: Double = 5.0
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let barHeight: Double = 6.0
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let barRadius: Double = 3.0
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let barSpaceAbove: Double = 3.0
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let barSpaceBelow: Double = 7.0
+        /// The least of the bar that is filled, so that a filled end is always a round one.
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let barMinFill: Double = 6.0
+        /// The way out, under the bar of an account that is used up.
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let noteLineHeight: Double = 20.0
+        /// Source: design v19, way three: src/v19.css and CHANGES.md.
+        static let notePaddingBottom: Double = 4.0
+    }
+
     /// The four status glyphs and how they move. Nothing moves under Reduce Motion.
     enum Status {
         /// Source: design v14, GRID.md.

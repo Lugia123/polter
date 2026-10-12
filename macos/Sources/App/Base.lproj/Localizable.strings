@@ -737,5 +737,30 @@
 "Command took %@ and exited with code %@." = "Command took %@ and exited with code %@.";
 "Update Polter and Restart" = "Update Polter and Restart";
 
+/* 总控台：左栏底部的额度（control-room.md 3.6）。家的名字 Claude、Codex 不翻 */
+"5-hour" = "5-hour";
+"7-day" = "7-day";
+"30-day" = "30-day";
+"%@ h ago" = "%@ h ago";
+"%@ d ago" = "%@ d ago";
+"Allowance used" = "Allowance used";
+"Allowance" = "Allowance";
+"No numbers yet" = "No numbers yet";
+"No numbers yet. Once a session has run, this shows how much is used." = "No numbers yet. Once a session has run, this shows how much is used.";
+"reset" = "reset";
+"unreadable" = "unreadable";
+"%@, %@" = "%@, %@";
+"%@ %@ %@ used" = "%@ %@ %@ used";
+"%@ %@ used" = "%@ %@ used";
+"%@ %@ allowance used up" = "%@ %@ allowance used up";
+"%@ allowance used up" = "%@ allowance used up";
+"back in %@ min" = "back in %@ min";
+"back in %@ h" = "back in %@ h";
+"back in %@ d" = "back in %@ d";
+"back at %@" = "back at %@";
+"%@ has room." = "%@ has room.";
+"as of %@" = "as of %@";
+"%@: this account's allowance could not be read." = "%@: this account's allowance could not be read.";
+
 /* 分屏框：worker 那一格的标题带上，名字后面说明身份的字 */
 "Worker" = "Worker";

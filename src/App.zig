@@ -119,6 +119,12 @@ notice_due: std.atomic.Value(bool) = .init(false),
 /// ever is never has the thread.
 notice_wake: ?poltergeistpkg.ControlWake = null,
 
+/// The thread that reads each account's allowance off disk, and the flag it
+/// raises when what it read is new (`poltergeist/QuotaWatch.zig`). Null
+/// until the control room first works anything out.
+quota_watch: ?poltergeistpkg.QuotaWatch = null,
+quota_changed: std.atomic.Value(bool) = .init(false),
+
 /// T1 for the control room: `poltergeist-quiescence-after`.
 control_still_ms: u64 = (poltergeistpkg.Sampler.Config{}).quiescence_ms,
 
@@ -513,6 +519,8 @@ pub fn deinit(self: *App) void {
     self.control_wake = null;
     if (self.notice_wake) |*w| w.stop();
     self.notice_wake = null;
+    if (self.quota_watch) |*w| w.stop();
+    self.quota_watch = null;
 
     // Clean up all our surfaces
     for (self.surfaces.items) |surface| surface.deinit();
@@ -668,6 +676,15 @@ fn controlRoomDue(ctx: *anyopaque) void {
     if (self.poltergeist_rt_app) |rt| rt.wakeup();
 }
 
+/// The allowance thread's whole job on this side: say that there is a new
+/// number and get `tick` called.
+fn quotaChanged(ctx: *anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (self.poltergeist_stopping.load(.acquire)) return;
+    self.quota_changed.store(true, .release);
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
+}
+
 /// Bring the control room's snapshot up to date if anything may have
 /// changed it, tell the apprt if it did, and set the next wake.
 ///
@@ -678,8 +695,21 @@ fn controlRoomDue(ctx: *anyopaque) void {
 fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
     if (self.poltergeist_stopping.load(.acquire)) return;
     const due = self.control_due.swap(false, .acq_rel);
-    const dirty = self.control_dirty;
+    const quota_new = self.quota_changed.swap(false, .acq_rel);
+    const dirty = self.control_dirty or quota_new;
     if (!due and !dirty) return;
+
+    // Something happened in a terminal, which is when an allowance moves:
+    // have the files read. Not when the only news is that they were read.
+    if (self.control_dirty) {
+        if (self.quota_watch == null) self.quota_watch = .{
+            .alloc = self.alloc,
+            .io = global.io(),
+            .fire = quotaChanged,
+            .ctx = self,
+        };
+        self.quota_watch.?.kick();
+    }
     self.control_dirty = false;
 
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
@@ -726,6 +756,9 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         }) catch return;
     }
 
+    var quota_buf: [std.enums.values(poltergeistpkg.quota.Family).len]poltergeistpkg.quota.Reading = undefined;
+    const quota_read: []const poltergeistpkg.quota.Reading =
+        if (self.quota_watch) |*w| w.readings(&quota_buf) else &.{};
     // The roles a supervisor can be started in: the ones that make a
     // terminal a supervisor and have a CLI to start. In the set's order,
     // which puts the one Polter ships first.
@@ -746,6 +779,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
             self.poltergeist.config,
         ),
         .tasks = &self.tasks,
+        .quota = quota_read,
         .supervisor_roles = roles.items,
         .home = self.controlHome(),
         .now_ms = now_ms,
