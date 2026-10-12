@@ -830,7 +830,23 @@ pub const StartFailure = enum {
     agent_never_connected,
     /// Its terminal was closed before the agent connected.
     terminal_closed,
+    /// `+launch` said so itself, in the tab: the CLI's program is not
+    /// there to run.
+    cli_not_found,
+    /// `+launch` said so itself: something else stopped it before the CLI
+    /// ran. The tab has the line that says what.
+    cli_did_not_start,
 };
+
+/// The reason a start failed for, when its launcher said its CLI did not
+/// start. A mapping and nothing else, here so that it can be tested
+/// without an app.
+pub fn startFailureOf(why: @import("agent_event.zig").LaunchFailure) StartFailure {
+    return switch (why) {
+        .not_found => .cli_not_found,
+        .failed => .cli_did_not_start,
+    };
+}
 
 /// What the control room shows of a start.
 pub const StartView = struct {

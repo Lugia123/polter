@@ -165,6 +165,12 @@ agent: {
 发一条 `agent_event{event:"hooks_expected"}`（尽力发，失败只写日志）。`+launch` 本来就在那个终端里、
 带着 socket 与 token，所以不需要新 RPC，1b 只改 adapter 一侧。
 
+`+launch` 没能把 CLI 起起来时再发一条 `agent_event{event:"launch_failed", detail:"not_found"|"failed"}`（同样
+尽力发）：找不到程序是 `not_found`，其余——没有适配器、适配器没给出命令、角色不在、程序在但执行失败——是
+`failed`；核心对不认识的 `detail` 按 `failed` 读。它撤回上面那句「等 hook」，并让等这个终端里出现 agent 的
+两处（角色待认领的身份、总控台正在启动的总管）立刻知道不用等了。有 `exec` 的系统上它只可能在 `exec` 返回
+（也就是失败）之后发；没有 `exec` 的系统上，只在系统没能把子进程起起来时发，子进程起来以后怎么退出都不发。
+
 **送到总管**：沿用 notices 盒子（`Bus.zig` 的 `take()`），新增一种 entry，与屏幕静止并列：
 
 ```

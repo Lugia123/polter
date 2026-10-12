@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 04:59+0800\n"
+"POT-Creation-Date: 2026-10-13 05:25+0800\n"
 "PO-Revision-Date: 2026-09-13 10:50+0800\n"
 "Last-Translator: Lukas <134181853+bo2themax@users.noreply.github.com>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -2224,7 +2224,7 @@ msgid "Edit this one in the config file."
 msgstr "这一项请在配置文件中编辑。"
 
 #: windows/host/src/general_ui.rs:1213 windows/host/src/general_ui.rs:1379
-#: windows/control-room/src/scene.rs:53
+#: windows/control-room/src/scene.rs:55
 msgid "Choose…"
 msgstr "选择…"
 
@@ -2612,7 +2612,7 @@ msgid "No Role"
 msgstr "不设角色"
 
 #: windows/host/src/personas.rs:602 windows/host/src/personas.rs:1017
-#: windows/control-room/src/scene.rs:51
+#: windows/control-room/src/scene.rs:53
 msgid "Role"
 msgstr "角色"
 
@@ -3065,7 +3065,7 @@ msgid "Rename"
 msgstr "重命名"
 
 #: windows/host/src/roles.rs:34 windows/host/src/roles.rs:1163
-#: windows/control-room/src/scene.rs:58
+#: windows/control-room/src/scene.rs:60
 msgid "Polter Supervisor"
 msgstr "Polter 总管"
 
@@ -3725,25 +3725,37 @@ msgstr "总管没有启动：它的标签页没有开出来。"
 msgid ""
 "The supervisor did not start: its tab opened, but no agent connected from "
 "it. Its tab shows why."
-msgstr "总管没有启动：标签页开了，但里面没有 agent 连上来。原因在它的标签页里。"
+msgstr ""
+"总管没有启动：标签页开了，但里面没有 agent 连上来。原因在它的标签页里。"
 
 #: windows/control-room/src/scene.rs:49
 msgid "The supervisor did not start: its tab was closed first."
 msgstr "总管没有启动：它的标签页先被关掉了。"
 
 #: windows/control-room/src/scene.rs:50
+msgid ""
+"The supervisor did not start: its agent CLI was not found. Its tab shows why."
+msgstr "总管没有启动：没有找到它的 agent CLI。原因在它的标签页里。"
+
+#: windows/control-room/src/scene.rs:51
+msgid ""
+"The supervisor did not start: its agent CLI could not be started. Its tab "
+"shows why."
+msgstr "总管没有启动：它的 agent CLI 没能启动。原因在它的标签页里。"
+
+#: windows/control-room/src/scene.rs:52
 msgid "The supervisor did not start."
 msgstr "总管没有启动。"
 
-#: windows/control-room/src/scene.rs:52
+#: windows/control-room/src/scene.rs:54
 msgid "Directory"
 msgstr "目录"
 
-#: windows/control-room/src/scene.rs:54
+#: windows/control-room/src/scene.rs:56
 msgid "Start Supervisor"
 msgstr "启动总管"
 
-#: windows/control-room/src/scene.rs:56
+#: windows/control-room/src/scene.rs:58
 msgid "Where the tab starts"
 msgstr "新标签页所在的目录"
 

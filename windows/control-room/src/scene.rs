@@ -47,6 +47,8 @@ pub mod msg {
     #[rustfmt::skip]
     pub const NEVER_CONNECTED: &str = n_("The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why.");
     pub const CLOSED_FIRST: &str = n_("The supervisor did not start: its tab was closed first.");
+    pub const CLI_NOT_FOUND: &str = n_("The supervisor did not start: its agent CLI was not found. Its tab shows why.");
+    pub const CLI_DID_NOT_START: &str = n_("The supervisor did not start: its agent CLI could not be started. Its tab shows why.");
     pub const DID_NOT_START: &str = n_("The supervisor did not start.");
     pub const ROLE: &str = n_("Role");
     pub const DIRECTORY: &str = n_("Directory");
@@ -768,6 +770,8 @@ pub fn no_supervisor_words(start: Option<&crate::snapshot::SupervisorStart>) -> 
         Some((S::Failed, F::TerminalNeverOpened)) => msg::NEVER_OPENED,
         Some((S::Failed, F::AgentNeverConnected)) => msg::NEVER_CONNECTED,
         Some((S::Failed, F::TerminalClosed)) => msg::CLOSED_FIRST,
+        Some((S::Failed, F::CliNotFound)) => msg::CLI_NOT_FOUND,
+        Some((S::Failed, F::CliDidNotStart)) => msg::CLI_DID_NOT_START,
         Some((S::Failed, F::None)) => msg::DID_NOT_START,
         Some((S::Present, _)) | Some((S::Absent, _)) | None => msg::NO_SUPERVISOR,
     }
@@ -1793,6 +1797,12 @@ mod tests {
         assert_eq!(says(S::Failed, F::TerminalNeverOpened), msg::NEVER_OPENED);
         assert_eq!(says(S::Failed, F::AgentNeverConnected), msg::NEVER_CONNECTED);
         assert_eq!(says(S::Failed, F::TerminalClosed), msg::CLOSED_FIRST);
+        // What the launcher said itself, each with its own sentence, and
+        // neither the timer's.
+        assert_eq!(says(S::Failed, F::CliNotFound), msg::CLI_NOT_FOUND);
+        assert_eq!(says(S::Failed, F::CliDidNotStart), msg::CLI_DID_NOT_START);
+        assert_ne!(msg::CLI_NOT_FOUND, msg::CLI_DID_NOT_START);
+        assert_ne!(msg::CLI_NOT_FOUND, msg::NEVER_CONNECTED);
         assert_eq!(says(S::Failed, F::None), msg::DID_NOT_START);
         assert_eq!(no_supervisor_words(None), msg::NO_SUPERVISOR);
         // And it is what the right side draws.

@@ -111,11 +111,17 @@ struct ControlRoomList: Equatable {
         }
 
         /// Why the last try made no supervisor.
-        enum Failure: String, Equatable, Decodable {
+        enum Failure: String, Equatable, Decodable, CaseIterable {
             case none
             case terminalNeverOpened = "terminal_never_opened"
             case agentNeverConnected = "agent_never_connected"
             case terminalClosed = "terminal_closed"
+            /// `+launch` said so itself, at once: the CLI's program is not
+            /// there to run.
+            case cliNotFound = "cli_not_found"
+            /// `+launch` said so itself: something else stopped it before
+            /// the CLI ran.
+            case cliDidNotStart = "cli_did_not_start"
         }
 
         var state: State

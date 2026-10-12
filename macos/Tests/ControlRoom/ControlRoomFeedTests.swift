@@ -618,11 +618,12 @@ struct ControlRoomStartTests {
             ControlRoomDetailMessage.words(for: detail),
             words(.absent, .none), words(.starting, .none), words(.failed, .none),
             words(.failed, .terminalNeverOpened), words(.failed, .agentNeverConnected), words(.failed, .terminalClosed),
+            words(.failed, .cliNotFound), words(.failed, .cliDidNotStart),
         ]
         // With nothing said and with "absent" it is the same sentence; the
-        // other five are each their own, and none is blank.
+        // other seven are each their own, and none is blank.
         #expect(all[0] == all[1])
-        #expect(Set(all).count == 6)
+        #expect(Set(all).count == 8)
         #expect(all.allSatisfy { !$0.isEmpty })
     }
 

@@ -1569,6 +1569,21 @@ pub fn agentEvent(
     ev: AgentEvent.Event,
     now_ms: u64,
 ) Allocator.Error!bool {
+    // **The launch started nothing**: whatever it said to expect is taken
+    // back, and the terminal is what it was before the launch line -- a
+    // shell with no agent in it. Before `register`, because a failure that
+    // came before anything else was said (no adapter, no such role) is not
+    // a reason for the bus to start keeping an entry for a plain terminal.
+    //
+    // Only an expectation is taken back. An agent that has spoken is
+    // there, whatever a launch line typed at it afterwards came to.
+    if (ev.event == .launch_failed) {
+        if (self.entries.getPtr(id)) |e| {
+            if (e.agent.hooks == .expected) e.agent = .none;
+        }
+        return false;
+    }
+
     try self.register(id);
     const e = self.entries.getPtr(id).?;
     const a = &e.agent;
@@ -1577,6 +1592,7 @@ pub fn agentEvent(
     if (ev.session_id) |sid| a.session_id.set(sid);
 
     const state: AgentState, const notice: ?AgentNotice = switch (ev.event) {
+        .launch_failed => unreachable,
         .hooks_expected => {
             // A second launch in the same terminal starts the wait again;
             // a terminal already live stays live -- it has proved its
@@ -4216,6 +4232,41 @@ fn hookedBus() !Bus {
     try b.addSupervisor(boss);
     try b.watch(worker, boss);
     return b;
+}
+
+test "hooks: a launcher that says its CLI did not start takes back what it said to expect" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    // `+launch` said hooks were coming, then could not start the CLI.
+    _ = try b.agentEvent(worker, hookEv(.hooks_expected), 0);
+    try testing.expectEqual(Hooks.expected, b.agentOf(worker).hooks);
+    const boxed = try b.agentEvent(worker, hookEv(.launch_failed), 500);
+    try testing.expect(!boxed);
+    const after = b.agentOf(worker).hooks;
+    try testing.expectEqual(Hooks.none, after);
+
+    // So the thirty seconds never run out on it: nothing is said about
+    // hooks that did not come, because none were promised any more.
+    const said = b.considerAgents(10 * hooks_expected_timeout_ms);
+    try testing.expect(!said);
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 10 * hooks_expected_timeout_ms, &buf, .none);
+    try testing.expect(line == null);
+
+    // A terminal the bus has never heard of is not given an entry for
+    // having failed to start something.
+    const unknown: Id = 0xdead;
+    _ = try b.agentEvent(unknown, hookEv(.launch_failed), 600);
+    const listed = b.entries.contains(unknown);
+    try testing.expect(!listed);
+
+    // And an agent that has spoken is there, whatever a launch line typed
+    // at it afterwards came to.
+    _ = try b.agentEvent(worker, hookEv(.session_started), 700);
+    _ = try b.agentEvent(worker, hookEv(.launch_failed), 800);
+    const live = b.agentOf(worker).hooks;
+    try testing.expectEqual(Hooks.live, live);
 }
 
 test "hooks: expected with no session_started for 30s is put in the box" {

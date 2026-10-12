@@ -50,7 +50,11 @@ supervisor (its state, whether one can be started, why the last try made
 none, the role and the directory), the roles one can be started in and
 whether there is a choice; when a group just made is selected; where a tab
 the core asked for goes, for every asker and every place the control room
-can be (forty cases); the English of what the person is told for each of
+can be (forty cases); the English of what the right-hand side says of a
+group with no supervisor for each of the six reasons the core gives for a
+try having made none (`cli_not_found` and `cli_did_not_start`, which a
+launcher reports itself, among them), while one is starting and with none;
+the English of what the person is told for each of
 fifteen names the core gives for not making a group or not starting a
 supervisor; how the first line of a waiting row is shared out when it
 is too narrow -- the status word whole, the group's name cut only by it, who
@@ -328,6 +332,19 @@ for r in list.rows {
     } else {
         print("start id=\(r.id) -")
     }
+}
+// What the right-hand side says of a group with no supervisor, for every
+// reason the core gives for the last try having made none -- the two a
+// launcher reports itself among them -- and while one is on its way.
+for failed in ControlRoomList.SupervisorStart.Failure.allCases {
+    let start = ControlRoomList.SupervisorStart(state: .failed, canStart: true, failed: failed, role: nil, cwd: "")
+    print("start_says state=failed failed=\(failed.rawValue) "
+        + "says=\(quote(ControlRoomLending.words(for: .noSupervisor(group: "g"), start: start)))")
+}
+for state in [ControlRoomList.SupervisorStart.State.starting, .absent] {
+    let start = ControlRoomList.SupervisorStart(state: state, canStart: false, failed: .none, role: nil, cwd: "")
+    print("start_says state=\(state.rawValue) failed=none "
+        + "says=\(quote(ControlRoomLending.words(for: .noSupervisor(group: "g"), start: start)))")
 }
 print("start_roles choose=\(list.chooseSupervisorRole)")
 for role in list.supervisorRoles {

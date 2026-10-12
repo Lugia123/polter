@@ -185,6 +185,12 @@ pub enum StartFailure {
     TerminalNeverOpened,
     AgentNeverConnected,
     TerminalClosed,
+    /// `+launch` said so itself, at once: the CLI's program is not there
+    /// to run.
+    CliNotFound,
+    /// `+launch` said so itself: something else stopped it before the CLI
+    /// ran.
+    CliDidNotStart,
 }
 
 impl StartFailure {
@@ -194,13 +200,24 @@ impl StartFailure {
             StartFailure::TerminalNeverOpened => "terminal_never_opened",
             StartFailure::AgentNeverConnected => "agent_never_connected",
             StartFailure::TerminalClosed => "terminal_closed",
+            StartFailure::CliNotFound => "cli_not_found",
+            StartFailure::CliDidNotStart => "cli_did_not_start",
         }
     }
 
+    /// Every reason the core gives. A word that is none of these is an
+    /// error, like a glyph this build does not know.
+    pub const ALL: [StartFailure; 6] = [
+        StartFailure::None,
+        StartFailure::TerminalNeverOpened,
+        StartFailure::AgentNeverConnected,
+        StartFailure::TerminalClosed,
+        StartFailure::CliNotFound,
+        StartFailure::CliDidNotStart,
+    ];
+
     fn parse(s: &str) -> Option<StartFailure> {
-        [StartFailure::None, StartFailure::TerminalNeverOpened, StartFailure::AgentNeverConnected, StartFailure::TerminalClosed]
-            .into_iter()
-            .find(|v| v.name() == s)
+        Self::ALL.into_iter().find(|v| v.name() == s)
     }
 }
 
