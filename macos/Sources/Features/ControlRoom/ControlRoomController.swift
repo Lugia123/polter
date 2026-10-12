@@ -98,6 +98,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
                 }
             }
         model.askForTerminal = { [weak self] in self?.lend(.askedFor) }
+        model.perform = { try actions.perform($0) }
         // Selecting the row that is already selected changes nothing the
         // sink above would see, and still means the person is on it now.
         model.onChoose = { [weak self] in
@@ -111,6 +112,12 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             guard let self, let terminal = self.lending.loan?.terminal, self.lender.isLent(view) else { return }
             self.lend(.homeGone(terminal: terminal))
         }
+    }
+
+    /// A terminal tab in the group of tabs this one sits in; nil when it
+    /// is alone in its window. Where a tab opened from here goes.
+    var terminalTabBeside: NSWindow? {
+        window?.tabGroup?.windows.first { $0.windowController is TerminalController }
     }
 
     /// Whether the person can be looking at the list: this tab is the one

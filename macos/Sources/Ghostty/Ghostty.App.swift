@@ -669,7 +669,7 @@ extension Ghostty {
                 newWindow(app, target: target)
 
             case GHOSTTY_ACTION_NEW_TAB:
-                newTab(app, target: target, action: action.action.new_tab)
+                return newTab(app, target: target, action: action.action.new_tab)
 
             case GHOSTTY_ACTION_TOGGLE_POLTERGEIST_CHAT:
                 openChat(app, target: target)
@@ -1059,11 +1059,14 @@ extension Ghostty {
             }
         }
 
+        /// False when no tab was asked of anybody: the core then answers
+        /// whoever wanted the terminal that it was not opened, instead of
+        /// "done" with nothing there.
         private static func newTab(
             _ app: ghostty_app_t,
             target: ghostty_target_s,
             action: ghostty_action_new_tab_s
-        ) {
+        ) -> Bool {
             // Empty means "wherever a new tab would have gone anyway", which
             // is what a keybinding and a menu item both send. Only Poltergeist
             // names a directory, because only it has somewhere to put a
@@ -1084,11 +1087,25 @@ extension Ghostty {
                         Notification.NewSurfaceConfigKey: config,
                     ]
                 )
+                return true
 
             case GHOSTTY_TARGET_SURFACE:
-                guard let surface = target.target.surface else { return }
-                guard let surfaceView = self.surfaceView(from: surface) else { return }
-                guard let appState = self.appState(fromView: surfaceView) else { return }
+                guard let surface = target.target.surface else { return false }
+                guard let surfaceView = self.surfaceView(from: surface) else { return false }
+                guard let appState = self.appState(fromView: surfaceView) else { return false }
+                // Asked of the window the terminal belongs to, which is not
+                // the one its view is in while the control room has it.
+                guard let home = surfaceView.homeWindow else {
+                    Ghostty.logger.warning("new tab refused: no window holds the terminal it was asked from")
+                    return false
+                }
+                // A borrowed terminal whose own window takes no tabs (the
+                // quick terminal): nobody would be asked, and nobody would
+                // tell the person, whose eyes are on the control room.
+                if ControlRoomLender.shared.isLent(surfaceView), !(home.windowController is TerminalController) {
+                    Ghostty.logger.warning("new tab refused: the terminal is in the control room and its own window takes no tabs")
+                    return false
+                }
                 guard appState.config.windowDecorations else {
                     let alert = NSAlert()
                     alert.messageText = String(localized: "Tabs are disabled", comment: "核心发起的提醒框")
@@ -1096,7 +1113,7 @@ extension Ghostty {
                     alert.addButton(withTitle: String(localized: "OK", comment: "核心发起的提醒框"))
                     alert.alertStyle = .warning
                     _ = alert.runModal()
-                    return
+                    return true
                 }
 
                 // Inherited first, then overridden: everything else about
@@ -1113,9 +1130,11 @@ extension Ghostty {
                         Notification.NewSurfaceConfigKey: config,
                     ]
                 )
+                return true
 
             default:
                 assertionFailure()
+                return false
             }
         }
 

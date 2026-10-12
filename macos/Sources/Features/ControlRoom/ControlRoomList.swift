@@ -55,8 +55,53 @@ struct ControlRoomList: Equatable {
         /// and the two moments it was drawn from. Nil where there is no
         /// terminal behind the row.
         var target: Target?
+        /// Whether this group has a supervisor and what starting one would
+        /// use, as the core says it. Nil in a list made by hand.
+        var start: SupervisorStart?
 
         var name: String { id }
+    }
+
+    /// What the core says about a group's supervisor (`ControlRoom.zig`,
+    /// `SupervisorOut`). **Whether one can be started is `canStart`, the
+    /// core's word**: a host shows the button on that and works nothing
+    /// out from `state`, which only picks the sentence.
+    struct SupervisorStart: Equatable {
+        enum State: String, Equatable, Decodable {
+            case present, absent, starting, failed
+        }
+
+        /// Why the last try made no supervisor.
+        enum Failure: String, Equatable, Decodable {
+            case none
+            case terminalNeverOpened = "terminal_never_opened"
+            case agentNeverConnected = "agent_never_connected"
+            case terminalClosed = "terminal_closed"
+        }
+
+        var state: State
+        var canStart: Bool
+        var failed: Failure
+        /// The role it is started in unless the person picks another.
+        var role: String?
+        /// Where it is started unless the person picks elsewhere.
+        var cwd: String
+    }
+
+    /// A role a supervisor can be started in.
+    struct SupervisorRole: Equatable, Identifiable {
+        var key: String
+        var name: String
+        var id: String { key }
+
+        /// The name to show. The role Polter ships is named in English in
+        /// the core and shown in the person's language, as the role
+        /// library shows it.
+        var displayName: String {
+            key == "polter-supervisor"
+                ? String(localized: "Polter Supervisor", comment: "角色库：内置角色名，Polter 总管")
+                : name
+        }
     }
 
     /// Who a row is about, as the core says it (`ControlRoom.zig`,
@@ -163,6 +208,11 @@ struct ControlRoomList: Equatable {
     /// "N groups need nothing from you". Also the core's.
     var quietCount: Int
     var quiet: [Row]
+    /// The roles a supervisor can be started in, in the core's order.
+    var supervisorRoles: [SupervisorRole] = []
+    /// Whether there is a choice of role to offer. The core's word, not
+    /// `supervisorRoles.count`.
+    var chooseSupervisorRole: Bool = false
 
     /// Every row in the order it is listed, which is the order the up and
     /// down keys walk.
@@ -321,8 +371,24 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var pane: Pane?
     }
 
+    /// See `ControlRoomList.SupervisorStart`.
+    struct Supervisor: Decodable, Equatable {
+        var state: ControlRoomList.SupervisorStart.State
+        var can_start: Bool
+        var failed: ControlRoomList.SupervisorStart.Failure
+        var role: String?
+        var cwd: String
+    }
+
+    struct SupervisorRole: Decodable, Equatable {
+        var key: String
+        var name: String
+    }
+
     struct Group: Decodable, Equatable {
         var name: String
+        /// Absent in snapshots from before the core said it.
+        var supervisor: Supervisor?
         /// The group's terminals. Absent in a snapshot cut down by hand.
         var members: [Member]?
         /// The terminal that is this group's supervisor, as the core names
@@ -362,6 +428,10 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     var pulses: [Pulse]?
     /// Every open terminal, for the frame its pane wears (`PaneFrame`).
     var terminals: [Terminal]?
+    /// Absent in snapshots from before a supervisor could be started here:
+    /// then there is no role to start one in and nothing is offered.
+    var supervisor_roles: [SupervisorRole]?
+    var choose_supervisor_role: Bool?
 }
 
 /// Which waiting glyph breathes.
@@ -468,13 +538,19 @@ extension ControlRoomList {
                     attention.terminal.map {
                         Target(terminal: $0, sinceMs: attention.since_ms, eventMs: attention.event_ms)
                     }
+                },
+                start: group.supervisor.map {
+                    SupervisorStart(state: $0.state, canStart: $0.can_start, failed: $0.failed,
+                                    role: $0.role, cwd: $0.cwd)
                 }))
         }
         self.init(
             waitingCount: snapshot.groups_needing_me,
             waiting: rows.filter { $0.0 }.map { $0.1 },
             quietCount: snapshot.groups_other,
-            quiet: rows.filter { !$0.0 }.map { $0.1 })
+            quiet: rows.filter { !$0.0 }.map { $0.1 },
+            supervisorRoles: (snapshot.supervisor_roles ?? []).map { SupervisorRole(key: $0.key, name: $0.name) },
+            chooseSupervisorRole: snapshot.choose_supervisor_role ?? false)
     }
 
     static func decode(snapshot json: Data, showing: String? = nil) throws -> ControlRoomList {
