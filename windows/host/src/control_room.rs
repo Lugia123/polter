@@ -1672,6 +1672,7 @@ unsafe fn part_width(dc: HDC, at: Px, part: &Part, fonts: &mut Fonts) -> i32 {
     match &part.piece {
         Piece::Words { text, style } => unsafe { text_width(dc, fonts.get(style), text) },
         Piece::Glyph { size, .. } => at.len(*size),
+        Piece::Held { size, .. } => at.len(*size),
     }
 }
 
@@ -1686,6 +1687,13 @@ unsafe fn paint_piece(dc: HDC, at: Px, piece: &Piece, r: RECT, fonts: &mut Fonts
             let top = r.top + (r.bottom - r.top - side) / 2;
             let opacity = if *pulses && source::animations_on() { pulse::opacity(t) } else { 1.0 };
             unsafe { draw_glyph(dc, r.left, top, side, *shown, *color, opacity) };
+        }
+        // A terminal the person is holding: two bars, in the box a status
+        // glyph has. It does not move.
+        Piece::Held { color, size } => {
+            let side = at.len(*size);
+            let top = r.top + (r.bottom - r.top - side) / 2;
+            unsafe { draw_shapes(dc, r.left, top, side, &glyph::held(), *color, 1.0) };
         }
     }
 }
@@ -1752,7 +1760,12 @@ pub(crate) unsafe fn round(dc: HDC, r: RECT, radius: i32, color: Rgba, edge: Opt
 /// `dc` must be a live device context.
 pub unsafe fn draw_glyph(dc: HDC, x: i32, y: i32, side: i32, shown: Shown, color: Rgba, opacity: f64) {
     let spin = if source::animations_on() { pulse::spin_step(source::clock()) } else { 0 };
-    let shapes = glyph::shapes(shown, spin);
+    unsafe { draw_shapes(dc, x, y, side, &glyph::shapes(shown, spin), color, opacity) };
+}
+
+/// Shapes on the status glyphs' artboard, in a square `side` pixels across
+/// with its top left at `x, y`.
+unsafe fn draw_shapes(dc: HDC, x: i32, y: i32, side: i32, shapes: &[glyph::Shape], color: Rgba, opacity: f64) {
     if shapes.is_empty() || side <= 0 {
         return;
     }
@@ -1760,7 +1773,7 @@ pub unsafe fn draw_glyph(dc: HDC, x: i32, y: i32, side: i32, shown: Shown, color
     let u = |v: f64| (v * unit).round() as i32;
     unsafe {
         blend(dc, x, y, side, side, color, opacity, &|m| {
-            for shape in &shapes {
+            for shape in shapes {
                 let level = (shape.level.clamp(0.0, 1.0) * 255.0).round() as u32;
                 let brush = CreateSolidBrush(COLORREF(level | (level << 8) | (level << 16)));
                 let old = SelectObject(m, brush.into());

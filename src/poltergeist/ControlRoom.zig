@@ -123,12 +123,20 @@
 //!       "shown", "word", "text", "waiter", "reason", "what" } ],
 //!   "terminals": [ { the member fields but `role`, and "event_ms",
 //!       "window":"0x…"|null, "tab":"0x…"|null,
-//!       "pane":"supervisor"|"worker"|"plain" } ],
+//!       "pane":"supervisor"|"worker"|"plain",
+//!       "bar":{"shown":"held","text":"被按住"} } ],
 //!                             `pane` is which of the three frames this
 //!                             terminal's pane wears in its own tab: the
 //!                             terminal minding others, one being minded,
 //!                             or neither. A host draws the frame it is
-//!                             told and asks no role
+//!                             told and asks no role.
+//!                             `bar` is what the right end of that
+//!                             frame's title draws: the glyph and the
+//!                             words. `shown` is one of the five above or
+//!                             `held`, which is only ever here. A host
+//!                             draws this pair in a pane's title and never
+//!                             makes one of `shown`, `text` and `held`.
+//!                             Rows and window tabs still draw `shown`
 //!   "tabs": [ { "window":"0x…"|null, "tab":"0x…",
 //!       "shown":…, "terminal":"0x…"|null } ],
 //!   "supervisor_roles": [ {"key":"polter-supervisor",
@@ -604,12 +612,52 @@ pub const Pane = enum {
     }
 };
 
+/// What the right end of a pane's title draws: a glyph and the words
+/// beside it (the design's `06-panes`).
+///
+/// **It is the terminal's status, unless the terminal is held and nobody is
+/// waiting on it.** A held terminal that is working, has finished unseen or
+/// has nothing to say reads "held": that is why nothing will come of it.
+/// One that is waiting for an approval or an answer, or is in trouble,
+/// still says so -- the control room exists so that who is waiting can be
+/// seen at a glance, and "held" over a prompt would hide exactly that.
+/// 暂定 (the supervisor's ruling, 2026-10-13).
+///
+/// Only a pane's title draws this. A group's row and a window tab's glyph
+/// are `shown`, which has no "held" in it.
+pub const Bar = struct {
+    shown: Shown,
+    text: []const u8,
+
+    /// The five a row draws, and the one only a title does.
+    pub const Shown = enum { needs_you, trouble, done_unseen, working, none, held };
+
+    pub fn of(d: Attention.Display, held: bool) Bar {
+        const covered = switch (d.shown) {
+            .needs_you, .trouble => false,
+            .done_unseen, .working, .none => held,
+        };
+        if (covered) return .{ .shown = .held, .text = "被按住" };
+        return .{
+            .shown = switch (d.shown) {
+                .needs_you => .needs_you,
+                .trouble => .trouble,
+                .done_unseen => .done_unseen,
+                .working => .working,
+                .none => .none,
+            },
+            .text = d.word.text(),
+        };
+    }
+};
+
 pub const TerminalOut = struct {
     id: Hex,
     title: []const u8,
     window: ?Hex,
     tab: ?Hex,
     pane: Pane,
+    bar: Bar,
     kind: Attention.Kind,
     since_ms: u64,
     event_ms: ?u64,
@@ -1280,6 +1328,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .window = .opt(t.window),
             .tab = .opt(t.tab),
             .pane = .of(in.bus.roleOf(t.id)),
+            .bar = .of(d, s.held),
             .kind = s.kind,
             .since_ms = s.since_ms,
             .event_ms = in.bus.agentOf(t.id).last_event_ms,
@@ -1590,6 +1639,8 @@ fn fixtureWorld() !World {
     try w.working("design-system", 0xa5, "改按钮的三种尺寸");
     try w.worker(0xb5, "tokens", 0x25, 0xa5, "design-system");
     try w.bus.clockOff(0xb5, .supervisor);
+    // And held by the person: what its pane's title says.
+    try w.bus.setHeld(0xb5, true, .user);
 
     // Idle.
     try w.steward(0xa6, "notes", 0x26, "notes");
@@ -2516,6 +2567,78 @@ test "ControlRoom snapshot: a worker minded outside any group is listed on its o
     try testing.expect(s.ungrouped[0].needs_me);
     try testing.expectEqual(@as(usize, 1), s.needs_me);
     try testing.expectEqual(@as(?u64, 1 * min), s.ungrouped[0].attention.event_ms);
+}
+
+test "ControlRoom bar: a held terminal's title says held, unless somebody is waiting on it" {
+    // Every glyph a terminal can have, held and not.
+    for (std.enums.values(Attention.Kind)) |kind| {
+        const d = Attention.displayOf(kind);
+        const free: Bar = .of(d, false);
+        const held: Bar = .of(d, true);
+        // Not held: the status, glyph and words, as a row would have it.
+        try testing.expectEqualStrings(@tagName(d.shown), @tagName(free.shown));
+        try testing.expectEqualStrings(d.word.text(), free.text);
+        switch (d.shown) {
+            // Waiting or in trouble: being held changes nothing.
+            .needs_you, .trouble => {
+                try testing.expectEqual(free.shown, held.shown);
+                try testing.expectEqualStrings(free.text, held.text);
+            },
+            // Working, finished unseen, nothing to say: it says held.
+            .done_unseen, .working, .none => {
+                try testing.expectEqual(Bar.Shown.held, held.shown);
+                try testing.expectEqualStrings("被按住", held.text);
+            },
+        }
+    }
+    // All four of the brief's, by name, so that a change of the table above
+    // cannot quietly take one of them out of the loop.
+    try testing.expectEqual(Bar.Shown.needs_you, Bar.of(Attention.displayOf(.needs_approval), true).shown);
+    try testing.expectEqual(Bar.Shown.needs_you, Bar.of(Attention.displayOf(.needs_answer), true).shown);
+    try testing.expectEqual(Bar.Shown.trouble, Bar.of(Attention.displayOf(.failed), true).shown);
+    try testing.expectEqual(Bar.Shown.held, Bar.of(Attention.displayOf(.working), true).shown);
+    try testing.expectEqual(Bar.Shown.held, Bar.of(Attention.displayOf(.done_unseen), true).shown);
+    try testing.expectEqual(Bar.Shown.held, Bar.of(Attention.displayOf(.idle), true).shown);
+    try testing.expectEqual(Bar.Shown.working, Bar.of(Attention.displayOf(.working), false).shown);
+}
+
+test "ControlRoom bar: the snapshot carries it for every terminal, and a row's glyph is not changed by it" {
+    var w: World = .init();
+    defer w.deinit();
+    try w.terminal(0xa1, "boss", 0x21);
+    try w.bus.addSupervisor(0xa1);
+    // Two workers, both held: one working, one stopped on an approval.
+    try w.terminal(0xb1, "busy", 0x21);
+    try w.bus.watch(0xb1, 0xa1);
+    try w.hook(0xb1, .turn_started, "", 1 * min);
+    try w.bus.setHeld(0xb1, true, .user);
+    try w.terminal(0xb2, "asking", 0x21);
+    try w.bus.watch(0xb2, 0xa1);
+    try w.hook(0xb2, .awaiting_approval, "Bash(x)", 1 * min);
+    try w.bus.setHeld(0xb2, true, .user);
+    // And one working that nobody holds.
+    try w.terminal(0xb3, "free", 0x21);
+    try w.bus.watch(0xb3, 0xa1);
+    try w.hook(0xb3, .turn_started, "", 1 * min);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const s = (try build(arena.allocator(), w.input(2 * min))).snapshot;
+    const Want = struct { u64, Bar.Shown, []const u8, Attention.Shown };
+    for ([_]Want{
+        .{ 0xb1, .held, "被按住", .working },
+        .{ 0xb2, .needs_you, "等批准", .needs_you },
+        .{ 0xb3, .working, "在干活", .working },
+    }) |want| {
+        const t = for (s.terminals) |t| {
+            if (t.id.id == want[0]) break t;
+        } else return error.TestTerminalMissing;
+        try testing.expectEqual(want[1], t.bar.shown);
+        try testing.expectEqualStrings(want[2], t.bar.text);
+        // What a row and a window tab draw is the status, held or not.
+        try testing.expectEqual(want[3], t.shown);
+        try testing.expect(t.held == (want[0] != 0xb3));
+    }
 }
 
 test "ControlRoom terminals: each says which frame its pane wears" {

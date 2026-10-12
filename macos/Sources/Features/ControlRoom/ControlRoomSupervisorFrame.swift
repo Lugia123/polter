@@ -22,7 +22,7 @@ struct ControlRoomSupervisorFrame<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        PaneFrameView(wears: .supervisor, title: title, caption: caption, focused: focused, content: content)
+        PaneFrameView(wears: .supervisor, title: title.map(PaneFrame.Title.init), caption: caption, focused: focused, content: content)
     }
 }
 

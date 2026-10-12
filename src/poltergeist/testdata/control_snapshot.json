@@ -567,7 +567,7 @@
           "screen": "unmeasured",
           "alive": true,
           "duty": "off",
-          "held": false,
+          "held": true,
           "shielded": false
         }
       ]
@@ -688,6 +688,10 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000021",
       "pane": "supervisor",
+      "bar": {
+        "shown": "needs_you",
+        "text": "等批准"
+      },
       "kind": "needs_approval",
       "since_ms": 5760000,
       "event_ms": 5760000,
@@ -708,6 +712,10 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000022",
       "pane": "supervisor",
+      "bar": {
+        "shown": "needs_you",
+        "text": "等回答"
+      },
       "kind": "needs_answer",
       "since_ms": 5340000,
       "event_ms": 5340000,
@@ -728,6 +736,10 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000023",
       "pane": "supervisor",
+      "bar": {
+        "shown": "trouble",
+        "text": "出错"
+      },
       "kind": "failed",
       "since_ms": 5880000,
       "event_ms": 5880000,
@@ -748,6 +760,10 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000024",
       "pane": "supervisor",
+      "bar": {
+        "shown": "done_unseen",
+        "text": "做完了，没看"
+      },
       "kind": "done_unseen",
       "since_ms": 4200000,
       "event_ms": 4200000,
@@ -768,6 +784,10 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000025",
       "pane": "supervisor",
+      "bar": {
+        "shown": "working",
+        "text": "在干活"
+      },
       "kind": "working",
       "since_ms": 5700000,
       "event_ms": 5700000,
@@ -788,6 +808,10 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000026",
       "pane": "supervisor",
+      "bar": {
+        "shown": "none",
+        "text": ""
+      },
       "kind": "idle",
       "since_ms": 600000,
       "event_ms": 600000,
@@ -808,6 +832,10 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000028",
       "pane": "supervisor",
+      "bar": {
+        "shown": "none",
+        "text": ""
+      },
       "kind": "idle",
       "since_ms": 1200000,
       "event_ms": 1200000,
@@ -828,6 +856,10 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000021",
       "pane": "worker",
+      "bar": {
+        "shown": "needs_you",
+        "text": "等批准"
+      },
       "kind": "needs_approval",
       "since_ms": 5970000,
       "event_ms": 5970000,
@@ -848,6 +880,10 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000025",
       "pane": "worker",
+      "bar": {
+        "shown": "held",
+        "text": "被按住"
+      },
       "kind": "idle",
       "since_ms": 0,
       "event_ms": null,
@@ -859,7 +895,7 @@
       "screen": "unmeasured",
       "alive": true,
       "duty": "off",
-      "held": false,
+      "held": true,
       "shielded": false
     },
     {
@@ -868,6 +904,10 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000028",
       "pane": "worker",
+      "bar": {
+        "shown": "needs_you",
+        "text": "等批准"
+      },
       "kind": "needs_approval",
       "since_ms": 5820000,
       "event_ms": 5820000,
@@ -888,6 +928,10 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000027",
       "pane": "plain",
+      "bar": {
+        "shown": "needs_you",
+        "text": "等批准"
+      },
       "kind": "needs_approval",
       "since_ms": 5940000,
       "event_ms": 5940000,
@@ -908,6 +952,10 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000027",
       "pane": "plain",
+      "bar": {
+        "shown": "none",
+        "text": ""
+      },
       "kind": "idle",
       "since_ms": 0,
       "event_ms": null,

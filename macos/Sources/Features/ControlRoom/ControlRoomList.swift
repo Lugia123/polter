@@ -416,6 +416,55 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         /// Absent in a snapshot from before the core said it; such a
         /// terminal is drawn as an ordinary one.
         var pane: Pane?
+
+        /// What the right end of its pane's title draws: the glyph and the
+        /// words, as the core worked them out (`ControlRoom.zig`, `Bar`).
+        /// **A host draws this pair and makes none of its own** out of
+        /// `shown`, `text` and whether the terminal is held: which of them
+        /// wins is the core's rule.
+        struct Bar: Decodable, Equatable {
+            /// The five a row draws, and `held`, which only a title does. A
+            /// value this does not know is an error, as with `shown`.
+            enum Shown: String, Decodable, Equatable, CaseIterable {
+                case needsYou = "needs_you"
+                case trouble
+                case doneUnseen = "done_unseen"
+                case working
+                case none
+                case held
+
+                /// The same glyph, for a status that is not a pane's.
+                init(_ status: ControlRoomList.Shown) {
+                    switch status {
+                    case .needsYou: self = .needsYou
+                    case .trouble: self = .trouble
+                    case .doneUnseen: self = .doneUnseen
+                    case .working: self = .working
+                    case .none: self = .none
+                    }
+                }
+
+                /// The status glyph this is; nil for `held`, which is not
+                /// one of the four.
+                var status: ControlRoomList.Shown? {
+                    switch self {
+                    case .needsYou: return .needsYou
+                    case .trouble: return .trouble
+                    case .doneUnseen: return .doneUnseen
+                    case .working: return .working
+                    case .none: return ControlRoomList.Shown.none
+                    case .held: return nil
+                    }
+                }
+            }
+
+            var shown: Shown
+            var text: String
+        }
+
+        /// Absent in a snapshot from before the core said it; the title
+        /// then says the terminal's status, as it did before.
+        var bar: Bar?
     }
 
     /// See `ControlRoomList.SupervisorStart`.
