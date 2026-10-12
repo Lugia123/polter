@@ -13,6 +13,9 @@ struct ControlRoomView: View {
 
     var body: some View {
         let edge = CGFloat(Look.Space.windowEdge)
+        let bar = ControlRoomList.detailBar(
+            row: model.selectedRow, selection: model.selection,
+            holdsTerminal: model.detail.terminal != nil, title: model.supervisorTitle)
         HStack(spacing: CGFloat(Look.Space.betweenFrames)) {
             if let list = model.list {
                 ControlRoomListView(
@@ -26,8 +29,8 @@ struct ControlRoomView: View {
             // The supervisor's frame, whatever is in it: the terminal, or
             // a sentence saying why there is none.
             ControlRoomSupervisorFrame(
-                title: model.supervisorTitle,
-                caption: model.detail.terminal == nil ? model.selection : nil,
+                title: bar.title,
+                caption: bar.caption,
                 focused: model.detailHasKeyboard
             ) {
                 ZStack {
@@ -42,6 +45,7 @@ struct ControlRoomView: View {
                             roles: model.list?.supervisorRoles ?? [],
                             chooseRole: model.list?.chooseSupervisorRole ?? false,
                             refusal: model.startRefusal.flatMap { $0.group == model.selection ? $0.message : nil },
+                            alone: model.selectedRow?.alone != nil,
                             onStart: { role, cwd in
                                 guard let group = model.selection else { return }
                                 model.startSupervisor(for: group, role: role, cwd: cwd)

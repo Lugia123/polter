@@ -197,4 +197,14 @@ extension ControlRoomSnapshot {
     func supervisor(of group: String) -> String? {
         groups.first { $0.name == group }?.steward
     }
+
+    /// The terminal the right-hand side shows for the row `row`: a group's
+    /// supervisor, and for a terminal that has a row of its own, that
+    /// terminal. Nil for a row the snapshot does not list.
+    func terminal(shownFor row: String) -> String? {
+        if let one = ungrouped?.first(where: { ControlRoomList.rowId(ofTerminal: $0.id) == row }) {
+            return one.id
+        }
+        return supervisor(of: row)
+    }
 }

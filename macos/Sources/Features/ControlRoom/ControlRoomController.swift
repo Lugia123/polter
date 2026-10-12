@@ -181,7 +181,9 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// whether a tab still holds it is looked up, not judged.
     private func syncDetail() {
         let group = model.selection
-        let supervisor = group.flatMap { ControlRoomFeed.shared(ghostty).latest?.supervisor(of: $0) }
+        // A group's supervisor, or the terminal itself for a row that is
+        // one terminal on its own.
+        let supervisor = group.flatMap { ControlRoomFeed.shared(ghostty).latest?.terminal(shownFor: $0) }
         let present = supervisor.map { ControlRoomLender.surface(for: $0) != nil } ?? false
         // Out of sight nothing is borrowed, but what the right side says
         // is still brought up to date (`ControlRoomLending.Event.outOfSight`).

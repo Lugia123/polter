@@ -199,12 +199,221 @@ struct ControlRoomListTests {
 
     @Test func theCoresFixtureDecodesIntoItsEightGroups() throws {
         let made = try ControlRoomList.decode(snapshot: Self.fixture())
+        // The groups, in the core's order -- and after them the terminal
+        // that waits in no group.
         let waiting = made.waiting.map(\.id)
-        #expect(waiting == ["web-app", "web-app-docs", "mobile", "billing", "docs-site"])
+        #expect(waiting == ["web-app", "web-app-docs", "mobile", "billing", "docs-site", "terminal:0x00000000000000c1"])
         let quiet = made.quiet.map(\.id)
         #expect(quiet == ["infra", "design-system", "notes"])
+        // The counts are of groups, and are the core's.
         #expect(made.waitingCount == 5)
         #expect(made.quietCount == 3)
+    }
+
+    // MARK: A terminal in no group
+
+    @Test func aTerminalWaitingInNoGroupHasARowSoTheListShowsWhatTheDockCounts() throws {
+        // The Dock's number is `needs_me`: every terminal waiting, each
+        // once. The groups' rows carry all of them but the ones in no
+        // group, and those were not drawn: the Dock said 6 over five rows.
+        let snapshot = try JSONDecoder().decode(ControlRoomSnapshot.self, from: Self.fixture())
+        let made = ControlRoomList(snapshot: snapshot)
+        let alone = made.waiting.filter { $0.alone != nil }
+        let lone = try #require(snapshot.ungrouped)
+        #expect(alone.count == lone.filter(\.needs_me).count)
+        #expect(alone.count == 1)
+
+        let row = try #require(alone.first)
+        #expect(row.alone == ControlRoomList.Alone(terminal: "0x00000000000000c1", title: "zsh — ~/work", pane: .plain))
+        // It is called by its title, and is a copy of what the core says.
+        #expect(row.name == "zsh — ~/work")
+        #expect(row.shown == .needsYou)
+        #expect(row.word == "等批准")
+        #expect(row.waiter.is == .terminal)
+        #expect(row.what.form == .command)
+        #expect(row.what.lines == ["git push"])
+        #expect(row.others == 0)
+        #expect(row.target == ControlRoomList.Target(terminal: "0x00000000000000c1", sinceMs: 5_940_000, eventMs: 5_940_000))
+        // Nothing to start: it is not a group without a supervisor.
+        #expect(row.start == nil)
+        // Nobody is named beside it: the row is the terminal.
+        let who = ControlRoomList.waiterText(row.waiter)
+        #expect(who == nil)
+    }
+
+    @Test func aLoneTerminalsRowCannotBeMistakenForAGroups() throws {
+        // A group may be named anything in letters, digits and hyphens --
+        // including what a terminal's id looks like.
+        let id = ControlRoomList.rowId(ofTerminal: "0x00000000000000c1")
+        #expect(id.contains(":"))
+        #expect(id != "0x00000000000000c1")
+
+        var snapshot = try JSONDecoder().decode(ControlRoomSnapshot.self, from: Self.fixture())
+        // The right-hand side shows that terminal itself; a group's row
+        // still shows its supervisor; a row that is neither shows nothing.
+        let shownForLone = snapshot.terminal(shownFor: id)
+        #expect(shownForLone == "0x00000000000000c1")
+        let shownForGroup = snapshot.terminal(shownFor: "web-app")
+        #expect(shownForGroup == "0x00000000000000a1")
+        let shownForTheBareId = snapshot.terminal(shownFor: "0x00000000000000c1")
+        #expect(shownForTheBareId == nil)
+        // And with none listed there are none, not an error.
+        snapshot.ungrouped = nil
+        let without = ControlRoomList(snapshot: snapshot)
+        let anyAlone = without.rows.contains { $0.alone != nil }
+        #expect(!anyAlone)
+        let gone = snapshot.terminal(shownFor: id)
+        #expect(gone == nil)
+    }
+
+    @Test func aLoneTerminalGoesInTheSectionItsOwnWordSaysAndBreathesWhenItIsFirst() throws {
+        var snapshot = try JSONDecoder().decode(ControlRoomSnapshot.self, from: Self.fixture())
+        var one = try #require(snapshot.ungrouped?.first)
+        // Needing nothing, it is with the quiet rows, after the groups.
+        one.needs_me = false
+        snapshot.ungrouped = [one]
+        let quiet = ControlRoomList(snapshot: snapshot)
+        let last = quiet.quiet.last?.id
+        #expect(last == "terminal:0x00000000000000c1")
+        let stillWaiting = quiet.waiting.contains { $0.alone != nil }
+        #expect(!stillWaiting)
+
+        // The one glyph that breathes is the first the core lists. When
+        // that is this terminal, in no group, it is this row and no group's.
+        one.needs_me = true
+        snapshot.ungrouped = [one]
+        snapshot.pulses = [ControlRoomSnapshot.Pulse(terminal: "0x00000000000000c1", window: nil, tab: nil, group: nil)]
+        let breathing = ControlRoomList(snapshot: snapshot).rows.filter(\.pulses).map(\.id)
+        #expect(breathing == ["terminal:0x00000000000000c1"])
+        // Another terminal in no group breathing is not this one.
+        snapshot.pulses = [ControlRoomSnapshot.Pulse(terminal: "0x00000000000000ff", window: nil, tab: nil, group: nil)]
+        let other = ControlRoomList(snapshot: snapshot).rows.filter(\.pulses).map(\.id)
+        #expect(other == [])
+    }
+
+    @Test func theBarOverTheRightSideSaysSupervisorOnlyOfASupervisor() {
+        let title = ControlRoomList.SupervisorTitle(name: "zsh", shown: .needsYou, word: "等批准")
+        var row = ControlRoomList.Row(
+            id: "terminal:0x1", shown: .needsYou, word: "等批准", waiter: .init(is: .terminal, name: ""),
+            what: .none, others: 0, pulses: false, supervisor: title,
+            alone: .init(terminal: "0x1", title: "zsh", pane: .plain))
+        // An ordinary agent on its own: its name, and no title to hang the
+        // word "Supervisor" on.
+        let plain = ControlRoomList.detailBar(row: row, selection: row.id, holdsTerminal: true, title: title)
+        #expect(plain.title == nil)
+        #expect(plain.caption == "zsh")
+        row.alone?.pane = .worker
+        let worker = ControlRoomList.detailBar(row: row, selection: row.id, holdsTerminal: true, title: title)
+        #expect(worker.title == nil)
+        // A supervisor that has made no group is one.
+        row.alone?.pane = .supervisor
+        let supervisor = ControlRoomList.detailBar(row: row, selection: row.id, holdsTerminal: true, title: title)
+        #expect(supervisor.title == title)
+        #expect(supervisor.caption == nil)
+        // A group's row is as it was: the title with a terminal, the
+        // group's name with a sentence.
+        row.alone = nil
+        row.id = "web-app"
+        let group = ControlRoomList.detailBar(row: row, selection: "web-app", holdsTerminal: true, title: title)
+        #expect(group.title == title)
+        let sentence = ControlRoomList.detailBar(row: row, selection: "web-app", holdsTerminal: false, title: nil)
+        #expect(sentence.title == nil)
+        #expect(sentence.caption == "web-app")
+        // A lone row with a sentence is named by its title, never its id.
+        row.alone = .init(terminal: "0x1", title: "zsh", pane: .plain)
+        row.id = "terminal:0x1"
+        let closed = ControlRoomList.detailBar(row: row, selection: row.id, holdsTerminal: false, title: nil)
+        #expect(closed.caption == "zsh")
+    }
+
+    @Test func lookingAtALoneTerminalsRowMarksNothingSeen() {
+        // `seen` names a group, and this row is in none: nothing is asked
+        // of the core under a name that is not a group's.
+        var waits = 0
+        var marked: [String] = []
+        let tracker = ControlRoomSeenTracker(
+            dwell: 0, later: { _, work in waits += 1; work() }, isInFront: { true }, markSeen: { marked.append($0) })
+        var row = ControlRoomList.Row(
+            id: "terminal:0x1", shown: .doneUnseen, word: "", waiter: .none, what: .none, others: 0, pulses: false,
+            unseen: true, alone: .init(terminal: "0x1", title: "zsh", pane: .plain))
+        tracker.selectionChanged(to: row)
+        row.unseen = false
+        tracker.listChanged(to: row)
+        row.unseen = true
+        tracker.listChanged(to: row)
+        #expect(waits == 0)
+        #expect(marked == [])
+        // The same row as a group's is marked, so the test can fail.
+        row.alone = nil
+        row.id = "web-app"
+        tracker.selectionChanged(to: row)
+        #expect(marked == ["web-app"])
+    }
+
+    // MARK: The first line of a waiting row
+
+    @Test func theGroupsNameIsNeverWhatGivesWayToWhoIsWaiting() {
+        // 322 across, 8 between things: a short name, a status word, and a
+        // worker whose title is far longer than the line.
+        let fit = ControlRoomLine1.fit(width: 322, gap: 8, name: 80, who: 400, word: 40)
+        // The name is whole.
+        #expect(fit.name == 80)
+        // Who is waiting has what is left -- 322 less the word, the name
+        // and the two gaps -- and is cut to it.
+        let who = fit.who
+        #expect(who == 186.0)
+        // With room for everything nothing is cut.
+        let roomy = ControlRoomLine1.fit(width: 322, gap: 8, name: 80, who: 100, word: 40)
+        #expect(roomy == .init(name: 80, who: 100))
+    }
+
+    @Test func aNameTooLongIsCutOnlyByTheStatusWordAndThenNobodyIsNamed() {
+        let fit = ControlRoomLine1.fit(width: 322, gap: 8, name: 500, who: 90, word: 40)
+        // Up to the status word and its gap, and no further.
+        #expect(fit.name == 322 - 40 - 8)
+        // There is no room left to name who waits: not drawn, rather than
+        // drawn at no width.
+        #expect(fit.who == nil)
+        // A name that just fits leaves nothing either.
+        let exact = ControlRoomLine1.fit(width: 322, gap: 8, name: 274, who: 90, word: 40)
+        #expect(exact == .init(name: 274, who: nil))
+        // One that leaves a little leaves that little.
+        let little = ControlRoomLine1.fit(width: 322, gap: 8, name: 250, who: 90, word: 40)
+        #expect(little == .init(name: 250, who: 16))
+    }
+
+    @Test func aRowWithNobodyToNameOrNoStatusWordGivesTheNameTheRoom() {
+        let nobody = ControlRoomLine1.fit(width: 322, gap: 8, name: 300, who: nil, word: 40)
+        #expect(nobody == .init(name: 274, who: nil))
+        // No status word takes no room and no gap.
+        let wordless = ControlRoomLine1.fit(width: 322, gap: 8, name: 400, who: nil, word: 0)
+        #expect(wordless == .init(name: 322, who: nil))
+        // Nothing is ever a negative width.
+        let tiny = ControlRoomLine1.fit(width: 30, gap: 8, name: 80, who: 50, word: 40)
+        #expect(tiny == .init(name: 0, who: nil))
+    }
+
+    // MARK: A note under the header
+
+    @Test func whatIsSaidUnderTheHeaderMovesTheRowsDownAndCoversNone() throws {
+        let plain = ControlRoomListLayout(list: list, height: 824)
+        let noted = ControlRoomListLayout(list: list, height: 824, noteUnderHeader: 36)
+        // The header stays; every row, the separator and the second header
+        // are lower by the note's height, so the note has that room to
+        // itself.
+        #expect(noted.header == plain.header)
+        for row in list.rows {
+            let was = try #require(plain.rows[row.id])
+            let now = try #require(noted.rows[row.id])
+            #expect(now == was.offsetBy(dx: 0, dy: 36))
+        }
+        #expect(noted.separator == plain.separator.offsetBy(dx: 0, dy: 36))
+        #expect(noted.quietHeader == plain.quietHeader.offsetBy(dx: 0, dy: 36))
+        let first = try #require(noted.rows[list.waiting[0].id])
+        #expect(first.minY >= noted.header.maxY + 36)
+        // With nothing said nothing moves.
+        let none = ControlRoomListLayout(list: list, height: 824, noteUnderHeader: 0)
+        #expect(none == plain)
     }
 
     @Test func theCoresFixtureSaysWhoWaitsAndForWhat() throws {

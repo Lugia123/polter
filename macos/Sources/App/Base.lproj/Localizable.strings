@@ -558,6 +558,8 @@
 "Supervisor May Answer Prompts" = "Supervisor May Answer Prompts";
 "Let a supervisor whose work is done take itself off duty." = "Let a supervisor whose work is done take itself off duty.";
 "Let a supervisor answer workers' permission prompts." = "Let a supervisor answer workers' permission prompts.";
+"Frames Around Split Panes" = "Frames Around Split Panes";
+"Draw a frame round each pane of a split." = "Draw a frame round each pane of a split.";
 "Keep Chat Log" = "Keep Chat Log";
 "Write what the terminals say to each other to disk." = "Write what the terminals say to each other to disk.";
 "Keep Terminal Transcripts" = "Keep Terminal Transcripts";
@@ -704,6 +706,8 @@
 "This group has no supervisor." = "This group has no supervisor.";
 "The supervisor's terminal is no longer open." = "The supervisor's terminal is no longer open.";
 "The supervisor's terminal is in its own tab." = "The supervisor's terminal is in its own tab.";
+"This terminal is no longer open." = "This terminal is no longer open.";
+"This terminal is in its own tab." = "This terminal is in its own tab.";
 
 /* 总控台：新建群、给没有总管的群启动总管 */
 "A group's name is lowercase letters, digits and dashes, 48 at most." = "A group's name is lowercase letters, digits and dashes, 48 at most.";

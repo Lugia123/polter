@@ -32,7 +32,7 @@ impl Shown {
         }
     }
 
-    fn parse(s: &str) -> Option<Shown> {
+    pub(crate) fn parse(s: &str) -> Option<Shown> {
         [Shown::NeedsYou, Shown::Trouble, Shown::DoneUnseen, Shown::Working, Shown::None]
             .into_iter()
             .find(|v| v.name() == s)
@@ -67,7 +67,7 @@ impl WaiterIs {
         }
     }
 
-    fn parse(s: &str) -> Option<WaiterIs> {
+    pub(crate) fn parse(s: &str) -> Option<WaiterIs> {
         [WaiterIs::None, WaiterIs::Supervisor, WaiterIs::WorkerViaSupervisor, WaiterIs::Worker, WaiterIs::Terminal]
             .into_iter()
             .find(|v| v.name() == s)
@@ -104,7 +104,7 @@ impl Form {
         }
     }
 
-    fn parse(s: &str) -> Option<Form> {
+    pub(crate) fn parse(s: &str) -> Option<Form> {
         [Form::None, Form::Command, Form::Code, Form::Words].into_iter().find(|v| v.name() == s)
     }
 }
@@ -130,7 +130,7 @@ impl Cut {
         }
     }
 
-    fn parse(s: &str) -> Option<Cut> {
+    pub(crate) fn parse(s: &str) -> Option<Cut> {
         [Cut::None, Cut::Tail, Cut::Head].into_iter().find(|v| v.name() == s)
     }
 }

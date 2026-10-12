@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 02:15+0800\n"
+"POT-Creation-Date: 2026-10-13 04:37+0800\n"
 "PO-Revision-Date: 2026-08-10 17:32+0300\n"
 "Last-Translator: Ēriks Remess <eriks@remess.lv>\n"
 "Language-Team: Latvian\n"
@@ -25,19 +25,19 @@ msgstr "Atvērt ar Ghostty"
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:12
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:197
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
-#: windows/host/src/main.rs:2562 windows/host/src/main.rs:2568
+#: windows/host/src/main.rs:2563 windows/host/src/main.rs:2569
 msgid "Authorize Clipboard Access"
 msgstr "Atļaut piekļuvi starpliktuvei"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:17
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:17
-#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:202
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:203
 msgid "Deny"
 msgstr "Noraidīt"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:18
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:18
-#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:201
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:202
 msgid "Allow"
 msgstr "Atļaut"
 
@@ -203,13 +203,13 @@ msgstr "Mainīt cilnes virsrakstu…"
 #: src/apprt/gtk/ui/1.2/surface.blp:386 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
 #: src/input/command.zig:427 windows/host/src/ctxmenu.rs:110
-#: windows/host/src/menu.rs:252 windows/host/src/strip.rs:1842
+#: windows/host/src/menu.rs:252 windows/host/src/strip.rs:2073
 msgid "New Tab"
 msgstr "Jauna cilne"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:242
 #: src/input/command.zig:674 windows/host/src/ctxmenu.rs:116
-#: windows/host/src/menu.rs:278 windows/host/src/strip.rs:1358
+#: windows/host/src/menu.rs:278 windows/host/src/strip.rs:1589
 msgid "Close Tab"
 msgstr "Aizvērt cilni"
 
@@ -264,7 +264,7 @@ msgid "Main Menu"
 msgstr "Galvenā izvēlne"
 
 #: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:192
-#: windows/host/src/menu.rs:328 windows/host/src/strip.rs:1849
+#: windows/host/src/menu.rs:328 windows/host/src/strip.rs:2080
 msgid "Command Palette"
 msgstr "Komandu palete"
 
@@ -310,7 +310,7 @@ msgid "Editing configuration file"
 msgstr "Konfigurācijas faila rediģēšana:"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
-#: windows/host/src/main.rs:2570
+#: windows/host/src/main.rs:2571
 msgid ""
 "An application is attempting to write to the clipboard. The current "
 "clipboard contents are shown below."
@@ -319,7 +319,7 @@ msgstr ""
 "starpliktuves saturs."
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:202
-#: windows/host/src/main.rs:2564
+#: windows/host/src/main.rs:2565
 msgid ""
 "An application is attempting to read from the clipboard. The current "
 "clipboard contents are shown below."
@@ -328,12 +328,12 @@ msgstr ""
 "starpliktuves saturs."
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2574
+#: windows/host/src/main.rs:2575
 msgid "Warning: Potentially Unsafe Paste"
 msgstr "Brīdinājums: potenciāli nedroša ielīmēšana"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2576
+#: windows/host/src/main.rs:2577
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -346,17 +346,17 @@ msgid "Quit Ghostty?"
 msgstr "Iziet no Ghostty?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
-#: windows/host/src/tabs.rs:3398
+#: windows/host/src/tabs.rs:3441
 msgid "Close Tab?"
 msgstr "Aizvērt cilni?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
-#: windows/host/src/tabs.rs:3399
+#: windows/host/src/tabs.rs:3442
 msgid "Close Window?"
 msgstr "Aizvērt logu?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
-#: windows/host/src/tabs.rs:3400
+#: windows/host/src/tabs.rs:3443
 msgid "Close Split?"
 msgstr "Aizvērt nodalījumu?"
 
@@ -365,17 +365,17 @@ msgid "All terminal sessions will be terminated."
 msgstr "Visas termināļa sesijas tiks pārtrauktas."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
-#: windows/host/src/tabs.rs:3408
+#: windows/host/src/tabs.rs:3451
 msgid "All terminal sessions in this tab will be terminated."
 msgstr "Visas termināļa sesijas šajā cilnē tiks pārtrauktas."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
-#: windows/host/src/tabs.rs:3409
+#: windows/host/src/tabs.rs:3452
 msgid "All terminal sessions in this window will be terminated."
 msgstr "Visas termināļa sesijas šajā logā tiks pārtrauktas."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
-#: windows/host/src/tabs.rs:3410
+#: windows/host/src/tabs.rs:3453
 msgid "The currently running process in this split will be terminated."
 msgstr "Pašlaik palaistais process šajā nodalījumā tiks pārtraukts."
 
@@ -828,7 +828,7 @@ msgstr "Pārvietot cilni pa labi"
 msgid "Move the current tab to the right."
 msgstr "Pārvietot pašreizējo cilni pa labi."
 
-#: src/input/command.zig:446 windows/host/src/strip.rs:1361
+#: src/input/command.zig:446 windows/host/src/strip.rs:1592
 msgid "Move Tab to New Window"
 msgstr "Pārvietot cilni uz jaunu logu"
 
@@ -953,7 +953,7 @@ msgid "Toggle read-only mode for the current surface."
 msgstr "Ieslēgt vai izslēgt tikai lasīšanas režīmu pašreizējā terminālī."
 
 #: src/input/command.zig:557 windows/host/src/ctxmenu.rs:142
-#: windows/host/src/menu.rs:373 windows/host/src/strip.rs:1367
+#: windows/host/src/menu.rs:373 windows/host/src/strip.rs:1598
 msgid "Make This Terminal a Supervisor"
 msgstr ""
 
@@ -964,7 +964,7 @@ msgid ""
 msgstr ""
 
 #: src/input/command.zig:563 windows/host/src/ctxmenu.rs:147
-#: windows/host/src/menu.rs:374 windows/host/src/strip.rs:1368
+#: windows/host/src/menu.rs:374 windows/host/src/strip.rs:1599
 msgid "Toggle Supervision of This Terminal"
 msgstr ""
 
@@ -983,7 +983,7 @@ msgid ""
 msgstr ""
 
 #: src/input/command.zig:600 windows/host/src/ctxmenu.rs:152
-#: windows/host/src/menu.rs:375 windows/host/src/strip.rs:1369
+#: windows/host/src/menu.rs:375 windows/host/src/strip.rs:1600
 msgid "Keep Agents Out of This Terminal"
 msgstr ""
 
@@ -1090,21 +1090,21 @@ msgstr "Aizvērt pašreizējo termināli."
 msgid "Close the current tab."
 msgstr "Aizvērt pašreizējo cilni."
 
-#: src/input/command.zig:679 windows/host/src/strip.rs:1359
-#: windows/host/src/tabs.rs:3401
+#: src/input/command.zig:679 windows/host/src/strip.rs:1590
+#: windows/host/src/tabs.rs:3444
 msgid "Close Other Tabs"
 msgstr "Aizvērt citas cilnes"
 
-#: src/input/command.zig:680 windows/host/src/tabs.rs:3418
+#: src/input/command.zig:680 windows/host/src/tabs.rs:3461
 msgid "Close all tabs in this window except the current one."
 msgstr "Aizvērt visas cilnes šajā logā, izņemot pašreizējo."
 
-#: src/input/command.zig:684 windows/host/src/strip.rs:1360
-#: windows/host/src/tabs.rs:3402
+#: src/input/command.zig:684 windows/host/src/strip.rs:1591
+#: windows/host/src/tabs.rs:3445
 msgid "Close Tabs to the Right"
 msgstr "Aizvērt cilnes pa labi"
 
-#: src/input/command.zig:685 windows/host/src/tabs.rs:3419
+#: src/input/command.zig:685 windows/host/src/tabs.rs:3462
 msgid "Close all tabs to the right of the current one."
 msgstr "Aizvērt visas cilnes pa labi no pašreizējās."
 
@@ -1290,22 +1290,22 @@ msgid "Block Size"
 msgstr "Bloka izmērs"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig:96 windows/host/src/strip.rs:1322
+#: src/input/screenshot.zig:96 windows/host/src/strip.rs:1553
 msgid "Red"
 msgstr "Sarkana"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig:97 windows/host/src/strip.rs:1323
+#: src/input/screenshot.zig:97 windows/host/src/strip.rs:1554
 msgid "Orange"
 msgstr "Oranža"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig:98 windows/host/src/strip.rs:1324
+#: src/input/screenshot.zig:98 windows/host/src/strip.rs:1555
 msgid "Yellow"
 msgstr "Dzeltena"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig:99 windows/host/src/strip.rs:1325
+#: src/input/screenshot.zig:99 windows/host/src/strip.rs:1556
 msgid "Green"
 msgstr "Zaļa"
 
@@ -1315,12 +1315,12 @@ msgid "Cyan"
 msgstr "Ciāna"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig:101 windows/host/src/strip.rs:1319
+#: src/input/screenshot.zig:101 windows/host/src/strip.rs:1550
 msgid "Blue"
 msgstr "Zila"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig:102 windows/host/src/strip.rs:1320
+#: src/input/screenshot.zig:102 windows/host/src/strip.rs:1551
 msgid "Purple"
 msgstr "Violeta"
 
@@ -2163,76 +2163,84 @@ msgid "Let a supervisor answer workers' permission prompts."
 msgstr ""
 
 #: src/config/form.zig:184
-msgid "Keep Chat Log"
+msgid "Frames Around Split Panes"
 msgstr ""
 
 #: src/config/form.zig:184
+msgid "Draw a frame round each pane of a split."
+msgstr ""
+
+#: src/config/form.zig:185
+msgid "Keep Chat Log"
+msgstr ""
+
+#: src/config/form.zig:185
 msgid "Write what the terminals say to each other to disk."
 msgstr ""
 
-#: src/config/form.zig:185
+#: src/config/form.zig:186
 msgid "Keep Terminal Transcripts"
 msgstr ""
 
-#: src/config/form.zig:185
+#: src/config/form.zig:186
 msgid "Keep a transcript of what ran in each terminal."
 msgstr ""
 
-#: src/config/form.zig:186 windows/host/src/language.rs:291
+#: src/config/form.zig:187 windows/host/src/language.rs:291
 msgid "Language"
 msgstr ""
 
-#: src/config/form.zig:186
+#: src/config/form.zig:187
 msgid "The interface language; empty follows the system."
 msgstr ""
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:189
+#: src/config/form.zig:190
 msgid "Paste Images as Files"
 msgstr "Ielīmēt attēlus kā failus"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:189
+#: src/config/form.zig:190
 msgid "Save a pasted image as a file and paste its path."
 msgstr "Saglabā ielīmēto attēlu failā un ielīmē tā ceļu."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:190
+#: src/config/form.zig:191
 msgid "Screenshot Folder"
 msgstr "Ekrānuzņēmumu mape"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:190
+#: src/config/form.zig:191
 msgid "Where screenshots and pasted images are saved."
 msgstr "Kur tiek saglabāti ekrānuzņēmumi un ielīmētie attēli."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:191
+#: src/config/form.zig:192
 msgid "Mouse Trigger"
 msgstr "Peles aktivizētājs"
 
 # Machine translation (2026-10-07), not reviewed by a speaker.
-#: src/config/form.zig:191
+#: src/config/form.zig:192
 msgid "Hold these keys and click to take a screenshot."
 msgstr "Turiet šos taustiņus un noklikšķiniet, lai uzņemtu ekrānu."
 
-#: src/config/form.zig:192 windows/settings-shell/src/plugins.rs:52
+#: src/config/form.zig:193 windows/settings-shell/src/plugins.rs:52
 msgid "Off"
 msgstr ""
 
 # Machine translation (2026-10-07), not reviewed by a speaker.
-#: src/config/form.zig:199
+#: src/config/form.zig:200
 #, c-format
 msgid "%s + Click"
 msgstr "%s + klikšķis"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:200
+#: src/config/form.zig:201
 msgid "Let Agents Take Screenshots"
 msgstr "Ļaut aģentiem uzņemt ekrānuzņēmumus"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:200
+#: src/config/form.zig:201
 msgid "Agents may capture the screen with the screenshot tools."
 msgstr "Aģenti var uzņemt ekrānu ar ekrānuzņēmumu rīkiem."
 
@@ -2253,7 +2261,7 @@ msgid "Let a Supervisor Answer Prompts Here"
 msgstr ""
 
 #: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:404
-#: windows/host/src/strip.rs:1370
+#: windows/host/src/strip.rs:1601
 msgid "Let Workers Name Each Other Directly"
 msgstr ""
 
@@ -2441,34 +2449,34 @@ msgid ""
 "and start Polter again."
 msgstr ""
 
-#: windows/host/src/main.rs:2590
+#: windows/host/src/main.rs:2591
 #, rust-format
 msgid "{} lines in all."
 msgstr ""
 
-#: windows/host/src/main.rs:6358
+#: windows/host/src/main.rs:6359
 msgid "No reason was recorded."
 msgstr ""
 
-#: windows/host/src/main.rs:6364
+#: windows/host/src/main.rs:6365
 msgid "Polter could not open its first terminal and will close."
 msgstr ""
 
-#: windows/host/src/main.rs:6366
+#: windows/host/src/main.rs:6367
 #, rust-format
 msgid "The full log is at {}"
 msgstr ""
 
-#: windows/host/src/menu.rs:263 windows/host/src/strip.rs:1848
+#: windows/host/src/menu.rs:263 windows/host/src/strip.rs:2079
 msgid "Reopen Closed Tab"
 msgstr ""
 
 #: windows/host/src/menu.rs:293 windows/host/src/projects_ui.rs:619
-#: windows/host/src/strip.rs:1373
+#: windows/host/src/strip.rs:1604
 msgid "Save as Project…"
 msgstr ""
 
-#: windows/host/src/menu.rs:294 windows/host/src/strip.rs:1374
+#: windows/host/src/menu.rs:294 windows/host/src/strip.rs:1605
 msgid "Load Project…"
 msgstr ""
 
@@ -3552,19 +3560,19 @@ msgstr ""
 msgid "{} (not in the search results)"
 msgstr ""
 
-#: windows/host/src/strip.rs:1318
+#: windows/host/src/strip.rs:1549
 msgid "None"
 msgstr ""
 
-#: windows/host/src/strip.rs:1321
+#: windows/host/src/strip.rs:1552
 msgid "Pink"
 msgstr ""
 
-#: windows/host/src/strip.rs:1326
+#: windows/host/src/strip.rs:1557
 msgid "Teal"
 msgstr ""
 
-#: windows/host/src/strip.rs:1327
+#: windows/host/src/strip.rs:1558
 msgid "Graphite"
 msgstr ""
 
@@ -3572,11 +3580,11 @@ msgstr ""
 #. in place on the tab strip. "Rename Tab…" with U+2026 is a
 #. DIFFERENT action (prompt_tab_title) that opens the title overlay.
 #. The two entries look almost identical; do not merge them.
-#: windows/host/src/strip.rs:1366
+#: windows/host/src/strip.rs:1597
 msgid "Rename Tab..."
 msgstr ""
 
-#: windows/host/src/strip.rs:1592
+#: windows/host/src/strip.rs:1823
 msgid "Tab Color"
 msgstr ""
 
@@ -3644,6 +3652,10 @@ msgstr ""
 #: windows/control-room/src/list.rs:56
 #, rust-format
 msgid "{}, via the supervisor"
+msgstr ""
+
+#: windows/control-room/src/pane.rs:40
+msgid "Worker"
 msgstr ""
 
 #: windows/control-room/src/rules.rs:83

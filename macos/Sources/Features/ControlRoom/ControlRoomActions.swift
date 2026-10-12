@@ -225,8 +225,9 @@ final class ControlRoomSeenTracker {
         selected = row?.id
         selectedUnseen = row?.unseen ?? false
         // Only a row the core says has not been looked at is worth saying
-        // anything about.
-        guard let row, row.unseen else { return }
+        // anything about -- and only a group's: `seen` names a group, and a
+        // terminal on its own is in none.
+        guard let row, row.unseen, row.alone == nil else { return }
         wait(for: row.id)
     }
 
@@ -250,7 +251,7 @@ final class ControlRoomSeenTracker {
         }
         let was = selectedUnseen
         selectedUnseen = row?.unseen ?? false
-        guard let row, row.unseen, !was else { return }
+        guard let row, row.unseen, !was, row.alone == nil else { return }
         generation += 1
         wait(for: row.id)
     }

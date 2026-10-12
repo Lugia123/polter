@@ -53,6 +53,8 @@ struct ControlRoomListView: View {
     /// Why the name as typed made no group.
     @State private var nameRefusal: String?
     @FocusState private var nameHasKeyboard: Bool
+    /// The list itself has the keyboard: the arrow keys walk the rows.
+    @FocusState private var listHasKeyboard: Bool
 
     /// `midSlide` draws the chip as it is in the air, this far from its
     /// row, and moves nothing: for still pictures of the slide.
@@ -74,7 +76,11 @@ struct ControlRoomListView: View {
 
     var body: some View {
         GeometryReader { proxy in
+            // Why a name made no group stands under the field, and the
+            // rows move down to make room for it.
+            let note = naming ? nameRefusal : nil
             let layout = ControlRoomListLayout(list: list, height: proxy.size.height,
+                                               noteUnderHeader: note.map(Self.noteHeight) ?? 0,
                                                needed: ControlRoomAskText.needed)
             ZStack(alignment: .topLeading) {
                 if let chip = layout.chip(for: selection) {
@@ -98,11 +104,10 @@ struct ControlRoomListView: View {
                 if let quota = list.quota {
                     ControlRoomQuotaView(quota: quota, still: still).place(layout.quota)
                 }
-                // Last, so it lies over the rows: it is there only until
-                // the name is put right.
-                if naming, let nameRefusal {
-                    nameNote(nameRefusal)
-                        .frame(width: layout.header.width, alignment: .leading)
+                // In the room the layout left under the header.
+                if let note {
+                    nameNote(note)
+                        .frame(width: layout.header.width, height: Self.noteHeight(note), alignment: .topLeading)
                         .offset(x: layout.header.minX, y: layout.header.maxY)
                 }
             }
@@ -113,6 +118,7 @@ struct ControlRoomListView: View {
         .monospacedDigit()
         .foregroundStyle(theme.text.color)
         .controlRoomListFocus()
+        .focused($listHasKeyboard)
         .onMoveCommand { direction in
             switch direction {
             case .up: select(ControlRoomList.move(selection, by: -1, in: list.rows))
@@ -252,6 +258,24 @@ struct ControlRoomListView: View {
         naming = false
         nameRefusal = nil
         nameHasKeyboard = false
+        // Back to the list, so that the arrow keys work at once: with the
+        // field gone the keyboard was left on the window, on nothing.
+        DispatchQueue.main.async { listHasKeyboard = true }
+    }
+
+    /// How wide the words of the note under the field are set.
+    private static var noteWidth: CGFloat {
+        CGFloat(Look.Side.width) - 2 * CGFloat(Look.Space.sidePanelPadding) - 2 * CGFloat(Look.Side.headerPaddingX)
+    }
+
+    /// How high the note is with these words in it: its lines, and the
+    /// row's padding above and below.
+    static func noteHeight(_ text: String) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: CGFloat(Look.Font.body))
+        let box = (text as NSString).boundingRect(
+            with: CGSize(width: noteWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin], attributes: [.font: font])
+        return ceil(box.height) + 2 * CGFloat(Look.Side.rowPaddingY)
     }
 
     private func submitName() {
@@ -355,27 +379,48 @@ struct ControlRoomListView: View {
     private func waitingRow(_ row: Row, fit: ControlRoomAskFit) -> some View {
         let selected = row.id == selection
         let gap = CGFloat(Look.Side.rowItemGap)
+        // Who gets how much of the first line is the rule's
+        // (`ControlRoomLine1`); what is measured here is only how wide each
+        // would be alone.
+        let nameFont = NSFont.monospacedSystemFont(
+            ofSize: CGFloat(Look.Font.groupName),
+            weight: Self.weight(selected ? Look.Font.weightStrong : Look.Font.weightGroupName))
+        let wordFont = NSFont.systemFont(ofSize: CGFloat(Look.Font.body), weight: Self.weight(Look.Font.weightEmphasis))
+        let whoText = who(row.waiter)
+        let line1 = ControlRoomLine1.fit(
+            width: Double(ControlRoomListLayout.askWidth), gap: Double(gap),
+            name: Double(Self.width(of: row.name, font: nameFont)),
+            who: whoText.map { _ in Double(Self.whoWidth(row.waiter)) },
+            word: row.word.isEmpty ? 0 : Double(Self.width(of: row.word, font: wordFont)))
         return HStack(alignment: .top, spacing: gap) {
             glyphColumn(height: Look.Side.rowLine1Height) {
                 ControlRoomGlyph(shown: row.shown, pulses: row.pulses, still: still)
             }
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .firstTextBaseline, spacing: gap) {
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
                     Text(row.name)
                         .font(.system(size: CGFloat(Look.Font.groupName), design: .monospaced))
                         .fontWeight(Look.weight(selected ? Look.Font.weightStrong : Look.Font.weightGroupName))
                         .lineLimit(1)
                         .truncationMode(.tail)
+                        .frame(width: CGFloat(line1.name), alignment: .leading)
                     Spacer(minLength: 0)
-                    if let who = who(row.waiter) {
-                        who.foregroundStyle(theme.textSecondary.color)
+                    if let whoText, let room = line1.who {
+                        // Cut from its start: the end of a long title is
+                        // the part that tells two workers apart.
+                        whoText.foregroundStyle(theme.textSecondary.color)
                             .lineLimit(1)
-                            .fixedSize()
+                            .truncationMode(.head)
+                            .frame(width: CGFloat(room), alignment: .trailing)
+                            .padding(.leading, gap)
                     }
-                    Text(row.word)
-                        .fontWeight(Look.weight(Look.Font.weightEmphasis))
-                        .foregroundStyle(ink(row.shown, selected: selected))
-                        .fixedSize()
+                    if !row.word.isEmpty {
+                        Text(row.word)
+                            .fontWeight(Look.weight(Look.Font.weightEmphasis))
+                            .foregroundStyle(ink(row.shown, selected: selected))
+                            .fixedSize()
+                            .padding(.leading, gap)
+                    }
                 }
                 .frame(height: CGFloat(Look.Side.rowLine1Height))
                 // Only the steps that have lines: the rest are counted below.
@@ -401,6 +446,37 @@ struct ControlRoomListView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(ControlRoomList.spoken(row))
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    /// The face's weight for one of the table's.
+    private static func weight(_ value: Double) -> NSFont.Weight {
+        switch value {
+        case ..<450: return .regular
+        case ..<550: return .medium
+        case ..<650: return .semibold
+        default: return .bold
+        }
+    }
+
+    /// How wide `text` is on one line, rounded up so that a text that fits
+    /// exactly is not cut by a fraction of a point.
+    static func width(of text: String, font: NSFont) -> CGFloat {
+        ceil((text as NSString).size(withAttributes: [.font: font]).width) + 1
+    }
+
+    /// How wide who is waiting would be alone: the worker's name in the
+    /// terminal's face, the rest in the interface's, as `who` sets them.
+    static func whoWidth(_ waiter: ControlRoomList.Waiter) -> CGFloat {
+        guard let said = ControlRoomList.waiterText(waiter) else { return 0 }
+        let size = CGFloat(Look.Font.body)
+        let text = NSMutableAttributedString(string: said, attributes: [.font: NSFont.systemFont(ofSize: size)])
+        if !waiter.name.isEmpty {
+            let range = (said as NSString).range(of: waiter.name)
+            if range.location != NSNotFound {
+                text.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: size, weight: .regular), range: range)
+            }
+        }
+        return ceil(text.size().width) + 1
     }
 
     /// A group that needs nothing: the glyph in the same column, the name,

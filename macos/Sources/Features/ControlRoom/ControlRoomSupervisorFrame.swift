@@ -39,6 +39,9 @@ struct ControlRoomDetailMessage: View {
     var chooseRole: Bool = false
     /// Why the last press of "Start Supervisor" did nothing.
     var refusal: String?
+    /// The selected row is one terminal on its own, not a group: the
+    /// sentences are about that terminal.
+    var alone: Bool = false
     var onStart: (_ role: String?, _ cwd: String?) -> Void = { _, _ in }
 
     @Environment(\.colorScheme) private var scheme
@@ -46,7 +49,7 @@ struct ControlRoomDetailMessage: View {
     var body: some View {
         let theme = Look.theme(scheme)
         VStack(spacing: CGFloat(Look.Side.rowGap)) {
-            Text(Self.words(for: detail, start: start))
+            Text(Self.words(for: detail, start: start, alone: alone))
                 .foregroundStyle(theme.textSecondary.color)
             if case let .noSupervisor(group) = detail, let start, start.canStart {
                 ControlRoomStartSupervisor(
@@ -72,7 +75,19 @@ struct ControlRoomDetailMessage: View {
     /// One sentence for each way of having no terminal to show. Never
     /// empty: a blank right-hand side reads as something broken.
     static func words(for detail: ControlRoomLending.Detail,
-                      start: ControlRoomList.SupervisorStart? = nil) -> String {
+                      start: ControlRoomList.SupervisorStart? = nil, alone: Bool = false) -> String {
+        if alone {
+            // A terminal with a row of its own has no supervisor to speak
+            // of: it is itself what the right-hand side would show.
+            switch detail {
+            case .noSupervisor, .supervisorGone:
+                return String(localized: "This terminal is no longer open.", comment: "总控台：选中的是一个不在任何群里的终端，它已经关掉时右栏的说明")
+            case .takenBack:
+                return String(localized: "This terminal is in its own tab.", comment: "总控台：选中的是一个不在任何群里的终端，它被要回原处以后右栏的说明")
+            case .nothingSelected, .terminal:
+                break
+            }
+        }
         switch detail {
         case .nothingSelected:
             return String(localized: "Select a group to see its supervisor.", comment: "总控台：没有选中任何群时右栏的说明")

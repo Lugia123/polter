@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 02:15+0800\n"
+"POT-Creation-Date: 2026-10-13 04:37+0800\n"
 "PO-Revision-Date: 2026-09-13 10:50+0800\n"
 "Last-Translator: Lukas <134181853+bo2themax@users.noreply.github.com>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -27,19 +27,19 @@ msgstr "在 Ghostty 中打开"
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:12
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:197
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
-#: windows/host/src/main.rs:2562 windows/host/src/main.rs:2568
+#: windows/host/src/main.rs:2563 windows/host/src/main.rs:2569
 msgid "Authorize Clipboard Access"
 msgstr "剪贴板访问授权"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:17
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:17
-#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:202
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:203
 msgid "Deny"
 msgstr "拒绝"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:18
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:18
-#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:201
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:202
 msgid "Allow"
 msgstr "允许"
 
@@ -204,13 +204,13 @@ msgstr "更改标签页标题…"
 #: src/apprt/gtk/ui/1.2/surface.blp:386 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
 #: src/input/command.zig:427 windows/host/src/ctxmenu.rs:110
-#: windows/host/src/menu.rs:252 windows/host/src/strip.rs:1842
+#: windows/host/src/menu.rs:252 windows/host/src/strip.rs:2073
 msgid "New Tab"
 msgstr "新建标签页"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:242
 #: src/input/command.zig:674 windows/host/src/ctxmenu.rs:116
-#: windows/host/src/menu.rs:278 windows/host/src/strip.rs:1358
+#: windows/host/src/menu.rs:278 windows/host/src/strip.rs:1589
 msgid "Close Tab"
 msgstr "关闭标签页"
 
@@ -265,7 +265,7 @@ msgid "Main Menu"
 msgstr "主菜单"
 
 #: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:192
-#: windows/host/src/menu.rs:328 windows/host/src/strip.rs:1849
+#: windows/host/src/menu.rs:328 windows/host/src/strip.rs:2080
 msgid "Command Palette"
 msgstr "命令面板"
 
@@ -311,26 +311,26 @@ msgid "Editing configuration file"
 msgstr "正在编辑配置文件"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
-#: windows/host/src/main.rs:2570
+#: windows/host/src/main.rs:2571
 msgid ""
 "An application is attempting to write to the clipboard. The current "
 "clipboard contents are shown below."
 msgstr "一个应用正在试图向剪贴板写入内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:202
-#: windows/host/src/main.rs:2564
+#: windows/host/src/main.rs:2565
 msgid ""
 "An application is attempting to read from the clipboard. The current "
 "clipboard contents are shown below."
 msgstr "一个应用正在试图从剪贴板读取内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2574
+#: windows/host/src/main.rs:2575
 msgid "Warning: Potentially Unsafe Paste"
 msgstr "警告：粘贴内容可能不安全"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2576
+#: windows/host/src/main.rs:2577
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -341,17 +341,17 @@ msgid "Quit Ghostty?"
 msgstr "退出 Ghostty 吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
-#: windows/host/src/tabs.rs:3398
+#: windows/host/src/tabs.rs:3441
 msgid "Close Tab?"
 msgstr "关闭标签页吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
-#: windows/host/src/tabs.rs:3399
+#: windows/host/src/tabs.rs:3442
 msgid "Close Window?"
 msgstr "关闭窗口吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
-#: windows/host/src/tabs.rs:3400
+#: windows/host/src/tabs.rs:3443
 msgid "Close Split?"
 msgstr "关闭分屏吗？"
 
@@ -360,17 +360,17 @@ msgid "All terminal sessions will be terminated."
 msgstr "终端内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
-#: windows/host/src/tabs.rs:3408
+#: windows/host/src/tabs.rs:3451
 msgid "All terminal sessions in this tab will be terminated."
 msgstr "标签页内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
-#: windows/host/src/tabs.rs:3409
+#: windows/host/src/tabs.rs:3452
 msgid "All terminal sessions in this window will be terminated."
 msgstr "窗口内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
-#: windows/host/src/tabs.rs:3410
+#: windows/host/src/tabs.rs:3453
 msgid "The currently running process in this split will be terminated."
 msgstr "分屏内正在运行中的进程将被终止。"
 
@@ -809,7 +809,7 @@ msgstr "标签页右移"
 msgid "Move the current tab to the right."
 msgstr "将当前标签页向右移动。"
 
-#: src/input/command.zig:446 windows/host/src/strip.rs:1361
+#: src/input/command.zig:446 windows/host/src/strip.rs:1592
 msgid "Move Tab to New Window"
 msgstr "移到新窗口"
 
@@ -934,7 +934,7 @@ msgid "Toggle read-only mode for the current surface."
 msgstr "切换当前分屏的只读状态。"
 
 #: src/input/command.zig:557 windows/host/src/ctxmenu.rs:142
-#: windows/host/src/menu.rs:373 windows/host/src/strip.rs:1367
+#: windows/host/src/menu.rs:373 windows/host/src/strip.rs:1598
 msgid "Make This Terminal a Supervisor"
 msgstr "将此终端设为总管"
 
@@ -947,7 +947,7 @@ msgstr ""
 "些。"
 
 #: src/input/command.zig:563 windows/host/src/ctxmenu.rs:147
-#: windows/host/src/menu.rs:374 windows/host/src/strip.rs:1368
+#: windows/host/src/menu.rs:374 windows/host/src/strip.rs:1599
 msgid "Toggle Supervision of This Terminal"
 msgstr "监督此终端"
 
@@ -967,7 +967,7 @@ msgstr ""
 "阻止这个终端被下班——无论是总管还是别的什么。只有键盘前的人能设置或解除它。"
 
 #: src/input/command.zig:600 windows/host/src/ctxmenu.rs:152
-#: windows/host/src/menu.rs:375 windows/host/src/strip.rs:1369
+#: windows/host/src/menu.rs:375 windows/host/src/strip.rs:1600
 msgid "Keep Agents Out of This Terminal"
 msgstr "不让 agent 碰此终端"
 
@@ -1074,21 +1074,21 @@ msgstr "关闭当前终端。"
 msgid "Close the current tab."
 msgstr "关闭当前标签页。"
 
-#: src/input/command.zig:679 windows/host/src/strip.rs:1359
-#: windows/host/src/tabs.rs:3401
+#: src/input/command.zig:679 windows/host/src/strip.rs:1590
+#: windows/host/src/tabs.rs:3444
 msgid "Close Other Tabs"
 msgstr "关闭其他标签页"
 
-#: src/input/command.zig:680 windows/host/src/tabs.rs:3418
+#: src/input/command.zig:680 windows/host/src/tabs.rs:3461
 msgid "Close all tabs in this window except the current one."
 msgstr "关闭当前窗口内除了当前标签页以外的所有标签页。"
 
-#: src/input/command.zig:684 windows/host/src/strip.rs:1360
-#: windows/host/src/tabs.rs:3402
+#: src/input/command.zig:684 windows/host/src/strip.rs:1591
+#: windows/host/src/tabs.rs:3445
 msgid "Close Tabs to the Right"
 msgstr "关闭右侧标签页"
 
-#: src/input/command.zig:685 windows/host/src/tabs.rs:3419
+#: src/input/command.zig:685 windows/host/src/tabs.rs:3462
 msgid "Close all tabs to the right of the current one."
 msgstr "关闭当前标签页右侧的所有标签页。"
 
@@ -1256,19 +1256,19 @@ msgstr "粗细"
 msgid "Block Size"
 msgstr "块大小"
 
-#: src/input/screenshot.zig:96 windows/host/src/strip.rs:1322
+#: src/input/screenshot.zig:96 windows/host/src/strip.rs:1553
 msgid "Red"
 msgstr "红"
 
-#: src/input/screenshot.zig:97 windows/host/src/strip.rs:1323
+#: src/input/screenshot.zig:97 windows/host/src/strip.rs:1554
 msgid "Orange"
 msgstr "橙"
 
-#: src/input/screenshot.zig:98 windows/host/src/strip.rs:1324
+#: src/input/screenshot.zig:98 windows/host/src/strip.rs:1555
 msgid "Yellow"
 msgstr "黄"
 
-#: src/input/screenshot.zig:99 windows/host/src/strip.rs:1325
+#: src/input/screenshot.zig:99 windows/host/src/strip.rs:1556
 msgid "Green"
 msgstr "绿"
 
@@ -1276,11 +1276,11 @@ msgstr "绿"
 msgid "Cyan"
 msgstr "青"
 
-#: src/input/screenshot.zig:101 windows/host/src/strip.rs:1319
+#: src/input/screenshot.zig:101 windows/host/src/strip.rs:1550
 msgid "Blue"
 msgstr "蓝"
 
-#: src/input/screenshot.zig:102 windows/host/src/strip.rs:1320
+#: src/input/screenshot.zig:102 windows/host/src/strip.rs:1551
 msgid "Purple"
 msgstr "紫"
 
@@ -2090,67 +2090,75 @@ msgid "Let a supervisor answer workers' permission prompts."
 msgstr "允许总管回答 worker 的权限确认。"
 
 #: src/config/form.zig:184
+msgid "Frames Around Split Panes"
+msgstr "分屏框"
+
+#: src/config/form.zig:184
+msgid "Draw a frame round each pane of a split."
+msgstr "给分屏的每一格画上框。"
+
+#: src/config/form.zig:185
 msgid "Keep Chat Log"
 msgstr "保存群聊记录"
 
-#: src/config/form.zig:184
+#: src/config/form.zig:185
 msgid "Write what the terminals say to each other to disk."
 msgstr "把终端之间的对话写到磁盘上。"
 
-#: src/config/form.zig:185
+#: src/config/form.zig:186
 msgid "Keep Terminal Transcripts"
 msgstr "保存终端记录"
 
-#: src/config/form.zig:185
+#: src/config/form.zig:186
 msgid "Keep a transcript of what ran in each terminal."
 msgstr "记录每个终端里实际运行了什么。"
 
-#: src/config/form.zig:186 windows/host/src/language.rs:291
+#: src/config/form.zig:187 windows/host/src/language.rs:291
 msgid "Language"
 msgstr "语言"
 
-#: src/config/form.zig:186
+#: src/config/form.zig:187
 msgid "The interface language; empty follows the system."
 msgstr "界面语言；留空跟随系统。"
 
-#: src/config/form.zig:189
+#: src/config/form.zig:190
 msgid "Paste Images as Files"
 msgstr "粘贴图片时存成文件并粘贴路径"
 
-#: src/config/form.zig:189
+#: src/config/form.zig:190
 msgid "Save a pasted image as a file and paste its path."
 msgstr "把粘贴的图片存成文件，再粘贴它的路径。"
 
-#: src/config/form.zig:190
+#: src/config/form.zig:191
 msgid "Screenshot Folder"
 msgstr "截图保存位置"
 
-#: src/config/form.zig:190
+#: src/config/form.zig:191
 msgid "Where screenshots and pasted images are saved."
 msgstr "截图和粘贴的图片存在这里。"
 
-#: src/config/form.zig:191
+#: src/config/form.zig:192
 msgid "Mouse Trigger"
 msgstr "鼠标触发"
 
-#: src/config/form.zig:191
+#: src/config/form.zig:192
 msgid "Hold these keys and click to take a screenshot."
 msgstr "按住这些键单击即可截图。"
 
-#: src/config/form.zig:192 windows/settings-shell/src/plugins.rs:52
+#: src/config/form.zig:193 windows/settings-shell/src/plugins.rs:52
 msgid "Off"
 msgstr "已关"
 
-#: src/config/form.zig:199
+#: src/config/form.zig:200
 #, c-format
 msgid "%s + Click"
 msgstr "%s + 单击"
 
-#: src/config/form.zig:200
+#: src/config/form.zig:201
 msgid "Let Agents Take Screenshots"
 msgstr "允许 agent 截图"
 
-#: src/config/form.zig:200
+#: src/config/form.zig:201
 msgid "Agents may capture the screen with the screenshot tools."
 msgstr "agent 可以用截图工具拍下屏幕。"
 
@@ -2173,7 +2181,7 @@ msgid "Let a Supervisor Answer Prompts Here"
 msgstr "允许总管替此终端点授权框（含「不再询问」）"
 
 #: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:404
-#: windows/host/src/strip.rs:1370
+#: windows/host/src/strip.rs:1601
 msgid "Let Workers Name Each Other Directly"
 msgstr "允许 worker 之间直接点名"
 
@@ -2367,34 +2375,34 @@ msgstr ""
 "启动 Polter 的环境里已设 LANG={}，Polter 会优先用它，而不是这里的选择。要让这"
 "个选择生效，请先清掉 LANG，再重新启动 Polter。"
 
-#: windows/host/src/main.rs:2590
+#: windows/host/src/main.rs:2591
 #, rust-format
 msgid "{} lines in all."
 msgstr "共 {} 行。"
 
-#: windows/host/src/main.rs:6358
+#: windows/host/src/main.rs:6359
 msgid "No reason was recorded."
 msgstr "没有记录到原因。"
 
-#: windows/host/src/main.rs:6364
+#: windows/host/src/main.rs:6365
 msgid "Polter could not open its first terminal and will close."
 msgstr "Polter 无法打开第一个终端，即将关闭。"
 
-#: windows/host/src/main.rs:6366
+#: windows/host/src/main.rs:6367
 #, rust-format
 msgid "The full log is at {}"
 msgstr "完整日志在 {}"
 
-#: windows/host/src/menu.rs:263 windows/host/src/strip.rs:1848
+#: windows/host/src/menu.rs:263 windows/host/src/strip.rs:2079
 msgid "Reopen Closed Tab"
 msgstr "重开关闭的标签"
 
 #: windows/host/src/menu.rs:293 windows/host/src/projects_ui.rs:619
-#: windows/host/src/strip.rs:1373
+#: windows/host/src/strip.rs:1604
 msgid "Save as Project…"
 msgstr "另存为项目…"
 
-#: windows/host/src/menu.rs:294 windows/host/src/strip.rs:1374
+#: windows/host/src/menu.rs:294 windows/host/src/strip.rs:1605
 msgid "Load Project…"
 msgstr "加载项目…"
 
@@ -3510,19 +3518,19 @@ msgstr "通用"
 msgid "{} (not in the search results)"
 msgstr "{}（不在搜索结果里）"
 
-#: windows/host/src/strip.rs:1318
+#: windows/host/src/strip.rs:1549
 msgid "None"
 msgstr "无颜色"
 
-#: windows/host/src/strip.rs:1321
+#: windows/host/src/strip.rs:1552
 msgid "Pink"
 msgstr "粉"
 
-#: windows/host/src/strip.rs:1326
+#: windows/host/src/strip.rs:1557
 msgid "Teal"
 msgstr "青"
 
-#: windows/host/src/strip.rs:1327
+#: windows/host/src/strip.rs:1558
 msgid "Graphite"
 msgstr "石墨"
 
@@ -3531,11 +3539,11 @@ msgstr "石墨"
 #. in place on the tab strip. "Rename Tab…" with U+2026 is a
 #. DIFFERENT action (prompt_tab_title) that opens the title overlay.
 #. The two entries look almost identical; do not merge them.
-#: windows/host/src/strip.rs:1366
+#: windows/host/src/strip.rs:1597
 msgid "Rename Tab..."
 msgstr "重命名标签…"
 
-#: windows/host/src/strip.rs:1592
+#: windows/host/src/strip.rs:1823
 msgid "Tab Color"
 msgstr "标签颜色"
 
@@ -3605,6 +3613,10 @@ msgstr "还有 {} 个"
 #, rust-format
 msgid "{}, via the supervisor"
 msgstr "{}，经总管"
+
+#: windows/control-room/src/pane.rs:40
+msgid "Worker"
+msgstr "worker"
 
 #: windows/control-room/src/rules.rs:83
 msgid "Polter — Control Room"

@@ -574,6 +574,8 @@
 "Supervisor May Answer Prompts" = "总管可代答确认";
 "Let a supervisor whose work is done take itself off duty." = "允许做完事的总管自己卸任。";
 "Let a supervisor answer workers' permission prompts." = "允许总管回答 worker 的权限确认。";
+"Frames Around Split Panes" = "分屏框";
+"Draw a frame round each pane of a split." = "给分屏的每一格画上框。";
 "Keep Chat Log" = "保存群聊记录";
 "Write what the terminals say to each other to disk." = "把终端之间的对话写到磁盘上。";
 "Keep Terminal Transcripts" = "保存终端记录";
@@ -720,6 +722,8 @@
 "This group has no supervisor." = "这个群没有总管。";
 "The supervisor's terminal is no longer open." = "总管的终端已经不在了。";
 "The supervisor's terminal is in its own tab." = "总管的终端在它自己的标签页里。";
+"This terminal is no longer open." = "这个终端已经不在了。";
+"This terminal is in its own tab." = "这个终端在它自己的标签页里。";
 
 /* 总控台：新建群、给没有总管的群启动总管 */
 "A group's name is lowercase letters, digits and dashes, 48 at most." = "群名只能用小写字母、数字和短横线，最长 48 个。";

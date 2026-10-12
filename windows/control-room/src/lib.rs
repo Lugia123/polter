@@ -6,6 +6,7 @@
 //! | [`look`] | what it looks like: sizes, colours, durations, light and dark (generated) |
 //! | [`snapshot`] | the core's snapshot, read; an unknown glyph is an error |
 //! | [`list`] | the rows in their two sections, what each says, where the selection goes |
+//! | [`lone`] | the terminals that are in no group and have a row of their own, read; not drawn by this host yet |
 //! | [`layout`] | where everything in the list panel is; the chip's spring |
 //! | [`pulse`] | which waiting glyph breathes; what a window tab carries and whether it is drawn |
 //! | [`act`] | the person's acts as requests to the core, what a refusal says, when looking marks a group seen |
@@ -42,6 +43,7 @@ pub mod json;
 pub mod layout;
 pub mod lend;
 pub mod list;
+pub mod lone;
 pub mod look;
 pub mod pane;
 pub mod pulse;

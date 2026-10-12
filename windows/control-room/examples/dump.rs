@@ -118,6 +118,42 @@ fn main() {
         row("quiet", r);
     }
 
+    // The terminals in no group, each with a row of its own.
+    let alone = match polter_control_room::lone::decode(&text) {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("the snapshot's ungrouped does not decode: {e:?}");
+            std::process::exit(1);
+        }
+    };
+    println!("lone {}", alone.len());
+    for one in &alone {
+        let since = one.terminal.as_ref().map_or("-".to_string(), |_| one.since_ms.to_string());
+        let event = one.terminal.as_ref().and(one.event_ms).map_or("-".to_string(), |m| m.to_string());
+        println!(
+            "lone row={} section={} title={} shown={} word={} who={} name={} form={} code={} lines={} unseen={} \
+             terminal={} since={since} event={event} shows={}",
+            one.row_id(),
+            one.section(),
+            quote(&one.title),
+            one.shown.name(),
+            quote(&one.text),
+            one.waiter.is.name(),
+            quote(&one.waiter.name),
+            one.what.form.name(),
+            list::is_code(&one.what),
+            one.what.lines.len(),
+            one.unseen,
+            one.terminal.as_deref().unwrap_or("-"),
+            polter_control_room::lone::shown_for(&alone, &one.row_id()).unwrap_or("-")
+        );
+        println!("lone cut row={} cut={}", one.row_id(), one.what.cut.name());
+        for (n, line) in list::drawn(&one.what).iter().enumerate() {
+            println!("lone what row={} n={n} line={}", one.row_id(), quote(line));
+        }
+    }
+    println!("lone shows bare-id={} group={}", polter_control_room::lone::shown_for(&alone, "0x00000000000000c1").unwrap_or("-"), polter_control_room::lone::shown_for(&alone, "web-app").unwrap_or("-"));
+
     // Which glyph breathes: with nothing in front, and with each tab that
     // holds a waiting terminal in front -- asked, as a host asks, with the
     // window that tab is in.

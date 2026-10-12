@@ -44,7 +44,11 @@ window tab draws it; which frame the pane of every terminal wears
 one it does not and none at all, in a split tab, alone in its tab, with the
 setting off and in the quick terminal: the frame, the name, the glyph and
 the word -- whether the tab's ground then shows, and the English word for
-what each frame is; which rows are marked seen by being looked at, and
+what each frame is; every terminal that is in no group and has a row of its
+own (`ungrouped`) -- its row's identity, the section it goes in, its title,
+glyph and words, who waits and for what with every line, what an act on it
+hands back, and the terminal the right-hand side then shows; which rows are
+marked seen by being looked at, and
 after how long; the selection chip's slide -- whether it moves at all (from
 one tab to another, with motion off, from nowhere, to where it already is),
 when it starts back down and when it is still, and at sixteen moments of a
@@ -85,6 +89,12 @@ high each side makes the block and where its parts start.
     draws. On Windows that is arithmetic in the crate (`pane::frame_px`,
     `well_px`, `build`); on macOS it is SwiftUI's layout, with nothing to
     print. The crate's own tests hold it.
+  * Where a lone terminal's row stands in the list, its rectangle, and
+    whether it is the row that breathes. The macOS host draws these rows
+    after the groups'; the Windows panel does not draw them yet
+    (`windows/control-room/src/lone.rs` reads them and stops there), so on
+    that side there is no list with them in it to lay out. Everything else
+    above is therefore compared with those rows left out of both lists.
   * Anything drawn. This compares numbers and strings, not pixels.
   * That the app links these files the way the package does. It is the same
     source; it is not the same binary.
@@ -195,7 +205,14 @@ do {
     FileHandle.standardError.write(Data("the snapshot does not decode: \(error)\n".utf8))
     exit(1)
 }
-let list = ControlRoomList(snapshot: snapshot)
+// The groups' rows are compared as they always were, without the terminals
+// that are in no group: the Windows panel does not draw those yet, so its
+// list, its layout and its arrow keys do not have them. They are compared
+// on their own below (`lone`).
+let whole = snapshot
+var groupsOnly = snapshot
+groupsOnly.ungrouped = nil
+let list = ControlRoomList(snapshot: groupsOnly)
 
 print("count waiting=\(list.waitingCount) quiet=\(list.quietCount)")
 
@@ -208,6 +225,28 @@ for (current, opening) in [(nil, true), (nil, false), (firstRow, true), (firstRo
 }
 for r in list.waiting { row("waiting", r) }
 for r in list.quiet { row("quiet", r) }
+// The terminals in no group, each with a row of its own: as the list the
+// macOS host draws has them, after the groups'.
+let everything = ControlRoomList(snapshot: whole)
+let alone = everything.rows.filter { $0.alone != nil }
+print("lone \(alone.count)")
+for r in alone {
+    let section = everything.waiting.contains { $0.id == r.id } ? "waiting" : "quiet"
+    let since = r.target.map { String($0.sinceMs) } ?? "-"
+    let event = r.target?.eventMs.map { String($0) } ?? "-"
+    print("lone row=\(r.id) section=\(section) title=\(quote(r.name)) shown=\(shownName(r.shown)) word=\(quote(r.word)) "
+        + "who=\(r.waiter.is.rawValue) name=\(quote(r.waiter.name)) form=\(r.what.form.rawValue) "
+        + "code=\(r.what.isCode) lines=\(r.what.lines.count) unseen=\(r.unseen) "
+        + "terminal=\(r.target?.terminal ?? "-") since=\(since) event=\(event) shows=\(whole.terminal(shownFor: r.id) ?? "-")")
+    print("lone cut row=\(r.id) cut=\(r.what.cut.rawValue)")
+    for (n, line) in r.what.drawn.enumerated() {
+        print("lone what row=\(r.id) n=\(n) line=\(quote(line))")
+    }
+}
+// The bare id is not a row, and a group's row is not one of these.
+let bare = whole.ungrouped?.contains { ControlRoomList.rowId(ofTerminal: $0.id) == "0x00000000000000c1" } == true ? "0x00000000000000c1" : "-"
+let asGroup = whole.ungrouped?.contains { ControlRoomList.rowId(ofTerminal: $0.id) == "web-app" } == true ? "web-app" : "-"
+print("lone shows bare-id=\(bare) group=\(asGroup)")
 
 // Which glyph breathes: with nothing in front, and with each tab that
 // holds a waiting terminal in front.
@@ -222,7 +261,7 @@ for p in pulses {
 windows.append("0x00000000000000ff")
 print("pulses \(pulses.count)")
 for front in fronts {
-    let breathing = ControlRoomList(snapshot: snapshot, showing: front).rows.filter { $0.pulses }.map { $0.id }
+    let breathing = ControlRoomList(snapshot: groupsOnly, showing: front).rows.filter { $0.pulses }.map { $0.id }
     print("pulse list showing=\(front ?? "-") rows=\(breathing.isEmpty ? "-" : breathing.joined(separator: ","))")
 }
 for window in windows {
