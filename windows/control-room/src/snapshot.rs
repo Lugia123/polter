@@ -114,6 +114,9 @@ pub struct Snapshot {
     /// Rows waiting: "N groups are waiting for you".
     pub groups_needing_me: u64,
     pub groups_other: u64,
+    /// The group to start on when the control room opens with nothing
+    /// selected: the core's choice of first and of which have an agent.
+    pub open_on: Option<String>,
     /// Already in the order to draw them.
     pub groups: Vec<Group>,
     /// Every window tab the core has placed, each with its glyph.
@@ -260,6 +263,7 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
         needs_me: int(&v, root, "needs_me")?,
         groups_needing_me: int(&v, root, "groups_needing_me")?,
         groups_other: int(&v, root, "groups_other")?,
+        open_on: opt_text(&v, root, "open_on")?,
         groups,
         tabs,
         pulses,

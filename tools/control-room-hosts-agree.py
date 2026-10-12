@@ -12,8 +12,9 @@ and compares what they say, line by line.
 
   * Windows: `windows/control-room` (a crate with no dependencies), through
     `examples/dump.rs`.
-  * macOS: `ControlRoomList.swift`, `ControlRoomLook.swift` and
-    `ControlRoomActions.swift` from `macos/Sources/Features/ControlRoom/`,
+  * macOS: `ControlRoomList.swift`, `ControlRoomLook.swift`,
+    `ControlRoomActions.swift` and `ControlRoomRules.swift` from
+    `macos/Sources/Features/ControlRoom/`,
     and `macos/Sources/Features/Terminal/TabAccessory.swift` -- **the same
     source files the app compiles**, linked into a throwaway SwiftPM package
     with a `main.swift` that prints the same lines. No app is built and
@@ -22,7 +23,10 @@ and compares what they say, line by line.
 Both read `src/poltergeist/testdata/control_snapshot.json`, the fixture a
 Zig test holds to what `ControlRoom.zig` actually produces.
 
-**What is compared**: the two counts in the headers; every row -- its
+**What is compared**: the two counts in the headers; the group a control
+room opens on, and what is then selected and whether it is the person's
+own choice, for a control room just opened and one long open, with and
+without a selection standing; every row -- its
 section, its place, its glyph, its words, its detail, whether the detail is
 set as code, its minutes, its "N more", whether the core says nobody has
 looked at it, and the terminal and two moments an act on it hands back;
@@ -80,6 +84,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomList.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLook.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
+    "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",
     "macos/Sources/Features/Terminal/TabAccessory.swift",
 ]
 CRATE = "windows/control-room"
@@ -157,6 +162,14 @@ do {
 let list = ControlRoomList(snapshot: snapshot)
 
 print("count waiting=\(list.waitingCount) quiet=\(list.quietCount)")
+
+// Where a control room opens, and whose choice the selection then is.
+print("open_on \(snapshot.open_on ?? "-")")
+let firstRow = list.rows.first?.id
+for (current, opening) in [(nil, true), (nil, false), (firstRow, true), (firstRow, false)] as [(String?, Bool)] {
+    let start = ControlRoomRules.selection(current: current, opening: opening, openOn: snapshot.open_on)
+    print("opening current=\(current ?? "-") opening=\(opening) selects=\(start.id ?? "-") persons=\(start.isThePersons)")
+}
 for r in list.waiting { row("waiting", r) }
 for r in list.quiet { row("quiet", r) }
 

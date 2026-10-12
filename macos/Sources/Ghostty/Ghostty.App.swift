@@ -1197,6 +1197,21 @@ extension Ghostty {
                     return
                 }
 
+                // In the control room it is not split (`ControlRoomRules.newSplit`).
+                // The answer cell is left as it came, which reads "not done".
+                switch ControlRoomRules.newSplit(
+                    lent: ControlRoomLender.shared.isLent(surfaceView), answerWanted: v.result != nil) {
+                case .split:
+                    break
+                case .refuseAloud:
+                    Ghostty.logger.warning("new split refused: the terminal is in the control room")
+                    NSSound.beep()
+                    return
+                case .refuseToTheCore:
+                    Ghostty.logger.warning("new split refused: the terminal is in the control room")
+                    return
+                }
+
                 var config = SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_SPLIT))
                 if let requested { config.workingDirectory = requested }
 

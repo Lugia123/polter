@@ -144,6 +144,31 @@ pub fn move_selection<'a>(list: &'a List, selection: Option<&str>, step: i64) ->
     Some(ids[to])
 }
 
+/// What is selected once a snapshot has arrived, and whether it is the
+/// person's own choice. `current` is what is selected already (after
+/// `restored_selection`), `opening` is true for the first snapshot a control
+/// room sees since it was opened, `open_on` is the group the core says to
+/// start on.
+///
+/// A selection that stands is never replaced. With none, a control room
+/// that has just opened starts on the core's group, and that is nobody's
+/// choice: it does not count towards "seen" until the person selects the
+/// row themselves. Later, with nothing selected, nothing is selected for
+/// them. The macOS host's `ControlRoomRules.selection` is the same rule.
+pub fn opening_selection<'a>(
+    current: Option<&'a str>,
+    opening: bool,
+    open_on: Option<&'a str>,
+) -> (Option<&'a str>, bool) {
+    if current.is_some() {
+        return (current, true);
+    }
+    match (opening, open_on) {
+        (true, Some(group)) => (Some(group), false),
+        _ => (None, true),
+    }
+}
+
 /// The selection to start with after a restart: the one that was kept, if
 /// that group is still listed. A group that went away overnight must not
 /// leave a selection pointing at nothing.

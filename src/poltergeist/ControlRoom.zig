@@ -21,6 +21,11 @@
 //!   "needs_me": 3,            "N waiting for you": terminals, each once
 //!   "groups_needing_me": 4,   rows in `groups` with needs_me, in a row
 //!   "groups_other": 3,        from the top; the rest
+//!   "open_on": "web-app" | null,
+//!                             the group a control room that opens with
+//!                             nothing selected selects: the first row
+//!                             with an agent in it, or the first row when
+//!                             none has one. Null with no groups
 //!   "groups": [ {             already in the order to draw them
 //!       "name": "web-app", "brief": "", "last_ms": 0,
 //!       "seen_ms": null,
@@ -495,6 +500,12 @@ pub const Snapshot = struct {
     needs_me: usize,
     groups_needing_me: usize,
     groups_other: usize,
+    /// The row a control room opening with nothing selected starts on.
+    /// The first, in the order below, of the groups that have an agent in
+    /// them (`hasAgent`); the first group when every one is empty; null
+    /// when there are none. Here and not in a host because "first" is an
+    /// order and "has an agent" is a judgement.
+    open_on: ?[]const u8,
     groups: []const GroupRow,
     ungrouped: []const LoneRow,
     terminals: []const TerminalOut,
@@ -726,7 +737,19 @@ fn stewardOf(in: Input, name: []const u8, members: []const Id) ?Id {
 const Pending = struct {
     row: GroupRow,
     attention: Attention,
+    /// A terminal that is open and has an agent in it is a member.
+    has_agent: bool,
 };
+
+/// Whether an open terminal is somebody's agent: a supervisor, a worker
+/// somebody minds, or one whose agent has been heard from or is connected.
+/// A plain shell that was added to a group is none of these.
+fn hasAgent(in: Input, t: Terminal) bool {
+    return switch (in.bus.roleOf(t.id)) {
+        .supervisor, .watched => true,
+        .none => in.bus.agentOf(t.id).hooks != .none or t.agent_present,
+    };
+}
 
 fn pendingBefore(_: void, a: Pending, b: Pending) bool {
     if (Attention.before(a.attention, b.attention)) return true;
@@ -775,9 +798,13 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         var steward: ?Attention.Status = null;
         var workers: std.ArrayListUnmanaged(Attention.Status) = .empty;
         var members: std.ArrayListUnmanaged(Member) = .empty;
+        var has_agent = false;
 
         for (all) |id| {
             if (id == Chat.user_id) continue;
+            if (find(in.terminals, id)) |t| {
+                if (hasAgent(in, t)) has_agent = true;
+            }
 
             // Seen in any of its groups is seen, for the glyph on its tab.
             const gop = try grouped.getOrPut(arena, id);
@@ -844,7 +871,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         }
 
         const d = rowDisplay(a, about);
-        try rows.append(arena, .{ .attention = a, .row = .{
+        try rows.append(arena, .{ .attention = a, .has_agent = has_agent, .row = .{
             .name = try arena.dupe(u8, name),
             .brief = try arena.dupe(u8, in.chat.briefOf(name) catch ""),
             .last_ms = last_ms,
@@ -922,10 +949,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         if (in_group != null) continue;
         // A supervisor with no group, a worker somebody minds outside any
         // group, and an agent nobody minds at all.
-        const alone = switch (in.bus.roleOf(t.id)) {
-            .supervisor, .watched => true,
-            .none => in.bus.agentOf(t.id).hooks != .none or t.agent_present,
-        };
+        const alone = hasAgent(in, t);
         if (!alone) continue;
 
         const a = Attention.ofTerminal(s);
@@ -993,6 +1017,12 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         };
     }
 
+    // Where a control room opens: the first group with an agent in it,
+    // and the first group at all when they are all empty.
+    const open_on: ?[]const u8 = for (rows.items) |r| {
+        if (r.has_agent) break r.row.name;
+    } else if (rows.items.len > 0) rows.items[0].row.name else null;
+
     // The count, from the one function that counts.
     var counted: std.ArrayListUnmanaged(Attention) = .empty;
     var needing: usize = 0;
@@ -1015,6 +1045,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .needs_me = Attention.needsMeCount(counted.items),
             .groups_needing_me = needing,
             .groups_other = group_rows.len - needing,
+            .open_on = open_on,
             .groups = group_rows,
             .ungrouped = lone_rows,
             .terminals = terminals.items,
@@ -1787,6 +1818,66 @@ test "ControlRoom snapshot: a terminal with its own idea of still is judged by i
     w.open.items[1].still_ms = 30_000;
     const own = (try build(arena.allocator(), w.input(2 * min))).snapshot;
     try testing.expectEqual(Attention.Kind.quiet_unknown, own.terminals[1].kind);
+}
+
+test "ControlRoom open_on: the first group with an agent in it, not an empty one before it" {
+    var w: World = .init();
+    defer w.deinit();
+    // Three idle groups. The first is the person's own with nobody in it,
+    // the second holds a plain shell, and only the third has an agent.
+    try w.chat.create("aaa-empty", Chat.user_id);
+    try w.chat.create("bbb-shell", Chat.user_id);
+    try w.terminal(0xc1, "zsh", 0x21);
+    try w.chat.add("bbb-shell", 0xc1, .all, .{});
+    try w.steward(0xa1, "boss", 0x22, "ccc-minded");
+    // Heard from a minute in, so its row is younger than the empty ones
+    // and sorts after them: an agent's group is not always first.
+    try w.hook(0xa1, .session_started, null, 1 * min);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const s = (try build(arena.allocator(), w.input(2 * min))).snapshot;
+    // The first row is the shell's group, which has no agent in it.
+    try testing.expectEqualStrings("bbb-shell", s.groups[0].name);
+    try testing.expectEqualStrings("ccc-minded", s.open_on.?);
+}
+
+test "ControlRoom open_on: the first group when every one is empty, and none when there are none" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const none = (try build(arena.allocator(), w.input(1 * min))).snapshot;
+    try testing.expectEqual(@as(?[]const u8, null), none.open_on);
+
+    try w.chat.create("zzz-empty", Chat.user_id);
+    try w.chat.create("mmm-empty", Chat.user_id);
+    const empty = (try build(arena.allocator(), w.input(2 * min))).snapshot;
+    try testing.expectEqualStrings("mmm-empty", empty.groups[0].name);
+    try testing.expectEqualStrings("mmm-empty", empty.open_on.?);
+}
+
+test "ControlRoom open_on: a group whose agent's terminal is closed counts as empty" {
+    var w: World = .init();
+    defer w.deinit();
+    try w.steward(0xa1, "gone", 0x21, "aaa-closed");
+    try w.steward(0xa2, "here", 0x22, "bbb-open");
+    // Put off, so its row comes after the one nobody is minding.
+    try w.chat.setSnooze("bbb-open", .{ .next_event = w.wall_ms + 1 * min }, 1 * min);
+    // 0xa1's tab is closed: it is in the group still, and not open.
+    for (w.open.items, 0..) |t, i| {
+        if (t.id == 0xa1) {
+            _ = w.open.orderedRemove(i);
+            break;
+        }
+    }
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const s = (try build(arena.allocator(), w.input(2 * min))).snapshot;
+    try testing.expectEqualStrings("aaa-closed", s.groups[0].name);
+    try testing.expectEqualStrings("bbb-open", s.open_on.?);
 }
 
 test "ControlRoom snapshot: a worker minded outside any group is listed on its own" {

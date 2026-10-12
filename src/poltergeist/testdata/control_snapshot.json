@@ -4,6 +4,7 @@
   "needs_me": 4,
   "groups_needing_me": 4,
   "groups_other": 3,
+  "open_on": "web-app",
   "groups": [
     {
       "name": "web-app",
