@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-09-27 20:52+0800\n"
+"POT-Creation-Date: 2026-10-12 23:49+0800\n"
 "PO-Revision-Date: 2026-09-13 10:50+0800\n"
 "Last-Translator: Lukas <134181853+bo2themax@users.noreply.github.com>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -27,17 +27,19 @@ msgstr "在 Ghostty 中打开"
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:12
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:197
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
-#: windows/host/src/main.rs:2525 windows/host/src/main.rs:2531
+#: windows/host/src/main.rs:2562 windows/host/src/main.rs:2568
 msgid "Authorize Clipboard Access"
 msgstr "剪贴板访问授权"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:17
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:17
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:201
 msgid "Deny"
 msgstr "拒绝"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:18
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:18
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:200
 msgid "Allow"
 msgstr "允许"
 
@@ -51,7 +53,10 @@ msgstr "本提示将在重载配置后再次出现"
 
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
-#: src/apprt/gtk/class/application.zig:2221 windows/host/src/roles_ui.rs:2647
+#: src/apprt/gtk/class/application.zig:2225
+#: windows/host/src/project_picker.rs:337 windows/host/src/projects_ui.rs:621
+#: windows/host/src/projects_ui.rs:648 windows/host/src/projects_ui.rs:653
+#: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:2887
 msgid "Cancel"
 msgstr "取消"
 
@@ -62,6 +67,7 @@ msgid "Close"
 msgstr "关闭"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:6
+#: windows/host/src/general_ui.rs:1856
 msgid "Configuration Errors"
 msgstr "配置错误"
 
@@ -78,7 +84,8 @@ msgstr "忽略"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:434 src/apprt/gtk/ui/1.5/window.blp:318
-#: windows/host/src/menu.rs:451
+#: windows/host/src/general_ui.rs:576 windows/host/src/general_ui.rs:842
+#: windows/host/src/menu.rs:495
 msgid "Reload Configuration"
 msgstr "重新加载配置"
 
@@ -93,7 +100,7 @@ msgid "Ghostty: Terminal Inspector"
 msgstr "Ghostty 终端检查器"
 
 #: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:108
-#: windows/host/src/menu.rs:265
+#: windows/host/src/menu.rs:299
 msgid "Find…"
 msgstr "查找…"
 
@@ -123,17 +130,17 @@ msgstr ""
 "会传给运行中的程序。"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:107 windows/host/src/ctxmenu.rs:129
-#: windows/host/src/menu.rs:309
+#: windows/host/src/menu.rs:343
 msgid "Read-only"
 msgstr "只读"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:311 src/apprt/gtk/ui/1.5/window.blp:203
-#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:275
+#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:309
 msgid "Copy"
 msgstr "复制"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:208
-#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:276
+#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:310
 msgid "Paste"
 msgstr "粘贴"
 
@@ -159,29 +166,29 @@ msgstr "更改标题…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:348 src/apprt/gtk/ui/1.5/window.blp:180
 #: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
-#: windows/host/src/ctxmenu.rs:125 windows/host/src/menu.rs:243
+#: windows/host/src/ctxmenu.rs:125 windows/host/src/menu.rs:275
 msgid "Split Up"
 msgstr "向上分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:354 src/apprt/gtk/ui/1.5/window.blp:185
 #: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
-#: windows/host/src/ctxmenu.rs:124 windows/host/src/menu.rs:242
+#: windows/host/src/ctxmenu.rs:124 windows/host/src/menu.rs:274
 msgid "Split Down"
 msgstr "向下分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:360 src/apprt/gtk/ui/1.5/window.blp:190
 #: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
-#: windows/host/src/ctxmenu.rs:123 windows/host/src/menu.rs:241
+#: windows/host/src/ctxmenu.rs:123 windows/host/src/menu.rs:273
 msgid "Split Left"
 msgstr "向左分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:366 src/apprt/gtk/ui/1.5/window.blp:195
 #: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
-#: windows/host/src/ctxmenu.rs:122 windows/host/src/menu.rs:240
+#: windows/host/src/ctxmenu.rs:122 windows/host/src/menu.rs:272
 msgid "Split Right"
 msgstr "向右分屏"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/menu.rs:245
+#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/menu.rs:277
 msgid "Close Split"
 msgstr "关闭分屏"
 
@@ -197,17 +204,17 @@ msgstr "更改标签页标题…"
 #: src/apprt/gtk/ui/1.2/surface.blp:386 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
 #: src/input/command.zig:427 windows/host/src/ctxmenu.rs:110
-#: windows/host/src/menu.rs:220 windows/host/src/strip.rs:1752
+#: windows/host/src/menu.rs:252 windows/host/src/strip.rs:1842
 msgid "New Tab"
 msgstr "新建标签页"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:242
-#: src/input/command.zig:668 windows/host/src/ctxmenu.rs:116
-#: windows/host/src/menu.rs:246 windows/host/src/strip.rs:1329
+#: src/input/command.zig:674 windows/host/src/ctxmenu.rs:116
+#: windows/host/src/menu.rs:278 windows/host/src/strip.rs:1358
 msgid "Close Tab"
 msgstr "关闭标签页"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:476
+#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:520
 msgid "Window"
 msgstr "窗口"
 
@@ -216,12 +223,12 @@ msgid "Change Window Title…"
 msgstr "更改窗口标题…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:406 src/apprt/gtk/ui/1.5/window.blp:220
-#: src/input/command.zig:421 windows/host/src/menu.rs:219
+#: src/input/command.zig:421 windows/host/src/menu.rs:251
 msgid "New Window"
 msgstr "新建窗口"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:685 windows/host/src/menu.rs:247
+#: src/input/command.zig:691 windows/host/src/menu.rs:279
 msgid "Close Window"
 msgstr "关闭窗口"
 
@@ -258,12 +265,12 @@ msgid "Main Menu"
 msgstr "主菜单"
 
 #: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:192
-#: windows/host/src/menu.rs:294 windows/host/src/strip.rs:1759
+#: windows/host/src/menu.rs:328 windows/host/src/strip.rs:1849
 msgid "Command Palette"
 msgstr "命令面板"
 
 #: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:128
-#: windows/host/src/menu.rs:318
+#: windows/host/src/menu.rs:352
 msgid "Terminal Inspector"
 msgstr "终端检查器"
 
@@ -271,7 +278,7 @@ msgstr "终端检查器"
 msgid "About Ghostty"
 msgstr "关于 Ghostty"
 
-#: src/apprt/gtk/ui/1.5/window.blp:331 src/input/command.zig:757
+#: src/apprt/gtk/ui/1.5/window.blp:331 src/input/command.zig:769
 msgid "Quit"
 msgstr "退出"
 
@@ -279,51 +286,51 @@ msgstr "退出"
 msgid "Execute a command…"
 msgstr "选择要执行的命令…"
 
-#: src/apprt/gtk/class/application.zig:1806
+#: src/apprt/gtk/class/application.zig:1810
 msgid "The keybind was revoked by the system."
 msgstr "系统撤销了该快捷键。"
 
-#: src/apprt/gtk/class/application.zig:1808
+#: src/apprt/gtk/class/application.zig:1812
 msgid "The keybind was denied by the system."
 msgstr "系统拒绝绑定该快捷键。"
 
-#: src/apprt/gtk/class/application.zig:1819
+#: src/apprt/gtk/class/application.zig:1823
 msgid "Global keybind unavailable"
 msgstr "全局快捷键不可用"
 
-#: src/apprt/gtk/class/application.zig:2217
+#: src/apprt/gtk/class/application.zig:2221
 msgid "Export Terminal IO Events"
 msgstr "导出终端输入输出事件"
 
-#: src/apprt/gtk/class/application.zig:2220
+#: src/apprt/gtk/class/application.zig:2224
 msgid "Export"
 msgstr "导出"
 
-#: src/apprt/gtk/class/application.zig:2739
+#: src/apprt/gtk/class/application.zig:2743
 msgid "Editing configuration file"
 msgstr "正在编辑配置文件"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
-#: windows/host/src/main.rs:2533
+#: windows/host/src/main.rs:2570
 msgid ""
 "An application is attempting to write to the clipboard. The current "
 "clipboard contents are shown below."
 msgstr "一个应用正在试图向剪贴板写入内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:202
-#: windows/host/src/main.rs:2527
+#: windows/host/src/main.rs:2564
 msgid ""
 "An application is attempting to read from the clipboard. The current "
 "clipboard contents are shown below."
 msgstr "一个应用正在试图从剪贴板读取内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2537
+#: windows/host/src/main.rs:2574
 msgid "Warning: Potentially Unsafe Paste"
 msgstr "警告：粘贴内容可能不安全"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2539
+#: windows/host/src/main.rs:2576
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -334,17 +341,17 @@ msgid "Quit Ghostty?"
 msgstr "退出 Ghostty 吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
-#: windows/host/src/tabs.rs:3070
+#: windows/host/src/tabs.rs:3398
 msgid "Close Tab?"
 msgstr "关闭标签页吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
-#: windows/host/src/tabs.rs:3071
+#: windows/host/src/tabs.rs:3399
 msgid "Close Window?"
 msgstr "关闭窗口吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
-#: windows/host/src/tabs.rs:3072
+#: windows/host/src/tabs.rs:3400
 msgid "Close Split?"
 msgstr "关闭分屏吗？"
 
@@ -353,17 +360,17 @@ msgid "All terminal sessions will be terminated."
 msgstr "终端内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
-#: windows/host/src/tabs.rs:3080
+#: windows/host/src/tabs.rs:3408
 msgid "All terminal sessions in this tab will be terminated."
 msgstr "标签页内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
-#: windows/host/src/tabs.rs:3081
+#: windows/host/src/tabs.rs:3409
 msgid "All terminal sessions in this window will be terminated."
 msgstr "窗口内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
-#: windows/host/src/tabs.rs:3082
+#: windows/host/src/tabs.rs:3410
 msgid "The currently running process in this split will be terminated."
 msgstr "分屏内正在运行中的进程将被终止。"
 
@@ -540,7 +547,7 @@ msgstr "缩小字号"
 msgid "Decrease the font size by 1 point."
 msgstr "将字体大小缩小 1pt。"
 
-#: src/input/command.zig:237 windows/host/src/menu.rs:290
+#: src/input/command.zig:237 windows/host/src/menu.rs:324
 msgid "Reset Font Size"
 msgstr "重置字号"
 
@@ -557,7 +564,7 @@ msgid "Clear the screen and scrollback."
 msgstr "清除屏幕和回滚内容。"
 
 #: src/input/command.zig:249 windows/host/src/ctxmenu.rs:106
-#: windows/host/src/menu.rs:284
+#: windows/host/src/menu.rs:318
 msgid "Select All"
 msgstr "全选"
 
@@ -802,7 +809,7 @@ msgstr "标签页右移"
 msgid "Move the current tab to the right."
 msgstr "将当前标签页向右移动。"
 
-#: src/input/command.zig:446 windows/host/src/strip.rs:1332
+#: src/input/command.zig:446 windows/host/src/strip.rs:1361
 msgid "Move Tab to New Window"
 msgstr "移到新窗口"
 
@@ -927,7 +934,7 @@ msgid "Toggle read-only mode for the current surface."
 msgstr "切换当前分屏的只读状态。"
 
 #: src/input/command.zig:557 windows/host/src/ctxmenu.rs:142
-#: windows/host/src/menu.rs:329 windows/host/src/strip.rs:1338
+#: windows/host/src/menu.rs:373 windows/host/src/strip.rs:1367
 msgid "Make This Terminal a Supervisor"
 msgstr "将此终端设为总管"
 
@@ -940,7 +947,7 @@ msgstr ""
 "些。"
 
 #: src/input/command.zig:563 windows/host/src/ctxmenu.rs:147
-#: windows/host/src/menu.rs:330 windows/host/src/strip.rs:1339
+#: windows/host/src/menu.rs:374 windows/host/src/strip.rs:1368
 msgid "Toggle Supervision of This Terminal"
 msgstr "监督此终端"
 
@@ -948,7 +955,7 @@ msgstr "监督此终端"
 msgid "Report this terminal to the supervisor when its screen goes quiet."
 msgstr "这个终端的屏幕静止下来时，报给总管。"
 
-#: src/input/command.zig:594 windows/host/src/menu.rs:388
+#: src/input/command.zig:594 windows/host/src/menu.rs:432
 msgid "Hold This Terminal to Its Work"
 msgstr "保持这个终端在岗"
 
@@ -960,7 +967,7 @@ msgstr ""
 "阻止这个终端被下班——无论是总管还是别的什么。只有键盘前的人能设置或解除它。"
 
 #: src/input/command.zig:600 windows/host/src/ctxmenu.rs:152
-#: windows/host/src/menu.rs:331 windows/host/src/strip.rs:1340
+#: windows/host/src/menu.rs:375 windows/host/src/strip.rs:1369
 msgid "Keep Agents Out of This Terminal"
 msgstr "不让 agent 碰此终端"
 
@@ -972,7 +979,7 @@ msgstr ""
 "不让任何 agent（总管也在内）读这个终端、或者往里打字。屏蔽期间，它的 tab 上会"
 "带一把锁。只有你能设这一项。"
 
-#: src/input/command.zig:606 windows/host/src/menu.rs:327
+#: src/input/command.zig:606 windows/host/src/menu.rs:371
 msgid "Terminal Conversations"
 msgstr "终端群聊"
 
@@ -980,204 +987,422 @@ msgstr "终端群聊"
 msgid "Open a terminal showing what the terminals have said to each other."
 msgstr "开一个终端，显示各个终端之间说过的话。"
 
-#: src/input/command.zig:612 windows/host/src/menu.rs:406
+#: src/input/command.zig:612 windows/host/src/menu.rs:364
+#: windows/control-room/src/rules.rs:82
+msgid "Control Room"
+msgstr "总控台"
+
+#: src/input/command.zig:613
+msgid ""
+"Go to the tab that lists every group by who is waiting for you, opening it "
+"if it is closed."
+msgstr ""
+
+#: src/input/command.zig:618 windows/host/src/menu.rs:450
 msgid "Equalize Splits"
 msgstr "均分分屏大小"
 
-#: src/input/command.zig:613
+#: src/input/command.zig:619
 msgid "Equalize the size of all splits."
 msgstr "使所有分屏大小相等。"
 
-#: src/input/command.zig:618 windows/host/src/menu.rs:428
+#: src/input/command.zig:624 windows/host/src/menu.rs:472
 msgid "Reset Window Size"
 msgstr "重置窗口大小"
 
-#: src/input/command.zig:619
+#: src/input/command.zig:625
 msgid "Reset the window size to the default."
 msgstr "将窗口重置到默认大小。"
 
-#: src/input/command.zig:624
+#: src/input/command.zig:630
 msgid "Toggle Inspector"
 msgstr "切换检查器"
 
-#: src/input/command.zig:625
+#: src/input/command.zig:631
 msgid "Toggle the inspector."
 msgstr "切换终端检查器。"
 
-#: src/input/command.zig:630
+#: src/input/command.zig:636
 msgid "Show the GTK Inspector"
 msgstr "显示 GTK 检查器"
 
-#: src/input/command.zig:631
+#: src/input/command.zig:637
 msgid "Show the GTK inspector."
 msgstr "显示 GTK 检查器。"
 
-#: src/input/command.zig:636
+#: src/input/command.zig:642
 msgid "Show On-Screen Keyboard"
 msgstr "显示屏幕键盘"
 
-#: src/input/command.zig:637
+#: src/input/command.zig:643
 msgid "Show the on-screen keyboard if present."
 msgstr "如果可能，显示屏幕键盘。"
 
-#: src/input/command.zig:643
+#: src/input/command.zig:649
 msgid "Open Config Using OS editor"
 msgstr "用系统编辑器打开配置"
 
-#: src/input/command.zig:644
+#: src/input/command.zig:650
 msgid "Open the config file with the OS's default editor."
 msgstr "用系统默认的编辑器打开配置文件。"
 
-#: src/input/command.zig:648
+#: src/input/command.zig:654
 msgid "Open Config in New Terminal Window"
 msgstr "在新终端窗口打开配置"
 
-#: src/input/command.zig:649
+#: src/input/command.zig:655
 msgid "Open the config file in a new window using $EDITOR or $VISUAL."
 msgstr "在新终端窗口内用 $EDITOR 或 $VISUAL 程序打开配置文件。"
 
-#: src/input/command.zig:655
+#: src/input/command.zig:661
 msgid "Reload Config"
 msgstr "重新加载配置"
 
-#: src/input/command.zig:656
+#: src/input/command.zig:662
 msgid "Reload the config file."
 msgstr "重新加载配置文件。"
 
-#: src/input/command.zig:661
+#: src/input/command.zig:667
 msgid "Close Terminal"
 msgstr "关闭终端"
 
-#: src/input/command.zig:662
+#: src/input/command.zig:668
 msgid "Close the current terminal."
 msgstr "关闭当前终端。"
 
-#: src/input/command.zig:669
+#: src/input/command.zig:675
 msgid "Close the current tab."
 msgstr "关闭当前标签页。"
 
-#: src/input/command.zig:673 windows/host/src/strip.rs:1330
-#: windows/host/src/tabs.rs:3073
+#: src/input/command.zig:679 windows/host/src/strip.rs:1359
+#: windows/host/src/tabs.rs:3401
 msgid "Close Other Tabs"
 msgstr "关闭其他标签页"
 
-#: src/input/command.zig:674 windows/host/src/tabs.rs:3090
+#: src/input/command.zig:680 windows/host/src/tabs.rs:3418
 msgid "Close all tabs in this window except the current one."
 msgstr "关闭当前窗口内除了当前标签页以外的所有标签页。"
 
-#: src/input/command.zig:678 windows/host/src/strip.rs:1331
-#: windows/host/src/tabs.rs:3074
+#: src/input/command.zig:684 windows/host/src/strip.rs:1360
+#: windows/host/src/tabs.rs:3402
 msgid "Close Tabs to the Right"
 msgstr "关闭右侧标签页"
 
-#: src/input/command.zig:679 windows/host/src/tabs.rs:3091
+#: src/input/command.zig:685 windows/host/src/tabs.rs:3419
 msgid "Close all tabs to the right of the current one."
 msgstr "关闭当前标签页右侧的所有标签页。"
 
-#: src/input/command.zig:686
+#: src/input/command.zig:692
 msgid "Close the current window."
 msgstr "关闭当前窗口。"
 
-#: src/input/command.zig:691
+#: src/input/command.zig:697
 msgid "Close All Windows"
 msgstr "关闭所有窗口"
 
-#: src/input/command.zig:692
+#: src/input/command.zig:698
 msgid "Close all windows."
 msgstr "关闭所有窗口。"
 
-#: src/input/command.zig:697
+#: src/input/command.zig:703
 msgid "Toggle Maximize"
 msgstr "切换最大化"
 
-#: src/input/command.zig:698
+#: src/input/command.zig:704
 msgid "Toggle the maximized state of the current window."
 msgstr "切换当前窗口的最大化状态。"
 
-#: src/input/command.zig:703
+#: src/input/command.zig:709
 msgid "Toggle Fullscreen"
 msgstr "切换全屏"
 
-#: src/input/command.zig:704
+#: src/input/command.zig:710
 msgid "Toggle the fullscreen state of the current window."
 msgstr "切换当前窗口的全屏状态。"
 
-#: src/input/command.zig:709
+#: src/input/command.zig:715
 msgid "Toggle Window Decorations"
 msgstr "切换窗口装饰"
 
-#: src/input/command.zig:710
+#: src/input/command.zig:716
 msgid "Toggle the window decorations."
 msgstr "切换是否显示窗口装饰，如标题栏、边框等。"
 
-#: src/input/command.zig:715
+#: src/input/command.zig:721
 msgid "Toggle Float on Top"
 msgstr "切换窗口置顶"
 
-#: src/input/command.zig:716
+#: src/input/command.zig:722
 msgid "Toggle the float on top state of the current window."
 msgstr "切换当前窗口的置顶状态。"
 
-#: src/input/command.zig:721
+#: src/input/command.zig:727
 msgid "Toggle Secure Input"
 msgstr "切换安全输入"
 
-#: src/input/command.zig:722
+#: src/input/command.zig:728
 msgid "Toggle secure input mode."
 msgstr "切换安全输入模式。"
 
-#: src/input/command.zig:727
+#: src/input/command.zig:733
 msgid "Toggle Mouse Reporting"
 msgstr "切换鼠标事件上报"
 
-#: src/input/command.zig:728
+#: src/input/command.zig:734
 msgid "Toggle whether mouse events are reported to terminal applications."
 msgstr "切换是否向终端应用上报鼠标事件。"
 
 # Opacity 实际指不透明度，但是这样表述太拗口了
-#: src/input/command.zig:733
+#: src/input/command.zig:739
 msgid "Toggle Background Opacity"
 msgstr "切换背景透明度"
 
-#: src/input/command.zig:734
+#: src/input/command.zig:740
 msgid "Toggle the background opacity of a window that started transparent."
 msgstr "切换最初透明的窗口的背景透明度。"
 
-#: src/input/command.zig:739
+#: src/input/command.zig:745 src/input/screenshot.zig:107
+#: windows/settings-shell/src/general.rs:78
+msgid "Screenshot"
+msgstr "截图"
+
+#: src/input/command.zig:746 src/input/screenshot.zig:115
+msgid ""
+"Freeze the screen, pick a window or drag a region, annotate it, and put the "
+"result on the clipboard."
+msgstr "定格屏幕，点选窗口或拖出一块区域，标注后把结果放进剪贴板。"
+
+#: src/input/command.zig:751
 msgid "Check for Updates"
 msgstr "检查更新"
 
-#: src/input/command.zig:740
+#: src/input/command.zig:752
 msgid "Check for updates to the application."
 msgstr "检查应用是否有版本更新。"
 
-#: src/input/command.zig:745
+#: src/input/command.zig:757 windows/host/src/projects_ui.rs:1349
 msgid "Undo"
 msgstr "撤销"
 
-#: src/input/command.zig:746
+#: src/input/command.zig:758
 msgid "Undo the last action."
 msgstr "撤销上一个操作。"
 
-#: src/input/command.zig:751
+#: src/input/command.zig:763
 msgid "Redo"
 msgstr "重做"
 
-#: src/input/command.zig:752
+#: src/input/command.zig:764
 msgid "Redo the last undone action."
 msgstr "重做上一个撤销的操作。"
 
-#: src/input/command.zig:758
+#: src/input/command.zig:770
 msgid "Quit the application."
 msgstr "退出应用。"
 
-#: src/input/command.zig:763
+#: src/input/command.zig:775
 msgid "Ghostty"
 msgstr "Ghostty"
 
-#: src/input/command.zig:764
+#: src/input/command.zig:776
 msgid "Put a little Ghostty in your terminal."
 msgstr "把一只小 Ghostty 塞进终端里。"
+
+#: src/input/screenshot.zig:84
+msgid "Select"
+msgstr "选择"
+
+#: src/input/screenshot.zig:85
+msgid "Rectangle"
+msgstr "矩形"
+
+#: src/input/screenshot.zig:86
+msgid "Ellipse"
+msgstr "椭圆"
+
+#: src/input/screenshot.zig:87
+msgid "Straight Line"
+msgstr "直线"
+
+#: src/input/screenshot.zig:88
+msgid "Highlighter"
+msgstr "荧光笔"
+
+#: src/input/screenshot.zig:89
+msgid "Number"
+msgstr "编号"
+
+#: src/input/screenshot.zig:90
+msgid "Mosaic"
+msgstr "马赛克"
+
+#: src/input/screenshot.zig:91
+msgid "Long Screenshot"
+msgstr "长截图"
+
+#: src/input/screenshot.zig:92
+msgid "Done"
+msgstr "完成"
+
+#: src/input/screenshot.zig:93
+msgid "Color"
+msgstr "颜色"
+
+#: src/input/screenshot.zig:94
+msgid "Thickness"
+msgstr "粗细"
+
+#: src/input/screenshot.zig:95
+msgid "Block Size"
+msgstr "块大小"
+
+#: src/input/screenshot.zig:96 windows/host/src/strip.rs:1322
+msgid "Red"
+msgstr "红"
+
+#: src/input/screenshot.zig:97 windows/host/src/strip.rs:1323
+msgid "Orange"
+msgstr "橙"
+
+#: src/input/screenshot.zig:98 windows/host/src/strip.rs:1324
+msgid "Yellow"
+msgstr "黄"
+
+#: src/input/screenshot.zig:99 windows/host/src/strip.rs:1325
+msgid "Green"
+msgstr "绿"
+
+#: src/input/screenshot.zig:100
+msgid "Cyan"
+msgstr "青"
+
+#: src/input/screenshot.zig:101 windows/host/src/strip.rs:1319
+msgid "Blue"
+msgstr "蓝"
+
+#: src/input/screenshot.zig:102 windows/host/src/strip.rs:1320
+msgid "Purple"
+msgstr "紫"
+
+#: src/input/screenshot.zig:103
+msgid "Black"
+msgstr "黑"
+
+#: src/input/screenshot.zig:104
+msgid "White"
+msgstr "白"
+
+#: src/input/screenshot.zig:105
+msgid "Circle"
+msgstr "圆"
+
+#: src/input/screenshot.zig:106
+msgid "Line"
+msgstr "线"
+
+#: src/input/screenshot.zig:108
+msgid "Screenshot annotations"
+msgstr "截图标注"
+
+#: src/input/screenshot.zig:109
+msgid "Text"
+msgstr "文字"
+
+#: src/input/screenshot.zig:110
+msgid "Box"
+msgstr "框"
+
+#: src/input/screenshot.zig:111
+msgid "Arrow"
+msgstr "箭头"
+
+#: src/input/screenshot.zig:112
+msgid "Pen"
+msgstr "画笔"
+
+#: src/input/screenshot.zig:113
+msgid "; "
+msgstr "；"
+
+#: src/input/screenshot.zig:114
+msgid ". See "
+msgstr "。详见 "
+
+#: src/input/screenshot.zig:116
+msgid "The annotation font is missing, so the system font is used."
+msgstr "标注字体文件缺失，已改用系统字体。"
+
+#: src/input/screenshot.zig:117
+msgid "Scroll down slowly. What comes into view is added at the bottom."
+msgstr "慢慢向下滚动，新露出的部分会接到底部。"
+
+#: src/input/screenshot.zig:118
+msgid "Scroll slower"
+msgstr "滚慢一点"
+
+#: src/input/screenshot.zig:119
+msgid "The height limit was reached."
+msgstr "已到高度上限。"
+
+#: src/input/screenshot.zig:120
+msgid "The picture keeps changing, so nothing can be added."
+msgstr "画面一直在动，没能接长。"
+
+#: src/input/screenshot.zig:121
+msgid "{n} tiles, first {m} pasted"
+msgstr "共 {n} 片，已粘贴前 {m} 片"
+
+#: src/input/screenshot.zig:122
+msgid "whole image"
+msgstr "整图"
+
+#: src/input/screenshot.zig:123
+msgid "Scrolling down… Enter keeps what is joined so far, Esc cancels."
+msgstr "正在向下滚动…回车保留已接好的部分，Esc 取消。"
+
+#: src/input/screenshot.zig:124
+msgid ""
+"Scrolling for you needs the Accessibility permission, so scroll down slowly "
+"by hand."
+msgstr "自动滚动需要“辅助功能”权限，请慢慢向下手动滚动。"
+
+#: src/input/screenshot.zig:125
+msgid "The page could not be followed any further, so the picture ends here."
+msgstr "页面没能再跟下去，图片到此为止。"
+
+#: src/input/screenshot.zig:126 windows/host/src/plugins_ui.rs:525
+#: windows/host/src/project_picker.rs:323 windows/host/src/roles_ui.rs:2258
+#: windows/host/src/roles_ui.rs:2951 windows/host/src/roles_ui.rs:2968
+#: windows/host/src/roles_ui.rs:2982
+msgid "Save"
+msgstr "保存"
+
+#: src/input/screenshot.zig:127
+msgid "Saved to Downloads: {name}"
+msgstr "已保存到“下载”：{name}"
+
+#: src/input/screenshot.zig:128
+msgid "The picture could not be saved."
+msgstr "图片没能保存。"
+
+#: src/input/screenshot.zig:129
+msgid "Copied"
+msgstr "已复制"
+
+#: src/input/screenshot.zig:130
+msgid "The screenshot shortcut could not be registered"
+msgstr "截图快捷键没能注册上"
+
+#: src/input/screenshot.zig:131
+msgid ""
+"Another application is already using it. Choose a different one with a "
+"`screenshot` keybind in the configuration."
+msgstr ""
+"别的应用已经占用了这个组合。请在配置里用 `screenshot` 的 keybind 换一个。"
+
+#: src/input/screenshot.zig:132
+msgid "No settings match."
+msgstr "没有匹配的设置。"
 
 #: src/cli/chat.zig:603
 msgid "all"
@@ -1195,260 +1420,260 @@ msgstr ""
 msgid "closed"
 msgstr ""
 
-#: src/cli/chat.zig:1855
+#: src/cli/chat.zig:1857
 msgid "Take the group \"{0}\" off this list?"
 msgstr "把群「{0}」从列表里移除？"
 
-#: src/cli/chat.zig:1860
+#: src/cli/chat.zig:1862
 msgid "Not one word of the conversation is deleted:"
 msgstr "聊天记录一个字都不会删：磁盘上"
 
-#: src/cli/chat.zig:1861
+#: src/cli/chat.zig:1863
 msgid "every day of it stays exactly as it is under"
 msgstr "<state>/chat/ 里的每一天原样保留，"
 
-#: src/cli/chat.zig:1862
+#: src/cli/chat.zig:1864
 msgid "<state>/chat/, to be read and grepped later."
 msgstr "以后还能翻、还能 grep。"
 
-#: src/cli/chat.zig:1863
+#: src/cli/chat.zig:1865
 msgid "What goes is one row of this list."
 msgstr "移除的只是这个列表里的一行。"
 
-#: src/cli/chat.zig:1865
+#: src/cli/chat.zig:1867
 msgid "y to confirm    any other key cancels"
 msgstr "y 确认    其他任意键取消"
 
-#: src/cli/chat.zig:1930
+#: src/cli/chat.zig:1932
 msgid "GROUPS   d removes"
 msgstr "群聊 / GROUPS  d 移除"
 
-#: src/cli/chat.zig:1934
+#: src/cli/chat.zig:1936
 msgid "  (no groups yet)"
 msgstr "  (还没有群)"
 
-#: src/cli/chat.zig:1982
+#: src/cli/chat.zig:1984
 msgid "MEMBERS"
 msgstr "成员 / MEMBERS"
 
-#: src/cli/chat.zig:2208
+#: src/cli/chat.zig:2210
 msgid "No groups. Tasks will appear here once a supervisor makes one."
 msgstr "  没有群聊。总管建群之后，任务会出现在这里。"
 
-#: src/cli/chat.zig:2217
+#: src/cli/chat.zig:2219
 msgid "No tasks in this group yet."
 msgstr "  这个群还没有任务。"
 
-#: src/cli/chat.zig:2257 src/cli/chat.zig:2262
+#: src/cli/chat.zig:2259 src/cli/chat.zig:2264
 msgid "filter"
 msgstr ""
 
-#: src/cli/chat.zig:2274
+#: src/cli/chat.zig:2276
 msgid "Nothing matches this filter. Press f to change it."
 msgstr ""
 
-#: src/cli/chat.zig:2366
+#: src/cli/chat.zig:2368
 msgid "No groups. There will be numbers here once a supervisor makes one."
 msgstr "  没有群聊。总管建群之后，这里会有数字。"
 
-#: src/cli/chat.zig:2493
+#: src/cli/chat.zig:2495
 msgid "Waiting on you"
 msgstr "在等你"
 
-#: src/cli/chat.zig:2495 src/cli/chat.zig:2771
+#: src/cli/chat.zig:2497 src/cli/chat.zig:2773
 msgid "  The task record has not been read yet."
 msgstr "  还没有读到任务记录。"
 
-#: src/cli/chat.zig:2497
+#: src/cli/chat.zig:2499
 msgid "  Nothing open."
 msgstr "  没有开着的任务。"
 
-#: src/cli/chat.zig:2513 src/cli/chat.zig:2526
+#: src/cli/chat.zig:2515 src/cli/chat.zig:2528
 msgid "with nothing happening"
 msgstr "没动静"
 
-#: src/cli/chat.zig:2523
+#: src/cli/chat.zig:2525
 msgid "#{0}  {1} {2}  {3}"
 msgstr "#{0}  {1} {2}  {3}"
 
-#: src/cli/chat.zig:2532
+#: src/cli/chat.zig:2534
 msgid "  and {0} more still open"
 msgstr "  还有 {0} 个开着的"
 
-#: src/cli/chat.zig:2539
+#: src/cli/chat.zig:2541
 msgid "Where it stopped"
 msgstr "停摆"
 
-#: src/cli/chat.zig:2547
+#: src/cli/chat.zig:2549
 msgid "  a day {0}"
 msgstr "  一天 {0}"
 
-#: src/cli/chat.zig:2551
+#: src/cli/chat.zig:2553
 msgid "  last message {0} ago"
 msgstr "  最近一条 {0}前"
 
-#: src/cli/chat.zig:2558
+#: src/cli/chat.zig:2560
 msgid "  longest silence {0} (from {1})"
 msgstr "  最长静默 {0}（{1} 起）"
 
-#: src/cli/chat.zig:2567
+#: src/cli/chat.zig:2569
 msgid "Saying · doing"
 msgstr "谁在说 · 谁在做"
 
-#: src/cli/chat.zig:2569
+#: src/cli/chat.zig:2571
 msgid "  Nobody has been in this group."
 msgstr "  这个群还没有成员。"
 
-#: src/cli/chat.zig:2603 src/cli/chat.zig:2617
+#: src/cli/chat.zig:2605 src/cli/chat.zig:2619
 msgid "said"
 msgstr "说"
 
-#: src/cli/chat.zig:2604 src/cli/chat.zig:2620
+#: src/cli/chat.zig:2606 src/cli/chat.zig:2622
 msgid "doing"
 msgstr "做"
 
-#: src/cli/chat.zig:2615
+#: src/cli/chat.zig:2617
 msgid "  {0} {1} {2} {3}  {4} {5} {6}"
 msgstr "  {0} {1} {2} {3}  {4} {5} {6}"
 
-#: src/cli/chat.zig:2627
+#: src/cli/chat.zig:2629
 msgid "  and {0} more"
 msgstr "  还有 {0} 个"
 
-#: src/cli/chat.zig:2634
+#: src/cli/chat.zig:2636
 msgid "Terminals"
 msgstr "终端"
 
-#: src/cli/chat.zig:2637
+#: src/cli/chat.zig:2639
 msgid "  {0} in the group now, {1} in the record"
 msgstr "  现在 {0} 个在群里，记录里出现过 {1} 个"
 
-#: src/cli/chat.zig:2675
+#: src/cli/chat.zig:2677
 msgid "  no supervisor was recorded"
 msgstr "  没有记录到总管"
 
-#: src/cli/chat.zig:2677
+#: src/cli/chat.zig:2679
 msgid "  last supervisor:"
 msgstr "  上次的总管："
 
-#: src/cli/chat.zig:2698
+#: src/cli/chat.zig:2700
 msgid "  and {0} other terminals"
 msgstr "  另有 {0} 个终端"
 
-#: src/cli/chat.zig:2728
+#: src/cli/chat.zig:2730
 msgid "This session"
 msgstr "这一场"
 
-#: src/cli/chat.zig:2733
+#: src/cli/chat.zig:2735
 msgid "  first line {0} · {1} since · {2} messages"
 msgstr "  第一句 {0} · 至今 {1} · 消息 {2}"
 
-#: src/cli/chat.zig:2748
+#: src/cli/chat.zig:2750
 msgid "  made {0} · closed {1} · cancelled {2} · open {3}"
 msgstr "  建 {0} · 关 {1} · 取消 {2} · 开着 {3}"
 
-#: src/cli/chat.zig:2763
+#: src/cli/chat.zig:2765
 msgid "  {0} handed round · {1} progress reports / {2}"
 msgstr "  重派 {0} 个 · 进度上报 {1} 次 / {2}"
 
-#: src/cli/chat.zig:2775
+#: src/cli/chat.zig:2777
 msgid "Task mix"
 msgstr "任务构成"
 
-#: src/cli/chat.zig:2783
+#: src/cli/chat.zig:2785
 msgid "  No tasks in this group yet."
 msgstr "  这个群还没有任务。"
 
-#: src/cli/chat.zig:2816
+#: src/cli/chat.zig:2818
 msgid "closed {0}"
 msgstr "关 {0}"
 
-#: src/cli/chat.zig:2821
+#: src/cli/chat.zig:2823
 msgid "past the mark {0}"
 msgstr "跨阈值 {0}"
 
-#: src/cli/chat.zig:2826
+#: src/cli/chat.zig:2828
 msgid "open {0}"
 msgstr "开 {0}"
 
-#: src/cli/chat.zig:2831
+#: src/cli/chat.zig:2833
 msgid "cancelled {0}"
 msgstr "取消 {0}"
 
-#: src/cli/chat.zig:2838
+#: src/cli/chat.zig:2840
 msgid "How long tasks lived"
 msgstr "任务寿命"
 
-#: src/cli/chat.zig:2840
+#: src/cli/chat.zig:2842
 msgid "  Nothing has been closed yet."
 msgstr "  还没有关掉的任务。"
 
-#: src/cli/chat.zig:2848
+#: src/cli/chat.zig:2850
 msgid "  fastest {0} · median {1} · slowest {2} (over {3})"
 msgstr "  最快 {0} · 中位 {1} · 最慢 {2}（{3} 个）"
 
-#: src/cli/chat.zig:2858
+#: src/cli/chat.zig:2860
 msgid "Rhythm"
 msgstr "节奏"
 
-#: src/cli/chat.zig:2866
+#: src/cli/chat.zig:2868
 msgid "  00:00{0}23:00"
 msgstr "  0时{0}23时"
 
-#: src/cli/chat.zig:2872
+#: src/cli/chat.zig:2874
 msgid "  busiest {0}:00 ({1} messages)"
 msgstr "  最忙 {0}:00（{1} 条）"
 
-#: src/cli/chat.zig:3037
+#: src/cli/chat.zig:3039
 msgid "Chat"
 msgstr "群聊"
 
-#: src/cli/chat.zig:3038
+#: src/cli/chat.zig:3040
 msgid "Tasks"
 msgstr "任务"
 
-#: src/cli/chat.zig:3039
+#: src/cli/chat.zig:3041
 msgid "Stats"
 msgstr "统计"
 
-#: src/cli/chat.zig:3063
+#: src/cli/chat.zig:3065
 msgid "· unassigned"
 msgstr "· 未分配"
 
-#: src/cli/chat.zig:3087
+#: src/cli/chat.zig:3089
 msgid ""
 "No groups. The conversation will appear here once a supervisor makes one."
 msgstr "  没有群聊。总管建群之后，对话会出现在这里。"
 
-#: src/cli/chat.zig:3110
+#: src/cli/chat.zig:3112
 msgid "── nothing older ──"
 msgstr "── 没有更早的了 ──"
 
-#: src/cli/chat.zig:3121
+#: src/cli/chat.zig:3123
 msgid "  (summary)"
 msgstr "  (摘要)"
 
-#: src/cli/chat.zig:3356
+#: src/cli/chat.zig:3358
 msgid "under a minute"
 msgstr "不到 1 分钟"
 
-#: src/cli/chat.zig:3359
+#: src/cli/chat.zig:3361
 msgid "{0} min"
 msgstr "{0} 分钟"
 
-#: src/cli/chat.zig:3364
+#: src/cli/chat.zig:3366
 msgid "{0} h"
 msgstr "{0} 小时"
 
-#: src/cli/chat.zig:3365
+#: src/cli/chat.zig:3367
 msgid "{0} h {1} min"
 msgstr "{0} 小时 {1} 分"
 
-#: src/cli/chat.zig:3370
+#: src/cli/chat.zig:3372
 msgid "{0} d"
 msgstr "{0} 天"
 
-#: src/cli/chat.zig:3371
+#: src/cli/chat.zig:3373
 msgid "{0} d {1} h"
 msgstr "{0} 天 {1} 小时"
 
@@ -1456,30 +1681,649 @@ msgstr "{0} 天 {1} 小时"
 msgid "Above this line: history restored from the previous session"
 msgstr "以上为上次会话恢复的历史记录"
 
+#: src/config/form.zig:124
+msgid "Screenshot Shortcut"
+msgstr "截图快捷键"
+
+#: src/config/form.zig:125
+msgid "Change it with a keybind line in the config file."
+msgstr "在配置文件的 keybind 里修改。"
+
+#: src/config/form.zig:143
+msgid "Theme"
+msgstr "主题"
+
+#: src/config/form.zig:143
+msgid "The color theme; light and dark mode can differ."
+msgstr "配色主题，浅色和深色模式可以分别设置。"
+
+#: src/config/form.zig:144
+msgid "Background Opacity"
+msgstr "背景不透明度"
+
+#: src/config/form.zig:144
+msgid "1 is fully opaque; lower lets the desktop show through."
+msgstr "1 为完全不透明，越小越能透出桌面。"
+
+#: src/config/form.zig:145
+msgid "Background Blur"
+msgstr "背景模糊"
+
+#: src/config/form.zig:145
+msgid "true, false, a strength, or macos-glass-regular/-clear."
+msgstr "填 true、false、强度数值，或 macos-glass-regular / -clear。"
+
+#: src/config/form.zig:146
+msgid "Cursor Style"
+msgstr "光标样式"
+
+#: src/config/form.zig:146
+msgid "The cursor's shape; programs in the terminal may change it."
+msgstr "光标形状；终端里的程序可以改变它。"
+
+#: src/config/form.zig:146
+msgid "Bar"
+msgstr "竖线"
+
+#: src/config/form.zig:146
+msgid "Block"
+msgstr "方块"
+
+#: src/config/form.zig:146
+msgid "Underline"
+msgstr "下划线"
+
+#: src/config/form.zig:146
+msgid "Hollow Block"
+msgstr "空心方块"
+
+#: src/config/form.zig:147
+msgid "Blinking Cursor"
+msgstr "光标闪烁"
+
+#: src/config/form.zig:147
+msgid "Whether the cursor blinks by default."
+msgstr "光标默认是否闪烁。"
+
+#: src/config/form.zig:148
+msgid "Horizontal Padding"
+msgstr "左右边距"
+
+#: src/config/form.zig:148
+msgid "Space between the text and the left and right edges."
+msgstr "文字与窗口左右边缘之间的空白。"
+
+#: src/config/form.zig:149
+msgid "Vertical Padding"
+msgstr "上下边距"
+
+#: src/config/form.zig:149
+msgid "Space between the text and the top and bottom edges."
+msgstr "文字与窗口上下边缘之间的空白。"
+
+#: src/config/form.zig:150
+msgid "Balance Padding"
+msgstr "均分边距"
+
+#: src/config/form.zig:150
+msgid "Spread leftover space evenly around the text."
+msgstr "把多出来的空白平均分到四边。"
+
+#: src/config/form.zig:150
+msgid "No Balancing"
+msgstr "关"
+
+#: src/config/form.zig:150
+msgid "Balanced, Top Capped"
+msgstr "均分（上边距有上限）"
+
+#: src/config/form.zig:150
+msgid "Equal on All Sides"
+msgstr "四边相等"
+
+#: src/config/form.zig:151
+msgid "Title Bar Style"
+msgstr "标题栏样式"
+
+#: src/config/form.zig:151
+msgid "Native, transparent, tabs, or hidden."
+msgstr "原生、透明、标签页或隐藏。"
+
+#: src/config/form.zig:151
+msgid "Native"
+msgstr "原生"
+
+#: src/config/form.zig:151
+msgid "Transparent"
+msgstr "透明"
+
+#: src/config/form.zig:151
+msgid "Tabs in Title Bar"
+msgstr "标签页在标题栏"
+
+#: src/config/form.zig:151
+msgid "Hidden"
+msgstr "隐藏"
+
+#: src/config/form.zig:154 windows/settings-shell/src/general.rs:74
+msgid "Font"
+msgstr "字体"
+
+#: src/config/form.zig:154
+msgid "The font family to use; empty uses the default."
+msgstr "使用的字体；留空用默认字体。"
+
+#: src/config/form.zig:155
+msgid "Font Size"
+msgstr "字号"
+
+#: src/config/form.zig:155
+msgid "In points; may be fractional."
+msgstr "以点为单位，可以带小数。"
+
+#: src/config/form.zig:156
+msgid "Line Height"
+msgstr "行高调整"
+
+#: src/config/form.zig:156
+msgid "Extra height per line, in points or percent (e.g. 20%)."
+msgstr "每行额外加高，写点数或百分比（如 20%）。"
+
+#: src/config/form.zig:159
+msgid "Scrollback Lines"
+msgstr "回滚行数"
+
+#: src/config/form.zig:159
+msgid "How many lines of history each terminal keeps."
+msgstr "每个终端保留多少行历史。"
+
+#: src/config/form.zig:160
+msgid "Copy on Select"
+msgstr "选中即复制"
+
+#: src/config/form.zig:160
+msgid "Copy selected text to the clipboard automatically."
+msgstr "选中文字时自动复制到剪贴板。"
+
+#: src/config/form.zig:160
+msgid "Don't Copy"
+msgstr "不复制"
+
+#: src/config/form.zig:160
+msgid "Selection Pasteboard Only"
+msgstr "仅选区剪贴板"
+
+#: src/config/form.zig:160
+msgid "Clipboard Only"
+msgstr "仅系统剪贴板"
+
+#: src/config/form.zig:160
+msgid "Both"
+msgstr "两者都复制"
+
+#: src/config/form.zig:161
+msgid "Clipboard Reading"
+msgstr "读取剪贴板"
+
+#: src/config/form.zig:161
+msgid "Whether programs may read the clipboard: ask, allow or deny."
+msgstr "终端里的程序能否读取剪贴板：询问、允许或拒绝。"
+
+#: src/config/form.zig:161 src/config/form.zig:162
+msgid "Ask"
+msgstr "询问"
+
+#: src/config/form.zig:162
+msgid "Clipboard Writing"
+msgstr "写入剪贴板"
+
+#: src/config/form.zig:162
+msgid "Whether programs may set the clipboard: ask, allow or deny."
+msgstr "终端里的程序能否写入剪贴板：询问、允许或拒绝。"
+
+#: src/config/form.zig:163
+msgid "Hide Pointer While Typing"
+msgstr "打字时隐藏鼠标"
+
+#: src/config/form.zig:163
+msgid "Hide the mouse pointer while you type in a terminal."
+msgstr "在终端里打字时隐藏鼠标指针。"
+
+#: src/config/form.zig:164
+msgid "Confirm Before Closing"
+msgstr "关闭前确认"
+
+#: src/config/form.zig:164
+msgid "Ask before closing a terminal still running something."
+msgstr "关闭仍在运行程序的终端前先确认。"
+
+#: src/config/form.zig:164
+msgid "Don't Confirm"
+msgstr "不确认"
+
+#: src/config/form.zig:164
+msgid "When Something Is Running"
+msgstr "有程序在运行时确认"
+
+#: src/config/form.zig:164
+msgid "Always Confirm"
+msgstr "总是确认"
+
+#: src/config/form.zig:165
+msgid "Shell Integration"
+msgstr "Shell 集成"
+
+#: src/config/form.zig:165
+msgid "Lets the shell report its directory and prompt to Polter."
+msgstr "让 shell 报告当前目录和提示符位置，Polter 才能跟踪它们。"
+
+#: src/config/form.zig:165
+msgid "Detect Automatically"
+msgstr "自动检测"
+
+#: src/config/form.zig:165
+msgid "No Integration"
+msgstr "不集成"
+
+#: src/config/form.zig:165
+msgid "Bash"
+msgstr "Bash"
+
+#: src/config/form.zig:165
+msgid "Elvish"
+msgstr "Elvish"
+
+#: src/config/form.zig:165
+msgid "fish"
+msgstr "fish"
+
+#: src/config/form.zig:165
+msgid "Nushell"
+msgstr "Nushell"
+
+#: src/config/form.zig:165
+msgid "PowerShell"
+msgstr "PowerShell"
+
+#: src/config/form.zig:165
+msgid "Zsh"
+msgstr "Zsh"
+
+#: src/config/form.zig:168
+msgid "Restore Windows"
+msgstr "恢复窗口"
+
+#: src/config/form.zig:168
+msgid "Reopen windows, tabs and splits where they were."
+msgstr "重新打开时恢复窗口、标签页和分屏。"
+
+#: src/config/form.zig:168
+msgid "System Default"
+msgstr "跟随系统"
+
+#: src/config/form.zig:168
+msgid "Never"
+msgstr "从不"
+
+#: src/config/form.zig:168
+msgid "Always"
+msgstr "总是"
+
+#: src/config/form.zig:169
+msgid "New Windows Inherit Directory"
+msgstr "新窗口沿用目录"
+
+#: src/config/form.zig:169
+msgid "New windows start in the focused window's directory."
+msgstr "新窗口从当前窗口的目录开始。"
+
+#: src/config/form.zig:170
+msgid "Quit After Last Window Closes"
+msgstr "关闭最后一个窗口后退出"
+
+#: src/config/form.zig:170
+msgid "Quit Polter when its last window is closed."
+msgstr "最后一个窗口关掉后退出 Polter。"
+
+#: src/config/form.zig:171
+msgid "Window Decorations"
+msgstr "窗口装饰"
+
+#: src/config/form.zig:171
+msgid "Whether windows have a title bar and borders."
+msgstr "窗口是否带标题栏和边框。"
+
+#: src/config/form.zig:171
+msgid "Automatic"
+msgstr "自动"
+
+#: src/config/form.zig:171
+msgid "Drawn by Polter"
+msgstr "由 Polter 绘制"
+
+#: src/config/form.zig:171
+msgid "Drawn by the System"
+msgstr "由系统绘制"
+
+#: src/config/form.zig:171
+msgid "No Decorations"
+msgstr "无"
+
+#: src/config/form.zig:174
+msgid "Notice Interval"
+msgstr "提醒间隔"
+
+#: src/config/form.zig:174
+msgid "How often the supervisor is handed what it has not seen."
+msgstr "多久把总管还没看过的动态交给它一次。"
+
+#: src/config/form.zig:175
+msgid "Quiet After"
+msgstr "静止判定"
+
+#: src/config/form.zig:175
+msgid "How long a screen must stay unchanged to count as quiet."
+msgstr "屏幕多久不变算作静止。"
+
+#: src/config/form.zig:176
+msgid "Repeat Quiet Report"
+msgstr "静止重复报告"
+
+#: src/config/form.zig:176
+msgid "How long before a still-quiet terminal is reported again."
+msgstr "仍然静止的终端隔多久再报一次。"
+
+#: src/config/form.zig:177
+msgid "Nudge Workers After"
+msgstr "催促汇报"
+
+#: src/config/form.zig:177
+msgid "How long a worker may sit still before it is told to report."
+msgstr "worker 静止多久后提醒它汇报。"
+
+#: src/config/form.zig:178
+msgid "Tool Silence Reminder"
+msgstr "工具沉默提醒"
+
+#: src/config/form.zig:178
+msgid "How long without a Polter tool call before it is mentioned."
+msgstr "多久没调用 Polter 工具就提一句。"
+
+#: src/config/form.zig:179
+msgid "Idle Task Reminder"
+msgstr "任务搁置提醒"
+
+#: src/config/form.zig:179
+msgid "How long a task may go untouched before it is mentioned."
+msgstr "任务多久没人动就提一句。"
+
+#: src/config/form.zig:180
+msgid "Quiet Group Reminder"
+msgstr "群静默提醒"
+
+#: src/config/form.zig:180
+msgid "How long a group may be silent before it is mentioned."
+msgstr "群多久没人说话就提一句。"
+
+#: src/config/form.zig:181
+msgid "Hours I May Be Disturbed"
+msgstr "可打扰时段"
+
+#: src/config/form.zig:181
+msgid "When you may be asked, as HH:MM-HH:MM; empty is any time."
+msgstr "什么时候可以问你，写成 HH:MM-HH:MM；留空表示随时。"
+
+#: src/config/form.zig:182
+msgid "Supervisor May Stand Down"
+msgstr "总管可自行卸任"
+
+#: src/config/form.zig:182
+msgid "Let a supervisor whose work is done take itself off duty."
+msgstr "允许做完事的总管自己卸任。"
+
+#: src/config/form.zig:183
+msgid "Keep Chat Log"
+msgstr "保存群聊记录"
+
+#: src/config/form.zig:183
+msgid "Write what the terminals say to each other to disk."
+msgstr "把终端之间的对话写到磁盘上。"
+
+#: src/config/form.zig:184
+msgid "Keep Terminal Transcripts"
+msgstr "保存终端记录"
+
+#: src/config/form.zig:184
+msgid "Keep a transcript of what ran in each terminal."
+msgstr "记录每个终端里实际运行了什么。"
+
+#: src/config/form.zig:185 windows/host/src/language.rs:291
+msgid "Language"
+msgstr "语言"
+
+#: src/config/form.zig:185
+msgid "The interface language; empty follows the system."
+msgstr "界面语言；留空跟随系统。"
+
+#: src/config/form.zig:188
+msgid "Paste Images as Files"
+msgstr "粘贴图片时存成文件并粘贴路径"
+
+#: src/config/form.zig:188
+msgid "Save a pasted image as a file and paste its path."
+msgstr "把粘贴的图片存成文件，再粘贴它的路径。"
+
+#: src/config/form.zig:189
+msgid "Screenshot Folder"
+msgstr "截图保存位置"
+
+#: src/config/form.zig:189
+msgid "Where screenshots and pasted images are saved."
+msgstr "截图和粘贴的图片存在这里。"
+
+#: src/config/form.zig:190
+msgid "Mouse Trigger"
+msgstr "鼠标触发"
+
+#: src/config/form.zig:190
+msgid "Hold these keys and click to take a screenshot."
+msgstr "按住这些键单击即可截图。"
+
+#: src/config/form.zig:191 windows/settings-shell/src/plugins.rs:52
+msgid "Off"
+msgstr "已关"
+
+#: src/config/form.zig:198
+#, c-format
+msgid "%s + Click"
+msgstr "%s + 单击"
+
+#: src/config/form.zig:199
+msgid "Let Agents Take Screenshots"
+msgstr "允许 agent 截图"
+
+#: src/config/form.zig:199
+msgid "Agents may capture the screen with the screenshot tools."
+msgstr "agent 可以用截图工具拍下屏幕。"
+
 # U+2026, action prompt_tab_title: opens the title overlay (menu.rs, ctxmenu.rs). "Rename Tab..." with three ASCII dots is a DIFFERENT action, rename_tab, in-place on the tab strip. Do not merge them.
 #. TRANSLATORS: U+2026, not three ASCII dots. This opens the title
 #. overlay. "Rename Tab..." with three dots is a DIFFERENT action
 #. (rename_tab) that edits the tab strip in place. The two entries look
 #. almost identical; do not merge them.
-#: windows/host/src/ctxmenu.rs:138 windows/host/src/menu.rs:306
+#: windows/host/src/ctxmenu.rs:138 windows/host/src/menu.rs:340
 msgid "Rename Tab…"
 msgstr "改标签标题…"
 
-#: windows/host/src/ctxmenu.rs:139 windows/host/src/menu.rs:307
+#: windows/host/src/ctxmenu.rs:139 windows/host/src/menu.rs:341
 msgid "Rename Terminal…"
 msgstr "改终端标题…"
 
 # The Chinese is longer than the English on purpose: the parenthesis says this also answers "Don't Ask Again", which writes a lasting grant. English matches macOS verbatim. Shared by menu.rs and ctxmenu.rs.
-#: windows/host/src/ctxmenu.rs:177 windows/host/src/menu.rs:346
+#: windows/host/src/ctxmenu.rs:177 windows/host/src/menu.rs:390
 msgid "Let a Supervisor Answer Prompts Here"
 msgstr "允许总管替此终端点授权框（含「不再询问」）"
 
-#: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:360
-#: windows/host/src/strip.rs:1341
+#: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:404
+#: windows/host/src/strip.rs:1370
 msgid "Let Workers Name Each Other Directly"
 msgstr "允许 worker 之间直接点名"
 
-#: windows/host/src/i18n.rs:360 windows/host/src/settings_ui.rs:168
+#: windows/host/src/general_ui.rs:264
+msgid "Not set"
+msgstr "未设置"
+
+#: windows/host/src/general_ui.rs:575 windows/host/src/general_ui.rs:842
+#: windows/host/src/general_ui.rs:844
+msgid "Open config file…"
+msgstr "打开配置文件…"
+
+#: windows/host/src/general_ui.rs:577 windows/host/src/general_ui.rs:841
+msgid "Edit in Config File…"
+msgstr "在配置文件中编辑…"
+
+#: windows/host/src/general_ui.rs:585
+msgid "Filter by key"
+msgstr "按键名筛选"
+
+#: windows/host/src/general_ui.rs:871
+msgid "Less"
+msgstr "收起"
+
+#: windows/host/src/general_ui.rs:871
+msgid "More…"
+msgstr "更多…"
+
+#: windows/host/src/general_ui.rs:891
+#, rust-format
+msgid "Set by {}:{}. Edit it there."
+msgstr "由 {}:{} 设置，请在那里修改。"
+
+#: windows/host/src/general_ui.rs:893
+msgid "Set on the command line, which has the last word."
+msgstr "在命令行里设置，以命令行为准。"
+
+#: windows/host/src/general_ui.rs:894
+msgid "Edit this one in the config file."
+msgstr "这一项请在配置文件中编辑。"
+
+#: windows/host/src/general_ui.rs:1213 windows/host/src/general_ui.rs:1379
+msgid "Choose…"
+msgstr "选择…"
+
+#: windows/host/src/general_ui.rs:1214 windows/host/src/general_ui.rs:1379
+#: windows/host/src/projects_ui.rs:1351
+msgid "Show in Explorer"
+msgstr "在资源管理器中显示"
+
+#: windows/host/src/general_ui.rs:1306
+msgid "Light"
+msgstr "浅色"
+
+#: windows/host/src/general_ui.rs:1306
+msgid "Dark"
+msgstr "深色"
+
+#: windows/host/src/general_ui.rs:1480
+msgid "The screenshot folder could not be worked out."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1488 windows/host/src/projects_ui.rs:972
+msgid "Explorer could not be started."
+msgstr "资源管理器打不开。"
+
+#: windows/host/src/general_ui.rs:1586
+msgid "Saved to the config file."
+msgstr "已写入配置文件。"
+
+#: windows/host/src/general_ui.rs:1595
+msgid "That value is not valid for this key."
+msgstr "这个值对该项无效。"
+
+#: windows/host/src/general_ui.rs:1596
+msgid "This key is set somewhere the form does not write."
+msgstr "这一项在表单不写入的地方设置。"
+
+#: windows/host/src/general_ui.rs:1597
+msgid "The config file kept changing while it was being written. Try again."
+msgstr "写入时配置文件一直在变，请再试一次。"
+
+#: windows/host/src/general_ui.rs:1598
+#, rust-format
+msgid "Could not write the config file: {}"
+msgstr "无法写入配置文件：{}"
+
+#: windows/host/src/general_ui.rs:1686
+msgid "Restore Default"
+msgstr "恢复默认"
+
+#: windows/host/src/general_ui.rs:1833
+#, rust-format
+msgid "The settings could not be read: {}"
+msgstr "无法读取设置：{}"
+
+#: windows/host/src/general_ui.rs:1850
+#, rust-format
+msgid ""
+"The form writes to:\n"
+"{}"
+msgstr ""
+"表单写入的文件：\n"
+"{}"
+
+#: windows/host/src/general_ui.rs:1859
+msgid "The configuration loaded without errors."
+msgstr "配置加载时没有错误。"
+
+#: windows/host/src/general_ui.rs:1861
+#, rust-format
+msgid "{} error(s). The lines they name were ignored; fix them and reload."
+msgstr "{} 个错误。它们指出的那些行已被忽略；改好后重新加载。"
+
+#: windows/host/src/general_ui.rs:1876
+#, rust-format
+msgid ""
+"Before this run's first write the config file was copied to:\n"
+"{}"
+msgstr ""
+"本次运行第一次写入前，配置文件已备份到：\n"
+"{}"
+
+#: windows/host/src/general_ui.rs:1892
+msgid ""
+"A terminal that minds the agents running in it. \n"
+"Built on Ghostty."
+msgstr ""
+"一个会照看在里面干活的 agent 的终端。\n"
+"基于 Ghostty 构建。"
+
+#: windows/host/src/general_ui.rs:1901
+msgid "Version"
+msgstr "版本"
+
+#: windows/host/src/general_ui.rs:1902
+msgid "Build"
+msgstr "构建"
+
+#: windows/host/src/general_ui.rs:1903
+msgid "Commit"
+msgstr "提交"
+
+#: windows/host/src/general_ui.rs:1910
+msgid "MIT licensed. A fork of Ghostty."
+msgstr "MIT 许可。Ghostty 的一个分支。"
+
+#: windows/host/src/general_ui.rs:2136
+msgid "The shortcuts could not be read from the configuration."
+msgstr "无法从配置中读取快捷键。"
+
+#: windows/host/src/general_ui.rs:2138
+#, rust-format
+msgid ""
+"This page lists actions; {} in all. Some actions have no shortcut assigned."
+msgstr "这里列的是「动作」，共 {} 个；有的动作还没有分配快捷键。"
+
+#: windows/host/src/i18n.rs:360 windows/host/src/plugins_ui.rs:1572
 msgid "Keeps the conversations"
 msgstr "保管终端之间的对话"
 
@@ -1515,222 +2359,191 @@ msgstr ""
 "启动 Polter 的环境里已设 LANG={}，Polter 会优先用它，而不是这里的选择。要让这"
 "个选择生效，请先清掉 LANG，再重新启动 Polter。"
 
-#: windows/host/src/language.rs:291
-msgid "Language"
-msgstr "语言"
-
-#: windows/host/src/main.rs:2553
+#: windows/host/src/main.rs:2590
 #, rust-format
 msgid "{} lines in all."
 msgstr "共 {} 行。"
 
-#: windows/host/src/main.rs:6146
+#: windows/host/src/main.rs:6332
 msgid "No reason was recorded."
 msgstr "没有记录到原因。"
 
-#: windows/host/src/main.rs:6152
+#: windows/host/src/main.rs:6338
 msgid "Polter could not open its first terminal and will close."
 msgstr "Polter 无法打开第一个终端，即将关闭。"
 
-#: windows/host/src/main.rs:6154
+#: windows/host/src/main.rs:6340
 #, rust-format
 msgid "The full log is at {}"
 msgstr "完整日志在 {}"
 
-#: windows/host/src/menu.rs:231 windows/host/src/strip.rs:1758
+#: windows/host/src/menu.rs:263 windows/host/src/strip.rs:1848
 msgid "Reopen Closed Tab"
 msgstr "重开关闭的标签"
 
-#: windows/host/src/menu.rs:260
+#: windows/host/src/menu.rs:293 windows/host/src/projects_ui.rs:619
+#: windows/host/src/strip.rs:1373
 msgid "Save as Project…"
 msgstr "另存为项目…"
 
-#: windows/host/src/menu.rs:261
+#: windows/host/src/menu.rs:294 windows/host/src/strip.rs:1374
 msgid "Load Project…"
 msgstr "加载项目…"
 
-#: windows/host/src/menu.rs:268
+#: windows/host/src/menu.rs:295
+msgid "Manage Projects…"
+msgstr "管理项目…"
+
+#: windows/host/src/menu.rs:302
 msgid "Next"
 msgstr "下一个"
 
-#: windows/host/src/menu.rs:269
+#: windows/host/src/menu.rs:303
 msgid "Previous"
 msgstr "上一个"
 
-#: windows/host/src/menu.rs:271
+#: windows/host/src/menu.rs:305
 msgid "Hide the Find Bar"
 msgstr "隐藏查找条"
 
-#: windows/host/src/menu.rs:286
+#: windows/host/src/menu.rs:320
 msgid "Find"
 msgstr "查找"
 
-#: windows/host/src/menu.rs:291
+#: windows/host/src/menu.rs:325
 msgid "Zoom In"
 msgstr "放大"
 
-#: windows/host/src/menu.rs:292
+#: windows/host/src/menu.rs:326
 msgid "Zoom Out"
 msgstr "缩小"
 
-#: windows/host/src/menu.rs:311
+#: windows/host/src/menu.rs:345
 msgid "Quick Terminal"
 msgstr "快速终端"
 
-#: windows/host/src/menu.rs:392
+#: windows/host/src/menu.rs:436
 msgid "Plugins…"
 msgstr "插件…"
 
-#: windows/host/src/menu.rs windows/host/src/personas.rs
+#: windows/host/src/menu.rs:439 windows/host/src/personas.rs:538
 msgid "Role Library..."
 msgstr "角色库…"
 
-#: windows/host/src/settings_win.rs
-msgid "Polter Settings"
-msgstr "Polter 设置"
-
-#: windows/host/src/settings_win.rs
-msgid "Roles"
-msgstr "角色"
-
-#: windows/host/src/settings_win.rs
-msgid "Projects"
-msgstr "项目"
-
-#: windows/host/src/settings_win.rs
-msgid "Plugins"
-msgstr "插件"
-
-#: windows/host/src/settings_win.rs
-msgid "General"
-msgstr "通用"
-
-#: windows/host/src/settings_win.rs
-msgid "Search"
-msgstr "搜索"
-
-#: windows/host/src/roles_ui.rs
-msgid "No matching roles"
-msgstr "没有匹配的角色"
-
-#: windows/host/src/settings_win.rs
-msgid "{} (not in the search results)"
-msgstr "{}（不在搜索结果里）"
-
-#: windows/host/src/menu.rs:399
+#: windows/host/src/menu.rs:443
 msgid "Up"
 msgstr "上"
 
-#: windows/host/src/menu.rs:400
+#: windows/host/src/menu.rs:444
 msgid "Down"
 msgstr "下"
 
-#: windows/host/src/menu.rs:401
+#: windows/host/src/menu.rs:445
 msgid "Left"
 msgstr "左"
 
-#: windows/host/src/menu.rs:402
+#: windows/host/src/menu.rs:446
 msgid "Right"
 msgstr "右"
 
-#: windows/host/src/menu.rs:408
+#: windows/host/src/menu.rs:452
 msgid "Grow Up"
 msgstr "向上"
 
-#: windows/host/src/menu.rs:409
+#: windows/host/src/menu.rs:453
 msgid "Grow Down"
 msgstr "向下"
 
-#: windows/host/src/menu.rs:410
+#: windows/host/src/menu.rs:454
 msgid "Grow Left"
 msgstr "向左"
 
-#: windows/host/src/menu.rs:411
+#: windows/host/src/menu.rs:455
 msgid "Grow Right"
 msgstr "向右"
 
-#: windows/host/src/menu.rs:417
+#: windows/host/src/menu.rs:461
 msgid "Minimize"
 msgstr "最小化"
 
-#: windows/host/src/menu.rs:418
+#: windows/host/src/menu.rs:462
 msgid "Maximize"
 msgstr "最大化"
 
-#: windows/host/src/menu.rs:420
+#: windows/host/src/menu.rs:464
 msgid "Full Screen"
 msgstr "全屏"
 
-#: windows/host/src/menu.rs:422
+#: windows/host/src/menu.rs:466
 msgid "Split Zoom"
 msgstr "分屏缩放"
 
-#: windows/host/src/menu.rs:423
+#: windows/host/src/menu.rs:467
 msgid "Previous Split"
 msgstr "上一个分屏"
 
-#: windows/host/src/menu.rs:424
+#: windows/host/src/menu.rs:468
 msgid "Next Split"
 msgstr "下一个分屏"
 
-#: windows/host/src/menu.rs:425
+#: windows/host/src/menu.rs:469
 msgid "Select Split"
 msgstr "选择分屏"
 
-#: windows/host/src/menu.rs:426
+#: windows/host/src/menu.rs:470
 msgid "Resize Split"
 msgstr "调整分屏"
 
-#: windows/host/src/menu.rs:430
+#: windows/host/src/menu.rs:474
 msgid "Float on Top"
 msgstr "置顶"
 
-#: windows/host/src/menu.rs:437
+#: windows/host/src/menu.rs:481
 msgid "Polter Help"
 msgstr "Polter 帮助"
 
-#: windows/host/src/menu.rs:450
+#: windows/host/src/menu.rs:494
 msgid "Check for Updates…"
 msgstr "检查更新…"
 
-#: windows/host/src/menu.rs:456
+#: windows/host/src/menu.rs:500
 msgid "File"
 msgstr "文件"
 
-#: windows/host/src/menu.rs:457
+#: windows/host/src/menu.rs:501
 msgid "Edit"
 msgstr "编辑"
 
-#: windows/host/src/menu.rs:458
+#: windows/host/src/menu.rs:502
 msgid "View"
 msgstr "查看"
 
-#: windows/host/src/menu.rs:474
+#: windows/host/src/menu.rs:518
 msgid "Agents"
 msgstr "智能体"
 
-#: windows/host/src/menu.rs:475
+#: windows/host/src/menu.rs:519
 msgid "Project"
 msgstr "项目"
 
-#: windows/host/src/menu.rs:477
+#: windows/host/src/menu.rs:521
 msgid "Help"
 msgstr "帮助"
 
-#: windows/host/src/menu.rs:479
+#: windows/host/src/menu.rs:526
 msgid "Settings…"
 msgstr "设置…"
 
-#: windows/host/src/menu.rs:491
+#: windows/host/src/menu.rs:538
 msgid "Language…"
 msgstr "语言…"
 
 # Menu item (menu.rs ROOT). Deliberately a different msgid from "Keyboard Shortcuts" without the ellipsis, which is the page title and accessible name (settings_ui.rs, uia.rs). The ellipsis says the item opens a page; macOS MainMenu.xib Kb1-Nd-Ls1 has it too. Do not merge the two.
-#: windows/host/src/menu.rs:505
+#: windows/host/src/menu.rs:552
 msgid "Keyboard Shortcuts…"
 msgstr "快捷键…"
 
-#: windows/host/src/menu.rs:506 windows/host/src/settings_ui.rs:1067
+#: windows/host/src/menu.rs:553
 msgid "About Polter"
 msgstr "关于 Polter"
 
@@ -1760,7 +2573,7 @@ msgid "May need the agent to restart before it takes effect"
 msgstr "可能要 agent 重启之后才生效"
 
 # The reason the rows below are shown but not offered. Deliberately the same words as the menu item «Keep Agents Out of This Terminal», so the reader recognises the switch they themselves ticked; an earlier draft said «shielded», a word that appears nowhere the user can see.
-#: windows/host/src/personas.rs:454 windows/host/src/personas.rs:1227
+#: windows/host/src/personas.rs:454 windows/host/src/personas.rs:1238
 msgid "Agents are kept out of this terminal, so its role cannot be changed"
 msgstr "不让 agent 碰此终端，所以它的角色也不能改"
 
@@ -1773,7 +2586,7 @@ msgstr "这个终端里没有 agent 连着，角色存下了，但还没有人�
 msgid "Nothing has reported which roles exist yet"
 msgstr "还没有人报上来有哪些角色"
 
-#: windows/host/src/personas.rs:479 windows/host/src/personas.rs:1268
+#: windows/host/src/personas.rs:479 windows/host/src/personas.rs:1279
 msgid "No roles are defined"
 msgstr "还没有定义任何角色"
 
@@ -1781,177 +2594,595 @@ msgstr "还没有定义任何角色"
 msgid "No Role"
 msgstr "不设角色"
 
-#: windows/host/src/personas.rs:599 windows/host/src/personas.rs:1006
+#: windows/host/src/personas.rs:602 windows/host/src/personas.rs:1017
 msgid "Role"
 msgstr "角色"
 
 # The Rust placeholder is `{}`; the Swift side of the same sentence carries `%@`. The two spellings are deliberate -- the two languages cannot share one placeholder -- and unifying them breaks one side.
-#: windows/host/src/personas.rs:603
+#: windows/host/src/personas.rs:607
 #, rust-format
 msgid "Role: {}"
 msgstr "角色：{}"
 
-#: windows/host/src/project_picker.rs:71 windows/host/src/project_picker.rs:102
-msgid "No Saved Projects"
-msgstr "还没有保存过项目"
+#: windows/host/src/plugins_ui.rs:522
+msgid "Enabled"
+msgstr "已启用"
 
-#: windows/host/src/project_picker.rs:132
-msgid "The project could not be opened."
-msgstr "这个项目打不开"
+#: windows/host/src/plugins_ui.rs:523
+msgid "Test"
+msgstr "测试"
 
-#: windows/host/src/project_picker.rs:138
+#: windows/host/src/plugins_ui.rs:524 windows/host/src/roles_ui.rs:2258
+msgid "Revert"
+msgstr "还原"
+
+#: windows/host/src/plugins_ui.rs:526
+msgid "Show Log"
+msgstr "显示日志"
+
+#: windows/host/src/plugins_ui.rs:527
+msgid "Show Plugin Folder"
+msgstr "显示插件文件夹"
+
+#: windows/host/src/plugins_ui.rs:708
+msgid "Polter's core did not say whether this plugin is running."
+msgstr "Polter 核心没有报告这个插件是否在运行。"
+
+#: windows/host/src/plugins_ui.rs:1081
+#, rust-format
+msgid "Test: {}"
+msgstr "测试：{}"
+
+#: windows/host/src/plugins_ui.rs:1085
+msgid "The log is empty."
+msgstr "日志是空的。"
+
+#: windows/host/src/plugins_ui.rs:1087
+#, rust-format
+msgid "No log yet: {}"
+msgstr "还没有日志：{}"
+
+#: windows/host/src/plugins_ui.rs:1133
+msgid "Saved."
+msgstr "已保存。"
+
+#: windows/host/src/plugins_ui.rs:1140
+#, rust-format
+msgid "Could not save: {}"
+msgstr "保存失败：{}"
+
+#: windows/host/src/plugins_ui.rs:1153
+msgid "Save changes to this plugin?"
+msgstr "保存对这个插件的更改吗？"
+
+#: windows/host/src/plugins_ui.rs:1162
+msgid "Tested less than a minute ago. Try again in a minute."
+msgstr "距上次测试不到一分钟，请一分钟后再试。"
+
+#: windows/host/src/plugins_ui.rs:1163
+msgid "Polter's core does not know this plugin."
+msgstr "Polter 核心不认识这个插件。"
+
+#: windows/host/src/plugins_ui.rs:1164
+msgid "Polter is not ready yet."
+msgstr "Polter 还没准备好。"
+
+#: windows/host/src/plugins_ui.rs:1165
+#, rust-format
+msgid "Test failed: {}"
+msgstr "测试失败：{}"
+
+#: windows/host/src/plugins_ui.rs:1295
+#, rust-format
+msgid ""
+"No plugins found. The bundled plugin directory exists and holds none this "
+"build can read:\n"
+"{}"
+msgstr ""
+"没有找到插件。内置插件目录存在，但里面没有这个版本能读取的插件：\n"
+"{}"
+
+#: windows/host/src/plugins_ui.rs:1297
+#, rust-format
+msgid ""
+"The bundled plugin directory is missing:\n"
+"{}\n"
+"This build's resources are not installed next to it."
+msgstr ""
+"内置插件目录不存在：\n"
+"{}\n"
+"这个版本的资源没有安装在它旁边。"
+
+#: windows/host/src/plugins_ui.rs:1299
+msgid ""
+"The bundled plugin directory could not be located: POLTER_RESOURCES_DIR is "
+"not set."
+msgstr "找不到内置插件目录：没有设置 POLTER_RESOURCES_DIR。"
+
+#: windows/host/src/plugins_ui.rs:1317
+msgid "Restart Polter to apply"
+msgstr "重启 Polter 后生效"
+
+#: windows/host/src/plugins_ui.rs:1338
+msgid "Status"
+msgstr "状态"
+
+#: windows/host/src/plugins_ui.rs:1341
+#, rust-format
+msgid "Still empty and required: {}"
+msgstr "必填但仍为空：{}"
+
+#: windows/host/src/plugins_ui.rs:1361
+msgid "Settings"
+msgstr "设置"
+
+#: windows/host/src/plugins_ui.rs:1362
+msgid "Page"
+msgstr "页面"
+
+#: windows/host/src/plugins_ui.rs:1372
+msgid "This plugin has no settings."
+msgstr "这个插件没有可设置的项。"
+
+#: windows/host/src/plugins_ui.rs:1380
+msgid ""
+"This plugin brings its own page, and it cannot be shown: WebView2Loader.dll "
+"is not next to polter-host.exe, so this installation is incomplete."
+msgstr ""
+"这个插件带有自己的页面，但无法显示：polter-host.exe 旁边没有 "
+"WebView2Loader.dll，安装不完整。"
+
+#: windows/host/src/plugins_ui.rs:1383
+#, rust-format
+msgid ""
+"This plugin brings its own page, and it cannot be shown: the Microsoft Edge "
+"WebView2 Runtime is not installed on this computer. Get it from {} and "
+"reopen this window."
+msgstr ""
+"这个插件带有自己的页面，但无法显示：这台电脑没有安装 Microsoft Edge WebView2 "
+"Runtime。请从 {} 下载安装，然后重新打开此窗口。"
+
+#: windows/host/src/plugins_ui.rs:1387
+#, rust-format
+msgid ""
+"This plugin brings its own page, and it could not be opened (error 0x{})."
+msgstr "这个插件带有自己的页面，但打开失败（错误 0x{}）。"
+
+#: windows/host/src/plugins_ui.rs:1396
+msgid "Log"
+msgstr "日志"
+
+#: windows/host/src/plugins_ui.rs:1573
+msgid "Notifies you"
+msgstr "在终端安静下来时通知你"
+
+#: windows/host/src/plugins_ui.rs:1574
+msgid "Sets your agent up to reach Polter"
+msgstr "把你的 agent 配置成能连到 Polter"
+
+#: windows/host/src/plugins_ui.rs:1581
+msgid ""
+"Subscribes to nothing, so Polter has nothing to hand it and will not start "
+"it."
+msgstr "没有订阅任何事件，因此 Polter 没有东西可以交给它，也不会启动它。"
+
+#: windows/host/src/plugins_ui.rs:1596
+#, rust-format
+msgid "What it is handed: {}"
+msgstr "它会收到：{}"
+
+#: windows/host/src/project_picker.rs:95 windows/host/src/project_picker.rs:542
 msgid "Load Project"
 msgstr "加载项目"
 
-#: windows/host/src/project_picker.rs
+#: windows/host/src/project_picker.rs:96 windows/host/src/project_picker.rs:596
 msgid "Save as Project"
 msgstr "另存为项目"
 
-#: windows/host/src/project_picker.rs
-msgid "New Project Name"
-msgstr "新项目的名字"
-
-#: windows/host/src/project_picker.rs
+#: windows/host/src/project_picker.rs:258
+#, rust-format
 msgid "Saves this tab: {} pane(s)"
 msgstr "将存下当前标签页的 {} 个面板"
 
-#: windows/host/src/roles.rs:330
+#: windows/host/src/project_picker.rs:542 windows/host/src/projects_ui.rs:686
+msgid "The project could not be opened."
+msgstr "这个项目打不开"
+
+#: windows/host/src/project_picker.rs:596 windows/host/src/projects_ui.rs:913
+#: windows/host/src/projects_ui.rs:926
+msgid "The project could not be saved."
+msgstr "项目存不了："
+
+#: windows/host/src/project_picker.rs:906 windows/host/src/settings_win.rs:934
+#: windows/host/src/settings_win.rs:1351
+msgid "Search"
+msgstr "搜索"
+
+#: windows/host/src/project_picker.rs:907
+msgid "New Project Name"
+msgstr "新项目的名字"
+
+#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1184
+msgid "No Saved Projects"
+msgstr "还没有保存过项目"
+
+#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1186
+msgid "No matching projects"
+msgstr "没有匹配的项目"
+
+#: windows/host/src/projects_ui.rs:557 windows/host/src/roles_ui.rs:732
+#: windows/settings-shell/src/general.rs:77
+#: windows/control-room/src/rules.rs:85
+msgid "Polter"
+msgstr "Polter"
+
+#: windows/host/src/projects_ui.rs:620
+msgid "Close Without Saving"
+msgstr "不保存，直接关闭"
+
+#: windows/host/src/projects_ui.rs:627
+msgid "Save as a Project Before Closing?"
+msgstr "关闭前存成项目吗？"
+
+#: windows/host/src/projects_ui.rs:628
+msgid ""
+"The terminal still has a running process. Closing it without saving as a "
+"project will kill it."
+msgstr "终端里还有正在运行的进程。不存成项目就关闭，进程会被结束。"
+
+#: windows/host/src/projects_ui.rs:644
+#, rust-format
+msgid ""
+"\"{}\" already has {} pane(s), saved {}. The replaced version is kept as the "
+"previous version."
+msgstr "“{}”已经有 {} 个面板，保存于 {}。被替换的版本会留作上一版。"
+
+#: windows/host/src/projects_ui.rs:648
+msgid "Overwrite Project?"
+msgstr "覆盖这个项目？"
+
+#: windows/host/src/projects_ui.rs:648 windows/host/src/projects_ui.rs:903
+msgid "Overwrite"
+msgstr "覆盖"
+
+#: windows/host/src/projects_ui.rs:675 windows/host/src/projects_ui.rs:896
+#: windows/host/src/projects_ui.rs:935
+msgid "There is no terminal window to open the project in."
+msgstr "没有打开的终端窗口可以用。"
+
+#: windows/host/src/projects_ui.rs:683
+#, rust-format
+msgid "Opened “{}”."
+msgstr "已打开「{}」。"
+
+#: windows/host/src/projects_ui.rs:702 windows/host/src/projects_ui.rs:726
+msgid "The project could not be renamed."
+msgstr "项目改不了名："
+
+#: windows/host/src/projects_ui.rs:709
+msgid "A project needs a name."
+msgstr "项目要有名字。"
+
+#: windows/host/src/projects_ui.rs:711
+#, rust-format
+msgid "There is already a project called “{}”."
+msgstr "已经有一个叫「{}」的项目。"
+
+#: windows/host/src/projects_ui.rs:722
+#, rust-format
+msgid "Renamed to “{}”."
+msgstr "已改名为「{}」。"
+
+#: windows/host/src/projects_ui.rs:800
+#, rust-format
+msgid "{} copy"
+msgstr "{} 副本"
+
+#: windows/host/src/projects_ui.rs:810
+#, rust-format
+msgid "Copied as “{}”."
+msgstr "已复制为「{}」。"
+
+#: windows/host/src/projects_ui.rs:812
+msgid "The project could not be copied."
+msgstr "项目复制不了："
+
+#: windows/host/src/projects_ui.rs:819
+#, rust-format
+msgid "Delete “{}”?"
+msgstr "删除「{}」？"
+
+#: windows/host/src/projects_ui.rs:820
+msgid "You can undo this until the settings window closes."
+msgstr "关掉设置窗口之前都可以撤销。"
+
+#: windows/host/src/projects_ui.rs:821 windows/host/src/roles_ui.rs:3120
+msgid "Delete"
+msgstr "删除"
+
+#: windows/host/src/projects_ui.rs:846
+msgid "The project could not be deleted."
+msgstr "项目删不掉："
+
+#: windows/host/src/projects_ui.rs:858
+#, rust-format
+msgid "“{}” is back."
+msgstr "「{}」已恢复。"
+
+#: windows/host/src/projects_ui.rs:867
+msgid "The project could not be put back."
+msgstr "项目放不回去："
+
+#: windows/host/src/projects_ui.rs:875
+#, rust-format
+msgid "Restore the previous version of “{}”?"
+msgstr "把「{}」恢复到上一版？"
+
+#: windows/host/src/projects_ui.rs:876
+msgid "The current version becomes the previous one, so you can switch back."
+msgstr "当前版本会变成上一版，随时可以换回来。"
+
+#: windows/host/src/projects_ui.rs:877 windows/host/src/projects_ui.rs:1348
+msgid "Restore"
+msgstr "恢复"
+
+#: windows/host/src/projects_ui.rs:887
+msgid "Restored the previous version."
+msgstr "已恢复上一版。"
+
+#: windows/host/src/projects_ui.rs:889
+msgid "The previous version could not be restored."
+msgstr "上一版恢复不了："
+
+#: windows/host/src/projects_ui.rs:900
+#, rust-format
+msgid "Overwrite “{}” with the current tab?"
+msgstr "用当前标签页覆盖「{}」？"
+
+#: windows/host/src/projects_ui.rs:901
+#, rust-format
+msgid ""
+"“{}” replaces what the project holds. The version it replaces is kept and "
+"can be restored."
+msgstr "「{}」会替换项目里现有的内容。被替换的版本会保留，可以恢复。"
+
+#: windows/host/src/projects_ui.rs:924
+#, rust-format
+msgid "Saved the current tab as “{}”."
+msgstr "已把当前标签页存为「{}」。"
+
+#: windows/host/src/projects_ui.rs:1106
+msgid "1 pane"
+msgstr "1 个面板"
+
+#: windows/host/src/projects_ui.rs:1108
+#, rust-format
+msgid "{} panes"
+msgstr "{} 个面板"
+
+#: windows/host/src/projects_ui.rs:1157
+#, rust-format
+msgid "Deleted “{}”"
+msgstr "已删除「{}」"
+
+#: windows/host/src/projects_ui.rs:1193
+msgid "Select a project, or save the current tab as one with +."
+msgstr "选一个项目，或者用 + 把当前标签页存成项目。"
+
+#: windows/host/src/projects_ui.rs:1238
+msgid "Last saved"
+msgstr "上次保存"
+
+#: windows/host/src/projects_ui.rs:1239
+msgid "Panes"
+msgstr "面板"
+
+#: windows/host/src/projects_ui.rs:1240
+msgid "Directories"
+msgstr "目录"
+
+#: windows/host/src/projects_ui.rs:1240
+msgid "None recorded"
+msgstr "没有记录"
+
+#: windows/host/src/projects_ui.rs:1242 windows/host/src/settings_win.rs:136
+msgid "Roles"
+msgstr "角色"
+
+#: windows/host/src/projects_ui.rs:1242
+msgid "Not recorded in project files"
+msgstr "项目文件不记录角色"
+
+#: windows/host/src/projects_ui.rs:1243
+msgid "Scrollback"
+msgstr "回滚内容"
+
+#: windows/host/src/projects_ui.rs:1245
+msgid "Autosave"
+msgstr "自动保存"
+
+#: windows/host/src/projects_ui.rs:1245
+msgid "Not bound to an open window"
+msgstr "没有绑定到打开的窗口"
+
+#: windows/host/src/projects_ui.rs:1252
+msgid "Version History"
+msgstr "版本历史"
+
+#: windows/host/src/projects_ui.rs:1256
+msgid "Current version"
+msgstr "当前版本"
+
+#: windows/host/src/projects_ui.rs:1256
+msgid "Previous version"
+msgstr "上一版"
+
+#: windows/host/src/projects_ui.rs:1266
+msgid "No earlier version is kept yet."
+msgstr "还没有保留更早的版本。"
+
+#: windows/host/src/projects_ui.rs:1347
+msgid "Rename…"
+msgstr "重命名…"
+
+#: windows/host/src/projects_ui.rs:1352
+msgid "Overwrite with Current Tab"
+msgstr "用当前标签页覆盖"
+
+#: windows/host/src/projects_ui.rs:1353
+msgid "Open"
+msgstr "打开"
+
+#: windows/host/src/prompt.rs:366
+msgid ""
+"The project's file, its previous version and its scrollback move with it."
+msgstr "项目文件、上一版和 scrollback 一起改名。"
+
+#: windows/host/src/prompt.rs:367
+msgid "Rename Project"
+msgstr "重命名项目"
+
+#: windows/host/src/prompt.rs:475
+msgid "Rename"
+msgstr "重命名"
+
+#: windows/host/src/roles.rs:34 windows/host/src/roles.rs:1163
 msgid "Polter Supervisor"
 msgstr "Polter 总管"
 
-#: windows/host/src/roles.rs:340
+#: windows/host/src/roles.rs:355
 msgid ""
 "Makes the terminal it starts in this window's supervisor: splits the work, "
 "hands it out and checks it."
 msgstr "把启动它的终端设为本窗口的总管：拆分工作、派活、验收。"
 
-#: windows/host/src/roles.rs:606
+#: windows/host/src/roles.rs:621
 msgid "Yours"
 msgstr "你自己的"
 
-#: windows/host/src/roles.rs:607
+#: windows/host/src/roles.rs:622
 msgid "This Project"
 msgstr "本项目"
 
-#: windows/host/src/roles.rs:608
+#: windows/host/src/roles.rs:623
 msgid "This Project, Only on This Machine"
 msgstr "本项目（仅本机）"
 
-#: windows/host/src/roles.rs:669
+#: windows/host/src/roles.rs:684
 msgid ""
 "This role can't be saved: it needs a name, and a key of lowercase letters, "
 "digits and dashes."
 msgstr "这个角色存不了：它需要一个名字，以及只含小写字母、数字和短横线的 key。"
 
-#: windows/host/src/roles.rs:670
+#: windows/host/src/roles.rs:685
 msgid ""
 "The role library file has an error in it, so saving would overwrite it. Fix "
 "the file first."
 msgstr "角色库文件里有错误，现在保存会把它覆盖掉。请先修好这个文件。"
 
-#: windows/host/src/roles.rs:671
+#: windows/host/src/roles.rs:686
 msgid "That role no longer exists."
 msgstr "这个角色已经不存在了。"
 
-#: windows/host/src/roles.rs:672
+#: windows/host/src/roles.rs:687
 msgid "The role was written but didn't read back. This is a bug in Polter."
 msgstr "角色已写入，但读回失败。这是 Polter 的缺陷。"
 
-#: windows/host/src/roles.rs:673
+#: windows/host/src/roles.rs:688
 msgid "The role library file couldn't be written."
 msgstr "角色库文件写不进去。"
 
-#: windows/host/src/roles.rs:674
+#: windows/host/src/roles.rs:689
 msgid "This role isn't set up for that agent CLI."
 msgstr "这个角色没有为该 agent CLI 配置。"
 
-#: windows/host/src/roles.rs:675
+#: windows/host/src/roles.rs:690
 msgid ""
 "This role isn't set up for any agent CLI yet. Pick one in the role library."
 msgstr "这个角色还没选任何 agent CLI，请在角色库里选一个。"
 
-#: windows/host/src/roles.rs:676
+#: windows/host/src/roles.rs:691
 msgid "This role is set up for more than one agent CLI. Choose one."
 msgstr "这个角色配了不止一个 agent CLI，请选一个。"
 
-#: windows/host/src/roles.rs:677
+#: windows/host/src/roles.rs:692
 msgid ""
 "A tab was opened but didn't appear in time, so nothing was started in it."
 msgstr "标签页已打开，但没有及时出现，所以里面什么都没启动。"
 
-#: windows/host/src/roles.rs:678
+#: windows/host/src/roles.rs:693
 msgid "Polter isn't ready yet."
 msgstr "Polter 还没准备好。"
 
-#: windows/host/src/roles.rs:683 windows/host/src/roles_ui.rs:3189
+#: windows/host/src/roles.rs:698 windows/host/src/roles_ui.rs:3493
 msgid ""
 "This role comes with Polter and can't be changed or deleted. Duplicate it to "
 "make one of your own."
 msgstr "这是 Polter 自带的角色，不能修改或删除。复制一份就能改成你自己的。"
 
-#: windows/host/src/roles.rs:684
+#: windows/host/src/roles.rs:699
 msgid ""
 "Only you can make a role's terminal a supervisor, let it answer permission "
 "prompts, or keep agents out of it."
 msgstr ""
 "只有你能把角色的终端设为总管、允许它回答权限提示，或把 agent 挡在它外面。"
 
-#: windows/host/src/roles_ui.rs:158 windows/host/src/roles_ui.rs:2033
+#: windows/host/src/roles_ui.rs:162
 msgid "New Role"
 msgstr "新角色"
 
-#: windows/host/src/roles_ui.rs:180
+#: windows/host/src/roles_ui.rs:184
 #, rust-format
 msgid "{} Copy"
 msgstr "{} 副本"
 
-#: windows/host/src/roles_ui.rs:236
+#: windows/host/src/roles_ui.rs:240
 msgid "Another role already uses this key."
 msgstr "已经有别的角色用了这个 key。"
 
-#: windows/host/src/roles_ui.rs:359 windows/host/src/roles_ui.rs:4238
+#: windows/host/src/roles_ui.rs:363 windows/host/src/roles_ui.rs:4564
 msgid "Unsaved changes"
 msgstr "有未保存的修改"
 
-#: windows/host/src/roles_ui.rs:362 windows/host/src/roles_ui.rs:4235
+#: windows/host/src/roles_ui.rs:366 windows/host/src/roles_ui.rs:4561
 msgid "Open a terminal window first; the new tab goes beside it."
 msgstr "请先打开一个终端窗口，新标签页会开在它旁边。"
 
-#: windows/host/src/roles_ui.rs:387
+#: windows/host/src/roles_ui.rs:391
 msgid "Basics"
 msgstr "基本信息"
 
-#: windows/host/src/roles_ui.rs:389
+#: windows/host/src/roles_ui.rs:393
 #, rust-format
 msgid "Skills {}"
 msgstr "Skills {}"
 
-#: windows/host/src/roles_ui.rs:390 windows/host/src/roles_ui.rs:857
+#: windows/host/src/roles_ui.rs:394 windows/host/src/roles_ui.rs:875
 msgid "Skills"
 msgstr "技能"
 
-#: windows/host/src/roles_ui.rs:393
+#: windows/host/src/roles_ui.rs:397
 #, rust-format
 msgid "MCP {}"
 msgstr "MCP {}"
 
-#: windows/host/src/roles_ui.rs:394
+#: windows/host/src/roles_ui.rs:398
 msgid "MCP"
 msgstr "MCP"
 
-#: windows/host/src/roles_ui.rs:421
+#: windows/host/src/roles_ui.rs:425
 msgid "No agent CLI"
 msgstr "未选 agent CLI"
 
-#: windows/host/src/roles_ui.rs:452
+#: windows/host/src/roles_ui.rs:456
 msgid "Reading the role library…"
 msgstr "正在读取角色库…"
 
-#: windows/host/src/roles_ui.rs:455
+#: windows/host/src/roles_ui.rs:459
 msgid "No roles yet"
 msgstr "还没有角色"
 
-#: windows/host/src/roles_ui.rs:456
+#: windows/host/src/roles_ui.rs:460
 msgid ""
 "A role is a saved way to start an agent CLI: which skills and MCP servers it "
 "keeps, and what it's told."
@@ -1959,39 +3190,39 @@ msgstr ""
 "角色是一套保存好的 agent CLI 启动方式：保留哪些 skill 和 MCP 服务器、启动时告"
 "诉它什么。"
 
-#: windows/host/src/roles_ui.rs:667
+#: windows/host/src/roles_ui.rs:682
 msgid "Select a role, or make a new one."
 msgstr "选一个角色，或者新建一个。"
 
-#: windows/host/src/roles_ui.rs:682
+#: windows/host/src/roles_ui.rs:697
 msgid "Name"
 msgstr "名称"
 
-#: windows/host/src/roles_ui.rs:684 windows/host/src/roles_ui.rs:694
+#: windows/host/src/roles_ui.rs:699 windows/host/src/roles_ui.rs:709
 msgid "Key"
 msgstr "Key"
 
-#: windows/host/src/roles_ui.rs:687
+#: windows/host/src/roles_ui.rs:702
 msgid "Lowercase letters, digits and dashes. It can't be changed after saving."
 msgstr "只能用小写字母、数字和短横线，保存后不能再改。"
 
-#: windows/host/src/roles_ui.rs:689
+#: windows/host/src/roles_ui.rs:704
 msgid "Only lowercase letters, digits and dashes, at most 32."
 msgstr "只能用小写字母、数字和短横线，最多 32 个字符。"
 
-#: windows/host/src/roles_ui.rs:697
+#: windows/host/src/roles_ui.rs:712
 msgid "Description"
 msgstr "说明"
 
-#: windows/host/src/roles_ui.rs:698
+#: windows/host/src/roles_ui.rs:713
 msgid "What this role is for, for whoever picks it"
 msgstr "这个角色是干什么的，写给挑选它的人看"
 
-#: windows/host/src/roles_ui.rs:701
+#: windows/host/src/roles_ui.rs:716
 msgid "Instructions"
 msgstr "指令"
 
-#: windows/host/src/roles_ui.rs:712
+#: windows/host/src/roles_ui.rs:727
 msgid ""
 "Added to the agent's system prompt when it starts. Leave it empty to add "
 "nothing. Drag the bottom edge to make the box taller."
@@ -1999,23 +3230,19 @@ msgstr ""
 "启动时附加到 agent 的系统提示词后面。留空就什么都不加。拖动下边缘可以把输入框"
 "拉高。"
 
-#: windows/host/src/roles_ui.rs:717
-msgid "Polter"
-msgstr "Polter"
-
-#: windows/host/src/roles_ui.rs:718
+#: windows/host/src/roles_ui.rs:733
 msgid "Make this terminal a supervisor"
 msgstr "将此终端设为总管"
 
-#: windows/host/src/roles_ui.rs:719
+#: windows/host/src/roles_ui.rs:734
 msgid "Let the supervisor answer this terminal's permission prompts"
 msgstr "允许总管替你回答此终端的权限问题"
 
-#: windows/host/src/roles_ui.rs:720
+#: windows/host/src/roles_ui.rs:735
 msgid "Shield it: no tool can reach it, a supervisor's included"
 msgstr "开启护盾：任何工具都碰不到它，总管也不行"
 
-#: windows/host/src/roles_ui.rs:722
+#: windows/host/src/roles_ui.rs:737
 msgid ""
 "These three give the terminal something, so only you can set them, here. A "
 "supervisor that edits roles can't change them."
@@ -2023,11 +3250,11 @@ msgstr ""
 "这三项会给终端授予权限，所以只有你能在这里设置。能编辑角色的总管也改不了它"
 "们。"
 
-#: windows/host/src/roles_ui.rs:725
+#: windows/host/src/roles_ui.rs:740
 msgid "Hand it to the supervisor to watch"
 msgstr "交给总管监管"
 
-#: windows/host/src/roles_ui.rs:729
+#: windows/host/src/roles_ui.rs:744
 msgid ""
 "The supervisor that started it, or the only one there is. With several and "
 "you starting it, nobody."
@@ -2035,27 +3262,27 @@ msgstr ""
 "交给启动它的那个总管；如果是你启动的，就交给唯一的那个总管。有多个总管时不交"
 "给任何人。"
 
-#: windows/host/src/roles_ui.rs:730
+#: windows/host/src/roles_ui.rs:745
 msgid "Report it as still after"
 msgstr "静止多久算卡住"
 
-#: windows/host/src/roles_ui.rs:738
+#: windows/host/src/roles_ui.rs:753 windows/control-room/src/scene.rs:31
 msgid "min"
 msgstr "分钟"
 
-#: windows/host/src/roles_ui.rs:743
+#: windows/host/src/roles_ui.rs:759
 msgid "Open in"
 msgstr "打开位置"
 
-#: windows/host/src/roles_ui.rs:747
+#: windows/host/src/roles_ui.rs:763
 msgid "Here when at a prompt, else a new tab"
 msgstr "在提示符处就地打开，否则开新标签页"
 
-#: windows/host/src/roles_ui.rs:747
+#: windows/host/src/roles_ui.rs:763
 msgid "Always a new tab"
 msgstr "始终在新标签页中打开"
 
-#: windows/host/src/roles_ui.rs:758
+#: windows/host/src/roles_ui.rs:773
 msgid ""
 "Applied once, when the role starts an agent CLI. Putting the role on a "
 "terminal that's already running changes its tools, not these."
@@ -2063,75 +3290,75 @@ msgstr ""
 "只在用这个角色启动 agent CLI 时生效一次。给已经在运行的终端换上这个角色，只会"
 "切换它的工具，不会改这些设置。"
 
-#: windows/host/src/roles_ui.rs:762
+#: windows/host/src/roles_ui.rs:777
 msgid "Agent CLIs"
 msgstr "Agent CLI"
 
-#: windows/host/src/roles_ui.rs:764 windows/host/src/roles_ui.rs:843
+#: windows/host/src/roles_ui.rs:779 windows/host/src/roles_ui.rs:861
 msgid "Reading what's installed…"
 msgstr "正在读取已安装的内容…"
 
-#: windows/host/src/roles_ui.rs:766
+#: windows/host/src/roles_ui.rs:781
 msgid "No plugin that manages an agent CLI is installed and switched on."
 msgstr "没有安装并启用任何管理 agent CLI 的插件。"
 
-#: windows/host/src/roles_ui.rs:771
+#: windows/host/src/roles_ui.rs:786
 #, rust-format
 msgid "{} isn't on this machine's PATH"
 msgstr "本机 PATH 里找不到 {}"
 
-#: windows/host/src/roles_ui.rs:774 windows/host/src/roles_ui.rs:850
+#: windows/host/src/roles_ui.rs:789 windows/host/src/roles_ui.rs:868
 msgid "Its plugin couldn't list what's installed"
 msgstr "它的插件没能列出已安装的内容"
 
-#: windows/host/src/roles_ui.rs:783 windows/host/src/roles_ui.rs:843
+#: windows/host/src/roles_ui.rs:799 windows/host/src/roles_ui.rs:861
 msgid "No plugin manages this CLI any more"
 msgstr "已经没有插件管理这个 CLI 了"
 
-#: windows/host/src/roles_ui.rs:793
+#: windows/host/src/roles_ui.rs:811
 #, rust-format
 msgid "Starting {}"
 msgstr "启动 {}"
 
-#: windows/host/src/roles_ui.rs:795
+#: windows/host/src/roles_ui.rs:813
 msgid "Model"
 msgstr "模型"
 
-#: windows/host/src/roles_ui.rs:796
+#: windows/host/src/roles_ui.rs:814
 msgid "The CLI's default"
 msgstr "CLI 默认"
 
-#: windows/host/src/roles_ui.rs:800
+#: windows/host/src/roles_ui.rs:818
 msgid "Extra Arguments"
 msgstr "额外参数"
 
-#: windows/host/src/roles_ui.rs:804
+#: windows/host/src/roles_ui.rs:822
 msgid "Added to the command line as typed. Quote anything with a space in it."
 msgstr "按原样追加到命令行。含空格的参数请加引号。"
 
-#: windows/host/src/roles_ui.rs:833
+#: windows/host/src/roles_ui.rs:851
 msgid ""
 "Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI."
 msgstr ""
 "先在「基本信息」里选一个 agent CLI：skill 和 MCP 服务器是属于某个 CLI 的。"
 
-#: windows/host/src/roles_ui.rs:834
+#: windows/host/src/roles_ui.rs:852
 msgid "Go to Basics"
 msgstr "去基本信息"
 
-#: windows/host/src/roles_ui.rs:856
+#: windows/host/src/roles_ui.rs:874
 msgid "Filter skills"
 msgstr "筛选 skill"
 
-#: windows/host/src/roles_ui.rs:858
+#: windows/host/src/roles_ui.rs:876
 msgid "Keep skills installed later"
 msgstr "以后新装的 skill 默认保留"
 
-#: windows/host/src/roles_ui.rs:859
+#: windows/host/src/roles_ui.rs:877
 msgid "No skills are installed for this CLI."
 msgstr "这个 CLI 没有安装任何 skill。"
 
-#: windows/host/src/roles_ui.rs:860
+#: windows/host/src/roles_ui.rs:878
 msgid ""
 "This list is what the CLI has on this machine. A project's own skills aren't "
 "in it; at launch they follow the switch above."
@@ -2139,23 +3366,23 @@ msgstr ""
 "这里列的是这个 CLI 在本机装的东西，项目自带的 skill 不在其中；启动时它们按上"
 "面那个开关处理。"
 
-#: windows/host/src/roles_ui.rs:863
+#: windows/host/src/roles_ui.rs:881
 msgid "Filter MCP servers"
 msgstr "筛选 MCP 服务器"
 
-#: windows/host/src/roles_ui.rs:864
+#: windows/host/src/roles_ui.rs:882
 msgid "MCP Servers"
 msgstr "MCP 服务器"
 
-#: windows/host/src/roles_ui.rs:865
+#: windows/host/src/roles_ui.rs:883
 msgid "Keep MCP servers added later"
 msgstr "以后新加的 MCP 服务器默认保留"
 
-#: windows/host/src/roles_ui.rs:866
+#: windows/host/src/roles_ui.rs:884
 msgid "No MCP servers are configured for this CLI."
 msgstr "这个 CLI 没有配置任何 MCP 服务器。"
 
-#: windows/host/src/roles_ui.rs:867
+#: windows/host/src/roles_ui.rs:885
 msgid ""
 "This list is what the CLI has on this machine. A project's own MCP servers "
 "aren't in it; at launch they follow the switch above."
@@ -2163,162 +3390,131 @@ msgstr ""
 "这里列的是这个 CLI 在本机装的东西，项目自带的 MCP 服务器不在其中；启动时它们"
 "按上面那个开关处理。"
 
-#: windows/host/src/roles_ui.rs:893
+#: windows/host/src/roles_ui.rs:911
 #, rust-format
 msgid "{} of {} kept"
 msgstr "保留 {} / {}"
 
-#: windows/host/src/roles_ui.rs:895
+#: windows/host/src/roles_ui.rs:913
 msgid "Keep All"
 msgstr "全部保留"
 
-#: windows/host/src/roles_ui.rs:896
+#: windows/host/src/roles_ui.rs:914
 msgid "Turn All Off"
 msgstr "全部关闭"
 
-#: windows/host/src/roles_ui.rs:903
+#: windows/host/src/roles_ui.rs:921
 msgid ""
 "What happens to anything that isn't listed here yet, such as something "
 "installed tomorrow or a project's own."
 msgstr "决定这里还没列出的东西怎么处理，比如明天新装的、或某个项目自带的。"
 
-#: windows/host/src/roles_ui.rs:917
+#: windows/host/src/roles_ui.rs:935
 msgid "Nothing matches the filter."
 msgstr "没有符合筛选条件的项。"
 
-#: windows/host/src/roles_ui.rs:932
+#: windows/host/src/roles_ui.rs:950
 msgid "Keep or turn off everything in this group"
 msgstr "整组保留或关闭"
 
-#: windows/host/src/roles_ui.rs:960
+#: windows/host/src/roles_ui.rs:978
 msgid "No description"
 msgstr "没有说明"
 
-#: windows/host/src/roles_ui.rs:976
+#: windows/host/src/roles_ui.rs:994
 msgid "Show Less"
 msgstr "收起"
 
-#: windows/host/src/roles_ui.rs:976
+#: windows/host/src/roles_ui.rs:994
 msgid "Show More"
 msgstr "展开"
 
-#: windows/host/src/roles_ui.rs:998
+#: windows/host/src/roles_ui.rs:1016
 #, rust-format
 msgid "Also in this role but not installed here: {}"
 msgstr "角色里还提到了本机没装的：{}"
 
-#: windows/host/src/roles_ui.rs:2034 windows/host/src/roles_ui.rs:2038
+#: windows/host/src/roles_ui.rs:2257
 msgid "Duplicate"
 msgstr "复制"
 
-#: windows/host/src/roles_ui.rs:2035 windows/host/src/roles_ui.rs:2822
-msgid "Delete"
-msgstr "删除"
-
-#: windows/host/src/roles_ui.rs:2039 windows/host/src/roles_ui.rs:2148
+#: windows/host/src/roles_ui.rs:2258 windows/host/src/roles_ui.rs:2357
 msgid "Launch"
 msgstr "启动"
 
-#: windows/host/src/roles_ui.rs:2039
-msgid "Revert"
-msgstr "还原"
-
-#: windows/host/src/roles_ui.rs:2039 windows/host/src/roles_ui.rs:2711
-#: windows/host/src/settings_ui.rs:1014
-msgid "Save"
-msgstr "保存"
-
-#: windows/host/src/roles_ui.rs:2241
+#: windows/host/src/roles_ui.rs:2452
 msgid ""
 "The role library file has an error in it. Roles can't be changed here until "
 "it's fixed."
 msgstr "角色库文件里有错误。修好之前，这里不能修改角色。"
 
-#: windows/host/src/roles_ui.rs:2709
+#: windows/host/src/roles_ui.rs:2887 windows/host/src/settings_win.rs:808
+msgid "Polter Settings"
+msgstr "Polter 设置"
+
+#: windows/host/src/roles_ui.rs:2949 windows/host/src/roles_ui.rs:2966
 msgid "Save changes to this role?"
 msgstr "保存对这个角色的修改吗？"
 
-#: windows/host/src/roles_ui.rs:2710
+#: windows/host/src/roles_ui.rs:2950 windows/host/src/roles_ui.rs:2967
+#: windows/host/src/roles_ui.rs:2982
 msgid "Your changes will be lost if you don't save them."
 msgstr "不保存的话，修改会丢失。"
 
-#: windows/host/src/roles_ui.rs:2712
+#: windows/host/src/roles_ui.rs:2952 windows/host/src/roles_ui.rs:2969
+#: windows/host/src/roles_ui.rs:2982
 msgid "Don't Save"
 msgstr "不保存"
 
-#: windows/host/src/roles_ui.rs:2820
+#: windows/host/src/roles_ui.rs:3118
 #, rust-format
 msgid "Delete the role \"{}\"?"
 msgstr "删除角色「{}」？"
 
-#: windows/host/src/roles_ui.rs:2821
+#: windows/host/src/roles_ui.rs:3119
 msgid ""
 "Terminals wearing it are taken out of it. Agents already running keep "
 "running."
 msgstr "正在用它的终端会被取消这个角色；已经在跑的 agent 会继续跑。"
 
-#: windows/host/src/roles_ui.rs:2879
+#: windows/host/src/roles_ui.rs:3177
 msgid "The role couldn't be launched"
 msgstr "无法用这个角色启动"
 
-#: windows/host/src/settings_ui.rs:169
-msgid "Notifies you"
-msgstr "在终端安静下来时通知你"
+#: windows/host/src/roles_ui.rs:3473
+msgid "No matching roles"
+msgstr "没有匹配的角色"
 
-#: windows/host/src/settings_ui.rs:170
-msgid "Sets your agent up to reach Polter"
-msgstr "把你的 agent 配置成能连到 Polter"
+#: windows/host/src/settings_win.rs:137
+msgid "Projects"
+msgstr "项目"
 
-#: windows/host/src/settings_ui.rs:181
-msgid ""
-"Subscribes to nothing, so Polter has nothing to hand it and will not start "
-"it."
-msgstr "没有订阅任何事件，因此 Polter 没有东西可以交给它，也不会启动它。"
+#: windows/host/src/settings_win.rs:138
+msgid "Plugins"
+msgstr "插件"
 
-#: windows/host/src/settings_ui.rs:201
+#: windows/host/src/settings_win.rs:139
+msgid "General"
+msgstr "通用"
+
+#: windows/host/src/settings_win.rs:1360 windows/host/src/settings_win.rs:1363
 #, rust-format
-msgid "What it is handed: {}"
-msgstr "它会收到：{}"
+msgid "{} (not in the search results)"
+msgstr "{}（不在搜索结果里）"
 
-#: windows/host/src/settings_ui.rs:1008
-msgid "Enabled"
-msgstr "已启用"
-
-#: windows/host/src/settings_ui.rs:1066
-msgid "Open config file…"
-msgstr "打开配置文件…"
-
-#: windows/host/src/settings_ui.rs:1135
-msgid "MIT licensed. A fork of Ghostty."
-msgstr "MIT 许可。Ghostty 的一个分支。"
-
-# Page title and accessible name (settings_ui.rs, uia.rs). Deliberately a different msgid from the menu item "Keyboard Shortcuts…" (U+2026). Do not merge the two.
-#: windows/host/src/settings_ui.rs:2129 windows/host/src/uia.rs:2038
-msgid "Keyboard Shortcuts"
-msgstr "快捷键"
-
-#. TRANSLATORS: `{}` is how many actions the list holds. It is
-#. not at the start of the sentence on purpose, so a language that
-#. needs the number elsewhere can move it.
-#: windows/host/src/settings_ui.rs:2144
-#, rust-format
-msgid ""
-"This page lists actions; {} in all. Some actions have no shortcut assigned."
-msgstr "这里列的是「动作」，共 {} 个；有的动作还没有分配快捷键。"
-
-#: windows/host/src/strip.rs:1294
+#: windows/host/src/strip.rs:1318
 msgid "None"
 msgstr "无颜色"
 
-#: windows/host/src/strip.rs:1297
+#: windows/host/src/strip.rs:1321
 msgid "Pink"
 msgstr "粉"
 
-#: windows/host/src/strip.rs:1302
+#: windows/host/src/strip.rs:1326
 msgid "Teal"
 msgstr "青"
 
-#: windows/host/src/strip.rs:1303
+#: windows/host/src/strip.rs:1327
 msgid "Graphite"
 msgstr "石墨"
 
@@ -2327,1113 +3523,132 @@ msgstr "石墨"
 #. in place on the tab strip. "Rename Tab…" with U+2026 is a
 #. DIFFERENT action (prompt_tab_title) that opens the title overlay.
 #. The two entries look almost identical; do not merge them.
-#: windows/host/src/strip.rs:1337
+#: windows/host/src/strip.rs:1366
 msgid "Rename Tab..."
 msgstr "重命名标签…"
 
-#: windows/host/src/strip.rs:1519
+#: windows/host/src/strip.rs:1592
 msgid "Tab Color"
 msgstr "标签颜色"
 
-#: windows/host/src/uia.rs:1168
+#: windows/host/src/uia.rs:1171
 msgid "Menu"
 msgstr "菜单"
 
-#: windows/host/src/plugins_ui.rs
-msgid "Test"
-msgstr "测试"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Show Log"
-msgstr "显示日志"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Show Plugin Folder"
-msgstr "显示插件文件夹"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Polter's core did not say whether this plugin is running."
-msgstr "Polter 核心没有报告这个插件是否在运行。"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Test: {}"
-msgstr "测试：{}"
-
-#: windows/host/src/plugins_ui.rs
-msgid "The log is empty."
-msgstr "日志是空的。"
-
-#: windows/host/src/plugins_ui.rs
-msgid "No log yet: {}"
-msgstr "还没有日志：{}"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Saved."
-msgstr "已保存。"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Could not save: {}"
-msgstr "保存失败：{}"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Save changes to this plugin?"
-msgstr "保存对这个插件的更改吗？"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Tested less than a minute ago. Try again in a minute."
-msgstr "距上次测试不到一分钟，请一分钟后再试。"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Polter's core does not know this plugin."
-msgstr "Polter 核心不认识这个插件。"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Polter is not ready yet."
-msgstr "Polter 还没准备好。"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Test failed: {}"
-msgstr "测试失败：{}"
-
-#: windows/host/src/plugins_ui.rs
-msgid "No plugins found. The bundled plugin directory exists and holds none this build can read:\n{}"
-msgstr "没有找到插件。内置插件目录存在，但里面没有这个版本能读取的插件：\n{}"
-
-#: windows/host/src/plugins_ui.rs
-msgid "The bundled plugin directory is missing:\n{}\nThis build's resources are not installed next to it."
-msgstr "内置插件目录不存在：\n{}\n这个版本的资源没有安装在它旁边。"
-
-#: windows/host/src/plugins_ui.rs
-msgid "The bundled plugin directory could not be located: POLTER_RESOURCES_DIR is not set."
-msgstr "找不到内置插件目录：没有设置 POLTER_RESOURCES_DIR。"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Restart Polter to apply"
-msgstr "重启 Polter 后生效"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Status"
-msgstr "状态"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Still empty and required: {}"
-msgstr "必填但仍为空：{}"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Settings"
-msgstr "设置"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Page"
-msgstr "页面"
-
-#: windows/host/src/plugins_ui.rs
-msgid "This plugin has no settings."
-msgstr "这个插件没有可设置的项。"
-
-#: windows/host/src/plugins_ui.rs
-msgid "This plugin brings its own page, and it cannot be shown: WebView2Loader.dll is not next to polter-host.exe, so this installation is incomplete."
-msgstr "这个插件带有自己的页面，但无法显示：polter-host.exe 旁边没有 WebView2Loader.dll，安装不完整。"
-
-#: windows/host/src/plugins_ui.rs
-msgid "This plugin brings its own page, and it cannot be shown: the Microsoft Edge WebView2 Runtime is not installed on this computer. Get it from {} and reopen this window."
-msgstr "这个插件带有自己的页面，但无法显示：这台电脑没有安装 Microsoft Edge WebView2 Runtime。请从 {} 下载安装，然后重新打开此窗口。"
-
-#: windows/host/src/plugins_ui.rs
-msgid "This plugin brings its own page, and it could not be opened (error 0x{})."
-msgstr "这个插件带有自己的页面，但打开失败（错误 0x{}）。"
-
-#: windows/host/src/plugins_ui.rs
-msgid "Log"
-msgstr "日志"
-
-#: windows/settings-shell/src/plugins.rs
-msgid "Restart to apply"
-msgstr "改了未重启"
-
-#: windows/settings-shell/src/plugins.rs
-msgid "Off"
-msgstr "已关"
-
-#: windows/settings-shell/src/plugins.rs
-msgid "Needs setup"
-msgstr "缺配置"
-
-#: windows/settings-shell/src/plugins.rs
-msgid "Error"
-msgstr "出错"
-
-#: windows/settings-shell/src/plugins.rs
-msgid "On"
-msgstr "已开"
-
-#: windows/host/src/projects_ui.rs
-msgid "There is no terminal window to open the project in."
-msgstr "没有打开的终端窗口可以用。"
-
-#: windows/host/src/projects_ui.rs
-msgid "Opened “{}”."
-msgstr "已打开「{}」。"
-
-#: windows/host/src/projects_ui.rs
-msgid "A project needs a name."
-msgstr "项目要有名字。"
-
-#: windows/host/src/projects_ui.rs
-msgid "There is already a project called “{}”."
-msgstr "已经有一个叫「{}」的项目。"
-
-#: windows/host/src/projects_ui.rs
-msgid "Renamed to “{}”."
-msgstr "已改名为「{}」。"
-
-#: windows/host/src/projects_ui.rs
-msgid "The project could not be renamed."
-msgstr "项目改不了名："
-
-#: windows/host/src/projects_ui.rs
-msgid "{} copy"
-msgstr "{} 副本"
-
-#: windows/host/src/projects_ui.rs
-msgid "Copied as “{}”."
-msgstr "已复制为「{}」。"
-
-#: windows/host/src/projects_ui.rs
-msgid "The project could not be copied."
-msgstr "项目复制不了："
-
-#: windows/host/src/projects_ui.rs
-msgid "Delete “{}”?"
-msgstr "删除「{}」？"
-
-#: windows/host/src/projects_ui.rs
-msgid "You can undo this until the settings window closes."
-msgstr "关掉设置窗口之前都可以撤销。"
-
-#: windows/host/src/projects_ui.rs
-msgid "The project could not be deleted."
-msgstr "项目删不掉："
-
-#: windows/host/src/projects_ui.rs
-msgid "“{}” is back."
-msgstr "「{}」已恢复。"
-
-#: windows/host/src/projects_ui.rs
-msgid "The project could not be put back."
-msgstr "项目放不回去："
-
-#: windows/host/src/projects_ui.rs
-msgid "Restore the previous version of “{}”?"
-msgstr "把「{}」恢复到上一版？"
-
-#: windows/host/src/projects_ui.rs
-msgid "The current version becomes the previous one, so you can switch back."
-msgstr "当前版本会变成上一版，随时可以换回来。"
-
-#: windows/host/src/projects_ui.rs
-msgid "Restore"
-msgstr "恢复"
-
-#: windows/host/src/projects_ui.rs
-msgid "Restored the previous version."
-msgstr "已恢复上一版。"
-
-#: windows/host/src/projects_ui.rs
-msgid "The previous version could not be restored."
-msgstr "上一版恢复不了："
-
-#: windows/host/src/projects_ui.rs
-msgid "Overwrite “{}” with the current tab?"
-msgstr "用当前标签页覆盖「{}」？"
-
-#: windows/host/src/projects_ui.rs
-msgid "“{}” replaces what the project holds. The version it replaces is kept and can be restored."
-msgstr "「{}」会替换项目里现有的内容。被替换的版本会保留，可以恢复。"
-
-#: windows/host/src/projects_ui.rs
-msgid "Overwrite"
-msgstr "覆盖"
-
-#: windows/host/src/projects_ui.rs windows/host/src/project_picker.rs
-msgid "The project could not be saved."
-msgstr "项目存不了："
-
-#: windows/host/src/projects_ui.rs
-msgid "Saved the current tab as “{}”."
-msgstr "已把当前标签页存为「{}」。"
-
-#: windows/host/src/projects_ui.rs
-msgid "Explorer could not be started."
-msgstr "资源管理器打不开。"
-
-#: windows/host/src/projects_ui.rs
-msgid "1 pane"
-msgstr "1 个面板"
-
-#: windows/host/src/projects_ui.rs
-msgid "{} panes"
-msgstr "{} 个面板"
-
-#: windows/host/src/projects_ui.rs
-msgid "Deleted “{}”"
-msgstr "已删除「{}」"
-
-#: windows/host/src/projects_ui.rs
-msgid "No matching projects"
-msgstr "没有匹配的项目"
-
-#: windows/host/src/projects_ui.rs
-msgid "Select a project, or save the current tab as one with +."
-msgstr "选一个项目，或者用 + 把当前标签页存成项目。"
-
-#: windows/host/src/projects_ui.rs
-msgid "Last saved"
-msgstr "上次保存"
-
-#: windows/host/src/projects_ui.rs
-msgid "Panes"
-msgstr "面板"
-
-#: windows/host/src/projects_ui.rs
-msgid "Directories"
-msgstr "目录"
-
-#: windows/host/src/projects_ui.rs
-msgid "None recorded"
-msgstr "没有记录"
-
-#: windows/host/src/projects_ui.rs
-msgid "Not recorded in project files"
-msgstr "项目文件不记录角色"
-
-#: windows/host/src/projects_ui.rs
-msgid "Scrollback"
-msgstr "回滚内容"
-
-#: windows/host/src/projects_ui.rs
-msgid "Autosave"
-msgstr "自动保存"
-
-#: windows/host/src/projects_ui.rs
-msgid "Not bound to an open window"
-msgstr "没有绑定到打开的窗口"
-
-#: windows/host/src/projects_ui.rs
-msgid "Version History"
-msgstr "版本历史"
-
-#: windows/host/src/projects_ui.rs
-msgid "Current version"
-msgstr "当前版本"
-
-#: windows/host/src/projects_ui.rs
-msgid "Previous version"
-msgstr "上一版"
-
-#: windows/host/src/projects_ui.rs
-msgid "No earlier version is kept yet."
-msgstr "还没有保留更早的版本。"
-
-#: windows/host/src/prompt.rs
-msgid "Rename"
-msgstr "重命名"
-
-#: windows/host/src/projects_ui.rs
-msgid "Show in Explorer"
-msgstr "在资源管理器中显示"
-
-#: windows/host/src/projects_ui.rs
-msgid "Overwrite with Current Tab"
-msgstr "用当前标签页覆盖"
-
-#: windows/host/src/projects_ui.rs
-msgid "Open"
-msgstr "打开"
-
-#: windows/host/src/projects_ui.rs
-msgid "Save as a Project Before Closing?"
-msgstr "关闭前存成项目吗？"
-
-#: windows/host/src/projects_ui.rs
-msgid "The terminal still has a running process. Closing it without saving as a project will kill it."
-msgstr "终端里还有正在运行的进程。不存成项目就关闭，进程会被结束。"
-
-#: windows/host/src/projects_ui.rs
-msgid "Close Without Saving"
-msgstr "不保存，直接关闭"
-
-#: windows/host/src/menu.rs
-msgid "Manage Projects…"
-msgstr "管理项目…"
-
-#: windows/host/src/projects_ui.rs
-msgid "Rename…"
-msgstr "重命名…"
-
-#: windows/host/src/prompt.rs
-msgid "Rename Project"
-msgstr "重命名项目"
-
-#: windows/host/src/prompt.rs
-msgid "The project's file, its previous version and its scrollback move with it."
-msgstr "项目文件、上一版和 scrollback 一起改名。"
-
-#: windows/host/src/general_ui.rs
-msgid "Edit in Config File…"
-msgstr "在配置文件中编辑…"
-
-#: windows/host/src/general_ui.rs
-msgid "Filter by key"
-msgstr "按键名筛选"
-
-#: windows/host/src/general_ui.rs
-msgid "Set by {}:{}. Edit it there."
-msgstr "由 {}:{} 设置，请在那里修改。"
-
-#: windows/host/src/general_ui.rs
-msgid "Set on the command line, which has the last word."
-msgstr "在命令行里设置，以命令行为准。"
-
-#: windows/host/src/general_ui.rs
-msgid "Edit this one in the config file."
-msgstr "这一项请在配置文件中编辑。"
-
-#: windows/host/src/general_ui.rs
-msgid "Light"
-msgstr "浅色"
-
-#: windows/host/src/general_ui.rs
-msgid "Dark"
-msgstr "深色"
-
-#: windows/host/src/general_ui.rs
-msgid "Saved to the config file."
-msgstr "已写入配置文件。"
-
-#: windows/host/src/general_ui.rs
-msgid "That value is not valid for this key."
-msgstr "这个值对该项无效。"
-
-#: windows/host/src/general_ui.rs
-msgid "This key is set somewhere the form does not write."
-msgstr "这一项在表单不写入的地方设置。"
-
-#: windows/host/src/general_ui.rs
-msgid "The config file kept changing while it was being written. Try again."
-msgstr "写入时配置文件一直在变，请再试一次。"
-
-#: windows/host/src/general_ui.rs
-msgid "Could not write the config file: {}"
-msgstr "无法写入配置文件：{}"
-
-#: windows/host/src/general_ui.rs
-msgid "Restore Default"
-msgstr "恢复默认"
-
-#: windows/host/src/general_ui.rs
-msgid "The settings could not be read: {}"
-msgstr "无法读取设置：{}"
-
-#: windows/host/src/general_ui.rs
-msgid "The form writes to:\n{}"
-msgstr "表单写入的文件：\n{}"
-
-#: windows/host/src/general_ui.rs
-msgid "The configuration loaded without errors."
-msgstr "配置加载时没有错误。"
-
-#: windows/host/src/general_ui.rs
-msgid "{} error(s). The lines they name were ignored; fix them and reload."
-msgstr "{} 个错误。它们指出的那些行已被忽略；改好后重新加载。"
-
-#: windows/host/src/general_ui.rs
-msgid "Before this run's first write the config file was copied to:\n{}"
-msgstr "本次运行第一次写入前，配置文件已备份到：\n{}"
-
-#: windows/host/src/general_ui.rs
-msgid "A terminal that minds the agents running in it. \nBuilt on Ghostty."
-msgstr "一个会照看在里面干活的 agent 的终端。\n基于 Ghostty 构建。"
-
-#: windows/host/src/general_ui.rs
-msgid "Version"
-msgstr "版本"
-
-#: windows/host/src/general_ui.rs
-msgid "Build"
-msgstr "构建"
-
-#: windows/host/src/general_ui.rs
-msgid "Commit"
-msgstr "提交"
-
-#: windows/host/src/general_ui.rs
-msgid "The shortcuts could not be read from the configuration."
-msgstr "无法从配置中读取快捷键。"
-
-#: windows/settings-shell/src/general.rs
+# Page title and accessible name (settings_ui.rs, uia.rs). Deliberately a different msgid from the menu item "Keyboard Shortcuts…" (U+2026). Do not merge the two.
+#: windows/host/src/uia.rs:2301 windows/settings-shell/src/general.rs:80
+msgid "Keyboard Shortcuts"
+msgstr "快捷键"
+
+#: windows/settings-shell/src/general.rs:73
 msgid "Appearance"
 msgstr "外观"
 
-#: windows/settings-shell/src/general.rs
-msgid "Font"
-msgstr "字体"
-
-#: windows/settings-shell/src/general.rs
+#: windows/settings-shell/src/general.rs:75
 msgid "Terminal"
 msgstr "终端"
 
-#: windows/settings-shell/src/general.rs
+#: windows/settings-shell/src/general.rs:76
 msgid "Windows & Tabs"
 msgstr "窗口与标签"
 
-#: windows/settings-shell/src/general.rs
+#: windows/settings-shell/src/general.rs:79
 msgid "All Options"
 msgstr "全部选项"
 
-#: windows/settings-shell/src/general.rs
+#: windows/settings-shell/src/general.rs:81
 msgid "Advanced"
 msgstr "高级"
 
-#: windows/settings-shell/src/general.rs
+#: windows/settings-shell/src/general.rs:82
 msgid "About"
 msgstr "关于"
 
-#: windows/host/src/projects_ui.rs
-msgid "\"{}\" already has {} pane(s), saved {}. The replaced version is kept as the previous version."
-msgstr "“{}”已经有 {} 个面板，保存于 {}。被替换的版本会留作上一版。"
-
-#: windows/host/src/projects_ui.rs
-msgid "Overwrite Project?"
-msgstr "覆盖这个项目？"
-
-#: src/config/form.zig:91
-msgid "Theme"
-msgstr "主题"
-
-#: src/config/form.zig:91
-msgid "The color theme; light and dark mode can differ."
-msgstr "配色主题，浅色和深色模式可以分别设置。"
-
-#: src/config/form.zig:92
-msgid "Background Opacity"
-msgstr "背景不透明度"
-
-#: src/config/form.zig:92
-msgid "1 is fully opaque; lower lets the desktop show through."
-msgstr "1 为完全不透明，越小越能透出桌面。"
-
-#: src/config/form.zig:93
-msgid "Background Blur"
-msgstr "背景模糊"
-
-#: src/config/form.zig:94
-msgid "Cursor Style"
-msgstr "光标样式"
-
-#: src/config/form.zig:94
-msgid "The cursor's shape; programs in the terminal may change it."
-msgstr "光标形状；终端里的程序可以改变它。"
-
-#: src/config/form.zig:95
-msgid "Blinking Cursor"
-msgstr "光标闪烁"
-
-#: src/config/form.zig:95
-msgid "Whether the cursor blinks by default."
-msgstr "光标默认是否闪烁。"
-
-#: src/config/form.zig:96
-msgid "Horizontal Padding"
-msgstr "左右边距"
-
-#: src/config/form.zig:96
-msgid "Space between the text and the left and right edges."
-msgstr "文字与窗口左右边缘之间的空白。"
-
-#: src/config/form.zig:97
-msgid "Vertical Padding"
-msgstr "上下边距"
-
-#: src/config/form.zig:97
-msgid "Space between the text and the top and bottom edges."
-msgstr "文字与窗口上下边缘之间的空白。"
-
-#: src/config/form.zig:98
-msgid "Balance Padding"
-msgstr "均分边距"
-
-#: src/config/form.zig:98
-msgid "Spread leftover space evenly around the text."
-msgstr "把多出来的空白平均分到四边。"
-
-#: src/config/form.zig:99
-msgid "Title Bar Style"
-msgstr "标题栏样式"
-
-#: src/config/form.zig:99
-msgid "Native, transparent, tabs, or hidden."
-msgstr "原生、透明、标签页或隐藏。"
-
-#: src/config/form.zig:102
-msgid "The font family to use; empty uses the default."
-msgstr "使用的字体；留空用默认字体。"
-
-#: src/config/form.zig:103
-msgid "Font Size"
-msgstr "字号"
-
-#: src/config/form.zig:103
-msgid "In points; may be fractional."
-msgstr "以点为单位，可以带小数。"
-
-#: src/config/form.zig:104
-msgid "Line Height"
-msgstr "行高调整"
-
-#: src/config/form.zig:104
-msgid "Extra height per line, in points or percent (e.g. 20%)."
-msgstr "每行额外加高，写点数或百分比（如 20%）。"
-
-#: src/config/form.zig:107
-msgid "Scrollback Lines"
-msgstr "回滚行数"
-
-#: src/config/form.zig:107
-msgid "How many lines of history each terminal keeps."
-msgstr "每个终端保留多少行历史。"
-
-#: src/config/form.zig:108
-msgid "Copy on Select"
-msgstr "选中即复制"
-
-#: src/config/form.zig:108
-msgid "Copy selected text to the clipboard automatically."
-msgstr "选中文字时自动复制到剪贴板。"
-
-#: src/config/form.zig:109
-msgid "Clipboard Reading"
-msgstr "读取剪贴板"
-
-#: src/config/form.zig:109
-msgid "Whether programs may read the clipboard: ask, allow or deny."
-msgstr "终端里的程序能否读取剪贴板：询问、允许或拒绝。"
-
-#: src/config/form.zig:110
-msgid "Clipboard Writing"
-msgstr "写入剪贴板"
-
-#: src/config/form.zig:110
-msgid "Whether programs may set the clipboard: ask, allow or deny."
-msgstr "终端里的程序能否写入剪贴板：询问、允许或拒绝。"
-
-#: src/config/form.zig:111
-msgid "Hide Pointer While Typing"
-msgstr "打字时隐藏鼠标"
-
-#: src/config/form.zig:111
-msgid "Hide the mouse pointer while you type in a terminal."
-msgstr "在终端里打字时隐藏鼠标指针。"
-
-#: src/config/form.zig:112
-msgid "Confirm Before Closing"
-msgstr "关闭前确认"
-
-#: src/config/form.zig:112
-msgid "Ask before closing a terminal still running something."
-msgstr "关闭仍在运行程序的终端前先确认。"
-
-#: src/config/form.zig:113
-msgid "Shell Integration"
-msgstr "Shell 集成"
-
-#: src/config/form.zig:113
-msgid "Lets the shell report its directory and prompt to Polter."
-msgstr "让 shell 报告当前目录和提示符位置，Polter 才能跟踪它们。"
-
-#: src/config/form.zig:116
-msgid "Restore Windows"
-msgstr "恢复窗口"
-
-#: src/config/form.zig:116
-msgid "Reopen windows, tabs and splits where they were."
-msgstr "重新打开时恢复窗口、标签页和分屏。"
-
-#: src/config/form.zig:117
-msgid "New Windows Inherit Directory"
-msgstr "新窗口沿用目录"
-
-#: src/config/form.zig:117
-msgid "New windows start in the focused window's directory."
-msgstr "新窗口从当前窗口的目录开始。"
-
-#: src/config/form.zig:118
-msgid "Quit After Last Window Closes"
-msgstr "关闭最后一个窗口后退出"
-
-#: src/config/form.zig:118
-msgid "Quit Polter when its last window is closed."
-msgstr "最后一个窗口关掉后退出 Polter。"
-
-#: src/config/form.zig:119
-msgid "Window Decorations"
-msgstr "窗口装饰"
-
-#: src/config/form.zig:119
-msgid "Whether windows have a title bar and borders."
-msgstr "窗口是否带标题栏和边框。"
-
-#: src/config/form.zig:122
-msgid "Notice Interval"
-msgstr "提醒间隔"
-
-#: src/config/form.zig:122
-msgid "How often the supervisor is handed what it has not seen."
-msgstr "多久把总管还没看过的动态交给它一次。"
-
-#: src/config/form.zig:123
-msgid "Quiet After"
-msgstr "静止判定"
-
-#: src/config/form.zig:123
-msgid "How long a screen must stay unchanged to count as quiet."
-msgstr "屏幕多久不变算作静止。"
-
-#: src/config/form.zig:124
-msgid "Repeat Quiet Report"
-msgstr "静止重复报告"
-
-#: src/config/form.zig:124
-msgid "How long before a still-quiet terminal is reported again."
-msgstr "仍然静止的终端隔多久再报一次。"
-
-#: src/config/form.zig:125
-msgid "Nudge Workers After"
-msgstr "催促汇报"
-
-#: src/config/form.zig:125
-msgid "How long a worker may sit still before it is told to report."
-msgstr "worker 静止多久后提醒它汇报。"
-
-#: src/config/form.zig:126
-msgid "Tool Silence Reminder"
-msgstr "工具沉默提醒"
-
-#: src/config/form.zig:126
-msgid "How long without a Polter tool call before it is mentioned."
-msgstr "多久没调用 Polter 工具就提一句。"
-
-#: src/config/form.zig:127
-msgid "Idle Task Reminder"
-msgstr "任务搁置提醒"
-
-#: src/config/form.zig:127
-msgid "How long a task may go untouched before it is mentioned."
-msgstr "任务多久没人动就提一句。"
-
-#: src/config/form.zig:128
-msgid "Quiet Group Reminder"
-msgstr "群静默提醒"
-
-#: src/config/form.zig:128
-msgid "How long a group may be silent before it is mentioned."
-msgstr "群多久没人说话就提一句。"
-
-#: src/config/form.zig:129
-msgid "Hours I May Be Disturbed"
-msgstr "可打扰时段"
-
-#: src/config/form.zig:129
-msgid "When you may be asked, as HH:MM-HH:MM; empty is any time."
-msgstr "什么时候可以问你，写成 HH:MM-HH:MM；留空表示随时。"
-
-#: src/config/form.zig:130
-msgid "Supervisor May Stand Down"
-msgstr "总管可自行卸任"
-
-#: src/config/form.zig:130
-msgid "Let a supervisor whose work is done take itself off duty."
-msgstr "允许做完事的总管自己卸任。"
-
-#: src/config/form.zig:131
-msgid "Keep Chat Log"
-msgstr "保存群聊记录"
-
-#: src/config/form.zig:131
-msgid "Write what the terminals say to each other to disk."
-msgstr "把终端之间的对话写到磁盘上。"
-
-#: src/config/form.zig:132
-msgid "Keep Terminal Transcripts"
-msgstr "保存终端记录"
-
-#: src/config/form.zig:132
-msgid "Keep a transcript of what ran in each terminal."
-msgstr "记录每个终端里实际运行了什么。"
-
-#: src/config/form.zig:133
-msgid "The interface language; empty follows the system."
-msgstr "界面语言；留空跟随系统。"
-
-#: src/config/form.zig:105
-msgid "true, false, a strength, or macos-glass-regular/-clear."
-msgstr "填 true、false、强度数值，或 macos-glass-regular / -clear。"
-
-#: src/config/form.zig:106
-msgid "Bar"
-msgstr "竖线"
-
-#: src/config/form.zig:106
-msgid "Block"
-msgstr "方块"
-
-#: src/config/form.zig:106
-msgid "Underline"
-msgstr "下划线"
-
-#: src/config/form.zig:106
-msgid "Hollow Block"
-msgstr "空心方块"
-
-#: src/config/form.zig:110
-msgid "No Balancing"
-msgstr "关"
-
-#: src/config/form.zig:110
-msgid "Balanced, Top Capped"
-msgstr "均分（上边距有上限）"
-
-#: src/config/form.zig:110
-msgid "Equal on All Sides"
-msgstr "四边相等"
-
-#: src/config/form.zig:111
-msgid "Native"
-msgstr "原生"
-
-#: src/config/form.zig:111
-msgid "Transparent"
-msgstr "透明"
-
-#: src/config/form.zig:111
-msgid "Tabs in Title Bar"
-msgstr "标签页在标题栏"
-
-#: src/config/form.zig:111
-msgid "Hidden"
-msgstr "隐藏"
-
-#: src/config/form.zig:120
-msgid "Don't Copy"
-msgstr "不复制"
-
-#: src/config/form.zig:120
-msgid "Selection Pasteboard Only"
-msgstr "仅选区剪贴板"
-
-#: src/config/form.zig:120
-msgid "Clipboard Only"
-msgstr "仅系统剪贴板"
-
-#: src/config/form.zig:120
-msgid "Both"
-msgstr "两者都复制"
-
-#: src/config/form.zig:121 src/config/form.zig:122
-msgid "Ask"
-msgstr "询问"
-
-#: src/config/form.zig:124
-msgid "Don't Confirm"
-msgstr "不确认"
-
-#: src/config/form.zig:124
-msgid "When Something Is Running"
-msgstr "有程序在运行时确认"
-
-#: src/config/form.zig:124
-msgid "Always Confirm"
-msgstr "总是确认"
-
-#: src/config/form.zig:125
-msgid "Detect Automatically"
-msgstr "自动检测"
-
-#: src/config/form.zig:125
-msgid "No Integration"
-msgstr "不集成"
-
-#: src/config/form.zig:125
-msgid "Bash"
-msgstr "Bash"
-
-#: src/config/form.zig:125
-msgid "Elvish"
-msgstr "Elvish"
-
-#: src/config/form.zig:125
-msgid "fish"
-msgstr "fish"
-
-#: src/config/form.zig:125
-msgid "Nushell"
-msgstr "Nushell"
-
-#: src/config/form.zig:125
-msgid "PowerShell"
-msgstr "PowerShell"
-
-#: src/config/form.zig:125
-msgid "Zsh"
-msgstr "Zsh"
-
-#: src/config/form.zig:128
-msgid "System Default"
-msgstr "跟随系统"
-
-#: src/config/form.zig:128
-msgid "Never"
-msgstr "从不"
-
-#: src/config/form.zig:128
-msgid "Always"
-msgstr "总是"
-
-#: src/config/form.zig:131
-msgid "Automatic"
-msgstr "自动"
-
-#: src/config/form.zig:131
-msgid "Drawn by Polter"
-msgstr "由 Polter 绘制"
-
-#: src/config/form.zig:131
-msgid "Drawn by the System"
-msgstr "由系统绘制"
-
-#: src/config/form.zig:131
-msgid "No Decorations"
-msgstr "无"
-
-#: windows/host/src/general_ui.rs:754
-msgid "Less"
-msgstr "收起"
-
-#: windows/host/src/general_ui.rs:754
-msgid "More…"
-msgstr "更多…"
-
-#: src/input/screenshot.zig
-msgid "Select"
-msgstr "选择"
-
-#: src/input/screenshot.zig
-msgid "Rectangle"
-msgstr "矩形"
-
-#: src/input/screenshot.zig
-msgid "Ellipse"
-msgstr "椭圆"
-
-#: src/input/screenshot.zig
-msgid "Straight Line"
-msgstr "直线"
-
-#: src/input/screenshot.zig
-msgid "Highlighter"
-msgstr "荧光笔"
-
-#: src/input/screenshot.zig
-msgid "Number"
-msgstr "编号"
-
-#: src/input/screenshot.zig
-msgid "Mosaic"
-msgstr "马赛克"
-
-#: src/input/screenshot.zig
-msgid "Long Screenshot"
-msgstr "长截图"
-
-#: src/input/screenshot.zig
-msgid "Done"
-msgstr "完成"
-
-#: src/input/screenshot.zig
-msgid "Color"
-msgstr "颜色"
-
-#: src/input/screenshot.zig
-msgid "Thickness"
-msgstr "粗细"
-
-#: src/input/screenshot.zig
-msgid "Block Size"
-msgstr "块大小"
-
-#: src/input/screenshot.zig
-msgid "Red"
-msgstr "红"
-
-#: src/input/screenshot.zig
-msgid "Orange"
-msgstr "橙"
-
-#: src/input/screenshot.zig
-msgid "Yellow"
-msgstr "黄"
-
-#: src/input/screenshot.zig
-msgid "Green"
-msgstr "绿"
-
-#: src/input/screenshot.zig
-msgid "Cyan"
-msgstr "青"
-
-#: src/input/screenshot.zig
-msgid "Blue"
-msgstr "蓝"
-
-#: src/input/screenshot.zig
-msgid "Purple"
-msgstr "紫"
-
-#: src/input/screenshot.zig
-msgid "Black"
-msgstr "黑"
-
-#: src/input/screenshot.zig
-msgid "White"
-msgstr "白"
-
-#: src/input/screenshot.zig
-msgid "Circle"
-msgstr "圆"
-
-#: src/input/screenshot.zig
-msgid "Line"
-msgstr "线"
-
-#: src/input/screenshot.zig
-msgid "Screenshot"
-msgstr "截图"
-
-#: src/input/screenshot.zig
-msgid "Screenshot annotations"
-msgstr "截图标注"
-
-#: src/input/screenshot.zig
-msgid "Text"
-msgstr "文字"
-
-#: src/input/screenshot.zig
-msgid "Box"
-msgstr "框"
-
-#: src/input/screenshot.zig
-msgid "Arrow"
-msgstr "箭头"
-
-#: src/input/screenshot.zig
-msgid "Pen"
-msgstr "画笔"
-
-#: src/input/screenshot.zig
-msgid "; "
-msgstr "；"
-
-#: src/input/screenshot.zig
-msgid ". See "
-msgstr "。详见 "
-
-#: src/input/screenshot.zig
-msgid "Freeze the screen, pick a window or drag a region, annotate it, and put the result on the clipboard."
-msgstr "定格屏幕，点选窗口或拖出一块区域，标注后把结果放进剪贴板。"
-
-#: src/input/screenshot.zig
-msgid "The annotation font is missing, so the system font is used."
-msgstr "标注字体文件缺失，已改用系统字体。"
-
-#: src/input/screenshot.zig
-msgid "Scroll down slowly. What comes into view is added at the bottom."
-msgstr "慢慢向下滚动，新露出的部分会接到底部。"
-
-#: src/input/screenshot.zig
-msgid "Scroll slower"
-msgstr "滚慢一点"
-
-#: src/input/screenshot.zig
-msgid "The height limit was reached."
-msgstr "已到高度上限。"
-
-#: src/input/screenshot.zig
-msgid "The picture keeps changing, so nothing can be added."
-msgstr "画面一直在动，没能接长。"
-
-#: src/input/screenshot.zig
-msgid "{n} tiles, first {m} pasted"
-msgstr "共 {n} 片，已粘贴前 {m} 片"
-
-#: src/input/screenshot.zig
-msgid "whole image"
-msgstr "整图"
-
-#: src/input/screenshot.zig
-msgid "The screenshot shortcut could not be registered"
-msgstr "截图快捷键没能注册上"
-
-#: src/input/screenshot.zig
-msgid "Another application is already using it. Choose a different one with a `screenshot` keybind in the configuration."
-msgstr "别的应用已经占用了这个组合。请在配置里用 `screenshot` 的 keybind 换一个。"
-
-#: src/input/screenshot.zig
-msgid "No settings match."
-msgstr "没有匹配的设置。"
-
-#: src/config/form.zig
-msgid "Paste Images as Files"
-msgstr "粘贴图片时存成文件并粘贴路径"
-
-#: src/config/form.zig
-msgid "Save a pasted image as a file and paste its path."
-msgstr "把粘贴的图片存成文件，再粘贴它的路径。"
-
-#: src/config/form.zig
-msgid "Screenshot Folder"
-msgstr "截图保存位置"
-
-#: src/config/form.zig
-msgid "Where screenshots and pasted images are saved."
-msgstr "截图和粘贴的图片存在这里。"
-
-#: src/config/form.zig
-msgid "Mouse Trigger"
-msgstr "鼠标触发"
-
-#: src/config/form.zig
-msgid "Hold these keys and click to take a screenshot."
-msgstr "按住这些键单击即可截图。"
-
-#: src/config/form.zig
-msgid "%s + Click"
-msgstr "%s + 单击"
-
-#: src/config/form.zig
-msgid "Let Agents Take Screenshots"
-msgstr "允许 agent 截图"
-
-#: src/config/form.zig
-msgid "Agents may capture the screen with the screenshot tools."
-msgstr "agent 可以用截图工具拍下屏幕。"
-
-#: src/config/form.zig
-msgid "Screenshot Shortcut"
-msgstr "截图快捷键"
-
-#: src/config/form.zig
-msgid "Change it with a keybind line in the config file."
-msgstr "在配置文件的 keybind 里修改。"
+#: windows/settings-shell/src/plugins.rs:51
+msgid "Restart to apply"
+msgstr "改了未重启"
+
+#: windows/settings-shell/src/plugins.rs:53
+msgid "Needs setup"
+msgstr "缺配置"
+
+#: windows/settings-shell/src/plugins.rs:54
+msgid "Error"
+msgstr "出错"
+
+#: windows/settings-shell/src/plugins.rs:55
+msgid "On"
+msgstr "已开"
+
+#: windows/control-room/src/lend.rs:294
+msgid "The supervisor's terminal is no longer open."
+msgstr "总管的终端已经关掉了。"
+
+#: windows/control-room/src/lend.rs:296
+msgid "Supervisor"
+msgstr "总管"
+
+#: windows/control-room/src/list.rs:67
+#, rust-format
+msgid "{} more"
+msgstr "还有 {} 个"
+
+#: windows/control-room/src/list.rs:68
+#, rust-format
+msgid "Same supervisor: see {}"
+msgstr "同一个总管：见 {}"
+
+#: windows/control-room/src/rules.rs:83
+msgid "Polter — Control Room"
+msgstr "Polter — 总控台"
+
+#: windows/control-room/src/scene.rs:29
+#, rust-format
+msgid "{} groups waiting for you"
+msgstr "{} 个群在等你"
+
+#: windows/control-room/src/scene.rs:30
+#, rust-format
+msgid "{} groups need nothing from you"
+msgstr "{} 个群不用你管"
+
+#: windows/control-room/src/scene.rs:32
+msgid "Kept you waiting today"
+msgstr "今天让你等过的"
+
+#: windows/control-room/src/scene.rs:33
+#, rust-format
+msgid "{} min"
+msgstr "{} 分"
+
+#: windows/control-room/src/scene.rs:34
+msgid "now"
+msgstr "现在"
+
+#: windows/control-room/src/scene.rs:36
+#, rust-format
+msgid "The control room's data could not be read ({})."
+msgstr "总控台的数据读不出来（{}）。"
+
+#: windows/control-room/src/scene.rs:38
+msgid "Nothing has been worked out yet."
+msgstr "还没有算出任何东西。"
+
+#: windows/control-room/src/scene.rs:39
+msgid "Select a group on the left."
+msgstr "在左边选一个群。"
+
+#: windows/control-room/src/scene.rs:40
+msgid "This group has no supervisor."
+msgstr "这个群没有总管。"
+
+#: windows/control-room/src/scene.rs:41
+msgid "The supervisor's terminal is in its own tab."
+msgstr "总管的终端在它自己的标签页里。"
+
+#: windows/control-room/src/scene.rs:42
+msgid "Go to Its Tab"
+msgstr "去它的标签页"
 
 #~ msgid "Role Editor (beta)..."
 #~ msgstr "角色编辑器（beta）…"
@@ -3516,35 +3731,3 @@ msgstr "在配置文件的 keybind 里修改。"
 
 #~ msgid "Role Library"
 #~ msgstr "角色库"
-
-#: windows/host/src/general_ui.rs
-msgid "Choose…"
-msgstr "选择…"
-
-#: windows/host/src/general_ui.rs
-msgid "Not set"
-msgstr "未设置"
-
-#: src/input/screenshot.zig
-msgid "Saved to Downloads: {name}"
-msgstr "已保存到“下载”：{name}"
-
-#: src/input/screenshot.zig
-msgid "The picture could not be saved."
-msgstr "图片没能保存。"
-
-#: src/input/screenshot.zig
-msgid "Copied"
-msgstr "已复制"
-
-#: src/input/screenshot.zig
-msgid "Scrolling down… Enter keeps what is joined so far, Esc cancels."
-msgstr "正在向下滚动…回车保留已接好的部分，Esc 取消。"
-
-#: src/input/screenshot.zig
-msgid "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand."
-msgstr "自动滚动需要“辅助功能”权限，请慢慢向下手动滚动。"
-
-#: src/input/screenshot.zig
-msgid "The page could not be followed any further, so the picture ends here."
-msgstr "页面没能再跟下去，图片到此为止。"

@@ -1998,6 +1998,10 @@ impl ISelectionItemProvider_Impl for PaletteItem_Impl {
 // core's and is re-sent whenever anything changes; "the third row" is a
 // different group a moment later (`a-position-is-not-an-identity.py`).
 //
+// **A row has no children and nothing to press.** It says that somebody is
+// waiting and for what; answering is done in the terminal. (Approve and
+// refuse buttons were here for a day; the user ruled them out, 2026-10-12.)
+//
 // ⚠️ **NOT IN THE TREE**: the two section headers, the time band, and the
 // right side with its button. **No event is raised** when the selection or a
 // row changes; a client that asks again is told the truth, one that waits to

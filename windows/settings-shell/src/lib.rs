@@ -12,6 +12,15 @@
 //! `settings_win.rs` asks these functions and decides nothing itself;
 //! `windows/tools/pure-crates-pass-their-tests.py` runs the tests below.
 
+/// Marks a string for the translation template without looking it up: the
+/// host translates it where it is shown. `src/build/GhosttyI18n.zig` reads
+/// this crate for string literals inside `n_(…)`; one that is not marked is
+/// never extracted, and is then English on every machine with nothing to
+/// say why. The same name and meaning as the host's `i18n::n_`.
+pub const fn n_(s: &'static str) -> &'static str {
+    s
+}
+
 pub mod general;
 pub mod plugins;
 pub mod handback;

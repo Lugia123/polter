@@ -490,11 +490,33 @@ mod tests {
             .unwrap_or_else(|| panic!("no .pot in {}", po.display()));
         let catalogue =
             std::fs::read_to_string(&pot).unwrap_or_else(|e| panic!("cannot read {}: {e}", pot.display()));
+        // **Read as gettext writes it, not as one line a msgid.** The
+        // template is rewritten by `zig build update-translations`, which
+        // folds a long msgid over several lines (`msgid ""` and then one
+        // quoted piece a line). This used to look for the one-line form,
+        // which is how a msgid typed into the template by hand looks -- and
+        // the first regeneration turned every long sentence here into "not a
+        // msgid", with nothing about the sentences having changed.
+        let mut msgids: Vec<String> = Vec::new();
+        let mut open = false;
+        for line in catalogue.lines() {
+            if let Some(first) = line.strip_prefix("msgid ") {
+                msgids.push(serde_json::from_str::<String>(first).unwrap_or_default());
+                open = true;
+            } else if open && line.starts_with('"') {
+                let piece = serde_json::from_str::<String>(line).unwrap_or_default();
+                if let Some(last) = msgids.last_mut() {
+                    last.push_str(&piece);
+                }
+            } else {
+                open = false;
+            }
+        }
+        assert!(msgids.len() >= 500, "only {} msgids were read from {}", msgids.len(), pot.display());
         let all = words();
         assert!(all.len() >= 35, "only {} words were collected", all.len());
         for word in all {
-            let entry = format!("\nmsgid {}\n", serde_json::to_string(word).unwrap());
-            assert!(catalogue.contains(&entry), "{word:?} is not a msgid in {}", pot.display());
+            assert!(msgids.iter().any(|m| m == word), "{word:?} is not a msgid in {}", pot.display());
         }
     }
 

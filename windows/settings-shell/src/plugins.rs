@@ -7,6 +7,7 @@
 //! is: those tests run only on Windows, so a rule left there could be broken
 //! on the Mac with everything green.
 
+use crate::n_;
 use crate::grid::*;
 use crate::{scale, Layout, Rect, Section};
 
@@ -47,11 +48,11 @@ impl Dot {
     /// table: 已开 / 缺配置 / 已关 / 出错 / 改了未重启).
     pub fn msgid(self) -> &'static str {
         match self {
-            Dot::Changed => "Restart to apply",
-            Dot::Off => "Off",
-            Dot::Missing => "Needs setup",
-            Dot::Error => "Error",
-            Dot::On => "On",
+            Dot::Changed => n_("Restart to apply"),
+            Dot::Off => n_("Off"),
+            Dot::Missing => n_("Needs setup"),
+            Dot::Error => n_("Error"),
+            Dot::On => n_("On"),
         }
     }
 }

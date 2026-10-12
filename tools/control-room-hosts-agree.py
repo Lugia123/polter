@@ -86,6 +86,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomLook.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",
+    "macos/Sources/Features/ControlRoom/ControlRoomLending.swift",
     "macos/Sources/Features/Terminal/TabAccessory.swift",
 ]
 CRATE = "windows/control-room"
@@ -230,6 +231,47 @@ for r in list.rows {
         markSeen: { said += " marks=\($0)" })
     tracker.selectionChanged(to: r)
     print("seen row=\(r.id) \(said)")
+}
+
+// Which terminal is shown on the right, through one script of events: what
+// each asks to be done, in order, and what the right side shows after it.
+// (`present: false` is the Windows side's `Gone`; its `Elsewhere` -- a
+// supervisor in another window, which macOS moves and Windows does not --
+// has no counterpart here and is not in the script.)
+do {
+    var lending = ControlRoomLending()
+    func sel(_ g: String?, _ s: String?, _ present: Bool) -> ControlRoomLending.Event {
+        .selected(group: g, supervisor: s, present: present)
+    }
+    let script: [(String, ControlRoomLending.Event)] = [
+        ("select a/t1", sel("a", "t1", true)), ("select b/t2", sel("b", "t2", true)),
+        ("select b/t2 again", sel("b", "t2", true)), ("select c/t2", sel("c", "t2", true)),
+        ("select d/none", sel("d", nil, false)), ("select a/t1", sel("a", "t1", true)),
+        ("reclaim t1", .reclaimed(terminal: "t1")), ("select a/t1", sel("a", "t1", true)),
+        ("ask", .askedFor), ("ask again", .askedFor), ("home gone t9", .homeGone(terminal: "t9")),
+        ("home gone t1", .homeGone(terminal: "t1")), ("select a/t1 gone", sel("a", "t1", false)),
+        ("select a/t1", sel("a", "t1", true)), ("select a/t1 gone", sel("a", "t1", false)),
+        ("select a/t1", sel("a", "t1", true)), ("close", .closing), ("close again", .closing),
+        ("select nothing", sel(nil, nil, false)),
+    ]
+    for (n, (name, event)) in script.enumerated() {
+        let effects = lending.handle(event).map { effect -> String in
+            switch effect {
+            case let .giveBack(terminal, toHome, focus): return "back(\(terminal),home=\(toHome),focus=\(focus))"
+            case let .borrow(loan): return "borrow(\(loan.group),\(loan.terminal))"
+            }
+        }
+        var shows: String
+        switch lending.detail {
+        case .nothingSelected: shows = "nothing"
+        case let .noSupervisor(group): shows = "no-supervisor(\(group))"
+        case let .supervisorGone(group): shows = "gone(\(group))"
+        case let .takenBack(loan): shows = "taken-back(\(loan.group),\(loan.terminal))"
+        case let .terminal(loan): shows = "terminal(\(loan.group),\(loan.terminal))"
+        }
+        let loan = lending.loan.map { "\($0.group),\($0.terminal)" } ?? "-"
+        print("lend \(n) \(quote(name)) does=[\(effects.joined(separator: " "))] shows=\(shows) loan=\(loan)")
+    }
 }
 
 let lay = ControlRoomListLayout(list: list, height: CGFloat(height))

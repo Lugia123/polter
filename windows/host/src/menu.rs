@@ -123,7 +123,14 @@ fn offered_in_front(r: &Row) -> bool {
         // A submenu or a separator: its rows answer for themselves.
         return true;
     };
-    match crate::tabs::front_kind(crate::tabs::overlay_frame()) {
+    let frame = crate::tabs::overlay_frame();
+    // With the keyboard in a terminal -- the front tab's, or the one the
+    // control room is showing once the person has clicked in it -- every
+    // row has something to act on.
+    if !crate::tabs::active_surface(frame).is_null() {
+        return true;
+    }
+    match crate::tabs::front_kind(frame) {
         Some(Kind::ControlRoom) => rules::menu_row_offered(
             action,
             crate::keys::is_host_action(action),

@@ -15,28 +15,31 @@
 //! The macOS host's `ControlRoomListView.swift` places the same things by
 //! the same numbers.
 
+use crate::lend::{msg as lend_msg, Detail as Detail_};
 use crate::layout::{self, ListLayout, Rect};
 use crate::list::{self, Detail, List, Row};
-use crate::look::{font, line, radius, selection, side, space, Rgba, Theme};
+use crate::look::{font, line, pane, radius, selection, side, space, Rgba, Theme};
 use crate::snapshot::Shown;
 
 /// The English of what the panel says; `build` passes each through the
 /// host's translation. `{}` is where the one argument goes.
 pub mod msg {
-    pub const WAITING_HEADER: &str = "{} groups waiting for you";
-    pub const QUIET_HEADER: &str = "{} groups need nothing from you";
-    pub const MINUTES_UNIT: &str = "min";
-    pub const BAND_HEADER: &str = "Kept you waiting today";
-    pub const BAND_TOTAL: &str = "{} min";
-    pub const NOW: &str = "now";
+    use crate::n_;
+
+    pub const WAITING_HEADER: &str = n_("{} groups waiting for you");
+    pub const QUIET_HEADER: &str = n_("{} groups need nothing from you");
+    pub const MINUTES_UNIT: &str = n_("min");
+    pub const BAND_HEADER: &str = n_("Kept you waiting today");
+    pub const BAND_TOTAL: &str = n_("{} min");
+    pub const NOW: &str = n_("now");
     /// The snapshot could not be read. `{}` is what was wrong with it.
-    pub const UNREADABLE: &str = "The control room's data could not be read ({}).";
+    pub const UNREADABLE: &str = n_("The control room's data could not be read ({}).");
     /// No snapshot has been worked out yet.
-    pub const NOT_YET: &str = "Nothing has been worked out yet.";
-    pub const NO_SELECTION: &str = "Select a group on the left.";
-    pub const NO_SUPERVISOR: &str = "This group has no supervisor.";
-    pub const IN_ITS_OWN_TAB: &str = "The supervisor's terminal is in its own tab.";
-    pub const GO_TO_ITS_TAB: &str = "Go to Its Tab";
+    pub const NOT_YET: &str = n_("Nothing has been worked out yet.");
+    pub const NO_SELECTION: &str = n_("Select a group on the left.");
+    pub const NO_SUPERVISOR: &str = n_("This group has no supervisor.");
+    pub const IN_ITS_OWN_TAB: &str = n_("The supervisor's terminal is in its own tab.");
+    pub const GO_TO_ITS_TAB: &str = n_("Go to Its Tab");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,6 +384,11 @@ fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View, tr: &dyn
     if let Some((template, n)) = list::others(row.others) {
         parts.push(words(list::fill(&tr(template), &n), body(theme.text_secondary), Side::Trail, side::ROW_ITEM_GAP));
     }
+    // **Nothing on a row can be pressed.** A row says that somebody is
+    // waiting and for what; the person goes to the terminal to answer. A
+    // tick and a cross were here for a day and were taken out again (the
+    // user's ruling, 2026-10-12): a row is too small to show what is being
+    // agreed to, and what is being asked is often not a yes or a no.
     out.push(Item::Line {
         rect: Rect { x: inner.x, y: inner.y + inner.h - side::ROW_LINE2_HEIGHT, w: inner.w, h: side::ROW_LINE2_HEIGHT },
         parts,
@@ -468,57 +476,154 @@ pub fn build_message(width: f64, height: f64, theme: &Theme, scale: f64, text: S
     ]
 }
 
-/// What the right side says about the selected group, until the
-/// supervisor's own terminal is put there.
+/// The right-hand side: the selected group's supervisor, or a sentence
+/// saying why it is not there.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Right {
     pub items: Vec<Item>,
-    /// Where "go to its tab" is, when there is a tab to go to.
+    /// Where "go to its tab" is, when the supervisor is in another window.
     pub go: Option<Rect>,
+    /// Where the supervisor's own terminal goes, when it is shown here. The
+    /// host puts the terminal's window exactly there; this draws only the
+    /// frame round it.
+    pub terminal: Option<Rect>,
 }
 
-/// `selected` is the selected row, none for none. `width` and `height` are
-/// the right side's own.
-pub fn build_right(selected: Option<&Row>, width: f64, height: f64, theme: &Theme, scale: f64, tr: &dyn Fn(&str) -> String) -> Right {
+/// Where the terminal sits inside the right-hand side when it is shown:
+/// under the frame's title bar, inside its border.
+pub fn terminal_rect(width: f64, height: f64) -> Rect {
+    let b = pane::SUPERVISOR_BORDER;
+    Rect { x: b, y: pane::BAR_HEIGHT, w: (width - 2.0 * b).max(0.0), h: (height - pane::BAR_HEIGHT - b).max(0.0) }
+}
+
+/// `detail` is what `lend::Lending` says the right side shows; `row` is the
+/// selected row, for its name and state. `in_terminal` is whether the
+/// terminal shown here has the keyboard. `width` and `height` are the right
+/// side's own.
+pub fn build_right(
+    detail: &Detail_,
+    row: Option<&Row>,
+    width: f64,
+    height: f64,
+    theme: &Theme,
+    scale: f64,
+    in_terminal: bool,
+    tr: &dyn Fn(&str) -> String,
+) -> Right {
     let frame = Rect { x: 0.0, y: 0.0, w: width, h: height };
+    let hair = hairline(scale).1;
+
+    if let Detail_::Terminal(loan) = detail {
+        // The supervisor's frame: a thick border whose top edge is the
+        // title bar, floating; the edge darkens (lightens, in the dark)
+        // while the terminal in it has the keyboard.
+        let bezel = over(theme.window_base, theme.supervisor_bezel, 1.0);
+        let edge = if in_terminal { theme.supervisor_edge_focused } else { theme.supervisor_edge };
+        let mut items = vec![Item::Round { rect: frame, radius: radius::SUPERVISOR_OUTER, color: bezel, edge: Some(over(bezel, edge, 1.0)) }];
+        let bar = Rect {
+            x: pane::SUPERVISOR_BAR_PADDING_X,
+            y: 0.0,
+            w: (width - 2.0 * pane::SUPERVISOR_BAR_PADDING_X).max(0.0),
+            h: pane::BAR_HEIGHT,
+        };
+        // The name and what it is on the left; its state on the right.
+        let mut parts = vec![
+            words(
+                loan.group.clone(),
+                Style { size: font::BODY, weight: font::WEIGHT_STRONG, face: Face::Mono, color: theme.text },
+                Side::Lead,
+                0.0,
+            ),
+            words(tr(lend_msg::SUPERVISOR), body(theme.text_secondary), Side::Lead, pane::BAR_GAP),
+        ];
+        if let Some(row) = row {
+            let word_ink = match row.shown {
+                Shown::NeedsYou | Shown::DoneUnseen => theme.attention_text,
+                // Where the word is not red is the table's to say.
+                Shown::Trouble => theme.problem_text_on_supervisor_bar,
+                Shown::Working | Shown::None => theme.text_secondary,
+            };
+            if row.shown != Shown::None {
+                parts.push(Part {
+                    piece: Piece::Glyph { shown: row.shown, color: glyph_color(theme, row.shown), size: side::GLYPH, pulses: false },
+                    side: Side::Trail,
+                    gap: pane::BAR_GAP,
+                });
+            }
+            parts.push(words(row.word.clone(), Style { weight: font::WEIGHT_EMPHASIS, ..body(word_ink) }, Side::Trail, side::STATUS_WORD_GAP));
+            if let Some(minutes) = row.waited_min {
+                parts.push(words(list::fill(&tr(msg::BAND_TOTAL), &minutes.to_string()), body(theme.text_secondary), Side::Trail, pane::BAR_GAP));
+            }
+        }
+        items.push(Item::Line { rect: bar, parts });
+        // The terminal's own ground, for the moment before the terminal's
+        // window is over it.
+        let terminal = terminal_rect(width, height);
+        items.push(Item::Fill { rect: terminal, color: theme.terminal_background });
+        return Right { items, go: None, terminal: Some(terminal) };
+    }
+
     let ground = theme.terminal_background;
     let mut items = vec![Item::Round {
         rect: frame,
         radius: radius::SUPERVISOR_OUTER,
         color: ground,
-        edge: Some(over(ground, theme.side_panel_edge, hairline(scale).1)),
+        edge: Some(over(ground, theme.side_panel_edge, hair)),
     }];
     let pad = space::FRAME_TO_CONTENT;
     let line_h = side::HEADER_HEIGHT;
     let inner_w = (width - 2.0 * pad).max(0.0);
     let line_at = |n: f64| Rect { x: pad, y: pad + n * line_h, w: inner_w, h: line_h };
-    let Some(row) = selected else {
-        items.push(Item::Text { rect: line_at(0.0), text: tr(msg::NO_SELECTION), style: body(theme.text_secondary), align: Align::Left });
-        return Right { items, go: None };
+    let name = |items: &mut Vec<Item>, group: &str| {
+        items.push(Item::Text {
+            rect: line_at(0.0),
+            text: group.to_string(),
+            style: Style { size: font::GROUP_NAME, weight: font::WEIGHT_STRONG, face: Face::Mono, color: theme.terminal_bold },
+            align: Align::Left,
+        })
     };
-    items.push(Item::Text {
-        rect: line_at(0.0),
-        text: row.id.clone(),
-        style: Style { size: font::GROUP_NAME, weight: font::WEIGHT_STRONG, face: Face::Mono, color: theme.terminal_bold },
-        align: Align::Left,
-    });
-    if row.steward.is_none() {
-        items.push(Item::Text { rect: line_at(1.0), text: tr(msg::NO_SUPERVISOR), style: body(theme.terminal_dim), align: Align::Left });
-        return Right { items, go: None };
+    let says = |items: &mut Vec<Item>, at: f64, sentence: &str| {
+        items.push(Item::Text { rect: line_at(at), text: tr(sentence), style: body(theme.terminal_dim), align: Align::Left })
+    };
+    let mut go = None;
+    match detail {
+        Detail_::NothingSelected => {
+            items.push(Item::Text { rect: line_at(0.0), text: tr(msg::NO_SELECTION), style: body(theme.text_secondary), align: Align::Left });
+        }
+        Detail_::NoSupervisor { group } => {
+            name(&mut items, group);
+            says(&mut items, 1.0, msg::NO_SUPERVISOR);
+        }
+        Detail_::SupervisorGone { group } => {
+            name(&mut items, group);
+            says(&mut items, 1.0, lend_msg::GONE);
+        }
+        // In its own tab, by the person's choice: said, and left there.
+        Detail_::TakenBack(loan) => {
+            name(&mut items, &loan.group);
+            says(&mut items, 1.0, msg::IN_ITS_OWN_TAB);
+        }
+        // In another window: said, with the way there.
+        Detail_::Elsewhere(loan) => {
+            name(&mut items, &loan.group);
+            says(&mut items, 1.0, msg::IN_ITS_OWN_TAB);
+            // A button the width of the list's rows would be lost on a wide
+            // side; it is as wide as a tab and sits on the content's left
+            // edge.
+            let rect = Rect { x: pad, y: pad + 2.0 * line_h + space::BETWEEN_FRAMES, w: side::WIDTH / 2.0, h: line_h };
+            let button = over(ground, theme.text, selection::LIFT_IN);
+            items.push(Item::Round { rect, radius: radius::ROW, color: button, edge: Some(over(button, theme.side_panel_edge, 1.0)) });
+            items.push(Item::Text {
+                rect,
+                text: tr(msg::GO_TO_ITS_TAB),
+                style: Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.terminal_text) },
+                align: Align::Centre,
+            });
+            go = Some(rect);
+        }
+        Detail_::Terminal(_) => {}
     }
-    items.push(Item::Text { rect: line_at(1.0), text: tr(msg::IN_ITS_OWN_TAB), style: body(theme.terminal_dim), align: Align::Left });
-    // A button the width of the list's rows would be lost on a wide side;
-    // it is as wide as a tab and sits on the content's left edge.
-    let go = Rect { x: pad, y: pad + 2.0 * line_h + space::BETWEEN_FRAMES, w: side::WIDTH / 2.0, h: line_h };
-    let button = over(ground, theme.text, selection::LIFT_IN);
-    items.push(Item::Round { rect: go, radius: radius::ROW, color: button, edge: Some(over(button, theme.side_panel_edge, 1.0)) });
-    items.push(Item::Text {
-        rect: go,
-        text: tr(msg::GO_TO_ITS_TAB),
-        style: Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.terminal_text) },
-        align: Align::Centre,
-    });
-    Right { items, go: Some(go) }
+    Right { items, go, terminal: None }
 }
 
 #[cfg(test)]
@@ -596,9 +701,22 @@ mod tests {
             for s in all {
                 assert!(s.size >= font::MIN, "{s:?}");
             }
-            let right = build_right(l.row(&first), 600.0, 700.0, look::theme(dark), 1.0, &same);
-            for s in styles(&right.items) {
-                assert!(s.size >= font::MIN, "{s:?}");
+            let row = l.row(&first);
+            let loan = crate::lend::Loan { group: first.clone(), terminal: "0x0000000000000001".into() };
+            for detail in [
+                Detail_::NothingSelected,
+                Detail_::NoSupervisor { group: first.clone() },
+                Detail_::SupervisorGone { group: first.clone() },
+                Detail_::Elsewhere(loan.clone()),
+                Detail_::TakenBack(loan.clone()),
+                Detail_::Terminal(loan.clone()),
+            ] {
+                let right = build_right(&detail, row, 600.0, 700.0, look::theme(dark), 1.0, false, &same);
+                let all = styles(&right.items);
+                assert!(!all.is_empty());
+                for s in all {
+                    assert!(s.size >= font::MIN, "{s:?}");
+                }
             }
         }
     }
@@ -835,25 +953,82 @@ mod tests {
         assert_eq!(over(base, Rgba { a: 0.5, ..WHITE }, 1.0), over(base, WHITE, 0.5));
     }
 
+    fn right(detail: &Detail_, row: Option<&Row>, in_terminal: bool) -> Right {
+        build_right(detail, row, 600.0, 700.0, look::theme(false), 1.0, in_terminal, &same)
+    }
+
     #[test]
-    fn the_right_side_offers_the_tab_only_when_the_group_has_a_supervisor() {
+    fn the_right_side_says_which_nothing_it_is_and_offers_the_tab_only_for_another_window() {
+        use crate::lend::Loan;
         let l = list();
-        let theme = look::theme(false);
         let with = l.rows().find(|r| r.steward.is_some()).expect("the fixture has a group with a supervisor");
-        let right = build_right(Some(with), 600.0, 700.0, theme, 1.0, &same);
-        assert!(right.go.is_some());
-        assert!(texts(&right.items).contains(&with.id));
-        assert!(texts(&right.items).contains(&msg::IN_ITS_OWN_TAB.to_string()));
+        let loan = Loan { group: with.id.clone(), terminal: with.steward.clone().unwrap() };
 
-        let mut without = with.clone();
-        without.steward = None;
-        let right = build_right(Some(&without), 600.0, 700.0, theme, 1.0, &same);
-        assert!(right.go.is_none());
-        assert!(texts(&right.items).contains(&msg::NO_SUPERVISOR.to_string()));
+        let r = right(&Detail_::Elsewhere(loan.clone()), Some(with), false);
+        assert!(r.go.is_some() && r.terminal.is_none());
+        assert!(texts(&r.items).contains(&with.id));
+        assert!(texts(&r.items).contains(&msg::IN_ITS_OWN_TAB.to_string()));
+        assert!(texts(&r.items).contains(&msg::GO_TO_ITS_TAB.to_string()));
 
-        let right = build_right(None, 600.0, 700.0, theme, 1.0, &same);
-        assert!(right.go.is_none());
-        assert_eq!(texts(&right.items), vec![msg::NO_SELECTION.to_string()]);
+        let r = right(&Detail_::NoSupervisor { group: with.id.clone() }, Some(with), false);
+        assert!(r.go.is_none() && r.terminal.is_none());
+        assert!(texts(&r.items).contains(&msg::NO_SUPERVISOR.to_string()));
+
+        let r = right(&Detail_::SupervisorGone { group: with.id.clone() }, Some(with), false);
+        assert!(r.go.is_none() && r.terminal.is_none());
+        assert!(texts(&r.items).contains(&lend_msg::GONE.to_string()));
+
+        let r = right(&Detail_::TakenBack(loan), Some(with), false);
+        assert!(r.go.is_none() && r.terminal.is_none());
+        assert!(texts(&r.items).contains(&msg::IN_ITS_OWN_TAB.to_string()));
+
+        let r = right(&Detail_::NothingSelected, None, false);
+        assert!(r.go.is_none() && r.terminal.is_none());
+        assert_eq!(texts(&r.items), vec![msg::NO_SELECTION.to_string()]);
+    }
+
+    #[test]
+    fn a_borrowed_terminal_sits_under_the_title_bar_inside_the_frames_border() {
+        use crate::lend::Loan;
+        let l = list();
+        let with = l.rows().find(|r| r.steward.is_some()).unwrap();
+        let loan = Loan { group: with.id.clone(), terminal: with.steward.clone().unwrap() };
+        let r = right(&Detail_::Terminal(loan), Some(with), false);
+        let t = r.terminal.expect("the terminal has a place");
+        assert_eq!(t, terminal_rect(600.0, 700.0));
+        assert_eq!((t.x, t.y), (pane::SUPERVISOR_BORDER, pane::BAR_HEIGHT));
+        assert_eq!(t.x + t.w, 600.0 - pane::SUPERVISOR_BORDER);
+        assert_eq!(t.y + t.h, 700.0 - pane::SUPERVISOR_BORDER);
+        assert!(r.go.is_none());
+        // The bar says whose it is, what it is, and its state.
+        let said = texts(&r.items);
+        assert!(said.contains(&with.id) && said.contains(&lend_msg::SUPERVISOR.to_string()) && said.contains(&with.word), "{said:?}");
+        // Nothing but the terminal's own ground is drawn where the terminal goes.
+        for item in &r.items {
+            let b = rect_of(item);
+            let overlaps = b.x < t.x + t.w && b.x + b.w > t.x && b.y < t.y + t.h && b.y + b.h > t.y;
+            let is_frame = matches!(item, Item::Round { .. });
+            let is_ground = matches!(item, Item::Fill { rect, .. } if *rect == t);
+            assert!(!overlaps || is_frame || is_ground, "{item:?} is drawn over the terminal");
+        }
+        // A window too small for one has an empty place, not a negative one.
+        assert_eq!(terminal_rect(4.0, 10.0).w, 0.0);
+        assert_eq!(terminal_rect(4.0, 10.0).h, 0.0);
+    }
+
+    #[test]
+    fn the_frames_edge_says_whether_the_terminal_in_it_has_the_keyboard() {
+        use crate::lend::Loan;
+        let l = list();
+        let with = l.rows().find(|r| r.steward.is_some()).unwrap();
+        let loan = Loan { group: with.id.clone(), terminal: with.steward.clone().unwrap() };
+        let edge_of = |r: &Right| match &r.items[0] {
+            Item::Round { edge, .. } => *edge,
+            other => panic!("the frame is drawn first, not {other:?}"),
+        };
+        let resting = right(&Detail_::Terminal(loan.clone()), Some(with), false);
+        let typing = right(&Detail_::Terminal(loan), Some(with), true);
+        assert_ne!(edge_of(&resting), edge_of(&typing));
     }
 
     #[test]

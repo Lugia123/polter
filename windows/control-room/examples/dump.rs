@@ -170,6 +170,62 @@ fn main() {
         println!("seen row={} {said}", r.id);
     }
 
+    // Which terminal is shown on the right, through one script of events:
+    // what each asks to be done, in order, and what the right side shows
+    // after it. (`Place::Elsewhere` is this host's own and is not in the
+    // script; the crate's tests hold it.)
+    {
+        use polter_control_room::lend::{Detail as Shows, Effect, Event, Lending, Place};
+        let sel = |g: Option<&str>, s: Option<&str>, here: bool| Event::Selected {
+            group: g.map(str::to_string),
+            supervisor: s.map(str::to_string),
+            place: if here { Place::Here } else { Place::Gone },
+        };
+        let t = |s: &str| s.to_string();
+        let script: Vec<(&str, Event)> = vec![
+            ("select a/t1", sel(Some("a"), Some("t1"), true)),
+            ("select b/t2", sel(Some("b"), Some("t2"), true)),
+            ("select b/t2 again", sel(Some("b"), Some("t2"), true)),
+            ("select c/t2", sel(Some("c"), Some("t2"), true)),
+            ("select d/none", sel(Some("d"), None, false)),
+            ("select a/t1", sel(Some("a"), Some("t1"), true)),
+            ("reclaim t1", Event::Reclaimed { terminal: t("t1") }),
+            ("select a/t1", sel(Some("a"), Some("t1"), true)),
+            ("ask", Event::AskedFor),
+            ("ask again", Event::AskedFor),
+            ("home gone t9", Event::HomeGone { terminal: t("t9") }),
+            ("home gone t1", Event::HomeGone { terminal: t("t1") }),
+            ("select a/t1 gone", sel(Some("a"), Some("t1"), false)),
+            ("select a/t1", sel(Some("a"), Some("t1"), true)),
+            ("select a/t1 gone", sel(Some("a"), Some("t1"), false)),
+            ("select a/t1", sel(Some("a"), Some("t1"), true)),
+            ("close", Event::Closing),
+            ("close again", Event::Closing),
+            ("select nothing", sel(None, None, false)),
+        ];
+        let mut lending = Lending::default();
+        for (n, (name, event)) in script.into_iter().enumerate() {
+            let effects: Vec<String> = lending
+                .handle(event)
+                .into_iter()
+                .map(|e| match e {
+                    Effect::GiveBack { terminal, to_home, focus } => format!("back({terminal},home={to_home},focus={focus})"),
+                    Effect::Borrow(loan) => format!("borrow({},{})", loan.group, loan.terminal),
+                })
+                .collect();
+            let shows = match lending.detail() {
+                Shows::NothingSelected => "nothing".to_string(),
+                Shows::NoSupervisor { group } => format!("no-supervisor({group})"),
+                Shows::SupervisorGone { group } => format!("gone({group})"),
+                Shows::Elsewhere(loan) => format!("elsewhere({},{})", loan.group, loan.terminal),
+                Shows::TakenBack(loan) => format!("taken-back({},{})", loan.group, loan.terminal),
+                Shows::Terminal(loan) => format!("terminal({},{})", loan.group, loan.terminal),
+            };
+            let loan = lending.loan().map_or("-".to_string(), |l| format!("{},{}", l.group, l.terminal));
+            println!("lend {n} {} does=[{}] shows={shows} loan={loan}", quote(name), effects.join(" "));
+        }
+    }
+
     let lay = ListLayout::new(&l, height);
     println!("size w={:.3} h={:.3}", lay.width, lay.height);
     rect("header", lay.header);

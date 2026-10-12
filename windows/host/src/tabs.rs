@@ -630,6 +630,51 @@ pub struct WindowState {
     /// somebody is reading, which is the entire fault being repaired here. A
     /// window has a handful of panes; the string is cheap.
     pub last_layout: Option<String>,
+    /// The pane the control room is showing on its right-hand side: the
+    /// selected group's supervisor, when that terminal is in a tab of this
+    /// same window (`polter_control_room::lend`).
+    ///
+    /// **The pane does not leave its tab.** It stays in its tab's tree and
+    /// its `panes`, so closing it, splitting beside it and saving its tab
+    /// find it where they always did; all this changes is where `layout`
+    /// puts its window while the control room's tab is in front. With any
+    /// other tab in front this is not looked at -- see `shown_on_loan`.
+    pub lent: Option<Lent>,
+}
+
+/// One pane on loan to the control room.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Lent {
+    pub pane: PaneId,
+    /// The person clicked in it, so the keyboard is in the terminal and not
+    /// on the list.
+    pub keyboard: bool,
+}
+
+impl WindowState {
+    /// The pane shown in the control room **right now**: one is on loan and
+    /// the control room's tab is the one in front. Everything that treats a
+    /// pane differently for being on loan asks this, so that a loan nobody
+    /// has cleared yet means nothing once another tab is in front.
+    pub fn shown_on_loan(&self) -> Option<Lent> {
+        let lent = self.lent?;
+        match self.tabs.get(self.active).map(|t| t.kind()) {
+            Some(Kind::ControlRoom) => Some(lent),
+            Some(Kind::Terminal) | None => None,
+        }
+    }
+
+    /// The pane typing goes to: the front tab's focused pane, or -- with
+    /// the control room in front -- the terminal shown in it, once the
+    /// person has clicked there.
+    fn typing_pane(&self) -> Option<&Pane> {
+        if let Some(lent) = self.shown_on_loan() {
+            if polter_control_room::lend::keyboard_in_terminal(true, lent.keyboard) {
+                return self.tabs.iter().flat_map(|t| t.panes().iter()).find(|p| p.id == lent.pane);
+            }
+        }
+        self.tabs.get(self.active).and_then(|t| t.focused_pane())
+    }
 }
 
 impl WindowState {
@@ -670,6 +715,7 @@ impl WindowState {
             initial,
             last_pane_cwd,
             last_layout,
+            lent,
         } = self;
         let listed: Vec<String> = tabs
             .iter()
@@ -677,7 +723,7 @@ impl WindowState {
             .collect();
         let active_id = tabs.get(*active).map(|t| t.id.0).unwrap_or(0);
         format!(
-            "frame=0x{:x} id={} tabs=[{}] active={} n={} panes={} room={} ops={} min={}x{} max={}x{} \
+            "frame=0x{:x} id={} tabs=[{}] active={} n={} panes={} room={} lent={} ops={} min={}x{} max={}x{} \
              prefullscreen={} scale={:.2} initial={} lastcwd={} lastlayout={}",
             frame,
             id,
@@ -693,6 +739,12 @@ impl WindowState {
                     Kind::ControlRoom => true,
                 })
                 .count(),
+            // The pane on loan to the control room, and whether the
+            // keyboard is in it: `none`, `7`, `7+kbd`.
+            match lent {
+                Some(l) => format!("{}{}", l.pane, if l.keyboard { "+kbd" } else { "" }),
+                None => "none".to_string(),
+            },
             ops.len(),
             min_w,
             min_h,
@@ -1723,6 +1775,7 @@ pub(crate) fn add_window(frame: HWND) {
             initial: None,
             last_pane_cwd: None,
             last_layout: None,
+            lent: None,
         });
         Some(ws.len())
     });
@@ -2032,12 +2085,13 @@ pub fn layout(frame: HWND) {
     // Pure work under the lock, Windows calls after it: `SetWindowPos` sends
     // WM_SIZE back into this thread, which takes the same lock.
     #[allow(clippy::type_complexity)]
-    let (place, hide, orphans, shape_changed, room): (
+    let (place, hide, orphans, shape_changed, room, lent_placed): (
         Vec<(PaneId, HWND, TreeRect)>,
         Vec<(PaneId, HWND)>,
         Vec<PaneId>,
         bool,
         Option<(HWND, Option<TreeRect>)>,
+        Option<HWND>,
     ) = {
         let mut orphans: Vec<PaneId> = Vec::new();
         let Some(mut win) = window(frame) else {
@@ -2050,6 +2104,23 @@ pub fn layout(frame: HWND) {
         let mut place = Vec::new();
         let mut hide = Vec::new();
         let mut room: Option<(HWND, Option<TreeRect>)> = None;
+        // The pane on loan to the control room, and where it goes: the
+        // place `scene::terminal_rect` gives a terminal inside the right
+        // side `Room` gives, in this window's pixels. The same two the
+        // panel draws its frame from, so the frame and the terminal cannot
+        // disagree about where the terminal is.
+        let on_loan = win.shown_on_loan();
+        let loan_rect: Option<TreeRect> = on_loan.and_then(|_| {
+            use polter_control_room::{layout::Room, scene};
+            let scale = win.scale.max(0.1);
+            let side = Room::new(bounds.w / scale, bounds.h / scale).right;
+            let t = scene::terminal_rect(side.w, side.h);
+            let px = |v: f64| (v * scale).round();
+            let (w, h) = (px(t.w), px(t.h));
+            // A side too narrow for a terminal shows none.
+            (w >= 1.0 && h >= 1.0).then(|| TreeRect::new(bounds.x + px(side.x + t.x), bounds.y + px(side.y + t.y), w, h))
+        });
+        let mut lent_placed: Option<HWND> = None;
         // **This window's tabs, not every tab in the process.** While there
         // was one window the two were the same list, and iterating all of
         // them was correct by accident. With two, the accident becomes a
@@ -2075,7 +2146,19 @@ pub fn layout(frame: HWND) {
                 }
             };
             if i != win.active {
-                hide.extend(term.panes.iter().map(|p| (p.id, HWND(p.hwnd as *mut c_void))));
+                for p in term.panes.iter() {
+                    let hw = HWND(p.hwnd as *mut c_void);
+                    // The one pane the control room is showing goes where
+                    // its right-hand side has a place for a terminal; every
+                    // other pane of a tab that is not in front is hidden.
+                    match on_loan.filter(|l| l.pane == p.id).and(loan_rect) {
+                        Some(r) => {
+                            place.push((p.id, hw, r));
+                            lent_placed = Some(hw);
+                        }
+                        None => hide.push((p.id, hw)),
+                    }
+                }
                 continue;
             }
             let laid = term.tree.layout(bounds);
@@ -2150,7 +2233,7 @@ pub fn layout(frame: HWND) {
         let shape_changed = win.last_layout.as_deref() != Some(shape.as_str());
         win.last_layout = Some(shape);
 
-        (place, hide, orphans, shape_changed, room)
+        (place, hide, orphans, shape_changed, room, lent_placed)
     };
 
     for id in orphans {
@@ -2335,6 +2418,12 @@ pub fn layout(frame: HWND) {
                 }
             }
             None => {}
+        }
+        // The terminal shown in the control room is a sibling of its panel
+        // and lies inside it: it goes on top, and the panel -- which clips
+        // its siblings -- does not paint where it is.
+        if let Some(hw) = lent_placed {
+            let _ = SetWindowPos(hw, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
         let _ = InvalidateRect(Some(frame), None, false);
     }
@@ -2967,7 +3056,14 @@ fn split_pane(
             );
             return false;
         };
-        (bounds, idx, acting_pane(term, at), term.tree.clone())
+        let acting = acting_pane(term, at);
+        // Not from the terminal the control room is showing: the split
+        // would open in its own tab, where nobody is looking.
+        if !polter_control_room::lend::may_split(win.shown_on_loan().is_some_and(|l| l.pane == acting)) {
+            wlogf!(frame, "[split] refused: pane {} is shown in the control room; a split would open in its own tab, out of sight", acting);
+            return false;
+        }
+        (bounds, idx, acting, term.tree.clone())
     };
 
     let id = take_id();
@@ -3117,6 +3213,7 @@ fn close_pane(frame: HWND, id: PaneId) -> bool {
 
     free_pane(id, hwnd, surface);
     logf!("[pane] {} closed", id);
+    forget_a_loan_that_went(frame);
 
     if tab_empty {
         destroy_tab_at(frame, tab_idx);
@@ -3525,6 +3622,22 @@ pub fn close_tab_mode_asking(frame: HWND, mode: i32) {
 /// Close one pane **after asking**, for the path where the core already
 /// answered the question and the host is only carrying it.
 pub fn close_pane_asking(frame: HWND, id: PaneId) {
+    // The core asks only about a close the person asked for. Asked of the
+    // terminal the control room is showing, what closes is the control
+    // room's tab: the terminal goes home with its program running, and
+    // there is nothing to ask about (`lend::close_of`).
+    let on_loan = window(frame).is_some_and(|w| w.shown_on_loan().is_some_and(|l| l.pane == id));
+    match polter_control_room::lend::close_of(on_loan, true) {
+        polter_control_room::lend::CloseOf::TheControlRoom => {
+            let room = window(frame).and_then(|w| w.tabs.get(w.active).map(|t| t.id));
+            wlogf!(frame, "[close] pane {} is shown in the control room: closing the control room's tab instead; the terminal goes home", id);
+            if let Some(room) = room {
+                close_tab(frame, room);
+            }
+            return;
+        }
+        polter_control_room::lend::CloseOf::ThePane => {}
+    }
     if !ask(frame, Subject::Pane) {
         wlogf!(frame, "[close] pane {} kept", id);
         return;
@@ -4601,6 +4714,10 @@ fn move_tab_to_new_window(
     set_active(dest, 0);
     crate::uia::tabs_changed(frame);
     crate::uia::tabs_changed(dest);
+    // The control room, or the terminal it was showing, may now be in the
+    // other window: a terminal is shown only from a tab of the control
+    // room's own.
+    crate::control_room::request_sync();
     wlogf!(
         frame,
         "[tab] moved {:?} out to {}; {} tab(s) left here",
@@ -4657,6 +4774,73 @@ pub fn perform_hosted(frame: HWND, what: polter_control_room::reach::Host, from:
         Host::CommandPalette => crate::palette::request_toggle(Some(frame)),
         Host::ControlRoom => post_op(frame, Op::ToggleControlRoom, from),
     }
+}
+
+/// Where the terminal the core names `key` is: its window and its pane.
+// window-free: keyed by a terminal's id, which is unique in the process
+pub fn place_of_terminal(key: &str) -> Option<(HWND, PaneId)> {
+    // The surfaces first, then the question to the core with the lock gone.
+    let panes: Vec<(isize, PaneId, usize)> = with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter().flat_map(|t| t.panes().iter()).map(move |p| (w.frame, p.id, p.surface)))
+            .collect()
+    });
+    panes
+        .into_iter()
+        .find(|(_, _, s)| *s != 0 && rules::key(unsafe { (api().surface_poltergeist_id)(*s as Surface) }) == key)
+        .map(|(frame, pane, _)| (HWND(frame as *mut c_void), pane))
+}
+
+/// A pane has just been freed. If it was the one on loan to the control
+/// room, the loan names nothing now: it is dropped here, at once, so that
+/// nothing between this and the control room's own reckoning can go
+/// looking for a pane that is gone -- and the control room is told to
+/// reckon again (`lend`'s "its home went").
+fn forget_a_loan_that_went(frame: HWND) {
+    let went = match window(frame) {
+        Some(mut win) => match win.lent {
+            Some(lent) if !win.tabs.iter().flat_map(|t| t.panes().iter()).any(|p| p.id == lent.pane) => {
+                win.lent = None;
+                true
+            }
+            Some(_) | None => false,
+        },
+        None => false,
+    };
+    if went {
+        wlogf!(frame, "[control-room] the pane on loan was closed; the loan is dropped");
+    }
+    crate::control_room::request_sync();
+}
+
+/// Put a pane of this window on loan to the control room, or take the loan
+/// away (`None`). The keyboard starts on the list. Only the model changes;
+/// the caller lays the window out.
+pub fn set_lent(frame: HWND, pane: Option<PaneId>) {
+    if let Some(mut win) = window(frame) {
+        let keyboard = match (win.lent, pane) {
+            // The same pane again keeps where the keyboard was.
+            (Some(was), Some(now)) if was.pane == now => was.keyboard,
+            _ => false,
+        };
+        win.lent = pane.map(|pane| Lent { pane, keyboard });
+    }
+}
+
+/// The control room's panel took the keyboard: it is on the list, not in
+/// the terminal shown beside it.
+pub fn keyboard_on_the_list(frame: HWND) {
+    if let Some(mut win) = window(frame) {
+        if let Some(lent) = win.lent {
+            win.lent = Some(Lent { keyboard: false, ..lent });
+        }
+    }
+}
+
+/// Whether the terminal the control room of this window is showing has the
+/// keyboard.
+pub fn keyboard_in_lent(frame: HWND) -> bool {
+    window(frame).is_some_and(|w| w.shown_on_loan().is_some_and(|l| l.keyboard))
 }
 
 /// Every control-room tab in the application, as `(frame, tab)`.
@@ -4904,7 +5088,12 @@ pub fn focus_active(frame: HWND) {
     let target = match window(frame) {
         Some(w) => match w.tabs.get(w.active).map(|t| t.front()) {
             Some(Front::Pane(p)) => Target::Pane(p.hwnd),
-            Some(Front::Room(hwnd)) => Target::Room(hwnd),
+            // With a terminal shown in the control room and the person
+            // having clicked in it, the keyboard is the terminal's.
+            Some(Front::Room(hwnd)) => match w.shown_on_loan().filter(|l| l.keyboard).and_then(|_| w.typing_pane()) {
+                Some(p) => Target::Pane(p.hwnd),
+                None => Target::Room(hwnd),
+            },
             Some(Front::NoPane) => Target::Nothing,
             None => Target::Nothing,
         },
@@ -4991,8 +5180,7 @@ pub fn set_initial_input(cmd: &str) {
 
 /// The window of the active tab, or a null HWND when there is none.
 pub fn active_hwnd(frame: HWND) -> HWND {
-    let found = window(frame)
-        .and_then(|w| w.tabs.get(w.active).and_then(|t| t.focused_pane()).map(|p| p.hwnd));
+    let found = window(frame).and_then(|w| w.typing_pane().map(|p| p.hwnd));
     match found {
         Some(hwnd) => HWND(hwnd as *mut c_void),
         None => HWND(std::ptr::null_mut()),
@@ -5024,7 +5212,12 @@ pub fn pane_place(hwnd: HWND) -> Option<(HWND, bool)> {
             w.tabs
                 .iter()
                 .position(|t| t.panes().iter().any(|p| p.hwnd == key))
-                .map(|i| (HWND(w.frame as *mut c_void), i == w.active))
+                // On screen: its tab is in front, or it is the pane the
+                // control room is showing.
+                .map(|i| {
+                    let lent = w.shown_on_loan().is_some_and(|l| w.tabs[i].panes().iter().any(|p| p.id == l.pane && p.hwnd == key));
+                    (HWND(w.frame as *mut c_void), i == w.active || lent)
+                })
         })
     })
 }
@@ -5039,7 +5232,10 @@ pub fn surface_showing(surface: usize) -> Option<bool> {
             w.tabs
                 .iter()
                 .position(|t| t.panes().iter().any(|p| p.surface == surface))
-                .map(|i| i == w.active)
+                .map(|i| {
+                    let lent = w.shown_on_loan().is_some_and(|l| w.tabs[i].panes().iter().any(|p| p.id == l.pane && p.surface == surface));
+                    i == w.active || lent
+                })
         })
     })
 }
@@ -5054,7 +5250,7 @@ pub fn is_frame(hwnd: HWND) -> bool {
 /// goes in that window (#1012).
 pub fn active_pane_hwnd(frame: HWND) -> Option<HWND> {
     window(frame)
-        .and_then(|w| w.tabs.get(w.active).and_then(|t| t.focused_pane()).map(|p| p.hwnd))
+        .and_then(|w| w.typing_pane().map(|p| p.hwnd))
         .filter(|h| *h != 0)
         .map(|h| HWND(h as *mut c_void))
 }
@@ -5074,8 +5270,7 @@ pub fn any_visible_active_pane() -> Option<HWND> {
 
 /// The surface of the focused pane of the active tab -- "where typing goes".
 pub fn active_surface(frame: HWND) -> Surface {
-    let found = window(frame)
-        .and_then(|w| w.tabs.get(w.active).and_then(|t| t.focused_pane()).map(|p| p.surface));
+    let found = window(frame).and_then(|w| w.typing_pane().map(|p| p.surface));
     match found {
         Some(surface) => surface as Surface,
         None => std::ptr::null_mut(),
@@ -5434,6 +5629,20 @@ pub fn focus_pane_at(hwnd: HWND) {
         let was = (win.active, win.tabs.get(win.active).and_then(|t| t.focused()));
         // `pane_of` found this pane in this tab, so it is a terminal tab; a
         // tab at that index that is not one is a different tab.
+        // **A pane shown in the control room is clicked where the control
+        // room is.** Making its own tab the active one, which is what a
+        // click on a pane otherwise means, would switch away from the
+        // control room the moment the person clicked into the terminal it
+        // is showing. The keyboard goes into the terminal and the tab in
+        // front stays the control room's.
+        if let Some(lent) = win.shown_on_loan().filter(|l| l.pane == id) {
+            let had = lent.keyboard;
+            win.lent = Some(Lent { pane: id, keyboard: true });
+            if let Some(tab) = win.tabs.get_mut(tab_idx).and_then(|t| t.terminal_mut()) {
+                tab.focused = id;
+            }
+            break 'commit Some(!had);
+        }
         let Some(tab) = win.tabs.get_mut(tab_idx).and_then(|t| t.terminal_mut()) else {
             break 'commit None;
         };
@@ -5459,6 +5668,9 @@ pub fn focus_pane_at(hwnd: HWND) {
         layout(frame);
     }
     focus_active(frame);
+    // The frame the control room draws round a terminal it is showing says
+    // whether the keyboard is in it.
+    crate::control_room::repaint();
 }
 
 fn set_active(frame: HWND, idx: usize) {
@@ -5622,6 +5834,7 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
     for (id, hwnd, surface) in doomed {
         free_pane(id, hwnd, surface);
     }
+    forget_a_loan_that_went(frame);
     if let Some(hwnd) = room {
         // The panel is a window of ours with no surface behind it. What it
         // showed is the core's and is asked for again when it reopens;
@@ -5631,6 +5844,8 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
     }
     logf!("[close] tab index {} panes gone; laying out", idx);
     layout(frame);
+    // The terminal the control room was showing may have been in this tab.
+    crate::control_room::request_sync();
     wlogf!(frame, "[tab] closed index {}; count now {}", idx, count(frame));
     // Same rule as the creation side: the critical section ended far above.
     crate::uia::tabs_changed(frame);

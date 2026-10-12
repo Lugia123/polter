@@ -10,7 +10,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-09-27 20:52+0800\n"
+"POT-Creation-Date: 2026-10-12 23:49+0800\n"
 "PO-Revision-Date: 2026-09-16 15:45+0200\n"
 "Last-Translator: derVedro <dervedro@googlemail.com>\n"
 "Language-Team: Russian\n"
@@ -29,17 +29,19 @@ msgstr "Открыть в Ghostty"
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:12
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:197
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
-#: windows/host/src/main.rs:2525 windows/host/src/main.rs:2531
+#: windows/host/src/main.rs:2562 windows/host/src/main.rs:2568
 msgid "Authorize Clipboard Access"
 msgstr "Разрешить доступ к буферу обмена"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:17
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:17
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:201
 msgid "Deny"
 msgstr "Отклонить"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:18
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:18
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:200
 msgid "Allow"
 msgstr "Разрешить"
 
@@ -53,7 +55,10 @@ msgstr "Перезагрузите конфигурацию, чтобы снов
 
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
-#: src/apprt/gtk/class/application.zig:2221 windows/host/src/roles_ui.rs:2647
+#: src/apprt/gtk/class/application.zig:2225
+#: windows/host/src/project_picker.rs:337 windows/host/src/projects_ui.rs:621
+#: windows/host/src/projects_ui.rs:648 windows/host/src/projects_ui.rs:653
+#: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:2887
 msgid "Cancel"
 msgstr "Отмена"
 
@@ -64,6 +69,7 @@ msgid "Close"
 msgstr "Закрыть"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:6
+#: windows/host/src/general_ui.rs:1856
 msgid "Configuration Errors"
 msgstr "Ошибки конфигурации"
 
@@ -81,7 +87,8 @@ msgstr "Игнорировать"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:434 src/apprt/gtk/ui/1.5/window.blp:318
-#: windows/host/src/menu.rs:451
+#: windows/host/src/general_ui.rs:576 windows/host/src/general_ui.rs:842
+#: windows/host/src/menu.rs:495
 msgid "Reload Configuration"
 msgstr "Перезагрузить конфигурацию"
 
@@ -98,7 +105,7 @@ msgid "Ghostty: Terminal Inspector"
 msgstr "Ghostty: Инспектор терминала"
 
 #: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:108
-#: windows/host/src/menu.rs:265
+#: windows/host/src/menu.rs:299
 msgid "Find…"
 msgstr "Найти…"
 
@@ -129,17 +136,17 @@ msgstr ""
 "ввода."
 
 #: src/apprt/gtk/ui/1.2/surface.blp:107 windows/host/src/ctxmenu.rs:129
-#: windows/host/src/menu.rs:309
+#: windows/host/src/menu.rs:343
 msgid "Read-only"
 msgstr "Режим только для чтения"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:311 src/apprt/gtk/ui/1.5/window.blp:203
-#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:275
+#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:309
 msgid "Copy"
 msgstr "Скопировать"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:208
-#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:276
+#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:310
 msgid "Paste"
 msgstr "Вставить"
 
@@ -165,29 +172,29 @@ msgstr "Переименовать область…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:348 src/apprt/gtk/ui/1.5/window.blp:180
 #: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
-#: windows/host/src/ctxmenu.rs:125 windows/host/src/menu.rs:243
+#: windows/host/src/ctxmenu.rs:125 windows/host/src/menu.rs:275
 msgid "Split Up"
 msgstr "Разделить вверх"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:354 src/apprt/gtk/ui/1.5/window.blp:185
 #: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
-#: windows/host/src/ctxmenu.rs:124 windows/host/src/menu.rs:242
+#: windows/host/src/ctxmenu.rs:124 windows/host/src/menu.rs:274
 msgid "Split Down"
 msgstr "Разделить вниз"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:360 src/apprt/gtk/ui/1.5/window.blp:190
 #: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
-#: windows/host/src/ctxmenu.rs:123 windows/host/src/menu.rs:241
+#: windows/host/src/ctxmenu.rs:123 windows/host/src/menu.rs:273
 msgid "Split Left"
 msgstr "Разделить влево"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:366 src/apprt/gtk/ui/1.5/window.blp:195
 #: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
-#: windows/host/src/ctxmenu.rs:122 windows/host/src/menu.rs:240
+#: windows/host/src/ctxmenu.rs:122 windows/host/src/menu.rs:272
 msgid "Split Right"
 msgstr "Разделить вправо"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/menu.rs:245
+#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/menu.rs:277
 msgid "Close Split"
 msgstr "Закрыть область"
 
@@ -203,17 +210,17 @@ msgstr "Переименовать вкладку…"
 #: src/apprt/gtk/ui/1.2/surface.blp:386 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
 #: src/input/command.zig:427 windows/host/src/ctxmenu.rs:110
-#: windows/host/src/menu.rs:220 windows/host/src/strip.rs:1752
+#: windows/host/src/menu.rs:252 windows/host/src/strip.rs:1842
 msgid "New Tab"
 msgstr "Новая вкладка"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:242
-#: src/input/command.zig:668 windows/host/src/ctxmenu.rs:116
-#: windows/host/src/menu.rs:246 windows/host/src/strip.rs:1329
+#: src/input/command.zig:674 windows/host/src/ctxmenu.rs:116
+#: windows/host/src/menu.rs:278 windows/host/src/strip.rs:1358
 msgid "Close Tab"
 msgstr "Закрыть вкладку"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:476
+#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:520
 msgid "Window"
 msgstr "Окно"
 
@@ -222,12 +229,12 @@ msgid "Change Window Title…"
 msgstr "Переименовать окно…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:406 src/apprt/gtk/ui/1.5/window.blp:220
-#: src/input/command.zig:421 windows/host/src/menu.rs:219
+#: src/input/command.zig:421 windows/host/src/menu.rs:251
 msgid "New Window"
 msgstr "Новое окно"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:685 windows/host/src/menu.rs:247
+#: src/input/command.zig:691 windows/host/src/menu.rs:279
 msgid "Close Window"
 msgstr "Закрыть окно"
 
@@ -264,12 +271,12 @@ msgid "Main Menu"
 msgstr "Главное меню"
 
 #: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:192
-#: windows/host/src/menu.rs:294 windows/host/src/strip.rs:1759
+#: windows/host/src/menu.rs:328 windows/host/src/strip.rs:1849
 msgid "Command Palette"
 msgstr "Палитра команд"
 
 #: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:128
-#: windows/host/src/menu.rs:318
+#: windows/host/src/menu.rs:352
 msgid "Terminal Inspector"
 msgstr "Инспектор терминала"
 
@@ -277,7 +284,7 @@ msgstr "Инспектор терминала"
 msgid "About Ghostty"
 msgstr "О Ghostty"
 
-#: src/apprt/gtk/ui/1.5/window.blp:331 src/input/command.zig:757
+#: src/apprt/gtk/ui/1.5/window.blp:331 src/input/command.zig:769
 msgid "Quit"
 msgstr "Выход"
 
@@ -285,32 +292,32 @@ msgstr "Выход"
 msgid "Execute a command…"
 msgstr "Выполнить команду…"
 
-#: src/apprt/gtk/class/application.zig:1806
+#: src/apprt/gtk/class/application.zig:1810
 msgid "The keybind was revoked by the system."
 msgstr "Сочетание клавиш было отозвано системой."
 
-#: src/apprt/gtk/class/application.zig:1808
+#: src/apprt/gtk/class/application.zig:1812
 msgid "The keybind was denied by the system."
 msgstr "Сочетание клавиш было отклонено системой."
 
-#: src/apprt/gtk/class/application.zig:1819
+#: src/apprt/gtk/class/application.zig:1823
 msgid "Global keybind unavailable"
 msgstr "Глобальное сочетание клавиш недоступно"
 
-#: src/apprt/gtk/class/application.zig:2217
+#: src/apprt/gtk/class/application.zig:2221
 msgid "Export Terminal IO Events"
 msgstr "Экспортировать события ввода-вывода терминала"
 
-#: src/apprt/gtk/class/application.zig:2220
+#: src/apprt/gtk/class/application.zig:2224
 msgid "Export"
 msgstr "Экспортировать"
 
-#: src/apprt/gtk/class/application.zig:2739
+#: src/apprt/gtk/class/application.zig:2743
 msgid "Editing configuration file"
 msgstr "Редактирование файла конфигурации"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
-#: windows/host/src/main.rs:2533
+#: windows/host/src/main.rs:2570
 msgid ""
 "An application is attempting to write to the clipboard. The current "
 "clipboard contents are shown below."
@@ -319,7 +326,7 @@ msgstr ""
 "буфера обмена показано ниже."
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:202
-#: windows/host/src/main.rs:2527
+#: windows/host/src/main.rs:2564
 msgid ""
 "An application is attempting to read from the clipboard. The current "
 "clipboard contents are shown below."
@@ -328,12 +335,12 @@ msgstr ""
 "показано ниже."
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2537
+#: windows/host/src/main.rs:2574
 msgid "Warning: Potentially Unsafe Paste"
 msgstr "Внимание! Потенциально небезопасная вставка"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2539
+#: windows/host/src/main.rs:2576
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -346,17 +353,17 @@ msgid "Quit Ghostty?"
 msgstr "Выйти из Ghostty?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
-#: windows/host/src/tabs.rs:3070
+#: windows/host/src/tabs.rs:3398
 msgid "Close Tab?"
 msgstr "Закрыть вкладку?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
-#: windows/host/src/tabs.rs:3071
+#: windows/host/src/tabs.rs:3399
 msgid "Close Window?"
 msgstr "Закрыть окно?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
-#: windows/host/src/tabs.rs:3072
+#: windows/host/src/tabs.rs:3400
 msgid "Close Split?"
 msgstr "Закрыть область?"
 
@@ -365,17 +372,17 @@ msgid "All terminal sessions will be terminated."
 msgstr "Все сессии терминала будут завершены."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
-#: windows/host/src/tabs.rs:3080
+#: windows/host/src/tabs.rs:3408
 msgid "All terminal sessions in this tab will be terminated."
 msgstr "Все сессии терминала в этой вкладке будут завершены."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
-#: windows/host/src/tabs.rs:3081
+#: windows/host/src/tabs.rs:3409
 msgid "All terminal sessions in this window will be terminated."
 msgstr "Все сессии терминала в этом окне будут завершены."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
-#: windows/host/src/tabs.rs:3082
+#: windows/host/src/tabs.rs:3410
 msgid "The currently running process in this split will be terminated."
 msgstr "Процесс, работающий в этой области, будет завершён."
 
@@ -558,7 +565,7 @@ msgstr "Уменьшить размер шрифта"
 msgid "Decrease the font size by 1 point."
 msgstr "Уменьшить размер шрифта на 1 пункт."
 
-#: src/input/command.zig:237 windows/host/src/menu.rs:290
+#: src/input/command.zig:237 windows/host/src/menu.rs:324
 msgid "Reset Font Size"
 msgstr "Сбросить размер шрифта"
 
@@ -575,7 +582,7 @@ msgid "Clear the screen and scrollback."
 msgstr "Очистить экран и историю вывода."
 
 #: src/input/command.zig:249 windows/host/src/ctxmenu.rs:106
-#: windows/host/src/menu.rs:284
+#: windows/host/src/menu.rs:318
 msgid "Select All"
 msgstr "Выделить всё"
 
@@ -840,7 +847,7 @@ msgstr "Переместить вкладку вправо"
 msgid "Move the current tab to the right."
 msgstr "Переместить текущую вкладку вправо."
 
-#: src/input/command.zig:446 windows/host/src/strip.rs:1332
+#: src/input/command.zig:446 windows/host/src/strip.rs:1361
 msgid "Move Tab to New Window"
 msgstr "Переместить вкладку в новое окно"
 
@@ -965,7 +972,7 @@ msgid "Toggle read-only mode for the current surface."
 msgstr "Включить или отключить режим только для чтения для текущей области."
 
 #: src/input/command.zig:557 windows/host/src/ctxmenu.rs:142
-#: windows/host/src/menu.rs:329 windows/host/src/strip.rs:1338
+#: windows/host/src/menu.rs:373 windows/host/src/strip.rs:1367
 msgid "Make This Terminal a Supervisor"
 msgstr ""
 
@@ -976,7 +983,7 @@ msgid ""
 msgstr ""
 
 #: src/input/command.zig:563 windows/host/src/ctxmenu.rs:147
-#: windows/host/src/menu.rs:330 windows/host/src/strip.rs:1339
+#: windows/host/src/menu.rs:374 windows/host/src/strip.rs:1368
 msgid "Toggle Supervision of This Terminal"
 msgstr ""
 
@@ -984,7 +991,7 @@ msgstr ""
 msgid "Report this terminal to the supervisor when its screen goes quiet."
 msgstr ""
 
-#: src/input/command.zig:594 windows/host/src/menu.rs:388
+#: src/input/command.zig:594 windows/host/src/menu.rs:432
 msgid "Hold This Terminal to Its Work"
 msgstr ""
 
@@ -995,7 +1002,7 @@ msgid ""
 msgstr ""
 
 #: src/input/command.zig:600 windows/host/src/ctxmenu.rs:152
-#: windows/host/src/menu.rs:331 windows/host/src/strip.rs:1340
+#: windows/host/src/menu.rs:375 windows/host/src/strip.rs:1369
 msgid "Keep Agents Out of This Terminal"
 msgstr ""
 
@@ -1005,7 +1012,7 @@ msgid ""
 "into it. Its tab wears a lock while the shield stands. Only you can set this."
 msgstr ""
 
-#: src/input/command.zig:606 windows/host/src/menu.rs:327
+#: src/input/command.zig:606 windows/host/src/menu.rs:371
 msgid "Terminal Conversations"
 msgstr ""
 
@@ -1013,204 +1020,478 @@ msgstr ""
 msgid "Open a terminal showing what the terminals have said to each other."
 msgstr ""
 
-#: src/input/command.zig:612 windows/host/src/menu.rs:406
+#: src/input/command.zig:612 windows/host/src/menu.rs:364
+#: windows/control-room/src/rules.rs:82
+msgid "Control Room"
+msgstr ""
+
+#: src/input/command.zig:613
+msgid ""
+"Go to the tab that lists every group by who is waiting for you, opening it "
+"if it is closed."
+msgstr ""
+
+#: src/input/command.zig:618 windows/host/src/menu.rs:450
 msgid "Equalize Splits"
 msgstr "Выровнять области"
 
-#: src/input/command.zig:613
+#: src/input/command.zig:619
 msgid "Equalize the size of all splits."
 msgstr "Выровнять размеры всех областей по сетке."
 
-#: src/input/command.zig:618 windows/host/src/menu.rs:428
+#: src/input/command.zig:624 windows/host/src/menu.rs:472
 msgid "Reset Window Size"
 msgstr "Сбросить размер окна"
 
-#: src/input/command.zig:619
+#: src/input/command.zig:625
 msgid "Reset the window size to the default."
 msgstr "Вернуть размер окна по умолчанию."
 
-#: src/input/command.zig:624
+#: src/input/command.zig:630
 msgid "Toggle Inspector"
 msgstr "Переключить инспектор"
 
-#: src/input/command.zig:625
+#: src/input/command.zig:631
 msgid "Toggle the inspector."
 msgstr "Показать или скрыть инспектор."
 
-#: src/input/command.zig:630
+#: src/input/command.zig:636
 msgid "Show the GTK Inspector"
 msgstr "Показать инспектор GTK"
 
-#: src/input/command.zig:631
+#: src/input/command.zig:637
 msgid "Show the GTK inspector."
 msgstr "Показать инспектор GTK."
 
-#: src/input/command.zig:636
+#: src/input/command.zig:642
 msgid "Show On-Screen Keyboard"
 msgstr "Показать экранную клавиатуру"
 
-#: src/input/command.zig:637
+#: src/input/command.zig:643
 msgid "Show the on-screen keyboard if present."
 msgstr "Показать экранную клавиатуру, если она доступна."
 
-#: src/input/command.zig:643
+#: src/input/command.zig:649
 msgid "Open Config Using OS editor"
 msgstr "Открыть конфигурацию в системном редакторе"
 
-#: src/input/command.zig:644
+#: src/input/command.zig:650
 msgid "Open the config file with the OS's default editor."
 msgstr "Открыть файл конфигурации в редакторе по умолчанию."
 
-#: src/input/command.zig:648
+#: src/input/command.zig:654
 msgid "Open Config in New Terminal Window"
 msgstr "Открыть конфигурацию в новом окне терминала"
 
-#: src/input/command.zig:649
+#: src/input/command.zig:655
 msgid "Open the config file in a new window using $EDITOR or $VISUAL."
 msgstr "Открыть файл конфигурации в новом окне с помощью $EDITOR или $VISUAL."
 
-#: src/input/command.zig:655
+#: src/input/command.zig:661
 msgid "Reload Config"
 msgstr "Перезагрузить конфигурацию"
 
-#: src/input/command.zig:656
+#: src/input/command.zig:662
 msgid "Reload the config file."
 msgstr "Перезагрузить файл конфигурации."
 
-#: src/input/command.zig:661
+#: src/input/command.zig:667
 msgid "Close Terminal"
 msgstr "Закрыть терминал"
 
-#: src/input/command.zig:662
+#: src/input/command.zig:668
 msgid "Close the current terminal."
 msgstr "Закрыть текущий терминал."
 
-#: src/input/command.zig:669
+#: src/input/command.zig:675
 msgid "Close the current tab."
 msgstr "Закрыть текущую вкладку."
 
-#: src/input/command.zig:673 windows/host/src/strip.rs:1330
-#: windows/host/src/tabs.rs:3073
+#: src/input/command.zig:679 windows/host/src/strip.rs:1359
+#: windows/host/src/tabs.rs:3401
 msgid "Close Other Tabs"
 msgstr "Закрыть другие вкладки"
 
-#: src/input/command.zig:674 windows/host/src/tabs.rs:3090
+#: src/input/command.zig:680 windows/host/src/tabs.rs:3418
 msgid "Close all tabs in this window except the current one."
 msgstr "Закрыть все остальные вкладки в этом окне."
 
-#: src/input/command.zig:678 windows/host/src/strip.rs:1331
-#: windows/host/src/tabs.rs:3074
+#: src/input/command.zig:684 windows/host/src/strip.rs:1360
+#: windows/host/src/tabs.rs:3402
 msgid "Close Tabs to the Right"
 msgstr "Закрыть вкладки справа"
 
-#: src/input/command.zig:679 windows/host/src/tabs.rs:3091
+#: src/input/command.zig:685 windows/host/src/tabs.rs:3419
 msgid "Close all tabs to the right of the current one."
 msgstr "Закрыть все вкладки справа от текущей."
 
-#: src/input/command.zig:686
+#: src/input/command.zig:692
 msgid "Close the current window."
 msgstr "Закрыть текущее окно."
 
-#: src/input/command.zig:691
+#: src/input/command.zig:697
 msgid "Close All Windows"
 msgstr "Закрыть все окна"
 
-#: src/input/command.zig:692
+#: src/input/command.zig:698
 msgid "Close all windows."
 msgstr "Закрыть все окна."
 
-#: src/input/command.zig:697
+#: src/input/command.zig:703
 msgid "Toggle Maximize"
 msgstr "Переключить развёрнутый режим окна"
 
-#: src/input/command.zig:698
+#: src/input/command.zig:704
 msgid "Toggle the maximized state of the current window."
 msgstr "Развернуть текущее окно или вернуть прежний размер."
 
-#: src/input/command.zig:703
+#: src/input/command.zig:709
 msgid "Toggle Fullscreen"
 msgstr "Переключить полноэкранный режим"
 
-#: src/input/command.zig:704
+#: src/input/command.zig:710
 msgid "Toggle the fullscreen state of the current window."
 msgstr "Показать текущее окно во весь экран или вернуть прежний размер."
 
-#: src/input/command.zig:709
+#: src/input/command.zig:715
 msgid "Toggle Window Decorations"
 msgstr "Переключить оформление окна"
 
-#: src/input/command.zig:710
+#: src/input/command.zig:716
 msgid "Toggle the window decorations."
 msgstr "Показать или скрыть оформление окна."
 
-#: src/input/command.zig:715
+#: src/input/command.zig:721
 msgid "Toggle Float on Top"
 msgstr "Переключить режим поверх всех окон"
 
-#: src/input/command.zig:716
+#: src/input/command.zig:722
 msgid "Toggle the float on top state of the current window."
 msgstr "Закрепить окно поверх остальных или снять закрепление."
 
-#: src/input/command.zig:721
+#: src/input/command.zig:727
 msgid "Toggle Secure Input"
 msgstr "Переключить защищённый ввод"
 
-#: src/input/command.zig:722
+#: src/input/command.zig:728
 msgid "Toggle secure input mode."
 msgstr "Включить или отключить режим защищённого ввода."
 
-#: src/input/command.zig:727
+#: src/input/command.zig:733
 msgid "Toggle Mouse Reporting"
 msgstr "Переключить передачу событий мыши"
 
-#: src/input/command.zig:728
+#: src/input/command.zig:734
 msgid "Toggle whether mouse events are reported to terminal applications."
 msgstr ""
 "Разрешить или запретить передачу событий мыши терминальным приложениям."
 
-#: src/input/command.zig:733
+#: src/input/command.zig:739
 msgid "Toggle Background Opacity"
 msgstr "Переключить прозрачность фона"
 
-#: src/input/command.zig:734
+#: src/input/command.zig:740
 msgid "Toggle the background opacity of a window that started transparent."
 msgstr "Изменить прозрачность у изначально прозрачного окна."
 
-#: src/input/command.zig:739
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/command.zig:745 src/input/screenshot.zig:107
+#: windows/settings-shell/src/general.rs:78
+msgid "Screenshot"
+msgstr "Снимок экрана"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/command.zig:746 src/input/screenshot.zig:115
+msgid ""
+"Freeze the screen, pick a window or drag a region, annotate it, and put the "
+"result on the clipboard."
+msgstr ""
+"Заморозить экран, выбрать окно или выделить область, добавить пометки и "
+"поместить результат в буфер обмена."
+
+#: src/input/command.zig:751
 msgid "Check for Updates"
 msgstr "Проверить обновления"
 
-#: src/input/command.zig:740
+#: src/input/command.zig:752
 msgid "Check for updates to the application."
 msgstr "Проверить наличие обновлений приложения."
 
-#: src/input/command.zig:745
+#: src/input/command.zig:757 windows/host/src/projects_ui.rs:1349
 msgid "Undo"
 msgstr "Отменить"
 
-#: src/input/command.zig:746
+#: src/input/command.zig:758
 msgid "Undo the last action."
 msgstr "Отменить последнее действие."
 
-#: src/input/command.zig:751
+#: src/input/command.zig:763
 msgid "Redo"
 msgstr "Повторить"
 
-#: src/input/command.zig:752
+#: src/input/command.zig:764
 msgid "Redo the last undone action."
 msgstr "Повторить последнее отменённое действие."
 
-#: src/input/command.zig:758
+#: src/input/command.zig:770
 msgid "Quit the application."
 msgstr "Выйти из приложения."
 
-#: src/input/command.zig:763
+#: src/input/command.zig:775
 msgid "Ghostty"
 msgstr "Ghostty"
 
-#: src/input/command.zig:764
+#: src/input/command.zig:776
 msgid "Put a little Ghostty in your terminal."
 msgstr "Вставить в терминал маленького Ghostty."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:84
+msgid "Select"
+msgstr "Выбор"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:85
+msgid "Rectangle"
+msgstr "Прямоугольник"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:86
+msgid "Ellipse"
+msgstr "Эллипс"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:87
+msgid "Straight Line"
+msgstr "Прямая линия"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:88
+msgid "Highlighter"
+msgstr "Маркер"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:89
+msgid "Number"
+msgstr "Номер"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:90
+msgid "Mosaic"
+msgstr "Мозаика"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:91
+msgid "Long Screenshot"
+msgstr "Длинный снимок"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:92
+msgid "Done"
+msgstr "Готово"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:93
+msgid "Color"
+msgstr "Цвет"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:94
+msgid "Thickness"
+msgstr "Толщина"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:95
+msgid "Block Size"
+msgstr "Размер блока"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:96 windows/host/src/strip.rs:1322
+msgid "Red"
+msgstr "Красный"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:97 windows/host/src/strip.rs:1323
+msgid "Orange"
+msgstr "Оранжевый"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:98 windows/host/src/strip.rs:1324
+msgid "Yellow"
+msgstr "Жёлтый"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:99 windows/host/src/strip.rs:1325
+msgid "Green"
+msgstr "Зелёный"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:100
+msgid "Cyan"
+msgstr "Голубой"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:101 windows/host/src/strip.rs:1319
+msgid "Blue"
+msgstr "Синий"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:102 windows/host/src/strip.rs:1320
+msgid "Purple"
+msgstr "Фиолетовый"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:103
+msgid "Black"
+msgstr "Чёрный"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:104
+msgid "White"
+msgstr "Белый"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:105
+msgid "Circle"
+msgstr "Круг"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:106
+msgid "Line"
+msgstr "Линия"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:108
+msgid "Screenshot annotations"
+msgstr "Пометки на снимке"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:109
+msgid "Text"
+msgstr "Текст"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:110
+msgid "Box"
+msgstr "Рамка"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:111
+msgid "Arrow"
+msgstr "Стрелка"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:112
+msgid "Pen"
+msgstr "Перо"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:113
+msgid "; "
+msgstr "; "
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:114
+msgid ". See "
+msgstr ". См. "
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:116
+msgid "The annotation font is missing, so the system font is used."
+msgstr "Шрифт для пометок отсутствует, поэтому используется системный шрифт."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:117
+msgid "Scroll down slowly. What comes into view is added at the bottom."
+msgstr "Медленно прокручивайте вниз. Появившаяся часть добавляется снизу."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:118
+msgid "Scroll slower"
+msgstr "Прокручивайте медленнее"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:119
+msgid "The height limit was reached."
+msgstr "Достигнут предел высоты."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:120
+msgid "The picture keeps changing, so nothing can be added."
+msgstr "Изображение постоянно меняется, поэтому ничего нельзя добавить."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:121
+msgid "{n} tiles, first {m} pasted"
+msgstr "частей: {n}, вставлены первые {m}"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:122
+msgid "whole image"
+msgstr "полное изображение"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig:123
+msgid "Scrolling down… Enter keeps what is joined so far, Esc cancels."
+msgstr "Прокрутка вниз… Enter оставляет уже склеенное, Esc отменяет."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig:124
+msgid ""
+"Scrolling for you needs the Accessibility permission, so scroll down slowly "
+"by hand."
+msgstr ""
+"Для автоматической прокрутки нужно разрешение «Универсальный доступ», "
+"поэтому медленно прокручивайте вниз вручную."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig:125
+msgid "The page could not be followed any further, so the picture ends here."
+msgstr ""
+"Страницу не удалось отследить дальше, поэтому изображение заканчивается "
+"здесь."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig:126 windows/host/src/plugins_ui.rs:525
+#: windows/host/src/project_picker.rs:323 windows/host/src/roles_ui.rs:2258
+#: windows/host/src/roles_ui.rs:2951 windows/host/src/roles_ui.rs:2968
+#: windows/host/src/roles_ui.rs:2982
+msgid "Save"
+msgstr "Сохранить"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig:127
+msgid "Saved to Downloads: {name}"
+msgstr "Сохранено в Загрузки: {name}"
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig:128
+msgid "The picture could not be saved."
+msgstr "Не удалось сохранить изображение."
+
+# Machine translation (2026-10-08), not reviewed by a speaker.
+#: src/input/screenshot.zig:129
+msgid "Copied"
+msgstr "Скопировано"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:130
+msgid "The screenshot shortcut could not be registered"
+msgstr "Не удалось зарегистрировать сочетание клавиш для снимка экрана"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:131
+msgid ""
+"Another application is already using it. Choose a different one with a "
+"`screenshot` keybind in the configuration."
+msgstr ""
+"Его уже использует другое приложение. Выберите другое с помощью keybind "
+"`screenshot` в конфигурации."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/input/screenshot.zig:132
+msgid "No settings match."
+msgstr "Нет подходящих настроек."
 
 #: src/cli/chat.zig:603
 msgid "all"
@@ -1228,260 +1509,260 @@ msgstr ""
 msgid "closed"
 msgstr ""
 
-#: src/cli/chat.zig:1855
+#: src/cli/chat.zig:1857
 msgid "Take the group \"{0}\" off this list?"
 msgstr ""
 
-#: src/cli/chat.zig:1860
+#: src/cli/chat.zig:1862
 msgid "Not one word of the conversation is deleted:"
 msgstr ""
 
-#: src/cli/chat.zig:1861
+#: src/cli/chat.zig:1863
 msgid "every day of it stays exactly as it is under"
 msgstr ""
 
-#: src/cli/chat.zig:1862
+#: src/cli/chat.zig:1864
 msgid "<state>/chat/, to be read and grepped later."
 msgstr ""
 
-#: src/cli/chat.zig:1863
+#: src/cli/chat.zig:1865
 msgid "What goes is one row of this list."
 msgstr ""
 
-#: src/cli/chat.zig:1865
+#: src/cli/chat.zig:1867
 msgid "y to confirm    any other key cancels"
 msgstr ""
 
-#: src/cli/chat.zig:1930
+#: src/cli/chat.zig:1932
 msgid "GROUPS   d removes"
 msgstr ""
 
-#: src/cli/chat.zig:1934
+#: src/cli/chat.zig:1936
 msgid "  (no groups yet)"
 msgstr ""
 
-#: src/cli/chat.zig:1982
+#: src/cli/chat.zig:1984
 msgid "MEMBERS"
 msgstr ""
 
-#: src/cli/chat.zig:2208
+#: src/cli/chat.zig:2210
 msgid "No groups. Tasks will appear here once a supervisor makes one."
 msgstr ""
 
-#: src/cli/chat.zig:2217
+#: src/cli/chat.zig:2219
 msgid "No tasks in this group yet."
 msgstr ""
 
-#: src/cli/chat.zig:2257 src/cli/chat.zig:2262
+#: src/cli/chat.zig:2259 src/cli/chat.zig:2264
 msgid "filter"
 msgstr ""
 
-#: src/cli/chat.zig:2274
+#: src/cli/chat.zig:2276
 msgid "Nothing matches this filter. Press f to change it."
 msgstr ""
 
-#: src/cli/chat.zig:2366
+#: src/cli/chat.zig:2368
 msgid "No groups. There will be numbers here once a supervisor makes one."
 msgstr ""
 
-#: src/cli/chat.zig:2493
+#: src/cli/chat.zig:2495
 msgid "Waiting on you"
 msgstr ""
 
-#: src/cli/chat.zig:2495 src/cli/chat.zig:2771
+#: src/cli/chat.zig:2497 src/cli/chat.zig:2773
 msgid "  The task record has not been read yet."
 msgstr ""
 
-#: src/cli/chat.zig:2497
+#: src/cli/chat.zig:2499
 msgid "  Nothing open."
 msgstr ""
 
-#: src/cli/chat.zig:2513 src/cli/chat.zig:2526
+#: src/cli/chat.zig:2515 src/cli/chat.zig:2528
 msgid "with nothing happening"
 msgstr ""
 
-#: src/cli/chat.zig:2523
+#: src/cli/chat.zig:2525
 msgid "#{0}  {1} {2}  {3}"
 msgstr ""
 
-#: src/cli/chat.zig:2532
+#: src/cli/chat.zig:2534
 msgid "  and {0} more still open"
 msgstr ""
 
-#: src/cli/chat.zig:2539
+#: src/cli/chat.zig:2541
 msgid "Where it stopped"
 msgstr ""
 
-#: src/cli/chat.zig:2547
+#: src/cli/chat.zig:2549
 msgid "  a day {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2551
+#: src/cli/chat.zig:2553
 msgid "  last message {0} ago"
 msgstr ""
 
-#: src/cli/chat.zig:2558
+#: src/cli/chat.zig:2560
 msgid "  longest silence {0} (from {1})"
 msgstr ""
 
-#: src/cli/chat.zig:2567
+#: src/cli/chat.zig:2569
 msgid "Saying · doing"
 msgstr ""
 
-#: src/cli/chat.zig:2569
+#: src/cli/chat.zig:2571
 msgid "  Nobody has been in this group."
 msgstr ""
 
-#: src/cli/chat.zig:2603 src/cli/chat.zig:2617
+#: src/cli/chat.zig:2605 src/cli/chat.zig:2619
 msgid "said"
 msgstr ""
 
-#: src/cli/chat.zig:2604 src/cli/chat.zig:2620
+#: src/cli/chat.zig:2606 src/cli/chat.zig:2622
 msgid "doing"
 msgstr ""
 
-#: src/cli/chat.zig:2615
+#: src/cli/chat.zig:2617
 msgid "  {0} {1} {2} {3}  {4} {5} {6}"
 msgstr ""
 
-#: src/cli/chat.zig:2627
+#: src/cli/chat.zig:2629
 msgid "  and {0} more"
 msgstr ""
 
-#: src/cli/chat.zig:2634
+#: src/cli/chat.zig:2636
 msgid "Terminals"
 msgstr ""
 
-#: src/cli/chat.zig:2637
+#: src/cli/chat.zig:2639
 msgid "  {0} in the group now, {1} in the record"
 msgstr ""
 
-#: src/cli/chat.zig:2675
+#: src/cli/chat.zig:2677
 msgid "  no supervisor was recorded"
 msgstr ""
 
-#: src/cli/chat.zig:2677
+#: src/cli/chat.zig:2679
 msgid "  last supervisor:"
 msgstr ""
 
-#: src/cli/chat.zig:2698
+#: src/cli/chat.zig:2700
 msgid "  and {0} other terminals"
 msgstr ""
 
-#: src/cli/chat.zig:2728
+#: src/cli/chat.zig:2730
 msgid "This session"
 msgstr ""
 
-#: src/cli/chat.zig:2733
+#: src/cli/chat.zig:2735
 msgid "  first line {0} · {1} since · {2} messages"
 msgstr ""
 
-#: src/cli/chat.zig:2748
+#: src/cli/chat.zig:2750
 msgid "  made {0} · closed {1} · cancelled {2} · open {3}"
 msgstr ""
 
-#: src/cli/chat.zig:2763
+#: src/cli/chat.zig:2765
 msgid "  {0} handed round · {1} progress reports / {2}"
 msgstr ""
 
-#: src/cli/chat.zig:2775
+#: src/cli/chat.zig:2777
 msgid "Task mix"
 msgstr ""
 
-#: src/cli/chat.zig:2783
+#: src/cli/chat.zig:2785
 msgid "  No tasks in this group yet."
 msgstr ""
 
-#: src/cli/chat.zig:2816
+#: src/cli/chat.zig:2818
 msgid "closed {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2821
+#: src/cli/chat.zig:2823
 msgid "past the mark {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2826
+#: src/cli/chat.zig:2828
 msgid "open {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2831
+#: src/cli/chat.zig:2833
 msgid "cancelled {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2838
+#: src/cli/chat.zig:2840
 msgid "How long tasks lived"
 msgstr ""
 
-#: src/cli/chat.zig:2840
+#: src/cli/chat.zig:2842
 msgid "  Nothing has been closed yet."
 msgstr ""
 
-#: src/cli/chat.zig:2848
+#: src/cli/chat.zig:2850
 msgid "  fastest {0} · median {1} · slowest {2} (over {3})"
 msgstr ""
 
-#: src/cli/chat.zig:2858
+#: src/cli/chat.zig:2860
 msgid "Rhythm"
 msgstr ""
 
-#: src/cli/chat.zig:2866
+#: src/cli/chat.zig:2868
 msgid "  00:00{0}23:00"
 msgstr ""
 
-#: src/cli/chat.zig:2872
+#: src/cli/chat.zig:2874
 msgid "  busiest {0}:00 ({1} messages)"
 msgstr ""
 
-#: src/cli/chat.zig:3037
+#: src/cli/chat.zig:3039
 msgid "Chat"
 msgstr ""
 
-#: src/cli/chat.zig:3038
+#: src/cli/chat.zig:3040
 msgid "Tasks"
 msgstr ""
 
-#: src/cli/chat.zig:3039
+#: src/cli/chat.zig:3041
 msgid "Stats"
 msgstr ""
 
-#: src/cli/chat.zig:3063
+#: src/cli/chat.zig:3065
 msgid "· unassigned"
 msgstr ""
 
-#: src/cli/chat.zig:3087
+#: src/cli/chat.zig:3089
 msgid ""
 "No groups. The conversation will appear here once a supervisor makes one."
 msgstr ""
 
-#: src/cli/chat.zig:3110
+#: src/cli/chat.zig:3112
 msgid "── nothing older ──"
 msgstr ""
 
-#: src/cli/chat.zig:3121
+#: src/cli/chat.zig:3123
 msgid "  (summary)"
 msgstr ""
 
-#: src/cli/chat.zig:3356
+#: src/cli/chat.zig:3358
 msgid "under a minute"
 msgstr ""
 
-#: src/cli/chat.zig:3359
+#: src/cli/chat.zig:3361
 msgid "{0} min"
 msgstr ""
 
-#: src/cli/chat.zig:3364
+#: src/cli/chat.zig:3366
 msgid "{0} h"
 msgstr ""
 
-#: src/cli/chat.zig:3365
+#: src/cli/chat.zig:3367
 msgid "{0} h {1} min"
 msgstr ""
 
-#: src/cli/chat.zig:3370
+#: src/cli/chat.zig:3372
 msgid "{0} d"
 msgstr ""
 
-#: src/cli/chat.zig:3371
+#: src/cli/chat.zig:3373
 msgid "{0} d {1} h"
 msgstr ""
 
@@ -1489,28 +1770,654 @@ msgstr ""
 msgid "Above this line: history restored from the previous session"
 msgstr ""
 
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig:124
+msgid "Screenshot Shortcut"
+msgstr "Сочетание клавиш для снимка"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig:125
+msgid "Change it with a keybind line in the config file."
+msgstr "Измените его строкой keybind в файле конфигурации."
+
+#: src/config/form.zig:143
+msgid "Theme"
+msgstr ""
+
+#: src/config/form.zig:143
+msgid "The color theme; light and dark mode can differ."
+msgstr ""
+
+#: src/config/form.zig:144
+msgid "Background Opacity"
+msgstr ""
+
+#: src/config/form.zig:144
+msgid "1 is fully opaque; lower lets the desktop show through."
+msgstr ""
+
+#: src/config/form.zig:145
+msgid "Background Blur"
+msgstr ""
+
+#: src/config/form.zig:145
+msgid "true, false, a strength, or macos-glass-regular/-clear."
+msgstr ""
+
+#: src/config/form.zig:146
+msgid "Cursor Style"
+msgstr ""
+
+#: src/config/form.zig:146
+msgid "The cursor's shape; programs in the terminal may change it."
+msgstr ""
+
+#: src/config/form.zig:146
+msgid "Bar"
+msgstr ""
+
+#: src/config/form.zig:146
+msgid "Block"
+msgstr ""
+
+#: src/config/form.zig:146
+msgid "Underline"
+msgstr ""
+
+#: src/config/form.zig:146
+msgid "Hollow Block"
+msgstr ""
+
+#: src/config/form.zig:147
+msgid "Blinking Cursor"
+msgstr ""
+
+#: src/config/form.zig:147
+msgid "Whether the cursor blinks by default."
+msgstr ""
+
+#: src/config/form.zig:148
+msgid "Horizontal Padding"
+msgstr ""
+
+#: src/config/form.zig:148
+msgid "Space between the text and the left and right edges."
+msgstr ""
+
+#: src/config/form.zig:149
+msgid "Vertical Padding"
+msgstr ""
+
+#: src/config/form.zig:149
+msgid "Space between the text and the top and bottom edges."
+msgstr ""
+
+#: src/config/form.zig:150
+msgid "Balance Padding"
+msgstr ""
+
+#: src/config/form.zig:150
+msgid "Spread leftover space evenly around the text."
+msgstr ""
+
+#: src/config/form.zig:150
+msgid "No Balancing"
+msgstr ""
+
+#: src/config/form.zig:150
+msgid "Balanced, Top Capped"
+msgstr ""
+
+#: src/config/form.zig:150
+msgid "Equal on All Sides"
+msgstr ""
+
+#: src/config/form.zig:151
+msgid "Title Bar Style"
+msgstr ""
+
+#: src/config/form.zig:151
+msgid "Native, transparent, tabs, or hidden."
+msgstr ""
+
+#: src/config/form.zig:151
+msgid "Native"
+msgstr ""
+
+#: src/config/form.zig:151
+msgid "Transparent"
+msgstr ""
+
+#: src/config/form.zig:151
+msgid "Tabs in Title Bar"
+msgstr ""
+
+#: src/config/form.zig:151
+msgid "Hidden"
+msgstr ""
+
+#: src/config/form.zig:154 windows/settings-shell/src/general.rs:74
+msgid "Font"
+msgstr ""
+
+#: src/config/form.zig:154
+msgid "The font family to use; empty uses the default."
+msgstr ""
+
+#: src/config/form.zig:155
+msgid "Font Size"
+msgstr ""
+
+#: src/config/form.zig:155
+msgid "In points; may be fractional."
+msgstr ""
+
+#: src/config/form.zig:156
+msgid "Line Height"
+msgstr ""
+
+#: src/config/form.zig:156
+msgid "Extra height per line, in points or percent (e.g. 20%)."
+msgstr ""
+
+#: src/config/form.zig:159
+msgid "Scrollback Lines"
+msgstr ""
+
+#: src/config/form.zig:159
+msgid "How many lines of history each terminal keeps."
+msgstr ""
+
+#: src/config/form.zig:160
+msgid "Copy on Select"
+msgstr ""
+
+#: src/config/form.zig:160
+msgid "Copy selected text to the clipboard automatically."
+msgstr ""
+
+#: src/config/form.zig:160
+msgid "Don't Copy"
+msgstr ""
+
+#: src/config/form.zig:160
+msgid "Selection Pasteboard Only"
+msgstr ""
+
+#: src/config/form.zig:160
+msgid "Clipboard Only"
+msgstr ""
+
+#: src/config/form.zig:160
+msgid "Both"
+msgstr ""
+
+#: src/config/form.zig:161
+msgid "Clipboard Reading"
+msgstr ""
+
+#: src/config/form.zig:161
+msgid "Whether programs may read the clipboard: ask, allow or deny."
+msgstr ""
+
+#: src/config/form.zig:161 src/config/form.zig:162
+msgid "Ask"
+msgstr ""
+
+#: src/config/form.zig:162
+msgid "Clipboard Writing"
+msgstr ""
+
+#: src/config/form.zig:162
+msgid "Whether programs may set the clipboard: ask, allow or deny."
+msgstr ""
+
+#: src/config/form.zig:163
+msgid "Hide Pointer While Typing"
+msgstr ""
+
+#: src/config/form.zig:163
+msgid "Hide the mouse pointer while you type in a terminal."
+msgstr ""
+
+#: src/config/form.zig:164
+msgid "Confirm Before Closing"
+msgstr ""
+
+#: src/config/form.zig:164
+msgid "Ask before closing a terminal still running something."
+msgstr ""
+
+#: src/config/form.zig:164
+msgid "Don't Confirm"
+msgstr ""
+
+#: src/config/form.zig:164
+msgid "When Something Is Running"
+msgstr ""
+
+#: src/config/form.zig:164
+msgid "Always Confirm"
+msgstr ""
+
+#: src/config/form.zig:165
+msgid "Shell Integration"
+msgstr ""
+
+#: src/config/form.zig:165
+msgid "Lets the shell report its directory and prompt to Polter."
+msgstr ""
+
+#: src/config/form.zig:165
+msgid "Detect Automatically"
+msgstr ""
+
+#: src/config/form.zig:165
+msgid "No Integration"
+msgstr ""
+
+#: src/config/form.zig:165
+msgid "Bash"
+msgstr ""
+
+#: src/config/form.zig:165
+msgid "Elvish"
+msgstr ""
+
+#: src/config/form.zig:165
+msgid "fish"
+msgstr ""
+
+#: src/config/form.zig:165
+msgid "Nushell"
+msgstr ""
+
+#: src/config/form.zig:165
+msgid "PowerShell"
+msgstr ""
+
+#: src/config/form.zig:165
+msgid "Zsh"
+msgstr ""
+
+#: src/config/form.zig:168
+msgid "Restore Windows"
+msgstr ""
+
+#: src/config/form.zig:168
+msgid "Reopen windows, tabs and splits where they were."
+msgstr ""
+
+#: src/config/form.zig:168
+msgid "System Default"
+msgstr ""
+
+#: src/config/form.zig:168
+msgid "Never"
+msgstr ""
+
+#: src/config/form.zig:168
+msgid "Always"
+msgstr ""
+
+#: src/config/form.zig:169
+msgid "New Windows Inherit Directory"
+msgstr ""
+
+#: src/config/form.zig:169
+msgid "New windows start in the focused window's directory."
+msgstr ""
+
+#: src/config/form.zig:170
+msgid "Quit After Last Window Closes"
+msgstr ""
+
+#: src/config/form.zig:170
+msgid "Quit Polter when its last window is closed."
+msgstr ""
+
+#: src/config/form.zig:171
+msgid "Window Decorations"
+msgstr ""
+
+#: src/config/form.zig:171
+msgid "Whether windows have a title bar and borders."
+msgstr ""
+
+#: src/config/form.zig:171
+msgid "Automatic"
+msgstr ""
+
+#: src/config/form.zig:171
+msgid "Drawn by Polter"
+msgstr ""
+
+#: src/config/form.zig:171
+msgid "Drawn by the System"
+msgstr ""
+
+#: src/config/form.zig:171
+msgid "No Decorations"
+msgstr ""
+
+#: src/config/form.zig:174
+msgid "Notice Interval"
+msgstr ""
+
+#: src/config/form.zig:174
+msgid "How often the supervisor is handed what it has not seen."
+msgstr ""
+
+#: src/config/form.zig:175
+msgid "Quiet After"
+msgstr ""
+
+#: src/config/form.zig:175
+msgid "How long a screen must stay unchanged to count as quiet."
+msgstr ""
+
+#: src/config/form.zig:176
+msgid "Repeat Quiet Report"
+msgstr ""
+
+#: src/config/form.zig:176
+msgid "How long before a still-quiet terminal is reported again."
+msgstr ""
+
+#: src/config/form.zig:177
+msgid "Nudge Workers After"
+msgstr ""
+
+#: src/config/form.zig:177
+msgid "How long a worker may sit still before it is told to report."
+msgstr ""
+
+#: src/config/form.zig:178
+msgid "Tool Silence Reminder"
+msgstr ""
+
+#: src/config/form.zig:178
+msgid "How long without a Polter tool call before it is mentioned."
+msgstr ""
+
+#: src/config/form.zig:179
+msgid "Idle Task Reminder"
+msgstr ""
+
+#: src/config/form.zig:179
+msgid "How long a task may go untouched before it is mentioned."
+msgstr ""
+
+#: src/config/form.zig:180
+msgid "Quiet Group Reminder"
+msgstr ""
+
+#: src/config/form.zig:180
+msgid "How long a group may be silent before it is mentioned."
+msgstr ""
+
+#: src/config/form.zig:181
+msgid "Hours I May Be Disturbed"
+msgstr ""
+
+#: src/config/form.zig:181
+msgid "When you may be asked, as HH:MM-HH:MM; empty is any time."
+msgstr ""
+
+#: src/config/form.zig:182
+msgid "Supervisor May Stand Down"
+msgstr ""
+
+#: src/config/form.zig:182
+msgid "Let a supervisor whose work is done take itself off duty."
+msgstr ""
+
+#: src/config/form.zig:183
+msgid "Keep Chat Log"
+msgstr ""
+
+#: src/config/form.zig:183
+msgid "Write what the terminals say to each other to disk."
+msgstr ""
+
+#: src/config/form.zig:184
+msgid "Keep Terminal Transcripts"
+msgstr ""
+
+#: src/config/form.zig:184
+msgid "Keep a transcript of what ran in each terminal."
+msgstr ""
+
+#: src/config/form.zig:185 windows/host/src/language.rs:291
+msgid "Language"
+msgstr ""
+
+#: src/config/form.zig:185
+msgid "The interface language; empty follows the system."
+msgstr ""
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig:188
+msgid "Paste Images as Files"
+msgstr "Вставлять изображения как файлы"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig:188
+msgid "Save a pasted image as a file and paste its path."
+msgstr "Сохранить вставленное изображение в файл и вставить путь к нему."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig:189
+msgid "Screenshot Folder"
+msgstr "Папка для снимков"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig:189
+msgid "Where screenshots and pasted images are saved."
+msgstr "Куда сохраняются снимки экрана и вставленные изображения."
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig:190
+msgid "Mouse Trigger"
+msgstr "Запуск мышью"
+
+# Machine translation (2026-10-07), not reviewed by a speaker.
+#: src/config/form.zig:190
+msgid "Hold these keys and click to take a screenshot."
+msgstr "Удерживайте эти клавиши и щёлкните, чтобы сделать снимок."
+
+#: src/config/form.zig:191 windows/settings-shell/src/plugins.rs:52
+msgid "Off"
+msgstr ""
+
+# Machine translation (2026-10-07), not reviewed by a speaker.
+#: src/config/form.zig:198
+#, c-format
+msgid "%s + Click"
+msgstr "%s + щелчок"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig:199
+msgid "Let Agents Take Screenshots"
+msgstr "Разрешить агентам делать снимки"
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: src/config/form.zig:199
+msgid "Agents may capture the screen with the screenshot tools."
+msgstr "Агенты могут снимать экран с помощью инструментов снимка."
+
 #. TRANSLATORS: U+2026, not three ASCII dots. This opens the title
 #. overlay. "Rename Tab..." with three dots is a DIFFERENT action
 #. (rename_tab) that edits the tab strip in place. The two entries look
 #. almost identical; do not merge them.
-#: windows/host/src/ctxmenu.rs:138 windows/host/src/menu.rs:306
+#: windows/host/src/ctxmenu.rs:138 windows/host/src/menu.rs:340
 msgid "Rename Tab…"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:139 windows/host/src/menu.rs:307
+#: windows/host/src/ctxmenu.rs:139 windows/host/src/menu.rs:341
 msgid "Rename Terminal…"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:177 windows/host/src/menu.rs:346
+#: windows/host/src/ctxmenu.rs:177 windows/host/src/menu.rs:390
 msgid "Let a Supervisor Answer Prompts Here"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:360
-#: windows/host/src/strip.rs:1341
+#: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:404
+#: windows/host/src/strip.rs:1370
 msgid "Let Workers Name Each Other Directly"
 msgstr ""
 
-#: windows/host/src/i18n.rs:360 windows/host/src/settings_ui.rs:168
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: windows/host/src/general_ui.rs:264
+msgid "Not set"
+msgstr "Не задано"
+
+#: windows/host/src/general_ui.rs:575 windows/host/src/general_ui.rs:842
+#: windows/host/src/general_ui.rs:844
+msgid "Open config file…"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:577 windows/host/src/general_ui.rs:841
+msgid "Edit in Config File…"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:585
+msgid "Filter by key"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:871
+msgid "Less"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:871
+msgid "More…"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:891
+#, rust-format
+msgid "Set by {}:{}. Edit it there."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:893
+msgid "Set on the command line, which has the last word."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:894
+msgid "Edit this one in the config file."
+msgstr ""
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: windows/host/src/general_ui.rs:1213 windows/host/src/general_ui.rs:1379
+msgid "Choose…"
+msgstr "Выбрать…"
+
+#: windows/host/src/general_ui.rs:1214 windows/host/src/general_ui.rs:1379
+#: windows/host/src/projects_ui.rs:1351
+msgid "Show in Explorer"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1306
+msgid "Light"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1306
+msgid "Dark"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1480
+msgid "The screenshot folder could not be worked out."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1488 windows/host/src/projects_ui.rs:972
+msgid "Explorer could not be started."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1586
+msgid "Saved to the config file."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1595
+msgid "That value is not valid for this key."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1596
+msgid "This key is set somewhere the form does not write."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1597
+msgid "The config file kept changing while it was being written. Try again."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1598
+#, rust-format
+msgid "Could not write the config file: {}"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1686
+msgid "Restore Default"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1833
+#, rust-format
+msgid "The settings could not be read: {}"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1850
+#, rust-format
+msgid ""
+"The form writes to:\n"
+"{}"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1859
+msgid "The configuration loaded without errors."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1861
+#, rust-format
+msgid "{} error(s). The lines they name were ignored; fix them and reload."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1876
+#, rust-format
+msgid ""
+"Before this run's first write the config file was copied to:\n"
+"{}"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1892
+msgid ""
+"A terminal that minds the agents running in it. \n"
+"Built on Ghostty."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1901
+msgid "Version"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1902
+msgid "Build"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1903
+msgid "Commit"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1910
+msgid "MIT licensed. A fork of Ghostty."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:2136
+msgid "The shortcuts could not be read from the configuration."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:2138
+#, rust-format
+msgid ""
+"This page lists actions; {} in all. Some actions have no shortcut assigned."
+msgstr ""
+
+#: windows/host/src/i18n.rs:360 windows/host/src/plugins_ui.rs:1572
 msgid "Keeps the conversations"
 msgstr ""
 
@@ -1544,189 +2451,190 @@ msgid ""
 "and start Polter again."
 msgstr ""
 
-#: windows/host/src/language.rs:291
-msgid "Language"
-msgstr ""
-
-#: windows/host/src/main.rs:2553
+#: windows/host/src/main.rs:2590
 #, rust-format
 msgid "{} lines in all."
 msgstr ""
 
-#: windows/host/src/main.rs:6146
+#: windows/host/src/main.rs:6332
 msgid "No reason was recorded."
 msgstr ""
 
-#: windows/host/src/main.rs:6152
+#: windows/host/src/main.rs:6338
 msgid "Polter could not open its first terminal and will close."
 msgstr ""
 
-#: windows/host/src/main.rs:6154
+#: windows/host/src/main.rs:6340
 #, rust-format
 msgid "The full log is at {}"
 msgstr ""
 
-#: windows/host/src/menu.rs:231 windows/host/src/strip.rs:1758
+#: windows/host/src/menu.rs:263 windows/host/src/strip.rs:1848
 msgid "Reopen Closed Tab"
 msgstr ""
 
-#: windows/host/src/menu.rs:260
+#: windows/host/src/menu.rs:293 windows/host/src/projects_ui.rs:619
+#: windows/host/src/strip.rs:1373
 msgid "Save as Project…"
 msgstr ""
 
-#: windows/host/src/menu.rs:261
+#: windows/host/src/menu.rs:294 windows/host/src/strip.rs:1374
 msgid "Load Project…"
 msgstr ""
 
-#: windows/host/src/menu.rs:268
+#: windows/host/src/menu.rs:295
+msgid "Manage Projects…"
+msgstr ""
+
+#: windows/host/src/menu.rs:302
 msgid "Next"
 msgstr ""
 
-#: windows/host/src/menu.rs:269
+#: windows/host/src/menu.rs:303
 msgid "Previous"
 msgstr ""
 
-#: windows/host/src/menu.rs:271
+#: windows/host/src/menu.rs:305
 msgid "Hide the Find Bar"
 msgstr ""
 
-#: windows/host/src/menu.rs:286
+#: windows/host/src/menu.rs:320
 msgid "Find"
 msgstr ""
 
-#: windows/host/src/menu.rs:291
+#: windows/host/src/menu.rs:325
 msgid "Zoom In"
 msgstr ""
 
-#: windows/host/src/menu.rs:292
+#: windows/host/src/menu.rs:326
 msgid "Zoom Out"
 msgstr ""
 
-#: windows/host/src/menu.rs:311
+#: windows/host/src/menu.rs:345
 msgid "Quick Terminal"
 msgstr ""
 
-#: windows/host/src/menu.rs:392
+#: windows/host/src/menu.rs:436
 msgid "Plugins…"
 msgstr ""
 
-#: windows/host/src/menu.rs:395 windows/host/src/personas.rs:536
-msgid "Role Library (beta)..."
+#: windows/host/src/menu.rs:439 windows/host/src/personas.rs:538
+msgid "Role Library..."
 msgstr ""
 
-#: windows/host/src/menu.rs:399
+#: windows/host/src/menu.rs:443
 msgid "Up"
 msgstr ""
 
-#: windows/host/src/menu.rs:400
+#: windows/host/src/menu.rs:444
 msgid "Down"
 msgstr ""
 
-#: windows/host/src/menu.rs:401
+#: windows/host/src/menu.rs:445
 msgid "Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:402
+#: windows/host/src/menu.rs:446
 msgid "Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:408
+#: windows/host/src/menu.rs:452
 msgid "Grow Up"
 msgstr ""
 
-#: windows/host/src/menu.rs:409
+#: windows/host/src/menu.rs:453
 msgid "Grow Down"
 msgstr ""
 
-#: windows/host/src/menu.rs:410
+#: windows/host/src/menu.rs:454
 msgid "Grow Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:411
+#: windows/host/src/menu.rs:455
 msgid "Grow Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:417
+#: windows/host/src/menu.rs:461
 msgid "Minimize"
 msgstr ""
 
-#: windows/host/src/menu.rs:418
+#: windows/host/src/menu.rs:462
 msgid "Maximize"
 msgstr ""
 
-#: windows/host/src/menu.rs:420
+#: windows/host/src/menu.rs:464
 msgid "Full Screen"
 msgstr ""
 
-#: windows/host/src/menu.rs:422
+#: windows/host/src/menu.rs:466
 msgid "Split Zoom"
 msgstr ""
 
-#: windows/host/src/menu.rs:423
+#: windows/host/src/menu.rs:467
 msgid "Previous Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:424
+#: windows/host/src/menu.rs:468
 msgid "Next Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:425
+#: windows/host/src/menu.rs:469
 msgid "Select Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:426
+#: windows/host/src/menu.rs:470
 msgid "Resize Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:430
+#: windows/host/src/menu.rs:474
 msgid "Float on Top"
 msgstr ""
 
-#: windows/host/src/menu.rs:437
+#: windows/host/src/menu.rs:481
 msgid "Polter Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:450
+#: windows/host/src/menu.rs:494
 msgid "Check for Updates…"
 msgstr ""
 
-#: windows/host/src/menu.rs:456
+#: windows/host/src/menu.rs:500
 msgid "File"
 msgstr ""
 
-#: windows/host/src/menu.rs:457
+#: windows/host/src/menu.rs:501
 msgid "Edit"
 msgstr ""
 
-#: windows/host/src/menu.rs:458
+#: windows/host/src/menu.rs:502
 msgid "View"
 msgstr ""
 
-#: windows/host/src/menu.rs:474
+#: windows/host/src/menu.rs:518
 msgid "Agents"
 msgstr ""
 
-#: windows/host/src/menu.rs:475
+#: windows/host/src/menu.rs:519
 msgid "Project"
 msgstr ""
 
-#: windows/host/src/menu.rs:477
+#: windows/host/src/menu.rs:521
 msgid "Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:479
+#: windows/host/src/menu.rs:526
 msgid "Settings…"
 msgstr ""
 
-#: windows/host/src/menu.rs:491
+#: windows/host/src/menu.rs:538
 msgid "Language…"
 msgstr ""
 
-#: windows/host/src/menu.rs:505
+#: windows/host/src/menu.rs:552
 msgid "Keyboard Shortcuts…"
 msgstr ""
 
-#: windows/host/src/menu.rs:506 windows/host/src/settings_ui.rs:1067
+#: windows/host/src/menu.rs:553
 msgid "About Polter"
 msgstr ""
 
@@ -1752,7 +2660,7 @@ msgstr ""
 msgid "May need the agent to restart before it takes effect"
 msgstr ""
 
-#: windows/host/src/personas.rs:454 windows/host/src/personas.rs:1227
+#: windows/host/src/personas.rs:454 windows/host/src/personas.rs:1238
 msgid "Agents are kept out of this terminal, so its role cannot be changed"
 msgstr ""
 
@@ -1764,7 +2672,7 @@ msgstr ""
 msgid "Nothing has reported which roles exist yet"
 msgstr ""
 
-#: windows/host/src/personas.rs:479 windows/host/src/personas.rs:1268
+#: windows/host/src/personas.rs:479 windows/host/src/personas.rs:1279
 msgid "No roles are defined"
 msgstr ""
 
@@ -1772,523 +2680,901 @@ msgstr ""
 msgid "No Role"
 msgstr ""
 
-#: windows/host/src/personas.rs:599 windows/host/src/personas.rs:1006
-msgid "Role (beta)"
+#: windows/host/src/personas.rs:602 windows/host/src/personas.rs:1017
+msgid "Role"
 msgstr ""
 
-#: windows/host/src/personas.rs:603
+#: windows/host/src/personas.rs:607
 #, rust-format
-msgid "Role (beta): {}"
+msgid "Role: {}"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:71 windows/host/src/project_picker.rs:102
-msgid "No Saved Projects"
+#: windows/host/src/plugins_ui.rs:522
+msgid "Enabled"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:132
-msgid "The project could not be opened."
+#: windows/host/src/plugins_ui.rs:523
+msgid "Test"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:138
-msgid "Load Project"
-msgstr ""
-
-#: windows/host/src/prompt.rs:331
-msgid "Save as Project"
-msgstr ""
-
-#: windows/host/src/roles.rs:330
-msgid "Polter Supervisor"
-msgstr ""
-
-#: windows/host/src/roles.rs:340
-msgid ""
-"Makes the terminal it starts in this window's supervisor: splits the work, "
-"hands it out and checks it."
-msgstr ""
-
-#: windows/host/src/roles.rs:606
-msgid "Yours"
-msgstr ""
-
-#: windows/host/src/roles.rs:607
-msgid "This Project"
-msgstr ""
-
-#: windows/host/src/roles.rs:608
-msgid "This Project, Only on This Machine"
-msgstr ""
-
-#: windows/host/src/roles.rs:669
-msgid ""
-"This role can't be saved: it needs a name, and a key of lowercase letters, "
-"digits and dashes."
-msgstr ""
-
-#: windows/host/src/roles.rs:670
-msgid ""
-"The role library file has an error in it, so saving would overwrite it. Fix "
-"the file first."
-msgstr ""
-
-#: windows/host/src/roles.rs:671
-msgid "That role no longer exists."
-msgstr ""
-
-#: windows/host/src/roles.rs:672
-msgid "The role was written but didn't read back. This is a bug in Polter."
-msgstr ""
-
-#: windows/host/src/roles.rs:673
-msgid "The role library file couldn't be written."
-msgstr ""
-
-#: windows/host/src/roles.rs:674
-msgid "This role isn't set up for that agent CLI."
-msgstr ""
-
-#: windows/host/src/roles.rs:675
-msgid ""
-"This role isn't set up for any agent CLI yet. Pick one in the role library."
-msgstr ""
-
-#: windows/host/src/roles.rs:676
-msgid "This role is set up for more than one agent CLI. Choose one."
-msgstr ""
-
-#: windows/host/src/roles.rs:677
-msgid ""
-"A tab was opened but didn't appear in time, so nothing was started in it."
-msgstr ""
-
-#: windows/host/src/roles.rs:678
-msgid "Polter isn't ready yet."
-msgstr ""
-
-#: windows/host/src/roles.rs:683 windows/host/src/roles_ui.rs:3189
-msgid ""
-"This role comes with Polter and can't be changed or deleted. Duplicate it to "
-"make one of your own."
-msgstr ""
-
-#: windows/host/src/roles.rs:684
-msgid ""
-"Only you can make a role's terminal a supervisor, let it answer permission "
-"prompts, or keep agents out of it."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:158 windows/host/src/roles_ui.rs:2033
-msgid "New Role"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:180
-#, rust-format
-msgid "{} Copy"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:236
-msgid "Another role already uses this key."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:359 windows/host/src/roles_ui.rs:4238
-msgid "Unsaved changes"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:362 windows/host/src/roles_ui.rs:4235
-msgid "Open a terminal window first; the new tab goes beside it."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:387
-msgid "Basics"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:389
-#, rust-format
-msgid "Skills {}"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:390 windows/host/src/roles_ui.rs:857
-msgid "Skills"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:393
-#, rust-format
-msgid "MCP {}"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:394
-msgid "MCP"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:421
-msgid "No agent CLI"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:452
-msgid "Reading the role library…"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:455
-msgid "No roles yet"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:456
-msgid ""
-"A role is a saved way to start an agent CLI: which skills and MCP servers it "
-"keeps, and what it's told."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:667
-msgid "Select a role, or make a new one."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:682
-msgid "Name"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:684 windows/host/src/roles_ui.rs:694
-msgid "Key"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:687
-msgid "Lowercase letters, digits and dashes. It can't be changed after saving."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:689
-msgid "Only lowercase letters, digits and dashes, at most 32."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:697
-msgid "Description"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:698
-msgid "What this role is for, for whoever picks it"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:701
-msgid "Instructions"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:712
-msgid ""
-"Added to the agent's system prompt when it starts. Leave it empty to add "
-"nothing. Drag the bottom edge to make the box taller."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:717
-msgid "Polter"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:718
-msgid "Make this terminal a supervisor"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:719
-msgid "Let the supervisor answer this terminal's permission prompts"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:720
-msgid "Shield it: no tool can reach it, a supervisor's included"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:722
-msgid ""
-"These three give the terminal something, so only you can set them, here. A "
-"supervisor that edits roles can't change them."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:725
-msgid "Hand it to the supervisor to watch"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:729
-msgid ""
-"The supervisor that started it, or the only one there is. With several and "
-"you starting it, nobody."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:730
-msgid "Report it as still after"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:738
-msgid "min"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:743
-msgid "Open in"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:747
-msgid "Here when at a prompt, else a new tab"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:747
-msgid "Always a new tab"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:758
-msgid ""
-"Applied once, when the role starts an agent CLI. Putting the role on a "
-"terminal that's already running changes its tools, not these."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:762
-msgid "Agent CLIs"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:764 windows/host/src/roles_ui.rs:843
-msgid "Reading what's installed…"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:766
-msgid "No plugin that manages an agent CLI is installed and switched on."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:771
-#, rust-format
-msgid "{} isn't on this machine's PATH"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:774 windows/host/src/roles_ui.rs:850
-msgid "Its plugin couldn't list what's installed"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:783 windows/host/src/roles_ui.rs:843
-msgid "No plugin manages this CLI any more"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:793
-#, rust-format
-msgid "Starting {}"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:795
-msgid "Model"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:796
-msgid "The CLI's default"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:800
-msgid "Extra Arguments"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:804
-msgid "Added to the command line as typed. Quote anything with a space in it."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:833
-msgid ""
-"Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:834
-msgid "Go to Basics"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:856
-msgid "Filter skills"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:858
-msgid "Keep skills installed later"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:859
-msgid "No skills are installed for this CLI."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:860
-msgid ""
-"This list is what the CLI has on this machine. A project's own skills aren't "
-"in it; at launch they follow the switch above."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:863
-msgid "Filter MCP servers"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:864
-msgid "MCP Servers"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:865
-msgid "Keep MCP servers added later"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:866
-msgid "No MCP servers are configured for this CLI."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:867
-msgid ""
-"This list is what the CLI has on this machine. A project's own MCP servers "
-"aren't in it; at launch they follow the switch above."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:893
-#, rust-format
-msgid "{} of {} kept"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:895
-msgid "Keep All"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:896
-msgid "Turn All Off"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:903
-msgid ""
-"What happens to anything that isn't listed here yet, such as something "
-"installed tomorrow or a project's own."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:917
-msgid "Nothing matches the filter."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:932
-msgid "Keep or turn off everything in this group"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:960
-msgid "No description"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:976
-msgid "Show Less"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:976
-msgid "Show More"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:998
-#, rust-format
-msgid "Also in this role but not installed here: {}"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:1943 windows/host/src/roles_ui.rs:2647
-msgid "Role Library"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:2034 windows/host/src/roles_ui.rs:2038
-msgid "Duplicate"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:2035 windows/host/src/roles_ui.rs:2822
-msgid "Delete"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:2039 windows/host/src/roles_ui.rs:2148
-msgid "Launch"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:2039
+#: windows/host/src/plugins_ui.rs:524 windows/host/src/roles_ui.rs:2258
 msgid "Revert"
 msgstr ""
 
-# Machine translation (2026-10-08), not reviewed by a speaker.
-#: windows/host/src/roles_ui.rs:2039 windows/host/src/roles_ui.rs:2711
-#: windows/host/src/settings_ui.rs:1014
-msgid "Save"
-msgstr "Сохранить"
-
-#: windows/host/src/roles_ui.rs:2241
-msgid ""
-"The role library file has an error in it. Roles can't be changed here until "
-"it's fixed."
+#: windows/host/src/plugins_ui.rs:526
+msgid "Show Log"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2709
-msgid "Save changes to this role?"
+#: windows/host/src/plugins_ui.rs:527
+msgid "Show Plugin Folder"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2710
-msgid "Your changes will be lost if you don't save them."
+#: windows/host/src/plugins_ui.rs:708
+msgid "Polter's core did not say whether this plugin is running."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2712
-msgid "Don't Save"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:2820
+#: windows/host/src/plugins_ui.rs:1081
 #, rust-format
-msgid "Delete the role \"{}\"?"
+msgid "Test: {}"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2821
+#: windows/host/src/plugins_ui.rs:1085
+msgid "The log is empty."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1087
+#, rust-format
+msgid "No log yet: {}"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1133
+msgid "Saved."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1140
+#, rust-format
+msgid "Could not save: {}"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1153
+msgid "Save changes to this plugin?"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1162
+msgid "Tested less than a minute ago. Try again in a minute."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1163
+msgid "Polter's core does not know this plugin."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1164
+msgid "Polter is not ready yet."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1165
+#, rust-format
+msgid "Test failed: {}"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1295
+#, rust-format
 msgid ""
-"Terminals wearing it are taken out of it. Agents already running keep "
-"running."
+"No plugins found. The bundled plugin directory exists and holds none this "
+"build can read:\n"
+"{}"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2879
-msgid "The role couldn't be launched"
+#: windows/host/src/plugins_ui.rs:1297
+#, rust-format
+msgid ""
+"The bundled plugin directory is missing:\n"
+"{}\n"
+"This build's resources are not installed next to it."
 msgstr ""
 
-#: windows/host/src/settings_ui.rs:169
+#: windows/host/src/plugins_ui.rs:1299
+msgid ""
+"The bundled plugin directory could not be located: POLTER_RESOURCES_DIR is "
+"not set."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1317
+msgid "Restart Polter to apply"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1338
+msgid "Status"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1341
+#, rust-format
+msgid "Still empty and required: {}"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1361
+msgid "Settings"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1362
+msgid "Page"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1372
+msgid "This plugin has no settings."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1380
+msgid ""
+"This plugin brings its own page, and it cannot be shown: WebView2Loader.dll "
+"is not next to polter-host.exe, so this installation is incomplete."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1383
+#, rust-format
+msgid ""
+"This plugin brings its own page, and it cannot be shown: the Microsoft Edge "
+"WebView2 Runtime is not installed on this computer. Get it from {} and "
+"reopen this window."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1387
+#, rust-format
+msgid ""
+"This plugin brings its own page, and it could not be opened (error 0x{})."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1396
+msgid "Log"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1573
 msgid "Notifies you"
 msgstr ""
 
-#: windows/host/src/settings_ui.rs:170
+#: windows/host/src/plugins_ui.rs:1574
 msgid "Sets your agent up to reach Polter"
 msgstr ""
 
-#: windows/host/src/settings_ui.rs:181
+#: windows/host/src/plugins_ui.rs:1581
 msgid ""
 "Subscribes to nothing, so Polter has nothing to hand it and will not start "
 "it."
 msgstr ""
 
-#: windows/host/src/settings_ui.rs:201
+#: windows/host/src/plugins_ui.rs:1596
 #, rust-format
 msgid "What it is handed: {}"
 msgstr ""
 
-#: windows/host/src/settings_ui.rs:1008
-msgid "Enabled"
+#: windows/host/src/project_picker.rs:95 windows/host/src/project_picker.rs:542
+msgid "Load Project"
 msgstr ""
 
-#: windows/host/src/settings_ui.rs:1066
-msgid "Open config file…"
+#: windows/host/src/project_picker.rs:96 windows/host/src/project_picker.rs:596
+msgid "Save as Project"
 msgstr ""
 
-#: windows/host/src/settings_ui.rs:1135
-msgid "MIT licensed. A fork of Ghostty."
+#: windows/host/src/project_picker.rs:258
+#, rust-format
+msgid "Saves this tab: {} pane(s)"
 msgstr ""
 
-#: windows/host/src/settings_ui.rs:2129 windows/host/src/uia.rs:2038
-msgid "Keyboard Shortcuts"
+#: windows/host/src/project_picker.rs:542 windows/host/src/projects_ui.rs:686
+msgid "The project could not be opened."
 msgstr ""
 
-#. TRANSLATORS: `{}` is how many actions the list holds. It is
-#. not at the start of the sentence on purpose, so a language that
-#. needs the number elsewhere can move it.
-#: windows/host/src/settings_ui.rs:2144
+#: windows/host/src/project_picker.rs:596 windows/host/src/projects_ui.rs:913
+#: windows/host/src/projects_ui.rs:926
+msgid "The project could not be saved."
+msgstr ""
+
+#: windows/host/src/project_picker.rs:906 windows/host/src/settings_win.rs:934
+#: windows/host/src/settings_win.rs:1351
+msgid "Search"
+msgstr ""
+
+#: windows/host/src/project_picker.rs:907
+msgid "New Project Name"
+msgstr ""
+
+#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1184
+msgid "No Saved Projects"
+msgstr ""
+
+#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1186
+msgid "No matching projects"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:557 windows/host/src/roles_ui.rs:732
+#: windows/settings-shell/src/general.rs:77
+#: windows/control-room/src/rules.rs:85
+msgid "Polter"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:620
+msgid "Close Without Saving"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:627
+msgid "Save as a Project Before Closing?"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:628
+msgid ""
+"The terminal still has a running process. Closing it without saving as a "
+"project will kill it."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:644
 #, rust-format
 msgid ""
-"This page lists actions; {} in all. Some actions have no shortcut assigned."
+"\"{}\" already has {} pane(s), saved {}. The replaced version is kept as the "
+"previous version."
 msgstr ""
 
-#: windows/host/src/strip.rs:1294
+#: windows/host/src/projects_ui.rs:648
+msgid "Overwrite Project?"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:648 windows/host/src/projects_ui.rs:903
+msgid "Overwrite"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:675 windows/host/src/projects_ui.rs:896
+#: windows/host/src/projects_ui.rs:935
+msgid "There is no terminal window to open the project in."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:683
+#, rust-format
+msgid "Opened “{}”."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:702 windows/host/src/projects_ui.rs:726
+msgid "The project could not be renamed."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:709
+msgid "A project needs a name."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:711
+#, rust-format
+msgid "There is already a project called “{}”."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:722
+#, rust-format
+msgid "Renamed to “{}”."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:800
+#, rust-format
+msgid "{} copy"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:810
+#, rust-format
+msgid "Copied as “{}”."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:812
+msgid "The project could not be copied."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:819
+#, rust-format
+msgid "Delete “{}”?"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:820
+msgid "You can undo this until the settings window closes."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:821 windows/host/src/roles_ui.rs:3120
+msgid "Delete"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:846
+msgid "The project could not be deleted."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:858
+#, rust-format
+msgid "“{}” is back."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:867
+msgid "The project could not be put back."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:875
+#, rust-format
+msgid "Restore the previous version of “{}”?"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:876
+msgid "The current version becomes the previous one, so you can switch back."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:877 windows/host/src/projects_ui.rs:1348
+msgid "Restore"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:887
+msgid "Restored the previous version."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:889
+msgid "The previous version could not be restored."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:900
+#, rust-format
+msgid "Overwrite “{}” with the current tab?"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:901
+#, rust-format
+msgid ""
+"“{}” replaces what the project holds. The version it replaces is kept and "
+"can be restored."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:924
+#, rust-format
+msgid "Saved the current tab as “{}”."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1106
+msgid "1 pane"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1108
+#, rust-format
+msgid "{} panes"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1157
+#, rust-format
+msgid "Deleted “{}”"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1193
+msgid "Select a project, or save the current tab as one with +."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1238
+msgid "Last saved"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1239
+msgid "Panes"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1240
+msgid "Directories"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1240
+msgid "None recorded"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1242 windows/host/src/settings_win.rs:136
+msgid "Roles"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1242
+msgid "Not recorded in project files"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1243
+msgid "Scrollback"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1245
+msgid "Autosave"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1245
+msgid "Not bound to an open window"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1252
+msgid "Version History"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1256
+msgid "Current version"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1256
+msgid "Previous version"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1266
+msgid "No earlier version is kept yet."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1347
+msgid "Rename…"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1352
+msgid "Overwrite with Current Tab"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1353
+msgid "Open"
+msgstr ""
+
+#: windows/host/src/prompt.rs:366
+msgid ""
+"The project's file, its previous version and its scrollback move with it."
+msgstr ""
+
+#: windows/host/src/prompt.rs:367
+msgid "Rename Project"
+msgstr ""
+
+#: windows/host/src/prompt.rs:475
+msgid "Rename"
+msgstr ""
+
+#: windows/host/src/roles.rs:34 windows/host/src/roles.rs:1163
+msgid "Polter Supervisor"
+msgstr ""
+
+#: windows/host/src/roles.rs:355
+msgid ""
+"Makes the terminal it starts in this window's supervisor: splits the work, "
+"hands it out and checks it."
+msgstr ""
+
+#: windows/host/src/roles.rs:621
+msgid "Yours"
+msgstr ""
+
+#: windows/host/src/roles.rs:622
+msgid "This Project"
+msgstr ""
+
+#: windows/host/src/roles.rs:623
+msgid "This Project, Only on This Machine"
+msgstr ""
+
+#: windows/host/src/roles.rs:684
+msgid ""
+"This role can't be saved: it needs a name, and a key of lowercase letters, "
+"digits and dashes."
+msgstr ""
+
+#: windows/host/src/roles.rs:685
+msgid ""
+"The role library file has an error in it, so saving would overwrite it. Fix "
+"the file first."
+msgstr ""
+
+#: windows/host/src/roles.rs:686
+msgid "That role no longer exists."
+msgstr ""
+
+#: windows/host/src/roles.rs:687
+msgid "The role was written but didn't read back. This is a bug in Polter."
+msgstr ""
+
+#: windows/host/src/roles.rs:688
+msgid "The role library file couldn't be written."
+msgstr ""
+
+#: windows/host/src/roles.rs:689
+msgid "This role isn't set up for that agent CLI."
+msgstr ""
+
+#: windows/host/src/roles.rs:690
+msgid ""
+"This role isn't set up for any agent CLI yet. Pick one in the role library."
+msgstr ""
+
+#: windows/host/src/roles.rs:691
+msgid "This role is set up for more than one agent CLI. Choose one."
+msgstr ""
+
+#: windows/host/src/roles.rs:692
+msgid ""
+"A tab was opened but didn't appear in time, so nothing was started in it."
+msgstr ""
+
+#: windows/host/src/roles.rs:693
+msgid "Polter isn't ready yet."
+msgstr ""
+
+#: windows/host/src/roles.rs:698 windows/host/src/roles_ui.rs:3493
+msgid ""
+"This role comes with Polter and can't be changed or deleted. Duplicate it to "
+"make one of your own."
+msgstr ""
+
+#: windows/host/src/roles.rs:699
+msgid ""
+"Only you can make a role's terminal a supervisor, let it answer permission "
+"prompts, or keep agents out of it."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:162
+msgid "New Role"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:184
+#, rust-format
+msgid "{} Copy"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:240
+msgid "Another role already uses this key."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:363 windows/host/src/roles_ui.rs:4564
+msgid "Unsaved changes"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:366 windows/host/src/roles_ui.rs:4561
+msgid "Open a terminal window first; the new tab goes beside it."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:391
+msgid "Basics"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:393
+#, rust-format
+msgid "Skills {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:394 windows/host/src/roles_ui.rs:875
+msgid "Skills"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:397
+#, rust-format
+msgid "MCP {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:398
+msgid "MCP"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:425
+msgid "No agent CLI"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:456
+msgid "Reading the role library…"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:459
+msgid "No roles yet"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:460
+msgid ""
+"A role is a saved way to start an agent CLI: which skills and MCP servers it "
+"keeps, and what it's told."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:682
+msgid "Select a role, or make a new one."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:697
+msgid "Name"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:699 windows/host/src/roles_ui.rs:709
+msgid "Key"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:702
+msgid "Lowercase letters, digits and dashes. It can't be changed after saving."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:704
+msgid "Only lowercase letters, digits and dashes, at most 32."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:712
+msgid "Description"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:713
+msgid "What this role is for, for whoever picks it"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:716
+msgid "Instructions"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:727
+msgid ""
+"Added to the agent's system prompt when it starts. Leave it empty to add "
+"nothing. Drag the bottom edge to make the box taller."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:733
+msgid "Make this terminal a supervisor"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:734
+msgid "Let the supervisor answer this terminal's permission prompts"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:735
+msgid "Shield it: no tool can reach it, a supervisor's included"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:737
+msgid ""
+"These three give the terminal something, so only you can set them, here. A "
+"supervisor that edits roles can't change them."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:740
+msgid "Hand it to the supervisor to watch"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:744
+msgid ""
+"The supervisor that started it, or the only one there is. With several and "
+"you starting it, nobody."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:745
+msgid "Report it as still after"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:753 windows/control-room/src/scene.rs:31
+msgid "min"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:759
+msgid "Open in"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:763
+msgid "Here when at a prompt, else a new tab"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:763
+msgid "Always a new tab"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:773
+msgid ""
+"Applied once, when the role starts an agent CLI. Putting the role on a "
+"terminal that's already running changes its tools, not these."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:777
+msgid "Agent CLIs"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:779 windows/host/src/roles_ui.rs:861
+msgid "Reading what's installed…"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:781
+msgid "No plugin that manages an agent CLI is installed and switched on."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:786
+#, rust-format
+msgid "{} isn't on this machine's PATH"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:789 windows/host/src/roles_ui.rs:868
+msgid "Its plugin couldn't list what's installed"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:799 windows/host/src/roles_ui.rs:861
+msgid "No plugin manages this CLI any more"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:811
+#, rust-format
+msgid "Starting {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:813
+msgid "Model"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:814
+msgid "The CLI's default"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:818
+msgid "Extra Arguments"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:822
+msgid "Added to the command line as typed. Quote anything with a space in it."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:851
+msgid ""
+"Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:852
+msgid "Go to Basics"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:874
+msgid "Filter skills"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:876
+msgid "Keep skills installed later"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:877
+msgid "No skills are installed for this CLI."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:878
+msgid ""
+"This list is what the CLI has on this machine. A project's own skills aren't "
+"in it; at launch they follow the switch above."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:881
+msgid "Filter MCP servers"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:882
+msgid "MCP Servers"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:883
+msgid "Keep MCP servers added later"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:884
+msgid "No MCP servers are configured for this CLI."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:885
+msgid ""
+"This list is what the CLI has on this machine. A project's own MCP servers "
+"aren't in it; at launch they follow the switch above."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:911
+#, rust-format
+msgid "{} of {} kept"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:913
+msgid "Keep All"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:914
+msgid "Turn All Off"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:921
+msgid ""
+"What happens to anything that isn't listed here yet, such as something "
+"installed tomorrow or a project's own."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:935
+msgid "Nothing matches the filter."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:950
+msgid "Keep or turn off everything in this group"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:978
+msgid "No description"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:994
+msgid "Show Less"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:994
+msgid "Show More"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1016
+#, rust-format
+msgid "Also in this role but not installed here: {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2257
+msgid "Duplicate"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2258 windows/host/src/roles_ui.rs:2357
+msgid "Launch"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2452
+msgid ""
+"The role library file has an error in it. Roles can't be changed here until "
+"it's fixed."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2887 windows/host/src/settings_win.rs:808
+msgid "Polter Settings"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2949 windows/host/src/roles_ui.rs:2966
+msgid "Save changes to this role?"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2950 windows/host/src/roles_ui.rs:2967
+#: windows/host/src/roles_ui.rs:2982
+msgid "Your changes will be lost if you don't save them."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2952 windows/host/src/roles_ui.rs:2969
+#: windows/host/src/roles_ui.rs:2982
+msgid "Don't Save"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3118
+#, rust-format
+msgid "Delete the role \"{}\"?"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3119
+msgid ""
+"Terminals wearing it are taken out of it. Agents already running keep "
+"running."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3177
+msgid "The role couldn't be launched"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3473
+msgid "No matching roles"
+msgstr ""
+
+#: windows/host/src/settings_win.rs:137
+msgid "Projects"
+msgstr ""
+
+#: windows/host/src/settings_win.rs:138
+msgid "Plugins"
+msgstr ""
+
+#: windows/host/src/settings_win.rs:139
+msgid "General"
+msgstr ""
+
+#: windows/host/src/settings_win.rs:1360 windows/host/src/settings_win.rs:1363
+#, rust-format
+msgid "{} (not in the search results)"
+msgstr ""
+
+#: windows/host/src/strip.rs:1318
 msgid "None"
 msgstr ""
 
-#: windows/host/src/strip.rs:1297
+#: windows/host/src/strip.rs:1321
 msgid "Pink"
 msgstr ""
 
-#: windows/host/src/strip.rs:1302
+#: windows/host/src/strip.rs:1326
 msgid "Teal"
 msgstr ""
 
-#: windows/host/src/strip.rs:1303
+#: windows/host/src/strip.rs:1327
 msgid "Graphite"
 msgstr ""
 
@@ -2296,319 +3582,128 @@ msgstr ""
 #. in place on the tab strip. "Rename Tab…" with U+2026 is a
 #. DIFFERENT action (prompt_tab_title) that opens the title overlay.
 #. The two entries look almost identical; do not merge them.
-#: windows/host/src/strip.rs:1337
+#: windows/host/src/strip.rs:1366
 msgid "Rename Tab..."
 msgstr ""
 
-#: windows/host/src/strip.rs:1519
+#: windows/host/src/strip.rs:1592
 msgid "Tab Color"
 msgstr ""
 
-#: windows/host/src/uia.rs:1168
+#: windows/host/src/uia.rs:1171
 msgid "Menu"
 msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Select"
-msgstr "Выбор"
+#: windows/host/src/uia.rs:2301 windows/settings-shell/src/general.rs:80
+msgid "Keyboard Shortcuts"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Rectangle"
-msgstr "Прямоугольник"
+#: windows/settings-shell/src/general.rs:73
+msgid "Appearance"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Ellipse"
-msgstr "Эллипс"
+#: windows/settings-shell/src/general.rs:75
+msgid "Terminal"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Straight Line"
-msgstr "Прямая линия"
+#: windows/settings-shell/src/general.rs:76
+msgid "Windows & Tabs"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Highlighter"
-msgstr "Маркер"
+#: windows/settings-shell/src/general.rs:79
+msgid "All Options"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Number"
-msgstr "Номер"
+#: windows/settings-shell/src/general.rs:81
+msgid "Advanced"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Mosaic"
-msgstr "Мозаика"
+#: windows/settings-shell/src/general.rs:82
+msgid "About"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Long Screenshot"
-msgstr "Длинный снимок"
+#: windows/settings-shell/src/plugins.rs:51
+msgid "Restart to apply"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Done"
-msgstr "Готово"
+#: windows/settings-shell/src/plugins.rs:53
+msgid "Needs setup"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Color"
-msgstr "Цвет"
+#: windows/settings-shell/src/plugins.rs:54
+msgid "Error"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Thickness"
-msgstr "Толщина"
+#: windows/settings-shell/src/plugins.rs:55
+msgid "On"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Block Size"
-msgstr "Размер блока"
+#: windows/control-room/src/lend.rs:294
+msgid "The supervisor's terminal is no longer open."
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Red"
-msgstr "Красный"
+#: windows/control-room/src/lend.rs:296
+msgid "Supervisor"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Orange"
-msgstr "Оранжевый"
+#: windows/control-room/src/list.rs:67
+#, rust-format
+msgid "{} more"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Yellow"
-msgstr "Жёлтый"
+#: windows/control-room/src/list.rs:68
+#, rust-format
+msgid "Same supervisor: see {}"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Green"
-msgstr "Зелёный"
+#: windows/control-room/src/rules.rs:83
+msgid "Polter — Control Room"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Cyan"
-msgstr "Голубой"
+#: windows/control-room/src/scene.rs:29
+#, rust-format
+msgid "{} groups waiting for you"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Blue"
-msgstr "Синий"
+#: windows/control-room/src/scene.rs:30
+#, rust-format
+msgid "{} groups need nothing from you"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Purple"
-msgstr "Фиолетовый"
+#: windows/control-room/src/scene.rs:32
+msgid "Kept you waiting today"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Black"
-msgstr "Чёрный"
+#: windows/control-room/src/scene.rs:33
+#, rust-format
+msgid "{} min"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "White"
-msgstr "Белый"
+#: windows/control-room/src/scene.rs:34
+msgid "now"
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Circle"
-msgstr "Круг"
+#: windows/control-room/src/scene.rs:36
+#, rust-format
+msgid "The control room's data could not be read ({})."
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Line"
-msgstr "Линия"
+#: windows/control-room/src/scene.rs:38
+msgid "Nothing has been worked out yet."
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Screenshot"
-msgstr "Снимок экрана"
+#: windows/control-room/src/scene.rs:39
+msgid "Select a group on the left."
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Screenshot annotations"
-msgstr "Пометки на снимке"
+#: windows/control-room/src/scene.rs:40
+msgid "This group has no supervisor."
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Text"
-msgstr "Текст"
+#: windows/control-room/src/scene.rs:41
+msgid "The supervisor's terminal is in its own tab."
+msgstr ""
 
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Box"
-msgstr "Рамка"
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Arrow"
-msgstr "Стрелка"
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Pen"
-msgstr "Перо"
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "; "
-msgstr "; "
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid ". See "
-msgstr ". См. "
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Freeze the screen, pick a window or drag a region, annotate it, and put the result on the clipboard."
-msgstr "Заморозить экран, выбрать окно или выделить область, добавить пометки и поместить результат в буфер обмена."
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "The annotation font is missing, so the system font is used."
-msgstr "Шрифт для пометок отсутствует, поэтому используется системный шрифт."
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Scroll down slowly. What comes into view is added at the bottom."
-msgstr "Медленно прокручивайте вниз. Появившаяся часть добавляется снизу."
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Scroll slower"
-msgstr "Прокручивайте медленнее"
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "The height limit was reached."
-msgstr "Достигнут предел высоты."
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "The picture keeps changing, so nothing can be added."
-msgstr "Изображение постоянно меняется, поэтому ничего нельзя добавить."
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "{n} tiles, first {m} pasted"
-msgstr "частей: {n}, вставлены первые {m}"
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "whole image"
-msgstr "полное изображение"
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "The screenshot shortcut could not be registered"
-msgstr "Не удалось зарегистрировать сочетание клавиш для снимка экрана"
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Another application is already using it. Choose a different one with a `screenshot` keybind in the configuration."
-msgstr "Его уже использует другое приложение. Выберите другое с помощью keybind `screenshot` в конфигурации."
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "No settings match."
-msgstr "Нет подходящих настроек."
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig
-msgid "Paste Images as Files"
-msgstr "Вставлять изображения как файлы"
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig
-msgid "Save a pasted image as a file and paste its path."
-msgstr "Сохранить вставленное изображение в файл и вставить путь к нему."
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig
-msgid "Screenshot Folder"
-msgstr "Папка для снимков"
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig
-msgid "Where screenshots and pasted images are saved."
-msgstr "Куда сохраняются снимки экрана и вставленные изображения."
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig
-msgid "Mouse Trigger"
-msgstr "Запуск мышью"
-
-# Machine translation (2026-10-07), not reviewed by a speaker.
-#: src/config/form.zig
-msgid "Hold these keys and click to take a screenshot."
-msgstr "Удерживайте эти клавиши и щёлкните, чтобы сделать снимок."
-
-# Machine translation (2026-10-07), not reviewed by a speaker.
-#: src/config/form.zig
-msgid "%s + Click"
-msgstr "%s + щелчок"
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig
-msgid "Let Agents Take Screenshots"
-msgstr "Разрешить агентам делать снимки"
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig
-msgid "Agents may capture the screen with the screenshot tools."
-msgstr "Агенты могут снимать экран с помощью инструментов снимка."
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig
-msgid "Screenshot Shortcut"
-msgstr "Сочетание клавиш для снимка"
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig
-msgid "Change it with a keybind line in the config file."
-msgstr "Измените его строкой keybind в файле конфигурации."
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: windows/host/src/general_ui.rs
-msgid "Choose…"
-msgstr "Выбрать…"
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: windows/host/src/general_ui.rs
-msgid "Not set"
-msgstr "Не задано"
-
-# Machine translation (2026-10-08), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Saved to Downloads: {name}"
-msgstr "Сохранено в Загрузки: {name}"
-
-# Machine translation (2026-10-08), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "The picture could not be saved."
-msgstr "Не удалось сохранить изображение."
-
-# Machine translation (2026-10-08), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Copied"
-msgstr "Скопировано"
-
-# Machine translation (2026-10-08), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Scrolling down… Enter keeps what is joined so far, Esc cancels."
-msgstr "Прокрутка вниз… Enter оставляет уже склеенное, Esc отменяет."
-
-# Machine translation (2026-10-08), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "Scrolling for you needs the Accessibility permission, so scroll down slowly by hand."
-msgstr "Для автоматической прокрутки нужно разрешение «Универсальный доступ», поэтому медленно прокручивайте вниз вручную."
-
-# Machine translation (2026-10-08), not reviewed by a speaker.
-#: src/input/screenshot.zig
-msgid "The page could not be followed any further, so the picture ends here."
-msgstr "Страницу не удалось отследить дальше, поэтому изображение заканчивается здесь."
+#: windows/control-room/src/scene.rs:42
+msgid "Go to Its Tab"
+msgstr ""

@@ -26,6 +26,10 @@
 //!    group is a list item with what it says and whether it is selected.
 //!    The headers, the time band and the right side are not in the tree,
 //!    and no event is raised when the selection or a row changes.
+//!  * **A supervisor in another window is not shown here**, only pointed
+//!    at: moving a terminal between frames is not built. One in a tab of
+//!    this window is shown, by `tabs::layout` putting its pane where
+//!    `scene::terminal_rect` says.
 //!  * **No soft shadows, and no refraction on the chip**: GDI has no blur.
 //!  * **The selection is kept for the life of the process only**, not across
 //!    a restart.
@@ -45,6 +49,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use polter_control_room::act::{self, Dwell, SeenMarker};
 use polter_control_room::glyph::{self, Outline};
 use polter_control_room::layout::{self, ListLayout, Rect, Room};
+use polter_control_room::lend::{Detail, Effect, Event, Lending, Place};
 use polter_control_room::list::{self, List, Selection};
 use polter_control_room::look::{self, selection, side, status, Rgba, Theme};
 use polter_control_room::pulse;
@@ -54,45 +59,10 @@ use polter_control_room::snapshot::Shown;
 use polter_split_tree::Rect as TreeRect;
 
 use crate::control_room_source::{self as source, Data};
-use crate::i18n::{n_, tr};
+use crate::i18n::tr;
 use crate::{plogf, wlogf};
 
 const CLASS: PCWSTR = w!("PolterControlRoom");
-
-// **Every sentence the control room says, written out once more so the
-// translation template can find them.** The words live in
-// `polter_control_room` (`scene::msg`, `list::msg`, `rules::msg`) and reach
-// `tr` as values, and the template is made by reading *this* directory for
-// string literals inside `tr(…)` and `n_(…)` (`src/build/GhosttyI18n.zig`):
-// a sentence that is a literal only in another crate is never extracted, and
-// then is English on every machine with nothing to say why. A test in that
-// crate (`rules::tests`) reads this file and fails when one of its sentences
-// is not here.
-const _: &[&str] = &[
-    n_("Control Room"),
-    n_("Polter — Control Room"),
-    n_("Polter"),
-    n_("{} groups waiting for you"),
-    n_("{} groups need nothing from you"),
-    // TRANSLATORS: the unit after a number of minutes, as short as it goes.
-    n_("min"),
-    n_("Kept you waiting today"),
-    // TRANSLATORS: {} is a number of minutes.
-    n_("{} min"),
-    // TRANSLATORS: the right-hand end of a time axis.
-    n_("now"),
-    // TRANSLATORS: {} is a technical reason, not translated.
-    n_("The control room's data could not be read ({})."),
-    n_("Nothing has been worked out yet."),
-    n_("Select a group on the left."),
-    n_("This group has no supervisor."),
-    n_("The supervisor's terminal is in its own tab."),
-    n_("Go to Its Tab"),
-    // TRANSLATORS: {} is how many other terminals of the group are waiting.
-    n_("{} more"),
-    // TRANSLATORS: {} is another group's name.
-    n_("Same supervisor: see {}"),
-];
 
 /// The chip's slide: one frame every 16 ms while it is in the air.
 const TIMER_SLIDE: usize = 1;
@@ -121,6 +91,9 @@ struct State {
     /// An Alt chord was just performed here, so the `WM_SYSCHAR` that
     /// follows it is not an unknown menu mnemonic to beep at.
     swallow_syschar: bool,
+    /// Which terminal is shown on the right, and what the right side says
+    /// when none is (`polter_control_room::lend`).
+    lending: Lending,
 }
 
 /// One row as a UI Automation client is told about it.
@@ -149,6 +122,95 @@ static UIA_SELECT: Mutex<Option<String>> = Mutex::new(None);
 
 /// Posted to the panel when `UIA_SELECT` has something in it.
 const WM_ROOM_SELECT: u32 = WM_APP + 61;
+/// Posted to the panel when what it shows on the right may have to change:
+/// see `request_sync`.
+const WM_ROOM_SYNC: u32 = WM_APP + 63;
+
+/// Something happened that may change which terminal the control room
+/// shows: its tab came to the front or left it, a pane or a tab was closed,
+/// a tab was moved to another window.
+///
+/// **Posted, never done in place.** Most callers are inside `tabs::layout`
+/// or a close path, and what this leads to is another layout. Safe from any
+/// thread; nothing when there is no panel.
+pub fn request_sync() {
+    let panel = PANEL.load(Ordering::Acquire);
+    if panel != 0 {
+        let _ = unsafe { PostMessageW(Some(HWND(panel as *mut c_void)), WM_ROOM_SYNC, WPARAM(0), LPARAM(0)) };
+    }
+}
+
+/// The terminal shown on the right took or gave up the keyboard: the frame
+/// round it says which, so it is drawn again.
+pub fn repaint() {
+    if let Some(hwnd) = panel() {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+}
+
+fn detail() -> Detail {
+    STATE.with(|s| s.borrow().as_ref().map(|st| st.lending.detail().clone()).unwrap_or(Detail::NothingSelected))
+}
+
+/// Tell the lending what is selected now and where its supervisor is, and
+/// do what it says: which pane of this window the layout shows on the
+/// right, if any.
+///
+/// **Everything it is told is asked for fresh**: whether the panel is
+/// showing, the selection, the supervisor the core names for it, and which
+/// window that terminal is in. So it can be called after anything, any
+/// number of times; with nothing changed the lending says "nothing to do".
+fn sync_loan(hwnd: HWND) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let showing = unsafe { IsWindowVisible(hwnd) }.as_bool();
+    let event = if !showing {
+        // Another tab of this window is in front, or the window is going.
+        Event::Closing
+    } else {
+        let group = selection();
+        let supervisor = source::with(|data| match data {
+            Data::Ready(r) => group.as_deref().and_then(|id| r.list.row(id)).and_then(|row| row.steward.clone()),
+            Data::NotYet => None,
+            Data::Unreadable(_) => None,
+        });
+        let place = match supervisor.as_deref().and_then(crate::tabs::place_of_terminal) {
+            Some((home, _)) if home == frame => Place::Here,
+            Some(_) => Place::Elsewhere,
+            None => Place::Gone,
+        };
+        Event::Selected { group, supervisor, place }
+    };
+    let effects = STATE.with(|s| s.borrow_mut().as_mut().map(|st| st.lending.handle(event)).unwrap_or_default());
+    if effects.is_empty() {
+        return;
+    }
+    for effect in &effects {
+        match effect {
+            // The pane never left its tab, so "back" is the layout no
+            // longer putting it here; with its home gone there is nothing
+            // to put anywhere.
+            Effect::GiveBack { terminal, to_home, focus: _ } => {
+                crate::tabs::set_lent(frame, None);
+                wlogf!(frame, "[control-room] gave back terminal {} (home still there: {})", terminal, to_home);
+            }
+            Effect::Borrow(loan) => match crate::tabs::place_of_terminal(&loan.terminal) {
+                Some((home, pane)) if home == frame => {
+                    crate::tabs::set_lent(frame, Some(pane));
+                    wlogf!(frame, "[control-room] showing terminal {} (pane {}) for {:?}", loan.terminal, pane, loan.group);
+                }
+                // It went between the asking and the doing; the next sync
+                // says so.
+                _ => wlogf!(frame, "[control-room] terminal {} for {:?} is not in this window any more; not shown", loan.terminal, loan.group),
+            },
+        }
+    }
+    if showing {
+        crate::tabs::layout(frame);
+    }
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
 
 /// The rows as they were last painted. Safe from any thread.
 pub fn uia_rows() -> Vec<UiaRow> {
@@ -267,6 +329,7 @@ pub fn create(frame: HWND, hinst: HINSTANCE, bounds: TreeRect) -> Option<HWND> {
                 dwell: None,
                 selection: Selection::opened(kept),
                 swallow_syschar: false,
+                lending: Lending::default(),
             })
         });
         // The snapshot there already is, if there is one, is this control
@@ -296,6 +359,8 @@ pub fn snapshot_changed() {
     if !waiting {
         arm_seen(hwnd);
     }
+    // The supervisor the core names may have changed, or gone.
+    sync_loan(hwnd);
     unsafe {
         let _ = InvalidateRect(Some(hwnd), None, false);
     }
@@ -413,6 +478,8 @@ fn select(hwnd: HWND, id: Option<String>) {
     }
     wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] selected {:?}", id);
     arm_seen(hwnd);
+    // Another group's supervisor on the right; the keyboard stays here.
+    sync_loan(hwnd);
 }
 
 /// Tell the marker what is selected now, and start its wait if it asks for
@@ -528,6 +595,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             LRESULT(0)
         }
+        // Shown or hidden: its tab came to the front or left it. Posted,
+        // because this arrives from inside `tabs::layout`.
+        WM_SHOWWINDOW => {
+            request_sync();
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        }
+        WM_ROOM_SYNC => {
+            sync_loan(hwnd);
+            LRESULT(0)
+        }
         WM_PAINT => {
             paint(hwnd);
             LRESULT(0)
@@ -605,6 +682,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // the keyboard (`palette.rs` has the contract). A pane's own
             // `WM_SETFOCUS` takes it again.
             crate::ime_focus(false);
+            // The keyboard is on the list now, not in the terminal shown
+            // beside it; the frame round that terminal says so.
+            crate::tabs::keyboard_on_the_list(unsafe { GetAncestor(hwnd, GA_ROOT) });
+            let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
             // Coming to the front with a row already selected is a look.
             let waiting = STATE.with(|s| s.borrow().as_ref().is_some_and(|st| st.dwell.is_some()));
             if !waiting {
@@ -647,6 +728,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     *st = None;
                 }
             });
+            // Whatever was shown on the right is no longer shown: it never
+            // left its own tab, so that is all "giving it back" is.
+            crate::tabs::set_lent(unsafe { GetAncestor(hwnd, GA_ROOT) }, None);
             // A client holding a row of a panel that is gone is told it is
             // gone, not handed the last list.
             let _ = PANEL.compare_exchange(hwnd.0 as isize, 0, Ordering::AcqRel, Ordering::Acquire);
@@ -677,6 +761,7 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         return;
     }
     // "Go to its tab" on the right.
+    let detail = detail();
     let selected = selection();
     let theme = look::theme(dark());
     let go = source::with(|data| {
@@ -685,7 +770,7 @@ fn click(hwnd: HWND, x: i32, y: i32) {
             Data::NotYet => None,
             Data::Unreadable(_) => None,
         };
-        scene::build_right(row, g.room.right.w, g.room.right.h, theme, g.scale, &|s| tr(s)).go
+        scene::build_right(&detail, row, g.room.right.w, g.room.right.h, theme, g.scale, false, &|s| tr(s)).go
     });
     if let Some(go) = go {
         let (rx, ry) = (px - g.room.right.x, py - g.room.right.y);
@@ -772,6 +857,8 @@ fn paint(hwnd: HWND) {
     let selected = selection();
     let t = source::clock();
     let translate = |s: &str| tr(s);
+    let detail = detail();
+    let in_terminal = crate::tabs::keyboard_in_lent(unsafe { GetAncestor(hwnd, GA_ROOT) });
 
     // Everything is drawn once, into memory, and blitted: the chip's slide
     // repaints sixty times a second.
@@ -824,12 +911,12 @@ fn paint(hwnd: HWND) {
                 }
                 (
                     scene::build(list, &lay, &view, &translate),
-                    scene::build_right(row, g.room.right.w, g.room.right.h, theme, g.scale, &translate),
+                    scene::build_right(&detail, row, g.room.right.w, g.room.right.h, theme, g.scale, in_terminal, &translate),
                 )
             }
             Data::NotYet => (
                 scene::build_message(side::WIDTH, g.room.panel.h, theme, g.scale, tr(scene::msg::NOT_YET)),
-                scene::build_right(None, g.room.right.w, g.room.right.h, theme, g.scale, &translate),
+                scene::build_right(&detail, None, g.room.right.w, g.room.right.h, theme, g.scale, in_terminal, &translate),
             ),
             Data::Unreadable(why) => (
                 scene::build_message(
@@ -839,7 +926,7 @@ fn paint(hwnd: HWND) {
                     g.scale,
                     list::fill(&tr(scene::msg::UNREADABLE), why),
                 ),
-                scene::build_right(None, g.room.right.w, g.room.right.h, theme, g.scale, &translate),
+                scene::build_right(&detail, None, g.room.right.w, g.room.right.h, theme, g.scale, in_terminal, &translate),
             ),
         });
         paint_items(mem, at, &items, &mut fonts, t);

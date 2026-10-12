@@ -77,10 +77,12 @@ pub fn can_be_renamed(kind: Kind) -> bool {
 /// The English of the tab's fixed name and of its window's title; a host
 /// translates them.
 pub mod msg {
-    pub const TAB_TITLE: &str = "Control Room";
-    pub const WINDOW_TITLE: &str = "Polter — Control Room";
+    use crate::n_;
+
+    pub const TAB_TITLE: &str = n_("Control Room");
+    pub const WINDOW_TITLE: &str = n_("Polter — Control Room");
     /// What a window says before any program in it has named itself.
-    pub const NO_TITLE: &str = "Polter";
+    pub const NO_TITLE: &str = n_("Polter");
 }
 
 /// What a window's caption says. `room` is the control room's window title
@@ -167,39 +169,75 @@ mod tests {
         assert!(!menu_row_offered("new_split:right", false, true));
     }
 
-    /// The sentences in a source's `pub mod msg { … }`.
-    fn sentences(src: &str) -> Vec<String> {
-        let Some(start) = src.find("pub mod msg {") else { return Vec::new() };
-        let body = &src[start..];
-        let end = body.find("\n}").unwrap_or(body.len());
-        body[..end]
-            .lines()
-            .filter_map(|l| {
-                let l = l.trim();
-                let rest = l.strip_prefix("pub const ")?;
-                let value = rest.split_once("&str = \"")?.1;
-                Some(value.strip_suffix("\";")?.to_string())
-            })
-            .collect()
+    #[test]
+    fn every_sentence_the_control_room_says_is_marked_for_the_translation_template() {
+        // The template is made from string literals inside `n_(…)`
+        // (`src/build/GhosttyI18n.zig` reads this crate's sources). A
+        // sentence written bare is never extracted, and is then English on
+        // every machine with nothing to say why.
+        let mut marked = 0;
+        for (name, src) in [
+            ("rules.rs", include_str!("rules.rs")),
+            ("scene.rs", include_str!("scene.rs")),
+            ("list.rs", include_str!("list.rs")),
+            ("lend.rs", include_str!("lend.rs")),
+        ] {
+            let start = src.find("pub mod msg {").unwrap_or_else(|| panic!("{name} has no `msg`"));
+            let body = &src[start..];
+            let body = &body[..body.find("\n}").unwrap_or(body.len())];
+            for line in body.lines().map(str::trim).filter(|l| l.starts_with("pub const ")) {
+                assert!(line.contains("&str = n_(\""), "{name}: not marked for translation: {line}");
+                marked += 1;
+            }
+        }
+        // A reader that stopped matching would find nothing to complain of.
+        assert!(marked >= 19, "only {marked} sentences were read");
+        // Not marked, on purpose: `act::Refusal::message`. Nothing shows a
+        // refusal to the person now -- the one act the control room sends is
+        // "seen", and a refusal of that goes to the log -- so those
+        // sentences have no place in a translator's list until something
+        // does show them.
+    }
+
+    /// Rust source with `//` comments taken out, so that a sentence about
+    /// a thing is not read as the thing.
+    fn code(src: &str) -> String {
+        src.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n")
     }
 
     #[test]
-    fn every_sentence_the_control_room_says_is_where_the_translation_template_reads() {
-        // The template is made from string literals in `windows/host/src`
-        // (`src/build/GhosttyI18n.zig`). These sentences are literals here
-        // and values there, so the host repeats each one inside `n_(…)`.
-        let host = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../host/src/control_room.rs"));
-        let mut all = Vec::new();
-        for src in [include_str!("rules.rs"), include_str!("scene.rs"), include_str!("list.rs")] {
-            all.extend(sentences(src));
+    fn a_row_only_says_who_is_waiting_and_for_what_and_nothing_on_it_can_be_pressed() {
+        // The user's ruling, 2026-10-12: a row is too small to show what is
+        // being agreed to, and what is asked is often not a yes or a no. So
+        // the control room tells and does not act: no approve, no refuse, no
+        // reply from a row, by a button or by a key or through UI
+        // Automation. This reads what draws and what handles input, and
+        // fails when any of it sends one of those acts or reads the core's
+        // word for "this can be approved" -- which is how such a button
+        // would come back.
+        let host = concat!(env!("CARGO_MANIFEST_DIR"), "/../host/src/");
+        let mut sources = vec![("scene.rs".to_string(), include_str!("scene.rs").to_string())];
+        for name in ["control_room.rs", "control_room_keys.rs", "control_room_source.rs", "uia.rs"] {
+            let text = std::fs::read_to_string(format!("{host}{name}")).unwrap_or_else(|e| panic!("cannot read the host's {name}: {e}"));
+            sources.push((name.to_string(), text));
         }
-        // A reader that stopped matching would find nothing to miss.
-        assert!(all.len() >= 16, "only {} sentences were read: {all:?}", all.len());
-        assert!(all.contains(&msg::TAB_TITLE.to_string()));
-        assert!(all.contains(&crate::scene::msg::GO_TO_ITS_TAB.to_string()));
-        assert!(all.contains(&crate::list::msg::OTHERS.to_string()));
-        for sentence in all {
-            assert!(host.contains(&format!("n_(\"{sentence}\")")), "not marked for translation in the host: {sentence:?}");
+        // The reading has a floor: these files are large, and one that came
+        // back empty would have nothing in it to object to.
+        assert!(sources.iter().all(|(_, text)| text.len() > 2000), "a source that should be read was nearly empty");
+        for (name, text) in &sources {
+            let code = code(text);
+            for forbidden in ["approvable", "Act::Approve", "Act::Refuse", "Act::Reply", "InvokePattern"] {
+                // `uia.rs` has other windows' buttons in it; only the
+                // control room's own providers are held to "no Invoke".
+                let scope: &str = if name == "uia.rs" {
+                    let from = code.find("struct ControlRoomRoot").expect("the control room's providers are in uia.rs");
+                    let to = code[from..].find("pub fn on_get_object_control_room").map_or(code.len(), |n| from + n);
+                    &code[from..to]
+                } else {
+                    &code
+                };
+                assert!(!scope.contains(forbidden), "{name} has `{forbidden}`: a row would be acting, not telling");
+            }
         }
     }
 

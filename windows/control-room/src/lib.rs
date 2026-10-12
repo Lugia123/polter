@@ -9,6 +9,7 @@
 //! | [`layout`] | where everything in the list panel is; the time band's pieces; the chip's spring |
 //! | [`pulse`] | which waiting glyph breathes; what a window tab carries and whether it is drawn |
 //! | [`act`] | the person's acts as requests to the core, what a refusal says, when looking marks a group seen |
+//! | [`lend`] | which terminal is shown on the right, and what happens to it when anything changes |
 //! | [`reach`] | what can still be done with no terminal in front: which actions, and which key is which |
 //! | [`rules`] | the control room's tab: one in the application, where it opens, what closing it involves |
 //! | [`scene`] | everything the panel draws, as a list of rectangles, words and glyphs for a host to paint |
@@ -23,10 +24,20 @@
 //! that, and `tools/control-room-hosts-agree.py` holds what it draws to what
 //! the macOS host draws from the same snapshot.
 
+/// Marks a string for the translation template without looking it up: the
+/// host translates it where it is shown. `src/build/GhosttyI18n.zig` reads
+/// this crate for string literals inside `n_(…)`; one that is not marked is
+/// never extracted, and is then English on every machine with nothing to
+/// say why. The same name and meaning as the host's `i18n::n_`.
+pub const fn n_(s: &'static str) -> &'static str {
+    s
+}
+
 pub mod act;
 pub mod glyph;
 pub mod json;
 pub mod layout;
+pub mod lend;
 pub mod list;
 pub mod look;
 pub mod pulse;

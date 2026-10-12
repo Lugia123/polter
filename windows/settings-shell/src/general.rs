@@ -10,6 +10,7 @@
 //! in as JSON and the host fills [`Item`] from it -- this crate has no
 //! dependencies, so no parser.
 
+use crate::n_;
 use crate::grid::*;
 use crate::{scale, Rect};
 
@@ -69,16 +70,16 @@ impl Group {
     /// The label, as an English msgid -- the macOS side's.
     pub fn msgid(self) -> &'static str {
         match self {
-            Group::Appearance => "Appearance",
-            Group::Font => "Font",
-            Group::Terminal => "Terminal",
-            Group::Windows => "Windows & Tabs",
-            Group::Polter => "Polter",
-            Group::Screenshot => "Screenshot",
-            Group::All => "All Options",
-            Group::Keybinds => "Keyboard Shortcuts",
-            Group::Advanced => "Advanced",
-            Group::About => "About",
+            Group::Appearance => n_("Appearance"),
+            Group::Font => n_("Font"),
+            Group::Terminal => n_("Terminal"),
+            Group::Windows => n_("Windows & Tabs"),
+            Group::Polter => n_("Polter"),
+            Group::Screenshot => n_("Screenshot"),
+            Group::All => n_("All Options"),
+            Group::Keybinds => n_("Keyboard Shortcuts"),
+            Group::Advanced => n_("Advanced"),
+            Group::About => n_("About"),
         }
     }
 

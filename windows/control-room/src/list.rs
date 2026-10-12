@@ -62,8 +62,10 @@ pub struct List {
 /// The English of what this crate says; a host passes each through its
 /// translation and then `fill`s it. `{}` is where the one argument goes.
 pub mod msg {
-    pub const OTHERS: &str = "{} more";
-    pub const SAME_SUPERVISOR: &str = "Same supervisor: see {}";
+    use crate::n_;
+
+    pub const OTHERS: &str = n_("{} more");
+    pub const SAME_SUPERVISOR: &str = n_("Same supervisor: see {}");
 }
 
 /// Put the argument where the translated sentence wants it.

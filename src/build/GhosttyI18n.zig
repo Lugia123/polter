@@ -258,7 +258,23 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
     // cache has not seen.
     xgettext_rs.has_side_effects = true;
 
-    {
+    // **Every directory the Windows host's words are written in**, not the
+    // host's own alone. The host cannot be tested off Windows, so whatever
+    // can be wrong without looking wrong is moved out into crates beside it
+    // -- and their sentences went with them: `Dot::msgid` in
+    // `windows/settings-shell`, the control room's in `windows/control-room`.
+    // The host passes those to `tr` as values, so there is no literal in
+    // `windows/host/src` to find. Twelve of them were in the template only
+    // because somebody had typed them into it by hand (c8c2902b6), which the
+    // next run of this step would have moved to the obsolete block of every
+    // catalogue with nothing going red. Each of these crates has its own
+    // `n_`, the same marker as the host's.
+    const rust_dirs = [_][]const u8{
+        "windows/host/src",
+        "windows/settings-shell/src",
+        "windows/control-room/src",
+    };
+    for (rust_dirs) |rust_dir| {
         // **Walked rather than named file by file**, and every `.rs` file:
         // naming files is what put `chat.zig` in here as a special case, and
         // a marker filter is what the note above describes going wrong.
@@ -271,7 +287,7 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
 
         var host_dir = try b.build_root.handle.openDir(
             b.graph.io,
-            "windows/host/src",
+            rust_dir,
             .{ .iterate = true },
         );
         defer host_dir.close(b.graph.io);
@@ -298,7 +314,7 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
         );
 
         for (host_files.items) |item| {
-            const path = b.pathJoin(&.{ "windows/host/src", item });
+            const path = b.pathJoin(&.{ rust_dir, item });
             xgettext_rs.addArg(path);
             xgettext_rs.addFileInput(b.path(path));
         }

@@ -81,7 +81,16 @@ def rules_for(code):
 
 # A bare `_`, or `Some(_)`: over an `Option<Kind>` that second one takes every
 # kind there will ever be, exactly as the first does over a `Kind`.
-WILDCARD = re.compile(r"(?:^|[,}\n|])\s*(?:_|Some\(\s*_\s*\))\s*(?:=>|if\b|\|)")
+#
+# Two shapes: the wildcard alone or first in an or-pattern (`_ =>`, `_ | X
+# =>`), and the wildcard last in one (`X | _ =>`). Kept apart so that a
+# closure's parameter list -- `.map(|_| …)` in an arm's own scrutinee -- is
+# neither: it is a `_` between two bars, with no `=>` after it.
+_WILD = r"(?:_|Some\(\s*_\s*\))"
+WILDCARD = re.compile(
+    r"(?:^|[,}\n])\s*" + _WILD + r"\s*(?:=>|if\b|\|)"
+    r"|\|\s*" + _WILD + r"\s*(?:=>|if\b)"
+)
 FIELDS = ("tree", "panes", "focused")
 
 # Below this the reading is not believable: the host matches a tab's kind in
@@ -237,6 +246,12 @@ def self_test():
          GOOD + "fn f(){ match tabs::front_kind(frame) {\n Some(Kind::ControlRoom) => {}\n Some(_) => {}\n None => {}\n } }\n", 1),
         ("Some(_) as one side of an or-pattern",
          GOOD + "fn f(){ match tabs::front_kind(frame) { Some(Kind::ControlRoom) => {}, Some(_) | None => {} } }\n", 1),
+        ("a wildcard last in an or-pattern",
+         GOOD + "fn f(t:&Tab){ match t.kind() { Kind::Terminal => 1, Kind::ControlRoom | _ => 2 } }\n", 1),
+        ("a closure that ignores its argument, in an arm of a match over a kind",
+         GOOD + "fn f(t:&Tab){ match t.front() {\n Front::Pane(p) => {}\n"
+                " Front::Room(h) => match w.on_loan().and_then(|_| w.typing()) { Some(p) => {}, None => {} },\n"
+                " Front::NoPane => {}\n } }\n", 0),
         ("if let", GOOD + "fn f(t:&Tab){ if let Body::Terminal(x) = &t.body { } }\n", 1),
         ("while let", GOOD + "fn f(t:&Tab){ while let Front::Pane(p) = t.front() { } }\n", 1),
         ("matches!", GOOD + "fn f(t:&Tab)->bool{ matches!(t.kind(), Kind::Terminal) }\n", 1),
