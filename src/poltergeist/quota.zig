@@ -229,12 +229,12 @@ fn agoChanges(at_ms: u64, age_ms: u64) u64 {
     return at_ms +| (age_ms / day + 1) * day;
 }
 
-const Said = struct { when: When, changes_ms: ?u64 };
+pub const Said = struct { when: When, changes_ms: ?u64 };
 
 /// How a reset `left_ms` away is said, and when that next reads differently.
 /// Close to the limit it is how long from now, which is what decides
 /// whether to wait; once it is all gone it is the moment itself.
-fn whenOf(level: Alert.Level, resets_ms: u64, left_ms: u64) Said {
+pub fn whenOf(level: Alert.Level, resets_ms: u64, left_ms: u64) Said {
     switch (level) {
         .out => {
             if (left_ms <= day) return .{ .when = .{ .form = .clock, .n = 0 }, .changes_ms = null };
@@ -399,6 +399,113 @@ pub fn stripped(arena: Allocator, out: Out) Allocator.Error!Out {
         s.line = .{ .label = line.label, .entries = entries };
     }
     return s;
+}
+
+// -- one line for a status line ---------------------------------------------
+
+pub const Lang = enum {
+    en,
+    zh,
+
+    /// From the locale a process was started with, the way `LC_ALL`,
+    /// `LC_MESSAGES` and `LANG` outrank one another. English unless it
+    /// says Chinese.
+    pub fn of(lc_all: ?[]const u8, lc_messages: ?[]const u8, lang: ?[]const u8) Lang {
+        for ([_]?[]const u8{ lc_all, lc_messages, lang }) |maybe| {
+            const v = maybe orelse continue;
+            if (v.len == 0) continue;
+            return if (std.mem.startsWith(u8, v, "zh")) .zh else .en;
+        }
+        return .en;
+    }
+};
+
+fn spanShort(span: Span, lang: Lang) []const u8 {
+    return switch (lang) {
+        .zh => switch (span) {
+            .five_hour => "5 小时",
+            .seven_day => "7 天",
+            .month => "30 天",
+            .other => "",
+        },
+        .en => switch (span) {
+            .five_hour => "5h",
+            .seven_day => "7d",
+            .month => "30d",
+            .other => "",
+        },
+    };
+}
+
+fn backIn(w: *std.Io.Writer, when: When, lang: Lang) std.Io.Writer.Error!void {
+    const unit: []const u8 = switch (lang) {
+        .zh => switch (when.form) {
+            .minutes => " 分钟后恢复",
+            .hours => " 小时后恢复",
+            .days => " 天后恢复",
+            .clock, .date => unreachable,
+        },
+        .en => switch (when.form) {
+            .minutes => " min",
+            .hours => " h",
+            .days => " d",
+            .clock, .date => unreachable,
+        },
+    };
+    switch (lang) {
+        .zh => try w.print("，{d}{s}", .{ when.n, unit }),
+        .en => try w.print(", back in {d}{s}", .{ when.n, unit }),
+    }
+}
+
+/// The one line `polter +statusline` writes when it stands in for nobody's
+/// status line: how much of each window is used, and nothing else.
+///
+/// **Short, and the same rules as the block**: a window says only its
+/// percentage; from `near_percent` it also says how long until it comes
+/// back, and is the one part in red; at a hundred it says it is used up
+/// rather than a number. A window whose reset has passed is not its old
+/// number and is left out. With no window to speak of, nothing is written
+/// at all -- not even a newline -- which is what there was before.
+///
+/// `color` off writes no escape at all.
+pub fn statusText(
+    w: *std.Io.Writer,
+    windows: [max_windows]?Window,
+    now_ms: u64,
+    lang: Lang,
+    color: bool,
+) std.Io.Writer.Error!void {
+    var said: usize = 0;
+    for (windows) |maybe| {
+        const window = maybe orelse continue;
+        if (window.resets_ms <= now_ms) continue;
+
+        try w.writeAll(if (said == 0) switch (lang) {
+            .zh => "额度 ",
+            .en => "Usage ",
+        } else " · ");
+        said += 1;
+
+        const hot = window.used >= near_percent;
+        if (hot and color) try w.writeAll("\x1b[31m");
+        const name = spanShort(window.span, lang);
+        if (window.used >= 100) {
+            try w.writeAll(name);
+            try w.writeAll(switch (lang) {
+                .zh => "用完了",
+                .en => if (name.len > 0) " used up" else "used up",
+            });
+        } else {
+            if (name.len > 0) try w.print("{s} ", .{name});
+            try w.print("{d}%", .{window.used});
+        }
+        // How long from now, at a hundred as well: a status line is read
+        // in passing, and "in 40 min" needs no clock beside it.
+        if (hot) try backIn(w, whenOf(.near, window.resets_ms, window.resets_ms -| now_ms).when, lang);
+        if (hot and color) try w.writeAll("\x1b[0m");
+    }
+    if (said > 0) try w.writeByte('\n');
 }
 
 // -- reading what the CLIs say ----------------------------------------------
@@ -935,4 +1042,73 @@ test "quota: what +statusline leaves is what the app reads back" {
     try testing.expect(readDrop(aa, .claude, "{\"v\":2,\"at_ms\":1,\"windows\":[]}") == null);
     const absurd = readDrop(aa, .claude, "{\"v\":1,\"at_ms\":1,\"windows\":[{\"span\":\"five_hour\",\"used\":140,\"resets_ms\":5}]}");
     try testing.expect(absurd == null);
+}
+
+fn statusLineOf(windows: [max_windows]?Window, lang: Lang, color: bool) ![]const u8 {
+    const S = struct {
+        var buf: [256]u8 = undefined;
+    };
+    var w: std.Io.Writer = .fixed(&S.buf);
+    try statusText(&w, windows, noon, lang, color);
+    return w.buffered();
+}
+
+test "quota status line: an ordinary day is each window and its percentage, and nothing else" {
+    const windows: [max_windows]?Window = .{ win(.five_hour, 61, 2 * hour), win(.seven_day, 12, 3 * day) };
+    const zh = try statusLineOf(windows, .zh, true);
+    try testing.expectEqualStrings("额度 5 小时 61% · 7 天 12%\n", zh);
+    const en = try statusLineOf(windows, .en, true);
+    try testing.expectEqualStrings("Usage 5h 61% · 7d 12%\n", en);
+}
+
+test "quota status line: past the line a window says how long until it comes back, and is the part in red" {
+    const windows: [max_windows]?Window = .{ win(.five_hour, 92, 40 * min), win(.seven_day, 30, 3 * day) };
+    const zh = try statusLineOf(windows, .zh, true);
+    try testing.expectEqualStrings("额度 \x1b[31m5 小时 92%，40 分钟后恢复\x1b[0m · 7 天 30%\n", zh);
+    const en = try statusLineOf(windows, .en, false);
+    try testing.expectEqualStrings("Usage 5h 92%, back in 40 min · 7d 30%\n", en);
+
+    // Seventy-nine says its number and no more.
+    const under = try statusLineOf(.{ win(.five_hour, 79, 40 * min), null }, .zh, true);
+    try testing.expectEqualStrings("额度 5 小时 79%\n", under);
+    const at = try statusLineOf(.{ win(.five_hour, 80, 40 * min), null }, .zh, false);
+    try testing.expectEqualStrings("额度 5 小时 80%，40 分钟后恢复\n", at);
+}
+
+test "quota status line: used up says which window, and when it is back" {
+    const windows: [max_windows]?Window = .{ win(.five_hour, 100, 100 * min), win(.seven_day, 64, 3 * day) };
+    const zh = try statusLineOf(windows, .zh, false);
+    try testing.expectEqualStrings("额度 5 小时用完了，2 小时后恢复 · 7 天 64%\n", zh);
+    const en = try statusLineOf(windows, .en, false);
+    try testing.expectEqualStrings("Usage 5h used up, back in 2 h · 7d 64%\n", en);
+
+    const weekly = try statusLineOf(.{ win(.five_hour, 10, hour), win(.seven_day, 100, 3 * day) }, .zh, false);
+    try testing.expectEqualStrings("额度 5 小时 10% · 7 天用完了，3 天后恢复\n", weekly);
+}
+
+test "quota status line: with no window to speak of it writes nothing, not even a newline" {
+    const none = try statusLineOf(.{ null, null }, .zh, true);
+    try testing.expectEqual(@as(usize, 0), none.len);
+
+    // A window that has come round again is not its old number.
+    const past: Window = .{ .span = .five_hour, .used = 97, .resets_ms = noon - min };
+    const over = try statusLineOf(.{ past, null }, .zh, true);
+    const over_len = over.len;
+    try testing.expectEqual(@as(usize, 0), over_len);
+    const one = try statusLineOf(.{ past, win(.seven_day, 41, 2 * day) }, .zh, true);
+    try testing.expectEqualStrings("额度 7 天 41%\n", one);
+
+    // A free account's one window.
+    const month = try statusLineOf(.{ win(.month, 3, 20 * day), null }, .en, true);
+    try testing.expectEqualStrings("Usage 30d 3%\n", month);
+}
+
+test "quota status line: the language is the locale's, in the order a locale is read" {
+    try testing.expectEqual(Lang.zh, Lang.of(null, null, "zh_CN.UTF-8"));
+    try testing.expectEqual(Lang.en, Lang.of(null, null, "en_US.UTF-8"));
+    const outranked = Lang.of("en_US.UTF-8", "zh_CN.UTF-8", "zh_CN.UTF-8");
+    try testing.expectEqual(Lang.en, outranked);
+    const messages = Lang.of("", "zh_TW", "en_US.UTF-8");
+    try testing.expectEqual(Lang.zh, messages);
+    try testing.expectEqual(Lang.en, Lang.of(null, null, null));
 }
