@@ -1011,5 +1011,59 @@
       "tab": "0x0000000000000021",
       "group": null
     }
-  ]
+  ],
+  "quota": {
+    "near_percent": 80,
+    "alerts": [
+      {
+        "family": "claude",
+        "level": "near",
+        "span": "five_hour",
+        "used": 92,
+        "resets_ms": 1700008400000,
+        "when": {
+          "form": "minutes",
+          "n": 40
+        },
+        "stale": null,
+        "way_out": null,
+        "at_ms": 1700005880000,
+        "windows": [
+          {
+            "span": "five_hour",
+            "used": 92,
+            "live": true,
+            "resets_ms": 1700008400000
+          },
+          {
+            "span": "seven_day",
+            "used": 30,
+            "live": true,
+            "resets_ms": 1700265200000
+          }
+        ]
+      }
+    ],
+    "line": {
+      "label": "used",
+      "entries": [
+        {
+          "family": "codex",
+          "state": "fresh",
+          "used": 20,
+          "span": "five_hour",
+          "stale": null,
+          "at_ms": 1700005700000,
+          "windows": [
+            {
+              "span": "five_hour",
+              "used": 20,
+              "live": true,
+              "resets_ms": 1700013200000
+            }
+          ]
+        }
+      ]
+    }
+  }
 }

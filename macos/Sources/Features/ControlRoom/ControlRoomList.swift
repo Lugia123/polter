@@ -208,6 +208,9 @@ struct ControlRoomList: Equatable {
     /// "N groups need nothing from you". Also the core's.
     var quietCount: Int
     var quiet: [Row]
+    /// The allowance block at the bottom, as the core says it; nil when
+    /// the snapshot has none, and then nothing is drawn there.
+    var quota: ControlRoomQuota?
     /// The roles a supervisor can be started in, in the core's order.
     var supervisorRoles: [SupervisorRole] = []
     /// Whether there is a choice of role to offer. The core's word, not
@@ -426,6 +429,10 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     /// draws no tab glyphs, breathes nothing and has no band.
     var tabs: [Tab]?
     var pulses: [Pulse]?
+    /// How much of each account's allowance is used. Newer than the rest:
+    /// a snapshot without it draws no block. One with a word in it this
+    /// does not know is not read at all.
+    var quota: ControlRoomQuota?
     /// Every open terminal, for the frame its pane wears (`PaneFrame`).
     var terminals: [Terminal]?
     /// Absent in snapshots from before a supervisor could be started here:
@@ -549,6 +556,7 @@ extension ControlRoomList {
             waiting: rows.filter { $0.0 }.map { $0.1 },
             quietCount: snapshot.groups_other,
             quiet: rows.filter { !$0.0 }.map { $0.1 },
+            quota: snapshot.quota,
             supervisorRoles: (snapshot.supervisor_roles ?? []).map { SupervisorRole(key: $0.key, name: $0.name) },
             chooseSupervisorRole: snapshot.choose_supervisor_role ?? false)
     }
@@ -635,6 +643,10 @@ struct ControlRoomListLayout: Equatable {
     var fits: [String: ControlRoomAskFit]
     var separator: CGRect
     var quietHeader: CGRect
+    /// The allowance block: against the bottom of the panel whatever the
+    /// list above it holds, so that it is there when the list is long. No
+    /// height when the list has none.
+    var quota: CGRect
 
     /// How wide what a row waits on is: the row, less its padding and the
     /// column the glyph stands in.
@@ -699,6 +711,8 @@ struct ControlRoomListLayout: Equatable {
         }
         rows = frames
 
+        let quotaH = list.quota.map { ControlRoomQuotaLayout(quota: $0).height } ?? 0
+        quota = CGRect(x: pad, y: height - pad - quotaH, width: inner, height: quotaH)
     }
 
     /// Where the selection chip rests for a row; nil for a row not listed.

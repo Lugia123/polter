@@ -252,6 +252,52 @@ pub mod stack_tab {
     pub const OUTLINED: bool = false;
 }
 
+/// The allowance block at the bottom of the list: a hairline, then one opened-out part for each account at or past the limit line, then the one line. 38.5 high on an ordinary day, 88.5 with one account close, 112.5 with one used up and a way out named.
+pub mod quota {
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const PADDING_X: f64 = 12.0;
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const PADDING_BOTTOM: f64 = 6.0;
+    /// Under the hairline that closes the list above.
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const SEPARATOR_SPACE_BELOW: f64 = 4.0;
+    /// The one line: the label at the left, each account and its number at the right.
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const LINE_HEIGHT: f64 = 28.0;
+    /// Between two accounts in the one line.
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const ENTRY_GAP: f64 = 16.0;
+    /// The least between the label and the accounts.
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const LABEL_GAP: f64 = 12.0;
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const ALERT_PADDING_TOP: f64 = 4.0;
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const ALERT_PADDING_BOTTOM: f64 = 6.0;
+    /// Which account and which window and how much, and at the right when it comes back.
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const ALERT_TITLE_HEIGHT: f64 = 24.0;
+    /// Between the triangle and the words, when it is all gone.
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const ALERT_GLYPH_GAP: f64 = 5.0;
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const BAR_HEIGHT: f64 = 6.0;
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const BAR_RADIUS: f64 = 3.0;
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const BAR_SPACE_ABOVE: f64 = 3.0;
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const BAR_SPACE_BELOW: f64 = 7.0;
+    /// The least of the bar that is filled, so that a filled end is always a round one.
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const BAR_MIN_FILL: f64 = 6.0;
+    /// The way out, under the bar of an account that is used up.
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const NOTE_LINE_HEIGHT: f64 = 20.0;
+    /// Source: design v19, way three: src/v19.css and CHANGES.md.
+    pub const NOTE_PADDING_BOTTOM: f64 = 4.0;
+}
+
 /// The four status glyphs and how they move. Nothing moves under Reduce Motion.
 pub mod status {
     /// Source: design v14, GRID.md.

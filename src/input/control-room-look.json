@@ -25,6 +25,7 @@
     "v17-tokens": "design v17, src/tokens-l.css and src/tokens-d.css",
     "v17-style": "design v17, src/style.css",
     "v18-a": "design v18, direction A: src/v18.css and CHANGES.md",
+    "v19-q3": "design v19, way three: src/v19.css and CHANGES.md",
     "v17-anim": "design v17, src/anim.py",
     "v17-build": "design v17, src/build.py (the glyphs' paths)",
     "supervisor": "the supervisor's ruling, not a design file",
@@ -166,6 +167,27 @@
         "tentative": { "alt": 104, "why": "104 is the design's eight-letter tab. The design draws no squeezed strip; where squeezing stops has not been ruled on." }
       },
       "outlined": { "v": false, "src": "v14-changes" }
+    },
+    "quota": {
+      "_src": "v19-q3",
+      "_doc": "The allowance block at the bottom of the list: a hairline, then one opened-out part for each account at or past the limit line, then the one line. 38.5 high on an ordinary day, 88.5 with one account close, 112.5 with one used up and a way out named.",
+      "padding_x": 12,
+      "padding_bottom": 6,
+      "separator_space_below": { "v": 4, "doc": "Under the hairline that closes the list above." },
+      "line_height": { "v": 28, "doc": "The one line: the label at the left, each account and its number at the right." },
+      "entry_gap": { "v": 16, "doc": "Between two accounts in the one line." },
+      "label_gap": { "v": 12, "doc": "The least between the label and the accounts." },
+      "alert_padding_top": 4,
+      "alert_padding_bottom": 6,
+      "alert_title_height": { "v": 24, "doc": "Which account and which window and how much, and at the right when it comes back." },
+      "alert_glyph_gap": { "v": 5, "doc": "Between the triangle and the words, when it is all gone." },
+      "bar_height": 6,
+      "bar_radius": 3,
+      "bar_space_above": 3,
+      "bar_space_below": 7,
+      "bar_min_fill": { "v": 6, "doc": "The least of the bar that is filled, so that a filled end is always a round one." },
+      "note_line_height": { "v": 20, "doc": "The way out, under the bar of an account that is used up." },
+      "note_padding_bottom": 4
     },
     "status": {
       "_src": "v14-changes",

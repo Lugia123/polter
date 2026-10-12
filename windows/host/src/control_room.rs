@@ -31,6 +31,9 @@
 //!    this window is shown, by `tabs::layout` putting its pane where
 //!    `scene::terminal_rect` says.
 //!  * **No soft shadows, and no refraction on the chip**: GDI has no blur.
+//!    The chip's shadow is flat pieces (`tabstrip::shadow`), and what the
+//!    slide has is place, size, lift and the two ways a row is written
+//!    (`scene::Lit`).
 //!  * **The selection is kept for the life of the process only**, not across
 //!    a restart.
 
@@ -54,7 +57,8 @@ use polter_control_room::list::{self, List, Selection};
 use polter_control_room::look::{self, selection, side, status, Rgba, Theme};
 use polter_control_room::rules;
 use polter_control_room::pulse;
-use polter_control_room::scene::{self, Align, Face, Item, Part, Piece, Side, Style, View};
+use polter_control_room::scene::{self, Align, Face, Item, Lit, Part, Piece, Side, Style, View};
+use polter_control_room::slide;
 use polter_control_room::snapshot::Shown;
 
 use polter_split_tree::Rect as TreeRect;
@@ -75,10 +79,13 @@ const TIMER_SEEN: usize = 2;
 /// has soft ones.
 const SS: i32 = 4;
 
+/// A slide in progress. Where it ends is not kept: it ends on the selected
+/// row, wherever the list has that row at the frame being drawn.
 struct Slide {
     from: Rect,
-    to: Rect,
     started: std::time::Instant,
+    /// How many times its timer has fired, for the line that says it stopped.
+    ticks: u32,
 }
 
 struct State {
@@ -428,19 +435,20 @@ fn in_front(hwnd: HWND) -> bool {
 
 // ----------------------------------------------------------------- selecting
 
-/// Where the chip is right now, in the panel's points.
-fn chip_now(at: &ListLayout, selected: Option<&str>) -> (Option<Rect>, f64) {
-    let rest = at.chip(selected);
+/// Where the chip is right now, in the panel's points; how far it is
+/// lifted; and whether it is on its way. Where it is on the way is
+/// `slide::Run`'s to say; this only tells it the time.
+fn chip_now(at: &ListLayout, selected: Option<&str>) -> (Option<Rect>, f64, bool) {
+    let Some(rest) = at.chip(selected) else { return (None, 0.0, false) };
     STATE.with(|s| {
         let st = s.borrow();
         match st.as_ref().and_then(|st| st.slide.as_ref()) {
-            Some(slide) => {
-                let t = slide.started.elapsed().as_secs_f64();
-                // In the air for the first half of the way, as on macOS.
-                let lift = if t < selection::SPRING_PERIOD / 2.0 { 1.0 } else { 0.0 };
-                (Some(layout::chip_between(slide.from, slide.to, t)), lift)
+            Some(sl) => {
+                let run = slide::Run { from: sl.from, to: rest, lift_scale: selection::LIFT_SCALE_ROW };
+                let frame = run.frame(sl.started.elapsed().as_secs_f64());
+                (Some(frame.chip), frame.lift, !frame.last)
             }
-            None => (rest, 0.0),
+            None => (Some(rest), 0.0, false),
         }
     })
 }
@@ -473,8 +481,13 @@ fn select(hwnd: HWND, id: Option<String>) {
             st.selection.choose(id.clone());
         }
     });
+    // Whether it slides at all is the rule's: not with the system's
+    // animations off, not from nowhere, not to where it already is.
     let slides = match ends {
-        Some((Some(from), Some(to))) if source::animations_on() => Some(Slide { from, to, started: std::time::Instant::now() }),
+        Some((from, Some(to))) => match slide::plan(from, to, source::animations_on()) {
+            slide::Plan::Slide { .. } => from.map(|from| Slide { from, started: std::time::Instant::now(), ticks: 0 }),
+            slide::Plan::Jump => None,
+        },
         _ => None,
     };
     let sliding = slides.is_some();
@@ -1126,19 +1139,37 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_TIMER => {
             match wp.0 {
                 TIMER_SLIDE => {
-                    let settled = STATE.with(|s| {
+                    // Decided here and not in the paint: a panel that is
+                    // not being painted -- hidden, minimised -- still gets
+                    // its timer stopped.
+                    let ended = STATE.with(|s| {
                         let mut st = s.borrow_mut();
-                        let Some(st) = st.as_mut() else { return true };
-                        let done = st.slide.as_ref().is_none_or(|sl| layout::chip_settled(sl.started.elapsed().as_secs_f64()));
-                        if done {
-                            st.slide = None;
+                        let Some(st) = st.as_mut() else { return Some((0, 0.0)) };
+                        let Some(sl) = st.slide.as_mut() else { return Some((0, 0.0)) };
+                        sl.ticks += 1;
+                        let t = sl.started.elapsed().as_secs_f64();
+                        if !slide::over(t) {
+                            return None;
                         }
-                        done
+                        let said = (sl.ticks, t);
+                        st.slide = None;
+                        Some(said)
                     });
                     unsafe {
-                        if settled {
+                        if let Some((ticks, t)) = ended {
                             let _ = KillTimer(Some(hwnd), TIMER_SLIDE);
+                            // absence: means it has not stopped -- after a
+                            // `selected` line that slid, no line of this kind
+                            // is a slide timer still running.
+                            wlogf!(
+                                GetAncestor(hwnd, GA_ROOT),
+                                "[control-room] slide over after {} tick(s), {:.0} ms; its timer is stopped",
+                                ticks,
+                                t * 1000.0
+                            );
                         }
+                        // The frame that says it is over is drawn too: that
+                        // is the one with the chip exactly on its row.
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                 }
@@ -1352,22 +1383,31 @@ fn paint(hwnd: HWND) {
                 rows.clear();
             }
         }
+        // What shows through the chip while it slides, and the chip's box.
+        let mut under_chip: Option<(RECT, Vec<Item>)> = None;
         let (items, right) = source::with(|data| match data {
             Data::Ready(r) => {
                 let list: &List = &r.list;
                 let lay = list_layout(hwnd, list, g.room.panel.h);
-                let (chip, lift) = chip_now(&lay, selected.as_deref());
+                let (chip, lift, sliding) = chip_now(&lay, selected.as_deref());
                 let window = crate::tabs::window(GetAncestor(hwnd, GA_ROOT)).map(|w| polter_control_room::rules::key(w.id));
                 let pulsing = pulse::pulsing_row(&r.snapshot.pulses, window.as_deref(), None);
-                let view = View {
-                    theme,
-                    scale: g.scale,
-                    selection: selected.as_deref(),
-                    chip,
-                    lift,
-                    pulsing,
-                    naming: naming.as_ref().map(|refusal| scene::Naming { refusal: refusal.as_deref() }),
-                };
+                // Whether a group is being named is the same in both passes:
+                // the field's outline and what says why a name made no
+                // group do not change while the chip is on its way.
+                let naming_view = naming.as_ref().map(|refusal| scene::Naming { refusal: refusal.as_deref() });
+                // On its way the chip is on no row: outside it nothing reads
+                // as selected, and what does is drawn through its outline
+                // below.
+                let lit = if sliding { Lit::Nobody } else { Lit::Selection };
+                let view = View { theme, scale: g.scale, selection: selected.as_deref(), lit, chip, lift, pulsing, naming: naming_view };
+                if sliding {
+                    if let Some(chip) = chip {
+                        let inside =
+                            View { theme, scale: g.scale, selection: selected.as_deref(), lit: Lit::Every, chip: Some(chip), lift, pulsing, naming: naming_view };
+                        under_chip = Some((at.rect(chip), scene::build(list, &lay, &inside, &translate)));
+                    }
+                }
                 let row = selected.as_deref().and_then(|id| list.row(id));
                 // What a UI Automation client is told, from the same list and
                 // the same layout this paint draws.
@@ -1407,6 +1447,20 @@ fn paint(hwnd: HWND) {
             ),
         });
         paint_items(mem, at, &items, &mut fonts, t);
+        if let Some((box_, inside)) = &under_chip {
+            // The same panel with every row written as selected, drawn only
+            // where the chip is: the chip's edge is the line between the
+            // two ways of writing a row.
+            let r = at.len(look::radius::ROW) * 2;
+            let outline = CreateRoundRectRgn(box_.left, box_.top, box_.right + 1, box_.bottom + 1, r, r);
+            if !outline.is_invalid() {
+                let saved = SaveDC(mem);
+                SelectClipRgn(mem, Some(outline));
+                paint_items(mem, at, inside, &mut fonts, t);
+                let _ = RestoreDC(mem, saved);
+                let _ = DeleteObject(outline.into());
+            }
+        }
         if scene::moves(&items) {
             source::wants_ticks();
         }
@@ -1651,7 +1705,7 @@ unsafe fn paint_line(dc: HDC, at: Px, r: RECT, parts: &[Part], fonts: &mut Fonts
 /// A rounded rectangle. A small one is drawn with soft corners; a large one
 /// (the panel itself) with GDI's own, because a mask that size is tens of
 /// megabytes a paint and its corners sit on a ground nearly its own colour.
-unsafe fn round(dc: HDC, r: RECT, radius: i32, color: Rgba, edge: Option<Rgba>) {
+pub(crate) unsafe fn round(dc: HDC, r: RECT, radius: i32, color: Rgba, edge: Option<Rgba>) {
     let (w, h) = (r.right - r.left, r.bottom - r.top);
     if w <= 0 || h <= 0 {
         return;

@@ -852,6 +852,8 @@ $script:HookEvents = @(
     @('Notification', 'idle_prompt|elicitation_dialog')
 )
 $script:HookTimeout = 5
+# How the person's own status line command reaches `polter +statusline`.
+$script:StatusLineChainEnv = 'POLTER_STATUSLINE_CHAIN'
 $script:VersionTimeoutMs = 10000
 
 # One argument as a Windows program reads its command line back into argv
@@ -982,6 +984,48 @@ function Get-Hooks($Req, [bool]$SettingsFile, $Notes) {
     return , $out
 }
 
+# `value` when it is a status line Claude Code would run, else `$null`.
+function Get-OwnStatusLine($Value) {
+    if (-not (Test-JDict $Value)) { return $null }
+    $type = Get-J $Value 'type'
+    if (-not ($type -is [string]) -or $type -cne 'command') { return $null }
+    $command = Get-J $Value 'command'
+    if (-not ($command -is [string]) -or $command.Length -eq 0) { return $null }
+    return , $Value
+}
+
+# The `statusLine` to set, and the environment that goes with it: see
+# `status_line_for` in adapter.py.
+function Get-StatusLine($Req, $Settings) {
+    $own = Get-OwnStatusLine $(if ($Settings.Contains('statusLine')) { $Settings['statusLine'] } else { $null })
+    if ($null -eq $own) {
+        $homeDir = Get-J $Req 'home'
+        if (-not (Test-Truthy $homeDir)) {
+            $homeDir = $(if ($script:OnWindows) { [string]$env:USERPROFILE } else { [string]$env:HOME })
+        }
+        $cwd = Get-J $Req 'cwd'
+        if (-not (Test-Truthy $cwd)) { $cwd = $null }
+        $files = New-List
+        if ($null -ne $cwd) {
+            $files.Add((Join-PyPath (Join-PyPath $cwd '.claude') 'settings.local.json'))
+            $files.Add((Join-PyPath (Join-PyPath $cwd '.claude') 'settings.json'))
+        }
+        $files.Add((Join-PyPath (Join-PyPath $homeDir '.claude') 'settings.json'))
+        foreach ($path in $files) {
+            $value = Get-JValue (Read-JsonFile $path)[0]
+            $own = Get-OwnStatusLine (Get-J $value 'statusLine')
+            if ($null -ne $own) { break }
+        }
+    }
+    $line = New-Map
+    if ($null -ne $own) { foreach ($k in (Get-JKeys $own)) { $line[$k] = Get-J $own $k } }
+    $line['type'] = 'command'
+    $line['command'] = "'" + ([string](Get-J $Req 'polter')).Replace("'", "'\''") + "' +statusline --cli claude-code"
+    $envOut = New-Map
+    if ($null -ne $own) { $envOut[$script:StatusLineChainEnv] = [string](Get-J $own 'command') }
+    return @($line, $envOut)
+}
+
 function Get-Launch($Req) {
     $role = Get-J $Req 'role'
     if (-not (Test-Truthy $role)) { $role = New-Map }
@@ -1095,6 +1139,14 @@ function Get-Launch($Req) {
         $settings['hooks'] = $merged
     }
 
+    # The status line -- see `adapter.py`.
+    $envOut = New-Map
+    if ($null -ne $hooks -and -not $script:OnWindows) {
+        $sl = Get-StatusLine $Req $settings
+        $settings['statusLine'] = $sl[0]
+        $envOut = $sl[1]
+    }
+
     $start = Resolve-ClaudeCommand
     if ($null -eq $start) {
         if ($script:OnWindows -and $null -ne $script:ShimFound) {
@@ -1130,7 +1182,7 @@ function Get-Launch($Req) {
     $answer = New-Map
     $answer['version'] = $ContractVersion
     $answer['argv'] = $argv
-    $answer['env'] = New-Map
+    $answer['env'] = $envOut
     $answer['summary'] = "$offSkill skill(s) and $offMcp MCP server(s) switched off"
     $answer['notes'] = $notes
     if ($null -ne $hooks) { $answer['hooks'] = $true }

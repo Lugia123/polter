@@ -52,12 +52,20 @@ the core asked for goes, for every asker and every place the control room
 can be (forty cases); the English of what the person is told for each of
 fifteen names the core gives for not making a group or not starting a
 supervisor; which rows are marked seen by being looked at, and
-after how long; the panel's size and every rectangle in it -- a waiting row's
+after how long; the selection chip's slide -- whether it moves at all (from
+one tab to another, with motion off, from nowhere, to where it already is),
+when it starts back down and when it is still, and at sixteen moments of a
+slide along the tab bar and of one down the list how far it has to go, how
+it is stretched, how far it is lifted and whether it is over, to six
+places; the panel's size and every rectangle in it -- a waiting row's
 height follows what it waits on, by the nominal count of lines; how what each
 waiting row waits on is fitted (the lines each step gets, the steps said only
 as a number), and the fitting rule itself on fourteen made-up commands; the
 nominal count on six strings; and
-where the arrow keys take the selection from every row.
+where the arrow keys take the selection from every row; and the allowance
+block as each side read it -- every account opened out and every one in the
+line, word for word and number for number, each of their windows -- and how
+high each side makes the block and where its parts start.
 
 **NOT COMPARED, and why.**
 
@@ -76,6 +84,10 @@ where the arrow keys take the selection from every row.
     told only the tab; the crate is told the window too. Each front is
     asked with the window that tab is in, which is the only way a host asks.
   * Translated text. Both sides print the English they start from.
+  * Where the allowance block stands in the panel, and anything it says in
+    words. `windows/control-room` reads the block and adds up its height;
+    the Windows host does not draw it yet, so there is no rectangle there
+    to compare the macOS one with.
   * Where a pane's frame and the terminal in it go, and what the frame
     draws. On Windows that is arithmetic in the crate (`pane::frame_px`,
     `well_px`, `build`); on macOS it is SwiftUI's layout, with nothing to
@@ -110,6 +122,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLending.swift",
+    "macos/Sources/Features/ControlRoom/ControlRoomQuota.swift",
     "macos/Sources/Features/ControlRoom/PaneFrame.swift",
     "macos/Sources/Features/Terminal/TabAccessory.swift",
 ]
@@ -378,6 +391,37 @@ do {
     }
 }
 
+func windowsText(_ ws: [ControlRoomQuota.Window]) -> String {
+    ws.map { "\($0.span.rawValue):\($0.used):\($0.live):\($0.resets_ms)" }.joined(separator: ",")
+}
+func agoText(_ a: ControlRoomQuota.Ago?) -> String { a.map { "\($0.unit.rawValue):\($0.n)" } ?? "-" }
+if let q = list.quota {
+    for a in q.alerts {
+        print("quota alert family=\(a.family.rawValue) level=\(a.level.rawValue) span=\(a.span.rawValue) "
+            + "used=\(a.used) resets=\(a.resets_ms) when=\(a.when.form.rawValue):\(a.when.n) "
+            + "stale=\(agoText(a.stale)) way_out=\(a.way_out?.rawValue ?? "-") at=\(a.at_ms) "
+            + "windows=\(windowsText(a.windows))")
+    }
+    if let line = q.line {
+        print("quota line label=\(line.label.rawValue) entries=\(line.entries.count)")
+        for e in line.entries {
+            print("quota entry family=\(e.family.rawValue) state=\(e.state.rawValue) "
+                + "used=\(e.used.map { String($0) } ?? "-") span=\(e.span?.rawValue ?? "-") "
+                + "stale=\(agoText(e.stale)) at=\(e.at_ms.map { String($0) } ?? "-") "
+                + "windows=\(windowsText(e.windows))")
+        }
+    } else {
+        print("quota line none")
+    }
+    let ql = ControlRoomQuotaLayout(quota: q)
+    for p in ql.parts {
+        print("quota part y=\(f(p.y)) h=\(f(p.height)) note=\(p.note)")
+    }
+    print("quota height=\(f(ql.height)) line_y=\(ql.lineY.map { f($0) } ?? "-")")
+} else {
+    print("quota none")
+}
+
 let lay = ControlRoomListLayout(list: list, height: CGFloat(height))
 print("size w=\(f(lay.size.width)) h=\(f(lay.size.height))")
 rect("header", lay.header)
@@ -417,6 +461,32 @@ for from in ids {
     for step in [-1, 1] {
         let to = ControlRoomList.move(from, by: step, in: list.rows) ?? "-"
         print("move from=\(from ?? "-") step=\(step) to=\(to)")
+    }
+}
+// The chip's slide: whether it moves, when it starts down, when it is
+// still, and where it is at the same moments on both sides.
+func g(_ v: Double) -> String { String(format: "%.6f", v) }
+func planName(_ p: ControlRoomChipSlide.Plan) -> String {
+    switch p {
+    case .jump: return "jump"
+    case let .slide(dx, dy): return "slide dx=\(g(dx)) dy=\(g(dy))"
+    }
+}
+let tabWas = CGRect(x: 0, y: 0, width: 293, height: 24), tabNow = CGRect(x: 588, y: 0, width: 292, height: 24)
+let rowWas = CGRect(x: 6, y: 38, width: 368, height: 100), rowNow = CGRect(x: 6, y: 146, width: 368, height: 80)
+print("slide plan tab still=false \(planName(ControlRoomChipSlide.plan(from: tabWas, to: tabNow, reduceMotion: false)))")
+print("slide plan tab still=true \(planName(ControlRoomChipSlide.plan(from: tabWas, to: tabNow, reduceMotion: true)))")
+print("slide plan row still=false \(planName(ControlRoomChipSlide.plan(from: rowWas, to: rowNow, reduceMotion: false)))")
+print("slide plan nowhere still=false \(planName(ControlRoomChipSlide.plan(from: nil, to: tabNow, reduceMotion: false)))")
+print("slide plan same still=false \(planName(ControlRoomChipSlide.plan(from: tabNow, to: tabNow, reduceMotion: false)))")
+print("slide lands_at=\(g(ControlRoomChipSlide.landsAt)) duration=\(g(ControlRoomChipSlide.duration))")
+let moments: [Double] = [0, 0.01, 0.035, 0.07, 0.1, 0.11, 0.15, 0.2, 0.26, 0.3, 0.36, 0.4, 0.405, 0.41, 0.5, 1]
+for (name, dx, dy, scale) in [("tab", -587.5, 0.0, ControlRoomLook.Selection.liftScaleWindowTab),
+                              ("row", 0.0, -98.0, ControlRoomLook.Selection.liftScaleRow)] {
+    for t in moments {
+        let s = ControlRoomChipSlide.sample(at: t, dx: dx, dy: dy, liftScale: scale)
+        print("slide \(name) t=\(g(t)) dx=\(g(s.dx)) dy=\(g(s.dy)) along=\(g(s.along)) across=\(g(s.across)) "
+            + "lift=\(g(ControlRoomChipSlide.lift(at: t))) over=\(t >= ControlRoomChipSlide.duration)")
     }
 }
 '''

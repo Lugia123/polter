@@ -32,7 +32,7 @@
         "/elsewhere": {"mcpServers": {"not-me": {"command": "x"}}}
       }
     }},
-    "HOME/.claude/settings.json": {"json": {"enabledPlugins": {"argus@mk": true, "off@mk": false, "one@mk": 1, "kanban@mk": true, "strmcp@mk": true, "design@mk": false}}},
+    "HOME/.claude/settings.json": {"json": {"enabledPlugins": {"argus@mk": true, "off@mk": false, "one@mk": 1, "kanban@mk": true, "strmcp@mk": true, "design@mk": false}, "statusLine": {"type": "command", "command": "~/.claude/statusline.sh --who '我' \"$HOME\" | cut -c1-80", "padding": 0, "refreshInterval": 5}}},
     "HOME/.claude/plugins/installed_plugins.json": {"json": {"version": 2, "plugins": {
       "argus@mk": [{"scope": "user", "installPath": "{HOME}/plugins/argus"}],
       "off@mk": [{"scope": "user", "installPath": "{HOME}/plugins/off"}],
@@ -66,8 +66,8 @@
     "CWD/.claude/skills/pdf/SKILL.md": "---\nname: pdf\ndescription: the project's own copy, which takes the row from the user's\n---\n",
     "CWD/.claude/skills/proj-skill/SKILL.md": "---\nname: proj-skill\ndescription: A project skill\n---\n",
     "CWD/.mcp.json": {"json": {"mcpServers": {"shared": {"type": "http", "url": "https://shared.example.com/x"}, "polter": {"command": "dup"}}}},
-    "CWD/.claude/settings.json": {"json": {"enabledPlugins": {"off@mk": false}}},
-    "CWD/.claude/settings.local.json": {"json": {"enabledPlugins": {"proj@mk": true}}},
+    "CWD/.claude/settings.json": {"json": {"enabledPlugins": {"off@mk": false}, "statusLine": {"type": "static", "command": "not one Claude Code would run"}}},
+    "CWD/.claude/settings.local.json": {"json": {"enabledPlugins": {"proj@mk": true}, "statusLine": {"command": "echo local", "type": "command", "hideVimModeIndicator": true}}},
     "HOME2/.claude/settings.json": "{not json",
     "HOME2/.claude.json": "[1, 2"
   },
@@ -100,6 +100,10 @@
     {"name": "hooks: a version that cannot be read, so none and a note", "question": "launch", "claude": "Claude Code, some version", "request": {"version": 1, "cwd": "{CWD}", "home": "{HOME}", "polter": "/Applications/It's Polter/polter", "role": {"key": "hooked", "name": "Hooked", "instructions": null}, "cli": {"skills": {"default": true, "except": ["skill:pdf"]}, "mcp": {"default": true, "except": []}, "model": null, "args": ["--settings", "{\"theme\":\"dark\",\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"true\"}]}]}}"]}}},
     {"name": "hooks: the role's --settings is a file, so none and a note", "question": "launch", "claude": "2.1.283 (Claude Code)", "request": {"version": 1, "cwd": "{CWD}", "home": "{HOME}", "polter": "/Applications/It's Polter/polter", "role": {"key": "hooked", "name": "Hooked", "instructions": null}, "cli": {"skills": {"default": true, "except": ["skill:pdf"]}, "mcp": {"default": true, "except": []}, "model": null, "args": ["--settings", "/etc/claude/role.json"]}}},
     {"name": "hooks: no polter path in the request, so none and a note", "question": "launch", "claude": "2.1.283 (Claude Code)", "request": {"version": 1, "cwd": "{CWD}", "home": "{HOME}", "role": {"key": "hooked", "name": "Hooked", "instructions": null}, "cli": {"skills": {"default": true, "except": ["skill:pdf"]}, "mcp": {"default": true, "except": []}, "model": null, "args": ["--settings", "{\"theme\":\"dark\",\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"true\"}]}]}}"]}}},
+    {"name": "status line: the project's local settings come before the project's and the user's, and what is not a command is passed over", "question": "launch", "claude": "2.1.296 (Claude Code)", "request": {"version": 1, "cwd": "{CWD}", "home": "{HOME}", "polter": "/Applications/It's Polter/polter", "role": {"key": "hooked", "name": "Hooked", "instructions": null}, "cli": {"skills": {"default": true, "except": []}, "mcp": {"default": true, "except": []}, "model": null, "args": []}}},
+    {"name": "status line: with no project, the user's own, every other field of it kept", "question": "launch", "claude": "2.1.296 (Claude Code)", "request": {"version": 1, "cwd": null, "home": "{HOME}", "polter": "/Applications/It's Polter/polter", "role": {"key": "hooked", "name": "Hooked", "instructions": null}, "cli": {"skills": {"default": true, "except": []}, "mcp": {"default": true, "except": []}, "model": null, "args": []}}},
+    {"name": "status line: the role's own --settings comes before every file", "question": "launch", "claude": "2.1.296 (Claude Code)", "request": {"version": 1, "cwd": "{CWD}", "home": "{HOME}", "polter": "/Applications/It's Polter/polter", "role": {"key": "hooked", "name": "Hooked", "instructions": null}, "cli": {"skills": {"default": true, "except": []}, "mcp": {"default": true, "except": []}, "model": null, "args": ["--settings", "{\"statusLine\":{\"type\":\"command\",\"command\":\"printf '%s' role\",\"padding\":2},\"theme\":\"dark\"}"]}}},
+    {"name": "status line: nobody has one, so Polter's alone and nothing chained", "question": "launch", "claude": "2.1.296 (Claude Code)", "request": {"version": 1, "cwd": null, "home": "{HOME2}", "polter": "/Applications/It's Polter/polter", "role": {"key": "hooked", "name": "Hooked", "instructions": null}, "cli": {"skills": {"default": true, "except": []}, "mcp": {"default": true, "except": []}, "model": null, "args": []}}},
     {"name": "a request that is not JSON", "question": "launch", "raw": "not json"},
     {"name": "a request that is not an object", "question": "inventory", "raw": "[1]"},
     {"name": "a question nobody asks", "question": "status", "raw": "{}"}

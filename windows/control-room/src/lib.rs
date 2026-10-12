@@ -12,6 +12,8 @@
 //! | [`lend`] | which terminal is shown on the right, and what happens to it when anything changes |
 //! | [`reach`] | what can still be done with no terminal in front: which actions, and which key is which |
 //! | [`rules`] | the control room's tab: one in the application, where it opens, what closing it involves |
+//! | [`slide`] | the selection chip's move from one place to the next, a frame at a time, and when it is over |
+//! | [`tabstrip`] | the window tab strip's track and the chip on the selected tab, in whole pixels |
 //! | [`scene`] | everything the panel draws, as a list of rectangles, words and glyphs for a host to paint |
 //! | [`pane`] | which frame a pane of a split terminal tab wears, where it and the terminal in it go, and what it draws |
 //! | [`glyph`] | the four status glyphs as shapes on the design's artboard |
@@ -43,10 +45,13 @@ pub mod list;
 pub mod look;
 pub mod pane;
 pub mod pulse;
+pub mod quota;
 pub mod reach;
 pub mod rules;
 pub mod scene;
+pub mod slide;
 pub mod snapshot;
+pub mod tabstrip;
 
 #[cfg(test)]
 mod fixture_tests;
