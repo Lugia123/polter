@@ -2,11 +2,11 @@
 //! a Zig test holds to the code. The same file the macOS side decodes.
 
 use crate::act::{self, Act, Refusal, SeenMarker};
-use crate::layout::{self, ListLayout};
-use crate::list::{self, Detail, List};
+use crate::layout::{self, AskFit, ListLayout};
+use crate::list::{self, List};
 use crate::look::{line, side, space, window_tab};
 use crate::pulse::{self, Scope, TabStatus};
-use crate::snapshot::{self, DecodeError, Shown};
+use crate::snapshot::{self, DecodeError, Form, Shown, WaiterIs};
 
 const FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -24,13 +24,94 @@ fn the_fixture_is_read_and_the_counts_are_the_ones_written_in_it() {
     let s = snapshot::decode(FIXTURE).unwrap();
     assert_eq!(s.rev, 1);
     assert_eq!(s.now_ms, 6_000_000);
-    assert_eq!(s.needs_me, 4);
-    assert_eq!(s.groups_needing_me, 4);
+    // Every row that waits is one: five groups, and a terminal in no group.
+    assert_eq!(s.needs_me, 6);
+    assert_eq!(s.groups_needing_me, 5);
     assert_eq!(s.groups_other, 3);
-    assert_eq!(s.groups.len(), 7);
-    assert_eq!(s.pulses.len(), 4);
-    assert_eq!(s.band.start_label, "06:00");
-    assert_eq!(s.band.total_min, 19);
+    assert_eq!(s.groups.len(), 8);
+    assert_eq!(s.pulses.len(), 5);
+}
+
+#[test]
+fn nothing_in_the_snapshot_says_how_long() {
+    // The minutes and the band of today's waiting were taken out (the
+    // user's ruling, 2026-10-13: "no use at all"). A snapshot that carries
+    // them again is one this crate was not told about.
+    for gone in ["waited_min", "\"band\"", "total_min", "lanes", "spans"] {
+        assert!(!FIXTURE.contains(gone), "the fixture says {gone} again");
+    }
+}
+
+#[test]
+fn a_part_is_marked_where_the_rest_would_be_and_never_shown_as_the_whole() {
+    use crate::snapshot::{Cut, What};
+    let what = |cut, lines: &[&str]| What { form: Form::Words, lines: lines.iter().map(|l| l.to_string()).collect(), cut };
+    assert_eq!(list::drawn(&what(Cut::None, &["which branch?"])), ["which branch?"]);
+    // The end of a turn: something came before it.
+    assert_eq!(list::drawn(&what(Cut::Head, &["half first, or all at once?"])), ["… half first, or all at once?"]);
+    // A summary that reached its limit: the mark goes after the last step.
+    assert_eq!(list::drawn(&what(Cut::Tail, &["rm -rf dist/", "&& npm ci --pre"])), ["rm -rf dist/", "&& npm ci --pre …"]);
+    assert!(list::drawn(&what(Cut::Tail, &[])).is_empty());
+
+    // The core's word, copied; and whatever shows the row shows the mark.
+    let l = list();
+    let infra = l.row("infra").unwrap();
+    assert_eq!(infra.what.cut, Cut::Head);
+    assert_eq!(list::tooltip(infra).as_deref(), Some("… 要不要现在切流量？"));
+    assert_eq!(l.row("web-app").unwrap().what.cut, Cut::None);
+
+    // Left out, or a word this build does not know, is not "all of it".
+    let gone = FIXTURE.replacen("\"cut\": \"none\"", "\"cat\": \"none\"", 1);
+    assert_eq!(snapshot::decode(&gone), Err(DecodeError::Field("groups[0].what.cut".into())));
+    let odd = FIXTURE.replacen("\"cut\": \"none\"", "\"cut\": \"middle\"", 1);
+    assert_eq!(snapshot::decode(&odd), Err(DecodeError::UnknownValue("groups[0].what.cut=middle".into())));
+}
+
+#[test]
+fn a_row_that_stops_while_the_person_is_on_it_is_seen_after_the_same_wait() {
+    let l = list();
+    let mut working = l.row("infra").unwrap().clone();
+    working.unseen = false;
+    let stopped = l.row("infra").unwrap().clone();
+    assert!(stopped.unseen);
+
+    let mut marker = SeenMarker::default();
+    assert_eq!(marker.selection_changed(Some(&working)), None);
+    assert_eq!(marker.list_changed(Some(&working)), None);
+    // It finishes, the selection not having moved: one wait.
+    let wait = marker.list_changed(Some(&stopped)).expect("a wait begins");
+    assert_eq!(marker.due(&wait, true), Some(Act::Seen { group: "infra" }));
+    assert_eq!(marker.due(&wait, false), None);
+    // More lists before it is over do not begin it again, and do not
+    // cancel it.
+    assert_eq!(marker.list_changed(Some(&stopped)), None);
+    assert_eq!(marker.due(&wait, true), Some(Act::Seen { group: "infra" }));
+    // Seen, then stopped a second time: a second wait.
+    assert_eq!(marker.list_changed(Some(&working)), None);
+    assert!(marker.list_changed(Some(&stopped)).is_some());
+
+    // The person moves on before the wait is over: nothing is sent.
+    let wait = marker.selection_changed(Some(&working)).or(marker.list_changed(Some(&stopped))).unwrap();
+    marker.selection_changed(l.row("notes"));
+    assert_eq!(marker.due(&wait, true), None);
+    // A list in which the selection is another row is a change of selection.
+    assert!(marker.list_changed(Some(&stopped)).is_some());
+    assert_eq!(marker.list_changed(None), None);
+}
+
+#[test]
+fn who_waits_and_for_what_are_read_and_a_value_not_known_is_an_error() {
+    let cut = FIXTURE.replacen("\"waiter\"", "\"waiting\"", 1);
+    assert_eq!(snapshot::decode(&cut), Err(DecodeError::Field("groups[0].waiter".into())));
+    let cut = FIXTURE.replacen("\"what\"", "\"wat\"", 1);
+    assert_eq!(snapshot::decode(&cut), Err(DecodeError::Field("groups[0].what".into())));
+
+    let odd = FIXTURE.replacen("\"is\": \"supervisor\"", "\"is\": \"owner\"", 1);
+    assert_ne!(odd, FIXTURE);
+    assert_eq!(snapshot::decode(&odd), Err(DecodeError::UnknownValue("groups[0].waiter.is=owner".into())));
+    let odd = FIXTURE.replacen("\"form\": \"command\"", "\"form\": \"poem\"", 1);
+    assert_ne!(odd, FIXTURE);
+    assert_eq!(snapshot::decode(&odd), Err(DecodeError::UnknownValue("groups[0].what.form=poem".into())));
 }
 
 #[test]
@@ -59,13 +140,14 @@ fn the_rows_keep_the_snapshots_order_in_two_sections() {
     let l = list();
     let waiting: Vec<&str> = l.waiting.iter().map(|r| r.id.as_str()).collect();
     let quiet: Vec<&str> = l.quiet.iter().map(|r| r.id.as_str()).collect();
-    assert_eq!(waiting, ["web-app", "web-app-docs", "billing", "docs-site"]);
+    assert_eq!(waiting, ["web-app", "web-app-docs", "mobile", "billing", "docs-site"]);
     assert_eq!(quiet, ["infra", "design-system", "notes"]);
 
     let shown: Vec<Shown> = l.rows().map(|r| r.shown).collect();
     assert_eq!(
         shown,
         [
+            Shown::NeedsYou,
             Shown::NeedsYou,
             Shown::NeedsYou,
             Shown::NeedsYou,
@@ -76,47 +158,69 @@ fn the_rows_keep_the_snapshots_order_in_two_sections() {
         ]
     );
     let words: Vec<&str> = l.rows().map(|r| r.word.as_str()).collect();
-    assert_eq!(words, ["等批准", "等批准", "等回答", "出错", "做完了，没看", "在干活", ""]);
+    assert_eq!(words, ["等批准", "等批准", "等批准", "等回答", "出错", "做完了，没看", "在干活", ""]);
 }
 
 #[test]
 fn the_counts_shown_are_the_ones_handed_in() {
     // A snapshot that says 9 and 0 is drawn as 9 and 0, whatever it holds.
     let odd = FIXTURE
-        .replacen("\"groups_needing_me\": 4", "\"groups_needing_me\": 9", 1)
+        .replacen("\"groups_needing_me\": 5", "\"groups_needing_me\": 9", 1)
         .replacen("\"groups_other\": 3", "\"groups_other\": 0", 1);
     let l = List::from_snapshot(&snapshot::decode(&odd).unwrap());
     assert_eq!(l.waiting_count, 9);
     assert_eq!(l.quiet_count, 0);
-    assert_eq!(l.waiting.len(), 4);
+    assert_eq!(l.waiting.len(), 5);
     assert_eq!(l.quiet.len(), 3);
 }
 
 #[test]
 fn what_a_row_says() {
     let l = list();
-    // One supervisor, two groups: the reason is on one row, the other points at it.
+    // A command is its steps, one to a line, each whole and the joiner at
+    // the head of the step it brings in.
     let web = l.row("web-app").unwrap();
-    assert_eq!(web.detail, Detail::SameAs("web-app-docs".into()));
-    assert!(!web.detail_is_code);
-    assert_eq!(list::tooltip(web), None);
-    assert_eq!(web.waited_min, Some(4));
+    assert_eq!(web.what.form, Form::Command);
+    assert_eq!(
+        web.what.lines,
+        ["rm -rf dist/ .cache/ node_modules/.vite", "&& npm ci", "&& npm run build -- --mode production"]
+    );
+    assert!(list::is_code(&web.what));
+    assert_eq!(web.waiter.is, WaiterIs::Supervisor);
+    assert_eq!(list::waiter(&web.waiter), Some((list::msg::SUPERVISOR, String::new())));
     assert_eq!(list::others(web.others), Some((list::msg::OTHERS, "1".to_string())));
+    assert_eq!(
+        list::tooltip(web).as_deref(),
+        Some("rm -rf dist/ .cache/ node_modules/.vite\n&& npm ci\n&& npm run build -- --mode production")
+    );
 
+    // One supervisor, two groups: each row says the whole of it.
     let docs = l.row("web-app-docs").unwrap();
-    assert_eq!(docs.detail, Detail::Reason("Bash(rm -rf dist/ && npm run build)".into()));
-    assert!(docs.detail_is_code);
-    assert_eq!(list::tooltip(docs), Some("Bash(rm -rf dist/ && npm run build)"));
+    assert_eq!(docs.what, web.what);
     assert_eq!(list::others(docs.others), None);
 
-    // ⚠️ A question an agent asked comes from a hook's note as well, so by
-    // this rule it is set as code too. That is the macOS host's rule, kept
-    // the same here so the two draw one thing; telling a command from a
-    // question is the core's to say, and it does not say it yet.
-    assert!(l.row("billing").unwrap().detail_is_code);
-    assert!(!l.row("docs-site").unwrap().detail_is_code);
-    assert_eq!(l.row("infra").unwrap().waited_min, None);
-    assert_eq!(list::fill(list::msg::SAME_SUPERVISOR, "web-app-docs"), "Same supervisor: see web-app-docs");
+    // A worker waits; the person reaches it through the supervisor.
+    let mobile = l.row("mobile").unwrap();
+    assert_eq!(mobile.waiter.is, WaiterIs::WorkerViaSupervisor);
+    let (template, who) = list::waiter(&mobile.waiter).unwrap();
+    assert_eq!(list::fill(template, &who), "ios-build, via the supervisor");
+    assert_eq!(mobile.what.lines, ["git push --force-with-lease origin release/2.4"]);
+
+    // A question is words: the core says so, nothing here guesses it from
+    // where the words came from.
+    let billing = l.row("billing").unwrap();
+    assert_eq!(billing.what.form, Form::Words);
+    assert!(!list::is_code(&billing.what));
+    assert_eq!(billing.what.lines.len(), 1);
+    assert!(!list::is_code(&l.row("docs-site").unwrap().what));
+
+    // A group that needs nothing: what it is doing, when the core knows.
+    let design = l.row("design-system").unwrap();
+    assert_eq!(design.what.lines, ["改按钮的三种尺寸"]);
+    let notes = l.row("notes").unwrap();
+    assert_eq!(notes.what.form, Form::None);
+    assert_eq!(list::tooltip(notes), None);
+    assert_eq!(list::waiter(&notes.waiter), None);
 }
 
 #[test]
@@ -156,14 +260,26 @@ fn the_panel_is_laid_out_from_the_look_and_nothing_else() {
     let inner = side::WIDTH - 2.0 * pad;
 
     assert_eq!(lay.header, layout::Rect { x: pad, y: pad, w: inner, h: side::HEADER_HEIGHT });
-    // Four waiting rows, each a row and a gap below the header.
+    // Five waiting rows below the header, each as high as what it waits on
+    // and a gap apart: 40 for the first line and the padding, 20 a line.
+    let high = |id: &str| lay.chip(Some(id)).unwrap().h;
     let first = lay.chip(Some("web-app")).unwrap();
     assert_eq!(first.y, pad + side::HEADER_HEIGHT);
-    assert_eq!(first.h, side::ROW_HEIGHT);
+    // Three steps, and a line for "1 more".
+    assert_eq!(high("web-app"), 120.0);
+    assert_eq!(high("web-app-docs"), 100.0);
+    // One step, too long for one line.
+    assert_eq!(high("mobile"), 80.0);
+    assert_eq!(high("billing"), 80.0);
+    assert_eq!(high("docs-site"), 60.0);
     let fourth = lay.chip(Some("docs-site")).unwrap();
-    assert_eq!(fourth.y, first.y + 3.0 * (side::ROW_HEIGHT + side::ROW_GAP));
+    assert_eq!(fourth.y, first.y + 120.0 + 100.0 + 80.0 + 80.0 + 4.0 * side::ROW_GAP);
+    assert_eq!(lay.fit("web-app"), Some(&AskFit { lines: vec![1, 1, 1], hidden: 0 }));
+    assert_eq!(lay.fit("mobile"), Some(&AskFit { lines: vec![2], hidden: 0 }));
+    assert_eq!(lay.fit("infra"), None);
+    assert_eq!(layout::ask_width(), 322.0);
 
-    let below = fourth.y + side::ROW_HEIGHT + side::ROW_GAP + side::SEPARATOR_SPACE_ABOVE;
+    let below = fourth.y + 60.0 + side::ROW_GAP + side::SEPARATOR_SPACE_ABOVE;
     assert_eq!(lay.separator.y, below);
     assert_eq!(lay.separator.h, line::HAIRLINE);
     assert_eq!(lay.quiet_header.y, below + line::HAIRLINE + side::SEPARATOR_SPACE_BELOW);
@@ -174,44 +290,89 @@ fn the_panel_is_laid_out_from_the_look_and_nothing_else() {
     assert_eq!(lay.chip(Some("notes")).unwrap().y, infra.y + 2.0 * side::QUIET_ROW_HEIGHT);
     assert_eq!(lay.chip(Some("gone")), None);
     assert_eq!(lay.chip(None), None);
-
-    // The band hangs from the bottom, one lane per group in it.
-    assert_eq!(lay.lanes.len(), 4);
-    assert_eq!(lay.axis.y, 800.0 - pad - side::TIME_BAND_PADDING_BOTTOM - side::TIME_AXIS_HEIGHT);
-    assert_eq!(lay.lanes[3].y + side::TIME_LANE_LABELLED_HEIGHT, lay.axis.y);
-    assert_eq!(lay.band_header.y + side::HEADER_HEIGHT, lay.lanes[0].y);
 }
 
 #[test]
-fn a_lanes_pieces_are_cut_to_the_band_and_run_to_now() {
+fn when_the_core_says_nobody_waits_the_groups_follow_the_one_header() {
+    // The core's count, whatever rows there are: 0 means no line and no
+    // second header, and the rows that follow start where they would be.
+    let none = FIXTURE.replacen("\"groups_needing_me\": 5", "\"groups_needing_me\": 0", 1);
+    assert_ne!(none, FIXTURE);
+    let l = List::from_snapshot(&snapshot::decode(&none).unwrap());
+    let lay = ListLayout::new(&l, 800.0);
+    assert_eq!(lay.quiet_header.h, 0.0);
+    assert_eq!(lay.separator.h, 0.0);
+    let after = lay.chip(Some("docs-site")).unwrap();
+    assert_eq!(lay.chip(Some("infra")).unwrap().y, after.y + after.h + side::ROW_GAP);
+    let with = ListLayout::new(&list(), 800.0);
+    assert_eq!(with.quiet_header.h, side::HEADER_HEIGHT);
+}
+
+#[test]
+fn a_row_is_as_high_as_the_host_measured_it_to_be() {
+    // A host with a font says every step wants four lines: a sentence gets
+    // the three there are, a command of three steps one line each.
     let l = list();
-    let band = &l.band;
-    let total = (band.now_ms - band.start_ms) as f64;
-    let width = layout::track_width(260.0);
-    assert_eq!(width, 260.0 - side::TIME_LANE_LABEL_WIDTH - side::ROW_ITEM_GAP);
-    assert_eq!(layout::track_width(10.0), 0.0);
+    let lay = ListLayout::measured(&l, 800.0, &|_, _| 4);
+    assert_eq!(lay.fit("billing"), Some(&AskFit { lines: vec![3], hidden: 0 }));
+    assert_eq!(lay.chip(Some("billing")).unwrap().h, 100.0);
+    assert_eq!(lay.fit("web-app-docs"), Some(&AskFit { lines: vec![1, 1, 1], hidden: 0 }));
+    // Told which face it is set in.
+    let asked = std::cell::RefCell::new(Vec::new());
+    ListLayout::measured(&l, 800.0, &|text, code| {
+        asked.borrow_mut().push((text.to_string(), code));
+        1
+    });
+    let asked = asked.into_inner();
+    assert!(asked.contains(&("&& npm ci".to_string(), true)));
+    assert!(asked.iter().any(|(text, code)| text.starts_with("发票") && !code));
+}
 
-    // docs-site: once this morning, over; and again, still going.
-    let docs = band.lanes.iter().find(|lane| lane.name == "docs-site").unwrap();
-    let pieces = layout::segments(docs, band, width);
-    assert_eq!(pieces.len(), 2);
-    assert!(!pieces[0].ongoing);
-    assert!(pieces[1].ongoing);
-    let eight_minutes = 8.0 * 60_000.0 / total * width;
-    assert!((pieces[0].w - eight_minutes).abs() < 1e-9);
-    // The one still going ends at the right edge, which is now.
-    assert!((pieces[1].x + pieces[1].w - width).abs() < 1e-9);
+#[test]
+fn what_is_cut_is_the_end_of_a_line_and_never_a_step() {
+    let max_lines = side::ASK_MAX_LINES as usize;
+    let max_steps = side::ASK_MAX_STEPS as usize;
+    assert_eq!((max_lines, max_steps), (3, 6));
 
-    // A span that claims to end after now, or before the band, is cut or dropped.
-    let mut odd = docs.clone();
-    odd.spans[0].from_ms = 0;
-    odd.spans[0].to_ms = band.start_ms - 1;
-    odd.spans[1].ongoing = false;
-    odd.spans[1].to_ms = band.now_ms + 999_999;
-    let cut = layout::segments(&odd, band, width);
-    assert_eq!(cut.len(), 1);
-    assert!((cut[0].x + cut[0].w - width).abs() < 1e-9);
-    assert!(layout::segments(docs, band, 0.0).is_empty());
+    assert_eq!(AskFit::fit(&[]), AskFit::default());
+    // A sentence: as many lines as it wants, up to the ceiling.
+    assert_eq!(AskFit::fit(&[1]).lines, [1]);
+    assert_eq!(AskFit::fit(&[2]).lines, [2]);
+    assert_eq!(AskFit::fit(&[9]).lines, [3]);
+    // Each step a line first; what is left to the earliest that needs it.
+    assert_eq!(AskFit::fit(&[3, 1]).lines, [2, 1]);
+    assert_eq!(AskFit::fit(&[1, 3]).lines, [1, 2]);
+    assert_eq!(AskFit::fit(&[2, 2]).lines, [2, 1]);
+    assert_eq!(AskFit::fit(&[9, 9, 9]).lines, [1, 1, 1]);
+
+    // **Every step has a line, however long each is and however many there
+    // are, until the second ceiling; past it the ones not shown are counted.**
+    for steps in 1..=20 {
+        for want in [1, 2, 9] {
+            let fit = AskFit::fit(&vec![want; steps]);
+            assert!(fit.lines.iter().all(|n| *n >= 1), "{steps} steps wanting {want}: {fit:?}");
+            assert_eq!(fit.lines.len() + fit.hidden, steps, "{steps} steps wanting {want}: a step is neither shown nor counted");
+            if steps <= max_steps {
+                assert_eq!(fit.hidden, 0, "{steps} steps: {fit:?}");
+            } else {
+                assert_eq!(fit.drawn(), max_steps, "{steps} steps: {fit:?}");
+            }
+            if steps <= max_lines {
+                assert!(fit.drawn() <= max_lines, "{steps} steps wanting {want}: {fit:?}");
+            }
+        }
+    }
+    // More steps than lines: the row grows by a line a step.
+    assert_eq!(AskFit::fit(&[2, 1, 1, 1]), AskFit { lines: vec![1, 1, 1, 1], hidden: 0 });
+    assert_eq!(layout::row_height(&AskFit::fit(&[1, 1, 1, 1]), 0), 120.0);
+    assert_eq!(AskFit::fit(&[1; 7]), AskFit { lines: vec![1; 5], hidden: 2 });
+
+    assert_eq!(layout::nominal_lines(""), 1);
+    assert_eq!(layout::nominal_lines(&"x".repeat(41)), 1);
+    assert_eq!(layout::nominal_lines(&"x".repeat(42)), 2);
+    // A wide character is two cells.
+    assert_eq!(layout::nominal_lines(&"票".repeat(20)), 1);
+    assert_eq!(layout::nominal_lines(&"票".repeat(21)), 2);
 }
 
 #[test]
@@ -279,7 +440,7 @@ fn a_tab_carries_the_glyph_the_core_gave_it_and_one_of_them_breathes() {
         pulse::tab_status(Some(&s), &tab(t), window, showing.map(tab).as_deref())
     };
 
-    assert_eq!(s.tabs.len(), 7);
+    assert_eq!(s.tabs.len(), 8);
     // Looking at a tab nothing waits in: billing's breathes, the others do not.
     assert_eq!(status(0x22, Some(0x26)), TabStatus { shown: Shown::NeedsYou, pulses: true });
     assert_eq!(status(0x21, Some(0x26)), TabStatus { shown: Shown::NeedsYou, pulses: false });

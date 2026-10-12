@@ -137,6 +137,8 @@ pub struct SeenMarker {
     /// the current one.
     generation: u64,
     selected: Option<String>,
+    /// Whether the selected row was unseen the last time it was heard of.
+    selected_unseen: bool,
 }
 
 /// One wait, for one selection of one group.
@@ -153,9 +155,30 @@ impl SeenMarker {
     pub fn selection_changed(&mut self, row: Option<&Row>) -> Option<Dwell> {
         self.generation += 1;
         self.selected = row.map(|r| r.id.clone());
+        self.selected_unseen = row.is_some_and(|r| r.unseen);
         // Only a row the core says has not been looked at is worth saying
         // anything about.
         let row = row.filter(|r| r.unseen)?;
+        Some(Dwell { generation: self.generation, group: row.id.clone() })
+    }
+
+    /// A new list has arrived; `row` is the selected row as it is now (none
+    /// for none, and for a row the person did not select themselves).
+    ///
+    /// **A row that stops while the person is on it is seen like any
+    /// other**: they selected it, the control room is in front, its
+    /// supervisor's terminal is beside the list. The wait starts when the
+    /// core first says "not looked at". A row that was already unseen is
+    /// left alone, or every list would start the wait over and it would
+    /// never end. The macOS host's `ControlRoomSeenTracker.listChanged`.
+    pub fn list_changed(&mut self, row: Option<&Row>) -> Option<Dwell> {
+        if row.map(|r| r.id.as_str()) != self.selected.as_deref() {
+            return self.selection_changed(row);
+        }
+        let was = self.selected_unseen;
+        self.selected_unseen = row.is_some_and(|r| r.unseen);
+        let row = row.filter(|r| r.unseen && !was)?;
+        self.generation += 1;
         Some(Dwell { generation: self.generation, group: row.id.clone() })
     }
 

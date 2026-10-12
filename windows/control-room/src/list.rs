@@ -7,18 +7,7 @@
 //! `ControlRoomList.swift` is the same thing, and
 //! `tools/control-room-hosts-agree.py` holds the two to one answer.
 
-use crate::snapshot::{Band, Shown, Snapshot};
-
-/// What a row's second line says after the status word.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Detail {
-    /// What it is waiting on, in the agent's or the core's words. May be
-    /// empty.
-    Reason(String),
-    /// One supervisor minds several groups and waits once: this row points
-    /// at the one that carries the reason.
-    SameAs(String),
-}
+use crate::snapshot::{Cut, Form, Shown, Snapshot, Waiter, WaiterIs, What};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -27,11 +16,10 @@ pub struct Row {
     pub shown: Shown,
     /// The words beside the glyph: which one of the four it is.
     pub word: String,
-    pub detail: Detail,
-    /// The detail is a command or a path, set in the terminal's face.
-    pub detail_is_code: bool,
-    /// Whole minutes it has waited, as the core counted them.
-    pub waited_min: Option<u64>,
+    /// Who is waiting: the supervisor itself or which worker. The core's.
+    pub waiter: Waiter,
+    /// What it is waiting on, whole, already cut into the lines to set.
+    pub what: What,
     /// How many other terminals of this group are also waiting.
     pub others: u64,
     /// The core says nobody has looked at this since it stopped.
@@ -53,7 +41,6 @@ pub struct List {
     /// "N groups need nothing from you". Also the core's.
     pub quiet_count: u64,
     pub quiet: Vec<Row>,
-    pub band: Band,
 }
 
 /// The English of what this crate says; a host passes each through its
@@ -62,7 +49,11 @@ pub mod msg {
     use crate::n_;
 
     pub const OTHERS: &str = n_("{} more");
-    pub const SAME_SUPERVISOR: &str = n_("Same supervisor: see {}");
+    /// Who is waiting, when it is the group's supervisor itself.
+    pub const SUPERVISOR: &str = n_("Supervisor");
+    /// Who is waiting, when it is a worker reached through the supervisor.
+    /// `{}` is the worker.
+    pub const VIA_SUPERVISOR: &str = n_("{}, via the supervisor");
 }
 
 /// Put the argument where the translated sentence wants it.
@@ -79,13 +70,8 @@ impl List {
                 id: g.name.clone(),
                 shown: g.shown,
                 word: g.text.clone(),
-                detail: match &g.same_as {
-                    Some(other) => Detail::SameAs(other.clone()),
-                    None => Detail::Reason(g.reason.text.clone()),
-                },
-                // A hook's note is a tool and what it was given.
-                detail_is_code: g.same_as.is_none() && g.reason.from == "hook_note",
-                waited_min: g.waited_min,
+                waiter: g.waiter.clone(),
+                what: g.what.clone(),
                 others: g.more,
                 unseen: g.unseen,
                 steward: g.steward.clone(),
@@ -105,7 +91,6 @@ impl List {
             waiting,
             quiet_count: s.groups_other,
             quiet,
-            band: s.band.clone(),
         }
     }
 
@@ -126,13 +111,55 @@ pub fn others(n: u64) -> Option<(&'static str, String)> {
     (n > 0).then(|| (msg::OTHERS, n.to_string()))
 }
 
-/// What the pointer shows for a row whose detail may be cut short: the
-/// whole of it. None when there is nothing that could have been cut.
-pub fn tooltip(row: &Row) -> Option<&str> {
-    match &row.detail {
-        Detail::Reason(text) if !text.is_empty() => Some(text),
-        _ => None,
+/// Whether what is waited on is set in the terminal's face. The core's
+/// `form` says; nothing is guessed from where the words came from.
+pub fn is_code(what: &What) -> bool {
+    matches!(what.form, Form::Command | Form::Code)
+}
+
+/// Who is waiting, as the words a row shows at its right: untranslated, with
+/// the argument `fill` puts in. None when there is nothing to say -- a row
+/// that is about no terminal, or a terminal in no group, which is its own
+/// name already.
+pub fn waiter(w: &Waiter) -> Option<(&'static str, String)> {
+    match w.is {
+        WaiterIs::Supervisor => Some((msg::SUPERVISOR, String::new())),
+        WaiterIs::WorkerViaSupervisor => Some((msg::VIA_SUPERVISOR, w.name.clone())),
+        WaiterIs::Worker => Some(("{}", w.name.clone())),
+        WaiterIs::None | WaiterIs::Terminal => None,
     }
+}
+
+/// The mark that stands where the rest would be.
+pub const ELLIPSIS: &str = "…";
+
+/// The lines as a row sets them: the core's, with the mark before the first
+/// when what came before is missing and after the last when what came after
+/// is. Everything that draws, measures or reads out a row uses these, so a
+/// part is marked wherever it appears. The macOS host's `What.drawn`.
+pub fn drawn(what: &What) -> Vec<String> {
+    let mut out = what.lines.clone();
+    match what.cut {
+        Cut::None => {}
+        Cut::Head => {
+            if let Some(first) = out.first_mut() {
+                *first = format!("{ELLIPSIS} {first}");
+            }
+        }
+        Cut::Tail => {
+            if let Some(last) = out.last_mut() {
+                last.push(' ');
+                last.push_str(ELLIPSIS);
+            }
+        }
+    }
+    out
+}
+
+/// What the pointer shows for a row whose lines may be cut short: all the
+/// row was given, a step to a line. None when there is nothing to show.
+pub fn tooltip(row: &Row) -> Option<String> {
+    (!row.what.lines.is_empty()).then(|| drawn(&row.what).join("\n"))
 }
 
 /// The row the selection lands on after an arrow key. It stops at the ends,

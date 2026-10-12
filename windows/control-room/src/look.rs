@@ -30,9 +30,6 @@ pub mod font {
     /// A group's name in the list.
     /// Source: design v14, GRID.md.
     pub const GROUP_NAME: f64 = 15.0;
-    /// How many minutes it has waited. Bold, so it counts as large text.
-    /// Source: design v14, GRID.md.
-    pub const MINUTES: f64 = 20.0;
     /// Source: design v14, GRID.md.
     pub const WEIGHT_BODY: f64 = 400.0;
     /// Source: design v14, GRID.md.
@@ -40,7 +37,7 @@ pub mod font {
     /// The selected tab, a status word, a title.
     /// Source: design v14, GRID.md.
     pub const WEIGHT_EMPHASIS: f64 = 600.0;
-    /// The selected group's name, the minutes.
+    /// The selected group's name.
     /// Source: design v14, GRID.md.
     pub const WEIGHT_STRONG: f64 = 700.0;
     /// A multiple of the size.
@@ -132,15 +129,13 @@ pub mod window_tab {
 
 /// The group list.
 pub mod side {
-    /// Source: design v14, GRID.md.
-    pub const WIDTH: f64 = 308.0;
+    /// Wide enough that what a row waits on is 322 across: 41 characters of the terminal's face, which is one step of most commands. The user, 2026-10-13: "A is better, it can be wider".
+    /// Source: design v18, direction A: src/v18.css and CHANGES.md.
+    pub const WIDTH: f64 = 380.0;
     /// Source: design v14, GRID.md.
     pub const HEADER_HEIGHT: f64 = 32.0;
     /// Source: design v14, GRID.md.
     pub const HEADER_PADDING_X: f64 = 12.0;
-    /// A group that is waiting for you: two lines.
-    /// Source: design v14, GRID.md.
-    pub const ROW_HEIGHT: f64 = 60.0;
     /// Source: design v14, GRID.md.
     pub const ROW_GAP: f64 = 8.0;
     /// Source: design v17, src/style.css.
@@ -151,40 +146,29 @@ pub mod side {
     /// Source: design v14, GRID.md.
     pub const QUIET_ROW_HEIGHT: f64 = 28.0;
     /// Source: design v14, GRID.md.
-    pub const MINUTES_WIDTH: f64 = 28.0;
-    /// Source: design v14, GRID.md.
-    pub const MINUTES_UNIT_WIDTH: f64 = 16.0;
-    /// Source: design v14, GRID.md.
     pub const GLYPH: f64 = 14.0;
-    /// Source: design v14, GRID.md.
-    pub const TIME_LANE_HEIGHT: f64 = 12.0;
-    /// Source: design v14, GRID.md.
-    pub const TIME_SEGMENT_HEIGHT: f64 = 6.0;
-    /// Source: design v17, src/style.css.
-    pub const TIME_SEGMENT_RADIUS: f64 = 2.0;
-    /// A lane's height once it carries its group's name: 13 pt text does not fit the design's 12.
-    /// TENTATIVE (other candidate: 12). The design draws three unlabelled lanes 12 high and does not say which group each is. 12 is the design's height, with no label.
-    /// Source: not in the design: chosen while building the mac list, to be ruled on.
-    pub const TIME_LANE_LABELLED_HEIGHT: f64 = 16.0;
-    /// The column at a lane's left end that holds its group's name: thirteen characters of the 13 pt monospaced system face, measured (one is 8.04 wide), which is the whole of most names. A longer one is cut at the end.
-    /// TENTATIVE (other candidate: 0). 0 is the design: no label.
-    /// Source: not in the design: chosen while building the mac list, to be ruled on.
-    pub const TIME_LANE_LABEL_WIDTH: f64 = 112.0;
-    /// Source: design v17, src/style.css.
-    pub const TIME_AXIS_HEIGHT: f64 = 24.0;
-    /// Source: design v17, src/style.css.
-    pub const TIME_BAND_PADDING_BOTTOM: f64 = 6.0;
     /// Below the last waiting row's own gap.
     /// Source: design v17, src/style.css.
     pub const SEPARATOR_SPACE_ABOVE: f64 = 8.0;
     /// Source: design v17, src/style.css.
     pub const SEPARATOR_SPACE_BELOW: f64 = 4.0;
-    /// The name and the minutes.
-    /// Source: design v17, src/style.css.
+    /// The glyph, the name, who is waiting and the status word. A waiting row is this, then its lines of what it waits on, inside `row_padding_y` above and below: 60, 80 or 100 high for one, two or three lines.
+    /// Source: design v18, direction A: src/v18.css and CHANGES.md.
     pub const ROW_LINE1_HEIGHT: f64 = 24.0;
-    /// The glyph, the status word, the detail.
-    /// Source: design v17, src/style.css.
-    pub const ROW_LINE2_HEIGHT: f64 = 20.0;
+    /// One line of what a row waits on.
+    /// Source: design v18, direction A: src/v18.css and CHANGES.md.
+    pub const ASK_LINE_HEIGHT: f64 = 20.0;
+    /// How many lines what a row waits on may wrap to. A sentence takes up to this many and ends in an ellipsis. A command of this many steps or fewer gives every step a line first, and what is left over to the steps that need a second.
+    /// TENTATIVE (other candidate: 4). The design's direction B drew four. The user chose A, which draws three.
+    /// Source: design v18, direction A: src/v18.css and CHANGES.md.
+    pub const ASK_MAX_LINES: f64 = 3.0;
+    /// A command of more steps than `ask_max_lines` is not cut to that many lines: every step keeps one line, cut at its end, so the start of every step shows. Past this many the last line says how many steps are not shown, rather than dropping them without a word.
+    /// TENTATIVE (other candidate: 3). 3 is the design's cap applied to steps as well, which hides the fourth step of a command behind an ellipsis -- the step that may be the dangerous one. The supervisor ruled that out; where the ceiling is, nobody has.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const ASK_MAX_STEPS: f64 = 6.0;
+    /// How many characters of the terminal's face one line of what a row waits on holds: the count a host uses when it has no font to measure with. A wide character is two.
+    /// Source: design v18, direction A: src/v18.css and CHANGES.md.
+    pub const ASK_CELLS_PER_LINE: f64 = 41.0;
     /// Source: design v17, src/style.css.
     pub const ROW_ITEM_GAP: f64 = 8.0;
     /// Between a glyph and its word.
@@ -622,8 +606,8 @@ pub const fn theme(dark: bool) -> &'static Theme {
 /// Each is one value in the data; ruling on it is one edit there.
 pub const TENTATIVE: &[&str] = &[
     "window_tab.working_glyph_shown",
-    "side.time_lane_labelled_height",
-    "side.time_lane_label_width",
+    "side.ask_max_lines",
+    "side.ask_max_steps",
     "stack_tab.inset",
     "selection.spring_damping",
     "selection.refraction_shown",

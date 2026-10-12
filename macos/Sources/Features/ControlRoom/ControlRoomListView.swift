@@ -1,8 +1,14 @@
+import AppKit
 import SwiftUI
 
-/// The control room's group list (`control-room.md`, 3.1 and 3.2): the
-/// groups waiting for you, the ones that need nothing, and today's waiting
-/// along the bottom.
+/// The control room's group list (`control-room.md`, 3.1, 3.2 and 3.5): the
+/// groups waiting for you -- who waits, and for what -- and the ones that
+/// need nothing, each with what it is doing when the core knows.
+///
+/// **Nothing here says how long.** The minutes on each row and the band of
+/// today's waiting along the bottom were taken out (the user, 2026-10-13:
+/// they do nothing but tell you that you have been slow). The bottom left
+/// is left empty.
 ///
 /// It draws a `ControlRoomList` and decides nothing about it. Every size and
 /// colour is `ControlRoomLook`'s, and every position is
@@ -43,26 +49,22 @@ struct ControlRoomListView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let layout = ControlRoomListLayout(list: list, height: proxy.size.height)
+            let layout = ControlRoomListLayout(list: list, height: proxy.size.height,
+                                               needed: ControlRoomAskText.needed)
             ZStack(alignment: .topLeading) {
                 if let chip = layout.chip(for: selection) {
                     self.chip.place(chip)
                 }
                 header.place(layout.header)
                 ForEach(list.waiting) { row in
-                    waitingRow(row).place(layout.rows[row.id] ?? .zero)
+                    waitingRow(row, fit: layout.fits[row.id] ?? .none).place(layout.rows[row.id] ?? .zero)
                 }
-                theme.lineFaint.color.place(layout.separator)
-                quietHeader.place(layout.quietHeader)
+                if layout.quietHeader.height > 0 {
+                    theme.lineFaint.color.place(layout.separator)
+                    quietHeader.place(layout.quietHeader)
+                }
                 ForEach(list.quiet) { row in
                     quietRow(row).place(layout.rows[row.id] ?? .zero)
-                }
-                if let band = list.timeBand {
-                    bandHeader(band).place(layout.bandHeader)
-                    ForEach(Array(band.lanes.enumerated()), id: \.offset) { n, lane in
-                        self.lane(lane, in: band).place(layout.lanes[n])
-                    }
-                    axis(band).place(layout.axis)
                 }
             }
         }
@@ -166,7 +168,7 @@ struct ControlRoomListView: View {
 
     private var header: some View {
         HStack(spacing: 0) {
-            Text(String(localized: "\(String(list.waitingCount)) groups waiting for you", comment: "总控台：左栏标题，N 是核心给的数"))
+            Text(ControlRoomList.headerText(waiting: list.waitingCount))
                 .fontWeight(Look.weight(Look.Font.weightEmphasis))
             Spacer(minLength: CGFloat(Look.Side.rowItemGap))
             Button(action: onNewGroup) {
@@ -188,154 +190,191 @@ struct ControlRoomListView: View {
             .padding(.horizontal, CGFloat(Look.Side.headerPaddingX))
     }
 
-    /// The colour of a status word and of the minutes beside it.
-    private func ink(_ shown: ControlRoomList.Shown, selected: Bool) -> (word: Color, minutes: Color) {
+    /// The colour of a status word.
+    private func ink(_ shown: ControlRoomList.Shown, selected: Bool) -> Color {
         switch shown {
         case .needsYou, .doneUnseen:
-            return (theme.attentionText.color, theme.attentionText.color)
+            return theme.attentionText.color
         case .trouble:
             // Where the word is not red is the table's to say (`text_on`).
-            let word = selected ? theme.problemTextOnRowSelected : theme.problemTextOnRow
-            return (word.color, theme.problemText.color)
+            return (selected ? theme.problemTextOnRowSelected : theme.problemTextOnRow).color
         case .working, .none:
-            return (theme.textSecondary.color, theme.textSecondary.color)
+            return theme.textSecondary.color
         }
     }
 
-    private func waitingRow(_ row: Row) -> some View {
+    /// The column every row's glyph stands in, so that the eye runs down
+    /// one line of them.
+    private func glyphColumn<Glyph: View>(height: Double, @ViewBuilder _ glyph: () -> Glyph) -> some View {
+        // The column is there whether or not there is a glyph to stand in it.
+        Color.clear
+            .frame(width: CGFloat(Look.Side.glyph), height: CGFloat(height))
+            .overlay(glyph())
+    }
+
+    /// One line of what a row says under its first line, in the secondary
+    /// colour: how many steps are not shown, how many others wait.
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .foregroundStyle(theme.textSecondary.color)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, minHeight: CGFloat(Look.Side.askLineHeight),
+                   maxHeight: CGFloat(Look.Side.askLineHeight), alignment: .leading)
+    }
+
+    /// Who is waiting: the worker's name in the terminal's face, the rest
+    /// in the interface's.
+    private func who(_ waiter: ControlRoomList.Waiter) -> Text? {
+        guard let said = ControlRoomList.waiterText(waiter) else { return nil }
+        var text = AttributedString(said)
+        if !waiter.name.isEmpty, let name = text.range(of: waiter.name) {
+            text[name].font = .system(size: CGFloat(Look.Font.body), design: .monospaced)
+        }
+        return Text(text)
+    }
+
+    /// A group that is waiting: the glyph in its column; the name, and at
+    /// the right who is waiting and for which of the four; then what it is
+    /// waiting for -- a sentence in the interface's face, a command in the
+    /// terminal's, one step to a line. `fit` is how many lines each step
+    /// has (`ControlRoomAskFit`); the row's height came from the same.
+    private func waitingRow(_ row: Row, fit: ControlRoomAskFit) -> some View {
         let selected = row.id == selection
-        let ink = ink(row.shown, selected: selected)
-        return VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                Text(row.name)
-                    .font(.system(size: CGFloat(Look.Font.groupName), design: .monospaced))
-                    .fontWeight(Look.weight(selected ? Look.Font.weightStrong : Look.Font.weightGroupName))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: CGFloat(Look.Side.rowItemGap))
-                if let minutes = row.waitedMin {
-                    Text("\(minutes)")
-                        .font(.system(size: CGFloat(Look.Font.minutes)))
-                        .fontWeight(Look.weight(Look.Font.weightStrong))
-                        .foregroundStyle(ink.minutes)
-                        .frame(minWidth: CGFloat(Look.Side.minutesWidth), alignment: .trailing)
-                    Text(String(localized: "min", comment: "总控台：等了几分钟，数字后面的单位"))
-                        .foregroundStyle(theme.textSecondary.color)
-                        .frame(width: CGFloat(Look.Side.minutesUnitWidth), alignment: .trailing)
-                }
+        let gap = CGFloat(Look.Side.rowItemGap)
+        return HStack(alignment: .top, spacing: gap) {
+            glyphColumn(height: Look.Side.rowLine1Height) {
+                ControlRoomGlyph(shown: row.shown, pulses: row.pulses, still: still)
             }
-            .frame(height: CGFloat(Look.Side.rowLine1Height))
-            Spacer(minLength: 0)
-            HStack(spacing: CGFloat(Look.Side.rowItemGap)) {
-                HStack(spacing: CGFloat(Look.Side.statusWordGap)) {
-                    ControlRoomGlyph(shown: row.shown, pulses: row.pulses, still: still)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: gap) {
+                    Text(row.name)
+                        .font(.system(size: CGFloat(Look.Font.groupName), design: .monospaced))
+                        .fontWeight(Look.weight(selected ? Look.Font.weightStrong : Look.Font.weightGroupName))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                    if let who = who(row.waiter) {
+                        who.foregroundStyle(theme.textSecondary.color)
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
                     Text(row.word)
                         .fontWeight(Look.weight(Look.Font.weightEmphasis))
-                        .foregroundStyle(ink.word)
+                        .foregroundStyle(ink(row.shown, selected: selected))
                         .fixedSize()
                 }
-                Text(row.detail)
-                    .font(.system(size: CGFloat(Look.Font.body), design: row.detailIsCode ? .monospaced : .default))
-                    .foregroundStyle(theme.textSecondary.color)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: CGFloat(Look.Side.rowLine1Height))
+                // Only the steps that have lines: the rest are counted below.
+                ForEach(Array(zip(row.what.drawn, fit.lines).enumerated()), id: \.offset) { _, step in
+                    ControlRoomAskText(text: step.0, code: row.what.isCode, lines: step.1)
+                }
+                if let hidden = ControlRoomList.hiddenStepsText(fit.hidden) {
+                    note(hidden)
+                }
+                // 暂定: a line of its own under what the row waits on. The
+                // design drew no row with a second thing waiting.
                 if let others = ControlRoomList.othersText(row.others) {
-                    Text(others)
-                        .foregroundStyle(theme.textSecondary.color)
-                        .fixedSize()
+                    note(others)
                 }
             }
-            .frame(height: CGFloat(Look.Side.rowLine2Height))
         }
         .padding(.horizontal, CGFloat(Look.Side.rowPaddingX))
         .padding(.vertical, CGFloat(Look.Side.rowPaddingY))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .contentShape(Rectangle())
         .onTapGesture { select(row.id) }
         .help(ControlRoomList.tooltip(for: row) ?? "")
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(ControlRoomList.spoken(row))
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
+    /// A group that needs nothing: the glyph in the same column, the name,
+    /// and what it is doing. A group with nothing to say is its name alone,
+    /// a step back.
     private func quietRow(_ row: Row) -> some View {
         let selected = row.id == selection
+        let said = ControlRoomList.quietText(row)
+        let idle = row.shown == .none && said.isEmpty
         return HStack(spacing: CGFloat(Look.Side.rowItemGap)) {
-            Text(row.name)
-                .font(.system(size: CGFloat(Look.Font.body), design: .monospaced))
-                .fontWeight(Look.weight(selected ? Look.Font.weightEmphasis : Look.Font.weightBody))
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
-            HStack(spacing: CGFloat(Look.Side.quietItemGap)) {
-                Text(row.word).fixedSize()
+            glyphColumn(height: Look.Side.glyph) {
                 if row.shown != .none {
                     ControlRoomGlyph(shown: row.shown, still: still)
                 }
             }
+            Text(row.name)
+                .font(.system(size: CGFloat(Look.Font.body), design: .monospaced))
+                .fontWeight(Look.weight(selected ? Look.Font.weightStrong : Look.Font.weightBody))
+                .foregroundStyle((idle && !selected ? theme.textSecondary : theme.text).color)
+                .lineLimit(1)
+                .fixedSize()
+            Text(said)
+                .foregroundStyle(theme.textSecondary.color)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
         }
-        .foregroundStyle((selected ? theme.text : theme.textSecondary).color)
         .padding(.horizontal, CGFloat(Look.Side.rowPaddingX))
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
         .onTapGesture { select(row.id) }
-        .accessibilityElement(children: .combine)
+        .help(said)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(ControlRoomList.spoken(row))
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
+}
 
-    // MARK: Today's waiting
+/// One step of what a row waits on: so many lines of it, each
+/// `ask_line_height` high, the last ending in an ellipsis when there is
+/// more.
+///
+/// It also measures: how many lines a step would take with all the room it
+/// wanted is asked of the same two faces, at the same width, that draw it.
+struct ControlRoomAskText: View {
+    typealias Look = ControlRoomLook
 
-    private func bandHeader(_ band: ControlRoomList.TimeBand) -> some View {
-        HStack {
-            Text(String(localized: "Kept you waiting today", comment: "总控台：左栏底部时间带的标题")).foregroundStyle(theme.textSecondary.color)
-            Spacer()
-            Text(String(localized: "\(String(band.totalMinutes)) min", comment: "总控台：今天累计让你等了多少分钟")).fontWeight(Look.weight(Look.Font.weightEmphasis))
-        }
-        .frame(maxHeight: .infinity)
-        .overlay(alignment: .top) {
-            theme.lineFaint.color.frame(height: CGFloat(Look.Line.hairline))
-        }
+    var text: String
+    var code: Bool
+    var lines: Int
+
+    @Environment(\.colorScheme) private var scheme
+
+    static func face(code: Bool) -> NSFont {
+        let size = CGFloat(Look.Font.body)
+        return code ? .monospacedSystemFont(ofSize: size, weight: .regular) : .systemFont(ofSize: size)
     }
 
-    /// One group's lane: the start of its name, then when today it kept
-    /// the person waiting. The design does not say which lane is whose; the
-    /// name is this build's answer and is marked tentative in the table.
-    private func lane(_ lane: ControlRoomList.Lane, in band: ControlRoomList.TimeBand) -> some View {
-        HStack(spacing: CGFloat(Look.Side.rowItemGap)) {
-            Text(lane.name)
-                .font(.system(size: CGFloat(Look.Font.min), design: .monospaced))
-                .foregroundStyle(theme.textSecondary.color)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(width: CGFloat(Look.Side.timeLaneLabelWidth), alignment: .leading)
-            GeometryReader { proxy in
-                let segments = ControlRoomListLayout.segments(
-                    lane, band: band, width: proxy.size.width)
-                ZStack(alignment: .leading) {
-                    theme.line.color
-                        .frame(height: CGFloat(Look.Line.stroke))
-                    ForEach(Array(segments.enumerated()), id: \.offset) { _, piece in
-                        RoundedRectangle(cornerRadius: CGFloat(Look.Side.timeSegmentRadius))
-                            .fill((piece.ongoing ? theme.text : theme.textSecondary).color)
-                            .frame(width: piece.width, height: CGFloat(Look.Side.timeSegmentHeight))
-                            .offset(x: piece.x)
-                    }
-                }
-                .frame(maxHeight: .infinity)
-            }
-        }
-        .help(lane.name)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(lane.name)
+    /// What one line of `font` is high when nothing is added between lines.
+    static func natural(_ font: NSFont) -> CGFloat {
+        NSLayoutManager().defaultLineHeight(for: font)
     }
 
-    private func axis(_ band: ControlRoomList.TimeBand) -> some View {
-        HStack {
-            Text(band.startLabel)
-            Spacer()
-            Text(String(localized: "now", comment: "总控台：时间带的右端"))
-        }
-        .foregroundStyle(theme.textTertiary.color)
-        .frame(maxHeight: .infinity, alignment: .bottom)
+    /// How many lines `text` takes at the width a row gives it.
+    static func needed(_ text: String, code: Bool) -> Int {
+        guard !text.isEmpty else { return 1 }
+        let font = face(code: code)
+        let box = (text as NSString).boundingRect(
+            with: CGSize(width: ControlRoomListLayout.askWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin],
+            attributes: [.font: font])
+        return max(1, Int((box.height / natural(font)).rounded()))
+    }
+
+    var body: some View {
+        let font = Self.face(code: code)
+        let lineH = CGFloat(Look.Side.askLineHeight)
+        let extra = max(0, lineH - Self.natural(font))
+        Text(text)
+            .font(Font(font))
+            .lineSpacing(extra)
+            .lineLimit(lines)
+            .truncationMode(.tail)
+            .multilineTextAlignment(.leading)
+            .foregroundStyle(Look.theme(scheme).text.color)
+            .padding(.top, extra / 2)
+            .frame(maxWidth: .infinity, minHeight: lineH * CGFloat(lines), maxHeight: lineH * CGFloat(lines),
+                   alignment: .topLeading)
     }
 }
 

@@ -27,8 +27,11 @@ Zig test holds to what `ControlRoom.zig` actually produces.
 room opens on, and what is then selected and whether it is the person's
 own choice, for a control room just opened and one long open, with and
 without a selection standing; every row -- its
-section, its place, its glyph, its words, its detail, whether the detail is
-set as code, its minutes, its "N more", whether the core says nobody has
+section, its place, its glyph, its words, who is waiting (which of the
+core's five answers, and the name), what it waits on (which of the core's
+four forms, whether that is set as code, how many lines, whether the core
+says that is all of it, and every line as the row sets it, the mark for a
+missing part included), its "N more", whether the core says nobody has
 looked at it, and the terminal and two moments an act on it hands back;
 which row of the list breathes, with nothing in front
 and with each tab that holds a waiting terminal in front; which terminal
@@ -37,21 +40,26 @@ holds none; every window tab the snapshot lists -- its glyph, whether that
 glyph is drawn on a tab at all, and whether it breathes, for the same
 fronts -- a tab it does not list, and for each of the five glyphs whether a
 window tab draws it; which rows are marked seen by being looked at, and
-after how long; the time band -- its start, its own now, its label, its minutes,
-every lane and span, and every piece of every lane as the x and width it is
-drawn at; the panel's size and every rectangle in it, lanes included; and
+after how long; the panel's size and every rectangle in it -- a waiting row's
+height follows what it waits on, by the nominal count of lines; how what each
+waiting row waits on is fitted (the lines each step gets, the steps said only
+as a number), and the fitting rule itself on fourteen made-up commands; the
+nominal count on six strings; and
 where the arrow keys take the selection from every row.
 
 **NOT COMPARED, and why.**
 
-  * The snapshot's own `now_ms`. The macOS list does not keep it (the band
-    carries its own, which is compared), so one side has nothing to print.
+  * The snapshot's own `now_ms`. The macOS list does not keep it, so one
+    side has nothing to print.
+  * The words "who is waiting" becomes ("Supervisor", "<name>, via the
+    supervisor"). Compared is which of the core's answers each side read;
+    each side's own tests hold the words.
   * What is around the seen rule: that the selection moving on, or the
     control room not being in front, calls the mark off. Each side's own
     tests hold that; here the wait is over at once and it is in front.
   * A snapshot with no `unseen` or no `tabs`. The macOS host reads one as
     nothing unseen and no tabs; `windows/control-room` refuses it, as it
-    does one with no `pulses` or `band`. The fixture has all four.
+    does one with no `pulses`. The fixture has all three.
   * A front tab that is not in the window asked about. The macOS list is
     told only the tab; the crate is told the window too. Each front is
     asked with the window that tab is in, which is the only way a host asks.
@@ -139,12 +147,16 @@ func shownName(_ s: ControlRoomList.Shown) -> String {
 }
 
 func row(_ section: String, _ r: ControlRoomList.Row) {
-    let waited = r.waitedMin.map(String.init) ?? "-"
     let since = r.target.map { String($0.sinceMs) } ?? "-"
     let event = r.target?.eventMs.map { String($0) } ?? "-"
     print("row section=\(section) id=\(r.id) shown=\(shownName(r.shown)) word=\(quote(r.word)) "
-        + "detail=\(quote(r.detail)) code=\(r.detailIsCode) waited=\(waited) others=\(r.others) "
+        + "who=\(r.waiter.is.rawValue) name=\(quote(r.waiter.name)) form=\(r.what.form.rawValue) "
+        + "code=\(r.what.isCode) lines=\(r.what.lines.count) others=\(r.others) "
         + "unseen=\(r.unseen) terminal=\(r.target?.terminal ?? "-") since=\(since) event=\(event)")
+    print("cut id=\(r.id) cut=\(r.what.cut.rawValue)")
+    for (n, line) in r.what.drawn.enumerated() {
+        print("what id=\(r.id) n=\(n) line=\(quote(line))")
+    }
 }
 
 let args = CommandLine.arguments
@@ -283,32 +295,30 @@ for r in list.rows {
     }
     rect("row:\(r.id)", frame)
 }
+for r in list.waiting {
+    let fit = lay.fits[r.id] ?? .none
+    print("fit id=\(r.id) lines=\(fit.lines.map(String.init).joined(separator: "+")) hidden=\(fit.hidden) drawn=\(fit.drawn)")
+}
+print("ask w=\(f(ControlRoomListLayout.askWidth))")
+let fits: [[Int]] = [
+    [], [1], [2], [5], [1, 1], [3, 1], [1, 3], [2, 2], [1, 1, 1], [4, 4, 4], [2, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1], [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9],
+]
+for wanted in fits {
+    let fit = ControlRoomAskFit.fit(needed: wanted)
+    print("fit-of \(wanted.map(String.init).joined(separator: "+")) "
+        + "lines=\(fit.lines.map(String.init).joined(separator: "+")) hidden=\(fit.hidden) drawn=\(fit.drawn)")
+}
+let nominal = [
+    "", "git push", "rm -rf dist/ .cache/ node_modules/.vite && x",
+    "01234567890123456789012345678901234567890", "012345678901234567890123456789012345678901",
+    "发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号？",
+]
+for text in nominal {
+    print("nominal \(quote(text)) lines=\(ControlRoomList.nominalLines(text))")
+}
 rect("separator", lay.separator)
 rect("quiet_header", lay.quietHeader)
-rect("band_header", lay.bandHeader)
-for (n, lane) in lay.lanes.enumerated() { rect("lane:\(n)", lane) }
-rect("axis", lay.axis)
-
-if let band = list.timeBand {
-    print("band start_ms=\(band.startMs) now_ms=\(band.nowMs) start_label=\(quote(band.startLabel)) "
-        + "total_min=\(band.totalMinutes) lanes=\(band.lanes.count)")
-    for (n, lane) in band.lanes.enumerated() {
-        print("lane \(n) name=\(quote(lane.name)) spans=\(lane.spans.count)")
-        for s in lane.spans {
-            print("span lane=\(n) from_ms=\(s.fromMs) to_ms=\(s.toMs) ongoing=\(s.ongoing)")
-        }
-        // Drawn in the lane's own rectangle; a lane the layout has no
-        // rectangle for is a disagreement the `rect lane:` lines show.
-        let track = ControlRoomListLayout.trackWidth(lane: n < lay.lanes.count ? lay.lanes[n].width : 0)
-        print("track lane=\(n) w=\(f(track))")
-        for g in ControlRoomListLayout.segments(lane, band: band, width: track) {
-            print("segment lane=\(n) x=\(f(g.x)) w=\(f(g.width)) ongoing=\(g.ongoing)")
-        }
-    }
-} else {
-    print("band none")
-}
-
 let ids: [String?] = [nil] + list.rows.map { Optional($0.id) }
 for from in ids {
     for step in [-1, 1] {

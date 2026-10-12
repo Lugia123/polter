@@ -8,6 +8,11 @@
 # cannot ride in the command): MAC_TEST_EXTRA_FLAGS='--copy-on-select=false'.
 # This is how a floor breaks one thing on purpose without a rebuild.
 #
+# `MAC_TEST_NO_COMMAND=1` starts it with no `-e` at all (and then takes no
+# command arguments): an instance given a command quits when its last window
+# closes, so "close every window and see what is left" cannot be asked of
+# one. Without it the instance runs the default shell and stays.
+#
 # Default command is `-e /bin/sh`. Prints `pid=`, `state=`, `socket=` and
 # `bundle=` lines; everything the test does afterwards should name that pid
 # (see tools/mac-drive.sh, tools/mac-hid.swift) and nothing else.
@@ -84,7 +89,14 @@ die() { printf 'mac-test-instance: %s\n' "$*" >&2; exit 1; }
 [ $# -ge 1 ] || die "usage: mac-test-instance.sh <path/to/Polter.app> [<args for -e ...>]"
 app=$1
 shift
-[ $# -gt 0 ] || set -- /bin/sh
+# Unquoted where it is used: empty, it is no argument at all.
+if [ -n "${MAC_TEST_NO_COMMAND-}" ]; then
+    [ $# -eq 0 ] || die "MAC_TEST_NO_COMMAND is set, so there is no -e to give '$*' to"
+    command_flag=
+else
+    [ $# -gt 0 ] || set -- /bin/sh
+    command_flag=-e
+fi
 
 plist="$app/Contents/Info.plist"
 exe="$app/Contents/MacOS/polter"
@@ -129,6 +141,14 @@ config_file="$state/config/polter/isolated-test.polter"
 mkdir -p "$state/config/polter" || die "could not create $state/config/polter"
 [ -f "$config_file" ] || printf '# Config of a test instance started by tools/mac-test-instance.sh.\n# Isolated on purpose; nothing here is the user'"'"'s.\n' > "$config_file" \
     || die "could not write $config_file"
+# The global "modifier + click takes a screenshot" trigger is off in a test
+# instance. It listens to every click on the machine, so a click a test sends
+# with ⌘⇧ still down opens the screenshot mode -- in this instance and in the
+# user's own Polter too (2026-10-13). This turns off this instance's half;
+# tools/mac-hid.swift refusing to click with a modifier down is the other.
+grep -q '^screenshot-mouse-trigger' "$config_file" \
+    || printf 'screenshot-mouse-trigger = none\n' >> "$config_file" \
+    || die "could not write $config_file"
 
 # --- 4. The user's MCP registration, before. --------------------------------
 mcp_entry() {
@@ -146,7 +166,7 @@ XDG_STATE_HOME=$state XDG_CONFIG_HOME="$state/config" GHOSTTY_CONFIG_PATH="$conf
     --config-default-files=false \
     --window-save-state=never \
     ${MAC_TEST_EXTRA_FLAGS-} \
-    -e "$@" >"$state/stdout.log" 2>&1 &
+    $command_flag "$@" >"$state/stdout.log" 2>&1 &
 pid=$!
 start=$(date +%s)
 

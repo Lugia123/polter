@@ -18,9 +18,12 @@
 //!                             than the two ages, changes
 //!   "now_ms": 6000000,        the clock every *_ms below is on, except
 //!                             last_ms / seen_ms / snooze, which are wall
-//!   "needs_me": 3,            "N waiting for you": terminals, each once
+//!   "needs_me": 5,            rows that wait, a group's or a lone terminal's:
+//!                             groups_needing_me plus the rows of
+//!                             `ungrouped` with needs_me. The Dock's number
 //!   "groups_needing_me": 4,   rows in `groups` with needs_me, in a row
-//!   "groups_other": 3,        from the top; the rest
+//!                             from the top. The list's header
+//!   "groups_other": 3,        the rest of `groups`
 //!   "open_on": "web-app" | null,
 //!                             the group a control room that opens with
 //!                             nothing selected selects: the first row
@@ -48,15 +51,31 @@
 //!       "shown": "needs_you",   needs_you | trouble | done_unseen |
 //!                               working | none
 //!       "word": "needs_approval", "text": "等批准",
-//!       "waited_min": 4 | null, only on rows that need the person
-//!       "reason": {"from":"hook_note","text":"Bash(rm -rf dist/)",
+//!       "waiter": {"is":"supervisor","name":""},
+//!                             who the row is about. is: none | supervisor
+//!                             | worker_via_supervisor | worker | terminal.
+//!                             `name` is the worker's when it is one
+//!       "reason": {"from":"hook_note","text":"rm -rf dist/ && npm ci",
 //!                  "missing":null},
 //!                             from: hook_note | hook_detail | process |
-//!                             clocks | hooks | last_turn | none.
+//!                             clocks | hooks | last_turn | task | none.
 //!                             When the line could not be had, text is
 //!                             empty and `missing` says which kind of
 //!                             missing: empty_note | empty_detail |
 //!                             no_turn_kept | self_report_text
+//!       "what": {"form":"command",
+//!                "lines":["rm -rf dist/","&& npm ci"],
+//!                "cut":"none"},
+//!                             the same thing in the pieces it is drawn
+//!                             in. form: none | command | code | words. A
+//!                             command is one step to a line; a host shows
+//!                             as many lines as it has room for.
+//!                             cut says whether lines is all of it: none |
+//!                             tail (the start of something longer: a
+//!                             summary, the whole not sent) | head (the end
+//!                             of something longer: the last paragraph of
+//!                             a turn). A host marks where the rest is and
+//!                             never shows a part as the whole
 //!       "more": 1,            other terminals in the group also waiting
 //!       "same_as": "billing" | null,
 //!                             same supervisor as that group's row, which
@@ -68,7 +87,7 @@
 //!           "alive":true, "duty":"on"|"off",
 //!           "held":false, "shielded":false } ] } ],
 //!   "ungrouped": [ { "id", "title", "attention", "needs_me", "unseen",
-//!       "shown", "word", "text", "waited_min", "reason" } ],
+//!       "shown", "word", "text", "waiter", "reason", "what" } ],
 //!   "terminals": [ { the member fields but `role`, and "event_ms",
 //!       "window":"0x…"|null, "tab":"0x…"|null } ],
 //!   "tabs": [ { "window":"0x…"|null, "tab":"0x…",
@@ -81,16 +100,13 @@
 //!                             the tab that window is showing (and, for a
 //!                             glyph in a tab bar or a pane, in that
 //!                             window). `group` is the row that is about
-//!                             it. A host tests equality and nothing else.
-//!   "band": {                 "kept you waiting today"; wall clock
-//!       "start_ms":…, "start_label":"09:00", "now_ms":…,
-//!       "total_min": 47,      minutes in which anyone waited, once
-//!       "lanes": [ { "name":"web-app", "spans": [
-//!           { "from_ms":…, "to_ms":…, "ongoing":false } ] } ] } }
-//!                             a span still going on has to_ms = now.
-//!                             Kept in memory from when this run began;
-//!                             a restart starts the day again.
+//!                             it. A host tests equality and nothing else. }
 //! ```
+//!
+//! **Nothing here says how long anything has waited**, and nothing draws
+//! the day's waiting: both were on screen once and told the person nothing
+//! they could act on (the user, 2026-10-13). The order of the rows is still
+//! longest-waiting first; that is this file's business and not a number.
 //!
 //! `since_ms` is when the state began and does not move when the agent
 //! says the same thing again; `event_ms` moves on every word from it.
@@ -105,6 +121,9 @@ const Allocator = std.mem.Allocator;
 const Attention = @import("Attention.zig");
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
+const AgentEvent = @import("agent_event.zig");
+const ShellSteps = @import("ShellSteps.zig");
+const Tasks = @import("Tasks.zig");
 
 pub const Id = Bus.Id;
 
@@ -130,15 +149,6 @@ wake_ms: ?u64,
 /// How many times the snapshot has been worked out.
 recomputes: u64,
 
-/// The stretches in which a group kept the person waiting, for the band at
-/// the foot of the list. **Kept from when this run started and nowhere
-/// else**: nothing writes them down, so a restart begins the day again.
-waits: std.ArrayListUnmanaged(Wait),
-
-/// When this run first looked, on the wall clock: where the band begins if
-/// that was today.
-began_ms: ?u64,
-
 pub fn init(alloc: Allocator) ControlRoom {
     return .{
         .alloc = alloc,
@@ -149,14 +159,10 @@ pub fn init(alloc: Allocator) ControlRoom {
         .sent_ms = null,
         .wake_ms = null,
         .recomputes = 0,
-        .waits = .empty,
-        .began_ms = null,
     };
 }
 
 pub fn deinit(self: *ControlRoom) void {
-    for (self.waits.items) |w| self.alloc.free(w.name);
-    self.waits.deinit(self.alloc);
     self.alloc.free(self.json);
     self.alloc.free(self.stable);
     self.* = undefined;
@@ -227,20 +233,10 @@ pub fn refresh(self: *ControlRoom, in: Input, cause: Cause) Allocator.Error!Outc
     return .{ .notify = notify, .wake_ms = wake };
 }
 
-/// The whole snapshot as of now, with today's waiting brought up to date.
-/// Everything in the result lives in `arena`.
+/// The whole snapshot as of now. Everything in the result lives in `arena`.
 fn compute(self: *ControlRoom, arena: Allocator, in: Input) Allocator.Error!Built {
-    var built = try build(arena, in);
+    const built = try build(arena, in);
     self.recomputes += 1;
-
-    try self.noteWaits(built.snapshot.groups, in);
-    const band = try bandOf(arena, self.waits.items, self.began_ms orelse in.wall_ms, in);
-    built.snapshot.band = band.band;
-    // The total is in whole minutes, and grows only while somebody waits.
-    if (band.ongoing) built.wake_ms = earlier(
-        built.wake_ms,
-        in.now_ms + (min_ms - band.total_ms % min_ms),
-    );
     return built;
 }
 
@@ -271,12 +267,11 @@ pub const Input = struct {
     /// Every terminal that is open. A group member not in here is gone.
     terminals: []const Terminal,
     thresholds: Attention.Thresholds,
+    /// The task panel: what a group that is working says it is doing.
+    tasks: *const Tasks,
     /// The bus's clock, and the real one.
     now_ms: u64,
     wall_ms: u64,
-    /// What to add to the wall clock to get the reader's own time of day.
-    /// Passed in so that what a day is does not depend on where this runs.
-    local_offset_ms: i64,
 };
 
 // -- what comes out ---------------------------------------------------------
@@ -354,7 +349,7 @@ pub const Reason = struct {
     /// Why there is no text, when there should have been.
     missing: ?Missing,
 
-    pub const From = enum { hook_note, hook_detail, process, clocks, hooks, last_turn, none };
+    pub const From = enum { hook_note, hook_detail, process, clocks, hooks, last_turn, task, none };
     pub const Missing = enum { empty_note, empty_detail, no_turn_kept, self_report_text };
 
     pub const none: Reason = .{ .from = .none, .text = "", .missing = null };
@@ -373,6 +368,79 @@ pub const Reason = struct {
     fn lacking(from: From, missing: Missing) Reason {
         return .{ .from = from, .text = "", .missing = missing };
     }
+};
+
+/// What a row says under its name, already in the pieces it is drawn in.
+///
+/// For a row that is waiting, this is what it is waiting for; for one that
+/// is not, what it is doing or has just done. **`form` says what kind of
+/// text it is, so that no host guesses from where it came**: a command is
+/// set in the terminal's face, one step to a line; words are set as words.
+/// `lines` is all of it -- nothing is cut here. How many lines are shown is
+/// a host's own matter.
+pub const What = struct {
+    form: Form,
+    lines: []const []const u8,
+    /// Whether `lines` is all of it. A host must not show a part as the
+    /// whole: it marks where the rest would be.
+    cut: Cut,
+
+    pub const Cut = enum {
+        /// `lines` is everything that was said.
+        none,
+        /// `lines` is the start of something longer, or may be: a summary
+        /// that reached its limit, with the whole not sent.
+        tail,
+        /// `lines` is the end of something longer: the last paragraph of a
+        /// turn, where a question asked in prose is.
+        head,
+    };
+
+    pub const Form = enum {
+        /// Nothing to say: `lines` is empty and a host draws no line.
+        none,
+        /// A shell command, cut into steps (`ShellSteps`): one step per
+        /// line, each after the first starting with its `&&`, `|`, `;`.
+        command,
+        /// Something literal that is not a command to cut -- the file a
+        /// tool wants to write, a command in a shell whose rules are not
+        /// the ones `ShellSteps` knows. One line, set like a command.
+        code,
+        /// A sentence: a question, why it failed, what it is doing.
+        words,
+    };
+
+    pub const none: What = .{ .form = .none, .lines = &.{}, .cut = .none };
+};
+
+/// Who is waiting: the terminal a waiting row is about, as one of the things
+/// a host can say without working anything out.
+///
+/// **Only a row that needs the person has one.** A row about a group that is
+/// working, or idle, is about a terminal too, but nobody is waiting there,
+/// and `supervisor` on such a row would be one word for "the supervisor
+/// waits" and "the supervisor is who this is about".
+pub const Waiter = struct {
+    is: Is,
+    /// The worker's name when it is a worker; empty otherwise. 暂定: its
+    /// terminal's title, the only name the control room is given.
+    name: []const u8,
+
+    pub const Is = enum {
+        /// The row is about no terminal.
+        none,
+        /// The group's supervisor itself.
+        supervisor,
+        /// A worker of the group, whose wait has come up through its
+        /// supervisor.
+        worker_via_supervisor,
+        /// A worker of a group that has no supervisor.
+        worker,
+        /// A terminal on its own, in no group.
+        terminal,
+    };
+
+    pub const none: Waiter = .{ .is = .none, .name = "" };
 };
 
 pub const ScreenOut = enum { unmeasured, unreadable, measured };
@@ -408,8 +476,9 @@ pub const GroupRow = struct {
     shown: Attention.Shown,
     word: Attention.Word,
     text: []const u8,
-    waited_min: ?u64,
+    waiter: Waiter,
     reason: Reason,
+    what: What,
     more: usize,
     same_as: ?[]const u8,
     members: []const Member,
@@ -424,8 +493,9 @@ pub const LoneRow = struct {
     shown: Attention.Shown,
     word: Attention.Word,
     text: []const u8,
-    waited_min: ?u64,
+    waiter: Waiter,
     reason: Reason,
+    what: What,
 };
 
 pub const TerminalOut = struct {
@@ -465,35 +535,6 @@ pub const Pulse = struct {
     group: ?[]const u8,
 };
 
-/// One stretch of today in which a group kept the person waiting. Wall
-/// clock.
-pub const Span = struct {
-    from_ms: u64,
-    /// For one still going on, now.
-    to_ms: u64,
-    ongoing: bool,
-};
-
-pub const Lane = struct {
-    name: []const u8,
-    spans: []const Span,
-};
-
-/// "Kept you waiting today".
-pub const Band = struct {
-    /// The left end of the axis, and how to label it: `09:00`.
-    start_ms: u64,
-    start_label: []const u8,
-    /// The right end. Wall clock, unlike the snapshot's own `now_ms`.
-    now_ms: u64,
-    /// Minutes in which at least one group was waiting; two waiting at
-    /// once are the person waiting once.
-    total_min: u64,
-    lanes: []const Lane,
-
-    pub const none: Band = .{ .start_ms = 0, .start_label = "", .now_ms = 0, .total_min = 0, .lanes = &.{} };
-};
-
 pub const Snapshot = struct {
     rev: u64,
     now_ms: u64,
@@ -517,7 +558,6 @@ pub const Snapshot = struct {
     /// it by asking "is this the tab I am showing" and "is this my window",
     /// which are equalities; the order, which is a comparison, is here.
     pulses: []const Pulse,
-    band: Band,
 };
 
 pub fn writeAlloc(alloc: Allocator, snapshot: Snapshot, options: std.json.Stringify.Options) Allocator.Error![]u8 {
@@ -548,19 +588,6 @@ fn stripped(arena: Allocator, s: Snapshot) Allocator.Error!Snapshot {
     const terminals = try arena.dupe(TerminalOut, s.terminals);
     for (terminals) |*t| t.age_ms = null;
     out.terminals = terminals;
-
-    // The right end of the band is now, and so is the end of a stretch
-    // still going on.
-    out.band.now_ms = 0;
-    const lanes = try arena.dupe(Lane, s.band.lanes);
-    for (lanes) |*l| {
-        const spans = try arena.dupe(Span, l.spans);
-        for (spans) |*sp| {
-            if (sp.ongoing) sp.to_ms = 0;
-        }
-        l.spans = spans;
-    }
-    out.band.lanes = lanes;
 
     return out;
 }
@@ -627,6 +654,41 @@ fn lastLine(text: []const u8) []const u8 {
     return "";
 }
 
+/// The last paragraph of what the agent said, on one line: where a question
+/// asked in prose is, all of it. `rest` says whether anything came before.
+fn lastParagraph(arena: Allocator, text: []const u8) Allocator.Error!struct { text: []const u8, rest: bool } {
+    const all = std.mem.trimEnd(u8, text, " \t\r\n");
+    var start: usize = 0;
+    var i: usize = all.len;
+    // Back to the last line that is empty or only spaces.
+    var line_end = all.len;
+    while (i > 0) : (i -= 1) {
+        if (all[i - 1] != '\n') continue;
+        if (std.mem.trim(u8, all[i..line_end], " \t\r").len == 0) {
+            start = line_end;
+            break;
+        }
+        line_end = i - 1;
+    }
+    const para = std.mem.trim(u8, all[start..], " \t\r\n");
+    const out = try arena.dupe(u8, para);
+    for (out) |*c| if (c.* == '\n' or c.* == '\r' or c.* == '\t') {
+        c.* = ' ';
+    };
+    return .{ .text = out, .rest = std.mem.trim(u8, all[0..start], " \t\r\n").len > 0 };
+}
+
+/// Whether a hook's one-line note may be less than what was said: it is as
+/// long as the bus keeps one (`Bus.Agent.note`), or as the summary `+hook`
+/// makes (`AgentEvent.summary_chars`). A note shorter than both is whole.
+fn noteMayBeCut(note: []const u8) bool {
+    if (note.len + 4 > note_bytes) return true;
+    return (std.unicode.utf8CountCodepoints(note) catch note.len) >= AgentEvent.summary_chars;
+}
+
+/// How many bytes of a note the bus keeps.
+const note_bytes = @typeInfo(@FieldType(@FieldType(Bus.Agent, "note"), "buf")).array.len;
+
 fn cut(text: []const u8, limit: usize) []const u8 {
     if (text.len <= limit) return text;
     var n = limit;
@@ -640,6 +702,7 @@ fn reasonOf(
     arena: Allocator,
     in: Input,
     s: Attention.Status,
+    group: ?[]const u8,
     wake: *Wake,
 ) Allocator.Error!Reason {
     const agent = in.bus.agentOf(s.id);
@@ -650,8 +713,13 @@ fn reasonOf(
         },
         .needs_answer => {
             if (s.source == .self_report) return .lacking(.none, .self_report_text);
-            const note = agent.note.get() orelse return .lacking(.hook_note, .empty_note);
-            return .{ .from = .hook_note, .text = try arena.dupe(u8, note), .missing = null };
+            if (agent.note.get()) |note| return .{ .from = .hook_note, .text = try arena.dupe(u8, note), .missing = null };
+            // No note: the hook said only that it is waiting. What it asked
+            // is how its last turn ended.
+            const turn = in.bus.turnOf(s.id) orelse return .lacking(.hook_note, .empty_note);
+            const line = lastLine(turn.text);
+            if (line.len == 0) return .lacking(.hook_note, .empty_note);
+            return .{ .from = .last_turn, .text = try arena.dupe(u8, line), .missing = null };
         },
         .failed => {
             if (s.source == .process) return .{ .from = .process, .text = Reason.words.process_exited, .missing = null };
@@ -677,8 +745,89 @@ fn reasonOf(
             if (line.len == 0) return .lacking(.last_turn, .no_turn_kept);
             return .{ .from = .last_turn, .text = try arena.dupe(u8, line), .missing = null };
         },
-        .working, .idle, .unattended, .snoozed => return .none,
+        .working => {
+            // What the panel says is being worked on. The agent is working
+            // now (that is this row's kind) and the title is what its
+            // supervisor wrote the work down as; neither half is a guess.
+            const title = workingOn(arena, in, s.id, group) orelse return .none;
+            return .{ .from = .task, .text = title, .missing = null };
+        },
+        .idle, .unattended, .snoozed => return .none,
     }
+}
+
+/// The title of the task `id` is working on in `group`: its own open task
+/// marked `working`, the newest when it has several. Null when it has none
+/// -- then nothing is said, rather than another terminal's task or a task
+/// nobody has started.
+fn workingOn(arena: Allocator, in: Input, id: Id, group: ?[]const u8) ?[]const u8 {
+    const name = group orelse return null;
+    const mine = in.tasks.forWorker(arena, name, id) catch return null;
+    var found: ?Tasks.Task = null;
+    for (mine) |t| {
+        if (t.progress != .working) continue;
+        if (found == null or t.id > found.?.id) found = t;
+    }
+    const t = found orelse return null;
+    return arena.dupe(u8, t.title) catch null;
+}
+
+/// A row's `what`: its reason, in the pieces it is drawn in.
+fn whatOf(arena: Allocator, in: Input, s: Attention.Status, reason: Reason) Allocator.Error!What {
+    // All of what the hook sent, when it sent all of it. One that reached
+    // the limit `+hook` cuts at may have had more.
+    const asked = in.bus.askOf(s.id);
+    const asked_cut: What.Cut = if (asked) |a| (if (a.len + 4 > AgentEvent.max_text_bytes) .tail else .none) else .none;
+    const note_cut: What.Cut = if (reason.from == .hook_note and noteMayBeCut(reason.text)) .tail else .none;
+
+    if (s.kind == .needs_approval) {
+        const agent = in.bus.agentOf(s.id);
+        const text = asked orelse reason.text;
+        if (text.len == 0) return .none;
+        const how: What.Cut = if (asked != null) asked_cut else note_cut;
+        switch (AgentEvent.toolKind(agent.detail.get())) {
+            .shell => return .{ .form = .command, .lines = try ShellSteps.split(arena, try arena.dupe(u8, text)), .cut = how },
+            .literal => return .{ .form = .code, .lines = try one(arena, text), .cut = how },
+        }
+    }
+    if (s.kind == .needs_answer) {
+        // A dialog's question, whole.
+        if (asked) |a| {
+            if (a.len > 0) return .{ .form = .words, .lines = try one(arena, a), .cut = asked_cut };
+        }
+        // A question asked in prose: the paragraph its last turn ended on,
+        // all of that paragraph, and said to be the end of something when
+        // there was more before it.
+        if (reason.from == .last_turn) {
+            if (in.bus.turnOf(s.id)) |turn| {
+                const para = try lastParagraph(arena, turn.text);
+                if (para.text.len > 0) {
+                    const shortened = turn.text_bytes > turn.text.len;
+                    return .{ .form = .words, .lines = try one(arena, para.text), .cut = if (para.rest or shortened) .head else .none };
+                }
+            }
+        }
+    }
+    if (reason.text.len == 0) return .none;
+    // Everything else is the reason line. A last line is the end of a turn;
+    // a hook's note may have been cut.
+    const how: What.Cut = switch (reason.from) {
+        .hook_note => note_cut,
+        .hook_detail => if (noteMayBeCut(in.bus.agentOf(s.id).note.get() orelse "")) .tail else .none,
+        .last_turn => how: {
+            const turn = in.bus.turnOf(s.id) orelse break :how .none;
+            const whole = std.mem.trim(u8, turn.text, " \t\r\n");
+            break :how if (whole.len > reason.text.len) .head else .none;
+        },
+        .process, .clocks, .hooks, .task, .none => .none,
+    };
+    return .{ .form = .words, .lines = try one(arena, reason.text), .cut = how };
+}
+
+fn one(arena: Allocator, text: []const u8) Allocator.Error![]const []const u8 {
+    const lines = try arena.alloc([]const u8, 1);
+    lines[0] = try arena.dupe(u8, text);
+    return lines;
 }
 
 /// How long the screen has been still and the calls silent, in whole
@@ -700,15 +849,6 @@ fn clocks(arena: Allocator, in: Input, s: Attention.Status, wake: *Wake) Allocat
         );
     } else try std.fmt.allocPrint(arena, Reason.words.still, .{still / min_ms});
     return .{ .from = .clocks, .text = text, .missing = null };
-}
-
-/// The minutes a row that needs the person has waited, which changes on
-/// the minute.
-fn waitedMin(a: Attention, now_ms: u64, wake: *Wake) ?u64 {
-    if (!Attention.needsMe(a)) return null;
-    const waited = now_ms -| a.since_ms;
-    wake.consider(now_ms + (min_ms - waited % min_ms));
-    return waited / min_ms;
 }
 
 const RowDisplay = struct { shown: Attention.Shown, word: Attention.Word };
@@ -871,6 +1011,17 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         }
 
         const d = rowDisplay(a, about);
+        const reason: Reason = if (about != null and a.kind == about.?.kind)
+            try reasonOf(arena, in, about.?, name, &wake)
+        else
+            .none;
+        // Who is waiting: the supervisor, or one of its workers. Nobody,
+        // on a row that needs nothing.
+        const waiter: Waiter = if (!Attention.needsMe(a)) .none else if (about) |who| waiter: {
+            if (steward_id != null and steward_id.? == who.id) break :waiter .{ .is = .supervisor, .name = "" };
+            const title = if (find(in.terminals, who.id)) |t| try arena.dupe(u8, t.title) else "";
+            break :waiter .{ .is = if (steward_id != null) .worker_via_supervisor else .worker, .name = title };
+        } else .none;
         try rows.append(arena, .{ .attention = a, .has_agent = has_agent, .row = .{
             .name = try arena.dupe(u8, name),
             .brief = try arena.dupe(u8, in.chat.briefOf(name) catch ""),
@@ -884,11 +1035,9 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .shown = d.shown,
             .word = d.word,
             .text = d.word.text(),
-            .waited_min = waitedMin(a, in.now_ms, &wake),
-            .reason = if (about != null and a.kind == about.?.kind)
-                try reasonOf(arena, in, about.?, &wake)
-            else
-                .none,
+            .waiter = waiter,
+            .reason = reason,
+            .what = if (about) |who| try whatOf(arena, in, who, reason) else .none,
             .more = more,
             .same_as = null,
             .members = members.items,
@@ -903,13 +1052,17 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
     for (rows.items, 0..) |*r, i| {
         if (r.attention.what != .own) continue;
         const t = r.attention.terminal orelse continue;
-        var lead = i;
+        // The first of them in the list leads unless a later one was
+        // spoken in more recently. Starting from this row instead would
+        // leave two groups nobody has spoken in each leading itself, and
+        // neither pointing at the other.
+        var lead: ?usize = null;
         for (rows.items, 0..) |o, j| {
             if (o.attention.what != .own or o.attention.terminal == null) continue;
             if (o.attention.terminal.? != t) continue;
-            if (o.row.last_ms > rows.items[lead].row.last_ms) lead = j;
+            if (lead == null or o.row.last_ms > rows.items[lead.?].row.last_ms) lead = j;
         }
-        if (lead != i) r.row.same_as = rows.items[lead].row.name;
+        if (lead.? != i) r.row.same_as = rows.items[lead.?].row.name;
     }
 
     // Terminals on their own (4.6): a supervisor with no group, and an
@@ -954,6 +1107,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
 
         const a = Attention.ofTerminal(s);
         const rd = rowDisplay(a, s);
+        const reason: Reason = if (a.kind == s.kind) try reasonOf(arena, in, s, null, &wake) else .none;
         try lone.append(arena, .{ .attention = a, .row = .{
             .id = .{ .id = t.id },
             .title = try arena.dupe(u8, t.title),
@@ -963,8 +1117,9 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .shown = rd.shown,
             .word = rd.word,
             .text = rd.word.text(),
-            .waited_min = waitedMin(a, in.now_ms, &wake),
-            .reason = if (a.kind == s.kind) try reasonOf(arena, in, s, &wake) else .none,
+            .waiter = if (Attention.needsMe(a)) .{ .is = .terminal, .name = "" } else .none,
+            .reason = reason,
+            .what = try whatOf(arena, in, s, reason),
         } });
     }
     std.mem.sort(Lone, lone.items, {}, loneBefore);
@@ -1023,26 +1178,34 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         if (r.has_agent) break r.row.name;
     } else if (rows.items.len > 0) rows.items[0].row.name else null;
 
-    // The count, from the one function that counts.
-    var counted: std.ArrayListUnmanaged(Attention) = .empty;
+    // The counts. **One meaning for every number the person is shown**:
+    // a row that waits is one, whether it is a group's or a lone
+    // terminal's. So `needs_me` -- the Dock -- is `groups_needing_me` --
+    // the list's header -- plus the lone terminals that wait, and with no
+    // lone terminal waiting the two are the same number.
+    //
+    // It used to count the terminals behind the rows, each once, so that
+    // one supervisor minding three groups was 1. On a real window that
+    // read as four rows under "4 groups waiting for you" and a 3 on the
+    // Dock, with no way to tell which was right (verify-cr-03). 暂定.
     var needing: usize = 0;
     const group_rows = try arena.alloc(GroupRow, rows.items.len);
     for (rows.items, group_rows) |r, *out| {
         out.* = r.row;
-        try counted.append(arena, r.attention);
         if (r.row.needs_me) needing += 1;
     }
+    var lone_needing: usize = 0;
     const lone_rows = try arena.alloc(LoneRow, lone.items.len);
     for (lone.items, lone_rows) |r, *out| {
         out.* = r.row;
-        try counted.append(arena, r.attention);
+        if (r.row.needs_me) lone_needing += 1;
     }
 
     return .{
         .snapshot = .{
             .rev = 0,
             .now_ms = in.now_ms,
-            .needs_me = Attention.needsMeCount(counted.items),
+            .needs_me = needing + lone_needing,
             .groups_needing_me = needing,
             .groups_other = group_rows.len - needing,
             .open_on = open_on,
@@ -1051,166 +1214,8 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .terminals = terminals.items,
             .tabs = tabs.items,
             .pulses = pulses,
-            .band = .none,
         },
         .wake_ms = wake.at,
-    };
-}
-
-// -- today's waiting --------------------------------------------------------
-
-const Wait = struct {
-    /// Owned.
-    name: []u8,
-    from_ms: u64,
-    /// Null while it is still going on.
-    to_ms: ?u64,
-};
-
-const day_ms: u64 = 24 * std.time.ms_per_hour;
-
-/// The most stretches kept. Past it the oldest finished one goes, so a
-/// group flickering all day cannot grow this without bound.
-const max_waits = 2048;
-
-fn localMs(wall_ms: u64, offset_ms: i64) u64 {
-    return @intCast(@max(0, @as(i64, @intCast(wall_ms)) + offset_ms));
-}
-
-/// The start of the reader's own day.
-fn dayStart(wall_ms: u64, offset_ms: i64) u64 {
-    return wall_ms -| (localMs(wall_ms, offset_ms) % day_ms);
-}
-
-/// Open a stretch for each group that has started waiting, and close the
-/// ones that have stopped.
-fn noteWaits(self: *ControlRoom, groups: []const GroupRow, in: Input) Allocator.Error!void {
-    if (self.began_ms == null) self.began_ms = in.wall_ms;
-    const today = dayStart(in.wall_ms, in.local_offset_ms);
-
-    // Yesterday's are not on today's band.
-    var i: usize = 0;
-    while (i < self.waits.items.len) {
-        const w = self.waits.items[i];
-        if (w.to_ms != null and w.to_ms.? < today) {
-            self.alloc.free(w.name);
-            _ = self.waits.orderedRemove(i);
-        } else i += 1;
-    }
-
-    for (self.waits.items) |*w| {
-        if (w.to_ms != null) continue;
-        const still = for (groups) |g| {
-            if (g.needs_me and std.mem.eql(u8, g.name, w.name)) break true;
-        } else false;
-        if (!still) w.to_ms = in.wall_ms;
-    }
-
-    for (groups) |g| {
-        if (!g.needs_me) continue;
-        const open = for (self.waits.items) |w| {
-            if (w.to_ms == null and std.mem.eql(u8, w.name, g.name)) break true;
-        } else false;
-        if (open) continue;
-
-        if (self.waits.items.len >= max_waits) {
-            for (self.waits.items, 0..) |w, n| if (w.to_ms != null) {
-                self.alloc.free(w.name);
-                _ = self.waits.orderedRemove(n);
-                break;
-            };
-        }
-        const name = try self.alloc.dupe(u8, g.name);
-        errdefer self.alloc.free(name);
-        try self.waits.append(self.alloc, .{
-            .name = name,
-            // It began when it began, which may be before anybody looked.
-            .from_ms = in.wall_ms -| (in.now_ms -| g.attention.since_ms),
-            .to_ms = null,
-        });
-    }
-}
-
-/// A group was renamed: what it kept the person waiting for goes with it.
-pub fn renameGroup(self: *ControlRoom, old: []const u8, new: []const u8) Allocator.Error!void {
-    for (self.waits.items) |*w| {
-        if (!std.mem.eql(u8, w.name, old)) continue;
-        const name = try self.alloc.dupe(u8, new);
-        self.alloc.free(w.name);
-        w.name = name;
-    }
-}
-
-const BandOf = struct { band: Band, total_ms: u64, ongoing: bool };
-
-fn bandOf(arena: Allocator, waits: []const Wait, began_ms: u64, in: Input) Allocator.Error!BandOf {
-    const today = dayStart(in.wall_ms, in.local_offset_ms);
-    // From the top of the hour this run began in, or from midnight when it
-    // began before today. 暂定: the design shows `09:00` and says no more.
-    const hour = std.time.ms_per_hour;
-    const start = @max(today, began_ms -| (localMs(began_ms, in.local_offset_ms) % hour));
-    const of_day = localMs(start, in.local_offset_ms) % day_ms;
-    const label = try std.fmt.allocPrint(arena, "{d:0>2}:{d:0>2}", .{
-        of_day / hour,
-        of_day % hour / std.time.ms_per_min,
-    });
-
-    const Cut = struct { from: u64, to: u64 };
-    var all: std.ArrayListUnmanaged(Cut) = .empty;
-    var lanes: std.ArrayListUnmanaged(Lane) = .empty;
-    var ongoing = false;
-
-    for (waits, 0..) |w, i| {
-        // One lane per name, made at its first stretch.
-        const first = for (waits[0..i]) |prev| {
-            if (std.mem.eql(u8, prev.name, w.name)) break false;
-        } else true;
-        if (!first) continue;
-
-        var spans: std.ArrayListUnmanaged(Span) = .empty;
-        for (waits[i..]) |o| {
-            if (!std.mem.eql(u8, o.name, w.name)) continue;
-            // A stretch still going on runs to now.
-            const to = o.to_ms orelse in.wall_ms;
-            const from = @max(o.from_ms, start);
-            if (to <= from) continue;
-            if (o.to_ms == null) ongoing = true;
-            try spans.append(arena, .{ .from_ms = from, .to_ms = to, .ongoing = o.to_ms == null });
-            try all.append(arena, .{ .from = from, .to = to });
-        }
-        if (spans.items.len == 0) continue;
-        try lanes.append(arena, .{ .name = try arena.dupe(u8, w.name), .spans = spans.items });
-    }
-    std.mem.sort(Lane, lanes.items, {}, struct {
-        fn lt(_: void, a: Lane, b: Lane) bool {
-            return std.mem.lessThan(u8, a.name, b.name);
-        }
-    }.lt);
-
-    // Two groups waiting at once are one person waiting once.
-    std.mem.sort(Cut, all.items, {}, struct {
-        fn lt(_: void, a: Cut, b: Cut) bool {
-            return a.from < b.from;
-        }
-    }.lt);
-    var total: u64 = 0;
-    var covered: u64 = 0;
-    for (all.items) |c| {
-        const from = @max(c.from, covered);
-        if (c.to > from) total += c.to - from;
-        covered = @max(covered, c.to);
-    }
-
-    return .{
-        .band = .{
-            .start_ms = start,
-            .start_label = label,
-            .now_ms = in.wall_ms,
-            .total_min = total / min_ms,
-            .lanes = lanes.items,
-        },
-        .total_ms = total,
-        .ongoing = ongoing,
     };
 }
 
@@ -1222,13 +1227,13 @@ fn waiting(s: Attention.Status) bool {
 // -- tests ------------------------------------------------------------------
 
 const testing = std.testing;
-const AgentEvent = @import("agent_event.zig");
 const T = Attention.Thresholds.defaults;
 
 /// A bus and a chat with terminals in them, and the list of what is open.
 const World = struct {
     bus: Bus,
     chat: Chat,
+    tasks: Tasks,
     open: std.ArrayListUnmanaged(Terminal) = .empty,
     wall_ms: u64 = 1_700_000_000_000,
 
@@ -1236,13 +1241,36 @@ const World = struct {
         return .{
             .bus = .init(testing.allocator, .{}),
             .chat = .init(testing.allocator, .{}),
+            .tasks = .init(testing.allocator, .{}),
         };
     }
 
     fn deinit(self: *World) void {
         self.open.deinit(testing.allocator);
+        self.tasks.deinit();
         self.chat.deinit();
         self.bus.deinit();
+    }
+
+    /// An approval asked through a tool: the tool's name, the one-line
+    /// summary a hook cuts, and the whole of what is to be approved.
+    fn approval(self: *World, id: Id, tool: []const u8, asked: []const u8, at_ms: u64) !void {
+        var ev: AgentEvent.Event = .none;
+        ev.event = .awaiting_approval;
+        ev.cli = "claude-code";
+        ev.session_id = "s";
+        ev.detail = tool;
+        ev.note = AgentEvent.cutBytes(asked, 120);
+        ev.text = asked;
+        ev.text_bytes = asked.len;
+        _ = try self.bus.agentEvent(id, ev, at_ms);
+    }
+
+    /// A task of `group` that `owner` has started.
+    fn working(self: *World, group: []const u8, owner: Id, title: []const u8) !void {
+        const id = try self.tasks.create(group, title, .feature);
+        try self.tasks.assign(id, owner);
+        try self.tasks.setProgress(id, owner, .working);
     }
 
     fn terminal(self: *World, id: Id, title: []const u8, tab: u64) !void {
@@ -1290,26 +1318,26 @@ const World = struct {
             .chat = &self.chat,
             .terminals = self.open.items,
             .thresholds = T,
+            .tasks = &self.tasks,
             .now_ms = now_ms,
             .wall_ms = self.wall_ms + now_ms,
-            .local_offset_ms = 8 * std.time.ms_per_hour,
         };
     }
 };
 
 const min = std.time.ms_per_min;
 
-/// Six groups, one of each thing a row can say, and a seventh that shares
+/// Seven groups, one of each thing a row can say, and an eighth that shares
 /// its supervisor with the first.
 fn fixtureWorld() !World {
     var w: World = .init();
     errdefer w.deinit();
 
-    // Waiting on an approval, for four minutes; a worker also waiting.
+    // Waiting on an approval of three steps; a worker also waiting.
     try w.steward(0xa1, "web-app", 0x21, "web-app");
-    try w.hook(0xa1, .awaiting_approval, "Bash(rm -rf dist/ && npm run build)", 96 * min);
+    try w.approval(0xa1, "Bash", "rm -rf dist/ .cache/ node_modules/.vite && npm ci && npm run build -- --mode production", 96 * min);
     try w.worker(0xb1, "web-app worker", 0x21, 0xa1, "web-app");
-    try w.hook(0xb1, .awaiting_approval, "Edit(src/app.ts)", 99 * min + 30_000);
+    try w.approval(0xb1, "Edit", "src/app.ts", 99 * min + 30_000);
 
     // The same supervisor minds a second group, spoken in more recently.
     try w.chat.create("web-app-docs", 0xa1);
@@ -1317,7 +1345,7 @@ fn fixtureWorld() !World {
 
     // Waiting on an answer.
     try w.steward(0xa2, "billing", 0x22, "billing");
-    try w.hook(0xa2, .awaiting_input, "发票编号用哪一种格式？", 89 * min);
+    try w.hook(0xa2, .awaiting_input, "发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号？", 89 * min);
 
     // Failed.
     try w.steward(0xa3, "docs-site", 0x23, "docs-site");
@@ -1327,13 +1355,21 @@ fn fixtureWorld() !World {
     failed.note = "resets 13:40";
     _ = try w.bus.agentEvent(0xa3, failed, 98 * min);
 
+    // A worker waiting, and its supervisor not: the wait comes up through
+    // the supervisor.
+    try w.steward(0xa7, "mobile", 0x28, "mobile");
+    try w.hook(0xa7, .session_started, null, 20 * min);
+    try w.worker(0xb7, "ios-build", 0x28, 0xa7, "mobile");
+    try w.approval(0xb7, "Bash", "git push --force-with-lease origin release/2.4", 97 * min);
+
     // Finished a turn nobody has looked at.
     try w.steward(0xa4, "infra", 0x24, "infra");
     try w.hook(0xa4, .turn_ended, "迁移脚本跑完了。\n要不要现在切流量？", 70 * min);
 
-    // Working, with a worker that clocked off.
+    // Working on a task of its own, with a worker that clocked off.
     try w.steward(0xa5, "design-system", 0x25, "design-system");
     try w.hook(0xa5, .turn_started, null, 95 * min);
+    try w.working("design-system", 0xa5, "改按钮的三种尺寸");
     try w.worker(0xb5, "tokens", 0x25, 0xa5, "design-system");
     try w.bus.clockOff(0xb5, .supervisor);
 
@@ -1343,25 +1379,16 @@ fn fixtureWorld() !World {
 
     // On its own: an agent with hooks that nobody minds, waiting.
     try w.terminal(0xc1, "zsh — ~/work", 0x27);
-    try w.hook(0xc1, .awaiting_approval, "Bash(git push)", 99 * min);
+    try w.approval(0xc1, "Bash", "git push", 99 * min);
     // And a plain shell, which is in no list but `terminals`.
     try w.terminal(0xc2, "zsh", 0x27);
 
     return w;
 }
 
-/// A room that has been open since the run began, in which docs-site had
-/// already kept the person waiting once this morning.
 fn fixtureRoom(w: *const World) !ControlRoom {
-    var room: ControlRoom = .init(testing.allocator);
-    errdefer room.deinit();
-    room.began_ms = w.wall_ms;
-    try room.waits.append(testing.allocator, .{
-        .name = try testing.allocator.dupe(u8, "docs-site"),
-        .from_ms = w.wall_ms + 50 * min,
-        .to_ms = w.wall_ms + 58 * min,
-    });
-    return room;
+    _ = w;
+    return .init(testing.allocator);
 }
 
 const fixture_now: u64 = 100 * min;
@@ -1399,7 +1426,7 @@ test "ControlRoom snapshot: the JSON reads back and writes out the same" {
     try testing.expectEqualStrings(want, try writeAlloc(arena.allocator(), read, pretty));
 
     // And it is the document a host would be handed, not an empty one.
-    try testing.expectEqual(@as(usize, 7), read.groups.len);
+    try testing.expectEqual(@as(usize, 8), read.groups.len);
     try testing.expectEqual(@as(u64, 0xa1), read.groups[0].steward.?.id);
 }
 
@@ -1410,34 +1437,35 @@ test "ControlRoom snapshot: rows come sorted, counted, and with what they draw" 
     defer arena.deinit();
     const s = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
 
-    const order = [_][]const u8{ "web-app", "web-app-docs", "billing", "docs-site", "infra", "design-system", "notes" };
+    const order = [_][]const u8{ "web-app", "web-app-docs", "mobile", "billing", "docs-site", "infra", "design-system", "notes" };
     try testing.expectEqual(order.len, s.groups.len);
     for (order, s.groups) |name, g| try testing.expectEqualStrings(name, g.name);
 
-    const kinds = [_]Attention.Kind{ .needs_approval, .needs_approval, .needs_answer, .failed, .done_unseen, .working, .idle };
-    const shown = [_]Attention.Shown{ .needs_you, .needs_you, .needs_you, .trouble, .done_unseen, .working, .none };
+    const kinds = [_]Attention.Kind{ .needs_approval, .needs_approval, .needs_approval, .needs_answer, .failed, .done_unseen, .working, .idle };
+    const shown = [_]Attention.Shown{ .needs_you, .needs_you, .needs_you, .needs_you, .trouble, .done_unseen, .working, .none };
     for (kinds, shown, s.groups) |k, sh, g| {
         try testing.expectEqual(k, g.attention.kind);
         try testing.expectEqual(sh, g.shown);
         try testing.expectEqualStrings(g.word.text(), g.text);
     }
 
-    try testing.expectEqual(@as(usize, 4), s.groups_needing_me);
+    try testing.expectEqual(@as(usize, 5), s.groups_needing_me);
     try testing.expectEqual(@as(usize, 3), s.groups_other);
-    try testing.expectEqual(@as(?u64, 4), s.groups[0].waited_min);
-    try testing.expectEqual(@as(?u64, null), s.groups[4].waited_min);
 }
 
-test "ControlRoom snapshot: one supervisor in two groups is counted once" {
+test "ControlRoom snapshot: one supervisor in two groups is two rows, and one of them points at the other" {
     var w = try fixtureWorld();
     defer w.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const s = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
 
-    // 0xa1 (two rows), 0xa2, 0xa3, and the lone 0xc1: four terminals, five rows.
-    try testing.expectEqual(@as(usize, 4), s.needs_me);
+    // Five groups wait and one lone terminal does: six rows, and six on
+    // the Dock. 0xa1 is behind two of them and is counted with each.
+    try testing.expectEqual(@as(usize, 5), s.groups_needing_me);
     try testing.expectEqual(@as(usize, 1), s.ungrouped.len);
+    try testing.expect(s.ungrouped[0].needs_me);
+    try testing.expectEqual(@as(usize, 6), s.needs_me);
 
     // The row spoken in last carries the reason; the other points at it.
     const main = try rowNamed(s, "web-app");
@@ -1447,6 +1475,48 @@ test "ControlRoom snapshot: one supervisor in two groups is counted once" {
     try testing.expectEqual(main.attention.terminal.?.id, docs.attention.terminal.?.id);
 }
 
+test "ControlRoom snapshot: the number on the Dock is the number of rows that wait" {
+    // What a real window showed (verify-cr-03): four rows under "4 groups
+    // waiting for you" and a 3 on the Dock. One supervisor minds two groups
+    // and has failed; another group's supervisor and its worker have both
+    // failed; a fourth group's only member has.
+    var w: World = .init();
+    defer w.deinit();
+    var failed: AgentEvent.Event = .none;
+    failed.event = .turn_failed;
+    failed.detail = "rate_limit";
+    try w.steward(0xa1, "A", 0x21, "docs-site");
+    try w.chat.create("web-app", 0xa1);
+    try w.steward(0xa2, "B", 0x22, "billing");
+    try w.worker(0xb3, "W3", 0x23, 0xa2, "billing");
+    try w.chat.create("notes", Chat.user_id);
+    try w.terminal(0xd1, "N1", 0x24);
+    try w.bus.watch(0xd1, 0xa2);
+    try w.chat.add("notes", 0xd1, .all, .{});
+    for ([_]Id{ 0xa1, 0xa2, 0xb3, 0xd1 }) |id| _ = try w.bus.agentEvent(id, failed, 10 * min);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const s = (try build(arena.allocator(), w.input(100 * min))).snapshot;
+
+    var rows: usize = 0;
+    for (s.groups) |g| {
+        if (g.needs_me) rows += 1;
+    }
+    try testing.expectEqual(@as(usize, 4), rows);
+    try testing.expectEqual(@as(usize, 4), s.groups_needing_me);
+    // **The one meaning**: every row the person is shown as waiting, a
+    // group's or a lone terminal's, is one.
+    try testing.expectEqual(@as(usize, 4), s.needs_me);
+
+    // Two rows, one supervisor, neither group spoken in: one of the two
+    // still points at the other.
+    const docs = try rowNamed(s, "docs-site");
+    const web = try rowNamed(s, "web-app");
+    try testing.expectEqual(docs.attention.terminal.?.id, web.attention.terminal.?.id);
+    try testing.expect((docs.same_as == null) != (web.same_as == null));
+}
+
 test "ControlRoom snapshot: the reason line, and which kind of missing when there is none" {
     var w = try fixtureWorld();
     defer w.deinit();
@@ -1454,23 +1524,28 @@ test "ControlRoom snapshot: the reason line, and which kind of missing when ther
     defer arena.deinit();
 
     // An approval whose hook said nothing about what for.
-    try w.steward(0xa7, "quiet", 0x28, "quiet");
-    try w.hook(0xa7, .awaiting_approval, null, 99 * min);
+    try w.steward(0xaa, "quiet", 0x2a, "quiet");
+    try w.hook(0xaa, .awaiting_approval, null, 99 * min);
     // A turn that ended with no text kept.
-    try w.steward(0xa8, "silent", 0x29, "silent");
-    try w.hook(0xa8, .turn_ended, null, 99 * min);
+    try w.steward(0xab, "silent", 0x2b, "silent");
+    try w.hook(0xab, .turn_ended, null, 99 * min);
 
     const s = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
 
     const approval = (try rowNamed(s, "web-app-docs")).reason;
     try testing.expectEqual(Reason.From.hook_note, approval.from);
-    try testing.expectEqualStrings("Bash(rm -rf dist/ && npm run build)", approval.text);
+    // The hook's one-line summary: the first 120 bytes of the command.
+    try testing.expectEqualStrings("rm -rf dist/ .cache/ node_modules/.vite && npm ci && npm run build -- --mode production", approval.text);
 
-    try testing.expectEqualStrings("发票编号用哪一种格式？", (try rowNamed(s, "billing")).reason.text);
+    try testing.expectEqualStrings("发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号？", (try rowNamed(s, "billing")).reason.text);
     try testing.expectEqualStrings("rate_limit：resets 13:40", (try rowNamed(s, "docs-site")).reason.text);
     // The last thing it said, which is where a question in prose is.
     try testing.expectEqualStrings("要不要现在切流量？", (try rowNamed(s, "infra")).reason.text);
-    try testing.expectEqual(Reason.none, (try rowNamed(s, "design-system")).reason);
+    // What a working group says it is doing is the panel's word for it.
+    const doing = (try rowNamed(s, "design-system")).reason;
+    try testing.expectEqual(Reason.From.task, doing.from);
+    try testing.expectEqualStrings("改按钮的三种尺寸", doing.text);
+    try testing.expectEqual(Reason.none, (try rowNamed(s, "notes")).reason);
 
     const quiet = (try rowNamed(s, "quiet")).reason;
     try testing.expectEqualStrings("", quiet.text);
@@ -1527,6 +1602,7 @@ test "ControlRoom snapshot: each window tab gets the highest glyph of what is in
         .{ 0x25, .none, null }, // working is not drawn on a window tab
         .{ 0x26, .none, null },
         .{ 0x27, .needs_you, 0xc1 },
+        .{ 0x28, .needs_you, 0xb7 }, // the worker waits; its supervisor does not
     };
     try testing.expectEqual(wants.len, s.tabs.len);
     for (wants, s.tabs) |want, tab| {
@@ -1567,7 +1643,7 @@ test "ControlRoom snapshot: a timed snooze ends on its own, and the core knows w
     const row = try rowNamed(during.snapshot, "billing");
     try testing.expectEqual(Attention.Kind.snoozed, row.attention.kind);
     try testing.expect(!row.needs_me);
-    try testing.expectEqual(@as(usize, 3), during.snapshot.needs_me);
+    try testing.expectEqual(@as(usize, 5), during.snapshot.needs_me);
     try testing.expectEqual(@as(?u64, fixture_now + 20_000), during.wake_ms);
 
     const after = try build(arena.allocator(), w.input(fixture_now + 20_000));
@@ -1699,9 +1775,10 @@ test "ControlRoom pulses: one waiting glyph breathes, the longest-waiting, and t
     defer arena.deinit();
     const s = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
 
-    // Waiting for the person: 0xa2 since 89, 0xa1 since 96, 0xc1 since 99,
-    // 0xb1 since 99:30. Failed (0xa3) is trouble, and is not in this.
-    const order = [_]u64{ 0xa2, 0xa1, 0xc1, 0xb1 };
+    // Waiting for the person: 0xa2 since 89, 0xa1 since 96, 0xb7 since 97,
+    // 0xc1 since 99, 0xb1 since 99:30. Failed (0xa3) is trouble, and is not
+    // in this.
+    const order = [_]u64{ 0xa2, 0xa1, 0xb7, 0xc1, 0xb1 };
     try testing.expectEqual(order.len, s.pulses.len);
     for (order, s.pulses) |id, p| try testing.expectEqual(id, p.terminal.id);
 
@@ -1713,91 +1790,245 @@ test "ControlRoom pulses: one waiting glyph breathes, the longest-waiting, and t
     // supervisor has two, none for a terminal in no row.
     try testing.expectEqualStrings("billing", s.pulses[0].group.?);
     try testing.expectEqualStrings("web-app-docs", s.pulses[1].group.?);
-    try testing.expectEqual(@as(?[]const u8, null), s.pulses[2].group);
+    try testing.expectEqualStrings("mobile", s.pulses[2].group.?);
     try testing.expectEqual(@as(?[]const u8, null), s.pulses[3].group);
+    try testing.expectEqual(@as(?[]const u8, null), s.pulses[4].group);
 }
 
-test "ControlRoom band: a group still waiting runs to now, and one that stopped does not" {
+test "ControlRoom waiter: the supervisor itself, a worker through it, a worker with none, a terminal alone" {
     var w = try fixtureWorld();
+    defer w.deinit();
+    // A group with no supervisor in it, whose one worker -- minded by
+    // somebody outside the group -- is waiting.
+    try w.chat.create("orphans", Chat.user_id);
+    try w.terminal(0xd1, "lint", 0x2c);
+    try w.bus.watch(0xd1, 0xa1);
+    try w.chat.add("orphans", 0xd1, .all, .{});
+    // Long enough ago that the wait has come up to the row.
+    try w.approval(0xd1, "Bash", "npm run lint", 90 * min);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const s = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
+
+    const own = (try rowNamed(s, "web-app")).waiter;
+    try testing.expectEqual(Waiter.Is.supervisor, own.is);
+    try testing.expectEqualStrings("", own.name);
+
+    // The row is about the worker, and says whose wait it is by name.
+    const through = try rowNamed(s, "mobile");
+    try testing.expectEqual(@as(u64, 0xb7), through.attention.terminal.?.id);
+    try testing.expectEqual(Waiter.Is.worker_via_supervisor, through.waiter.is);
+    try testing.expectEqualStrings("ios-build", through.waiter.name);
+
+    const alone = (try rowNamed(s, "orphans")).waiter;
+    try testing.expectEqual(Waiter.Is.worker, alone.is);
+    try testing.expectEqualStrings("lint", alone.name);
+
+    try testing.expectEqual(Waiter.Is.terminal, s.ungrouped[0].waiter.is);
+    // Nobody is waiting on a row that needs nothing, whoever it is about.
+    for (s.groups) |g| {
+        if (!g.needs_me) try testing.expectEqual(Waiter.Is.none, g.waiter.is);
+        if (g.needs_me) try testing.expect(g.waiter.is != .none);
+    }
+}
+
+test "ControlRoom what: a command is its steps, a file is one piece, words are words" {
+    var w = try fixtureWorld();
+    defer w.deinit();
+    // A tool that is not a shell asks for a file whose name has a `;` in it.
+    try w.steward(0xaa, "editor", 0x2a, "editing");
+    try w.approval(0xaa, "Edit", "src/a;b && c.ts", 99 * min);
+    // PowerShell's rules are not the ones the cutter knows: one piece.
+    try w.steward(0xab, "win", 0x2b, "windows");
+    try w.approval(0xab, "PowerShell", "Remove-Item dist; npm ci", 99 * min);
+    // A command the hook sent only the summary of.
+    try w.steward(0xac, "old", 0x2c, "summary-only");
+    var ev: AgentEvent.Event = .none;
+    ev.event = .awaiting_approval;
+    ev.detail = "Bash";
+    ev.note = "make clean && make";
+    _ = try w.bus.agentEvent(0xac, ev, 99 * min);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const s = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
+
+    const command = (try rowNamed(s, "web-app")).what;
+    try testing.expectEqual(What.Form.command, command.form);
+    try testing.expectEqual(@as(usize, 3), command.lines.len);
+    try testing.expectEqualStrings("rm -rf dist/ .cache/ node_modules/.vite", command.lines[0]);
+    try testing.expectEqualStrings("&& npm ci", command.lines[1]);
+    try testing.expectEqualStrings("&& npm run build -- --mode production", command.lines[2]);
+
+    const file = (try rowNamed(s, "editing")).what;
+    try testing.expectEqual(What.Form.code, file.form);
+    try testing.expectEqual(@as(usize, 1), file.lines.len);
+    try testing.expectEqualStrings("src/a;b && c.ts", file.lines[0]);
+
+    const posh = (try rowNamed(s, "windows")).what;
+    try testing.expectEqual(What.Form.code, posh.form);
+    try testing.expectEqualStrings("Remove-Item dist; npm ci", posh.lines[0]);
+
+    const summary = (try rowNamed(s, "summary-only")).what;
+    try testing.expectEqual(What.Form.command, summary.form);
+    try testing.expectEqual(@as(usize, 2), summary.lines.len);
+
+    const question = (try rowNamed(s, "billing")).what;
+    try testing.expectEqual(What.Form.words, question.form);
+    try testing.expectEqual(@as(usize, 1), question.lines.len);
+
+    try testing.expectEqual(What.Form.words, (try rowNamed(s, "docs-site")).what.form);
+    try testing.expectEqual(What.none.form, (try rowNamed(s, "notes")).what.form);
+    try testing.expectEqual(@as(usize, 0), (try rowNamed(s, "notes")).what.lines.len);
+}
+
+test "ControlRoom what: a command longer than the hook's summary is whole, every step of it" {
+    var w: World = .init();
+    defer w.deinit();
+    try w.steward(0xa1, "boss", 0x21, "long");
+    // 31 steps; the summary a hook cuts stops inside the eighth.
+    var command: std.ArrayListUnmanaged(u8) = .empty;
+    defer command.deinit(testing.allocator);
+    try command.appendSlice(testing.allocator, "echo step-00");
+    for (1..30) |n| try command.print(testing.allocator, " && echo step-{d:0>2}", .{n});
+    try command.appendSlice(testing.allocator, " && rm -rf /srv/data");
+    try w.approval(0xa1, "Bash", command.items, 1 * min);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const row = try rowNamed((try build(arena.allocator(), w.input(2 * min))).snapshot, "long");
+    try testing.expect(row.reason.text.len <= 120);
+    try testing.expectEqual(@as(usize, 31), row.what.lines.len);
+    // The last step is the one that matters, and it is there.
+    try testing.expectEqualStrings("&& rm -rf /srv/data", row.what.lines[30]);
+
+    // Once it is no longer waiting, what it was waiting for is not kept.
+    try w.hook(0xa1, .turn_started, null, 3 * min);
+    try testing.expectEqual(@as(?[]const u8, null), w.bus.askOf(0xa1));
+}
+
+test "ControlRoom what: a question is whole, and a part of one is never passed off as all of it" {
+    var w: World = .init();
     defer w.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
+    const a = arena.allocator();
+
+    // A dialog: the hook sends a first line and all of it. Longer than the
+    // 160 bytes the bus keeps of a note.
+    var long: std.ArrayListUnmanaged(u8) = .empty;
+    for (0..30) |_| try long.appendSlice(a, "发票编号要按租户分开吗？");
+    try w.steward(0xa1, "one", 0x21, "dialog");
+    var dialog: AgentEvent.Event = .none;
+    dialog.event = .awaiting_input;
+    dialog.note = AgentEvent.prefixChars(long.items, AgentEvent.summary_chars);
+    dialog.text = long.items;
+    dialog.text_bytes = long.items.len;
+    _ = try w.bus.agentEvent(0xa1, dialog, 10 * min);
+
+    // Asked in prose: the turn ends on a question and the hook then says
+    // only that it is waiting.
+    try w.steward(0xa2, "two", 0x22, "prose");
+    try w.hook(0xa2, .turn_ended, "迁移脚本写完了，12 条测试全过。\n\n有两件事要你定：\n先切一半流量，还是一次切完？", 10 * min);
+    try w.hook(0xa2, .awaiting_input, null, 11 * min);
+
+    // The same, when the question is all there was.
+    try w.steward(0xa3, "three", 0x23, "only");
+    try w.hook(0xa3, .turn_ended, "先切一半流量，还是一次切完？\n", 10 * min);
+    try w.hook(0xa3, .awaiting_input, null, 11 * min);
+
+    // A note as long as the bus keeps one and nothing else: it may have
+    // been cut, and the row says so.
+    try w.steward(0xa4, "four", 0x24, "capped");
+    try w.hook(0xa4, .awaiting_input, "x" ** 200, 10 * min);
+    // A short note is all of it.
+    try w.steward(0xa5, "five", 0x25, "short");
+    try w.hook(0xa5, .awaiting_input, "用哪个分支？", 10 * min);
+
+    const s = (try build(a, w.input(100 * min))).snapshot;
+
+    const whole = (try rowNamed(s, "dialog")).what;
+    try testing.expectEqual(What.Form.words, whole.form);
+    try testing.expectEqualStrings(long.items, whole.lines[0]);
+    try testing.expectEqual(What.Cut.none, whole.cut);
+    try testing.expect(whole.lines[0].len > 160);
+
+    const prose = try rowNamed(s, "prose");
+    try testing.expectEqual(Reason.From.last_turn, prose.reason.from);
+    try testing.expectEqualStrings("有两件事要你定： 先切一半流量，还是一次切完？", prose.what.lines[0]);
+    try testing.expectEqual(What.Cut.head, prose.what.cut);
+
+    const only = (try rowNamed(s, "only")).what;
+    try testing.expectEqualStrings("先切一半流量，还是一次切完？", only.lines[0]);
+    try testing.expectEqual(What.Cut.none, only.cut);
+
+    const capped = (try rowNamed(s, "capped")).what;
+    try testing.expectEqual(@as(usize, 160), capped.lines[0].len);
+    try testing.expectEqual(What.Cut.tail, capped.cut);
+
+    try testing.expectEqual(What.Cut.none, (try rowNamed(s, "short")).what.cut);
+
+    // The question is forgotten with the wait: a new turn, and nothing of
+    // it is left to show beside whatever comes next.
+    try w.hook(0xa1, .turn_started, null, 101 * min);
+    try testing.expect(w.bus.askOf(0xa1) == null);
+}
+
+test "ControlRoom what: a working group says its own started task, and nothing when it has none" {
+    var w: World = .init();
+    defer w.deinit();
+    try w.steward(0xa1, "boss", 0x21, "busy");
+    try w.hook(0xa1, .turn_started, null, 1 * min);
+    try w.worker(0xb1, "helper", 0x21, 0xa1, "busy");
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    // No task of its own: nothing is said.
+    const bare = try rowNamed((try build(arena.allocator(), w.input(2 * min))).snapshot, "busy");
+    try testing.expectEqual(Attention.Kind.working, bare.attention.kind);
+    try testing.expectEqual(What.Form.none, bare.what.form);
+
+    // Somebody else's started task, and one of its own not started: still nothing.
+    try w.working("busy", 0xb1, "the helper's task");
+    const queued = try w.tasks.create("busy", "not started yet", .feature);
+    try w.tasks.assign(queued, 0xa1);
+    const other = try rowNamed((try build(arena.allocator(), w.input(2 * min))).snapshot, "busy");
+    try testing.expectEqual(What.Form.none, other.what.form);
+
+    // Its own, started: that title; and the newer of two.
+    try w.working("busy", 0xa1, "first thing");
+    try w.working("busy", 0xa1, "second thing");
+    const doing = try rowNamed((try build(arena.allocator(), w.input(2 * min))).snapshot, "busy");
+    try testing.expectEqual(Reason.From.task, doing.reason.from);
+    try testing.expectEqualStrings("second thing", doing.what.lines[0]);
+}
+
+test "ControlRoom snapshot: nothing in it says how long, and nothing wakes it to count minutes" {
+    var w = try fixtureWorld();
+    defer w.deinit();
     var room = try fixtureRoom(&w);
     defer room.deinit();
 
-    const wall = w.wall_ms;
-    const band = (try room.compute(arena.allocator(), w.input(fixture_now))).snapshot.band;
+    const first = try room.refresh(w.input(fixture_now), .event);
+    try testing.expect(first.notify != null);
+    inline for (.{ "waited_min", "\"band\"", "total_min", "start_label", "lanes", "spans" }) |gone| {
+        try testing.expect(std.mem.indexOf(u8, room.json, gone) == null);
+    }
 
-    // The run began at 06:13 local; the axis starts on the hour.
-    try testing.expectEqualStrings("06:00", band.start_label);
-    try testing.expectEqual(wall - 13 * min - 20_000, band.start_ms);
-    try testing.expectEqual(wall + fixture_now, band.now_ms);
-
-    const names = [_][]const u8{ "billing", "docs-site", "web-app", "web-app-docs" };
-    try testing.expectEqual(names.len, band.lanes.len);
-    for (names, band.lanes) |name, lane| try testing.expectEqualStrings(name, lane.name);
-
-    // billing has waited since 89 and is waiting still.
-    const billing = band.lanes[0].spans;
-    try testing.expectEqual(@as(usize, 1), billing.len);
-    try testing.expectEqual(wall + 89 * min, billing[0].from_ms);
-    try testing.expectEqual(wall + fixture_now, billing[0].to_ms);
-    try testing.expect(billing[0].ongoing);
-
-    // docs-site: once this morning, over; and again since 98.
-    const docs = band.lanes[1].spans;
-    try testing.expectEqual(@as(usize, 2), docs.len);
-    try testing.expectEqual(Span{ .from_ms = wall + 50 * min, .to_ms = wall + 58 * min, .ongoing = false }, docs[0]);
-    try testing.expectEqual(Span{ .from_ms = wall + 98 * min, .to_ms = wall + fixture_now, .ongoing = true }, docs[1]);
-
-    // Eight minutes then, and eleven since 89 with everything overlapping.
-    try testing.expectEqual(@as(u64, 19), band.total_min);
-}
-
-test "ControlRoom band: a wait that ends is closed where it ended, and a rename keeps it" {
-    var w = try fixtureWorld();
-    defer w.deinit();
-    var room: ControlRoom = .init(testing.allocator);
-    defer room.deinit();
-
-    _ = try room.refresh(w.input(fixture_now), .event);
-    // The answer is given: billing's agent starts a turn.
-    try w.hook(0xa2, .turn_started, null, fixture_now + 2 * min);
-    _ = try room.refresh(w.input(fixture_now + 2 * min), .event);
-    try room.renameGroup("billing", "invoices");
-    try w.chat.rename("billing", "invoices");
-    _ = try room.refresh(w.input(fixture_now + 5 * min), .event);
-
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const band = (try room.compute(arena.allocator(), w.input(fixture_now + 5 * min))).snapshot.band;
-    const lane = for (band.lanes) |l| {
-        if (std.mem.eql(u8, l.name, "invoices")) break l;
-    } else return error.TestLaneMissing;
-    try testing.expectEqual(@as(usize, 1), lane.spans.len);
-    try testing.expectEqual(w.wall_ms + fixture_now + 2 * min, lane.spans[0].to_ms);
-    try testing.expect(!lane.spans[0].ongoing);
-    for (band.lanes) |l| try testing.expect(!std.mem.eql(u8, l.name, "billing"));
-}
-
-test "ControlRoom band: yesterday is not on it" {
-    var w = try fixtureWorld();
-    defer w.deinit();
-    var room = try fixtureRoom(&w);
-    defer room.deinit();
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-
-    // The same world a day later: the morning's finished stretch is gone
-    // and the axis starts at midnight.
-    w.wall_ms += day_ms;
-    const band = (try room.compute(arena.allocator(), w.input(fixture_now))).snapshot.band;
-    try testing.expectEqualStrings("00:00", band.start_label);
-    for (band.lanes) |l| for (l.spans) |sp| try testing.expect(sp.from_ms >= band.start_ms);
-    const docs = for (band.lanes) |l| {
-        if (std.mem.eql(u8, l.name, "docs-site")) break l;
-    } else return error.TestLaneMissing;
-    try testing.expectEqual(@as(usize, 1), docs.spans.len);
+    // Five rows are waiting. An hour of looking again, were anybody to: the
+    // snapshot is worked out only when something in it can have changed,
+    // and never once a minute.
+    const before = room.recomputes;
+    var t: u64 = fixture_now;
+    var notices: usize = 0;
+    while (t < fixture_now + 60 * min) : (t += 1_000) {
+        const out = try room.refresh(w.input(t), .timer);
+        if (out.notify != null) notices += 1;
+    }
+    try testing.expect(room.recomputes - before < 10);
+    try testing.expectEqual(@as(usize, 0), notices);
 }
 
 test "ControlRoom snapshot: a terminal with its own idea of still is judged by it" {

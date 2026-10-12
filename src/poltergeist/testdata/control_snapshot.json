@@ -1,8 +1,8 @@
 {
   "rev": 1,
   "now_ms": 6000000,
-  "needs_me": 4,
-  "groups_needing_me": 4,
+  "needs_me": 6,
+  "groups_needing_me": 5,
   "groups_other": 3,
   "open_on": "web-app",
   "groups": [
@@ -32,11 +32,23 @@
       "shown": "needs_you",
       "word": "needs_approval",
       "text": "等批准",
-      "waited_min": 4,
+      "waiter": {
+        "is": "supervisor",
+        "name": ""
+      },
       "reason": {
         "from": "hook_note",
-        "text": "Bash(rm -rf dist/ && npm run build)",
+        "text": "rm -rf dist/ .cache/ node_modules/.vite && npm ci && npm run build -- --mode production",
         "missing": null
+      },
+      "what": {
+        "form": "command",
+        "lines": [
+          "rm -rf dist/ .cache/ node_modules/.vite",
+          "&& npm ci",
+          "&& npm run build -- --mode production"
+        ],
+        "cut": "none"
       },
       "more": 1,
       "same_as": "web-app-docs",
@@ -103,11 +115,23 @@
       "shown": "needs_you",
       "word": "needs_approval",
       "text": "等批准",
-      "waited_min": 4,
+      "waiter": {
+        "is": "supervisor",
+        "name": ""
+      },
       "reason": {
         "from": "hook_note",
-        "text": "Bash(rm -rf dist/ && npm run build)",
+        "text": "rm -rf dist/ .cache/ node_modules/.vite && npm ci && npm run build -- --mode production",
         "missing": null
+      },
+      "what": {
+        "form": "command",
+        "lines": [
+          "rm -rf dist/ .cache/ node_modules/.vite",
+          "&& npm ci",
+          "&& npm run build -- --mode production"
+        ],
+        "cut": "none"
       },
       "more": 0,
       "same_as": null,
@@ -120,6 +144,87 @@
           "since_ms": 5760000,
           "source": "hook",
           "age_ms": 240000,
+          "shown": "needs_you",
+          "word": "needs_approval",
+          "text": "等批准",
+          "screen": "unmeasured",
+          "alive": true,
+          "duty": "on",
+          "held": false,
+          "shielded": false
+        }
+      ]
+    },
+    {
+      "name": "mobile",
+      "brief": "",
+      "last_ms": 0,
+      "seen_ms": null,
+      "snooze": {
+        "until": "none",
+        "at_ms": null,
+        "until_ms": null
+      },
+      "steward": "0x00000000000000a7",
+      "attention": {
+        "kind": "needs_approval",
+        "under": "needs_approval",
+        "since_ms": 5820000,
+        "source": "hook",
+        "age_ms": 180000,
+        "terminal": "0x00000000000000b7",
+        "worker": "0x00000000000000b7",
+        "event_ms": 5820000
+      },
+      "needs_me": true,
+      "unseen": false,
+      "shown": "needs_you",
+      "word": "needs_approval",
+      "text": "等批准",
+      "waiter": {
+        "is": "worker_via_supervisor",
+        "name": "ios-build"
+      },
+      "reason": {
+        "from": "hook_note",
+        "text": "git push --force-with-lease origin release/2.4",
+        "missing": null
+      },
+      "what": {
+        "form": "command",
+        "lines": [
+          "git push --force-with-lease origin release/2.4"
+        ],
+        "cut": "none"
+      },
+      "more": 0,
+      "same_as": null,
+      "members": [
+        {
+          "id": "0x00000000000000a7",
+          "role": "steward",
+          "title": "mobile",
+          "kind": "idle",
+          "since_ms": 1200000,
+          "source": "hook",
+          "age_ms": 4800000,
+          "shown": "none",
+          "word": "none",
+          "text": "",
+          "screen": "unmeasured",
+          "alive": true,
+          "duty": "on",
+          "held": false,
+          "shielded": false
+        },
+        {
+          "id": "0x00000000000000b7",
+          "role": "worker",
+          "title": "ios-build",
+          "kind": "needs_approval",
+          "since_ms": 5820000,
+          "source": "hook",
+          "age_ms": 180000,
           "shown": "needs_you",
           "word": "needs_approval",
           "text": "等批准",
@@ -157,11 +262,21 @@
       "shown": "needs_you",
       "word": "needs_answer",
       "text": "等回答",
-      "waited_min": 11,
+      "waiter": {
+        "is": "supervisor",
+        "name": ""
+      },
       "reason": {
         "from": "hook_note",
-        "text": "发票编号用哪一种格式？",
+        "text": "发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号？",
         "missing": null
+      },
+      "what": {
+        "form": "words",
+        "lines": [
+          "发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号？"
+        ],
+        "cut": "none"
       },
       "more": 0,
       "same_as": null,
@@ -211,11 +326,21 @@
       "shown": "trouble",
       "word": "failed",
       "text": "出错",
-      "waited_min": 2,
+      "waiter": {
+        "is": "supervisor",
+        "name": ""
+      },
       "reason": {
         "from": "hook_detail",
         "text": "rate_limit：resets 13:40",
         "missing": null
+      },
+      "what": {
+        "form": "words",
+        "lines": [
+          "rate_limit：resets 13:40"
+        ],
+        "cut": "none"
       },
       "more": 0,
       "same_as": null,
@@ -265,11 +390,21 @@
       "shown": "done_unseen",
       "word": "done_unseen",
       "text": "做完了，没看",
-      "waited_min": null,
+      "waiter": {
+        "is": "none",
+        "name": ""
+      },
       "reason": {
         "from": "last_turn",
         "text": "要不要现在切流量？",
         "missing": null
+      },
+      "what": {
+        "form": "words",
+        "lines": [
+          "要不要现在切流量？"
+        ],
+        "cut": "head"
       },
       "more": 0,
       "same_as": null,
@@ -319,11 +454,21 @@
       "shown": "working",
       "word": "working",
       "text": "在干活",
-      "waited_min": null,
+      "waiter": {
+        "is": "none",
+        "name": ""
+      },
       "reason": {
-        "from": "none",
-        "text": "",
+        "from": "task",
+        "text": "改按钮的三种尺寸",
         "missing": null
+      },
+      "what": {
+        "form": "words",
+        "lines": [
+          "改按钮的三种尺寸"
+        ],
+        "cut": "none"
       },
       "more": 0,
       "same_as": null,
@@ -390,11 +535,19 @@
       "shown": "none",
       "word": "none",
       "text": "",
-      "waited_min": null,
+      "waiter": {
+        "is": "none",
+        "name": ""
+      },
       "reason": {
         "from": "none",
         "text": "",
         "missing": null
+      },
+      "what": {
+        "form": "none",
+        "lines": [],
+        "cut": "none"
       },
       "more": 0,
       "same_as": null,
@@ -438,11 +591,21 @@
       "shown": "needs_you",
       "word": "needs_approval",
       "text": "等批准",
-      "waited_min": 1,
+      "waiter": {
+        "is": "terminal",
+        "name": ""
+      },
       "reason": {
         "from": "hook_note",
-        "text": "Bash(git push)",
+        "text": "git push",
         "missing": null
+      },
+      "what": {
+        "form": "command",
+        "lines": [
+          "git push"
+        ],
+        "cut": "none"
       }
     }
   ],
@@ -562,6 +725,25 @@
       "shielded": false
     },
     {
+      "id": "0x00000000000000a7",
+      "title": "mobile",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000028",
+      "kind": "idle",
+      "since_ms": 1200000,
+      "event_ms": 1200000,
+      "source": "hook",
+      "age_ms": 4800000,
+      "shown": "none",
+      "word": "none",
+      "text": "",
+      "screen": "unmeasured",
+      "alive": true,
+      "duty": "on",
+      "held": false,
+      "shielded": false
+    },
+    {
       "id": "0x00000000000000b1",
       "title": "web-app worker",
       "window": "0x0000000000000010",
@@ -596,6 +778,25 @@
       "screen": "unmeasured",
       "alive": true,
       "duty": "off",
+      "held": false,
+      "shielded": false
+    },
+    {
+      "id": "0x00000000000000b7",
+      "title": "ios-build",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000028",
+      "kind": "needs_approval",
+      "since_ms": 5820000,
+      "event_ms": 5820000,
+      "source": "hook",
+      "age_ms": 180000,
+      "shown": "needs_you",
+      "word": "needs_approval",
+      "text": "等批准",
+      "screen": "unmeasured",
+      "alive": true,
+      "duty": "on",
       "held": false,
       "shielded": false
     },
@@ -680,6 +881,12 @@
       "tab": "0x0000000000000027",
       "shown": "needs_you",
       "terminal": "0x00000000000000c1"
+    },
+    {
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000028",
+      "shown": "needs_you",
+      "terminal": "0x00000000000000b7"
     }
   ],
   "pulses": [
@@ -696,6 +903,12 @@
       "group": "web-app-docs"
     },
     {
+      "terminal": "0x00000000000000b7",
+      "window": "0x0000000000000010",
+      "tab": "0x0000000000000028",
+      "group": "mobile"
+    },
+    {
       "terminal": "0x00000000000000c1",
       "window": "0x0000000000000010",
       "tab": "0x0000000000000027",
@@ -707,58 +920,5 @@
       "tab": "0x0000000000000021",
       "group": null
     }
-  ],
-  "band": {
-    "start_ms": 1699999200000,
-    "start_label": "06:00",
-    "now_ms": 1700006000000,
-    "total_min": 19,
-    "lanes": [
-      {
-        "name": "billing",
-        "spans": [
-          {
-            "from_ms": 1700005340000,
-            "to_ms": 1700006000000,
-            "ongoing": true
-          }
-        ]
-      },
-      {
-        "name": "docs-site",
-        "spans": [
-          {
-            "from_ms": 1700003000000,
-            "to_ms": 1700003480000,
-            "ongoing": false
-          },
-          {
-            "from_ms": 1700005880000,
-            "to_ms": 1700006000000,
-            "ongoing": true
-          }
-        ]
-      },
-      {
-        "name": "web-app",
-        "spans": [
-          {
-            "from_ms": 1700005760000,
-            "to_ms": 1700006000000,
-            "ongoing": true
-          }
-        ]
-      },
-      {
-        "name": "web-app-docs",
-        "spans": [
-          {
-            "from_ms": 1700005760000,
-            "to_ms": 1700006000000,
-            "ongoing": true
-          }
-        ]
-      }
-    ]
-  }
+  ]
 }

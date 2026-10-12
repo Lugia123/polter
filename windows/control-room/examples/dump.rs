@@ -10,39 +10,68 @@
 use polter_control_room::json::quote;
 use polter_control_room::act::{Act, SeenMarker};
 use polter_control_room::layout::{self, ListLayout, Rect};
-use polter_control_room::list::{self, Detail, List, Row};
+use polter_control_room::list::{self, List, Row};
 use polter_control_room::pulse::{self, Scope};
 use polter_control_room::look::selection;
 use polter_control_room::snapshot::{self, Shown};
+
+/// What steps want, for the fitting rule: one sentence short and long, a
+/// command at, under and over each of the two ceilings.
+const FITS: &[&[usize]] = &[
+    &[],
+    &[1],
+    &[2],
+    &[5],
+    &[1, 1],
+    &[3, 1],
+    &[1, 3],
+    &[2, 2],
+    &[1, 1, 1],
+    &[4, 4, 4],
+    &[2, 1, 1, 1],
+    &[1, 1, 1, 1, 1, 1],
+    &[1, 1, 1, 1, 1, 1, 1],
+    &[9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9],
+];
+
+const NOMINAL: &[&str] = &[
+    "",
+    "git push",
+    "rm -rf dist/ .cache/ node_modules/.vite && x",
+    "01234567890123456789012345678901234567890",
+    "012345678901234567890123456789012345678901",
+    "发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号？",
+];
 
 fn rect(name: &str, r: Rect) {
     println!("rect {name} x={:.3} y={:.3} w={:.3} h={:.3}", r.x, r.y, r.w, r.h);
 }
 
 fn row(section: &str, r: &Row) {
-    // Untranslated on both sides: the sentence is the same English key
-    // the macOS host starts from.
-    let detail = match &r.detail {
-        Detail::Reason(text) => text.clone(),
-        Detail::SameAs(other) => list::fill(list::msg::SAME_SUPERVISOR, other),
-    };
-    let waited = r.waited_min.map_or("-".to_string(), |m| m.to_string());
     // The two moments go with the terminal: with no terminal behind the
     // row there is nothing an act would hand back.
     let since = r.terminal.as_ref().map_or("-".to_string(), |_| r.since_ms.to_string());
     let event = r.terminal.as_ref().and(r.event_ms).map_or("-".to_string(), |m| m.to_string());
     println!(
-        "row section={section} id={} shown={} word={} detail={} code={} waited={waited} others={} \
+        "row section={section} id={} shown={} word={} who={} name={} form={} code={} lines={} others={} \
          unseen={} terminal={} since={since} event={event}",
         r.id,
         r.shown.name(),
         quote(&r.word),
-        quote(&detail),
-        r.detail_is_code,
+        r.waiter.is.name(),
+        quote(&r.waiter.name),
+        r.what.form.name(),
+        list::is_code(&r.what),
+        r.what.lines.len(),
         r.others,
         r.unseen,
         r.terminal.as_deref().unwrap_or("-")
     );
+    // What it waits on, every line of it and whole.
+    println!("cut id={} cut={}", r.id, r.what.cut.name());
+    for (n, line) in list::drawn(&r.what).iter().enumerate() {
+        println!("what id={} n={n} line={}", r.id, quote(line));
+    }
 }
 
 fn main() {
@@ -231,36 +260,25 @@ fn main() {
     for (id, r) in &lay.rows {
         rect(&format!("row:{id}"), *r);
     }
+    // How what each waiting row waits on is fitted, by the nominal count.
+    for (id, fit) in &lay.fits {
+        let lines: Vec<String> = fit.lines.iter().map(|n| n.to_string()).collect();
+        println!("fit id={id} lines={} hidden={} drawn={}", lines.join("+"), fit.hidden, fit.drawn());
+    }
+    println!("ask w={:.3}", layout::ask_width());
+    // The rule itself, away from the fixture: what each step wants, in.
+    for wanted in FITS {
+        let fit = layout::AskFit::fit(wanted);
+        let w: Vec<String> = wanted.iter().map(|n| n.to_string()).collect();
+        let l: Vec<String> = fit.lines.iter().map(|n| n.to_string()).collect();
+        println!("fit-of {} lines={} hidden={} drawn={}", w.join("+"), l.join("+"), fit.hidden, fit.drawn());
+    }
+    for text in NOMINAL {
+        println!("nominal {} lines={}", quote(text), layout::nominal_lines(text));
+    }
     rect("separator", lay.separator);
     rect("quiet_header", lay.quiet_header);
-    rect("band_header", lay.band_header);
-    for (n, lane) in lay.lanes.iter().enumerate() {
-        rect(&format!("lane:{n}"), *lane);
-    }
-    rect("axis", lay.axis);
 
-    let band = &l.band;
-    println!(
-        "band start_ms={} now_ms={} start_label={} total_min={} lanes={}",
-        band.start_ms,
-        band.now_ms,
-        quote(&band.start_label),
-        band.total_min,
-        band.lanes.len()
-    );
-    for (n, lane) in band.lanes.iter().enumerate() {
-        println!("lane {n} name={} spans={}", quote(&lane.name), lane.spans.len());
-        for s in &lane.spans {
-            println!("span lane={n} from_ms={} to_ms={} ongoing={}", s.from_ms, s.to_ms, s.ongoing);
-        }
-        let track = layout::track_width(lay.lanes.get(n).map_or(0.0, |r| r.w));
-        println!("track lane={n} w={track:.3}");
-        for g in layout::segments(lane, band, track) {
-            println!("segment lane={n} x={:.3} w={:.3} ongoing={}", g.x, g.w, g.ongoing);
-        }
-    }
-
-    // Where the arrow keys take the selection, from every row and from none.
     let ids: Vec<Option<String>> =
         std::iter::once(None).chain(l.rows().map(|r| Some(r.id.clone()))).collect();
     for from in &ids {

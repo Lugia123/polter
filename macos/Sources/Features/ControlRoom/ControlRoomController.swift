@@ -89,7 +89,13 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         // supervisor that changed or went away arrives as a new list.
         watchingList = model.$list
             .sink { [weak self] _ in
-                DispatchQueue.main.async { self?.syncDetail() }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    // The selected row may have stopped while it was being
+                    // looked at (`ControlRoomSeenTracker.listChanged`).
+                    self.seen?.listChanged(to: self.model.rowBeingLookedAt)
+                    self.syncDetail()
+                }
             }
         model.askForTerminal = { [weak self] in self?.lend(.askedFor) }
         // Selecting the row that is already selected changes nothing the
@@ -126,7 +132,22 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// at it that selecting it earlier, behind something else, was not.
     func windowDidBecomeKey(_ notification: Notification) {
         noteSelection()
+        giveListTheKeyboardIfNobodyHasIt()
         syncLentFocus()
+    }
+
+    /// A window the system restored comes back with itself as first
+    /// responder, so the arrow keys go nowhere until something is clicked
+    /// (a real window, verify-cr-03; a control room opened from the menu
+    /// starts with the list). The window holding the keyboard means nobody
+    /// does: the list takes it (`ControlRoomRules.listTakesKeyboard`).
+    private func giveListTheKeyboardIfNobodyHasIt() {
+        guard let window, let content = window.contentView else { return }
+        guard ControlRoomRules.listTakesKeyboard(firstResponderIsTheWindow: window.firstResponder === window) else { return }
+        // The first key view under the content is the list: it is the one
+        // focusable thing while no terminal has been clicked into.
+        window.recalculateKeyViewLoop()
+        window.selectKeyView(following: content)
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -138,11 +159,8 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// tab it would be a placeholder in its own tab for nobody's benefit --
     /// and that other tab may be the terminal's own.
     func windowDidChangeOcclusionState(_ notification: Notification) {
-        if isVisible {
-            syncDetail()
-        } else {
-            lend(.closing)
-        }
+        // In sight: borrow. Out of sight: give back, and say why.
+        syncDetail()
     }
 
     private var isVisible: Bool {
@@ -155,11 +173,14 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// snapshot. Which terminal is a group's supervisor is the core's word;
     /// whether a tab still holds it is looked up, not judged.
     private func syncDetail() {
-        guard isVisible else { return }
         let group = model.selection
         let supervisor = group.flatMap { ControlRoomFeed.shared(ghostty).latest?.supervisor(of: $0) }
         let present = supervisor.map { ControlRoomLender.surface(for: $0) != nil } ?? false
-        lend(.selected(group: group, supervisor: supervisor, present: present))
+        // Out of sight nothing is borrowed, but what the right side says
+        // is still brought up to date (`ControlRoomLending.Event.outOfSight`).
+        lend(isVisible
+            ? .selected(group: group, supervisor: supervisor, present: present)
+            : .outOfSight(group: group, supervisor: supervisor, present: present))
     }
 
     /// Hand `event` to the lending and do what it says, in order.

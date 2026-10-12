@@ -711,6 +711,11 @@ entries: std.AutoHashMapUnmanaged(Id, Entry) = .empty,
 /// The last finished turn of each terminal that has had one; see `Turn`.
 turns: std.AutoHashMapUnmanaged(Id, Turn) = .empty,
 
+/// The whole of what each terminal is waiting on, while it is waiting:
+/// what is to be approved, or the question a dialog asks. Owned; outside
+/// `Entry` for the reason `turns` is.
+asks: std.AutoHashMapUnmanaged(Id, []u8) = .empty,
+
 /// There may be several supervisors, each minding its own piece of work.
 /// What is one at a time is the other direction: a watched terminal has at
 /// most one minder, because two of them nudging one input box is, to the
@@ -724,6 +729,9 @@ pub fn deinit(self: *Bus) void {
     var it = self.turns.valueIterator();
     while (it.next()) |t| self.alloc.free(t.text);
     self.turns.deinit(self.alloc);
+    var asks = self.asks.valueIterator();
+    while (asks.next()) |a| self.alloc.free(a.*);
+    self.asks.deinit(self.alloc);
     self.entries.deinit(self.alloc);
     self.* = undefined;
 }
@@ -742,6 +750,7 @@ pub fn unregister(self: *Bus, id: Id) void {
     self.removeSupervisor(id);
     _ = self.entries.remove(id);
     if (self.turns.fetchRemove(id)) |kv| self.alloc.free(kv.value.text);
+    if (self.asks.fetchRemove(id)) |kv| self.alloc.free(kv.value);
 }
 
 /// Record that the agent in `by` opened this terminal
@@ -1545,6 +1554,7 @@ pub fn agentEvent(
     a.waiting_on_background = ev.event == .turn_ended and ev.waiting_on_background;
 
     if (ev.event == .turn_ended) try self.keepTurn(id, ev, now_ms);
+    try self.keepAsk(id, ev);
 
     // A new turn makes whatever was waiting about the last one stale, the
     // way `resumed` replaces a quiet report.
@@ -1590,6 +1600,32 @@ pub fn promptStanding(self: *const Bus, id: Id, since_ms: u64, event_ms: u64, no
     if (a.since_ms != since_ms) return false;
     if (a.last_event_ms == null or a.last_event_ms.? != event_ms) return false;
     return self.quietExplained(id, now_ms);
+}
+
+/// The whole of what this terminal is waiting to have approved, or null
+/// when it is not waiting on an approval or its hook sent only the summary.
+/// Borrowed: valid until the next `agentEvent` or `unregister` for it.
+pub fn askOf(self: *const Bus, id: Id) ?[]const u8 {
+    return self.asks.get(id);
+}
+
+/// An approval's whole text is kept while the approval stands; any other
+/// event means it no longer does.
+fn keepAsk(self: *Bus, id: Id, ev: AgentEvent.Event) Allocator.Error!void {
+    // What is to be approved, or the question a dialog asks.
+    const whole: ?[]const u8 = switch (ev.event) {
+        .awaiting_approval, .awaiting_input => ev.text,
+        else => null,
+    };
+    const text = whole orelse {
+        if (self.asks.fetchRemove(id)) |kv| self.alloc.free(kv.value);
+        return;
+    };
+    const kept = try self.alloc.dupe(u8, text);
+    errdefer self.alloc.free(kept);
+    const gop = try self.asks.getOrPut(self.alloc, id);
+    if (gop.found_existing) self.alloc.free(gop.value_ptr.*);
+    gop.value_ptr.* = kept;
 }
 
 fn keepTurn(self: *Bus, id: Id, ev: AgentEvent.Event, now_ms: u64) Allocator.Error!void {

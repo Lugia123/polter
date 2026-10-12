@@ -173,4 +173,11 @@ struct ControlRoomRulesTests {
         #expect(container.hostedGroup == nil)
         #expect(container.subviews.isEmpty)
     }
+
+    @Test func theListTakesTheKeyboardOnlyWhenNobodyHasIt() {
+        // A restored window is its own first responder: nobody has the keyboard.
+        #expect(ControlRoomRules.listTakesKeyboard(firstResponderIsTheWindow: true) == true)
+        // A terminal clicked into, or the list itself, keeps it.
+        #expect(ControlRoomRules.listTakesKeyboard(firstResponderIsTheWindow: false) == false)
+    }
 }

@@ -90,9 +90,28 @@ func requireFront() {
     guard front == pid else { die("refusing: pid \(front) is in front, not \(pid); this tool does not raise the target") }
 }
 
+/// The four modifiers a click must never carry by accident.
+let modifiers: CGEventFlags = [.maskCommand, .maskShift, .maskControl, .maskAlternate]
+
+/// **A pointer action is refused while any modifier is down**, whoever holds
+/// it: the person, or a key this tool pressed a moment ago. A click with ⌘⇧
+/// is Polter's global "take a screenshot" trigger, and it is global -- it
+/// put the *user's* Polter into its screenshot mode from a test of another
+/// instance (2026-10-13). The session's state is read, not this process's
+/// memory of what it sent.
+func requireNoModifiers() {
+    let held = CGEventSource.flagsState(.combinedSessionState).intersection(modifiers)
+    guard held.isEmpty else {
+        die("refusing: a modifier key is down (flags \(held.rawValue)); a click now would carry it. Release it, or wait for the last key to be let go of")
+    }
+}
+
 func mouse(_ type: CGEventType, _ p: CGPoint, _ button: CGMouseButton = .left) {
-    CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: p, mouseButton: button)!
-        .post(tap: .cghidEventTap)
+    let e = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: p, mouseButton: button)!
+    // Never whatever the session happens to hold: a pointer event from
+    // here is a bare one.
+    e.flags = []
+    e.post(tap: .cghidEventTap)
     usleep(30_000)
 }
 
@@ -207,14 +226,26 @@ case "key":
     requireFront()
     for down in [true, false] {
         let e = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)!
-        e.flags = flags
+        // The modifiers go down with the key and are let go of with it. A
+        // key-up that still carried them left them down as far as the next
+        // event was concerned, and the next click was a ⌘⇧-click.
+        e.flags = down ? flags : []
         e.post(tap: .cghidEventTap)
+        usleep(30_000)
+    }
+    if !flags.isEmpty {
+        // Say outright that nothing is held any more.
+        let released = CGEvent(source: nil)!
+        released.type = .flagsChanged
+        released.flags = []
+        released.post(tap: .cghidEventTap)
         usleep(30_000)
     }
     print("pressed key \(code) in pid \(pid)")
 case "click", "rclick", "move":
     let p = point(0)
     requireOwner(p)
+    requireNoModifiers()
     mouse(.mouseMoved, p)
     if action == "click" { mouse(.leftMouseDown, p); mouse(.leftMouseUp, p) }
     if action == "rclick" { mouse(.rightMouseDown, p, .right); mouse(.rightMouseUp, p, .right) }
@@ -222,6 +253,7 @@ case "click", "rclick", "move":
 case "drag":
     let a = point(0), b = point(2)
     requireOwner(a); requireOwner(b)
+    requireNoModifiers()
     mouse(.mouseMoved, a); mouse(.leftMouseDown, a)
     for i in 1...20 {
         let t = Double(i) / 20

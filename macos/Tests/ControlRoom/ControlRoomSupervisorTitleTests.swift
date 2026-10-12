@@ -25,20 +25,22 @@ struct ControlRoomSupervisorTitleTests {
         #expect(web.attention?.terminal == web.steward)
         let title = try #require(ControlRoomList.supervisorTitle(of: web))
         let member = try #require(web.members?.first { $0.id == web.steward })
-        #expect(title == Title(name: member.title, shown: web.shown, word: web.text, waitedMin: web.waited_min))
-        #expect(title.waitedMin != nil)
+        #expect(title == Title(name: member.title, shown: web.shown, word: web.text))
         #expect(title.shown == .needsYou)
     }
 
-    @Test func whenTheRowIsAboutAWorkerTheTitleIsTheSupervisorsOwnAndHasNoMinutes() throws {
-        // The row of a group whose worker is the one waiting: the worker's
-        // words are not the supervisor's.
-        var web = try group("web-app")
-        let worker = try #require(web.members?.first { $0.id != web.steward })
-        web.attention?.terminal = worker.id
-        let member = try #require(web.members?.first { $0.id == web.steward })
-        let title = try #require(ControlRoomList.supervisorTitle(of: web))
-        #expect(title == Title(name: member.title, shown: member.shown, word: member.text, waitedMin: nil))
+    @Test func whenTheRowIsAboutAWorkerTheTitleIsTheSupervisorsOwn() throws {
+        // mobile: a worker waits for an approval and the supervisor itself
+        // has nothing to say. The row says "waiting for approval"; the
+        // title of the supervisor's frame does not, because the supervisor
+        // is not the one waiting.
+        let mobile = try group("mobile")
+        #expect(mobile.waiter.is == .workerViaSupervisor)
+        #expect(mobile.shown == .needsYou)
+        let member = try #require(mobile.members?.first { $0.id == mobile.steward })
+        #expect(member.shown == .none)
+        let title = try #require(ControlRoomList.supervisorTitle(of: mobile))
+        #expect(title == Title(name: member.title, shown: .none, word: ""))
     }
 
     @Test func theNameIsTheSupervisorsOwnTitleNotAnotherMembers() throws {
@@ -91,10 +93,12 @@ struct ControlRoomSupervisorTitleTests {
 
     @Test func theNumberIsReadFromTheSnapshotsNeedsMe() throws {
         let snapshot = try snapshot()
-        #expect(snapshot.needs_me == 4)
-        // Not the count of rows, which is another number.
-        #expect(snapshot.groups_needing_me == 4)
-        #expect(snapshot.groups.count == 7)
-        #expect(ControlRoomRules.dockBadge(needsMe: snapshot.needs_me, bells: nil) == "4")
+        // Every row that waits is one: the five groups the list's header
+        // counts, and one terminal that is in no group. The Dock's number
+        // is the core's, and the host adds nothing up to get it.
+        #expect(snapshot.groups_needing_me == 5)
+        #expect(snapshot.needs_me == 6)
+        #expect(snapshot.groups.count == 8)
+        #expect(ControlRoomRules.dockBadge(needsMe: snapshot.needs_me, bells: nil) == "6")
     }
 }
