@@ -135,15 +135,17 @@ pub const Msgid = enum {
 };
 
 /// Whether `text` has a live catalogue entry for `msgid`, and its
-/// translation when it has one. The generator writes these entries on one
-/// line each, which is the only form looked for; an entry `msgmerge` has
-/// re-wrapped would read as missing, and that is a failure worth having.
+/// translation when it has one, read by gettext's own rules
+/// (`i18n.po_text.lookup`): a long message is folded over several lines by
+/// whatever wrote the catalogue, and is the same message.
+///
+/// This used to look for the entry written on one line and call anything
+/// else missing, "a failure worth having". It was not: regenerating the
+/// catalogues folded every long message, both tests that use this went red
+/// on a sentence that was in the template all along, and a filtered build
+/// never ran either of them.
 fn catalogueEntry(alloc: std.mem.Allocator, text: []const u8, msgid: []const u8) !?[]const u8 {
-    const needle = try std.fmt.allocPrint(alloc, "\nmsgid \"{s}\"\nmsgstr \"", .{msgid});
-    const at = std.mem.indexOf(u8, text, needle) orelse return null;
-    const rest = text[at + needle.len ..];
-    const end = std.mem.indexOf(u8, rest, "\"\n") orelse return null;
-    return rest[0..end];
+    return i18n.po_text.lookup(alloc, text, msgid);
 }
 
 /// The value a macOS `.strings` table gives `key`.
@@ -226,8 +228,10 @@ pub fn expectEverywhere(msgids: []const []const u8) !void {
         if (mac == null) std.debug.print("zh-Hans.lproj has no key \"{s}\"\n", .{msgid});
         try std.testing.expect(mac != null);
 
+        // Both with their escapes undone: the catalogue is read that way,
+        // and a `.strings` value writes a quote and a newline the same.
         const windows = (try catalogueEntry(alloc, chinese, msgid)).?;
-        try std.testing.expectEqualStrings(windows, mac.?);
+        try std.testing.expectEqualStrings(windows, try i18n.po_text.unescape(alloc, mac.?));
     }
 }
 

@@ -19,6 +19,126 @@ pub const locales_map = map: {
     break :map std.StaticStringMap(void).initComptime(kvs);
 };
 
+/// A gettext catalogue read as text -- a `.po` or the `.pot` -- for the tests
+/// that hold the tree to its catalogues. Nothing at run time uses this: a
+/// running Polter reads the compiled `.mo`.
+///
+/// **It reads the format, not one way of writing it.** A message longer
+/// than a line is written by every gettext tool as `msgid ""` followed by
+/// the text in quoted pieces on the lines after, and the same for `msgstr`.
+/// The readers this replaces looked for `msgid "<the whole text>"` on one
+/// line, which was true of the catalogues until they were regenerated and
+/// then silently false: a long message read as "not in the template" in one
+/// place, and in another as "this label is not a msgid at all", which that
+/// place took for the ordinary case and said nothing about.
+pub const po_text = struct {
+    /// What `text` says `msgid` is translated to: the pieces joined and the
+    /// escapes undone. Empty when the entry is there with no translation
+    /// (every entry of a `.pot`); null when there is no live entry for it.
+    ///
+    /// `msgid` is the message itself, as the program has it -- a newline is
+    /// a newline, not a backslash and an `n`. An entry `msgmerge` retired
+    /// (`#~`) is not an entry; one with a context (`msgctxt`) is another
+    /// message; a plural answers with its first form.
+    pub fn lookup(alloc: std.mem.Allocator, text: []const u8, msgid: []const u8) std.mem.Allocator.Error!?[]const u8 {
+        const Field = enum { none, context, id, plural, str, other };
+        var field: Field = .none;
+        var id: std.ArrayListUnmanaged(u8) = .empty;
+        defer id.deinit(alloc);
+        var str: std.ArrayListUnmanaged(u8) = .empty;
+        defer str.deinit(alloc);
+        var has_id = false;
+        var has_context = false;
+
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (true) {
+            const raw = lines.next();
+            const line = std.mem.trim(u8, raw orelse "", " \t\r");
+
+            // What kind of line: a keyword starts a field, a quoted line
+            // carries the field on, anything else ends the entry.
+            const Start = struct { field: Field, rest: []const u8 };
+            const start: ?Start = if (raw == null)
+                null
+            else if (std.mem.startsWith(u8, line, "msgctxt"))
+                .{ .field = .context, .rest = line["msgctxt".len..] }
+            else if (std.mem.startsWith(u8, line, "msgid_plural"))
+                .{ .field = .plural, .rest = line["msgid_plural".len..] }
+            else if (std.mem.startsWith(u8, line, "msgid"))
+                .{ .field = .id, .rest = line["msgid".len..] }
+            else if (std.mem.startsWith(u8, line, "msgstr[0]"))
+                .{ .field = .str, .rest = line["msgstr[0]".len..] }
+            else if (std.mem.startsWith(u8, line, "msgstr["))
+                .{ .field = .other, .rest = "" }
+            else if (std.mem.startsWith(u8, line, "msgstr"))
+                .{ .field = .str, .rest = line["msgstr".len..] }
+            else
+                null;
+            const continues = start == null and raw != null and line.len > 0 and line[0] == '"';
+
+            // An entry ends at a blank line, a comment, the end of the
+            // file, or the keyword that begins the next one.
+            const begins_next = if (start) |st| (st.field == .context or st.field == .id) and (has_id and field != .context) else false;
+            if ((start == null and !continues) or begins_next) {
+                if (has_id and !has_context and std.mem.eql(u8, id.items, msgid)) {
+                    return try alloc.dupe(u8, str.items);
+                }
+                id.clearRetainingCapacity();
+                str.clearRetainingCapacity();
+                has_id = false;
+                has_context = false;
+                field = .none;
+            }
+            if (raw == null) return null;
+
+            if (start) |st| {
+                field = st.field;
+                if (st.field == .context) has_context = true;
+                if (st.field == .id) has_id = true;
+            }
+            const quoted = if (start) |st| std.mem.trim(u8, st.rest, " \t") else if (continues) line else "";
+            const piece = unquoted(quoted) orelse continue;
+            switch (field) {
+                .id => try appendUnescaped(alloc, &id, piece),
+                .str => try appendUnescaped(alloc, &str, piece),
+                .none, .context, .plural, .other => {},
+            }
+        }
+    }
+
+    /// `s` with a catalogue's escapes undone. A macOS `.strings` value
+    /// uses the same ones, which is what lets the two be compared.
+    pub fn unescape(alloc: std.mem.Allocator, s: []const u8) std.mem.Allocator.Error![]const u8 {
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer out.deinit(alloc);
+        try appendUnescaped(alloc, &out, s);
+        return try out.toOwnedSlice(alloc);
+    }
+
+    /// What is between the first quote of a line and its last.
+    fn unquoted(s: []const u8) ?[]const u8 {
+        if (s.len < 2 or s[0] != '"' or s[s.len - 1] != '"') return null;
+        return s[1 .. s.len - 1];
+    }
+
+    fn appendUnescaped(alloc: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), s: []const u8) std.mem.Allocator.Error!void {
+        var i: usize = 0;
+        while (i < s.len) : (i += 1) {
+            if (s[i] != '\\' or i + 1 == s.len) {
+                try out.append(alloc, s[i]);
+                continue;
+            }
+            i += 1;
+            try out.append(alloc, switch (s[i]) {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                else => s[i],
+            });
+        }
+    }
+};
+
 pub const InitError = error{
     InvalidResourcesDir,
     OutOfMemory,
@@ -533,6 +653,82 @@ const Mo = struct {
         return value;
     }
 };
+
+test "po: a message is found however its lines are folded" {
+    const testing = std.testing;
+    // The translation, or a failed test -- not a crash -- when there is none.
+    const said = struct {
+        fn said(alloc: std.mem.Allocator, text: []const u8, msgid: []const u8) ![]const u8 {
+            const found = try po_text.lookup(alloc, text, msgid);
+            if (found == null) std.debug.print("no entry was found for \"{s}\"\n", .{msgid});
+            try std.testing.expect(found != null);
+            return found.?;
+        }
+    }.said;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const text =
+        \\# A catalogue as the tools write one.
+        \\msgid ""
+        \\msgstr ""
+        \\"Language: zh_CN\n"
+        \\
+        \\#: src/a.zig:1
+        \\msgid "Close Tab"
+        \\msgstr "关闭标签页"
+        \\
+        \\#: src/b.zig:2 src/c.zig:3
+        \\msgid ""
+        \\"Freeze the screen, pick a window or drag a region, annotate it, and put the "
+        \\"result on the clipboard."
+        \\msgstr ""
+        \\"冻结屏幕，选一个窗口或拖一块区域，"
+        \\"标注后放进剪贴板。"
+        \\
+        \\msgid "Say \"yes\"\nor no"
+        \\msgstr "说“是”\n或不"
+        \\
+        \\msgid "Not yet"
+        \\msgstr ""
+        \\
+        \\msgctxt "menu"
+        \\msgid "Open"
+        \\msgstr "打开（菜单）"
+        \\
+        \\msgid "%d tab"
+        \\msgid_plural "%d tabs"
+        \\msgstr[0] "%d 个标签页"
+        \\msgstr[1] "不该读到这一个"
+        \\
+        \\#~ msgid "Retired"
+        \\#~ msgstr "已经退休"
+        \\msgid "Last, with no blank line before it and none after"
+        \\msgstr "最后一条"
+    ;
+    try testing.expectEqualStrings("关闭标签页", try said(a, text, "Close Tab"));
+    // Folded over three lines, in the msgid and in the msgstr.
+    try testing.expectEqualStrings(
+        "冻结屏幕，选一个窗口或拖一块区域，标注后放进剪贴板。",
+        try said(a, text, "Freeze the screen, pick a window or drag a region, annotate it, and put the result on the clipboard."),
+    );
+    // Asked for as the program has it: a quote is a quote, a newline a newline.
+    try testing.expectEqualStrings("说“是”\n或不", try said(a, text, "Say \"yes\"\nor no"));
+    // There, and not translated: empty, which is not the same as absent.
+    try testing.expectEqualStrings("", try said(a, text, "Not yet"));
+    try testing.expect((try po_text.lookup(a, text, "No such message")) == null);
+    // Part of a folded message is not a message.
+    try testing.expect((try po_text.lookup(a, text, "result on the clipboard.")) == null);
+    try testing.expect((try po_text.lookup(a, text, "Freeze the screen, pick a window or drag a region, annotate it, and put the ")) == null);
+    // A message with a context is another message; a retired one is none.
+    try testing.expect((try po_text.lookup(a, text, "Open")) == null);
+    try testing.expect((try po_text.lookup(a, text, "Retired")) == null);
+    try testing.expectEqualStrings("%d 个标签页", try said(a, text, "%d tab"));
+    try testing.expectEqualStrings("最后一条", try said(a, text, "Last, with no blank line before it and none after"));
+    // The header is the entry for the empty message.
+    try testing.expectEqualStrings("Language: zh_CN\n", try said(a, text, ""));
+    try testing.expectEqualStrings("a\"b\\c\nd", try po_text.unescape(a, "a\\\"b\\\\c\\nd"));
+}
 
 test "canonicalizeLocale darwin" {
     if (!builtin.target.os.tag.isDarwin()) return error.SkipZigTest;
