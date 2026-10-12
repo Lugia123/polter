@@ -779,6 +779,12 @@ pub fn init(
         );
         app.ensureChatLog(config.@"poltergeist-chat-log");
 
+        // What the bus does by default -- whether a supervisor may answer a
+        // prompt here, above all -- from the configuration this terminal
+        // starts under. For the same reason as everything round it:
+        // `updateConfig` runs only on a reload.
+        app.applyPoltergeistSettings(config);
+
         // Same reason as the socket and the log: `updateConfig` runs only
         // on a reload, which neither apprt does at launch.
         app.poltergeist_notify_window = poltergeistpkg.notify.Window.parse(
@@ -7298,6 +7304,16 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             // can be seen. This one is a permission the user granted to a
             // supervisor, and the place it has to be visible is the menu
             // the user granted it from, which shows its own state.
+            //
+            // **It shows it off the mark, though**, so the mark is sent:
+            // the action carries the switch beside the prefix, and a host
+            // that was not told draws the tick as it was until this
+            // terminal next happens to send one (the Windows machine,
+            // 2026-10-13: clicked, and nothing until its next tool call).
+            // The control room reads it too -- whose a worker's prompt is
+            // in its first minute.
+            self.updatePoltergeistTabMark();
+            self.app.controlRoomTouch();
             return true;
         },
 

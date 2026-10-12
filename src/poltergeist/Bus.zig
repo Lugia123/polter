@@ -4859,3 +4859,47 @@ test "hooks: the status line saying it wrote the allowance changes nothing the b
     try testing.expect(!try b.agentEvent(stranger, hookEv(.allowance_written), 12_000));
     try testing.expect(b.get(stranger) == null);
 }
+
+test "may-authorise off in the configuration: every terminal starts shut, and one opened by hand is the only one open" {
+    // The gate a person shuts for good: `poltergeist-may-authorise = false`.
+    var b: Bus = .init(testing.allocator, .{ .may_authorise = false });
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    const other: Id = 0x3333;
+    try b.watch(other, boss);
+    var buf: [255]u8 = undefined;
+
+    // A terminal nobody has said anything about: shut -- registered or not.
+    try testing.expect(!b.mayAuthorise(worker));
+    try testing.expect(!b.mayAuthorise(0x9999));
+    try testing.expectEqual(Answer.off, b.answer(worker));
+
+    // The notice about its prompt tells the supervisor so.
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Edit";
+    _ = try b.agentEvent(worker, ask, 7);
+    const line = b.drain(boss, 7, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "answer=off") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "answer=allowed") == null);
+
+    // The person opens it for one terminal, from that terminal's menu.
+    // Only a person can; and only that terminal is open.
+    try testing.expectError(error.NotPermitted, b.setMayAuthorise(other, true, .supervisor));
+    try b.setMayAuthorise(other, true, .user);
+    try testing.expect(b.mayAuthorise(other));
+    try testing.expectEqual(Answer.allowed, b.answer(other));
+    try testing.expect(!b.mayAuthorise(worker));
+
+    // The configuration is read again -- a reload, or the next terminal
+    // starting -- and says the same, or the opposite: what the person said
+    // about one terminal stands either way.
+    b.config.may_authorise = false;
+    try testing.expect(b.mayAuthorise(other));
+    b.config.may_authorise = true;
+    try testing.expect(b.mayAuthorise(worker));
+    try b.setMayAuthorise(worker, false, .user);
+    b.config.may_authorise = true;
+    try testing.expect(!b.mayAuthorise(worker));
+    try testing.expect(b.mayAuthorise(other));
+}

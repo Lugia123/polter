@@ -14778,3 +14778,25 @@ test "ControlRoom answer_prompt: without the prompt it saw, it is what it always
     try testing.expectEqualStrings("PromptGone", refused.failed.code);
     try testing.expect(fake.keyed == null);
 }
+
+test "may-authorise off in the configuration: a supervisor's answer to a prompt, and the keys that would be one, are refused" {
+    var b: Bus = .init(testing.allocator, .{ .may_authorise = false });
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+
+    // Nobody said anything about this terminal: the configuration did.
+    try testing.expectError(error.AuthoriseOff, authorize(&b, term(boss), .{
+        .terminal_answer_prompt = .{ .id = worker, .choice = 1 },
+    }));
+    try testing.expectError(error.AuthoriseOff, authorize(&b, term(boss), .{
+        .terminal_key = .{ .id = worker, .key = "enter" },
+    }));
+    try testing.expectError(error.AuthoriseOff, authorize(&b, term(boss), .{
+        .terminal_key = .{ .id = worker, .key = "arrow_down" },
+    }));
+
+    // Opened for this one terminal by the person: allowed there.
+    try b.setMayAuthorise(worker, true, .user);
+    try authorize(&b, term(boss), .{ .terminal_answer_prompt = .{ .id = worker, .choice = 1 } });
+}

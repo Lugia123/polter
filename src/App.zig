@@ -1049,6 +1049,83 @@ pub fn controlSnapshotJson(self: *const App) []const u8 {
     return self.control_room.json;
 }
 
+/// What the configuration says about how the bus behaves, over `base`.
+/// Every setting the bus reads is named here, so that the place they are
+/// applied cannot apply three of them and forget the fourth.
+fn busConfigFrom(base: poltergeistpkg.Bus.Config, config: *const Config) poltergeistpkg.Bus.Config {
+    var out = base;
+    out.notice_interval_ms = config.@"poltergeist-notice-interval".duration / std.time.ns_per_ms;
+    out.stand_down_allowed = config.@"poltergeist-supervisor-stand-down";
+    out.may_authorise = config.@"poltergeist-may-authorise";
+    out.calls_silent_after_ms = config.@"poltergeist-calls-silent-after".duration / std.time.ns_per_ms;
+    return out;
+}
+
+/// Bring Poltergeist's settings in line with `config`: what the bus does
+/// by default, and the thresholds the app keeps beside it.
+///
+/// **Called as every surface starts, and on a reload** -- because
+/// `updateConfig` runs only on a reload and neither apprt calls it at
+/// launch. Until this existed, these were written in `updateConfig` and
+/// nowhere else, so **the configuration a person started Polter with never
+/// reached the bus at all**: it ran on the defaults compiled into
+/// `Bus.Config` until somebody reloaded by hand. For most of them that is a
+/// wrong number. For `poltergeist-may-authorise` it is a gate the person
+/// shut and the core held open: `false` in the file, the menu item drawn
+/// unticked by the host (which reads the file itself), and every terminal
+/// answering "a supervisor may answer my prompts" (the Windows machine,
+/// 2026-10-13; the same code runs on macOS).
+///
+/// A terminal's own choice (`Bus.Entry.may_authorise`) is beside the
+/// default, not under it, so neither this nor a reload undoes one.
+pub fn applyPoltergeistSettings(self: *App, config: *const Config) void {
+    self.poltergeist.config = busConfigFrom(self.poltergeist.config, config);
+    self.control_still_ms =
+        config.@"poltergeist-quiescence-after".duration / std.time.ns_per_ms;
+
+    self.poltergeist_task_idle_ms =
+        config.@"poltergeist-task-idle-after".duration / std.time.ns_per_ms;
+    self.poltergeist_group_quiet_ms =
+        config.@"poltergeist-group-quiet-after".duration / std.time.ns_per_ms;
+    self.poltergeist_worker_nudge_ms =
+        config.@"poltergeist-worker-nudge-after".duration / std.time.ns_per_ms;
+    self.poltergeist_compact_after = config.@"poltergeist-compact-after".value;
+    self.poltergeist_screenshot_allowed = config.@"screenshot-agent-access" == .allow;
+
+    // The default may have moved under every terminal that has not said
+    // for itself: the menus read it off the mark, the control room off the
+    // snapshot.
+    self.refreshPoltergeistTabs();
+}
+
+test "poltergeist settings: what the configuration says reaches the bus, the shut gate above all" {
+    var config = try Config.default(std.testing.allocator);
+    defer config.deinit();
+
+    // As shipped: a supervisor may answer.
+    const shipped = busConfigFrom(.{}, &config);
+    try std.testing.expect(shipped.may_authorise);
+
+    // The person shuts it, and changes the other three while they are there.
+    config.@"poltergeist-may-authorise" = false;
+    config.@"poltergeist-supervisor-stand-down" = !shipped.stand_down_allowed;
+    config.@"poltergeist-notice-interval" = .{ .duration = 7 * std.time.ns_per_s };
+    config.@"poltergeist-calls-silent-after" = .{ .duration = 3 * std.time.ns_per_min };
+    const shut = busConfigFrom(.{}, &config);
+    try std.testing.expect(!shut.may_authorise);
+    try std.testing.expectEqual(!shipped.stand_down_allowed, shut.stand_down_allowed);
+    try std.testing.expectEqual(@as(u64, 7_000), shut.notice_interval_ms);
+    try std.testing.expectEqual(@as(u64, 180_000), shut.calls_silent_after_ms);
+
+    // And a bus run on that is one where the gate is shut for a terminal
+    // nobody has said otherwise about.
+    var bus: poltergeistpkg.Bus = .init(std.testing.allocator, shut);
+    defer bus.deinit();
+    try bus.register(0xb1);
+    try std.testing.expect(!bus.mayAuthorise(0xb1));
+    try std.testing.expectEqual(poltergeistpkg.Bus.Answer.off, bus.answer(0xb1));
+}
+
 /// Update the configuration associated with the app. This can only be
 /// called from the main thread. The caller owns the config memory. The
 /// memory can be freed immediately when this returns.
@@ -1064,26 +1141,7 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
         log.warn("poltergeist: could not open the agent socket err={}", .{err});
     };
 
-    self.poltergeist.config.notice_interval_ms =
-        config.@"poltergeist-notice-interval".duration / std.time.ns_per_ms;
-    self.poltergeist.config.stand_down_allowed =
-        config.@"poltergeist-supervisor-stand-down";
-    self.poltergeist.config.may_authorise =
-        config.@"poltergeist-may-authorise";
-    self.poltergeist.config.calls_silent_after_ms =
-        config.@"poltergeist-calls-silent-after".duration / std.time.ns_per_ms;
-    self.control_still_ms =
-        config.@"poltergeist-quiescence-after".duration / std.time.ns_per_ms;
-    self.controlRoomTouch();
-
-    self.poltergeist_task_idle_ms =
-        config.@"poltergeist-task-idle-after".duration / std.time.ns_per_ms;
-    self.poltergeist_group_quiet_ms =
-        config.@"poltergeist-group-quiet-after".duration / std.time.ns_per_ms;
-    self.poltergeist_worker_nudge_ms =
-        config.@"poltergeist-worker-nudge-after".duration / std.time.ns_per_ms;
-    self.poltergeist_compact_after = config.@"poltergeist-compact-after".value;
-    self.poltergeist_screenshot_allowed = config.@"screenshot-agent-access" == .allow;
+    self.applyPoltergeistSettings(config);
 
     self.poltergeist_notify_window =
         poltergeistpkg.notify.Window.parse(config.@"poltergeist-notify-window");
