@@ -267,7 +267,10 @@ pub const Snapshot = struct {
     /// with no group. A project has at most one.
     group: ?[]const u8,
 
-    /// The windows, the first being the one in front. Empty for a project
+    /// The windows, in an order that stays the same from one save to the
+    /// next -- not the order they are stacked in on screen, which would
+    /// reorder the file every time a person clicked on another window.
+    /// Empty for a project
     /// with nothing in it (a format 1 file with no `root`): that is not a
     /// corrupt file, so it round-trips rather than erroring.
     windows: []const Window,

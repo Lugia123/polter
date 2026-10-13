@@ -190,6 +190,18 @@ enum ProjectAutosaveChange: Equatable, CaseIterable {
     /// A pane's title or directory. Follows the person around all day and
     /// is worth much less a second after it happened.
     case paneDetail
+    /// Which pages the project has and in what order: a tab added, taken
+    /// out, closed, dragged along the tab bar or into another window. Done
+    /// by hand and expected back, as a split is.
+    case pages
+    /// Where a window is and how big. Dragging one is a stream of these;
+    /// the place it was let go is worth keeping, a little later.
+    case windowFrame
+    /// Which tab is showing in a window. It is what a person sees first
+    /// when the project opens again, and a tab that closes keeps what was
+    /// last written rather than ask (`ProjectPages.updated`), so it is not
+    /// left waiting behind titles.
+    case front
 
     /// How long after the last change of a burst the write happens.
     static let quiet: TimeInterval = 1.0
@@ -198,7 +210,8 @@ enum ProjectAutosaveChange: Equatable, CaseIterable {
     /// many changes follow it.
     var noLaterThan: TimeInterval {
         switch self {
-        case .layout: return 3.0
+        case .layout, .pages, .front: return 3.0
+        case .windowFrame: return 10.0
         case .paneDetail: return 30.0
         }
     }

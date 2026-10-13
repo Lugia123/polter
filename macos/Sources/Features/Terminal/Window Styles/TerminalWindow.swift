@@ -353,6 +353,32 @@ class TerminalWindow: NSWindow {
         }
     }
 
+    /// The project this tab is a page of; nil for none. Set by the tab's
+    /// controller whenever it joins or leaves one. Shows or hides the
+    /// project mark and leaves the rest of the stack alone.
+    var projectOfTab: String? {
+        didSet {
+            guard projectOfTab != oldValue else { return }
+            refreshTabAccessory()
+        }
+    }
+
+    /// The mark of a page of a project: two stacked pages, the size of the
+    /// status glyph.
+    private lazy var projectMarkView: NSImageView = {
+        let size = CGFloat(ControlRoomLook.WindowTab.glyph)
+        let view = NSImageView()
+        view.image = NSImage(systemSymbolName: "square.on.square", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: size - 3, weight: .regular))
+        view.contentTintColor = .secondaryLabelColor
+        view.imageScaling = .scaleProportionallyDown
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.widthAnchor.constraint(equalToConstant: size).isActive = true
+        view.heightAnchor.constraint(equalToConstant: size).isActive = true
+        view.isHidden = true
+        return view
+    }()
+
     /// The label that draws the Poltergeist mark.
     private lazy var poltergeistMarkLabel: NSTextField = {
         let label = NSTextField(labelWithString: "")
@@ -367,6 +393,7 @@ class TerminalWindow: NSWindow {
     /// view here.
     private func tabAccessoryView(for item: TabAccessory.Item) -> NSView {
         switch item {
+        case .projectMark: return projectMarkView
         case .colorIndicator: return tabColorIndicator
         case .poltergeistMark: return poltergeistMarkLabel
         case .keyEquivalent: return keyEquivalentLabel
@@ -420,10 +447,13 @@ class TerminalWindow: NSWindow {
             shown: tabStatus.shown, pulses: tabStatus.pulses,
             size: CGFloat(ControlRoomLook.WindowTab.glyph))
 
+        projectMarkView.toolTip = projectOfTab.map(TabAccessory.projectMarkHelp)
+
         let visible = TabAccessory.visibleItems(.init(
             poltergeistMark: poltergeistMark,
             surfaceIsZoomed: surfaceIsZoomed,
-            status: tabStatus.shown))
+            status: tabStatus.shown,
+            project: projectOfTab))
         for item in TabAccessory.Item.allCases {
             tabAccessoryView(for: item).isHidden = !visible.contains(item)
         }
@@ -881,6 +911,8 @@ extension TerminalWindow {
     private static let projectSeparatorIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSeparator")
     private static let projectSaveAsIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSaveAs")
     private static let projectLoadIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectLoad")
+    private static let projectAddToIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectAddTo")
+    private static let projectTakeOutIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectTakeOut")
 
     func configureTabContextMenuIfNeeded(_ menu: NSMenu) {
         guard isTabContextMenu(menu) else { return }
@@ -1086,6 +1118,8 @@ extension TerminalWindow {
             Self.projectSeparatorIdentifier,
             Self.projectSaveAsIdentifier,
             Self.projectLoadIdentifier,
+            Self.projectAddToIdentifier,
+            Self.projectTakeOutIdentifier,
         ])
 
         let separator = NSMenuItem.separator()
@@ -1109,6 +1143,49 @@ extension TerminalWindow {
         loadItem.target = target
         loadItem.setImageIfDesired(systemSymbolName: "square.and.arrow.up")
         menu.addItem(loadItem)
+
+        // "Add to Project ▸": every project there is, and at the bottom the
+        // way to make a new one of this tab. Offered -- by the tab's own
+        // `validateMenuItem` -- only to a tab that is a page of none.
+        let project = target?.boundProject
+        let addItem = NSMenuItem(
+            title: String(localized: "Add to Project", comment: "标签页右键菜单：加入项目（子菜单列出现有项目）"),
+            action: nil,
+            keyEquivalent: "")
+        addItem.identifier = Self.projectAddToIdentifier
+        let submenu = NSMenu()
+        submenu.autoenablesItems = true
+        for entry in ProjectStore.shared.list() {
+            let item = NSMenuItem(
+                title: entry.name,
+                action: #selector(TerminalController.addToProject(_:)),
+                keyEquivalent: "")
+            item.representedObject = entry.name
+            item.target = target
+            submenu.addItem(item)
+        }
+        if !submenu.items.isEmpty { submenu.addItem(.separator()) }
+        let newItem = NSMenuItem(
+            title: String(localized: "Save as New Project...", comment: "标签页右键菜单·加入项目子菜单最下面：存为新项目"),
+            action: #selector(TerminalController.saveAsProject(_:)),
+            keyEquivalent: "")
+        newItem.target = target
+        submenu.addItem(newItem)
+        // An item with a submenu is always enabled, whatever its menu
+        // thinks of it; one with neither submenu nor action is not. So a
+        // tab that is a page already gets the item without the submenu.
+        if ProjectPageRules.offered(.addTo, pageOf: project) {
+            addItem.submenu = submenu
+        }
+        menu.addItem(addItem)
+
+        let takeOutItem = NSMenuItem(
+            title: ProjectPageRules.takeOutTitle(project: project),
+            action: #selector(TerminalController.takeOutOfProject(_:)),
+            keyEquivalent: "")
+        takeOutItem.identifier = Self.projectTakeOutIdentifier
+        takeOutItem.target = target
+        menu.addItem(takeOutItem)
     }
 }
 

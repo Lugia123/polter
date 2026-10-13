@@ -2373,6 +2373,7 @@ pub const CAPI = struct {
             "",
             // The library window's Launch button: a tab, as it always was.
             .tab,
+            null,
         ) catch |e| {
             copyErrorOut(e, err, cap);
             return false;

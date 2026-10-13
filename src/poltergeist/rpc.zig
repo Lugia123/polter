@@ -556,6 +556,11 @@ pub const Request = union(Method) {
         /// by the same code (`App.poltergeistOpenTerminal`). A role whose
         /// own `open` is `tab` still gets a tab when this is `auto`.
         place: Placement = .auto,
+        /// A terminal that is already open, to start the role in instead
+        /// of opening one (`"in"` on the wire). It is this request's
+        /// target, so the reach rules of anything that types into a
+        /// terminal apply to it (`target`).
+        in: ?Bus.Id = null,
     },
     terminal_action: struct { id: Bus.Id, action: []const u8 },
     terminal_actions,
@@ -1480,7 +1485,6 @@ pub fn target(req: Request) ?Bus.Id {
         .role_put,
         .role_delete,
         .role_clis,
-        .role_launch,
 
         // Named here rather than left to the `inline else` below, because
         // that one reads `v.id` off whatever payload has one and these
@@ -1495,6 +1499,11 @@ pub fn target(req: Request) ?Bus.Id {
         .task_list,
         .task_history,
         => null,
+
+        // A role started in a terminal that is already open types into it:
+        // that terminal is the target, shield, marks and all. With none
+        // named it opens its own, and reaches nobody.
+        .role_launch => |v| v.in,
 
         inline .group_add, .group_remove, .task_assign => |v| v.id,
         inline else => |v| v.id,
@@ -4790,6 +4799,13 @@ pub const Placement = enum {
     /// says so and why (`Placed.tab`) -- **a fallback that was silent would
     /// read as "here" having worked**, and did (issue #17).
     here,
+
+    /// Stacked with the caller's other workers: one pane's room, a tab for
+    /// each. **Named and not built** -- asked for, it is refused with
+    /// `NotBuiltYet` rather than read as `auto`, so that the word means one
+    /// thing from the day it works (task 1492). It is where the worker
+    /// after the second column will go.
+    stack,
 };
 
 /// Where a `terminal_open` actually put the terminal. Answered in the reply,
@@ -4802,6 +4818,18 @@ pub const Placed = union(enum) {
     split,
     /// A tab, and why.
     tab: TabWhy,
+    /// No terminal was opened: the role was started in one that was already
+    /// there, and the reply carries its id.
+    reused: ReusedWhy,
+};
+
+/// Why a role was started in a terminal that was already open.
+pub const ReusedWhy = enum {
+    /// The caller named it (`in`).
+    asked,
+    /// `auto`: one of the caller's own worker panes had no agent in it and
+    /// was waiting at its prompt, so it was used before another was made.
+    free_worker,
 };
 
 /// Why a terminal went into a tab. One code per reason, grouped into the
@@ -4813,8 +4841,9 @@ pub const TabWhy = enum {
     // -- cannot: a split was due and could not be made.
     /// The apprt did not say how many terminals share the tab.
     no_pane_count,
-    /// Three workers already stand beside the caller; the fourth needs a
-    /// second column, which means splitting a subtree -- not possible today.
+    /// Six workers already stand beside the caller, in two columns of
+    /// three; the seventh would have to be stacked with them, which is not
+    /// built yet. (It was three, and one column, until task 1492.)
     column_full,
     /// The apprt would not split (GTK cannot split into a named directory).
     split_refused,
@@ -5038,6 +5067,9 @@ pub const Host = struct {
             cli: []const u8,
             cwd: []const u8,
             place: Placement,
+            /// A terminal that is already open, to start the role in
+            /// instead of opening one; null to open one where `place` says.
+            into: ?Bus.Id,
         ) anyerror!Opened,
 
         /// Open a terminal in `by`'s window, starting in `cwd`.
@@ -5661,8 +5693,9 @@ pub const Host = struct {
         cli: []const u8,
         cwd: []const u8,
         place: Placement,
+        into: ?Bus.Id,
     ) anyerror!Opened {
-        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd, place);
+        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd, place, into);
     }
 
     fn quietMs(self: Host, id: Bus.Id) u64 {
@@ -6615,6 +6648,7 @@ fn dispatchOne(
 
         .terminal_open => |p| {
             const opened = host.openTerminal(alloc, p.cwd, caller, p.place) catch |err| return switch (err) {
+                error.NotBuiltYet => notBuiltYet(),
                 error.NotAbsolute => hostFailure(
                     "BadParams",
                     "a working directory has to be an absolute path.",
@@ -6698,7 +6732,35 @@ fn dispatchOne(
         },
 
         .role_launch => |p| {
-            const opened = host.personaLaunch(alloc, caller, p.key, p.cli, p.cwd, p.place) catch |err| return switch (err) {
+            const opened = host.personaLaunch(alloc, caller, p.key, p.cli, p.cwd, p.place, p.in) catch |err| return switch (err) {
+                // Starting it in a terminal that is already open (`in`).
+                error.UnknownTerminal => hostFailure(
+                    "UnknownTerminal",
+                    "there is no terminal with that id. terminal_list has them.",
+                ),
+                error.AgentThere => hostFailure(
+                    "AgentThere",
+                    "an agent is already running in that terminal. A role is started in " ++
+                        "a shell that is waiting; to change what a running agent wears, " ++
+                        "that is the user's menu.",
+                ),
+                error.NotAtPrompt => hostFailure(
+                    "NotAtPrompt",
+                    "that terminal is not at its shell's prompt: something is running in " ++
+                        "it, or its shell does not say. Nothing was typed. terminal_read " ++
+                        "shows what is there.",
+                ),
+                error.DraftInLine => hostFailure(
+                    "DraftInLine",
+                    "that terminal has a half-typed line in it, and a launch typed after " ++
+                        "it would run as one command with it. Nothing was typed.",
+                ),
+                error.InWithCwd => hostFailure(
+                    "BadParams",
+                    "`in` starts the role where that terminal already is; leave `cwd` out, " ++
+                        "or open a new terminal there with `place`.",
+                ),
+                error.NotBuiltYet => notBuiltYet(),
                 error.NoSuchPersona => hostFailure(
                     "NoSuchRole",
                     "there is no role with that key. role_list has them.",
@@ -8548,6 +8610,16 @@ fn joined(
 /// the launched agent to connect (`PersonaStore.claimStanding`) -- so a
 /// terminal not minded *yet* whose launch is still holding a `watch` is
 /// "not yet", and saying `false` would be a "no" nobody knows.
+/// `place: "stack"`: a name with nothing behind it yet.
+fn notBuiltYet() wire.Response {
+    return hostFailure(
+        "NotBuiltYet",
+        "`stack` -- a worker stacked with your others in one pane's room -- is not " ++
+            "built yet, and nothing was opened. `auto` puts six beside you in two " ++
+            "columns before it opens a tab.",
+    );
+}
+
 fn launchedWatching(
     alloc: std.mem.Allocator,
     bus: *const Bus,
@@ -8796,6 +8868,7 @@ const FakeHost = struct {
         cli: []const u8,
         cwd: []const u8,
         place: Placement,
+        into: ?Bus.Id = null,
     } = null,
     clis_refreshed: bool = false,
     role_tab_late: bool = false,
@@ -9708,10 +9781,13 @@ const FakeHost = struct {
         cli: []const u8,
         cwd: []const u8,
         place: Placement,
+        into: ?Bus.Id,
     ) anyerror!Opened {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.role_error) |e| return e;
-        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place };
+        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place, .into = into };
+        if (into) |there| return .{ .id = there, .placed = .{ .reused = .asked } };
+        if (place == .stack) return error.NotBuiltYet;
         // What the app's placement would answer: `tab` is a tab, `here` a
         // split, and `auto` whichever this fake was told the tab has room
         // for. A split has no terminal yet, and a late tab has none either.
@@ -9719,6 +9795,7 @@ const FakeHost = struct {
             .tab => .{ .tab = .asked },
             .here => .split,
             .auto => if (self.role_auto_splits) .split else .{ .tab = .column_full },
+            .stack => unreachable,
         };
         return .{
             .id = if (self.role_tab_late or placed == .split) null else 0x7777,
@@ -14085,6 +14162,74 @@ test "roles: what the supervisor sends is what the library is handed" {
     try testing.expectEqual(boss, fake.role_launched.?.by);
     try testing.expectEqualStrings("claude-code", fake.role_launched.?.cli);
     try testing.expectEqualStrings("/tmp", fake.role_launched.?.cwd);
+}
+
+test "role_launch in: started in a terminal that is already open, under the rules of anything that types into one" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // That terminal is the request's target; with none named it has none.
+    try testing.expectEqual(@as(?Bus.Id, worker), target(.{ .role_launch = .{ .key = "archer", .in = worker } }));
+    try testing.expectEqual(@as(?Bus.Id, null), target(.{ .role_launch = .{ .key = "archer" } }));
+
+    // Handed to the host as named, and the reply says no terminal was
+    // opened and gives the one it used.
+    var fake: FakeHost = .{};
+    const started = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "archer", .in = worker } });
+    try testing.expectEqual(@as(?Bus.Id, worker), fake.role_launched.?.into);
+    try testing.expectEqual(@as(?Bus.Id, worker), started.opened.id);
+    try testing.expectEqual(Placed{ .reused = .asked }, started.opened.placed.?);
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&out.writer, started);
+    const text = out.written();
+    try testing.expect(std.mem.indexOf(u8, text, "\"placed\":\"reused\"") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "\"reused\":\"asked\"") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "pending") == null);
+
+    // Into itself: refused before the host is asked.
+    var own: FakeHost = .{};
+    const self_aimed = try dispatch(alloc, &b, own.host(), term(boss), .{ .role_launch = .{ .key = "archer", .in = boss } });
+    try testing.expectEqualStrings("SelfTarget", self_aimed.failed.code);
+    try testing.expect(own.role_launched == null);
+
+    // Into one the user has shielded: refused, as anything typed there is.
+    try b.setShielded(worker, true, .user);
+    var shut: FakeHost = .{};
+    const shielded = try dispatch(alloc, &b, shut.host(), term(boss), .{ .role_launch = .{ .key = "archer", .in = worker } });
+    try testing.expectEqualStrings("Shielded", shielded.failed.code);
+    try testing.expect(shut.role_launched == null);
+    try b.setShielded(worker, false, .user);
+
+    // Each way the terminal can be unfit is its own answer, and says that
+    // nothing was typed.
+    for ([_]struct { err: anyerror, code: []const u8 }{
+        .{ .err = error.AgentThere, .code = "AgentThere" },
+        .{ .err = error.NotAtPrompt, .code = "NotAtPrompt" },
+        .{ .err = error.DraftInLine, .code = "DraftInLine" },
+        .{ .err = error.UnknownTerminal, .code = "UnknownTerminal" },
+        .{ .err = error.InWithCwd, .code = "BadParams" },
+    }) |c| {
+        var unfit: FakeHost = .{ .role_error = c.err };
+        const refused = try dispatch(alloc, &b, unfit.host(), term(boss), .{ .role_launch = .{ .key = "archer", .in = worker } });
+        try testing.expectEqualStrings(c.code, refused.failed.code);
+        try testing.expect(!std.mem.eql(u8, refused.failed.code, "LaunchFailed"));
+    }
+}
+
+test "place stack: a name with nothing behind it yet is refused by name, not read as auto" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fake: FakeHost = .{};
+    const refused = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "archer", .place = .stack } });
+    try testing.expectEqualStrings("NotBuiltYet", refused.failed.code);
+    try testing.expect(std.mem.indexOf(u8, refused.failed.message, "nothing was opened") != null);
 }
 
 test "roles: each reason a write is refused says what to do about it" {

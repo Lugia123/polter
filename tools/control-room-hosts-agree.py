@@ -64,7 +64,9 @@ when the core has none (`ControlRoomStartChoice`; `scene::resume_note`, `last_su
 `act::session_sent`) -- the roles one can be started in and
 whether there is a choice; when a group just made is selected; where a tab
 the core asked for goes, for every asker and every place the control room
-can be (forty cases); the English of what the right-hand side says of a
+can be (forty cases); whether a split asked of a terminal is made, borrowed
+by the control room or not, asked by an agent through the core or by a key
+(`ControlRoomRules.newSplit` and `lend::may_split`); the English of what the right-hand side says of a
 group with no supervisor for each of the six reasons the core gives for a
 try having made none (`cli_not_found` and `cli_did_not_start`, which a
 launcher reports itself, among them), while one is starting and with none;
@@ -396,6 +398,14 @@ for one in ControlRoomSnapshot.Terminal.Who.Is.allCases {
 // (none for the two that need none), what the two sessions are called,
 // what a start sends for every state of the choice, and the sentence about
 // the last supervisor for each mix of what is known of it.
+// Whether a split asked of a terminal is made: of one the control room has
+// borrowed, for an agent (asked through the core) and not for a key.
+for lent in [false, true] {
+    for core in [false, true] {
+        let made = ControlRoomRules.newSplit(lent: lent, answerWanted: core) == .split
+        print("new_split lent=\(lent) asked_by_core=\(core) made=\(made)")
+    }
+}
 for why in ControlRoomList.SupervisorStart.ResumeWhy.allCases {
     print("resume_note \(why.rawValue) says=\(ControlRoomStartChoice.resumeNote(why).map(quote) ?? "-")")
 }

@@ -27,6 +27,9 @@ enum TabAccessory {
     /// wants (0.10) is exactly that: one case, one view, one line below --
     /// nothing that assigns `accessoryView`.
     enum Item: CaseIterable {
+        /// The mark of a tab that is a page of a project: two stacked
+        /// pages. First, so it is the thing nearest the title.
+        case projectMark
         /// The dot in the colour the user gave the tab.
         case colorIndicator
         /// The Poltergeist mark: supervising, supervised, and so on.
@@ -50,6 +53,32 @@ enum TabAccessory {
         var surfaceIsZoomed: Bool = false
         /// The glyph the core gives this tab; `.none` for none.
         var status: ControlRoomList.Shown = .none
+        /// The project this tab is a page of; nil for none.
+        var project: String?
+    }
+
+    /// How a tab says it is a page of a project.
+    ///
+    /// **The one place to change it.** The design gave three ways and the
+    /// choice between them is not final: a mark beside the title, a line
+    /// under it, the project's name before it. The first is what is drawn.
+    /// It was drawn at the title's *left* in the design, in the slot where
+    /// the close button appears; the system's tabs give no way into that
+    /// slot short of reaching into views that are not ours, so the mark is
+    /// the first thing at the title's right instead.
+    enum ProjectMark: Equatable {
+        /// Two stacked pages, in the accessory stack.
+        case stackedPages
+        /// Nothing drawn.
+        case none
+    }
+
+    static let projectMark: ProjectMark = .stackedPages
+
+    /// What the mark says when the pointer rests on it: which project,
+    /// which the mark alone does not.
+    static func projectMarkHelp(_ project: String) -> String {
+        String(localized: "A page of the project \"\(project)\"", comment: "标签页上项目记号的悬停提示，参数是项目名")
     }
 
     /// Whether a status is drawn on a window tab at all.
@@ -83,6 +112,8 @@ enum TabAccessory {
     static func visibleItems(_ state: State) -> [Item] {
         Item.allCases.filter { item in
             switch item {
+            case .projectMark:
+                return state.project != nil && projectMark == .stackedPages
             case .colorIndicator, .keyEquivalent:
                 return true
             case .poltergeistMark:

@@ -7,44 +7,57 @@ import GhosttyKit
 /// `TerminalWindow.configureTabContextMenuIfNeeded`) and from the `Project`
 /// menu (targeting the focused tab via the responder chain, see
 /// `MainMenu.xib`).
-extension TerminalController: ProjectBindingHolder {
-    /// Never empty: a tab just opened has no window title until its shell
-    /// sets one (see `ProjectsRules.holderLabel`, #965).
-    var projectBindingTitle: String {
-        ProjectsRules.holderLabel(
-            windowTitle: window?.title ?? "",
-            paneTitles: [focusedSurface?.title ?? ""] + surfaceTree.map(\.title),
-            cwds: [focusedSurface?.pwd] + surfaceTree.map(\.pwd))
-    }
-}
-
-/// Renamed from the settings window while this tab is bound to it: the tab
-/// stays bound, under the new name, and its panes go on journaling into the
-/// moved snapshot directory under the same snapshot names.
-extension TerminalController: ProjectMoveFollower {
-    func projectWillMove() {
-        // A pending autosave lands where the project is now, before it moves.
-        projectAutosave?.flush()
-        stopScrollbackJournals()
-    }
-
-    func projectDidMove(to name: String, oldKey: String, key: String, scrollback: URL) {
-        boundProject = name
-        for view in surfaceTree {
-            guard let snapshot = view.projectSnapshot, snapshot.project == oldKey else { continue }
-            view.journalScrollback(.init(project: key, filename: snapshot.filename), in: scrollback)
-        }
-        invalidateRestorableState()
-    }
-}
-
+///
+/// A tab is a page of at most one project, and the project -- not the tab
+/// -- is what writes the file: see `ProjectSession`. What is here is the
+/// tab's side of that: the menu actions, and telling the session what
+/// changed.
 extension TerminalController {
+    /// The terminal tabs of this tab's window, in the order they stand:
+    /// what "Save as Project" lists.
+    private var tabsOfThisWindow: [TerminalController] {
+        let windows = window?.tabGroup?.windows ?? window.map { [$0] } ?? []
+        return windows.compactMap { $0.windowController as? TerminalController }
+    }
+
     @IBAction func saveAsProject(_ sender: Any?) {
-        projectPicker.present(
-            mode: .saveAs(currentPaneCount: surfaceTree.count),
-            onSave: { [weak self] name in
-                self?.performSave(name: name)
-            })
+        presentSaveAsProject { _ in }
+    }
+
+    /// Show "Save as Project" for this tab's window. `done` is told whether
+    /// a save happened and worked.
+    private func presentSaveAsProject(done: @escaping (Bool) -> Void) {
+        let controllers = tabsOfThisWindow
+        let tabs = controllers.enumerated().map { index, controller in
+            ProjectPageRules.Tab(
+                id: index,
+                title: controller.projectTabTitle,
+                panes: controller.surfaceTree.count,
+                project: controller.boundProject,
+                isCurrent: controller === self)
+        }
+        projectPicker.presentSaveAs(
+            tabs: tabs,
+            onSave: { [weak self] name, ids in
+                guard let self else { return }
+                var saved = false
+                // A save that fails is reported and is not a save
+                // (`ProjectSaveBeforeClose.saveThenClose` is that rule).
+                ProjectSaveBeforeClose.saveThenClose(
+                    save: {
+                        // Save As: a name that is taken is a replacement,
+                        // and what it held is kept as the previous version,
+                        // whatever its layout (#969). A new name has
+                        // nothing to keep either way.
+                        try ProjectSession.save(
+                            ids.compactMap { controllers.indices.contains($0) ? controllers[$0] : nil },
+                            as: name, keeping: .always, in: ProjectStore.shared)
+                    },
+                    reportFailure: { self.presentProjectError($0) },
+                    close: { saved = true })
+                done(saved)
+            },
+            onCancel: { done(false) })
     }
 
     @IBAction func loadProject(_ sender: Any?) {
@@ -59,6 +72,149 @@ extension TerminalController {
     /// (settings.md §3.2).
     @IBAction func manageProjects(_ sender: Any?) {
         openSettings(.projects(boundProject))
+    }
+
+    /// The line at the top of the `Project` menu. It does nothing and is
+    /// never offered: it is there to be read.
+    @IBAction func projectMenuHeader(_ sender: Any?) {}
+
+    /// "Add to Project ▸ <name>" on a tab's own menu: the project's name is
+    /// the item's `representedObject`.
+    @IBAction func addToProject(_ sender: Any?) {
+        guard let name = (sender as? NSMenuItem)?.representedObject as? String else { return }
+        do {
+            guard let entry = ProjectStore.shared.entry(name: name) else { throw ProjectStore.StoreError.notFound }
+            try ProjectSession.add(self, to: entry, in: ProjectStore.shared)
+        } catch {
+            presentProjectError(error)
+        }
+    }
+
+    /// "Take This Page Out of the Project": the tab stays open and is a tab
+    /// of no project; the project no longer has the page.
+    @IBAction func takeOutOfProject(_ sender: Any?) {
+        projectSession?.detach(self, removing: true)
+    }
+
+    /// "Close Project": every open page of this tab's project closes, and
+    /// every one stays a page. Asked about once, for all of them, when
+    /// something is still running in one.
+    @IBAction func closeProject(_ sender: Any?) {
+        guard let session = projectSession else { return }
+        guard session.needsConfirmToClose else {
+            session.closeAllPages()
+            return
+        }
+        confirmClose(
+            messageText: String(localized: "Close Project?", comment: "关闭项目的确认框标题"),
+            informativeText: String(localized: "A terminal of this project still has a running process. If you close the project the process will be killed.", comment: "关闭项目的确认框正文")
+        ) {
+            session.closeAllPages()
+        }
+    }
+
+    /// "Rename Project…": asks for the new name on a sheet and renames the
+    /// project's file, with everything that goes with it
+    /// (`ProjectStore.rename`); its open pages follow.
+    @IBAction func renameProject(_ sender: Any?) {
+        guard let window, let name = boundProject, let entry = ProjectStore.shared.entry(name: name) else { return }
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Rename Project", comment: "给项目改名的框标题")
+        let field = NSTextField(string: name)
+        field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+        field.font = NSFont.systemFont(ofSize: SettingsFont.minimumPointSize)
+        alert.accessoryView = field
+        alert.addButton(withTitle: String(localized: "Rename", comment: "给项目改名的框：改名按钮"))
+        let cancel = alert.addButton(withTitle: String(localized: "Cancel", comment: "项目选择界面：取消按钮"))
+        cancel.keyEquivalent = "\u{1b}"
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            do {
+                try ProjectStore.shared.rename(entry, to: field.stringValue)
+            } catch {
+                self?.presentProjectError(error)
+            }
+        }
+    }
+
+    /// What the `Project` menu's items say and whether each is offered for
+    /// this tab (`ProjectPageRules`). Nil for an item that is not one of
+    /// them.
+    func validateProjectMenuItem(_ item: NSMenuItem) -> Bool? {
+        let project = boundProject
+        switch item.action {
+        case #selector(projectMenuHeader(_:)):
+            item.title = ProjectPageRules.menuHeader(project: project)
+            return false
+        case #selector(saveAsProject(_:)): return ProjectPageRules.offered(.saveAs, pageOf: project)
+        case #selector(loadProject(_:)): return ProjectPageRules.offered(.open, pageOf: project)
+        case #selector(manageProjects(_:)): return ProjectPageRules.offered(.manage, pageOf: project)
+        case #selector(addToProject(_:)): return ProjectPageRules.offered(.addTo, pageOf: project)
+        case #selector(renameProject(_:)): return ProjectPageRules.offered(.rename, pageOf: project)
+        case #selector(closeProject(_:)): return ProjectPageRules.offered(.closeProject, pageOf: project)
+        case #selector(takeOutOfProject(_:)):
+            item.title = ProjectPageRules.takeOutTitle(project: project)
+            return ProjectPageRules.offered(.takeOut, pageOf: project)
+        default:
+            return nil
+        }
+    }
+
+    // MARK: Closing a Page
+
+    /// Run `close` for this one tab, after asking -- where
+    /// `ProjectPageRules.closeStep` says to ask -- whether the page should
+    /// be taken out of its project as well. Cancel leaves the tab open.
+    func askAboutProjectPage(thenClose close: @escaping () -> Void) {
+        let defaults = UserDefaults.standard
+        let choice = defaults.string(forKey: ProjectPageRules.closeChoiceKey)
+            .flatMap(ProjectPageRules.CloseChoice.init(rawValue:)) ?? .ask
+        let step = ProjectPageRules.closeStep(
+            pageOf: boundProject,
+            otherPagesOpen: projectSession?.otherPagesOpen(than: self) ?? 0,
+            scope: .tab,
+            choice: choice)
+
+        func finish(takingOut: Bool) {
+            if takingOut { projectSession?.detach(self, removing: true) }
+            close()
+        }
+
+        guard step == .ask, let window, let project = boundProject else {
+            if case .close(let takingOut) = step { finish(takingOut: takingOut) } else { close() }
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Close the page \"\(projectTabTitle)\"", comment: "关掉项目里的一页的询问框标题，参数是这一页的标题")
+        alert.informativeText = String(localized: "It is a page of the project \"\(project)\". If you only close it, it comes back the next time the project is opened.", comment: "关掉项目里的一页的询问框正文，参数是项目名")
+        let takeOut = NSButton(checkboxWithTitle: String(localized: "Also take it out of the project", comment: "关掉项目里的一页：同时把它从项目里移出"), target: nil, action: nil)
+        let dontAsk = NSButton(checkboxWithTitle: String(localized: "Don't ask again (do as chosen this time)", comment: "关掉项目里的一页：以后不再问（照这次选的做）"), target: nil, action: nil)
+        let font = NSFont.systemFont(ofSize: SettingsFont.minimumPointSize)
+        takeOut.font = font
+        dontAsk.font = font
+        let stack = NSStackView(views: [takeOut, dontAsk])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.frame = NSRect(origin: .zero, size: stack.fittingSize)
+        alert.accessoryView = stack
+        alert.addButton(withTitle: String(localized: "Close", comment: "关闭确认框"))
+        // Esc is bound explicitly: NSAlert only binds it on its own to a
+        // button titled "Cancel" in English.
+        alert.addButton(withTitle: String(localized: "Cancel", comment: "项目选择界面：取消按钮")).keyEquivalent = "\u{1b}"
+        alert.beginSheetModal(for: window) { response in
+            alert.window.orderOut(nil)
+            guard response == .alertFirstButtonReturn else { return }
+            let takingOut = takeOut.state == .on
+            let remembered = ProjectPageRules.choice(
+                afterTakingOut: takingOut, dontAskAgain: dontAsk.state == .on, was: choice)
+            if remembered != choice {
+                defaults.set(remembered.rawValue, forKey: ProjectPageRules.closeChoiceKey)
+            }
+            finish(takingOut: takingOut)
+        }
     }
 
     // MARK: Close Flow
@@ -112,178 +268,87 @@ extension TerminalController {
             case .closeWithoutSaving:
                 closeAction()
             case .save:
-                // Cancelling the picker keeps the tab open too: `onCancel`
-                // defaults to doing nothing.
-                self.projectPicker.present(
-                    mode: .saveAs(currentPaneCount: self.surfaceTree.count),
-                    onSave: { [weak self] name in
-                        guard let self else { return }
-                        ProjectSaveBeforeClose.saveThenClose(
-                            // Save As onto an existing name replaces that
-                            // project: what it held is kept as `.prev` (#969).
-                            save: { try self.saveAndBind(name: name, keeping: .always) },
-                            reportFailure: { self.presentProjectError($0) },
-                            close: closeAction)
-                    })
+                // Cancelling the sheet, or a save that fails (which the
+                // sheet reports), keeps the tab open too.
+                self.presentSaveAsProject { saved in
+                    if saved { closeAction() }
+                }
             }
         }
     }
 
     // MARK: Store Operations
 
-    private func performSave(name: String) {
-        do {
-            // Save As: a name that is taken is a replacement, and what it
-            // held is kept as the previous version, whatever its layout
-            // (#969). A new name has nothing to keep either way.
-            try saveAndBind(name: name, keeping: .always)
-        } catch {
-            presentProjectError(error)
-        }
-    }
-
-    /// Save this tab as `name` and bind it there. Throws rather than
-    /// reporting, so a caller that has something riding on the save --
-    /// closing the tab, the settings window's "Overwrite with Current Tab"
-    /// -- can tell whether it worked. `keeping` is `.always` when this
-    /// replaces a project with the tab ("Overwrite with Current Tab").
+    /// Save this tab as the project `name` and make it that project's page.
+    /// Throws rather than reporting, so a caller that has something riding
+    /// on the save -- closing the tab, the settings window's "Overwrite
+    /// with Current Tab" -- can tell whether it worked. `keeping` is
+    /// `.always` when this replaces a project with the tab.
     func saveAndBind(name: String, keeping: ProjectFileWriter.Keeping) throws {
-        let store = ProjectStore.shared
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Checked before writing, not after: saving over a project another
-        // tab autosaves into would be overwritten by that tab on its next
-        // change -- the silent two-writer failure binding exists to prevent.
-        if let holder = store.bindings.owner(of: store.bindingKey(name: trimmed)), holder !== self {
-            throw ProjectStore.StoreError.boundElsewhere(
-                name: trimmed,
-                holder: store.holderTitle(name: trimmed) ?? "")
-        }
-        let entry = try store.save(name: trimmed, tree: surfaceTree, keeping: keeping)
-        try bindProject(entry.name)
+        try ProjectSession.save([self], as: name, keeping: keeping, in: ProjectStore.shared)
     }
 
     private func performLoad(_ entry: ProjectStore.Entry) {
         do {
-            try Self.load(entry, ghostty: ghostty, beside: window)
+            try Self.load(entry, ghostty: ghostty, into: nil, beside: window)
         } catch {
             presentProjectError(error)
         }
     }
 
-    /// Open `entry` as a new tab beside `parent` (a new window without one)
-    /// and bind the tab to it. What "Load Project" and the settings window's
-    /// "Open" both do. `inFront` false leaves the tab behind the one that
-    /// is showing: the control room's "Load Project", where the tab in
-    /// front is the control room (`ControlRoomRules.newTab`).
+    /// Open the whole project in `entry`: every page of it that is not
+    /// open, and bring it in front (`ProjectSession.open` has the rules).
+    /// What "Load Project", the settings window's "Open" and the control
+    /// room's all do. A project that is open already is not refused; it
+    /// comes in front.
+    ///
+    /// `current` is the terminal window the person is in: a window of the
+    /// project that has no recorded frame opens as tabs there, and one that
+    /// has opens as its own window (`ProjectPlacement.place`).
+    ///
+    /// `home` is a window the project's first window goes into as tabs
+    /// whatever its frame, and `inFront` false leaves those tabs behind the
+    /// one showing there: the control room's "Load Project", where the tab
+    /// in front is the control room (`ControlRoomRules.newTab`).
     static func load(
-        _ entry: ProjectStore.Entry, ghostty: Ghostty.App, beside parent: NSWindow?, inFront: Bool = true
+        _ entry: ProjectStore.Entry, ghostty: Ghostty.App,
+        into home: NSWindow?, beside current: NSWindow?, inFront: Bool = true
     ) throws {
-        guard let app = ghostty.app else { return }
-        let store = ProjectStore.shared
-        // Refused before `loadTree`, which starts a shell per pane: a
-        // second tab on the same project would have to either not
-        // autosave (quietly unlike the first) or fight it for the file.
-        if let holder = store.holderTitle(name: entry.name) {
-            throw ProjectStore.StoreError.boundElsewhere(name: entry.name, holder: holder)
-        }
-        let tree = try store.loadTree(entry, app: app)
-        let controller = TerminalController.openProject(ghostty, tree: tree, attachingTo: parent, inFront: inFront)
-        do {
-            try controller.bindProject(entry.name)
-        } catch {
-            // Restoring started each pane's journal into the project's
-            // files; a tab that did not get the binding must not write
-            // to them.
-            controller.stopScrollbackJournals()
-            throw error
-        }
+        try ProjectSession.session(for: entry, in: ProjectStore.shared)
+            .open(ghostty, into: home, beside: current, inFront: inFront)
     }
 
-    // MARK: Binding and Autosave
+    // MARK: A Page of a Project
 
-    /// Bind this tab to `name` -- from now on its layout, cwds and titles
-    /// are written to that project as they change. Replaces any binding
-    /// this tab had. Throws `boundElsewhere` if another tab holds it.
-    func bindProject(_ name: String) throws {
-        let store = ProjectStore.shared
-        if case .heldBy = store.bindings.claim(store.bindingKey(name: name), for: self) {
-            throw ProjectStore.StoreError.boundElsewhere(name: name, holder: store.holderTitle(name: name) ?? "")
-        }
-
-        if let old = boundProject, store.bindingKey(name: old) != store.bindingKey(name: name) {
-            store.bindings.release(store.bindingKey(name: old), for: self)
-        }
-        boundProject = name
-        startProjectAutosave()
-        ProjectStore.postBindingDidChange(name)
-
-        // What carries the binding across a restart -- see
-        // `TerminalRestorableState.InternalState.boundProject`.
-        invalidateRestorableState()
+    /// What this tab is called when something says which tab a project is
+    /// open in. Never empty: a tab just opened has no window title until
+    /// its shell sets one (see `ProjectsRules.holderLabel`, #965).
+    var projectTabTitle: String {
+        ProjectsRules.holderLabel(
+            windowTitle: window?.title ?? "",
+            paneTitles: [focusedSurface?.title ?? ""] + surfaceTree.map(\.title),
+            cwds: [focusedSurface?.pwd] + surfaceTree.map(\.pwd))
     }
 
-    /// Stop autosaving. Doesn't write anything; call `saveBoundProjectOnClose`
-    /// first if the last change should still land.
-    func unbindProject() {
-        guard let name = boundProject else { return }
-        let store = ProjectStore.shared
-        store.bindings.release(store.bindingKey(name: name), for: self)
-        stopProjectAutosave()
-        stopScrollbackJournals()
-        boundProject = nil
-        invalidateRestorableState()
-        ProjectStore.postBindingDidChange(name)
-    }
-
-    /// Window restoration's half of `bindProject`: a restored tab takes its
-    /// binding back if nobody else has it and the project still exists, and
-    /// otherwise starts unbound -- a restart is no time for an alert.
+    /// Window restoration's side: a restored tab asks for its page back.
+    /// Whether it gets it is the project file's to say
+    /// (`ProjectSession.restore`).
     func restoreProjectBinding(_ name: String?) {
         guard let name else { return }
-        guard ProjectStore.shared.entry(name: name) != nil else {
-            Ghostty.logger.warning("not restoring binding to missing project '\(name, privacy: .public)'")
-            return
-        }
-        do {
-            try bindProject(name)
-        } catch {
-            Ghostty.logger.warning("not restoring binding to project '\(name, privacy: .public)': \(error.localizedDescription, privacy: .public)")
-        }
+        ProjectSession.restore(self, to: name, in: ProjectStore.shared)
     }
 
-    /// The last save of a bound tab that is closing: the layout as it is
-    /// now, plus -- the one time besides an explicit save -- a full
-    /// scrollback capture. Called from `windowWillClose`, while the panes
-    /// are still alive: the core only promises that a capture requested
-    /// before `ghostty_surface_free` has landed by the time that returns.
-    func saveBoundProjectOnClose() {
-        projectAutosave?.cancel()
-        guard let name = boundProject, !surfaceTree.isEmpty else { return }
-        do {
-            try ProjectStore.shared.save(name: name, tree: surfaceTree, capturingScrollback: true, keeping: .onLayoutChange)
-        } catch {
-            Ghostty.logger.warning("final save of project '\(name, privacy: .public)' failed: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    /// The application is quitting: write every bound tab as it is now.
+    /// The application is quitting: write every open project as it is now.
     ///
     /// Quitting closes no window, so `windowWillClose` -- where a tab's last
     /// save is -- does not run, and a change still waiting out its second
-    /// was lost with the process. Always written, pending or not: a file
-    /// that would not change is not touched (`ProjectFileWriter.plan`).
-    /// No full scrollback capture, which is asked of the core and lands
-    /// later than a quit waits for; each pane's journal has its scrollback.
+    /// was lost with the process.
     static func saveBoundProjectsBeforeQuit() {
+        var saved: [ObjectIdentifier] = []
         for controller in all {
-            controller.projectAutosave?.cancel()
-            guard let name = controller.boundProject, !controller.surfaceTree.isEmpty else { continue }
-            do {
-                try ProjectStore.shared.save(
-                    name: name, tree: controller.surfaceTree, capturingScrollback: false, keeping: .onLayoutChange)
-            } catch {
-                Ghostty.logger.warning("save of project '\(name, privacy: .public)' at quit failed: \(error.localizedDescription, privacy: .public)")
-            }
+            guard let session = controller.projectSession, !saved.contains(ObjectIdentifier(session)) else { continue }
+            saved.append(ObjectIdentifier(session))
+            session.saveBeforeQuit()
         }
     }
 
@@ -296,17 +361,14 @@ extension TerminalController {
         }
     }
 
-    private func startProjectAutosave() {
+    /// Tell the project of this tab's changes from now on. Called by
+    /// `ProjectSession` when the tab joins it.
+    func startProjectAutosave() {
         stopProjectAutosave()
-
-        let debouncer = ProjectAutosaveDebouncer(scheduler: MainQueueScheduler()) { [weak self] in
-            self?.autosaveProject()
-        }
-        projectAutosave = debouncer
 
         // Each of these publishes its current value on subscription (and
         // the per-surface ones again on every tree change); `dropFirst`
-        // keeps binding itself from counting as a change. Splits added or
+        // keeps joining itself from counting as a change. Splits added or
         // removed and dividers dragged all arrive as a new `surfaceTree`.
         //
         // Which kind each is decides how long its write may be put off
@@ -314,50 +376,23 @@ extension TerminalController {
         // agent works, and must not hold back a split the person made.
         $surfaceTree
             .dropFirst()
-            .sink { _ in debouncer.poke(.layout) }
+            .sink { [weak self] _ in self?.projectSession?.poke(.layout) }
             .store(in: &projectAutosaveCancellables)
         surfaceValuesPublisher(valueKeyPath: \.pwd, publisherKeyPath: \.$pwd)
             .dropFirst()
-            .sink { _ in debouncer.poke(.paneDetail) }
+            .sink { [weak self] _ in self?.projectSession?.poke(.paneDetail) }
             .store(in: &projectAutosaveCancellables)
         surfaceValuesPublisher(valueKeyPath: \.title, publisherKeyPath: \.$title)
             .dropFirst()
-            .sink { _ in debouncer.poke(.paneDetail) }
+            .sink { [weak self] _ in self?.projectSession?.poke(.paneDetail) }
             .store(in: &projectAutosaveCancellables)
     }
 
-    private func stopProjectAutosave() {
+    func stopProjectAutosave() {
         projectAutosaveCancellables.removeAll()
-        projectAutosave?.cancel()
-        projectAutosave = nil
     }
 
-    private func autosaveProject() {
-        guard let name = boundProject else { return }
-        // A tab whose last pane just closed is about to go away, not a
-        // project that now has nothing in it. Writing it would leave a
-        // project that opens to nothing -- and push the real layout into
-        // `.prev`, one mistake away from gone.
-        guard !surfaceTree.isEmpty else { return }
-        do {
-            // No full capture: that is up to the configured limit per pane
-            // and this runs a second after any title change. Scrollback is
-            // kept by each pane's journal, which this also starts for a
-            // pane that has none yet (`ProjectStore.save`).
-            try ProjectStore.shared.save(name: name, tree: surfaceTree, capturingScrollback: false, keeping: .onLayoutChange)
-            // Also when nothing was written: what changed may be only the
-            // window's title, which is what the settings window calls this
-            // tab by.
-            ProjectStore.postBindingDidChange(name)
-        } catch {
-            // Logged, not alerted: this runs on its own a second after any
-            // change, and an alert per keystroke-driven title change is
-            // worse than the failure. The next change tries again.
-            Ghostty.logger.warning("autosave of project '\(name, privacy: .public)' failed: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    private func presentProjectError(_ error: Error) {
+    func presentProjectError(_ error: Error) {
         guard let window else { return }
         let alert = NSAlert()
         alert.messageText = String(localized: "Project Error", comment: "项目功能出错提醒标题")

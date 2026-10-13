@@ -241,6 +241,17 @@ struct ControlRoomTabStatusTests {
         let plain = TabAccessory.visibleItems(.init())
         #expect(plain == [.colorIndicator, .keyEquivalent])
     }
+
+    /// A tab that is a page of a project says so, with the first thing
+    /// beside its title; a tab of no project has no such mark.
+    @Test func aPageOfAProjectIsMarkedNearestTheTitle() {
+        let page = TabAccessory.visibleItems(.init(poltergeistMark: "⚑ ", status: .needsYou, project: "polter"))
+        #expect(page == [.projectMark, .colorIndicator, .poltergeistMark, .keyEquivalent, .status])
+        #expect(!TabAccessory.visibleItems(.init(project: nil)).contains(.projectMark))
+        #expect(TabAccessory.projectMarkHelp("polter").contains("polter"))
+        // The mark is the one drawn; changing it is changing this constant.
+        #expect(TabAccessory.projectMark == .stackedPages)
+    }
 }
 
 /// Looking at a row for a moment marks its group seen.
