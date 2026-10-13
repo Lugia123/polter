@@ -25,6 +25,12 @@ final class RoleLibraryEditor: ObservableObject {
     /// the person types a key of their own.
     @Published var keyFollowsName = true
 
+    /// The official skill on screen, when it is one of those and not a
+    /// role: its name, and its whole text as it is being edited.
+    @Published private(set) var skill: String?
+    @Published var skillText = ""
+    @Published private(set) var skillSaved = ""
+
     let library: RoleLibrary
 
     init(library: RoleLibrary) {
@@ -32,6 +38,7 @@ final class RoleLibraryEditor: ObservableObject {
     }
 
     var isDirty: Bool {
+        if skill != nil { return skillText != skillSaved }
         guard let draft else { return false }
         return isNew || draft != original
     }
@@ -40,14 +47,33 @@ final class RoleLibraryEditor: ObservableObject {
 
     /// Select a role, asking first when leaving unsaved changes behind.
     func select(_ key: String?) {
-        guard key != draft?.key || isNew else { return }
+        guard key != draft?.key || isNew || skill != nil else { return }
         // Cancelled: the list draws its highlight from `selection`, which
         // has not moved, so there is nothing to put back.
         guard confirmLeavingDraft() else { return }
         load(key)
     }
 
+    /// Put an official skill on screen in place of a role.
+    func selectSkill(_ name: String) {
+        guard name != skill, confirmLeavingDraft() else { return }
+        load(nil)
+        loadSkill(name)
+    }
+
+    private func loadSkill(_ name: String) {
+        let text = library.skills.skills.first { $0.name == name }?.source ?? ""
+        skill = name
+        skillText = text
+        skillSaved = text
+    }
+
+    var selectedSkill: OfficialSkill? {
+        skill.flatMap { name in library.skills.skills.first { $0.name == name } }
+    }
+
     private func load(_ key: String?) {
+        skill = nil
         selection = key
         isNew = false
         status = nil
@@ -60,6 +86,10 @@ final class RoleLibraryEditor: ObservableObject {
     /// After the library changed underneath: keep the draft, but refresh
     /// what "saved" means for it, and drop a selection that is gone.
     func libraryChanged() {
+        if let name = skill {
+            if !isDirty { loadSkill(name) }
+            return
+        }
         guard !isNew, let key = draft?.key ?? selection else { return }
         if let fresh = library.catalog.roles.first(where: { $0.key == key }) {
             if !isDirty { draft = fresh }
@@ -105,6 +135,7 @@ final class RoleLibraryEditor: ObservableObject {
         // A copy of a built-in role is the user's: theirs to change, and
         // saved under a key of its own.
         role.builtin = false
+        role.official = nil
         role.name = String(format: String(localized: "%@ Copy", comment: "角色库：复制角色后的默认名字，%@ 是原名"), source.displayName)
         role.summary = source.displaySummary
         role.key = Role.suggestedKey(for: source.key, avoiding: taken)
@@ -145,7 +176,16 @@ final class RoleLibraryEditor: ObservableObject {
 
     @discardableResult
     func save() -> Bool {
-        guard let role = draft, !role.builtin else { return true }
+        if let name = skill {
+            if let error = library.putSkill(name, text: skillText) {
+                status = error
+                return false
+            }
+            status = nil
+            loadSkill(name)
+            return true
+        }
+        guard let role = draft else { return true }
         if isNew && library.catalog.roles.contains(where: { $0.key == role.key }) {
             status = String(localized: "Another role already uses this key.", comment: "角色库：新建角色的 key 与已有角色重复")
             return false
@@ -163,7 +203,10 @@ final class RoleLibraryEditor: ObservableObject {
     }
 
     func revert() {
-        if isNew {
+        if let name = skill {
+            status = nil
+            loadSkill(name)
+        } else if isNew {
             load(nil)
         } else {
             load(draft?.key)
@@ -188,6 +231,78 @@ final class RoleLibraryEditor: ObservableObject {
             return
         }
         load(nil)
+    }
+}
+
+// MARK: Official roles and skills
+
+extension RoleLibraryEditor {
+    /// What "Restore Factory Settings" would act on: an official role or
+    /// an official skill that has been changed. Nil when there is nothing
+    /// to put back, which is when the button is greyed.
+    var restorable: RoleOfficial? {
+        let official = skill != nil ? selectedSkill?.official : (isNew ? nil : original?.official)
+        return official?.canRestore == true ? official : nil
+    }
+
+    /// Whether the thing on screen is one "Restore Factory Settings" is
+    /// about at all; the button is only there when it is.
+    var showsRestore: Bool {
+        skill != nil || (!isNew && draft?.builtin == true)
+    }
+
+    private func confirm(_ message: String, _ detail: String, button: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.informativeText = detail
+        alert.addButton(withTitle: button)
+        alert.addButton(withTitle: String(localized: "Cancel", comment: "角色库：取消"))
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    func restore() {
+        let button = String(localized: "Restore", comment: "角色库：恢复出厂设置确认框里的确认按钮")
+        if let name = skill {
+            guard confirm(
+                String(format: String(localized: "Restore \"%@\" to factory settings?", comment: "角色库：恢复出厂设置的确认，%@ 是角色名或 skill 名"), name),
+                String(localized: "Your changes to it are removed, along with anything typed here and not saved. This can't be undone.", comment: "角色库：恢复出厂设置的后果"),
+                button: button) else { return }
+            status = library.restoreSkill(name)
+            loadSkill(name)
+            return
+        }
+        guard let role = original, role.builtin else { return }
+        guard confirm(
+            String(format: String(localized: "Restore \"%@\" to factory settings?", comment: "角色库：恢复出厂设置的确认，%@ 是角色名或 skill 名"), role.name),
+            String(localized: "Your changes to it are removed, along with anything typed here and not saved. This can't be undone.", comment: "角色库：恢复出厂设置的后果"),
+            button: button) else { return }
+        var code = library.restore(role.key, everything: false)
+        if code == "OverridesUnreadable" {
+            // One role cannot be taken out of a file nobody can read. The
+            // core will set the whole file aside, and only when told to --
+            // so the person is told what that costs first.
+            guard confirm(
+                String(localized: "The file that holds your changes can't be read.", comment: "角色库：恢复出厂设置时改动文件读不了，第二次确认的标题"),
+                String(localized: "Restoring will put every official role and skill back to factory settings, not only this one. The file is kept beside the role library, renamed, so nothing in it is lost.", comment: "角色库：恢复出厂设置时改动文件读不了，第二次确认的说明"),
+                button: String(localized: "Restore All", comment: "角色库：把全部官方角色与 skill 恢复出厂设置")) else { return }
+            code = library.restore(role.key, everything: true)
+        }
+        load(role.key)
+        status = code.map(RoleLibrary.message(for:))
+    }
+
+    /// "Keep mine": the notice that the official role has changed goes,
+    /// and what was changed here stays.
+    func keepMine() {
+        guard let key = original?.key else { return }
+        let wasDirty = isDirty
+        status = library.acknowledge(key)
+        if !wasDirty { load(key) }
+    }
+
+    func adopt(_ key: String) {
+        status = library.adopt(key)
     }
 }
 
@@ -265,6 +380,7 @@ struct RoleLibraryView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                officialSkillRows
             }
             .padding(.vertical, SettingsLayout.rowGap)
         }
@@ -282,6 +398,39 @@ struct RoleLibraryView: View {
             editor.select(next)
         }
         .overlay { sidebarEmptyState }
+    }
+
+    /// The skills Polter ships, under the roles: the same list, because a
+    /// role is where a person meets them, and the same mark.
+    @ViewBuilder
+    private var officialSkillRows: some View {
+        let shown = library.skills.skills.filter {
+            filter.isEmpty || $0.name.localizedCaseInsensitiveContains(filter)
+        }
+        if !shown.isEmpty {
+            Divider().padding(.vertical, SettingsLayout.rowGap)
+            SettingsRow(selected: false) {
+                Text(String(localized: "Official Skills", comment: "角色库：列表下半的分组标题，Polter 自带的 skill"))
+                    .font(SettingsFont.minimum)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(shown) { skill in
+                SettingsRow(selected: editor.skill == skill.name) {
+                    HStack(spacing: 6) {
+                        Text(skill.name).lineLimit(1)
+                        OfficialMark()
+                        if skill.official.canRestore || (editor.skill == skill.name && editor.isDirty) {
+                            Circle().fill(Color.accentColor).frame(width: 6, height: 6)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .onTapGesture {
+                    listFocused = true
+                    DispatchQueue.main.async { editor.selectSkill(skill.name) }
+                }
+            }
+        }
     }
 
     /// What the search leaves of the list. The breadcrumb asks the same
@@ -339,14 +488,13 @@ struct RoleLibraryView: View {
                 Text(role.displayName.isEmpty ? role.key : role.displayName)
                     .lineLimit(1)
                 if role.builtin {
-                    Image(systemName: "lock.fill")
-                        .font(SettingsFont.minimum)
-                        .foregroundStyle(.secondary)
-                        .help(String(localized: "Comes with Polter", comment: "角色库：内置角色的锁图标说明"))
+                    OfficialMark()
                 }
-                if unsaved || (role.key == editor.draft?.key && editor.isDirty) {
+                if unsaved || (role.key == editor.draft?.key && editor.isDirty) || role.official?.canRestore == true {
                     Circle().fill(Color.accentColor).frame(width: 6, height: 6)
-                        .help(String(localized: "Unsaved changes", comment: "角色库：有未保存的修改"))
+                        .help(unsaved || (role.key == editor.draft?.key && editor.isDirty)
+                              ? String(localized: "Unsaved changes", comment: "角色库：有未保存的修改")
+                              : String(localized: "Changed from factory settings", comment: "角色库：官方角色或 skill 被改过的圆点说明"))
                 }
             }
             Text(role.clis.isEmpty
@@ -375,9 +523,22 @@ struct RoleLibraryView: View {
             if let error = library.catalog.error {
                 banner(String(localized: "The role library file has an error in it. Roles can't be changed here until it's fixed.", comment: "角色库：personas.json 解析失败的横幅"), detail: error)
             }
-            if let draft = editor.draft {
-                if draft.builtin {
-                    builtinBanner
+            if let why = library.catalog.overridesError {
+                banner(String(localized: "Your changes to official roles couldn't be read, so they are not in use.", comment: "角色库：官方角色的改动文件整份读不了"), detail: why)
+            }
+            ForEach(library.catalog.shadowed) { mine in
+                shadowedBanner(mine)
+            }
+            if let skill = editor.selectedSkill {
+                officialNotice(skill.official, name: nil)
+                ScrollView {
+                    skillEditor(skill)
+                        .padding(SettingsLayout.pad)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else if let draft = editor.draft {
+                if !editor.isNew, let official = editor.original?.official {
+                    officialNotice(official, name: draft.name)
                 }
                 tabBar
                 Divider()
@@ -397,9 +558,6 @@ struct RoleLibraryView: View {
                                 itemsTab(editor.tab == .skills ? .skill : .mcp)
                             }
                         }
-                        // Read-only rather than hidden: what it does is the
-                        // point of looking at it.
-                        .disabled(draft.builtin)
                     }
                     .padding(SettingsLayout.pad)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -469,18 +627,111 @@ struct RoleLibraryView: View {
         }
     }
 
-    private var builtinBanner: some View {
-        HStack(spacing: 10) {
-            Label(String(localized: "This role comes with Polter and can't be changed or deleted. Duplicate it to make one of your own.", comment: "角色库：内置角色不可改的横幅"),
-                  systemImage: "lock.fill")
-                .foregroundStyle(.secondary)
+    /// Whether the role on screen is an official one: its name, its
+    /// description and what it grants are shown and cannot be changed.
+    private var locked: Bool { editor.draft?.builtin == true }
+
+    /// What an official role or skill has to say for itself, above it:
+    /// that the shipped one has changed since it was changed here, or that
+    /// what was changed here could not be read. Nothing when neither.
+    @ViewBuilder
+    private func officialNotice(_ official: RoleOfficial, name: String?) -> some View {
+        switch official.state {
+        case .modifiedStale:
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    let fields = Array(Set(official.stale.map(RoleOfficial.fieldName))).sorted().joined(separator: ", ")
+                    Label(fields.isEmpty
+                          ? String(localized: "The official version has changed", comment: "角色库：官方版本有更新（官方 skill，没有字段可点名）")
+                          : String(format: String(localized: "The official version has changed: %@", comment: "角色库：官方版本有更新，%@ 是哪几部分"), fields),
+                          systemImage: "arrow.triangle.2.circlepath")
+                    Text(String(localized: "The official version of what you changed here has changed since. Yours is still the one in use.", comment: "角色库：官方版本有更新的第二行"))
+                        .font(SettingsFont.minimum)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                if name != nil {
+                    Button(String(localized: "Keep Mine", comment: "角色库：官方版本有更新时，知道了，仍用我的")) { editor.keepMine() }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, SettingsLayout.pad)
+            .padding(.vertical, SettingsLayout.rowGap + 4)
+            .background(Color.accentColor.opacity(0.08))
+        case .unknown:
+            banner(String(localized: "Your changes weren't read, so the factory settings are in use.", comment: "角色库：这个官方角色或 skill 的改动读不出来"),
+                   detail: official.reason ?? "")
+        case .pristine, .modified:
+            EmptyView()
+        }
+    }
+
+    /// A role of the person's that the file holds under a key Polter now
+    /// ships a role under: said, with the one thing they can do about it.
+    private func shadowedBanner(_ mine: RoleCatalog.Shadowed) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Label(String(format: String(localized: "Your role \"%1$@\" has the key %2$@, which is now an official role's. Yours is kept in the file but isn't in use.", comment: "角色库：用户文件里有一个角色用了官方 key；%1$@ 是它的名字，%2$@ 是 key"), mine.name, mine.key),
+                  systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer()
-            Button(String(localized: "Duplicate", comment: "角色库：横幅上的复制按钮")) { editor.duplicate() }
+            Button(String(localized: "Keep It Under a New Key", comment: "角色库：把占了官方 key 的自建角色改个 key 留下")) { editor.adopt(mine.key) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, SettingsLayout.pad)
         .padding(.vertical, SettingsLayout.rowGap + 4)
-        .background(Color.secondary.opacity(0.08))
+        .background(Color.orange.opacity(0.08))
+    }
+
+    /// An official skill: its name, which is its file's and cannot change,
+    /// where it stands, and its whole text.
+    private func skillEditor(_ skill: OfficialSkill) -> some View {
+        VStack(alignment: .leading, spacing: SettingsLayout.groupGap) {
+            VStack(alignment: .leading, spacing: SettingsLayout.rowGap) {
+                labeled(String(localized: "Name", comment: "角色库：字段名，角色名")) {
+                    lockedField(skill.name, monospaced: true)
+                }
+                labeled(String(localized: "Status", comment: "角色库：官方 skill 的状态行标签")) {
+                    Text(Self.stateText(skill.official))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            section(String(localized: "Skill Text", comment: "角色库：分区名，官方 skill 的正文")) {
+                TextEditor(text: $editor.skillText)
+                    .font(.body.monospaced())
+                    .frame(minHeight: 320)
+                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.3)))
+                note(String(localized: "Takes effect as soon as it's saved. When an agent that is already running reads the new text depends on the tool it uses.", comment: "角色库：官方 skill 保存后何时生效"))
+            }
+        }
+    }
+
+    static func stateText(_ official: RoleOfficial) -> String {
+        switch official.state {
+        case .pristine: return String(localized: "Factory settings", comment: "角色库：官方 skill 的状态，没改过")
+        case .modified: return String(localized: "Changed", comment: "角色库：官方 skill 的状态，改过")
+        case .modifiedStale: return String(localized: "Changed · The official version has changed", comment: "角色库：官方 skill 的状态，改过且官方版本后来也变了")
+        case .unknown: return String(format: String(localized: "Your changes weren't read: %@", comment: "角色库：官方 skill 的状态，改动读不出来，%@ 是原因"), official.reason ?? "")
+        }
+    }
+
+    /// A field that is shown and cannot be changed, with the lock that
+    /// says so.
+    private func lockedField(_ text: String, monospaced: Bool = false) -> some View {
+        HStack(spacing: 6) {
+            Text(text)
+                .font(monospaced ? .body.monospaced() : .body)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: "lock.fill")
+                .font(SettingsFont.minimum)
+                .foregroundStyle(.secondary)
+                .help(String(localized: "Part of the official version. It can't be changed.", comment: "角色库：官方角色或 skill 里锁住的字段的说明"))
+        }
     }
 
     private func banner(_ text: String, detail: String) -> some View {
@@ -505,10 +756,13 @@ struct RoleLibraryView: View {
     private var basics: some View {
         VStack(alignment: .leading, spacing: SettingsLayout.rowGap) {
             labeled(String(localized: "Name", comment: "角色库：字段名，角色名")) {
-                TextField("", text: editor.draft?.builtin == true
-                          ? .constant(editor.draft?.displayName ?? "") : draftBinding.name)
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: editor.draft?.name ?? "") { _ in editor.nameChanged() }
+                if locked {
+                    lockedField(editor.draft?.name ?? "")
+                } else {
+                    TextField("", text: draftBinding.name)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: editor.draft?.name ?? "") { _ in editor.nameChanged() }
+                }
             }
             labeled(String(localized: "Key", comment: "角色库：字段名，角色的 key（英文标识）")) {
                 if editor.isNew {
@@ -533,10 +787,13 @@ struct RoleLibraryView: View {
                 }
             }
             labeled(String(localized: "Description", comment: "角色库：字段名，角色的一句话说明")) {
-                TextField(String(localized: "What this role is for, for whoever picks it", comment: "角色库：说明字段的占位提示"),
-                          text: editor.draft?.builtin == true
-                          ? .constant(editor.draft?.displaySummary ?? "") : draftBinding.summary)
-                    .textFieldStyle(.roundedBorder)
+                if locked {
+                    lockedField(editor.draft?.summary ?? "")
+                } else {
+                    TextField(String(localized: "What this role is for, for whoever picks it", comment: "角色库：说明字段的占位提示"),
+                              text: draftBinding.summary)
+                        .textFieldStyle(.roundedBorder)
+                }
             }
         }
     }
@@ -568,17 +825,22 @@ struct RoleLibraryView: View {
                 formControl {
                     Toggle(String(localized: "Make this terminal a supervisor", comment: "角色库：Polter 选项，启动后设为总管"),
                            isOn: polterBinding.supervisor)
+                        .disabled(locked)
                 }
                 formControl {
                     Toggle(String(localized: "Let the supervisor answer this terminal's permission prompts", comment: "角色库：Polter 选项，允许总管替你回答权限问题"),
                            isOn: polterBinding.mayAuthorise)
+                        .disabled(locked)
                 }
                 formControl {
                     Toggle(String(localized: "Shield it: no tool can reach it, a supervisor's included", comment: "角色库：Polter 选项，护盾"),
                            isOn: polterBinding.shielded)
+                        .disabled(locked)
                 }
                 formControl {
-                    note(String(localized: "These three give the terminal something, so only you can set them, here. A supervisor that edits roles can't change them.", comment: "角色库：前三个 Polter 选项只有用户能改"))
+                    note(locked
+                         ? String(localized: "These three are part of the official role and can't be changed. Duplicate the role to make one of your own.", comment: "角色库：官方角色的前三个 Polter 选项锁住")
+                         : String(localized: "These three give the terminal something, so only you can set them, here. A supervisor that edits roles can't change them.", comment: "角色库：前三个 Polter 选项只有用户能改"))
                 }
 
                 let p = editor.draft?.polter ?? RolePolter()
@@ -702,7 +964,7 @@ struct RoleLibraryView: View {
                     Label(status, systemImage: "exclamationmark.circle")
                         .foregroundStyle(.red)
                         .textSelection(.enabled)
-                } else if let reason = launchBlockedReason {
+                } else if let reason = editor.skill == nil ? launchBlockedReason : nil {
                     // Written out rather than a tooltip: a reason nobody
                     // hovers over is no reason (settings.md §4).
                     Text(reason)
@@ -718,8 +980,12 @@ struct RoleLibraryView: View {
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
-            launchButton
-            Button(String(localized: "Revert", comment: "角色库：放弃修改回到已保存的版本")) { editor.revert() }
+            if editor.showsRestore {
+                Button(String(localized: "Restore Factory Settings…", comment: "角色库：把官方角色或官方 skill 恢复成出厂的")) { editor.restore() }
+                    .disabled(editor.restorable == nil)
+            }
+            if editor.skill == nil { launchButton }
+            Button(String(localized: "Discard Changes", comment: "角色库：放弃未保存的修改，回到已保存的版本")) { editor.revert() }
                 .disabled(!editor.isDirty)
             Button(String(localized: "Save", comment: "角色库：保存按钮")) { editor.save() }
                 .keyboardShortcut("s", modifiers: .command)
@@ -782,6 +1048,21 @@ struct RoleLibraryView: View {
 
     private func labeled<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         formRow(title, content: content)
+    }
+}
+
+/// The mark on a role or a skill Polter ships. Words in a thin outline: a
+/// lock said "cannot be changed", which is no longer what official means.
+struct OfficialMark: View {
+    var body: some View {
+        Text(String(localized: "Official", comment: "角色库：官方角色与官方 skill 的标志"))
+            .font(SettingsFont.minimum)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.5), lineWidth: 1))
+            .fixedSize()
+            .help(String(localized: "Comes with Polter. What you change in it can be put back with Restore Factory Settings.", comment: "角色库：官方标志的说明"))
     }
 }
 

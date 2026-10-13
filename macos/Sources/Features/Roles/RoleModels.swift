@@ -141,38 +141,31 @@ struct Role: Equatable, Identifiable {
     var clis: [RoleCliChoice] = []
     var polter = RolePolter()
 
-    /// Shipped with Polter. Shown, launched and copied, never saved: the
-    /// core refuses to replace or delete one.
+    /// An official role: shipped with Polter. Some of it can be changed
+    /// here and put back (`official`); its name, its description and what
+    /// it grants cannot, and it cannot be deleted.
     var builtin = false
+
+    /// Where an official role stands against the shipped one; nil for a
+    /// role somebody wrote. The core's word, never worked out here.
+    var official: RoleOfficial?
 
     /// Everything else in the object, as JSON, so it compares and saves.
     var passthrough: Data = Data("{}".utf8)
 
     var id: String { key }
 
-    static let editedKeys: Set<String> = ["key", "name", "description", "instructions", "clis", "polter", "builtin"]
+    static let editedKeys: Set<String> = ["key", "name", "description", "instructions", "clis", "polter", "builtin", "official"]
 
     /// The key of the supervisor role Polter ships (`persona.supervisor_key`).
     static let supervisorKey = "polter-supervisor"
 
-    /// The name to show. A built-in role's is in the core in English, and
-    /// shown here in the user's language.
-    var displayName: String {
-        guard builtin else { return name }
-        switch key {
-        case Self.supervisorKey: return String(localized: "Polter Supervisor", comment: "角色库：内置角色名，Polter 总管")
-        default: return name
-        }
-    }
+    /// The name to show: the name. An official role's used to be shown in
+    /// the reader's language by its key; official roles are English as
+    /// shipped, so the name beside the "Official" mark is the shipped one.
+    var displayName: String { name }
 
-    var displaySummary: String {
-        guard builtin else { return summary }
-        switch key {
-        case Self.supervisorKey:
-            return String(localized: "Makes the terminal it starts in this window's supervisor: splits the work, hands it out and checks it.", comment: "角色库：内置总管角色的一句话说明")
-        default: return summary
-        }
-    }
+    var displaySummary: String { summary }
 
     init(key: String, name: String) {
         self.key = key
@@ -190,6 +183,7 @@ struct Role: Equatable, Identifiable {
         }
         polter = RolePolter(json: obj["polter"])
         builtin = (obj["builtin"] as? Bool) ?? false
+        official = RoleOfficial(json: obj["official"])
         let rest = obj.filter { !Self.editedKeys.contains($0.key) }
         passthrough = (try? JSONSerialization.data(withJSONObject: rest, options: [.sortedKeys])) ?? Data("{}".utf8)
     }
@@ -247,9 +241,102 @@ struct Role: Equatable, Identifiable {
     }
 }
 
+/// Where an official role, or an official skill, stands against the one
+/// Polter ships (`persona.Official` in the core).
+struct RoleOfficial: Equatable {
+    enum State: String {
+        case pristine, modified, unknown
+        /// Changed here, and the shipped one has changed in the same place
+        /// since.
+        case modifiedStale = "modified_stale"
+    }
+
+    var state: State
+    var overridden: [String] = []
+    var stale: [String] = []
+    var reason: String?
+
+    init(state: State, reason: String? = nil) {
+        self.state = state
+        self.reason = reason
+    }
+
+    init?(json: Any?) {
+        guard let obj = json as? [String: Any],
+              let raw = obj["state"] as? String, let state = State(rawValue: raw) else { return nil }
+        self.state = state
+        overridden = (obj["overridden"] as? [String]) ?? []
+        stale = (obj["stale"] as? [String]) ?? []
+        reason = obj["reason"] as? String
+    }
+
+    /// Whether there is anything to put back.
+    var canRestore: Bool { state != .pristine }
+
+    /// A field path from the core (`official.targetOf`), in words.
+    static func fieldName(_ path: String) -> String {
+        switch path {
+        case "instructions": return String(localized: "Instructions", comment: "角色库：分区名，启动时附加给 agent 的指令")
+        case "polter.watch", "polter.open", "polter.quiet_ms": return String(localized: "Polter", comment: "角色库：分区名，这个角色启动的终端在 Polter 里是什么身份")
+        default: return String(localized: "Agent CLIs", comment: "角色库：分区名，这个角色可以启动哪些 CLI")
+        }
+    }
+}
+
+/// One skill Polter ships, with the text in use and where it stands.
+struct OfficialSkill: Equatable, Identifiable {
+    var name: String
+    var summary: String
+    var official: RoleOfficial
+    /// The whole file in use: the person's copy when there is one.
+    var source: String
+    var shipped: String
+    var id: String { name }
+
+    init?(json obj: [String: Any]) {
+        guard let name = obj["name"] as? String, let source = obj["source"] as? String,
+              let official = RoleOfficial(json: obj) else { return nil }
+        self.name = name
+        self.source = source
+        self.official = official
+        summary = (obj["description"] as? String) ?? ""
+        shipped = (obj["shipped"] as? String) ?? source
+    }
+}
+
+struct OfficialSkillCatalog: Equatable {
+    /// Why the list could not be made; then `skills` is empty because it
+    /// is not known, not because there are none.
+    var error: String?
+    var skills: [OfficialSkill] = []
+
+    init() {}
+
+    init?(json: String) {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        error = obj["error"] as? String
+        skills = ((obj["skills"] as? [[String: Any]]) ?? []).compactMap(OfficialSkill.init(json:))
+    }
+}
+
 /// What the core said about the library: the roles, and whether that list
 /// can be believed.
 struct RoleCatalog: Equatable {
+    /// A role the file holds under a key that is now an official role's.
+    struct Shadowed: Equatable, Identifiable {
+        var key: String
+        var name: String
+        var id: String { key }
+    }
+
+    /// Roles of the person's that are in the file and not in use, because
+    /// Polter ships a role under their key.
+    var shadowed: [Shadowed] = []
+    /// Why the file of changes to official roles could not be read as a
+    /// whole; nil when it could.
+    var overridesError: String?
+
     /// False until the file has been looked at. An empty list before then
     /// is "not read yet", not "no roles".
     var loaded = false
@@ -268,6 +355,11 @@ struct RoleCatalog: Equatable {
         error = obj["error"] as? String
         path = obj["path"] as? String
         roles = ((obj["personas"] as? [[String: Any]]) ?? []).compactMap(Role.init(json:))
+        shadowed = ((obj["shadowed"] as? [[String: Any]]) ?? []).compactMap { row in
+            guard let key = row["key"] as? String else { return nil }
+            return Shadowed(key: key, name: (row["name"] as? String) ?? key)
+        }
+        overridesError = obj["overrides_error"] as? String
     }
 }
 

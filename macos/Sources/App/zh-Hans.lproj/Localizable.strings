@@ -841,3 +841,36 @@
 "Every page of its project comes back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide." = "项目的各页都还原，总管在它那一格启动；worker 的格子只还原终端，叫谁回来由总管决定。";
 "All %@ page(s) of its project come back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide." = "项目的 %@ 页都还原，总管在它那一格启动；worker 的格子只还原终端，叫谁回来由总管决定。";
 "The group's supervisor is on this page, so it stays in the group's project." = "这个群的总管在这一页上，所以它留在这个群的项目里。";
+
+/* 官方角色与官方 skill：可改、可恢复出厂设置（#1504） */
+"An official role's name, description and what it grants can't be changed. Duplicate it to make one of your own." = "官方角色的名字、说明和它赋予终端的权限不能改。想改就复制一份成为你自己的角色。";
+"Changed" = "已修改";
+"Changed from factory settings" = "与出厂设置不同";
+"Changed · The official version has changed" = "已修改 · 官方版本有更新";
+"Comes with Polter. What you change in it can be put back with Restore Factory Settings." = "Polter 自带。你在里面改的东西可以用「恢复出厂设置」还原。";
+"Discard Changes" = "放弃修改";
+"Factory settings" = "出厂设置";
+"Keep It Under a New Key" = "换个 key 留作我自己的角色";
+"Keep Mine" = "知道了，仍用我的";
+"Official" = "官方";
+"Official Skills" = "官方 skill";
+"Part of the official version. It can't be changed." = "属于官方版本，不能修改。";
+"Restore All" = "全部恢复";
+"Restore Factory Settings…" = "恢复出厂设置…";
+"Restore \"%@\" to factory settings?" = "把「%@」恢复出厂设置？";
+"Restoring will put every official role and skill back to factory settings, not only this one. The file is kept beside the role library, renamed, so nothing in it is lost." = "恢复会把全部官方角色和官方 skill 都设回出厂设置，不只是这一个。读不了的那个文件会改名留在角色库旁边，里面的内容不会丢。";
+"Takes effect as soon as it's saved. When an agent that is already running reads the new text depends on the tool it uses." = "保存后立即生效。已经在运行的 agent 什么时候读到新内容，取决于它用的工具。";
+"The file that holds your changes can't be read." = "保存你的改动的文件读不了。";
+"The file that holds your changes to official roles can't be read, so nothing was saved into it. Restore Factory Settings sets it aside." = "保存你对官方角色改动的文件读不了，所以这次没有存进去。用「恢复出厂设置」可以把它挪开。";
+"The official version has changed" = "官方版本有更新";
+"The official version has changed: %@" = "官方版本有更新：%@";
+"The official version of what you changed here has changed since. Yours is still the one in use." = "你改过的这一项，官方版本后来也改了。现在用的仍是你的。";
+"These three are part of the official role and can't be changed. Duplicate the role to make one of your own." = "这三项属于官方角色，不能修改。想改就复制一份成为你自己的角色。";
+"This doesn't read as the skill: it needs its opening lines, with its own name in them." = "这段内容读不成这个 skill：开头那几行要在，里面的名字要是它自己的。";
+"This skill couldn't be saved." = "这个 skill 没能保存。";
+"Your changes to it are removed, along with anything typed here and not saved. This can't be undone." = "你对它的改动会被去掉，这里还没保存的输入也一样。此操作不能撤销。";
+"Your changes to official roles couldn't be read, so they are not in use." = "你对官方角色的改动没被读到，所以没有生效。";
+"Your changes weren't read, so the factory settings are in use." = "你的改动没被读到，现在用的是出厂设置。";
+"Your changes weren't read: %@" = "你的改动没被读到：%@";
+"Your role \"%1$@\" has the key %2$@, which is now an official role's. Yours is kept in the file but isn't in use." = "你的角色「%1$@」用的 key 是 %2$@，这个 key 现在属于官方角色。你的那份还在文件里，但没有被使用。";
+"Skill Text" = "正文";

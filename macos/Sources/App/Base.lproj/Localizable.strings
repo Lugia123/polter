@@ -825,3 +825,36 @@
 "Every page of its project comes back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide." = "Every page of its project comes back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide.";
 "All %@ page(s) of its project come back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide." = "All %@ page(s) of its project come back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide.";
 "The group's supervisor is on this page, so it stays in the group's project." = "The group's supervisor is on this page, so it stays in the group's project.";
+
+/* 官方角色与官方 skill：可改、可恢复出厂设置（#1504） */
+"An official role's name, description and what it grants can't be changed. Duplicate it to make one of your own." = "An official role's name, description and what it grants can't be changed. Duplicate it to make one of your own.";
+"Changed" = "Changed";
+"Changed from factory settings" = "Changed from factory settings";
+"Changed · The official version has changed" = "Changed · The official version has changed";
+"Comes with Polter. What you change in it can be put back with Restore Factory Settings." = "Comes with Polter. What you change in it can be put back with Restore Factory Settings.";
+"Discard Changes" = "Discard Changes";
+"Factory settings" = "Factory settings";
+"Keep It Under a New Key" = "Keep It Under a New Key";
+"Keep Mine" = "Keep Mine";
+"Official" = "Official";
+"Official Skills" = "Official Skills";
+"Part of the official version. It can't be changed." = "Part of the official version. It can't be changed.";
+"Restore All" = "Restore All";
+"Restore Factory Settings…" = "Restore Factory Settings…";
+"Restore \"%@\" to factory settings?" = "Restore \"%@\" to factory settings?";
+"Restoring will put every official role and skill back to factory settings, not only this one. The file is kept beside the role library, renamed, so nothing in it is lost." = "Restoring will put every official role and skill back to factory settings, not only this one. The file is kept beside the role library, renamed, so nothing in it is lost.";
+"Takes effect as soon as it's saved. When an agent that is already running reads the new text depends on the tool it uses." = "Takes effect as soon as it's saved. When an agent that is already running reads the new text depends on the tool it uses.";
+"The file that holds your changes can't be read." = "The file that holds your changes can't be read.";
+"The file that holds your changes to official roles can't be read, so nothing was saved into it. Restore Factory Settings sets it aside." = "The file that holds your changes to official roles can't be read, so nothing was saved into it. Restore Factory Settings sets it aside.";
+"The official version has changed" = "The official version has changed";
+"The official version has changed: %@" = "The official version has changed: %@";
+"The official version of what you changed here has changed since. Yours is still the one in use." = "The official version of what you changed here has changed since. Yours is still the one in use.";
+"These three are part of the official role and can't be changed. Duplicate the role to make one of your own." = "These three are part of the official role and can't be changed. Duplicate the role to make one of your own.";
+"This doesn't read as the skill: it needs its opening lines, with its own name in them." = "This doesn't read as the skill: it needs its opening lines, with its own name in them.";
+"This skill couldn't be saved." = "This skill couldn't be saved.";
+"Your changes to it are removed, along with anything typed here and not saved. This can't be undone." = "Your changes to it are removed, along with anything typed here and not saved. This can't be undone.";
+"Your changes to official roles couldn't be read, so they are not in use." = "Your changes to official roles couldn't be read, so they are not in use.";
+"Your changes weren't read, so the factory settings are in use." = "Your changes weren't read, so the factory settings are in use.";
+"Your changes weren't read: %@" = "Your changes weren't read: %@";
+"Your role \"%1$@\" has the key %2$@, which is now an official role's. Yours is kept in the file but isn't in use." = "Your role \"%1$@\" has the key %2$@, which is now an official role's. Yours is kept in the file but isn't in use.";
+"Skill Text" = "Skill Text";

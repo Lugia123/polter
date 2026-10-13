@@ -182,14 +182,9 @@ struct ControlRoomList: Equatable {
         var name: String
         var id: String { key }
 
-        /// The name to show. The role Polter ships is named in English in
-        /// the core and shown in the person's language, as the role
-        /// library shows it.
-        var displayName: String {
-            key == "polter-supervisor"
-                ? String(localized: "Polter Supervisor", comment: "角色库：内置角色名，Polter 总管")
-                : name
-        }
+        /// The name to show: the name, as the role library shows it. An
+        /// official role is English as shipped.
+        var displayName: String { name }
     }
 
     /// Who a row is about, as the core says it (`ControlRoom.zig`,

@@ -80,6 +80,71 @@ struct RoleLibraryTests {
 
     /// A hand-written role's tool rules must survive the window saving its
     /// description.
+    /// An official role says where it stands against the shipped one, in
+    /// the core's four words; that is read, shown, and never sent back --
+    /// it is the core's to say, and a write that carried it would be a
+    /// write claiming to know.
+    @Test func anOfficialRolesStandingIsReadAndNeverWrittenBack() throws {
+        func role(_ official: String) throws -> Role {
+            let json = """
+            {"key":"polter-tester","name":"Polter Tester","description":"d","builtin":true,
+             "official":\(official)}
+            """
+            let obj = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+            return try #require(Role(json: obj))
+        }
+        let stale = try role(#"{"state":"modified_stale","overridden":["instructions","polter.watch"],"stale":["instructions"],"reason":null}"#)
+        #expect(stale.official?.state == .modifiedStale)
+        #expect(stale.official?.stale == ["instructions"])
+        #expect(stale.official?.canRestore == true)
+        #expect(try role(#"{"state":"pristine","overridden":[],"stale":[],"reason":null}"#).official?.canRestore == false)
+        let unknown = try role(#"{"state":"unknown","overridden":[],"stale":[],"reason":"not json"}"#)
+        // Not known is something to put back from, and says why.
+        #expect(unknown.official?.canRestore == true)
+        #expect(unknown.official?.reason == "not json")
+        // A word this build does not know is not guessed at.
+        #expect(try role(#"{"state":"something-new"}"#).official == nil)
+
+        // Shown under the name it ships with, whatever the reader's language.
+        #expect(stale.displayName == "Polter Tester")
+        #expect(stale.displaySummary == "d")
+        // What goes back to the core carries neither word for "official".
+        #expect(stale.jsonObject["official"] == nil)
+        #expect(stale.jsonObject["builtin"] == nil)
+        #expect(stale.jsonObject["name"] as? String == "Polter Tester")
+    }
+
+    /// The library says which of the person's roles are in the file and not
+    /// in use, and why their changes to official roles could not be read;
+    /// absent means neither.
+    @Test func theCatalogSaysWhatIsShadowedAndWhyChangesWereNotRead() throws {
+        let full = try #require(RoleCatalog(json: """
+        {"loaded":true,"error":null,"path":"/x/personas.json","personas":[],
+         "shadowed":[{"key":"polter-tester","name":"我的测试员"}],"overrides_error":"not json"}
+        """))
+        #expect(full.shadowed == [.init(key: "polter-tester", name: "我的测试员")])
+        #expect(full.overridesError == "not json")
+        let plain = try #require(RoleCatalog(json: #"{"loaded":true,"error":null,"path":null,"personas":[]}"#))
+        #expect(plain.shadowed.isEmpty)
+        #expect(plain.overridesError == nil)
+    }
+
+    /// The official skills, each with the text in use and the shipped text;
+    /// a list that could not be made is an error, not an empty list.
+    @Test func officialSkillsCarryBothTextsAndAnUnknownListIsAnError() throws {
+        let some = try #require(OfficialSkillCatalog(json: """
+        {"error":null,"skills":[
+         {"name":"supervising","description":"d","state":"modified","reason":null,"source":"mine","shipped":"theirs"},
+         {"name":"reading-a-terminal","description":"","state":"pristine","reason":null,"source":"same","shipped":"same"}]}
+        """))
+        #expect(some.skills.map(\.name) == ["supervising", "reading-a-terminal"])
+        #expect(some.skills[0].source == "mine" && some.skills[0].shipped == "theirs")
+        #expect(some.skills[0].official.canRestore && !some.skills[1].official.canRestore)
+        #expect(some.error == nil)
+        let none = try #require(OfficialSkillCatalog(json: #"{"error":"could not be listed","skills":null}"#))
+        #expect(none.skills.isEmpty && none.error == "could not be listed")
+    }
+
     @Test func fieldsTheWindowDoesNotEditAreWrittenBack() throws {
         let catalog = try #require(RoleCatalog(json: catalogJSON))
         var role = try #require(catalog.roles.first)

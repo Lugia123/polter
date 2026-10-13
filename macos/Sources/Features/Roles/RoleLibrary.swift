@@ -14,6 +14,7 @@ final class RoleLibrary: ObservableObject {
 
     @Published private(set) var catalog = RoleCatalog()
     @Published private(set) var clis = AgentCliSnapshot()
+    @Published private(set) var skills = OfficialSkillCatalog()
 
     private var pollTimer: Timer?
     private var pollDeadline = Date.distantPast
@@ -28,7 +29,60 @@ final class RoleLibrary: ObservableObject {
            let parsed = RoleCatalog(json: json) {
             catalog = parsed
         }
+        if let json = PersonaCatalog.readJSON({ ghostty_app_official_skills(app, $0, $1) }),
+           let parsed = OfficialSkillCatalog(json: json) {
+            skills = parsed
+        }
         reloadClis(refresh: false)
+    }
+
+    /// One call that answers true, or false with an error's name. Nil on
+    /// success, otherwise that name -- the caller turns it into words, or
+    /// acts on it.
+    private func ask(_ body: (ghostty_app_t, UnsafeMutablePointer<CChar>?, UInt) -> Bool) -> String? {
+        guard let app else { return "NoApp" }
+        var err = [CChar](repeating: 0, count: 128)
+        let ok = err.withUnsafeMutableBufferPointer { body(app, $0.baseAddress, UInt($0.count)) }
+        reload()
+        return ok ? nil : String(cString: err)
+    }
+
+    /// Put an official role back to the shipped one. The error's name, not
+    /// a sentence: `OverridesUnreadable` is a question to ask the person.
+    func restore(_ key: String, everything: Bool) -> String? {
+        ask { app, err, cap in
+            key.withCString { ghostty_app_persona_restore(app, $0, UInt(strlen($0)), everything, err, cap) }
+        }
+    }
+
+    /// "Keep mine", for a role the shipped version has moved under.
+    func acknowledge(_ key: String) -> String? {
+        ask { app, err, cap in
+            key.withCString { ghostty_app_persona_acknowledge(app, $0, UInt(strlen($0)), err, cap) }
+        }.map(Self.message(for:))
+    }
+
+    /// Keep a role the file holds under an official key as one's own.
+    func adopt(_ key: String) -> String? {
+        ask { app, err, cap in
+            key.withCString { ghostty_app_persona_adopt(app, $0, UInt(strlen($0)), err, cap) }
+        }.map(Self.message(for:))
+    }
+
+    func putSkill(_ name: String, text: String) -> String? {
+        ask { app, err, cap in
+            name.withCString { cName in
+                text.withCString { cText in
+                    ghostty_app_official_skill_put(app, cName, UInt(strlen(cName)), cText, UInt(strlen(cText)), err, cap)
+                }
+            }
+        }.map(Self.message(for:))
+    }
+
+    func restoreSkill(_ name: String) -> String? {
+        ask { app, err, cap in
+            name.withCString { ghostty_app_official_skill_restore(app, $0, UInt(strlen($0)), err, cap) }
+        }.map(Self.message(for:))
     }
 
     /// Read the CLI cache, and keep reading it while the core says a newer
@@ -131,6 +185,14 @@ final class RoleLibrary: ObservableObject {
             return String(localized: "This role is set up for more than one agent CLI. Choose one.", comment: "用角色启动：角色配了多个 CLI，要指定一个")
         case "NotYetOpen":
             return String(localized: "A tab was opened but didn't appear in time, so nothing was started in it.", comment: "用角色启动：新标签页没及时出现，没有往里启动任何东西")
+        case "LockedName", "LockedDescription", "LockedStanding", "LockedField":
+            return String(localized: "An official role's name, description and what it grants can't be changed. Duplicate it to make one of your own.", comment: "角色库：保存官方角色时动了不许改的字段")
+        case "OverridesUnreadable":
+            return String(localized: "The file that holds your changes to official roles can't be read, so nothing was saved into it. Restore Factory Settings sets it aside.", comment: "角色库：官方角色的改动文件读不了，拒绝写入")
+        case "BadSkill":
+            return String(localized: "This doesn't read as the skill: it needs its opening lines, with its own name in them.", comment: "角色库：官方 skill 的正文保存被拒")
+        case "NoSuchSkill", "NoConfigDir":
+            return String(localized: "This skill couldn't be saved.", comment: "角色库：官方 skill 保存失败")
         case "NoApp":
             return String(localized: "Polter isn't ready yet.", comment: "角色库：app 还没初始化")
         default:
