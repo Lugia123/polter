@@ -287,6 +287,24 @@ fn main() {
             ),
             None => println!("start id={} -", r.id),
         }
+        // What the core says of the last supervisor, and whether a start
+        // goes on with its session.
+        match r.start.as_ref().and_then(|s| s.last.as_ref()) {
+            Some(l) => println!(
+                "start_last id={} cli={} last_role={} last_cli={} heard_ms={} resume={} why={}",
+                r.id,
+                l.cli.as_deref().unwrap_or("-"),
+                l.role.as_deref().unwrap_or("-"),
+                l.last_cli.as_deref().unwrap_or("-"),
+                l.heard_ms.map(|n| n.to_string()).unwrap_or_else(|| "-".into()),
+                l.can_resume,
+                l.why.name()
+            ),
+            None => println!("start_last id={} -", r.id),
+        }
+    }
+    for why in polter_control_room::snapshot::ResumeWhy::ALL {
+        println!("resume_why {}", why.name());
     }
     // What the right-hand side says of a group with no supervisor, for
     // every reason the core gives for the last try having made none -- the
@@ -295,7 +313,7 @@ fn main() {
     {
         use polter_control_room::scene::no_supervisor_words;
         use polter_control_room::snapshot::{StartFailure, SupervisorStart, SupervisorState};
-        let start = |state, failed, can_start| SupervisorStart { state, can_start, failed, role: None, cwd: String::new() };
+        let start = |state, failed, can_start| SupervisorStart { state, can_start, failed, role: None, cwd: String::new(), last: None };
         for failed in StartFailure::ALL {
             println!(
                 "start_says state=failed failed={} says={}",

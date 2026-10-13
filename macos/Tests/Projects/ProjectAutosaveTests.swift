@@ -41,13 +41,13 @@ struct ProjectAutosaveTests {
         let debouncer = ProjectAutosaveDebouncer(delay: 1.0, scheduler: clock) { writes += 1 }
 
         for _ in 0..<120 {
-            debouncer.poke()
+            debouncer.poke(.layout)
             clock.advance(1.0 / 60)
         }
         clock.advance(1.0)
         #expect(writes == 1)
 
-        for _ in 0..<10 { debouncer.poke() }
+        for _ in 0..<10 { debouncer.poke(.layout) }
         clock.advance(1.5)
         #expect(writes == 2)
     }
@@ -57,15 +57,111 @@ struct ProjectAutosaveTests {
         var writes = 0
         let debouncer = ProjectAutosaveDebouncer(delay: 1.0, scheduler: clock) { writes += 1 }
 
-        debouncer.poke()
+        debouncer.poke(.layout)
         debouncer.flush()
         #expect(writes == 1)
         debouncer.flush()
         #expect(writes == 1)
-        debouncer.poke()
+        debouncer.poke(.layout)
         debouncer.cancel()
         clock.advance(5)
         #expect(writes == 1)
+    }
+
+    // MARK: - Changes that never stop
+
+    /// A pane with an agent in it changes its title for as long as the
+    /// agent works. `every` seconds apart, for `seconds`.
+    private func churn(_ debouncer: ProjectAutosaveDebouncer<ManualClock>, on clock: ManualClock,
+                       for seconds: TimeInterval, every: TimeInterval = 0.25) {
+        var elapsed: TimeInterval = 0
+        while elapsed < seconds {
+            debouncer.poke(.paneDetail)
+            clock.advance(every)
+            elapsed += every
+        }
+    }
+
+    /// What the user reported: a split made while agents were working was
+    /// not in the project. Every title change restarted the one-second
+    /// wait, and they came four a second.
+    @Test func aLayoutChangeIsWrittenWhileTitlesKeepChanging() {
+        let clock = ManualClock()
+        var writes: [TimeInterval] = []
+        let debouncer = ProjectAutosaveDebouncer(scheduler: clock) { writes.append(clock.now) }
+
+        debouncer.poke(.layout)
+        churn(debouncer, on: clock, for: 10)
+        // Written no later than a layout change may be put off, and not
+        // before the burst had its second of quiet to end in.
+        let first = writes.first ?? .infinity
+        #expect(first <= ProjectAutosaveChange.layout.noLaterThan)
+        #expect(first > ProjectAutosaveChange.quiet)
+    }
+
+    @Test func titlesThatNeverStopAreWrittenNowAndThenAndNotEachTime() {
+        let clock = ManualClock()
+        var writes = 0
+        let debouncer = ProjectAutosaveDebouncer(scheduler: clock) { writes += 1 }
+
+        // Ninety seconds, 360 changes: not none, and not 360.
+        churn(debouncer, on: clock, for: 90)
+        #expect(writes == 3)
+    }
+
+    @Test func aLayoutChangeBringsForwardAWriteThatWasWaitingOnTitles() {
+        let clock = ManualClock()
+        var writes: [TimeInterval] = []
+        let debouncer = ProjectAutosaveDebouncer(scheduler: clock) { writes.append(clock.now) }
+
+        churn(debouncer, on: clock, for: 10)
+        #expect(writes.isEmpty)
+        debouncer.poke(.layout)
+        churn(debouncer, on: clock, for: 5)
+        let first = writes.first ?? .infinity
+        #expect(first <= 10 + ProjectAutosaveChange.layout.noLaterThan)
+        // And a title after a layout change does not push it back out.
+        #expect(first > 10)
+    }
+
+    @Test func oneChangeAloneStillWaitsOutItsSecond() {
+        let clock = ManualClock()
+        var writes = 0
+        let debouncer = ProjectAutosaveDebouncer(scheduler: clock) { writes += 1 }
+
+        debouncer.poke(.layout)
+        clock.advance(0.9)
+        #expect(writes == 0)
+        clock.advance(0.2)
+        #expect(writes == 1)
+        // Nothing left over: the latest moment went with the write.
+        clock.advance(60)
+        #expect(writes == 1)
+    }
+
+    @Test func aWriteThatWasDroppedOrDoneLeavesNoLatestMomentBehind() {
+        let clock = ManualClock()
+        var writes = 0
+        let debouncer = ProjectAutosaveDebouncer(scheduler: clock) { writes += 1 }
+
+        // A layout change, dropped (the tab was unbound). Titles after it
+        // are a new burst with their own, longer, latest moment.
+        debouncer.poke(.layout)
+        clock.advance(0.5)
+        debouncer.cancel()
+        churn(debouncer, on: clock, for: 10)
+        #expect(writes == 0)
+        // The same after a flush.
+        debouncer.flush()
+        #expect(writes == 1)
+        churn(debouncer, on: clock, for: 10)
+        #expect(writes == 1)
+    }
+
+    @Test func aLayoutChangeWaitsLessThanATitleAndBothLongerThanTheQuiet() {
+        #expect(ProjectAutosaveChange.quiet == 1)
+        #expect(ProjectAutosaveChange.layout.noLaterThan == 3)
+        #expect(ProjectAutosaveChange.paneDetail.noLaterThan == 30)
     }
 
     // MARK: - One previous generation

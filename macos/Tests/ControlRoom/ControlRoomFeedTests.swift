@@ -597,10 +597,10 @@ struct ControlRoomStartTests {
     }
 
     @Test func theCoresFixtureSaysEveryGroupHasASupervisorAndNamesOneRole() throws {
-        let list = try ControlRoomList.decode(snapshot: ControlRoomListTests.fixture())
-        // The rows that are groups. A terminal on its own has a row too
-        // since those were listed, and no supervisor to start: it is one,
-        // or it has none to be given here.
+        let list = try ControlRoomList.decode(snapshot: ControlRoomListTests.fixture(), loneRows: true)
+        // The rows that are groups. A terminal on its own, were it given a
+        // row, has no supervisor to start: it is one, or it has none to be
+        // given here.
         let groups = list.rows.filter { $0.alone == nil }
         #expect(groups.count == 8)
         for row in groups {

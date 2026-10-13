@@ -69,12 +69,12 @@ struct ControlRoomHeaderTests {
         #expect(list.quietHeaderText.contains("8"))
     }
 
-    @Test func theCoresFixtureSaysSixWaitingAndThreeGroupsThatNeedNothing() throws {
+    @Test func theCoresFixtureSaysFiveGroupsWaitingAndThreeThatNeedNothing() throws {
         let list = try ControlRoomList.decode(snapshot: ControlRoomListTests.fixture())
-        #expect(list.waitingHeader == Header(count: 6, of: .rows, number: .other))
+        #expect(list.waitingHeader == Header(count: 5, of: .groups, number: .other))
         #expect(list.quietHeader == Header(count: 3, of: .groups, number: .other))
         // The heading and the rows under it are the same number.
-        #expect(list.waiting.count == 6)
+        #expect(list.waiting.count == 5)
         #expect(list.quiet.count == 3)
     }
 }

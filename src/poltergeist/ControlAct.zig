@@ -28,11 +28,27 @@
 //! {"act":"start_supervisor","group":"web-app"}          the snapshot's role
 //!                                                       and directory
 //! {"act":"start_supervisor","group":"web-app","role":"…","cwd":"/…"}
+//! {"act":"start_supervisor","group":"web-app","session":"new"}
+//!                                                       last | new
 //! ```
 //!
 //! `start_supervisor` opens a tab, starts the role's CLI in it, and holds
 //! "this terminal is `group`'s supervisor" for the agent that connects from
-//! it. **It returns when the tab has been asked for, not when there is a
+//! it.
+//!
+//! `session` says whether it goes on with the session the group's last
+//! supervisor was in. **`last` is what leaving it out means, and it is a
+//! preference, not a condition**: the session is gone on with when the
+//! snapshot's `supervisor.resume.can` holds at that moment *for the role
+//! this start uses* -- there is a session written down, the role starts
+//! the same CLI, that CLI's adapter says it can, and no open terminal is
+//! in it -- and a new session is started otherwise. A supervisor that
+//! cannot go on where the last one stopped is still a supervisor; a group
+//! left without one because of it would be the worse answer. What the
+//! control room offered is `resume` in the snapshot, with the reason when
+//! it is no. `new` starts a new session whatever is written down.
+//!
+//! The start is the same act either way. **It returns when the tab has been asked for, not when there is a
 //! supervisor**: what becomes of it is the group's `supervisor` in the
 //! snapshot (`starting`, then `present` or `failed`). A refusal below means
 //! nothing was started.
@@ -94,7 +110,16 @@ pub const Act = union(enum) {
     reply: struct { terminal: Id, since_ms: u64, text: []const u8 },
     new_group: []const u8,
     /// Empty `role` and `cwd` are "the one the snapshot names".
-    start_supervisor: struct { group: []const u8, role: []const u8, cwd: []const u8 },
+    start_supervisor: struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session },
+};
+
+/// Which session a supervisor is started in.
+pub const Session = enum {
+    /// The last supervisor's, when it can be gone on with; a new one
+    /// otherwise.
+    last,
+    /// A new one, whatever is written down.
+    new,
 };
 
 pub const Refusal = error{
@@ -135,7 +160,7 @@ pub const Host = struct {
     stewardOf: *const fn (ctx: *anyopaque, group: []const u8) ?Id,
     /// Open a tab and start a supervisor for `group` in it. Empty `role`
     /// and `cwd` are the snapshot's.
-    startSupervisor: *const fn (ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8) anyerror!void,
+    startSupervisor: *const fn (ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8, session: Session) anyerror!void,
 };
 
 fn fieldOf(obj: std.json.ObjectMap, name: []const u8) Refusal!std.json.Value {
@@ -197,11 +222,19 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
             .text = try textOf(obj, "text"),
         } },
         .new_group => .{ .new_group = try textOf(obj, "name") },
-        .start_supervisor => .{ .start_supervisor = .{
-            .group = try textOf(obj, "group"),
-            .role = if (obj.get("role")) |_| try textOf(obj, "role") else "",
-            .cwd = if (obj.get("cwd")) |_| try textOf(obj, "cwd") else "",
-        } },
+        .start_supervisor => .{
+            .start_supervisor = .{
+                .group = try textOf(obj, "group"),
+                .role = if (obj.get("role")) |_| try textOf(obj, "role") else "",
+                .cwd = if (obj.get("cwd")) |_| try textOf(obj, "cwd") else "",
+                // A word that is neither is not a request: guessing which was
+                // meant would start the session the person did not ask for.
+                .session = if (obj.get("session")) |_|
+                    std.meta.stringToEnum(Session, try textOf(obj, "session")) orelse return error.BadRequest
+                else
+                    .last,
+            },
+        },
     };
 }
 
@@ -282,7 +315,7 @@ pub fn perform(
             // Asked here as well as where the start is recorded, so that a
             // second press is refused before anything is opened for it.
             if (chat.startOf(s.group, now_ms).state == .starting) return error.AlreadyStarting;
-            try host.startSupervisor(host.ctx, s.group, s.role, s.cwd);
+            try host.startSupervisor(host.ctx, s.group, s.role, s.cwd, s.session);
         },
     }
 }
@@ -310,7 +343,7 @@ const Recorder = struct {
     steward: ?Id = null,
     started: std.ArrayListUnmanaged(Started) = .empty,
 
-    const Started = struct { group: []const u8, role: []const u8, cwd: []const u8 };
+    const Started = struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session };
 
     fn deinit(self: *Recorder) void {
         self.keys.deinit(testing.allocator);
@@ -347,12 +380,12 @@ const Recorder = struct {
         return self.steward;
     }
 
-    fn startSupervisor(ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8) anyerror!void {
+    fn startSupervisor(ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8, session: Session) anyerror!void {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
         if (self.refuse_with) |err| return err;
         // Copied: the request they point into is gone when the act returns.
         const a = testing.allocator;
-        try self.started.append(a, .{ .group = try a.dupe(u8, group), .role = try a.dupe(u8, role), .cwd = try a.dupe(u8, cwd) });
+        try self.started.append(a, .{ .group = try a.dupe(u8, group), .role = try a.dupe(u8, role), .cwd = try a.dupe(u8, cwd), .session = session });
     }
 
     fn sendKey(ctx: *anyopaque, _: Id, key: []const u8) anyerror!void {
@@ -668,10 +701,12 @@ test "ControlRoom start: a supervisor is started for a group that has none, once
     try testing.expectEqual(@as(usize, 1), b.rec.started.items.len);
     try testing.expectEqualStrings("", b.rec.started.items[0].role);
     try testing.expectEqualStrings("", b.rec.started.items[0].cwd);
+    // Nor a session: left out is the last one, where it can be gone on with.
+    try testing.expectEqual(Session.last, b.rec.started.items[0].session);
 
     // One is on its way (the real host records that as it opens the tab):
     // a second press opens nothing.
-    try b.chat.beginStart("nightly", 1_000, 11_000);
+    try b.chat.beginStart("nightly", 1_000, 11_000, false);
     try testing.expectError(error.AlreadyStarting, b.act(
         \\{"act":"start_supervisor","group":"nightly","role":"night-lead","cwd":"/work"}
     , 2_000));
@@ -682,6 +717,26 @@ test "ControlRoom start: a supervisor is started for a group that has none, once
         \\{"act":"start_supervisor","group":"nightly","role":"night-lead","cwd":"/work"}
     , 11_001);
     try testing.expectEqual(@as(usize, 2), b.rec.started.items.len);
+
+    // Which session is the person's to say, and is handed on as said.
+    try b.act(
+        \\{"act":"start_supervisor","group":"nightly","session":"new"}
+    , 11_001);
+    try b.act(
+        \\{"act":"start_supervisor","group":"nightly","session":"last"}
+    , 11_001);
+    try testing.expectEqual(Session.new, b.rec.started.items[2].session);
+    try testing.expectEqual(Session.last, b.rec.started.items[3].session);
+    // A word that is neither starts nothing.
+    for ([_][]const u8{
+        \\{"act":"start_supervisor","group":"nightly","session":"resume"}
+        ,
+        \\{"act":"start_supervisor","group":"nightly","session":""}
+        ,
+        \\{"act":"start_supervisor","group":"nightly","session":true}
+        ,
+    }) |bad| try testing.expectError(error.BadRequest, b.act(bad, 11_001));
+    try testing.expectEqual(@as(usize, 4), b.rec.started.items.len);
 
     // What the host refuses is the answer, by its own name.
     b.rec.refuse_with = error.NoSuchDirectory;

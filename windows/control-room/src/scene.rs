@@ -1822,7 +1822,7 @@ mod tests {
 
     fn start_row(state: crate::snapshot::SupervisorState, can_start: bool, failed: crate::snapshot::StartFailure) -> Row {
         let mut row = list().quiet[0].clone();
-        row.start = Some(crate::snapshot::SupervisorStart { state, can_start, failed, role: Some("polter-supervisor".into()), cwd: "/Users/me/work".into() });
+        row.start = Some(crate::snapshot::SupervisorStart { state, can_start, failed, role: Some("polter-supervisor".into()), cwd: "/Users/me/work".into(), last: None });
         row
     }
 
@@ -1952,15 +1952,21 @@ mod tests {
 
     const LONE: &str = "terminal:0x00000000000000c1";
 
+    /// The list with a row for the terminal in no group, which nothing
+    /// draws since task 1485: what such a row would say is still held.
+    fn lone_list() -> List {
+        List::from_snapshot_with(&snapshot::decode(FIXTURE).unwrap(), true)
+    }
+
     fn lone_row(pane: crate::snapshot::Pane) -> Row {
-        let mut row = list().row(LONE).unwrap().clone();
+        let mut row = lone_list().row(LONE).unwrap().clone();
         row.alone.as_mut().unwrap().pane = pane;
         row
     }
 
     #[test]
     fn a_lone_terminals_row_is_drawn_under_its_title_never_its_id() {
-        let l = list();
+        let l = lone_list();
         let said = texts(&scene(&l, None, false, 1.0, None));
         assert!(said.contains(&"zsh — ~/work".to_string()), "{said:?}");
         assert!(!said.iter().any(|t| t.contains("terminal:0x")), "{said:?}");
@@ -2014,7 +2020,7 @@ mod tests {
         assert_eq!(bar(&lone_row(Pane::Worker)), ["zsh — ~/work", "Worker", "等批准"]);
         assert_eq!(bar(&lone_row(Pane::Supervisor)), ["zsh — ~/work", "Supervisor", "等批准"]);
         // A group's supervisor: that terminal's own title and "Supervisor".
-        let l = list();
+        let l = lone_list();
         let group = l.row("web-app").unwrap();
         assert_eq!(bar(group)[..2], ["web-app".to_string(), "Supervisor".to_string()]);
         // The terminal's title, not the group's name, where they differ.
@@ -2055,7 +2061,7 @@ mod tests {
             assert!(!texts.iter().any(|t| t.contains("terminal:0x") || t.contains("supervisor")), "{detail:?}: {texts:?}");
         }
         // The same for a group is said of its supervisor, under the group's name.
-        let l = list();
+        let l = lone_list();
         let group = l.row("web-app").unwrap();
         let texts = said(&Detail_::SupervisorGone { group: "web-app".to_string() }, Some(group));
         assert_eq!(texts, ["web-app", crate::lend::msg::GONE]);

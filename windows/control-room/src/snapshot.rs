@@ -221,6 +221,70 @@ impl StartFailure {
     }
 }
 
+/// Why a start does not go on with the last supervisor's session, or
+/// `None` when it does (`ControlRoom.zig`, `ResumeOut.Why`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeWhy {
+    None,
+    NoRecord,
+    NoSession,
+    LastTryFailed,
+    CliDiffers,
+    ClisUnread,
+    CliCannotResume,
+    SessionInUse,
+}
+
+impl ResumeWhy {
+    pub fn name(self) -> &'static str {
+        match self {
+            ResumeWhy::None => "none",
+            ResumeWhy::NoRecord => "no_record",
+            ResumeWhy::NoSession => "no_session",
+            ResumeWhy::LastTryFailed => "last_try_failed",
+            ResumeWhy::CliDiffers => "cli_differs",
+            ResumeWhy::ClisUnread => "clis_unread",
+            ResumeWhy::CliCannotResume => "cli_cannot_resume",
+            ResumeWhy::SessionInUse => "session_in_use",
+        }
+    }
+
+    /// Every reason the core gives. A word that is none of these is an
+    /// error, like a glyph this build does not know.
+    pub const ALL: [ResumeWhy; 8] = [
+        ResumeWhy::None,
+        ResumeWhy::NoRecord,
+        ResumeWhy::NoSession,
+        ResumeWhy::LastTryFailed,
+        ResumeWhy::CliDiffers,
+        ResumeWhy::ClisUnread,
+        ResumeWhy::CliCannotResume,
+        ResumeWhy::SessionInUse,
+    ];
+
+    fn parse(s: &str) -> Option<ResumeWhy> {
+        Self::ALL.into_iter().find(|v| v.name() == s)
+    }
+}
+
+/// What the core says of the supervisor a group last had, and whether a
+/// start goes on with its session (`ControlRoom.zig`, `SupervisorOut`'s
+/// `cli`, `last` and `resume`). Read and carried; no host draws it yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupervisorLast {
+    /// The CLI the default role is started in.
+    pub cli: Option<String>,
+    /// The role and the CLI the last supervisor was, and when it was last
+    /// heard from (the real clock). Each `None` when nobody wrote it down.
+    pub role: Option<String>,
+    pub last_cli: Option<String>,
+    pub heard_ms: Option<u64>,
+    /// Whether a start goes on with its session. A host offers that on
+    /// this and on nothing else, and says `why` when it is no.
+    pub can_resume: bool,
+    pub why: ResumeWhy,
+}
+
 /// What the core says about a group's supervisor and what starting one
 /// would use.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,6 +298,9 @@ pub struct SupervisorStart {
     pub role: Option<String>,
     /// Where it is started unless the person picks elsewhere.
     pub cwd: String,
+    /// The last supervisor and whether its session is gone on with.
+    /// `None` for a snapshot from before the core said it.
+    pub last: Option<SupervisorLast>,
 }
 
 /// A role a supervisor can be started in.
@@ -595,6 +662,25 @@ fn group(v: &Value, path: &str) -> Res<Group> {
                 failed: StartFailure::parse(&failed).ok_or(DecodeError::UnknownValue(format!("{sp}.failed={failed}")))?,
                 role: opt_text(s, &sp, "role")?,
                 cwd: text(s, &sp, "cwd")?,
+                // All of it or none: a core that says `resume` says the
+                // other two with it.
+                last: match (s.get("last"), s.get("resume")) {
+                    (Some(last), Some(resume)) => {
+                        let lp = format!("{sp}.last");
+                        let rp = format!("{sp}.resume");
+                        let why = text(resume, &rp, "why")?;
+                        Some(SupervisorLast {
+                            cli: opt_text(s, &sp, "cli")?,
+                            role: opt_text(last, &lp, "role")?,
+                            last_cli: opt_text(last, &lp, "cli")?,
+                            heard_ms: opt_int(last, &lp, "heard_ms")?,
+                            can_resume: boolean(resume, &rp, "can")?,
+                            why: ResumeWhy::parse(&why).ok_or(DecodeError::UnknownValue(format!("{rp}.why={why}")))?,
+                        })
+                    }
+                    (None, None) => None,
+                    _ => return Err(DecodeError::Field(format!("{sp}.resume"))),
+                },
             })
         }
     };

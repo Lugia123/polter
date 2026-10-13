@@ -9,10 +9,11 @@ eleven is the contract; this file is one side of it.
 
     adapter.py inventory '<request>'
         request {"version":1,"cwd":"/abs"|null,"home":"/abs"}
-        stdout  {"version":1,"installed":…,"items":[…],"notes":[…]}
+        stdout  {"version":1,"installed":…,"resume":true,"items":[…],"notes":[…]}
 
     adapter.py launch '<request>'
-        request {"version":1,"cwd":…,"home":…,"polter":"/abs"|null,"role":{…},"cli":{…}}
+        request {"version":1,"cwd":…,"home":…,"polter":"/abs"|null,
+                 "session":"<id>"|null,"role":{…},"cli":{…}}
         stdout  {"version":1,"argv":[…],"env":{},"summary":…,"notes":[…],"hooks":true?}
 
 The request is the second argument (read from stdin instead when it is
@@ -60,6 +61,39 @@ row for a status line whatever the command prints.
 The user's settings files are read and never written. Not on Windows: a
 status line has no exec form, it is a line for whichever shell Claude Code
 finds there, and one string is not quoted the same for all of them (#888).
+
+Going on with a session: `inventory` says `"resume": true`, which is this
+adapter telling Polter it may be handed a session, and `launch` then turns a
+`session` in the request into `--resume <id>`. Measured on claude 2.1.296
+with a throwaway session, hooks logging every event:
+
+  * `claude --resume <id>` goes on with that session **under the same id**
+    (`SessionStart` says `source: resume`), from the directory it was made
+    in and from a sibling directory alike -- the transcript stays where it
+    was, under the first directory's project.
+  * `/clear` ends the session and starts another with a **new id**
+    (`SessionEnd reason: clear`, then `SessionStart source: clear`).
+    `/compact` keeps the id (`SessionStart source: compact`).
+  * `claude --resume <an id with no transcript>` prints `No conversation
+    found with session ID: …` and **exits 1 by itself**, without ever saying
+    `SessionStart`. On POSIX `+launch` has replaced itself with `claude` by
+    then, so nothing is left to tell Polter the launch came to nothing, and
+    the person is looking at a shell prompt where a supervisor should be.
+
+**So the session is looked for here, before the command is built**: its
+transcript is `~/.claude/projects/<any project>/<id>.jsonl`. When that file
+is not there -- cleaned up, another machine's, never Claude Code's id at all
+-- the launch starts a new session and a note says so. A launch starts.
+What this cannot see is a transcript that is there and that Claude Code will
+not load; that one still ends at the shell prompt, and the control room
+reports the agent as never having connected.
+
+An id that is not a UUID is not passed on either: `--resume <words>` is a
+search by title, and it opens a picker.
+
+A role whose own arguments already choose a session (`--resume`, `-r`,
+`--continue`, `-c`, `--session-id`) keeps its choice, and a note says the
+one in the request was left out.
 
 Which launch flag switches off which kind of thing was measured, not read
 (claude 2.1.278, each with a control that the rest still worked):
@@ -123,6 +157,13 @@ HOOK_TIMEOUT = 5
 
 # How long `claude --version` may take.
 VERSION_TIMEOUT = 10
+
+# What Claude Code calls a session. Anything else given to `--resume` is a
+# search by title.
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+# Arguments with which a role has already said which session it wants.
+SESSION_FLAGS = ("--resume", "-r", "--continue", "-c", "--session-id")
 
 
 def read_json(path):
@@ -479,6 +520,8 @@ def inventory(req):
     return {
         "version": CONTRACT_VERSION,
         "installed": on_path("claude") is not None,
+        # `launch` goes on with a session it is handed (`session_to_resume`).
+        "resume": True,
         "items": unique,
         "notes": notes,
     }
@@ -610,6 +653,9 @@ def launch(req):
     instructions = role.get("instructions")
     if instructions:
         argv += ["--append-system-prompt", instructions]
+    session = session_to_resume(req, extra, notes)
+    if session:
+        argv += ["--resume", session]
     argv += extra
 
     answer = {
@@ -622,6 +668,51 @@ def launch(req):
     if hooks:
         answer["hooks"] = True
     return answer
+
+
+def has_transcript(home, session):
+    """Whether Claude Code has a transcript for `session` on this machine.
+
+    `~/.claude/projects/<project>/<session>.jsonl`, under whichever project:
+    a session is gone on with from a directory other than the one it was
+    made in (measured, see the top of this file), so the launch directory
+    is not the place to look.
+    """
+    root = os.path.join(home, ".claude", "projects")
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return False
+    for name in names:
+        if os.path.isfile(os.path.join(root, name, session + ".jsonl")):
+            return True
+    return False
+
+
+def session_to_resume(req, extra, notes):
+    """The session id to pass as `--resume`, or None with a note saying why.
+
+    None without a note when the request names no session: that is a new
+    session being asked for, not one that could not be gone on with.
+    """
+    session = req.get("session")
+    if not isinstance(session, str) or not session:
+        return None
+    new = "so this starts a new session."
+    for a in extra:
+        if a in SESSION_FLAGS or a.split("=", 1)[0] in SESSION_FLAGS:
+            notes.append("The role's own arguments already choose a session (%s), so the last "
+                         "session is not passed on." % a.split("=", 1)[0])
+            return None
+    if not SESSION_ID.fullmatch(session):
+        notes.append("The last session's id is not one Claude Code gives a session, " + new)
+        return None
+    home = req.get("home") or os.path.expanduser("~")
+    if not has_transcript(home, session):
+        notes.append("The last session (%s) is no longer on this machine, %s" % (session, new))
+        return None
+    notes.append("Going on with the last session (%s)." % session)
+    return session
 
 
 def claude_version():

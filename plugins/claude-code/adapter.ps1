@@ -769,6 +769,8 @@ function Get-Inventory($Req) {
     $answer = New-Map
     $answer['version'] = $ContractVersion
     $answer['installed'] = $null -ne (Resolve-ClaudeCommand)
+    # `launch` goes on with a session it is handed (`Get-SessionToResume`).
+    $answer['resume'] = $true
     $answer['items'] = $unique
     $answer['notes'] = $notes
     return , $answer
@@ -1026,6 +1028,49 @@ function Get-StatusLine($Req, $Settings) {
     return @($line, $envOut)
 }
 
+# Whether Claude Code has a transcript for this session on this machine:
+# `~/.claude/projects/<project>/<session>.jsonl`, under whichever project --
+# see `has_transcript` in `adapter.py`.
+function Test-Transcript([string]$HomeDir, [string]$Session) {
+    $root = Join-PyPath (Join-PyPath $HomeDir '.claude') 'projects'
+    foreach ($name in (Get-SortedNames $root)) {
+        $file = Join-PyPath (Join-PyPath $root $name) ($Session + '.jsonl')
+        if ([System.IO.File]::Exists($file)) { return $true }
+    }
+    return $false
+}
+
+# The session id to pass as `--resume`, or `$null` with a note saying why --
+# and `$null` with no note when the request names none. See
+# `session_to_resume` in `adapter.py`, which this follows line for line.
+function Get-SessionToResume($Req, $Extra, $Notes) {
+    $session = Get-J $Req 'session'
+    if (-not ($session -is [string]) -or $session.Length -eq 0) { return $null }
+    $new = 'so this starts a new session.'
+    $flags = @('--resume', '-r', '--continue', '-c', '--session-id')
+    foreach ($a in $Extra) {
+        $head = ([string]$a).Split([char[]]@('='), 2)[0]
+        if (($flags -ccontains $a) -or ($flags -ccontains $head)) {
+            $Notes.Add("The role's own arguments already choose a session ($head), so the last session is not passed on.")
+            return $null
+        }
+    }
+    if (-not [regex]::IsMatch($session, '\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z')) {
+        $Notes.Add("The last session's id is not one Claude Code gives a session, " + $new)
+        return $null
+    }
+    $homeDir = Get-J $Req 'home'
+    if (-not (Test-Truthy $homeDir)) {
+        $homeDir = $(if ($script:OnWindows) { [string]$env:USERPROFILE } else { [string]$env:HOME })
+    }
+    if (-not (Test-Transcript $homeDir $session)) {
+        $Notes.Add("The last session ($session) is no longer on this machine, $new")
+        return $null
+    }
+    $Notes.Add("Going on with the last session ($session).")
+    return $session
+}
+
 function Get-Launch($Req) {
     $role = Get-J $Req 'role'
     if (-not (Test-Truthy $role)) { $role = New-Map }
@@ -1176,6 +1221,11 @@ function Get-Launch($Req) {
     if (Test-Truthy $instructions) {
         $argv.Add('--append-system-prompt')
         $argv.Add($instructions)
+    }
+    $session = Get-SessionToResume $Req $extra $notes
+    if ($null -ne $session) {
+        $argv.Add('--resume')
+        $argv.Add($session)
     }
     foreach ($e in $extra) { $argv.Add($e) }
 

@@ -57,6 +57,7 @@ GROUP_NAME_FILES = {
     "src/poltergeist/daylog.zig": "the tree of per-name directories; its group parameter is the path segment",
     "src/poltergeist/group_stores.zig": "the list itself",
     "src/poltergeist/notes.zig": "builds one sentence about a group; stores nothing",
+    "src/poltergeist/Session.zig": "looks a group up by name in a session snapshot already read (supervisorDirIn); files nothing under the name. The snapshot is written whole from Chat after every change, so it carries whatever names Chat holds; one written before a rename simply has no entry for the new name, and the lookup finds nothing",
     "src/poltergeist/rpc.zig": "the request/response surface: groups are named by callers",
     "src/poltergeist/wire.zig": "parses the request fields",
     "src/poltergeist/Transcript.zig": "terminals, not groups: its `group`-like parameters are the daylog path segment",
