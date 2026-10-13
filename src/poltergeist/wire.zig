@@ -724,6 +724,25 @@ fn optionalParams(
 /// Durations and bookkeeping, never screen contents. The supervisor calls
 /// `terminal_read` if it wants to know what is actually on a screen, which
 /// keeps both the reading and the judgement on its side.
+/// Where a terminal stands with the groups: what `me` adds to what it
+/// says of the terminal itself.
+///
+/// **Each of the three is always said.** A terminal in no group is told
+/// an empty list, and one nobody started for a group is told `null`: an
+/// agent asking "which group am I for" is answered either way, and never
+/// left to read a missing key as "ask again later".
+pub const Membership = struct {
+    /// The groups this terminal is in, in the order `group_list` gives.
+    groups: []const []const u8,
+    /// The ones among them it is the supervisor of -- by the control
+    /// room's rule (`ControlRoom.stewardOfGroup`), which is one supervisor
+    /// to a group.
+    supervisor_of: []const []const u8,
+    /// The group the person started this terminal for from the control
+    /// room, in this run. Null when it was not started that way.
+    started_for: ?[]const u8,
+};
+
 pub const TerminalInfo = struct {
     id: Bus.Id,
     role: Bus.Role = .none,
@@ -773,6 +792,11 @@ pub const TerminalInfo = struct {
     /// under it -- the two were one field, and a mark with nothing under
     /// it read as a watch (task 731).
     sampling: ?Bus.Sampling = null,
+
+    /// Which groups it is in, is the supervisor of, and was started for.
+    /// Filled for `me` only: null everywhere else, and left out of the
+    /// JSON then. Null from `me` means the host could not say.
+    membership: ?Membership = null,
 
     /// How long since this terminal's agent last called a Polter tool.
     /// Null, and left out, for one that never has -- a plain shell, or an
@@ -1711,6 +1735,17 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
 
     try s.objectField("agent");
     try writeAgent(s, info.agent);
+
+    // Only `me` carries it, and then all three are written -- `started_for`
+    // as a `null` the reader can see when there is none.
+    if (info.membership) |m| {
+        try s.objectField("groups");
+        try s.write(m.groups);
+        try s.objectField("supervisor_of");
+        try s.write(m.supervisor_of);
+        try s.objectField("started_for");
+        try s.write(m.started_for);
+    }
 
     try s.endObject();
 }
@@ -2666,4 +2701,41 @@ test "ControlRoom answer_prompt: the two moments are taken together or not at al
     try testing.expectError(error.BadParams, parse(
         \\{"id":1,"method":"terminal_answer_prompt","params":{"id":"0x0000000000002222","event_at_ms":1000}}
     ));
+}
+
+test "ControlRoom resume: me says the groups, the ones it is the supervisor of and the one it was started for -- a null when there is none" {
+    var buf: [1024]u8 = undefined;
+
+    // Started for a group: all three, named.
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .membership = .{
+        .groups = &.{ "web-app", "billing" },
+        .supervisor_of = &.{"web-app"},
+        .started_for = "web-app",
+    } } });
+    try testing.expect(std.mem.indexOf(
+        u8,
+        w.buffered(),
+        "\"groups\":[\"web-app\",\"billing\"],\"supervisor_of\":[\"web-app\"],\"started_for\":\"web-app\"",
+    ) != null);
+
+    // In nothing and started for nothing: said, as empty lists and a null.
+    w = .fixed(&buf);
+    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .membership = .{
+        .groups = &.{},
+        .supervisor_of = &.{},
+        .started_for = null,
+    } } });
+    try testing.expect(std.mem.indexOf(
+        u8,
+        w.buffered(),
+        "\"groups\":[],\"supervisor_of\":[],\"started_for\":null",
+    ) != null);
+
+    // Not `me`, or a host that could not say: none of the three keys.
+    w = .fixed(&buf);
+    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none } });
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "started_for") == null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "supervisor_of") == null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"groups\"") == null);
 }

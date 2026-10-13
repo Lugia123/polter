@@ -925,7 +925,9 @@ fn a_snapshot_from_before_a_supervisor_could_be_started_offers_nothing() {
     let mut rest = FIXTURE;
     while let Some(at) = rest.find("      \"supervisor\": {") {
         old.push_str(&rest[..at]);
-        let end = rest[at..].find("},\n").unwrap() + at + "},\n".len();
+        // Its own closing brace, at its own depth: it has objects in it.
+        let close = "\n      },\n";
+        let end = rest[at..].find(close).unwrap() + at + close.len();
         rest = &rest[end..];
     }
     old.push_str(rest);
@@ -936,6 +938,51 @@ fn a_snapshot_from_before_a_supervisor_could_be_started_offers_nothing() {
     assert_eq!(s.groups.len(), 8);
     assert!(s.groups.iter().all(|g| g.supervisor.is_none()));
     assert!(s.supervisor_roles.is_empty() && !s.choose_supervisor_role);
+}
+
+#[test]
+fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
+    use crate::snapshot::{ResumeWhy, SupervisorLast};
+    let s = snapshot::decode(FIXTURE).unwrap();
+    let last = |name: &str| s.groups.iter().find(|g| g.name == name).unwrap().supervisor.clone().unwrap().last.unwrap();
+
+    // Nothing written down: every part is none, and the reason is that.
+    assert_eq!(
+        last("web-app"),
+        SupervisorLast { cli: Some("claude-code".into()), role: None, last_cli: None, heard_ms: None, can_resume: false, why: ResumeWhy::NoRecord }
+    );
+    // One whose session a terminal is in now, and one that can be gone on with.
+    let billing = last("billing");
+    assert_eq!((billing.role.as_deref(), billing.last_cli.as_deref(), billing.heard_ms), (Some("polter-supervisor"), Some("claude-code"), Some(1_699_999_340_000)));
+    assert_eq!((billing.can_resume, billing.why), (false, ResumeWhy::SessionInUse));
+    let notes = last("notes");
+    assert_eq!((notes.can_resume, notes.why), (true, ResumeWhy::None));
+
+    // `can` is read, not made out of `why`: a core that says it cannot for
+    // no reason it names is believed.
+    let first = |from: &str, to: &str| FIXTURE.replacen(from, to, 1);
+    let read = |json: String| snapshot::decode(&json).map(|s| s.groups[0].supervisor.clone().unwrap().last);
+    let odd = read(first("\"why\": \"no_record\"", "\"why\": \"none\"")).unwrap().unwrap();
+    assert_eq!((odd.can_resume, odd.why), (false, ResumeWhy::None));
+
+    // Every word the core writes, and a word it does not is an error
+    // rather than a guess.
+    for why in ResumeWhy::ALL {
+        let with = read(first("\"why\": \"no_record\"", &format!("\"why\": \"{}\"", why.name()))).unwrap().unwrap();
+        assert_eq!(with.why, why, "{}", why.name());
+    }
+    let named: Vec<&str> = ResumeWhy::ALL.iter().map(|w| w.name()).collect();
+    assert_eq!(named, ["none", "no_record", "no_session", "last_try_failed", "cli_differs", "clis_unread", "cli_cannot_resume", "session_in_use"]);
+    assert!(read(first("\"why\": \"no_record\"", "\"why\": \"because\"")).is_err());
+
+    // A core from before it said any of this: nothing, not a made-up "no".
+    // And half of it is not a snapshot.
+    let block = "        \"last\": {\n          \"role\": null,\n          \"cli\": null,\n          \"heard_ms\": null\n        },\n        \"resume\": {\n          \"can\": false,\n          \"why\": \"no_record\"\n        }\n";
+    assert!(FIXTURE.contains(block), "the fixture no longer writes the block this test cuts");
+    let before = first(&format!("\"cwd_from\": \"home\",\n{block}"), "\"cwd_from\": \"home\"\n");
+    assert_eq!(read(before).unwrap(), None);
+    let half = first("        \"resume\": {\n          \"can\": false,\n          \"why\": \"no_record\"\n        }\n", "        \"x\": 1\n");
+    assert!(read(half).is_err());
 }
 
 #[test]

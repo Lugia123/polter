@@ -882,7 +882,15 @@ agent 在等审批，用户仍然得去翻 tab。
 - **这个群能不能启动总管、用哪个角色、在哪个目录：`groups[].supervisor`，以及顶层的 `supervisor_roles`
   与 `choose_supervisor_role`。**（§6.4）`state` 是 `present` / `absent` / `starting` / `failed`；
   **宿主出不出「启动总管」按钮只看 `can_start`**，不从 `state` 推；`state` 与 `failed` 只用来挑右栏那句话。
-  `role` 与 `cwd` 是人不另选时用的默认值，`cwd_from` 说这个目录是怎么来的。要不要出角色选择看
+  `role` 与 `cwd` 是人不另选时用的默认值，`cli` 是那个角色会被启动成的 CLI，`cwd_from` 说这个目录是怎么来的
+  （`last_supervisor` / `session_snapshot` / `members` / `home` / `none`）。
+  **上次的总管与能不能接着它的会话：`groups[].supervisor.last` 与 `.resume`（任务 #1486）。** `last` 是
+  `role` / `cli` / `heard_ms`，没人记过的那一项是 `null`。`resume.can` 是「现在启动会不会接上次的会话」，
+  **宿主出不出「接着上次」只看它**；`resume.why` 是不能接的原因：`no_record`（从没记过总管）、`no_session`
+  （记过，它的 CLI 没报过会话）、`last_try_failed`（上次接着它启动没成）、`cli_differs`（要起的不是那个会话的
+  CLI）、`clis_unread`（各家 CLI 的能力还没读到——会自己变，快照为它自己要了唤醒）、`cli_cannot_resume`
+  （这家的适配器没声明接得上）、`session_in_use`（有开着的终端正在这个会话里），能接时是 `none`。两个宿主
+  的逻辑层都读了这几项并进了对照闸（`start_last` / `resume_why` 两种行）；**界面还没有画**，另开任务。要不要出角色选择看
   `choose_supervisor_role`，宿主不数 `supervisor_roles` 有几个。
 - **两句标题说什么：`header_waiting` / `header_quiet`（任务 #1469）。** 每项是 `count`（这句标题下面有几行）、
   `of`（`groups`：全是群，写「N 个群…」；`rows`：里面有不在任何群里的终端，写「N 个…」不带「群」字）、
@@ -1032,13 +1040,59 @@ agent 在等审批，用户仍然得去翻 tab。
    CLI 也会因为自己的原因立刻退出——那种情形仍走 60 秒那条。这两种取值两个宿主都认得（Windows 逻辑层对不认识的
    取值是报错，所以是同一个提交里一起加的），那两句话由对照闸逐字比。
 
-**默认角色**：角色库里第一个带总管标记而且配了 CLI 的角色（内置的 `polter-supervisor` 排在最前）。
-一个角色配了几个 CLI 时用第一个——右栏给的选择是角色和目录，没有第三样。
+**默认角色**：这个群上一任总管穿的角色，只要它现在仍是一个能启动总管的角色；否则是角色库里第一个
+带总管标记而且配了 CLI 的角色（内置的 `polter-supervisor` 排在最前）。
+一个角色配了几个 CLI 时，用上一任总管的那个 CLI（角色仍配着它的话），否则用第一个——右栏给的选择是
+角色和目录，没有第三样。
 **默认目录**，依次：这个群上一任总管所在的目录；群里现有终端最多的那个目录（并列取字典序靠前的）；
 用户主目录。**上一任总管的目录以前核心没有记**（成员和它们的目录只在内存里，重启就没了；会话快照里有，
 但那是给总管读的材料，程序不读回来）。现在记了：总管建群、总管被加进群时，把它当时的目录写进
-`<state>/chat/<群>/group.json` 的 `supervisor_dir`，重启后随群一起回来。**这一版之前建的群没有这一项**，
-第一次会落到主目录，要人自己选一次。
+`<state>/chat/<群>/group.json`，重启后随群一起回来。**0.10.1843 及之前建的群没有这一项**，
+第一次会落到主目录，要人自己选一次——下面「上次的总管」里说它现在怎么补。
+
+**上次的总管（任务 #1486）。** `group.json` 里多了一节 `supervisor`，记这个群上一任总管的五件事：
+
+| 键 | 是什么 | 缺席的意思 |
+| --- | --- | --- |
+| `dir` | 它的工作目录 | 不知道 |
+| `dir_from` | `supervisor`（总管自己所在的目录）或 `session_snapshot`（见下） | 没有 `dir` |
+| `role` | 角色 key | 它没穿角色，或者没人记过 |
+| `cli` | agent CLI 的 key（适配器插件的 key） | 不知道 |
+| `session` | CLI 经 hook 报上来的会话号，原样 | 这个 CLI 从没报过 |
+| `heard_ms` | 最后一次听到它的墙上时刻 | **从没记过总管** |
+
+**不知道一律是键不在**，不写空串、不拿默认值冒充（`Chat.LastSupervisor` 的字段没有默认值，漏填编不过）。
+「从没记过总管」和「记过，但它的 CLI 没报过会话」是两个答案，靠 `heard_ms` 在不在分开。旧版写在顶层的
+`supervisor_dir` 仍然读得进来（当作 `dir`），下一次有任何人重写这个文件时挪进这一节，不再写回顶层。
+
+什么时候写：总管建群、总管进群（含总控台启动的那个连上来自动进群）时写一次；此后**这个终端的 agent 每次经
+hook 说话**（`rpc` 的 `agentHeard`）核心都重新看一遍——目录、角色、CLI、会话号任何一样变了就落盘；只是
+「又听到了一次」则只在会话开始和一轮结束时落盘，不为每个 hook 写一次文件。会话号会在跑着的时候换：
+实测 Claude Code 2.1.296 上 `/clear` 结束旧会话、带着**新号**报 `SessionStart`（`source: clear`），
+`/compact` 和 `--resume` 都不换号。所以存下来的是「最后听到的那个」。
+
+**一个终端是好几个群的总管时，每个群都记，记同一份。** 它们是同一个 agent、同一个会话；下次从哪个群启动，
+就由那个群接上它，其余的群这时会看到「有一个开着的终端正在这个会话里」（`session_in_use`），起的是新会话，
+而不是往一个活着的会话里再塞一个 agent。「是这个群的总管」用的是快照那条规则（一个群一个，
+`ControlRoom.stewardOfGroup`）：别人管着的群里后进来的第二个总管，不会改掉这个群记的东西。
+
+**旧群没有目录时补一次。** 恢复群的时候，`dir` 为空的群去读**上一轮留下的** `session.json`：里面这个群
+标着 `role:"supervisor"` 的第一个成员的 `cwd` 被拿来当目录，写回 `group.json`，并标 `dir_from:
+"session_snapshot"`。只补目录：那位总管的角色、CLI、会话从来没有被记过，一样都不编，`heard_ms` 仍然不在。
+快照里它的 `cwd_from` 是 `session_snapshot`，不是 `last_supervisor`——这是对一个旧群的猜测，并且照实说是猜测。
+这是程序**唯一**从会话快照里读回来自己用的东西（`Session.supervisorDirIn`）；哪个终端是哪个仍然不归它判断。
+
+**启动时接着上次的会话。** `start_supervisor` 的请求多了可选的 `"session": "last" | "new"`，不写等于
+`last`。`last` 是「能接就接」：存着会话、这次要起的 CLI 与那个会话的 CLI 相同、那个 CLI 的适配器声明接得上
+（`inventory` 里的 `"resume": true`）、没有开着的终端正在那个会话里、上一次接着它启动没有失败——全成立就把
+会话号放进启动行（`polter +launch <角色> <cli> --group=<群> --resume=<会话>`），经 `+launch` 的请求交给
+适配器；任何一条不成立就起新会话。**总管必须起得来**，所以 `last` 不成立不是一种拒绝。能不能接、不能接的
+原因，快照事先就说了（下一节的 `resume`），判断是同一个函数（`ControlRoom.resumeOf`），启动那一刻按**这次
+实际用的角色**再问一遍。`new` 无论存着什么都起新会话。
+
+**总管起来就知道自己是哪个群的。** 启动行里的 `--group=<群>` 只改一件事：给 agent 的启动说明换成点名这个群
+的那一份（`persona.supervisor_of_group_note`）——先读这个群，不要再建一个。`me` 也答得出：`groups`、
+`supervisor_of`、`started_for`，三样都一定在，没有就是空表和 `null`。
 
 **这是右栏占位里的按钮，不是行上的按钮。**「行只提示」（`tools/control-room-rows-only-tell.py`）没有放宽：
 左栏仍然只有「新建群」一个按钮。

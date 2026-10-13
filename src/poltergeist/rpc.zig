@@ -4934,6 +4934,21 @@ pub const Host = struct {
             id: Bus.Id,
         ) void,
 
+        /// The agent CLI in terminal `id` has said something through its
+        /// hooks, and the bus has taken it in. This is where a supervisor's
+        /// session is written down for its group: the bus keeps the session
+        /// a CLI names and nothing else does, and a session changes under a
+        /// running agent (`/clear`).
+        ///
+        /// Not called for what `+launch` says on its own account
+        /// (`hooks_expected`, `launch_failed`): neither is an agent.
+        agentHeard: *const fn (
+            ctx: *anyopaque,
+            bus: *Bus,
+            id: Bus.Id,
+            kind: AgentEvent.Kind,
+        ) void,
+
         /// `+launch` in terminal `id` says the CLI it was to start did not
         /// start. Whatever was waiting on an agent from that terminal stops
         /// waiting now and says why: the standing a role launch was holding
@@ -5306,6 +5321,15 @@ pub const Host = struct {
             alloc: std.mem.Allocator,
             id: Bus.Id,
         ) anyerror![]const []const u8,
+
+        /// Where `id` stands with the groups, for its own `me`: the ones it
+        /// is in, the ones it is the supervisor of, and the one the control
+        /// room started it for. Copied into `alloc`.
+        membership: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+        ) anyerror!wire.Membership,
 
         /// What `id` has not seen in `group` after `since`, and whether
         /// the budget cut it short.
@@ -5778,6 +5802,14 @@ pub const Host = struct {
         return self.vtable.chatGroups(self.ctx, alloc, id);
     }
 
+    fn membership(
+        self: Host,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+    ) anyerror!wire.Membership {
+        return self.vtable.membership(self.ctx, alloc, id);
+    }
+
     fn chatRead(
         self: Host,
         alloc: std.mem.Allocator,
@@ -6200,7 +6232,14 @@ fn dispatchOne(
     const caller: Bus.Id = who.terminalId() orelse Bus.not_a_terminal;
 
     switch (req) {
-        .me => return .{ .me = describe(bus, host, caller) },
+        .me => {
+            var info = describe(bus, host, caller);
+            // Its own standing with the groups, which only it is told. A
+            // host that cannot say leaves it out; what it does say is all
+            // three (`wire.Membership`).
+            info.membership = host.membership(alloc, caller) catch null;
+            return .{ .me = info };
+        },
 
         .persona_slot => |p| {
             const answer = host.personaSlot(caller, p.slot) catch
@@ -6390,6 +6429,9 @@ fn dispatchOne(
             if (ev.event == .launch_failed) {
                 host.vtable.launchFailed(host.ctx, bus, id, AgentEvent.LaunchFailure.parse(ev.detail));
             }
+            // What an agent said, after the bus has it: the same two that
+            // do not show an agent are not one being heard.
+            if (showsAnAgent(req)) host.vtable.agentHeard(host.ctx, bus, id, ev.event);
             return .ok;
         },
 
@@ -8669,6 +8711,10 @@ const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 const FakeHost = struct {
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
 
+    /// What `agentHeard` was last told.
+    heard: ?struct { id: Bus.Id, kind: AgentEvent.Kind } = null,
+    /// What `membership` answers; null is a host that cannot say.
+    membership_is: ?wire.Membership = null,
     /// What `launchFailed` was last told.
     launch_failed: ?struct { id: Bus.Id, why: AgentEvent.LaunchFailure } = null,
 
@@ -8962,6 +9008,7 @@ const FakeHost = struct {
             .personaFace = personaFace,
             .terminalCapabilities = terminalCapabilities,
             .agentArrived = agentArrived,
+            .agentHeard = agentHeard,
             .launchFailed = launchFailed,
             .personaCatalog = personaCatalog,
             .personaPut = personaPut,
@@ -8997,6 +9044,7 @@ const FakeHost = struct {
             .chatOwner = chatOwner,
             .chatMembers = chatMembers,
             .chatGroups = chatGroups,
+            .membership = membership,
             .chatRead = chatRead,
             .chatHistory = chatHistory,
             .pluginList = pluginList,
@@ -9550,6 +9598,16 @@ const FakeHost = struct {
     /// The store's half of what the app does; the app's other half -- the
     /// group a supervisor was being started for -- is recorded, since there
     /// is no chat here to fail it in.
+    fn agentHeard(ctx: *anyopaque, _: *Bus, id: Bus.Id, kind: AgentEvent.Kind) void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.heard = .{ .id = id, .kind = kind };
+    }
+
+    fn membership(ctx: *anyopaque, _: std.mem.Allocator, _: Bus.Id) anyerror!wire.Membership {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.membership_is orelse error.NoSuchGroup;
+    }
+
     fn launchFailed(ctx: *anyopaque, _: *Bus, id: Bus.Id, why: AgentEvent.LaunchFailure) void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         self.launch_failed = .{ .id = id, .why = why };
@@ -14969,4 +15027,53 @@ test "may-authorise off in the configuration: a supervisor's answer to a prompt,
     // Opened for this one terminal by the person: allowed there.
     try b.setMayAuthorise(worker, true, .user);
     try authorize(&b, term(boss), .{ .terminal_answer_prompt = .{ .id = worker, .choice = 1 } });
+}
+
+test "ControlRoom resume: me is the one answer that carries where the terminal stands with the groups" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    var fake: FakeHost = .{ .membership_is = .{
+        .groups = &.{ "web-app", "billing" },
+        .supervisor_of = &.{"web-app"},
+        .started_for = "web-app",
+    } };
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .me);
+    const m = res.me.membership orelse return error.MeSaidNothingOfItsGroups;
+    try testing.expectEqual(@as(usize, 2), m.groups.len);
+    try testing.expectEqualStrings("web-app", m.supervisor_of[0]);
+    try testing.expectEqualStrings("web-app", m.started_for.?);
+
+    // A host that cannot say: the rest of `me` is still answered, and
+    // nothing is made up about groups.
+    var mute: FakeHost = .{};
+    const bare = try dispatch(testing.allocator, &b, mute.host(), term(worker), .me);
+    try testing.expectEqual(worker, bare.me.id);
+    try testing.expect(bare.me.membership == null);
+
+    // Nobody else's row carries it: it is what a terminal is told about
+    // itself.
+    try testing.expect(describe(&b, fake.host(), worker).membership == null);
+}
+
+test "ControlRoom resume: the host hears what an agent's hooks said, after the bus has it, and never the launcher's own word" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    var ev = hookEvent(.session_started);
+    ev.session_id = "s-9";
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = ev });
+    const heard = fake.heard orelse return error.HostWasNotTold;
+    try testing.expectEqual(worker, heard.id);
+    try testing.expectEqual(AgentEvent.Kind.session_started, heard.kind);
+    // The bus had the session by the time the host was told: reading it
+    // there is what the host does next.
+    try testing.expectEqualStrings("s-9", b.agentOf(worker).session_id.get().?);
+
+    for ([_]AgentEvent.Kind{ .hooks_expected, .launch_failed }) |kind| {
+        fake.heard = null;
+        _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = hookEvent(kind) });
+        try testing.expect(fake.heard == null);
+    }
 }

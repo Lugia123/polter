@@ -5,8 +5,11 @@
 //! and that the adapter it names answers two questions:
 //!
 //!   * `inventory` -- which skills and MCP servers this CLI has on this
-//!     machine, each with what a person needs to decide about it.
-//!   * `launch` -- the command line that starts this CLI wearing a role.
+//!     machine, each with what a person needs to decide about it; and
+//!     whether this adapter can start the CLI in a session it is handed
+//!     (`"resume": true`).
+//!   * `launch` -- the command line that starts this CLI wearing a role,
+//!     going on with the session the request names when it names one.
 //!
 //! Adding a CLI is adding a plugin that answers both. Nothing here changes.
 //! The contract is in `dev-docs/poltergeist/roles.md` part eleven; the
@@ -227,6 +230,7 @@ pub fn writeLaunchRequest(
     cwd: ?[]const u8,
     home: ?[]const u8,
     polter: ?[]const u8,
+    session: ?[]const u8,
 ) std.Io.Writer.Error!void {
     try w.print("{{\"version\":{d},\"cwd\":", .{contract_version});
     try writeOptional(w, cwd);
@@ -237,6 +241,15 @@ pub fn writeLaunchRequest(
     // could not be worked out; an adapter then configures no hooks.
     try w.writeAll(",\"polter\":");
     try writeOptional(w, polter);
+    // The session to go on with, as the CLI itself named it through its
+    // hooks; null for a new one. **Always written**, so an adapter reads
+    // "new session" as a null it was sent rather than as a key it may or
+    // may not have been sent. An adapter that cannot go on with a session
+    // (it did not say `"resume": true` in its inventory) is never sent
+    // anything but null, and one that can and finds the session gone
+    // starts a new one and says so in `notes`: a launch must start.
+    try w.writeAll(",\"session\":");
+    try writeOptional(w, session);
     try w.print(",\"role\":{{\"key\":{f},\"name\":{f},\"instructions\":", .{
         std.json.fmt(p.key, .{}),
         std.json.fmt(p.name, .{}),
@@ -366,6 +379,10 @@ pub const Cache = struct {
     /// The `clis` array as last read, owned by `alloc`. Null until the
     /// first refresh finishes.
     clis: ?[]u8 = null,
+    /// The keys of the CLIs whose adapter said `"resume": true` in the
+    /// inventory `clis` was made from, each owned by `alloc`. Null exactly
+    /// when `clis` is.
+    resume_keys: ?[][]u8 = null,
     refreshing: bool = false,
     thread: ?std.Thread = null,
 
@@ -380,6 +397,34 @@ pub const Cache = struct {
         defer self.mutex.unlock(io);
         if (self.clis) |c| self.alloc.free(c);
         self.clis = null;
+        if (self.resume_keys) |keys| freeKeys(self.alloc, keys);
+        self.resume_keys = null;
+    }
+
+    fn freeKeys(alloc: Allocator, keys: [][]u8) void {
+        for (keys) |k| alloc.free(k);
+        alloc.free(keys);
+    }
+
+    /// Which CLIs can go on with a session they are handed, as last read:
+    /// null when nothing has been read yet -- which is not "none can" --
+    /// and otherwise their keys, copied into `alloc`.
+    ///
+    /// Does not start a read. A caller that wants one calls `refresh`.
+    pub fn resumable(self: *Cache, io: std.Io, alloc: Allocator) Allocator.Error!?[]const []const u8 {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        const keys = self.resume_keys orelse return null;
+        const out = try alloc.alloc([]const u8, keys.len);
+        for (keys, out) |k, *o| o.* = try alloc.dupe(u8, k);
+        return out;
+    }
+
+    /// Whether a read has finished or is under way.
+    pub fn askedFor(self: *Cache, io: std.Io) bool {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        return self.clis != null or self.refreshing;
     }
 
     /// Start reading again, unless a read is already under way.
@@ -445,14 +490,18 @@ pub const Cache = struct {
         defer self.mutex.unlock(io);
         if (fresh) |f| {
             if (self.clis) |old| self.alloc.free(old);
-            self.clis = f;
+            self.clis = f.clis;
+            if (self.resume_keys) |old| freeKeys(self.alloc, old);
+            self.resume_keys = f.resume_keys;
         }
         self.refreshing = false;
     }
 
-    /// Ask every adapter for its inventory. The `clis` array, owned by
-    /// `alloc`.
-    fn read(alloc: Allocator, io: std.Io) ![]u8 {
+    const Read = struct { clis: []u8, resume_keys: [][]u8 };
+
+    /// Ask every adapter for its inventory. The `clis` array and the keys
+    /// of those that can go on with a session, owned by `alloc`.
+    fn read(alloc: Allocator, io: std.Io) !Read {
         var arena: std.heap.ArenaAllocator = .init(alloc);
         defer arena.deinit();
         const aa = arena.allocator();
@@ -473,6 +522,12 @@ pub const Cache = struct {
         errdefer out.deinit();
         const w = &out.writer;
 
+        var can: std.ArrayListUnmanaged([]u8) = .empty;
+        errdefer {
+            for (can.items) |k| alloc.free(k);
+            can.deinit(alloc);
+        }
+
         try w.writeAll("[");
         for (discover(aa, io, &environ_map), 0..) |a, i| {
             if (i > 0) try w.writeAll(",");
@@ -482,7 +537,14 @@ pub const Cache = struct {
                 std.json.fmt(a.bin, .{}),
             });
             switch (try ask(aa, io, &environ_map, a, .inventory, request.written())) {
-                .ok => |json| try w.print("\"error\":null,\"inventory\":{s}}}", .{json}),
+                .ok => |json| {
+                    try w.print("\"error\":null,\"inventory\":{s}}}", .{json});
+                    if (saysResume(aa, json)) {
+                        const key = try alloc.dupe(u8, a.key);
+                        errdefer alloc.free(key);
+                        try can.append(alloc, key);
+                    }
+                },
                 .failed => |why| {
                     log.warn("agent cli {s}: inventory failed: {s}", .{ a.key, why });
                     try w.print("\"error\":{f},\"inventory\":null}}", .{std.json.fmt(why, .{})});
@@ -490,9 +552,74 @@ pub const Cache = struct {
             }
         }
         try w.writeAll("]");
-        return try out.toOwnedSlice();
+        const clis = try out.toOwnedSlice();
+        errdefer alloc.free(clis);
+        return .{ .clis = clis, .resume_keys = try can.toOwnedSlice(alloc) };
     }
 };
+
+/// What only the control room adds to a launch line: the group a
+/// supervisor is started for, and the session it goes on with.
+pub const LaunchFor = struct {
+    group: ?[]const u8,
+    session: ?[]const u8,
+
+    pub const none: LaunchFor = .{ .group = null, .session = null };
+};
+
+/// ` +launch <role> <cli>[ --group=<name>][ --resume=<session>]` -- what
+/// follows the executable on the line typed to start a role
+/// (`App.launchLine`); `cli/launch.zig` reads it back.
+///
+/// **Nothing here needs quoting, and that is checked rather than assumed
+/// for the one part that comes from outside**: the keys and a group's name
+/// are `[a-z0-9-]` by construction, and a session's id is whatever a CLI
+/// called it, so one that is not `isSessionToken` is left off the line.
+/// The role then starts in a new session, which is what a launch does
+/// with no id at all.
+pub fn writeLaunchWords(
+    w: *std.Io.Writer,
+    role: []const u8,
+    cli: []const u8,
+    extra: LaunchFor,
+) std.Io.Writer.Error!void {
+    try w.print(" +launch {s} {s}", .{ role, cli });
+    if (extra.group) |g| try w.print(" --group={s}", .{g});
+    if (extra.session) |id| {
+        if (isSessionToken(id)) try w.print(" --resume={s}", .{id});
+    }
+}
+
+/// Whether `s` can be a session's id on a launch line and in a launch
+/// request: 1 to 96 of `[A-Za-z0-9._-]`, not starting with `-`.
+///
+/// **Narrower than what a CLI may call a session, on purpose.** The id is
+/// typed into a shell on the launch line and ends up as an argument to the
+/// CLI, so it is held to characters neither reads as anything else. A CLI
+/// whose ids do not fit is one whose sessions are not gone on with -- the
+/// supervisor starts in a new one -- rather than one whose id is quoted by
+/// a rule somebody has to get right for every shell. 96 is what the bus
+/// keeps of one (`Bus.Agent.session_id`).
+pub fn isSessionToken(s: []const u8) bool {
+    if (s.len == 0 or s.len > 96 or s[0] == '-') return false;
+    for (s) |c| switch (c) {
+        'A'...'Z', 'a'...'z', '0'...'9', '.', '_', '-' => {},
+        else => return false,
+    };
+    return true;
+}
+
+/// Whether an inventory answer says its adapter can start the CLI in a
+/// session it is handed. **Only a JSON `true` says so**, the way only one
+/// says `hooks` in a launch answer: an adapter that did not say it cannot,
+/// and is never sent a session.
+pub fn saysResume(arena: Allocator, inventory_json: []const u8) bool {
+    const root = std.json.parseFromSliceLeaky(std.json.Value, arena, inventory_json, .{}) catch
+        return false;
+    if (root != .object) return false;
+    const v = root.object.get("resume") orelse return false;
+    return v == .bool and v.bool;
+}
 
 // ------------------------------------------------------------------- tests
 
@@ -517,13 +644,15 @@ test "agent_cli: the launch request carries the role and one CLI's choices" {
     };
 
     var out: std.Io.Writer.Allocating = .init(aa);
-    try writeLaunchRequest(&out.writer, p, choice, "/tmp/x", null, "/Applications/Polter.app/Contents/MacOS/polter");
+    try writeLaunchRequest(&out.writer, p, choice, "/tmp/x", null, "/Applications/Polter.app/Contents/MacOS/polter", null);
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, out.written(), .{});
     const o = v.object;
     try testing.expectEqual(@as(i64, contract_version), o.get("version").?.integer);
     try testing.expectEqualStrings("/tmp/x", o.get("cwd").?.string);
     try testing.expect(o.get("home").? == .null);
+    // A new session is a null that was sent, not a key left out.
+    try testing.expect(o.get("session").? == .null);
     try testing.expectEqualStrings("/Applications/Polter.app/Contents/MacOS/polter", o.get("polter").?.string);
     const role = o.get("role").?.object;
     try testing.expectEqualStrings("射手", role.get("name").?.string);
@@ -709,7 +838,7 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
         .args = &.{ "--settings", "{\"theme\":\"dark\"}" },
     };
     var req: std.Io.Writer.Allocating = .init(aa);
-    try writeLaunchRequest(&req.writer, p, choice, null, home, null);
+    try writeLaunchRequest(&req.writer, p, choice, null, home, null, null);
     const answer = switch (try ask(aa, io, &env, adapter, .launch, req.written())) {
         .ok => |j| j,
         .failed => |why| {
@@ -821,7 +950,7 @@ test "agent_cli: a role never switches off what belongs to the directory it is l
         .mcp = .{ .default = false },
     };
     var req: std.Io.Writer.Allocating = .init(aa);
-    try writeLaunchRequest(&req.writer, p, choice, project, home, null);
+    try writeLaunchRequest(&req.writer, p, choice, project, home, null, null);
     const answer = switch (try ask(aa, io, &env, adapter, .launch, req.written())) {
         .ok => |j| j,
         .failed => |why| {
@@ -863,6 +992,8 @@ const HookCell = struct {
     version: []const u8,
     args: []const []const u8 = &.{},
     polter: ?[]const u8 = "/Applications/It's Polter/polter",
+    /// The session the launch is asked to go on with.
+    session: ?[]const u8 = null,
 };
 
 const HookAnswer = struct {
@@ -928,7 +1059,7 @@ fn askHooks(aa: Allocator, io: std.Io, rig: HookRig, cell: HookCell) !?HookAnswe
         .args = cell.args,
     };
     var req: std.Io.Writer.Allocating = .init(aa);
-    try writeLaunchRequest(&req.writer, p, choice, null, rig.home, cell.polter);
+    try writeLaunchRequest(&req.writer, p, choice, null, rig.home, cell.polter, cell.session);
     const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = rig.exec };
     const answer = switch (try ask(aa, io, &env, adapter, .launch, req.written())) {
         .ok => |j| j,
@@ -1225,4 +1356,158 @@ test "agent_cli status line: the line it writes is one sh reads back as the Polt
     const command = a.settings.?.get("statusLine").?.object.get("command").?.string;
     const ran = try std.process.run(aa, io, .{ .argv = &.{ "/bin/sh", "-c", command } });
     try testing.expectEqualStrings("+statusline|--cli|claude-code|", ran.stdout);
+}
+
+test "agent_cli resume: only a JSON true in the inventory says an adapter can go on with a session" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    try testing.expect(saysResume(aa, "{\"version\":1,\"resume\":true,\"items\":[]}"));
+    for ([_][]const u8{
+        "{\"version\":1,\"items\":[]}",
+        "{\"resume\":false}",
+        "{\"resume\":\"true\"}",
+        "{\"resume\":1}",
+        "{\"resume\":null}",
+        "[true]",
+        "not json",
+    }) |no| try testing.expect(!saysResume(aa, no));
+}
+
+test "agent_cli resume: the launch line carries the group and a session that is plain, and leaves off one that is not" {
+    var buf: [512]u8 = undefined;
+
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeLaunchWords(&w, "polter-supervisor", "claude-code", .none);
+    try testing.expectEqualStrings(" +launch polter-supervisor claude-code", w.buffered());
+
+    w = .fixed(&buf);
+    try writeLaunchWords(&w, "polter-supervisor", "claude-code", .{
+        .group = "web-app",
+        .session = "eed9173b-c1fc-4493-aa00-187bacdc94cf",
+    });
+    try testing.expectEqualStrings(
+        " +launch polter-supervisor claude-code --group=web-app --resume=eed9173b-c1fc-4493-aa00-187bacdc94cf",
+        w.buffered(),
+    );
+
+    // An id a shell would read as something else never reaches the line:
+    // the group still does, and the role starts in a new session.
+    for ([_][]const u8{ "a b", "x;rm -rf ~", "$(id)", "it's", "-rf", "", "a\"b", "a/b" }) |bad| {
+        try testing.expect(!isSessionToken(bad));
+        w = .fixed(&buf);
+        try writeLaunchWords(&w, "r", "c", .{ .group = "g", .session = bad });
+        try testing.expectEqualStrings(" +launch r c --group=g", w.buffered());
+    }
+    try testing.expect(isSessionToken("a" ** 96));
+    try testing.expect(!isSessionToken("a" ** 97));
+    try testing.expect(isSessionToken("rollout-2026.10.13_x"));
+}
+
+/// Put a transcript for `session` under some project of the rig's home.
+fn writeTranscript(aa: Allocator, io: std.Io, rig: HookRig, session: []const u8) !void {
+    const path = try std.fmt.allocPrint(aa, "{s}/.claude/projects/-some-other-place/{s}.jsonl", .{ rig.home, session });
+    try std.Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(path).?);
+    var f = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer f.close(io);
+    try f.writeStreamingAll(io, "{\"type\":\"user\"}\n");
+}
+
+/// Where `--resume` is in a command line, and what follows it.
+fn resumeIn(argv: []const []const u8) ?[]const u8 {
+    for (argv, 0..) |a, i| {
+        if (std.mem.eql(u8, a, "--resume")) return if (i + 1 < argv.len) argv[i + 1] else "";
+    }
+    return null;
+}
+
+test "agent_cli resume: the shipped Claude Code adapter says it can, and goes on with a session whose transcript is there" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rig = try hookRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    // What it says of itself, asked the way the cache asks.
+    var env = try global.environMap();
+    defer env.deinit();
+    const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = rig.exec };
+    const request = try std.fmt.allocPrint(aa, "{{\"version\":1,\"cwd\":null,\"home\":{f}}}", .{std.json.fmt(rig.home, .{})});
+    const inv = switch (try ask(aa, io, &env, adapter, .inventory, request)) {
+        .ok => |j| j,
+        .failed => |why| {
+            if (std.mem.indexOf(u8, why, "could not be run") != null) return error.SkipZigTest;
+            std.debug.print("adapter failed: {s}\n", .{why});
+            return error.TestUnexpectedResult;
+        },
+    };
+    try testing.expect(saysResume(aa, inv));
+
+    const session = "0a1b2c3d-1111-4222-8333-444455556666";
+    try writeTranscript(aa, io, rig, session);
+
+    const a = (try askHooks(aa, io, rig, .{
+        .version = "2.1.296 (Claude Code)",
+        .session = session,
+        .args = &.{"--verbose"},
+    })) orelse return error.SkipZigTest;
+    try testing.expectEqualStrings(session, resumeIn(a.launch.argv).?);
+    try testing.expect(std.mem.indexOf(u8, a.notes, "Going on with the last session") != null);
+    // Beside everything else the launch carries, not in place of it: the
+    // hooks are still there, and so are the role's own arguments.
+    try testing.expect(a.launch.hooks);
+    try testing.expectEqualStrings("--verbose", a.launch.argv[a.launch.argv.len - 1]);
+    try testing.expectEqualStrings("claude", a.launch.argv[0]);
+
+    // No session asked for: no `--resume`, and no note about one.
+    const fresh = (try askHooks(aa, io, rig, .{ .version = "2.1.296 (Claude Code)" })) orelse return error.SkipZigTest;
+    try testing.expect(resumeIn(fresh.launch.argv) == null);
+    try testing.expect(std.mem.indexOf(u8, fresh.notes, "session") == null);
+}
+
+test "agent_cli resume: a session that is gone, or is not one, starts a new session and a note says so" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rig = try hookRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    const there = "0a1b2c3d-1111-4222-8333-444455556666";
+    try writeTranscript(aa, io, rig, there);
+
+    const Cell = struct { session: []const u8, args: []const []const u8 = &.{}, says: []const u8 };
+    const cells = [_]Cell{
+        // Its transcript is not on this machine. Measured: `claude --resume`
+        // of one prints "No conversation found" and exits 1 by itself.
+        .{ .session = "99999999-1111-4222-8333-444455556666", .says = "is no longer on this machine, so this starts a new session." },
+        // Not an id Claude Code gives: `--resume <words>` is a search.
+        .{ .session = "last-tuesday", .says = "is not one Claude Code gives a session, so this starts a new session." },
+        // The role has its own say, even for a session that is there.
+        .{ .session = there, .args = &.{ "-r", "mine" }, .says = "already choose a session (-r)" },
+        .{ .session = there, .args = &.{"--continue"}, .says = "already choose a session (--continue)" },
+        .{ .session = there, .args = &.{"--session-id=77777777-1111-4222-8333-444455556666"}, .says = "already choose a session (--session-id)" },
+    };
+    for (cells) |c| {
+        const a = (try askHooks(aa, io, rig, .{
+            .version = "2.1.296 (Claude Code)",
+            .session = c.session,
+            .args = c.args,
+        })) orelse return error.SkipZigTest;
+        // Never ours on the line -- and there is still a command to run.
+        for (a.launch.argv) |arg| try testing.expect(!std.mem.eql(u8, arg, "--resume"));
+        try testing.expectEqualStrings("claude", a.launch.argv[0]);
+        if (std.mem.indexOf(u8, a.notes, c.says) == null) {
+            std.debug.print("no note saying {s} in:\n{s}\n", .{ c.says, a.notes });
+            return error.TestExpectedEqual;
+        }
+    }
 }

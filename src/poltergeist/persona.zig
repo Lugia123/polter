@@ -245,13 +245,41 @@ pub const supervisor_launch_note =
     "Talk to the terminals you supervise through the group and task tools: " ++
     "only what goes through them is written down and survives a restart.";
 
+/// What an agent started as the supervisor **of a group** is told instead:
+/// the control room started it for that group (`ControlAct`,
+/// `start_supervisor`), so the group is there already and is the first
+/// thing to read. Telling it to make a group, as the note above does, is
+/// how the morning after came to have two groups for one piece of work.
+///
+/// The group's name goes between the two halves.
+pub const supervisor_of_group_note = [2][]const u8{
+    "You were started in a Polter terminal as the supervisor of the group `",
+    "`: the person started you for that group from the control room, and you " ++
+        "are put in it as you connect. Before doing anything else, read the " ++
+        "`supervising` skill with the polter MCP tool skill_read, and follow " ++
+        "it. Do not make a group for this work -- that one is yours. Call `me` " ++
+        "(its `started_for` names the group), then read what the group " ++
+        "already holds before arranging anything: its brief (group_list), " ++
+        "what was said in it (group_read, group_history) and its panel " ++
+        "(task_list, task_history). If this is a session of yours from " ++
+        "before, what you remember may be older than what the group holds: " ++
+        "the group and the panel are the record. Keep the brief current, and " ++
+        "talk to the terminals you supervise through the group and task " ++
+        "tools: only what goes through them is written down and survives a " ++
+        "restart.",
+};
+
 /// The instructions an agent started in `p` is given: the supervisor note
-/// when the role makes it one, then the role's own. Null when both are
-/// absent.
-pub fn launchInstructions(aa: Allocator, p: Persona) Allocator.Error!?[]const u8 {
+/// when the role makes it one -- the one that names `group` when it was
+/// started for one -- then the role's own. Null when both are absent.
+pub fn launchInstructions(aa: Allocator, p: Persona, group: ?[]const u8) Allocator.Error!?[]const u8 {
     if (!p.polter.supervisor) return p.instructions;
-    const own = p.instructions orelse return supervisor_launch_note;
-    return try std.mem.concat(aa, u8, &.{ supervisor_launch_note, "\n\n", own });
+    const note: []const u8 = if (group) |g|
+        try std.mem.concat(aa, u8, &.{ supervisor_of_group_note[0], g, supervisor_of_group_note[1] })
+    else
+        supervisor_launch_note;
+    const own = p.instructions orelse return note;
+    return try std.mem.concat(aa, u8, &.{ note, "\n\n", own });
 }
 
 // ------------------------------------------------------------ the built-ins
@@ -1571,15 +1599,39 @@ test "persona: an agent started in a supervisor role is told it is one" {
     const aa = arena.allocator();
 
     const plain: Persona = .{ .key = "a", .name = "a", .instructions = "own" };
-    try testing.expectEqualStrings("own", (try launchInstructions(aa, plain)).?);
-    try testing.expectEqual(@as(?[]const u8, null), try launchInstructions(aa, .{ .key = "b", .name = "b" }));
+    try testing.expectEqualStrings("own", (try launchInstructions(aa, plain, null)).?);
+    try testing.expectEqual(@as(?[]const u8, null), try launchInstructions(aa, .{ .key = "b", .name = "b" }, null));
 
     const bare: Persona = .{ .key = "c", .name = "c", .polter = .{ .supervisor = true } };
-    try testing.expectEqualStrings(supervisor_launch_note, (try launchInstructions(aa, bare)).?);
+    try testing.expectEqualStrings(supervisor_launch_note, (try launchInstructions(aa, bare, null)).?);
 
     var with = bare;
     with.instructions = "own";
-    const text = (try launchInstructions(aa, with)).?;
+    const text = (try launchInstructions(aa, with, null)).?;
     try testing.expect(std.mem.startsWith(u8, text, supervisor_launch_note));
     try testing.expect(std.mem.endsWith(u8, text, "\n\nown"));
+}
+
+test "persona: a supervisor started for a group is told which, and to read it rather than make one" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const bare: Persona = .{ .key = "c", .name = "c", .polter = .{ .supervisor = true } };
+    const text = (try launchInstructions(aa, bare, "web-app")).?;
+    try testing.expect(std.mem.indexOf(u8, text, "supervisor of the group `web-app`") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "Do not make a group") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "started_for") != null);
+    // The sentence that sends a supervisor off to make one is the other
+    // note's, and is not said to this one.
+    try testing.expect(std.mem.indexOf(u8, supervisor_launch_note, "making a group") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "making a group") == null);
+
+    // Its own instructions still follow, and a role that makes no
+    // supervisor is told nothing about any group.
+    var with = bare;
+    with.instructions = "own";
+    try testing.expect(std.mem.endsWith(u8, (try launchInstructions(aa, with, "web-app")).?, "\n\nown"));
+    const plain: Persona = .{ .key = "a", .name = "a", .instructions = "own" };
+    try testing.expectEqualStrings("own", (try launchInstructions(aa, plain, "web-app")).?);
 }

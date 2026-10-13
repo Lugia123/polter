@@ -15,7 +15,13 @@ those is a fresh start, and the arrangement you are picking up is not the one
 you remember. Four calls before you plan anything, in this order.
 
 1. `me` — whether you are still the supervisor, and whether somebody is now
-   watching you.
+   watching you. **It also says which groups are yours**: `groups` (the ones
+   you are in), `supervisor_of` (the ones you are the supervisor of) and
+   `started_for` — the group the person started you for from the control
+   room, or `null` when nobody started you that way. A name in `started_for`
+   is the answer to "which group is this about": you were put in it as you
+   connected, so read it; do not make another. `null` there is an answer
+   too, not a failure to find out.
 2. `group_list`. **Read `joined` on each entry.** A group marked
    `joined: false` is one that came back from disk without you in it — after
    a restart that is all of them — and `group_read` on it answers
@@ -934,6 +940,17 @@ for, and every terminal's `cwd` and `title`.
 off disk on their own, and so do their task panels — what does *not* come back
 is who was in them, because deciding which terminal on screen now is which one
 from last night is a judgement, and judgements are yours.
+
+**If the person started you from a group in the control room, one thing is
+already done**: you are in that group, in the directory its last supervisor
+worked in, and `me` names it in `started_for`. What you were told at launch
+names it too. You may also be *the same session as before* — Polter keeps
+the session a group's supervisor was in and starts the next one in it when
+the CLI can do that — so you may remember last night. Treat that memory the
+way the section above treats any memory: the group, the panel and the
+screens are the record, and where what you remember disagrees with them,
+they are right and you say so. Being resumed does not put your workers
+back: `group_list`, `task_list` and `terminal_list` first, exactly as below.
 
 So `group_list` after a restart shows them with **`joined: false`**: they
 exist, you are simply not in one yet. **That is not an empty night, and the

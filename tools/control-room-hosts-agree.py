@@ -47,7 +47,11 @@ the word -- whether the tab's ground then shows, and the English word for
 what each frame is -- the glyph and the word being the pair the core gives
 for the title's right end, `held` among them; what the core says of every group's
 supervisor (its state, whether one can be started, why the last try made
-none, the role and the directory), the roles one can be started in and
+none, the role and the directory), what it says of the supervisor each
+group last had (the CLI a start uses, the role and the CLI the last one
+was, when it was last heard from) and whether a start goes on with its
+session and why not -- with every one of the eight reasons the core can
+give, as each side spells it -- the roles one can be started in and
 whether there is a choice; when a group just made is selected; where a tab
 the core asked for goes, for every asker and every place the control room
 can be (forty cases); the English of what the right-hand side says of a
@@ -345,6 +349,18 @@ for r in list.rows {
     } else {
         print("start id=\(r.id) -")
     }
+    // What the core says of the last supervisor, and whether a start goes
+    // on with its session.
+    if let l = r.start?.last {
+        print("start_last id=\(r.id) cli=\(l.cli ?? "-") last_role=\(l.role ?? "-") "
+            + "last_cli=\(l.lastCli ?? "-") heard_ms=\(l.heardMs.map { String($0) } ?? "-") "
+            + "resume=\(l.canResume) why=\(l.why.rawValue)")
+    } else {
+        print("start_last id=\(r.id) -")
+    }
+}
+for why in ControlRoomList.SupervisorStart.ResumeWhy.allCases {
+    print("resume_why \(why.rawValue)")
 }
 // What the right-hand side says of a group with no supervisor, for every
 // reason the core gives for the last try having made none -- the two a

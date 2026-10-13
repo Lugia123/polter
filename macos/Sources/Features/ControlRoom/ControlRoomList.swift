@@ -124,6 +124,37 @@ struct ControlRoomList: Equatable {
             case cliDidNotStart = "cli_did_not_start"
         }
 
+        /// Why a start does not go on with the last supervisor's session,
+        /// or `none` when it does (`ControlRoom.zig`, `ResumeOut.Why`).
+        enum ResumeWhy: String, Equatable, Decodable, CaseIterable {
+            case none
+            case noRecord = "no_record"
+            case noSession = "no_session"
+            case lastTryFailed = "last_try_failed"
+            case cliDiffers = "cli_differs"
+            case clisUnread = "clis_unread"
+            case cliCannotResume = "cli_cannot_resume"
+            case sessionInUse = "session_in_use"
+        }
+
+        /// What the core says of the supervisor a group last had, and
+        /// whether a start goes on with its session. Read and carried; the
+        /// view does not draw it yet.
+        struct Last: Equatable {
+            /// The CLI the default role is started in.
+            var cli: String?
+            /// The role and the CLI the last supervisor was, and when it
+            /// was last heard from (the real clock). Each nil when nobody
+            /// wrote it down.
+            var role: String?
+            var lastCli: String?
+            var heardMs: Int64?
+            /// Whether a start goes on with its session: a host offers
+            /// that on this and on nothing else, and says `why` when not.
+            var canResume: Bool
+            var why: ResumeWhy
+        }
+
         var state: State
         var canStart: Bool
         var failed: Failure
@@ -131,6 +162,8 @@ struct ControlRoomList: Equatable {
         var role: String?
         /// Where it is started unless the person picks elsewhere.
         var cwd: String
+        /// Nil for a snapshot from before the core said it.
+        var last: Last?
     }
 
     /// A role a supervisor can be started in.
@@ -544,6 +577,28 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var failed: ControlRoomList.SupervisorStart.Failure
         var role: String?
         var cwd: String
+        /// The three the core added together; absent together in a
+        /// snapshot from before it did.
+        var cli: String?
+        var last: Last?
+        var resume: Resume?
+
+        struct Last: Decodable, Equatable {
+            var role: String?
+            var cli: String?
+            var heard_ms: Int64?
+        }
+
+        struct Resume: Decodable, Equatable {
+            var can: Bool
+            var why: ControlRoomList.SupervisorStart.ResumeWhy
+        }
+
+        var startLast: ControlRoomList.SupervisorStart.Last? {
+            guard let last, let resume else { return nil }
+            return .init(cli: cli, role: last.role, lastCli: last.cli, heardMs: last.heard_ms,
+                         canResume: resume.can, why: resume.why)
+        }
     }
 
     struct SupervisorRole: Decodable, Equatable {
@@ -765,7 +820,7 @@ extension ControlRoomList {
                 },
                 start: group.supervisor.map {
                     SupervisorStart(state: $0.state, canStart: $0.can_start, failed: $0.failed,
-                                    role: $0.role, cwd: $0.cwd)
+                                    role: $0.role, cwd: $0.cwd, last: $0.startLast)
                 }))
         }
         let rows = groups + lone

@@ -773,12 +773,8 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
     // The roles a supervisor can be started in: the ones that make a
     // terminal a supervisor and have a CLI to start. In the set's order,
     // which puts the one Polter ships first.
-    self.ensurePersonas();
-    var roles: std.ArrayListUnmanaged(poltergeistpkg.ControlRoom.SupervisorRole) = .empty;
-    for (self.personas.set.personas) |p| {
-        if (!p.polter.supervisor or p.clis.len == 0) continue;
-        roles.append(alloc, .{ .key = p.key, .name = p.name }) catch return;
-    }
+    const roles = self.controlStartRoles(alloc) catch return;
+    const cli_resume = self.controlCliResume(alloc) catch return;
 
     const wall_ms = self.poltergeistWallMs();
     const outcome = self.control_room.refresh(.{
@@ -791,7 +787,8 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         ),
         .tasks = &self.tasks,
         .quota = quota_read,
-        .supervisor_roles = roles.items,
+        .supervisor_roles = roles,
+        .cli_resume = cli_resume,
         .home = self.controlHome(),
         .now_ms = now_ms,
         .wall_ms = @intCast(@max(0, wall_ms)),
@@ -908,36 +905,57 @@ fn controlActStewardOf(ctx: *anyopaque, group: []const u8) ?poltergeistpkg.Bus.I
 /// is asked of the application rather than of a terminal, and the new
 /// terminal is the person's own, not one an agent opened.
 ///
-/// 暂定: a role set up for several CLIs is started in the first of them.
-/// The control room offers a role and a directory, not a third choice.
+/// The role is the one named, or the one the snapshot names
+/// (`ControlRoom.startRoleOf`): what the group's last supervisor wore when
+/// that is still a role to start in, else the first. A role set up for
+/// several CLIs is started in the last supervisor's when it is one of
+/// them, else in its first (`ControlRoom.startCliOf`) -- the control room
+/// offers a role and a directory, not a third choice.
+///
+/// **Which session**: the last supervisor's when `session` is `.last` and
+/// `ControlRoom.resumeOf` says it can be gone on with -- the same function
+/// the snapshot's `resume` is, asked again now for the role this start
+/// uses -- and a new one otherwise. The id rides the launch line as
+/// `--resume=`, and from there to the CLI's adapter, which is the one that
+/// knows what going on with a session takes and starts a new one if the
+/// session turns out to be gone.
 fn controlActStartSupervisor(
     ctx: *anyopaque,
     group: []const u8,
     role_asked: []const u8,
     cwd_asked: []const u8,
+    session_asked: poltergeistpkg.ControlAct.Session,
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     const Chat = poltergeistpkg.Chat;
     const Store = poltergeistpkg.PersonaStore;
+    const ControlRoom = poltergeistpkg.ControlRoom;
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // The role: the one named, or the first that makes a supervisor --
-    // the one the snapshot named as the default.
+    const last = self.chat.lastSupervisorOf(group);
+
+    // The role: the one named, or the one the snapshot named as the
+    // default.
     self.ensurePersonas();
     const p = if (role_asked.len > 0)
         self.personas.set.find(role_asked) orelse return error.NoSuchPersona
-    else for (self.personas.set.personas) |candidate| {
-        if (candidate.polter.supervisor and candidate.clis.len > 0) break candidate;
-    } else return error.NoSupervisorRole;
+    else p: {
+        const roles = try self.controlStartRoles(alloc);
+        const role = ControlRoom.startRoleOf(roles, last) orelse return error.NoSupervisorRole;
+        break :p self.personas.set.find(role.key) orelse return error.NoSupervisorRole;
+    };
     if (!p.polter.supervisor) return error.NotASupervisorRole;
     if (p.clis.len == 0) return error.NoCli;
 
+    const cli_keys = try alloc.alloc([]const u8, p.clis.len);
+    for (p.clis, cli_keys) |c, *k| k.* = c.cli;
+    const cli = ControlRoom.startCliOf(cli_keys, last).?;
+
     // The directory: the one named, or the snapshot's, by the same order.
     const cwd: []const u8 = if (cwd_asked.len > 0) cwd_asked else cwd: {
-        const last = self.chat.supervisorDirOf(group);
-        if (last.len > 0) break :cwd last;
+        if (last.dir.len > 0) break :cwd last.dir;
         const common = self.chat.commonDirOf(group);
         if (common.len > 0) break :cwd common;
         break :cwd self.controlHome();
@@ -954,12 +972,34 @@ fn controlActStartSupervisor(
     }
 
     const rt_app = self.poltergeist_rt_app orelse return error.NoRuntime;
-    const choice = try self.resolveLaunch(alloc, p.key, p.clis[0].cli);
-    const line = try launchLine(alloc, choice);
+    const choice = try self.resolveLaunch(alloc, p.key, cli);
     const now_ms = self.poltergeistElapsedMs();
 
+    // Whether it goes on with the last session. Asked for the role and the
+    // CLI this start uses, which the person may have picked since the
+    // snapshot was drawn.
+    const go_on = ControlRoom.resumeOf(.{
+        .last = last,
+        .cli = choice.cli,
+        .cli_resume = try self.controlCliResume(alloc),
+        .held = ControlRoom.sessionHeld(&self.poltergeist, try self.liveTerminals(alloc), last.session),
+        .last_try_failed = fails: {
+            const was = self.chat.startOf(group, now_ms);
+            break :fails was.state == .failed and was.resuming;
+        },
+    });
+    const resuming = session_asked == .last and go_on.can;
+    const line = try launchLineFor(alloc, choice, .{
+        .group = group,
+        .session = if (resuming) last.session else null,
+    });
+    log.info("control room: starting a supervisor, session={s} ({t})", .{
+        if (resuming) "last" else "new",
+        if (session_asked == .new) poltergeistpkg.ControlRoom.ResumeOut.Why.none else go_on.why,
+    });
+
     // From here a refusal has something to take back.
-    try self.chat.beginStart(group, now_ms, now_ms + Store.pending_launch_ms);
+    try self.chat.beginStart(group, now_ms, now_ms + Store.pending_launch_ms, resuming);
     errdefer self.chat.endStart(group);
     try self.personas.expectLaunch(choice.key, choice.cli, line, Chat.user_id, now_ms);
     errdefer self.personas.dropLaunch();
@@ -1030,17 +1070,156 @@ fn controlStartConnected(self: *App, id: poltergeistpkg.Bus.Id) void {
         log.warn("control room: could not put the supervisor it started in its group err={}", .{err});
         return;
     };
-    self.chat.endStart(group);
+    // Over, and remembered: this terminal's `me` says which group it was
+    // started for.
+    self.chat.startMade(group, id);
     log.info("control room: the supervisor it started connected and is in its group", .{});
     self.controlRoomTouch();
 }
 
-/// Remember where a group's supervisor is working, in memory and on disk,
-/// when that is known and has changed.
-fn noteSupervisorDir(self: *App, group: []const u8, dir: []const u8) void {
-    const changed = self.chat.setSupervisorDir(group, dir) catch return;
-    if (!changed) return;
-    if (self.group_log) |*l| l.supervisorDir(group, dir);
+/// The roles a supervisor can be started in: the ones that make a terminal
+/// a supervisor and have a CLI to start, each with the CLIs it is set up
+/// for. In the set's order, which puts the one Polter ships first. The
+/// snapshot and the start both read this, so they name the same default.
+fn controlStartRoles(self: *App, alloc: Allocator) Allocator.Error![]const poltergeistpkg.ControlRoom.StartRole {
+    self.ensurePersonas();
+    var roles: std.ArrayListUnmanaged(poltergeistpkg.ControlRoom.StartRole) = .empty;
+    for (self.personas.set.personas) |p| {
+        if (!p.polter.supervisor or p.clis.len == 0) continue;
+        const clis = try alloc.alloc([]const u8, p.clis.len);
+        for (p.clis, clis) |c, *k| k.* = c.cli;
+        try roles.append(alloc, .{ .key = p.key, .name = p.name, .clis = clis });
+    }
+    return roles.items;
+}
+
+/// Which agent CLIs can go on with a session, as far as their adapters
+/// have been asked (`agent_cli.Cache`).
+///
+/// **Asking is started here, and only when it would matter**: an adapter is
+/// a process, and a machine none of whose groups has a session written
+/// down has no use for the answer. Until it comes this is `unread`, which
+/// the snapshot says as its own reason and asks to be drawn again for.
+fn controlCliResume(self: *App, alloc: Allocator) Allocator.Error!poltergeistpkg.ControlRoom.CliResume {
+    const io = global.io();
+    if (try self.poltergeist_agent_clis.resumable(io, alloc)) |keys| return .{ .read = keys };
+    if (!self.poltergeist_agent_clis.askedFor(io) and self.chat.anySessionKept()) {
+        self.poltergeist_agent_clis.refresh(io);
+    }
+    return .unread;
+}
+
+/// Write down, for every group terminal `id` is the supervisor of, what
+/// that supervisor is now: where it works, the role it wears, its CLI, the
+/// session its CLI says it is in, and that it was heard from this moment.
+///
+/// **A terminal that is the supervisor of several groups is written down
+/// in each of them**, the same record. They are one agent in one session,
+/// and whichever group it is next started from is the one that goes on
+/// with it; the others then find an open terminal in that session and say
+/// `session_in_use` rather than start a second agent in it.
+///
+/// "The supervisor of" is the control room's rule, one to a group
+/// (`ControlRoom.stewardOfGroup`): a second supervisor that joins a group
+/// somebody else minds does not become where that group's is started.
+///
+/// What is not known *now* is written as not known, with one exception:
+/// a directory. A terminal that cannot say where it is (its shell gave no
+/// `pwd`) leaves the directory the group already had, because where to
+/// start the next one is worth more stale than empty.
+///
+/// `keep` says whether a change of nothing but "heard at" is worth a write
+/// to disk. It is for the events that are rare and mark something -- a
+/// session beginning, a turn ending -- and not for every hook.
+fn noteSupervisor(self: *App, id: poltergeistpkg.Bus.Id, keep: enum { write, only_a_change }) void {
+    const Chat = poltergeistpkg.Chat;
+    if (id == Chat.user_id or !self.poltergeist.isSupervisor(id)) return;
+
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const live = self.liveTerminals(alloc) catch return;
+    const names = self.chat.groupsFor(alloc, id, live) catch return;
+    if (names.len == 0) return;
+
+    const footing = self.footingOf(alloc, id);
+    const agent = self.poltergeist.agentOf(id);
+    const launch = self.personas.launchOf(id);
+    const role: []const u8 = if (launch) |l| l.role else self.personas.stateOf(id).key orelse "";
+    const cli: []const u8 = agent.cli.get() orelse if (launch) |l| l.choice.cli else "";
+    const wall_ms: u64 = @intCast(@max(0, self.poltergeistWallMs()));
+
+    var touched = false;
+    for (names) |name| {
+        const steward = poltergeistpkg.ControlRoom.stewardOfGroup(alloc, &self.poltergeist, &self.chat, name);
+        if (steward == null or steward.? != id) continue;
+
+        const was = self.chat.lastSupervisorOf(name);
+        const now: Chat.LastSupervisor = .{
+            .dir = if (footing.cwd.len > 0) footing.cwd else was.dir,
+            .dir_from = if (footing.cwd.len > 0) .supervisor else was.dir_from,
+            .role = role,
+            .cli = cli,
+            .session = agent.session_id.get() orelse "",
+            .heard_ms = wall_ms,
+        };
+        const change = self.chat.setLastSupervisor(name, now) catch continue;
+        const write = switch (change) {
+            .same => false,
+            .heard => keep == .write,
+            .who => true,
+        };
+        if (change == .who) touched = true;
+        // Read back rather than `now`: what the chat holds is what was
+        // decided, and it owns its strings.
+        if (write) if (self.group_log) |*l| l.supervisor(name, self.chat.lastSupervisorOf(name));
+    }
+    if (touched) self.controlRoomTouch();
+}
+
+/// The agent CLI in `id` said something through its hooks (`rpc`,
+/// `agentHeard`). If that terminal is a group's supervisor, what is
+/// written down of it follows: this is the only place a session that
+/// changed under a running agent -- `/clear` gives Claude Code a new one,
+/// measured on 2.1.296 -- reaches the group's record.
+fn poltergeistAgentHeard(
+    ctx: *anyopaque,
+    _: *poltergeistpkg.Bus,
+    id: poltergeistpkg.Bus.Id,
+    kind: poltergeistpkg.agent_event.Kind,
+) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    self.noteSupervisor(id, switch (kind) {
+        .session_started, .turn_ended => .write,
+        .turn_started,
+        .turn_failed,
+        .awaiting_approval,
+        .awaiting_input,
+        => .only_a_change,
+        // Not an agent speaking: the launcher's own two, and a file.
+        .hooks_expected, .launch_failed, .allowance_written => return,
+    });
+}
+
+/// Where terminal `id` stands with the groups, for its own `me`.
+fn poltergeistMembership(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+) anyerror!poltergeistpkg.wire.Membership {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const groups = try chatGroups(ctx, alloc, id);
+    var mine: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (groups) |name| {
+        const steward = poltergeistpkg.ControlRoom.stewardOfGroup(alloc, &self.poltergeist, &self.chat, name);
+        if (steward != null and steward.? == id) try mine.append(alloc, name);
+    }
+    return .{
+        .groups = groups,
+        .supervisor_of = mine.items,
+        .started_for = if (self.chat.startedFor(id)) |name| try alloc.dupe(u8, name) else null,
+    };
 }
 
 /// The control room's snapshot as JSON; `ControlRoom.zig` has the shape.
@@ -2127,11 +2306,15 @@ fn restoreChatGroups(self: *App) void {
 
     const ceiling = self.chat.config.max_groups -| restore_reserve;
 
+    // Read at most once, and only if some group needs it.
+    var last_night: LastNight = .unread;
+
     var back: usize = 0;
     for (shells) |shell| {
         if (back >= ceiling) break;
         self.chat.restoreShell(shell.name, shell.brief, shell.last_ms, shell.marks) catch continue;
-        _ = self.chat.setSupervisorDir(shell.name, shell.supervisor_dir) catch false;
+        _ = self.chat.setLastSupervisor(shell.name, shell.supervisor) catch .same;
+        if (shell.supervisor.dir.len == 0) self.backfillSupervisorDir(alloc, gl, shell.name, &last_night);
         back += 1;
     }
 
@@ -2140,6 +2323,59 @@ fn restoreChatGroups(self: *App) void {
         "poltergeist: {d} older group(s) left on disk, room kept for new ones",
         .{shells.len - back},
     );
+}
+
+/// The session snapshot the run before left (`Session`), read when the
+/// first group needs it. `none` is "looked, and there is nothing to read".
+const LastNight = union(enum) {
+    unread,
+    none,
+    read: poltergeistpkg.Session.Snapshot,
+};
+
+/// A group that came back with no directory for its supervisor: every one
+/// written before that was kept. If the session snapshot of the run before
+/// still has the terminal that was this group's supervisor, where it stood
+/// is taken as the directory -- **once, marked as a guess**
+/// (`dir_from: session_snapshot`), and written down so that the next start
+/// does not depend on a file the first change of this run overwrites.
+///
+/// Only a directory. Nothing else about that supervisor was ever recorded,
+/// and none of it is made up: no role, no CLI, no session, and `heard_ms`
+/// stays null -- "no supervisor was ever recorded" is still the truth.
+///
+/// With more than one supervisor in the group last night, the first as the
+/// snapshot lists them: which of them minded the group is not written
+/// anywhere, and the guess is said to be one.
+fn backfillSupervisorDir(
+    self: *App,
+    arena: Allocator,
+    gl: *poltergeistpkg.GroupLog,
+    group: []const u8,
+    last_night: *LastNight,
+) void {
+    if (last_night.* == .unread) {
+        const path = self.poltergeist_session_path orelse {
+            last_night.* = .none;
+            return;
+        };
+        last_night.* = if (poltergeistpkg.Session.read(arena, global.io(), path)) |snap|
+            .{ .read = snap }
+        else
+            .none;
+    }
+    const snap = switch (last_night.*) {
+        .read => |v| v,
+        .unread, .none => return,
+    };
+    const dir = poltergeistpkg.Session.supervisorDirIn(snap, group) orelse return;
+
+    var guessed = self.chat.lastSupervisorOf(group);
+    guessed.dir = dir;
+    guessed.dir_from = .session_snapshot;
+    const change = self.chat.setLastSupervisor(group, guessed) catch return;
+    if (change == .who) gl.supervisor(group, self.chat.lastSupervisorOf(group));
+    log.info("poltergeist: a group with no supervisor directory took one from last run's session snapshot", .{});
 }
 
 /// How many of `Chat.max_groups` are held back from the restore, so the
@@ -3190,6 +3426,17 @@ fn resolveLaunch(
 /// `& '<polter-cli.exe>' +launch …`, see below. Both keys are `[a-z0-9-]`
 /// by construction, so the only thing that needs quoting is the path.
 fn launchLine(alloc: Allocator, choice: LaunchChoice) ![]const u8 {
+    return launchLineFor(alloc, choice, .none);
+}
+
+/// `launchLine`, with the two words only the control room adds
+/// (`agent_cli.LaunchFor`): the group a supervisor is started for and the
+/// session it goes on with.
+fn launchLineFor(
+    alloc: Allocator,
+    choice: LaunchChoice,
+    extra: poltergeistpkg.agent_cli.LaunchFor,
+) ![]const u8 {
     const io = global.io();
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe = exe_buf[0 .. std.process.executablePath(io, &exe_buf) catch
@@ -3217,7 +3464,8 @@ fn launchLine(alloc: Allocator, choice: LaunchChoice) ![]const u8 {
             if (c == '\'') try line.writer.writeAll("'\\''") else try line.writer.writeByte(c);
         }
     }
-    try line.writer.print("' +launch {s} {s}", .{ choice.key, choice.cli });
+    try line.writer.writeAll("'");
+    try poltergeistpkg.agent_cli.writeLaunchWords(&line.writer, choice.key, choice.cli, extra);
     return line.written();
 }
 
@@ -3599,6 +3847,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .personaFace = poltergeistPersonaFace,
         .terminalCapabilities = poltergeistTerminalCapabilities,
         .agentArrived = poltergeistAgentArrived,
+        .agentHeard = poltergeistAgentHeard,
         .launchFailed = poltergeistLaunchFailed,
         .personaCatalog = poltergeistPersonaCatalog,
         .personaPut = poltergeistPersonaPut,
@@ -3634,6 +3883,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .chatOwner = chatOwner,
         .chatMembers = chatMembers,
         .chatGroups = chatGroups,
+        .membership = poltergeistMembership,
         .chatRead = chatRead,
         .chatHistory = chatHistory,
         .pluginList = pluginList,
@@ -5907,13 +6157,9 @@ fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) any
     // directory at all, and would not be in the list in the morning.
     if (self.group_log) |*l| l.note(group, "");
 
-    // Made by a supervisor: where it is working is where this group's
-    // supervisor works.
-    if (by != poltergeistpkg.Chat.user_id and self.poltergeist.isSupervisor(by)) {
-        var buf: [2048]u8 = undefined;
-        var fixed: std.heap.FixedBufferAllocator = .init(&buf);
-        self.noteSupervisorDir(group, self.footingOf(fixed.allocator(), by).cwd);
-    }
+    // Made by a supervisor: it is this group's, and what it is is written
+    // down for whoever starts the next one.
+    self.noteSupervisor(by, .write);
 
     self.saveSession();
 }
@@ -6340,8 +6586,9 @@ fn chatAdd(
 
     try self.chat.add(group, id, history, footing);
 
-    // A supervisor joining is where this group's supervisor works now.
-    if (self.poltergeist.isSupervisor(id)) self.noteSupervisorDir(group, footing.cwd);
+    // A supervisor joining: if that makes it this group's, what it is is
+    // written down for whoever starts the next one.
+    self.noteSupervisor(id, .write);
 
     // `history: none` means nothing from before now, and "before now"
     // includes the file. The group in memory cannot say where that reaches

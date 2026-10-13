@@ -68,6 +68,27 @@ pub const Terminal = struct {
     title: []const u8 = "",
 };
 
+/// Where the terminal that was `group`'s supervisor stood, in a snapshot
+/// read back: the first member written down as a supervisor that said
+/// where it was. Null when the group is not in it, had no supervisor in
+/// it, or none of them had a directory.
+///
+/// This is the one thing the program reads back out of the snapshot for
+/// itself, and it is narrow on purpose: a directory to *offer* for a group
+/// that predates the record of one (`App.backfillSupervisorDir`), marked as
+/// a guess where it is kept. It decides nothing about which terminal is
+/// which -- that is still nobody's but the supervisor's.
+pub fn supervisorDirIn(snapshot: Snapshot, group: []const u8) ?[]const u8 {
+    for (snapshot.groups) |g| {
+        if (!std.mem.eql(u8, g.name, group)) continue;
+        for (g.members) |m| {
+            if (m.role == .supervisor and m.cwd.len > 0) return m.cwd;
+        }
+        return null;
+    }
+    return null;
+}
+
 /// Everything worth writing down.
 pub const Snapshot = struct {
     /// How the supervision was arranged.
@@ -872,4 +893,27 @@ test "notes from before terminals were recorded still read" {
     try testing.expectEqual(@as(usize, 1), back.groups.len);
     try testing.expectEqualStrings("CSV", back.groups[0].brief);
     try testing.expectEqual(@as(usize, 0), back.terminals.len);
+}
+
+test "ControlRoom resume: an old group's supervisor directory is read out of last run's snapshot, and only a supervisor's" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+
+    const snap = parse(arena.allocator(),
+        \\{"groups":[
+        \\ {"name":"build","members":[
+        \\   {"cwd":"/work/worker","title":"w","role":"watched"},
+        \\   {"cwd":"","title":"lost","role":"supervisor"},
+        \\   {"cwd":"/work/repo","title":"boss","role":"supervisor"},
+        \\   {"cwd":"/work/other","title":"boss2","role":"supervisor"}]},
+        \\ {"name":"unminded","members":[{"cwd":"/work/x","title":"w","role":"watched"}]},
+        \\ {"name":"empty","members":[]}],
+        \\ "terminals":[]}
+    ).?;
+    // The first that says where it was; a worker's directory is not it,
+    // and neither is a supervisor that said nothing.
+    try std.testing.expectEqualStrings("/work/repo", supervisorDirIn(snap, "build").?);
+    try std.testing.expectEqual(@as(?[]const u8, null), supervisorDirIn(snap, "unminded"));
+    try std.testing.expectEqual(@as(?[]const u8, null), supervisorDirIn(snap, "empty"));
+    try std.testing.expectEqual(@as(?[]const u8, null), supervisorDirIn(snap, "not-there"));
 }

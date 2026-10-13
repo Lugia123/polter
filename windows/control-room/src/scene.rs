@@ -1822,7 +1822,7 @@ mod tests {
 
     fn start_row(state: crate::snapshot::SupervisorState, can_start: bool, failed: crate::snapshot::StartFailure) -> Row {
         let mut row = list().quiet[0].clone();
-        row.start = Some(crate::snapshot::SupervisorStart { state, can_start, failed, role: Some("polter-supervisor".into()), cwd: "/Users/me/work".into() });
+        row.start = Some(crate::snapshot::SupervisorStart { state, can_start, failed, role: Some("polter-supervisor".into()), cwd: "/Users/me/work".into(), last: None });
         row
     }
 

@@ -247,22 +247,27 @@ const Group = struct {
     seen_run_ms: ?u64 = null,
     snoozed_run_ms: ?u64 = null,
 
-    /// The directory this group's supervisor was last working in. Owned;
-    /// empty when nobody has said. It is written down (`GroupLog`) and
-    /// comes back, because the morning after is when it is asked for: the
-    /// group is there, its supervisor is not, and the person is about to
-    /// start one.
-    supervisor_dir: []const u8 = "",
+    /// The supervisor this group last had: where it worked, what it was
+    /// and the session it was in. Owned. It is written down (`GroupLog`)
+    /// and comes back, because the morning after is when it is asked for:
+    /// the group is there, its supervisor is not, and the person is about
+    /// to start one.
+    last_supervisor: LastSupervisor = .none,
 
     /// A supervisor the person is starting for this group from the control
     /// room, until it is one or has failed to be. This run's only.
     start: ?Start = null,
 
+    /// The terminal the control room started as this group's supervisor,
+    /// once it was one. This run's only: it is how that terminal's `me`
+    /// says which group it was started for.
+    started: ?Id = null,
+
     fn deinit(self: *Group, alloc: Allocator) void {
         for (self.log.items) |m| m.release(alloc);
         self.log.deinit(alloc);
         if (self.brief.len > 0) alloc.free(self.brief);
-        if (self.supervisor_dir.len > 0) alloc.free(self.supervisor_dir);
+        self.last_supervisor.free(alloc);
 
         var it = self.members.valueIterator();
         while (it.next()) |m| m.footing.deinit(alloc);
@@ -818,6 +823,10 @@ pub const Start = struct {
     deadline_ms: u64,
     /// Set when it failed for a reason that is not a wait running out.
     failed: StartFailure = .none,
+    /// Whether it was started to go on with the last supervisor's session.
+    /// A try that did and made no supervisor is a reason not to try the
+    /// same session again by default (`StartView.resuming`).
+    resuming: bool,
 };
 
 /// Why a start did not make a supervisor.
@@ -856,31 +865,38 @@ pub const StartView = struct {
     /// When a start that is still waiting stops waiting; null otherwise.
     /// What the snapshot asks to be woken at.
     deadline_ms: ?u64,
+    /// The start this is of was to go on with the last session.
+    resuming: bool,
 
-    pub const none: StartView = .{ .state = .none, .failed = .none, .terminal = null, .deadline_ms = null };
+    pub const none: StartView = .{ .state = .none, .failed = .none, .terminal = null, .deadline_ms = null, .resuming = false };
 };
 
 /// Where `name`'s start stands at `now_ms`.
 pub fn startOf(self: *const Chat, name: []const u8, now_ms: u64) StartView {
     const group = self.groups.getPtr(name) orelse return .none;
     const s = group.start orelse return .none;
-    if (s.failed != .none) return .{ .state = .failed, .failed = s.failed, .terminal = s.terminal, .deadline_ms = null };
+    if (s.failed != .none) return .{ .state = .failed, .failed = s.failed, .terminal = s.terminal, .deadline_ms = null, .resuming = s.resuming };
     if (now_ms > s.deadline_ms) return .{
         .state = .failed,
         .failed = if (s.terminal == null) .terminal_never_opened else .agent_never_connected,
         .terminal = s.terminal,
         .deadline_ms = null,
+        .resuming = s.resuming,
     };
-    return .{ .state = .starting, .failed = .none, .terminal = s.terminal, .deadline_ms = s.deadline_ms };
+    return .{ .state = .starting, .failed = .none, .terminal = s.terminal, .deadline_ms = s.deadline_ms, .resuming = s.resuming };
 }
 
 /// Begin a start: the tab has been asked for and is waited for until
 /// `deadline_ms`. Refused while one is still waiting; one that failed is
 /// replaced, which is what trying again is.
-pub fn beginStart(self: *Chat, name: []const u8, now_ms: u64, deadline_ms: u64) Error!void {
+///
+/// `resuming` says whether it is to go on with the last supervisor's
+/// session; it is kept so that a try which did and failed can be told
+/// from one that started afresh and failed.
+pub fn beginStart(self: *Chat, name: []const u8, now_ms: u64, deadline_ms: u64, resuming: bool) Error!void {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
     if (self.startOf(name, now_ms).state == .starting) return error.AlreadyStarting;
-    group.start = .{ .terminal = null, .deadline_ms = deadline_ms };
+    group.start = .{ .terminal = null, .deadline_ms = deadline_ms, .resuming = resuming };
 }
 
 /// The tab exists: it is `terminal`, and its agent is waited for until
@@ -923,6 +939,28 @@ pub fn endStart(self: *Chat, name: []const u8) void {
     group.start = null;
 }
 
+/// The start made a supervisor: `terminal` is it. The start is over, and
+/// that terminal is remembered as the one this group was started with.
+pub fn startMade(self: *Chat, name: []const u8, terminal: Id) void {
+    const group = self.groups.getPtr(name) orelse return;
+    group.start = null;
+    group.started = terminal;
+}
+
+/// The group the control room started `terminal` as the supervisor of, in
+/// this run; null for a terminal that was not started that way. When it
+/// was started for more than one, the one whose name sorts first -- the
+/// same answer every time.
+pub fn startedFor(self: *const Chat, terminal: Id) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var it = self.groups.valueIterator();
+    while (it.next()) |g| {
+        if (g.started == null or g.started.? != terminal) continue;
+        if (best == null or std.mem.lessThan(u8, g.name, best.?)) best = g.name;
+    }
+    return best;
+}
+
 /// The start failed, for a reason that is not a wait running out.
 pub fn failStart(self: *Chat, name: []const u8, why: StartFailure) void {
     const group = self.groups.getPtr(name) orelse return;
@@ -931,21 +969,150 @@ pub fn failStart(self: *Chat, name: []const u8, why: StartFailure) void {
     }
 }
 
-/// Where `name`'s supervisor was last working; empty when nobody said.
-pub fn supervisorDirOf(self: *const Chat, name: []const u8) []const u8 {
-    const group = self.groups.getPtr(name) orelse return "";
-    return group.supervisor_dir;
+/// The supervisor a group last had, as far as anybody wrote it down.
+///
+/// **A part nobody knows is empty, and that is the only thing empty
+/// means.** There are no defaults, so a writer that carried four of these
+/// over and forgot the fifth does not compile; `none` is the record of a
+/// group nobody has minded, written out in full.
+///
+/// Two things here look alike and are kept apart:
+///
+///   * `heard_ms == null` -- no supervisor was ever recorded for this
+///     group (every record from before this was kept; a group nobody
+///     minded). It may still have a `dir`: one made up afterwards out of
+///     the old session snapshot, which `dir_from` says.
+///   * `heard_ms` set and `session` empty -- there was a supervisor, and
+///     its CLI never said which session it was in.
+pub const LastSupervisor = struct {
+    /// Where it was working. Empty when nobody has said.
+    dir: []const u8,
+    /// How `dir` was come by. `none` exactly when `dir` is empty.
+    dir_from: DirFrom,
+    /// The key of the role it wore; empty when it wore none, or nobody
+    /// wrote it down.
+    role: []const u8,
+    /// The key of its agent CLI (`agent_cli.Adapter.key`); empty when not
+    /// known.
+    cli: []const u8,
+    /// The session its CLI said it was in, as the CLI wrote it; empty
+    /// when it never said.
+    session: []const u8,
+    /// When it was last heard from, on the real clock. Null when no
+    /// supervisor was ever recorded.
+    heard_ms: ?u64,
+
+    pub const DirFrom = enum {
+        none,
+        /// A supervisor of this group was working there.
+        supervisor,
+        /// Nobody recorded a supervisor's directory for this group; this
+        /// is where the terminal that was its supervisor stood in the
+        /// session snapshot of the run before (`Session`). A guess about
+        /// an old group, made once, and said to be one.
+        session_snapshot,
+    };
+
+    pub const none: LastSupervisor = .{
+        .dir = "",
+        .dir_from = .none,
+        .role = "",
+        .cli = "",
+        .session = "",
+        .heard_ms = null,
+    };
+
+    pub fn isNone(self: LastSupervisor) bool {
+        return self.dir.len == 0 and self.role.len == 0 and self.cli.len == 0 and
+            self.session.len == 0 and self.heard_ms == null;
+    }
+
+    /// Whether everything but `heard_ms` is the same.
+    pub fn sameWho(self: LastSupervisor, other: LastSupervisor) bool {
+        return self.dir_from == other.dir_from and
+            std.mem.eql(u8, self.dir, other.dir) and
+            std.mem.eql(u8, self.role, other.role) and
+            std.mem.eql(u8, self.cli, other.cli) and
+            std.mem.eql(u8, self.session, other.session);
+    }
+
+    /// A copy whose strings belong to `alloc`; give it back with `free`.
+    pub fn dupe(self: LastSupervisor, alloc: Allocator) Allocator.Error!LastSupervisor {
+        const dir = try alloc.dupe(u8, self.dir);
+        errdefer alloc.free(dir);
+        const role = try alloc.dupe(u8, self.role);
+        errdefer alloc.free(role);
+        const cli = try alloc.dupe(u8, self.cli);
+        errdefer alloc.free(cli);
+        const session = try alloc.dupe(u8, self.session);
+        return .{
+            .dir = dir,
+            .dir_from = self.dir_from,
+            .role = role,
+            .cli = cli,
+            .session = session,
+            .heard_ms = self.heard_ms,
+        };
+    }
+
+    /// Only for one `dupe` made, or `none`.
+    pub fn free(self: LastSupervisor, alloc: Allocator) void {
+        alloc.free(self.dir);
+        alloc.free(self.role);
+        alloc.free(self.cli);
+        alloc.free(self.session);
+    }
+};
+
+/// What `setLastSupervisor` changed.
+pub const LastChange = enum {
+    /// Nothing at all.
+    same,
+    /// Only when it was last heard from.
+    heard,
+    /// Where it is, what it is, or the session it is in.
+    who,
+};
+
+/// What is written down of `name`'s last supervisor; `none` when nothing
+/// is, and for a group that is not there. Borrowed until the next
+/// `setLastSupervisor` for it.
+pub fn lastSupervisorOf(self: *const Chat, name: []const u8) LastSupervisor {
+    const group = self.groups.getPtr(name) orelse return .none;
+    return group.last_supervisor;
 }
 
-/// Record where `name`'s supervisor is working. An empty directory is not
-/// a record and changes nothing. True when it changed.
-pub fn setSupervisorDir(self: *Chat, name: []const u8, dir: []const u8) Error!bool {
+/// Whether any group has a session written down for its last supervisor:
+/// the one thing that makes it worth asking the agent CLIs' adapters what
+/// they can go on with.
+pub fn anySessionKept(self: *const Chat) bool {
+    var it = self.groups.valueIterator();
+    while (it.next()) |g| {
+        if (g.last_supervisor.session.len > 0) return true;
+    }
+    return false;
+}
+
+/// Where `name`'s supervisor was last working; empty when nobody said.
+pub fn supervisorDirOf(self: *const Chat, name: []const u8) []const u8 {
+    return self.lastSupervisorOf(name).dir;
+}
+
+/// Replace what is written down of `name`'s last supervisor with `last`,
+/// whole. Says what that changed, so the caller knows whether it is worth
+/// a write to disk.
+pub fn setLastSupervisor(self: *Chat, name: []const u8, last: LastSupervisor) Error!LastChange {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
-    if (dir.len == 0 or std.mem.eql(u8, group.supervisor_dir, dir)) return false;
-    const owned = try self.alloc.dupe(u8, dir);
-    if (group.supervisor_dir.len > 0) self.alloc.free(group.supervisor_dir);
-    group.supervisor_dir = owned;
-    return true;
+    const was = group.last_supervisor;
+    if (was.sameWho(last)) {
+        if (was.heard_ms == last.heard_ms) return .same;
+        group.last_supervisor.heard_ms = last.heard_ms;
+        return .heard;
+    }
+    const owned = try last.dupe(self.alloc);
+    was.free(self.alloc);
+    group.last_supervisor = owned;
+    return .who;
 }
 
 /// The directory most of `name`'s terminals are working in; empty when
@@ -3203,16 +3370,16 @@ test "ControlRoom start: a supervisor on its way waits for its tab, then for its
     try chat.restoreShell("build", "", 0, .none);
 
     try testing.expectEqual(StartView.none, chat.startOf("build", 1_000));
-    try testing.expectError(error.NoSuchGroup, chat.beginStart("nope", 1_000, 11_000));
+    try testing.expectError(error.NoSuchGroup, chat.beginStart("nope", 1_000, 11_000, false));
 
-    try chat.beginStart("build", 1_000, 11_000);
+    try chat.beginStart("build", 1_000, 11_000, false);
     try testing.expectEqualStrings("build", chat.startAwaitingTerminal(2_000).?);
     const waiting = chat.startOf("build", 2_000);
     try testing.expect(waiting.state == .starting);
     try testing.expectEqual(@as(?Id, null), waiting.terminal);
     try testing.expectEqual(@as(?u64, 11_000), waiting.deadline_ms);
     // A second press while the first is still waiting starts nothing.
-    try testing.expectError(error.AlreadyStarting, chat.beginStart("build", 2_000, 12_000));
+    try testing.expectError(error.AlreadyStarting, chat.beginStart("build", 2_000, 12_000, false));
 
     // The tab never came.
     const no_tab = chat.startOf("build", 11_001);
@@ -3221,7 +3388,7 @@ test "ControlRoom start: a supervisor on its way waits for its tab, then for its
     try testing.expectEqual(@as(?[]const u8, null), chat.startAwaitingTerminal(11_001));
 
     // Trying again replaces what failed.
-    try chat.beginStart("build", 12_000, 22_000);
+    try chat.beginStart("build", 12_000, 22_000, false);
     chat.startOpened("build", 0xa1, 72_000);
     try testing.expectEqual(@as(?[]const u8, null), chat.startAwaitingTerminal(13_000));
     try testing.expectEqualStrings("build", chat.startingIn(0xa1, 13_000).?);
@@ -3244,7 +3411,7 @@ test "ControlRoom start: closing the terminal a supervisor was starting in fails
     var chat = testChat();
     defer chat.deinit();
     try chat.restoreShell("build", "", 0, .none);
-    try chat.beginStart("build", 1_000, 11_000);
+    try chat.beginStart("build", 1_000, 11_000, false);
     chat.startOpened("build", 0xa1, 61_000);
 
     try chat.rename("build", "nightly");
@@ -3268,10 +3435,12 @@ test "ControlRoom start: where a supervisor is started -- the last one's directo
     try testing.expectEqualStrings("", chat.supervisorDirOf("build"));
     try testing.expectEqualStrings("", chat.commonDirOf("build"));
 
-    try testing.expect(try chat.setSupervisorDir("build", "/work/repo"));
-    // Nothing known is not a record, and the same again is not a change.
-    try testing.expect(!try chat.setSupervisorDir("build", ""));
-    try testing.expect(!try chat.setSupervisorDir("build", "/work/repo"));
+    var last: LastSupervisor = .none;
+    last.dir = "/work/repo";
+    last.dir_from = .supervisor;
+    try testing.expectEqual(LastChange.who, try chat.setLastSupervisor("build", last));
+    // The same again is not a change.
+    try testing.expectEqual(LastChange.same, try chat.setLastSupervisor("build", last));
     try testing.expectEqualStrings("/work/repo", chat.supervisorDirOf("build"));
     try chat.rename("build", "nightly");
     try testing.expectEqualStrings("/work/repo", chat.supervisorDirOf("nightly"));
@@ -3413,4 +3582,101 @@ test "group notice: a message that arrives inside the gap is told when the gap i
         defer testing.allocator.free(got);
     }
     try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 32_000, gap, .supervisor));
+}
+
+test "ControlRoom resume: a group's last supervisor is replaced whole, and says what that changed" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.restoreShell("build", "", 0, .none);
+
+    // Nothing written down is `none`, for a group that is there and one
+    // that is not.
+    try testing.expect(chat.lastSupervisorOf("build").isNone());
+    try testing.expect(chat.lastSupervisorOf("nope").isNone());
+    try testing.expect(!chat.anySessionKept());
+    try testing.expectError(error.NoSuchGroup, chat.setLastSupervisor("nope", .none));
+
+    const first: LastSupervisor = .{
+        .dir = "/work/repo",
+        .dir_from = .supervisor,
+        .role = "polter-supervisor",
+        .cli = "claude-code",
+        .session = "s-1",
+        .heard_ms = 100,
+    };
+    try testing.expectEqual(LastChange.who, try chat.setLastSupervisor("build", first));
+    try testing.expectEqual(LastChange.same, try chat.setLastSupervisor("build", first));
+    try testing.expect(chat.anySessionKept());
+
+    // Heard from again and nothing else: not worth a write by itself.
+    var later = first;
+    later.heard_ms = 200;
+    try testing.expectEqual(LastChange.heard, try chat.setLastSupervisor("build", later));
+    try testing.expectEqual(@as(?u64, 200), chat.lastSupervisorOf("build").heard_ms);
+
+    // Each part on its own is a change of who.
+    inline for (.{ "dir", "role", "cli", "session" }) |field| {
+        var other = chat.lastSupervisorOf("build");
+        @field(other, field) = "something-else";
+        try testing.expectEqual(LastChange.who, try chat.setLastSupervisor("build", other));
+        try testing.expectEqualStrings("something-else", @field(chat.lastSupervisorOf("build"), field));
+    }
+
+    // What is not known now is written as not known: a session that the
+    // new record does not have is gone, not carried over.
+    var cleared = chat.lastSupervisorOf("build");
+    cleared.session = "";
+    try testing.expectEqual(LastChange.who, try chat.setLastSupervisor("build", cleared));
+    try testing.expectEqualStrings("", chat.lastSupervisorOf("build").session);
+    try testing.expect(!chat.anySessionKept());
+
+    // A record built out of the one the chat holds is copied before the
+    // old one is let go.
+    var same_dir = chat.lastSupervisorOf("build");
+    same_dir.role = "night-lead";
+    try testing.expectEqual(LastChange.who, try chat.setLastSupervisor("build", same_dir));
+    try testing.expectEqualStrings("something-else", chat.lastSupervisorOf("build").dir);
+
+    // It goes with the group when the group is renamed.
+    try chat.rename("build", "nightly");
+    try testing.expectEqualStrings("night-lead", chat.lastSupervisorOf("nightly").role);
+}
+
+test "ControlRoom resume: a start says whether it went on with the last session, and the terminal it made is remembered" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.restoreShell("build", "", 0, .none);
+    try chat.restoreShell("alpha", "", 0, .none);
+
+    // A start that went on with the last session and ran out of time reads
+    // as one that did; a new one that failed does not.
+    try chat.beginStart("build", 1_000, 11_000, true);
+    try testing.expect(chat.startOf("build", 2_000).resuming);
+    const out_of_time = chat.startOf("build", 11_001);
+    try testing.expectEqual(StartFailure.terminal_never_opened, out_of_time.failed);
+    try testing.expect(out_of_time.resuming);
+
+    try chat.beginStart("build", 12_000, 22_000, false);
+    chat.startOpened("build", 0xa1, 72_000);
+    chat.failStart("build", .cli_not_found);
+    try testing.expect(!chat.startOf("build", 13_000).resuming);
+    try testing.expect(!StartView.none.resuming);
+
+    // Nobody was started for anything yet.
+    try testing.expectEqual(@as(?[]const u8, null), chat.startedFor(0xa1));
+
+    try chat.beginStart("build", 80_000, 90_000, true);
+    chat.startOpened("build", 0xa1, 140_000);
+    chat.startMade("build", 0xa1);
+    try testing.expectEqual(@as(@TypeOf(chat.startOf("build", 0).state), .none), chat.startOf("build", 81_000).state);
+    try testing.expectEqualStrings("build", chat.startedFor(0xa1).?);
+    try testing.expectEqual(@as(?[]const u8, null), chat.startedFor(0xa2));
+
+    // Started for two: the same answer every time, the name that sorts
+    // first. And it follows a rename.
+    try chat.beginStart("alpha", 80_000, 90_000, false);
+    chat.startMade("alpha", 0xa1);
+    try testing.expectEqualStrings("alpha", chat.startedFor(0xa1).?);
+    try chat.rename("alpha", "zeta");
+    try testing.expectEqualStrings("build", chat.startedFor(0xa1).?);
 }
