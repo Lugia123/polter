@@ -282,6 +282,9 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                 .cwd = (try optionalString(aa, params, "cwd")) orelse "",
                 // The same reading as `terminal_open`'s, from the same function.
                 .place = try placeParam(aa, params),
+                // A terminal that is already open, by its id; left out, one
+                // is opened where `place` says.
+                .in = try optionalIdParam(params, "in"),
             },
         },
 
@@ -442,6 +445,17 @@ fn requireIdNamed(params: ?std.json.ObjectMap, key: []const u8) ParseError!Bus.I
     };
 }
 
+/// A terminal id that may be left out: absent or `null` is none, and one
+/// that is there is read as `requireIdNamed` reads it -- a malformed id is
+/// refused, not taken for "none", which would open a terminal the caller
+/// did not ask for.
+fn optionalIdParam(params: ?std.json.ObjectMap, key: []const u8) ParseError!?Bus.Id {
+    const p = params orelse return null;
+    const v = p.get(key) orelse return null;
+    if (v == .null) return null;
+    return try requireIdNamed(params, key);
+}
+
 /// An array of terminal ids, each in either form `requireIdNamed` takes.
 /// Absent or `null` is the empty list; anything else malformed is refused
 /// whole rather than read as far as it goes -- a list of names half-read is
@@ -539,6 +553,8 @@ fn placeParam(aa: Allocator, params: ?std.json.ObjectMap) ParseError!rpc.Placeme
     const w = (try optionalString(aa, params, "place")) orelse return .auto;
     if (std.mem.eql(u8, w, "tab")) return .tab;
     if (std.mem.eql(u8, w, "here")) return .here;
+    // Read, so that it can be refused by name rather than become `auto`.
+    if (std.mem.eql(u8, w, "stack")) return .stack;
     return .auto;
 }
 
@@ -1296,6 +1312,11 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                         try s.write(@tagName(why));
                         try s.objectField("fallback_kind");
                         try s.write(@tagName(why.kind()));
+                    },
+                    // No terminal was opened, and why that one was used.
+                    .reused => |why| {
+                        try s.objectField("reused");
+                        try s.write(@tagName(why));
                     },
                 }
             }
@@ -2636,11 +2657,31 @@ test "role_launch place: read exactly as terminal_open's" {
         .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"place\":\"tab\"}}", .want = .tab },
         .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"place\":\"here\"}}", .want = .here },
         .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"place\":\"beside\"}}", .want = .auto },
+        // Named and not built: read as itself, so that it is refused by
+        // name instead of becoming `auto`.
+        .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"place\":\"stack\"}}", .want = .stack },
     }) |c| {
         var p = try parse(c.json);
         defer p.deinit();
         try testing.expectEqual(c.want, p.value.role_launch.place);
+        // No terminal named: one is opened.
+        try testing.expectEqual(@as(?Bus.Id, null), p.value.role_launch.in);
     }
+}
+
+test "role_launch in: a terminal that is already open is named by its id, and a bad one is refused" {
+    for ([_]struct { json: []const u8, want: ?Bus.Id }{
+        .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":\"0x2a\"}}", .want = 0x2a },
+        .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":42}}", .want = 42 },
+        .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":null}}", .want = null },
+    }) |c| {
+        var p = try parse(c.json);
+        defer p.deinit();
+        try testing.expectEqual(c.want, p.value.role_launch.in);
+    }
+    // Not "none": that would open a terminal nobody asked for.
+    try testing.expectError(error.BadParams, parse("{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":\"that one\"}}"));
+    try testing.expectError(error.BadParams, parse("{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":true}}"));
 }
 
 test "wire: a screenshot call carries each parameter as the JSON it arrived as" {

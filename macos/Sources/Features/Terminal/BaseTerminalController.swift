@@ -306,11 +306,26 @@ class BaseTerminalController: NSWindowController,
             return nil
         }
 
+        // Split from a terminal the control room has borrowed: the pane is
+        // made here, in its own tab, and the keyboard stays where it is
+        // (`ControlRoomRules.newSplitTakesKeyboard`).
+        let takesKeyboard = ControlRoomRules.newSplitTakesKeyboard(
+            fromLent: ControlRoomLender.shared.isLent(oldView))
         replaceSurfaceTree(
             newTree,
-            moveFocusTo: newView,
-            moveFocusFrom: oldView,
+            moveFocusTo: takesKeyboard ? newView : nil,
+            moveFocusFrom: takesKeyboard ? oldView : nil,
             undoAction: "New Split")
+
+        // Changing the tree rebuilt the panes here, so the one that had
+        // this window's keyboard is handed it again -- unless that one is
+        // the terminal on loan, whose keyboard is the control room's to
+        // give. The same two rules as zooming a pane that is on loan
+        // (`ghosttyDidToggleSplitZoom`).
+        if !takesKeyboard, let focusedSurface, ControlRoomHomecoming.focusedPaneKeepsKeyboard(
+            focusedPaneIsLent: ControlRoomLender.shared.isLent(focusedSurface)) {
+            DispatchQueue.main.async { Ghostty.moveFocus(to: focusedSurface) }
+        }
 
         return newView
     }

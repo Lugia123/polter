@@ -320,6 +320,14 @@ fn main() {
         use polter_control_room::snapshot::{ResumeWhy, StartFailure, SupervisorLast, SupervisorStart, SupervisorState};
         let same = |s: &str| s.to_string();
         let or_dash = |s: Option<String>| s.map_or("-".to_string(), |s| quote(&s));
+        // Whether a split asked of a terminal is made: of one the control
+        // room is showing, for an agent (asked through the core) and not
+        // for a key.
+        for lent in [false, true] {
+            for core in [false, true] {
+                println!("new_split lent={lent} asked_by_core={core} made={}", polter_control_room::lend::may_split(lent, core));
+            }
+        }
         for why in ResumeWhy::ALL {
             println!("resume_note {} says={}", why.name(), or_dash(scene::resume_note(why).map(str::to_string)));
         }

@@ -3443,7 +3443,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // loan that asked for a worker was told one had been opened and
             // nothing was (fourth run on a real machine, defect 1).
             if let Some(frame) = origin {
-                let (answer, why) = tabs::split_answer(frame, at);
+                let (answer, why) = tabs::split_answer(frame, at, !result.is_null());
                 if !answer.will() {
                     alogf!(
                         origin,
@@ -3459,7 +3459,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                     return true;
                 }
             }
-            let queued = queue_from(origin, Op::NewSplit(dir, cwd, at), "new_split action");
+            let queued = queue_from(origin, Op::NewSplit(dir, cwd, at, !result.is_null()), "new_split action");
             if queued && !result.is_null() {
                 // `ghostty_action_new_split_result_e`: 1 == SPLIT.
                 unsafe { result.write(1) };
