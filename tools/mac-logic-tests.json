@@ -10,6 +10,7 @@
   "watched": [
     "macos/Sources/Features/ControlRoom",
     "macos/Tests/ControlRoom",
+    "macos/Tests/Projects",
     "macos/Tests/Splits"
   ],
   "stubs": [
@@ -28,6 +29,7 @@
       "macos/Sources/Features/ControlRoom/ControlRoomQuotaView.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomSource.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomStartChoice.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomSupervisorFrame.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomView.swift",
       "macos/Sources/Features/ControlRoom/PaneFrame.swift",
@@ -48,7 +50,6 @@
         ],
         "why": "only the drop zone's arithmetic, which is the end of the file; the views before it hold live terminals"
       },
-      "macos/Sources/Features/Projects/ProjectAutosave.swift",
       "macos/Sources/Features/Projects/ProjectScrollback.swift",
       {
         "path": "macos/Sources/Features/Projects/ProjectDocument.swift",
@@ -56,8 +57,10 @@
         "drop": [
           "import GhosttyKit"
         ],
-        "why": "the document's encoding and decoding are taken; from the marker on it captures live terminals. No test in the tree uses it yet: the tests that pin a project file's bytes are on a branch (StoredBytesTests), and will need exactly this part"
-      }
+        "why": "the document's writing and reading are taken, which is what the files in test/project-format are checked against; from the marker on it captures live terminals"
+      },
+      "macos/Sources/Features/Projects/ProjectAutosave.swift",
+      "macos/Sources/Features/Projects/ProjectFilename.swift"
     ],
     "out": [
       {
@@ -87,15 +90,40 @@
       "macos/Tests/ControlRoom/ControlRoomRestartTests.swift",
       "macos/Tests/ControlRoom/ControlRoomRulesTests.swift",
       "macos/Tests/ControlRoom/ControlRoomSeenAloneTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomStartChoiceTests.swift",
       "macos/Tests/ControlRoom/ControlRoomSupervisorTitleTests.swift",
       "macos/Tests/ControlRoom/PaneFrameChromeTests.swift",
       "macos/Tests/ControlRoom/PaneFrameTests.swift",
       "macos/Tests/Projects/ProjectAutosaveTests.swift",
+      "macos/Tests/Projects/ProjectDocumentTests.swift",
+      "macos/Tests/Projects/ProjectFileAdoptionTests.swift",
+      "macos/Tests/Projects/ProjectFilenameTableTests.swift",
+      "macos/Tests/Projects/SharedProjectFilesTests.swift",
       "macos/Tests/Splits/PoltergeistLayoutShapeTests.swift",
       "macos/Tests/Splits/SplitTreeTests.swift",
       "macos/Tests/Splits/TerminalSplitDropZoneTests.swift"
     ],
     "out": [
+      {
+        "path": "macos/Tests/Projects/ProjectRestartTests.swift",
+        "why": "imports GhosttyKit and starts real terminals: it is about a pane's snapshot surviving a restart of the app"
+      },
+      {
+        "path": "macos/Tests/Projects/ProjectSaveBeforeCloseTests.swift",
+        "why": "about ProjectSaveBeforeClose.swift, which puts an alert on a window"
+      },
+      {
+        "path": "macos/Tests/Projects/ProjectScrollbackTests.swift",
+        "why": "imports GhosttyKit: half of it asks the core to write and read a snapshot"
+      },
+      {
+        "path": "macos/Tests/Projects/ProjectStoreSettingsTests.swift",
+        "why": "about ProjectStore, which holds the core's app and saves live terminals (ProjectStore.swift imports GhosttyKit)"
+      },
+      {
+        "path": "macos/Tests/Projects/ProjectStoreTests.swift",
+        "why": "about ProjectStore, which holds the core's app and saves live terminals (ProjectStore.swift imports GhosttyKit)"
+      },
       {
         "path": "macos/Tests/Splits/CloseSplitOfferTests.swift",
         "why": "asks Ghostty.SurfaceView.closeSplitIsOffered, a static of the real terminal view (SurfaceView_AppKit.swift), which the package cannot compile"

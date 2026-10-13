@@ -172,7 +172,7 @@ fn reload() {
         for e in listing.entries {
             let panes = project::read_file(&e.path)
                 .ok()
-                .and_then(|s| s.root.as_ref().map(crate::project_ui::leaf_count))
+                .and_then(|s| s.first_tab().map(crate::project_ui::leaf_count))
                 .unwrap_or(0);
             items.push(Item { name: e.name, saved_at: e.saved_at, panes, path: e.path });
         }
@@ -508,8 +508,8 @@ fn refresh() {
             .as_ref()
             .map(|d| {
                 pj::versions(
-                    Some((d.snap.saved_at, d.snap.root.as_ref().map(crate::project_ui::leaf_count).unwrap_or(0))),
-                    d.prev.as_ref().map(|p| (p.saved_at, p.root.as_ref().map(crate::project_ui::leaf_count).unwrap_or(0))),
+                    Some((d.snap.saved_at, d.snap.first_tab().map(crate::project_ui::leaf_count).unwrap_or(0))),
+                    d.prev.as_ref().map(|p| (p.saved_at, p.first_tab().map(crate::project_ui::leaf_count).unwrap_or(0))),
                 )
             })
             .unwrap_or_default();
@@ -638,7 +638,7 @@ pub(crate) fn ask_save_before_close(frame: HWND) -> pj::CloseChoice {
 /// file does not read. True to overwrite.
 pub(crate) fn confirm_save_as_overwrite(owner: HWND, name: &str, existing: Option<&Snapshot>) -> bool {
     let (panes, saved) = match existing {
-        Some(s) => (s.root.as_ref().map(crate::project_ui::leaf_count).unwrap_or(0).to_string(), pj::format_time(s.saved_at, local_offset())),
+        Some(s) => (s.first_tab().map(crate::project_ui::leaf_count).unwrap_or(0).to_string(), pj::format_time(s.saved_at, local_offset())),
         None => ("?".to_string(), "?".to_string()),
     };
     let body = tr("\"{}\" already has {} pane(s), saved {}. The replaced version is kept as the previous version.")
@@ -1217,10 +1217,10 @@ fn paint_detail(hdc: HDC, d: &Detail, e: &pj::EditorLayout, dpi: i32, offset: i6
 
     // The thumbnail (§6.1): the tab's split tree, each pane named by its
     // directory's last part and its title.
-    let leaves = d.snap.root.as_ref().map(project::leaves).unwrap_or_default();
+    let leaves = d.snap.first_tab().map(project::leaves).unwrap_or_default();
     fill(hdc, &rect(e.thumb), theme::panel());
     frame_rect(hdc, &rect(e.thumb), theme::border());
-    if let Some(root) = &d.snap.root {
+    if let Some(root) = d.snap.first_tab() {
         let inner = SRect::new(e.thumb.left + 1, e.thumb.top + 1, e.thumb.right - 1, e.thumb.bottom - 1);
         let boxes = pj::thumbnail(&project::to_shape(root), inner, scale(pj::THUMB_GAP, dpi));
         for (b, leaf) in boxes.iter().zip(&leaves) {
@@ -1250,7 +1250,7 @@ fn paint_detail(hdc: HDC, d: &Detail, e: &pj::EditorLayout, dpi: i32, offset: i6
     }
 
     draw_text(hdc, &tr("Version History"), &rect(e.history_heading), &FONT_BOLD, theme::text(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-    let count = |s: &Snapshot| s.root.as_ref().map(crate::project_ui::leaf_count).unwrap_or(0);
+    let count = |s: &Snapshot| s.first_tab().map(crate::project_ui::leaf_count).unwrap_or(0);
     let versions = pj::versions(Some((d.snap.saved_at, count(&d.snap))), d.prev.as_ref().map(|p| (p.saved_at, count(p))));
     for (i, v) in versions.iter().enumerate().take(2) {
         let who = if v.current { tr("Current version") } else { tr("Previous version") };

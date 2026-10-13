@@ -269,7 +269,8 @@ impl ResumeWhy {
 
 /// What the core says of the supervisor a group last had, and whether a
 /// start goes on with its session (`ControlRoom.zig`, `SupervisorOut`'s
-/// `cli`, `last` and `resume`). Read and carried; no host draws it yet.
+/// `cli`, `last` and `resume`). What the right side makes of it is
+/// `scene::last_supervisor_said`, `scene::resume_note` and `scene::build_start`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupervisorLast {
     /// The CLI the default role is started in.
@@ -283,6 +284,16 @@ pub struct SupervisorLast {
     /// this and on nothing else, and says `why` when it is no.
     pub can_resume: bool,
     pub why: ResumeWhy,
+    /// The directory the core names for the start (`cwd`) is where that
+    /// supervisor last worked (`cwd_from: last_supervisor`), and not
+    /// somewhere worked out another way.
+    pub cwd_is_last: bool,
+    /// What the two CLIs are called to a person, as the core says
+    /// (`cli_label`): the one a start uses, and the one the last supervisor
+    /// was. `None` when the core has no name for it, and then the key is
+    /// what is written.
+    pub cli_label: Option<String>,
+    pub last_cli_label: Option<String>,
 }
 
 /// What the core says about a group's supervisor and what starting one
@@ -676,6 +687,11 @@ fn group(v: &Value, path: &str) -> Res<Group> {
                             heard_ms: opt_int(last, &lp, "heard_ms")?,
                             can_resume: boolean(resume, &rp, "can")?,
                             why: ResumeWhy::parse(&why).ok_or(DecodeError::UnknownValue(format!("{rp}.why={why}")))?,
+                            cwd_is_last: opt_text(s, &sp, "cwd_from")?.as_deref() == Some("last_supervisor"),
+                            // Newer than the rest: a core from before it
+                            // gave names says none, and that is no name.
+                            cli_label: if s.get("cli_label").is_some() { opt_text(s, &sp, "cli_label")? } else { None },
+                            last_cli_label: if last.get("cli_label").is_some() { opt_text(last, &lp, "cli_label")? } else { None },
                         })
                     }
                     (None, None) => None,

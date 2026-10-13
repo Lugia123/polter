@@ -76,8 +76,8 @@ struct ProjectFileAdoptionTests {
     /// file that names it.
     @Test func locateFindsAnOlderFileByItsContents() {
         let dir = URL(fileURLWithPath: "/p")
-        let legacy = (url: dir.appendingPathComponent("a:b.json"), file: ProjectFile(name: "a:b", savedAt: 0, root: nil, nextScrollback: nil))
-        let other = (url: dir.appendingPathComponent("c.json"), file: ProjectFile(name: "c", savedAt: 0, root: nil, nextScrollback: nil))
+        let legacy = (url: dir.appendingPathComponent("a:b.json"), file: ProjectFile.oneTab(name: "a:b", savedAt: 0, root: nil, nextScrollback: nil))
+        let other = (url: dir.appendingPathComponent("c.json"), file: ProjectFile.oneTab(name: "c", savedAt: 0, root: nil, nextScrollback: nil))
         let rule = dir.appendingPathComponent("a_b.json")
 
         #expect(ProjectListing.locate(name: "a:b", ruleFile: rule, listed: [other, legacy]) == legacy.url)

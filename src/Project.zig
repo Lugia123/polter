@@ -1,19 +1,18 @@
-//! A user's "save this tab as a project": the whole split tree of one tab,
-//! each pane's directory and title, and which command-history file (see
-//! `CommandHistory.zig`) belongs to which pane -- so that loading the
-//! project back can rebuild the tree in a new tab and give each rebuilt
-//! pane the history it had when the project was saved.
+//! A project: a set of tabs together with the windows they sit in. Each tab
+//! is a split tree; each pane of it has its directory and title, which
+//! command-history file (see `CommandHistory.zig`) is its own, and who was
+//! working in it -- so that opening the project again rebuilds every window
+//! and every tab, and gives each pane back what it had.
 //!
 //! **This is not `poltergeist/Session.zig`.** Session.zig is material for a
 //! restart: it is written continuously, its groups come back from disk with
 //! nobody in them on purpose, and deciding which terminal on screen now is
 //! which one from last night is left to a person. None of that applies
-//! here. A project is written once, when the user asks for it, and loading
-//! it is not a guess about which pane is which -- there is no ambiguity to
-//! leave to a person, because the whole tree is the record. The two files
-//! read similarly (hand-rolled JSON, tolerant of the state directory not
-//! existing yet) because that shape has already been proven out in this
-//! codebase, not because they are the same kind of file.
+//! here. Loading a project is not a guess about which pane is which --
+//! there is no ambiguity to leave to a person, because the whole tree is
+//! the record. The two files read similarly (tolerant of the state
+//! directory not existing yet) because that shape has already been proven
+//! out in this codebase, not because they are the same kind of file.
 //!
 //! **Reading is strict, on purpose, which is the other way this deviates
 //! from Session.zig.** Session.zig treats a corrupt file as no different
@@ -24,7 +23,67 @@
 //! cut off in a syntactically-still-valid place -- would rebuild a tab that
 //! silently drops a pane the user had open. So `read` returns a named error
 //! instead: `error.NotFound` when there is no such project, `error.Corrupt`
-//! when the file exists but couldn't be read whole. Nothing in between.
+//! when the file exists but couldn't be read whole, `error.TooNew` when a
+//! later build wrote it. Nothing in between.
+//!
+//! ## The file
+//!
+//! Three implementations read and write it -- this one,
+//! `windows/projectfile/src/lib.rs` and
+//! `macos/Sources/Features/Projects/ProjectDocument.swift` -- and what they
+//! write is **the same bytes**, which `test/project-format/` holds them to:
+//! this file makes the bytes there from values written out in its tests,
+//! and the other two only read them and compare (`test/project-format/README.md`).
+//!
+//! A file is one of two formats.
+//!
+//! **Format 1** (no `format` key) is what was written while a project was
+//! one tab: `name`, `saved_at`, `root` (that tab's tree), `next_scrollback`.
+//! It is read as a project of one window with one tab, the window's frame
+//! not recorded and every pane's occupant not known. It is never written.
+//!
+//! **Format 2** is what is written, always, in this order and with no
+//! space anywhere:
+//!
+//!     {"format":2,"name":S,"saved_at":I,"root":{"kind":"moved-to-windows"},
+//!      "group":S,"next_scrollback":I,"windows":[WINDOW,...]}
+//!     WINDOW  {"frame":{"origin":"top_left"|"bottom_left","x":N,"y":N,
+//!              "width":N,"height":N},"front":I,"tabs":[{"root":NODE},...]}
+//!     NODE    {"kind":"split","direction":"horizontal"|"vertical","ratio":N,
+//!              "left":NODE,"right":NODE}
+//!           | {"kind":"leaf","cwd":S,"title":S,"history":S,"scrollback":S,
+//!              "agent":AGENT}
+//!     AGENT   {"kind":"unknown"} | {"kind":"none"}
+//!           | {"kind":"agent","role":S,"cli":S,"session":S,"supervisor":B}
+//!
+//! `group`, `next_scrollback` and `frame` are left out when there is none;
+//! so is any string of a leaf or an agent that is empty. Everything else is
+//! always there, and a format 2 file without it is `Corrupt`.
+//!
+//!   - A string is its UTF-8 bytes between quotes, with `"` and `\` each
+//!     behind a backslash and every byte below 0x20 as `\u00xx` in lower
+//!     case. Nothing else is escaped: not `/`, not U+007F, not anything
+//!     past ASCII.
+//!   - `I` is a whole number in decimal.
+//!   - `N` is the shortest decimal that reads back as the same double,
+//!     written out in full and never with an exponent; a whole value has no
+//!     point (`1`, not `1.0`). A value that is not finite cannot be written:
+//!     the write fails.
+//!
+//! `root` is in a format 2 file only so that a build from before windows
+//! refuses it: such a build reads `name`, `saved_at` and `root` and nothing
+//! else, and without this it would open a project of several tabs as one
+//! with no panes and save that over it. All three of those builds answer a
+//! node of a kind they do not know with "corrupt". This build never reads it.
+//!
+//! **What a read puts right, and says nothing more about.** A `scrollback`
+//! that is not a name this format writes reads as none. So does one an
+//! earlier pane of the file already has (windows in order, tabs in order,
+//! left before right): two panes writing one snapshot is the thing the
+//! numbering exists to prevent. And a project has at most one supervisor:
+//! **a file in which two or more panes say they are it reads with none of
+//! them being it** -- which of them it was cannot be told from the file, and
+//! whoever opens a project starts its supervisor without asking.
 const Project = @This();
 
 const std = @import("std");
@@ -88,6 +147,42 @@ pub const Leaf = struct {
     /// field makes a project file a list of files the core may delete, and
     /// `../../elsewhere/keep.snap` passes the core's own `.snap` check.
     scrollback: []const u8,
+
+    /// Who was working in this pane.
+    agent: Agent,
+};
+
+/// Who was working in a pane when the project was saved.
+///
+/// **Nobody and not known are two answers, and neither is a default.** A
+/// pane a person ran a shell in has `none`; a pane out of a format 1 file,
+/// or one whose host could not tell, has `unknown`. Reading the first as the
+/// second would bring a worker's pane back as a plain shell without a word,
+/// and reading the second as the first would say of a plain shell that
+/// nobody can say what it was.
+pub const Agent = union(enum) {
+    /// Nothing recorded who, if anybody, was here.
+    unknown,
+    /// Nobody: a pane with no agent in it.
+    none,
+    agent: Who,
+};
+
+/// The agent in a pane. `role`, `cli` and `session` are the words
+/// `poltergeist/Chat.zig`'s `LastSupervisor` keeps under the same names in
+/// a group's own file, and mean what they mean there: each is empty when
+/// the agent had none or nobody could tell which.
+pub const Who = struct {
+    /// The key of the role it wore.
+    role: []const u8,
+    /// The key of its agent CLI (`agent_cli.Adapter.key`).
+    cli: []const u8,
+    /// The session its CLI said it was in, as the CLI wrote it.
+    session: []const u8,
+    /// Whether it is the supervisor of the project's group. At most one
+    /// pane of a project is, and `parse` never hands back two (see the
+    /// module comment).
+    supervisor: bool,
 };
 
 /// Whether `name` is a snapshot name this format writes: 1 to 20 ASCII
@@ -120,7 +215,46 @@ pub const Node = union(enum) {
     split: Split,
 };
 
-/// The whole saved tab.
+/// One tab: a tree of panes.
+pub const Tab = struct {
+    root: *const Node,
+};
+
+/// Which corner of the screen a `Frame` is measured from. The hosts do not
+/// agree -- AppKit measures up from the bottom left, Win32 down from the top
+/// left -- and the same four numbers are two different places.
+pub const Origin = enum {
+    top_left,
+    bottom_left,
+};
+
+/// Where a window was and how big, **as its host had it and nothing more**:
+/// in that host's own units, from the corner `origin` names. The screen it
+/// was on may not be there when the project is opened again, and bringing a
+/// window back onto a screen that is belongs to whoever opens it -- this
+/// only says where it was.
+pub const Frame = struct {
+    origin: Origin,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+};
+
+/// One window: its tabs in the order they stood, and which was in front.
+pub const Window = struct {
+    /// Null when nothing recorded it, which is every window out of a
+    /// format 1 file.
+    frame: ?Frame,
+
+    /// The index, in `tabs`, of the tab that was showing.
+    front: usize,
+
+    /// Never empty: a window with no tab is not a window.
+    tabs: []const Tab,
+};
+
+/// The whole saved project.
 pub const Snapshot = struct {
     /// The name the user gave it. Also what the file on disk is named
     /// after -- see `pathFor`.
@@ -129,15 +263,21 @@ pub const Snapshot = struct {
     /// When it was saved, Unix seconds.
     saved_at: i64,
 
-    /// The layout, or null for a tab with nothing worth saving (shouldn't
-    /// happen in practice -- a tab always has at least one pane -- but an
-    /// empty tree is not a corrupt file, so it round-trips rather than
-    /// erroring).
-    root: ?*const Node,
+    /// The group this project is the project of, or null for a project
+    /// with no group. A project has at most one.
+    group: ?[]const u8,
+
+    /// The windows, the first being the one in front. Empty for a project
+    /// with nothing in it (a format 1 file with no `root`): that is not a
+    /// corrupt file, so it round-trips rather than erroring.
+    windows: []const Window,
 
     /// The next scrollback snapshot number this project will hand out
     /// (`next_scrollback` on the wire), or null in a file written before
-    /// snapshots existed. Only ever grows, so a number that belonged to a
+    /// snapshots existed. **One counter for the whole project**, whatever
+    /// window or tab a pane is in: every snapshot of a project is in one
+    /// directory, so two tabs each counting from zero would write one file.
+    /// Only ever grows, so a number that belonged to a
     /// pane since closed is never handed to a new one -- which would open
     /// the new pane with the old one's history.
     ///
@@ -146,22 +286,30 @@ pub const Snapshot = struct {
     /// implementations that do. Anything but a non-negative integer reads
     /// as null, the same as `windows/host/src/project.rs` (`as_u64`).
     next_scrollback: ?u64,
+
+    /// The tree of the first window's first tab, or null for a project
+    /// with nothing in it. What a caller that still thinks of a project as
+    /// one tab has to go on.
+    pub fn firstTab(self: Snapshot) ?*const Node {
+        if (self.windows.len == 0) return null;
+        return self.windows[0].tabs[0].root;
+    }
 };
 
 // **No field of the file's shape may have a default.** This format has
-// three implementations -- this file, `windows/host/src/project.rs`, and
+// three implementations -- this file, `windows/projectfile/src/lib.rs`, and
 // `macos/Sources/Features/Projects/ProjectDocument.swift` -- and nothing
 // compiles all three. A field added here with `= ""` compiles everywhere
 // it is not mentioned, `parseNode` included, so the reader could silently
 // never fill it. Without a default, every place that builds one of these
 // is a compile error naming the field until it says what goes there.
 //
-// What this cannot see is the other two implementations: the test
-// "every field in the shared sample survives this build, and every field
-// this build has is in the sample" does that, against
-// `test/project-format/all_fields.json`, which the other two read as well.
+// What this cannot see is the other two implementations: the files under
+// `test/project-format/` do that. They are made here, from values the
+// tests below spell out, and the other two read each one and have to write
+// the same bytes back.
 comptime {
-    for (.{ Leaf, Split, Snapshot }) |T| {
+    for (.{ Leaf, Who, Split, Tab, Frame, Window, Snapshot }) |T| {
         for (std.meta.fields(T)) |f| {
             if (f.default_value_ptr != null) @compileError(
                 @typeName(T) ++ "." ++ f.name ++
@@ -189,6 +337,13 @@ pub const ReadError = error{
     /// field a complete project must have (e.g. a split with no `right`) --
     /// both are the same promise to the caller: never a half a tree.
     Corrupt,
+
+    /// The file says it is of a format later than `format_version`: a
+    /// build newer than this one wrote it. **Not `Corrupt`, and never read
+    /// as format 1**: the file is whole, and what this build would make of
+    /// it -- the keys it happens to know, the rest dropped -- is a project
+    /// with panes missing that the next save would put on disk.
+    TooNew,
 
     /// `name` sanitizes to nothing a file can be named -- see
     /// `sanitizeFilename`. Reading (or writing, or renaming to) a name
@@ -314,6 +469,9 @@ fn replaced(c: u8) bool {
     };
 }
 
+/// The format this build writes, and the latest it reads.
+pub const format_version: u32 = 2;
+
 /// Write the snapshot, replacing whatever project of this name was there.
 ///
 /// Written whole and atomically: a half-written project file would be
@@ -329,8 +487,7 @@ pub fn write(
     var buf: std.Io.Writer.Allocating = .init(alloc);
     defer buf.deinit();
 
-    var s: std.json.Stringify = .{ .writer = &buf.writer, .options = .{} };
-    try writeJson(&s, snapshot);
+    try emit(&buf.writer, snapshot);
 
     const path = try pathFor(alloc, dir, snapshot.name);
     defer alloc.free(path);
@@ -352,62 +509,118 @@ pub fn write(
     try atomic.replace(io);
 }
 
-fn writeJson(s: *std.json.Stringify, snapshot: Snapshot) !void {
-    try s.beginObject();
-    try s.objectField("name");
-    try s.write(snapshot.name);
-    try s.objectField("saved_at");
-    try s.write(snapshot.saved_at);
-    if (snapshot.root) |root| {
-        try s.objectField("root");
-        try writeNode(s, root.*);
+pub const EmitError = std.Io.Writer.Error || error{
+    /// A ratio or a frame holds a value that is not a finite number, which
+    /// the file has no way to say.
+    NotFinite,
+};
+
+/// The bytes of `snapshot` as a format 2 file. **Written by hand rather than
+/// through `std.json`**, because the three implementations have to write the
+/// same bytes and three JSON libraries do not: they order keys differently,
+/// one escapes `/`, and each prints a double its own way. The rules are in
+/// the module comment; every one of them is in this function and the four
+/// below it.
+pub fn emit(w: *std.Io.Writer, snapshot: Snapshot) EmitError!void {
+    try w.print("{{\"format\":{d},\"name\":", .{format_version});
+    try emitString(w, snapshot.name);
+    try w.print(",\"saved_at\":{d}", .{snapshot.saved_at});
+    try w.writeAll(",\"root\":{\"kind\":\"" ++ moved_kind ++ "\"}");
+    if (snapshot.group) |group| if (group.len > 0) {
+        try w.writeAll(",\"group\":");
+        try emitString(w, group);
+    };
+    if (snapshot.next_scrollback) |n| try w.print(",\"next_scrollback\":{d}", .{n});
+    try w.writeAll(",\"windows\":[");
+    for (snapshot.windows, 0..) |window, i| {
+        if (i > 0) try w.writeByte(',');
+        try w.writeByte('{');
+        if (window.frame) |frame| {
+            try w.writeAll("\"frame\":{\"origin\":\"");
+            try w.writeAll(@tagName(frame.origin));
+            try w.writeAll("\",\"x\":");
+            try emitNumber(w, frame.x);
+            try w.writeAll(",\"y\":");
+            try emitNumber(w, frame.y);
+            try w.writeAll(",\"width\":");
+            try emitNumber(w, frame.width);
+            try w.writeAll(",\"height\":");
+            try emitNumber(w, frame.height);
+            try w.writeAll("},");
+        }
+        try w.print("\"front\":{d},\"tabs\":[", .{window.front});
+        for (window.tabs, 0..) |tab, j| {
+            if (j > 0) try w.writeByte(',');
+            try w.writeAll("{\"root\":");
+            try emitNode(w, tab.root.*);
+            try w.writeByte('}');
+        }
+        try w.writeAll("]}");
     }
-    if (snapshot.next_scrollback) |n| {
-        try s.objectField("next_scrollback");
-        try s.write(n);
-    }
-    try s.endObject();
+    try w.writeAll("]}");
 }
 
-fn writeNode(s: *std.json.Stringify, node: Node) !void {
+/// The kind of the node a format 2 file has under `root`, which no build
+/// reads as a node -- see the module comment.
+const moved_kind = "moved-to-windows";
+
+fn emitNode(w: *std.Io.Writer, node: Node) EmitError!void {
     switch (node) {
         .leaf => |leaf| {
-            try s.beginObject();
-            try s.objectField("kind");
-            try s.write("leaf");
-            if (leaf.cwd.len > 0) {
-                try s.objectField("cwd");
-                try s.write(leaf.cwd);
+            try w.writeAll("{\"kind\":\"leaf\"");
+            try emitField(w, "cwd", leaf.cwd);
+            try emitField(w, "title", leaf.title);
+            try emitField(w, "history", leaf.history);
+            try emitField(w, "scrollback", leaf.scrollback);
+            try w.writeAll(",\"agent\":{\"kind\":\"");
+            try w.writeAll(@tagName(leaf.agent));
+            try w.writeByte('"');
+            switch (leaf.agent) {
+                .unknown, .none => {},
+                .agent => |who| {
+                    try emitField(w, "role", who.role);
+                    try emitField(w, "cli", who.cli);
+                    try emitField(w, "session", who.session);
+                    try w.writeAll(if (who.supervisor) ",\"supervisor\":true" else ",\"supervisor\":false");
+                },
             }
-            if (leaf.title.len > 0) {
-                try s.objectField("title");
-                try s.write(leaf.title);
-            }
-            if (leaf.history.len > 0) {
-                try s.objectField("history");
-                try s.write(leaf.history);
-            }
-            if (leaf.scrollback.len > 0) {
-                try s.objectField("scrollback");
-                try s.write(leaf.scrollback);
-            }
-            try s.endObject();
+            try w.writeAll("}}");
         },
         .split => |split| {
-            try s.beginObject();
-            try s.objectField("kind");
-            try s.write("split");
-            try s.objectField("direction");
-            try s.write(@tagName(split.direction));
-            try s.objectField("ratio");
-            try s.write(split.ratio);
-            try s.objectField("left");
-            try writeNode(s, split.left.*);
-            try s.objectField("right");
-            try writeNode(s, split.right.*);
-            try s.endObject();
+            try w.writeAll("{\"kind\":\"split\",\"direction\":\"");
+            try w.writeAll(@tagName(split.direction));
+            try w.writeAll("\",\"ratio\":");
+            try emitNumber(w, split.ratio);
+            try w.writeAll(",\"left\":");
+            try emitNode(w, split.left.*);
+            try w.writeAll(",\"right\":");
+            try emitNode(w, split.right.*);
+            try w.writeByte('}');
         },
     }
+}
+
+/// `,"key":"value"`, or nothing when the value is empty.
+fn emitField(w: *std.Io.Writer, comptime key: []const u8, value: []const u8) EmitError!void {
+    if (value.len == 0) return;
+    try w.writeAll(",\"" ++ key ++ "\":");
+    try emitString(w, value);
+}
+
+fn emitString(w: *std.Io.Writer, value: []const u8) EmitError!void {
+    try w.writeByte('"');
+    for (value) |c| switch (c) {
+        '"' => try w.writeAll("\\\""),
+        '\\' => try w.writeAll("\\\\"),
+        0...0x1f => try w.print("\\u{x:0>4}", .{c}),
+        else => try w.writeByte(c),
+    };
+    try w.writeByte('"');
+}
+
+fn emitNumber(w: *std.Io.Writer, value: f64) EmitError!void {
+    if (!std.math.isFinite(value)) return error.NotFinite;
+    try w.print("{d}", .{value});
 }
 
 /// Read a project by name. Everything it borrows comes from `arena`.
@@ -428,6 +641,15 @@ pub fn read(arena: Allocator, io: std.Io, dir: []const u8, name: []const u8) Rea
     return parse(arena, bytes);
 }
 
+/// What a read keeps track of across the whole file, to put right the two
+/// things the module comment says it puts right.
+const Fixups = struct {
+    /// Every snapshot name a pane read so far has.
+    scrollback: std.StringHashMapUnmanaged(void) = .empty,
+    /// Every pane that says it is the supervisor.
+    supervisors: std.ArrayListUnmanaged(*Node) = .empty,
+};
+
 /// The same, for bytes already in hand.
 pub fn parse(arena: Allocator, bytes: []const u8) ReadError!Snapshot {
     const parsed = std.json.parseFromSliceLeaky(
@@ -445,6 +667,24 @@ pub fn parse(arena: Allocator, bytes: []const u8) ReadError!Snapshot {
         else => return error.Corrupt,
     };
 
+    // The format first, and before anything is made of the rest: a file
+    // from a later build is refused whole, not read for the keys this
+    // build happens to share with it.
+    const format: u32 = if (obj.get("format")) |v| switch (v) {
+        .integer => |n| format: {
+            if (n < 1) return error.Corrupt;
+            if (n > format_version) {
+                log.warn(
+                    "project file is format {d}; this build reads up to {d} -- a later build wrote it",
+                    .{ n, format_version },
+                );
+                return error.TooNew;
+            }
+            break :format @intCast(n);
+        },
+        else => return error.Corrupt,
+    } else 1;
+
     const name = switch (obj.get("name") orelse return error.Corrupt) {
         .string => |s| s,
         else => return error.Corrupt,
@@ -455,20 +695,113 @@ pub fn parse(arena: Allocator, bytes: []const u8) ReadError!Snapshot {
         else => return error.Corrupt,
     };
 
-    const root: ?*const Node = if (obj.get("root")) |r|
-        try parseNode(arena, r)
-    else
-        null;
-
     const next_scrollback: ?u64 = if (obj.get("next_scrollback")) |v| switch (v) {
         .integer => |n| std.math.cast(u64, n),
         else => null,
     } else null;
 
-    return .{ .name = name, .saved_at = saved_at, .root = root, .next_scrollback = next_scrollback };
+    var fixups: Fixups = .{};
+
+    const windows: []const Window = if (format == 1) one: {
+        // One tab is one window with that tab in it; no `root` is a
+        // project with nothing in it.
+        const root = try parseNode(arena, obj.get("root") orelse break :one &.{}, format, &fixups);
+        const tabs = try arena.alloc(Tab, 1);
+        tabs[0] = .{ .root = root };
+        const windows = try arena.alloc(Window, 1);
+        windows[0] = .{ .frame = null, .front = 0, .tabs = tabs };
+        break :one windows;
+    } else try parseWindows(arena, obj.get("windows") orelse return error.Corrupt, format, &fixups);
+
+    const group: ?[]const u8 = if (format == 1) null else if (obj.get("group")) |v| switch (v) {
+        .string => |s| if (s.len > 0) s else null,
+        else => return error.Corrupt,
+    } else null;
+
+    if (fixups.supervisors.items.len > 1) {
+        log.warn(
+            "project '{s}' has {d} panes that each say they are the supervisor; read as having none",
+            .{ name, fixups.supervisors.items.len },
+        );
+        for (fixups.supervisors.items) |node| node.leaf.agent.agent.supervisor = false;
+    }
+
+    return .{
+        .name = name,
+        .saved_at = saved_at,
+        .group = group,
+        .windows = windows,
+        .next_scrollback = next_scrollback,
+    };
 }
 
-fn parseNode(arena: Allocator, value: std.json.Value) ReadError!*const Node {
+fn parseWindows(arena: Allocator, value: std.json.Value, format: u32, fixups: *Fixups) ReadError![]const Window {
+    const items = switch (value) {
+        .array => |a| a.items,
+        else => return error.Corrupt,
+    };
+    const windows = try arena.alloc(Window, items.len);
+    for (items, windows) |item, *window| {
+        const obj = switch (item) {
+            .object => |o| o,
+            else => return error.Corrupt,
+        };
+
+        const frame: ?Frame = if (obj.get("frame")) |v| frame: {
+            const f = switch (v) {
+                .object => |o| o,
+                else => return error.Corrupt,
+            };
+            const origin = switch (f.get("origin") orelse return error.Corrupt) {
+                .string => |s| std.meta.stringToEnum(Origin, s) orelse return error.Corrupt,
+                else => return error.Corrupt,
+            };
+            break :frame .{
+                .origin = origin,
+                .x = try numberOf(f.get("x")),
+                .y = try numberOf(f.get("y")),
+                .width = try numberOf(f.get("width")),
+                .height = try numberOf(f.get("height")),
+            };
+        } else null;
+
+        const tab_items = switch (obj.get("tabs") orelse return error.Corrupt) {
+            .array => |a| a.items,
+            else => return error.Corrupt,
+        };
+        if (tab_items.len == 0) return error.Corrupt;
+        const tabs = try arena.alloc(Tab, tab_items.len);
+        for (tab_items, tabs) |tab_item, *tab| {
+            const tab_obj = switch (tab_item) {
+                .object => |o| o,
+                else => return error.Corrupt,
+            };
+            tab.* = .{ .root = try parseNode(arena, tab_obj.get("root") orelse return error.Corrupt, format, fixups) };
+        }
+
+        const front: usize = switch (obj.get("front") orelse return error.Corrupt) {
+            .integer => |n| std.math.cast(usize, n) orelse return error.Corrupt,
+            else => return error.Corrupt,
+        };
+        if (front >= tabs.len) return error.Corrupt;
+
+        window.* = .{ .frame = frame, .front = front, .tabs = tabs };
+    }
+    return windows;
+}
+
+fn numberOf(v: ?std.json.Value) ReadError!f64 {
+    return switch (v orelse return error.Corrupt) {
+        .float => |f| f,
+        .integer => |n| @floatFromInt(n),
+        // A whole number too big for an i64, which is how `std.json` hands
+        // back the `1000000000000000000000` this format writes for 1e21.
+        .number_string => |text| std.fmt.parseFloat(f64, text) catch error.Corrupt,
+        else => error.Corrupt,
+    };
+}
+
+fn parseNode(arena: Allocator, value: std.json.Value, format: u32, fixups: *Fixups) ReadError!*Node {
     const obj = switch (value) {
         .object => |o| o,
         else => return error.Corrupt,
@@ -482,19 +815,29 @@ fn parseNode(arena: Allocator, value: std.json.Value) ReadError!*const Node {
     const node = try arena.create(Node);
 
     if (std.mem.eql(u8, kind, "leaf")) {
+        // Invalid is absent, not corrupt: one bad field should not cost
+        // the whole project, and an absent snapshot is an empty pane. A
+        // name an earlier pane has is absent for the same reason.
+        const scrollback: []const u8 = scrollback: {
+            const name = optionalStr(obj.get("scrollback")) orelse break :scrollback "";
+            if (!isScrollbackName(name)) break :scrollback "";
+            const seen = try fixups.scrollback.getOrPut(arena, name);
+            break :scrollback if (seen.found_existing) "" else name;
+        };
         node.* = .{
             .leaf = .{
                 .cwd = optionalStr(obj.get("cwd")) orelse "",
                 .title = optionalStr(obj.get("title")) orelse "",
                 .history = optionalStr(obj.get("history")) orelse "",
-                // Invalid is absent, not corrupt: one bad field should not cost
-                // the whole project, and an absent snapshot is an empty pane.
-                .scrollback = if (optionalStr(obj.get("scrollback"))) |name|
-                    if (isScrollbackName(name)) name else ""
-                else
-                    "",
+                .scrollback = scrollback,
+                // A format 1 file never said, whatever keys it has.
+                .agent = if (format == 1) .unknown else try parseAgent(obj.get("agent") orelse return error.Corrupt),
             },
         };
+        switch (node.leaf.agent) {
+            .agent => |who| if (who.supervisor) try fixups.supervisors.append(arena, node),
+            .unknown, .none => {},
+        }
         return node;
     }
 
@@ -505,18 +848,14 @@ fn parseNode(arena: Allocator, value: std.json.Value) ReadError!*const Node {
         };
         const direction = std.meta.stringToEnum(Direction, direction_str) orelse return error.Corrupt;
 
-        const ratio: f64 = switch (obj.get("ratio") orelse return error.Corrupt) {
-            .float => |f| f,
-            .integer => |n| @floatFromInt(n),
-            else => return error.Corrupt,
-        };
+        const ratio = try numberOf(obj.get("ratio"));
 
         // Both children are required. A split with only a `left` is
         // exactly the "half a tree" this reader promises never to hand
         // back, so a missing child fails the whole read rather than
         // producing a lopsided node.
-        const left = try parseNode(arena, obj.get("left") orelse return error.Corrupt);
-        const right = try parseNode(arena, obj.get("right") orelse return error.Corrupt);
+        const left = try parseNode(arena, obj.get("left") orelse return error.Corrupt, format, fixups);
+        const right = try parseNode(arena, obj.get("right") orelse return error.Corrupt, format, fixups);
 
         node.* = .{ .split = .{
             .direction = direction,
@@ -528,6 +867,40 @@ fn parseNode(arena: Allocator, value: std.json.Value) ReadError!*const Node {
     }
 
     return error.Corrupt;
+}
+
+/// Strict where the rest of a leaf is not: these keys are new with format
+/// 2, so nothing older wrote them any other way, and "an agent, but of a
+/// kind this build cannot name" is not something to guess at.
+fn parseAgent(value: std.json.Value) ReadError!Agent {
+    const obj = switch (value) {
+        .object => |o| o,
+        else => return error.Corrupt,
+    };
+    const kind = switch (obj.get("kind") orelse return error.Corrupt) {
+        .string => |s| s,
+        else => return error.Corrupt,
+    };
+    if (std.mem.eql(u8, kind, "unknown")) return .unknown;
+    if (std.mem.eql(u8, kind, "none")) return .none;
+    if (!std.mem.eql(u8, kind, "agent")) return error.Corrupt;
+    return .{ .agent = .{
+        .role = try strictStr(obj.get("role")),
+        .cli = try strictStr(obj.get("cli")),
+        .session = try strictStr(obj.get("session")),
+        .supervisor = switch (obj.get("supervisor") orelse return error.Corrupt) {
+            .bool => |b| b,
+            else => return error.Corrupt,
+        },
+    } };
+}
+
+/// Absent is empty; anything but a string is `Corrupt`.
+fn strictStr(v: ?std.json.Value) ReadError![]const u8 {
+    return switch (v orelse return "") {
+        .string => |s| s,
+        else => error.Corrupt,
+    };
 }
 
 fn optionalStr(v: ?std.json.Value) ?[]const u8 {
@@ -552,7 +925,7 @@ pub fn delete(alloc: Allocator, io: std.Io, dir: []const u8, name: []const u8) !
     };
 }
 
-/// Rename a saved project: same tree, same history file references, new
+/// Rename a saved project: same windows, same history file references, new
 /// display name -- and, since the filename is derived from the name (see
 /// `pathFor`), a new file. `error.NotFound` if `old_name` doesn't exist.
 ///
@@ -570,13 +943,11 @@ pub fn rename(
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();
 
-    const old = try read(arena.allocator(), io, dir, old_name);
-    try write(alloc, io, dir, .{
-        .name = new_name,
-        .saved_at = old.saved_at,
-        .root = old.root,
-        .next_scrollback = old.next_scrollback,
-    });
+    // Everything the project has, under the new name: its windows, its
+    // group and its counter go with it.
+    var renamed = try read(arena.allocator(), io, dir, old_name);
+    renamed.name = new_name;
+    try write(alloc, io, dir, renamed);
 
     if (!std.mem.eql(u8, old_name, new_name)) {
         delete(alloc, io, dir, old_name) catch |err| switch (err) {
@@ -635,6 +1006,19 @@ fn tmpDir(alloc: Allocator, io: std.Io) ![]const u8 {
     return dir;
 }
 
+/// A project of one window with one tab, the way every project was before
+/// format 2; no `root` is a project with nothing in it.
+fn oneTab(arena: Allocator, name: []const u8, saved_at: i64, root: ?*const Node, next_scrollback: ?u64) !Snapshot {
+    const windows: []const Window = if (root) |r| windows: {
+        const tabs = try arena.alloc(Tab, 1);
+        tabs[0] = .{ .root = r };
+        const windows = try arena.alloc(Window, 1);
+        windows[0] = .{ .frame = null, .front = 0, .tabs = tabs };
+        break :windows windows;
+    } else &.{};
+    return .{ .name = name, .saved_at = saved_at, .group = null, .windows = windows, .next_scrollback = next_scrollback };
+}
+
 fn expectNodesEqual(a: Node, b: Node) !void {
     switch (a) {
         .leaf => |al| {
@@ -646,6 +1030,7 @@ fn expectNodesEqual(a: Node, b: Node) !void {
             try testing.expectEqualStrings(al.title, bl.title);
             try testing.expectEqualStrings(al.history, bl.history);
             try testing.expectEqualStrings(al.scrollback, bl.scrollback);
+            try testing.expectEqualDeep(al.agent, bl.agent);
         },
         .split => |as| {
             const bs = switch (b) {
@@ -672,8 +1057,8 @@ test "what is written comes back exactly" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const left: Node = .{ .leaf = .{ .cwd = "/work/repo", .title = "✳ retry.py", .history = "a1b2c3.history", .scrollback = "0.snap" } };
-    const right: Node = .{ .leaf = .{ .cwd = "/work/repo/tests", .title = "✳ tests", .history = "", .scrollback = "" } };
+    const left: Node = .{ .leaf = .{ .cwd = "/work/repo", .title = "✳ retry.py", .history = "a1b2c3.history", .scrollback = "0.snap", .agent = .unknown } };
+    const right: Node = .{ .leaf = .{ .cwd = "/work/repo/tests", .title = "✳ tests", .history = "", .scrollback = "", .agent = .unknown } };
     const root: Node = .{ .split = .{
         .direction = .horizontal,
         .ratio = 0.62,
@@ -681,12 +1066,7 @@ test "what is written comes back exactly" {
         .right = &right,
     } };
 
-    const snapshot: Snapshot = .{
-        .name = "写 retry 装饰器",
-        .saved_at = 1_757_000_000,
-        .root = &root,
-        .next_scrollback = 4,
-    };
+    const snapshot = try oneTab(alloc, "写 retry 装饰器", 1_757_000_000, &root, 4);
 
     try write(alloc, io, dir, snapshot);
 
@@ -694,7 +1074,7 @@ test "what is written comes back exactly" {
     try testing.expectEqualStrings(snapshot.name, back.name);
     try testing.expectEqual(snapshot.saved_at, back.saved_at);
     try testing.expectEqual(snapshot.next_scrollback, back.next_scrollback);
-    try expectNodesEqual(root, back.root.?.*);
+    try expectNodesEqual(root, back.firstTab().?.*);
 }
 
 test "a project with no layout round-trips as an empty root" {
@@ -709,10 +1089,10 @@ test "a project with no layout round-trips as an empty root" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    try write(alloc, io, dir, .{ .name = "blank", .saved_at = 1, .root = null, .next_scrollback = null });
+    try write(alloc, io, dir, try oneTab(alloc, "blank", 1, null, null));
 
     const back = try read(alloc, io, dir, "blank");
-    try testing.expect(back.root == null);
+    try testing.expect(back.firstTab() == null);
 }
 
 test "a nested tree round-trips" {
@@ -727,16 +1107,16 @@ test "a nested tree round-trips" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const a: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "" } };
-    const b: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "" } };
-    const c: Node = .{ .leaf = .{ .cwd = "/c", .title = "", .history = "", .scrollback = "" } };
+    const a: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .agent = .unknown } };
+    const b: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .agent = .unknown } };
+    const c: Node = .{ .leaf = .{ .cwd = "/c", .title = "", .history = "", .scrollback = "", .agent = .unknown } };
     const inner: Node = .{ .split = .{ .direction = .vertical, .ratio = 0.5, .left = &b, .right = &c } };
     const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = 0.3, .left = &a, .right = &inner } };
 
-    try write(alloc, io, dir, .{ .name = "nested", .saved_at = 2, .root = &root, .next_scrollback = null });
+    try write(alloc, io, dir, try oneTab(alloc, "nested", 2, &root, null));
 
     const back = try read(alloc, io, dir, "nested");
-    try expectNodesEqual(root, back.root.?.*);
+    try expectNodesEqual(root, back.firstTab().?.*);
 }
 
 test "reading a project that was never saved is a named error, not a crash" {
@@ -781,10 +1161,10 @@ test "a truncated file does not read out half a tree" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const left: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "" } };
-    const right: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "" } };
+    const left: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .agent = .unknown } };
+    const right: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .agent = .unknown } };
     const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = 0.5, .left = &left, .right = &right } };
-    try write(alloc, io, dir, .{ .name = "cutoff", .saved_at = 3, .root = &root, .next_scrollback = null });
+    try write(alloc, io, dir, try oneTab(alloc, "cutoff", 3, &root, null));
 
     // Cut the file off partway through, the way a crash mid-write might
     // leave it (atomic replace makes this specific case unreachable in
@@ -838,7 +1218,7 @@ test "an empty name is rejected at write, not saved unfindably" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    try testing.expectError(error.InvalidName, write(alloc, io, dir, .{ .name = "", .saved_at = 1, .root = null, .next_scrollback = null }));
+    try testing.expectError(error.InvalidName, write(alloc, io, dir, try oneTab(alloc, "", 1, null, null)));
 
     // Nothing was written under any name a picker could show.
     const entries = try list(alloc, io, dir);
@@ -863,7 +1243,7 @@ test "a name made entirely of illegal characters still sanitizes to something, a
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    try write(alloc, io, dir, .{ .name = "/", .saved_at = 2, .root = null, .next_scrollback = null });
+    try write(alloc, io, dir, try oneTab(alloc, "/", 2, null, null));
     const back = try read(alloc, io, dir, "/");
     try testing.expectEqualStrings("/", back.name);
 }
@@ -880,7 +1260,7 @@ test "delete removes a project and reading it after is NotFound" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    try write(alloc, io, dir, .{ .name = "gone soon", .saved_at = 5, .root = null, .next_scrollback = null });
+    try write(alloc, io, dir, try oneTab(alloc, "gone soon", 5, null, null));
     try delete(alloc, io, dir, "gone soon");
 
     try testing.expectError(error.NotFound, read(alloc, io, dir, "gone soon"));
@@ -913,8 +1293,8 @@ test "rename keeps the tree and moves the name" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const leaf: Node = .{ .leaf = .{ .cwd = "/work", .title = "", .history = "", .scrollback = "" } };
-    try write(alloc, io, dir, .{ .name = "old name", .saved_at = 6, .root = &leaf, .next_scrollback = 3 });
+    const leaf: Node = .{ .leaf = .{ .cwd = "/work", .title = "", .history = "", .scrollback = "", .agent = .unknown } };
+    try write(alloc, io, dir, try oneTab(alloc, "old name", 6, &leaf, 3));
 
     try rename(alloc, io, dir, "old name", "new name");
 
@@ -924,7 +1304,7 @@ test "rename keeps the tree and moves the name" {
     // Dropping the counter on a rename would let the next save hand out a
     // number a closed pane still has a snapshot under.
     try testing.expectEqual(@as(?u64, 3), back.next_scrollback);
-    try expectNodesEqual(leaf, back.root.?.*);
+    try expectNodesEqual(leaf, back.firstTab().?.*);
 
     try testing.expectError(error.NotFound, read(alloc, io, dir, "old name"));
 }
@@ -941,8 +1321,8 @@ test "list finds every saved project and skips a corrupt one" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    try write(alloc, io, dir, .{ .name = "alpha", .saved_at = 10, .root = null, .next_scrollback = null });
-    try write(alloc, io, dir, .{ .name = "beta", .saved_at = 20, .root = null, .next_scrollback = null });
+    try write(alloc, io, dir, try oneTab(alloc, "alpha", 10, null, null));
+    try write(alloc, io, dir, try oneTab(alloc, "beta", 20, null, null));
 
     {
         var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
@@ -1002,9 +1382,9 @@ test "a scrollback name that could name anything but a snapshot here reads as em
         \\  "right":{"kind":"leaf","cwd":"/b","scrollback":"4.snap"}}}
     );
     // The bad name costs that one field, not the project.
-    try testing.expectEqualStrings("", snap.root.?.split.left.leaf.scrollback);
-    try testing.expectEqualStrings("/a", snap.root.?.split.left.leaf.cwd);
-    try testing.expectEqualStrings("4.snap", snap.root.?.split.right.leaf.scrollback);
+    try testing.expectEqualStrings("", snap.firstTab().?.split.left.leaf.scrollback);
+    try testing.expectEqualStrings("/a", snap.firstTab().?.split.left.leaf.cwd);
+    try testing.expectEqualStrings("4.snap", snap.firstTab().?.split.right.leaf.scrollback);
 }
 
 test "every row of the shared filename table" {
@@ -1140,151 +1520,341 @@ test "bytes that are not UTF-8 each become an underscore, and nothing is cut ins
     try testing.expectEqual(@as(usize, max_filename_len + ".json".len), got.len);
 }
 
-// -- the shared sample --------------------------------------------------------
+test "a format 1 file reads as one window with one tab, and nobody knows who was in its panes" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
 
-/// One project with every field of the format filled in, each with its own
-/// value. It is read by the tests of all three implementations of this
-/// format -- this one, `windows/host/src/project.rs`, and
-/// `macos/Tests/Projects/SharedProjectSampleTests.swift` -- and each of them
-/// checks the same things against it: every key in it survives that
-/// implementation's read-then-write, and every field that implementation
-/// has is a key in it. **Adding a field means adding it there first**; the
-/// test in each implementation that has not caught up yet then goes red
-/// and names the key.
-///
-/// It lives under `test/`, not beside this file, because it is the judge
-/// between three implementations rather than a fixture of this one. That
-/// puts it outside this module's package path, so it cannot be
-/// `@embedFile`d ("embed of file outside package path") and is read at
-/// test time instead, relative to the repository root -- which is where
-/// `zig build test` runs. Not finding it is a failure, never a skip.
-const all_fields_sample_path = "test/project-format/all_fields.json";
+    const snap = try parse(arena.allocator(),
+        \\{"name":"old","saved_at":7,"next_scrollback":2,"group":"not a format 1 key",
+        \\ "root":{"kind":"leaf","cwd":"/a","scrollback":"1.snap",
+        \\         "agent":{"kind":"agent","supervisor":true}}}
+    );
+    try testing.expectEqual(@as(usize, 1), snap.windows.len);
+    try testing.expectEqual(@as(?Frame, null), snap.windows[0].frame);
+    try testing.expectEqual(@as(usize, 0), snap.windows[0].front);
+    try testing.expectEqual(@as(usize, 1), snap.windows[0].tabs.len);
+    try testing.expectEqual(@as(?[]const u8, null), snap.group);
+    try testing.expectEqual(@as(?u64, 2), snap.next_scrollback);
+    const leaf = snap.firstTab().?.leaf;
+    try testing.expectEqualStrings("/a", leaf.cwd);
+    try testing.expectEqualStrings("1.snap", leaf.scrollback);
+    // Not `none`, and not the agent the stray key describes.
+    try testing.expectEqual(Agent.unknown, leaf.agent);
 
-/// The keys found on each kind of object in a project file. `kind` is the
-/// discriminator, not a field, so it is in none of them.
-const KeySets = struct {
-    snapshot: std.StringArrayHashMapUnmanaged(void) = .empty,
-    leaf: std.StringArrayHashMapUnmanaged(void) = .empty,
-    split: std.StringArrayHashMapUnmanaged(void) = .empty,
+    // No `root` is a project with nothing in it, not a corrupt one.
+    const blank = try parse(arena.allocator(), "{\"name\":\"blank\",\"saved_at\":1}");
+    try testing.expectEqual(@as(usize, 0), blank.windows.len);
+    try testing.expect(blank.firstTab() == null);
+}
 
-    fn of(alloc: Allocator, file: std.json.Value) !KeySets {
-        var sets: KeySets = .{};
-        const obj = switch (file) {
-            .object => |o| o,
-            else => return error.Corrupt,
-        };
-        var it = obj.iterator();
-        while (it.next()) |e| try sets.snapshot.put(alloc, e.key_ptr.*, {});
-        if (obj.get("root")) |root| try sets.addNode(alloc, root);
-        return sets;
+test "a file from a later format is refused as too new, and is never read as format 1" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // It has everything a format 1 file has. Read as one, it is a project
+    // of one pane, and the next save writes that over whatever it was.
+    try testing.expectError(error.TooNew, parse(alloc,
+        \\{"format":3,"name":"later","saved_at":1,"root":{"kind":"leaf","cwd":"/a"}}
+    ));
+    try testing.expectError(error.TooNew, parse(alloc, "{\"format\":9000,\"name\":\"n\",\"saved_at\":1,\"windows\":[]}"));
+
+    // A `format` that is not a version at all is a damaged file.
+    for ([_][]const u8{ "0", "-1", "\"2\"", "2.0", "null", "true", "[2]" }) |bad| {
+        const bytes = try std.fmt.allocPrint(alloc, "{{\"format\":{s},\"name\":\"n\",\"saved_at\":1,\"windows\":[]}}", .{bad});
+        try testing.expectError(error.Corrupt, parse(alloc, bytes));
     }
 
-    fn addNode(self: *KeySets, alloc: Allocator, node: std.json.Value) !void {
-        const obj = switch (node) {
-            .object => |o| o,
-            else => return error.Corrupt,
+    // And `format: 1` said out loud is format 1.
+    const one = try parse(alloc, "{\"format\":1,\"name\":\"n\",\"saved_at\":1,\"root\":{\"kind\":\"leaf\"}}");
+    try testing.expectEqual(@as(usize, 1), one.windows.len);
+}
+
+test "a format 2 file that lacks what format 2 always writes is corrupt" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const leaf = "{\"kind\":\"leaf\",\"agent\":{\"kind\":\"none\"}}";
+    const cases = [_]struct { what: []const u8, windows: []const u8 }{
+        .{ .what = "no tabs key", .windows = "[{\"front\":0}]" },
+        .{ .what = "a window with no tab", .windows = "[{\"front\":0,\"tabs\":[]}]" },
+        .{ .what = "no front", .windows = "[{\"tabs\":[{\"root\":" ++ leaf ++ "}]}]" },
+        .{ .what = "front past the last tab", .windows = "[{\"front\":1,\"tabs\":[{\"root\":" ++ leaf ++ "}]}]" },
+        .{ .what = "front below zero", .windows = "[{\"front\":-1,\"tabs\":[{\"root\":" ++ leaf ++ "}]}]" },
+        .{ .what = "a tab with no root", .windows = "[{\"front\":0,\"tabs\":[{}]}]" },
+        .{ .what = "a leaf that does not say who", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\"}}]}]" },
+        .{ .what = "an agent of no kind this build names", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"agent\":{\"kind\":\"robot\"}}}]}]" },
+        .{ .what = "an agent that does not say whether it supervises", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"agent\":{\"kind\":\"agent\"}}}]}]" },
+        .{ .what = "an agent whose role is not text", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"agent\":{\"kind\":\"agent\",\"role\":1,\"supervisor\":false}}}]}]" },
+        .{ .what = "a frame from no corner", .windows = "[{\"frame\":{\"x\":0,\"y\":0,\"width\":1,\"height\":1},\"front\":0,\"tabs\":[{\"root\":" ++ leaf ++ "}]}]" },
+        .{ .what = "a frame missing a side", .windows = "[{\"frame\":{\"origin\":\"top_left\",\"x\":0,\"y\":0,\"width\":1},\"front\":0,\"tabs\":[{\"root\":" ++ leaf ++ "}]}]" },
+        .{ .what = "windows that are not a list", .windows = "{}" },
+    };
+    for (cases) |c| {
+        const bytes = try std.fmt.allocPrint(alloc, "{{\"format\":2,\"name\":\"n\",\"saved_at\":1,\"windows\":{s}}}", .{c.windows});
+        testing.expectError(error.Corrupt, parse(alloc, bytes)) catch |err| {
+            std.debug.print("{s}: read without complaint\n", .{c.what});
+            return err;
         };
-        const kind = switch (obj.get("kind") orelse return error.Corrupt) {
-            .string => |s| s,
-            else => return error.Corrupt,
-        };
-        const set = if (std.mem.eql(u8, kind, "leaf"))
-            &self.leaf
-        else if (std.mem.eql(u8, kind, "split"))
-            &self.split
-        else
-            return error.Corrupt;
-        var it = obj.iterator();
-        while (it.next()) |e| {
-            if (std.mem.eql(u8, e.key_ptr.*, "kind")) continue;
-            try set.put(alloc, e.key_ptr.*, {});
-        }
-        if (set == &self.split) {
-            try self.addNode(alloc, obj.get("left") orelse return error.Corrupt);
-            try self.addNode(alloc, obj.get("right") orelse return error.Corrupt);
-        }
     }
+    // No `windows` at all -- which is what a format 1 file looks like to a
+    // reader that only checked the number.
+    try testing.expectError(error.Corrupt, parse(alloc, "{\"format\":2,\"name\":\"n\",\"saved_at\":1,\"root\":" ++ leaf ++ "}"));
+    // The control: the same shape, whole, reads.
+    const ok = try parse(alloc, "{\"format\":2,\"name\":\"n\",\"saved_at\":1,\"windows\":[{\"front\":0,\"tabs\":[{\"root\":" ++ leaf ++ "}]}]}");
+    try testing.expectEqual(Agent.none, ok.firstTab().?.leaf.agent);
+}
+
+test "a ratio that is not a finite number cannot be written" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const leaf: Node = .{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .agent = .none } };
+    for ([_]f64{ std.math.nan(f64), std.math.inf(f64), -std.math.inf(f64) }) |bad| {
+        const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = bad, .left = &leaf, .right = &leaf } };
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        try testing.expectError(error.NotFinite, emit(&buf.writer, try oneTab(alloc, "n", 1, &root, null)));
+    }
+}
+
+// -- the shared files ----------------------------------------------------------
+//
+// `test/project-format/` is the judge between the three implementations of
+// this format. Every file in it is listed in `index.txt` there, and is one
+// of three kinds:
+//
+//   same     `<stem>.json` is a format 2 file. Read and written back, it
+//            is the same bytes.
+//   from     `<stem>.in.json` is something else that has to be read -- a
+//            format 1 file, or a file a read puts right. Read and written,
+//            it is the bytes of `<stem>.json`.
+//   refused  `<stem>.in.json` must not be read: it is from a later format.
+//
+// **The bytes are made here and nowhere else.** Each `<stem>.json` is what
+// `emit` gives for a value spelled out below, so it is not a file that
+// happened to round-trip: the reader is checked against the value, and the
+// file against the writer. The other two implementations do not make any of
+// them; they read `index.txt` and compare. The `.in.json` files are written
+// by hand, since no build writes them.
+//
+// To change the format: change the values, create an empty file named
+// `test/project-format/REGENERATE`, run this test once (it rewrites every
+// `<stem>.json` and `index.txt`, and then fails so that the run is not
+// taken for a pass), delete `REGENERATE`, and read the diff. It lives under
+// `test/`, outside this module's package path, so nothing here can be
+// `@embedFile`d; the files are read at test time relative to the repository
+// root, which is where `zig build test` runs. Not finding one is a
+// failure, never a skip.
+
+const shared_dir = "test/project-format";
+
+const Shared = struct {
+    const Kind = enum { same, from, refused };
+
+    kind: Kind,
+    stem: []const u8,
+    /// What the file reads as. Not looked at for `refused`.
+    value: Snapshot,
+
+    fn leaf(comptime cwd: []const u8, comptime scrollback: []const u8, comptime agent: Agent) *const Node {
+        return &.{ .leaf = .{ .cwd = cwd, .title = "", .history = "", .scrollback = scrollback, .agent = agent } };
+    }
+
+    fn split(comptime direction: Direction, comptime ratio: f64, comptime left: *const Node, comptime right: *const Node) *const Node {
+        return &.{ .split = .{ .direction = direction, .ratio = ratio, .left = left, .right = right } };
+    }
+
+    const supervisor: Agent = .{ .agent = .{
+        .role = "polter-supervisor",
+        .cli = "claude-code",
+        .session = "eed9173b-c1fc-4493-aa00-187bacdc94cf",
+        .supervisor = true,
+    } };
+
+    fn worker(comptime supervises: bool) Agent {
+        return .{ .agent = .{ .role = "polter-dev", .cli = "codex", .session = "", .supervisor = supervises } };
+    }
+
+    const all = [_]Shared{
+        // What every project file was before format 2.
+        .{ .kind = .from, .stem = "format_1", .value = .{
+            .name = "every field",
+            .saved_at = 1757000000,
+            .group = null,
+            .next_scrollback = 12,
+            .windows = &.{.{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(
+                .vertical,
+                0.25,
+                &.{ .leaf = .{ .cwd = "/work/left", .title = "left title", .history = "left.history", .scrollback = "3.snap", .agent = .unknown } },
+                &.{ .leaf = .{ .cwd = "/work/right", .title = "right title", .history = "right.history", .scrollback = "8.snap", .agent = .unknown } },
+            ) }} }},
+        } },
+        // A format 1 file with no tab in it.
+        .{ .kind = .from, .stem = "format_1_empty", .value = .{
+            .name = "nothing in it",
+            .saved_at = 5,
+            .group = null,
+            .next_scrollback = null,
+            .windows = &.{},
+        } },
+        // The smallest thing format 2 writes for a real project.
+        .{ .kind = .same, .stem = "one_tab", .value = .{
+            .name = "one tab",
+            .saved_at = 1757000001,
+            .group = null,
+            .next_scrollback = 1,
+            .windows = &.{.{
+                .frame = .{ .origin = .bottom_left, .x = 120, .y = 80, .width = 1280, .height = 800 },
+                .front = 0,
+                .tabs = &.{.{ .root = &.{ .leaf = .{ .cwd = "/work", .title = "zsh", .history = "a1b2c3.history", .scrollback = "0.snap", .agent = .none } } }},
+            }},
+        } },
+        // Several windows, several tabs, and every way a string or a number
+        // is written differently by three JSON libraries left to themselves.
+        .{ .kind = .same, .stem = "windows_and_tabs", .value = .{
+            .name = "写 retry 装饰器 \"v2\" a/b",
+            .saved_at = -1,
+            .group = null,
+            .next_scrollback = 9007199254740993,
+            .windows = &.{
+                .{
+                    .frame = .{ .origin = .top_left, .x = -1920, .y = 0.5, .width = 1707.3333333333333, .height = 1e21 },
+                    .front = 2,
+                    .tabs = &.{
+                        .{ .root = split(
+                            .horizontal,
+                            0.62,
+                            &.{ .leaf = .{
+                                .cwd = "C:\\work\\repo",
+                                .title = "a \"quoted\" title, a backslash \\, a tab\t, a line\n, 中文, ✳ and 🧪",
+                                .history = "a1b2c3.history",
+                                .scrollback = "0.snap",
+                                .agent = .none,
+                            } },
+                            &.{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .agent = .unknown } },
+                        ) },
+                        .{ .root = &.{ .leaf = .{
+                            .cwd = "/a/b",
+                            .title = "\x01\x1f\x7f</script>\u{2028}",
+                            .history = "",
+                            .scrollback = "12345678901234567890.snap",
+                            .agent = worker(false),
+                        } } },
+                        .{ .root = split(
+                            .vertical,
+                            0.30000000000000004,
+                            split(.horizontal, 0.0000001, leaf("/x", "", .none), leaf("/y", "", .none)),
+                            split(
+                                .vertical,
+                                1,
+                                split(.horizontal, 0.3333333333333333, leaf("/p", "7.snap", .none), leaf("/q", "", .none)),
+                                split(.horizontal, 5e-324, leaf("/r", "", .none), split(.vertical, 123456789.125, leaf("/s", "", .none), leaf("/t", "", .none))),
+                            ),
+                        ) },
+                    },
+                },
+                .{
+                    .frame = null,
+                    .front = 0,
+                    .tabs = &.{.{ .root = leaf("/tmp", "8.snap", .unknown) }},
+                },
+            },
+        } },
+        // A project with its supervisor, a worker, a plain shell, and a
+        // pane nobody could say anything about -- the four things a pane
+        // can be.
+        .{
+            .kind = .same,
+            .stem = "supervisor",
+            .value = .{
+                .name = "with a supervisor",
+                .saved_at = 1757000002,
+                .group = null,
+                .next_scrollback = null,
+                .windows = &.{.{
+                    .frame = .{ .origin = .bottom_left, .x = 0, .y = 0, .width = 1440, .height = 900 },
+                    .front = 1,
+                    .tabs = &.{
+                        // This ratio is one a JSON reader that parses numbers
+                        // the quick way gets wrong by one in the last place
+                        // (measured: serde_json without `float_roundtrip` reads
+                        // it as ...696), and then writes back different digits.
+                        .{ .root = split(.horizontal, 0.9856906946328695, leaf("/work/repo", "", supervisor), leaf("/work/repo", "", worker(false))) },
+                        .{ .root = split(.vertical, 0.5, leaf("/work/repo", "", .none), leaf("", "", .unknown)) },
+                    },
+                }},
+            },
+        },
+        // The project of a group.
+        .{ .kind = .same, .stem = "group", .value = .{
+            .name = "polter 0.10 群",
+            .saved_at = 1757000003,
+            .group = "polter 0.10 群",
+            .next_scrollback = 2,
+            .windows = &.{.{
+                .frame = null,
+                .front = 0,
+                .tabs = &.{.{ .root = leaf("/work/repo", "1.snap", supervisor) }},
+            }},
+        } },
+        // Three panes each say they are the supervisor: none of them is,
+        // and what they otherwise were is kept.
+        .{ .kind = .from, .stem = "two_supervisors", .value = .{
+            .name = "two supervisors",
+            .saved_at = 1757000004,
+            .group = "g",
+            .next_scrollback = null,
+            .windows = &.{
+                .{ .frame = null, .front = 0, .tabs = &.{
+                    .{ .root = split(.horizontal, 0.5, leaf("/a", "", worker(false)), leaf("/b", "", .none)) },
+                    .{ .root = leaf("/c", "", worker(false)) },
+                } },
+                .{ .frame = null, .front = 0, .tabs = &.{.{ .root = &.{ .leaf = .{
+                    .cwd = "/d",
+                    .title = "",
+                    .history = "",
+                    .scrollback = "",
+                    .agent = .{ .agent = .{ .role = "polter-supervisor", .cli = "claude-code", .session = "s-2", .supervisor = false } },
+                } } }} },
+            },
+        } },
+        // One snapshot name on three panes, in two tabs and two windows:
+        // the first keeps it. And a name that is not a snapshot's.
+        .{ .kind = .from, .stem = "duplicate_scrollback", .value = .{
+            .name = "one snapshot, three panes",
+            .saved_at = 1757000005,
+            .group = null,
+            .next_scrollback = 4,
+            .windows = &.{
+                .{ .frame = null, .front = 1, .tabs = &.{
+                    .{ .root = split(.horizontal, 0.5, leaf("/a", "3.snap", .none), leaf("/b", "", .none)) },
+                    .{ .root = leaf("/c", "", .none) },
+                } },
+                .{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(.vertical, 0.5, leaf("/d", "", .none), leaf("/e", "2.snap", .none)) }} },
+            },
+        } },
+        .{ .kind = .refused, .stem = "too_new", .value = undefined },
+    };
 };
 
-/// Prints one line per key the two sets disagree on, saying which file to
-/// change. Returns whether they agreed.
-fn sampleKeysAgree(
-    comptime what: []const u8,
-    sample: std.StringArrayHashMapUnmanaged(void),
-    written: std.StringArrayHashMapUnmanaged(void),
-) bool {
-    var ok = true;
-    for (sample.keys()) |k| if (!written.contains(k)) {
-        ok = false;
-        std.debug.print(
-            "src/Project.zig loses {s}.{s}: it is in test/project-format/all_fields.json" ++
-                " but does not come back out of parse + writeJson -- carry it in the type," ++
-                " parseNode/parse and writeNode/writeJson\n",
-            .{ what, k },
-        );
-    };
-    for (written.keys()) |k| if (!sample.contains(k)) {
-        ok = false;
-        std.debug.print(
-            "src/Project.zig writes {s}.{s}, which test/project-format/all_fields.json" ++
-                " does not have -- add it there, then to windows/host/src/project.rs and" ++
-                " macos/Sources/Features/Projects/ProjectDocument.swift, whose tests read" ++
-                " the same file\n",
-            .{ what, k },
-        );
-    };
-    return ok;
+fn expectSnapshotsEqual(want: Snapshot, got: Snapshot) !void {
+    try testing.expectEqualStrings(want.name, got.name);
+    try testing.expectEqual(want.saved_at, got.saved_at);
+    try testing.expectEqual(want.next_scrollback, got.next_scrollback);
+    try testing.expectEqual(want.group == null, got.group == null);
+    if (want.group) |g| try testing.expectEqualStrings(g, got.group.?);
+    try testing.expectEqual(want.windows.len, got.windows.len);
+    for (want.windows, got.windows) |w, g| {
+        try testing.expectEqual(w.frame, g.frame);
+        try testing.expectEqual(w.front, g.front);
+        try testing.expectEqual(w.tabs.len, g.tabs.len);
+        for (w.tabs, g.tabs) |wt, gt| try expectNodesEqual(wt.root.*, gt.root.*);
+    }
 }
 
-/// Every field of `T` is a key of `sample`. Catches the one case the
-/// read-then-write comparison cannot: a field this build has that it
-/// neither writes nor finds in the sample. Relies on field names being the
-/// JSON keys, which is true of every field today.
-fn fieldsAreInSample(
-    comptime T: type,
-    comptime what: []const u8,
-    sample: std.StringArrayHashMapUnmanaged(void),
-) bool {
-    var ok = true;
-    inline for (std.meta.fields(T)) |f| if (!sample.contains(f.name)) {
-        ok = false;
-        std.debug.print(
-            "Project." ++ what ++ " has a field `" ++ f.name ++ "` but" ++
-                " test/project-format/all_fields.json has no " ++ what ++ "." ++ f.name ++
-                " -- add it to the sample, and make writeNode/writeJson write it\n",
-            .{},
-        );
-    };
-    return ok;
-}
-
-fn jsonEql(a: std.json.Value, b: std.json.Value) bool {
-    const num = struct {
-        fn of(v: std.json.Value) ?f64 {
-            return switch (v) {
-                .integer => |n| @floatFromInt(n),
-                .float => |f| f,
-                else => null,
-            };
-        }
-    };
-    if (num.of(a)) |x| return if (num.of(b)) |y| x == y else false;
-    return switch (a) {
-        .null => b == .null,
-        .bool => |x| b == .bool and b.bool == x,
-        .string => |x| b == .string and std.mem.eql(u8, x, b.string),
-        .array => |x| b == .array and x.items.len == b.array.items.len and for (x.items, b.array.items) |p, q| {
-            if (!jsonEql(p, q)) break false;
-        } else true,
-        .object => |x| b == .object and x.count() == b.object.count() and for (x.keys()) |k| {
-            const other = b.object.get(k) orelse break false;
-            if (!jsonEql(x.get(k).?, other)) break false;
-        } else true,
-        else => false,
-    };
-}
-
-test "every field in the shared sample survives this build, and every field this build has is in the sample" {
+test "the files under test/project-format are what this build writes, and what it reads them as" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1293,43 +1863,104 @@ test "every field in the shared sample survives this build, and every field this
     defer threaded.deinit();
     const io = threaded.io();
 
-    const all_fields_sample = std.Io.Dir.cwd().readFileAlloc(
-        io,
-        all_fields_sample_path,
-        alloc,
-        .limited(1024 * 1024),
-    ) catch |err| {
-        std.debug.print(
-            "cannot read the shared sample {s} ({s}): this test runs from the repository root\n",
-            .{ all_fields_sample_path, @errorName(err) },
-        );
+    var dir = std.Io.Dir.cwd().openDir(io, shared_dir, .{ .iterate = true }) catch |err| {
+        std.debug.print("cannot open {s} ({s}): this test runs from the repository root\n", .{ shared_dir, @errorName(err) });
         return err;
     };
+    defer dir.close(io);
 
-    const sample = try std.json.parseFromSliceLeaky(std.json.Value, alloc, all_fields_sample, .{});
+    const regenerate = if (dir.access(io, "REGENERATE", .{})) |_| true else |_| false;
 
-    var buf: std.Io.Writer.Allocating = .init(alloc);
-    var s: std.json.Stringify = .{ .writer = &buf.writer, .options = .{} };
-    try writeJson(&s, try parse(alloc, all_fields_sample));
-    const written = try std.json.parseFromSliceLeaky(std.json.Value, alloc, buf.written(), .{});
+    var index: std.Io.Writer.Allocating = .init(alloc);
+    for (Shared.all) |f| try index.writer.print("{s}\t{s}\n", .{ @tagName(f.kind), f.stem });
 
-    const want: KeySets = try .of(alloc, sample);
-    const got: KeySets = try .of(alloc, written);
+    var files_named: usize = 0;
+    for (Shared.all) |f| {
+        const in_name = try std.fmt.allocPrint(alloc, "{s}.in.json", .{f.stem});
+        const out_name = try std.fmt.allocPrint(alloc, "{s}.json", .{f.stem});
 
-    // Each is its own line so that one disagreement does not hide the next.
-    var ok = true;
-    if (!sampleKeysAgree("snapshot", want.snapshot, got.snapshot)) ok = false;
-    if (!sampleKeysAgree("leaf", want.leaf, got.leaf)) ok = false;
-    if (!sampleKeysAgree("split", want.split, got.split)) ok = false;
-    if (!fieldsAreInSample(Snapshot, "snapshot", want.snapshot)) ok = false;
-    if (!fieldsAreInSample(Leaf, "leaf", want.leaf)) ok = false;
-    if (!fieldsAreInSample(Split, "split", want.split)) ok = false;
-    try testing.expect(ok);
+        if (f.kind == .refused) {
+            files_named += 1;
+            const in = try dir.readFileAlloc(io, in_name, alloc, .limited(1024 * 1024));
+            try testing.expectError(error.TooNew, parse(alloc, in));
+            continue;
+        }
 
-    // Same keys is not same values: a writer that put `title` under `cwd`
-    // and `cwd` under `title` passes everything above.
-    if (!jsonEql(sample, written)) {
-        std.debug.print("src/Project.zig read + wrote the shared sample back as:\n{s}\n", .{buf.written()});
-        return error.TestExpectedEqual;
+        var made: std.Io.Writer.Allocating = .init(alloc);
+        try emit(&made.writer, f.value);
+        if (regenerate) {
+            var file = try dir.createFile(io, out_name, .{});
+            defer file.close(io);
+            try file.writeStreamingAll(io, made.written());
+        }
+
+        // The file is what the writer makes of the value...
+        files_named += 1;
+        const on_disk = dir.readFileAlloc(io, out_name, alloc, .limited(1024 * 1024)) catch |err| {
+            std.debug.print("{s}/{s}: {s}\n", .{ shared_dir, out_name, @errorName(err) });
+            return err;
+        };
+        testing.expectEqualStrings(on_disk, made.written()) catch |err| {
+            std.debug.print("{s}/{s} is not what emit writes for the value in src/Project.zig\n", .{ shared_dir, out_name });
+            return err;
+        };
+
+        // ...and the reader makes the value of the file.
+        const back = try parse(alloc, on_disk);
+        expectSnapshotsEqual(f.value, back) catch |err| {
+            std.debug.print("{s}/{s} does not read as the value in src/Project.zig\n", .{ shared_dir, out_name });
+            return err;
+        };
+
+        if (f.kind == .from) {
+            files_named += 1;
+            const in = try dir.readFileAlloc(io, in_name, alloc, .limited(1024 * 1024));
+            const read_in = try parse(alloc, in);
+            expectSnapshotsEqual(f.value, read_in) catch |err| {
+                std.debug.print("{s}/{s} does not read as the value in src/Project.zig\n", .{ shared_dir, in_name });
+                return err;
+            };
+            var rewritten: std.Io.Writer.Allocating = .init(alloc);
+            try emit(&rewritten.writer, read_in);
+            try testing.expectEqualStrings(on_disk, rewritten.written());
+        }
     }
+
+    if (regenerate) {
+        var file = try dir.createFile(io, "index.txt", .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, index.written());
+    }
+    const index_on_disk = try dir.readFileAlloc(io, "index.txt", alloc, .limited(1024 * 1024));
+    try testing.expectEqualStrings(index_on_disk, index.written());
+
+    // No file here that nothing above looked at: a file the index does not
+    // name is one the other two implementations never read either.
+    var json_files: usize = 0;
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (std.mem.endsWith(u8, entry.name, ".json")) json_files += 1;
+    }
+    try testing.expectEqual(files_named, json_files);
+
+    if (regenerate) {
+        std.debug.print("{s}: rewritten because REGENERATE is there -- delete it and run again\n", .{shared_dir});
+        return error.RegeneratedNotChecked;
+    }
+}
+
+test "a build from before windows cannot take a format 2 file for a project with no panes" {
+    // Such a build reads `name`, `saved_at` and `root`. What it finds under
+    // `root` has to be something it refuses.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var made: std.Io.Writer.Allocating = .init(alloc);
+    try emit(&made.writer, Shared.all[2].value);
+    const file = try std.json.parseFromSliceLeaky(std.json.Value, alloc, made.written(), .{});
+    const root = file.object.get("root").?.object;
+    const kind = root.get("kind").?.string;
+    try testing.expect(!std.mem.eql(u8, kind, "leaf"));
+    try testing.expect(!std.mem.eql(u8, kind, "split"));
 }

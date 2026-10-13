@@ -42,7 +42,7 @@ struct ControlRoomDetailMessage: View {
     /// The selected row is one terminal on its own, not a group: the
     /// sentences are about that terminal.
     var alone: Bool = false
-    var onStart: (_ role: String?, _ cwd: String?) -> Void = { _, _ in }
+    var onStart: (_ role: String?, _ cwd: String?, _ session: ControlRoomStartChoice.Session?) -> Void = { _, _, _ in }
 
     @Environment(\.colorScheme) private var scheme
 
@@ -91,18 +91,26 @@ struct ControlRoomDetailMessage: View {
 /// `start.cwd`) until the person picks another; what is sent is only what
 /// they picked. Whether there is a choice of role to show is the core's
 /// word too.
+///
+/// Under the directory it says what the group's last supervisor was, when
+/// the core has a record of one, and -- only when the core says that
+/// supervisor's session can be gone on with -- offers going on with it or
+/// starting a new one. When it cannot, a sentence says why instead
+/// (`ControlRoomStartChoice`).
 struct ControlRoomStartSupervisor: View {
     typealias Look = ControlRoomLook
+    typealias Choice = ControlRoomStartChoice
 
     let start: ControlRoomList.SupervisorStart
     let roles: [ControlRoomList.SupervisorRole]
     let chooseRole: Bool
     let refusal: String?
-    let onStart: (_ role: String?, _ cwd: String?) -> Void
+    let onStart: (_ role: String?, _ cwd: String?, _ session: ControlRoomStartChoice.Session?) -> Void
 
     /// What the person picked; nil while they have picked nothing.
     @State private var role: String?
     @State private var cwd: String?
+    @State private var session: ControlRoomStartChoice.Session?
 
     @Environment(\.colorScheme) private var scheme
 
@@ -136,7 +144,21 @@ struct ControlRoomStartSupervisor: View {
                 }
                 .buttonStyle(.plain)
             }
-            Button(action: { onStart(role, cwd) }, label: {
+            if let said = Choice.lastSupervisorText(start, startingIn: cwd ?? start.cwd) {
+                Text(said)
+                    .foregroundStyle(theme.textSecondary.color)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if Choice.offersSession(start) {
+                sessionChoice(theme)
+            } else if let why = start.last.flatMap({ Choice.resumeNote($0.why) }) {
+                Text(why)
+                    .foregroundStyle(theme.textSecondary.color)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button(action: {
+                onStart(role, cwd, Choice.sessionSent(offered: Choice.offersSession(start), picked: session))
+            }, label: {
                 Text(String(localized: "Start Supervisor", comment: "总控台：没有总管的群，右栏上启动一个总管的主按钮"))
                     .fontWeight(Look.weight(Look.Font.weightEmphasis))
                     .foregroundStyle(theme.attentionText.color)
@@ -155,13 +177,35 @@ struct ControlRoomStartSupervisor: View {
         }
     }
 
+    /// The two sessions a start can use, one to a line, the one in use
+    /// marked: a ring filled in the attention colour, never a grey ground.
+    private func sessionChoice(_ theme: Look.Theme) -> some View {
+        let picked = session ?? .last
+        let mark = CGFloat(Look.Side.glyph)
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(Choice.Session.allCases, id: \.self) { one in
+                Button(action: { session = one }, label: {
+                    HStack(spacing: CGFloat(Look.Side.rowItemGap)) {
+                        Circle()
+                            .strokeBorder(
+                                one == picked ? theme.attentionText.color : theme.textSecondary.color,
+                                lineWidth: one == picked ? mark / 3 : CGFloat(Look.Line.stroke))
+                            .frame(width: mark, height: mark)
+                        Text(Choice.optionText(one))
+                            .foregroundStyle(theme.text.color)
+                    }
+                    .frame(height: CGFloat(Look.Side.quietRowHeight))
+                    .contentShape(Rectangle())
+                })
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(one == picked ? .isSelected : [])
+            }
+        }
+    }
+
     /// The directory as it is shown: the home directory as `~`.
     static func shown(_ path: String, home: String = NSHomeDirectory()) -> String {
-        guard !path.isEmpty else {
-            return String(localized: "Where the tab starts", comment: "总控台：启动总管时没有可用的默认目录，新标签页在哪就在哪")
-        }
-        if path == home { return "~" }
-        return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
+        ControlRoomStartChoice.shownDirectory(path, home: home)
     }
 
     private func chooseDirectory() {

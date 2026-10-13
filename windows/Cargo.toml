@@ -31,6 +31,11 @@
 #                the opening size and whether a remembered one is still on a
 #                screen. Shared with macOS through one specification
 #                (dev-docs/poltergeist/settings.md), so they are tested here.
+#   projectfile/ what a project file says and the bytes it is written as.
+#                Written three times (Zig, Swift, here) and pinned by the
+#                files in test/project-format/, which Zig makes and the other
+#                two read and have to write back the same; inside host/ that
+#                check could only run on Windows.
 #   shots/       pasting an image and taking a screenshot, minus the windows:
 #                clipboard bitmap to PNG, the file's name, which old files
 #                startup may delete, which clipboard format wins. Shared with
@@ -41,7 +46,7 @@
 # knowing where the crate lives.
 [workspace]
 resolver = "2"
-members = ["host", "split-tree", "droppath", "cliargs", "urlpolicy", "projectname", "settings-shell", "shots", "control-room"]
+members = ["host", "split-tree", "droppath", "cliargs", "urlpolicy", "projectname", "projectfile", "settings-shell", "shots", "control-room"]
 
 # **Profiles must live here, not in a member.** Cargo ignores a member's
 # `[profile]` inside a workspace and only says so as a warning -- the symptom

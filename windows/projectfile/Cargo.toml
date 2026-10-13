@@ -1,0 +1,21 @@
+[package]
+name = "polter-projectfile"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# What a project file says, and the bytes it is written as. Out of
+# `polter-host` for the reason `projectname` is: the format is written three
+# times (Zig, Swift, here) and pinned by files all three read
+# (test/project-format/), and inside `polter-host` this copy's check could
+# only run on Windows -- so on the Mac the port is written on, a writer that
+# dropped a field turned nothing red.
+#
+# `serde_json` reads; nothing here writes with it (see `emit`). The feature
+# is not optional: without it `serde_json` reads a number to the nearest
+# double it finds quickly, which for some is the one beside the right one,
+# and a ratio then comes back out of a read and a write as different digits.
+[dependencies]
+polter-split-tree = { path = "../split-tree" }
+polter-settings-shell = { path = "../settings-shell" }
+serde_json = { version = "1", features = ["float_roundtrip"] }

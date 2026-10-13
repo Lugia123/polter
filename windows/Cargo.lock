@@ -113,6 +113,7 @@ dependencies = [
  "polter-cliargs",
  "polter-control-room",
  "polter-droppath",
+ "polter-projectfile",
  "polter-projectname",
  "polter-settings-shell",
  "polter-shots",
@@ -122,6 +123,15 @@ dependencies = [
  "webview2-com",
  "windows",
  "windows-core",
+]
+
+[[package]]
+name = "polter-projectfile"
+version = "0.1.0"
+dependencies = [
+ "polter-settings-shell",
+ "polter-split-tree",
+ "serde_json",
 ]
 
 [[package]]

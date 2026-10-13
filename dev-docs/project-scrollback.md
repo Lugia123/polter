@@ -428,6 +428,10 @@ scrollback **相反** —— 它是为这一次项目存盘抓的，脱离那个
 **有项目功能的宿主（mac、Windows）各自的一小块** —— 只有两件事：存盘时调那个新 C API；把快照文件名读写进项目文件（即 3.1 那张表里对应的那一份实现）。
 
 - **Windows**：`windows/host/src/project.rs`（701 行，`serde_json`）+ `windows/host/src/ffi.rs` 里手写的 extern 结构体。⚠️ 布局改了不会编译失败，见 3.3。
+  （2026-10-13，#1487：项目文件说什么、写成哪些字节，已经从 `project.rs` 挪到 `windows/projectfile`，
+  在 mac 上就能 `cargo test`；`project.rs` 只剩放在哪、`.prev`、快照目录这些盘上的事。格式升到 2——
+  若干窗口 × 若干标签页，每格记「这格里是谁」——规则写在 `src/Project.zig` 的模块注释里，
+  三处实现逐字节一致由 `test/project-format/` 钉住，见那里的 README。上面的行数是当时的读数。）
 - **mac**：`macos/Sources/Features/Projects/` 下的存取。
 - **Linux（GTK）**：**不做，也不是「一小块」。** GTK 上根本没有项目功能：存、取、`history_filename`、`history_restore` 一处都没接（`src/apprt/gtk/class/application.zig` 里那个 arm 是 `log.warn("unimplemented")`），所以在 GTK 上接 scrollback，意味着从零做整套项目功能。issue #27 按功能面数过：做到和 Windows 一样要 11 面，**没有一面是 GTK 做不到的，全是没做**。不做的原因是**没有 Linux 测试机**，写出来只能停在「编过」，而其中 4 面是 UI。这是排序，不是放弃：有了能跑 GTK 的机器，随时可以开工。`tools/gtk-has-no-project-half.py` 钉着这件事，半个实现进不来。
 

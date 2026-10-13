@@ -40,7 +40,8 @@ struct ControlRoomActions {
         case newGroup(name: String)
         /// Start a supervisor for a group that has none. A nil role or
         /// directory is the one the core's snapshot names.
-        case startSupervisor(group: String, role: String? = nil, cwd: String? = nil)
+        case startSupervisor(group: String, role: String? = nil, cwd: String? = nil,
+                             session: ControlRoomStartChoice.Session? = nil)
     }
 
     /// Why an action was not done. `name` is the core's word for it and is
@@ -152,12 +153,15 @@ struct ControlRoomActions {
             return ["act": "reply", "terminal": target.terminal, "since_ms": target.sinceMs, "text": text]
         case .newGroup(let name):
             return ["act": "new_group", "name": name]
-        case .startSupervisor(let group, let role, let cwd):
+        case .startSupervisor(let group, let role, let cwd, let session):
             // Left out when the person picked neither: the core then uses
-            // the ones its snapshot named.
+            // the ones its snapshot named. Which session is sent only
+            // while the choice is on screen
+            // (`ControlRoomStartChoice.sessionSent`).
             var request: [String: Any] = ["act": "start_supervisor", "group": group]
             if let role { request["role"] = role }
             if let cwd { request["cwd"] = cwd }
+            if let session { request["session"] = session.rawValue }
             return request
         }
     }

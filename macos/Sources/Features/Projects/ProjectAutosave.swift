@@ -61,16 +61,26 @@ enum ProjectFileWriter {
     ///
     /// An existing file that doesn't decode is always rotated rather than
     /// overwritten -- it is somebody's project, and this can't tell whose
-    /// layout it was.
+    /// layout it was. A file from a later format is one of those.
+    ///
+    /// **So is a file of an older format, whatever is being written over
+    /// it** -- even when nothing but the time would change, which otherwise
+    /// writes nothing and would leave the file in the old format for good.
+    /// This write turns it into the current one, which the build that wrote
+    /// it cannot read; the copy in `.prev` is that build's way back.
     static func plan(writing file: ProjectFile, over existing: Data?, keeping: Keeping) -> Outcome {
         guard let existing else { return .written(rotated: false) }
         guard let old = try? ProjectFile.decode(from: existing) else { return .written(rotated: true) }
-        if old.name == file.name && old.root == file.root && old.nextScrollback == file.nextScrollback {
+        if let format = try? ProjectFile.format(of: existing), format < ProjectFile.formatVersion {
+            return .written(rotated: true)
+        }
+        if old.name == file.name && old.group == file.group && old.windows == file.windows
+            && old.nextScrollback == file.nextScrollback {
             return .unchanged
         }
         switch keeping {
         case .always: return .written(rotated: true)
-        case .onLayoutChange: return .written(rotated: old.root?.layout != file.root?.layout)
+        case .onLayoutChange: return .written(rotated: old.layout != file.layout)
         }
     }
 
@@ -119,6 +129,15 @@ enum ProjectFileWriter {
             .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
         try FileManager.default.copyItem(at: url, to: temporary)
         return temporary
+    }
+}
+
+extension ProjectFile {
+    /// What a mistake changes and an ordinary day doesn't, over the whole
+    /// project: every tab's `ProjectNode.layout`, window by window. A tab or
+    /// a window more or fewer is a change of layout too.
+    var layout: [[ProjectNode.Layout]] {
+        windows.map { $0.tabs.map(\.root.layout) }
     }
 }
 

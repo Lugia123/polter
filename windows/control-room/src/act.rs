@@ -25,8 +25,44 @@ pub enum Act<'a> {
     /// Make a group by the name that was typed.
     NewGroup { name: &'a str },
     /// Start a supervisor for a group that has none. No role or no
-    /// directory is the one the core's snapshot names.
-    StartSupervisor { group: &'a str, role: Option<&'a str>, cwd: Option<&'a str> },
+    /// directory is the one the core's snapshot names. No session is the
+    /// core's own choice (`session_sent`).
+    StartSupervisor { group: &'a str, role: Option<&'a str>, cwd: Option<&'a str>, session: Option<Session> },
+}
+
+/// Which session a start is asked for: the core's two words
+/// (`ControlAct.zig`, `Session`). The macOS host's
+/// `ControlRoomStartChoice.Session`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Session {
+    /// Go on with the session the group's last supervisor was in.
+    Last,
+    New,
+}
+
+impl Session {
+    pub const ALL: [Session; 2] = [Session::Last, Session::New];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Session::Last => "last",
+            Session::New => "new",
+        }
+    }
+}
+
+/// What the start sends for `session`; none to leave it out. With the
+/// choice on screen (`offered`) it is what is selected there -- the last
+/// session until the person picks the other. With no choice on screen
+/// nothing is said: the core starts a new session where the last cannot be
+/// gone on with, and a host that said "new" there would be deciding it a
+/// second time.
+pub fn session_sent(offered: bool, picked: Option<Session>) -> Option<Session> {
+    if offered {
+        Some(picked.unwrap_or(Session::Last))
+    } else {
+        None
+    }
 }
 
 /// The request for an act, or none when the row has nothing to send it
@@ -50,7 +86,7 @@ pub fn encode(act: &Act) -> Option<String> {
             quote(text)
         ),
         Act::NewGroup { name } => format!("{{\"act\":\"new_group\",\"name\":{}}}", quote(name)),
-        Act::StartSupervisor { group, role, cwd } => {
+        Act::StartSupervisor { group, role, cwd, session } => {
             // Left out when the person picked neither: the core then uses
             // the ones its snapshot named.
             let mut out = format!("{{\"act\":\"start_supervisor\",\"group\":{}", quote(group));
@@ -59,6 +95,9 @@ pub fn encode(act: &Act) -> Option<String> {
             }
             if let Some(cwd) = cwd {
                 out.push_str(&format!(",\"cwd\":{}", quote(cwd)));
+            }
+            if let Some(session) = session {
+                out.push_str(&format!(",\"session\":{}", quote(session.name())));
             }
             out.push('}');
             out

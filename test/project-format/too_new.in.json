@@ -1,0 +1,9 @@
+{
+  "format": 3,
+  "name": "from a later build",
+  "saved_at": 1757000006,
+  "root": { "kind": "leaf", "cwd": "/read as format 1, this is a project of one pane" },
+  "windows": [
+    { "front": 0, "tabs": [ { "root": { "kind": "leaf", "agent": { "kind": "none" } } } ] }
+  ]
+}

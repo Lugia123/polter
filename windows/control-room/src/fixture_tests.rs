@@ -945,6 +945,25 @@ fn a_snapshot_from_before_a_supervisor_could_be_started_offers_nothing() {
 }
 
 #[test]
+fn the_directory_is_the_last_supervisors_only_when_the_core_says_how_it_was_arrived_at() {
+    // Every group in the fixture has a directory arrived at another way.
+    let s = snapshot::decode(FIXTURE).unwrap();
+    assert!(s.groups.iter().all(|g| !g.supervisor.as_ref().unwrap().last.as_ref().unwrap().cwd_is_last));
+    // The first one, said to be where its supervisor last worked.
+    let said = FIXTURE.replacen("\"cwd_from\": \"home\"", "\"cwd_from\": \"last_supervisor\"", 1);
+    assert_ne!(said, FIXTURE);
+    let s = snapshot::decode(&said).unwrap();
+    let is_last: Vec<bool> = s.groups.iter().map(|g| g.supervisor.as_ref().unwrap().last.as_ref().unwrap().cwd_is_last).collect();
+    assert_eq!(is_last.iter().filter(|b| **b).count(), 1);
+    assert!(is_last[0]);
+    // Any other way of arriving at it is not that.
+    for other in ["session_snapshot", "members", "none"] {
+        let s = snapshot::decode(&FIXTURE.replacen("\"cwd_from\": \"home\"", &format!("\"cwd_from\": \"{other}\""), 1)).unwrap();
+        assert!(s.groups.iter().all(|g| !g.supervisor.as_ref().unwrap().last.as_ref().unwrap().cwd_is_last), "{other}");
+    }
+}
+
+#[test]
 fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
     use crate::snapshot::{ResumeWhy, SupervisorLast};
     let s = snapshot::decode(FIXTURE).unwrap();
@@ -953,7 +972,19 @@ fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
     // Nothing written down: every part is none, and the reason is that.
     assert_eq!(
         last("web-app"),
-        SupervisorLast { cli: Some("claude-code".into()), role: None, last_cli: None, heard_ms: None, can_resume: false, why: ResumeWhy::NoRecord }
+        SupervisorLast {
+            cli: Some("claude-code".into()),
+            role: None,
+            last_cli: None,
+            heard_ms: None,
+            can_resume: false,
+            why: ResumeWhy::NoRecord,
+            cwd_is_last: false,
+            // The CLI a start uses has a name; the last supervisor's was
+            // never written down, so there is none to name.
+            cli_label: Some("Claude Code".into()),
+            last_cli_label: None,
+        }
     );
     // One whose session a terminal is in now, and one that can be gone on with.
     let billing = last("billing");
@@ -961,6 +992,15 @@ fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
     assert_eq!((billing.can_resume, billing.why), (false, ResumeWhy::SessionInUse));
     let notes = last("notes");
     assert_eq!((notes.can_resume, notes.why), (true, ResumeWhy::None));
+    assert_eq!((billing.cli_label.as_deref(), billing.last_cli_label.as_deref()), (Some("Claude Code"), Some("Claude Code")));
+    // A core that gives no name -- null, or from before it said -- is read
+    // as no name, not as the key.
+    let unnamed = snapshot::decode(&FIXTURE.replace("\"cli_label\": \"Claude Code\"", "\"cli_label\": null")).unwrap();
+    let b = unnamed.groups.iter().find(|g| g.name == "billing").unwrap().supervisor.clone().unwrap().last.unwrap();
+    assert_eq!((b.cli.as_deref(), b.cli_label, b.last_cli.as_deref(), b.last_cli_label), (Some("claude-code"), None, Some("claude-code"), None));
+    let before = snapshot::decode(&FIXTURE.replace("        \"cli_label\": \"Claude Code\",\n", "").replace("          \"cli_label\": \"Claude Code\",\n", "").replace("          \"cli_label\": null,\n", "")).unwrap();
+    let b = before.groups.iter().find(|g| g.name == "billing").unwrap().supervisor.clone().unwrap().last.unwrap();
+    assert_eq!((b.cli_label, b.last_cli_label), (None, None));
 
     // `can` is read, not made out of `why`: a core that says it cannot for
     // no reason it names is believed.
@@ -981,7 +1021,7 @@ fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
 
     // A core from before it said any of this: nothing, not a made-up "no".
     // And half of it is not a snapshot.
-    let block = "        \"last\": {\n          \"role\": null,\n          \"cli\": null,\n          \"heard_ms\": null\n        },\n        \"resume\": {\n          \"can\": false,\n          \"why\": \"no_record\"\n        }\n";
+    let block = "        \"last\": {\n          \"role\": null,\n          \"cli\": null,\n          \"cli_label\": null,\n          \"heard_ms\": null\n        },\n        \"resume\": {\n          \"can\": false,\n          \"why\": \"no_record\"\n        }\n";
     assert!(FIXTURE.contains(block), "the fixture no longer writes the block this test cuts");
     let before = first(&format!("\"cwd_from\": \"home\",\n{block}"), "\"cwd_from\": \"home\"\n");
     assert_eq!(read(before).unwrap(), None);
@@ -993,13 +1033,27 @@ fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
 fn making_a_group_and_starting_a_supervisor_are_requests_the_core_reads() {
     assert_eq!(act::encode(&Act::NewGroup { name: " web app\"x " }).unwrap(), r#"{"act":"new_group","name":" web app\"x "}"#);
     // What the person did not pick is left out, for the core to fill in.
-    let start = |role, cwd| act::encode(&Act::StartSupervisor { group: "web-app", role, cwd }).unwrap();
+    let start = |role, cwd| act::encode(&Act::StartSupervisor { group: "web-app", role, cwd, session: None }).unwrap();
     assert_eq!(start(None, None), r#"{"act":"start_supervisor","group":"web-app"}"#);
     assert_eq!(start(Some("reviewer"), None), r#"{"act":"start_supervisor","group":"web-app","role":"reviewer"}"#);
     assert_eq!(start(None, Some(r"C:\src")), r#"{"act":"start_supervisor","group":"web-app","cwd":"C:\\src"}"#);
     assert_eq!(start(Some("r"), Some("/x")), r#"{"act":"start_supervisor","group":"web-app","role":"r","cwd":"/x"}"#);
     for request in [start(Some("r"), Some("/x")), act::encode(&Act::NewGroup { name: "a" }).unwrap()] {
         assert!(crate::json::parse(&request).is_ok(), "{request}");
+    }
+    // Which session is the core's two words, and is left out when there is
+    // none to say (`act::session_sent`).
+    let with = |session| act::encode(&Act::StartSupervisor { group: "web-app", role: None, cwd: None, session }).unwrap();
+    assert_eq!(with(Some(act::Session::Last)), r#"{"act":"start_supervisor","group":"web-app","session":"last"}"#);
+    assert_eq!(with(Some(act::Session::New)), r#"{"act":"start_supervisor","group":"web-app","session":"new"}"#);
+    assert_eq!(with(None), r#"{"act":"start_supervisor","group":"web-app"}"#);
+    // On screen: the last session until the person picks the other. Not on
+    // screen: nothing is said, whatever was picked while it was.
+    assert_eq!(act::session_sent(true, None), Some(act::Session::Last));
+    assert_eq!(act::session_sent(true, Some(act::Session::New)), Some(act::Session::New));
+    assert_eq!(act::session_sent(true, Some(act::Session::Last)), Some(act::Session::Last));
+    for picked in [None, Some(act::Session::Last), Some(act::Session::New)] {
+        assert_eq!(act::session_sent(false, picked), None);
     }
 }
 
