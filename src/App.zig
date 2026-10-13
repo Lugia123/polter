@@ -3690,6 +3690,16 @@ pub fn restorePersona(self: *App, key: []const u8, everything: bool) !void {
     if (everything) self.skillsChanged();
 }
 
+/// "Keep mine" on an official role the shipped version has moved under
+/// (`PersonaStore.acknowledge`). The role library only.
+pub fn acknowledgePersona(self: *App, key: []const u8) !void {
+    self.ensurePersonas();
+    const path = try poltergeistpkg.PersonaStore.defaultPath(self.alloc);
+    defer self.alloc.free(path);
+    try self.personas.acknowledge(global.io(), path, key);
+    self.personasChanged();
+}
+
 /// Keep a role the file holds under an official key as the person's own
 /// (`PersonaStore.adopt`).
 pub fn adoptPersona(self: *App, key: []const u8) !void {

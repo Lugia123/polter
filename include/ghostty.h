@@ -1619,6 +1619,9 @@ GHOSTTY_API bool ghostty_app_persona_delete(ghostty_app_t, const char*, uintptr_
 // person's own, under a new key.
 GHOSTTY_API bool ghostty_app_persona_restore(ghostty_app_t, const char*, uintptr_t, bool, char*, uintptr_t);
 GHOSTTY_API bool ghostty_app_persona_adopt(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+// _acknowledge(key, ...): "keep mine" for a role whose official.state is
+// modified_stale; it goes back to modified and the person's changes stay.
+GHOSTTY_API bool ghostty_app_persona_acknowledge(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 // Every shipped skill as JSON: {"error":null|"...","skills":[{"name",
 // "description","state","reason","source","shipped"}]|null}. "skills" is null,
 // not empty, when what ships could not be listed.

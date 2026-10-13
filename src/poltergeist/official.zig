@@ -277,6 +277,18 @@ fn isStale(official_role: Persona, f: Field) bool {
     return !f.base.eql(get(official_role, t));
 }
 
+/// `fields` as if each had been written against today's official role:
+/// what the person says when told the official text has moved and they
+/// answer "I know, keep mine". The values are theirs and do not move.
+pub fn rebased(aa: Allocator, official_role: Persona, fields: []const Field) Allocator.Error![]const Field {
+    const out = try aa.alloc(Field, fields.len);
+    for (fields, out) |f, *dst| {
+        dst.* = f;
+        if (targetOf(f.path)) |t| dst.base = get(official_role, t);
+    }
+    return out;
+}
+
 /// What only Polter decides about an official role, in the order checked.
 pub const Locked = enum { name, description, standing, legacy };
 
@@ -958,6 +970,33 @@ test "official: saying the same thing again keeps the base it was first said aga
     for (third) |f| {
         if (std.mem.eql(u8, f.path, "instructions")) try testing.expectEqualStrings("two", f.base.text.?);
     }
+}
+
+test "official: keeping mine after the official text moved is changed, and no longer behind" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const v1 = (try effective(aa, &.{fakeSource("one", "")}, .absent))[0];
+    var e = v1;
+    e.instructions = "mine";
+    const file = try withRole(aa, .absent, v1.key, try diff(aa, v1, e, &.{}));
+
+    const v2 = [_]Source{fakeSource("two", "")};
+    const shipped_v2 = (try effective(aa, &v2, .absent))[0];
+    const behind = (try effective(aa, &v2, .{ .bytes = file }))[0];
+    try testing.expectEqual(persona.Official.Status.modified_stale, behind.official.?.state);
+
+    const fields = (try roleFields(aa, .{ .bytes = file }, v1.key)).fields;
+    const kept = try withRole(aa, .{ .bytes = file }, v1.key, try rebased(aa, shipped_v2, fields));
+    const now = (try effective(aa, &v2, .{ .bytes = kept }))[0];
+    try testing.expectEqual(persona.Official.Status.modified, now.official.?.state);
+    try testing.expectEqualStrings("mine", now.instructions.?);
+
+    // And it is only today's text that was accepted: the next move is said
+    // again.
+    const v3 = [_]Source{fakeSource("three", "")};
+    try testing.expectEqual(persona.Official.Status.modified_stale, (try effective(aa, &v3, .{ .bytes = kept }))[0].official.?.state);
 }
 
 test "official: taking one role's overrides out leaves every other entry as written" {

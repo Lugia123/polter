@@ -2210,6 +2210,22 @@ pub const CAPI = struct {
         return true;
     }
 
+    /// "I know, keep mine": an official role in state `modified_stale`
+    /// goes back to `modified`, with what the person changed untouched.
+    export fn ghostty_app_persona_acknowledge(
+        app: *App,
+        key: [*]const u8,
+        len: usize,
+        err: ?[*]u8,
+        cap: usize,
+    ) bool {
+        app.core_app.acknowledgePersona(key[0..len]) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
     /// Keep a role the library file holds under an official key (the
     /// catalog's `shadowed`) as the person's own, under a new key.
     export fn ghostty_app_persona_adopt(

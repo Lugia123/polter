@@ -561,6 +561,42 @@ pub fn restore(self: *PersonaStore, io: std.Io, path: []const u8, key: []const u
     try self.commitOverrides(io, path, bytes);
 }
 
+/// "I know the official role has changed; keep mine": what the person
+/// changed stays as it is, and is recorded as said against the official
+/// role as it is today (`official.rebased`). The notice that it is behind
+/// goes, until the official role moves again.
+///
+/// The library window only, like `restore`.
+pub fn acknowledge(self: *PersonaStore, io: std.Io, path: []const u8, key: []const u8) WriteError!void {
+    if (self.load_error != null) return error.FileUnreadable;
+
+    var scratch: std.heap.ArenaAllocator = .init(self.alloc);
+    defer scratch.deinit();
+    const sa = scratch.allocator();
+
+    const src = for (official.sources) |s| {
+        if (std.mem.eql(u8, s.key, key)) break s;
+    } else return error.NoSuchPersona;
+    const shipped = official.parseSource(sa, src) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.BadPersona,
+    };
+
+    const read = readOverrides(sa, io, path);
+    const fields = switch (try official.roleFields(sa, read, key)) {
+        // Nothing changed, so nothing to keep.
+        .none => return,
+        // What they changed cannot be read, so it cannot be kept either.
+        .unknown => return error.OverridesUnreadable,
+        .fields => |f| f,
+    };
+    const bytes = official.withRole(sa, read, key, try official.rebased(sa, shipped, fields)) catch |err| return switch (err) {
+        error.Unreadable => error.OverridesUnreadable,
+        error.OutOfMemory => error.OutOfMemory,
+    };
+    try self.commitOverrides(io, path, bytes);
+}
+
 /// Move an overrides file nobody can read out of the way, keeping it.
 /// Returns the name it now has, in `sa`.
 pub fn setOverridesAside(sa: Allocator, io: std.Io, personas_path: []const u8) ![]const u8 {
@@ -1738,6 +1774,43 @@ test "personas: the person's change to an official role is an override, and rest
     // Restoring what was never changed is not an error and writes nothing.
     try b.store.restore(b.io(), b.path, persona.tester_key, false);
     try testing.expectError(error.NoSuchPersona, b.store.restore(b.io(), b.path, "archer", false));
+}
+
+test "personas: keeping mine clears the notice and changes nothing the person wrote" {
+    var b: Bench = undefined;
+    try b.init();
+    defer b.deinit();
+    const S = persona.Official.Status;
+    const key = persona.tester_key;
+
+    // An override written against an official text that has since moved:
+    // the base recorded is not what ships today.
+    try b.write(b.opath,
+        \\{"version":1,"roles":{
+        \\ "polter-tester":{"instructions":{"value":"mine","base":"what shipped last year"},
+        \\                  "polter.open":{"value":"tab","base":"auto"}},
+        \\ "polter-supervisor":{"instructions":{"value":"boss, mine","base":"older"}}}}
+    );
+    b.store.load(b.io(), b.path);
+    try testing.expectEqual(S.modified_stale, b.state(key));
+    try testing.expectEqual(@as(usize, 1), b.role(key).official.?.stale.len);
+
+    try b.store.acknowledge(b.io(), b.path, key);
+    try testing.expectEqual(S.modified, b.state(key));
+    try testing.expectEqual(@as(usize, 0), b.role(key).official.?.stale.len);
+    try testing.expectEqualStrings("mine", b.role(key).instructions.?);
+    try testing.expectEqual(persona.Polter.Open.tab, b.role(key).polter.open);
+    // The other role was not asked about, and is still behind.
+    try testing.expectEqual(S.modified_stale, b.state(persona.supervisor_key));
+
+    // Nothing changed is nothing to keep; nothing readable cannot be kept.
+    try b.store.restore(b.io(), b.path, key, false);
+    try b.store.acknowledge(b.io(), b.path, key);
+    try testing.expectEqual(S.pristine, b.state(key));
+    try b.write(b.opath, "{\"version\":1,\"roles\":{\"polter-tester\":{\"nope\":{\"value\":1,\"base\":1}}}}");
+    b.store.load(b.io(), b.path);
+    try testing.expectError(error.OverridesUnreadable, b.store.acknowledge(b.io(), b.path, key));
+    try testing.expectError(error.NoSuchPersona, b.store.acknowledge(b.io(), b.path, "archer"));
 }
 
 test "personas: an agent cannot change an official role, by any write there is" {
