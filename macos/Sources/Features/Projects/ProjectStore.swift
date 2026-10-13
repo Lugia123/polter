@@ -77,8 +77,9 @@ final class ProjectStore {
         }
     }
 
-    /// Which open tab each project is bound to. One per store, so tests
-    /// with their own directory get their own bindings.
+    /// Who has each project open: its `ProjectSession`, which is the one
+    /// writer of its file while any of its pages is a tab. One per store,
+    /// so tests with their own directory get their own.
     let bindings = ProjectBindingRegistry()
 
     /// The identity a binding is keyed by: the file the current rule gives
@@ -168,36 +169,70 @@ final class ProjectStore {
             hasPrevious: FileManager.default.fileExists(atPath: ProjectFileWriter.previousURL(for: url).path))
     }
 
-    /// Save (or overwrite -- see `Entry`) a project under `name`: `tree`'s
-    /// current shape, each pane's `cwd`/`title`/`history`, and each pane's
-    /// scrollback snapshot name.
+    /// One open tab of a project, as `save` is handed it: the page it is
+    /// (`ProjectPages`), its panes, and where it sits.
+    struct OpenPage {
+        let id: Int
+        let tree: SplitTree<Ghostty.SurfaceView>
+        /// The same for tabs of one window, different between windows.
+        let window: Int
+        /// Its place among that window's tabs.
+        let index: Int
+        /// Whether it is the tab showing in its window.
+        let selected: Bool
+        /// Ask the core to write each pane's whole snapshot now, flushed.
+        /// Only an explicit save and the flush when a tab closes do that;
+        /// autosave, which runs whenever a title changes, leaves the
+        /// writing to the journal.
+        let capturingScrollback: Bool
+    }
+
+    /// What a save is handed of the screen: the open tabs, the frame of
+    /// each window they are in (by `OpenPage.window`), and whether this is
+    /// the save a closing tab makes -- in which case the page in front
+    /// stays what it was (`ProjectPages.updated` says why).
+    struct OpenTabs {
+        let open: [OpenPage]
+        let frames: [Int: ProjectFrame]
+        let keepingFront: Bool
+    }
+
+    /// Save the project `name`: every tab in `open` as it is now and where
+    /// it is now, every other page of `pages` as it was (`ProjectPages.updated`
+    /// has the rules). Returns the pages as they were written, which is what
+    /// the next save starts from.
     ///
     /// Every pane is given a snapshot number if it has none, and its
     /// scrollback journaled there from now on (`SurfaceView.journalScrollback`):
     /// the core writes what changed, every `project-scrollback-autosave-interval`
     /// and when the pane closes, so a pane's history survives a crash.
+    /// **One counter for the whole project**: the numbers already in use are
+    /// those of every page, open or not, and of every file in the
+    /// directory.
     ///
-    /// `capturingScrollback` also asks the core to write each pane's whole
-    /// snapshot now, flushed. Only an explicit save and the flush when a
-    /// bound tab closes do that; autosave, which runs whenever a title
-    /// changes, leaves the writing to the journal.
+    /// A tab with no pane left is about to go away, not a page that now has
+    /// nothing in it: it is saved as a page that is not open, with the
+    /// layout it last had.
     ///
-    /// - Important: When capturing, call this while every pane in `tree` is
-    ///   still alive. The snapshots are written asynchronously on each
-    ///   surface's IO thread; the core guarantees a capture requested before
+    /// - Important: When capturing, call this while every pane is still
+    ///   alive. The snapshots are written asynchronously on each surface's
+    ///   IO thread; the core guarantees a capture requested before
     ///   `ghostty_surface_free` has landed by the time that returns, and
     ///   nothing about one requested after.
     ///
-    /// `keeping` says whether this follows the tab around (autosave, the
+    /// `keeping` says whether this follows the tabs around (autosave, the
     /// last save on close) or replaces the project with something else --
     /// see `ProjectFileWriter.Keeping`. It has no default.
     @discardableResult
     func save(
         name: String,
-        tree: SplitTree<Ghostty.SurfaceView>,
-        capturingScrollback: Bool = true,
+        group: String?,
+        pages: ProjectPages,
+        tabs screen: OpenTabs,
+        agent: (Ghostty.SurfaceView) -> ProjectAgent,
         keeping: ProjectFileWriter.Keeping
-    ) throws -> Entry {
+    ) throws -> (entry: Entry, pages: ProjectPages) {
+        let (open, frames, keepingFront) = (screen.open, screen.frames, screen.keepingFront)
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = ruleURL(name: trimmed) else { throw StoreError.nameEmpty }
         try adoptLegacyFile(name: trimmed, as: url)
@@ -205,14 +240,13 @@ final class ProjectStore {
         let scrollbackDirectory = ProjectScrollback.directory(forProjectFile: url)
         let existing = (try? Data(contentsOf: url)).flatMap { try? ProjectFile.decode(from: $0) }
         let onDisk = (try? FileManager.default.contentsOfDirectory(atPath: scrollbackDirectory.path)) ?? []
-        // In use: the names of every tab of the project, not only the one
-        // being saved -- the snapshots of all of them are in this directory.
         var allocator = ProjectScrollback.Allocator(
             project: bindingKey(name: trimmed),
             storedNext: existing?.nextScrollback,
-            inUse: (existing?.scrollbackFilenames ?? []) + onDisk)
+            inUse: pages.scrollbackFilenames + (existing?.scrollbackFilenames ?? []) + onDisk)
 
-        if tree.root != nil {
+        let live = open.filter { $0.tree.root != nil }
+        if !live.isEmpty {
             try? FileManager.default.createDirectory(
                 at: scrollbackDirectory,
                 withIntermediateDirectories: true)
@@ -222,55 +256,88 @@ final class ProjectStore {
         // request was accepted: the name is the pane's for life, and a name
         // whose file never landed reads back as "no scrollback" -- the core
         // starts an empty terminal -- which is today's behavior.
-        let root = tree.root.map { node in
-            ProjectNode.capturing(node, scrollback: { view in
+        let tabs: [ProjectPages.Live] = live.compactMap { page in
+            guard let node = page.tree.root else { return nil }
+            let root = ProjectNode.capturing(node, scrollback: { view in
                 // Every pane gets a number, autosave included: a number is
                 // now what keeps a pane's scrollback journaled, and a pane
-                // opened after the tab was bound that waited for an explicit
-                // save would have nothing on disk when the machine goes
-                // down. Handing one out used to mean a full capture; it no
-                // longer does -- the journal writes only what changed.
+                // opened after the tab joined the project that waited for
+                // an explicit save would have nothing on disk when the
+                // machine goes down. Handing one out used to mean a full
+                // capture; it no longer does -- the journal writes only
+                // what changed.
                 guard let snapshot = allocator.snapshot(for: view.projectSnapshot, allocate: true) else {
                     return ""
                 }
                 view.journalScrollback(snapshot, in: scrollbackDirectory)
-                if capturingScrollback, let surface = view.surface {
+                if page.capturingScrollback, let surface = view.surface {
                     let path = scrollbackDirectory.appendingPathComponent(snapshot.filename).path
                     if !ghostty_surface_capture_scrollback(surface, path) {
                         Self.logger.warning("scrollback capture for '\(snapshot.filename, privacy: .public)' was not queued")
                     }
                 }
                 return snapshot.filename
-            }, agent: { _ in
-                // **Not known, which is not "nobody".** Nothing here records
-                // yet which agent, if any, is in a pane; `.none` would write
-                // down that a worker's pane was a plain shell.
-                .unknown
-            })
+            }, agent: agent)
+            return ProjectPages.Live(
+                id: page.id, window: page.window, index: page.index, selected: page.selected, root: root)
         }
 
-        // **The tab goes into the project that is there, in place of its
-        // first tab.** A project file can hold more windows and tabs than
-        // this saves; written as the whole project, this one tab would be
-        // all that is left of them, and of the project's group.
-        let file = ProjectFile(
+        // Everything a save decides is decided there, without a terminal:
+        // what the capture could not tell is filled in from the file, and
+        // the tabs take the places of their pages.
+        let (written, file) = pages.saving(
             name: trimmed,
             savedAt: Int(Date().timeIntervalSince1970),
-            group: existing?.group,
-            windows: existing?.windowsReplacingFirstTab(root)
-                ?? ProjectFile.oneTab(name: trimmed, savedAt: 0, root: root, nextScrollback: nil).windows,
-            nextScrollback: allocator.next)
+            group: group,
+            nextScrollback: allocator.next,
+            screen: .init(live: tabs, frames: frames, keepingFront: keepingFront))
         let entry = try write(file, keeping: keeping)
 
         // Kept: exactly the names the saved project refers to, in every
-        // tab of it (and their in-flight `.tmp`). A pane closed since the
-        // last save leaves a snapshot nothing refers to, and it goes --
-        // here, on every save, not only the capturing ones.
+        // page of it, open or not (and their in-flight `.tmp`). A pane
+        // closed since the last save leaves a snapshot nothing refers to,
+        // and it goes -- here, on every save, not only the capturing ones.
         ProjectScrollback.prune(
             directory: scrollbackDirectory,
             keeping: Set(file.scrollbackFilenames))
 
-        return entry
+        return (entry, written)
+    }
+
+    /// The project `name` **becomes this one tab**: whatever pages it had
+    /// are replaced, and its group, if it had one, stays its group. What
+    /// "Save as Project" under a name that is taken does, and what a tab
+    /// saved under a new name starts from.
+    ///
+    /// Nobody is asked who is in the panes: every one is saved as not known
+    /// unless the file being replaced knew.
+    @discardableResult
+    func save(
+        name: String,
+        tree: SplitTree<Ghostty.SurfaceView>,
+        capturingScrollback: Bool = true,
+        keeping: ProjectFileWriter.Keeping
+    ) throws -> Entry {
+        var pages = ProjectPages()
+        let id = pages.newPageID()
+        return try save(
+            name: name,
+            group: group(name: name),
+            pages: pages,
+            tabs: OpenTabs(
+                open: [OpenPage(id: id, tree: tree, window: 0, index: 0, selected: true, capturingScrollback: capturingScrollback)],
+                frames: [:],
+                keepingFront: false),
+            agent: { _ in .unknown },
+            keeping: keeping).entry
+    }
+
+    /// The group the project saved as `name` is the project of, if the file
+    /// is there and says so.
+    func group(name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = ruleURL(name: trimmed) else { return nil }
+        return (try? Data(contentsOf: url)).flatMap { try? ProjectFile.decode(from: $0) }?.group
     }
 
     /// The file-level half of `save`, keeping one previous generation --
@@ -297,27 +364,31 @@ final class ProjectStore {
         return makeEntry(file, at: url)
     }
 
-    /// Materialize a saved project's tree, ready to hand to
+    /// The project in `entry`'s file, read whole. Throws `notFound` when
+    /// the file is gone, and what `ProjectFile.decode` throws -- a project
+    /// from a later format among them -- when it cannot be read.
+    func read(_ entry: Entry) throws -> ProjectFile {
+        guard let data = try? Data(contentsOf: entry.url) else {
+            throw StoreError.notFound
+        }
+        return try ProjectFile.decode(from: data)
+    }
+
+    /// Materialize one page of `entry`, ready to hand to
     /// `TerminalController(withSurfaceTree:)`.
     ///
     /// - Important: This is the expensive path -- each leaf spins up a live
     ///   terminal process (see `ProjectNode.materializing`), which is the
-    ///   entire point when actually opening a project, so only call this
+    ///   entire point when actually opening a page, so only call this
     ///   then. Use `list()`/`entry(name:)` for anything that just displays
     ///   metadata.
-    func loadTree(_ entry: Entry, app: ghostty_app_t) throws -> SplitTree<Ghostty.SurfaceView> {
-        guard let data = try? Data(contentsOf: entry.url) else {
-            throw StoreError.notFound
-        }
-        let file = try ProjectFile.decode(from: data)
+    func materialize(_ tab: ProjectTab, of entry: Entry, app: ghostty_app_t) -> SplitTree<Ghostty.SurfaceView> {
         // The snapshots sit beside the file they were saved with, which is
         // `entry.url` even when that is an older rule's name.
         let location = ProjectScrollback.Location(
             directory: ProjectScrollback.directory(forProjectFile: entry.url),
             key: bindingKey(name: entry.name))
-        // The first window's first tab: what this opens of a project today.
-        let root = file.firstTab.map { $0.materializing(app, scrollback: location) }
-        return SplitTree(root: root, zoomed: nil)
+        return SplitTree(root: tab.root.materializing(app, scrollback: location), zoomed: nil)
     }
 
     /// Put `name`'s previous generation back, keeping the current one as
@@ -336,7 +407,8 @@ final class ProjectStore {
         Self.logger.info("restored previous version of project '\(entry.name, privacy: .public)'")
     }
 
-    /// The title of the tab bound to `name`, for saying who holds it.
+    /// The title of a tab the project `name` is open in, for saying who
+    /// holds it; nil when it is not open.
     func holderTitle(name: String) -> String? {
         guard let holder = bindings.owner(of: bindingKey(name: name)) else { return nil }
         return (holder as? ProjectBindingHolder)?.projectBindingTitle ?? ""

@@ -1,0 +1,410 @@
+import AppKit
+import GhosttyKit
+import OSLog
+
+/// A project that is open: the tabs that are its pages, and the one writer
+/// of its file for as long as any of them is there.
+///
+/// A project used to be one tab, and that tab wrote the file. Now it is
+/// several pages in one window or more, some of them open as tabs and some
+/// not, and a save has to write all of them -- the open ones as they are,
+/// the others as they were. So the writer is this, not a tab: every tab of
+/// the project holds it (`TerminalController.projectSession`), it holds
+/// them weakly, and it goes away with the last of them.
+///
+/// What the pages are and what a save makes of them is `ProjectPages`,
+/// which needs no window and is tested without the app. This file is the
+/// part that touches real tabs and real windows, and it decides nothing
+/// that file does not.
+///
+/// It is what `ProjectStore.bindings` holds for the project, so "is this
+/// project open, and in what" has one answer.
+@MainActor
+final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
+        category: "projects")
+
+    /// Who is working in a pane, as far as anything running can tell.
+    ///
+    /// **The seam for whatever knows.** Nothing in the app does yet, so this
+    /// answers `.unknown` for every pane -- and a pane saved as not known
+    /// keeps what the file already says of it
+    /// (`ProjectNode.keepingWhatTheFileKnew`), so nothing known is lost by not
+    /// knowing. Whatever comes to know replaces this one closure; an answer
+    /// that is one (`.none`, or an agent) is written as it is.
+    static var agentOfPane: (Ghostty.SurfaceView) -> ProjectAgent = { _ in .unknown }
+
+    private struct Member {
+        weak var controller: TerminalController?
+        let page: Int
+    }
+
+    private(set) var name: String
+    private let store: ProjectStore
+    private var pages: ProjectPages
+    /// The group the project is the project of. Read from the file and
+    /// written back; nothing here changes it.
+    private let group: String?
+    private var members: [Member] = []
+    private lazy var autosave = ProjectAutosaveDebouncer(scheduler: MainQueueScheduler()) { [weak self] in
+        self?.autosaveNow()
+    }
+
+    private init(name: String, store: ProjectStore, pages: ProjectPages, group: String?) {
+        self.name = name
+        self.store = store
+        self.pages = pages
+        self.group = group
+    }
+
+    // MARK: Finding and making one
+
+    /// The session the project `name` is open in, if it is open.
+    static func open(for name: String, in store: ProjectStore) -> ProjectSession? {
+        store.bindings.owner(of: store.bindingKey(name: name)) as? ProjectSession
+    }
+
+    /// The session of `entry`'s project: the one it is open in, or a new
+    /// one read from its file with none of its pages open yet.
+    static func session(for entry: ProjectStore.Entry, in store: ProjectStore) throws -> ProjectSession {
+        if let session = open(for: entry.name, in: store) { return session }
+        let file = try store.read(entry)
+        let session = ProjectSession(name: entry.name, store: store, pages: ProjectPages(file: file), group: file.group)
+        try session.claim()
+        return session
+    }
+
+    private func claim() throws {
+        if case .heldBy = store.bindings.claim(store.bindingKey(name: name), for: self) {
+            throw ProjectStore.StoreError.boundElsewhere(name: name, holder: store.holderTitle(name: name) ?? "")
+        }
+    }
+
+    private func releaseIfNobodyIsLeft() {
+        guard liveMembers.isEmpty else { return }
+        autosave.cancel()
+        store.bindings.release(store.bindingKey(name: name), for: self)
+    }
+
+    // MARK: Its tabs
+
+    private var liveMembers: [(controller: TerminalController, page: Int)] {
+        members.compactMap { member in member.controller.map { ($0, member.page) } }
+    }
+
+    private func controller(of page: Int) -> TerminalController? {
+        liveMembers.first { $0.page == page }?.controller
+    }
+
+    /// Never empty: a tab just opened has no window title until its shell
+    /// sets one (see `ProjectsRules.holderLabel`, #965).
+    var projectBindingTitle: String {
+        liveMembers.first?.controller.projectTabTitle ?? ""
+    }
+
+    /// Make `controller` a page of this project: the page `page` when it is
+    /// one the project already has, a new one otherwise. From now on its
+    /// layout, directories and titles are written as they change.
+    private func attach(_ controller: TerminalController, page: Int?) {
+        let id = page ?? pages.newPageID()
+        members.removeAll { $0.controller == nil }
+        members.append(Member(controller: controller, page: id))
+        controller.projectSession = self
+        controller.boundProject = name
+        controller.startProjectAutosave()
+        // What carries the tab's place in the project across a restart --
+        // see `TerminalRestorableState.InternalState.boundProject`.
+        controller.invalidateRestorableState()
+        ProjectStore.postBindingDidChange(name)
+    }
+
+    /// `controller` stops being a tab of this project.
+    ///
+    /// With `removing` false the page stays: the tab is closing, and the
+    /// project keeps the page as it is now -- with a full capture of its
+    /// scrollback, asked for while its panes are still alive -- to open
+    /// again. With `removing` true the page is taken out of the project,
+    /// and the tab, if it lives on, is a tab of no project.
+    ///
+    /// `saving` false leaves the page as the file last had it: for a tab
+    /// that has just been saved as another project, whose panes now write
+    /// there.
+    func detach(_ controller: TerminalController, removing: Bool, saving: Bool = true) {
+        guard let at = members.firstIndex(where: { $0.controller === controller }) else { return }
+        if !removing && saving {
+            save(capturing: [controller], closing: true, keeping: .onLayoutChange, what: "final save")
+        }
+        let page = members.remove(at: at).page
+        controller.stopProjectAutosave()
+        controller.stopScrollbackJournals()
+        controller.projectSession = nil
+        controller.boundProject = nil
+        controller.invalidateRestorableState()
+        if removing {
+            pages.remove(page)
+            // Written now, with or without a tab left: the page is gone
+            // from the file, and its snapshots with it.
+            save(capturing: [], keeping: .onLayoutChange, what: "save after taking a page out")
+        }
+        releaseIfNobodyIsLeft()
+        ProjectStore.postBindingDidChange(name)
+    }
+
+    // MARK: Saving
+
+    /// Something about the project changed: write it soon
+    /// (`ProjectAutosaveChange` says how soon at the latest).
+    func poke(_ change: ProjectAutosaveChange) {
+        autosave.poke(change)
+    }
+
+    private func autosaveNow() {
+        // No full capture: that is up to the configured limit per pane and
+        // this runs a second after any title change. Scrollback is kept by
+        // each pane's journal, which a save also starts for a pane that has
+        // none yet (`ProjectStore.save`).
+        save(capturing: [], keeping: .onLayoutChange, what: "autosave")
+    }
+
+    /// The application is quitting: write the project as it is now. Always
+    /// written, pending or not: a file that would not change is not touched
+    /// (`ProjectFileWriter.plan`). No full scrollback capture, which is
+    /// asked of the core and lands later than a quit waits for; each pane's
+    /// journal has its scrollback.
+    func saveBeforeQuit() {
+        autosave.cancel()
+        save(capturing: [], keeping: .onLayoutChange, what: "save at quit")
+    }
+
+    /// Logged, not alerted, when it fails: most saves run on their own a
+    /// second after a change, and an alert per title change is worse than
+    /// the failure. The next change tries again.
+    private func save(
+        capturing: [TerminalController], closing: Bool = false, keeping: ProjectFileWriter.Keeping, what: String
+    ) {
+        do {
+            try write(capturing: capturing, closing: closing, keeping: keeping)
+        } catch {
+            Self.logger.warning("\(what, privacy: .public) of project '\(self.name, privacy: .public)' failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// `closing` is the save a tab makes as it closes: which page is in
+    /// front is not asked of the tabs (`ProjectPages.updated`).
+    private func write(capturing: [TerminalController], closing: Bool = false, keeping: ProjectFileWriter.Keeping) throws {
+        var frames: [Int: ProjectFrame] = [:]
+        let open: [ProjectStore.OpenPage] = liveMembers.compactMap { member in
+            guard let window = member.controller.window else { return nil }
+            let tabs = window.tabGroup
+            let token = tabs.map { ObjectIdentifier($0).hashValue } ?? ObjectIdentifier(window).hashValue
+            // A window that fills the screen has the screen's frame, which
+            // is not where it goes back to: what the file had stays.
+            if !window.styleMask.contains(.fullScreen) {
+                frames[token] = ProjectPlacement.stored(window.frame)
+            }
+            return ProjectStore.OpenPage(
+                id: member.page,
+                tree: member.controller.surfaceTree,
+                window: token,
+                index: tabs?.windows.firstIndex(of: window) ?? 0,
+                selected: tabs?.selectedWindow.map { $0 === window } ?? true,
+                capturingScrollback: capturing.contains { $0 === member.controller })
+        }
+        pages = try store.save(
+            name: name, group: group, pages: pages,
+            tabs: .init(open: open, frames: frames, keepingFront: closing),
+            agent: Self.agentOfPane, keeping: keeping).pages
+        // Also when nothing was written: what changed may be only a
+        // window's title, which is what the settings window calls the
+        // project's tab by.
+        ProjectStore.postBindingDidChange(name)
+    }
+
+    // MARK: A tab saved as a project
+
+    /// The project `name` becomes the one tab `controller`, which is its
+    /// page from now on. Throws rather than reporting, so a caller that has
+    /// something riding on the save -- closing the tab, the settings
+    /// window's "Overwrite with Current Tab" -- can tell whether it worked.
+    ///
+    /// Refused while the project is open in another tab: its pages there
+    /// would be written straight back over this.
+    static func save(
+        _ controller: TerminalController,
+        as name: String,
+        keeping: ProjectFileWriter.Keeping,
+        in store: ProjectStore
+    ) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let session = open(for: trimmed, in: store) {
+            guard session.liveMembers.allSatisfy({ $0.controller === controller }) else {
+                throw ProjectStore.StoreError.boundElsewhere(name: trimmed, holder: session.projectBindingTitle)
+            }
+            // Its own project, saved again by hand.
+            try session.write(capturing: [controller], keeping: keeping)
+            return
+        }
+        if store.bindings.owner(of: store.bindingKey(name: trimmed)) != nil {
+            throw ProjectStore.StoreError.boundElsewhere(name: trimmed, holder: store.holderTitle(name: trimmed) ?? "")
+        }
+
+        // Written before the tab leaves the project it was in: a save that
+        // fails leaves it where it was. That project keeps the page as it
+        // last saved it -- not as it is now, which would point the panes'
+        // journals back at its files.
+        let entry = try store.save(name: trimmed, tree: controller.surfaceTree, keeping: keeping)
+        controller.projectSession?.detach(controller, removing: false, saving: false)
+        let session = try session(for: entry, in: store)
+        session.attach(controller, page: session.pages.pageIDs.first)
+        // Leaving a project stops the panes' journals; this starts them
+        // again, into the new one. Nothing else changes, so nothing is
+        // written.
+        session.save(capturing: [], keeping: .onLayoutChange, what: "save after joining")
+    }
+
+    // MARK: Opening
+
+    /// Open every page of the project that is not open, and bring the
+    /// project in front.
+    ///
+    /// - A window of the project none of whose pages is open goes where
+    ///   `ProjectPlacement.place` says: a window of its own at the frame the
+    ///   file recorded, or -- with no frame recorded -- tabs of `current`,
+    ///   the terminal window the person is in. Its pages are in order, the
+    ///   one that was in front showing.
+    /// - A window some of whose pages are open gets the others back as tabs
+    ///   beside them, each after the page it follows.
+    /// - `home`, when there is one, is where the first window's pages go as
+    ///   tabs whatever its frame: the control room's rule for where a tab
+    ///   it opens goes (`ControlRoomRules.newTab`). `inFront` false then
+    ///   leaves them behind the tab that is showing.
+    /// - Nothing is refused for being open already: with every page open
+    ///   this only brings the project in front.
+    func open(_ ghostty: Ghostty.App, into home: NSWindow?, beside current: NSWindow?, inFront: Bool) throws {
+        guard let app = ghostty.app else { return }
+        guard let entry = store.entry(name: name) else { throw ProjectStore.StoreError.notFound }
+        let screens = NSScreen.screens.map(\.visibleFrame)
+
+        var toShow: NSWindow?
+        for (number, window) in pages.windows.enumerated() {
+            let wasOpen = window.pages.contains { controller(of: $0.id) != nil }
+            // The tab a page not yet open goes after...
+            var previous: NSWindow?
+            // ...or, with no page before it open, the tab it goes before.
+            let firstOpen = window.pages.lazy.compactMap { self.controller(of: $0.id)?.window }.first
+            let place = ProjectPlacement.place(
+                window.frame, isFirstWindow: number == 0, homeIsNamed: home != nil,
+                hasCurrentWindow: current != nil, screens: screens)
+            let behind = !wasOpen && place == .tabs(in: .named) && !inFront
+
+            for page in window.pages {
+                if let existing = controller(of: page.id) {
+                    previous = existing.window
+                    continue
+                }
+                let tree = store.materialize(page.tab, of: entry, app: app)
+                let controller = TerminalController(ghostty, withSurfaceTree: tree)
+                guard let tab = controller.window else { continue }
+                if let previous {
+                    previous.addTabbedWindowSafely(tab, ordered: .above)
+                } else if let firstOpen {
+                    firstOpen.addTabbedWindowSafely(tab, ordered: .below)
+                } else {
+                    switch place {
+                    case .ownWindow(let frame):
+                        controller.presentAsProjectWindow(at: frame)
+                    case .tabs(let which):
+                        // `place` only names a window that is there.
+                        guard let host = which == .named ? home : current else {
+                            controller.presentAsProjectWindow(at: nil)
+                            break
+                        }
+                        if host.isMiniaturized { host.deminiaturize(nil) }
+                        (host.tabGroup?.windows.last ?? host).addTabbedWindowSafely(tab, ordered: .above)
+                    }
+                }
+                previous = tab
+                attach(controller, page: page.id)
+            }
+
+            // Which tab shows: the page that was in front, in a window this
+            // just made or filled. In a window of the project the person
+            // already has open, the tab they are looking at stays.
+            let front = controller(of: window.front)?.window
+            if !wasOpen, !behind, let front {
+                front.tabGroup?.selectedWindow = front
+            }
+            if number == 0, !behind {
+                toShow = front ?? firstOpen
+            }
+        }
+
+        if let toShow {
+            let showing = toShow.tabGroup?.selectedWindow ?? toShow
+            showing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        for member in liveMembers {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak controller = member.controller] in
+                controller?.relabelTabs()
+            }
+        }
+    }
+
+    // MARK: Across a restart
+
+    /// A tab that came back from a restart saying it was in the project
+    /// `name` takes its page back -- **if the file has a page for it**
+    /// (`ProjectPages.page(sharing:excluding:)` has the rule and why). When
+    /// it has none, or the project is gone, the tab is a tab of no project;
+    /// a restart is no time for an alert, so that is logged.
+    static func restore(_ controller: TerminalController, to name: String, in store: ProjectStore) {
+        guard let entry = store.entry(name: name) else {
+            logger.warning("a restored tab says it was in project '\(name, privacy: .public)', which is gone; it is in no project")
+            return
+        }
+        do {
+            let session = try session(for: entry, in: store)
+            let key = store.bindingKey(name: entry.name)
+            let names = controller.surfaceTree.compactMap { view -> String? in
+                guard let snapshot = view.projectSnapshot, snapshot.project == key else { return nil }
+                return snapshot.filename
+            }
+            let taken = Set(session.liveMembers.map(\.page))
+            guard let page = session.pages.page(sharing: names, excluding: taken) else {
+                logger.warning("a restored tab says it was in project '\(name, privacy: .public)', whose file has no page for it; it is in no project")
+                session.releaseIfNobodyIsLeft()
+                return
+            }
+            session.attach(controller, page: page)
+        } catch {
+            logger.warning("a restored tab was not put back in project '\(name, privacy: .public)': \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    // MARK: Renamed from the settings window
+
+    func projectWillMove() {
+        // A pending autosave lands where the project is now, before it moves.
+        autosave.flush()
+        for member in liveMembers {
+            member.controller.stopScrollbackJournals()
+        }
+    }
+
+    /// Its tabs stay its tabs, under the new name, and their panes go on
+    /// journaling into the moved snapshot directory under the same
+    /// snapshot names.
+    func projectDidMove(to name: String, oldKey: String, key: String, scrollback: URL) {
+        self.name = name
+        for member in liveMembers {
+            member.controller.boundProject = name
+            for view in member.controller.surfaceTree {
+                guard let snapshot = view.projectSnapshot, snapshot.project == oldKey else { continue }
+                view.journalScrollback(.init(project: key, filename: snapshot.filename), in: scrollback)
+            }
+            member.controller.invalidateRestorableState()
+        }
+    }
+}

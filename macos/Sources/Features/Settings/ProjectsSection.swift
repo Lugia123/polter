@@ -97,7 +97,9 @@ final class ProjectsModel: ObservableObject {
 
     func open() {
         guard let entry = selected, let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty else { return }
-        attempt { try TerminalController.load(entry, ghostty: ghostty, beside: currentTab?.window) }
+        // The whole project. A window of it with no recorded frame opens as
+        // tabs of the terminal the settings window was opened over.
+        attempt { try TerminalController.load(entry, ghostty: ghostty, into: nil, beside: currentTab?.window) }
     }
 
     func rename(to name: String) {

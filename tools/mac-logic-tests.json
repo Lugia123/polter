@@ -59,7 +59,8 @@
         "why": "the document's writing and reading are taken, which is what the files in test/project-format are checked against; from the marker on it captures live terminals"
       },
       "macos/Sources/Features/Projects/ProjectAutosave.swift",
-      "macos/Sources/Features/Projects/ProjectFilename.swift"
+      "macos/Sources/Features/Projects/ProjectFilename.swift",
+      "macos/Sources/Features/Projects/ProjectPages.swift"
     ],
     "out": [
       {
@@ -96,6 +97,7 @@
       "macos/Tests/Projects/ProjectDocumentTests.swift",
       "macos/Tests/Projects/ProjectFileAdoptionTests.swift",
       "macos/Tests/Projects/ProjectFilenameTableTests.swift",
+      "macos/Tests/Projects/ProjectPagesTests.swift",
       "macos/Tests/Projects/SharedProjectFilesTests.swift",
       "macos/Tests/Splits/PoltergeistLayoutShapeTests.swift",
       "macos/Tests/Splits/SplitTreeTests.swift",
