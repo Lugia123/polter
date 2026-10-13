@@ -442,7 +442,7 @@ mac 上能验的只有 `polter-control-room` 的测试、两道闸和交叉编�
 | 选中一个群，总管在本窗口 | 先还上一个，再把这个的那一格摆进右栏；键盘留在列表，点一下终端才进去 | 相同 |
 | 两个群同一个总管，在它们之间切 | 不动 | 相同 |
 | 没有总管 / 总管的终端已不在 / 没有选中 | 还回上一个；右栏一句话 | 相同 |
-| 总管在**别的窗口** | 不搬。右栏写「在它自己的标签页里」加「Go to Its Tab」 | **不同**：mac 搬。跨窗口要 `SetParent`，没验过，没做 |
+| 总管在**别的窗口** | 不搬。右栏两行：「界面在总管的标签页」「点击过去」，**整个右栏是一个按钮**，点任意位置就过去（#1500 起；原先是一句话加一个要点中的小按钮「Go to Its Tab」） | **不同**：mac 搬。跨窗口要 `SetParent`，没验过，没做 |
 | 点右栏的终端 | 键盘进终端，前面的标签页仍是总控台（`focus_pane_at` 对借出的格不再改 `active`）；总管框的边变深 | 相同 |
 | 切到别的标签页（含总管自己的） | 面板一藏就还回；切回来再借。在总管自己的标签页里看到的就是终端，没有占位 | 结果相同；mac 的占位在同一窗口的情形下本来也看不到 |
 | 原处的占位与「拿回来」 | **没有**：同一窗口里原标签页与总控台不会同时在前面，没有地方显示它。逻辑层里 `Reclaimed` / `AskedFor` 两个事件保留并与 mac 对照，宿主现在不发它们 | 出入，随跨窗口一起补 |
@@ -686,7 +686,7 @@ Windows 借出的那一格没有离开它的窗口，动作带着它的表面，
 | 行上写什么 | 与群的行一样：图形、状态的字、等的是什么；「谁在等」那一格是空的（这一行就是那个终端） | `scene` 照行画，没有为它另写 |
 | 选中它 | 右栏放的是**它自己**的终端：借出、还回、切走还回、点进去打字，全是群的总管那一套，没有另一套 | `Row::steward` 就是它自己，`lend` 不用知道它是哪一类 |
 | 右栏的标题条 | 它的标题，后面跟它那一格的框的身份：没建群的总管写「Supervisor」、被看管的写「Worker」、普通的不写。框仍是总管的框（总控台只有这一种） | `scene::build_right` |
-| 它不在右栏时 | 关掉了：「This terminal is no longer open.」；在它自己的标签页或别的窗口：「Showing in its own tab」（后者照旧带「Go to Its Tab」；#1500 起改成这句，原先是「This terminal is in its own tab.」）。不说「总管」，不出「启动总管」 | 同上 |
+| 它不在右栏时 | 关掉了：「This terminal is no longer open.」；在它自己的标签页或别的窗口：「Showing in its own tab」（#1500 起改成这句，原先是「This terminal is in its own tab.」；在别的窗口时第二行是「Click to go there」，整个右栏可点）。不说「总管」，不出「启动总管」 | 同上 |
 | 看过 | 与群的行**同一条规则**（没看过、选中、总控台在前面、停够时间）；只是发出去的请求点的是终端：`{"act":"seen","terminal":"0x…"}`，群的行照旧发 `"group"`。发哪一种看那一行是不是单独的终端（`Row::alone`），不从行的身份里猜（#1475；#1471 那一版是「不发」，因为核心当时只认群名） | `act::SeenMarker`、`Act::SeenTerminal` |
 | 两句标题 | 照核心写的 `header_waiting` / `header_quiet`（`count`、`of`、`number`）：下面全是群时写「N groups…」，正好一个写「1 group…」；里面有单独的终端时不写「group」，N 是 `count`（含它们）。单复数是核心的 `number` 说的，不从数里算。核心没给这两项的旧快照，照 `groups_needing_me` / `groups_other` 写，与从前一样（#1475） | `list::waiting_heading`、`list::quiet_heading` |
 | 哪一行在呼吸 | 核心列出的第一个在等的终端如果不在任何群里，呼吸的就是它那一行 | `pulse::pulsing_row_id` |
@@ -742,7 +742,7 @@ Windows 借出的那一格没有离开它的窗口，动作带着它的表面，
    「Supervisor」，选中后者写「Worker」。
 6. 选中 N 的行后在 N 的标签页里 `exit`。应：那一行消失（核心不再列它）；消失前右栏若还选着它，写
    「This terminal is no longer open.」，没有「启动总管」按钮，没有「supervisor」字样。
-7. 把 N 的标签页拖到另一个窗口，回总控台选中它。应：「Showing in its own tab」加「Go to Its Tab」，点了过去。
+7. 把 N 的标签页拖到另一个窗口，回总控台选中它。应：「Showing in its own tab」「Click to go there」两行，鼠标在右栏上是手形，点右栏任意位置过去；按回车也过去。
 8. 只有它在等、没有任何群在等时：它是唯一呼吸的那一行；有群等得更久时呼吸的是那个群。
 9. 一个刚开、还没有标题的终端成了这类行：行上名字是空的但不崩，事件日志无 `Application Error`。
 10. 标题：只有群在等时写「N groups waiting for you」（中文「N 个群在等你」），正好一个群时英文是「1 group waiting for you」；

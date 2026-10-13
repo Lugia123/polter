@@ -1067,6 +1067,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
             LRESULT(0)
         }
+        // Over what a press goes somewhere from, the pointer is the hand.
+        // Everywhere else it is the class's arrow, which is what not
+        // answering this gets.
+        WM_SETCURSOR if (lp.0 & 0xffff) as u32 == HTCLIENT => {
+            let mut at = POINT::default();
+            let over = unsafe { GetCursorPos(&mut at).is_ok() && ScreenToClient(hwnd, &mut at).as_bool() };
+            if over && goes_at(hwnd, at.x, at.y) {
+                unsafe {
+                    let _ = SetCursor(LoadCursorW(None, IDC_HAND).ok());
+                }
+                return LRESULT(1);
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        }
         WM_LBUTTONDOWN => {
             unsafe {
                 let _ = SetFocus(Some(hwnd));
@@ -1251,8 +1265,6 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         select(hwnd, row);
         return;
     }
-    // "Go to its tab" on the right.
-    let detail = detail();
     let selected = selection();
     let theme = look::theme(dark());
     // What starting a supervisor offers, when the core says one can be.
@@ -1280,6 +1292,21 @@ fn click(hwnd: HWND, x: i32, y: i32) {
             return;
         }
     }
+    if goes_at(hwnd, x, y) {
+        go_to_supervisor(hwnd);
+    }
+}
+
+/// Whether a press at this point of the panel goes to the supervisor's own
+/// tab: it is in another window, and the point is on the right-hand side
+/// (`scene::Right::go`). What a click asks, and what the pointer's shape
+/// says before one.
+fn goes_at(hwnd: HWND, x: i32, y: i32) -> bool {
+    let g = geometry(hwnd);
+    let (px, py) = (x as f64 / g.scale, y as f64 / g.scale);
+    let detail = detail();
+    let selected = selection();
+    let theme = look::theme(dark());
     let go = source::with(|data| {
         let row = match data {
             Data::Ready(r) => selected.as_deref().and_then(|id| r.list.row(id)),
@@ -1288,12 +1315,7 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         };
         scene::build_right(&detail, row, g.room.right.w, g.room.right.h, theme, g.scale, false, &|s| tr(s)).go
     });
-    if let Some(go) = go {
-        let (rx, ry) = (px - g.room.right.x, py - g.room.right.y);
-        if rx >= go.x && rx < go.x + go.w && ry >= go.y && ry < go.y + go.h {
-            go_to_supervisor(hwnd);
-        }
-    }
+    go.is_some_and(|go| inside(go, px - g.room.right.x, py - g.room.right.y))
 }
 
 // --------------------------------------------------------------------- paint

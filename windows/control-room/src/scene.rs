@@ -18,7 +18,7 @@
 use crate::lend::{msg as lend_msg, Detail as Detail_};
 use crate::layout::{AskFit, ListLayout, Rect};
 use crate::list::{self, List, Row};
-use crate::look::{font, line, pane, radius, selection, side, space, Rgba, Theme};
+use crate::look::{font, line, pane, radius, side, space, Rgba, Theme};
 use crate::snapshot::Shown;
 
 /// The English of what the panel says; `build` passes each through the
@@ -33,7 +33,9 @@ pub mod msg {
     pub const NO_SELECTION: &str = n_("Select a group on the left.");
     pub const NO_SUPERVISOR: &str = n_("This group has no supervisor.");
     pub const IN_ITS_OWN_TAB: &str = n_("Showing in the supervisor's tab");
-    pub const GO_TO_ITS_TAB: &str = n_("Go to Its Tab");
+    /// The second line when the terminal is in another window: the whole
+    /// of the right-hand side is the button, and pressing goes there.
+    pub const GO_THERE: &str = n_("Click to go there");
     pub const HIDDEN_STEPS: &str = n_("{} more steps");
     /// The one button of the list: at the right end of its header.
     pub const NEW_GROUP: &str = n_("New Group");
@@ -743,7 +745,9 @@ pub fn build_message(width: f64, height: f64, theme: &Theme, scale: f64, text: S
 #[derive(Debug, Clone, PartialEq)]
 pub struct Right {
     pub items: Vec<Item>,
-    /// Where "go to its tab" is, when the supervisor is in another window.
+    /// What a press goes to the supervisor's own tab from, when it is in
+    /// another window: the whole of this side. The second line says so and
+    /// is not the only place to press.
     pub go: Option<Rect>,
     /// Where the supervisor's own terminal goes, when it is shown here. The
     /// host puts the terminal's window exactly there; this draws only the
@@ -1198,19 +1202,11 @@ pub fn build_right(
         Detail_::Elsewhere(loan) => {
             name(&mut items, &loan.group);
             says(&mut items, 1.0, if alone.is_some() { msg::TERMINAL_IN_ITS_OWN_TAB } else { msg::IN_ITS_OWN_TAB });
-            // A button the width of the list's rows would be lost on a wide
-            // side; it is as wide as a tab and sits on the content's left
-            // edge.
-            let rect = Rect { x: pad, y: pad + 2.0 * line_h + space::BETWEEN_FRAMES, w: side::WIDTH / 2.0, h: line_h };
-            let button = over(ground, theme.text, selection::LIFT_IN);
-            items.push(Item::Round { rect, radius: radius::ROW, color: button, edge: Some(over(button, theme.side_panel_edge, 1.0)) });
-            items.push(Item::Text {
-                rect,
-                text: tr(msg::GO_TO_ITS_TAB),
-                style: Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.terminal_text) },
-                align: Align::Centre,
-            });
-            go = Some(rect);
+            // What a press does, in the colour a link has. It is not one:
+            // the whole side takes the press (it used to be a small button
+            // under the sentence, which had to be hit).
+            items.push(Item::Text { rect: line_at(2.0), text: tr(msg::GO_THERE), style: body(theme.attention_text), align: Align::Left });
+            go = Some(frame);
         }
         Detail_::Terminal(_) => {}
     }
@@ -1790,10 +1786,24 @@ mod tests {
         let loan = Loan { group: with.id.clone(), terminal: with.steward.clone().unwrap() };
 
         let r = right(&Detail_::Elsewhere(loan.clone()), Some(with), false);
-        assert!(r.go.is_some() && r.terminal.is_none());
+        assert!(r.terminal.is_none());
         assert!(texts(&r.items).contains(&with.id));
         assert!(texts(&r.items).contains(&msg::IN_ITS_OWN_TAB.to_string()));
-        assert!(texts(&r.items).contains(&msg::GO_TO_ITS_TAB.to_string()));
+        assert!(texts(&r.items).contains(&msg::GO_THERE.to_string()));
+        // The whole side is what is pressed, not a button inside it: the
+        // press area is the frame the side is drawn in, and nothing round
+        // is drawn but that frame.
+        let frame = match &r.items[0] {
+            Item::Round { rect, .. } => *rect,
+            other => panic!("the side's own frame comes first: {other:?}"),
+        };
+        assert_eq!(r.go, Some(frame));
+        assert_eq!(r.items.iter().filter(|i| matches!(i, Item::Round { .. })).count(), 1);
+        // Taken back to its own tab in this window is not somewhere a
+        // press goes to: this host has no such press.
+        let r = right(&Detail_::TakenBack(loan.clone()), Some(with), false);
+        assert!(r.go.is_none());
+        assert!(!texts(&r.items).contains(&msg::GO_THERE.to_string()));
 
         let r = right(&Detail_::NoSupervisor { group: with.id.clone() }, Some(with), false);
         assert!(r.go.is_none() && r.terminal.is_none());

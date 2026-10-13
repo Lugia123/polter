@@ -359,15 +359,15 @@ enum ControlRoomLook {
         /// TENTATIVE (other candidate: 0.86). The user has seen neither on a real terminal; 0.86 is where the veil alone keeps the words at 4.5:1 and the frame is a faint shadow.
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
         static let veil: Double = 0.65
-        /// How much more of the terminal's ground is laid just behind the two lines of words, fading out round them with no edge. With the veil, 0.867 of the ground is under the words: both lines keep 4.5:1 over any frame at all, white or black, in both themes.
+        /// How much more of the terminal's ground there is behind the two lines of words, at the corners of their box -- where there is least of it under them. With the veil, 0.867 of the ground is under the words there: both lines keep 4.5:1 over any frame at all, white or black, in both themes. It is more than this at the middle and less everywhere further out: it has no flat part and no edge.
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
         static let shade: Double = 0.62
-        /// How far past the words the shade goes before it is gone: it is an ellipse with radii of the words' half-width and half-height, each times the square root of two, plus this.
+        /// How fast the shade falls away from its middle: the sigma of a Gaussian, as a fraction of the shade's radius. At the radius it is gone.
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
-        static let shadeReach: Double = 96.0
-        /// The shade is at its full amount out to this fraction of the ellipse's radius and fades over the rest: nearly a third of it, so that over a frame it stands out against (all white, in the dark theme) it has no edge to be seen as a plate. The corners of the words' box are always inside the full part (at most 0.67 for words up to 900 across and 80 tall).
+        static let shadeSpread: Double = 0.4
+        /// The shade's radius each way is at least the words' half-width (half-height) divided by this, and at least half the place's shorter side: so the corners of the words' box are never further out than 0.37 of the radius, where 0.65 of the middle's amount is left (the supervisor, on build-19: it read as a plate with an edge; it should read as the middle being a little deeper).
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
-        static let shadeFullWithin: Double = 0.7
+        static let shadeWordsWithin: Double = 0.26
         /// The frame is kept no larger than this on its longer side, in pixels: it is only ever shown blurred.
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
         static let frameLongestSide: Double = 640.0

@@ -37,18 +37,22 @@ struct ControlRoomElsewhere: View {
     var body: some View {
         let theme = Look.theme(scheme)
         Button(action: perform) {
-            VStack(spacing: CGFloat(Look.Side.rowGap)) {
-                Text(sentence)
-                    .foregroundStyle(theme.textSecondary.color)
-                Text(action)
-                    .foregroundStyle(theme.attentionText.color)
+            GeometryReader { place in
+                VStack(spacing: CGFloat(Look.Side.rowGap)) {
+                    Text(sentence)
+                        .foregroundStyle(theme.textSecondary.color)
+                    Text(action)
+                        .foregroundStyle(theme.attentionText.color)
+                }
+                .font(.system(size: CGFloat(Look.Font.body)))
+                .multilineTextAlignment(.center)
+                .background { shade(theme, place: place.size) }
+                .padding(CGFloat(Look.Space.frameToContent))
+                .frame(width: place.size.width, height: place.size.height)
+                .background { ground(theme) }
+                // The shade may be larger than the place.
+                .clipped()
             }
-            .font(.system(size: CGFloat(Look.Font.body)))
-            .multilineTextAlignment(.center)
-            .background { shade(theme) }
-            .padding(CGFloat(Look.Space.frameToContent))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background { ground(theme) }
             // The whole of it takes the press, not only the words.
             .contentShape(Rectangle())
         }
@@ -57,16 +61,18 @@ struct ControlRoomElsewhere: View {
         .accessibilityLabel(Text(Self.label(sentence: sentence, action: action)))
     }
 
-    /// More of the terminal's ground just behind the words, fading out
-    /// round them with no edge: what keeps them readable over whatever the
-    /// frame is, so that the veil over the whole of it can be thin enough
-    /// for the frame to show (`shadeSize`, `shadeStops`).
-    private func shade(_ theme: Look.Theme) -> some View {
+    /// More of the terminal's ground behind the words, most at the middle
+    /// and falling away all the way out with no flat part and no edge:
+    /// what keeps them readable over whatever the frame is, so that the
+    /// veil over the whole of it can be thin enough for the frame to show
+    /// (`shadeSize`, `shadeFall`, `shadeAtMiddle`).
+    private func shade(_ theme: Look.Theme, place: CGSize) -> some View {
         GeometryReader { words in
-            let size = Self.shadeSize(round: words.size)
+            let size = Self.shadeSize(round: words.size, in: place)
+            let middle = Self.shadeAtMiddle(ofWords: words.size, in: place)
             EllipticalGradient(
-                stops: Self.shadeStops.map {
-                    .init(color: theme.terminalBackground.color.opacity($0.amount), location: CGFloat($0.at))
+                stops: Self.shadeFall.map {
+                    .init(color: theme.terminalBackground.color.opacity(middle * $0.left), location: CGFloat($0.at))
                 },
                 center: .center, startRadiusFraction: 0, endRadiusFraction: 0.5)
                 .frame(width: size.width, height: size.height)
@@ -75,48 +81,62 @@ struct ControlRoomElsewhere: View {
         .allowsHitTesting(false)
     }
 
-    /// The ellipse the shade fills, round words of `size`: wide and tall
-    /// enough that the corners of the words' box are well inside it.
-    static func shadeSize(round size: CGSize) -> CGSize {
-        let reach = CGFloat(Look.Elsewhere.shadeReach)
-        return CGSize(
-            width: size.width * 2.0.squareRoot() + 2 * reach,
-            height: size.height * 2.0.squareRoot() + 2 * reach)
+    /// The ellipse the shade fills, round words of `size` in a place of
+    /// `place`: half the place's shorter side each way, and more where the
+    /// words are long, so that the corners of their box are never far out
+    /// in it (`Look.Elsewhere.shadeWordsWithin`). It may be larger than the
+    /// place, which cuts it.
+    static func shadeSize(round size: CGSize, in place: CGSize) -> CGSize {
+        let least = min(place.width, place.height)
+        let within = CGFloat(Look.Elsewhere.shadeWordsWithin)
+        return CGSize(width: max(least, size.width / within), height: max(least, size.height / within))
     }
 
-    /// How much of the ground the shade lays down, by how far out from
-    /// its centre (0) to its edge (1): all of `Look.Elsewhere.shade` out
-    /// to `shadeFullWithin`, then eased away to nothing.
-    static let shadeStops: [(amount: Double, at: Double)] = {
-        let full = Look.Elsewhere.shade
-        let within = Look.Elsewhere.shadeFullWithin
-        let rest = 1 - within
-        return [
-            (full, 0), (full, within),
-            (full * 0.85, within + rest * 0.25), (full * 0.5, within + rest * 0.5),
-            (full * 0.15, within + rest * 0.75), (0, 1),
-        ]
+    /// How much of the middle's amount is left, by how far out from the
+    /// middle (0) to the ellipse's edge (1): a Gaussian, lowered so that
+    /// it is nothing at the edge. Close enough together that the straight
+    /// lines a gradient draws between them are the curve.
+    static let shadeFall: [(left: Double, at: Double)] = {
+        let spread = Look.Elsewhere.shadeSpread
+        func bell(_ out: Double) -> Double { exp(-(out * out) / (2 * spread * spread)) }
+        let edge = bell(1)
+        return (0...48).map { step in
+            let out = Double(step) / 48
+            return (left: (bell(out) - edge) / (1 - edge), at: out)
+        }
     }()
 
-    /// How much of the shade is under the point of the words' box
-    /// furthest from its middle -- a corner -- for words of `size`.
-    static func shadeAtCorner(ofWords size: CGSize) -> Double {
-        let ellipse = shadeSize(round: size)
-        guard ellipse.width > 0, ellipse.height > 0 else { return 0 }
-        let x = Double(size.width / ellipse.width), y = Double(size.height / ellipse.height)
-        let out = (x * x + y * y).squareRoot()
-        // Between two stops the amount goes in a straight line.
-        for (inner, outer) in zip(shadeStops, shadeStops.dropFirst()) where out <= outer.at {
-            guard outer.at > inner.at else { continue }
-            return inner.amount + (outer.amount - inner.amount) * (out - inner.at) / (outer.at - inner.at)
+    /// `shadeFall` between its points, as a gradient draws it.
+    static func shadeLeft(at out: Double) -> Double {
+        guard out > 0 else { return 1 }
+        for (inner, outer) in zip(shadeFall, shadeFall.dropFirst()) where out <= outer.at {
+            return inner.left + (outer.left - inner.left) * (out - inner.at) / (outer.at - inner.at)
         }
         return 0
     }
 
-    /// How much of the terminal's ground is over the frame under the
-    /// words, veil and shade together: 1 is none of the frame showing.
-    static func groundUnderWords(of size: CGSize) -> Double {
-        1 - (1 - Look.Elsewhere.veil) * (1 - shadeAtCorner(ofWords: size))
+    /// How far out in the shade the corners of the words' box are: the
+    /// point of the words furthest from the middle.
+    static func shadeCorner(ofWords size: CGSize, in place: CGSize) -> Double {
+        let ellipse = shadeSize(round: size, in: place)
+        guard ellipse.width > 0, ellipse.height > 0 else { return 1 }
+        let x = Double(size.width / ellipse.width), y = Double(size.height / ellipse.height)
+        return (x * x + y * y).squareRoot()
+    }
+
+    /// The amount of shade at its middle: whatever leaves
+    /// `Look.Elsewhere.shade` at the corners of the words' box.
+    static func shadeAtMiddle(ofWords size: CGSize, in place: CGSize) -> Double {
+        let left = shadeLeft(at: shadeCorner(ofWords: size, in: place))
+        return left > 0 ? min(1, Look.Elsewhere.shade / left) : 1
+    }
+
+    /// How much of the terminal's ground is over the frame at the corners
+    /// of the words' box, veil and shade together: 1 is none of the frame
+    /// showing. Everywhere else under the words there is more.
+    static func groundUnderWords(of size: CGSize, in place: CGSize) -> Double {
+        let shade = shadeAtMiddle(ofWords: size, in: place) * shadeLeft(at: shadeCorner(ofWords: size, in: place))
+        return 1 - (1 - Look.Elsewhere.veil) * (1 - shade)
     }
 
     /// The second line, wherever the terminal is: pressing brings it here.
