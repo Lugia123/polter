@@ -40,6 +40,19 @@ The `.in.json` files are written by hand, since no build writes them.
 
 ## Changing the format
 
+**Once a build that writes format 2 has been released, a new kind of node --
+or anything else an older reader would stumble on rather than skip -- means
+a new format number.** `stack` and `by_supervisor` were both added to format
+2 without one, which was sound only because no release had format 2 in it
+(measured when `stack` went in: no tag held the commit that brought format
+2, and the newest release read format 1 only, which a format 2 file already
+turns away). A released build that meets a kind it does not know says
+"damaged", which is the wrong word for "newer than me"; the reader's
+too-new refusal exists to say the right one, and can only say it when the
+number went up. Before adding to the format, run
+`git tag --contains <the commit that introduced the current format>`: an
+empty answer is what makes "no new number" allowed.
+
 1. Change the values in `src/Project.zig` (`Shared.all`), and the module
    comment if a rule changed.
 2. Create an empty file `test/project-format/REGENERATE` and run

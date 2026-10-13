@@ -82,6 +82,7 @@ struct ProjectScrollbackTests {
     private func snapshots(_ node: ProjectNode?) -> [String: String] {
         switch node {
         case .leaf(let cwd, _, _, let scrollback, _, _): return [cwd: scrollback]
+        case .stack(_, let members): return members.map { snapshots($0) }.reduce(into: [:]) { $0.merge($1) { $1 } }
         case .split(_, _, let left, let right): return snapshots(left).merging(snapshots(right)) { $1 }
         case nil: return [:]
         }

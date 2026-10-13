@@ -96,6 +96,13 @@ impl SavedLeaf {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SavedNode {
     Leaf(SavedLeaf),
+    /// Several terminals in one pane: one showing, the others behind it.
+    /// It takes the place of a pane, so its members are panes -- never a
+    /// split, never another stack -- and there are at least two: **one
+    /// terminal in a pane is a `Leaf`**. `shown` is the index, in
+    /// `members`, of the one in front; the order is the order of its tabs.
+    /// See `Project.zig`'s `Stack`.
+    Stack { shown: usize, members: Vec<SavedLeaf> },
     Split { axis: Axis, ratio: f64, left: Box<SavedNode>, right: Box<SavedNode> },
 }
 
@@ -187,12 +194,13 @@ impl Snapshot {
     }
 }
 
-/// Every leaf, left before right.
+/// Every leaf, left before right; a stack's members in their order.
 pub fn leaves(node: &SavedNode) -> Vec<&SavedLeaf> {
     let mut out = Vec::new();
     fn walk<'a>(n: &'a SavedNode, out: &mut Vec<&'a SavedLeaf>) {
         match n {
             SavedNode::Leaf(l) => out.push(l),
+            SavedNode::Stack { members, .. } => out.extend(members.iter()),
             SavedNode::Split { left, right, .. } => {
                 walk(left, out);
                 walk(right, out);
@@ -209,6 +217,7 @@ pub fn leaves_mut(node: &mut SavedNode) -> Vec<&mut SavedLeaf> {
     fn walk<'a>(n: &'a mut SavedNode, out: &mut Vec<&'a mut SavedLeaf>) {
         match n {
             SavedNode::Leaf(l) => out.push(l),
+            SavedNode::Stack { members, .. } => out.extend(members.iter_mut()),
             SavedNode::Split { left, right, .. } => {
                 walk(left, out);
                 walk(right, out);
@@ -269,10 +278,26 @@ impl std::fmt::Display for ReadError {
 // Writing
 // ---------------------------------------------------------------------------
 
-/// A ratio or a frame holds a value that is not a finite number, which the
-/// file has no way to say.
+/// Why a project could not be written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NotFinite;
+pub enum EmitError {
+    /// A ratio or a frame holds a value that is not a finite number, which
+    /// the file has no way to say.
+    NotFinite,
+    /// A stack with fewer than two members, or whose `shown` is none of
+    /// them. Refused rather than written as something else: one member is
+    /// a `Leaf`, and it is whoever built the tree that knows which.
+    BadStack,
+}
+
+impl std::fmt::Display for EmitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EmitError::NotFinite => write!(f, "a split's ratio or a window's frame is not a finite number"),
+            EmitError::BadStack => write!(f, "a stack has fewer than two members, or shows one it does not have"),
+        }
+    }
+}
 
 /// `Axis` as `Project.zig`'s `Direction` spells it: full words, not
 /// `layout.rs`'s `"h"`/`"v"`. Two wire formats for two features; the strings
@@ -295,7 +320,7 @@ pub fn direction_from_str(s: &str) -> Option<Axis> {
 /// The bytes of `snapshot` as a format 2 file -- `emit` in `Project.zig`,
 /// which says why this is written out by hand and not handed to a JSON
 /// library.
-pub fn emit(snapshot: &Snapshot) -> Result<String, NotFinite> {
+pub fn emit(snapshot: &Snapshot) -> Result<String, EmitError> {
     let mut out = String::new();
     out.push_str(&format!("{{\"format\":{FORMAT_VERSION},\"name\":"));
     string(&mut out, &snapshot.name);
@@ -345,30 +370,21 @@ pub fn emit(snapshot: &Snapshot) -> Result<String, NotFinite> {
     Ok(out)
 }
 
-fn node(out: &mut String, n: &SavedNode) -> Result<(), NotFinite> {
+fn node(out: &mut String, n: &SavedNode) -> Result<(), EmitError> {
     match n {
-        SavedNode::Leaf(leaf) => {
-            out.push_str("{\"kind\":\"leaf\"");
-            field(out, "cwd", &leaf.cwd);
-            field(out, "title", &leaf.title);
-            field(out, "history", &leaf.history);
-            field(out, "scrollback", &leaf.scrollback);
-            if leaf.by_supervisor {
-                out.push_str(",\"by_supervisor\":true");
+        SavedNode::Leaf(leaf) => leaf_out(out, leaf),
+        SavedNode::Stack { shown, members } => {
+            if members.len() < 2 || *shown >= members.len() {
+                return Err(EmitError::BadStack);
             }
-            out.push_str(",\"agent\":{\"kind\":\"");
-            match &leaf.agent {
-                Agent::Unknown => out.push_str("unknown\""),
-                Agent::None => out.push_str("none\""),
-                Agent::Agent(who) => {
-                    out.push_str("agent\"");
-                    field(out, "role", &who.role);
-                    field(out, "cli", &who.cli);
-                    field(out, "session", &who.session);
-                    out.push_str(if who.supervisor { ",\"supervisor\":true" } else { ",\"supervisor\":false" });
+            out.push_str(&format!("{{\"kind\":\"stack\",\"shown\":{shown},\"members\":["));
+            for (i, member) in members.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
                 }
+                leaf_out(out, member);
             }
-            out.push_str("}}");
+            out.push_str("]}");
         }
         SavedNode::Split { axis, ratio, left, right } => {
             out.push_str("{\"kind\":\"split\",\"direction\":\"");
@@ -383,6 +399,30 @@ fn node(out: &mut String, n: &SavedNode) -> Result<(), NotFinite> {
         }
     }
     Ok(())
+}
+
+fn leaf_out(out: &mut String, leaf: &SavedLeaf) {
+    out.push_str("{\"kind\":\"leaf\"");
+    field(out, "cwd", &leaf.cwd);
+    field(out, "title", &leaf.title);
+    field(out, "history", &leaf.history);
+    field(out, "scrollback", &leaf.scrollback);
+    if leaf.by_supervisor {
+        out.push_str(",\"by_supervisor\":true");
+    }
+    out.push_str(",\"agent\":{\"kind\":\"");
+    match &leaf.agent {
+        Agent::Unknown => out.push_str("unknown\""),
+        Agent::None => out.push_str("none\""),
+        Agent::Agent(who) => {
+            out.push_str("agent\"");
+            field(out, "role", &who.role);
+            field(out, "cli", &who.cli);
+            field(out, "session", &who.session);
+            out.push_str(if who.supervisor { ",\"supervisor\":true" } else { ",\"supervisor\":false" });
+        }
+    }
+    out.push_str("}}");
 }
 
 /// `,"key":"value"`, or nothing when the value is empty.
@@ -412,9 +452,9 @@ fn string(out: &mut String, value: &str) {
 /// The shortest decimal that reads back as `value`, in full: `Display` for
 /// an `f64` is that, never with an exponent and with no point on a whole
 /// value.
-fn number(out: &mut String, value: f64) -> Result<(), NotFinite> {
+fn number(out: &mut String, value: f64) -> Result<(), EmitError> {
     if !value.is_finite() {
-        return Err(NotFinite);
+        return Err(EmitError::NotFinite);
     }
     out.push_str(&format!("{value}"));
     Ok(())
@@ -554,37 +594,29 @@ fn json_to_node(v: &serde_json::Value, format: i64, fixups: &mut Fixups) -> Resu
     let kind = obj.get("kind").and_then(|k| k.as_str()).ok_or(ReadError::Corrupt)?;
 
     match kind {
-        "leaf" => {
-            // A name that is not one this format writes is dropped, not
-            // refused: the pane still opens, just without its scrollback,
-            // which is exactly what a missing snapshot gives. Refusing would
-            // cost the whole project for one field. A name an earlier pane
-            // already has is dropped for the same reason.
-            let scrollback = Some(opt_str(obj.get("scrollback")))
-                .filter(|s| is_scrollback_name(s))
-                .filter(|s| fixups.scrollback.insert(s.clone()))
-                .unwrap_or_default();
-            // A format 1 file never said, whatever keys it has.
-            let agent = if format == 1 { Agent::Unknown } else { json_to_agent(obj.get("agent").ok_or(ReadError::Corrupt)?)? };
-            if matches!(&agent, Agent::Agent(who) if who.supervisor) {
-                fixups.supervisors += 1;
+        "leaf" => Ok(SavedNode::Leaf(json_to_leaf(obj, format, fixups)?)),
+        // Format 1 has no such node. And nothing about a stack is put right
+        // (`Project.zig`'s module comment says why): fewer than two members,
+        // a member that is not a pane, or a `shown` that is none of them is
+        // a damaged file.
+        "stack" if format != 1 => {
+            let items = obj.get("members").and_then(|m| m.as_array()).ok_or(ReadError::Corrupt)?;
+            if items.len() < 2 {
+                return Err(ReadError::Corrupt);
             }
-            // New with format 2 and strict as the agent is: absent is
-            // false, anything but a boolean is a damaged file.
-            let by_supervisor = match obj.get("by_supervisor") {
-                _ if format == 1 => false,
-                None => false,
-                Some(serde_json::Value::Bool(b)) => *b,
-                Some(_) => return Err(ReadError::Corrupt),
-            };
-            Ok(SavedNode::Leaf(SavedLeaf {
-                cwd: opt_str(obj.get("cwd")),
-                title: opt_str(obj.get("title")),
-                history: opt_str(obj.get("history")),
-                scrollback,
-                by_supervisor,
-                agent,
-            }))
+            let mut members = Vec::with_capacity(items.len());
+            for item in items {
+                let member = item.as_object().ok_or(ReadError::Corrupt)?;
+                if member.get("kind").and_then(|k| k.as_str()) != Some("leaf") {
+                    return Err(ReadError::Corrupt);
+                }
+                members.push(json_to_leaf(member, format, fixups)?);
+            }
+            let shown = obj.get("shown").filter(|n| n.is_u64()).and_then(|n| n.as_u64()).ok_or(ReadError::Corrupt)? as usize;
+            if shown >= members.len() {
+                return Err(ReadError::Corrupt);
+            }
+            Ok(SavedNode::Stack { shown, members })
         }
         "split" => {
             let direction = obj
@@ -601,6 +633,40 @@ fn json_to_node(v: &serde_json::Value, format: i64, fixups: &mut Fixups) -> Resu
         }
         _ => Err(ReadError::Corrupt),
     }
+}
+
+/// One pane, out of an object already known to be of kind `leaf`.
+fn json_to_leaf(obj: &Object, format: i64, fixups: &mut Fixups) -> Result<SavedLeaf, ReadError> {
+    // A name that is not one this format writes is dropped, not refused:
+    // the pane still opens, just without its scrollback, which is exactly
+    // what a missing snapshot gives. Refusing would cost the whole project
+    // for one field. A name an earlier pane already has is dropped for the
+    // same reason.
+    let scrollback = Some(opt_str(obj.get("scrollback")))
+        .filter(|s| is_scrollback_name(s))
+        .filter(|s| fixups.scrollback.insert(s.clone()))
+        .unwrap_or_default();
+    // A format 1 file never said, whatever keys it has.
+    let agent = if format == 1 { Agent::Unknown } else { json_to_agent(obj.get("agent").ok_or(ReadError::Corrupt)?)? };
+    if matches!(&agent, Agent::Agent(who) if who.supervisor) {
+        fixups.supervisors += 1;
+    }
+    // New with format 2 and strict as the agent is: absent is false,
+    // anything but a boolean is a damaged file.
+    let by_supervisor = match obj.get("by_supervisor") {
+        _ if format == 1 => false,
+        None => false,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(_) => return Err(ReadError::Corrupt),
+    };
+    Ok(SavedLeaf {
+        cwd: opt_str(obj.get("cwd")),
+        title: opt_str(obj.get("title")),
+        history: opt_str(obj.get("history")),
+        scrollback,
+        by_supervisor,
+        agent,
+    })
 }
 
 /// Strict where the rest of a leaf is not: these keys are new with format 2,
@@ -645,7 +711,9 @@ fn opt_str(v: Option<&serde_json::Value>) -> String {
 pub fn to_shape(node: &SavedNode) -> polter_settings_shell::projects::Shape {
     use polter_settings_shell::projects::Shape;
     match node {
-        SavedNode::Leaf(_) => Shape::Pane,
+        // A stack is one pane to the layout: which terminals are in it,
+        // and which is in front, changes as often as a title does.
+        SavedNode::Leaf(_) | SavedNode::Stack { .. } => Shape::Pane,
         SavedNode::Split { axis, ratio, left, right } => Shape::Split {
             side_by_side: *axis == Axis::Horizontal,
             ratio: *ratio,

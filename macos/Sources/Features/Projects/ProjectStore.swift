@@ -199,8 +199,10 @@ final class ProjectStore {
     struct OpenPage {
         let id: Int
         let tree: SplitTree<Ghostty.SurfaceView>
-        /// The same for tabs of one window, different between windows.
-        let window: Int
+        /// The same for tabs of one window, different between windows. Nil
+        /// for a tab that is closing: its page stays where the file has it
+        /// (`ProjectPages.Live.window`).
+        let window: Int?
         /// Its place among that window's tabs.
         let index: Int
         /// Whether it is the tab showing in its window.

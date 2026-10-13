@@ -60,6 +60,7 @@ fn cwds(pages: &Pages) -> Vec<Vec<String>> {
                 .iter()
                 .map(|t| match &t.root {
                     SavedNode::Leaf(l) => l.cwd.clone(),
+                    SavedNode::Stack { .. } => "stack".to_string(),
                     SavedNode::Split { .. } => "split".to_string(),
                 })
                 .collect()

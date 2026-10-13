@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use polter_projectfile::{leaves, Agent, Frame, SavedNode, Snapshot, Tab, Who, Window};
+use polter_projectfile::{leaves, Agent, Frame, SavedLeaf, SavedNode, Snapshot, Tab, Who, Window};
 
 /// A page's name for as long as the host has the project in hand.
 pub type PageId = usize;
@@ -329,19 +329,23 @@ impl Pages {
         fn has(node: &SavedNode, name: &str) -> bool {
             match node {
                 SavedNode::Leaf(leaf) => leaf.scrollback == name,
+                // A stack's members are panes like any other.
+                SavedNode::Stack { members, .. } => members.iter().any(|m| m.scrollback == name),
                 SavedNode::Split { left, right, .. } => has(left, name) || has(right, name),
+            }
+        }
+        fn mark_leaf(leaf: &mut SavedLeaf, name: &str) {
+            let it = leaf.scrollback == name;
+            match &mut leaf.agent {
+                Agent::Agent(who) => who.supervisor = it,
+                other if it => *other = Agent::Agent(Who { role: String::new(), cli: String::new(), session: String::new(), supervisor: true }),
+                _ => {}
             }
         }
         fn mark(node: &mut SavedNode, name: &str) {
             match node {
-                SavedNode::Leaf(leaf) => {
-                    let it = leaf.scrollback == name;
-                    match &mut leaf.agent {
-                        Agent::Agent(who) => who.supervisor = it,
-                        other if it => *other = Agent::Agent(Who { role: String::new(), cli: String::new(), session: String::new(), supervisor: true }),
-                        _ => {}
-                    }
-                }
+                SavedNode::Leaf(leaf) => mark_leaf(leaf, name),
+                SavedNode::Stack { members, .. } => members.iter_mut().for_each(|m| mark_leaf(m, name)),
                 SavedNode::Split { left, right, .. } => {
                     mark(left, name);
                     mark(right, name);
@@ -390,17 +394,22 @@ impl Pages {
 ///   seconds; written as they come, its panes would all lose the
 ///   directories they were opened in.
 pub fn keeping_what_the_file_knew(node: &SavedNode, known: &BTreeMap<String, Known>) -> SavedNode {
+    fn keep(leaf: &SavedLeaf, known: &BTreeMap<String, Known>) -> SavedLeaf {
+        let Some(was) = known.get(&leaf.scrollback) else { return leaf.clone() };
+        let mut leaf = leaf.clone();
+        if leaf.cwd.is_empty() {
+            leaf.cwd = was.cwd.clone();
+        }
+        if leaf.agent == Agent::Unknown {
+            leaf.agent = was.agent.clone();
+        }
+        leaf
+    }
     match node {
-        SavedNode::Leaf(leaf) => {
-            let Some(was) = known.get(&leaf.scrollback) else { return node.clone() };
-            let mut leaf = leaf.clone();
-            if leaf.cwd.is_empty() {
-                leaf.cwd = was.cwd.clone();
-            }
-            if leaf.agent == Agent::Unknown {
-                leaf.agent = was.agent.clone();
-            }
-            SavedNode::Leaf(leaf)
+        SavedNode::Leaf(leaf) => SavedNode::Leaf(keep(leaf, known)),
+        // Each member of a stack is a pane of its own.
+        SavedNode::Stack { shown, members } => {
+            SavedNode::Stack { shown: *shown, members: members.iter().map(|m| keep(m, known)).collect() }
         }
         SavedNode::Split { axis, ratio, left, right } => SavedNode::Split {
             axis: *axis,

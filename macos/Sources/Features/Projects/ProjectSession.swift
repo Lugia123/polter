@@ -220,6 +220,15 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
         var frames: [Int: ProjectFrame] = [:]
         let open: [ProjectStore.OpenPage] = liveMembers.compactMap { member in
             guard let window = member.controller.window else { return nil }
+            let capturing = capturing.contains { $0 === member.controller }
+            // A tab that is closing is not asked where it is: the system
+            // has already taken it out of its window, and what it would
+            // answer is a window of its own (`ProjectPages.Live.window`).
+            if closing && capturing {
+                return ProjectStore.OpenPage(
+                    id: member.page, tree: member.controller.surfaceTree,
+                    window: nil, index: 0, selected: false, capturingScrollback: true)
+            }
             let tabs = window.tabGroup
             let token = tabs.map { ObjectIdentifier($0).hashValue } ?? ObjectIdentifier(window).hashValue
             // Where the window is, is where the tab that is showing is:
@@ -237,7 +246,7 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
                 window: token,
                 index: tabs?.windows.firstIndex(of: window) ?? 0,
                 selected: tabs?.selectedWindow.map { $0 === window } ?? true,
-                capturingScrollback: capturing.contains { $0 === member.controller })
+                capturingScrollback: capturing)
         }
         let taken = ProjectPages.taken(frames: frames, closing: closing, opening: opening > 0)
         pages = try store.save(

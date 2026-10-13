@@ -432,6 +432,10 @@ scrollback **相反** —— 它是为这一次项目存盘抓的，脱离那个
   在 mac 上就能 `cargo test`；`project.rs` 只剩放在哪、`.prev`、快照目录这些盘上的事。格式升到 2——
   若干窗口 × 若干标签页，每格记「这格里是谁」——规则写在 `src/Project.zig` 的模块注释里，
   三处实现逐字节一致由 `test/project-format/` 钉住，见那里的 README。上面的行数是当时的读数。）
+  （同日稍后：格式 2 又加了两样而没有升号——leaf 上的 `by_supervisor`，和第三种节点 `stack`（一格里叠着几个终端）。
+  能不升号只因为当时没有任何发出去的版本带格式 2（`git tag --contains` 引入格式 2 的那个提交，结果为空）。
+  **带格式 2 的版本一旦发出去，再加节点种类就必须升格式号**：已发布的读者遇到不认识的种类只会说「损坏」，
+  而「这是比我新的文件」要靠号变大才说得出来。规则全文在 `src/Project.zig` 的模块注释与 `test/project-format/README.md`。）
 - **mac**：`macos/Sources/Features/Projects/` 下的存取。
 - **Linux（GTK）**：**不做，也不是「一小块」。** GTK 上根本没有项目功能：存、取、`history_filename`、`history_restore` 一处都没接（`src/apprt/gtk/class/application.zig` 里那个 arm 是 `log.warn("unimplemented")`），所以在 GTK 上接 scrollback，意味着从零做整套项目功能。issue #27 按功能面数过：做到和 Windows 一样要 11 面，**没有一面是 GTK 做不到的，全是没做**。不做的原因是**没有 Linux 测试机**，写出来只能停在「编过」，而其中 4 面是 UI。这是排序，不是放弃：有了能跑 GTK 的机器，随时可以开工。`tools/gtk-has-no-project-half.py` 钉着这件事，半个实现进不来。
 

@@ -266,9 +266,9 @@ pub use polter_settings_shell::projects::WriteKind;
 /// is not a new version of the project.
 pub fn write_file(path: &Path, snapshot: &Snapshot, kind: WriteKind) -> std::io::Result<()> {
     use polter_settings_shell::projects::{plan_for, write_keeping_previous};
-    let body = emit(snapshot).map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "a split's ratio or a window's frame is not a finite number")
-    })?;
+    // In the writer's own words: there are two things it refuses now (a
+    // number that is not finite, a stack that is not one).
+    let body = emit(snapshot).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
     write_keeping_previous(path, body.as_bytes(), plan_for(kind, existing(path, snapshot)))
 }
 
@@ -425,6 +425,17 @@ pub struct Listing {
 /// different wire formats; see that function's doc comment.
 pub fn to_layout_shape(node: &SavedNode, snaps: &Path) -> serde_json::Value {
     match node {
+        // ⚠️ **Only the member in front is brought back.** This host has no
+        // pane that holds several terminals, so a stack opens as the one
+        // terminal that was showing and the others are not opened -- and a
+        // save after that writes the project without them. Nothing on
+        // Windows writes a stack and project files do not travel between
+        // machines, so no file this host meets has one today; when stacks
+        // come to this host, this arm is where they have to be built.
+        SavedNode::Stack { shown, members } => match members.get(*shown).or(members.first()) {
+            Some(leaf) => to_layout_shape(&SavedNode::Leaf(leaf.clone()), snaps),
+            None => serde_json::json!({ "new": null }),
+        },
         SavedNode::Leaf(leaf) => {
             let scrollback = scrollback_path(snaps, leaf);
             if leaf.cwd.is_empty() && leaf.history.is_empty() && scrollback.is_none() {

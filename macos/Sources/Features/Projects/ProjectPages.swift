@@ -116,8 +116,15 @@ struct ProjectPages: Equatable {
         /// The page it is.
         let id: Int
         /// Which window it is in: any number that is the same for tabs of
-        /// one window and differs between windows.
-        let window: Int
+        /// one window and differs between windows. **Nil for a tab that is
+        /// closing**: it is saved as it is, and stays the page it was,
+        /// where it was. By the time a tab says it is closing the system
+        /// has already taken it out of its window, so the window it
+        /// reports is one of its own -- and a save that went by that moved
+        /// the page into a window of the project that never was, where it
+        /// then came back when the project was opened again, instead of as
+        /// a tab beside the others.
+        let window: Int?
         /// Where it stands among that window's tabs. Only the order
         /// matters; tabs that are not the project's leave gaps.
         let index: Int
@@ -145,6 +152,10 @@ struct ProjectPages: Equatable {
     ///   As the tabs of a window close one after another, the system shows
     ///   each of the ones left in turn, and a save that believed it would
     ///   record the last tab to close as the page that was in front.
+    /// - A tab that is closing (`Live.window` nil) is none of the above: its
+    ///   page takes what the tab holds now and stays where it is, like any
+    ///   page that is not open. One the project has no page for is not
+    ///   added by closing.
     /// - A window none of whose pages is open is left exactly as it was,
     ///   and one with no page left is gone.
     /// - **The order of the windows does not change**, and new ones go
@@ -152,7 +163,33 @@ struct ProjectPages: Equatable {
     ///   and with it what counts as its layout, every time a person clicked
     ///   on another window.
     func updated(live: [Live], frames: [Int: ProjectFrame], keepingFront: Bool) -> ProjectPages {
-        let liveByID = Dictionary(live.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // The tabs that are closing first: each page as its tab leaves it,
+        // in the place it has. After this they are pages that are not open.
+        let leaving = Dictionary(
+            live.filter { $0.window == nil }.map { ($0.id, $0.root) }, uniquingKeysWith: { first, _ in first })
+        guard leaving.isEmpty else {
+            var settled = self
+            for w in settled.windows.indices {
+                for p in settled.windows[w].pages.indices {
+                    if let root = leaving[settled.windows[w].pages[p].id] {
+                        settled.windows[w].pages[p].tab = ProjectTab(root: root)
+                    }
+                }
+            }
+            return settled.updated(live: live.filter { $0.window != nil }, frames: frames, keepingFront: keepingFront)
+        }
+
+        struct Placed {
+            let id: Int
+            let window: Int
+            let index: Int
+            let selected: Bool
+            let root: ProjectNode
+        }
+        let placed = live.compactMap { tab in
+            tab.window.map { Placed(id: tab.id, window: $0, index: tab.index, selected: tab.selected, root: tab.root) }
+        }
+        let liveByID = Dictionary(placed.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let tabs = liveByID.values.sorted { ($0.window, $0.index, $0.id) < ($1.window, $1.index, $1.id) }
 
         // Which window on screen each window of the file goes on as.
@@ -365,6 +402,8 @@ extension ProjectNode {
         switch self {
         case .leaf(_, _, _, let scrollback, _, let agent):
             return agent.isSupervisor && !scrollback.isEmpty ? scrollback : nil
+        case .stack(_, let members):
+            return members.lazy.compactMap(\.supervisorPane).first
         case .split(_, _, let left, let right):
             return left.supervisorPane ?? right.supervisorPane
         }
@@ -374,6 +413,8 @@ extension ProjectNode {
         switch self {
         case .leaf(_, _, _, let scrollback, let bySupervisor, _):
             return bySupervisor && !scrollback.isEmpty ? [scrollback] : []
+        case .stack(_, let members):
+            return members.flatMap(\.workerPanes)
         case .split(_, _, let left, let right):
             return left.workerPanes + right.workerPanes
         }
@@ -393,6 +434,8 @@ extension ProjectNode {
             return .leaf(
                 cwd: cwd, title: title, history: history, scrollback: scrollback,
                 bySupervisor: bySupervisor, agent: marked)
+        case .stack(let shown, let members):
+            return .stack(shown: shown, members: members.map { $0.markingSupervisor(name) })
         case .split(let direction, let ratio, let left, let right):
             return .split(
                 direction: direction, ratio: ratio,
@@ -406,6 +449,8 @@ extension ProjectNode {
             if !scrollback.isEmpty, known[scrollback] == nil {
                 known[scrollback] = ProjectPages.Known(cwd: cwd, agent: agent, bySupervisor: bySupervisor)
             }
+        case .stack(_, let members):
+            for member in members { member.collectKnown(into: &known) }
         case .split(_, _, let left, let right):
             left.collectKnown(into: &known)
             right.collectKnown(into: &known)
@@ -467,6 +512,10 @@ extension ProjectNode {
                 title: title, history: history, scrollback: scrollback,
                 bySupervisor: bySupervisor || was.bySupervisor,
                 agent: Self.agent(now: agent, was: was.agent))
+        // Each member of a stack is a pane of its own, found by its own
+        // snapshot name -- in front or behind.
+        case .stack(let shown, let members):
+            return .stack(shown: shown, members: members.map { $0.keepingWhatTheFileKnew(known) })
         case .split(let direction, let ratio, let left, let right):
             return .split(
                 direction: direction, ratio: ratio,

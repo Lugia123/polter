@@ -260,6 +260,32 @@ struct ProjectLinkTests {
         #expect(pages == was)
     }
 
+    /// The supervisor's pane, a worker's pane and what a save cannot tell
+    /// are found among a stack's members exactly as among panes side by
+    /// side -- in front or behind.
+    @Test func whatIsKeptAndMarkedIsFoundAmongAStacksMembers() {
+        let was = ProjectAgent.agent(role: "polter-supervisor", cli: "claude-code", session: "s-1", supervisor: true)
+        let file = ProjectFile.oneTab(
+            name: "p", savedAt: 1,
+            root: .stack(shown: 1, members: [leaf("/a", "0.snap", was), leaf("/b", "1.snap", .none, bySupervisor: true)]),
+            nextScrollback: 2)
+        var pages = ProjectPages(file: file)
+        #expect(pages.supervisorPane == "0.snap")
+        #expect(pages.workerPanes == ["1.snap"])
+
+        // A save that can tell nothing about either member -- and has the
+        // other one in front now -- keeps what the file said of each.
+        let captured = ProjectNode.stack(shown: 0, members: [leaf("", "0.snap", .unknown), leaf("/b2", "1.snap", .unknown)])
+        #expect(captured.keepingWhatTheFileKnew(pages.known) == .stack(shown: 0, members: [
+            leaf("/a", "0.snap", was), leaf("/b2", "1.snap", .none, bySupervisor: true),
+        ]))
+
+        // Marking the member behind as the supervisor's unmarks the other.
+        pages.makeSupervisor(pane: "1.snap")
+        #expect(pages.supervisorPane == "1.snap")
+        #expect(pages.fileWindows[0].tabs[0].root.supervisorCount == 1)
+    }
+
     // MARK: Who is in a pane
 
     private func who(_ kind: Link.Who.Kind, role: String? = nil, cli: String? = nil, session: String? = nil, openedBy: UInt64? = nil) -> Link.Who {

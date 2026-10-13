@@ -51,7 +51,9 @@
 //!              "width":N,"height":N},"front":I,"tabs":[{"root":NODE},...]}
 //!     NODE    {"kind":"split","direction":"horizontal"|"vertical","ratio":N,
 //!              "left":NODE,"right":NODE}
-//!           | {"kind":"leaf","cwd":S,"title":S,"history":S,"scrollback":S,
+//!           | LEAF
+//!           | {"kind":"stack","shown":I,"members":[LEAF,LEAF,...]}
+//!     LEAF    {"kind":"leaf","cwd":S,"title":S,"history":S,"scrollback":S,
 //!              "by_supervisor":true,"agent":AGENT}
 //!     AGENT   {"kind":"unknown"} | {"kind":"none"}
 //!           | {"kind":"agent","role":S,"cli":S,"session":S,"supervisor":B}
@@ -70,6 +72,23 @@
 //!     written out in full and never with an exponent; a whole value has no
 //!     point (`1`, not `1.0`). A value that is not finite cannot be written:
 //!     the write fails.
+//!
+//! A `stack` is several terminals in one pane. Its members are leaves and
+//! nothing else, there are at least two of them, and `shown` is the index
+//! of the one in front; a stack that is not that -- one member, a split
+//! among them, `shown` past the end -- is `Corrupt`, in what is read and
+//! in what is asked to be written alike. It is not put right: any way of
+//! putting it right is deciding which terminal a person no longer has.
+//!
+//! **Once a build that writes format 2 has been released, a new kind of
+//! node means a new format number.** `stack` and `by_supervisor` were both
+//! added to format 2 without one, and that was sound only because no
+//! release had format 2 in it (measured when `stack` went in: no tag held
+//! the commit that brought format 2; the newest release read format 1
+//! only). A released build that meets a kind it does not know says
+//! "corrupt", which is the wrong word for "newer than me" -- `TooNew`
+//! exists so that it can say the right one, and it can only say it when
+//! the number went up.
 //!
 //! `root` is in a format 2 file only so that a build from before windows
 //! refuses it: such a build reads `name`, `saved_at` and `root` and nothing
@@ -222,9 +241,26 @@ pub const Split = struct {
     right: *const Node,
 };
 
-/// One node in the layout tree: either a pane or a split of two more nodes.
+/// Several terminals in one pane: one showing, the others behind it, a row
+/// of tabs over the pane to choose between them.
+///
+/// A stack takes the place of a pane, so its members are panes -- never a
+/// split, never another stack -- and it has at least two: **one terminal in
+/// a pane is a `leaf`, not a stack of one**, which keeps every project
+/// without a stack the bytes it always was. Each member is a whole pane
+/// with its own directory, history, snapshot and occupant; the order is the
+/// order of the tabs.
+pub const Stack = struct {
+    /// The index, in `members`, of the one that is showing.
+    shown: usize,
+    members: []const Leaf,
+};
+
+/// One node in the layout tree: a pane, a pane that holds several
+/// terminals, or a split of two more nodes.
 pub const Node = union(enum) {
     leaf: Leaf,
+    stack: Stack,
     split: Split,
 };
 
@@ -325,7 +361,7 @@ pub const Snapshot = struct {
 // tests below spell out, and the other two read each one and have to write
 // the same bytes back.
 comptime {
-    for (.{ Leaf, Who, Split, Tab, Frame, Window, Snapshot }) |T| {
+    for (.{ Leaf, Who, Stack, Split, Tab, Frame, Window, Snapshot }) |T| {
         for (std.meta.fields(T)) |f| {
             if (f.default_value_ptr != null) @compileError(
                 @typeName(T) ++ "." ++ f.name ++
@@ -529,6 +565,10 @@ pub const EmitError = std.Io.Writer.Error || error{
     /// A ratio or a frame holds a value that is not a finite number, which
     /// the file has no way to say.
     NotFinite,
+    /// A stack with fewer than two members, or whose `shown` is none of
+    /// them. Refused rather than written as something else: one member is
+    /// a `leaf`, and it is whoever built the tree that knows which.
+    BadStack,
 };
 
 /// The bytes of `snapshot` as a format 2 file. **Written by hand rather than
@@ -582,26 +622,15 @@ const moved_kind = "moved-to-windows";
 
 fn emitNode(w: *std.Io.Writer, node: Node) EmitError!void {
     switch (node) {
-        .leaf => |leaf| {
-            try w.writeAll("{\"kind\":\"leaf\"");
-            try emitField(w, "cwd", leaf.cwd);
-            try emitField(w, "title", leaf.title);
-            try emitField(w, "history", leaf.history);
-            try emitField(w, "scrollback", leaf.scrollback);
-            if (leaf.by_supervisor) try w.writeAll(",\"by_supervisor\":true");
-            try w.writeAll(",\"agent\":{\"kind\":\"");
-            try w.writeAll(@tagName(leaf.agent));
-            try w.writeByte('"');
-            switch (leaf.agent) {
-                .unknown, .none => {},
-                .agent => |who| {
-                    try emitField(w, "role", who.role);
-                    try emitField(w, "cli", who.cli);
-                    try emitField(w, "session", who.session);
-                    try w.writeAll(if (who.supervisor) ",\"supervisor\":true" else ",\"supervisor\":false");
-                },
+        .leaf => |leaf| try emitLeaf(w, leaf),
+        .stack => |stack| {
+            if (stack.members.len < 2 or stack.shown >= stack.members.len) return error.BadStack;
+            try w.print("{{\"kind\":\"stack\",\"shown\":{d},\"members\":[", .{stack.shown});
+            for (stack.members, 0..) |member, i| {
+                if (i > 0) try w.writeByte(',');
+                try emitLeaf(w, member);
             }
-            try w.writeAll("}}");
+            try w.writeAll("]}");
         },
         .split => |split| {
             try w.writeAll("{\"kind\":\"split\",\"direction\":\"");
@@ -615,6 +644,28 @@ fn emitNode(w: *std.Io.Writer, node: Node) EmitError!void {
             try w.writeByte('}');
         },
     }
+}
+
+fn emitLeaf(w: *std.Io.Writer, leaf: Leaf) EmitError!void {
+    try w.writeAll("{\"kind\":\"leaf\"");
+    try emitField(w, "cwd", leaf.cwd);
+    try emitField(w, "title", leaf.title);
+    try emitField(w, "history", leaf.history);
+    try emitField(w, "scrollback", leaf.scrollback);
+    if (leaf.by_supervisor) try w.writeAll(",\"by_supervisor\":true");
+    try w.writeAll(",\"agent\":{\"kind\":\"");
+    try w.writeAll(@tagName(leaf.agent));
+    try w.writeByte('"');
+    switch (leaf.agent) {
+        .unknown, .none => {},
+        .agent => |who| {
+            try emitField(w, "role", who.role);
+            try emitField(w, "cli", who.cli);
+            try emitField(w, "session", who.session);
+            try w.writeAll(if (who.supervisor) ",\"supervisor\":true" else ",\"supervisor\":false");
+        },
+    }
+    try w.writeAll("}}");
 }
 
 /// `,"key":"value"`, or nothing when the value is empty.
@@ -664,7 +715,7 @@ const Fixups = struct {
     /// Every snapshot name a pane read so far has.
     scrollback: std.StringHashMapUnmanaged(void) = .empty,
     /// Every pane that says it is the supervisor.
-    supervisors: std.ArrayListUnmanaged(*Node) = .empty,
+    supervisors: std.ArrayListUnmanaged(*Agent) = .empty,
 };
 
 /// The same, for bytes already in hand.
@@ -740,7 +791,7 @@ pub fn parse(arena: Allocator, bytes: []const u8) ReadError!Snapshot {
             "project '{s}' has {d} panes that each say they are the supervisor; read as having none",
             .{ name, fixups.supervisors.items.len },
         );
-        for (fixups.supervisors.items) |node| node.leaf.agent.agent.supervisor = false;
+        for (fixups.supervisors.items) |agent| agent.agent.supervisor = false;
     }
 
     return .{
@@ -832,35 +883,40 @@ fn parseNode(arena: Allocator, value: std.json.Value, format: u32, fixups: *Fixu
     const node = try arena.create(Node);
 
     if (std.mem.eql(u8, kind, "leaf")) {
-        // Invalid is absent, not corrupt: one bad field should not cost
-        // the whole project, and an absent snapshot is an empty pane. A
-        // name an earlier pane has is absent for the same reason.
-        const scrollback: []const u8 = scrollback: {
-            const name = optionalStr(obj.get("scrollback")) orelse break :scrollback "";
-            if (!isScrollbackName(name)) break :scrollback "";
-            const seen = try fixups.scrollback.getOrPut(arena, name);
-            break :scrollback if (seen.found_existing) "" else name;
+        node.* = .{ .leaf = try parseLeaf(arena, obj, format, fixups) };
+        try noteSupervisor(arena, &node.leaf, fixups);
+        return node;
+    }
+
+    if (std.mem.eql(u8, kind, "stack")) {
+        // Format 1 has no such node. And nothing about a stack is put
+        // right: see the module comment.
+        if (format == 1) return error.Corrupt;
+        const items = switch (obj.get("members") orelse return error.Corrupt) {
+            .array => |a| a.items,
+            else => return error.Corrupt,
         };
-        node.* = .{
-            .leaf = .{
-                .cwd = optionalStr(obj.get("cwd")) orelse "",
-                .title = optionalStr(obj.get("title")) orelse "",
-                .history = optionalStr(obj.get("history")) orelse "",
-                .scrollback = scrollback,
-                // New with format 2 and strict as the agent is: absent is
-                // false, anything but a boolean is a damaged file.
-                .by_supervisor = if (format == 1) false else if (obj.get("by_supervisor")) |v| switch (v) {
-                    .bool => |b| b,
-                    else => return error.Corrupt,
-                } else false,
-                // A format 1 file never said, whatever keys it has.
-                .agent = if (format == 1) .unknown else try parseAgent(obj.get("agent") orelse return error.Corrupt),
-            },
-        };
-        switch (node.leaf.agent) {
-            .agent => |who| if (who.supervisor) try fixups.supervisors.append(arena, node),
-            .unknown, .none => {},
+        if (items.len < 2) return error.Corrupt;
+        const members = try arena.alloc(Leaf, items.len);
+        for (items, members) |item, *member| {
+            const m = switch (item) {
+                .object => |o| o,
+                else => return error.Corrupt,
+            };
+            // A pane and nothing else: not a split, not another stack.
+            switch (m.get("kind") orelse return error.Corrupt) {
+                .string => |k| if (!std.mem.eql(u8, k, "leaf")) return error.Corrupt,
+                else => return error.Corrupt,
+            }
+            member.* = try parseLeaf(arena, m, format, fixups);
+            try noteSupervisor(arena, member, fixups);
         }
+        const shown: usize = switch (obj.get("shown") orelse return error.Corrupt) {
+            .integer => |n| std.math.cast(usize, n) orelse return error.Corrupt,
+            else => return error.Corrupt,
+        };
+        if (shown >= members.len) return error.Corrupt;
+        node.* = .{ .stack = .{ .shown = shown, .members = members } };
         return node;
     }
 
@@ -890,6 +946,42 @@ fn parseNode(arena: Allocator, value: std.json.Value, format: u32, fixups: *Fixu
     }
 
     return error.Corrupt;
+}
+
+/// One pane, out of an object already known to be of kind `leaf`.
+fn parseLeaf(arena: Allocator, obj: std.json.ObjectMap, format: u32, fixups: *Fixups) ReadError!Leaf {
+    // Invalid is absent, not corrupt: one bad field should not cost
+    // the whole project, and an absent snapshot is an empty pane. A
+    // name an earlier pane has is absent for the same reason.
+    const scrollback: []const u8 = scrollback: {
+        const name = optionalStr(obj.get("scrollback")) orelse break :scrollback "";
+        if (!isScrollbackName(name)) break :scrollback "";
+        const seen = try fixups.scrollback.getOrPut(arena, name);
+        break :scrollback if (seen.found_existing) "" else name;
+    };
+    return .{
+        .cwd = optionalStr(obj.get("cwd")) orelse "",
+        .title = optionalStr(obj.get("title")) orelse "",
+        .history = optionalStr(obj.get("history")) orelse "",
+        .scrollback = scrollback,
+        // New with format 2 and strict as the agent is: absent is
+        // false, anything but a boolean is a damaged file.
+        .by_supervisor = if (format == 1) false else if (obj.get("by_supervisor")) |v| switch (v) {
+            .bool => |b| b,
+            else => return error.Corrupt,
+        } else false,
+        // A format 1 file never said, whatever keys it has.
+        .agent = if (format == 1) .unknown else try parseAgent(obj.get("agent") orelse return error.Corrupt),
+    };
+}
+
+/// Remember a pane that says it is the supervisor's, by where it now
+/// lives, so that `parse` can take the claim back from all of them.
+fn noteSupervisor(arena: Allocator, leaf: *Leaf, fixups: *Fixups) ReadError!void {
+    switch (leaf.agent) {
+        .agent => |who| if (who.supervisor) try fixups.supervisors.append(arena, &leaf.agent),
+        .unknown, .none => {},
+    }
 }
 
 /// Strict where the rest of a leaf is not: these keys are new with format
@@ -1042,24 +1134,37 @@ fn oneTab(arena: Allocator, name: []const u8, saved_at: i64, root: ?*const Node,
     return .{ .name = name, .saved_at = saved_at, .group = null, .windows = windows, .next_scrollback = next_scrollback };
 }
 
+fn expectLeavesEqual(al: Leaf, bl: Leaf) !void {
+    try testing.expectEqualStrings(al.cwd, bl.cwd);
+    try testing.expectEqualStrings(al.title, bl.title);
+    try testing.expectEqualStrings(al.history, bl.history);
+    try testing.expectEqualStrings(al.scrollback, bl.scrollback);
+    try testing.expectEqual(al.by_supervisor, bl.by_supervisor);
+    try testing.expectEqualDeep(al.agent, bl.agent);
+}
+
 fn expectNodesEqual(a: Node, b: Node) !void {
     switch (a) {
         .leaf => |al| {
             const bl = switch (b) {
                 .leaf => |v| v,
-                .split => return error.TestExpectedEqual,
+                .stack, .split => return error.TestExpectedEqual,
             };
-            try testing.expectEqualStrings(al.cwd, bl.cwd);
-            try testing.expectEqualStrings(al.title, bl.title);
-            try testing.expectEqualStrings(al.history, bl.history);
-            try testing.expectEqualStrings(al.scrollback, bl.scrollback);
-            try testing.expectEqual(al.by_supervisor, bl.by_supervisor);
-            try testing.expectEqualDeep(al.agent, bl.agent);
+            try expectLeavesEqual(al, bl);
+        },
+        .stack => |as| {
+            const bs = switch (b) {
+                .stack => |v| v,
+                .leaf, .split => return error.TestExpectedEqual,
+            };
+            try testing.expectEqual(as.shown, bs.shown);
+            try testing.expectEqual(as.members.len, bs.members.len);
+            for (as.members, bs.members) |am, bm| try expectLeavesEqual(am, bm);
         },
         .split => |as| {
             const bs = switch (b) {
                 .split => |v| v,
-                .leaf => return error.TestExpectedEqual,
+                .leaf, .stack => return error.TestExpectedEqual,
             };
             try testing.expectEqual(as.direction, bs.direction);
             try testing.expectEqual(as.ratio, bs.ratio);
@@ -1611,6 +1716,17 @@ test "a format 2 file that lacks what format 2 always writes is corrupt" {
         .{ .what = "an agent of no kind this build names", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"agent\":{\"kind\":\"robot\"}}}]}]" },
         .{ .what = "an agent that does not say whether it supervises", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"agent\":{\"kind\":\"agent\"}}}]}]" },
         .{ .what = "an agent whose role is not text", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"agent\":{\"kind\":\"agent\",\"role\":1,\"supervisor\":false}}}]}]" },
+        .{ .what = "a stack of one", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"stack\",\"shown\":0,\"members\":[" ++ leaf ++ "]}}]}]" },
+        .{ .what = "a stack of none", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"stack\",\"shown\":0,\"members\":[]}}]}]" },
+        .{ .what = "a stack showing a member it has not", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"stack\",\"shown\":2,\"members\":[" ++ leaf ++ "," ++ leaf ++ "]}}]}]" },
+        .{ .what = "a stack showing a member below zero", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"stack\",\"shown\":-1,\"members\":[" ++ leaf ++ "," ++ leaf ++ "]}}]}]" },
+        .{ .what = "a stack that does not say which shows", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"stack\",\"members\":[" ++ leaf ++ "," ++ leaf ++ "]}}]}]" },
+        .{ .what = "a stack with no members key", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"stack\",\"shown\":0}}]}]" },
+        .{ .what = "a stack with a split in it", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"stack\",\"shown\":0,\"members\":[" ++ leaf ++ ",{\"kind\":\"split\",\"direction\":\"horizontal\",\"ratio\":0.5,\"left\":" ++ leaf ++ ",\"right\":" ++ leaf ++ "}]}}]}]" },
+        // Everything a leaf needs, under another kind: it is the kind that
+        // is refused, not something that happens to be missing.
+        .{ .what = "a stack with a member that says it is a split", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"stack\",\"shown\":0,\"members\":[" ++ leaf ++ ",{\"kind\":\"split\",\"agent\":{\"kind\":\"none\"}}]}}]}]" },
+        .{ .what = "a stack with a stack in it", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"stack\",\"shown\":0,\"members\":[" ++ leaf ++ ",{\"kind\":\"stack\",\"shown\":0,\"members\":[" ++ leaf ++ "," ++ leaf ++ "]}]}}]}]" },
         .{ .what = "a by_supervisor that is not yes or no", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"by_supervisor\":1,\"agent\":{\"kind\":\"none\"}}}]}]" },
         .{ .what = "a frame from no corner", .windows = "[{\"frame\":{\"x\":0,\"y\":0,\"width\":1,\"height\":1},\"front\":0,\"tabs\":[{\"root\":" ++ leaf ++ "}]}]" },
         .{ .what = "a frame missing a side", .windows = "[{\"frame\":{\"origin\":\"top_left\",\"x\":0,\"y\":0,\"width\":1},\"front\":0,\"tabs\":[{\"root\":" ++ leaf ++ "}]}]" },
@@ -1629,6 +1745,32 @@ test "a format 2 file that lacks what format 2 always writes is corrupt" {
     // The control: the same shape, whole, reads.
     const ok = try parse(alloc, "{\"format\":2,\"name\":\"n\",\"saved_at\":1,\"windows\":[{\"front\":0,\"tabs\":[{\"root\":" ++ leaf ++ "}]}]}");
     try testing.expectEqual(Agent.none, ok.firstTab().?.leaf.agent);
+}
+
+test "a stack is at least two panes with one of them showing, to write as to read" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const pane: Leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .none };
+    const bad = [_]Stack{
+        // One terminal in a pane is a leaf, and it is not this that turns
+        // it into one.
+        .{ .shown = 0, .members = &.{pane} },
+        .{ .shown = 0, .members = &.{} },
+        .{ .shown = 2, .members = &.{ pane, pane } },
+    };
+    for (bad) |stack| {
+        const root: Node = .{ .stack = stack };
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        try testing.expectError(error.BadStack, emit(&buf.writer, try oneTab(alloc, "n", 1, &root, null)));
+    }
+
+    // Format 1 has no such node: a file that old with one in it is damaged.
+    try testing.expectError(error.Corrupt, parse(alloc,
+        \\{"name":"old","saved_at":1,"root":{"kind":"stack","shown":0,
+        \\ "members":[{"kind":"leaf","cwd":"/a"},{"kind":"leaf","cwd":"/b"}]}}
+    ));
 }
 
 test "a ratio that is not a finite number cannot be written" {
@@ -1870,6 +2012,54 @@ const Shared = struct {
                 } },
                 .{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(.vertical, 0.5, leaf("/d", "", .none), leaf("/e", "2.snap", .none)) }} },
             },
+        } },
+        // A pane that holds three terminals, the second showing, beside a
+        // plain pane; and a tab that is nothing but a stack. The supervisor
+        // is a member that is not in front, and a member is a pane the
+        // supervisor opened.
+        .{ .kind = .same, .stem = "stack", .value = .{
+            .name = "a stack",
+            .saved_at = 1757000007,
+            .group = "g",
+            .next_scrollback = 6,
+            .windows = &.{.{
+                .frame = null,
+                .front = 0,
+                .tabs = &.{
+                    .{ .root = split(
+                        .horizontal,
+                        0.5,
+                        &.{ .stack = .{ .shown = 1, .members = &.{
+                            .{ .cwd = "/work/repo", .title = "supervisor", .history = "s.history", .scrollback = "0.snap", .by_supervisor = false, .agent = supervisor },
+                            .{ .cwd = "/work/repo/a", .title = "", .history = "", .scrollback = "1.snap", .by_supervisor = true, .agent = worker(false) },
+                            .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown },
+                        } } },
+                        leaf("/work/repo/b", "2.snap", .none),
+                    ) },
+                    .{ .root = &.{ .stack = .{ .shown = 0, .members = &.{
+                        .{ .cwd = "/x", .title = "", .history = "", .scrollback = "4.snap", .by_supervisor = false, .agent = .none },
+                        .{ .cwd = "/y", .title = "", .history = "", .scrollback = "5.snap", .by_supervisor = false, .agent = .none },
+                    } } } },
+                },
+            }},
+        } },
+        // What a read puts right, inside a stack as anywhere: two members
+        // say they are the supervisor, so neither is; and the snapshot one
+        // member has is not also the next one's, nor the pane's beside it.
+        .{ .kind = .from, .stem = "stack_put_right", .value = .{
+            .name = "a stack put right",
+            .saved_at = 1757000008,
+            .group = null,
+            .next_scrollback = 2,
+            .windows = &.{.{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(
+                .vertical,
+                0.5,
+                &.{ .stack = .{ .shown = 0, .members = &.{
+                    .{ .cwd = "/a", .title = "", .history = "", .scrollback = "1.snap", .by_supervisor = false, .agent = worker(false) },
+                    .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = worker(false) },
+                } } },
+                leaf("/c", "", .none),
+            ) }} }},
         } },
         .{ .kind = .refused, .stem = "too_new", .value = undefined },
     };

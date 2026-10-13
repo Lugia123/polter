@@ -122,6 +122,57 @@ struct ProjectPagesTests {
         #expect(now.fileWindows[0].front == 0)
     }
 
+    /// **Closing a page leaves it where it is.** (Found on a real machine:
+    /// a project of [m1, (m2|m3), x1] with the second page closed was
+    /// saved as [m1, x1] and a window more holding (m2|m3) -- so opening
+    /// the project again brought the page back as a window of its own,
+    /// not as the tab after the first.) By the time a tab is closing the
+    /// system has taken it out of its window; where it says it is, is not
+    /// asked.
+    @Test func aClosingTabsPageStaysWhereItIs() {
+        // The second page of the first window is closing. Its tab holds a
+        // split made since the last save.
+        let split = ProjectNode.split(direction: .horizontal, ratio: 0.5, left: leaf("/m2", "1.snap"), right: leaf("/m3", "9.snap"))
+        let closing = project.updated(
+            live: [
+                live(0, window: 7, index: 0, selected: true, "/a"),
+                Live(id: 1, window: nil, index: 0, selected: false, root: split),
+                live(2, window: 7, index: 1, "/c"),
+            ],
+            frames: [7: frame(77)], keepingFront: true)
+        // Still three pages in the first window, the closed one second,
+        // with what its tab held; and no window more.
+        #expect(closing.fileWindows.count == 2)
+        #expect(closing.fileWindows[0].tabs.map(\.root) == [leaf("/a"), split, leaf("/c")])
+        #expect(closing.fileWindows[0].front == 1)
+        #expect(closing.fileWindows[0].frame == frame(77))
+        #expect(closing.fileWindows[1] == project.fileWindows[1])
+
+        // The same tab asked where it is -- a window of its own by then --
+        // is the page gone to a window more: what the rule is there to stop.
+        let asked = project.updated(
+            live: [
+                live(0, window: 7, index: 0, selected: true, "/a"),
+                Live(id: 1, window: 99, index: 0, selected: true, root: split),
+                live(2, window: 7, index: 1, "/c"),
+            ],
+            frames: [7: frame(77)], keepingFront: true)
+        #expect(asked.fileWindows.count == 3)
+
+        // The last open page of a window closing: the window is as it was,
+        // frame included, with the page as its tab left it.
+        let last = project.updated(
+            live: [Live(id: 3, window: nil, index: 0, selected: false, root: leaf("/d2", "3.snap"))],
+            frames: [:], keepingFront: true)
+        #expect(last.fileWindows[1] == ProjectWindow(frame: frame(20), front: 0, tabs: [ProjectTab(root: leaf("/d2", "3.snap"))]))
+        #expect(last.fileWindows[0] == project.fileWindows[0])
+
+        // A tab the project has no page for is not added by closing.
+        let stranger = project.updated(
+            live: [Live(id: 42, window: nil, index: 0, selected: false, root: leaf("/x"))], frames: [:], keepingFront: true)
+        #expect(stranger == project)
+    }
+
     /// **A window closing does not make its last tab the page in front.**
     /// Its tabs close one after another, and the system shows each of the
     /// ones left in turn; each closing tab's save keeps what was in front.

@@ -105,7 +105,7 @@ struct SharedProjectFilesTests {
         let reading = try SharedProjectFiles.read(SharedProjectFiles.directory)
         #expect(reading.problems.isEmpty, "\n\(reading.problems.joined(separator: "\n"))")
         // A reader that found nothing passed every row it found.
-        #expect(reading.rows >= 9, "index.txt has \(reading.rows) rows; there were 9 when this was written")
+        #expect(reading.rows >= 11, "index.txt has \(reading.rows) rows; there were 11 when this was written")
     }
 
     /// The rules for a string and a number, said here as well as in the
@@ -204,6 +204,15 @@ struct SharedProjectFilesTests {
             ("an agent that does not say whether it supervises", #"[{"front":0,"tabs":[{"root":{"kind":"leaf","agent":{"kind":"agent"}}}]}]"#),
             ("an agent whose role is not text", #"[{"front":0,"tabs":[{"root":{"kind":"leaf","agent":{"kind":"agent","role":1,"supervisor":false}}}]}]"#),
             ("an agent whose role is null", #"[{"front":0,"tabs":[{"root":{"kind":"leaf","agent":{"kind":"agent","role":null,"supervisor":false}}}]}]"#),
+            ("a stack of one", #"[{"front":0,"tabs":[{"root":{"kind":"stack","shown":0,"members":[\#(leaf)]}}]}]"#),
+            ("a stack of none", #"[{"front":0,"tabs":[{"root":{"kind":"stack","shown":0,"members":[]}}]}]"#),
+            ("a stack showing a member it has not", #"[{"front":0,"tabs":[{"root":{"kind":"stack","shown":2,"members":[\#(leaf),\#(leaf)]}}]}]"#),
+            ("a stack showing a member below zero", #"[{"front":0,"tabs":[{"root":{"kind":"stack","shown":-1,"members":[\#(leaf),\#(leaf)]}}]}]"#),
+            ("a stack that does not say which shows", #"[{"front":0,"tabs":[{"root":{"kind":"stack","members":[\#(leaf),\#(leaf)]}}]}]"#),
+            ("a stack with no members key", #"[{"front":0,"tabs":[{"root":{"kind":"stack","shown":0}}]}]"#),
+            ("a stack with a split in it", #"[{"front":0,"tabs":[{"root":{"kind":"stack","shown":0,"members":[\#(leaf),{"kind":"split","direction":"horizontal","ratio":0.5,"left":\#(leaf),"right":\#(leaf)}]}}]}]"#),
+            ("a stack with a member that says it is a split", #"[{"front":0,"tabs":[{"root":{"kind":"stack","shown":0,"members":[\#(leaf),{"kind":"split","agent":{"kind":"none"}}]}}]}]"#),
+            ("a stack with a stack in it", #"[{"front":0,"tabs":[{"root":{"kind":"stack","shown":0,"members":[\#(leaf),{"kind":"stack","shown":0,"members":[\#(leaf),\#(leaf)]}]}}]}]"#),
             ("a by_supervisor that is not yes or no", #"[{"front":0,"tabs":[{"root":{"kind":"leaf","by_supervisor":1,"agent":{"kind":"none"}}}]}]"#),
             ("a by_supervisor that is null", #"[{"front":0,"tabs":[{"root":{"kind":"leaf","by_supervisor":null,"agent":{"kind":"none"}}}]}]"#),
             ("a frame from no corner", #"[{"frame":{"x":0,"y":0,"width":1,"height":1},"front":0,"tabs":[{"root":\#(leaf)}]}]"#),
@@ -222,6 +231,56 @@ struct SharedProjectFilesTests {
         // The control: the same shape, whole, reads.
         let whole = Data("{\"format\":2,\"name\":\"n\",\"saved_at\":1,\"windows\":[{\"front\":0,\"tabs\":[{\"root\":\(leaf)}]}]}".utf8)
         #expect(try ProjectFile.decode(from: whole).firstTab == .leaf(cwd: "", title: "", history: "", scrollback: "", bySupervisor: false, agent: .none))
+    }
+
+    // MARK: A stack
+
+    /// A stack is at least two panes with one of them showing -- to write
+    /// as to read. One terminal in a pane is a leaf, and it is `stacked`
+    /// that knows so, not the writer.
+    @Test func aStackIsAtLeastTwoPanesWithOneOfThemShowing() throws {
+        let a = leaf("/a", "0.snap"), b = leaf("/b", "3.snap")
+        #expect(ProjectNode.stacked(shown: 0, members: []) == nil)
+        #expect(ProjectNode.stacked(shown: 0, members: [a]) == a)
+        #expect(ProjectNode.stacked(shown: 1, members: [a, b]) == .stack(shown: 1, members: [a, b]))
+        // `shown` past the end is the last, so what is built can be written.
+        #expect(ProjectNode.stacked(shown: 7, members: [a, b]) == .stack(shown: 1, members: [a, b]))
+
+        func written(_ root: ProjectNode) throws -> Data {
+            try ProjectFile.oneTab(name: "n", savedAt: 1, root: root, nextScrollback: nil).encoded()
+        }
+        let split = ProjectNode.split(direction: .horizontal, ratio: 0.5, left: a, right: b)
+        for bad in [
+            ProjectNode.stack(shown: 0, members: [a]),
+            .stack(shown: 0, members: []),
+            .stack(shown: 2, members: [a, b]),
+            .stack(shown: -1, members: [a, b]),
+            .stack(shown: 0, members: [a, split]),
+            .stack(shown: 0, members: [a, .stack(shown: 0, members: [a, b])]),
+        ] {
+            #expect(throws: ProjectFileError.badStack) { try written(bad) }
+        }
+        // A good one comes back as it went.
+        let good = ProjectNode.split(direction: .vertical, ratio: 0.5, left: .stack(shown: 1, members: [a, b]), right: leaf("/c"))
+        #expect(try ProjectFile.decode(from: written(good)).firstTab == good)
+
+        // Format 1 has no such node: a file that old with one in it is damaged.
+        let old = #"{"name":"old","saved_at":1,"root":{"kind":"stack","shown":0,"members":[{"kind":"leaf","cwd":"/a"},{"kind":"leaf","cwd":"/b"}]}}"#
+        #expect(throws: (any Error).self) { try ProjectFile.decode(from: Data(old.utf8)) }
+    }
+
+    /// Its members are panes like any other: counted, named and walked in
+    /// their order -- and to the layout the whole stack is one pane.
+    @Test func theMembersOfAStackArePanesLikeAnyOther() {
+        let a = leaf("/a", "0.snap"), b = leaf("/b", "3.snap")
+        let root = ProjectNode.split(direction: .horizontal, ratio: 0.5, left: .stack(shown: 1, members: [a, b]), right: leaf("/c", "1.snap"))
+        #expect(root.leafCount == 3)
+        #expect(root.scrollbackFilenames == ["0.snap", "3.snap", "1.snap"])
+        #expect(root.layout == .split(.horizontal, .pane, .pane))
+        // Who is in front, and how many there are, is not layout.
+        let other = ProjectNode.split(direction: .horizontal, ratio: 0.5, left: .stack(shown: 0, members: [a, b, leaf("/d")]), right: leaf("/c"))
+        #expect(other.layout == root.layout)
+        #expect(ProjectNode.split(direction: .horizontal, ratio: 0.5, left: a, right: leaf("/c")).layout == root.layout)
     }
 
     // MARK: The whole project

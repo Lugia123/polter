@@ -152,7 +152,10 @@ extension ProjectNode {
 
     var layout: Layout {
         switch self {
-        case .leaf: return .pane
+        // A stack is one pane to the layout: which terminals are in it and
+        // which is in front change as often as a title does, and neither
+        // is what a mistake with the split tree takes away.
+        case .leaf, .stack: return .pane
         case .split(let direction, _, let left, let right):
             return .split(direction, left.layout, right.layout)
         }

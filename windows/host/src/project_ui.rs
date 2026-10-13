@@ -220,6 +220,8 @@ pub(crate) fn name_leaves(
 pub fn leaf_count(node: &SavedNode) -> usize {
     match node {
         SavedNode::Leaf(_) => 1,
+        // Every terminal of a stack is one the person has.
+        SavedNode::Stack { members, .. } => members.len(),
         SavedNode::Split { left, right, .. } => leaf_count(left) + leaf_count(right),
     }
 }
@@ -242,6 +244,7 @@ pub fn missing_history_count(node: &SavedNode) -> usize {
                 0
             }
         }
+        SavedNode::Stack { members, .. } => members.iter().filter(|m| m.history.is_empty()).count(),
         SavedNode::Split { left, right, .. } => missing_history_count(left) + missing_history_count(right),
     }
 }
@@ -493,7 +496,8 @@ pub fn shape_for_page_seeded(root: &SavedNode, seed_surface: usize, snaps: &std:
 
 fn seed_leftmost(node: &SavedNode, seed_surface: usize, snaps: &std::path::Path) -> serde_json::Value {
     match node {
-        SavedNode::Leaf(_) => serde_json::json!({ "pane": format!("0x{seed_surface:x}") }),
+        // A stack is one pane here: see `project::to_layout_shape`.
+        SavedNode::Leaf(_) | SavedNode::Stack { .. } => serde_json::json!({ "pane": format!("0x{seed_surface:x}") }),
         SavedNode::Split { axis, ratio, left, right } => serde_json::json!({
             "split": match axis { polter_split_tree::Axis::Horizontal => "h", polter_split_tree::Axis::Vertical => "v" },
             "ratio": ratio,
@@ -512,6 +516,10 @@ fn seed_leftmost(node: &SavedNode, seed_surface: usize, snaps: &std::path::Path)
 fn leftmost_leaf(node: &SavedNode) -> &SavedLeaf {
     match node {
         SavedNode::Leaf(leaf) => leaf,
+        // The member in front, which is the one `to_layout_shape` opens. A
+        // stack that was read has at least two members and shows one of
+        // them (`polter_projectfile`).
+        SavedNode::Stack { shown, members } => &members[(*shown).min(members.len().saturating_sub(1))],
         SavedNode::Split { left, .. } => leftmost_leaf(left),
     }
 }

@@ -1,0 +1,21 @@
+{
+  "format": 2,
+  "name": "a stack put right",
+  "saved_at": 1757000008,
+  "next_scrollback": 2,
+  "windows": [
+    { "front": 0, "tabs": [ { "root": {
+        "kind": "split", "direction": "vertical", "ratio": 0.5,
+        "left": {
+          "kind": "stack", "shown": 0,
+          "members": [
+            { "kind": "leaf", "cwd": "/a", "scrollback": "1.snap",
+              "agent": { "kind": "agent", "role": "polter-dev", "cli": "codex", "supervisor": true } },
+            { "kind": "leaf", "cwd": "/b", "scrollback": "1.snap",
+              "agent": { "kind": "agent", "role": "polter-dev", "cli": "codex", "supervisor": true } }
+          ]
+        },
+        "right": { "kind": "leaf", "cwd": "/c", "scrollback": "1.snap", "agent": { "kind": "none" } }
+    } } ] }
+  ]
+}

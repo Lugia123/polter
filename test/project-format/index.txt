@@ -6,4 +6,6 @@ same	supervisor
 same	group
 from	two_supervisors
 from	duplicate_scrollback
+same	stack
+from	stack_put_right
 refused	too_new

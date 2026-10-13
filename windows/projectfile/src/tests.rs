@@ -76,7 +76,7 @@ fn every_shared_file_is_read_and_written_back_as_the_same_bytes() {
     }
 
     // A reader that found nothing passed every row it found.
-    assert!(rows >= 9, "index.txt has {rows} rows; there were 9 when this was written");
+    assert!(rows >= 11, "index.txt has {rows} rows; there were 11 when this was written");
     // And no file here that the index does not name.
     let on_disk = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".json")).count();
     assert_eq!(on_disk, named, "test/project-format has a .json file index.txt does not name, or names one that is not there");
@@ -105,10 +105,35 @@ fn a_string_and_a_number_are_written_one_way() {
         assert_eq!(s, want);
     }
     for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        assert_eq!(number(&mut String::new(), bad), Err(NotFinite));
+        assert_eq!(number(&mut String::new(), bad), Err(EmitError::NotFinite));
         let root = SavedNode::Split { axis: Axis::Horizontal, ratio: bad, left: Box::new(leaf("/a")), right: Box::new(leaf("/b")) };
-        assert_eq!(emit(&one_tab("n", root)), Err(NotFinite));
+        assert_eq!(emit(&one_tab("n", root)), Err(EmitError::NotFinite));
     }
+}
+
+/// A stack is at least two panes with one of them showing -- to write as to
+/// read. One terminal in a pane is a `Leaf`, and it is not the writer that
+/// turns a stack of one into it.
+#[test]
+fn a_stack_is_at_least_two_panes_with_one_of_them_showing() {
+    let pane = || SavedLeaf::plain("", Agent::None);
+    for (shown, members) in [(0, vec![pane()]), (0, vec![]), (2, vec![pane(), pane()])] {
+        assert_eq!(emit(&one_tab("n", SavedNode::Stack { shown, members })), Err(EmitError::BadStack));
+    }
+    // Format 1 has no such node: a file that old with one in it is damaged.
+    let old = br#"{"name":"old","saved_at":1,"root":{"kind":"stack","shown":0,
+        "members":[{"kind":"leaf","cwd":"/a"},{"kind":"leaf","cwd":"/b"}]}}"#;
+    assert_eq!(parse_snapshot(old), Err(ReadError::Corrupt));
+
+    // Its members are panes like any other: counted, named, walked in order.
+    let named = |cwd: &str, snap: &str| SavedLeaf { scrollback: snap.to_string(), ..SavedLeaf::plain(cwd, Agent::None) };
+    let stack = SavedNode::Stack { shown: 1, members: vec![named("/a", "0.snap"), named("/b", "3.snap")] };
+    let p = one_tab("p", SavedNode::Split { axis: Axis::Horizontal, ratio: 0.5, left: Box::new(stack), right: Box::new(leaf("/c")) });
+    assert_eq!(p.pane_count(), 3);
+    assert_eq!(p.scrollback_names(), ["0.snap", "3.snap"]);
+    // And to the layout a stack is one pane: who is in it is not layout.
+    use polter_settings_shell::projects::Shape;
+    assert!(matches!(to_shape(p.tabs().next().unwrap()), Shape::Split { first, .. } if *first == Shape::Pane));
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +211,17 @@ fn a_format_2_file_that_lacks_what_format_2_always_writes_is_corrupt() {
         ("an agent of no kind this build names", r#"[{"front":0,"tabs":[{"root":{"kind":"leaf","agent":{"kind":"robot"}}}]}]"#.to_string()),
         ("an agent that does not say whether it supervises", r#"[{"front":0,"tabs":[{"root":{"kind":"leaf","agent":{"kind":"agent"}}}]}]"#.to_string()),
         ("an agent whose role is not text", r#"[{"front":0,"tabs":[{"root":{"kind":"leaf","agent":{"kind":"agent","role":1,"supervisor":false}}}]}]"#.to_string()),
+        ("a stack of one", format!(r#"[{{"front":0,"tabs":[{{"root":{{"kind":"stack","shown":0,"members":[{leaf}]}}}}]}}]"#)),
+        ("a stack of none", r#"[{"front":0,"tabs":[{"root":{"kind":"stack","shown":0,"members":[]}}]}]"#.to_string()),
+        ("a stack showing a member it has not", format!(r#"[{{"front":0,"tabs":[{{"root":{{"kind":"stack","shown":2,"members":[{leaf},{leaf}]}}}}]}}]"#)),
+        ("a stack showing a member below zero", format!(r#"[{{"front":0,"tabs":[{{"root":{{"kind":"stack","shown":-1,"members":[{leaf},{leaf}]}}}}]}}]"#)),
+        ("a stack that does not say which shows", format!(r#"[{{"front":0,"tabs":[{{"root":{{"kind":"stack","members":[{leaf},{leaf}]}}}}]}}]"#)),
+        ("a stack with no members key", r#"[{"front":0,"tabs":[{"root":{"kind":"stack","shown":0}}]}]"#.to_string()),
+        ("a stack with a split in it", format!(r#"[{{"front":0,"tabs":[{{"root":{{"kind":"stack","shown":0,"members":[{leaf},{{"kind":"split","direction":"horizontal","ratio":0.5,"left":{leaf},"right":{leaf}}}]}}}}]}}]"#)),
+        // Everything a leaf needs, under another kind: it is the kind that is
+        // refused, not something that happens to be missing.
+        ("a stack with a member that says it is a split", format!(r#"[{{"front":0,"tabs":[{{"root":{{"kind":"stack","shown":0,"members":[{leaf},{{"kind":"split","agent":{{"kind":"none"}}}}]}}}}]}}]"#)),
+        ("a stack with a stack in it", format!(r#"[{{"front":0,"tabs":[{{"root":{{"kind":"stack","shown":0,"members":[{leaf},{{"kind":"stack","shown":0,"members":[{leaf},{leaf}]}}]}}}}]}}]"#)),
         ("a by_supervisor that is not yes or no", r#"[{"front":0,"tabs":[{"root":{"kind":"leaf","by_supervisor":1,"agent":{"kind":"none"}}}]}]"#.to_string()),
         ("a frame from no corner", format!(r#"[{{"frame":{{"x":0,"y":0,"width":1,"height":1}},"front":0,"tabs":[{{"root":{leaf}}}]}}]"#)),
         ("a frame missing a side", format!(r#"[{{"frame":{{"origin":"top_left","x":0,"y":0,"width":1}},"front":0,"tabs":[{{"root":{leaf}}}]}}]"#)),

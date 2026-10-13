@@ -190,7 +190,29 @@ indirect enum ProjectNode: Equatable {
     /// nobody's, and it is still one the supervisor may use again. False
     /// is also what a pane nothing recorded this for reads as.
     case leaf(cwd: String, title: String, history: String, scrollback: String, bySupervisor: Bool, agent: ProjectAgent)
+    /// Several terminals in one pane: one showing, the others behind it,
+    /// a row of tabs over the pane to choose between them
+    /// (`Project.Stack` in `src/Project.zig`).
+    ///
+    /// **`members` are `.leaf` nodes and nothing else, and there are at
+    /// least two**: a stack takes the place of a pane, and one terminal in
+    /// a pane is a `.leaf`. `shown` is the index of the one in front; the
+    /// order is the order of the tabs. `ProjectFile.decode` never hands
+    /// back a stack that is not this, and `encoded()` throws rather than
+    /// write one (`ProjectFileError.badStack`) -- build one with `stacked`,
+    /// which knows that one member is a leaf.
+    case stack(shown: Int, members: [ProjectNode])
     case split(direction: Direction, ratio: Double, left: ProjectNode, right: ProjectNode)
+
+    /// The node for a pane that holds `members`, the one at `shown` in
+    /// front: that member itself when it is the only one, a stack of them
+    /// when there are more, nil when there are none. `shown` past the end
+    /// is the last.
+    static func stacked(shown: Int, members: [ProjectNode]) -> ProjectNode? {
+        guard let only = members.first else { return nil }
+        guard members.count > 1 else { return only }
+        return .stack(shown: min(max(shown, 0), members.count - 1), members: members)
+    }
 
     /// Mirrors `Project.Direction` in `src/Project.zig`, which mirrors
     /// `SplitTree.Direction` in `SplitTree.swift`: `horizontal` means the
@@ -206,6 +228,8 @@ indirect enum ProjectNode: Equatable {
     var leafCount: Int {
         switch self {
         case .leaf: return 1
+        // Every terminal of a stack is one the person has.
+        case .stack(_, let members): return members.reduce(0) { $0 + $1.leafCount }
         case .split(_, _, let left, let right): return left.leafCount + right.leafCount
         }
     }
@@ -213,6 +237,7 @@ indirect enum ProjectNode: Equatable {
     var scrollbackFilenames: [String] {
         switch self {
         case .leaf(_, _, _, let scrollback, _, _): return scrollback.isEmpty ? [] : [scrollback]
+        case .stack(_, let members): return members.flatMap(\.scrollbackFilenames)
         case .split(_, _, let left, let right): return left.scrollbackFilenames + right.scrollbackFilenames
         }
     }
@@ -230,6 +255,10 @@ enum ProjectFileError: LocalizedError, Equatable, CustomStringConvertible {
     /// A ratio or a frame holds a value that is not a finite number, which
     /// the file has no way to say.
     case notFinite
+    /// A stack with fewer than two members, with a member that is not a
+    /// pane, or whose `shown` is none of them. Refused rather than written
+    /// as something else.
+    case badStack
 
     var description: String {
         switch self {
@@ -237,6 +266,8 @@ enum ProjectFileError: LocalizedError, Equatable, CustomStringConvertible {
             return "the project file is format \(found), and this build reads up to format \(ProjectFile.formatVersion): a later version of Polter wrote it"
         case .notFinite:
             return "a split's ratio or a window's frame is not a finite number"
+        case .badStack:
+            return "a stack has fewer than two members, a member that is not a pane, or shows one it does not have"
         }
     }
 
@@ -315,6 +346,17 @@ enum ProjectFileWriting {
                 out += supervisor ? ",\"supervisor\":true" : ",\"supervisor\":false"
             }
             out += "}}"
+
+        case .stack(let shown, let members):
+            guard members.count >= 2, members.indices.contains(shown),
+                  members.allSatisfy({ if case .leaf = $0 { return true } else { return false } })
+            else { throw ProjectFileError.badStack }
+            out += "{\"kind\":\"stack\",\"shown\":\(shown),\"members\":["
+            for (i, member) in members.enumerated() {
+                if i > 0 { out += "," }
+                try self.node(member, into: &out)
+            }
+            out += "]}"
 
         case .split(let direction, let ratio, let left, let right):
             out += "{\"kind\":\"split\",\"direction\":\"\(direction.rawValue)\",\"ratio\":"
@@ -445,11 +487,13 @@ extension ProjectNode {
     var supervisorCount: Int {
         switch self {
         case .leaf(_, _, _, _, _, let agent): return agent.isSupervisor ? 1 : 0
+        case .stack(_, let members): return members.reduce(0) { $0 + $1.supervisorCount }
         case .split(_, _, let left, let right): return left.supervisorCount + right.supervisorCount
         }
     }
 
-    /// Left before right, which is the order `seen` is filled in.
+    /// Left before right, and a stack's members in their order, which is
+    /// the order `seen` is filled in.
     fileprivate func puttingRight(seen: inout Set<String>, demoting: Bool) -> ProjectNode {
         switch self {
         case .leaf(let cwd, let title, let history, let scrollback, let bySupervisor, var agent):
@@ -460,6 +504,13 @@ extension ProjectNode {
             return .leaf(
                 cwd: cwd, title: title, history: history, scrollback: kept ? scrollback : "",
                 bySupervisor: bySupervisor, agent: agent)
+
+        case .stack(let shown, let members):
+            var put: [ProjectNode] = []
+            for member in members {
+                put.append(member.puttingRight(seen: &seen, demoting: demoting))
+            }
+            return .stack(shown: shown, members: put)
 
         case .split(let direction, let ratio, let left, let right):
             let first = left.puttingRight(seen: &seen, demoting: demoting)
@@ -584,6 +635,7 @@ enum ProjectFileReading {
 
         private enum CodingKeys: String, CodingKey {
             case kind, cwd, title, history, scrollback, agent, direction, ratio, left, right
+            case shown, members
             case bySupervisor = "by_supervisor"
         }
 
@@ -613,6 +665,26 @@ enum ProjectFileReading {
                         ? try container.decode(Bool.self, forKey: .bySupervisor) : false,
                     // A format 1 file never said, whatever keys it has.
                     agent: format >= 2 ? try Self.agent(container) : .unknown)
+
+            case "stack":
+                // Format 1 has no such node. And nothing about a stack is
+                // put right (`Project.zig`'s module comment says why):
+                // fewer than two members, a member that is not a pane, or
+                // a `shown` that is none of them is an error.
+                guard format >= 2 else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .kind, in: container, debugDescription: "a format 1 project file has no stacks")
+                }
+                let members = try container.decode([Node].self, forKey: .members).map(\.node)
+                let shown = try container.decode(Int.self, forKey: .shown)
+                guard members.count >= 2, members.indices.contains(shown),
+                      members.allSatisfy({ if case .leaf = $0 { return true } else { return false } })
+                else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .members, in: container,
+                        debugDescription: "a stack has \(members.count) member(s), not all of them panes, or shows number \(shown)")
+                }
+                node = .stack(shown: shown, members: members)
 
             case "split":
                 // Both children are required. A split with only a `left` is
@@ -765,6 +837,15 @@ extension ProjectNode {
         scrollback project: ProjectScrollback.Location? = nil
     ) -> SplitTree<Ghostty.SurfaceView>.Node {
         switch self {
+        // ⚠️ **Only the member in front is brought back, for now.** Putting
+        // a stack back as one pane with every member in it, the one at
+        // `shown` in front, is the work of whoever wires the split tree's
+        // stacks to this (#1493); until then a project with a stack opens
+        // with that pane's front terminal only, and the first save after
+        // would write it without the others.
+        case .stack(let shown, let members):
+            return members[min(max(shown, 0), members.count - 1)].materializing(app, scrollback: project)
+
         // Who was in the pane is not acted on here: a restored pane is a
         // terminal in the right place, and starting an agent in it is a
         // decision for whoever opens the project.
