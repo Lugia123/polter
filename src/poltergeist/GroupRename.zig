@@ -2361,7 +2361,12 @@ test "#1267: the replayed panel has to match as well as the lines" {
 
     // A task event gone from the new file: the panel would come back one
     // task short, whatever the line check says.
-    const f = try std.fs.path.join(alloc, &.{ state, work_name, "tasks", "gamma", "2023-11-15.jsonl" });
+    // The day comes from the clock of whoever runs this, the way the log
+    // itself names it: `t0` is the 14th in UTC and the 15th east of it.
+    const day = daylog.dayOf(t0);
+    var day_buf: [32]u8 = undefined;
+    const day_file = try std.fmt.bufPrint(&day_buf, "{d:0>4}-{d:0>2}-{d:0>2}.jsonl", .{ day / 10000, (day / 100) % 100, day % 100 });
+    const f = try std.fs.path.join(alloc, &.{ state, work_name, "tasks", "gamma", day_file });
     defer alloc.free(f);
     const bytes = try std.Io.Dir.readFileAlloc(.cwd(), io, f, alloc, .limited(max_file_bytes));
     defer alloc.free(bytes);
