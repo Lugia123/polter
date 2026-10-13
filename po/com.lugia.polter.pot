@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.lugia.polter\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 18:49+0800\n"
+"POT-Creation-Date: 2026-10-13 21:44+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -52,9 +52,9 @@ msgstr ""
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
 #: src/apprt/gtk/class/application.zig:2225
-#: windows/host/src/project_picker.rs:251
-#: windows/host/src/project_picker.rs:420 windows/host/src/project_ui.rs:409
-#: windows/host/src/project_ui.rs:449 windows/host/src/projects_ui.rs:626
+#: windows/host/src/project_picker.rs:258
+#: windows/host/src/project_picker.rs:427 windows/host/src/project_ui.rs:413
+#: windows/host/src/project_ui.rs:453 windows/host/src/projects_ui.rs:626
 #: windows/host/src/projects_ui.rs:653 windows/host/src/projects_ui.rs:658
 #: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:2887
 msgid "Cancel"
@@ -63,7 +63,7 @@ msgstr ""
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:8
 #: src/apprt/gtk/ui/1.2/search-overlay.blp:90
 #: src/apprt/gtk/ui/1.3/surface-child-exited.blp:17
-#: windows/host/src/project_ui.rs:449
+#: windows/host/src/project_ui.rs:453
 msgid "Close"
 msgstr ""
 
@@ -979,7 +979,7 @@ msgid "Open a terminal showing what the terminals have said to each other."
 msgstr ""
 
 #: src/input/command.zig:612 windows/host/src/menu.rs:393
-#: windows/control-room/src/rules.rs:165
+#: windows/control-room/src/rules.rs:173
 msgid "Control Room"
 msgstr ""
 
@@ -1361,7 +1361,7 @@ msgid "The page could not be followed any further, so the picture ends here."
 msgstr ""
 
 #: src/input/screenshot.zig:126 windows/host/src/plugins_ui.rs:525
-#: windows/host/src/project_picker.rs:406 windows/host/src/roles_ui.rs:2258
+#: windows/host/src/project_picker.rs:413 windows/host/src/roles_ui.rs:2258
 #: windows/host/src/roles_ui.rs:2951 windows/host/src/roles_ui.rs:2968
 #: windows/host/src/roles_ui.rs:2982
 msgid "Save"
@@ -2360,15 +2360,15 @@ msgstr ""
 msgid "{} lines in all."
 msgstr ""
 
-#: windows/host/src/main.rs:6435
+#: windows/host/src/main.rs:6437
 msgid "No reason was recorded."
 msgstr ""
 
-#: windows/host/src/main.rs:6441
+#: windows/host/src/main.rs:6443
 msgid "Polter could not open its first terminal and will close."
 msgstr ""
 
-#: windows/host/src/main.rs:6443
+#: windows/host/src/main.rs:6445
 #, rust-format
 msgid "The full log is at {}"
 msgstr ""
@@ -2768,68 +2768,68 @@ msgstr ""
 msgid "What it is handed: {}"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:98 windows/host/src/project_picker.rs:626
+#: windows/host/src/project_picker.rs:98 windows/host/src/project_picker.rs:633
 msgid "Load Project"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:99 windows/host/src/project_picker.rs:225
-#: windows/host/src/project_picker.rs:697
-#: windows/host/src/project_picker.rs:703
+#: windows/host/src/project_picker.rs:99 windows/host/src/project_picker.rs:232
+#: windows/host/src/project_picker.rs:704
+#: windows/host/src/project_picker.rs:710
 msgid "Save as Project"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:242
+#: windows/host/src/project_picker.rs:249
 #, rust-format
 msgid "All {} Pages of This Window"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:251
+#: windows/host/src/project_picker.rs:258
 msgid "This Page Only"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:338
+#: windows/host/src/project_picker.rs:345
 #, rust-format
 msgid "Saves this tab: {} pane(s)"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:626 windows/host/src/projects_ui.rs:691
+#: windows/host/src/project_picker.rs:633 windows/host/src/projects_ui.rs:691
 msgid "The project could not be opened."
 msgstr ""
 
-#: windows/host/src/project_picker.rs:697
-#: windows/host/src/project_picker.rs:703 windows/host/src/projects_ui.rs:943
+#: windows/host/src/project_picker.rs:704
+#: windows/host/src/project_picker.rs:710 windows/host/src/projects_ui.rs:943
 #: windows/host/src/projects_ui.rs:956
 msgid "The project could not be saved."
 msgstr ""
 
-#: windows/host/src/project_picker.rs:1013 windows/host/src/settings_win.rs:934
+#: windows/host/src/project_picker.rs:1020 windows/host/src/settings_win.rs:934
 #: windows/host/src/settings_win.rs:1351
 msgid "Search"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:1014
+#: windows/host/src/project_picker.rs:1021
 msgid "New Project Name"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:1094 windows/host/src/projects_ui.rs:1214
+#: windows/host/src/project_picker.rs:1101 windows/host/src/projects_ui.rs:1214
 msgid "No Saved Projects"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:1094 windows/host/src/projects_ui.rs:1216
+#: windows/host/src/project_picker.rs:1101 windows/host/src/projects_ui.rs:1216
 msgid "No matching projects"
 msgstr ""
 
-#: windows/host/src/project_ui.rs:365 windows/host/src/projects_ui.rs:562
+#: windows/host/src/project_ui.rs:369 windows/host/src/projects_ui.rs:562
 #: windows/host/src/roles_ui.rs:732 windows/settings-shell/src/general.rs:77
-#: windows/control-room/src/rules.rs:168
+#: windows/control-room/src/rules.rs:176
 msgid "Polter"
 msgstr ""
 
-#: windows/host/src/project_ui.rs:407
+#: windows/host/src/project_ui.rs:411
 msgid "Close Project?"
 msgstr ""
 
-#: windows/host/src/project_ui.rs:408
+#: windows/host/src/project_ui.rs:412
 msgid ""
 "A terminal of this project still has a running process. If you close the "
 "project the process will be killed."
@@ -3692,7 +3692,7 @@ msgstr ""
 msgid "Worker"
 msgstr ""
 
-#: windows/control-room/src/rules.rs:166
+#: windows/control-room/src/rules.rs:174
 msgid "Polter — Control Room"
 msgstr ""
 
@@ -3714,7 +3714,7 @@ msgid "This group has no supervisor."
 msgstr ""
 
 #: windows/control-room/src/scene.rs:35
-msgid "The supervisor's terminal is in its own tab."
+msgid "Showing in the supervisor's tab"
 msgstr ""
 
 #: windows/control-room/src/scene.rs:36
@@ -3833,7 +3833,7 @@ msgid "This terminal is no longer open."
 msgstr ""
 
 #: windows/control-room/src/scene.rs:78
-msgid "This terminal is in its own tab."
+msgid "Showing in its own tab"
 msgstr ""
 
 #: windows/projects/src/page_rules.rs:100

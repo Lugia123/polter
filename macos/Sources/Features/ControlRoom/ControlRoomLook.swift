@@ -350,6 +350,29 @@ enum ControlRoomLook {
         static let doneUnseenDot: Double = 6.0
     }
 
+    /// A terminal that is being shown somewhere else: the last frame it drew here, frosted, under the sentence that says where it went. The whole of it is one button.
+    enum Elsewhere {
+        /// How far the kept frame is blurred, as the sigma of a Gaussian in that frame's own pixels: enough that no word of it can be read.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let blur: Double = 10.0
+        /// How much of the terminal's ground is laid over the whole blurred frame. At 0.65 the frame can still be told for the screen it was (the supervisor, on build-18: at 0.86 it was "a flat colour and a line of words" again). The words are not kept readable by this; `shade` does that.
+        /// TENTATIVE (other candidate: 0.86). The user has seen neither on a real terminal; 0.86 is where the veil alone keeps the words at 4.5:1 and the frame is a faint shadow.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let veil: Double = 0.65
+        /// How much more of the terminal's ground is laid just behind the two lines of words, fading out round them with no edge. With the veil, 0.867 of the ground is under the words: both lines keep 4.5:1 over any frame at all, white or black, in both themes.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let shade: Double = 0.62
+        /// How far past the words the shade goes before it is gone: it is an ellipse with radii of the words' half-width and half-height, each times the square root of two, plus this.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let shadeReach: Double = 96.0
+        /// The shade is at its full amount out to this fraction of the ellipse's radius and fades over the rest: nearly a third of it, so that over a frame it stands out against (all white, in the dark theme) it has no edge to be seen as a plate. The corners of the words' box are always inside the full part (at most 0.67 for words up to 900 across and 80 tall).
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let shadeFullWithin: Double = 0.7
+        /// The frame is kept no larger than this on its longer side, in pixels: it is only ever shown blurred.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let frameLongestSide: Double = 640.0
+    }
+
     /// The selected row of the group list and the selected window tab: a chip at rest, glass while it slides.
     enum Selection {
         /// The width of the faint band just inside the chip's edge.
@@ -696,6 +719,7 @@ enum ControlRoomLook {
         "stack_tab.inset",
         "stack_tab.more_button",
         "stack_tab.min_width",
+        "elsewhere.veil",
         "selection.spring_damping",
         "selection.glass_at_rest",
         "selection.refraction_shown",

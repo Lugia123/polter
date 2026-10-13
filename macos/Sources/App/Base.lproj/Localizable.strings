@@ -704,15 +704,14 @@
 "Supervisor" = "Supervisor";
 
 /* 总控台：右栏的总管终端 */
-"This terminal is in the Control Room." = "This terminal is in the Control Room.";
-"Bring It Back" = "Bring It Back";
-"Show It Here" = "Show It Here";
+"Showing in the control room" = "Showing in the control room";
+"Click to switch here" = "Click to switch here";
 "Select a group to see its supervisor." = "Select a group to see its supervisor.";
 "This group has no supervisor." = "This group has no supervisor.";
 "The supervisor's terminal is no longer open." = "The supervisor's terminal is no longer open.";
-"The supervisor's terminal is in its own tab." = "The supervisor's terminal is in its own tab.";
+"Showing in the supervisor's tab" = "Showing in the supervisor's tab";
 "This terminal is no longer open." = "This terminal is no longer open.";
-"This terminal is in its own tab." = "This terminal is in its own tab.";
+"Showing in its own tab" = "Showing in its own tab";
 
 /* 总控台：新建群、给没有总管的群启动总管 */
 "A group's name is lowercase letters, digits and dashes, 48 at most." = "A group's name is lowercase letters, digits and dashes, 48 at most.";

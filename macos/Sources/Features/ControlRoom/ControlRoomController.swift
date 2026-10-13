@@ -273,6 +273,12 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         if view.isFirstResponder { window?.makeFirstResponder(nil) }
         view.focusDidChange(false)
 
+        // Before it moves: the frame at the size of the right-hand side,
+        // for the sentence that says it went back to be drawn over.
+        model.frozen = ControlRoomLender.terminal(of: view).flatMap { terminal in
+            ControlRoomLender.freeze(view).map { (terminal: terminal, frame: $0) }
+        }
+
         detail.giveBack()
         // Its pane draws the terminal again from here on.
         lender.markReturned()

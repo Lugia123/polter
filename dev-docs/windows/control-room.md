@@ -686,7 +686,7 @@ Windows 借出的那一格没有离开它的窗口，动作带着它的表面，
 | 行上写什么 | 与群的行一样：图形、状态的字、等的是什么；「谁在等」那一格是空的（这一行就是那个终端） | `scene` 照行画，没有为它另写 |
 | 选中它 | 右栏放的是**它自己**的终端：借出、还回、切走还回、点进去打字，全是群的总管那一套，没有另一套 | `Row::steward` 就是它自己，`lend` 不用知道它是哪一类 |
 | 右栏的标题条 | 它的标题，后面跟它那一格的框的身份：没建群的总管写「Supervisor」、被看管的写「Worker」、普通的不写。框仍是总管的框（总控台只有这一种） | `scene::build_right` |
-| 它不在右栏时 | 关掉了：「This terminal is no longer open.」；在它自己的标签页或别的窗口：「This terminal is in its own tab.」（后者照旧带「Go to Its Tab」）。不说「总管」，不出「启动总管」 | 同上 |
+| 它不在右栏时 | 关掉了：「This terminal is no longer open.」；在它自己的标签页或别的窗口：「Showing in its own tab」（后者照旧带「Go to Its Tab」；#1500 起改成这句，原先是「This terminal is in its own tab.」）。不说「总管」，不出「启动总管」 | 同上 |
 | 看过 | 与群的行**同一条规则**（没看过、选中、总控台在前面、停够时间）；只是发出去的请求点的是终端：`{"act":"seen","terminal":"0x…"}`，群的行照旧发 `"group"`。发哪一种看那一行是不是单独的终端（`Row::alone`），不从行的身份里猜（#1475；#1471 那一版是「不发」，因为核心当时只认群名） | `act::SeenMarker`、`Act::SeenTerminal` |
 | 两句标题 | 照核心写的 `header_waiting` / `header_quiet`（`count`、`of`、`number`）：下面全是群时写「N groups…」，正好一个写「1 group…」；里面有单独的终端时不写「group」，N 是 `count`（含它们）。单复数是核心的 `number` 说的，不从数里算。核心没给这两项的旧快照，照 `groups_needing_me` / `groups_other` 写，与从前一样（#1475） | `list::waiting_heading`、`list::quiet_heading` |
 | 哪一行在呼吸 | 核心列出的第一个在等的终端如果不在任何群里，呼吸的就是它那一行 | `pulse::pulsing_row_id` |
@@ -720,7 +720,7 @@ Windows 借出的那一格没有离开它的窗口，动作带着它的表面，
 | `{} needs nothing from you` | `{} 个不用你管` |
 | `{} need nothing from you` | `{} 个不用你管` |
 | `This terminal is no longer open.` | `这个终端已经不在了。` |
-| `This terminal is in its own tab.` | `这个终端在它自己的标签页里。` |
+| `Showing in its own tab` | `界面在它自己的标签页` |
 
 **没有自动判据的**：宿主里「等够了就发」那几行（`seen_due`）本身没改，只是日志里点的从群名换成了行的身份；
 核心收到按终端的 `seen` 以后那一行真的不再是「做完了，没看」，要真机看。
@@ -742,7 +742,7 @@ Windows 借出的那一格没有离开它的窗口，动作带着它的表面，
    「Supervisor」，选中后者写「Worker」。
 6. 选中 N 的行后在 N 的标签页里 `exit`。应：那一行消失（核心不再列它）；消失前右栏若还选着它，写
    「This terminal is no longer open.」，没有「启动总管」按钮，没有「supervisor」字样。
-7. 把 N 的标签页拖到另一个窗口，回总控台选中它。应：「This terminal is in its own tab.」加「Go to Its Tab」，点了过去。
+7. 把 N 的标签页拖到另一个窗口，回总控台选中它。应：「Showing in its own tab」加「Go to Its Tab」，点了过去。
 8. 只有它在等、没有任何群在等时：它是唯一呼吸的那一行；有群等得更久时呼吸的是那个群。
 9. 一个刚开、还没有标题的终端成了这类行：行上名字是空的但不崩，事件日志无 `Application Error`。
 10. 标题：只有群在等时写「N groups waiting for you」（中文「N 个群在等你」），正好一个群时英文是「1 group waiting for you」；

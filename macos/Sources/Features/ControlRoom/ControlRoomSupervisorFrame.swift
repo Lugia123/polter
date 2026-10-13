@@ -42,13 +42,34 @@ struct ControlRoomDetailMessage: View {
     /// The selected row is one terminal on its own, not a group: the
     /// sentences are about that terminal.
     var alone: Bool = false
+    /// The last frame the terminal drew here before the person took it
+    /// back; nil when it has not been drawn here.
+    var lastFrame: CGImage?
     var onStart: (_ role: String?, _ cwd: String?, _ session: ControlRoomStartChoice.Session?) -> Void = { _, _, _ in }
 
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
+        if case .takenBack = detail {
+            // The terminal is somewhere else: the one case of having none
+            // where a press brings it here.
+            ControlRoomElsewhere(
+                frame: lastFrame,
+                sentence: Self.words(for: detail, start: start, alone: alone),
+                action: ControlRoomElsewhere.switchHere,
+                perform: askFor)
+                // The frame's inner corners, as the terminal itself has.
+                .clipShape(RoundedRectangle(cornerRadius: CGFloat(Look.Radius.supervisorInner), style: .continuous))
+        } else {
+            sentence
+        }
+    }
+
+    /// Every other way of having no terminal: a sentence, and for a group
+    /// with no supervisor what starts one.
+    private var sentence: some View {
         let theme = Look.theme(scheme)
-        VStack(spacing: CGFloat(Look.Side.rowGap)) {
+        return VStack(spacing: CGFloat(Look.Side.rowGap)) {
             Text(Self.words(for: detail, start: start, alone: alone))
                 .foregroundStyle(theme.textSecondary.color)
             if case let .noSupervisor(group) = detail, let start, start.canStart {
@@ -58,13 +79,6 @@ struct ControlRoomDetailMessage: View {
                     // A pick is about one group: another group starts from
                     // what the core names for it.
                     .id(group)
-            }
-            if case .takenBack = detail {
-                Button(action: askFor) {
-                    Text(String(localized: "Show It Here", comment: "总控台：终端被要回原处以后，右栏上把它再放过来的按钮"))
-                        .foregroundStyle(theme.attentionText.color)
-                }
-                .buttonStyle(.plain)
             }
         }
         .font(.system(size: CGFloat(Look.Font.body)))

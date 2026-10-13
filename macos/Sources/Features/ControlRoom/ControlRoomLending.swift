@@ -206,7 +206,7 @@ extension ControlRoomLending {
             case .noSupervisor, .supervisorGone:
                 return String(localized: "This terminal is no longer open.", comment: "总控台：选中的是一个不在任何群里的终端，它已经关掉时右栏的说明")
             case .takenBack:
-                return String(localized: "This terminal is in its own tab.", comment: "总控台：选中的是一个不在任何群里的终端，它被要回原处以后右栏的说明")
+                return String(localized: "Showing in its own tab", comment: "总控台：选中的是一个不在任何群里的终端，它被要回原处以后右栏的第一行：界面现在在哪")
             case .nothingSelected, .terminal:
                 break
             }
@@ -242,7 +242,7 @@ extension ControlRoomLending {
         case .supervisorGone:
             return String(localized: "The supervisor's terminal is no longer open.", comment: "总控台：总管的终端已经关掉时右栏的说明")
         case .takenBack:
-            return String(localized: "The supervisor's terminal is in its own tab.", comment: "总控台：终端被要回原处以后右栏的说明")
+            return String(localized: "Showing in the supervisor's tab", comment: "总控台：总管的终端被要回原处以后右栏的第一行：界面现在在哪")
         case .terminal:
             return ""
         }

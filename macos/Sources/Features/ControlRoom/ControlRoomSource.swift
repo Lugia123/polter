@@ -108,6 +108,16 @@ final class ControlRoomModel: ObservableObject {
     /// frame's edge says so. Written by `ControlRoomController`.
     @Published var detailHasKeyboard = false
 
+    /// The last frame a terminal drew on the right-hand side, taken as it
+    /// was given back, and which terminal that was. Written by
+    /// `ControlRoomController`.
+    @Published var frozen: (terminal: String, frame: CGImage)?
+
+    /// `ControlRoomElsewhere.frame`, asked of what was last taken.
+    func lastFrame(for detail: ControlRoomLending.Detail) -> CGImage? {
+        ControlRoomElsewhere.frame(for: detail, frozen: frozen)
+    }
+
     /// The title of the frame on the right while it holds a terminal; nil
     /// while it holds a sentence.
     var supervisorTitle: ControlRoomList.SupervisorTitle? {

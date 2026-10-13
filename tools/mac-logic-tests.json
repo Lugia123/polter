@@ -19,6 +19,7 @@
   "sources": {
     "in": [
       "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomElsewhere.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomGlyph.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomHomecoming.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomLending.swift",
@@ -38,6 +39,7 @@
       "macos/Sources/Features/ControlRoom/PaneStackStripView.swift",
       "macos/Sources/Features/ControlRoom/TerminalPresence.swift",
       "macos/Sources/Features/Splits/SplitTree.swift",
+      "macos/Sources/Helpers/Backport.swift",
       "macos/Sources/Helpers/Extensions/Array+Extension.swift",
       "macos/Sources/Features/Terminal/TabAccessory.swift",
       {
@@ -85,6 +87,7 @@
   },
   "tests": {
     "in": [
+      "macos/Tests/ControlRoom/ControlRoomElsewhereTests.swift",
       "macos/Tests/ControlRoom/ControlRoomFeedTests.swift",
       "macos/Tests/ControlRoom/ControlRoomHeaderTests.swift",
       "macos/Tests/ControlRoom/ControlRoomHomecomingTests.swift",

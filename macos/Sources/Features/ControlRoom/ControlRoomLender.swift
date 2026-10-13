@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import GhosttyKit
+import CoreImage
 import SwiftUI
 
 /// The one terminal the control room has on loan, as the rest of the
@@ -34,6 +35,10 @@ final class ControlRoomLender: ObservableObject {
     /// watches to know whether to draw itself or the placeholder.
     @Published private(set) var lentID: UUID?
     private(set) weak var lent: Ghostty.SurfaceView?
+    /// The last frame the lent terminal drew in its own pane, taken as it
+    /// left: what the placeholder there is drawn over. Nil with nothing
+    /// lent, or when the terminal had drawn nothing.
+    @Published private(set) var frozenAtHome: CGImage?
 
     /// The person asked for it back from the placeholder.
     var onReclaim: ((Ghostty.SurfaceView) -> Void)?
@@ -53,6 +58,8 @@ final class ControlRoomLender: ObservableObject {
     func markLent(_ view: Ghostty.SurfaceView) {
         if let terminal = Self.terminal(of: view) { homecoming.cancelled(terminal) }
         if let search = view.searchState { movedSearches.moved(search) }
+        // Before it moves: this is the frame at the size of its own pane.
+        frozenAtHome = Self.freeze(view)
         lent = view
         lentID = view.id
     }
@@ -61,6 +68,7 @@ final class ControlRoomLender: ObservableObject {
         if let search = lent?.searchState { movedSearches.moved(search) }
         lent = nil
         lentID = nil
+        frozenAtHome = nil
     }
 
     /// `view` was given back and its own tab is still there. `wanted`
@@ -126,6 +134,23 @@ final class ControlRoomLender: ObservableObject {
         onHomeGone?(lent)
     }
 
+    private static let freezer = CIContext()
+
+    /// A still, frosted copy of the frame `view` is showing now; nil when
+    /// it has drawn none.
+    ///
+    /// The renderer hands each frame to the view's layer as its `contents`
+    /// (`IOSurfaceLayer.setSurface`), one of a few surfaces it draws into
+    /// in turn -- so the surface itself goes on changing. This copies it
+    /// out (`ControlRoomElsewhere.frosted`).
+    static func freeze(_ view: Ghostty.SurfaceView) -> CGImage? {
+        guard let contents = view.layer?.contents,
+              CFGetTypeID(contents as CFTypeRef) == IOSurfaceGetTypeID() else { return nil }
+        // Checked the line above.
+        let surface = unsafeBitCast(contents as AnyObject, to: IOSurfaceRef.self)
+        return ControlRoomElsewhere.frosted(CIImage(ioSurface: surface), with: freezer)
+    }
+
     /// The id the core gives a terminal, as the snapshot writes it; nil for
     /// a view with no terminal behind it.
     static func terminal(of view: Ghostty.SurfaceView) -> String? {
@@ -167,32 +192,15 @@ extension Ghostty.SurfaceView {
 /// What a pane draws while its terminal is in the control room: where it
 /// went, and one press to have it back.
 struct ControlRoomLentPlaceholder: View {
-    typealias Look = ControlRoomLook
-
     let surfaceView: Ghostty.SurfaceView
-
-    @Environment(\.colorScheme) private var scheme
+    /// The last frame it drew here (`ControlRoomLender.frozenAtHome`).
+    let lastFrame: CGImage?
 
     var body: some View {
-        let theme = Look.theme(scheme)
-        VStack(spacing: CGFloat(Look.Side.rowGap)) {
-            Text(String(localized: "This terminal is in the Control Room.", comment: "总控台：终端被借到总控台时，原处占位上的说明"))
-                .foregroundStyle(theme.textSecondary.color)
-            Button {
-                ControlRoomLender.shared.reclaim(surfaceView)
-            } label: {
-                Text(String(localized: "Bring It Back", comment: "总控台：原处占位上把终端要回来的按钮"))
-                    .foregroundStyle(theme.attentionText.color)
-            }
-            .buttonStyle(.plain)
-        }
-        .font(.system(size: CGFloat(Look.Font.body)))
-        .multilineTextAlignment(.center)
-        .padding(CGFloat(Look.Space.frameToContent))
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(theme.terminalBackground.color)
-        // The whole pane takes the press, not only the words.
-        .contentShape(Rectangle())
-        .onTapGesture { ControlRoomLender.shared.reclaim(surfaceView) }
+        ControlRoomElsewhere(
+            frame: lastFrame,
+            sentence: String(localized: "Showing in the control room", comment: "总控台：终端被借到总控台时，它自己那一格上的第一行：界面现在在哪"),
+            action: ControlRoomElsewhere.switchHere,
+            perform: { ControlRoomLender.shared.reclaim(surfaceView) })
     }
 }

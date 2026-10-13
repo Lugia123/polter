@@ -105,7 +105,7 @@ private struct TerminalSplitLeaf: View {
                 if lender.lentID == surfaceView.id {
                     // The view is on the control room's right-hand side;
                     // the pane keeps its place in the tree.
-                    ControlRoomLentPlaceholder(surfaceView: surfaceView)
+                    ControlRoomLentPlaceholder(surfaceView: surfaceView, lastFrame: lender.frozenAtHome)
                 } else {
                     Ghostty.InspectableSurface(
                         surfaceView: surfaceView,

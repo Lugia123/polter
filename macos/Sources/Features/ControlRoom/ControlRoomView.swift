@@ -46,6 +46,7 @@ struct ControlRoomView: View {
                             chooseRole: model.list?.chooseSupervisorRole ?? false,
                             refusal: model.startRefusal.flatMap { $0.group == model.selection ? $0.message : nil },
                             alone: model.selectedRow?.alone != nil,
+                            lastFrame: model.lastFrame(for: model.detail),
                             onStart: { role, cwd, session in
                                 guard let group = model.selection else { return }
                                 model.startSupervisor(for: group, role: role, cwd: cwd, session: session)

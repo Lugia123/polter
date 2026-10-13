@@ -32,7 +32,7 @@ pub mod msg {
     pub const NOT_YET: &str = n_("Nothing has been worked out yet.");
     pub const NO_SELECTION: &str = n_("Select a group on the left.");
     pub const NO_SUPERVISOR: &str = n_("This group has no supervisor.");
-    pub const IN_ITS_OWN_TAB: &str = n_("The supervisor's terminal is in its own tab.");
+    pub const IN_ITS_OWN_TAB: &str = n_("Showing in the supervisor's tab");
     pub const GO_TO_ITS_TAB: &str = n_("Go to Its Tab");
     pub const HIDDEN_STEPS: &str = n_("{} more steps");
     /// The one button of the list: at the right end of its header.
@@ -75,7 +75,7 @@ pub mod msg {
     /// The right side, for a row that is a terminal in no group: it is
     /// itself what would be shown there. The macOS host's sentences.
     pub const TERMINAL_GONE: &str = n_("This terminal is no longer open.");
-    pub const TERMINAL_IN_ITS_OWN_TAB: &str = n_("This terminal is in its own tab.");
+    pub const TERMINAL_IN_ITS_OWN_TAB: &str = n_("Showing in its own tab");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
