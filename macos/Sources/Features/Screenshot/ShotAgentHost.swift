@@ -251,7 +251,9 @@ final class ShotAgentHost {
         var panes: [PixelRect] = []
         for window in NSApp.windows where window.isVisible && !window.isMiniaturized && window.isOnActiveSpace {
             guard let controller = window.windowController as? BaseTerminalController else { continue }
-            for view in controller.surfaceTree where view.poltergeistShielded {
+            // What is on screen: a shielded terminal stacked behind another
+            // has no pixels to cover.
+            for view in controller.surfaceTree.shownLeaves() where view.poltergeistShielded {
                 guard view.window === window else { continue }
                 let onScreen = window.convertToScreen(view.convert(view.bounds, to: nil))
                 panes.append(ShotAgent.rect(

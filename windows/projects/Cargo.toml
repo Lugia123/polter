@@ -1,0 +1,17 @@
+[package]
+name = "polter-projects"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A project while the host has it in hand: which open tab is which page of
+# the file, what a save makes of the tabs that are open and the pages that
+# are not, where a window of a project opens, and how soon a change is
+# written. The macOS host's `ProjectPages.swift` and `ProjectAutosave.swift`
+# are the same rules, case for case.
+#
+# Out of `polter-host` for the reason `projectfile` is: none of this needs a
+# window, and inside the host its tests could only run on Windows -- which
+# is not where it is written.
+[dependencies]
+polter-projectfile = { path = "../projectfile" }

@@ -222,7 +222,7 @@ fn read_items(frame: HWND) -> Vec<Item> {
         .map(|e| {
             let panes = project::read_file(&e.path)
                 .ok()
-                .and_then(|s| s.first_tab().map(crate::project_ui::leaf_count))
+                .map(|s| s.pane_count())
                 .unwrap_or(0);
             Item { name: e.name, saved_at: e.saved_at, panes, path: e.path }
         })
@@ -530,9 +530,9 @@ fn accept() {
 fn load(item: Item) {
     let Some(h) = dismiss() else { return };
     let frame = h.frame;
-    wlogf!(frame, "[project] load {:?} (saved_at={}) -> load_project_into_new_tab …", item.name, item.saved_at);
+    wlogf!(frame, "[project] load {:?} (saved_at={}) -> open_project …", item.name, item.saved_at);
     let hinst = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }.map(Into::into).unwrap_or_default();
-    match crate::project_ui::load_project_into_new_tab(frame, crate::app_handle(), hinst, &item.path) {
+    match crate::project_ui::open_project(frame, crate::app_handle(), hinst, &item.path) {
         Ok(()) => wlogf!(frame, "[project] loaded {:?}", item.name),
         Err(e) => {
             // **Said on screen as well as in the log.** The row was picked;

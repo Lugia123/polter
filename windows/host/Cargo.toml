@@ -187,6 +187,13 @@ path = "../projectname"
 [dependencies.polter-projectfile]
 path = "../projectfile"
 
+# A project while this host has it in hand: pages, placement, how soon a
+# change is written (`project_session.rs` gathers and carries out, this
+# decides). Out here because its tests are the macOS host's, and inside this
+# crate they could only run on Windows.
+[dependencies.polter-projects]
+path = "../projects"
+
 # The settings window's rules (`settings_win.rs` draws, this decides). Out
 # here for the reason `projectname` is: a rule tested only on Windows is one
 # that can be broken on the Mac with everything green.

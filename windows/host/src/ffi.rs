@@ -1521,7 +1521,7 @@ pub struct Api {
     /// `ghostty_surface_capture_scrollback(surface, path)`: queue a write of
     /// this pane's scrollback snapshot to `path` (absolute, UTF-8; the core
     /// copies it). `true` means queued, not written. Only a project save
-    /// calls it (`project_ui::capture_scrollback`).
+    /// calls it (`project_ui::name_leaves`).
     pub surface_capture_scrollback: unsafe extern "C" fn(Surface, *const c_char) -> bool,
     /// `ghostty_surface_set_scrollback_journal(surface, path)`: keep this
     /// pane's scrollback written to `path` as it runs (absolute, ending in

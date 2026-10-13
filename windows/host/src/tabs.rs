@@ -3791,6 +3791,24 @@ pub fn set_scrollback_slot(frame: HWND, pane: PaneId, slot: crate::journal::Jour
     }
 }
 
+/// The tab most recently added to `frame`: the last one.
+pub fn last_tab_id(frame: HWND) -> Option<TabId> {
+    window(frame).and_then(|w| w.tabs.last().map(|t| t.id))
+}
+
+/// Which window a tab is in, where it stands among that window's tabs, and
+/// whether it is the one showing there. Every window is asked: a tab can be
+/// moved to another, and its identity goes with it. None for a tab that is
+/// nowhere any more.
+pub fn locate_tab(id: TabId) -> Option<(HWND, usize, bool)> {
+    with_windows(|ws| {
+        ws.iter().find_map(|w| {
+            let at = w.tabs.iter().position(|t| t.id == id)?;
+            Some((HWND(w.frame as *mut c_void), at, at == w.active))
+        })
+    })
+}
+
 /// Where a tab sits right now, and how many there are.
 ///
 /// **Resolved at the moment it is asked, never cached.** Everything that
@@ -4019,6 +4037,7 @@ pub fn set_cwd_for_surface(surface: Surface, cwd: String) -> bool {
         false
     });
     if landed {
+        crate::project_session::note(polter_projects::autosave::Change::PaneDetail);
         return true;
     }
     // No tab yet: it is still being built. Held until `create_tab` collects it.
@@ -5859,6 +5878,8 @@ fn set_active(frame: HWND, idx: usize) {
         }
         win.active = idx.min(win.tabs.len() - 1);
     }
+    // Which page is in front is part of a project.
+    crate::project_session::note(polter_projects::autosave::Change::Front);
     layout(frame);
     // **One line, and it exists to split a dark stretch.** A main-thread
     // freeze on a tab click left `[strip] click -> activate` and then the
@@ -5952,6 +5973,19 @@ fn free_pane(id: PaneId, hwnd: isize, surface: usize) {
 /// computed a tab index and the tabs moved underneath it. That is a bug in
 /// the caller, and it used to close no tab and say nothing.
 fn destroy_tab_at(frame: HWND, idx: usize) {
+    // **Before anything is taken apart, and outside every lock**: a tab that
+    // is a page of a project is written one last time while its panes are
+    // there, and then stops being a page that is open
+    // (`project_session::tab_closing`). Its page stays in the project.
+    //
+    // ⚠️ The id is read in a statement of its own: written inside the `if
+    // let`, the window guard would live for the whole block, and the save
+    // asks the tab model for the tab's tree -- the non-reentrant lock taken
+    // twice (`project_ui::tab_tree`'s doc comment has the run that did it).
+    let closing = window(frame).and_then(|w| w.tabs.get(idx).map(|t| t.id));
+    if let Some(id) = closing {
+        crate::project_session::tab_closing(frame, id);
+    }
     // Both come out of the one critical section: the panes to free, and what
     // `reopen.rs` should be told once the guard is gone.
     #[allow(clippy::type_complexity)]
@@ -6299,6 +6333,23 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
         // one window are otherwise three identical lines.
         wlogf!(frame, "[ops] running {} for {}; {} queued behind it (queued from {})",
             op.name(), crate::winid::tag(frame), behind, from);
+
+        // **Every way a tab's tree, the tabs of a window or their order
+        // change is an op**, so this is the one place an open project hears
+        // of all of them. Told for every op, whatever it is: a write that
+        // changes nothing is not made (`project_session::note`). Told
+        // *before* the op runs, because several arms below leave the loop
+        // body early -- and the write it asks for is a second off at the
+        // soonest, by when the op has run.
+        //
+        // A title is the one thing that arrives here many times a second
+        // for as long as an agent works, and is worth least: it may wait
+        // longest.
+        crate::project_session::note(if matches!(op, Op::SetTabTitle { .. }) {
+            polter_projects::autosave::Change::PaneDetail
+        } else {
+            polter_projects::autosave::Change::Layout
+        });
 
         match op {
             Op::NewTab(cwd) => {

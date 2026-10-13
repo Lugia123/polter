@@ -65,6 +65,12 @@ pub const Stated = struct {
     /// When it is open: the terminal in the pane its file marks as the
     /// supervisor's. Null when it is not open, or marks none.
     supervisor: ?Id,
+    /// When it is open: the terminals in the panes its file marks as
+    /// opened by its supervisor, whoever is in them now. Empty when it is
+    /// not open, or marks none. This is how "the supervisor's own panes"
+    /// outlives a restart: terminal ids do not, the file's mark does, and
+    /// the host says here which terminals the marked panes are this time.
+    workers: []const Id,
 
     fn holds(self: Stated, terminal: Id) bool {
         const pages = self.open orelse return false;
@@ -161,7 +167,18 @@ pub fn parse(arena: Allocator, value: std.json.Value) ParseError![]const Stated 
             .null => null,
             else => |v| try idOf(v),
         };
-        o.* = .{ .name = name, .group = group, .pages = pages, .open = open, .supervisor = supervisor };
+        const workers: []const Id = switch (obj.get("workers") orelse return error.BadRequest) {
+            .array => |listed| workers: {
+                const made = try arena.alloc(Id, listed.items.len);
+                for (listed.items, made) |id, *m| m.* = try idOf(id);
+                break :workers made;
+            },
+            else => return error.BadRequest,
+        };
+        o.* = .{ .name = name, .group = group, .pages = pages, .open = open, .supervisor = supervisor, .workers = workers };
+        // Like the supervisor's pane: a pane of this project, or the
+        // statement contradicts itself.
+        for (workers) |w| if (!o.holds(w)) return error.BadRequest;
         // The supervisor's pane is a pane of the project: one that is on
         // none of its pages is a statement that contradicts itself.
         if (supervisor) |s| if (!o.holds(s)) return error.BadRequest;
@@ -196,6 +213,7 @@ pub fn state(self: *Projects, list: []const Stated) Allocator.Error!void {
                 break :open made;
             } else null,
             .supervisor = p.supervisor,
+            .workers = try aa.dupe(Id, p.workers),
         };
         if (p.open) |pages| for (pages) |page| {
             for (page) |id| try self.settled.put(self.alloc, id, {});
@@ -714,8 +732,8 @@ test "Projects: a statement is read whole or not at all" {
     const list = try read(aa,
         \\[{"name":"web-app","group":"web-app","pages":2,
         \\  "open":[["0x00000000000000a1","0x00000000000000b1"],["0x00000000000000b2"]],
-        \\  "supervisor":"0x00000000000000a1"},
-        \\ {"name":"notes","group":null,"pages":1,"open":null,"supervisor":null}]
+        \\  "supervisor":"0x00000000000000a1","workers":[]},
+        \\ {"name":"notes","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]}]
     );
     try testing.expectEqual(@as(usize, 2), list.len);
     try testing.expectEqualStrings("web-app", list[0].group.?);
@@ -730,35 +748,35 @@ test "Projects: a statement is read whole or not at all" {
     const bad = [_][]const u8{
         "{}",
         "[7]",
-        \\[{"group":null,"pages":1,"open":null,"supervisor":null}]
+        \\[{"group":null,"pages":1,"open":null,"supervisor":null,"workers":[]}]
         ,
-        \\[{"name":"","group":null,"pages":1,"open":null,"supervisor":null}]
+        \\[{"name":"","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]}]
         ,
-        \\[{"name":"a","pages":1,"open":null,"supervisor":null}]
+        \\[{"name":"a","pages":1,"open":null,"supervisor":null,"workers":[]}]
         ,
-        \\[{"name":"a","group":"","pages":1,"open":null,"supervisor":null}]
+        \\[{"name":"a","group":"","pages":1,"open":null,"supervisor":null,"workers":[]}]
         ,
-        \\[{"name":"a","group":null,"open":null,"supervisor":null}]
+        \\[{"name":"a","group":null,"open":null,"supervisor":null,"workers":[]}]
         ,
-        \\[{"name":"a","group":null,"pages":-1,"open":null,"supervisor":null}]
+        \\[{"name":"a","group":null,"pages":-1,"open":null,"supervisor":null,"workers":[]}]
         ,
-        \\[{"name":"a","group":null,"pages":1,"supervisor":null}]
+        \\[{"name":"a","group":null,"pages":1,"supervisor":null,"workers":[]}]
         ,
         \\[{"name":"a","group":null,"pages":1,"open":null}]
         ,
-        \\[{"name":"a","group":null,"pages":1,"open":[["161"]],"supervisor":null}]
+        \\[{"name":"a","group":null,"pages":1,"open":[["161"]],"supervisor":null,"workers":[]}]
         ,
         // Two projects of one name; one terminal on the pages of two.
-        \\[{"name":"a","group":null,"pages":1,"open":null,"supervisor":null},
-        \\ {"name":"a","group":null,"pages":1,"open":null,"supervisor":null}]
+        \\[{"name":"a","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]},
+        \\ {"name":"a","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]}]
         ,
-        \\[{"name":"a","group":null,"pages":1,"open":[["0x00000000000000a1"]],"supervisor":null},
-        \\ {"name":"b","group":null,"pages":1,"open":[["0x00000000000000a1"]],"supervisor":null}]
+        \\[{"name":"a","group":null,"pages":1,"open":[["0x00000000000000a1"]],"supervisor":null,"workers":[]},
+        \\ {"name":"b","group":null,"pages":1,"open":[["0x00000000000000a1"]],"supervisor":null,"workers":[]}]
         ,
         // A supervisor's pane that is on none of its pages, open or not.
-        \\[{"name":"a","group":null,"pages":1,"open":[["0x00000000000000a1"]],"supervisor":"0x00000000000000a2"}]
+        \\[{"name":"a","group":null,"pages":1,"open":[["0x00000000000000a1"]],"supervisor":"0x00000000000000a2","workers":[]}]
         ,
-        \\[{"name":"a","group":null,"pages":1,"open":null,"supervisor":"0x00000000000000a2"}]
+        \\[{"name":"a","group":null,"pages":1,"open":null,"supervisor":"0x00000000000000a2","workers":[]}]
         ,
     };
     for (bad) |b| try testing.expectError(error.BadRequest, read(aa, b));
@@ -819,7 +837,7 @@ test "Projects: an old group taken up by its one supervisor gets a project of it
     // Its tab is a page of a project with no group: that one is tied, and
     // takes the group's name.
     try stateJson(&p,
-        \\[{"name":"scratch","group":null,"pages":1,"open":[["0x00000000000000a1"]],"supervisor":null}]
+        \\[{"name":"scratch","group":null,"pages":1,"open":[["0x00000000000000a1"]],"supervisor":null,"workers":[]}]
     );
     out = try p.reconcile(aa, &.{view("old", .undecided, 0xa1, took(0xa1))}, &.{});
     try testing.expectEqual(Why.pending, out.standings[0].why);
@@ -828,7 +846,7 @@ test "Projects: an old group taken up by its one supervisor gets a project of it
     // The host did it and said so: the file names the group, and the group
     // takes it -- under whatever name the host has it by now.
     try stateJson(&p,
-        \\[{"name":"scratch","group":"old","pages":1,"open":[["0x00000000000000a1"]],"supervisor":"0x00000000000000a1"}]
+        \\[{"name":"scratch","group":"old","pages":1,"open":[["0x00000000000000a1"]],"supervisor":"0x00000000000000a1","workers":[]}]
     );
     out = try p.reconcile(aa, &.{view("old", .undecided, 0xa1, took(0xa1))}, &.{});
     try testing.expectEqual(@as(usize, 1), out.commits.len);
@@ -844,7 +862,7 @@ test "Projects: an old group taken up by its one supervisor gets a project of it
 
     // Renamed: the two halves agree and there is nothing to do.
     try stateJson(&p,
-        \\[{"name":"old","group":"old","pages":1,"open":[["0x00000000000000a1"]],"supervisor":"0x00000000000000a1"}]
+        \\[{"name":"old","group":"old","pages":1,"open":[["0x00000000000000a1"]],"supervisor":"0x00000000000000a1","workers":[]}]
     );
     out = try p.reconcile(aa, &.{view("old", .{ .bound = "old" }, 0xa1, null)}, &.{});
     try testing.expectEqual(Why.none, out.standings[0].why);
@@ -860,10 +878,10 @@ test "Projects: where there is more than one way to read it, nothing is done and
     const aa = arena.allocator();
 
     try stateJson(&p,
-        \\[{"name":"theirs","group":"theirs","pages":1,"open":[["0x00000000000000c1"]],"supervisor":"0x00000000000000c1"},
-        \\ {"name":"taken","group":null,"pages":1,"open":null,"supervisor":null},
-        \\ {"name":"twice","group":"dup","pages":1,"open":null,"supervisor":null},
-        \\ {"name":"twice-b","group":"dup","pages":1,"open":null,"supervisor":null}]
+        \\[{"name":"theirs","group":"theirs","pages":1,"open":[["0x00000000000000c1"]],"supervisor":"0x00000000000000c1","workers":[]},
+        \\ {"name":"taken","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]},
+        \\ {"name":"twice","group":"dup","pages":1,"open":null,"supervisor":null,"workers":[]},
+        \\ {"name":"twice-b","group":"dup","pages":1,"open":null,"supervisor":null,"workers":[]}]
     );
 
     var two_bosses = view("two-bosses", .undecided, 0xa1, took(0xa1));
@@ -926,8 +944,8 @@ test "Projects: the supervisor saying so settles what the core would not pick, a
     const aa = arena.allocator();
 
     try stateJson(&p,
-        \\[{"name":"theirs","group":"theirs","pages":1,"open":[["0x00000000000000c1"]],"supervisor":"0x00000000000000c1"},
-        \\ {"name":"taken","group":null,"pages":1,"open":null,"supervisor":null}]
+        \\[{"name":"theirs","group":"theirs","pages":1,"open":[["0x00000000000000c1"]],"supervisor":"0x00000000000000c1","workers":[]},
+        \\ {"name":"taken","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]}]
     );
     var two_bosses = view("two-bosses", .undecided, 0xa1, null);
     two_bosses.supervisors = 2;
@@ -973,11 +991,11 @@ test "Projects: the two halves disagreeing is put right, and the group's record 
     const aa = arena.allocator();
 
     try stateJson(&p,
-        \\[{"name":"web-app","group":null,"pages":3,"open":null,"supervisor":null},
-        \\ {"name":"copy-of-web-app","group":"web-app","pages":3,"open":null,"supervisor":null},
-        \\ {"name":"orphan","group":"long-gone","pages":1,"open":null,"supervisor":null},
-        \\ {"name":"refused","group":"said-no","pages":1,"open":null,"supervisor":null},
-        \\ {"name":"kept","group":"lost-its-key","pages":2,"open":null,"supervisor":null}]
+        \\[{"name":"web-app","group":null,"pages":3,"open":null,"supervisor":null,"workers":[]},
+        \\ {"name":"copy-of-web-app","group":"web-app","pages":3,"open":null,"supervisor":null,"workers":[]},
+        \\ {"name":"orphan","group":"long-gone","pages":1,"open":null,"supervisor":null,"workers":[]},
+        \\ {"name":"refused","group":"said-no","pages":1,"open":null,"supervisor":null,"workers":[]},
+        \\ {"name":"kept","group":"lost-its-key","pages":2,"open":null,"supervisor":null,"workers":[]}]
     );
     const groups = [_]GroupView{
         // Its file stopped naming it, and a copy of the file names it too.
@@ -1020,7 +1038,7 @@ test "Projects: a group renamed has its project renamed after it, unless the nam
     // The group was `web-app` and is `storefront` now; its tie still names
     // the project as the host has it.
     try stateJson(&p,
-        \\[{"name":"web-app","group":"web-app","pages":2,"open":null,"supervisor":null}]
+        \\[{"name":"web-app","group":"web-app","pages":2,"open":null,"supervisor":null,"workers":[]}]
     );
     var out = try p.reconcile(aa, &.{view("storefront", .{ .bound = "web-app" }, null, null)}, &.{});
     try testing.expectEqual(Why.none, out.standings[0].why);
@@ -1030,8 +1048,8 @@ test "Projects: a group renamed has its project renamed after it, unless the nam
 
     // There is a `storefront` already: still tied, not renamed, and said.
     try stateJson(&p,
-        \\[{"name":"web-app","group":"storefront","pages":2,"open":null,"supervisor":null},
-        \\ {"name":"storefront","group":null,"pages":1,"open":null,"supervisor":null}]
+        \\[{"name":"web-app","group":"storefront","pages":2,"open":null,"supervisor":null,"workers":[]},
+        \\ {"name":"storefront","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]}]
     );
     out = try p.reconcile(aa, &.{view("storefront", .{ .bound = "web-app" }, null, null)}, &.{});
     try testing.expectEqual(Why.project_name_taken, out.standings[0].why);
@@ -1047,8 +1065,8 @@ test "Projects: a tab the supervisor opened goes into its group's project once, 
     const aa = arena.allocator();
 
     try stateJson(&p,
-        \\[{"name":"web-app","group":"web-app","pages":1,"open":[["0x00000000000000a1"]],"supervisor":"0x00000000000000a1"},
-        \\ {"name":"other","group":null,"pages":1,"open":[["0x00000000000000d1"]],"supervisor":null}]
+        \\[{"name":"web-app","group":"web-app","pages":1,"open":[["0x00000000000000a1"]],"supervisor":"0x00000000000000a1","workers":[]},
+        \\ {"name":"other","group":null,"pages":1,"open":[["0x00000000000000d1"]],"supervisor":null,"workers":[]}]
     );
     const groups = [_]GroupView{view("web-app", .{ .bound = "web-app" }, 0xa1, null)};
     const opened = [_]Opened{
@@ -1064,14 +1082,14 @@ test "Projects: a tab the supervisor opened goes into its group's project once, 
 
     // The host put it in and said so: nothing more is asked.
     try stateJson(&p,
-        \\[{"name":"web-app","group":"web-app","pages":2,"open":[["0x00000000000000a1"],["0x00000000000000b1"]],"supervisor":"0x00000000000000a1"}]
+        \\[{"name":"web-app","group":"web-app","pages":2,"open":[["0x00000000000000a1"],["0x00000000000000b1"]],"supervisor":"0x00000000000000a1","workers":[]}]
     );
     out = try p.reconcile(aa, &groups, &opened[0..1].*);
     try testing.expectEqual(@as(usize, 0), out.orders.len);
 
     // Somebody took it out again: that is their say, and it is not put back.
     try stateJson(&p,
-        \\[{"name":"web-app","group":"web-app","pages":1,"open":[["0x00000000000000a1"]],"supervisor":"0x00000000000000a1"}]
+        \\[{"name":"web-app","group":"web-app","pages":1,"open":[["0x00000000000000a1"]],"supervisor":"0x00000000000000a1","workers":[]}]
     );
     out = try p.reconcile(aa, &groups, &opened[0..1].*);
     try testing.expectEqual(@as(usize, 0), out.orders.len);
@@ -1103,8 +1121,8 @@ test "Projects: the page a group's supervisor is on cannot be taken out of that 
     try stateJson(&p,
         \\[{"name":"web-app","group":"web-app","pages":2,
         \\  "open":[["0x00000000000000a1","0x00000000000000b1"],["0x00000000000000b2"]],
-        \\  "supervisor":"0x00000000000000a1"},
-        \\ {"name":"scratch","group":null,"pages":1,"open":[["0x00000000000000a7"]],"supervisor":null}]
+        \\  "supervisor":"0x00000000000000a1","workers":[]},
+        \\ {"name":"scratch","group":null,"pages":1,"open":[["0x00000000000000a7"]],"supervisor":null,"workers":[]}]
     );
     // The supervisor's own pane, and the pane beside it on the same page.
     try testing.expectError(error.SupervisorPage, p.mayRemove(&groups, 0xa1));
@@ -1134,4 +1152,44 @@ test "Projects: which answers refuse a supervisor that asked, and with what" {
         if (why == .pending or why == .none) continue;
         try testing.expect(refusalOf(why) != null);
     }
+}
+
+test "Projects: the panes a project's supervisor opened are said with it, each one a pane of that project" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const read = struct {
+        fn f(a: Allocator, json: []const u8) ParseError![]const Stated {
+            const v = std.json.parseFromSliceLeaky(std.json.Value, a, json, .{}) catch return error.BadRequest;
+            return parse(a, v);
+        }
+    }.f;
+
+    const list = try read(aa,
+        \\[{"name":"web-app","group":"web-app","pages":2,
+        \\  "open":[["0x00000000000000a1","0x00000000000000b1"],["0x00000000000000b2"]],
+        \\  "supervisor":"0x00000000000000a1","workers":["0x00000000000000b1","0x00000000000000b2"]}]
+    );
+    try testing.expectEqualSlices(Id, &.{ 0xb1, 0xb2 }, list[0].workers);
+
+    // Kept as said, in the order said.
+    var p: Projects = .init(testing.allocator);
+    defer p.deinit();
+    try p.state(list);
+    try testing.expectEqualSlices(Id, &.{ 0xb1, 0xb2 }, p.find("web-app").?.workers);
+
+    for ([_][]const u8{
+        // Left out is not "none": the key is said, empty when there are none.
+        \\[{"name":"a","group":null,"pages":1,"open":null,"supervisor":null}]
+        ,
+        \\[{"name":"a","group":null,"pages":1,"open":null,"supervisor":null,"workers":null}]
+        ,
+        \\[{"name":"a","group":null,"pages":1,"open":null,"supervisor":null,"workers":["161"]}]
+        ,
+        // A pane that is on none of this project's pages, open or not.
+        \\[{"name":"a","group":null,"pages":1,"open":[["0x00000000000000a1"]],"supervisor":null,"workers":["0x00000000000000b9"]}]
+        ,
+        \\[{"name":"a","group":null,"pages":1,"open":null,"supervisor":null,"workers":["0x00000000000000b9"]}]
+        ,
+    }) |bad| try testing.expectError(error.BadRequest, read(aa, bad));
 }

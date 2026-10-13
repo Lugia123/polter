@@ -27,10 +27,14 @@ struct PaneFrameView<Content: View>: View {
     var well: Color?
     /// See `PaneFrameChrome.cover`.
     var cover: Color?
+    /// See `PaneFrameChrome.stack`. **Nothing passes one yet.**
+    var stack: PaneStack?
+    var stackActions = PaneStackActions()
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        content().modifier(PaneFrameChrome(wears: wears, title: title, caption: caption, focused: focused, well: well, cover: cover))
+        content().modifier(PaneFrameChrome(wears: wears, title: title, caption: caption, focused: focused, well: well, cover: cover,
+                                           stack: stack, stackActions: stackActions))
     }
 }
 
@@ -76,6 +80,16 @@ struct PaneFrameChrome: ViewModifier {
     var cover: Color?
     /// Kept clear outside the frame, on every side.
     var outside: CGFloat = 0
+    /// The terminals this pane holds, when it holds more than the one it
+    /// shows: the title gives way to a strip of tabs (`PaneStackStripView`;
+    /// `control-room.md`, 12.6.2). **Nothing passes one yet** -- no pane
+    /// holds a stack -- and without one this draws what it drew.
+    ///
+    /// Having one or not is, like `wears`, only a matter of what is drawn
+    /// over the frame: the strip is one more layer over it, there or
+    /// empty, and what is framed is the same view either way.
+    var stack: PaneStack?
+    var stackActions = PaneStackActions()
 
     @Environment(\.colorScheme) private var scheme
 
@@ -86,6 +100,9 @@ struct PaneFrameChrome: ViewModifier {
             .padding(Self.room(for: wears))
             .background { behind(theme) }
             .overlay { overFrame(theme).allowsHitTesting(false) }
+            // The strip takes clicks, which nothing else over the frame
+            // does, so it is a layer of its own.
+            .overlay(alignment: .top) { strip(theme) }
             .padding(outside)
     }
 
@@ -177,6 +194,28 @@ struct PaneFrameChrome: ViewModifier {
         }
     }
 
+    /// The strip of tabs, across the top of the frame where the title is,
+    /// when the pane holds a stack. Between the content's edges: inside a
+    /// supervisor's border, the frame's own edges for the other two.
+    @ViewBuilder
+    private func strip(_ theme: Look.Theme) -> some View {
+        if let wears, let stack {
+            PaneStackStripView(stack: stack, wears: wears, title: title, well: ground(theme), actions: stackActions)
+                .padding(.horizontal, Self.room(for: wears).leading)
+                .background {
+                    // An ordinary terminal has no band -- unless it holds
+                    // a stack and is drawn the first of the two ways the
+                    // design did not draw (`PaneStack.PlainStyle`). The
+                    // band is the strip's, so that a pane with no stack
+                    // is painted by exactly what painted it before.
+                    if wears == .plain, stack.plainStyle == .band {
+                        theme.workerBand.color
+                            .clipShape(PaneStackBandShape(radius: CGFloat(Look.Radius.plain)))
+                    }
+                }
+        }
+    }
+
     /// Over the whole frame: its title, and what rounds the corners of a
     /// terminal that reaches the frame's own bottom edge.
     @ViewBuilder
@@ -189,7 +228,10 @@ struct PaneFrameChrome: ViewModifier {
             }
             ZStack {
                 VStack(spacing: 0) {
-                    PaneFrameBar(wears: wears, title: title, caption: caption)
+                    // Under a strip the bar is still there and says
+                    // nothing: taking it out would be one more thing that
+                    // changes shape when a pane gains a stack.
+                    PaneFrameBar(wears: wears, title: stack == nil ? title : nil, caption: stack == nil ? caption : nil)
                         .frame(height: Self.room(for: wears).top)
                         .padding(.horizontal, padding)
                     Spacer(minLength: 0)
@@ -215,6 +257,22 @@ struct PaneFrameChrome: ViewModifier {
                 }
             }
         }
+    }
+}
+
+/// A band across the top of a pane: round at the two top corners, square
+/// along the bottom where the terminal begins.
+struct PaneStackBandShape: Shape {
+    var radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY), tangent2End: CGPoint(x: rect.minX + radius, y: rect.minY), radius: radius)
+        path.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.minY), tangent2End: CGPoint(x: rect.maxX, y: rect.minY + radius), radius: radius)
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }
 

@@ -371,6 +371,10 @@ pub fn window_finished(frame: HWND) {
 /// whether anything is left. Collapsing them would put the count back before
 /// the destruction, which is the bug this pair exists to keep apart.
 pub fn close_window_now(frame: HWND) {
+    // Every route that takes a window down without its `WM_CLOSE` comes
+    // through here (the core's quit and close-window among them), so this
+    // is where the open projects are written while their tabs are there.
+    crate::project_session::save_all();
     crate::wlogf!(frame, "[win] closing -> DestroyWindow");
     unsafe {
         // The result is logged rather than dropped: a `DestroyWindow` that

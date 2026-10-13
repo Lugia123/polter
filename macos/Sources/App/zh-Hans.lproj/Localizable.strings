@@ -803,6 +803,10 @@
 /* 分屏框：worker 那一格的标题带上，名字后面说明身份的字 */
 "Worker" = "worker";
 
+/* 分屏框：层叠标签条（control-room.md 12.6.2）。还没有接线 */
+"More tabs" = "更多标签";
+"Add a terminal to this pane" = "在这一格里再开一个终端";
+
 /* 多标签页的项目（#1491）：存为项目的框、菜单、关页询问、记号、设置 */
 "This page" = "这一页";
 "Already in the project \"%@\"" = "已在项目 %@ 里";

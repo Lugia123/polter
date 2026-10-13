@@ -29,7 +29,8 @@
   [windows/keybinds-page-criteria.md](windows/keybinds-page-criteria.md)（快捷键页的 UIA 树，含 C0 地板与它的正对照）、
   [windows/split-target-criteria.md](windows/split-target-criteria.md)（分屏动作作用在被指名的 pane 上，四条 + 四条键位回归；**并含 407 跨标签那三格**，因为那是同一条规则的另一半）、
   [windows/layout-criteria.md](windows/layout-criteria.md)（`terminal_layout` 一次给出整份形状，六格 + 406 的 id 归属三格，**含「① 不绿则 ②③ 不算数」那条地板**）、
-  [windows/worker-placement-criteria.md](windows/worker-placement-criteria.md)（worker 摆在哪，附五条欠账）。
+  [windows/worker-placement-criteria.md](windows/worker-placement-criteria.md)（worker 摆在哪，附五条欠账）、
+  [windows/projects.md](windows/projects.md)（Windows 宿主的项目：哪页是哪页、随改随存、整个打开；附代定的 DPI 规矩与逐步的真机清单）。
   ⚠️ 另有一份**不是判据**的表：[windows/c-api-surface-bindings.md](windows/c-api-surface-bindings.md)（C API 的 `ghostty_surface_*` 导出里，宿主接了哪些、剩下的 22 条各是什么；**一次定性，没有闸，也没有一条被真机验过**）。
   另有一份**方案**（只写了没做）：[windows/control-room.md](windows/control-room.md)（总控台在 Windows 宿主里放哪、用什么画；推荐先做成独立顶层窗口，附「没有终端的标签页」的冲击表与必须上测试机才能验的十二条）。
   ⚠️ 判据里的键位一律以 `Keybinds.init` 的 `!isDarwin()` 分支为准——**判据写错键位的表现和功能真坏了一样：按下去没反应。**
