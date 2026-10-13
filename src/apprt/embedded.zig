@@ -2373,6 +2373,7 @@ pub const CAPI = struct {
             "",
             // The library window's Launch button: a tab, as it always was.
             .tab,
+            null,
         ) catch |e| {
             copyErrorOut(e, err, cap);
             return false;
@@ -3034,6 +3035,20 @@ pub const CAPI = struct {
     export fn ghostty_surface_poltergeist_id(surface: ?*Surface) u64 {
         const s = surface orelse return 0;
         return poltergeistpkg.Bus.idOf(&s.core_surface);
+    }
+
+    /// The tab this terminal is in has been closed, and the terminal is
+    /// still alive -- the host keeps it so that the close can be undone.
+    ///
+    /// The core learns that a terminal is gone when it is destroyed, which
+    /// for a host that keeps closed tabs is later, by however long the undo
+    /// lasts. Whatever was waiting on this terminal and has no use for one
+    /// in a closed tab is told now (`Surface.poltergeistTabClosed`). A host
+    /// that destroys a terminal as it closes its tab has no need to call
+    /// this. If the tab comes back, nothing is un-told.
+    export fn ghostty_surface_poltergeist_tab_closed(surface: ?*Surface) void {
+        const s = surface orelse return;
+        s.core_surface.poltergeistTabClosed();
     }
 
     /// To deny a request use ghostty_surface_deny_clipboard_request

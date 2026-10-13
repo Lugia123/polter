@@ -18,12 +18,41 @@ pub const Kind = enum {
     /// CLI it is about to start, so silence from here on means something.
     /// See `Bus.Hooks`.
     hooks_expected,
+    /// Not a hook either: `+launch` saying the CLI it was to start did not
+    /// start, so nothing it said before stands -- no hooks are coming, and
+    /// no agent will connect from this terminal on this launch's account.
+    /// `detail` is which kind of failure (`LaunchFailure`).
+    launch_failed,
     session_started,
     turn_started,
     turn_ended,
     turn_failed,
     awaiting_approval,
     awaiting_input,
+    /// Not a hook either: `polter +statusline` saying it has just written
+    /// the allowance it was handed (`QuotaWatch`). It says nothing about
+    /// what the agent is doing and changes nothing the bus keeps -- it is
+    /// here because it comes from the same place by the same road, and a
+    /// request of its own would be that road built twice.
+    allowance_written,
+};
+
+/// Why a launch started no CLI, as `+launch` says it in `detail`.
+pub const LaunchFailure = enum {
+    /// The CLI's program is not there to run: not installed, or not on the
+    /// path this terminal has.
+    not_found,
+    /// Anything else that stopped it before the CLI ran: no adapter for
+    /// it, the adapter gave no command, the role is not there, the program
+    /// is there and could not be run.
+    failed,
+
+    /// What `detail` says; `failed` for a word this build does not know,
+    /// so that a newer `+launch` is still heard as a failure.
+    pub fn parse(detail: ?[]const u8) LaunchFailure {
+        const d = detail orelse return .failed;
+        return std.meta.stringToEnum(LaunchFailure, d) orelse .failed;
+    }
 };
 
 /// The most of a final answer that is carried. `terminal_turn` hands out
@@ -314,6 +343,13 @@ fn teardown() void {
 // for each event (common fields first), not a minimal one: a table that
 // only ever saw `{"session_id":"s"}` would not notice a field it ignored
 // turning into one it tripped on.
+
+test "launch failure: the word a launcher gives, and any other word is still a failure" {
+    try testing.expectEqual(LaunchFailure.not_found, LaunchFailure.parse("not_found"));
+    try testing.expectEqual(LaunchFailure.failed, LaunchFailure.parse("failed"));
+    try testing.expectEqual(LaunchFailure.failed, LaunchFailure.parse("something_newer"));
+    try testing.expectEqual(LaunchFailure.failed, LaunchFailure.parse(null));
+}
 
 test "claude-code SessionStart is session_started with its source" {
     setup();

@@ -18,7 +18,35 @@ enum PaneFrame {
 
     /// The name, the glyph and the word. The same three a supervisor's
     /// frame in the control room has always been given.
-    typealias Title = ControlRoomList.SupervisorTitle
+    struct Title: Equatable {
+        var name: String
+        /// The glyph at the title's right end: a status, or `held`.
+        var shown: ControlRoomSnapshot.Terminal.Bar.Shown
+        var word: String
+        /// Whose word follows the name, when it is not the frame's own
+        /// (`ControlRoomList.SupervisorTitle.says`); nil for a pane of a
+        /// split, whose frame is what it is.
+        var says: Kind?
+
+        init(name: String, shown: ControlRoomSnapshot.Terminal.Bar.Shown, word: String, says: Kind? = nil) {
+            self.name = name
+            self.shown = shown
+            self.word = word
+            self.says = says
+        }
+
+        /// The control room's own frame: the supervisor's status, which is
+        /// one of the row's glyphs, and the word the title brings with it.
+        init(_ supervisor: ControlRoomList.SupervisorTitle) {
+            self.init(name: supervisor.name, shown: .init(supervisor.shown), word: supervisor.word, says: supervisor.says)
+        }
+
+        /// The word after the name on the bar of a frame that is `wears`:
+        /// the title's own when it brings one, the frame's otherwise.
+        func roleWord(in wears: Kind) -> String? {
+            PaneFrame.roleWord(says ?? wears)
+        }
+    }
 
     /// What one pane wears.
     struct Drawn: Equatable {
@@ -50,7 +78,12 @@ enum PaneFrame {
                       in terminals: [ControlRoomSnapshot.Terminal]?) -> Drawn? {
         guard place.enabled, !place.quickTerminal else { return nil }
         let listed = terminal.flatMap { id in terminals?.first { $0.id == id } }
-        let drawn = listed.map { Drawn(wears: $0.pane ?? .plain, title: Title(name: $0.title, shown: $0.shown, word: $0.text)) }
+        let drawn = listed.map { listed in
+            // The pair the core says the title draws. Only a snapshot from
+            // before it said so falls back to the status.
+            let shown = listed.bar?.shown ?? .init(listed.shown)
+            return Drawn(wears: listed.pane ?? .plain, title: Title(name: listed.title, shown: shown, word: listed.bar?.text ?? listed.text))
+        }
             ?? Drawn(wears: .plain, title: Title(name: ownName, shown: .none, word: ""))
         if drawn.wears == .plain, place.alone { return nil }
         return drawn

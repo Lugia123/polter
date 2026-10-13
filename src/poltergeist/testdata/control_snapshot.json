@@ -1,9 +1,23 @@
 {
   "rev": 1,
   "now_ms": 6000000,
-  "needs_me": 6,
+  "needs_me": 5,
   "groups_needing_me": 5,
   "groups_other": 3,
+  "header_waiting": {
+    "count": 5,
+    "of": "groups",
+    "number": "other",
+    "groups": 5,
+    "alone": 0
+  },
+  "header_quiet": {
+    "count": 3,
+    "of": "groups",
+    "number": "other",
+    "groups": 3,
+    "alone": 0
+  },
   "open_on": "web-app",
   "groups": [
     {
@@ -23,8 +37,28 @@
         "terminal": null,
         "failed": "none",
         "role": "polter-supervisor",
+        "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
-        "cwd_from": "home"
+        "cwd_from": "home",
+        "last": {
+          "role": null,
+          "cli": null,
+          "cli_label": null,
+          "heard_ms": null
+        },
+        "resume": {
+          "can": false,
+          "why": "no_record"
+        }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "needs_approval",
@@ -115,8 +149,28 @@
         "terminal": null,
         "failed": "none",
         "role": "polter-supervisor",
+        "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
-        "cwd_from": "home"
+        "cwd_from": "home",
+        "last": {
+          "role": null,
+          "cli": null,
+          "cli_label": null,
+          "heard_ms": null
+        },
+        "resume": {
+          "can": false,
+          "why": "no_record"
+        }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "needs_approval",
@@ -190,8 +244,28 @@
         "terminal": null,
         "failed": "none",
         "role": "polter-supervisor",
+        "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
-        "cwd_from": "home"
+        "cwd_from": "home",
+        "last": {
+          "role": null,
+          "cli": null,
+          "cli_label": null,
+          "heard_ms": null
+        },
+        "resume": {
+          "can": false,
+          "why": "no_record"
+        }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "needs_approval",
@@ -280,8 +354,28 @@
         "terminal": null,
         "failed": "none",
         "role": "polter-supervisor",
+        "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
-        "cwd_from": "home"
+        "cwd_from": "home",
+        "last": {
+          "role": "polter-supervisor",
+          "cli": "claude-code",
+          "cli_label": "Claude Code",
+          "heard_ms": 1699999340000
+        },
+        "resume": {
+          "can": false,
+          "why": "session_in_use"
+        }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "needs_answer",
@@ -353,8 +447,28 @@
         "terminal": null,
         "failed": "none",
         "role": "polter-supervisor",
+        "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
-        "cwd_from": "home"
+        "cwd_from": "home",
+        "last": {
+          "role": null,
+          "cli": null,
+          "cli_label": null,
+          "heard_ms": null
+        },
+        "resume": {
+          "can": false,
+          "why": "no_record"
+        }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "failed",
@@ -426,8 +540,28 @@
         "terminal": null,
         "failed": "none",
         "role": "polter-supervisor",
+        "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
-        "cwd_from": "home"
+        "cwd_from": "home",
+        "last": {
+          "role": null,
+          "cli": null,
+          "cli_label": null,
+          "heard_ms": null
+        },
+        "resume": {
+          "can": false,
+          "why": "no_record"
+        }
+      },
+      "project": {
+        "tie": "bound",
+        "name": "infra",
+        "pages": null,
+        "open": null,
+        "start": "project",
+        "why": "none"
       },
       "attention": {
         "kind": "done_unseen",
@@ -499,8 +633,28 @@
         "terminal": null,
         "failed": "none",
         "role": "polter-supervisor",
+        "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
-        "cwd_from": "home"
+        "cwd_from": "home",
+        "last": {
+          "role": null,
+          "cli": null,
+          "cli_label": null,
+          "heard_ms": null
+        },
+        "resume": {
+          "can": false,
+          "why": "no_record"
+        }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "working",
@@ -567,7 +721,7 @@
           "screen": "unmeasured",
           "alive": true,
           "duty": "off",
-          "held": false,
+          "held": true,
           "shielded": false
         }
       ]
@@ -589,8 +743,28 @@
         "terminal": null,
         "failed": "none",
         "role": "polter-supervisor",
+        "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
-        "cwd_from": "home"
+        "cwd_from": "home",
+        "last": {
+          "role": "polter-supervisor",
+          "cli": "claude-code",
+          "cli_label": "Claude Code",
+          "heard_ms": 1699913600000
+        },
+        "resume": {
+          "can": true,
+          "why": "none"
+        }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "idle",
@@ -688,6 +862,17 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000021",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "polter-supervisor",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
+      "bar": {
+        "shown": "needs_you",
+        "text": "等批准"
+      },
       "kind": "needs_approval",
       "since_ms": 5760000,
       "event_ms": 5760000,
@@ -708,6 +893,17 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000022",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
+      "bar": {
+        "shown": "needs_you",
+        "text": "等回答"
+      },
       "kind": "needs_answer",
       "since_ms": 5340000,
       "event_ms": 5340000,
@@ -728,6 +924,17 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000023",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "",
+        "session": "",
+        "opened_by": null
+      },
+      "bar": {
+        "shown": "trouble",
+        "text": "出错"
+      },
       "kind": "failed",
       "since_ms": 5880000,
       "event_ms": 5880000,
@@ -748,6 +955,17 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000024",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
+      "bar": {
+        "shown": "done_unseen",
+        "text": "做完了，没看"
+      },
       "kind": "done_unseen",
       "since_ms": 4200000,
       "event_ms": 4200000,
@@ -768,6 +986,17 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000025",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
+      "bar": {
+        "shown": "working",
+        "text": "在干活"
+      },
       "kind": "working",
       "since_ms": 5700000,
       "event_ms": 5700000,
@@ -788,6 +1017,17 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000026",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
+      "bar": {
+        "shown": "none",
+        "text": ""
+      },
       "kind": "idle",
       "since_ms": 600000,
       "event_ms": 600000,
@@ -808,6 +1048,17 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000028",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
+      "bar": {
+        "shown": "none",
+        "text": ""
+      },
       "kind": "idle",
       "since_ms": 1200000,
       "event_ms": 1200000,
@@ -828,6 +1079,17 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000021",
       "pane": "worker",
+      "who": {
+        "is": "agent",
+        "role": "dev-worker",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": "0x00000000000000a1"
+      },
+      "bar": {
+        "shown": "needs_you",
+        "text": "等批准"
+      },
       "kind": "needs_approval",
       "since_ms": 5970000,
       "event_ms": 5970000,
@@ -848,6 +1110,17 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000025",
       "pane": "worker",
+      "who": {
+        "is": "unknown",
+        "role": null,
+        "cli": null,
+        "session": null,
+        "opened_by": null
+      },
+      "bar": {
+        "shown": "held",
+        "text": "被按住"
+      },
       "kind": "idle",
       "since_ms": 0,
       "event_ms": null,
@@ -859,7 +1132,7 @@
       "screen": "unmeasured",
       "alive": true,
       "duty": "off",
-      "held": false,
+      "held": true,
       "shielded": false
     },
     {
@@ -868,6 +1141,17 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000028",
       "pane": "worker",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
+      "bar": {
+        "shown": "needs_you",
+        "text": "等批准"
+      },
       "kind": "needs_approval",
       "since_ms": 5820000,
       "event_ms": 5820000,
@@ -888,6 +1172,17 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000027",
       "pane": "plain",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
+      "bar": {
+        "shown": "needs_you",
+        "text": "等批准"
+      },
       "kind": "needs_approval",
       "since_ms": 5940000,
       "event_ms": 5940000,
@@ -908,6 +1203,17 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000027",
       "pane": "plain",
+      "who": {
+        "is": "none",
+        "role": null,
+        "cli": null,
+        "session": null,
+        "opened_by": null
+      },
+      "bar": {
+        "shown": "none",
+        "text": ""
+      },
       "kind": "idle",
       "since_ms": 0,
       "event_ms": null,
@@ -973,6 +1279,8 @@
       "terminal": "0x00000000000000b7"
     }
   ],
+  "projects_known": false,
+  "project_orders": [],
   "supervisor_roles": [
     {
       "key": "polter-supervisor",

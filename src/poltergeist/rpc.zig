@@ -53,6 +53,11 @@ pub const Method = enum {
     /// back hours later when it no longer remembers why it made this one.
     group_set_brief,
 
+    /// Say that a group uses the project the caller's tab is in, or that
+    /// it has none (`Projects.zig`). The supervisor's way of settling what
+    /// the program would not pick by itself.
+    group_project,
+
     /// Ask for the person to be told something.
     ///
     /// The program never decides that a human is needed -- it cannot read
@@ -432,6 +437,10 @@ pub const Request = union(Method) {
     notices,
     group_members: struct { group: []const u8 },
     group_set_brief: struct { group: []const u8, text: []const u8 },
+    /// `use` is "this group uses the project I am in"; `drop` is "this
+    /// group has no project". The field is named for the parameter: what a
+    /// request may carry is read off these names (`wire`).
+    group_project: struct { group: []const u8, action: ProjectAction },
 
     notify_user: struct {
         /// `scheduling` or `authorisation`. The second is never held back
@@ -547,6 +556,11 @@ pub const Request = union(Method) {
         /// by the same code (`App.poltergeistOpenTerminal`). A role whose
         /// own `open` is `tab` still gets a tab when this is `auto`.
         place: Placement = .auto,
+        /// A terminal that is already open, to start the role in instead
+        /// of opening one (`"in"` on the wire). It is this request's
+        /// target, so the reach rules of anything that types into a
+        /// terminal apply to it (`target`).
+        in: ?Bus.Id = null,
     },
     terminal_action: struct { id: Bus.Id, action: []const u8 },
     terminal_actions,
@@ -952,6 +966,7 @@ pub fn callableByPlugin(method: Method) bool {
         // plugin already; they are named here too so this list reads as the
         // whole answer rather than half of one.
         .group_set_brief,
+        .group_project,
         .group_create,
         .group_destroy,
         .group_rename,
@@ -1119,6 +1134,8 @@ pub fn requiresSupervisor(method: Method) bool {
         .set_watch,
 
         .group_set_brief,
+
+        .group_project,
         .session_recall,
         .notify_user,
 
@@ -1322,6 +1339,7 @@ pub fn targetsTerminal(method: Method) bool {
         .group_history,
         .group_members,
         .group_set_brief,
+        .group_project,
 
         // A plugin is a setting of this machine, not of any terminal. The
         // one that names a terminal at all -- `plugin_test`, so the test
@@ -1437,6 +1455,7 @@ pub fn target(req: Request) ?Bus.Id {
         .group_history,
         .group_members,
         .group_set_brief,
+        .group_project,
         .session_recall,
         .notify_user,
         .plugin_list,
@@ -1466,7 +1485,6 @@ pub fn target(req: Request) ?Bus.Id {
         .role_put,
         .role_delete,
         .role_clis,
-        .role_launch,
 
         // Named here rather than left to the `inline else` below, because
         // that one reads `v.id` off whatever payload has one and these
@@ -1481,6 +1499,11 @@ pub fn target(req: Request) ?Bus.Id {
         .task_list,
         .task_history,
         => null,
+
+        // A role started in a terminal that is already open types into it:
+        // that terminal is the target, shield, marks and all. With none
+        // named it opens its own, and reaches nobody.
+        .role_launch => |v| v.in,
 
         inline .group_add, .group_remove, .task_assign => |v| v.id,
         inline else => |v| v.id,
@@ -1545,6 +1568,7 @@ pub fn selfPermitted(req: Request) bool {
         .group_history,
         .group_members,
         .group_set_brief,
+        .group_project,
         .plugin_list,
         .plugin_configure,
         .plugin_test,
@@ -1808,6 +1832,7 @@ pub fn promptReach(method: Method) enum {
         .group_history,
         .group_members,
         .group_set_brief,
+        .group_project,
         .task_create,
         .task_close,
         .task_edit,
@@ -2311,6 +2336,7 @@ test "only what changes the arrangement needs the supervisor" {
             // Writing what a group is for is arranging, not talking.
             // Reading last night's arrangement, likewise.
             .group_set_brief,
+            .group_project,
             .session_recall,
             .notify_user,
 
@@ -4773,6 +4799,13 @@ pub const Placement = enum {
     /// says so and why (`Placed.tab`) -- **a fallback that was silent would
     /// read as "here" having worked**, and did (issue #17).
     here,
+
+    /// Stacked with the caller's other workers: one pane's room, a tab for
+    /// each. **Named and not built** -- asked for, it is refused with
+    /// `NotBuiltYet` rather than read as `auto`, so that the word means one
+    /// thing from the day it works (task 1492). It is where the worker
+    /// after the second column will go.
+    stack,
 };
 
 /// Where a `terminal_open` actually put the terminal. Answered in the reply,
@@ -4785,6 +4818,18 @@ pub const Placed = union(enum) {
     split,
     /// A tab, and why.
     tab: TabWhy,
+    /// No terminal was opened: the role was started in one that was already
+    /// there, and the reply carries its id.
+    reused: ReusedWhy,
+};
+
+/// Why a role was started in a terminal that was already open.
+pub const ReusedWhy = enum {
+    /// The caller named it (`in`).
+    asked,
+    /// `auto`: one of the caller's own worker panes had no agent in it and
+    /// was waiting at its prompt, so it was used before another was made.
+    free_worker,
 };
 
 /// Why a terminal went into a tab. One code per reason, grouped into the
@@ -4796,8 +4841,9 @@ pub const TabWhy = enum {
     // -- cannot: a split was due and could not be made.
     /// The apprt did not say how many terminals share the tab.
     no_pane_count,
-    /// Three workers already stand beside the caller; the fourth needs a
-    /// second column, which means splitting a subtree -- not possible today.
+    /// Six workers already stand beside the caller, in two columns of
+    /// three; the seventh would have to be stacked with them, which is not
+    /// built yet. (It was three, and one column, until task 1492.)
     column_full,
     /// The apprt would not split (GTK cannot split into a named directory).
     split_refused,
@@ -4934,6 +4980,33 @@ pub const Host = struct {
             id: Bus.Id,
         ) void,
 
+        /// The agent CLI in terminal `id` has said something through its
+        /// hooks, and the bus has taken it in. This is where a supervisor's
+        /// session is written down for its group: the bus keeps the session
+        /// a CLI names and nothing else does, and a session changes under a
+        /// running agent (`/clear`).
+        ///
+        /// Not called for what `+launch` says on its own account
+        /// (`hooks_expected`, `launch_failed`): neither is an agent.
+        agentHeard: *const fn (
+            ctx: *anyopaque,
+            bus: *Bus,
+            id: Bus.Id,
+            kind: AgentEvent.Kind,
+        ) void,
+
+        /// `+launch` in terminal `id` says the CLI it was to start did not
+        /// start. Whatever was waiting on an agent from that terminal stops
+        /// waiting now and says why: the standing a role launch was holding
+        /// (`PersonaStore.dropStanding`), and the group the control room
+        /// was starting a supervisor for.
+        launchFailed: *const fn (
+            ctx: *anyopaque,
+            bus: *Bus,
+            id: Bus.Id,
+            why: AgentEvent.LaunchFailure,
+        ) void,
+
         /// Whether an agent is listening in this terminal right now.
         ///
         /// **A fact, not a policy.** What to do about a `false` is decided
@@ -4994,6 +5067,9 @@ pub const Host = struct {
             cli: []const u8,
             cwd: []const u8,
             place: Placement,
+            /// A terminal that is already open, to start the role in
+            /// instead of opening one; null to open one where `place` says.
+            into: ?Bus.Id,
         ) anyerror!Opened,
 
         /// Open a terminal in `by`'s window, starting in `cwd`.
@@ -5240,6 +5316,18 @@ pub const Host = struct {
             text: []const u8,
         ) anyerror!Chat.Kept,
 
+        /// `id`, a supervisor, says `group` uses the project its tab is in
+        /// (`use`) or has none. Answers where the group then stands, as a
+        /// JSON object in `alloc`; fails with one of `Projects.ToolRefusal`
+        /// or `NoSuchGroup` when nothing was changed.
+        groupProject: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+            group: []const u8,
+            use: bool,
+        ) anyerror![]const u8,
+
         /// Tell the person something, through whatever they configured.
         ///
         /// Returns what came of it, as a sentence to hand back -- the
@@ -5294,6 +5382,15 @@ pub const Host = struct {
             alloc: std.mem.Allocator,
             id: Bus.Id,
         ) anyerror![]const []const u8,
+
+        /// Where `id` stands with the groups, for its own `me`: the ones it
+        /// is in, the ones it is the supervisor of, and the one the control
+        /// room started it for. Copied into `alloc`.
+        membership: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+        ) anyerror!wire.Membership,
 
         /// What `id` has not seen in `group` after `since`, and whether
         /// the budget cut it short.
@@ -5596,8 +5693,9 @@ pub const Host = struct {
         cli: []const u8,
         cwd: []const u8,
         place: Placement,
+        into: ?Bus.Id,
     ) anyerror!Opened {
-        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd, place);
+        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd, place, into);
     }
 
     fn quietMs(self: Host, id: Bus.Id) u64 {
@@ -5764,6 +5862,14 @@ pub const Host = struct {
         id: Bus.Id,
     ) anyerror![]const []const u8 {
         return self.vtable.chatGroups(self.ctx, alloc, id);
+    }
+
+    fn membership(
+        self: Host,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+    ) anyerror!wire.Membership {
+        return self.vtable.membership(self.ctx, alloc, id);
     }
 
     fn chatRead(
@@ -5967,7 +6073,9 @@ pub fn arrived(bus: *Bus, host: Host, who: Bus.Caller, req: Request) void {
 /// Whether a request from a terminal shows that the agent a launch started
 /// there is running.
 ///
-/// Every request does but one. `hooks_expected` is sent by `+launch`
+/// Every request does but two, and both are `+launch` speaking for itself:
+/// `launch_failed`, which says outright that there is no agent, and
+/// `hooks_expected`. `hooks_expected` is sent by `+launch`
 /// itself, **before** it starts the CLI (`cli/launch.zig`, `expectHooks`)
 /// -- so it arrives whether or not the CLI then starts, and it used to
 /// claim the launch's standing all the same. Measured on a Mac (task 1460,
@@ -5982,7 +6090,23 @@ pub fn arrived(bus: *Bus, host: Host, who: Bus.Caller, req: Request) void {
 /// running. Everything else comes from the agent's sidecar.
 pub fn showsAnAgent(req: Request) bool {
     return switch (req) {
-        .agent_event => |ev| ev.event != .hooks_expected,
+        // Exhaustive, with no `else`: a kind added to `AgentEvent.Kind`
+        // does not compile until somebody has said whether hearing it
+        // means an agent is there.
+        .agent_event => |ev| switch (ev.event) {
+            .hooks_expected, .launch_failed => false,
+            .session_started,
+            .turn_started,
+            .turn_ended,
+            .turn_failed,
+            .awaiting_approval,
+            .awaiting_input,
+            // The status line saying it wrote the allowance file. Not a
+            // hook, and the bus does nothing with it -- but only a CLI
+            // that is running calls its status line, so it is there.
+            .allowance_written,
+            => true,
+        },
         else => true,
     };
 }
@@ -6033,6 +6157,7 @@ pub fn isAgentCall(method: Method) bool {
         .notices,
         .group_members,
         .group_set_brief,
+        .group_project,
         .notify_user,
         .session_recall,
         .terminal_read,
@@ -6170,7 +6295,14 @@ fn dispatchOne(
     const caller: Bus.Id = who.terminalId() orelse Bus.not_a_terminal;
 
     switch (req) {
-        .me => return .{ .me = describe(bus, host, caller) },
+        .me => {
+            var info = describe(bus, host, caller);
+            // Its own standing with the groups, which only it is told. A
+            // host that cannot say leaves it out; what it does say is all
+            // three (`wire.Membership`).
+            info.membership = host.membership(alloc, caller) catch null;
+            return .{ .me = info };
+        },
 
         .persona_slot => |p| {
             const answer = host.personaSlot(caller, p.slot) catch
@@ -6305,6 +6437,12 @@ fn dispatchOne(
             return .{ .text = text };
         },
 
+        .group_project => |p| {
+            const said = host.vtable.groupProject(host.ctx, alloc, caller, p.group, p.action == .use) catch |err|
+                return hostFailure(@errorName(err), projectRefusalMessage(err));
+            return .{ .json = said };
+        },
+
         .group_set_brief => |p| {
             if (!host.ownsGroup(p.group, caller)) return failure(error.NotYours);
             const kept = host.chatSetBrief(p.group, p.text) catch
@@ -6355,6 +6493,14 @@ fn dispatchOne(
             // `not_a_terminal` must never become an entry with a state.
             const id = who.terminalId() orelse return failure(error.NotATerminal);
             _ = try bus.agentEvent(id, ev, host.nowMs());
+            // After the bus has taken back what the launch said to expect:
+            // whoever was waiting for an agent from here is told now.
+            if (ev.event == .launch_failed) {
+                host.vtable.launchFailed(host.ctx, bus, id, AgentEvent.LaunchFailure.parse(ev.detail));
+            }
+            // What an agent said, after the bus has it: the same two that
+            // do not show an agent are not one being heard.
+            if (showsAnAgent(req)) host.vtable.agentHeard(host.ctx, bus, id, ev.event);
             return .ok;
         },
 
@@ -6502,6 +6648,7 @@ fn dispatchOne(
 
         .terminal_open => |p| {
             const opened = host.openTerminal(alloc, p.cwd, caller, p.place) catch |err| return switch (err) {
+                error.NotBuiltYet => notBuiltYet(),
                 error.NotAbsolute => hostFailure(
                     "BadParams",
                     "a working directory has to be an absolute path.",
@@ -6585,7 +6732,35 @@ fn dispatchOne(
         },
 
         .role_launch => |p| {
-            const opened = host.personaLaunch(alloc, caller, p.key, p.cli, p.cwd, p.place) catch |err| return switch (err) {
+            const opened = host.personaLaunch(alloc, caller, p.key, p.cli, p.cwd, p.place, p.in) catch |err| return switch (err) {
+                // Starting it in a terminal that is already open (`in`).
+                error.UnknownTerminal => hostFailure(
+                    "UnknownTerminal",
+                    "there is no terminal with that id. terminal_list has them.",
+                ),
+                error.AgentThere => hostFailure(
+                    "AgentThere",
+                    "an agent is already running in that terminal. A role is started in " ++
+                        "a shell that is waiting; to change what a running agent wears, " ++
+                        "that is the user's menu.",
+                ),
+                error.NotAtPrompt => hostFailure(
+                    "NotAtPrompt",
+                    "that terminal is not at its shell's prompt: something is running in " ++
+                        "it, or its shell does not say. Nothing was typed. terminal_read " ++
+                        "shows what is there.",
+                ),
+                error.DraftInLine => hostFailure(
+                    "DraftInLine",
+                    "that terminal has a half-typed line in it, and a launch typed after " ++
+                        "it would run as one command with it. Nothing was typed.",
+                ),
+                error.InWithCwd => hostFailure(
+                    "BadParams",
+                    "`in` starts the role where that terminal already is; leave `cwd` out, " ++
+                        "or open a new terminal there with `place`.",
+                ),
+                error.NotBuiltYet => notBuiltYet(),
                 error.NoSuchPersona => hostFailure(
                     "NoSuchRole",
                     "there is no role with that key. role_list has them.",
@@ -8208,8 +8383,11 @@ fn chatFailure(err: anyerror) wire.Response {
 ///      window, and the sentence is still on the screen.
 ///
 /// **Neither reads the input line, and (2) is not a way of reading it.** It
-/// counts what went in -- the same key events (1) times -- so backspacing a
-/// line empty leaves it set. Reading the line is what cannot be done here:
+/// counts what went in -- the same key events (1) times -- and takes one
+/// off for each plain backspace, for as long as nothing but characters and
+/// backspaces has reached the line; after a tab, an arrow or a history
+/// chord it stops counting, and backspacing that line empty leaves it set.
+/// Reading the line is what cannot be done here:
 /// an agent CLI draws its own prompt, so the cursor is never at column zero,
 /// and this runs on a thread that does not hold the renderer lock.
 /// `poltergeist/draft.zig` argues all of it, including why OSC 133 does not
@@ -8258,8 +8436,10 @@ const draft_in_line =
     "something, and it now tells you whether it landed -- if it answers " ++
     "that the key reached the program, this refusal is gone; if it answers " ++
     "that nothing received the key, a person has to go to that machine. " ++
-    "Note that this never read the input line: it counts what went in, so " ++
-    "backspacing a line empty also leaves it set.";
+    "Note that this never read the input line: it counts what went in and " ++
+    "what plain backspaces took out, and stops counting at the first tab, " ++
+    "arrow or history key -- so a line emptied after one of those is still " ++
+    "reported as holding text.";
 
 /// Said when the host has the tools but this build has not wired them up.
 ///
@@ -8430,6 +8610,16 @@ fn joined(
 /// the launched agent to connect (`PersonaStore.claimStanding`) -- so a
 /// terminal not minded *yet* whose launch is still holding a `watch` is
 /// "not yet", and saying `false` would be a "no" nobody knows.
+/// `place: "stack"`: a name with nothing behind it yet.
+fn notBuiltYet() wire.Response {
+    return hostFailure(
+        "NotBuiltYet",
+        "`stack` -- a worker stacked with your others in one pane's room -- is not " ++
+            "built yet, and nothing was opened. `auto` puts six beside you in two " ++
+            "columns before it opens a tab.",
+    );
+}
+
 fn launchedWatching(
     alloc: std.mem.Allocator,
     bus: *const Bus,
@@ -8587,6 +8777,22 @@ fn screenshotUnsupported() wire.Response {
     );
 }
 
+pub const ProjectAction = enum { use, drop };
+
+/// Why `group_project` changed nothing, in words for the agent that
+/// asked. By the error's name, so that one this file has never heard of
+/// still says something true.
+fn projectRefusalMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.NoSuchGroup => "no group by that name",
+        error.ProjectsUnknown => "the interface has not told Polter what projects there are, so there is nothing to tie the group to yet. Nothing was changed; the group is started by picking a directory.",
+        error.NotItsSupervisor => "you are not that group's supervisor: a group's project is its supervisor's to say. See `supervisor_of` in `me`.",
+        error.ProjectHasGroup => "one group, one project: either that group has a project already, or the project your tab is in is another group's. Nothing was changed. `me` says which project each of your groups has.",
+        error.ProjectNameTaken => "a group's project bears the group's name, and there is already a project by that name that is not the one your tab is in. Nothing was changed; the person can rename or remove that project.",
+        else => "the group's project was not changed",
+    };
+}
+
 fn hostFailure(code: []const u8, message: []const u8) wire.Response {
     return .{ .failed = .{ .code = code, .message = message } };
 }
@@ -8629,6 +8835,16 @@ const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 const FakeHost = struct {
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
 
+    /// What `groupProject` was last asked, and what it refuses with.
+    project_said: ?struct { id: Bus.Id, group: []const u8, use: bool } = null,
+    project_refusal: ?anyerror = null,
+    /// What `agentHeard` was last told.
+    heard: ?struct { id: Bus.Id, kind: AgentEvent.Kind } = null,
+    /// What `membership` answers; null is a host that cannot say.
+    membership_is: ?wire.Membership = null,
+    /// What `launchFailed` was last told.
+    launch_failed: ?struct { id: Bus.Id, why: AgentEvent.LaunchFailure } = null,
+
     /// The screenshot tools: what the user's switch says, what the apprt
     /// answers to each kind of request, and what it was last asked.
     shot_allowed: bool = true,
@@ -8652,6 +8868,7 @@ const FakeHost = struct {
         cli: []const u8,
         cwd: []const u8,
         place: Placement,
+        into: ?Bus.Id = null,
     } = null,
     clis_refreshed: bool = false,
     role_tab_late: bool = false,
@@ -8919,6 +9136,8 @@ const FakeHost = struct {
             .personaFace = personaFace,
             .terminalCapabilities = terminalCapabilities,
             .agentArrived = agentArrived,
+            .agentHeard = agentHeard,
+            .launchFailed = launchFailed,
             .personaCatalog = personaCatalog,
             .personaPut = personaPut,
             .personaDelete = personaDelete,
@@ -8949,10 +9168,12 @@ const FakeHost = struct {
             .notifyUser = notifyUser,
             .sessionRecall = sessionRecall,
             .chatSetBrief = chatSetBrief,
+            .groupProject = groupProject,
             .chatGroupInfo = chatGroupInfo,
             .chatOwner = chatOwner,
             .chatMembers = chatMembers,
             .chatGroups = chatGroups,
+            .membership = membership,
             .chatRead = chatRead,
             .chatHistory = chatHistory,
             .pluginList = pluginList,
@@ -9316,6 +9537,13 @@ const FakeHost = struct {
         return alloc.dupe(u8, self.session);
     }
 
+    fn groupProject(ctx: *anyopaque, _: std.mem.Allocator, id: Bus.Id, group: []const u8, use: bool) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.project_refusal) |err| return err;
+        self.project_said = .{ .id = id, .group = group, .use = use };
+        return "{\"tie\":\"undecided\",\"why\":\"pending\"}";
+    }
+
     fn chatSetBrief(ctx: *anyopaque, group: []const u8, text: []const u8) anyerror!Chat.Kept {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NoSuchGroup;
@@ -9503,6 +9731,26 @@ const FakeHost = struct {
         _ = store.claimStanding(bus, id, self.now_ms);
     }
 
+    /// The store's half of what the app does; the app's other half -- the
+    /// group a supervisor was being started for -- is recorded, since there
+    /// is no chat here to fail it in.
+    fn agentHeard(ctx: *anyopaque, _: *Bus, id: Bus.Id, kind: AgentEvent.Kind) void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.heard = .{ .id = id, .kind = kind };
+    }
+
+    fn membership(ctx: *anyopaque, _: std.mem.Allocator, _: Bus.Id) anyerror!wire.Membership {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.membership_is orelse error.NoSuchGroup;
+    }
+
+    fn launchFailed(ctx: *anyopaque, _: *Bus, id: Bus.Id, why: AgentEvent.LaunchFailure) void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.launch_failed = .{ .id = id, .why = why };
+        const store = self.personas orelse return;
+        _ = store.dropStanding(id);
+    }
+
     fn personaCatalog(_: *anyopaque, _: std.mem.Allocator) anyerror![]const u8 {
         return "{\"loaded\":true,\"error\":null,\"path\":null,\"personas\":[]}";
     }
@@ -9533,10 +9781,13 @@ const FakeHost = struct {
         cli: []const u8,
         cwd: []const u8,
         place: Placement,
+        into: ?Bus.Id,
     ) anyerror!Opened {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.role_error) |e| return e;
-        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place };
+        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place, .into = into };
+        if (into) |there| return .{ .id = there, .placed = .{ .reused = .asked } };
+        if (place == .stack) return error.NotBuiltYet;
         // What the app's placement would answer: `tab` is a tab, `here` a
         // split, and `auto` whichever this fake was told the tab has room
         // for. A split has no terminal yet, and a late tab has none either.
@@ -9544,6 +9795,7 @@ const FakeHost = struct {
             .tab => .{ .tab = .asked },
             .here => .split,
             .auto => if (self.role_auto_splits) .split else .{ .tab = .column_full },
+            .stack => unreachable,
         };
         return .{
             .id = if (self.role_tab_late or placed == .split) null else 0x7777,
@@ -13296,10 +13548,126 @@ test "launched standing: only the launcher's own word is not an agent" {
     // `AgentEvent.Kind` is one somebody has put on a side.
     for (std.enums.values(AgentEvent.Kind)) |kind| {
         const shows = showsAnAgent(.{ .agent_event = hookEvent(kind) });
-        try testing.expectEqual(kind != .hooks_expected, shows);
+        // The two a launcher sends for itself are the two that are not.
+        try testing.expectEqual(kind != .hooks_expected and kind != .launch_failed, shows);
     }
     try testing.expect(showsAnAgent(.me));
     try testing.expect(showsAnAgent(.terminal_list));
+}
+
+fn launchFailedEvent(detail: ?[]const u8) AgentEvent.Event {
+    var ev = hookEvent(.launch_failed);
+    ev.session_id = null;
+    ev.detail = detail;
+    return ev;
+}
+
+test "launched standing: a launcher that says its CLI did not start gives the standing up at once" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh } };
+
+    // A supervisor role launched in `fresh`; `+launch` says hooks are
+    // expected and then finds the CLI is not installed.
+    try store.setPersona(fresh, "lead");
+    try store.holdStanding(fresh, fresh, standing_roles[0].polter, 0);
+    fake.now_ms = 400;
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = hookEvent(.hooks_expected) });
+    fake.now_ms = 500;
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = launchFailedEvent("not_found") });
+
+    // The host was told, with the kind of failure the launcher named.
+    const told = fake.launch_failed orelse return error.HostWasNotTold;
+    try testing.expectEqual(fresh, told.id);
+    try testing.expectEqual(AgentEvent.LaunchFailure.not_found, told.why);
+
+    // Nothing is held any more -- now, not when the minute is up.
+    const caps = try expectCaps(try dispatch(alloc, &bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = fresh },
+    }));
+    try testing.expectEqual(@as(?persona.Capabilities.PendingStanding, null), caps.persona.pending_standing);
+    // And no hooks are expected from a CLI that never ran.
+    const hooks = bus.agentOf(fresh).hooks;
+    try testing.expectEqual(Bus.Hooks.none, hooks);
+    // Saying it failed is not an agent arriving, either.
+    const supervisor_after_failure = bus.isSupervisor(fresh);
+    try testing.expect(!supervisor_after_failure);
+
+    // A `claude` typed into that terminal by hand, inside the minute the
+    // standing would have waited: it is an agent, and it is not the one a
+    // supervisor's standing was for.
+    fake.now_ms = 5_000;
+    try testing.expectEqual(Bus.Role.none, try roleIn(try dispatch(alloc, &bus, fake.host(), term(fresh), .me)));
+    const supervisor_by_hand = bus.isSupervisor(fresh);
+    try testing.expect(!supervisor_by_hand);
+}
+
+test "launched standing: a worker's launch that failed is not handed to its supervisor later" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh } };
+
+    // `role_launch` by the supervisor, a role that is watched. The
+    // launcher fails before it has said anything else -- no adapter -- and
+    // names a kind this build does not know.
+    try store.setPersona(fresh, "hand");
+    try store.holdStanding(fresh, boss, standing_roles[1].polter, 0);
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = launchFailedEvent("out_of_luck") });
+
+    // Still a failure, of the kind that is not "not found".
+    const told = fake.launch_failed orelse return error.HostWasNotTold;
+    try testing.expectEqual(AgentEvent.LaunchFailure.failed, told.why);
+    // The bus keeps nothing for a terminal that only ever failed to start.
+    const listed = bus.entries.contains(fresh);
+    try testing.expect(!listed);
+
+    // Whatever runs there next is not minded on that launch's account.
+    fake.now_ms = 2_000;
+    try testing.expectEqual(Bus.Role.none, try roleIn(try dispatch(alloc, &bus, fake.host(), term(fresh), .me)));
+    const minded = bus.minds(boss, fresh);
+    try testing.expect(!minded);
+}
+
+test "launched standing: with no word from the launcher the standing waits out its minute as before" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh } };
+
+    // A CLI that started and went quiet, or left at once for reasons of
+    // its own: the launcher has nothing to report, and nothing is told.
+    try store.setPersona(fresh, "lead");
+    try store.holdStanding(fresh, fresh, standing_roles[0].polter, 0);
+    fake.now_ms = 400;
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = hookEvent(.hooks_expected) });
+    const told = fake.launch_failed != null;
+    try testing.expect(!told);
+
+    fake.now_ms = PersonaStore.standing_wait_ms - 1;
+    const caps = try expectCaps(try dispatch(alloc, &bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = fresh },
+    }));
+    const still_held = caps.persona.pending_standing != null;
+    try testing.expect(still_held);
+    const hooks = bus.agentOf(fresh).hooks;
+    try testing.expectEqual(Bus.Hooks.expected, hooks);
 }
 
 test "launched standing: an agent that connects after it ran out gets nothing" {
@@ -13794,6 +14162,74 @@ test "roles: what the supervisor sends is what the library is handed" {
     try testing.expectEqual(boss, fake.role_launched.?.by);
     try testing.expectEqualStrings("claude-code", fake.role_launched.?.cli);
     try testing.expectEqualStrings("/tmp", fake.role_launched.?.cwd);
+}
+
+test "role_launch in: started in a terminal that is already open, under the rules of anything that types into one" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // That terminal is the request's target; with none named it has none.
+    try testing.expectEqual(@as(?Bus.Id, worker), target(.{ .role_launch = .{ .key = "archer", .in = worker } }));
+    try testing.expectEqual(@as(?Bus.Id, null), target(.{ .role_launch = .{ .key = "archer" } }));
+
+    // Handed to the host as named, and the reply says no terminal was
+    // opened and gives the one it used.
+    var fake: FakeHost = .{};
+    const started = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "archer", .in = worker } });
+    try testing.expectEqual(@as(?Bus.Id, worker), fake.role_launched.?.into);
+    try testing.expectEqual(@as(?Bus.Id, worker), started.opened.id);
+    try testing.expectEqual(Placed{ .reused = .asked }, started.opened.placed.?);
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&out.writer, started);
+    const text = out.written();
+    try testing.expect(std.mem.indexOf(u8, text, "\"placed\":\"reused\"") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "\"reused\":\"asked\"") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "pending") == null);
+
+    // Into itself: refused before the host is asked.
+    var own: FakeHost = .{};
+    const self_aimed = try dispatch(alloc, &b, own.host(), term(boss), .{ .role_launch = .{ .key = "archer", .in = boss } });
+    try testing.expectEqualStrings("SelfTarget", self_aimed.failed.code);
+    try testing.expect(own.role_launched == null);
+
+    // Into one the user has shielded: refused, as anything typed there is.
+    try b.setShielded(worker, true, .user);
+    var shut: FakeHost = .{};
+    const shielded = try dispatch(alloc, &b, shut.host(), term(boss), .{ .role_launch = .{ .key = "archer", .in = worker } });
+    try testing.expectEqualStrings("Shielded", shielded.failed.code);
+    try testing.expect(shut.role_launched == null);
+    try b.setShielded(worker, false, .user);
+
+    // Each way the terminal can be unfit is its own answer, and says that
+    // nothing was typed.
+    for ([_]struct { err: anyerror, code: []const u8 }{
+        .{ .err = error.AgentThere, .code = "AgentThere" },
+        .{ .err = error.NotAtPrompt, .code = "NotAtPrompt" },
+        .{ .err = error.DraftInLine, .code = "DraftInLine" },
+        .{ .err = error.UnknownTerminal, .code = "UnknownTerminal" },
+        .{ .err = error.InWithCwd, .code = "BadParams" },
+    }) |c| {
+        var unfit: FakeHost = .{ .role_error = c.err };
+        const refused = try dispatch(alloc, &b, unfit.host(), term(boss), .{ .role_launch = .{ .key = "archer", .in = worker } });
+        try testing.expectEqualStrings(c.code, refused.failed.code);
+        try testing.expect(!std.mem.eql(u8, refused.failed.code, "LaunchFailed"));
+    }
+}
+
+test "place stack: a name with nothing behind it yet is refused by name, not read as auto" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fake: FakeHost = .{};
+    const refused = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "archer", .place = .stack } });
+    try testing.expectEqualStrings("NotBuiltYet", refused.failed.code);
+    try testing.expect(std.mem.indexOf(u8, refused.failed.message, "nothing was opened") != null);
 }
 
 test "roles: each reason a write is refused says what to do about it" {
@@ -14777,4 +15213,113 @@ test "ControlRoom answer_prompt: without the prompt it saw, it is what it always
     try testing.expect(refused == .failed);
     try testing.expectEqualStrings("PromptGone", refused.failed.code);
     try testing.expect(fake.keyed == null);
+}
+
+test "may-authorise off in the configuration: a supervisor's answer to a prompt, and the keys that would be one, are refused" {
+    var b: Bus = .init(testing.allocator, .{ .may_authorise = false });
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+
+    // Nobody said anything about this terminal: the configuration did.
+    try testing.expectError(error.AuthoriseOff, authorize(&b, term(boss), .{
+        .terminal_answer_prompt = .{ .id = worker, .choice = 1 },
+    }));
+    try testing.expectError(error.AuthoriseOff, authorize(&b, term(boss), .{
+        .terminal_key = .{ .id = worker, .key = "enter" },
+    }));
+    try testing.expectError(error.AuthoriseOff, authorize(&b, term(boss), .{
+        .terminal_key = .{ .id = worker, .key = "arrow_down" },
+    }));
+
+    // Opened for this one terminal by the person: allowed there.
+    try b.setMayAuthorise(worker, true, .user);
+    try authorize(&b, term(boss), .{ .terminal_answer_prompt = .{ .id = worker, .choice = 1 } });
+}
+
+test "ControlRoom resume: me is the one answer that carries where the terminal stands with the groups" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    var fake: FakeHost = .{ .membership_is = .{
+        .groups = &.{ "web-app", "billing" },
+        .supervisor_of = &.{"web-app"},
+        .started_for = "web-app",
+        .projects = &.{},
+    } };
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .me);
+    const m = res.me.membership orelse return error.MeSaidNothingOfItsGroups;
+    try testing.expectEqual(@as(usize, 2), m.groups.len);
+    try testing.expectEqualStrings("web-app", m.supervisor_of[0]);
+    try testing.expectEqualStrings("web-app", m.started_for.?);
+
+    // A host that cannot say: the rest of `me` is still answered, and
+    // nothing is made up about groups.
+    var mute: FakeHost = .{};
+    const bare = try dispatch(testing.allocator, &b, mute.host(), term(worker), .me);
+    try testing.expectEqual(worker, bare.me.id);
+    try testing.expect(bare.me.membership == null);
+
+    // Nobody else's row carries it: it is what a terminal is told about
+    // itself.
+    try testing.expect(describe(&b, fake.host(), worker).membership == null);
+}
+
+test "ControlRoom resume: the host hears what an agent's hooks said, after the bus has it, and never the launcher's own word" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    var ev = hookEvent(.session_started);
+    ev.session_id = "s-9";
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = ev });
+    const heard = fake.heard orelse return error.HostWasNotTold;
+    try testing.expectEqual(worker, heard.id);
+    try testing.expectEqual(AgentEvent.Kind.session_started, heard.kind);
+    // The bus had the session by the time the host was told: reading it
+    // there is what the host does next.
+    try testing.expectEqualStrings("s-9", b.agentOf(worker).session_id.get().?);
+
+    for ([_]AgentEvent.Kind{ .hooks_expected, .launch_failed }) |kind| {
+        fake.heard = null;
+        _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = hookEvent(kind) });
+        try testing.expect(fake.heard == null);
+    }
+}
+
+test "Projects: group_project is a supervisor's, reaches the host as said, and a refusal says why in words" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    // A worker has no say over what project a group has.
+    try testing.expect(requiresSupervisor(.group_project));
+    try testing.expectError(error.NotPermitted, authorize(&b, term(worker), .{ .group_project = .{ .group = "build", .action = .use } }));
+
+    const yes = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{ .group_project = .{ .group = "build", .action = .use } });
+    try testing.expect(yes == .json);
+    try testing.expectEqual(boss, fake.project_said.?.id);
+    try testing.expectEqualStrings("build", fake.project_said.?.group);
+    try testing.expect(fake.project_said.?.use);
+
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{ .group_project = .{ .group = "build", .action = .drop } });
+    try testing.expect(!fake.project_said.?.use);
+
+    // Each refusal by its own name, with a sentence that is its own.
+    var seen: [5][]const u8 = undefined;
+    for ([_]anyerror{
+        error.NoSuchGroup,
+        error.ProjectsUnknown,
+        error.NotItsSupervisor,
+        error.ProjectHasGroup,
+        error.ProjectNameTaken,
+    }, 0..) |err, i| {
+        fake.project_refusal = err;
+        const no = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{ .group_project = .{ .group = "build", .action = .use } });
+        try testing.expectEqualStrings(@errorName(err), no.failed.code);
+        try testing.expect(no.failed.message.len > 0);
+        try testing.expect(!std.mem.eql(u8, no.failed.message, "the group's project was not changed"));
+        for (seen[0..i]) |before| try testing.expect(!std.mem.eql(u8, before, no.failed.message));
+        seen[i] = no.failed.message;
+    }
 }

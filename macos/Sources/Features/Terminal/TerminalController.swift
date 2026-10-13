@@ -78,18 +78,26 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// `TerminalController+Projects.swift`.
     var isPresentingCloseSaveAlert = false
 
-    /// The project this tab is bound to and autosaves into, or nil. Set by
-    /// saving as a project, by loading one, and by window restoration --
-    /// see `bindProject` in `TerminalController+Projects.swift`. Kept in
-    /// `TerminalRestorableState` so it lives exactly as long as the tab
-    /// does, restarts included.
-    var boundProject: String?
+    /// The name of the project this tab is a page of, or nil. Set only by
+    /// `ProjectSession`, when the tab joins or leaves one. Kept in
+    /// `TerminalRestorableState` so that after a restart the tab can ask for
+    /// its page back -- which the project's file then grants or does not
+    /// (`ProjectSession.restore`).
+    var boundProject: String? {
+        didSet {
+            (window as? TerminalWindow)?.projectOfTab = boundProject
+        }
+    }
 
-    /// Coalesces the stream of layout/cwd/title changes into one write --
-    /// nil while unbound.
-    var projectAutosave: ProjectAutosaveDebouncer<MainQueueScheduler>?
+    /// The project this tab is a page of, open: what writes the project's
+    /// file as its tabs change, and what a tab's own changes are told to
+    /// (`ProjectSession.poke`). Nil for a tab of no project. Held strongly
+    /// here and nowhere else, so it lasts exactly as long as the project
+    /// has a tab.
+    var projectSession: ProjectSession?
 
-    /// What `projectAutosave` is listening to; emptied on unbind.
+    /// What tells `projectSession` of this tab's changes; emptied when the
+    /// tab leaves its project.
     var projectAutosaveCancellables: Set<AnyCancellable> = []
 
     init(_ ghostty: Ghostty.App,
@@ -251,7 +259,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     // of each other.
     private static var lastCascadePoint = NSPoint(x: 0, y: 0)
 
-    private static func applyCascade(to window: NSWindow, hasFixedPos: Bool) {
+    static func applyCascade(to window: NSWindow, hasFixedPos: Bool) {
         if hasFixedPos { return }
 
         if all.count > 1 {
@@ -451,7 +459,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         _ ghostty: Ghostty.App,
         from parent: NSWindow? = nil,
         withBaseConfig baseConfig: Ghostty.SurfaceConfiguration? = nil,
-        inFront: Bool = true
+        inFront: Bool = true,
+        activates: Bool = true
     ) -> TerminalController? {
         // Making sure that we're dealing with a TerminalController. If not,
         // then we just create a new window.
@@ -553,8 +562,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             }
 
             // We also activate our app so that it becomes front. This may be
-            // necessary for the dock menu.
-            NSApp.activate(ignoringOtherApps: true)
+            // necessary for the dock menu. Not for a tab an agent asked for
+            // while the app is behind another (`ControlRoomRules.newTabActivates`).
+            if activates {
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
 
         // It takes an event loop cycle until the macOS tabGroup state becomes
@@ -672,6 +684,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         guard tabWindowsHash != v else { return }
         tabWindowsHash = v
         self.relabelTabs()
+        // The order of a project's pages is the order of its tabs.
+        projectSession?.poke(.pages)
     }
 
     override func syncAppearance() {
@@ -1272,11 +1286,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     override func windowWillClose(_ notification: Notification) {
         super.windowWillClose(notification)
         cancelPendingInitialPresentation()
-        // The last change before closing still counts, the scrollback is
-        // captured while the panes are still alive, and the binding must go
-        // with the tab so the project can be opened again.
-        saveBoundProjectOnClose()
-        unbindProject()
+        // The last change before closing still counts, and the scrollback
+        // is captured while the panes are still alive. The page stays in
+        // the project: closing a tab is not taking it out.
+        projectSession?.detach(self, removing: false)
         self.relabelTabs()
 
         // If we remove a window, we reset the cascade point to the key window so that
@@ -1313,6 +1326,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         super.windowDidBecomeKey(notification)
         self.relabelTabs()
         self.fixTabBar()
+        // A tab chosen, or dragged into this window: either way it is the
+        // one showing here now.
+        projectSession?.poke(.front)
     }
 
     override func windowDidMove(_ notification: Notification) {
@@ -1321,6 +1337,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         // Whenever we move save our last position for the next start.
         LastWindowPosition.shared.save(window)
+        projectSession?.poke(.windowFrame)
     }
 
     override func windowDidResize(_ notification: Notification) {
@@ -1328,6 +1345,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         // Whenever we resize save our last position and size for the next start.
         LastWindowPosition.shared.save(window)
+        projectSession?.poke(.windowFrame)
 
         if let window = self.window as? TerminalWindow {
             // Expand the title frame to new width.
@@ -1373,13 +1391,19 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             return
         }
 
-        guard surfaceTree.contains(where: { $0.needsConfirmQuit }) else {
-            closeTabImmediately()
-            return
-        }
+        // One page of a project closed by itself: whether it leaves the
+        // project too is asked first, where there is a question
+        // (`ProjectPageRules.closeStep`).
+        askAboutProjectPage { [weak self] in
+            guard let self else { return }
+            guard self.surfaceTree.contains(where: { $0.needsConfirmQuit }) else {
+                self.closeTabImmediately()
+                return
+            }
 
-        presentSaveAsProjectBeforeClosing {
-            self.closeTabImmediately()
+            self.presentSaveAsProjectBeforeClosing {
+                self.closeTabImmediately()
+            }
         }
     }
 
@@ -1959,6 +1983,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
 extension TerminalController {
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if let offered = validateProjectMenuItem(item) { return offered }
         switch item.action {
         // The menu bar's own copies of the agent items. AppKit asks this
         // just before the menu opens, which is the only moment the answer

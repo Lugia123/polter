@@ -5,7 +5,8 @@ import Testing
 
 /// Where the control room opens (`ControlRoomRules.selection`), that a row
 /// it opened on by itself is not one the person has looked at, and that a
-/// terminal it has borrowed is not split (`ControlRoomRules.newSplit`).
+/// terminal it has borrowed is split for an agent and not for a key
+/// (`ControlRoomRules.newSplit`).
 struct ControlRoomOpeningTests {
     /// A snapshot with an empty group listed first, a group with an agent
     /// second -- which the core says to open on -- and both unseen.
@@ -175,15 +176,25 @@ struct ControlRoomOpeningTests {
         #expect(model.rowBeingLookedAt?.id == "attic")
     }
 
-    // MARK: A borrowed terminal is not split
+    // MARK: Splitting a borrowed terminal
 
-    @Test func aTerminalTheControlRoomHasIsNotSplit() {
-        // From a key: refused, and the person hears it.
+    @Test func aBorrowedTerminalIsSplitForAnAgentAndNotForAKey() {
+        // From a key: refused, and the person hears it -- the pane would
+        // open in a tab they are not looking at.
         #expect(ControlRoomRules.newSplit(lent: true, answerWanted: false) == .refuseAloud)
-        // Asked through the core: refused, and the core answers whoever asked.
-        #expect(ControlRoomRules.newSplit(lent: true, answerWanted: true) == .refuseToTheCore)
+        // Asked through the core, by an agent: made, in the terminal's own
+        // tab. Refused, this was every worker of a supervisor shown in the
+        // control room opening as a new tab.
+        #expect(ControlRoomRules.newSplit(lent: true, answerWanted: true) == .split)
         // In its own tab it splits as it always did.
         #expect(ControlRoomRules.newSplit(lent: false, answerWanted: false) == .split)
         #expect(ControlRoomRules.newSplit(lent: false, answerWanted: true) == .split)
+    }
+
+    @Test func aSplitMadeFromABorrowedTerminalDoesNotTakeTheKeyboard() {
+        // Its window is behind the control room, and the terminal it was
+        // split from may be the one being typed into there.
+        #expect(ControlRoomRules.newSplitTakesKeyboard(fromLent: true) == false)
+        #expect(ControlRoomRules.newSplitTakesKeyboard(fromLent: false) == true)
     }
 }

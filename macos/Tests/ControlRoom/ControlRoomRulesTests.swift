@@ -218,6 +218,22 @@ struct ControlRoomNewTabTests {
         }
     }
 
+    @Test func aTabAnAgentAskedForDoesNotBringTheApplicationInFrontOfAnother() {
+        // The person is in another application and an agent opens itself
+        // a terminal: the tab opens, and they keep the keyboard.
+        let agentBehind = Rules.newTabActivates(answerWanted: true, appIsActive: false)
+        #expect(!agentBehind)
+        // Already in front, nothing changes for anybody.
+        let agentInFront = Rules.newTabActivates(answerWanted: true, appIsActive: true)
+        #expect(agentInFront)
+        // A key, a menu item, the Dock's menu: theirs comes forward, as it
+        // always has -- the Dock's menu is used from behind.
+        let theirsBehind = Rules.newTabActivates(answerWanted: false, appIsActive: false)
+        #expect(theirsBehind)
+        let theirsInFront = Rules.newTabActivates(answerWanted: false, appIsActive: true)
+        #expect(theirsInFront)
+    }
+
     @Test func aTabTheApplicationAsksForGoesBesideTheControlRoomBehindItWhileThatIsInFront() {
         // The control room starting a supervisor: the person stays where
         // they are.

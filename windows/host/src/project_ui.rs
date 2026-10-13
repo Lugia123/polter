@@ -24,7 +24,7 @@
 use windows::Win32::Foundation::HWND;
 
 use crate::{plogf, wlogf};
-use crate::project::{self, SavedLeaf, SavedNode, Snapshot};
+use crate::project::{self, Agent, SavedLeaf, SavedNode, Snapshot, Tab, Window};
 use crate::tabs::{self, TabId};
 
 /// Build a `Snapshot` from a live tab. `None` if the tab (or its window) is
@@ -90,6 +90,11 @@ fn snapshot_and_surfaces(frame: HWND, id: TabId, name: String, saved_at: i64) ->
                             // Named by `write_tab`, from the pane's own
                             // slot (`capture_scrollback`); empty until then.
                             scrollback: String::new(),
+                            // **Not known, which is not "nobody".** This
+                            // host does not yet record which agent, if any,
+                            // is in a pane; saying `None` here would write
+                            // down that a worker's pane was a plain shell.
+                            agent: Agent::Unknown,
                         },
                         LeafPane { pane: p.id, surface: p.surface, slot: p.scrollback.as_ref().map(|j| j.slot().clone()) },
                     ),
@@ -98,14 +103,19 @@ fn snapshot_and_surfaces(frame: HWND, id: TabId, name: String, saved_at: i64) ->
             .collect();
         let order = std::cell::RefCell::new(Vec::new());
         let root = project::describe(node, &|id| {
-            let (leaf, pane) = meta.get(&id).cloned().unwrap_or_default();
+            let (leaf, pane) =
+                meta.get(&id).cloned().unwrap_or_else(|| (SavedLeaf::plain("", Agent::Unknown), LeafPane::default()));
             order.borrow_mut().push(pane);
             leaf
         });
         Some((root, order.into_inner()))
     })?;
 
-    Some((Snapshot { name, saved_at, root: Some(root), next_scrollback: None }, surfaces))
+    // One tab is what this host saves: a project of one window with that
+    // tab in it, the window's frame not recorded. `write_tab` puts it into
+    // the project the name already has, if it has one.
+    let windows = vec![Window { frame: None, front: 0, tabs: vec![Tab { root }] }];
+    Some((Snapshot { name, saved_at, group: None, windows, next_scrollback: None }, surfaces))
 }
 
 /// The pane behind one leaf of a snapshot being saved.
@@ -137,7 +147,7 @@ fn capture_scrollback(
     snaps: &std::path::Path,
     alloc: &mut project::Allocator,
 ) {
-    let Some(root) = snapshot.root.as_mut() else { return };
+    let Some(root) = snapshot.first_tab_mut() else { return };
     let leaves = project::leaves_mut(root);
     if leaves.len() != panes.len() {
         // Cannot happen while both come from one `describe` walk; if it
@@ -260,7 +270,7 @@ fn write_tab(dir: &std::path::Path, frame: HWND, id: TabId, name: String, kind: 
         return Err("that tab no longer exists".to_string());
     };
 
-    if let Some(root) = &snapshot.root {
+    if let Some(root) = snapshot.first_tab() {
         let missing = missing_history_count(root);
         let total = leaf_count(root);
         if missing > 0 && missing < total {
@@ -284,16 +294,32 @@ fn write_tab(dir: &std::path::Path, frame: HWND, id: TabId, name: String, kind: 
     // being replaced, and every snapshot name that file or the directory
     // still holds. A counter that went missing cannot make a number be used
     // twice, because what is on disk is counted too.
+    //
+    // **Every tab of the project, not only the one being saved**: the
+    // snapshots of all of them are in this one directory.
     let existing = project::read(dir, &snapshot.name).ok();
-    let mut in_use: Vec<String> =
-        existing.as_ref().and_then(|e| e.root.as_ref()).map(project::scrollback_names).unwrap_or_default();
+    let mut in_use: Vec<String> = existing.as_ref().map(Snapshot::scrollback_names).unwrap_or_default();
     if let Ok(entries) = std::fs::read_dir(&snaps) {
         in_use.extend(entries.flatten().filter_map(|e| e.file_name().to_str().map(str::to_string)));
     }
-    let mut alloc = project::Allocator::new(existing.and_then(|e| e.next_scrollback), in_use.iter().map(String::as_str));
+    let mut alloc =
+        project::Allocator::new(existing.as_ref().and_then(|e| e.next_scrollback), in_use.iter().map(String::as_str));
     capture_scrollback(frame, &mut snapshot, &surfaces, &snaps, &mut alloc);
+    // **The tab goes into the project that is there, in place of its first
+    // tab.** A project file can hold more windows and tabs than this host
+    // saves; written as the whole project, this one tab would be all that is
+    // left of them, and of the project's group.
+    let mut snapshot = match existing {
+        Some(was) => {
+            let Snapshot { name, saved_at, windows, .. } = snapshot;
+            let root = windows.into_iter().next().and_then(|w| w.tabs.into_iter().next()).map(|t| t.root);
+            Snapshot { name, saved_at, ..was.replacing_first_tab(root) }
+        }
+        None => snapshot,
+    };
     snapshot.next_scrollback = Some(alloc.next);
-    let named = snapshot.root.as_ref().map(project::scrollback_names).unwrap_or_default();
+    // Kept below: what every tab of the project names.
+    let named = snapshot.scrollback_names();
     project::write(dir, &snapshot, kind).map_err(|e| e.to_string())?;
     // After the write, so a failed write leaves the previous save's
     // snapshots where its file still points. Kept: exactly what the tree
@@ -332,7 +358,7 @@ pub fn shape_for_snapshot_seeded(
     seed_surface: usize,
     snaps: &std::path::Path,
 ) -> Option<serde_json::Value> {
-    let root = snapshot.root.as_ref()?;
+    let root = snapshot.first_tab()?;
     Some(seed_leftmost(root, seed_surface, snaps))
 }
 
@@ -372,7 +398,7 @@ fn leftmost_leaf(node: &SavedNode) -> &SavedLeaf {
 /// still queues `tabs::Op::ApplyLayout` with the shape this returns, the same
 /// path `poltergeist_layout` uses.
 pub fn shape_for_snapshot(snapshot: &Snapshot, snaps: &std::path::Path) -> Option<serde_json::Value> {
-    snapshot.root.as_ref().map(|r| project::to_layout_shape(r, snaps))
+    snapshot.first_tab().map(|r| project::to_layout_shape(r, snaps))
 }
 
 /// Load a saved project into a brand-new tab in `frame`. This is the
@@ -419,7 +445,9 @@ pub fn load_project_into_new_tab(
     // **The file the listing found**, not a path recomputed from the name:
     // see `project::path_for`. (This used to take a name and call `path_for`
     // right below a comment saying it did not.)
-    let snapshot = project::read_file(file).map_err(|e| format!("{e:?}"))?;
+    // In words: a project from a later format is refused, and "TooNew" on
+    // its own does not tell a person that updating is what opens it.
+    let snapshot = project::read_file(file).map_err(|e| e.to_string())?;
     let snaps = project::scrollback_dir(file);
 
     // The seed pane is created here rather than by the layout step, so its
@@ -427,7 +455,7 @@ pub fn load_project_into_new_tab(
     // `history` (task 547): `scrollback_restore` is read once, at
     // `surface_new`, and a pane the layout step plugs in by identity has
     // long since passed it.
-    let seed = snapshot.root.as_ref().map(leftmost_leaf);
+    let seed = snapshot.first_tab().map(leftmost_leaf);
     let seed_spec = tabs::NewTab {
         cwd: seed.filter(|l| !l.cwd.is_empty()).map(|l| l.cwd.clone()),
         history: seed.filter(|l| !l.history.is_empty()).map(|l| l.history.clone()),
@@ -471,12 +499,19 @@ mod tests {
         Snapshot {
             name: "demo".to_string(),
             saved_at: 1,
-            root: Some(SavedNode::Split {
-                axis: polter_split_tree::Axis::Horizontal,
-                ratio: 0.5,
-                left: Box::new(SavedNode::Leaf(SavedLeaf { cwd: "/a".to_string(), ..Default::default() })),
-                right: Box::new(SavedNode::Leaf(SavedLeaf { cwd: "/b".to_string(), ..Default::default() })),
-            }),
+            group: None,
+            windows: vec![Window {
+                frame: None,
+                front: 0,
+                tabs: vec![Tab {
+                    root: SavedNode::Split {
+                        axis: polter_split_tree::Axis::Horizontal,
+                        ratio: 0.5,
+                        left: Box::new(SavedNode::Leaf(SavedLeaf::plain("/a", Agent::Unknown))),
+                        right: Box::new(SavedNode::Leaf(SavedLeaf::plain("/b", Agent::Unknown))),
+                    },
+                }],
+            }],
             next_scrollback: None,
         }
     }
@@ -491,13 +526,13 @@ mod tests {
 
     #[test]
     fn shape_for_snapshot_of_an_empty_project_is_none() {
-        let snapshot = Snapshot { name: "blank".to_string(), saved_at: 1, root: None, next_scrollback: None };
+        let snapshot = Snapshot { name: "blank".to_string(), saved_at: 1, group: None, windows: Vec::new(), next_scrollback: None };
         assert!(shape_for_snapshot(&snapshot, std::path::Path::new("/p/x.scrollback")).is_none());
     }
 
     #[test]
     fn leaf_count_counts_every_leaf_not_every_node() {
-        let root = sample_snapshot().root.unwrap();
+        let root = sample_snapshot().first_tab().cloned().unwrap();
         assert_eq!(leaf_count(&root), 2);
     }
 
@@ -536,7 +571,7 @@ mod tests {
             })),
         }));
 
-        let saved = project::describe(&live, &|id| SavedLeaf { cwd: format!("/pane/{id}"), ..Default::default() });
+        let saved = project::describe(&live, &|id| SavedLeaf::plain(&format!("/pane/{id}"), Agent::Unknown));
 
         let shape = project::to_layout_shape(&saved, std::path::Path::new("/p/x.scrollback"));
 
@@ -586,15 +621,21 @@ mod tests {
             })),
         }));
 
-        let saved = project::describe(&live, &|id| SavedLeaf { cwd: cwd_of(id).to_string(), ..Default::default() });
-        let snapshot = Snapshot { name: "three panes three dirs".to_string(), saved_at: 42, root: Some(saved), next_scrollback: None };
+        let saved = project::describe(&live, &|id| SavedLeaf::plain(cwd_of(id), Agent::Unknown));
+        let snapshot = Snapshot {
+            name: "three panes three dirs".to_string(),
+            saved_at: 42,
+            group: None,
+            windows: vec![Window { frame: None, front: 0, tabs: vec![Tab { root: saved }] }],
+            next_scrollback: None,
+        };
 
         let dir = std::env::temp_dir().join(format!("polter-project-ui-rs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         project::write(&dir, &snapshot, project::WriteKind::Save).expect("write should succeed");
 
         let back = project::read(&dir, "three panes three dirs").expect("read should succeed");
-        let root = back.root.expect("root should round-trip");
+        let root = back.first_tab().cloned().expect("root should round-trip");
         let SavedNode::Split { left, right, .. } = &root else { panic!("expected a split") };
         let SavedNode::Leaf(a) = left.as_ref() else { panic!("expected a leaf") };
         let SavedNode::Split { left: b, right: c, .. } = right.as_ref() else { panic!("expected a split") };
@@ -617,7 +658,7 @@ mod tests {
     /// scrolled-off log) can act on it later.
     #[test]
     fn missing_history_is_a_discoverable_fact_not_a_silent_null() {
-        let root = sample_snapshot().root.unwrap();
+        let root = sample_snapshot().first_tab().cloned().unwrap();
         // Neither leaf in `sample_snapshot` was given a history handle.
         assert_eq!(missing_history_count(&root), 2);
         assert_eq!(leaf_count(&root), 2);
@@ -626,8 +667,8 @@ mod tests {
         let with_history = SavedNode::Split {
             axis: polter_split_tree::Axis::Horizontal,
             ratio: 0.5,
-            left: Box::new(SavedNode::Leaf(SavedLeaf { history: "abc123.history".to_string(), ..Default::default() })),
-            right: Box::new(SavedNode::Leaf(SavedLeaf::default())),
+            left: Box::new(SavedNode::Leaf(SavedLeaf { history: "abc123.history".to_string(), ..SavedLeaf::plain("", Agent::Unknown) })),
+            right: Box::new(SavedNode::Leaf(SavedLeaf::plain("", Agent::Unknown))),
         };
         assert_eq!(missing_history_count(&with_history), 1);
     }
@@ -655,7 +696,7 @@ mod tests {
     /// metadata belongs to a different pane entirely).
     #[test]
     fn leftmost_leaf_finds_the_same_leaf_seed_leftmost_addresses() {
-        let root = sample_snapshot().root.unwrap();
+        let root = sample_snapshot().first_tab().cloned().unwrap();
         let leaf = leftmost_leaf(&root);
         assert_eq!(leaf.cwd, "/a");
 
@@ -675,10 +716,10 @@ mod tests {
             left: Box::new(SavedNode::Split {
                 axis: polter_split_tree::Axis::Horizontal,
                 ratio: 0.6,
-                left: Box::new(SavedNode::Leaf(SavedLeaf { cwd: "/deep".to_string(), ..Default::default() })),
-                right: Box::new(SavedNode::Leaf(SavedLeaf::default())),
+                left: Box::new(SavedNode::Leaf(SavedLeaf::plain("/deep", Agent::Unknown))),
+                right: Box::new(SavedNode::Leaf(SavedLeaf::plain("", Agent::Unknown))),
             }),
-            right: Box::new(SavedNode::Leaf(SavedLeaf::default())),
+            right: Box::new(SavedNode::Leaf(SavedLeaf::plain("", Agent::Unknown))),
         };
         assert_eq!(leftmost_leaf(&nested).cwd, "/deep");
     }

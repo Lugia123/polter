@@ -260,6 +260,40 @@ struct ControlRoomLendingTests {
         #expect(world.lending.detail == .nothingSelected)
     }
 
+    // MARK: Why a supervisor did not start
+
+    @Test func whatALauncherReportsItselfIsReadAndHasItsOwnSentence() throws {
+        typealias Start = ControlRoomList.SupervisorStart
+        // The core's two words for it, as it writes them.
+        let notFound = try JSONDecoder().decode(Start.Failure.self, from: Data(#""cli_not_found""#.utf8))
+        #expect(notFound == .cliNotFound)
+        let didNotStart = try JSONDecoder().decode(Start.Failure.self, from: Data(#""cli_did_not_start""#.utf8))
+        #expect(didNotStart == .cliDidNotStart)
+        // A word this build does not know is an error, not "no reason".
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(Start.Failure.self, from: Data(#""gave_up""#.utf8))
+        }
+
+        let detail = ControlRoomLending.Detail.noSupervisor(group: "nightly")
+        func words(_ failed: Start.Failure) -> String {
+            ControlRoomLending.words(
+                for: detail, start: Start(state: .failed, canStart: true, failed: failed, role: nil, cwd: ""))
+        }
+        // Every reason has a sentence of its own: the launcher's two are
+        // not the timer's "no agent connected", and not each other's.
+        let all = Start.Failure.allCases.map(words)
+        #expect(Set(all).count == Start.Failure.allCases.count)
+        #expect(all.allSatisfy { !$0.isEmpty })
+        let found = words(.cliNotFound)
+        #expect(found.contains("not found"))
+        let timer = words(.agentNeverConnected)
+        #expect(found != timer)
+        // The view says what this says.
+        let shown = ControlRoomDetailMessage.words(
+            for: detail, start: Start(state: .failed, canStart: true, failed: .cliDidNotStart, role: nil, cwd: ""))
+        #expect(shown == words(.cliDidNotStart))
+    }
+
     // MARK: Who the supervisor is
 
     @Test func theSupervisorIsTheOneTheCoreNames() throws {

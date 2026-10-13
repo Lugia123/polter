@@ -312,11 +312,62 @@ pub fn close_of(on_loan: bool, asks: bool) -> CloseOf {
     }
 }
 
-/// Whether a new split may be made from this pane. Not from the one shown
-/// in the control room: the split would open in its own tab, where nobody
-/// is looking (as on macOS).
-pub fn may_split(on_loan: bool) -> bool {
-    !on_loan
+/// Whether a new split may be made from this pane. `on_loan` is whether it
+/// is the one shown in the control room; `asked_by_core` is whether the
+/// request came with somewhere to write the answer (an agent's, through
+/// the core) rather than from a key.
+///
+/// **A key on the pane shown in the control room is refused**: the split
+/// would open in its own tab, where the person who pressed it is not
+/// looking. **An agent's request is carried out**: the pane never left its
+/// tab's tree, so the split is made there. Refused, the core opened a tab
+/// instead, and a supervisor shown in the control room opened every worker
+/// as a new tab (task 1492). The macOS host's `ControlRoomRules.newSplit`.
+pub fn may_split(on_loan: bool, asked_by_core: bool) -> bool {
+    !on_loan || asked_by_core
+}
+
+/// What a host answers when it is asked for a split, at the moment it is
+/// asked -- before anything is queued.
+///
+/// **The answer is the core's cue.** The core reads it there and then: told
+/// "will split" it waits for a terminal to appear in that tab, and told
+/// anything else it opens a tab instead and says so to whoever asked
+/// (`placed: "tab"`, `fallback: "split_refused"`). A host that says "will"
+/// and finds out later that it will not has told an agent its worker was
+/// opened when nothing was (Windows, fourth run on a real machine: a
+/// supervisor shown in the control room asked for a worker, and none came).
+/// So what would refuse the split later is asked now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitAnswer {
+    /// It will be made.
+    Will,
+    /// The tab the split would go in has no pane to split: it is the
+    /// control room.
+    NoPane,
+    /// The pane is the one shown in the control room (`may_split`).
+    OnLoan,
+}
+
+impl SplitAnswer {
+    /// `has_pane`: the tab the split is aimed at is a terminal's.
+    /// `on_loan`: the pane it is aimed at is shown in the control room.
+    /// `asked_by_core`: see `may_split`.
+    pub fn to(has_pane: bool, on_loan: bool, asked_by_core: bool) -> SplitAnswer {
+        if !has_pane {
+            SplitAnswer::NoPane
+        } else if !may_split(on_loan, asked_by_core) {
+            SplitAnswer::OnLoan
+        } else {
+            SplitAnswer::Will
+        }
+    }
+
+    /// Whether the core is told the split will be made, and the split is
+    /// queued. The two are one decision: never one without the other.
+    pub fn will(self) -> bool {
+        self == SplitAnswer::Will
+    }
 }
 
 /// The English of what the right-hand side says when it shows a sentence; a
@@ -522,8 +573,37 @@ mod tests {
     }
 
     #[test]
-    fn the_borrowed_terminal_is_not_split() {
-        assert!(!may_split(true));
-        assert!(may_split(false));
+    fn a_split_that_would_be_refused_is_refused_when_it_is_asked_for() {
+        // An ordinary pane of a terminal's tab: it will be made, whoever asks.
+        for core in [false, true] {
+            assert_eq!(SplitAnswer::to(true, false, core), SplitAnswer::Will);
+            assert!(SplitAnswer::to(true, false, core).will());
+        }
+        // The pane shown in the control room, from a key: not made.
+        assert_eq!(SplitAnswer::to(true, true, false), SplitAnswer::OnLoan);
+        assert!(!SplitAnswer::to(true, true, false).will());
+        // The same pane, asked by an agent through the core: made, in its
+        // own tab. Refused, the core opened a tab instead -- every worker
+        // of a supervisor shown in the control room (task 1492).
+        assert_eq!(SplitAnswer::to(true, true, true), SplitAnswer::Will);
+        // The control room's own tab has nothing to split, whoever asks.
+        for (on_loan, core) in [(false, false), (true, false), (false, true), (true, true)] {
+            assert_eq!(SplitAnswer::to(false, on_loan, core), SplitAnswer::NoPane);
+            assert!(!SplitAnswer::to(false, on_loan, core).will());
+        }
+        // It is the same test the split itself is refused by.
+        for on_loan in [false, true] {
+            for core in [false, true] {
+                assert_eq!(SplitAnswer::to(true, on_loan, core).will(), may_split(on_loan, core));
+            }
+        }
+    }
+
+    #[test]
+    fn the_borrowed_terminal_is_split_for_an_agent_and_not_for_a_key() {
+        assert!(!may_split(true, false));
+        assert!(may_split(true, true));
+        assert!(may_split(false, false));
+        assert!(may_split(false, true));
     }
 }

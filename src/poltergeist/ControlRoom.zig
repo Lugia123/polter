@@ -18,12 +18,38 @@
 //!                             than the two ages, changes
 //!   "now_ms": 6000000,        the clock every *_ms below is on, except
 //!                             last_ms / seen_ms / snooze, which are wall
-//!   "needs_me": 5,            rows that wait, a group's or a lone terminal's:
-//!                             groups_needing_me plus the rows of
-//!                             `ungrouped` with needs_me. The Dock's number
+//!   "needs_me": 4,            rows that wait and are drawn: the groups'.
+//!                             The same number as groups_needing_me, since
+//!                             no host draws a row for a terminal in no
+//!                             group (below). The Dock's number
 //!   "groups_needing_me": 4,   rows in `groups` with needs_me, in a row
 //!                             from the top. The list's header
 //!   "groups_other": 3,        the rest of `groups`
+//!   "header_waiting": {"count": 4, "of": "groups", "number": "other",
+//!                      "groups": 4, "alone": 0},
+//!   "header_quiet":   {"count": 3, "of": "groups", "number": "other",
+//!                      "groups": 3, "alone": 0},
+//!                             what the list's two headings say. **The
+//!                             terminals in no group are in neither**: the
+//!                             control room does not show them (the user,
+//!                             2026-10-13 -- their rows read as groups
+//!                             nobody had made), so `alone` is 0 and `of`
+//!                             is groups until a host draws them again.
+//!                             `ungrouped` still lists them, each with its
+//!                             own needs_me; they are in no count.
+//!                             count: the rows under that heading
+//!                             -- for header_waiting the same number as
+//!                             needs_me. of: groups (every one of them is a
+//!                             group: "N groups …") | rows (a lone terminal
+//!                             is among them: "N waiting …", no word for
+//!                             what they are). number: none | one | other,
+//!                             so that "1 group" and "3 groups" are the
+//!                             host's two sentences and not its arithmetic.
+//!                             groups / alone: the two that count is the
+//!                             sum of, for a host that says them apart.
+//!                             A host that draws only the groups' rows goes
+//!                             by groups_needing_me / groups_other instead,
+//!                             and is as true to what it draws
 //!   "open_on": "web-app" | null,
 //!                             the group a control room that opens with
 //!                             nothing selected selects: the first row
@@ -47,19 +73,98 @@
 //!                                 and on nothing else
 //!         "terminal": "0x…"|null, the terminal one is being started in
 //!         "failed": "none",       none | terminal_never_opened |
-//!                                 agent_never_connected | terminal_closed
+//!                                 agent_never_connected | terminal_closed |
+//!                                 cli_not_found | cli_did_not_start
+//!                                 the last two are `+launch` saying so
+//!                                 itself, at once: its CLI is not there
+//!                                 to run, or something else stopped it
+//!                                 before the CLI ran
 //!         "role": "polter-supervisor" | null,
 //!                                 the role it is started in unless the
 //!                                 person picks another; null with no
-//!                                 supervisor role at all
+//!                                 supervisor role at all. The role the
+//!                                 group's last supervisor wore when that
+//!                                 is still one to start in, else the first
+//!         "cli": "claude-code" | null,
+//!                                 the agent CLI that role is started in:
+//!                                 the last supervisor's when the role is
+//!                                 set up for it, else the role's first
+//!         "cli_label": "Claude Code" | null,
+//!                                 what that CLI is called to a person: its
+//!                                 adapter's own `agent_cli.label`. Null
+//!                                 when there is no CLI, or no name for it
+//!                                 is known -- no adapter by that key, one
+//!                                 that gives none, or none read yet -- and
+//!                                 a host then writes the key
 //!         "cwd": "/Users/me/work",
-//!         "cwd_from": "last_supervisor" },
+//!         "cwd_from": "last_supervisor",
 //!                                 where it is started unless the person
 //!                                 picks elsewhere, and how that was
 //!                                 arrived at: last_supervisor (where this
 //!                                 group's supervisor last worked, kept
-//!                                 across restarts) | members (what most of
-//!                                 its terminals are in) | home | none
+//!                                 across restarts) | session_snapshot (no
+//!                                 supervisor's directory was ever kept for
+//!                                 this group; this is where the one in the
+//!                                 last run's session snapshot stood -- a
+//!                                 guess about an old group, and said to be
+//!                                 one) | members (what most of its
+//!                                 terminals are in) | home | none
+//!         "last": { "role": "polter-supervisor" | null,
+//!                   "cli": "claude-code" | null,
+//!                   "cli_label": "Claude Code" | null,
+//!                   "heard_ms": 1700000000000 | null },
+//!                                 what is written down of the supervisor
+//!                                 this group last had (`Chat.LastSupervisor`).
+//!                                 Each is null when nobody wrote it down;
+//!                                 heard_ms (the real clock) is null when
+//!                                 no supervisor was ever recorded at all
+//!         "resume": { "can": true, "why": "none" } },
+//!                                 whether starting one now goes on with
+//!                                 the last one's session, for `role` and
+//!                                 `cli` above. A host offers "go on with
+//!                                 the last session" on `can` and on nothing
+//!                                 else, and says `why` when it cannot:
+//!                                 none (it can) | no_record (no supervisor
+//!                                 was ever recorded) | no_session (there
+//!                                 was one; its CLI never said which
+//!                                 session it was in) | last_try_failed (a
+//!                                 start that went on with it made no
+//!                                 supervisor) | cli_differs (it would be
+//!                                 started in another CLI than that
+//!                                 session's) | clis_unread (what the CLIs
+//!                                 can do has not been read yet -- it will
+//!                                 be, and this changes by itself) |
+//!                                 cli_cannot_resume (that CLI's adapter
+//!                                 does not say it can go on with a
+//!                                 session) | session_in_use (an open
+//!                                 terminal is in that session now)
+//!       "project": {
+//!         "tie": "bound",         bound | undecided | declined. Whether
+//!                                 this group has a project (`Projects.zig`):
+//!                                 undecided is nobody having said -- every
+//!                                 group from before there were ties --
+//!                                 declined is its supervisor saying none
+//!         "name": "web-app" | null,
+//!                                 the project, by the name the host has
+//!                                 it under; null unless bound
+//!         "pages": 3 | null,      how many pages it has. Null unless
+//!                                 bound, **and null when the host has not
+//!                                 said**: not known is not zero
+//!         "open": true | null,    whether it is open now; null likewise
+//!         "start": "project",     project | directory. What starting a
+//!                                 supervisor for this group does: opens
+//!                                 its project (all its pages; the
+//!                                 supervisor is started in its own pane),
+//!                                 or opens one tab in `supervisor.cwd`.
+//!                                 A host words its button on this
+//!         "why": "none" },        why the tie is as it is, in one word
+//!                                 (`Projects.Why`): none | projects_unknown
+//!                                 | not_taken_up | declined | pending |
+//!                                 no_supervisor | other_supervisor |
+//!                                 supervisor_of_several |
+//!                                 supervisor_has_project |
+//!                                 project_has_group | project_name_taken |
+//!                                 several_projects
 //!       "attention": {
 //!         "kind": "needs_approval",     Attention.Kind
 //!         "under": "needs_approval",    what it is when not snoozed
@@ -119,18 +224,53 @@
 //!           "screen":"unmeasured"|"unreadable"|"measured",
 //!           "alive":true, "duty":"on"|"off",
 //!           "held":false, "shielded":false } ] } ],
+//!                             (a row of `ungrouped` is marked seen by its
+//!                             terminal: {"act":"seen","terminal":"0x…"})
 //!   "ungrouped": [ { "id", "title", "attention", "needs_me", "unseen",
 //!       "shown", "word", "text", "waiter", "reason", "what" } ],
 //!   "terminals": [ { the member fields but `role`, and "event_ms",
+//!       "who":{"is":"agent","role":"dev-worker","cli":"claude-code",
+//!              "session":"…","opened_by":"0x…"|null},
+//!                             who is working in it (`WhoOut`). is:
+//!                             agent | none (nobody: no agent, and the
+//!                             shell is at its prompt) | unknown (the core
+//!                             cannot tell -- not "nobody"). role, cli and
+//!                             session are the words a group's record and
+//!                             a project's pane use; for an agent, "" is
+//!                             that part not known, and for the other two
+//!                             all three are null. opened_by is the
+//!                             terminal whose agent opened this one, in
+//!                             this run, whoever is in it now
 //!       "window":"0x…"|null, "tab":"0x…"|null,
-//!       "pane":"supervisor"|"worker"|"plain" } ],
+//!       "pane":"supervisor"|"worker"|"plain",
+//!       "bar":{"shown":"held","text":"被按住"} } ],
 //!                             `pane` is which of the three frames this
 //!                             terminal's pane wears in its own tab: the
 //!                             terminal minding others, one being minded,
 //!                             or neither. A host draws the frame it is
-//!                             told and asks no role
+//!                             told and asks no role.
+//!                             `bar` is what the right end of that
+//!                             frame's title draws: the glyph and the
+//!                             words. `shown` is one of the five above or
+//!                             `held`, which is only ever here. A host
+//!                             draws this pair in a pane's title and never
+//!                             makes one of `shown`, `text` and `held`.
+//!                             Rows and window tabs still draw `shown`
 //!   "tabs": [ { "window":"0x…"|null, "tab":"0x…",
 //!       "shown":…, "terminal":"0x…"|null } ],
+//!   "projects_known": false,  whether the host has stated what projects
+//!                             there are (ControlAct.zig, `projects`).
+//!                             Until it has, no group is tied or untied
+//!                             and the only order is `open`
+//!   "project_orders": [ {"order":"create","project":"web-app",
+//!       "group":"web-app","to":null,"terminal":"0x…"} ],
+//!                             what the host is to do for its half of the
+//!                             ties to match (`Projects.Order`): open |
+//!                             create | bind | set_group | rename |
+//!                             add_tab. Worked out afresh each time: an
+//!                             order is there until the host has done it
+//!                             and stated the result, and gone when it has.
+//!                             Carrying one out twice changes nothing
 //!   "supervisor_roles": [ {"key":"polter-supervisor",
 //!       "name":"Polter Supervisor"} ],
 //!                             the roles a supervisor can be started in,
@@ -171,6 +311,7 @@ const Allocator = std.mem.Allocator;
 const Attention = @import("Attention.zig");
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
+const Projects = @import("Projects.zig");
 const AgentEvent = @import("agent_event.zig");
 const ShellSteps = @import("ShellSteps.zig");
 const quota = @import("quota.zig");
@@ -307,6 +448,14 @@ pub const Terminal = struct {
     process: Attention.Process,
     /// An agent is connected to Polter from this terminal.
     agent_present: bool,
+    /// Its shell is at its prompt, by shell integration's word: nothing
+    /// is running in it. False also when there is no integration to say.
+    at_prompt: bool,
+    /// The key of the role it wears or was started in; empty for none.
+    role: []const u8,
+    /// The agent CLI a role launch started in it; empty when none did.
+    /// What its hooks say of the CLI is the bus's and comes first.
+    launched_cli: []const u8,
     /// This terminal's own T1, when it was given one; null for the common
     /// one.
     still_ms: ?u64,
@@ -327,7 +476,19 @@ pub const Input = struct {
     /// The roles a supervisor can be started in from the control room, in
     /// the order to offer them; the first is the one used unless the person
     /// picks. Empty when there is none, and then nothing can be started.
-    supervisor_roles: []const SupervisorRole,
+    supervisor_roles: []const StartRole,
+    /// Which agent CLIs can go on with a session they are handed, by their
+    /// adapters' own word. No default: a caller that forgot it would have
+    /// every group say "not read yet" for ever.
+    cli_resume: CliResume,
+    /// Where every group stands with a project, and what the host is to
+    /// do about it. No default: a caller that forgot it would have every
+    /// group read "the host has not said" for ever.
+    projects: ProjectsIn,
+    /// What each agent CLI is called to a person, by its adapter's own
+    /// word. Empty when none has been read; a key that is not here has no
+    /// name, and the snapshot says so. No default, for the reason above.
+    cli_names: []const CliName,
     /// The person's home directory, where a supervisor is started when
     /// nothing says better. Empty when it is not known.
     home: []const u8,
@@ -336,11 +497,128 @@ pub const Input = struct {
     wall_ms: u64,
 };
 
-/// A role that makes the terminal it starts in a supervisor.
+/// What `Projects.reconcile` came to, and the table it came from.
+pub const ProjectsIn = struct {
+    /// What the host stated; null when it has stated nothing.
+    table: ?*const Projects,
+    standings: []const Projects.Standing,
+    orders: []const Projects.Order,
+
+    /// Nothing stated and nothing worked out.
+    pub const unknown: ProjectsIn = .{ .table = null, .standings = &.{}, .orders = &.{} };
+};
+
+/// A role that makes the terminal it starts in a supervisor, as the
+/// snapshot lists it.
 pub const SupervisorRole = struct {
     key: []const u8,
     name: []const u8,
 };
+
+/// The same role as it is handed in: with the CLIs it is set up for, in
+/// the role's own order. Never empty -- a role with no CLI is not one a
+/// supervisor can be started in.
+pub const StartRole = struct {
+    key: []const u8,
+    name: []const u8,
+    clis: []const []const u8,
+};
+
+/// Which agent CLIs can go on with a session, as far as that has been
+/// read. **Not read and read-and-none are two answers**: the first is
+/// about to change by itself, the second is not.
+pub const CliResume = union(enum) {
+    /// No adapter has been asked yet (`agent_cli.Cache`).
+    unread,
+    /// The keys of the CLIs whose adapter says it can.
+    read: []const []const u8,
+};
+
+/// What an agent CLI is called to a person (`agent_cli.Adapter.label`).
+pub const CliName = struct {
+    key: []const u8,
+    label: []const u8,
+};
+
+/// The name `key` goes by; null when there is no key, nobody names it, or
+/// the name it was given is empty. **Never the key standing in for a
+/// name**: a host that is handed null writes the key and knows it did.
+pub fn cliLabelOf(names: []const CliName, key: ?[]const u8) ?[]const u8 {
+    const k = key orelse return null;
+    if (k.len == 0) return null;
+    for (names) |n| {
+        if (std.mem.eql(u8, n.key, k)) return if (n.label.len > 0) n.label else null;
+    }
+    return null;
+}
+
+/// The role a supervisor is started in for a group unless one is named:
+/// the one its last supervisor wore when that is still a role to start
+/// in, else the first. Null with no role at all.
+pub fn startRoleOf(roles: []const StartRole, last: Chat.LastSupervisor) ?StartRole {
+    if (last.role.len > 0) for (roles) |r| {
+        if (std.mem.eql(u8, r.key, last.role)) return r;
+    };
+    return if (roles.len > 0) roles[0] else null;
+}
+
+/// The CLI a role is started in: the last supervisor's when the role is
+/// set up for it, else the role's first. Null for a role with none.
+pub fn startCliOf(clis: []const []const u8, last: Chat.LastSupervisor) ?[]const u8 {
+    if (last.cli.len > 0) for (clis) |c| {
+        if (std.mem.eql(u8, c, last.cli)) return c;
+    };
+    return if (clis.len > 0) clis[0] else null;
+}
+
+/// Whether an open terminal's agent last said it is in `session`.
+///
+/// "Last said", not "is": an agent that has left a terminal still open
+/// says nothing on the way out that Polter hears, so this can be true of
+/// a session nobody is in. That errs towards a new session, which starts;
+/// the other way round would start a second agent in a live one.
+pub fn sessionHeld(bus: *const Bus, open: []const Id, session: []const u8) bool {
+    if (session.len == 0) return false;
+    for (open) |id| {
+        const a = bus.agentOf(id);
+        if (a.hooks != .live) continue;
+        if (std.mem.eql(u8, a.session_id.get() orelse "", session)) return true;
+    }
+    return false;
+}
+
+/// Whether a start goes on with the last supervisor's session.
+///
+/// One function, asked by the snapshot and by the start itself
+/// (`App.controlActStartSupervisor`), so that what the control room
+/// offered and what the launch line then carries cannot be two answers.
+pub fn resumeOf(q: struct {
+    last: Chat.LastSupervisor,
+    /// The CLI it would be started in; null when there is none.
+    cli: ?[]const u8,
+    cli_resume: CliResume,
+    /// `sessionHeld` of the last session.
+    held: bool,
+    /// The last try went on with this session and made no supervisor.
+    last_try_failed: bool,
+}) ResumeOut {
+    const why: ResumeOut.Why = why: {
+        if (q.last.heard_ms == null) break :why .no_record;
+        if (q.last.session.len == 0) break :why .no_session;
+        if (q.last_try_failed) break :why .last_try_failed;
+        const cli = q.cli orelse break :why .cli_differs;
+        if (!std.mem.eql(u8, cli, q.last.cli)) break :why .cli_differs;
+        switch (q.cli_resume) {
+            .unread => break :why .clis_unread,
+            .read => |keys| for (keys) |k| {
+                if (std.mem.eql(u8, k, cli)) break;
+            } else break :why .cli_cannot_resume,
+        }
+        if (q.held) break :why .session_in_use;
+        break :why .none;
+    };
+    return .{ .can = why == .none, .why = why };
+}
 
 // -- what comes out ---------------------------------------------------------
 
@@ -542,11 +820,61 @@ pub const SupervisorOut = struct {
     terminal: ?Hex,
     failed: Chat.StartFailure,
     role: ?[]const u8,
+    cli: ?[]const u8,
+    cli_label: ?[]const u8,
     cwd: []const u8,
     cwd_from: CwdFrom,
+    last: LastOut,
+    @"resume": ResumeOut,
 
     pub const State = enum { present, absent, starting, failed };
-    pub const CwdFrom = enum { none, last_supervisor, members, home };
+    pub const CwdFrom = enum { none, last_supervisor, session_snapshot, members, home };
+};
+
+/// What is written down of the supervisor a group last had. Null is
+/// "nobody wrote it down", for each on its own.
+pub const LastOut = struct {
+    role: ?[]const u8,
+    cli: ?[]const u8,
+    cli_label: ?[]const u8,
+    heard_ms: ?u64,
+};
+
+/// Whether a start goes on with the last session, and when not, why not.
+pub const ResumeOut = struct {
+    can: bool,
+    why: Why,
+
+    pub const Why = enum {
+        none,
+        no_record,
+        no_session,
+        last_try_failed,
+        cli_differs,
+        clis_unread,
+        cli_cannot_resume,
+        session_in_use,
+    };
+};
+
+/// A group's tie to a project, and what starting its supervisor does.
+pub const ProjectOut = struct {
+    tie: enum { undecided, declined, bound },
+    name: ?[]const u8,
+    pages: ?usize,
+    open: ?bool,
+    start: Chat.StartBy,
+    why: Projects.Why,
+};
+
+/// One thing the host is to do; `Projects.Order`, with the terminal as
+/// the snapshot writes one.
+pub const OrderOut = struct {
+    order: Projects.Order.Kind,
+    project: []const u8,
+    group: ?[]const u8,
+    to: ?[]const u8,
+    terminal: ?Hex,
 };
 
 pub const GroupRow = struct {
@@ -557,6 +885,7 @@ pub const GroupRow = struct {
     snooze: SnoozeOut,
     steward: ?Hex,
     supervisor: SupervisorOut,
+    project: ProjectOut,
     attention: AttentionOut,
     needs_me: bool,
     unseen: bool,
@@ -604,12 +933,120 @@ pub const Pane = enum {
     }
 };
 
+/// What the right end of a pane's title draws: a glyph and the words
+/// beside it (the design's `06-panes`).
+///
+/// **It is the terminal's status, unless the terminal is held and nobody is
+/// waiting on it.** A held terminal that is working, has finished unseen or
+/// has nothing to say reads "held": that is why nothing will come of it.
+/// One that is waiting for an approval or an answer, or is in trouble,
+/// still says so -- the control room exists so that who is waiting can be
+/// seen at a glance, and "held" over a prompt would hide exactly that.
+/// 暂定 (the supervisor's ruling, 2026-10-13).
+///
+/// Only a pane's title draws this. A group's row and a window tab's glyph
+/// are `shown`, which has no "held" in it.
+pub const Bar = struct {
+    shown: Shown,
+    text: []const u8,
+
+    /// The five a row draws, and the one only a title does.
+    pub const Shown = enum { needs_you, trouble, done_unseen, working, none, held };
+
+    pub fn of(d: Attention.Display, held: bool) Bar {
+        const covered = switch (d.shown) {
+            .needs_you, .trouble => false,
+            .done_unseen, .working, .none => held,
+        };
+        if (covered) return .{ .shown = .held, .text = "被按住" };
+        return .{
+            .shown = switch (d.shown) {
+                .needs_you => .needs_you,
+                .trouble => .trouble,
+                .done_unseen => .done_unseen,
+                .working => .working,
+                .none => .none,
+            },
+            .text = d.word.text(),
+        };
+    }
+};
+
+/// Who is working in a terminal, as far as the core can tell: what a host
+/// writes into a project's pane (`Project.zig`, `agent`) and into nothing
+/// else. `role`, `cli` and `session` are the same three words a group's
+/// record keeps of its supervisor (`Chat.LastSupervisor`) and a project
+/// file keeps of a pane.
+///
+/// **Three answers, and two of them are not the same "nobody".**
+///
+///   * `agent` -- one is there: connected to Polter from it, or its hooks
+///     have been heard from (or are expected) and its shell is not back
+///     at the prompt. Each of the three is what is known of it and an
+///     empty string where nothing is: a role it never wore, a CLI that
+///     never named itself, a session it never said.
+///   * `none` -- nobody: no agent is connected and the shell is at its
+///     prompt. An agent that was there and has left reads this way too,
+///     which is what makes a pane it left one that can be used again.
+///   * `unknown` -- the core cannot tell: something is running in it that
+///     says nothing to Polter, or the shell has no integration to say it
+///     is idle. Not "nobody". A host that saves this keeps what the file
+///     already said of the pane.
+///
+/// For `none` and `unknown` the three are null: there is nobody for them
+/// to be about.
+pub const WhoOut = struct {
+    /// Which of the three. Written `is`, as `waiter.is` is: a host is
+    /// kept from reading anything the snapshot calls `kind`
+    /// (`tools/control-room-hosts-do-not-decide.py`), because the one
+    /// that was there first is the status a host must not compare.
+    is: Is,
+    role: ?[]const u8,
+    cli: ?[]const u8,
+    session: ?[]const u8,
+    /// The terminal whose agent opened this one in this run
+    /// (`Bus.Entry.opened_by`), whoever is in it now; null when no agent
+    /// did. It says which panes are a supervisor's own, so a host can
+    /// keep that with the project and say it back (`Projects`, `workers`).
+    opened_by: ?Hex,
+
+    pub const Is = enum { unknown, none, agent };
+};
+
+/// `WhoOut` for one open terminal, its strings copied into `arena`: what
+/// the bus hands back of an agent is a copy that is gone when this returns.
+pub fn whoOf(arena: Allocator, bus: *const Bus, t: Terminal) Allocator.Error!WhoOut {
+    const a = bus.agentOf(t.id);
+    const kind: WhoOut.Is = if (t.agent_present)
+        .agent
+    else if (t.at_prompt)
+        // Whatever its hooks last said: the shell has the terminal back.
+        .none
+    else if (a.hooks != .none)
+        .agent
+    else
+        .unknown;
+    const opened_by: ?Hex = .opt(bus.openedBy(t.id));
+    return switch (kind) {
+        .unknown, .none => .{ .is = kind, .role = null, .cli = null, .session = null, .opened_by = opened_by },
+        .agent => .{
+            .is = .agent,
+            .role = try arena.dupe(u8, t.role),
+            .cli = try arena.dupe(u8, a.cli.get() orelse t.launched_cli),
+            .session = try arena.dupe(u8, a.session_id.get() orelse ""),
+            .opened_by = opened_by,
+        },
+    };
+}
+
 pub const TerminalOut = struct {
     id: Hex,
     title: []const u8,
     window: ?Hex,
     tab: ?Hex,
     pane: Pane,
+    who: WhoOut,
+    bar: Bar,
     kind: Attention.Kind,
     since_ms: u64,
     event_ms: ?u64,
@@ -642,12 +1079,51 @@ pub const Pulse = struct {
     group: ?[]const u8,
 };
 
+/// What one of the list's two headings says: how many rows are under it,
+/// whether they are all groups, and which grammatical number that is.
+///
+/// **Here because a host was writing it from half the facts.** The heading
+/// said "1 group waiting for you" over three rows with a 3 on the Dock: the
+/// host had begun to draw lone terminals' rows and went on counting groups
+/// (2026-10-13). A count a host can only get right by adding two fields
+/// and comparing the sum with one is a count the core should have said.
+pub const HeaderOut = struct {
+    count: usize,
+    of: Of,
+    number: Number,
+    /// The two that `count` is the sum of: the rows that are groups, and
+    /// the rows that are lone terminals. For a host that wants to say them
+    /// apart; `count`, `of` and `number` are for one that does not.
+    groups: usize,
+    alone: usize,
+
+    pub const Of = enum { groups, rows };
+    pub const Number = enum { none, one, other };
+
+    fn over(groups: usize, alone: usize) HeaderOut {
+        const count = groups + alone;
+        return .{
+            .count = count,
+            .of = if (alone == 0) .groups else .rows,
+            .number = switch (count) {
+                0 => .none,
+                1 => .one,
+                else => .other,
+            },
+            .groups = groups,
+            .alone = alone,
+        };
+    }
+};
+
 pub const Snapshot = struct {
     rev: u64,
     now_ms: u64,
     needs_me: usize,
     groups_needing_me: usize,
     groups_other: usize,
+    header_waiting: HeaderOut,
+    header_quiet: HeaderOut,
     /// The row a control room opening with nothing selected starts on.
     /// The first, in the order below, of the groups that have an agent in
     /// them (`hasAgent`); the first group when every one is empty; null
@@ -658,6 +1134,8 @@ pub const Snapshot = struct {
     ungrouped: []const LoneRow,
     terminals: []const TerminalOut,
     tabs: []const Tab,
+    projects_known: bool,
+    project_orders: []const OrderOut,
     supervisor_roles: []const SupervisorRole,
     choose_supervisor_role: bool,
     /// Every "waiting for you" terminal, longest-waiting first. **The one
@@ -1022,6 +1500,36 @@ pub fn stewardOfGroup(arena: Allocator, bus: *const Bus, chat: *const Chat, name
 /// What the control room says of `name`'s supervisor: there is one, one is
 /// on its way, the last try failed, or there is none -- and what starting
 /// one would use. `steward` is the answer `stewardOf` gave.
+/// What the snapshot says of `name`'s project: the tie as `Chat` holds
+/// it, what the host said of that project, and the one word
+/// `Projects.reconcile` came to.
+fn projectOf(arena: Allocator, in: Input, name: []const u8) Allocator.Error!ProjectOut {
+    const tie = in.chat.projectOf(name);
+    const why: Projects.Why = for (in.projects.standings) |s| {
+        if (std.mem.eql(u8, s.group, name)) break s.why;
+    } else switch (tie) {
+        // Nothing was worked out for it: only what the tie itself says.
+        .bound => .none,
+        .declined => .declined,
+        .undecided => .projects_unknown,
+    };
+    return switch (tie) {
+        .undecided => .{ .tie = .undecided, .name = null, .pages = null, .open = null, .start = .directory, .why = why },
+        .declined => .{ .tie = .declined, .name = null, .pages = null, .open = null, .start = .directory, .why = why },
+        .bound => |project| bound: {
+            const stated = if (in.projects.table) |t| t.find(project) else null;
+            break :bound .{
+                .tie = .bound,
+                .name = try arena.dupe(u8, project),
+                .pages = if (stated) |p| p.pages else null,
+                .open = if (stated) |p| p.open != null else null,
+                .start = .project,
+                .why = why,
+            };
+        },
+    };
+}
+
 fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wake: *Wake) Allocator.Error!SupervisorOut {
     const start = in.chat.startOf(name, in.now_ms);
     // Past its deadline a start reads as failed, and nothing else happens
@@ -1034,10 +1542,16 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
         .failed => .failed,
     };
 
-    const last = in.chat.supervisorDirOf(name);
+    const last = in.chat.lastSupervisorOf(name);
     const common = in.chat.commonDirOf(name);
-    const cwd: struct { dir: []const u8, from: SupervisorOut.CwdFrom } = if (last.len > 0)
-        .{ .dir = last, .from = .last_supervisor }
+    // A directory made up out of the old session snapshot says so; it is
+    // still better than where most members are, which a group back from
+    // last night has none of.
+    const cwd: struct { dir: []const u8, from: SupervisorOut.CwdFrom } = if (last.dir.len > 0)
+        .{ .dir = last.dir, .from = switch (last.dir_from) {
+            .supervisor, .none => .last_supervisor,
+            .session_snapshot => .session_snapshot,
+        } }
     else if (common.len > 0)
         .{ .dir = common, .from = .members }
     else if (in.home.len > 0)
@@ -1045,14 +1559,39 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
     else
         .{ .dir = "", .from = .none };
 
+    const role = startRoleOf(in.supervisor_roles, last);
+    const cli = if (role) |r| startCliOf(r.clis, last) else null;
+
+    const open = try arena.alloc(Id, in.terminals.len);
+    for (in.terminals, open) |t, *o| o.* = t.id;
+    const go_on = resumeOf(.{
+        .last = last,
+        .cli = cli,
+        .cli_resume = in.cli_resume,
+        .held = sessionHeld(in.bus, open, last.session),
+        .last_try_failed = start.state == .failed and start.resuming,
+    });
+    // Reading the adapters is under way and nothing happens here when it
+    // ends, so the snapshot asks to be made again shortly.
+    if (go_on.why == .clis_unread) wake.consider(in.now_ms + 1_000);
+
     return .{
         .state = state,
         .can_start = (state == .absent or state == .failed) and in.supervisor_roles.len > 0,
         .terminal = if (state == .starting or state == .failed) .opt(start.terminal) else null,
         .failed = if (state == .failed) start.failed else .none,
-        .role = if (in.supervisor_roles.len > 0) try arena.dupe(u8, in.supervisor_roles[0].key) else null,
+        .role = if (role) |r| try arena.dupe(u8, r.key) else null,
+        .cli = if (cli) |c| try arena.dupe(u8, c) else null,
+        .cli_label = if (cliLabelOf(in.cli_names, cli)) |l| try arena.dupe(u8, l) else null,
         .cwd = try arena.dupe(u8, cwd.dir),
         .cwd_from = cwd.from,
+        .last = .{
+            .role = if (last.role.len > 0) try arena.dupe(u8, last.role) else null,
+            .cli = if (last.cli.len > 0) try arena.dupe(u8, last.cli) else null,
+            .cli_label = if (cliLabelOf(in.cli_names, last.cli)) |l| try arena.dupe(u8, l) else null,
+            .heard_ms = last.heard_ms,
+        },
+        .@"resume" = go_on,
     };
 }
 
@@ -1217,6 +1756,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
                 .snooze = .of(marks.snooze),
                 .steward = .opt(steward_id),
                 .supervisor = try supervisorOf(arena, in, name, steward_id, &wake),
+                .project = try projectOf(arena, in, name),
                 .attention = .of(a, in.bus),
                 .needs_me = Attention.needsMe(a),
                 // **Looking at this row changes it**: it stopped and nobody has
@@ -1225,7 +1765,13 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
                 // a raise that did not say so here could never be withdrawn --
                 // which is what it was (the Windows machine, 2026-10-13: five
                 // seconds on the row, in front, and no `seen` was ever sent).
-                .unseen = Attention.unseen(a) or reason.from == .raised,
+                //
+                // **Wherever in the row the raise is.** This asked whether
+                // the raise was the row's reason, so one standing behind a
+                // worker's prompt -- "1 more" -- was never looked at however
+                // long the person looked (the same machine, the same day:
+                // eight seconds, in front, and it stayed until the end).
+                .unseen = Attention.unseen(a) or raiseStandsIn(in, steward, workers.items),
                 .shown = d.shown,
                 .word = d.word,
                 .text = d.word.text(),
@@ -1270,7 +1816,9 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
     var statuses: std.ArrayListUnmanaged(Attention.Status) = .empty;
     for (sorted) |t| {
         const in_group = grouped.get(t.id);
-        const s = statusOf(in, t.id, if (in_group) |seen| seen else null, &wake);
+        // In a group: looked at through its group. On its own: through its
+        // own row (`Bus.markSeen`).
+        const s = statusOf(in, t.id, if (in_group) |seen| seen else in.bus.seenOf(t.id), &wake);
         try statuses.append(arena, s);
 
         const d = Attention.display(s);
@@ -1280,6 +1828,8 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .window = .opt(t.window),
             .tab = .opt(t.tab),
             .pane = .of(in.bus.roleOf(t.id)),
+            .who = try whoOf(arena, in.bus, t),
+            .bar = .of(d, s.held),
             .kind = s.kind,
             .since_ms = s.since_ms,
             .event_ms = in.bus.agentOf(t.id).last_event_ms,
@@ -1304,19 +1854,23 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         const a = Attention.ofTerminal(s);
         const rd = rowDisplay(a, s);
         const reason: Reason = if (a.kind == s.kind) try reasonOf(arena, in, s, null, &wake) else .none;
-        try lone.append(arena, .{ .attention = a, .row = .{
-            .id = .{ .id = t.id },
-            .title = try arena.dupe(u8, t.title),
-            .attention = .of(a, in.bus),
-            .needs_me = Attention.needsMe(a),
-            .unseen = Attention.unseen(a),
-            .shown = rd.shown,
-            .word = rd.word,
-            .text = rd.word.text(),
-            .waiter = if (Attention.needsMe(a)) .{ .is = .terminal, .name = "" } else .none,
-            .reason = reason,
-            .what = try whatOf(arena, in, s, reason),
-        } });
+        try lone.append(arena, .{
+            .attention = a,
+            .row = .{
+                .id = .{ .id = t.id },
+                .title = try arena.dupe(u8, t.title),
+                .attention = .of(a, in.bus),
+                .needs_me = Attention.needsMe(a),
+                // As for a group's row: looking at it changes it.
+                .unseen = Attention.unseen(a) or reason.from == .raised,
+                .shown = rd.shown,
+                .word = rd.word,
+                .text = rd.word.text(),
+                .waiter = if (Attention.needsMe(a)) .{ .is = .terminal, .name = "" } else .none,
+                .reason = reason,
+                .what = try whatOf(arena, in, s, reason),
+            },
+        });
     }
     std.mem.sort(Lone, lone.items, {}, loneBefore);
 
@@ -1375,10 +1929,15 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
     } else if (rows.items.len > 0) rows.items[0].row.name else null;
 
     // The counts. **One meaning for every number the person is shown**:
-    // a row that waits is one, whether it is a group's or a lone
-    // terminal's. So `needs_me` -- the Dock -- is `groups_needing_me` --
-    // the list's header -- plus the lone terminals that wait, and with no
-    // lone terminal waiting the two are the same number.
+    // a row that waits and is drawn is one. `needs_me` -- the Dock, the
+    // taskbar, a title -- and the list's heading are the same number.
+    //
+    // **A terminal in no group is in none of them.** It was, while the
+    // hosts drew a row for it (task 1469); the rows read as groups nobody
+    // had made, and the hosts stopped drawing them (the user, 2026-10-13,
+    // task 1485). A number that counted them would again say more than
+    // the list shows, which is what counting them was for. They are still
+    // listed, in `ungrouped`, with what each would say.
     //
     // It used to count the terminals behind the rows, each once, so that
     // one supervisor minding three groups was 1. On a real window that
@@ -1390,12 +1949,8 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         out.* = r.row;
         if (r.row.needs_me) needing += 1;
     }
-    var lone_needing: usize = 0;
     const lone_rows = try arena.alloc(LoneRow, lone.items.len);
-    for (lone.items, lone_rows) |r, *out| {
-        out.* = r.row;
-        if (r.row.needs_me) lone_needing += 1;
-    }
+    for (lone.items, lone_rows) |r, *out| out.* = r.row;
 
     // The allowance counts on the wall clock, since that is the clock its
     // resets are on; the wake is on the bus's. A machine that slept wakes
@@ -1407,14 +1962,28 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         .snapshot = .{
             .rev = 0,
             .now_ms = in.now_ms,
-            .needs_me = needing + lone_needing,
+            .needs_me = needing,
             .groups_needing_me = needing,
             .groups_other = group_rows.len - needing,
+            .header_waiting = .over(needing, 0),
+            .header_quiet = .over(group_rows.len - needing, 0),
             .open_on = open_on,
             .groups = group_rows,
             .ungrouped = lone_rows,
             .terminals = terminals.items,
             .tabs = tabs.items,
+            .projects_known = if (in.projects.table) |t| t.stated != null else false,
+            .project_orders = orders: {
+                const out = try arena.alloc(OrderOut, in.projects.orders.len);
+                for (in.projects.orders, out) |o, *made| made.* = .{
+                    .order = o.order,
+                    .project = try arena.dupe(u8, o.project),
+                    .group = if (o.group) |g| try arena.dupe(u8, g) else null,
+                    .to = if (o.to) |t| try arena.dupe(u8, t) else null,
+                    .terminal = .opt(o.terminal),
+                };
+                break :orders out;
+            },
             .supervisor_roles = roles: {
                 const out = try arena.alloc(SupervisorRole, in.supervisor_roles.len);
                 for (in.supervisor_roles, out) |r, *o| o.* = .{
@@ -1436,6 +2005,25 @@ fn waiting(s: Attention.Status) bool {
     return s.alive and s.duty == .on and s.kind.needsMe();
 }
 
+/// Whether this terminal is waiting on something it raised (`Bus.raise`)
+/// and the person has not looked at since. The same question `reasonOf`
+/// asks before it takes the raise's words, and `statusOf` is what decided
+/// it: a status is a self-reported "needs an answer" because a raise
+/// stands.
+fn raiseStands(in: Input, s: Attention.Status) bool {
+    if (!waiting(s)) return false;
+    if (s.kind != .needs_answer or s.source != .self_report) return false;
+    return in.bus.raisedOf(s.id, null) != null;
+}
+
+/// Whether anything in a group's row is: its supervisor or any worker,
+/// whichever of them the row happens to be about.
+fn raiseStandsIn(in: Input, steward: ?Attention.Status, workers: []const Attention.Status) bool {
+    if (steward) |s| if (raiseStands(in, s)) return true;
+    for (workers) |w| if (raiseStands(in, w)) return true;
+    return false;
+}
+
 // -- tests ------------------------------------------------------------------
 
 const testing = std.testing;
@@ -1449,7 +2037,10 @@ const World = struct {
     open: std.ArrayListUnmanaged(Terminal) = .empty,
     wall_ms: u64 = 1_700_000_000_000,
     quota: []const quota.Reading = &.{},
-    roles: []const SupervisorRole = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor" }},
+    roles: []const StartRole = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{"claude-code"} }},
+    cli_resume: CliResume = .{ .read = &.{"claude-code"} },
+    projects: ProjectsIn = .unknown,
+    cli_names: []const CliName = &.{.{ .key = "claude-code", .label = "Claude Code" }},
     home: []const u8 = "/Users/me",
 
     fn init() World {
@@ -1497,6 +2088,9 @@ const World = struct {
             .tab = tab,
             .process = .running,
             .agent_present = false,
+            .at_prompt = false,
+            .role = "",
+            .launched_cli = "",
             .still_ms = null,
         });
     }
@@ -1536,6 +2130,9 @@ const World = struct {
             .tasks = &self.tasks,
             .quota = self.quota,
             .supervisor_roles = self.roles,
+            .cli_resume = self.cli_resume,
+            .projects = self.projects,
+            .cli_names = self.cli_names,
             .home = self.home,
             .now_ms = now_ms,
             .wall_ms = self.wall_ms + now_ms,
@@ -1590,6 +2187,8 @@ fn fixtureWorld() !World {
     try w.working("design-system", 0xa5, "改按钮的三种尺寸");
     try w.worker(0xb5, "tokens", 0x25, 0xa5, "design-system");
     try w.bus.clockOff(0xb5, .supervisor);
+    // And held by the person: what its pane's title says.
+    try w.bus.setHeld(0xb5, true, .user);
 
     // Idle.
     try w.steward(0xa6, "notes", 0x26, "notes");
@@ -1603,6 +2202,43 @@ fn fixtureWorld() !World {
 
     // One account close to its limit and one with room.
     w.quota = &fixture_quota;
+
+    // What is written down of two groups' supervisors. The one that is
+    // there now, in the session its hooks name: nothing goes on with a
+    // session a terminal is in. And one whose session is from before.
+    // The other six have nothing written down.
+    //
+    // Who is in each terminal. The plain shell is at its prompt: nobody,
+    // which is not the same answer as the worker whose hooks were never
+    // heard and whose shell does not say (not known). The web-app worker
+    // was started in a role, in a pane its supervisor opened.
+    for (w.open.items) |*t| switch (t.id) {
+        0xc2 => t.at_prompt = true,
+        0xb1 => t.role = "dev-worker",
+        0xa1 => t.role = "polter-supervisor",
+        else => {},
+    };
+    try w.bus.markOpenedByAgent(0xb1, 0xa1);
+
+    // One group tied to a project, the host not having said anything yet:
+    // it is started by opening it, and how many pages it has is not known.
+    _ = try w.chat.setProject("infra", .{ .bound = "infra" });
+    _ = try w.chat.setLastSupervisor("billing", .{
+        .dir = "",
+        .dir_from = .none,
+        .role = "polter-supervisor",
+        .cli = "claude-code",
+        .session = "s",
+        .heard_ms = 1_699_999_340_000,
+    });
+    _ = try w.chat.setLastSupervisor("notes", .{
+        .dir = "",
+        .dir_from = .none,
+        .role = "polter-supervisor",
+        .cli = "claude-code",
+        .session = "s-before",
+        .heard_ms = 1_699_913_600_000,
+    });
 
     return w;
 }
@@ -1703,12 +2339,13 @@ test "ControlRoom snapshot: one supervisor in two groups is two rows, and one of
     defer arena.deinit();
     const s = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
 
-    // Five groups wait and one lone terminal does: six rows, and six on
-    // the Dock. 0xa1 is behind two of them and is counted with each.
+    // Five groups wait: five rows, and five on the Dock. 0xa1 is behind
+    // two of them and is counted with each. The lone terminal that waits
+    // is listed and is not in the number: no host draws it a row.
     try testing.expectEqual(@as(usize, 5), s.groups_needing_me);
     try testing.expectEqual(@as(usize, 1), s.ungrouped.len);
     try testing.expect(s.ungrouped[0].needs_me);
-    try testing.expectEqual(@as(usize, 6), s.needs_me);
+    try testing.expectEqual(@as(usize, 5), s.needs_me);
 
     // The row spoken in last carries the reason; the other points at it.
     const main = try rowNamed(s, "web-app");
@@ -1918,6 +2555,49 @@ test "ControlRoom snapshot: what a supervisor raises is waiting for the person a
     try testing.expect(!try w.bus.raise(0xdead, at, "x"));
 }
 
+test "ControlRoom snapshot: a raise standing behind a worker's prompt is still withdrawn by looking" {
+    var w: World = .init();
+    defer w.deinit();
+    try w.steward(0xa1, "api", 0x21, "api");
+    try w.hook(0xa1, .turn_started, null, 10 * min);
+    try w.worker(0xb1, "api worker", 0x21, 0xa1, "api");
+    // The worker's prompt has had its minute: the row is about it.
+    try w.approval(0xb1, "Bash", "git push --force", 20 * min);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const at = 21 * min + 5_000;
+    {
+        const row = try rowNamed((try build(arena.allocator(), w.input(at))).snapshot, "api");
+        try testing.expect(row.needs_me);
+        try testing.expectEqual(Attention.Kind.needs_approval, row.attention.kind);
+        try testing.expectEqual(@as(usize, 0), row.more);
+        // A prompt is not withdrawn by being looked at.
+        try testing.expect(!row.unseen);
+    }
+
+    // Now the supervisor raises it as well. The row stays about the prompt;
+    // the raise is the "1 more".
+    try testing.expect(try w.bus.raise(0xa1, at, "the worker has waited a minute: yours"));
+    {
+        const row = try rowNamed((try build(arena.allocator(), w.input(at + 1))).snapshot, "api");
+        try testing.expectEqual(Attention.Kind.needs_approval, row.attention.kind);
+        try testing.expect(row.reason.from != .raised);
+        try testing.expectEqual(@as(usize, 1), row.more);
+        // Looking changes this row, and it says so.
+        try testing.expect(row.unseen);
+    }
+
+    // The person looks: the raise goes, the prompt stays.
+    try w.chat.markSeen("api", at + 4_000, w.wall_ms + at + 4_000);
+    {
+        const row = try rowNamed((try build(arena.allocator(), w.input(at + 5_000))).snapshot, "api");
+        try testing.expectEqual(Attention.Kind.needs_approval, row.attention.kind);
+        try testing.expect(row.needs_me);
+        try testing.expectEqual(@as(usize, 0), row.more);
+        try testing.expect(!row.unseen);
+    }
+}
+
 test "ControlRoom snapshot: a prompt the supervisor may not answer is the person's without the minute" {
     var w: World = .init();
     defer w.deinit();
@@ -1980,7 +2660,8 @@ test "ControlRoom snapshot: a timed snooze ends on its own, and the core knows w
     const row = try rowNamed(during.snapshot, "billing");
     try testing.expectEqual(Attention.Kind.snoozed, row.attention.kind);
     try testing.expect(!row.needs_me);
-    try testing.expectEqual(@as(usize, 5), during.snapshot.needs_me);
+    // Four groups still wait; the lone terminal that does is in no count.
+    try testing.expectEqual(@as(usize, 4), during.snapshot.needs_me);
     try testing.expectEqual(@as(?u64, fixture_now + 20_000), during.wake_ms);
 
     const after = try build(arena.allocator(), w.input(fixture_now + 20_000));
@@ -2514,8 +3195,81 @@ test "ControlRoom snapshot: a worker minded outside any group is listed on its o
     try testing.expectEqual(@as(usize, 2), s.ungrouped.len);
     try testing.expectEqual(@as(u64, 0xb1), s.ungrouped[0].id.id);
     try testing.expect(s.ungrouped[0].needs_me);
-    try testing.expectEqual(@as(usize, 1), s.needs_me);
+    // Listed, and in no count: it has no row (task 1485).
+    try testing.expectEqual(@as(usize, 0), s.needs_me);
     try testing.expectEqual(@as(?u64, 1 * min), s.ungrouped[0].attention.event_ms);
+}
+
+test "ControlRoom bar: a held terminal's title says held, unless somebody is waiting on it" {
+    // Every glyph a terminal can have, held and not.
+    for (std.enums.values(Attention.Kind)) |kind| {
+        const d = Attention.displayOf(kind);
+        const free: Bar = .of(d, false);
+        const held: Bar = .of(d, true);
+        // Not held: the status, glyph and words, as a row would have it.
+        try testing.expectEqualStrings(@tagName(d.shown), @tagName(free.shown));
+        try testing.expectEqualStrings(d.word.text(), free.text);
+        switch (d.shown) {
+            // Waiting or in trouble: being held changes nothing.
+            .needs_you, .trouble => {
+                try testing.expectEqual(free.shown, held.shown);
+                try testing.expectEqualStrings(free.text, held.text);
+            },
+            // Working, finished unseen, nothing to say: it says held.
+            .done_unseen, .working, .none => {
+                try testing.expectEqual(Bar.Shown.held, held.shown);
+                try testing.expectEqualStrings("被按住", held.text);
+            },
+        }
+    }
+    // All four of the brief's, by name, so that a change of the table above
+    // cannot quietly take one of them out of the loop.
+    try testing.expectEqual(Bar.Shown.needs_you, Bar.of(Attention.displayOf(.needs_approval), true).shown);
+    try testing.expectEqual(Bar.Shown.needs_you, Bar.of(Attention.displayOf(.needs_answer), true).shown);
+    try testing.expectEqual(Bar.Shown.trouble, Bar.of(Attention.displayOf(.failed), true).shown);
+    try testing.expectEqual(Bar.Shown.held, Bar.of(Attention.displayOf(.working), true).shown);
+    try testing.expectEqual(Bar.Shown.held, Bar.of(Attention.displayOf(.done_unseen), true).shown);
+    try testing.expectEqual(Bar.Shown.held, Bar.of(Attention.displayOf(.idle), true).shown);
+    try testing.expectEqual(Bar.Shown.working, Bar.of(Attention.displayOf(.working), false).shown);
+}
+
+test "ControlRoom bar: the snapshot carries it for every terminal, and a row's glyph is not changed by it" {
+    var w: World = .init();
+    defer w.deinit();
+    try w.terminal(0xa1, "boss", 0x21);
+    try w.bus.addSupervisor(0xa1);
+    // Two workers, both held: one working, one stopped on an approval.
+    try w.terminal(0xb1, "busy", 0x21);
+    try w.bus.watch(0xb1, 0xa1);
+    try w.hook(0xb1, .turn_started, "", 1 * min);
+    try w.bus.setHeld(0xb1, true, .user);
+    try w.terminal(0xb2, "asking", 0x21);
+    try w.bus.watch(0xb2, 0xa1);
+    try w.hook(0xb2, .awaiting_approval, "Bash(x)", 1 * min);
+    try w.bus.setHeld(0xb2, true, .user);
+    // And one working that nobody holds.
+    try w.terminal(0xb3, "free", 0x21);
+    try w.bus.watch(0xb3, 0xa1);
+    try w.hook(0xb3, .turn_started, "", 1 * min);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const s = (try build(arena.allocator(), w.input(2 * min))).snapshot;
+    const Want = struct { u64, Bar.Shown, []const u8, Attention.Shown };
+    for ([_]Want{
+        .{ 0xb1, .held, "被按住", .working },
+        .{ 0xb2, .needs_you, "等批准", .needs_you },
+        .{ 0xb3, .working, "在干活", .working },
+    }) |want| {
+        const t = for (s.terminals) |t| {
+            if (t.id.id == want[0]) break t;
+        } else return error.TestTerminalMissing;
+        try testing.expectEqual(want[1], t.bar.shown);
+        try testing.expectEqualStrings(want[2], t.bar.text);
+        // What a row and a window tab draw is the status, held or not.
+        try testing.expectEqual(want[3], t.shown);
+        try testing.expect(t.held == (want[0] != 0xb3));
+    }
 }
 
 test "ControlRoom terminals: each says which frame its pane wears" {
@@ -2630,6 +3384,14 @@ test "ControlRoom bench: 32 groups and 128 terminals, worked out and written" {
     );
 }
 
+/// A record that knows a directory and nothing else.
+fn lastIn(dir: []const u8, from: Chat.LastSupervisor.DirFrom) Chat.LastSupervisor {
+    var last: Chat.LastSupervisor = .none;
+    last.dir = dir;
+    last.dir_from = from;
+    return last;
+}
+
 test "ControlRoom start: a group with no supervisor says one can be started, in which role and where" {
     var w: World = .init();
     defer w.deinit();
@@ -2669,15 +3431,15 @@ test "ControlRoom start: a group with no supervisor says one can be started, in 
     // A worker in it is not a supervisor of it.
     try testing.expect((try rowNamed(s, "nightly")).supervisor.can_start);
 
-    _ = try w.chat.setSupervisorDir("nightly", "/work/repo");
+    _ = try w.chat.setLastSupervisor("nightly", lastIn("/work/repo", .supervisor));
     s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
     try testing.expectEqualStrings("/work/repo", (try rowNamed(s, "nightly")).supervisor.cwd);
     try testing.expectEqual(SupervisorOut.CwdFrom.last_supervisor, (try rowNamed(s, "nightly")).supervisor.cwd_from);
 
     // Two roles is a choice, in the order given; none is nothing to start.
     w.roles = &.{
-        .{ .key = "polter-supervisor", .name = "Polter Supervisor" },
-        .{ .key = "night-lead", .name = "Night Lead" },
+        .{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{"claude-code"} },
+        .{ .key = "night-lead", .name = "Night Lead", .clis = &.{ "codex", "claude-code" } },
     };
     s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
     try testing.expect(s.choose_supervisor_role);
@@ -2686,7 +3448,7 @@ test "ControlRoom start: a group with no supervisor says one can be started, in 
 
     w.roles = &.{};
     w.home = "";
-    _ = try w.chat.setSupervisorDir("web-app", "/x");
+    _ = try w.chat.setLastSupervisor("web-app", lastIn("/x", .supervisor));
     try w.chat.restoreShell("empty", "", 0, .none);
     s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
     const none = (try rowNamed(s, "empty")).supervisor;
@@ -2706,7 +3468,7 @@ test "ControlRoom start: one on its way is not offered again, and the snapshot w
     try w.chat.restoreShell("nightly", "", 0, .none);
     _ = try room.refresh(w.input(1_000), .event);
 
-    try w.chat.beginStart("nightly", 2_000, 11_000);
+    try w.chat.beginStart("nightly", 2_000, 11_000, false, .directory);
     var out = try room.refresh(w.input(2_000), .event);
     try testing.expect(out.notify != null);
     {
@@ -2749,7 +3511,7 @@ test "ControlRoom start: one on its way is not offered again, and the snapshot w
 
     // It did connect, was made a supervisor and put in the group: present,
     // whatever is left of the start.
-    try w.chat.beginStart("nightly", 62_000, 72_000);
+    try w.chat.beginStart("nightly", 62_000, 72_000, false, .directory);
     w.chat.startOpened("nightly", 0xa9, 122_000);
     try w.bus.addSupervisor(0xa9);
     try w.chat.add("nightly", 0xa9, .all, .{});
@@ -2763,6 +3525,57 @@ test "ControlRoom start: one on its way is not offered again, and the snapshot w
         try testing.expectEqual(@as(u64, 0xa9), row.steward.?.id);
         try testing.expectEqual(@as(?Hex, null), row.supervisor.terminal);
     }
+}
+
+test "ControlRoom start: a launcher that says its CLI did not start fails the start at once, with that reason" {
+    var w: World = .init();
+    defer w.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    try w.chat.restoreShell("nightly", "", 0, .none);
+    try w.chat.beginStart("nightly", 2_000, 11_000, false, .directory);
+    try w.terminal(0xa9, "zsh", 0x29);
+    w.chat.startOpened("nightly", 0xa9, 61_000);
+    var out = try room.refresh(w.input(3_000), .event);
+    // Waiting for the agent, and woken for nothing sooner than the minute.
+    try testing.expectEqual(@as(?u64, 61_001), out.wake_ms);
+
+    // One second in, `+launch` says the CLI is not there to run. What the
+    // app does with that (`App.poltergeistLaunchFailed`): the group that
+    // terminal was being started for fails, for the reason given.
+    const group = w.chat.startingIn(0xa9, 4_000) orelse return error.NothingWasStartingThere;
+    try testing.expectEqualStrings("nightly", group);
+    w.chat.failStart(group, Chat.startFailureOf(.not_found));
+
+    out = try room.refresh(w.input(4_000), .event);
+    try testing.expect(out.notify != null);
+    {
+        const read = try std.json.parseFromSlice(Snapshot, testing.allocator, room.json, .{});
+        defer read.deinit();
+        const sup = (try rowNamed(read.value, "nightly")).supervisor;
+        // Failed now, fifty-seven seconds before the timer could say so.
+        try testing.expectEqual(SupervisorOut.State.failed, sup.state);
+        try testing.expectEqual(Chat.StartFailure.cli_not_found, sup.failed);
+        // Offered again, and the tab that says why is still named.
+        try testing.expect(sup.can_start);
+        try testing.expectEqual(@as(u64, 0xa9), sup.terminal.?.id);
+    }
+    // Nothing is left to wait for.
+    try testing.expectEqual(@as(?u64, null), out.wake_ms);
+    // The reason stands when the minute comes round: the timer's own
+    // reason does not replace the one the launcher gave.
+    _ = try room.refresh(w.input(61_001), .timer);
+    try testing.expectEqual(Chat.StartFailure.cli_not_found, w.chat.startOf("nightly", 61_001).failed);
+
+    // The other kind, on another try.
+    try w.chat.beginStart("nightly", 70_000, 80_000, false, .directory);
+    w.chat.startOpened("nightly", 0xa9, 130_000);
+    w.chat.failStart("nightly", Chat.startFailureOf(.failed));
+    try testing.expectEqual(Chat.StartFailure.cli_did_not_start, w.chat.startOf("nightly", 71_000).failed);
+    // And a terminal nothing was being started in fails nothing.
+    const nobody = w.chat.startingIn(0xb7, 71_000);
+    try testing.expectEqual(@as(?[]const u8, null), nobody);
 }
 
 test "ControlRoom wake: hooks that never came are said once, and there is no moment left to wake for" {
@@ -2800,4 +3613,662 @@ test "ControlRoom wake: hooks that never came are said once, and there is no mom
     try testing.expectEqual(@as(usize, 1), read.value.ungrouped.len);
     try testing.expectEqual(Attention.Kind.suspect_stuck, read.value.ungrouped[0].attention.kind);
     try testing.expectEqual(Attention.Source.hook_missing, read.value.ungrouped[0].attention.source);
+}
+
+test "ControlRoom header: terminals on their own are in no count, so the heading, the rows drawn and the Dock are one number" {
+    // What was on a real window: "1 group waiting for you", three rows
+    // under it, and 3 on the Dock. For a while the answer was to count the
+    // lone terminals everywhere; now their rows are not drawn (task 1485)
+    // and the answer is to count them nowhere.
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    try w.approval(0xa1, "Bash", "npm ci", 1 * min);
+    // Two agents nobody minds, in no group, each stopped on a prompt.
+    try w.terminal(0xc1, "one", 0x22);
+    try w.approval(0xc1, "Bash", "git push", 1 * min);
+    try w.terminal(0xc2, "two", 0x23);
+    try w.approval(0xc2, "Bash", "rm -rf dist", 1 * min);
+    // And one that needs nothing, with a group that needs nothing.
+    try w.terminal(0xc3, "three", 0x24);
+    try w.hook(0xc3, .session_started, null, 1 * min);
+    try w.steward(0xa2, "notes", 0x25, "notes");
+    try w.hook(0xa2, .session_started, null, 1 * min);
+
+    var s = (try build(arena.allocator(), w.input(2 * min))).snapshot;
+    // The rows a host draws: the groups', and nothing else.
+    var waiting_rows: usize = 0;
+    var quiet_rows: usize = 0;
+    for (s.groups) |g| {
+        if (g.needs_me) waiting_rows += 1 else quiet_rows += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), waiting_rows);
+    // The lone terminals are still listed, two of them waiting.
+    var lone_waiting: usize = 0;
+    for (s.ungrouped) |t| {
+        if (t.needs_me) lone_waiting += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), s.ungrouped.len);
+    try testing.expectEqual(@as(usize, 2), lone_waiting);
+
+    // The three places, one number -- and it is the rows drawn.
+    try testing.expectEqual(waiting_rows, s.header_waiting.count);
+    try testing.expectEqual(s.needs_me, s.header_waiting.count);
+    try testing.expectEqual(s.groups_needing_me, s.needs_me);
+    // Every one of them is a group, and the heading says so.
+    try testing.expectEqual(HeaderOut{ .count = 1, .of = .groups, .number = .one, .groups = 1, .alone = 0 }, s.header_waiting);
+
+    // The second heading is held to the same.
+    try testing.expectEqual(quiet_rows, s.header_quiet.count);
+    try testing.expectEqual(HeaderOut{ .count = 1, .of = .groups, .number = .one, .groups = 1, .alone = 0 }, s.header_quiet);
+    try testing.expectEqual(@as(usize, 1), s.groups_other);
+
+    // Only groups under a heading: it says "groups", and one is "one".
+    var only: World = .init();
+    defer only.deinit();
+    try only.steward(0xa1, "web-app", 0x21, "web-app");
+    try only.approval(0xa1, "Bash", "npm ci", 1 * min);
+    s = (try build(arena.allocator(), only.input(2 * min))).snapshot;
+    try testing.expectEqual(HeaderOut{ .count = 1, .of = .groups, .number = .one, .groups = 1, .alone = 0 }, s.header_waiting);
+    try testing.expectEqual(HeaderOut{ .count = 0, .of = .groups, .number = .none, .groups = 0, .alone = 0 }, s.header_quiet);
+
+    // One lone terminal waiting and nothing else: listed, and nobody is
+    // waiting as far as any number says.
+    var lone: World = .init();
+    defer lone.deinit();
+    try lone.terminal(0xc1, "one", 0x22);
+    try lone.approval(0xc1, "Bash", "git push", 1 * min);
+    s = (try build(arena.allocator(), lone.input(2 * min))).snapshot;
+    try testing.expect(s.ungrouped[0].needs_me);
+    try testing.expectEqual(HeaderOut{ .count = 0, .of = .groups, .number = .none, .groups = 0, .alone = 0 }, s.header_waiting);
+    try testing.expectEqual(@as(usize, 0), s.needs_me);
+    try testing.expectEqual(@as(usize, 0), s.groups_needing_me);
+}
+
+test "ControlRoom seen: a terminal on its own is looked at through its own row" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    // An agent nobody minds, in no group, finishes a turn.
+    try w.terminal(0xc1, "stray", 0x21);
+    try w.hook(0xc1, .turn_started, null, 1 * min);
+    try w.hook(0xc1, .turn_ended, "done", 2 * min);
+    {
+        const s = (try build(arena.allocator(), w.input(3 * min))).snapshot;
+        try testing.expectEqual(@as(usize, 1), s.ungrouped.len);
+        try testing.expectEqual(Attention.Kind.done_unseen, s.ungrouped[0].attention.kind);
+        try testing.expect(s.ungrouped[0].unseen);
+    }
+
+    // The person looks at its row. It is no longer something not looked at.
+    try testing.expect(w.bus.markSeen(0xc1, 3 * min));
+    {
+        const s = (try build(arena.allocator(), w.input(4 * min))).snapshot;
+        try testing.expect(!s.ungrouped[0].unseen);
+        try testing.expect(s.ungrouped[0].attention.kind != .done_unseen);
+    }
+
+    // It finishes another turn afterwards: that one has not been looked at.
+    try w.hook(0xc1, .turn_started, null, 5 * min);
+    try w.hook(0xc1, .turn_ended, "done again", 6 * min);
+    {
+        const s = (try build(arena.allocator(), w.input(7 * min))).snapshot;
+        try testing.expect(s.ungrouped[0].unseen);
+    }
+
+    // A terminal the bus does not know has no row to look at.
+    try testing.expect(!w.bus.markSeen(0xdead, 7 * min));
+}
+
+test "ControlRoom seen: what a supervisor with no group raises is withdrawn by looking at its row" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    // A supervisor minding a worker, neither in any group.
+    try w.terminal(0xa1, "boss", 0x21);
+    try w.bus.addSupervisor(0xa1);
+    try w.hook(0xa1, .session_started, null, 1 * min);
+    const said = "the worker wants to force-push: yours to decide";
+    try testing.expect(try w.bus.raise(0xa1, 2 * min, said));
+
+    const rowOf = struct {
+        fn of(s: Snapshot, id: u64) !LoneRow {
+            for (s.ungrouped) |r| if (r.id.id == id) return r;
+            return error.TestRowMissing;
+        }
+    }.of;
+    {
+        const s = (try build(arena.allocator(), w.input(2 * min + 1))).snapshot;
+        const row = try rowOf(s, 0xa1);
+        try testing.expect(row.needs_me);
+        try testing.expectEqual(Reason.From.raised, row.reason.from);
+        try testing.expectEqualStrings(said, row.reason.text);
+        // Looking at it is what withdraws it, and the row says so: this is
+        // what a host starts its "seen" clock on.
+        try testing.expect(row.unseen);
+        // In no count: its row is not drawn.
+        try testing.expectEqual(@as(usize, 0), s.header_waiting.count);
+    }
+
+    try testing.expect(w.bus.markSeen(0xa1, 3 * min));
+    {
+        const s = (try build(arena.allocator(), w.input(3 * min + 1))).snapshot;
+        const row = try rowOf(s, 0xa1);
+        try testing.expect(row.reason.from != .raised);
+        try testing.expect(!row.needs_me);
+        try testing.expect(!row.unseen);
+        try testing.expectEqual(@as(usize, 0), s.needs_me);
+    }
+
+    // Raised again after that: there again.
+    try testing.expect(try w.bus.raise(0xa1, 4 * min, "and now this"));
+    {
+        const s = (try build(arena.allocator(), w.input(4 * min + 1))).snapshot;
+        try testing.expect((try rowOf(s, 0xa1)).needs_me);
+    }
+}
+
+test "ControlRoom start: closing the tab fails the start in the very next snapshot, while the terminal is still there" {
+    // A host that keeps a closed tab for undo does not destroy the
+    // terminal, so nothing "forgets" it. The control room said "starting"
+    // for fifteen to forty-odd seconds after the tab was gone.
+    var w: World = .init();
+    defer w.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    try w.chat.restoreShell("nightly", "", 0, .none);
+    try w.terminal(0xa9, "zsh", 0x29);
+    try w.chat.beginStart("nightly", 1_000, 11_000, false, .directory);
+    w.chat.startOpened("nightly", 0xa9, 61_000);
+    var out = try room.refresh(w.input(2_000), .event);
+    try testing.expectEqual(@as(?u64, 61_001), out.wake_ms);
+
+    // The tab is closed three seconds in. The terminal is still open as
+    // far as the core can tell -- it is in `terminals` below.
+    try testing.expect(w.chat.startTerminalClosed(0xa9));
+    out = try room.refresh(w.input(5_000), .event);
+    try testing.expect(out.notify != null);
+    {
+        const read = try std.json.parseFromSlice(Snapshot, testing.allocator, room.json, .{});
+        defer read.deinit();
+        const sup = (try rowNamed(read.value, "nightly")).supervisor;
+        try testing.expectEqual(SupervisorOut.State.failed, sup.state);
+        try testing.expectEqual(Chat.StartFailure.terminal_closed, sup.failed);
+        try testing.expect(sup.can_start);
+        try testing.expectEqual(@as(usize, 1), read.value.terminals.len);
+    }
+    // Nothing is left to wait for.
+    try testing.expectEqual(@as(?u64, null), out.wake_ms);
+
+    // Said once; a terminal nothing was starting in says nothing.
+    try testing.expect(!w.chat.startTerminalClosed(0xa9));
+    try testing.expect(!w.chat.startTerminalClosed(0xb0));
+}
+
+test "may-authorise off in the configuration: a worker's prompt is the person's at once, not after its supervisor's minute" {
+    var w: World = .init();
+    defer w.deinit();
+    w.bus.config.may_authorise = false;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    try w.steward(0xa1, "api", 0x21, "api");
+    try w.hook(0xa1, .turn_started, null, 10 * min);
+    try w.worker(0xb1, "api worker", 0x21, 0xa1, "api");
+    try w.approval(0xb1, "Bash", "git push --force", 20 * min);
+
+    // Five seconds in. With the gate open this row would still be the
+    // supervisor's business; shut, there is nobody who may answer it but
+    // the person.
+    const s = (try build(arena.allocator(), w.input(20 * min + 5_000))).snapshot;
+    const row = try rowNamed(s, "api");
+    try testing.expect(row.needs_me);
+    try testing.expectEqual(Attention.Kind.needs_approval, row.attention.kind);
+    try testing.expectEqual(@as(usize, 1), s.needs_me);
+
+    // The same world with the gate open, so that this can fail.
+    w.bus.config.may_authorise = true;
+    const open = (try build(arena.allocator(), w.input(20 * min + 5_000))).snapshot;
+    try testing.expect(!(try rowNamed(open, "api")).needs_me);
+}
+
+test "ControlRoom resume: whether a start goes on with the last session, one reason at a time" {
+    const whole: Chat.LastSupervisor = .{
+        .dir = "/work/repo",
+        .dir_from = .supervisor,
+        .role = "polter-supervisor",
+        .cli = "claude-code",
+        .session = "s-1",
+        .heard_ms = 1,
+    };
+    const can_all: CliResume = .{ .read = &.{ "codex", "claude-code" } };
+
+    // Everything in place: it can, and there is no reason.
+    const yes = resumeOf(.{ .last = whole, .cli = "claude-code", .cli_resume = can_all, .held = false, .last_try_failed = false });
+    try testing.expect(yes.can);
+    try testing.expectEqual(ResumeOut.Why.none, yes.why);
+
+    const Cell = struct {
+        last: Chat.LastSupervisor = whole,
+        cli: ?[]const u8 = "claude-code",
+        cli_resume: CliResume = can_all,
+        held: bool = false,
+        last_try_failed: bool = false,
+        why: ResumeOut.Why,
+    };
+    var never = whole;
+    never.heard_ms = null;
+    never.session = "";
+    var guessed: Chat.LastSupervisor = .none;
+    guessed.dir = "/old";
+    guessed.dir_from = .session_snapshot;
+    var silent = whole;
+    silent.session = "";
+    var no_cli = whole;
+    no_cli.cli = "";
+
+    const cells = [_]Cell{
+        // No supervisor was ever recorded -- with nothing at all, and with
+        // a directory made up afterwards.
+        .{ .last = .none, .why = .no_record },
+        .{ .last = never, .why = .no_record },
+        .{ .last = guessed, .why = .no_record },
+        // There was one, and its CLI never named a session: not the same
+        // answer as there never having been one.
+        .{ .last = silent, .why = .no_session },
+        .{ .last_try_failed = true, .why = .last_try_failed },
+        .{ .cli = "codex", .why = .cli_differs },
+        .{ .cli = null, .why = .cli_differs },
+        .{ .last = no_cli, .why = .cli_differs },
+        // Not read yet is not "cannot".
+        .{ .cli_resume = .unread, .why = .clis_unread },
+        .{ .cli_resume = .{ .read = &.{} }, .why = .cli_cannot_resume },
+        .{ .cli_resume = .{ .read = &.{"codex"} }, .why = .cli_cannot_resume },
+        .{ .held = true, .why = .session_in_use },
+    };
+    for (cells) |c| {
+        const got = resumeOf(.{ .last = c.last, .cli = c.cli, .cli_resume = c.cli_resume, .held = c.held, .last_try_failed = c.last_try_failed });
+        try testing.expectEqual(c.why, got.why);
+        try testing.expect(!got.can);
+    }
+
+    // The order, where two apply: what is missing is said before what
+    // would not have mattered.
+    const two = resumeOf(.{ .last = silent, .cli = "codex", .cli_resume = .unread, .held = true, .last_try_failed = true });
+    try testing.expectEqual(ResumeOut.Why.no_session, two.why);
+}
+
+test "ControlRoom resume: a CLI is named by its adapter's word, and one nobody names is said to have no name" {
+    const names: []const CliName = &.{
+        .{ .key = "claude-code", .label = "Claude Code" },
+        .{ .key = "bare", .label = "" },
+    };
+    try testing.expectEqualStrings("Claude Code", cliLabelOf(names, "claude-code").?);
+    // No adapter by that key, one that gives no name, no key, none read:
+    // each is "no name", never the key standing in for one.
+    try testing.expectEqual(@as(?[]const u8, null), cliLabelOf(names, "codex"));
+    try testing.expectEqual(@as(?[]const u8, null), cliLabelOf(names, "bare"));
+    try testing.expectEqual(@as(?[]const u8, null), cliLabelOf(names, null));
+    try testing.expectEqual(@as(?[]const u8, null), cliLabelOf(names, ""));
+    try testing.expectEqual(@as(?[]const u8, null), cliLabelOf(&.{}, "claude-code"));
+
+    // In the snapshot: beside the CLI a start uses and beside the one the
+    // last supervisor was, each on its own.
+    var w = try fixtureWorld();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const named = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
+    const billing = (try rowNamed(named, "billing")).supervisor;
+    try testing.expectEqualStrings("claude-code", billing.cli.?);
+    try testing.expectEqualStrings("Claude Code", billing.cli_label.?);
+    try testing.expectEqualStrings("claude-code", billing.last.cli.?);
+    try testing.expectEqualStrings("Claude Code", billing.last.cli_label.?);
+    // A group with no CLI written down for its last supervisor has no
+    // name for it either.
+    const web = (try rowNamed(named, "web-app")).supervisor;
+    try testing.expectEqual(@as(?[]const u8, null), web.last.cli);
+    try testing.expectEqual(@as(?[]const u8, null), web.last.cli_label);
+    try testing.expectEqualStrings("Claude Code", web.cli_label.?);
+
+    // With no names read the keys are still there, and the names are not.
+    w.cli_names = &.{};
+    const unnamed = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
+    const b = (try rowNamed(unnamed, "billing")).supervisor;
+    try testing.expectEqualStrings("claude-code", b.cli.?);
+    try testing.expectEqual(@as(?[]const u8, null), b.cli_label);
+    try testing.expectEqualStrings("claude-code", b.last.cli.?);
+    try testing.expectEqual(@as(?[]const u8, null), b.last.cli_label);
+}
+
+test "ControlRoom resume: the role and the CLI a start uses are the last supervisor's while they are still there" {
+    const roles = [_]StartRole{
+        .{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{"claude-code"} },
+        .{ .key = "night-lead", .name = "Night Lead", .clis = &.{ "codex", "claude-code" } },
+    };
+    var last: Chat.LastSupervisor = .none;
+
+    // Nothing written down: the first role, and its first CLI.
+    try testing.expectEqualStrings("polter-supervisor", startRoleOf(&roles, last).?.key);
+    try testing.expectEqualStrings("codex", startCliOf(roles[1].clis, last).?);
+
+    // The role it wore, and the CLI it was -- not the role's first.
+    last.role = "night-lead";
+    last.cli = "claude-code";
+    const role = startRoleOf(&roles, last).?;
+    try testing.expectEqualStrings("night-lead", role.key);
+    try testing.expectEqualStrings("claude-code", startCliOf(role.clis, last).?);
+
+    // A role that is gone, or no longer one to start a supervisor in, and
+    // a CLI the role is no longer set up for: the first of each again.
+    last.role = "deleted";
+    last.cli = "gemini";
+    try testing.expectEqualStrings("polter-supervisor", startRoleOf(&roles, last).?.key);
+    try testing.expectEqualStrings("codex", startCliOf(roles[1].clis, last).?);
+
+    try testing.expectEqual(@as(?StartRole, null), startRoleOf(&.{}, last));
+    try testing.expectEqual(@as(?[]const u8, null), startCliOf(&.{}, last));
+}
+
+test "ControlRoom resume: the snapshot says what a group's last supervisor was and whether a start goes on with its session" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    w.roles = &.{
+        .{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{"claude-code"} },
+        .{ .key = "night-lead", .name = "Night Lead", .clis = &.{ "codex", "claude-code" } },
+    };
+    try w.chat.restoreShell("nightly", "", 0, .none);
+    try w.chat.restoreShell("old", "", 0, .none);
+    try w.chat.restoreShell("guessed", "", 0, .none);
+
+    _ = try w.chat.setLastSupervisor("nightly", .{
+        .dir = "/work/repo",
+        .dir_from = .supervisor,
+        .role = "night-lead",
+        .cli = "claude-code",
+        .session = "s-1",
+        .heard_ms = 1_700_000_000_000,
+    });
+    _ = try w.chat.setLastSupervisor("guessed", lastIn("/old/place", .session_snapshot));
+
+    var s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
+
+    // What was written down, and the start it makes the default: that
+    // role, that CLI (the role's second), that directory, that session.
+    const sup = (try rowNamed(s, "nightly")).supervisor;
+    try testing.expectEqualStrings("night-lead", sup.last.role.?);
+    try testing.expectEqualStrings("claude-code", sup.last.cli.?);
+    try testing.expectEqual(@as(?u64, 1_700_000_000_000), sup.last.heard_ms);
+    try testing.expectEqualStrings("night-lead", sup.role.?);
+    try testing.expectEqualStrings("claude-code", sup.cli.?);
+    try testing.expectEqualStrings("/work/repo", sup.cwd);
+    try testing.expectEqual(SupervisorOut.CwdFrom.last_supervisor, sup.cwd_from);
+    try testing.expect(sup.@"resume".can);
+    try testing.expectEqual(ResumeOut.Why.none, sup.@"resume".why);
+
+    // Nothing written down: every part is null, not an empty string, and
+    // the reason is that there is no record.
+    const old = (try rowNamed(s, "old")).supervisor;
+    try testing.expectEqual(@as(?[]const u8, null), old.last.role);
+    try testing.expectEqual(@as(?[]const u8, null), old.last.cli);
+    try testing.expectEqual(@as(?u64, null), old.last.heard_ms);
+    try testing.expectEqualStrings("polter-supervisor", old.role.?);
+    try testing.expect(!old.@"resume".can);
+    try testing.expectEqual(ResumeOut.Why.no_record, old.@"resume".why);
+
+    // A directory made up out of the old session snapshot is offered, and
+    // is not passed off as where a supervisor is known to have worked.
+    const guessed = (try rowNamed(s, "guessed")).supervisor;
+    try testing.expectEqualStrings("/old/place", guessed.cwd);
+    try testing.expectEqual(SupervisorOut.CwdFrom.session_snapshot, guessed.cwd_from);
+    try testing.expectEqual(ResumeOut.Why.no_record, guessed.@"resume".why);
+
+    // The adapters not read yet: said as that, and the snapshot asks to be
+    // made again for it.
+    w.cli_resume = .unread;
+    const unread = try room.compute(arena.allocator(), w.input(1_000));
+    try testing.expectEqual(ResumeOut.Why.clis_unread, (try rowNamed(unread.snapshot, "nightly")).supervisor.@"resume".why);
+    try testing.expectEqual(@as(?u64, 2_000), unread.wake_ms);
+    w.cli_resume = .{ .read = &.{} };
+    s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
+    try testing.expectEqual(ResumeOut.Why.cli_cannot_resume, (try rowNamed(s, "nightly")).supervisor.@"resume".why);
+    w.cli_resume = .{ .read = &.{"claude-code"} };
+
+    // An open terminal whose agent says it is in that session: not a
+    // second agent in it.
+    try w.terminal(0xc1, "elsewhere", 0x31);
+    var ev: AgentEvent.Event = .none;
+    ev.event = .session_started;
+    ev.cli = "claude-code";
+    ev.session_id = "s-1";
+    _ = try w.bus.agentEvent(0xc1, ev, 500);
+    s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
+    try testing.expectEqual(ResumeOut.Why.session_in_use, (try rowNamed(s, "nightly")).supervisor.@"resume".why);
+    // It moved on to another session (`/clear`): free again.
+    ev.session_id = "s-2";
+    _ = try w.bus.agentEvent(0xc1, ev, 600);
+    s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
+    try testing.expect((try rowNamed(s, "nightly")).supervisor.@"resume".can);
+
+    // A start that went on with it and made no supervisor: the next one
+    // does not, by default. One that started afresh and failed says
+    // nothing against the session.
+    try w.chat.beginStart("nightly", 2_000, 11_000, true, .directory);
+    s = (try room.compute(arena.allocator(), w.input(11_001))).snapshot;
+    const failed = (try rowNamed(s, "nightly")).supervisor;
+    try testing.expectEqual(SupervisorOut.State.failed, failed.state);
+    try testing.expect(failed.can_start);
+    try testing.expectEqual(ResumeOut.Why.last_try_failed, failed.@"resume".why);
+    try w.chat.beginStart("nightly", 12_000, 21_000, false, .directory);
+    s = (try room.compute(arena.allocator(), w.input(21_001))).snapshot;
+    try testing.expect((try rowNamed(s, "nightly")).supervisor.@"resume".can);
+}
+
+test "Projects: the snapshot says which project each group has, what starting it does, and what the host is to do" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    try w.chat.restoreShell("tied", "", 0, .none);
+    try w.chat.restoreShell("old", "", 0, .none);
+    try w.chat.restoreShell("said-no", "", 0, .none);
+    _ = try w.chat.setProject("tied", .{ .bound = "tied" });
+    _ = try w.chat.setProject("said-no", .declined);
+
+    // The host has said nothing: the tie is known, the project is not.
+    var s = (try room.compute(aa, w.input(1_000))).snapshot;
+    try testing.expect(!s.projects_known);
+    try testing.expectEqual(@as(usize, 0), s.project_orders.len);
+    const blind = (try rowNamed(s, "tied")).project;
+    try testing.expect(blind.tie == .bound);
+    try testing.expectEqualStrings("tied", blind.name.?);
+    // Not known is not zero pages and not closed.
+    try testing.expectEqual(@as(?usize, null), blind.pages);
+    try testing.expectEqual(@as(?bool, null), blind.open);
+    try testing.expectEqual(Chat.StartBy.project, blind.start);
+    try testing.expectEqual(Projects.Why.projects_unknown, (try rowNamed(s, "old")).project.why);
+    try testing.expectEqual(Chat.StartBy.directory, (try rowNamed(s, "old")).project.start);
+
+    // Stated. One group tied to a project of three pages, closed; one old
+    // group its supervisor has just taken up; one that said no.
+    var table: Projects = .init(testing.allocator);
+    defer table.deinit();
+    {
+        const v = try std.json.parseFromSliceLeaky(std.json.Value, aa,
+            \\[{"name":"tied","group":"tied","pages":3,"open":null,"supervisor":null,"workers":[]}]
+        , .{});
+        try table.state(try Projects.parse(aa, v));
+    }
+    const views = [_]Projects.GroupView{
+        .{ .name = "tied", .tie = .{ .bound = "tied" }, .steward = null, .supervisors = 0, .claim = null, .awaiting_open = true },
+        .{ .name = "old", .tie = .undecided, .steward = 0xa1, .supervisors = 1, .claim = .{ .terminal = 0xa1, .said = false }, .awaiting_open = false },
+        .{ .name = "said-no", .tie = .declined, .steward = null, .supervisors = 0, .claim = null, .awaiting_open = false },
+    };
+    const out = try table.reconcile(aa, &views, &.{});
+    w.projects = .{ .table = &table, .standings = out.standings, .orders = out.orders };
+
+    s = (try room.compute(aa, w.input(1_000))).snapshot;
+    try testing.expect(s.projects_known);
+    const tied = (try rowNamed(s, "tied")).project;
+    try testing.expectEqual(@as(?usize, 3), tied.pages);
+    try testing.expectEqual(@as(?bool, false), tied.open);
+    try testing.expectEqual(Projects.Why.none, tied.why);
+
+    const old = (try rowNamed(s, "old")).project;
+    try testing.expect(old.tie == .undecided);
+    try testing.expectEqual(@as(?[]const u8, null), old.name);
+    try testing.expectEqual(Projects.Why.pending, old.why);
+    try testing.expectEqual(Chat.StartBy.directory, old.start);
+
+    const no = (try rowNamed(s, "said-no")).project;
+    try testing.expect(no.tie == .declined);
+    try testing.expectEqual(Projects.Why.declined, no.why);
+
+    // The two things asked of the host, as it reads them.
+    try testing.expectEqual(@as(usize, 2), s.project_orders.len);
+    try testing.expectEqual(Projects.Order.Kind.open, s.project_orders[0].order);
+    try testing.expectEqualStrings("tied", s.project_orders[0].project);
+    try testing.expectEqual(@as(?Hex, null), s.project_orders[0].terminal);
+    try testing.expectEqual(Projects.Order.Kind.create, s.project_orders[1].order);
+    try testing.expectEqualStrings("old", s.project_orders[1].group.?);
+    try testing.expectEqual(@as(u64, 0xa1), s.project_orders[1].terminal.?.id);
+
+    const json = try writeAlloc(aa, s, .{});
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\{"order":"create","project":"old","group":"old","to":null,"terminal":"0x00000000000000a1"}
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"project":{"tie":"bound","name":"tied","pages":3,"open":false,"start":"project","why":"none"}
+    ) != null);
+}
+
+test "Projects: who is in a terminal is an agent, nobody, or not known -- and nobody is not not-known" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    // 0xa1: hooks heard from, in a turn, started in a role.
+    try w.terminal(0xa1, "boss", 0x21);
+    try w.hook(0xa1, .turn_started, null, 500);
+    // 0xa2: an agent connected, no hooks, no role: all three not known.
+    try w.terminal(0xa2, "connected", 0x22);
+    // 0xa3: its agent has gone -- the hooks said what they said, and the
+    // shell has the terminal back.
+    try w.terminal(0xa3, "left", 0x23);
+    try w.hook(0xa3, .turn_ended, "bye", 500);
+    // 0xa4: a shell at its prompt that never had one.
+    try w.terminal(0xa4, "shell", 0x24);
+    // 0xa5: something is running that says nothing to Polter.
+    try w.terminal(0xa5, "vim, or an agent it cannot see", 0x25);
+    // 0xa6: a launch line was typed and its hooks are expected.
+    try w.terminal(0xa6, "starting", 0x26);
+    {
+        var ev: AgentEvent.Event = .none;
+        ev.event = .hooks_expected;
+        ev.cli = "codex";
+        _ = try w.bus.agentEvent(0xa6, ev, 500);
+    }
+    for (w.open.items) |*t| switch (t.id) {
+        0xa1 => {
+            t.role = "polter-supervisor";
+            t.launched_cli = "codex";
+        },
+        0xa2 => t.agent_present = true,
+        0xa3 => {
+            t.at_prompt = true;
+            t.role = "dev-worker";
+            t.launched_cli = "claude-code";
+        },
+        0xa4 => t.at_prompt = true,
+        0xa6 => {
+            t.role = "dev-worker";
+            t.launched_cli = "codex";
+        },
+        else => {},
+    };
+    // The supervisor opened two of them; nobody opened the rest.
+    try w.bus.markOpenedByAgent(0xa3, 0xa1);
+    try w.bus.markOpenedByAgent(0xa5, 0xa1);
+
+    const s = (try room.compute(aa, w.input(1_000))).snapshot;
+    const who = struct {
+        fn of(snap: Snapshot, id: u64) !WhoOut {
+            for (snap.terminals) |t| {
+                if (t.id.id == id) return t.who;
+            }
+            return error.NoSuchTerminal;
+        }
+    }.of;
+
+    // What its hooks said beats what the launch said: the CLI is the one
+    // that named itself.
+    const boss = try who(s, 0xa1);
+    try testing.expectEqual(WhoOut.Is.agent, boss.is);
+    try testing.expectEqualStrings("polter-supervisor", boss.role.?);
+    try testing.expectEqualStrings("claude-code", boss.cli.?);
+    try testing.expectEqualStrings("s", boss.session.?);
+    try testing.expectEqual(@as(?Hex, null), boss.opened_by);
+
+    // There, and nothing known of it: empty strings, which is "an agent,
+    // and that part is not known" -- not nulls.
+    const connected = try who(s, 0xa2);
+    try testing.expectEqual(WhoOut.Is.agent, connected.is);
+    try testing.expectEqualStrings("", connected.role.?);
+    try testing.expectEqualStrings("", connected.cli.?);
+    try testing.expectEqualStrings("", connected.session.?);
+
+    // Gone: nobody, whatever it was -- and still the supervisor's pane.
+    const left = try who(s, 0xa3);
+    try testing.expectEqual(WhoOut.Is.none, left.is);
+    try testing.expectEqual(@as(?[]const u8, null), left.role);
+    try testing.expectEqual(@as(?[]const u8, null), left.cli);
+    try testing.expectEqual(@as(?[]const u8, null), left.session);
+    try testing.expectEqual(@as(u64, 0xa1), left.opened_by.?.id);
+
+    try testing.expectEqual(WhoOut.Is.none, (try who(s, 0xa4)).is);
+
+    // Not at a prompt, and nothing heard: the core cannot tell.
+    const blind = try who(s, 0xa5);
+    try testing.expectEqual(WhoOut.Is.unknown, blind.is);
+    try testing.expectEqual(@as(?[]const u8, null), blind.role);
+    try testing.expectEqual(@as(u64, 0xa1), blind.opened_by.?.id);
+
+    // On its way: what the launch said is what is known so far.
+    const starting = try who(s, 0xa6);
+    try testing.expectEqual(WhoOut.Is.agent, starting.is);
+    try testing.expectEqualStrings("dev-worker", starting.role.?);
+    try testing.expectEqualStrings("codex", starting.cli.?);
+    try testing.expectEqualStrings("", starting.session.?);
+
+    const json = try writeAlloc(aa, s, .{});
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"who":{"is":"agent","role":"polter-supervisor","cli":"claude-code","session":"s","opened_by":null}
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"who":{"is":"none","role":null,"cli":null,"session":null,"opened_by":"0x00000000000000a1"}
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"who":{"is":"unknown","role":null,"cli":null,"session":null,"opened_by":"0x00000000000000a1"}
+    ) != null);
 }

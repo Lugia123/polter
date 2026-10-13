@@ -606,17 +606,32 @@ Polter，适配器管角色。
 
 ```text
 adapter inventory '{"version":1,"cwd":null|"/abs","home":"/abs"}'
-→ {"version":1,"installed":bool,"notes":[…],
+→ {"version":1,"installed":bool,"resume":true?,"notes":[…],
    "items":[{"kind":"skill"|"mcp","id":"skill:pdf","name":"pdf",
              "description":"…","detail":"http · host","source":"user|claude.ai|claude-code|project|local|plugin:<p>",
              "group":"<plugin>","group_description":"…","locked":bool}]}
 
-adapter launch '{"version":1,"cwd":…,"home":…,
+adapter launch '{"version":1,"cwd":…,"home":…,"polter":…,"session":"<id>"|null,
                  "role":{"key","name","instructions"},
                  "cli":{"skills":{"default":bool,"except":[ids]},"mcp":{…},"model":…,"args":[…]}}'
 → {"version":1,"argv":["claude",…],"env":{},"summary":"…","notes":[…]}
 ```
 
+- **接着某个会话**（任务 #1486）：适配器在 `inventory` 里答 `"resume": true`，就是在说「`launch`
+  收到 `session` 时我接得上」。只认 JSON 的 `true`；没说的 CLI 核心**从不**给它发非空的 `session`，
+  它永远是新会话，总控台的快照里说得出是这一家接不上（`cli_cannot_resume`）。`session` 这个键
+  **每次都写**，新会话是一个发过去的 `null`，不是一个可能有可能没有的键。会话号是 CLI 自己经 hook
+  报上来的那个字符串，核心不懂它，只把它限在 `[A-Za-z0-9._-]`、96 字节以内
+  （`agent_cli.isSessionToken`）：它要被打进 shell 的启动行、最后成为 CLI 的一个参数，不合这个形状的
+  就不接、起新会话，而不是为每一种 shell 各写一条引号规则。
+  **会话已经不在了怎么办，归适配器先判**：找不到就退回新会话，并在 `notes` 里说一句——`+launch`
+  在 CLI 接管屏幕之前把它打出来。选这条而不是「起不来时走 `launch_failed`、由核心换新会话再来一次」，
+  是量出来的：`claude --resume <不存在的会话>` 打印 `No conversation found…` 后**自己退出 1**
+  （2.1.296），而 POSIX 上 `+launch` 此时已经把自己换成了 `claude`，没有人能替它说「没起来」；
+  核心只能等满一分钟才知道，而且知道的只是「没有 agent 连上」。适配器看不出来的那一种（会话文件在、
+  CLI 却读不进去）仍然落到那一分钟上；那次启动若是接着会话的，下一次默认就不再接
+  （快照 `resume.why: last_try_failed`）。Claude Code 这边的实测与判法写在
+  `plugins/claude-code/adapter.py` 文件头。
 - `id` 是适配器的，核心只存不懂。`locked` 的项（Claude Code 的是 `polter` 这个
   MCP）角色关不掉——关掉等于一个交不了活的终端，和第五节「`polter` 永远隐式在内」
   是同一条。

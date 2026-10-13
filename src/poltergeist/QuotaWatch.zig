@@ -42,6 +42,11 @@ pub const settle_ms: u64 = 1_500;
 /// The least time between two reads while kicks keep coming.
 pub const min_gap_ms: u64 = 15_000;
 
+/// How long after being told a file was written it is read. Its writer
+/// renames it into place before saying so; this is only so that two
+/// writers saying so at once are one read.
+pub const written_settle_ms: u64 = 50;
+
 /// How much of the end of a Codex session record is read.
 const tail_bytes: usize = 256 * 1024;
 
@@ -62,6 +67,9 @@ mutex: Io.Mutex = .init,
 last: [families]?quota.Reading = @splat(null),
 running: bool = false,
 again: bool = false,
+/// The read that is owed is for a file known to be written already: no
+/// settling, no gap.
+soon: bool = false,
 stopping: bool = false,
 thread: ?std.Thread = null,
 
@@ -85,6 +93,28 @@ pub const Dirs = struct {
 /// after it. **The app thread only**, for the reason `agent_cli.Cache.
 /// refresh` gives.
 pub fn kick(self: *QuotaWatch) void {
+    self.ask(.activity);
+}
+
+/// The file has just been written, and whoever wrote it says so (`polter
+/// +statusline`, through `agent_event: allowance_written`). Read it now:
+/// there is nothing to wait for, and nothing else is coming to say that it
+/// changed.
+///
+/// **Why `kick` is not enough.** `kick` means "something happened in a
+/// terminal, a number may move", and is answered a moment later, once; a
+/// second one while that is on its way is answered `min_gap_ms` after. A
+/// file written after the last thing that happened was read by nobody --
+/// the block went on showing the old figure until some unrelated event
+/// came along (a real window, 2026-10-13) -- and one written while the
+/// thread sat out the gap would have waited the rest of it.
+pub fn written(self: *QuotaWatch) void {
+    self.ask(.written);
+}
+
+const Why = enum { activity, written };
+
+fn ask(self: *QuotaWatch, why: Why) void {
     self.mutex.lockUncancelable(self.io);
     if (self.stopping) {
         self.mutex.unlock(self.io);
@@ -92,10 +122,17 @@ pub fn kick(self: *QuotaWatch) void {
     }
     if (self.running) {
         self.again = true;
+        if (why == .written) self.soon = true;
         self.mutex.unlock(self.io);
+        // Out of whatever it is waiting through, to read now.
+        if (why == .written) {
+            _ = self.generation.fetchAdd(1, .release);
+            self.io.futexWake(u32, &self.generation.raw, 1);
+        }
         return;
     }
     self.running = true;
+    self.soon = why == .written;
     const previous = self.thread;
     self.thread = null;
     self.mutex.unlock(self.io);
@@ -137,13 +174,24 @@ pub fn readings(self: *QuotaWatch, buf: *[families]quota.Reading) []const quota.
     return buf[0..n];
 }
 
-/// Sleep, unless told to stop. False when stopping.
-fn pause(self: *QuotaWatch, ms: u64) bool {
+const Woke = enum {
+    /// The time is up.
+    elapsed,
+    /// Told there is something to read now (`written`).
+    told,
+    stopping,
+};
+
+/// Sleep for `ms`, or until told to stop or to read now.
+fn pause(self: *QuotaWatch, ms: u64) Woke {
     const seen = self.generation.load(.acquire);
     self.mutex.lockUncancelable(self.io);
     const stopping = self.stopping;
+    const soon = self.soon;
     self.mutex.unlock(self.io);
-    if (stopping) return false;
+    if (stopping) return .stopping;
+    // Asked for between the last read and here.
+    if (soon and ms > written_settle_ms) return .told;
     self.io.futexWaitTimeout(u32, &self.generation.raw, seen, .{
         .duration = .{
             // Through the same clamp the control room's wake uses: `ms` is a
@@ -152,14 +200,35 @@ fn pause(self: *QuotaWatch, ms: u64) bool {
             .raw = .fromMilliseconds(ControlWake.waitMs(ms, 0)),
             .clock = .awake,
         },
-    }) catch return false;
-    return self.generation.load(.acquire) == seen;
+    }) catch return .stopping;
+    if (self.generation.load(.acquire) == seen) return .elapsed;
+
+    self.mutex.lockUncancelable(self.io);
+    defer self.mutex.unlock(self.io);
+    return if (self.stopping) .stopping else .told;
 }
 
 fn work(self: *QuotaWatch) void {
-    var wait = settle_ms;
+    self.mutex.lockUncancelable(self.io);
+    var wait = if (self.soon) written_settle_ms else settle_ms;
+    self.mutex.unlock(self.io);
+
     while (true) {
-        if (!self.pause(wait)) break;
+        switch (self.pause(wait)) {
+            .stopping => break,
+            .elapsed => {},
+            // Told mid-wait that a file is there: a breath, so that two
+            // tellings are one read, and then read.
+            .told => if (self.pause(written_settle_ms) == .stopping) break,
+        }
+
+        // This read is the one a "written" was owed. What `kick` asked for
+        // meanwhile is still owed its own, a gap from now: that is the
+        // limit on how often the files are read while things keep
+        // happening, and being told of a write does not lift it.
+        self.mutex.lockUncancelable(self.io);
+        self.soon = false;
+        self.mutex.unlock(self.io);
 
         const fresh = self.readAll();
         _ = self.reads.fetchAdd(1, .monotonic);
@@ -169,11 +238,13 @@ fn work(self: *QuotaWatch) void {
         self.last = fresh;
         const more = self.again;
         self.again = false;
+        const soon = self.soon;
+        if (!more) self.running = false;
         self.mutex.unlock(self.io);
 
         if (changed) self.fire(self.ctx);
-        if (!more) break;
-        wait = min_gap_ms;
+        if (!more) return;
+        wait = if (soon) written_settle_ms else min_gap_ms;
     }
 
     self.mutex.lockUncancelable(self.io);
@@ -589,4 +660,71 @@ test "QuotaWatch: a kick reads once and says so only when what it read is new" {
     try Io.sleep(io, .fromMilliseconds(50), .awake);
     const second = fired.n.load(.monotonic);
     try testing.expectEqual(@as(u32, 1), second);
+}
+
+test "QuotaWatch: a file its writer says it has written is read then, not at the end of the gap and not at the next event" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var rig: Rig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const io = rig.threaded.io();
+
+    const before: quota.Window = .{ .span = .five_hour, .used = 86, .resets_ms = 1_700_003_600_000 };
+    try writeDrop(aa, io, rig.root, .claude, .{ before, null }, 1_700_000_000_000);
+
+    var fired: Fired = .{};
+    var watch: QuotaWatch = .{
+        .alloc = testing.allocator,
+        .io = io,
+        .fire = Fired.fire,
+        .ctx = &fired,
+        .dirs = .{ .drop = rig.root, .codex = rig.root },
+    };
+    defer watch.stop();
+
+    // Two things happen in a terminal a moment apart: one read now, and
+    // one owed at the end of the fifteen-second gap.
+    watch.kick();
+    watch.kick();
+    var waited: u64 = 0;
+    while (watch.reads.load(.monotonic) < 1) : (waited += 20) {
+        if (waited > 10_000) return error.TestNeverRead;
+        try Io.sleep(io, .fromMilliseconds(20), .awake);
+    }
+    var buf: [families]quota.Reading = undefined;
+    try testing.expectEqual(@as(u8, 86), watch.readings(&buf)[0].windows[0].?.used);
+
+    // The status line writes a new figure after that -- nothing else
+    // happens in any terminal -- and says so.
+    const after: quota.Window = .{ .span = .five_hour, .used = 100, .resets_ms = 1_700_003_600_000 };
+    try writeDrop(aa, io, rig.root, .claude, .{ after, null }, 1_700_000_001_000);
+    watch.written();
+
+    // Well inside the gap: three seconds is a long time against 50 ms and
+    // short against fifteen.
+    waited = 0;
+    while (watch.reads.load(.monotonic) < 2 and waited < 3_000) : (waited += 20) {
+        try Io.sleep(io, .fromMilliseconds(20), .awake);
+    }
+    try Io.sleep(io, .fromMilliseconds(50), .awake);
+    try testing.expectEqual(@as(u8, 100), watch.readings(&buf)[0].windows[0].?.used);
+    try testing.expectEqual(@as(u32, 2), fired.n.load(.monotonic));
+
+    // And with the thread not running at all -- the last thing that
+    // happened was long ago -- the same: told, read.
+    waited = 0;
+    while (waited < 500) : (waited += 20) try Io.sleep(io, .fromMilliseconds(20), .awake);
+    const last: quota.Window = .{ .span = .five_hour, .used = 12, .resets_ms = 1_700_021_600_000 };
+    try writeDrop(aa, io, rig.root, .claude, .{ last, null }, 1_700_000_002_000);
+    const reads = watch.reads.load(.monotonic);
+    watch.written();
+    waited = 0;
+    while (watch.reads.load(.monotonic) == reads and waited < 3_000) : (waited += 20) {
+        try Io.sleep(io, .fromMilliseconds(20), .awake);
+    }
+    try Io.sleep(io, .fromMilliseconds(50), .awake);
+    try testing.expectEqual(@as(u8, 12), watch.readings(&buf)[0].windows[0].?.used);
 }

@@ -1095,12 +1095,12 @@ extension Ghostty {
                 var config = SurfaceConfiguration()
                 config.workingDirectory = requested
                 answer?.pointee = GHOSTTY_ACTION_NEW_TAB_RESULT_WILL_OPEN
+                var info: [AnyHashable: Any] = [Notification.NewTabAnswerWantedKey: answer != nil]
+                if requested != nil { info[Notification.NewSurfaceConfigKey] = config }
                 NotificationCenter.default.post(
                     name: Notification.ghosttyNewTab,
                     object: nil,
-                    userInfo: requested == nil ? [:] : [
-                        Notification.NewSurfaceConfigKey: config,
-                    ]
+                    userInfo: info
                 )
                 return true
 
@@ -1154,6 +1154,7 @@ extension Ghostty {
                     object: surfaceView,
                     userInfo: [
                         Notification.NewSurfaceConfigKey: config,
+                        Notification.NewTabAnswerWantedKey: answer != nil,
                     ]
                 )
                 return true
@@ -1242,8 +1243,10 @@ extension Ghostty {
                     return
                 }
 
-                // In the control room it is not split (`ControlRoomRules.newSplit`).
-                // The answer cell is left as it came, which reads "not done".
+                // A key pressed on a terminal the control room has borrowed
+                // is refused; an agent's request is carried out in the
+                // terminal's own tab, where its tree is
+                // (`ControlRoomRules.newSplit`).
                 switch ControlRoomRules.newSplit(
                     lent: ControlRoomLender.shared.isLent(surfaceView), answerWanted: v.result != nil) {
                 case .split:
@@ -1251,9 +1254,6 @@ extension Ghostty {
                 case .refuseAloud:
                     Ghostty.logger.warning("new split refused: the terminal is in the control room")
                     NSSound.beep()
-                    return
-                case .refuseToTheCore:
-                    Ghostty.logger.warning("new split refused: the terminal is in the control room")
                     return
                 }
 

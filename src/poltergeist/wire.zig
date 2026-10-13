@@ -15,6 +15,7 @@ const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Plugin = @import("Plugin.zig");
 const rpc = @import("rpc.zig");
+const Projects = @import("Projects.zig");
 
 pub const ParseError = error{
     /// The bytes are not a JSON object.
@@ -133,6 +134,18 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .group = try requireString(aa, params, "group"),
             .text = try requireString(aa, params, "text"),
         } },
+
+        .group_project => .{
+            .group_project = .{
+                .group = try requireString(aa, params, "group"),
+                // One of two words, and nothing is read into any other: a
+                // guess here ties a group to a project or unties it.
+                .action = std.meta.stringToEnum(
+                    rpc.ProjectAction,
+                    try requireString(aa, params, "action"),
+                ) orelse return error.BadParams,
+            },
+        },
 
         .agent_event => .{ .agent_event = try parseAgentEvent(aa, params) },
         .terminal_turn => .{ .terminal_turn = .{ .id = try requireId(params) } },
@@ -282,6 +295,9 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                 .cwd = (try optionalString(aa, params, "cwd")) orelse "",
                 // The same reading as `terminal_open`'s, from the same function.
                 .place = try placeParam(aa, params),
+                // A terminal that is already open, by its id; left out, one
+                // is opened where `place` says.
+                .in = try optionalIdParam(params, "in"),
             },
         },
 
@@ -442,6 +458,17 @@ fn requireIdNamed(params: ?std.json.ObjectMap, key: []const u8) ParseError!Bus.I
     };
 }
 
+/// A terminal id that may be left out: absent or `null` is none, and one
+/// that is there is read as `requireIdNamed` reads it -- a malformed id is
+/// refused, not taken for "none", which would open a terminal the caller
+/// did not ask for.
+fn optionalIdParam(params: ?std.json.ObjectMap, key: []const u8) ParseError!?Bus.Id {
+    const p = params orelse return null;
+    const v = p.get(key) orelse return null;
+    if (v == .null) return null;
+    return try requireIdNamed(params, key);
+}
+
 /// An array of terminal ids, each in either form `requireIdNamed` takes.
 /// Absent or `null` is the empty list; anything else malformed is refused
 /// whole rather than read as far as it goes -- a list of names half-read is
@@ -539,6 +566,8 @@ fn placeParam(aa: Allocator, params: ?std.json.ObjectMap) ParseError!rpc.Placeme
     const w = (try optionalString(aa, params, "place")) orelse return .auto;
     if (std.mem.eql(u8, w, "tab")) return .tab;
     if (std.mem.eql(u8, w, "here")) return .here;
+    // Read, so that it can be refused by name rather than become `auto`.
+    if (std.mem.eql(u8, w, "stack")) return .stack;
     return .auto;
 }
 
@@ -724,6 +753,36 @@ fn optionalParams(
 /// Durations and bookkeeping, never screen contents. The supervisor calls
 /// `terminal_read` if it wants to know what is actually on a screen, which
 /// keeps both the reading and the judgement on its side.
+/// Where a terminal stands with the groups: what `me` adds to what it
+/// says of the terminal itself.
+///
+/// **Each of the three is always said.** A terminal in no group is told
+/// an empty list, and one nobody started for a group is told `null`: an
+/// agent asking "which group am I for" is answered either way, and never
+/// left to read a missing key as "ask again later".
+pub const Membership = struct {
+    /// The groups this terminal is in, in the order `group_list` gives.
+    groups: []const []const u8,
+    /// The ones among them it is the supervisor of -- by the control
+    /// room's rule (`ControlRoom.stewardOfGroup`), which is one supervisor
+    /// to a group.
+    supervisor_of: []const []const u8,
+    /// The group the person started this terminal for from the control
+    /// room, in this run. Null when it was not started that way.
+    started_for: ?[]const u8,
+    /// For each group in `supervisor_of`: the project it is tied to, and
+    /// when it is tied to none, why (`Projects.Why`).
+    projects: []const GroupProject,
+
+    pub const GroupProject = struct {
+        group: []const u8,
+        /// Only which of the three it is; the name is `project`.
+        tie: Chat.ProjectTie,
+        project: ?[]const u8,
+        why: Projects.Why,
+    };
+};
+
 pub const TerminalInfo = struct {
     id: Bus.Id,
     role: Bus.Role = .none,
@@ -773,6 +832,11 @@ pub const TerminalInfo = struct {
     /// under it -- the two were one field, and a mark with nothing under
     /// it read as a watch (task 731).
     sampling: ?Bus.Sampling = null,
+
+    /// Which groups it is in, is the supervisor of, and was started for.
+    /// Filled for `me` only: null everywhere else, and left out of the
+    /// JSON then. Null from `me` means the host could not say.
+    membership: ?Membership = null,
 
     /// How long since this terminal's agent last called a Polter tool.
     /// Null, and left out, for one that never has -- a plain shell, or an
@@ -1273,6 +1337,11 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                         try s.objectField("fallback_kind");
                         try s.write(@tagName(why.kind()));
                     },
+                    // No terminal was opened, and why that one was used.
+                    .reused => |why| {
+                        try s.objectField("reused");
+                        try s.write(@tagName(why));
+                    },
                 }
             }
         },
@@ -1711,6 +1780,34 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
 
     try s.objectField("agent");
     try writeAgent(s, info.agent);
+
+    // Only `me` carries it, and then all three are written -- `started_for`
+    // as a `null` the reader can see when there is none.
+    if (info.membership) |m| {
+        try s.objectField("groups");
+        try s.write(m.groups);
+        try s.objectField("supervisor_of");
+        try s.write(m.supervisor_of);
+        try s.objectField("started_for");
+        try s.write(m.started_for);
+        try s.objectField("projects");
+        try s.beginArray();
+        for (m.projects) |p| {
+            try s.beginObject();
+            try s.objectField("group");
+            try s.write(p.group);
+            try s.objectField("tie");
+            try s.write(@tagName(p.tie));
+            // A `null` the reader can see, like `started_for`: "has none"
+            // is said, with the reason beside it.
+            try s.objectField("project");
+            try s.write(p.project);
+            try s.objectField("why");
+            try s.write(@tagName(p.why));
+            try s.endObject();
+        }
+        try s.endArray();
+    }
 
     try s.endObject();
 }
@@ -2601,11 +2698,31 @@ test "role_launch place: read exactly as terminal_open's" {
         .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"place\":\"tab\"}}", .want = .tab },
         .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"place\":\"here\"}}", .want = .here },
         .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"place\":\"beside\"}}", .want = .auto },
+        // Named and not built: read as itself, so that it is refused by
+        // name instead of becoming `auto`.
+        .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"place\":\"stack\"}}", .want = .stack },
     }) |c| {
         var p = try parse(c.json);
         defer p.deinit();
         try testing.expectEqual(c.want, p.value.role_launch.place);
+        // No terminal named: one is opened.
+        try testing.expectEqual(@as(?Bus.Id, null), p.value.role_launch.in);
     }
+}
+
+test "role_launch in: a terminal that is already open is named by its id, and a bad one is refused" {
+    for ([_]struct { json: []const u8, want: ?Bus.Id }{
+        .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":\"0x2a\"}}", .want = 0x2a },
+        .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":42}}", .want = 42 },
+        .{ .json = "{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":null}}", .want = null },
+    }) |c| {
+        var p = try parse(c.json);
+        defer p.deinit();
+        try testing.expectEqual(c.want, p.value.role_launch.in);
+    }
+    // Not "none": that would open a terminal nobody asked for.
+    try testing.expectError(error.BadParams, parse("{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":\"that one\"}}"));
+    try testing.expectError(error.BadParams, parse("{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":true}}"));
 }
 
 test "wire: a screenshot call carries each parameter as the JSON it arrived as" {
@@ -2666,4 +2783,80 @@ test "ControlRoom answer_prompt: the two moments are taken together or not at al
     try testing.expectError(error.BadParams, parse(
         \\{"id":1,"method":"terminal_answer_prompt","params":{"id":"0x0000000000002222","event_at_ms":1000}}
     ));
+}
+
+test "ControlRoom resume: me says the groups, the ones it is the supervisor of and the one it was started for -- a null when there is none" {
+    var buf: [1024]u8 = undefined;
+
+    // Started for a group: all three, named.
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .membership = .{
+        .groups = &.{ "web-app", "billing" },
+        .supervisor_of = &.{"web-app"},
+        .started_for = "web-app",
+        .projects = &.{
+            .{ .group = "web-app", .tie = .{ .bound = "web-app" }, .project = "web-app", .why = .none },
+            .{ .group = "old", .tie = .undecided, .project = null, .why = .other_supervisor },
+        },
+    } } });
+    try testing.expect(std.mem.indexOf(
+        u8,
+        w.buffered(),
+        "\"groups\":[\"web-app\",\"billing\"],\"supervisor_of\":[\"web-app\"],\"started_for\":\"web-app\"",
+    ) != null);
+    // Which project each group it supervises has, and for one that has
+    // none, a null and the reason.
+    try testing.expect(std.mem.indexOf(
+        u8,
+        w.buffered(),
+        "\"projects\":[{\"group\":\"web-app\",\"tie\":\"bound\",\"project\":\"web-app\",\"why\":\"none\"}," ++
+            "{\"group\":\"old\",\"tie\":\"undecided\",\"project\":null,\"why\":\"other_supervisor\"}]",
+    ) != null);
+
+    // In nothing and started for nothing: said, as empty lists and a null.
+    w = .fixed(&buf);
+    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .membership = .{
+        .groups = &.{},
+        .supervisor_of = &.{},
+        .started_for = null,
+        .projects = &.{},
+    } } });
+    try testing.expect(std.mem.indexOf(
+        u8,
+        w.buffered(),
+        "\"groups\":[],\"supervisor_of\":[],\"started_for\":null,\"projects\":[]",
+    ) != null);
+
+    // Not `me`, or a host that could not say: none of the three keys.
+    w = .fixed(&buf);
+    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none } });
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "started_for") == null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "supervisor_of") == null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"groups\"") == null);
+}
+
+test "Projects: group_project reads one of two words and guesses at no other" {
+    var use = try parse(
+        \\{"method":"group_project","params":{"group":"build","action":"use"}}
+    );
+    defer use.deinit();
+    try testing.expectEqualStrings("build", use.value.group_project.group);
+    try testing.expect(use.value.group_project.action == .use);
+
+    var drop = try parse(
+        \\{"method":"group_project","params":{"group":"build","action":"drop"}}
+    );
+    defer drop.deinit();
+    try testing.expect(drop.value.group_project.action == .drop);
+
+    for ([_][]const u8{
+        \\{"method":"group_project","params":{"group":"build","action":"bind"}}
+        ,
+        \\{"method":"group_project","params":{"group":"build","action":""}}
+        ,
+        \\{"method":"group_project","params":{"group":"build"}}
+        ,
+        \\{"method":"group_project","params":{"action":"use"}}
+        ,
+    }) |bad| try testing.expectError(error.BadParams, parse(bad));
 }

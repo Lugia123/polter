@@ -28,7 +28,7 @@
 use crate::layout::Rect;
 use crate::look::{font, pane, radius, side, space, Rgba, Theme};
 use crate::scene::{self, Face, Item, Part, Piece, Side, Style};
-use crate::snapshot::{Shown, Terminal};
+use crate::snapshot::{BarShown, Shown, Terminal};
 
 pub use crate::snapshot::Pane as Wears;
 
@@ -44,7 +44,8 @@ pub mod msg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Title {
     pub name: String,
-    pub shown: Shown,
+    /// The glyph at the title's right end: a status, or held.
+    pub shown: BarShown,
     pub word: String,
 }
 
@@ -84,9 +85,14 @@ pub fn drawn(terminal: Option<&str>, own_name: &str, place: Place, terminals: Op
     let drawn = match listed {
         Some(t) => Drawn {
             wears: t.pane.unwrap_or(Wears::Plain),
-            title: Title { name: t.title.clone(), shown: t.shown, word: t.text.clone() },
+            // The pair the core says the title draws. Only a snapshot from
+            // before it said so falls back to the status.
+            title: match &t.bar {
+                Some(bar) => Title { name: t.title.clone(), shown: bar.shown, word: bar.text.clone() },
+                None => Title { name: t.title.clone(), shown: BarShown::of(t.shown), word: t.text.clone() },
+            },
         },
-        None => Drawn { wears: Wears::Plain, title: Title { name: own_name.to_string(), shown: Shown::None, word: String::new() } },
+        None => Drawn { wears: Wears::Plain, title: Title { name: own_name.to_string(), shown: BarShown::None, word: String::new() } },
     };
     if drawn.wears == Wears::Plain && place.alone {
         return None;
@@ -280,19 +286,23 @@ pub fn build(frame: Px, drawn: &Drawn, view: &View, tr: &dyn Fn(&str) -> String)
         });
     }
     let shown = drawn.title.shown;
-    if shown != Shown::None {
-        parts.push(Part {
-            piece: Piece::Glyph { shown, color: scene::glyph_color(theme, shown), size: side::GLYPH, pulses: false },
+    match shown.status() {
+        Some(Shown::None) => {}
+        Some(status) => parts.push(Part {
+            piece: Piece::Glyph { shown: status, color: scene::glyph_color(theme, status), size: side::GLYPH, pulses: false },
             side: Side::Trail,
             gap: pane::BAR_GAP,
-        });
+        }),
+        // Held is not a status and has no colour of its own: the design
+        // draws it in the title's second ink.
+        None => parts.push(Part { piece: Piece::Held { color: second_ink, size: side::GLYPH }, side: Side::Trail, gap: pane::BAR_GAP }),
     }
     if scene::draws(&drawn.title.word) {
         let ink = match shown {
-            Shown::NeedsYou | Shown::DoneUnseen => theme.attention_text,
+            BarShown::NeedsYou | BarShown::DoneUnseen => theme.attention_text,
             // Where the word is not red is the table's to say.
-            Shown::Trouble => trouble_ink,
-            Shown::Working | Shown::None => second_ink,
+            BarShown::Trouble => trouble_ink,
+            BarShown::Working | BarShown::None | BarShown::Held => second_ink,
         };
         parts.push(Part {
             piece: Piece::Words { text: drawn.title.word.clone(), style: ui(ink, font::WEIGHT_EMPHASIS) },
@@ -327,7 +337,7 @@ mod tests {
     const SHELL: &str = "0x00000000000000c2";
 
     fn title(name: &str, shown: Shown, word: &str) -> Title {
-        Title { name: name.to_string(), shown, word: word.to_string() }
+        Title { name: name.to_string(), shown: BarShown::of(shown), word: word.to_string() }
     }
 
     fn wears(id: &str, place: Place) -> Option<Wears> {
@@ -662,7 +672,7 @@ mod tests {
                 .find_map(|i| match i {
                     Item::Line { parts, .. } => parts.iter().find_map(|p| match &p.piece {
                         Piece::Words { text, style } if text == "出错" => Some(style.color),
-                        Piece::Words { .. } | Piece::Glyph { .. } => None,
+                        Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } => None,
                     }),
                     Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => None,
                 })
@@ -705,6 +715,131 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    // ---- the right end of the title: the core's pair (task 1468)
+
+    use crate::snapshot::Bar;
+
+    fn listed(shown: Shown, text: &str, bar: Option<(BarShown, &str)>) -> Vec<Terminal> {
+        vec![Terminal {
+            id: "0x01".to_string(),
+            title: "t".to_string(),
+            shown,
+            text: text.to_string(),
+            pane: Some(Wears::Worker),
+            bar: bar.map(|(shown, text)| Bar { shown, text: text.to_string() }),
+            who: None,
+        }]
+    }
+
+    #[test]
+    fn the_titles_glyph_and_word_are_the_pair_the_core_gives_for_every_terminal() {
+        let all = terminals();
+        for t in &all {
+            let bar = t.bar.clone().unwrap_or_else(|| panic!("{} has no bar", t.id));
+            let d = drawn(Some(&t.id), "", SPLIT, Some(&all)).unwrap();
+            assert_eq!(d.title, Title { name: t.title.clone(), shown: bar.shown, word: bar.text }, "{}", t.id);
+        }
+    }
+
+    #[test]
+    fn a_held_worker_of_the_fixture_says_held_and_its_status_is_untouched() {
+        let all = terminals();
+        let held = all.iter().find(|t| t.title == "tokens").unwrap();
+        assert_eq!(held.bar, Some(Bar { shown: BarShown::Held, text: "被按住".to_string() }));
+        // What a row or a window tab would draw of it is still its status.
+        assert_eq!((held.shown, held.text.as_str()), (Shown::None, "下班"));
+        let d = drawn(Some(&held.id), "", SPLIT, Some(&all));
+        assert_eq!(d, Some(Drawn { wears: Wears::Worker, title: Title { name: "tokens".to_string(), shown: BarShown::Held, word: "被按住".to_string() } }));
+        let held_ones: Vec<&str> = all.iter().filter(|t| t.bar.as_ref().is_some_and(|b| b.shown == BarShown::Held)).map(|t| t.title.as_str()).collect();
+        assert_eq!(held_ones, ["tokens"]);
+    }
+
+    #[test]
+    fn the_host_takes_the_pair_as_given_and_works_nothing_out() {
+        // Whatever the status says: the title is the pair. Which wins when a
+        // terminal is held and also waiting is the core's rule, not this.
+        for status in [Shown::NeedsYou, Shown::Trouble, Shown::DoneUnseen, Shown::Working, Shown::None] {
+            for bar in BarShown::ALL {
+                let all = listed(status, "status", Some((bar, "pair")));
+                let d = drawn(Some("0x01"), "", SPLIT, Some(&all)).unwrap();
+                assert_eq!(d.title, Title { name: "t".to_string(), shown: bar, word: "pair".to_string() }, "{status:?} {bar:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_snapshot_from_before_the_core_gave_the_pair_says_the_status() {
+        let all = listed(Shown::Working, "在干活", None);
+        let d = drawn(Some("0x01"), "", SPLIT, Some(&all)).unwrap();
+        assert_eq!(d.title, title("t", Shown::Working, "在干活"));
+        // And such a snapshot reads: the fixture with every `bar` cut out.
+        let mut old = String::new();
+        let mut rest = FIXTURE;
+        while let Some(at) = rest.find("      \"bar\": {") {
+            old.push_str(&rest[..at]);
+            let end = rest[at..].find("},\n").unwrap() + at + "},\n".len();
+            rest = &rest[end..];
+        }
+        old.push_str(rest);
+        let read = snapshot::decode(&old).unwrap().terminals;
+        assert_eq!(read.len(), 12);
+        assert!(read.iter().all(|t| t.bar.is_none()));
+    }
+
+    #[test]
+    fn a_glyph_the_host_does_not_know_is_an_error_not_a_blank_title() {
+        let odd = FIXTURE.replacen("\"shown\": \"held\"", "\"shown\": \"muted\"", 1);
+        assert!(matches!(snapshot::decode(&odd), Err(snapshot::DecodeError::UnknownValue(_))));
+        assert!(FIXTURE.contains("\"shown\": \"held\""));
+    }
+
+    #[test]
+    fn held_is_the_only_glyph_of_a_title_that_is_not_a_status() {
+        for status in [Shown::NeedsYou, Shown::Trouble, Shown::DoneUnseen, Shown::Working, Shown::None] {
+            assert_eq!(BarShown::of(status).status(), Some(status));
+            assert_eq!(BarShown::of(status).name(), status.name());
+        }
+        let not: Vec<BarShown> = BarShown::ALL.into_iter().filter(|b| b.status().is_none()).collect();
+        assert_eq!(not, [BarShown::Held]);
+        assert_eq!(BarShown::Held.name(), "held");
+    }
+
+    #[test]
+    fn a_held_title_draws_the_two_bars_and_its_words_in_the_second_ink_and_nothing_moves() {
+        let f = Px { x: 0, y: 0, w: 700, h: 500 };
+        for dark in [false, true] {
+            let theme = look::theme(dark);
+            for (wears, second) in [(Wears::Supervisor, theme.text_secondary), (Wears::Worker, theme.terminal_dim), (Wears::Plain, theme.terminal_dim)] {
+                let d = Drawn { wears, title: Title { name: "tests".to_string(), shown: BarShown::Held, word: "被按住".to_string() } };
+                let items = build(f, &d, &view(dark, 1.0, false), &same);
+                let parts = items
+                    .iter()
+                    .find_map(|i| match i {
+                        Item::Line { parts, .. } => Some(parts),
+                        Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => None,
+                    })
+                    .unwrap();
+                // The glyph, then the word to its right: both trailing.
+                let held: Vec<&Part> = parts.iter().filter(|p| matches!(p.piece, Piece::Held { .. })).collect();
+                assert_eq!(held.len(), 1, "{wears:?}");
+                assert_eq!(held[0].piece, Piece::Held { color: second, size: side::GLYPH }, "{wears:?} dark={dark}");
+                assert_eq!(held[0].side, Side::Trail);
+                let word = parts.last().unwrap();
+                assert!(matches!(&word.piece, Piece::Words { text, style } if text == "被按住" && style.color == second && style.weight == font::WEIGHT_EMPHASIS), "{wears:?}");
+                // No status glyph beside it, and no clock for it.
+                assert!(!parts.iter().any(|p| matches!(p.piece, Piece::Glyph { .. })));
+                assert!(!scene::moves(&items));
+            }
+        }
+        // The two bars: inside the glyph's box, as the design has them.
+        let bars = crate::glyph::held();
+        assert_eq!(bars.len(), 2);
+        for (bar, x) in bars.iter().zip([3.8, 7.8]) {
+            assert_eq!(bar.outline, crate::glyph::Outline::RoundRect(x, 3.0, 2.4, 8.0, 0.8));
+            assert_eq!(bar.level, 1.0);
         }
     }
 }

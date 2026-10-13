@@ -8,7 +8,7 @@
 //! disagreeing about what one snapshot looks like.
 
 use polter_control_room::json::quote;
-use polter_control_room::act::{Act, Refusal, SeenMarker};
+use polter_control_room::act::{self, Act, Refusal, SeenMarker};
 use polter_control_room::rules;
 use polter_control_room::layout::{self, ListLayout, Rect};
 use polter_control_room::list::{self, List, Row};
@@ -98,6 +98,11 @@ fn main() {
     let l = List::from_snapshot(&snap);
 
     println!("count waiting={} quiet={}", l.waiting_count, l.quiet_count);
+    // The two headings: what the core wrote, and the sentence made of it.
+    for (name, h, (words, n)) in [("waiting", l.waiting_header, l.waiting_heading()), ("quiet", l.quiet_header, l.quiet_heading())] {
+        let core = h.map_or("-".to_string(), |h| format!("{} of={} number={}", h.count, h.of.name(), h.number.name()));
+        println!("heading {name} core={core} says={}", quote(&polter_control_room::list::fill(words, &n)));
+    }
 
     // Where a control room opens, and whose choice the selection then is.
     let open_on = snap.open_on.as_deref();
@@ -119,6 +124,84 @@ fn main() {
     for r in &l.quiet {
         row("quiet", r);
     }
+    // What each row is called, and for a terminal in no group which
+    // terminal it is and which frame its own pane wears.
+    for r in l.rows() {
+        println!(
+            "rowname id={} name={} alone={} pane={}",
+            r.id,
+            quote(r.name()),
+            r.alone.as_ref().map_or("-", |a| a.terminal.as_str()),
+            r.alone.as_ref().map_or("-", |a| a.pane.name())
+        );
+    }
+
+    // The terminals in no group, each with a row of its own.
+    let alone = match polter_control_room::lone::decode(&text) {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("the snapshot's ungrouped does not decode: {e:?}");
+            std::process::exit(1);
+        }
+    };
+    println!("lone {}", alone.len());
+    for one in &alone {
+        let since = one.terminal.as_ref().map_or("-".to_string(), |_| one.since_ms.to_string());
+        let event = one.terminal.as_ref().and(one.event_ms).map_or("-".to_string(), |m| m.to_string());
+        println!(
+            "lone row={} section={} title={} shown={} word={} who={} name={} form={} code={} lines={} unseen={} \
+             terminal={} since={since} event={event} shows={}",
+            one.row_id(),
+            one.section(),
+            quote(&one.title),
+            one.shown.name(),
+            quote(&one.text),
+            one.waiter.is.name(),
+            quote(&one.waiter.name),
+            one.what.form.name(),
+            list::is_code(&one.what),
+            one.what.lines.len(),
+            one.unseen,
+            one.terminal.as_deref().unwrap_or("-"),
+            polter_control_room::lone::shown_for(&alone, &one.row_id()).unwrap_or("-")
+        );
+        println!("lone cut row={} cut={}", one.row_id(), one.what.cut.name());
+        for (n, line) in list::drawn(&one.what).iter().enumerate() {
+            println!("lone what row={} n={n} line={}", one.row_id(), quote(line));
+        }
+    }
+    // The first line of a waiting row, when it is too narrow for the name,
+    // who is waiting and the status word: the same cases on both sides, in
+    // the same units, laid out the way `scene` lays that line out -- the
+    // name leading, who is waiting squeezed, the status word trailing.
+    const LINE1: [(i32, i32, Option<i32>, i32); 16] = [
+        (80, 0, Some(100), 40), (80, 0, Some(400), 40), (500, 0, Some(90), 40), (274, 0, Some(90), 40),
+        (266, 0, Some(90), 40), (265, 0, Some(90), 40), (250, 0, Some(90), 40), (300, 0, None, 40),
+        (400, 0, None, 40), (66, 0, Some(67), 40), (187, 0, Some(510), 40), (465, 0, Some(149), 40),
+        (80, 292, Some(50), 40), (10, 262, Some(50), 40), (80, 0, Some(400), 0), (400, 0, None, 0),
+    ];
+    for (name, narrower, who, word) in LINE1 {
+        use polter_control_room::scene::{place_line, Side};
+        let width = 322 - narrower;
+        let mut parts = vec![(Side::Lead, 0, name)];
+        if let Some(w) = who {
+            parts.push((Side::Squeezed, 8, w));
+        }
+        parts.push((Side::Trail, 8, word));
+        let placed = place_line(0, width, &parts);
+        let got_name = placed[0].map_or((0, name > 0), |p| (p.right - p.left, p.cut));
+        let who_says = match who.and_then(|_| placed[1]) {
+            Some(p) => format!("{} cut={}", p.right - p.left, p.cut),
+            None => "-".to_string(),
+        };
+        println!(
+            "line1 width={width} name={name} who={} word={word} -> name={} cut={} who={who_says}",
+            who.map_or("-".to_string(), |w| w.to_string()),
+            got_name.0,
+            got_name.1
+        );
+    }
+    println!("lone shows bare-id={} group={}", polter_control_room::lone::shown_for(&alone, "0x00000000000000c1").unwrap_or("-"), polter_control_room::lone::shown_for(&alone, "web-app").unwrap_or("-"));
 
     // Which glyph breathes: with nothing in front, and with each tab that
     // holds a waiting terminal in front -- asked, as a host asks, with the
@@ -143,7 +226,8 @@ fn main() {
     for front in &fronts {
         let tab = front.map(|(t, _)| t);
         let window = front.and_then(|(_, w)| w);
-        let row = pulse::pulsing_row(&snap.pulses, window, tab).and_then(|name| l.row(name));
+        let breathing = pulse::pulsing_row_id(&snap.pulses, window, tab);
+        let row = breathing.as_deref().and_then(|id| l.row(id));
         println!("pulse list showing={} rows={}", tab.unwrap_or("-"), row.map_or("-", |r| r.id.as_str()));
     }
     for window in &windows {
@@ -203,6 +287,149 @@ fn main() {
                 quote(&s.cwd)
             ),
             None => println!("start id={} -", r.id),
+        }
+        // What the core says of the last supervisor, and whether a start
+        // goes on with its session.
+        match r.start.as_ref().and_then(|s| s.last.as_ref()) {
+            Some(l) => println!(
+                "start_last id={} cli={} last_role={} last_cli={} heard_ms={} resume={} why={} dir_is_last={} cli_label={} last_cli_label={}",
+                r.id,
+                l.cli.as_deref().unwrap_or("-"),
+                l.role.as_deref().unwrap_or("-"),
+                l.last_cli.as_deref().unwrap_or("-"),
+                l.heard_ms.map(|n| n.to_string()).unwrap_or_else(|| "-".into()),
+                l.can_resume,
+                l.why.name(),
+                l.cwd_is_last,
+                l.cli_label.as_deref().map_or("-".to_string(), quote),
+                l.last_cli_label.as_deref().map_or("-".to_string(), quote)
+            ),
+            None => println!("start_last id={} -", r.id),
+        }
+    }
+    for why in polter_control_room::snapshot::ResumeWhy::ALL {
+        println!("resume_why {}", why.name());
+    }
+    // Who the core says is working in every terminal: which of its three
+    // answers, the three words a project's pane keeps, and who opened it.
+    for t in &snap.terminals {
+        match &t.who {
+            Some(w) => println!(
+                "who id={} is={} role={} cli={} session={} opened_by={}",
+                t.id,
+                w.is.name(),
+                w.role.as_deref().map(quote).unwrap_or_else(|| "-".into()),
+                w.cli.as_deref().map(quote).unwrap_or_else(|| "-".into()),
+                w.session.as_deref().map(quote).unwrap_or_else(|| "-".into()),
+                w.opened_by.as_deref().unwrap_or("-")
+            ),
+            None => println!("who id={} -", t.id),
+        }
+    }
+    for is in polter_control_room::snapshot::WhoIs::ALL {
+        println!("who_is {}", is.name());
+    }
+    // What the right-hand side makes of that: the sentence for each reason
+    // a start will not go on with the last session (none for the two that
+    // need none), what the two sessions are called, what a start sends for
+    // every state of the choice, and the sentence about the last supervisor
+    // for each mix of what is known of it.
+    {
+        use polter_control_room::act::{session_sent, Session};
+        use polter_control_room::scene;
+        use polter_control_room::snapshot::{ResumeWhy, StartFailure, SupervisorLast, SupervisorStart, SupervisorState};
+        let same = |s: &str| s.to_string();
+        let or_dash = |s: Option<String>| s.map_or("-".to_string(), |s| quote(&s));
+        // Whether a split asked of a terminal is made: of one the control
+        // room is showing, for an agent (asked through the core) and not
+        // for a key.
+        for lent in [false, true] {
+            for core in [false, true] {
+                println!("new_split lent={lent} asked_by_core={core} made={}", polter_control_room::lend::may_split(lent, core));
+            }
+        }
+        for why in ResumeWhy::ALL {
+            println!("resume_note {} says={}", why.name(), or_dash(scene::resume_note(why).map(str::to_string)));
+        }
+        for session in Session::ALL {
+            println!("session_option {} says={}", session.name(), quote(scene::session_words(session)));
+        }
+        for offered in [true, false] {
+            for picked in [None, Some(Session::Last), Some(Session::New)] {
+                println!(
+                    "session_sent offered={offered} picked={} sends={}",
+                    picked.map_or("-", Session::name),
+                    session_sent(offered, picked).map_or("-", Session::name)
+                );
+            }
+        }
+        // (name, heard, the directory, it is the last supervisor's, its CLI, the core's name for it,
+        //  the directory the person picked, can go on)
+        #[allow(clippy::type_complexity)]
+        let cases: [(&str, Option<u64>, &str, bool, Option<&str>, Option<&str>, Option<&str>, bool); 12] = [
+            ("unpicked", Some(1), "/Users/me/work", true, Some("claude-code"), Some("Claude Code"), None, true),
+            ("picked-the-same", Some(1), "/Users/me/work", true, Some("claude-code"), Some("Claude Code"), Some("/Users/me/work"), true),
+            ("picked-elsewhere", Some(1), "/Users/me/work", true, Some("claude-code"), Some("Claude Code"), Some("/srv/other"), true),
+            ("home-itself", Some(1), "/Users/me", true, Some("claude-code"), Some("Claude Code"), Some("/srv/other"), true),
+            ("no-name-for-the-cli", Some(1), "/Users/me/work", true, Some("claude-code"), None, Some("/srv/other"), false),
+            ("an-empty-name", Some(1), "/Users/me/work", true, Some("claude-code"), Some(""), None, false),
+            ("directory-is-a-guess", Some(1), "/Users/me/work", false, Some("claude-code"), Some("Claude Code"), Some("/srv/other"), true),
+            ("no-directory", Some(1), "", true, Some("codex"), None, Some("/srv/other"), false),
+            ("cli-not-written", Some(1), "/Users/me/work", true, None, None, Some("/srv/other"), false),
+            ("cli-not-written-unpicked", Some(1), "/Users/me/work", true, None, None, None, false),
+            ("cli-empty", Some(1), "/Users/me/work", true, Some(""), Some("Claude Code"), Some("/srv/other"), false),
+            ("never-recorded", None, "/Users/me/work", true, Some("claude-code"), Some("Claude Code"), Some("/srv/other"), false),
+        ];
+        let start = |cwd: &str, last| SupervisorStart { state: SupervisorState::Absent, can_start: true, failed: StartFailure::None, role: None, cwd: cwd.to_string(), last };
+        for (name, heard, cwd, is_last, cli, label, picked, can) in cases {
+            let s = start(
+                cwd,
+                Some(SupervisorLast {
+                    cli: Some("claude-code".into()),
+                    role: None,
+                    last_cli: cli.map(str::to_string),
+                    heard_ms: heard,
+                    can_resume: can,
+                    why: if can { ResumeWhy::None } else { ResumeWhy::NoSession },
+                    cwd_is_last: is_last,
+                    cli_label: Some("Claude Code".into()),
+                    last_cli_label: label.map(str::to_string),
+                }),
+            );
+            println!(
+                "last_said {name} offers={} says={}",
+                scene::offers_session(Some(&s)),
+                or_dash(scene::last_supervisor_words(Some(&s), picked, "/Users/me", &same))
+            );
+        }
+        let old = start("/Users/me/work", None);
+        println!(
+            "last_said core-says-nothing offers={} says={}",
+            scene::offers_session(Some(&old)),
+            or_dash(scene::last_supervisor_words(Some(&old), None, "/Users/me", &same))
+        );
+    }
+    // What the right-hand side says of a group with no supervisor, for
+    // every reason the core gives for the last try having made none -- the
+    // two a launcher reports itself among them -- and while one is on its
+    // way.
+    {
+        use polter_control_room::scene::no_supervisor_words;
+        use polter_control_room::snapshot::{StartFailure, SupervisorStart, SupervisorState};
+        let start = |state, failed, can_start| SupervisorStart { state, can_start, failed, role: None, cwd: String::new(), last: None };
+        for failed in StartFailure::ALL {
+            println!(
+                "start_says state=failed failed={} says={}",
+                failed.name(),
+                quote(no_supervisor_words(Some(&start(SupervisorState::Failed, failed, true))))
+            );
+        }
+        for state in [SupervisorState::Starting, SupervisorState::Absent] {
+            println!(
+                "start_says state={} failed=none says={}",
+                state.name(),
+                quote(no_supervisor_words(Some(&start(state, StartFailure::None, false))))
+            );
         }
     }
     println!("start_roles choose={}", l.choose_supervisor_role);
@@ -289,10 +516,32 @@ fn main() {
             None => "-".to_string(),
             Some(dwell) => match marker.due(&dwell, true) {
                 Some(Act::Seen { group }) => format!("after={:.3} marks={group}", selection::SEEN_AFTER),
+                Some(Act::SeenTerminal { terminal }) => format!("after={:.3} marks_terminal={terminal}", selection::SEEN_AFTER),
                 _ => format!("after={:.3}", selection::SEEN_AFTER),
             },
         };
         println!("seen row={} {said}", r.id);
+    }
+    // What the title of the frame on the right says while it holds each
+    // row's terminal: that terminal's own name, glyph and word.
+    for r in l.rows() {
+        match &r.title {
+            Some(t) => println!("frame_title row={} name={} shown={} word={}", r.id, quote(&t.name), t.shown.name(), quote(&t.word)),
+            None => println!("frame_title row={} -", r.id),
+        }
+    }
+    // What marking a row seen sends, for every row as if nobody had looked
+    // at it: a group's by the group's name, a lone terminal's by the
+    // terminal.
+    for r in l.rows() {
+        let mut unseen = r.clone();
+        unseen.unseen = true;
+        let mut marker = SeenMarker::default();
+        let sends = marker
+            .selection_changed(Some(&unseen))
+            .and_then(|dwell| marker.due(&dwell, true).and_then(|a| act::encode(&a)))
+            .unwrap_or("-".to_string());
+        println!("seen_sends row={} {sends}", r.id);
     }
 
     // Which terminal is shown on the right, through one script of events:

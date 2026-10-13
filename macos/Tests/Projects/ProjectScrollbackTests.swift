@@ -73,15 +73,15 @@ struct ProjectScrollbackTests {
             _ = capture
             let snapshot = allocator.snapshot(for: pane.snapshot, allocate: true)
             if let snapshot { pane.snapshot = snapshot }
-            return .leaf(cwd: pane.cwd, title: "", history: "", scrollback: snapshot?.filename ?? "")
+            return .leaf(cwd: pane.cwd, title: "", history: "", scrollback: snapshot?.filename ?? "", agent: .unknown)
         }
         let root = leaves.dropFirst().reduce(leaves[0]) { .split(direction: .horizontal, ratio: 0.5, left: $0, right: $1) }
-        return ProjectFile(name: "p", savedAt: 0, root: root, nextScrollback: allocator.next)
+        return ProjectFile.oneTab(name: "p", savedAt: 0, root: root, nextScrollback: allocator.next)
     }
 
     private func snapshots(_ node: ProjectNode?) -> [String: String] {
         switch node {
-        case .leaf(let cwd, _, _, let scrollback): return [cwd: scrollback]
+        case .leaf(let cwd, _, _, let scrollback, _): return [cwd: scrollback]
         case .split(_, _, let left, let right): return snapshots(left).merging(snapshots(right)) { $1 }
         case nil: return [:]
         }
@@ -96,14 +96,14 @@ struct ProjectScrollbackTests {
         let a = Pane("/a")
         let b = Pane("/b")
         let saved = save([a, b], existing: nil, capture: true)
-        let history = snapshots(saved.root)
+        let history = snapshots(saved.firstTab)
         #expect(history["/a"] != history["/b"])
 
         let swapped = save([b, a], existing: saved, capture: false)
-        #expect(snapshots(swapped.root) == history)
+        #expect(snapshots(swapped.firstTab) == history)
 
         let reopened = try ProjectFile.decode(from: swapped.encoded())
-        #expect(snapshots(reopened.root) == history)
+        #expect(snapshots(reopened.firstTab) == history)
     }
 
     /// A number whose pane has closed is never handed out again, even once
@@ -133,7 +133,7 @@ struct ProjectScrollbackTests {
         let fresh = Pane("/b")
         let autosaved = save([a, fresh], existing: saved, capture: false)
         #expect(fresh.snapshot != nil)
-        #expect(snapshots(autosaved.root)["/b"] == fresh.snapshot?.filename)
+        #expect(snapshots(autosaved.firstTab)["/b"] == fresh.snapshot?.filename)
         #expect(fresh.snapshot?.filename != a.snapshot?.filename)
         #expect(autosaved.nextScrollback == saved.nextScrollback! + 1)
     }

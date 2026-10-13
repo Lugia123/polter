@@ -578,7 +578,7 @@ fn seen_due(hwnd: HWND) {
         let st = st.as_mut()?;
         let dwell = st.dwell.take()?;
         let request = st.seen.due(&dwell, front).and_then(|a| act::encode(&a));
-        request.map(|r| (r, dwell.group))
+        request.map(|r| (r, dwell.row))
     });
     let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
     match request {
@@ -643,6 +643,8 @@ struct StartPicks {
     group: Option<String>,
     role: Option<String>,
     cwd: Option<String>,
+    /// Which session, when the two are offered; none until one is pressed.
+    session: Option<act::Session>,
     refusal: Option<String>,
 }
 
@@ -879,6 +881,7 @@ fn start_scene(g: &Geometry, theme: &Theme) -> scene::Start {
             choose_role: ready.list.choose_supervisor_role,
             role: picks.role.as_deref(),
             cwd: picks.cwd.as_deref(),
+            session: picks.session,
             refusal: picks.refusal.as_deref(),
             home: &home,
         };
@@ -940,10 +943,18 @@ fn choose_directory(hwnd: HWND, group: &str) {
 fn start_supervisor(hwnd: HWND, group: &str) {
     let picks = picks_for(Some(group));
     let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
-    let Some(request) = act::encode(&act::Act::StartSupervisor { group, role: picks.role.as_deref(), cwd: picks.cwd.as_deref() }) else { return };
+    // Which session is said only while the choice is on screen
+    // (`act::session_sent`); whether it is is the core's word.
+    let offered = source::with(|data| match data {
+        Data::Ready(r) => scene::offers_session(r.list.row(group).and_then(|row| row.start.as_ref())),
+        Data::NotYet => false,
+        Data::Unreadable(_) => false,
+    });
+    let session = act::session_sent(offered, picks.session);
+    let Some(request) = act::encode(&act::Act::StartSupervisor { group, role: picks.role.as_deref(), cwd: picks.cwd.as_deref(), session }) else { return };
     match source::act(&request) {
         Ok(()) => {
-            wlogf!(frame, "[control-room] start supervisor for {:?} (role {:?}, in {:?}) taken", group, picks.role, picks.cwd);
+            wlogf!(frame, "[control-room] start supervisor for {:?} (role {:?}, in {:?}, session {:?}) taken", group, picks.role, picks.cwd, session.map(|s| s.name()));
             pick(group, |p| p.refusal = None);
         }
         Err(why) => {
@@ -1260,6 +1271,14 @@ fn click(hwnd: HWND, x: i32, y: i32) {
             choose_directory(hwnd, &group);
             return;
         }
+        if let Some((session, _)) = offered.sessions.iter().find(|(_, r)| inside(*r, rx, ry)) {
+            let session = *session;
+            pick(&group, |p| p.session = Some(session));
+            unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
+            return;
+        }
     }
     let go = source::with(|data| {
         let row = match data {
@@ -1391,7 +1410,10 @@ fn paint(hwnd: HWND) {
                 let lay = list_layout(hwnd, list, g.room.panel.h);
                 let (chip, lift, sliding) = chip_now(&lay, selected.as_deref());
                 let window = crate::tabs::window(GetAncestor(hwnd, GA_ROOT)).map(|w| polter_control_room::rules::key(w.id));
-                let pulsing = pulse::pulsing_row(&r.snapshot.pulses, window.as_deref(), None);
+                // By the row's identity: a group's name, or the row of a
+                // terminal that is in no group.
+                let pulsing = pulse::pulsing_row_id(&r.snapshot.pulses, window.as_deref(), None);
+                let pulsing = pulsing.as_deref();
                 // Whether a group is being named is the same in both passes:
                 // the field's outline and what says why a name made no
                 // group do not change while the chip is on its way.
@@ -1672,6 +1694,7 @@ unsafe fn part_width(dc: HDC, at: Px, part: &Part, fonts: &mut Fonts) -> i32 {
     match &part.piece {
         Piece::Words { text, style } => unsafe { text_width(dc, fonts.get(style), text) },
         Piece::Glyph { size, .. } => at.len(*size),
+        Piece::Held { size, .. } => at.len(*size),
     }
 }
 
@@ -1686,6 +1709,13 @@ unsafe fn paint_piece(dc: HDC, at: Px, piece: &Piece, r: RECT, fonts: &mut Fonts
             let top = r.top + (r.bottom - r.top - side) / 2;
             let opacity = if *pulses && source::animations_on() { pulse::opacity(t) } else { 1.0 };
             unsafe { draw_glyph(dc, r.left, top, side, *shown, *color, opacity) };
+        }
+        // A terminal the person is holding: two bars, in the box a status
+        // glyph has. It does not move.
+        Piece::Held { color, size } => {
+            let side = at.len(*size);
+            let top = r.top + (r.bottom - r.top - side) / 2;
+            unsafe { draw_shapes(dc, r.left, top, side, &glyph::held(), *color, 1.0) };
         }
     }
 }
@@ -1752,7 +1782,12 @@ pub(crate) unsafe fn round(dc: HDC, r: RECT, radius: i32, color: Rgba, edge: Opt
 /// `dc` must be a live device context.
 pub unsafe fn draw_glyph(dc: HDC, x: i32, y: i32, side: i32, shown: Shown, color: Rgba, opacity: f64) {
     let spin = if source::animations_on() { pulse::spin_step(source::clock()) } else { 0 };
-    let shapes = glyph::shapes(shown, spin);
+    unsafe { draw_shapes(dc, x, y, side, &glyph::shapes(shown, spin), color, opacity) };
+}
+
+/// Shapes on the status glyphs' artboard, in a square `side` pixels across
+/// with its top left at `x, y`.
+unsafe fn draw_shapes(dc: HDC, x: i32, y: i32, side: i32, shapes: &[glyph::Shape], color: Rgba, opacity: f64) {
     if shapes.is_empty() || side <= 0 {
         return;
     }
@@ -1760,7 +1795,7 @@ pub unsafe fn draw_glyph(dc: HDC, x: i32, y: i32, side: i32, shown: Shown, color
     let u = |v: f64| (v * unit).round() as i32;
     unsafe {
         blend(dc, x, y, side, side, color, opacity, &|m| {
-            for shape in &shapes {
+            for shape in shapes {
                 let level = (shape.level.clamp(0.0, 1.0) * 255.0).round() as u32;
                 let brush = CreateSolidBrush(COLORREF(level | (level << 8) | (level << 16)));
                 let old = SelectObject(m, brush.into());

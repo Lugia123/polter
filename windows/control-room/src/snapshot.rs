@@ -32,7 +32,7 @@ impl Shown {
         }
     }
 
-    fn parse(s: &str) -> Option<Shown> {
+    pub(crate) fn parse(s: &str) -> Option<Shown> {
         [Shown::NeedsYou, Shown::Trouble, Shown::DoneUnseen, Shown::Working, Shown::None]
             .into_iter()
             .find(|v| v.name() == s)
@@ -67,7 +67,7 @@ impl WaiterIs {
         }
     }
 
-    fn parse(s: &str) -> Option<WaiterIs> {
+    pub(crate) fn parse(s: &str) -> Option<WaiterIs> {
         [WaiterIs::None, WaiterIs::Supervisor, WaiterIs::WorkerViaSupervisor, WaiterIs::Worker, WaiterIs::Terminal]
             .into_iter()
             .find(|v| v.name() == s)
@@ -104,7 +104,7 @@ impl Form {
         }
     }
 
-    fn parse(s: &str) -> Option<Form> {
+    pub(crate) fn parse(s: &str) -> Option<Form> {
         [Form::None, Form::Command, Form::Code, Form::Words].into_iter().find(|v| v.name() == s)
     }
 }
@@ -130,7 +130,7 @@ impl Cut {
         }
     }
 
-    fn parse(s: &str) -> Option<Cut> {
+    pub(crate) fn parse(s: &str) -> Option<Cut> {
         [Cut::None, Cut::Tail, Cut::Head].into_iter().find(|v| v.name() == s)
     }
 }
@@ -185,6 +185,12 @@ pub enum StartFailure {
     TerminalNeverOpened,
     AgentNeverConnected,
     TerminalClosed,
+    /// `+launch` said so itself, at once: the CLI's program is not there
+    /// to run.
+    CliNotFound,
+    /// `+launch` said so itself: something else stopped it before the CLI
+    /// ran.
+    CliDidNotStart,
 }
 
 impl StartFailure {
@@ -194,14 +200,100 @@ impl StartFailure {
             StartFailure::TerminalNeverOpened => "terminal_never_opened",
             StartFailure::AgentNeverConnected => "agent_never_connected",
             StartFailure::TerminalClosed => "terminal_closed",
+            StartFailure::CliNotFound => "cli_not_found",
+            StartFailure::CliDidNotStart => "cli_did_not_start",
         }
     }
 
+    /// Every reason the core gives. A word that is none of these is an
+    /// error, like a glyph this build does not know.
+    pub const ALL: [StartFailure; 6] = [
+        StartFailure::None,
+        StartFailure::TerminalNeverOpened,
+        StartFailure::AgentNeverConnected,
+        StartFailure::TerminalClosed,
+        StartFailure::CliNotFound,
+        StartFailure::CliDidNotStart,
+    ];
+
     fn parse(s: &str) -> Option<StartFailure> {
-        [StartFailure::None, StartFailure::TerminalNeverOpened, StartFailure::AgentNeverConnected, StartFailure::TerminalClosed]
-            .into_iter()
-            .find(|v| v.name() == s)
+        Self::ALL.into_iter().find(|v| v.name() == s)
     }
+}
+
+/// Why a start does not go on with the last supervisor's session, or
+/// `None` when it does (`ControlRoom.zig`, `ResumeOut.Why`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeWhy {
+    None,
+    NoRecord,
+    NoSession,
+    LastTryFailed,
+    CliDiffers,
+    ClisUnread,
+    CliCannotResume,
+    SessionInUse,
+}
+
+impl ResumeWhy {
+    pub fn name(self) -> &'static str {
+        match self {
+            ResumeWhy::None => "none",
+            ResumeWhy::NoRecord => "no_record",
+            ResumeWhy::NoSession => "no_session",
+            ResumeWhy::LastTryFailed => "last_try_failed",
+            ResumeWhy::CliDiffers => "cli_differs",
+            ResumeWhy::ClisUnread => "clis_unread",
+            ResumeWhy::CliCannotResume => "cli_cannot_resume",
+            ResumeWhy::SessionInUse => "session_in_use",
+        }
+    }
+
+    /// Every reason the core gives. A word that is none of these is an
+    /// error, like a glyph this build does not know.
+    pub const ALL: [ResumeWhy; 8] = [
+        ResumeWhy::None,
+        ResumeWhy::NoRecord,
+        ResumeWhy::NoSession,
+        ResumeWhy::LastTryFailed,
+        ResumeWhy::CliDiffers,
+        ResumeWhy::ClisUnread,
+        ResumeWhy::CliCannotResume,
+        ResumeWhy::SessionInUse,
+    ];
+
+    fn parse(s: &str) -> Option<ResumeWhy> {
+        Self::ALL.into_iter().find(|v| v.name() == s)
+    }
+}
+
+/// What the core says of the supervisor a group last had, and whether a
+/// start goes on with its session (`ControlRoom.zig`, `SupervisorOut`'s
+/// `cli`, `last` and `resume`). What the right side makes of it is
+/// `scene::last_supervisor_said`, `scene::resume_note` and `scene::build_start`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupervisorLast {
+    /// The CLI the default role is started in.
+    pub cli: Option<String>,
+    /// The role and the CLI the last supervisor was, and when it was last
+    /// heard from (the real clock). Each `None` when nobody wrote it down.
+    pub role: Option<String>,
+    pub last_cli: Option<String>,
+    pub heard_ms: Option<u64>,
+    /// Whether a start goes on with its session. A host offers that on
+    /// this and on nothing else, and says `why` when it is no.
+    pub can_resume: bool,
+    pub why: ResumeWhy,
+    /// The directory the core names for the start (`cwd`) is where that
+    /// supervisor last worked (`cwd_from: last_supervisor`), and not
+    /// somewhere worked out another way.
+    pub cwd_is_last: bool,
+    /// What the two CLIs are called to a person, as the core says
+    /// (`cli_label`): the one a start uses, and the one the last supervisor
+    /// was. `None` when the core has no name for it, and then the key is
+    /// what is written.
+    pub cli_label: Option<String>,
+    pub last_cli_label: Option<String>,
 }
 
 /// What the core says about a group's supervisor and what starting one
@@ -217,6 +309,9 @@ pub struct SupervisorStart {
     pub role: Option<String>,
     /// Where it is started unless the person picks elsewhere.
     pub cwd: String,
+    /// The last supervisor and whether its session is gone on with.
+    /// `None` for a snapshot from before the core said it.
+    pub last: Option<SupervisorLast>,
 }
 
 /// A role a supervisor can be started in.
@@ -283,6 +378,71 @@ impl Pane {
     }
 }
 
+/// The glyph at the right end of a pane's title: the five a row draws, and
+/// `Held`, which only a title does (`ControlRoom.zig`, `Bar`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarShown {
+    NeedsYou,
+    Trouble,
+    DoneUnseen,
+    Working,
+    None,
+    /// The person is holding the terminal, and nobody is waiting on it.
+    Held,
+}
+
+impl BarShown {
+    pub const ALL: [BarShown; 6] =
+        [BarShown::NeedsYou, BarShown::Trouble, BarShown::DoneUnseen, BarShown::Working, BarShown::None, BarShown::Held];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BarShown::Held => "held",
+            BarShown::NeedsYou => Shown::NeedsYou.name(),
+            BarShown::Trouble => Shown::Trouble.name(),
+            BarShown::DoneUnseen => Shown::DoneUnseen.name(),
+            BarShown::Working => Shown::Working.name(),
+            BarShown::None => Shown::None.name(),
+        }
+    }
+
+    fn parse(s: &str) -> Option<BarShown> {
+        BarShown::ALL.into_iter().find(|v| v.name() == s)
+    }
+
+    /// The same glyph, for a status that is not a pane's.
+    pub fn of(status: Shown) -> BarShown {
+        match status {
+            Shown::NeedsYou => BarShown::NeedsYou,
+            Shown::Trouble => BarShown::Trouble,
+            Shown::DoneUnseen => BarShown::DoneUnseen,
+            Shown::Working => BarShown::Working,
+            Shown::None => BarShown::None,
+        }
+    }
+
+    /// The status glyph this is; none for `Held`, which is not one of them.
+    pub fn status(self) -> Option<Shown> {
+        match self {
+            BarShown::NeedsYou => Some(Shown::NeedsYou),
+            BarShown::Trouble => Some(Shown::Trouble),
+            BarShown::DoneUnseen => Some(Shown::DoneUnseen),
+            BarShown::Working => Some(Shown::Working),
+            BarShown::None => Some(Shown::None),
+            BarShown::Held => None,
+        }
+    }
+}
+
+/// What the right end of a pane's title draws, as the core worked it out.
+/// **A host draws this pair and makes none of its own** out of the status
+/// and whether the terminal is held: which of them wins is the core's rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bar {
+    pub shown: BarShown,
+    pub text: String,
+}
+
 /// One open terminal, as much of it as its pane's frame shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Terminal {
@@ -294,6 +454,55 @@ pub struct Terminal {
     /// None in a snapshot from before the core said it; such a terminal is
     /// drawn as an ordinary one.
     pub pane: Option<Pane>,
+    /// None in a snapshot from before the core said it; the title then
+    /// says the terminal's status, as it did before.
+    pub bar: Option<Bar>,
+    /// Who is working in it. None in a snapshot from before the core said
+    /// it. Read and carried; nothing here draws it.
+    pub who: Option<Who>,
+}
+
+/// Which of the core's three answers to "who is in this terminal"
+/// (`ControlRoom.zig`, `WhoOut`). `Unknown` is not `None`: the core could
+/// not tell, which is not nobody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhoIs {
+    Unknown,
+    None,
+    Agent,
+}
+
+impl WhoIs {
+    pub fn name(self) -> &'static str {
+        match self {
+            WhoIs::Unknown => "unknown",
+            WhoIs::None => "none",
+            WhoIs::Agent => "agent",
+        }
+    }
+
+    /// Every answer the core gives. A word that is none of these is an
+    /// error, like a glyph this build does not know.
+    pub const ALL: [WhoIs; 3] = [WhoIs::Unknown, WhoIs::None, WhoIs::Agent];
+
+    fn parse(s: &str) -> Option<WhoIs> {
+        Self::ALL.into_iter().find(|v| v.name() == s)
+    }
+}
+
+/// Who is working in a terminal: what a host writes into a project's pane.
+/// `role`, `cli` and `session` are the core's words, kept as it wrote them
+/// -- for an agent an empty string is that part not known, and for the
+/// other two all three are `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Who {
+    /// Which of the three: the snapshot's `who.is`.
+    pub is: WhoIs,
+    pub role: Option<String>,
+    pub cli: Option<String>,
+    pub session: Option<String>,
+    /// The terminal whose agent opened this one, in this run.
+    pub opened_by: Option<String>,
 }
 
 /// One window tab and the one glyph it carries.
@@ -312,6 +521,69 @@ pub struct Pulse {
     pub group: Option<String>,
 }
 
+/// One of the list's two headings, as the core writes it: how many rows
+/// are under it, whether every one of them is a group, and which form of
+/// the number the sentence takes. Nothing here is worked out from `count`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Header {
+    pub count: u64,
+    pub of: HeaderOf,
+    pub number: HeaderNumber,
+}
+
+/// What the rows under a heading are called.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderOf {
+    /// Every one is a group.
+    Groups,
+    /// Some are terminals in no group: the heading does not say "group".
+    Rows,
+}
+
+impl HeaderOf {
+    pub fn parse(s: &str) -> Option<HeaderOf> {
+        Some(match s {
+            "groups" => HeaderOf::Groups,
+            "rows" => HeaderOf::Rows,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HeaderOf::Groups => "groups",
+            HeaderOf::Rows => "rows",
+        }
+    }
+}
+
+/// Which form of the number a heading's sentence takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderNumber {
+    None,
+    One,
+    Other,
+}
+
+impl HeaderNumber {
+    pub fn parse(s: &str) -> Option<HeaderNumber> {
+        Some(match s {
+            "none" => HeaderNumber::None,
+            "one" => HeaderNumber::One,
+            "other" => HeaderNumber::Other,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HeaderNumber::None => "none",
+            HeaderNumber::One => "one",
+            HeaderNumber::Other => "other",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     pub rev: u64,
@@ -321,6 +593,12 @@ pub struct Snapshot {
     /// Rows waiting: "N groups are waiting for you".
     pub groups_needing_me: u64,
     pub groups_other: u64,
+    /// The first heading, as the core writes it: the rows waiting, the
+    /// terminals in no group among them. None in a snapshot from a core
+    /// that does not say; the heading is then the groups' count.
+    pub header_waiting: Option<Header>,
+    /// The second heading, by the same rule.
+    pub header_quiet: Option<Header>,
     /// The group to start on when the control room opens with nothing
     /// selected: the core's choice of first and of which have an agent.
     pub open_on: Option<String>,
@@ -336,6 +614,9 @@ pub struct Snapshot {
     /// Every open terminal, for the frame its pane wears. Empty in a
     /// snapshot that lists none.
     pub terminals: Vec<Terminal>,
+    /// The terminals that are in no group and have a row of their own, in
+    /// the core's order (`lone`). Empty in a snapshot that lists none.
+    pub ungrouped: Vec<crate::lone::Lone>,
     /// The roles a supervisor can be started in, in the core's order.
     /// Empty in a snapshot from before one could be started here.
     pub supervisor_roles: Vec<SupervisorRole>,
@@ -438,6 +719,30 @@ fn group(v: &Value, path: &str) -> Res<Group> {
                 failed: StartFailure::parse(&failed).ok_or(DecodeError::UnknownValue(format!("{sp}.failed={failed}")))?,
                 role: opt_text(s, &sp, "role")?,
                 cwd: text(s, &sp, "cwd")?,
+                // All of it or none: a core that says `resume` says the
+                // other two with it.
+                last: match (s.get("last"), s.get("resume")) {
+                    (Some(last), Some(resume)) => {
+                        let lp = format!("{sp}.last");
+                        let rp = format!("{sp}.resume");
+                        let why = text(resume, &rp, "why")?;
+                        Some(SupervisorLast {
+                            cli: opt_text(s, &sp, "cli")?,
+                            role: opt_text(last, &lp, "role")?,
+                            last_cli: opt_text(last, &lp, "cli")?,
+                            heard_ms: opt_int(last, &lp, "heard_ms")?,
+                            can_resume: boolean(resume, &rp, "can")?,
+                            why: ResumeWhy::parse(&why).ok_or(DecodeError::UnknownValue(format!("{rp}.why={why}")))?,
+                            cwd_is_last: opt_text(s, &sp, "cwd_from")?.as_deref() == Some("last_supervisor"),
+                            // Newer than the rest: a core from before it
+                            // gave names says none, and that is no name.
+                            cli_label: if s.get("cli_label").is_some() { opt_text(s, &sp, "cli_label")? } else { None },
+                            last_cli_label: if last.get("cli_label").is_some() { opt_text(last, &lp, "cli_label")? } else { None },
+                        })
+                    }
+                    (None, None) => None,
+                    _ => return Err(DecodeError::Field(format!("{sp}.resume"))),
+                },
             })
         }
     };
@@ -468,6 +773,20 @@ fn group(v: &Value, path: &str) -> Res<Group> {
         event_ms: opt_int(attention, &at, "event_ms")?,
         supervisor,
     })
+}
+
+/// A heading the core wrote, or none where the snapshot has none. One that
+/// is there and says a word this build does not know is not read at all:
+/// a heading written from a guess would be a wrong number said plainly.
+fn header(v: &Value, key: &str) -> Res<Option<Header>> {
+    let Some(h) = v.get(key) else { return Ok(None) };
+    let of = text(h, key, "of")?;
+    let number = text(h, key, "number")?;
+    Ok(Some(Header {
+        count: int(h, key, "count")?,
+        of: HeaderOf::parse(&of).ok_or(DecodeError::UnknownValue(format!("{key}.of={of}")))?,
+        number: HeaderNumber::parse(&number).ok_or(DecodeError::UnknownValue(format!("{key}.number={number}")))?,
+    }))
 }
 
 pub fn decode(json_text: &str) -> Res<Snapshot> {
@@ -515,13 +834,46 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
                     Some(Pane::parse(&name).ok_or(DecodeError::UnknownValue(format!("{path}.pane={name}")))?)
                 }
             };
+            let bar = match t.get("bar") {
+                None => None,
+                Some(b) => {
+                    let at = format!("{path}.bar");
+                    let name = text(b, &at, "shown")?;
+                    Some(Bar {
+                        shown: BarShown::parse(&name).ok_or(DecodeError::UnknownValue(format!("{at}.shown={name}")))?,
+                        text: text(b, &at, "text")?,
+                    })
+                }
+            };
             terminals.push(Terminal {
                 id: text(t, &path, "id")?,
                 title: text(t, &path, "title")?,
                 shown: Shown::parse(&shown).ok_or(DecodeError::UnknownShown(shown))?,
                 text: text(t, &path, "text")?,
                 pane,
+                bar,
+                who: match t.get("who") {
+                    None => None,
+                    Some(w) => {
+                        let at = format!("{path}.who");
+                        let is = text(w, &at, "is")?;
+                        Some(Who {
+                            is: WhoIs::parse(&is).ok_or(DecodeError::UnknownValue(format!("{at}.is={is}")))?,
+                            role: opt_text(w, &at, "role")?,
+                            cli: opt_text(w, &at, "cli")?,
+                            session: opt_text(w, &at, "session")?,
+                            opened_by: opt_text(w, &at, "opened_by")?,
+                        })
+                    }
+                },
             });
+        }
+    }
+
+    let mut ungrouped = Vec::new();
+    if v.get("ungrouped").is_some() {
+        for (i, one) in list(&v, root, "ungrouped")?.iter().enumerate() {
+            ungrouped.push(crate::lone::lone(one, &format!("ungrouped[{i}]"))?);
         }
     }
 
@@ -543,6 +895,8 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
         needs_me: int(&v, root, "needs_me")?,
         groups_needing_me: int(&v, root, "groups_needing_me")?,
         groups_other: int(&v, root, "groups_other")?,
+        header_waiting: header(&v, "header_waiting")?,
+        header_quiet: header(&v, "header_quiet")?,
         open_on: opt_text(&v, root, "open_on")?,
         groups,
         tabs,
@@ -552,6 +906,7 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
             Some(q) => Some(crate::quota::decode(q, "quota")?),
         },
         terminals,
+        ungrouped,
         supervisor_roles,
         choose_supervisor_role,
     })

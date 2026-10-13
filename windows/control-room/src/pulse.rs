@@ -38,6 +38,18 @@ pub fn pulsing<'a>(
     })
 }
 
+/// The row of the list that breathes, by the row's identity: a group's
+/// name, or the row of a terminal that is in no group (`lone::row_id`).
+/// The one that breathes is the first the core lists that is not being
+/// looked at; it is a terminal's own row when that one is in no group.
+pub fn pulsing_row_id(pulses: &[Pulse], window: Option<&str>, showing_tab: Option<&str>) -> Option<String> {
+    let first = pulsing(pulses, window, showing_tab, Scope::List)?;
+    Some(match &first.group {
+        Some(group) => group.clone(),
+        None => crate::lone::row_id(&first.terminal),
+    })
+}
+
 /// The row of the list that breathes, by its group's name.
 pub fn pulsing_row<'a>(pulses: &'a [Pulse], window: Option<&str>, showing_tab: Option<&str>) -> Option<&'a str> {
     pulsing(pulses, window, showing_tab, Scope::List)?.group.as_deref()

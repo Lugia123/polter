@@ -207,20 +207,36 @@ enum ControlRoomRules {
         case split
         /// Not done, and the person who pressed the key hears so.
         case refuseAloud
-        /// Not done; whoever asked through the core is answered by the
-        /// core, which opens a tab instead and says why.
-        case refuseToTheCore
     }
 
-    /// A terminal the control room has borrowed is not split: the new pane
-    /// would open in its own tab, which is behind the control room, where
-    /// the person who pressed the key cannot see it. `lent` is whether the
-    /// control room has it; `answerWanted` is whether the request came with
-    /// somewhere to write the answer (an agent's, through the core) rather
-    /// than from a key.
+    /// `lent` is whether the control room has borrowed the terminal;
+    /// `answerWanted` is whether the request came with somewhere to write
+    /// the answer (an agent's, through the core) rather than from a key.
+    ///
+    /// **A key pressed on a borrowed terminal is refused**: the new pane
+    /// would open in the terminal's own tab, behind the control room,
+    /// where the person who pressed it cannot see it.
+    ///
+    /// **An agent's request is carried out.** The terminal never left its
+    /// tab's split tree -- only its view is on the control room's right --
+    /// so the split is made there, in its own tab, as it would have been.
+    /// It used to be refused too, and the core then opened a tab instead:
+    /// a supervisor the person was watching in the control room opened
+    /// every worker as a new tab, three in a row on a real window (the
+    /// user, 2026-10-13: "it always opens a new tab"). An agent does not
+    /// need to see the pane it asked for, and the person finds it where
+    /// the supervisor's other panes are.
     static func newSplit(lent: Bool, answerWanted: Bool) -> NewSplit {
         guard lent else { return .split }
-        return answerWanted ? .refuseToTheCore : .refuseAloud
+        return answerWanted ? .split : .refuseAloud
+    }
+
+    /// Whether a new split takes the keyboard in its window. Not when the
+    /// terminal it was split from is in the control room: that window is
+    /// behind, and the terminal that would be told it lost the keyboard is
+    /// the one the person may be typing into on the control room's right.
+    static func newSplitTakesKeyboard(fromLent lent: Bool) -> Bool {
+        !lent
     }
 
     /// What becomes of "new tab" asked of a terminal whose window may not
@@ -314,6 +330,74 @@ enum ControlRoomRules {
         }
         if controlRoomInFront, tabsBesideControlRoom { return .behind(.controlRooms) }
         return anyTerminalWindow ? .inFront(of: .frontmost) : .ownWindow
+    }
+
+    // MARK: The Project menu
+
+    /// The three items of the Project menu.
+    enum ProjectItem: Equatable, CaseIterable {
+        case saveAs
+        case load
+        case manage
+    }
+
+    /// Whether an item of the Project menu can be chosen while the control
+    /// room is the window with the keyboard.
+    ///
+    /// All three were greyed there, and for no reason anybody wrote down:
+    /// the items go to whoever in the window answers to them, and in the
+    /// control room's window nobody did (the user, 2026-10-13: "I cannot
+    /// load a project"). This is the reason, written down.
+    ///
+    /// Loading and managing need no terminal: a project opens as a new tab
+    /// (`newTab` says where), and the list of projects is the
+    /// application's. Saving saves a tab, and the control room is not one
+    /// that can be saved -- so it saves the tab of the terminal it has
+    /// borrowed, and with none borrowed, or one whose tab is gone, there is
+    /// nothing to save.
+    static func projectItemOffered(_ item: ProjectItem, lentTerminalHasTab: Bool) -> Bool {
+        switch item {
+        case .load, .manage: return true
+        case .saveAs: return lentTerminalHasTab
+        }
+    }
+
+    /// Where a project the person loaded from the control room's menu
+    /// opens, and that it comes in front.
+    ///
+    /// The place is `newTab`'s, asked with nothing as the asker: among the
+    /// terminal tabs the control room sits with when there are any, else in
+    /// the terminal window used last, else in a window of its own. **It is
+    /// never left behind.** "Behind" is for a tab an agent asked for while
+    /// the person is looking at the control room; this one the person
+    /// chose themselves, and a project that opened where they cannot see
+    /// it reads as a menu item that did nothing (the user, 2026-10-13).
+    static func loadedProjectTab(tabsBesideControlRoom: Bool, anyTerminalWindow: Bool) -> NewTab {
+        let place = newTab(
+            asker: nil,
+            // It was chosen from the control room's own menu.
+            controlRoomInFront: true,
+            tabsBesideControlRoom: tabsBesideControlRoom,
+            anyTerminalWindow: anyTerminalWindow)
+        if case let .behind(home) = place { return .inFront(of: home) }
+        return place
+    }
+
+    /// Whether opening a tab brings the application in front of whatever
+    /// the person is using.
+    ///
+    /// A tab the person asked for -- a key, a menu item, the Dock's menu --
+    /// does, as it always has. One an agent asked for does not: with the
+    /// application behind another, the tab opens where it would have and
+    /// the application stays behind. It used to come forward every time,
+    /// taking the keyboard from whatever the person was typing into, each
+    /// time an agent opened a terminal for itself.
+    ///
+    /// `answerWanted` is whether the request came with somewhere to write
+    /// an answer: an agent's does and a key press's does not
+    /// (`apprt.action.NewTab.result`).
+    static func newTabActivates(answerWanted: Bool, appIsActive: Bool) -> Bool {
+        !answerWanted || appIsActive
     }
 
     /// What is selected once a snapshot has arrived, and whose choice it

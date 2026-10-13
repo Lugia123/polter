@@ -624,6 +624,10 @@ class AppDelegate: NSObject,
         // A terminal the control room has borrowed goes back to its tab.
         ControlRoomController.shared?.applicationWillTerminate()
 
+        // Quitting closes no window, so nothing else writes a bound tab's
+        // last change.
+        TerminalController.saveBoundProjectsBeforeQuit()
+
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be
         // more selective and only remove surface-targeted notifications.
@@ -988,7 +992,12 @@ class AppDelegate: NSObject,
         // a regular terminal controller.
         guard parent.windowController is TerminalController else { return }
 
-        _ = TerminalController.newTab(ghostty, from: parent, withBaseConfig: config, inFront: inFront)
+        // An agent's tab does not pull the application in front of
+        // whatever the person is using; theirs does.
+        let answerWanted = notification.userInfo?[Ghostty.Notification.NewTabAnswerWantedKey] as? Bool ?? false
+        let activates = ControlRoomRules.newTabActivates(answerWanted: answerWanted, appIsActive: NSApp.isActive)
+        _ = TerminalController.newTab(
+            ghostty, from: parent, withBaseConfig: config, inFront: inFront, activates: activates)
     }
 
     private func setDockBadge() {

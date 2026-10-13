@@ -1,14 +1,21 @@
-//! A user's "save this tab as a project": the whole split tree of one tab,
-//! each pane's directory and title, and which command-history handle
-//! belongs to which pane.
+//! Where this host keeps projects, and what it does with one on disk: a
+//! project is a set of tabs and the windows they sit in, each tab a split
+//! tree, each pane with its directory, title, command-history handle and
+//! who was working in it.
 //!
-//! **This mirrors `src/Project.zig`, byte-for-byte on the wire, and nothing
-//! else.** The file format, the field names, the strict-read rules and the
-//! `sanitizeFilename` behaviour below are copied from there because two
-//! independent JSON writers is how a project saved on one platform silently
-//! fails to load on the other -- see `windows_host_settings.json` in
-//! `src/poltergeist/testdata/` for a case this codebase already paid for
-//! once. Read `Project.zig`'s doc comment before changing either side.
+//! **What a project file says and the bytes it is written as are not here.**
+//! They are `polter-projectfile` (`windows/projectfile`), which mirrors
+//! `src/Project.zig` byte for byte and is checked against the files all
+//! three implementations share (`test/project-format/`) by a test that runs
+//! off Windows -- this crate's cannot. Read `Project.zig`'s module comment
+//! before changing the format. This file re-exports those types, so the
+//! rest of the host still says `project::Snapshot`.
+//!
+//! ⚠️ **The host still saves and opens one tab.** A project file can hold
+//! several windows of several tabs; what this host does with one is its
+//! first window's first tab (`Snapshot::first_tab`), and a save replaces
+//! that tab and keeps the rest (`Snapshot::replacing_first_tab`). Opening
+//! every window and tab is the work that comes after the format.
 //!
 //! **Why this is not in `polter-split-tree`.** That crate's whole reason to
 //! exist is that it knows nothing beyond the shape: no Win32, no libghostty,
@@ -45,63 +52,13 @@ use polter_split_tree::{Axis, Node, PaneId};
 // Types
 // ---------------------------------------------------------------------------
 
-/// A pane: one leaf of the *saved* tree. Not a `split_tree::Leaf` -- there is
-/// no such type; `split_tree::Node::Leaf` holds a bare `PaneId`, and a
-/// `PaneId` from a previous run means nothing (the host hands out fresh ones
-/// every launch, see `split_tree`'s own doc comment on `PaneId`). So a saved
-/// leaf holds what a `PaneId` would have pointed the host at, not the id
-/// itself.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SavedLeaf {
-    pub cwd: String,
-    pub title: String,
-    /// Opaque; see `Project.zig`'s `Leaf.history` doc comment. Never a path
-    /// to open directly -- bash/zsh keys give a filename under
-    /// `CommandHistory.defaultDir`, fish gives a `fish_history` session name.
-    pub history: String,
-    /// The pane's scrollback snapshot, as a name **relative to
-    /// `scrollback_dir`** of this project's file: `<ASCII digits>.snap`, or
-    /// empty for none. Never a path -- the directory is derived by whoever
-    /// reads the file, from the file's own path, so the three
-    /// implementations' disagreeing name sanitizers (issue #23) never meet
-    /// here. See `dev-docs/project-scrollback.md` §4.5.
-    pub scrollback: String,
-}
-
-/// One node of the saved tree: a pane, or a division of two more nodes.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SavedNode {
-    Leaf(SavedLeaf),
-    Split { axis: Axis, ratio: f64, left: Box<SavedNode>, right: Box<SavedNode> },
-}
-
-/// The whole saved tab, matching `Project.zig`'s `Snapshot`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Snapshot {
-    pub name: String,
-    pub saved_at: i64,
-    pub root: Option<SavedNode>,
-    /// The next scrollback snapshot number this project will hand out
-    /// (`next_scrollback` on the wire, shared with macOS). See `Allocator`.
-    ///
-    /// ⚠️ **Read and written back even by a build that does not use it.** A
-    /// writer that dropped a counter it did not understand would reset it,
-    /// the next save would hand out a number some closed pane still has a
-    /// file under, and a new pane would open with that pane's history.
-    pub next_scrollback: Option<u64>,
-}
-
-/// Matches `Project.zig`'s `ReadError`: never a half a tree.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ReadError {
-    /// No project by this name exists.
-    NotFound,
-    /// The file exists but is not a complete, well-formed project.
-    Corrupt,
-    /// The name has nothing left once sanitized (`sanitize_filename`), so no
-    /// file can be named after it. Matches `Project.zig`'s `InvalidName`.
-    InvalidName,
-}
+// Only what this host uses today. `Frame`, `Origin` and `Who` -- a window's
+// place and the agent in a pane -- are in the crate for whoever starts
+// recording them.
+pub use polter_projectfile::{
+    emit, is_scrollback_name, leaves, leaves_mut, parse_snapshot, to_shape, Agent, ReadError, SavedLeaf, SavedNode, Snapshot, Tab,
+    Window,
+};
 
 /// A project name that names no file: nothing is left once it is sanitized.
 /// Defined in `polter-projectname` with the rule that produces it.
@@ -161,39 +118,6 @@ pub fn path_for(dir: &Path, name: &str) -> Result<PathBuf, InvalidName> {
 /// and looked for in another, with nothing reporting it.
 pub fn scrollback_dir(project_file: &Path) -> PathBuf {
     polter_settings_shell::projects::scrollback_dir(project_file)
-}
-
-/// Whether `name` is a snapshot name this format writes: ASCII digits, then
-/// `.snap`, and nothing else.
-///
-/// **Checked on read, because the core deletes what it cannot decode.** A
-/// restored pane's snapshot is removed when it is missing, stale or corrupt,
-/// so a project file is -- through this one field -- a list of files the core
-/// may delete. `../../somewhere/else.snap` passes the core's own `.snap`
-/// check; it does not pass this one, and no separator or drive can.
-pub fn is_scrollback_name(name: &str) -> bool {
-    match name.strip_suffix(".snap") {
-        Some(digits) => !digits.is_empty() && digits.len() <= 20 && digits.bytes().all(|b| b.is_ascii_digit()),
-        None => false,
-    }
-}
-
-/// Every leaf of `node`, in the order `describe` and `layout::fresh` walk
-/// (left before right) -- the order a save numbers snapshots in, so the
-/// caller can pair each leaf with the surface it met at the same position.
-pub fn leaves_mut(node: &mut SavedNode) -> Vec<&mut SavedLeaf> {
-    let mut out = Vec::new();
-    fn walk<'a>(n: &'a mut SavedNode, out: &mut Vec<&'a mut SavedLeaf>) {
-        match n {
-            SavedNode::Leaf(l) => out.push(l),
-            SavedNode::Split { left, right, .. } => {
-                walk(left, out);
-                walk(right, out);
-            }
-        }
-    }
-    walk(node, &mut out);
-    out
 }
 
 /// Remove the snapshots in `dir` that this save did not name.
@@ -298,23 +222,6 @@ impl Allocator {
     }
 }
 
-/// Every snapshot name a saved tree refers to.
-pub fn scrollback_names(node: &SavedNode) -> Vec<String> {
-    let mut out = Vec::new();
-    fn walk(n: &SavedNode, out: &mut Vec<String>) {
-        match n {
-            SavedNode::Leaf(l) if !l.scrollback.is_empty() => out.push(l.scrollback.clone()),
-            SavedNode::Leaf(_) => {}
-            SavedNode::Split { left, right, .. } => {
-                walk(left, out);
-                walk(right, out);
-            }
-        }
-    }
-    walk(node, &mut out);
-    out
-}
-
 /// The rule that names a new project file (#838, #23). **It lives in
 /// `polter-projectname`, not here**, because this crate's tests cannot run
 /// off Windows (see `windows/Cargo.toml`) and the rule's test is the shared
@@ -322,142 +229,6 @@ pub fn scrollback_names(node: &SavedNode) -> Vec<String> {
 /// machine, so on the Mac the port is written on, breaking the rule turned
 /// nothing red.
 pub use polter_projectname::sanitize_filename;
-
-// ---------------------------------------------------------------------------
-// Wire format: SavedNode <-> JSON (matches Project.zig's writeJson/parseNode)
-// ---------------------------------------------------------------------------
-
-/// `Axis` as `Project.zig`'s `Direction` spells it: full words, not
-/// `layout.rs`'s `"h"`/`"v"`. **Do not reuse `layout::describe`'s mapping
-/// here** -- they are two different wire formats for two different features
-/// (the `poltergeist_layout` tool vs. this file), and the whole reason this
-/// comment exists is that conflating them is the trap the axis doc comment
-/// warns about, one level up: `Horizontal` is side-by-side (a vertical
-/// divider) either way, but the *strings* are not interchangeable.
-fn direction_str(axis: Axis) -> &'static str {
-    match axis {
-        Axis::Horizontal => "horizontal",
-        Axis::Vertical => "vertical",
-    }
-}
-
-fn direction_from_str(s: &str) -> Option<Axis> {
-    match s {
-        "horizontal" => Some(Axis::Horizontal),
-        "vertical" => Some(Axis::Vertical),
-        _ => None,
-    }
-}
-
-fn node_to_json(node: &SavedNode) -> serde_json::Value {
-    match node {
-        SavedNode::Leaf(leaf) => {
-            let mut obj = serde_json::Map::new();
-            obj.insert("kind".to_string(), serde_json::Value::String("leaf".to_string()));
-            // Omitted-when-empty, matching Project.zig's writeNode -- an
-            // absent field and an empty string read back the same way
-            // (`optionalStr(...) orelse ""`), so this is cosmetic, but
-            // matching it keeps a saved file the same shape on either
-            // platform for anyone diffing one by hand.
-            if !leaf.cwd.is_empty() {
-                obj.insert("cwd".to_string(), serde_json::Value::String(leaf.cwd.clone()));
-            }
-            if !leaf.title.is_empty() {
-                obj.insert("title".to_string(), serde_json::Value::String(leaf.title.clone()));
-            }
-            if !leaf.history.is_empty() {
-                obj.insert("history".to_string(), serde_json::Value::String(leaf.history.clone()));
-            }
-            if !leaf.scrollback.is_empty() {
-                obj.insert("scrollback".to_string(), serde_json::Value::String(leaf.scrollback.clone()));
-            }
-            serde_json::Value::Object(obj)
-        }
-        SavedNode::Split { axis, ratio, left, right } => serde_json::json!({
-            "kind": "split",
-            "direction": direction_str(*axis),
-            "ratio": ratio,
-            "left": node_to_json(left),
-            "right": node_to_json(right),
-        }),
-    }
-}
-
-fn json_to_node(v: &serde_json::Value) -> Result<SavedNode, ReadError> {
-    let obj = v.as_object().ok_or(ReadError::Corrupt)?;
-    let kind = obj.get("kind").and_then(|k| k.as_str()).ok_or(ReadError::Corrupt)?;
-
-    match kind {
-        "leaf" => Ok(SavedNode::Leaf(SavedLeaf {
-            cwd: opt_str(obj.get("cwd")),
-            title: opt_str(obj.get("title")),
-            history: opt_str(obj.get("history")),
-            // A name that is not one this format writes is dropped, not
-            // refused: the pane still opens, just without its scrollback,
-            // which is exactly what a missing snapshot gives. Refusing would
-            // cost the whole project for one field. See `is_scrollback_name`
-            // on why this is checked at all.
-            scrollback: Some(opt_str(obj.get("scrollback"))).filter(|s| is_scrollback_name(s)).unwrap_or_default(),
-        })),
-        "split" => {
-            let direction = obj
-                .get("direction")
-                .and_then(|d| d.as_str())
-                .and_then(direction_from_str)
-                .ok_or(ReadError::Corrupt)?;
-            let ratio = obj.get("ratio").and_then(|r| r.as_f64()).ok_or(ReadError::Corrupt)?;
-            // Both children required -- a split with only `left` is exactly
-            // the half-a-tree `Project.zig`'s reader refuses to hand back,
-            // so this does too, rather than producing a lopsided node.
-            let left = json_to_node(obj.get("left").ok_or(ReadError::Corrupt)?)?;
-            let right = json_to_node(obj.get("right").ok_or(ReadError::Corrupt)?)?;
-            Ok(SavedNode::Split { axis: direction, ratio, left: Box::new(left), right: Box::new(right) })
-        }
-        _ => Err(ReadError::Corrupt),
-    }
-}
-
-fn opt_str(v: Option<&serde_json::Value>) -> String {
-    match v {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        _ => String::new(),
-    }
-}
-
-/// Matches `Project.zig`'s `writeJson`.
-pub fn snapshot_to_json(snapshot: &Snapshot) -> serde_json::Value {
-    let mut obj = serde_json::Map::new();
-    obj.insert("name".to_string(), serde_json::Value::String(snapshot.name.clone()));
-    obj.insert("saved_at".to_string(), serde_json::json!(snapshot.saved_at));
-    if let Some(root) = &snapshot.root {
-        obj.insert("root".to_string(), node_to_json(root));
-    }
-    if let Some(n) = snapshot.next_scrollback {
-        obj.insert("next_scrollback".to_string(), serde_json::json!(n));
-    }
-    serde_json::Value::Object(obj)
-}
-
-/// Matches `Project.zig`'s `parse`. Never returns half a `Snapshot`: any
-/// structural problem is `Corrupt`, the same promise `Project.zig` makes.
-pub fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot, ReadError> {
-    let parsed: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| ReadError::Corrupt)?;
-    let obj = parsed.as_object().ok_or(ReadError::Corrupt)?;
-
-    let name = obj.get("name").and_then(|n| n.as_str()).ok_or(ReadError::Corrupt)?.to_string();
-    let saved_at = obj.get("saved_at").and_then(|s| s.as_i64()).ok_or(ReadError::Corrupt)?;
-    let root = match obj.get("root") {
-        Some(r) => Some(json_to_node(r)?),
-        None => None,
-    };
-
-    // Absent or not a whole number: `None`, and the allocator falls back on
-    // the numbers actually in use (`Allocator::new`), which is what it would
-    // do for a file written before the counter existed.
-    let next_scrollback = obj.get("next_scrollback").and_then(|n| n.as_u64());
-
-    Ok(Snapshot { name, saved_at, root, next_scrollback })
-}
 
 // ---------------------------------------------------------------------------
 // Disk I/O
@@ -493,63 +264,22 @@ pub use polter_settings_shell::projects::WriteKind;
 /// is not a new version of the project.
 pub fn write_file(path: &Path, snapshot: &Snapshot, kind: WriteKind) -> std::io::Result<()> {
     use polter_settings_shell::projects::{plan_for, write_keeping_previous};
-    let body = serde_json::to_string(&snapshot_to_json(snapshot))
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let body = emit(snapshot).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "a split's ratio or a window's frame is not a finite number")
+    })?;
     write_keeping_previous(path, body.as_bytes(), plan_for(kind, existing(path, snapshot)))
 }
 
-/// What a save of `new` into `path` finds there, as `plan_write` asks.
+/// What a save of `new` into `path` finds there, as `plan_write` asks. The
+/// comparison itself is `polter_projectfile::found_on_disk`, where it is
+/// tested; this only reads the file.
 fn existing(path: &Path, new: &Snapshot) -> polter_settings_shell::projects::Existing {
-    use polter_settings_shell::projects::{same_layout, Existing};
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Existing::Nothing,
-        Err(_) => return Existing::Unreadable,
-    };
-    match parse_snapshot(&bytes) {
-        Ok(old) => {
-            let (a, b) = (old.root.as_ref().map(to_shape), new.root.as_ref().map(to_shape));
-            Existing::Read {
-                layout_changed: !same_layout(a.as_ref(), b.as_ref()),
-                only_the_time_changed: old.name == new.name
-                    && old.root == new.root
-                    && old.next_scrollback == new.next_scrollback,
-            }
-        }
+    use polter_settings_shell::projects::Existing;
+    match std::fs::read(path) {
+        Ok(bytes) => polter_projectfile::found_on_disk(&bytes, new),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Existing::Nothing,
         Err(_) => Existing::Unreadable,
     }
-}
-
-/// The saved tree's shape, for the rules that need nothing else: the
-/// thumbnail and whether a save changes the layout.
-pub fn to_shape(node: &SavedNode) -> polter_settings_shell::projects::Shape {
-    use polter_settings_shell::projects::Shape;
-    match node {
-        SavedNode::Leaf(_) => Shape::Pane,
-        SavedNode::Split { axis, ratio, left, right } => Shape::Split {
-            side_by_side: *axis == Axis::Horizontal,
-            ratio: *ratio,
-            first: Box::new(to_shape(left)),
-            second: Box::new(to_shape(right)),
-        },
-    }
-}
-
-/// Every leaf, left before right, for the detail's directories and the
-/// thumbnail's labels (in the order `thumbnail` gives its boxes).
-pub fn leaves(node: &SavedNode) -> Vec<&SavedLeaf> {
-    let mut out = Vec::new();
-    fn walk<'a>(n: &'a SavedNode, out: &mut Vec<&'a SavedLeaf>) {
-        match n {
-            SavedNode::Leaf(l) => out.push(l),
-            SavedNode::Split { left, right, .. } => {
-                walk(left, out);
-                walk(right, out);
-            }
-        }
-    }
-    walk(node, &mut out);
-    out
 }
 
 /// Give the project in `file` -- and its previous generation, when it has
@@ -653,7 +383,7 @@ pub fn list(dir: &Path) -> Listing {
         };
         match parse_snapshot(&bytes) {
             Ok(snapshot) => out.entries.push(Entry { name: snapshot.name, saved_at: snapshot.saved_at, path }),
-            Err(e) => out.skipped.push((path, format!("{e:?}"))),
+            Err(e) => out.skipped.push((path, e.to_string())),
         }
     }
     out
@@ -721,7 +451,7 @@ pub fn to_layout_shape(node: &SavedNode, snaps: &Path) -> serde_json::Value {
 
 /// The absolute path of `leaf`'s snapshot under `snaps`, as UTF-8 (what the
 /// C API takes), or `None` when it has none -- or when its name is not one
-/// this format writes, which `json_to_node` already drops but a `SavedLeaf`
+/// this format writes, which reading a file already drops but a `SavedLeaf`
 /// built some other way might still carry. A path that is not valid Unicode
 /// cannot be handed over as UTF-8 and is `None` too: the pane opens without
 /// scrollback rather than with a path the core would misread.
@@ -773,21 +503,27 @@ pub fn write_fixture(path: &str) -> bool {
         title: "a \"quoted\" title, a backslash \\, and 中文".to_string(),
         history: "a1b2c3.history".to_string(),
         scrollback: "1.snap".to_string(),
+        agent: Agent::None,
     });
-    let left_leaf = SavedNode::Leaf(SavedLeaf::default());
+    let left_leaf = SavedNode::Leaf(SavedLeaf::plain("", Agent::Unknown));
     let root = SavedNode::Split {
         axis: Axis::Vertical,
         ratio: 0.4,
         left: Box::new(left_leaf),
         right: Box::new(right_leaf),
     };
-    let snapshot = Snapshot { name: "fixture project".to_string(), saved_at: 1_757_000_000, root: Some(root), next_scrollback: None };
-
-    let body = match serde_json::to_string_pretty(&snapshot_to_json(&snapshot)) {
-        Ok(b) => b,
-        Err(_) => return false,
+    let snapshot = Snapshot {
+        name: "fixture project".to_string(),
+        saved_at: 1_757_000_000,
+        group: None,
+        windows: vec![Window { frame: None, front: 0, tabs: vec![Tab { root }] }],
+        next_scrollback: None,
     };
-    std::fs::write(path, body.as_bytes()).is_ok()
+
+    match emit(&snapshot) {
+        Ok(body) => std::fs::write(path, body.as_bytes()).is_ok(),
+        Err(_) => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -893,12 +629,12 @@ mod tests {
             );
         }
 
-        let snap = Snapshot {
-            name: name.clone(),
-            saved_at: 5,
-            root: Some(SavedNode::Leaf(SavedLeaf { cwd: "C:\\w".to_string(), scrollback: "0.snap".to_string(), ..Default::default() })),
-            next_scrollback: Some(1),
-        };
+        let snap = one_tab(
+            &name,
+            5,
+            Some(SavedNode::Leaf(SavedLeaf { scrollback: "0.snap".to_string(), ..SavedLeaf::plain("C:\\w", Agent::None) })),
+            Some(1),
+        );
         write(&dir, &snap, WriteKind::Save).expect("write past MAX_PATH");
         assert!(file.exists(), "{file:?} was not written");
         assert_eq!(read_file(&file), Ok(snap.clone()));
@@ -927,7 +663,7 @@ mod tests {
     fn a_name_with_nothing_left_cannot_be_saved() {
         assert_eq!(sanitize_filename(""), Err(InvalidName));
         let dir = std::env::temp_dir().join(format!("polter-project-rs-empty-{}", std::process::id()));
-        let snap = Snapshot { name: String::new(), saved_at: 1, root: None, next_scrollback: None };
+        let snap = one_tab("", 1, None, None);
         assert!(write(&dir, &snap, WriteKind::Save).is_err());
         assert!(!dir.join("project").exists());
         let _ = std::fs::remove_dir_all(&dir);
@@ -941,10 +677,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-legacy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let snap = Snapshot { name: "写".to_string(), saved_at: 7, root: None, next_scrollback: None };
+        let snap = one_tab("写", 7, None, None);
         // The old rule's filename for "写": each UTF-8 byte as its own char.
         let legacy = dir.join("\u{e5}\u{86}\u{99}.json");
-        std::fs::write(&legacy, serde_json::to_vec(&snapshot_to_json(&snap)).unwrap()).unwrap();
+        std::fs::write(&legacy, emit(&snap).unwrap()).unwrap();
 
         let listing = list(&dir);
         assert_eq!(listing.entries.len(), 1);
@@ -955,14 +691,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn direction_strings_match_project_zig_not_layout_rs() {
-        assert_eq!(direction_str(Axis::Horizontal), "horizontal");
-        assert_eq!(direction_str(Axis::Vertical), "vertical");
-        assert_eq!(direction_from_str("horizontal"), Some(Axis::Horizontal));
-        assert_eq!(direction_from_str("vertical"), Some(Axis::Vertical));
-        assert_eq!(direction_from_str("h"), None);
-        assert_eq!(direction_from_str("v"), None);
+    /// A project of one window with one tab -- or, with no tree, of nothing.
+    fn one_tab(name: &str, saved_at: i64, root: Option<SavedNode>, next_scrollback: Option<u64>) -> Snapshot {
+        Snapshot {
+            name: name.to_string(),
+            saved_at,
+            group: None,
+            windows: root.map(|root| Window { frame: None, front: 0, tabs: vec![Tab { root }] }).into_iter().collect(),
+            next_scrollback,
+        }
     }
 
     fn sample_tree() -> SavedNode {
@@ -971,8 +708,9 @@ mod tests {
             title: "retry.py".to_string(),
             history: "a1b2c3.history".to_string(),
             scrollback: "0.snap".to_string(),
+            agent: Agent::None,
         });
-        let right = SavedNode::Leaf(SavedLeaf { cwd: "/work/repo/tests".to_string(), ..Default::default() });
+        let right = SavedNode::Leaf(SavedLeaf::plain("/work/repo/tests", Agent::None));
         SavedNode::Split { axis: Axis::Horizontal, ratio: 0.62, left: Box::new(left), right: Box::new(right) }
     }
 
@@ -981,7 +719,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let snapshot = Snapshot { name: "写 retry 装饰器".to_string(), saved_at: 1_757_000_000, root: Some(sample_tree()), next_scrollback: None };
+        let snapshot = one_tab("写 retry 装饰器", 1_757_000_000, Some(sample_tree()), None);
         write(&dir, &snapshot, WriteKind::Save).expect("write should succeed");
 
         let back = read(&dir, "写 retry 装饰器").expect("read should succeed");
@@ -995,9 +733,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-blank-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        write(&dir, &Snapshot { name: "blank".to_string(), saved_at: 1, root: None, next_scrollback: None }, WriteKind::Save).unwrap();
+        write(&dir, &one_tab("blank", 1, None, None), WriteKind::Save).unwrap();
         let back = read(&dir, "blank").unwrap();
-        assert!(back.root.is_none());
+        assert!(back.first_tab().is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1007,7 +745,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-delete-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        write(&dir, &Snapshot { name: "gone soon".to_string(), saved_at: 5, root: None, next_scrollback: None }, WriteKind::Save).unwrap();
+        write(&dir, &one_tab("gone soon", 5, None, None), WriteKind::Save).unwrap();
         delete(&dir, "gone soon").unwrap();
         assert_eq!(read(&dir, "gone soon"), Err(ReadError::NotFound));
 
@@ -1030,8 +768,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-list-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        write(&dir, &Snapshot { name: "alpha".to_string(), saved_at: 10, root: None, next_scrollback: None }, WriteKind::Save).unwrap();
-        write(&dir, &Snapshot { name: "beta".to_string(), saved_at: 20, root: None, next_scrollback: None }, WriteKind::Save).unwrap();
+        write(&dir, &one_tab("alpha", 10, None, None), WriteKind::Save).unwrap();
+        write(&dir, &one_tab("beta", 20, None, None), WriteKind::Save).unwrap();
         std::fs::write(dir.join("garbage.json"), b"{not json").unwrap();
 
         let listing = list(&dir);
@@ -1071,141 +809,10 @@ mod tests {
         assert_eq!(read(&dir, "whatever"), Err(ReadError::NotFound));
     }
 
-    #[test]
-    fn a_split_missing_its_right_child_is_corrupt_not_a_lopsided_tree() {
-        let bytes = br#"{"name":"lopsided","saved_at":4,"root":{"kind":"split",
-            "direction":"horizontal","ratio":0.5,
-            "left":{"kind":"leaf","cwd":"/a"}}}"#;
-        assert_eq!(parse_snapshot(bytes), Err(ReadError::Corrupt));
-    }
-
-    #[test]
-    fn truncated_json_is_corrupt() {
-        let full = serde_json::to_vec(&snapshot_to_json(&Snapshot {
-            name: "cutoff".to_string(),
-            saved_at: 3,
-            root: Some(sample_tree()),
-            next_scrollback: None,
-        }))
-        .unwrap();
-        let half = &full[..full.len() / 2];
-        assert_eq!(parse_snapshot(half), Err(ReadError::Corrupt));
-    }
-
-    /// **The floor under every field this format grows.** A file written by a
-    /// newer build -- one that knows a field this one does not, such as the
-    /// scrollback snapshot a pane may carry -- must still open here, with
-    /// every field this build does know read correctly. `json_to_node` and
-    /// `parse_snapshot` look fields up by name and ignore the rest, so today
-    /// this holds; this test is what keeps a stricter reader from breaking
-    /// every project saved by the next version.
-    #[test]
-    fn a_file_with_fields_this_build_does_not_know_still_reads() {
-        let bytes = br#"{"name":"from the future","saved_at":9,"format":2,
-            "root":{"kind":"split","direction":"vertical","ratio":0.25,"weight":3,
-              "left":{"kind":"leaf","cwd":"/a","title":"t","history":"h.history",
-                      "scrollback":"0.snap","colour":{"r":1}},
-              "right":{"kind":"leaf","unheard_of":[1,2,3]}}}"#;
-        let want = Snapshot {
-            name: "from the future".to_string(),
-            saved_at: 9,
-            root: Some(SavedNode::Split {
-                axis: Axis::Vertical,
-                ratio: 0.25,
-                left: Box::new(SavedNode::Leaf(SavedLeaf {
-                    cwd: "/a".to_string(),
-                    title: "t".to_string(),
-                    history: "h.history".to_string(),
-                    scrollback: "0.snap".to_string(),
-                })),
-                right: Box::new(SavedNode::Leaf(SavedLeaf::default())),
-            }),
-            next_scrollback: None,
-        };
-        assert_eq!(parse_snapshot(bytes), Ok(want));
-    }
-
-    /// **Every field of a leaf and of the snapshot reaches the file**, and
-    /// the list of fields checked here is the struct's own, not one kept by
-    /// hand beside it.
-    ///
-    /// ⚠️ The destructuring patterns below have no `..` on purpose. Adding a
-    /// field to `SavedLeaf` or `Snapshot` -- as `scrollback` was -- is a
-    /// compile error here until that field is
-    /// given its JSON key in `expect`. A writer that forgets the new field is
-    /// then a red assertion that names the key, instead of a project that
-    /// silently loses it on the next save. (This file is one of three
-    /// implementations of the format -- `src/Project.zig`, this one, and the
-    /// mac one -- and this test only speaks for this one.)
-    #[test]
-    fn every_field_is_written() {
-        let leaf = SavedLeaf {
-            cwd: "C:\\work".to_string(),
-            title: "a title".to_string(),
-            history: "a1b2.history".to_string(),
-            scrollback: "7.snap".to_string(),
-        };
-        let SavedLeaf { cwd, title, history, scrollback } = &leaf;
-        let expect: [(&str, &str); 4] =
-            [("cwd", cwd), ("title", title), ("history", history), ("scrollback", scrollback)];
-
-        let snapshot = Snapshot {
-            name: "all fields".to_string(),
-            saved_at: 42,
-            root: Some(SavedNode::Leaf(leaf.clone())),
-            next_scrollback: Some(8),
-        };
-        let Snapshot { name, saved_at, root: _, next_scrollback } = &snapshot;
-        let json = snapshot_to_json(&snapshot);
-        assert_eq!(json.get("next_scrollback").and_then(|v| v.as_u64()), *next_scrollback, "`next_scrollback` was not written");
-
-        assert_eq!(json.get("name").and_then(|v| v.as_str()), Some(name.as_str()), "`name` was not written");
-        assert_eq!(json.get("saved_at").and_then(|v| v.as_i64()), Some(*saved_at), "`saved_at` was not written");
-        let node = json.get("root").and_then(|v| v.as_object()).expect("`root` was not written");
-        assert_eq!(node.get("kind").and_then(|v| v.as_str()), Some("leaf"));
-        for (key, value) in expect {
-            assert_eq!(node.get(key).and_then(|v| v.as_str()), Some(value), "leaf field `{key}` was not written");
-        }
-        // `kind` plus one key per field: nothing written that the reader
-        // does not know about.
-        assert_eq!(node.len(), expect.len() + 1, "leaf has keys this test does not name: {node:?}");
-    }
-
-    #[test]
-    fn a_scrollback_name_is_only_what_a_save_writes() {
-        for ok in ["0.snap", "12.snap", "00000000000000000001.snap"] {
-            assert!(is_scrollback_name(ok), "{ok:?} should be accepted");
-        }
-        for bad in [
-            "",
-            ".snap",
-            "a.snap",
-            "-1.snap",
-            "0.SNAP",
-            "0.snap.tmp",
-            "0",
-            "../0.snap",
-            "0/1.snap",
-            "..\\0.snap",
-            "C:\\x\\0.snap",
-            "１.snap", // full-width digit: not ASCII
-            "000000000000000000001.snap", // 21 digits
-        ] {
-            assert!(!is_scrollback_name(bad), "{bad:?} should be refused");
-        }
-    }
-
-    /// The case `is_scrollback_name` exists for: a project file is, through
-    /// this field, a list of files the core may delete. A name reaching
-    /// outside the snapshot directory is dropped and the rest of the pane
-    /// still loads.
-    #[test]
-    fn a_scrollback_name_that_reaches_outside_is_dropped_and_the_pane_still_loads() {
-        let bytes = br#"{"name":"p","saved_at":1,
-            "root":{"kind":"leaf","cwd":"/a","scrollback":"..\\..\\Users\\x\\keep.snap"}}"#;
-        let snap = parse_snapshot(bytes).expect("one bad field must not cost the project");
-        assert_eq!(snap.root, Some(SavedNode::Leaf(SavedLeaf { cwd: "/a".to_string(), ..Default::default() })));
-    }
+    // What a project file says and how it is read -- the two formats, the
+    // strict rules, what a read puts right, and the files all three
+    // implementations share -- is tested in `polter-projectfile`, where
+    // `cargo test` runs on any machine.
 
     #[test]
     fn the_snapshot_directory_is_the_project_file_with_its_extension_replaced() {
@@ -1242,7 +849,7 @@ mod tests {
     fn deleting_a_project_takes_its_snapshot_directory_with_it() {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-delete-snaps-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        write(&dir, &Snapshot { name: "with snaps".to_string(), saved_at: 1, root: None, next_scrollback: None }, WriteKind::Save).unwrap();
+        write(&dir, &one_tab("with snaps", 1, None, None), WriteKind::Save).unwrap();
         let snaps = scrollback_dir(&path_for(&dir, "with snaps").unwrap());
         std::fs::create_dir_all(&snaps).unwrap();
         std::fs::write(snaps.join("0.snap"), b"x").unwrap();
@@ -1320,110 +927,12 @@ mod tests {
         assert_eq!(Slot::from_restore_path("/p/x.scrollback/notes.txt"), None);
     }
 
-    /// **Read and written back unchanged**, which is a different promise from
-    /// "an unknown field does not make the read fail": that one keeps the
-    /// project opening, this one keeps the counter from being reset by a
-    /// round trip through this build.
-    #[test]
-    fn next_scrollback_survives_a_read_and_a_write() {
-        let bytes = br#"{"name":"p","saved_at":1,"next_scrollback":12,"root":{"kind":"leaf","scrollback":"11.snap"}}"#;
-        let snap = parse_snapshot(bytes).unwrap();
-        assert_eq!(snap.next_scrollback, Some(12));
-        let again = snapshot_to_json(&snap);
-        assert_eq!(again.get("next_scrollback").and_then(|v| v.as_u64()), Some(12));
-        assert_eq!(parse_snapshot(&serde_json::to_vec(&again).unwrap()).unwrap(), snap);
-    }
-
     #[test]
     fn to_layout_shape_turns_a_scrollback_name_into_a_path_under_the_snapshot_directory() {
         let snaps = Path::new("/p/x.scrollback");
         let shape = to_layout_shape(&sample_tree(), snaps);
         assert_eq!(shape["left"]["new"]["scrollback"], snaps.join("0.snap").to_str().unwrap());
         assert!(shape["right"]["new"].get("scrollback").is_none());
-    }
-
-    /// The keys found on each kind of object in a project file, `kind`
-    /// itself left out -- it is the discriminator, not a field.
-    fn key_sets(file: &serde_json::Value) -> [(&'static str, std::collections::BTreeSet<String>); 3] {
-        fn walk(node: &serde_json::Value, leaf: &mut std::collections::BTreeSet<String>, split: &mut std::collections::BTreeSet<String>) {
-            let obj = node.as_object().expect("a node is an object");
-            let into = match obj.get("kind").and_then(|k| k.as_str()) {
-                Some("leaf") => &mut *leaf,
-                Some("split") => &mut *split,
-                other => panic!("unknown node kind {other:?}"),
-            };
-            into.extend(obj.keys().filter(|k| *k != "kind").cloned());
-            if obj.get("kind").and_then(|k| k.as_str()) == Some("split") {
-                walk(&obj["left"], leaf, split);
-                walk(&obj["right"], leaf, split);
-            }
-        }
-        let top = file.as_object().expect("a project file is an object");
-        let (mut leaf, mut split) = (Default::default(), Default::default());
-        if let Some(root) = top.get("root") {
-            walk(root, &mut leaf, &mut split);
-        }
-        [("snapshot", top.keys().cloned().collect()), ("leaf", leaf), ("split", split)]
-    }
-
-    /// **The same file `src/Project.zig` and the mac tests check against.**
-    /// `test/project-format/all_fields.json` is one project with every field
-    /// of the format filled in; this checks that every key in it survives this
-    /// implementation's read-then-write, and that this implementation writes
-    /// no key it lacks. `every_field_is_written` above keeps this file's
-    /// writer honest about its own struct; this is what keeps it honest about
-    /// the other two implementations, which nothing here compiles.
-    ///
-    /// Adding a field to the format: add it to the sample first, and this
-    /// test (and theirs) name what has not caught up.
-    #[test]
-    fn the_shared_sample_survives_this_build_and_this_build_writes_nothing_it_lacks() {
-        const SAMPLE: &str = include_str!("../../../test/project-format/all_fields.json");
-        let sample: serde_json::Value = serde_json::from_str(SAMPLE).expect("the shared sample is JSON");
-        let written = snapshot_to_json(&parse_snapshot(SAMPLE.as_bytes()).expect("the shared sample must read"));
-
-        // What this build writes when every field it has is filled in. No
-        // `..` in the literals: a field added to either struct is a compile
-        // error here until it is given a (non-empty) value.
-        let own = snapshot_to_json(&Snapshot {
-            name: "n".to_string(),
-            saved_at: 1,
-            root: Some(SavedNode::Split {
-                axis: Axis::Horizontal,
-                ratio: 0.5,
-                left: Box::new(SavedNode::Leaf(SavedLeaf {
-                    cwd: "c".to_string(),
-                    title: "t".to_string(),
-                    history: "h".to_string(),
-                    scrollback: "5.snap".to_string(),
-                })),
-                right: Box::new(SavedNode::Leaf(SavedLeaf::default())),
-            }),
-            next_scrollback: Some(9),
-        });
-
-        let mut problems = Vec::new();
-        for (((what, want), (_, got)), (_, mine)) in key_sets(&sample).into_iter().zip(key_sets(&written)).zip(key_sets(&own)) {
-            for k in want.difference(&got) {
-                problems.push(format!(
-                    "windows/host/src/project.rs loses {what}.{k}: it is in test/project-format/all_fields.json \
-                     but does not come back out of parse_snapshot + snapshot_to_json -- carry it in \
-                     SavedLeaf/Snapshot, json_to_node/parse_snapshot and node_to_json/snapshot_to_json"
-                ));
-            }
-            for k in got.union(&mine).filter(|k| !want.contains(*k)) {
-                problems.push(format!(
-                    "windows/host/src/project.rs writes {what}.{k}, which test/project-format/all_fields.json \
-                     does not have -- add it there, then to src/Project.zig and \
-                     macos/Sources/Features/Projects/ProjectDocument.swift, whose tests read the same file"
-                ));
-            }
-        }
-        assert!(problems.is_empty(), "\n{}", problems.join("\n"));
-
-        // Same keys is not same values: a writer that swapped `cwd` and
-        // `title` passes everything above.
-        assert_eq!(written, sample, "the shared sample did not come back as it went in");
     }
 
     #[test]
@@ -1448,13 +957,13 @@ mod tests {
             right: Node::Leaf(2),
         }));
 
-        let saved = describe(&live, &|id: PaneId| SavedLeaf { cwd: format!("/pane/{id}"), ..Default::default() });
+        let saved = describe(&live, &|id: PaneId| SavedLeaf::plain(&format!("/pane/{id}"), Agent::Unknown));
 
         match saved {
             SavedNode::Split { axis, left, right, .. } => {
                 assert_eq!(axis, Axis::Vertical);
-                assert_eq!(*left, SavedNode::Leaf(SavedLeaf { cwd: "/pane/1".to_string(), ..Default::default() }));
-                assert_eq!(*right, SavedNode::Leaf(SavedLeaf { cwd: "/pane/2".to_string(), ..Default::default() }));
+                assert_eq!(*left, SavedNode::Leaf(SavedLeaf::plain("/pane/1", Agent::Unknown)));
+                assert_eq!(*right, SavedNode::Leaf(SavedLeaf::plain("/pane/2", Agent::Unknown)));
             }
             _ => panic!("expected a split"),
         }

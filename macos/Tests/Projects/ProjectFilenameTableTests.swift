@@ -16,6 +16,7 @@ struct ProjectFilenameTableTests {
     }
 
     private static let tableURL = URL(fileURLWithPath: #filePath)
+        .resolvingSymlinksInPath() // `tools/mac-logic-tests` links this file into its package
         .deletingLastPathComponent()
         .appendingPathComponent("../../../test/fixtures/project-filenames.tsv")
         .standardized

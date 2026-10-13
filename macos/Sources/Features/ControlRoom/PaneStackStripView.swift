@@ -230,7 +230,16 @@ struct PaneStackStripView: View {
     /// The showing member's status, as a frame's title bar writes it.
     private func status(_ title: PaneFrame.Title) -> some View {
         HStack(spacing: CGFloat(Look.Side.statusWordGap)) {
-            ControlRoomGlyph(shown: title.shown, still: still)
+            // Held is not a status and has no colour of its own: drawn as
+            // the frame's own title draws it (`PaneFrameTitleBar.status`).
+            if let status = title.shown.status {
+                ControlRoomGlyph(shown: status, still: still)
+            } else {
+                PaneHeldGlyph()
+                    .fill(otherInk)
+                    .frame(width: CGFloat(Look.Side.glyph), height: CGFloat(Look.Side.glyph))
+                    .accessibilityHidden(true)
+            }
             Text(title.word)
                 .fontWeight(Look.weight(Look.Font.weightEmphasis))
                 .foregroundStyle(wordInk(title.shown))
@@ -255,7 +264,7 @@ struct PaneStackStripView: View {
 
     /// The status word, by the table: where a red word is not red is its
     /// to say.
-    private func wordInk(_ shown: ControlRoomList.Shown) -> Color {
+    private func wordInk(_ shown: ControlRoomSnapshot.Terminal.Bar.Shown) -> Color {
         switch shown {
         case .needsYou, .doneUnseen:
             return theme.attentionText.color
@@ -265,7 +274,7 @@ struct PaneStackStripView: View {
             case .worker: return theme.problemTextOnWorkerBand.color
             case .plain: return bare ? theme.problemTextOnTerminal.color : theme.problemTextOnWorkerBand.color
             }
-        case .working, .none:
+        case .working, .none, .held:
             return otherInk
         }
     }

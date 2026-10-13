@@ -44,15 +44,51 @@ window tab draws it; which frame the pane of every terminal wears
 one it does not and none at all, in a split tab, alone in its tab, with the
 setting off and in the quick terminal: the frame, the name, the glyph and
 the word -- whether the tab's ground then shows, and the English word for
-what each frame is; what the core says of every group's
+what each frame is -- the glyph and the word being the pair the core gives
+for the title's right end, `held` among them; what the core says of every group's
 supervisor (its state, whether one can be started, why the last try made
-none, the role and the directory), the roles one can be started in and
+none, the role and the directory), what it says of the supervisor each
+group last had (the CLI a start uses, the role and the CLI the last one
+was, when it was last heard from) and whether a start goes on with its
+session and why not -- with every one of the eight reasons the core can
+give, as each side spells it; who the core says is working in every
+terminal (which of its three answers, each as each side spells it; the role,
+the CLI and the session as written, with "not said" told from empty; and the
+terminal that opened it); the English sentence each side makes of each
+reason (none for the two that need none), what the two sessions a start
+can use are called, what a start sends for every state of that choice, and
+the sentence about the last supervisor for thirteen mixes of what is known
+of it and of where the person has picked to start -- its directory said
+only when that is elsewhere, its CLI by the core's name and by its key
+when the core has none (`ControlRoomStartChoice`; `scene::resume_note`, `last_supervisor_said`,
+`act::session_sent`) -- the roles one can be started in and
 whether there is a choice; when a group just made is selected; where a tab
 the core asked for goes, for every asker and every place the control room
-can be (forty cases); the English of what the person is told for each of
+can be (forty cases); whether a split asked of a terminal is made, borrowed
+by the control room or not, asked by an agent through the core or by a key
+(`ControlRoomRules.newSplit` and `lend::may_split`); the English of what the right-hand side says of a
+group with no supervisor for each of the six reasons the core gives for a
+try having made none (`cli_not_found` and `cli_did_not_start`, which a
+launcher reports itself, among them), while one is starting and with none;
+the English of what the person is told for each of
 fifteen names the core gives for not making a group or not starting a
-supervisor; which rows are marked seen by being looked at, and
-after how long; the selection chip's slide -- whether it moves at all (from
+supervisor; how the first line of a waiting row is shared out when it
+is too narrow -- the status word whole, the group's name cut only by it, who
+is waiting in what is left and not at all when nothing is
+(`ControlRoomLine1.fit` and `scene::place_line`), on sixteen made-up rows:
+who gets how wide and which of them is cut; that neither side has a row
+for a terminal in no group (the rows above are each side's list as it is
+drawn); every terminal that is in no group (`ungrouped`), as the row it
+would have were one drawn -- its row's identity, the section it goes in, its title,
+glyph and words, who waits and for what with every line, what an act on it
+hands back, and the terminal the right-hand side then shows; which rows are
+marked seen by being looked at, and
+after how long, what the title of the frame on the right says while it
+holds each row's terminal (that terminal's own name, glyph and word -- the
+supervisor's, not the row's), and the request marking each row seen sends (a group's
+name, or the terminal of a row that is in no group); the list's two
+headings -- the count, what the rows are called and the form of the number
+as the core wrote them, and the English sentence each side makes of that; the selection chip's slide -- whether it moves at all (from
 one tab to another, with motion off, from nowhere, to where it already is),
 when it starts back down and when it is still, and at sixteen moments of a
 slide along the tab bar and of one down the list how far it has to go, how
@@ -98,6 +134,10 @@ a tab's nominal width for five names.
     draws. On Windows that is arithmetic in the crate (`pane::frame_px`,
     `well_px`, `build`); on macOS it is SwiftUI's layout, with nothing to
     print. The crate's own tests hold it.
+  * What the right-hand side says for a terminal in no group that is not
+    shown (closed, or in its own tab), and the word after its name on the
+    bar. On Windows that is the crate's scene; on macOS it is in the view.
+    Each side's own tests hold the same sentences and the same word.
   * Anything drawn. This compares numbers and strings, not pixels.
   * That the app links these files the way the package does. It is the same
     source; it is not the same binary.
@@ -127,6 +167,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomLook.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",
+    "macos/Sources/Features/ControlRoom/ControlRoomStartChoice.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLending.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomQuota.swift",
     "macos/Sources/Features/ControlRoom/PaneStackStrip.swift",
@@ -209,9 +250,21 @@ do {
     FileHandle.standardError.write(Data("the snapshot does not decode: \(error)\n".utf8))
     exit(1)
 }
+// The whole list, the terminals that are in no group among its rows: both
+// hosts draw those now, so the list, its layout, its arrow keys and the row
+// that breathes are compared with them in. What each of those rows is on
+// its own is compared again below (`lone`).
+let whole = snapshot
 let list = ControlRoomList(snapshot: snapshot)
 
 print("count waiting=\(list.waitingCount) quiet=\(list.quietCount)")
+// The two headings: what the core wrote (`header_waiting` /
+// `header_quiet`, which count the rows drawn: the groups'), and the sentence each
+// side makes of it -- in English, as each side's table has it.
+for (name, h, says) in [("waiting", list.waitingHeader, list.waitingHeaderText), ("quiet", list.quietHeader, list.quietHeaderText)] {
+    let core = h.map { "\($0.count) of=\($0.of.rawValue) number=\($0.number.rawValue)" } ?? "-"
+    print("heading \(name) core=\(core) says=\(quote(says))")
+}
 
 // Where a control room opens, and whose choice the selection then is.
 print("open_on \(snapshot.open_on ?? "-")")
@@ -222,6 +275,50 @@ for (current, opening) in [(nil, true), (nil, false), (firstRow, true), (firstRo
 }
 for r in list.waiting { row("waiting", r) }
 for r in list.quiet { row("quiet", r) }
+// What each row is called, and for a terminal in no group which terminal it
+// is and which frame its own pane wears.
+for r in list.rows {
+    print("rowname id=\(r.id) name=\(quote(r.name)) alone=\(r.alone?.terminal ?? "-") pane=\(r.alone?.pane.rawValue ?? "-")")
+}
+// The terminals in no group. Neither host draws a row for one (task 1485,
+// and the rows printed above are compared without them); what such a row
+// would say is still compared, through the switch nothing in the app
+// turns on.
+let everything = ControlRoomList(snapshot: whole, loneRows: true)
+let alone = everything.rows.filter { $0.alone != nil }
+print("lone \(alone.count)")
+for r in alone {
+    let section = everything.waiting.contains { $0.id == r.id } ? "waiting" : "quiet"
+    let since = r.target.map { String($0.sinceMs) } ?? "-"
+    let event = r.target?.eventMs.map { String($0) } ?? "-"
+    print("lone row=\(r.id) section=\(section) title=\(quote(r.name)) shown=\(shownName(r.shown)) word=\(quote(r.word)) "
+        + "who=\(r.waiter.is.rawValue) name=\(quote(r.waiter.name)) form=\(r.what.form.rawValue) "
+        + "code=\(r.what.isCode) lines=\(r.what.lines.count) unseen=\(r.unseen) "
+        + "terminal=\(r.target?.terminal ?? "-") since=\(since) event=\(event) shows=\(whole.terminal(shownFor: r.id) ?? "-")")
+    print("lone cut row=\(r.id) cut=\(r.what.cut.rawValue)")
+    for (n, line) in r.what.drawn.enumerated() {
+        print("lone what row=\(r.id) n=\(n) line=\(quote(line))")
+    }
+}
+// The first line of a waiting row, when it is too narrow for the name, who
+// is waiting and the status word: who keeps its width and who gives way.
+// The same cases on both sides, in the same units.
+let line1: [(Int, Int, Int?, Int)] = [
+    (80, 0, 100, 40), (80, 0, 400, 40), (500, 0, 90, 40), (274, 0, 90, 40), (266, 0, 90, 40), (265, 0, 90, 40),
+    (250, 0, 90, 40), (300, 0, nil, 40), (400, 0, nil, 40), (66, 0, 67, 40), (187, 0, 510, 40), (465, 0, 149, 40),
+    (80, 292, 50, 40), (10, 262, 50, 40), (80, 0, 400, 0), (400, 0, nil, 0),
+]
+for (name, narrower, who, word) in line1 {
+    let width = 322 - narrower
+    let fit = ControlRoomLine1.fit(width: Double(width), gap: 8, name: Double(name), who: who.map(Double.init), word: Double(word))
+    let whoSays = fit.who.map { "\(Int($0)) cut=\($0 < Double(who ?? 0))" } ?? "-"
+    print("line1 width=\(width) name=\(name) who=\(who.map(String.init) ?? "-") word=\(word) "
+        + "-> name=\(Int(fit.name)) cut=\(fit.name < Double(name)) who=\(whoSays)")
+}
+// The bare id is not a row, and a group's row is not one of these.
+let bare = whole.ungrouped?.contains { ControlRoomList.rowId(ofTerminal: $0.id) == "0x00000000000000c1" } == true ? "0x00000000000000c1" : "-"
+let asGroup = whole.ungrouped?.contains { ControlRoomList.rowId(ofTerminal: $0.id) == "web-app" } == true ? "web-app" : "-"
+print("lone shows bare-id=\(bare) group=\(asGroup)")
 
 // Which glyph breathes: with nothing in front, and with each tab that
 // holds a waiting terminal in front.
@@ -275,6 +372,101 @@ for r in list.rows {
     } else {
         print("start id=\(r.id) -")
     }
+    // What the core says of the last supervisor, and whether a start goes
+    // on with its session.
+    if let l = r.start?.last {
+        print("start_last id=\(r.id) cli=\(l.cli ?? "-") last_role=\(l.role ?? "-") "
+            + "last_cli=\(l.lastCli ?? "-") heard_ms=\(l.heardMs.map { String($0) } ?? "-") "
+            + "resume=\(l.canResume) why=\(l.why.rawValue) dir_is_last=\(l.cwdIsTheLastSupervisors) "
+            + "cli_label=\(l.cliLabel.map(quote) ?? "-") last_cli_label=\(l.lastCliLabel.map(quote) ?? "-")")
+    } else {
+        print("start_last id=\(r.id) -")
+    }
+}
+for why in ControlRoomList.SupervisorStart.ResumeWhy.allCases {
+    print("resume_why \(why.rawValue)")
+}
+// Who the core says is working in every terminal: which of its three
+// answers, the three words a project's pane keeps, and who opened it.
+for t in snapshot.terminals ?? [] {
+    if let w = t.who {
+        print("who id=\(t.id) is=\(w.is.rawValue) role=\(w.role.map(quote) ?? "-") "
+            + "cli=\(w.cli.map(quote) ?? "-") session=\(w.session.map(quote) ?? "-") "
+            + "opened_by=\(w.opened_by ?? "-")")
+    } else {
+        print("who id=\(t.id) -")
+    }
+}
+for one in ControlRoomSnapshot.Terminal.Who.Is.allCases {
+    print("who_is \(one.rawValue)")
+}
+// What the right-hand side makes of that (`ControlRoomStartChoice`): the
+// sentence for each reason a start will not go on with the last session
+// (none for the two that need none), what the two sessions are called,
+// what a start sends for every state of the choice, and the sentence about
+// the last supervisor for each mix of what is known of it.
+// Whether a split asked of a terminal is made: of one the control room has
+// borrowed, for an agent (asked through the core) and not for a key.
+for lent in [false, true] {
+    for core in [false, true] {
+        let made = ControlRoomRules.newSplit(lent: lent, answerWanted: core) == .split
+        print("new_split lent=\(lent) asked_by_core=\(core) made=\(made)")
+    }
+}
+for why in ControlRoomList.SupervisorStart.ResumeWhy.allCases {
+    print("resume_note \(why.rawValue) says=\(ControlRoomStartChoice.resumeNote(why).map(quote) ?? "-")")
+}
+for session in ControlRoomStartChoice.Session.allCases {
+    print("session_option \(session.rawValue) says=\(quote(ControlRoomStartChoice.optionText(session)))")
+}
+for offered in [true, false] {
+    for picked in [nil, ControlRoomStartChoice.Session.last, .new] as [ControlRoomStartChoice.Session?] {
+        let sent = ControlRoomStartChoice.sessionSent(offered: offered, picked: picked)
+        print("session_sent offered=\(offered) picked=\(picked?.rawValue ?? "-") sends=\(sent?.rawValue ?? "-")")
+    }
+}
+do {
+    typealias Start = ControlRoomList.SupervisorStart
+    // (name, heard, the directory, it is the last supervisor's, its CLI, the core's name for it,
+    //  the directory the person picked, can go on)
+    let cases: [(String, Int64?, String, Bool, String?, String?, String?, Bool)] = [
+        ("unpicked", 1, "/Users/me/work", true, "claude-code", "Claude Code", nil, true),
+        ("picked-the-same", 1, "/Users/me/work", true, "claude-code", "Claude Code", "/Users/me/work", true),
+        ("picked-elsewhere", 1, "/Users/me/work", true, "claude-code", "Claude Code", "/srv/other", true),
+        ("home-itself", 1, "/Users/me", true, "claude-code", "Claude Code", "/srv/other", true),
+        ("no-name-for-the-cli", 1, "/Users/me/work", true, "claude-code", nil, "/srv/other", false),
+        ("an-empty-name", 1, "/Users/me/work", true, "claude-code", "", nil, false),
+        ("directory-is-a-guess", 1, "/Users/me/work", false, "claude-code", "Claude Code", "/srv/other", true),
+        ("no-directory", 1, "", true, "codex", nil, "/srv/other", false),
+        ("cli-not-written", 1, "/Users/me/work", true, nil, nil, "/srv/other", false),
+        ("cli-not-written-unpicked", 1, "/Users/me/work", true, nil, nil, nil, false),
+        ("cli-empty", 1, "/Users/me/work", true, "", "Claude Code", "/srv/other", false),
+        ("never-recorded", nil, "/Users/me/work", true, "claude-code", "Claude Code", "/srv/other", false),
+    ]
+    for (name, heard, cwd, isLast, cli, label, picked, can) in cases {
+        let start = Start(state: .absent, canStart: true, failed: Start.Failure.none, role: nil, cwd: cwd,
+                          last: .init(cli: "claude-code", role: nil, lastCli: cli, heardMs: heard, canResume: can,
+                                      why: can ? .none : .noSession, cwdIsTheLastSupervisors: isLast,
+                                      cliLabel: "Claude Code", lastCliLabel: label))
+        let said = ControlRoomStartChoice.lastSupervisorText(start, startingIn: picked, home: "/Users/me")
+        print("last_said \(name) offers=\(ControlRoomStartChoice.offersSession(start)) says=\(said.map(quote) ?? "-")")
+    }
+    let old = Start(state: .absent, canStart: true, failed: Start.Failure.none, role: nil, cwd: "/Users/me/work")
+    print("last_said core-says-nothing offers=\(ControlRoomStartChoice.offersSession(old)) "
+        + "says=\(ControlRoomStartChoice.lastSupervisorText(old, home: "/Users/me").map(quote) ?? "-")")
+}
+// What the right-hand side says of a group with no supervisor, for every
+// reason the core gives for the last try having made none -- the two a
+// launcher reports itself among them -- and while one is on its way.
+for failed in ControlRoomList.SupervisorStart.Failure.allCases {
+    let start = ControlRoomList.SupervisorStart(state: .failed, canStart: true, failed: failed, role: nil, cwd: "")
+    print("start_says state=failed failed=\(failed.rawValue) "
+        + "says=\(quote(ControlRoomLending.words(for: .noSupervisor(group: "g"), start: start)))")
+}
+for state in [ControlRoomList.SupervisorStart.State.starting, .absent] {
+    let start = ControlRoomList.SupervisorStart(state: state, canStart: false, failed: .none, role: nil, cwd: "")
+    print("start_says state=\(state.rawValue) failed=none "
+        + "says=\(quote(ControlRoomLending.words(for: .noSupervisor(group: "g"), start: start)))")
 }
 print("start_roles choose=\(list.chooseSupervisorRole)")
 for role in list.supervisorRoles {
@@ -328,7 +520,7 @@ for (placeName, place) in panePlaces {
         let d = PaneFrame.drawn(terminal: id, ownName: "own", at: place, in: terminals)
         if let d {
             print("pane place=\(placeName) terminal=\(id ?? "-") wears=\(d.wears.rawValue) "
-                + "name=\(quote(d.title.name)) shown=\(shownName(d.title.shown)) word=\(quote(d.title.word))")
+                + "name=\(quote(d.title.name)) shown=\(d.title.shown.rawValue) word=\(quote(d.title.word))")
         } else {
             print("pane place=\(placeName) terminal=\(id ?? "-") wears=-")
         }
@@ -355,6 +547,23 @@ for r in list.rows {
         markSeen: { said += " marks=\($0)" })
     tracker.selectionChanged(to: r)
     print("seen row=\(r.id) \(said)")
+}
+// What the title of the frame on the right says while it holds each row's
+// terminal: that terminal's own name, glyph and word.
+for r in list.rows {
+    if let t = r.supervisor {
+        print("frame_title row=\(r.id) name=\(quote(t.name)) shown=\(shownName(t.shown)) word=\(quote(t.word))")
+    } else {
+        print("frame_title row=\(r.id) -")
+    }
+}
+// What marking a row seen sends, for every row as if nobody had looked at
+// it: a group's by the group's name, a lone terminal's by the terminal.
+for r in list.rows {
+    let sends = ControlRoomActions.seen(rowId: r.id, in: list.rows)
+        .flatMap { try? JSONSerialization.data(withJSONObject: ControlRoomActions.request(for: $0), options: [.sortedKeys]) }
+        .map { String(decoding: $0, as: UTF8.self) } ?? "-"
+    print("seen_sends row=\(r.id) \(sends)")
 }
 
 // Which terminal is shown on the right, through one script of events: what

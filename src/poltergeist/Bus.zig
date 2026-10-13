@@ -387,6 +387,18 @@ pub const Entry = struct {
     role: Role = .none,
     duty: Duty = .on,
 
+    /// When the person last looked at this terminal's own row in the
+    /// control room, on the bus's clock; null for never (`markSeen`).
+    ///
+    /// For a terminal in no group: a group's row is looked at through the
+    /// group (`Chat.markSeen`), and that had nowhere to go for a row that
+    /// is about one terminal -- so what it had finished stayed "not looked
+    /// at", and what it had raised could not be withdrawn. **Not written
+    /// down**: a terminal's id is new at every start, so a mark kept
+    /// against one would name nothing afterwards; it lasts as long as the
+    /// terminal does.
+    seen_ms: ?u64 = null,
+
     /// The user is holding this terminal to its work: it may not be
     /// clocked off.
     ///
@@ -433,6 +445,11 @@ pub const Entry = struct {
     /// Read by `actions.confirmsClose`: an agent may close what an agent
     /// opened without asking anybody.
     opened_by_agent: bool = false,
+
+    /// The terminal whose agent opened this one; null when none did, and
+    /// kept as long as `opened_by_agent` is. A tab its supervisor opened
+    /// goes into that supervisor's group's project (`Projects`).
+    opened_by: ?Id = null,
 
     /// Whether a supervisor may answer a permission prompt in this terminal
     /// on its behalf. `null` is "the person has not said for this terminal",
@@ -815,6 +832,21 @@ pub fn raise(self: *Bus, id: Id, at_ms: u64, text: []const u8) Allocator.Error!b
     return true;
 }
 
+/// The person looked at this terminal's own row. False for a terminal the
+/// bus does not know: there is no row to have looked at.
+pub fn markSeen(self: *Bus, id: Id, now_ms: u64) bool {
+    const e = self.entries.getPtr(id) orelse return false;
+    e.seen_ms = now_ms;
+    return true;
+}
+
+/// When the person last looked at this terminal's own row; null for never
+/// and for a terminal the bus does not know.
+pub fn seenOf(self: *const Bus, id: Id) ?u64 {
+    const e = self.entries.get(id) orelse return null;
+    return e.seen_ms;
+}
+
 /// What this terminal has raised and the person has not looked at since:
 /// `seen_ms` is when they last looked at it, null for never. Borrowed:
 /// valid until the next `raise` or `unregister` for it.
@@ -836,10 +868,16 @@ pub fn raisedOf(self: *const Bus, id: Id, seen_ms: ?u64) ?Raise {
 /// which is what somebody who set that asked for. `by` is still taken: it
 /// is who the record says opened it.
 pub fn markOpenedByAgent(self: *Bus, id: Id, by: Id) Allocator.Error!void {
-    _ = by;
     try self.register(id);
     const e = self.entries.getPtr(id).?;
     e.opened_by_agent = true;
+    e.opened_by = by;
+}
+
+/// The terminal whose agent opened this one, or null.
+pub fn openedBy(self: *const Bus, id: Id) ?Id {
+    const e = self.entries.get(id) orelse return null;
+    return e.opened_by;
 }
 
 /// Whether an agent opened this terminal. False for one the bus has never
@@ -1569,6 +1607,26 @@ pub fn agentEvent(
     ev: AgentEvent.Event,
     now_ms: u64,
 ) Allocator.Error!bool {
+    // **The launch started nothing**: whatever it said to expect is taken
+    // back, and the terminal is what it was before the launch line -- a
+    // shell with no agent in it. Before `register`, because a failure that
+    // came before anything else was said (no adapter, no such role) is not
+    // a reason for the bus to start keeping an entry for a plain terminal.
+    //
+    // Only an expectation is taken back. An agent that has spoken is
+    // there, whatever a launch line typed at it afterwards came to.
+    if (ev.event == .launch_failed) {
+        if (self.entries.getPtr(id)) |e| {
+            if (e.agent.hooks == .expected) e.agent = .none;
+        }
+        return false;
+    }
+
+    // About a file, not about the agent: nothing here is touched, not even
+    // "when it was last heard from" -- that clock is what says a prompt on
+    // screen is still the one that was asked about.
+    if (ev.event == .allowance_written) return false;
+
     try self.register(id);
     const e = self.entries.getPtr(id).?;
     const a = &e.agent;
@@ -1577,6 +1635,7 @@ pub fn agentEvent(
     if (ev.session_id) |sid| a.session_id.set(sid);
 
     const state: AgentState, const notice: ?AgentNotice = switch (ev.event) {
+        .launch_failed => unreachable,
         .hooks_expected => {
             // A second launch in the same terminal starts the wait again;
             // a terminal already live stays live -- it has proved its
@@ -1591,6 +1650,7 @@ pub fn agentEvent(
             if (ev.cli.len > 0) a.cli.set(ev.cli);
             return false;
         },
+        .allowance_written => return false,
         .session_started => .{ .idle, null },
         .turn_started => .{ .in_turn, null },
         .turn_ended => .{ .ended, .turn_ended },
@@ -4218,6 +4278,41 @@ fn hookedBus() !Bus {
     return b;
 }
 
+test "hooks: a launcher that says its CLI did not start takes back what it said to expect" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    // `+launch` said hooks were coming, then could not start the CLI.
+    _ = try b.agentEvent(worker, hookEv(.hooks_expected), 0);
+    try testing.expectEqual(Hooks.expected, b.agentOf(worker).hooks);
+    const boxed = try b.agentEvent(worker, hookEv(.launch_failed), 500);
+    try testing.expect(!boxed);
+    const after = b.agentOf(worker).hooks;
+    try testing.expectEqual(Hooks.none, after);
+
+    // So the thirty seconds never run out on it: nothing is said about
+    // hooks that did not come, because none were promised any more.
+    const said = b.considerAgents(10 * hooks_expected_timeout_ms);
+    try testing.expect(!said);
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 10 * hooks_expected_timeout_ms, &buf, .none);
+    try testing.expect(line == null);
+
+    // A terminal the bus has never heard of is not given an entry for
+    // having failed to start something.
+    const unknown: Id = 0xdead;
+    _ = try b.agentEvent(unknown, hookEv(.launch_failed), 600);
+    const listed = b.entries.contains(unknown);
+    try testing.expect(!listed);
+
+    // And an agent that has spoken is there, whatever a launch line typed
+    // at it afterwards came to.
+    _ = try b.agentEvent(worker, hookEv(.session_started), 700);
+    _ = try b.agentEvent(worker, hookEv(.launch_failed), 800);
+    const live = b.agentOf(worker).hooks;
+    try testing.expectEqual(Hooks.live, live);
+}
+
 test "hooks: expected with no session_started for 30s is put in the box" {
     var b = try hookedBus();
     defer b.deinit();
@@ -4796,4 +4891,77 @@ test "ControlRoom prompt: the one a caller saw, and no other" {
     // No longer waiting on an approval at all.
     _ = try b.agentEvent(worker, hookEv(.turn_started), 30_000);
     try testing.expect(!b.promptStanding(worker, 30_000, 30_000, 31_000));
+}
+
+test "hooks: the status line saying it wrote the allowance changes nothing the bus keeps" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    // A worker stopped on a prompt, as the control room and the guard on
+    // answering it both read it.
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    _ = try b.agentEvent(worker, ask, 10_000);
+    const before = b.agentOf(worker);
+    try testing.expect(b.promptStanding(worker, 10_000, 10_000, 11_000));
+
+    // Its status line refreshes a second later and says a file was written.
+    try testing.expect(!try b.agentEvent(worker, hookEv(.allowance_written), 11_000));
+    const after = b.agentOf(worker);
+    try testing.expectEqual(before.state, after.state);
+    try testing.expectEqual(before.since_ms, after.since_ms);
+    // Not "heard from": the prompt on screen is still the one asked about.
+    try testing.expectEqual(before.last_event_ms, after.last_event_ms);
+    try testing.expectEqual(before.pending, after.pending);
+    try testing.expect(b.promptStanding(worker, 10_000, 10_000, 12_000));
+
+    // And from a terminal the bus has never heard of, it makes no entry:
+    // a status line is not an agent's hook.
+    const stranger: Id = 0x7777;
+    try testing.expect(!try b.agentEvent(stranger, hookEv(.allowance_written), 12_000));
+    try testing.expect(b.get(stranger) == null);
+}
+
+test "may-authorise off in the configuration: every terminal starts shut, and one opened by hand is the only one open" {
+    // The gate a person shuts for good: `poltergeist-may-authorise = false`.
+    var b: Bus = .init(testing.allocator, .{ .may_authorise = false });
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    const other: Id = 0x3333;
+    try b.watch(other, boss);
+    var buf: [255]u8 = undefined;
+
+    // A terminal nobody has said anything about: shut -- registered or not.
+    try testing.expect(!b.mayAuthorise(worker));
+    try testing.expect(!b.mayAuthorise(0x9999));
+    try testing.expectEqual(Answer.off, b.answer(worker));
+
+    // The notice about its prompt tells the supervisor so.
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Edit";
+    _ = try b.agentEvent(worker, ask, 7);
+    const line = b.drain(boss, 7, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "answer=off") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "answer=allowed") == null);
+
+    // The person opens it for one terminal, from that terminal's menu.
+    // Only a person can; and only that terminal is open.
+    try testing.expectError(error.NotPermitted, b.setMayAuthorise(other, true, .supervisor));
+    try b.setMayAuthorise(other, true, .user);
+    try testing.expect(b.mayAuthorise(other));
+    try testing.expectEqual(Answer.allowed, b.answer(other));
+    try testing.expect(!b.mayAuthorise(worker));
+
+    // The configuration is read again -- a reload, or the next terminal
+    // starting -- and says the same, or the opposite: what the person said
+    // about one terminal stands either way.
+    b.config.may_authorise = false;
+    try testing.expect(b.mayAuthorise(other));
+    b.config.may_authorise = true;
+    try testing.expect(b.mayAuthorise(worker));
+    try b.setMayAuthorise(worker, false, .user);
+    b.config.may_authorise = true;
+    try testing.expect(!b.mayAuthorise(worker));
+    try testing.expect(b.mayAuthorise(other));
 }

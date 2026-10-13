@@ -306,11 +306,26 @@ class BaseTerminalController: NSWindowController,
             return nil
         }
 
+        // Split from a terminal the control room has borrowed: the pane is
+        // made here, in its own tab, and the keyboard stays where it is
+        // (`ControlRoomRules.newSplitTakesKeyboard`).
+        let takesKeyboard = ControlRoomRules.newSplitTakesKeyboard(
+            fromLent: ControlRoomLender.shared.isLent(oldView))
         replaceSurfaceTree(
             newTree,
-            moveFocusTo: newView,
-            moveFocusFrom: oldView,
+            moveFocusTo: takesKeyboard ? newView : nil,
+            moveFocusFrom: takesKeyboard ? oldView : nil,
             undoAction: "New Split")
+
+        // Changing the tree rebuilt the panes here, so the one that had
+        // this window's keyboard is handed it again -- unless that one is
+        // the terminal on loan, whose keyboard is the control room's to
+        // give. The same two rules as zooming a pane that is on loan
+        // (`ghosttyDidToggleSplitZoom`).
+        if !takesKeyboard, let focusedSurface, ControlRoomHomecoming.focusedPaneKeepsKeyboard(
+            focusedPaneIsLent: ControlRoomLender.shared.isLent(focusedSurface)) {
+            DispatchQueue.main.async { Ghostty.moveFocus(to: focusedSurface) }
+        }
 
         return newView
     }
@@ -1305,6 +1320,12 @@ class BaseTerminalController: NSWindowController,
 
         for surfaceView in surfaceTree {
             cancelPendingClipboardConfirmation(for: surfaceView)
+            // The terminals outlive this for as long as the close can be
+            // undone, and the core hears of a terminal going only when it
+            // is destroyed. What was waiting on one of them is told now.
+            if let surface = surfaceView.surface {
+                ghostty_surface_poltergeist_tab_closed(surface)
+            }
         }
 
         // Emit a final bell-state transition so any observers can clear state

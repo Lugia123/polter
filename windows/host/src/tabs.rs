@@ -398,7 +398,10 @@ pub enum Op {
     /// The direction, where the new pane's shell starts (`None` means
     /// wherever the split source is standing), and **which pane to split**
     /// (`None` means the focused one, which is what a keybinding means).
-    NewSplit(i32, Option<String>, Option<PaneId>),
+    /// The last is whether it was asked with somewhere to write the answer
+    /// -- an agent's, through the core -- rather than by a key
+    /// (`lend::may_split`).
+    NewSplit(i32, Option<String>, Option<PaneId>, bool),
     /// `ghostty_action_goto_split_e`.
     /// The direction, and **which pane to move from** (`None` means the
     /// focused one, which is what a keybinding means).
@@ -3144,6 +3147,7 @@ fn split_pane(
     dir: NewSplit,
     cwd: Option<String>,
     at: Option<PaneId>,
+    asked_by_core: bool,
 ) -> bool {
     let (bounds, tab_idx, focused, tree) = {
         let Some(win) = window(frame) else {
@@ -3165,21 +3169,15 @@ fn split_pane(
             wlogf!(frame, "[split] refused: tab {} is not in this window", idx);
             return false;
         };
-        let Some(term) = tab.terminal() else {
-            wlogf!(
-                frame,
-                "[split] refused: the tab in front is the control room, which has no pane to split \
-                 (not passed on to another tab: the split would open where nobody is looking)"
-            );
+        // The same answer the action was given when it was asked for
+        // (`split_answer`), asked again now that its turn has come: the
+        // control room may have taken the pane in between.
+        let (answer, acting) = split_answer_in(&win, at, asked_by_core);
+        let (Some(term), true) = (tab.terminal(), answer.will()) else {
+            wlogf!(frame, "[split] refused: {}", split_refusal(answer, acting));
             return false;
         };
         let acting = acting_pane(term, at);
-        // Not from the terminal the control room is showing: the split
-        // would open in its own tab, where nobody is looking.
-        if !polter_control_room::lend::may_split(win.shown_on_loan().is_some_and(|l| l.pane == acting)) {
-            wlogf!(frame, "[split] refused: pane {} is shown in the control room; a split would open in its own tab, out of sight", acting);
-            return false;
-        }
         (bounds, idx, acting, term.tree.clone())
     };
 
@@ -4956,6 +4954,28 @@ pub fn keyboard_on_the_list(frame: HWND) {
     }
 }
 
+/// Whether the control room of this window is showing a terminal right now.
+pub fn shows_lent(frame: HWND) -> bool {
+    window(frame).is_some_and(|w| w.shown_on_loan().is_some())
+}
+
+/// The tab "Save as Project" saves: the one in front, or -- with the
+/// control room in front -- the tab of the terminal it is showing. Which of
+/// the two, or neither, is `rules::project_tab`; this only finds the tab.
+pub fn tab_saved_as_project(frame: HWND) -> Option<TabId> {
+    let w = window(frame)?;
+    let front = w.tabs.get(w.active)?;
+    let lent = w.shown_on_loan();
+    match rules::project_tab(front.kind(), lent.is_some()) {
+        rules::ProjectTab::Front => Some(front.id),
+        rules::ProjectTab::OfTheLentTerminal => {
+            let pane = lent?.pane;
+            w.tabs.iter().find(|t| t.panes().iter().any(|p| p.id == pane)).map(|t| t.id)
+        }
+        rules::ProjectTab::None => None,
+    }
+}
+
 /// Whether the terminal the control room of this window is showing has the
 /// keyboard.
 pub fn keyboard_in_lent(frame: HWND) -> bool {
@@ -5500,6 +5520,42 @@ pub fn pane_id_of_surface(surface: Surface) -> Option<PaneId> {
             .find(|p| p.surface == key)
             .map(|p| p.id)
     })
+}
+
+/// Whether a split aimed at `at` in `win` will be made, and from which pane
+/// (none when the tab it would go in has no pane).
+fn split_answer_in(win: &WindowState, at: Option<PaneId>, asked_by_core: bool) -> (polter_control_room::lend::SplitAnswer, Option<PaneId>) {
+    use polter_control_room::lend::SplitAnswer;
+    let acting = win.tabs.get(acting_tab(win, at)).and_then(|t| t.terminal()).map(|term| acting_pane(term, at));
+    let on_loan = acting.is_some_and(|p| win.shown_on_loan().is_some_and(|l| l.pane == p));
+    (SplitAnswer::to(acting.is_some(), on_loan, asked_by_core), acting)
+}
+
+/// The line that says why a split was not made.
+fn split_refusal(answer: polter_control_room::lend::SplitAnswer, acting: Option<PaneId>) -> String {
+    use polter_control_room::lend::SplitAnswer;
+    match (answer, acting) {
+        (SplitAnswer::OnLoan, Some(p)) => {
+            format!("pane {} is shown in the control room; a split would open in its own tab, out of sight", p)
+        }
+        _ => "the tab in front is the control room, which has no pane to split \
+              (not passed on to another tab: the split would open where nobody is looking)"
+            .to_string(),
+    }
+}
+
+/// What to answer an action that asks for a split in `frame`, aimed at
+/// `at`: decided now, from the window as it is, so that the core is not
+/// told "will split" about a split that is going to be refused
+/// (`lend::SplitAnswer`). The second value is the line for the log when the
+/// answer is no.
+pub fn split_answer(frame: HWND, at: Option<PaneId>, asked_by_core: bool) -> (polter_control_room::lend::SplitAnswer, Option<String>) {
+    let Some(win) = window(frame) else {
+        // No such window: the op would find none either, and says so.
+        return (polter_control_room::lend::SplitAnswer::Will, None);
+    };
+    let (answer, acting) = split_answer_in(&win, at, asked_by_core);
+    (answer, (!answer.will()).then(|| split_refusal(answer, acting)))
 }
 
 /// The pane an op should act on: the one it named, or the focused one.
@@ -6551,7 +6607,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     *cell = Some(answer);
                 }
             }
-            Op::NewSplit(dir, cwd, at) => {
+            Op::NewSplit(dir, cwd, at, asked_by_core) => {
                 // `ghostty_action_split_direction_e`
                 let d = match dir {
                     1 => NewSplit::Down,
@@ -6563,7 +6619,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 // that is already unconditional.** A start with no end is
                 // what made a swallowed split read as a core that would not
                 // draw; see `split_pane`.
-                let ok = split_pane(frame, app, hinst, d, cwd, at);
+                let ok = split_pane(frame, app, hinst, d, cwd, at, asked_by_core);
                 wlogf!(frame, "[ops] NewSplit finished: split={}", ok as u8);
             }
             Op::GotoSplit(v, at) => {

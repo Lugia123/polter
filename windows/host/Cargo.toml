@@ -180,6 +180,13 @@ path = "../droppath"
 [dependencies.polter-projectname]
 path = "../projectname"
 
+# What a project file says and the bytes it is written as (`project.rs`
+# re-exports it). Out here for the reason `projectname` is: its test is the
+# files all three implementations share (test/project-format/), and inside
+# this crate that test could only run on Windows.
+[dependencies.polter-projectfile]
+path = "../projectfile"
+
 # The settings window's rules (`settings_win.rs` draws, this decides). Out
 # here for the reason `projectname` is: a rule tested only on Windows is one
 # that can be broken on the Mac with everything green.

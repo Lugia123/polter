@@ -667,8 +667,18 @@ test {
     );
     try thread.wakeup.notify();
 
-    // Wait for completion
-    try ud.reset.waitTimeout(testing.io, .{ .duration = .{ .clock = .awake, .raw = .fromMilliseconds(100) } });
+    // Wait for completion. This returns the moment the search says it is
+    // complete; the time is only how long to wait before deciding it never
+    // will, so it is long.
+    //
+    // It was 100 ms, and that went red on a busy machine. The search thread
+    // gives itself a lower scheduling class on purpose (`utility`, above),
+    // and nothing in the product waits on it against a clock. Measured
+    // with forty busy processes on ten cores, forty runs each: with that
+    // class the search completes in a median of 5 ms and at worst 109 ms;
+    // left at the default class, a median of 0.6 ms and at worst 42 ms. So
+    // the tail is the thread waiting its turn, and 100 ms was inside it.
+    try ud.reset.waitTimeout(testing.io, .{ .duration = .{ .clock = .awake, .raw = .fromMilliseconds(10_000) } });
 
     // Stop the thread
     try thread.stop.notify();

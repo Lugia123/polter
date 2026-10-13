@@ -25,7 +25,9 @@ struct ControlRoomList: Equatable {
     }
 
     struct Row: Equatable, Identifiable {
-        /// The group's name, which is its identity.
+        /// The group's name, which is its identity -- or, for a terminal
+        /// that is in no group, `rowId(ofTerminal:)`, which no group can be
+        /// named.
         var id: String
         var shown: Shown
         /// The words beside the glyph: which one of the four it is.
@@ -58,8 +60,45 @@ struct ControlRoomList: Equatable {
         /// Whether this group has a supervisor and what starting one would
         /// use, as the core says it. Nil in a list made by hand.
         var start: SupervisorStart?
+        /// Set on a row that is a terminal on its own, in no group
+        /// (`ungrouped` in the snapshot): which terminal, and its title.
+        var alone: Alone?
 
-        var name: String { id }
+        /// What the row is called: the group's name, or the terminal's
+        /// title.
+        var name: String { alone?.title ?? id }
+    }
+
+    /// A terminal that is in no group and has a row of its own: a
+    /// supervisor that has made no group yet, a worker minded outside any
+    /// group, an agent nobody minds. The core lists them; which they are is
+    /// not asked here.
+    struct Alone: Equatable {
+        var terminal: String
+        var title: String
+        /// Which frame its own pane wears, as the core says it for that
+        /// terminal; plain when the core does not list it.
+        var pane: ControlRoomSnapshot.Terminal.Pane
+    }
+
+    /// What the bar over the right-hand side says: a title (name, the word
+    /// "Supervisor", status) while it holds a group's supervisor, and
+    /// otherwise one name and nothing more.
+    ///
+    /// A terminal with a row of its own has a title like any other; what
+    /// follows its name is that terminal's own word -- "Worker", or nothing
+    /// for an ordinary agent -- because its title says so (`says`), not
+    /// because anything here looked at what it is.
+    static func detailBar(row: Row?, selection: String?, holdsTerminal: Bool,
+                          title: SupervisorTitle?) -> (title: SupervisorTitle?, caption: String?) {
+        guard holdsTerminal else { return (nil, row?.name ?? selection) }
+        return (title, nil)
+    }
+
+    /// The identity of a lone terminal's row. A group's name is letters,
+    /// digits and hyphens, so nothing with a colon in it is one.
+    static func rowId(ofTerminal terminal: String) -> String {
+        "terminal:" + terminal
     }
 
     /// What the core says about a group's supervisor (`ControlRoom.zig`,
@@ -72,11 +111,58 @@ struct ControlRoomList: Equatable {
         }
 
         /// Why the last try made no supervisor.
-        enum Failure: String, Equatable, Decodable {
+        enum Failure: String, Equatable, Decodable, CaseIterable {
             case none
             case terminalNeverOpened = "terminal_never_opened"
             case agentNeverConnected = "agent_never_connected"
             case terminalClosed = "terminal_closed"
+            /// `+launch` said so itself, at once: the CLI's program is not
+            /// there to run.
+            case cliNotFound = "cli_not_found"
+            /// `+launch` said so itself: something else stopped it before
+            /// the CLI ran.
+            case cliDidNotStart = "cli_did_not_start"
+        }
+
+        /// Why a start does not go on with the last supervisor's session,
+        /// or `none` when it does (`ControlRoom.zig`, `ResumeOut.Why`).
+        enum ResumeWhy: String, Equatable, Decodable, CaseIterable {
+            case none
+            case noRecord = "no_record"
+            case noSession = "no_session"
+            case lastTryFailed = "last_try_failed"
+            case cliDiffers = "cli_differs"
+            case clisUnread = "clis_unread"
+            case cliCannotResume = "cli_cannot_resume"
+            case sessionInUse = "session_in_use"
+        }
+
+        /// What the core says of the supervisor a group last had, and
+        /// whether a start goes on with its session. What the right-hand
+        /// side makes of it is `ControlRoomStartChoice`.
+        struct Last: Equatable {
+            /// The CLI the default role is started in.
+            var cli: String?
+            /// The role and the CLI the last supervisor was, and when it
+            /// was last heard from (the real clock). Each nil when nobody
+            /// wrote it down.
+            var role: String?
+            var lastCli: String?
+            var heardMs: Int64?
+            /// Whether a start goes on with its session: a host offers
+            /// that on this and on nothing else, and says `why` when not.
+            var canResume: Bool
+            var why: ResumeWhy
+            /// The directory the core names for the start (`cwd`) is where
+            /// that supervisor last worked (`cwd_from: last_supervisor`),
+            /// and not somewhere worked out another way.
+            var cwdIsTheLastSupervisors: Bool = false
+            /// What the two CLIs are called to a person, as the core says
+            /// (`cli_label`): the one a start uses, and the one the last
+            /// supervisor was. Nil when the core has no name for it, and
+            /// then the key is what is written.
+            var cliLabel: String?
+            var lastCliLabel: String?
         }
 
         var state: State
@@ -86,6 +172,8 @@ struct ControlRoomList: Equatable {
         var role: String?
         /// Where it is started unless the person picks elsewhere.
         var cwd: String
+        /// Nil for a snapshot from before the core said it.
+        var last: Last?
     }
 
     /// A role a supervisor can be started in.
@@ -192,6 +280,11 @@ struct ControlRoomList: Equatable {
         var name: String
         var shown: Shown
         var word: String
+        /// Whose word follows the name on the bar, when it is not the
+        /// frame's own: the control room has one frame -- a supervisor's --
+        /// and shows in it a terminal that may be a worker or neither. Nil
+        /// for "what the frame is", which is every title but those.
+        var says: ControlRoomSnapshot.Terminal.Pane?
     }
 
     /// The terminal a row is about, and when. Both times are on the core's
@@ -202,12 +295,33 @@ struct ControlRoomList: Equatable {
         var eventMs: UInt64?
     }
 
-    /// "N groups are waiting for you". The core's number, not `waiting.count`.
+    /// How many rows are under the first heading. The core's number, not
+    /// `waiting.count`: the rows of groups, and of lone terminals when
+    /// they are listed.
     var waitingCount: Int
     var waiting: [Row]
-    /// "N groups need nothing from you". Also the core's.
+    /// How many rows are under the second heading. Also the core's.
     var quietCount: Int
     var quiet: [Row]
+    /// What each heading says, as the core put it (`ControlRoom.zig`,
+    /// `HeaderOut`); nil in a list made by hand or from an older snapshot,
+    /// and then the heading is written from the count alone, as it was.
+    var waitingHeader: Header?
+    var quietHeader: Header?
+
+    /// A heading: how many rows, whether every one is a group, and which
+    /// grammatical number that is. **All three are the core's.** A host
+    /// picks a sentence by `of` and `number` and puts `count` in it; it
+    /// does not add the groups to the lone terminals, and it does not
+    /// compare the count with one to find the singular.
+    struct Header: Equatable, Decodable {
+        enum Of: String, Equatable, Decodable { case groups, rows }
+        enum Number: String, Equatable, Decodable { case none, one, other }
+
+        var count: Int
+        var of: Of
+        var number: Number
+    }
     /// The allowance block at the bottom, as the core says it; nil when
     /// the snapshot has none, and then nothing is drawn there.
     var quota: ControlRoomQuota?
@@ -254,6 +368,49 @@ extension ControlRoomList {
         waiting == 0
             ? String(localized: "No group is waiting for you", comment: "总控台：左栏标题，没有群在等的时候")
             : String(localized: "\(String(waiting)) groups waiting for you", comment: "总控台：左栏标题，N 是核心给的数")
+    }
+
+    /// The first heading as the core says it: so many waiting, called
+    /// groups only when every one of them is a group, and "1 group" where
+    /// the core says the number is one.
+    static func headerText(_ header: Header) -> String {
+        let n = String(header.count)
+        switch (header.number, header.of) {
+        case (.none, _):
+            return String(localized: "No group is waiting for you", comment: "总控台：左栏标题，没有群在等的时候")
+        case (.one, .groups):
+            return String(localized: "\(n) group waiting for you", comment: "总控台：左栏标题，正好一个群在等（英文单数）")
+        case (.other, .groups):
+            return String(localized: "\(n) groups waiting for you", comment: "总控台：左栏标题，N 是核心给的数")
+        case (.one, .rows), (.other, .rows):
+            return String(localized: "\(n) waiting for you", comment: "总控台：左栏标题，在等的里有不在任何群里的终端，所以不说「群」")
+        }
+    }
+
+    /// The second heading, by the same rule.
+    static func quietHeaderText(_ header: Header) -> String {
+        let n = String(header.count)
+        switch (header.number, header.of) {
+        case (.one, .groups):
+            return String(localized: "\(n) group needs nothing from you", comment: "总控台：左栏第二段的标题，正好一个群（英文单数）")
+        case (.none, .groups), (.other, .groups):
+            return String(localized: "\(n) groups need nothing from you", comment: "总控台：左栏第二段的标题")
+        case (.one, .rows):
+            return String(localized: "\(n) needs nothing from you", comment: "总控台：左栏第二段的标题，正好一行、而且不是群（英文单数）")
+        case (.none, .rows), (.other, .rows):
+            return String(localized: "\(n) need nothing from you", comment: "总控台：左栏第二段的标题，里面有不在任何群里的终端，所以不说「群」")
+        }
+    }
+
+    /// The heading of a list: the core's when it gave one, otherwise the
+    /// count of groups, written as it always was.
+    var waitingHeaderText: String {
+        waitingHeader.map(Self.headerText) ?? Self.headerText(waiting: waitingCount)
+    }
+
+    var quietHeaderText: String {
+        quietHeader.map(Self.quietHeaderText)
+            ?? String(localized: "\(String(quietCount)) groups need nothing from you", comment: "总控台：左栏第二段的标题")
     }
 
     /// The line that stands for the steps of a command that are not shown;
@@ -372,6 +529,79 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         /// Absent in a snapshot from before the core said it; such a
         /// terminal is drawn as an ordinary one.
         var pane: Pane?
+
+        /// What the right end of its pane's title draws: the glyph and the
+        /// words, as the core worked them out (`ControlRoom.zig`, `Bar`).
+        /// **A host draws this pair and makes none of its own** out of
+        /// `shown`, `text` and whether the terminal is held: which of them
+        /// wins is the core's rule.
+        struct Bar: Decodable, Equatable {
+            /// The five a row draws, and `held`, which only a title does. A
+            /// value this does not know is an error, as with `shown`.
+            enum Shown: String, Decodable, Equatable, CaseIterable {
+                case needsYou = "needs_you"
+                case trouble
+                case doneUnseen = "done_unseen"
+                case working
+                case none
+                case held
+
+                /// The same glyph, for a status that is not a pane's.
+                init(_ status: ControlRoomList.Shown) {
+                    switch status {
+                    case .needsYou: self = .needsYou
+                    case .trouble: self = .trouble
+                    case .doneUnseen: self = .doneUnseen
+                    case .working: self = .working
+                    case .none: self = .none
+                    }
+                }
+
+                /// The status glyph this is; nil for `held`, which is not
+                /// one of the four.
+                var status: ControlRoomList.Shown? {
+                    switch self {
+                    case .needsYou: return .needsYou
+                    case .trouble: return .trouble
+                    case .doneUnseen: return .doneUnseen
+                    case .working: return .working
+                    case .none: return ControlRoomList.Shown.none
+                    case .held: return nil
+                    }
+                }
+            }
+
+            var shown: Shown
+            var text: String
+        }
+
+        /// Absent in a snapshot from before the core said it; the title
+        /// then says the terminal's status, as it did before.
+        var bar: Bar?
+
+        /// Who is working in it (`ControlRoom.zig`, `WhoOut`): what a
+        /// project's pane keeps. `role`, `cli` and `session` are the
+        /// core's words as it wrote them -- for an agent an empty string
+        /// is that part not known, and for the other two all three are
+        /// nil. Read and carried; nothing here draws it.
+        struct Who: Decodable, Equatable {
+            /// `unknown` is not `none`: the core could not tell, which is
+            /// not nobody. A value this does not know is an error.
+            enum Is: String, Decodable, Equatable, CaseIterable {
+                case unknown, none, agent
+            }
+
+            /// Which of the three: the snapshot's `who.is`.
+            var `is`: Is
+            var role: String?
+            var cli: String?
+            var session: String?
+            /// The terminal whose agent opened this one, in this run.
+            var opened_by: String?
+        }
+
+        /// Absent in a snapshot from before the core said it.
+        var who: Who?
     }
 
     /// See `ControlRoomList.SupervisorStart`.
@@ -381,6 +611,37 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var failed: ControlRoomList.SupervisorStart.Failure
         var role: String?
         var cwd: String
+        /// The three the core added together; absent together in a
+        /// snapshot from before it did.
+        var cli: String?
+        var last: Last?
+        var resume: Resume?
+        /// How the core arrived at `cwd`. Kept as the word it wrote: the
+        /// one value asked about is `last_supervisor`.
+        var cwd_from: String?
+        /// What `cli` is called to a person; nil when the core has no
+        /// name for it, or is from before it said.
+        var cli_label: String?
+
+        struct Last: Decodable, Equatable {
+            var role: String?
+            var cli: String?
+            var cli_label: String?
+            var heard_ms: Int64?
+        }
+
+        struct Resume: Decodable, Equatable {
+            var can: Bool
+            var why: ControlRoomList.SupervisorStart.ResumeWhy
+        }
+
+        var startLast: ControlRoomList.SupervisorStart.Last? {
+            guard let last, let resume else { return nil }
+            return .init(cli: cli, role: last.role, lastCli: last.cli, heardMs: last.heard_ms,
+                         canResume: resume.can, why: resume.why,
+                         cwdIsTheLastSupervisors: cwd_from == "last_supervisor",
+                         cliLabel: cli_label, lastCliLabel: last.cli_label)
+        }
     }
 
     struct SupervisorRole: Decodable, Equatable {
@@ -413,18 +674,41 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var same_as: String?
     }
 
+    /// A terminal in no group, with a row of its own (`ControlRoom.zig`,
+    /// `LoneRow`): the same things a group's row says, about one terminal.
+    struct Lone: Decodable, Equatable {
+        var id: String
+        var title: String
+        var needs_me: Bool
+        var unseen: Bool?
+        var attention: Attention?
+        var shown: ControlRoomList.Shown
+        var text: String
+        var waiter: Waiter
+        var what: What
+    }
+
     var rev: UInt64
     /// "N waiting for you": terminals, each once. The number on the Dock
     /// icon. Absent in a snapshot cut down by hand.
     var needs_me: Int?
     var groups_needing_me: Int
     var groups_other: Int
+    /// What the list's two headings say. Absent in snapshots from before
+    /// the core said it: then the headings count groups.
+    var header_waiting: ControlRoomList.Header?
+    var header_quiet: ControlRoomList.Header?
     /// The group to start on when the control room opens with nothing
     /// selected. The core's choice: which is first and which have an agent
     /// in them are both its to say.
     var open_on: String?
     /// Already in the order to draw them.
     var groups: [Group]
+    /// Terminals in no group. **Read and not drawn**: they have no row in
+    /// the list (`ControlRoomList.init(snapshot:showing:loneRows:)`), and
+    /// the core counts them in nothing the person is shown (task 1485).
+    /// Absent in a snapshot cut down by hand.
+    var ungrouped: [Lone]?
     /// The three below are newer than the rest; a snapshot without them
     /// draws no tab glyphs, breathes nothing and has no band.
     var tabs: [Tab]?
@@ -528,9 +812,47 @@ extension ControlRoomList {
     /// order, each goes in the section its own `needs_me` says, and the two
     /// counts are the snapshot's. `showing` is the tab in front in the
     /// window that draws this list, which decides only which glyph breathes.
-    init(snapshot: ControlRoomSnapshot, showing: String? = nil) {
-        let breathing = ControlRoomPulse.first(of: snapshot.pulses ?? [], notIn: showing)?.group
-        let rows = snapshot.groups.map { group in
+    ///
+    /// **The terminals in no group (`ungrouped`) get no row.** They had one
+    /// each, after the groups'; the rows read as groups nobody had made,
+    /// and the user had them taken out (2026-10-13, task 1485). The core
+    /// counts them in neither heading nor in `needs_me`, so what is drawn
+    /// is still what every number says. `loneRows` true is the list as it
+    /// was: nothing in the app asks for it, and it is kept so that what
+    /// such a row says stays under test for the day they are drawn
+    /// somewhere of their own.
+    init(snapshot: ControlRoomSnapshot, showing: String? = nil, loneRows: Bool = false) {
+        let first = ControlRoomPulse.first(of: snapshot.pulses ?? [], notIn: showing)
+        let breathing = first?.group
+        // Which frame a terminal's own pane wears, as the core says it for
+        // that terminal; plain for one it does not list.
+        func pane(of terminal: String) -> ControlRoomSnapshot.Terminal.Pane {
+            snapshot.terminals?.first { $0.id == terminal }?.pane ?? .plain
+        }
+        // A terminal on its own, after the groups, in the section its own
+        // `needs_me` says -- the same test a group's row is put by.
+        let lone = (loneRows ? snapshot.ungrouped ?? [] : []).map { one in
+            (one.needs_me, Row(
+                id: Self.rowId(ofTerminal: one.id),
+                shown: one.shown,
+                word: one.text,
+                waiter: Waiter(is: one.waiter.is, name: one.waiter.name),
+                what: What(cut: one.what.cut, form: one.what.form, lines: one.what.lines),
+                others: 0,
+                // The one that breathes is the first the core lists; it is
+                // this row when that one is in no group and is this terminal.
+                pulses: first != nil && first?.group == nil && first?.terminal == one.id,
+                unseen: one.unseen ?? false,
+                supervisor: SupervisorTitle(name: one.title, shown: one.shown, word: one.text, says: pane(of: one.id)),
+                target: one.attention.flatMap { attention in
+                    attention.terminal.map {
+                        Target(terminal: $0, sinceMs: attention.since_ms, eventMs: attention.event_ms)
+                    }
+                },
+                start: nil,
+                alone: Alone(terminal: one.id, title: one.title, pane: pane(of: one.id))))
+        }
+        let groups = snapshot.groups.map { group in
             (group.needs_me, Row(
                 id: group.name,
                 shown: group.shown,
@@ -548,21 +870,29 @@ extension ControlRoomList {
                 },
                 start: group.supervisor.map {
                     SupervisorStart(state: $0.state, canStart: $0.can_start, failed: $0.failed,
-                                    role: $0.role, cwd: $0.cwd)
+                                    role: $0.role, cwd: $0.cwd, last: $0.startLast)
                 }))
         }
+        let rows = groups + lone
         self.init(
-            waitingCount: snapshot.groups_needing_me,
+            // The heading's count where the core gave one, and the groups'
+            // otherwise: the same number since task 1485. The
+            // layout goes by the same number: with nobody waiting there is
+            // one heading and no line under it.
+            waitingCount: snapshot.header_waiting?.count ?? snapshot.groups_needing_me,
             waiting: rows.filter { $0.0 }.map { $0.1 },
-            quietCount: snapshot.groups_other,
+            quietCount: snapshot.header_quiet?.count ?? snapshot.groups_other,
             quiet: rows.filter { !$0.0 }.map { $0.1 },
+            waitingHeader: snapshot.header_waiting,
+            quietHeader: snapshot.header_quiet,
             quota: snapshot.quota,
             supervisorRoles: (snapshot.supervisor_roles ?? []).map { SupervisorRole(key: $0.key, name: $0.name) },
             chooseSupervisorRole: snapshot.choose_supervisor_role ?? false)
     }
 
-    static func decode(snapshot json: Data, showing: String? = nil) throws -> ControlRoomList {
-        ControlRoomList(snapshot: try JSONDecoder().decode(ControlRoomSnapshot.self, from: json), showing: showing)
+    static func decode(snapshot json: Data, showing: String? = nil, loneRows: Bool = false) throws -> ControlRoomList {
+        ControlRoomList(snapshot: try JSONDecoder().decode(ControlRoomSnapshot.self, from: json),
+                        showing: showing, loneRows: loneRows)
     }
 }
 
@@ -631,6 +961,42 @@ extension ControlRoomList {
     }
 }
 
+/// How the first line of a waiting row is shared out when it is too narrow
+/// for all three things on it: the group's name, who is waiting, and the
+/// status word.
+///
+/// **What keeps its width, in order**: the status word, whole; then the
+/// name, cut only by the status word; then who is waiting, in what is left
+/// -- cut from its start, so the end of a long title is what stays, and
+/// not drawn at all when nothing is left. It used to be the other way
+/// round: who is waiting kept its width and the name was cut to an
+/// ellipsis, so a worker with a long title left a row that did not say
+/// which group it was (task 1444, defect 3). The Windows host's
+/// `scene::place_line` is the same rule.
+enum ControlRoomLine1 {
+    struct Fit: Equatable {
+        /// How wide the name is drawn; less than it wanted when it is cut.
+        var name: Double
+        /// How wide who is waiting is drawn; nil when it is not.
+        var who: Double?
+    }
+
+    /// Widths are what each would take alone on a line; `who` nil when
+    /// there is nobody to name. `gap` is the space between two things.
+    static func fit(width: Double, gap: Double, name: Double, who: Double?, word: Double) -> Fit {
+        // The status word and the gap before it come off the right -- the
+        // gap whether or not there is a word, as the Windows host's
+        // `place_line` has it, so that the two are one rule to the point.
+        let trail = width - word - gap
+        let drawnName = max(0, min(name, trail))
+        guard let who, who > 0 else { return Fit(name: drawnName, who: nil) }
+        // What the name wanted, not what it got: a name that is cut has
+        // left no room, even if rounding says a point remains.
+        let room = trail - (name + gap)
+        return Fit(name: drawnName, who: room > 0 ? min(who, room) : nil)
+    }
+}
+
 struct ControlRoomListLayout: Equatable {
     typealias Look = ControlRoomLook
 
@@ -666,7 +1032,11 @@ struct ControlRoomListLayout: Equatable {
     /// `needed` says how many lines one step would take with all the room
     /// it wanted, and whether it is set in the terminal's face: the host's
     /// measurement. Left out, the nominal count stands in.
-    init(list: ControlRoomList, height: CGFloat,
+    ///
+    /// `noteUnderHeader` is how high whatever is said under the header is
+    /// -- why a name made no group -- and the rows start below it: a note
+    /// laid over the first row hid the row it was laid over.
+    init(list: ControlRoomList, height: CGFloat, noteUnderHeader: CGFloat = 0,
          needed: (String, Bool) -> Int = { text, _ in ControlRoomList.nominalLines(text) }) {
         let pad = CGFloat(Look.Space.sidePanelPadding)
         let width = CGFloat(Look.Side.width)
@@ -678,7 +1048,7 @@ struct ControlRoomListLayout: Equatable {
 
         var y = pad
         header = CGRect(x: pad, y: y, width: inner, height: headerH)
-        y += headerH
+        y += headerH + max(0, noteUnderHeader)
 
         var frames: [String: CGRect] = [:]
         var fitted: [String: ControlRoomAskFit] = [:]

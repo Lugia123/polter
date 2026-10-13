@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import Ghostty
 
@@ -125,6 +126,122 @@ struct PaneFrameTests {
         #expect(throws: (any Error).self) {
             try JSONDecoder().decode(ControlRoomSnapshot.Terminal.self, from: json)
         }
+    }
+
+    // MARK: The right end of the title: the core's pair
+
+    private typealias Bar = ControlRoomSnapshot.Terminal.Bar
+
+    @Test func theTitlesGlyphAndWordAreThePairTheCoreGivesForEveryTerminal() throws {
+        let all = try terminals()
+        for terminal in all {
+            let bar = try #require(terminal.bar, "\(terminal.id) has no bar")
+            let drawn = try #require(PaneFrame.drawn(terminal: terminal.id, ownName: "", at: split, in: all))
+            #expect(drawn.title == Title(name: terminal.title, shown: bar.shown, word: bar.text), "\(terminal.id)")
+        }
+    }
+
+    @Test func aHeldWorkerOfTheFixtureSaysHeldAndItsStatusIsUntouched() throws {
+        let all = try terminals()
+        // `tokens`: a worker that clocked off, and the person holds it.
+        let held = try #require(all.first { $0.title == "tokens" })
+        #expect(held.bar == Bar(shown: .held, text: "被按住"))
+        // What a row or a window tab would draw of it is still its status.
+        #expect(held.shown == .none)
+        #expect(held.text == "下班")
+        let drawn = PaneFrame.drawn(terminal: held.id, ownName: "", at: split, in: all)
+        #expect(drawn == Drawn(wears: .worker, title: Title(name: "tokens", shown: .held, word: "被按住")))
+        // Exactly one of the fixture's terminals is held.
+        let heldOnes = all.filter { $0.bar?.shown == .held }.map(\.title)
+        #expect(heldOnes == ["tokens"])
+    }
+
+    @Test func theHostTakesThePairAsGivenAndWorksNothingOut() {
+        // Whatever the status says: the title is the pair. Which wins when a
+        // terminal is held and also waiting is the core's rule, not this.
+        for status in ControlRoomList.Shown.allCases {
+            for bar in Bar.Shown.allCases {
+                let terminal = ControlRoomSnapshot.Terminal(
+                    id: "0x01", title: "t", shown: status, text: "status", pane: .worker, bar: Bar(shown: bar, text: "pair"))
+                let drawn = PaneFrame.drawn(terminal: "0x01", ownName: "", at: split, in: [terminal])
+                #expect(drawn?.title == Title(name: "t", shown: bar, word: "pair"), "\(status) \(bar)")
+            }
+        }
+    }
+
+    @Test func aSnapshotFromBeforeTheCoreGaveThePairSaysTheStatus() throws {
+        let json = Data(#"{"id":"0x01","title":"old","shown":"working","text":"在干活","pane":"worker"}"#.utf8)
+        let old = try JSONDecoder().decode(ControlRoomSnapshot.Terminal.self, from: json)
+        #expect(old.bar == nil)
+        let drawn = PaneFrame.drawn(terminal: "0x01", ownName: "", at: split, in: [old])
+        #expect(drawn?.title == Title(name: "old", shown: .working, word: "在干活"))
+    }
+
+    @Test func aGlyphTheHostDoesNotKnowIsAnErrorNotABlankTitle() {
+        let json = Data(#"{"id":"0x01","title":"t","shown":"none","text":"","pane":"plain","bar":{"shown":"muted","text":"x"}}"#.utf8)
+        #expect(throws: (any Error).self) {
+            try JSONDecoder().decode(ControlRoomSnapshot.Terminal.self, from: json)
+        }
+    }
+
+    @Test func heldIsTheOnlyGlyphOfATitleThatIsNotAStatus() {
+        for status in ControlRoomList.Shown.allCases {
+            #expect(Bar.Shown(status).status == status)
+        }
+        let notAStatus = Bar.Shown.allCases.filter { $0.status == nil }
+        #expect(notAStatus == [.held])
+        // The control room's own frame: a supervisor's status, as it was.
+        let title = Title(ControlRoomList.SupervisorTitle(name: "web-app", shown: .trouble, word: "出错"))
+        #expect(title == Title(name: "web-app", shown: .trouble, word: "出错"))
+    }
+
+    @Test func theHeldGlyphIsTwoBarsInsideTheStatusGlyphsBox() {
+        let side = CGFloat(ControlRoomLook.Side.glyph)
+        let box = PaneHeldGlyph().path(in: CGRect(x: 0, y: 0, width: side, height: side)).boundingRect
+        // The design's: from 3.8 to 10.2 across and 3 to 11 down, of 14.
+        #expect(abs(box.minX - 3.8) < 0.01 && abs(box.maxX - 10.2) < 0.01)
+        #expect(abs(box.minY - 3) < 0.01 && abs(box.maxY - 11) < 0.01)
+        #expect(PaneHeldGlyph.bars.count == 2)
+    }
+
+    // MARK: The word after the name, when the title brings its own
+
+    @Test func aControlRoomTitleBringsItsOwnWordAcross() {
+        // The control room has one frame -- a supervisor's -- and shows in it
+        // a terminal that may be a worker or neither. Whose word follows the
+        // name comes with the title, and must still be there on the bar.
+        for says in PaneFrame.Kind.allCases {
+            let from = ControlRoomList.SupervisorTitle(name: "lone", shown: .needsYou, word: "等批准", says: says)
+            let title = Title(from)
+            #expect(title.says == says, "\(says)")
+            #expect(title == Title(name: "lone", shown: .needsYou, word: "等批准", says: says))
+            // In the supervisor's frame it says what the title says it is.
+            #expect(title.roleWord(in: .supervisor) == PaneFrame.roleWord(says), "\(says)")
+        }
+        // An ordinary terminal in the supervisor's frame says nothing; a
+        // worker there says it is a worker, not a supervisor.
+        let plain = Title(ControlRoomList.SupervisorTitle(name: "zsh", shown: .none, word: "", says: .plain))
+        #expect(plain.roleWord(in: .supervisor) == nil)
+        let worker = Title(ControlRoomList.SupervisorTitle(name: "w", shown: .none, word: "", says: .worker))
+        #expect(worker.roleWord(in: .supervisor) == PaneFrame.roleWord(.worker))
+        #expect(worker.roleWord(in: .supervisor) != PaneFrame.roleWord(.supervisor))
+    }
+
+    @Test func aTitleThatBringsNoWordSaysWhatItsFrameIsAndAPaneOfASplitNeverBringsOne() throws {
+        // A group's supervisor in the control room: no word of its own.
+        let group = Title(ControlRoomList.SupervisorTitle(name: "web-app", shown: .working, word: "在干活"))
+        #expect(group.says == nil)
+        #expect(group.roleWord(in: .supervisor) == PaneFrame.roleWord(.supervisor))
+        // Every pane of a split: the frame is what it is.
+        let all = try terminals()
+        for terminal in all {
+            let drawn = try #require(PaneFrame.drawn(terminal: terminal.id, ownName: "", at: split, in: all))
+            #expect(drawn.title.says == nil, "\(terminal.id)")
+            #expect(drawn.title.roleWord(in: drawn.wears) == PaneFrame.roleWord(drawn.wears), "\(terminal.id)")
+        }
+        let unlisted = try #require(PaneFrame.drawn(terminal: nil, ownName: "fish", at: split, in: all))
+        #expect(unlisted.title.says == nil)
+        #expect(Title(name: "t", shown: .none, word: "").says == nil)
     }
 
     // MARK: The ground

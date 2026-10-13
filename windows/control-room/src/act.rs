@@ -11,6 +11,9 @@ use crate::list::Row;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Act<'a> {
     Seen { group: &'a str },
+    /// The same for a terminal that is in no group: it has no group to
+    /// name, so it is named itself.
+    SeenTerminal { terminal: &'a str },
     /// Until its state next changes.
     Snooze { group: &'a str },
     /// Until a moment on the wall clock.
@@ -22,8 +25,44 @@ pub enum Act<'a> {
     /// Make a group by the name that was typed.
     NewGroup { name: &'a str },
     /// Start a supervisor for a group that has none. No role or no
-    /// directory is the one the core's snapshot names.
-    StartSupervisor { group: &'a str, role: Option<&'a str>, cwd: Option<&'a str> },
+    /// directory is the one the core's snapshot names. No session is the
+    /// core's own choice (`session_sent`).
+    StartSupervisor { group: &'a str, role: Option<&'a str>, cwd: Option<&'a str>, session: Option<Session> },
+}
+
+/// Which session a start is asked for: the core's two words
+/// (`ControlAct.zig`, `Session`). The macOS host's
+/// `ControlRoomStartChoice.Session`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Session {
+    /// Go on with the session the group's last supervisor was in.
+    Last,
+    New,
+}
+
+impl Session {
+    pub const ALL: [Session; 2] = [Session::Last, Session::New];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Session::Last => "last",
+            Session::New => "new",
+        }
+    }
+}
+
+/// What the start sends for `session`; none to leave it out. With the
+/// choice on screen (`offered`) it is what is selected there -- the last
+/// session until the person picks the other. With no choice on screen
+/// nothing is said: the core starts a new session where the last cannot be
+/// gone on with, and a host that said "new" there would be deciding it a
+/// second time.
+pub fn session_sent(offered: bool, picked: Option<Session>) -> Option<Session> {
+    if offered {
+        Some(picked.unwrap_or(Session::Last))
+    } else {
+        None
+    }
 }
 
 /// The request for an act, or none when the row has nothing to send it
@@ -32,6 +71,7 @@ pub enum Act<'a> {
 pub fn encode(act: &Act) -> Option<String> {
     Some(match act {
         Act::Seen { group } => format!("{{\"act\":\"seen\",\"group\":{}}}", quote(group)),
+        Act::SeenTerminal { terminal } => format!("{{\"act\":\"seen\",\"terminal\":{}}}", quote(terminal)),
         Act::Snooze { group } => format!("{{\"act\":\"snooze\",\"group\":{}}}", quote(group)),
         Act::SnoozeUntil { group, until_ms } => {
             format!("{{\"act\":\"snooze\",\"group\":{},\"until_ms\":{until_ms}}}", quote(group))
@@ -46,7 +86,7 @@ pub fn encode(act: &Act) -> Option<String> {
             quote(text)
         ),
         Act::NewGroup { name } => format!("{{\"act\":\"new_group\",\"name\":{}}}", quote(name)),
-        Act::StartSupervisor { group, role, cwd } => {
+        Act::StartSupervisor { group, role, cwd, session } => {
             // Left out when the person picked neither: the core then uses
             // the ones its snapshot named.
             let mut out = format!("{{\"act\":\"start_supervisor\",\"group\":{}", quote(group));
@@ -55,6 +95,9 @@ pub fn encode(act: &Act) -> Option<String> {
             }
             if let Some(cwd) = cwd {
                 out.push_str(&format!(",\"cwd\":{}", quote(cwd)));
+            }
+            if let Some(session) = session {
+                out.push_str(&format!(",\"session\":{}", quote(session.name())));
             }
             out.push('}');
             out
@@ -185,9 +228,16 @@ impl Refusal {
     }
 }
 
-/// Looking at a group marks it seen: a row the core says nobody has looked
+/// Looking at a row marks it seen: a row the core says nobody has looked
 /// at, left selected with the control room in front for
 /// `look::selection::SEEN_AFTER` seconds.
+///
+/// The rule is one for every row. A group's row is seen by the group's
+/// name; a terminal that is in no group has no group to name and is seen
+/// by its own (`Act::SeenTerminal`). For as long as only the first was
+/// sent, what such a terminal finished stayed "not looked at". Which a row
+/// is the list already says (`alone`); nothing is worked out from its id.
+/// The macOS host's `ControlRoomActions.seen(rowId:in:)`.
 ///
 /// This holds no clock. `selection_changed` hands back a `Dwell` when there
 /// is something to wait for; the host waits and then asks `due`, which says
@@ -202,11 +252,20 @@ pub struct SeenMarker {
     selected_unseen: bool,
 }
 
-/// One wait, for one selection of one group.
+/// One wait, for one selection of one row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dwell {
     generation: u64,
-    pub group: String,
+    /// The row waited on, by its id.
+    pub row: String,
+    /// The terminal to name when the row is a terminal in no group.
+    alone: Option<String>,
+}
+
+impl Dwell {
+    fn on(generation: u64, row: &Row) -> Dwell {
+        Dwell { generation, row: row.id.clone(), alone: row.alone.as_ref().map(|a| a.terminal.clone()) }
+    }
 }
 
 impl SeenMarker {
@@ -220,7 +279,7 @@ impl SeenMarker {
         // Only a row the core says has not been looked at is worth saying
         // anything about.
         let row = row.filter(|r| r.unseen)?;
-        Some(Dwell { generation: self.generation, group: row.id.clone() })
+        Some(Dwell::on(self.generation, row))
     }
 
     /// A new list has arrived; `row` is the selected row as it is now (none
@@ -240,13 +299,16 @@ impl SeenMarker {
         self.selected_unseen = row.is_some_and(|r| r.unseen);
         let row = row.filter(|r| r.unseen && !was)?;
         self.generation += 1;
-        Some(Dwell { generation: self.generation, group: row.id.clone() })
+        Some(Dwell::on(self.generation, row))
     }
 
     /// The wait is over: the act to send, or none when the selection moved
     /// or the control room is not what the person is looking at.
     pub fn due<'a>(&self, dwell: &'a Dwell, in_front: bool) -> Option<Act<'a>> {
-        let still = self.generation == dwell.generation && self.selected.as_deref() == Some(dwell.group.as_str());
-        (still && in_front).then_some(Act::Seen { group: &dwell.group })
+        let still = self.generation == dwell.generation && self.selected.as_deref() == Some(dwell.row.as_str());
+        (still && in_front).then(|| match &dwell.alone {
+            Some(terminal) => Act::SeenTerminal { terminal },
+            None => Act::Seen { group: &dwell.row },
+        })
     }
 }

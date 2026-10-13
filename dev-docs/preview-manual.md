@@ -314,6 +314,40 @@ macos/build.nu --action test
 GHOSTTY_LZ4_SLOW=1 zig build test -Dtest-filter="lz4 differential"
 ```
 
+### macOS 的纯逻辑测试：不起 app 也能跑（`tools/mac-logic-tests`）
+
+app 自己的测试目标要起宿主：跑它会启动一个 Polter，把屏幕从正在用机器的人手里拿走，所以日常没有人跑。
+`tools/mac-logic-tests` 走的是另一条路：在仓外的临时目录里搭一个 SwiftPM 小包，把不需要宿主的源文件和它们的测试
+软链进去，`swift test`。什么都不启动，屏幕上不出窗口。
+
+```sh
+tools/mac-logic-tests                 # 核清单、搭包、跑；约半分钟（每次都是冷的，包建在临时目录里、跑完删掉）
+tools/mac-logic-tests --check-list    # 只核清单，不编译；零点几秒
+tools/mac-logic-tests --filter 名字    # 传给 swift test 的 --filter
+tools/mac-logic-tests --keep          # 把小包留下（几百 MB），说出路径
+```
+
+- **哪些文件进小包写在 `tools/mac-logic-tests.json`**。`watched` 里的三个目录（`macos/Sources/Features/ControlRoom`、
+  `macos/Tests/ControlRoom`、`macos/Tests/Splits`）下每一个 `.swift` 文件，要么在 `in` 里，要么在 `out` 里并写一句原因
+  （要核心、要真的终端视图……）。**两边都没有的文件 = 命令失败并点名它**：新加一份测试而没人把它放进去，以前是没人跑、
+  也没人知道（一条测试因此在主线上红了一夜）。加文件时顺手登记；`tools/mac-logic-tests-list-covers-the-tree.py` 这道闸
+  只做这一步核对，跟别的闸一起跑。
+- **只取文件的一段**：有的文件前半截是纯逻辑、后半截要活的终端（`ProjectDocument.swift`、`PoltergeistLayoutShape.swift`、
+  `TerminalSplitTreeView.swift`）。清单里用 `from` / `until`（各是恰好出现在一行里的一段文字）、`drop`（删掉的整行）、
+  `prepend` 写明取哪一段；这种是**拷贝出来的副本，不是软链**。标记在文件里找不到了是失败，不是悄悄取个短的。
+- **替身**：`tools/mac-logic-tests-stubs/` 里的文件只编进小包，不是 app 的一部分。现在只有 `Ghostty` 这个名字空间和一个
+  空的 `SurfaceView`（为了让签名里写着它的泛型代码编得过）。测试不许是关于替身的。
+- **退出码**：0 = 清单与树一致、至少跑了一条、全过；1 = 有测试失败或小包编不过；2 = 清单与树不一致、标记不见了、
+  **或者一条都没跑到**；3 = 没有 `swift`。
+- **它证明什么、不证明什么**：跑的是 app 编的同一份源码文本，不是 app 的二进制。量不到的：接线（控制器、借出、
+  AppDelegate——只有含 app 的 `zig build` 能证编得过）；Xcode 测试目标比小包更严的并发检查（要
+  `xcodebuild build-for-testing`）；任何画出来的东西。清单里 `out` 的那几个文件就是它够不着的范围。
+- 写测试时的两个坑：软链进去的测试用 `#filePath` 找仓根要先 `resolvingSymlinksInPath()`（现有的 `fixture()` 就是这么写的）；
+  小包里 `RunLoop` 上的 `Timer` 不触发，要定时用 `DispatchQueue.main.asyncAfter`。
+- `tools/pre-push-full-test` 在 Zig 全量之后、闸之前跑它一次，输出里有它自己的一行。
+
+出处：`tools/mac-logic-tests` 文件头；清单 `tools/mac-logic-tests.json`。
+
 ### 没人引用的声明可能从来没被编译过
 
 `src/os/i18n.zig` 的 `locales_map` 和 `staticLocale` 里一共有 **5 处编译错误**，

@@ -78,6 +78,8 @@ const Allocator = std.mem.Allocator;
 
 const daylog = @import("daylog.zig");
 const Marks = @import("Chat.zig").Marks;
+const LastSupervisor = @import("Chat.zig").LastSupervisor;
+const ProjectTie = @import("Chat.zig").ProjectTie;
 
 const log = std.log.scoped(.poltergeist);
 
@@ -121,9 +123,14 @@ pub const Shell = struct {
     /// every record written before there was one.
     marks: Marks,
 
-    /// The directory its supervisor was last working in; empty for every
-    /// record written before that was kept, and for a group nobody minded.
-    supervisor_dir: []const u8,
+    /// The supervisor it last had; `none` for every record written before
+    /// that was kept, and for a group nobody minded. Its strings are owned
+    /// like the rest.
+    supervisor: LastSupervisor,
+
+    /// The project it is tied to; `undecided` for every record written
+    /// before there were ties. Owned like the rest.
+    project: ProjectTie,
 };
 
 pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error!GroupLog {
@@ -164,7 +171,8 @@ pub fn note(self: *GroupLog, name: []const u8, brief: []const u8) void {
         .brief = brief,
         .listed = true,
         .marks = if (was) |m| m.marks else .none,
-        .supervisor_dir = if (was) |m| m.supervisor_dir else "",
+        .supervisor = if (was) |m| m.supervisor else .none,
+        .project = if (was) |m| m.project else .undecided,
     });
 }
 
@@ -177,21 +185,42 @@ pub fn mark(self: *GroupLog, name: []const u8, marks: Marks) void {
         .brief = if (was) |m| m.brief else "",
         .listed = if (was) |m| m.listed else true,
         .marks = marks,
-        .supervisor_dir = if (was) |m| m.supervisor_dir else "",
+        .supervisor = if (was) |m| m.supervisor else .none,
+        .project = if (was) |m| m.project else .undecided,
     });
 }
 
-/// Write down where a group's supervisor is working, leaving everything
-/// else as it was. It is what the control room offers to start the next
-/// one in, the morning after.
-pub fn supervisorDir(self: *GroupLog, name: []const u8, dir: []const u8) void {
+/// Write down the supervisor a group has, leaving everything else as it
+/// was: where it works, the role and the CLI it is, the session it is in
+/// and when it was last heard from. It is what the control room offers to
+/// start the next one from, the morning after.
+///
+/// The whole record, not a field of it: the caller holds the current one
+/// (`Chat.lastSupervisorOf`), and a writer that named three of the five
+/// would be erasing the other two.
+pub fn supervisor(self: *GroupLog, name: []const u8, last: LastSupervisor) void {
     const was = self.readMeta(self.alloc, name);
     defer if (was) |m| m.free(self.alloc);
     self.writeMeta(name, .{
         .brief = if (was) |m| m.brief else "",
         .listed = if (was) |m| m.listed else true,
         .marks = if (was) |m| m.marks else .none,
-        .supervisor_dir = dir,
+        .supervisor = last,
+        .project = if (was) |m| m.project else .undecided,
+    });
+}
+
+/// Write down the project a group is tied to, or that it has none,
+/// leaving everything else as it was.
+pub fn project(self: *GroupLog, name: []const u8, tie: ProjectTie) void {
+    const was = self.readMeta(self.alloc, name);
+    defer if (was) |m| m.free(self.alloc);
+    self.writeMeta(name, .{
+        .brief = if (was) |m| m.brief else "",
+        .listed = if (was) |m| m.listed else true,
+        .marks = if (was) |m| m.marks else .none,
+        .supervisor = if (was) |m| m.supervisor else .none,
+        .project = tie,
     });
 }
 
@@ -207,7 +236,8 @@ pub fn forget(self: *GroupLog, name: []const u8) void {
         .brief = if (was) |m| m.brief else "",
         .listed = false,
         .marks = if (was) |m| m.marks else .none,
-        .supervisor_dir = if (was) |m| m.supervisor_dir else "",
+        .supervisor = if (was) |m| m.supervisor else .none,
+        .project = if (was) |m| m.project else .undecided,
     });
 }
 
@@ -219,7 +249,8 @@ const Entry = struct {
     brief: []const u8,
     listed: bool,
     marks: Marks,
-    supervisor_dir: []const u8,
+    supervisor: LastSupervisor,
+    project: ProjectTie,
 };
 
 fn writeMeta(self: *GroupLog, name: []const u8, entry: Entry) void {
@@ -287,10 +318,50 @@ fn render(s: *std.json.Stringify, entry: Entry) std.Io.Writer.Error!void {
     }
 
     // Only when somebody said: a group nobody minded has the file it
-    // always had.
-    if (entry.supervisor_dir.len > 0) {
-        try s.objectField("supervisor_dir");
-        try s.write(entry.supervisor_dir);
+    // always had. **A part nobody knows is a key that is not there** --
+    // never an empty string, which would read back as "known, and empty".
+    const sup = entry.supervisor;
+    if (!sup.isNone()) {
+        try s.objectField("supervisor");
+        try s.beginObject();
+        if (sup.dir.len > 0) {
+            try s.objectField("dir");
+            try s.write(sup.dir);
+            try s.objectField("dir_from");
+            try s.write(@tagName(sup.dir_from));
+        }
+        inline for (.{ "role", "cli", "session" }) |key| {
+            if (@field(sup, key).len > 0) {
+                try s.objectField(key);
+                try s.write(@field(sup, key));
+            }
+        }
+        if (sup.heard_ms) |ms| {
+            try s.objectField("heard_ms");
+            try s.write(ms);
+        }
+        try s.endObject();
+    }
+
+    // Only when somebody has said. Nobody having said is the key not
+    // being there, which is what every older record already is; a group
+    // whose supervisor said it has none says that in so many words.
+    switch (entry.project) {
+        .undecided => {},
+        .declined => {
+            try s.objectField("project");
+            try s.beginObject();
+            try s.objectField("declined");
+            try s.write(true);
+            try s.endObject();
+        },
+        .bound => |name| {
+            try s.objectField("project");
+            try s.beginObject();
+            try s.objectField("name");
+            try s.write(name);
+            try s.endObject();
+        },
     }
 
     // Only when it is false. Being in the list is what a group directory
@@ -337,15 +408,80 @@ const Meta = struct {
     brief: []u8,
     listed: bool,
     marks: Marks,
-    /// Owned by the caller's allocator, like `brief`. Empty when the file
-    /// names none.
-    supervisor_dir: []u8,
+    /// Its strings are owned by the caller's allocator, like `brief`.
+    /// `none` when the file names none.
+    supervisor: LastSupervisor,
+    /// Owned likewise. `undecided` when the file says nothing of one.
+    project: ProjectTie,
 
     fn free(self: Meta, alloc: Allocator) void {
         alloc.free(self.brief);
-        alloc.free(self.supervisor_dir);
+        self.supervisor.free(alloc);
+        self.project.free(alloc);
     }
 };
+
+/// What the file says of the group's project, borrowed from the parse.
+/// Anything that is not one of the two shapes `render` writes is nobody
+/// having said -- never a tie to a project named by a guess.
+fn projectIn(obj: std.json.ObjectMap) ProjectTie {
+    const o = switch (obj.get("project") orelse std.json.Value.null) {
+        .object => |v| v,
+        else => return .undecided,
+    };
+    const name = textIn(o, "name");
+    if (name.len > 0) return .{ .bound = name };
+    return switch (o.get("declined") orelse std.json.Value.null) {
+        .bool => |b| if (b) .declined else .undecided,
+        else => .undecided,
+    };
+}
+
+fn textIn(obj: std.json.ObjectMap, key: []const u8) []const u8 {
+    return switch (obj.get(key) orelse std.json.Value.null) {
+        .string => |v| v,
+        else => "",
+    };
+}
+
+/// What the file says of the group's last supervisor, borrowed from the
+/// parse. Anything missing or of the wrong type is that part not known,
+/// never an error.
+///
+/// **`supervisor_dir` at the top is what was written before there was a
+/// section**, by a supervisor and by nobody else: it is read as the
+/// section's `dir` when the section has none, and is not written again.
+fn supervisorIn(obj: std.json.ObjectMap) LastSupervisor {
+    var out: LastSupervisor = .none;
+    switch (obj.get("supervisor") orelse std.json.Value.null) {
+        .object => |o| {
+            out.dir = textIn(o, "dir");
+            out.role = textIn(o, "role");
+            out.cli = textIn(o, "cli");
+            out.session = textIn(o, "session");
+            out.heard_ms = if (o.get("heard_ms")) |v| msOf(v) else null;
+            if (out.dir.len > 0) {
+                // A directory with nothing saying where it came from was a
+                // supervisor's: that is the only thing there was to say
+                // when the key was first written.
+                out.dir_from = std.meta.stringToEnum(
+                    LastSupervisor.DirFrom,
+                    textIn(o, "dir_from"),
+                ) orelse .supervisor;
+                if (out.dir_from == .none) out.dir_from = .supervisor;
+            }
+        },
+        else => {},
+    }
+    if (out.dir.len == 0) {
+        const old = textIn(obj, "supervisor_dir");
+        if (old.len > 0) {
+            out.dir = old;
+            out.dir_from = .supervisor;
+        }
+    }
+    return out;
+}
 
 fn msOf(v: std.json.Value) ?u64 {
     return switch (v) {
@@ -430,18 +566,19 @@ fn readMetaIn(self: *const GroupLog, alloc: Allocator, seg: []const u8) ?Meta {
         else => true,
     };
 
-    const supervisor_dir: []const u8 = switch (obj.get("supervisor_dir") orelse std.json.Value.null) {
-        .string => |v| v,
-        else => "",
-    };
-
     const owned_brief = alloc.dupe(u8, brief) catch return null;
+    const owned_last = supervisorIn(obj).dupe(alloc) catch {
+        alloc.free(owned_brief);
+        return null;
+    };
     return .{
         .brief = owned_brief,
         .listed = listed,
         .marks = marksIn(obj),
-        .supervisor_dir = alloc.dupe(u8, supervisor_dir) catch {
+        .supervisor = owned_last,
+        .project = projectIn(obj).dupe(alloc) catch {
             alloc.free(owned_brief);
+            owned_last.free(alloc);
             return null;
         },
     };
@@ -458,7 +595,8 @@ pub fn restore(self: *GroupLog, alloc: Allocator) Allocator.Error![]Shell {
         for (out.items) |s| {
             alloc.free(s.name);
             alloc.free(s.brief);
-            alloc.free(s.supervisor_dir);
+            s.supervisor.free(alloc);
+            s.project.free(alloc);
         }
         out.deinit(alloc);
     }
@@ -500,18 +638,28 @@ pub fn restore(self: *GroupLog, alloc: Allocator) Allocator.Error![]Shell {
             continue;
         };
 
-        const supervisor_dir = alloc.dupe(u8, if (meta) |m| m.supervisor_dir else "") catch {
+        const last = (if (meta) |m| m.supervisor else LastSupervisor.none).dupe(alloc) catch {
             alloc.free(name);
             alloc.free(brief);
             continue;
         };
+        errdefer last.free(alloc);
+        const said: ProjectTie = if (meta) |m| m.project else .undecided;
+        const tie = said.dupe(alloc) catch {
+            alloc.free(name);
+            alloc.free(brief);
+            last.free(alloc);
+            continue;
+        };
+        errdefer tie.free(alloc);
 
         try out.append(alloc, .{
             .name = name,
             .brief = brief,
             .last_ms = self.lastSpokeIn(seg),
             .marks = if (meta) |m| m.marks else .none,
-            .supervisor_dir = supervisor_dir,
+            .supervisor = last,
+            .project = tie,
         });
     }
 
@@ -522,7 +670,8 @@ pub fn free(alloc: Allocator, shells: []Shell) void {
     for (shells) |s| {
         alloc.free(s.name);
         alloc.free(s.brief);
-        alloc.free(s.supervisor_dir);
+        s.supervisor.free(alloc);
+        s.project.free(alloc);
     }
     alloc.free(shells);
 }
@@ -918,7 +1067,7 @@ test "ControlRoom marks: a record from before there were marks reads back with n
     try testing.expectEqualStrings("{\"brief\":\"now noted\"}", bytes);
 }
 
-test "ControlRoom start: where a group's supervisor worked is written down and outlives every other write to the file" {
+test "ControlRoom resume: a group's last supervisor is written down whole and outlives every other write to the file" {
     const alloc = testing.allocator;
     var threaded: std.Io.Threaded = .init(alloc, .{});
     defer threaded.deinit();
@@ -933,13 +1082,22 @@ test "ControlRoom start: where a group's supervisor worked is written down and o
     var gl = try GroupLog.open(alloc, io, state);
     defer gl.deinit();
 
+    const whole: LastSupervisor = .{
+        .dir = "/work/repo",
+        .dir_from = .supervisor,
+        .role = "polter-supervisor",
+        .cli = "claude-code",
+        .session = "eed9173b-c1fc-4493-aa00-187bacdc94cf",
+        .heard_ms = 1_700_000_000_123,
+    };
+
     gl.note("build", "why");
-    gl.supervisorDir("build", "/work/repo");
+    gl.supervisor("build", whole);
     {
         const shells = try gl.restore(alloc);
         defer free(alloc, shells);
         try testing.expectEqual(@as(usize, 1), shells.len);
-        try testing.expectEqualStrings("/work/repo", shells[0].supervisor_dir);
+        try expectLast(whole, shells[0].supervisor);
         // What was there before it is still there.
         try testing.expectEqualStrings("why", shells[0].brief);
     }
@@ -953,12 +1111,220 @@ test "ControlRoom start: where a group's supervisor worked is written down and o
     const shells = try gl.restore(alloc);
     defer free(alloc, shells);
     try testing.expectEqual(@as(usize, 1), shells.len);
-    try testing.expectEqualStrings("/work/repo", shells[0].supervisor_dir);
+    try expectLast(whole, shells[0].supervisor);
     try testing.expectEqual(@as(?u64, 1_700_000_000_000), shells[0].marks.seen_ms);
 
     // A group nobody minded has none, and its file does not say the word.
     gl.note("quiet", "");
     const m = gl.readMeta(alloc, "quiet").?;
     defer m.free(alloc);
-    try testing.expectEqualStrings("", m.supervisor_dir);
+    try testing.expect(m.supervisor.isNone());
+    const quiet = try metaText(alloc, io, state, "quiet");
+    defer alloc.free(quiet);
+    try testing.expect(std.mem.indexOf(u8, quiet, "supervisor") == null);
+}
+
+fn expectLast(want: LastSupervisor, got: LastSupervisor) !void {
+    try testing.expectEqualStrings(want.dir, got.dir);
+    try testing.expectEqual(want.dir_from, got.dir_from);
+    try testing.expectEqualStrings(want.role, got.role);
+    try testing.expectEqualStrings(want.cli, got.cli);
+    try testing.expectEqualStrings(want.session, got.session);
+    try testing.expectEqual(want.heard_ms, got.heard_ms);
+}
+
+/// The bytes of a group's `group.json`. Caller frees.
+fn metaText(alloc: Allocator, io: std.Io, state: []const u8, group: []const u8) ![]u8 {
+    const path = try std.fs.path.join(alloc, &.{ state, "chat", group, meta_name });
+    defer alloc.free(path);
+    return try std.Io.Dir.readFileAlloc(.cwd(), io, path, alloc, .limited(max_meta_bytes));
+}
+
+fn putMetaText(alloc: Allocator, io: std.Io, state: []const u8, group: []const u8, text: []const u8) !void {
+    const dir = try std.fs.path.join(alloc, &.{ state, "chat", group });
+    defer alloc.free(dir);
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+    var f = try d.createFile(io, meta_name, .{});
+    defer f.close(io);
+    try f.writeStreamingAll(io, text);
+}
+
+test "ControlRoom resume: what nobody knows of a last supervisor is a key that is not there, and reads back as not known" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const state = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+
+    var gl = try GroupLog.open(alloc, io, state);
+    defer gl.deinit();
+
+    // A supervisor that was heard from and whose CLI never named a
+    // session: not the same record as no supervisor at all.
+    const heard: LastSupervisor = .{
+        .dir = "/work/repo",
+        .dir_from = .supervisor,
+        .role = "",
+        .cli = "",
+        .session = "",
+        .heard_ms = 42,
+    };
+    gl.supervisor("heard", heard);
+    const text = try metaText(alloc, io, state, "heard");
+    defer alloc.free(text);
+    try testing.expectEqualStrings(
+        "{\"supervisor\":{\"dir\":\"/work/repo\",\"dir_from\":\"supervisor\",\"heard_ms\":42}}",
+        text,
+    );
+    const back = gl.readMeta(alloc, "heard").?;
+    defer back.free(alloc);
+    try expectLast(heard, back.supervisor);
+
+    // A directory made up out of the old session snapshot: no supervisor
+    // was recorded, and the file says where the directory is from.
+    var guessed: LastSupervisor = .none;
+    guessed.dir = "/old/place";
+    guessed.dir_from = .session_snapshot;
+    gl.supervisor("guessed", guessed);
+    const g = gl.readMeta(alloc, "guessed").?;
+    defer g.free(alloc);
+    try expectLast(guessed, g.supervisor);
+    try testing.expectEqual(@as(?u64, null), g.supervisor.heard_ms);
+}
+
+test "ControlRoom resume: a record from before there was a section reads its directory as a supervisor's and nothing else as known" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const state = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+
+    var gl = try GroupLog.open(alloc, io, state);
+    defer gl.deinit();
+
+    // What 0.10.1843 wrote, byte for byte in shape.
+    try putMetaText(alloc, io, state, "old", "{\"brief\":\"b\",\"supervisor_dir\":\"/work/repo\",\"seen_ms\":7}");
+    {
+        const m = gl.readMeta(alloc, "old").?;
+        defer m.free(alloc);
+        var want: LastSupervisor = .none;
+        want.dir = "/work/repo";
+        want.dir_from = .supervisor;
+        try expectLast(want, m.supervisor);
+    }
+
+    // The next writer of anything moves it into the section, once, and
+    // loses nothing on the way.
+    gl.mark("old", .{ .seen_ms = 8, .snooze = .none });
+    const text = try metaText(alloc, io, state, "old");
+    defer alloc.free(text);
+    try testing.expectEqualStrings(
+        "{\"brief\":\"b\",\"supervisor\":{\"dir\":\"/work/repo\",\"dir_from\":\"supervisor\"},\"seen_ms\":8}",
+        text,
+    );
+
+    // A section wins over the old key, and a part of the wrong type is a
+    // part not known rather than a file that cannot be read.
+    try putMetaText(alloc, io, state, "both",
+        \\{"supervisor_dir":"/old","supervisor":{"dir":"/new","role":7,"cli":"claude-code","session":"s-1","heard_ms":-3}}
+    );
+    const m = gl.readMeta(alloc, "both").?;
+    defer m.free(alloc);
+    try testing.expectEqualStrings("/new", m.supervisor.dir);
+    try testing.expectEqual(LastSupervisor.DirFrom.supervisor, m.supervisor.dir_from);
+    try testing.expectEqualStrings("", m.supervisor.role);
+    try testing.expectEqualStrings("claude-code", m.supervisor.cli);
+    try testing.expectEqualStrings("s-1", m.supervisor.session);
+    try testing.expectEqual(@as(?u64, null), m.supervisor.heard_ms);
+}
+
+test "Projects: a group's tie to a project is written down in its own words and outlives every other write to the file" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const state = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+
+    var gl = try GroupLog.open(alloc, io, state);
+    defer gl.deinit();
+
+    // Nobody has said: the key is not there, as in every older record.
+    gl.note("build", "why");
+    {
+        const text = try metaText(alloc, io, state, "build");
+        defer alloc.free(text);
+        try testing.expect(std.mem.indexOf(u8, text, "project") == null);
+        const m = gl.readMeta(alloc, "build").?;
+        defer m.free(alloc);
+        try testing.expect(m.project == .undecided);
+    }
+
+    gl.project("build", .{ .bound = "scratch" });
+    {
+        const text = try metaText(alloc, io, state, "build");
+        defer alloc.free(text);
+        try testing.expectEqualStrings("{\"brief\":\"why\",\"project\":{\"name\":\"scratch\"}}", text);
+    }
+
+    // Each of the other writers rewrites the whole file.
+    gl.note("build", "why, again");
+    gl.mark("build", .{ .seen_ms = 7, .snooze = .none });
+    gl.supervisor("build", .none);
+    gl.forget("build");
+    gl.note("build", "why, again");
+    {
+        const shells = try gl.restore(alloc);
+        defer free(alloc, shells);
+        try testing.expectEqual(@as(usize, 1), shells.len);
+        try testing.expectEqualStrings("scratch", shells[0].project.bound);
+    }
+
+    // "Has none, its supervisor said so" is not "nobody has said".
+    gl.project("build", .declined);
+    {
+        const text = try metaText(alloc, io, state, "build");
+        defer alloc.free(text);
+        try testing.expect(std.mem.indexOf(u8, text, "\"project\":{\"declined\":true}") != null);
+        const m = gl.readMeta(alloc, "build").?;
+        defer m.free(alloc);
+        try testing.expect(m.project == .declined);
+    }
+    gl.project("build", .undecided);
+    {
+        const text = try metaText(alloc, io, state, "build");
+        defer alloc.free(text);
+        try testing.expect(std.mem.indexOf(u8, text, "project") == null);
+    }
+
+    // Anything that is not one of the two shapes is nobody having said.
+    for ([_][]const u8{
+        "{\"project\":\"scratch\"}",
+        "{\"project\":{\"name\":\"\"}}",
+        "{\"project\":{\"name\":7}}",
+        "{\"project\":{\"declined\":false}}",
+        "{\"project\":{\"declined\":\"yes\"}}",
+        "{\"project\":null}",
+    }) |odd| {
+        try putMetaText(alloc, io, state, "odd", odd);
+        const m = gl.readMeta(alloc, "odd").?;
+        defer m.free(alloc);
+        try testing.expect(m.project == .undecided);
+    }
 }

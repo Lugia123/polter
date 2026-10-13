@@ -15,7 +15,16 @@ those is a fresh start, and the arrangement you are picking up is not the one
 you remember. Four calls before you plan anything, in this order.
 
 1. `me` — whether you are still the supervisor, and whether somebody is now
-   watching you.
+   watching you. **It also says which groups are yours**: `groups` (the ones
+   you are in), `supervisor_of` (the ones you are the supervisor of) and
+   `started_for` — the group the person started you for from the control
+   room, or `null` when nobody started you that way. A name in `started_for`
+   is the answer to "which group is this about": you were put in it as you
+   connected, so read it; do not make another. `null` there is an answer
+   too, not a failure to find out. And `projects` says, for each group you
+   supervise, **which project it has** — the tabs and windows its work is
+   laid out in, which is what the person gets back when they start the
+   group again — or `null` and a `why`.
 2. `group_list`. **Read `joined` on each entry.** A group marked
    `joined: false` is one that came back from disk without you in it — after
    a restart that is all of them — and `group_read` on it answers
@@ -198,9 +207,14 @@ Good — same length, but it can be finished and you can tell from outside:
 
 Three house rules go with every assignment, and each has a reason:
 
-- **Open the worker with `place: "here"`.** It lands beside you, in the tab
-  the user is looking at. A worker in a tab nobody has open is one whose stall
-  nobody sees.
+- **Look at your tab before you open anybody**, and open the worker beside
+  you. `terminal_list` first: the terminals whose `tab` is yours are what
+  the user sees next to you. A pane you opened earlier whose agent has gone
+  is used again before a new one is made (leave `place` out, or name the pane
+  with `in`); only when there is none does a new pane go beside you. A worker
+  in a tab nobody has open is one whose stall nobody sees -- so a reply that
+  says `placed: "tab"` when you did not ask for one is something to read, not
+  to skip ("Where a worker lands", below).
 - **Workers do not commit, merge or stage.** Workers share trees, and a
   `git add` or `git commit` in one of them sweeps up whatever another has
   half-written. Commits and merges are yours, made once a piece has been
@@ -535,11 +549,27 @@ library -- you have the same powers over it as the user has in the role
 library window, so edit it the way they would: say in the group what you
 changed and why.
 
-`role_launch(key, cli?, cwd?, place?)` opens a terminal for the role, gives
-it the role, and starts the CLI there. `place` is `terminal_open`'s --
+`role_launch(key, cli?, cwd?, place?, in?)` opens a terminal for the role,
+gives it the role, and starts the CLI there. `place` is `terminal_open`'s --
 `auto` (the default), `tab`, `here` -- placed by the same code, so the next
 section applies to it word for word; a role whose own `open` is `tab` still
-gets a tab under `auto`. A role started in a split is recorded exactly like
+gets a tab under `auto`.
+
+**`in` starts the role in a terminal that is already open** instead of
+opening one: `role_launch(key, in: "0x…")`. It is how you put a worker into a
+pane that is standing empty -- one of yours whose agent finished, or a shell
+the user told you to use. It is typed into only when that terminal has no
+agent in it, is sitting at its shell's prompt, and has no half-typed line:
+otherwise it is refused (`AgentThere`, `NotAtPrompt`, `DraftInLine`) and
+nothing is typed. The reach rules are `terminal_send`'s, and `cwd` cannot be
+given with it -- the role starts where that terminal already is. The reply
+says `placed: "reused"`, `reused: "asked"`, and carries the id you named.
+
+**A pane the user opened is theirs until they say otherwise.** `auto` never
+takes one. `in` can, because you named it -- so name one only when the user
+or the work has made it yours to use: three shells restored from a project
+look exactly like three free panes, and one of them may be where the user
+runs their own commands. When you cannot tell, ask, or open a new one. A role started in a split is recorded exactly like
 one started in a tab (`terminal_capabilities` shows the role and
 `started: launched`). **Do not type `polter +launch` into a terminal
 yourself** to get a split: the command line comes out right, but Polter
@@ -563,9 +593,10 @@ Any terminal, another supervisor or yourself; only you can ask it.
 
 **You no longer say where a terminal goes, and you no longer need to.**
 `terminal_open` places workers itself: the first three go beside you, as a
-column to your right, and once that column is full the rest go into tabs.
-Terminals the person opened in your tab do not change that: they are left
-where they are, and only your own workers count towards the three.
+column to your right; the next three stand beside those, a second column;
+and once both are full the rest go into tabs. Terminals the person opened in
+your tab do not change that: they are left where they are, and only your own
+workers count towards the six.
 Asking for a position was never possible and is now not needed — the budget
 lives in one place instead of being recomputed by every supervisor, which is
 how six supervisors used to arrive at six different layouts.
@@ -574,12 +605,38 @@ how six supervisors used to arrive at six different layouts.
 have to read what came out, because a placement that went wrong looks exactly
 like one that went right from inside a tool reply. What to expect today:
 
+- **Before any of that, under `auto`, `role_launch` uses a pane of yours
+  that is free**: one you opened for a worker, still in your tab, with no
+  agent in it, at its prompt, nothing half-typed, and -- when you gave a
+  `cwd` -- already standing there. The reply says `placed: "reused"`,
+  `reused: "free_worker"`, and carries that terminal's id. Nothing is opened.
+  (`terminal_open` never does this: it is asked for a terminal, not a role.)
 - Workers 1–3: beside you, top to bottom, with you on the left — the first
   splits your own pane to the right, the next two go under the one before.
   The person's own panes in that tab stay as they were and are not counted.
-- Worker 4 onward: **a new tab**. The host log says so and says why — a
-  fourth would need a second column beside the whole first one, and the
-  automatic placement only ever splits a single pane.
+- Workers 4–6: **beside the first three**, one each — the fourth to the
+  right of the first, the fifth of the second, the sixth of the third. You
+  on the left, your workers in two columns.
+- Worker 7 onward: **a new tab** (`fallback: "column_full"`). Six is what one
+  tab holds until panes can be stacked; `place: "stack"` is the name that
+  will ask for that, and today it is refused with `NotBuiltYet` and opens
+  nothing.
+
+**It works the same while the user is watching you in the control room.**
+Your terminal is shown there, and your panes are still in your own tab: a
+worker you open is split off there, where your others are. (It used to be
+refused then, and every worker became a tab: `fallback: "split_refused"`.
+If you still see that code on macOS or Windows, it is a defect -- report it.)
+
+**Think about what the user will see in that tab.** It is one of you to
+several of them, and the several are not all alike. Workers belong together
+-- let `auto` put them in the columns. A command line the user is meant to
+watch or type into -- a dev server, a test watcher, a log -- is not a
+worker: give it its own split (`new_split:down` at your own id, or
+`terminal_open` with `place: "here"`) and say in the group which pane it is,
+so nobody starts an agent in it. A long build nobody needs to watch goes in
+a tab (`place: "tab"`). And when the shape you want is not the one the
+placement builds, `terminal_layout` sets a whole tab in one call.
 
 ⚠️ **That is a limit of the automatic placement, not of the tools.** If you
 want a shape it will not build — a two-by-two, say — `terminal_layout` takes
@@ -598,15 +655,19 @@ session the person will want to look at on its own, anything you would not
 want three of your workers wedged in next to. It is a guarantee: `tab` never
 becomes a split.
 
-`here` is the opposite: put it beside me. It is placed exactly as `auto`
-is, and it is what to pass when opening a worker, because it says what you
-mean. It falls back to a tab when there is no room, and the log says both
-that it fell back and why.
+`here` is the opposite: a new pane beside me. It is placed exactly as `auto`
+places a new pane, and never uses one that is already there -- pass it when
+a new pane is what you mean, and leave `place` out when a worker is. It
+falls back to a tab when there is no room, and the reply says both that it
+fell back (`placed: "tab"`) and why (`fallback`). **Read that before opening
+the next one**: `fallback_kind: "timing"` is worth asking again in a moment;
+`"cannot"` will be the same answer again, so stop and look at the tab
+(`terminal_list`) rather than opening a third tab the same way.
 
 ⚠️ **The old rule of thumb "twelve workers should be two tabs" is wrong now**
-and would have you report a defect that is not one. With three workers to a
-tab, twelve is one tab plus four. The shape to check instead is the one
-above: **you on the left, three beside you, then tabs**.
+and would have you report a defect that is not one. With six workers to a
+tab, twelve is one tab plus six. The shape to check instead is the one
+above: **you on the left, two columns of three beside you, then tabs**.
 
 `new_split:right` **works at your own id**, giving you a pane to run a server
 in without claiming anybody's terminal. It appears in `terminal_list` as a
@@ -920,6 +981,38 @@ and Polter's verdicts under one clock, which is where the answer lives when
 `plugin_test` says a notification went nowhere. You cannot read it with these
 tools; tell the person the path.
 
+## A group's project
+
+A group has exactly one project: the tabs and windows its work is laid out
+in, with your pane among them. Starting the group from the control room
+opens the whole project and starts you in your pane, in the session you
+were in. Your workers' panes come back as terminals with nobody in them —
+**calling a worker back is your decision**, not something the restore did.
+
+You mostly do nothing about this. A tab you open with `terminal_open` or
+`role_launch` joins your group's project by itself. A group from before
+projects were kept gets one when you take it up, if there is only one way
+to read the situation: the tab you are in becomes its project (or the
+project that tab already belongs to is tied to the group).
+
+When there was more than one way to read it, nothing is done and `me`
+says why on that group's line. Then it is yours to say:
+
+- `group_project` with `action: "use"` — this group uses the project the
+  tab I am in belongs to. That settles `other_supervisor` (you are the one)
+  and `supervisor_of_several` (this is the group).
+- `action: "drop"` — this group has no project. It is started by picking a
+  directory, and nothing is offered again until you say `use`.
+
+What you cannot settle is one-to-one: `ProjectHasGroup` (the group already
+has a project, or the one your tab is in is another group's) and
+`ProjectNameTaken` (a project by the group's name already exists) change
+nothing, and are for the person to sort out. `ProjectsUnknown` means the
+interface has not told Polter about projects at all; the group is started
+by directory and there is nothing for you to do. `pending` is not a
+refusal: the interface has been asked, and `me` shows the project once it
+has made it.
+
 ## After a restart
 
 A restart is picking up again with one extra problem: the groups and the panel
@@ -934,6 +1027,17 @@ for, and every terminal's `cwd` and `title`.
 off disk on their own, and so do their task panels — what does *not* come back
 is who was in them, because deciding which terminal on screen now is which one
 from last night is a judgement, and judgements are yours.
+
+**If the person started you from a group in the control room, one thing is
+already done**: you are in that group, in the directory its last supervisor
+worked in, and `me` names it in `started_for`. What you were told at launch
+names it too. You may also be *the same session as before* — Polter keeps
+the session a group's supervisor was in and starts the next one in it when
+the CLI can do that — so you may remember last night. Treat that memory the
+way the section above treats any memory: the group, the panel and the
+screens are the record, and where what you remember disagrees with them,
+they are right and you say so. Being resumed does not put your workers
+back: `group_list`, `task_list` and `terminal_list` first, exactly as below.
 
 So `group_list` after a restart shows them with **`joined: false`**: they
 exist, you are simply not in one yet. **That is not an empty night, and the

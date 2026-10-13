@@ -241,6 +241,17 @@ struct ControlRoomTabStatusTests {
         let plain = TabAccessory.visibleItems(.init())
         #expect(plain == [.colorIndicator, .keyEquivalent])
     }
+
+    /// A tab that is a page of a project says so, with the first thing
+    /// beside its title; a tab of no project has no such mark.
+    @Test func aPageOfAProjectIsMarkedNearestTheTitle() {
+        let page = TabAccessory.visibleItems(.init(poltergeistMark: "⚑ ", status: .needsYou, project: "polter"))
+        #expect(page == [.projectMark, .colorIndicator, .poltergeistMark, .keyEquivalent, .status])
+        #expect(!TabAccessory.visibleItems(.init(project: nil)).contains(.projectMark))
+        #expect(TabAccessory.projectMarkHelp("polter").contains("polter"))
+        // The mark is the one drawn; changing it is changing this constant.
+        #expect(TabAccessory.projectMark == .stackedPages)
+    }
 }
 
 /// Looking at a row for a moment marks its group seen.
@@ -597,12 +608,20 @@ struct ControlRoomStartTests {
     }
 
     @Test func theCoresFixtureSaysEveryGroupHasASupervisorAndNamesOneRole() throws {
-        let list = try ControlRoomList.decode(snapshot: ControlRoomListTests.fixture())
-        for row in list.rows {
-            let start = try #require(row.start)
+        let list = try ControlRoomList.decode(snapshot: ControlRoomListTests.fixture(), loneRows: true)
+        // The rows that are groups. A terminal on its own, were it given a
+        // row, has no supervisor to start: it is one, or it has none to be
+        // given here.
+        let groups = list.rows.filter { $0.alone == nil }
+        #expect(groups.count == 8)
+        for row in groups {
+            let start = try #require(row.start, "\(row.id)")
             #expect(start.state == .present)
             #expect(!start.canStart)
         }
+        let alone = list.rows.filter { $0.alone != nil }
+        #expect(!alone.isEmpty)
+        #expect(alone.allSatisfy { $0.start == nil })
         #expect(list.supervisorRoles.map(\.key) == ["polter-supervisor"])
         #expect(!list.chooseSupervisorRole)
     }
@@ -618,11 +637,12 @@ struct ControlRoomStartTests {
             ControlRoomDetailMessage.words(for: detail),
             words(.absent, .none), words(.starting, .none), words(.failed, .none),
             words(.failed, .terminalNeverOpened), words(.failed, .agentNeverConnected), words(.failed, .terminalClosed),
+            words(.failed, .cliNotFound), words(.failed, .cliDidNotStart),
         ]
         // With nothing said and with "absent" it is the same sentence; the
-        // other five are each their own, and none is blank.
+        // other seven are each their own, and none is blank.
         #expect(all[0] == all[1])
-        #expect(Set(all).count == 6)
+        #expect(Set(all).count == 8)
         #expect(all.allSatisfy { !$0.isEmpty })
     }
 

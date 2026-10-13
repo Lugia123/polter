@@ -17,6 +17,7 @@
 //!
 //! ```
 //! {"act":"seen",     "group":"web-app"}
+//! {"act":"seen",     "terminal":"0x…"}                  a terminal in no group
 //! {"act":"snooze",   "group":"web-app"}                 until it changes
 //! {"act":"snooze",   "group":"web-app","until_ms":N}    until then (wall)
 //! {"act":"unsnooze", "group":"web-app"}
@@ -27,11 +28,73 @@
 //! {"act":"start_supervisor","group":"web-app"}          the snapshot's role
 //!                                                       and directory
 //! {"act":"start_supervisor","group":"web-app","role":"…","cwd":"/…"}
+//! {"act":"start_supervisor","group":"web-app","session":"new"}
+//!                                                       last | new
 //! ```
 //!
 //! `start_supervisor` opens a tab, starts the role's CLI in it, and holds
 //! "this terminal is `group`'s supervisor" for the agent that connects from
-//! it. **It returns when the tab has been asked for, not when there is a
+//! it.
+//!
+//! `session` says whether it goes on with the session the group's last
+//! supervisor was in. **`last` is what leaving it out means, and it is a
+//! preference, not a condition**: the session is gone on with when the
+//! snapshot's `supervisor.resume.can` holds at that moment *for the role
+//! this start uses* -- there is a session written down, the role starts
+//! the same CLI, that CLI's adapter says it can, and no open terminal is
+//! in it -- and a new session is started otherwise. A supervisor that
+//! cannot go on where the last one stopped is still a supervisor; a group
+//! left without one because of it would be the worse answer. What the
+//! control room offered is `resume` in the snapshot, with the reason when
+//! it is no. `new` starts a new session whatever is written down.
+//!
+//! The start is the same act either way.
+//!
+//! **A group that has a project is started by opening the project**, not
+//! by a tab in a directory: the start is recorded as waiting for it, the
+//! snapshot's `project_orders` asks the host to `open` it, and when the
+//! host states it open with a terminal in its supervisor's pane, the core
+//! types the launch line there. `role` is still read; `cwd` is not -- the
+//! pane has its own. A group with no project is started as before.
+//!
+//! ## What the host says about projects
+//!
+//! ```
+//! {"act":"projects","list":[
+//!    {"name":"web-app","group":"web-app"|null,"pages":3,
+//!     "open":null | [["0x…","0x…"],["0x…"]],
+//!     "supervisor":"0x…"|null,
+//!     "workers":["0x…", …]}, … ]}
+//! {"act":"project_failed","name":"web-app","why":"not_found"|"unreadable"}
+//! {"act":"project_remove","terminal":"0x…"}
+//! {"act":"project_rename","from":"web-app","to":"storefront"}
+//! ```
+//!
+//! `projects` is **everything the host knows, every time** (`Projects.zig`
+//! has the whole of it): each project, the group its file names, how many
+//! pages it has, and for one that is open the terminals on each page, the
+//! one in the supervisor's pane, and the ones in the panes its file marks
+//! as opened by its supervisor (`workers`; empty when none). Every key is said in every entry. It
+//! replaces what was said before; a list that does not read whole is
+//! refused whole and the last one stands. The host says it at start, and
+//! whenever a project is made, opened, closed, renamed, deleted, or gains
+//! or loses a page or a pane.
+//!
+//! `project_failed` is the host saying it could not open a project it was
+//! ordered to: the start waiting on it fails now rather than by its
+//! deadline. `not_found` also unties the group -- the file is gone, and
+//! the group is started by directory again.
+//!
+//! `project_remove` is asked **before** a page is taken out of its project
+//! and answers whether it may be: the page with a group's supervisor on it
+//! may not (`SupervisorPage`). Nothing is changed by asking; the host
+//! takes the page out and states the result.
+//!
+//! `project_rename` is asked **before** a project is renamed. For a
+//! project that is a group's, it renames the group -- that is the only
+//! way such a project is renamed, and it may be refused as any rename of
+//! a group may -- and the host then finds a `rename` order to carry out.
+//! For a project that is no group's it changes nothing and says yes. **It returns when the tab has been asked for, not when there is a
 //! supervisor**: what becomes of it is the group's `supervisor` in the
 //! snapshot (`starting`, then `present` or `failed`). A refusal below means
 //! nothing was started.
@@ -42,6 +105,7 @@
 //! |---|---|---|
 //! | any | `BadRequest` | not JSON, no such `act`, a field missing or of the wrong type |
 //! | seen, snooze, unsnooze | `NoSuchGroup` | the group is not there |
+//! | seen (a terminal) | `UnknownTerminal` | the terminal is not there |
 //! | snooze | `SnoozeInThePast` | `until_ms` is not after now |
 //! | approve, refuse, reply | `UnknownTerminal` | the terminal is not there |
 //! | approve, refuse | `PromptGone` | it is not waiting on an approval; or `since_ms` / `event_ms` are not the ones it has now; or its screen has moved since the box was drawn |
@@ -62,6 +126,12 @@
 //! | start_supervisor | `NoSuchPersona`, `NotASupervisorRole`, `NoCli` | the role named is not there, does not make a supervisor, or has no CLI to start |
 //! | start_supervisor | `NotAbsolute`, `NoSuchDirectory`, `NotADirectory` | the directory |
 //! | start_supervisor | `OpenFailed` | no tab could be opened |
+//! | projects | `BadRequest` | an entry lacks a key, two projects have one name, a terminal is on the pages of two, or the supervisor's pane is on no page |
+//! | project_failed | `NoSuchProject` | no group is tied to a project by that name |
+//! | project_remove | `ProjectsUnknown` | the host has stated nothing yet |
+//! | project_remove | `NotInAProject` | that terminal is on no page of an open project |
+//! | project_remove | `SupervisorPage` | a group's supervisor is on that page, and the project is that group's |
+//! | project_rename | `BadName`, `GroupExists`, and the rest of a group's rename | the project is a group's, and the group cannot take that name |
 //!
 //! The last four are the terminal's own, from the path every agent's text
 //! takes; they are not decided here.
@@ -72,6 +142,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
+const Projects = @import("Projects.zig");
 
 pub const Id = Bus.Id;
 
@@ -83,6 +154,8 @@ pub const Prompt = struct {
 
 pub const Act = union(enum) {
     seen: []const u8,
+    /// The person looked at the row of a terminal that is in no group.
+    seen_terminal: Id,
     snooze: struct { group: []const u8, until_ms: ?u64 },
     unsnooze: []const u8,
     approve: Prompt,
@@ -90,7 +163,29 @@ pub const Act = union(enum) {
     reply: struct { terminal: Id, since_ms: u64, text: []const u8 },
     new_group: []const u8,
     /// Empty `role` and `cwd` are "the one the snapshot names".
-    start_supervisor: struct { group: []const u8, role: []const u8, cwd: []const u8 },
+    start_supervisor: struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session },
+    /// Everything the host knows about projects, replacing what it said.
+    projects: []const Projects.Stated,
+    project_failed: struct { name: []const u8, why: ProjectFailure },
+    project_remove: Id,
+    project_rename: struct { from: []const u8, to: []const u8 },
+};
+
+/// Why the host could not open a project it was ordered to.
+pub const ProjectFailure = enum {
+    /// There is no such project file any more.
+    not_found,
+    /// It is there and does not read.
+    unreadable,
+};
+
+/// Which session a supervisor is started in.
+pub const Session = enum {
+    /// The last supervisor's, when it can be gone on with; a new one
+    /// otherwise.
+    last,
+    /// A new one, whatever is written down.
+    new,
 };
 
 pub const Refusal = error{
@@ -131,7 +226,16 @@ pub const Host = struct {
     stewardOf: *const fn (ctx: *anyopaque, group: []const u8) ?Id,
     /// Open a tab and start a supervisor for `group` in it. Empty `role`
     /// and `cwd` are the snapshot's.
-    startSupervisor: *const fn (ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8) anyerror!void,
+    startSupervisor: *const fn (ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8, session: Session) anyerror!void,
+    /// Take a statement of every project as what is now known.
+    stateProjects: *const fn (ctx: *anyopaque, list: []const Projects.Stated) anyerror!void,
+    /// A project the host was ordered to open did not open.
+    projectFailed: *const fn (ctx: *anyopaque, name: []const u8, why: ProjectFailure) anyerror!void,
+    /// Whether the page `terminal` is on may be taken out of its project;
+    /// an error named in the table above when not.
+    projectRemove: *const fn (ctx: *anyopaque, terminal: Id) anyerror!void,
+    /// A project is about to be renamed: rename its group, if it has one.
+    projectRename: *const fn (ctx: *anyopaque, from: []const u8, to: []const u8) anyerror!void,
 };
 
 fn fieldOf(obj: std.json.ObjectMap, name: []const u8) Refusal!std.json.Value {
@@ -169,10 +273,27 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
         else => return error.BadRequest,
     };
 
-    const Name = enum { seen, snooze, unsnooze, approve, refuse, reply, new_group, start_supervisor };
+    const Name = enum {
+        seen,
+        snooze,
+        unsnooze,
+        approve,
+        refuse,
+        reply,
+        new_group,
+        start_supervisor,
+        projects,
+        project_failed,
+        project_remove,
+        project_rename,
+    };
     const name = std.meta.stringToEnum(Name, try textOf(obj, "act")) orelse return error.BadRequest;
     return switch (name) {
-        .seen => .{ .seen = try textOf(obj, "group") },
+        // One or the other: a row is a group's or a lone terminal's.
+        .seen => if (obj.get("terminal")) |_|
+            (if (obj.get("group")) |_| return error.BadRequest else .{ .seen_terminal = try idOf(obj, "terminal") })
+        else
+            .{ .seen = try textOf(obj, "group") },
         .unsnooze => .{ .unsnooze = try textOf(obj, "group") },
         .snooze => .{ .snooze = .{
             .group = try textOf(obj, "group"),
@@ -189,10 +310,28 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
             .text = try textOf(obj, "text"),
         } },
         .new_group => .{ .new_group = try textOf(obj, "name") },
-        .start_supervisor => .{ .start_supervisor = .{
-            .group = try textOf(obj, "group"),
-            .role = if (obj.get("role")) |_| try textOf(obj, "role") else "",
-            .cwd = if (obj.get("cwd")) |_| try textOf(obj, "cwd") else "",
+        .start_supervisor => .{
+            .start_supervisor = .{
+                .group = try textOf(obj, "group"),
+                .role = if (obj.get("role")) |_| try textOf(obj, "role") else "",
+                .cwd = if (obj.get("cwd")) |_| try textOf(obj, "cwd") else "",
+                // A word that is neither is not a request: guessing which was
+                // meant would start the session the person did not ask for.
+                .session = if (obj.get("session")) |_|
+                    std.meta.stringToEnum(Session, try textOf(obj, "session")) orelse return error.BadRequest
+                else
+                    .last,
+            },
+        },
+        .projects => .{ .projects = try Projects.parse(arena, try fieldOf(obj, "list")) },
+        .project_failed => .{ .project_failed = .{
+            .name = try textOf(obj, "name"),
+            .why = std.meta.stringToEnum(ProjectFailure, try textOf(obj, "why")) orelse return error.BadRequest,
+        } },
+        .project_remove => .{ .project_remove = try idOf(obj, "terminal") },
+        .project_rename => .{ .project_rename = .{
+            .from = try textOf(obj, "from"),
+            .to = try textOf(obj, "to"),
         } },
     };
 }
@@ -209,7 +348,7 @@ fn promptOf(obj: std.json.ObjectMap) Refusal!Prompt {
 /// the real one.
 pub fn perform(
     act: Act,
-    bus: *const Bus,
+    bus: *Bus,
     chat: *Chat,
     host: Host,
     now_ms: u64,
@@ -220,6 +359,9 @@ pub fn perform(
             chat.markSeen(group, now_ms, wall_ms) catch return error.NoSuchGroup;
             host.persist(host.ctx, group, try chat.marksOf(group));
         },
+        // Nothing to write down: the mark is the terminal's, and a
+        // terminal's id does not outlive the run (`Bus.Entry.seen_ms`).
+        .seen_terminal => |id| if (!bus.markSeen(id, now_ms)) return error.UnknownTerminal,
         .snooze => |s| {
             if (!chat.exists(s.group)) return error.NoSuchGroup;
             const snooze: Chat.Marks.Snooze = if (s.until_ms) |until| until: {
@@ -271,8 +413,12 @@ pub fn perform(
             // Asked here as well as where the start is recorded, so that a
             // second press is refused before anything is opened for it.
             if (chat.startOf(s.group, now_ms).state == .starting) return error.AlreadyStarting;
-            try host.startSupervisor(host.ctx, s.group, s.role, s.cwd);
+            try host.startSupervisor(host.ctx, s.group, s.role, s.cwd, s.session);
         },
+        .projects => |list| try host.stateProjects(host.ctx, list),
+        .project_failed => |f| try host.projectFailed(host.ctx, f.name, f.why),
+        .project_remove => |terminal| try host.projectRemove(host.ctx, terminal),
+        .project_rename => |r| try host.projectRename(host.ctx, r.from, r.to),
     }
 }
 
@@ -298,8 +444,14 @@ const Recorder = struct {
     chat: ?*Chat = null,
     steward: ?Id = null,
     started: std.ArrayListUnmanaged(Started) = .empty,
+    /// How many projects the last statement had, and how many open.
+    stated: ?usize = null,
+    stated_open: usize = 0,
+    project_failed: ?ProjectFailure = null,
+    asked_remove: ?Id = null,
+    renames: usize = 0,
 
-    const Started = struct { group: []const u8, role: []const u8, cwd: []const u8 };
+    const Started = struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session };
 
     fn deinit(self: *Recorder) void {
         self.keys.deinit(testing.allocator);
@@ -322,7 +474,39 @@ const Recorder = struct {
             .createGroup = createGroup,
             .stewardOf = stewardOf,
             .startSupervisor = startSupervisor,
+            .stateProjects = stateProjects,
+            .projectFailed = projectFailed,
+            .projectRemove = projectRemove,
+            .projectRename = projectRename,
         };
+    }
+
+    fn stateProjects(ctx: *anyopaque, list: []const Projects.Stated) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        self.stated = list.len;
+        self.stated_open = 0;
+        for (list) |p| {
+            if (p.open != null) self.stated_open += 1;
+        }
+    }
+
+    fn projectFailed(ctx: *anyopaque, _: []const u8, why: ProjectFailure) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        self.project_failed = why;
+    }
+
+    fn projectRemove(ctx: *anyopaque, terminal: Id) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        self.asked_remove = terminal;
+    }
+
+    fn projectRename(ctx: *anyopaque, _: []const u8, _: []const u8) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        self.renames += 1;
     }
 
     fn createGroup(ctx: *anyopaque, name: []const u8) anyerror!void {
@@ -336,12 +520,12 @@ const Recorder = struct {
         return self.steward;
     }
 
-    fn startSupervisor(ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8) anyerror!void {
+    fn startSupervisor(ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8, session: Session) anyerror!void {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
         if (self.refuse_with) |err| return err;
         // Copied: the request they point into is gone when the act returns.
         const a = testing.allocator;
-        try self.started.append(a, .{ .group = try a.dupe(u8, group), .role = try a.dupe(u8, role), .cwd = try a.dupe(u8, cwd) });
+        try self.started.append(a, .{ .group = try a.dupe(u8, group), .role = try a.dupe(u8, role), .cwd = try a.dupe(u8, cwd), .session = session });
     }
 
     fn sendKey(ctx: *anyopaque, _: Id, key: []const u8) anyerror!void {
@@ -657,10 +841,12 @@ test "ControlRoom start: a supervisor is started for a group that has none, once
     try testing.expectEqual(@as(usize, 1), b.rec.started.items.len);
     try testing.expectEqualStrings("", b.rec.started.items[0].role);
     try testing.expectEqualStrings("", b.rec.started.items[0].cwd);
+    // Nor a session: left out is the last one, where it can be gone on with.
+    try testing.expectEqual(Session.last, b.rec.started.items[0].session);
 
     // One is on its way (the real host records that as it opens the tab):
     // a second press opens nothing.
-    try b.chat.beginStart("nightly", 1_000, 11_000);
+    try b.chat.beginStart("nightly", 1_000, 11_000, false, .directory);
     try testing.expectError(error.AlreadyStarting, b.act(
         \\{"act":"start_supervisor","group":"nightly","role":"night-lead","cwd":"/work"}
     , 2_000));
@@ -672,6 +858,26 @@ test "ControlRoom start: a supervisor is started for a group that has none, once
     , 11_001);
     try testing.expectEqual(@as(usize, 2), b.rec.started.items.len);
 
+    // Which session is the person's to say, and is handed on as said.
+    try b.act(
+        \\{"act":"start_supervisor","group":"nightly","session":"new"}
+    , 11_001);
+    try b.act(
+        \\{"act":"start_supervisor","group":"nightly","session":"last"}
+    , 11_001);
+    try testing.expectEqual(Session.new, b.rec.started.items[2].session);
+    try testing.expectEqual(Session.last, b.rec.started.items[3].session);
+    // A word that is neither starts nothing.
+    for ([_][]const u8{
+        \\{"act":"start_supervisor","group":"nightly","session":"resume"}
+        ,
+        \\{"act":"start_supervisor","group":"nightly","session":""}
+        ,
+        \\{"act":"start_supervisor","group":"nightly","session":true}
+        ,
+    }) |bad| try testing.expectError(error.BadRequest, b.act(bad, 11_001));
+    try testing.expectEqual(@as(usize, 4), b.rec.started.items.len);
+
     // What the host refuses is the answer, by its own name.
     b.rec.refuse_with = error.NoSuchDirectory;
     try testing.expectError(error.NoSuchDirectory, b.act(
@@ -680,4 +886,94 @@ test "ControlRoom start: a supervisor is started for a group that has none, once
     try testing.expectError(error.BadRequest, b.act(
         \\{"act":"start_supervisor","group":"nightly","role":7}
     , 11_002));
+}
+
+test "ControlRoom act: a terminal in no group is marked seen by its own id" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try testing.expectEqual(@as(?u64, null), b.bus.seenOf(term));
+
+    try b.act(
+        \\{"act":"seen","terminal":"0x00000000000000a1"}
+    , 5_000);
+    try testing.expectEqual(@as(?u64, 5_000), b.bus.seenOf(term));
+    // Nothing is written down for it, and no key goes anywhere.
+    try testing.expectEqual(@as(usize, 0), b.rec.persisted.items.len);
+    try testing.expectEqual(@as(usize, 0), b.rec.keys.items.len);
+    // A group's seen is still a group's.
+    try testing.expectEqual(@as(?u64, null), b.chat.seenRunMs("web-app"));
+
+    try testing.expectError(error.UnknownTerminal, b.act(
+        \\{"act":"seen","terminal":"0x00000000000000ff"}
+    , 6_000));
+    // A row is one or the other; both, or a terminal that is not an id, is
+    // not a request.
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"seen","group":"web-app","terminal":"0x00000000000000a1"}
+    , 6_000));
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"seen","terminal":"161"}
+    , 6_000));
+    try testing.expectEqual(@as(?u64, 5_000), b.bus.seenOf(term));
+}
+
+test "Projects: what the host says about projects reaches the core whole, and what it asks is the core's to answer" {
+    var b = try Bench.init();
+    defer b.deinit();
+
+    try b.act(
+        \\{"act":"projects","list":[
+        \\ {"name":"web-app","group":"web-app","pages":2,
+        \\  "open":[["0x00000000000000a1"],["0x00000000000000b1"]],"supervisor":"0x00000000000000a1","workers":[]},
+        \\ {"name":"notes","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]}]}
+    , 1_000);
+    try testing.expectEqual(@as(?usize, 2), b.rec.stated);
+    try testing.expectEqual(@as(usize, 1), b.rec.stated_open);
+    // No projects is a statement too.
+    try b.act(
+        \\{"act":"projects","list":[]}
+    , 1_000);
+    try testing.expectEqual(@as(?usize, 0), b.rec.stated);
+
+    // One that does not read whole changes nothing: the last one stands.
+    b.rec.stated = 99;
+    for ([_][]const u8{
+        \\{"act":"projects"}
+        ,
+        \\{"act":"projects","list":{}}
+        ,
+        \\{"act":"projects","list":[{"name":"a"}]}
+        ,
+    }) |bad| try testing.expectError(error.BadRequest, b.act(bad, 1_000));
+    try testing.expectEqual(@as(?usize, 99), b.rec.stated);
+
+    try b.act(
+        \\{"act":"project_failed","name":"web-app","why":"not_found"}
+    , 1_000);
+    try testing.expectEqual(@as(?ProjectFailure, .not_found), b.rec.project_failed);
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"project_failed","name":"web-app","why":"busy"}
+    , 1_000));
+
+    try b.act(
+        \\{"act":"project_remove","terminal":"0x00000000000000b1"}
+    , 1_000);
+    try testing.expectEqual(@as(?Id, 0xb1), b.rec.asked_remove);
+    // The core's refusal is the answer, by its own name.
+    b.rec.refuse_with = error.SupervisorPage;
+    try testing.expectError(error.SupervisorPage, b.act(
+        \\{"act":"project_remove","terminal":"0x00000000000000a1"}
+    , 1_000));
+    b.rec.refuse_with = error.GroupExists;
+    try testing.expectError(error.GroupExists, b.act(
+        \\{"act":"project_rename","from":"web-app","to":"billing"}
+    , 1_000));
+    b.rec.refuse_with = null;
+    try b.act(
+        \\{"act":"project_rename","from":"notes","to":"scratch"}
+    , 1_000);
+    try testing.expectEqual(@as(usize, 1), b.rec.renames);
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"project_rename","from":"notes"}
+    , 1_000));
 }

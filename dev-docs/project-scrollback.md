@@ -308,6 +308,11 @@ CHECKPOINT 条目是 head、end，外加一份 `max_history_bytes = 0` 的 v1 �
 - **存在哪**：控制器上的内存状态 + 要能活过 app 重启，否则重启一次就退回手动。
 - **触发结构保存的事件**：分屏增删、比例拖动、cwd 变、标题变。⚠️ 拖分屏会连续触发，
   要合并（约 1 秒去抖）。项目 JSON 很小，写的成本可忽略。
+  **只有去抖是不够的（任务 #1488，2026-10-13）。** 每次变化都重置那一秒，而格子里跑着 agent 时标题一秒变好几次
+  （转圈的记号在标题里）——那一秒永远等不完，用户分完屏得手动存。现在每次写盘还有一个最晚时刻，从这一批的
+  第一次变化算起（`ProjectAutosaveChange`）：布局变化最晚 3 秒，标题/目录变化最晚 30 秒；安静下来仍是最后一次
+  变化后 1 秒。退出程序时每个绑定的标签页都再存一次（`TerminalController.saveBoundProjectsBeforeQuit`）：
+  退出不关窗口，`windowWillClose` 里那次收尾保存跑不到。
 - **两个 tab 绑到同一个项目**：拒绝第二次绑定并说明。理由是另一种做法（都写同一个文件）
   的失败形式是静默互相覆盖。
 
@@ -423,6 +428,10 @@ scrollback **相反** —— 它是为这一次项目存盘抓的，脱离那个
 **有项目功能的宿主（mac、Windows）各自的一小块** —— 只有两件事：存盘时调那个新 C API；把快照文件名读写进项目文件（即 3.1 那张表里对应的那一份实现）。
 
 - **Windows**：`windows/host/src/project.rs`（701 行，`serde_json`）+ `windows/host/src/ffi.rs` 里手写的 extern 结构体。⚠️ 布局改了不会编译失败，见 3.3。
+  （2026-10-13，#1487：项目文件说什么、写成哪些字节，已经从 `project.rs` 挪到 `windows/projectfile`，
+  在 mac 上就能 `cargo test`；`project.rs` 只剩放在哪、`.prev`、快照目录这些盘上的事。格式升到 2——
+  若干窗口 × 若干标签页，每格记「这格里是谁」——规则写在 `src/Project.zig` 的模块注释里，
+  三处实现逐字节一致由 `test/project-format/` 钉住，见那里的 README。上面的行数是当时的读数。）
 - **mac**：`macos/Sources/Features/Projects/` 下的存取。
 - **Linux（GTK）**：**不做，也不是「一小块」。** GTK 上根本没有项目功能：存、取、`history_filename`、`history_restore` 一处都没接（`src/apprt/gtk/class/application.zig` 里那个 arm 是 `log.warn("unimplemented")`），所以在 GTK 上接 scrollback，意味着从零做整套项目功能。issue #27 按功能面数过：做到和 Windows 一样要 11 面，**没有一面是 GTK 做不到的，全是没做**。不做的原因是**没有 Linux 测试机**，写出来只能停在「编过」，而其中 4 面是 UI。这是排序，不是放弃：有了能跑 GTK 的机器，随时可以开工。`tools/gtk-has-no-project-half.py` 钉着这件事，半个实现进不来。
 

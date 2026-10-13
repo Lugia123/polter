@@ -421,7 +421,7 @@ pub const Host = struct {
 const tools = [_]Tool{
     .{
         .name = "me",
-        .description = "Which terminal this agent is running in, and whether it is supervising or supervised. When it is watched, `sampling` says whether anything is measuring it, with the same three values terminal_list documents: `starting` (not confirmed yet, not a fault), `running`, `failed`. `call_silent_ms` is how long since this terminal last called a Polter tool, as terminal_list documents it. If you are a supervisor and it passes `poltergeist-calls-silent-after`, your tab's flag goes hollow (⚑ → ⚐) so the person can see it -- your own notices are the one place that could not tell anyone you had stopped.",
+        .description = "Which terminal this agent is running in, and whether it is supervising or supervised. **And where it stands with the groups, which is how you find out which group you are for**: `groups` is every group this terminal is in, `supervisor_of` the ones among them it is the supervisor of, and `started_for` the group the person started this terminal for from the control room. All three are always there: an empty list means none, and **`started_for: null` means nobody started you from a group** -- that is an answer, not something to ask again later. A name there is the group to read (group_list for its brief, group_read and task_list for the rest) before making or arranging anything; do not make a second group for the same work. When it is watched, `sampling` says whether anything is measuring it, with the same three values terminal_list documents: `starting` (not confirmed yet, not a fault), `running`, `failed`. `call_silent_ms` is how long since this terminal last called a Polter tool, as terminal_list documents it. If you are a supervisor and it passes `poltergeist-calls-silent-after`, your tab's flag goes hollow (⚑ → ⚐) so the person can see it -- your own notices are the one place that could not tell anyone you had stopped.",
         .schema =
         \\{"type":"object","properties":{},"additionalProperties":false}
         ,
@@ -459,6 +459,13 @@ const tools = [_]Tool{
         .description = "Say what a group is for, in your own words. Write this right after creating a group, while you still know why you made it -- in eight hours group_list will show you a name you no longer recognise, and that is exactly when you have to decide whether it still needs watching. **Everyone in the group reads this**, so it is also where a round's terms belong -- what the work is, what is off limits, where to put the artefacts. Writing to a group you are in is still yours alone. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"group":{"type":"string"},"text":{"type":"string"}},"required":["group","text"]}
+        ,
+    },
+    .{
+        .name = "group_project",
+        .description = "Say which project a group has. **A group has exactly one project** -- the tabs and windows its work is laid out in, yours among them -- and starting the group from the control room opens that project and starts you in your pane, in the session you were in. A group from before this was kept has none until it is taken up: when you are started for a group or join one and there is one way to read the situation, Polter ties the tab you are in to it by itself (`me` shows `project` on each group you supervise, and `why` when there is none). **This tool is for when it did not**, because it would have had to pick: `action: \"use\"` says this group uses the project the tab you are in belongs to -- or, if that tab is in no project, that one is made of it, named after the group. `action: \"drop\"` says this group has no project; it is then started by picking a directory, and Polter stops offering it one until you say `use`. Only the group's supervisor may say either. Refused, with nothing changed, when it would break one-to-one: `ProjectHasGroup` (the group already has a project, or the project your tab is in is another group's), `ProjectNameTaken` (a group's project bears its name, and another project has that name), `ProjectsUnknown` (the interface has not told Polter what projects there are), `NotItsSupervisor`. The answer says where the group stands; `pending` means the interface has been asked to make or tie the project and `me` will show it once it has.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"},"action":{"type":"string","enum":["use","drop"]}},"required":["group","action"],"additionalProperties":false}
         ,
     },
     .{
@@ -772,7 +779,7 @@ const tools = [_]Tool{
             "split in your own tab, which falls back to a tab when there is no room " ++
             "and says so in the log.",
         .schema =
-        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"},"place":{"type":"string","enum":["auto","tab","here"],"description":"Defaults to auto: beside you while there is room, a new tab once there is not. tab is a guarantee of its own tab; here asks for a split in your tab, and the reply says when it could not. Terminals in your tab that are not your workers are left alone and not counted, under auto and here alike."}},"required":["cwd"]}
+        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"},"place":{"type":"string","enum":["auto","tab","here","stack"],"description":"Defaults to auto: beside you while there is room -- three in a column, three more beside those -- a new tab once there is not. tab is a guarantee of its own tab; here asks for a split in your tab, and the reply says when it could not. stack is not built yet and is refused with NotBuiltYet. Terminals in your tab that are not your workers are left alone and not counted, under auto and here alike."}},"required":["cwd"]}
         ,
     },
     .{
@@ -849,11 +856,24 @@ const tools = [_]Tool{
     .{
         .name = "role_launch",
         .description = "Open a terminal and start an agent CLI in it wearing a role -- the " ++
-            "same thing the user's \"Launch with Role\" does. `place` is terminal_open's, " ++
-            "with the same meaning and the same placement code: `auto` (the default) goes " ++
-            "beside you while your tab has room and into a new tab after that, `tab` is " ++
-            "always a new tab, `here` is a split in your own tab; the reply's `placed` " ++
-            "says which it got, and why when it was not what you asked. A role whose own " ++
+            "same thing the user's \"Launch with Role\" does. **Look at your tab first** " ++
+            "(terminal_list: the terminals whose `tab` is yours). `place` is terminal_open's, " ++
+            "with the same meaning and the same placement code: `auto` (the default) first " ++
+            "uses a pane you opened for an earlier worker that now has no agent in it and " ++
+            "is waiting at its prompt (`placed: \"reused\"`, `reused: \"free_worker\"`, " ++
+            "and the reply carries that terminal's id), then goes beside you -- three in a " ++
+            "column, three more beside those -- and into a new tab only after that; `tab` " ++
+            "is always a new tab; `here` is a new split in your own tab; the reply's " ++
+            "`placed` says which it got, and `fallback` why when it was not what you asked. " ++
+            "`stack` is a name for stacking workers in one pane's room that is not built " ++
+            "yet: it is refused with NotBuiltYet and opens nothing. **`in` starts the role " ++
+            "in a terminal that is already open** instead of opening one -- a pane of " ++
+            "yours standing empty, or a shell the user told you to use. It is typed into " ++
+            "only if no agent is in it, it is at its shell's prompt and has no half-typed " ++
+            "line; otherwise AgentThere, NotAtPrompt or DraftInLine, and nothing is typed. " ++
+            "`in` follows terminal_send's reach rules and cannot be combined with `cwd`. " ++
+            "A pane the user opened is theirs: `auto` never takes one, so name one with " ++
+            "`in` only when they or the work have made it yours. A role whose own " ++
             "`open` is `tab` still gets a tab when you leave `place` at `auto`. The terminal " ++
             "is given the role -- a split exactly as a tab: terminal_capabilities shows the " ++
             "role and `started: launched` for it -- and `polter +launch <key> <cli>` is " ++
@@ -877,7 +897,7 @@ const tools = [_]Tool{
             "something is wrong with the role or the CLI, the reason is printed in that " ++
             "terminal. Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"key":{"type":"string"},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here"]}},"required":["key"],"additionalProperties":false}
+        \\{"type":"object","properties":{"key":{"type":"string"},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here","stack"]},"in":{"type":"string","description":"The id of a terminal that is already open, to start the role in instead of opening one. Not with cwd."}},"required":["key"],"additionalProperties":false}
         ,
     },
     .{

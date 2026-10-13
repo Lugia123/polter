@@ -1,0 +1,9 @@
+from	format_1
+from	format_1_empty
+same	one_tab
+same	windows_and_tabs
+same	supervisor
+same	group
+from	two_supervisors
+from	duplicate_scrollback
+refused	too_new

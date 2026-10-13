@@ -558,6 +558,8 @@
 "Supervisor May Answer Prompts" = "Supervisor May Answer Prompts";
 "Let a supervisor whose work is done take itself off duty." = "Let a supervisor whose work is done take itself off duty.";
 "Let a supervisor answer workers' permission prompts." = "Let a supervisor answer workers' permission prompts.";
+"Frames Around Split Panes" = "Frames Around Split Panes";
+"Draw a frame round each pane of a split." = "Draw a frame round each pane of a split.";
 "Keep Chat Log" = "Keep Chat Log";
 "Write what the terminals say to each other to disk." = "Write what the terminals say to each other to disk.";
 "Keep Terminal Transcripts" = "Keep Terminal Transcripts";
@@ -675,6 +677,11 @@
 "%@ groups waiting for you" = "%@ groups waiting for you";
 "No group is waiting for you" = "No group is waiting for you";
 "%@ groups need nothing from you" = "%@ groups need nothing from you";
+"%@ group waiting for you" = "%@ group waiting for you";
+"%@ waiting for you" = "%@ waiting for you";
+"%@ group needs nothing from you" = "%@ group needs nothing from you";
+"%@ needs nothing from you" = "%@ needs nothing from you";
+"%@ need nothing from you" = "%@ need nothing from you";
 "New Group" = "New Group";
 "%@ more" = "%@ more";
 "%@, via the supervisor" = "%@, via the supervisor";
@@ -704,6 +711,8 @@
 "This group has no supervisor." = "This group has no supervisor.";
 "The supervisor's terminal is no longer open." = "The supervisor's terminal is no longer open.";
 "The supervisor's terminal is in its own tab." = "The supervisor's terminal is in its own tab.";
+"This terminal is no longer open." = "This terminal is no longer open.";
+"This terminal is in its own tab." = "This terminal is in its own tab.";
 
 /* 总控台：新建群、给没有总管的群启动总管 */
 "A group's name is lowercase letters, digits and dashes, 48 at most." = "A group's name is lowercase letters, digits and dashes, 48 at most.";
@@ -721,10 +730,23 @@
 "The supervisor did not start: its tab never opened." = "The supervisor did not start: its tab never opened.";
 "The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why." = "The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why.";
 "The supervisor did not start: its tab was closed first." = "The supervisor did not start: its tab was closed first.";
+"The supervisor did not start: its agent CLI was not found. Its tab shows why." = "The supervisor did not start: its agent CLI was not found. Its tab shows why.";
+"The supervisor did not start: its agent CLI could not be started. Its tab shows why." = "The supervisor did not start: its agent CLI could not be started. Its tab shows why.";
 "The supervisor did not start." = "The supervisor did not start.";
 "Directory" = "Directory";
 "Choose" = "Choose";
 "Start Supervisor" = "Start Supervisor";
+"Go on with the last session" = "Go on with the last session";
+"New session" = "New session";
+"The last supervisor worked in %@, using %@." = "The last supervisor worked in %@, using %@.";
+"The last supervisor worked in %@." = "The last supervisor worked in %@.";
+"The last supervisor used %@." = "The last supervisor used %@.";
+"A new session will be started: the last supervisor's CLI never said which session it was in." = "A new session will be started: the last supervisor's CLI never said which session it was in.";
+"A new session will be started: going on with the last one did not work the last time it was tried." = "A new session will be started: going on with the last one did not work the last time it was tried.";
+"A new session will be started: the last session was in another CLI." = "A new session will be started: the last session was in another CLI.";
+"Checking whether the last session can be gone on with…" = "Checking whether the last session can be gone on with…";
+"A new session will be started: this CLI cannot go on with an earlier session." = "A new session will be started: this CLI cannot go on with an earlier session.";
+"A new session will be started: an open terminal is in the last session now." = "A new session will be started: an open terminal is in the last session now.";
 "Where the tab starts" = "Where the tab starts";
 
 /* 终端进程退出的提示条、命令结束的通知、命令面板里的更新项：原先是裸赋值的英文，没进过这张表 */
@@ -768,3 +790,34 @@
 /* 分屏框：层叠标签条（control-room.md 12.6.2）。还没有接线 */
 "More tabs" = "More tabs";
 "Add a terminal to this pane" = "Add a terminal to this pane";
+
+/* 多标签页的项目（#1491）：存为项目的框、菜单、关页询问、记号、设置 */
+"This page" = "This page";
+"Already in the project \"%@\"" = "Already in the project \"%@\"";
+"This page is in no project" = "This page is in no project";
+"This page is in the project \"%@\"" = "This page is in the project \"%@\"";
+"Take This Page Out of the Project" = "Take This Page Out of the Project";
+"Take This Page Out of \"%@\"" = "Take This Page Out of \"%@\"";
+"Ask each time" = "Ask each time";
+"Keep it in the project" = "Keep it in the project";
+"Take it out of the project" = "Take it out of the project";
+"%@ page(s) · %@ pane(s)" = "%@ page(s) · %@ pane(s)";
+"Tabs of this window to save" = "Tabs of this window to save";
+"Once saved, these tabs are saved back to the project whenever their layout changes. There is no need to save again." = "Once saved, these tabs are saved back to the project whenever their layout changes. There is no need to save again.";
+"\"%@\" already has %@, saved %@. The replaced version is kept as the previous version." = "\"%@\" already has %@, saved %@. The replaced version is kept as the previous version.";
+"%@ · saved %@" = "%@ · saved %@";
+"The tab \"%@\" is already a page of the project \"%@\". Take it out of that project first." = "The tab \"%@\" is already a page of the project \"%@\". Take it out of that project first.";
+"Close Project?" = "Close Project?";
+"A terminal of this project still has a running process. If you close the project the process will be killed." = "A terminal of this project still has a running process. If you close the project the process will be killed.";
+"Close the page \"%@\"" = "Close the page \"%@\"";
+"It is a page of the project \"%@\". If you only close it, it comes back the next time the project is opened." = "It is a page of the project \"%@\". If you only close it, it comes back the next time the project is opened.";
+"Also take it out of the project" = "Also take it out of the project";
+"Don't ask again (do as chosen this time)" = "Don't ask again (do as chosen this time)";
+"Add to Project" = "Add to Project";
+"Save as New Project..." = "Save as New Project...";
+"A page of the project \"%@\"" = "A page of the project \"%@\"";
+"Page %@" = "Page %@";
+"Size" = "Size";
+"Closing a page" = "Closing a page";
+"Not open." = "Not open.";
+"Open in the tab \"%@\"; saved automatically as its pages change, last at %@." = "Open in the tab \"%@\"; saved automatically as its pages change, last at %@.";

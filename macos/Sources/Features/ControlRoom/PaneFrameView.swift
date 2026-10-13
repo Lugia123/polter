@@ -325,7 +325,9 @@ struct PaneFrameBar: View {
                         .foregroundStyle(nameColor(theme))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if let role = PaneFrame.roleWord(wears) {
+                    // The title's own word when it brings one; the frame's
+                    // otherwise (`SupervisorTitle.says`).
+                    if let role = title.roleWord(in: wears) {
                         Text(role)
                             .foregroundStyle(secondaryColor(theme))
                             .fixedSize()
@@ -351,7 +353,16 @@ struct PaneFrameBar: View {
     private func status(_ title: PaneFrame.Title, theme: Look.Theme) -> some View {
         if title.shown != .none || !title.word.isEmpty {
             HStack(spacing: CGFloat(Look.Side.statusWordGap)) {
-                ControlRoomGlyph(shown: title.shown)
+                // Held is not a status and has no colour of its own: the
+                // design draws it in the title's second ink.
+                if let status = title.shown.status {
+                    ControlRoomGlyph(shown: status)
+                } else {
+                    PaneHeldGlyph()
+                        .fill(secondaryColor(theme))
+                        .frame(width: CGFloat(Look.Side.glyph), height: CGFloat(Look.Side.glyph))
+                        .accessibilityHidden(true)
+                }
                 Text(title.word)
                     .fontWeight(Look.weight(Look.Font.weightEmphasis))
                     .foregroundStyle(wordColor(title.shown, theme: theme))
@@ -377,7 +388,7 @@ struct PaneFrameBar: View {
 
     /// The colour of the status word on this bar: the table's, including
     /// where a red word is not red.
-    private func wordColor(_ shown: ControlRoomList.Shown, theme: Look.Theme) -> Color {
+    private func wordColor(_ shown: ControlRoomSnapshot.Terminal.Bar.Shown, theme: Look.Theme) -> Color {
         switch shown {
         case .needsYou, .doneUnseen:
             return theme.attentionText.color
@@ -387,8 +398,33 @@ struct PaneFrameBar: View {
             case .worker: return theme.problemTextOnWorkerBand.color
             case .plain: return theme.problemTextOnTerminal.color
             }
-        case .working, .none:
+        case .working, .none, .held:
             return secondaryColor(theme)
         }
+    }
+}
+
+/// The glyph of a terminal the person is holding: two bars, as the design
+/// draws them on the status glyphs' own artboard (`06-panes`: each 2.4 wide
+/// and 8 high, their corners 0.8, at 3.8 and 7.8 across and 3 down, of 14).
+/// The Windows host draws the same two from the same numbers
+/// (`polter_control_room::glyph::held`).
+struct PaneHeldGlyph: Shape {
+    /// Where the two bars are on the artboard: x, y, width, height, corner.
+    static let bars: [(x: Double, y: Double, width: Double, height: Double, corner: Double)] = [
+        (3.8, 3, 2.4, 8, 0.8),
+        (7.8, 3, 2.4, 8, 0.8),
+    ]
+
+    func path(in rect: CGRect) -> Path {
+        let unit = rect.width / CGFloat(ControlRoomLook.Status.artboard)
+        var path = Path()
+        for bar in Self.bars {
+            let box = CGRect(
+                x: rect.minX + CGFloat(bar.x) * unit, y: rect.minY + CGFloat(bar.y) * unit,
+                width: CGFloat(bar.width) * unit, height: CGFloat(bar.height) * unit)
+            path.addRoundedRect(in: box, cornerSize: CGSize(width: CGFloat(bar.corner) * unit, height: CGFloat(bar.corner) * unit))
+        }
+        return path
     }
 }
