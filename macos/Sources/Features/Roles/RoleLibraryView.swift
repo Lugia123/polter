@@ -392,26 +392,49 @@ struct RoleLibraryView: View {
         // A row chosen with ↑↓, or by a route from elsewhere, is scrolled to.
         .onChange(of: editor.selection) { key in
             if let key { scroller.scrollTo(key) }
+        }
+        .onChange(of: editor.skill) { name in
+            if let name { scroller.scrollTo(Self.skillRowID(name)) }
         } }
         .settingsListFocus()
         .focused($listFocused)
         .onMoveCommand { direction in
+            // One list to the arrow keys, as it is one list to the eye: the
+            // roles, then the official skills under them.
+            let rows = listing.visible.map(ListedRow.role) + shownSkills.map { ListedRow.skill($0.name) }
+            let current: ListedRow? = editor.skill.map(ListedRow.skill)
+                ?? (editor.isNew ? nil : editor.selection.map(ListedRow.role))
             guard let delta = direction.rowDelta,
-                  let next = SettingsRules.step(
-                    from: editor.isNew ? nil : editor.selection, in: listing.visible, by: delta)
+                  let next = SettingsRules.step(from: current, in: rows, by: delta)
             else { return }
-            editor.select(next)
+            switch next {
+            case .role(let key): editor.select(key)
+            case .skill(let name): editor.selectSkill(name)
+            }
         }
         .overlay { sidebarEmptyState }
     }
 
     /// The skills Polter ships, under the roles: the same list, because a
     /// role is where a person meets them, and the same mark.
-    @ViewBuilder
-    private var officialSkillRows: some View {
-        let shown = library.skills.skills.filter {
+    /// A row of the list column: a role, or an official skill.
+    enum ListedRow: Equatable {
+        case role(String)
+        case skill(String)
+    }
+
+    static func skillRowID(_ name: String) -> String { "official-skill:" + name }
+
+    /// The official skills the search leaves.
+    private var shownSkills: [OfficialSkill] {
+        library.skills.skills.filter {
             filter.isEmpty || $0.name.localizedCaseInsensitiveContains(filter)
         }
+    }
+
+    @ViewBuilder
+    private var officialSkillRows: some View {
+        let shown = shownSkills
         if !shown.isEmpty {
             Divider().padding(.vertical, SettingsLayout.rowGap)
             SettingsRow(selected: false) {
@@ -430,6 +453,7 @@ struct RoleLibraryView: View {
                     }
                     .padding(.vertical, 2)
                 }
+                .id(Self.skillRowID(skill.name))
                 .onTapGesture {
                     listFocused = true
                     DispatchQueue.main.async { editor.selectSkill(skill.name) }

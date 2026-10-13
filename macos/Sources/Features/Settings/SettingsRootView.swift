@@ -86,7 +86,12 @@ struct SettingsRootView: View {
     private var crumb: String {
         var item: String?
         var hidden = false
-        if model.section == .roles, let draft = editor.draft {
+        if model.section == .roles, let skill = editor.skill {
+            // An official skill is in the roles section, under its own
+            // heading in the list; the crumb says both.
+            item = String(localized: "Official Skills", comment: "角色库：列表下半的分组标题，Polter 自带的 skill") + " › " + skill
+            hidden = false
+        } else if model.section == .roles, let draft = editor.draft {
             item = draft.displayName.isEmpty ? draft.key : draft.displayName
             hidden = false
         } else if model.section == .projects, let name = projects.selected?.name {
