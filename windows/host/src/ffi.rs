@@ -710,6 +710,13 @@ impl Action {
     ///
     /// An empty string is the same as no directory: "wherever the asking
     /// terminal is standing", which is what a keybinding means.
+    /// Whether the request came with somewhere to write the answer: an
+    /// agent's does (the core asking on its behalf), a key's and a menu
+    /// item's do not. The second field of the struct above, at 8.
+    pub fn as_new_tab_answer_wanted(&self) -> bool {
+        usize::from_ne_bytes(self.payload[8..16].try_into().unwrap()) != 0
+    }
+
     pub fn as_new_tab_cwd(&self) -> Option<String> {
         let p = usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *const c_char;
         if p.is_null() {

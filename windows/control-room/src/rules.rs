@@ -80,7 +80,10 @@ pub enum NewTab {
 /// it. With no asker the request came from the application itself -- the
 /// control room starting a supervisor is one -- and the three facts after
 /// it say where there is room.
-pub fn new_tab(asker: Option<(bool, bool)>, control_room_in_front: bool, tabs_beside_control_room: bool, any_terminal_window: bool) -> NewTab {
+///
+/// `by_person` is a key or a menu item; false is the application's own. A
+/// tab the person asked for on the control room comes in front.
+pub fn new_tab(asker: Option<(bool, bool)>, by_person: bool, control_room_in_front: bool, tabs_beside_control_room: bool, any_terminal_window: bool) -> NewTab {
     if let Some((lent, has_home)) = asker {
         if !has_home {
             return NewTab::Refused;
@@ -91,7 +94,7 @@ pub fn new_tab(asker: Option<(bool, bool)>, control_room_in_front: bool, tabs_be
     // answered `OwnWindow` there, which this host cannot open, so starting
     // a supervisor from a lone control room opened nothing.
     if control_room_in_front && (tabs_beside_control_room || !any_terminal_window) {
-        return NewTab::Behind(Home::ControlRooms);
+        return if by_person { NewTab::InFront(Home::ControlRooms) } else { NewTab::Behind(Home::ControlRooms) };
     }
     if any_terminal_window {
         NewTab::InFront(Home::Frontmost)

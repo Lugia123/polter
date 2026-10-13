@@ -3533,7 +3533,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // carries no terminal: it asks where the one control room is
             let facts = tabs::new_tab_facts();
             let asker = target_surface(&target).map(tabs::asker_facts);
-            let to = new_tab(asker, facts.control_room.is_some(), facts.tabs_beside, facts.any_terminal_window);
+            let to = new_tab(asker, !action.as_new_tab_answer_wanted(), facts.control_room.is_some(), facts.tabs_beside, facts.any_terminal_window);
             let behind = |frame: HWND| {
                 tabs::post_op(frame, Op::NewTabWith(tabs::NewTab { cwd: cwd.clone(), behind: true, ..Default::default() }), "new_tab action");
                 true

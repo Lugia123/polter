@@ -484,17 +484,17 @@ func homeName(_ h: ControlRoomRules.NewTab.Home) -> String {
     }
 }
 for asker in tabAskers {
-    for bits in 0..<8 {
-        let (front, beside, any) = (bits & 4 != 0, bits & 2 != 0, bits & 1 != 0)
+    for bits in 0..<16 {
+        let (person, front, beside, any) = (bits & 8 != 0, bits & 4 != 0, bits & 2 != 0, bits & 1 != 0)
         let to: String
-        switch ControlRoomRules.newTab(asker: asker, controlRoomInFront: front, tabsBesideControlRoom: beside, anyTerminalWindow: any) {
+        switch ControlRoomRules.newTab(asker: asker, byPerson: person, controlRoomInFront: front, tabsBesideControlRoom: beside, anyTerminalWindow: any) {
         case .inFront(let h): to = "in_front(\(homeName(h)))"
         case .behind(let h): to = "behind(\(homeName(h)))"
         case .ownWindow: to = "own_window"
         case .refused: to = "refused"
         }
         let who = asker.map { "lent=\($0.lent),home=\($0.hasHome)" } ?? "app"
-        print("new_tab asker=\(who) front=\(front) beside=\(beside) any=\(any) -> \(to)")
+        print("new_tab asker=\(who) person=\(person) front=\(front) beside=\(beside) any=\(any) -> \(to)")
     }
 }
 for name in ["BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting", "NoSupervisorRole", "NoSuchPersona",

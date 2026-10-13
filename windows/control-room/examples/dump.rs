@@ -444,21 +444,21 @@ fn main() {
     // the control room can be.
     let askers = [None, Some((false, false)), Some((false, true)), Some((true, false)), Some((true, true))];
     for asker in askers {
-        for bits in 0..8u8 {
-            let (front, beside, any) = (bits & 4 != 0, bits & 2 != 0, bits & 1 != 0);
+        for bits in 0..16u8 {
+            let (person, front, beside, any) = (bits & 8 != 0, bits & 4 != 0, bits & 2 != 0, bits & 1 != 0);
             let home = |h: rules::Home| match h {
                 rules::Home::Askers => "askers",
                 rules::Home::ControlRooms => "control_rooms",
                 rules::Home::Frontmost => "frontmost",
             };
-            let to = match rules::new_tab(asker, front, beside, any) {
+            let to = match rules::new_tab(asker, person, front, beside, any) {
                 rules::NewTab::InFront(h) => format!("in_front({})", home(h)),
                 rules::NewTab::Behind(h) => format!("behind({})", home(h)),
                 rules::NewTab::OwnWindow => "own_window".to_string(),
                 rules::NewTab::Refused => "refused".to_string(),
             };
             let who = asker.map_or("app".to_string(), |(lent, has_home)| format!("lent={lent},home={has_home}"));
-            println!("new_tab asker={who} front={front} beside={beside} any={any} -> {to}");
+            println!("new_tab asker={who} person={person} front={front} beside={beside} any={any} -> {to}");
         }
     }
     // What the person is told when a group was not made or a supervisor

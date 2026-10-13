@@ -1133,28 +1133,33 @@ fn a_group_just_made_is_selected_when_the_core_lists_it_and_not_before() {
 fn where_a_tab_the_core_asked_for_goes() {
     use crate::rules::{new_tab, Home, NewTab};
     // (lent, has a home)
-    assert_eq!(new_tab(Some((true, true)), true, true, true), NewTab::Behind(Home::Askers));
-    assert_eq!(new_tab(Some((false, true)), true, true, true), NewTab::InFront(Home::Askers));
+    assert_eq!(new_tab(Some((true, true)), false, true, true, true), NewTab::Behind(Home::Askers));
+    assert_eq!(new_tab(Some((false, true)), false, true, true, true), NewTab::InFront(Home::Askers));
     // Nothing holds it: not opened, whatever else is so.
     for lent in [false, true] {
         for facts in [(false, false, false), (true, true, true)] {
-            assert_eq!(new_tab(Some((lent, false)), facts.0, facts.1, facts.2), NewTab::Refused);
+            assert_eq!(new_tab(Some((lent, false)), false, facts.0, facts.1, facts.2), NewTab::Refused);
         }
     }
     // The application itself -- the control room starting a supervisor.
-    assert_eq!(new_tab(None, true, true, true), NewTab::Behind(Home::ControlRooms));
-    assert_eq!(new_tab(None, true, true, false), NewTab::Behind(Home::ControlRooms));
-    assert_eq!(new_tab(None, true, false, true), NewTab::InFront(Home::Frontmost));
-    assert_eq!(new_tab(None, false, true, true), NewTab::InFront(Home::Frontmost));
-    assert_eq!(new_tab(None, false, false, false), NewTab::OwnWindow);
+    assert_eq!(new_tab(None, false, true, true, true), NewTab::Behind(Home::ControlRooms));
+    assert_eq!(new_tab(None, false, true, true, false), NewTab::Behind(Home::ControlRooms));
+    assert_eq!(new_tab(None, false, true, false, true), NewTab::InFront(Home::Frontmost));
+    assert_eq!(new_tab(None, false, false, true, true), NewTab::InFront(Home::Frontmost));
+    assert_eq!(new_tab(None, false, false, false, false), NewTab::OwnWindow);
     // The control room alone on screen: its own window takes the tab.
-    assert_eq!(new_tab(None, true, false, false), NewTab::Behind(Home::ControlRooms));
+    assert_eq!(new_tab(None, false, true, false, false), NewTab::Behind(Home::ControlRooms));
+    // The person's own -- a key, a menu item -- comes in front there.
+    assert_eq!(new_tab(None, true, true, true, true), NewTab::InFront(Home::ControlRooms));
+    assert_eq!(new_tab(None, true, true, false, false), NewTab::InFront(Home::ControlRooms));
+    assert_eq!(new_tab(None, true, true, false, true), NewTab::InFront(Home::Frontmost));
+    assert_eq!(new_tab(None, true, false, false, false), NewTab::OwnWindow);
     // An asker's own answer does not depend on where the control room is.
     for a in [false, true] {
         for b in [false, true] {
             for c in [false, true] {
-                assert_eq!(new_tab(Some((true, true)), a, b, c), NewTab::Behind(Home::Askers));
-                assert_eq!(new_tab(Some((false, true)), a, b, c), NewTab::InFront(Home::Askers));
+                assert_eq!(new_tab(Some((true, true)), false, a, b, c), NewTab::Behind(Home::Askers));
+                assert_eq!(new_tab(Some((false, true)), false, a, b, c), NewTab::InFront(Home::Askers));
             }
         }
     }

@@ -48,7 +48,7 @@ struct ControlRoomProjectMenuTests {
         // is for a tab an agent asked for, and that rule still says so.
         let beside = Rules.loadedProjectTab(tabsBesideControlRoom: true, anyTerminalWindow: true)
         #expect(beside == .inFront(of: .controlRooms))
-        let agents = Rules.newTab(asker: nil, controlRoomInFront: true,
+        let agents = Rules.newTab(asker: nil, byPerson: false, controlRoomInFront: true,
                                   tabsBesideControlRoom: true, anyTerminalWindow: true)
         #expect(agents == .behind(.controlRooms))
         // With no terminal tab beside the control room: the terminal

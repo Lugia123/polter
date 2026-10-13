@@ -961,8 +961,12 @@ class AppDelegate: NSObject,
         let controlRoom = ControlRoomController.shared
         let beside = controlRoom?.terminalTabBeside
         let frontmost = TerminalController.preferredParent?.window
+        // An agent's request comes with somewhere to write the answer; a
+        // key's and a menu item's do not.
+        let answerWanted = notification.userInfo?[Ghostty.Notification.NewTabAnswerWantedKey] as? Bool ?? false
         let plan = ControlRoomRules.newTab(
             asker: surfaceView.map { (lent: ControlRoomLender.shared.isLent($0), hasHome: home != nil) },
+            byPerson: !answerWanted,
             controlRoomInFront: controlRoom?.window?.isKeyWindow ?? false,
             tabsBesideControlRoom: beside != nil,
             anyTerminalWindow: frontmost != nil)
@@ -989,7 +993,10 @@ class AppDelegate: NSObject,
         case .behind(.controlRooms) where beside == nil:
             // The control room is the only window: the tab is the first
             // one beside it, and the control room stays in front.
-            controlRoom?.newFirstTerminalTab(withBaseConfig: config)
+            controlRoom?.newFirstTerminalTab(withBaseConfig: config, inFront: false)
+            return
+        case .inFront(of: .controlRooms) where beside == nil:
+            controlRoom?.newFirstTerminalTab(withBaseConfig: config, inFront: true)
             return
         case let .behind(which):
             parent = window(which)
@@ -1003,7 +1010,6 @@ class AppDelegate: NSObject,
 
         // An agent's tab does not pull the application in front of
         // whatever the person is using; theirs does.
-        let answerWanted = notification.userInfo?[Ghostty.Notification.NewTabAnswerWantedKey] as? Bool ?? false
         let activates = ControlRoomRules.newTabActivates(answerWanted: answerWanted, appIsActive: NSApp.isActive)
         _ = TerminalController.newTab(
             ghostty, from: parent, withBaseConfig: config, inFront: inFront, activates: activates)

@@ -327,8 +327,16 @@ enum ControlRoomRules {
     /// only window put it in a second window (the user, 2026-10-13). The
     /// control room's window does take terminal tabs; what it lacked was
     /// anybody adding the first one.
+    ///
+    /// **A tab the person asked for comes in front.** `byPerson` is a key
+    /// or a menu item; false is the application's own -- the control room
+    /// starting a supervisor, an agent's `terminal_open`. "Behind" is for
+    /// those: the person pressing New Tab on the control room is asking to
+    /// go to that tab, and it goes into the control room's own window
+    /// rather than whichever terminal window was used last.
     static func newTab(
         asker: (lent: Bool, hasHome: Bool)?,
+        byPerson: Bool,
         controlRoomInFront: Bool,
         tabsBesideControlRoom: Bool,
         anyTerminalWindow: Bool
@@ -337,7 +345,9 @@ enum ControlRoomRules {
             guard asker.hasHome else { return .refused }
             return asker.lent ? .behind(.askers) : .inFront(of: .askers)
         }
-        if controlRoomInFront, tabsBesideControlRoom || !anyTerminalWindow { return .behind(.controlRooms) }
+        if controlRoomInFront, tabsBesideControlRoom || !anyTerminalWindow {
+            return byPerson ? .inFront(of: .controlRooms) : .behind(.controlRooms)
+        }
         return anyTerminalWindow ? .inFront(of: .frontmost) : .ownWindow
     }
 
@@ -383,14 +393,13 @@ enum ControlRoomRules {
     /// chose themselves, and a project that opened where they cannot see
     /// it reads as a menu item that did nothing (the user, 2026-10-13).
     static func loadedProjectTab(tabsBesideControlRoom: Bool, anyTerminalWindow: Bool) -> NewTab {
-        let place = newTab(
+        newTab(
             asker: nil,
             // It was chosen from the control room's own menu.
+            byPerson: true,
             controlRoomInFront: true,
             tabsBesideControlRoom: tabsBesideControlRoom,
             anyTerminalWindow: anyTerminalWindow)
-        if case let .behind(home) = place { return .inFront(of: home) }
-        return place
     }
 
     /// Whether opening a tab brings the application in front of whatever

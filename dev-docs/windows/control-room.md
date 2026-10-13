@@ -558,7 +558,7 @@ mac 上能验的只有 `polter-control-room` 的测试、两道闸和交叉编�
 | 「新建群」 | 左栏标题行右端 `+ 新建群`。点了以后标题行原地变成输入框：**系统自己的 EDIT 控件**，所以输入法照平常那样在里面组字。回车建、Esc 取消、点别处或标签页被切走也算取消。核心拒绝时那句话写在输入框正下方（盖在第一行上），输入框留着 | 位置：`scene::new_group_hit` / `name_field` / `name_note`；窗口：`control_room.rs` 的 `begin_naming` / `submit_name` / `name_proc` |
 | 建成后选中 | 等核心下一份快照列出它再选中（`rules::made_group_to_select`），名字按核心的做法只去首尾空白 | `control_room.rs` 的 `select_made`，在 `snapshot_changed` 里 |
 | 没有总管的群 | 右栏那句话按核心的 `state` / `failed` 换（没有总管 / 正在启动 / 三种没等到 / 没有更具体的原因），两行高。**下面出不出东西只看核心的 `can_start`**：角色（核心说有得选才出，点了弹菜单）、目录（点了开系统的选文件夹）、「启动总管」按钮；当场被拒的原因写在按钮下面 | `scene::no_supervisor_words` / `build_start`；`control_room.rs` 的 `start_scene` / `choose_role` / `choose_directory` / `start_supervisor` |
-| 开标签页去哪、切不切过去 | 与 mac 同一条规则 `rules::new_tab`（对照闸比了 40 格）：被借到右栏的终端要的标签页开在它自己的窗口、**不切过去**；应用自己要的（总控台启动总管）在总控台在前、且旁边有终端标签页**或者一个终端标签页都没有**时开在总控台那个窗口、不切过去（后一格原先是不开，#1500）；其余照旧 | `main.rs` 的 `ACTION_NEW_TAB`；`tabs.rs` 的 `NewTab::behind`、`asker_facts`、`new_tab_facts` |
+| 开标签页去哪、切不切过去 | 与 mac 同一条规则 `rules::new_tab`（对照闸比了 80 格：谁要的 × 是不是人按的 × 三个事实）：被借到右栏的终端要的标签页开在它自己的窗口、**不切过去**；应用自己要的（总控台启动总管）在总控台在前、且旁边有终端标签页**或者一个终端标签页都没有**时开在总控台那个窗口、不切过去（后一格原先是不开，#1500）；其余照旧 | `main.rs` 的 `ACTION_NEW_TAB`；`tabs.rs` 的 `NewTab::behind`、`asker_facts`、`new_tab_facts` |
 | 群名被挤没（第三轮缺陷 3） | 见 12.3 | `scene::place_line` |
 | 等宽字 | 装了 Cascadia Mono 就用它，没有才用 Consolas。见 12.3 | `uifont::mono_face` |
 | 「允许总管代答」的勾（缺陷 4 的宿主一半） | 新标签页在收到第一条 `poltergeist_mark` 之前，按配置 `poltergeist-may-authorise` 画（核心给每个新终端的起点就是它），不再一律画成关 | `tabs.rs` 的 `may_authorise_until_marked` |

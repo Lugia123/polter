@@ -126,8 +126,8 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         window?.tabGroup?.windows.first { $0.windowController is TerminalController }
     }
 
-    /// Open a terminal as the first terminal tab of this window, behind
-    /// this one: where `ControlRoomRules.newTab` sends a tab asked for
+    /// Open a terminal as the first terminal tab of this window -- behind
+    /// this one, or with `inFront` selected and given the keyboard: where `ControlRoomRules.newTab` sends a tab asked for
     /// while the control room is the only window there is.
     ///
     /// `TerminalController.newTab` cannot do it: it opens a tab beside a
@@ -135,7 +135,9 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// A terminal window whose title-bar style takes no tabs opens as a
     /// window of its own, as it does everywhere else.
     @discardableResult
-    func newFirstTerminalTab(withBaseConfig config: Ghostty.SurfaceConfiguration?) -> TerminalController? {
+    func newFirstTerminalTab(
+        withBaseConfig config: Ghostty.SurfaceConfiguration?, inFront: Bool
+    ) -> TerminalController? {
         guard let window else { return nil }
         let controller = TerminalController(ghostty, withBaseConfig: config)
         guard let tab = controller.window else { return controller }
@@ -147,8 +149,12 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             controller.showWindowSafely(nil)
             return controller
         }
-        // Its terminal is running already -- the surface was made with the
-        // controller -- and the tab shows it when it is selected.
+        if inFront {
+            window.tabGroup?.selectedWindow = tab
+            controller.showWindowSafely(nil)
+        }
+        // Behind, its terminal is running already -- the surface was made
+        // with the controller -- and the tab shows it when it is selected.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { Self.relabel() }
         return controller
     }
@@ -540,9 +546,29 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         }
     }
 
-    /// "New Tab" while this tab is selected: a terminal tab, as anywhere.
+    /// "New Tab" while this tab is selected: a terminal tab, in this
+    /// window and in front (`ControlRoomRules.newTab`, asked by the
+    /// person). It used to go to the terminal window used last, and with
+    /// none to a window of its own.
     @IBAction func newTab(_ sender: Any?) {
-        (NSApp.delegate as? AppDelegate)?.newTab(sender)
+        let beside = terminalTabBeside
+        let plan = ControlRoomRules.newTab(
+            asker: nil,
+            byPerson: true,
+            controlRoomInFront: true,
+            tabsBesideControlRoom: beside != nil,
+            anyTerminalWindow: TerminalController.preferredParent != nil)
+        switch plan {
+        case .inFront(of: .controlRooms):
+            if let beside {
+                _ = TerminalController.newTab(ghostty, from: beside)
+            } else {
+                newFirstTerminalTab(withBaseConfig: nil, inFront: true)
+            }
+        case .inFront, .behind, .ownWindow, .refused:
+            // The terminal window used last, as the menu item does anywhere.
+            (NSApp.delegate as? AppDelegate)?.newTab(sender)
+        }
     }
 
     // MARK: The Project menu
