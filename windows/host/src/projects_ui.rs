@@ -716,6 +716,22 @@ pub fn rename_to(file: &Path, wanted: &str) {
             say(tr("There is already a project called “{}”.").replacen("{}", &other, 1), true)
         }
         NameVerdict::Ok(new) => {
+            // Asked of the core first (`project_rename`): a project that is
+            // a group's is renamed by renaming the group, which the core
+            // may refuse -- and when it does not, the rename comes back as
+            // an order (`project_session::obey`), not from here.
+            let group = project::read_file(&item.path).ok().and_then(|s| s.group);
+            match crate::project_session::ask_before_renaming(&item.name, &new, group.as_deref()) {
+                Ok(true) => {}
+                Ok(false) => {
+                    say(tr("Its group is being renamed; the project follows."), false);
+                    return;
+                }
+                Err(why) => {
+                    say(format!("{} {why}", tr("The project could not be renamed.")), true);
+                    return;
+                }
+            }
             let to = dir.join(rule_file(&new).unwrap_or_default());
             let r = pj::move_project(&item.path, &to).map_err(|e| e.to_string()).and_then(|_| project::set_name(&to, &new));
             match r {

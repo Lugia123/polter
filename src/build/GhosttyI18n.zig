@@ -273,6 +273,7 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
         "windows/host/src",
         "windows/settings-shell/src",
         "windows/control-room/src",
+        "windows/projects/src",
     };
     for (rust_dirs) |rust_dir| {
         // **Walked rather than named file by file**, and every `.rs` file:

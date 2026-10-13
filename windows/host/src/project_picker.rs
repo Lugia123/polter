@@ -78,12 +78,15 @@ enum Purpose {
     /// case (settings.md §6.3): the tab -- or, with `true`, its window --
     /// closes once the save has worked, and only then.
     Save { tab: TabId, close_after: Option<bool> },
+    /// Put `tab` into a project that exists: the list is the projects, and
+    /// picking one adds the tab to it as one more page.
+    AddTo { tab: TabId },
 }
 
 impl Purpose {
     fn mode(self) -> Mode {
         match self {
-            Purpose::Load => Mode::Load,
+            Purpose::Load | Purpose::AddTo { .. } => Mode::Load,
             Purpose::Save { .. } => Mode::SaveAs,
         }
     }
@@ -94,6 +97,7 @@ impl Purpose {
         match self {
             Purpose::Load => n_("Load Project"),
             Purpose::Save { .. } => n_("Save as Project"),
+            Purpose::AddTo { .. } => polter_projects::page_rules::ADD_TO_PROJECT,
         }
     }
 }
@@ -139,6 +143,9 @@ thread_local! {
     /// A pick is being acted on: the overwrite question runs a message loop
     /// of its own, and a second pick arriving in it would ask twice.
     static ACTING: Cell<bool> = const { Cell::new(false) };
+    /// The other tabs of the window that are saved with the one a save was
+    /// asked from (`open_save`'s question); empty for that tab alone.
+    static SAVING_WITH: RefCell<Vec<TabId>> = const { RefCell::new(Vec::new()) };
 }
 
 fn handles() -> Option<Handles> {
@@ -183,7 +190,78 @@ unsafe extern "system" fn load_timer(_: HWND, _: u32, id: usize, _: u32) {
 /// Open the window to save tab `tab` of `frame` as a project. **Main thread
 /// only** -- it makes windows.
 pub fn open_save(frame: HWND, tab: TabId) {
+    let Some(with) = which_tabs(frame, frame, tab) else { return };
+    saving_with(with);
     open(frame, frame, Purpose::Save { tab, close_after: None });
+}
+
+/// The tabs a save takes besides the one it was asked from. Set here, in a
+/// function of its own, so that the cell is let go of before the window is
+/// made (`windows/tools/borrow-across-dispatch.py`).
+fn saving_with(tabs: Vec<TabId>) {
+    SAVING_WITH.with(|w| *w.borrow_mut() = tabs);
+}
+
+/// Open the window to put tab `tab` of `frame` into a project that exists.
+pub fn open_add_to(frame: HWND, tab: TabId) {
+    open(frame, frame, Purpose::AddTo { tab });
+}
+
+/// Which tabs of `frame` a save asked from `tab` takes besides it, or
+/// `None` for no save at all (`page_rules::save_as_rows`, the macOS sheet's
+/// rule): a tab that is a page of a project already cannot be saved into
+/// another, and is said so; a window with other tabs that can be is asked
+/// whether they come too.
+///
+/// **Not the list of tick boxes the macOS sheet has.** Two answers: this
+/// page, which is what is ticked there to begin with, or every page of the
+/// window that is in no project. A page by itself is added afterwards from
+/// its tab's menu ("Add to Project").
+fn which_tabs(owner: HWND, frame: HWND, tab: TabId) -> Option<Vec<TabId>> {
+    use polter_projects::page_rules as rules;
+    let tabs: Vec<rules::Tab> = crate::tabs::terminal_tabs_of(frame)
+        .into_iter()
+        .map(|(id, title, panes, _)| rules::Tab { id: id.0, title, panes, project: crate::project_session::project_of_tab(id), is_current: id == tab })
+        .collect();
+    let rows = rules::save_as_rows(&tabs);
+    if rules::initially_checked(&tabs).is_empty() {
+        // The tab asked from is a page already.
+        if let Some(rules::Row { title, note: rules::Note::InProject(project), .. }) = rows.iter().find(|r| r.id == tab.0) {
+            let w = rules::page_of_another_words(title, project);
+            wlogf!(frame, "[project] save as project: tab {:?} is already a page of {:?}; not offered", tab, project);
+            tell(owner, n_("Save as Project"), &w.filled(&tr(w.msgid)), MB_ICONINFORMATION);
+        }
+        return None;
+    }
+    let others: Vec<&rules::Row> = rows.iter().filter(|r| r.can_check && r.id != tab.0).collect();
+    if others.is_empty() {
+        return Some(Vec::new());
+    }
+    let every: std::collections::BTreeSet<u64> = rows.iter().map(|r| r.id).collect();
+    let all = rules::tabs_to_save(&every, &rows);
+    let listed: Vec<String> = others
+        .iter()
+        .map(|r| {
+            let w = rules::note_words(&r.note);
+            format!("{}  ({})", r.title, w.filled(&tr(w.msgid)))
+        })
+        .collect();
+    let all_label = tr("All {} Pages of This Window").replacen("{}", &all.len().to_string(), 1);
+    let pressed = crate::projects_ui::ask(
+        owner,
+        "[project]",
+        &tr(rules::TABS_TO_SAVE),
+        &format!("{}
+
+{}", listed.join("
+"), tr(rules::SAVED_FROM_NOW_ON)),
+        &[tr("This Page Only"), all_label, tr("Cancel")],
+    );
+    match pressed {
+        Some(0) => Some(Vec::new()),
+        Some(1) => Some(all.into_iter().filter(|id| *id != tab.0).map(TabId).collect()),
+        _ => None,
+    }
 }
 
 /// The same, asked for from another window -- the settings window's "+".
@@ -192,6 +270,8 @@ pub fn open_save(frame: HWND, tab: TabId) {
 /// behind that window with nothing to say it was still there. What is saved
 /// is still `frame`'s tab.
 pub fn open_save_over(owner: HWND, frame: HWND, tab: TabId) {
+    let Some(with) = which_tabs(owner, frame, tab) else { return };
+    saving_with(with);
     open(owner, frame, Purpose::Save { tab, close_after: None });
 }
 
@@ -199,6 +279,8 @@ pub fn open_save_over(owner: HWND, frame: HWND, tab: TabId) {
 /// the tab -- or, with `whole_window`, its window -- closes once the save has
 /// worked, and only then (`ProjectSaveBeforeClose.saveThenClose`).
 pub fn open_save_then_close(frame: HWND, tab: TabId, whole_window: bool) {
+    // The tab that is closing, and no other: that is what was asked about.
+    saving_with(Vec::new());
     open(frame, frame, Purpose::Save { tab, close_after: Some(whole_window) });
 }
 
@@ -253,10 +335,18 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
     }
     let items = read_items(frame);
     let caption = match purpose {
-        Purpose::Load => None,
-        Purpose::Save { tab, .. } => Some(match panes_of(frame, tab) {
-            Some(n) => tr("Saves this tab: {} pane(s)").replacen("{}", &n.to_string(), 1),
-            None => String::new(),
+        Purpose::Load | Purpose::AddTo { .. } => None,
+        Purpose::Save { tab, .. } => Some({
+            // Every tab that is saved, counted whole: the one asked from,
+            // and the others of its window that were chosen with it.
+            let with: Vec<TabId> = SAVING_WITH.with(|w| w.borrow().clone());
+            let panes: usize = std::iter::once(tab).chain(with.iter().copied()).filter_map(|t| panes_of(frame, t)).sum();
+            if with.is_empty() {
+                tr("Saves this tab: {} pane(s)").replacen("{}", &panes.to_string(), 1)
+            } else {
+                let w = polter_projects::page_rules::size(with.len() + 1, panes);
+                w.filled(&tr(w.msgid))
+            }
         }),
     };
 
@@ -416,7 +506,7 @@ fn row_count() -> usize {
 fn fill_list() {
     let Some(h) = handles() else { return };
     let needle = match h.purpose {
-        Purpose::Load => field_text(h.field),
+        Purpose::Load | Purpose::AddTo { .. } => field_text(h.field),
         // The name field names a new project; it is not a search.
         Purpose::Save { .. } => String::new(),
     };
@@ -501,6 +591,7 @@ fn pick(row: usize) {
     match h.purpose {
         Purpose::Load => load(item),
         Purpose::Save { tab, close_after } => save(h, tab, close_after, &item.name),
+        Purpose::AddTo { tab } => add(item, tab),
     }
 }
 
@@ -508,7 +599,7 @@ fn pick(row: usize) {
 fn accept() {
     let Some(h) = handles() else { return };
     match h.purpose {
-        Purpose::Load => {
+        Purpose::Load | Purpose::AddTo { .. } => {
             let selected = usize::try_from(unsafe { SendMessageW(h.list, LB_GETCURSEL, Some(WPARAM(0)), Some(LPARAM(0))) }.0).ok();
             if let Some(row) = picker::enter_target(row_count(), selected) {
                 pick(row);
@@ -540,6 +631,19 @@ fn load(item: Item) {
             // that did nothing.
             wlogf!(frame, "[project] load {:?} failed: {}", item.name, e);
             tell(frame, n_("Load Project"), &format!("{}\n\n{}", tr(n_("The project could not be opened.")), e), MB_ICONINFORMATION);
+        }
+    }
+}
+
+/// Tab `tab` becomes one more page of the project picked.
+fn add(item: Item, tab: TabId) {
+    let Some(h) = dismiss() else { return };
+    let frame = h.frame;
+    match crate::project_session::add_tab(&item.path, tab) {
+        Ok(()) => wlogf!(frame, "[project] tab {:?} added to {:?}", tab, item.name),
+        Err(e) => {
+            wlogf!(frame, "[project] adding tab {:?} to {:?} failed: {}", tab, item.name, e);
+            tell(frame, polter_projects::page_rules::ADD_TO_PROJECT, &e, MB_ICONWARNING);
         }
     }
 }
@@ -577,7 +681,11 @@ fn save(h: Handles, tab: TabId, close_after: Option<bool>, typed: &str) {
         wlogf!(frame, "[project] save as project {:?}: the window went away while asking; nothing written", typed);
         return;
     }
-    let saved = crate::project_ui::write_tab_as(&dir, frame, tab, name, kind);
+    // The tab asked from, then the ones chosen with it; the project keeps
+    // them in the order of the strip whatever order they are named in.
+    let mut chosen = vec![(frame, tab)];
+    chosen.extend(SAVING_WITH.with(|w| std::mem::take(&mut *w.borrow_mut())).into_iter().map(|t| (frame, t)));
+    let saved = crate::project_ui::save_tabs_as(&dir, &chosen, name, kind);
     match (&saved, close_after) {
         (Ok(()), None) => wlogf!(frame, "[project] saved as project {:?}", typed),
         (Ok(()), Some(whole_window)) => {
@@ -588,7 +696,13 @@ fn save(h: Handles, tab: TabId, close_after: Option<bool>, typed: &str) {
                 crate::tabs::close_tab(frame, tab);
             }
         }
-        (Err(e), None) => wlogf!(frame, "[project] save as project {:?} failed: {}", typed, e),
+        (Err(e), None) => {
+            // Said on screen: a refusal -- the project is open in other
+            // tabs, a tab is another project's page -- is otherwise a
+            // window that closed and saved nothing.
+            wlogf!(frame, "[project] save as project {:?} failed: {}", typed, e);
+            tell(frame, n_("Save as Project"), &format!("{}\n\n{}", tr("The project could not be saved."), e), MB_ICONWARNING);
+        }
         (Err(e), Some(_)) => {
             // **Said on screen, and the tab stays**: the person chose Save so
             // as not to lose what is running in it.
@@ -733,7 +847,7 @@ unsafe extern "system" fn picker_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
 fn field_changed() {
     let Some(h) = handles() else { return };
     match h.purpose {
-        Purpose::Load => fill_list(),
+        Purpose::Load | Purpose::AddTo { .. } => fill_list(),
         Purpose::Save { .. } => {
             let named = !field_text(h.field).trim().is_empty();
             let _ = unsafe { EnableWindow(h.save, named) };
@@ -785,7 +899,7 @@ unsafe extern "system" fn child_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
                 // ↑ and ↓ in the search move the highlight in the list, so
                 // a project can be found and opened without the mouse.
-                if is_field && matches!(h.purpose, Purpose::Load) && (vk == VK_UP.0 || vk == VK_DOWN.0) {
+                if is_field && matches!(h.purpose, Purpose::Load | Purpose::AddTo { .. }) && (vk == VK_UP.0 || vk == VK_DOWN.0) {
                     let selected = usize::try_from(SendMessageW(h.list, LB_GETCURSEL, Some(WPARAM(0)), Some(LPARAM(0))).0).ok();
                     if let Some(to) = picker::step(selected, row_count(), vk == VK_DOWN.0) {
                         SendMessageW(h.list, LB_SETCURSEL, Some(WPARAM(to)), Some(LPARAM(0)));
@@ -903,7 +1017,7 @@ fn draw_text(hdc: HDC, s: &str, r: &RECT, font: HFONT, colour: u32, flags: DRAW_
 
 fn paint_placeholder(h: Handles) {
     let text = match h.purpose {
-        Purpose::Load => tr("Search"),
+        Purpose::Load | Purpose::AddTo { .. } => tr("Search"),
         Purpose::Save { .. } => tr("New Project Name"),
     };
     let mut rc = RECT::default();

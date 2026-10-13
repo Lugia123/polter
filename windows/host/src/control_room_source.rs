@@ -56,6 +56,9 @@ static FETCHES: AtomicU32 = AtomicU32::new(0);
 pub struct Ready {
     pub snapshot: Snapshot,
     pub list: List,
+    /// What it says about projects: whether the core has been told, what
+    /// it asks of this host, and each group's project.
+    pub projects: polter_projects::orders::Told,
 }
 
 /// What there is to draw from.
@@ -137,6 +140,15 @@ fn fetch() {
     // The frames round the panes of a split tab say what the snapshot says
     // of each terminal.
     crate::pane_frames::snapshot_changed();
+    // What the core asks about projects, and the first chance to tell it
+    // what projects there are. With the borrow gone: telling it calls `act`.
+    let projects = with(|d| match d {
+        Data::Ready(r) => Some(r.projects.clone()),
+        _ => None,
+    });
+    if let Some(projects) = projects {
+        crate::project_session::told(&projects);
+    }
 }
 
 fn read() -> Data {
@@ -162,7 +174,15 @@ fn read() -> Data {
     match snapshot::decode(text) {
         Ok(snapshot) => {
             let list = List::from_snapshot(&snapshot);
-            Data::Ready(Box::new(Ready { snapshot, list }))
+            // The part about projects is read on its own
+            // (`polter_projects::orders`), and strictly: an order this build
+            // does not know is said, not skipped.
+            let projects = polter_projects::orders::decode(text).unwrap_or_else(|why| {
+                // process-wide: the snapshot is the application's, not a window's
+                plogf!("[control-room] the snapshot's projects could not be read: {}", why);
+                Default::default()
+            });
+            Data::Ready(Box::new(Ready { snapshot, list, projects }))
         }
         Err(e) => Data::Unreadable(format!("{e:?}")),
     }

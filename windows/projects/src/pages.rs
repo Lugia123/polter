@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use polter_projectfile::{leaves, Agent, Frame, SavedNode, Snapshot, Tab, Window};
+use polter_projectfile::{leaves, Agent, Frame, SavedNode, Snapshot, Tab, Who, Window};
 
 /// A page's name for as long as the host has the project in hand.
 pub type PageId = usize;
@@ -316,6 +316,45 @@ impl Pages {
             .filter(|p| !taken.contains(&p.id))
             .find(|p| leaves(&p.tab.root).iter().any(|l| wanted.contains(l.scrollback.as_str())))
             .map(|p| p.id)
+    }
+
+    /// The pane called `scrollback` is the supervisor's from now on, and no
+    /// other pane of the project is (a project has one). False, and nothing
+    /// changed, when no pane is called that.
+    ///
+    /// Who is in it is kept when the file said; when it did not, the pane is
+    /// an agent's of whom nothing else is known -- the mark has nowhere else
+    /// to be written (`Who::supervisor`).
+    pub fn mark_supervisor(&mut self, scrollback: &str) -> bool {
+        fn has(node: &SavedNode, name: &str) -> bool {
+            match node {
+                SavedNode::Leaf(leaf) => leaf.scrollback == name,
+                SavedNode::Split { left, right, .. } => has(left, name) || has(right, name),
+            }
+        }
+        fn mark(node: &mut SavedNode, name: &str) {
+            match node {
+                SavedNode::Leaf(leaf) => {
+                    let it = leaf.scrollback == name;
+                    match &mut leaf.agent {
+                        Agent::Agent(who) => who.supervisor = it,
+                        other if it => *other = Agent::Agent(Who { role: String::new(), cli: String::new(), session: String::new(), supervisor: true }),
+                        _ => {}
+                    }
+                }
+                SavedNode::Split { left, right, .. } => {
+                    mark(left, name);
+                    mark(right, name);
+                }
+            }
+        }
+        if scrollback.is_empty() || !self.windows.iter().flat_map(|w| w.pages.iter()).any(|p| has(&p.tab.root, scrollback)) {
+            return false;
+        }
+        for page in self.windows.iter_mut().flat_map(|w| w.pages.iter_mut()) {
+            mark(&mut page.tab.root, scrollback);
+        }
+        true
     }
 
     /// What the file says of each of its panes, by the pane's snapshot name
