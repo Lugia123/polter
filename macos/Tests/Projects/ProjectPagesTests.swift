@@ -137,6 +137,40 @@ struct ProjectPagesTests {
         #expect(project.updated(live: left, frames: [:], keepingFront: false).fileWindows[0].front == 2)
     }
 
+    /// **A save made while the project is being opened does not write the
+    /// screen over the file.** The window is still where a new window
+    /// goes and the tab showing is the last one added; the file's frame
+    /// and the file's front are what stay. (Found on a real machine: the
+    /// first save, a second after opening, replaced 60,300 900×600 with a
+    /// new window's 321,82 1400×860.)
+    @Test func aSaveWhileTheProjectIsOpeningKeepsTheFilesFrameAndFront() {
+        // Both pages of the first window are up; the window has not been
+        // moved yet, and the last tab added is the one showing.
+        let live = [live(0, window: 7, index: 0, "/a"), live(1, window: 7, index: 1, "/b"), live(2, window: 7, index: 2, selected: true, "/c")]
+        let defaultPlace = [7: ProjectFrame(origin: .bottomLeft, x: 321, y: 82, width: 1400, height: 860)]
+
+        let during = ProjectPages.taken(frames: defaultPlace, closing: false, opening: true)
+        let opening = project.updated(live: live, frames: during.frames, keepingFront: during.keepingFront)
+        #expect(opening.fileWindows[0].frame == frame(10))
+        #expect(opening.fileWindows[0].front == 1)
+        // The window that is not open is, as ever, as it was.
+        #expect(opening.fileWindows.map(\.frame) == project.fileWindows.map(\.frame))
+        #expect(opening.fileWindows.map(\.front) == project.fileWindows.map(\.front))
+
+        // Once it is open the screen is the project's again: the same
+        // tabs, now saved as they stand.
+        let after = ProjectPages.taken(frames: defaultPlace, closing: false, opening: false)
+        let settled = project.updated(live: live, frames: after.frames, keepingFront: after.keepingFront)
+        #expect(settled.fileWindows[0].frame == defaultPlace[7])
+        #expect(settled.fileWindows[0].front == 2)
+
+        // A closing tab's save takes the frames and keeps the front; and
+        // opening wins over closing -- a tab closed while its project is
+        // still coming up is no reason to believe the screen.
+        #expect(ProjectPages.taken(frames: defaultPlace, closing: true, opening: false) == (defaultPlace, true))
+        #expect(ProjectPages.taken(frames: defaultPlace, closing: true, opening: true) == ([:], true))
+    }
+
     /// A tab dragged to another window is a page of that window; dragged
     /// out on its own, it is a window more.
     @Test func aPageDraggedToAnotherWindowIsInThatWindow() {

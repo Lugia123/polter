@@ -38,6 +38,15 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
     /// call.
     private(set) var group: String?
     private var members: [Member] = []
+    /// How many `open`s have put tabs up and not yet finished placing
+    /// their windows. While any has not, a save takes no frame and no
+    /// front from the screen (`ProjectPages.taken`).
+    private var opening = 0
+
+    /// How long after its tabs are up a project is still "being opened".
+    /// Shorter than the second a save waits after a change, so the first
+    /// save after an open is already one that may look at the screen.
+    private static let settling: TimeInterval = 0.5
     private lazy var autosave = ProjectAutosaveDebouncer(scheduler: MainQueueScheduler()) { [weak self] in
         self?.autosaveNow()
     }
@@ -213,10 +222,14 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
             guard let window = member.controller.window else { return nil }
             let tabs = window.tabGroup
             let token = tabs.map { ObjectIdentifier($0).hashValue } ?? ObjectIdentifier(window).hashValue
-            // A window that fills the screen has the screen's frame, which
-            // is not where it goes back to: what the file had stays.
-            if !window.styleMask.contains(.fullScreen) {
-                frames[token] = ProjectPlacement.stored(window.frame)
+            // Where the window is, is where the tab that is showing is:
+            // the tabs of a window are windows themselves, and one that is
+            // not showing can be anywhere it was last put. A window that
+            // fills the screen has the screen's frame, which is not where
+            // it goes back to: what the file had stays.
+            let onScreen = tabs?.selectedWindow ?? window
+            if !onScreen.styleMask.contains(.fullScreen) {
+                frames[token] = ProjectPlacement.stored(onScreen.frame)
             }
             return ProjectStore.OpenPage(
                 id: member.page,
@@ -226,9 +239,10 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
                 selected: tabs?.selectedWindow.map { $0 === window } ?? true,
                 capturingScrollback: capturing.contains { $0 === member.controller })
         }
+        let taken = ProjectPages.taken(frames: frames, closing: closing, opening: opening > 0)
         pages = try store.save(
             name: name, group: group, pages: pages,
-            tabs: .init(open: open, frames: frames, keepingFront: closing),
+            tabs: .init(open: open, frames: taken.frames, keepingFront: taken.keepingFront),
             who: whoIsInPane(), keeping: keeping).pages
         // Also when nothing was written: what changed may be only a
         // window's title, which is what the settings window calls the
@@ -401,6 +415,11 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
         guard let entry = store.entry(name: name) else { throw ProjectStore.StoreError.notFound }
         let screens = NSScreen.screens.map(\.visibleFrame)
 
+        // Until the windows stand where the file says, nothing a save
+        // takes from the screen is the project's (`ProjectPages.taken`).
+        opening += 1
+        var placements: [() -> Void] = []
+
         var toShow: NSWindow?
         for (number, window) in pages.windows.enumerated() {
             let wasOpen = window.pages.contains { controller(of: $0.id) != nil }
@@ -428,11 +447,11 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
                 } else {
                     switch place {
                     case .ownWindow(let frame):
-                        controller.presentAsProjectWindow(at: frame)
+                        controller.presentAsProjectWindow(placed: frame != nil)
                     case .tabs(let which):
                         // `place` only names a window that is there.
                         guard let host = which == .named ? home : current else {
-                            controller.presentAsProjectWindow(at: nil)
+                            controller.presentAsProjectWindow(placed: false)
                             break
                         }
                         if host.isMiniaturized { host.deminiaturize(nil) }
@@ -453,6 +472,45 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
             if number == 0, !behind {
                 toShow = front ?? firstOpen
             }
+
+            // **The window's place, now that its tabs stand and the one in
+            // front is chosen** -- and on every tab of it, the one showing
+            // first: each tab is a window of its own, and the one on screen
+            // is the one whose frame the person sees. Only for a window
+            // this just made; one that was already open is where the
+            // person has it.
+            if !wasOpen, case .ownWindow(let frame?) = place, let shown = front ?? previous {
+                let place = { [weak shown] in
+                    guard let shown else { return }
+                    let showing = shown.tabGroup?.selectedWindow ?? shown
+                    guard !showing.styleMask.contains(.fullScreen) else { return }
+                    showing.setFrame(frame, display: true)
+                    for tab in shown.tabGroup?.windows ?? [] where tab !== showing {
+                        tab.setFrame(frame, display: false)
+                    }
+                }
+                place()
+                placements.append(place)
+            }
+        }
+
+        // Again after this turn of the run loop, when everything each new
+        // window put off until it was first shown has run; and once more a
+        // little later, for whatever the system does to a window it has
+        // just put up. Only after that last time is a save let take frames
+        // again: until then the screen is not known to be the project's,
+        // and a save that waits loses nothing -- one that does not wrote
+        // a new window's place over the person's (`ProjectPages.taken`).
+        // The write poked for at the end is the first that may take them,
+        // and what it finds is what the file said.
+        DispatchQueue.main.async {
+            for place in placements { place() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.settling) { [weak self] in
+            for place in placements { place() }
+            guard let self else { return }
+            self.opening -= 1
+            self.poke(.windowFrame)
         }
 
         if let toShow {

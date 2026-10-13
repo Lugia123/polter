@@ -228,6 +228,28 @@ struct ProjectPages: Equatable {
         let keepingFront: Bool
     }
 
+    /// What a save may take from the screen, given what is going on.
+    ///
+    /// **While the project is being opened, a save takes neither where a
+    /// window is nor which tab shows.** Opening puts the tabs up one at a
+    /// time and only then moves the window to where the file says and
+    /// brings the right tab in front; until that has happened the screen
+    /// has a new window's place and whichever tab was added last. A save
+    /// that believed it wrote the default place over the one the person
+    /// had chosen, a second after they asked for their project back --
+    /// and nothing kept the old one, because a place is not a layout. With
+    /// no frame handed in, `updated` leaves every window's as the file has
+    /// it; with the front kept, likewise.
+    ///
+    /// A closing tab's save keeps the front for its own reason (`updated`),
+    /// and takes the frames: nothing is in flight.
+    static func taken(
+        frames: [Int: ProjectFrame], closing: Bool, opening: Bool
+    ) -> (frames: [Int: ProjectFrame], keepingFront: Bool) {
+        if opening { return ([:], true) }
+        return (frames, closing)
+    }
+
     /// The whole of a save, short of touching the disk: the pages after it
     /// and the file to write.
     ///
