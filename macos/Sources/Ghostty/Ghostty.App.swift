@@ -722,6 +722,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_GOTO_SPLIT:
                 return gotoSplit(app, target: target, direction: action.action.goto_split)
 
+            case GHOSTTY_ACTION_PANE_STACK:
+                return paneStack(app, target: target, verb: action.action.pane_stack)
+
             case GHOSTTY_ACTION_GOTO_WINDOW:
                 return gotoWindow(app, target: target, direction: action.action.goto_window)
 
@@ -1984,6 +1987,34 @@ extension Ghostty {
             default:
                 assertionFailure()
             }
+        }
+
+        /// A stack's verb from a key binding, the command palette or an
+        /// agent's `terminal_action`: carried out on the pane of the
+        /// surface it names. Answers whether there was anything to do, so
+        /// that a binding with nothing to do falls through.
+        private static func paneStack(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            verb: ghostty_action_pane_stack_e) -> Bool {
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = self.surfaceView(from: surface),
+                  let controller = BaseTerminalController.controller(owning: surfaceView)
+            else { return false }
+            let what: PaneStackRules.Verb
+            switch verb {
+            case GHOSTTY_PANE_STACK_NEW: what = .new
+            case GHOSTTY_PANE_STACK_NEXT: what = .next
+            case GHOSTTY_PANE_STACK_PREVIOUS: what = .previous
+            case GHOSTTY_PANE_STACK_OUT: what = .out
+            case GHOSTTY_PANE_STACK_ONTO_NEXT: what = .ontoNext
+            case GHOSTTY_PANE_STACK_ONTO_PREVIOUS: what = .ontoPrevious
+            default: return false
+            }
+            guard controller.offers(stack: what, at: surfaceView) else { return false }
+            controller.perform(stack: what, at: surfaceView)
+            return true
         }
 
         private static func toggleSplitZoom(

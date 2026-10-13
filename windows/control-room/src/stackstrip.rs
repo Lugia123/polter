@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn the_numbers_these_tests_add_up_with() {
-        assert_eq!((t::INSET, t::ADD_BUTTON, t::TRAILING, t::STATUS_GAP, t::MORE_BUTTON, t::MIN_WIDTH), (20.0, 28.0, 12.0, 8.0, 44.0, 104.0));
+        assert_eq!((t::INSET, t::ADD_BUTTON, t::TRAILING, t::STATUS_GAP, t::MORE_BUTTON, t::MIN_WIDTH), (20.0, 28.0, 12.0, 8.0, 60.0, 104.0));
     }
 
     #[test]
@@ -296,16 +296,16 @@ mod tests {
     fn what_there_is_no_room_for_goes_behind_more_and_the_one_in_front_never_does() {
         let l = layout(&[150.0; 8], 6, 400.0, 0.0);
         assert_eq!(members(&l), [0, 6]);
-        // Counted at 104 to see whether it fits; given the 146 there is.
-        assert_eq!(widths(&l), [146.0, 150.0]);
+        // Counted at 104 to see whether it fits; given the 130 there is.
+        assert_eq!(widths(&l), [130.0, 150.0]);
         assert_eq!(l.hidden, [1, 2, 3, 4, 5, 7]);
-        assert_eq!((l.more_x, l.add_x), (Some(316.0), 360.0));
-        // `more` has its own 44: a second tab would fit without it.
-        assert_eq!(members(&layout(&[150.0; 8], 6, 418.0, 0.0)), [0, 6]);
+        assert_eq!((l.more_x, l.add_x), (Some(300.0), 360.0));
+        // `more` has its own 60: a second tab would fit without it.
+        assert_eq!(members(&layout(&[150.0; 8], 6, 434.0, 0.0)), [0, 6]);
         // And the tabs keep the stack's order.
         let second = layout(&[150.0; 8], 1, 520.0, 0.0);
         assert_eq!(members(&second), [0, 1, 2]);
-        assert_eq!(widths(&second), [133.0, 150.0, 133.0]);
+        assert_eq!(widths(&second), [125.0, 150.0, 125.0]);
     }
 
     #[test]
@@ -324,7 +324,7 @@ mod tests {
     fn the_status_gives_way_before_the_tab_in_front_and_then_the_tab_itself() {
         let l = layout(&[120.0, 150.0], 0, 200.0, 60.0);
         assert_eq!(l.status, None);
-        assert_eq!((members(&l), widths(&l), l.hidden.clone()), (vec![0], vec![96.0], vec![1]));
+        assert_eq!((members(&l), widths(&l), l.hidden.clone()), (vec![0], vec![80.0], vec![1]));
         let roomy = layout(&[120.0, 80.0], 0, 330.0, 60.0);
         assert_eq!(roomy.status, Some((258.0, 318.0)));
         assert_eq!(widths(&roomy), [120.0, 80.0]);

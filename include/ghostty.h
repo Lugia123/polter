@@ -713,6 +713,16 @@ typedef enum {
   GHOSTTY_GOTO_SPLIT_RIGHT,
 } ghostty_action_goto_split_e;
 
+// apprt.action.PaneStack
+typedef enum {
+  GHOSTTY_PANE_STACK_NEW,
+  GHOSTTY_PANE_STACK_NEXT,
+  GHOSTTY_PANE_STACK_PREVIOUS,
+  GHOSTTY_PANE_STACK_OUT,
+  GHOSTTY_PANE_STACK_ONTO_NEXT,
+  GHOSTTY_PANE_STACK_ONTO_PREVIOUS,
+} ghostty_action_pane_stack_e;
+
 // apprt.action.GotoWindow
 typedef enum {
   GHOSTTY_GOTO_WINDOW_PREVIOUS,
@@ -1401,6 +1411,7 @@ typedef enum {
   GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT,
   GHOSTTY_ACTION_CONTROL_ROOM_CHANGED,
   GHOSTTY_ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM,
+  GHOSTTY_ACTION_PANE_STACK,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1453,6 +1464,7 @@ typedef union {
   ghostty_action_poltergeist_screenshot_s poltergeist_screenshot;
   ghostty_action_history_filename_s history_filename;
   ghostty_action_control_room_changed_s control_room_changed;
+  ghostty_action_pane_stack_e pane_stack;
 } ghostty_action_u;
 
 typedef struct {

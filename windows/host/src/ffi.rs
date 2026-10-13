@@ -148,6 +148,10 @@ pub const ACTION_CONTROL_ROOM_CHANGED: u32 = 78;
 /// here: the control room is not built on this host, so the arm in
 /// `cb_action` answers that and the palette hides the row.
 pub const ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM: u32 = 79;
+/// `Binding.zig`'s `pane_stack`: several terminals in one pane, one in
+/// front. Not built on this host -- the split tree here has no stacks --
+/// so the arm in `cb_action` answers that and the palette hides the rows.
+pub const ACTION_PANE_STACK: u32 = 80;
 
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //

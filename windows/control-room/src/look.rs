@@ -250,10 +250,10 @@ pub mod stack_tab {
     /// The least between the plus and the status at the right end.
     /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
     pub const STATUS_GAP: f64 = 8.0;
-    /// The `more` button that stands for the tabs there was no room for, between the last tab and the plus: the dots, and beside them the place for the glyph of the most pressing terminal among those it stands for (6 + dots 14 + 4 + glyph 14 + 6). The place is kept whether or not there is a glyph, so that the strip does not move when one of them starts waiting.
-    /// TENTATIVE (other candidate: 28). The design draws no strip with more tabs than fit. 28 is the dots alone, as wide as the plus, with nothing to say that somebody behind them is waiting.
+    /// The `more` button that stands for the tabs there was no room for, between the last tab and the plus: the dots with how many tabs they stand for, and beside them the place for the glyph of the most pressing terminal among those (6 + dots and count 30 + 4 + glyph 14 + 6). The glyph's place is kept whether or not there is one, so that the strip does not move when one of them starts waiting; the count is room for two digits.
+    /// TENTATIVE (other candidate: 44). The design draws no strip with more tabs than fit. 44 is the dots without the count: narrower, and it does not say whether one terminal is behind them or nine.
     /// Source: not in the design: chosen while building the mac list, to be ruled on.
-    pub const MORE_BUTTON: f64 = 44.0;
+    pub const MORE_BUTTON: f64 = 60.0;
     /// Between the dots and the glyph beside them.
     /// Source: not in the design: chosen while building the mac list, to be ruled on.
     pub const MORE_GLYPH_GAP: f64 = 4.0;

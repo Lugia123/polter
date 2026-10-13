@@ -466,6 +466,11 @@ pub const Action = union(Key) {
     /// application; the apprt owns which window it is in.
     toggle_poltergeist_control_room,
 
+    /// Stack terminals in the pane of the target surface, switch among
+    /// them, or take one out (`input.Binding.Action.pane_stack`). An apprt
+    /// that has no stacks answers that it did nothing.
+    pane_stack: PaneStack,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -553,6 +558,7 @@ pub const Action = union(Key) {
         poltergeist_screenshot,
         control_room_changed,
         toggle_poltergeist_control_room,
+        pane_stack,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -1746,6 +1752,21 @@ pub const SplitDirection = enum(c_int) {
 
     test "ghostty.h SplitDirection" {
         try lib.checkGhosttyHEnum(SplitDirection, "GHOSTTY_SPLIT_DIRECTION_");
+    }
+};
+
+/// What to do with the stack of the target surface's pane. In the order
+/// of `input.Binding.Action.PaneStack`, which names the same six.
+pub const PaneStack = enum(c_int) {
+    new,
+    next,
+    previous,
+    out,
+    onto_next,
+    onto_previous,
+
+    test "ghostty.h PaneStack" {
+        try lib.checkGhosttyHEnum(PaneStack, "GHOSTTY_PANE_STACK_");
     }
 };
 

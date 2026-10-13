@@ -95,6 +95,9 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuReopenTab: NSMenuItem?
 
     @IBOutlet private var menuEqualizeSplits: NSMenuItem?
+    /// The Stack submenu's items with their binding actions, once made
+    /// (`stackMenuItems`).
+    private var stackMenu: [(String, NSMenuItem)]?
     @IBOutlet private var menuMoveSplitDividerUp: NSMenuItem?
     @IBOutlet private var menuMoveSplitDividerDown: NSMenuItem?
     @IBOutlet private var menuMoveSplitDividerLeft: NSMenuItem?
@@ -1506,6 +1509,9 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "resize_split:right,10", menuItem: self.menuMoveSplitDividerRight)
         syncMenuShortcut(config, action: "resize_split:left,10", menuItem: self.menuMoveSplitDividerLeft)
         syncMenuShortcut(config, action: "equalize_splits", menuItem: self.menuEqualizeSplits)
+        for (action, item) in stackMenuItems() {
+            syncMenuShortcut(config, action: action, menuItem: item)
+        }
         syncMenuShortcut(config, action: "reset_window_size", menuItem: self.menuReturnToDefaultSize)
 
         syncMenuShortcut(config, action: "increase_font_size:1", menuItem: self.menuIncreaseFontSize)
@@ -1540,6 +1546,44 @@ extension AppDelegate {
 
         // Dock menu
         reloadDockMenu()
+    }
+
+    /// The Stack submenu, made the first time it is asked for and put
+    /// after "Equalize Splits": one item for each of a stack's verbs, each
+    /// with the binding action it is the menu form of. No key is bound by
+    /// default; an item shows whatever key the config gives its action.
+    ///
+    /// Made in code, not in the xib: the items go to the first responder
+    /// (the tab's controller), which says which of them has anything to do.
+    @MainActor private func stackMenuItems() -> [(String, NSMenuItem)] {
+        if let stackMenu { return stackMenu }
+        let verbs: [(String, String, Selector)] = [
+            ("pane_stack:new", String(localized: "New Terminal in This Pane", comment: "窗口菜单 › 层叠：在当前这一格里新开一个终端，叠在前面"),
+             #selector(BaseTerminalController.paneStackNew(_:))),
+            ("pane_stack:next", String(localized: "Next Stacked Terminal", comment: "窗口菜单 › 层叠：这一叠的下一个"),
+             #selector(BaseTerminalController.paneStackNext(_:))),
+            ("pane_stack:previous", String(localized: "Previous Stacked Terminal", comment: "窗口菜单 › 层叠：这一叠的上一个"),
+             #selector(BaseTerminalController.paneStackPrevious(_:))),
+            ("pane_stack:out", String(localized: "Move Terminal Out of Stack", comment: "窗口菜单 › 层叠：把当前终端从这一叠里拿出来，成为旁边的一格"),
+             #selector(BaseTerminalController.paneStackOut(_:))),
+            ("pane_stack:onto_next", String(localized: "Stack onto Next Pane", comment: "窗口菜单 › 层叠：把当前终端叠到下一格上"),
+             #selector(BaseTerminalController.paneStackOntoNext(_:))),
+            ("pane_stack:onto_previous", String(localized: "Stack onto Previous Pane", comment: "窗口菜单 › 层叠：把当前终端叠到上一格上"),
+             #selector(BaseTerminalController.paneStackOntoPrevious(_:))),
+        ]
+        let submenu = NSMenu(title: String(localized: "Stack", comment: "窗口菜单里的子菜单：一格里叠放多个终端"))
+        let made: [(String, NSMenuItem)] = verbs.map { action, title, selector in
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+            submenu.addItem(item)
+            return (action, item)
+        }
+        if let anchor = menuEqualizeSplits, let parent = anchor.menu {
+            let holder = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
+            holder.submenu = submenu
+            parent.insertItem(holder, at: parent.index(of: anchor) + 1)
+        }
+        stackMenu = made
+        return made
     }
 
     @MainActor private func syncMenuShortcut(_ config: Ghostty.Config, action: String, menuItem: NSMenuItem?) {

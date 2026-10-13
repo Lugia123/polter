@@ -28,6 +28,11 @@ final class PaneFrameSource: ObservableObject {
     /// Nil until the core has a snapshot.
     @Published private(set) var terminals: [ControlRoomSnapshot.Terminal]?
 
+    /// The terminals that are waiting for the person, most pressing
+    /// first: the core's order (`pulses`). What a stack's strip goes by to
+    /// say that somebody behind its `more` is waiting.
+    @Published private(set) var waiting: [String] = []
+
     private var listening: AnyCancellable?
 
     /// Start listening. Asked for by every tab as it appears; only the
@@ -35,7 +40,10 @@ final class PaneFrameSource: ObservableObject {
     func attach(_ ghostty: Ghostty.App) {
         guard listening == nil else { return }
         listening = ControlRoomFeed.shared(ghostty).listen { [weak self] snapshot in
-            guard let self, self.terminals != snapshot.terminals else { return }
+            guard let self else { return }
+            let waiting = (snapshot.pulses ?? []).map(\.terminal)
+            if self.waiting != waiting { self.waiting = waiting }
+            guard self.terminals != snapshot.terminals else { return }
             self.terminals = snapshot.terminals
         }
     }
@@ -50,11 +58,23 @@ private struct PaneFrameGroundKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct PaneFrameTreeKey: EnvironmentKey {
+    /// Outside a scope no pane holds a stack.
+    static let defaultValue: SplitTree<Ghostty.SurfaceView>? = nil
+}
+
 extension EnvironmentValues {
     /// Where the panes of this tab are, as far as a frame cares.
     var paneFramePlace: PaneFrame.Place {
         get { self[PaneFramePlaceKey.self] }
         set { self[PaneFramePlaceKey.self] = newValue }
+    }
+
+    /// The tree the panes of this tab are in: where a pane finds the
+    /// terminals stacked behind the one it shows.
+    var paneFrameTree: SplitTree<Ghostty.SurfaceView>? {
+        get { self[PaneFrameTreeKey.self] }
+        set { self[PaneFrameTreeKey.self] = newValue }
     }
 
     /// Whether the tab's ground shows between its panes. The split view
@@ -89,6 +109,7 @@ private struct PaneFrameScope: ViewModifier {
         content
             .environment(\.paneFramePlace, place)
             .environment(\.paneFrameGround, ground)
+            .environment(\.paneFrameTree, place.quickTerminal ? nil : tree)
             // Each pane keeps half the gap on every side, so the window's
             // edge is owed the rest.
             .padding(ground ? CGFloat(Look.Space.windowEdge) - PaneFrameSplit.inset : 0)
@@ -107,6 +128,7 @@ private struct PaneFramed: ViewModifier {
     @ObservedObject private var source = PaneFrameSource.shared
     @Environment(\.paneFramePlace) private var place
     @Environment(\.paneFrameGround) private var ground
+    @Environment(\.paneFrameTree) private var tree
     @Environment(\.ghosttyLastFocusedSurface) private var lastFocused
     @Environment(\.colorScheme) private var scheme
 
@@ -119,12 +141,53 @@ private struct PaneFramed: ViewModifier {
         // choice here did to the terminal (task 1461). A pane with nothing
         // of its own whose neighbours are framed keeps the same gap; with
         // no ground it is as it ever was.
+        //
+        // The same for a stack: a pane that holds one hands the chain the
+        // stack, and what changes is what the chain's top layer draws --
+        // the tabs in place of the title. A stacked pane always wears a
+        // frame, an ordinary terminal's included
+        // (`PaneStackRules.Choices`): without the strip nothing reaches
+        // the terminals behind.
+        let members = tree?.stack(of: surfaceView)
+        let stack = members.map { members in
+            PaneStackRules.stack(
+                members: members.members.map {
+                    .init(terminal: ControlRoomLender.terminal(of: $0), ownName: $0.title)
+                },
+                shown: members.members.firstIndex { $0.id == members.shown } ?? 0,
+                terminals: source.terminals, pulses: source.waiting)
+        }
         content.modifier(PaneFrameChrome(
-            wears: drawn?.wears, title: drawn?.title, caption: nil,
+            wears: stack.map(PaneStackRules.wears) ?? drawn?.wears,
+            title: stack.map { PaneStackRules.title($0, framed: drawn?.title) } ?? drawn?.title,
+            caption: nil,
             focused: lastFocused?.value === surfaceView,
             well: ghostty.config.backgroundColor,
             cover: Look.theme(scheme).windowBase.color,
-            outside: drawn != nil || ground ? PaneFrameSplit.inset : 0))
+            outside: drawn != nil || ground ? PaneFrameSplit.inset : 0,
+            stack: stack,
+            stackActions: actions(members: members, names: stack?.members.map(\.name) ?? [])))
+    }
+
+    /// What pressing the strip does: each is the tab's own controller's,
+    /// found by the terminal this pane shows.
+    private func actions(
+        members: SplitTree<Ghostty.SurfaceView>.Stack?, names: [String]
+    ) -> PaneStackActions {
+        guard let members else { return PaneStackActions() }
+        let view = surfaceView
+        return PaneStackActions(
+            select: { index in
+                guard members.members.indices.contains(index) else { return }
+                BaseTerminalController.controller(owning: view)?.showStackMember(members.members[index])
+            },
+            add: {
+                BaseTerminalController.controller(owning: view)?.stackNewTerminal(onto: view)
+            },
+            more: { hidden in
+                BaseTerminalController.controller(owning: view)?
+                    .presentStackMenu(of: view, members: hidden, names: names)
+            })
     }
 }
 

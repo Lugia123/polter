@@ -8,7 +8,7 @@ import Testing
 ///
 /// With the table as it is: the first tab starts 20 in, the plus is 28,
 /// 12 is kept at the right end, a status takes its width and 8 before it,
-/// `more` is 44, and a tab is not cut below 104.
+/// `more` is 60, and a tab is not cut below 104.
 struct PaneStackStripTests {
     typealias Layout = PaneStackStripLayout
     typealias Look = ControlRoomLook
@@ -22,7 +22,7 @@ struct PaneStackStripTests {
         #expect(Look.StackTab.addButton == 28)
         #expect(Look.StackTab.trailing == 12)
         #expect(Look.StackTab.statusGap == 8)
-        #expect(Look.StackTab.moreButton == 44)
+        #expect(Look.StackTab.moreButton == 60)
         #expect(Look.StackTab.minWidth == 104)
     }
 
@@ -112,23 +112,23 @@ struct PaneStackStripTests {
 
     @Test func whatThereIsNoRoomForGoesBehindMoreAndTheOneInFrontNeverDoes() {
         // Eight tabs of 150, the seventh in front, 400 wide: 340 for the
-        // tabs, 296 once `more` has its 44. The one in front takes its
+        // tabs, 280 once `more` has its 60. The one in front takes its
         // 150; one more at 104 makes 254, and another would not fit.
         let l = Layout(wants: Array(repeating: 150, count: 8), current: 6, width: 400, status: 0)
         #expect(members(l) == [0, 6])
         // It was counted at 104 to see whether it fits, and is given the
-        // 146 there turned out to be.
-        #expect(widths(l) == [146, 150])
-        #expect(xs(l) == [20, 166])
+        // 130 there turned out to be.
+        #expect(widths(l) == [130, 150])
+        #expect(xs(l) == [20, 150])
         #expect(l.hidden == [1, 2, 3, 4, 5, 7])
-        #expect(l.moreX == 316)
+        #expect(l.moreX == 300)
         #expect(l.addX == 360)
         #expect(l.tabs.last?.current == true)
 
-        // `more` has to have its own 44: at 418 wide a second tab beside
-        // the one in front would fit in the 358 there is without it, and
+        // `more` has to have its own 60: at 434 wide a second tab beside
+        // the one in front would fit in the 374 there is without it, and
         // does not in the 314 there is with it.
-        let tight = Layout(wants: Array(repeating: 150, count: 8), current: 6, width: 418, status: 0)
+        let tight = Layout(wants: Array(repeating: 150, count: 8), current: 6, width: 434, status: 0)
         #expect(members(tight) == [0, 6])
         // With 164 left beside the one in front, the other is whole.
         #expect(widths(tight) == [150, 150])
@@ -138,8 +138,8 @@ struct PaneStackStripTests {
         // In front is the second: it stays second, not last.
         let l = Layout(wants: Array(repeating: 150, count: 8), current: 1, width: 520, status: 0)
         #expect(members(l) == [0, 1, 2])
-        // 416 beside `more`: the one in front whole, 133 each for the two.
-        #expect(widths(l) == [133, 150, 133])
+        // 400 beside `more`: the one in front whole, 125 each for the two.
+        #expect(widths(l) == [125, 150, 125])
         #expect(l.tabs.map(\.current) == [false, true, false])
         #expect(l.hidden == [3, 4, 5, 6, 7])
     }
@@ -171,10 +171,10 @@ struct PaneStackStripTests {
         // With the status there would be 72 for a tab that wants 120.
         let l = Layout(wants: [120, 150], current: 0, width: 200, status: 60)
         #expect(l.status == nil)
-        // Without it there is 140, 96 beside `more`: the one in front
+        // Without it there is 140, 80 beside `more`: the one in front
         // alone, cut to that, and the other behind `more`.
         #expect(members(l) == [0])
-        #expect(widths(l) == [96])
+        #expect(widths(l) == [80])
         #expect(l.hidden == [1])
         #expect(l.tabs[0].squeezed)
     }
@@ -226,5 +226,32 @@ struct PaneStackStripTests {
         #expect(stack.showing?.wears == .worker)
         stack.current = 2
         #expect(stack.showing?.wears == .plain)
+    }
+
+    // MARK: What `more` says, and the glyph at the right end
+
+    @Test func moreSaysHowManyTabsAreBehindIt() {
+        #expect(Layout.moreLabel(hidden: 1) == "…1")
+        #expect(Layout.moreLabel(hidden: 12) == "…12")
+        #expect(Layout.moreLabel(hidden: 99) == "…99")
+        // Past what the button has room for, said as that.
+        #expect(Layout.moreLabel(hidden: 100) == "…99+")
+        #expect(Layout.moreLabel(hidden: 0) == "…0")
+    }
+
+    @Test func aHeldTerminalDrawsTheHeldMarkAndEveryStatusDrawsItsOwnGlyph() {
+        typealias Bar = ControlRoomSnapshot.Terminal.Bar.Shown
+        // Held is not one of the status glyphs: it is the one case that
+        // is drawn as something else.
+        #expect(PaneStackStatusGlyph(Bar.held) == .held)
+        #expect(PaneStackStatusGlyph(Bar.needsYou) == .status(.needsYou))
+        #expect(PaneStackStatusGlyph(Bar.trouble) == .status(.trouble))
+        #expect(PaneStackStatusGlyph(Bar.doneUnseen) == .status(.doneUnseen))
+        #expect(PaneStackStatusGlyph(Bar.working) == .status(.working))
+        #expect(PaneStackStatusGlyph(Bar.none) == .status(ControlRoomList.Shown.none))
+        // Every case the core can send is one of the two.
+        for shown in Bar.allCases {
+            #expect(PaneStackStatusGlyph(shown) == (shown == .held ? .held : .status(shown.status!)))
+        }
     }
 }

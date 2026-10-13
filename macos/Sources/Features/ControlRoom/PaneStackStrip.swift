@@ -63,6 +63,27 @@ struct PaneStack: Equatable {
     }
 }
 
+/// What the right end of a strip draws for the member in front: one of
+/// the status glyphs, or the mark for a terminal that is held.
+///
+/// **Held is not a status** (`ControlRoomSnapshot.Terminal.Bar.Shown`): it
+/// has no glyph among the status glyphs and no colour of its own, and a
+/// strip that drew it as one -- or drew nothing -- would say a held
+/// terminal is idle. Which of the two it is is decided here, so that it
+/// is tested and the view only draws.
+enum PaneStackStatusGlyph: Equatable {
+    case status(ControlRoomList.Shown)
+    case held
+
+    init(_ shown: ControlRoomSnapshot.Terminal.Bar.Shown) {
+        if let status = shown.status {
+            self = .status(status)
+        } else {
+            self = .held
+        }
+    }
+}
+
 /// Where everything in a stack's strip is, left to right, in the strip's
 /// own points: 0 is the frame's content edge (inside a supervisor's border,
 /// the frame's own edge for the other two).
@@ -121,6 +142,13 @@ struct PaneStackStripLayout: Equatable {
     /// settled when the list was ordered.
     func behindMore(urgent: [Int]) -> Int? {
         urgent.first { hidden.contains($0) }
+    }
+
+    /// What `more` says: the dots and how many tabs are behind them. More
+    /// than ninety-nine is said as that -- the button has room for two
+    /// digits, and past that the number is not what anybody is counting.
+    static func moreLabel(hidden: Int) -> String {
+        "…" + (hidden > 99 ? "99+" : String(max(hidden, 0)))
     }
 
     /// How wide a tab's name wants it with no font to measure by: so many

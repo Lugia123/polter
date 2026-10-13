@@ -540,6 +540,39 @@ fn actionCommands(action: Action.Key) []const Command {
             },
         },
 
+        .pane_stack => comptime &.{
+            .{
+                .action = .{ .pane_stack = .new },
+                .title = i18n.N_("Stack: New Terminal in This Pane"),
+                .description = i18n.N_("Open a new terminal in the focused pane, in front of the one there."),
+            },
+            .{
+                .action = .{ .pane_stack = .next },
+                .title = i18n.N_("Stack: Next Terminal"),
+                .description = i18n.N_("Bring the next terminal of the focused pane's stack to the front."),
+            },
+            .{
+                .action = .{ .pane_stack = .previous },
+                .title = i18n.N_("Stack: Previous Terminal"),
+                .description = i18n.N_("Bring the previous terminal of the focused pane's stack to the front."),
+            },
+            .{
+                .action = .{ .pane_stack = .out },
+                .title = i18n.N_("Stack: Move Terminal Out"),
+                .description = i18n.N_("Take the focused terminal out of its stack, into a pane of its own."),
+            },
+            .{
+                .action = .{ .pane_stack = .onto_next },
+                .title = i18n.N_("Stack: Onto the Next Pane"),
+                .description = i18n.N_("Put the focused terminal onto the stack of the next pane."),
+            },
+            .{
+                .action = .{ .pane_stack = .onto_previous },
+                .title = i18n.N_("Stack: Onto the Previous Pane"),
+                .description = i18n.N_("Put the focused terminal onto the stack of the previous pane."),
+            },
+        },
+
         .toggle_split_zoom => comptime &.{.{
             .action = .toggle_split_zoom,
             .title = i18n.N_("Toggle Split Zoom"),

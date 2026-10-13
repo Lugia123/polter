@@ -88,17 +88,23 @@ extension TerminalController {
 
         // Every check above passed: only now does anything get created or
         // the tree get replaced.
+        // The stacks come out beside the node and go into the tree with it.
+        // ⚠️ A tree made of the node alone keeps only the terminal each
+        // pane shows: every terminal stacked behind one would be left
+        // running with no pane, and no check above would have noticed --
+        // they are all "in the shape".
+        var stacks: [SplitTree<Ghostty.SurfaceView>.Stack] = []
         let node = shape.materializing(
             existingByHandle: handleToView,
             makeNew: { cwd in
                 var config = Ghostty.SurfaceConfiguration()
                 if let cwd, !cwd.isEmpty { config.workingDirectory = cwd }
                 return Ghostty.SurfaceView(ghosttyApp, baseConfig: config)
-            })
+            },
+            stacks: &stacks)
+        let tree = SplitTree<Ghostty.SurfaceView>(root: node, zoomed: nil, stacks: stacks)
 
-        replaceSurfaceTree(
-            SplitTree(root: node, zoomed: nil),
-            undoAction: "Layout")
+        replaceSurfaceTree(tree, undoAction: "Layout")
 
         // The reply is in the caller's namespace: `App.zig`'s
         // `layoutSurfacesToIds` walks this text for `pane` cells and
@@ -106,7 +112,7 @@ extension TerminalController {
         // back to `terminal_read`/`terminal_send`. Wrapped in `"layout"`
         // to match `windows/host/src/layout.rs`'s reply shape, so a caller
         // sees the same envelope on either platform.
-        let reply: [String: Any] = ["layout": node.describingForLayoutReply()]
+        let reply: [String: Any] = ["layout": tree.describingForLayoutReply(node)]
         guard let replyData = try? JSONSerialization.data(withJSONObject: reply),
               let replyText = String(data: replyData, encoding: .utf8)
         else {

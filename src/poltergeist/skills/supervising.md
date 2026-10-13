@@ -673,6 +673,35 @@ above: **you on the left, two columns of three beside you, then tabs**.
 in without claiming anybody's terminal. It appears in `terminal_list` as a
 new unmarked id, and it is not you.
 
+### One pane, several terminals: a stack
+
+A pane can hold more than one terminal: one in front, the rest behind it
+under a strip of tabs across the top of the pane. **That is where workers
+go when there is no room to give each a pane** — and it keeps the panes you
+do split off for what the person should be able to see side by side, like a
+shell running a command.
+
+- In a `terminal_layout`, a cell `{"stack":[cell, cell, …],"shown":0}` is one
+  pane holding those terminals (`pane` or `new` cells, two or more), with
+  `shown` in front. The reply says a pane that holds a stack as a `stack`
+  cell, every member's id in it.
+- On a terminal already there, `terminal_action` with `pane_stack:new` opens
+  a new terminal in its pane, in front; `pane_stack:next` / `:previous` turn
+  the pane to its neighbour in the stack; `pane_stack:out` takes it out into
+  a pane of its own; `pane_stack:onto_next` / `:onto_previous` put it onto
+  the pane after or before it, so two panes become one.
+
+**A terminal behind another is still running, still in `terminal_list`, and
+still raises its hand**: its glyph is on its tab in the strip, and if its tab
+has been folded behind the strip's `…`, on the `…`. Nothing about minding it
+changes — you read it and send to it by id exactly as before; you do not
+have to bring it to the front first. Bring it to the front when the *person*
+needs to look at it.
+
+Stacks are macOS only so far. On Windows and Linux a `stack` cell is
+refused with nothing moved, and `pane_stack` does nothing: give each worker
+a pane or a tab there.
+
 ### Building a shape by hand, and the one thing that makes it hard
 
 ⚠️ **`terminal_action` never tells you what it made.** A `new_split` answers
