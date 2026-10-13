@@ -11,11 +11,9 @@
 //! before changing the format. This file re-exports those types, so the
 //! rest of the host still says `project::Snapshot`.
 //!
-//! ⚠️ **The host still saves and opens one tab.** A project file can hold
-//! several windows of several tabs; what this host does with one is its
-//! first window's first tab (`Snapshot::first_tab`), and a save replaces
-//! that tab and keeps the rest (`Snapshot::replacing_first_tab`). Opening
-//! every window and tab is the work that comes after the format.
+//! **The host saves and opens every window and tab of a project** (task
+//! 1496): which open tab is which page, saving as things change and opening
+//! one whole are `project_session.rs`, by the rules in `polter-projects`.
 //!
 //! **Why this is not in `polter-split-tree`.** That crate's whole reason to
 //! exist is that it knows nothing beyond the shape: no Win32, no libghostty,
@@ -56,8 +54,8 @@ use polter_split_tree::{Axis, Node, PaneId};
 // place and the agent in a pane -- are in the crate for whoever starts
 // recording them.
 pub use polter_projectfile::{
-    emit, is_scrollback_name, leaves, leaves_mut, parse_snapshot, to_shape, Agent, ReadError, SavedLeaf, SavedNode, Snapshot, Tab,
-    Window,
+    emit, is_scrollback_name, leaves, leaves_mut, parse_snapshot, to_shape, Agent, Frame, ReadError, SavedLeaf, SavedNode, Snapshot,
+    Tab, Window,
 };
 
 /// A project name that names no file: nothing is left once it is sanitized.
@@ -249,6 +247,10 @@ pub use polter_projectname::sanitize_filename;
 /// this only says what is on disk. `kind` is why it is written: a save, or
 /// "Overwrite with Current Tab", **which always keeps what it replaces**
 /// (§6.2, 39ae3f040).
+///
+/// By name: what this file's own tests write with. The host writes the file
+/// it has open (`write_file`), which a rename may have moved.
+#[cfg(test)]
 pub fn write(dir: &Path, snapshot: &Snapshot, kind: WriteKind) -> std::io::Result<()> {
     let path = path_for(dir, &snapshot.name).map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "the project name is empty once sanitized")
@@ -303,7 +305,8 @@ pub fn set_name(file: &Path, name: &str) -> Result<(), String> {
 
 /// Read the project this build would write under `name` -- the file a save
 /// is about to replace. To open a project a person picked, use `read_file`
-/// with the path `list` found (see `path_for`).
+/// with the path `list` found (see `path_for`). Only the tests read by name.
+#[cfg(test)]
 pub fn read(dir: &Path, name: &str) -> Result<Snapshot, ReadError> {
     read_file(&path_for(dir, name).map_err(|_| ReadError::InvalidName)?)
 }
@@ -735,7 +738,7 @@ mod tests {
 
         write(&dir, &one_tab("blank", 1, None, None), WriteKind::Save).unwrap();
         let back = read(&dir, "blank").unwrap();
-        assert!(back.first_tab().is_none());
+        assert!(back.tabs().next().is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

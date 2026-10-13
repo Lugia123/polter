@@ -11,14 +11,16 @@
 //! is Win32 asking those functions and doing what they say, and `project.rs`
 //! reading and writing the format.
 //!
-//! **A project here is a tab**, as it is everywhere on both hosts: "Overwrite"
-//! takes the current tab of the terminal window the settings window was opened
-//! from (the group's ruling on §6.2), and "+" saves that tab as a new project
-//! through the same box the menu row opens.
+//! **A project is tabs in windows** (`polter-projects`); what this window
+//! saves is still one tab: "Overwrite" takes the current tab of the terminal
+//! window the settings window was opened from (the group's ruling on §6.2),
+//! and "+" saves that tab as a new project through the same box the menu row
+//! opens. Opening one opens all of it (`project_session::open`).
 //!
-//! **Windows has no autosave and no binding of a tab to a project**, so the
-//! detail says "not bound" and a rename has no binding to carry along
-//! (§6.1/§6.2, as ruled for this host).
+//! **A project with a tab open is saved as it changes**
+//! (`project_session.rs`), so the detail says which it is, a rename carries
+//! the open tabs to the new file, and a delete or a restore lets them go
+//! (`dev-docs/windows/projects.md`).
 //!
 //! ⚠️ **Nothing here dispatches a message while `ST` is borrowed**
 //! (`windows/tools/borrow-across-dispatch.py`): every block that borrows
@@ -88,6 +90,9 @@ struct Detail {
     snap: Snapshot,
     prev: Option<Snapshot>,
     bytes: u64,
+    /// The file it was read from: what `project_session` knows an open
+    /// project by.
+    path: PathBuf,
 }
 
 struct State {
@@ -172,7 +177,7 @@ fn reload() {
         for e in listing.entries {
             let panes = project::read_file(&e.path)
                 .ok()
-                .and_then(|s| s.first_tab().map(crate::project_ui::leaf_count))
+                .map(|s| s.pane_count())
                 .unwrap_or(0);
             items.push(Item { name: e.name, saved_at: e.saved_at, panes, path: e.path });
         }
@@ -242,7 +247,7 @@ fn load_detail() {
         let snap = project::read_file(&path).ok()?;
         let prev = project::read_file(&pj::prev_path(&path)).ok();
         let bytes = pj::scrollback_bytes(&path);
-        Some(Detail { snap, prev, bytes })
+        Some(Detail { snap, prev, bytes, path })
     });
     with(|s| s.detail = detail);
 }
@@ -508,8 +513,8 @@ fn refresh() {
             .as_ref()
             .map(|d| {
                 pj::versions(
-                    Some((d.snap.saved_at, d.snap.first_tab().map(crate::project_ui::leaf_count).unwrap_or(0))),
-                    d.prev.as_ref().map(|p| (p.saved_at, p.first_tab().map(crate::project_ui::leaf_count).unwrap_or(0))),
+                    Some((d.snap.saved_at, d.snap.pane_count())),
+                    d.prev.as_ref().map(|p| (p.saved_at, p.pane_count())),
                 )
             })
             .unwrap_or_default();
@@ -638,7 +643,7 @@ pub(crate) fn ask_save_before_close(frame: HWND) -> pj::CloseChoice {
 /// file does not read. True to overwrite.
 pub(crate) fn confirm_save_as_overwrite(owner: HWND, name: &str, existing: Option<&Snapshot>) -> bool {
     let (panes, saved) = match existing {
-        Some(s) => (s.first_tab().map(crate::project_ui::leaf_count).unwrap_or(0).to_string(), pj::format_time(s.saved_at, local_offset())),
+        Some(s) => (s.pane_count().to_string(), pj::format_time(s.saved_at, local_offset())),
         None => ("?".to_string(), "?".to_string()),
     };
     let body = tr("\"{}\" already has {} pane(s), saved {}. The replaced version is kept as the previous version.")
@@ -677,8 +682,8 @@ fn open_selected() {
     };
     let hinst = unsafe { GetModuleHandleW(None) }.map(Into::into).unwrap_or_default();
     // process-wide: as above
-    crate::plogf!("[projects-ui] open {:?} from {:?} -> load_project_into_new_tab", item.name, item.path);
-    match crate::project_ui::load_project_into_new_tab(frame, crate::app_handle(), hinst, &item.path) {
+    crate::plogf!("[projects-ui] open {:?} from {:?} -> open_project", item.name, item.path);
+    match crate::project_ui::open_project(frame, crate::app_handle(), hinst, &item.path) {
         Ok(()) => {
             say(tr("Opened “{}”.").replacen("{}", &item.name, 1), false);
             let _ = unsafe { SetForegroundWindow(frame) };
@@ -717,6 +722,9 @@ pub fn rename_to(file: &Path, wanted: &str) {
                 Ok(()) => {
                     // process-wide: the projects section of the one settings window
                     crate::plogf!("[projects-ui] renamed {:?} -> {:?} ({:?})", item.name, new, to);
+                    // Its open tabs follow it, or the next autosave would
+                    // write the old file back into existence.
+                    crate::project_session::moved(&item.path, &to, &new);
                     reload();
                     select(Some(to));
                     say(tr("Renamed to “{}”.").replacen("{}", &new, 1), false);
@@ -840,6 +848,9 @@ fn delete_selected() {
             }
             // process-wide: as above
             crate::plogf!("[projects-ui] deleted {:?} (undo held)", item.name);
+            // Its tabs stay open and stop being its pages: saving them
+            // again would undo the delete behind the user's back.
+            crate::project_session::forget(&item.path);
             reload();
             select(next);
         }
@@ -882,6 +893,9 @@ fn restore_previous() {
         Ok(()) => {
             // process-wide: as above
             crate::plogf!("[projects-ui] restored the previous version of {:?}", item.name);
+            // The tabs open now are the version just replaced; left bound,
+            // the next autosave would write them over the one restored.
+            crate::project_session::forget(&item.path);
             reload();
             select(Some(item.path.clone()));
             say(tr("Restored the previous version."), false);
@@ -1215,15 +1229,17 @@ fn paint_detail(hdc: HDC, d: &Detail, e: &pj::EditorLayout, dpi: i32, offset: i6
     // The project's name as the page's heading, as on macOS.
     draw_text(hdc, &d.snap.name, &rect(e.title), &FONT_BOLD, theme::text(), DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
-    // The thumbnail (§6.1): the tab's split tree, each pane named by its
-    // directory's last part and its title.
-    let leaves = d.snap.first_tab().map(project::leaves).unwrap_or_default();
+    // The thumbnail (§6.1): the split tree of the tab in front, each pane
+    // named by its directory's last part and its title. A project of
+    // several tabs is drawn as that one; the lines under it count them all.
+    let shown = d.snap.front_tab().map(project::leaves).unwrap_or_default();
+    let leaves: Vec<&project::SavedLeaf> = d.snap.tabs().flat_map(project::leaves).collect();
     fill(hdc, &rect(e.thumb), theme::panel());
     frame_rect(hdc, &rect(e.thumb), theme::border());
-    if let Some(root) = d.snap.first_tab() {
+    if let Some(root) = d.snap.front_tab() {
         let inner = SRect::new(e.thumb.left + 1, e.thumb.top + 1, e.thumb.right - 1, e.thumb.bottom - 1);
         let boxes = pj::thumbnail(&project::to_shape(root), inner, scale(pj::THUMB_GAP, dpi));
-        for (b, leaf) in boxes.iter().zip(&leaves) {
+        for (b, leaf) in boxes.iter().zip(&shown) {
             fill(hdc, &rect(*b), theme::field_bg());
             frame_rect(hdc, &rect(*b), theme::border());
             let pad = scale(4, dpi);
@@ -1241,8 +1257,13 @@ fn paint_detail(hdc: HDC, d: &Detail, e: &pj::EditorLayout, dpi: i32, offset: i6
         // The project file keeps no role, on either host.
         (tr("Roles"), tr("Not recorded in project files"), true),
         (tr("Scrollback"), pj::format_bytes(d.bytes), false),
-        // Windows binds no tab to a project and saves none automatically.
-        (tr("Autosave"), tr("Not bound to an open window"), true),
+        // A project with a tab open is saved as it changes
+        // (`project_session`); one with none has nothing to save.
+        if crate::project_session::is_open(&d.path) {
+            (tr("Autosave"), tr("Saved automatically as it changes"), false)
+        } else {
+            (tr("Autosave"), tr("Not bound to an open window"), true)
+        },
     ];
     for (i, (label, v, quiet)) in lines.iter().enumerate() {
         draw_text(hdc, label, &rect(e.labels[i]), &FONT, theme::dim(), right_label);
@@ -1250,7 +1271,7 @@ fn paint_detail(hdc: HDC, d: &Detail, e: &pj::EditorLayout, dpi: i32, offset: i6
     }
 
     draw_text(hdc, &tr("Version History"), &rect(e.history_heading), &FONT_BOLD, theme::text(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-    let count = |s: &Snapshot| s.first_tab().map(crate::project_ui::leaf_count).unwrap_or(0);
+    let count = |s: &Snapshot| s.pane_count();
     let versions = pj::versions(Some((d.snap.saved_at, count(&d.snap))), d.prev.as_ref().map(|p| (p.saved_at, count(p))));
     for (i, v) in versions.iter().enumerate().take(2) {
         let who = if v.current { tr("Current version") } else { tr("Previous version") };

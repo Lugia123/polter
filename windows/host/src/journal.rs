@@ -52,7 +52,7 @@ impl Journaled {
 /// from the restored state.
 ///
 /// ⚠️ **Not with the window lock held**: this calls into the core, and the
-/// core calls back into this host (`project_ui::snapshot_and_surfaces` has
+/// core calls back into this host (`project_ui::tab_tree` has
 /// the deadlock that cost once).
 pub fn start(pane: u64, surface: usize, slot: Slot) -> Journaled {
     let path = slot.dir.join(&slot.name);

@@ -148,7 +148,7 @@ fn a_format_1_file_reads_as_one_window_with_one_tab_and_nobody_knows_who_was_in_
     // No `root` is a project with nothing in it, not a corrupt one.
     let blank = parse_snapshot(br#"{"name":"blank","saved_at":1}"#).unwrap();
     assert!(blank.windows.is_empty());
-    assert!(blank.first_tab().is_none());
+    assert!(blank.tabs().next().is_none());
 }
 
 #[test]
@@ -245,7 +245,7 @@ fn a_file_with_fields_this_build_does_not_know_still_reads() {
           "right":{"kind":"leaf","unheard_of":[1,2,3]}}}"#;
     let snap = parse_snapshot(bytes).unwrap();
     assert_eq!(
-        snap.first_tab(),
+        snap.tabs().next(),
         Some(&SavedNode::Split {
             axis: Axis::Vertical,
             ratio: 0.25,
@@ -293,7 +293,7 @@ fn a_scrollback_name_that_reaches_outside_is_dropped_and_the_pane_still_loads() 
     let bytes = br#"{"name":"p","saved_at":1,
         "root":{"kind":"leaf","cwd":"/a","scrollback":"..\\..\\Users\\x\\keep.snap"}}"#;
     let snap = parse_snapshot(bytes).expect("one bad field must not cost the project");
-    assert_eq!(snap.first_tab(), Some(&SavedNode::Leaf(SavedLeaf::plain("/a", Agent::Unknown))));
+    assert_eq!(snap.tabs().next(), Some(&SavedNode::Leaf(SavedLeaf::plain("/a", Agent::Unknown))));
 }
 
 /// **Read and written back unchanged**, which is a different promise from "an
@@ -341,35 +341,20 @@ fn three_tabs() -> Snapshot {
     }
 }
 
-/// **Saving one tab into a project of several keeps the others.** A host
-/// that still saves "the tab" builds one tree; written as the whole project,
-/// that is every other tab and window gone, and the group with them.
+/// The one tab a picture of the project shows is the one in front in the
+/// window in front, not whichever happens to be written first.
 #[test]
-fn replacing_the_first_tab_keeps_every_other_tab_window_and_the_group() {
+fn the_tab_in_front_is_the_first_windows_front_tab() {
     let was = three_tabs();
-    let now = was.clone().replacing_first_tab(Some(leaf("/changed")));
-    assert_eq!(now.first_tab(), Some(&leaf("/changed")));
-    assert_eq!(now.windows[0].tabs[1], was.windows[0].tabs[1]);
-    assert_eq!(now.windows[0].frame, was.windows[0].frame);
-    assert_eq!(now.windows[0].front, 1);
-    assert_eq!(now.windows[1], was.windows[1]);
-    assert_eq!(now.group, was.group);
-    assert_eq!(now.next_scrollback, was.next_scrollback);
-
-    // A project with nothing in it gets its one window.
+    assert_eq!(was.windows[0].front, 1);
+    assert_eq!(was.front_tab(), Some(&was.windows[0].tabs[1].root));
+    // A front that names no tab falls back to the first, and a project with
+    // nothing in it has none.
+    let mut odd = was.clone();
+    odd.windows[0].front = 9;
+    assert_eq!(odd.front_tab(), Some(&was.windows[0].tabs[0].root));
     let blank = Snapshot { name: "p".to_string(), saved_at: 1, group: None, windows: Vec::new(), next_scrollback: None };
-    assert_eq!(blank.clone().replacing_first_tab(Some(leaf("/a"))), one_tab("p", leaf("/a")));
-    assert_eq!(blank.clone().replacing_first_tab(None), blank);
-
-    // Taking the first tab away leaves the second in its place, and the tab
-    // that was in front still in front.
-    let fewer = was.clone().replacing_first_tab(None);
-    assert_eq!(fewer.first_tab(), Some(&leaf("/second")));
-    assert_eq!(fewer.windows[0].front, 0);
-    assert_eq!(fewer.windows.len(), 2);
-    // And a window's only tab takes the window with it.
-    let gone = one_tab("p", leaf("/a")).replacing_first_tab(None);
-    assert!(gone.windows.is_empty());
+    assert_eq!(blank.front_tab(), None);
 }
 
 /// Every snapshot of a project is in one directory, so what a save counts as

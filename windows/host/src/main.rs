@@ -134,6 +134,7 @@ mod plugin_page;
 mod polterclose;
 mod project;
 mod project_picker;
+mod project_session;
 mod project_ui;
 mod projects_ui;
 mod prompt;
@@ -4668,6 +4669,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 if is_primary_frame(hwnd) {
                     session::mark_dirty();
                 }
+                // A project records where each of its windows is; a drag is
+                // many of these and one write (`project_session::note`).
+                project_session::note(polter_projects::autosave::Change::WindowFrame);
                 tabs::layout(hwnd);
                 // The dividers are synced by `layout` itself, from inside it.
                 // The grid sign is measured after, so it reads the client rect
@@ -4689,6 +4693,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 if is_primary_frame(hwnd) {
                     session::mark_dirty();
                 }
+                project_session::note(polter_projects::autosave::Change::WindowFrame);
                 ime_layout_changed();
                 LRESULT(0)
             }
@@ -4770,8 +4775,23 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // that no terminal consumed all arrive here, and `WM_CLOSE` does
             // not say which -- so neither does the log (#59). With a terminal
             // focused, Alt+F4 is the core's `close_window` binding instead.
+            // The session is ending -- log-off or shutdown -- and nothing
+            // after this is promised to run: every open project is written
+            // now. `wp` is whether it really is ending.
+            WM_ENDSESSION => {
+                if wp.0 != 0 {
+                    project_session::save_all();
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+
             WM_CLOSE => {
                 winid::close_requested(hwnd, winid::CloseVia::WmClose);
+                // **Before anything is asked or closed**: the open projects
+                // as they stand, all their pages still open and the right
+                // one in front. The tabs that then close each make their own
+                // save, which keeps this front (`project_session::tab_closing`).
+                project_session::save_all();
                 // **The tabs go before the window does.** Windows destroys a
                 // frame's children with it, but it knows nothing about the
                 // surfaces bound to them -- so without this the shells in a

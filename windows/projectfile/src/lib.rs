@@ -147,40 +147,12 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// The tree of the first window's first tab, or `None` for a project
-    /// with nothing in it. What a caller that still thinks of a project as
-    /// one tab has to go on.
-    pub fn first_tab(&self) -> Option<&SavedNode> {
-        self.windows.first().and_then(|w| w.tabs.first()).map(|t| &t.root)
-    }
-
-    pub fn first_tab_mut(&mut self) -> Option<&mut SavedNode> {
-        self.windows.first_mut().and_then(|w| w.tabs.first_mut()).map(|t| &mut t.root)
-    }
-
-    /// This project with its first window's first tab replaced by `root`,
-    /// and **every other tab, every other window, the group and the first
-    /// window's frame left as they are**. With no window yet, `root` becomes
-    /// the one tab of a new one whose frame nothing recorded. `None` takes
-    /// the first tab away (and its window with it, if that was its only tab).
-    ///
-    /// This is how a caller that saves one tab writes into a project that
-    /// may hold more: building the snapshot afresh from that one tab would
-    /// drop the rest without a word.
-    pub fn replacing_first_tab(mut self, root: Option<SavedNode>) -> Snapshot {
-        match (root, self.windows.first_mut()) {
-            (Some(root), Some(first)) => first.tabs[0] = Tab { root },
-            (Some(root), None) => self.windows.push(Window { frame: None, front: 0, tabs: vec![Tab { root }] }),
-            (None, Some(first)) => {
-                first.tabs.remove(0);
-                first.front = first.front.saturating_sub(1);
-                if first.tabs.is_empty() {
-                    self.windows.remove(0);
-                }
-            }
-            (None, None) => {}
-        }
-        self
+    /// The tree of the tab in front in the first window -- the window in
+    /// front -- or `None` for a project with nothing in it. What a picture
+    /// of the project that has room for one tab shows.
+    pub fn front_tab(&self) -> Option<&SavedNode> {
+        let first = self.windows.first()?;
+        first.tabs.get(first.front).or(first.tabs.first()).map(|t| &t.root)
     }
 
     /// Every tab's tree: windows in order, and each window's tabs in order.

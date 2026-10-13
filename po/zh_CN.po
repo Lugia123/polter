@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 17:04+0800\n"
+"POT-Creation-Date: 2026-10-13 18:28+0800\n"
 "PO-Revision-Date: 2026-09-13 10:50+0800\n"
 "Last-Translator: Lukas <134181853+bo2themax@users.noreply.github.com>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -27,7 +27,7 @@ msgstr "在 Ghostty 中打开"
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:12
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:197
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
-#: windows/host/src/main.rs:2563 windows/host/src/main.rs:2569
+#: windows/host/src/main.rs:2564 windows/host/src/main.rs:2570
 msgid "Authorize Clipboard Access"
 msgstr "剪贴板访问授权"
 
@@ -54,8 +54,8 @@ msgstr "本提示将在重载配置后再次出现"
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
 #: src/apprt/gtk/class/application.zig:2225
-#: windows/host/src/project_picker.rs:337 windows/host/src/projects_ui.rs:621
-#: windows/host/src/projects_ui.rs:648 windows/host/src/projects_ui.rs:653
+#: windows/host/src/project_picker.rs:337 windows/host/src/projects_ui.rs:626
+#: windows/host/src/projects_ui.rs:653 windows/host/src/projects_ui.rs:658
 #: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:2887
 msgid "Cancel"
 msgstr "取消"
@@ -311,26 +311,26 @@ msgid "Editing configuration file"
 msgstr "正在编辑配置文件"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
-#: windows/host/src/main.rs:2571
+#: windows/host/src/main.rs:2572
 msgid ""
 "An application is attempting to write to the clipboard. The current "
 "clipboard contents are shown below."
 msgstr "一个应用正在试图向剪贴板写入内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:202
-#: windows/host/src/main.rs:2565
+#: windows/host/src/main.rs:2566
 msgid ""
 "An application is attempting to read from the clipboard. The current "
 "clipboard contents are shown below."
 msgstr "一个应用正在试图从剪贴板读取内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2575
+#: windows/host/src/main.rs:2576
 msgid "Warning: Potentially Unsafe Paste"
 msgstr "警告：粘贴内容可能不安全"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2577
+#: windows/host/src/main.rs:2578
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -341,17 +341,17 @@ msgid "Quit Ghostty?"
 msgstr "退出 Ghostty 吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
-#: windows/host/src/tabs.rs:3509
+#: windows/host/src/tabs.rs:3513
 msgid "Close Tab?"
 msgstr "关闭标签页吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
-#: windows/host/src/tabs.rs:3510
+#: windows/host/src/tabs.rs:3514
 msgid "Close Window?"
 msgstr "关闭窗口吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
-#: windows/host/src/tabs.rs:3511
+#: windows/host/src/tabs.rs:3515
 msgid "Close Split?"
 msgstr "关闭分屏吗？"
 
@@ -360,17 +360,17 @@ msgid "All terminal sessions will be terminated."
 msgstr "终端内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
-#: windows/host/src/tabs.rs:3519
+#: windows/host/src/tabs.rs:3523
 msgid "All terminal sessions in this tab will be terminated."
 msgstr "标签页内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
-#: windows/host/src/tabs.rs:3520
+#: windows/host/src/tabs.rs:3524
 msgid "All terminal sessions in this window will be terminated."
 msgstr "窗口内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
-#: windows/host/src/tabs.rs:3521
+#: windows/host/src/tabs.rs:3525
 msgid "The currently running process in this split will be terminated."
 msgstr "分屏内正在运行中的进程将被终止。"
 
@@ -1075,20 +1075,20 @@ msgid "Close the current tab."
 msgstr "关闭当前标签页。"
 
 #: src/input/command.zig:679 windows/host/src/strip.rs:1605
-#: windows/host/src/tabs.rs:3512
+#: windows/host/src/tabs.rs:3516
 msgid "Close Other Tabs"
 msgstr "关闭其他标签页"
 
-#: src/input/command.zig:680 windows/host/src/tabs.rs:3529
+#: src/input/command.zig:680 windows/host/src/tabs.rs:3533
 msgid "Close all tabs in this window except the current one."
 msgstr "关闭当前窗口内除了当前标签页以外的所有标签页。"
 
 #: src/input/command.zig:684 windows/host/src/strip.rs:1606
-#: windows/host/src/tabs.rs:3513
+#: windows/host/src/tabs.rs:3517
 msgid "Close Tabs to the Right"
 msgstr "关闭右侧标签页"
 
-#: src/input/command.zig:685 windows/host/src/tabs.rs:3530
+#: src/input/command.zig:685 windows/host/src/tabs.rs:3534
 msgid "Close all tabs to the right of the current one."
 msgstr "关闭当前标签页右侧的所有标签页。"
 
@@ -1180,7 +1180,7 @@ msgstr "检查更新"
 msgid "Check for updates to the application."
 msgstr "检查应用是否有版本更新。"
 
-#: src/input/command.zig:757 windows/host/src/projects_ui.rs:1349
+#: src/input/command.zig:757 windows/host/src/projects_ui.rs:1370
 msgid "Undo"
 msgstr "撤销"
 
@@ -2229,7 +2229,7 @@ msgid "Choose…"
 msgstr "选择…"
 
 #: windows/host/src/general_ui.rs:1214 windows/host/src/general_ui.rs:1379
-#: windows/host/src/projects_ui.rs:1351
+#: windows/host/src/projects_ui.rs:1372
 msgid "Show in Explorer"
 msgstr "在资源管理器中显示"
 
@@ -2245,7 +2245,7 @@ msgstr "深色"
 msgid "The screenshot folder could not be worked out."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1488 windows/host/src/projects_ui.rs:972
+#: windows/host/src/general_ui.rs:1488 windows/host/src/projects_ui.rs:986
 msgid "Explorer could not be started."
 msgstr "资源管理器打不开。"
 
@@ -2376,20 +2376,20 @@ msgstr ""
 "启动 Polter 的环境里已设 LANG={}，Polter 会优先用它，而不是这里的选择。要让这"
 "个选择生效，请先清掉 LANG，再重新启动 Polter。"
 
-#: windows/host/src/main.rs:2591
+#: windows/host/src/main.rs:2592
 #, rust-format
 msgid "{} lines in all."
 msgstr "共 {} 行。"
 
-#: windows/host/src/main.rs:6415
+#: windows/host/src/main.rs:6435
 msgid "No reason was recorded."
 msgstr "没有记录到原因。"
 
-#: windows/host/src/main.rs:6421
+#: windows/host/src/main.rs:6441
 msgid "Polter could not open its first terminal and will close."
 msgstr "Polter 无法打开第一个终端，即将关闭。"
 
-#: windows/host/src/main.rs:6423
+#: windows/host/src/main.rs:6443
 #, rust-format
 msgid "The full log is at {}"
 msgstr "完整日志在 {}"
@@ -2398,7 +2398,7 @@ msgstr "完整日志在 {}"
 msgid "Reopen Closed Tab"
 msgstr "重开关闭的标签"
 
-#: windows/host/src/menu.rs:296 windows/host/src/projects_ui.rs:619
+#: windows/host/src/menu.rs:296 windows/host/src/projects_ui.rs:624
 #: windows/host/src/strip.rs:1619
 msgid "Save as Project…"
 msgstr "另存为项目…"
@@ -2802,12 +2802,12 @@ msgstr "另存为项目"
 msgid "Saves this tab: {} pane(s)"
 msgstr "将存下当前标签页的 {} 个面板"
 
-#: windows/host/src/project_picker.rs:542 windows/host/src/projects_ui.rs:686
+#: windows/host/src/project_picker.rs:542 windows/host/src/projects_ui.rs:691
 msgid "The project could not be opened."
 msgstr "这个项目打不开"
 
-#: windows/host/src/project_picker.rs:596 windows/host/src/projects_ui.rs:913
-#: windows/host/src/projects_ui.rs:926
+#: windows/host/src/project_picker.rs:596 windows/host/src/projects_ui.rs:927
+#: windows/host/src/projects_ui.rs:940
 msgid "The project could not be saved."
 msgstr "项目存不了："
 
@@ -2820,234 +2820,238 @@ msgstr "搜索"
 msgid "New Project Name"
 msgstr "新项目的名字"
 
-#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1184
+#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1198
 msgid "No Saved Projects"
 msgstr "还没有保存过项目"
 
-#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1186
+#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1200
 msgid "No matching projects"
 msgstr "没有匹配的项目"
 
-#: windows/host/src/projects_ui.rs:557 windows/host/src/roles_ui.rs:732
+#: windows/host/src/projects_ui.rs:562 windows/host/src/roles_ui.rs:732
 #: windows/settings-shell/src/general.rs:77
 #: windows/control-room/src/rules.rs:168
 msgid "Polter"
 msgstr "Polter"
 
-#: windows/host/src/projects_ui.rs:620
+#: windows/host/src/projects_ui.rs:625
 msgid "Close Without Saving"
 msgstr "不保存，直接关闭"
 
-#: windows/host/src/projects_ui.rs:627
+#: windows/host/src/projects_ui.rs:632
 msgid "Save as a Project Before Closing?"
 msgstr "关闭前存成项目吗？"
 
-#: windows/host/src/projects_ui.rs:628
+#: windows/host/src/projects_ui.rs:633
 msgid ""
 "The terminal still has a running process. Closing it without saving as a "
 "project will kill it."
 msgstr "终端里还有正在运行的进程。不存成项目就关闭，进程会被结束。"
 
-#: windows/host/src/projects_ui.rs:644
+#: windows/host/src/projects_ui.rs:649
 #, rust-format
 msgid ""
 "\"{}\" already has {} pane(s), saved {}. The replaced version is kept as the "
 "previous version."
 msgstr "“{}”已经有 {} 个面板，保存于 {}。被替换的版本会留作上一版。"
 
-#: windows/host/src/projects_ui.rs:648
+#: windows/host/src/projects_ui.rs:653
 msgid "Overwrite Project?"
 msgstr "覆盖这个项目？"
 
-#: windows/host/src/projects_ui.rs:648 windows/host/src/projects_ui.rs:903
+#: windows/host/src/projects_ui.rs:653 windows/host/src/projects_ui.rs:917
 msgid "Overwrite"
 msgstr "覆盖"
 
-#: windows/host/src/projects_ui.rs:675 windows/host/src/projects_ui.rs:896
-#: windows/host/src/projects_ui.rs:935
+#: windows/host/src/projects_ui.rs:680 windows/host/src/projects_ui.rs:910
+#: windows/host/src/projects_ui.rs:949
 msgid "There is no terminal window to open the project in."
 msgstr "没有打开的终端窗口可以用。"
 
-#: windows/host/src/projects_ui.rs:683
+#: windows/host/src/projects_ui.rs:688
 #, rust-format
 msgid "Opened “{}”."
 msgstr "已打开「{}」。"
 
-#: windows/host/src/projects_ui.rs:702 windows/host/src/projects_ui.rs:726
+#: windows/host/src/projects_ui.rs:707 windows/host/src/projects_ui.rs:734
 msgid "The project could not be renamed."
 msgstr "项目改不了名："
 
-#: windows/host/src/projects_ui.rs:709
+#: windows/host/src/projects_ui.rs:714
 msgid "A project needs a name."
 msgstr "项目要有名字。"
 
-#: windows/host/src/projects_ui.rs:711
+#: windows/host/src/projects_ui.rs:716
 #, rust-format
 msgid "There is already a project called “{}”."
 msgstr "已经有一个叫「{}」的项目。"
 
-#: windows/host/src/projects_ui.rs:722
+#: windows/host/src/projects_ui.rs:730
 #, rust-format
 msgid "Renamed to “{}”."
 msgstr "已改名为「{}」。"
 
-#: windows/host/src/projects_ui.rs:800
+#: windows/host/src/projects_ui.rs:808
 #, rust-format
 msgid "{} copy"
 msgstr "{} 副本"
 
-#: windows/host/src/projects_ui.rs:810
+#: windows/host/src/projects_ui.rs:818
 #, rust-format
 msgid "Copied as “{}”."
 msgstr "已复制为「{}」。"
 
-#: windows/host/src/projects_ui.rs:812
+#: windows/host/src/projects_ui.rs:820
 msgid "The project could not be copied."
 msgstr "项目复制不了："
 
-#: windows/host/src/projects_ui.rs:819
+#: windows/host/src/projects_ui.rs:827
 #, rust-format
 msgid "Delete “{}”?"
 msgstr "删除「{}」？"
 
-#: windows/host/src/projects_ui.rs:820
+#: windows/host/src/projects_ui.rs:828
 msgid "You can undo this until the settings window closes."
 msgstr "关掉设置窗口之前都可以撤销。"
 
-#: windows/host/src/projects_ui.rs:821 windows/host/src/roles_ui.rs:3120
+#: windows/host/src/projects_ui.rs:829 windows/host/src/roles_ui.rs:3120
 msgid "Delete"
 msgstr "删除"
 
-#: windows/host/src/projects_ui.rs:846
+#: windows/host/src/projects_ui.rs:857
 msgid "The project could not be deleted."
 msgstr "项目删不掉："
 
-#: windows/host/src/projects_ui.rs:858
+#: windows/host/src/projects_ui.rs:869
 #, rust-format
 msgid "“{}” is back."
 msgstr "「{}」已恢复。"
 
-#: windows/host/src/projects_ui.rs:867
+#: windows/host/src/projects_ui.rs:878
 msgid "The project could not be put back."
 msgstr "项目放不回去："
 
-#: windows/host/src/projects_ui.rs:875
+#: windows/host/src/projects_ui.rs:886
 #, rust-format
 msgid "Restore the previous version of “{}”?"
 msgstr "把「{}」恢复到上一版？"
 
-#: windows/host/src/projects_ui.rs:876
+#: windows/host/src/projects_ui.rs:887
 msgid "The current version becomes the previous one, so you can switch back."
 msgstr "当前版本会变成上一版，随时可以换回来。"
 
-#: windows/host/src/projects_ui.rs:877 windows/host/src/projects_ui.rs:1348
+#: windows/host/src/projects_ui.rs:888 windows/host/src/projects_ui.rs:1369
 msgid "Restore"
 msgstr "恢复"
 
-#: windows/host/src/projects_ui.rs:887
+#: windows/host/src/projects_ui.rs:901
 msgid "Restored the previous version."
 msgstr "已恢复上一版。"
 
-#: windows/host/src/projects_ui.rs:889
+#: windows/host/src/projects_ui.rs:903
 msgid "The previous version could not be restored."
 msgstr "上一版恢复不了："
 
-#: windows/host/src/projects_ui.rs:900
+#: windows/host/src/projects_ui.rs:914
 #, rust-format
 msgid "Overwrite “{}” with the current tab?"
 msgstr "用当前标签页覆盖「{}」？"
 
-#: windows/host/src/projects_ui.rs:901
+#: windows/host/src/projects_ui.rs:915
 #, rust-format
 msgid ""
 "“{}” replaces what the project holds. The version it replaces is kept and "
 "can be restored."
 msgstr "「{}」会替换项目里现有的内容。被替换的版本会保留，可以恢复。"
 
-#: windows/host/src/projects_ui.rs:924
+#: windows/host/src/projects_ui.rs:938
 #, rust-format
 msgid "Saved the current tab as “{}”."
 msgstr "已把当前标签页存为「{}」。"
 
-#: windows/host/src/projects_ui.rs:1106
+#: windows/host/src/projects_ui.rs:1120
 msgid "1 pane"
 msgstr "1 个面板"
 
-#: windows/host/src/projects_ui.rs:1108
+#: windows/host/src/projects_ui.rs:1122
 #, rust-format
 msgid "{} panes"
 msgstr "{} 个面板"
 
-#: windows/host/src/projects_ui.rs:1157
+#: windows/host/src/projects_ui.rs:1171
 #, rust-format
 msgid "Deleted “{}”"
 msgstr "已删除「{}」"
 
-#: windows/host/src/projects_ui.rs:1193
+#: windows/host/src/projects_ui.rs:1207
 msgid "Select a project, or save the current tab as one with +."
 msgstr "选一个项目，或者用 + 把当前标签页存成项目。"
 
-#: windows/host/src/projects_ui.rs:1238
+#: windows/host/src/projects_ui.rs:1254
 msgid "Last saved"
 msgstr "上次保存"
 
-#: windows/host/src/projects_ui.rs:1239
+#: windows/host/src/projects_ui.rs:1255
 msgid "Panes"
 msgstr "面板"
 
-#: windows/host/src/projects_ui.rs:1240
+#: windows/host/src/projects_ui.rs:1256
 msgid "Directories"
 msgstr "目录"
 
-#: windows/host/src/projects_ui.rs:1240
+#: windows/host/src/projects_ui.rs:1256
 msgid "None recorded"
 msgstr "没有记录"
 
-#: windows/host/src/projects_ui.rs:1242 windows/host/src/settings_win.rs:136
+#: windows/host/src/projects_ui.rs:1258 windows/host/src/settings_win.rs:136
 msgid "Roles"
 msgstr "角色"
 
-#: windows/host/src/projects_ui.rs:1242
+#: windows/host/src/projects_ui.rs:1258
 msgid "Not recorded in project files"
 msgstr "项目文件不记录角色"
 
-#: windows/host/src/projects_ui.rs:1243
+#: windows/host/src/projects_ui.rs:1259
 msgid "Scrollback"
 msgstr "回滚内容"
 
-#: windows/host/src/projects_ui.rs:1245
+#: windows/host/src/projects_ui.rs:1263 windows/host/src/projects_ui.rs:1265
 msgid "Autosave"
 msgstr "自动保存"
 
-#: windows/host/src/projects_ui.rs:1245
+#: windows/host/src/projects_ui.rs:1263
+msgid "Saved automatically as it changes"
+msgstr "改动后自动保存"
+
+#: windows/host/src/projects_ui.rs:1265
 msgid "Not bound to an open window"
 msgstr "没有绑定到打开的窗口"
 
-#: windows/host/src/projects_ui.rs:1252
+#: windows/host/src/projects_ui.rs:1273
 msgid "Version History"
 msgstr "版本历史"
 
-#: windows/host/src/projects_ui.rs:1256
+#: windows/host/src/projects_ui.rs:1277
 msgid "Current version"
 msgstr "当前版本"
 
-#: windows/host/src/projects_ui.rs:1256
+#: windows/host/src/projects_ui.rs:1277
 msgid "Previous version"
 msgstr "上一版"
 
-#: windows/host/src/projects_ui.rs:1266
+#: windows/host/src/projects_ui.rs:1287
 msgid "No earlier version is kept yet."
 msgstr "还没有保留更早的版本。"
 
-#: windows/host/src/projects_ui.rs:1347
+#: windows/host/src/projects_ui.rs:1368
 msgid "Rename…"
 msgstr "重命名…"
 
-#: windows/host/src/projects_ui.rs:1352
+#: windows/host/src/projects_ui.rs:1373
 msgid "Overwrite with Current Tab"
 msgstr "用当前标签页覆盖"
 
-#: windows/host/src/projects_ui.rs:1353
+#: windows/host/src/projects_ui.rs:1374
 msgid "Open"
 msgstr "打开"
 
@@ -3639,11 +3643,11 @@ msgstr "没能为它开出标签页。"
 msgid "Polter could not find its own program to start the role with."
 msgstr "Polter 找不到自己的程序，没法用它启动角色。"
 
-#: windows/control-room/src/lend.rs:369
+#: windows/control-room/src/lend.rs:378
 msgid "The supervisor's terminal is no longer open."
 msgstr "总管的终端已经关掉了。"
 
-#: windows/control-room/src/lend.rs:371 windows/control-room/src/list.rs:117
+#: windows/control-room/src/lend.rs:380 windows/control-room/src/list.rs:117
 msgid "Supervisor"
 msgstr "总管"
 

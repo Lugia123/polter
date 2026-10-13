@@ -14,17 +14,24 @@
 //! Manage Projects) and the close-flow integration are tracked separately,
 //! for a session with real-machine access.
 //!
+//! **Since task 1496 a project is every tab it holds, in every window.**
+//! What is here is one tab's worth of each direction -- a live tab into a
+//! saved tree (`tab_tree`, `name_leaves`), a saved tree into a new tab
+//! (`open_page_in_new_tab`) -- and saving chosen tabs as a project
+//! (`save_tabs_as`). Which open tab is which page, saving as things change
+//! and opening a whole project are `project_session.rs`; the rules they
+//! follow are `polter-projects`.
+//!
 //! What lives here is everything about task 533 that *is* verifiable without
-//! a screen: turning a live tab into a `Snapshot` (`write_tab`) and
-//! turning a loaded `Snapshot` into the JSON the existing
+//! a screen: turning a live tab into a saved tree (`tab_tree`,
+//! `name_leaves`) and turning a saved page into the JSON the existing
 //! `poltergeist_layout` pipeline already knows how to build a tab from
-//! (`shape_for_snapshot`). A UI, whatever shape it ends up taking, calls
-//! into these two and nothing else.
+//! (`shape_for_page`).
 
 use windows::Win32::Foundation::HWND;
 
-use crate::{plogf, wlogf};
-use crate::project::{self, Agent, SavedLeaf, SavedNode, Snapshot, Tab, Window};
+use crate::wlogf;
+use crate::project::{self, Agent, SavedLeaf, SavedNode};
 use crate::tabs::{self, TabId};
 
 /// Build a `Snapshot` from a live tab. `None` if the tab (or its window) is
@@ -39,7 +46,7 @@ use crate::tabs::{self, TabId};
 /// `Leaf.history` default -- unlike the gap this function used to have
 /// before `ACTION_HISTORY_FILENAME` was wired (`tabs::history_of_pane`),
 /// where the field was empty for a reason nobody could ask about. See
-/// `write_tab`'s doc comment for how those two "empty" cases are told
+/// `name_leaves`'s doc comment for how those two "empty" cases are told
 /// apart now (an apprt-side count, not just a hope that a log line was
 /// read).
 ///
@@ -65,11 +72,11 @@ use crate::tabs::{self, TabId};
 /// default too.
 ///
 /// **Nothing is asked of the core in here.** The surfaces come out so that
-/// `write_tab` can make its capture calls after this lock is released;
+/// `name_leaves` can make its capture calls after this lock is released;
 /// the deadlock described above is what calling out from inside it has
 /// already cost once.
-fn snapshot_and_surfaces(frame: HWND, id: TabId, name: String, saved_at: i64) -> Option<(Snapshot, Vec<LeafPane>)> {
-    let (root, surfaces) = tabs::with_windows(|ws| {
+pub(crate) fn tab_tree(frame: HWND, id: TabId) -> Option<(SavedNode, Vec<LeafPane>)> {
+    tabs::with_windows(|ws| {
         let win = ws.iter().find(|w| w.frame == frame.0 as isize)?;
         let tab = win.tabs.iter().find(|t| t.id == id)?;
         // A project is a terminal tab's split tree. The control room has
@@ -87,8 +94,8 @@ fn snapshot_and_surfaces(frame: HWND, id: TabId, name: String, saved_at: i64) ->
                             cwd: p.cwd.clone().unwrap_or_default(),
                             title: p.title.clone().unwrap_or_default(),
                             history: p.history.clone().unwrap_or_default(),
-                            // Named by `write_tab`, from the pane's own
-                            // slot (`capture_scrollback`); empty until then.
+                            // Named by `name_leaves`, from the pane's own
+                            // slot; empty until then.
                             scrollback: String::new(),
                             // **Not known, which is not "nobody".** This
                             // host does not yet record which agent, if any,
@@ -109,18 +116,12 @@ fn snapshot_and_surfaces(frame: HWND, id: TabId, name: String, saved_at: i64) ->
             leaf
         });
         Some((root, order.into_inner()))
-    })?;
-
-    // One tab is what this host saves: a project of one window with that
-    // tab in it, the window's frame not recorded. `write_tab` puts it into
-    // the project the name already has, if it has one.
-    let windows = vec![Window { frame: None, front: 0, tabs: vec![Tab { root }] }];
-    Some((Snapshot { name, saved_at, group: None, windows, next_scrollback: None }, surfaces))
+    })
 }
 
-/// The pane behind one leaf of a snapshot being saved.
+/// The pane behind one leaf of a tree being saved.
 #[derive(Clone, Debug, Default)]
-struct LeafPane {
+pub(crate) struct LeafPane {
     pane: polter_split_tree::PaneId,
     surface: usize,
     slot: Option<project::Slot>,
@@ -140,14 +141,20 @@ struct LeafPane {
 /// *will* be (`dev-docs/project-scrollback.md` §3.2). The core also finishes
 /// queued captures before `ghostty_surface_free` returns, so closing right
 /// after saving does not lose them.
-fn capture_scrollback(
+///
+/// `capture` is whether the core is asked to write each pane's whole
+/// scrollback now. A save somebody asked for does; one made as things
+/// change does not -- it is up to the configured limit per pane and such a
+/// save follows every divider that is dragged -- and relies on the journal
+/// this starts for any pane that has none yet.
+pub(crate) fn name_leaves(
     frame: HWND,
-    snapshot: &mut Snapshot,
+    root: &mut SavedNode,
     panes: &[LeafPane],
     snaps: &std::path::Path,
     alloc: &mut project::Allocator,
+    capture: bool,
 ) {
-    let Some(root) = snapshot.first_tab_mut() else { return };
     let leaves = project::leaves_mut(root);
     if leaves.len() != panes.len() {
         // Cannot happen while both come from one `describe` walk; if it
@@ -172,11 +179,14 @@ fn capture_scrollback(
         // Outside the window lock: `journal::start` calls into the core.
         let journaled = crate::journal::start(p.pane, p.surface, project::Slot { dir: snaps.to_path_buf(), name: name.clone() });
         tabs::set_scrollback_slot(frame, p.pane, journaled);
+        if !capture {
+            continue;
+        }
         let Some(abs) = snaps.join(&name).to_str().and_then(|s| std::ffi::CString::new(s).ok()) else {
             wlogf!(frame, "[project] capture {}: {:?} is not a UTF-8 path the core can take", name, snaps);
             continue;
         };
-        // Written before the call: `capture_scrollback` queues onto the IO
+        // Written before the call: the capture queues onto the IO
         // thread's mailbox and waits for room when it is full, so this line
         // being the last one is what that wait would look like.
         wlogf!(frame, "[project] capture pane {} -> {} via ghostty_surface_capture_scrollback(0x{:x}) …", p.pane, name, p.surface);
@@ -187,7 +197,7 @@ fn capture_scrollback(
     }
 }
 
-/// Number of leaves in a saved tree. Used by `write_tab`'s log line and by
+/// Number of leaves in a saved tree. Used by the save's log line and by
 /// the "you are about to overwrite N-pane project saved at T" confirmation a
 /// UI shows before replacing an existing name -- **on the *existing on-disk*
 /// project being overwritten**, read fresh with `project::read`, never on the
@@ -237,107 +247,41 @@ pub fn should_offer_save_as_project(tab_needs_confirmation: bool) -> bool {
     polter_settings_shell::projects::offers_save_before_close(1, tab_needs_confirmation)
 }
 
+/// Save the given tabs as the project `name`: **the project is those tabs
+/// and nothing else**, each a page, in the order given and in the windows
+/// they are in now (v20, rule 6). A project that already has that name is
+/// replaced by them -- what it held is kept as the previous version when
+/// `kind` says so, which for a name that is taken it always does
+/// (`projects_ui::save_as_plan`) -- except its group, which stays: the
+/// group's own file says which project is its, and a project that dropped
+/// the word would be unbound behind the group's back.
+///
+/// The tabs are then pages of that project for as long as they are open
+/// (`project_session`), and it is saved as they change.
+///
+/// The caller (whichever UI asked for the name) is responsible for telling
+/// the person the result; this only reports success/failure as a value.
+pub fn save_tabs_as(dir: &std::path::Path, tabs_to_save: &[(HWND, TabId)], name: String, kind: project::WriteKind) -> Result<(), String> {
+    let file = project::path_for(dir, &name)
+        .map_err(|_| format!("{name:?} has nothing left once sanitized, so no file can be named after it"))?;
+    crate::project_session::save_as(&file, tabs_to_save, name, kind)
+}
+
+/// One tab saved as a project: what "Save as Project" does until its window
+/// lists the tabs to tick, and what "Overwrite with Current Tab" is.
+pub fn write_tab_as(dir: &std::path::Path, frame: HWND, id: TabId, name: String, kind: project::WriteKind) -> Result<(), String> {
+    save_tabs_as(dir, &[(frame, id)], name, kind)
+}
+
 /// "Overwrite with Current Tab" (settings.md §6.2): a save, except that
 /// **what it replaces is always kept as the previous version**, as the
 /// confirmation promised -- the save's rule keeps it only on a layout change,
 /// and one pane over one pane then lost it (39ae3f040).
 pub fn overwrite_project(dir: &std::path::Path, frame: HWND, id: TabId, name: String) -> Result<(), String> {
-    write_tab(dir, frame, id, name, project::WriteKind::Overwrite)
+    write_tab_as(dir, frame, id, name, project::WriteKind::Overwrite)
 }
 
-/// A tab saved as a project of `kind` -- `Save` or `Overwrite`, as
-/// `polter_settings_shell::projects::save_as` decided for "Save as Project".
-pub fn write_tab_as(dir: &std::path::Path, frame: HWND, id: TabId, name: String, kind: project::WriteKind) -> Result<(), String> {
-    write_tab(dir, frame, id, name, kind)
-}
-
-/// Save the given tab as a named project. The caller (whichever UI asked
-/// for the name) is responsible for telling the person the result; this
-/// only reports success/failure as a value.
-///
-/// **Logs once when some, but not all, panes have a history handle.** All
-/// missing (capture is plainly off) or all present are both unremarkable; a
-/// *mix* in one save is the shape worth a line, since it usually means
-/// capture was toggled mid-session rather than a per-pane setting anyone
-/// asked for.
-fn write_tab(dir: &std::path::Path, frame: HWND, id: TabId, name: String, kind: project::WriteKind) -> Result<(), String> {
-    let saved_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    let Some((mut snapshot, surfaces)) = snapshot_and_surfaces(frame, id, name.clone(), saved_at) else {
-        return Err("that tab no longer exists".to_string());
-    };
-
-    if let Some(root) = snapshot.first_tab() {
-        let missing = missing_history_count(root);
-        let total = leaf_count(root);
-        if missing > 0 && missing < total {
-            // process-wide: about the save format, not attributable to one window
-            plogf!(
-                "[project] saved {:?}: {} of {} pane(s) have no history handle \
-                 (the rest do) -- capture may have been toggled mid-session",
-                name,
-                missing,
-                total
-            );
-        }
-    }
-
-    // Derived from the file this save writes, not from `name` again: see
-    // `project::scrollback_dir`.
-    let file = project::path_for(dir, &snapshot.name)
-        .map_err(|_| format!("{:?} has nothing left once sanitized, so no file can be named after it", snapshot.name))?;
-    let snaps = project::scrollback_dir(&file);
-    // **What this project has already handed out**: the counter in the file
-    // being replaced, and every snapshot name that file or the directory
-    // still holds. A counter that went missing cannot make a number be used
-    // twice, because what is on disk is counted too.
-    //
-    // **Every tab of the project, not only the one being saved**: the
-    // snapshots of all of them are in this one directory.
-    let existing = project::read(dir, &snapshot.name).ok();
-    let mut in_use: Vec<String> = existing.as_ref().map(Snapshot::scrollback_names).unwrap_or_default();
-    if let Ok(entries) = std::fs::read_dir(&snaps) {
-        in_use.extend(entries.flatten().filter_map(|e| e.file_name().to_str().map(str::to_string)));
-    }
-    let mut alloc =
-        project::Allocator::new(existing.as_ref().and_then(|e| e.next_scrollback), in_use.iter().map(String::as_str));
-    capture_scrollback(frame, &mut snapshot, &surfaces, &snaps, &mut alloc);
-    // **The tab goes into the project that is there, in place of its first
-    // tab.** A project file can hold more windows and tabs than this host
-    // saves; written as the whole project, this one tab would be all that is
-    // left of them, and of the project's group.
-    let mut snapshot = match existing {
-        Some(was) => {
-            let Snapshot { name, saved_at, windows, .. } = snapshot;
-            let root = windows.into_iter().next().and_then(|w| w.tabs.into_iter().next()).map(|t| t.root);
-            Snapshot { name, saved_at, ..was.replacing_first_tab(root) }
-        }
-        None => snapshot,
-    };
-    snapshot.next_scrollback = Some(alloc.next);
-    // Kept below: what every tab of the project names.
-    let named = snapshot.scrollback_names();
-    project::write(dir, &snapshot, kind).map_err(|e| e.to_string())?;
-    // After the write, so a failed write leaves the previous save's
-    // snapshots where its file still points. Kept: exactly what the tree
-    // now names.
-    let pruned = project::prune_scrollback_dir(&snaps, &named);
-    wlogf!(
-        frame,
-        "[project] saved {:?}: {} of {} pane(s) named a snapshot, next_scrollback={}, {} stale snapshot(s) removed",
-        name,
-        named.len(),
-        surfaces.len(),
-        alloc.next,
-        pruned
-    );
-    Ok(())
-}
-
-/// Build the shape for a *new* tab from a loaded project, reusing the tab's
+/// Build the shape for a *new* tab from a saved page, reusing the tab's
 /// already-existing seed pane (every `tabs::Op::NewTab` starts with one)
 /// rather than creating a redundant extra pane and discarding it.
 ///
@@ -353,13 +297,8 @@ fn write_tab(dir: &std::path::Path, frame: HWND, id: TabId, name: String, kind: 
 /// `snaps` is the project file's `project::scrollback_dir`, which turns each
 /// leaf's relative snapshot name into the absolute path a pane is created
 /// with (see `project::to_layout_shape`).
-pub fn shape_for_snapshot_seeded(
-    snapshot: &Snapshot,
-    seed_surface: usize,
-    snaps: &std::path::Path,
-) -> Option<serde_json::Value> {
-    let root = snapshot.first_tab()?;
-    Some(seed_leftmost(root, seed_surface, snaps))
+pub fn shape_for_page_seeded(root: &SavedNode, seed_surface: usize, snaps: &std::path::Path) -> serde_json::Value {
+    seed_leftmost(root, seed_surface, snaps)
 }
 
 fn seed_leftmost(node: &SavedNode, seed_surface: usize, snaps: &std::path::Path) -> serde_json::Value {
@@ -378,7 +317,7 @@ fn seed_leftmost(node: &SavedNode, seed_surface: usize, snaps: &std::path::Path)
 /// walked once, before the seed pane exists, so its `cwd`/`history` can be
 /// given to the tab's *creation* instead of left for the layout step, which
 /// has no way to carry either onto a pane it did not create. See task 547 and
-/// `load_project_into_new_tab`'s doc comment on why this half of the fix
+/// `open_page_in_new_tab`'s doc comment on why this half of the fix
 /// belongs at creation time, not in `Shape`.
 fn leftmost_leaf(node: &SavedNode) -> &SavedLeaf {
     match node {
@@ -387,32 +326,33 @@ fn leftmost_leaf(node: &SavedNode) -> &SavedLeaf {
     }
 }
 
-/// Turn a loaded snapshot into the JSON `layout::parse` already understands.
-/// `None` for a project with no layout (`Snapshot::root` is `None`) -- there
-/// is nothing to build, which is a valid saved state (see `Project.zig`'s
-/// doc comment on `Snapshot::root`), not an error.
+/// Turn a saved page into the JSON `layout::parse` already understands.
 ///
 /// **Does not apply anything.** Building windows has to happen on the thread
 /// that owns them (see `layout.rs`'s module doc comment on the same point),
 /// so this makes no assumption about which thread called it -- the caller
 /// still queues `tabs::Op::ApplyLayout` with the shape this returns, the same
 /// path `poltergeist_layout` uses.
-pub fn shape_for_snapshot(snapshot: &Snapshot, snaps: &std::path::Path) -> Option<serde_json::Value> {
-    snapshot.first_tab().map(|r| project::to_layout_shape(r, snaps))
+///
+/// Opening a page goes through `shape_for_page_seeded`; this is the same
+/// shape without a seed, which is what the tests of it read.
+#[cfg(test)]
+pub fn shape_for_page(root: &SavedNode, snaps: &std::path::Path) -> serde_json::Value {
+    project::to_layout_shape(root, snaps)
 }
 
-/// Load a saved project into a brand-new tab in `frame`. This is the
-/// end-to-end "does the existing `poltergeist_layout` pipeline actually
-/// build the tree, with the right cwd and `history_restore` on the fresh
-/// panes" path -- called from a fresh top-level context (a keybind's
-/// dispatch, same as `layout::perform` is normally reached from
-/// `cb_action`), **never from inside `tabs::run_ops`**: `post_op` +
-/// `drain_for_layout` below queue and then synchronously wait for a *second*
-/// op, and doing that from inside the op loop that would have to run it is
-/// the same non-reentrant shape `snapshot_and_surfaces`'s deadlock was, one level
-/// up (queueing into your own queue and then blocking for it to drain, while
-/// the thread that drains it is this one and it is not draining because it
-/// is here instead).
+/// Open one saved page as a brand-new tab in `frame`, and say which tab it
+/// is. This is the end-to-end "does the existing `poltergeist_layout`
+/// pipeline actually build the tree, with the right cwd and
+/// `history_restore` on the fresh panes" path -- called from a fresh
+/// top-level context (a keybind's dispatch, same as `layout::perform` is
+/// normally reached from `cb_action`), **never from inside
+/// `tabs::run_ops`**: `post_op` + `drain_for_layout` below queue and then
+/// synchronously wait for a *second* op, and doing that from inside the op
+/// loop that would have to run it is the same non-reentrant shape
+/// `tab_tree`'s deadlock was, one level up (queueing into your own queue and
+/// then blocking for it to drain, while the thread that drains it is this
+/// one and it is not draining because it is here instead).
 ///
 /// **Task 547, fixed here rather than worked around.** The earlier version
 /// of this function created its seed pane with `create_tab_in(frame, app,
@@ -426,7 +366,7 @@ pub fn shape_for_snapshot(snapshot: &Snapshot, snaps: &std::path::Path) -> Optio
 /// already passed before this function ever sees it.
 ///
 /// **The fix is to stop creating the seed pane blank.** `leftmost_leaf`
-/// reads the same leaf `shape_for_snapshot_seeded` will later address as
+/// reads the same leaf `shape_for_page_seeded` will later address as
 /// `{"pane": "0x..."}`, and its `cwd`/`history` seed the tab's creation via
 /// `NewTab` -- the same fields `Op::ApplyLayout`'s own fresh leaves already
 /// use. The seed pane is still plugged into the shape by identity afterward
@@ -436,64 +376,75 @@ pub fn shape_for_snapshot(snapshot: &Snapshot, snaps: &std::path::Path) -> Optio
 /// still capped by whatever `history_filename` core minted for it -- if that
 /// pane's own shell never turned history capture on, there is nothing here
 /// to restore, same as any other leaf, and that is not this function's gap.
-pub fn load_project_into_new_tab(
+///
+/// **Every pane is a shell and nothing more**, the one a supervisor was in
+/// included: who was in a pane is written in the file and is not started
+/// from here (`dev-docs/poltergeist/projects.md`, 8.5).
+pub fn open_page_in_new_tab(
     frame: HWND,
     app: crate::ffi::App,
     hinst: windows::Win32::Foundation::HINSTANCE,
-    file: &std::path::Path,
-) -> Result<(), String> {
-    // **The file the listing found**, not a path recomputed from the name:
-    // see `project::path_for`. (This used to take a name and call `path_for`
-    // right below a comment saying it did not.)
-    // In words: a project from a later format is refused, and "TooNew" on
-    // its own does not tell a person that updating is what opens it.
-    let snapshot = project::read_file(file).map_err(|e| e.to_string())?;
-    let snaps = project::scrollback_dir(file);
-
+    root: &SavedNode,
+    snaps: &std::path::Path,
+) -> Result<TabId, String> {
     // The seed pane is created here rather than by the layout step, so its
     // scrollback has to be given here too -- the same reason as `cwd` and
     // `history` (task 547): `scrollback_restore` is read once, at
     // `surface_new`, and a pane the layout step plugs in by identity has
     // long since passed it.
-    let seed = snapshot.first_tab().map(leftmost_leaf);
+    let seed = leftmost_leaf(root);
     let seed_spec = tabs::NewTab {
-        cwd: seed.filter(|l| !l.cwd.is_empty()).map(|l| l.cwd.clone()),
-        history: seed.filter(|l| !l.history.is_empty()).map(|l| l.history.clone()),
-        scrollback: seed.and_then(|l| project::scrollback_path(&snaps, l)),
+        cwd: Some(seed.cwd.clone()).filter(|c| !c.is_empty()),
+        history: Some(seed.history.clone()).filter(|h| !h.is_empty()),
+        scrollback: project::scrollback_path(snaps, seed),
         ..Default::default()
     };
     if !tabs::create_tab_with(frame, app, hinst, seed_spec) {
         return Err("could not create a new tab".to_string());
     }
+    // `create_tab_with` appends and activates, so the tab just made is the
+    // last one -- picked up by identity here, before anything can reorder.
+    let Some(id) = tabs::last_tab_id(frame) else {
+        return Err("the new tab is not in its window".to_string());
+    };
 
     let seed_surface = tabs::active_surface(frame);
     if seed_surface.is_null() {
         return Err("the new tab has no active surface".to_string());
     }
 
-    let Some(shape_json) = shape_for_snapshot_seeded(&snapshot, seed_surface as usize, &snaps) else {
-        // An empty project: the fresh blank tab this function already made
-        // is the whole of what there was to build.
-        return Ok(());
-    };
+    let shape_json = shape_for_page_seeded(root, seed_surface as usize, snaps);
     let shape = crate::layout::parse_project(&shape_json)?;
     let at = tabs::pane_id_of_surface(seed_surface);
 
     let outcome: crate::layout::Outcome = std::sync::Arc::new(std::sync::Mutex::new(None));
-    tabs::post_op(frame, tabs::Op::ApplyLayout(shape, at, outcome.clone()), "load_project_into_new_tab");
+    tabs::post_op(frame, tabs::Op::ApplyLayout(shape, at, outcome.clone()), "open_page_in_new_tab");
     tabs::drain_for_layout(frame);
 
     match outcome.lock().ok().and_then(|mut o| o.take()) {
-        Some(Ok(_)) => Ok(()),
+        Some(Ok(_)) => Ok(id),
         Some(Err(e)) => Err(e),
         None => Err("the layout was queued and did not run; the window may have closed".to_string()),
     }
 }
 
+/// Open the project in `file`, whole: every window and every page of it
+/// that is not open already, each window where the file says it was or
+/// among the tabs of `frame` (`project_session::open`). A project that is
+/// open already is gone to.
+pub fn open_project(
+    frame: HWND,
+    app: crate::ffi::App,
+    hinst: windows::Win32::Foundation::HINSTANCE,
+    file: &std::path::Path,
+) -> Result<(), String> {
+    crate::project_session::open(frame, app, hinst, file, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::SavedLeaf;
+    use crate::project::{Snapshot, Tab, Window};
 
     fn sample_snapshot() -> Snapshot {
         Snapshot {
@@ -516,23 +467,22 @@ mod tests {
         }
     }
 
+    /// The one tab of `sample_snapshot`.
+    fn sample_root() -> SavedNode {
+        sample_snapshot().windows[0].tabs[0].root.clone()
+    }
+
     #[test]
-    fn shape_for_snapshot_carries_cwd_through_the_existing_layout_shape() {
-        let shape = shape_for_snapshot(&sample_snapshot(), std::path::Path::new("/p/x.scrollback")).unwrap();
+    fn shape_for_page_carries_cwd_through_the_existing_layout_shape() {
+        let shape = shape_for_page(&sample_root(), std::path::Path::new("/p/x.scrollback"));
         assert_eq!(shape["split"], "h");
         assert_eq!(shape["left"]["new"]["cwd"], "/a");
         assert_eq!(shape["right"]["new"]["cwd"], "/b");
     }
 
     #[test]
-    fn shape_for_snapshot_of_an_empty_project_is_none() {
-        let snapshot = Snapshot { name: "blank".to_string(), saved_at: 1, group: None, windows: Vec::new(), next_scrollback: None };
-        assert!(shape_for_snapshot(&snapshot, std::path::Path::new("/p/x.scrollback")).is_none());
-    }
-
-    #[test]
     fn leaf_count_counts_every_leaf_not_every_node() {
-        let root = sample_snapshot().first_tab().cloned().unwrap();
+        let root = sample_root();
         assert_eq!(leaf_count(&root), 2);
     }
 
@@ -635,7 +585,7 @@ mod tests {
         project::write(&dir, &snapshot, project::WriteKind::Save).expect("write should succeed");
 
         let back = project::read(&dir, "three panes three dirs").expect("read should succeed");
-        let root = back.first_tab().cloned().expect("root should round-trip");
+        let root = back.tabs().next().cloned().expect("root should round-trip");
         let SavedNode::Split { left, right, .. } = &root else { panic!("expected a split") };
         let SavedNode::Leaf(a) = left.as_ref() else { panic!("expected a leaf") };
         let SavedNode::Split { left: b, right: c, .. } = right.as_ref() else { panic!("expected a split") };
@@ -652,13 +602,13 @@ mod tests {
     /// **Judgment ③ from the windows-port discussion: the missing-history
     /// gap must be discoverable, not a silent empty string that reads the
     /// same as "this pane never ran a command".** This does not (and
-    /// cannot, on this machine) prove the log line in `write_tab` fires
+    /// cannot, on this machine) prove the log line in `name_leaves` fires
     /// -- it proves the *fact the log line reports* is independently
     /// computable from the saved data, so code (not just a person reading a
     /// scrolled-off log) can act on it later.
     #[test]
     fn missing_history_is_a_discoverable_fact_not_a_silent_null() {
-        let root = sample_snapshot().first_tab().cloned().unwrap();
+        let root = sample_root();
         // Neither leaf in `sample_snapshot` was given a history handle.
         assert_eq!(missing_history_count(&root), 2);
         assert_eq!(leaf_count(&root), 2);
@@ -680,8 +630,8 @@ mod tests {
     }
 
     #[test]
-    fn shape_for_snapshot_seeded_reuses_the_seed_pane_as_the_leftmost_leaf() {
-        let shape = shape_for_snapshot_seeded(&sample_snapshot(), 0xABCD, std::path::Path::new("/p/x.scrollback")).unwrap();
+    fn shape_for_page_seeded_reuses_the_seed_pane_as_the_leftmost_leaf() {
+        let shape = shape_for_page_seeded(&sample_root(), 0xABCD, std::path::Path::new("/p/x.scrollback"));
         assert_eq!(shape["left"]["pane"], "0xabcd");
         // The other leaf is still freshly built, cwd intact.
         assert_eq!(shape["right"]["new"]["cwd"], "/b");
@@ -696,7 +646,7 @@ mod tests {
     /// metadata belongs to a different pane entirely).
     #[test]
     fn leftmost_leaf_finds_the_same_leaf_seed_leftmost_addresses() {
-        let root = sample_snapshot().first_tab().cloned().unwrap();
+        let root = sample_root();
         let leaf = leftmost_leaf(&root);
         assert_eq!(leaf.cwd, "/a");
 

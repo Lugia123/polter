@@ -115,6 +115,7 @@ dependencies = [
  "polter-droppath",
  "polter-projectfile",
  "polter-projectname",
+ "polter-projects",
  "polter-settings-shell",
  "polter-shots",
  "polter-split-tree",
@@ -137,6 +138,13 @@ dependencies = [
 [[package]]
 name = "polter-projectname"
 version = "0.1.0"
+
+[[package]]
+name = "polter-projects"
+version = "0.1.0"
+dependencies = [
+ "polter-projectfile",
+]
 
 [[package]]
 name = "polter-settings-shell"
