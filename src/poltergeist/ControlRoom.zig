@@ -89,6 +89,13 @@
 //!                                 the agent CLI that role is started in:
 //!                                 the last supervisor's when the role is
 //!                                 set up for it, else the role's first
+//!         "cli_label": "Claude Code" | null,
+//!                                 what that CLI is called to a person: its
+//!                                 adapter's own `agent_cli.label`. Null
+//!                                 when there is no CLI, or no name for it
+//!                                 is known -- no adapter by that key, one
+//!                                 that gives none, or none read yet -- and
+//!                                 a host then writes the key
 //!         "cwd": "/Users/me/work",
 //!         "cwd_from": "last_supervisor",
 //!                                 where it is started unless the person
@@ -104,6 +111,7 @@
 //!                                 terminals are in) | home | none
 //!         "last": { "role": "polter-supervisor" | null,
 //!                   "cli": "claude-code" | null,
+//!                   "cli_label": "Claude Code" | null,
 //!                   "heard_ms": 1700000000000 | null },
 //!                                 what is written down of the supervisor
 //!                                 this group last had (`Chat.LastSupervisor`).
@@ -412,6 +420,10 @@ pub const Input = struct {
     /// adapters' own word. No default: a caller that forgot it would have
     /// every group say "not read yet" for ever.
     cli_resume: CliResume,
+    /// What each agent CLI is called to a person, by its adapter's own
+    /// word. Empty when none has been read; a key that is not here has no
+    /// name, and the snapshot says so. No default, for the reason above.
+    cli_names: []const CliName,
     /// The person's home directory, where a supervisor is started when
     /// nothing says better. Empty when it is not known.
     home: []const u8,
@@ -445,6 +457,24 @@ pub const CliResume = union(enum) {
     /// The keys of the CLIs whose adapter says it can.
     read: []const []const u8,
 };
+
+/// What an agent CLI is called to a person (`agent_cli.Adapter.label`).
+pub const CliName = struct {
+    key: []const u8,
+    label: []const u8,
+};
+
+/// The name `key` goes by; null when there is no key, nobody names it, or
+/// the name it was given is empty. **Never the key standing in for a
+/// name**: a host that is handed null writes the key and knows it did.
+pub fn cliLabelOf(names: []const CliName, key: ?[]const u8) ?[]const u8 {
+    const k = key orelse return null;
+    if (k.len == 0) return null;
+    for (names) |n| {
+        if (std.mem.eql(u8, n.key, k)) return if (n.label.len > 0) n.label else null;
+    }
+    return null;
+}
 
 /// The role a supervisor is started in for a group unless one is named:
 /// the one its last supervisor wore when that is still a role to start
@@ -715,6 +745,7 @@ pub const SupervisorOut = struct {
     failed: Chat.StartFailure,
     role: ?[]const u8,
     cli: ?[]const u8,
+    cli_label: ?[]const u8,
     cwd: []const u8,
     cwd_from: CwdFrom,
     last: LastOut,
@@ -729,6 +760,7 @@ pub const SupervisorOut = struct {
 pub const LastOut = struct {
     role: ?[]const u8,
     cli: ?[]const u8,
+    cli_label: ?[]const u8,
     heard_ms: ?u64,
 };
 
@@ -1353,11 +1385,13 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
         .failed = if (state == .failed) start.failed else .none,
         .role = if (role) |r| try arena.dupe(u8, r.key) else null,
         .cli = if (cli) |c| try arena.dupe(u8, c) else null,
+        .cli_label = if (cliLabelOf(in.cli_names, cli)) |l| try arena.dupe(u8, l) else null,
         .cwd = try arena.dupe(u8, cwd.dir),
         .cwd_from = cwd.from,
         .last = .{
             .role = if (last.role.len > 0) try arena.dupe(u8, last.role) else null,
             .cli = if (last.cli.len > 0) try arena.dupe(u8, last.cli) else null,
+            .cli_label = if (cliLabelOf(in.cli_names, last.cli)) |l| try arena.dupe(u8, l) else null,
             .heard_ms = last.heard_ms,
         },
         .@"resume" = go_on,
@@ -1794,6 +1828,7 @@ const World = struct {
     quota: []const quota.Reading = &.{},
     roles: []const StartRole = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{"claude-code"} }},
     cli_resume: CliResume = .{ .read = &.{"claude-code"} },
+    cli_names: []const CliName = &.{.{ .key = "claude-code", .label = "Claude Code" }},
     home: []const u8 = "/Users/me",
 
     fn init() World {
@@ -1881,6 +1916,7 @@ const World = struct {
             .quota = self.quota,
             .supervisor_roles = self.roles,
             .cli_resume = self.cli_resume,
+            .cli_names = self.cli_names,
             .home = self.home,
             .now_ms = now_ms,
             .wall_ms = self.wall_ms + now_ms,
@@ -3636,6 +3672,49 @@ test "ControlRoom resume: whether a start goes on with the last session, one rea
     // would not have mattered.
     const two = resumeOf(.{ .last = silent, .cli = "codex", .cli_resume = .unread, .held = true, .last_try_failed = true });
     try testing.expectEqual(ResumeOut.Why.no_session, two.why);
+}
+
+test "ControlRoom resume: a CLI is named by its adapter's word, and one nobody names is said to have no name" {
+    const names: []const CliName = &.{
+        .{ .key = "claude-code", .label = "Claude Code" },
+        .{ .key = "bare", .label = "" },
+    };
+    try testing.expectEqualStrings("Claude Code", cliLabelOf(names, "claude-code").?);
+    // No adapter by that key, one that gives no name, no key, none read:
+    // each is "no name", never the key standing in for one.
+    try testing.expectEqual(@as(?[]const u8, null), cliLabelOf(names, "codex"));
+    try testing.expectEqual(@as(?[]const u8, null), cliLabelOf(names, "bare"));
+    try testing.expectEqual(@as(?[]const u8, null), cliLabelOf(names, null));
+    try testing.expectEqual(@as(?[]const u8, null), cliLabelOf(names, ""));
+    try testing.expectEqual(@as(?[]const u8, null), cliLabelOf(&.{}, "claude-code"));
+
+    // In the snapshot: beside the CLI a start uses and beside the one the
+    // last supervisor was, each on its own.
+    var w = try fixtureWorld();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const named = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
+    const billing = (try rowNamed(named, "billing")).supervisor;
+    try testing.expectEqualStrings("claude-code", billing.cli.?);
+    try testing.expectEqualStrings("Claude Code", billing.cli_label.?);
+    try testing.expectEqualStrings("claude-code", billing.last.cli.?);
+    try testing.expectEqualStrings("Claude Code", billing.last.cli_label.?);
+    // A group with no CLI written down for its last supervisor has no
+    // name for it either.
+    const web = (try rowNamed(named, "web-app")).supervisor;
+    try testing.expectEqual(@as(?[]const u8, null), web.last.cli);
+    try testing.expectEqual(@as(?[]const u8, null), web.last.cli_label);
+    try testing.expectEqualStrings("Claude Code", web.cli_label.?);
+
+    // With no names read the keys are still there, and the names are not.
+    w.cli_names = &.{};
+    const unnamed = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
+    const b = (try rowNamed(unnamed, "billing")).supervisor;
+    try testing.expectEqualStrings("claude-code", b.cli.?);
+    try testing.expectEqual(@as(?[]const u8, null), b.cli_label);
+    try testing.expectEqualStrings("claude-code", b.last.cli.?);
+    try testing.expectEqual(@as(?[]const u8, null), b.last.cli_label);
 }
 
 test "ControlRoom resume: the role and the CLI a start uses are the last supervisor's while they are still there" {

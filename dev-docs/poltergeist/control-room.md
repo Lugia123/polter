@@ -914,7 +914,19 @@ Windows 是 `rules::menu_row_offered` 加 `rules::project_tab`）：
   （记过，它的 CLI 没报过会话）、`last_try_failed`（上次接着它启动没成）、`cli_differs`（要起的不是那个会话的
   CLI）、`clis_unread`（各家 CLI 的能力还没读到——会自己变，快照为它自己要了唤醒）、`cli_cannot_resume`
   （这家的适配器没声明接得上）、`session_in_use`（有开着的终端正在这个会话里），能接时是 `none`。两个宿主
-  的逻辑层都读了这几项并进了对照闸（`start_last` / `resume_why` 两种行）；**界面还没有画**，另开任务。要不要出角色选择看
+  的逻辑层都读了这几项并进了对照闸（`start_last` / `resume_why` 两种行）；**界面画了（任务 #1489）**：没有总管的群，右栏在目录那一行下面
+  写一句上次的总管（用的哪个 CLI，以及——**只在用户把这次的目录改到别处以后**——它原来在哪个目录：没改时上一行
+  「目录」写的就是它，再说一遍是同一个路径出现两次；目录还要 `cwd_from` 是 `last_supervisor` 才算它的。CLI 只在记过时
+  才说，写的是核心给的名字 `cli_label`，核心没有名字就写 key；`heard_ms` 为空就什么都不写）。
+  **`cli_label`**（`supervisor.cli_label` 与 `supervisor.last.cli_label`，任务 #1489）：那个 CLI 对人叫什么，取适配器
+  `plugin.json` 的 `agent_cli.label`（`agent_cli.Cache.names` 从上一次读到的清单里取）；没有这个 key 的适配器、适配器没给名字、
+  或者清单还没读到，都是 `null`——**核心不拿 key 冒充名字**，宿主拿到 `null` 自己写 key。`resume.can` 为真时出两选一「接着上次的会话 / 新会话」，
+  默认前者；为假时不出这组选择，改写一句为什么（`no_session` 等六个各一句，`none` / `no_record` 不说；
+  `clis_unread` 写的是「正在确认…」，因为它会自己变）。启动时发 `session`：选择在屏上时发选中的那个，不在屏上时
+  不发（核心自己会开新会话，宿主再说一遍就是第二次决定）。规则在 mac 的 `ControlRoomStartChoice`、Windows 的
+  `scene::last_supervisor_said` / `resume_note` / `build_start` 与 `act::session_sent`，对照闸逐句比
+  （`resume_note` / `session_option` / `session_sent` / `last_said` 四种行）。按钮仍叫「启动总管」；
+  「打开项目、各页都还原」要等群与项目绑上以后。图在设计目录的 `build-15/`、`build-16/`。要不要出角色选择看
   `choose_supervisor_role`，宿主不数 `supervisor_roles` 有几个。
 - **两句标题说什么：`header_waiting` / `header_quiet`（任务 #1469）。** 每项是 `count`（这句标题下面有几行）、
   `of`（`groups`：全是群，写「N 个群…」；`rows`：里面有不在任何群里的终端，写「N 个…」不带「群」字）、

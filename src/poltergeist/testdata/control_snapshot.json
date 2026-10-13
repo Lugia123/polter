@@ -38,11 +38,13 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": null,
           "cli": null,
+          "cli_label": null,
           "heard_ms": null
         },
         "resume": {
@@ -140,11 +142,13 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": null,
           "cli": null,
+          "cli_label": null,
           "heard_ms": null
         },
         "resume": {
@@ -225,11 +229,13 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": null,
           "cli": null,
+          "cli_label": null,
           "heard_ms": null
         },
         "resume": {
@@ -325,11 +331,13 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": "polter-supervisor",
           "cli": "claude-code",
+          "cli_label": "Claude Code",
           "heard_ms": 1699999340000
         },
         "resume": {
@@ -408,11 +416,13 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": null,
           "cli": null,
+          "cli_label": null,
           "heard_ms": null
         },
         "resume": {
@@ -491,11 +501,13 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": null,
           "cli": null,
+          "cli_label": null,
           "heard_ms": null
         },
         "resume": {
@@ -574,11 +586,13 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": null,
           "cli": null,
+          "cli_label": null,
           "heard_ms": null
         },
         "resume": {
@@ -674,11 +688,13 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": "polter-supervisor",
           "cli": "claude-code",
+          "cli_label": "Claude Code",
           "heard_ms": 1699913600000
         },
         "resume": {

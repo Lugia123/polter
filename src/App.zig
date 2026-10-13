@@ -789,6 +789,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         .quota = quota_read,
         .supervisor_roles = roles,
         .cli_resume = cli_resume,
+        .cli_names = self.controlCliNames(alloc) catch return,
         .home = self.controlHome(),
         .now_ms = now_ms,
         .wall_ms = @intCast(@max(0, wall_ms)),
@@ -1100,6 +1101,17 @@ fn controlStartRoles(self: *App, alloc: Allocator) Allocator.Error![]const polte
 /// a process, and a machine none of whose groups has a session written
 /// down has no use for the answer. Until it comes this is `unread`, which
 /// the snapshot says as its own reason and asks to be drawn again for.
+/// What each agent CLI is called to a person, for the snapshot: its
+/// adapter's own label, as last read. Empty until a read has finished
+/// (`controlCliResume` starts one); the snapshot then says a CLI has no
+/// name, and a host writes its key.
+fn controlCliNames(self: *App, alloc: Allocator) Allocator.Error![]const poltergeistpkg.ControlRoom.CliName {
+    const read = try self.poltergeist_agent_clis.names(global.io(), alloc);
+    const out = try alloc.alloc(poltergeistpkg.ControlRoom.CliName, read.len);
+    for (read, out) |n, *o| o.* = .{ .key = n.key, .label = n.label };
+    return out;
+}
+
 fn controlCliResume(self: *App, alloc: Allocator) Allocator.Error!poltergeistpkg.ControlRoom.CliResume {
     const io = global.io();
     if (try self.poltergeist_agent_clis.resumable(io, alloc)) |keys| return .{ .read = keys };

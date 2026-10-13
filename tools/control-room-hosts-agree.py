@@ -51,7 +51,14 @@ none, the role and the directory), what it says of the supervisor each
 group last had (the CLI a start uses, the role and the CLI the last one
 was, when it was last heard from) and whether a start goes on with its
 session and why not -- with every one of the eight reasons the core can
-give, as each side spells it -- the roles one can be started in and
+give, as each side spells it, the English sentence each side makes of each
+reason (none for the two that need none), what the two sessions a start
+can use are called, what a start sends for every state of that choice, and
+the sentence about the last supervisor for thirteen mixes of what is known
+of it and of where the person has picked to start -- its directory said
+only when that is elsewhere, its CLI by the core's name and by its key
+when the core has none (`ControlRoomStartChoice`; `scene::resume_note`, `last_supervisor_said`,
+`act::session_sent`) -- the roles one can be started in and
 whether there is a choice; when a group just made is selected; where a tab
 the core asked for goes, for every asker and every place the control room
 can be (forty cases); the English of what the right-hand side says of a
@@ -149,6 +156,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomLook.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",
+    "macos/Sources/Features/ControlRoom/ControlRoomStartChoice.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLending.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomQuota.swift",
     "macos/Sources/Features/ControlRoom/PaneFrame.swift",
@@ -357,13 +365,61 @@ for r in list.rows {
     if let l = r.start?.last {
         print("start_last id=\(r.id) cli=\(l.cli ?? "-") last_role=\(l.role ?? "-") "
             + "last_cli=\(l.lastCli ?? "-") heard_ms=\(l.heardMs.map { String($0) } ?? "-") "
-            + "resume=\(l.canResume) why=\(l.why.rawValue)")
+            + "resume=\(l.canResume) why=\(l.why.rawValue) dir_is_last=\(l.cwdIsTheLastSupervisors) "
+            + "cli_label=\(l.cliLabel.map(quote) ?? "-") last_cli_label=\(l.lastCliLabel.map(quote) ?? "-")")
     } else {
         print("start_last id=\(r.id) -")
     }
 }
 for why in ControlRoomList.SupervisorStart.ResumeWhy.allCases {
     print("resume_why \(why.rawValue)")
+}
+// What the right-hand side makes of that (`ControlRoomStartChoice`): the
+// sentence for each reason a start will not go on with the last session
+// (none for the two that need none), what the two sessions are called,
+// what a start sends for every state of the choice, and the sentence about
+// the last supervisor for each mix of what is known of it.
+for why in ControlRoomList.SupervisorStart.ResumeWhy.allCases {
+    print("resume_note \(why.rawValue) says=\(ControlRoomStartChoice.resumeNote(why).map(quote) ?? "-")")
+}
+for session in ControlRoomStartChoice.Session.allCases {
+    print("session_option \(session.rawValue) says=\(quote(ControlRoomStartChoice.optionText(session)))")
+}
+for offered in [true, false] {
+    for picked in [nil, ControlRoomStartChoice.Session.last, .new] as [ControlRoomStartChoice.Session?] {
+        let sent = ControlRoomStartChoice.sessionSent(offered: offered, picked: picked)
+        print("session_sent offered=\(offered) picked=\(picked?.rawValue ?? "-") sends=\(sent?.rawValue ?? "-")")
+    }
+}
+do {
+    typealias Start = ControlRoomList.SupervisorStart
+    // (name, heard, the directory, it is the last supervisor's, its CLI, the core's name for it,
+    //  the directory the person picked, can go on)
+    let cases: [(String, Int64?, String, Bool, String?, String?, String?, Bool)] = [
+        ("unpicked", 1, "/Users/me/work", true, "claude-code", "Claude Code", nil, true),
+        ("picked-the-same", 1, "/Users/me/work", true, "claude-code", "Claude Code", "/Users/me/work", true),
+        ("picked-elsewhere", 1, "/Users/me/work", true, "claude-code", "Claude Code", "/srv/other", true),
+        ("home-itself", 1, "/Users/me", true, "claude-code", "Claude Code", "/srv/other", true),
+        ("no-name-for-the-cli", 1, "/Users/me/work", true, "claude-code", nil, "/srv/other", false),
+        ("an-empty-name", 1, "/Users/me/work", true, "claude-code", "", nil, false),
+        ("directory-is-a-guess", 1, "/Users/me/work", false, "claude-code", "Claude Code", "/srv/other", true),
+        ("no-directory", 1, "", true, "codex", nil, "/srv/other", false),
+        ("cli-not-written", 1, "/Users/me/work", true, nil, nil, "/srv/other", false),
+        ("cli-not-written-unpicked", 1, "/Users/me/work", true, nil, nil, nil, false),
+        ("cli-empty", 1, "/Users/me/work", true, "", "Claude Code", "/srv/other", false),
+        ("never-recorded", nil, "/Users/me/work", true, "claude-code", "Claude Code", "/srv/other", false),
+    ]
+    for (name, heard, cwd, isLast, cli, label, picked, can) in cases {
+        let start = Start(state: .absent, canStart: true, failed: Start.Failure.none, role: nil, cwd: cwd,
+                          last: .init(cli: "claude-code", role: nil, lastCli: cli, heardMs: heard, canResume: can,
+                                      why: can ? .none : .noSession, cwdIsTheLastSupervisors: isLast,
+                                      cliLabel: "Claude Code", lastCliLabel: label))
+        let said = ControlRoomStartChoice.lastSupervisorText(start, startingIn: picked, home: "/Users/me")
+        print("last_said \(name) offers=\(ControlRoomStartChoice.offersSession(start)) says=\(said.map(quote) ?? "-")")
+    }
+    let old = Start(state: .absent, canStart: true, failed: Start.Failure.none, role: nil, cwd: "/Users/me/work")
+    print("last_said core-says-nothing offers=\(ControlRoomStartChoice.offersSession(old)) "
+        + "says=\(ControlRoomStartChoice.lastSupervisorText(old, home: "/Users/me").map(quote) ?? "-")")
 }
 // What the right-hand side says of a group with no supervisor, for every
 // reason the core gives for the last try having made none -- the two a
