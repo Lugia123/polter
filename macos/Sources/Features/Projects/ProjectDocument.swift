@@ -184,7 +184,12 @@ indirect enum ProjectNode: Equatable {
     /// `ProjectScrollback.directory`, or empty for a pane saved without one.
     /// Only ever a name `ProjectScrollback.filename(number:)` produces --
     /// the reader drops anything else.
-    case leaf(cwd: String, title: String, history: String, scrollback: String, agent: ProjectAgent)
+    ///
+    /// `bySupervisor` is whether the project's supervisor opened the pane.
+    /// It is the pane's and not the agent's: the agent leaves, the pane is
+    /// nobody's, and it is still one the supervisor may use again. False
+    /// is also what a pane nothing recorded this for reads as.
+    case leaf(cwd: String, title: String, history: String, scrollback: String, bySupervisor: Bool, agent: ProjectAgent)
     case split(direction: Direction, ratio: Double, left: ProjectNode, right: ProjectNode)
 
     /// Mirrors `Project.Direction` in `src/Project.zig`, which mirrors
@@ -207,7 +212,7 @@ indirect enum ProjectNode: Equatable {
 
     var scrollbackFilenames: [String] {
         switch self {
-        case .leaf(_, _, _, let scrollback, _): return scrollback.isEmpty ? [] : [scrollback]
+        case .leaf(_, _, _, let scrollback, _, _): return scrollback.isEmpty ? [] : [scrollback]
         case .split(_, _, let left, let right): return left.scrollbackFilenames + right.scrollbackFilenames
         }
     }
@@ -291,12 +296,13 @@ extension ProjectFile {
 enum ProjectFileWriting {
     static func node(_ node: ProjectNode, into out: inout String) throws {
         switch node {
-        case .leaf(let cwd, let title, let history, let scrollback, let agent):
+        case .leaf(let cwd, let title, let history, let scrollback, let bySupervisor, let agent):
             out += "{\"kind\":\"leaf\""
             field("cwd", cwd, into: &out)
             field("title", title, into: &out)
             field("history", history, into: &out)
             field("scrollback", scrollback, into: &out)
+            if bySupervisor { out += ",\"by_supervisor\":true" }
             out += ",\"agent\":{\"kind\":"
             switch agent {
             case .unknown: out += "\"unknown\""
@@ -438,7 +444,7 @@ extension ProjectFile {
 extension ProjectNode {
     var supervisorCount: Int {
         switch self {
-        case .leaf(_, _, _, _, let agent): return agent.isSupervisor ? 1 : 0
+        case .leaf(_, _, _, _, _, let agent): return agent.isSupervisor ? 1 : 0
         case .split(_, _, let left, let right): return left.supervisorCount + right.supervisorCount
         }
     }
@@ -446,12 +452,14 @@ extension ProjectNode {
     /// Left before right, which is the order `seen` is filled in.
     fileprivate func puttingRight(seen: inout Set<String>, demoting: Bool) -> ProjectNode {
         switch self {
-        case .leaf(let cwd, let title, let history, let scrollback, var agent):
+        case .leaf(let cwd, let title, let history, let scrollback, let bySupervisor, var agent):
             let kept = scrollback.isEmpty || seen.insert(scrollback).inserted
             if demoting, case .agent(let role, let cli, let session, _) = agent {
                 agent = .agent(role: role, cli: cli, session: session, supervisor: false)
             }
-            return .leaf(cwd: cwd, title: title, history: history, scrollback: kept ? scrollback : "", agent: agent)
+            return .leaf(
+                cwd: cwd, title: title, history: history, scrollback: kept ? scrollback : "",
+                bySupervisor: bySupervisor, agent: agent)
 
         case .split(let direction, let ratio, let left, let right):
             let first = left.puttingRight(seen: &seen, demoting: demoting)
@@ -576,6 +584,7 @@ enum ProjectFileReading {
 
         private enum CodingKeys: String, CodingKey {
             case kind, cwd, title, history, scrollback, agent, direction, ratio, left, right
+            case bySupervisor = "by_supervisor"
         }
 
         private enum AgentKeys: String, CodingKey { case kind, role, cli, session, supervisor }
@@ -597,6 +606,11 @@ enum ProjectFileReading {
                     title: try container.decodeIfPresent(String.self, forKey: .title) ?? "",
                     history: try container.decodeIfPresent(String.self, forKey: .history) ?? "",
                     scrollback: ProjectScrollback.isSnapshotFilename(scrollback) ? scrollback : "",
+                    // New with format 2 and strict as the agent is: absent
+                    // is false, anything but a boolean (`null` included)
+                    // is an error.
+                    bySupervisor: format >= 2 && container.contains(.bySupervisor)
+                        ? try container.decode(Bool.self, forKey: .bySupervisor) : false,
                     // A format 1 file never said, whatever keys it has.
                     agent: format >= 2 ? try Self.agent(container) : .unknown)
 
@@ -688,13 +702,14 @@ extension ProjectNode {
     /// part: `ProjectStore.save` passes a closure that looks up (or hands
     /// out) the pane's own snapshot name and may ask the core to write it.
     ///
-    /// `agent` is asked once per leaf too, and says who is working in that
-    /// pane. **Neither has a default**: a caller that left `agent` out would
-    /// be writing down an answer it never gave.
+    /// `who` is asked once per leaf too, and says who is working in that
+    /// pane and whether the project's supervisor opened it. **Neither has a
+    /// default**: a caller that left `who` out would be writing down an
+    /// answer it never gave.
     static func capturing(
         _ node: SplitTree<Ghostty.SurfaceView>.Node,
         scrollback: (Ghostty.SurfaceView) -> String,
-        agent: (Ghostty.SurfaceView) -> ProjectAgent
+        who: (Ghostty.SurfaceView) -> (agent: ProjectAgent, bySupervisor: Bool)
     ) -> ProjectNode {
         switch node {
         case .leaf(let view):
@@ -703,14 +718,15 @@ extension ProjectNode {
                 title: view.title,
                 history: view.historyFilename ?? "",
                 scrollback: scrollback(view),
-                agent: agent(view))
+                bySupervisor: who(view).bySupervisor,
+                agent: who(view).agent)
 
         case .split(let split):
             return .split(
                 direction: Direction(split.direction),
                 ratio: split.ratio,
-                left: capturing(split.left, scrollback: scrollback, agent: agent),
-                right: capturing(split.right, scrollback: scrollback, agent: agent))
+                left: capturing(split.left, scrollback: scrollback, who: who),
+                right: capturing(split.right, scrollback: scrollback, who: who))
         }
     }
 }
@@ -752,7 +768,7 @@ extension ProjectNode {
         // Who was in the pane is not acted on here: a restored pane is a
         // terminal in the right place, and starting an agent in it is a
         // decision for whoever opens the project.
-        case .leaf(let cwd, let title, let history, let scrollback, _):
+        case .leaf(let cwd, let title, let history, let scrollback, _, _):
             var config = Ghostty.SurfaceConfiguration()
             if !cwd.isEmpty { config.workingDirectory = cwd }
             // Passed through opaquely -- see `SurfaceConfiguration.historyRestore`.

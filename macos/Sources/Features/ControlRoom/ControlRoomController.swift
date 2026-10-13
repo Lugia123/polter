@@ -554,6 +554,24 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// from the control room goes to, and in front because the person
     /// asked for it.
     private func openProject(_ entry: ProjectStore.Entry) {
+        do {
+            try loadProjectWhereTabsGo(entry)
+        } catch {
+            guard let window else { return }
+            let alert = NSAlert()
+            alert.messageText = String(localized: "Project Error", comment: "项目功能出错提醒标题")
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: String(localized: "OK", comment: "项目功能出错提醒：确定按钮"))
+            alert.beginSheetModal(for: window)
+        }
+    }
+
+    /// Open `entry` where `ControlRoomRules.loadedProjectTab` says a
+    /// project opened from the control room goes. Throws instead of
+    /// reporting: a project the core asked for (`ProjectLinker`) has its
+    /// failure told to the core, not put on a sheet.
+    func loadProjectWhereTabsGo(_ entry: ProjectStore.Entry) throws {
         let beside = terminalTabBeside
         let frontmost = TerminalController.preferredParent?.window
         let plan = ControlRoomRules.loadedProjectTab(
@@ -584,17 +602,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             inFront = false
         }
 
-        do {
-            try TerminalController.load(entry, ghostty: ghostty, into: parent, beside: frontmost, inFront: inFront)
-        } catch {
-            guard let window else { return }
-            let alert = NSAlert()
-            alert.messageText = String(localized: "Project Error", comment: "项目功能出错提醒标题")
-            alert.informativeText = error.localizedDescription
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: String(localized: "OK", comment: "项目功能出错提醒：确定按钮"))
-            alert.beginSheetModal(for: window)
-        }
+        try TerminalController.load(entry, ghostty: ghostty, into: parent, beside: frontmost, inFront: inFront)
     }
 }
 

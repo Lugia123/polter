@@ -374,6 +374,10 @@ class AppDelegate: NSObject,
             self?.setDockBadge()
         }
 
+        // The core is told what projects there are, and what it asks to
+        // have done about them is done (`dev-docs/poltergeist/projects.md`).
+        ProjectLinker.start(ghostty)
+
         // System settings overrides
         UserDefaults.ghostty.register(defaults: [
             // Disable this so that repeated key events make it through to our terminal views.

@@ -33,7 +33,13 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
     /// (`ProjectNode.keepingWhatTheFileKnew`), so nothing known is lost by not
     /// knowing. Whatever comes to know replaces this one closure; an answer
     /// that is one (`.none`, or an agent) is written as it is.
-    static var agentOfPane: (Ghostty.SurfaceView) -> ProjectAgent = { _ in .unknown }
+    ///
+    /// Whether the project's supervisor opened the pane goes with it: the
+    /// core knows that for panes opened since the app started, and says so
+    /// in its snapshot (`terminals[].who.opened_by`, #1495); until that is
+    /// read here the answer is "cannot tell", which keeps what the file
+    /// says.
+    static var whoIsInPane: (Ghostty.SurfaceView) -> (agent: ProjectAgent, bySupervisor: Bool) = { _ in (.unknown, false) }
 
     private struct Member {
         weak var controller: TerminalController?
@@ -44,8 +50,9 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
     private let store: ProjectStore
     private var pages: ProjectPages
     /// The group the project is the project of. Read from the file and
-    /// written back; nothing here changes it.
-    private let group: String?
+    /// written back; changed only by `setGroup`, which the core's orders
+    /// call.
+    private(set) var group: String?
     private var members: [Member] = []
     private lazy var autosave = ProjectAutosaveDebouncer(scheduler: MainQueueScheduler()) { [weak self] in
         self?.autosaveNow()
@@ -215,12 +222,72 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
         pages = try store.save(
             name: name, group: group, pages: pages,
             tabs: .init(open: open, frames: frames, keepingFront: closing),
-            agent: Self.agentOfPane, keeping: keeping).pages
+            who: Self.whoIsInPane, keeping: keeping).pages
         // Also when nothing was written: what changed may be only a
         // window's title, which is what the settings window calls the
         // project's tab by.
         ProjectStore.postBindingDidChange(name)
     }
+
+    // MARK: The group's side
+
+    /// The project is `group`'s from now on (nil: no group's), and the file
+    /// says so.
+    func setGroup(_ group: String?) {
+        guard self.group != group else { return }
+        self.group = group
+        save(capturing: [], keeping: .onLayoutChange, what: "save of the group")
+    }
+
+    /// The pane `view` is the supervisor's, and no other pane of the
+    /// project is (`ProjectPages.makeSupervisor`).
+    func makeSupervisor(_ view: Ghostty.SurfaceView) {
+        // A pane is found by its snapshot name, which a save gives it.
+        if view.projectSnapshot == nil {
+            save(capturing: [], keeping: .onLayoutChange, what: "save before marking the supervisor")
+        }
+        let key = store.bindingKey(name: name)
+        guard let snapshot = view.projectSnapshot, snapshot.project == key else { return }
+        guard pages.supervisorPane != snapshot.filename else { return }
+        pages.makeSupervisor(pane: snapshot.filename)
+        save(capturing: [], keeping: .onLayoutChange, what: "save of the supervisor's pane")
+    }
+
+    /// What the core is told of this project while it is open: the
+    /// terminals on each open page in the pages' order, the terminal in the
+    /// supervisor's pane, and those in panes the supervisor opened. Nil
+    /// when no page is open.
+    ///
+    /// **`workers` is empty for now.** The core's reader of that key is
+    /// not in this tree yet (#1495); the names are worked out, and stating
+    /// them is the one line below.
+    var stated: (open: [[String]], supervisor: String?, workers: [String])? {
+        let order = pages.pageIDs
+        let live = liveMembers.sorted {
+            (order.firstIndex(of: $0.page) ?? .max) < (order.firstIndex(of: $1.page) ?? .max)
+        }
+        guard !live.isEmpty else { return nil }
+        let key = store.bindingKey(name: name)
+        func terminals(named names: [String]) -> [String] {
+            live.flatMap { member in
+                member.controller.surfaceTree.compactMap { view -> String? in
+                    guard let snapshot = view.projectSnapshot, snapshot.project == key,
+                          names.contains(snapshot.filename)
+                    else { return nil }
+                    return ControlRoomLender.terminal(of: view)
+                }
+            }
+        }
+        let workers = Self.statesWorkers ? terminals(named: pages.workerPanes) : []
+        return (
+            live.map { $0.controller.surfaceTree.compactMap(ControlRoomLender.terminal(of:)) },
+            pages.supervisorPane.flatMap { terminals(named: [$0]).first },
+            workers)
+    }
+
+    /// Whether `stated` names the panes the supervisor opened. Off until
+    /// the core reads them.
+    static let statesWorkers = false
 
     // MARK: Tabs saved as a project
 

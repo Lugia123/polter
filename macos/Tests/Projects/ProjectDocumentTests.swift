@@ -11,8 +11,8 @@ struct ProjectDocumentTests {
     /// the ratio to when a split is first created) would pass any test
     /// that only checks pane count or directories. This one doesn't.
     @Test func roundTripPreservesRatioNotJustShape() throws {
-        let left = ProjectNode.leaf(cwd: "/work/repo", title: "left pane", history: "", scrollback: "", agent: .unknown)
-        let right = ProjectNode.leaf(cwd: "/work/repo/tests", title: "right pane", history: "", scrollback: "", agent: .unknown)
+        let left = ProjectNode.leaf(cwd: "/work/repo", title: "left pane", history: "", scrollback: "", bySupervisor: false, agent: .unknown)
+        let right = ProjectNode.leaf(cwd: "/work/repo/tests", title: "right pane", history: "", scrollback: "", bySupervisor: false, agent: .unknown)
         let root = ProjectNode.split(direction: .horizontal, ratio: 0.37, left: left, right: right)
         let file = ProjectFile.oneTab(name: "two panes", savedAt: 1_757_000_000, root: root, nextScrollback: nil)
 
@@ -39,9 +39,9 @@ struct ProjectDocumentTests {
     }
 
     @Test func paneCountCountsAllLeavesInNestedSplits() {
-        let a: ProjectNode = .leaf(cwd: "/a", title: "", history: "", scrollback: "", agent: .unknown)
-        let b: ProjectNode = .leaf(cwd: "/b", title: "", history: "", scrollback: "", agent: .unknown)
-        let c: ProjectNode = .leaf(cwd: "/c", title: "", history: "", scrollback: "", agent: .unknown)
+        let a: ProjectNode = .leaf(cwd: "/a", title: "", history: "", scrollback: "", bySupervisor: false, agent: .unknown)
+        let b: ProjectNode = .leaf(cwd: "/b", title: "", history: "", scrollback: "", bySupervisor: false, agent: .unknown)
+        let c: ProjectNode = .leaf(cwd: "/c", title: "", history: "", scrollback: "", bySupervisor: false, agent: .unknown)
         let inner: ProjectNode = .split(direction: .vertical, ratio: 0.5, left: b, right: c)
         let root: ProjectNode = .split(direction: .horizontal, ratio: 0.3, left: a, right: inner)
         #expect(root.leafCount == 3)
@@ -89,8 +89,8 @@ struct ProjectDocumentTests {
         }
         #expect(direction == .horizontal)
         #expect(ratio == 0.62)
-        #expect(left == .leaf(cwd: "/work/repo", title: "✳ retry.py", history: "a1b2c3.history", scrollback: "", agent: .unknown))
-        #expect(right == .leaf(cwd: "/work/repo/tests", title: "✳ tests", history: "", scrollback: "", agent: .unknown))
+        #expect(left == .leaf(cwd: "/work/repo", title: "✳ retry.py", history: "a1b2c3.history", scrollback: "", bySupervisor: false, agent: .unknown))
+        #expect(right == .leaf(cwd: "/work/repo/tests", title: "✳ tests", history: "", scrollback: "", bySupervisor: false, agent: .unknown))
     }
 
     /// `saved_at` must be a JSON integer: `Project.zig`'s reader rejects a
@@ -162,8 +162,8 @@ struct ProjectDocumentTests {
         #expect(file.firstTab == .split(
             direction: .vertical,
             ratio: 0.25,
-            left: .leaf(cwd: "/a", title: "", history: "h.history", scrollback: "", agent: .unknown),
-            right: .leaf(cwd: "/b", title: "", history: "", scrollback: "", agent: .unknown)))
+            left: .leaf(cwd: "/a", title: "", history: "h.history", scrollback: "", bySupervisor: false, agent: .unknown),
+            right: .leaf(cwd: "/b", title: "", history: "", scrollback: "", bySupervisor: false, agent: .unknown)))
     }
 
     // MARK: - Scrollback
@@ -172,7 +172,7 @@ struct ProjectDocumentTests {
     /// a writer that forgot to emit `scrollback` would still decode every
     /// fixture fine and quietly save projects that restore empty screens.
     @Test func scrollbackIsWrittenAndReadBack() throws {
-        let leaf = ProjectNode.leaf(cwd: "/a", title: "", history: "", scrollback: "3.snap", agent: .unknown)
+        let leaf = ProjectNode.leaf(cwd: "/a", title: "", history: "", scrollback: "3.snap", bySupervisor: false, agent: .unknown)
         let file = ProjectFile.oneTab(name: "x", savedAt: 0, root: leaf, nextScrollback: nil)
         let data = try file.encoded()
 
@@ -185,7 +185,7 @@ struct ProjectDocumentTests {
     /// same as `cwd`/`title`/`history` -- so a project saved with the
     /// feature off is byte-for-byte what it was before the field existed.
     @Test func emptyScrollbackIsOmitted() throws {
-        let file = ProjectFile.oneTab(name: "x", savedAt: 0, root: .leaf(cwd: "/a", title: "", history: "", scrollback: "", agent: .unknown), nextScrollback: nil)
+        let file = ProjectFile.oneTab(name: "x", savedAt: 0, root: .leaf(cwd: "/a", title: "", history: "", scrollback: "", bySupervisor: false, agent: .unknown), nextScrollback: nil)
         let text = try #require(String(bytes: try file.encoded(), encoding: .utf8))
         #expect(!text.contains("scrollback"))
     }
@@ -200,7 +200,7 @@ struct ProjectDocumentTests {
             {"name": "x", "saved_at": 0, "root": {"kind": "leaf", "cwd": "/a", "scrollback": \(String(reflecting: hostile))}}
             """
             let file = try ProjectFile.decode(from: Data(json.utf8))
-            #expect(file.firstTab == .leaf(cwd: "/a", title: "", history: "", scrollback: "", agent: .unknown), "\(hostile)")
+            #expect(file.firstTab == .leaf(cwd: "/a", title: "", history: "", scrollback: "", bySupervisor: false, agent: .unknown), "\(hostile)")
         }
     }
 

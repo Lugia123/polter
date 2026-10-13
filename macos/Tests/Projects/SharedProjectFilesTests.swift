@@ -136,7 +136,7 @@ struct SharedProjectFilesTests {
         }
         for bad in [Double.nan, .infinity, -.infinity] {
             #expect(throws: ProjectFileError.notFinite) { try Writing.number(bad) }
-            let leaf = ProjectNode.leaf(cwd: "", title: "", history: "", scrollback: "", agent: .none)
+            let leaf = ProjectNode.leaf(cwd: "", title: "", history: "", scrollback: "", bySupervisor: false, agent: .none)
             let root = ProjectNode.split(direction: .horizontal, ratio: bad, left: leaf, right: leaf)
             #expect(throws: ProjectFileError.notFinite) {
                 try ProjectFile.oneTab(name: "n", savedAt: 1, root: root, nextScrollback: nil).encoded()
@@ -151,7 +151,7 @@ struct SharedProjectFilesTests {
         """#
         let file = try ProjectFile.decode(from: Data(json.utf8))
         // Not `.none`, and not the agent the stray key describes.
-        let leaf = ProjectNode.leaf(cwd: "/a", title: "", history: "", scrollback: "1.snap", agent: .unknown)
+        let leaf = ProjectNode.leaf(cwd: "/a", title: "", history: "", scrollback: "1.snap", bySupervisor: false, agent: .unknown)
         #expect(file == ProjectFile(
             name: "old", savedAt: 7, group: nil,
             windows: [ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf)])],
@@ -204,6 +204,8 @@ struct SharedProjectFilesTests {
             ("an agent that does not say whether it supervises", #"[{"front":0,"tabs":[{"root":{"kind":"leaf","agent":{"kind":"agent"}}}]}]"#),
             ("an agent whose role is not text", #"[{"front":0,"tabs":[{"root":{"kind":"leaf","agent":{"kind":"agent","role":1,"supervisor":false}}}]}]"#),
             ("an agent whose role is null", #"[{"front":0,"tabs":[{"root":{"kind":"leaf","agent":{"kind":"agent","role":null,"supervisor":false}}}]}]"#),
+            ("a by_supervisor that is not yes or no", #"[{"front":0,"tabs":[{"root":{"kind":"leaf","by_supervisor":1,"agent":{"kind":"none"}}}]}]"#),
+            ("a by_supervisor that is null", #"[{"front":0,"tabs":[{"root":{"kind":"leaf","by_supervisor":null,"agent":{"kind":"none"}}}]}]"#),
             ("a frame from no corner", #"[{"frame":{"x":0,"y":0,"width":1,"height":1},"front":0,"tabs":[{"root":\#(leaf)}]}]"#),
             ("a frame missing a side", #"[{"frame":{"origin":"top_left","x":0,"y":0,"width":1},"front":0,"tabs":[{"root":\#(leaf)}]}]"#),
             ("windows that are not a list", "{}"),
@@ -219,13 +221,13 @@ struct SharedProjectFilesTests {
         }
         // The control: the same shape, whole, reads.
         let whole = Data("{\"format\":2,\"name\":\"n\",\"saved_at\":1,\"windows\":[{\"front\":0,\"tabs\":[{\"root\":\(leaf)}]}]}".utf8)
-        #expect(try ProjectFile.decode(from: whole).firstTab == .leaf(cwd: "", title: "", history: "", scrollback: "", agent: .none))
+        #expect(try ProjectFile.decode(from: whole).firstTab == .leaf(cwd: "", title: "", history: "", scrollback: "", bySupervisor: false, agent: .none))
     }
 
     // MARK: The whole project
 
     private func leaf(_ cwd: String, _ scrollback: String = "") -> ProjectNode {
-        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, agent: .none)
+        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, bySupervisor: false, agent: .none)
     }
 
     private var threeTabs: ProjectFile {

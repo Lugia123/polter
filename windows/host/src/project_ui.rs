@@ -90,6 +90,7 @@ fn snapshot_and_surfaces(frame: HWND, id: TabId, name: String, saved_at: i64) ->
                             // Named by `write_tab`, from the pane's own
                             // slot (`capture_scrollback`); empty until then.
                             scrollback: String::new(),
+                            by_supervisor: false,
                             // **Not known, which is not "nobody".** This
                             // host does not yet record which agent, if any,
                             // is in a pane; saying `None` here would write

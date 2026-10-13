@@ -10,7 +10,7 @@ struct ProjectPagesTests {
     private typealias Live = ProjectPages.Live
 
     private func leaf(_ cwd: String, _ scrollback: String = "", _ agent: ProjectAgent = .none) -> ProjectNode {
-        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, agent: agent)
+        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, bySupervisor: false, agent: agent)
     }
 
     private func frame(_ x: Double) -> ProjectFrame {
@@ -38,7 +38,7 @@ struct ProjectPagesTests {
     private func cwds(_ pages: ProjectPages) -> [[String]] {
         pages.fileWindows.map { window in
             window.tabs.map { tab -> String in
-                if case .leaf(let cwd, _, _, _, _) = tab.root { return cwd }
+                if case .leaf(let cwd, _, _, _, _, _) = tab.root { return cwd }
                 return "split"
             }
         }
@@ -253,8 +253,8 @@ struct ProjectPagesTests {
             nextScrollback: 2))
         let known = pages.known
         #expect(known == [
-            "0.snap": ProjectPages.Known(cwd: "/a", agent: worker),
-            "1.snap": ProjectPages.Known(cwd: "/b", agent: .none),
+            "0.snap": ProjectPages.Known(cwd: "/a", agent: worker, bySupervisor: false),
+            "1.snap": ProjectPages.Known(cwd: "/b", agent: .none, bySupervisor: false),
         ])
 
         // The save cannot tell about either pane.
@@ -286,6 +286,21 @@ struct ProjectPagesTests {
             nextScrollback: 2)
         let known = ProjectPages(file: file).known
         #expect(leaf("/b", "1.snap", .unknown).keepingWhatTheFileKnew(known) == leaf("/b", "1.snap", worker))
+    }
+
+    /// A pane the supervisor opened stays one: a save that cannot tell --
+    /// every save after a restart -- does not make it a pane the supervisor
+    /// did not open. And a save that can tell says so.
+    @Test func aPaneTheSupervisorOpenedStaysOne() {
+        let opened = ProjectNode.leaf(cwd: "/w", title: "", history: "", scrollback: "0.snap", bySupervisor: true, agent: .none)
+        let known = ProjectPages(file: .oneTab(name: "p", savedAt: 1, root: opened, nextScrollback: 1)).known
+        #expect(known["0.snap"]?.bySupervisor == true)
+        #expect(leaf("/w", "0.snap", .none).keepingWhatTheFileKnew(known) == opened)
+        // A pane the file did not mark, which the save says the supervisor
+        // opened: it is marked.
+        let plain = ProjectPages(file: .oneTab(name: "p", savedAt: 1, root: leaf("/w", "0.snap", .none), nextScrollback: 1)).known
+        #expect(opened.keepingWhatTheFileKnew(plain) == opened)
+        #expect(leaf("/w", "0.snap", .none).keepingWhatTheFileKnew(plain) == leaf("/w", "0.snap", .none))
     }
 
     /// **A project just opened does not lose its directories.** A pane has

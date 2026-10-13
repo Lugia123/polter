@@ -84,6 +84,7 @@ test {
     _ = agent_event;
     _ = Chat;
     _ = ControlAct;
+    _ = @import("HostProjectActs.zig");
     _ = ControlRoom;
     _ = ControlWake;
     _ = ShellSteps;

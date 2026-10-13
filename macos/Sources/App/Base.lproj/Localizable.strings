@@ -817,3 +817,8 @@
 "Closing a page" = "Closing a page";
 "Not open." = "Not open.";
 "Open in the tab \"%@\"; saved automatically as its pages change, last at %@." = "Open in the tab \"%@\"; saved automatically as its pages change, last at %@.";
+
+/* 群与项目（#1491 接核心）：总控台右栏、移出被拒 */
+"Every page of its project comes back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide." = "Every page of its project comes back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide.";
+"All %@ page(s) of its project come back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide." = "All %@ page(s) of its project come back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide.";
+"The group's supervisor is on this page, so it stays in the group's project." = "The group's supervisor is on this page, so it stays in the group's project.";

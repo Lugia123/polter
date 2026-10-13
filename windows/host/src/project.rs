@@ -503,6 +503,7 @@ pub fn write_fixture(path: &str) -> bool {
         title: "a \"quoted\" title, a backslash \\, and 中文".to_string(),
         history: "a1b2c3.history".to_string(),
         scrollback: "1.snap".to_string(),
+        by_supervisor: false,
         agent: Agent::None,
     });
     let left_leaf = SavedNode::Leaf(SavedLeaf::plain("", Agent::Unknown));
@@ -708,6 +709,7 @@ mod tests {
             title: "retry.py".to_string(),
             history: "a1b2c3.history".to_string(),
             scrollback: "0.snap".to_string(),
+            by_supervisor: false,
             agent: Agent::None,
         });
         let right = SavedNode::Leaf(SavedLeaf::plain("/work/repo/tests", Agent::None));

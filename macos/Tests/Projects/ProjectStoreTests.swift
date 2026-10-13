@@ -146,7 +146,7 @@ struct ProjectStoreTests {
     @MainActor
     @Test func deleteAlsoRemovesThePreviousVersion() throws {
         let (store, dir) = makeStoreWithDirectory()
-        try store.write(ProjectFile.oneTab(name: "notes", savedAt: 1, root: .leaf(cwd: "/a", title: "", history: "", scrollback: "", agent: .unknown), nextScrollback: nil), keeping: .onLayoutChange)
+        try store.write(ProjectFile.oneTab(name: "notes", savedAt: 1, root: .leaf(cwd: "/a", title: "", history: "", scrollback: "", bySupervisor: false, agent: .unknown), nextScrollback: nil), keeping: .onLayoutChange)
         try store.write(ProjectFile.oneTab(name: "notes", savedAt: 2, root: nil, nextScrollback: nil), keeping: .onLayoutChange)
         #expect(store.entry(name: "notes")?.hasPrevious == true)
 
@@ -198,7 +198,7 @@ struct ProjectStoreTests {
     @Test func aProjectUnderAnOlderFilenameIsStillFoundAndMovedOnSave() throws {
         let (store, dir) = makeStoreWithDirectory()
         let legacy = dir.appendingPathComponent("a:b.json")
-        let root = ProjectNode.leaf(cwd: "/a", title: "", history: "", scrollback: "", agent: .unknown)
+        let root = ProjectNode.leaf(cwd: "/a", title: "", history: "", scrollback: "", bySupervisor: false, agent: .unknown)
         try ProjectFile.oneTab(name: "a:b", savedAt: 1, root: root, nextScrollback: 3).encoded().write(to: legacy)
         try Data("previous".utf8).write(to: ProjectFileWriter.previousURL(for: legacy))
 
