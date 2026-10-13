@@ -18,6 +18,7 @@ use polter_control_room::quota;
 use polter_control_room::look::selection;
 use polter_control_room::slide;
 use polter_control_room::snapshot::{self, Shown};
+use polter_control_room::stackstrip;
 
 /// What steps want, for the fitting rule: one sentence short and long, a
 /// command at, under and over each of the two ceilings.
@@ -308,6 +309,25 @@ fn main() {
     }
     for why in polter_control_room::snapshot::ResumeWhy::ALL {
         println!("resume_why {}", why.name());
+    }
+    // Who the core says is working in every terminal: which of its three
+    // answers, the three words a project's pane keeps, and who opened it.
+    for t in &snap.terminals {
+        match &t.who {
+            Some(w) => println!(
+                "who id={} is={} role={} cli={} session={} opened_by={}",
+                t.id,
+                w.is.name(),
+                w.role.as_deref().map(quote).unwrap_or_else(|| "-".into()),
+                w.cli.as_deref().map(quote).unwrap_or_else(|| "-".into()),
+                w.session.as_deref().map(quote).unwrap_or_else(|| "-".into()),
+                w.opened_by.as_deref().unwrap_or("-")
+            ),
+            None => println!("who id={} -", t.id),
+        }
+    }
+    for is in polter_control_room::snapshot::WhoIs::ALL {
+        println!("who_is {}", is.name());
     }
     // What the right-hand side makes of that: the sentence for each reason
     // a start will not go on with the last session (none for the two that
@@ -630,6 +650,38 @@ fn main() {
             println!("quota height={:.3} line_y={}", ql.height, ql.line_y.map_or("-".to_string(), |y| format!("{y:.3}")));
         }
         None => println!("quota none"),
+    }
+
+    for (n, (wants, current, width, status)) in stackstrip::CASES.iter().enumerate() {
+        let sl = stackstrip::layout(wants, *current, *width, *status);
+        let tabs: Vec<String> = sl
+            .tabs
+            .iter()
+            .map(|t| format!("{}@{:.3}+{:.3}{}{}{}", t.member, t.x, t.width, if t.current { "*" } else { "" }, if t.separator_before { "|" } else { "" }, if t.squeezed { "~" } else { "" }))
+            .collect();
+        let hidden: Vec<String> = sl.hidden.iter().map(|i| i.to_string()).collect();
+        println!(
+            "strip {n} tabs=[{}] hidden=[{}] more={} add={:.3} status={}",
+            tabs.join(" "),
+            hidden.join(","),
+            sl.more_x.map_or("-".to_string(), |x| format!("{x:.3}")),
+            sl.add_x,
+            sl.status.map_or("-".to_string(), |(a, b)| format!("{a:.3}..{b:.3}")),
+        );
+    }
+    // The other candidate for the least width, and what `more` carries for
+    // three orders the core might hand in.
+    for (n, (wants, current, width, status)) in stackstrip::CASES.iter().enumerate() {
+        let sl = stackstrip::layout_with(wants, *current, *width, *status, 68.0);
+        let widths: Vec<String> = sl.tabs.iter().map(|t| format!("{}:{:.3}", t.member, t.width)).collect();
+        let carried: Vec<String> = [&[6usize, 4, 0, 2][..], &[0, 2, 4, 9, 11], &[]]
+            .iter()
+            .map(|urgent| stackstrip::behind_more(&stackstrip::layout(wants, *current, *width, *status), urgent).map_or("-".to_string(), |i| i.to_string()))
+            .collect();
+        println!("strip {n} at68=[{}] hidden68={} carries={}", widths.join(" "), sl.hidden.len(), carried.join("/"));
+    }
+    for name in ["", "api", "frontend", "任务", "billing-worker"] {
+        println!("strip nominal {} plain={:.3} glyph={:.3}", quote(name), stackstrip::nominal_width(name, false), stackstrip::nominal_width(name, true));
     }
 
     let lay = ListLayout::new(&l, height);

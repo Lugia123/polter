@@ -78,7 +78,7 @@ private struct PaneFrameScope: ViewModifier {
 
     func body(content: Content) -> some View {
         // What is showing: the zoomed pane when there is one.
-        let showing = (tree.zoomed ?? tree.root)?.leaves() ?? []
+        let showing = (tree.zoomed ?? tree.root)?.shownLeaves() ?? []
         let place = PaneFrame.Place(
             enabled: ghostty.config.poltergeistPaneFrames,
             quickTerminal: showing.first.map { BaseTerminalController.controller(owning: $0) is QuickTerminalController } ?? false,

@@ -132,7 +132,8 @@ pub struct Snapshot {
     pub saved_at: i64,
     /// The group this project is the project of. A project has at most one.
     pub group: Option<String>,
-    /// The windows, the first being the one in front. Empty for a project
+    /// The windows, in an order that stays the same from one save to the
+    /// next -- not the order they are stacked in on screen. Empty for a project
     /// with nothing in it.
     pub windows: Vec<Window>,
     /// The next scrollback snapshot number this project will hand out. **One

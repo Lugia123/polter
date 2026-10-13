@@ -51,7 +51,10 @@ none, the role and the directory), what it says of the supervisor each
 group last had (the CLI a start uses, the role and the CLI the last one
 was, when it was last heard from) and whether a start goes on with its
 session and why not -- with every one of the eight reasons the core can
-give, as each side spells it, the English sentence each side makes of each
+give, as each side spells it; who the core says is working in every
+terminal (which of its three answers, each as each side spells it; the role,
+the CLI and the session as written, with "not said" told from empty; and the
+terminal that opened it); the English sentence each side makes of each
 reason (none for the two that need none), what the two sessions a start
 can use are called, what a start sends for every state of that choice, and
 the sentence about the last supervisor for thirteen mixes of what is known
@@ -98,7 +101,13 @@ nominal count on six strings; and
 where the arrow keys take the selection from every row; and the allowance
 block as each side read it -- every account opened out and every one in the
 line, word for word and number for number, each of their windows -- and how
-high each side makes the block and where its parts start.
+high each side makes the block and where its parts start; and the strip of
+tabs over a pane that holds a stack -- on eighteen made-up stacks, where each
+tab is and how wide, which is in front, where a hairline stands, which are
+cut short, which go behind `more`, where `more`, the plus and the status are,
+the same stacks with the other candidate for the least width, and which
+member's glyph `more` carries for three orders the core might hand in -- and
+a tab's nominal width for five names.
 
 **NOT COMPARED, and why.**
 
@@ -161,6 +170,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomStartChoice.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLending.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomQuota.swift",
+    "macos/Sources/Features/ControlRoom/PaneStackStrip.swift",
     "macos/Sources/Features/ControlRoom/PaneFrame.swift",
     "macos/Sources/Features/Terminal/TabAccessory.swift",
 ]
@@ -375,6 +385,20 @@ for r in list.rows {
 }
 for why in ControlRoomList.SupervisorStart.ResumeWhy.allCases {
     print("resume_why \(why.rawValue)")
+}
+// Who the core says is working in every terminal: which of its three
+// answers, the three words a project's pane keeps, and who opened it.
+for t in snapshot.terminals ?? [] {
+    if let w = t.who {
+        print("who id=\(t.id) is=\(w.is.rawValue) role=\(w.role.map(quote) ?? "-") "
+            + "cli=\(w.cli.map(quote) ?? "-") session=\(w.session.map(quote) ?? "-") "
+            + "opened_by=\(w.opened_by ?? "-")")
+    } else {
+        print("who id=\(t.id) -")
+    }
+}
+for one in ControlRoomSnapshot.Terminal.Who.Is.allCases {
+    print("who_is \(one.rawValue)")
 }
 // What the right-hand side makes of that (`ControlRoomStartChoice`): the
 // sentence for each reason a start will not go on with the last session
@@ -612,6 +636,47 @@ if let q = list.quota {
     print("quota height=\(f(ql.height)) line_y=\(ql.lineY.map { f($0) } ?? "-")")
 } else {
     print("quota none")
+}
+
+let stripCases: [([CGFloat], Int, CGFloat, CGFloat)] = [
+    ([], 0, 400, 0),
+    ([60], 0, 300, 0),
+    ([100, 60, 60], 1, 400, 50),
+    ([60, 60, 60, 60], 0, 600, 0),
+    ([60, 60, 60, 60], 2, 600, 0),
+    ([60, 60, 60, 60], 3, 600, 0),
+    ([200, 60, 200, 60], 1, 460, 0),
+    ([200, 60, 200, 60], 0, 460, 0),
+    ([200, 72, 200, 200], 1, 336, 0),
+    ([200, 72, 200, 200], 1, 335, 0),
+    ([100, 100, 100, 100, 100, 100, 100, 100], 6, 400, 0),
+    ([100, 100, 100, 100, 100, 100, 100, 100], 1, 400, 0),
+    ([120, 80], 0, 200, 60),
+    ([120, 80], 0, 330, 60),
+    ([60, 60], 7, 400, 0),
+    ([94, 70, 48, 126, 56, 150, 78], 3, 520, 70),
+    ([94, 70, 48, 126, 56, 150, 78, 94, 56, 142, 78, 56], 9, 520, 70),
+    ([300], 0, 100, 40),
+]
+for (n, c) in stripCases.enumerated() {
+    let sl = PaneStackStripLayout(wants: c.0, current: c.1, width: c.2, status: c.3)
+    let tabs = sl.tabs.map { t in
+        "\(t.member)@\(f(t.x))+\(f(t.width))\(t.current ? "*" : "")\(t.separatorBefore ? "|" : "")\(t.squeezed ? "~" : "")"
+    }
+    let status = sl.status.map { "\(f($0.lowerBound))..\(f($0.upperBound))" } ?? "-"
+    print("strip \(n) tabs=[\(tabs.joined(separator: " "))] hidden=[\(sl.hidden.map(String.init).joined(separator: ","))] "
+        + "more=\(sl.moreX.map { f($0) } ?? "-") add=\(f(sl.addX)) status=\(status)")
+}
+for (n, c) in stripCases.enumerated() {
+    let sl = PaneStackStripLayout(wants: c.0, current: c.1, width: c.2, status: c.3, minWidth: 68)
+    let widths = sl.tabs.map { "\($0.member):\(f($0.width))" }
+    let table = PaneStackStripLayout(wants: c.0, current: c.1, width: c.2, status: c.3)
+    let carried = [[6, 4, 0, 2], [0, 2, 4, 9, 11], []].map { table.behindMore(urgent: $0).map(String.init) ?? "-" }
+    print("strip \(n) at68=[\(widths.joined(separator: " "))] hidden68=\(sl.hidden.count) carries=\(carried.joined(separator: "/"))")
+}
+for name in ["", "api", "frontend", "任务", "billing-worker"] {
+    print("strip nominal \(quote(name)) plain=\(f(PaneStackStripLayout.nominalWidth(name: name, glyph: false))) "
+        + "glyph=\(f(PaneStackStripLayout.nominalWidth(name: name, glyph: true)))")
 }
 
 let lay = ControlRoomListLayout(list: list, height: CGFloat(height))

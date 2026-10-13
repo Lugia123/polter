@@ -585,7 +585,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         }
 
         do {
-            try TerminalController.load(entry, ghostty: ghostty, beside: parent, inFront: inFront)
+            try TerminalController.load(entry, ghostty: ghostty, into: parent, beside: frontmost, inFront: inFront)
         } catch {
             guard let window else { return }
             let alert = NSAlert()

@@ -457,6 +457,52 @@ pub struct Terminal {
     /// None in a snapshot from before the core said it; the title then
     /// says the terminal's status, as it did before.
     pub bar: Option<Bar>,
+    /// Who is working in it. None in a snapshot from before the core said
+    /// it. Read and carried; nothing here draws it.
+    pub who: Option<Who>,
+}
+
+/// Which of the core's three answers to "who is in this terminal"
+/// (`ControlRoom.zig`, `WhoOut`). `Unknown` is not `None`: the core could
+/// not tell, which is not nobody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhoIs {
+    Unknown,
+    None,
+    Agent,
+}
+
+impl WhoIs {
+    pub fn name(self) -> &'static str {
+        match self {
+            WhoIs::Unknown => "unknown",
+            WhoIs::None => "none",
+            WhoIs::Agent => "agent",
+        }
+    }
+
+    /// Every answer the core gives. A word that is none of these is an
+    /// error, like a glyph this build does not know.
+    pub const ALL: [WhoIs; 3] = [WhoIs::Unknown, WhoIs::None, WhoIs::Agent];
+
+    fn parse(s: &str) -> Option<WhoIs> {
+        Self::ALL.into_iter().find(|v| v.name() == s)
+    }
+}
+
+/// Who is working in a terminal: what a host writes into a project's pane.
+/// `role`, `cli` and `session` are the core's words, kept as it wrote them
+/// -- for an agent an empty string is that part not known, and for the
+/// other two all three are `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Who {
+    /// Which of the three: the snapshot's `who.is`.
+    pub is: WhoIs,
+    pub role: Option<String>,
+    pub cli: Option<String>,
+    pub session: Option<String>,
+    /// The terminal whose agent opened this one, in this run.
+    pub opened_by: Option<String>,
 }
 
 /// One window tab and the one glyph it carries.
@@ -806,6 +852,20 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
                 text: text(t, &path, "text")?,
                 pane,
                 bar,
+                who: match t.get("who") {
+                    None => None,
+                    Some(w) => {
+                        let at = format!("{path}.who");
+                        let is = text(w, &at, "is")?;
+                        Some(Who {
+                            is: WhoIs::parse(&is).ok_or(DecodeError::UnknownValue(format!("{at}.is={is}")))?,
+                            role: opt_text(w, &at, "role")?,
+                            cli: opt_text(w, &at, "cli")?,
+                            session: opt_text(w, &at, "session")?,
+                            opened_by: opt_text(w, &at, "opened_by")?,
+                        })
+                    }
+                },
             });
         }
     }

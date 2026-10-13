@@ -63,7 +63,8 @@
 //! {"act":"projects","list":[
 //!    {"name":"web-app","group":"web-app"|null,"pages":3,
 //!     "open":null | [["0x…","0x…"],["0x…"]],
-//!     "supervisor":"0x…"|null}, … ]}
+//!     "supervisor":"0x…"|null,
+//!     "workers":["0x…", …]}, … ]}
 //! {"act":"project_failed","name":"web-app","why":"not_found"|"unreadable"}
 //! {"act":"project_remove","terminal":"0x…"}
 //! {"act":"project_rename","from":"web-app","to":"storefront"}
@@ -71,8 +72,9 @@
 //!
 //! `projects` is **everything the host knows, every time** (`Projects.zig`
 //! has the whole of it): each project, the group its file names, how many
-//! pages it has, and for one that is open the terminals on each page and
-//! the one in the supervisor's pane. Every key is said in every entry. It
+//! pages it has, and for one that is open the terminals on each page, the
+//! one in the supervisor's pane, and the ones in the panes its file marks
+//! as opened by its supervisor (`workers`; empty when none). Every key is said in every entry. It
 //! replaces what was said before; a list that does not read whole is
 //! refused whole and the last one stands. The host says it at start, and
 //! whenever a project is made, opened, closed, renamed, deleted, or gains
@@ -922,8 +924,8 @@ test "Projects: what the host says about projects reaches the core whole, and wh
     try b.act(
         \\{"act":"projects","list":[
         \\ {"name":"web-app","group":"web-app","pages":2,
-        \\  "open":[["0x00000000000000a1"],["0x00000000000000b1"]],"supervisor":"0x00000000000000a1"},
-        \\ {"name":"notes","group":null,"pages":1,"open":null,"supervisor":null}]}
+        \\  "open":[["0x00000000000000a1"],["0x00000000000000b1"]],"supervisor":"0x00000000000000a1","workers":[]},
+        \\ {"name":"notes","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]}]}
     , 1_000);
     try testing.expectEqual(@as(?usize, 2), b.rec.stated);
     try testing.expectEqual(@as(usize, 1), b.rec.stated_open);

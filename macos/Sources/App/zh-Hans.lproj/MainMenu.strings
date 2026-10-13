@@ -76,6 +76,10 @@
 "pj1-Sv-As1.title" = "另存为项目…";
 "pj2-Ld-Pr1.title" = "加载项目…";
 "pj4-Mg-Pr1.title" = "管理项目…";
+"pj5-Hd-Pg1.title" = "这一页不属于任何项目";
+"pj6-Rn-Pr1.title" = "给项目改名…";
+"pj7-Tk-Ot1.title" = "把这一页移出项目";
+"pj8-Cl-Pr1.title" = "关闭项目";
 
 /* 窗口 */
 "aUF-d1-5bR.title" = "窗口";

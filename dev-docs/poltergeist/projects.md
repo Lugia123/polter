@@ -45,18 +45,21 @@
 {"act":"projects","list":[
   {"name":"web-app","group":"web-app","pages":3,
    "open":[["0x…a1","0x…b1"],["0x…b2"]],
-   "supervisor":"0x…a1"},
-  {"name":"notes","group":null,"pages":1,"open":null,"supervisor":null}
+   "supervisor":"0x…a1",
+   "workers":["0x…b1","0x…b2"]},
+  {"name":"notes","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]}
 ]}
 ```
 
 - **每次都是全部**：每个项目、它文件里写的群（没有写 `null`）、它一共几页、**开着的话**每一页上有哪些
   终端（`ghostty_surface_poltergeist_id` 的那个号，`0x` 加 16 位十六进制）、文件标成总管的那一格里现在是
-  哪个终端。没开就是 `"open":null`、`"supervisor":null`。**五个键每一项都要写**，漏写不是「没有」，整句被拒。
+  哪个终端，文件标成「总管开的」那些格里现在是哪些终端（`workers`，任务 #1495，见第 9 节）。没开就是
+  `"open":null`、`"supervisor":null`、`"workers":[]`。**六个键每一项都要写**，漏写不是「没有」，整句被拒。
 - **它替换上一句**，不是增量。丢一句不要紧，下一句会把全部再说一遍。
 - 什么时候说：启动时读完项目目录说一次；此后项目被新建、打开、关闭、改名、删除，或者多了少了一页、
   一格，都重说。说多了没有代价。
-- 整句读不通（缺键、两个项目同名、一个终端出现在两个项目的页上、总管那格不在任何一页上）→ `BadRequest`，
+- 整句读不通（缺键、两个项目同名、一个终端出现在两个项目的页上、总管那格或 `workers` 里的某一格不在
+  这个项目的任何一页上）→ `BadRequest`，
   上一句继续算数。**不收半句**：半句会让另一半里的项目看起来被删了，它们的群会被解绑。
 - **没说过 = 不知道**，不是「没有项目」。核心在不知道的时候不绑、不解绑，唯一会出的待办是 `open`。
 
@@ -181,7 +184,43 @@
 5. 打开项目时，标成总管的那一格**只起 shell**，不要自己启动 agent——启动行是核心打的。其它格按设计第 13 条
    只还原终端。
 
-## 9. 没验的
+## 9. 每一格里是谁，以及「总管开的格子」怎么活过重启（任务 #1495）
+
+**每一格里是谁**：快照 `terminals[]` 每项多了
+
+```json
+"who": {"is":"agent","role":"dev-worker","cli":"claude-code","session":"…","opened_by":"0x…a1"}
+```
+
+`role` / `cli` / `session` 与 `group.json` 的 `supervisor` 一节、项目文件 leaf 的 `agent` 同名同义，宿主保存
+项目时把它原样写进那一格。`is` 三个答案（`ControlRoom.whoOf`，有测试）。**这个键在快照里叫 `is`、在项目文件里叫
+`kind`**：快照里凡叫 `kind` 的字段宿主一律不许读（`tools/control-room-hosts-do-not-decide.py`，那是留给
+注意力状态的禁区），所以这里照 `waiter.is` 的写法；宿主写项目文件时把 `who.is` 写成 `agent.kind`，取值相同：
+
+| `is` | 什么时候 | 三个词 |
+| --- | --- | --- |
+| `agent` | 有 agent 从这个终端连着 Polter；或它的 hook 报过（或约好了要报）而 shell 没有回到提示符 | 都在；**空串 = 这一项不知道**（没穿角色、CLI 没自报、会话没报过） |
+| `none` | 没有 agent 连着，而且 shell 在提示符上（shell 集成说的）。**来过又走了的 agent 也读成这个** | 都是 `null` |
+| `unknown` | 核心说不出：里面在跑一个不跟 Polter 说话的东西，或者这个 shell 没有集成、说不出自己闲着 | 都是 `null` |
+
+`none` 与 `unknown` 不是一回事：前者是「没有人」，后者是「不知道」。宿主保存到 `unknown` 的格子时保留文件里
+原来写的。是不是总管不在 `who` 里：一格是总管 ⇔ 它的终端号等于绑着本项目的那个群的 `groups[].steward`。
+
+**「总管开的格子」**：`who.opened_by` 是本轮里哪个终端的 agent 开的这一格（不管现在里面是谁），没有就是
+`null`。终端号每次运行都换，所以要活过重启只能靠项目文件，一条通道三段：
+
+1. 核心 → 宿主：`who.opened_by`（上面）。
+2. 宿主 ↔ 项目文件：保存时，这一格的 `opened_by` 等于本项目总管那格的终端 → 在 leaf 上记一个标记。一个项目
+   只有一个总管，所以文件里只用记「是总管开的」，不用记是哪位。**这个标记在项目文件格式里叫什么由格式那一边定
+   （写这段时还没有）**；它不该放进 `agent` 里——agent 走了以后那一格是 `none`，而「总管开的」仍然成立。
+3. 宿主 → 核心：`projects` 陈述的 `workers`——开着的项目里带标记的格子现在是哪些终端。核心收到后，把本轮还
+   不知道是谁开的那些记成「`supervisor` 那格的终端开的」（`Bus.Entry.opened_by` 与 `App.poltergeist_workers`
+   两处一起），于是「总管开的、agent 已走的格子可再用」（#1492）在重启或从项目还原以后照常认得。已经知道是谁
+   开的不改；`supervisor` 为 `null` 的项目不记（没有可以记给的终端）。
+
+格式那边的标记做出来之前，宿主恒发 `"workers": []`，行为与没有这件事时相同。
+
+## 10. 没验的
 
 - `App.zig` 的接线（`projectsWork` 的提交循环、`deliverProjectLaunch`、`takeUpGroups`、三条 `controlAct*`、
   `poltergeistGroupProject`、`me` 的 `projects`）编得过，调用的判定函数都有测试，**但没有在真程序里走过**，

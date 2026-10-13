@@ -862,6 +862,13 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000021",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "polter-supervisor",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
       "bar": {
         "shown": "needs_you",
         "text": "等批准"
@@ -886,6 +893,13 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000022",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
       "bar": {
         "shown": "needs_you",
         "text": "等回答"
@@ -910,6 +924,13 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000023",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "",
+        "session": "",
+        "opened_by": null
+      },
       "bar": {
         "shown": "trouble",
         "text": "出错"
@@ -934,6 +955,13 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000024",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
       "bar": {
         "shown": "done_unseen",
         "text": "做完了，没看"
@@ -958,6 +986,13 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000025",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
       "bar": {
         "shown": "working",
         "text": "在干活"
@@ -982,6 +1017,13 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000026",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
       "bar": {
         "shown": "none",
         "text": ""
@@ -1006,6 +1048,13 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000028",
       "pane": "supervisor",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
       "bar": {
         "shown": "none",
         "text": ""
@@ -1030,6 +1079,13 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000021",
       "pane": "worker",
+      "who": {
+        "is": "agent",
+        "role": "dev-worker",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": "0x00000000000000a1"
+      },
       "bar": {
         "shown": "needs_you",
         "text": "等批准"
@@ -1054,6 +1110,13 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000025",
       "pane": "worker",
+      "who": {
+        "is": "unknown",
+        "role": null,
+        "cli": null,
+        "session": null,
+        "opened_by": null
+      },
       "bar": {
         "shown": "held",
         "text": "被按住"
@@ -1078,6 +1141,13 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000028",
       "pane": "worker",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
       "bar": {
         "shown": "needs_you",
         "text": "等批准"
@@ -1102,6 +1172,13 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000027",
       "pane": "plain",
+      "who": {
+        "is": "agent",
+        "role": "",
+        "cli": "claude-code",
+        "session": "s",
+        "opened_by": null
+      },
       "bar": {
         "shown": "needs_you",
         "text": "等批准"
@@ -1126,6 +1203,13 @@
       "window": "0x0000000000000010",
       "tab": "0x0000000000000027",
       "pane": "plain",
+      "who": {
+        "is": "none",
+        "role": null,
+        "cli": null,
+        "session": null,
+        "opened_by": null
+      },
       "bar": {
         "shown": "none",
         "text": ""

@@ -229,6 +229,18 @@
 //!   "ungrouped": [ { "id", "title", "attention", "needs_me", "unseen",
 //!       "shown", "word", "text", "waiter", "reason", "what" } ],
 //!   "terminals": [ { the member fields but `role`, and "event_ms",
+//!       "who":{"is":"agent","role":"dev-worker","cli":"claude-code",
+//!              "session":"…","opened_by":"0x…"|null},
+//!                             who is working in it (`WhoOut`). is:
+//!                             agent | none (nobody: no agent, and the
+//!                             shell is at its prompt) | unknown (the core
+//!                             cannot tell -- not "nobody"). role, cli and
+//!                             session are the words a group's record and
+//!                             a project's pane use; for an agent, "" is
+//!                             that part not known, and for the other two
+//!                             all three are null. opened_by is the
+//!                             terminal whose agent opened this one, in
+//!                             this run, whoever is in it now
 //!       "window":"0x…"|null, "tab":"0x…"|null,
 //!       "pane":"supervisor"|"worker"|"plain",
 //!       "bar":{"shown":"held","text":"被按住"} } ],
@@ -436,6 +448,14 @@ pub const Terminal = struct {
     process: Attention.Process,
     /// An agent is connected to Polter from this terminal.
     agent_present: bool,
+    /// Its shell is at its prompt, by shell integration's word: nothing
+    /// is running in it. False also when there is no integration to say.
+    at_prompt: bool,
+    /// The key of the role it wears or was started in; empty for none.
+    role: []const u8,
+    /// The agent CLI a role launch started in it; empty when none did.
+    /// What its hooks say of the CLI is the bus's and comes first.
+    launched_cli: []const u8,
     /// This terminal's own T1, when it was given one; null for the common
     /// one.
     still_ms: ?u64,
@@ -952,12 +972,80 @@ pub const Bar = struct {
     }
 };
 
+/// Who is working in a terminal, as far as the core can tell: what a host
+/// writes into a project's pane (`Project.zig`, `agent`) and into nothing
+/// else. `role`, `cli` and `session` are the same three words a group's
+/// record keeps of its supervisor (`Chat.LastSupervisor`) and a project
+/// file keeps of a pane.
+///
+/// **Three answers, and two of them are not the same "nobody".**
+///
+///   * `agent` -- one is there: connected to Polter from it, or its hooks
+///     have been heard from (or are expected) and its shell is not back
+///     at the prompt. Each of the three is what is known of it and an
+///     empty string where nothing is: a role it never wore, a CLI that
+///     never named itself, a session it never said.
+///   * `none` -- nobody: no agent is connected and the shell is at its
+///     prompt. An agent that was there and has left reads this way too,
+///     which is what makes a pane it left one that can be used again.
+///   * `unknown` -- the core cannot tell: something is running in it that
+///     says nothing to Polter, or the shell has no integration to say it
+///     is idle. Not "nobody". A host that saves this keeps what the file
+///     already said of the pane.
+///
+/// For `none` and `unknown` the three are null: there is nobody for them
+/// to be about.
+pub const WhoOut = struct {
+    /// Which of the three. Written `is`, as `waiter.is` is: a host is
+    /// kept from reading anything the snapshot calls `kind`
+    /// (`tools/control-room-hosts-do-not-decide.py`), because the one
+    /// that was there first is the status a host must not compare.
+    is: Is,
+    role: ?[]const u8,
+    cli: ?[]const u8,
+    session: ?[]const u8,
+    /// The terminal whose agent opened this one in this run
+    /// (`Bus.Entry.opened_by`), whoever is in it now; null when no agent
+    /// did. It says which panes are a supervisor's own, so a host can
+    /// keep that with the project and say it back (`Projects`, `workers`).
+    opened_by: ?Hex,
+
+    pub const Is = enum { unknown, none, agent };
+};
+
+/// `WhoOut` for one open terminal, its strings copied into `arena`: what
+/// the bus hands back of an agent is a copy that is gone when this returns.
+pub fn whoOf(arena: Allocator, bus: *const Bus, t: Terminal) Allocator.Error!WhoOut {
+    const a = bus.agentOf(t.id);
+    const kind: WhoOut.Is = if (t.agent_present)
+        .agent
+    else if (t.at_prompt)
+        // Whatever its hooks last said: the shell has the terminal back.
+        .none
+    else if (a.hooks != .none)
+        .agent
+    else
+        .unknown;
+    const opened_by: ?Hex = .opt(bus.openedBy(t.id));
+    return switch (kind) {
+        .unknown, .none => .{ .is = kind, .role = null, .cli = null, .session = null, .opened_by = opened_by },
+        .agent => .{
+            .is = .agent,
+            .role = try arena.dupe(u8, t.role),
+            .cli = try arena.dupe(u8, a.cli.get() orelse t.launched_cli),
+            .session = try arena.dupe(u8, a.session_id.get() orelse ""),
+            .opened_by = opened_by,
+        },
+    };
+}
+
 pub const TerminalOut = struct {
     id: Hex,
     title: []const u8,
     window: ?Hex,
     tab: ?Hex,
     pane: Pane,
+    who: WhoOut,
     bar: Bar,
     kind: Attention.Kind,
     since_ms: u64,
@@ -1740,6 +1828,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .window = .opt(t.window),
             .tab = .opt(t.tab),
             .pane = .of(in.bus.roleOf(t.id)),
+            .who = try whoOf(arena, in.bus, t),
             .bar = .of(d, s.held),
             .kind = s.kind,
             .since_ms = s.since_ms,
@@ -1999,6 +2088,9 @@ const World = struct {
             .tab = tab,
             .process = .running,
             .agent_present = false,
+            .at_prompt = false,
+            .role = "",
+            .launched_cli = "",
             .still_ms = null,
         });
     }
@@ -2116,6 +2208,18 @@ fn fixtureWorld() !World {
     // session a terminal is in. And one whose session is from before.
     // The other six have nothing written down.
     //
+    // Who is in each terminal. The plain shell is at its prompt: nobody,
+    // which is not the same answer as the worker whose hooks were never
+    // heard and whose shell does not say (not known). The web-app worker
+    // was started in a role, in a pane its supervisor opened.
+    for (w.open.items) |*t| switch (t.id) {
+        0xc2 => t.at_prompt = true,
+        0xb1 => t.role = "dev-worker",
+        0xa1 => t.role = "polter-supervisor",
+        else => {},
+    };
+    try w.bus.markOpenedByAgent(0xb1, 0xa1);
+
     // One group tied to a project, the host not having said anything yet:
     // it is started by opening it, and how many pages it has is not known.
     _ = try w.chat.setProject("infra", .{ .bound = "infra" });
@@ -4008,7 +4112,7 @@ test "Projects: the snapshot says which project each group has, what starting it
     defer table.deinit();
     {
         const v = try std.json.parseFromSliceLeaky(std.json.Value, aa,
-            \\[{"name":"tied","group":"tied","pages":3,"open":null,"supervisor":null}]
+            \\[{"name":"tied","group":"tied","pages":3,"open":null,"supervisor":null,"workers":[]}]
         , .{});
         try table.state(try Projects.parse(aa, v));
     }
@@ -4052,5 +4156,119 @@ test "Projects: the snapshot says which project each group has, what starting it
     ) != null);
     try testing.expect(std.mem.indexOf(u8, json,
         \\"project":{"tie":"bound","name":"tied","pages":3,"open":false,"start":"project","why":"none"}
+    ) != null);
+}
+
+test "Projects: who is in a terminal is an agent, nobody, or not known -- and nobody is not not-known" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    // 0xa1: hooks heard from, in a turn, started in a role.
+    try w.terminal(0xa1, "boss", 0x21);
+    try w.hook(0xa1, .turn_started, null, 500);
+    // 0xa2: an agent connected, no hooks, no role: all three not known.
+    try w.terminal(0xa2, "connected", 0x22);
+    // 0xa3: its agent has gone -- the hooks said what they said, and the
+    // shell has the terminal back.
+    try w.terminal(0xa3, "left", 0x23);
+    try w.hook(0xa3, .turn_ended, "bye", 500);
+    // 0xa4: a shell at its prompt that never had one.
+    try w.terminal(0xa4, "shell", 0x24);
+    // 0xa5: something is running that says nothing to Polter.
+    try w.terminal(0xa5, "vim, or an agent it cannot see", 0x25);
+    // 0xa6: a launch line was typed and its hooks are expected.
+    try w.terminal(0xa6, "starting", 0x26);
+    {
+        var ev: AgentEvent.Event = .none;
+        ev.event = .hooks_expected;
+        ev.cli = "codex";
+        _ = try w.bus.agentEvent(0xa6, ev, 500);
+    }
+    for (w.open.items) |*t| switch (t.id) {
+        0xa1 => {
+            t.role = "polter-supervisor";
+            t.launched_cli = "codex";
+        },
+        0xa2 => t.agent_present = true,
+        0xa3 => {
+            t.at_prompt = true;
+            t.role = "dev-worker";
+            t.launched_cli = "claude-code";
+        },
+        0xa4 => t.at_prompt = true,
+        0xa6 => {
+            t.role = "dev-worker";
+            t.launched_cli = "codex";
+        },
+        else => {},
+    };
+    // The supervisor opened two of them; nobody opened the rest.
+    try w.bus.markOpenedByAgent(0xa3, 0xa1);
+    try w.bus.markOpenedByAgent(0xa5, 0xa1);
+
+    const s = (try room.compute(aa, w.input(1_000))).snapshot;
+    const who = struct {
+        fn of(snap: Snapshot, id: u64) !WhoOut {
+            for (snap.terminals) |t| {
+                if (t.id.id == id) return t.who;
+            }
+            return error.NoSuchTerminal;
+        }
+    }.of;
+
+    // What its hooks said beats what the launch said: the CLI is the one
+    // that named itself.
+    const boss = try who(s, 0xa1);
+    try testing.expectEqual(WhoOut.Is.agent, boss.is);
+    try testing.expectEqualStrings("polter-supervisor", boss.role.?);
+    try testing.expectEqualStrings("claude-code", boss.cli.?);
+    try testing.expectEqualStrings("s", boss.session.?);
+    try testing.expectEqual(@as(?Hex, null), boss.opened_by);
+
+    // There, and nothing known of it: empty strings, which is "an agent,
+    // and that part is not known" -- not nulls.
+    const connected = try who(s, 0xa2);
+    try testing.expectEqual(WhoOut.Is.agent, connected.is);
+    try testing.expectEqualStrings("", connected.role.?);
+    try testing.expectEqualStrings("", connected.cli.?);
+    try testing.expectEqualStrings("", connected.session.?);
+
+    // Gone: nobody, whatever it was -- and still the supervisor's pane.
+    const left = try who(s, 0xa3);
+    try testing.expectEqual(WhoOut.Is.none, left.is);
+    try testing.expectEqual(@as(?[]const u8, null), left.role);
+    try testing.expectEqual(@as(?[]const u8, null), left.cli);
+    try testing.expectEqual(@as(?[]const u8, null), left.session);
+    try testing.expectEqual(@as(u64, 0xa1), left.opened_by.?.id);
+
+    try testing.expectEqual(WhoOut.Is.none, (try who(s, 0xa4)).is);
+
+    // Not at a prompt, and nothing heard: the core cannot tell.
+    const blind = try who(s, 0xa5);
+    try testing.expectEqual(WhoOut.Is.unknown, blind.is);
+    try testing.expectEqual(@as(?[]const u8, null), blind.role);
+    try testing.expectEqual(@as(u64, 0xa1), blind.opened_by.?.id);
+
+    // On its way: what the launch said is what is known so far.
+    const starting = try who(s, 0xa6);
+    try testing.expectEqual(WhoOut.Is.agent, starting.is);
+    try testing.expectEqualStrings("dev-worker", starting.role.?);
+    try testing.expectEqualStrings("codex", starting.cli.?);
+    try testing.expectEqualStrings("", starting.session.?);
+
+    const json = try writeAlloc(aa, s, .{});
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"who":{"is":"agent","role":"polter-supervisor","cli":"claude-code","session":"s","opened_by":null}
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"who":{"is":"none","role":null,"cli":null,"session":null,"opened_by":"0x00000000000000a1"}
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"who":{"is":"unknown","role":null,"cli":null,"session":null,"opened_by":"0x00000000000000a1"}
     ) != null);
 }

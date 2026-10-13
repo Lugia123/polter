@@ -52,6 +52,14 @@ struct PaneFrameChromeTests {
         let id: Int
         let terminal = Terminal()
         var kind: PaneFrame.Kind = .plain
+        /// The terminals the pane holds besides the one it shows, when it
+        /// holds a stack: the frame's title is then a strip of tabs.
+        var stack: PaneStack?
+    }
+
+    /// A stack of three, the second in front.
+    static func three(_ kind: PaneFrame.Kind = .worker, current: Int = 1) -> PaneStack {
+        PaneStack(members: ["frontend", "api", "e2e"].map { .init(name: $0, shown: .none, wears: kind) }, current: current)
     }
 
     /// One tab: its panes, which of them is zoomed, and the setting.
@@ -87,7 +95,7 @@ struct PaneFrameChromeTests {
             Hold(terminal: pane.terminal, count: count)
                 .modifier(PaneFrameChrome(
                     wears: drawn?.wears, title: drawn?.title, caption: nil, focused: false,
-                    well: .white, cover: .gray, outside: drawn != nil ? 3.5 : 0))
+                    well: .white, cover: .gray, outside: drawn != nil ? 3.5 : 0, stack: pane.stack))
         }
     }
 
@@ -168,6 +176,42 @@ struct PaneFrameChromeTests {
 
     @Test func aTerminalStaysInTheWindowThroughEverythingAPersonDoesToItsTab() {
         let stage = Stage()
+        walk(stage)
+    }
+
+    /// The same fourteen with the first pane holding a stack from the
+    /// start: its title is a strip of tabs through all of it.
+    @Test func aTerminalInAStackStaysInTheWindowThroughTheSameFourteenSteps() {
+        let stage = Stage()
+        stage.change { $0.panes[0].stack = Self.three() }
+        #expect(stage.lost == [])
+        walk(stage)
+        #expect(stage.tab.panes[0].stack != nil)
+    }
+
+    /// And with a stack arriving, changing and going in the middle of
+    /// them: after every one of the fourteen the pane gains a stack, or
+    /// shows another member of it, or loses it.
+    @Test func gainingAndLosingAStackBetweenEveryStepLosesNobody() {
+        let stage = Stage()
+        var turn = 0
+        walk(stage) { stage in
+            let changes: [(Tab) -> Void] = [
+                { $0.panes[0].stack = Self.three() },
+                { $0.panes[0].stack?.current = 2 },
+                { $0.panes[0].stack = Self.three(.supervisor, current: 0) },
+                { $0.panes[0].stack = nil },
+            ]
+            stage.change(changes[turn % changes.count])
+            turn += 1
+        }
+        #expect(turn == 14)
+    }
+
+    /// The fourteen steps, and after each that every terminal showing is
+    /// in the window. `between` is run after each step, and the same is
+    /// asked again after it.
+    private func walk(_ stage: Stage, between: ((Stage) -> Void)? = nil) {
         let first = stage.tab.panes[0].terminal
         let steps: [(String, (Tab) -> Void)] = [
             ("split", { $0.panes.append(Pane(id: 1)) }),
@@ -185,10 +229,16 @@ struct PaneFrameChromeTests {
             ("close down to one", { $0.panes.removeAll { $0.id == 2 } }),
             ("split once more", { $0.panes.append(Pane(id: 3)) }),
         ]
+        #expect(steps.count == 14)
         for (name, step) in steps {
             stage.change(step)
             #expect(stage.lost == [], "after: \(name)")
             #expect(first.window === stage.window, "after: \(name)")
+            if let between {
+                between(stage)
+                #expect(stage.lost == [], "after what followed: \(name)")
+                #expect(first.window === stage.window, "after what followed: \(name)")
+            }
         }
     }
 
@@ -213,6 +263,37 @@ struct PaneFrameChromeTests {
         #expect(stage.tab.count.made == made, "putting the frames back made a holder")
         #expect(stage.tab.panes[0].terminal.superview === holder)
         #expect(stage.lost == [])
+    }
+
+    @Test func gainingAStackShowingAnotherMemberAndLosingItNeverMakesAnotherHolder() {
+        let stage = Stage()
+        stage.change { $0.panes.append(Pane(id: 1)) }
+        for kind in [PaneFrame.Kind.plain, .worker, .supervisor] {
+            stage.change { $0.panes[0].kind = kind }
+            let made = stage.tab.count.made
+            let holder = stage.tab.panes[0].terminal.superview
+            let size = holder?.frame.size
+            let changes: [(String, (Tab) -> Void)] = [
+                ("gaining a stack", { $0.panes[0].stack = Self.three(kind) }),
+                ("showing another member", { $0.panes[0].stack?.current = 0 }),
+                ("the other way of drawing an ordinary one", { $0.panes[0].stack?.plainStyle = .bare }),
+                ("losing the stack", { $0.panes[0].stack = nil }),
+            ]
+            for (name, change) in changes {
+                stage.change(change)
+                #expect(stage.tab.count.made == made, "\(name) on a \(kind) pane made a holder")
+                #expect(stage.tab.panes[0].terminal.superview === holder, "\(name) on a \(kind) pane moved the terminal")
+                // The strip is as high as the title it stands for: the
+                // terminal is not resized by gaining or losing tabs.
+                #expect(stage.tab.panes[0].terminal.superview?.frame.size == size, "\(name) on a \(kind) pane resized the terminal")
+            }
+        }
+        #expect(stage.lost == [])
+    }
+
+    @Test func aStripIsAsHighAsTheTitleItStandsFor() {
+        #expect(ControlRoomLook.StackTab.stripHeight == ControlRoomLook.Pane.barHeight)
+        #expect(ControlRoomLook.StackTab.stripHeight == ControlRoomLook.Pane.plainTitleBandHeight)
     }
 
     // MARK: With no frame it takes no room

@@ -34,6 +34,9 @@
       "macos/Sources/Features/ControlRoom/ControlRoomView.swift",
       "macos/Sources/Features/ControlRoom/PaneFrame.swift",
       "macos/Sources/Features/ControlRoom/PaneFrameView.swift",
+      "macos/Sources/Features/ControlRoom/PaneStackStrip.swift",
+      "macos/Sources/Features/ControlRoom/PaneStackStripView.swift",
+      "macos/Sources/Features/ControlRoom/TerminalPresence.swift",
       "macos/Sources/Features/Splits/SplitTree.swift",
       "macos/Sources/Helpers/Extensions/Array+Extension.swift",
       "macos/Sources/Features/Terminal/TabAccessory.swift",
@@ -60,7 +63,9 @@
         "why": "the document's writing and reading are taken, which is what the files in test/project-format are checked against; from the marker on it captures live terminals"
       },
       "macos/Sources/Features/Projects/ProjectAutosave.swift",
-      "macos/Sources/Features/Projects/ProjectFilename.swift"
+      "macos/Sources/Features/Projects/ProjectFilename.swift",
+      "macos/Sources/Features/Projects/ProjectPageRules.swift",
+      "macos/Sources/Features/Projects/ProjectPages.swift"
     ],
     "out": [
       {
@@ -94,13 +99,19 @@
       "macos/Tests/ControlRoom/ControlRoomSupervisorTitleTests.swift",
       "macos/Tests/ControlRoom/PaneFrameChromeTests.swift",
       "macos/Tests/ControlRoom/PaneFrameTests.swift",
+      "macos/Tests/ControlRoom/PaneStackStripTests.swift",
+      "macos/Tests/ControlRoom/TerminalPresenceTests.swift",
       "macos/Tests/Projects/ProjectAutosaveTests.swift",
       "macos/Tests/Projects/ProjectDocumentTests.swift",
       "macos/Tests/Projects/ProjectFileAdoptionTests.swift",
       "macos/Tests/Projects/ProjectFilenameTableTests.swift",
+      "macos/Tests/Projects/ProjectPageRulesTests.swift",
+      "macos/Tests/Projects/ProjectPagesTests.swift",
       "macos/Tests/Projects/SharedProjectFilesTests.swift",
       "macos/Tests/Splits/PoltergeistLayoutShapeTests.swift",
       "macos/Tests/Splits/SplitTreeTests.swift",
+      "macos/Tests/Splits/SplitStackTests.swift",
+      "macos/Tests/Splits/StoredBytesTests.swift",
       "macos/Tests/Splits/TerminalSplitDropZoneTests.swift"
     ],
     "out": [

@@ -24,10 +24,10 @@ import GhosttyKit
 /// are the inert, side-effect-free data; `capture`/`materialize` below are
 /// the two, explicit, one-directional bridges to and from live surfaces.
 ///
-/// ⚠️ **The app still saves and opens one tab.** A project file can hold
-/// several windows of several tabs; what `ProjectStore` does with one is its
-/// first window's first tab (`firstTab`), and a save replaces that tab and
-/// keeps the rest (`replacingFirstTab`).
+/// What the app does with a file once it is read -- which tab is which
+/// page, what a save makes of the tabs that are open and the pages that are
+/// not -- is `ProjectPages`, and the part that holds real tabs is
+/// `ProjectSession`.
 ///
 /// **No memberwise default anywhere in this file's types**, and `encoded()`
 /// is the only way to bytes: `ProjectFile` is not `Encodable`, so nothing
@@ -46,7 +46,9 @@ struct ProjectFile: Equatable {
     /// no group. A project has at most one.
     let group: String?
 
-    /// The windows, the first being the one in front. Empty for a project
+    /// The windows, in an order that stays the same from one save to the
+    /// next (`ProjectPages.updated`) -- not the order they are stacked in on
+    /// screen. Empty for a project
     /// with nothing in it.
     let windows: [ProjectWindow]
 
@@ -80,8 +82,9 @@ struct ProjectFile: Equatable {
     }
 
     /// The tree of the first window's first tab, or nil for a project with
-    /// nothing in it. What a caller that still thinks of a project as one
-    /// tab has to go on.
+    /// nothing in it. **Nothing that saves or opens a project uses this**:
+    /// it is for the settings window's thumbnail, which still draws one
+    /// page, and for tests that build a project of one page.
     var firstTab: ProjectNode? {
         windows.first?.tabs.first?.root
     }
@@ -89,35 +92,6 @@ struct ProjectFile: Equatable {
     /// Every tab's tree: windows in order, and each window's tabs in order.
     var tabs: [ProjectNode] {
         windows.flatMap { $0.tabs.map(\.root) }
-    }
-
-    /// This project's windows with the first window's first tab replaced by
-    /// `root`, and **every other tab, every other window and the first
-    /// window's frame left as they are**. With no window yet, `root` becomes
-    /// the one tab of a new one whose frame nothing recorded. Nil takes the
-    /// first tab away (and its window with it, if that was its only tab).
-    ///
-    /// This is how a caller that saves one tab writes into a project that
-    /// may hold more: building the file afresh from that one tab would drop
-    /// the rest without a word.
-    func windowsReplacingFirstTab(_ root: ProjectNode?) -> [ProjectWindow] {
-        var windows = windows
-        guard let first = windows.first else {
-            return root.map { [ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: $0)])] } ?? []
-        }
-        var tabs = first.tabs
-        if let root {
-            tabs[0] = ProjectTab(root: root)
-            windows[0] = ProjectWindow(frame: first.frame, front: first.front, tabs: tabs)
-        } else {
-            tabs.removeFirst()
-            if tabs.isEmpty {
-                windows.removeFirst()
-            } else {
-                windows[0] = ProjectWindow(frame: first.frame, front: max(first.front - 1, 0), tabs: tabs)
-            }
-        }
-        return windows
     }
 
     /// The same project under another name and time: its windows, its group
@@ -137,8 +111,8 @@ struct ProjectFile: Equatable {
         Date(timeIntervalSince1970: TimeInterval(savedAt))
     }
 
-    /// How many panes the first window's first tab has -- the tab the app
-    /// opens -- without materializing any of them.
+    /// How many panes the first window's first tab has, without
+    /// materializing any of them -- the page the settings window draws.
     var paneCount: Int {
         firstTab?.leafCount ?? 0
     }

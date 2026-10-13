@@ -222,7 +222,7 @@ struct SharedProjectFilesTests {
         #expect(try ProjectFile.decode(from: whole).firstTab == .leaf(cwd: "", title: "", history: "", scrollback: "", agent: .none))
     }
 
-    // MARK: A caller that saves one tab
+    // MARK: The whole project
 
     private func leaf(_ cwd: String, _ scrollback: String = "") -> ProjectNode {
         .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, agent: .none)
@@ -239,33 +239,6 @@ struct SharedProjectFilesTests {
                 ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf("/other window", "2.snap"))]),
             ],
             nextScrollback: 5)
-    }
-
-    /// **Saving one tab into a project of several keeps the others.** The
-    /// app still saves "the tab": one tree. Written as the whole project,
-    /// that is every other tab and window gone.
-    @Test func replacingTheFirstTabKeepsEveryOtherTabAndWindow() {
-        let was = threeTabs
-        let now = was.windowsReplacingFirstTab(leaf("/changed"))
-        #expect(now[0].tabs[0].root == leaf("/changed"))
-        #expect(now[0].tabs[1] == was.windows[0].tabs[1])
-        #expect(now[0].frame == was.windows[0].frame)
-        #expect(now[0].front == 1)
-        #expect(now[1] == was.windows[1])
-
-        // A project with nothing in it gets its one window.
-        let blank = ProjectFile.oneTab(name: "p", savedAt: 1, root: nil, nextScrollback: nil)
-        #expect(blank.windowsReplacingFirstTab(leaf("/a")) == ProjectFile.oneTab(name: "p", savedAt: 1, root: leaf("/a"), nextScrollback: nil).windows)
-        #expect(blank.windowsReplacingFirstTab(nil).isEmpty)
-
-        // Taking the first tab away leaves the second in its place, and the
-        // tab that was in front still in front.
-        let fewer = was.windowsReplacingFirstTab(nil)
-        #expect(fewer.count == 2)
-        #expect(fewer[0].tabs.map(\.root) == [leaf("/second", "4.snap")])
-        #expect(fewer[0].front == 0)
-        // And a window's only tab takes the window with it.
-        #expect(ProjectFile.oneTab(name: "p", savedAt: 1, root: leaf("/a"), nextScrollback: nil).windowsReplacingFirstTab(nil).isEmpty)
     }
 
     /// Every snapshot of a project is in one directory, so what a save

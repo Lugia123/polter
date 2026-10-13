@@ -578,6 +578,30 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         /// Absent in a snapshot from before the core said it; the title
         /// then says the terminal's status, as it did before.
         var bar: Bar?
+
+        /// Who is working in it (`ControlRoom.zig`, `WhoOut`): what a
+        /// project's pane keeps. `role`, `cli` and `session` are the
+        /// core's words as it wrote them -- for an agent an empty string
+        /// is that part not known, and for the other two all three are
+        /// nil. Read and carried; nothing here draws it.
+        struct Who: Decodable, Equatable {
+            /// `unknown` is not `none`: the core could not tell, which is
+            /// not nobody. A value this does not know is an error.
+            enum Is: String, Decodable, Equatable, CaseIterable {
+                case unknown, none, agent
+            }
+
+            /// Which of the three: the snapshot's `who.is`.
+            var `is`: Is
+            var role: String?
+            var cli: String?
+            var session: String?
+            /// The terminal whose agent opened this one, in this run.
+            var opened_by: String?
+        }
+
+        /// Absent in a snapshot from before the core said it.
+        var who: Who?
     }
 
     /// See `ControlRoomList.SupervisorStart`.
