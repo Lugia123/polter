@@ -205,6 +205,8 @@ final class ProjectStore {
         let scrollbackDirectory = ProjectScrollback.directory(forProjectFile: url)
         let existing = (try? Data(contentsOf: url)).flatMap { try? ProjectFile.decode(from: $0) }
         let onDisk = (try? FileManager.default.contentsOfDirectory(atPath: scrollbackDirectory.path)) ?? []
+        // In use: the names of every tab of the project, not only the one
+        // being saved -- the snapshots of all of them are in this directory.
         var allocator = ProjectScrollback.Allocator(
             project: bindingKey(name: trimmed),
             storedNext: existing?.nextScrollback,
@@ -221,7 +223,7 @@ final class ProjectStore {
         // whose file never landed reads back as "no scrollback" -- the core
         // starts an empty terminal -- which is today's behavior.
         let root = tree.root.map { node in
-            ProjectNode.capturing(node) { view in
+            ProjectNode.capturing(node, scrollback: { view in
                 // Every pane gets a number, autosave included: a number is
                 // now what keeps a pane's scrollback journaled, and a pane
                 // opened after the tab was bound that waited for an explicit
@@ -239,23 +241,34 @@ final class ProjectStore {
                     }
                 }
                 return snapshot.filename
-            }
+            }, agent: { _ in
+                // **Not known, which is not "nobody".** Nothing here records
+                // yet which agent, if any, is in a pane; `.none` would write
+                // down that a worker's pane was a plain shell.
+                .unknown
+            })
         }
 
-        let entry = try write(ProjectFile(
+        // **The tab goes into the project that is there, in place of its
+        // first tab.** A project file can hold more windows and tabs than
+        // this saves; written as the whole project, this one tab would be
+        // all that is left of them, and of the project's group.
+        let file = ProjectFile(
             name: trimmed,
             savedAt: Int(Date().timeIntervalSince1970),
-            root: root,
-            nextScrollback: allocator.next),
-            keeping: keeping)
+            group: existing?.group,
+            windows: existing?.windowsReplacingFirstTab(root)
+                ?? ProjectFile.oneTab(name: trimmed, savedAt: 0, root: root, nextScrollback: nil).windows,
+            nextScrollback: allocator.next)
+        let entry = try write(file, keeping: keeping)
 
-        // Kept: exactly the names the saved tree refers to (and their
-        // in-flight `.tmp`). A pane closed since the last save leaves a
-        // snapshot nothing refers to, and it goes -- here, on every save,
-        // not only the capturing ones.
+        // Kept: exactly the names the saved project refers to, in every
+        // tab of it (and their in-flight `.tmp`). A pane closed since the
+        // last save leaves a snapshot nothing refers to, and it goes --
+        // here, on every save, not only the capturing ones.
         ProjectScrollback.prune(
             directory: scrollbackDirectory,
-            keeping: Set(root?.scrollbackFilenames ?? []))
+            keeping: Set(file.scrollbackFilenames))
 
         return entry
     }
@@ -302,7 +315,8 @@ final class ProjectStore {
         let location = ProjectScrollback.Location(
             directory: ProjectScrollback.directory(forProjectFile: entry.url),
             key: bindingKey(name: entry.name))
-        let root = file.root.map { $0.materializing(app, scrollback: location) }
+        // The first window's first tab: what this opens of a project today.
+        let root = file.firstTab.map { $0.materializing(app, scrollback: location) }
         return SplitTree(root: root, zoomed: nil)
     }
 
@@ -421,8 +435,7 @@ final class ProjectStore {
         let fm = FileManager.default
         let parked = try park(entry.url)
         do {
-            try ProjectFile(name: name, savedAt: file.savedAt, root: file.root, nextScrollback: file.nextScrollback)
-                .encoded().write(to: target, options: .atomic)
+            try file.with(name: name, savedAt: file.savedAt).encoded().write(to: target, options: .atomic)
         } catch {
             try? fm.moveItem(at: parked, to: entry.url)
             follower?.projectDidMove(to: entry.name, oldKey: oldKey, key: oldKey,
@@ -443,15 +456,14 @@ final class ProjectStore {
         // put the old name back.
         let prev = ProjectFileWriter.previousURL(for: target)
         if let old = (try? Data(contentsOf: prev)).flatMap({ try? ProjectFile.decode(from: $0) }) {
-            try? ProjectFile(name: name, savedAt: old.savedAt, root: old.root, nextScrollback: old.nextScrollback)
-                .encoded().write(to: prev, options: .atomic)
+            try? old.with(name: name, savedAt: old.savedAt).encoded().write(to: prev, options: .atomic)
         }
 
         bindings.move(oldKey, to: newKey)
         follower?.projectDidMove(to: name, oldKey: oldKey, key: newKey,
                                  scrollback: ProjectScrollback.directory(forProjectFile: target))
         Self.logger.info("renamed project '\(entry.name, privacy: .public)' to '\(name, privacy: .public)'")
-        return makeEntry(ProjectFile(name: name, savedAt: file.savedAt, root: file.root, nextScrollback: file.nextScrollback), at: target)
+        return makeEntry(file.with(name: name, savedAt: file.savedAt), at: target)
     }
 
     /// Move `url` to a hidden name beside it, and return that name.
@@ -474,11 +486,7 @@ final class ProjectStore {
             return true
         }
         guard let target = ruleURL(name: name) else { throw StoreError.nameEmpty }
-        let copy = ProjectFile(
-            name: name,
-            savedAt: Int(Date().timeIntervalSince1970),
-            root: file.root,
-            nextScrollback: file.nextScrollback)
+        let copy = file.with(name: name, savedAt: Int(Date().timeIntervalSince1970))
         let snapshots = ProjectScrollback.directory(forProjectFile: entry.url)
         if FileManager.default.fileExists(atPath: snapshots.path) {
             try FileManager.default.copyItem(at: snapshots, to: ProjectScrollback.directory(forProjectFile: target))

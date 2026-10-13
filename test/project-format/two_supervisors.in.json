@@ -1,0 +1,27 @@
+{
+  "windows": [
+    {
+      "tabs": [
+        { "root": {
+            "kind": "split", "direction": "horizontal", "ratio": 0.5,
+            "left":  { "kind": "leaf", "cwd": "/a",
+                       "agent": { "supervisor": true, "kind": "agent", "cli": "codex", "role": "polter-dev" } },
+            "right": { "kind": "leaf", "cwd": "/b", "agent": { "kind": "none" } } } },
+        { "root": { "kind": "leaf", "cwd": "/c",
+                    "agent": { "kind": "agent", "role": "polter-dev", "cli": "codex", "session": "", "supervisor": true } } }
+      ],
+      "front": 0
+    },
+    {
+      "front": 0,
+      "tabs": [
+        { "root": { "kind": "leaf", "cwd": "/d",
+                    "agent": { "kind": "agent", "role": "polter-supervisor", "cli": "claude-code", "session": "s-2", "supervisor": true } } }
+      ]
+    }
+  ],
+  "group": "g",
+  "saved_at": 1757000004,
+  "name": "two supervisors",
+  "format": 2
+}

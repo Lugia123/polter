@@ -146,8 +146,8 @@ struct ProjectStoreTests {
     @MainActor
     @Test func deleteAlsoRemovesThePreviousVersion() throws {
         let (store, dir) = makeStoreWithDirectory()
-        try store.write(ProjectFile(name: "notes", savedAt: 1, root: .leaf(cwd: "/a", title: "", history: "", scrollback: ""), nextScrollback: nil), keeping: .onLayoutChange)
-        try store.write(ProjectFile(name: "notes", savedAt: 2, root: nil, nextScrollback: nil), keeping: .onLayoutChange)
+        try store.write(ProjectFile.oneTab(name: "notes", savedAt: 1, root: .leaf(cwd: "/a", title: "", history: "", scrollback: "", agent: .unknown), nextScrollback: nil), keeping: .onLayoutChange)
+        try store.write(ProjectFile.oneTab(name: "notes", savedAt: 2, root: nil, nextScrollback: nil), keeping: .onLayoutChange)
         #expect(store.entry(name: "notes")?.hasPrevious == true)
 
         try store.delete(try #require(store.entry(name: "notes")))
@@ -198,8 +198,8 @@ struct ProjectStoreTests {
     @Test func aProjectUnderAnOlderFilenameIsStillFoundAndMovedOnSave() throws {
         let (store, dir) = makeStoreWithDirectory()
         let legacy = dir.appendingPathComponent("a:b.json")
-        let root = ProjectNode.leaf(cwd: "/a", title: "", history: "", scrollback: "")
-        try ProjectFile(name: "a:b", savedAt: 1, root: root, nextScrollback: 3).encoded().write(to: legacy)
+        let root = ProjectNode.leaf(cwd: "/a", title: "", history: "", scrollback: "", agent: .unknown)
+        try ProjectFile.oneTab(name: "a:b", savedAt: 1, root: root, nextScrollback: 3).encoded().write(to: legacy)
         try Data("previous".utf8).write(to: ProjectFileWriter.previousURL(for: legacy))
 
         let found = try #require(store.entry(name: "a:b"))
@@ -215,7 +215,7 @@ struct ProjectStoreTests {
         // The layout changed (a pane -> nothing), so the adopted file became
         // `.prev`; the counter it carried survived the move.
         let previous = try ProjectFile.decode(from: Data(contentsOf: ProjectFileWriter.previousURL(for: moved)))
-        #expect(previous.root == root)
+        #expect(previous.firstTab == root)
         #expect(try ProjectFile.decode(from: Data(contentsOf: moved)).nextScrollback == 3)
     }
 
@@ -225,7 +225,7 @@ struct ProjectStoreTests {
     @Test func deletingAProjectUnderAnOlderFilenameRemovesThatFile() throws {
         let (store, dir) = makeStoreWithDirectory()
         let legacy = dir.appendingPathComponent("a:b.json")
-        try ProjectFile(name: "a:b", savedAt: 1, root: nil, nextScrollback: nil).encoded().write(to: legacy)
+        try ProjectFile.oneTab(name: "a:b", savedAt: 1, root: nil, nextScrollback: nil).encoded().write(to: legacy)
         try Data("previous".utf8).write(to: ProjectFileWriter.previousURL(for: legacy))
 
         try store.delete(try #require(store.entry(name: "a:b")))

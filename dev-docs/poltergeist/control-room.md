@@ -1860,7 +1860,7 @@ S7 最后。开工前的三问，总管代定了（暂定，§12.6.1 的表）�
 | 其中按叶子走的（文件外） | `for … in surfaceTree` 14 处 / 8 文件；`surfaceTree.contains / first / count / isEmpty / map / filter / find` 46 处 / 10 文件；`.leaves()` 9 处 / 7 文件；`leftmostLeaf` / `rightmostLeaf` 6 处 / 4 文件；`surfaceTree.root` 34 处 / 11 文件 |
 | 整棵树被换掉（`surfaceTree = …`） | 14 处、3 个文件 |
 | 树的存盘 | `SplitTree` 自己带版本号 1，读到别的版本就抛错（`guard version == currentVersion`）；节点写成 `{"view":…}` 或 `{"split":…}`；放大的那一格存的是路径 |
-| 项目文件 | `src/Project.zig`（1335 行）与 `Features/Projects/ProjectDocument.swift`（334 行）：节点是 `"kind":"leaf"` / `"split"`，**没有版本号**；读的一侧遇到不认识的 `kind` 报 `Corrupt`，叶子上不认识的键被忽略 |
+| 项目文件 | `src/Project.zig`（1335 行）与 `Features/Projects/ProjectDocument.swift`（334 行）：节点是 `"kind":"leaf"` / `"split"`，**没有版本号**；读的一侧遇到不认识的 `kind` 报 `Corrupt`，叶子上不认识的键被忽略。（这是当时的读数。2026-10-13 #1487 起文件有 `"format":2`，没有这个键的照旧读成格式 1；比自己认识的大就拒读，见 `src/Project.zig` 模块注释。行数也已不是这两个。）|
 | 「在树里、不在眼前」的钩子 | `ControlRoomLender.isLent(` 13 处、4 个文件；其中 `BaseTerminalController` 的两处是「跳过它」：报焦点（`syncFocusToSurfaceTree`）与报可见（按窗口的 occlusion） |
 | 现有测试 | `SplitTreeTests` 50 条、`PoltergeistLayoutShapeTests` 15、`TerminalSplitDropZoneTests` 20、`CloseSplitOfferTests` 4 |
 
