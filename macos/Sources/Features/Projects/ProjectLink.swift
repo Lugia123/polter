@@ -200,6 +200,55 @@ enum ProjectLink {
         return told
     }
 
+    // MARK: Who is in a pane
+
+    /// What the core's snapshot says of one terminal (`terminals[].who`):
+    /// who is working in it, and which terminal's agent opened it.
+    struct Who: Equatable {
+        enum Kind: Equatable {
+            /// The core could not tell.
+            case unknown
+            /// Nobody: no agent, and the shell at its prompt.
+            case none
+            case agent
+        }
+
+        let kind: Kind
+        /// For an agent, each as the core wrote it: empty is that part not
+        /// known. Nil for the other two.
+        let role: String?
+        let cli: String?
+        let session: String?
+        /// The terminal whose agent opened this one, in this run of the
+        /// app; nil when none did, or it was opened before the app started.
+        let openedBy: String?
+    }
+
+    /// What a save writes of a pane, given what the core says of its
+    /// terminal.
+    ///
+    /// - The core's three answers are the file's three, word for word. A
+    ///   terminal the snapshot does not have is one nothing can be said of.
+    /// - **Whether it is the supervisor is not said here**: that is the
+    ///   project's own mark (`ProjectPages.makeSupervisor`), which a save
+    ///   keeps (`ProjectNode.keepingWhatTheFileKnew`).
+    /// - The pane is one the supervisor opened when the terminal that
+    ///   opened it is the one in the project's supervisor pane now. With no
+    ///   supervisor's terminal to compare with -- its page is closed, or
+    ///   the project has none -- that cannot be told, which is not "no":
+    ///   the file's mark stays.
+    static func pane(_ who: Who?, supervisor: String?) -> (agent: ProjectAgent, bySupervisor: Bool) {
+        guard let who else { return (.unknown, false) }
+        let agent: ProjectAgent
+        switch who.kind {
+        case .unknown: agent = .unknown
+        case .none: agent = .none
+        case .agent:
+            agent = .agent(role: who.role ?? "", cli: who.cli ?? "", session: who.session ?? "", supervisor: false)
+        }
+        return (agent, supervisor != nil && who.openedBy == supervisor)
+    }
+
     /// What the core last said. Kept here, where the control room's views
     /// can read it without the half of the app that holds terminals; set by
     /// `ProjectLinker` at every snapshot.

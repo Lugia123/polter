@@ -25,22 +25,6 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
         subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
         category: "projects")
 
-    /// Who is working in a pane, as far as anything running can tell.
-    ///
-    /// **The seam for whatever knows.** Nothing in the app does yet, so this
-    /// answers `.unknown` for every pane -- and a pane saved as not known
-    /// keeps what the file already says of it
-    /// (`ProjectNode.keepingWhatTheFileKnew`), so nothing known is lost by not
-    /// knowing. Whatever comes to know replaces this one closure; an answer
-    /// that is one (`.none`, or an agent) is written as it is.
-    ///
-    /// Whether the project's supervisor opened the pane goes with it: the
-    /// core knows that for panes opened since the app started, and says so
-    /// in its snapshot (`terminals[].who.opened_by`, #1495); until that is
-    /// read here the answer is "cannot tell", which keeps what the file
-    /// says.
-    static var whoIsInPane: (Ghostty.SurfaceView) -> (agent: ProjectAgent, bySupervisor: Bool) = { _ in (.unknown, false) }
-
     private struct Member {
         weak var controller: TerminalController?
         let page: Int
@@ -198,6 +182,29 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
         }
     }
 
+    /// Who is in each pane, as the core's latest snapshot says
+    /// (`terminals[].who`), and whether the project's supervisor opened it
+    /// (`ProjectLink.pane` has the rule). Read once for a whole save.
+    private func whoIsInPane() -> (Ghostty.SurfaceView) -> (agent: ProjectAgent, bySupervisor: Bool) {
+        guard let ghostty = liveMembers.first?.controller.ghostty else { return { _ in (.unknown, false) } }
+        var said: [String: ProjectLink.Who] = [:]
+        for terminal in ControlRoomFeed.shared(ghostty).latest?.terminals ?? [] {
+            guard let who = terminal.who else { continue }
+            let kind: ProjectLink.Who.Kind
+            switch who.is {
+            case .unknown: kind = .unknown
+            case .none: kind = .none
+            case .agent: kind = .agent
+            }
+            said[terminal.id] = ProjectLink.Who(
+                kind: kind, role: who.role, cli: who.cli, session: who.session, openedBy: who.opened_by)
+        }
+        let supervisor = stated?.supervisor
+        return { view in
+            ProjectLink.pane(ControlRoomLender.terminal(of: view).flatMap { said[$0] }, supervisor: supervisor)
+        }
+    }
+
     /// `closing` is the save a tab makes as it closes: which page is in
     /// front is not asked of the tabs (`ProjectPages.updated`).
     private func write(capturing: [TerminalController], closing: Bool = false, keeping: ProjectFileWriter.Keeping) throws {
@@ -222,7 +229,7 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
         pages = try store.save(
             name: name, group: group, pages: pages,
             tabs: .init(open: open, frames: frames, keepingFront: closing),
-            who: Self.whoIsInPane, keeping: keeping).pages
+            who: whoIsInPane(), keeping: keeping).pages
         // Also when nothing was written: what changed may be only a
         // window's title, which is what the settings window calls the
         // project's tab by.
@@ -258,9 +265,9 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
     /// supervisor's pane, and those in panes the supervisor opened. Nil
     /// when no page is open.
     ///
-    /// **`workers` is empty for now.** The core's reader of that key is
-    /// not in this tree yet (#1495); the names are worked out, and stating
-    /// them is the one line below.
+    /// The panes the supervisor opened are the ones the file marks: after a
+    /// restart the core has forgotten who opened what, and this is how it
+    /// is told again (`dev-docs/poltergeist/projects.md`, section 9).
     var stated: (open: [[String]], supervisor: String?, workers: [String])? {
         let order = pages.pageIDs
         let live = liveMembers.sorted {
@@ -278,16 +285,11 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
                 }
             }
         }
-        let workers = Self.statesWorkers ? terminals(named: pages.workerPanes) : []
         return (
             live.map { $0.controller.surfaceTree.compactMap(ControlRoomLender.terminal(of:)) },
             pages.supervisorPane.flatMap { terminals(named: [$0]).first },
-            workers)
+            terminals(named: pages.workerPanes))
     }
-
-    /// Whether `stated` names the panes the supervisor opened. Off until
-    /// the core reads them.
-    static let statesWorkers = false
 
     // MARK: Tabs saved as a project
 

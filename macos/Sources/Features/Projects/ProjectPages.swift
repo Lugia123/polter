@@ -390,6 +390,30 @@ extension ProjectNode {
         }
     }
 
+    /// Who is written as being in a pane, given what a save found (`now`)
+    /// and what the file said (`was`).
+    ///
+    /// An answer replaces what was there; "cannot tell" does not. **The
+    /// supervisor's pane is the exception, and stays the supervisor's
+    /// whatever is found in it**: the mark is the project's, put there by
+    /// `ProjectPages.makeSupervisor` and by nothing a save sees, and the
+    /// pane is where the group's supervisor is started again -- most of all
+    /// when nobody is in it. So that pane goes on recording an agent: the
+    /// one in it now, each part the core does not know yet (an empty one)
+    /// kept as the file had it -- the session is what "go on with the last
+    /// session" needs -- or, with nobody in it, the one that was.
+    private static func agent(now: ProjectAgent, was: ProjectAgent) -> ProjectAgent {
+        guard case .agent(let role, let cli, let session, true) = was else {
+            return now == .unknown ? was : now
+        }
+        guard case .agent(let nowRole, let nowCLI, let nowSession, _) = now else { return was }
+        return .agent(
+            role: nowRole.isEmpty ? role : nowRole,
+            cli: nowCLI.isEmpty ? cli : nowCLI,
+            session: nowSession.isEmpty ? session : nowSession,
+            supervisor: true)
+    }
+
     /// This tree with what a save could not tell about a pane filled in
     /// from what the file said of it, by snapshot name.
     ///
@@ -400,7 +424,8 @@ extension ProjectNode {
     ///   `.unknown`, and writing that would wipe out what the file knew --
     ///   a worker's pane would be a pane nobody knows anything about after
     ///   the first title change. An answer that *is* one -- `.none`, or an
-    ///   agent -- always replaces what was there.
+    ///   agent -- replaces what was there, except in the supervisor's pane
+    ///   (`agent(now:was:)`).
     /// - *Where it is working.* A pane has no directory to report until
     ///   its shell has said one, which is some time after it opens and,
     ///   without shell integration, never. A project just opened is saved
@@ -419,7 +444,7 @@ extension ProjectNode {
                 cwd: cwd.isEmpty ? was.cwd : cwd,
                 title: title, history: history, scrollback: scrollback,
                 bySupervisor: bySupervisor || was.bySupervisor,
-                agent: agent == .unknown ? was.agent : agent)
+                agent: Self.agent(now: agent, was: was.agent))
         case .split(let direction, let ratio, let left, let right):
             return .split(
                 direction: direction, ratio: ratio,

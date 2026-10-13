@@ -260,6 +260,76 @@ struct ProjectLinkTests {
         #expect(pages == was)
     }
 
+    // MARK: Who is in a pane
+
+    private func who(_ kind: Link.Who.Kind, role: String? = nil, cli: String? = nil, session: String? = nil, openedBy: UInt64? = nil) -> Link.Who {
+        Link.Who(kind: kind, role: role, cli: cli, session: session, openedBy: openedBy.map(Link.terminal))
+    }
+
+    /// The core's three answers are the file's three; a terminal the
+    /// snapshot does not have is one nothing can be said of.
+    @Test func whatTheCoreSaysOfATerminalIsWhatIsWrittenOfItsPane() {
+        let supervisor = Link.terminal(0xa1)
+        #expect(Link.pane(nil, supervisor: supervisor).agent == .unknown)
+        #expect(Link.pane(who(.unknown), supervisor: supervisor).agent == .unknown)
+        #expect(Link.pane(who(.none), supervisor: supervisor).agent == ProjectAgent.none)
+        #expect(Link.pane(who(.agent, role: "polter-dev", cli: "codex", session: "s"), supervisor: supervisor).agent
+            == .agent(role: "polter-dev", cli: "codex", session: "s", supervisor: false))
+        // A part the core does not know is an empty one, as it wrote it.
+        #expect(Link.pane(who(.agent, role: "", cli: "claude-code", session: ""), supervisor: nil).agent
+            == .agent(role: "", cli: "claude-code", session: "", supervisor: false))
+    }
+
+    /// A pane is one the supervisor opened when the terminal that opened it
+    /// is the one in the project's supervisor pane -- and with no such
+    /// terminal to compare with, that is not said.
+    @Test func aPaneIsTheSupervisorsToUseWhenTheSupervisorsTerminalOpenedIt() {
+        let supervisor = Link.terminal(0xa1)
+        #expect(Link.pane(who(.agent, role: "polter-dev", cli: "codex", session: "", openedBy: 0xa1), supervisor: supervisor).bySupervisor)
+        // The agent has left; the pane is still one the supervisor opened.
+        #expect(Link.pane(who(.none, openedBy: 0xa1), supervisor: supervisor).bySupervisor)
+        // Opened by somebody else's agent, by a person, or not in the snapshot.
+        #expect(!Link.pane(who(.none, openedBy: 0xc9), supervisor: supervisor).bySupervisor)
+        #expect(!Link.pane(who(.none), supervisor: supervisor).bySupervisor)
+        #expect(!Link.pane(nil, supervisor: supervisor).bySupervisor)
+        // The supervisor's page is closed: nothing to compare with -- and a
+        // pane nobody opened does not match "no supervisor".
+        #expect(!Link.pane(who(.none, openedBy: 0xa1), supervisor: nil).bySupervisor)
+        #expect(!Link.pane(who(.none), supervisor: nil).bySupervisor)
+    }
+
+    /// **The supervisor's pane stays the supervisor's, whoever is found in
+    /// it** -- most of all when nobody is: it is where the group's
+    /// supervisor is started again, with the session it had.
+    @Test func theSupervisorsPaneKeepsItsMarkAndItsLastSession() {
+        let was = ProjectAgent.agent(role: "polter-supervisor", cli: "claude-code", session: "s-1", supervisor: true)
+        let known = ProjectPages(file: .oneTab(name: "p", savedAt: 1, root: leaf("/w", "0.snap", was), nextScrollback: 1)).known
+        func saved(_ now: ProjectAgent) -> ProjectNode { leaf("/w", "0.snap", now).keepingWhatTheFileKnew(known) }
+
+        // Its agent has left, or nothing can tell: the pane as it was.
+        #expect(saved(.none) == leaf("/w", "0.snap", was))
+        #expect(saved(.unknown) == leaf("/w", "0.snap", was))
+        // An agent is in it: what the core knows of it, the mark kept, and
+        // what the core does not know yet kept as the file had it.
+        #expect(saved(.agent(role: "polter-supervisor", cli: "claude-code", session: "s-2", supervisor: false))
+            == leaf("/w", "0.snap", .agent(role: "polter-supervisor", cli: "claude-code", session: "s-2", supervisor: true)))
+        #expect(saved(.agent(role: "", cli: "codex", session: "", supervisor: false))
+            == leaf("/w", "0.snap", .agent(role: "polter-supervisor", cli: "codex", session: "s-1", supervisor: true)))
+
+        // Any other pane: an answer is what is written, nobody included,
+        // and an agent's unknown parts are not filled from whoever was
+        // there before.
+        let worker = ProjectAgent.agent(role: "polter-dev", cli: "codex", session: "w", supervisor: false)
+        let other = ProjectPages(file: .oneTab(name: "p", savedAt: 1, root: leaf("/w", "0.snap", worker), nextScrollback: 1)).known
+        #expect(leaf("/w", "0.snap", .none).keepingWhatTheFileKnew(other) == leaf("/w", "0.snap", .none))
+        #expect(leaf("/w", "0.snap", .unknown).keepingWhatTheFileKnew(other) == leaf("/w", "0.snap", worker))
+        let next = ProjectAgent.agent(role: "", cli: "claude-code", session: "", supervisor: false)
+        #expect(leaf("/w", "0.snap", next).keepingWhatTheFileKnew(other) == leaf("/w", "0.snap", next))
+        // And a save cannot make a pane the supervisor's: only the mark can.
+        let claims = ProjectAgent.agent(role: "x", cli: "y", session: "z", supervisor: true)
+        #expect(Link.pane(who(.agent, role: "x", cli: "y", session: "z"), supervisor: nil).agent != claims)
+    }
+
     // MARK: The control room's start
 
     @Test func theStartButtonSaysOpenWhenStartingOpensAProject() {
