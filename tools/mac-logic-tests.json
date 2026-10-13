@@ -48,6 +48,7 @@
         ],
         "why": "only the drop zone's arithmetic, which is the end of the file; the views before it hold live terminals"
       },
+      "macos/Sources/Features/Projects/ProjectAutosave.swift",
       "macos/Sources/Features/Projects/ProjectScrollback.swift",
       {
         "path": "macos/Sources/Features/Projects/ProjectDocument.swift",
@@ -89,6 +90,7 @@
       "macos/Tests/ControlRoom/ControlRoomSupervisorTitleTests.swift",
       "macos/Tests/ControlRoom/PaneFrameChromeTests.swift",
       "macos/Tests/ControlRoom/PaneFrameTests.swift",
+      "macos/Tests/Projects/ProjectAutosaveTests.swift",
       "macos/Tests/Splits/PoltergeistLayoutShapeTests.swift",
       "macos/Tests/Splits/SplitTreeTests.swift",
       "macos/Tests/Splits/TerminalSplitDropZoneTests.swift"

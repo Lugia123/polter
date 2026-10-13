@@ -624,6 +624,10 @@ class AppDelegate: NSObject,
         // A terminal the control room has borrowed goes back to its tab.
         ControlRoomController.shared?.applicationWillTerminate()
 
+        // Quitting closes no window, so nothing else writes a bound tab's
+        // last change.
+        TerminalController.saveBoundProjectsBeforeQuit()
+
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be
         // more selective and only remove surface-targeted notifications.

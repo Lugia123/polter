@@ -266,6 +266,27 @@ extension TerminalController {
         }
     }
 
+    /// The application is quitting: write every bound tab as it is now.
+    ///
+    /// Quitting closes no window, so `windowWillClose` -- where a tab's last
+    /// save is -- does not run, and a change still waiting out its second
+    /// was lost with the process. Always written, pending or not: a file
+    /// that would not change is not touched (`ProjectFileWriter.plan`).
+    /// No full scrollback capture, which is asked of the core and lands
+    /// later than a quit waits for; each pane's journal has its scrollback.
+    static func saveBoundProjectsBeforeQuit() {
+        for controller in all {
+            controller.projectAutosave?.cancel()
+            guard let name = controller.boundProject, !controller.surfaceTree.isEmpty else { continue }
+            do {
+                try ProjectStore.shared.save(
+                    name: name, tree: controller.surfaceTree, capturingScrollback: false, keeping: .onLayoutChange)
+            } catch {
+                Ghostty.logger.warning("save of project '\(name, privacy: .public)' at quit failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
     /// Stop every pane's scrollback journal: the tab no longer writes to a
     /// project. Their files stay; the project's own saves decide what is
     /// kept.
@@ -287,17 +308,21 @@ extension TerminalController {
         // the per-surface ones again on every tree change); `dropFirst`
         // keeps binding itself from counting as a change. Splits added or
         // removed and dividers dragged all arrive as a new `surfaceTree`.
+        //
+        // Which kind each is decides how long its write may be put off
+        // (`ProjectAutosaveChange`): a title changes for as long as an
+        // agent works, and must not hold back a split the person made.
         $surfaceTree
             .dropFirst()
-            .sink { _ in debouncer.poke() }
+            .sink { _ in debouncer.poke(.layout) }
             .store(in: &projectAutosaveCancellables)
         surfaceValuesPublisher(valueKeyPath: \.pwd, publisherKeyPath: \.$pwd)
             .dropFirst()
-            .sink { _ in debouncer.poke() }
+            .sink { _ in debouncer.poke(.paneDetail) }
             .store(in: &projectAutosaveCancellables)
         surfaceValuesPublisher(valueKeyPath: \.title, publisherKeyPath: \.$title)
             .dropFirst()
-            .sink { _ in debouncer.poke() }
+            .sink { _ in debouncer.poke(.paneDetail) }
             .store(in: &projectAutosaveCancellables)
     }
 
