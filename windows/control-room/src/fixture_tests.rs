@@ -69,6 +69,12 @@ fn list() -> List {
     List::from_snapshot(&snapshot::decode(FIXTURE).expect("the fixture decodes"))
 }
 
+/// The list as it was before task 1485, with a row for the terminal in no
+/// group: what such a row says is still held, though nothing draws one.
+fn list_with_lone() -> List {
+    List::from_snapshot_with(&snapshot::decode(FIXTURE).expect("the fixture decodes"), true)
+}
+
 /// The fixture with its two headings replaced by the ones given, or taken
 /// out: what a core that writes none sends.
 fn with_headers(waiting: Option<&str>, quiet: Option<&str>) -> String {
@@ -89,8 +95,10 @@ fn the_fixture_is_read_and_the_counts_are_the_ones_written_in_it() {
     let s = snapshot::decode(FIXTURE).unwrap();
     assert_eq!(s.rev, 1);
     assert_eq!(s.now_ms, 6_000_000);
-    // Every row that waits is one: five groups, and a terminal in no group.
-    assert_eq!(s.needs_me, 6);
+    // Every row that waits and is drawn is one: five groups. The terminal
+    // in no group that waits is listed and not counted (task 1485).
+    assert_eq!(s.needs_me, 5);
+    assert_eq!(s.ungrouped.iter().filter(|u| u.needs_me).count(), 1);
     assert_eq!(s.groups_needing_me, 5);
     assert_eq!(s.groups_other, 3);
     assert_eq!(s.groups.len(), 8);
@@ -205,9 +213,9 @@ fn the_rows_keep_the_snapshots_order_in_two_sections() {
     let l = list();
     let waiting: Vec<&str> = l.waiting.iter().map(|r| r.id.as_str()).collect();
     let quiet: Vec<&str> = l.quiet.iter().map(|r| r.id.as_str()).collect();
-    // The groups in the core's order, and after them -- in the section its
-    // own `needs_me` says -- the one terminal that is in no group.
-    assert_eq!(waiting, ["web-app", "web-app-docs", "mobile", "billing", "docs-site", LONE]);
+    // The groups in the core's order, and nothing else: the terminal that
+    // is in no group has no row.
+    assert_eq!(waiting, ["web-app", "web-app-docs", "mobile", "billing", "docs-site"]);
     assert_eq!(quiet, ["infra", "design-system", "notes"]);
 
     let shown: Vec<Shown> = l.rows().map(|r| r.shown).collect();
@@ -219,15 +227,13 @@ fn the_rows_keep_the_snapshots_order_in_two_sections() {
             Shown::NeedsYou,
             Shown::NeedsYou,
             Shown::Trouble,
-            // The terminal in no group, waiting for an approval.
-            Shown::NeedsYou,
             Shown::DoneUnseen,
             Shown::Working,
             Shown::None
         ]
     );
     let words: Vec<&str> = l.rows().map(|r| r.word.as_str()).collect();
-    assert_eq!(words, ["等批准", "等批准", "等批准", "等回答", "出错", "等批准", "做完了，没看", "在干活", ""]);
+    assert_eq!(words, ["等批准", "等批准", "等批准", "等回答", "出错", "做完了，没看", "在干活", ""]);
 }
 
 #[test]
@@ -237,7 +243,7 @@ fn the_counts_shown_are_the_ones_handed_in() {
     let l = List::from_snapshot(&snapshot::decode(&odd).unwrap());
     assert_eq!(l.waiting_count, 9);
     assert_eq!(l.quiet_count, 0);
-    assert_eq!(l.waiting.len(), 6);
+    assert_eq!(l.waiting.len(), 5);
     assert_eq!(l.quiet.len(), 3);
     // From a core that writes no headings the two are the groups' counts.
     let old = with_headers(None, None)
@@ -301,12 +307,11 @@ fn the_selection_walks_the_rows_and_stops_at_the_ends() {
     let l = list();
     assert_eq!(list::move_selection(&l, None, 1), Some("web-app"));
     assert_eq!(list::move_selection(&l, None, -1), Some("notes"));
-    // The arrow keys reach the terminal that is in no group, between the
-    // last waiting group and the first quiet one.
-    assert_eq!(list::move_selection(&l, Some("docs-site"), 1), Some(LONE));
-    assert_eq!(list::move_selection(&l, Some(LONE), 1), Some("infra"));
-    assert_eq!(list::move_selection(&l, Some("infra"), -1), Some(LONE));
-    assert_eq!(list::move_selection(&l, Some(LONE), -1), Some("docs-site"));
+    // From the last waiting group to the first quiet one and back: the
+    // terminal in no group is not a row, so the keys do not stop on it.
+    assert_eq!(list::move_selection(&l, Some("docs-site"), 1), Some("infra"));
+    assert_eq!(list::move_selection(&l, Some("infra"), -1), Some("docs-site"));
+    assert_eq!(list::move_selection(&l, Some(LONE), 1), Some("web-app"));
     assert_eq!(list::move_selection(&l, Some("notes"), 1), Some("notes"));
     assert_eq!(list::move_selection(&l, Some("web-app"), -3), Some("web-app"));
     // A selection that is no longer listed starts over.
@@ -356,13 +361,10 @@ fn the_panel_is_laid_out_from_the_look_and_nothing_else() {
     assert_eq!(lay.fit("infra"), None);
     assert_eq!(layout::ask_width(), 322.0);
 
-    // The terminal in no group is a waiting row like the others, after
-    // them: one step on one line.
-    assert_eq!(high(LONE), 60.0);
-    let last = lay.chip(Some(LONE)).unwrap();
-    assert_eq!(last.y, fourth.y + 60.0 + side::ROW_GAP);
-    assert_eq!(lay.fit(LONE), Some(&AskFit { lines: vec![1], hidden: 0 }));
-    let below = last.y + 60.0 + side::ROW_GAP + side::SEPARATOR_SPACE_ABOVE;
+    // The terminal in no group has no row: the line follows the last group.
+    assert_eq!(lay.chip(Some(LONE)), None);
+    assert_eq!(lay.fit(LONE), None);
+    let below = fourth.y + 60.0 + side::ROW_GAP + side::SEPARATOR_SPACE_ABOVE;
     assert_eq!(lay.separator.y, below);
     assert_eq!(lay.separator.h, line::HAIRLINE);
     assert_eq!(lay.quiet_header.y, below + line::HAIRLINE + side::SEPARATOR_SPACE_BELOW);
@@ -384,7 +386,7 @@ fn when_the_core_says_nobody_waits_the_groups_follow_the_one_header() {
     let lay = ListLayout::new(&l, 800.0);
     assert_eq!(lay.quiet_header.h, 0.0);
     assert_eq!(lay.separator.h, 0.0);
-    let after = lay.chip(Some(LONE)).unwrap();
+    let after = lay.chip(Some("docs-site")).unwrap();
     assert_eq!(lay.chip(Some("infra")).unwrap().y, after.y + after.h + side::ROW_GAP);
     let with = ListLayout::new(&list(), 800.0);
     assert_eq!(with.quiet_header.h, side::HEADER_HEIGHT);
@@ -879,6 +881,8 @@ fn the_fixture_says_where_every_group_stands_with_a_supervisor_and_which_roles_s
     assert!(l.rows().filter(|r| r.alone.is_none()).all(|r| r.start.is_some()));
     // A terminal on its own has no supervisor to start: it is one, or has
     // none to be given here.
+    assert_eq!(l.rows().filter(|r| r.alone.is_some()).count(), 0);
+    let l = List::from_snapshot_with(&s, true);
     assert!(l.rows().filter(|r| r.alone.is_some()).all(|r| r.start.is_none()));
     assert_eq!(l.rows().filter(|r| r.alone.is_some()).count(), 1);
     assert_eq!(l.supervisor_roles, s.supervisor_roles);
@@ -1075,13 +1079,35 @@ fn a_title_that_is_the_path_of_the_program_started_is_shown_as_its_name() {
     }
 }
 
-// ---- a terminal in no group has a row of its own (task 1471; the same
+// ---- a terminal in no group has no row, and is in no count (task 1485)
+
+#[test]
+fn a_terminal_in_no_group_has_no_row_and_is_in_no_number_the_person_is_shown() {
+    // The user, 2026-10-13: the rows of these terminals read as groups
+    // nobody had made. They are listed by the core and drawn by no host.
+    let s = snapshot::decode(FIXTURE).unwrap();
+    assert_eq!(s.ungrouped.len(), 1);
+    let l = List::from_snapshot(&s);
+    assert!(l.rows().all(|r| r.alone.is_none()));
+    assert_eq!(l.row(LONE), None);
+    // The heading, the rows under it and the badge: one number.
+    assert_eq!(l.waiting.len() as u64, l.waiting_count);
+    assert_eq!(l.waiting_count, s.needs_me);
+    assert_eq!(l.quiet.len() as u64, l.quiet_count);
+    assert_eq!(s.header_waiting.map(|h| h.of), Some(HeaderOf::Groups));
+    // And nothing of it is drawn.
+    let lay = ListLayout::new(&l, 900.0);
+    assert_eq!(lay.chip(Some(LONE)), None);
+    assert_eq!(lay.rows.len() as u64, s.needs_me + l.quiet_count);
+}
+
+// ---- what a row of such a terminal says, were one drawn (task 1471; the same
 // cases as the macOS host's ControlRoomListTests)
 
 fn snapshot_with(change: impl FnOnce(&mut snapshot::Snapshot)) -> List {
     let mut s = snapshot::decode(FIXTURE).unwrap();
     change(&mut s);
-    List::from_snapshot(&s)
+    List::from_snapshot_with(&s, true)
 }
 
 #[test]
@@ -1090,12 +1116,14 @@ fn a_terminal_waiting_in_no_group_has_a_row_so_the_list_shows_what_the_badge_cou
     // The groups' rows carry all of them but the ones in no group, and
     // those were not drawn: the badge said 6 over five rows.
     let s = snapshot::decode(FIXTURE).unwrap();
-    let l = List::from_snapshot(&s);
+    let l = List::from_snapshot_with(&s, true);
     let alone: Vec<&list::Row> = l.waiting.iter().filter(|r| r.alone.is_some()).collect();
     assert_eq!(alone.len(), s.ungrouped.iter().filter(|u| u.needs_me).count());
     assert_eq!(alone.len(), 1);
+    // Drawn, it would be one row more than the number says: the core
+    // counts only what the hosts draw, and they do not draw this.
     let waiting_rows = l.waiting.len() as u64;
-    assert_eq!(waiting_rows, s.needs_me);
+    assert_eq!(waiting_rows, s.needs_me + 1);
 
     let row = alone[0];
     assert_eq!(
@@ -1121,7 +1149,7 @@ fn a_terminal_waiting_in_no_group_has_a_row_so_the_list_shows_what_the_badge_cou
 
 #[test]
 fn a_lone_terminals_row_cannot_be_mistaken_for_a_groups_and_shows_the_terminal_itself() {
-    let l = list();
+    let l = list_with_lone();
     // The right-hand side shows that terminal itself; a group's row still
     // shows its supervisor; the bare id is no row at all.
     assert_eq!(l.row(LONE).and_then(|r| r.steward.as_deref()), Some("0x00000000000000c1"));
@@ -1165,7 +1193,7 @@ fn a_lone_terminal_goes_in_the_section_its_own_word_says_and_breathes_when_it_is
 
 #[test]
 fn a_lone_terminals_row_says_which_frame_its_own_pane_wears() {
-    assert_eq!(list().row(LONE).unwrap().alone.as_ref().unwrap().pane, snapshot::Pane::Plain);
+    assert_eq!(list_with_lone().row(LONE).unwrap().alone.as_ref().unwrap().pane, snapshot::Pane::Plain);
     // The core lists a terminal in no group as a worker somebody minds, or
     // as a supervisor that has made no group: the row follows.
     for kind in [snapshot::Pane::Worker, snapshot::Pane::Supervisor] {
@@ -1181,7 +1209,7 @@ fn a_lone_terminals_row_says_which_frame_its_own_pane_wears() {
 fn looking_at_a_lone_terminals_row_for_a_moment_marks_it_like_any_other() {
     // The same marker, the same wait, the same check of being in front:
     // only what is sent names the terminal, since there is no group to.
-    let l = list();
+    let l = list_with_lone();
     let mut row = l.row(LONE).unwrap().clone();
     row.unseen = true;
     let mut marker = SeenMarker::default();
@@ -1311,14 +1339,14 @@ fn a_snapshot_without_the_headings_is_written_from_the_groups_as_it_always_was()
 }
 
 #[test]
-fn the_cores_fixture_says_six_waiting_and_three_groups_that_need_nothing() {
+fn the_cores_fixture_says_five_groups_waiting_and_three_that_need_nothing() {
     let l = list();
-    assert_eq!(l.waiting_header, Some(header(6, HeaderOf::Rows, HeaderNumber::Other)));
+    assert_eq!(l.waiting_header, Some(header(5, HeaderOf::Groups, HeaderNumber::Other)));
     assert_eq!(l.quiet_header, Some(header(3, HeaderOf::Groups, HeaderNumber::Other)));
     // The heading and the rows under it are the same number.
-    assert_eq!(l.waiting.len(), 6);
+    assert_eq!(l.waiting.len(), 5);
     assert_eq!(l.quiet.len(), 3);
-    assert_eq!(said(l.waiting_heading()), "6 waiting for you");
+    assert_eq!(said(l.waiting_heading()), "5 groups waiting for you");
     assert_eq!(said(l.quiet_heading()), "3 groups need nothing from you");
 }
 
@@ -1351,15 +1379,19 @@ fn the_title_of_a_groups_frame_is_its_supervisors_own_terminal() {
     // Two groups under one supervisor both name that terminal.
     assert_eq!(l.row("web-app-docs").unwrap().title.as_ref().unwrap().name, "web-app");
     // A terminal on its own is its own title.
-    let lone = l.row(LONE).unwrap();
+    let with_lone = list_with_lone();
+    let lone = with_lone.row(LONE).unwrap();
     assert_eq!(lone.title.as_ref().unwrap().name, lone.alone.as_ref().unwrap().title);
     assert_eq!(lone.title.as_ref().unwrap().shown, lone.shown);
     // A core that lists no terminals gives a group's frame no title.
-    let none = List::from_snapshot(&{
-        let mut s = snapshot::decode(FIXTURE).unwrap();
-        s.terminals.clear();
-        s
-    });
+    let none = List::from_snapshot_with(
+        &{
+            let mut s = snapshot::decode(FIXTURE).unwrap();
+            s.terminals.clear();
+            s
+        },
+        true,
+    );
     assert_eq!(none.row("billing").unwrap().title, None);
     assert!(none.row(LONE).unwrap().title.is_some());
 }

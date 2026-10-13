@@ -49,6 +49,9 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     private var lending = ControlRoomLending()
     private let lender = ControlRoomLender.shared
 
+    /// "Load Project" chosen here opens its list from here.
+    private let projectPicker = ProjectPicker()
+
     init(_ ghostty: Ghostty.App, selection: String? = nil) {
         self.ghostty = ghostty
         // The list is only ever on screen while this tab is the one in
@@ -513,6 +516,103 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// "New Tab" while this tab is selected: a terminal tab, as anywhere.
     @IBAction func newTab(_ sender: Any?) {
         (NSApp.delegate as? AppDelegate)?.newTab(sender)
+    }
+
+    // MARK: The Project menu
+
+    /// The tab the terminal on the right-hand side belongs to; nil with
+    /// none borrowed, or when no tab holds it any more.
+    private var lentTerminalsTab: TerminalController? {
+        lender.lent.flatMap { BaseTerminalController.controller(owning: $0) as? TerminalController }
+    }
+
+    /// "Save as Project" while this tab is selected: the control room is
+    /// not a tab that can be saved, so what is saved is the tab of the
+    /// terminal it is showing. Its panes are still in that tab's tree
+    /// while one of them is drawn here.
+    @IBAction func saveAsProject(_ sender: Any?) {
+        lentTerminalsTab?.saveAsProject(sender)
+    }
+
+    /// "Load Project" while this tab is selected.
+    @IBAction func loadProject(_ sender: Any?) {
+        projectPicker.present(
+            mode: .load,
+            onLoad: { [weak self] entry in
+                self?.openProject(entry)
+            })
+    }
+
+    /// "Manage Projects" while this tab is selected: on the project of the
+    /// terminal shown, when that tab is bound to one.
+    @IBAction func manageProjects(_ sender: Any?) {
+        openSettings(.projects(lentTerminalsTab?.boundProject))
+    }
+
+    /// Open `entry` as a tab. Where it goes, and that it comes in front,
+    /// is `ControlRoomRules.loadedProjectTab`: the place every tab opened
+    /// from the control room goes to, and in front because the person
+    /// asked for it.
+    private func openProject(_ entry: ProjectStore.Entry) {
+        let beside = terminalTabBeside
+        let frontmost = TerminalController.preferredParent?.window
+        let plan = ControlRoomRules.loadedProjectTab(
+            tabsBesideControlRoom: beside != nil,
+            anyTerminalWindow: frontmost != nil)
+
+        func home(_ which: ControlRoomRules.NewTab.Home) -> NSWindow? {
+            switch which {
+            case .askers: return nil
+            case .controlRooms: return beside
+            case .frontmost: return frontmost
+            }
+        }
+
+        let parent: NSWindow?
+        let inFront: Bool
+        switch plan {
+        case .refused:
+            return
+        case .ownWindow:
+            parent = nil
+            inFront = true
+        case let .inFront(of: which):
+            parent = home(which)
+            inFront = true
+        case let .behind(which):
+            parent = home(which)
+            inFront = false
+        }
+
+        do {
+            try TerminalController.load(entry, ghostty: ghostty, beside: parent, inFront: inFront)
+        } catch {
+            guard let window else { return }
+            let alert = NSAlert()
+            alert.messageText = String(localized: "Project Error", comment: "项目功能出错提醒标题")
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: String(localized: "OK", comment: "项目功能出错提醒：确定按钮"))
+            alert.beginSheetModal(for: window)
+        }
+    }
+}
+
+// MARK: NSMenuItemValidation
+
+extension ControlRoomController: NSMenuItemValidation {
+    /// Which of the Project menu's items can be chosen here is
+    /// `ControlRoomRules.projectItemOffered`, and nothing else is decided:
+    /// every other item this window answers to stays as it was.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        let which: ControlRoomRules.ProjectItem
+        switch item.action {
+        case #selector(saveAsProject(_:)): which = .saveAs
+        case #selector(loadProject(_:)): which = .load
+        case #selector(manageProjects(_:)): which = .manage
+        default: return true
+        }
+        return ControlRoomRules.projectItemOffered(which, lentTerminalHasTab: lentTerminalsTab != nil)
     }
 }
 

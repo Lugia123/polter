@@ -192,18 +192,50 @@ pub fn caption<'a>(room: Option<&'a str>, over: Option<&'a str>, program: &'a st
     }
 }
 
-/// Rows of the host's own menus (`__polter_*`) that act on the terminal tab
-/// in front and so are greyed on the control room's.
+/// Rows of the host's own menus (`__polter_*`) that act on a terminal's
+/// tab. The control room's tab is not one, so with it in front they act on
+/// the tab of the terminal it is showing, and are greyed when it shows none.
 pub const HOST_ROWS_ON_A_TERMINAL: &[&str] = &["__polter_save_project"];
 
 /// Whether a menu row can be chosen with the control room's tab in front.
 /// `host_row` is a row the host performs itself (its action starts
 /// `__polter_`); the rest are the core's bindings, which `reach` sorts.
-pub fn menu_row_offered(action: &str, host_row: bool, any_terminal: bool) -> bool {
+/// `lent` is whether the control room is showing a terminal of this window
+/// on its right-hand side.
+///
+/// The Project menu, with the control room in front: loading and managing
+/// are offered always, and saving while a terminal is shown -- what is
+/// saved is that terminal's own tab (`project_tab`). The macOS host's
+/// `ControlRoomRules.projectItemOffered`.
+pub fn menu_row_offered(action: &str, host_row: bool, any_terminal: bool, lent: bool) -> bool {
     if host_row {
-        !HOST_ROWS_ON_A_TERMINAL.contains(&action)
+        lent || !HOST_ROWS_ON_A_TERMINAL.contains(&action)
     } else {
         crate::reach::offered(action, any_terminal)
+    }
+}
+
+/// Which tab "Save as Project" saves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectTab {
+    /// The tab in front: a terminal's.
+    Front,
+    /// The tab of the terminal the control room is showing. The pane never
+    /// left that tab's tree, so the tab saves as it always did.
+    OfTheLentTerminal,
+    /// Nothing to save: the control room is in front and shows no terminal.
+    None,
+}
+
+/// `front` is the kind of the tab in front; `lent` whether the control
+/// room is showing a terminal. **Not whether the keyboard is in it**: the
+/// row used to light up once the person had clicked into that terminal and
+/// then saved the tab in front, which was the control room's own.
+pub fn project_tab(front: Kind, lent: bool) -> ProjectTab {
+    match front {
+        Kind::Terminal => ProjectTab::Front,
+        Kind::ControlRoom if lent => ProjectTab::OfTheLentTerminal,
+        Kind::ControlRoom => ProjectTab::None,
     }
 }
 
@@ -240,16 +272,41 @@ mod tests {
     #[test]
     fn on_the_control_room_a_menu_row_is_offered_only_if_it_can_be_done_there() {
         // The host's own rows, bar the one that saves the terminal tab in front.
-        assert!(menu_row_offered("__polter_settings", true, false));
-        assert!(menu_row_offered("__polter_load_project", true, false));
-        assert!(!menu_row_offered("__polter_save_project", true, true));
+        assert!(menu_row_offered("__polter_settings", true, false, false));
+        assert!(menu_row_offered("__polter_load_project", true, false, false));
+        assert!(!menu_row_offered("__polter_save_project", true, true, false));
         // The core's: a tab action yes, an app action with a terminal
         // somewhere, a terminal's own never.
-        assert!(menu_row_offered("new_tab", false, false));
-        assert!(menu_row_offered("quit", false, true));
-        assert!(!menu_row_offered("quit", false, false));
-        assert!(!menu_row_offered("copy_to_clipboard", false, true));
-        assert!(!menu_row_offered("new_split:right", false, true));
+        assert!(menu_row_offered("new_tab", false, false, false));
+        assert!(menu_row_offered("quit", false, true, false));
+        assert!(!menu_row_offered("quit", false, false, false));
+        assert!(!menu_row_offered("copy_to_clipboard", false, true, false));
+        assert!(!menu_row_offered("new_split:right", false, true, false));
+    }
+
+    #[test]
+    fn the_project_menu_works_with_the_control_room_in_front() {
+        // Loading and managing need no terminal: offered whether or not
+        // the control room is showing one, and with no terminal anywhere.
+        for lent in [false, true] {
+            for any_terminal in [false, true] {
+                assert!(menu_row_offered("__polter_load_project", true, any_terminal, lent));
+                assert!(menu_row_offered("__polter_manage_projects", true, any_terminal, lent));
+            }
+        }
+        // Saving saves a tab, and the control room's is not one: offered
+        // only while it shows a terminal, whose tab is then what is saved.
+        assert!(menu_row_offered("__polter_save_project", true, true, true));
+        assert!(!menu_row_offered("__polter_save_project", true, true, false));
+        assert_eq!(project_tab(Kind::ControlRoom, true), ProjectTab::OfTheLentTerminal);
+        assert_eq!(project_tab(Kind::ControlRoom, false), ProjectTab::None);
+        // A terminal's tab in front saves itself, whatever is on loan.
+        assert_eq!(project_tab(Kind::Terminal, false), ProjectTab::Front);
+        assert_eq!(project_tab(Kind::Terminal, true), ProjectTab::Front);
+        // A terminal's own rows are still not lit by a loan: the keyboard
+        // being in that terminal is what lights them, and that is the
+        // host's to see.
+        assert!(!menu_row_offered("copy_to_clipboard", false, true, true));
     }
 
     #[test]

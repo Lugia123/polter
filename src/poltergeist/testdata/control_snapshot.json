@@ -1,15 +1,15 @@
 {
   "rev": 1,
   "now_ms": 6000000,
-  "needs_me": 6,
+  "needs_me": 5,
   "groups_needing_me": 5,
   "groups_other": 3,
   "header_waiting": {
-    "count": 6,
-    "of": "rows",
+    "count": 5,
+    "of": "groups",
     "number": "other",
     "groups": 5,
-    "alone": 1
+    "alone": 0
   },
   "header_quiet": {
     "count": 3,

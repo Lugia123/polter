@@ -316,6 +316,57 @@ enum ControlRoomRules {
         return anyTerminalWindow ? .inFront(of: .frontmost) : .ownWindow
     }
 
+    // MARK: The Project menu
+
+    /// The three items of the Project menu.
+    enum ProjectItem: Equatable, CaseIterable {
+        case saveAs
+        case load
+        case manage
+    }
+
+    /// Whether an item of the Project menu can be chosen while the control
+    /// room is the window with the keyboard.
+    ///
+    /// All three were greyed there, and for no reason anybody wrote down:
+    /// the items go to whoever in the window answers to them, and in the
+    /// control room's window nobody did (the user, 2026-10-13: "I cannot
+    /// load a project"). This is the reason, written down.
+    ///
+    /// Loading and managing need no terminal: a project opens as a new tab
+    /// (`newTab` says where), and the list of projects is the
+    /// application's. Saving saves a tab, and the control room is not one
+    /// that can be saved -- so it saves the tab of the terminal it has
+    /// borrowed, and with none borrowed, or one whose tab is gone, there is
+    /// nothing to save.
+    static func projectItemOffered(_ item: ProjectItem, lentTerminalHasTab: Bool) -> Bool {
+        switch item {
+        case .load, .manage: return true
+        case .saveAs: return lentTerminalHasTab
+        }
+    }
+
+    /// Where a project the person loaded from the control room's menu
+    /// opens, and that it comes in front.
+    ///
+    /// The place is `newTab`'s, asked with nothing as the asker: among the
+    /// terminal tabs the control room sits with when there are any, else in
+    /// the terminal window used last, else in a window of its own. **It is
+    /// never left behind.** "Behind" is for a tab an agent asked for while
+    /// the person is looking at the control room; this one the person
+    /// chose themselves, and a project that opened where they cannot see
+    /// it reads as a menu item that did nothing (the user, 2026-10-13).
+    static func loadedProjectTab(tabsBesideControlRoom: Bool, anyTerminalWindow: Bool) -> NewTab {
+        let place = newTab(
+            asker: nil,
+            // It was chosen from the control room's own menu.
+            controlRoomInFront: true,
+            tabsBesideControlRoom: tabsBesideControlRoom,
+            anyTerminalWindow: anyTerminalWindow)
+        if case let .behind(home) = place { return .inFront(of: home) }
+        return place
+    }
+
     /// Whether opening a tab brings the application in front of whatever
     /// the person is using.
     ///

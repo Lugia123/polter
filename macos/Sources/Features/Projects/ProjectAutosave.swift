@@ -142,16 +142,53 @@ extension ProjectNode {
 
 // MARK: - Coalescing
 
-/// Something that can run a closure later and cancel it -- a seam so the
-/// debouncer can be driven by a clock a test controls.
+/// Something that can run a closure later and cancel it, and says what
+/// time it is -- a seam so the debouncer can be driven by a clock a test
+/// controls.
 protocol ProjectAutosaveScheduler {
     associatedtype Token
+    /// Seconds on a clock that only goes forward.
+    var now: TimeInterval { get }
     func schedule(after seconds: TimeInterval, _ work: @escaping () -> Void) -> Token
     func cancel(_ token: Token)
 }
 
+/// What changed in a bound tab, which says how long its write may be put
+/// off while other changes keep arriving.
+///
+/// **Why there are two.** Every change restarts a short wait, so that a
+/// burst is one write. But a pane with an agent in it changes its title
+/// several times a second for as long as the agent works -- the spinner is
+/// in the title -- and a wait that every change restarts then never ends:
+/// a split added while agents were running was written when they all fell
+/// silent, or never, since quitting wrote nothing either. That is "I have
+/// to save by hand after every change" (the user, 2026-10-13). So a write
+/// has a latest moment as well, counted from the first change it is for.
+enum ProjectAutosaveChange: Equatable, CaseIterable {
+    /// The tree: a pane added or closed, a divider moved, panes swapped.
+    /// What the person did with their own hands and expects to find again.
+    case layout
+    /// A pane's title or directory. Follows the person around all day and
+    /// is worth much less a second after it happened.
+    case paneDetail
+
+    /// How long after the last change of a burst the write happens.
+    static let quiet: TimeInterval = 1.0
+
+    /// The longest a write is put off after a change of this kind, however
+    /// many changes follow it.
+    var noLaterThan: TimeInterval {
+        switch self {
+        case .layout: return 3.0
+        case .paneDetail: return 30.0
+        }
+    }
+}
+
 /// `DispatchQueue.main`, the real clock.
 struct MainQueueScheduler: ProjectAutosaveScheduler {
+    var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
+
     func schedule(after seconds: TimeInterval, _ work: @escaping () -> Void) -> DispatchWorkItem {
         let item = DispatchWorkItem(block: work)
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item)
@@ -163,18 +200,24 @@ struct MainQueueScheduler: ProjectAutosaveScheduler {
     }
 }
 
-/// Runs `action` once, `delay` after the last `poke()` of a burst.
+/// Runs `action` once for a burst of changes: `delay` after the last of
+/// them, and never later than the change that allows the least waiting
+/// said it could be put off (`ProjectAutosaveChange.noLaterThan`).
 ///
 /// Dragging a split divider changes the tree on every mouse-moved event;
-/// without this, each of those is a file write and -- worse -- each is a
-/// chance for `.prev` to be taken from the middle of a drag.
+/// without the wait, each of those is a file write and -- worse -- each is a
+/// chance for `.prev` to be taken from the middle of a drag. Without the
+/// latest moment, changes that never stop arriving put the write off for
+/// ever.
 final class ProjectAutosaveDebouncer<Scheduler: ProjectAutosaveScheduler> {
     let delay: TimeInterval
     private let scheduler: Scheduler
     private let action: () -> Void
     private var pending: Scheduler.Token?
+    /// The latest the pending write may run, on the scheduler's clock.
+    private var deadline: TimeInterval?
 
-    init(delay: TimeInterval = 1.0, scheduler: Scheduler, action: @escaping () -> Void) {
+    init(delay: TimeInterval = ProjectAutosaveChange.quiet, scheduler: Scheduler, action: @escaping () -> Void) {
         self.delay = delay
         self.scheduler = scheduler
         self.action = action
@@ -182,11 +225,18 @@ final class ProjectAutosaveDebouncer<Scheduler: ProjectAutosaveScheduler> {
 
     var isPending: Bool { pending != nil }
 
-    /// Something changed: (re)start the wait.
-    func poke() {
+    /// Something changed: (re)start the wait, without moving the latest
+    /// moment any later than an earlier change of this burst put it. **What
+    /// changed has no default**: a caller that did not have to say would be
+    /// the next one whose write never comes.
+    func poke(_ change: ProjectAutosaveChange) {
+        let now = scheduler.now
+        let latest = min(deadline ?? .infinity, now + change.noLaterThan)
+        deadline = latest
         if let pending { scheduler.cancel(pending) }
-        pending = scheduler.schedule(after: delay) { [weak self] in
+        pending = scheduler.schedule(after: max(0, min(delay, latest - now))) { [weak self] in
             self?.pending = nil
+            self?.deadline = nil
             self?.action()
         }
     }
@@ -198,6 +248,7 @@ final class ProjectAutosaveDebouncer<Scheduler: ProjectAutosaveScheduler> {
         guard let pending else { return }
         scheduler.cancel(pending)
         self.pending = nil
+        deadline = nil
         action()
     }
 
@@ -206,6 +257,7 @@ final class ProjectAutosaveDebouncer<Scheduler: ProjectAutosaveScheduler> {
         guard let pending else { return }
         scheduler.cancel(pending)
         self.pending = nil
+        deadline = nil
     }
 }
 

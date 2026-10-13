@@ -651,10 +651,8 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     var needs_me: Int?
     var groups_needing_me: Int
     var groups_other: Int
-    /// What the list's two headings say, for a host that draws the lone
-    /// terminals' rows among the groups' -- which this one does. Absent in
-    /// snapshots from before the core said it, and in one whose lone rows
-    /// were taken out by hand: then the headings count groups.
+    /// What the list's two headings say. Absent in snapshots from before
+    /// the core said it: then the headings count groups.
     var header_waiting: ControlRoomList.Header?
     var header_quiet: ControlRoomList.Header?
     /// The group to start on when the control room opens with nothing
@@ -663,9 +661,9 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     var open_on: String?
     /// Already in the order to draw them.
     var groups: [Group]
-    /// Terminals in no group, each a row after the groups'. They are in
-    /// `needs_me` -- the Dock's number -- and not in the two counts of
-    /// groups, so without them the Dock says more than the list shows.
+    /// Terminals in no group. **Read and not drawn**: they have no row in
+    /// the list (`ControlRoomList.init(snapshot:showing:loneRows:)`), and
+    /// the core counts them in nothing the person is shown (task 1485).
     /// Absent in a snapshot cut down by hand.
     var ungrouped: [Lone]?
     /// The three below are newer than the rest; a snapshot without them
@@ -771,7 +769,16 @@ extension ControlRoomList {
     /// order, each goes in the section its own `needs_me` says, and the two
     /// counts are the snapshot's. `showing` is the tab in front in the
     /// window that draws this list, which decides only which glyph breathes.
-    init(snapshot: ControlRoomSnapshot, showing: String? = nil) {
+    ///
+    /// **The terminals in no group (`ungrouped`) get no row.** They had one
+    /// each, after the groups'; the rows read as groups nobody had made,
+    /// and the user had them taken out (2026-10-13, task 1485). The core
+    /// counts them in neither heading nor in `needs_me`, so what is drawn
+    /// is still what every number says. `loneRows` true is the list as it
+    /// was: nothing in the app asks for it, and it is kept so that what
+    /// such a row says stays under test for the day they are drawn
+    /// somewhere of their own.
+    init(snapshot: ControlRoomSnapshot, showing: String? = nil, loneRows: Bool = false) {
         let first = ControlRoomPulse.first(of: snapshot.pulses ?? [], notIn: showing)
         let breathing = first?.group
         // Which frame a terminal's own pane wears, as the core says it for
@@ -781,7 +788,7 @@ extension ControlRoomList {
         }
         // A terminal on its own, after the groups, in the section its own
         // `needs_me` says -- the same test a group's row is put by.
-        let lone = (snapshot.ungrouped ?? []).map { one in
+        let lone = (loneRows ? snapshot.ungrouped ?? [] : []).map { one in
             (one.needs_me, Row(
                 id: Self.rowId(ofTerminal: one.id),
                 shown: one.shown,
@@ -825,8 +832,8 @@ extension ControlRoomList {
         }
         let rows = groups + lone
         self.init(
-            // The heading's count where the core gave one -- it covers the
-            // lone terminals' rows too -- and the groups' otherwise. The
+            // The heading's count where the core gave one, and the groups'
+            // otherwise: the same number since task 1485. The
             // layout goes by the same number: with nobody waiting there is
             // one heading and no line under it.
             waitingCount: snapshot.header_waiting?.count ?? snapshot.groups_needing_me,
@@ -840,8 +847,9 @@ extension ControlRoomList {
             chooseSupervisorRole: snapshot.choose_supervisor_role ?? false)
     }
 
-    static func decode(snapshot json: Data, showing: String? = nil) throws -> ControlRoomList {
-        ControlRoomList(snapshot: try JSONDecoder().decode(ControlRoomSnapshot.self, from: json), showing: showing)
+    static func decode(snapshot json: Data, showing: String? = nil, loneRows: Bool = false) throws -> ControlRoomList {
+        ControlRoomList(snapshot: try JSONDecoder().decode(ControlRoomSnapshot.self, from: json),
+                        showing: showing, loneRows: loneRows)
     }
 }
 

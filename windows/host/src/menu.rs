@@ -126,7 +126,9 @@ fn offered_in_front(r: &Row) -> bool {
     let frame = crate::tabs::overlay_frame();
     // With the keyboard in a terminal -- the front tab's, or the one the
     // control room is showing once the person has clicked in it -- every
-    // row has something to act on.
+    // row has something to act on. (The one row that acts on a tab and not
+    // on a terminal, "Save as Project", is lit then too: a terminal is
+    // being shown, and its tab is what is saved -- `tabs::tab_saved_as_project`.)
     if !crate::tabs::active_surface(frame).is_null() {
         return true;
     }
@@ -135,6 +137,7 @@ fn offered_in_front(r: &Row) -> bool {
             action,
             crate::keys::is_host_action(action),
             !crate::tabs::any_surface().is_null(),
+            crate::tabs::shows_lent(frame),
         ),
         Some(Kind::Terminal) | None => true,
     }
@@ -606,17 +609,17 @@ fn run_host(frame: HWND, action: &str) -> bool {
         // `reopen.rs`. It answers false when there is nothing to reopen,
         // which is also what the greyed row is saying.
         "__polter_reopen_tab" => crate::reopen::reopen_last(frame),
-        // The tab in front.
-        "__polter_save_project" => {
-            let (tabs_now, active) = crate::tabs::strip_snapshot(frame);
-            match tabs_now.get(active) {
-                Some((id, _)) => {
-                    crate::project_picker::open_save(frame, *id);
-                    true
-                }
-                None => false,
+        // The tab in front -- or, with the control room in front, the tab
+        // of the terminal it is showing (`tabs::tab_saved_as_project`). It used to
+        // be the tab in front always, which with the keyboard in a shown
+        // terminal was the control room's own.
+        "__polter_save_project" => match crate::tabs::tab_saved_as_project(frame) {
+            Some(id) => {
+                crate::project_picker::open_save(frame, id);
+                true
             }
-        }
+            None => false,
+        },
         // **Returns before the window is on screen**, for the reason
         // `__polter_language` gives below.
         "__polter_load_project" => crate::project_picker::request_load(frame),
