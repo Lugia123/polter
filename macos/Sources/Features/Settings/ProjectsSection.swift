@@ -408,7 +408,7 @@ private struct ProjectDetail: View {
 
     var body: some View {
         let file = model.store.document(entry)
-        let leaves = file?.root.map(Self.leaves) ?? []
+        let leaves = file?.firstTab.map(Self.leaves) ?? []
         VStack(alignment: .leading, spacing: L.groupGap) {
             HStack(alignment: .firstTextBaseline, spacing: L.rowGap) {
                 Text(entry.name)
@@ -422,7 +422,7 @@ private struct ProjectDetail: View {
                 }
             }
 
-            if let root = file?.root {
+            if let root = file?.firstTab {
                 ProjectThumbnail(pane: Self.pane(root), leaves: leaves)
                     .frame(height: 200)
             }
@@ -503,7 +503,7 @@ private struct ProjectDetail: View {
 
     static func leaves(_ node: ProjectNode) -> [Leaf] {
         switch node {
-        case .leaf(let cwd, let title, _, _): [Leaf(cwd: cwd, title: title)]
+        case .leaf(let cwd, let title, _, _, _): [Leaf(cwd: cwd, title: title)]
         case .split(_, _, let left, let right): leaves(left) + leaves(right)
         }
     }

@@ -222,7 +222,7 @@ fn read_items(frame: HWND) -> Vec<Item> {
         .map(|e| {
             let panes = project::read_file(&e.path)
                 .ok()
-                .and_then(|s| s.root.as_ref().map(crate::project_ui::leaf_count))
+                .and_then(|s| s.first_tab().map(crate::project_ui::leaf_count))
                 .unwrap_or(0);
             Item { name: e.name, saved_at: e.saved_at, panes, path: e.path }
         })
