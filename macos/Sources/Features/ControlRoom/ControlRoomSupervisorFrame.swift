@@ -67,7 +67,22 @@ struct ControlRoomDetailMessage: View {
 
     /// Every other way of having no terminal: a sentence, and for a group
     /// with no supervisor what starts one.
+    ///
+    /// **What does not fit scrolls here.** The window does not grow to
+    /// hold it and is not kept from being made smaller by it
+    /// (`ControlRoomWindowSize`): on a narrow right-hand side the
+    /// sentences wrap to many lines, and those are reached by scrolling.
+    /// With room to spare it sits in the middle, as it always did.
     private var sentence: some View {
+        GeometryReader { place in
+            ScrollView(.vertical) {
+                words
+                    .frame(maxWidth: .infinity, minHeight: place.size.height)
+            }
+        }
+    }
+
+    private var words: some View {
         let theme = Look.theme(scheme)
         return VStack(spacing: CGFloat(Look.Side.rowGap)) {
             Text(Self.words(for: detail, start: start, alone: alone))
@@ -84,7 +99,6 @@ struct ControlRoomDetailMessage: View {
         .font(.system(size: CGFloat(Look.Font.body)))
         .multilineTextAlignment(.center)
         .padding(CGFloat(Look.Space.frameToContent))
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// One sentence for each way of having no terminal to show

@@ -391,7 +391,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         watchingResponder = window.observe(\.firstResponder) { [weak self] _, _ in
             DispatchQueue.main.async { self?.syncLentFocus() }
         }
-        window.contentView = content
+        ControlRoomWindowSize.install(content, in: window)
 
         // All three are needed for the system to bring it back.
         window.isRestorable = true
