@@ -127,9 +127,8 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
     /// again. With `removing` true the page is taken out of the project,
     /// and the tab, if it lives on, is a tab of no project.
     ///
-    /// `saving` false leaves the page as the file last had it: for a tab
-    /// that has just been saved as another project, whose panes now write
-    /// there.
+    /// `saving` false writes nothing at all: for undoing a join whose save
+    /// failed, which must leave the file as it was.
     func detach(_ controller: TerminalController, removing: Bool, saving: Bool = true) {
         guard let at = members.firstIndex(where: { $0.controller === controller }) else { return }
         if !removing && saving {
@@ -145,7 +144,9 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
             pages.remove(page)
             // Written now, with or without a tab left: the page is gone
             // from the file, and its snapshots with it.
-            save(capturing: [], keeping: .onLayoutChange, what: "save after taking a page out")
+            if saving {
+                save(capturing: [], keeping: .onLayoutChange, what: "save after taking a page out")
+            }
         }
         releaseIfNobodyIsLeft()
         ProjectStore.postBindingDidChange(name)
@@ -221,46 +222,91 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
         ProjectStore.postBindingDidChange(name)
     }
 
-    // MARK: A tab saved as a project
+    // MARK: Tabs saved as a project
 
-    /// The project `name` becomes the one tab `controller`, which is its
-    /// page from now on. Throws rather than reporting, so a caller that has
-    /// something riding on the save -- closing the tab, the settings
-    /// window's "Overwrite with Current Tab" -- can tell whether it worked.
+    /// The project `name` becomes the tabs `controllers`, in the order
+    /// their tabs stand: whatever pages it had are replaced, and its group,
+    /// if it had one, stays its group. Throws rather than reporting, so a
+    /// caller that has something riding on the save -- closing the tab, the
+    /// settings window's "Overwrite with Current Tab" -- can tell whether
+    /// it worked, and a save that fails leaves every tab as it was.
     ///
-    /// Refused while the project is open in another tab: its pages there
-    /// would be written straight back over this.
+    /// Refused while the project is open in other tabs: its pages there
+    /// would be written straight back over this. Refused for a tab that is
+    /// a page of another project: a tab is a page of at most one.
     static func save(
-        _ controller: TerminalController,
+        _ controllers: [TerminalController],
         as name: String,
         keeping: ProjectFileWriter.Keeping,
         in store: ProjectStore
     ) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if let session = open(for: trimmed, in: store) {
-            guard session.liveMembers.allSatisfy({ $0.controller === controller }) else {
+            guard session.liveMembers.allSatisfy({ member in controllers.contains { $0 === member.controller } }),
+                  controllers.allSatisfy({ $0.projectSession === session })
+            else {
                 throw ProjectStore.StoreError.boundElsewhere(name: trimmed, holder: session.projectBindingTitle)
             }
             // Its own project, saved again by hand.
-            try session.write(capturing: [controller], keeping: keeping)
+            try session.write(capturing: controllers, keeping: keeping)
             return
         }
         if store.bindings.owner(of: store.bindingKey(name: trimmed)) != nil {
             throw ProjectStore.StoreError.boundElsewhere(name: trimmed, holder: store.holderTitle(name: trimmed) ?? "")
         }
+        if let taken = controllers.first(where: { $0.projectSession != nil }) {
+            throw ProjectStore.StoreError.pageOfAnother(tab: taken.projectTabTitle, name: taken.boundProject ?? "")
+        }
 
-        // Written before the tab leaves the project it was in: a save that
-        // fails leaves it where it was. That project keeps the page as it
-        // last saved it -- not as it is now, which would point the panes'
-        // journals back at its files.
-        let entry = try store.save(name: trimmed, tree: controller.surfaceTree, keeping: keeping)
-        controller.projectSession?.detach(controller, removing: false, saving: false)
+        let session = ProjectSession(
+            name: trimmed, store: store, pages: ProjectPages(), group: store.group(name: trimmed))
+        try session.claim()
+        for controller in controllers {
+            session.attach(controller, page: nil)
+        }
+        do {
+            try session.write(capturing: controllers, keeping: keeping)
+        } catch {
+            for controller in controllers {
+                session.detach(controller, removing: true, saving: false)
+            }
+            throw error
+        }
+    }
+
+    /// `controller` becomes one more page of `entry`'s project, where its
+    /// tab is. The project's other pages are not opened by this.
+    static func add(_ controller: TerminalController, to entry: ProjectStore.Entry, in store: ProjectStore) throws {
+        if let name = controller.boundProject, controller.projectSession != nil {
+            throw ProjectStore.StoreError.pageOfAnother(tab: controller.projectTabTitle, name: name)
+        }
         let session = try session(for: entry, in: store)
-        session.attach(controller, page: session.pages.pageIDs.first)
-        // Leaving a project stops the panes' journals; this starts them
-        // again, into the new one. Nothing else changes, so nothing is
-        // written.
-        session.save(capturing: [], keeping: .onLayoutChange, what: "save after joining")
+        session.attach(controller, page: nil)
+        do {
+            try session.write(capturing: [controller], keeping: .onLayoutChange)
+        } catch {
+            session.detach(controller, removing: true, saving: false)
+            throw error
+        }
+    }
+
+    /// How many of the project's pages are open besides `controller`.
+    func otherPagesOpen(than controller: TerminalController) -> Int {
+        liveMembers.filter { $0.controller !== controller }.count
+    }
+
+    /// Whether any pane of any open page has something running that a
+    /// person would want asking about before it is closed.
+    var needsConfirmToClose: Bool {
+        liveMembers.contains { member in member.controller.surfaceTree.contains { $0.needsConfirmQuit } }
+    }
+
+    /// "Close Project": every open page closes, and every one stays a page
+    /// -- the project is put away, not taken apart.
+    func closeAllPages() {
+        for member in liveMembers {
+            member.controller.closeTabImmediately(registerRedo: false)
+        }
     }
 
     // MARK: Opening

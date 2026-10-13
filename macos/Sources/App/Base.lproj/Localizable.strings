@@ -775,3 +775,34 @@
 
 /* 分屏框：worker 那一格的标题带上，名字后面说明身份的字 */
 "Worker" = "Worker";
+
+/* 多标签页的项目（#1491）：存为项目的框、菜单、关页询问、记号、设置 */
+"This page" = "This page";
+"Already in the project \"%@\"" = "Already in the project \"%@\"";
+"This page is in no project" = "This page is in no project";
+"This page is in the project \"%@\"" = "This page is in the project \"%@\"";
+"Take This Page Out of the Project" = "Take This Page Out of the Project";
+"Take This Page Out of \"%@\"" = "Take This Page Out of \"%@\"";
+"Ask each time" = "Ask each time";
+"Keep it in the project" = "Keep it in the project";
+"Take it out of the project" = "Take it out of the project";
+"%@ page(s) · %@ pane(s)" = "%@ page(s) · %@ pane(s)";
+"Tabs of this window to save" = "Tabs of this window to save";
+"Once saved, these tabs are saved back to the project whenever their layout changes. There is no need to save again." = "Once saved, these tabs are saved back to the project whenever their layout changes. There is no need to save again.";
+"\"%@\" already has %@, saved %@. The replaced version is kept as the previous version." = "\"%@\" already has %@, saved %@. The replaced version is kept as the previous version.";
+"%@ · saved %@" = "%@ · saved %@";
+"The tab \"%@\" is already a page of the project \"%@\". Take it out of that project first." = "The tab \"%@\" is already a page of the project \"%@\". Take it out of that project first.";
+"Close Project?" = "Close Project?";
+"A terminal of this project still has a running process. If you close the project the process will be killed." = "A terminal of this project still has a running process. If you close the project the process will be killed.";
+"Close the page \"%@\"" = "Close the page \"%@\"";
+"It is a page of the project \"%@\". If you only close it, it comes back the next time the project is opened." = "It is a page of the project \"%@\". If you only close it, it comes back the next time the project is opened.";
+"Also take it out of the project" = "Also take it out of the project";
+"Don't ask again (do as chosen this time)" = "Don't ask again (do as chosen this time)";
+"Add to Project" = "Add to Project";
+"Save as New Project..." = "Save as New Project...";
+"A page of the project \"%@\"" = "A page of the project \"%@\"";
+"Page %@" = "Page %@";
+"Size" = "Size";
+"Closing a page" = "Closing a page";
+"Not open." = "Not open.";
+"Open in the tab \"%@\"; saved automatically as its pages change, last at %@." = "Open in the tab \"%@\"; saved automatically as its pages change, last at %@.";

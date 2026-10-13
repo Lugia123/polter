@@ -791,3 +791,34 @@
 
 /* 分屏框：worker 那一格的标题带上，名字后面说明身份的字 */
 "Worker" = "worker";
+
+/* 多标签页的项目（#1491）：存为项目的框、菜单、关页询问、记号、设置 */
+"This page" = "这一页";
+"Already in the project \"%@\"" = "已在项目 %@ 里";
+"This page is in no project" = "这一页不属于任何项目";
+"This page is in the project \"%@\"" = "这一页属于项目 %@";
+"Take This Page Out of the Project" = "把这一页移出项目";
+"Take This Page Out of \"%@\"" = "把这一页移出项目 %@";
+"Ask each time" = "每次都问";
+"Keep it in the project" = "不问，留在项目里";
+"Take it out of the project" = "不问，同时移出项目";
+"%@ page(s) · %@ pane(s)" = "%@ 页 · %@ 格";
+"Tabs of this window to save" = "存这个窗口里的哪几页";
+"Once saved, these tabs are saved back to the project whenever their layout changes. There is no need to save again." = "存下以后，这几页的布局一变就自动存回这个项目，不用再点保存。";
+"\"%@\" already has %@, saved %@. The replaced version is kept as the previous version." = "“%@”已经有 %@，保存于 %@。被替换的版本会留作上一版。";
+"%@ · saved %@" = "%@ · 保存于 %@";
+"The tab \"%@\" is already a page of the project \"%@\". Take it out of that project first." = "标签页“%@”已经是项目“%@”的一页。先把它从那个项目里移出。";
+"Close Project?" = "关闭这个项目？";
+"A terminal of this project still has a running process. If you close the project the process will be killed." = "这个项目里还有终端在跑进程。关闭项目会把它结束掉。";
+"Close the page \"%@\"" = "关掉“%@”这一页";
+"It is a page of the project \"%@\". If you only close it, it comes back the next time the project is opened." = "它在项目 %@ 里。只是关掉的话，下次打开项目它还会回来。";
+"Also take it out of the project" = "同时把它从项目里移出";
+"Don't ask again (do as chosen this time)" = "以后不再问（照这次选的做）";
+"Add to Project" = "加入项目";
+"Save as New Project..." = "存为新项目…";
+"A page of the project \"%@\"" = "项目 %@ 的一页";
+"Page %@" = "第 %@ 页";
+"Size" = "大小";
+"Closing a page" = "关掉一页时";
+"Not open." = "没有打开。";
+"Open in the tab \"%@\"; saved automatically as its pages change, last at %@." = "开在标签页“%@”里；它的页一变就自动保存，上次在 %@。";

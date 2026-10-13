@@ -83,7 +83,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// `TerminalRestorableState` so that after a restart the tab can ask for
     /// its page back -- which the project's file then grants or does not
     /// (`ProjectSession.restore`).
-    var boundProject: String?
+    var boundProject: String? {
+        didSet {
+            (window as? TerminalWindow)?.projectOfTab = boundProject
+        }
+    }
 
     /// The project this tab is a page of, open: what writes the project's
     /// file as its tabs change, and what a tab's own changes are told to
@@ -1387,13 +1391,19 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             return
         }
 
-        guard surfaceTree.contains(where: { $0.needsConfirmQuit }) else {
-            closeTabImmediately()
-            return
-        }
+        // One page of a project closed by itself: whether it leaves the
+        // project too is asked first, where there is a question
+        // (`ProjectPageRules.closeStep`).
+        askAboutProjectPage { [weak self] in
+            guard let self else { return }
+            guard self.surfaceTree.contains(where: { $0.needsConfirmQuit }) else {
+                self.closeTabImmediately()
+                return
+            }
 
-        presentSaveAsProjectBeforeClosing {
-            self.closeTabImmediately()
+            self.presentSaveAsProjectBeforeClosing {
+                self.closeTabImmediately()
+            }
         }
     }
 
@@ -1973,6 +1983,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
 extension TerminalController {
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if let offered = validateProjectMenuItem(item) { return offered }
         switch item.action {
         // The menu bar's own copies of the agent items. AppKit asks this
         // just before the menu opens, which is the only moment the answer

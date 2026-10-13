@@ -47,7 +47,13 @@ final class ProjectStore {
         let url: URL
         let name: String
         let savedAt: Date
+        /// The panes of the first page -- what the thumbnail of one page
+        /// counts. A project's size is `pageCount` and `totalPaneCount`.
         let paneCount: Int
+        /// How many pages the project has, in every window.
+        var pageCount = 0
+        /// How many panes it has, on every page.
+        var totalPaneCount = 0
         /// Whether a `.prev` generation exists to go back to -- see
         /// `ProjectFileWriter.write`.
         var hasPrevious = false
@@ -62,6 +68,9 @@ final class ProjectStore {
         /// `name` is bound to an open tab, titled `holder`, and the action
         /// would either give it a second writer or change the file under it.
         case boundElsewhere(name: String, holder: String)
+        /// The tab titled `tab` is a page of the project `name` already,
+        /// and a tab is a page of at most one.
+        case pageOfAnother(tab: String, name: String)
 
         var errorDescription: String? {
             switch self {
@@ -71,6 +80,8 @@ final class ProjectStore {
                 return String(localized: "That project no longer exists.", comment: "项目存储出错：项目已不存在")
             case .nameTaken(let name):
                 return String(localized: "There is already a project called \"\(name)\".", comment: "项目存储出错：重名，参数是已有的那个项目名")
+            case .pageOfAnother(let tab, let name):
+                return String(localized: "The tab \"\(tab)\" is already a page of the project \"\(name)\". Take it out of that project first.", comment: "项目存储出错：这个标签页已经是另一个项目的一页，参数依次是标签页标题、项目名")
             case .boundElsewhere(let name, let holder):
                 return String(localized: "\"\(name)\" is open in the tab \"\(holder)\", which saves it automatically. Close that tab first.", comment: "项目存储出错：项目已绑定到另一个 tab，参数依次是项目名、那个 tab 的标题")
             }
@@ -166,6 +177,8 @@ final class ProjectStore {
             name: file.name,
             savedAt: file.savedAtDate,
             paneCount: file.paneCount,
+            pageCount: file.pageCount,
+            totalPaneCount: file.totalPaneCount,
             hasPrevious: FileManager.default.fileExists(atPath: ProjectFileWriter.previousURL(for: url).path))
     }
 
@@ -353,7 +366,7 @@ final class ProjectStore {
             Self.logger.debug("project '\(file.name, privacy: .public)' unchanged, not written")
         case .written(let rotated):
             Self.logger.info(
-                "saved project '\(file.name, privacy: .public)' with \(file.paneCount, privacy: .public) pane(s), previous kept: \(rotated, privacy: .public)")
+                "saved project '\(file.name, privacy: .public)' with \(file.pageCount, privacy: .public) page(s), \(file.totalPaneCount, privacy: .public) pane(s), previous kept: \(rotated, privacy: .public)")
             // Whoever shows a project's "last saved" -- the settings window --
             // reads it again now rather than when something else happens to
             // make it look (#965). Only a write that happened: `.unchanged`
@@ -447,10 +460,11 @@ final class ProjectStore {
     /// doesn't decode isn't offered: restoring it would give back a project
     /// nothing can open.
     func versions(_ entry: Entry) -> [ProjectsRules.Version] {
-        let current = ProjectsRules.Version(isCurrent: true, savedAt: entry.savedAt, paneCount: entry.paneCount)
+        // Counted whole: every page of each version.
+        let current = ProjectsRules.Version(isCurrent: true, savedAt: entry.savedAt, paneCount: entry.totalPaneCount)
         let previous = (try? Data(contentsOf: ProjectFileWriter.previousURL(for: entry.url)))
             .flatMap { try? ProjectFile.decode(from: $0) }
-            .map { ProjectsRules.Version(isCurrent: false, savedAt: $0.savedAtDate, paneCount: $0.paneCount) }
+            .map { ProjectsRules.Version(isCurrent: false, savedAt: $0.savedAtDate, paneCount: $0.totalPaneCount) }
         return ProjectsRules.versions(current: current, previous: previous)
     }
 

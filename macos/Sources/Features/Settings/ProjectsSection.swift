@@ -387,7 +387,7 @@ struct ProjectsView: View {
     // MARK: Text
 
     static func summary(_ entry: ProjectStore.Entry) -> String {
-        String(localized: "\(String(entry.paneCount)) pane(s) · saved \(dateFormatter.string(from: entry.savedAt))", comment: "项目列表每一行的副标题：面板数和保存时间")
+        String(localized: "\(ProjectPageRules.size(pages: entry.pageCount, panes: entry.totalPaneCount)) · saved \(dateFormatter.string(from: entry.savedAt))", comment: "项目列表每一行的副标题：几页几格和保存时间")
     }
 
     static let dateFormatter: DateFormatter = {
@@ -406,11 +406,16 @@ private struct ProjectDetail: View {
     var rename: () -> Void
     var restore: () -> Void
 
+    /// What closing one page of a project does (`ProjectPageRules.closeStep`).
+    @AppStorage(ProjectPageRules.closeChoiceKey) private var closeChoice = ProjectPageRules.CloseChoice.ask.rawValue
+
     private typealias L = SettingsLayout
 
     var body: some View {
         let file = model.store.document(entry)
-        let leaves = file?.firstTab.map(Self.leaves) ?? []
+        // Every page of the project, in the order the file has them.
+        let pages = file?.tabs ?? []
+        let leaves = pages.flatMap(Self.leaves)
         VStack(alignment: .leading, spacing: L.groupGap) {
             HStack(alignment: .firstTextBaseline, spacing: L.rowGap) {
                 Text(entry.name)
@@ -424,17 +429,26 @@ private struct ProjectDetail: View {
                 }
             }
 
-            if let root = file?.firstTab {
-                ProjectThumbnail(pane: Self.pane(root), leaves: leaves)
-                    .frame(height: 200)
+            // One thumbnail per page: a project is drawn whole. A project
+            // of one page is drawn as it always was.
+            ForEach(Array(pages.enumerated()), id: \.offset) { number, root in
+                VStack(alignment: .leading, spacing: L.rowGap / 2) {
+                    if pages.count > 1 {
+                        Text(String(localized: "Page \(String(number + 1))", comment: "设置窗口·项目：多页项目里每张缩略图上方的页码，参数是第几页"))
+                            .font(SettingsFont.minimum)
+                            .foregroundStyle(.secondary)
+                    }
+                    ProjectThumbnail(pane: Self.pane(root), leaves: Self.leaves(root))
+                        .frame(height: pages.count > 1 ? 120 : 200)
+                }
             }
 
             VStack(alignment: .leading, spacing: L.rowGap) {
                 formRow(String(localized: "Saved", comment: "设置窗口·项目：字段名，上次保存时间")) {
                     Text(ProjectsView.dateFormatter.string(from: entry.savedAt))
                 }
-                formRow(String(localized: "Panes", comment: "设置窗口·项目：字段名，pane 数")) {
-                    Text(String(entry.paneCount))
+                formRow(String(localized: "Size", comment: "设置窗口·项目：字段名，项目有几页几格")) {
+                    Text(ProjectPageRules.size(pages: entry.pageCount, panes: entry.totalPaneCount))
                 }
                 formRow(String(localized: "Directories", comment: "设置窗口·项目：字段名，涉及的目录")) {
                     let dirs = ProjectsRules.directories(leaves.map(\.cwd))
@@ -456,6 +470,18 @@ private struct ProjectDetail: View {
                 formRow(String(localized: "Autosave", comment: "设置窗口·项目：字段名，自动保存状态")) {
                     Text(autosave)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+                // Not this project's alone: what closing a page of any
+                // project does. Here because this is where the answer to
+                // "don't ask again" is taken back.
+                formRow(String(localized: "Closing a page", comment: "设置窗口·项目：字段名，关掉项目里的一页时怎么办")) {
+                    Picker("", selection: $closeChoice) {
+                        ForEach(ProjectPageRules.CloseChoice.allCases, id: \.rawValue) { choice in
+                            Text(ProjectPageRules.text(choice)).tag(choice.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
                 }
             }
 
@@ -493,9 +519,9 @@ private struct ProjectDetail: View {
 
     private var autosave: String {
         guard let holder = model.holder(of: entry) else {
-            return String(localized: "Not bound to an open tab.", comment: "设置窗口·项目：自动保存状态，没有绑定到打开的标签页")
+            return String(localized: "Not open.", comment: "设置窗口·项目：自动保存状态，项目没有打开着的页")
         }
-        return String(localized: "Bound to the tab \"\(holder)\"; saved automatically as it changes, last at \(ProjectsView.dateFormatter.string(from: entry.savedAt)).", comment: "设置窗口·项目：自动保存状态，参数依次是标签页标题、上次自动保存时间")
+        return String(localized: "Open in the tab \"\(holder)\"; saved automatically as its pages change, last at \(ProjectsView.dateFormatter.string(from: entry.savedAt)).", comment: "设置窗口·项目：自动保存状态，参数依次是它开着的一个标签页的标题、上次自动保存时间")
     }
 
     struct Leaf {

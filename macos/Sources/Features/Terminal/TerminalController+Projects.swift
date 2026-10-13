@@ -13,12 +13,51 @@ import GhosttyKit
 /// tab's side of that: the menu actions, and telling the session what
 /// changed.
 extension TerminalController {
+    /// The terminal tabs of this tab's window, in the order they stand:
+    /// what "Save as Project" lists.
+    private var tabsOfThisWindow: [TerminalController] {
+        let windows = window?.tabGroup?.windows ?? window.map { [$0] } ?? []
+        return windows.compactMap { $0.windowController as? TerminalController }
+    }
+
     @IBAction func saveAsProject(_ sender: Any?) {
-        projectPicker.present(
-            mode: .saveAs(currentPaneCount: surfaceTree.count),
-            onSave: { [weak self] name in
-                self?.performSave(name: name)
-            })
+        presentSaveAsProject { _ in }
+    }
+
+    /// Show "Save as Project" for this tab's window. `done` is told whether
+    /// a save happened and worked.
+    private func presentSaveAsProject(done: @escaping (Bool) -> Void) {
+        let controllers = tabsOfThisWindow
+        let tabs = controllers.enumerated().map { index, controller in
+            ProjectPageRules.Tab(
+                id: index,
+                title: controller.projectTabTitle,
+                panes: controller.surfaceTree.count,
+                project: controller.boundProject,
+                isCurrent: controller === self)
+        }
+        projectPicker.presentSaveAs(
+            tabs: tabs,
+            onSave: { [weak self] name, ids in
+                guard let self else { return }
+                var saved = false
+                // A save that fails is reported and is not a save
+                // (`ProjectSaveBeforeClose.saveThenClose` is that rule).
+                ProjectSaveBeforeClose.saveThenClose(
+                    save: {
+                        // Save As: a name that is taken is a replacement,
+                        // and what it held is kept as the previous version,
+                        // whatever its layout (#969). A new name has
+                        // nothing to keep either way.
+                        try ProjectSession.save(
+                            ids.compactMap { controllers.indices.contains($0) ? controllers[$0] : nil },
+                            as: name, keeping: .always, in: ProjectStore.shared)
+                    },
+                    reportFailure: { self.presentProjectError($0) },
+                    close: { saved = true })
+                done(saved)
+            },
+            onCancel: { done(false) })
     }
 
     @IBAction func loadProject(_ sender: Any?) {
@@ -33,6 +72,149 @@ extension TerminalController {
     /// (settings.md §3.2).
     @IBAction func manageProjects(_ sender: Any?) {
         openSettings(.projects(boundProject))
+    }
+
+    /// The line at the top of the `Project` menu. It does nothing and is
+    /// never offered: it is there to be read.
+    @IBAction func projectMenuHeader(_ sender: Any?) {}
+
+    /// "Add to Project ▸ <name>" on a tab's own menu: the project's name is
+    /// the item's `representedObject`.
+    @IBAction func addToProject(_ sender: Any?) {
+        guard let name = (sender as? NSMenuItem)?.representedObject as? String else { return }
+        do {
+            guard let entry = ProjectStore.shared.entry(name: name) else { throw ProjectStore.StoreError.notFound }
+            try ProjectSession.add(self, to: entry, in: ProjectStore.shared)
+        } catch {
+            presentProjectError(error)
+        }
+    }
+
+    /// "Take This Page Out of the Project": the tab stays open and is a tab
+    /// of no project; the project no longer has the page.
+    @IBAction func takeOutOfProject(_ sender: Any?) {
+        projectSession?.detach(self, removing: true)
+    }
+
+    /// "Close Project": every open page of this tab's project closes, and
+    /// every one stays a page. Asked about once, for all of them, when
+    /// something is still running in one.
+    @IBAction func closeProject(_ sender: Any?) {
+        guard let session = projectSession else { return }
+        guard session.needsConfirmToClose else {
+            session.closeAllPages()
+            return
+        }
+        confirmClose(
+            messageText: String(localized: "Close Project?", comment: "关闭项目的确认框标题"),
+            informativeText: String(localized: "A terminal of this project still has a running process. If you close the project the process will be killed.", comment: "关闭项目的确认框正文")
+        ) {
+            session.closeAllPages()
+        }
+    }
+
+    /// "Rename Project…": asks for the new name on a sheet and renames the
+    /// project's file, with everything that goes with it
+    /// (`ProjectStore.rename`); its open pages follow.
+    @IBAction func renameProject(_ sender: Any?) {
+        guard let window, let name = boundProject, let entry = ProjectStore.shared.entry(name: name) else { return }
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Rename Project", comment: "给项目改名的框标题")
+        let field = NSTextField(string: name)
+        field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+        field.font = NSFont.systemFont(ofSize: SettingsFont.minimumPointSize)
+        alert.accessoryView = field
+        alert.addButton(withTitle: String(localized: "Rename", comment: "给项目改名的框：改名按钮"))
+        let cancel = alert.addButton(withTitle: String(localized: "Cancel", comment: "项目选择界面：取消按钮"))
+        cancel.keyEquivalent = "\u{1b}"
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            do {
+                try ProjectStore.shared.rename(entry, to: field.stringValue)
+            } catch {
+                self?.presentProjectError(error)
+            }
+        }
+    }
+
+    /// What the `Project` menu's items say and whether each is offered for
+    /// this tab (`ProjectPageRules`). Nil for an item that is not one of
+    /// them.
+    func validateProjectMenuItem(_ item: NSMenuItem) -> Bool? {
+        let project = boundProject
+        switch item.action {
+        case #selector(projectMenuHeader(_:)):
+            item.title = ProjectPageRules.menuHeader(project: project)
+            return false
+        case #selector(saveAsProject(_:)): return ProjectPageRules.offered(.saveAs, pageOf: project)
+        case #selector(loadProject(_:)): return ProjectPageRules.offered(.open, pageOf: project)
+        case #selector(manageProjects(_:)): return ProjectPageRules.offered(.manage, pageOf: project)
+        case #selector(addToProject(_:)): return ProjectPageRules.offered(.addTo, pageOf: project)
+        case #selector(renameProject(_:)): return ProjectPageRules.offered(.rename, pageOf: project)
+        case #selector(closeProject(_:)): return ProjectPageRules.offered(.closeProject, pageOf: project)
+        case #selector(takeOutOfProject(_:)):
+            item.title = ProjectPageRules.takeOutTitle(project: project)
+            return ProjectPageRules.offered(.takeOut, pageOf: project)
+        default:
+            return nil
+        }
+    }
+
+    // MARK: Closing a Page
+
+    /// Run `close` for this one tab, after asking -- where
+    /// `ProjectPageRules.closeStep` says to ask -- whether the page should
+    /// be taken out of its project as well. Cancel leaves the tab open.
+    func askAboutProjectPage(thenClose close: @escaping () -> Void) {
+        let defaults = UserDefaults.standard
+        let choice = defaults.string(forKey: ProjectPageRules.closeChoiceKey)
+            .flatMap(ProjectPageRules.CloseChoice.init(rawValue:)) ?? .ask
+        let step = ProjectPageRules.closeStep(
+            pageOf: boundProject,
+            otherPagesOpen: projectSession?.otherPagesOpen(than: self) ?? 0,
+            scope: .tab,
+            choice: choice)
+
+        func finish(takingOut: Bool) {
+            if takingOut { projectSession?.detach(self, removing: true) }
+            close()
+        }
+
+        guard step == .ask, let window, let project = boundProject else {
+            if case .close(let takingOut) = step { finish(takingOut: takingOut) } else { close() }
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Close the page \"\(projectTabTitle)\"", comment: "关掉项目里的一页的询问框标题，参数是这一页的标题")
+        alert.informativeText = String(localized: "It is a page of the project \"\(project)\". If you only close it, it comes back the next time the project is opened.", comment: "关掉项目里的一页的询问框正文，参数是项目名")
+        let takeOut = NSButton(checkboxWithTitle: String(localized: "Also take it out of the project", comment: "关掉项目里的一页：同时把它从项目里移出"), target: nil, action: nil)
+        let dontAsk = NSButton(checkboxWithTitle: String(localized: "Don't ask again (do as chosen this time)", comment: "关掉项目里的一页：以后不再问（照这次选的做）"), target: nil, action: nil)
+        let font = NSFont.systemFont(ofSize: SettingsFont.minimumPointSize)
+        takeOut.font = font
+        dontAsk.font = font
+        let stack = NSStackView(views: [takeOut, dontAsk])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.frame = NSRect(origin: .zero, size: stack.fittingSize)
+        alert.accessoryView = stack
+        alert.addButton(withTitle: String(localized: "Close", comment: "关闭确认框"))
+        // Esc is bound explicitly: NSAlert only binds it on its own to a
+        // button titled "Cancel" in English.
+        alert.addButton(withTitle: String(localized: "Cancel", comment: "项目选择界面：取消按钮")).keyEquivalent = "\u{1b}"
+        alert.beginSheetModal(for: window) { response in
+            alert.window.orderOut(nil)
+            guard response == .alertFirstButtonReturn else { return }
+            let takingOut = takeOut.state == .on
+            let remembered = ProjectPageRules.choice(
+                afterTakingOut: takingOut, dontAskAgain: dontAsk.state == .on, was: choice)
+            if remembered != choice {
+                defaults.set(remembered.rawValue, forKey: ProjectPageRules.closeChoiceKey)
+            }
+            finish(takingOut: takingOut)
+        }
     }
 
     // MARK: Close Flow
@@ -86,35 +268,16 @@ extension TerminalController {
             case .closeWithoutSaving:
                 closeAction()
             case .save:
-                // Cancelling the picker keeps the tab open too: `onCancel`
-                // defaults to doing nothing.
-                self.projectPicker.present(
-                    mode: .saveAs(currentPaneCount: self.surfaceTree.count),
-                    onSave: { [weak self] name in
-                        guard let self else { return }
-                        ProjectSaveBeforeClose.saveThenClose(
-                            // Save As onto an existing name replaces that
-                            // project: what it held is kept as `.prev` (#969).
-                            save: { try self.saveAndBind(name: name, keeping: .always) },
-                            reportFailure: { self.presentProjectError($0) },
-                            close: closeAction)
-                    })
+                // Cancelling the sheet, or a save that fails (which the
+                // sheet reports), keeps the tab open too.
+                self.presentSaveAsProject { saved in
+                    if saved { closeAction() }
+                }
             }
         }
     }
 
     // MARK: Store Operations
-
-    private func performSave(name: String) {
-        do {
-            // Save As: a name that is taken is a replacement, and what it
-            // held is kept as the previous version, whatever its layout
-            // (#969). A new name has nothing to keep either way.
-            try saveAndBind(name: name, keeping: .always)
-        } catch {
-            presentProjectError(error)
-        }
-    }
 
     /// Save this tab as the project `name` and make it that project's page.
     /// Throws rather than reporting, so a caller that has something riding
@@ -122,7 +285,7 @@ extension TerminalController {
     /// with Current Tab" -- can tell whether it worked. `keeping` is
     /// `.always` when this replaces a project with the tab.
     func saveAndBind(name: String, keeping: ProjectFileWriter.Keeping) throws {
-        try ProjectSession.save(self, as: name, keeping: keeping, in: ProjectStore.shared)
+        try ProjectSession.save([self], as: name, keeping: keeping, in: ProjectStore.shared)
     }
 
     private func performLoad(_ entry: ProjectStore.Entry) {
@@ -229,7 +392,7 @@ extension TerminalController {
         projectAutosaveCancellables.removeAll()
     }
 
-    private func presentProjectError(_ error: Error) {
+    func presentProjectError(_ error: Error) {
         guard let window else { return }
         let alert = NSAlert()
         alert.messageText = String(localized: "Project Error", comment: "项目功能出错提醒标题")
