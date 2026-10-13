@@ -345,8 +345,15 @@ enum ControlRoomRules {
             guard asker.hasHome else { return .refused }
             return asker.lent ? .behind(.askers) : .inFront(of: .askers)
         }
-        if controlRoomInFront, tabsBesideControlRoom || !anyTerminalWindow {
-            return byPerson ? .inFront(of: .controlRooms) : .behind(.controlRooms)
+        if controlRoomInFront {
+            // The application's own, asked while the person is on the
+            // control room, goes into the control room's window and stays
+            // behind -- wherever else there is a terminal window. It used
+            // to go to that other window and come in front there, which
+            // took the person off the control room they had just pressed
+            // "Start Supervisor" on.
+            if !byPerson { return .behind(.controlRooms) }
+            if tabsBesideControlRoom || !anyTerminalWindow { return .inFront(of: .controlRooms) }
         }
         return anyTerminalWindow ? .inFront(of: .frontmost) : .ownWindow
     }

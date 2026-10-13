@@ -90,11 +90,18 @@ pub fn new_tab(asker: Option<(bool, bool)>, by_person: bool, control_room_in_fro
         }
         return if lent { NewTab::Behind(Home::Askers) } else { NewTab::InFront(Home::Askers) };
     }
-    // Alone on screen, the control room's window takes the tab too: it
-    // answered `OwnWindow` there, which this host cannot open, so starting
-    // a supervisor from a lone control room opened nothing.
-    if control_room_in_front && (tabs_beside_control_room || !any_terminal_window) {
-        return if by_person { NewTab::InFront(Home::ControlRooms) } else { NewTab::Behind(Home::ControlRooms) };
+    if control_room_in_front {
+        // The application's own, asked while the control room is in front,
+        // goes into the control room's window and stays behind -- wherever
+        // else there is a terminal window, and with none at all (that cell
+        // answered `OwnWindow`, which this host cannot open, so starting a
+        // supervisor from a lone control room opened nothing).
+        if !by_person {
+            return NewTab::Behind(Home::ControlRooms);
+        }
+        if tabs_beside_control_room || !any_terminal_window {
+            return NewTab::InFront(Home::ControlRooms);
+        }
     }
     if any_terminal_window {
         NewTab::InFront(Home::Frontmost)

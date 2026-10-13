@@ -1144,7 +1144,8 @@ fn where_a_tab_the_core_asked_for_goes() {
     // The application itself -- the control room starting a supervisor.
     assert_eq!(new_tab(None, false, true, true, true), NewTab::Behind(Home::ControlRooms));
     assert_eq!(new_tab(None, false, true, true, false), NewTab::Behind(Home::ControlRooms));
-    assert_eq!(new_tab(None, false, true, false, true), NewTab::InFront(Home::Frontmost));
+    // Alone in its window with a terminal window elsewhere: still its own.
+    assert_eq!(new_tab(None, false, true, false, true), NewTab::Behind(Home::ControlRooms));
     assert_eq!(new_tab(None, false, false, true, true), NewTab::InFront(Home::Frontmost));
     assert_eq!(new_tab(None, false, false, false, false), NewTab::OwnWindow);
     // The control room alone on screen: its own window takes the tab.

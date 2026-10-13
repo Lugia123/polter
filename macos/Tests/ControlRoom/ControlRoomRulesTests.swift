@@ -240,10 +240,18 @@ struct ControlRoomNewTabTests {
         let beside = Rules.newTab(asker: nil, byPerson: false, controlRoomInFront: true,
                                   tabsBesideControlRoom: true, anyTerminalWindow: true)
         #expect(beside == .behind(.controlRooms))
-        // Alone in its window: the terminal window used last takes it.
+        // Alone in its window with a terminal window elsewhere: still the
+        // control room's own window, behind. It went to that other window
+        // and came in front there, over the control room (mac round 8).
         let elsewhere = Rules.newTab(asker: nil, byPerson: false, controlRoomInFront: true,
                                      tabsBesideControlRoom: false, anyTerminalWindow: true)
-        #expect(elsewhere == .inFront(of: .frontmost))
+        #expect(elsewhere == .behind(.controlRooms))
+        // Wherever there is room or none: every answer is that one.
+        for (beside, any) in [(true, true), (true, false), (false, true), (false, false)] {
+            let plan = Rules.newTab(asker: nil, byPerson: false, controlRoomInFront: true,
+                                    tabsBesideControlRoom: beside, anyTerminalWindow: any)
+            #expect(plan == .behind(.controlRooms))
+        }
         // Not in front: an ordinary new tab.
         let ordinary = Rules.newTab(asker: nil, byPerson: false, controlRoomInFront: false,
                                     tabsBesideControlRoom: true, anyTerminalWindow: true)
@@ -275,8 +283,14 @@ struct ControlRoomNewTabTests {
                                     tabsBesideControlRoom: beside, anyTerminalWindow: any)
             #expect(apps == .behind(.controlRooms))
         }
-        // Who asked changes nothing anywhere else.
-        for (front, beside, any) in Self.rooms where !(front && (beside || !any)) {
+        // New Tab on a control room alone in its window, with a terminal
+        // window elsewhere: the person's goes there, as the menu item does
+        // anywhere, while the application's stays with the control room.
+        let theirs = Rules.newTab(asker: nil, byPerson: true, controlRoomInFront: true,
+                                  tabsBesideControlRoom: false, anyTerminalWindow: true)
+        #expect(theirs == .inFront(of: .frontmost))
+        // With the control room not in front, who asked changes nothing.
+        for (front, beside, any) in Self.rooms where !front {
             let theirs = Rules.newTab(asker: nil, byPerson: true, controlRoomInFront: front,
                                       tabsBesideControlRoom: beside, anyTerminalWindow: any)
             let apps = Rules.newTab(asker: nil, byPerson: false, controlRoomInFront: front,
