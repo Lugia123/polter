@@ -4950,6 +4950,28 @@ pub fn keyboard_on_the_list(frame: HWND) {
     }
 }
 
+/// Whether the control room of this window is showing a terminal right now.
+pub fn shows_lent(frame: HWND) -> bool {
+    window(frame).is_some_and(|w| w.shown_on_loan().is_some())
+}
+
+/// The tab "Save as Project" saves: the one in front, or -- with the
+/// control room in front -- the tab of the terminal it is showing. Which of
+/// the two, or neither, is `rules::project_tab`; this only finds the tab.
+pub fn tab_saved_as_project(frame: HWND) -> Option<TabId> {
+    let w = window(frame)?;
+    let front = w.tabs.get(w.active)?;
+    let lent = w.shown_on_loan();
+    match rules::project_tab(front.kind(), lent.is_some()) {
+        rules::ProjectTab::Front => Some(front.id),
+        rules::ProjectTab::OfTheLentTerminal => {
+            let pane = lent?.pane;
+            w.tabs.iter().find(|t| t.panes().iter().any(|p| p.id == pane)).map(|t| t.id)
+        }
+        rules::ProjectTab::None => None,
+    }
+}
+
 /// Whether the terminal the control room of this window is showing has the
 /// keyboard.
 pub fn keyboard_in_lent(frame: HWND) -> bool {

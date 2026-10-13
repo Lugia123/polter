@@ -172,8 +172,12 @@ extension TerminalController {
 
     /// Open `entry` as a new tab beside `parent` (a new window without one)
     /// and bind the tab to it. What "Load Project" and the settings window's
-    /// "Open" both do.
-    static func load(_ entry: ProjectStore.Entry, ghostty: Ghostty.App, beside parent: NSWindow?) throws {
+    /// "Open" both do. `inFront` false leaves the tab behind the one that
+    /// is showing: the control room's "Load Project", where the tab in
+    /// front is the control room (`ControlRoomRules.newTab`).
+    static func load(
+        _ entry: ProjectStore.Entry, ghostty: Ghostty.App, beside parent: NSWindow?, inFront: Bool = true
+    ) throws {
         guard let app = ghostty.app else { return }
         let store = ProjectStore.shared
         // Refused before `loadTree`, which starts a shell per pane: a
@@ -183,7 +187,7 @@ extension TerminalController {
             throw ProjectStore.StoreError.boundElsewhere(name: entry.name, holder: holder)
         }
         let tree = try store.loadTree(entry, app: app)
-        let controller = TerminalController.openProject(ghostty, tree: tree, attachingTo: parent)
+        let controller = TerminalController.openProject(ghostty, tree: tree, attachingTo: parent, inFront: inFront)
         do {
             try controller.bindProject(entry.name)
         } catch {

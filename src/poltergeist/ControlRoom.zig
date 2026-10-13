@@ -18,19 +18,26 @@
 //!                             than the two ages, changes
 //!   "now_ms": 6000000,        the clock every *_ms below is on, except
 //!                             last_ms / seen_ms / snooze, which are wall
-//!   "needs_me": 5,            rows that wait, a group's or a lone terminal's:
-//!                             groups_needing_me plus the rows of
-//!                             `ungrouped` with needs_me. The Dock's number
+//!   "needs_me": 4,            rows that wait and are drawn: the groups'.
+//!                             The same number as groups_needing_me, since
+//!                             no host draws a row for a terminal in no
+//!                             group (below). The Dock's number
 //!   "groups_needing_me": 4,   rows in `groups` with needs_me, in a row
 //!                             from the top. The list's header
 //!   "groups_other": 3,        the rest of `groups`
-//!   "header_waiting": {"count": 5, "of": "rows", "number": "other",
-//!                      "groups": 4, "alone": 1},
+//!   "header_waiting": {"count": 4, "of": "groups", "number": "other",
+//!                      "groups": 4, "alone": 0},
 //!   "header_quiet":   {"count": 3, "of": "groups", "number": "other",
 //!                      "groups": 3, "alone": 0},
-//!                             what the list's two headings say, for a host
-//!                             that draws a lone terminal's row among the
-//!                             groups'. count: the rows under that heading
+//!                             what the list's two headings say. **The
+//!                             terminals in no group are in neither**: the
+//!                             control room does not show them (the user,
+//!                             2026-10-13 -- their rows read as groups
+//!                             nobody had made), so `alone` is 0 and `of`
+//!                             is groups until a host draws them again.
+//!                             `ungrouped` still lists them, each with its
+//!                             own needs_me; they are in no count.
+//!                             count: the rows under that heading
 //!                             -- for header_waiting the same number as
 //!                             needs_me. of: groups (every one of them is a
 //!                             group: "N groups …") | rows (a lone terminal
@@ -1501,10 +1508,15 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
     } else if (rows.items.len > 0) rows.items[0].row.name else null;
 
     // The counts. **One meaning for every number the person is shown**:
-    // a row that waits is one, whether it is a group's or a lone
-    // terminal's. So `needs_me` -- the Dock -- is `groups_needing_me` --
-    // the list's header -- plus the lone terminals that wait, and with no
-    // lone terminal waiting the two are the same number.
+    // a row that waits and is drawn is one. `needs_me` -- the Dock, the
+    // taskbar, a title -- and the list's heading are the same number.
+    //
+    // **A terminal in no group is in none of them.** It was, while the
+    // hosts drew a row for it (task 1469); the rows read as groups nobody
+    // had made, and the hosts stopped drawing them (the user, 2026-10-13,
+    // task 1485). A number that counted them would again say more than
+    // the list shows, which is what counting them was for. They are still
+    // listed, in `ungrouped`, with what each would say.
     //
     // It used to count the terminals behind the rows, each once, so that
     // one supervisor minding three groups was 1. On a real window that
@@ -1516,12 +1528,8 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         out.* = r.row;
         if (r.row.needs_me) needing += 1;
     }
-    var lone_needing: usize = 0;
     const lone_rows = try arena.alloc(LoneRow, lone.items.len);
-    for (lone.items, lone_rows) |r, *out| {
-        out.* = r.row;
-        if (r.row.needs_me) lone_needing += 1;
-    }
+    for (lone.items, lone_rows) |r, *out| out.* = r.row;
 
     // The allowance counts on the wall clock, since that is the clock its
     // resets are on; the wake is on the bus's. A machine that slept wakes
@@ -1533,11 +1541,11 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         .snapshot = .{
             .rev = 0,
             .now_ms = in.now_ms,
-            .needs_me = needing + lone_needing,
+            .needs_me = needing,
             .groups_needing_me = needing,
             .groups_other = group_rows.len - needing,
-            .header_waiting = .over(needing, lone_needing),
-            .header_quiet = .over(group_rows.len - needing, lone_rows.len - lone_needing),
+            .header_waiting = .over(needing, 0),
+            .header_quiet = .over(group_rows.len - needing, 0),
             .open_on = open_on,
             .groups = group_rows,
             .ungrouped = lone_rows,
@@ -1852,12 +1860,13 @@ test "ControlRoom snapshot: one supervisor in two groups is two rows, and one of
     defer arena.deinit();
     const s = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
 
-    // Five groups wait and one lone terminal does: six rows, and six on
-    // the Dock. 0xa1 is behind two of them and is counted with each.
+    // Five groups wait: five rows, and five on the Dock. 0xa1 is behind
+    // two of them and is counted with each. The lone terminal that waits
+    // is listed and is not in the number: no host draws it a row.
     try testing.expectEqual(@as(usize, 5), s.groups_needing_me);
     try testing.expectEqual(@as(usize, 1), s.ungrouped.len);
     try testing.expect(s.ungrouped[0].needs_me);
-    try testing.expectEqual(@as(usize, 6), s.needs_me);
+    try testing.expectEqual(@as(usize, 5), s.needs_me);
 
     // The row spoken in last carries the reason; the other points at it.
     const main = try rowNamed(s, "web-app");
@@ -2172,7 +2181,8 @@ test "ControlRoom snapshot: a timed snooze ends on its own, and the core knows w
     const row = try rowNamed(during.snapshot, "billing");
     try testing.expectEqual(Attention.Kind.snoozed, row.attention.kind);
     try testing.expect(!row.needs_me);
-    try testing.expectEqual(@as(usize, 5), during.snapshot.needs_me);
+    // Four groups still wait; the lone terminal that does is in no count.
+    try testing.expectEqual(@as(usize, 4), during.snapshot.needs_me);
     try testing.expectEqual(@as(?u64, fixture_now + 20_000), during.wake_ms);
 
     const after = try build(arena.allocator(), w.input(fixture_now + 20_000));
@@ -2706,7 +2716,8 @@ test "ControlRoom snapshot: a worker minded outside any group is listed on its o
     try testing.expectEqual(@as(usize, 2), s.ungrouped.len);
     try testing.expectEqual(@as(u64, 0xb1), s.ungrouped[0].id.id);
     try testing.expect(s.ungrouped[0].needs_me);
-    try testing.expectEqual(@as(usize, 1), s.needs_me);
+    // Listed, and in no count: it has no row (task 1485).
+    try testing.expectEqual(@as(usize, 0), s.needs_me);
     try testing.expectEqual(@as(?u64, 1 * min), s.ungrouped[0].attention.event_ms);
 }
 
@@ -3117,9 +3128,11 @@ test "ControlRoom wake: hooks that never came are said once, and there is no mom
     try testing.expectEqual(Attention.Source.hook_missing, read.value.ungrouped[0].attention.source);
 }
 
-test "ControlRoom header: with terminals on their own among the rows, the heading, the rows and the Dock are one number" {
+test "ControlRoom header: terminals on their own are in no count, so the heading, the rows drawn and the Dock are one number" {
     // What was on a real window: "1 group waiting for you", three rows
-    // under it, and 3 on the Dock.
+    // under it, and 3 on the Dock. For a while the answer was to count the
+    // lone terminals everywhere; now their rows are not drawn (task 1485)
+    // and the answer is to count them nowhere.
     var w: World = .init();
     defer w.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
@@ -3139,33 +3152,31 @@ test "ControlRoom header: with terminals on their own among the rows, the headin
     try w.hook(0xa2, .session_started, null, 1 * min);
 
     var s = (try build(arena.allocator(), w.input(2 * min))).snapshot;
+    // The rows a host draws: the groups', and nothing else.
     var waiting_rows: usize = 0;
     var quiet_rows: usize = 0;
     for (s.groups) |g| {
         if (g.needs_me) waiting_rows += 1 else quiet_rows += 1;
     }
+    try testing.expectEqual(@as(usize, 1), waiting_rows);
+    // The lone terminals are still listed, two of them waiting.
+    var lone_waiting: usize = 0;
     for (s.ungrouped) |t| {
-        if (t.needs_me) waiting_rows += 1 else quiet_rows += 1;
+        if (t.needs_me) lone_waiting += 1;
     }
-    try testing.expectEqual(@as(usize, 3), waiting_rows);
+    try testing.expectEqual(@as(usize, 3), s.ungrouped.len);
+    try testing.expectEqual(@as(usize, 2), lone_waiting);
 
-    // The three places, one number.
+    // The three places, one number -- and it is the rows drawn.
     try testing.expectEqual(waiting_rows, s.header_waiting.count);
     try testing.expectEqual(s.needs_me, s.header_waiting.count);
-    // Not all of them are groups, so the heading does not call them that.
-    try testing.expectEqual(HeaderOut.Of.rows, s.header_waiting.of);
-    try testing.expectEqual(HeaderOut.Number.other, s.header_waiting.number);
-    try testing.expectEqual(@as(usize, 1), s.header_waiting.groups);
-    try testing.expectEqual(@as(usize, 2), s.header_waiting.alone);
+    try testing.expectEqual(s.groups_needing_me, s.needs_me);
+    // Every one of them is a group, and the heading says so.
+    try testing.expectEqual(HeaderOut{ .count = 1, .of = .groups, .number = .one, .groups = 1, .alone = 0 }, s.header_waiting);
 
     // The second heading is held to the same.
     try testing.expectEqual(quiet_rows, s.header_quiet.count);
-    try testing.expectEqual(@as(usize, 2), s.header_quiet.count);
-    try testing.expectEqual(HeaderOut.Of.rows, s.header_quiet.of);
-
-    // A host that draws only the groups' rows still has its own two
-    // numbers, and they are still only the groups.
-    try testing.expectEqual(@as(usize, 1), s.groups_needing_me);
+    try testing.expectEqual(HeaderOut{ .count = 1, .of = .groups, .number = .one, .groups = 1, .alone = 0 }, s.header_quiet);
     try testing.expectEqual(@as(usize, 1), s.groups_other);
 
     // Only groups under a heading: it says "groups", and one is "one".
@@ -3177,14 +3188,16 @@ test "ControlRoom header: with terminals on their own among the rows, the headin
     try testing.expectEqual(HeaderOut{ .count = 1, .of = .groups, .number = .one, .groups = 1, .alone = 0 }, s.header_waiting);
     try testing.expectEqual(HeaderOut{ .count = 0, .of = .groups, .number = .none, .groups = 0, .alone = 0 }, s.header_quiet);
 
-    // One lone terminal waiting and nothing else: one, and not a group.
+    // One lone terminal waiting and nothing else: listed, and nobody is
+    // waiting as far as any number says.
     var lone: World = .init();
     defer lone.deinit();
     try lone.terminal(0xc1, "one", 0x22);
     try lone.approval(0xc1, "Bash", "git push", 1 * min);
     s = (try build(arena.allocator(), lone.input(2 * min))).snapshot;
-    try testing.expectEqual(HeaderOut{ .count = 1, .of = .rows, .number = .one, .groups = 0, .alone = 1 }, s.header_waiting);
-    try testing.expectEqual(@as(usize, 1), s.needs_me);
+    try testing.expect(s.ungrouped[0].needs_me);
+    try testing.expectEqual(HeaderOut{ .count = 0, .of = .groups, .number = .none, .groups = 0, .alone = 0 }, s.header_waiting);
+    try testing.expectEqual(@as(usize, 0), s.needs_me);
     try testing.expectEqual(@as(usize, 0), s.groups_needing_me);
 }
 
@@ -3253,7 +3266,8 @@ test "ControlRoom seen: what a supervisor with no group raises is withdrawn by l
         // Looking at it is what withdraws it, and the row says so: this is
         // what a host starts its "seen" clock on.
         try testing.expect(row.unseen);
-        try testing.expectEqual(@as(usize, 1), s.header_waiting.count);
+        // In no count: its row is not drawn.
+        try testing.expectEqual(@as(usize, 0), s.header_waiting.count);
     }
 
     try testing.expect(w.bus.markSeen(0xa1, 3 * min));

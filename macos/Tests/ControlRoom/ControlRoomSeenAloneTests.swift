@@ -62,7 +62,7 @@ struct ControlRoomSeenAloneTests {
     }
 
     @Test func theCoresFixtureHasALoneRowThatCarriesItsTerminal() throws {
-        let list = try ControlRoomList.decode(snapshot: ControlRoomListTests.fixture())
+        let list = try ControlRoomList.decode(snapshot: ControlRoomListTests.fixture(), loneRows: true)
         let alone = try #require(list.rows.first { $0.alone != nil })
         let act = Actions.seen(rowId: alone.id, in: list.rows)
         #expect(act == .seenTerminal("0x00000000000000c1"))

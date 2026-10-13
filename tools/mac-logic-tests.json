@@ -81,6 +81,7 @@
       "macos/Tests/ControlRoom/ControlRoomLendingTests.swift",
       "macos/Tests/ControlRoom/ControlRoomListTests.swift",
       "macos/Tests/ControlRoom/ControlRoomOpeningTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomProjectMenuTests.swift",
       "macos/Tests/ControlRoom/ControlRoomQuotaTests.swift",
       "macos/Tests/ControlRoom/ControlRoomRestartTests.swift",
       "macos/Tests/ControlRoom/ControlRoomRulesTests.swift",

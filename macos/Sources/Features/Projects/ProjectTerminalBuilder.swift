@@ -12,12 +12,16 @@ import AppKit
 /// surface config.
 extension TerminalController {
     /// Open `tree` as a new tab of `parent`'s window, or as a new window if
-    /// `parent` is nil or isn't a terminal window.
+    /// `parent` is nil or isn't a terminal window. With `inFront` false the
+    /// tab is added and not selected, as `newTab(_:from:withBaseConfig:inFront:)`
+    /// leaves one: its terminals are running already and it shows them when
+    /// it is selected.
     @discardableResult
     static func openProject(
         _ ghostty: Ghostty.App,
         tree: SplitTree<Ghostty.SurfaceView>,
-        attachingTo parent: NSWindow?
+        attachingTo parent: NSWindow?,
+        inFront: Bool = true
     ) -> TerminalController {
         guard let parent, parent.windowController is TerminalController else {
             return newWindow(ghostty, tree: tree)
@@ -36,16 +40,26 @@ extension TerminalController {
         }
 
         if window.tabbingMode != .disallowed {
+            let tabCreated: Bool
             switch ghostty.config.windowNewTabPosition {
             case "end":
                 if let last = parent.tabGroup?.windows.last {
-                    last.addTabbedWindowSafely(window, ordered: .above)
+                    tabCreated = last.addTabbedWindowSafely(window, ordered: .above)
                 } else {
-                    parent.addTabbedWindowSafely(window, ordered: .above)
+                    tabCreated = parent.addTabbedWindowSafely(window, ordered: .above)
                 }
             case "current": fallthrough
             default:
-                parent.addTabbedWindowSafely(window, ordered: .above)
+                tabCreated = parent.addTabbedWindowSafely(window, ordered: .above)
+            }
+            // A tab, and nothing brought in front. Only when it did become
+            // a tab: a window that could not must still be shown, or the
+            // project would be open nowhere.
+            if tabCreated && !inFront {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    controller.relabelTabs()
+                }
+                return controller
             }
         }
 

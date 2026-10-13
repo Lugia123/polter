@@ -60,9 +60,10 @@ supervisor; how the first line of a waiting row is shared out when it
 is too narrow -- the status word whole, the group's name cut only by it, who
 is waiting in what is left and not at all when nothing is
 (`ControlRoomLine1.fit` and `scene::place_line`), on sixteen made-up rows:
-who gets how wide and which of them is cut; every terminal that is in no
-group and has a row of its
-own (`ungrouped`) -- its row's identity, the section it goes in, its title,
+who gets how wide and which of them is cut; that neither side has a row
+for a terminal in no group (the rows above are each side's list as it is
+drawn); every terminal that is in no group (`ungrouped`), as the row it
+would have were one drawn -- its row's identity, the section it goes in, its title,
 glyph and words, who waits and for what with every line, what an act on it
 hands back, and the terminal the right-hand side then shows; which rows are
 marked seen by being looked at, and
@@ -234,7 +235,7 @@ let list = ControlRoomList(snapshot: snapshot)
 
 print("count waiting=\(list.waitingCount) quiet=\(list.quietCount)")
 // The two headings: what the core wrote (`header_waiting` /
-// `header_quiet`, which count the lone terminals), and the sentence each
+// `header_quiet`, which count the rows drawn: the groups'), and the sentence each
 // side makes of it -- in English, as each side's table has it.
 for (name, h, says) in [("waiting", list.waitingHeader, list.waitingHeaderText), ("quiet", list.quietHeader, list.quietHeaderText)] {
     let core = h.map { "\($0.count) of=\($0.of.rawValue) number=\($0.number.rawValue)" } ?? "-"
@@ -255,9 +256,11 @@ for r in list.quiet { row("quiet", r) }
 for r in list.rows {
     print("rowname id=\(r.id) name=\(quote(r.name)) alone=\(r.alone?.terminal ?? "-") pane=\(r.alone?.pane.rawValue ?? "-")")
 }
-// The terminals in no group, each with a row of its own: as the list the
-// macOS host draws has them, after the groups'.
-let everything = ControlRoomList(snapshot: whole)
+// The terminals in no group. Neither host draws a row for one (task 1485,
+// and the rows printed above are compared without them); what such a row
+// would say is still compared, through the switch nothing in the app
+// turns on.
+let everything = ControlRoomList(snapshot: whole, loneRows: true)
 let alone = everything.rows.filter { $0.alone != nil }
 print("lone \(alone.count)")
 for r in alone {

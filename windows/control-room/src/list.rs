@@ -168,7 +168,23 @@ impl List {
         }
     }
 
+    /// The list a snapshot describes, as the panel draws it.
+    ///
+    /// **The terminals in no group (`ungrouped`) get no row.** They had one
+    /// each, after the groups' (task 1471); the rows read as groups nobody
+    /// had made, and the user had them taken out (2026-10-13, task 1485).
+    /// The core counts them in neither heading nor in `needs_me`, so what
+    /// is drawn is still what every number says. The macOS host's
+    /// `ControlRoomList.init(snapshot:)` is the same.
     pub fn from_snapshot(s: &Snapshot) -> List {
+        Self::from_snapshot_with(s, false)
+    }
+
+    /// `lone_rows` true is the list as it was, a row for every terminal in
+    /// no group after the groups' rows. Nothing in the host asks for it; it
+    /// is kept so that what such a row says stays under test for the day
+    /// they are drawn somewhere of their own.
+    pub fn from_snapshot_with(s: &Snapshot, lone_rows: bool) -> List {
         let mut waiting = Vec::new();
         let mut quiet = Vec::new();
         for g in &s.groups {
@@ -203,7 +219,7 @@ impl List {
         }
         // A terminal on its own, after the groups, in the section its own
         // `needs_me` says -- the same test a group's row is put by.
-        for one in &s.ungrouped {
+        for one in s.ungrouped.iter().filter(|_| lone_rows) {
             let pane = s.terminals.iter().find(|t| t.id == one.id).and_then(|t| t.pane).unwrap_or(crate::snapshot::Pane::Plain);
             let row = Row {
                 id: one.row_id(),

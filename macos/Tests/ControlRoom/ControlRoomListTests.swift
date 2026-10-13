@@ -199,26 +199,30 @@ struct ControlRoomListTests {
 
     @Test func theCoresFixtureDecodesIntoItsEightGroups() throws {
         let made = try ControlRoomList.decode(snapshot: Self.fixture())
-        // The groups, in the core's order -- and after them the terminal
-        // that waits in no group.
+        // The groups, in the core's order, and nothing else: the terminal
+        // that waits in no group has no row (task 1485).
         let waiting = made.waiting.map(\.id)
-        #expect(waiting == ["web-app", "web-app-docs", "mobile", "billing", "docs-site", "terminal:0x00000000000000c1"])
+        #expect(waiting == ["web-app", "web-app-docs", "mobile", "billing", "docs-site"])
         let quiet = made.quiet.map(\.id)
         #expect(quiet == ["infra", "design-system", "notes"])
         // The counts are the core's, and are of the rows under each
-        // heading: six wait, the lone terminal among them.
-        #expect(made.waitingCount == 6)
+        // heading: five groups wait.
+        #expect(made.waitingCount == 5)
         #expect(made.quietCount == 3)
     }
 
     // MARK: A terminal in no group
+    //
+    // Nothing draws a row for one since task 1485
+    // (`ControlRoomProjectMenuTests` holds that). These hold what such a
+    // row says, through `loneRows`, which nothing in the app turns on.
 
     @Test func aTerminalWaitingInNoGroupHasARowSoTheListShowsWhatTheDockCounts() throws {
         // The Dock's number is `needs_me`: every terminal waiting, each
         // once. The groups' rows carry all of them but the ones in no
         // group, and those were not drawn: the Dock said 6 over five rows.
         let snapshot = try JSONDecoder().decode(ControlRoomSnapshot.self, from: Self.fixture())
-        let made = ControlRoomList(snapshot: snapshot)
+        let made = ControlRoomList(snapshot: snapshot, loneRows: true)
         let alone = made.waiting.filter { $0.alone != nil }
         let lone = try #require(snapshot.ungrouped)
         #expect(alone.count == lone.filter(\.needs_me).count)
@@ -260,7 +264,7 @@ struct ControlRoomListTests {
         #expect(shownForTheBareId == nil)
         // And with none listed there are none, not an error.
         snapshot.ungrouped = nil
-        let without = ControlRoomList(snapshot: snapshot)
+        let without = ControlRoomList(snapshot: snapshot, loneRows: true)
         let anyAlone = without.rows.contains { $0.alone != nil }
         #expect(!anyAlone)
         let gone = snapshot.terminal(shownFor: id)
@@ -273,7 +277,7 @@ struct ControlRoomListTests {
         // Needing nothing, it is with the quiet rows, after the groups.
         one.needs_me = false
         snapshot.ungrouped = [one]
-        let quiet = ControlRoomList(snapshot: snapshot)
+        let quiet = ControlRoomList(snapshot: snapshot, loneRows: true)
         let last = quiet.quiet.last?.id
         #expect(last == "terminal:0x00000000000000c1")
         let stillWaiting = quiet.waiting.contains { $0.alone != nil }
@@ -284,11 +288,11 @@ struct ControlRoomListTests {
         one.needs_me = true
         snapshot.ungrouped = [one]
         snapshot.pulses = [ControlRoomSnapshot.Pulse(terminal: "0x00000000000000c1", window: nil, tab: nil, group: nil)]
-        let breathing = ControlRoomList(snapshot: snapshot).rows.filter(\.pulses).map(\.id)
+        let breathing = ControlRoomList(snapshot: snapshot, loneRows: true).rows.filter(\.pulses).map(\.id)
         #expect(breathing == ["terminal:0x00000000000000c1"])
         // Another terminal in no group breathing is not this one.
         snapshot.pulses = [ControlRoomSnapshot.Pulse(terminal: "0x00000000000000ff", window: nil, tab: nil, group: nil)]
-        let other = ControlRoomList(snapshot: snapshot).rows.filter(\.pulses).map(\.id)
+        let other = ControlRoomList(snapshot: snapshot, loneRows: true).rows.filter(\.pulses).map(\.id)
         #expect(other == [])
     }
 
@@ -296,7 +300,7 @@ struct ControlRoomListTests {
         // The title a lone terminal's row carries says whose word follows
         // its name: the frame its own pane wears, as the core says it.
         var snapshot = try JSONDecoder().decode(ControlRoomSnapshot.self, from: Self.fixture())
-        let plainRow = try #require(ControlRoomList(snapshot: snapshot).rows.first { $0.alone != nil })
+        let plainRow = try #require(ControlRoomList(snapshot: snapshot, loneRows: true).rows.first { $0.alone != nil })
         #expect(plainRow.supervisor == .init(name: "zsh — ~/work", shown: .needsYou, word: "等批准", says: .plain))
         // An ordinary agent has no word after its name; a worker has its
         // own; and neither is called a supervisor.
@@ -311,17 +315,17 @@ struct ControlRoomListTests {
         for kind in [ControlRoomSnapshot.Terminal.Pane.worker, .supervisor] {
             let at = try #require(snapshot.terminals?.firstIndex { $0.id == "0x00000000000000c1" })
             snapshot.terminals?[at].pane = kind
-            let row = try #require(ControlRoomList(snapshot: snapshot).rows.first { $0.alone != nil })
+            let row = try #require(ControlRoomList(snapshot: snapshot, loneRows: true).rows.first { $0.alone != nil })
             #expect(row.supervisor?.says == kind)
             #expect(row.alone?.pane == kind)
         }
         // One the core does not list among its terminals is an ordinary one.
         snapshot.terminals = []
-        let unlisted = try #require(ControlRoomList(snapshot: snapshot).rows.first { $0.alone != nil })
+        let unlisted = try #require(ControlRoomList(snapshot: snapshot, loneRows: true).rows.first { $0.alone != nil })
         #expect(unlisted.supervisor?.says == .plain)
 
         // A group's supervisor says nothing of its own: the frame's word stands.
-        let group = try #require(ControlRoomList(snapshot: snapshot).rows.first { $0.id == "web-app" })
+        let group = try #require(ControlRoomList(snapshot: snapshot, loneRows: true).rows.first { $0.id == "web-app" })
         let groupsTitle = try #require(group.supervisor)
         #expect(groupsTitle.says == nil)
 
