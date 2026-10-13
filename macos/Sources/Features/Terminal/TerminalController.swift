@@ -1096,7 +1096,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 DispatchQueue.main.async {
                     Ghostty.moveFocus(to: focusTarget, from: nil)
                 }
-            } else if let focusedSurface = surfaceTree.first {
+            } else if let focusedSurface = surfaceTree.shownLeaves().first {
                 // No prior focused surface or we can't find it, let's focus
                 // the first.
                 self.focusedSurface = focusedSurface

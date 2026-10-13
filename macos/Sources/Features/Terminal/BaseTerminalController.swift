@@ -526,12 +526,15 @@ class BaseTerminalController: NSWindowController,
         // Remembered before it goes, so it can be opened again where it
         // was. Taken here rather than from a close notification because
         // this is the last moment the surface still knows its directory.
-        for surface in node {
+        // Asked of the tree, not of the node: a node knows only the view
+        // each pane shows, and what goes is every terminal `removing` takes.
+        let going = surfaceTree.removed(by: node)
+        for surface in going {
             ClosedTabs.shared.remember(directory: surface.pwd)
         }
 
         // Move focus if the closed surface was focused and we have a next target
-        let nextFocus: Ghostty.SurfaceView? = if node.contains(
+        let nextFocus: Ghostty.SurfaceView? = if going.contains(
             where: { $0 == focusedSurface }
         ) {
             findNextFocusTargetAfterClosing(node: node)
@@ -730,11 +733,9 @@ class BaseTerminalController: NSWindowController,
 
         if surfaceTree.zoomed != nil {
             if derivedConfig.splitPreserveZoom.contains(.navigation) {
-                surfaceTree = SplitTree(
-                    root: surfaceTree.root,
-                    zoomed: surfaceTree.root?.node(view: nextSurface))
+                surfaceTree = surfaceTree.zooming(surfaceTree.root?.node(view: nextSurface))
             } else {
-                surfaceTree = SplitTree(root: surfaceTree.root, zoomed: nil)
+                surfaceTree = surfaceTree.zooming(nil)
             }
         }
 
@@ -752,13 +753,13 @@ class BaseTerminalController: NSWindowController,
         // Toggle the zoomed state
         if surfaceTree.zoomed == targetNode {
             // Already zoomed, unzoom it
-            surfaceTree = SplitTree(root: surfaceTree.root, zoomed: nil)
+            surfaceTree = surfaceTree.zooming(nil)
         } else {
             // We require that the split tree have splits
             guard surfaceTree.isSplit else { return }
 
             // Not zoomed or different node zoomed, zoom this node
-            surfaceTree = SplitTree(root: surfaceTree.root, zoomed: targetNode)
+            surfaceTree = surfaceTree.zooming(targetNode)
         }
 
         // Lent to the control room: the person is looking at it there, and

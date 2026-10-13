@@ -100,7 +100,7 @@ final class ScriptTab: NSObject {
     var terminals: [ScriptTerminal] {
         guard NSApp.isAppleScriptEnabled else { return [] }
         guard let controller else { return [] }
-        return (controller.surfaceTree.root?.leaves() ?? [])
+        return controller.surfaceTree.members()
             .map(ScriptTerminal.init)
     }
 
@@ -109,7 +109,7 @@ final class ScriptTab: NSObject {
     func valueInTerminals(uniqueID: String) -> ScriptTerminal? {
         guard NSApp.isAppleScriptEnabled else { return nil }
         guard let controller else { return nil }
-        return (controller.surfaceTree.root?.leaves() ?? [])
+        return controller.surfaceTree.members()
             .first(where: { $0.id.uuidString == uniqueID })
             .map(ScriptTerminal.init)
     }

@@ -697,6 +697,59 @@ test "what is written comes back exactly" {
     try expectNodesEqual(root, back.root.?.*);
 }
 
+/// What `writeJson` writes for `snapshot`, as text.
+fn writtenBytes(alloc: Allocator, snapshot: Snapshot) ![]const u8 {
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    var s: std.json.Stringify = .{ .writer = &buf.writer, .options = .{} };
+    try writeJson(&s, snapshot);
+    return buf.written();
+}
+
+test "stored bytes: a project file is exactly these bytes" {
+    // Every other test here writes a project and reads it back, and a round
+    // trip is green for any format that agrees with itself -- a renamed
+    // key, a field that used to be left out, an order that moved. These
+    // strings were written out by hand from `writeJson` and `writeNode`,
+    // not pasted from a run. Stacking (control-room.md, 12.6.2) promises
+    // that a layout with no stack in it is stored as it is today; this is
+    // that promise for the core's writer, and it stays green, unedited,
+    // through every step of it.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // No layout: the name and when, and nothing else.
+    try testing.expectEqualStrings(
+        \\{"name":"empty","saved_at":1757000000}
+    , try writtenBytes(alloc, .{ .name = "empty", .saved_at = 1_757_000_000, .root = null, .next_scrollback = null }));
+
+    // One terminal: only the fields it has.
+    const one: Node = .{ .leaf = .{ .cwd = "/work/repo", .title = "", .history = "", .scrollback = "" } };
+    try testing.expectEqualStrings(
+        \\{"name":"one","saved_at":1757000000,"root":{"kind":"leaf","cwd":"/work/repo"}}
+    , try writtenBytes(alloc, .{ .name = "one", .saved_at = 1_757_000_000, .root = &one, .next_scrollback = null }));
+
+    // Two side by side, every field of a leaf, and the counter last.
+    const left: Node = .{ .leaf = .{ .cwd = "/work/repo", .title = "✳ retry.py", .history = "a1b2c3.history", .scrollback = "0.snap" } };
+    const right: Node = .{ .leaf = .{ .cwd = "/work/repo/tests", .title = "✳ tests", .history = "", .scrollback = "" } };
+    const two: Node = .{ .split = .{ .direction = .horizontal, .ratio = 0.62, .left = &left, .right = &right } };
+    try testing.expectEqualStrings(
+        \\{"name":"写 retry 装饰器","saved_at":1757000000,"root":{"kind":"split","direction":"horizontal","ratio":0.62,"left":{"kind":"leaf","cwd":"/work/repo","title":"✳ retry.py","history":"a1b2c3.history","scrollback":"0.snap"},"right":{"kind":"leaf","cwd":"/work/repo/tests","title":"✳ tests"}},"next_scrollback":4}
+    , try writtenBytes(alloc, .{ .name = "写 retry 装饰器", .saved_at = 1_757_000_000, .root = &two, .next_scrollback = 4 }));
+
+    // Three splits deep, nesting on the right, three different ratios.
+    const a: Node = .{ .leaf = .{ .cwd = "", .title = "a", .history = "", .scrollback = "" } };
+    const b: Node = .{ .leaf = .{ .cwd = "", .title = "b", .history = "", .scrollback = "" } };
+    const c: Node = .{ .leaf = .{ .cwd = "", .title = "c", .history = "", .scrollback = "" } };
+    const d: Node = .{ .leaf = .{ .cwd = "", .title = "d", .history = "", .scrollback = "" } };
+    const inner: Node = .{ .split = .{ .direction = .horizontal, .ratio = 0.75, .left = &c, .right = &d } };
+    const middle: Node = .{ .split = .{ .direction = .vertical, .ratio = 0.25, .left = &b, .right = &inner } };
+    const deep: Node = .{ .split = .{ .direction = .horizontal, .ratio = 0.5, .left = &a, .right = &middle } };
+    try testing.expectEqualStrings(
+        \\{"name":"deep","saved_at":1,"root":{"kind":"split","direction":"horizontal","ratio":0.5,"left":{"kind":"leaf","title":"a"},"right":{"kind":"split","direction":"vertical","ratio":0.25,"left":{"kind":"leaf","title":"b"},"right":{"kind":"split","direction":"horizontal","ratio":0.75,"left":{"kind":"leaf","title":"c"},"right":{"kind":"leaf","title":"d"}}}}}
+    , try writtenBytes(alloc, .{ .name = "deep", .saved_at = 1, .root = &deep, .next_scrollback = null }));
+}
+
 test "a project with no layout round-trips as an empty root" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
