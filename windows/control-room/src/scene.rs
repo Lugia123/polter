@@ -72,8 +72,6 @@ pub mod msg {
     pub const WHY_SESSION_IN_USE: &str = n_("A new session will be started: an open terminal is in the last session now.");
     /// The directory, when the core names none: the new tab's own.
     pub const WHERE_THE_TAB_STARTS: &str = n_("Where the tab starts");
-    /// The role Polter ships, as the role library shows it.
-    pub const POLTER_SUPERVISOR: &str = n_("Polter Supervisor");
     /// The right side, for a row that is a terminal in no group: it is
     /// itself what would be shown there. The macOS host's sentences.
     pub const TERMINAL_GONE: &str = n_("This terminal is no longer open.");
@@ -919,13 +917,11 @@ pub fn shown_directory(path: &str, home: &str, tr: &dyn Fn(&str) -> String) -> S
     }
 }
 
-/// The name a role is shown under.
-pub fn role_name(role: &crate::snapshot::SupervisorRole, tr: &dyn Fn(&str) -> String) -> String {
-    if role.key == "polter-supervisor" {
-        tr(msg::POLTER_SUPERVISOR)
-    } else {
-        role.name.clone()
-    }
+/// The name a role is shown under: its name. The official supervisor role
+/// used to be put into the reader's language by its key; official roles are
+/// English as shipped (#1504), so the core's name is the one to show.
+pub fn role_name(role: &crate::snapshot::SupervisorRole, _tr: &dyn Fn(&str) -> String) -> String {
+    role.name.clone()
 }
 
 /// How far down the right side the sentence of a group with no supervisor
@@ -2058,6 +2054,19 @@ mod tests {
         assert_eq!(offered(Some(&row), &Detail_::SupervisorGone { group: row.id.clone() }), Start::default());
     }
 
+    /// A role is shown under the name the core sent, the official
+    /// supervisor included. On a name no catalogue has, and with a `tr` that
+    /// would change anything it was handed -- the fixture's own name is a
+    /// msgid, and `same` would pass a looked-up name as readily as a plain one.
+    #[test]
+    fn a_role_is_shown_under_the_cores_name_whatever_its_key() {
+        let shout = |t: &str| format!("TR<{t}>");
+        let boss = crate::snapshot::SupervisorRole { key: "polter-supervisor".into(), name: "Polter Supervisor".into() };
+        assert_eq!(role_name(&boss, &shout), "Polter Supervisor");
+        let other = crate::snapshot::SupervisorRole { key: "reviewer".into(), name: "Reviewer".into() };
+        assert_eq!(role_name(&other, &shout), "Reviewer");
+    }
+
     #[test]
     fn the_role_is_offered_only_when_the_core_says_there_is_a_choice() {
         use crate::snapshot::{StartFailure as F, SupervisorState as S};
@@ -2071,10 +2080,10 @@ mod tests {
         assert!(!all_text(&one.items).contains(&msg::ROLE));
         let two = build_start(&detail, Some(&row), 600.0, theme, &StartView { roles: &all, choose_role: true, home: "", ..Default::default() }, &same);
         assert!(two.role.is_some());
-        // The core's role until the person picks another; Polter's own under its shown name.
-        assert!(all_text(&two.items).contains(&msg::POLTER_SUPERVISOR));
+        // The core's role until the person picks another, under the name the core gave it.
+        assert!(all_text(&two.items).contains(&"Polter Supervisor"));
         let picked = build_start(&detail, Some(&row), 600.0, theme, &StartView { roles: &all, choose_role: true, role: Some("reviewer"), home: "", ..Default::default() }, &same);
-        assert!(all_text(&picked.items).contains(&"Reviewer") && !all_text(&picked.items).contains(&msg::POLTER_SUPERVISOR));
+        assert!(all_text(&picked.items).contains(&"Reviewer") && !all_text(&picked.items).contains(&"Polter Supervisor"));
         // The three things to press do not overlap, top to bottom.
         let (r, d, s) = (two.role.unwrap(), two.directory.unwrap(), two.start.unwrap());
         assert!(r.y + r.h <= d.y && d.y + d.h <= s.y);

@@ -22,24 +22,28 @@ use crate::ffi::Surface;
 use crate::i18n::tr;
 
 /// The key of the supervisor role Polter ships (`persona.supervisor_key`).
+/// Only the tests name it now: nothing here treats a role differently by
+/// its key any more, only by the core's `builtin`.
+#[cfg(test)]
 pub const SUPERVISOR_KEY: &str = "polter-supervisor";
 
-/// A built-in role's name in the reader's language, by its key -- the same
-/// name the role library shows. `None` for any other key. **Asked by key
-/// alone** so the role menus, which get only a key and a name from the core,
-/// show what the list shows: they showed "Polter Supervisor" in English
-/// beside a list that said 「Polter 总管」 (#896).
-pub fn builtin_name(key: &str) -> Option<String> {
-    match key {
-        SUPERVISOR_KEY => Some(tr("Polter Supervisor")),
-        _ => None,
-    }
+/// The name a role menu shows for a role: its name, as the list shows it.
+///
+/// An official role's used to be put into the reader's language by its key
+/// here, so the menus and the list agreed (#896). Official roles are English
+/// as shipped (#1504) -- the name beside the "Official" mark is the shipped
+/// one -- so both show the core's name, and agree for that reason instead.
+pub fn menu_name(_key: &str, name: &str) -> String {
+    name.to_string()
 }
 
-/// The name a role menu shows for a role: the built-in's translated name,
-/// else the name as written.
-pub fn menu_name(key: &str, name: &str) -> String {
-    builtin_name(key).unwrap_or_else(|| name.to_string())
+/// What this window says about an official role, on the role itself and
+/// when the core refuses a write to one. **True as far as this host goes**:
+/// the core keeps what a person changes in an official role and can put it
+/// back, and the Mac's library does both; this window does neither yet
+/// (#1507), and says so rather than showing fields that look editable.
+pub fn official_notice() -> String {
+    tr("Official role. Changing it and restoring its factory settings can't be done on Windows yet.")
 }
 
 // ------------------------------------------------------------- the values
@@ -338,23 +342,13 @@ impl Role {
         self.to_json().to_string()
     }
 
-    /// The name to show. A built-in role's is in the core in English, and
-    /// shown here in the user's language.
+    /// The name to show: the name. An official role is English as shipped.
     pub fn display_name(&self) -> String {
-        if !self.builtin {
-            return self.name.clone();
-        }
-        builtin_name(&self.key).unwrap_or_else(|| self.name.clone())
+        self.name.clone()
     }
 
     pub fn display_summary(&self) -> String {
-        if !self.builtin {
-            return self.summary.clone();
-        }
-        match self.key.as_str() {
-            SUPERVISOR_KEY => tr("Makes the terminal it starts in this window's supervisor: splits the work, hands it out and checks it."),
-            _ => self.summary.clone(),
-        }
+        self.summary.clone()
     }
 
     pub fn choice(&self, cli: &str) -> Option<&CliChoice> {
@@ -695,7 +689,7 @@ pub fn message(code: &str) -> String {
         // never changes the three user-only fields on someone else's behalf,
         // so these two mean something got past it. Worded after
         // `roleWriteFailure` in rpc.zig, which says the same to an agent.
-        "BuiltinPersona" => tr("This role comes with Polter and can't be changed or deleted. Duplicate it to make one of your own."),
+        "BuiltinPersona" => official_notice(),
         "NotPermitted" => tr("Only you can make a role's terminal a supervisor, let it answer permission prompts, or keep agents out of it."),
         other => other.to_string(),
     }
@@ -923,12 +917,11 @@ mod tests {
     }
 
     #[test]
-    fn a_builtin_role_is_read_as_builtin_and_shown_by_key() {
+    fn an_official_role_is_read_as_one_and_shown_under_its_own_name() {
         let r = Role::from_json(&supervisor_json()).unwrap();
         assert!(r.builtin);
         assert!(r.polter.supervisor);
         assert_eq!(r.polter.open, Open::Auto);
-        // Tests run with no DLL, so `tr` answers the msgid.
         assert_eq!(r.display_name(), "Polter Supervisor");
         assert!(r.display_summary().starts_with("Makes the terminal it starts in"));
         let c = r.choice("claude-code").unwrap();
@@ -936,20 +929,22 @@ mod tests {
         assert!(!c.mcp.keep_by_default);
     }
 
-    /// A user's role named like a built-in shows its own name: only
-    /// `builtin` makes a name Polter's to translate.
+    /// The name shown is the name the core sent, official or not, and
+    /// whatever the role's key is. **Asserted on a name no catalogue has**:
+    /// these tests run with no DLL, so `tr` answers the msgid and a name
+    /// that happened to be a msgid would pass whether or not it had been
+    /// looked up.
     #[test]
-    fn display_name_is_only_translated_for_a_builtin() {
+    fn the_name_shown_is_the_cores_whatever_the_key() {
         let mut r = Role::from_json(&supervisor_json()).unwrap();
+        r.name = "Shipped Name 7".into();
+        r.summary = "shipped summary 7".into();
+        assert!(r.builtin);
+        assert_eq!(r.display_name(), "Shipped Name 7");
+        assert_eq!(r.display_summary(), "shipped summary 7");
+        assert_eq!(menu_name(SUPERVISOR_KEY, "Shipped Name 7"), "Shipped Name 7");
         r.builtin = false;
-        r.name = "我的总管".into();
-        r.summary = "mine".into();
-        assert_eq!(r.display_name(), "我的总管");
-        assert_eq!(r.display_summary(), "mine");
-        // A built-in this build does not know yet falls back to the core's.
-        let mut other = Role::new("polter-future", "Future");
-        other.builtin = true;
-        assert_eq!(other.display_name(), "Future");
+        assert_eq!(r.display_name(), "Shipped Name 7");
     }
 
     #[test]
@@ -1150,18 +1145,21 @@ mod tests {
     fn error_names_become_sentences_and_unknown_ones_pass_through() {
         assert!(message("BadPersona").starts_with("This role can't be saved"));
         assert_eq!(message("NoApp"), "Polter isn't ready yet.");
-        assert!(message("BuiltinPersona").starts_with("This role comes with Polter"));
+        // What the core answers when a write to an official role reaches
+        // it: this window cannot do that yet, and says so.
+        assert!(message("BuiltinPersona").starts_with("Official role."));
+        assert!(message("BuiltinPersona").contains("can't be done on Windows yet"));
         assert!(message("NotPermitted").starts_with("Only you can"));
         assert_eq!(message("SomethingNew"), "SomethingNew");
         assert_eq!(err_name(b"NoCli\0garbage"), "NoCli");
         assert_eq!(err_name(b"Cut"), "Cut");
     }
 
-    /// #896: the role menus name a built-in role the way the list does.
+    /// #896: the role menus name a role the way the list does.
     #[test]
-    fn menus_name_a_builtin_role_the_way_the_list_does() {
-        assert_eq!(menu_name(SUPERVISOR_KEY, "Polter Supervisor"), tr("Polter Supervisor"));
+    fn menus_name_a_role_the_way_the_list_does() {
+        let r = Role::from_json(&supervisor_json()).unwrap();
+        assert_eq!(menu_name(&r.key, &r.name), r.display_name());
         assert_eq!(menu_name("archer", "Archer"), "Archer");
-        assert_eq!(builtin_name("archer"), None);
     }
 }

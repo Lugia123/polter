@@ -3450,14 +3450,21 @@ fn paint_main(win: HWND) {
             let right = r.right - s(PAD);
             // The marks go after the name, so the name is measured first and
             // cut short enough to leave them room.
-            let marks = s(14) * (i32::from(row.builtin) + i32::from(row.unsaved));
+            // The mark on an official role is the word, in a thin frame: a
+            // lock said "cannot be changed", which is not what official
+            // means (the core keeps a person's changes to one, #1504).
+            let official = tr("Official");
+            let badge_w = if row.builtin { measure(&official, right - x, Font::Small, true).0 + s(10) } else { 0 };
+            let marks = if row.builtin { badge_w + s(6) } else { 0 } + s(14) * i32::from(row.unsaved);
             let (tw, _) = measure(&row.title, right - x - marks, Font::Normal, true);
             let title = RECT { left: x, top: r.top + s(4), right: x + tw, bottom: r.top + s(24) };
             draw_text(hdc, &row.title, &title, Font::Normal, fg, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-            let mut mx = title.right + s(5);
+            let mut mx = title.right + s(6);
             if row.builtin {
-                draw_lock(hdc, mx, title.top + s(5), s(10), dim);
-                mx += s(14);
+                let badge = RECT { left: mx, top: title.top + s(1), right: mx + badge_w, bottom: title.bottom - s(1) };
+                frame_rect(hdc, &badge, theme::border());
+                draw_text(hdc, &official, &badge, Font::Small, dim, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+                mx = badge.right + s(2);
             }
             if row.unsaved {
                 draw_dot(hdc, mx + s(3), (title.top + title.bottom) / 2, s(3), theme::focus());
@@ -3486,11 +3493,10 @@ fn paint_main(win: HWND) {
         }
         if let (Some(r), Some(d)) = (frame.banner, frame.banner_dup) {
             fill(hdc, &r, theme::panel());
-            draw_lock(hdc, r.left + s(PAD), r.top + s(15), s(12), theme::dim());
-            let t = RECT { left: r.left + s(PAD + 20), top: r.top, right: d.left - s(PAD), bottom: r.bottom };
+            let t = RECT { left: r.left + s(PAD), top: r.top, right: d.left - s(PAD), bottom: r.bottom };
             draw_text(
                 hdc,
-                &tr("This role comes with Polter and can't be changed or deleted. Duplicate it to make one of your own."),
+                &crate::roles::official_notice(),
                 &t,
                 Font::Normal,
                 theme::dim(),

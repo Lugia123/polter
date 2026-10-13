@@ -4107,3 +4107,11 @@ msgstr ""
 
 #~ msgid "Role Library"
 #~ msgstr "角色库"
+
+#: windows/host/src/roles_ui.rs
+msgid "Official"
+msgstr "官方"
+
+#: windows/host/src/roles.rs
+msgid "Official role. Changing it and restoring its factory settings can't be done on Windows yet."
+msgstr "官方角色。修改与恢复出厂设置在 Windows 上还不能做。"
