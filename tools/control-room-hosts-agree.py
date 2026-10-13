@@ -51,7 +51,10 @@ none, the role and the directory), what it says of the supervisor each
 group last had (the CLI a start uses, the role and the CLI the last one
 was, when it was last heard from) and whether a start goes on with its
 session and why not -- with every one of the eight reasons the core can
-give, as each side spells it, the English sentence each side makes of each
+give, as each side spells it; who the core says is working in every
+terminal (which of its three answers, each as each side spells it; the role,
+the CLI and the session as written, with "not said" told from empty; and the
+terminal that opened it); the English sentence each side makes of each
 reason (none for the two that need none), what the two sessions a start
 can use are called, what a start sends for every state of that choice, and
 the sentence about the last supervisor for thirteen mixes of what is known
@@ -373,6 +376,20 @@ for r in list.rows {
 }
 for why in ControlRoomList.SupervisorStart.ResumeWhy.allCases {
     print("resume_why \(why.rawValue)")
+}
+// Who the core says is working in every terminal: which of its three
+// answers, the three words a project's pane keeps, and who opened it.
+for t in snapshot.terminals ?? [] {
+    if let w = t.who {
+        print("who id=\(t.id) is=\(w.is.rawValue) role=\(w.role.map(quote) ?? "-") "
+            + "cli=\(w.cli.map(quote) ?? "-") session=\(w.session.map(quote) ?? "-") "
+            + "opened_by=\(w.opened_by ?? "-")")
+    } else {
+        print("who id=\(t.id) -")
+    }
+}
+for one in ControlRoomSnapshot.Terminal.Who.Is.allCases {
+    print("who_is \(one.rawValue)")
 }
 // What the right-hand side makes of that (`ControlRoomStartChoice`): the
 // sentence for each reason a start will not go on with the last session

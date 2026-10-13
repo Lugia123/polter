@@ -775,6 +775,9 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
             else
                 .gone,
             .agent_present = self.agentPresent(id),
+            .at_prompt = surface.isAtShellPrompt(),
+            .role = if (self.personas.launchOf(id)) |l| l.role else self.personas.stateOf(id).key orelse "",
+            .launched_cli = if (self.personas.launchOf(id)) |l| l.choice.cli else "",
             .still_ms = surface.poltergeist_threshold_ms,
         }) catch return;
     }
@@ -1250,6 +1253,19 @@ fn deliverProjectLaunch(self: *App, now_ms: u64) void {
 fn controlActStateProjects(ctx: *anyopaque, list: []const poltergeistpkg.Projects.Stated) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     try self.projects.state(list);
+
+    // The panes a project's supervisor opened, said back after a restart
+    // or a restore: the terminals are new and nothing in memory knows
+    // them. Each is recorded as opened by the terminal now in the
+    // supervisor's pane, unless this run already knows who opened it.
+    for (list) |p| {
+        const boss = p.supervisor orelse continue;
+        for (p.workers) |w| {
+            if (w == boss or self.poltergeist.openedBy(w) != null) continue;
+            self.markAgentOpened(w, boss);
+            self.poltergeistRecordWorker(boss, w);
+        }
+    }
 }
 
 /// The host could not open a project it was ordered to. The start that

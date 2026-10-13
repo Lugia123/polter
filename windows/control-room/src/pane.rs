@@ -730,6 +730,7 @@ mod tests {
             text: text.to_string(),
             pane: Some(Wears::Worker),
             bar: bar.map(|(shown, text)| Bar { shown, text: text.to_string() }),
+            who: None,
         }]
     }
 

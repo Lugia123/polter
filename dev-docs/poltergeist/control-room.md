@@ -1130,6 +1130,10 @@ hook 说话**（`rpc` 的 `agentHeard`）核心都重新看一遍——目录、
 启动」；快照 `groups[].project.start` 说是哪一种。两端怎么说话、旧群怎么补上项目，整个在
 [projects.md](projects.md)。
 
+**每个终端里是谁（任务 #1495）。** 快照 `terminals[].who`：`is`（`agent` / `none` / `unknown`）、`role`、
+`cli`、`session`、`opened_by`，供宿主写进项目文件的每一格；判法与「总管开的格子」怎么活过重启在
+[projects.md](projects.md) 第 9 节。两个宿主的逻辑层都读入并进了对照闸（`who` / `who_is` 两种行），界面不画它。
+
 **总管起来就知道自己是哪个群的。** 启动行里的 `--group=<群>` 只改一件事：给 agent 的启动说明换成点名这个群
 的那一份（`persona.supervisor_of_group_note`）——先读这个群，不要再建一个。`me` 也答得出：`groups`、
 `supervisor_of`、`started_for`，三样都一定在，没有就是空表和 `null`。

@@ -309,6 +309,25 @@ fn main() {
     for why in polter_control_room::snapshot::ResumeWhy::ALL {
         println!("resume_why {}", why.name());
     }
+    // Who the core says is working in every terminal: which of its three
+    // answers, the three words a project's pane keeps, and who opened it.
+    for t in &snap.terminals {
+        match &t.who {
+            Some(w) => println!(
+                "who id={} is={} role={} cli={} session={} opened_by={}",
+                t.id,
+                w.is.name(),
+                w.role.as_deref().map(quote).unwrap_or_else(|| "-".into()),
+                w.cli.as_deref().map(quote).unwrap_or_else(|| "-".into()),
+                w.session.as_deref().map(quote).unwrap_or_else(|| "-".into()),
+                w.opened_by.as_deref().unwrap_or("-")
+            ),
+            None => println!("who id={} -", t.id),
+        }
+    }
+    for is in polter_control_room::snapshot::WhoIs::ALL {
+        println!("who_is {}", is.name());
+    }
     // What the right-hand side makes of that: the sentence for each reason
     // a start will not go on with the last session (none for the two that
     // need none), what the two sessions are called, what a start sends for

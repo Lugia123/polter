@@ -964,6 +964,44 @@ fn the_directory_is_the_last_supervisors_only_when_the_core_says_how_it_was_arri
 }
 
 #[test]
+fn who_the_core_says_is_in_a_terminal_is_read_as_one_of_three_and_never_guessed() {
+    use crate::snapshot::{Who, WhoIs};
+    let s = snapshot::decode(FIXTURE).unwrap();
+    let who = |id: &str| s.terminals.iter().find(|t| t.id == id).unwrap().who.clone().unwrap();
+
+    // An agent, with what is known of it; a part not known is an empty
+    // string, which is not a part that was not said.
+    assert_eq!(
+        who("0x00000000000000b1"),
+        Who {
+            is: WhoIs::Agent,
+            role: Some("dev-worker".into()),
+            cli: Some("claude-code".into()),
+            session: Some("s".into()),
+            opened_by: Some("0x00000000000000a1".into()),
+        }
+    );
+    assert_eq!(who("0x00000000000000a2").role.as_deref(), Some(""));
+    // Nobody, and not known: two answers, and neither has the three words.
+    let nobody = who("0x00000000000000c2");
+    assert_eq!((nobody.is, nobody.role, nobody.cli, nobody.session), (WhoIs::None, None, None, None));
+    assert_eq!(who("0x00000000000000b5").is, WhoIs::Unknown);
+
+    let named: Vec<&str> = WhoIs::ALL.iter().map(|k| k.name()).collect();
+    assert_eq!(named, ["unknown", "none", "agent"]);
+    // A word the core does not write is an error, not "unknown".
+    let odd = FIXTURE.replacen("\"is\": \"none\",\n        \"role\": null", "\"is\": \"nobody\",\n        \"role\": null", 1);
+    assert_ne!(odd, FIXTURE, "the fixture no longer has a terminal with nobody in it");
+    assert!(snapshot::decode(&odd).is_err());
+
+    // A core from before it said this: nothing, not a made-up "unknown".
+    let block = "      \"who\": {\n        \"is\": \"none\",\n        \"role\": null,\n        \"cli\": null,\n        \"session\": null,\n        \"opened_by\": null\n      },\n";
+    assert!(FIXTURE.contains(block), "the fixture no longer writes the block this test cuts");
+    let before = snapshot::decode(&FIXTURE.replacen(block, "", 1)).unwrap();
+    assert_eq!(before.terminals.iter().find(|t| t.id == "0x00000000000000c2").unwrap().who, None);
+}
+
+#[test]
 fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
     use crate::snapshot::{ResumeWhy, SupervisorLast};
     let s = snapshot::decode(FIXTURE).unwrap();
