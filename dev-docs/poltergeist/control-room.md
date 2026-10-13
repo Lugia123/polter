@@ -1114,6 +1114,10 @@ hook 说话**（`rpc` 的 `agentHeard`）核心都重新看一遍——目录、
 原因，快照事先就说了（下一节的 `resume`），判断是同一个函数（`ControlRoom.resumeOf`），启动那一刻按**这次
 实际用的角色**再问一遍。`new` 无论存着什么都起新会话。
 
+**有项目的群不走选目录（任务 #1490）。** 群绑着项目时，`start_supervisor` 是「打开它的项目，总管在它那一格里
+启动」；快照 `groups[].project.start` 说是哪一种。两端怎么说话、旧群怎么补上项目，整个在
+[projects.md](projects.md)。
+
 **总管起来就知道自己是哪个群的。** 启动行里的 `--group=<群>` 只改一件事：给 agent 的启动说明换成点名这个群
 的那一份（`persona.supervisor_of_group_note`）——先读这个群，不要再建一个。`me` 也答得出：`groups`、
 `supervisor_of`、`started_for`，三样都一定在，没有就是空表和 `null`。

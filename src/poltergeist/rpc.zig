@@ -53,6 +53,11 @@ pub const Method = enum {
     /// back hours later when it no longer remembers why it made this one.
     group_set_brief,
 
+    /// Say that a group uses the project the caller's tab is in, or that
+    /// it has none (`Projects.zig`). The supervisor's way of settling what
+    /// the program would not pick by itself.
+    group_project,
+
     /// Ask for the person to be told something.
     ///
     /// The program never decides that a human is needed -- it cannot read
@@ -432,6 +437,10 @@ pub const Request = union(Method) {
     notices,
     group_members: struct { group: []const u8 },
     group_set_brief: struct { group: []const u8, text: []const u8 },
+    /// `use` is "this group uses the project I am in"; `drop` is "this
+    /// group has no project". The field is named for the parameter: what a
+    /// request may carry is read off these names (`wire`).
+    group_project: struct { group: []const u8, action: ProjectAction },
 
     notify_user: struct {
         /// `scheduling` or `authorisation`. The second is never held back
@@ -952,6 +961,7 @@ pub fn callableByPlugin(method: Method) bool {
         // plugin already; they are named here too so this list reads as the
         // whole answer rather than half of one.
         .group_set_brief,
+        .group_project,
         .group_create,
         .group_destroy,
         .group_rename,
@@ -1119,6 +1129,8 @@ pub fn requiresSupervisor(method: Method) bool {
         .set_watch,
 
         .group_set_brief,
+
+        .group_project,
         .session_recall,
         .notify_user,
 
@@ -1322,6 +1334,7 @@ pub fn targetsTerminal(method: Method) bool {
         .group_history,
         .group_members,
         .group_set_brief,
+        .group_project,
 
         // A plugin is a setting of this machine, not of any terminal. The
         // one that names a terminal at all -- `plugin_test`, so the test
@@ -1437,6 +1450,7 @@ pub fn target(req: Request) ?Bus.Id {
         .group_history,
         .group_members,
         .group_set_brief,
+        .group_project,
         .session_recall,
         .notify_user,
         .plugin_list,
@@ -1545,6 +1559,7 @@ pub fn selfPermitted(req: Request) bool {
         .group_history,
         .group_members,
         .group_set_brief,
+        .group_project,
         .plugin_list,
         .plugin_configure,
         .plugin_test,
@@ -1808,6 +1823,7 @@ pub fn promptReach(method: Method) enum {
         .group_history,
         .group_members,
         .group_set_brief,
+        .group_project,
         .task_create,
         .task_close,
         .task_edit,
@@ -2311,6 +2327,7 @@ test "only what changes the arrangement needs the supervisor" {
             // Writing what a group is for is arranging, not talking.
             // Reading last night's arrangement, likewise.
             .group_set_brief,
+            .group_project,
             .session_recall,
             .notify_user,
 
@@ -5267,6 +5284,18 @@ pub const Host = struct {
             text: []const u8,
         ) anyerror!Chat.Kept,
 
+        /// `id`, a supervisor, says `group` uses the project its tab is in
+        /// (`use`) or has none. Answers where the group then stands, as a
+        /// JSON object in `alloc`; fails with one of `Projects.ToolRefusal`
+        /// or `NoSuchGroup` when nothing was changed.
+        groupProject: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+            group: []const u8,
+            use: bool,
+        ) anyerror![]const u8,
+
         /// Tell the person something, through whatever they configured.
         ///
         /// Returns what came of it, as a sentence to hand back -- the
@@ -6095,6 +6124,7 @@ pub fn isAgentCall(method: Method) bool {
         .notices,
         .group_members,
         .group_set_brief,
+        .group_project,
         .notify_user,
         .session_recall,
         .terminal_read,
@@ -6372,6 +6402,12 @@ fn dispatchOne(
             const text = host.sessionRecall(alloc) catch
                 return hostFailure("ReadFailed", "could not read last night's notes");
             return .{ .text = text };
+        },
+
+        .group_project => |p| {
+            const said = host.vtable.groupProject(host.ctx, alloc, caller, p.group, p.action == .use) catch |err|
+                return hostFailure(@errorName(err), projectRefusalMessage(err));
+            return .{ .json = said };
         },
 
         .group_set_brief => |p| {
@@ -8669,6 +8705,22 @@ fn screenshotUnsupported() wire.Response {
     );
 }
 
+pub const ProjectAction = enum { use, drop };
+
+/// Why `group_project` changed nothing, in words for the agent that
+/// asked. By the error's name, so that one this file has never heard of
+/// still says something true.
+fn projectRefusalMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.NoSuchGroup => "no group by that name",
+        error.ProjectsUnknown => "the interface has not told Polter what projects there are, so there is nothing to tie the group to yet. Nothing was changed; the group is started by picking a directory.",
+        error.NotItsSupervisor => "you are not that group's supervisor: a group's project is its supervisor's to say. See `supervisor_of` in `me`.",
+        error.ProjectHasGroup => "one group, one project: either that group has a project already, or the project your tab is in is another group's. Nothing was changed. `me` says which project each of your groups has.",
+        error.ProjectNameTaken => "a group's project bears the group's name, and there is already a project by that name that is not the one your tab is in. Nothing was changed; the person can rename or remove that project.",
+        else => "the group's project was not changed",
+    };
+}
+
 fn hostFailure(code: []const u8, message: []const u8) wire.Response {
     return .{ .failed = .{ .code = code, .message = message } };
 }
@@ -8711,6 +8763,9 @@ const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 const FakeHost = struct {
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
 
+    /// What `groupProject` was last asked, and what it refuses with.
+    project_said: ?struct { id: Bus.Id, group: []const u8, use: bool } = null,
+    project_refusal: ?anyerror = null,
     /// What `agentHeard` was last told.
     heard: ?struct { id: Bus.Id, kind: AgentEvent.Kind } = null,
     /// What `membership` answers; null is a host that cannot say.
@@ -9040,6 +9095,7 @@ const FakeHost = struct {
             .notifyUser = notifyUser,
             .sessionRecall = sessionRecall,
             .chatSetBrief = chatSetBrief,
+            .groupProject = groupProject,
             .chatGroupInfo = chatGroupInfo,
             .chatOwner = chatOwner,
             .chatMembers = chatMembers,
@@ -9406,6 +9462,13 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.ReadFailed;
         return alloc.dupe(u8, self.session);
+    }
+
+    fn groupProject(ctx: *anyopaque, _: std.mem.Allocator, id: Bus.Id, group: []const u8, use: bool) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.project_refusal) |err| return err;
+        self.project_said = .{ .id = id, .group = group, .use = use };
+        return "{\"tie\":\"undecided\",\"why\":\"pending\"}";
     }
 
     fn chatSetBrief(ctx: *anyopaque, group: []const u8, text: []const u8) anyerror!Chat.Kept {
@@ -15037,6 +15100,7 @@ test "ControlRoom resume: me is the one answer that carries where the terminal s
         .groups = &.{ "web-app", "billing" },
         .supervisor_of = &.{"web-app"},
         .started_for = "web-app",
+        .projects = &.{},
     } };
     const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .me);
     const m = res.me.membership orelse return error.MeSaidNothingOfItsGroups;
@@ -15075,5 +15139,42 @@ test "ControlRoom resume: the host hears what an agent's hooks said, after the b
         fake.heard = null;
         _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = hookEvent(kind) });
         try testing.expect(fake.heard == null);
+    }
+}
+
+test "Projects: group_project is a supervisor's, reaches the host as said, and a refusal says why in words" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    // A worker has no say over what project a group has.
+    try testing.expect(requiresSupervisor(.group_project));
+    try testing.expectError(error.NotPermitted, authorize(&b, term(worker), .{ .group_project = .{ .group = "build", .action = .use } }));
+
+    const yes = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{ .group_project = .{ .group = "build", .action = .use } });
+    try testing.expect(yes == .json);
+    try testing.expectEqual(boss, fake.project_said.?.id);
+    try testing.expectEqualStrings("build", fake.project_said.?.group);
+    try testing.expect(fake.project_said.?.use);
+
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{ .group_project = .{ .group = "build", .action = .drop } });
+    try testing.expect(!fake.project_said.?.use);
+
+    // Each refusal by its own name, with a sentence that is its own.
+    var seen: [5][]const u8 = undefined;
+    for ([_]anyerror{
+        error.NoSuchGroup,
+        error.ProjectsUnknown,
+        error.NotItsSupervisor,
+        error.ProjectHasGroup,
+        error.ProjectNameTaken,
+    }, 0..) |err, i| {
+        fake.project_refusal = err;
+        const no = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{ .group_project = .{ .group = "build", .action = .use } });
+        try testing.expectEqualStrings(@errorName(err), no.failed.code);
+        try testing.expect(no.failed.message.len > 0);
+        try testing.expect(!std.mem.eql(u8, no.failed.message, "the group's project was not changed"));
+        for (seen[0..i]) |before| try testing.expect(!std.mem.eql(u8, before, no.failed.message));
+        seen[i] = no.failed.message;
     }
 }

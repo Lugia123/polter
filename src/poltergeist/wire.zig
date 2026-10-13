@@ -15,6 +15,7 @@ const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Plugin = @import("Plugin.zig");
 const rpc = @import("rpc.zig");
+const Projects = @import("Projects.zig");
 
 pub const ParseError = error{
     /// The bytes are not a JSON object.
@@ -133,6 +134,18 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .group = try requireString(aa, params, "group"),
             .text = try requireString(aa, params, "text"),
         } },
+
+        .group_project => .{
+            .group_project = .{
+                .group = try requireString(aa, params, "group"),
+                // One of two words, and nothing is read into any other: a
+                // guess here ties a group to a project or unties it.
+                .action = std.meta.stringToEnum(
+                    rpc.ProjectAction,
+                    try requireString(aa, params, "action"),
+                ) orelse return error.BadParams,
+            },
+        },
 
         .agent_event => .{ .agent_event = try parseAgentEvent(aa, params) },
         .terminal_turn => .{ .terminal_turn = .{ .id = try requireId(params) } },
@@ -741,6 +754,17 @@ pub const Membership = struct {
     /// The group the person started this terminal for from the control
     /// room, in this run. Null when it was not started that way.
     started_for: ?[]const u8,
+    /// For each group in `supervisor_of`: the project it is tied to, and
+    /// when it is tied to none, why (`Projects.Why`).
+    projects: []const GroupProject,
+
+    pub const GroupProject = struct {
+        group: []const u8,
+        /// Only which of the three it is; the name is `project`.
+        tie: Chat.ProjectTie,
+        project: ?[]const u8,
+        why: Projects.Why,
+    };
 };
 
 pub const TerminalInfo = struct {
@@ -1745,6 +1769,23 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
         try s.write(m.supervisor_of);
         try s.objectField("started_for");
         try s.write(m.started_for);
+        try s.objectField("projects");
+        try s.beginArray();
+        for (m.projects) |p| {
+            try s.beginObject();
+            try s.objectField("group");
+            try s.write(p.group);
+            try s.objectField("tie");
+            try s.write(@tagName(p.tie));
+            // A `null` the reader can see, like `started_for`: "has none"
+            // is said, with the reason beside it.
+            try s.objectField("project");
+            try s.write(p.project);
+            try s.objectField("why");
+            try s.write(@tagName(p.why));
+            try s.endObject();
+        }
+        try s.endArray();
     }
 
     try s.endObject();
@@ -2712,11 +2753,23 @@ test "ControlRoom resume: me says the groups, the ones it is the supervisor of a
         .groups = &.{ "web-app", "billing" },
         .supervisor_of = &.{"web-app"},
         .started_for = "web-app",
+        .projects = &.{
+            .{ .group = "web-app", .tie = .{ .bound = "web-app" }, .project = "web-app", .why = .none },
+            .{ .group = "old", .tie = .undecided, .project = null, .why = .other_supervisor },
+        },
     } } });
     try testing.expect(std.mem.indexOf(
         u8,
         w.buffered(),
         "\"groups\":[\"web-app\",\"billing\"],\"supervisor_of\":[\"web-app\"],\"started_for\":\"web-app\"",
+    ) != null);
+    // Which project each group it supervises has, and for one that has
+    // none, a null and the reason.
+    try testing.expect(std.mem.indexOf(
+        u8,
+        w.buffered(),
+        "\"projects\":[{\"group\":\"web-app\",\"tie\":\"bound\",\"project\":\"web-app\",\"why\":\"none\"}," ++
+            "{\"group\":\"old\",\"tie\":\"undecided\",\"project\":null,\"why\":\"other_supervisor\"}]",
     ) != null);
 
     // In nothing and started for nothing: said, as empty lists and a null.
@@ -2725,11 +2778,12 @@ test "ControlRoom resume: me says the groups, the ones it is the supervisor of a
         .groups = &.{},
         .supervisor_of = &.{},
         .started_for = null,
+        .projects = &.{},
     } } });
     try testing.expect(std.mem.indexOf(
         u8,
         w.buffered(),
-        "\"groups\":[],\"supervisor_of\":[],\"started_for\":null",
+        "\"groups\":[],\"supervisor_of\":[],\"started_for\":null,\"projects\":[]",
     ) != null);
 
     // Not `me`, or a host that could not say: none of the three keys.
@@ -2738,4 +2792,30 @@ test "ControlRoom resume: me says the groups, the ones it is the supervisor of a
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "started_for") == null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "supervisor_of") == null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"groups\"") == null);
+}
+
+test "Projects: group_project reads one of two words and guesses at no other" {
+    var use = try parse(
+        \\{"method":"group_project","params":{"group":"build","action":"use"}}
+    );
+    defer use.deinit();
+    try testing.expectEqualStrings("build", use.value.group_project.group);
+    try testing.expect(use.value.group_project.action == .use);
+
+    var drop = try parse(
+        \\{"method":"group_project","params":{"group":"build","action":"drop"}}
+    );
+    defer drop.deinit();
+    try testing.expect(drop.value.group_project.action == .drop);
+
+    for ([_][]const u8{
+        \\{"method":"group_project","params":{"group":"build","action":"bind"}}
+        ,
+        \\{"method":"group_project","params":{"group":"build","action":""}}
+        ,
+        \\{"method":"group_project","params":{"group":"build"}}
+        ,
+        \\{"method":"group_project","params":{"action":"use"}}
+        ,
+    }) |bad| try testing.expectError(error.BadParams, parse(bad));
 }

@@ -130,6 +130,33 @@
 //!                                 does not say it can go on with a
 //!                                 session) | session_in_use (an open
 //!                                 terminal is in that session now)
+//!       "project": {
+//!         "tie": "bound",         bound | undecided | declined. Whether
+//!                                 this group has a project (`Projects.zig`):
+//!                                 undecided is nobody having said -- every
+//!                                 group from before there were ties --
+//!                                 declined is its supervisor saying none
+//!         "name": "web-app" | null,
+//!                                 the project, by the name the host has
+//!                                 it under; null unless bound
+//!         "pages": 3 | null,      how many pages it has. Null unless
+//!                                 bound, **and null when the host has not
+//!                                 said**: not known is not zero
+//!         "open": true | null,    whether it is open now; null likewise
+//!         "start": "project",     project | directory. What starting a
+//!                                 supervisor for this group does: opens
+//!                                 its project (all its pages; the
+//!                                 supervisor is started in its own pane),
+//!                                 or opens one tab in `supervisor.cwd`.
+//!                                 A host words its button on this
+//!         "why": "none" },        why the tie is as it is, in one word
+//!                                 (`Projects.Why`): none | projects_unknown
+//!                                 | not_taken_up | declined | pending |
+//!                                 no_supervisor | other_supervisor |
+//!                                 supervisor_of_several |
+//!                                 supervisor_has_project |
+//!                                 project_has_group | project_name_taken |
+//!                                 several_projects
 //!       "attention": {
 //!         "kind": "needs_approval",     Attention.Kind
 //!         "under": "needs_approval",    what it is when not snoozed
@@ -211,6 +238,19 @@
 //!                             Rows and window tabs still draw `shown`
 //!   "tabs": [ { "window":"0x…"|null, "tab":"0x…",
 //!       "shown":…, "terminal":"0x…"|null } ],
+//!   "projects_known": false,  whether the host has stated what projects
+//!                             there are (ControlAct.zig, `projects`).
+//!                             Until it has, no group is tied or untied
+//!                             and the only order is `open`
+//!   "project_orders": [ {"order":"create","project":"web-app",
+//!       "group":"web-app","to":null,"terminal":"0x…"} ],
+//!                             what the host is to do for its half of the
+//!                             ties to match (`Projects.Order`): open |
+//!                             create | bind | set_group | rename |
+//!                             add_tab. Worked out afresh each time: an
+//!                             order is there until the host has done it
+//!                             and stated the result, and gone when it has.
+//!                             Carrying one out twice changes nothing
 //!   "supervisor_roles": [ {"key":"polter-supervisor",
 //!       "name":"Polter Supervisor"} ],
 //!                             the roles a supervisor can be started in,
@@ -251,6 +291,7 @@ const Allocator = std.mem.Allocator;
 const Attention = @import("Attention.zig");
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
+const Projects = @import("Projects.zig");
 const AgentEvent = @import("agent_event.zig");
 const ShellSteps = @import("ShellSteps.zig");
 const quota = @import("quota.zig");
@@ -412,12 +453,27 @@ pub const Input = struct {
     /// adapters' own word. No default: a caller that forgot it would have
     /// every group say "not read yet" for ever.
     cli_resume: CliResume,
+    /// Where every group stands with a project, and what the host is to
+    /// do about it. No default: a caller that forgot it would have every
+    /// group read "the host has not said" for ever.
+    projects: ProjectsIn,
     /// The person's home directory, where a supervisor is started when
     /// nothing says better. Empty when it is not known.
     home: []const u8,
     /// The bus's clock, and the real one.
     now_ms: u64,
     wall_ms: u64,
+};
+
+/// What `Projects.reconcile` came to, and the table it came from.
+pub const ProjectsIn = struct {
+    /// What the host stated; null when it has stated nothing.
+    table: ?*const Projects,
+    standings: []const Projects.Standing,
+    orders: []const Projects.Order,
+
+    /// Nothing stated and nothing worked out.
+    pub const unknown: ProjectsIn = .{ .table = null, .standings = &.{}, .orders = &.{} };
 };
 
 /// A role that makes the terminal it starts in a supervisor, as the
@@ -749,6 +805,26 @@ pub const ResumeOut = struct {
     };
 };
 
+/// A group's tie to a project, and what starting its supervisor does.
+pub const ProjectOut = struct {
+    tie: enum { undecided, declined, bound },
+    name: ?[]const u8,
+    pages: ?usize,
+    open: ?bool,
+    start: Chat.StartBy,
+    why: Projects.Why,
+};
+
+/// One thing the host is to do; `Projects.Order`, with the terminal as
+/// the snapshot writes one.
+pub const OrderOut = struct {
+    order: Projects.Order.Kind,
+    project: []const u8,
+    group: ?[]const u8,
+    to: ?[]const u8,
+    terminal: ?Hex,
+};
+
 pub const GroupRow = struct {
     name: []const u8,
     brief: []const u8,
@@ -757,6 +833,7 @@ pub const GroupRow = struct {
     snooze: SnoozeOut,
     steward: ?Hex,
     supervisor: SupervisorOut,
+    project: ProjectOut,
     attention: AttentionOut,
     needs_me: bool,
     unseen: bool,
@@ -937,6 +1014,8 @@ pub const Snapshot = struct {
     ungrouped: []const LoneRow,
     terminals: []const TerminalOut,
     tabs: []const Tab,
+    projects_known: bool,
+    project_orders: []const OrderOut,
     supervisor_roles: []const SupervisorRole,
     choose_supervisor_role: bool,
     /// Every "waiting for you" terminal, longest-waiting first. **The one
@@ -1301,6 +1380,36 @@ pub fn stewardOfGroup(arena: Allocator, bus: *const Bus, chat: *const Chat, name
 /// What the control room says of `name`'s supervisor: there is one, one is
 /// on its way, the last try failed, or there is none -- and what starting
 /// one would use. `steward` is the answer `stewardOf` gave.
+/// What the snapshot says of `name`'s project: the tie as `Chat` holds
+/// it, what the host said of that project, and the one word
+/// `Projects.reconcile` came to.
+fn projectOf(arena: Allocator, in: Input, name: []const u8) Allocator.Error!ProjectOut {
+    const tie = in.chat.projectOf(name);
+    const why: Projects.Why = for (in.projects.standings) |s| {
+        if (std.mem.eql(u8, s.group, name)) break s.why;
+    } else switch (tie) {
+        // Nothing was worked out for it: only what the tie itself says.
+        .bound => .none,
+        .declined => .declined,
+        .undecided => .projects_unknown,
+    };
+    return switch (tie) {
+        .undecided => .{ .tie = .undecided, .name = null, .pages = null, .open = null, .start = .directory, .why = why },
+        .declined => .{ .tie = .declined, .name = null, .pages = null, .open = null, .start = .directory, .why = why },
+        .bound => |project| bound: {
+            const stated = if (in.projects.table) |t| t.find(project) else null;
+            break :bound .{
+                .tie = .bound,
+                .name = try arena.dupe(u8, project),
+                .pages = if (stated) |p| p.pages else null,
+                .open = if (stated) |p| p.open != null else null,
+                .start = .project,
+                .why = why,
+            };
+        },
+    };
+}
+
 fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wake: *Wake) Allocator.Error!SupervisorOut {
     const start = in.chat.startOf(name, in.now_ms);
     // Past its deadline a start reads as failed, and nothing else happens
@@ -1525,6 +1634,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
                 .snooze = .of(marks.snooze),
                 .steward = .opt(steward_id),
                 .supervisor = try supervisorOf(arena, in, name, steward_id, &wake),
+                .project = try projectOf(arena, in, name),
                 .attention = .of(a, in.bus),
                 .needs_me = Attention.needsMe(a),
                 // **Looking at this row changes it**: it stopped and nobody has
@@ -1739,6 +1849,18 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .ungrouped = lone_rows,
             .terminals = terminals.items,
             .tabs = tabs.items,
+            .projects_known = if (in.projects.table) |t| t.stated != null else false,
+            .project_orders = orders: {
+                const out = try arena.alloc(OrderOut, in.projects.orders.len);
+                for (in.projects.orders, out) |o, *made| made.* = .{
+                    .order = o.order,
+                    .project = try arena.dupe(u8, o.project),
+                    .group = if (o.group) |g| try arena.dupe(u8, g) else null,
+                    .to = if (o.to) |t| try arena.dupe(u8, t) else null,
+                    .terminal = .opt(o.terminal),
+                };
+                break :orders out;
+            },
             .supervisor_roles = roles: {
                 const out = try arena.alloc(SupervisorRole, in.supervisor_roles.len);
                 for (in.supervisor_roles, out) |r, *o| o.* = .{
@@ -1794,6 +1916,7 @@ const World = struct {
     quota: []const quota.Reading = &.{},
     roles: []const StartRole = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{"claude-code"} }},
     cli_resume: CliResume = .{ .read = &.{"claude-code"} },
+    projects: ProjectsIn = .unknown,
     home: []const u8 = "/Users/me",
 
     fn init() World {
@@ -1881,6 +2004,7 @@ const World = struct {
             .quota = self.quota,
             .supervisor_roles = self.roles,
             .cli_resume = self.cli_resume,
+            .projects = self.projects,
             .home = self.home,
             .now_ms = now_ms,
             .wall_ms = self.wall_ms + now_ms,
@@ -1955,6 +2079,10 @@ fn fixtureWorld() !World {
     // there now, in the session its hooks name: nothing goes on with a
     // session a terminal is in. And one whose session is from before.
     // The other six have nothing written down.
+    //
+    // One group tied to a project, the host not having said anything yet:
+    // it is started by opening it, and how many pages it has is not known.
+    _ = try w.chat.setProject("infra", .{ .bound = "infra" });
     _ = try w.chat.setLastSupervisor("billing", .{
         .dir = "",
         .dir_from = .none,
@@ -3200,7 +3328,7 @@ test "ControlRoom start: one on its way is not offered again, and the snapshot w
     try w.chat.restoreShell("nightly", "", 0, .none);
     _ = try room.refresh(w.input(1_000), .event);
 
-    try w.chat.beginStart("nightly", 2_000, 11_000, false);
+    try w.chat.beginStart("nightly", 2_000, 11_000, false, .directory);
     var out = try room.refresh(w.input(2_000), .event);
     try testing.expect(out.notify != null);
     {
@@ -3243,7 +3371,7 @@ test "ControlRoom start: one on its way is not offered again, and the snapshot w
 
     // It did connect, was made a supervisor and put in the group: present,
     // whatever is left of the start.
-    try w.chat.beginStart("nightly", 62_000, 72_000, false);
+    try w.chat.beginStart("nightly", 62_000, 72_000, false, .directory);
     w.chat.startOpened("nightly", 0xa9, 122_000);
     try w.bus.addSupervisor(0xa9);
     try w.chat.add("nightly", 0xa9, .all, .{});
@@ -3266,7 +3394,7 @@ test "ControlRoom start: a launcher that says its CLI did not start fails the st
     defer room.deinit();
 
     try w.chat.restoreShell("nightly", "", 0, .none);
-    try w.chat.beginStart("nightly", 2_000, 11_000, false);
+    try w.chat.beginStart("nightly", 2_000, 11_000, false, .directory);
     try w.terminal(0xa9, "zsh", 0x29);
     w.chat.startOpened("nightly", 0xa9, 61_000);
     var out = try room.refresh(w.input(3_000), .event);
@@ -3301,7 +3429,7 @@ test "ControlRoom start: a launcher that says its CLI did not start fails the st
     try testing.expectEqual(Chat.StartFailure.cli_not_found, w.chat.startOf("nightly", 61_001).failed);
 
     // The other kind, on another try.
-    try w.chat.beginStart("nightly", 70_000, 80_000, false);
+    try w.chat.beginStart("nightly", 70_000, 80_000, false, .directory);
     w.chat.startOpened("nightly", 0xa9, 130_000);
     w.chat.failStart("nightly", Chat.startFailureOf(.failed));
     try testing.expectEqual(Chat.StartFailure.cli_did_not_start, w.chat.startOf("nightly", 71_000).failed);
@@ -3518,7 +3646,7 @@ test "ControlRoom start: closing the tab fails the start in the very next snapsh
 
     try w.chat.restoreShell("nightly", "", 0, .none);
     try w.terminal(0xa9, "zsh", 0x29);
-    try w.chat.beginStart("nightly", 1_000, 11_000, false);
+    try w.chat.beginStart("nightly", 1_000, 11_000, false, .directory);
     w.chat.startOpened("nightly", 0xa9, 61_000);
     var out = try room.refresh(w.input(2_000), .event);
     try testing.expectEqual(@as(?u64, 61_001), out.wake_ms);
@@ -3755,13 +3883,95 @@ test "ControlRoom resume: the snapshot says what a group's last supervisor was a
     // A start that went on with it and made no supervisor: the next one
     // does not, by default. One that started afresh and failed says
     // nothing against the session.
-    try w.chat.beginStart("nightly", 2_000, 11_000, true);
+    try w.chat.beginStart("nightly", 2_000, 11_000, true, .directory);
     s = (try room.compute(arena.allocator(), w.input(11_001))).snapshot;
     const failed = (try rowNamed(s, "nightly")).supervisor;
     try testing.expectEqual(SupervisorOut.State.failed, failed.state);
     try testing.expect(failed.can_start);
     try testing.expectEqual(ResumeOut.Why.last_try_failed, failed.@"resume".why);
-    try w.chat.beginStart("nightly", 12_000, 21_000, false);
+    try w.chat.beginStart("nightly", 12_000, 21_000, false, .directory);
     s = (try room.compute(arena.allocator(), w.input(21_001))).snapshot;
     try testing.expect((try rowNamed(s, "nightly")).supervisor.@"resume".can);
+}
+
+test "Projects: the snapshot says which project each group has, what starting it does, and what the host is to do" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    try w.chat.restoreShell("tied", "", 0, .none);
+    try w.chat.restoreShell("old", "", 0, .none);
+    try w.chat.restoreShell("said-no", "", 0, .none);
+    _ = try w.chat.setProject("tied", .{ .bound = "tied" });
+    _ = try w.chat.setProject("said-no", .declined);
+
+    // The host has said nothing: the tie is known, the project is not.
+    var s = (try room.compute(aa, w.input(1_000))).snapshot;
+    try testing.expect(!s.projects_known);
+    try testing.expectEqual(@as(usize, 0), s.project_orders.len);
+    const blind = (try rowNamed(s, "tied")).project;
+    try testing.expect(blind.tie == .bound);
+    try testing.expectEqualStrings("tied", blind.name.?);
+    // Not known is not zero pages and not closed.
+    try testing.expectEqual(@as(?usize, null), blind.pages);
+    try testing.expectEqual(@as(?bool, null), blind.open);
+    try testing.expectEqual(Chat.StartBy.project, blind.start);
+    try testing.expectEqual(Projects.Why.projects_unknown, (try rowNamed(s, "old")).project.why);
+    try testing.expectEqual(Chat.StartBy.directory, (try rowNamed(s, "old")).project.start);
+
+    // Stated. One group tied to a project of three pages, closed; one old
+    // group its supervisor has just taken up; one that said no.
+    var table: Projects = .init(testing.allocator);
+    defer table.deinit();
+    {
+        const v = try std.json.parseFromSliceLeaky(std.json.Value, aa,
+            \\[{"name":"tied","group":"tied","pages":3,"open":null,"supervisor":null}]
+        , .{});
+        try table.state(try Projects.parse(aa, v));
+    }
+    const views = [_]Projects.GroupView{
+        .{ .name = "tied", .tie = .{ .bound = "tied" }, .steward = null, .supervisors = 0, .claim = null, .awaiting_open = true },
+        .{ .name = "old", .tie = .undecided, .steward = 0xa1, .supervisors = 1, .claim = .{ .terminal = 0xa1, .said = false }, .awaiting_open = false },
+        .{ .name = "said-no", .tie = .declined, .steward = null, .supervisors = 0, .claim = null, .awaiting_open = false },
+    };
+    const out = try table.reconcile(aa, &views, &.{});
+    w.projects = .{ .table = &table, .standings = out.standings, .orders = out.orders };
+
+    s = (try room.compute(aa, w.input(1_000))).snapshot;
+    try testing.expect(s.projects_known);
+    const tied = (try rowNamed(s, "tied")).project;
+    try testing.expectEqual(@as(?usize, 3), tied.pages);
+    try testing.expectEqual(@as(?bool, false), tied.open);
+    try testing.expectEqual(Projects.Why.none, tied.why);
+
+    const old = (try rowNamed(s, "old")).project;
+    try testing.expect(old.tie == .undecided);
+    try testing.expectEqual(@as(?[]const u8, null), old.name);
+    try testing.expectEqual(Projects.Why.pending, old.why);
+    try testing.expectEqual(Chat.StartBy.directory, old.start);
+
+    const no = (try rowNamed(s, "said-no")).project;
+    try testing.expect(no.tie == .declined);
+    try testing.expectEqual(Projects.Why.declined, no.why);
+
+    // The two things asked of the host, as it reads them.
+    try testing.expectEqual(@as(usize, 2), s.project_orders.len);
+    try testing.expectEqual(Projects.Order.Kind.open, s.project_orders[0].order);
+    try testing.expectEqualStrings("tied", s.project_orders[0].project);
+    try testing.expectEqual(@as(?Hex, null), s.project_orders[0].terminal);
+    try testing.expectEqual(Projects.Order.Kind.create, s.project_orders[1].order);
+    try testing.expectEqualStrings("old", s.project_orders[1].group.?);
+    try testing.expectEqual(@as(u64, 0xa1), s.project_orders[1].terminal.?.id);
+
+    const json = try writeAlloc(aa, s, .{});
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\{"order":"create","project":"old","group":"old","to":null,"terminal":"0x00000000000000a1"}
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"project":{"tie":"bound","name":"tied","pages":3,"open":false,"start":"project","why":"none"}
+    ) != null);
 }
