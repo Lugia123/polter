@@ -295,6 +295,11 @@ extension RoleLibraryEditor {
     /// "Keep mine": the notice that the official role has changed goes,
     /// and what was changed here stays.
     func keepMine() {
+        if let name = skill {
+            // The text is untouched, so what is being typed stays as it is.
+            status = library.acknowledgeSkill(name)
+            return
+        }
         guard let key = original?.key else { return }
         let wasDirty = isDirty
         status = library.acknowledge(key)
@@ -651,9 +656,7 @@ struct RoleLibraryView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                if name != nil {
-                    Button(String(localized: "Keep Mine", comment: "角色库：官方版本有更新时，知道了，仍用我的")) { editor.keepMine() }
-                }
+                Button(String(localized: "Keep Mine", comment: "角色库：官方版本有更新时，知道了，仍用我的")) { editor.keepMine() }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, SettingsLayout.pad)

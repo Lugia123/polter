@@ -2274,6 +2274,22 @@ pub const CAPI = struct {
         return true;
     }
 
+    /// "Keep mine" for a shipped skill whose state is `modified_stale` (or
+    /// `unknown` because the copy has no record): it goes to `modified`.
+    export fn ghostty_app_official_skill_acknowledge(
+        app: *App,
+        name: [*]const u8,
+        len: usize,
+        err: ?[*]u8,
+        cap: usize,
+    ) bool {
+        app.core_app.acknowledgeOfficialSkill(name[0..len]) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
     /// Put a shipped skill back to the shipped text.
     export fn ghostty_app_official_skill_restore(
         app: *App,

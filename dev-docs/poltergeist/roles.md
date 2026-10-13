@@ -1011,7 +1011,9 @@ key 对谁都拒。还原、认领、skill 的保存与还原**只有 C 接口**
 - ~~「官方版本有更新」的提示目前只有还原或重改那个字段才会消失。~~ 已补
   `PersonaStore.acknowledge`（`ghostty_app_persona_acknowledge`，只有界面能调）：「知道了，仍用
   我的」把这个角色每个覆盖的 `base` 提到当前官方值，状态回到 `modified`，用户的值不动；官方
-  再变一次会再提示。
+  再变一次会再提示。官方 skill 同样有（`skill_store.acknowledge`，
+  `ghostty_app_official_skill_acknowledge`）：把记录的哈希提到当前随包那份；用户手放、没有记录的
+  副本也借此得到记录，从 `unknown` 变成 `modified`。
 - 官方 skill 改完后，**已经在跑的 agent 什么时候读到新的 `SKILL.md` 是各 CLI 自己的事**
   （附录 A.3）；核心只保证文件被重写、`skill_read` 立刻是新的。重发 provision 之后插件确实
   重写了文件——这一步是读脚本推的，没在真机上跑过。

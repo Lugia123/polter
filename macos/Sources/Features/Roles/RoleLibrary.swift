@@ -79,6 +79,13 @@ final class RoleLibrary: ObservableObject {
         }.map(Self.message(for:))
     }
 
+    /// "Keep mine", for a skill the shipped text has moved under.
+    func acknowledgeSkill(_ name: String) -> String? {
+        ask { app, err, cap in
+            name.withCString { ghostty_app_official_skill_acknowledge(app, $0, UInt(strlen($0)), err, cap) }
+        }.map(Self.message(for:))
+    }
+
     func restoreSkill(_ name: String) -> String? {
         ask { app, err, cap in
             name.withCString { ghostty_app_official_skill_restore(app, $0, UInt(strlen($0)), err, cap) }

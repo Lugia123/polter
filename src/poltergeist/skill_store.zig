@@ -357,6 +357,48 @@ pub fn put(
     };
 }
 
+/// "I know the official text has changed; keep mine": the person's copy
+/// stays as it is and is recorded as made from the shipped text as it is
+/// today, so it reads as changed and no longer as behind. A copy somebody
+/// put there by hand, which had no record at all, gets one the same way.
+/// With no copy there is nothing to keep, and nothing is written.
+pub fn acknowledge(
+    alloc: Allocator,
+    io: std.Io,
+    name: []const u8,
+    config_root: ?[]const u8,
+    resources_dir: ?[]const u8,
+    personas_path: []const u8,
+) WriteError!void {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const res = resources_dir orelse return error.NoSuchSkill;
+    const shipped_path = skill.resourcePath(aa, res, name) catch |err| return switch (err) {
+        error.BadName => error.NoSuchSkill,
+        error.OutOfMemory => error.OutOfMemory,
+    };
+    const shipped_bytes = readSkill(aa, io, shipped_path) orelse return error.NoSuchSkill;
+    switch (try userCopy(aa, io, name, config_root)) {
+        .ok => {},
+        // A copy that does not read is not in use; there is nothing of the
+        // person's to keep until it is fixed or put back.
+        .none, .broken => return,
+    }
+
+    const read = PersonaStore.readOverrides(aa, io, personas_path);
+    const doc = official.withSkillBase(aa, read, name, try sha256Hex(aa, shipped_bytes)) catch |err| return switch (err) {
+        error.Unreadable => error.OverridesUnreadable,
+        error.OutOfMemory => error.OutOfMemory,
+    };
+    const opath = try PersonaStore.overridesPath(aa, personas_path);
+    PersonaStore.writeReplacing(aa, io, opath, doc) catch |err| {
+        log.warn("poltergeist: could not write {s}: {t}", .{ opath, err });
+        return error.CouldNotWrite;
+    };
+}
+
 /// Put the skill `name` back to the shipped one: the person's copy is
 /// deleted, from both places one can be, and its record with it.
 ///
@@ -590,6 +632,43 @@ test "skills: a saved copy is changed, then behind once the shipped text moves, 
     const st = try f.state();
     try testing.expectEqual(S.unknown, st.state);
     try testing.expect(st.reason != null);
+}
+
+test "skills: keeping mine clears behind and not-known, and leaves the copy alone" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const aa = f.arena.allocator();
+    const io = f.threaded.io();
+    const a = testing.allocator;
+    const S = persona.Official.Status;
+
+    // Nothing of the person's: nothing to keep, and no file is made.
+    try acknowledge(a, io, "supervising", f.config, f.res, f.personas);
+    try testing.expectEqual(S.pristine, (try f.state()).state);
+    try testing.expect(f.overrides() == .absent);
+
+    // Saved, then the shipped text moves: behind. Kept: changed, same text.
+    try put(a, io, "supervising", Fixture.mine("mine"), f.config, f.res, f.personas);
+    try f.write(try skill.resourcePath(aa, f.res, "supervising"), "---\nname: supervising\n---\nnew shipped prose\n");
+    try testing.expectEqual(S.modified_stale, (try f.state()).state);
+    try acknowledge(a, io, "supervising", f.config, f.res, f.personas);
+    try testing.expectEqual(S.modified, (try f.state()).state);
+    try testing.expectEqualStrings("mine\n", try readBody(aa, io, "supervising", f.config, f.res));
+
+    // A copy put there by hand has no record; keeping it gives it one.
+    try restore(a, io, "supervising", f.config, f.personas);
+    try f.write(try skill.userPath(aa, f.config, "supervising"), Fixture.mine("by hand"));
+    try testing.expectEqual(S.unknown, (try f.state()).state);
+    try acknowledge(a, io, "supervising", f.config, f.res, f.personas);
+    try testing.expectEqual(S.modified, (try f.state()).state);
+
+    // With the record file unreadable it cannot be written, and is not replaced.
+    const opath = try PersonaStore.overridesPath(aa, f.personas);
+    try f.write(opath, "{{{");
+    try testing.expectError(error.OverridesUnreadable, acknowledge(a, io, "supervising", f.config, f.res, f.personas));
+    try testing.expectEqualStrings("{{{", readSkill(aa, io, opath).?);
+    try testing.expectError(error.NoSuchSkill, acknowledge(a, io, "invented", f.config, f.res, f.personas));
 }
 
 test "skills: only a shipped skill is saved, under its own name, and the shipped text is not a copy" {

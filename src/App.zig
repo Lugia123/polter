@@ -8225,6 +8225,17 @@ pub fn restoreOfficialSkill(self: *App, name: []const u8) !void {
     self.skillsChanged();
 }
 
+/// "Keep mine" on a shipped skill the official text has moved under
+/// (`skill_store.acknowledge`). The text in use does not change, so nobody
+/// is told again.
+pub fn acknowledgeOfficialSkill(self: *App, name: []const u8) !void {
+    const dirs = self.skillDirs();
+    defer if (dirs.config_root) |d| self.alloc.free(d);
+    const path = try poltergeistpkg.PersonaStore.defaultPath(self.alloc);
+    defer self.alloc.free(path);
+    try poltergeistpkg.skill_store.acknowledge(self.alloc, global.io(), name, dirs.config_root, dirs.resources, path);
+}
+
 /// After a skill's text changed. `skill_read` reads the file each time and
 /// needs nothing; the copies the agent CLIs keep are the plugins' to
 /// rewrite, so they are told again -- when they were told the first time.

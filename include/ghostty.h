@@ -1629,6 +1629,9 @@ GHOSTTY_API uintptr_t ghostty_app_official_skills(ghostty_app_t, char*, uintptr_
 // _put(name, name_len, text, text_len, err, cap): text is the whole file.
 GHOSTTY_API bool ghostty_app_official_skill_put(ghostty_app_t, const char*, uintptr_t, const char*, uintptr_t, char*, uintptr_t);
 GHOSTTY_API bool ghostty_app_official_skill_restore(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+// _acknowledge(name, ...): "keep mine" for a skill whose state is
+// modified_stale; it goes back to modified and the person's text stays.
+GHOSTTY_API bool ghostty_app_official_skill_acknowledge(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 GHOSTTY_API uintptr_t ghostty_app_agent_clis(ghostty_app_t, bool, char*, uintptr_t);
 // Plugins, for the settings window: the list is the document `plugin_list`
 // answers with (same buffer rule). The test is `plugin_test` with no
