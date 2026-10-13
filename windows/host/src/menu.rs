@@ -107,7 +107,13 @@ fn row_enabled(r: &Row) -> bool {
         Enable::No => false,
         Enable::WhenReopenable => crate::reopen::can_reopen(),
     };
-    by_state && offered_in_front(r)
+    // A row about the page in front is lit when that page is, or is not,
+    // a page of a project -- whichever the row needs.
+    let by_page = r.action.and_then(page_act_of).is_none_or(|act| {
+        let frame = crate::tabs::overlay_frame();
+        crate::project_ui::page_act_offered(act, crate::tabs::tab_saved_as_project(frame))
+    });
+    by_state && by_page && offered_in_front(r)
 }
 
 /// Whether the row can be done with the tab that is in front.
@@ -296,7 +302,27 @@ const PROJECT_ROWS: &[Row] = &[
     act(n_("Save as Project…"), "__polter_save_project"),
     act(n_("Load Project…"), "__polter_load_project"),
     act(n_("Manage Projects…"), "__polter_manage_projects"),
+    sep(),
+    // What is done to the page in front (`polter_projects::page_rules`):
+    // each is lit only when it fits -- "Add" for a tab that is a page of no
+    // project, the other three for one that is.
+    act(n_("Add to Project…"), "__polter_add_to_project"),
+    act(n_("Take This Page Out of the Project"), "__polter_take_out_of_project"),
+    act(n_("Rename Project…"), "__polter_rename_project"),
+    act(n_("Close Project"), "__polter_close_project"),
 ];
+
+/// The page act a row is, when it is one.
+fn page_act_of(action: &str) -> Option<crate::project_ui::PageAct> {
+    use crate::project_ui::PageAct;
+    match action {
+        "__polter_add_to_project" => Some(PageAct::AddTo),
+        "__polter_take_out_of_project" => Some(PageAct::TakeOut),
+        "__polter_rename_project" => Some(PageAct::Rename),
+        "__polter_close_project" => Some(PageAct::CloseProject),
+        _ => None,
+    }
+}
 
 const FIND_ROWS: &[Row] = &[
     act(n_("Find…"), "start_search"),
@@ -630,6 +656,14 @@ fn run_host(frame: HWND, action: &str) -> bool {
             crate::settings_win::request(Route::to(Section::Projects, None), frame);
             true
         }
+        // The page in front, as "Save as Project" takes it. **Each returns
+        // before anything is on screen** (`request_page_act`).
+        "__polter_add_to_project" | "__polter_take_out_of_project" | "__polter_rename_project" | "__polter_close_project" => {
+            match (page_act_of(action), crate::tabs::tab_saved_as_project(frame)) {
+                (Some(act), Some(id)) if crate::project_ui::page_act_offered(act, Some(id)) => crate::project_ui::request_page_act(frame, id, act),
+                _ => false,
+            }
+        }
         "__polter_minimize" => {
             let _ = unsafe { ShowWindow(frame, SW_MINIMIZE) };
             true
@@ -678,6 +712,10 @@ const HOST_ACTIONS: &[&str] = &[
     "__polter_save_project",
     "__polter_load_project",
     "__polter_manage_projects",
+    "__polter_add_to_project",
+    "__polter_take_out_of_project",
+    "__polter_rename_project",
+    "__polter_close_project",
 ];
 
 // ------------------------------------------------------- the core's actions

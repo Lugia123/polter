@@ -977,3 +977,31 @@ test "Projects: what the host says about projects reaches the core whole, and wh
         \\{"act":"project_rename","from":"notes"}
     , 1_000));
 }
+
+// What a host says about projects, as the Windows host writes it: the lines
+// of this file are the bytes `polter-projects` (windows/projects/src/stated.rs)
+// produces, held to them by its own test, and this is the core taking each.
+// A key the host stopped writing, or one the core started asking for, turns
+// one of the two red.
+test "Projects: the core takes what the Windows host writes, line for line" {
+    var b = try Bench.init();
+    defer b.deinit();
+
+    var lines = std.mem.tokenizeScalar(u8, @embedFile("testdata/host_project_acts.jsonl"), '\n');
+    // Two projects, one of them open.
+    try b.act(lines.next().?, 1_000);
+    try testing.expectEqual(@as(?usize, 2), b.rec.stated);
+    try testing.expectEqual(@as(usize, 1), b.rec.stated_open);
+    // None.
+    try b.act(lines.next().?, 1_000);
+    try testing.expectEqual(@as(?usize, 0), b.rec.stated);
+    try b.act(lines.next().?, 1_000);
+    try testing.expectEqual(@as(?ProjectFailure, .not_found), b.rec.project_failed);
+    try b.act(lines.next().?, 1_000);
+    try testing.expectEqual(@as(?ProjectFailure, .unreadable), b.rec.project_failed);
+    try b.act(lines.next().?, 1_000);
+    try testing.expectEqual(@as(?Id, 0xb2), b.rec.asked_remove);
+    try b.act(lines.next().?, 1_000);
+    try testing.expectEqual(@as(usize, 1), b.rec.renames);
+    try testing.expectEqual(@as(?[]const u8, null), lines.next());
+}

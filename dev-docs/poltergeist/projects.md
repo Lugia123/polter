@@ -1,7 +1,8 @@
 # 群与项目：一一绑定，以及两端怎么说话
 
-> 状态：**核心与契约做完并有测试（任务 #1490）；两个宿主都还没接。** 宿主不发 `projects` 之前，核心对
-> 项目是「不知道」，什么都不自动做——所以今天的 mac 与 Windows 行为与接这件事之前相同。
+> 状态：**核心与契约做完并有测试（任务 #1490）。Windows 宿主接了（任务 #1496，`dev-docs/windows/projects.md`：
+> 规则有测试、接线只编译过、没在真机上跑过）；mac 宿主的这一半还没进主线。** 宿主不发 `projects` 之前，核心对
+> 项目是「不知道」，什么都不自动做。
 > 设计依据：`control-room-design/v20/DESIGN.md` 第 10–19 条。代码：`src/poltergeist/Projects.zig`（判定，
 > 纯函数）、`Chat.ProjectTie`（群这一半）、`ControlAct.zig`（宿主的四句话）、`ControlRoom.zig`（快照里的
 > `project` 与 `project_orders`）、`App.zig` 的 `projectsWork`（把两者接起来，**没有单测**）。
@@ -225,6 +226,6 @@
 - `App.zig` 的接线（`projectsWork` 的提交循环、`deliverProjectLaunch`、`takeUpGroups`、三条 `controlAct*`、
   `poltergeistGroupProject`、`me` 的 `projects`）编得过，调用的判定函数都有测试，**但没有在真程序里走过**，
   也没有宿主能驱动它。
-- 两个宿主都没接，所以「打开项目并在总管那格启动」的全流程没有任何读数。
+- Windows 宿主接了但没在真机上跑过、mac 宿主还没接，所以「打开项目并在总管那格启动」的全流程没有任何读数。
 - 一个项目跨窗口、一页被拖到别的窗口后的陈述：按设计「仍属于这个项目」，核心只看终端号，不看窗口，
   推断不受影响，没验。

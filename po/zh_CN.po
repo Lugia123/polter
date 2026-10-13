@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 18:28+0800\n"
+"POT-Creation-Date: 2026-10-13 18:49+0800\n"
 "PO-Revision-Date: 2026-09-13 10:50+0800\n"
 "Last-Translator: Lukas <134181853+bo2themax@users.noreply.github.com>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -54,7 +54,9 @@ msgstr "本提示将在重载配置后再次出现"
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
 #: src/apprt/gtk/class/application.zig:2225
-#: windows/host/src/project_picker.rs:337 windows/host/src/projects_ui.rs:626
+#: windows/host/src/project_picker.rs:251
+#: windows/host/src/project_picker.rs:420 windows/host/src/project_ui.rs:409
+#: windows/host/src/project_ui.rs:449 windows/host/src/projects_ui.rs:626
 #: windows/host/src/projects_ui.rs:653 windows/host/src/projects_ui.rs:658
 #: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:2887
 msgid "Cancel"
@@ -63,6 +65,7 @@ msgstr "取消"
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:8
 #: src/apprt/gtk/ui/1.2/search-overlay.blp:90
 #: src/apprt/gtk/ui/1.3/surface-child-exited.blp:17
+#: windows/host/src/project_ui.rs:449
 msgid "Close"
 msgstr "关闭"
 
@@ -85,7 +88,7 @@ msgstr "忽略"
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:434 src/apprt/gtk/ui/1.5/window.blp:318
 #: windows/host/src/general_ui.rs:576 windows/host/src/general_ui.rs:842
-#: windows/host/src/menu.rs:498
+#: windows/host/src/menu.rs:524
 msgid "Reload Configuration"
 msgstr "重新加载配置"
 
@@ -100,7 +103,7 @@ msgid "Ghostty: Terminal Inspector"
 msgstr "Ghostty 终端检查器"
 
 #: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:108
-#: windows/host/src/menu.rs:302
+#: windows/host/src/menu.rs:328
 msgid "Find…"
 msgstr "查找…"
 
@@ -130,17 +133,17 @@ msgstr ""
 "会传给运行中的程序。"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:107 windows/host/src/ctxmenu.rs:129
-#: windows/host/src/menu.rs:346
+#: windows/host/src/menu.rs:372
 msgid "Read-only"
 msgstr "只读"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:311 src/apprt/gtk/ui/1.5/window.blp:203
-#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:312
+#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:338
 msgid "Copy"
 msgstr "复制"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:208
-#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:313
+#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:339
 msgid "Paste"
 msgstr "粘贴"
 
@@ -166,29 +169,29 @@ msgstr "更改标题…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:348 src/apprt/gtk/ui/1.5/window.blp:180
 #: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
-#: windows/host/src/ctxmenu.rs:125 windows/host/src/menu.rs:278
+#: windows/host/src/ctxmenu.rs:125 windows/host/src/menu.rs:284
 msgid "Split Up"
 msgstr "向上分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:354 src/apprt/gtk/ui/1.5/window.blp:185
 #: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
-#: windows/host/src/ctxmenu.rs:124 windows/host/src/menu.rs:277
+#: windows/host/src/ctxmenu.rs:124 windows/host/src/menu.rs:283
 msgid "Split Down"
 msgstr "向下分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:360 src/apprt/gtk/ui/1.5/window.blp:190
 #: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
-#: windows/host/src/ctxmenu.rs:123 windows/host/src/menu.rs:276
+#: windows/host/src/ctxmenu.rs:123 windows/host/src/menu.rs:282
 msgid "Split Left"
 msgstr "向左分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:366 src/apprt/gtk/ui/1.5/window.blp:195
 #: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
-#: windows/host/src/ctxmenu.rs:122 windows/host/src/menu.rs:275
+#: windows/host/src/ctxmenu.rs:122 windows/host/src/menu.rs:281
 msgid "Split Right"
 msgstr "向右分屏"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/menu.rs:280
+#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/menu.rs:286
 msgid "Close Split"
 msgstr "关闭分屏"
 
@@ -204,17 +207,17 @@ msgstr "更改标签页标题…"
 #: src/apprt/gtk/ui/1.2/surface.blp:386 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
 #: src/input/command.zig:427 windows/host/src/ctxmenu.rs:110
-#: windows/host/src/menu.rs:255 windows/host/src/strip.rs:2088
+#: windows/host/src/menu.rs:261 windows/host/src/strip.rs:2127
 msgid "New Tab"
 msgstr "新建标签页"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:242
 #: src/input/command.zig:674 windows/host/src/ctxmenu.rs:116
-#: windows/host/src/menu.rs:281 windows/host/src/strip.rs:1604
+#: windows/host/src/menu.rs:287 windows/host/src/strip.rs:1604
 msgid "Close Tab"
 msgstr "关闭标签页"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:523
+#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:549
 msgid "Window"
 msgstr "窗口"
 
@@ -223,12 +226,12 @@ msgid "Change Window Title…"
 msgstr "更改窗口标题…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:406 src/apprt/gtk/ui/1.5/window.blp:220
-#: src/input/command.zig:421 windows/host/src/menu.rs:254
+#: src/input/command.zig:421 windows/host/src/menu.rs:260
 msgid "New Window"
 msgstr "新建窗口"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:691 windows/host/src/menu.rs:282
+#: src/input/command.zig:691 windows/host/src/menu.rs:288
 msgid "Close Window"
 msgstr "关闭窗口"
 
@@ -265,12 +268,12 @@ msgid "Main Menu"
 msgstr "主菜单"
 
 #: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:192
-#: windows/host/src/menu.rs:331 windows/host/src/strip.rs:2095
+#: windows/host/src/menu.rs:357 windows/host/src/strip.rs:2134
 msgid "Command Palette"
 msgstr "命令面板"
 
 #: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:128
-#: windows/host/src/menu.rs:355
+#: windows/host/src/menu.rs:381
 msgid "Terminal Inspector"
 msgstr "终端检查器"
 
@@ -547,7 +550,7 @@ msgstr "缩小字号"
 msgid "Decrease the font size by 1 point."
 msgstr "将字体大小缩小 1pt。"
 
-#: src/input/command.zig:237 windows/host/src/menu.rs:327
+#: src/input/command.zig:237 windows/host/src/menu.rs:353
 msgid "Reset Font Size"
 msgstr "重置字号"
 
@@ -564,7 +567,7 @@ msgid "Clear the screen and scrollback."
 msgstr "清除屏幕和回滚内容。"
 
 #: src/input/command.zig:249 windows/host/src/ctxmenu.rs:106
-#: windows/host/src/menu.rs:321
+#: windows/host/src/menu.rs:347
 msgid "Select All"
 msgstr "全选"
 
@@ -934,7 +937,7 @@ msgid "Toggle read-only mode for the current surface."
 msgstr "切换当前分屏的只读状态。"
 
 #: src/input/command.zig:557 windows/host/src/ctxmenu.rs:142
-#: windows/host/src/menu.rs:376 windows/host/src/strip.rs:1613
+#: windows/host/src/menu.rs:402 windows/host/src/strip.rs:1613
 msgid "Make This Terminal a Supervisor"
 msgstr "将此终端设为总管"
 
@@ -947,7 +950,7 @@ msgstr ""
 "些。"
 
 #: src/input/command.zig:563 windows/host/src/ctxmenu.rs:147
-#: windows/host/src/menu.rs:377 windows/host/src/strip.rs:1614
+#: windows/host/src/menu.rs:403 windows/host/src/strip.rs:1614
 msgid "Toggle Supervision of This Terminal"
 msgstr "监督此终端"
 
@@ -955,7 +958,7 @@ msgstr "监督此终端"
 msgid "Report this terminal to the supervisor when its screen goes quiet."
 msgstr "这个终端的屏幕静止下来时，报给总管。"
 
-#: src/input/command.zig:594 windows/host/src/menu.rs:435
+#: src/input/command.zig:594 windows/host/src/menu.rs:461
 msgid "Hold This Terminal to Its Work"
 msgstr "保持这个终端在岗"
 
@@ -967,7 +970,7 @@ msgstr ""
 "阻止这个终端被下班——无论是总管还是别的什么。只有键盘前的人能设置或解除它。"
 
 #: src/input/command.zig:600 windows/host/src/ctxmenu.rs:152
-#: windows/host/src/menu.rs:378 windows/host/src/strip.rs:1615
+#: windows/host/src/menu.rs:404 windows/host/src/strip.rs:1615
 msgid "Keep Agents Out of This Terminal"
 msgstr "不让 agent 碰此终端"
 
@@ -979,7 +982,7 @@ msgstr ""
 "不让任何 agent（总管也在内）读这个终端、或者往里打字。屏蔽期间，它的 tab 上会"
 "带一把锁。只有你能设这一项。"
 
-#: src/input/command.zig:606 windows/host/src/menu.rs:374
+#: src/input/command.zig:606 windows/host/src/menu.rs:400
 msgid "Terminal Conversations"
 msgstr "终端群聊"
 
@@ -987,7 +990,7 @@ msgstr "终端群聊"
 msgid "Open a terminal showing what the terminals have said to each other."
 msgstr "开一个终端，显示各个终端之间说过的话。"
 
-#: src/input/command.zig:612 windows/host/src/menu.rs:367
+#: src/input/command.zig:612 windows/host/src/menu.rs:393
 #: windows/control-room/src/rules.rs:165
 msgid "Control Room"
 msgstr "总控台"
@@ -998,7 +1001,7 @@ msgid ""
 "if it is closed."
 msgstr ""
 
-#: src/input/command.zig:618 windows/host/src/menu.rs:453
+#: src/input/command.zig:618 windows/host/src/menu.rs:479
 msgid "Equalize Splits"
 msgstr "均分分屏大小"
 
@@ -1006,7 +1009,7 @@ msgstr "均分分屏大小"
 msgid "Equalize the size of all splits."
 msgstr "使所有分屏大小相等。"
 
-#: src/input/command.zig:624 windows/host/src/menu.rs:475
+#: src/input/command.zig:624 windows/host/src/menu.rs:501
 msgid "Reset Window Size"
 msgstr "重置窗口大小"
 
@@ -1180,7 +1183,7 @@ msgstr "检查更新"
 msgid "Check for updates to the application."
 msgstr "检查应用是否有版本更新。"
 
-#: src/input/command.zig:757 windows/host/src/projects_ui.rs:1370
+#: src/input/command.zig:757 windows/host/src/projects_ui.rs:1386
 msgid "Undo"
 msgstr "撤销"
 
@@ -1371,7 +1374,7 @@ msgid "The page could not be followed any further, so the picture ends here."
 msgstr "页面没能再跟下去，图片到此为止。"
 
 #: src/input/screenshot.zig:126 windows/host/src/plugins_ui.rs:525
-#: windows/host/src/project_picker.rs:323 windows/host/src/roles_ui.rs:2258
+#: windows/host/src/project_picker.rs:406 windows/host/src/roles_ui.rs:2258
 #: windows/host/src/roles_ui.rs:2951 windows/host/src/roles_ui.rs:2968
 #: windows/host/src/roles_ui.rs:2982
 msgid "Save"
@@ -2167,20 +2170,20 @@ msgstr "agent 可以用截图工具拍下屏幕。"
 #. overlay. "Rename Tab..." with three dots is a DIFFERENT action
 #. (rename_tab) that edits the tab strip in place. The two entries look
 #. almost identical; do not merge them.
-#: windows/host/src/ctxmenu.rs:138 windows/host/src/menu.rs:343
+#: windows/host/src/ctxmenu.rs:138 windows/host/src/menu.rs:369
 msgid "Rename Tab…"
 msgstr "改标签标题…"
 
-#: windows/host/src/ctxmenu.rs:139 windows/host/src/menu.rs:344
+#: windows/host/src/ctxmenu.rs:139 windows/host/src/menu.rs:370
 msgid "Rename Terminal…"
 msgstr "改终端标题…"
 
 # The Chinese is longer than the English on purpose: the parenthesis says this also answers "Don't Ask Again", which writes a lasting grant. English matches macOS verbatim. Shared by menu.rs and ctxmenu.rs.
-#: windows/host/src/ctxmenu.rs:177 windows/host/src/menu.rs:393
+#: windows/host/src/ctxmenu.rs:177 windows/host/src/menu.rs:419
 msgid "Let a Supervisor Answer Prompts Here"
 msgstr "允许总管替此终端点授权框（含「不再询问」）"
 
-#: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:407
+#: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:433
 #: windows/host/src/strip.rs:1616
 msgid "Let Workers Name Each Other Directly"
 msgstr "允许 worker 之间直接点名"
@@ -2229,7 +2232,7 @@ msgid "Choose…"
 msgstr "选择…"
 
 #: windows/host/src/general_ui.rs:1214 windows/host/src/general_ui.rs:1379
-#: windows/host/src/projects_ui.rs:1372
+#: windows/host/src/projects_ui.rs:1388
 msgid "Show in Explorer"
 msgstr "在资源管理器中显示"
 
@@ -2245,7 +2248,7 @@ msgstr "深色"
 msgid "The screenshot folder could not be worked out."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1488 windows/host/src/projects_ui.rs:986
+#: windows/host/src/general_ui.rs:1488 windows/host/src/projects_ui.rs:1002
 msgid "Explorer could not be started."
 msgstr "资源管理器打不开。"
 
@@ -2394,173 +2397,189 @@ msgstr "Polter 无法打开第一个终端，即将关闭。"
 msgid "The full log is at {}"
 msgstr "完整日志在 {}"
 
-#: windows/host/src/menu.rs:266 windows/host/src/strip.rs:2094
+#: windows/host/src/menu.rs:272 windows/host/src/strip.rs:2133
 msgid "Reopen Closed Tab"
 msgstr "重开关闭的标签"
 
-#: windows/host/src/menu.rs:296 windows/host/src/projects_ui.rs:624
+#: windows/host/src/menu.rs:302 windows/host/src/projects_ui.rs:624
 #: windows/host/src/strip.rs:1619
 msgid "Save as Project…"
 msgstr "另存为项目…"
 
-#: windows/host/src/menu.rs:297 windows/host/src/strip.rs:1620
+#: windows/host/src/menu.rs:303 windows/host/src/strip.rs:1620
 msgid "Load Project…"
 msgstr "加载项目…"
 
-#: windows/host/src/menu.rs:298
+#: windows/host/src/menu.rs:304
 msgid "Manage Projects…"
 msgstr "管理项目…"
 
-#: windows/host/src/menu.rs:305
+#: windows/host/src/menu.rs:309 windows/host/src/strip.rs:1889
+msgid "Add to Project…"
+msgstr "加入项目…"
+
+#: windows/host/src/menu.rs:310 windows/projects/src/page_rules.rs:159
+msgid "Take This Page Out of the Project"
+msgstr "把这一页移出项目"
+
+#: windows/host/src/menu.rs:311 windows/projects/src/page_rules.rs:166
+msgid "Rename Project…"
+msgstr "重命名项目…"
+
+#: windows/host/src/menu.rs:312 windows/projects/src/page_rules.rs:165
+msgid "Close Project"
+msgstr "关闭项目"
+
+#: windows/host/src/menu.rs:331
 msgid "Next"
 msgstr "下一个"
 
-#: windows/host/src/menu.rs:306
+#: windows/host/src/menu.rs:332
 msgid "Previous"
 msgstr "上一个"
 
-#: windows/host/src/menu.rs:308
+#: windows/host/src/menu.rs:334
 msgid "Hide the Find Bar"
 msgstr "隐藏查找条"
 
-#: windows/host/src/menu.rs:323
+#: windows/host/src/menu.rs:349
 msgid "Find"
 msgstr "查找"
 
-#: windows/host/src/menu.rs:328
+#: windows/host/src/menu.rs:354
 msgid "Zoom In"
 msgstr "放大"
 
-#: windows/host/src/menu.rs:329
+#: windows/host/src/menu.rs:355
 msgid "Zoom Out"
 msgstr "缩小"
 
-#: windows/host/src/menu.rs:348
+#: windows/host/src/menu.rs:374
 msgid "Quick Terminal"
 msgstr "快速终端"
 
-#: windows/host/src/menu.rs:439
+#: windows/host/src/menu.rs:465
 msgid "Plugins…"
 msgstr "插件…"
 
-#: windows/host/src/menu.rs:442 windows/host/src/personas.rs:538
+#: windows/host/src/menu.rs:468 windows/host/src/personas.rs:538
 msgid "Role Library..."
 msgstr "角色库…"
 
-#: windows/host/src/menu.rs:446
+#: windows/host/src/menu.rs:472
 msgid "Up"
 msgstr "上"
 
-#: windows/host/src/menu.rs:447
+#: windows/host/src/menu.rs:473
 msgid "Down"
 msgstr "下"
 
-#: windows/host/src/menu.rs:448
+#: windows/host/src/menu.rs:474
 msgid "Left"
 msgstr "左"
 
-#: windows/host/src/menu.rs:449
+#: windows/host/src/menu.rs:475
 msgid "Right"
 msgstr "右"
 
-#: windows/host/src/menu.rs:455
+#: windows/host/src/menu.rs:481
 msgid "Grow Up"
 msgstr "向上"
 
-#: windows/host/src/menu.rs:456
+#: windows/host/src/menu.rs:482
 msgid "Grow Down"
 msgstr "向下"
 
-#: windows/host/src/menu.rs:457
+#: windows/host/src/menu.rs:483
 msgid "Grow Left"
 msgstr "向左"
 
-#: windows/host/src/menu.rs:458
+#: windows/host/src/menu.rs:484
 msgid "Grow Right"
 msgstr "向右"
 
-#: windows/host/src/menu.rs:464
+#: windows/host/src/menu.rs:490
 msgid "Minimize"
 msgstr "最小化"
 
-#: windows/host/src/menu.rs:465
+#: windows/host/src/menu.rs:491
 msgid "Maximize"
 msgstr "最大化"
 
-#: windows/host/src/menu.rs:467
+#: windows/host/src/menu.rs:493
 msgid "Full Screen"
 msgstr "全屏"
 
-#: windows/host/src/menu.rs:469
+#: windows/host/src/menu.rs:495
 msgid "Split Zoom"
 msgstr "分屏缩放"
 
-#: windows/host/src/menu.rs:470
+#: windows/host/src/menu.rs:496
 msgid "Previous Split"
 msgstr "上一个分屏"
 
-#: windows/host/src/menu.rs:471
+#: windows/host/src/menu.rs:497
 msgid "Next Split"
 msgstr "下一个分屏"
 
-#: windows/host/src/menu.rs:472
+#: windows/host/src/menu.rs:498
 msgid "Select Split"
 msgstr "选择分屏"
 
-#: windows/host/src/menu.rs:473
+#: windows/host/src/menu.rs:499
 msgid "Resize Split"
 msgstr "调整分屏"
 
-#: windows/host/src/menu.rs:477
+#: windows/host/src/menu.rs:503
 msgid "Float on Top"
 msgstr "置顶"
 
-#: windows/host/src/menu.rs:484
+#: windows/host/src/menu.rs:510
 msgid "Polter Help"
 msgstr "Polter 帮助"
 
-#: windows/host/src/menu.rs:497
+#: windows/host/src/menu.rs:523
 msgid "Check for Updates…"
 msgstr "检查更新…"
 
-#: windows/host/src/menu.rs:503
+#: windows/host/src/menu.rs:529
 msgid "File"
 msgstr "文件"
 
-#: windows/host/src/menu.rs:504
+#: windows/host/src/menu.rs:530
 msgid "Edit"
 msgstr "编辑"
 
-#: windows/host/src/menu.rs:505
+#: windows/host/src/menu.rs:531
 msgid "View"
 msgstr "查看"
 
-#: windows/host/src/menu.rs:521
+#: windows/host/src/menu.rs:547
 msgid "Agents"
 msgstr "智能体"
 
-#: windows/host/src/menu.rs:522
+#: windows/host/src/menu.rs:548
 msgid "Project"
 msgstr "项目"
 
-#: windows/host/src/menu.rs:524
+#: windows/host/src/menu.rs:550
 msgid "Help"
 msgstr "帮助"
 
-#: windows/host/src/menu.rs:529
+#: windows/host/src/menu.rs:555
 msgid "Settings…"
 msgstr "设置…"
 
-#: windows/host/src/menu.rs:541
+#: windows/host/src/menu.rs:567
 msgid "Language…"
 msgstr "语言…"
 
 # Menu item (menu.rs ROOT). Deliberately a different msgid from "Keyboard Shortcuts" without the ellipsis, which is the page title and accessible name (settings_ui.rs, uia.rs). The ellipsis says the item opens a page; macOS MainMenu.xib Kb1-Nd-Ls1 has it too. Do not merge the two.
-#: windows/host/src/menu.rs:555
+#: windows/host/src/menu.rs:581
 msgid "Keyboard Shortcuts…"
 msgstr "快捷键…"
 
-#: windows/host/src/menu.rs:556
+#: windows/host/src/menu.rs:582
 msgid "About Polter"
 msgstr "关于 Polter"
 
@@ -2789,50 +2808,72 @@ msgstr "没有订阅任何事件，因此 Polter 没有东西可以交给它，�
 msgid "What it is handed: {}"
 msgstr "它会收到：{}"
 
-#: windows/host/src/project_picker.rs:95 windows/host/src/project_picker.rs:542
+#: windows/host/src/project_picker.rs:98 windows/host/src/project_picker.rs:626
 msgid "Load Project"
 msgstr "加载项目"
 
-#: windows/host/src/project_picker.rs:96 windows/host/src/project_picker.rs:596
+#: windows/host/src/project_picker.rs:99 windows/host/src/project_picker.rs:225
+#: windows/host/src/project_picker.rs:697
+#: windows/host/src/project_picker.rs:703
 msgid "Save as Project"
 msgstr "另存为项目"
 
-#: windows/host/src/project_picker.rs:258
+#: windows/host/src/project_picker.rs:242
+#, rust-format
+msgid "All {} Pages of This Window"
+msgstr "这个窗口的全部 {} 页"
+
+#: windows/host/src/project_picker.rs:251
+msgid "This Page Only"
+msgstr "只存这一页"
+
+#: windows/host/src/project_picker.rs:338
 #, rust-format
 msgid "Saves this tab: {} pane(s)"
 msgstr "将存下当前标签页的 {} 个面板"
 
-#: windows/host/src/project_picker.rs:542 windows/host/src/projects_ui.rs:691
+#: windows/host/src/project_picker.rs:626 windows/host/src/projects_ui.rs:691
 msgid "The project could not be opened."
 msgstr "这个项目打不开"
 
-#: windows/host/src/project_picker.rs:596 windows/host/src/projects_ui.rs:927
-#: windows/host/src/projects_ui.rs:940
+#: windows/host/src/project_picker.rs:697
+#: windows/host/src/project_picker.rs:703 windows/host/src/projects_ui.rs:943
+#: windows/host/src/projects_ui.rs:956
 msgid "The project could not be saved."
 msgstr "项目存不了："
 
-#: windows/host/src/project_picker.rs:906 windows/host/src/settings_win.rs:934
+#: windows/host/src/project_picker.rs:1013 windows/host/src/settings_win.rs:934
 #: windows/host/src/settings_win.rs:1351
 msgid "Search"
 msgstr "搜索"
 
-#: windows/host/src/project_picker.rs:907
+#: windows/host/src/project_picker.rs:1014
 msgid "New Project Name"
 msgstr "新项目的名字"
 
-#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1198
+#: windows/host/src/project_picker.rs:1094 windows/host/src/projects_ui.rs:1214
 msgid "No Saved Projects"
 msgstr "还没有保存过项目"
 
-#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1200
+#: windows/host/src/project_picker.rs:1094 windows/host/src/projects_ui.rs:1216
 msgid "No matching projects"
 msgstr "没有匹配的项目"
 
-#: windows/host/src/projects_ui.rs:562 windows/host/src/roles_ui.rs:732
-#: windows/settings-shell/src/general.rs:77
+#: windows/host/src/project_ui.rs:365 windows/host/src/projects_ui.rs:562
+#: windows/host/src/roles_ui.rs:732 windows/settings-shell/src/general.rs:77
 #: windows/control-room/src/rules.rs:168
 msgid "Polter"
 msgstr "Polter"
+
+#: windows/host/src/project_ui.rs:407
+msgid "Close Project?"
+msgstr "关闭这个项目？"
+
+#: windows/host/src/project_ui.rs:408
+msgid ""
+"A terminal of this project still has a running process. If you close the "
+"project the process will be killed."
+msgstr "这个项目里还有终端在跑进程。关闭项目会把它结束掉。"
 
 #: windows/host/src/projects_ui.rs:625
 msgid "Close Without Saving"
@@ -2859,12 +2900,12 @@ msgstr "“{}”已经有 {} 个面板，保存于 {}。被替换的版本会留
 msgid "Overwrite Project?"
 msgstr "覆盖这个项目？"
 
-#: windows/host/src/projects_ui.rs:653 windows/host/src/projects_ui.rs:917
+#: windows/host/src/projects_ui.rs:653 windows/host/src/projects_ui.rs:933
 msgid "Overwrite"
 msgstr "覆盖"
 
-#: windows/host/src/projects_ui.rs:680 windows/host/src/projects_ui.rs:910
-#: windows/host/src/projects_ui.rs:949
+#: windows/host/src/projects_ui.rs:680 windows/host/src/projects_ui.rs:926
+#: windows/host/src/projects_ui.rs:965
 msgid "There is no terminal window to open the project in."
 msgstr "没有打开的终端窗口可以用。"
 
@@ -2873,7 +2914,8 @@ msgstr "没有打开的终端窗口可以用。"
 msgid "Opened “{}”."
 msgstr "已打开「{}」。"
 
-#: windows/host/src/projects_ui.rs:707 windows/host/src/projects_ui.rs:734
+#: windows/host/src/projects_ui.rs:707 windows/host/src/projects_ui.rs:731
+#: windows/host/src/projects_ui.rs:750
 msgid "The project could not be renamed."
 msgstr "项目改不了名："
 
@@ -2886,172 +2928,176 @@ msgstr "项目要有名字。"
 msgid "There is already a project called “{}”."
 msgstr "已经有一个叫「{}」的项目。"
 
-#: windows/host/src/projects_ui.rs:730
+#: windows/host/src/projects_ui.rs:727
+msgid "Its group is being renamed; the project follows."
+msgstr "正在给它的群改名，项目随后跟着改。"
+
+#: windows/host/src/projects_ui.rs:746
 #, rust-format
 msgid "Renamed to “{}”."
 msgstr "已改名为「{}」。"
 
-#: windows/host/src/projects_ui.rs:808
+#: windows/host/src/projects_ui.rs:824
 #, rust-format
 msgid "{} copy"
 msgstr "{} 副本"
 
-#: windows/host/src/projects_ui.rs:818
+#: windows/host/src/projects_ui.rs:834
 #, rust-format
 msgid "Copied as “{}”."
 msgstr "已复制为「{}」。"
 
-#: windows/host/src/projects_ui.rs:820
+#: windows/host/src/projects_ui.rs:836
 msgid "The project could not be copied."
 msgstr "项目复制不了："
 
-#: windows/host/src/projects_ui.rs:827
+#: windows/host/src/projects_ui.rs:843
 #, rust-format
 msgid "Delete “{}”?"
 msgstr "删除「{}」？"
 
-#: windows/host/src/projects_ui.rs:828
+#: windows/host/src/projects_ui.rs:844
 msgid "You can undo this until the settings window closes."
 msgstr "关掉设置窗口之前都可以撤销。"
 
-#: windows/host/src/projects_ui.rs:829 windows/host/src/roles_ui.rs:3120
+#: windows/host/src/projects_ui.rs:845 windows/host/src/roles_ui.rs:3120
 msgid "Delete"
 msgstr "删除"
 
-#: windows/host/src/projects_ui.rs:857
+#: windows/host/src/projects_ui.rs:873
 msgid "The project could not be deleted."
 msgstr "项目删不掉："
 
-#: windows/host/src/projects_ui.rs:869
+#: windows/host/src/projects_ui.rs:885
 #, rust-format
 msgid "“{}” is back."
 msgstr "「{}」已恢复。"
 
-#: windows/host/src/projects_ui.rs:878
+#: windows/host/src/projects_ui.rs:894
 msgid "The project could not be put back."
 msgstr "项目放不回去："
 
-#: windows/host/src/projects_ui.rs:886
+#: windows/host/src/projects_ui.rs:902
 #, rust-format
 msgid "Restore the previous version of “{}”?"
 msgstr "把「{}」恢复到上一版？"
 
-#: windows/host/src/projects_ui.rs:887
+#: windows/host/src/projects_ui.rs:903
 msgid "The current version becomes the previous one, so you can switch back."
 msgstr "当前版本会变成上一版，随时可以换回来。"
 
-#: windows/host/src/projects_ui.rs:888 windows/host/src/projects_ui.rs:1369
+#: windows/host/src/projects_ui.rs:904 windows/host/src/projects_ui.rs:1385
 msgid "Restore"
 msgstr "恢复"
 
-#: windows/host/src/projects_ui.rs:901
+#: windows/host/src/projects_ui.rs:917
 msgid "Restored the previous version."
 msgstr "已恢复上一版。"
 
-#: windows/host/src/projects_ui.rs:903
+#: windows/host/src/projects_ui.rs:919
 msgid "The previous version could not be restored."
 msgstr "上一版恢复不了："
 
-#: windows/host/src/projects_ui.rs:914
+#: windows/host/src/projects_ui.rs:930
 #, rust-format
 msgid "Overwrite “{}” with the current tab?"
 msgstr "用当前标签页覆盖「{}」？"
 
-#: windows/host/src/projects_ui.rs:915
+#: windows/host/src/projects_ui.rs:931
 #, rust-format
 msgid ""
 "“{}” replaces what the project holds. The version it replaces is kept and "
 "can be restored."
 msgstr "「{}」会替换项目里现有的内容。被替换的版本会保留，可以恢复。"
 
-#: windows/host/src/projects_ui.rs:938
+#: windows/host/src/projects_ui.rs:954
 #, rust-format
 msgid "Saved the current tab as “{}”."
 msgstr "已把当前标签页存为「{}」。"
 
-#: windows/host/src/projects_ui.rs:1120
+#: windows/host/src/projects_ui.rs:1136
 msgid "1 pane"
 msgstr "1 个面板"
 
-#: windows/host/src/projects_ui.rs:1122
+#: windows/host/src/projects_ui.rs:1138
 #, rust-format
 msgid "{} panes"
 msgstr "{} 个面板"
 
-#: windows/host/src/projects_ui.rs:1171
+#: windows/host/src/projects_ui.rs:1187
 #, rust-format
 msgid "Deleted “{}”"
 msgstr "已删除「{}」"
 
-#: windows/host/src/projects_ui.rs:1207
+#: windows/host/src/projects_ui.rs:1223
 msgid "Select a project, or save the current tab as one with +."
 msgstr "选一个项目，或者用 + 把当前标签页存成项目。"
 
-#: windows/host/src/projects_ui.rs:1254
+#: windows/host/src/projects_ui.rs:1270
 msgid "Last saved"
 msgstr "上次保存"
 
-#: windows/host/src/projects_ui.rs:1255
+#: windows/host/src/projects_ui.rs:1271
 msgid "Panes"
 msgstr "面板"
 
-#: windows/host/src/projects_ui.rs:1256
+#: windows/host/src/projects_ui.rs:1272
 msgid "Directories"
 msgstr "目录"
 
-#: windows/host/src/projects_ui.rs:1256
+#: windows/host/src/projects_ui.rs:1272
 msgid "None recorded"
 msgstr "没有记录"
 
-#: windows/host/src/projects_ui.rs:1258 windows/host/src/settings_win.rs:136
+#: windows/host/src/projects_ui.rs:1274 windows/host/src/settings_win.rs:136
 msgid "Roles"
 msgstr "角色"
 
-#: windows/host/src/projects_ui.rs:1258
+#: windows/host/src/projects_ui.rs:1274
 msgid "Not recorded in project files"
 msgstr "项目文件不记录角色"
 
-#: windows/host/src/projects_ui.rs:1259
+#: windows/host/src/projects_ui.rs:1275
 msgid "Scrollback"
 msgstr "回滚内容"
 
-#: windows/host/src/projects_ui.rs:1263 windows/host/src/projects_ui.rs:1265
+#: windows/host/src/projects_ui.rs:1279 windows/host/src/projects_ui.rs:1281
 msgid "Autosave"
 msgstr "自动保存"
 
-#: windows/host/src/projects_ui.rs:1263
+#: windows/host/src/projects_ui.rs:1279
 msgid "Saved automatically as it changes"
 msgstr "改动后自动保存"
 
-#: windows/host/src/projects_ui.rs:1265
+#: windows/host/src/projects_ui.rs:1281
 msgid "Not bound to an open window"
 msgstr "没有绑定到打开的窗口"
 
-#: windows/host/src/projects_ui.rs:1273
+#: windows/host/src/projects_ui.rs:1289
 msgid "Version History"
 msgstr "版本历史"
 
-#: windows/host/src/projects_ui.rs:1277
+#: windows/host/src/projects_ui.rs:1293
 msgid "Current version"
 msgstr "当前版本"
 
-#: windows/host/src/projects_ui.rs:1277
+#: windows/host/src/projects_ui.rs:1293
 msgid "Previous version"
 msgstr "上一版"
 
-#: windows/host/src/projects_ui.rs:1287
+#: windows/host/src/projects_ui.rs:1303
 msgid "No earlier version is kept yet."
 msgstr "还没有保留更早的版本。"
 
-#: windows/host/src/projects_ui.rs:1368
+#: windows/host/src/projects_ui.rs:1384
 msgid "Rename…"
 msgstr "重命名…"
 
-#: windows/host/src/projects_ui.rs:1373
+#: windows/host/src/projects_ui.rs:1389
 msgid "Overwrite with Current Tab"
 msgstr "用当前标签页覆盖"
 
-#: windows/host/src/projects_ui.rs:1374
+#: windows/host/src/projects_ui.rs:1390
 msgid "Open"
 msgstr "打开"
 
@@ -3550,7 +3596,7 @@ msgstr "石墨"
 msgid "Rename Tab..."
 msgstr "重命名标签…"
 
-#: windows/host/src/strip.rs:1838
+#: windows/host/src/strip.rs:1843
 msgid "Tab Color"
 msgstr "标签颜色"
 
@@ -3848,6 +3894,119 @@ msgstr "这个终端已经不在了。"
 #: windows/control-room/src/scene.rs:78
 msgid "This terminal is in its own tab."
 msgstr "这个终端在它自己的标签页里。"
+
+#: windows/projects/src/page_rules.rs:100
+msgid "This page"
+msgstr "这一页"
+
+#: windows/projects/src/page_rules.rs:101
+#, rust-format
+msgid "{} pane(s)"
+msgstr "{} 格"
+
+#: windows/projects/src/page_rules.rs:102
+#, rust-format
+msgid "Already in the project \"{}\""
+msgstr "已在项目 {} 里"
+
+#: windows/projects/src/page_rules.rs:106
+msgid "Tabs of this window to save"
+msgstr "存这个窗口里的哪几页"
+
+#: windows/projects/src/page_rules.rs:108
+msgid ""
+"Once saved, these tabs are saved back to the project whenever their layout "
+"changes. There is no need to save again."
+msgstr "存下以后，这几页的布局一变就自动存回这个项目，不用再点保存。"
+
+#: windows/projects/src/page_rules.rs:116
+msgid "This page is in no project"
+msgstr "这一页不属于任何项目"
+
+#: windows/projects/src/page_rules.rs:117
+#, rust-format
+msgid "This page is in the project \"{}\""
+msgstr "这一页属于项目 {}"
+
+#: windows/projects/src/page_rules.rs:160
+#, rust-format
+msgid "Take This Page Out of \"{}\""
+msgstr "把这一页移出项目 {}"
+
+#: windows/projects/src/page_rules.rs:164
+msgid "Add to Project"
+msgstr "加入项目"
+
+#: windows/projects/src/page_rules.rs:169
+msgid ""
+"The group's supervisor is on this page, so it stays in the group's project."
+msgstr "这个群的总管在这一页上，所以它留在这个群的项目里。"
+
+#: windows/projects/src/page_rules.rs:204
+msgid "Ask each time"
+msgstr "每次都问"
+
+#: windows/projects/src/page_rules.rs:205
+msgid "Keep it in the project"
+msgstr "不问，留在项目里"
+
+#: windows/projects/src/page_rules.rs:206
+msgid "Take it out of the project"
+msgstr "不问，同时移出项目"
+
+#: windows/projects/src/page_rules.rs:270
+#, rust-format
+msgid "Close the page \"{}\""
+msgstr "关掉“{}”这一页"
+
+#: windows/projects/src/page_rules.rs:274
+#, rust-format
+msgid ""
+"It is a page of the project \"{}\". If you only close it, it comes back the "
+"next time the project is opened."
+msgstr "它在项目 {} 里。只是关掉的话，下次打开项目它还会回来。"
+
+#: windows/projects/src/page_rules.rs:277
+msgid "Also take it out of the project"
+msgstr "同时把它从项目里移出"
+
+#: windows/projects/src/page_rules.rs:278
+msgid "Don't ask again (do as chosen this time)"
+msgstr "以后不再问（照这次选的做）"
+
+#: windows/projects/src/page_rules.rs:284
+#, rust-format
+msgid "{} page(s) · {} pane(s)"
+msgstr "{} 页 · {} 格"
+
+#: windows/projects/src/page_rules.rs:322
+#, rust-format
+msgid ""
+"\"{}\" is open in other tabs, which save it automatically. Close those tabs "
+"first."
+msgstr "“{}”已在别的标签页中打开，那些标签页会自动保存它。请先关闭那些标签页。"
+
+#: windows/projects/src/page_rules.rs:326
+#, rust-format
+msgid ""
+"The tab \"{}\" is already a page of the project \"{}\". Take it out of that "
+"project first."
+msgstr "标签页“{}”已经是项目“{}”的一页。先把它从那个项目里移出。"
+
+#: windows/projects/src/page_rules.rs:337
+#, rust-format
+msgid ""
+"All {} page(s) of its project come back and the supervisor starts in its own "
+"pane. The workers' panes come back as terminals only; who is called back is "
+"the supervisor's to decide."
+msgstr "项目的 {} 页都还原，总管在它那一格启动；worker 的格子只还原终端，叫谁回来由总管决定。"
+
+#: windows/projects/src/page_rules.rs:341
+msgid ""
+"Every page of its project comes back and the supervisor starts in its own "
+"pane. The workers' panes come back as terminals only; who is called back is "
+"the supervisor's to decide."
+msgstr "项目的各页都还原，总管在它那一格启动；worker 的格子只还原终端，叫谁回来由总管决定。"
 
 #, rust-format
 #~ msgid "Same supervisor: see {}"

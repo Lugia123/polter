@@ -144,6 +144,7 @@ name = "polter-projects"
 version = "0.1.0"
 dependencies = [
  "polter-projectfile",
+ "serde_json",
 ]
 
 [[package]]

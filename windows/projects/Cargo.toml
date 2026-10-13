@@ -15,3 +15,7 @@ publish = false
 # is not where it is written.
 [dependencies]
 polter-projectfile = { path = "../projectfile" }
+# Reads the part of the control-room snapshot that is about projects
+# (`orders.rs`); what is said back to the core is written by hand
+# (`stated.rs`), as the project file is.
+serde_json = "1"

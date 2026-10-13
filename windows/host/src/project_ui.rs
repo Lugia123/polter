@@ -127,6 +127,18 @@ pub(crate) struct LeafPane {
     slot: Option<project::Slot>,
 }
 
+impl LeafPane {
+    /// The terminal in this pane, as the core names it; none for a pane
+    /// that has no surface yet.
+    pub(crate) fn terminal(&self) -> Option<String> {
+        if self.surface == 0 {
+            return None;
+        }
+        let id = unsafe { (crate::api().surface_poltergeist_id)(self.surface as crate::ffi::Surface) };
+        Some(polter_control_room::rules::key(id))
+    }
+}
+
 /// Name every leaf's snapshot **by its pane**, ask the core to write each one,
 /// and give each pane its slot to keep. See `project::Allocator` for why the
 /// name belongs to the pane and never to the leaf's position.
@@ -279,6 +291,183 @@ pub fn write_tab_as(dir: &std::path::Path, frame: HWND, id: TabId, name: String,
 /// and one pane over one pane then lost it (39ae3f040).
 pub fn overwrite_project(dir: &std::path::Path, frame: HWND, id: TabId, name: String) -> Result<(), String> {
     write_tab_as(dir, frame, id, name, project::WriteKind::Overwrite)
+}
+
+// ---------------------------------------------------------------------
+// What a person does to a page from a menu
+// ---------------------------------------------------------------------
+
+/// The things the `Project` menu and a tab's own menu do to a page that
+/// take a moment or a question (`page_rules::Item` has the rest).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageAct {
+    AddTo,
+    TakeOut,
+    Rename,
+    CloseProject,
+}
+
+impl PageAct {
+    fn item(self) -> polter_projects::page_rules::Item {
+        use polter_projects::page_rules::Item;
+        match self {
+            PageAct::AddTo => Item::AddTo,
+            PageAct::TakeOut => Item::TakeOut,
+            PageAct::Rename => Item::Rename,
+            PageAct::CloseProject => Item::CloseProject,
+        }
+    }
+}
+
+/// Whether `act` can be chosen for tab `id` (`page_rules::offered`): the
+/// three that act on a project need the tab to be a page of one, and
+/// "Add to Project" needs it to be a page of none.
+pub fn page_act_offered(act: PageAct, id: Option<TabId>) -> bool {
+    let Some(id) = id else { return false };
+    polter_projects::page_rules::offered(act.item(), crate::project_session::project_of_tab(id).as_deref())
+}
+
+thread_local! {
+    static ASKED: std::cell::RefCell<Vec<(isize, TabId, PageAct)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Do `act` to tab `id` of `frame`. **Returns at once**: each of these
+/// opens a window or asks a question, which runs a message loop, and a menu
+/// row is also performed by the menu's self-test -- so it is done from the
+/// thread's own loop, a moment later (`project_picker::request_load` has
+/// the same reason).
+pub fn request_page_act(frame: HWND, id: TabId, act: PageAct) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::SetTimer;
+    ASKED.with(|a| a.borrow_mut().push((frame.0 as isize, id, act)));
+    let timer = unsafe { SetTimer(None, 0, 0, Some(page_act_timer)) };
+    // not-gated: the condition is the event -- the timer was refused, and
+    // without this line a click that did nothing would leave no trace.
+    if timer == 0 {
+        ASKED.with(|a| a.borrow_mut().clear());
+        wlogf!(frame, "[project] SetTimer failed; {:?} for tab {:?} was not done", act, id);
+        return false;
+    }
+    true
+}
+
+unsafe extern "system" fn page_act_timer(_: HWND, _: u32, id: usize, _: u32) {
+    let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::KillTimer(None, id) };
+    let asked = ASKED.with(|a| std::mem::take(&mut *a.borrow_mut()));
+    for (frame, tab, act) in asked {
+        page_act(HWND(frame as *mut core::ffi::c_void), tab, act);
+    }
+}
+
+fn tell(frame: HWND, text: &str) {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(Some(0)).collect() };
+    let (title, body) = (wide(&crate::i18n::tr("Polter")), wide(text));
+    unsafe {
+        MessageBoxW(Some(frame), PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONINFORMATION);
+    }
+}
+
+fn page_act(frame: HWND, id: TabId, act: PageAct) {
+    use crate::i18n::tr;
+    use polter_projects::page_rules as rules;
+    // Asked again now: the menu was drawn a moment ago.
+    if !page_act_offered(act, Some(id)) {
+        wlogf!(frame, "[project] {:?} for tab {:?}: not offered any more; nothing done", act, id);
+        return;
+    }
+    match act {
+        PageAct::AddTo => crate::project_picker::open_add_to(frame, id),
+        PageAct::TakeOut => {
+            let done = crate::project_session::ask_before_taking_out(id).and_then(|()| crate::project_session::take_out(id));
+            wlogf!(frame, "[project] take tab {:?} out of its project -> {:?}", id, done);
+            if let Err(why) = done {
+                tell(frame, &why);
+            }
+        }
+        // Renaming is the settings window's: it has the box, the rule about
+        // names that are taken, and the question to the core.
+        PageAct::Rename => {
+            let name = crate::project_session::project_of_tab(id);
+            crate::settings_win::request(
+                polter_settings_shell::Route::to(polter_settings_shell::Section::Projects, name.as_deref()),
+                frame,
+            );
+        }
+        PageAct::CloseProject => {
+            let Some((file, name)) = crate::project_session::project_file_of_tab(id) else { return };
+            let its = crate::project_session::tabs_of(&file);
+            // One question for all of it, and only when something would be
+            // killed: closing a project is putting it away, and every page
+            // stays its page.
+            if crate::tabs::any_busy(&its) {
+                let pressed = crate::projects_ui::ask(
+                    frame,
+                    "[project]",
+                    &tr("Close Project?"),
+                    &tr("A terminal of this project still has a running process. If you close the project the process will be killed."),
+                    &[tr(rules::CLOSE_PROJECT), tr("Cancel")],
+                );
+                if pressed != Some(0) {
+                    wlogf!(frame, "[project] close project {:?}: kept", name);
+                    return;
+                }
+            }
+            wlogf!(frame, "[project] close project {:?}: closing {} tab(s)", name, its.len());
+            for (window, tab) in its {
+                crate::tabs::close_tab(window, tab);
+            }
+        }
+    }
+}
+
+/// Tab `id` of `frame` is about to be closed by itself, by a person. `true`
+/// means close it; `false` that they thought better of it.
+///
+/// When it is a page of a project that has other pages open, they are asked
+/// whether it is to be taken out of the project as well
+/// (`page_rules::close_step`); nothing else asks. **There is no "don't ask
+/// again" here yet**: this host has nowhere to change that answer back, and
+/// a question that can be silenced for good and never restored is worse
+/// than one that is asked.
+pub fn closing_a_page(frame: HWND, id: TabId) -> bool {
+    use crate::i18n::tr;
+    use polter_projects::page_rules::{self as rules, CloseChoice, CloseScope, CloseStep};
+    let project = crate::project_session::project_of_tab(id);
+    let others = crate::project_session::other_pages_open(id);
+    match rules::close_step(project.as_deref(), others, CloseScope::Tab, CloseChoice::Ask) {
+        CloseStep::Close { taking_out: false } => true,
+        CloseStep::Close { taking_out: true } => taking_out_then(frame, id),
+        CloseStep::Ask => {
+            let project = project.unwrap_or_default();
+            let (title, body) = (rules::close_question_title(&crate::tabs::title_of_tab(id)), rules::close_question_body(&project));
+            let pressed = crate::projects_ui::ask(
+                frame,
+                "[close]",
+                &title.filled(&tr(title.msgid)),
+                &body.filled(&tr(body.msgid)),
+                &[tr("Close"), tr(rules::ALSO_TAKE_OUT), tr("Cancel")],
+            );
+            match pressed {
+                Some(0) => true,
+                Some(1) => taking_out_then(frame, id),
+                _ => false,
+            }
+        }
+    }
+}
+
+/// Take the page out of its project before its tab closes. Refused -- the
+/// group's supervisor is on it -- is said, and the tab stays.
+fn taking_out_then(frame: HWND, id: TabId) -> bool {
+    match crate::project_session::ask_before_taking_out(id).and_then(|()| crate::project_session::take_out(id)) {
+        Ok(()) => true,
+        Err(why) => {
+            wlogf!(frame, "[close] tab {:?} was not taken out of its project: {}", id, why);
+            tell(frame, &why);
+            false
+        }
+    }
 }
 
 /// Build the shape for a *new* tab from a saved page, reusing the tab's

@@ -3596,8 +3596,11 @@ pub fn tool_close_refused(frame: HWND, tab: TabId, scope: i32, confirm: bool) ->
 pub fn close_tab_asking(frame: HWND, id: TabId) -> bool {
     let flags = tab_confirm_flags(frame, id);
     let busy = dialogs_for(&flags) == 1;
+    // A page of a project is saved already, and is asked its own question
+    // below; offering to save it as a project would be asking the wrong one.
+    let page = crate::project_session::project_of_tab(id).is_some();
     // §6.3: one busy tab is offered a save instead of the plain warning.
-    if crate::project_ui::should_offer_save_as_project(busy) {
+    if !page && crate::project_ui::should_offer_save_as_project(busy) {
         if !offer_save_before_close(frame, id, false) {
             return false;
         }
@@ -3607,8 +3610,21 @@ pub fn close_tab_asking(frame: HWND, id: TabId) -> bool {
         wlogf!(frame, "[close] tab {:?} kept", id);
         return false;
     }
+    // Closing a page is not taking it out of its project: whether to take it
+    // out as well is asked, where the answer could be wanted
+    // (`page_rules::close_step`).
+    if !crate::project_ui::closing_a_page(frame, id) {
+        wlogf!(frame, "[close] tab {:?} kept: the question about its project was declined", id);
+        return false;
+    }
     close_tab(frame, id);
     true
+}
+
+/// Whether anything is running in any of these tabs that closing would
+/// kill: what "Close Project" asks about, once.
+pub fn any_busy(these: &[(HWND, TabId)]) -> bool {
+    these.iter().any(|(frame, id)| dialogs_for(&tab_confirm_flags(*frame, *id)) == 1)
 }
 
 /// "Save as a Project Before Closing?" (settings.md §6.3) for tab `id`, or
@@ -3794,6 +3810,44 @@ pub fn set_scrollback_slot(frame: HWND, pane: PaneId, slot: crate::journal::Jour
 /// The tab most recently added to `frame`: the last one.
 pub fn last_tab_id(frame: HWND) -> Option<TabId> {
     window(frame).and_then(|w| w.tabs.last().map(|t| t.id))
+}
+
+/// Every terminal tab of a window, in the order of the strip: its id, the
+/// title the strip shows, how many panes it has, and whether it is the one
+/// showing. What "Save as Project" lists.
+pub fn terminal_tabs_of(frame: HWND) -> Vec<(TabId, String, usize, bool)> {
+    window(frame)
+        .map(|w| {
+            w.tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.terminal().is_some())
+                .map(|(at, t)| (t.id, t.title.clone(), t.panes().len(), at == w.active))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The title the strip shows for a tab, wherever it is; empty for a tab
+/// that is nowhere any more.
+// window-free: keyed by a tab's id, which is unique in the process
+pub fn title_of_tab(id: TabId) -> String {
+    with_windows(|ws| ws.iter().flat_map(|w| w.tabs.iter()).find(|t| t.id == id).map(|t| t.title.clone())).unwrap_or_default()
+}
+
+/// The tab the terminal the core names `key` is in, and its window.
+// window-free: keyed by a terminal's id, which is unique in the process
+pub fn tab_of_terminal(key: &str) -> Option<(HWND, TabId)> {
+    // The surfaces first, then the question to the core with the lock gone.
+    let panes: Vec<(isize, TabId, usize)> = with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter().flat_map(move |t| t.panes().iter().map(move |p| (w.frame, t.id, p.surface))))
+            .collect()
+    });
+    panes
+        .into_iter()
+        .find(|(_, _, s)| *s != 0 && rules::key(unsafe { (api().surface_poltergeist_id)(*s as Surface) }) == key)
+        .map(|(frame, tab, _)| (HWND(frame as *mut c_void), tab))
 }
 
 /// Which window a tab is in, where it stands among that window's tabs, and

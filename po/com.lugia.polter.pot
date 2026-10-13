@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.lugia.polter\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 18:28+0800\n"
+"POT-Creation-Date: 2026-10-13 18:49+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -52,7 +52,9 @@ msgstr ""
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
 #: src/apprt/gtk/class/application.zig:2225
-#: windows/host/src/project_picker.rs:337 windows/host/src/projects_ui.rs:626
+#: windows/host/src/project_picker.rs:251
+#: windows/host/src/project_picker.rs:420 windows/host/src/project_ui.rs:409
+#: windows/host/src/project_ui.rs:449 windows/host/src/projects_ui.rs:626
 #: windows/host/src/projects_ui.rs:653 windows/host/src/projects_ui.rs:658
 #: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:2887
 msgid "Cancel"
@@ -61,6 +63,7 @@ msgstr ""
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:8
 #: src/apprt/gtk/ui/1.2/search-overlay.blp:90
 #: src/apprt/gtk/ui/1.3/surface-child-exited.blp:17
+#: windows/host/src/project_ui.rs:449
 msgid "Close"
 msgstr ""
 
@@ -82,7 +85,7 @@ msgstr ""
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:434 src/apprt/gtk/ui/1.5/window.blp:318
 #: windows/host/src/general_ui.rs:576 windows/host/src/general_ui.rs:842
-#: windows/host/src/menu.rs:498
+#: windows/host/src/menu.rs:524
 msgid "Reload Configuration"
 msgstr ""
 
@@ -97,7 +100,7 @@ msgid "Ghostty: Terminal Inspector"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:108
-#: windows/host/src/menu.rs:302
+#: windows/host/src/menu.rs:328
 msgid "Find…"
 msgstr ""
 
@@ -125,17 +128,17 @@ msgid ""
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:107 windows/host/src/ctxmenu.rs:129
-#: windows/host/src/menu.rs:346
+#: windows/host/src/menu.rs:372
 msgid "Read-only"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:311 src/apprt/gtk/ui/1.5/window.blp:203
-#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:312
+#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:338
 msgid "Copy"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:208
-#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:313
+#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:339
 msgid "Paste"
 msgstr ""
 
@@ -161,29 +164,29 @@ msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:348 src/apprt/gtk/ui/1.5/window.blp:180
 #: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
-#: windows/host/src/ctxmenu.rs:125 windows/host/src/menu.rs:278
+#: windows/host/src/ctxmenu.rs:125 windows/host/src/menu.rs:284
 msgid "Split Up"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:354 src/apprt/gtk/ui/1.5/window.blp:185
 #: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
-#: windows/host/src/ctxmenu.rs:124 windows/host/src/menu.rs:277
+#: windows/host/src/ctxmenu.rs:124 windows/host/src/menu.rs:283
 msgid "Split Down"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:360 src/apprt/gtk/ui/1.5/window.blp:190
 #: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
-#: windows/host/src/ctxmenu.rs:123 windows/host/src/menu.rs:276
+#: windows/host/src/ctxmenu.rs:123 windows/host/src/menu.rs:282
 msgid "Split Left"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:366 src/apprt/gtk/ui/1.5/window.blp:195
 #: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
-#: windows/host/src/ctxmenu.rs:122 windows/host/src/menu.rs:275
+#: windows/host/src/ctxmenu.rs:122 windows/host/src/menu.rs:281
 msgid "Split Right"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/menu.rs:280
+#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/menu.rs:286
 msgid "Close Split"
 msgstr ""
 
@@ -199,17 +202,17 @@ msgstr ""
 #: src/apprt/gtk/ui/1.2/surface.blp:386 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
 #: src/input/command.zig:427 windows/host/src/ctxmenu.rs:110
-#: windows/host/src/menu.rs:255 windows/host/src/strip.rs:2088
+#: windows/host/src/menu.rs:261 windows/host/src/strip.rs:2127
 msgid "New Tab"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:242
 #: src/input/command.zig:674 windows/host/src/ctxmenu.rs:116
-#: windows/host/src/menu.rs:281 windows/host/src/strip.rs:1604
+#: windows/host/src/menu.rs:287 windows/host/src/strip.rs:1604
 msgid "Close Tab"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:523
+#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:549
 msgid "Window"
 msgstr ""
 
@@ -218,12 +221,12 @@ msgid "Change Window Title…"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:406 src/apprt/gtk/ui/1.5/window.blp:220
-#: src/input/command.zig:421 windows/host/src/menu.rs:254
+#: src/input/command.zig:421 windows/host/src/menu.rs:260
 msgid "New Window"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:691 windows/host/src/menu.rs:282
+#: src/input/command.zig:691 windows/host/src/menu.rs:288
 msgid "Close Window"
 msgstr ""
 
@@ -260,12 +263,12 @@ msgid "Main Menu"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:192
-#: windows/host/src/menu.rs:331 windows/host/src/strip.rs:2095
+#: windows/host/src/menu.rs:357 windows/host/src/strip.rs:2134
 msgid "Command Palette"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:128
-#: windows/host/src/menu.rs:355
+#: windows/host/src/menu.rs:381
 msgid "Terminal Inspector"
 msgstr ""
 
@@ -542,7 +545,7 @@ msgstr ""
 msgid "Decrease the font size by 1 point."
 msgstr ""
 
-#: src/input/command.zig:237 windows/host/src/menu.rs:327
+#: src/input/command.zig:237 windows/host/src/menu.rs:353
 msgid "Reset Font Size"
 msgstr ""
 
@@ -559,7 +562,7 @@ msgid "Clear the screen and scrollback."
 msgstr ""
 
 #: src/input/command.zig:249 windows/host/src/ctxmenu.rs:106
-#: windows/host/src/menu.rs:321
+#: windows/host/src/menu.rs:347
 msgid "Select All"
 msgstr ""
 
@@ -927,7 +930,7 @@ msgid "Toggle read-only mode for the current surface."
 msgstr ""
 
 #: src/input/command.zig:557 windows/host/src/ctxmenu.rs:142
-#: windows/host/src/menu.rs:376 windows/host/src/strip.rs:1613
+#: windows/host/src/menu.rs:402 windows/host/src/strip.rs:1613
 msgid "Make This Terminal a Supervisor"
 msgstr ""
 
@@ -938,7 +941,7 @@ msgid ""
 msgstr ""
 
 #: src/input/command.zig:563 windows/host/src/ctxmenu.rs:147
-#: windows/host/src/menu.rs:377 windows/host/src/strip.rs:1614
+#: windows/host/src/menu.rs:403 windows/host/src/strip.rs:1614
 msgid "Toggle Supervision of This Terminal"
 msgstr ""
 
@@ -946,7 +949,7 @@ msgstr ""
 msgid "Report this terminal to the supervisor when its screen goes quiet."
 msgstr ""
 
-#: src/input/command.zig:594 windows/host/src/menu.rs:435
+#: src/input/command.zig:594 windows/host/src/menu.rs:461
 msgid "Hold This Terminal to Its Work"
 msgstr ""
 
@@ -957,7 +960,7 @@ msgid ""
 msgstr ""
 
 #: src/input/command.zig:600 windows/host/src/ctxmenu.rs:152
-#: windows/host/src/menu.rs:378 windows/host/src/strip.rs:1615
+#: windows/host/src/menu.rs:404 windows/host/src/strip.rs:1615
 msgid "Keep Agents Out of This Terminal"
 msgstr ""
 
@@ -967,7 +970,7 @@ msgid ""
 "into it. Its tab wears a lock while the shield stands. Only you can set this."
 msgstr ""
 
-#: src/input/command.zig:606 windows/host/src/menu.rs:374
+#: src/input/command.zig:606 windows/host/src/menu.rs:400
 msgid "Terminal Conversations"
 msgstr ""
 
@@ -975,7 +978,7 @@ msgstr ""
 msgid "Open a terminal showing what the terminals have said to each other."
 msgstr ""
 
-#: src/input/command.zig:612 windows/host/src/menu.rs:367
+#: src/input/command.zig:612 windows/host/src/menu.rs:393
 #: windows/control-room/src/rules.rs:165
 msgid "Control Room"
 msgstr ""
@@ -986,7 +989,7 @@ msgid ""
 "if it is closed."
 msgstr ""
 
-#: src/input/command.zig:618 windows/host/src/menu.rs:453
+#: src/input/command.zig:618 windows/host/src/menu.rs:479
 msgid "Equalize Splits"
 msgstr ""
 
@@ -994,7 +997,7 @@ msgstr ""
 msgid "Equalize the size of all splits."
 msgstr ""
 
-#: src/input/command.zig:624 windows/host/src/menu.rs:475
+#: src/input/command.zig:624 windows/host/src/menu.rs:501
 msgid "Reset Window Size"
 msgstr ""
 
@@ -1167,7 +1170,7 @@ msgstr ""
 msgid "Check for updates to the application."
 msgstr ""
 
-#: src/input/command.zig:757 windows/host/src/projects_ui.rs:1370
+#: src/input/command.zig:757 windows/host/src/projects_ui.rs:1386
 msgid "Undo"
 msgstr ""
 
@@ -1358,7 +1361,7 @@ msgid "The page could not be followed any further, so the picture ends here."
 msgstr ""
 
 #: src/input/screenshot.zig:126 windows/host/src/plugins_ui.rs:525
-#: windows/host/src/project_picker.rs:323 windows/host/src/roles_ui.rs:2258
+#: windows/host/src/project_picker.rs:406 windows/host/src/roles_ui.rs:2258
 #: windows/host/src/roles_ui.rs:2951 windows/host/src/roles_ui.rs:2968
 #: windows/host/src/roles_ui.rs:2982
 msgid "Save"
@@ -2152,19 +2155,19 @@ msgstr ""
 #. overlay. "Rename Tab..." with three dots is a DIFFERENT action
 #. (rename_tab) that edits the tab strip in place. The two entries look
 #. almost identical; do not merge them.
-#: windows/host/src/ctxmenu.rs:138 windows/host/src/menu.rs:343
+#: windows/host/src/ctxmenu.rs:138 windows/host/src/menu.rs:369
 msgid "Rename Tab…"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:139 windows/host/src/menu.rs:344
+#: windows/host/src/ctxmenu.rs:139 windows/host/src/menu.rs:370
 msgid "Rename Terminal…"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:177 windows/host/src/menu.rs:393
+#: windows/host/src/ctxmenu.rs:177 windows/host/src/menu.rs:419
 msgid "Let a Supervisor Answer Prompts Here"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:407
+#: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:433
 #: windows/host/src/strip.rs:1616
 msgid "Let Workers Name Each Other Directly"
 msgstr ""
@@ -2213,7 +2216,7 @@ msgid "Choose…"
 msgstr ""
 
 #: windows/host/src/general_ui.rs:1214 windows/host/src/general_ui.rs:1379
-#: windows/host/src/projects_ui.rs:1372
+#: windows/host/src/projects_ui.rs:1388
 msgid "Show in Explorer"
 msgstr ""
 
@@ -2229,7 +2232,7 @@ msgstr ""
 msgid "The screenshot folder could not be worked out."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1488 windows/host/src/projects_ui.rs:986
+#: windows/host/src/general_ui.rs:1488 windows/host/src/projects_ui.rs:1002
 msgid "Explorer could not be started."
 msgstr ""
 
@@ -2370,172 +2373,188 @@ msgstr ""
 msgid "The full log is at {}"
 msgstr ""
 
-#: windows/host/src/menu.rs:266 windows/host/src/strip.rs:2094
+#: windows/host/src/menu.rs:272 windows/host/src/strip.rs:2133
 msgid "Reopen Closed Tab"
 msgstr ""
 
-#: windows/host/src/menu.rs:296 windows/host/src/projects_ui.rs:624
+#: windows/host/src/menu.rs:302 windows/host/src/projects_ui.rs:624
 #: windows/host/src/strip.rs:1619
 msgid "Save as Project…"
 msgstr ""
 
-#: windows/host/src/menu.rs:297 windows/host/src/strip.rs:1620
+#: windows/host/src/menu.rs:303 windows/host/src/strip.rs:1620
 msgid "Load Project…"
 msgstr ""
 
-#: windows/host/src/menu.rs:298
+#: windows/host/src/menu.rs:304
 msgid "Manage Projects…"
 msgstr ""
 
-#: windows/host/src/menu.rs:305
+#: windows/host/src/menu.rs:309 windows/host/src/strip.rs:1889
+msgid "Add to Project…"
+msgstr ""
+
+#: windows/host/src/menu.rs:310 windows/projects/src/page_rules.rs:159
+msgid "Take This Page Out of the Project"
+msgstr ""
+
+#: windows/host/src/menu.rs:311 windows/projects/src/page_rules.rs:166
+msgid "Rename Project…"
+msgstr ""
+
+#: windows/host/src/menu.rs:312 windows/projects/src/page_rules.rs:165
+msgid "Close Project"
+msgstr ""
+
+#: windows/host/src/menu.rs:331
 msgid "Next"
 msgstr ""
 
-#: windows/host/src/menu.rs:306
+#: windows/host/src/menu.rs:332
 msgid "Previous"
 msgstr ""
 
-#: windows/host/src/menu.rs:308
+#: windows/host/src/menu.rs:334
 msgid "Hide the Find Bar"
 msgstr ""
 
-#: windows/host/src/menu.rs:323
+#: windows/host/src/menu.rs:349
 msgid "Find"
 msgstr ""
 
-#: windows/host/src/menu.rs:328
+#: windows/host/src/menu.rs:354
 msgid "Zoom In"
 msgstr ""
 
-#: windows/host/src/menu.rs:329
+#: windows/host/src/menu.rs:355
 msgid "Zoom Out"
 msgstr ""
 
-#: windows/host/src/menu.rs:348
+#: windows/host/src/menu.rs:374
 msgid "Quick Terminal"
 msgstr ""
 
-#: windows/host/src/menu.rs:439
+#: windows/host/src/menu.rs:465
 msgid "Plugins…"
 msgstr ""
 
-#: windows/host/src/menu.rs:442 windows/host/src/personas.rs:538
+#: windows/host/src/menu.rs:468 windows/host/src/personas.rs:538
 msgid "Role Library..."
 msgstr ""
 
-#: windows/host/src/menu.rs:446
+#: windows/host/src/menu.rs:472
 msgid "Up"
 msgstr ""
 
-#: windows/host/src/menu.rs:447
+#: windows/host/src/menu.rs:473
 msgid "Down"
 msgstr ""
 
-#: windows/host/src/menu.rs:448
+#: windows/host/src/menu.rs:474
 msgid "Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:449
+#: windows/host/src/menu.rs:475
 msgid "Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:455
+#: windows/host/src/menu.rs:481
 msgid "Grow Up"
 msgstr ""
 
-#: windows/host/src/menu.rs:456
+#: windows/host/src/menu.rs:482
 msgid "Grow Down"
 msgstr ""
 
-#: windows/host/src/menu.rs:457
+#: windows/host/src/menu.rs:483
 msgid "Grow Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:458
+#: windows/host/src/menu.rs:484
 msgid "Grow Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:464
+#: windows/host/src/menu.rs:490
 msgid "Minimize"
 msgstr ""
 
-#: windows/host/src/menu.rs:465
+#: windows/host/src/menu.rs:491
 msgid "Maximize"
 msgstr ""
 
-#: windows/host/src/menu.rs:467
+#: windows/host/src/menu.rs:493
 msgid "Full Screen"
 msgstr ""
 
-#: windows/host/src/menu.rs:469
+#: windows/host/src/menu.rs:495
 msgid "Split Zoom"
 msgstr ""
 
-#: windows/host/src/menu.rs:470
+#: windows/host/src/menu.rs:496
 msgid "Previous Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:471
+#: windows/host/src/menu.rs:497
 msgid "Next Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:472
+#: windows/host/src/menu.rs:498
 msgid "Select Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:473
+#: windows/host/src/menu.rs:499
 msgid "Resize Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:477
+#: windows/host/src/menu.rs:503
 msgid "Float on Top"
 msgstr ""
 
-#: windows/host/src/menu.rs:484
+#: windows/host/src/menu.rs:510
 msgid "Polter Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:497
+#: windows/host/src/menu.rs:523
 msgid "Check for Updates…"
 msgstr ""
 
-#: windows/host/src/menu.rs:503
+#: windows/host/src/menu.rs:529
 msgid "File"
 msgstr ""
 
-#: windows/host/src/menu.rs:504
+#: windows/host/src/menu.rs:530
 msgid "Edit"
 msgstr ""
 
-#: windows/host/src/menu.rs:505
+#: windows/host/src/menu.rs:531
 msgid "View"
 msgstr ""
 
-#: windows/host/src/menu.rs:521
+#: windows/host/src/menu.rs:547
 msgid "Agents"
 msgstr ""
 
-#: windows/host/src/menu.rs:522
+#: windows/host/src/menu.rs:548
 msgid "Project"
 msgstr ""
 
-#: windows/host/src/menu.rs:524
+#: windows/host/src/menu.rs:550
 msgid "Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:529
+#: windows/host/src/menu.rs:555
 msgid "Settings…"
 msgstr ""
 
-#: windows/host/src/menu.rs:541
+#: windows/host/src/menu.rs:567
 msgid "Language…"
 msgstr ""
 
-#: windows/host/src/menu.rs:555
+#: windows/host/src/menu.rs:581
 msgid "Keyboard Shortcuts…"
 msgstr ""
 
-#: windows/host/src/menu.rs:556
+#: windows/host/src/menu.rs:582
 msgid "About Polter"
 msgstr ""
 
@@ -2749,49 +2768,71 @@ msgstr ""
 msgid "What it is handed: {}"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:95 windows/host/src/project_picker.rs:542
+#: windows/host/src/project_picker.rs:98 windows/host/src/project_picker.rs:626
 msgid "Load Project"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:96 windows/host/src/project_picker.rs:596
+#: windows/host/src/project_picker.rs:99 windows/host/src/project_picker.rs:225
+#: windows/host/src/project_picker.rs:697
+#: windows/host/src/project_picker.rs:703
 msgid "Save as Project"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:258
+#: windows/host/src/project_picker.rs:242
+#, rust-format
+msgid "All {} Pages of This Window"
+msgstr ""
+
+#: windows/host/src/project_picker.rs:251
+msgid "This Page Only"
+msgstr ""
+
+#: windows/host/src/project_picker.rs:338
 #, rust-format
 msgid "Saves this tab: {} pane(s)"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:542 windows/host/src/projects_ui.rs:691
+#: windows/host/src/project_picker.rs:626 windows/host/src/projects_ui.rs:691
 msgid "The project could not be opened."
 msgstr ""
 
-#: windows/host/src/project_picker.rs:596 windows/host/src/projects_ui.rs:927
-#: windows/host/src/projects_ui.rs:940
+#: windows/host/src/project_picker.rs:697
+#: windows/host/src/project_picker.rs:703 windows/host/src/projects_ui.rs:943
+#: windows/host/src/projects_ui.rs:956
 msgid "The project could not be saved."
 msgstr ""
 
-#: windows/host/src/project_picker.rs:906 windows/host/src/settings_win.rs:934
+#: windows/host/src/project_picker.rs:1013 windows/host/src/settings_win.rs:934
 #: windows/host/src/settings_win.rs:1351
 msgid "Search"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:907
+#: windows/host/src/project_picker.rs:1014
 msgid "New Project Name"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1198
+#: windows/host/src/project_picker.rs:1094 windows/host/src/projects_ui.rs:1214
 msgid "No Saved Projects"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1200
+#: windows/host/src/project_picker.rs:1094 windows/host/src/projects_ui.rs:1216
 msgid "No matching projects"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:562 windows/host/src/roles_ui.rs:732
-#: windows/settings-shell/src/general.rs:77
+#: windows/host/src/project_ui.rs:365 windows/host/src/projects_ui.rs:562
+#: windows/host/src/roles_ui.rs:732 windows/settings-shell/src/general.rs:77
 #: windows/control-room/src/rules.rs:168
 msgid "Polter"
+msgstr ""
+
+#: windows/host/src/project_ui.rs:407
+msgid "Close Project?"
+msgstr ""
+
+#: windows/host/src/project_ui.rs:408
+msgid ""
+"A terminal of this project still has a running process. If you close the "
+"project the process will be killed."
 msgstr ""
 
 #: windows/host/src/projects_ui.rs:625
@@ -2819,12 +2860,12 @@ msgstr ""
 msgid "Overwrite Project?"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:653 windows/host/src/projects_ui.rs:917
+#: windows/host/src/projects_ui.rs:653 windows/host/src/projects_ui.rs:933
 msgid "Overwrite"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:680 windows/host/src/projects_ui.rs:910
-#: windows/host/src/projects_ui.rs:949
+#: windows/host/src/projects_ui.rs:680 windows/host/src/projects_ui.rs:926
+#: windows/host/src/projects_ui.rs:965
 msgid "There is no terminal window to open the project in."
 msgstr ""
 
@@ -2833,7 +2874,8 @@ msgstr ""
 msgid "Opened “{}”."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:707 windows/host/src/projects_ui.rs:734
+#: windows/host/src/projects_ui.rs:707 windows/host/src/projects_ui.rs:731
+#: windows/host/src/projects_ui.rs:750
 msgid "The project could not be renamed."
 msgstr ""
 
@@ -2846,172 +2888,176 @@ msgstr ""
 msgid "There is already a project called “{}”."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:730
+#: windows/host/src/projects_ui.rs:727
+msgid "Its group is being renamed; the project follows."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:746
 #, rust-format
 msgid "Renamed to “{}”."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:808
+#: windows/host/src/projects_ui.rs:824
 #, rust-format
 msgid "{} copy"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:818
+#: windows/host/src/projects_ui.rs:834
 #, rust-format
 msgid "Copied as “{}”."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:820
+#: windows/host/src/projects_ui.rs:836
 msgid "The project could not be copied."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:827
+#: windows/host/src/projects_ui.rs:843
 #, rust-format
 msgid "Delete “{}”?"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:828
+#: windows/host/src/projects_ui.rs:844
 msgid "You can undo this until the settings window closes."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:829 windows/host/src/roles_ui.rs:3120
+#: windows/host/src/projects_ui.rs:845 windows/host/src/roles_ui.rs:3120
 msgid "Delete"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:857
+#: windows/host/src/projects_ui.rs:873
 msgid "The project could not be deleted."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:869
+#: windows/host/src/projects_ui.rs:885
 #, rust-format
 msgid "“{}” is back."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:878
+#: windows/host/src/projects_ui.rs:894
 msgid "The project could not be put back."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:886
+#: windows/host/src/projects_ui.rs:902
 #, rust-format
 msgid "Restore the previous version of “{}”?"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:887
+#: windows/host/src/projects_ui.rs:903
 msgid "The current version becomes the previous one, so you can switch back."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:888 windows/host/src/projects_ui.rs:1369
+#: windows/host/src/projects_ui.rs:904 windows/host/src/projects_ui.rs:1385
 msgid "Restore"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:901
+#: windows/host/src/projects_ui.rs:917
 msgid "Restored the previous version."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:903
+#: windows/host/src/projects_ui.rs:919
 msgid "The previous version could not be restored."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:914
+#: windows/host/src/projects_ui.rs:930
 #, rust-format
 msgid "Overwrite “{}” with the current tab?"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:915
+#: windows/host/src/projects_ui.rs:931
 #, rust-format
 msgid ""
 "“{}” replaces what the project holds. The version it replaces is kept and "
 "can be restored."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:938
+#: windows/host/src/projects_ui.rs:954
 #, rust-format
 msgid "Saved the current tab as “{}”."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1120
+#: windows/host/src/projects_ui.rs:1136
 msgid "1 pane"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1122
+#: windows/host/src/projects_ui.rs:1138
 #, rust-format
 msgid "{} panes"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1171
+#: windows/host/src/projects_ui.rs:1187
 #, rust-format
 msgid "Deleted “{}”"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1207
+#: windows/host/src/projects_ui.rs:1223
 msgid "Select a project, or save the current tab as one with +."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1254
+#: windows/host/src/projects_ui.rs:1270
 msgid "Last saved"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1255
+#: windows/host/src/projects_ui.rs:1271
 msgid "Panes"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1256
+#: windows/host/src/projects_ui.rs:1272
 msgid "Directories"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1256
+#: windows/host/src/projects_ui.rs:1272
 msgid "None recorded"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1258 windows/host/src/settings_win.rs:136
+#: windows/host/src/projects_ui.rs:1274 windows/host/src/settings_win.rs:136
 msgid "Roles"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1258
+#: windows/host/src/projects_ui.rs:1274
 msgid "Not recorded in project files"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1259
+#: windows/host/src/projects_ui.rs:1275
 msgid "Scrollback"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1263 windows/host/src/projects_ui.rs:1265
+#: windows/host/src/projects_ui.rs:1279 windows/host/src/projects_ui.rs:1281
 msgid "Autosave"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1263
+#: windows/host/src/projects_ui.rs:1279
 msgid "Saved automatically as it changes"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1265
+#: windows/host/src/projects_ui.rs:1281
 msgid "Not bound to an open window"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1273
+#: windows/host/src/projects_ui.rs:1289
 msgid "Version History"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1277
+#: windows/host/src/projects_ui.rs:1293
 msgid "Current version"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1277
+#: windows/host/src/projects_ui.rs:1293
 msgid "Previous version"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1287
+#: windows/host/src/projects_ui.rs:1303
 msgid "No earlier version is kept yet."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1368
+#: windows/host/src/projects_ui.rs:1384
 msgid "Rename…"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1373
+#: windows/host/src/projects_ui.rs:1389
 msgid "Overwrite with Current Tab"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1374
+#: windows/host/src/projects_ui.rs:1390
 msgid "Open"
 msgstr ""
 
@@ -3493,7 +3539,7 @@ msgstr ""
 msgid "Rename Tab..."
 msgstr ""
 
-#: windows/host/src/strip.rs:1838
+#: windows/host/src/strip.rs:1843
 msgid "Tab Color"
 msgstr ""
 
@@ -3788,4 +3834,117 @@ msgstr ""
 
 #: windows/control-room/src/scene.rs:78
 msgid "This terminal is in its own tab."
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:100
+msgid "This page"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:101
+#, rust-format
+msgid "{} pane(s)"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:102
+#, rust-format
+msgid "Already in the project \"{}\""
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:106
+msgid "Tabs of this window to save"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:108
+msgid ""
+"Once saved, these tabs are saved back to the project whenever their layout "
+"changes. There is no need to save again."
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:116
+msgid "This page is in no project"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:117
+#, rust-format
+msgid "This page is in the project \"{}\""
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:160
+#, rust-format
+msgid "Take This Page Out of \"{}\""
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:164
+msgid "Add to Project"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:169
+msgid ""
+"The group's supervisor is on this page, so it stays in the group's project."
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:204
+msgid "Ask each time"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:205
+msgid "Keep it in the project"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:206
+msgid "Take it out of the project"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:270
+#, rust-format
+msgid "Close the page \"{}\""
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:274
+#, rust-format
+msgid ""
+"It is a page of the project \"{}\". If you only close it, it comes back the "
+"next time the project is opened."
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:277
+msgid "Also take it out of the project"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:278
+msgid "Don't ask again (do as chosen this time)"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:284
+#, rust-format
+msgid "{} page(s) · {} pane(s)"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:322
+#, rust-format
+msgid ""
+"\"{}\" is open in other tabs, which save it automatically. Close those tabs "
+"first."
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:326
+#, rust-format
+msgid ""
+"The tab \"{}\" is already a page of the project \"{}\". Take it out of that "
+"project first."
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:337
+#, rust-format
+msgid ""
+"All {} page(s) of its project come back and the supervisor starts in its own "
+"pane. The workers' panes come back as terminals only; who is called back is "
+"the supervisor's to decide."
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:341
+msgid ""
+"Every page of its project comes back and the supervisor starts in its own "
+"pane. The workers' panes come back as terminals only; who is called back is "
+"the supervisor's to decide."
 msgstr ""

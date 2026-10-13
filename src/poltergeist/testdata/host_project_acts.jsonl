@@ -1,0 +1,6 @@
+{"act":"projects","list":[{"name":"web-app","group":"web-app","pages":3,"open":[["0x00000000000000a1","0x00000000000000b1"],["0x00000000000000b2"]],"supervisor":"0x00000000000000a1","workers":["0x00000000000000b1","0x00000000000000b2"]},{"name":"notes","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]}]}
+{"act":"projects","list":[]}
+{"act":"project_failed","name":"web-app","why":"not_found"}
+{"act":"project_failed","name":"web-app","why":"unreadable"}
+{"act":"project_remove","terminal":"0x00000000000000b2"}
+{"act":"project_rename","from":"notes","to":"scratch"}

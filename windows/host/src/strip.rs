@@ -1778,6 +1778,11 @@ const _: () = {
 const TAB_ID_BASE: usize = 0x5000;
 const TAB_COLOR_BASE: usize = 0x5100;
 const STRIP_ID_BASE: usize = 0x5200;
+/// The rows about a tab's project, which are not in `TAB_MENU`: what they
+/// say depends on the tab (the project's name), and a table's row cannot.
+const TAB_PROJECT_BASE: usize = 0x5300;
+const TAB_PROJECT_ACTS: [crate::project_ui::PageAct; 3] =
+    [crate::project_ui::PageAct::AddTo, crate::project_ui::PageAct::TakeOut, crate::project_ui::PageAct::CloseProject];
 
 /// A tab's 1-based position **right now** in a given window's strip, or `?`
 /// if it has gone.
@@ -1863,6 +1868,34 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
             items += 1;
         }
 
+        // The tab's project, under everything else: "Add to Project" for a
+        // tab that is a page of none, or -- for a page -- taking it out and
+        // closing the project (`page_rules::offered`). Not on the control
+        // room's tab, which is no page of anything.
+        if !room {
+            use polter_projects::page_rules as rules;
+            let project = crate::project_session::project_of_tab(target.id);
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            for (i, act) in TAB_PROJECT_ACTS.iter().enumerate() {
+                if !crate::project_ui::page_act_offered(*act, Some(target.id)) {
+                    continue;
+                }
+                let label = match act {
+                    crate::project_ui::PageAct::TakeOut => {
+                        let w = rules::take_out_title(project.as_deref());
+                        w.filled(&tr(w.msgid))
+                    }
+                    crate::project_ui::PageAct::CloseProject => tr(rules::CLOSE_PROJECT),
+                    _ => tr("Add to Project…"),
+                };
+                let mut wide: Vec<u16> = label.encode_utf16().collect();
+                wide.push(0);
+                let _ = AppendMenuW(menu, MF_STRING, TAB_PROJECT_BASE + i, PCWSTR(wide.as_ptr()));
+                items += 1;
+            }
+            wlogf!(frame, "[tabmenu] tab {} project: {:?}", target.index + 1, project);
+        }
+
         // Printed **before** `TrackPopupMenu`, which runs a nested message
         // loop and does not come back until the menu is dismissed. `items`
         // counts selectable rows, separators excluded.
@@ -1912,6 +1945,12 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
     if (TAB_COLOR_BASE..TAB_COLOR_BASE + TAB_COLORS.len()).contains(&chosen) {
         let c = chosen - TAB_COLOR_BASE;
         run_tab_colour(frame, target.id, c as u8);
+        return;
+    }
+    if (TAB_PROJECT_BASE..TAB_PROJECT_BASE + TAB_PROJECT_ACTS.len()).contains(&chosen) {
+        let act = TAB_PROJECT_ACTS[chosen - TAB_PROJECT_BASE];
+        let ok = crate::project_ui::request_page_act(frame, target.id, act);
+        wlogf!(frame, "[tabmenu] pick {:?} tab {} ok={}", act, target.index + 1, ok);
         return;
     }
     // Subtracted only after the range is known: an id below the base would

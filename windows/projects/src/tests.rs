@@ -625,3 +625,499 @@ fn a_write_that_was_dropped_or_done_leaves_no_latest_moment_behind() {
     assert!(!d.flush());
     assert!(churn(&mut d, Change::PaneDetail, 20.0, 10.0, 0.25).is_empty());
 }
+
+// ---- what the host tells the core
+
+use crate::orders::{self, Have, Kind, Order, Start, Step};
+use crate::stated::{self, FailedWhy, Refusal, Stated};
+
+fn chief() -> Agent {
+    Agent::Agent(Who { role: "polter-supervisor".into(), cli: "claude-code".into(), session: "s".into(), supervisor: true })
+}
+
+fn terms(of: &[&str]) -> Vec<String> {
+    of.iter().map(|t| t.to_string()).collect()
+}
+
+/// One window, two pages: the first is the supervisor beside a worker, the
+/// second one pane.
+fn tied() -> Pages {
+    Pages::from_file(&Snapshot {
+        name: "web-app".into(),
+        saved_at: 1,
+        group: Some("web-app".into()),
+        windows: vec![Window {
+            frame: None,
+            front: 0,
+            tabs: vec![tab(split(leaf_of("/a", "0.snap", chief()), leaf_of("/b", "1.snap", worker()), Axis::Horizontal)), tab(leaf("/c", "2.snap"))],
+        }],
+        next_scrollback: Some(3),
+    })
+}
+
+/// The statement is these bytes: the contract's own example, key for key.
+#[test]
+fn the_statement_says_every_key_of_every_project() {
+    let list = [
+        Stated {
+            name: "web-app".into(),
+            group: Some("web-app".into()),
+            pages: 3,
+            open: Some(vec![terms(&["0xa1", "0xb1"]), terms(&["0xb2"])]),
+            supervisor: Some("0xa1".into()),
+            workers: terms(&["0xb1", "0xb2"]),
+        },
+        Stated { name: "notes".into(), group: None, pages: 1, open: None, supervisor: None, workers: Vec::new() },
+    ];
+    assert_eq!(
+        stated::statement(&list),
+        concat!(
+            r#"{"act":"projects","list":["#,
+            r#"{"name":"web-app","group":"web-app","pages":3,"open":[["0xa1","0xb1"],["0xb2"]],"supervisor":"0xa1","workers":["0xb1","0xb2"]},"#,
+            r#"{"name":"notes","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]}"#,
+            r#"]}"#
+        )
+    );
+    assert_eq!(stated::refusal(&list), None);
+    // No project at all is still a statement: "there are none" is not
+    // "nothing was said".
+    assert_eq!(stated::statement(&[]), r#"{"act":"projects","list":[]}"#);
+    // A name is written as JSON writes it.
+    let odd = [Stated { name: "a\"b\\c".into(), group: None, pages: 0, open: None, supervisor: None, workers: Vec::new() }];
+    assert_eq!(stated::statement(&odd), r#"{"act":"projects","list":[{"name":"a\"b\\c","group":null,"pages":0,"open":null,"supervisor":null,"workers":[]}]}"#);
+}
+
+#[test]
+fn a_project_that_is_not_open_says_what_its_file_says() {
+    let file = Snapshot { name: "notes".into(), saved_at: 1, group: Some("g".into()), windows: tied().file_windows(), next_scrollback: None };
+    assert_eq!(Stated::of_closed(&file), Stated { name: "notes".into(), group: Some("g".into()), pages: 2, open: None, supervisor: None, workers: Vec::new() });
+}
+
+/// The supervisor's terminal is the one in the pane the file marks, found
+/// by where that pane stands among its page's panes.
+#[test]
+fn an_open_project_says_its_pages_terminals_and_where_its_supervisor_is() {
+    let pages = tied();
+    // Said in the order the tabs happen to be held in, which is not the
+    // project's.
+    let said = Stated::of_open("web-app", Some("web-app".into()), &pages, &[(1, terms(&["0xc"])), (0, terms(&["0xa", "0xb"]))]);
+    assert_eq!(
+        said,
+        Stated { name: "web-app".into(), group: Some("web-app".into()), pages: 2, open: Some(vec![terms(&["0xa", "0xb"]), terms(&["0xc"])]), supervisor: Some("0xa".into()), workers: Vec::new() }
+    );
+    assert_eq!(stated::refusal(&[said]), None);
+
+    // Only the second page open: the supervisor's pane is not on screen.
+    let said = Stated::of_open("web-app", None, &pages, &[(1, terms(&["0xc"]))]);
+    assert_eq!(said.open, Some(vec![terms(&["0xc"])]));
+    assert_eq!(said.supervisor, None);
+    assert_eq!(said.pages, 2);
+
+    // No page open is not "open with nothing".
+    let said = Stated::of_open("web-app", None, &pages, &[]);
+    assert_eq!(said.open, None);
+
+    // An agent in a pane is not the supervisor for being an agent: with
+    // the worker's pane first, it is still the marked pane that is named.
+    let turned = Pages::from_file(&one_tab(split(leaf_of("/b", "1.snap", worker()), leaf_of("/a", "0.snap", chief()), Axis::Horizontal), 2));
+    assert_eq!(Stated::of_open("p", None, &turned, &[(0, terms(&["0xw", "0xs"]))]).supervisor, Some("0xs".into()));
+    // And a project nobody is marked in names nobody.
+    let unmarked = Pages::from_file(&one_tab(leaf_of("/b", "1.snap", worker()), 2));
+    assert_eq!(Stated::of_open("p", None, &unmarked, &[(0, terms(&["0xw"]))]).supervisor, None);
+}
+
+/// A page split since it was written has three terminals and two leaves:
+/// counting along it would name the wrong pane, so nobody is named.
+#[test]
+fn a_page_that_changed_since_it_was_written_names_no_supervisor() {
+    let said = Stated::of_open("web-app", None, &tied(), &[(0, terms(&["0xnew", "0xa", "0xb"]))]);
+    assert_eq!(said.open, Some(vec![terms(&["0xnew", "0xa", "0xb"])]));
+    assert_eq!(said.supervisor, None);
+}
+
+#[test]
+fn what_the_core_would_refuse_is_found_before_it_is_said() {
+    let p = |name: &str, open: Option<Vec<Vec<String>>>, supervisor: Option<&str>, workers: &[&str]| Stated {
+        name: name.into(),
+        group: None,
+        pages: 1,
+        open,
+        supervisor: supervisor.map(str::to_string),
+        workers: terms(workers),
+    };
+    let on = |t: &[&str]| Some(vec![terms(t)]);
+    assert_eq!(stated::refusal(&[p("a", None, None, &[]), p("a", None, None, &[])]), Some(Refusal::SameName("a".into())));
+    assert_eq!(
+        stated::refusal(&[p("a", on(&["0x1"]), None, &[]), p("b", on(&["0x2", "0x1"]), None, &[])]),
+        Some(Refusal::OnTwoProjects("0x1".into(), "a".into(), "b".into()))
+    );
+    assert_eq!(stated::refusal(&[p("a", on(&["0x1"]), Some("0x9"), &[])]), Some(Refusal::SupervisorOffPage("a".into())));
+    assert_eq!(stated::refusal(&[p("a", None, Some("0x1"), &[])]), Some(Refusal::SupervisorOffPage("a".into())));
+    assert_eq!(stated::refusal(&[p("a", on(&["0x1"]), Some("0x1"), &["0x7"])]), Some(Refusal::WorkerOffPage("a".into(), "0x7".into())));
+    assert_eq!(stated::refusal(&[p("a", None, None, &["0x7"])]), Some(Refusal::WorkerOffPage("a".into(), "0x7".into())));
+    assert_eq!(stated::refusal(&[p("a", Some(Vec::new()), None, &[])]), Some(Refusal::OpenWithNothing("a".into())));
+    // And what it takes.
+    assert_eq!(stated::refusal(&[p("a", on(&["0x1", "0x2"]), Some("0x1"), &["0x2"]), p("b", on(&["0x3"]), None, &[])]), None);
+}
+
+#[test]
+fn the_three_other_things_a_host_says() {
+    assert_eq!(stated::failed("web-app", FailedWhy::NotFound), r#"{"act":"project_failed","name":"web-app","why":"not_found"}"#);
+    assert_eq!(stated::failed("web-app", FailedWhy::Unreadable), r#"{"act":"project_failed","name":"web-app","why":"unreadable"}"#);
+    assert_eq!(stated::remove_question("0xb2"), r#"{"act":"project_remove","terminal":"0xb2"}"#);
+    assert_eq!(stated::rename_question("web-app", "storefront"), r#"{"act":"project_rename","from":"web-app","to":"storefront"}"#);
+}
+
+// ---- what the core asks of the host
+
+const SNAPSHOT: &str = r#"{
+  "rev": 7,
+  "projects_known": true,
+  "project_orders": [
+    {"order":"open",     "project":"web-app","group":"web-app","to":null,"terminal":null},
+    {"order":"create",   "project":"nightly","group":"nightly","to":null,"terminal":"0xa1"},
+    {"order":"bind",     "project":"scratch","group":"old","to":"old","terminal":"0xa1"},
+    {"order":"set_group","project":"copy","group":null,"to":null,"terminal":null},
+    {"order":"rename",   "project":"web-app","group":null,"to":"storefront","terminal":null},
+    {"order":"add_tab",  "project":"web-app","group":null,"to":null,"terminal":"0xb9"}
+  ],
+  "groups": [
+    {"name":"web-app","project":{"tie":"bound","name":"web-app","pages":3,"open":false,"start":"project","why":"none"}},
+    {"name":"old","project":{"tie":"undecided","name":null,"pages":null,"open":null,"start":"directory","why":"projects_unknown"}},
+    {"name":"before-ties"}
+  ]
+}"#;
+
+fn order(kind: Kind, project: &str, group: Option<&str>, to: Option<&str>, terminal: Option<&str>) -> Order {
+    Order { kind, project: project.into(), group: group.map(str::to_string), to: to.map(str::to_string), terminal: terminal.map(str::to_string) }
+}
+
+#[test]
+fn the_snapshots_orders_and_each_groups_project_are_read() {
+    let told = orders::decode(SNAPSHOT).unwrap();
+    assert!(told.known);
+    assert_eq!(
+        told.orders,
+        [
+            order(Kind::Open, "web-app", Some("web-app"), None, None),
+            order(Kind::Create, "nightly", Some("nightly"), None, Some("0xa1")),
+            order(Kind::Bind, "scratch", Some("old"), Some("old"), Some("0xa1")),
+            order(Kind::SetGroup, "copy", None, None, None),
+            order(Kind::Rename, "web-app", None, Some("storefront"), None),
+            order(Kind::AddTab, "web-app", None, None, Some("0xb9")),
+        ]
+    );
+    let web = &told.groups["web-app"];
+    assert_eq!((web.name.as_deref(), web.pages, web.open, web.start, web.why.as_str()), (Some("web-app"), Some(3), Some(false), Start::Project, "none"));
+    // Not known is not zero and not closed.
+    let old = &told.groups["old"];
+    assert_eq!((old.name.as_deref(), old.pages, old.open, old.start, old.why.as_str()), (None, None, None, Start::Directory, "projects_unknown"));
+    assert!(!told.groups.contains_key("before-ties"));
+}
+
+#[test]
+fn a_snapshot_from_before_projects_says_the_host_has_said_nothing() {
+    let told = orders::decode(r#"{"rev":1,"groups":[{"name":"g"}]}"#).unwrap();
+    assert_eq!(told, orders::Told::default());
+    assert!(!told.known);
+}
+
+/// An order this build does not know is not skipped: the core would wait on
+/// a host that never does it and never says why.
+#[test]
+fn what_cannot_be_read_is_an_error_not_a_guess() {
+    // Asked as "what was the error", so that reading it by mistake fails
+    // the comparison below instead of stopping the test on an unwrap.
+    let bad = |text: &str| orders::decode(text).err().unwrap_or_default();
+    assert!(bad(r#"{"project_orders":[{"order":"paint","project":"p","group":null,"to":null,"terminal":null}]}"#).contains("paint"));
+    assert!(bad(r#"{"project_orders":[{"order":"open","project":"p","group":null,"to":null}]}"#).contains("terminal is missing"));
+    assert!(bad(r#"{"projects_known":"yes"}"#).contains("projects_known"));
+    assert!(bad(r#"{"groups":[{"name":"g","project":{"tie":"bound","name":"p","pages":1,"open":true,"start":"later","why":"none"}}]}"#).contains("later"));
+    assert!(bad(r#"{"groups":[{"name":"g","project":{"tie":"bound","name":"p","open":true,"start":"project","why":"none"}}]}"#).contains("pages is missing"));
+}
+
+fn have(name: &str, group: Option<&str>, terminals: &[&str]) -> Have {
+    Have { name: name.into(), group: group.map(str::to_string), terminals: terms(terminals), open: !terminals.is_empty() }
+}
+
+fn any_terminal(_: &str) -> bool {
+    true
+}
+
+#[test]
+fn an_order_to_open_opens_what_is_closed_and_says_what_is_missing() {
+    let o = order(Kind::Open, "web-app", Some("web-app"), None, None);
+    assert_eq!(orders::step(&o, &[have("web-app", Some("web-app"), &[])], &any_terminal), Step::Open { project: "web-app".into() });
+    // Seen again after it was done: nothing more.
+    assert_eq!(orders::step(&o, &[have("web-app", Some("web-app"), &["0x1"])], &any_terminal), Step::Nothing("it is open"));
+    assert_eq!(orders::step(&o, &[have("other", None, &[])], &any_terminal), Step::Missing { project: "web-app".into() });
+}
+
+#[test]
+fn an_order_to_create_makes_a_project_of_the_supervisors_tab_once() {
+    let o = order(Kind::Create, "nightly", Some("nightly"), None, Some("0xa1"));
+    assert_eq!(orders::step(&o, &[], &any_terminal), Step::Create { name: "nightly".into(), group: Some("nightly".into()), terminal: "0xa1".into() });
+    assert_eq!(orders::step(&o, &[have("nightly", Some("nightly"), &["0xa1"])], &any_terminal), Step::Nothing("a project of that name exists"));
+    assert_eq!(orders::step(&o, &[have("other", None, &["0xa1"])], &any_terminal), Step::Nothing("its tab is already a page of a project"));
+    assert_eq!(orders::step(&o, &[], &|_| false), Step::Nothing("that terminal is not open here"));
+    assert_eq!(orders::step(&order(Kind::Create, "nightly", None, None, None), &[], &any_terminal), Step::Nothing("no terminal was named"));
+}
+
+#[test]
+fn an_order_to_bind_gives_a_project_its_group_and_its_name() {
+    let o = order(Kind::Bind, "scratch", Some("old"), Some("old"), Some("0xa1"));
+    assert_eq!(
+        orders::step(&o, &[have("scratch", None, &["0xa1"])], &any_terminal),
+        Step::Bind { project: "scratch".into(), group: "old".into(), terminal: Some("0xa1".into()), to: Some("old".into()) }
+    );
+    // Called that already: bound, not renamed.
+    let same = order(Kind::Bind, "old", Some("old"), Some("old"), Some("0xa1"));
+    assert_eq!(orders::step(&same, &[have("old", None, &["0xa1"])], &any_terminal), Step::Bind { project: "old".into(), group: "old".into(), terminal: Some("0xa1".into()), to: None });
+    assert_eq!(orders::step(&o, &[have("scratch", Some("old"), &["0xa1"])], &any_terminal), Step::Nothing("its file names that group already"));
+    assert_eq!(orders::step(&o, &[have("scratch", None, &[]), have("old", None, &[])], &any_terminal), Step::Nothing("the name it would take is another project's"));
+    assert_eq!(orders::step(&o, &[], &any_terminal), Step::Nothing("no such project"));
+}
+
+#[test]
+fn an_order_to_set_the_group_writes_it_once() {
+    let clear = order(Kind::SetGroup, "copy", None, None, None);
+    assert_eq!(orders::step(&clear, &[have("copy", Some("web-app"), &[])], &any_terminal), Step::SetGroup { project: "copy".into(), group: None });
+    assert_eq!(orders::step(&clear, &[have("copy", None, &[])], &any_terminal), Step::Nothing("its file says that already"));
+    let set = order(Kind::SetGroup, "copy", Some("g"), None, None);
+    assert_eq!(orders::step(&set, &[have("copy", None, &[])], &any_terminal), Step::SetGroup { project: "copy".into(), group: Some("g".into()) });
+    assert_eq!(orders::step(&set, &[], &any_terminal), Step::Nothing("no such project"));
+}
+
+#[test]
+fn an_order_to_rename_moves_the_file_once_and_never_onto_another() {
+    let o = order(Kind::Rename, "web-app", None, Some("storefront"), None);
+    assert_eq!(orders::step(&o, &[have("web-app", Some("storefront"), &[])], &any_terminal), Step::Rename { from: "web-app".into(), to: "storefront".into() });
+    // Done: the old name is gone.
+    assert_eq!(orders::step(&o, &[have("storefront", Some("storefront"), &[])], &any_terminal), Step::Nothing("no such project"));
+    assert_eq!(orders::step(&o, &[have("web-app", None, &[]), have("storefront", None, &[])], &any_terminal), Step::Nothing("that name is another project's"));
+    assert_eq!(orders::step(&order(Kind::Rename, "web-app", None, Some("web-app"), None), &[have("web-app", None, &[])], &any_terminal), Step::Nothing("it is called that already"));
+}
+
+#[test]
+fn an_order_to_add_a_tab_adds_it_once() {
+    let o = order(Kind::AddTab, "web-app", None, None, Some("0xb9"));
+    assert_eq!(orders::step(&o, &[have("web-app", None, &["0xa1"])], &any_terminal), Step::AddTab { project: "web-app".into(), terminal: "0xb9".into() });
+    assert_eq!(orders::step(&o, &[have("web-app", None, &["0xa1", "0xb9"])], &any_terminal), Step::Nothing("its tab is already a page of a project"));
+    assert_eq!(orders::step(&o, &[have("web-app", None, &[]), have("notes", None, &["0xb9"])], &any_terminal), Step::Nothing("its tab is already a page of a project"));
+    assert_eq!(orders::step(&o, &[have("web-app", None, &["0xa1"])], &|_| false), Step::Nothing("that terminal is not open here"));
+    assert_eq!(orders::step(&o, &[], &any_terminal), Step::Nothing("no such project"));
+}
+
+/// Marking a pane the supervisor's unmarks the one that was, and a save
+/// that cannot tell who is in a pane keeps the mark.
+#[test]
+fn one_pane_of_a_project_is_its_supervisors() {
+    let supervisors = |pages: &Pages| -> Vec<String> {
+        pages
+            .file_windows()
+            .iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| polter_projectfile::leaves(&t.root))
+            .filter(|l| matches!(&l.agent, Agent::Agent(who) if who.supervisor))
+            .map(|l| l.scrollback.clone())
+            .collect()
+    };
+    let mut pages = tied();
+    assert_eq!(supervisors(&pages), ["0.snap"]);
+    // A pane nobody was written down for: it is an agent's now, of whom
+    // nothing else is known. The one that was is still who it was.
+    assert!(pages.mark_supervisor("2.snap"));
+    assert_eq!(supervisors(&pages), ["2.snap"]);
+    let was = pages.known();
+    assert_eq!(was["0.snap"].agent, Agent::Agent(Who { role: "polter-supervisor".into(), cli: "claude-code".into(), session: "s".into(), supervisor: false }));
+    assert_eq!(was["2.snap"].agent, Agent::Agent(Who { role: String::new(), cli: String::new(), session: String::new(), supervisor: true }));
+    // A worker's pane keeps who the worker is.
+    assert!(pages.mark_supervisor("1.snap"));
+    assert_eq!(pages.known()["1.snap"].agent, Agent::Agent(Who { role: "polter-dev".into(), cli: "codex".into(), session: "s".into(), supervisor: true }));
+    assert_eq!(supervisors(&pages), ["1.snap"]);
+    // No such pane: nothing changes, and the one marked stays marked.
+    assert!(!pages.mark_supervisor("9.snap"));
+    assert!(!pages.mark_supervisor(""));
+    assert_eq!(supervisors(&pages), ["1.snap"]);
+
+    // A pane that has no name yet is not "the pane called nothing": asked
+    // for that, nothing is marked -- and the one that was stays.
+    let mut unnamed = Pages::from_file(&one_tab(split(leaf_of("/a", "", worker()), leaf_of("/b", "1.snap", chief()), Axis::Horizontal), 2));
+    assert!(!unnamed.mark_supervisor(""));
+    assert_eq!(supervisors(&unnamed), ["1.snap"]);
+
+    // The next save sees the tab and cannot say who is in its panes.
+    let unknown = split(leaf_of("/a", "0.snap", Agent::Unknown), leaf_of("/b", "1.snap", Agent::Unknown), Axis::Horizontal);
+    let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root: unknown }], frames: BTreeMap::new(), keeping_front: false };
+    let (after, _) = pages.saving("web-app", 2, None, Some(3), &screen);
+    assert_eq!(supervisors(&after), ["1.snap"]);
+}
+
+// ---- the interface's rules about pages (ProjectPageRulesTests, case for case)
+
+use crate::page_rules::{self as rules, CloseChoice, CloseScope, CloseStep, Item, Note, Row, SaveOver};
+
+fn three_tabs() -> Vec<rules::Tab> {
+    vec![
+        rules::Tab { id: 1, title: "polter".into(), panes: 2, project: None, is_current: false },
+        rules::Tab { id: 2, title: "web-app".into(), panes: 3, project: None, is_current: true },
+        rules::Tab { id: 3, title: "argus-site".into(), panes: 1, project: Some("argus".into()), is_current: false },
+    ]
+}
+
+fn set(of: &[u64]) -> BTreeSet<u64> {
+    of.iter().copied().collect()
+}
+
+#[test]
+fn save_as_lists_every_tab_and_only_the_current_one_is_checked() {
+    let tabs = three_tabs();
+    assert_eq!(
+        rules::save_as_rows(&tabs),
+        [
+            Row { id: 1, title: "polter".into(), note: Note::Panes(2), can_check: true },
+            Row { id: 2, title: "web-app".into(), note: Note::ThisPage, can_check: true },
+            Row { id: 3, title: "argus-site".into(), note: Note::InProject("argus".into()), can_check: false },
+        ]
+    );
+    assert_eq!(rules::initially_checked(&tabs), set(&[2]));
+    assert_eq!(rules::note_words(&Note::Panes(2)).filled("{} pane(s)"), "2 pane(s)");
+    assert_eq!(rules::note_words(&Note::InProject("argus".into())).filled("已在项目 {} 里"), "已在项目 argus 里");
+}
+
+#[test]
+fn a_current_tab_that_is_already_a_page_is_not_offered() {
+    let own = [
+        rules::Tab { id: 1, title: "a".into(), panes: 1, project: None, is_current: false },
+        rules::Tab { id: 2, title: "b".into(), panes: 1, project: Some("p".into()), is_current: true },
+    ];
+    assert_eq!(rules::initially_checked(&own), set(&[]));
+    assert_eq!(rules::save_as_rows(&own)[1], Row { id: 2, title: "b".into(), note: Note::InProject("p".into()), can_check: false });
+}
+
+#[test]
+fn saving_needs_a_name_and_a_tab_that_can_be_taken() {
+    let rows = rules::save_as_rows(&three_tabs());
+    assert!(rules::can_save("new", &set(&[2]), &rows));
+    assert!(!rules::can_save("   ", &set(&[2]), &rows));
+    assert!(!rules::can_save("new", &set(&[]), &rows));
+    // A check on a row that cannot be checked is not a way round the rule.
+    assert!(!rules::can_save("new", &set(&[3]), &rows));
+    assert_eq!(rules::tabs_to_save(&set(&[3, 2, 1]), &rows), [1, 2]);
+}
+
+#[test]
+fn the_menu_says_which_project_and_offers_what_fits() {
+    assert_eq!(rules::menu_header(Some("polter")).filled("This page is in the project \"{}\""), "This page is in the project \"polter\"");
+    assert_ne!(rules::menu_header(None), rules::menu_header(Some("polter")));
+    assert_eq!(rules::take_out_title(Some("polter")).args, ["polter"]);
+    assert_ne!(rules::take_out_title(None).msgid, rules::take_out_title(Some("polter")).msgid);
+
+    let in_one: Vec<Item> = Item::ALL.into_iter().filter(|i| rules::offered(*i, Some("polter"))).collect();
+    assert_eq!(in_one, [Item::SaveAs, Item::Open, Item::Manage, Item::Rename, Item::TakeOut, Item::CloseProject]);
+    let in_none: Vec<Item> = Item::ALL.into_iter().filter(|i| rules::offered(*i, None)).collect();
+    assert_eq!(in_none, [Item::SaveAs, Item::Open, Item::Manage, Item::AddTo]);
+}
+
+#[test]
+fn closing_a_page_asks_only_where_the_answer_could_be_wanted() {
+    let step = |project: Option<&str>, others: usize, scope: CloseScope, choice: CloseChoice| rules::close_step(project, others, scope, choice);
+    let stays = CloseStep::Close { taking_out: false };
+    assert_eq!(step(Some("p"), 2, CloseScope::Tab, CloseChoice::Ask), CloseStep::Ask);
+    assert_eq!(step(None, 2, CloseScope::Tab, CloseChoice::Ask), stays);
+    // The project's last open page: that is the project being closed.
+    assert_eq!(step(Some("p"), 0, CloseScope::Tab, CloseChoice::Ask), stays);
+    for scope in CloseScope::ALL.into_iter().filter(|s| *s != CloseScope::Tab) {
+        for choice in CloseChoice::ALL {
+            assert_eq!(step(Some("p"), 2, scope, choice), stays, "{scope:?} {choice:?}");
+        }
+    }
+    assert_eq!(step(Some("p"), 2, CloseScope::Tab, CloseChoice::Keep), stays);
+    assert_eq!(step(Some("p"), 2, CloseScope::Tab, CloseChoice::TakeOut), CloseStep::Close { taking_out: true });
+    // A standing "take it out" takes nothing out of no project, and does
+    // not thin a project that is being closed.
+    assert_eq!(step(None, 2, CloseScope::Tab, CloseChoice::TakeOut), stays);
+    assert_eq!(step(Some("p"), 0, CloseScope::Tab, CloseChoice::TakeOut), stays);
+}
+
+#[test]
+fn the_answer_is_remembered_only_when_asked_to() {
+    assert_eq!(rules::choice_after(true, false, CloseChoice::Ask), CloseChoice::Ask);
+    assert_eq!(rules::choice_after(true, true, CloseChoice::Ask), CloseChoice::TakeOut);
+    assert_eq!(rules::choice_after(false, true, CloseChoice::Ask), CloseChoice::Keep);
+    for choice in CloseChoice::ALL {
+        assert_eq!(CloseChoice::from_stored(choice.stored()), choice);
+    }
+    // The macOS host's own words for them, so a setting means the same.
+    assert_eq!(CloseChoice::ALL.map(CloseChoice::stored), ["ask", "keep", "takeOut"]);
+    assert_eq!(CloseChoice::from_stored(""), CloseChoice::Ask);
+    assert_eq!(CloseChoice::from_stored("later"), CloseChoice::Ask);
+    let said: BTreeSet<&str> = CloseChoice::ALL.into_iter().map(CloseChoice::msgid).collect();
+    assert_eq!(said.len(), 3);
+}
+
+#[test]
+fn a_project_is_counted_whole() {
+    assert_eq!(rules::size(3, 4).filled("{} 页 · {} 格"), "3 页 · 4 格");
+}
+
+/// Saving over a name: the three refusals of the macOS host's
+/// `ProjectSession.save`, and the two things it does otherwise.
+#[test]
+fn saving_over_a_project_never_writes_under_tabs_that_would_write_back() {
+    let free = |t: u64| (t, None);
+    let of = |t: u64, p: &str| (t, Some(p.to_string()));
+    // Not open: it becomes these tabs.
+    assert_eq!(rules::save_over("p", &[], &[free(1), free(2)]), SaveOver::Replace);
+    // A chosen tab is another project's page.
+    assert_eq!(rules::save_over("p", &[], &[free(1), of(2, "q")]), SaveOver::PageOfAnother { tab: 2, project: "q".into() });
+    // Open in exactly these tabs: saved again by hand.
+    assert_eq!(rules::save_over("p", &[1, 2], &[of(2, "p"), of(1, "p")]), SaveOver::Again);
+    // Open in a tab that was not chosen: that tab would write itself back.
+    assert_eq!(rules::save_over("p", &[1, 2], &[of(1, "p")]), SaveOver::OpenElsewhere);
+    // Open, and a tab that is not its page was chosen too.
+    assert_eq!(rules::save_over("p", &[1], &[of(1, "p"), free(3)]), SaveOver::OpenElsewhere);
+    assert_eq!(rules::save_over("p", &[1], &[free(3)]), SaveOver::OpenElsewhere);
+}
+
+#[test]
+fn the_start_button_says_how_many_pages_come_back_when_that_is_known() {
+    assert_eq!(rules::start_in_project_words(Some(3)).args, ["3"]);
+    assert!(rules::start_in_project_words(Some(3)).msgid.starts_with("All {} page(s)"));
+    // Not known is not "0 pages".
+    assert!(rules::start_in_project_words(None).args.is_empty());
+    assert!(rules::start_in_project_words(None).msgid.starts_with("Every page"));
+}
+
+/// **What this crate writes is what the core reads**: the lines of this
+/// file are fed to the core by its own test (`ControlAct.zig`, "the core
+/// takes what the Windows host writes"), and are these bytes here.
+#[test]
+fn what_is_said_is_the_bytes_the_core_is_tested_on() {
+    let file = include_str!("../../../src/poltergeist/testdata/host_project_acts.jsonl");
+    let lines: Vec<&str> = file.lines().collect();
+    let id = |n: u64| format!("0x{n:016x}");
+    let list = [
+        Stated {
+            name: "web-app".into(),
+            group: Some("web-app".into()),
+            pages: 3,
+            open: Some(vec![vec![id(0xa1), id(0xb1)], vec![id(0xb2)]]),
+            supervisor: Some(id(0xa1)),
+            workers: vec![id(0xb1), id(0xb2)],
+        },
+        Stated { name: "notes".into(), group: None, pages: 1, open: None, supervisor: None, workers: Vec::new() },
+    ];
+    assert_eq!(stated::refusal(&list), None);
+    assert_eq!(
+        lines,
+        [
+            stated::statement(&list),
+            stated::statement(&[]),
+            stated::failed("web-app", FailedWhy::NotFound),
+            stated::failed("web-app", FailedWhy::Unreadable),
+            stated::remove_question(&id(0xb2)),
+            stated::rename_question("notes", "scratch"),
+        ]
+    );
+}

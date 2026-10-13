@@ -23,19 +23,23 @@
 //! function copies out what it needs, lets go, does the work, and puts the
 //! result back.
 //!
+//! # The core
+//!
+//! The core is told what projects there are and which are open
+//! (`state`), and what it asks back is done (`told`, `obey`):
+//! `dev-docs/poltergeist/projects.md` 3, 4 and 8. What is said and what an
+//! order still asks are `polter_projects::stated` and `::orders`.
+//!
 //! # Not done in this file yet
 //!
-//!  * **The core is told nothing.** No `projects` statement is sent and no
-//!    `project_orders` is read (`dev-docs/poltergeist/projects.md`, 8): that
-//!    is the second half of this task.
-//!  * **Nothing asks before a page is closed, and no page can be taken out
-//!    of a project from the screen.** Also the second half.
 //!  * **A restart forgets which tabs were pages.** This host does not bring
 //!    its tabs back after a restart, so there is no tab to match to a page
 //!    (`Pages::page_sharing` is there for the day it does). The project is
 //!    opened again from its file.
 //!  * **Who is in a pane is not recorded**: every pane is saved `Unknown`,
-//!    which keeps whatever the file already said of it.
+//!    which keeps whatever the file already said of it -- the snapshot's
+//!    `terminals[].who` is not read here yet, and no pane is marked as
+//!    opened by the supervisor, so `workers` is always said empty.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -49,8 +53,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use polter_projects::autosave::{Change, Debounce};
+use polter_projects::orders::{self, Have, Order, Step, Told};
+use polter_projects::page_rules::{self, SaveOver};
 use polter_projects::pages::{Live, PageId, Pages, Screen};
 use polter_projects::placement::{self, Place, Rect};
+use polter_projects::stated::{self, FailedWhy, Stated};
 
 use crate::project::{self, WriteKind};
 use crate::tabs::{self, TabId};
@@ -62,20 +69,39 @@ struct Open {
     file: PathBuf,
     name: String,
     /// The group the file says it is the project of. Carried from read to
-    /// write untouched; nothing here changes it.
+    /// write; changed only when the core asks (`set_group`).
     group: Option<String>,
     next_scrollback: Option<u64>,
     pages: Pages,
     /// Which tab is which page. A tab is in here from the moment it is
     /// opened or saved as a page until it closes.
     tabs: Vec<(TabId, PageId)>,
+    /// The terminals in each open page's panes, in the order of the page's
+    /// leaves, as the last save found them: what the core is told.
+    terminals: Vec<(PageId, Vec<String>)>,
     debounce: Debounce,
+}
+
+/// What a save found on screen, besides the screen itself.
+struct Found {
+    /// Tabs that are no longer anywhere.
+    gone: Vec<TabId>,
+    terminals: Vec<(PageId, Vec<String>)>,
 }
 
 thread_local! {
     static OPEN: RefCell<Vec<Open>> = const { RefCell::new(Vec::new()) };
     /// The thread timer the next write is waiting on; 0 for none.
     static TIMER: Cell<usize> = const { Cell::new(0) };
+    /// The statement the core last took; none until it has taken one.
+    static STATED: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// The orders of the last snapshot that are still to be looked at, and
+    /// the timer that will look at them.
+    static ORDERS: RefCell<Vec<Order>> = const { RefCell::new(Vec::new()) };
+    static ORDERS_TIMER: Cell<usize> = const { Cell::new(0) };
+    /// Orders that were acted on and are still being asked: each is acted
+    /// on once for as long as the core goes on asking it.
+    static TRIED: RefCell<Vec<Order>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Seconds on a clock that only goes forward.
@@ -172,6 +198,8 @@ unsafe extern "system" fn timer(_: HWND, _: u32, id: usize, _: u32) {
             plogf!("[project] autosave of {:?} failed: {}", file, e);
         }
     }
+    // A pane more or fewer is something the core is told.
+    state();
     arm_timer();
 }
 
@@ -199,10 +227,11 @@ fn frame_of(hwnd: HWND) -> Option<project::Frame> {
 /// that are no longer anywhere come back in the second list.
 ///
 /// `capture` is `project_ui::name_leaves`'s.
-fn screen_of(bound: &[(TabId, PageId)], snaps: &Path, alloc: &mut project::Allocator, capture: bool, keeping_front: bool) -> (Screen, Vec<TabId>) {
+fn screen_of(bound: &[(TabId, PageId)], snaps: &Path, alloc: &mut project::Allocator, capture: bool, keeping_front: bool) -> (Screen, Found) {
     let mut live = Vec::new();
     let mut frames = BTreeMap::new();
     let mut gone = Vec::new();
+    let mut terminals = Vec::new();
     for (tab, page) in bound {
         let Some((frame, index, selected)) = tabs::locate_tab(*tab) else {
             gone.push(*tab);
@@ -213,6 +242,7 @@ fn screen_of(bound: &[(TabId, PageId)], snaps: &Path, alloc: &mut project::Alloc
             continue;
         };
         crate::project_ui::name_leaves(frame, &mut root, &panes, snaps, alloc, capture);
+        terminals.push((*page, panes.iter().filter_map(crate::project_ui::LeafPane::terminal).collect()));
         let token = frame.0 as isize;
         live.push(Live { id: *page, window: token, index, selected, root });
         if let std::collections::btree_map::Entry::Vacant(slot) = frames.entry(token) {
@@ -221,7 +251,7 @@ fn screen_of(bound: &[(TabId, PageId)], snaps: &Path, alloc: &mut project::Alloc
             }
         }
     }
-    (Screen { live, frames, keeping_front }, gone)
+    (Screen { live, frames, keeping_front }, Found { gone, terminals })
 }
 
 /// Every snapshot name `pages` refers to or the directory holds: what an
@@ -251,7 +281,7 @@ fn save(file: &Path, keeping_front: bool, capture: bool) -> Result<(), String> {
     let snaps = project::scrollback_dir(file);
     let in_use = names_in_use(&pages, &snaps);
     let mut alloc = project::Allocator::new(next, in_use.iter().map(String::as_str));
-    let (screen, gone) = screen_of(&bound, &snaps, &mut alloc, capture, keeping_front);
+    let (screen, found) = screen_of(&bound, &snaps, &mut alloc, capture, keeping_front);
     let (after, snapshot) = pages.saving(&name, wall_secs(), group, Some(alloc.next), &screen);
 
     project::write_file(file, &snapshot, WriteKind::Save).map_err(|e| e.to_string())?;
@@ -277,7 +307,8 @@ fn save(file: &Path, keeping_front: bool, capture: bool) -> Result<(), String> {
             if let Some(p) = open.iter_mut().find(|p| p.file == file) {
                 p.pages = after;
                 p.next_scrollback = Some(alloc.next);
-                p.tabs.retain(|(t, _)| !gone.contains(t));
+                p.tabs.retain(|(t, _)| !found.gone.contains(t));
+                p.terminals = found.terminals;
             }
             // A project none of whose tabs is left -- its window went
             // without its tabs being closed one by one -- is not open.
@@ -347,27 +378,53 @@ pub fn tab_closing(frame: HWND, tab: TabId) {
             open.retain(|p| !p.tabs.is_empty());
         }
     });
+    state();
     arm_timer();
 }
 
 /// The tabs in `chosen` saved as the project in `file`, called `name`: the
-/// project is those tabs and nothing else (`project_ui::save_tabs_as`).
+/// project becomes those tabs. Whatever pages it had are replaced (the
+/// replaced version is kept as the previous one when `kind` says so), and
+/// its group, if it had one, stays its group.
 ///
-/// A tab that is already a page of *another* project is refused -- a tab is
-/// a page of one project (v20, rule 6). One that is a page of *this* project
-/// is simply part of what is saved.
+/// What it may not do is `page_rules::save_over`, the macOS host's rule:
+/// refused while the project is open in other tabs -- they would write
+/// themselves straight back over this -- and refused for a tab that is a
+/// page of another project.
 pub fn save_as(file: &Path, chosen: &[(HWND, TabId)], name: String, kind: WriteKind) -> Result<(), String> {
-    for (_, tab) in chosen {
-        let elsewhere = OPEN.with(|o| o.try_borrow().ok()?.iter().find(|p| p.file != file && p.tabs.iter().any(|(t, _)| t == tab)).map(|p| p.name.clone()));
-        if let Some(other) = elsewhere {
-            return Err(format!("that tab is already a page of the project {other:?}"));
+    save_as_for(file, chosen, name, kind, None)
+}
+
+/// `save_as`, and `group` -- when given -- is what the file names as its
+/// group instead of what it named before (an order to create a project).
+fn save_as_for(file: &Path, chosen: &[(HWND, TabId)], name: String, kind: WriteKind, group: Option<Option<String>>) -> Result<(), String> {
+    let its_tabs: Vec<u64> = OPEN.with(|o| {
+        o.try_borrow().ok().and_then(|o| o.iter().find(|p| p.file == file).map(|p| p.tabs.iter().map(|(t, _)| t.0).collect())).unwrap_or_default()
+    });
+    let asked: Vec<(u64, Option<String>)> = chosen.iter().map(|(_, tab)| (tab.0, project_of_tab(*tab))).collect();
+    match page_rules::save_over(&name, &its_tabs, &asked) {
+        SaveOver::Replace => {}
+        SaveOver::Again => {
+            // Its own project, saved again by hand: with the whole
+            // scrollback, as a save somebody asked for is.
+            save(file, false, true)?;
+            state();
+            return Ok(());
+        }
+        SaveOver::OpenElsewhere => {
+            let w = page_rules::open_elsewhere_words(&name);
+            return Err(w.filled(&crate::i18n::tr(w.msgid)));
+        }
+        SaveOver::PageOfAnother { tab, project } => {
+            let w = page_rules::page_of_another_words(&tabs::title_of_tab(TabId(tab)), &project);
+            return Err(w.filled(&crate::i18n::tr(w.msgid)));
         }
     }
 
     // What the name already holds: its group stays, and its numbers are not
     // handed out again.
     let existing = project::read_file(file).ok();
-    let group = existing.as_ref().and_then(|e| e.group.clone());
+    let group = group.unwrap_or_else(|| existing.as_ref().and_then(|e| e.group.clone()));
     let snaps = project::scrollback_dir(file);
     let mut in_use: Vec<String> = existing.as_ref().map(project::Snapshot::scrollback_names).unwrap_or_default();
     in_use.extend(names_in_use(&Pages::new(), &snaps));
@@ -380,7 +437,7 @@ pub fn save_as(file: &Path, chosen: &[(HWND, TabId)], name: String, kind: WriteK
             bound.push((*tab, pages.new_page_id()));
         }
     }
-    let (screen, gone) = screen_of(&bound, &snaps, &mut alloc, true, false);
+    let (screen, found) = screen_of(&bound, &snaps, &mut alloc, true, false);
     if screen.live.is_empty() {
         return Err("that tab no longer exists".to_string());
     }
@@ -398,14 +455,23 @@ pub fn save_as(file: &Path, chosen: &[(HWND, TabId)], name: String, kind: WriteK
         history_note(&snapshot)
     );
 
-    bound.retain(|(t, _)| !gone.contains(t));
+    bound.retain(|(t, _)| !found.gone.contains(t));
     OPEN.with(|o| {
         if let Ok(mut open) = o.try_borrow_mut() {
-            // Whatever was open under this file is replaced by this.
             open.retain(|p| p.file != file);
-            open.push(Open { file: file.to_path_buf(), name, group, next_scrollback: Some(alloc.next), pages: after, tabs: bound, debounce: Debounce::new() });
+            open.push(Open {
+                file: file.to_path_buf(),
+                name,
+                group,
+                next_scrollback: Some(alloc.next),
+                pages: after,
+                tabs: bound,
+                terminals: found.terminals,
+                debounce: Debounce::new(),
+            });
         }
     });
+    state();
     Ok(())
 }
 
@@ -550,15 +616,21 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
                     next_scrollback: snapshot.next_scrollback,
                     pages,
                     tabs: bound,
+                    terminals: Vec::new(),
                     debounce: Debounce::new(),
                 }),
             }
         }
     });
-    // Where its windows stand now is worth writing once things are still.
+    // Written now rather than when things are still: the core is waiting
+    // to hear which terminal is in the supervisor's pane, and a save is
+    // what finds that out. No whole-scrollback capture -- nothing has run.
     if opened > 0 {
-        note(Change::Pages);
+        if let Err(e) = save(file, false, false) {
+            wlogf!(frame, "[project] the save after opening {:?} failed: {}", snapshot.name, e);
+        }
     }
+    state();
     Ok(())
 }
 
@@ -574,6 +646,7 @@ pub fn moved(file: &Path, to: &Path, name: &str) {
             }
         }
     });
+    state();
 }
 
 /// The project in `file` is gone (deleted from the settings window, or its
@@ -586,16 +659,402 @@ pub fn forget(file: &Path) {
             open.retain(|p| p.file != file);
         }
     });
+    state();
     arm_timer();
 }
 
-/// Every open project's name and how many of its tabs are open: for a line
-/// in the log, and for a test of this file on a real machine.
-pub fn summary() -> Vec<(String, usize)> {
-    OPEN.with(|o| o.try_borrow().map(|o| o.iter().map(|p| (p.name.clone(), p.tabs.len())).collect()).unwrap_or_default())
+// ------------------------------------------------------- pages in and out
+
+/// The file of the open project `tab` is a page of.
+fn file_of_tab(tab: TabId) -> Option<PathBuf> {
+    OPEN.with(|o| o.try_borrow().ok()?.iter().find(|p| p.tabs.iter().any(|(t, _)| *t == tab)).map(|p| p.file.clone()))
 }
 
-/// The tabs that are pages of any open project.
-pub fn bound_tabs() -> Vec<TabId> {
-    OPEN.with(|o| o.try_borrow().map(|o| o.iter().flat_map(|p| p.tabs.iter().map(|(t, _)| *t)).collect()).unwrap_or_default())
+/// How many pages of `tab`'s project are open besides it: what closing it
+/// asks about (`page_rules::close_step`).
+pub fn other_pages_open(tab: TabId) -> usize {
+    OPEN.with(|o| {
+        o.try_borrow()
+            .ok()
+            .and_then(|o| o.iter().find(|p| p.tabs.iter().any(|(t, _)| *t == tab)).map(|p| p.tabs.len().saturating_sub(1)))
+            .unwrap_or(0)
+    })
+}
+
+/// `tab` becomes one more page of the project in `file`, where its tab is.
+/// The project's other pages are not opened by this.
+pub fn add_tab(file: &Path, tab: TabId) -> Result<(), String> {
+    if let Some(other) = project_of_tab(tab) {
+        let w = page_rules::page_of_another_words(&tabs::title_of_tab(tab), &other);
+        return Err(w.filled(&crate::i18n::tr(w.msgid)));
+    }
+    let snapshot = project::read_file(file).map_err(|e| e.to_string())?;
+    OPEN.with(|o| {
+        let Ok(mut open) = o.try_borrow_mut() else { return };
+        if !open.iter().any(|p| p.file == file) {
+            open.push(Open {
+                file: file.to_path_buf(),
+                name: snapshot.name.clone(),
+                group: snapshot.group.clone(),
+                next_scrollback: snapshot.next_scrollback,
+                pages: Pages::from_file(&snapshot),
+                tabs: Vec::new(),
+                terminals: Vec::new(),
+                debounce: Debounce::new(),
+            });
+        }
+        if let Some(p) = open.iter_mut().find(|p| p.file == file) {
+            let page = p.pages.new_page_id();
+            p.tabs.push((tab, page));
+        }
+    });
+    // With its whole scrollback: this is a save somebody asked for.
+    let saved = save(file, false, true);
+    state();
+    saved
+}
+
+/// `tab` stops being a page of its project, and its page is gone from the
+/// file; the tab stays open. **Whether it may is asked first, of the core**
+/// (`ask_before_taking_out`): this only does it.
+pub fn take_out(tab: TabId) -> Result<(), String> {
+    let Some(file) = file_of_tab(tab) else { return Ok(()) };
+    // The project as it stands, so that what is written is everything but
+    // this page -- not everything but this page as of some seconds ago.
+    save(&file, false, false)?;
+    let left = OPEN.with(|o| {
+        let mut open = o.try_borrow_mut().ok()?;
+        let p = open.iter_mut().find(|p| p.file == file)?;
+        let (_, page) = *p.tabs.iter().find(|(t, _)| *t == tab)?;
+        p.pages.remove(page);
+        p.tabs.retain(|(t, _)| *t != tab);
+        p.terminals.retain(|(id, _)| *id != page);
+        let snapshot = project::Snapshot { name: p.name.clone(), saved_at: wall_secs(), group: p.group.clone(), windows: p.pages.file_windows(), next_scrollback: p.next_scrollback };
+        let keep = p.pages.scrollback_names();
+        let none_open = p.tabs.is_empty();
+        if none_open {
+            open.retain(|p| p.file != file);
+        }
+        Some((snapshot, keep, none_open))
+    });
+    let Some((snapshot, keep, none_open)) = left else { return Ok(()) };
+    let written = project::write_file(&file, &snapshot, WriteKind::Save).map_err(|e| e.to_string());
+    if written.is_ok() {
+        let pruned = project::prune_scrollback_dir(&project::scrollback_dir(&file), &keep);
+        // process-wide: a project is tabs of any number of windows
+        plogf!(
+            "[project] a page was taken out of {:?}: {} page(s) left, {} snapshot(s) removed{}",
+            snapshot.name,
+            snapshot.tabs().count(),
+            pruned,
+            if none_open { "; none of it is open now" } else { "" }
+        );
+    }
+    state();
+    arm_timer();
+    written
+}
+
+/// Ask the core whether `tab`'s page may be taken out of its project
+/// (`project_remove`, contract 3). `Err` is the sentence to show: the
+/// group's supervisor is on the page, or the core's own word for anything
+/// else it refuses with.
+pub fn ask_before_taking_out(tab: TabId) -> Result<(), String> {
+    let Some(file) = file_of_tab(tab) else { return Ok(()) };
+    // Any terminal on the page names the page. Asked of the screen, not of
+    // what the last save found: the page may have been split since.
+    let terminal = tabs::locate_tab(tab)
+        .and_then(|(frame, _, _)| crate::project_ui::tab_tree(frame, tab))
+        .and_then(|(_, panes)| panes.iter().find_map(crate::project_ui::LeafPane::terminal));
+    let Some(terminal) = terminal else { return Ok(()) };
+    match crate::control_room_source::act(&stated::remove_question(&terminal)) {
+        Ok(()) => Ok(()),
+        Err(why) => {
+            // process-wide: a project is tabs of any number of windows
+            plogf!("[project] taking a page out of {:?} was refused by the core: {}", file, why);
+            Err(match why.as_str() {
+                "SupervisorPage" => crate::i18n::tr(page_rules::SUPERVISOR_PAGE),
+                // A core that has not heard of projects refuses nothing a
+                // person asks of their own files.
+                "NoApp" | "ProjectsUnknown" | "NoSuchTerminal" => return Ok(()),
+                other => other.to_string(),
+            })
+        }
+    }
+}
+
+/// Every open tab of the project in `file`, with its window: what "Close
+/// Project" closes.
+pub fn tabs_of(file: &Path) -> Vec<(HWND, TabId)> {
+    let bound: Vec<TabId> =
+        OPEN.with(|o| o.try_borrow().ok().and_then(|o| o.iter().find(|p| p.file == file).map(|p| p.tabs.iter().map(|(t, _)| *t).collect())).unwrap_or_default());
+    bound.into_iter().filter_map(|t| tabs::locate_tab(t).map(|(f, _, _)| (f, t))).collect()
+}
+
+/// The file of the open project `tab` is a page of, and its name.
+pub fn project_file_of_tab(tab: TabId) -> Option<(PathBuf, String)> {
+    OPEN.with(|o| o.try_borrow().ok()?.iter().find(|p| p.tabs.iter().any(|(t, _)| *t == tab)).map(|p| (p.file.clone(), p.name.clone())))
+}
+
+// ------------------------------------------------------- telling the core
+
+fn projects_dir() -> Option<PathBuf> {
+    project::resolve_state_dir().map(|s| project::default_dir(&s))
+}
+
+/// Every project there is, each as it would be said: an open one from what
+/// is open, the rest from their files.
+fn everything() -> Vec<(PathBuf, Stated)> {
+    let Some(dir) = projects_dir() else { return Vec::new() };
+    project::list(&dir)
+        .entries
+        .into_iter()
+        .filter_map(|e| {
+            let showing = OPEN.with(|o| {
+                let o = o.try_borrow().ok()?;
+                let p = o.iter().find(|p| p.file == e.path)?;
+                let on_screen: Vec<(PageId, Vec<String>)> = p.terminals.iter().filter(|(page, _)| p.tabs.iter().any(|(_, id)| id == page)).cloned().collect();
+                Some(Stated::of_open(&p.name, p.group.clone(), &p.pages, &on_screen))
+            });
+            match showing {
+                Some(said) => Some((e.path, said)),
+                None => project::read_file(&e.path).ok().map(|file| (e.path, Stated::of_closed(&file))),
+            }
+        })
+        .collect()
+}
+
+/// Tell the core what projects there are and which are open: all of it,
+/// every time (contract 3). Said again only when it would say something
+/// else, so it is called wherever anything about a project may have changed
+/// and costs a directory listing when nothing did.
+///
+/// A statement the core would refuse is not sent (`stated::refusal`): the
+/// one it has goes on standing, and the log says which project and why.
+pub fn state() {
+    let list: Vec<Stated> = everything().into_iter().map(|(_, said)| said).collect();
+    if let Some(why) = stated::refusal(&list) {
+        // process-wide: a project is tabs of any number of windows
+        plogf!("[project] NOT stated: the core would refuse it: {:?}", why);
+        return;
+    }
+    let text = stated::statement(&list);
+    if STATED.with(|s| s.try_borrow().is_ok_and(|s| s.as_deref() == Some(text.as_str()))) {
+        return;
+    }
+    match crate::control_room_source::act(&text) {
+        Ok(()) => {
+            // process-wide: a project is tabs of any number of windows
+            plogf!(
+                "[project] stated {} project(s), {} open, {} with a supervisor's terminal",
+                list.len(),
+                list.iter().filter(|p| p.open.is_some()).count(),
+                list.iter().filter(|p| p.supervisor.is_some()).count()
+            );
+            STATED.with(|s| {
+                if let Ok(mut s) = s.try_borrow_mut() {
+                    *s = Some(text);
+                }
+            });
+        }
+        // process-wide: a project is tabs of any number of windows
+        Err(why) => plogf!("[project] the statement was not taken: {}", why),
+    }
+}
+
+/// A snapshot arrived, and this is what it says about projects. The first
+/// one is when the core is first told anything; every one's orders are
+/// looked at, a moment later and off this call's stack -- doing one opens
+/// windows and tabs, and the snapshot's reader is not the place for that.
+pub fn told(told: &Told) {
+    if STATED.with(|s| s.try_borrow().is_ok_and(|s| s.is_none())) {
+        state();
+    }
+    // An order the core has stopped asking can be acted on afresh if it
+    // ever asks again.
+    TRIED.with(|t| {
+        if let Ok(mut t) = t.try_borrow_mut() {
+            t.retain(|o| told.orders.contains(o));
+        }
+    });
+    let fresh: Vec<Order> = TRIED.with(|t| t.try_borrow().map(|t| told.orders.iter().filter(|o| !t.contains(o)).cloned().collect()).unwrap_or_default());
+    let any = !fresh.is_empty();
+    ORDERS.with(|o| {
+        if let Ok(mut o) = o.try_borrow_mut() {
+            *o = fresh;
+        }
+    });
+    if any && ORDERS_TIMER.with(Cell::get) == 0 {
+        let id = unsafe { SetTimer(None, 0, 10, Some(orders_timer)) };
+        ORDERS_TIMER.with(|t| t.set(id));
+    }
+}
+
+unsafe extern "system" fn orders_timer(_: HWND, _: u32, id: usize, _: u32) {
+    let _ = unsafe { KillTimer(None, id) };
+    ORDERS_TIMER.with(|t| t.set(0));
+    obey();
+}
+
+/// A terminal window to open things in: the one in front if it is one of
+/// ours, else any.
+fn some_frame() -> Option<HWND> {
+    let all = crate::winid::all();
+    let front = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+    all.iter().copied().find(|f| *f == front).or_else(|| all.first().copied())
+}
+
+fn hinst() -> windows::Win32::Foundation::HINSTANCE {
+    unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }.map(Into::into).unwrap_or_default()
+}
+
+/// Do what the core asked, each order once for as long as it is asked
+/// (contract 4). What an order still asks, given how things stand, is
+/// `orders::step`; this carries the answer out and says so in the log.
+fn obey() {
+    let pending: Vec<Order> = ORDERS.with(|o| o.try_borrow_mut().map(|mut o| std::mem::take(&mut *o)).unwrap_or_default());
+    for order in pending {
+        // Looked up afresh for each: the one before may have made, moved
+        // or opened a project.
+        let all = everything();
+        let have: Vec<Have> = all
+            .iter()
+            .map(|(_, p)| Have {
+                name: p.name.clone(),
+                group: p.group.clone(),
+                terminals: p.open.iter().flatten().flatten().cloned().collect(),
+                open: p.open.is_some(),
+            })
+            .collect();
+        let file_of = |name: &str| all.iter().find(|(_, p)| p.name == name).map(|(f, _)| f.clone());
+        let step = orders::step(&order, &have, &|t| tabs::tab_of_terminal(t).is_some());
+        let done: Result<(), String> = match &step {
+            Step::Nothing(why) => {
+                // process-wide: a project is tabs of any number of windows
+                plogf!("[project] order {:?} for {:?}: nothing to do ({})", order.kind, order.project, why);
+                continue;
+            }
+            Step::Missing { project } => crate::control_room_source::act(&stated::failed(project, FailedWhy::NotFound)),
+            Step::Open { project } => match (file_of(project), some_frame()) {
+                (Some(file), frame) => {
+                    // The first window of it goes among the tabs of the
+                    // window the person is in, whatever frame it recorded:
+                    // they asked for it from there.
+                    let opened = open(frame.unwrap_or_default(), crate::app_handle(), hinst(), &file, true);
+                    if opened.is_err() && project::read_file(&file).is_err() {
+                        let _ = crate::control_room_source::act(&stated::failed(project, FailedWhy::Unreadable));
+                    }
+                    opened
+                }
+                (None, _) => Err("its file was not found".to_string()),
+            },
+            Step::Create { name, group, terminal } => match (projects_dir(), tabs::tab_of_terminal(terminal)) {
+                (Some(dir), Some((frame, tab))) => project::sanitize_filename(name)
+                    .map_err(|_| format!("{name:?} names no file"))
+                    .and_then(|file| {
+                        let file = dir.join(file);
+                        save_as_for(&file, &[(frame, tab)], name.clone(), WriteKind::Save, Some(group.clone()))?;
+                        mark_supervisor(&file, terminal)
+                    }),
+                _ => Err("no projects directory, or the terminal is gone".to_string()),
+            },
+            Step::Bind { project, group, terminal, to } => match file_of(project) {
+                Some(file) => set_group(&file, Some(group.clone()))
+                    .and_then(|()| match terminal {
+                        Some(t) => mark_supervisor(&file, t),
+                        None => Ok(()),
+                    })
+                    .and_then(|()| match to {
+                        Some(to) => rename_to(&file, to),
+                        None => Ok(()),
+                    }),
+                None => Err("its file was not found".to_string()),
+            },
+            Step::SetGroup { project, group } => match file_of(project) {
+                Some(file) => set_group(&file, group.clone()),
+                None => Err("its file was not found".to_string()),
+            },
+            Step::Rename { from, to } => match file_of(from) {
+                Some(file) => rename_to(&file, to),
+                None => Err("its file was not found".to_string()),
+            },
+            Step::AddTab { project, terminal } => match (file_of(project), tabs::tab_of_terminal(terminal)) {
+                (Some(file), Some((_, tab))) => add_tab(&file, tab),
+                _ => Err("its file was not found, or the terminal is gone".to_string()),
+            },
+        };
+        // process-wide: a project is tabs of any number of windows
+        plogf!("[project] order {:?} for {:?} -> {:?}: {}", order.kind, order.project, step, done.as_ref().map_or_else(|e| format!("FAILED: {e}"), |()| "done".to_string()));
+        TRIED.with(|t| {
+            if let Ok(mut t) = t.try_borrow_mut() {
+                t.push(order);
+            }
+        });
+    }
+    state();
+}
+
+/// The file's group becomes `group` (none: it names none). An open project
+/// is written as it stands with the new group; a closed one has only that
+/// changed in its file.
+fn set_group(file: &Path, group: Option<String>) -> Result<(), String> {
+    let is_open = OPEN.with(|o| {
+        let Ok(mut open) = o.try_borrow_mut() else { return false };
+        match open.iter_mut().find(|p| p.file == file) {
+            Some(p) => {
+                p.group = group.clone();
+                true
+            }
+            None => false,
+        }
+    });
+    if is_open {
+        return save(file, false, false);
+    }
+    let mut snapshot = project::read_file(file).map_err(|e| e.to_string())?;
+    snapshot.group = group;
+    project::write_file(file, &snapshot, WriteKind::Save).map_err(|e| e.to_string())
+}
+
+/// The pane `terminal` is in becomes the supervisor's pane of the open
+/// project in `file`, and no other pane of it is.
+fn mark_supervisor(file: &Path, terminal: &str) -> Result<(), String> {
+    // A save first: it is what names the pane and finds its terminal.
+    save(file, false, false)?;
+    let marked = OPEN.with(|o| {
+        let mut open = o.try_borrow_mut().ok()?;
+        let p = open.iter_mut().find(|p| p.file == file)?;
+        let (page, at) = p.terminals.iter().find_map(|(page, on)| on.iter().position(|t| t == terminal).map(|at| (*page, at)))?;
+        let name = project::leaves(&p.pages.page(page)?.tab.root).get(at)?.scrollback.clone();
+        Some(p.pages.mark_supervisor(&name))
+    });
+    match marked {
+        Some(true) => save(file, false, false),
+        _ => Err(format!("the terminal {terminal} is in no pane of it that has a name")),
+    }
+}
+
+/// The project in `file` is called `to` from now on: its file, its
+/// snapshots and its previous version move, and its open tabs follow.
+fn rename_to(file: &Path, to: &str) -> Result<(), String> {
+    let dir = file.parent().ok_or("the project file has no directory")?;
+    let target = dir.join(project::sanitize_filename(to).map_err(|_| format!("{to:?} names no file"))?);
+    polter_settings_shell::projects::move_project(file, &target).map_err(|e| e.to_string())?;
+    project::set_name(&target, to)?;
+    moved(file, &target, to);
+    Ok(())
+}
+
+/// Ask the core before the project called `from` is renamed `to`
+/// (`project_rename`, contract 3). `Ok(true)`: go on and rename it.
+/// `Ok(false)`: the core has taken it from here -- the project is a group's,
+/// the group is being renamed, and the rename comes back as an order.
+/// `Err` is the core's word for why not.
+pub fn ask_before_renaming(from: &str, to: &str, group: Option<&str>) -> Result<bool, String> {
+    match crate::control_room_source::act(&stated::rename_question(from, to)) {
+        Ok(()) => Ok(group.is_none()),
+        // A core that has not heard of projects has no group to rename.
+        Err(why) if why == "NoApp" || why == "ProjectsUnknown" => Ok(true),
+        Err(why) => Err(why),
+    }
 }
