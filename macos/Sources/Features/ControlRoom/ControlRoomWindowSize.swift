@@ -41,4 +41,30 @@ enum ControlRoomWindowSize {
         window.contentView = holder
         window.contentMinSize = least
     }
+
+    /// Where a window that stands at `frame` goes so that all of it is on
+    /// its screen, `visible` being the part of that screen windows may
+    /// use: no larger than that part, and then moved the least it takes
+    /// to be inside it. A window already inside is not touched.
+    ///
+    /// The window this is for was pushed 466 points off the bottom of its
+    /// screen by a least height it should never have had (above), and the
+    /// system keeps a window's frame across a restart: nothing else would
+    /// bring it back.
+    static func fitted(_ frame: CGRect, within visible: CGRect) -> CGRect {
+        let width = min(frame.width, visible.width)
+        let height = min(frame.height, visible.height)
+        let left = min(max(frame.minX, visible.minX), visible.maxX - width)
+        let top = min(frame.maxY, visible.maxY)
+        return CGRect(x: left, y: max(top - height, visible.minY), width: width, height: height)
+    }
+
+    /// Bring `window` wholly onto its screen (`fitted`). Not in full
+    /// screen, where the frame is the system's.
+    static func bringOnScreen(_ window: NSWindow) {
+        guard !window.styleMask.contains(.fullScreen),
+              let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
+        let fits = fitted(window.frame, within: visible)
+        if fits != window.frame { window.setFrame(fits, display: true) }
+    }
 }

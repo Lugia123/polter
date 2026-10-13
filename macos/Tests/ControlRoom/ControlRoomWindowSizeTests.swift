@@ -81,4 +81,53 @@ import Testing
         settled(window)
         #expect(window.contentMinSize.height < ControlRoomWindowSize.least.height)
     }
+
+    // MARK: Back onto the screen
+
+    /// A 1440x900 screen with a menu bar above and a Dock below.
+    private let visible = CGRect(x: 0, y: 70, width: 1440, height: 805)
+
+    @Test func aWindowPushedOffTheBottomIsBroughtBackNoTallerThanItsScreen() {
+        // The defect's own numbers: 900 by 1596, its bottom 466 below the
+        // screen and its top where the person left it.
+        let pushed = CGRect(x: 200, y: -466, width: 900, height: 1596)
+        let fits = ControlRoomWindowSize.fitted(pushed, within: visible)
+        #expect(fits == CGRect(x: 200, y: 70, width: 900, height: 805))
+    }
+
+    @Test func aWindowAlreadyOnItsScreenIsNotTouched() {
+        let inside = CGRect(x: 120, y: 150, width: 900, height: 616)
+        let fits = ControlRoomWindowSize.fitted(inside, within: visible)
+        #expect(fits == inside)
+        // Filling it exactly is inside it.
+        let filling = ControlRoomWindowSize.fitted(visible, within: visible)
+        #expect(filling == visible)
+    }
+
+    @Test func aWindowThatFitsButHangsOffAnEdgeIsMovedAndKeepsItsSize() {
+        let size = CGSize(width: 900, height: 600)
+        let offBottom = ControlRoomWindowSize.fitted(CGRect(origin: CGPoint(x: 100, y: -200), size: size), within: visible)
+        #expect(offBottom == CGRect(x: 100, y: 70, width: 900, height: 600))
+        let offTop = ControlRoomWindowSize.fitted(CGRect(origin: CGPoint(x: 100, y: 500), size: size), within: visible)
+        #expect(offTop == CGRect(x: 100, y: 275, width: 900, height: 600))
+        let offRight = ControlRoomWindowSize.fitted(CGRect(origin: CGPoint(x: 1000, y: 150), size: size), within: visible)
+        #expect(offRight == CGRect(x: 540, y: 150, width: 900, height: 600))
+        let offLeft = ControlRoomWindowSize.fitted(CGRect(origin: CGPoint(x: -300, y: 150), size: size), within: visible)
+        #expect(offLeft == CGRect(x: 0, y: 150, width: 900, height: 600))
+    }
+
+    @Test func aWindowTooTallOrTooWideIsMadeTheScreensSizeThatWayOnly() {
+        let tall = ControlRoomWindowSize.fitted(CGRect(x: 100, y: -500, width: 900, height: 1200), within: visible)
+        #expect(tall == CGRect(x: 100, y: 70, width: 900, height: 805))
+        let wide = ControlRoomWindowSize.fitted(CGRect(x: -400, y: 150, width: 2000, height: 600), within: visible)
+        #expect(wide == CGRect(x: 0, y: 150, width: 1440, height: 600))
+    }
+
+    @Test func aWindowLargerThanAScreenThatIsNotAtTheOriginFillsThatScreen() {
+        // A second display to the left of the first, lower down.
+        let second = CGRect(x: -1920, y: -300, width: 1920, height: 1050)
+        let huge = CGRect(x: -2500, y: -900, width: 3000, height: 2400)
+        let fits = ControlRoomWindowSize.fitted(huge, within: second)
+        #expect(fits == second)
+    }
 }

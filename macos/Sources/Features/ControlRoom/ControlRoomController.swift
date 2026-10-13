@@ -177,6 +177,10 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// Coming to the front with a row already selected is a chance to look
     /// at it that selecting it earlier, behind something else, was not.
     func windowDidBecomeKey(_ notification: Notification) {
+        if restoredAndNotYetPlaced {
+            restoredAndNotYetPlaced = false
+            bringOnScreen()
+        }
         noteSelection()
         giveListTheKeyboardIfNobodyHasIt()
         syncLentFocus()
@@ -344,14 +348,29 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
                 first.tabGroup?.selectedWindow = window
             }
             controller.showWindowSafely(nil)
+            controller.bringOnScreen()
             relabel()
 
         case .openInOwnWindow:
             let controller = ControlRoomController(ghostty)
             shared = controller
             controller.showWindowSafely(nil)
+            controller.bringOnScreen()
         }
     }
+
+    /// A window opened or restored partly off its screen is brought back
+    /// onto it (`ControlRoomWindowSize.fitted`). Only then: where the
+    /// person drags it afterwards is theirs.
+    private func bringOnScreen() {
+        guard let window else { return }
+        ControlRoomWindowSize.bringOnScreen(window)
+    }
+
+    /// The system is restoring this window and has not placed it yet: it
+    /// is brought onto its screen when it first has the keyboard, which is
+    /// after the kept frame is back.
+    private var restoredAndNotYetPlaced = false
 
     /// Bring the control room's window forward with its tab selected.
     private func select() {
@@ -743,6 +762,7 @@ extension ControlRoomController {
     /// The control room the system is restoring; it becomes the one.
     fileprivate static func restored(_ ghostty: Ghostty.App, selection: String?) -> ControlRoomController {
         let controller = ControlRoomController(ghostty, selection: selection)
+        controller.restoredAndNotYetPlaced = true
         shared = controller
         return controller
     }
