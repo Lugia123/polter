@@ -1607,6 +1607,25 @@ GHOSTTY_API bool ghostty_app_control_act(ghostty_app_t, const char*, uintptr_t, 
 GHOSTTY_API uintptr_t ghostty_app_persona_catalog(ghostty_app_t, char*, uintptr_t);
 GHOSTTY_API bool ghostty_app_persona_put(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 GHOSTTY_API bool ghostty_app_persona_delete(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+// Official roles and skills (the ones Polter ships). What a person changes in
+// one is kept as an override and can be put back; these calls are the role
+// library's alone -- no agent tool reaches them.
+//
+// _restore(key, key_len, everything, err, cap): put an official role back.
+// False with "OverridesUnreadable" in err when the file of changes cannot be
+// read at all; calling again with everything=true moves that file aside and
+// puts every official role and skill back, so ask the person first.
+// _adopt(key, ...): keep a role from the catalog's "shadowed" list as the
+// person's own, under a new key.
+GHOSTTY_API bool ghostty_app_persona_restore(ghostty_app_t, const char*, uintptr_t, bool, char*, uintptr_t);
+GHOSTTY_API bool ghostty_app_persona_adopt(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+// Every shipped skill as JSON: {"error":null|"...","skills":[{"name",
+// "description","state","reason","source","shipped"}]|null}. "skills" is null,
+// not empty, when what ships could not be listed.
+GHOSTTY_API uintptr_t ghostty_app_official_skills(ghostty_app_t, char*, uintptr_t);
+// _put(name, name_len, text, text_len, err, cap): text is the whole file.
+GHOSTTY_API bool ghostty_app_official_skill_put(ghostty_app_t, const char*, uintptr_t, const char*, uintptr_t, char*, uintptr_t);
+GHOSTTY_API bool ghostty_app_official_skill_restore(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 GHOSTTY_API uintptr_t ghostty_app_agent_clis(ghostty_app_t, bool, char*, uintptr_t);
 // Plugins, for the settings window: the list is the document `plugin_list`
 // answers with (same buffer rule). The test is `plugin_test` with no

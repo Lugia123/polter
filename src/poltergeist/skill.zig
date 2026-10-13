@@ -125,12 +125,11 @@ pub fn parse(source: []const u8) ParseError!Skill {
     return .{ .meta = meta, .body = body };
 }
 
-/// The skills shipped with Ghostty, in load order.
-pub const builtin_names = [_][]const u8{
-    "supervising",
-    "reading-a-terminal",
-    "operating-a-terminal",
-};
+// Which skills ship is not written down here: it is whatever is in the
+// resources directory when the program looks (`skill_store.shipped`), and
+// whatever is in `skills/` when the build looks (`PolterOfficial.zig`,
+// which also reads every one of them and fails the build on one that does
+// not parse). The tests below run over the build's list.
 
 // -- tests ------------------------------------------------------------------
 
@@ -277,9 +276,19 @@ test "the mode skills are gone, and nothing still names one" {
     // worth doing, which was the same judgement. What survived is the
     // hold, and it is a boolean in code with a mark in the tab -- not a
     // skill anybody has to read.
-    try testing.expectEqual(@as(usize, 3), builtin_names.len);
-    for (builtin_names) |name| {
-        try testing.expect(!std.mem.startsWith(u8, name, "mode-"));
+    try testing.expect(shipped_skills.len > 0);
+    for (shipped_skills) |sk| {
+        try testing.expect(!std.mem.startsWith(u8, sk.name, "mode-"));
+    }
+
+    // The three the code itself names: a supervisor is told to read
+    // `supervising` (`persona.supervisor_launch_note`), and the official
+    // roles keep the other two.
+    for ([_][]const u8{ "supervising", "reading-a-terminal", "operating-a-terminal" }) |needed| {
+        const there = for (shipped_skills) |sk| {
+            if (std.mem.eql(u8, sk.name, needed)) break true;
+        } else false;
+        try testing.expect(there);
     }
 
     // The prose is guarded too, by the test below that lists the tools no
@@ -290,6 +299,13 @@ pub const PathError = error{BadName} || std.mem.Allocator.Error;
 
 /// Where a user's own copy of a skill lives. Checked first, so editing one
 /// is how you change Poltergeist's behaviour without touching the install.
+///
+/// `config_dir` is the configuration root -- `~/.config`, or wherever
+/// `XDG_CONFIG_HOME` points -- **not** Polter's own directory inside it:
+/// the `polter/` is added here. Handing this a directory that already ended
+/// in `polter` is how `skill_read` came to look in
+/// `<config>/polter/polter/skills/` while the copy handed to the agent CLIs
+/// came from `<config>/polter/skills/` (`legacyUserPath`).
 pub fn userPath(
     alloc: std.mem.Allocator,
     config_dir: []const u8,
@@ -297,6 +313,19 @@ pub fn userPath(
 ) PathError![]u8 {
     if (!isValidName(name)) return error.BadName;
     return std.fmt.allocPrint(alloc, "{s}/polter/skills/{s}.md", .{ config_dir, name });
+}
+
+/// Where `skill_read` looked for a user's copy until 2026-10-14: one
+/// `polter/` too deep. Still read, after the real place, so that a file
+/// somebody put there because that is where it worked does not stop
+/// working; `skill_store.resolve` says so in the log when it uses one.
+pub fn legacyUserPath(
+    alloc: std.mem.Allocator,
+    config_dir: []const u8,
+    name: []const u8,
+) PathError![]u8 {
+    if (!isValidName(name)) return error.BadName;
+    return std.fmt.allocPrint(alloc, "{s}/polter/polter/skills/{s}.md", .{ config_dir, name });
 }
 
 /// Where the shipped copy lives.
@@ -309,20 +338,18 @@ pub fn resourcePath(
     return std.fmt.allocPrint(alloc, "{s}/poltergeist/{s}.md", .{ resources_dir, name });
 }
 
-/// The shipped files, embedded for the tests only.
+/// The shipped files, embedded for the tests only, as the build listed
+/// them.
 ///
 /// A test block is not compiled into a normal build, so these do not end up
 /// in the binary -- the loader reads them from the resources directory,
-/// which is what makes them editable. Embedding them here is only so that a
-/// broken shipped file fails the build rather than a user's night.
-const builtin_sources = if (@import("builtin").is_test) [_][]const u8{
-    @embedFile("skills/supervising.md"),
-    @embedFile("skills/reading-a-terminal.md"),
-    @embedFile("skills/operating-a-terminal.md"),
-} else {};
+/// which is what makes them editable.
+const shipped_skills = if (@import("builtin").is_test) @import("polter_official").skills else {};
 
 test "every shipped skill parses" {
-    for (builtin_sources, builtin_names) |source, expected_name| {
+    for (shipped_skills) |sk| {
+        const source = sk.source;
+        const expected_name = sk.name;
         const s = parse(source) catch |err| {
             std.debug.print("\n{s} failed to parse: {}\n", .{ expected_name, err });
             return err;
@@ -357,7 +384,9 @@ test "the shipped skills do not promise what the tools cannot do" {
     // the *other* list now, below: the skills must name it, because a
     // supervisor that does not know it exists cannot find out that it is
     // refused and why.
-    for (builtin_sources, builtin_names) |source, name| {
+    for (shipped_skills) |sk| {
+        const source = sk.source;
+        const name = sk.name;
         for ([_][]const u8{
             "approve(",
             "grant_permission",
@@ -377,8 +406,8 @@ test "the supervising skill names the tools it tells you to use" {
     // to set the work up. If it names a tool that is not on the surface,
     // the AI goes looking for something that is not there; if it stops
     // naming one, nothing points at it at all.
-    const supervising = for (builtin_sources, builtin_names) |source, name| {
-        if (std.mem.eql(u8, name, "supervising")) break source;
+    const supervising = for (shipped_skills) |sk| {
+        if (std.mem.eql(u8, sk.name, "supervising")) break sk.source;
     } else return error.TestUnexpectedResult;
 
     for ([_][]const u8{
@@ -472,8 +501,8 @@ test "every tool an unmarked terminal may call is named in some skill" {
         // is an `inline for` and a `continue` in one is comptime control
         // flow inside a runtime block.)
         if (rpc.offeredAsTool(method) and !rpc.requiresSupervisor(method)) {
-            const named = for (builtin_sources) |source| {
-                if (namesTool(source, f.name)) break true;
+            const named = for (shipped_skills) |sk| {
+                if (namesTool(sk.source, f.name)) break true;
             } else false;
 
             if (!named) {
@@ -519,7 +548,9 @@ test "the skills say that a post wakes nobody who is not named" {
     // Backtick-anchored like the tool check: "mention" is also an English
     // verb, and `supervising` used it as one (in `group_history`'s `match`)
     // for as long as the parameter went undocumented.
-    for (builtin_sources, builtin_names) |source, name| {
+    for (shipped_skills) |sk| {
+        const source = sk.source;
+        const name = sk.name;
         if (!namesTool(source, "group_post")) continue;
         if (!namesTool(source, "mention")) {
             std.debug.print("\n{s} never names `mention`\n", .{name});
@@ -581,6 +612,10 @@ test "a path is built from a name, or refused" {
         "/home/u/.config/ghostty/polter/skills/supervising.md",
         p,
     );
+
+    const old = try legacyUserPath(testing.allocator, "/home/u/.config", "supervising");
+    defer testing.allocator.free(old);
+    try testing.expectEqualStrings("/home/u/.config/polter/polter/skills/supervising.md", old);
 
     const r = try resourcePath(testing.allocator, "/usr/share/ghostty", "reading-a-terminal");
     defer testing.allocator.free(r);

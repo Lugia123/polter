@@ -30,6 +30,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const official = @import("official.zig");
 
 /// Longest a persona key may be. Keys go into keybinding action strings
 /// (`poltergeist_persona_set:archer`), which is also why the charset below
@@ -66,12 +67,6 @@ pub const ParseError = error{
 
     /// Two personas claim the same key.
     DuplicateKey,
-
-    /// A persona in the file, or one sent to be written, uses the key of a
-    /// role Polter ships (`builtins`). Refused rather than let one shadow
-    /// the other: two rows with one key is the ambiguity `DuplicateKey`
-    /// already refuses, and the built-in one cannot be the one to go.
-    ReservedKey,
 
     OutOfMemory,
 };
@@ -143,9 +138,10 @@ pub const Persona = struct {
     /// What Polter does with the terminal it is started in. See `Polter`.
     polter: Polter = .{},
 
-    /// Shipped with Polter rather than written by anybody (`builtins`).
-    /// Never written to the file, never replaced, never deleted.
-    builtin: bool = false,
+    /// Null for a role somebody wrote. For one Polter ships
+    /// (`official.zig`), where it stands against what shipped. Never
+    /// written to `personas.json`, and nothing read from a file sets it.
+    official: ?Official = null,
 
     pub fn cli(self: Persona, key: []const u8) ?CliChoice {
         for (self.clis) |c| {
@@ -153,6 +149,44 @@ pub const Persona = struct {
         }
         return null;
     }
+};
+
+/// Where an official role stands against the one this build ships.
+///
+/// **No field has a default, on purpose.** "Nothing was changed" and "what
+/// was changed could not be read" are both a role that looks like the
+/// shipped one, and the difference is the whole of what this says; a
+/// default would let one of them be written by leaving a line out. The one
+/// that needs no thought has a name instead: `pristine`.
+pub const Official = struct {
+    state: Status,
+    /// The fields the person changed, as paths (`official.targetOf`).
+    overridden: []const []const u8,
+    /// Those among them the official role has changed since.
+    stale: []const []const u8,
+    /// Why, when `state` is `unknown`. Words for the person.
+    reason: ?[]const u8,
+
+    pub const Status = enum {
+        /// As shipped.
+        pristine,
+        /// Changed by the person; the official fields under the changes are
+        /// as they were when they changed them.
+        modified,
+        /// Changed by the person, and at least one of the fields they
+        /// changed has since changed in the official role too.
+        modified_stale,
+        /// Something is written for this role and it could not be read.
+        /// What is in effect is the shipped role.
+        unknown,
+    };
+
+    pub const pristine: Official = .{
+        .state = .pristine,
+        .overridden = &.{},
+        .stale = &.{},
+        .reason = null,
+    };
 };
 
 /// What Polter does with a terminal a role is **started** in.
@@ -282,74 +316,17 @@ pub fn launchInstructions(aa: Allocator, p: Persona, group: ?[]const u8) Allocat
     return try std.mem.concat(aa, u8, &.{ note, "\n\n", own });
 }
 
-// ------------------------------------------------------------ the built-ins
+// ------------------------------------------------------ the official roles
 
+/// The roles Polter ships are data, not code: `official.zig` has where they
+/// come from and how what a person changed in one is kept. Two keys are
+/// named here because code asks for those roles by name.
 pub const supervisor_key = "polter-supervisor";
+pub const tester_key = "polter-tester";
 
-/// The Polter skills a supervisor reads. The polter MCP server itself needs
-/// no entry: it is always kept (`locked` in the inventory).
-const supervisor_skills = [_][]const u8{
-    "skill:polter-supervising",
-    "skill:polter-operating-a-terminal",
-    "skill:polter-reading-a-terminal",
-};
-
-/// Roles Polter ships. They come first in every set, are the same on every
-/// machine, and cannot be edited or deleted -- a copy under another key
-/// can. `name` and `description` are English here; the interface shows
-/// them in the user's language by `key`.
-pub const builtins = [_]Persona{
-    .{
-        .key = supervisor_key,
-        .name = "Polter Supervisor",
-        .description = "Makes the terminal it starts in this window's supervisor: splits the work, hands it out and checks it.",
-        .instructions =
-        \\You are the supervisor. The person talking to you here is the user;
-        \\the other terminals are your workers.
-        \\
-        \\- Your job is to split the work, hand it out, and check what comes back.
-        \\  Hand anything that takes more than a few minutes to a worker rather than
-        \\  doing it yourself, so that you stay free to watch everyone.
-        \\- Hand out work as tasks on the task panel, with a result that can be
-        \\  checked. A task is done when you have checked it, not when a worker says so.
-        \\- Put decisions and results in the group, not only on this screen: nobody
-        \\  else can see this screen, and the group survives a restart.
-        \\- Ask the user before anything that cannot be undone or reaches outside this
-        \\  machine, and when a decision is theirs to make.
-        \\- Open workers (terminal_open, role_launch) with place: "here", so they
-        \\  stand beside you in this tab where the user is looking, not in tabs
-        \\  nobody has open.
-        \\- Workers do not git commit, merge, or touch the staging area. You make
-        \\  every commit and every merge yourself, so one hand decides what goes
-        \\  in and nobody's work is swept into somebody else's commit.
-        \\- Testing on a real machine is one dedicated test worker's job per
-        \\  platform: one for macOS, one for Windows. Never put several workers on
-        \\  a real machine at the same time.
-        ,
-        .clis = &.{.{
-            .cli = "claude-code",
-            .skills = .{ .default = false, .except = &supervisor_skills },
-            .mcp = .{ .default = false },
-        }},
-        // `.auto`, not `.tab`: picking it on a terminal already running an
-        // agent should put that agent in the role, and picking it at a shell
-        // prompt should start it there. `.tab` sent both to a new tab.
-        .polter = .{ .supervisor = true },
-        .builtin = true,
-    },
-};
-
-pub fn isBuiltinKey(key: []const u8) bool {
-    for (builtins) |b| {
-        if (std.mem.eql(u8, b.key, key)) return true;
-    }
-    return false;
-}
-
-/// The set a machine with no `personas.json` has: the built-ins alone.
-pub fn builtinSet() Set {
-    return .{ .personas = &builtins };
-}
+/// How many official roles this build carries. They come first in every
+/// set.
+pub const official_count = official.sources.len;
 
 /// Which of a CLI's own skills or MCP servers a role leaves on.
 ///
@@ -398,6 +375,13 @@ pub const Set = struct {
     /// interface can say so; an ignored instruction that says nothing is
     /// indistinguishable from an instruction that was honoured.
     ignored_denies: []const []const u8 = &.{},
+
+    /// Roles in the file under a key that is an official role's. They are
+    /// not in `personas` -- the official one is -- and they are **written
+    /// back as they were read**, so that a key Polter starts shipping
+    /// (`polter-tester` was anybody's to use until it did) does not cost a
+    /// person the role they had under it the next time anything is saved.
+    shadowed: []const Persona = &.{},
 
     pub fn find(self: Set, key: []const u8) ?Persona {
         for (self.personas) |p| {
@@ -521,6 +505,19 @@ fn stringArray(
 /// personas that happened to be well formed would hand back a set that
 /// looks exactly like a complete one.
 pub fn parseLeaky(aa: Allocator, bytes: []const u8) ParseError!Set {
+    return parseFileLeaky(aa, bytes, try official.effective(aa, &official.sources, .absent));
+}
+
+/// `parseLeaky` with the official roles handed in, already as they are in
+/// effect (`official.effective`). They go first; a role in the file under
+/// one of their keys goes to `shadowed`.
+///
+/// That used to refuse the whole file (`ReservedKey`). It was the right
+/// answer while the only official key was one nobody could have used by
+/// accident, and stopped being it the day a second key became official:
+/// refusing the file would have emptied the library of anybody who already
+/// had a role called that.
+pub fn parseFileLeaky(aa: Allocator, bytes: []const u8, official_roles: []const Persona) ParseError!Set {
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, aa, bytes, .{}) catch
         return error.Malformed;
 
@@ -543,22 +540,29 @@ pub fn parseLeaky(aa: Allocator, bytes: []const u8) ParseError!Set {
     };
 
     var personas: std.ArrayList(Persona) = .empty;
+    var shadowed: std.ArrayList(Persona) = .empty;
     var ignored: std.ArrayList([]const u8) = .empty;
-    try personas.appendSlice(aa, &builtins);
+    try personas.appendSlice(aa, official_roles);
 
     for (list.items) |entry| {
         const p = try personaOf(aa, entry, &ignored);
-        if (isBuiltinKey(p.key)) return error.ReservedKey;
-        for (personas.items) |q| {
-            if (std.mem.eql(u8, q.key, p.key)) return error.DuplicateKey;
+        const is_official = for (official_roles) |q| {
+            if (std.mem.eql(u8, q.key, p.key)) break true;
+        } else false;
+        const among: *std.ArrayList(Persona) = if (is_official) &shadowed else &personas;
+        // Two under one key is refused among the shadowed ones as well:
+        // which of the two the person would get back is not ours to pick.
+        for (among.items) |q| {
+            if (q.official == null and std.mem.eql(u8, q.key, p.key)) return error.DuplicateKey;
         }
-        try personas.append(aa, p);
+        try among.append(aa, p);
     }
 
     return .{
         .version = version,
         .personas = try personas.toOwnedSlice(aa),
         .ignored_denies = try ignored.toOwnedSlice(aa),
+        .shadowed = try shadowed.toOwnedSlice(aa),
     };
 }
 
@@ -573,12 +577,12 @@ pub fn parsePersonaLeaky(aa: Allocator, bytes: []const u8) ParseError!Persona {
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, aa, bytes, .{}) catch
         return error.Malformed;
     var ignored: std.ArrayList([]const u8) = .empty;
-    const p = try personaOf(aa, parsed, &ignored);
-    if (isBuiltinKey(p.key)) return error.ReservedKey;
-    return p;
+    return try personaOf(aa, parsed, &ignored);
 }
 
-fn personaOf(
+/// One persona object. Public for `official.parseSource`: a shipped role is
+/// read by the same function as one in the file.
+pub fn personaOf(
     aa: Allocator,
     entry: std.json.Value,
     ignored: *std.ArrayList([]const u8),
@@ -737,12 +741,20 @@ fn selectionOf(aa: Allocator, obj: std.json.ObjectMap, field: []const u8) ParseE
 /// any effect, so the file loses a line that was not doing anything.
 pub fn writeSet(w: *std.Io.Writer, set: Set) std.Io.Writer.Error!void {
     try w.print("{{\n  \"version\": {d},\n  \"personas\": [", .{supported_version});
-    // The built-ins are Polter's, not the user's: every reader puts them
-    // back, so writing them would only make a file that the next read
-    // refuses as `ReservedKey`.
+    // The official roles are Polter's, not the user's: every reader puts
+    // them back, and what a person changed in one is kept elsewhere
+    // (`official.zig`).
     var n: usize = 0;
     for (set.personas) |p| {
-        if (p.builtin) continue;
+        if (p.official != null) continue;
+        try w.writeAll(if (n == 0) "\n    " else ",\n    ");
+        try writePersona(w, p);
+        n += 1;
+    }
+    // And the roles that were in the file under an official key, which are
+    // the person's and not in use. Last, since they have no place in the
+    // menu to keep.
+    for (set.shadowed) |p| {
         try w.writeAll(if (n == 0) "\n    " else ",\n    ");
         try writePersona(w, p);
         n += 1;
@@ -813,8 +825,17 @@ pub fn writePersona(w: *std.Io.Writer, p: Persona) std.Io.Writer.Error!void {
         try w.writeAll("}");
     }
     // Read by the window and `role_list`; ignored when read back, since a
-    // file cannot make a role Polter's.
-    if (p.builtin) try w.writeAll(",\"builtin\":true");
+    // file cannot make a role Polter's. `builtin` is the older word for it
+    // and is what both hosts already look for.
+    if (p.official) |o| {
+        try w.print(",\"builtin\":true,\"official\":{{\"state\":\"{t}\",\"overridden\":", .{o.state});
+        try writeStrings(w, o.overridden);
+        try w.writeAll(",\"stale\":");
+        try writeStrings(w, o.stale);
+        try w.writeAll(",\"reason\":");
+        if (o.reason) |r| try w.print("{f}", .{jstr(r)}) else try w.writeAll("null");
+        try w.writeAll("}");
+    }
     try w.writeAll("}");
 }
 
@@ -850,7 +871,12 @@ pub fn withPersona(aa: Allocator, set: Set, p: Persona) Allocator.Error!Set {
         } else try out.append(aa, q);
     }
     if (!replaced) try out.append(aa, p);
-    return .{ .version = supported_version, .personas = try out.toOwnedSlice(aa) };
+    // A copy of the set with one thing changed, rather than a new one with
+    // two fields filled in: what it does not mention has to survive.
+    var next = set;
+    next.version = supported_version;
+    next.personas = try out.toOwnedSlice(aa);
+    return next;
 }
 
 /// `set` without the persona called `key`, or null when there was none.
@@ -863,7 +889,10 @@ pub fn withoutPersona(aa: Allocator, set: Set, key: []const u8) Allocator.Error!
         } else try out.append(aa, q);
     }
     if (!found) return null;
-    return .{ .version = supported_version, .personas = try out.toOwnedSlice(aa) };
+    var next = set;
+    next.version = supported_version;
+    next.personas = try out.toOwnedSlice(aa);
+    return next;
 }
 
 // ------------------------------------------------------- the effective set
@@ -1210,7 +1239,7 @@ test "persona: the sample file loads with every field where it was put" {
     const aa = arena.allocator();
 
     const set = try parseLeaky(aa, sample);
-    try testing.expectEqual(builtins.len + 2, set.personas.len);
+    try testing.expectEqual(official_count + 2, set.personas.len);
 
     const archer = set.find("archer").?;
     try testing.expectEqualStrings("射手", archer.name);
@@ -1221,8 +1250,8 @@ test "persona: the sample file loads with every field where it was put" {
     try testing.expectEqualStrings("kanban@x", archer.hint_disable_host_plugins[0]);
 
     // Order is the user's, and the menu is built from it.
-    try testing.expectEqualStrings("archer", set.personas[builtins.len + 0].key);
-    try testing.expectEqualStrings("scribe", set.personas[builtins.len + 1].key);
+    try testing.expectEqualStrings("archer", set.personas[official_count + 0].key);
+    try testing.expectEqualStrings("scribe", set.personas[official_count + 1].key);
 
     // Absent lists are empty, not missing.
     const scribe = set.find("scribe").?;
@@ -1400,8 +1429,8 @@ test "persona: a version 1 file still reads, as a role with no CLI choices" {
     defer arena.deinit();
     const set = try parseLeaky(arena.allocator(), sample);
     try testing.expectEqual(@as(u32, 1), set.version);
-    try testing.expectEqual(@as(usize, 0), set.personas[builtins.len + 0].clis.len);
-    try testing.expectEqual(@as(?[]const u8, null), set.personas[builtins.len + 0].instructions);
+    try testing.expectEqual(@as(usize, 0), set.personas[official_count + 0].clis.len);
+    try testing.expectEqual(@as(?[]const u8, null), set.personas[official_count + 0].instructions);
 
     // And a version that is neither is still refused, so an older Polter
     // reading a newer file says so instead of guessing.
@@ -1437,8 +1466,8 @@ test "persona: what is written reads back as the same roles" {
     const again = try parseLeaky(aa, out.written());
 
     try testing.expectEqual(supported_version, again.version);
-    try testing.expectEqual(builtins.len + 2, again.personas.len);
-    const a = again.personas[builtins.len + 0];
+    try testing.expectEqual(official_count + 2, again.personas.len);
+    const a = again.personas[official_count + 0];
     try testing.expectEqualStrings("只读调研", a.description.?);
     try testing.expectEqualStrings("Say \"hi\" first.\nThen work.", a.instructions.?);
     try testing.expectEqualStrings("notify_user", a.tools.deny[0]);
@@ -1456,7 +1485,7 @@ test "persona: what is written reads back as the same roles" {
     try testing.expectEqualStrings("codex", a.clis[1].cli);
     try testing.expect(a.clis[1].skills.default);
 
-    try testing.expectEqualStrings("书记", again.personas[builtins.len + 1].name);
+    try testing.expectEqualStrings("书记", again.personas[official_count + 1].name);
 }
 
 test "persona: a default and its exceptions decide what is on" {
@@ -1504,28 +1533,30 @@ test "persona: an edit keeps the role where it was, a new one goes last" {
     const set = try parseLeaky(aa, sample);
 
     const edited = try withPersona(aa, set, .{ .key = "archer", .name = "新名字" });
-    try testing.expectEqualStrings("archer", edited.personas[builtins.len + 0].key);
-    try testing.expectEqualStrings("新名字", edited.personas[builtins.len + 0].name);
-    try testing.expectEqual(builtins.len + 2, edited.personas.len);
+    try testing.expectEqualStrings("archer", edited.personas[official_count + 0].key);
+    try testing.expectEqualStrings("新名字", edited.personas[official_count + 0].name);
+    try testing.expectEqual(official_count + 2, edited.personas.len);
 
     const added = try withPersona(aa, set, .{ .key = "zz", .name = "z" });
-    try testing.expectEqualStrings("zz", added.personas[builtins.len + 2].key);
+    try testing.expectEqualStrings("zz", added.personas[official_count + 2].key);
 
     const gone = (try withoutPersona(aa, set, "archer")).?;
-    try testing.expectEqual(builtins.len + 1, gone.personas.len);
-    try testing.expectEqualStrings("scribe", gone.personas[builtins.len + 0].key);
+    try testing.expectEqual(official_count + 1, gone.personas.len);
+    try testing.expectEqualStrings("scribe", gone.personas[official_count + 0].key);
     try testing.expectEqual(@as(?Set, null), try withoutPersona(aa, set, "nobody"));
 }
 
-test "persona: every set starts with the built-in roles, and a file cannot claim their keys" {
+test "persona: every set starts with the official roles" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const aa = arena.allocator();
 
     const empty = try parseLeaky(aa, "{\"version\":2,\"personas\":[]}");
-    try testing.expectEqual(builtins.len, empty.personas.len);
+    try testing.expectEqual(official_count, empty.personas.len);
     const boss = empty.find(supervisor_key).?;
-    try testing.expect(boss.builtin);
+    try testing.expect(boss.official != null);
+    try testing.expectEqual(Official.Status.pristine, boss.official.?.state);
+    try testing.expectEqualStrings("Polter Supervisor", boss.name);
     try testing.expect(boss.polter.supervisor);
     try testing.expectEqual(Polter.Open.auto, boss.polter.open);
     try testing.expect(boss.instructions != null);
@@ -1537,17 +1568,65 @@ test "persona: every set starts with the built-in roles, and a file cannot claim
     // kept whatever this says.
     try testing.expect(!boss.clis[0].skills.default);
     try testing.expect(!boss.clis[0].mcp.default);
-    try testing.expect(builtinSet().find(supervisor_key) != null);
-
-    try testing.expectError(error.ReservedKey, parseLeaky(aa,
-        \\{"version":2,"personas":[{"key":"polter-supervisor","name":"mine"}]}
-    ));
-    try testing.expectError(error.ReservedKey, parsePersonaLeaky(aa,
-        \\{"key":"polter-supervisor","name":"mine"}
-    ));
+    try testing.expectEqual(@as(usize, 3), boss.clis[0].skills.except.len);
+    try testing.expect(empty.find(tester_key).?.official != null);
+    // With no file at all, the same.
+    const none = try official.assemble(aa, null, &official.sources, .absent);
+    try testing.expect(none.find(supervisor_key) != null);
+    try testing.expectEqual(official_count, none.personas.len);
 }
 
-test "persona: the Polter half reads, writes back, and the built-ins are not written" {
+test "persona: a role in the file under an official key is kept, unused, and written back" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // `polter-tester` was anybody's key until Polter shipped a role under it.
+    const file =
+        \\{"version":2,"personas":[
+        \\  {"key":"archer","name":"Archer"},
+        \\  {"key":"polter-tester","name":"我的测试员","instructions":"只测不改"},
+        \\  {"key":"scribe","name":"书记"}
+        \\]}
+    ;
+    const set = try parseLeaky(aa, file);
+    // The rest of the library is there: the file is not refused for it.
+    try testing.expectEqual(official_count + 2, set.personas.len);
+    try testing.expect(set.find("archer") != null and set.find("scribe") != null);
+    // The official one is the one in use...
+    try testing.expectEqualStrings("Polter Tester", set.find(tester_key).?.name);
+    try testing.expect(set.find(tester_key).?.official != null);
+    // ...and theirs is held, whole.
+    try testing.expectEqual(@as(usize, 1), set.shadowed.len);
+    try testing.expectEqualStrings("我的测试员", set.shadowed[0].name);
+    try testing.expect(set.shadowed[0].official == null);
+
+    // Saving anything else -- here, a new role -- does not lose it.
+    const edited = try withPersona(aa, set, .{ .key = "zz", .name = "new" });
+    const fewer = (try withoutPersona(aa, edited, "archer")).?;
+    var out: std.Io.Writer.Allocating = .init(aa);
+    try writeSet(&out.writer, fewer);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "我的测试员") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "只测不改") != null);
+    // The official role itself is still not written.
+    try testing.expect(std.mem.indexOf(u8, out.written(), "Polter Tester") == null);
+
+    const again = try parseLeaky(aa, out.written());
+    try testing.expectEqual(@as(usize, 1), again.shadowed.len);
+    try testing.expectEqualStrings("只测不改", again.shadowed[0].instructions.?);
+
+    // Two of them under the one key is still two roles with one key.
+    try testing.expectError(error.DuplicateKey, parseLeaky(aa,
+        \\{"version":2,"personas":[{"key":"polter-tester","name":"a"},{"key":"polter-tester","name":"b"}]}
+    ));
+
+    // One role arriving by itself under an official key parses: whether it
+    // may be written is the store's to say, which knows who is asking.
+    const one = try parsePersonaLeaky(aa, "{\"key\":\"polter-supervisor\",\"name\":\"mine\"}");
+    try testing.expect(one.official == null);
+}
+
+test "persona: the Polter half reads, writes back, and the official roles are not written" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const aa = arena.allocator();
@@ -1564,7 +1643,7 @@ test "persona: the Polter half reads, writes back, and the built-ins are not wri
     try testing.expect(std.mem.indexOf(u8, out.written(), supervisor_key) == null);
 
     const again = try parseLeaky(aa, out.written());
-    try testing.expectEqual(builtins.len + 2, again.personas.len);
+    try testing.expectEqual(official_count + 2, again.personas.len);
     const w = again.find("w").?.polter;
     try testing.expect(w.watch and w.may_authorise and !w.supervisor and !w.shielded);
     try testing.expectEqual(Polter.Open.tab, w.open);

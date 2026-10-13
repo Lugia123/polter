@@ -2134,6 +2134,10 @@ pub const CAPI = struct {
     const clis_fallback =
         \\{"stale":true,"refreshing":false,"clis":[]}
     ;
+    /// `skills` null, as it is whenever what ships is not known.
+    const skills_fallback =
+        \\{"error":"the official skills could not be rendered","skills":null}
+    ;
 
     /// Every role in the library, as JSON: `PersonaStore.writeCatalogJson`,
     /// the same document `role_list` answers with. Same buffer rule as
@@ -2176,6 +2180,93 @@ pub const CAPI = struct {
         cap: usize,
     ) bool {
         app.core_app.deletePersona(key[0..len]) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
+    /// Put an official role back to the one this build ships. With
+    /// `everything`, and only when the file of changes cannot be read at
+    /// all, that file is moved aside and every official role and skill goes
+    /// back; without it that case answers `OverridesUnreadable`, which is
+    /// the host's cue to ask the person in those words first.
+    ///
+    /// This, `_adopt` and the two skill calls below exist on this surface
+    /// alone. There is no MCP tool for any of them: what an official role
+    /// or skill says is what binds the agent reading it.
+    export fn ghostty_app_persona_restore(
+        app: *App,
+        key: [*]const u8,
+        len: usize,
+        everything: bool,
+        err: ?[*]u8,
+        cap: usize,
+    ) bool {
+        app.core_app.restorePersona(key[0..len], everything) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
+    /// Keep a role the library file holds under an official key (the
+    /// catalog's `shadowed`) as the person's own, under a new key.
+    export fn ghostty_app_persona_adopt(
+        app: *App,
+        key: [*]const u8,
+        len: usize,
+        err: ?[*]u8,
+        cap: usize,
+    ) bool {
+        app.core_app.adoptPersona(key[0..len]) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
+    /// Every skill Polter ships, as JSON: its text in use, the shipped
+    /// text, and where the two stand (`skill_store.writeCatalogJson`).
+    export fn ghostty_app_official_skills(
+        app: *App,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        const core = app.core_app;
+        const json = core.officialSkillsJson(core.alloc) catch
+            return copyJsonOut(skills_fallback, buf, cap);
+        defer core.alloc.free(json);
+        return copyJsonOut(json, buf, cap);
+    }
+
+    /// Save the person's copy of a shipped skill (`text` is the whole
+    /// file, frontmatter included).
+    export fn ghostty_app_official_skill_put(
+        app: *App,
+        name: [*]const u8,
+        name_len: usize,
+        text: [*]const u8,
+        text_len: usize,
+        err: ?[*]u8,
+        cap: usize,
+    ) bool {
+        app.core_app.putOfficialSkill(name[0..name_len], text[0..text_len]) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
+    /// Put a shipped skill back to the shipped text.
+    export fn ghostty_app_official_skill_restore(
+        app: *App,
+        name: [*]const u8,
+        len: usize,
+        err: ?[*]u8,
+        cap: usize,
+    ) bool {
+        app.core_app.restoreOfficialSkill(name[0..len]) catch |e| {
             copyErrorOut(e, err, cap);
             return false;
         };

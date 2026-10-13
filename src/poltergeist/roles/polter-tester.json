@@ -1,0 +1,15 @@
+{
+  "key": "polter-tester",
+  "name": "Polter Tester",
+  "description": "A test worker: checks what was built against what was asked for, with evidence, and changes nothing.",
+  "clis": {
+    "claude-code": {
+      "skills": {
+        "default": false,
+        "except": ["skill:polter-operating-a-terminal"]
+      },
+      "mcp": { "default": false, "except": [] }
+    }
+  },
+  "polter": { "watch": true }
+}

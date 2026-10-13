@@ -3004,7 +3004,14 @@ pub fn ensureMcpRegistered(self: *App, want: bool) void {
     // later anyway -- said here so that this does not depend on the order
     // two calls in another file happen to be written in.
     self.ensurePlugins();
+    self.publishProvision();
+}
 
+/// Publish what Polter is to the provisioning plugins: `ensureMcpRegistered`
+/// once at the start, and again whenever the text of a skill changes under
+/// them (`skillsChanged`) -- a plugin mirrors the files it is handed, and
+/// one it was handed before the edit is one it has no reason to read again.
+fn publishProvision(self: *App) void {
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -3102,23 +3109,28 @@ pub fn ensureMcpRegistered(self: *App, want: bool) void {
     // user's own copy is what gets handed over, the same order
     // `skill_read` resolves in: editing one file should change Polter's
     // behaviour everywhere, not in one of two places.
+    //
+    // **Which skills there are is read from the resources directory**, and
+    // the plugins take away a `polter-*` skill that has stopped being
+    // listed. So when that directory cannot be read the list handed over is
+    // left empty, which both plugin SDKs read as "nothing was said about
+    // skills" and do nothing for -- they prune only against a list that has
+    // something in it. `skill_store.provisioned` is where "could not be
+    // read" and "is empty" are kept apart.
     var skills: std.ArrayListUnmanaged(poltergeistpkg.provision.Skill) = .empty;
     const config_dir = internal_os.xdg.config(io, alloc, &environ_map, .{}) catch null;
     const resources = internal_os.resourcesDir(alloc) catch null;
 
-    for (poltergeistpkg.skill.builtin_names) |name| {
-        const path = self.skillSource(
-            alloc,
-            io,
-            name,
-            config_dir,
-            if (resources) |r| r.app_path else null,
-        ) orelse {
-            log.warn("poltergeist: no source for skill {s}", .{name});
-            continue;
-        };
-
-        skills.append(alloc, .{ .name = name, .path = path }) catch {};
+    if (poltergeistpkg.skill_store.provisioned(
+        alloc,
+        io,
+        config_dir,
+        if (resources) |r| r.app_path else null,
+    ) catch null) |handed| {
+        for (handed) |h| skills.append(alloc, .{ .name = h.name, .path = h.path }) catch {};
+        // A list cut short by a failed append is a partial list, and a
+        // partial list is the one that gets skills taken away.
+        if (skills.items.len != handed.len) skills.clearRetainingCapacity();
     }
 
     // Published, not run. There is no provisioning pass any more: a
@@ -3139,44 +3151,6 @@ pub fn ensureMcpRegistered(self: *App, want: bool) void {
         "poltergeist: handed what Polter is to {d} provisioning plugin(s)",
         .{poltergeistpkg.notify.count(self.poltergeist_plugins, .provision)},
     );
-}
-
-/// The file one skill is actually in, the user's own copy first.
-///
-/// A path and not the text: a plugin is the thing that copies or rewrites
-/// it, the file may be a lot of prose, and a plugin that only wants the
-/// name never has to open it. Existence is checked here rather than left to
-/// the plugin so that "we ship no such skill" is our warning and not a
-/// mysterious failure in somebody's script.
-fn skillSource(
-    self: *App,
-    alloc: Allocator,
-    io: std.Io,
-    name: []const u8,
-    config_dir: ?[]const u8,
-    resources_dir: ?[]const u8,
-) ?[]const u8 {
-    _ = self;
-
-    if (config_dir) |dir| {
-        if (std.fmt.allocPrint(
-            alloc,
-            "{s}/polter/skills/{s}.md",
-            .{ dir, name },
-        )) |path| {
-            if (std.Io.Dir.cwd().statFile(io, path, .{})) |_| return path else |_| {}
-        } else |_| {}
-    }
-
-    const dir = resources_dir orelse return null;
-    const path = std.fmt.allocPrint(
-        alloc,
-        "{s}/poltergeist/{s}.md",
-        .{ dir, name },
-    ) catch return null;
-
-    if (std.Io.Dir.cwd().statFile(io, path, .{})) |_| return path else |_| {}
-    return null;
 }
 
 /// Put everything that has been waiting on a terminal that now exists.
@@ -3701,6 +3675,28 @@ pub fn putPersona(self: *App, json: []const u8, who: poltergeistpkg.Bus.Authorit
     const path = try poltergeistpkg.PersonaStore.defaultPath(self.alloc);
     defer self.alloc.free(path);
     try self.personas.put(global.io(), path, json, who);
+    self.personasChanged();
+}
+
+/// Put an official role back to the shipped one (`PersonaStore.restore`).
+/// The role library only: no agent reaches this.
+pub fn restorePersona(self: *App, key: []const u8, everything: bool) !void {
+    self.ensurePersonas();
+    const path = try poltergeistpkg.PersonaStore.defaultPath(self.alloc);
+    defer self.alloc.free(path);
+    try self.personas.restore(global.io(), path, key, everything);
+    self.personasChanged();
+    // Moving the whole file aside takes the skills' records with it.
+    if (everything) self.skillsChanged();
+}
+
+/// Keep a role the file holds under an official key as the person's own
+/// (`PersonaStore.adopt`).
+pub fn adoptPersona(self: *App, key: []const u8) !void {
+    self.ensurePersonas();
+    const path = try poltergeistpkg.PersonaStore.defaultPath(self.alloc);
+    defer self.alloc.free(path);
+    try self.personas.adopt(global.io(), path, key);
     self.personasChanged();
 }
 
@@ -8142,56 +8138,88 @@ pub fn poltergeistWallMs(self: *App) i64 {
 ///
 /// The user layer is checked first so that editing a file is how you change
 /// what a supervisor does, without touching the install and without the
-/// change being undone by the next upgrade.
+/// change being undone by the next upgrade. Which copy that is, is
+/// `skill_store.resolve`'s to say -- the same answer the provisioning
+/// plugins are handed.
 fn poltergeistSkill(
     ctx: *anyopaque,
     alloc: Allocator,
     name: []const u8,
 ) anyerror![]const u8 {
     const self: *App = @ptrCast(@alignCast(ctx));
-    const io = global.io();
-
-    user: {
-        var environ_map = global.environMap() catch break :user;
-        defer environ_map.deinit();
-
-        const config_dir = internal_os.xdg.config(
-            io,
-            self.alloc,
-            &environ_map,
-            .{ .subdir = "polter" },
-        ) catch break :user;
-        defer self.alloc.free(config_dir);
-
-        const path = poltergeistpkg.skill.userPath(self.alloc, config_dir, name) catch
-            break :user;
-        defer self.alloc.free(path);
-
-        if (readSkillFile(io, alloc, path)) |body| return body else |_| {}
-    }
-
-    // The app-visible copy: this runs inside Ghostty, not in a sandboxed
-    // host.
-    const dir = global.resourcesDir();
-    const resources = dir.app() orelse return error.NoSuchSkill;
-    const path = try poltergeistpkg.skill.resourcePath(self.alloc, resources, name);
-    defer self.alloc.free(path);
-
-    return readSkillFile(io, alloc, path) catch error.NoSuchSkill;
+    const dirs = self.skillDirs();
+    defer if (dirs.config_root) |d| self.alloc.free(d);
+    return poltergeistpkg.skill_store.readBody(alloc, global.io(), name, dirs.config_root, dirs.resources);
 }
 
-/// Read a skill file and hand back its prose, checking that it parses so
-/// that a broken file reads as missing rather than as instructions.
-fn readSkillFile(io: std.Io, alloc: Allocator, path: []const u8) ![]const u8 {
-    const source = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(1024 * 1024));
-    defer alloc.free(source);
+const SkillDirs = struct {
+    /// The configuration root (`~/.config`), owned; null when not found.
+    config_root: ?[]u8,
+    /// The app-visible resources: this runs inside Ghostty, not in a
+    /// sandboxed host.
+    resources: ?[]const u8,
+};
 
-    const parsed = poltergeistpkg.skill.parse(source) catch |err| {
-        log.warn("poltergeist: skill at {s} does not parse err={}", .{ path, err });
-        return err;
+fn skillDirs(self: *App) SkillDirs {
+    const resources = global.resourcesDir().app();
+    var environ_map = global.environMap() catch return .{ .config_root = null, .resources = resources };
+    defer environ_map.deinit();
+    return .{
+        .config_root = internal_os.xdg.config(global.io(), self.alloc, &environ_map, .{}) catch null,
+        .resources = resources,
     };
+}
 
-    return alloc.dupe(u8, parsed.body);
+/// Every skill Polter ships, with its text and where it stands against the
+/// person's copy, as JSON for the role library.
+pub fn officialSkillsJson(self: *App, alloc: Allocator) ![]u8 {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const dirs = self.skillDirs();
+    defer if (dirs.config_root) |d| self.alloc.free(d);
+    const path = try poltergeistpkg.PersonaStore.defaultPath(aa);
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    try poltergeistpkg.skill_store.writeCatalogJson(
+        &out.writer,
+        aa,
+        global.io(),
+        dirs.config_root,
+        dirs.resources,
+        poltergeistpkg.PersonaStore.readOverrides(aa, global.io(), path),
+    );
+    return try out.toOwnedSlice();
+}
+
+/// Save the person's copy of a shipped skill. The role library only: no
+/// agent reaches this.
+pub fn putOfficialSkill(self: *App, name: []const u8, text: []const u8) !void {
+    const dirs = self.skillDirs();
+    defer if (dirs.config_root) |d| self.alloc.free(d);
+    const path = try poltergeistpkg.PersonaStore.defaultPath(self.alloc);
+    defer self.alloc.free(path);
+    try poltergeistpkg.skill_store.put(self.alloc, global.io(), name, text, dirs.config_root, dirs.resources, path);
+    self.skillsChanged();
+}
+
+/// Put a shipped skill back to the shipped text.
+pub fn restoreOfficialSkill(self: *App, name: []const u8) !void {
+    const dirs = self.skillDirs();
+    defer if (dirs.config_root) |d| self.alloc.free(d);
+    const path = try poltergeistpkg.PersonaStore.defaultPath(self.alloc);
+    defer self.alloc.free(path);
+    try poltergeistpkg.skill_store.restore(self.alloc, global.io(), name, dirs.config_root, path);
+    self.skillsChanged();
+}
+
+/// After a skill's text changed. `skill_read` reads the file each time and
+/// needs nothing; the copies the agent CLIs keep are the plugins' to
+/// rewrite, so they are told again -- when they were told the first time.
+fn skillsChanged(self: *App) void {
+    if (self.poltergeist_registered) self.publishProvision();
 }
 
 fn poltergeistThreshold(

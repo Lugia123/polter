@@ -54,6 +54,7 @@ const Action = @import("ghostty.zig").Action;
 const global = @import("../global.zig");
 const persona = @import("../poltergeist/persona.zig");
 const PersonaStore = @import("../poltergeist/PersonaStore.zig");
+const official = @import("../poltergeist/official.zig");
 const agent_cli = @import("../poltergeist/agent_cli.zig");
 const Plugin = @import("../poltergeist/Plugin.zig");
 const AgentEvent = @import("../poltergeist/agent_event.zig");
@@ -177,10 +178,18 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
             return 1;
         },
     };
-    const set = if (bytes) |b| persona.parseLeaky(aa, b) catch |err| {
+    // The official roles with what the person changed in them, read the
+    // way the app reads them: this is another process, and it must not
+    // start a different role from the one the library window shows.
+    const set = official.assemble(
+        aa,
+        bytes,
+        &official.sources,
+        PersonaStore.readOverrides(aa, io, path),
+    ) catch |err| {
         try err_out.print("Polter: {s} does not read as a role library ({t}).\n", .{ path, err });
         return 1;
-    } else persona.builtinSet();
+    };
     var p = set.find(parsed.role) orelse {
         try err_out.print("Polter: there is no role called \"{s}\".\n", .{parsed.role});
         return 1;

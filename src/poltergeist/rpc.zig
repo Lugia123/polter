@@ -6023,8 +6023,9 @@ fn roleWriteFailure(err: anyerror) wire.Response {
         error.NoSuchPersona => hostFailure("NoSuchRole", "there is no role with that key."),
         error.BuiltinPersona => hostFailure(
             "BuiltinRole",
-            "that role ships with Polter and cannot be changed or deleted. Write a copy " ++
-                "under another key instead.",
+            "that is an official role, and no agent may change or delete one: what it " ++
+                "says is what binds the agent started in it. Only the person can change " ++
+                "it, in the role library. Write a copy under another key instead.",
         ),
         error.NotPermitted => hostFailure(
             "NotPermitted",

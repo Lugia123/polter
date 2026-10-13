@@ -26,6 +26,7 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 const persona = @import("persona.zig");
+const official = @import("official.zig");
 const Bus = @import("Bus.zig");
 const global = @import("../global.zig");
 const internal_os = @import("../os/main.zig");
@@ -57,6 +58,10 @@ loaded: bool = false,
 /// alternative -- dropping to zero personas on a typo -- looks exactly like
 /// "you have not defined any", which is a sentence the menu already has.
 load_error: ?[]const u8 = null,
+
+/// Why `official-overrides.json` could not be used as a whole, or null when
+/// it could or is not there. Borrowed from `arena`, and set with it.
+overrides_error: ?[]const u8 = null,
 
 /// The keys and names again, NUL-terminated, for the C surface.
 ///
@@ -232,40 +237,44 @@ pub const max_bytes = 256 * 1024;
 /// who has never written one, and reporting it would put a red message in
 /// front of every user who does not use personas.
 pub fn load(self: *PersonaStore, io: std.Io, path: []const u8) void {
-    const bytes = readAll(self.alloc, io, path) catch |err| switch (err) {
-        error.FileNotFound => {
-            // Nothing there, and nothing wrong. What is left is the roles
-            // Polter ships, which every reader adds whether or not there is
-            // a file -- `+launch` in its own process included.
-            var arena: std.heap.ArenaAllocator = .init(self.alloc);
-            self.install(&arena, persona.builtinSet(), path) catch arena.deinit();
-            return;
-        },
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    const aa = arena.allocator();
+
+    // What the person changed in the official roles, which is read whether
+    // or not they have a library of their own.
+    const read = readOverrides(aa, io, path);
+
+    // In the arena, with the set: the parsed strings may point into it.
+    const bytes: ?[]u8 = readAll(aa, io, path) catch |err| switch (err) {
+        // Nothing there, and nothing wrong. What is left is the roles
+        // Polter ships, which every reader adds whether or not there is
+        // a file -- `+launch` in its own process included.
+        error.FileNotFound => null,
         else => {
-            self.keepBuiltinsOnly(path);
+            arena.deinit();
+            self.keepOfficialOnly(io, path);
             self.setErrorFmt("could not read {s}: {t}", .{ path, err });
             return;
         },
     };
-    defer self.alloc.free(bytes);
 
-    var arena: std.heap.ArenaAllocator = .init(self.alloc);
-    errdefer arena.deinit();
-
-    const set = persona.parseLeaky(arena.allocator(), bytes) catch |err| {
+    const set = official.assemble(aa, bytes, &official.sources, read) catch |err| {
         // The sentence names the file and what was wrong with it, because
         // the person reading it is looking at a menu that did not change
         // and has to be told where to go.
         arena.deinit();
-        self.keepBuiltinsOnly(path);
+        self.keepOfficialOnly(io, path);
         self.setErrorFmt("{s} was not loaded: {t}", .{ path, err });
         return;
     };
+    const overrides_error = official.readError(aa, read);
 
     self.install(&arena, set, path) catch {
         arena.deinit();
         return;
     };
+    self.overrides_error = overrides_error;
+    if (overrides_error) |why| log.warn("poltergeist: official role overrides not used: {s}", .{why});
 
     if (set.ignored_denies.len > 0) {
         // Not an error -- the file loaded -- but the user asked for
@@ -276,21 +285,59 @@ pub fn load(self: *PersonaStore, io: std.Io, path: []const u8) void {
             .{set.ignored_denies.len},
         );
     }
+    if (set.shadowed.len > 0) {
+        log.warn(
+            "poltergeist: {d} role(s) in personas.json use a key Polter now ships a role under; kept in the file, not in use",
+            .{set.shadowed.len},
+        );
+    }
 }
 
 /// After a read that failed: when there is no earlier good set to keep, the
 /// roles Polter ships, so they are there however the file is broken.
 ///
 /// **Only when there is nothing to keep.** A later bad file leaves the last
-/// good set in place, and that set has the built-ins in it already. It is
-/// the *first* read failing that used to leave nothing at all -- measured
+/// good set in place, and that set has the official roles in it already. It
+/// is the *first* read failing that used to leave nothing at all -- measured
 /// on the Windows machine: the list came up empty, "Polter Supervisor"
 /// included, because the file the user was halfway through did not parse.
 /// Called before the error is set, because installing clears it.
-fn keepBuiltinsOnly(self: *PersonaStore, path: []const u8) void {
+fn keepOfficialOnly(self: *PersonaStore, io: std.Io, path: []const u8) void {
     if (self.loaded) return;
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
-    self.install(&arena, persona.builtinSet(), path) catch arena.deinit();
+    const aa = arena.allocator();
+    const read = readOverrides(aa, io, path);
+    const set = official.assemble(aa, null, &official.sources, read) catch {
+        arena.deinit();
+        return;
+    };
+    const overrides_error = official.readError(aa, read);
+    self.install(&arena, set, path) catch {
+        arena.deinit();
+        return;
+    };
+    self.overrides_error = overrides_error;
+}
+
+/// `official-overrides.json`, which sits beside `personas.json` wherever
+/// that is -- so a test instance with its library isolated has its
+/// overrides isolated with it, by the same rule and not a second one.
+pub fn overridesPath(alloc: Allocator, personas_path: []const u8) Allocator.Error![]u8 {
+    const dir = std.fs.path.dirname(personas_path) orelse ".";
+    return try std.fs.path.join(alloc, &.{ dir, "official-overrides.json" });
+}
+
+/// Read the overrides beside `personas_path`. Never fails: every way of
+/// not having them is one of the three answers.
+pub fn readOverrides(aa: Allocator, io: std.Io, personas_path: []const u8) official.Read {
+    const path = overridesPath(aa, personas_path) catch return .{ .unreadable = "out of memory" };
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, aa, .limited(max_bytes)) catch |err| switch (err) {
+        error.FileNotFound => return .absent,
+        else => return .{
+            .unreadable = std.fmt.allocPrint(aa, "could not read {s}: {t}", .{ path, err }) catch "could not read official-overrides.json",
+        },
+    };
+    return .{ .bytes = bytes };
 }
 
 /// Make `set`, which lives in `arena`, the one in use. On failure nothing
@@ -361,9 +408,24 @@ pub const WriteError = error{
 
     NoSuchPersona,
 
-    /// The key is a role Polter ships (`persona.builtins`). Those are
-    /// neither replaced nor deleted; a copy under another key can be.
+    /// The key is a role Polter ships (`official.zig`), and this is not
+    /// something that may be done to one: an agent changing it at all, or
+    /// anybody deleting it.
     BuiltinPersona,
+
+    /// The write changes something in an official role that nobody may
+    /// change. Four names so the answer says which: its name, its
+    /// description, what it grants the terminal it starts in, or one of the
+    /// fields from before roles had a CLI half.
+    LockedName,
+    LockedDescription,
+    LockedStanding,
+    LockedField,
+
+    /// `official-overrides.json` is there and cannot be read, so nothing is
+    /// written into it and one entry cannot be taken out of it. `restore`
+    /// with `everything` is the way out, and says what it costs.
+    OverridesUnreadable,
 
     /// A supervisor tried to change what only the user may set in a role
     /// (`persona.Polter.userOnlyEql`).
@@ -396,9 +458,9 @@ pub fn put(self: *PersonaStore, io: std.Io, path: []const u8, json: []const u8, 
 
     const p = persona.parsePersonaLeaky(sa, json) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
-        error.ReservedKey => error.BuiltinPersona,
         else => error.BadPersona,
     };
+    if (official.isKey(p.key)) return self.putOfficial(io, path, sa, p, who);
     if (who != .user) {
         const before: persona.Polter = if (self.set.find(p.key)) |q| q.polter else .{};
         if (!persona.Polter.userOnlyEql(before, p.polter)) return error.NotPermitted;
@@ -407,10 +469,150 @@ pub fn put(self: *PersonaStore, io: std.Io, path: []const u8, json: []const u8, 
     try self.commit(io, path, set);
 }
 
+/// A write to an official role: kept as overrides, one per field changed.
+///
+/// **Only the person at the keyboard.** An official role's instructions are
+/// what its agent is bound by -- the supervisor's say what a supervisor may
+/// decide by itself -- so an agent that could rewrite them could let itself
+/// off anything written there. `who` is `.user` only on the library
+/// window's path (`ghostty_app_persona_put`); everything an agent can reach
+/// arrives as `.supervisor` and is refused here, before anything is read.
+fn putOfficial(
+    self: *PersonaStore,
+    io: std.Io,
+    path: []const u8,
+    sa: Allocator,
+    p: persona.Persona,
+    who: Bus.Authority,
+) WriteError!void {
+    if (who != .user) return error.BuiltinPersona;
+
+    const src = for (official.sources) |s| {
+        if (std.mem.eql(u8, s.key, p.key)) break s;
+    } else return error.NoSuchPersona;
+    const shipped = official.parseSource(sa, src) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.BadPersona,
+    };
+    // Refused whole rather than quietly dropped, for the reason a
+    // supervisor's write is: what is read back should be what was sent.
+    if (official.lockedChange(shipped, p)) |locked| return switch (locked) {
+        .name => error.LockedName,
+        .description => error.LockedDescription,
+        .standing => error.LockedStanding,
+        .legacy => error.LockedField,
+    };
+
+    const read = readOverrides(sa, io, path);
+    const existing: []const official.Field = switch (try official.roleFields(sa, read, p.key)) {
+        .fields => |f| f,
+        .none, .unknown => &.{},
+    };
+    const fields = try official.diff(sa, shipped, p, existing);
+    // Nothing changed and nothing written: not a reason to make a file.
+    if (fields.len == 0 and read == .absent) return;
+    const bytes = official.withRole(sa, read, p.key, fields) catch |err| return switch (err) {
+        error.Unreadable => error.OverridesUnreadable,
+        error.OutOfMemory => error.OutOfMemory,
+    };
+    try self.commitOverrides(io, path, bytes);
+}
+
+/// Put an official role back to the one this build ships: what was changed
+/// in it is taken out of the overrides file, and nothing else in that file
+/// moves.
+///
+/// **When the file cannot be read at all**, one role's entry cannot be
+/// taken out of it -- there is no telling where it is. That is refused
+/// (`OverridesUnreadable`) unless `everything` is set, and then the whole
+/// file is moved aside, under a name that says what it is, rather than
+/// deleted: every official role and skill goes back to the shipped one,
+/// and whatever was in the file is still on disk for the person to look
+/// at. The caller asks them first, in those words.
+///
+/// Not reachable by an agent: there is no method for it, only the library
+/// window's call.
+pub fn restore(self: *PersonaStore, io: std.Io, path: []const u8, key: []const u8, everything: bool) WriteError!void {
+    if (!official.isKey(key)) return error.NoSuchPersona;
+    // With the library file unreadable a reload keeps the last good set,
+    // official roles and all, so the restore would be written and not seen.
+    // The window already says the file has to be fixed first.
+    if (self.load_error != null) return error.FileUnreadable;
+
+    var scratch: std.heap.ArenaAllocator = .init(self.alloc);
+    defer scratch.deinit();
+    const sa = scratch.allocator();
+
+    const read = readOverrides(sa, io, path);
+    if (read == .absent) return;
+    const bytes = official.withRole(sa, read, key, &.{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Unreadable => {
+            if (!everything) return error.OverridesUnreadable;
+            _ = setOverridesAside(sa, io, path) catch |e| {
+                log.warn("poltergeist: could not move the overrides file aside: {t}", .{e});
+                return error.CouldNotWrite;
+            };
+            self.load(io, path);
+            if (self.load_error != null) return error.WriteNotLoaded;
+            return;
+        },
+    };
+    try self.commitOverrides(io, path, bytes);
+}
+
+/// Move an overrides file nobody can read out of the way, keeping it.
+/// Returns the name it now has, in `sa`.
+pub fn setOverridesAside(sa: Allocator, io: std.Io, personas_path: []const u8) ![]const u8 {
+    const from = try overridesPath(sa, personas_path);
+    var raw: [4]u8 = undefined;
+    io.random(&raw);
+    const to = try std.fmt.allocPrint(sa, "{s}.unreadable-{x}", .{ from, &raw });
+    const cwd = std.Io.Dir.cwd();
+    try cwd.rename(from, cwd, to, io);
+    log.warn("poltergeist: {s} could not be read and was kept as {s}", .{ from, to });
+    return to;
+}
+
+fn commitOverrides(self: *PersonaStore, io: std.Io, path: []const u8, bytes: []const u8) WriteError!void {
+    const opath = try overridesPath(self.alloc, path);
+    defer self.alloc.free(opath);
+    writeReplacing(self.alloc, io, opath, bytes) catch |err| {
+        log.warn("poltergeist: could not write {s}: {t}", .{ opath, err });
+        return error.CouldNotWrite;
+    };
+    self.load(io, path);
+    if (self.load_error != null) return error.WriteNotLoaded;
+}
+
+/// Keep a role the file holds under an official key as one of the person's
+/// own, under a new key (`official.adoptedKey`). Their file is only changed
+/// here, when they ask: on reading, such a role is held and left alone.
+pub fn adopt(self: *PersonaStore, io: std.Io, path: []const u8, key: []const u8) WriteError!void {
+    if (self.load_error != null) return error.FileUnreadable;
+
+    var scratch: std.heap.ArenaAllocator = .init(self.alloc);
+    defer scratch.deinit();
+    const sa = scratch.allocator();
+
+    var rest: std.ArrayList(persona.Persona) = .empty;
+    var mine: ?persona.Persona = null;
+    for (self.set.shadowed) |p| {
+        if (mine == null and std.mem.eql(u8, p.key, key)) mine = p else try rest.append(sa, p);
+    }
+    var p = mine orelse return error.NoSuchPersona;
+    p.key = try official.adoptedKey(sa, key, self.set.personas);
+
+    var set = try persona.withPersona(sa, self.set, p);
+    set.shadowed = rest.items;
+    try self.commit(io, path, set);
+}
+
 /// Delete a role. Terminals wearing it are taken out of it.
 pub fn remove(self: *PersonaStore, io: std.Io, path: []const u8, key: []const u8) WriteError!void {
     if (self.load_error != null) return error.FileUnreadable;
-    if (persona.isBuiltinKey(key)) return error.BuiltinPersona;
+    // An official role is put back, not deleted: `restore`.
+    if (official.isKey(key)) return error.BuiltinPersona;
 
     var scratch: std.heap.ArenaAllocator = .init(self.alloc);
     defer scratch.deinit();
@@ -435,7 +637,7 @@ fn commit(self: *PersonaStore, io: std.Io, path: []const u8, set: persona.Set) W
 
 /// Write `bytes` to `path` by way of a temporary file beside it, so a
 /// reader -- or a crash -- never sees half a file.
-fn writeReplacing(alloc: Allocator, io: std.Io, path: []const u8, bytes: []const u8) !void {
+pub fn writeReplacing(alloc: Allocator, io: std.Io, path: []const u8, bytes: []const u8) !void {
     const cwd = std.Io.Dir.cwd();
     if (std.fs.path.dirname(path)) |dir| try cwd.createDirPath(io, dir);
 
@@ -470,7 +672,18 @@ pub fn writeCatalogJson(self: *const PersonaStore, w: *std.Io.Writer, path: ?[]c
         if (i > 0) try w.writeAll(",");
         try persona.writePersona(w, p);
     }
-    try w.writeAll("]}");
+    // Roles the file holds under a key that is an official role's: theirs,
+    // kept, and not in use (`persona.Set.shadowed`).
+    try w.writeAll("],\"shadowed\":[");
+    for (self.set.shadowed, 0..) |p, i| {
+        if (i > 0) try w.writeAll(",");
+        try w.print("{{\"key\":{f},\"name\":{f}}}", .{ std.json.fmt(p.key, .{}), std.json.fmt(p.name, .{}) });
+    }
+    // Why the file of changes to official roles could not be used as a
+    // whole; null when it could, or when there is none.
+    try w.writeAll("],\"overrides_error\":");
+    if (self.overrides_error) |e| try w.print("{f}", .{std.json.fmt(e, .{})}) else try w.writeAll("null");
+    try w.writeAll("}");
 }
 
 fn readAll(alloc: Allocator, io: std.Io, path: []const u8) ![]u8 {
@@ -775,7 +988,7 @@ pub fn capabilities(
             .key = k,
             .name = if (p) |q| q.name else null,
             .deviated = state.deviated(self.set),
-            .builtin = if (p) |q| q.builtin else false,
+            .builtin = if (p) |q| q.official != null else false,
         };
     } else null;
 
@@ -1005,7 +1218,7 @@ fn tmpDir(alloc: Allocator, io: std.Io) ![]const u8 {
     return dir;
 }
 
-test "personas: a bad file on the first read still leaves the built-in roles" {
+test "personas: a bad file on the first read still leaves the official roles" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const aa = arena.allocator();
@@ -1029,7 +1242,7 @@ test "personas: a bad file on the first read still leaves the built-in roles" {
     try testing.expect(store.loaded);
     try testing.expect(store.load_error != null);
     try testing.expect(store.set.find(persona.supervisor_key) != null);
-    try testing.expectEqual(persona.builtins.len, store.set.personas.len);
+    try testing.expectEqual(persona.official_count, store.set.personas.len);
 
     // Still refused as a write target: the file on disk is the user's
     // half-finished one, and writing would replace it.
@@ -1056,14 +1269,14 @@ test "personas: a good file loads, and a later bad one does not take it away" {
     store.load(io, path);
     try testing.expect(store.loaded);
     try testing.expectEqual(@as(?[]const u8, null), store.load_error);
-    try testing.expectEqual(persona.builtins.len + 0, store.set.personas.len);
+    try testing.expectEqual(persona.official_count + 0, store.set.personas.len);
 
     try write(io, path,
         \\{"version":1,"personas":[{"key":"archer","name":"Archer",
         \\  "tools":{"deny":["notify_user"]}}]}
     );
     store.load(io, path);
-    try testing.expectEqual(persona.builtins.len + 1, store.set.personas.len);
+    try testing.expectEqual(persona.official_count + 1, store.set.personas.len);
     try testing.expectEqual(@as(?[]const u8, null), store.load_error);
 
     // **The assertion this test exists for.** A typo must not silently
@@ -1072,8 +1285,8 @@ test "personas: a good file loads, and a later bad one does not take it away" {
     // uses for something else.
     try write(io, path, "{\"version\":1,\"personas\":[{\"key\":\"a\"");
     store.load(io, path);
-    try testing.expectEqual(persona.builtins.len + 1, store.set.personas.len);
-    try testing.expectEqualStrings("Archer", store.set.personas[persona.builtins.len + 0].name);
+    try testing.expectEqual(persona.official_count + 1, store.set.personas.len);
+    try testing.expectEqualStrings("Archer", store.set.personas[persona.official_count + 0].name);
     try testing.expect(store.load_error != null);
     try testing.expect(std.mem.indexOf(u8, store.load_error.?, "personas.json") != null);
 }
@@ -1302,7 +1515,7 @@ test "personas: a role put through the writer is in the file and in the set" {
         \\{"key":"scribe","name":"书记"}
     , .user);
     // The two written, after the built-ins every set starts with.
-    try testing.expectEqual(persona.builtins.len + 2, store.set.personas.len);
+    try testing.expectEqual(persona.official_count + 2, store.set.personas.len);
     try testing.expectEqualStrings("射手", store.cName("archer").?.name);
 
     // The file is what the next start reads, so it is checked, not the
@@ -1310,7 +1523,7 @@ test "personas: a role put through the writer is in the file and in the set" {
     var fresh: PersonaStore = .{ .alloc = testing.allocator };
     defer fresh.deinit();
     fresh.load(io, path);
-    try testing.expectEqual(persona.builtins.len + 2, fresh.set.personas.len);
+    try testing.expectEqual(persona.official_count + 2, fresh.set.personas.len);
     try testing.expect(!fresh.set.find("archer").?.clis[0].skills.default);
 
     try testing.expectError(error.BadPersona, store.put(io, path,
@@ -1318,7 +1531,7 @@ test "personas: a role put through the writer is in the file and in the set" {
     , .user));
     try testing.expectError(error.NoSuchPersona, store.remove(io, path, "nobody"));
     try store.remove(io, path, "archer");
-    try testing.expectEqual(persona.builtins.len + 1, store.set.personas.len);
+    try testing.expectEqual(persona.official_count + 1, store.set.personas.len);
 }
 
 test "personas: a file that does not parse is not overwritten" {
@@ -1398,33 +1611,327 @@ test "personas: after an edit a terminal wears the edit, and a deleted role come
     try testing.expectEqualStrings("archer", store.stateOf(a).key.?);
 }
 
-test "personas: no file is the built-ins, and they can be neither replaced nor deleted" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const aa = arena.allocator();
+/// What a test needs to stand a store on a directory of its own.
+const Bench = struct {
+    arena: std.heap.ArenaAllocator,
+    threaded: std.Io.Threaded,
+    dir: []const u8 = "",
+    path: []const u8 = "",
+    opath: []const u8 = "",
+    store: PersonaStore,
 
-    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    /// In place: the arena and the io are pointed at from inside.
+    fn init(b: *Bench) !void {
+        b.* = .{
+            .arena = .init(testing.allocator),
+            .threaded = .init(testing.allocator, .{}),
+            .store = .{ .alloc = testing.allocator },
+        };
+        const aa = b.arena.allocator();
+        b.dir = try tmpDir(aa, b.threaded.io());
+        b.path = try std.fmt.allocPrint(aa, "{s}/personas.json", .{b.dir});
+        b.opath = try overridesPath(aa, b.path);
+        b.store.load(b.threaded.io(), b.path);
+    }
 
-    const dir = try tmpDir(aa, io);
-    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
-    const path = try std.fmt.allocPrint(aa, "{s}/personas.json", .{dir});
+    fn deinit(b: *Bench) void {
+        b.store.deinit();
+        std.Io.Dir.cwd().deleteTree(b.threaded.io(), b.dir) catch {};
+        b.threaded.deinit();
+        b.arena.deinit();
+    }
 
-    var store: PersonaStore = .{ .alloc = testing.allocator };
-    defer store.deinit();
-    store.load(io, path);
-    try testing.expect(store.loaded);
-    try testing.expect(store.set.find(persona.supervisor_key) != null);
-    try testing.expect(store.cName(persona.supervisor_key) != null);
+    fn io(b: *Bench) std.Io {
+        return b.threaded.io();
+    }
 
-    try testing.expectError(error.BuiltinPersona, store.put(io, path,
-        \\{"key":"polter-supervisor","name":"mine"}
-    , .user));
-    try testing.expectError(error.BuiltinPersona, store.remove(io, path, persona.supervisor_key));
+    /// The role `key` as it stands, as the JSON the window would send back.
+    fn json(b: *Bench, p: persona.Persona) ![]const u8 {
+        var out: std.Io.Writer.Allocating = .init(b.arena.allocator());
+        try persona.writePersona(&out.writer, p);
+        return out.written();
+    }
+
+    fn role(b: *Bench, key: []const u8) persona.Persona {
+        return b.store.set.find(key).?;
+    }
+
+    fn state(b: *Bench, key: []const u8) persona.Official.Status {
+        return b.role(key).official.?.state;
+    }
+
+    fn exists(b: *Bench, path: []const u8) bool {
+        std.Io.Dir.cwd().access(b.io(), path, .{}) catch return false;
+        return true;
+    }
+
+    fn read(b: *Bench, path: []const u8) ![]const u8 {
+        return try std.Io.Dir.cwd().readFileAlloc(b.io(), path, b.arena.allocator(), .limited(max_bytes));
+    }
+
+    fn write(b: *Bench, path: []const u8, text: []const u8) !void {
+        try writeReplacing(b.arena.allocator(), b.io(), path, text);
+    }
+};
+
+test "personas: no file is the official roles, and none of them can be deleted" {
+    var b: Bench = undefined;
+    try b.init();
+    defer b.deinit();
+
+    try testing.expect(b.store.loaded);
+    try testing.expectEqual(persona.official_count, b.store.set.personas.len);
+    try testing.expect(b.store.cName(persona.supervisor_key) != null);
+    try testing.expect(b.store.cName(persona.tester_key) != null);
+    try testing.expectEqual(persona.Official.Status.pristine, b.state(persona.supervisor_key));
+
+    try testing.expectError(error.BuiltinPersona, b.store.remove(b.io(), b.path, persona.supervisor_key));
+    try testing.expectError(error.BuiltinPersona, b.store.remove(b.io(), b.path, persona.tester_key));
 
     // Refused before anything was written.
-    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, path, .{}));
+    try testing.expect(!b.exists(b.path));
+    try testing.expect(!b.exists(b.opath));
+}
+
+test "personas: the person's change to an official role is an override, and restoring takes it away" {
+    var b: Bench = undefined;
+    try b.init();
+    defer b.deinit();
+    const S = persona.Official.Status;
+    const shipped_prose = b.role(persona.supervisor_key).instructions.?;
+
+    // Saved as it is: nothing changed, so nothing is written.
+    try b.store.put(b.io(), b.path, try b.json(b.role(persona.supervisor_key)), .user);
+    try testing.expect(!b.exists(b.opath));
+
+    var mine = b.role(persona.supervisor_key);
+    mine.instructions = "my own rules";
+    mine.polter.watch = true;
+    try b.store.put(b.io(), b.path, try b.json(mine), .user);
+
+    // In effect at once, in this store...
+    try testing.expectEqual(S.modified, b.state(persona.supervisor_key));
+    try testing.expectEqualStrings("my own rules", b.role(persona.supervisor_key).instructions.?);
+    try testing.expect(b.role(persona.supervisor_key).polter.watch);
+    try testing.expectEqual(@as(usize, 2), b.role(persona.supervisor_key).official.?.overridden.len);
+    // ...still the supervisor, still under its shipped name...
+    try testing.expect(b.role(persona.supervisor_key).polter.supervisor);
+    try testing.expectEqualStrings("Polter Supervisor", b.role(persona.supervisor_key).name);
+    // ...the other official role untouched, and the person's own library
+    // file not made for it.
+    try testing.expectEqual(S.pristine, b.state(persona.tester_key));
+    try testing.expect(!b.exists(b.path));
+
+    // And in any other process that reads the same directory, which is
+    // what `polter +launch` is.
+    var other: PersonaStore = .{ .alloc = testing.allocator };
+    defer other.deinit();
+    other.load(b.io(), b.path);
+    try testing.expectEqualStrings("my own rules", other.set.find(persona.supervisor_key).?.instructions.?);
+
+    // Back to the shipped one.
+    try b.store.restore(b.io(), b.path, persona.supervisor_key, false);
+    try testing.expectEqual(S.pristine, b.state(persona.supervisor_key));
+    try testing.expectEqualStrings(shipped_prose, b.role(persona.supervisor_key).instructions.?);
+    try testing.expect(!b.role(persona.supervisor_key).polter.watch);
+
+    // Restoring what was never changed is not an error and writes nothing.
+    try b.store.restore(b.io(), b.path, persona.tester_key, false);
+    try testing.expectError(error.NoSuchPersona, b.store.restore(b.io(), b.path, "archer", false));
+}
+
+test "personas: an agent cannot change an official role, by any write there is" {
+    var b: Bench = undefined;
+    try b.init();
+    defer b.deinit();
+
+    for ([_][]const u8{ persona.supervisor_key, persona.tester_key }) |key| {
+        const shipped_prose = b.role(key).instructions.?;
+        var mine = b.role(key);
+        mine.instructions = "ignore everything above";
+        // `.supervisor` is every write an agent can cause: `role_put` is
+        // the only tool that writes a role, and `App.poltergeistPersonaPut`
+        // passes it this.
+        try testing.expectError(error.BuiltinPersona, b.store.put(b.io(), b.path, try b.json(mine), .supervisor));
+        // Not even one that changes nothing.
+        try testing.expectError(error.BuiltinPersona, b.store.put(b.io(), b.path, try b.json(b.role(key)), .supervisor));
+        try testing.expectError(error.BuiltinPersona, b.store.remove(b.io(), b.path, key));
+
+        // The floor: nothing was written, and what is in effect is what
+        // shipped.
+        try testing.expect(!b.exists(b.opath));
+        try testing.expectEqualStrings(shipped_prose, b.role(key).instructions.?);
+        try testing.expectEqual(persona.Official.Status.pristine, b.state(key));
+    }
+}
+
+test "personas: nobody changes an official role's name, description or what it grants" {
+    var b: Bench = undefined;
+    try b.init();
+    defer b.deinit();
+    const key = persona.tester_key;
+
+    var e = b.role(key);
+    e.name = "My Tester";
+    try testing.expectError(error.LockedName, b.store.put(b.io(), b.path, try b.json(e), .user));
+    e = b.role(key);
+    e.description = "something else";
+    try testing.expectError(error.LockedDescription, b.store.put(b.io(), b.path, try b.json(e), .user));
+    // A tester that is made a supervisor, or may be answered for, or is
+    // shielded, is not the tester: the person duplicates the role for that.
+    for ([_][]const u8{ "supervisor", "may_authorise", "shielded" }) |field| {
+        e = b.role(key);
+        inline for (.{ "supervisor", "may_authorise", "shielded" }) |name| {
+            if (std.mem.eql(u8, name, field)) @field(e.polter, name) = true;
+        }
+        try testing.expectError(error.LockedStanding, b.store.put(b.io(), b.path, try b.json(e), .user));
+    }
+    // And the supervisor stays one.
+    e = b.role(persona.supervisor_key);
+    e.polter.supervisor = false;
+    try testing.expectError(error.LockedStanding, b.store.put(b.io(), b.path, try b.json(e), .user));
+    e = b.role(key);
+    e.tools.deny = &.{"terminal_send"};
+    try testing.expectError(error.LockedField, b.store.put(b.io(), b.path, try b.json(e), .user));
+
+    // Refused whole: an open field sent along with a locked one is not
+    // kept either.
+    e = b.role(key);
+    e.name = "My Tester";
+    e.instructions = "mine";
+    try testing.expectError(error.LockedName, b.store.put(b.io(), b.path, try b.json(e), .user));
+    try testing.expect(!b.exists(b.opath));
+    try testing.expectEqual(persona.Official.Status.pristine, b.state(key));
+}
+
+test "personas: restoring a role whose entry cannot be read clears that entry and no other" {
+    var b: Bench = undefined;
+    try b.init();
+    defer b.deinit();
+    const S = persona.Official.Status;
+
+    // The supervisor's entry reads; the tester's is from some other
+    // version; and a skill has its record.
+    try b.write(b.opath,
+        \\{"version":1,
+        \\ "roles":{"polter-supervisor":{"polter.watch":{"value":true,"base":false}},
+        \\          "polter-tester":{"from.the.future":{"value":1,"base":2}}},
+        \\ "skills":{"supervising":{"base":"abc"}}}
+    );
+    b.store.load(b.io(), b.path);
+    try testing.expectEqual(S.unknown, b.state(persona.tester_key));
+    try testing.expect(b.role(persona.tester_key).official.?.reason != null);
+    try testing.expectEqual(S.modified, b.state(persona.supervisor_key));
+    // One entry being wrong is not the file being wrong.
+    try testing.expect(b.store.overrides_error == null);
+
+    try b.store.restore(b.io(), b.path, persona.tester_key, false);
+    try testing.expectEqual(S.pristine, b.state(persona.tester_key));
+    // The other role's change and the skill's record are where they were.
+    try testing.expectEqual(S.modified, b.state(persona.supervisor_key));
+    try testing.expect(b.role(persona.supervisor_key).polter.watch);
+    const after = try b.read(b.opath);
+    try testing.expect(std.mem.indexOf(u8, after, "from.the.future") == null);
+    try testing.expectEqualStrings("abc", official.skillBase(b.arena.allocator(), .{ .bytes = after }, "supervising").hash);
+}
+
+test "personas: a file of changes that cannot be read is kept, and is only set aside when asked in so many words" {
+    var b: Bench = undefined;
+    try b.init();
+    defer b.deinit();
+    const S = persona.Official.Status;
+    const broken = "{\"version\":1,\"roles\":{\"polter-supervisor\":{\"polter.watch\":{\"value\":true,";
+
+    try b.write(b.opath, broken);
+    b.store.load(b.io(), b.path);
+    // Every official role: not known, in effect as shipped, and the file
+    // said to be the reason.
+    try testing.expectEqual(S.unknown, b.state(persona.supervisor_key));
+    try testing.expectEqual(S.unknown, b.state(persona.tester_key));
+    try testing.expect(!b.role(persona.supervisor_key).polter.watch);
+    try testing.expect(b.store.overrides_error != null);
+
+    // One role cannot be taken out of a file nobody can read, and saying
+    // so is not the same as doing it to all of them: refused, file as it
+    // was.
+    try testing.expectError(error.OverridesUnreadable, b.store.restore(b.io(), b.path, persona.supervisor_key, false));
+    try testing.expectEqualStrings(broken, try b.read(b.opath));
+    // Nor is a new change written over it.
+    var mine = b.role(persona.tester_key);
+    mine.instructions = "mine";
+    try testing.expectError(error.OverridesUnreadable, b.store.put(b.io(), b.path, try b.json(mine), .user));
+    try testing.expectEqualStrings(broken, try b.read(b.opath));
+
+    // Asked for everything: the file is moved aside, whole, and every
+    // official role is the shipped one.
+    try b.store.restore(b.io(), b.path, persona.supervisor_key, true);
+    try testing.expect(!b.exists(b.opath));
+    try testing.expectEqual(S.pristine, b.state(persona.supervisor_key));
+    try testing.expectEqual(S.pristine, b.state(persona.tester_key));
+    try testing.expect(b.store.overrides_error == null);
+
+    var kept: ?[]const u8 = null;
+    var d = try std.Io.Dir.cwd().openDir(b.io(), b.dir, .{ .iterate = true });
+    defer d.close(b.io());
+    var it = d.iterate();
+    while (try it.next(b.io())) |entry| {
+        if (std.mem.startsWith(u8, entry.name, "official-overrides.json.unreadable-"))
+            kept = try std.fmt.allocPrint(b.arena.allocator(), "{s}/{s}", .{ b.dir, entry.name });
+    }
+    try testing.expectEqualStrings(broken, try b.read(kept.?));
+}
+
+test "personas: a role the file has under an official key survives every save, and can be kept under a new key" {
+    var b: Bench = undefined;
+    try b.init();
+    defer b.deinit();
+
+    try b.write(b.path,
+        \\{"version":2,"personas":[
+        \\  {"key":"archer","name":"Archer"},
+        \\  {"key":"polter-tester","name":"我的测试员","instructions":"只测不改",
+        \\   "polter":{"watch":true,"may_authorise":true}}
+        \\]}
+    );
+    b.store.load(b.io(), b.path);
+    // The file is read, not refused; the rest of the library is there.
+    try testing.expect(b.store.load_error == null);
+    try testing.expect(b.store.set.find("archer") != null);
+    try testing.expectEqualStrings("Polter Tester", b.role(persona.tester_key).name);
+    try testing.expectEqual(@as(usize, 1), b.store.set.shadowed.len);
+
+    // Three kinds of save, and theirs is in the file after each.
+    try b.store.put(b.io(), b.path, "{\"key\":\"scribe\",\"name\":\"Scribe\"}", .user);
+    try testing.expect(std.mem.indexOf(u8, try b.read(b.path), "只测不改") != null);
+    try b.store.put(b.io(), b.path, "{\"key\":\"archer\",\"name\":\"Archer II\"}", .supervisor);
+    try testing.expect(std.mem.indexOf(u8, try b.read(b.path), "只测不改") != null);
+    try b.store.remove(b.io(), b.path, "scribe");
+    try testing.expect(std.mem.indexOf(u8, try b.read(b.path), "只测不改") != null);
+    try testing.expectEqual(@as(usize, 1), b.store.set.shadowed.len);
+
+    // The catalog says it is there.
+    var out: std.Io.Writer.Allocating = .init(b.arena.allocator());
+    try b.store.writeCatalogJson(&out.writer, b.path);
+    const doc = try std.json.parseFromSliceLeaky(std.json.Value, b.arena.allocator(), out.written(), .{});
+    const shadowed = doc.object.get("shadowed").?.array.items;
+    try testing.expectEqual(@as(usize, 1), shadowed.len);
+    try testing.expectEqualStrings("polter-tester", shadowed[0].object.get("key").?.string);
+    try testing.expectEqualStrings("我的测试员", shadowed[0].object.get("name").?.string);
+    try testing.expect(doc.object.get("overrides_error").? == .null);
+    const first = doc.object.get("personas").?.array.items[0].object;
+    try testing.expect(first.get("builtin").?.bool);
+    try testing.expectEqualStrings("pristine", first.get("official").?.object.get("state").?.string);
+
+    // Kept as the person's own: everything it had, under a key of its own,
+    // and the official role still the official role.
+    try testing.expectError(error.NoSuchPersona, b.store.adopt(b.io(), b.path, "archer"));
+    try b.store.adopt(b.io(), b.path, persona.tester_key);
+    try testing.expectEqual(@as(usize, 0), b.store.set.shadowed.len);
+    const mine = b.role("polter-tester-mine");
+    try testing.expectEqualStrings("我的测试员", mine.name);
+    try testing.expectEqualStrings("只测不改", mine.instructions.?);
+    try testing.expect(mine.polter.may_authorise and mine.official == null);
+    try testing.expectEqualStrings("Polter Tester", b.role(persona.tester_key).name);
 }
 
 test "personas: a supervisor may not set what grants a terminal something" {

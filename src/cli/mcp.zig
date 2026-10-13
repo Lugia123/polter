@@ -790,10 +790,13 @@ const tools = [_]Tool{
             "comes back in exactly the shape role_put takes, so reading one, changing a " ++
             "field and writing it back is the whole edit. `loaded` false means the file " ++
             "has not been read yet; `error` set means it does not parse and the list is " ++
-            "the last good one. Roles with `builtin` true ship with Polter and cannot be " ++
-            "changed or deleted. Supervisor only, and a supervisor has the same powers " ++
-            "over roles as the user has in the role library window, except the three " ++
-            "polter settings role_put names.",
+            "the last good one. Roles with `builtin` true are official: they ship with " ++
+            "Polter, only the person can change them (in the role library), and nobody " ++
+            "can delete them. Their `official.state` says whether the person has: " ++
+            "pristine, modified, modified_stale (changed, and the shipped role has " ++
+            "moved since), or unknown. Supervisor only, and a supervisor has the same " ++
+            "powers over the other roles as the user has in the role library window, " ++
+            "except the three polter settings role_put names.",
         .schema =
         \\{"type":"object","properties":{},"additionalProperties":false}
         ,
@@ -823,8 +826,9 @@ const tools = [_]Tool{
             "set**: a write that changes any of them from what the role has now (off, " ++
             "for a new role) is refused as NotPermitted. `may_authorise` in a role only " ++
             "ever adds: off there means \"as the user's default has it\", which is on " ++
-            "unless they turned it off, not \"refuse\". A built-in role's key is " ++
-            "refused as BuiltinRole. Supervisor only.",
+            "unless they turned it off, not \"refuse\". An official role's key " ++
+            "(`builtin: true` in role_list) is refused as BuiltinRole: only the person " ++
+            "changes those, in the role library. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"role":{"type":"object","description":"One role, in the shape role_list returns."}},"required":["role"],"additionalProperties":false}
         ,
@@ -832,8 +836,8 @@ const tools = [_]Tool{
     .{
         .name = "role_delete",
         .description = "Delete a role from the library by its key. Terminals wearing it " ++
-            "are taken out of it; agents already running in them keep running. A " ++
-            "built-in role cannot be deleted. Supervisor only.",
+            "are taken out of it; agents already running in them keep running. An " ++
+            "official role cannot be deleted. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}
         ,

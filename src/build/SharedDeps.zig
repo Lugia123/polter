@@ -8,6 +8,7 @@ const HelpStrings = @import("HelpStrings.zig");
 const MetallibStep = @import("MetallibStep.zig");
 const UnicodeTables = @import("UnicodeTables.zig");
 const GhosttyFrameData = @import("GhosttyFrameData.zig");
+const PolterOfficial = @import("PolterOfficial.zig");
 const DistResource = @import("GhosttyDist.zig").Resource;
 const gtk_helpers = @import("gtk.zig");
 const translate_c = @import("translate_c");
@@ -19,6 +20,7 @@ help_strings: HelpStrings,
 metallib: ?*MetallibStep,
 unicode_tables: UnicodeTables,
 framedata: GhosttyFrameData,
+polter_official: PolterOfficial,
 uucode_tables: std.Build.LazyPath,
 
 /// Singleton uucode module, instantiated once in `init` and reused
@@ -88,6 +90,7 @@ pub fn init(b: *std.Build, cfg: *const Config) !SharedDeps {
         .help_strings = try .init(b, cfg),
         .unicode_tables = try .init(b, uucode_tables),
         .framedata = try .init(b),
+        .polter_official = try .init(b),
         .uucode_tables = uucode_tables,
         .uucode_mod = uucode_mod,
 
@@ -184,6 +187,9 @@ pub fn add(
 
     // Every exe gets build options populated
     step.root_module.addOptions("build_options", self.options);
+
+    // The official roles and skills, as data (`PolterOfficial.zig`).
+    self.polter_official.addImport(step);
 
     // The plugin manifests Polter ships that declare a credential, so a test
     // can read what they declare. `plugin_configure` only refuses a plaintext

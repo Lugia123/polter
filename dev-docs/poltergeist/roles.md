@@ -852,19 +852,154 @@ Windows 测试机上，隔离配置目录 + 一个 PowerShell 写的假 CLI 插�
 `polter +launch` 交给 adapter。用户自己写的总管角色，指令留空也不会起一个「是总管
 却不知道」的 agent。
 
-## 12.4 内置角色
+## 12.4 官方角色（原「内置角色」）
 
-`persona.builtins` 目前一个：`polter-supervisor`。
+**2026-10-14 重写**（任务 #1504，用户定的：官方角色和 skill「不能代码写死，方便以后更新或者
+用户可以自己调整」，「留一个还原功能」）。旧的写法和它的理由留在本节末尾，划掉并写了为什么改。
 
-- **不写进 `personas.json`**，由读者补上：`parseLeaky` 把它放在最前面，没有文件
-  时 `builtinSet()`——应用和 `polter +launch`（另一个进程）都是这样。若写进文件，
-  用户删了它下次启动又回来，用户改了它升级时不知道该不该覆盖。
-- 文件或 `role_put` 用了这个 key：`ReservedKey` / `BuiltinRole`，删它：`BuiltinRole`。
-  想改就在角色库里「复制」一份。
-- 内容：skills 默认全关，只留 `polter-*` 三个；MCP 默认全关（polter 自己的锁定常驻）；
-  Polter 一半 `supervisor`（`open` 是默认的 `auto`，见 12.2）；指令只写身份与边界（拆分、派活、验收，
-  结论进群，不可逆的事先问用户）——「先读 supervising」已经在 12.3 那句里。
-- 名字和说明在核心里是英文，mac 界面按 key 显示本地化文字（`Role.displayName`）。
+### 官方版本是数据，随二进制走
+
+- 一个官方角色是 `src/poltergeist/roles/` 下的两个文件：`<key>.json`（就是 `personas.json`
+  里一个角色对象的形状，同一个 `persona.personaOf` 解析）和 `<key>.md`（提示词；JSON 里
+  不许再写 `instructions`，两份文本就没有人说得清用的是哪份）。现在两个：
+  `polter-supervisor`、`polter-tester`。
+- **构建时整份解析，坏了红构建**（`src/build/PolterOfficial.zig`）：它枚举这个目录、用程序自己
+  的解析器读每个文件、生成嵌入清单 `polter_official`。放在构建脚本而不是测试里，是因为带
+  `-Dtest-filter` 的构建不编译没点名的测试——测试守不住的那种构建，正是日常跑得最多的那种。
+  地板四格（JSON 写坏 / JSON 里带 instructions / key 不等于文件名 / skill 的 name 不等于文件名）
+  都红在 `zig build` 的第一行，点名文件。
+- **「官方版本」= 这个二进制带的那一份**（`@embedFile`）。不在运行时从资源目录读：app 和
+  `polter +launch` 是两个进程（Windows 上是两个 exe），运行时读就多一种「打包清单漏了一个文件
+  → 总管角色消失、总控台起不了总管」的失败；而升级官方角色本来就是换安装包。
+- 名字、说明、提示词一律英文，随包只有这一份。**宿主直接显示英文名**，不再按 key 换成本地化
+  文字（原先 `Role.displayName` 等四处）。界面自己的字（「官方」「恢复出厂设置」）照常本地化。
+
+### 用户的改动是一份覆盖
+
+存在 `personas.json` **旁边**的 `official-overrides.json`（同一条路径规则，所以测试实例隔离了
+角色库也就隔离了它），按字段存，每个字段带「改的时候官方是什么」：
+
+```json
+{"version":1,
+ "roles":{"polter-supervisor":{
+   "instructions":{"value":"…","base":"…"},
+   "clis.claude-code.model":{"value":"opus","base":null}}},
+ "skills":{"supervising":{"base":"<保存时随包那份的 sha256>"}}}
+```
+
+- 生效的角色 = 官方逐字段，被覆盖的字段取 `value`（`official.effective`）。**没改过的字段升级后
+  自动跟新版，改过的保持用户的。**
+- 字段单位：`instructions`｜`polter.watch` / `polter.open` / `polter.quiet_ms`｜`clis.<cli>`
+  （这个 CLI 在不在）｜`clis.<cli>.skills` / `.mcp` / `.model` / `.args`。
+- 保存时与当前官方相同的字段不写，所以「改回去」= 这一项覆盖自己消失。已有的覆盖若值没变，
+  **保留它原来的 `base`**：把同一句话再说一遍不会让它变新，「官方版本有更新」的提示也不该因为
+  用户存了别的东西就消失。（让用户「知道了，仍用我的」从而消掉提示的动作还没有，见 12.5。）
+- **不放进 `personas.json`**：旧版 Polter 读到官方 key 会整份拒读，降级一次用户的整个角色库
+  就空了。
+
+### 四种状态，「不知道」和「没有」分开
+
+`role_list` 与角色库目录里，官方角色带 `builtin: true` 和
+
+```json
+"official": {"state": "pristine|modified|modified_stale|unknown",
+             "overridden": ["字段…"], "stale": ["字段…"], "reason": null}
+```
+
+| state | 意思 |
+| --- | --- |
+| `pristine` | 没改过 |
+| `modified` | 改过；被改字段底下的官方值和改的时候一样 |
+| `modified_stale` | 改过，而且至少一个被改的字段官方后来也变了（`stale` 点名）——界面提示「官方版本有更新」 |
+| `unknown` | 有东西写着但读不出来：整份文件读不了、不是 JSON、版本不认识、这个角色那一项里有不认识的字段或某字段缺 `base`。**此时生效的是纯官方角色**（半份覆盖和整份长得一样，所以一点都不套），`reason` 说原因 |
+
+`persona.Official` 的字段都**没有默认值**，没改过的那个有具名常量 `.pristine`——「没改」和「读不出
+改了什么」看上去都是一个出厂角色，漏写一行就会把一个写成另一个（仓库规矩第 5、6 条）。
+整份文件用不了的原因另在目录顶层 `overrides_error`；只有某一项坏不算文件坏。
+
+### 谁能改什么
+
+开放（界面里改，存成覆盖，可还原）：上面那几个字段。锁住，**谁都不能改**：`key`、官方属性、
+名字、说明、三项授权类开关（总管的 `supervisor = true` 在内）、v1 遗留的
+`tools` / `skills` / `mcp` / `prompt` / `hint`。改了锁住的东西整个请求被拒，四个错误名分别点名
+（`LockedName` / `LockedDescription` / `LockedStanding` / `LockedField`）——拒绝而不是悄悄保留，
+理由和 12.2 第一条一样：读回来的应当就是发出去的。
+
+**AI 不能改官方的东西。** 官方角色的提示词就是它的 agent 的边界——总管的那份写着总管自己能
+决定什么——让 agent 能改它等于让它自己给自己松绑。实现挂在现成的那条线上：`PersonaStore.put`
+的 `who`，界面（`ghostty_app_persona_put`）是 `.user`，agent 能碰到的一切写入（`role_put`）是
+`.supervisor`，对官方 key 一律 `BuiltinRole`，连「什么都没改」的写入也拒。`role_delete` 对官方
+key 对谁都拒。还原、认领、skill 的保存与还原**只有 C 接口**，`rpc.Method` 里没有对应项。
+
+### 恢复出厂设置
+
+`PersonaStore.restore(key, everything)`：把这一个角色的那一项从覆盖文件里拿掉，别的项原样
+留着（在 JSON 值上改，所以连本版读不懂的项也带得过去）。
+
+**整份文件解析不过时**，没法只拿掉一项——不知道它在哪。此时 `everything = false` 被拒
+（`OverridesUnreadable`），文件一个字节不动；宿主要先用这句话问用户：「改动文件读不了；恢复会把
+**全部**官方角色与 skill 设回出厂，读不了的文件留作 `official-overrides.json.unreadable-<随机>`」，
+得到同意再以 `everything = true` 调用，文件被**改名留存**而不是删除。同一个状态下保存新的改动
+也被拒，不会把读不了的文件盖掉。
+
+### 旧数据：文件里已经有一个官方 key
+
+`polter-tester` 在成为官方 key 之前是谁都能用的名字，所以这不再只是「有人手写了
+`polter-supervisor`」的问题。**不再整份拒读。** 那一项不进生效集（官方的赢），原样留在
+`Set.shadowed` 里，`writeSet` 每次都把它写回文件——之后任何一次保存（用户的、总管的、删除）都
+冲不掉它。目录里 `shadowed: [{key, name}]` 让界面说出来；`PersonaStore.adopt` 在**用户点了
+之后**把它改成 `<key>-mine`（撞了加数字）变成用户自己的角色。读文件时不改用户的文件，也不把它
+当成覆盖（名字、授权位的语义对不上）。
+
+### 两个官方角色的内容
+
+- `polter-supervisor`：与原来写死的那份逐字相同。
+- `polter-tester`（新）：通用的测试 worker——只测不改、先说清测的是哪个产物、结论带证据、要人
+  授权就停、只清自己起的、做完或卡住先 `task_progress` 再 `group_post`。不是总管，`watch` 开，
+  skill 只留 `polter-operating-a-terminal`，MCP 全关。不写本仓、某台测试机或某个工具的事。
+  用户自己库里原有的测试角色不受影响。
+
+### 官方 skill 走同一套
+
+- **清单不写死**：运行时列资源目录 `poltergeist/*.md`（`skill_store.shipped`），构建时列源码目录。
+- **哪一份在用，只有一个函数说了算**（`skill_store.resolve`）。原先有两个答案：`skill_read`
+  读 `<配置>/polter/polter/skills/`（目录拼了两次），交给各 CLI 的那份读
+  `<配置>/polter/skills/`。用户按文档放一份，CLI 拿到改过的、`skill_read` 还答出厂的，没有任何
+  地方说。现在以 `<配置>/polter/skills/` 为准；多拼一层的旧位置仍读（排在后面，用到时打一行
+  日志），免得谁放过的文件静默失效。解析不过、或 `name` 不是这个 skill 的副本不用。
+- 用户的副本仍是整份文件，保持纯净（它会原样进各 CLI 的 `SKILL.md`）；「它是照哪一版改的」记在
+  `official-overrides.json` 的 `skills.<name>.base`。四种状态同上：有副本而没有记录 = 用户手放
+  的文件 → `unknown`（分不出官方变没变），不是「没更新」。
+- 保存或还原之后核心**重发一次 provision 事件**，各 CLI 的插件按内容比较重写它那份
+  `polter-<name>/SKILL.md`。`skill_read` 每次读文件，立刻生效。
+- ⚠️ 插件会删掉不再随包的 `polter-*` skill，而清单现在来自列目录。**「资源目录读不到」绝不能
+  到了那边变成「什么都不随包了」**：`skill_store.provisioned` 此时给 null，核心交出空清单，两份
+  插件 SDK 都把空清单当作「没说 skill 的事」、不删任何东西（`provision.sh` / `provision.ps1`
+  「only when the line actually parsed into a list」）。中途少了一个也算读不到，不交半份清单。
+
+### 被推翻的旧写法
+
+> ~~`persona.builtins` 目前一个：`polter-supervisor`。~~
+>
+> ~~- **不写进 `personas.json`**，由读者补上：`parseLeaky` 把它放在最前面，没有文件
+>   时 `builtinSet()`——应用和 `polter +launch`（另一个进程）都是这样。若写进文件，
+>   用户删了它下次启动又回来，用户改了它升级时不知道该不该覆盖。~~
+> ~~- 文件或 `role_put` 用了这个 key：`ReservedKey` / `BuiltinRole`，删它：`BuiltinRole`。
+>   想改就在角色库里「复制」一份。~~
+> ~~- 名字和说明在核心里是英文，mac 界面按 key 显示本地化文字（`Role.displayName`）。~~
+
+为什么改，逐条：
+
+- 「改了之后升级不知道该不该覆盖」是真问题，但答案不必是「所以不许改」。它问的其实是「这个字段
+  是用户改的还是旧版留下的」，**按字段存覆盖并记下 `base`** 就能回答，而且比「整份覆盖/整份
+  不覆盖」多回答一件事：官方后来动没动用户改过的那个字段。「删了又回来」则原样保留——官方
+  角色仍然不能删，只能还原。
+- 官方角色仍然**不写进 `personas.json`**，由读者补上，这一条没变；变的是「补上的是什么」：
+  数据文件加覆盖，而不是一个 Zig 常量。
+- `ReservedKey` 整份拒读在只有一个、谁也不会碰巧用到的官方 key 时是对的；第二个官方 key 一出现，
+  它就会把已经有同名角色的用户的整个库清空。
+- 按 key 本地化官方名：用户定了官方角色与 skill 全文英文，带「官方」标志的名字就该是出厂的
+  那个名字。
 
 ## 12.5 没做的，和没验证的
 
@@ -873,6 +1008,13 @@ Windows 测试机上，隔离配置目录 + 一个 PowerShell 写的假 CLI 插�
   roles-win 群 #699（第一阶段：内置角色在、启动成总管、watch 归启动者、保留 key 整份
   拒读——并由此测出 12.2 第二条改成「agent 连上时生效」）。
 - `watch` 在「用户启动、有多个总管」时不交给任何人，只写一行日志，界面上看不出来。
+- **「官方版本有更新」的提示目前只有还原或重改那个字段才会消失。**「知道了，仍用我的」
+  （把 `base` 提到当前官方值）这个动作还没有。
+- 官方 skill 改完后，**已经在跑的 agent 什么时候读到新的 `SKILL.md` 是各 CLI 自己的事**
+  （附录 A.3）；核心只保证文件被重写、`skill_read` 立刻是新的。重发 provision 之后插件确实
+  重写了文件——这一步是读脚本推的，没在真机上跑过。
+- `personas.json` 自己解析不过时，官方角色的保存与还原也被拒（`FileUnreadable`）：重读会留住
+  上一份好的集合，写进去的东西看不见。
 
 ---
 
