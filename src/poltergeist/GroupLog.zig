@@ -79,6 +79,7 @@ const Allocator = std.mem.Allocator;
 const daylog = @import("daylog.zig");
 const Marks = @import("Chat.zig").Marks;
 const LastSupervisor = @import("Chat.zig").LastSupervisor;
+const ProjectTie = @import("Chat.zig").ProjectTie;
 
 const log = std.log.scoped(.poltergeist);
 
@@ -126,6 +127,10 @@ pub const Shell = struct {
     /// that was kept, and for a group nobody minded. Its strings are owned
     /// like the rest.
     supervisor: LastSupervisor,
+
+    /// The project it is tied to; `undecided` for every record written
+    /// before there were ties. Owned like the rest.
+    project: ProjectTie,
 };
 
 pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error!GroupLog {
@@ -167,6 +172,7 @@ pub fn note(self: *GroupLog, name: []const u8, brief: []const u8) void {
         .listed = true,
         .marks = if (was) |m| m.marks else .none,
         .supervisor = if (was) |m| m.supervisor else .none,
+        .project = if (was) |m| m.project else .undecided,
     });
 }
 
@@ -180,6 +186,7 @@ pub fn mark(self: *GroupLog, name: []const u8, marks: Marks) void {
         .listed = if (was) |m| m.listed else true,
         .marks = marks,
         .supervisor = if (was) |m| m.supervisor else .none,
+        .project = if (was) |m| m.project else .undecided,
     });
 }
 
@@ -199,6 +206,21 @@ pub fn supervisor(self: *GroupLog, name: []const u8, last: LastSupervisor) void 
         .listed = if (was) |m| m.listed else true,
         .marks = if (was) |m| m.marks else .none,
         .supervisor = last,
+        .project = if (was) |m| m.project else .undecided,
+    });
+}
+
+/// Write down the project a group is tied to, or that it has none,
+/// leaving everything else as it was.
+pub fn project(self: *GroupLog, name: []const u8, tie: ProjectTie) void {
+    const was = self.readMeta(self.alloc, name);
+    defer if (was) |m| m.free(self.alloc);
+    self.writeMeta(name, .{
+        .brief = if (was) |m| m.brief else "",
+        .listed = if (was) |m| m.listed else true,
+        .marks = if (was) |m| m.marks else .none,
+        .supervisor = if (was) |m| m.supervisor else .none,
+        .project = tie,
     });
 }
 
@@ -215,6 +237,7 @@ pub fn forget(self: *GroupLog, name: []const u8) void {
         .listed = false,
         .marks = if (was) |m| m.marks else .none,
         .supervisor = if (was) |m| m.supervisor else .none,
+        .project = if (was) |m| m.project else .undecided,
     });
 }
 
@@ -227,6 +250,7 @@ const Entry = struct {
     listed: bool,
     marks: Marks,
     supervisor: LastSupervisor,
+    project: ProjectTie,
 };
 
 fn writeMeta(self: *GroupLog, name: []const u8, entry: Entry) void {
@@ -319,6 +343,27 @@ fn render(s: *std.json.Stringify, entry: Entry) std.Io.Writer.Error!void {
         try s.endObject();
     }
 
+    // Only when somebody has said. Nobody having said is the key not
+    // being there, which is what every older record already is; a group
+    // whose supervisor said it has none says that in so many words.
+    switch (entry.project) {
+        .undecided => {},
+        .declined => {
+            try s.objectField("project");
+            try s.beginObject();
+            try s.objectField("declined");
+            try s.write(true);
+            try s.endObject();
+        },
+        .bound => |name| {
+            try s.objectField("project");
+            try s.beginObject();
+            try s.objectField("name");
+            try s.write(name);
+            try s.endObject();
+        },
+    }
+
     // Only when it is false. Being in the list is what a group directory
     // already means, so the ordinary file is a note and nothing else, and
     // the flag is there to say the one thing the directory cannot.
@@ -366,12 +411,31 @@ const Meta = struct {
     /// Its strings are owned by the caller's allocator, like `brief`.
     /// `none` when the file names none.
     supervisor: LastSupervisor,
+    /// Owned likewise. `undecided` when the file says nothing of one.
+    project: ProjectTie,
 
     fn free(self: Meta, alloc: Allocator) void {
         alloc.free(self.brief);
         self.supervisor.free(alloc);
+        self.project.free(alloc);
     }
 };
+
+/// What the file says of the group's project, borrowed from the parse.
+/// Anything that is not one of the two shapes `render` writes is nobody
+/// having said -- never a tie to a project named by a guess.
+fn projectIn(obj: std.json.ObjectMap) ProjectTie {
+    const o = switch (obj.get("project") orelse std.json.Value.null) {
+        .object => |v| v,
+        else => return .undecided,
+    };
+    const name = textIn(o, "name");
+    if (name.len > 0) return .{ .bound = name };
+    return switch (o.get("declined") orelse std.json.Value.null) {
+        .bool => |b| if (b) .declined else .undecided,
+        else => .undecided,
+    };
+}
 
 fn textIn(obj: std.json.ObjectMap, key: []const u8) []const u8 {
     return switch (obj.get(key) orelse std.json.Value.null) {
@@ -503,12 +567,18 @@ fn readMetaIn(self: *const GroupLog, alloc: Allocator, seg: []const u8) ?Meta {
     };
 
     const owned_brief = alloc.dupe(u8, brief) catch return null;
+    const owned_last = supervisorIn(obj).dupe(alloc) catch {
+        alloc.free(owned_brief);
+        return null;
+    };
     return .{
         .brief = owned_brief,
         .listed = listed,
         .marks = marksIn(obj),
-        .supervisor = supervisorIn(obj).dupe(alloc) catch {
+        .supervisor = owned_last,
+        .project = projectIn(obj).dupe(alloc) catch {
             alloc.free(owned_brief);
+            owned_last.free(alloc);
             return null;
         },
     };
@@ -526,6 +596,7 @@ pub fn restore(self: *GroupLog, alloc: Allocator) Allocator.Error![]Shell {
             alloc.free(s.name);
             alloc.free(s.brief);
             s.supervisor.free(alloc);
+            s.project.free(alloc);
         }
         out.deinit(alloc);
     }
@@ -573,6 +644,14 @@ pub fn restore(self: *GroupLog, alloc: Allocator) Allocator.Error![]Shell {
             continue;
         };
         errdefer last.free(alloc);
+        const said: ProjectTie = if (meta) |m| m.project else .undecided;
+        const tie = said.dupe(alloc) catch {
+            alloc.free(name);
+            alloc.free(brief);
+            last.free(alloc);
+            continue;
+        };
+        errdefer tie.free(alloc);
 
         try out.append(alloc, .{
             .name = name,
@@ -580,6 +659,7 @@ pub fn restore(self: *GroupLog, alloc: Allocator) Allocator.Error![]Shell {
             .last_ms = self.lastSpokeIn(seg),
             .marks = if (meta) |m| m.marks else .none,
             .supervisor = last,
+            .project = tie,
         });
     }
 
@@ -591,6 +671,7 @@ pub fn free(alloc: Allocator, shells: []Shell) void {
         alloc.free(s.name);
         alloc.free(s.brief);
         s.supervisor.free(alloc);
+        s.project.free(alloc);
     }
     alloc.free(shells);
 }
@@ -1167,4 +1248,83 @@ test "ControlRoom resume: a record from before there was a section reads its dir
     try testing.expectEqualStrings("claude-code", m.supervisor.cli);
     try testing.expectEqualStrings("s-1", m.supervisor.session);
     try testing.expectEqual(@as(?u64, null), m.supervisor.heard_ms);
+}
+
+test "Projects: a group's tie to a project is written down in its own words and outlives every other write to the file" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const state = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+
+    var gl = try GroupLog.open(alloc, io, state);
+    defer gl.deinit();
+
+    // Nobody has said: the key is not there, as in every older record.
+    gl.note("build", "why");
+    {
+        const text = try metaText(alloc, io, state, "build");
+        defer alloc.free(text);
+        try testing.expect(std.mem.indexOf(u8, text, "project") == null);
+        const m = gl.readMeta(alloc, "build").?;
+        defer m.free(alloc);
+        try testing.expect(m.project == .undecided);
+    }
+
+    gl.project("build", .{ .bound = "scratch" });
+    {
+        const text = try metaText(alloc, io, state, "build");
+        defer alloc.free(text);
+        try testing.expectEqualStrings("{\"brief\":\"why\",\"project\":{\"name\":\"scratch\"}}", text);
+    }
+
+    // Each of the other writers rewrites the whole file.
+    gl.note("build", "why, again");
+    gl.mark("build", .{ .seen_ms = 7, .snooze = .none });
+    gl.supervisor("build", .none);
+    gl.forget("build");
+    gl.note("build", "why, again");
+    {
+        const shells = try gl.restore(alloc);
+        defer free(alloc, shells);
+        try testing.expectEqual(@as(usize, 1), shells.len);
+        try testing.expectEqualStrings("scratch", shells[0].project.bound);
+    }
+
+    // "Has none, its supervisor said so" is not "nobody has said".
+    gl.project("build", .declined);
+    {
+        const text = try metaText(alloc, io, state, "build");
+        defer alloc.free(text);
+        try testing.expect(std.mem.indexOf(u8, text, "\"project\":{\"declined\":true}") != null);
+        const m = gl.readMeta(alloc, "build").?;
+        defer m.free(alloc);
+        try testing.expect(m.project == .declined);
+    }
+    gl.project("build", .undecided);
+    {
+        const text = try metaText(alloc, io, state, "build");
+        defer alloc.free(text);
+        try testing.expect(std.mem.indexOf(u8, text, "project") == null);
+    }
+
+    // Anything that is not one of the two shapes is nobody having said.
+    for ([_][]const u8{
+        "{\"project\":\"scratch\"}",
+        "{\"project\":{\"name\":\"\"}}",
+        "{\"project\":{\"name\":7}}",
+        "{\"project\":{\"declined\":false}}",
+        "{\"project\":{\"declined\":\"yes\"}}",
+        "{\"project\":null}",
+    }) |odd| {
+        try putMetaText(alloc, io, state, "odd", odd);
+        const m = gl.readMeta(alloc, "odd").?;
+        defer m.free(alloc);
+        try testing.expect(m.project == .undecided);
+    }
 }

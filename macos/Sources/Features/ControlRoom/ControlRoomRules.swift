@@ -207,20 +207,36 @@ enum ControlRoomRules {
         case split
         /// Not done, and the person who pressed the key hears so.
         case refuseAloud
-        /// Not done; whoever asked through the core is answered by the
-        /// core, which opens a tab instead and says why.
-        case refuseToTheCore
     }
 
-    /// A terminal the control room has borrowed is not split: the new pane
-    /// would open in its own tab, which is behind the control room, where
-    /// the person who pressed the key cannot see it. `lent` is whether the
-    /// control room has it; `answerWanted` is whether the request came with
-    /// somewhere to write the answer (an agent's, through the core) rather
-    /// than from a key.
+    /// `lent` is whether the control room has borrowed the terminal;
+    /// `answerWanted` is whether the request came with somewhere to write
+    /// the answer (an agent's, through the core) rather than from a key.
+    ///
+    /// **A key pressed on a borrowed terminal is refused**: the new pane
+    /// would open in the terminal's own tab, behind the control room,
+    /// where the person who pressed it cannot see it.
+    ///
+    /// **An agent's request is carried out.** The terminal never left its
+    /// tab's split tree -- only its view is on the control room's right --
+    /// so the split is made there, in its own tab, as it would have been.
+    /// It used to be refused too, and the core then opened a tab instead:
+    /// a supervisor the person was watching in the control room opened
+    /// every worker as a new tab, three in a row on a real window (the
+    /// user, 2026-10-13: "it always opens a new tab"). An agent does not
+    /// need to see the pane it asked for, and the person finds it where
+    /// the supervisor's other panes are.
     static func newSplit(lent: Bool, answerWanted: Bool) -> NewSplit {
         guard lent else { return .split }
-        return answerWanted ? .refuseToTheCore : .refuseAloud
+        return answerWanted ? .split : .refuseAloud
+    }
+
+    /// Whether a new split takes the keyboard in its window. Not when the
+    /// terminal it was split from is in the control room: that window is
+    /// behind, and the terminal that would be told it lost the keyboard is
+    /// the one the person may be typing into on the control room's right.
+    static func newSplitTakesKeyboard(fromLent lent: Bool) -> Bool {
+        !lent
     }
 
     /// What becomes of "new tab" asked of a terminal whose window may not

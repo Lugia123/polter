@@ -736,6 +736,17 @@
 "Directory" = "Directory";
 "Choose" = "Choose";
 "Start Supervisor" = "Start Supervisor";
+"Go on with the last session" = "Go on with the last session";
+"New session" = "New session";
+"The last supervisor worked in %@, using %@." = "The last supervisor worked in %@, using %@.";
+"The last supervisor worked in %@." = "The last supervisor worked in %@.";
+"The last supervisor used %@." = "The last supervisor used %@.";
+"A new session will be started: the last supervisor's CLI never said which session it was in." = "A new session will be started: the last supervisor's CLI never said which session it was in.";
+"A new session will be started: going on with the last one did not work the last time it was tried." = "A new session will be started: going on with the last one did not work the last time it was tried.";
+"A new session will be started: the last session was in another CLI." = "A new session will be started: the last session was in another CLI.";
+"Checking whether the last session can be gone on with…" = "Checking whether the last session can be gone on with…";
+"A new session will be started: this CLI cannot go on with an earlier session." = "A new session will be started: this CLI cannot go on with an earlier session.";
+"A new session will be started: an open terminal is in the last session now." = "A new session will be started: an open terminal is in the last session now.";
 "Where the tab starts" = "Where the tab starts";
 
 /* 终端进程退出的提示条、命令结束的通知、命令面板里的更新项：原先是裸赋值的英文，没进过这张表 */

@@ -51,8 +51,9 @@
 群壳那一行是**唯一被读回程序里的东西**，因此群列表就是这些目录本身：
 群名从目录名解回来（`daylog.decodeSegment`，和写进去的 `encodeSegment` 同一个文件），
 `group.json` 只补目录名说不出的那几件事——简介，这个群还在不在列表里，人在总控台里对它做过的标记
-（`seen_ms` / `snooze`），以及**上次的总管**（`supervisor` 一节：目录、角色、CLI、会话号、最后听到的时刻；
-`control-room.md` §6.4）。
+（`seen_ms` / `snooze`），**上次的总管**（`supervisor` 一节：目录、角色、CLI、会话号、最后听到的时刻；
+`control-room.md` §6.4），以及**它的项目**（`project`：`{"name":…}` 绑着、`{"declined":true}` 它的总管说没有、
+没有这个键是没人说过；`projects.md`）。
 它**不是记录的一部分**：记录里每一行都是「某时发生了某事」，而简介是总管随时替换的
 一句备忘（`Chat.setBrief` 是替换不是追加），把它追加进日文件会让它出现在
 `group_history` 里，那不是备忘该待的地方。TUI 里 `d` 移除一个群，

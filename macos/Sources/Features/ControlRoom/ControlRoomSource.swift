@@ -179,9 +179,10 @@ final class ControlRoomModel: ObservableObject {
     /// Start a supervisor for `group`. A nil role or directory is the one
     /// the core named. What becomes of it arrives in the next list; a
     /// refusal is kept to be shown.
-    func startSupervisor(for group: String, role: String?, cwd: String?) {
+    func startSupervisor(for group: String, role: String?, cwd: String?,
+                         session: ControlRoomStartChoice.Session? = nil) {
         do {
-            try perform(.startSupervisor(group: group, role: role, cwd: cwd))
+            try perform(.startSupervisor(group: group, role: role, cwd: cwd, session: session))
             startRefusal = nil
         } catch let refusal as ControlRoomActions.Refusal {
             startRefusal = (group, refusal.message)

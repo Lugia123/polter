@@ -71,6 +71,15 @@ poltergeist_agent_clis: poltergeistpkg.agent_cli.Cache,
 /// because talking is not steering, and mixing them would blur that.
 chat: poltergeistpkg.Chat,
 
+/// What the host has said about projects, and nothing about any group:
+/// which group has which project is `chat`'s.
+projects: poltergeistpkg.Projects,
+
+/// The launch a start is holding for the supervisor's pane of a project
+/// the host has been ordered to open. One at a time, like the one waiting
+/// for a tab; a second start replaces it.
+project_launch: ?ProjectLaunch = null,
+
 /// Who is doing which piece of work, per group.
 ///
 /// Beside the chat rather than inside it: a task is not a message, and the
@@ -506,6 +515,7 @@ pub fn init(
         .poltergeist_persona_waits = .{ .alloc = alloc, .io = global.io() },
         .poltergeist_feed = .init(alloc, global.io()),
         .chat = .init(alloc, .{}),
+        .projects = .init(alloc),
         .tasks = .init(alloc, .{}),
         .control_room = .init(alloc),
     };
@@ -567,6 +577,8 @@ pub fn deinit(self: *App) void {
     self.control_room.deinit();
     if (self.control_home) |h| if (h.len > 0) self.alloc.free(h);
     self.chat.deinit();
+    self.projects.deinit();
+    if (self.project_launch) |*l| l.arena.deinit();
     self.tasks.deinit();
     self.poltergeist.deinit();
     self.personas.deinit();
@@ -775,6 +787,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
     // which puts the one Polter ships first.
     const roles = self.controlStartRoles(alloc) catch return;
     const cli_resume = self.controlCliResume(alloc) catch return;
+    const projects = self.projectsWork(alloc, now_ms) catch return;
 
     const wall_ms = self.poltergeistWallMs();
     const outcome = self.control_room.refresh(.{
@@ -789,6 +802,8 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         .quota = quota_read,
         .supervisor_roles = roles,
         .cli_resume = cli_resume,
+        .projects = projects,
+        .cli_names = self.controlCliNames(alloc) catch return,
         .home = self.controlHome(),
         .now_ms = now_ms,
         .wall_ms = @intCast(@max(0, wall_ms)),
@@ -841,6 +856,10 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
             .createGroup = controlActCreateGroup,
             .stewardOf = controlActStewardOf,
             .startSupervisor = controlActStartSupervisor,
+            .stateProjects = controlActStateProjects,
+            .projectFailed = controlActProjectFailed,
+            .projectRemove = controlActProjectRemove,
+            .projectRename = controlActProjectRename,
         },
         self.poltergeistElapsedMs(),
         @intCast(@max(0, self.poltergeistWallMs())),
@@ -953,8 +972,12 @@ fn controlActStartSupervisor(
     for (p.clis, cli_keys) |c, *k| k.* = c.cli;
     const cli = ControlRoom.startCliOf(cli_keys, last).?;
 
+    // A group that has a project is started in it: the pane has its own
+    // directory, and none is opened here.
+    const by_project = self.chat.projectOf(group) == .bound;
+
     // The directory: the one named, or the snapshot's, by the same order.
-    const cwd: []const u8 = if (cwd_asked.len > 0) cwd_asked else cwd: {
+    const cwd: []const u8 = if (by_project) "" else if (cwd_asked.len > 0) cwd_asked else cwd: {
         if (last.dir.len > 0) break :cwd last.dir;
         const common = self.chat.commonDirOf(group);
         if (common.len > 0) break :cwd common;
@@ -998,8 +1021,20 @@ fn controlActStartSupervisor(
         if (session_asked == .new) poltergeistpkg.ControlRoom.ResumeOut.Why.none else go_on.why,
     });
 
+    // **Its project, when it has one.** Nothing is opened from here: the
+    // start waits, the snapshot orders the host to open the project
+    // (`Projects`, `open`), and the launch is held until the host states
+    // which terminal is in the supervisor's pane (`projectsWork`).
+    if (by_project) {
+        try self.chat.beginStart(group, now_ms, now_ms + project_open_ms, resuming, .project);
+        errdefer self.chat.endStart(group);
+        try self.holdProjectLaunch(group, choice, line);
+        log.info("control room: starting a supervisor by opening its group's project, in role {s}", .{choice.key});
+        return;
+    }
+
     // From here a refusal has something to take back.
-    try self.chat.beginStart(group, now_ms, now_ms + Store.pending_launch_ms, resuming);
+    try self.chat.beginStart(group, now_ms, now_ms + Store.pending_launch_ms, resuming, .directory);
     errdefer self.chat.endStart(group);
     try self.personas.expectLaunch(choice.key, choice.cli, line, Chat.user_id, now_ms);
     errdefer self.personas.dropLaunch();
@@ -1077,6 +1112,266 @@ fn controlStartConnected(self: *App, id: poltergeistpkg.Bus.Id) void {
     self.controlRoomTouch();
 }
 
+/// How long a start waits for the host to open the group's project and
+/// say which terminal is in the supervisor's pane. Longer than a tab gets:
+/// a project is several windows and every page's shell.
+const project_open_ms: u64 = 30_000;
+
+const ProjectLaunch = struct {
+    arena: std.heap.ArenaAllocator,
+    group: []const u8,
+    key: []const u8,
+    cli: []const u8,
+    line: []const u8,
+};
+
+fn holdProjectLaunch(self: *App, group: []const u8, choice: LaunchChoice, line: []const u8) Allocator.Error!void {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    errdefer arena.deinit();
+    const aa = arena.allocator();
+    const held: ProjectLaunch = .{
+        .arena = undefined,
+        .group = try aa.dupe(u8, group),
+        .key = try aa.dupe(u8, choice.key),
+        .cli = try aa.dupe(u8, choice.cli),
+        .line = try aa.dupe(u8, line),
+    };
+    if (self.project_launch) |*old| old.arena.deinit();
+    self.project_launch = held;
+    self.project_launch.?.arena = arena;
+}
+
+/// Every group as `Projects` needs to see it. Borrowed from `alloc` and
+/// from `chat`; good until the next change to either.
+fn projectViews(self: *App, alloc: Allocator, now_ms: u64) Allocator.Error![]const poltergeistpkg.Projects.GroupView {
+    const Chat = poltergeistpkg.Chat;
+    const live = try self.liveTerminals(alloc);
+    const names = try self.chat.groupsFor(alloc, Chat.user_id, live);
+    const views = try alloc.alloc(poltergeistpkg.Projects.GroupView, names.len);
+    for (names, views) |name, *v| {
+        const members = self.chat.membersOf(alloc, name) catch &.{};
+        var supervisors: usize = 0;
+        for (members) |id| {
+            if (id == Chat.user_id) continue;
+            if (std.mem.indexOfScalar(poltergeistpkg.Bus.Id, live, id) == null) continue;
+            if (self.poltergeist.isSupervisor(id)) supervisors += 1;
+        }
+        v.* = .{
+            .name = name,
+            .tie = self.chat.projectOf(name),
+            .steward = poltergeistpkg.ControlRoom.stewardOfGroup(alloc, &self.poltergeist, &self.chat, name),
+            .supervisors = supervisors,
+            .claim = self.chat.projectClaimOf(name),
+            .awaiting_open = self.chat.startAwaitingProject(name, now_ms),
+        };
+    }
+    return views;
+}
+
+/// Every open terminal an agent opened, and whose agent.
+fn projectOpened(self: *App, alloc: Allocator) Allocator.Error![]const poltergeistpkg.Projects.Opened {
+    var out: std.ArrayListUnmanaged(poltergeistpkg.Projects.Opened) = .empty;
+    for (self.surfaces.items) |v| {
+        const id = v.core().id;
+        const by = self.poltergeist.openedBy(id) orelse continue;
+        try out.append(alloc, .{ .terminal = id, .by = by });
+    }
+    return out.items;
+}
+
+/// Bring the ties between groups and projects up to date and say what is
+/// left for the host: `Projects.reconcile`, with what it asks of this half
+/// carried out -- a tie written down, a tie dropped -- and asked again
+/// until it asks for nothing more. Then, for a start that is waiting for
+/// its project: if the host has stated it open, the launch goes into the
+/// supervisor's pane.
+///
+/// Called while the control room's snapshot is being made, which is after
+/// anything that could have changed the answer (`controlRoomTouch`).
+fn projectsWork(self: *App, alloc: Allocator, now_ms: u64) Allocator.Error!poltergeistpkg.ControlRoom.ProjectsIn {
+    const Projects = poltergeistpkg.Projects;
+
+    // A commit changes a tie, and the next asking then has something else
+    // to say about it (tied, so now rename). Three rounds is one more than
+    // any chain there is; a fourth would be two commits undoing each other.
+    var round: usize = 0;
+    var out: Projects.Outcome = undefined;
+    while (true) : (round += 1) {
+        const views = try self.projectViews(alloc, now_ms);
+        out = try self.projects.reconcile(alloc, views, try self.projectOpened(alloc));
+        if (out.commits.len == 0 or round == 3) break;
+        for (out.commits) |c| {
+            // Copied first: the name is borrowed from the tie it replaces.
+            const tie: poltergeistpkg.Chat.ProjectTie = if (c.project) |name|
+                .{ .bound = try alloc.dupe(u8, name) }
+            else
+                .undecided;
+            const changed = self.chat.setProject(c.group, tie) catch continue;
+            if (!changed) continue;
+            // Settled, one way or the other: whoever took it up has been
+            // answered, and is not asked on behalf of again.
+            self.chat.setProjectClaim(c.group, null);
+            if (self.group_log) |*l| l.project(c.group, self.chat.projectOf(c.group));
+            log.info("poltergeist: a group's project {s}", .{if (c.project == null) "is gone; it is started by directory again" else "is written down"});
+        }
+    }
+
+    self.deliverProjectLaunch(now_ms);
+
+    return .{ .table = &self.projects, .standings = out.standings, .orders = out.orders };
+}
+
+/// The launch a start is holding goes into the supervisor's pane of its
+/// group's project, once the host has stated that project open and said
+/// which terminal that is.
+fn deliverProjectLaunch(self: *App, now_ms: u64) void {
+    const held = if (self.project_launch) |*l| l else return;
+    // The start it was for is over -- made, failed, or timed out.
+    if (!self.chat.startAwaitingProject(held.group, now_ms)) {
+        held.arena.deinit();
+        self.project_launch = null;
+        return;
+    }
+    const tie = self.chat.projectOf(held.group);
+    if (tie != .bound) return;
+    const stated = self.projects.find(tie.bound) orelse return;
+    const pane = stated.supervisor orelse return;
+
+    self.chat.startOpened(held.group, pane, now_ms + poltergeistpkg.PersonaStore.standing_wait_ms);
+    self.startRoleIn(pane, poltergeistpkg.Chat.user_id, .{ .key = held.key, .cli = held.cli }, held.line, .agent) catch |err| {
+        log.warn("control room: could not start the supervisor in its project's pane err={}", .{err});
+        self.chat.failStart(held.group, .agent_never_connected);
+    };
+    held.arena.deinit();
+    self.project_launch = null;
+}
+
+/// The host's statement of every project (`ControlAct`, `projects`).
+fn controlActStateProjects(ctx: *anyopaque, list: []const poltergeistpkg.Projects.Stated) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    try self.projects.state(list);
+}
+
+/// The host could not open a project it was ordered to. The start that
+/// was waiting fails now; a file that is gone also unties its group, at
+/// once rather than at the host's next statement.
+fn controlActProjectFailed(ctx: *anyopaque, name: []const u8, why: poltergeistpkg.ControlAct.ProjectFailure) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const now_ms = self.poltergeistElapsedMs();
+    const views = try self.projectViews(arena.allocator(), now_ms);
+    const found = poltergeistpkg.Projects.groupOf(views, name) orelse return error.NoSuchProject;
+    // Copied: untying frees the name it is found by, and the group's is
+    // the chat's own.
+    const group = try arena.allocator().dupe(u8, found);
+
+    if (self.chat.startAwaitingProject(group, now_ms)) {
+        // 暂定: said with the reason there already is for a start whose
+        // terminal never came. A sentence of its own needs a word both
+        // hosts know, which is theirs to add.
+        self.chat.failStart(group, .terminal_never_opened);
+    }
+    if (why == .not_found) {
+        if (self.chat.setProject(group, .undecided) catch false) {
+            self.chat.setProjectClaim(group, null);
+            if (self.group_log) |*l| l.project(group, .undecided);
+        }
+    }
+    log.info("control room: a group's project did not open ({t})", .{why});
+}
+
+fn controlActProjectRemove(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const views = try self.projectViews(arena.allocator(), self.poltergeistElapsedMs());
+    try self.projects.mayRemove(views, id);
+}
+
+/// A project is about to be renamed. One that is a group's is renamed by
+/// renaming the group -- the person's doing, like any rename from the
+/// interface -- and the host is then ordered to rename the file.
+fn controlActProjectRename(ctx: *anyopaque, from: []const u8, to: []const u8) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const views = try self.projectViews(arena.allocator(), self.poltergeistElapsedMs());
+    const found = poltergeistpkg.Projects.groupOf(views, from) orelse return;
+    const group = try arena.allocator().dupe(u8, found);
+    try chatRename(ctx, group, to, poltergeistpkg.Chat.user_id);
+}
+
+/// A supervisor has taken groups up: made one, joined one, been started
+/// for one. Every group it is now the supervisor of and that nobody has
+/// said anything about a project for is marked as taken up by it, which
+/// is what `Projects` goes by to offer an old group a project.
+fn takeUpGroups(self: *App, id: poltergeistpkg.Bus.Id) void {
+    const Chat = poltergeistpkg.Chat;
+    if (id == Chat.user_id or !self.poltergeist.isSupervisor(id)) return;
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const live = self.liveTerminals(alloc) catch return;
+    const names = self.chat.groupsFor(alloc, id, live) catch return;
+    for (names) |name| {
+        if (self.chat.projectOf(name) != .undecided) continue;
+        const steward = poltergeistpkg.ControlRoom.stewardOfGroup(alloc, &self.poltergeist, &self.chat, name);
+        if (steward == null or steward.? != id) continue;
+        self.chat.setProjectClaim(name, .{ .terminal = id, .said = false });
+    }
+    self.controlRoomTouch();
+}
+
+/// `group_project`: a supervisor says a group uses the project its tab is
+/// in, or has none.
+fn poltergeistGroupProject(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+    group: []const u8,
+    use: bool,
+) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const Projects = poltergeistpkg.Projects;
+    if (!self.chat.exists(group)) return error.NoSuchGroup;
+    defer self.controlRoomTouch();
+
+    const views = try self.projectViews(alloc, self.poltergeistElapsedMs());
+    var why: Projects.Why = undefined;
+    if (use) {
+        why = try self.projects.judge(alloc, views, group, id);
+        if (Projects.refusalOf(why)) |refusal| return refusal;
+        if (why == .pending) {
+            // Having said no before is unsaid by saying yes.
+            if (self.chat.projectOf(group) == .declined) {
+                _ = try self.chat.setProject(group, .undecided);
+                if (self.group_log) |*l| l.project(group, .undecided);
+            }
+            self.chat.setProjectClaim(group, null);
+            self.chat.setProjectClaim(group, .{ .terminal = id, .said = true });
+        }
+    } else {
+        const steward = poltergeistpkg.ControlRoom.stewardOfGroup(alloc, &self.poltergeist, &self.chat, group);
+        if (steward == null or steward.? != id) return error.NotItsSupervisor;
+        if (try self.chat.setProject(group, .declined)) {
+            if (self.group_log) |*l| l.project(group, .declined);
+        }
+        self.chat.setProjectClaim(group, null);
+        why = .declined;
+    }
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    const tie = self.chat.projectOf(group);
+    try out.writer.print("{{\"group\":{f},\"tie\":\"{s}\",\"project\":", .{ std.json.fmt(group, .{}), @tagName(tie) });
+    switch (tie) {
+        .bound => |name| try out.writer.print("{f}", .{std.json.fmt(name, .{})}),
+        .undecided, .declined => try out.writer.writeAll("null"),
+    }
+    try out.writer.print(",\"why\":\"{s}\"}}", .{@tagName(why)});
+    return out.written();
+}
+
 /// The roles a supervisor can be started in: the ones that make a terminal
 /// a supervisor and have a CLI to start, each with the CLIs it is set up
 /// for. In the set's order, which puts the one Polter ships first. The
@@ -1100,6 +1395,17 @@ fn controlStartRoles(self: *App, alloc: Allocator) Allocator.Error![]const polte
 /// a process, and a machine none of whose groups has a session written
 /// down has no use for the answer. Until it comes this is `unread`, which
 /// the snapshot says as its own reason and asks to be drawn again for.
+/// What each agent CLI is called to a person, for the snapshot: its
+/// adapter's own label, as last read. Empty until a read has finished
+/// (`controlCliResume` starts one); the snapshot then says a CLI has no
+/// name, and a host writes its key.
+fn controlCliNames(self: *App, alloc: Allocator) Allocator.Error![]const poltergeistpkg.ControlRoom.CliName {
+    const read = try self.poltergeist_agent_clis.names(global.io(), alloc);
+    const out = try alloc.alloc(poltergeistpkg.ControlRoom.CliName, read.len);
+    for (read, out) |n, *o| o.* = .{ .key = n.key, .label = n.label };
+    return out;
+}
+
 fn controlCliResume(self: *App, alloc: Allocator) Allocator.Error!poltergeistpkg.ControlRoom.CliResume {
     const io = global.io();
     if (try self.poltergeist_agent_clis.resumable(io, alloc)) |keys| return .{ .read = keys };
@@ -1219,6 +1525,28 @@ fn poltergeistMembership(
         .groups = groups,
         .supervisor_of = mine.items,
         .started_for = if (self.chat.startedFor(id)) |name| try alloc.dupe(u8, name) else null,
+        .projects = projects: {
+            // Asked the way the snapshot asks, and nothing is carried out:
+            // this only says where each of its groups stands.
+            const views = try self.projectViews(alloc, self.poltergeistElapsedMs());
+            const stand = try self.projects.reconcile(alloc, views, &.{});
+            const out = try alloc.alloc(poltergeistpkg.wire.Membership.GroupProject, mine.items.len);
+            for (mine.items, out) |name, *o| {
+                const tie = self.chat.projectOf(name);
+                o.* = .{
+                    .group = name,
+                    .tie = tie,
+                    .project = switch (tie) {
+                        .bound => |project| try alloc.dupe(u8, project),
+                        .undecided, .declined => null,
+                    },
+                    .why = for (stand.standings) |s| {
+                        if (std.mem.eql(u8, s.group, name)) break s.why;
+                    } else .projects_unknown,
+                };
+            }
+            break :projects out;
+        },
     };
 }
 
@@ -2314,6 +2642,7 @@ fn restoreChatGroups(self: *App) void {
         if (back >= ceiling) break;
         self.chat.restoreShell(shell.name, shell.brief, shell.last_ms, shell.marks) catch continue;
         _ = self.chat.setLastSupervisor(shell.name, shell.supervisor) catch .same;
+        _ = self.chat.setProject(shell.name, shell.project) catch false;
         if (shell.supervisor.dir.len == 0) self.backfillSupervisorDir(alloc, gl, shell.name, &last_night);
         back += 1;
     }
@@ -3573,14 +3902,44 @@ pub fn launchPersona(
     cli: []const u8,
     cwd: []const u8,
     place: poltergeistpkg.rpc.Placement,
+    /// A terminal that is already open, to start the role in instead of
+    /// opening one. The caller named it, which is the say-so a pane the
+    /// person opened themselves needs.
+    into: ?poltergeistpkg.Bus.Id,
 ) anyerror!poltergeistpkg.rpc.Opened {
     const choice = try self.resolveLaunch(alloc, key, cli);
     const line = try launchLine(alloc, choice);
+
+    if (into) |target| {
+        // It is where it is: a directory would have to be typed into it.
+        if (cwd.len > 0) return error.InWithCwd;
+        try self.launchPersonaIn(target, by, choice, line);
+        return .{ .id = target, .placed = .{ .reused = .asked } };
+    }
 
     const where: poltergeistpkg.rpc.Placement = if (place == .auto) auto: {
         const p = self.personas.set.find(choice.key) orelse break :auto .auto;
         break :auto if (p.polter.open == .tab) .tab else .auto;
     } else place;
+
+    // **Before a pane is made, one of this supervisor's own that is free
+    // is used again** -- only under `auto`, where the caller left the
+    // place to Polter. A pane it opened for a worker whose agent has gone
+    // is an empty seat in the row it built; opening another beside it is
+    // how a tab filled with idle shells while new workers went to new tabs
+    // (task 1492). The person's own panes are never candidates: only what
+    // `poltergeist_workers` says this supervisor opened.
+    if (where == .auto) {
+        if (try self.poltergeistFreeWorker(alloc, by, cwd)) |free| {
+            if (self.launchPersonaIn(free, by, choice, line)) {
+                return .{ .id = free, .placed = .{ .reused = .free_worker } };
+            } else |err| {
+                // It was free when it was looked at and is not now: a new
+                // pane is the answer it would have been without this.
+                log.info("poltergeist: worker pane {x} could not be used again ({}); opening another", .{ free, err });
+            }
+        }
+    }
 
     // Set before the terminal is asked for: a runtime that creates the
     // surface synchronously runs its `init` -- and so the claim -- inside
@@ -3601,6 +3960,151 @@ pub fn launchPersona(
         }
     }
     return opened;
+}
+
+/// Start a role in a terminal that is already open, for an agent.
+///
+/// **Only into a shell that is waiting and empty**, each asked of the part
+/// of the program that knows: no agent connected from it (`agentPresent`
+/// -- the bus's answer, any CLI talking to Polter), at its prompt (shell
+/// integration's, the one closing a tab asks), and no half-typed line
+/// (`draftFor(.agent)`, which errs towards "there is one"). A launch line
+/// typed into anything else is typed into somebody's work.
+fn launchPersonaIn(
+    self: *App,
+    target: poltergeistpkg.Bus.Id,
+    by: poltergeistpkg.Bus.Id,
+    choice: LaunchChoice,
+    line: []const u8,
+) anyerror!void {
+    const surface = self.findSurfaceByID(target) orelse return error.UnknownTerminal;
+    const seat: FreeWorker.Seat = .{
+        .here = true,
+        .agent = self.agentPresent(target),
+        .at_prompt = surface.isAtShellPrompt(),
+        .draft = surface.draftFor(.agent),
+        .dir_fits = true,
+    };
+    if (seat.why()) |why| return switch (why) {
+        .agent => error.AgentThere,
+        .not_at_prompt => error.NotAtPrompt,
+        .draft => error.DraftInLine,
+        .elsewhere, .other_directory => unreachable,
+    };
+    try self.startRoleIn(target, by, choice, line, .agent);
+}
+
+/// One of `by`'s own worker panes that a role can be started in now, the
+/// oldest first; null when there is none. `cwd` is where the role is to
+/// start: empty for "wherever", and otherwise only a pane already standing
+/// there will do -- nothing is typed to move one.
+fn poltergeistFreeWorker(
+    self: *App,
+    alloc: Allocator,
+    by: poltergeistpkg.Bus.Id,
+    cwd: []const u8,
+) Allocator.Error!?poltergeistpkg.Bus.Id {
+    const workers: []const poltergeistpkg.Bus.Id = if (self.poltergeist_workers.get(by)) |l| l.items else return null;
+    const caller = self.findSurfaceByID(by) orelse return null;
+    const tab = poltergeistTabOf(caller);
+    const now = try self.poltergeistSeen(alloc);
+    defer alloc.free(now);
+
+    const seats = try alloc.alloc(FreeWorker.Seat, workers.len);
+    defer alloc.free(seats);
+    for (workers, seats) |w, *seat| {
+        const surface = self.findSurfaceByID(w);
+        const here = if (surface != null) for (now) |seen| {
+            if (seen.id == w) break WorkerColumn.sameTab(seen.tab, tab);
+        } else false else false;
+        seat.* = .{
+            .here = here,
+            .agent = self.agentPresent(w),
+            .at_prompt = if (surface) |s| s.isAtShellPrompt() else false,
+            .draft = if (surface) |s| s.draftFor(.agent) else true,
+            .dir_fits = cwd.len == 0 or if (surface) |s| dir: {
+                const at = (s.pwd(alloc) catch null) orelse break :dir false;
+                defer alloc.free(at);
+                break :dir std.mem.eql(u8, at, cwd);
+            } else false,
+        };
+    }
+    const at = FreeWorker.pick(seats) orelse return null;
+    return workers[at];
+}
+
+/// Whether a pane a supervisor opened for a worker can have a role started
+/// in it again. Out of the functions above so that the rule is tested
+/// without a window system: they gather the five facts, this decides.
+const FreeWorker = struct {
+    const Seat = struct {
+        /// Still open, and in the supervisor's tab.
+        here: bool,
+        /// An agent is connected to Polter from it.
+        agent: bool,
+        at_prompt: bool,
+        /// A half-typed line is in front of whoever uses it next.
+        draft: bool,
+        /// It stands where the role is to start, or nowhere was named.
+        dir_fits: bool,
+
+        const Why = enum { elsewhere, agent, not_at_prompt, draft, other_directory };
+
+        /// Why this one cannot be used; null when it can. In the order a
+        /// caller would want to hear it: an agent that is there is the
+        /// reason whatever its screen looks like.
+        fn why(self: Seat) ?Why {
+            if (!self.here) return .elsewhere;
+            if (self.agent) return .agent;
+            if (!self.at_prompt) return .not_at_prompt;
+            if (self.draft) return .draft;
+            if (!self.dir_fits) return .other_directory;
+            return null;
+        }
+    };
+
+    /// The first that can be used, oldest first, so the same panes are
+    /// filled in the same order they were made.
+    fn pick(seats: []const Seat) ?usize {
+        for (seats, 0..) |seat, i| {
+            if (seat.why() == null) return i;
+        }
+        return null;
+    }
+};
+
+test "a worker's pane is used again only when it is ours, empty, waiting and where the role is to start" {
+    const testing = std.testing;
+    const free: FreeWorker.Seat = .{ .here = true, .agent = false, .at_prompt = true, .draft = false, .dir_fits = true };
+    try testing.expectEqual(@as(?FreeWorker.Seat.Why, null), free.why());
+
+    // Each of the five on its own is enough to leave it alone.
+    var seat = free;
+    seat.here = false;
+    try testing.expectEqual(@as(?FreeWorker.Seat.Why, .elsewhere), seat.why());
+    seat = free;
+    seat.agent = true;
+    try testing.expectEqual(@as(?FreeWorker.Seat.Why, .agent), seat.why());
+    seat = free;
+    seat.at_prompt = false;
+    try testing.expectEqual(@as(?FreeWorker.Seat.Why, .not_at_prompt), seat.why());
+    seat = free;
+    seat.draft = true;
+    try testing.expectEqual(@as(?FreeWorker.Seat.Why, .draft), seat.why());
+    seat = free;
+    seat.dir_fits = false;
+    try testing.expectEqual(@as(?FreeWorker.Seat.Why, .other_directory), seat.why());
+    // An agent that is there is the reason, whatever else is true.
+    seat = .{ .here = true, .agent = true, .at_prompt = false, .draft = true, .dir_fits = false };
+    try testing.expectEqual(@as(?FreeWorker.Seat.Why, .agent), seat.why());
+
+    // The oldest that can be used, and none when none can.
+    var busy = free;
+    busy.agent = true;
+    try testing.expectEqual(@as(?usize, 1), FreeWorker.pick(&.{ busy, free, free }));
+    try testing.expectEqual(@as(?usize, 0), FreeWorker.pick(&.{ free, busy }));
+    try testing.expectEqual(@as(?usize, null), FreeWorker.pick(&.{ busy, busy }));
+    try testing.expectEqual(@as(?usize, null), FreeWorker.pick(&.{}));
 }
 
 /// Called by a surface at the end of its `init`: if the tool surface asked
@@ -3703,7 +4207,7 @@ pub fn choosePersona(self: *App, id: poltergeistpkg.Bus.Id, arg: []const u8) any
         try self.startRoleIn(id, id, choice, try launchLine(aa, choice), .person);
         return .started_here;
     }
-    _ = try self.launchPersona(aa, id, key, cli, "", .tab);
+    _ = try self.launchPersona(aa, id, key, cli, "", .tab, null);
     return .started_in_tab;
 }
 
@@ -3736,9 +4240,10 @@ fn poltergeistPersonaLaunch(
     cli: []const u8,
     cwd: []const u8,
     place: poltergeistpkg.rpc.Placement,
+    into: ?poltergeistpkg.Bus.Id,
 ) anyerror!poltergeistpkg.rpc.Opened {
     const self: *App = @ptrCast(@alignCast(ctx));
-    return self.launchPersona(alloc, by, key, cli, cwd, place);
+    return self.launchPersona(alloc, by, key, cli, cwd, place, into);
 }
 
 /// Take a terminal out of any persona, back to handing out everything.
@@ -3879,6 +4384,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .notifyUser = notifyUser,
         .sessionRecall = sessionRecall,
         .chatSetBrief = chatSetBrief,
+        .groupProject = poltergeistGroupProject,
         .chatGroupInfo = chatGroupInfo,
         .chatOwner = chatOwner,
         .chatMembers = chatMembers,
@@ -5557,8 +6063,19 @@ const WorkerPlacement = enum {
     beside_supervisor,
     /// Split the last worker downwards, growing the column.
     below_last_worker,
+    /// Split one of the first three workers to the right: the fourth,
+    /// fifth and sixth stand beside the first, second and third, which is
+    /// a second column made of single-pane splits (task 1492). Which one
+    /// is `WorkerColumn.nth(ours - 3)`.
+    beside_worker,
     /// Open a tab instead. The caller says why.
     new_tab,
+
+    /// How many workers stand in one column, and how many columns there
+    /// are. Past `column * columns` a tab is the answer -- until panes can
+    /// be stacked, which is where the seventh will go.
+    const column = 3;
+    const columns = 2;
 
     /// `panes` is how many terminals share the supervisor's tab, as the apprt
     /// counted them; zero means it did not answer. `ours` is how many of
@@ -5580,15 +6097,21 @@ const WorkerPlacement = enum {
         if (unsettled) return .new_tab;
 
         if (panes == 0) return .new_tab;
-        // The fourth worker wants a second column, which means splitting a
-        // subtree, and no action can express that today. **Ours only**: the
-        // person's own terminals are not in the column and do not fill it.
-        if (ours >= 3) return .new_tab;
+        // Both columns are full. **Ours only**: the person's own terminals
+        // are in neither column and fill neither.
+        if (ours >= column * columns) return .new_tab;
         // None of ours here: the first worker goes beside the supervisor,
         // whatever else the person has open in this tab (task 900). Their
         // panes are left where they are -- this splits the supervisor's own
         // pane and nothing else.
         if (ours == 0) return .beside_supervisor;
+        // The first column is full: the next stands beside one of its
+        // three. A second column would be splitting a subtree, which no
+        // action can express -- but a pane beside each of the three is the
+        // same picture, and splitting one pane is all it takes. It used to
+        // be a tab from the fourth on, and the person found their workers
+        // scattered over tabs they had not opened (task 1492).
+        if (ours >= column) return .beside_worker;
         if (!have_last_worker) return .new_tab;
         return .below_last_worker;
     }
@@ -5619,6 +6142,21 @@ const WorkerColumn = struct {
             if (i == workers.len - 1) out.last_here = true;
         }
         return out;
+    }
+
+    /// The `n`th of this supervisor's workers that is in its tab now,
+    /// counted as `of` counts them; null when there are not that many.
+    fn nth(workers: []const poltergeistpkg.Bus.Id, now: []const Seen, tab: ?u64, n: u32) ?poltergeistpkg.Bus.Id {
+        var seen_here: u32 = 0;
+        for (workers) |w| {
+            const here = for (now) |seen| {
+                if (seen.id == w) break sameTab(seen.tab, tab);
+            } else false;
+            if (!here) continue;
+            if (seen_here == n) return w;
+            seen_here += 1;
+        }
+        return null;
     }
 
     /// Null is "the apprt did not say", and two of those are the same tab
@@ -5654,9 +6192,19 @@ test "the worker budget" {
         WorkerPlacement.decide(3, 2, true, settled),
     );
 
-    // The fourth worker onwards: a tab, until a subtree can be split.
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(4, 3, true, settled));
+    // The fourth, fifth and sixth stand beside the first three: a second
+    // column, made by splitting one pane each. It was a tab from the
+    // fourth on (task 1492).
+    try testing.expectEqual(WorkerPlacement.beside_worker, WorkerPlacement.decide(4, 3, true, settled));
+    try testing.expectEqual(WorkerPlacement.beside_worker, WorkerPlacement.decide(5, 4, true, settled));
+    try testing.expectEqual(WorkerPlacement.beside_worker, WorkerPlacement.decide(6, 5, true, settled));
+    // Whether the newest is still there does not matter to it: it is not
+    // the newest it stands beside.
+    try testing.expectEqual(WorkerPlacement.beside_worker, WorkerPlacement.decide(5, 4, false, settled));
+    // Both columns full: a tab, until panes can be stacked.
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(7, 6, true, settled));
     try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(9, 8, true, settled));
+    try testing.expectEqual(@as(u32, 6), WorkerPlacement.column * WorkerPlacement.columns);
 
     // The newest worker is gone and others of ours are still here: which
     // pane replaced it is a guess this does not make.
@@ -5692,9 +6240,40 @@ test "the person's own terminals are neither avoided nor counted (task 900)" {
         WorkerPlacement.decide(5, 2, true, settled),
     );
 
-    // Three of ours fill the column whatever else is here.
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(5, 3, true, settled));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(4, 3, true, settled));
+    // Three of ours fill the first column whatever else is here, and the
+    // next starts the second; six fill both.
+    try testing.expectEqual(WorkerPlacement.beside_worker, WorkerPlacement.decide(5, 3, true, settled));
+    try testing.expectEqual(WorkerPlacement.beside_worker, WorkerPlacement.decide(4, 3, true, settled));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(9, 6, true, settled));
+    // The person's own panes do not fill it: nine terminals of which two
+    // are ours still has room in the first column.
+    try testing.expectEqual(WorkerPlacement.below_last_worker, WorkerPlacement.decide(9, 2, true, settled));
+}
+
+test "the pane a second-column worker stands beside is found by identity, among ours that are still here" {
+    const testing = std.testing;
+    const tab: ?u64 = 7;
+    const now = [_]Seen{
+        .{ .id = 1, .tab = tab },
+        .{ .id = 2, .tab = tab },
+        .{ .id = 3, .tab = tab },
+        .{ .id = 4, .tab = tab },
+        // One of ours that the person dragged to another tab.
+        .{ .id = 5, .tab = 8 },
+        // A terminal the person opened here: in the tab, and not ours.
+        .{ .id = 6, .tab = tab },
+    };
+    const workers = [_]poltergeistpkg.Bus.Id{ 2, 3, 5, 4 };
+    // The fourth worker stands beside the first that is here, the fifth
+    // beside the second: 5 is elsewhere and is stepped over, 6 is not ours.
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), WorkerColumn.nth(&workers, &now, tab, 0));
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 3), WorkerColumn.nth(&workers, &now, tab, 1));
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 4), WorkerColumn.nth(&workers, &now, tab, 2));
+    // Not that many: an answer, not a guess.
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), WorkerColumn.nth(&workers, &now, tab, 3));
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), WorkerColumn.nth(&.{}, &now, tab, 0));
+    // It counts the same ones `of` does.
+    try testing.expectEqual(@as(u32, 3), WorkerColumn.of(&workers, &now, tab).count);
 }
 
 test "only this supervisor's open workers in its tab are counted" {
@@ -5831,6 +6410,21 @@ fn poltergeistPlaceWorker(
 
         .below_last_worker => return .{ .split = .{ .target = target_alive.?, .direction = .down } },
 
+        .beside_worker => {
+            // By identity, like the pane the column grows from: the one it
+            // stands beside is looked up, and a lookup that fails is an
+            // answer.
+            const beside = WorkerColumn.nth(workers, now, poltergeistTabOf(surface), column.count - WorkerPlacement.column);
+            const target = if (beside) |id| self.findSurfaceByID(id) else null;
+            if (target) |t| return .{ .split = .{ .target = t, .direction = .right } };
+            log.info(
+                "poltergeist: falling back to a tab -- the worker number {d} would stand " ++
+                    "beside has gone since it was counted",
+                .{column.count + 1},
+            );
+            return .{ .tab = .last_worker_gone };
+        },
+
         .new_tab => {
             // ⚠️ **Each of these is a fallback, and the log says which.**
             // Read as the design rather than as unfinished work, they would
@@ -5851,7 +6445,7 @@ fn poltergeistPlaceWorker(
                     .{},
                 );
                 return .{ .tab = .no_pane_count };
-            } else if (column.count >= 3) {
+            } else if (column.count >= WorkerPlacement.column * WorkerPlacement.columns) {
                 log.info(
                     // ⚠️ **The ordinal used to be the word "fourth" while the
                     // count beside it was live**, so a stale count read as
@@ -5860,8 +6454,8 @@ fn poltergeistPlaceWorker(
                     // the log that could have shown the count was wrong.
                     // Both halves say the same thing now.
                     "poltergeist: falling back to a tab -- {d} of this supervisor's workers " ++
-                        "already here ({d} terminals in the tab), and number {d} would need " ++
-                        "a second column, which means splitting a subtree (not possible today)",
+                        "already here ({d} terminals in the tab), both columns are full, and " ++
+                        "number {d} would have to be stacked with them (not built yet)",
                     .{ column.count, panes, column.count + 1 },
                 );
                 return .{ .tab = .column_full };
@@ -5894,6 +6488,11 @@ fn poltergeistOpenTerminal(
 ) anyerror!poltergeistpkg.rpc.Opened {
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(by) orelse return error.UnknownTerminal;
+
+    // A place that has a name and is not built: refused, and said, rather
+    // than read as `auto` -- a caller that asked for a stack and got a
+    // split would have no way to tell.
+    if (place == .stack) return error.NotBuiltYet;
 
     // Checked here so a directory that is not there is refused rather than
     // quietly ignored. The apprt logs and carries on -- which is right for a
@@ -6160,6 +6759,7 @@ fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) any
     // Made by a supervisor: it is this group's, and what it is is written
     // down for whoever starts the next one.
     self.noteSupervisor(by, .write);
+    self.takeUpGroups(by);
 
     self.saveSession();
 }
@@ -6324,6 +6924,9 @@ fn chatRename(
     }
 
     self.saveSession();
+    // A group that has a project: the project is to bear the new name,
+    // which the snapshot now orders (`Projects`, `rename`).
+    self.controlRoomTouch();
 }
 
 /// `GroupRename.Hooks.close_handles`: every handle into the files a rename
@@ -6589,6 +7192,7 @@ fn chatAdd(
     // A supervisor joining: if that makes it this group's, what it is is
     // written down for whoever starts the next one.
     self.noteSupervisor(id, .write);
+    self.takeUpGroups(id);
 
     // `history: none` means nothing from before now, and "before now"
     // includes the file. The group in memory cannot say where that reaches
@@ -7627,6 +8231,8 @@ pub fn deleteSurface(self: *App, rt_surface: *apprt.Surface) void {
     while (i < self.surfaces.items.len) {
         if (self.surfaces.items[i] == rt_surface) {
             _ = self.surfaces.swapRemove(i);
+            // Gone: a terminal that is given this id later is another one.
+            self.projects.forget(poltergeistpkg.Bus.idOf(rt_surface.core()));
             self.controlRoomTouch();
             continue;
         }

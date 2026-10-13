@@ -138,8 +138,8 @@ struct ControlRoomList: Equatable {
         }
 
         /// What the core says of the supervisor a group last had, and
-        /// whether a start goes on with its session. Read and carried; the
-        /// view does not draw it yet.
+        /// whether a start goes on with its session. What the right-hand
+        /// side makes of it is `ControlRoomStartChoice`.
         struct Last: Equatable {
             /// The CLI the default role is started in.
             var cli: String?
@@ -153,6 +153,16 @@ struct ControlRoomList: Equatable {
             /// that on this and on nothing else, and says `why` when not.
             var canResume: Bool
             var why: ResumeWhy
+            /// The directory the core names for the start (`cwd`) is where
+            /// that supervisor last worked (`cwd_from: last_supervisor`),
+            /// and not somewhere worked out another way.
+            var cwdIsTheLastSupervisors: Bool = false
+            /// What the two CLIs are called to a person, as the core says
+            /// (`cli_label`): the one a start uses, and the one the last
+            /// supervisor was. Nil when the core has no name for it, and
+            /// then the key is what is written.
+            var cliLabel: String?
+            var lastCliLabel: String?
         }
 
         var state: State
@@ -582,10 +592,17 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var cli: String?
         var last: Last?
         var resume: Resume?
+        /// How the core arrived at `cwd`. Kept as the word it wrote: the
+        /// one value asked about is `last_supervisor`.
+        var cwd_from: String?
+        /// What `cli` is called to a person; nil when the core has no
+        /// name for it, or is from before it said.
+        var cli_label: String?
 
         struct Last: Decodable, Equatable {
             var role: String?
             var cli: String?
+            var cli_label: String?
             var heard_ms: Int64?
         }
 
@@ -597,7 +614,9 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var startLast: ControlRoomList.SupervisorStart.Last? {
             guard let last, let resume else { return nil }
             return .init(cli: cli, role: last.role, lastCli: last.cli, heardMs: last.heard_ms,
-                         canResume: resume.can, why: resume.why)
+                         canResume: resume.can, why: resume.why,
+                         cwdIsTheLastSupervisors: cwd_from == "last_supervisor",
+                         cliLabel: cli_label, lastCliLabel: last.cli_label)
         }
     }
 

@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.lugia.polter\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 05:58+0800\n"
+"POT-Creation-Date: 2026-10-13 17:04+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -82,7 +82,7 @@ msgstr ""
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:434 src/apprt/gtk/ui/1.5/window.blp:318
 #: windows/host/src/general_ui.rs:576 windows/host/src/general_ui.rs:842
-#: windows/host/src/menu.rs:495
+#: windows/host/src/menu.rs:498
 msgid "Reload Configuration"
 msgstr ""
 
@@ -97,7 +97,7 @@ msgid "Ghostty: Terminal Inspector"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:108
-#: windows/host/src/menu.rs:299
+#: windows/host/src/menu.rs:302
 msgid "Find…"
 msgstr ""
 
@@ -125,17 +125,17 @@ msgid ""
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:107 windows/host/src/ctxmenu.rs:129
-#: windows/host/src/menu.rs:343
+#: windows/host/src/menu.rs:346
 msgid "Read-only"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:311 src/apprt/gtk/ui/1.5/window.blp:203
-#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:309
+#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:312
 msgid "Copy"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:208
-#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:310
+#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:313
 msgid "Paste"
 msgstr ""
 
@@ -161,29 +161,29 @@ msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:348 src/apprt/gtk/ui/1.5/window.blp:180
 #: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
-#: windows/host/src/ctxmenu.rs:125 windows/host/src/menu.rs:275
+#: windows/host/src/ctxmenu.rs:125 windows/host/src/menu.rs:278
 msgid "Split Up"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:354 src/apprt/gtk/ui/1.5/window.blp:185
 #: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
-#: windows/host/src/ctxmenu.rs:124 windows/host/src/menu.rs:274
+#: windows/host/src/ctxmenu.rs:124 windows/host/src/menu.rs:277
 msgid "Split Down"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:360 src/apprt/gtk/ui/1.5/window.blp:190
 #: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
-#: windows/host/src/ctxmenu.rs:123 windows/host/src/menu.rs:273
+#: windows/host/src/ctxmenu.rs:123 windows/host/src/menu.rs:276
 msgid "Split Left"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:366 src/apprt/gtk/ui/1.5/window.blp:195
 #: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
-#: windows/host/src/ctxmenu.rs:122 windows/host/src/menu.rs:272
+#: windows/host/src/ctxmenu.rs:122 windows/host/src/menu.rs:275
 msgid "Split Right"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/menu.rs:277
+#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/menu.rs:280
 msgid "Close Split"
 msgstr ""
 
@@ -199,17 +199,17 @@ msgstr ""
 #: src/apprt/gtk/ui/1.2/surface.blp:386 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
 #: src/input/command.zig:427 windows/host/src/ctxmenu.rs:110
-#: windows/host/src/menu.rs:252 windows/host/src/strip.rs:2073
+#: windows/host/src/menu.rs:255 windows/host/src/strip.rs:2088
 msgid "New Tab"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:242
 #: src/input/command.zig:674 windows/host/src/ctxmenu.rs:116
-#: windows/host/src/menu.rs:278 windows/host/src/strip.rs:1589
+#: windows/host/src/menu.rs:281 windows/host/src/strip.rs:1604
 msgid "Close Tab"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:520
+#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:523
 msgid "Window"
 msgstr ""
 
@@ -218,12 +218,12 @@ msgid "Change Window Title…"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:406 src/apprt/gtk/ui/1.5/window.blp:220
-#: src/input/command.zig:421 windows/host/src/menu.rs:251
+#: src/input/command.zig:421 windows/host/src/menu.rs:254
 msgid "New Window"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:691 windows/host/src/menu.rs:279
+#: src/input/command.zig:691 windows/host/src/menu.rs:282
 msgid "Close Window"
 msgstr ""
 
@@ -260,12 +260,12 @@ msgid "Main Menu"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:192
-#: windows/host/src/menu.rs:328 windows/host/src/strip.rs:2080
+#: windows/host/src/menu.rs:331 windows/host/src/strip.rs:2095
 msgid "Command Palette"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:128
-#: windows/host/src/menu.rs:352
+#: windows/host/src/menu.rs:355
 msgid "Terminal Inspector"
 msgstr ""
 
@@ -336,17 +336,17 @@ msgid "Quit Ghostty?"
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
-#: windows/host/src/tabs.rs:3515
+#: windows/host/src/tabs.rs:3509
 msgid "Close Tab?"
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
-#: windows/host/src/tabs.rs:3516
+#: windows/host/src/tabs.rs:3510
 msgid "Close Window?"
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
-#: windows/host/src/tabs.rs:3517
+#: windows/host/src/tabs.rs:3511
 msgid "Close Split?"
 msgstr ""
 
@@ -355,17 +355,17 @@ msgid "All terminal sessions will be terminated."
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
-#: windows/host/src/tabs.rs:3525
+#: windows/host/src/tabs.rs:3519
 msgid "All terminal sessions in this tab will be terminated."
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
-#: windows/host/src/tabs.rs:3526
+#: windows/host/src/tabs.rs:3520
 msgid "All terminal sessions in this window will be terminated."
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
-#: windows/host/src/tabs.rs:3527
+#: windows/host/src/tabs.rs:3521
 msgid "The currently running process in this split will be terminated."
 msgstr ""
 
@@ -542,7 +542,7 @@ msgstr ""
 msgid "Decrease the font size by 1 point."
 msgstr ""
 
-#: src/input/command.zig:237 windows/host/src/menu.rs:324
+#: src/input/command.zig:237 windows/host/src/menu.rs:327
 msgid "Reset Font Size"
 msgstr ""
 
@@ -559,7 +559,7 @@ msgid "Clear the screen and scrollback."
 msgstr ""
 
 #: src/input/command.zig:249 windows/host/src/ctxmenu.rs:106
-#: windows/host/src/menu.rs:318
+#: windows/host/src/menu.rs:321
 msgid "Select All"
 msgstr ""
 
@@ -802,7 +802,7 @@ msgstr ""
 msgid "Move the current tab to the right."
 msgstr ""
 
-#: src/input/command.zig:446 windows/host/src/strip.rs:1592
+#: src/input/command.zig:446 windows/host/src/strip.rs:1607
 msgid "Move Tab to New Window"
 msgstr ""
 
@@ -927,7 +927,7 @@ msgid "Toggle read-only mode for the current surface."
 msgstr ""
 
 #: src/input/command.zig:557 windows/host/src/ctxmenu.rs:142
-#: windows/host/src/menu.rs:373 windows/host/src/strip.rs:1598
+#: windows/host/src/menu.rs:376 windows/host/src/strip.rs:1613
 msgid "Make This Terminal a Supervisor"
 msgstr ""
 
@@ -938,7 +938,7 @@ msgid ""
 msgstr ""
 
 #: src/input/command.zig:563 windows/host/src/ctxmenu.rs:147
-#: windows/host/src/menu.rs:374 windows/host/src/strip.rs:1599
+#: windows/host/src/menu.rs:377 windows/host/src/strip.rs:1614
 msgid "Toggle Supervision of This Terminal"
 msgstr ""
 
@@ -946,7 +946,7 @@ msgstr ""
 msgid "Report this terminal to the supervisor when its screen goes quiet."
 msgstr ""
 
-#: src/input/command.zig:594 windows/host/src/menu.rs:432
+#: src/input/command.zig:594 windows/host/src/menu.rs:435
 msgid "Hold This Terminal to Its Work"
 msgstr ""
 
@@ -957,7 +957,7 @@ msgid ""
 msgstr ""
 
 #: src/input/command.zig:600 windows/host/src/ctxmenu.rs:152
-#: windows/host/src/menu.rs:375 windows/host/src/strip.rs:1600
+#: windows/host/src/menu.rs:378 windows/host/src/strip.rs:1615
 msgid "Keep Agents Out of This Terminal"
 msgstr ""
 
@@ -967,7 +967,7 @@ msgid ""
 "into it. Its tab wears a lock while the shield stands. Only you can set this."
 msgstr ""
 
-#: src/input/command.zig:606 windows/host/src/menu.rs:371
+#: src/input/command.zig:606 windows/host/src/menu.rs:374
 msgid "Terminal Conversations"
 msgstr ""
 
@@ -975,7 +975,7 @@ msgstr ""
 msgid "Open a terminal showing what the terminals have said to each other."
 msgstr ""
 
-#: src/input/command.zig:612 windows/host/src/menu.rs:364
+#: src/input/command.zig:612 windows/host/src/menu.rs:367
 #: windows/control-room/src/rules.rs:165
 msgid "Control Room"
 msgstr ""
@@ -986,7 +986,7 @@ msgid ""
 "if it is closed."
 msgstr ""
 
-#: src/input/command.zig:618 windows/host/src/menu.rs:450
+#: src/input/command.zig:618 windows/host/src/menu.rs:453
 msgid "Equalize Splits"
 msgstr ""
 
@@ -994,7 +994,7 @@ msgstr ""
 msgid "Equalize the size of all splits."
 msgstr ""
 
-#: src/input/command.zig:624 windows/host/src/menu.rs:472
+#: src/input/command.zig:624 windows/host/src/menu.rs:475
 msgid "Reset Window Size"
 msgstr ""
 
@@ -1062,21 +1062,21 @@ msgstr ""
 msgid "Close the current tab."
 msgstr ""
 
-#: src/input/command.zig:679 windows/host/src/strip.rs:1590
-#: windows/host/src/tabs.rs:3518
+#: src/input/command.zig:679 windows/host/src/strip.rs:1605
+#: windows/host/src/tabs.rs:3512
 msgid "Close Other Tabs"
 msgstr ""
 
-#: src/input/command.zig:680 windows/host/src/tabs.rs:3535
+#: src/input/command.zig:680 windows/host/src/tabs.rs:3529
 msgid "Close all tabs in this window except the current one."
 msgstr ""
 
-#: src/input/command.zig:684 windows/host/src/strip.rs:1591
-#: windows/host/src/tabs.rs:3519
+#: src/input/command.zig:684 windows/host/src/strip.rs:1606
+#: windows/host/src/tabs.rs:3513
 msgid "Close Tabs to the Right"
 msgstr ""
 
-#: src/input/command.zig:685 windows/host/src/tabs.rs:3536
+#: src/input/command.zig:685 windows/host/src/tabs.rs:3530
 msgid "Close all tabs to the right of the current one."
 msgstr ""
 
@@ -1243,19 +1243,19 @@ msgstr ""
 msgid "Block Size"
 msgstr ""
 
-#: src/input/screenshot.zig:96 windows/host/src/strip.rs:1553
+#: src/input/screenshot.zig:96 windows/host/src/strip.rs:1568
 msgid "Red"
 msgstr ""
 
-#: src/input/screenshot.zig:97 windows/host/src/strip.rs:1554
+#: src/input/screenshot.zig:97 windows/host/src/strip.rs:1569
 msgid "Orange"
 msgstr ""
 
-#: src/input/screenshot.zig:98 windows/host/src/strip.rs:1555
+#: src/input/screenshot.zig:98 windows/host/src/strip.rs:1570
 msgid "Yellow"
 msgstr ""
 
-#: src/input/screenshot.zig:99 windows/host/src/strip.rs:1556
+#: src/input/screenshot.zig:99 windows/host/src/strip.rs:1571
 msgid "Green"
 msgstr ""
 
@@ -1263,11 +1263,11 @@ msgstr ""
 msgid "Cyan"
 msgstr ""
 
-#: src/input/screenshot.zig:101 windows/host/src/strip.rs:1550
+#: src/input/screenshot.zig:101 windows/host/src/strip.rs:1565
 msgid "Blue"
 msgstr ""
 
-#: src/input/screenshot.zig:102 windows/host/src/strip.rs:1551
+#: src/input/screenshot.zig:102 windows/host/src/strip.rs:1566
 msgid "Purple"
 msgstr ""
 
@@ -2152,20 +2152,20 @@ msgstr ""
 #. overlay. "Rename Tab..." with three dots is a DIFFERENT action
 #. (rename_tab) that edits the tab strip in place. The two entries look
 #. almost identical; do not merge them.
-#: windows/host/src/ctxmenu.rs:138 windows/host/src/menu.rs:340
+#: windows/host/src/ctxmenu.rs:138 windows/host/src/menu.rs:343
 msgid "Rename Tab…"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:139 windows/host/src/menu.rs:341
+#: windows/host/src/ctxmenu.rs:139 windows/host/src/menu.rs:344
 msgid "Rename Terminal…"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:177 windows/host/src/menu.rs:390
+#: windows/host/src/ctxmenu.rs:177 windows/host/src/menu.rs:393
 msgid "Let a Supervisor Answer Prompts Here"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:404
-#: windows/host/src/strip.rs:1601
+#: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:407
+#: windows/host/src/strip.rs:1616
 msgid "Let Workers Name Each Other Directly"
 msgstr ""
 
@@ -2357,185 +2357,185 @@ msgstr ""
 msgid "{} lines in all."
 msgstr ""
 
-#: windows/host/src/main.rs:6390
+#: windows/host/src/main.rs:6415
 msgid "No reason was recorded."
 msgstr ""
 
-#: windows/host/src/main.rs:6396
+#: windows/host/src/main.rs:6421
 msgid "Polter could not open its first terminal and will close."
 msgstr ""
 
-#: windows/host/src/main.rs:6398
+#: windows/host/src/main.rs:6423
 #, rust-format
 msgid "The full log is at {}"
 msgstr ""
 
-#: windows/host/src/menu.rs:263 windows/host/src/strip.rs:2079
+#: windows/host/src/menu.rs:266 windows/host/src/strip.rs:2094
 msgid "Reopen Closed Tab"
 msgstr ""
 
-#: windows/host/src/menu.rs:293 windows/host/src/projects_ui.rs:619
-#: windows/host/src/strip.rs:1604
+#: windows/host/src/menu.rs:296 windows/host/src/projects_ui.rs:619
+#: windows/host/src/strip.rs:1619
 msgid "Save as Project…"
 msgstr ""
 
-#: windows/host/src/menu.rs:294 windows/host/src/strip.rs:1605
+#: windows/host/src/menu.rs:297 windows/host/src/strip.rs:1620
 msgid "Load Project…"
 msgstr ""
 
-#: windows/host/src/menu.rs:295
+#: windows/host/src/menu.rs:298
 msgid "Manage Projects…"
 msgstr ""
 
-#: windows/host/src/menu.rs:302
+#: windows/host/src/menu.rs:305
 msgid "Next"
 msgstr ""
 
-#: windows/host/src/menu.rs:303
+#: windows/host/src/menu.rs:306
 msgid "Previous"
 msgstr ""
 
-#: windows/host/src/menu.rs:305
+#: windows/host/src/menu.rs:308
 msgid "Hide the Find Bar"
 msgstr ""
 
-#: windows/host/src/menu.rs:320
+#: windows/host/src/menu.rs:323
 msgid "Find"
 msgstr ""
 
-#: windows/host/src/menu.rs:325
+#: windows/host/src/menu.rs:328
 msgid "Zoom In"
 msgstr ""
 
-#: windows/host/src/menu.rs:326
+#: windows/host/src/menu.rs:329
 msgid "Zoom Out"
 msgstr ""
 
-#: windows/host/src/menu.rs:345
+#: windows/host/src/menu.rs:348
 msgid "Quick Terminal"
 msgstr ""
 
-#: windows/host/src/menu.rs:436
+#: windows/host/src/menu.rs:439
 msgid "Plugins…"
 msgstr ""
 
-#: windows/host/src/menu.rs:439 windows/host/src/personas.rs:538
+#: windows/host/src/menu.rs:442 windows/host/src/personas.rs:538
 msgid "Role Library..."
 msgstr ""
 
-#: windows/host/src/menu.rs:443
+#: windows/host/src/menu.rs:446
 msgid "Up"
 msgstr ""
 
-#: windows/host/src/menu.rs:444
+#: windows/host/src/menu.rs:447
 msgid "Down"
 msgstr ""
 
-#: windows/host/src/menu.rs:445
+#: windows/host/src/menu.rs:448
 msgid "Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:446
+#: windows/host/src/menu.rs:449
 msgid "Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:452
+#: windows/host/src/menu.rs:455
 msgid "Grow Up"
 msgstr ""
 
-#: windows/host/src/menu.rs:453
+#: windows/host/src/menu.rs:456
 msgid "Grow Down"
 msgstr ""
 
-#: windows/host/src/menu.rs:454
+#: windows/host/src/menu.rs:457
 msgid "Grow Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:455
+#: windows/host/src/menu.rs:458
 msgid "Grow Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:461
+#: windows/host/src/menu.rs:464
 msgid "Minimize"
 msgstr ""
 
-#: windows/host/src/menu.rs:462
+#: windows/host/src/menu.rs:465
 msgid "Maximize"
 msgstr ""
 
-#: windows/host/src/menu.rs:464
+#: windows/host/src/menu.rs:467
 msgid "Full Screen"
 msgstr ""
 
-#: windows/host/src/menu.rs:466
+#: windows/host/src/menu.rs:469
 msgid "Split Zoom"
 msgstr ""
 
-#: windows/host/src/menu.rs:467
+#: windows/host/src/menu.rs:470
 msgid "Previous Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:468
+#: windows/host/src/menu.rs:471
 msgid "Next Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:469
+#: windows/host/src/menu.rs:472
 msgid "Select Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:470
+#: windows/host/src/menu.rs:473
 msgid "Resize Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:474
+#: windows/host/src/menu.rs:477
 msgid "Float on Top"
 msgstr ""
 
-#: windows/host/src/menu.rs:481
+#: windows/host/src/menu.rs:484
 msgid "Polter Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:494
+#: windows/host/src/menu.rs:497
 msgid "Check for Updates…"
 msgstr ""
 
-#: windows/host/src/menu.rs:500
+#: windows/host/src/menu.rs:503
 msgid "File"
 msgstr ""
 
-#: windows/host/src/menu.rs:501
+#: windows/host/src/menu.rs:504
 msgid "Edit"
 msgstr ""
 
-#: windows/host/src/menu.rs:502
+#: windows/host/src/menu.rs:505
 msgid "View"
 msgstr ""
 
-#: windows/host/src/menu.rs:518
+#: windows/host/src/menu.rs:521
 msgid "Agents"
 msgstr ""
 
-#: windows/host/src/menu.rs:519
+#: windows/host/src/menu.rs:522
 msgid "Project"
 msgstr ""
 
-#: windows/host/src/menu.rs:521
+#: windows/host/src/menu.rs:524
 msgid "Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:526
+#: windows/host/src/menu.rs:529
 msgid "Settings…"
 msgstr ""
 
-#: windows/host/src/menu.rs:538
+#: windows/host/src/menu.rs:541
 msgid "Language…"
 msgstr ""
 
-#: windows/host/src/menu.rs:552
+#: windows/host/src/menu.rs:555
 msgid "Keyboard Shortcuts…"
 msgstr ""
 
-#: windows/host/src/menu.rs:553
+#: windows/host/src/menu.rs:556
 msgid "About Polter"
 msgstr ""
 
@@ -3025,7 +3025,7 @@ msgid "Rename"
 msgstr ""
 
 #: windows/host/src/roles.rs:34 windows/host/src/roles.rs:1163
-#: windows/control-room/src/scene.rs:57
+#: windows/control-room/src/scene.rs:74
 msgid "Polter Supervisor"
 msgstr ""
 
@@ -3059,7 +3059,7 @@ msgid ""
 "the file first."
 msgstr ""
 
-#: windows/host/src/roles.rs:686 windows/control-room/src/act.rs:167
+#: windows/host/src/roles.rs:686 windows/control-room/src/act.rs:206
 msgid "That role no longer exists."
 msgstr ""
 
@@ -3075,7 +3075,7 @@ msgstr ""
 msgid "This role isn't set up for that agent CLI."
 msgstr ""
 
-#: windows/host/src/roles.rs:690 windows/control-room/src/act.rs:169
+#: windows/host/src/roles.rs:690 windows/control-room/src/act.rs:208
 msgid ""
 "This role isn't set up for any agent CLI yet. Pick one in the role library."
 msgstr ""
@@ -3465,19 +3465,19 @@ msgstr ""
 msgid "{} (not in the search results)"
 msgstr ""
 
-#: windows/host/src/strip.rs:1549
+#: windows/host/src/strip.rs:1564
 msgid "None"
 msgstr ""
 
-#: windows/host/src/strip.rs:1552
+#: windows/host/src/strip.rs:1567
 msgid "Pink"
 msgstr ""
 
-#: windows/host/src/strip.rs:1557
+#: windows/host/src/strip.rs:1572
 msgid "Teal"
 msgstr ""
 
-#: windows/host/src/strip.rs:1558
+#: windows/host/src/strip.rs:1573
 msgid "Graphite"
 msgstr ""
 
@@ -3485,11 +3485,11 @@ msgstr ""
 #. in place on the tab strip. "Rename Tab…" with U+2026 is a
 #. DIFFERENT action (prompt_tab_title) that opens the title overlay.
 #. The two entries look almost identical; do not merge them.
-#: windows/host/src/strip.rs:1597
+#: windows/host/src/strip.rs:1612
 msgid "Rename Tab..."
 msgstr ""
 
-#: windows/host/src/strip.rs:1823
+#: windows/host/src/strip.rs:1838
 msgid "Tab Color"
 msgstr ""
 
@@ -3541,99 +3541,99 @@ msgstr ""
 msgid "On"
 msgstr ""
 
-#: windows/control-room/src/act.rs:161
+#: windows/control-room/src/act.rs:200
 msgid "A group's name is lowercase letters, digits and dashes, 48 at most."
 msgstr ""
 
-#: windows/control-room/src/act.rs:162
+#: windows/control-room/src/act.rs:201
 msgid "There is already a group by that name."
 msgstr ""
 
-#: windows/control-room/src/act.rs:163
+#: windows/control-room/src/act.rs:202
 msgid "There is no room for another group."
 msgstr ""
 
-#: windows/control-room/src/act.rs:164
+#: windows/control-room/src/act.rs:203
 msgid "This group already has a supervisor."
 msgstr ""
 
-#: windows/control-room/src/act.rs:165
+#: windows/control-room/src/act.rs:204
 msgid "A supervisor is already being started for this group."
 msgstr ""
 
-#: windows/control-room/src/act.rs:166
+#: windows/control-room/src/act.rs:205
 msgid "There is no role that makes a supervisor. Add one in the role library."
 msgstr ""
 
-#: windows/control-room/src/act.rs:168
+#: windows/control-room/src/act.rs:207
 msgid "That role does not make a supervisor."
 msgstr ""
 
-#: windows/control-room/src/act.rs:170
+#: windows/control-room/src/act.rs:209
 msgid "That directory is not there."
 msgstr ""
 
-#: windows/control-room/src/act.rs:171
+#: windows/control-room/src/act.rs:210
 msgid "No tab could be opened for it."
 msgstr ""
 
-#: windows/control-room/src/act.rs:172
+#: windows/control-room/src/act.rs:211
 msgid "Polter could not find its own program to start the role with."
 msgstr ""
 
-#: windows/control-room/src/lend.rs:327
+#: windows/control-room/src/lend.rs:369
 msgid "The supervisor's terminal is no longer open."
 msgstr ""
 
-#: windows/control-room/src/lend.rs:329 windows/control-room/src/list.rs:103
+#: windows/control-room/src/lend.rs:371 windows/control-room/src/list.rs:117
 msgid "Supervisor"
 msgstr ""
 
-#: windows/control-room/src/list.rs:90
+#: windows/control-room/src/list.rs:104
 msgid "No group is waiting for you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:91
+#: windows/control-room/src/list.rs:105
 #, rust-format
 msgid "{} group waiting for you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:92
+#: windows/control-room/src/list.rs:106
 #, rust-format
 msgid "{} groups waiting for you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:95
+#: windows/control-room/src/list.rs:109
 #, rust-format
 msgid "{} waiting for you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:96
+#: windows/control-room/src/list.rs:110
 #, rust-format
 msgid "{} group needs nothing from you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:97
+#: windows/control-room/src/list.rs:111
 #, rust-format
 msgid "{} groups need nothing from you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:98
+#: windows/control-room/src/list.rs:112
 #, rust-format
 msgid "{} needs nothing from you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:99
+#: windows/control-room/src/list.rs:113
 #, rust-format
 msgid "{} need nothing from you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:101
+#: windows/control-room/src/list.rs:115
 #, rust-format
 msgid "{} more"
 msgstr ""
 
-#: windows/control-room/src/list.rs:106
+#: windows/control-room/src/list.rs:120
 #, rust-format
 msgid "{}, via the supervisor"
 msgstr ""
@@ -3721,14 +3721,67 @@ msgstr ""
 msgid "Start Supervisor"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:55
-msgid "Where the tab starts"
+#: windows/control-room/src/scene.rs:57
+#, rust-format
+msgid "The last supervisor worked in {}, using {}."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:60
-msgid "This terminal is no longer open."
+#: windows/control-room/src/scene.rs:58
+#, rust-format
+msgid "The last supervisor worked in {}."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:59
+#, rust-format
+msgid "The last supervisor used {}."
 msgstr ""
 
 #: windows/control-room/src/scene.rs:61
+msgid "Go on with the last session"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:62
+msgid "New session"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:65
+msgid ""
+"A new session will be started: the last supervisor's CLI never said which "
+"session it was in."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:66
+msgid ""
+"A new session will be started: going on with the last one did not work the "
+"last time it was tried."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:67
+msgid "A new session will be started: the last session was in another CLI."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:68
+msgid "Checking whether the last session can be gone on with…"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:69
+msgid ""
+"A new session will be started: this CLI cannot go on with an earlier session."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:70
+msgid ""
+"A new session will be started: an open terminal is in the last session now."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:72
+msgid "Where the tab starts"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:77
+msgid "This terminal is no longer open."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:78
 msgid "This terminal is in its own tab."
 msgstr ""

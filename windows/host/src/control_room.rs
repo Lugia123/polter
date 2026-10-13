@@ -643,6 +643,8 @@ struct StartPicks {
     group: Option<String>,
     role: Option<String>,
     cwd: Option<String>,
+    /// Which session, when the two are offered; none until one is pressed.
+    session: Option<act::Session>,
     refusal: Option<String>,
 }
 
@@ -879,6 +881,7 @@ fn start_scene(g: &Geometry, theme: &Theme) -> scene::Start {
             choose_role: ready.list.choose_supervisor_role,
             role: picks.role.as_deref(),
             cwd: picks.cwd.as_deref(),
+            session: picks.session,
             refusal: picks.refusal.as_deref(),
             home: &home,
         };
@@ -940,10 +943,18 @@ fn choose_directory(hwnd: HWND, group: &str) {
 fn start_supervisor(hwnd: HWND, group: &str) {
     let picks = picks_for(Some(group));
     let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
-    let Some(request) = act::encode(&act::Act::StartSupervisor { group, role: picks.role.as_deref(), cwd: picks.cwd.as_deref() }) else { return };
+    // Which session is said only while the choice is on screen
+    // (`act::session_sent`); whether it is is the core's word.
+    let offered = source::with(|data| match data {
+        Data::Ready(r) => scene::offers_session(r.list.row(group).and_then(|row| row.start.as_ref())),
+        Data::NotYet => false,
+        Data::Unreadable(_) => false,
+    });
+    let session = act::session_sent(offered, picks.session);
+    let Some(request) = act::encode(&act::Act::StartSupervisor { group, role: picks.role.as_deref(), cwd: picks.cwd.as_deref(), session }) else { return };
     match source::act(&request) {
         Ok(()) => {
-            wlogf!(frame, "[control-room] start supervisor for {:?} (role {:?}, in {:?}) taken", group, picks.role, picks.cwd);
+            wlogf!(frame, "[control-room] start supervisor for {:?} (role {:?}, in {:?}, session {:?}) taken", group, picks.role, picks.cwd, session.map(|s| s.name()));
             pick(group, |p| p.refusal = None);
         }
         Err(why) => {
@@ -1258,6 +1269,14 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         }
         if offered.directory.is_some_and(|r| inside(r, rx, ry)) {
             choose_directory(hwnd, &group);
+            return;
+        }
+        if let Some((session, _)) = offered.sessions.iter().find(|(_, r)| inside(*r, rx, ry)) {
+            let session = *session;
+            pick(&group, |p| p.session = Some(session));
+            unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
             return;
         }
     }

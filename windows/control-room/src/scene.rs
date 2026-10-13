@@ -51,6 +51,23 @@ pub mod msg {
     pub const DIRECTORY: &str = n_("Directory");
     pub const CHOOSE: &str = n_("Choose…");
     pub const START_SUPERVISOR: &str = n_("Start Supervisor");
+    // What the group's last supervisor was. The sentences are the macOS
+    // host's, word for word (`ControlRoomStartChoice.lastSupervisorText`).
+    /// The first `{}` is the directory, the second the agent CLI.
+    pub const LAST_IN_USING: &str = n_("The last supervisor worked in {}, using {}.");
+    pub const LAST_IN: &str = n_("The last supervisor worked in {}.");
+    pub const LAST_USED: &str = n_("The last supervisor used {}.");
+    // The two sessions a start can use.
+    pub const GO_ON: &str = n_("Go on with the last session");
+    pub const NEW_SESSION: &str = n_("New session");
+    // Why a start will not go on with the last session
+    // (`ControlRoomStartChoice.resumeNote`).
+    pub const WHY_NO_SESSION: &str = n_("A new session will be started: the last supervisor's CLI never said which session it was in.");
+    pub const WHY_LAST_TRY_FAILED: &str = n_("A new session will be started: going on with the last one did not work the last time it was tried.");
+    pub const WHY_CLI_DIFFERS: &str = n_("A new session will be started: the last session was in another CLI.");
+    pub const WHY_CLIS_UNREAD: &str = n_("Checking whether the last session can be gone on with…");
+    pub const WHY_CLI_CANNOT_RESUME: &str = n_("A new session will be started: this CLI cannot go on with an earlier session.");
+    pub const WHY_SESSION_IN_USE: &str = n_("A new session will be started: an open terminal is in the last session now.");
     /// The directory, when the core names none: the new tab's own.
     pub const WHERE_THE_TAB_STARTS: &str = n_("Where the tab starts");
     /// The role Polter ships, as the role library shows it.
@@ -745,6 +762,9 @@ pub struct StartView<'a> {
     /// is the core's (`start.role`, `start.cwd`).
     pub role: Option<&'a str>,
     pub cwd: Option<&'a str>,
+    /// Which session they picked; none while they have picked neither,
+    /// and then it is the last one (`act::session_sent`).
+    pub session: Option<crate::act::Session>,
     /// Why the last press of "Start Supervisor" did nothing.
     pub refusal: Option<&'a str>,
     /// The person's home directory, shown as `~`.
@@ -762,6 +782,103 @@ pub struct Start {
     pub directory: Option<Rect>,
     /// "Start Supervisor".
     pub start: Option<Rect>,
+    /// The two sessions' lines, when the core says the last one can be
+    /// gone on with: pressing one picks it. Empty otherwise.
+    pub sessions: Vec<(crate::act::Session, Rect)>,
+}
+
+/// Whether the two-way choice of session is drawn: only when the core says
+/// a start can go on with the last session. Offering it otherwise would be
+/// offering something that then does not happen.
+pub fn offers_session(start: Option<&crate::snapshot::SupervisorStart>) -> bool {
+    start.and_then(|s| s.last.as_ref()).is_some_and(|l| l.can_resume)
+}
+
+/// What an option of the choice is called.
+pub fn session_words(session: crate::act::Session) -> &'static str {
+    match session {
+        crate::act::Session::Last => msg::GO_ON,
+        crate::act::Session::New => msg::NEW_SESSION,
+    }
+}
+
+/// One sentence about the supervisor this group last had -- where it
+/// worked and which agent CLI it was -- as the English to translate and
+/// what goes where its `{}` are, in order. None when the core has no
+/// record of one, and then the right side is what it was before.
+///
+/// **The directory is said only when it is not the one on the line
+/// above.** `starting_in` is the directory the person picked for this
+/// start, none while they have picked nothing -- and then the start uses
+/// the core's, which is drawn there already; said again it was the same
+/// path twice in three lines (the user, 2026-10-13). And only when the
+/// core says the directory it names is that supervisor's
+/// (`cwd_from: last_supervisor`).
+///
+/// The CLI is said only when it was written down: by the name the core
+/// gives for it (`cli_label`), and by its key when the core has none.
+pub fn last_supervisor_said(
+    start: Option<&crate::snapshot::SupervisorStart>,
+    starting_in: Option<&str>,
+    home: &str,
+    tr: &dyn Fn(&str) -> String,
+) -> Option<(&'static str, Vec<String>)> {
+    let start = start?;
+    let last = start.last.as_ref()?;
+    last.heard_ms?;
+    let elsewhere = starting_in.unwrap_or(&start.cwd) != start.cwd;
+    let directory = (last.cwd_is_last && !start.cwd.is_empty() && elsewhere).then(|| shown_directory(&start.cwd, home, tr));
+    let cli = cli_name(last.last_cli.as_deref(), last.last_cli_label.as_deref());
+    match (directory, cli) {
+        (Some(directory), Some(cli)) => Some((msg::LAST_IN_USING, vec![directory, cli])),
+        (Some(directory), None) => Some((msg::LAST_IN, vec![directory])),
+        (None, Some(cli)) => Some((msg::LAST_USED, vec![cli])),
+        (None, None) => None,
+    }
+}
+
+/// What a CLI is written as: the core's name for it, and its key when the
+/// core has none. None when there is no CLI to name.
+pub fn cli_name(key: Option<&str>, label: Option<&str>) -> Option<String> {
+    let key = key.filter(|k| !k.is_empty())?;
+    Some(label.filter(|l| !l.is_empty()).unwrap_or(key).to_string())
+}
+
+/// The same sentence, translated and filled.
+pub fn last_supervisor_words(
+    start: Option<&crate::snapshot::SupervisorStart>,
+    starting_in: Option<&str>,
+    home: &str,
+    tr: &dyn Fn(&str) -> String,
+) -> Option<String> {
+    let (template, args) = last_supervisor_said(start, starting_in, home, tr)?;
+    Some(args.iter().fold(tr(template), |said, arg| list::fill(&said, arg)))
+}
+
+/// Why this start will not go on with the last session, in a sentence;
+/// none where there is nothing worth saying -- it can, or there never was a
+/// supervisor to go on from. **Every reason the core gives has an arm
+/// here**: one added there does not compile here until somebody says what
+/// the person is told.
+pub fn resume_note(why: crate::snapshot::ResumeWhy) -> Option<&'static str> {
+    use crate::snapshot::ResumeWhy as W;
+    match why {
+        W::None | W::NoRecord => None,
+        W::NoSession => Some(msg::WHY_NO_SESSION),
+        W::LastTryFailed => Some(msg::WHY_LAST_TRY_FAILED),
+        W::CliDiffers => Some(msg::WHY_CLI_DIFFERS),
+        W::ClisUnread => Some(msg::WHY_CLIS_UNREAD),
+        W::CliCannotResume => Some(msg::WHY_CLI_CANNOT_RESUME),
+        W::SessionInUse => Some(msg::WHY_SESSION_IN_USE),
+    }
+}
+
+/// How many lines a sentence is given on the right side, by a count of its
+/// cells (a wide character two) against the width: one, or two. The host
+/// draws it wrapped inside the room this leaves.
+fn sentence_lines(text: &str, width: f64) -> usize {
+    let cells: usize = text.chars().map(|c| if c as u32 >= 0x2E80 { 2 } else { 1 }).sum();
+    if cells as f64 * font::BODY * 0.55 > width { 2 } else { 1 }
 }
 
 /// What the right side says of a group with no supervisor: which sentence
@@ -862,7 +979,53 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
         ],
     });
     out.directory = Some(rect);
-    y += line_h + side::ROW_GAP;
+    y += line_h;
+
+    // What the last supervisor was, when the core has a record of one.
+    let mut sentence = |out: &mut Start, y: &mut f64, text: String| {
+        let lines = sentence_lines(&text, w);
+        let h = lines as f64 * side::ASK_LINE_HEIGHT;
+        out.items.push(Item::Block { rect: Rect { x: pad, y: *y + (line_h - side::ASK_LINE_HEIGHT) / 2.0, w, h }, text, style: body(theme.terminal_dim), lines });
+        *y += h + (line_h - side::ASK_LINE_HEIGHT);
+    };
+    if let Some(said) = last_supervisor_words(Some(start), view.cwd, view.home, tr).filter(|s| draws(s)) {
+        sentence(&mut out, &mut y, said);
+    }
+    // Go on with its session or start a new one -- only when the core says
+    // the first can be done. When it cannot, a sentence says why instead.
+    if offers_session(Some(start)) {
+        let picked = crate::act::session_sent(true, view.session);
+        for one in crate::act::Session::ALL {
+            let rect = Rect { x: pad, y, w, h: side::QUIET_ROW_HEIGHT };
+            let on = picked == Some(one);
+            let mark = Rect { x: pad, y: y + (side::QUIET_ROW_HEIGHT - side::GLYPH) / 2.0, w: side::GLYPH, h: side::GLYPH };
+            // The one in use: a ring filled in the attention colour, never
+            // a grey ground. The other: an empty ring.
+            let ink = if on { theme.attention_text } else { theme.terminal_dim };
+            out.items.push(Item::Round { rect: mark, radius: side::GLYPH / 2.0, color: if on { ink } else { theme.terminal_background }, edge: Some(ink) });
+            if on {
+                let hole = side::GLYPH / 3.0;
+                out.items.push(Item::Round {
+                    rect: Rect { x: mark.x + hole, y: mark.y + hole, w: side::GLYPH - 2.0 * hole, h: side::GLYPH - 2.0 * hole },
+                    radius: (side::GLYPH - 2.0 * hole) / 2.0,
+                    color: theme.terminal_background,
+                    edge: None,
+                });
+            }
+            let lead = side::GLYPH + side::ROW_ITEM_GAP;
+            out.items.push(Item::Text {
+                rect: Rect { x: pad + lead, y, w: (w - lead).max(0.0), h: side::QUIET_ROW_HEIGHT },
+                text: tr(session_words(one)),
+                style: body(theme.terminal_text),
+                align: Align::Left,
+            });
+            out.sessions.push((one, rect));
+            y += side::QUIET_ROW_HEIGHT;
+        }
+    } else if let Some(why) = start.last.as_ref().and_then(|l| resume_note(l.why)) {
+        sentence(&mut out, &mut y, tr(why));
+    }
+    y += side::ROW_GAP;
 
     let button = Rect { x: pad, y, w: side::WIDTH / 2.0, h: line_h };
     out.items.push(Item::Round { rect: button, radius: radius::ROW, color: theme.terminal_background, edge: Some(theme.attention_text) });
@@ -1946,6 +2109,205 @@ mod tests {
         // What it offers starts under the sentence, which has two lines.
         let top = said.directory.unwrap().y;
         assert!(top >= space::FRAME_TO_CONTENT + side::HEADER_HEIGHT + 2.0 * side::ASK_LINE_HEIGHT);
+    }
+
+    // ---- the last supervisor, and which session a start uses (task 1489)
+
+    fn last_row(heard: Option<u64>, last_cli: Option<&str>, cwd_is_last: bool, can: bool, why: crate::snapshot::ResumeWhy) -> Row {
+        use crate::snapshot::{StartFailure as F, SupervisorLast, SupervisorState as S};
+        let mut row = start_row(S::Absent, true, F::None);
+        row.start.as_mut().unwrap().last = Some(SupervisorLast {
+            cli: Some("claude-code".into()),
+            role: Some("polter-supervisor".into()),
+            last_cli: last_cli.map(str::to_string),
+            heard_ms: heard,
+            can_resume: can,
+            why,
+            cwd_is_last,
+            cli_label: Some("Claude Code".into()),
+            last_cli_label: last_cli.filter(|c| !c.is_empty()).map(|_| "Claude Code".to_string()),
+        });
+        row
+    }
+
+    #[test]
+    fn the_choice_of_session_is_offered_only_when_the_core_says_the_last_can_be_gone_on_with() {
+        use crate::act::Session;
+        use crate::snapshot::ResumeWhy as W;
+        let can = last_row(Some(1), Some("claude-code"), true, true, W::None);
+        let cannot = last_row(Some(1), Some("claude-code"), true, false, W::SessionInUse);
+        assert!(offers_session(can.start.as_ref()));
+        assert!(!offers_session(cannot.start.as_ref()));
+        // A core that says nothing of a last supervisor, and no start at all.
+        let old = start_row(crate::snapshot::SupervisorState::Absent, true, crate::snapshot::StartFailure::None);
+        assert!(!offers_session(old.start.as_ref()));
+        assert!(!offers_session(None));
+
+        let theme = look::theme(false);
+        let view = StartView { home: "/Users/me", ..Default::default() };
+        let detail = Detail_::NoSupervisor { group: can.id.clone() };
+        let drawn = build_start(&detail, Some(&can), 600.0, theme, &view, &same);
+        // Two lines, the last session first, one under the other, each as
+        // high as a quiet row and starting where the directory's line does.
+        assert_eq!(drawn.sessions.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [Session::Last, Session::New]);
+        let (first, second) = (drawn.sessions[0].1, drawn.sessions[1].1);
+        let directory = drawn.directory.unwrap();
+        assert_eq!((first.x, first.h, second.h), (directory.x, side::QUIET_ROW_HEIGHT, side::QUIET_ROW_HEIGHT));
+        assert_eq!(second.y, first.y + first.h);
+        assert!(first.y >= directory.y + directory.h);
+        // The button is under them, a row's gap on.
+        assert_eq!(drawn.start.unwrap().y, second.y + second.h + side::ROW_GAP);
+        let said = all_text(&drawn.items);
+        assert!(said.contains(&msg::GO_ON) && said.contains(&msg::NEW_SESSION), "{said:?}");
+        // Their words start a mark and a gap in from the line's start.
+        let words_at = directory.x + side::GLYPH + side::ROW_ITEM_GAP;
+        for item in &drawn.items {
+            if let Item::Text { rect, text, .. } = item {
+                if text == msg::GO_ON || text == msg::NEW_SESSION {
+                    assert_eq!(rect.x, words_at, "{text}");
+                }
+            }
+        }
+
+        // When it cannot: no choice, and the reason in its place.
+        let detail = Detail_::NoSupervisor { group: cannot.id.clone() };
+        let drawn = build_start(&detail, Some(&cannot), 600.0, theme, &view, &same);
+        assert!(drawn.sessions.is_empty());
+        let said = all_text(&drawn.items);
+        assert!(said.contains(&msg::WHY_SESSION_IN_USE), "{said:?}");
+        assert!(!said.contains(&msg::GO_ON) && !said.contains(&msg::NEW_SESSION), "{said:?}");
+
+        // One or the other, never both: whether it can is the core's `can`,
+        // and a core that says it can while naming a reason is believed
+        // about the first.
+        let odd = last_row(Some(1), Some("claude-code"), true, true, W::SessionInUse);
+        let drawn = build_start(&Detail_::NoSupervisor { group: odd.id.clone() }, Some(&odd), 600.0, theme, &view, &same);
+        assert_eq!(drawn.sessions.len(), 2);
+        assert!(!all_text(&drawn.items).contains(&msg::WHY_SESSION_IN_USE));
+    }
+
+    #[test]
+    fn the_mark_that_is_filled_is_the_session_in_use() {
+        use crate::act::Session;
+        use crate::snapshot::ResumeWhy as W;
+        let row = last_row(Some(1), Some("claude-code"), true, true, W::None);
+        let detail = Detail_::NoSupervisor { group: row.id.clone() };
+        let theme = look::theme(false);
+        // Which line's mark is in the attention colour: the y of the one
+        // round thing filled with it.
+        let filled_at = |session| {
+            let view = StartView { home: "", session, ..Default::default() };
+            let drawn = build_start(&detail, Some(&row), 600.0, theme, &view, &same);
+            let marks: Vec<f64> = drawn
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Round { rect, color, .. } if *color == theme.attention_text && rect.w == side::GLYPH => Some(rect.y),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(marks.len(), 1, "one mark is filled: {marks:?}");
+            let line = drawn.sessions.iter().find(|(_, r)| marks[0] >= r.y && marks[0] < r.y + r.h).map(|(s, _)| *s);
+            line.unwrap()
+        };
+        assert_eq!(filled_at(None), Session::Last);
+        assert_eq!(filled_at(Some(Session::Last)), Session::Last);
+        assert_eq!(filled_at(Some(Session::New)), Session::New);
+    }
+
+    #[test]
+    fn the_last_supervisor_is_said_and_its_directory_only_when_it_is_not_the_one_already_shown() {
+        use crate::snapshot::ResumeWhy as W;
+        let said = |row: &Row, picked: Option<&str>| last_supervisor_words(row.start.as_ref(), picked, "/Users/me", &same);
+        let whole = last_row(Some(1), Some("claude-code"), true, true, W::None);
+        // Nothing picked: the start uses the last supervisor's directory,
+        // which the line above shows. Said again it was the same path
+        // twice; so only the CLI, by the core's name for it.
+        assert_eq!(said(&whole, None).as_deref(), Some("The last supervisor used Claude Code."));
+        // Picked, and the same one: still not said.
+        assert_eq!(said(&whole, Some("/Users/me/work")).as_deref(), Some("The last supervisor used Claude Code."));
+        // Picked elsewhere: now it tells them something, shown as
+        // directories are everywhere else.
+        assert_eq!(said(&whole, Some("/srv/other")).as_deref(), Some("The last supervisor worked in ~/work, using Claude Code."));
+        // The directory the core names is the last supervisor's only when
+        // it says so (`cwd_from: last_supervisor`).
+        assert_eq!(said(&last_row(Some(1), Some("claude-code"), false, true, W::None), Some("/srv/other")).as_deref(), Some("The last supervisor used Claude Code."));
+        // A CLI nobody wrote down is not said, and neither is an empty one.
+        assert_eq!(said(&last_row(Some(1), None, true, true, W::None), Some("/srv/other")).as_deref(), Some("The last supervisor worked in ~/work."));
+        assert_eq!(said(&last_row(Some(1), Some(""), true, true, W::None), Some("/srv/other")).as_deref(), Some("The last supervisor worked in ~/work."));
+        // Never recorded, or nothing of it left to say: nothing.
+        assert_eq!(said(&last_row(None, Some("claude-code"), true, false, W::NoRecord), Some("/srv/other")), None);
+        assert_eq!(said(&last_row(Some(1), None, true, false, W::NoSession), None), None);
+        assert_eq!(said(&last_row(Some(1), None, false, false, W::NoSession), Some("/srv/other")), None);
+        let old = start_row(crate::snapshot::SupervisorState::Absent, true, crate::snapshot::StartFailure::None);
+        assert_eq!(said(&old, Some("/srv/other")), None);
+        assert_eq!(last_supervisor_words(None, None, "/Users/me", &same), None);
+        // No directory at all is not "where the tab starts".
+        let mut nowhere = last_row(Some(1), Some("codex"), true, true, W::None);
+        nowhere.start.as_mut().unwrap().cwd = String::new();
+        nowhere.start.as_mut().unwrap().last.as_mut().unwrap().last_cli_label = None;
+        assert_eq!(said(&nowhere, Some("/srv/other")).as_deref(), Some("The last supervisor used codex."));
+
+        // The CLI: the core's name, and the key when the core has none.
+        assert_eq!(cli_name(Some("claude-code"), Some("Claude Code")).as_deref(), Some("Claude Code"));
+        assert_eq!(cli_name(Some("claude-code"), None).as_deref(), Some("claude-code"));
+        assert_eq!(cli_name(Some("claude-code"), Some("")).as_deref(), Some("claude-code"));
+        assert_eq!(cli_name(None, Some("Claude Code")), None);
+        assert_eq!(cli_name(Some(""), Some("Claude Code")), None);
+
+        // And it is drawn, under the directory's line and above the
+        // button, for what the person has picked.
+        let row = last_row(Some(1), Some("claude-code"), true, false, W::NoRecord);
+        let detail = Detail_::NoSupervisor { group: row.id.clone() };
+        let drawn_for = |cwd: Option<&'static str>| build_start(&detail, Some(&row), 600.0, look::theme(false), &StartView { cwd, home: "/Users/me", ..Default::default() }, &same);
+        let sentence = |drawn: &Start| {
+            drawn.items.iter().find_map(|item| match item {
+                Item::Block { rect, text, .. } if text.starts_with("The last supervisor") => Some((*rect, text.clone())),
+                _ => None,
+            })
+        };
+        let drawn = drawn_for(None);
+        let (at, text) = sentence(&drawn).expect("the sentence is drawn");
+        assert_eq!(text, "The last supervisor used Claude Code.");
+        let directory = drawn.directory.unwrap();
+        assert_eq!(at.x, directory.x);
+        assert!(at.y >= directory.y + directory.h && at.y + at.h <= drawn.start.unwrap().y);
+        assert_eq!(sentence(&drawn_for(Some("/srv/other"))).unwrap().1, "The last supervisor worked in ~/work, using Claude Code.");
+    }
+
+    #[test]
+    fn every_reason_for_not_going_on_has_its_own_sentence_and_the_two_that_need_none_have_none() {
+        use crate::snapshot::ResumeWhy as W;
+        assert_eq!(resume_note(W::None), None);
+        assert_eq!(resume_note(W::NoRecord), None);
+        let spoken: Vec<&str> = W::ALL.into_iter().filter_map(resume_note).collect();
+        assert_eq!(spoken.len(), 6);
+        for (i, a) in spoken.iter().enumerate() {
+            assert!(!a.is_empty());
+            for b in &spoken[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        // The one that changes by itself does not say a new session will
+        // be started: that is about to stop being true.
+        assert!(msg::WHY_CLIS_UNREAD.ends_with('…'));
+        assert!(!msg::WHY_SESSION_IN_USE.ends_with('…'));
+    }
+
+    #[test]
+    fn a_group_with_no_record_of_a_supervisor_is_drawn_as_it_was() {
+        use crate::snapshot::{ResumeWhy as W, StartFailure as F, SupervisorState as S};
+        let theme = look::theme(false);
+        let view = StartView { home: "", ..Default::default() };
+        let before = start_row(S::Absent, true, F::None);
+        let detail = Detail_::NoSupervisor { group: before.id.clone() };
+        let was = build_start(&detail, Some(&before), 600.0, theme, &view, &same);
+        // The core says there is no record: nothing more is said, nothing
+        // is offered, and every rectangle is where it was.
+        let silent = last_row(None, None, false, false, W::NoRecord);
+        let now = build_start(&detail, Some(&silent), 600.0, theme, &view, &same);
+        assert_eq!(now, was);
+        assert!(now.sessions.is_empty());
     }
 
     // ---- a terminal in no group: its row, and the right side (task 1471)

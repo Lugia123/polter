@@ -188,6 +188,7 @@ Poltergeist 本身不管理任务。任务由其他系统 / 载体承载，AI �
 | [chatui.md](chatui.md)         | R9         | 群聊与私信界面的承载方式                                  | 原生 UI（参照 command palette）对比 imgui（参照 `src/inspector/Inspector.zig`）    |
 | [plugins.md](plugins.md)       | R3 的一半  | 插件的全部：一个常驻协议、订阅声明取代 `Kind`、插件与 agent 共用一个能力面、凭据、权限、照着写一个 | 拆掉 `Kind`（它同时管生命周期和契约，出过两次同一个 bug）；不写 SDK，让插件直接说 MCP 那套线协议 |
 | [plugin/](plugin/)             | —          | 随构建装出去的两个插件各自的说明（`archive`、`claude-code`） | 官方插件的说明和插件框架分开，改一个不牵动另一个 |
+| [projects.md](projects.md)    | —          | 群与项目一一绑定：谁为准、宿主的整份陈述、快照里的待办单、旧群补全 | 核心做完有测试，两个宿主都还没接 |
 | [storage.md](storage.md)      | —          | 核心自己的存储：流与记录两种形状、按天布局、往回翻       | 核心的存储是核心功能，不作为插件的数据源——插件那一半整个搬去了 plugins.md |
 | [roles.md](roles.md)           | —          | 角色：按终端决定 agent 手上有哪些工具、技能、提示词；哪几家宿主能在跑着的时候改 | **设计，未实现。** 不聚合上游 MCP（聚合会把宿主按服务器授权的能力吞掉）；角色技能走工具面而非文件（文件不按终端分） |
 | [surface.md](surface.md)      | —          | 菜单栏逐条盘点：哪些该经 MCP 开放给 AI，哪些故意不给    | 判据是「会不会让读到一段文字变成在这台机器上做一件事」 |

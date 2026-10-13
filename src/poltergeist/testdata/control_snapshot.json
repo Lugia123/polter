@@ -38,17 +38,27 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": null,
           "cli": null,
+          "cli_label": null,
           "heard_ms": null
         },
         "resume": {
           "can": false,
           "why": "no_record"
         }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "needs_approval",
@@ -140,17 +150,27 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": null,
           "cli": null,
+          "cli_label": null,
           "heard_ms": null
         },
         "resume": {
           "can": false,
           "why": "no_record"
         }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "needs_approval",
@@ -225,17 +245,27 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": null,
           "cli": null,
+          "cli_label": null,
           "heard_ms": null
         },
         "resume": {
           "can": false,
           "why": "no_record"
         }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "needs_approval",
@@ -325,17 +355,27 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": "polter-supervisor",
           "cli": "claude-code",
+          "cli_label": "Claude Code",
           "heard_ms": 1699999340000
         },
         "resume": {
           "can": false,
           "why": "session_in_use"
         }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "needs_answer",
@@ -408,17 +448,27 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": null,
           "cli": null,
+          "cli_label": null,
           "heard_ms": null
         },
         "resume": {
           "can": false,
           "why": "no_record"
         }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "failed",
@@ -491,17 +541,27 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": null,
           "cli": null,
+          "cli_label": null,
           "heard_ms": null
         },
         "resume": {
           "can": false,
           "why": "no_record"
         }
+      },
+      "project": {
+        "tie": "bound",
+        "name": "infra",
+        "pages": null,
+        "open": null,
+        "start": "project",
+        "why": "none"
       },
       "attention": {
         "kind": "done_unseen",
@@ -574,17 +634,27 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": null,
           "cli": null,
+          "cli_label": null,
           "heard_ms": null
         },
         "resume": {
           "can": false,
           "why": "no_record"
         }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "working",
@@ -674,17 +744,27 @@
         "failed": "none",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "cli_label": "Claude Code",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": "polter-supervisor",
           "cli": "claude-code",
+          "cli_label": "Claude Code",
           "heard_ms": 1699913600000
         },
         "resume": {
           "can": true,
           "why": "none"
         }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "idle",
@@ -1115,6 +1195,8 @@
       "terminal": "0x00000000000000b7"
     }
   ],
+  "projects_known": false,
+  "project_orders": [],
   "supervisor_roles": [
     {
       "key": "polter-supervisor",

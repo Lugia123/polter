@@ -420,6 +420,32 @@ pub const Cache = struct {
         return out;
     }
 
+    /// What each CLI is called to a person, as last read: its key and its
+    /// adapter's `label`, copied into `alloc`. Empty when nothing has been
+    /// read yet. Read out of `clis`, which is what a read leaves.
+    ///
+    /// Does not start a read.
+    pub fn names(self: *Cache, io: std.Io, alloc: Allocator) Allocator.Error![]const Named {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        return namesIn(alloc, self.clis orelse return &.{});
+    }
+
+    pub const Named = struct { key: []const u8, label: []const u8 };
+
+    /// The key and the label of every entry of a `clis` array. One that
+    /// does not read -- which a read never leaves -- is no names.
+    pub fn namesIn(alloc: Allocator, clis: []const u8) Allocator.Error![]const Named {
+        const parsed = std.json.parseFromSlice([]const Named, alloc, clis, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return &.{},
+        };
+        defer parsed.deinit();
+        const out = try alloc.alloc(Named, parsed.value.len);
+        for (parsed.value, out) |n, *o| o.* = .{ .key = try alloc.dupe(u8, n.key), .label = try alloc.dupe(u8, n.label) };
+        return out;
+    }
+
     /// Whether a read has finished or is under way.
     pub fn askedFor(self: *Cache, io: std.Io) bool {
         self.mutex.lockUncancelable(io);
@@ -1510,4 +1536,23 @@ test "agent_cli resume: a session that is gone, or is not one, starts a new sess
             return error.TestExpectedEqual;
         }
     }
+}
+
+test "agent_cli names: what each CLI is called is read out of what a read leaves, and nothing out of what does not read" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const clis =
+        \\[{"key":"claude-code","label":"Claude Code","bin":"claude","error":null,"inventory":{"resume":true}},
+        \\ {"key":"codex","label":"","bin":"codex","error":"no such file","inventory":null}]
+    ;
+    const read = try Cache.namesIn(a, clis);
+    try std.testing.expectEqual(@as(usize, 2), read.len);
+    try std.testing.expectEqualStrings("claude-code", read[0].key);
+    try std.testing.expectEqualStrings("Claude Code", read[0].label);
+    // One that failed still has its key, and the label it was given.
+    try std.testing.expectEqualStrings("codex", read[1].key);
+    try std.testing.expectEqualStrings("", read[1].label);
+    try std.testing.expectEqual(@as(usize, 0), (try Cache.namesIn(a, "[]")).len);
+    try std.testing.expectEqual(@as(usize, 0), (try Cache.namesIn(a, "not json")).len);
 }

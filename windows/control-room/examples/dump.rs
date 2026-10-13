@@ -291,20 +291,103 @@ fn main() {
         // goes on with its session.
         match r.start.as_ref().and_then(|s| s.last.as_ref()) {
             Some(l) => println!(
-                "start_last id={} cli={} last_role={} last_cli={} heard_ms={} resume={} why={}",
+                "start_last id={} cli={} last_role={} last_cli={} heard_ms={} resume={} why={} dir_is_last={} cli_label={} last_cli_label={}",
                 r.id,
                 l.cli.as_deref().unwrap_or("-"),
                 l.role.as_deref().unwrap_or("-"),
                 l.last_cli.as_deref().unwrap_or("-"),
                 l.heard_ms.map(|n| n.to_string()).unwrap_or_else(|| "-".into()),
                 l.can_resume,
-                l.why.name()
+                l.why.name(),
+                l.cwd_is_last,
+                l.cli_label.as_deref().map_or("-".to_string(), quote),
+                l.last_cli_label.as_deref().map_or("-".to_string(), quote)
             ),
             None => println!("start_last id={} -", r.id),
         }
     }
     for why in polter_control_room::snapshot::ResumeWhy::ALL {
         println!("resume_why {}", why.name());
+    }
+    // What the right-hand side makes of that: the sentence for each reason
+    // a start will not go on with the last session (none for the two that
+    // need none), what the two sessions are called, what a start sends for
+    // every state of the choice, and the sentence about the last supervisor
+    // for each mix of what is known of it.
+    {
+        use polter_control_room::act::{session_sent, Session};
+        use polter_control_room::scene;
+        use polter_control_room::snapshot::{ResumeWhy, StartFailure, SupervisorLast, SupervisorStart, SupervisorState};
+        let same = |s: &str| s.to_string();
+        let or_dash = |s: Option<String>| s.map_or("-".to_string(), |s| quote(&s));
+        // Whether a split asked of a terminal is made: of one the control
+        // room is showing, for an agent (asked through the core) and not
+        // for a key.
+        for lent in [false, true] {
+            for core in [false, true] {
+                println!("new_split lent={lent} asked_by_core={core} made={}", polter_control_room::lend::may_split(lent, core));
+            }
+        }
+        for why in ResumeWhy::ALL {
+            println!("resume_note {} says={}", why.name(), or_dash(scene::resume_note(why).map(str::to_string)));
+        }
+        for session in Session::ALL {
+            println!("session_option {} says={}", session.name(), quote(scene::session_words(session)));
+        }
+        for offered in [true, false] {
+            for picked in [None, Some(Session::Last), Some(Session::New)] {
+                println!(
+                    "session_sent offered={offered} picked={} sends={}",
+                    picked.map_or("-", Session::name),
+                    session_sent(offered, picked).map_or("-", Session::name)
+                );
+            }
+        }
+        // (name, heard, the directory, it is the last supervisor's, its CLI, the core's name for it,
+        //  the directory the person picked, can go on)
+        #[allow(clippy::type_complexity)]
+        let cases: [(&str, Option<u64>, &str, bool, Option<&str>, Option<&str>, Option<&str>, bool); 12] = [
+            ("unpicked", Some(1), "/Users/me/work", true, Some("claude-code"), Some("Claude Code"), None, true),
+            ("picked-the-same", Some(1), "/Users/me/work", true, Some("claude-code"), Some("Claude Code"), Some("/Users/me/work"), true),
+            ("picked-elsewhere", Some(1), "/Users/me/work", true, Some("claude-code"), Some("Claude Code"), Some("/srv/other"), true),
+            ("home-itself", Some(1), "/Users/me", true, Some("claude-code"), Some("Claude Code"), Some("/srv/other"), true),
+            ("no-name-for-the-cli", Some(1), "/Users/me/work", true, Some("claude-code"), None, Some("/srv/other"), false),
+            ("an-empty-name", Some(1), "/Users/me/work", true, Some("claude-code"), Some(""), None, false),
+            ("directory-is-a-guess", Some(1), "/Users/me/work", false, Some("claude-code"), Some("Claude Code"), Some("/srv/other"), true),
+            ("no-directory", Some(1), "", true, Some("codex"), None, Some("/srv/other"), false),
+            ("cli-not-written", Some(1), "/Users/me/work", true, None, None, Some("/srv/other"), false),
+            ("cli-not-written-unpicked", Some(1), "/Users/me/work", true, None, None, None, false),
+            ("cli-empty", Some(1), "/Users/me/work", true, Some(""), Some("Claude Code"), Some("/srv/other"), false),
+            ("never-recorded", None, "/Users/me/work", true, Some("claude-code"), Some("Claude Code"), Some("/srv/other"), false),
+        ];
+        let start = |cwd: &str, last| SupervisorStart { state: SupervisorState::Absent, can_start: true, failed: StartFailure::None, role: None, cwd: cwd.to_string(), last };
+        for (name, heard, cwd, is_last, cli, label, picked, can) in cases {
+            let s = start(
+                cwd,
+                Some(SupervisorLast {
+                    cli: Some("claude-code".into()),
+                    role: None,
+                    last_cli: cli.map(str::to_string),
+                    heard_ms: heard,
+                    can_resume: can,
+                    why: if can { ResumeWhy::None } else { ResumeWhy::NoSession },
+                    cwd_is_last: is_last,
+                    cli_label: Some("Claude Code".into()),
+                    last_cli_label: label.map(str::to_string),
+                }),
+            );
+            println!(
+                "last_said {name} offers={} says={}",
+                scene::offers_session(Some(&s)),
+                or_dash(scene::last_supervisor_words(Some(&s), picked, "/Users/me", &same))
+            );
+        }
+        let old = start("/Users/me/work", None);
+        println!(
+            "last_said core-says-nothing offers={} says={}",
+            scene::offers_session(Some(&old)),
+            or_dash(scene::last_supervisor_words(Some(&old), None, "/Users/me", &same))
+        );
     }
     // What the right-hand side says of a group with no supervisor, for
     // every reason the core gives for the last try having made none -- the
