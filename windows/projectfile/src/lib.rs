@@ -68,13 +68,27 @@ pub struct SavedLeaf {
     /// snapshot directory: `<ASCII digits>.snap`, or empty for none. Never a
     /// path.
     pub scrollback: String,
+    /// Whether the project's supervisor opened this pane. On the pane and
+    /// not in `agent`: the agent leaves, the pane is nobody's, and it is
+    /// still one the supervisor opened and may use again. `false` is also
+    /// what a pane nothing recorded this for reads as (`Project.zig`'s
+    /// `Leaf.by_supervisor` says why the two are not told apart).
+    pub by_supervisor: bool,
     pub agent: Agent,
 }
 
 impl SavedLeaf {
-    /// A pane in `cwd` with no title, history or snapshot, and `agent` in it.
+    /// A pane in `cwd` with no title, history or snapshot, not one the
+    /// supervisor opened, and `agent` in it.
     pub fn plain(cwd: &str, agent: Agent) -> SavedLeaf {
-        SavedLeaf { cwd: cwd.to_string(), title: String::new(), history: String::new(), scrollback: String::new(), agent }
+        SavedLeaf {
+            cwd: cwd.to_string(),
+            title: String::new(),
+            history: String::new(),
+            scrollback: String::new(),
+            by_supervisor: false,
+            agent,
+        }
     }
 }
 
@@ -339,6 +353,9 @@ fn node(out: &mut String, n: &SavedNode) -> Result<(), NotFinite> {
             field(out, "title", &leaf.title);
             field(out, "history", &leaf.history);
             field(out, "scrollback", &leaf.scrollback);
+            if leaf.by_supervisor {
+                out.push_str(",\"by_supervisor\":true");
+            }
             out.push_str(",\"agent\":{\"kind\":\"");
             match &leaf.agent {
                 Agent::Unknown => out.push_str("unknown\""),
@@ -552,11 +569,20 @@ fn json_to_node(v: &serde_json::Value, format: i64, fixups: &mut Fixups) -> Resu
             if matches!(&agent, Agent::Agent(who) if who.supervisor) {
                 fixups.supervisors += 1;
             }
+            // New with format 2 and strict as the agent is: absent is
+            // false, anything but a boolean is a damaged file.
+            let by_supervisor = match obj.get("by_supervisor") {
+                _ if format == 1 => false,
+                None => false,
+                Some(serde_json::Value::Bool(b)) => *b,
+                Some(_) => return Err(ReadError::Corrupt),
+            };
             Ok(SavedNode::Leaf(SavedLeaf {
                 cwd: opt_str(obj.get("cwd")),
                 title: opt_str(obj.get("title")),
                 history: opt_str(obj.get("history")),
                 scrollback,
+                by_supervisor,
                 agent,
             }))
         }

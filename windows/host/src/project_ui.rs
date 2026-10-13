@@ -97,6 +97,7 @@ pub(crate) fn tab_tree(frame: HWND, id: TabId) -> Option<(SavedNode, Vec<LeafPan
                             // Named by `name_leaves`, from the pane's own
                             // slot; empty until then.
                             scrollback: String::new(),
+                            by_supervisor: false,
                             // **Not known, which is not "nobody".** This
                             // host does not yet record which agent, if any,
                             // is in a pane; saying `None` here would write

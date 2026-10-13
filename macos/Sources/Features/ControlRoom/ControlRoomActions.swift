@@ -87,6 +87,9 @@ struct ControlRoomActions {
             case "SnoozeInThePast":
                 return String(localized: "That time has already passed.",
                               comment: "总控台：先放着到某个时刻，但时刻已过")
+            case "SupervisorPage":
+                return String(localized: "The group's supervisor is on this page, so it stays in the group's project.",
+                              comment: "项目：想把一页移出项目，但这个群的总管在这一页上")
             case "BadName":
                 return String(localized: "A group's name is lowercase letters, digits and dashes, 48 at most.",
                               comment: "总控台：新建群时名字不合规则（空的也是）")

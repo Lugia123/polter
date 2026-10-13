@@ -93,7 +93,20 @@ extension TerminalController {
     /// "Take This Page Out of the Project": the tab stays open and is a tab
     /// of no project; the project no longer has the page.
     @IBAction func takeOutOfProject(_ sender: Any?) {
-        projectSession?.detach(self, removing: true)
+        do {
+            try takeOutOfProject()
+        } catch {
+            presentProjectError(error)
+        }
+    }
+
+    /// Take this page out of its project -- after asking the core, which
+    /// does not allow it for the page a group's supervisor is on
+    /// (`ProjectLinker.askToRemove`).
+    private func takeOutOfProject() throws {
+        guard let session = projectSession else { return }
+        try ProjectLinker.shared?.askToRemove(self)
+        session.detach(self, removing: true)
     }
 
     /// "Close Project": every open page of this tab's project closes, and
@@ -131,7 +144,13 @@ extension TerminalController {
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
             do {
-                try ProjectStore.shared.rename(entry, to: field.stringValue)
+                // Asked of the core first; a group's project is renamed by
+                // the order that follows (`ProjectLinker.rename`).
+                if let linker = ProjectLinker.shared {
+                    try linker.rename(entry, to: field.stringValue)
+                } else {
+                    try ProjectStore.shared.rename(entry, to: field.stringValue)
+                }
             } catch {
                 self?.presentProjectError(error)
             }
@@ -177,7 +196,16 @@ extension TerminalController {
             choice: choice)
 
         func finish(takingOut: Bool) {
-            if takingOut { projectSession?.detach(self, removing: true) }
+            if takingOut {
+                do {
+                    try takeOutOfProject()
+                } catch {
+                    // Not taken out, so not closed either: the person asked
+                    // for both, and is told why one cannot be.
+                    presentProjectError(error)
+                    return
+                }
+            }
             close()
         }
 

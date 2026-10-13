@@ -279,6 +279,39 @@ struct ProjectPages: Equatable {
         return nil
     }
 
+    // MARK: The supervisor's pane
+
+    /// The snapshot name of the pane the project marks as its
+    /// supervisor's, if it marks one. A pane with no snapshot name cannot
+    /// be found again and is not one.
+    var supervisorPane: String? {
+        for window in windows {
+            for page in window.pages {
+                if let name = page.tab.root.supervisorPane { return name }
+            }
+        }
+        return nil
+    }
+
+    /// The snapshot names of the panes the project's supervisor opened.
+    var workerPanes: [String] {
+        windows.flatMap { $0.pages.flatMap(\.tab.root.workerPanes) }
+    }
+
+    /// Mark the pane called `name` as the supervisor's, **and no other**: a
+    /// project has one, and a file in which two panes say they are it reads
+    /// as having none (`ProjectFile.puttingRight`). What the pane's agent
+    /// otherwise was is kept; a pane nobody could say anything about, or
+    /// nobody was in, becomes an agent of which only this is known.
+    mutating func makeSupervisor(pane name: String) {
+        guard !name.isEmpty else { return }
+        for w in windows.indices {
+            for p in windows[w].pages.indices {
+                windows[w].pages[p].tab = ProjectTab(root: windows[w].pages[p].tab.root.markingSupervisor(name))
+            }
+        }
+    }
+
     // MARK: What a save cannot tell
 
     /// What the file says of a pane that a save may not be able to say
@@ -288,6 +321,8 @@ struct ProjectPages: Equatable {
         var cwd: String
         /// Who was in it; `.unknown` when the file did not say.
         var agent: ProjectAgent
+        /// Whether the project's supervisor opened it.
+        var bySupervisor: Bool
     }
 
     /// What the file says of each of its panes, by the pane's snapshot
@@ -304,16 +339,79 @@ struct ProjectPages: Equatable {
 }
 
 extension ProjectNode {
+    fileprivate var supervisorPane: String? {
+        switch self {
+        case .leaf(_, _, _, let scrollback, _, let agent):
+            return agent.isSupervisor && !scrollback.isEmpty ? scrollback : nil
+        case .split(_, _, let left, let right):
+            return left.supervisorPane ?? right.supervisorPane
+        }
+    }
+
+    fileprivate var workerPanes: [String] {
+        switch self {
+        case .leaf(_, _, _, let scrollback, let bySupervisor, _):
+            return bySupervisor && !scrollback.isEmpty ? [scrollback] : []
+        case .split(_, _, let left, let right):
+            return left.workerPanes + right.workerPanes
+        }
+    }
+
+    fileprivate func markingSupervisor(_ name: String) -> ProjectNode {
+        switch self {
+        case .leaf(let cwd, let title, let history, let scrollback, let bySupervisor, let agent):
+            let isIt = scrollback == name
+            let marked: ProjectAgent
+            switch agent {
+            case .agent(let role, let cli, let session, _):
+                marked = .agent(role: role, cli: cli, session: session, supervisor: isIt)
+            case .unknown, .none:
+                marked = isIt ? .agent(role: "", cli: "", session: "", supervisor: true) : agent
+            }
+            return .leaf(
+                cwd: cwd, title: title, history: history, scrollback: scrollback,
+                bySupervisor: bySupervisor, agent: marked)
+        case .split(let direction, let ratio, let left, let right):
+            return .split(
+                direction: direction, ratio: ratio,
+                left: left.markingSupervisor(name), right: right.markingSupervisor(name))
+        }
+    }
+
     fileprivate func collectKnown(into known: inout [String: ProjectPages.Known]) {
         switch self {
-        case .leaf(let cwd, _, _, let scrollback, let agent):
+        case .leaf(let cwd, _, _, let scrollback, let bySupervisor, let agent):
             if !scrollback.isEmpty, known[scrollback] == nil {
-                known[scrollback] = ProjectPages.Known(cwd: cwd, agent: agent)
+                known[scrollback] = ProjectPages.Known(cwd: cwd, agent: agent, bySupervisor: bySupervisor)
             }
         case .split(_, _, let left, let right):
             left.collectKnown(into: &known)
             right.collectKnown(into: &known)
         }
+    }
+
+    /// Who is written as being in a pane, given what a save found (`now`)
+    /// and what the file said (`was`).
+    ///
+    /// An answer replaces what was there; "cannot tell" does not. **The
+    /// supervisor's pane is the exception, and stays the supervisor's
+    /// whatever is found in it**: the mark is the project's, put there by
+    /// `ProjectPages.makeSupervisor` and by nothing a save sees, and the
+    /// pane is where the group's supervisor is started again -- most of all
+    /// when nobody is in it. So that pane goes on recording an agent: the
+    /// one in it now, each part the core does not know yet (an empty one)
+    /// kept as the file had it -- the session is what "go on with the last
+    /// session" needs -- or, with nobody in it, the one that was.
+    private static func agent(now: ProjectAgent, was: ProjectAgent) -> ProjectAgent {
+        guard case .agent(let role, let cli, let session, true) = was else {
+            return now == .unknown ? was : now
+        }
+        guard case .agent(let nowRole, let nowCLI, let nowSession, _) = now else { return was }
+        return .agent(
+            role: nowRole.isEmpty ? role : nowRole,
+            cli: nowCLI.isEmpty ? cli : nowCLI,
+            session: nowSession.isEmpty ? session : nowSession,
+            supervisor: true)
     }
 
     /// This tree with what a save could not tell about a pane filled in
@@ -326,20 +424,27 @@ extension ProjectNode {
     ///   `.unknown`, and writing that would wipe out what the file knew --
     ///   a worker's pane would be a pane nobody knows anything about after
     ///   the first title change. An answer that *is* one -- `.none`, or an
-    ///   agent -- always replaces what was there.
+    ///   agent -- replaces what was there, except in the supervisor's pane
+    ///   (`agent(now:was:)`).
     /// - *Where it is working.* A pane has no directory to report until
     ///   its shell has said one, which is some time after it opens and,
     ///   without shell integration, never. A project just opened is saved
     ///   within seconds; written as they come, its panes would all lose the
     ///   directories they were opened in.
+    /// - *Whether the supervisor opened it.* The core knows that only for
+    ///   panes opened since the app started; for a pane that came back with
+    ///   the project it is the file that knows. It is a thing about the
+    ///   pane for life, so once the file says yes a save that cannot tell
+    ///   does not make it no.
     func keepingWhatTheFileKnew(_ known: [String: ProjectPages.Known]) -> ProjectNode {
         switch self {
-        case .leaf(let cwd, let title, let history, let scrollback, let agent):
+        case .leaf(let cwd, let title, let history, let scrollback, let bySupervisor, let agent):
             guard let was = known[scrollback] else { return self }
             return .leaf(
                 cwd: cwd.isEmpty ? was.cwd : cwd,
                 title: title, history: history, scrollback: scrollback,
-                agent: agent == .unknown ? was.agent : agent)
+                bySupervisor: bySupervisor || was.bySupervisor,
+                agent: Self.agent(now: agent, was: was.agent))
         case .split(let direction, let ratio, let left, let right):
             return .split(
                 direction: direction, ratio: ratio,

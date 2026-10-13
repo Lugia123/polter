@@ -24,6 +24,15 @@ final class ProjectStore {
     /// there is one, and the tab's title -- is read again on it.
     static let bindingDidChange = Notification.Name("PolterProjectBindingDidChange")
 
+    /// Posted when the set of projects changes other than by a save: one
+    /// deleted, put back, renamed or copied. What states the projects to
+    /// the core says them again on it.
+    static let listDidChange = Notification.Name("PolterProjectListDidChange")
+
+    private func postListDidChange() {
+        NotificationCenter.default.post(name: Self.listDidChange, object: self)
+    }
+
     static func postBindingDidChange(_ name: String) {
         NotificationCenter.default.post(name: bindingDidChange, object: nil, userInfo: ["name": name])
     }
@@ -54,6 +63,8 @@ final class ProjectStore {
         var pageCount = 0
         /// How many panes it has, on every page.
         var totalPaneCount = 0
+        /// The group its file says it is the project of, if any.
+        var group: String?
         /// Whether a `.prev` generation exists to go back to -- see
         /// `ProjectFileWriter.write`.
         var hasPrevious = false
@@ -179,6 +190,7 @@ final class ProjectStore {
             paneCount: file.paneCount,
             pageCount: file.pageCount,
             totalPaneCount: file.totalPaneCount,
+            group: file.group,
             hasPrevious: FileManager.default.fileExists(atPath: ProjectFileWriter.previousURL(for: url).path))
     }
 
@@ -242,7 +254,7 @@ final class ProjectStore {
         group: String?,
         pages: ProjectPages,
         tabs screen: OpenTabs,
-        agent: (Ghostty.SurfaceView) -> ProjectAgent,
+        who: (Ghostty.SurfaceView) -> (agent: ProjectAgent, bySupervisor: Bool),
         keeping: ProjectFileWriter.Keeping
     ) throws -> (entry: Entry, pages: ProjectPages) {
         let (open, frames, keepingFront) = (screen.open, screen.frames, screen.keepingFront)
@@ -290,7 +302,7 @@ final class ProjectStore {
                     }
                 }
                 return snapshot.filename
-            }, agent: agent)
+            }, who: who)
             return ProjectPages.Live(
                 id: page.id, window: page.window, index: page.index, selected: page.selected, root: root)
         }
@@ -341,7 +353,7 @@ final class ProjectStore {
                 open: [OpenPage(id: id, tree: tree, window: 0, index: 0, selected: true, capturingScrollback: capturingScrollback)],
                 frames: [:],
                 keepingFront: false),
-            agent: { _ in .unknown },
+            who: { _ in (.unknown, false) },
             keeping: keeping).entry
     }
 
@@ -385,6 +397,18 @@ final class ProjectStore {
             throw StoreError.notFound
         }
         return try ProjectFile.decode(from: data)
+    }
+
+    /// Write `group` into the file of a project none of whose pages is
+    /// open, and change nothing else about it. (An open project's group is
+    /// its session's to write: `ProjectSession.setGroup`.)
+    func setGroup(_ entry: Entry, to group: String?) throws {
+        let file = try read(entry)
+        guard file.group != group else { return }
+        let changed = ProjectFile(
+            name: file.name, savedAt: file.savedAt, group: group, windows: file.windows, nextScrollback: file.nextScrollback)
+        try ProjectFileWriter.write(changed, to: entry.url, keeping: .onLayoutChange)
+        NotificationCenter.default.post(name: Self.didWrite, object: self, userInfo: ["name": file.name])
     }
 
     /// Materialize one page of `entry`, ready to hand to
@@ -445,6 +469,7 @@ final class ProjectStore {
             try? FileManager.default.removeItem(at: sidecar)
         }
         Self.logger.info("deleted project '\(entry.name, privacy: .public)'")
+        postListDidChange()
     }
 
     // MARK: - The settings window's operations (settings.md §6.2)
@@ -549,6 +574,7 @@ final class ProjectStore {
         follower?.projectDidMove(to: name, oldKey: oldKey, key: newKey,
                                  scrollback: ProjectScrollback.directory(forProjectFile: target))
         Self.logger.info("renamed project '\(entry.name, privacy: .public)' to '\(name, privacy: .public)'")
+        postListDidChange()
         return makeEntry(file.with(name: name, savedAt: file.savedAt), at: target)
     }
 
@@ -579,6 +605,7 @@ final class ProjectStore {
         }
         try copy.encoded().write(to: target, options: .atomic)
         Self.logger.info("copied project '\(entry.name, privacy: .public)' to '\(name, privacy: .public)'")
+        postListDidChange()
         return makeEntry(copy, at: target)
     }
 
@@ -611,6 +638,7 @@ final class ProjectStore {
             }
         }
         Self.logger.info("moved project '\(entry.name, privacy: .public)' to the Trash")
+        postListDidChange()
         return Trashed(name: entry.name, moves: moves)
     }
 
@@ -631,6 +659,7 @@ final class ProjectStore {
             try fm.moveItem(at: move.to, to: move.from)
         }
         Self.logger.info("put project '\(trashed.name, privacy: .public)' back from the Trash")
+        postListDidChange()
     }
 
     nonisolated static func systemTrash(_ url: URL) throws -> URL {

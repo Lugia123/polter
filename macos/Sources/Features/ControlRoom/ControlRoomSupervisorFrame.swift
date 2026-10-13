@@ -53,7 +53,8 @@ struct ControlRoomDetailMessage: View {
                 .foregroundStyle(theme.textSecondary.color)
             if case let .noSupervisor(group) = detail, let start, start.canStart {
                 ControlRoomStartSupervisor(
-                    start: start, roles: roles, chooseRole: chooseRole, refusal: refusal, onStart: onStart)
+                    start: start, project: ProjectLink.latest?.groups[group],
+                    roles: roles, chooseRole: chooseRole, refusal: refusal, onStart: onStart)
                     // A pick is about one group: another group starts from
                     // what the core names for it.
                     .id(group)
@@ -102,6 +103,11 @@ struct ControlRoomStartSupervisor: View {
     typealias Choice = ControlRoomStartChoice
 
     let start: ControlRoomList.SupervisorStart
+    /// What the core says of this group's project; nil when it says
+    /// nothing. Starting opens the project when it says so
+    /// (`ProjectLink.startTitle`), and then the directory is not asked for:
+    /// the supervisor's pane has its own.
+    let project: ProjectLink.GroupProject?
     let roles: [ControlRoomList.SupervisorRole]
     let chooseRole: Bool
     let refusal: String?
@@ -129,6 +135,7 @@ struct ControlRoomStartSupervisor: View {
                     .fixedSize()
                 }
             }
+            if project?.start != .project {
             HStack(spacing: gap) {
                 Text(String(localized: "Directory", comment: "总控台：启动总管时，总管在哪个目录里启动"))
                     .foregroundStyle(theme.textSecondary.color)
@@ -143,6 +150,7 @@ struct ControlRoomStartSupervisor: View {
                         .foregroundStyle(theme.attentionText.color)
                 }
                 .buttonStyle(.plain)
+            }
             }
             if let said = Choice.lastSupervisorText(start, startingIn: cwd ?? start.cwd) {
                 Text(said)
@@ -159,7 +167,7 @@ struct ControlRoomStartSupervisor: View {
             Button(action: {
                 onStart(role, cwd, Choice.sessionSent(offered: Choice.offersSession(start), picked: session))
             }, label: {
-                Text(String(localized: "Start Supervisor", comment: "总控台：没有总管的群，右栏上启动一个总管的主按钮"))
+                Text(ProjectLink.startTitle(project))
                     .fontWeight(Look.weight(Look.Font.weightEmphasis))
                     .foregroundStyle(theme.attentionText.color)
                     .padding(.horizontal, CGFloat(Look.Side.rowPaddingX))
@@ -170,6 +178,11 @@ struct ControlRoomStartSupervisor: View {
                     .contentShape(Rectangle())
             })
             .buttonStyle(.plain)
+            if let note = ProjectLink.startNote(project) {
+                Text(note)
+                    .foregroundStyle(theme.textSecondary.color)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let refusal {
                 Text(refusal)
                     .foregroundStyle(theme.problemTextOnSupervisorBar.color)

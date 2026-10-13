@@ -52,12 +52,13 @@
 //!     NODE    {"kind":"split","direction":"horizontal"|"vertical","ratio":N,
 //!              "left":NODE,"right":NODE}
 //!           | {"kind":"leaf","cwd":S,"title":S,"history":S,"scrollback":S,
-//!              "agent":AGENT}
+//!              "by_supervisor":true,"agent":AGENT}
 //!     AGENT   {"kind":"unknown"} | {"kind":"none"}
 //!           | {"kind":"agent","role":S,"cli":S,"session":S,"supervisor":B}
 //!
 //! `group`, `next_scrollback` and `frame` are left out when there is none;
-//! so is any string of a leaf or an agent that is empty. Everything else is
+//! so is any string of a leaf or an agent that is empty, and `by_supervisor`
+//! when it is not true. Everything else is
 //! always there, and a format 2 file without it is `Corrupt`.
 //!
 //!   - A string is its UTF-8 bytes between quotes, with `"` and `\` each
@@ -147,6 +148,18 @@ pub const Leaf = struct {
     /// field makes a project file a list of files the core may delete, and
     /// `../../elsewhere/keep.snap` passes the core's own `.snap` check.
     scrollback: []const u8,
+
+    /// Whether the project's supervisor opened this pane -- a worker's
+    /// pane, in the supervisor's own tab or one it opened.
+    ///
+    /// **On the pane and not in `agent`**: the agent leaves and the pane is
+    /// then nobody's, and it is still a pane the supervisor opened, which
+    /// is what lets the supervisor use it again rather than open another.
+    /// A project has one group and one supervisor, so which supervisor
+    /// need not be said. `false` is also what a pane reads as when nothing
+    /// recorded it: the two are not told apart, because both mean "not one
+    /// the supervisor may take for its own".
+    by_supervisor: bool,
 
     /// Who was working in this pane.
     agent: Agent,
@@ -575,6 +588,7 @@ fn emitNode(w: *std.Io.Writer, node: Node) EmitError!void {
             try emitField(w, "title", leaf.title);
             try emitField(w, "history", leaf.history);
             try emitField(w, "scrollback", leaf.scrollback);
+            if (leaf.by_supervisor) try w.writeAll(",\"by_supervisor\":true");
             try w.writeAll(",\"agent\":{\"kind\":\"");
             try w.writeAll(@tagName(leaf.agent));
             try w.writeByte('"');
@@ -833,6 +847,12 @@ fn parseNode(arena: Allocator, value: std.json.Value, format: u32, fixups: *Fixu
                 .title = optionalStr(obj.get("title")) orelse "",
                 .history = optionalStr(obj.get("history")) orelse "",
                 .scrollback = scrollback,
+                // New with format 2 and strict as the agent is: absent is
+                // false, anything but a boolean is a damaged file.
+                .by_supervisor = if (format == 1) false else if (obj.get("by_supervisor")) |v| switch (v) {
+                    .bool => |b| b,
+                    else => return error.Corrupt,
+                } else false,
                 // A format 1 file never said, whatever keys it has.
                 .agent = if (format == 1) .unknown else try parseAgent(obj.get("agent") orelse return error.Corrupt),
             },
@@ -1033,6 +1053,7 @@ fn expectNodesEqual(a: Node, b: Node) !void {
             try testing.expectEqualStrings(al.title, bl.title);
             try testing.expectEqualStrings(al.history, bl.history);
             try testing.expectEqualStrings(al.scrollback, bl.scrollback);
+            try testing.expectEqual(al.by_supervisor, bl.by_supervisor);
             try testing.expectEqualDeep(al.agent, bl.agent);
         },
         .split => |as| {
@@ -1060,8 +1081,8 @@ test "what is written comes back exactly" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const left: Node = .{ .leaf = .{ .cwd = "/work/repo", .title = "✳ retry.py", .history = "a1b2c3.history", .scrollback = "0.snap", .agent = .unknown } };
-    const right: Node = .{ .leaf = .{ .cwd = "/work/repo/tests", .title = "✳ tests", .history = "", .scrollback = "", .agent = .unknown } };
+    const left: Node = .{ .leaf = .{ .cwd = "/work/repo", .title = "✳ retry.py", .history = "a1b2c3.history", .scrollback = "0.snap", .by_supervisor = false, .agent = .unknown } };
+    const right: Node = .{ .leaf = .{ .cwd = "/work/repo/tests", .title = "✳ tests", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
     const root: Node = .{ .split = .{
         .direction = .horizontal,
         .ratio = 0.62,
@@ -1110,9 +1131,9 @@ test "a nested tree round-trips" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const a: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .agent = .unknown } };
-    const b: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .agent = .unknown } };
-    const c: Node = .{ .leaf = .{ .cwd = "/c", .title = "", .history = "", .scrollback = "", .agent = .unknown } };
+    const a: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
+    const b: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
+    const c: Node = .{ .leaf = .{ .cwd = "/c", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
     const inner: Node = .{ .split = .{ .direction = .vertical, .ratio = 0.5, .left = &b, .right = &c } };
     const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = 0.3, .left = &a, .right = &inner } };
 
@@ -1164,8 +1185,8 @@ test "a truncated file does not read out half a tree" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const left: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .agent = .unknown } };
-    const right: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .agent = .unknown } };
+    const left: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
+    const right: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
     const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = 0.5, .left = &left, .right = &right } };
     try write(alloc, io, dir, try oneTab(alloc, "cutoff", 3, &root, null));
 
@@ -1296,7 +1317,7 @@ test "rename keeps the tree and moves the name" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const leaf: Node = .{ .leaf = .{ .cwd = "/work", .title = "", .history = "", .scrollback = "", .agent = .unknown } };
+    const leaf: Node = .{ .leaf = .{ .cwd = "/work", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
     try write(alloc, io, dir, try oneTab(alloc, "old name", 6, &leaf, 3));
 
     try rename(alloc, io, dir, "old name", "new name");
@@ -1590,6 +1611,7 @@ test "a format 2 file that lacks what format 2 always writes is corrupt" {
         .{ .what = "an agent of no kind this build names", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"agent\":{\"kind\":\"robot\"}}}]}]" },
         .{ .what = "an agent that does not say whether it supervises", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"agent\":{\"kind\":\"agent\"}}}]}]" },
         .{ .what = "an agent whose role is not text", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"agent\":{\"kind\":\"agent\",\"role\":1,\"supervisor\":false}}}]}]" },
+        .{ .what = "a by_supervisor that is not yes or no", .windows = "[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"by_supervisor\":1,\"agent\":{\"kind\":\"none\"}}}]}]" },
         .{ .what = "a frame from no corner", .windows = "[{\"frame\":{\"x\":0,\"y\":0,\"width\":1,\"height\":1},\"front\":0,\"tabs\":[{\"root\":" ++ leaf ++ "}]}]" },
         .{ .what = "a frame missing a side", .windows = "[{\"frame\":{\"origin\":\"top_left\",\"x\":0,\"y\":0,\"width\":1},\"front\":0,\"tabs\":[{\"root\":" ++ leaf ++ "}]}]" },
         .{ .what = "windows that are not a list", .windows = "{}" },
@@ -1614,7 +1636,7 @@ test "a ratio that is not a finite number cannot be written" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const leaf: Node = .{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .agent = .none } };
+    const leaf: Node = .{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .none } };
     for ([_]f64{ std.math.nan(f64), std.math.inf(f64), -std.math.inf(f64) }) |bad| {
         const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = bad, .left = &leaf, .right = &leaf } };
         var buf: std.Io.Writer.Allocating = .init(alloc);
@@ -1662,7 +1684,12 @@ const Shared = struct {
     value: Snapshot,
 
     fn leaf(comptime cwd: []const u8, comptime scrollback: []const u8, comptime agent: Agent) *const Node {
-        return &.{ .leaf = .{ .cwd = cwd, .title = "", .history = "", .scrollback = scrollback, .agent = agent } };
+        return &.{ .leaf = .{ .cwd = cwd, .title = "", .history = "", .scrollback = scrollback, .by_supervisor = false, .agent = agent } };
+    }
+
+    /// A pane the project's supervisor opened.
+    fn opened(comptime cwd: []const u8, comptime agent: Agent) *const Node {
+        return &.{ .leaf = .{ .cwd = cwd, .title = "", .history = "", .scrollback = "", .by_supervisor = true, .agent = agent } };
     }
 
     fn split(comptime direction: Direction, comptime ratio: f64, comptime left: *const Node, comptime right: *const Node) *const Node {
@@ -1690,8 +1717,8 @@ const Shared = struct {
             .windows = &.{.{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(
                 .vertical,
                 0.25,
-                &.{ .leaf = .{ .cwd = "/work/left", .title = "left title", .history = "left.history", .scrollback = "3.snap", .agent = .unknown } },
-                &.{ .leaf = .{ .cwd = "/work/right", .title = "right title", .history = "right.history", .scrollback = "8.snap", .agent = .unknown } },
+                &.{ .leaf = .{ .cwd = "/work/left", .title = "left title", .history = "left.history", .scrollback = "3.snap", .by_supervisor = false, .agent = .unknown } },
+                &.{ .leaf = .{ .cwd = "/work/right", .title = "right title", .history = "right.history", .scrollback = "8.snap", .by_supervisor = false, .agent = .unknown } },
             ) }} }},
         } },
         // A format 1 file with no tab in it.
@@ -1711,7 +1738,7 @@ const Shared = struct {
             .windows = &.{.{
                 .frame = .{ .origin = .bottom_left, .x = 120, .y = 80, .width = 1280, .height = 800 },
                 .front = 0,
-                .tabs = &.{.{ .root = &.{ .leaf = .{ .cwd = "/work", .title = "zsh", .history = "a1b2c3.history", .scrollback = "0.snap", .agent = .none } } }},
+                .tabs = &.{.{ .root = &.{ .leaf = .{ .cwd = "/work", .title = "zsh", .history = "a1b2c3.history", .scrollback = "0.snap", .by_supervisor = false, .agent = .none } } }},
             }},
         } },
         // Several windows, several tabs, and every way a string or a number
@@ -1734,15 +1761,17 @@ const Shared = struct {
                                 .title = "a \"quoted\" title, a backslash \\, a tab\t, a line\n, 中文, ✳ and 🧪",
                                 .history = "a1b2c3.history",
                                 .scrollback = "0.snap",
+                                .by_supervisor = false,
                                 .agent = .none,
                             } },
-                            &.{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .agent = .unknown } },
+                            &.{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } },
                         ) },
                         .{ .root = &.{ .leaf = .{
                             .cwd = "/a/b",
                             .title = "\x01\x1f\x7f</script>\u{2028}",
                             .history = "",
                             .scrollback = "12345678901234567890.snap",
+                            .by_supervisor = false,
                             .agent = worker(false),
                         } } },
                         .{ .root = split(
@@ -1784,8 +1813,11 @@ const Shared = struct {
                         // the quick way gets wrong by one in the last place
                         // (measured: serde_json without `float_roundtrip` reads
                         // it as ...696), and then writes back different digits.
-                        .{ .root = split(.horizontal, 0.9856906946328695, leaf("/work/repo", "", supervisor), leaf("/work/repo", "", worker(false))) },
-                        .{ .root = split(.vertical, 0.5, leaf("/work/repo", "", .none), leaf("", "", .unknown)) },
+                        .{ .root = split(.horizontal, 0.9856906946328695, leaf("/work/repo", "", supervisor), opened("/work/repo", worker(false))) },
+                        // The second pane is one the supervisor opened and
+                        // whose agent has since left: nobody's, and still
+                        // the supervisor's to use again.
+                        .{ .root = split(.vertical, 0.5, opened("/work/repo", .none), leaf("", "", .unknown)) },
                     },
                 }},
             },
@@ -1819,6 +1851,7 @@ const Shared = struct {
                     .title = "",
                     .history = "",
                     .scrollback = "",
+                    .by_supervisor = false,
                     .agent = .{ .agent = .{ .role = "polter-supervisor", .cli = "claude-code", .session = "s-2", .supervisor = false } },
                 } } }} },
             },

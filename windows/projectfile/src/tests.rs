@@ -135,6 +135,7 @@ fn a_format_1_file_reads_as_one_window_with_one_tab_and_nobody_knows_who_was_in_
                         title: String::new(),
                         history: String::new(),
                         scrollback: "1.snap".to_string(),
+                        by_supervisor: false,
                         // Not `None`, and not the agent the stray key describes.
                         agent: Agent::Unknown,
                     })
@@ -185,6 +186,7 @@ fn a_format_2_file_that_lacks_what_format_2_always_writes_is_corrupt() {
         ("an agent of no kind this build names", r#"[{"front":0,"tabs":[{"root":{"kind":"leaf","agent":{"kind":"robot"}}}]}]"#.to_string()),
         ("an agent that does not say whether it supervises", r#"[{"front":0,"tabs":[{"root":{"kind":"leaf","agent":{"kind":"agent"}}}]}]"#.to_string()),
         ("an agent whose role is not text", r#"[{"front":0,"tabs":[{"root":{"kind":"leaf","agent":{"kind":"agent","role":1,"supervisor":false}}}]}]"#.to_string()),
+        ("a by_supervisor that is not yes or no", r#"[{"front":0,"tabs":[{"root":{"kind":"leaf","by_supervisor":1,"agent":{"kind":"none"}}}]}]"#.to_string()),
         ("a frame from no corner", format!(r#"[{{"frame":{{"x":0,"y":0,"width":1,"height":1}},"front":0,"tabs":[{{"root":{leaf}}}]}}]"#)),
         ("a frame missing a side", format!(r#"[{{"frame":{{"origin":"top_left","x":0,"y":0,"width":1}},"front":0,"tabs":[{{"root":{leaf}}}]}}]"#)),
         ("windows that are not a list", "{}".to_string()),
@@ -254,6 +256,7 @@ fn a_file_with_fields_this_build_does_not_know_still_reads() {
                 title: "t".to_string(),
                 history: "h.history".to_string(),
                 scrollback: "0.snap".to_string(),
+                by_supervisor: false,
                 agent: Agent::Unknown,
             })),
             right: Box::new(SavedNode::Leaf(SavedLeaf::plain("", Agent::Unknown))),

@@ -105,8 +105,13 @@ final class ProjectsModel: ObservableObject {
     func rename(to name: String) {
         guard let entry = selected else { return }
         attempt {
-            let renamed = try store.rename(entry, to: name)
-            selection = renamed.name
+            // Asked of the core first; a group's project is renamed by the
+            // order that follows (`ProjectLinker.rename`).
+            if let linker = ProjectLinker.shared {
+                selection = try linker.rename(entry, to: name)
+            } else {
+                selection = try store.rename(entry, to: name).name
+            }
         }
     }
 
@@ -531,7 +536,7 @@ private struct ProjectDetail: View {
 
     static func leaves(_ node: ProjectNode) -> [Leaf] {
         switch node {
-        case .leaf(let cwd, let title, _, _, _): [Leaf(cwd: cwd, title: title)]
+        case .leaf(let cwd, let title, _, _, _, _): [Leaf(cwd: cwd, title: title)]
         case .split(_, _, let left, let right): leaves(left) + leaves(right)
         }
     }

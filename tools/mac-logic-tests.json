@@ -64,6 +64,7 @@
       },
       "macos/Sources/Features/Projects/ProjectAutosave.swift",
       "macos/Sources/Features/Projects/ProjectFilename.swift",
+      "macos/Sources/Features/Projects/ProjectLink.swift",
       "macos/Sources/Features/Projects/ProjectPageRules.swift",
       "macos/Sources/Features/Projects/ProjectPages.swift"
     ],
@@ -105,6 +106,7 @@
       "macos/Tests/Projects/ProjectDocumentTests.swift",
       "macos/Tests/Projects/ProjectFileAdoptionTests.swift",
       "macos/Tests/Projects/ProjectFilenameTableTests.swift",
+      "macos/Tests/Projects/ProjectLinkTests.swift",
       "macos/Tests/Projects/ProjectPageRulesTests.swift",
       "macos/Tests/Projects/ProjectPagesTests.swift",
       "macos/Tests/Projects/SharedProjectFilesTests.swift",

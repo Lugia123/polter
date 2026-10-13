@@ -174,7 +174,7 @@ struct ProjectAutosaveTests {
     }
 
     private func leaf(_ cwd: String, _ title: String = "") -> ProjectNode {
-        .leaf(cwd: cwd, title: title, history: "", scrollback: "", agent: .unknown)
+        .leaf(cwd: cwd, title: title, history: "", scrollback: "", bySupervisor: false, agent: .unknown)
     }
 
     /// `.prev` is the file from before the *last* layout change -- one

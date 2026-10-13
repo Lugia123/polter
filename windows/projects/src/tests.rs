@@ -11,7 +11,7 @@ use crate::pages::{keeping_what_the_file_knew, Known, Live, Pages, Screen};
 use crate::placement::{self, Home, Place, Rect};
 
 fn leaf_of(cwd: &str, scrollback: &str, agent: Agent) -> SavedNode {
-    SavedNode::Leaf(SavedLeaf { cwd: cwd.into(), title: String::new(), history: String::new(), scrollback: scrollback.into(), agent })
+    SavedNode::Leaf(SavedLeaf { cwd: cwd.into(), title: String::new(), history: String::new(), scrollback: scrollback.into(), by_supervisor: false, agent })
 }
 
 fn leaf(cwd: &str, scrollback: &str) -> SavedNode {
