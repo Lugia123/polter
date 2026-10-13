@@ -986,6 +986,11 @@ class AppDelegate: NSObject,
         case let .inFront(of: which):
             parent = window(which)
             inFront = true
+        case .behind(.controlRooms) where beside == nil:
+            // The control room is the only window: the tab is the first
+            // one beside it, and the control room stays in front.
+            controlRoom?.newFirstTerminalTab(withBaseConfig: config)
+            return
         case let .behind(which):
             parent = window(which)
             inFront = false

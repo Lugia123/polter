@@ -291,7 +291,7 @@ enum ControlRoomRules {
         /// there.
         case behind(Home)
         /// In a window of its own: there is no terminal window to put a
-        /// tab in.
+        /// tab in, and the control room is not where the person is.
         case ownWindow
         /// Not opened, and the core is told so. Nothing holds the terminal
         /// it was asked from.
@@ -301,7 +301,9 @@ enum ControlRoomRules {
             /// The window of the terminal the tab was asked from -- its own
             /// tab's, wherever its view is at the moment.
             case askers
-            /// The terminal tabs the control room sits among.
+            /// The window the control room is a tab of: among the terminal
+            /// tabs it sits with, and with none there yet, as the first
+            /// one beside it.
             case controlRooms
             /// The terminal window the person used last.
             case frontmost
@@ -318,6 +320,13 @@ enum ControlRoomRules {
     /// view is in the control room's window, which takes no terminal tabs;
     /// asking that window for a tab opened nothing at all and answered
     /// "done" (the supervisor's `terminal_open`, 2026-10-13).
+    ///
+    /// **The control room alone on screen takes the tab into its own
+    /// window.** This answered `.ownWindow` -- "no terminal window to put a
+    /// tab in" -- and starting a supervisor from a control room that was the
+    /// only window put it in a second window (the user, 2026-10-13). The
+    /// control room's window does take terminal tabs; what it lacked was
+    /// anybody adding the first one.
     static func newTab(
         asker: (lent: Bool, hasHome: Bool)?,
         controlRoomInFront: Bool,
@@ -328,7 +337,7 @@ enum ControlRoomRules {
             guard asker.hasHome else { return .refused }
             return asker.lent ? .behind(.askers) : .inFront(of: .askers)
         }
-        if controlRoomInFront, tabsBesideControlRoom { return .behind(.controlRooms) }
+        if controlRoomInFront, tabsBesideControlRoom || !anyTerminalWindow { return .behind(.controlRooms) }
         return anyTerminalWindow ? .inFront(of: .frontmost) : .ownWindow
     }
 
@@ -367,7 +376,8 @@ enum ControlRoomRules {
     ///
     /// The place is `newTab`'s, asked with nothing as the asker: among the
     /// terminal tabs the control room sits with when there are any, else in
-    /// the terminal window used last, else in a window of its own. **It is
+    /// the terminal window used last, else -- no terminal window anywhere --
+    /// as the first tab beside the control room. **It is
     /// never left behind.** "Behind" is for a tab an agent asked for while
     /// the person is looking at the control room; this one the person
     /// chose themselves, and a project that opened where they cannot see

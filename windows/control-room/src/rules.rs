@@ -50,7 +50,8 @@ pub enum Home {
     /// The window of the terminal the tab was asked from -- its own tab's,
     /// wherever it is being shown at the moment.
     Askers,
-    /// The window whose tabs the control room sits among.
+    /// The window the control room is a tab of, whether or not a terminal
+    /// tab is there yet.
     ControlRooms,
     /// The terminal window the person used last.
     Frontmost,
@@ -66,7 +67,8 @@ pub enum NewTab {
     /// As a tab of that window, **without being brought in front**: the
     /// person is looking at the control room and stays there.
     Behind(Home),
-    /// In a window of its own: there is no terminal window to put a tab in.
+    /// In a window of its own: there is no terminal window to put a tab in,
+    /// and the control room is not the tab in front.
     OwnWindow,
     /// Not opened, and the core is told so. Nothing holds the terminal it
     /// was asked from.
@@ -85,7 +87,10 @@ pub fn new_tab(asker: Option<(bool, bool)>, control_room_in_front: bool, tabs_be
         }
         return if lent { NewTab::Behind(Home::Askers) } else { NewTab::InFront(Home::Askers) };
     }
-    if control_room_in_front && tabs_beside_control_room {
+    // Alone on screen, the control room's window takes the tab too: it
+    // answered `OwnWindow` there, which this host cannot open, so starting
+    // a supervisor from a lone control room opened nothing.
+    if control_room_in_front && (tabs_beside_control_room || !any_terminal_window) {
         return NewTab::Behind(Home::ControlRooms);
     }
     if any_terminal_window {

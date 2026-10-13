@@ -464,6 +464,12 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
                             break
                         }
                         if host.isMiniaturized { host.deminiaturize(nil) }
+                        // Tabs join by identifier, and a host that is not a
+                        // terminal's window -- the control room alone in
+                        // its own -- does not have the terminals'.
+                        if !(host.windowController is TerminalController) {
+                            host.tabbingIdentifier = tab.tabbingIdentifier
+                        }
                         (host.tabGroup?.windows.last ?? host).addTabbedWindowSafely(tab, ordered: .above)
                     }
                 }

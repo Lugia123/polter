@@ -248,10 +248,20 @@ struct ControlRoomNewTabTests {
         let ordinary = Rules.newTab(asker: nil, controlRoomInFront: false,
                                     tabsBesideControlRoom: true, anyTerminalWindow: true)
         #expect(ordinary == .inFront(of: .frontmost))
-        // No terminal window anywhere: one of its own.
-        let none = Rules.newTab(asker: nil, controlRoomInFront: true,
-                                tabsBesideControlRoom: false, anyTerminalWindow: false)
-        #expect(none == .ownWindow)
+    }
+
+    @Test func aTabAskedForFromAControlRoomThatIsTheOnlyWindowBecomesATabOfItBehind() {
+        // The defect (the user, 2026-10-13): starting a supervisor from a
+        // control room with no terminal window anywhere opened a second
+        // window.
+        let alone = Rules.newTab(asker: nil, controlRoomInFront: true,
+                                 tabsBesideControlRoom: false, anyTerminalWindow: false)
+        #expect(alone == .behind(.controlRooms))
+        // Not where the person is, and nothing to put a tab in: a window
+        // of its own, as before.
+        let nowhere = Rules.newTab(asker: nil, controlRoomInFront: false,
+                                   tabsBesideControlRoom: false, anyTerminalWindow: false)
+        #expect(nowhere == .ownWindow)
     }
 
     @Test func aGroupThePersonMadeIsSelectedOnlyOnceTheCoreListsIt() {

@@ -52,11 +52,12 @@ struct ControlRoomProjectMenuTests {
                                   tabsBesideControlRoom: true, anyTerminalWindow: true)
         #expect(agents == .behind(.controlRooms))
         // With no terminal tab beside the control room: the terminal
-        // window used last, and with none at all a window of its own.
+        // window used last, and with none at all the first tab beside the
+        // control room -- in front, like the others.
         let elsewhere = Rules.loadedProjectTab(tabsBesideControlRoom: false, anyTerminalWindow: true)
         #expect(elsewhere == .inFront(of: .frontmost))
         let nowhere = Rules.loadedProjectTab(tabsBesideControlRoom: false, anyTerminalWindow: false)
-        #expect(nowhere == .ownWindow)
+        #expect(nowhere == .inFront(of: .controlRooms))
     }
 
     // MARK: The terminals in no group are not shown

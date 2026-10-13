@@ -1147,7 +1147,8 @@ fn where_a_tab_the_core_asked_for_goes() {
     assert_eq!(new_tab(None, true, false, true), NewTab::InFront(Home::Frontmost));
     assert_eq!(new_tab(None, false, true, true), NewTab::InFront(Home::Frontmost));
     assert_eq!(new_tab(None, false, false, false), NewTab::OwnWindow);
-    assert_eq!(new_tab(None, true, false, false), NewTab::OwnWindow);
+    // The control room alone on screen: its own window takes the tab.
+    assert_eq!(new_tab(None, true, false, false), NewTab::Behind(Home::ControlRooms));
     // An asker's own answer does not depend on where the control room is.
     for a in [false, true] {
         for b in [false, true] {

@@ -3548,7 +3548,9 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 To::InFront(Home::Frontmost) | To::InFront(Home::ControlRooms) => {
                     queue_from((!front.0.is_null()).then_some(front), Op::NewTab(cwd.clone()), "new_tab action")
                 }
-                // No terminal window at all. This host has no window-less
+                // No terminal window at all, and the control room is not
+                // the tab in front (with it in front the rule answers
+                // `Behind(ControlRooms)`). This host has no window-less
                 // state to open one from: not opened, and the core is told.
                 To::OwnWindow => false,
                 To::Refused => false,

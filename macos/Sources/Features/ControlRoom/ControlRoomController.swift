@@ -126,6 +126,33 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         window?.tabGroup?.windows.first { $0.windowController is TerminalController }
     }
 
+    /// Open a terminal as the first terminal tab of this window, behind
+    /// this one: where `ControlRoomRules.newTab` sends a tab asked for
+    /// while the control room is the only window there is.
+    ///
+    /// `TerminalController.newTab` cannot do it: it opens a tab beside a
+    /// terminal's window and reads that terminal's controller for the rest.
+    /// A terminal window whose title-bar style takes no tabs opens as a
+    /// window of its own, as it does everywhere else.
+    @discardableResult
+    func newFirstTerminalTab(withBaseConfig config: Ghostty.SurfaceConfiguration?) -> TerminalController? {
+        guard let window else { return nil }
+        let controller = TerminalController(ghostty, withBaseConfig: config)
+        guard let tab = controller.window else { return controller }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        // Tabs join by identifier, and this window's is its own until a
+        // terminal has been beside it.
+        window.tabbingIdentifier = tab.tabbingIdentifier
+        guard tab.tabbingMode != .disallowed, window.addTabbedWindowSafely(tab, ordered: .above) else {
+            controller.showWindowSafely(nil)
+            return controller
+        }
+        // Its terminal is running already -- the surface was made with the
+        // controller -- and the tab shows it when it is selected.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { Self.relabel() }
+        return controller
+    }
+
     /// Whether the person can be looking at the list: this tab is the one
     /// in front in the window that has the keyboard, in the application
     /// that is active.
@@ -581,7 +608,9 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         func home(_ which: ControlRoomRules.NewTab.Home) -> NSWindow? {
             switch which {
             case .askers: return nil
-            case .controlRooms: return beside
+            // With no terminal tab beside it yet, this window itself: the
+            // project's first tab becomes the first one beside it.
+            case .controlRooms: return beside ?? window
             case .frontmost: return frontmost
             }
         }
