@@ -48,7 +48,51 @@
 //! control room offered is `resume` in the snapshot, with the reason when
 //! it is no. `new` starts a new session whatever is written down.
 //!
-//! The start is the same act either way. **It returns when the tab has been asked for, not when there is a
+//! The start is the same act either way.
+//!
+//! **A group that has a project is started by opening the project**, not
+//! by a tab in a directory: the start is recorded as waiting for it, the
+//! snapshot's `project_orders` asks the host to `open` it, and when the
+//! host states it open with a terminal in its supervisor's pane, the core
+//! types the launch line there. `role` is still read; `cwd` is not -- the
+//! pane has its own. A group with no project is started as before.
+//!
+//! ## What the host says about projects
+//!
+//! ```
+//! {"act":"projects","list":[
+//!    {"name":"web-app","group":"web-app"|null,"pages":3,
+//!     "open":null | [["0x…","0x…"],["0x…"]],
+//!     "supervisor":"0x…"|null}, … ]}
+//! {"act":"project_failed","name":"web-app","why":"not_found"|"unreadable"}
+//! {"act":"project_remove","terminal":"0x…"}
+//! {"act":"project_rename","from":"web-app","to":"storefront"}
+//! ```
+//!
+//! `projects` is **everything the host knows, every time** (`Projects.zig`
+//! has the whole of it): each project, the group its file names, how many
+//! pages it has, and for one that is open the terminals on each page and
+//! the one in the supervisor's pane. Every key is said in every entry. It
+//! replaces what was said before; a list that does not read whole is
+//! refused whole and the last one stands. The host says it at start, and
+//! whenever a project is made, opened, closed, renamed, deleted, or gains
+//! or loses a page or a pane.
+//!
+//! `project_failed` is the host saying it could not open a project it was
+//! ordered to: the start waiting on it fails now rather than by its
+//! deadline. `not_found` also unties the group -- the file is gone, and
+//! the group is started by directory again.
+//!
+//! `project_remove` is asked **before** a page is taken out of its project
+//! and answers whether it may be: the page with a group's supervisor on it
+//! may not (`SupervisorPage`). Nothing is changed by asking; the host
+//! takes the page out and states the result.
+//!
+//! `project_rename` is asked **before** a project is renamed. For a
+//! project that is a group's, it renames the group -- that is the only
+//! way such a project is renamed, and it may be refused as any rename of
+//! a group may -- and the host then finds a `rename` order to carry out.
+//! For a project that is no group's it changes nothing and says yes. **It returns when the tab has been asked for, not when there is a
 //! supervisor**: what becomes of it is the group's `supervisor` in the
 //! snapshot (`starting`, then `present` or `failed`). A refusal below means
 //! nothing was started.
@@ -80,6 +124,12 @@
 //! | start_supervisor | `NoSuchPersona`, `NotASupervisorRole`, `NoCli` | the role named is not there, does not make a supervisor, or has no CLI to start |
 //! | start_supervisor | `NotAbsolute`, `NoSuchDirectory`, `NotADirectory` | the directory |
 //! | start_supervisor | `OpenFailed` | no tab could be opened |
+//! | projects | `BadRequest` | an entry lacks a key, two projects have one name, a terminal is on the pages of two, or the supervisor's pane is on no page |
+//! | project_failed | `NoSuchProject` | no group is tied to a project by that name |
+//! | project_remove | `ProjectsUnknown` | the host has stated nothing yet |
+//! | project_remove | `NotInAProject` | that terminal is on no page of an open project |
+//! | project_remove | `SupervisorPage` | a group's supervisor is on that page, and the project is that group's |
+//! | project_rename | `BadName`, `GroupExists`, and the rest of a group's rename | the project is a group's, and the group cannot take that name |
 //!
 //! The last four are the terminal's own, from the path every agent's text
 //! takes; they are not decided here.
@@ -90,6 +140,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
+const Projects = @import("Projects.zig");
 
 pub const Id = Bus.Id;
 
@@ -111,6 +162,19 @@ pub const Act = union(enum) {
     new_group: []const u8,
     /// Empty `role` and `cwd` are "the one the snapshot names".
     start_supervisor: struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session },
+    /// Everything the host knows about projects, replacing what it said.
+    projects: []const Projects.Stated,
+    project_failed: struct { name: []const u8, why: ProjectFailure },
+    project_remove: Id,
+    project_rename: struct { from: []const u8, to: []const u8 },
+};
+
+/// Why the host could not open a project it was ordered to.
+pub const ProjectFailure = enum {
+    /// There is no such project file any more.
+    not_found,
+    /// It is there and does not read.
+    unreadable,
 };
 
 /// Which session a supervisor is started in.
@@ -161,6 +225,15 @@ pub const Host = struct {
     /// Open a tab and start a supervisor for `group` in it. Empty `role`
     /// and `cwd` are the snapshot's.
     startSupervisor: *const fn (ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8, session: Session) anyerror!void,
+    /// Take a statement of every project as what is now known.
+    stateProjects: *const fn (ctx: *anyopaque, list: []const Projects.Stated) anyerror!void,
+    /// A project the host was ordered to open did not open.
+    projectFailed: *const fn (ctx: *anyopaque, name: []const u8, why: ProjectFailure) anyerror!void,
+    /// Whether the page `terminal` is on may be taken out of its project;
+    /// an error named in the table above when not.
+    projectRemove: *const fn (ctx: *anyopaque, terminal: Id) anyerror!void,
+    /// A project is about to be renamed: rename its group, if it has one.
+    projectRename: *const fn (ctx: *anyopaque, from: []const u8, to: []const u8) anyerror!void,
 };
 
 fn fieldOf(obj: std.json.ObjectMap, name: []const u8) Refusal!std.json.Value {
@@ -198,7 +271,20 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
         else => return error.BadRequest,
     };
 
-    const Name = enum { seen, snooze, unsnooze, approve, refuse, reply, new_group, start_supervisor };
+    const Name = enum {
+        seen,
+        snooze,
+        unsnooze,
+        approve,
+        refuse,
+        reply,
+        new_group,
+        start_supervisor,
+        projects,
+        project_failed,
+        project_remove,
+        project_rename,
+    };
     const name = std.meta.stringToEnum(Name, try textOf(obj, "act")) orelse return error.BadRequest;
     return switch (name) {
         // One or the other: a row is a group's or a lone terminal's.
@@ -235,6 +321,16 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
                     .last,
             },
         },
+        .projects => .{ .projects = try Projects.parse(arena, try fieldOf(obj, "list")) },
+        .project_failed => .{ .project_failed = .{
+            .name = try textOf(obj, "name"),
+            .why = std.meta.stringToEnum(ProjectFailure, try textOf(obj, "why")) orelse return error.BadRequest,
+        } },
+        .project_remove => .{ .project_remove = try idOf(obj, "terminal") },
+        .project_rename => .{ .project_rename = .{
+            .from = try textOf(obj, "from"),
+            .to = try textOf(obj, "to"),
+        } },
     };
 }
 
@@ -317,6 +413,10 @@ pub fn perform(
             if (chat.startOf(s.group, now_ms).state == .starting) return error.AlreadyStarting;
             try host.startSupervisor(host.ctx, s.group, s.role, s.cwd, s.session);
         },
+        .projects => |list| try host.stateProjects(host.ctx, list),
+        .project_failed => |f| try host.projectFailed(host.ctx, f.name, f.why),
+        .project_remove => |terminal| try host.projectRemove(host.ctx, terminal),
+        .project_rename => |r| try host.projectRename(host.ctx, r.from, r.to),
     }
 }
 
@@ -342,6 +442,12 @@ const Recorder = struct {
     chat: ?*Chat = null,
     steward: ?Id = null,
     started: std.ArrayListUnmanaged(Started) = .empty,
+    /// How many projects the last statement had, and how many open.
+    stated: ?usize = null,
+    stated_open: usize = 0,
+    project_failed: ?ProjectFailure = null,
+    asked_remove: ?Id = null,
+    renames: usize = 0,
 
     const Started = struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session };
 
@@ -366,7 +472,39 @@ const Recorder = struct {
             .createGroup = createGroup,
             .stewardOf = stewardOf,
             .startSupervisor = startSupervisor,
+            .stateProjects = stateProjects,
+            .projectFailed = projectFailed,
+            .projectRemove = projectRemove,
+            .projectRename = projectRename,
         };
+    }
+
+    fn stateProjects(ctx: *anyopaque, list: []const Projects.Stated) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        self.stated = list.len;
+        self.stated_open = 0;
+        for (list) |p| {
+            if (p.open != null) self.stated_open += 1;
+        }
+    }
+
+    fn projectFailed(ctx: *anyopaque, _: []const u8, why: ProjectFailure) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        self.project_failed = why;
+    }
+
+    fn projectRemove(ctx: *anyopaque, terminal: Id) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        self.asked_remove = terminal;
+    }
+
+    fn projectRename(ctx: *anyopaque, _: []const u8, _: []const u8) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        self.renames += 1;
     }
 
     fn createGroup(ctx: *anyopaque, name: []const u8) anyerror!void {
@@ -706,7 +844,7 @@ test "ControlRoom start: a supervisor is started for a group that has none, once
 
     // One is on its way (the real host records that as it opens the tab):
     // a second press opens nothing.
-    try b.chat.beginStart("nightly", 1_000, 11_000, false);
+    try b.chat.beginStart("nightly", 1_000, 11_000, false, .directory);
     try testing.expectError(error.AlreadyStarting, b.act(
         \\{"act":"start_supervisor","group":"nightly","role":"night-lead","cwd":"/work"}
     , 2_000));
@@ -775,4 +913,65 @@ test "ControlRoom act: a terminal in no group is marked seen by its own id" {
         \\{"act":"seen","terminal":"161"}
     , 6_000));
     try testing.expectEqual(@as(?u64, 5_000), b.bus.seenOf(term));
+}
+
+test "Projects: what the host says about projects reaches the core whole, and what it asks is the core's to answer" {
+    var b = try Bench.init();
+    defer b.deinit();
+
+    try b.act(
+        \\{"act":"projects","list":[
+        \\ {"name":"web-app","group":"web-app","pages":2,
+        \\  "open":[["0x00000000000000a1"],["0x00000000000000b1"]],"supervisor":"0x00000000000000a1"},
+        \\ {"name":"notes","group":null,"pages":1,"open":null,"supervisor":null}]}
+    , 1_000);
+    try testing.expectEqual(@as(?usize, 2), b.rec.stated);
+    try testing.expectEqual(@as(usize, 1), b.rec.stated_open);
+    // No projects is a statement too.
+    try b.act(
+        \\{"act":"projects","list":[]}
+    , 1_000);
+    try testing.expectEqual(@as(?usize, 0), b.rec.stated);
+
+    // One that does not read whole changes nothing: the last one stands.
+    b.rec.stated = 99;
+    for ([_][]const u8{
+        \\{"act":"projects"}
+        ,
+        \\{"act":"projects","list":{}}
+        ,
+        \\{"act":"projects","list":[{"name":"a"}]}
+        ,
+    }) |bad| try testing.expectError(error.BadRequest, b.act(bad, 1_000));
+    try testing.expectEqual(@as(?usize, 99), b.rec.stated);
+
+    try b.act(
+        \\{"act":"project_failed","name":"web-app","why":"not_found"}
+    , 1_000);
+    try testing.expectEqual(@as(?ProjectFailure, .not_found), b.rec.project_failed);
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"project_failed","name":"web-app","why":"busy"}
+    , 1_000));
+
+    try b.act(
+        \\{"act":"project_remove","terminal":"0x00000000000000b1"}
+    , 1_000);
+    try testing.expectEqual(@as(?Id, 0xb1), b.rec.asked_remove);
+    // The core's refusal is the answer, by its own name.
+    b.rec.refuse_with = error.SupervisorPage;
+    try testing.expectError(error.SupervisorPage, b.act(
+        \\{"act":"project_remove","terminal":"0x00000000000000a1"}
+    , 1_000));
+    b.rec.refuse_with = error.GroupExists;
+    try testing.expectError(error.GroupExists, b.act(
+        \\{"act":"project_rename","from":"web-app","to":"billing"}
+    , 1_000));
+    b.rec.refuse_with = null;
+    try b.act(
+        \\{"act":"project_rename","from":"notes","to":"scratch"}
+    , 1_000);
+    try testing.expectEqual(@as(usize, 1), b.rec.renames);
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"project_rename","from":"notes"}
+    , 1_000));
 }

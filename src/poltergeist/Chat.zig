@@ -263,11 +263,20 @@ const Group = struct {
     /// says which group it was started for.
     started: ?Id = null,
 
+    /// The project this group is tied to, or that it has none. Owned;
+    /// written down (`GroupLog`) and comes back.
+    project: ProjectTie = .undecided,
+
+    /// The supervisor that took this group up in this run: what offering
+    /// an old group a project goes by (`Projects`). This run's only.
+    project_claim: ?ProjectClaim = null,
+
     fn deinit(self: *Group, alloc: Allocator) void {
         for (self.log.items) |m| m.release(alloc);
         self.log.deinit(alloc);
         if (self.brief.len > 0) alloc.free(self.brief);
         self.last_supervisor.free(alloc);
+        self.project.free(alloc);
 
         var it = self.members.valueIterator();
         while (it.next()) |m| m.footing.deinit(alloc);
@@ -827,7 +836,12 @@ pub const Start = struct {
     /// A try that did and made no supervisor is a reason not to try the
     /// same session again by default (`StartView.resuming`).
     resuming: bool,
+    /// How its terminal comes to be: a tab asked for, or the group's
+    /// project opened by the host (`Projects`, the `open` order).
+    by: StartBy,
 };
+
+pub const StartBy = enum { directory, project };
 
 /// Why a start did not make a supervisor.
 pub const StartFailure = enum {
@@ -867,23 +881,26 @@ pub const StartView = struct {
     deadline_ms: ?u64,
     /// The start this is of was to go on with the last session.
     resuming: bool,
+    /// How its terminal comes to be; null when there is no start.
+    by: ?StartBy,
 
-    pub const none: StartView = .{ .state = .none, .failed = .none, .terminal = null, .deadline_ms = null, .resuming = false };
+    pub const none: StartView = .{ .state = .none, .failed = .none, .terminal = null, .deadline_ms = null, .resuming = false, .by = null };
 };
 
 /// Where `name`'s start stands at `now_ms`.
 pub fn startOf(self: *const Chat, name: []const u8, now_ms: u64) StartView {
     const group = self.groups.getPtr(name) orelse return .none;
     const s = group.start orelse return .none;
-    if (s.failed != .none) return .{ .state = .failed, .failed = s.failed, .terminal = s.terminal, .deadline_ms = null, .resuming = s.resuming };
+    if (s.failed != .none) return .{ .state = .failed, .failed = s.failed, .terminal = s.terminal, .deadline_ms = null, .resuming = s.resuming, .by = s.by };
     if (now_ms > s.deadline_ms) return .{
         .state = .failed,
         .failed = if (s.terminal == null) .terminal_never_opened else .agent_never_connected,
         .terminal = s.terminal,
         .deadline_ms = null,
         .resuming = s.resuming,
+        .by = s.by,
     };
-    return .{ .state = .starting, .failed = .none, .terminal = s.terminal, .deadline_ms = s.deadline_ms, .resuming = s.resuming };
+    return .{ .state = .starting, .failed = .none, .terminal = s.terminal, .deadline_ms = s.deadline_ms, .resuming = s.resuming, .by = s.by };
 }
 
 /// Begin a start: the tab has been asked for and is waited for until
@@ -893,10 +910,10 @@ pub fn startOf(self: *const Chat, name: []const u8, now_ms: u64) StartView {
 /// `resuming` says whether it is to go on with the last supervisor's
 /// session; it is kept so that a try which did and failed can be told
 /// from one that started afresh and failed.
-pub fn beginStart(self: *Chat, name: []const u8, now_ms: u64, deadline_ms: u64, resuming: bool) Error!void {
+pub fn beginStart(self: *Chat, name: []const u8, now_ms: u64, deadline_ms: u64, resuming: bool, by: StartBy) Error!void {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
     if (self.startOf(name, now_ms).state == .starting) return error.AlreadyStarting;
-    group.start = .{ .terminal = null, .deadline_ms = deadline_ms, .resuming = resuming };
+    group.start = .{ .terminal = null, .deadline_ms = deadline_ms, .resuming = resuming, .by = by };
 }
 
 /// The tab exists: it is `terminal`, and its agent is waited for until
@@ -915,9 +932,21 @@ pub fn startAwaitingTerminal(self: *const Chat, now_ms: u64) ?[]const u8 {
     var it = self.groups.valueIterator();
     while (it.next()) |g| {
         const s = g.start orelse continue;
+        // One waiting for its project is waiting for the host to say
+        // which terminal, not for the next tab anybody opens: opening a
+        // project makes many.
+        if (s.by != .directory) continue;
         if (s.terminal == null and s.failed == .none and now_ms <= s.deadline_ms) return g.name;
     }
     return null;
+}
+
+/// Whether `name`'s start is still waiting for the host to open its
+/// project and say which terminal is the supervisor's.
+pub fn startAwaitingProject(self: *const Chat, name: []const u8, now_ms: u64) bool {
+    const group = self.groups.getPtr(name) orelse return false;
+    const s = group.start orelse return false;
+    return s.by == .project and s.terminal == null and s.failed == .none and now_ms <= s.deadline_ms;
 }
 
 /// The group `terminal` is being started as the supervisor of, while that
@@ -967,6 +996,88 @@ pub fn failStart(self: *Chat, name: []const u8, why: StartFailure) void {
     if (group.start) |*s| {
         if (s.failed == .none) s.failed = why;
     }
+}
+
+/// A group's tie to a project (`Projects`). One group, one project; the
+/// project bears the group's name once the host has caught up, and until
+/// then `bound` holds the name the host has it under.
+///
+/// **Three answers, and the first two are not the same "no".** A record
+/// from before there were ties is `undecided`: nobody has said, and the
+/// group is offered a project when a supervisor takes it up. `declined`
+/// is its supervisor saying it has none, and it is offered nothing until
+/// the supervisor says otherwise.
+pub const ProjectTie = union(enum) {
+    undecided,
+    declined,
+    /// The project's name, owned by whoever holds the tie.
+    bound: []const u8,
+
+    pub fn eql(self: ProjectTie, other: ProjectTie) bool {
+        return switch (self) {
+            .undecided => other == .undecided,
+            .declined => other == .declined,
+            .bound => |name| other == .bound and std.mem.eql(u8, name, other.bound),
+        };
+    }
+
+    pub fn dupe(self: ProjectTie, alloc: Allocator) Allocator.Error!ProjectTie {
+        return switch (self) {
+            .undecided, .declined => self,
+            .bound => |name| .{ .bound = try alloc.dupe(u8, name) },
+        };
+    }
+
+    /// Only for one `dupe` made.
+    pub fn free(self: ProjectTie, alloc: Allocator) void {
+        switch (self) {
+            .undecided, .declined => {},
+            .bound => |name| alloc.free(name),
+        }
+    }
+};
+
+/// A supervisor taking a group up: started for it, joining it, making it,
+/// or saying outright that the group uses the project it is in.
+pub const ProjectClaim = struct {
+    terminal: Id,
+    /// Said by the supervisor (`group_project`), not worked out. What the
+    /// core would not pick between -- which of two supervisors, which of a
+    /// supervisor's two groups -- the supervisor has then picked.
+    said: bool,
+};
+
+/// `name`'s tie to a project; `undecided` for a group that is not there.
+/// Borrowed until the next `setProject` for it.
+pub fn projectOf(self: *const Chat, name: []const u8) ProjectTie {
+    const group = self.groups.getPtr(name) orelse return .undecided;
+    return group.project;
+}
+
+/// Replace `name`'s tie. True when it changed.
+pub fn setProject(self: *Chat, name: []const u8, tie: ProjectTie) Error!bool {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    if (group.project.eql(tie)) return false;
+    const owned = try tie.dupe(self.alloc);
+    group.project.free(self.alloc);
+    group.project = owned;
+    return true;
+}
+
+pub fn projectClaimOf(self: *const Chat, name: []const u8) ?ProjectClaim {
+    const group = self.groups.getPtr(name) orelse return null;
+    return group.project_claim;
+}
+
+/// Record, or with null take back, that a supervisor took `name` up. One
+/// that was said outright is not replaced by one that was only worked
+/// out: joining a group again does not unsay what its supervisor said.
+pub fn setProjectClaim(self: *Chat, name: []const u8, claim: ?ProjectClaim) void {
+    const group = self.groups.getPtr(name) orelse return;
+    if (claim) |c| if (group.project_claim) |was| {
+        if (was.said and !c.said and was.terminal == c.terminal) return;
+    };
+    group.project_claim = claim;
 }
 
 /// The supervisor a group last had, as far as anybody wrote it down.
@@ -3370,16 +3481,16 @@ test "ControlRoom start: a supervisor on its way waits for its tab, then for its
     try chat.restoreShell("build", "", 0, .none);
 
     try testing.expectEqual(StartView.none, chat.startOf("build", 1_000));
-    try testing.expectError(error.NoSuchGroup, chat.beginStart("nope", 1_000, 11_000, false));
+    try testing.expectError(error.NoSuchGroup, chat.beginStart("nope", 1_000, 11_000, false, .directory));
 
-    try chat.beginStart("build", 1_000, 11_000, false);
+    try chat.beginStart("build", 1_000, 11_000, false, .directory);
     try testing.expectEqualStrings("build", chat.startAwaitingTerminal(2_000).?);
     const waiting = chat.startOf("build", 2_000);
     try testing.expect(waiting.state == .starting);
     try testing.expectEqual(@as(?Id, null), waiting.terminal);
     try testing.expectEqual(@as(?u64, 11_000), waiting.deadline_ms);
     // A second press while the first is still waiting starts nothing.
-    try testing.expectError(error.AlreadyStarting, chat.beginStart("build", 2_000, 12_000, false));
+    try testing.expectError(error.AlreadyStarting, chat.beginStart("build", 2_000, 12_000, false, .directory));
 
     // The tab never came.
     const no_tab = chat.startOf("build", 11_001);
@@ -3388,7 +3499,7 @@ test "ControlRoom start: a supervisor on its way waits for its tab, then for its
     try testing.expectEqual(@as(?[]const u8, null), chat.startAwaitingTerminal(11_001));
 
     // Trying again replaces what failed.
-    try chat.beginStart("build", 12_000, 22_000, false);
+    try chat.beginStart("build", 12_000, 22_000, false, .directory);
     chat.startOpened("build", 0xa1, 72_000);
     try testing.expectEqual(@as(?[]const u8, null), chat.startAwaitingTerminal(13_000));
     try testing.expectEqualStrings("build", chat.startingIn(0xa1, 13_000).?);
@@ -3411,7 +3522,7 @@ test "ControlRoom start: closing the terminal a supervisor was starting in fails
     var chat = testChat();
     defer chat.deinit();
     try chat.restoreShell("build", "", 0, .none);
-    try chat.beginStart("build", 1_000, 11_000, false);
+    try chat.beginStart("build", 1_000, 11_000, false, .directory);
     chat.startOpened("build", 0xa1, 61_000);
 
     try chat.rename("build", "nightly");
@@ -3650,13 +3761,13 @@ test "ControlRoom resume: a start says whether it went on with the last session,
 
     // A start that went on with the last session and ran out of time reads
     // as one that did; a new one that failed does not.
-    try chat.beginStart("build", 1_000, 11_000, true);
+    try chat.beginStart("build", 1_000, 11_000, true, .directory);
     try testing.expect(chat.startOf("build", 2_000).resuming);
     const out_of_time = chat.startOf("build", 11_001);
     try testing.expectEqual(StartFailure.terminal_never_opened, out_of_time.failed);
     try testing.expect(out_of_time.resuming);
 
-    try chat.beginStart("build", 12_000, 22_000, false);
+    try chat.beginStart("build", 12_000, 22_000, false, .directory);
     chat.startOpened("build", 0xa1, 72_000);
     chat.failStart("build", .cli_not_found);
     try testing.expect(!chat.startOf("build", 13_000).resuming);
@@ -3665,7 +3776,7 @@ test "ControlRoom resume: a start says whether it went on with the last session,
     // Nobody was started for anything yet.
     try testing.expectEqual(@as(?[]const u8, null), chat.startedFor(0xa1));
 
-    try chat.beginStart("build", 80_000, 90_000, true);
+    try chat.beginStart("build", 80_000, 90_000, true, .directory);
     chat.startOpened("build", 0xa1, 140_000);
     chat.startMade("build", 0xa1);
     try testing.expectEqual(@as(@TypeOf(chat.startOf("build", 0).state), .none), chat.startOf("build", 81_000).state);
@@ -3674,9 +3785,71 @@ test "ControlRoom resume: a start says whether it went on with the last session,
 
     // Started for two: the same answer every time, the name that sorts
     // first. And it follows a rename.
-    try chat.beginStart("alpha", 80_000, 90_000, false);
+    try chat.beginStart("alpha", 80_000, 90_000, false, .directory);
     chat.startMade("alpha", 0xa1);
     try testing.expectEqualStrings("alpha", chat.startedFor(0xa1).?);
     try chat.rename("alpha", "zeta");
     try testing.expectEqualStrings("build", chat.startedFor(0xa1).?);
+}
+
+test "Projects: a group's tie is one of three, kept across a rename, and a start by project waits for no tab" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.restoreShell("build", "", 0, .none);
+    try chat.restoreShell("other", "", 0, .none);
+
+    // Nobody has said, for a group that is there and one that is not.
+    try testing.expect(chat.projectOf("build") == .undecided);
+    try testing.expect(chat.projectOf("nope") == .undecided);
+    try testing.expectError(error.NoSuchGroup, chat.setProject("nope", .declined));
+
+    try testing.expect(try chat.setProject("build", .{ .bound = "scratch" }));
+    try testing.expect(!try chat.setProject("build", .{ .bound = "scratch" }));
+    try testing.expectEqualStrings("scratch", chat.projectOf("build").bound);
+    // A tie built out of the one the chat holds is copied before the old
+    // one is let go.
+    try testing.expect(!try chat.setProject("build", chat.projectOf("build")));
+    try testing.expect(try chat.setProject("build", .{ .bound = "build" }));
+    // It goes with the group, under the name the host still has it by.
+    try chat.rename("build", "nightly");
+    try testing.expectEqualStrings("build", chat.projectOf("nightly").bound);
+    // Said to have none is not nobody having said.
+    try testing.expect(try chat.setProject("nightly", .declined));
+    try testing.expect(chat.projectOf("nightly") == .declined);
+    try testing.expect(try chat.setProject("nightly", .undecided));
+
+    // Taken up: worked out, then said -- and joining again does not unsay it.
+    try testing.expectEqual(@as(?ProjectClaim, null), chat.projectClaimOf("nightly"));
+    chat.setProjectClaim("nightly", .{ .terminal = 0xa1, .said = false });
+    try testing.expect(!chat.projectClaimOf("nightly").?.said);
+    chat.setProjectClaim("nightly", .{ .terminal = 0xa1, .said = true });
+    chat.setProjectClaim("nightly", .{ .terminal = 0xa1, .said = false });
+    try testing.expect(chat.projectClaimOf("nightly").?.said);
+    // Another supervisor taking it up is another claim.
+    chat.setProjectClaim("nightly", .{ .terminal = 0xa2, .said = false });
+    try testing.expectEqual(@as(Id, 0xa2), chat.projectClaimOf("nightly").?.terminal);
+    chat.setProjectClaim("nightly", null);
+    try testing.expectEqual(@as(?ProjectClaim, null), chat.projectClaimOf("nightly"));
+
+    // A start that opens the group's project: it waits for the host to say
+    // which terminal, and **the next tab anybody opens is not it**.
+    try chat.beginStart("nightly", 1_000, 31_000, false, .project);
+    try testing.expect(chat.startAwaitingProject("nightly", 2_000));
+    try testing.expectEqual(@as(?[]const u8, null), chat.startAwaitingTerminal(2_000));
+    try testing.expectEqual(StartBy.project, chat.startOf("nightly", 2_000).by.?);
+    // A start by directory beside it is the one a new tab belongs to.
+    try chat.beginStart("other", 1_000, 11_000, false, .directory);
+    try testing.expectEqualStrings("other", chat.startAwaitingTerminal(2_000).?);
+    try testing.expect(!chat.startAwaitingProject("other", 2_000));
+
+    // Told its terminal, it is waiting for the agent and no longer for the
+    // project; out of time, it is not waiting at all.
+    chat.startOpened("nightly", 0xa1, 91_000);
+    try testing.expect(!chat.startAwaitingProject("nightly", 3_000));
+    try testing.expectEqualStrings("nightly", chat.startingIn(0xa1, 3_000).?);
+    chat.endStart("nightly");
+    try chat.beginStart("nightly", 100_000, 130_000, false, .project);
+    try testing.expect(!chat.startAwaitingProject("nightly", 130_001));
+    try testing.expectEqual(StartFailure.terminal_never_opened, chat.startOf("nightly", 130_001).failed);
+    try testing.expect(StartView.none.by == null);
 }

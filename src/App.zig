@@ -71,6 +71,15 @@ poltergeist_agent_clis: poltergeistpkg.agent_cli.Cache,
 /// because talking is not steering, and mixing them would blur that.
 chat: poltergeistpkg.Chat,
 
+/// What the host has said about projects, and nothing about any group:
+/// which group has which project is `chat`'s.
+projects: poltergeistpkg.Projects,
+
+/// The launch a start is holding for the supervisor's pane of a project
+/// the host has been ordered to open. One at a time, like the one waiting
+/// for a tab; a second start replaces it.
+project_launch: ?ProjectLaunch = null,
+
 /// Who is doing which piece of work, per group.
 ///
 /// Beside the chat rather than inside it: a task is not a message, and the
@@ -506,6 +515,7 @@ pub fn init(
         .poltergeist_persona_waits = .{ .alloc = alloc, .io = global.io() },
         .poltergeist_feed = .init(alloc, global.io()),
         .chat = .init(alloc, .{}),
+        .projects = .init(alloc),
         .tasks = .init(alloc, .{}),
         .control_room = .init(alloc),
     };
@@ -567,6 +577,8 @@ pub fn deinit(self: *App) void {
     self.control_room.deinit();
     if (self.control_home) |h| if (h.len > 0) self.alloc.free(h);
     self.chat.deinit();
+    self.projects.deinit();
+    if (self.project_launch) |*l| l.arena.deinit();
     self.tasks.deinit();
     self.poltergeist.deinit();
     self.personas.deinit();
@@ -775,6 +787,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
     // which puts the one Polter ships first.
     const roles = self.controlStartRoles(alloc) catch return;
     const cli_resume = self.controlCliResume(alloc) catch return;
+    const projects = self.projectsWork(alloc, now_ms) catch return;
 
     const wall_ms = self.poltergeistWallMs();
     const outcome = self.control_room.refresh(.{
@@ -789,6 +802,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         .quota = quota_read,
         .supervisor_roles = roles,
         .cli_resume = cli_resume,
+        .projects = projects,
         .cli_names = self.controlCliNames(alloc) catch return,
         .home = self.controlHome(),
         .now_ms = now_ms,
@@ -842,6 +856,10 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
             .createGroup = controlActCreateGroup,
             .stewardOf = controlActStewardOf,
             .startSupervisor = controlActStartSupervisor,
+            .stateProjects = controlActStateProjects,
+            .projectFailed = controlActProjectFailed,
+            .projectRemove = controlActProjectRemove,
+            .projectRename = controlActProjectRename,
         },
         self.poltergeistElapsedMs(),
         @intCast(@max(0, self.poltergeistWallMs())),
@@ -954,8 +972,12 @@ fn controlActStartSupervisor(
     for (p.clis, cli_keys) |c, *k| k.* = c.cli;
     const cli = ControlRoom.startCliOf(cli_keys, last).?;
 
+    // A group that has a project is started in it: the pane has its own
+    // directory, and none is opened here.
+    const by_project = self.chat.projectOf(group) == .bound;
+
     // The directory: the one named, or the snapshot's, by the same order.
-    const cwd: []const u8 = if (cwd_asked.len > 0) cwd_asked else cwd: {
+    const cwd: []const u8 = if (by_project) "" else if (cwd_asked.len > 0) cwd_asked else cwd: {
         if (last.dir.len > 0) break :cwd last.dir;
         const common = self.chat.commonDirOf(group);
         if (common.len > 0) break :cwd common;
@@ -999,8 +1021,20 @@ fn controlActStartSupervisor(
         if (session_asked == .new) poltergeistpkg.ControlRoom.ResumeOut.Why.none else go_on.why,
     });
 
+    // **Its project, when it has one.** Nothing is opened from here: the
+    // start waits, the snapshot orders the host to open the project
+    // (`Projects`, `open`), and the launch is held until the host states
+    // which terminal is in the supervisor's pane (`projectsWork`).
+    if (by_project) {
+        try self.chat.beginStart(group, now_ms, now_ms + project_open_ms, resuming, .project);
+        errdefer self.chat.endStart(group);
+        try self.holdProjectLaunch(group, choice, line);
+        log.info("control room: starting a supervisor by opening its group's project, in role {s}", .{choice.key});
+        return;
+    }
+
     // From here a refusal has something to take back.
-    try self.chat.beginStart(group, now_ms, now_ms + Store.pending_launch_ms, resuming);
+    try self.chat.beginStart(group, now_ms, now_ms + Store.pending_launch_ms, resuming, .directory);
     errdefer self.chat.endStart(group);
     try self.personas.expectLaunch(choice.key, choice.cli, line, Chat.user_id, now_ms);
     errdefer self.personas.dropLaunch();
@@ -1076,6 +1110,266 @@ fn controlStartConnected(self: *App, id: poltergeistpkg.Bus.Id) void {
     self.chat.startMade(group, id);
     log.info("control room: the supervisor it started connected and is in its group", .{});
     self.controlRoomTouch();
+}
+
+/// How long a start waits for the host to open the group's project and
+/// say which terminal is in the supervisor's pane. Longer than a tab gets:
+/// a project is several windows and every page's shell.
+const project_open_ms: u64 = 30_000;
+
+const ProjectLaunch = struct {
+    arena: std.heap.ArenaAllocator,
+    group: []const u8,
+    key: []const u8,
+    cli: []const u8,
+    line: []const u8,
+};
+
+fn holdProjectLaunch(self: *App, group: []const u8, choice: LaunchChoice, line: []const u8) Allocator.Error!void {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    errdefer arena.deinit();
+    const aa = arena.allocator();
+    const held: ProjectLaunch = .{
+        .arena = undefined,
+        .group = try aa.dupe(u8, group),
+        .key = try aa.dupe(u8, choice.key),
+        .cli = try aa.dupe(u8, choice.cli),
+        .line = try aa.dupe(u8, line),
+    };
+    if (self.project_launch) |*old| old.arena.deinit();
+    self.project_launch = held;
+    self.project_launch.?.arena = arena;
+}
+
+/// Every group as `Projects` needs to see it. Borrowed from `alloc` and
+/// from `chat`; good until the next change to either.
+fn projectViews(self: *App, alloc: Allocator, now_ms: u64) Allocator.Error![]const poltergeistpkg.Projects.GroupView {
+    const Chat = poltergeistpkg.Chat;
+    const live = try self.liveTerminals(alloc);
+    const names = try self.chat.groupsFor(alloc, Chat.user_id, live);
+    const views = try alloc.alloc(poltergeistpkg.Projects.GroupView, names.len);
+    for (names, views) |name, *v| {
+        const members = self.chat.membersOf(alloc, name) catch &.{};
+        var supervisors: usize = 0;
+        for (members) |id| {
+            if (id == Chat.user_id) continue;
+            if (std.mem.indexOfScalar(poltergeistpkg.Bus.Id, live, id) == null) continue;
+            if (self.poltergeist.isSupervisor(id)) supervisors += 1;
+        }
+        v.* = .{
+            .name = name,
+            .tie = self.chat.projectOf(name),
+            .steward = poltergeistpkg.ControlRoom.stewardOfGroup(alloc, &self.poltergeist, &self.chat, name),
+            .supervisors = supervisors,
+            .claim = self.chat.projectClaimOf(name),
+            .awaiting_open = self.chat.startAwaitingProject(name, now_ms),
+        };
+    }
+    return views;
+}
+
+/// Every open terminal an agent opened, and whose agent.
+fn projectOpened(self: *App, alloc: Allocator) Allocator.Error![]const poltergeistpkg.Projects.Opened {
+    var out: std.ArrayListUnmanaged(poltergeistpkg.Projects.Opened) = .empty;
+    for (self.surfaces.items) |v| {
+        const id = v.core().id;
+        const by = self.poltergeist.openedBy(id) orelse continue;
+        try out.append(alloc, .{ .terminal = id, .by = by });
+    }
+    return out.items;
+}
+
+/// Bring the ties between groups and projects up to date and say what is
+/// left for the host: `Projects.reconcile`, with what it asks of this half
+/// carried out -- a tie written down, a tie dropped -- and asked again
+/// until it asks for nothing more. Then, for a start that is waiting for
+/// its project: if the host has stated it open, the launch goes into the
+/// supervisor's pane.
+///
+/// Called while the control room's snapshot is being made, which is after
+/// anything that could have changed the answer (`controlRoomTouch`).
+fn projectsWork(self: *App, alloc: Allocator, now_ms: u64) Allocator.Error!poltergeistpkg.ControlRoom.ProjectsIn {
+    const Projects = poltergeistpkg.Projects;
+
+    // A commit changes a tie, and the next asking then has something else
+    // to say about it (tied, so now rename). Three rounds is one more than
+    // any chain there is; a fourth would be two commits undoing each other.
+    var round: usize = 0;
+    var out: Projects.Outcome = undefined;
+    while (true) : (round += 1) {
+        const views = try self.projectViews(alloc, now_ms);
+        out = try self.projects.reconcile(alloc, views, try self.projectOpened(alloc));
+        if (out.commits.len == 0 or round == 3) break;
+        for (out.commits) |c| {
+            // Copied first: the name is borrowed from the tie it replaces.
+            const tie: poltergeistpkg.Chat.ProjectTie = if (c.project) |name|
+                .{ .bound = try alloc.dupe(u8, name) }
+            else
+                .undecided;
+            const changed = self.chat.setProject(c.group, tie) catch continue;
+            if (!changed) continue;
+            // Settled, one way or the other: whoever took it up has been
+            // answered, and is not asked on behalf of again.
+            self.chat.setProjectClaim(c.group, null);
+            if (self.group_log) |*l| l.project(c.group, self.chat.projectOf(c.group));
+            log.info("poltergeist: a group's project {s}", .{if (c.project == null) "is gone; it is started by directory again" else "is written down"});
+        }
+    }
+
+    self.deliverProjectLaunch(now_ms);
+
+    return .{ .table = &self.projects, .standings = out.standings, .orders = out.orders };
+}
+
+/// The launch a start is holding goes into the supervisor's pane of its
+/// group's project, once the host has stated that project open and said
+/// which terminal that is.
+fn deliverProjectLaunch(self: *App, now_ms: u64) void {
+    const held = if (self.project_launch) |*l| l else return;
+    // The start it was for is over -- made, failed, or timed out.
+    if (!self.chat.startAwaitingProject(held.group, now_ms)) {
+        held.arena.deinit();
+        self.project_launch = null;
+        return;
+    }
+    const tie = self.chat.projectOf(held.group);
+    if (tie != .bound) return;
+    const stated = self.projects.find(tie.bound) orelse return;
+    const pane = stated.supervisor orelse return;
+
+    self.chat.startOpened(held.group, pane, now_ms + poltergeistpkg.PersonaStore.standing_wait_ms);
+    self.startRoleIn(pane, poltergeistpkg.Chat.user_id, .{ .key = held.key, .cli = held.cli }, held.line, .agent) catch |err| {
+        log.warn("control room: could not start the supervisor in its project's pane err={}", .{err});
+        self.chat.failStart(held.group, .agent_never_connected);
+    };
+    held.arena.deinit();
+    self.project_launch = null;
+}
+
+/// The host's statement of every project (`ControlAct`, `projects`).
+fn controlActStateProjects(ctx: *anyopaque, list: []const poltergeistpkg.Projects.Stated) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    try self.projects.state(list);
+}
+
+/// The host could not open a project it was ordered to. The start that
+/// was waiting fails now; a file that is gone also unties its group, at
+/// once rather than at the host's next statement.
+fn controlActProjectFailed(ctx: *anyopaque, name: []const u8, why: poltergeistpkg.ControlAct.ProjectFailure) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const now_ms = self.poltergeistElapsedMs();
+    const views = try self.projectViews(arena.allocator(), now_ms);
+    const found = poltergeistpkg.Projects.groupOf(views, name) orelse return error.NoSuchProject;
+    // Copied: untying frees the name it is found by, and the group's is
+    // the chat's own.
+    const group = try arena.allocator().dupe(u8, found);
+
+    if (self.chat.startAwaitingProject(group, now_ms)) {
+        // 暂定: said with the reason there already is for a start whose
+        // terminal never came. A sentence of its own needs a word both
+        // hosts know, which is theirs to add.
+        self.chat.failStart(group, .terminal_never_opened);
+    }
+    if (why == .not_found) {
+        if (self.chat.setProject(group, .undecided) catch false) {
+            self.chat.setProjectClaim(group, null);
+            if (self.group_log) |*l| l.project(group, .undecided);
+        }
+    }
+    log.info("control room: a group's project did not open ({t})", .{why});
+}
+
+fn controlActProjectRemove(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const views = try self.projectViews(arena.allocator(), self.poltergeistElapsedMs());
+    try self.projects.mayRemove(views, id);
+}
+
+/// A project is about to be renamed. One that is a group's is renamed by
+/// renaming the group -- the person's doing, like any rename from the
+/// interface -- and the host is then ordered to rename the file.
+fn controlActProjectRename(ctx: *anyopaque, from: []const u8, to: []const u8) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const views = try self.projectViews(arena.allocator(), self.poltergeistElapsedMs());
+    const found = poltergeistpkg.Projects.groupOf(views, from) orelse return;
+    const group = try arena.allocator().dupe(u8, found);
+    try chatRename(ctx, group, to, poltergeistpkg.Chat.user_id);
+}
+
+/// A supervisor has taken groups up: made one, joined one, been started
+/// for one. Every group it is now the supervisor of and that nobody has
+/// said anything about a project for is marked as taken up by it, which
+/// is what `Projects` goes by to offer an old group a project.
+fn takeUpGroups(self: *App, id: poltergeistpkg.Bus.Id) void {
+    const Chat = poltergeistpkg.Chat;
+    if (id == Chat.user_id or !self.poltergeist.isSupervisor(id)) return;
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const live = self.liveTerminals(alloc) catch return;
+    const names = self.chat.groupsFor(alloc, id, live) catch return;
+    for (names) |name| {
+        if (self.chat.projectOf(name) != .undecided) continue;
+        const steward = poltergeistpkg.ControlRoom.stewardOfGroup(alloc, &self.poltergeist, &self.chat, name);
+        if (steward == null or steward.? != id) continue;
+        self.chat.setProjectClaim(name, .{ .terminal = id, .said = false });
+    }
+    self.controlRoomTouch();
+}
+
+/// `group_project`: a supervisor says a group uses the project its tab is
+/// in, or has none.
+fn poltergeistGroupProject(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+    group: []const u8,
+    use: bool,
+) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const Projects = poltergeistpkg.Projects;
+    if (!self.chat.exists(group)) return error.NoSuchGroup;
+    defer self.controlRoomTouch();
+
+    const views = try self.projectViews(alloc, self.poltergeistElapsedMs());
+    var why: Projects.Why = undefined;
+    if (use) {
+        why = try self.projects.judge(alloc, views, group, id);
+        if (Projects.refusalOf(why)) |refusal| return refusal;
+        if (why == .pending) {
+            // Having said no before is unsaid by saying yes.
+            if (self.chat.projectOf(group) == .declined) {
+                _ = try self.chat.setProject(group, .undecided);
+                if (self.group_log) |*l| l.project(group, .undecided);
+            }
+            self.chat.setProjectClaim(group, null);
+            self.chat.setProjectClaim(group, .{ .terminal = id, .said = true });
+        }
+    } else {
+        const steward = poltergeistpkg.ControlRoom.stewardOfGroup(alloc, &self.poltergeist, &self.chat, group);
+        if (steward == null or steward.? != id) return error.NotItsSupervisor;
+        if (try self.chat.setProject(group, .declined)) {
+            if (self.group_log) |*l| l.project(group, .declined);
+        }
+        self.chat.setProjectClaim(group, null);
+        why = .declined;
+    }
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    const tie = self.chat.projectOf(group);
+    try out.writer.print("{{\"group\":{f},\"tie\":\"{s}\",\"project\":", .{ std.json.fmt(group, .{}), @tagName(tie) });
+    switch (tie) {
+        .bound => |name| try out.writer.print("{f}", .{std.json.fmt(name, .{})}),
+        .undecided, .declined => try out.writer.writeAll("null"),
+    }
+    try out.writer.print(",\"why\":\"{s}\"}}", .{@tagName(why)});
+    return out.written();
 }
 
 /// The roles a supervisor can be started in: the ones that make a terminal
@@ -1231,6 +1525,28 @@ fn poltergeistMembership(
         .groups = groups,
         .supervisor_of = mine.items,
         .started_for = if (self.chat.startedFor(id)) |name| try alloc.dupe(u8, name) else null,
+        .projects = projects: {
+            // Asked the way the snapshot asks, and nothing is carried out:
+            // this only says where each of its groups stands.
+            const views = try self.projectViews(alloc, self.poltergeistElapsedMs());
+            const stand = try self.projects.reconcile(alloc, views, &.{});
+            const out = try alloc.alloc(poltergeistpkg.wire.Membership.GroupProject, mine.items.len);
+            for (mine.items, out) |name, *o| {
+                const tie = self.chat.projectOf(name);
+                o.* = .{
+                    .group = name,
+                    .tie = tie,
+                    .project = switch (tie) {
+                        .bound => |project| try alloc.dupe(u8, project),
+                        .undecided, .declined => null,
+                    },
+                    .why = for (stand.standings) |s| {
+                        if (std.mem.eql(u8, s.group, name)) break s.why;
+                    } else .projects_unknown,
+                };
+            }
+            break :projects out;
+        },
     };
 }
 
@@ -2326,6 +2642,7 @@ fn restoreChatGroups(self: *App) void {
         if (back >= ceiling) break;
         self.chat.restoreShell(shell.name, shell.brief, shell.last_ms, shell.marks) catch continue;
         _ = self.chat.setLastSupervisor(shell.name, shell.supervisor) catch .same;
+        _ = self.chat.setProject(shell.name, shell.project) catch false;
         if (shell.supervisor.dir.len == 0) self.backfillSupervisorDir(alloc, gl, shell.name, &last_night);
         back += 1;
     }
@@ -4067,6 +4384,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .notifyUser = notifyUser,
         .sessionRecall = sessionRecall,
         .chatSetBrief = chatSetBrief,
+        .groupProject = poltergeistGroupProject,
         .chatGroupInfo = chatGroupInfo,
         .chatOwner = chatOwner,
         .chatMembers = chatMembers,
@@ -6441,6 +6759,7 @@ fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) any
     // Made by a supervisor: it is this group's, and what it is is written
     // down for whoever starts the next one.
     self.noteSupervisor(by, .write);
+    self.takeUpGroups(by);
 
     self.saveSession();
 }
@@ -6605,6 +6924,9 @@ fn chatRename(
     }
 
     self.saveSession();
+    // A group that has a project: the project is to bear the new name,
+    // which the snapshot now orders (`Projects`, `rename`).
+    self.controlRoomTouch();
 }
 
 /// `GroupRename.Hooks.close_handles`: every handle into the files a rename
@@ -6870,6 +7192,7 @@ fn chatAdd(
     // A supervisor joining: if that makes it this group's, what it is is
     // written down for whoever starts the next one.
     self.noteSupervisor(id, .write);
+    self.takeUpGroups(id);
 
     // `history: none` means nothing from before now, and "before now"
     // includes the file. The group in memory cannot say where that reaches
@@ -7908,6 +8231,8 @@ pub fn deleteSurface(self: *App, rt_surface: *apprt.Surface) void {
     while (i < self.surfaces.items.len) {
         if (self.surfaces.items[i] == rt_surface) {
             _ = self.surfaces.swapRemove(i);
+            // Gone: a terminal that is given this id later is another one.
+            self.projects.forget(poltergeistpkg.Bus.idOf(rt_surface.core()));
             self.controlRoomTouch();
             continue;
         }

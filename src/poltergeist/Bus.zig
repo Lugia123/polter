@@ -446,6 +446,11 @@ pub const Entry = struct {
     /// opened without asking anybody.
     opened_by_agent: bool = false,
 
+    /// The terminal whose agent opened this one; null when none did, and
+    /// kept as long as `opened_by_agent` is. A tab its supervisor opened
+    /// goes into that supervisor's group's project (`Projects`).
+    opened_by: ?Id = null,
+
     /// Whether a supervisor may answer a permission prompt in this terminal
     /// on its behalf. `null` is "the person has not said for this terminal",
     /// and then the answer is the bus's default (`Config.may_authorise`),
@@ -863,10 +868,16 @@ pub fn raisedOf(self: *const Bus, id: Id, seen_ms: ?u64) ?Raise {
 /// which is what somebody who set that asked for. `by` is still taken: it
 /// is who the record says opened it.
 pub fn markOpenedByAgent(self: *Bus, id: Id, by: Id) Allocator.Error!void {
-    _ = by;
     try self.register(id);
     const e = self.entries.getPtr(id).?;
     e.opened_by_agent = true;
+    e.opened_by = by;
+}
+
+/// The terminal whose agent opened this one, or null.
+pub fn openedBy(self: *const Bus, id: Id) ?Id {
+    const e = self.entries.get(id) orelse return null;
+    return e.opened_by;
 }
 
 /// Whether an agent opened this terminal. False for one the bus has never

@@ -462,6 +462,13 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "group_project",
+        .description = "Say which project a group has. **A group has exactly one project** -- the tabs and windows its work is laid out in, yours among them -- and starting the group from the control room opens that project and starts you in your pane, in the session you were in. A group from before this was kept has none until it is taken up: when you are started for a group or join one and there is one way to read the situation, Polter ties the tab you are in to it by itself (`me` shows `project` on each group you supervise, and `why` when there is none). **This tool is for when it did not**, because it would have had to pick: `action: \"use\"` says this group uses the project the tab you are in belongs to -- or, if that tab is in no project, that one is made of it, named after the group. `action: \"drop\"` says this group has no project; it is then started by picking a directory, and Polter stops offering it one until you say `use`. Only the group's supervisor may say either. Refused, with nothing changed, when it would break one-to-one: `ProjectHasGroup` (the group already has a project, or the project your tab is in is another group's), `ProjectNameTaken` (a group's project bears its name, and another project has that name), `ProjectsUnknown` (the interface has not told Polter what projects there are), `NotItsSupervisor`. The answer says where the group stands; `pending` means the interface has been asked to make or tie the project and `me` will show it once it has.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"},"action":{"type":"string","enum":["use","drop"]}},"required":["group","action"],"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "group_members",
         .description = "Who is in a group, and what each terminal is currently called. Useful before asking somebody to do something: a group where the terminal you want is not a member cannot reach it.",
         .schema =

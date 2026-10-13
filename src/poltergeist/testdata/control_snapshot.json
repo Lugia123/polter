@@ -52,6 +52,14 @@
           "why": "no_record"
         }
       },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
+      },
       "attention": {
         "kind": "needs_approval",
         "under": "needs_approval",
@@ -156,6 +164,14 @@
           "why": "no_record"
         }
       },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
+      },
       "attention": {
         "kind": "needs_approval",
         "under": "needs_approval",
@@ -242,6 +258,14 @@
           "can": false,
           "why": "no_record"
         }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "needs_approval",
@@ -345,6 +369,14 @@
           "why": "session_in_use"
         }
       },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
+      },
       "attention": {
         "kind": "needs_answer",
         "under": "needs_answer",
@@ -429,6 +461,14 @@
           "can": false,
           "why": "no_record"
         }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "failed",
@@ -515,6 +555,14 @@
           "why": "no_record"
         }
       },
+      "project": {
+        "tie": "bound",
+        "name": "infra",
+        "pages": null,
+        "open": null,
+        "start": "project",
+        "why": "none"
+      },
       "attention": {
         "kind": "done_unseen",
         "under": "done_unseen",
@@ -599,6 +647,14 @@
           "can": false,
           "why": "no_record"
         }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "working",
@@ -701,6 +757,14 @@
           "can": true,
           "why": "none"
         }
+      },
+      "project": {
+        "tie": "undecided",
+        "name": null,
+        "pages": null,
+        "open": null,
+        "start": "directory",
+        "why": "projects_unknown"
       },
       "attention": {
         "kind": "idle",
@@ -1131,6 +1195,8 @@
       "terminal": "0x00000000000000b7"
     }
   ],
+  "projects_known": false,
+  "project_orders": [],
   "supervisor_roles": [
     {
       "key": "polter-supervisor",

@@ -21,7 +21,10 @@ you remember. Four calls before you plan anything, in this order.
    room, or `null` when nobody started you that way. A name in `started_for`
    is the answer to "which group is this about": you were put in it as you
    connected, so read it; do not make another. `null` there is an answer
-   too, not a failure to find out.
+   too, not a failure to find out. And `projects` says, for each group you
+   supervise, **which project it has** — the tabs and windows its work is
+   laid out in, which is what the person gets back when they start the
+   group again — or `null` and a `why`.
 2. `group_list`. **Read `joined` on each entry.** A group marked
    `joined: false` is one that came back from disk without you in it — after
    a restart that is all of them — and `group_read` on it answers
@@ -977,6 +980,38 @@ Every plugin logs to `~/.local/state/polter/plugins/<key>.log` — its output
 and Polter's verdicts under one clock, which is where the answer lives when
 `plugin_test` says a notification went nowhere. You cannot read it with these
 tools; tell the person the path.
+
+## A group's project
+
+A group has exactly one project: the tabs and windows its work is laid out
+in, with your pane among them. Starting the group from the control room
+opens the whole project and starts you in your pane, in the session you
+were in. Your workers' panes come back as terminals with nobody in them —
+**calling a worker back is your decision**, not something the restore did.
+
+You mostly do nothing about this. A tab you open with `terminal_open` or
+`role_launch` joins your group's project by itself. A group from before
+projects were kept gets one when you take it up, if there is only one way
+to read the situation: the tab you are in becomes its project (or the
+project that tab already belongs to is tied to the group).
+
+When there was more than one way to read it, nothing is done and `me`
+says why on that group's line. Then it is yours to say:
+
+- `group_project` with `action: "use"` — this group uses the project the
+  tab I am in belongs to. That settles `other_supervisor` (you are the one)
+  and `supervisor_of_several` (this is the group).
+- `action: "drop"` — this group has no project. It is started by picking a
+  directory, and nothing is offered again until you say `use`.
+
+What you cannot settle is one-to-one: `ProjectHasGroup` (the group already
+has a project, or the one your tab is in is another group's) and
+`ProjectNameTaken` (a project by the group's name already exists) change
+nothing, and are for the person to sort out. `ProjectsUnknown` means the
+interface has not told Polter about projects at all; the group is started
+by directory and there is nothing for you to do. `pending` is not a
+refusal: the interface has been asked, and `me` shows the project once it
+has made it.
 
 ## After a restart
 

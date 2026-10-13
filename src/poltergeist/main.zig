@@ -52,6 +52,7 @@ pub const report = @import("report.zig");
 pub const scrub = @import("scrub.zig");
 pub const secret = @import("secret.zig");
 pub const Session = @import("Session.zig");
+pub const Projects = @import("Projects.zig");
 pub const Tasks = @import("Tasks.zig");
 pub const TaskLog = @import("TaskLog.zig");
 pub const StatsLog = @import("StatsLog.zig");
