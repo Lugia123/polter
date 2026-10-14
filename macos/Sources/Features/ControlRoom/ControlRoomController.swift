@@ -52,6 +52,12 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// "Load Project" chosen here opens its list from here.
     private let projectPicker = ProjectPicker()
 
+    /// Which cards are wholly on screen, as the list last said, and what
+    /// the core was last told about where the person is (task 1505).
+    private var cardsInSight: [String] = []
+    private var presence = ControlRoomAlert.PresenceReporter()
+    private var closing = false
+
     init(_ ghostty: Ghostty.App, selection: String? = nil) {
         self.ghostty = ghostty
         // The list is only ever on screen while this tab is the one in
@@ -103,6 +109,10 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
                     self.syncDetail()
                 }
             }
+        model.onCardsInSight = { [weak self] cards in
+            self?.cardsInSight = cards
+            self?.reportPresence()
+        }
         model.askForTerminal = { [weak self] in self?.lend(.askedFor) }
         model.perform = { try actions.perform($0) }
         // Selecting the row that is already selected changes nothing the
@@ -184,6 +194,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         noteSelection()
         giveListTheKeyboardIfNobodyHasIt()
         syncLentFocus()
+        reportPresence()
     }
 
     /// A window the system restored comes back with itself as first
@@ -202,6 +213,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
 
     func windowDidResignKey(_ notification: Notification) {
         syncLentFocus()
+        reportPresence()
     }
 
     /// This tab going behind another, or coming back in front. A terminal
@@ -211,6 +223,28 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     func windowDidChangeOcclusionState(_ notification: Notification) {
         // In sight: borrow. Out of sight: give back, and say why.
         syncDetail()
+        reportPresence()
+    }
+
+    // MARK: Where the person is
+
+    /// Tell the core whether this is in front and which cards are on
+    /// screen in it, when that changed: the control room's notifications
+    /// are not sent about a card the person can see
+    /// (`ghostty_app_control_presence`, `ControlNotify.zig`). "In front" is
+    /// this window having the keyboard in the active application and not
+    /// being covered -- this window's, not the application's.
+    private func reportPresence() {
+        let inFront = !closing && isInFront && isVisible
+        let now = ControlRoomAlert.Presence(inFront: inFront, cards: inFront ? cardsInSight : [])
+        guard let json = presence.report(now), let app = ghostty.app else { return }
+        var refusal = [CChar](repeating: 0, count: 64)
+        let taken = json.withCString { ptr in
+            ghostty_app_control_presence(app, ptr, UInt(strlen(ptr)), &refusal, UInt(refusal.count))
+        }
+        if !taken {
+            Ghostty.logger.warning("control room: presence was refused: \(String(cString: refusal), privacy: .public)")
+        }
     }
 
     private var isVisible: Bool {
@@ -359,6 +393,14 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         }
     }
 
+    /// Go to the control room with `group` selected: clicking a
+    /// notification it raised (task 1505). Selecting it there is the
+    /// person's doing -- they clicked to go to it.
+    static func show(_ ghostty: Ghostty.App, selecting group: String) {
+        show(ghostty)
+        shared?.model.choose(group)
+    }
+
     /// A window opened or restored partly off its screen is brought back
     /// onto it (`ControlRoomWindowSize.fitted`). Only then: where the
     /// person drags it afterwards is theirs.
@@ -485,6 +527,9 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     }
 
     func windowWillClose(_ notification: Notification) {
+        // Closed is not in front: nothing on it is in sight any more.
+        closing = true
+        reportPresence()
         lend(.closing)
         detail.giveBack()
         lender.onReclaim = nil

@@ -2453,7 +2453,7 @@ mod tests {
         assert!(said.contains(&"git push".to_string()), "{said:?}");
         // Read out, it is its title too, and says nobody is beside it.
         let spoken = spoken(l.row(LONE).unwrap(), &same);
-        assert!(spoken.starts_with("zsh — ~/work, 等批准"), "{spoken}");
+        assert!(spoken.starts_with("zsh — ~/work, Awaiting approval"), "{spoken}");
         // It is selected by its row's identity, and lit like any other.
         let at = ListLayout::new(&l, 900.0);
         assert!(at.chip(Some(LONE)).is_some());
@@ -2494,10 +2494,10 @@ mod tests {
                 .unwrap()
         };
         // An ordinary agent: its title and its state, and no word between.
-        assert_eq!(bar(&lone_row(Pane::Plain)), ["zsh — ~/work", "等批准"]);
+        assert_eq!(bar(&lone_row(Pane::Plain)), ["zsh — ~/work", "Awaiting approval"]);
         // A worker somebody minds says so; a supervisor with no group too.
-        assert_eq!(bar(&lone_row(Pane::Worker)), ["zsh — ~/work", "Worker", "等批准"]);
-        assert_eq!(bar(&lone_row(Pane::Supervisor)), ["zsh — ~/work", "Supervisor", "等批准"]);
+        assert_eq!(bar(&lone_row(Pane::Worker)), ["zsh — ~/work", "Worker", "Awaiting approval"]);
+        assert_eq!(bar(&lone_row(Pane::Supervisor)), ["zsh — ~/work", "Supervisor", "Awaiting approval"]);
         // A group's supervisor: that terminal's own title and "Supervisor".
         let l = lone_list();
         let group = l.row("web-app").unwrap();
@@ -2505,12 +2505,12 @@ mod tests {
         // The terminal's title, not the group's name, where they differ.
         let mut renamed = l.row("billing").unwrap().clone();
         renamed.title.as_mut().unwrap().name = "claude — ~/billing".to_string();
-        assert_eq!(bar(&renamed), ["claude — ~/billing", "Supervisor", "等回答"]);
+        assert_eq!(bar(&renamed), ["claude — ~/billing", "Supervisor", "Awaiting input"]);
         // The state is the supervisor's own and not the row's: in `mobile`
         // a worker waits for approval while the supervisor has nothing to
         // say, and the bar over the supervisor says nothing.
         let mobile = l.row("mobile").unwrap();
-        assert_eq!(mobile.word, "等批准");
+        assert_eq!(mobile.word, "Awaiting approval");
         assert_eq!(bar(mobile), ["mobile", "Supervisor"]);
         // A supervisor the core lists no terminal for: the group's name is
         // all there is to write.

@@ -233,7 +233,7 @@ struct ControlRoomListTests {
         // It is called by its title, and is a copy of what the core says.
         #expect(row.name == "zsh — ~/work")
         #expect(row.shown == .needsYou)
-        #expect(row.word == "等批准")
+        #expect(row.word == "Awaiting approval")
         #expect(row.waiter.is == .terminal)
         #expect(row.what.form == .command)
         #expect(row.what.lines == ["git push"])
@@ -301,7 +301,7 @@ struct ControlRoomListTests {
         // its name: the frame its own pane wears, as the core says it.
         var snapshot = try JSONDecoder().decode(ControlRoomSnapshot.self, from: Self.fixture())
         let plainRow = try #require(ControlRoomList(snapshot: snapshot, loneRows: true).rows.first { $0.alone != nil })
-        #expect(plainRow.supervisor == .init(name: "zsh — ~/work", shown: .needsYou, word: "等批准", says: .plain))
+        #expect(plainRow.supervisor == .init(name: "zsh — ~/work", shown: .needsYou, word: "Awaiting approval", says: .plain))
         // An ordinary agent has no word after its name; a worker has its
         // own; and neither is called a supervisor.
         let noWord = PaneFrame.roleWord(.plain)
@@ -835,5 +835,32 @@ struct ControlRoomListTests {
         #expect(seen == Array(0..<steps))
         let held = ControlRoomGlyph.spinStep(at: 0.01)
         #expect(held == 0)
+    }
+
+    // Task 1522: the core writes the words beside a glyph as English msgids,
+    // and the app says them in the person's language. A bundle with only the
+    // app's zh-Hans table in it stands in for a Chinese system: this test
+    // runs in English, and would see the msgid come back either way.
+    @Test func theCoresWordsAreSaidInThePersonsLanguage() throws {
+        // The package links this file from the tree: resolved, it is there.
+        let root = URL(fileURLWithPath: #filePath).resolvingSymlinksInPath().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let table = root.appendingPathComponent("macos/Sources/App/zh-Hans.lproj/Localizable.strings")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("polter-words-\(UUID().uuidString)")
+        let lproj = dir.appendingPathComponent("zh-Hans.lproj")
+        try FileManager.default.createDirectory(at: lproj, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.copyItem(at: table, to: lproj.appendingPathComponent("Localizable.strings"))
+        let zh = try #require(Bundle(url: dir))
+
+        #expect(ControlRoomList.say("Awaiting approval", in: zh) == "等批准")
+        #expect(ControlRoomList.say("Held", in: zh) == "被按住")
+        #expect(ControlRoomList.say("Off duty", in: zh) == "下班")
+        // Nothing to say stays nothing; a word the table does not have is
+        // shown as the core wrote it rather than as a blank.
+        #expect(ControlRoomList.say("", in: zh) == "")
+        #expect(ControlRoomList.say("Something new", in: zh) == "Something new")
+        // And in English, the msgid is the word.
+        #expect(ControlRoomList.say("Awaiting approval") == "Awaiting approval")
     }
 }

@@ -328,7 +328,8 @@ pub struct Group {
     /// The core says nobody has looked at this since it stopped.
     pub unseen: bool,
     pub shown: Shown,
-    /// The words beside the glyph, already in the person's language.
+    /// The words beside the glyph: the core's English msgid as decoded,
+    /// the person's language after [`Snapshot::translate_words`].
     pub text: String,
     pub waiter: Waiter,
     pub reason: Reason,
@@ -449,7 +450,8 @@ pub struct Terminal {
     pub id: String,
     pub title: String,
     pub shown: Shown,
-    /// The words beside the glyph, already in the person's language.
+    /// The words beside the glyph: the core's English msgid as decoded,
+    /// the person's language after [`Snapshot::translate_words`].
     pub text: String,
     /// None in a snapshot from before the core said it; such a terminal is
     /// drawn as an ordinary one.
@@ -628,6 +630,34 @@ pub struct Snapshot {
     /// delete this much (task 1511). None when nothing waits, or from a
     /// core that does not say.
     pub retention_waiting_bytes: Option<u64>,
+}
+
+impl Snapshot {
+    /// Put every word beside a glyph into the person's language: a group's,
+    /// a terminal's, its pane title's and a lone terminal's (task 1522).
+    /// The core writes them as English msgids ("Awaiting approval",
+    /// "Held"), because it does not know the person's language; this is
+    /// where the host says them in it -- once, as the snapshot arrives, so
+    /// that what a row measures and what it draws are the same words.
+    pub fn translate_words(&mut self, tr: &dyn Fn(&str) -> String) {
+        let say = |t: &mut String| {
+            if !t.is_empty() {
+                *t = tr(t);
+            }
+        };
+        for g in &mut self.groups {
+            say(&mut g.text);
+        }
+        for t in &mut self.terminals {
+            say(&mut t.text);
+            if let Some(b) = &mut t.bar {
+                say(&mut b.text);
+            }
+        }
+        for l in &mut self.ungrouped {
+            say(&mut l.text);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

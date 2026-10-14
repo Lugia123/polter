@@ -466,6 +466,15 @@ pub const Action = union(Key) {
     /// application; the apprt owns which window it is in.
     toggle_poltergeist_control_room,
 
+    /// Call the person: somebody in a group has waited two minutes for them
+    /// and they are not looking (`ControlNotify`,
+    /// `dev-docs/poltergeist/control-room.md` section 9). App-scoped. The
+    /// apprt raises the operating system's notification, with a sound, in
+    /// its own words for `kind`; clicking it goes to the control room with
+    /// `group` selected. **Every decision is already made**: whether, when,
+    /// how often, and for whom -- the apprt only says it.
+    control_room_alert: ControlRoomAlert,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -553,6 +562,7 @@ pub const Action = union(Key) {
         poltergeist_screenshot,
         control_room_changed,
         toggle_poltergeist_control_room,
+        control_room_alert,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -2329,6 +2339,42 @@ pub const ControlRoomChanged = extern struct {
     /// The snapshot's `rev`. One that is not above the last the apprt
     /// fetched is a notice it has already acted on.
     rev: u64,
+};
+
+/// Sync with: ghostty_action_control_room_alert_s
+///
+/// **One pointer**, to the alert: the action union is held to 24 bytes
+/// (`CValue`'s size check), and the five fields of `Alert` are 40.
+pub const ControlRoomAlert = extern struct {
+    alert: *const Alert,
+
+    /// Sync with: ghostty_control_room_alert_s
+    pub const Alert = extern struct {
+        kind: Kind,
+        /// The group to name, and to select when the notification is
+        /// clicked.
+        group: [*:0]const u8,
+        /// How many more of the same supervisor's groups are waiting: "and
+        /// 2 more" -- one supervisor is one notification.
+        more: u32,
+        /// The worker that waits, by its name; empty when it is the
+        /// supervisor itself.
+        who: [*:0]const u8,
+        /// What it is waiting on, in its own words; may be empty.
+        text: [*:0]const u8,
+    };
+
+    /// The three kinds of wait that call the person.
+    /// Sync with: ghostty_control_room_alert_kind_e
+    pub const Kind = enum(c_int) {
+        needs_approval,
+        needs_answer,
+        failed,
+
+        test "ghostty.h ControlRoomAlert.Kind" {
+            try lib.checkGhosttyHEnum(Kind, "GHOSTTY_CONTROL_ROOM_ALERT_");
+        }
+    };
 };
 
 pub const PoltergeistGrouping = extern struct {

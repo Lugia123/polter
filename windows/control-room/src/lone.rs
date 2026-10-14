@@ -27,7 +27,8 @@ pub struct Lone {
     pub needs_me: bool,
     pub unseen: bool,
     pub shown: Shown,
-    /// The words beside the glyph, already in the person's language.
+    /// The words beside the glyph: the core's English msgid as decoded,
+    /// the person's language after [`crate::snapshot::Snapshot::translate_words`].
     pub text: String,
     pub waiter: Waiter,
     pub what: What,
@@ -131,7 +132,7 @@ mod tests {
         assert!(one.needs_me && !one.unseen);
         assert_eq!(one.section(), "waiting");
         assert_eq!(one.shown, Shown::NeedsYou);
-        assert_eq!(one.text, "等批准");
+        assert_eq!(one.text, "Awaiting approval");
         assert_eq!(one.waiter.is, WaiterIs::Terminal);
         assert_eq!(one.what.lines, vec!["git push".to_string()]);
         assert_eq!((one.terminal.as_deref(), one.since_ms, one.event_ms), (Some("0x00000000000000c1"), 5_940_000, Some(5_940_000)));

@@ -19,6 +19,7 @@
   "sources": {
     "in": [
       "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomAlert.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomElsewhere.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomGlyph.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomHomecoming.swift",
@@ -93,6 +94,7 @@
   },
   "tests": {
     "in": [
+      "macos/Tests/ControlRoom/ControlRoomAlertTests.swift",
       "macos/Tests/ControlRoom/ControlRoomElsewhereTests.swift",
       "macos/Tests/ControlRoom/ControlRoomFeedTests.swift",
       "macos/Tests/ControlRoom/ControlRoomHeaderTests.swift",

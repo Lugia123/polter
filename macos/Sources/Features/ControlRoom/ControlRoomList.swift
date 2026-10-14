@@ -796,6 +796,20 @@ extension ControlRoomList.Shown: Decodable {
 }
 
 extension ControlRoomList {
+    /// A word beside a glyph -- "Awaiting approval", "Working", "Held" -- in
+    /// the person's language (task 1522). The core writes it as an English
+    /// msgid, because it does not know the person's language; it was a
+    /// Chinese literal before, and so Chinese in an English window. Said
+    /// here, where a snapshot's words become a row's or a title's, so that
+    /// nothing downstream measures one set of words and draws another.
+    /// `tools/control-room-words-are-translated.py` checks each word has an
+    /// entry in both `Localizable.strings`.
+    static func say(_ word: String, in bundle: Bundle = .main) -> String {
+        word.isEmpty ? word : bundle.localizedString(forKey: word, value: word, table: nil)
+    }
+}
+
+extension ControlRoomList {
     /// What the title of `group`'s supervisor frame says; nil when the core
     /// names no supervisor, or lists no such member.
     static func supervisorTitle(of group: ControlRoomSnapshot.Group) -> SupervisorTitle? {
@@ -805,7 +819,7 @@ extension ControlRoomList {
         // the row is about the supervisor or about one of its workers is
         // not asked here: the core says who waits (`waiter`), and the
         // member's glyph and word are the supervisor's either way.
-        return SupervisorTitle(name: member.title, shown: member.shown, word: member.text)
+        return SupervisorTitle(name: member.title, shown: member.shown, word: say(member.text))
     }
 }
 
@@ -837,7 +851,7 @@ extension ControlRoomList {
             (one.needs_me, Row(
                 id: Self.rowId(ofTerminal: one.id),
                 shown: one.shown,
-                word: one.text,
+                word: Self.say(one.text),
                 waiter: Waiter(is: one.waiter.is, name: one.waiter.name),
                 what: What(cut: one.what.cut, form: one.what.form, lines: one.what.lines),
                 others: 0,
@@ -845,7 +859,7 @@ extension ControlRoomList {
                 // this row when that one is in no group and is this terminal.
                 pulses: first != nil && first?.group == nil && first?.terminal == one.id,
                 unseen: one.unseen ?? false,
-                supervisor: SupervisorTitle(name: one.title, shown: one.shown, word: one.text, says: pane(of: one.id)),
+                supervisor: SupervisorTitle(name: one.title, shown: one.shown, word: Self.say(one.text), says: pane(of: one.id)),
                 target: one.attention.flatMap { attention in
                     attention.terminal.map {
                         Target(terminal: $0, sinceMs: attention.since_ms, eventMs: attention.event_ms)
@@ -858,7 +872,7 @@ extension ControlRoomList {
             (group.needs_me, Row(
                 id: group.name,
                 shown: group.shown,
-                word: group.text,
+                word: Self.say(group.text),
                 waiter: Waiter(is: group.waiter.is, name: group.waiter.name),
                 what: What(cut: group.what.cut, form: group.what.form, lines: group.what.lines),
                 others: group.more,
@@ -1091,6 +1105,17 @@ struct ControlRoomListLayout: Equatable {
     /// Where the selection chip rests for a row; nil for a row not listed.
     func chip(for id: String?) -> CGRect? {
         id.flatMap { rows[$0] }
+    }
+
+    /// The rows whose whole card is on screen: above the allowance block,
+    /// or above the panel's bottom when there is none. The list does not
+    /// scroll -- rows past the bottom are simply cut off -- so this is what
+    /// "the card is in sight" is (task 1505: no notification about a card
+    /// the person can see). `order` is the list's own (`ControlRoomList.rows`);
+    /// this only filters it.
+    func inSight(order: [String]) -> [String] {
+        let bottom = quota.height > 0 ? quota.minY : size.height
+        return order.filter { id in rows[id].map { $0.height > 0 && $0.maxY <= bottom } ?? false }
     }
 }
 

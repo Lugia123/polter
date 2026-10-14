@@ -48,7 +48,7 @@ struct PaneFrameTests {
     @Test func theTitleIsTheTerminalsOwnNameGlyphAndWord() throws {
         let all = try terminals()
         let b = PaneFrame.drawn(terminal: worker, ownName: "not this", at: split, in: all)
-        #expect(b?.title == Title(name: "web-app worker", shown: .needsYou, word: "等批准"))
+        #expect(b?.title == Title(name: "web-app worker", shown: .needsYou, word: "Awaiting approval"))
         // Not the first one listed, and not another terminal's.
         let c = PaneFrame.drawn(terminal: shell, ownName: "not this", at: split, in: all)
         #expect(c?.title == Title(name: "zsh", shown: .none, word: ""))
@@ -56,7 +56,7 @@ struct PaneFrameTests {
 
     @Test func anOrdinaryTerminalThatWaitsSaysSo() throws {
         let c = PaneFrame.drawn(terminal: waitingShell, ownName: "", at: split, in: try terminals())
-        #expect(c == Drawn(wears: .plain, title: Title(name: "zsh — ~/work", shown: .needsYou, word: "等批准")))
+        #expect(c == Drawn(wears: .plain, title: Title(name: "zsh — ~/work", shown: .needsYou, word: "Awaiting approval")))
     }
 
     // MARK: Alone in its tab
@@ -145,12 +145,12 @@ struct PaneFrameTests {
         let all = try terminals()
         // `tokens`: a worker that clocked off, and the person holds it.
         let held = try #require(all.first { $0.title == "tokens" })
-        #expect(held.bar == Bar(shown: .held, text: "被按住"))
+        #expect(held.bar == Bar(shown: .held, text: "Held"))
         // What a row or a window tab would draw of it is still its status.
         #expect(held.shown == .none)
-        #expect(held.text == "下班")
+        #expect(held.text == "Off duty")
         let drawn = PaneFrame.drawn(terminal: held.id, ownName: "", at: split, in: all)
-        #expect(drawn == Drawn(wears: .worker, title: Title(name: "tokens", shown: .held, word: "被按住")))
+        #expect(drawn == Drawn(wears: .worker, title: Title(name: "tokens", shown: .held, word: "Held")))
         // Exactly one of the fixture's terminals is held.
         let heldOnes = all.filter { $0.bar?.shown == .held }.map(\.title)
         #expect(heldOnes == ["tokens"])

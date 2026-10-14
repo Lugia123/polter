@@ -941,3 +941,24 @@
 "Not by days" = "Not by days";
 "Write a whole number, or leave it empty for no limit." = "Write a whole number, or leave it empty for no limit.";
 "Log Management" = "Log Management";
+
+/* 总控台：图形旁边的状态词（核心 Attention.zig 的 Word.text 与 held_text 写成英文 msgid，宿主按 key 翻译，#1522） */
+"Awaiting approval" = "Awaiting approval";
+"Awaiting input" = "Awaiting input";
+"Failed" = "Failed";
+"Maybe stuck" = "Maybe stuck";
+"Done, not looked at" = "Done, not looked at";
+"Working" = "Working";
+"Stopped, cause unknown" = "Stopped, cause unknown";
+"Screen unreadable" = "Screen unreadable";
+"Unattended" = "Unattended";
+"Set aside" = "Set aside";
+"Off duty" = "Off duty";
+"Held" = "Held";
+
+/* 总控台：有人在等你时的系统通知（#1505，设计第 9 节） */
+"%@ is waiting for your approval" = "%@ is waiting for your approval";
+"%@ is waiting for your answer" = "%@ is waiting for your answer";
+"%@ has stopped on an error" = "%@ has stopped on an error";
+"1 more group of the same supervisor is waiting too." = "1 more group of the same supervisor is waiting too.";
+"%lld more groups of the same supervisor are waiting too." = "%lld more groups of the same supervisor are waiting too.";

@@ -4336,6 +4336,21 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             true
         }
 
+        // The control room calling the person (task 1505): a tray balloon,
+        // in this host's words, that goes to the control room when clicked.
+        ffi::ACTION_CONTROL_ROOM_ALERT => {
+            match action.as_control_room_alert() {
+                // carries no terminal: the action is app-scoped -- it is about
+                // a group, which is what the balloon's click goes to
+                Some((kind, group, more, who, text)) => notify::on_control_room_alert(kind, group, more, who, text),
+                None => {
+                    // process-wide: the control room is one per process
+                    plogf!("[action] control_room_alert with no alert; nothing shown");
+                    false
+                }
+            }
+        }
+
         // Go to the control room, opening it as the first tab of the window
         // in front when there is none. Queued: opening it makes a window.
         ffi::ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM => {
@@ -4587,6 +4602,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // The caption's colours differ when the window is not the active
             // one, and nothing else would ask us to repaint for that.
             WM_ACTIVATE => {
+                // Which window is in front decides whether the control room
+                // is in the person's sight (task 1505).
+                crate::control_room::presence_may_have_changed();
                 // One of the three messages that change where the window is
                 // -- the same three `LastWindowPosition` saves on. **Marked,
                 // not written**: a drag delivers `WM_MOVE` continuously, and
@@ -5408,6 +5426,7 @@ fn load_api() -> Option<Api> {
             surface_poltergeist_id: sym!(internal, "ghostty_surface_poltergeist_id"),
             app_control_snapshot: sym!(internal, "ghostty_app_control_snapshot"),
             app_control_act: sym!(internal, "ghostty_app_control_act"),
+            app_control_presence: sym!(internal, "ghostty_app_control_presence"),
             app_key: sym!(internal, "ghostty_app_key"),
             surface_persona_launch: sym!(internal, "ghostty_surface_persona_launch"),
             app_plugin_list: sym!(internal, "ghostty_app_plugin_list"),

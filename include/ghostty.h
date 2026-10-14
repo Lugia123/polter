@@ -1230,6 +1230,36 @@ typedef struct {
   uint64_t rev;
 } ghostty_action_control_room_changed_s;
 
+// apprt.action.ControlRoomAlert
+//
+// Call the person: somebody in a group has waited two minutes for them and
+// they are not looking (src/poltergeist/ControlNotify.zig). Raise the system
+// notification, with a sound, in the host's own words for `kind`; clicking it
+// goes to the control room with `group` selected. Whether, when and how
+// often are already decided. Everything is valid during the call only.
+typedef enum {
+  GHOSTTY_CONTROL_ROOM_ALERT_NEEDS_APPROVAL,
+  GHOSTTY_CONTROL_ROOM_ALERT_NEEDS_ANSWER,
+  GHOSTTY_CONTROL_ROOM_ALERT_FAILED,
+} ghostty_control_room_alert_kind_e;
+
+typedef struct {
+  ghostty_control_room_alert_kind_e kind;
+  // The group to name, and to select when the notification is clicked.
+  const char* group;
+  // How many more of the same supervisor's groups wait.
+  uint32_t more;
+  // The worker that waits, by name; empty when it is the supervisor.
+  const char* who;
+  // What it waits on, in its own words; may be empty.
+  const char* text;
+} ghostty_control_room_alert_s;
+
+// One pointer: the action union is held to 24 bytes.
+typedef struct {
+  const ghostty_control_room_alert_s* alert;
+} ghostty_action_control_room_alert_s;
+
 // apprt.action.HistoryFilename
 //
 // Fired once, synchronously, when the surface is created (not on a
@@ -1401,6 +1431,7 @@ typedef enum {
   GHOSTTY_ACTION_POLTERGEIST_SCREENSHOT,
   GHOSTTY_ACTION_CONTROL_ROOM_CHANGED,
   GHOSTTY_ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM,
+  GHOSTTY_ACTION_CONTROL_ROOM_ALERT,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1453,6 +1484,7 @@ typedef union {
   ghostty_action_poltergeist_screenshot_s poltergeist_screenshot;
   ghostty_action_history_filename_s history_filename;
   ghostty_action_control_room_changed_s control_room_changed;
+  ghostty_action_control_room_alert_s control_room_alert;
 } ghostty_action_u;
 
 typedef struct {
@@ -1598,6 +1630,13 @@ GHOSTTY_API uintptr_t ghostty_app_control_snapshot(ghostty_app_t, char*, uintptr
 // they no longer hold. There is no field for who is asking: calling this is
 // being the person. App thread only.
 GHOSTTY_API bool ghostty_app_control_act(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+// Where the person is, as far as the control room goes: whether it is in
+// front, and which groups' cards it has on screen, as JSON
+// {"in_front":bool,"cards":["group",...]}. Said whenever either changes; the
+// notifications of src/poltergeist/ControlNotify.zig are not sent about a card
+// in sight. False, with the error's name in `err`, when it could not be read;
+// the last one then stands. App thread only.
+GHOSTTY_API bool ghostty_app_control_presence(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 
 // The role library and the agent CLIs a role can start. Buffers follow the
 // persona rule above: the real length back, one NUL after it when it fits.

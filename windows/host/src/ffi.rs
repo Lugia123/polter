@@ -149,6 +149,12 @@ pub const ACTION_CONTROL_ROOM_CHANGED: u32 = 78;
 /// `cb_action` answers that and the palette hides the row.
 pub const ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM: u32 = 79;
 
+/// `Action.Key.control_room_alert`, appended after
+/// `toggle_poltergeist_control_room` (task 1505; the design's section 9).
+/// ⚠️ **Appended, like every one before it.** The payload is one pointer to
+/// a [`ControlRoomAlert`]; the arm in `cb_action` raises the tray balloon.
+pub const ACTION_CONTROL_ROOM_ALERT: u32 = 80;
+
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
 // **Every ordinal below was counted twice, from two files that are generated
@@ -310,6 +316,18 @@ pub struct LayoutOut {
 /// 1 is done (the result's JSON is in `buf`), 2 refused (`{"code",
 /// "message"}` is), 3 pending -- answered later, with the token, through
 /// `app_poltergeist_screenshot_complete`.
+/// `ghostty_control_room_alert_s`: the control room calling the person.
+/// Everything in it is valid during the action's call only.
+#[repr(C)]
+pub struct ControlRoomAlert {
+    /// `ghostty_control_room_alert_kind_e`: 0 approval, 1 answer, 2 failed.
+    pub kind: i32,
+    pub group: *const c_char,
+    pub more: u32,
+    pub who: *const c_char,
+    pub text: *const c_char,
+}
+
 #[repr(C)]
 pub struct ScreenshotOut {
     pub result: i32,
@@ -791,6 +809,27 @@ impl Action {
     /// of the snapshot the notice is about.
     pub fn as_control_room_changed(&self) -> u64 {
         u64::from_ne_bytes(self.payload[0..8].try_into().unwrap())
+    }
+
+    /// `ghostty_action_control_room_alert_s { const
+    /// ghostty_control_room_alert_s* alert; }`: the alert read out and
+    /// copied, as `(kind, group, more, who, text)`. `None` for a null
+    /// pointer. The strings are the core's for the call only, so they are
+    /// copied here and nowhere later.
+    pub fn as_control_room_alert(&self) -> Option<(i32, String, u32, String, String)> {
+        let p = usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *const ControlRoomAlert;
+        if p.is_null() {
+            return None;
+        }
+        let a = unsafe { &*p };
+        let text = |s: *const c_char| -> String {
+            if s.is_null() {
+                String::new()
+            } else {
+                unsafe { std::ffi::CStr::from_ptr(s) }.to_string_lossy().into_owned()
+            }
+        };
+        Some((a.kind, text(a.group), a.more, text(a.who), text(a.text)))
     }
 
     pub fn as_poltergeist_tab_panes(&self) -> *mut u32 {
@@ -1746,6 +1785,11 @@ pub struct Api {
     /// `terminal_list` reports for this surface, written `0x{:016x}`. 0 for
     /// null. The `Surface` handle itself is a pointer and is not this.
     pub surface_poltergeist_id: unsafe extern "C" fn(Surface) -> u64,
+    /// `ghostty_app_control_presence(app, json, len, err, cap)`: whether the
+    /// control room is in front and which cards it has on screen
+    /// (`polter_control_room::alert::Presence`). False with the error's
+    /// name when it could not be read.
+    pub app_control_presence: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> bool,
     /// `ghostty_app_control_snapshot(app, buf, cap)`: the control room's
     /// snapshot as JSON, by the persona buffer rule. Zero bytes means none
     /// has been worked out yet. App thread only; asked for when

@@ -172,7 +172,10 @@ fn read() -> Data {
         return Data::Unreadable("it is not UTF-8".into());
     };
     match snapshot::decode(text) {
-        Ok(snapshot) => {
+        Ok(mut snapshot) => {
+            // The words beside each glyph come as English msgids: said in
+            // the person's language here, before anything measures them.
+            snapshot.translate_words(&|w| crate::i18n::tr(w));
             let list = List::from_snapshot(&snapshot);
             // The part about projects is read on its own
             // (`polter_projects::orders`), and strictly: an order this build

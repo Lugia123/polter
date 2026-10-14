@@ -74,7 +74,7 @@
       "unseen": false,
       "shown": "needs_you",
       "word": "needs_approval",
-      "text": "等批准",
+      "text": "Awaiting approval",
       "waiter": {
         "is": "supervisor",
         "name": ""
@@ -106,7 +106,7 @@
           "age_ms": 240000,
           "shown": "needs_you",
           "word": "needs_approval",
-          "text": "等批准",
+          "text": "Awaiting approval",
           "screen": "unmeasured",
           "alive": true,
           "duty": "on",
@@ -123,7 +123,7 @@
           "age_ms": 30000,
           "shown": "needs_you",
           "word": "needs_approval",
-          "text": "等批准",
+          "text": "Awaiting approval",
           "screen": "unmeasured",
           "alive": true,
           "duty": "on",
@@ -186,7 +186,7 @@
       "unseen": false,
       "shown": "needs_you",
       "word": "needs_approval",
-      "text": "等批准",
+      "text": "Awaiting approval",
       "waiter": {
         "is": "supervisor",
         "name": ""
@@ -218,7 +218,7 @@
           "age_ms": 240000,
           "shown": "needs_you",
           "word": "needs_approval",
-          "text": "等批准",
+          "text": "Awaiting approval",
           "screen": "unmeasured",
           "alive": true,
           "duty": "on",
@@ -281,7 +281,7 @@
       "unseen": false,
       "shown": "needs_you",
       "word": "needs_approval",
-      "text": "等批准",
+      "text": "Awaiting approval",
       "waiter": {
         "is": "worker_via_supervisor",
         "name": "ios-build"
@@ -328,7 +328,7 @@
           "age_ms": 180000,
           "shown": "needs_you",
           "word": "needs_approval",
-          "text": "等批准",
+          "text": "Awaiting approval",
           "screen": "unmeasured",
           "alive": true,
           "duty": "on",
@@ -391,7 +391,7 @@
       "unseen": false,
       "shown": "needs_you",
       "word": "needs_answer",
-      "text": "等回答",
+      "text": "Awaiting input",
       "waiter": {
         "is": "supervisor",
         "name": ""
@@ -421,7 +421,7 @@
           "age_ms": 660000,
           "shown": "needs_you",
           "word": "needs_answer",
-          "text": "等回答",
+          "text": "Awaiting input",
           "screen": "unmeasured",
           "alive": true,
           "duty": "on",
@@ -484,7 +484,7 @@
       "unseen": false,
       "shown": "trouble",
       "word": "failed",
-      "text": "出错",
+      "text": "Failed",
       "waiter": {
         "is": "supervisor",
         "name": ""
@@ -514,7 +514,7 @@
           "age_ms": 120000,
           "shown": "trouble",
           "word": "failed",
-          "text": "出错",
+          "text": "Failed",
           "screen": "unmeasured",
           "alive": true,
           "duty": "on",
@@ -577,7 +577,7 @@
       "unseen": true,
       "shown": "done_unseen",
       "word": "done_unseen",
-      "text": "做完了，没看",
+      "text": "Done, not looked at",
       "waiter": {
         "is": "none",
         "name": ""
@@ -607,7 +607,7 @@
           "age_ms": 1800000,
           "shown": "done_unseen",
           "word": "done_unseen",
-          "text": "做完了，没看",
+          "text": "Done, not looked at",
           "screen": "unmeasured",
           "alive": true,
           "duty": "on",
@@ -670,7 +670,7 @@
       "unseen": false,
       "shown": "working",
       "word": "working",
-      "text": "在干活",
+      "text": "Working",
       "waiter": {
         "is": "none",
         "name": ""
@@ -700,7 +700,7 @@
           "age_ms": 300000,
           "shown": "working",
           "word": "working",
-          "text": "在干活",
+          "text": "Working",
           "screen": "unmeasured",
           "alive": true,
           "duty": "on",
@@ -717,7 +717,7 @@
           "age_ms": null,
           "shown": "none",
           "word": "off_duty",
-          "text": "下班",
+          "text": "Off duty",
           "screen": "unmeasured",
           "alive": true,
           "duty": "off",
@@ -836,7 +836,7 @@
       "unseen": false,
       "shown": "needs_you",
       "word": "needs_approval",
-      "text": "等批准",
+      "text": "Awaiting approval",
       "waiter": {
         "is": "terminal",
         "name": ""
@@ -871,7 +871,7 @@
       },
       "bar": {
         "shown": "needs_you",
-        "text": "等批准"
+        "text": "Awaiting approval"
       },
       "kind": "needs_approval",
       "since_ms": 5760000,
@@ -880,7 +880,7 @@
       "age_ms": 240000,
       "shown": "needs_you",
       "word": "needs_approval",
-      "text": "等批准",
+      "text": "Awaiting approval",
       "screen": "unmeasured",
       "alive": true,
       "duty": "on",
@@ -902,7 +902,7 @@
       },
       "bar": {
         "shown": "needs_you",
-        "text": "等回答"
+        "text": "Awaiting input"
       },
       "kind": "needs_answer",
       "since_ms": 5340000,
@@ -911,7 +911,7 @@
       "age_ms": 660000,
       "shown": "needs_you",
       "word": "needs_answer",
-      "text": "等回答",
+      "text": "Awaiting input",
       "screen": "unmeasured",
       "alive": true,
       "duty": "on",
@@ -933,7 +933,7 @@
       },
       "bar": {
         "shown": "trouble",
-        "text": "出错"
+        "text": "Failed"
       },
       "kind": "failed",
       "since_ms": 5880000,
@@ -942,7 +942,7 @@
       "age_ms": 120000,
       "shown": "trouble",
       "word": "failed",
-      "text": "出错",
+      "text": "Failed",
       "screen": "unmeasured",
       "alive": true,
       "duty": "on",
@@ -964,7 +964,7 @@
       },
       "bar": {
         "shown": "done_unseen",
-        "text": "做完了，没看"
+        "text": "Done, not looked at"
       },
       "kind": "done_unseen",
       "since_ms": 4200000,
@@ -973,7 +973,7 @@
       "age_ms": 1800000,
       "shown": "done_unseen",
       "word": "done_unseen",
-      "text": "做完了，没看",
+      "text": "Done, not looked at",
       "screen": "unmeasured",
       "alive": true,
       "duty": "on",
@@ -995,7 +995,7 @@
       },
       "bar": {
         "shown": "working",
-        "text": "在干活"
+        "text": "Working"
       },
       "kind": "working",
       "since_ms": 5700000,
@@ -1004,7 +1004,7 @@
       "age_ms": 300000,
       "shown": "working",
       "word": "working",
-      "text": "在干活",
+      "text": "Working",
       "screen": "unmeasured",
       "alive": true,
       "duty": "on",
@@ -1088,7 +1088,7 @@
       },
       "bar": {
         "shown": "needs_you",
-        "text": "等批准"
+        "text": "Awaiting approval"
       },
       "kind": "needs_approval",
       "since_ms": 5970000,
@@ -1097,7 +1097,7 @@
       "age_ms": 30000,
       "shown": "needs_you",
       "word": "needs_approval",
-      "text": "等批准",
+      "text": "Awaiting approval",
       "screen": "unmeasured",
       "alive": true,
       "duty": "on",
@@ -1119,7 +1119,7 @@
       },
       "bar": {
         "shown": "held",
-        "text": "被按住"
+        "text": "Held"
       },
       "kind": "idle",
       "since_ms": 0,
@@ -1128,7 +1128,7 @@
       "age_ms": null,
       "shown": "none",
       "word": "off_duty",
-      "text": "下班",
+      "text": "Off duty",
       "screen": "unmeasured",
       "alive": true,
       "duty": "off",
@@ -1150,7 +1150,7 @@
       },
       "bar": {
         "shown": "needs_you",
-        "text": "等批准"
+        "text": "Awaiting approval"
       },
       "kind": "needs_approval",
       "since_ms": 5820000,
@@ -1159,7 +1159,7 @@
       "age_ms": 180000,
       "shown": "needs_you",
       "word": "needs_approval",
-      "text": "等批准",
+      "text": "Awaiting approval",
       "screen": "unmeasured",
       "alive": true,
       "duty": "on",
@@ -1181,7 +1181,7 @@
       },
       "bar": {
         "shown": "needs_you",
-        "text": "等批准"
+        "text": "Awaiting approval"
       },
       "kind": "needs_approval",
       "since_ms": 5940000,
@@ -1190,7 +1190,7 @@
       "age_ms": 60000,
       "shown": "needs_you",
       "word": "needs_approval",
-      "text": "等批准",
+      "text": "Awaiting approval",
       "screen": "unmeasured",
       "alive": true,
       "duty": "on",

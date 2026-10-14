@@ -38,6 +38,7 @@ pub const fn n_(s: &'static str) -> &'static str {
 }
 
 pub mod act;
+pub mod alert;
 pub mod glyph;
 pub mod json;
 pub mod layout;
