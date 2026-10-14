@@ -1540,9 +1540,16 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             try self.showDesktopNotification(title, body);
         },
 
-        .poltergeist_notice => |*notice| try self.typePoltergeistNotice(
+        .poltergeist_notice => |*notice| _ = try self.typePoltergeistNotice(
             std.mem.sliceTo(notice, 0),
         ),
+
+        // **Arrived when it was submitted** (task 1503): what this line
+        // carried is not typed again a minute later with a fresh figure.
+        // Refused, it stays in the box, as before.
+        .poltergeist_handover => |*line| if (try self.typePoltergeistNotice(std.mem.sliceTo(line, 0))) {
+            self.app.poltergeist.delivered(self.id, self.app.chat.peers());
+        },
 
         .poltergeist_alert => |*alert| try self.showPoltergeistAlert(
             std.mem.sliceTo(alert, 0),
@@ -4191,7 +4198,8 @@ test "poltergeist mark prefix fits every combination" {
 /// text does not submit -- that is exactly why an agent CLI can accept
 /// multi-line pastes. So the newline is sent afterwards as its own key
 /// event, which is what a real return keypress looks like.
-fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
+/// True when the line was typed and its return reached the program.
+fn typePoltergeistNotice(self: *Surface, text: []const u8) !bool {
     // Whatever becomes of this one, it is no longer the refusal that was
     // waiting; a new refusal below says so again.
     self.poltergeist_notice_refused = false;
@@ -4226,16 +4234,17 @@ fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
             else
                 null;
             if (noticeRetryDelayMs(err, since_key_ms)) |ms| self.app.noticeRetryIn(ms);
-            return;
+            return false;
         },
         error.ChildExited,
         error.UnsafeText,
         // Said in the log where it happened; the line is marked as a draft,
         // so nothing more is typed onto it.
         error.NotSubmitted,
-        => {},
+        => return false,
         else => return err,
     };
+    return true;
 }
 
 /// A printed line starts at the left edge; with the cursor anywhere else it
