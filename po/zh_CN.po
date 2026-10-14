@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-15 04:03+0800\n"
+"POT-Creation-Date: 2026-10-15 04:17+0800\n"
 "PO-Revision-Date: 2026-09-13 10:50+0800\n"
 "Last-Translator: Lukas <134181853+bo2themax@users.noreply.github.com>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -53,7 +53,7 @@ msgstr "本提示将在重载配置后再次出现"
 
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
-#: src/apprt/gtk/class/application.zig:2225 windows/host/src/logs_ui.rs:628
+#: src/apprt/gtk/class/application.zig:2226 windows/host/src/logs_ui.rs:628
 #: windows/host/src/project_picker.rs:258
 #: windows/host/src/project_picker.rs:427 windows/host/src/project_ui.rs:413
 #: windows/host/src/project_ui.rs:453 windows/host/src/projects_ui.rs:634
@@ -290,27 +290,27 @@ msgstr "退出"
 msgid "Execute a command…"
 msgstr "选择要执行的命令…"
 
-#: src/apprt/gtk/class/application.zig:1810
+#: src/apprt/gtk/class/application.zig:1811
 msgid "The keybind was revoked by the system."
 msgstr "系统撤销了该快捷键。"
 
-#: src/apprt/gtk/class/application.zig:1812
+#: src/apprt/gtk/class/application.zig:1813
 msgid "The keybind was denied by the system."
 msgstr "系统拒绝绑定该快捷键。"
 
-#: src/apprt/gtk/class/application.zig:1823
+#: src/apprt/gtk/class/application.zig:1824
 msgid "Global keybind unavailable"
 msgstr "全局快捷键不可用"
 
-#: src/apprt/gtk/class/application.zig:2221
+#: src/apprt/gtk/class/application.zig:2222
 msgid "Export Terminal IO Events"
 msgstr "导出终端输入输出事件"
 
-#: src/apprt/gtk/class/application.zig:2224
+#: src/apprt/gtk/class/application.zig:2225
 msgid "Export"
 msgstr "导出"
 
-#: src/apprt/gtk/class/application.zig:2743
+#: src/apprt/gtk/class/application.zig:2744
 msgid "Editing configuration file"
 msgstr "正在编辑配置文件"
 
@@ -2592,15 +2592,15 @@ msgstr "什么都没清：Polter 的核心拒绝了。"
 msgid "{} lines in all."
 msgstr "共 {} 行。"
 
-#: windows/host/src/main.rs:6685
+#: windows/host/src/main.rs:6704
 msgid "No reason was recorded."
 msgstr "没有记录到原因。"
 
-#: windows/host/src/main.rs:6691
+#: windows/host/src/main.rs:6710
 msgid "Polter could not open its first terminal and will close."
 msgstr "Polter 无法打开第一个终端，即将关闭。"
 
-#: windows/host/src/main.rs:6693
+#: windows/host/src/main.rs:6712
 #, rust-format
 msgid "The full log is at {}"
 msgstr "完整日志在 {}"
@@ -4310,6 +4310,30 @@ msgstr "没能为它开出标签页。"
 #: windows/control-room/src/act.rs:214
 msgid "Polter could not find its own program to start the role with."
 msgstr "Polter 找不到自己的程序，没法用它启动角色。"
+
+#: windows/control-room/src/alert.rs:36
+#, rust-format
+msgid "{} is waiting for your approval"
+msgstr "「{}」在等你审批"
+
+#: windows/control-room/src/alert.rs:37
+#, rust-format
+msgid "{} is waiting for your answer"
+msgstr "「{}」在等你回答"
+
+#: windows/control-room/src/alert.rs:38
+#, rust-format
+msgid "{} has stopped on an error"
+msgstr "「{}」出错停下了"
+
+#: windows/control-room/src/alert.rs:61
+msgid "1 more group of the same supervisor is waiting too."
+msgstr "同一个总管还有 1 个群也在等你。"
+
+#: windows/control-room/src/alert.rs:63
+#, rust-format
+msgid "{} more groups of the same supervisor are waiting too."
+msgstr "同一个总管还有 {} 个群也在等你。"
 
 #: windows/control-room/src/lend.rs:378
 msgid "The supervisor's terminal is no longer open."

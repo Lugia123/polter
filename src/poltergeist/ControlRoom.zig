@@ -316,6 +316,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Attention = @import("Attention.zig");
 const Bus = @import("Bus.zig");
+const ControlNotify = @import("ControlNotify.zig");
 const Chat = @import("Chat.zig");
 const Projects = @import("Projects.zig");
 const AgentEvent = @import("agent_event.zig");
@@ -347,6 +348,13 @@ wake_ms: ?u64,
 /// How many times the snapshot has been worked out.
 recomputes: u64,
 
+/// The groups' rows as of the last time the snapshot was worked out, in
+/// what the notifications need of them (`ControlNotify.Row`), in the
+/// snapshot's order. Lives in `notify_arena`; replaced on every working-out
+/// and left alone when a timer finds nothing to work out.
+notify_rows: []const ControlNotify.Row,
+notify_arena: std.heap.ArenaAllocator,
+
 pub fn init(alloc: Allocator) ControlRoom {
     return .{
         .alloc = alloc,
@@ -357,10 +365,13 @@ pub fn init(alloc: Allocator) ControlRoom {
         .sent_ms = null,
         .wake_ms = null,
         .recomputes = 0,
+        .notify_rows = &.{},
+        .notify_arena = .init(alloc),
     };
 }
 
 pub fn deinit(self: *ControlRoom) void {
+    self.notify_arena.deinit();
     self.alloc.free(self.json);
     self.alloc.free(self.stable);
     self.* = undefined;
@@ -397,6 +408,9 @@ pub fn refresh(self: *ControlRoom, in: Input, cause: Cause) Allocator.Error!Outc
     defer arena.deinit();
 
     var built = try self.compute(arena.allocator(), in);
+
+    _ = self.notify_arena.reset(.retain_capacity);
+    self.notify_rows = try notifyRows(self.notify_arena.allocator(), built.snapshot.groups);
 
     const stable = try writeAlloc(self.alloc, try stripped(arena.allocator(), built.snapshot), .{});
     if (std.mem.eql(u8, stable, self.stable)) {
@@ -440,6 +454,38 @@ fn compute(self: *ControlRoom, arena: Allocator, in: Input) Allocator.Error!Buil
 
 fn earlier(a: ?u64, b: u64) u64 {
     return if (a) |x| @min(x, b) else b;
+}
+
+/// The groups' rows as the notifications need them. Copied into `arena`:
+/// the snapshot they come from does not outlive `refresh`.
+pub fn notifyRows(arena: Allocator, groups: []const GroupRow) Allocator.Error![]const ControlNotify.Row {
+    const out = try arena.alloc(ControlNotify.Row, groups.len);
+    for (groups, out) |g, *r| {
+        // The supervisor's own wait: its member row, when it is there and
+        // on duty. Off duty it waits for nobody (`Attention.ofTerminal`).
+        var own: ?ControlNotify.Need = null;
+        for (g.members) |m| {
+            if (m.role != .steward or !m.alive or m.duty != .on) continue;
+            own = .{ .kind = m.kind, .since_ms = m.since_ms, .terminal = m.id.id };
+        }
+        const text = if (g.reason.text.len > 0)
+            g.reason.text
+        else if (g.what.lines.len > 0) g.what.lines[0] else "";
+        r.* = .{
+            .group = try arena.dupe(u8, g.name),
+            .steward = if (g.steward) |h| h.id else null,
+            .top = .{
+                .kind = g.attention.under,
+                .since_ms = g.attention.since_ms,
+                .terminal = if (g.attention.terminal) |h| h.id else null,
+            },
+            .snoozed = g.attention.kind == .snoozed,
+            .own = own,
+            .who = try arena.dupe(u8, g.waiter.name),
+            .text = try arena.dupe(u8, text),
+        };
+    }
+    return out;
 }
 
 // -- what goes in -----------------------------------------------------------
@@ -2572,6 +2618,36 @@ test "ControlRoom snapshot: what a supervisor raises is waiting for the person a
 
     // A terminal the bus does not know raises nothing.
     try testing.expect(!try w.bus.raise(0xdead, at, "x"));
+}
+
+test "ControlRoom notifyRows: a worker's prompt over a supervisor that also waits, as the notifications read it" {
+    var w: World = .init();
+    defer w.deinit();
+    try w.steward(0xa1, "api", 0x21, "api");
+    try w.hook(0xa1, .turn_started, null, 10 * min);
+    try w.worker(0xb1, "api worker", 0x21, 0xa1, "api");
+    try w.approval(0xb1, "Bash", "git push --force", 20 * min);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const at = 21 * min + 5_000;
+    try testing.expect(try w.bus.raise(0xa1, at, "the worker has waited a minute: yours"));
+    const s = (try build(arena.allocator(), w.input(at + 1))).snapshot;
+    const rows = try notifyRows(arena.allocator(), s.groups);
+    try testing.expectEqual(s.groups.len, rows.len);
+    const r = for (rows) |r| {
+        if (std.mem.eql(u8, r.group, "api")) break r;
+    } else return error.TestUnexpectedResult;
+    // The row is about the worker's prompt...
+    try testing.expectEqual(Attention.Kind.needs_approval, r.top.kind);
+    try testing.expectEqual(@as(?Id, 0xb1), r.top.terminal);
+    try testing.expectEqual(@as(?Id, 0xa1), r.steward);
+    try testing.expectEqualStrings("api worker", r.who);
+    try testing.expect(!r.snoozed);
+    // ...and the supervisor's own wait is carried beside it: that is the
+    // thing the notifications call about while it lasts.
+    const own = r.own orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Attention.Kind.needs_answer, own.kind);
+    try testing.expectEqual(@as(?Id, 0xa1), own.terminal);
 }
 
 test "ControlRoom snapshot: a raise standing behind a worker's prompt is still withdrawn by looking" {

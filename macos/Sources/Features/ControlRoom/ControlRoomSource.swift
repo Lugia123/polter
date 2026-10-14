@@ -130,6 +130,10 @@ final class ControlRoomModel: ObservableObject {
     /// becomes one the person is looking at.
     var onChoose: () -> Void = {}
 
+    /// Told which cards are wholly on screen, each time that changes.
+    /// Written by `ControlRoomController`, which tells the core.
+    var onCardsInSight: ([String]) -> Void = { _ in }
+
     /// The person selected `id` (nil for nothing).
     func choose(_ id: String?) {
         selectionIsThePersons = true

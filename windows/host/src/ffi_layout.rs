@@ -23,6 +23,15 @@ const _: () = assert!(std::mem::offset_of!(ScreenshotOut, buf) == 16, "Screensho
 const _: () = assert!(std::mem::offset_of!(ScreenshotOut, cap) == 24, "ScreenshotOut.cap is not at ghostty_action_poltergeist_screenshot_out_s.cap");
 const _: () = assert!(std::mem::offset_of!(ScreenshotOut, len) == 32, "ScreenshotOut.len is not at ghostty_action_poltergeist_screenshot_out_s.len");
 
+// ControlRoomAlert <- ghostty_control_room_alert_s
+const _: () = assert!(std::mem::size_of::<ControlRoomAlert>() == 40, "size of ControlRoomAlert != sizeof(ghostty_control_room_alert_s)");
+const _: () = assert!(std::mem::align_of::<ControlRoomAlert>() == 8, "align of ControlRoomAlert != alignof(ghostty_control_room_alert_s)");
+const _: () = assert!(std::mem::offset_of!(ControlRoomAlert, kind) == 0, "ControlRoomAlert.kind is not at ghostty_control_room_alert_s.kind");
+const _: () = assert!(std::mem::offset_of!(ControlRoomAlert, group) == 8, "ControlRoomAlert.group is not at ghostty_control_room_alert_s.group");
+const _: () = assert!(std::mem::offset_of!(ControlRoomAlert, more) == 16, "ControlRoomAlert.more is not at ghostty_control_room_alert_s.more");
+const _: () = assert!(std::mem::offset_of!(ControlRoomAlert, who) == 24, "ControlRoomAlert.who is not at ghostty_control_room_alert_s.who");
+const _: () = assert!(std::mem::offset_of!(ControlRoomAlert, text) == 32, "ControlRoomAlert.text is not at ghostty_control_room_alert_s.text");
+
 // PoltergeistMark <- ghostty_action_poltergeist_mark_s
 const _: () = assert!(std::mem::size_of::<PoltergeistMark>() == 24, "size of PoltergeistMark != sizeof(ghostty_action_poltergeist_mark_s)");
 const _: () = assert!(std::mem::align_of::<PoltergeistMark>() == 8, "align of PoltergeistMark != alignof(ghostty_action_poltergeist_mark_s)");

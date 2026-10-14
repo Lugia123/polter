@@ -971,3 +971,10 @@
 "Set aside" = "先放着";
 "Off duty" = "下班";
 "Held" = "被按住";
+
+/* 总控台：有人在等你时的系统通知（#1505，设计第 9 节） */
+"%@ is waiting for your approval" = "「%@」在等你审批";
+"%@ is waiting for your answer" = "「%@」在等你回答";
+"%@ has stopped on an error" = "「%@」出错停下了";
+"1 more group of the same supervisor is waiting too." = "同一个总管还有 1 个群也在等你。";
+"%lld more groups of the same supervisor are waiting too." = "同一个总管还有 %lld 个群也在等你。";

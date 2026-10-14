@@ -2103,6 +2103,24 @@ pub const CAPI = struct {
         return true;
     }
 
+    /// The host's word on its control room, for the notifications
+    /// (`ControlNotify.Sight`): `{"in_front":bool,"cards":["group",…]}`.
+    /// False with the error's name when it could not be read; the last
+    /// report then stands.
+    export fn ghostty_app_control_presence(
+        app: *App,
+        json: [*]const u8,
+        len: usize,
+        err: ?[*]u8,
+        cap: usize,
+    ) bool {
+        app.core_app.controlPresence(json[0..len]) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
     /// Write `json` into the caller's buffer by the persona buffer rule:
     /// the real length back, one NUL after it when it fits.
     fn copyJsonOut(json: []const u8, buf: ?[*]u8, cap: usize) usize {

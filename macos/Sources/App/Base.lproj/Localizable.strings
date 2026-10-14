@@ -955,3 +955,10 @@
 "Set aside" = "Set aside";
 "Off duty" = "Off duty";
 "Held" = "Held";
+
+/* 总控台：有人在等你时的系统通知（#1505，设计第 9 节） */
+"%@ is waiting for your approval" = "%@ is waiting for your approval";
+"%@ is waiting for your answer" = "%@ is waiting for your answer";
+"%@ has stopped on an error" = "%@ has stopped on an error";
+"1 more group of the same supervisor is waiting too." = "1 more group of the same supervisor is waiting too.";
+"%lld more groups of the same supervisor are waiting too." = "%lld more groups of the same supervisor are waiting too.";

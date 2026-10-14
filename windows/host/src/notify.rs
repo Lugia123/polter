@@ -55,11 +55,17 @@ static WORKER: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut()
 static ICON_ADDED: AtomicBool = AtomicBool::new(false);
 /// The frame the last notification came from, for the balloon's click.
 static LAST_FRAME: AtomicIsize = AtomicIsize::new(0);
+/// The group the last balloon was about, when the control room raised it:
+/// clicking goes to the control room with that group selected, not to a
+/// window. `None` for a terminal's own notification.
+static LAST_GROUP: Mutex<Option<String>> = Mutex::new(None);
 
 struct Pending {
     frame: isize,
     title: String,
     body: String,
+    /// The control room's group, for a balloon the control room raised.
+    group: Option<String>,
 }
 
 static QUEUE: Mutex<Vec<Pending>> = Mutex::new(Vec::new());
@@ -112,7 +118,7 @@ pub fn on_notification(frame: Option<HWND>, title: Option<String>, body: Option<
     // the ability to raise anything when clicked.
     let f = frame.map(|h| h.0 as isize).unwrap_or(0);
     match QUEUE.lock() {
-        Ok(mut q) => q.push(Pending { frame: f, title: title.clone(), body }),
+        Ok(mut q) => q.push(Pending { frame: f, title: title.clone(), body, group: None }),
         Err(_) => return false,
     }
     let posted =
@@ -165,12 +171,44 @@ fn ensure_icon(hwnd: HWND) -> bool {
     ok
 }
 
+/// `control_room_alert`: the control room calling the person (task 1505).
+/// Whether, when and how often were the core's; this says it, in the
+/// person's language, with the notification area's sound, and remembers
+/// the group so that clicking goes there.
+pub fn on_control_room_alert(kind: i32, group: String, more: u32, who: String, text: String) -> bool {
+    use polter_control_room::alert;
+    let Some(kind) = alert::Kind::from_c(kind) else {
+        // process-wide: the control room is the application's, not a window's
+        plogf!("[notify] control_room_alert of a kind this host does not know: {kind}; not shown");
+        return false;
+    };
+    let title = alert::title(kind, &group, crate::i18n::tr);
+    let body = alert::body(&who, &text, more, crate::i18n::tr);
+    let hwnd = WORKER.load(Ordering::Acquire);
+    if hwnd.is_null() {
+        // process-wide: the notification worker belongs to the process
+        plogf!("[notify] no worker window; control room alert for {group:?} dropped");
+        return false;
+    }
+    match QUEUE.lock() {
+        Ok(mut q) => q.push(Pending { frame: 0, title, body, group: Some(group.clone()) }),
+        Err(_) => return false,
+    }
+    let posted = unsafe { PostMessageW(Some(HWND(hwnd)), WM_NOTIFY_SYNC, WPARAM(0), LPARAM(0)) }.is_ok();
+    // process-wide: the control room is one per process
+    plogf!("[notify] control room alert for {group:?} kind={kind:?} more={more} queued posted={posted}");
+    posted
+}
+
 fn show(p: Pending) {
     let hwnd = HWND(WORKER.load(Ordering::Acquire));
     if hwnd.0.is_null() || !ensure_icon(hwnd) {
         return;
     }
     LAST_FRAME.store(p.frame, Ordering::Release);
+    if let Ok(mut g) = LAST_GROUP.lock() {
+        *g = p.group.clone();
+    }
 
     let mut d = base(hwnd);
     d.uFlags = NIF_INFO;
@@ -207,6 +245,14 @@ extern "system" fn worker_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         // The shell packs the event into the low word of `lParam`.
         WM_TRAY_CALLBACK => {
             if (lp.0 as u32 & 0xFFFF) == NIN_BALLOONUSERCLICK {
+                // The control room's own: to the control room, at its group.
+                let group = LAST_GROUP.lock().ok().and_then(|g| g.clone());
+                if let Some(group) = group {
+                    crate::control_room::go_to(&group);
+                    // process-wide: the control room is one per process
+                    plogf!("[notify] control room balloon clicked; going to {group:?}");
+                    return LRESULT(0);
+                }
                 let f = LAST_FRAME.load(Ordering::Acquire);
                 if f != 0 {
                     let frame = HWND(f as *mut std::ffi::c_void);
