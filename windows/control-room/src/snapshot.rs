@@ -623,6 +623,10 @@ pub struct Snapshot {
     /// Whether there is a choice of role to offer: the core's word, not
     /// the length of the list.
     pub choose_supervisor_role: bool,
+    /// The first sweep of old records is waiting for the person, and would
+    /// delete this much (task 1511). None when nothing waits, or from a
+    /// core that does not say.
+    pub retention_waiting_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -909,5 +913,10 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
         ungrouped,
         supervisor_roles,
         choose_supervisor_role,
+        // Absent from a core older than task 1511: nothing waits.
+        retention_waiting_bytes: match v.get("retention_waiting_bytes") {
+            None => None,
+            Some(_) => opt_int(&v, root, "retention_waiting_bytes")?,
+        },
     })
 }

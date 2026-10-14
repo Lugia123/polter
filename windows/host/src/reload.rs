@@ -276,6 +276,8 @@ fn perform(soft: bool, surface: ffi::Surface) {
     // The screenshot hotkey and mouse trigger are read from the config, on
     // this thread, and keep nothing of the handle.
     crate::shot::config_changed();
+    // The log sweep's limits are settings too (task 1511).
+    crate::read_log_limits();
 
     // Last, so the window is asked to redraw once, after the swap.
     crate::general_ui::config_changed();

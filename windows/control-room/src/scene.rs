@@ -39,6 +39,11 @@ pub mod msg {
     pub const HIDDEN_STEPS: &str = n_("{} more steps");
     /// The one button of the list: at the right end of its header.
     pub const NEW_GROUP: &str = n_("New Group");
+    /// The first sweep of old records waits for the person (task 1511).
+    /// `%@` is a size; the macOS host's sentence and its format, so the two
+    /// share a translation.
+    pub const RETENTION_WAITING: &str = n_("The new retention settings will clear %@ of old records");
+    pub const OK: &str = n_("OK");
     /// What the right side says of a group with no supervisor, by what the
     /// core says became of starting one. The macOS host's sentences.
     pub const STARTING: &str = n_("Starting the supervisor…");
@@ -338,6 +343,33 @@ pub struct Naming<'a> {
     pub refusal: Option<&'a str>,
 }
 
+/// The notice's OK: under its two lines, at its left.
+pub fn retention_ok_hit(notice: Rect) -> Rect {
+    Rect {
+        x: notice.x + side::ROW_PADDING_X,
+        y: notice.y + side::ROW_PADDING_Y + 2.0 * side::ASK_LINE_HEIGHT + 4.0,
+        w: crate::layout::NOTICE_BUTTON_W,
+        h: crate::layout::NOTICE_BUTTON_H,
+    }
+}
+
+/// A size the way Explorer writes one. The settings page's own
+/// (`polter_settings_shell::logs::size_text`) is in a crate this one does
+/// not depend on; the two are tested to agree on the same numbers.
+pub fn size_text(bytes: u64) -> String {
+    const K: f64 = 1024.0;
+    let b = bytes as f64;
+    if b < K {
+        format!("{bytes} B")
+    } else if b < K * K {
+        format!("{:.0} KB", b / K)
+    } else if b < K * K * K {
+        format!("{:.1} MB", b / (K * K))
+    } else {
+        format!("{:.2} GB", b / (K * K * K))
+    }
+}
+
 /// Where pressing makes a new group: the right end of the header, where
 /// the words are. 暂定: the right two fifths of the header, since only a
 /// host can measure the words.
@@ -446,6 +478,29 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
     for row in &list.quiet {
         let Some(rect) = at.chip(Some(&row.id)) else { continue };
         quiet_row(&mut out, row, rect, view);
+    }
+
+    // The first sweep of old records waiting for the person: in the room
+    // the layout left under the header (task 1511). Not a row and not an
+    // answer to an agent -- `tools/control-room-rows-only-tell.py` -- but
+    // about Polter's own records, there until the OK.
+    if let (Some(n), Some(bytes)) = (at.notice, list.retention_waiting_bytes) {
+        out.push(Item::Round { rect: n, radius: radius::ROW, color: theme.window_base, edge: None });
+        let text = Rect {
+            x: n.x + side::ROW_PADDING_X,
+            y: n.y + side::ROW_PADDING_Y,
+            w: (n.w - 2.0 * side::ROW_PADDING_X).max(0.0),
+            h: 2.0 * side::ASK_LINE_HEIGHT,
+        };
+        out.push(Item::Block {
+            rect: text,
+            text: tr(msg::RETENTION_WAITING).replace("%@", &size_text(bytes)),
+            style: body(theme.text),
+            lines: 2,
+        });
+        let ok = retention_ok_hit(n);
+        out.push(Item::Round { rect: ok, radius: radius::ROW, color: panel, edge: Some(theme.line_faint) });
+        out.push(Item::Text { rect: ok, text: tr(msg::OK), style: body(theme.text), align: Align::Centre });
     }
 
     // Last, so it lies over the rows: it is there only until the name is
@@ -1229,6 +1284,49 @@ mod tests {
         let at = ListLayout::new(list, 900.0);
         let view = View { theme: look::theme(dark), scale, selection, lit: Lit::Selection, chip: at.chip(selection), lift: 0.0, pulsing, naming: None };
         build(list, &at, &view, &same)
+    }
+
+    /// Task 1511: the first sweep of old records waiting for the person.
+    #[test]
+    fn nothing_waiting_means_no_notice_and_no_room() {
+        let l = list();
+        assert_eq!(l.retention_waiting_bytes, None, "the fixture says null");
+        let at = ListLayout::new(&l, 900.0);
+        assert_eq!(at.notice, None);
+        let items = scene(&l, None, false, 1.0, None);
+        assert!(!items.iter().any(|i| matches!(i, Item::Text { text, .. } if text == msg::OK)));
+    }
+
+    #[test]
+    fn a_waiting_sweep_takes_room_under_the_header_and_says_how_much() {
+        let plain = list();
+        let mut l = list();
+        l.retention_waiting_bytes = Some(419 * 1024 * 1024);
+        let (before, at) = (ListLayout::new(&plain, 900.0), ListLayout::new(&l, 900.0));
+        let n = at.notice.expect("room for the notice");
+        assert_eq!(n.y, at.header.y + at.header.h);
+        assert_eq!(n.h, crate::layout::notice_height());
+        // Every row moves down by the notice and one gap, and no further.
+        let first = plain.waiting[0].id.clone();
+        assert_eq!(at.chip(Some(&first)).unwrap().y, before.chip(Some(&first)).unwrap().y + n.h + side::ROW_GAP);
+        let items = scene(&l, None, false, 1.0, None);
+        let said = items.iter().find_map(|i| match i {
+            Item::Block { text, .. } if text.contains("419.0 MB") => Some(text.clone()),
+            _ => None,
+        });
+        assert_eq!(said.as_deref(), Some("The new retention settings will clear 419.0 MB of old records"));
+        let ok = retention_ok_hit(n);
+        assert!(items.iter().any(|i| matches!(i, Item::Text { text, rect, .. } if text == msg::OK && *rect == ok)));
+        assert!(ok.y + ok.h <= n.y + n.h, "the OK is inside the notice");
+    }
+
+    /// The same numbers as `polter_settings_shell::logs::size_text`'s test.
+    #[test]
+    fn sizes_read_the_way_the_settings_page_writes_them() {
+        assert_eq!(size_text(512), "512 B");
+        assert_eq!(size_text(2048), "2 KB");
+        assert_eq!(size_text(5 * 1024 * 1024 + 200 * 1024), "5.2 MB");
+        assert_eq!(size_text(3 * 1024 * 1024 * 1024), "3.00 GB");
     }
 
     fn styles(items: &[Item]) -> Vec<Style> {

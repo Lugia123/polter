@@ -1787,6 +1787,16 @@ pub struct Api {
     pub app_config_set: unsafe extern "C" fn(App, *const u8, usize, *const u8, usize, *mut u8, usize) -> usize,
     /// `ghostty_app_config_set_result(app, buf, cap)`: the last `set`'s JSON.
     pub app_config_set_result: unsafe extern "C" fn(App, *mut u8, usize) -> usize,
+
+    // -- Log Management (task 1511, `src/poltergeist/Storage.zig`).
+    /// `ghostty_app_storage_usage(app, buf, cap)`: the page's JSON
+    /// (`Storage.writeUsage`); 0 when there is no state directory yet. Each
+    /// call reads the disk again.
+    pub app_storage_usage: unsafe extern "C" fn(App, *mut u8, usize) -> usize,
+    /// `ghostty_app_storage_clear(app, key, len, buf, cap)`: clear one kind.
+    /// **Done once per call**, whatever the buffer: hand it a few hundred
+    /// bytes and do not call it again for its size.
+    pub app_storage_clear: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> usize,
     /// `ghostty_app_config_form_search(app, entries, len, query, len, buf,
     /// cap)`: the settings search (screenshot.md §12.3). Pure.
     pub app_config_form_search:

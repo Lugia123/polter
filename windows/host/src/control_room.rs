@@ -1261,6 +1261,25 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         begin_naming(hwnd);
         return;
     }
+    // The OK of the notice that the first sweep of old records waits for
+    // the person (task 1511): in the room the layout left under the header.
+    let pressed_ok = source::with(|data| match data {
+        Data::Ready(r) => list_layout(hwnd, &r.list, g.room.panel.h)
+            .notice
+            .is_some_and(|n| inside(scene::retention_ok_hit(n), px - g.room.panel.x, py - g.room.panel.y)),
+        Data::NotYet => false,
+        Data::Unreadable(_) => false,
+    });
+    if pressed_ok {
+        let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+        if let Some(request) = act::encode(&act::Act::RetentionAgree) {
+            match source::act(&request) {
+                Ok(()) => wlogf!(frame, "[control-room] first sweep agreed to"),
+                Err(why) => wlogf!(frame, "[control-room] agreeing to the first sweep refused: {}", why),
+            }
+        }
+        return;
+    }
     if row.is_some() {
         select(hwnd, row);
         return;

@@ -558,6 +558,13 @@ fn task_dialog_indirect() -> Option<TaskDialogIndirectFn> {
 /// index pressed, `None` when the dialog could not be shown or went away.
 /// Owned by `owner`; the keyboard goes back to whoever had it (#896 W35).
 pub(crate) fn ask(owner: HWND, tag: &str, main: &str, body: &str, buttons: &[String]) -> Option<usize> {
+    ask_with_default(owner, tag, main, body, buttons, 0)
+}
+
+/// `ask`, with the button Return presses named: Log Management's "Clear…"
+/// makes the last one -- the one that does nothing -- the default, because
+/// what the first one does cannot be undone (task 1511).
+pub(crate) fn ask_with_default(owner: HWND, tag: &str, main: &str, body: &str, buttons: &[String], default: usize) -> Option<usize> {
     let before = unsafe { GetFocus() };
     let (m, b, title) = (wide(main), wide(body), wide(&tr("Polter")));
     let labels: Vec<Vec<u16>> = buttons.iter().map(|l| wide(l)).collect();
@@ -579,7 +586,7 @@ pub(crate) fn ask(owner: HWND, tag: &str, main: &str, body: &str, buttons: &[Str
             pszContent: PCWSTR(b.as_ptr()),
             cButtons: specs.len() as u32,
             pButtons: specs.as_ptr(),
-            nDefaultButton: 100,
+            nDefaultButton: 100 + default.min(buttons.len().saturating_sub(1)) as i32,
             ..Default::default()
         };
         let mut id = 0i32;
@@ -596,7 +603,8 @@ pub(crate) fn ask(owner: HWND, tag: &str, main: &str, body: &str, buttons: &[Str
     if !shown {
         // Two answers at most in a message box: the first, or nothing.
         let text = wide(&format!("{main}\n\n{body}"));
-        let r = unsafe { MessageBoxW(Some(owner), PCWSTR(text.as_ptr()), PCWSTR(title.as_ptr()), MB_OKCANCEL | MB_ICONWARNING) };
+        let second = if default > 0 { MB_DEFBUTTON2 } else { MESSAGEBOX_STYLE(0) };
+        let r = unsafe { MessageBoxW(Some(owner), PCWSTR(text.as_ptr()), PCWSTR(title.as_ptr()), MB_OKCANCEL | MB_ICONWARNING | second) };
         pressed = Some(if r == IDOK { 0 } else { buttons.len() - 1 });
     }
     crate::plogf!("{tag} answered {:?}", pressed.and_then(|i| buttons.get(i)));

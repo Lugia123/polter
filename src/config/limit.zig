@@ -49,6 +49,13 @@ pub fn Limit(comptime T: type, comptime default_value: T) type {
             return self.value;
         }
 
+        /// What `ghostty_config_get` hands a host: the integer, with
+        /// `unlimited` as the type's maximum, the same as it is stored. The
+        /// Windows host reads its own log limits this way (task 1511).
+        pub fn cval(self: Self) T {
+            return self.value;
+        }
+
         /// Returns an independent copy of this value for Config cloning.
         pub fn clone(
             self: Self,
@@ -112,4 +119,11 @@ test "Limit formatting" {
             buf.written(),
         );
     }
+}
+
+test "Limit cval is the integer, unlimited as the maximum" {
+    const testing = std.testing;
+    const TestLimit = Limit(u32, 14);
+    try testing.expectEqual(@as(u32, 14), TestLimit.default.cval());
+    try testing.expectEqual(std.math.maxInt(u32), (try TestLimit.parseCLI("unlimited")).cval());
 }

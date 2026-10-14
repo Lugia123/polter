@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-15 03:09+0800\n"
+"POT-Creation-Date: 2026-10-15 03:30+0800\n"
 "PO-Revision-Date: 2026-09-13 10:50+0800\n"
 "Last-Translator: Lukas <134181853+bo2themax@users.noreply.github.com>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -27,7 +27,7 @@ msgstr "在 Ghostty 中打开"
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:12
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:197
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
-#: windows/host/src/main.rs:2576 windows/host/src/main.rs:2582
+#: windows/host/src/main.rs:2577 windows/host/src/main.rs:2583
 msgid "Authorize Clipboard Access"
 msgstr "剪贴板访问授权"
 
@@ -53,11 +53,11 @@ msgstr "本提示将在重载配置后再次出现"
 
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
-#: src/apprt/gtk/class/application.zig:2225
+#: src/apprt/gtk/class/application.zig:2225 windows/host/src/logs_ui.rs:575
 #: windows/host/src/project_picker.rs:258
 #: windows/host/src/project_picker.rs:427 windows/host/src/project_ui.rs:413
-#: windows/host/src/project_ui.rs:453 windows/host/src/projects_ui.rs:626
-#: windows/host/src/projects_ui.rs:653 windows/host/src/projects_ui.rs:658
+#: windows/host/src/project_ui.rs:453 windows/host/src/projects_ui.rs:634
+#: windows/host/src/projects_ui.rs:661 windows/host/src/projects_ui.rs:666
 #: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:3208
 msgid "Cancel"
 msgstr "取消"
@@ -70,7 +70,7 @@ msgid "Close"
 msgstr "关闭"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:6
-#: windows/host/src/general_ui.rs:1856
+#: windows/host/src/general_ui.rs:1884
 msgid "Configuration Errors"
 msgstr "配置错误"
 
@@ -87,7 +87,7 @@ msgstr "忽略"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:434 src/apprt/gtk/ui/1.5/window.blp:318
-#: windows/host/src/general_ui.rs:576 windows/host/src/general_ui.rs:842
+#: windows/host/src/general_ui.rs:586 windows/host/src/general_ui.rs:860
 #: windows/host/src/menu.rs:524
 msgid "Reload Configuration"
 msgstr "重新加载配置"
@@ -251,7 +251,8 @@ msgstr "在新窗口内打开配置"
 msgid "Leave blank to restore the default title."
 msgstr "留空以重置至默认标题。"
 
-#: src/apprt/gtk/ui/1.5/title-dialog.blp:9
+#: src/apprt/gtk/ui/1.5/title-dialog.blp:9 windows/host/src/logs_ui.rs:196
+#: windows/control-room/src/scene.rs:46
 msgid "OK"
 msgstr "确认"
 
@@ -314,26 +315,26 @@ msgid "Editing configuration file"
 msgstr "正在编辑配置文件"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
-#: windows/host/src/main.rs:2584
+#: windows/host/src/main.rs:2585
 msgid ""
 "An application is attempting to write to the clipboard. The current "
 "clipboard contents are shown below."
 msgstr "一个应用正在试图向剪贴板写入内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:202
-#: windows/host/src/main.rs:2578
+#: windows/host/src/main.rs:2579
 msgid ""
 "An application is attempting to read from the clipboard. The current "
 "clipboard contents are shown below."
 msgstr "一个应用正在试图从剪贴板读取内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2588
+#: windows/host/src/main.rs:2589
 msgid "Warning: Potentially Unsafe Paste"
 msgstr "警告：粘贴内容可能不安全"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2590
+#: windows/host/src/main.rs:2591
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -1165,7 +1166,7 @@ msgid "Toggle the background opacity of a window that started transparent."
 msgstr "切换最初透明的窗口的背景透明度。"
 
 #: src/input/command.zig:745 src/input/screenshot.zig:107
-#: windows/settings-shell/src/general.rs:78
+#: windows/settings-shell/src/general.rs:84
 msgid "Screenshot"
 msgstr "截图"
 
@@ -1183,7 +1184,7 @@ msgstr "检查更新"
 msgid "Check for updates to the application."
 msgstr "检查应用是否有版本更新。"
 
-#: src/input/command.zig:757 windows/host/src/projects_ui.rs:1386
+#: src/input/command.zig:757 windows/host/src/projects_ui.rs:1394
 msgid "Undo"
 msgstr "撤销"
 
@@ -1808,7 +1809,7 @@ msgstr "标签页在标题栏"
 msgid "Hidden"
 msgstr "隐藏"
 
-#: src/config/form.zig:154 windows/settings-shell/src/general.rs:74
+#: src/config/form.zig:154 windows/settings-shell/src/general.rs:79
 msgid "Font"
 msgstr "字体"
 
@@ -2118,75 +2119,75 @@ msgstr "记录每个终端里实际运行了什么。"
 
 #: src/config/form.zig:189
 msgid "Group Transcripts, Total MB"
-msgstr ""
+msgstr "群里的终端记录，总量 MB"
 
 #: src/config/form.zig:189
 msgid "Transcripts written while in a group, kept by size only."
-msgstr ""
+msgstr "在群里时写下的终端记录，只按总量保留。"
 
 #: src/config/form.zig:190
 msgid "Project Transcripts, Days"
-msgstr ""
+msgstr "项目里的终端记录，天数"
 
 #: src/config/form.zig:190
 msgid "Days kept of transcripts from a project's tabs."
-msgstr ""
+msgstr "项目标签页里的终端记录保留几天。"
 
 #: src/config/form.zig:191
 msgid "Project Transcripts, Total MB"
-msgstr ""
+msgstr "项目里的终端记录，总量 MB"
 
 #: src/config/form.zig:191
 msgid "Megabytes kept of transcripts from a project's tabs."
-msgstr ""
+msgstr "项目标签页里的终端记录最多保留多少 MB。"
 
 #: src/config/form.zig:192
 msgid "Other Transcripts, Days"
-msgstr ""
+msgstr "其它终端记录，天数"
 
 #: src/config/form.zig:192
 msgid "Days kept of transcripts in no group or project."
-msgstr ""
+msgstr "不在群也不在项目里的终端记录保留几天。"
 
 #: src/config/form.zig:193
 msgid "Other Transcripts, Total MB"
-msgstr ""
+msgstr "其它终端记录，总量 MB"
 
 #: src/config/form.zig:193
 msgid "Megabytes kept of transcripts in no group or project."
-msgstr ""
+msgstr "不在群也不在项目里的终端记录最多保留多少 MB。"
 
 #: src/config/form.zig:194
 msgid "Logs, Days"
-msgstr ""
+msgstr "日志，天数"
 
 #: src/config/form.zig:194
 msgid "Days kept of Polter's own logs and crash reports."
-msgstr ""
+msgstr "Polter 自己的日志和崩溃报告保留几天。"
 
 #: src/config/form.zig:195
 msgid "Logs, Total MB"
-msgstr ""
+msgstr "日志，总量 MB"
 
 #: src/config/form.zig:195
 msgid "Megabytes kept of Polter's own logs."
-msgstr ""
+msgstr "Polter 自己的日志最多保留多少 MB。"
 
 #: src/config/form.zig:196
 msgid "Screenshots, Days"
-msgstr ""
+msgstr "截图，天数"
 
 #: src/config/form.zig:196
 msgid "Days kept of Polter's screenshots."
-msgstr ""
+msgstr "Polter 的截图保留几天。"
 
 #: src/config/form.zig:197
 msgid "Screenshots, Total MB"
-msgstr ""
+msgstr "截图，总量 MB"
 
 #: src/config/form.zig:197
 msgid "Megabytes kept of Polter's screenshots."
-msgstr ""
+msgstr "Polter 的截图最多保留多少 MB。"
 
 #: src/config/form.zig:198 windows/host/src/language.rs:291
 msgid "Language"
@@ -2260,101 +2261,103 @@ msgstr "允许总管替此终端点授权框（含「不再询问」）"
 msgid "Let Workers Name Each Other Directly"
 msgstr "允许 worker 之间直接点名"
 
-#: windows/host/src/general_ui.rs:264
+#: windows/host/src/general_ui.rs:267
 msgid "Not set"
 msgstr "未设置"
 
-#: windows/host/src/general_ui.rs:575 windows/host/src/general_ui.rs:842
-#: windows/host/src/general_ui.rs:844
+#: windows/host/src/general_ui.rs:585 windows/host/src/general_ui.rs:860
+#: windows/host/src/general_ui.rs:863
 msgid "Open config file…"
 msgstr "打开配置文件…"
 
-#: windows/host/src/general_ui.rs:577 windows/host/src/general_ui.rs:841
+#: windows/host/src/general_ui.rs:587 windows/host/src/general_ui.rs:859
 msgid "Edit in Config File…"
 msgstr "在配置文件中编辑…"
 
-#: windows/host/src/general_ui.rs:585
+#: windows/host/src/general_ui.rs:588 windows/host/src/general_ui.rs:862
+#: windows/host/src/general_ui.rs:1233 windows/host/src/general_ui.rs:1401
+#: windows/host/src/projects_ui.rs:1396
+msgid "Show in Explorer"
+msgstr "在资源管理器中显示"
+
+#: windows/host/src/general_ui.rs:596
 msgid "Filter by key"
 msgstr "按键名筛选"
 
-#: windows/host/src/general_ui.rs:871
+#: windows/host/src/general_ui.rs:890
 msgid "Less"
 msgstr "收起"
 
-#: windows/host/src/general_ui.rs:871
+#: windows/host/src/general_ui.rs:890
 msgid "More…"
 msgstr "更多…"
 
-#: windows/host/src/general_ui.rs:891
+#: windows/host/src/general_ui.rs:910
 #, rust-format
 msgid "Set by {}:{}. Edit it there."
 msgstr "由 {}:{} 设置，请在那里修改。"
 
-#: windows/host/src/general_ui.rs:893
+#: windows/host/src/general_ui.rs:912
 msgid "Set on the command line, which has the last word."
 msgstr "在命令行里设置，以命令行为准。"
 
-#: windows/host/src/general_ui.rs:894
+#: windows/host/src/general_ui.rs:913
 msgid "Edit this one in the config file."
 msgstr "这一项请在配置文件中编辑。"
 
-#: windows/host/src/general_ui.rs:1213 windows/host/src/general_ui.rs:1379
-#: windows/control-room/src/scene.rs:54
+#: windows/host/src/general_ui.rs:1232 windows/host/src/general_ui.rs:1401
+#: windows/control-room/src/scene.rs:59
 msgid "Choose…"
 msgstr "选择…"
 
-#: windows/host/src/general_ui.rs:1214 windows/host/src/general_ui.rs:1379
-#: windows/host/src/projects_ui.rs:1388
-msgid "Show in Explorer"
-msgstr "在资源管理器中显示"
-
-#: windows/host/src/general_ui.rs:1306
+#: windows/host/src/general_ui.rs:1325
 msgid "Light"
 msgstr "浅色"
 
-#: windows/host/src/general_ui.rs:1306
+#: windows/host/src/general_ui.rs:1325
 msgid "Dark"
 msgstr "深色"
 
-#: windows/host/src/general_ui.rs:1480
+#: windows/host/src/general_ui.rs:1502
 msgid "The screenshot folder could not be worked out."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1488 windows/host/src/projects_ui.rs:1002
+#: windows/host/src/general_ui.rs:1510 windows/host/src/logs_ui.rs:624
+#: windows/host/src/projects_ui.rs:1010
 msgid "Explorer could not be started."
 msgstr "资源管理器打不开。"
 
-#: windows/host/src/general_ui.rs:1586
+#: windows/host/src/general_ui.rs:1608 windows/host/src/logs_ui.rs:557
 msgid "Saved to the config file."
 msgstr "已写入配置文件。"
 
-#: windows/host/src/general_ui.rs:1595
+#: windows/host/src/general_ui.rs:1617
 msgid "That value is not valid for this key."
 msgstr "这个值对该项无效。"
 
-#: windows/host/src/general_ui.rs:1596
+#: windows/host/src/general_ui.rs:1618
 msgid "This key is set somewhere the form does not write."
 msgstr "这一项在表单不写入的地方设置。"
 
-#: windows/host/src/general_ui.rs:1597
+#: windows/host/src/general_ui.rs:1619
 msgid "The config file kept changing while it was being written. Try again."
 msgstr "写入时配置文件一直在变，请再试一次。"
 
-#: windows/host/src/general_ui.rs:1598
+#: windows/host/src/general_ui.rs:1620
 #, rust-format
 msgid "Could not write the config file: {}"
 msgstr "无法写入配置文件：{}"
 
-#: windows/host/src/general_ui.rs:1686
+#: windows/host/src/general_ui.rs:1714
 msgid "Restore Default"
 msgstr "恢复默认"
 
-#: windows/host/src/general_ui.rs:1833
+#: windows/host/src/general_ui.rs:1861
 #, rust-format
 msgid "The settings could not be read: {}"
 msgstr "无法读取设置：{}"
 
-#: windows/host/src/general_ui.rs:1850
+#: windows/host/src/general_ui.rs:1878
 #, rust-format
 msgid ""
 "The form writes to:\n"
@@ -2363,16 +2366,16 @@ msgstr ""
 "表单写入的文件：\n"
 "{}"
 
-#: windows/host/src/general_ui.rs:1859
+#: windows/host/src/general_ui.rs:1887
 msgid "The configuration loaded without errors."
 msgstr "配置加载时没有错误。"
 
-#: windows/host/src/general_ui.rs:1861
+#: windows/host/src/general_ui.rs:1889
 #, rust-format
 msgid "{} error(s). The lines they name were ignored; fix them and reload."
 msgstr "{} 个错误。它们指出的那些行已被忽略；改好后重新加载。"
 
-#: windows/host/src/general_ui.rs:1876
+#: windows/host/src/general_ui.rs:1904
 #, rust-format
 msgid ""
 "Before this run's first write the config file was copied to:\n"
@@ -2381,7 +2384,7 @@ msgstr ""
 "本次运行第一次写入前，配置文件已备份到：\n"
 "{}"
 
-#: windows/host/src/general_ui.rs:1892
+#: windows/host/src/general_ui.rs:1920
 msgid ""
 "A terminal that minds the agents running in it. \n"
 "Built on Ghostty."
@@ -2389,27 +2392,27 @@ msgstr ""
 "一个会照看在里面干活的 agent 的终端。\n"
 "基于 Ghostty 构建。"
 
-#: windows/host/src/general_ui.rs:1901
+#: windows/host/src/general_ui.rs:1929
 msgid "Version"
 msgstr "版本"
 
-#: windows/host/src/general_ui.rs:1902
+#: windows/host/src/general_ui.rs:1930
 msgid "Build"
 msgstr "构建"
 
-#: windows/host/src/general_ui.rs:1903
+#: windows/host/src/general_ui.rs:1931
 msgid "Commit"
 msgstr "提交"
 
-#: windows/host/src/general_ui.rs:1910
+#: windows/host/src/general_ui.rs:1938
 msgid "MIT licensed. A fork of Ghostty."
 msgstr "MIT 许可。Ghostty 的一个分支。"
 
-#: windows/host/src/general_ui.rs:2136
+#: windows/host/src/general_ui.rs:2164
 msgid "The shortcuts could not be read from the configuration."
 msgstr "无法从配置中读取快捷键。"
 
-#: windows/host/src/general_ui.rs:2138
+#: windows/host/src/general_ui.rs:2166
 #, rust-format
 msgid ""
 "This page lists actions; {} in all. Some actions have no shortcut assigned."
@@ -2451,20 +2454,105 @@ msgstr ""
 "启动 Polter 的环境里已设 LANG={}，Polter 会优先用它，而不是这里的选择。要让这"
 "个选择生效，请先清掉 LANG，再重新启动 Polter。"
 
-#: windows/host/src/main.rs:2604
+#: windows/host/src/logs_ui.rs:192
+msgid "Compact…"
+msgstr "压实…"
+
+#: windows/host/src/logs_ui.rs:192
+msgid "Clear…"
+msgstr "清理…"
+
+#: windows/host/src/logs_ui.rs:305 windows/host/src/logs_ui.rs:545
+msgid "No limit"
+msgstr "不限"
+
+#: windows/host/src/logs_ui.rs:424
+msgid ""
+"This is the first clearing since the upgrade, and nothing is deleted until "
+"you choose OK. You can change the settings below first; a change counts as "
+"agreeing."
+msgstr ""
+"升级后的第一次清理，点「好」之后才会删除。也可以先在下面调整保留设置，改过即"
+"按新设置清理。"
+
+#: windows/host/src/logs_ui.rs:443
+msgid "Polter has no records to show yet."
+msgstr "还没有可以显示的记录。"
+
+#: windows/host/src/logs_ui.rs:454 windows/control-room/src/scene.rs:45
+msgid "The new retention settings will clear %@ of old records"
+msgstr "按新的保留设置，将清理 %@ 的旧记录"
+
+#: windows/host/src/logs_ui.rs:461
+msgid ""
+"%1$@ in all, in %2$@. Past the limits, cleared when Polter starts and every "
+"hour after."
+msgstr "共 %1$@，在 %2$@。超过上限的，启动时和之后每小时自动清理。"
+
+#: windows/host/src/logs_ui.rs:464
+msgid "Kept Going Round"
+msgstr "循环保存"
+
+#: windows/host/src/logs_ui.rs:464
+msgid "Past the days or the total, the oldest go first"
+msgstr "超过天数或总量，从最旧的删起"
+
+#: windows/host/src/logs_ui.rs:465
+msgid "Kept for Good"
+msgstr "永久保存"
+
+#: windows/host/src/logs_ui.rs:465
+msgid "Deleted only when you choose Clear"
+msgstr "只在你点「清理」时删除"
+
+#: windows/host/src/logs_ui.rs:474
+msgid "Fixed at %lld days"
+msgstr "固定 %lld 天"
+
+#: windows/host/src/logs_ui.rs:475
+msgid "Kept for good"
+msgstr "永久保存"
+
+#: windows/host/src/logs_ui.rs:483
+msgid "Not by days"
+msgstr "不按天数"
+
+#: windows/host/src/logs_ui.rs:485
+msgid "days"
+msgstr "天"
+
+#: windows/host/src/logs_ui.rs:549
+msgid "Write a whole number, or leave it empty for no limit."
+msgstr "请填整数；留空表示不限。"
+
+#: windows/host/src/logs_ui.rs:594
+msgid "Cleared %@."
+msgstr "已清理 %@。"
+
+#: windows/host/src/logs_ui.rs:596
+msgid ""
+"A project file could not be read, so no shell history was cleared: it might "
+"have named some of it."
+msgstr "有项目文件读不了，所以一条 Shell 历史都没清：它可能用着其中一些。"
+
+#: windows/host/src/logs_ui.rs:598
+msgid "Nothing was cleared: Polter's core refused."
+msgstr "什么都没清：Polter 的核心拒绝了。"
+
+#: windows/host/src/main.rs:2605
 #, rust-format
 msgid "{} lines in all."
 msgstr "共 {} 行。"
 
-#: windows/host/src/main.rs:6631
+#: windows/host/src/main.rs:6685
 msgid "No reason was recorded."
 msgstr "没有记录到原因。"
 
-#: windows/host/src/main.rs:6637
+#: windows/host/src/main.rs:6691
 msgid "Polter could not open its first terminal and will close."
 msgstr "Polter 无法打开第一个终端，即将关闭。"
 
-#: windows/host/src/main.rs:6639
+#: windows/host/src/main.rs:6693
 #, rust-format
 msgid "The full log is at {}"
 msgstr "完整日志在 {}"
@@ -2473,7 +2561,7 @@ msgstr "完整日志在 {}"
 msgid "Reopen Closed Tab"
 msgstr "重开关闭的标签"
 
-#: windows/host/src/menu.rs:302 windows/host/src/projects_ui.rs:624
+#: windows/host/src/menu.rs:302 windows/host/src/projects_ui.rs:632
 #: windows/host/src/strip.rs:1619
 msgid "Save as Project…"
 msgstr "另存为项目…"
@@ -2703,7 +2791,7 @@ msgid "No Role"
 msgstr "不设角色"
 
 #: windows/host/src/personas.rs:602 windows/host/src/personas.rs:1017
-#: windows/control-room/src/scene.rs:52
+#: windows/control-room/src/scene.rs:57
 msgid "Role"
 msgstr "角色"
 
@@ -2904,13 +2992,13 @@ msgstr "只存这一页"
 msgid "Saves this tab: {} pane(s)"
 msgstr "将存下当前标签页的 {} 个面板"
 
-#: windows/host/src/project_picker.rs:633 windows/host/src/projects_ui.rs:691
+#: windows/host/src/project_picker.rs:633 windows/host/src/projects_ui.rs:699
 msgid "The project could not be opened."
 msgstr "这个项目打不开"
 
 #: windows/host/src/project_picker.rs:704
-#: windows/host/src/project_picker.rs:710 windows/host/src/projects_ui.rs:943
-#: windows/host/src/projects_ui.rs:956
+#: windows/host/src/project_picker.rs:710 windows/host/src/projects_ui.rs:951
+#: windows/host/src/projects_ui.rs:964
 msgid "The project could not be saved."
 msgstr "项目存不了："
 
@@ -2923,16 +3011,16 @@ msgstr "搜索"
 msgid "New Project Name"
 msgstr "新项目的名字"
 
-#: windows/host/src/project_picker.rs:1104 windows/host/src/projects_ui.rs:1214
+#: windows/host/src/project_picker.rs:1104 windows/host/src/projects_ui.rs:1222
 msgid "No Saved Projects"
 msgstr "还没有保存过项目"
 
-#: windows/host/src/project_picker.rs:1104 windows/host/src/projects_ui.rs:1216
+#: windows/host/src/project_picker.rs:1104 windows/host/src/projects_ui.rs:1224
 msgid "No matching projects"
 msgstr "没有匹配的项目"
 
-#: windows/host/src/project_ui.rs:369 windows/host/src/projects_ui.rs:562
-#: windows/host/src/roles_ui.rs:982 windows/settings-shell/src/general.rs:77
+#: windows/host/src/project_ui.rs:369 windows/host/src/projects_ui.rs:569
+#: windows/host/src/roles_ui.rs:982 windows/settings-shell/src/general.rs:82
 #: windows/settings-shell/src/official.rs:162
 #: windows/control-room/src/rules.rs:183
 msgid "Polter"
@@ -2948,230 +3036,230 @@ msgid ""
 "project the process will be killed."
 msgstr "这个项目里还有终端在跑进程。关闭项目会把它结束掉。"
 
-#: windows/host/src/projects_ui.rs:625
+#: windows/host/src/projects_ui.rs:633
 msgid "Close Without Saving"
 msgstr "不保存，直接关闭"
 
-#: windows/host/src/projects_ui.rs:632
+#: windows/host/src/projects_ui.rs:640
 msgid "Save as a Project Before Closing?"
 msgstr "关闭前存成项目吗？"
 
-#: windows/host/src/projects_ui.rs:633
+#: windows/host/src/projects_ui.rs:641
 msgid ""
 "The terminal still has a running process. Closing it without saving as a "
 "project will kill it."
 msgstr "终端里还有正在运行的进程。不存成项目就关闭，进程会被结束。"
 
-#: windows/host/src/projects_ui.rs:649
+#: windows/host/src/projects_ui.rs:657
 #, rust-format
 msgid ""
 "\"{}\" already has {} pane(s), saved {}. The replaced version is kept as the "
 "previous version."
 msgstr "“{}”已经有 {} 个面板，保存于 {}。被替换的版本会留作上一版。"
 
-#: windows/host/src/projects_ui.rs:653
+#: windows/host/src/projects_ui.rs:661
 msgid "Overwrite Project?"
 msgstr "覆盖这个项目？"
 
-#: windows/host/src/projects_ui.rs:653 windows/host/src/projects_ui.rs:933
+#: windows/host/src/projects_ui.rs:661 windows/host/src/projects_ui.rs:941
 msgid "Overwrite"
 msgstr "覆盖"
 
-#: windows/host/src/projects_ui.rs:680 windows/host/src/projects_ui.rs:926
-#: windows/host/src/projects_ui.rs:965
+#: windows/host/src/projects_ui.rs:688 windows/host/src/projects_ui.rs:934
+#: windows/host/src/projects_ui.rs:973
 msgid "There is no terminal window to open the project in."
 msgstr "没有打开的终端窗口可以用。"
 
-#: windows/host/src/projects_ui.rs:688
+#: windows/host/src/projects_ui.rs:696
 #, rust-format
 msgid "Opened “{}”."
 msgstr "已打开「{}」。"
 
-#: windows/host/src/projects_ui.rs:707 windows/host/src/projects_ui.rs:731
-#: windows/host/src/projects_ui.rs:750
+#: windows/host/src/projects_ui.rs:715 windows/host/src/projects_ui.rs:739
+#: windows/host/src/projects_ui.rs:758
 msgid "The project could not be renamed."
 msgstr "项目改不了名："
 
-#: windows/host/src/projects_ui.rs:714
+#: windows/host/src/projects_ui.rs:722
 msgid "A project needs a name."
 msgstr "项目要有名字。"
 
-#: windows/host/src/projects_ui.rs:716
+#: windows/host/src/projects_ui.rs:724
 #, rust-format
 msgid "There is already a project called “{}”."
 msgstr "已经有一个叫「{}」的项目。"
 
-#: windows/host/src/projects_ui.rs:727
+#: windows/host/src/projects_ui.rs:735
 msgid "Its group is being renamed; the project follows."
 msgstr "正在给它的群改名，项目随后跟着改。"
 
-#: windows/host/src/projects_ui.rs:746
+#: windows/host/src/projects_ui.rs:754
 #, rust-format
 msgid "Renamed to “{}”."
 msgstr "已改名为「{}」。"
 
-#: windows/host/src/projects_ui.rs:824
+#: windows/host/src/projects_ui.rs:832
 #, rust-format
 msgid "{} copy"
 msgstr "{} 副本"
 
-#: windows/host/src/projects_ui.rs:834
+#: windows/host/src/projects_ui.rs:842
 #, rust-format
 msgid "Copied as “{}”."
 msgstr "已复制为「{}」。"
 
-#: windows/host/src/projects_ui.rs:836
+#: windows/host/src/projects_ui.rs:844
 msgid "The project could not be copied."
 msgstr "项目复制不了："
 
-#: windows/host/src/projects_ui.rs:843
+#: windows/host/src/projects_ui.rs:851
 #, rust-format
 msgid "Delete “{}”?"
 msgstr "删除「{}」？"
 
-#: windows/host/src/projects_ui.rs:844
+#: windows/host/src/projects_ui.rs:852
 msgid "You can undo this until the settings window closes."
 msgstr "关掉设置窗口之前都可以撤销。"
 
-#: windows/host/src/projects_ui.rs:845 windows/host/src/roles_ui.rs:3613
+#: windows/host/src/projects_ui.rs:853 windows/host/src/roles_ui.rs:3613
 msgid "Delete"
 msgstr "删除"
 
-#: windows/host/src/projects_ui.rs:873
+#: windows/host/src/projects_ui.rs:881
 msgid "The project could not be deleted."
 msgstr "项目删不掉："
 
-#: windows/host/src/projects_ui.rs:885
+#: windows/host/src/projects_ui.rs:893
 #, rust-format
 msgid "“{}” is back."
 msgstr "「{}」已恢复。"
 
-#: windows/host/src/projects_ui.rs:894
+#: windows/host/src/projects_ui.rs:902
 msgid "The project could not be put back."
 msgstr "项目放不回去："
 
-#: windows/host/src/projects_ui.rs:902
+#: windows/host/src/projects_ui.rs:910
 #, rust-format
 msgid "Restore the previous version of “{}”?"
 msgstr "把「{}」恢复到上一版？"
 
-#: windows/host/src/projects_ui.rs:903
+#: windows/host/src/projects_ui.rs:911
 msgid "The current version becomes the previous one, so you can switch back."
 msgstr "当前版本会变成上一版，随时可以换回来。"
 
-#: windows/host/src/projects_ui.rs:904 windows/host/src/projects_ui.rs:1385
+#: windows/host/src/projects_ui.rs:912 windows/host/src/projects_ui.rs:1393
 #: windows/host/src/roles_ui.rs:3480
 msgid "Restore"
 msgstr "恢复"
 
-#: windows/host/src/projects_ui.rs:917
+#: windows/host/src/projects_ui.rs:925
 msgid "Restored the previous version."
 msgstr "已恢复上一版。"
 
-#: windows/host/src/projects_ui.rs:919
+#: windows/host/src/projects_ui.rs:927
 msgid "The previous version could not be restored."
 msgstr "上一版恢复不了："
 
-#: windows/host/src/projects_ui.rs:930
+#: windows/host/src/projects_ui.rs:938
 #, rust-format
 msgid "Overwrite “{}” with the current tab?"
 msgstr "用当前标签页覆盖「{}」？"
 
-#: windows/host/src/projects_ui.rs:931
+#: windows/host/src/projects_ui.rs:939
 #, rust-format
 msgid ""
 "“{}” replaces what the project holds. The version it replaces is kept and "
 "can be restored."
 msgstr "「{}」会替换项目里现有的内容。被替换的版本会保留，可以恢复。"
 
-#: windows/host/src/projects_ui.rs:954
+#: windows/host/src/projects_ui.rs:962
 #, rust-format
 msgid "Saved the current tab as “{}”."
 msgstr "已把当前标签页存为「{}」。"
 
-#: windows/host/src/projects_ui.rs:1136
+#: windows/host/src/projects_ui.rs:1144
 msgid "1 pane"
 msgstr "1 个面板"
 
-#: windows/host/src/projects_ui.rs:1138
+#: windows/host/src/projects_ui.rs:1146
 #, rust-format
 msgid "{} panes"
 msgstr "{} 个面板"
 
-#: windows/host/src/projects_ui.rs:1187
+#: windows/host/src/projects_ui.rs:1195
 #, rust-format
 msgid "Deleted “{}”"
 msgstr "已删除「{}」"
 
-#: windows/host/src/projects_ui.rs:1223
+#: windows/host/src/projects_ui.rs:1231
 msgid "Select a project, or save the current tab as one with +."
 msgstr "选一个项目，或者用 + 把当前标签页存成项目。"
 
-#: windows/host/src/projects_ui.rs:1270
+#: windows/host/src/projects_ui.rs:1278
 msgid "Last saved"
 msgstr "上次保存"
 
-#: windows/host/src/projects_ui.rs:1271
+#: windows/host/src/projects_ui.rs:1279
 msgid "Panes"
 msgstr "面板"
 
-#: windows/host/src/projects_ui.rs:1272
+#: windows/host/src/projects_ui.rs:1280
 msgid "Directories"
 msgstr "目录"
 
-#: windows/host/src/projects_ui.rs:1272
+#: windows/host/src/projects_ui.rs:1280
 msgid "None recorded"
 msgstr "没有记录"
 
-#: windows/host/src/projects_ui.rs:1274 windows/host/src/settings_win.rs:136
+#: windows/host/src/projects_ui.rs:1282 windows/host/src/settings_win.rs:136
 msgid "Roles"
 msgstr "角色"
 
-#: windows/host/src/projects_ui.rs:1274
+#: windows/host/src/projects_ui.rs:1282
 msgid "Not recorded in project files"
 msgstr "项目文件不记录角色"
 
-#: windows/host/src/projects_ui.rs:1275
+#: windows/host/src/projects_ui.rs:1283
 msgid "Scrollback"
 msgstr "回滚内容"
 
-#: windows/host/src/projects_ui.rs:1279 windows/host/src/projects_ui.rs:1281
+#: windows/host/src/projects_ui.rs:1287 windows/host/src/projects_ui.rs:1289
 msgid "Autosave"
 msgstr "自动保存"
 
-#: windows/host/src/projects_ui.rs:1279
+#: windows/host/src/projects_ui.rs:1287
 msgid "Saved automatically as it changes"
 msgstr "改动后自动保存"
 
-#: windows/host/src/projects_ui.rs:1281
+#: windows/host/src/projects_ui.rs:1289
 msgid "Not bound to an open window"
 msgstr "没有绑定到打开的窗口"
 
-#: windows/host/src/projects_ui.rs:1289
+#: windows/host/src/projects_ui.rs:1297
 msgid "Version History"
 msgstr "版本历史"
 
-#: windows/host/src/projects_ui.rs:1293
+#: windows/host/src/projects_ui.rs:1301
 msgid "Current version"
 msgstr "当前版本"
 
-#: windows/host/src/projects_ui.rs:1293
+#: windows/host/src/projects_ui.rs:1301
 msgid "Previous version"
 msgstr "上一版"
 
-#: windows/host/src/projects_ui.rs:1303
+#: windows/host/src/projects_ui.rs:1311
 msgid "No earlier version is kept yet."
 msgstr "还没有保留更早的版本。"
 
-#: windows/host/src/projects_ui.rs:1384
+#: windows/host/src/projects_ui.rs:1392
 msgid "Rename…"
 msgstr "重命名…"
 
-#: windows/host/src/projects_ui.rs:1389
+#: windows/host/src/projects_ui.rs:1397
 msgid "Overwrite with Current Tab"
 msgstr "用当前标签页覆盖"
 
-#: windows/host/src/projects_ui.rs:1390
+#: windows/host/src/projects_ui.rs:1398
 msgid "Open"
 msgstr "打开"
 
@@ -3212,7 +3300,7 @@ msgid ""
 "the file first."
 msgstr "角色库文件里有错误，现在保存会把它覆盖掉。请先修好这个文件。"
 
-#: windows/host/src/roles.rs:779 windows/control-room/src/act.rs:206
+#: windows/host/src/roles.rs:779 windows/control-room/src/act.rs:209
 msgid "That role no longer exists."
 msgstr "这个角色已经不存在了。"
 
@@ -3228,7 +3316,7 @@ msgstr "角色库文件写不进去。"
 msgid "This role isn't set up for that agent CLI."
 msgstr "这个角色没有为该 agent CLI 配置。"
 
-#: windows/host/src/roles.rs:783 windows/control-room/src/act.rs:208
+#: windows/host/src/roles.rs:783 windows/control-room/src/act.rs:211
 msgid ""
 "This role isn't set up for any agent CLI yet. Pick one in the role library."
 msgstr "这个角色还没选任何 agent CLI，请在角色库里选一个。"
@@ -3250,13 +3338,17 @@ msgstr "Polter 还没准备好。"
 msgid ""
 "An official role's name, description and what it grants can't be changed. "
 "Duplicate it to make one of your own."
-msgstr "官方角色的名字、说明和它赋予终端的权限不能改。想改就复制一份成为你自己的角色。"
+msgstr ""
+"官方角色的名字、说明和它赋予终端的权限不能改。想改就复制一份成为你自己的角"
+"色。"
 
 #: windows/host/src/roles.rs:792
 msgid ""
 "The file that holds your changes to official roles can't be read, so nothing "
 "was saved into it. Restore Factory Settings sets it aside."
-msgstr "保存你对官方角色改动的文件读不了，所以这次没有存进去。用「恢复出厂设置」可以把它挪开。"
+msgstr ""
+"保存你对官方角色改动的文件读不了，所以这次没有存进去。用「恢复出厂设置」可以"
+"把它挪开。"
 
 #: windows/host/src/roles.rs:793
 msgid ""
@@ -3356,7 +3448,9 @@ msgstr "你对官方角色的改动没被读到，所以没有生效。"
 msgid ""
 "Your role \"{}\" has the key {}, which is now an official role's. Yours is "
 "kept in the file but isn't in use."
-msgstr "你的角色「{}」用的 key 是 {}，这个 key 现在属于官方角色。你的那份还在文件里，但没有被使用。"
+msgstr ""
+"你的角色「{}」用的 key 是 {}，这个 key 现在属于官方角色。你的那份还在文件里，"
+"但没有被使用。"
 
 #: windows/host/src/roles_ui.rs:848
 msgid "Keep It Under a New Key"
@@ -3397,7 +3491,8 @@ msgstr "正文"
 msgid ""
 "Takes effect as soon as it's saved. When an agent that is already running "
 "reads the new text depends on the tool it uses."
-msgstr "保存后立即生效。已经在运行的 agent 什么时候读到新内容，取决于它用的工具。"
+msgstr ""
+"保存后立即生效。已经在运行的 agent 什么时候读到新内容，取决于它用的工具。"
 
 #: windows/host/src/roles_ui.rs:939 windows/host/src/roles_ui.rs:949
 msgid "Key"
@@ -3679,7 +3774,9 @@ msgid ""
 "Restoring will put every official role and skill back to factory settings, "
 "not only this one. The file of your changes and your own copies of official "
 "skills are kept where they were, renamed, so nothing in them is lost."
-msgstr "恢复会把全部官方角色和官方 skill 都设回出厂设置，不只是这一个。保存改动的文件和你的官方 skill 副本都会改名留在原处，里面的内容不会丢。"
+msgstr ""
+"恢复会把全部官方角色和官方 skill 都设回出厂设置，不只是这一个。保存改动的文件"
+"和你的官方 skill 副本都会改名留在原处，里面的内容不会丢。"
 
 #: windows/host/src/roles_ui.rs:3498
 msgid "Restore All"
@@ -3759,33 +3856,248 @@ msgid "Menu"
 msgstr "菜单"
 
 # Page title and accessible name (settings_ui.rs, uia.rs). Deliberately a different msgid from the menu item "Keyboard Shortcuts…" (U+2026). Do not merge the two.
-#: windows/host/src/uia.rs:2301 windows/settings-shell/src/general.rs:80
+#: windows/host/src/uia.rs:2301 windows/settings-shell/src/general.rs:86
 msgid "Keyboard Shortcuts"
 msgstr "快捷键"
 
-#: windows/settings-shell/src/general.rs:73
+#: windows/settings-shell/src/general.rs:78
 msgid "Appearance"
 msgstr "外观"
 
-#: windows/settings-shell/src/general.rs:75
+#: windows/settings-shell/src/general.rs:80
 msgid "Terminal"
 msgstr "终端"
 
-#: windows/settings-shell/src/general.rs:76
+#: windows/settings-shell/src/general.rs:81
 msgid "Windows & Tabs"
 msgstr "窗口与标签"
 
-#: windows/settings-shell/src/general.rs:79
+#: windows/settings-shell/src/general.rs:83
+msgid "Log Management"
+msgstr "日志管理"
+
+#: windows/settings-shell/src/general.rs:85
 msgid "All Options"
 msgstr "全部选项"
 
-#: windows/settings-shell/src/general.rs:81
+#: windows/settings-shell/src/general.rs:87
 msgid "Advanced"
 msgstr "高级"
 
-#: windows/settings-shell/src/general.rs:82
+#: windows/settings-shell/src/general.rs:88
 msgid "About"
 msgstr "关于"
+
+#: windows/settings-shell/src/logs.rs:154
+msgid "Terminal Records · In Groups"
+msgstr "终端记录 · 群里的"
+
+#: windows/settings-shell/src/logs.rs:155
+msgid "Terminal Records · In Projects"
+msgstr "终端记录 · 项目里的"
+
+#: windows/settings-shell/src/logs.rs:156
+msgid "Terminal Records · Other"
+msgstr "终端记录 · 其它"
+
+#: windows/settings-shell/src/logs.rs:157
+msgid "Logs"
+msgstr "日志"
+
+#: windows/settings-shell/src/logs.rs:158
+msgid "Screenshots"
+msgstr "截图"
+
+#: windows/settings-shell/src/logs.rs:159
+msgid "Group Rename Backups"
+msgstr "改群名的备份"
+
+#: windows/settings-shell/src/logs.rs:160
+msgid "Group Chat Records"
+msgstr "群聊记录"
+
+#: windows/settings-shell/src/logs.rs:161
+msgid "Task Records"
+msgstr "任务记录"
+
+#: windows/settings-shell/src/logs.rs:162
+msgid "Shell History"
+msgstr "Shell 历史"
+
+#: windows/settings-shell/src/logs.rs:163
+msgid "Archive Plugin's Copy"
+msgstr "归档插件写的副本"
+
+#: windows/settings-shell/src/logs.rs:169
+msgid ""
+"What terminals printed while working in a group; supervisors look back "
+"through it"
+msgstr "在群里工作期间终端滚出屏幕的内容，总管可以回看"
+
+#: windows/settings-shell/src/logs.rs:170
+msgid "In a project's tabs, while in no group"
+msgstr "在项目的标签页里、不在群里时的内容"
+
+#: windows/settings-shell/src/logs.rs:171
+msgid "Terminals in no group and no project"
+msgstr "不在群也不在项目里的终端"
+
+#: windows/settings-shell/src/logs.rs:172
+msgid "Plugins' older logs, crash reports, hourly group snapshots"
+msgstr "插件的旧日志、崩溃报告、每小时的群快照"
+
+#: windows/settings-shell/src/logs.rs:173
+msgid "Polter's screenshots; nothing else in the folder is touched"
+msgstr "Polter 截的图，截图文件夹里别的文件不动"
+
+#: windows/settings-shell/src/logs.rs:174
+msgid "Old files a rename set aside, only to finish an interrupted one"
+msgstr "改名时换下的旧文件，只为续完被打断的改名"
+
+#: windows/settings-shell/src/logs.rs:175
+msgid "What each group said, day by day"
+msgstr "每个群每天说了什么"
+
+#: windows/settings-shell/src/logs.rs:176
+msgid "The task panel's history; compacting keeps where each task stands"
+msgstr "任务面板的变更历史；压实只留当前状态"
+
+#: windows/settings-shell/src/logs.rs:177
+msgid "Each pane's commands; clearing removes only what no project uses"
+msgstr "各分格的命令历史；清理只删没有项目用到的"
+
+#: windows/settings-shell/src/logs.rs:178
+msgid "The archive plugin's own copy of the chat, not Polter's records"
+msgstr "归档插件另存的群聊，不是 Polter 自己的记录"
+
+#: windows/settings-shell/src/logs.rs:196
+msgid "%1$@ (%2$lld files) will be deleted. This cannot be undone."
+msgstr "将删除 %1$@（%2$lld 个文件），无法恢复。"
+
+#: windows/settings-shell/src/logs.rs:197
+msgid "After this, the AI can no longer find them when it looks back."
+msgstr "删除后，AI 回顾时再也找不到它们。"
+
+#: windows/settings-shell/src/logs.rs:198
+msgid "Today's file that is still being written is kept."
+msgstr "今天正在写的文件不会删。"
+
+#: windows/settings-shell/src/logs.rs:199
+msgid "Clear “%@”?"
+msgstr "清理「%@」？"
+
+#: windows/settings-shell/src/logs.rs:200
+msgid "Clear Now"
+msgstr "清理"
+
+#: windows/settings-shell/src/logs.rs:203
+msgid "These are what terminals printed while working in a group."
+msgstr "这些是终端在群里工作期间滚出屏幕的内容。"
+
+#: windows/settings-shell/src/logs.rs:204
+msgid "These are what terminals printed in a project's tabs while in no group."
+msgstr "这些是终端在项目标签页里、不在群里时滚出屏幕的内容。"
+
+#: windows/settings-shell/src/logs.rs:205
+msgid ""
+"These are what terminals printed while in no group and no project's tab."
+msgstr "这些是不在任何群、也不在项目标签页里的终端滚出屏幕的内容。"
+
+#: windows/settings-shell/src/logs.rs:206
+msgid ""
+"They are only for finding out what went wrong; nothing Polter does depends "
+"on them."
+msgstr "它们只用来排查问题，Polter 的功能不依赖它们。"
+
+#: windows/settings-shell/src/logs.rs:207
+msgid ""
+"Only Polter's own screenshots go; nothing else in the folder is touched. The "
+"AI can no longer list or open them."
+msgstr ""
+"只删 Polter 自己截的图，截图文件夹里别的文件不动。AI 从此列不出、打不开这些截"
+"图。"
+
+#: windows/settings-shell/src/logs.rs:208
+msgid ""
+"They are only needed to finish a rename that was interrupted, and none is "
+"under way."
+msgstr "它们只在改名被打断时用来续完，现在没有进行中的改名。"
+
+#: windows/settings-shell/src/logs.rs:210
+msgid "Clear the group chat records?"
+msgstr "清理群聊记录？"
+
+#: windows/settings-shell/src/logs.rs:212
+msgid ""
+"Every group's chat before today will be deleted, at most %@. This cannot be "
+"undone."
+msgstr "将删除所有群今天以前的聊天记录（最多 %@），无法恢复。"
+
+#: windows/settings-shell/src/logs.rs:213
+msgid ""
+"The list of groups, their notes, the last supervisor and project ties are "
+"kept."
+msgstr "群列表、群简介、上次的总管、项目绑定都保留。"
+
+#: windows/settings-shell/src/logs.rs:214
+msgid ""
+"The chat page and the AI reading back a group can no longer reach messages "
+"before today."
+msgstr "聊天页和 AI 回读群聊时，从此翻不到今天以前的消息。"
+
+#: windows/settings-shell/src/logs.rs:219
+msgid "Compact the task records?"
+msgstr "压实任务记录？"
+
+#: windows/settings-shell/src/logs.rs:221
+msgid ""
+"Each task keeps only where it stands now: title, owner, progress, open or "
+"closed. The history of changes before today, at most %@, will be deleted. "
+"This cannot be undone."
+msgstr ""
+"每个任务只留下当前状态：标题、负责人、进度、是否关闭。今天以前的变更历史（最"
+"多 %@）将被删除，无法恢复。"
+
+#: windows/settings-shell/src/logs.rs:222
+msgid "The task panel is unchanged and task numbers stay the same."
+msgstr "任务面板不受影响，任务号不变。"
+
+#: windows/settings-shell/src/logs.rs:223
+msgid ""
+"The history of task changes and the statistics page will no longer show "
+"events before today."
+msgstr "任务的变更历史和统计页从此看不到今天以前的事件。"
+
+#: windows/settings-shell/src/logs.rs:225
+msgid "Compact"
+msgstr "压实"
+
+#: windows/settings-shell/src/logs.rs:228
+msgid "Clear shell history?"
+msgstr "清理 Shell 历史？"
+
+#: windows/settings-shell/src/logs.rs:230
+msgid ""
+"History files no saved project and no open pane uses will be deleted, at "
+"most %@. This cannot be undone."
+msgstr ""
+"将删除没有已保存项目、也没有打开着的分格在用的历史文件（最多 %@），无法恢复。"
+
+#: windows/settings-shell/src/logs.rs:231
+msgid "Panes opened from a project, and panes open now, keep their history."
+msgstr "从项目打开的分格、现在开着的分格，历史都保留。"
+
+#: windows/settings-shell/src/logs.rs:238
+msgid ""
+"The archive plugin's copies before today will be deleted, at most %@. This "
+"cannot be undone."
+msgstr "将删除归档插件今天以前的副本（最多 %@），无法恢复。"
+
+#: windows/settings-shell/src/logs.rs:239
+msgid ""
+"This is the archive plugin's own copy of the chat; Polter's chat records are "
+"not touched."
+msgstr "这是归档插件另存的群聊，Polter 自己的群聊记录不受影响。"
 
 #: windows/settings-shell/src/official.rs:49
 msgid "Factory settings"
@@ -3911,43 +4223,43 @@ msgstr "出错"
 msgid "On"
 msgstr "已开"
 
-#: windows/control-room/src/act.rs:200
+#: windows/control-room/src/act.rs:203
 msgid "A group's name is lowercase letters, digits and dashes, 48 at most."
 msgstr "群名只能用小写字母、数字和短横线，最长 48 个。"
 
-#: windows/control-room/src/act.rs:201
+#: windows/control-room/src/act.rs:204
 msgid "There is already a group by that name."
 msgstr "已经有一个叫这个名字的群了。"
 
-#: windows/control-room/src/act.rs:202
+#: windows/control-room/src/act.rs:205
 msgid "There is no room for another group."
 msgstr "群的数量已经到上限了。"
 
-#: windows/control-room/src/act.rs:203
+#: windows/control-room/src/act.rs:206
 msgid "This group already has a supervisor."
 msgstr "这个群已经有总管了。"
 
-#: windows/control-room/src/act.rs:204
+#: windows/control-room/src/act.rs:207
 msgid "A supervisor is already being started for this group."
 msgstr "这个群的总管正在启动。"
 
-#: windows/control-room/src/act.rs:205
+#: windows/control-room/src/act.rs:208
 msgid "There is no role that makes a supervisor. Add one in the role library."
 msgstr "角色库里没有总管角色，请先在角色库里加一个。"
 
-#: windows/control-room/src/act.rs:207
+#: windows/control-room/src/act.rs:210
 msgid "That role does not make a supervisor."
 msgstr "这个角色不是总管角色。"
 
-#: windows/control-room/src/act.rs:209
+#: windows/control-room/src/act.rs:212
 msgid "That directory is not there."
 msgstr "这个目录不存在。"
 
-#: windows/control-room/src/act.rs:210
+#: windows/control-room/src/act.rs:213
 msgid "No tab could be opened for it."
 msgstr "没能为它开出标签页。"
 
-#: windows/control-room/src/act.rs:211
+#: windows/control-room/src/act.rs:214
 msgid "Polter could not find its own program to start the role with."
 msgstr "Polter 找不到自己的程序，没法用它启动角色。"
 
@@ -3955,55 +4267,55 @@ msgstr "Polter 找不到自己的程序，没法用它启动角色。"
 msgid "The supervisor's terminal is no longer open."
 msgstr "总管的终端已经关掉了。"
 
-#: windows/control-room/src/lend.rs:380 windows/control-room/src/list.rs:117
+#: windows/control-room/src/lend.rs:380 windows/control-room/src/list.rs:120
 msgid "Supervisor"
 msgstr "总管"
 
-#: windows/control-room/src/list.rs:104
+#: windows/control-room/src/list.rs:107
 msgid "No group is waiting for you"
 msgstr "没有群在等你"
 
-#: windows/control-room/src/list.rs:105
+#: windows/control-room/src/list.rs:108
 #, rust-format
 msgid "{} group waiting for you"
 msgstr "{} 个群在等你"
 
-#: windows/control-room/src/list.rs:106
+#: windows/control-room/src/list.rs:109
 #, rust-format
 msgid "{} groups waiting for you"
 msgstr "{} 个群在等你"
 
-#: windows/control-room/src/list.rs:109
+#: windows/control-room/src/list.rs:112
 #, rust-format
 msgid "{} waiting for you"
 msgstr "{} 个在等你"
 
-#: windows/control-room/src/list.rs:110
+#: windows/control-room/src/list.rs:113
 #, rust-format
 msgid "{} group needs nothing from you"
 msgstr "{} 个群不用你管"
 
-#: windows/control-room/src/list.rs:111
+#: windows/control-room/src/list.rs:114
 #, rust-format
 msgid "{} groups need nothing from you"
 msgstr "{} 个群不用你管"
 
-#: windows/control-room/src/list.rs:112
+#: windows/control-room/src/list.rs:115
 #, rust-format
 msgid "{} needs nothing from you"
 msgstr "{} 个不用你管"
 
-#: windows/control-room/src/list.rs:113
+#: windows/control-room/src/list.rs:116
 #, rust-format
 msgid "{} need nothing from you"
 msgstr "{} 个不用你管"
 
-#: windows/control-room/src/list.rs:115
+#: windows/control-room/src/list.rs:118
 #, rust-format
 msgid "{} more"
 msgstr "还有 {} 个"
 
-#: windows/control-room/src/list.rs:120
+#: windows/control-room/src/list.rs:123
 #, rust-format
 msgid "{}, via the supervisor"
 msgstr "{}，经总管"
@@ -4050,110 +4362,110 @@ msgstr "还有 {} 步"
 msgid "New Group"
 msgstr "新建群"
 
-#: windows/control-room/src/scene.rs:44
+#: windows/control-room/src/scene.rs:49
 msgid "Starting the supervisor…"
 msgstr "正在启动总管…"
 
-#: windows/control-room/src/scene.rs:45
+#: windows/control-room/src/scene.rs:50
 msgid "The supervisor did not start: its tab never opened."
 msgstr "总管没有启动：它的标签页没有开出来。"
 
-#: windows/control-room/src/scene.rs:47
+#: windows/control-room/src/scene.rs:52
 msgid ""
 "The supervisor did not start: its tab opened, but no agent connected from "
 "it. Its tab shows why."
 msgstr ""
 "总管没有启动：标签页开了，但里面没有 agent 连上来。原因在它的标签页里。"
 
-#: windows/control-room/src/scene.rs:48
+#: windows/control-room/src/scene.rs:53
 msgid "The supervisor did not start: its tab was closed first."
 msgstr "总管没有启动：它的标签页先被关掉了。"
 
-#: windows/control-room/src/scene.rs:49
+#: windows/control-room/src/scene.rs:54
 msgid ""
 "The supervisor did not start: its agent CLI was not found. Its tab shows why."
 msgstr "总管没有启动：没有找到它的 agent CLI。原因在它的标签页里。"
 
-#: windows/control-room/src/scene.rs:50
+#: windows/control-room/src/scene.rs:55
 msgid ""
 "The supervisor did not start: its agent CLI could not be started. Its tab "
 "shows why."
 msgstr "总管没有启动：它的 agent CLI 没能启动。原因在它的标签页里。"
 
-#: windows/control-room/src/scene.rs:51
+#: windows/control-room/src/scene.rs:56
 msgid "The supervisor did not start."
 msgstr "总管没有启动。"
 
-#: windows/control-room/src/scene.rs:53
+#: windows/control-room/src/scene.rs:58
 msgid "Directory"
 msgstr "目录"
 
-#: windows/control-room/src/scene.rs:55
+#: windows/control-room/src/scene.rs:60
 msgid "Start Supervisor"
 msgstr "启动总管"
 
-#: windows/control-room/src/scene.rs:59
+#: windows/control-room/src/scene.rs:64
 #, rust-format
 msgid "The last supervisor worked in {}, using {}."
 msgstr "上次的总管在 {}，用的是 {}。"
 
-#: windows/control-room/src/scene.rs:60
+#: windows/control-room/src/scene.rs:65
 #, rust-format
 msgid "The last supervisor worked in {}."
 msgstr "上次的总管在 {}。"
 
-#: windows/control-room/src/scene.rs:61
+#: windows/control-room/src/scene.rs:66
 #, rust-format
 msgid "The last supervisor used {}."
 msgstr "上次的总管用的是 {}。"
 
-#: windows/control-room/src/scene.rs:63
+#: windows/control-room/src/scene.rs:68
 msgid "Go on with the last session"
 msgstr "接着上次的会话"
 
-#: windows/control-room/src/scene.rs:64
+#: windows/control-room/src/scene.rs:69
 msgid "New session"
 msgstr "新会话"
 
-#: windows/control-room/src/scene.rs:67
+#: windows/control-room/src/scene.rs:72
 msgid ""
 "A new session will be started: the last supervisor's CLI never said which "
 "session it was in."
 msgstr "会开一个新会话：上次那个 CLI 没有报过它在哪个会话里。"
 
-#: windows/control-room/src/scene.rs:68
+#: windows/control-room/src/scene.rs:73
 msgid ""
 "A new session will be started: going on with the last one did not work the "
 "last time it was tried."
 msgstr "会开一个新会话：上一次接着旧会话启动没有成功。"
 
-#: windows/control-room/src/scene.rs:69
+#: windows/control-room/src/scene.rs:74
 msgid "A new session will be started: the last session was in another CLI."
 msgstr "会开一个新会话：上次的会话是另一个 CLI 的。"
 
-#: windows/control-room/src/scene.rs:70
+#: windows/control-room/src/scene.rs:75
 msgid "Checking whether the last session can be gone on with…"
 msgstr "正在确认能不能接着上次的会话…"
 
-#: windows/control-room/src/scene.rs:71
+#: windows/control-room/src/scene.rs:76
 msgid ""
 "A new session will be started: this CLI cannot go on with an earlier session."
 msgstr "会开一个新会话：这个 CLI 不能接着以前的会话。"
 
-#: windows/control-room/src/scene.rs:72
+#: windows/control-room/src/scene.rs:77
 msgid ""
 "A new session will be started: an open terminal is in the last session now."
 msgstr "会开一个新会话：上次的会话现在有一个开着的终端在用。"
 
-#: windows/control-room/src/scene.rs:74
+#: windows/control-room/src/scene.rs:79
 msgid "Where the tab starts"
 msgstr "新标签页所在的目录"
 
-#: windows/control-room/src/scene.rs:77
+#: windows/control-room/src/scene.rs:82
 msgid "This terminal is no longer open."
 msgstr "这个终端已经不在了。"
 
-#: windows/control-room/src/scene.rs:78
+#: windows/control-room/src/scene.rs:83
 msgid "Showing in its own tab"
 msgstr "界面在它自己的标签页"
 

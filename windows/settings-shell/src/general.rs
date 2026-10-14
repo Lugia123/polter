@@ -24,6 +24,9 @@ pub enum Group {
     Terminal,
     Windows,
     Polter,
+    /// Log Management (task 1511): what each kind of record takes, how
+    /// long it is kept, and "Clear…". Drawn by `logs_ui.rs`, not as a form.
+    Logs,
     /// screenshot.md §12.1: before Keyboard Shortcuts.
     Screenshot,
     All,
@@ -33,12 +36,13 @@ pub enum Group {
 }
 
 impl Group {
-    pub const ALL: [Group; 10] = [
+    pub const ALL: [Group; 11] = [
         Group::Appearance,
         Group::Font,
         Group::Terminal,
         Group::Windows,
         Group::Polter,
+        Group::Logs,
         Group::Screenshot,
         Group::All,
         Group::Keybinds,
@@ -55,6 +59,7 @@ impl Group {
             Group::Terminal => "terminal",
             Group::Windows => "windows",
             Group::Polter => "polter",
+            Group::Logs => "logs",
             Group::Screenshot => "screenshot",
             Group::All => "all",
             Group::Keybinds => "keybinds",
@@ -75,6 +80,7 @@ impl Group {
             Group::Terminal => n_("Terminal"),
             Group::Windows => n_("Windows & Tabs"),
             Group::Polter => n_("Polter"),
+            Group::Logs => n_("Log Management"),
             Group::Screenshot => n_("Screenshot"),
             Group::All => n_("All Options"),
             Group::Keybinds => n_("Keyboard Shortcuts"),
@@ -93,14 +99,17 @@ impl Group {
             Group::Terminal => Some("terminal"),
             Group::Windows => Some("window"),
             Group::Polter => Some("polter"),
+            Group::Logs => Some("logs"),
             Group::Screenshot => Some("screenshot"),
             Group::All | Group::Keybinds | Group::Advanced | Group::About => None,
         }
     }
 
-    /// Drawn from the core's form table.
+    /// Drawn from the core's form table. Log Management's settings are in
+    /// the table (so a search finds them and says where they live), but the
+    /// page is its own: each setting stands in the row of what it keeps.
     pub fn is_form(self) -> bool {
-        self.core().is_some() || self == Group::All
+        (self.core().is_some() || self == Group::All) && self != Group::Logs
     }
 }
 
@@ -766,7 +775,7 @@ mod tests {
     #[test]
     fn group_keys_are_the_macos_raw_values() {
         let keys: Vec<_> = Group::ALL.iter().map(|g| g.key()).collect();
-        assert_eq!(keys, ["appearance", "font", "terminal", "windows", "polter", "screenshot", "all", "keybinds", "advanced", "about"]);
+        assert_eq!(keys, ["appearance", "font", "terminal", "windows", "polter", "logs", "screenshot", "all", "keybinds", "advanced", "about"]);
         for g in Group::ALL {
             assert_eq!(Group::from_key(g.key()), Some(g));
         }
@@ -774,6 +783,9 @@ mod tests {
         // `windows`, as the macOS side does.
         assert_eq!(Group::Windows.core(), Some("window"));
         assert!(Group::All.is_form() && !Group::Keybinds.is_form());
+        // Its settings are in the core's table; its page is not a form.
+        assert_eq!(Group::Logs.core(), Some("logs"));
+        assert!(!Group::Logs.is_form());
     }
 
     #[test]

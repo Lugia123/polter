@@ -67,7 +67,7 @@ enum LogManagementRules {
         case "shots": String(localized: "Polter's screenshots; nothing else in the folder is touched", comment: "日志管理：一行的说明，截图")
         case "rename_backups": String(localized: "Old files a rename set aside, only to finish an interrupted one", comment: "日志管理：一行的说明，改名备份")
         case "chat": String(localized: "What each group said, day by day", comment: "日志管理：一行的说明，群聊记录")
-        case "tasks": String(localized: "The task panel's history of changes; compacting keeps where each task stands", comment: "日志管理：一行的说明，任务记录")
+        case "tasks": String(localized: "The task panel's history; compacting keeps where each task stands", comment: "日志管理：一行的说明，任务记录")
         case "history": String(localized: "Each pane's commands; clearing removes only what no project uses", comment: "日志管理：一行的说明，Shell 历史")
         case "archive": String(localized: "The archive plugin's own copy of the chat, not Polter's records", comment: "日志管理：一行的说明，归档插件的副本")
         default: ""
@@ -116,7 +116,7 @@ enum LogManagementRules {
         let deleted = String(format: String(localized: "%1$@ (%2$lld files) will be deleted. This cannot be undone.", comment: "日志管理：确认框第一行，%1$@ 是大小，%2$lld 是文件数"), size, Int64(kind.files))
         let lookBack = String(localized: "After this, the AI can no longer find them when it looks back.", comment: "日志管理：确认框，删终端记录的后果")
         let today = String(localized: "Today's file that is still being written is kept.", comment: "日志管理：确认框，正在写的不删")
-        let clear = String(localized: "Clear", comment: "日志管理：确认框的按钮，清理")
+        let clear = String(localized: "Clear Now", comment: "日志管理：确认框的按钮，清理")
         let named = String(format: String(localized: "Clear “%@”?", comment: "日志管理：确认框标题，%@ 是这一行的名字"), title(kind.key))
         switch kind.key {
         case "group_transcripts":

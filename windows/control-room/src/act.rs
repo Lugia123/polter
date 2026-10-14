@@ -28,6 +28,8 @@ pub enum Act<'a> {
     /// directory is the one the core's snapshot names. No session is the
     /// core's own choice (`session_sent`).
     StartSupervisor { group: &'a str, role: Option<&'a str>, cwd: Option<&'a str>, session: Option<Session> },
+    /// The person said OK to the first sweep of old records (task 1511).
+    RetentionAgree,
 }
 
 /// Which session a start is asked for: the core's two words
@@ -86,6 +88,7 @@ pub fn encode(act: &Act) -> Option<String> {
             quote(text)
         ),
         Act::NewGroup { name } => format!("{{\"act\":\"new_group\",\"name\":{}}}", quote(name)),
+        Act::RetentionAgree => "{\"act\":\"retention_agree\"}".to_string(),
         Act::StartSupervisor { group, role, cwd, session } => {
             // Left out when the person picked neither: the core then uses
             // the ones its snapshot named.

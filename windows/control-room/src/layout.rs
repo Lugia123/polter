@@ -153,7 +153,22 @@ pub struct ListLayout {
     pub fits: Vec<(String, AskFit)>,
     pub separator: Rect,
     pub quiet_header: Rect,
+    /// The notice that the first sweep of old records waits for the
+    /// person, under the header, when there is one: the rows start below
+    /// it. Two lines of text and an OK (`scene::retention_ok_hit`).
+    pub notice: Option<Rect>,
 }
+
+/// How high the notice is: two lines, the OK under them, and the row's
+/// padding round both. Fixed rather than measured: the sentence is one
+/// short line in every language this ships in, and the second line is room.
+pub fn notice_height() -> f64 {
+    2.0 * side::ASK_LINE_HEIGHT + NOTICE_BUTTON_H + 4.0 + 2.0 * side::ROW_PADDING_Y
+}
+
+/// The notice's OK.
+pub const NOTICE_BUTTON_H: f64 = 24.0;
+pub const NOTICE_BUTTON_W: f64 = 56.0;
 
 impl ListLayout {
     /// Laid out by the nominal count of lines.
@@ -174,6 +189,13 @@ impl ListLayout {
         let mut y = pad;
         let header = Rect { x: pad, y, w: inner, h: header_h };
         y += header_h;
+        // The first sweep waiting for the person: under the header, and the
+        // rows move down to make room (task 1511).
+        let notice = list.retention_waiting_bytes.map(|_| {
+            let r = Rect { x: pad, y, w: inner, h: notice_height() };
+            y += r.h + side::ROW_GAP;
+            r
+        });
 
         let mut rows = Vec::new();
         let mut fits = Vec::new();
@@ -205,7 +227,7 @@ impl ListLayout {
             y += side::QUIET_ROW_HEIGHT;
         }
 
-        ListLayout { width, height, header, rows, fits, separator, quiet_header }
+        ListLayout { width, height, header, rows, fits, separator, quiet_header, notice }
     }
 
     /// The row under a point of the panel, by its group's name.

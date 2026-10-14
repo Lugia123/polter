@@ -142,31 +142,40 @@ pub fn parse(name: &str, own_stem: &str) -> Option<Owner> {
     ours(stem).then_some(Owner::Pid(pid))
 }
 
-/// The three bounds of the sweep.
+/// The two bounds of the sweep: **the same two, with the same settings, as
+/// the core's** (`poltergeist-log-keep-days`, `poltergeist-log-max-mb`;
+/// `src/poltergeist/Retention.zig`), task 1511. There was a third, a
+/// count of files, while these were the host's own numbers; one rule for
+/// every log Polter keeps has no count in it, and the one-shot commands
+/// that made the count matter now share a file a day.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// A file older than this goes, unless its process is alive.
     pub max_age: Duration,
-    /// After that, the oldest go until at most this many of ours remain...
-    pub max_files: usize,
-    /// ...and they come to at most this many bytes.
+    /// After that, the oldest go until what is left comes to at most this
+    /// many bytes.
     pub max_bytes: u64,
 }
 
 impl Limits {
-    /// **Seven days**: long enough that a person who hits a problem on
-    /// Monday can still send Friday's log. **A hundred files**: a GUI run
-    /// that starts an agent CLI per terminal writes one `polter-cli` log per
-    /// agent, and a hundred is a few days of a busy run. **64 MiB**: well
-    /// above one ordinary day of a GUI log (the `[loop]` line once a second
-    /// is most of it, roughly half a megabyte an hour -- an estimate from the
-    /// code, see the task 1510 report), and small enough that nobody finds it
-    /// while looking for what filled their disk.
+    /// The settings' defaults: **fourteen days**, because a problem is
+    /// usually noticed and asked about within a few days and the logs from
+    /// before it are what explain it; **128 MiB** in all, room for the
+    /// GUI's own log (about half a megabyte an hour at most, task 1510) and
+    /// a plugin gone wrong.
     pub const DEFAULT: Limits = Limits {
-        max_age: Duration::from_secs(7 * 24 * 60 * 60),
-        max_files: 100,
-        max_bytes: 64 * 1024 * 1024,
+        max_age: Duration::from_secs(14 * 24 * 60 * 60),
+        max_bytes: 128 * 1024 * 1024,
     };
+
+    /// From the two settings as `ghostty_config_get` hands them over: days
+    /// and megabytes, `u32::MAX` meaning `unlimited`.
+    pub fn from_config(keep_days: u32, max_mb: u32) -> Limits {
+        Limits {
+            max_age: if keep_days == u32::MAX { Duration::MAX } else { Duration::from_secs(u64::from(keep_days) * 24 * 60 * 60) },
+            max_bytes: if max_mb == u32::MAX { u64::MAX } else { u64::from(max_mb) * 1024 * 1024 },
+        }
+    }
 }
 
 /// One regular file in the directory.
@@ -191,11 +200,11 @@ pub struct Entry {
 ///     deleted out from under its writer. A pid reused by an unrelated
 ///     process only keeps a file longer, which is the safe direction.
 ///  3. A file older than `max_age` goes.
-///  4. Of what remains, the oldest go first until at most `max_files` remain
-///     and they hold at most `max_bytes`. Live files count toward both bounds
-///     but are never chosen; when they alone exceed them, every other file
-///     goes and the bounds stay exceeded -- truncating a live log would
-///     destroy the evidence it exists to keep.
+///  4. Of what remains, the oldest go first until they hold at most
+///     `max_bytes`. Live files count toward the bound but are never chosen;
+///     when they alone exceed it, every other file goes and the bound stays
+///     exceeded -- truncating a live log would destroy the evidence it
+///     exists to keep.
 pub fn plan(
     entries: &[Entry],
     own_stem: &str,
@@ -226,18 +235,16 @@ pub fn plan(
         }
     }
 
-    let mut count = kept.len();
     let mut bytes: u64 = kept.iter().map(|(e, _)| e.size).sum();
     let mut candidates: Vec<&Entry> = kept.iter().filter(|(_, live)| !live).map(|(e, _)| *e).collect();
     // Oldest first; the name breaks ties so the plan does not depend on the
     // order the directory happened to list.
     candidates.sort_by(|a, b| b.age.cmp(&a.age).then_with(|| a.name.cmp(&b.name)));
     for e in candidates {
-        if count <= limits.max_files && bytes <= limits.max_bytes {
+        if bytes <= limits.max_bytes {
             break;
         }
         doomed.push(e.name.clone());
-        count -= 1;
         bytes -= e.size;
     }
     doomed
@@ -392,19 +399,19 @@ mod tests {
     fn a_day_file_written_to_within_the_hour_is_kept_past_every_bound() {
         let fresh = Entry { name: "polter-cli-day-20261015.log".into(), age: Duration::from_secs(59 * 60), size: 1000 };
         let stale = Entry { name: "polter-cli-day-20261014.log".into(), age: DAY_FILE_IN_USE, size: 1000 };
-        let l = Limits { max_files: 0, max_bytes: 0, ..Limits::DEFAULT };
+        let l = Limits { max_bytes: 0, ..Limits::DEFAULT };
         assert_eq!(planned(&[fresh, stale], &dead, l), ["polter-cli-day-20261014.log"]);
     }
 
     #[test]
     fn an_old_day_file_goes_by_age_like_any_other() {
-        assert_eq!(planned(&[e("polter-cli-day-20261001.log", 8, 1)], &dead, Limits::DEFAULT), ["polter-cli-day-20261001.log"]);
+        assert_eq!(planned(&[e("polter-cli-day-20261001.log", 15, 1)], &dead, Limits::DEFAULT), ["polter-cli-day-20261001.log"]);
     }
 
     #[test]
     fn an_old_dead_log_goes_and_a_recent_one_stays() {
         let got = planned(
-            &[e("polter-host-1.log", 8, 10), e("polter-cli-2.log", 6, 10)],
+            &[e("polter-host-1.log", 15, 10), e("polter-cli-2.log", 13, 10)],
             &dead,
             Limits::DEFAULT,
         );
@@ -412,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn exactly_seven_days_is_not_yet_older_than_seven_days() {
+    fn exactly_the_days_kept_is_not_yet_older_than_them() {
         let at = |age| vec![Entry { name: "polter-host-1.log".into(), age, size: 1 }];
         let l = Limits::DEFAULT;
         assert!(plan(&at(l.max_age), "", ME, &dead, l).is_empty());
@@ -428,7 +435,7 @@ mod tests {
                 e("polter-host-1.log", 1, 10),
             ],
             &dead,
-            Limits { max_files: 0, max_bytes: 0, ..Limits::DEFAULT },
+            Limits { max_bytes: 0, ..Limits::DEFAULT },
         );
         assert_eq!(got, ["polter-host-1.log"]);
     }
@@ -452,14 +459,25 @@ mod tests {
     }
 
     #[test]
-    fn past_the_count_the_oldest_go_first() {
-        let l = Limits { max_files: 2, ..Limits::DEFAULT };
-        let got = planned(
-            &[e("polter-cli-1.log", 3, 1), e("polter-cli-2.log", 1, 1), e("polter-cli-3.log", 5, 1), e("polter-cli-4.log", 2, 1)],
-            &dead,
-            l,
-        );
-        assert_eq!(got, ["polter-cli-1.log", "polter-cli-3.log"]);
+    fn there_is_no_bound_on_how_many() {
+        let many: Vec<Entry> = (1..=500).map(|i| e(&format!("polter-cli-{i}.log"), 1, 1)).collect();
+        assert!(planned(&many, &dead, Limits::DEFAULT).is_empty());
+    }
+
+    #[test]
+    fn the_defaults_are_the_settings_defaults() {
+        // `poltergeist-log-keep-days` and `poltergeist-log-max-mb` in
+        // src/config/Config.zig.
+        assert_eq!(Limits::DEFAULT, Limits::from_config(14, 128));
+    }
+
+    #[test]
+    fn unlimited_keeps_everything() {
+        let l = Limits::from_config(u32::MAX, u32::MAX);
+        // Not just a very long time: no bound at all.
+        assert_eq!(l, Limits { max_age: Duration::MAX, max_bytes: u64::MAX });
+        let got = planned(&[e("polter-cli-1.log", 10_000, 1 << 40)], &dead, l);
+        assert!(got.is_empty(), "{got:?}");
     }
 
     #[test]
@@ -505,8 +523,8 @@ mod tests {
         for n in ["polter-cli-1.log", "polter-host-2.log", "keep-me.log"] {
             std::fs::write(dir.join(n), b"x").unwrap();
         }
-        // Seen from eight days on, every file is past its age.
-        let later = SystemTime::now() + DAY * 8;
+        // Seen from fifteen days on, every file is past its age.
+        let later = SystemTime::now() + DAY * 15;
         let live = |pid: u32| pid == 2;
         let r = sweep(&dir, later, "polter-host", ME, &live, Limits::DEFAULT).unwrap();
         let left = |n: &str| dir.join(n).exists();

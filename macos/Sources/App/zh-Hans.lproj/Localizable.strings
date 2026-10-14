@@ -909,7 +909,7 @@
 "Polter's screenshots; nothing else in the folder is touched" = "Polter 截的图，截图文件夹里别的文件不动";
 "Old files a rename set aside, only to finish an interrupted one" = "改名时换下的旧文件，只为续完被打断的改名";
 "What each group said, day by day" = "每个群每天说了什么";
-"The task panel's history of changes; compacting keeps where each task stands" = "任务面板的变更历史；压实只留每个任务的当前状态";
+"The task panel's history; compacting keeps where each task stands" = "任务面板的变更历史；压实只留当前状态";
 "Each pane's commands; clearing removes only what no project uses" = "各分格的命令历史；清理只删没有项目用到的";
 "The archive plugin's own copy of the chat, not Polter's records" = "归档插件另存的群聊，不是 Polter 自己的记录";
 "Compact…" = "压实…";
@@ -918,7 +918,7 @@
 "%1$@ (%2$lld files) will be deleted. This cannot be undone." = "将删除 %1$@（%2$lld 个文件），无法恢复。";
 "After this, the AI can no longer find them when it looks back." = "删除后，AI 回顾时再也找不到它们。";
 "Today's file that is still being written is kept." = "今天正在写的文件不会删。";
-"Clear" = "清理";
+"Clear Now" = "清理";
 "Clear “%@”?" = "清理「%@」？";
 "These are what terminals printed while working in a group." = "这些是终端在群里工作期间滚出屏幕的内容。";
 "These are what terminals printed in a project's tabs while in no group." = "这些是终端在项目标签页里、不在群里时滚出屏幕的内容。";

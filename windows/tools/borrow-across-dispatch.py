@@ -83,6 +83,15 @@ KNOWN = {
                "WM_PAINT takes a shared `borrow`, which nothing live conflicts "
                "with. Moving the ShowWindow/SetTimer into the `with` closure "
                "would make the paint a double borrow.",
+    "logs_ui.rs": "Log Management (task 1511). Both sites the probe sees -- after "
+                  "`reload`'s last `ST.with` and in `scroll_to` -- are one-statement "
+                  "borrows that have ended before `layout()`, which takes its own "
+                  "shared borrow, lets go, and only then moves controls. Every other "
+                  "dispatch in the file (CreateWindowExW, DestroyWindow, SetWindowText, "
+                  "the TaskDialog) is likewise after the borrow it read from. The "
+                  "re-entrant case is handled differently: a reload asked for from a "
+                  "control's own notification (EN_KILLFOCUS, Return, BN_CLICKED) is "
+                  "posted (`reload_later`), because it destroys that control.",
 }
 
 # `settings_ui.rs` used to be in KNOWN. **Its reason was wrong, and the page

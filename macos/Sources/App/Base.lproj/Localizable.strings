@@ -893,7 +893,7 @@
 "Polter's screenshots; nothing else in the folder is touched" = "Polter's screenshots; nothing else in the folder is touched";
 "Old files a rename set aside, only to finish an interrupted one" = "Old files a rename set aside, only to finish an interrupted one";
 "What each group said, day by day" = "What each group said, day by day";
-"The task panel's history of changes; compacting keeps where each task stands" = "The task panel's history of changes; compacting keeps where each task stands";
+"The task panel's history; compacting keeps where each task stands" = "The task panel's history; compacting keeps where each task stands";
 "Each pane's commands; clearing removes only what no project uses" = "Each pane's commands; clearing removes only what no project uses";
 "The archive plugin's own copy of the chat, not Polter's records" = "The archive plugin's own copy of the chat, not Polter's records";
 "Compact…" = "Compact…";
@@ -902,7 +902,7 @@
 "%1$@ (%2$lld files) will be deleted. This cannot be undone." = "%1$@ (%2$lld files) will be deleted. This cannot be undone.";
 "After this, the AI can no longer find them when it looks back." = "After this, the AI can no longer find them when it looks back.";
 "Today's file that is still being written is kept." = "Today's file that is still being written is kept.";
-"Clear" = "Clear";
+"Clear Now" = "Clear Now";
 "Clear “%@”?" = "Clear “%@”?";
 "These are what terminals printed while working in a group." = "These are what terminals printed while working in a group.";
 "These are what terminals printed in a project's tabs while in no group." = "These are what terminals printed in a project's tabs while in no group.";

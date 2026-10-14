@@ -300,24 +300,3 @@ pub fn image_text(pane: u64) -> Option<String> {
     Some(text)
 }
 
-/// Delete shots older than seven days. Once, at startup.
-///
-/// Only files named the way this host names them: the directory can be
-/// anyone's (`screenshot-directory`), and `polter_shots::sweep` is where that
-/// promise is kept and tested.
-pub fn sweep_old() {
-    let Some(dir) = dir() else {
-        // process-wide: startup housekeeping, before and apart from any window
-        plogf!("[shots] sweep: no screenshot-directory and no LOCALAPPDATA, so no directory to sweep");
-        return;
-    };
-    match polter_shots::sweep::sweep(&dir, std::time::SystemTime::now(), polter_shots::sweep::MAX_AGE) {
-        // process-wide: startup housekeeping, before and apart from any window
-        Ok(r) => plogf!(
-            "[shots] sweep {}: {} file(s) seen, {} deleted {:?}, {} could not be deleted {:?}",
-            dir.display(), r.seen, r.deleted.len(), r.deleted, r.failed.len(), r.failed
-        ),
-        // process-wide: startup housekeeping, before and apart from any window
-        Err(e) => plogf!("[shots] sweep {}: could not be listed: {}", dir.display(), e),
-    }
-}

@@ -378,7 +378,8 @@ like for some reason in macOS its already scaled. I'm not sure why that is"*。
 会打的行和只有旧版会打的行。现在日志是 `polter-host-<pid>.log`，首行打 pid 和路径。
 （#1510 起它在 `%LOCALAPPDATA%\polter\logs\`，不再在 exe 旁边；一跑就退的 `+hook` /
 `+statusline` 等共用 `polter-cli-day-<yyyymmdd>.log`、每行带 `p<pid>`；目录由主程序按
-7 天 / 100 个 / 64 MB 清理。规则在 `windows/hostlog/`。）
+设置 `poltergeist-log-keep-days` / `-max-mb`（默认 14 天 / 128 MB，#1511 起；之前写死 7 天 / 100 个 / 64 MB）
+清理，读不到设置那一小时就不清。规则在 `windows/hostlog/`。）
 
 ### 已知未检验（不是已排除）
 

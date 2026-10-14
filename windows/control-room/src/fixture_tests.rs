@@ -1494,3 +1494,9 @@ fn the_title_of_a_groups_frame_is_its_supervisors_own_terminal() {
     assert_eq!(none.row("billing").unwrap().title, None);
     assert!(none.row(LONE).unwrap().title.is_some());
 }
+
+#[test]
+fn agreeing_to_the_first_sweep_is_one_word() {
+    // Task 1511: `ControlAct.zig` takes `retention_agree` and nothing with it.
+    assert_eq!(act::encode(&Act::RetentionAgree).unwrap(), r#"{"act":"retention_agree"}"#);
+}

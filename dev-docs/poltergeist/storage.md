@@ -412,3 +412,18 @@ ReleaseFast 1.34 秒，峰值内存 22MB（改之前一次全读进来是 280MB�
 - **确认框不出现工具名和内部词**（用户定）：写删多少、能不能恢复；删的是什么；之后哪些功能受影响、什么保留。
 - 第一次清理的提示在页首和总控台列表顶上各一条，同一句话加「好」（`{"act":"retention_agree"}`）；改了保留设置也算同意。
 
+### Windows（第四段）
+
+- **宿主日志**（`windows/hostlog`）：只剩两个界限，与核心同一组设置 `poltergeist-log-keep-days` /
+  `poltergeist-log-max-mb`（默认 14 天 / 128 MB）；原来的「最多 100 个文件」去掉了——一次性命令已经一天共用
+  一个文件，数量不再是问题。宿主在加载和重载配置时经 `ghostty_config_get` 读这两个数（核心给 `Limit` 加了
+  `cval`，`unlimited` 交出来是类型的最大值）；清理线程在读到之前等，两分钟还没读到就跳过那一小时，**不拿默认值
+  去清**——默认值可能比人设的短。
+- **截图**：两个宿主各自「启动时按固定 7 天清」都去掉了，交给核心按设置清（见上「谁清」）；否则人设了 30 天，
+  宿主还是 7 天删。
+- **日志管理页**（`logs_ui.rs`，规则在 `windows/settings-shell/src/logs.rs`）：同一张表、同一组列，确认框是
+  TaskDialog，**默认按钮是「取消」**；接线前的图在 `Polter_Pub/assets/control-room-design/log-management-windows-v1/`。
+- **总控台提示**：Windows 的列表布局原来没有「头下面留高度」这一格（「名字不合法」那句是盖在行上画的），
+  这次给 `ListLayout` 加了 `notice`，有提示时行往下挪，与 mac 一致；「好」不是行上的按钮，也不是替人回答
+  agent（`tools/control-room-rows-only-tell.py` 只管后者）。
+

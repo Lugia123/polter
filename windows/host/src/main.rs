@@ -129,6 +129,7 @@ mod pane_frames;
 mod personas;
 mod plugins;
 mod general_ui;
+mod logs_ui;
 mod plugins_ui;
 mod plugin_page;
 mod polterclose;
@@ -169,7 +170,7 @@ use ffi::*;
 use std::cell::RefCell;
 use std::ffi::{c_void, CString};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use windows::core::{s, w, Interface, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -5413,6 +5414,8 @@ fn load_api() -> Option<Api> {
             app_plugin_test: sym!(internal, "ghostty_app_plugin_test"),
             app_plugin_configure: sym!(internal, "ghostty_app_plugin_configure"),
             app_config_form: sym!(internal, "ghostty_app_config_form"),
+            app_storage_usage: sym!(internal, "ghostty_app_storage_usage"),
+            app_storage_clear: sym!(internal, "ghostty_app_storage_clear"),
             app_config_set: sym!(internal, "ghostty_app_config_set"),
             app_config_set_result: sym!(internal, "ghostty_app_config_set_result"),
             app_config_form_search: sym!(internal, "ghostty_app_config_form_search"),
@@ -5878,27 +5881,78 @@ fn pid_is_live(pid: u32) -> bool {
 /// the same reason the other way round.
 ///
 /// The rule itself is `polter_hostlog::plan`, tested on the Mac.
+///
+/// **The limits are the person's settings** (`poltergeist-log-keep-days`,
+/// `poltergeist-log-max-mb`, task 1511), read on the UI thread when the
+/// config is loaded and reloaded (`read_log_limits`). This thread starts
+/// before the config exists, so it waits for them -- a first pass with the
+/// defaults would delete what somebody had set to keep longer -- and when
+/// they have still not been read it skips that hour rather than guess.
+/// `poltergeist-log-keep-days` and `poltergeist-log-max-mb` as last read,
+/// `u32::MAX` for `unlimited`; meaningless until `LOG_LIMITS_KNOWN`.
+static LOG_KEEP_DAYS: AtomicU32 = AtomicU32::new(14);
+static LOG_MAX_MB: AtomicU32 = AtomicU32::new(128);
+static LOG_LIMITS_KNOWN: AtomicBool = AtomicBool::new(false);
+
+/// Read the log retention settings out of the config now in force. On the
+/// UI thread, at startup and after every reload, like the screenshot
+/// settings beside it (`shot::config_changed`).
+pub fn read_log_limits() {
+    const KEYS: [&str; 2] = ["poltergeist-log-keep-days", "poltergeist-log-max-mb"];
+    let cfg = config_handle();
+    if cfg.is_null() {
+        return;
+    }
+    let mut got = [0u32; 2];
+    for (key, out) in KEYS.iter().zip(got.iter_mut()) {
+        let ok = unsafe { (api().config_get)(cfg, out as *mut u32 as *mut c_void, key.as_ptr(), key.len()) };
+        if !ok {
+            // process-wide: one set of log limits per process
+            plogf!("[logs] {key} could not be read; the sweep keeps its last limits");
+            return;
+        }
+    }
+    LOG_KEEP_DAYS.store(got[0], Ordering::Release);
+    LOG_MAX_MB.store(got[1], Ordering::Release);
+    LOG_LIMITS_KNOWN.store(true, Ordering::Release);
+    // process-wide: as above
+    plogf!("[logs] retention: {} days, {} MB (u32::MAX is unlimited)", got[0], got[1]);
+}
+
 fn start_log_sweep() {
     const EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+    const WAIT_FOR_CONFIG: std::time::Duration = std::time::Duration::from_secs(120);
     let spawned = std::thread::Builder::new().name("polter-log-sweep".into()).spawn(|| {
         crate::name_this_thread("polter-log-sweep");
         let stem = log_stem();
         let me = std::process::id();
+        let started = std::time::Instant::now();
+        while !LOG_LIMITS_KNOWN.load(Ordering::Acquire) && started.elapsed() < WAIT_FOR_CONFIG {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
         loop {
-            let limits = polter_hostlog::Limits::DEFAULT;
+            if !LOG_LIMITS_KNOWN.load(Ordering::Acquire) {
+                // process-wide: the log directory belongs to the process
+                plogf!("[logs] sweep skipped: the retention settings have not been read");
+                std::thread::sleep(EVERY);
+                continue;
+            }
+            let limits = polter_hostlog::Limits::from_config(
+                LOG_KEEP_DAYS.load(Ordering::Acquire),
+                LOG_MAX_MB.load(Ordering::Acquire),
+            );
             match polter_hostlog::sweep(log_dir(), std::time::SystemTime::now(), &stem, me, &pid_is_live, limits) {
                 Ok(r) => {
                     // process-wide: the log directory belongs to the process
                     plogf!(
                         "[logs] sweep dir={} deleted={} kept={} kept_bytes={} failed={} \
-                         (limits: {} days, {} files, {} bytes)",
+                         (limits: {} days, {} bytes)",
                         log_dir().display(),
                         r.deleted.len(),
                         r.kept,
                         r.kept_bytes,
                         r.failed.len(),
                         limits.max_age.as_secs() / 86400,
-                        limits.max_files,
                         limits.max_bytes
                     );
                     for (name, why) in &r.failed {
@@ -7004,6 +7058,8 @@ fn main() {
     let config = unsafe { api_box.config_loader.load_config() };
     CONFIG.store(config, Ordering::Release);
     logf!("config ready ({:?})", config);
+    // The log sweep has been waiting for these (`start_log_sweep`).
+    read_log_limits();
 
     let rt = RuntimeConfig {
         userdata: std::ptr::null_mut(),
@@ -7172,8 +7228,11 @@ fn main() {
         session::restore(hwnd, !(has_x || has_y), !configured_size);
     }
 
-    // Shots older than a week, once per launch (screenshot.md §5).
-    shots::sweep_old();
+    // Old shots are the core's to clear, by the person's settings
+    // (`poltergeist-shots-keep-days` / `-max-mb`, task 1511): its sweep asks
+    // this host for the directory (`shot_agent`'s `directory`) and deletes
+    // only the names this host gives them. A fixed week here as well would
+    // overrule a setting of more.
     // The screenshot hotkey and the mouse trigger.
     shot::init();
 

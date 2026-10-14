@@ -45,6 +45,8 @@ const ID_FILTER: u16 = 100;
 const ID_OPEN_CONFIG: u16 = 101;
 const ID_RELOAD: u16 = 102;
 const ID_EDIT_KEYBINDS: u16 = 103;
+/// Log Management's "Show in Explorer": the state directory (`logs_ui`).
+const ID_REVEAL_LOGS: u16 = 104;
 const ID_ROW_BASE: u16 = 2000;
 /// The second box of a theme row (the dark half) is its row's id plus this;
 /// so is a folder row's "Choose…", and its "Show in Explorer" is the id
@@ -142,6 +144,7 @@ struct Fixed {
     open_config: HWND,
     reload: HWND,
     edit_keybinds: HWND,
+    reveal_logs: HWND,
 }
 
 struct State {
@@ -212,11 +215,11 @@ fn to_rect(r: Rect) -> RECT {
     RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
 }
 
-fn font() -> HFONT {
+pub(crate) fn font() -> HFONT {
     HFONT(FONT.load(Ordering::Acquire))
 }
 
-fn bold() -> HFONT {
+pub(crate) fn bold() -> HFONT {
     HFONT(FONT_BOLD.load(Ordering::Acquire))
 }
 
@@ -236,7 +239,7 @@ pub fn current() -> Group {
 // ================================================================ the core
 
 /// Ask the core by the persona buffer rule.
-fn ask_json(mut call: impl FnMut(*mut u8, usize) -> usize) -> Option<String> {
+pub(crate) fn ask_json(mut call: impl FnMut(*mut u8, usize) -> usize) -> Option<String> {
     let need = call(std::ptr::null_mut(), 0);
     if need == 0 {
         return None;
@@ -400,16 +403,16 @@ fn parse_form(text: &str, binding: impl Fn(&str) -> String) -> Option<Form> {
 }
 
 /// What a write came back with (`setJson`).
-struct SetResult {
-    ok: bool,
-    code: String,
-    message: Option<String>,
+pub(crate) struct SetResult {
+    pub(crate) ok: bool,
+    pub(crate) code: String,
+    pub(crate) message: Option<String>,
 }
 
 /// `ghostty_app_config_set`: `None` restores the default. The write happens
 /// once per call, so a result that did not fit is read back with
 /// `_set_result`, never by calling again.
-fn set(key: &str, value: Option<&str>) -> SetResult {
+pub(crate) fn set(key: &str, value: Option<&str>) -> SetResult {
     let failed = |m: &str| SetResult { ok: false, code: "failed".into(), message: Some(m.into()) };
     let Some(api) = crate::api_opt() else { return failed("NoApp") };
     let app = crate::app_opt();
@@ -459,7 +462,7 @@ fn make_fonts(dpi: i32) {
     }
 }
 
-fn set_font(h: HWND, f: HFONT) {
+pub(crate) fn set_font(h: HWND, f: HFONT) {
     unsafe {
         SendMessageW(h, WM_SETFONT, Some(WPARAM(f.0 as usize)), Some(LPARAM(1)));
     }
@@ -561,7 +564,14 @@ fn create(host: HWND) -> bool {
         )
         .unwrap_or_default();
         crate::settings_win::subclass_child(filter);
-        let fixed = Fixed { filter, open_config: button(ID_OPEN_CONFIG), reload: button(ID_RELOAD), edit_keybinds: button(ID_EDIT_KEYBINDS) };
+        let fixed = Fixed {
+            filter,
+            open_config: button(ID_OPEN_CONFIG),
+            reload: button(ID_RELOAD),
+            edit_keybinds: button(ID_EDIT_KEYBINDS),
+            reveal_logs: button(ID_REVEAL_LOGS),
+        };
+        crate::logs_ui::create(sec);
         set_fixed(fixed);
         label_fixed(fixed);
         // process-wide: the settings window's one General section
@@ -575,6 +585,7 @@ fn label_fixed(f: Fixed) {
         (f.open_config, tr("Open config file…")),
         (f.reload, tr("Reload Configuration")),
         (f.edit_keybinds, tr("Edit in Config File…")),
+        (f.reveal_logs, tr("Show in Explorer")),
     ] {
         set_font(h, font());
         set_text(h, &t);
@@ -740,6 +751,13 @@ fn read_diagnostics() -> Vec<String> {
 }
 
 /// Read the table (and the shortcuts) afresh and redraw everything.
+/// The value the config file holds for `key` now, as the core's table says
+/// it; `None` before the table is read. Log Management's fields read theirs
+/// here (`logs_ui`).
+pub(crate) fn form_value(key: &str) -> Option<String> {
+    ST.with(|c| c.borrow().form.as_ref()?.items.iter().find(|i| i.key == key).map(|i| i.value.clone()))
+}
+
 fn reload_form() {
     let form = read_form();
     let keybinds = crate::keybinds::rows();
@@ -785,7 +803,7 @@ fn laid() -> (shell::SectionGrid, i32) {
     (shell::section_grid(rc.right, rc.bottom, dpi, true), dpi)
 }
 
-fn metrics(f: HFONT) -> i32 {
+pub(crate) fn metrics(f: HFONT) -> i32 {
     let h = section();
     let mut tm = TEXTMETRICW::default();
     unsafe {
@@ -841,6 +859,7 @@ fn band_buttons(g: &shell::SectionGrid, dpi: i32, group: Group) -> Vec<(u16, Rec
         Group::Keybinds => vec![(ID_EDIT_KEYBINDS, tr("Edit in Config File…"))],
         Group::Advanced => vec![(ID_OPEN_CONFIG, tr("Open config file…")), (ID_RELOAD, tr("Reload Configuration"))],
         Group::About => Vec::new(),
+        Group::Logs => vec![(ID_REVEAL_LOGS, tr("Show in Explorer"))],
         _ => vec![(ID_OPEN_CONFIG, tr("Open config file…"))],
     };
     let top = g.actions[2].top;
@@ -1340,7 +1359,7 @@ fn relayout() {
     if let Some(f) = fixed() {
         // A search is across every group: the band is the form's own.
         let buttons = band_buttons(&g, dpi, if searching { Group::All } else { group });
-        for (id, h) in [(ID_OPEN_CONFIG, f.open_config), (ID_RELOAD, f.reload), (ID_EDIT_KEYBINDS, f.edit_keybinds)] {
+        for (id, h) in [(ID_OPEN_CONFIG, f.open_config), (ID_RELOAD, f.reload), (ID_EDIT_KEYBINDS, f.edit_keybinds), (ID_REVEAL_LOGS, f.reveal_logs)] {
             match buttons.iter().find(|(i, _)| *i == id) {
                 Some((_, r)) => place(h, *r, true),
                 None => place(h, Rect::new(0, 0, 1, 1), false),
@@ -1350,6 +1369,9 @@ fn relayout() {
     }
     place(form_hwnd(), body, group.is_form() || searching);
     place(kb_hwnd(), body, group == Group::Keybinds && !searching);
+    // Log Management is its own page over the whole editor: its notice
+    // runs edge to edge, and it keeps its own margins (`logs_ui`).
+    crate::logs_ui::place(g.editor, group == Group::Logs && !searching);
     kb_publish(group == Group::Keybinds && !searching);
     if group.is_form() || searching {
         layout_form(dpi);
@@ -1489,7 +1511,7 @@ fn directory_button(index: usize, part: u16) {
     }
 }
 
-fn say_status(text: String, warn: bool) {
+pub(crate) fn say_status(text: String, warn: bool) {
     ST.with(|c| {
         let s = &mut *c.borrow_mut();
         s.status = text;
@@ -1616,6 +1638,12 @@ fn write(index: usize, key: &str, value: Option<&str>) {
 /// group now lists other keys. A read that is not the form's own, right
 /// after a write, clears the refusals shown under the controls and the red
 /// status that said the same (#986).
+/// Read the core's table again after a write made elsewhere (Log
+/// Management's fields, `logs_ui`).
+pub(crate) fn refresh_form_values() {
+    refresh_values(FormRead::AfterOwnWrite);
+}
+
 fn refresh_values(read: FormRead) {
     if read == FormRead::Reread {
         ST.with(|c| {
@@ -1757,7 +1785,7 @@ unsafe extern "system" fn field_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 
 // ================================================================ painting
 
-fn fill(hdc: HDC, r: &RECT, colour: u32) {
+pub(crate) fn fill(hdc: HDC, r: &RECT, colour: u32) {
     unsafe {
         let b = CreateSolidBrush(COLORREF(colour));
         FillRect(hdc, r, b);
@@ -1765,7 +1793,7 @@ fn fill(hdc: HDC, r: &RECT, colour: u32) {
     }
 }
 
-fn draw_text(hdc: HDC, s: &str, r: &RECT, f: HFONT, colour: u32, flags: DRAW_TEXT_FORMAT) {
+pub(crate) fn draw_text(hdc: HDC, s: &str, r: &RECT, f: HFONT, colour: u32, flags: DRAW_TEXT_FORMAT) {
     let mut w: Vec<u16> = s.encode_utf16().collect();
     if w.is_empty() {
         return;
@@ -2185,6 +2213,7 @@ unsafe extern "system" fn section_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     ID_RELOAD => {
                         let _ = crate::reload::request(false, std::ptr::null_mut());
                     }
+                    ID_REVEAL_LOGS => crate::logs_ui::reveal(),
                     ID_FILTER if code == 0x0300 => {
                         let q = fixed().map(|f| get_text(f.filter)).unwrap_or_default();
                         set_query(q);

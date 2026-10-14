@@ -387,16 +387,11 @@ class AppDelegate: NSObject,
         // Store our start time
         applicationLaunchTime = ProcessInfo.processInfo.systemUptime
 
-        // Screenshots and pasted images older than a week go. Only files
-        // named the way `ShotStore` names them: `screenshot-directory` may
-        // point at a directory that holds other things.
-        let shots = ghostty.config.screenshotDirectory
-        DispatchQueue.global(qos: .utility).async {
-            let removed = ShotStore.cleanup(directory: shots)
-            if !removed.isEmpty {
-                Ghostty.logger.info("screenshots: removed \(removed.count, privacy: .public) files older than a week from \(shots.path, privacy: .public)")
-            }
-        }
+        // Old screenshots are the core's to clear now, by the person's
+        // settings (`poltergeist-shots-keep-days` / `-max-mb`, task 1511):
+        // its sweep asks this host where they are and deletes only the
+        // names `ShotStore` gives them. A fixed week here as well would
+        // overrule a setting of more.
 
         // The Language submenu is built from AppLanguage rather than the nib.
         setupLanguageMenu()

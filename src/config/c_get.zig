@@ -131,6 +131,23 @@ test "c_get: u8" {
     try testing.expectEqual(@as(f32, 24), cval);
 }
 
+test "c_get: a retention limit is its number, unlimited the maximum" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var c = try Config.default(alloc);
+    defer c.deinit();
+
+    var days: u32 = 0;
+    try testing.expect(get(&c, .@"poltergeist-log-keep-days", &days));
+    try testing.expectEqual(@as(u32, 14), days);
+
+    c.@"poltergeist-log-max-mb" = .{ .value = std.math.maxInt(u32) };
+    var mb: u32 = 0;
+    try testing.expect(get(&c, .@"poltergeist-log-max-mb", &mb));
+    try testing.expectEqual(std.math.maxInt(u32), mb);
+}
+
 test "c_get: enum" {
     const testing = std.testing;
     const alloc = testing.allocator;

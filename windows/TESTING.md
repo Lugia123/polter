@@ -67,7 +67,7 @@ info(i18n): loaded catalog locale=zh_CN entries=… path=…\share\locale\zh_CN\
 
 日志在 `%LOCALAPPDATA%\polter\logs\`（资源管理器地址栏粘这一串就能打开），主程序的文件名 `polter-host-<进程号>.log`（一次运行一个文件，挑时间最近的那个）。同一目录里还有：`polter-host.exe +mcp` / `polter-cli.exe +chat` 这类常驻子进程各自的 `<程序名>-<进程号>.log`，以及 `+hook`、`+statusline`、`+version` 这类一跑就退的命令共用的 `polter-cli-day-<年月日>.log`（每行带 `p<进程号>`）。想放别处可以设环境变量 `POLTER_HOST_LOG`，但测试用不着。
 
-**目录有上限**：主程序启动时清一次、之后每小时清一次——超过 7 天的删，其余从最旧的删起，直到不超过 100 个文件、总共不超过 64 MB；还在运行的进程的文件不删，不是这个程序起名的文件不碰。
+**目录有上限**：主程序启动时清一次、之后每小时清一次——超过保留天数的删，其余从最旧的删起，直到总共不超过上限；还在运行的进程的文件不删，不是这个程序起名的文件不碰。天数和上限是设置 `poltergeist-log-keep-days`（默认 14）与 `poltergeist-log-max-mb`（默认 128），在「设置 › 通用 › 日志管理」里改（#1511；在那之前是写死的 7 天 / 100 个文件 / 64 MB）。
 
 **旧版本留在 `polter-host.exe` 旁边的那些 `polter-host-*.log`、`polter-cli-*.log`（含 `-stdio-`）可以直接手动删掉**：新版本不再往那里写，也不会替你删它们（不是这一版写的文件，程序不碰）。
 

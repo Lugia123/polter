@@ -92,6 +92,9 @@ pub struct List {
     pub supervisor_roles: Vec<SupervisorRole>,
     /// Whether there is a choice of role to offer. The core's word.
     pub choose_supervisor_role: bool,
+    /// See `Snapshot::retention_waiting_bytes`: said once, under the
+    /// header, with an OK.
+    pub retention_waiting_bytes: Option<u64>,
 }
 
 /// The English of what this crate says; a host passes each through its
@@ -255,6 +258,7 @@ impl List {
             quiet_header: s.header_quiet,
             supervisor_roles: s.supervisor_roles.clone(),
             choose_supervisor_role: s.choose_supervisor_role,
+            retention_waiting_bytes: s.retention_waiting_bytes,
         }
     }
 

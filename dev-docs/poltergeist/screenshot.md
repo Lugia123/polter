@@ -226,6 +226,10 @@ mac `ImagePaste.separated` / `ImagePaste.separator`，Windows `paste.rs` 的常�
 - 文件名：`YYYYMMDD-HHMMSS-mmm.png`，本地时间，纯 ASCII、小写扩展名、无空格。
 - 清理：宿主启动时删掉该目录里**修改时间早于 7 天**、且文件名匹配上面模式的 `.png` 与
   同名 `.json`。只认这个模式——用户把目录指到别处时，不许删掉不是我们写的文件。
+  （**#1511 起改了谁来清**：不再是两个宿主各自在启动时按固定 7 天清，而是核心的清理线程按设置
+  `poltergeist-shots-keep-days`（默认 7）与 `-max-mb`（默认 512）清，启动时一次、之后每小时一次；
+  目录仍然问宿主，认的仍然是这个模式（`Sweeper.isShot`，与 `ShotStore.isOurs`、`windows/shots` 的
+  `sweep` 同一条规则）。见 [storage.md](storage.md)「保留与清理」。）
 - 文件权限：POSIX 下 `0600`，目录 `0700`。
 
 ## 6. 权限
@@ -1492,7 +1496,7 @@ GHOSTTY_API void ghostty_app_poltergeist_screenshot_complete(
 
 - 模式在第二轮扩成 `YYYYMMDD-HHMMSS-mmm` + 可选的 `-<1 到 3 位数字>` + `.png` / `.json`
   （后缀是长截图的分片）。**两个宿主的 7 天清理也要认这个扩展后的模式**，否则分片永远
-  不会被清。
+  不会被清。（#1511 起清理在核心，`Sweeper.isShot` 认这个扩展后的模式，有测试。）
 - 校验在核心（`src/poltergeist/` 下的纯函数，有测试）：取宿主报的目录，路径必须是它的
   **直接子项**（不许子目录、不许 `..`、不许符号链接指到外面——按解析后的真实路径比），
   文件名符合上面的模式。`screenshot_info`、`screenshot_annotate` 的 `path` 和宿主回来的
