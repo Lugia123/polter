@@ -50,7 +50,21 @@ pub fn items() comptime_int {
         // raise made here would stay in force for the caller -- which then
         // runs under this number instead of the one computed from it. Walking
         // the field lists costs almost nothing, as sublime's quota of 1 shows.
+        //
+        // **One exception, and why it is safe.** This walk runs under the
+        // *caller's* quota before the caller has raised it -- it is the
+        // argument to the caller's `@setEvalBranchQuota` -- and it crossed
+        // the default 1000 when the config grew past about 700 options
+        // (task 1511). So it raises the quota for itself, to 8 per field
+        // and action: about 6,000 today. What the warning above guards
+        // against is a raise here *larger* than the caller's own number,
+        // which would then be the one in force. `configWalk` is 128 per item
+        // and there is at least one item per field and action, so this is
+        // at most a sixteenth of it -- half of even the `configWalk()/8`
+        // floor #826 used -- and the caller's number is still the one that
+        // decides.
 
+        @setEvalBranchQuota(8 * (config_fields.len + actions.len));
         var total: comptime_int = 0;
         for (config_fields) |field| total += 1 + memberCount(field.type);
         for (actions) |action| {

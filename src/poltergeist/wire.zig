@@ -548,6 +548,7 @@ fn parseAgentEvent(aa: Allocator, params: ?std.json.ObjectMap) ParseError!AgentE
         .event = kind,
         .cli = try requireString(aa, params, "cli"),
         .session_id = try optionalString(aa, params, "session_id"),
+        .transcript_path = try optionalString(aa, params, "transcript_path"),
         .detail = try optionalString(aa, params, "detail"),
         .note = try optionalString(aa, params, "note"),
         .text = if (text) |t| AgentEvent.cutBytes(t, AgentEvent.max_text_bytes) else null,

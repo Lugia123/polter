@@ -1750,11 +1750,72 @@ command: ?Command = null,
 /// paths, and a scrubber that catches nine keys in ten would be worse than
 /// none -- it would make the file feel safe to send somewhere, and the tenth
 /// key would go with it. Treat this the way you treat your shell history.
-/// Like the chat record it is never rotated or trimmed, so it grows for as
-/// long as the terminal keeps printing.
+///
+/// **It is kept going round, not for ever.** One terminal running a dev
+/// server can write hundreds of megabytes in a month. How long each part
+/// is kept depends on what it belongs to -- a group, a project, or
+/// nothing -- and is set by `poltergeist-terminal-log-group-max-mb`,
+/// `poltergeist-terminal-log-project-keep-days` and the rest beside this.
+/// (This used to say the transcript was never rotated or trimmed. That was
+/// true until there was a way to say how much of it to keep.)
 ///
 /// Turn it off if you would rather nothing was written down.
 @"poltergeist-terminal-log": bool = true,
+
+/// How many days of a terminal's transcript are kept when, at the time it
+/// was written, the terminal was in no group and no project. `unlimited`
+/// keeps them for ever.
+///
+/// The oldest go first, once a day has passed this many. Today's file of a
+/// terminal that is still writing is never deleted. See also
+/// `poltergeist-terminal-log-max-mb`.
+///
+/// Checked when Polter starts and every hour after, by the application
+/// itself and not by any command it runs.
+@"poltergeist-terminal-log-keep-days": Limit(u32, 30) = .default,
+
+/// How many megabytes of transcript, of terminals that were in no group and
+/// no project, are kept in all. Past it the oldest files go until what is
+/// left fits. `unlimited` sets no total.
+@"poltergeist-terminal-log-max-mb": Limit(u32, 512) = .default,
+
+/// How many days of transcript are kept from terminals that were in a
+/// project's tab but in no group. `unlimited` keeps them for ever.
+@"poltergeist-terminal-log-project-keep-days": Limit(u32, 90) = .default,
+
+/// How many megabytes of transcript are kept, in all, from terminals that
+/// were in a project's tab but in no group.
+@"poltergeist-terminal-log-project-max-mb": Limit(u32, 1024) = .default,
+
+/// How many megabytes of transcript are kept, in all, from terminals that
+/// were members of a group at the time.
+///
+/// These are kept by size only, never by age: they are the record of the
+/// work a group did, which is what a supervisor looks back through. Set it
+/// to `unlimited` to keep them for as long as the group's chat is kept,
+/// which is for ever.
+@"poltergeist-terminal-log-group-max-mb": Limit(u32, 2048) = .default,
+
+/// How many days of Polter's own logs are kept: plugins' older log
+/// generations, crash reports, the hourly group snapshots, and on Windows
+/// the host's log files. `unlimited` keeps them for ever.
+///
+/// Two weeks, because a problem is usually noticed and asked about within
+/// a few days, and the logs from before it are what explain it.
+@"poltergeist-log-keep-days": Limit(u32, 14) = .default,
+
+/// How many megabytes of Polter's own logs are kept in all. Past it the
+/// oldest go until what is left fits. A log being written now is never
+/// deleted.
+@"poltergeist-log-max-mb": Limit(u32, 128) = .default,
+
+/// How many days of screenshots are kept in the screenshot directory.
+/// Only Polter's own screenshots are ever deleted, never anything else in
+/// that directory.
+@"poltergeist-shots-keep-days": Limit(u32, 7) = .default,
+
+/// How many megabytes of screenshots are kept in all.
+@"poltergeist-shots-max-mb": Limit(u32, 512) = .default,
 
 /// Deprecated, and does nothing.
 ///

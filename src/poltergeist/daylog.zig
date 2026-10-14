@@ -354,7 +354,7 @@ pub fn Tree(comptime Owner: type) type {
         }
 
         /// The day file `name` is, or null when it is not one.
-        fn parseDayFile(name: []const u8) ?DayFile {
+        pub fn parseDayFile(name: []const u8) ?DayFile {
             if (!std.mem.endsWith(u8, name, ".jsonl")) return null;
             const stem = name[0 .. name.len - ".jsonl".len];
             if (stem.len < 10) return null;

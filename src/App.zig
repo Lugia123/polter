@@ -97,6 +97,25 @@ task_log: ?poltergeistpkg.TaskLog = null,
 /// program, read by nobody until somebody goes looking; see `StatsLog`.
 stats_log: ?poltergeistpkg.StatsLog = null,
 
+/// Who was in which group, when, and what agent session they ran: what ties
+/// a terminal's transcript to a group (task 1511). See `SessionLog`.
+session_log: ?poltergeistpkg.SessionLog = null,
+
+/// What each terminal was beside its transcript: agent session, project
+/// tab, role (task 1511). See `TerminalMeta`.
+terminal_meta: ?poltergeistpkg.TerminalMeta = null,
+
+/// What goes round -- logs, transcripts, screenshots -- kept to its limits
+/// on a thread of its own: at start and every hour (task 1511). Started by
+/// the first terminal, whether or not the chat log is on.
+sweeper: ?poltergeistpkg.Sweeper = null,
+
+/// The sweeper's limits, as the configuration last said them.
+sweep_limits: SweepLimits = .{},
+
+/// The state directory the sweeper works in. Owned.
+sweep_state_dir: ?[]const u8 = null,
+
 /// The group shells on disk, so the list has last night's groups in it.
 ///
 /// The same state directory and the same condition as `chat_log`, because
@@ -563,6 +582,10 @@ pub fn deinit(self: *App) void {
     if (self.chat_log) |*l| l.deinit();
     if (self.task_log) |*l| l.deinit();
     if (self.stats_log) |*l| l.deinit();
+    if (self.session_log) |*l| l.deinit();
+    if (self.terminal_meta) |*m| m.deinit();
+    if (self.sweeper) |*w| w.deinit();
+    if (self.sweep_state_dir) |d| self.alloc.free(d);
     self.poltergeist_nudged.deinit(self.alloc);
     if (self.group_log) |*l| l.deinit();
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
@@ -1215,6 +1238,7 @@ fn projectsWork(self: *App, alloc: Allocator, now_ms: u64) Allocator.Error!polte
             // answered, and is not asked on behalf of again.
             self.chat.setProjectClaim(c.group, null);
             if (self.group_log) |*l| l.project(c.group, self.chat.projectOf(c.group));
+            self.noteGroupProject(c.group);
             log.info("poltergeist: a group's project {s}", .{if (c.project == null) "is gone; it is started by directory again" else "is written down"});
         }
     }
@@ -1253,6 +1277,7 @@ fn deliverProjectLaunch(self: *App, now_ms: u64) void {
 fn controlActStateProjects(ctx: *anyopaque, list: []const poltergeistpkg.Projects.Stated) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     try self.projects.state(list);
+    self.noteTerminalProjects();
 
     // The panes a project's supervisor opened, said back after a restart
     // or a restore: the terminals are new and nothing in memory knows
@@ -1292,6 +1317,7 @@ fn controlActProjectFailed(ctx: *anyopaque, name: []const u8, why: poltergeistpk
         if (self.chat.setProject(group, .undecided) catch false) {
             self.chat.setProjectClaim(group, null);
             if (self.group_log) |*l| l.project(group, .undecided);
+            self.noteGroupProject(group);
         }
     }
     log.info("control room: a group's project did not open ({t})", .{why});
@@ -1363,6 +1389,7 @@ fn poltergeistGroupProject(
             if (self.chat.projectOf(group) == .declined) {
                 _ = try self.chat.setProject(group, .undecided);
                 if (self.group_log) |*l| l.project(group, .undecided);
+                self.noteGroupProject(group);
             }
             self.chat.setProjectClaim(group, null);
             self.chat.setProjectClaim(group, .{ .terminal = id, .said = true });
@@ -1372,6 +1399,7 @@ fn poltergeistGroupProject(
         if (steward == null or steward.? != id) return error.NotItsSupervisor;
         if (try self.chat.setProject(group, .declined)) {
             if (self.group_log) |*l| l.project(group, .declined);
+            self.noteGroupProject(group);
         }
         self.chat.setProjectClaim(group, null);
         why = .declined;
@@ -1614,6 +1642,8 @@ pub fn applyPoltergeistSettings(self: *App, config: *const Config) void {
         config.@"poltergeist-worker-nudge-after".duration / std.time.ns_per_ms;
     self.poltergeist_compact_after = config.@"poltergeist-compact-after".value;
     self.poltergeist_screenshot_allowed = config.@"screenshot-agent-access" == .allow;
+    self.sweep_limits = SweepLimits.from(config);
+    self.configureSweeper();
 
     // The default may have moved under every terminal that has not said
     // for itself: the menus read it off the mark, the control room off the
@@ -2398,6 +2428,83 @@ fn sessionSnapshot(
 /// Same reasoning as the socket: `updateConfig` runs only on a config
 /// *reload*, which neither apprt does at launch, so waiting for it would
 /// mean nothing was written down until somebody reloaded by hand.
+/// The limits of everything the sweeper keeps, from the configuration.
+const SweepLimits = struct {
+    const Limits = poltergeistpkg.Retention.Limits;
+    logs: Limits = .unlimited,
+    shots: Limits = .unlimited,
+    group: Limits = .unlimited,
+    project: Limits = .unlimited,
+    other: Limits = .unlimited,
+    /// False until a configuration has been read: until then nothing is
+    /// swept rather than everything being kept by the defaults' absence.
+    known: bool = false,
+
+    fn from(config: *const Config) SweepLimits {
+        return .{
+            .logs = .fromConfig(config.@"poltergeist-log-keep-days".value, config.@"poltergeist-log-max-mb".value),
+            .shots = .fromConfig(config.@"poltergeist-shots-keep-days".value, config.@"poltergeist-shots-max-mb".value),
+            .group = .fromConfig(std.math.maxInt(u32), config.@"poltergeist-terminal-log-group-max-mb".value),
+            .project = .fromConfig(config.@"poltergeist-terminal-log-project-keep-days".value, config.@"poltergeist-terminal-log-project-max-mb".value),
+            .other = .fromConfig(config.@"poltergeist-terminal-log-keep-days".value, config.@"poltergeist-terminal-log-max-mb".value),
+            .known = true,
+        };
+    }
+};
+
+/// Start the sweeper, once, in the state directory. Called as each
+/// terminal starts; only the first does anything. Never by a command
+/// Polter runs: those do not have an `App`.
+pub fn ensureSweeper(self: *App) void {
+    if (self.sweeper != null) return;
+
+    const io = global.io();
+    var environ_map = global.environMap() catch return;
+    defer environ_map.deinit();
+    const state_dir = internal_os.xdg.state(io, self.alloc, &environ_map, .{ .subdir = "polter" }) catch |err| {
+        log.warn("poltergeist: no state directory to keep tidy err={}", .{err});
+        return;
+    };
+    self.sweep_state_dir = state_dir;
+    self.sweeper = .init(self.alloc, io);
+    self.configureSweeper();
+    if (self.sweeper) |*w| w.start() catch |err| {
+        log.warn("poltergeist: could not start the sweeper err={}", .{err});
+    };
+}
+
+/// Hand the sweeper what it is to keep, now: the limits, and where the
+/// host puts screenshots.
+fn configureSweeper(self: *App) void {
+    const w = if (self.sweeper) |*v| v else return;
+    const state_dir = self.sweep_state_dir orelse return;
+    if (!self.sweep_limits.known) return;
+
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const shots_dir: ?[]const u8 = shots: {
+        const reply = poltergeistScreenshotHost(self, arena.allocator(), poltergeistpkg.Chat.user_id, .{
+            .op = .directory,
+            .spec = poltergeistpkg.screenshot.directory_spec,
+        }, "") catch break :shots null;
+        break :shots switch (reply) {
+            .done => |json| poltergeistpkg.screenshot.directoryOf(arena.allocator(), json),
+            else => null,
+        };
+    };
+
+    const l = self.sweep_limits;
+    w.configure(.{
+        .state_dir = state_dir,
+        .shots_dir = shots_dir,
+        .logs = l.logs,
+        .shots = l.shots,
+        .group = l.group,
+        .project = l.project,
+        .other = l.other,
+    }) catch |err| log.warn("poltergeist: could not configure the sweeper err={}", .{err});
+}
+
 pub fn ensureChatLog(self: *App, want: bool) void {
     if (!want or self.chat_log != null) return;
 
@@ -2485,6 +2592,21 @@ pub fn ensureChatLog(self: *App, want: bool) void {
         self.stats_log = l;
     } else |err| {
         log.warn("poltergeist: could not open the stats log err={}", .{err});
+    }
+
+    // Who was in which group: what a transcript is found by later.
+    if (poltergeistpkg.SessionLog.open(self.alloc, io, state_dir)) |l| {
+        self.session_log = l;
+        // Groups from before this record: who was in them, as far as the
+        // chat and the panel say. Once per group, before anybody joins.
+        if (self.session_log) |*sl| sl.backfill(state_dir, self.poltergeistWallMs(), poltergeistpkg.Chat.user_id);
+    } else |err| {
+        log.warn("poltergeist: could not open the session log err={}", .{err});
+    }
+    if (poltergeistpkg.TerminalMeta.open(self.alloc, io, state_dir)) |m| {
+        self.terminal_meta = m;
+    } else |err| {
+        log.warn("poltergeist: could not open the terminal notes err={}", .{err});
     }
 
     // And the groups those tasks are filed under. **Before this, the panel
@@ -2587,6 +2709,10 @@ fn closeRecordsAfterDeferredRename(self: *App, state_dir: []const u8) void {
     self.task_log = null;
     if (self.stats_log) |*l| l.deinit();
     self.stats_log = null;
+    if (self.session_log) |*l| l.deinit();
+    self.session_log = null;
+    if (self.terminal_meta) |*m| m.deinit();
+    self.terminal_meta = null;
     if (self.group_log) |*l| l.deinit();
     self.group_log = null;
     if (self.poltergeist_state_dir) |p| self.alloc.free(p);
@@ -3480,6 +3606,7 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     // which for a terminal that has just gone still is a whole threshold
     // away; still bounded by `poltergeist-notice-interval`.
     if (pending.request == .agent_event) {
+        if (caller.terminalId()) |id| self.noteAgentSession(id, pending.request.agent_event);
         _ = self.poltergeist.considerAgents(now_ms);
         self.deliverPoltergeistNotices(now_ms);
 
@@ -3851,6 +3978,7 @@ fn startRoleIn(
     };
     self.wakePersonaWaits(id);
     self.refreshPoltergeistTabs();
+    if (self.terminal_meta) |*m| m.role(id, self.poltergeistWallMs(), choice.key);
 
     try surface.typePoltergeistTextAs(line, true, who);
 }
@@ -6960,6 +7088,7 @@ fn closeStoreHandles(ctx: ?*anyopaque) void {
         .chat_log_stream, .chat_log_tree => if (self.chat_log) |*l| l.closeHandles(),
         .task_log_tree => if (self.task_log) |*l| l.closeHandles(),
         .stats_log_tree => if (self.stats_log) |*l| l.closeHandles(),
+        .session_log_tree => if (self.session_log) |*l| l.closeHandles(),
     };
 }
 
@@ -7210,6 +7339,7 @@ fn chatAdd(
     const footing = self.footingOf(fixed.allocator(), id);
 
     try self.chat.add(group, id, history, footing);
+    self.noteJoined(group, id, footing);
 
     // A supervisor joining: if that makes it this group's, what it is is
     // written down for whoever starts the next one.
@@ -7276,6 +7406,77 @@ fn footingOf(
     return out;
 }
 
+/// Write down that `id` joined `group`, with what is known of it now
+/// (task 1511). The footing is the one `Chat.add` was just given.
+fn noteJoined(self: *App, group: []const u8, id: poltergeistpkg.Bus.Id, footing: poltergeistpkg.Chat.Footing) void {
+    const l = if (self.session_log) |*v| v else return;
+    const agent = self.poltergeist.agentOf(id);
+    const role: []const u8 = if (self.personas.launchOf(id)) |launch| launch.role else switch (self.poltergeist.roleOf(id)) {
+        .supervisor => "supervisor",
+        .watched => "worker",
+        else => "",
+    };
+    l.joined(group, self.poltergeistWallMs(), id, .{
+        .role = role,
+        .cli = agent.cli.get() orelse "",
+        .cwd = footing.cwd,
+        .title = footing.title,
+        .session_id = agent.session_id.get() orelse "",
+        .transcript_path = if (self.terminal_meta) |*m| m.transcriptPathOf(id) else "",
+    }, false);
+}
+
+/// An agent said which session it is: beside its transcript, and in every
+/// group it is in, when that is news.
+fn noteAgentSession(self: *App, id: poltergeistpkg.Bus.Id, ev: poltergeistpkg.agent_event.Event) void {
+    const sid = ev.session_id orelse return;
+    const m = if (self.terminal_meta) |*v| v else return;
+    const path = ev.transcript_path orelse "";
+    const at = self.poltergeistWallMs();
+    if (!m.agent(id, at, ev.cli, sid, path)) return;
+    const l = if (self.session_log) |*v| v else return;
+    var it = self.chat.groups.iterator();
+    while (it.next()) |kv| {
+        if (!self.chat.isMember(kv.key_ptr.*, id)) continue;
+        l.agent(kv.key_ptr.*, at, id, .{ .cli = ev.cli, .session_id = sid, .transcript_path = path });
+    }
+}
+
+/// The host has said which tab is in which project: each terminal's, as
+/// far as it changed.
+fn noteTerminalProjects(self: *App) void {
+    const m = if (self.terminal_meta) |*v| v else return;
+    const at = self.poltergeistWallMs();
+    for (self.surfaces.items) |rt| {
+        const id = poltergeistpkg.Bus.idOf(rt.core());
+        m.project(id, at, if (self.projects.projectOf(id)) |p| p.name else null);
+    }
+}
+
+/// A group's tie to a project changed: written beside who was in it, so
+/// that "which project" can be asked of a time and not only of now.
+fn noteGroupProject(self: *App, group: []const u8) void {
+    const l = if (self.session_log) |*v| v else return;
+    const name: ?[]const u8 = switch (self.chat.projectOf(group)) {
+        .bound => |n| n,
+        .undecided, .declined => null,
+    };
+    l.project(group, self.poltergeistWallMs(), name);
+}
+
+/// A terminal is going: it leaves every group it is in, on the record.
+/// Called by `Surface.deinit` before `Chat.forget` takes it out of memory.
+pub fn poltergeistTerminalGone(self: *App, id: poltergeistpkg.Bus.Id) void {
+    if (self.session_log) |*l| {
+        const at = self.poltergeistWallMs();
+        var it = self.chat.groups.iterator();
+        while (it.next()) |kv| {
+            if (self.chat.isMember(kv.key_ptr.*, id)) l.left(kv.key_ptr.*, at, id, false);
+        }
+    }
+    if (self.terminal_meta) |*m| m.forget(id);
+}
+
 fn chatOwner(ctx: *anyopaque, group: []const u8) anyerror!poltergeistpkg.Bus.Id {
     const self: *App = @ptrCast(@alignCast(ctx));
     return self.chat.createdBy(group);
@@ -7288,6 +7489,7 @@ fn chatRemove(
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     try self.chat.remove(group, id);
+    if (self.session_log) |*l| l.left(group, self.poltergeistWallMs(), id, false);
     self.saveSession();
 }
 

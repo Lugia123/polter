@@ -77,6 +77,12 @@ pub const Event = struct {
 
     session_id: ?[]const u8,
 
+    /// Where the CLI keeps its own record of this session, when it says:
+    /// Claude Code's `transcript_path`. Not read by Polter -- the file is
+    /// the CLI's -- only remembered beside the session, so that whoever
+    /// looks back through a group can be pointed at it (task 1511).
+    transcript_path: ?[]const u8,
+
     /// The short word for what happened: the session's `source`, the
     /// error type, the tool name, the notification type.
     detail: ?[]const u8,
@@ -103,6 +109,7 @@ pub const Event = struct {
         .event = .hooks_expected,
         .cli = "",
         .session_id = null,
+        .transcript_path = null,
         .detail = null,
         .note = null,
         .text = null,
@@ -170,6 +177,7 @@ fn claudeCode(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error
     var ev: Event = .none;
     ev.cli = "claude-code";
     ev.session_id = try requireString(obj, "session_id");
+    ev.transcript_path = try optionalString(obj, "transcript_path");
 
     if (std.mem.eql(u8, hook, "SessionStart")) {
         ev.event = .session_started;

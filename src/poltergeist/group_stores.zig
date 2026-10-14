@@ -36,6 +36,11 @@ pub const Root = enum {
     /// Hourly snapshots.
     stats,
 
+    /// Who was in the group, when, as what, and which agent session they
+    /// ran (`SessionLog`, task 1511). What ties a terminal's transcript to
+    /// the group, so it has to go wherever the group's name goes.
+    sessions,
+
     pub fn subdir(self: Root) []const u8 {
         return @tagName(self);
     }
@@ -87,4 +92,7 @@ pub const Handle = enum {
 
     /// `StatsLog`'s open day file.
     stats_log_tree,
+
+    /// `SessionLog`'s open day file.
+    session_log_tree,
 };

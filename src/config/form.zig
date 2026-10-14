@@ -42,7 +42,7 @@ const log = std.log.scoped(.config_form);
 
 /// The groups of §7.1 that hold a chosen set of keys. "All options" is not
 /// one of them: it is every key, and every item is in it.
-pub const Group = enum { appearance, font, terminal, window, polter, screenshot };
+pub const Group = enum { appearance, font, terminal, window, polter, logs, screenshot };
 
 /// What a host draws for a key. Derived from the field's type by
 /// `controlOf` unless the table says otherwise.
@@ -184,6 +184,17 @@ pub const table = [_]Item{
     .{ .key = .@"poltergeist-pane-frames", .group = .polter, .label = i18n.N_("Frames Around Split Panes"), .summary = i18n.N_("Draw a frame round each pane of a split.") },
     .{ .key = .@"poltergeist-chat-log", .group = .polter, .label = i18n.N_("Keep Chat Log"), .summary = i18n.N_("Write what the terminals say to each other to disk.") },
     .{ .key = .@"poltergeist-terminal-log", .group = .polter, .label = i18n.N_("Keep Terminal Transcripts"), .summary = i18n.N_("Keep a transcript of what ran in each terminal.") },
+    // Log management (task 1511): how long each kind of record is kept.
+    // Written `14` or `unlimited`, which is why these are text boxes.
+    .{ .key = .@"poltergeist-terminal-log-group-max-mb", .group = .logs, .label = i18n.N_("Group Transcripts, Total MB"), .summary = i18n.N_("Transcripts written while in a group, kept by size only."), .aliases = &.{ "transcript", "retention", "cleanup", "disk", "终端记录", "上下文", "保留", "清理", "群" } },
+    .{ .key = .@"poltergeist-terminal-log-project-keep-days", .group = .logs, .label = i18n.N_("Project Transcripts, Days"), .summary = i18n.N_("Days kept of transcripts from a project's tabs."), .aliases = &.{ "transcript", "retention", "project", "终端记录", "上下文", "保留", "项目" } },
+    .{ .key = .@"poltergeist-terminal-log-project-max-mb", .group = .logs, .label = i18n.N_("Project Transcripts, Total MB"), .summary = i18n.N_("Megabytes kept of transcripts from a project's tabs."), .aliases = &.{ "transcript", "retention", "project", "终端记录", "上下文", "保留", "项目" } },
+    .{ .key = .@"poltergeist-terminal-log-keep-days", .group = .logs, .label = i18n.N_("Other Transcripts, Days"), .summary = i18n.N_("Days kept of transcripts in no group or project."), .aliases = &.{ "transcript", "retention", "终端记录", "上下文", "保留" } },
+    .{ .key = .@"poltergeist-terminal-log-max-mb", .group = .logs, .label = i18n.N_("Other Transcripts, Total MB"), .summary = i18n.N_("Megabytes kept of transcripts in no group or project."), .aliases = &.{ "transcript", "retention", "终端记录", "上下文", "保留" } },
+    .{ .key = .@"poltergeist-log-keep-days", .group = .logs, .label = i18n.N_("Logs, Days"), .summary = i18n.N_("Days kept of Polter's own logs and crash reports."), .aliases = &.{ "log", "logs", "retention", "crash", "日志", "保留", "清理" } },
+    .{ .key = .@"poltergeist-log-max-mb", .group = .logs, .label = i18n.N_("Logs, Total MB"), .summary = i18n.N_("Megabytes kept of Polter's own logs."), .aliases = &.{ "log", "logs", "retention", "日志", "保留", "清理" } },
+    .{ .key = .@"poltergeist-shots-keep-days", .group = .logs, .label = i18n.N_("Screenshots, Days"), .summary = i18n.N_("Days kept of Polter's screenshots."), .aliases = &.{ "screenshot", "retention", "截图", "保留", "清理" } },
+    .{ .key = .@"poltergeist-shots-max-mb", .group = .logs, .label = i18n.N_("Screenshots, Total MB"), .summary = i18n.N_("Megabytes kept of Polter's screenshots."), .aliases = &.{ "screenshot", "retention", "截图", "保留", "清理" } },
     .{ .key = .language, .group = .polter, .label = i18n.N_("Language"), .summary = i18n.N_("The interface language; empty follows the system.") },
 
     // Screenshot (screenshot.md §12.1)
@@ -2409,6 +2420,7 @@ const MachineEntries = struct {
             .window => "窗口与标签页",
             .polter => "Polter",
             .screenshot => "截图",
+            .logs => "日志管理",
         };
     }
 
@@ -2508,9 +2520,11 @@ const MachineEntries = struct {
 
 test "config search: the readings the test machine took still hold (#1093 S7)" {
     const M = MachineEntries;
-    // The four settings, the shortcut row, and the shortcut page's action.
-    try M.expectCount("截图", 6);
-    try M.expectCount("screenshot", 6);
+    // The four settings, the shortcut row, and the shortcut page's action;
+    // and since #1511, the two rows of log management that say how long
+    // screenshots are kept.
+    try M.expectCount("截图", 8);
+    try M.expectCount("screenshot", 8);
     try M.expectCount("capture", 3);
     try M.expectNames("SCREENSHOT-DIR", &.{"截图保存位置"});
     try M.expectCount("总管", 4);

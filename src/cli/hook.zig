@@ -218,7 +218,7 @@ pub fn writeRequest(w: *std.Io.Writer, ev: AgentEvent.Event) std.Io.Writer.Error
     try s.write(@tagName(ev.event));
     try s.objectField("cli");
     try s.write(ev.cli);
-    inline for (.{ "session_id", "detail", "note", "text" }) |name| {
+    inline for (.{ "session_id", "transcript_path", "detail", "note", "text" }) |name| {
         if (@field(ev, name)) |v| {
             try s.objectField(name);
             try s.write(v);

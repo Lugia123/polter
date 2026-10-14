@@ -778,6 +778,7 @@ pub fn init(
             config.@"poltergeist-mcp" and config.@"poltergeist-register-mcp",
         );
         app.ensureChatLog(config.@"poltergeist-chat-log");
+        app.ensureSweeper();
 
         // What the bus does by default -- whether a supervisor may answer a
         // prompt here, above all -- from the configuration this terminal
@@ -1075,6 +1076,7 @@ pub fn deinit(self: *Surface) void {
     // `errdefer` that can fire before the core surface exists, where there
     // is no id to read. Here `self` is the core surface by definition.
     self.app.poltergeist.unregister(self.id);
+    self.app.poltergeistTerminalGone(self.id);
     self.app.chat.forget(self.id);
 
     // The tasks stay, without an owner. What a terminal was working on is

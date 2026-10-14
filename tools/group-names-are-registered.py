@@ -62,6 +62,8 @@ GROUP_NAME_FILES = {
     "src/poltergeist/rpc.zig": "the request/response surface: groups are named by callers",
     "src/poltergeist/wire.zig": "parses the request fields",
     "src/poltergeist/Transcript.zig": "terminals, not groups: its `group`-like parameters are the daylog path segment",
+    "src/poltergeist/SessionLog.zig": "sessions/<group>/ (group_stores.Root.sessions); what it reads back carries the name it was filed under",
+    "src/poltergeist/Records.zig": "works out which transcripts belong to which group from a SessionLog record already read; stores nothing by name",
 }
 
 TREE_FILES = {
@@ -72,6 +74,7 @@ TREE_FILES = {
     "src/poltergeist/daylog.zig",
     "src/poltergeist/group_stores.zig",
     "src/poltergeist/GroupRename.zig",
+    "src/poltergeist/SessionLog.zig",
 }
 
 # (file, field name) -> what it is
@@ -88,6 +91,7 @@ MAP_FIELDS = {
     ("src/poltergeist/PersonaStore.zig", "states"): "keyed by terminal id",
     ("src/poltergeist/PersonaStore.zig", "launches"): "keyed by terminal id",
     ("src/poltergeist/PersonaStore.zig", "standings"): "keyed by terminal id",
+    ("src/poltergeist/TerminalMeta.zig", "last"): "keyed by terminal id",
 }
 
 FIELD_GROUP = re.compile(r"^\s*(pub\s+)?group\s*:\s*\[\]const u8")
