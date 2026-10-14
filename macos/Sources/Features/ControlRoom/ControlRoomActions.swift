@@ -42,6 +42,8 @@ struct ControlRoomActions {
         /// directory is the one the core's snapshot names.
         case startSupervisor(group: String, role: String? = nil, cwd: String? = nil,
                              session: ControlRoomStartChoice.Session? = nil)
+        /// The person said OK to the first sweep of old records (task 1511).
+        case retentionAgree
     }
 
     /// Why an action was not done. `name` is the core's word for it and is
@@ -166,6 +168,8 @@ struct ControlRoomActions {
             if let cwd { request["cwd"] = cwd }
             if let session { request["session"] = session.rawValue }
             return request
+        case .retentionAgree:
+            return ["act": "retention_agree"]
         }
     }
 

@@ -1650,6 +1650,12 @@ GHOSTTY_API bool ghostty_app_plugin_configure(ghostty_app_t, const char*, uintpt
 // src/config/form.zig. Same buffer rule as the persona calls. Read from the
 // files on disk each call, so call it again when the window takes focus.
 GHOSTTY_API uintptr_t ghostty_app_config_form(ghostty_app_t, char*, uintptr_t);
+GHOSTTY_API uintptr_t ghostty_app_storage_usage(ghostty_app_t, char*, uintptr_t);
+GHOSTTY_API uintptr_t ghostty_app_storage_clear(ghostty_app_t,
+                                                const char*,
+                                                uintptr_t,
+                                                char*,
+                                                uintptr_t);
 // Set one key in the main config file: (key, key_len, value, value_len,
 // buf, cap). A NULL value restores the default. The result is JSON
 // (`setJson` in src/config/form.zig) under the same buffer rule, but the

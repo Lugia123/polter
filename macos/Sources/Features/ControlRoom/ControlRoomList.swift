@@ -325,6 +325,10 @@ struct ControlRoomList: Equatable {
     /// Whether there is a choice of role to offer. The core's word, not
     /// `supervisorRoles.count`.
     var chooseSupervisorRole: Bool = false
+    /// The first sweep of old records is waiting for the person, and would
+    /// delete this much (task 1511); nil when nothing waits. Said once, as
+    /// a note under the header with an OK.
+    var retentionWaitingBytes: UInt64?
 
     /// Every row in the order it is listed, which is the order the up and
     /// down keys walk.
@@ -718,6 +722,8 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     /// then there is no role to start one in and nothing is offered.
     var supervisor_roles: [SupervisorRole]?
     var choose_supervisor_role: Bool?
+    /// Absent before task 1511, and then nothing waits.
+    var retention_waiting_bytes: UInt64?
 }
 
 /// Which waiting glyph breathes.
@@ -882,7 +888,8 @@ extension ControlRoomList {
             quietHeader: snapshot.header_quiet,
             quota: snapshot.quota,
             supervisorRoles: (snapshot.supervisor_roles ?? []).map { SupervisorRole(key: $0.key, name: $0.name) },
-            chooseSupervisorRole: snapshot.choose_supervisor_role ?? false)
+            chooseSupervisorRole: snapshot.choose_supervisor_role ?? false,
+            retentionWaitingBytes: snapshot.retention_waiting_bytes)
     }
 
     static func decode(snapshot json: Data, showing: String? = nil, loneRows: Bool = false) throws -> ControlRoomList {

@@ -9,13 +9,13 @@ struct GeneralRulesTests {
     /// then the three that need no form.
     @Test func theGroupsAreTheSpecsInItsOrder() {
         #expect(GeneralGroup.allCases.map(\.rawValue) == [
-            "appearance", "font", "terminal", "windows", "polter", "all", "screenshot", "keybinds", "advanced", "about",
+            "appearance", "font", "terminal", "windows", "polter", "logs", "all", "screenshot", "keybinds", "advanced", "about",
         ])
     }
 
     @Test func onlyTheFormGroupsWaitForTheCoresTable() {
         #expect(GeneralGroup.allCases.filter(\.needsForm)
-            == [.appearance, .font, .terminal, .windows, .polter, .all, .screenshot])
+            == [.appearance, .font, .terminal, .windows, .polter, .logs, .all, .screenshot])
     }
 
     @Test func aRouteLandsOnTheGroupItNames() {

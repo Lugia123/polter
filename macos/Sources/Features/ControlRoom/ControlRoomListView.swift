@@ -35,6 +35,8 @@ struct ControlRoomListView: View {
     /// Make a group by this name. Returns what to tell the person when it
     /// was not made; nil when it was.
     var onNewGroup: (String) -> String? = { _ in nil }
+    /// "OK" on the notice that the first sweep of old records is waiting.
+    var onRetentionAgree: () -> Void = {}
     /// Whether the chip is the system's glass while it slides, which bends
     /// what is under its edge. The table's to say; a still picture turns
     /// it off, because the system's glass cannot be drawn off screen.
@@ -59,10 +61,12 @@ struct ControlRoomListView: View {
     /// `midSlide` draws the chip as it is in the air, this far from its
     /// row, and moves nothing: for still pictures of the slide.
     init(list: ControlRoomList, selection: Binding<String?>, onNewGroup: @escaping (String) -> String? = { _ in nil },
+         onRetentionAgree: @escaping () -> Void = {},
          refraction: Bool = Look.Selection.refractionShown, still: Bool = false, midSlide: CGSize? = nil) {
         self.list = list
         self._selection = selection
         self.onNewGroup = onNewGroup
+        self.onRetentionAgree = onRetentionAgree
         self.refraction = refraction
         self.still = still
         self.away = midSlide ?? .zero
@@ -79,8 +83,13 @@ struct ControlRoomListView: View {
             // Why a name made no group stands under the field, and the
             // rows move down to make room for it.
             let note = naming ? nameRefusal : nil
+            // The first sweep waiting for the person takes the same room,
+            // when no refusal is there to take it (task 1511).
+            let retention = note == nil ? list.retentionWaitingBytes : nil
+            let retentionText = retention.map(LogManagementRules.noticeTitle)
             let layout = ControlRoomListLayout(list: list, height: proxy.size.height,
-                                               noteUnderHeader: note.map(Self.noteHeight) ?? 0,
+                                               noteUnderHeader: note.map(Self.noteHeight)
+                                                   ?? retentionText.map { Self.noteHeight($0) + ControlRoomRetentionNotice.buttonHeight } ?? 0,
                                                needed: ControlRoomAskText.needed)
             ZStack(alignment: .topLeading) {
                 if let chip = layout.chip(for: selection) {
@@ -103,6 +112,11 @@ struct ControlRoomListView: View {
                 }
                 if let quota = list.quota {
                     ControlRoomQuotaView(quota: quota, still: still).place(layout.quota)
+                }
+                if let retentionText {
+                    ControlRoomRetentionNotice(text: retentionText, onAgree: onRetentionAgree)
+                        .frame(width: layout.header.width, alignment: .topLeading)
+                        .offset(x: layout.header.minX, y: layout.header.maxY)
                 }
                 // In the room the layout left under the header.
                 if let note {

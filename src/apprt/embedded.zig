@@ -2405,6 +2405,47 @@ pub const CAPI = struct {
     /// (`Config._origin`: the host's own file under `GHOSTTY_CONFIG_PATH`,
     /// else the default files), so it answers for the files as they are
     /// now, not for the config this app last applied.
+    /// Settings > General > Log Management: the page's JSON
+    /// (`Storage.writeUsage`). Call with no buffer for the size first, as
+    /// `ghostty_app_config_form`; each call reads the disk again. Zero when
+    /// there is no state directory yet.
+    export fn ghostty_app_storage_usage(
+        app: *App,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        const alloc = app.core_app.alloc;
+        const json = app.core_app.storageUsageJson(alloc) catch |err| {
+            log.warn("storage usage: could not render: {t}", .{err});
+            return 0;
+        };
+        defer alloc.free(json);
+        return copyJsonOut(json, buf, cap);
+    }
+
+    /// "Clear…" on one row, by its key (`Storage.Kind`). **Does it once,
+    /// whatever `buf` is** -- unlike the readers above it is not to be
+    /// called twice for its size: pass a buffer of a few hundred bytes. It
+    /// answers `{"ok":true,"files":N,"bytes":N}`, or `{"ok":false,"error":
+    /// "<name>"}` (`UnknownKind`, `ProjectUnreadable`, `LogsClosed`, …).
+    export fn ghostty_app_storage_clear(
+        app: *App,
+        key_ptr: [*]const u8,
+        key_len: usize,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        var out: [256]u8 = undefined;
+        const kind = std.meta.stringToEnum(poltergeistpkg.Storage.Kind, key_ptr[0..key_len]) orelse
+            return copyJsonOut("{\"ok\":false,\"error\":\"UnknownKind\"}", buf, cap);
+        const r = app.core_app.storageClear(kind) catch |err| {
+            const text = std.fmt.bufPrint(&out, "{{\"ok\":false,\"error\":\"{t}\"}}", .{err}) catch return 0;
+            return copyJsonOut(text, buf, cap);
+        };
+        const text = std.fmt.bufPrint(&out, "{{\"ok\":true,\"files\":{d},\"bytes\":{d}}}", .{ r.files + r.dirs, r.bytes }) catch return 0;
+        return copyJsonOut(text, buf, cap);
+    }
+
     export fn ghostty_app_config_form(
         app: *App,
         buf: ?[*]u8,

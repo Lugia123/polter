@@ -130,12 +130,12 @@ pub fn writeConsent(io: Io, state_dir: []const u8, at_ms: i64, how: []const u8) 
 }
 
 /// A file the sweep might delete, with what the rule needs to know.
-const Candidate = struct {
+pub const Candidate = struct {
     path: []const u8,
     file: Retention.File,
 };
 
-fn deleteChosen(io: Io, files: []const Candidate, limits: Retention.Limits, today: u32, alloc: Allocator, r: *Report) !void {
+pub fn deleteChosen(io: Io, files: []const Candidate, limits: Retention.Limits, today: u32, alloc: Allocator, r: *Report) !void {
     const plain = try alloc.alloc(Retention.File, files.len);
     for (files, 0..) |c, i| plain[i] = c.file;
     const chosen = try Retention.plan(alloc, plain, today, limits);
@@ -177,18 +177,30 @@ fn dayFilesIn(alloc: Allocator, io: Io, dir: []const u8, today: u32, out: *std.A
     return out.items.len - first;
 }
 
-fn sweepTranscripts(a: Allocator, io: Io, s: Settings, today: u32, dayOf: Records.DayOf, r: *Report) !void {
-    const root = try std.fs.path.join(a, &.{ s.state_dir, "terminals" });
-    var d = Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return;
+/// Every transcript file under `<state>/terminals`, by tier, with the
+/// directories they are in and the terminals' notes beside them. What the
+/// sweep, the usage figures and "Clear…" all start from.
+pub const Transcripts = struct {
+    /// Indexed by `Retention.Tier`.
+    tiers: [3][]Candidate,
+    dirs: []const []const u8,
+    metas: []const Meta,
+    root: []const u8,
+
+    pub const Meta = struct { id: u64, path: []const u8 };
+};
+
+pub fn collectTranscripts(a: Allocator, io: Io, state_dir: []const u8, today: u32, dayOf: Records.DayOf) !?Transcripts {
+    const root = try std.fs.path.join(a, &.{ state_dir, "terminals" });
+    var d = Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return null;
     defer d.close(io);
 
-    const sessions = try SessionLog.read(a, io, s.state_dir);
-    const notes = try TerminalMeta.read(a, io, s.state_dir);
+    const sessions = try SessionLog.read(a, io, state_dir);
+    const notes = try TerminalMeta.read(a, io, state_dir);
 
     var tiers: [3]std.ArrayListUnmanaged(Candidate) = .{ .empty, .empty, .empty };
     var dirs: std.ArrayListUnmanaged([]const u8) = .empty;
-    var ids: std.AutoHashMapUnmanaged(u64, void) = .empty;
-    var metas: std.ArrayListUnmanaged(struct { id: u64, path: []const u8 }) = .empty;
+    var metas: std.ArrayListUnmanaged(Transcripts.Meta) = .empty;
 
     var it = d.iterate();
     while (it.next(io) catch null) |e| {
@@ -199,7 +211,6 @@ fn sweepTranscripts(a: Allocator, io: Io, s: Settings, today: u32, dayOf: Record
         const id = TerminalMeta.idOfTranscriptDir(e.name) orelse continue;
         const dir = try std.fs.path.join(a, &.{ root, e.name });
         try dirs.append(a, dir);
-        try ids.put(a, id, {});
 
         var files: std.ArrayListUnmanaged(Candidate) = .empty;
         _ = try dayFilesIn(a, io, dir, today, &files);
@@ -209,22 +220,36 @@ fn sweepTranscripts(a: Allocator, io: Io, s: Settings, today: u32, dayOf: Record
             try tiers[@intFromEnum(tier)].append(a, c);
         }
     }
+    return .{
+        .tiers = .{ tiers[0].items, tiers[1].items, tiers[2].items },
+        .dirs = dirs.items,
+        .metas = metas.items,
+        .root = root,
+    };
+}
 
-    try deleteChosen(io, tiers[@intFromEnum(Retention.Tier.group)].items, s.group, today, a, r);
-    try deleteChosen(io, tiers[@intFromEnum(Retention.Tier.project)].items, s.project, today, a, r);
-    try deleteChosen(io, tiers[@intFromEnum(Retention.Tier.none)].items, s.other, today, a, r);
+fn sweepTranscripts(a: Allocator, io: Io, s: Settings, today: u32, dayOf: Records.DayOf, r: *Report) !void {
+    const t = (try collectTranscripts(a, io, s.state_dir, today, dayOf)) orelse return;
+    try deleteChosen(io, t.tiers[@intFromEnum(Retention.Tier.group)], s.group, today, a, r);
+    try deleteChosen(io, t.tiers[@intFromEnum(Retention.Tier.project)], s.project, today, a, r);
+    try deleteChosen(io, t.tiers[@intFromEnum(Retention.Tier.none)], s.other, today, a, r);
+    tidyTranscripts(io, t, today, dayOf, r);
+}
 
-    // A directory with nothing left in it goes; a terminal that is still
-    // open makes it again at its next line.
-    if (r.delete) for (dirs.items) |dir| {
+/// After transcript files have gone: a directory with nothing left in it
+/// goes (a terminal that is still open makes it again at its next line),
+/// and a terminal's notes go once its transcript has and nobody has
+/// written them for a day -- a terminal that has not printed a line yet
+/// has notes and no directory.
+pub fn tidyTranscripts(io: Io, t: Transcripts, today: u32, dayOf: Records.DayOf, r: *Report) void {
+    if (!r.delete) return;
+    for (t.dirs) |dir| {
         Io.Dir.cwd().deleteDir(io, dir) catch continue;
         r.dirs += 1;
-    };
-
-    // A terminal's notes go once its transcript has, and once nobody has
-    // written them for a day -- a terminal that has not printed a line yet
-    // has notes and no directory.
-    if (r.delete) for (metas.items) |m| {
+    }
+    var d = Io.Dir.cwd().openDir(io, t.root, .{ .iterate = true }) catch return;
+    defer d.close(io);
+    for (t.metas) |m| {
         var still = false;
         var di = d.iterate();
         while (di.next(io) catch null) |e| {
@@ -239,14 +264,16 @@ fn sweepTranscripts(a: Allocator, io: Io, s: Settings, today: u32, dayOf: Record
         Io.Dir.cwd().deleteFile(io, m.path) catch continue;
         r.files += 1;
         r.bytes += st.size;
-    };
+    }
 }
 
-fn sweepLogs(a: Allocator, io: Io, s: Settings, today: u32, dayOf: Records.DayOf, r: *Report) !void {
+/// Polter's own logs that go round: the hourly group snapshots, crash
+/// reports, and plugins' older log generation. The current plugin log is
+/// held open by its host and is bounded by its own rotation.
+pub fn collectLogs(a: Allocator, io: Io, state_dir: []const u8, today: u32, dayOf: Records.DayOf) ![]Candidate {
     var files: std.ArrayListUnmanaged(Candidate) = .empty;
 
-    // The hourly snapshots: one directory per group.
-    const stats = try std.fs.path.join(a, &.{ s.state_dir, "stats" });
+    const stats = try std.fs.path.join(a, &.{ state_dir, "stats" });
     if (Io.Dir.cwd().openDir(io, stats, .{ .iterate = true })) |sd| {
         var d = sd;
         defer d.close(io);
@@ -257,22 +284,21 @@ fn sweepLogs(a: Allocator, io: Io, s: Settings, today: u32, dayOf: Records.DayOf
         }
     } else |_| {}
 
-    // Crash reports: every file in the directory is one.
-    try mtimeFiles(a, io, try std.fs.path.join(a, &.{ s.state_dir, "crash" }), dayOf, &files, struct {
+    try mtimeFiles(a, io, try std.fs.path.join(a, &.{ state_dir, "crash" }), dayOf, &files, struct {
         fn ours(name: []const u8) bool {
             return std.mem.endsWith(u8, name, ".ghosttycrash");
         }
     }.ours);
-
-    // Plugins' older log generation. The current one is held open by the
-    // running plugin's host and is bounded by its own rotation.
-    try mtimeFiles(a, io, try std.fs.path.join(a, &.{ s.state_dir, "plugins" }), dayOf, &files, struct {
+    try mtimeFiles(a, io, try std.fs.path.join(a, &.{ state_dir, "plugins" }), dayOf, &files, struct {
         fn ours(name: []const u8) bool {
             return std.mem.endsWith(u8, name, ".log.1");
         }
     }.ours);
+    return files.items;
+}
 
-    try deleteChosen(io, files.items, s.logs, today, a, r);
+fn sweepLogs(a: Allocator, io: Io, s: Settings, today: u32, dayOf: Records.DayOf, r: *Report) !void {
+    try deleteChosen(io, try collectLogs(a, io, s.state_dir, today, dayOf), s.logs, today, a, r);
 }
 
 fn mtimeFiles(
@@ -294,10 +320,14 @@ fn mtimeFiles(
     }
 }
 
-fn sweepShots(a: Allocator, io: Io, dir: []const u8, limits: Retention.Limits, today: u32, dayOf: Records.DayOf, r: *Report) !void {
+pub fn collectShots(a: Allocator, io: Io, dir: []const u8, dayOf: Records.DayOf) ![]Candidate {
     var files: std.ArrayListUnmanaged(Candidate) = .empty;
     try mtimeFiles(a, io, dir, dayOf, &files, isShot);
-    try deleteChosen(io, files.items, limits, today, a, r);
+    return files.items;
+}
+
+fn sweepShots(a: Allocator, io: Io, dir: []const u8, limits: Retention.Limits, today: u32, dayOf: Records.DayOf, r: *Report) !void {
+    try deleteChosen(io, try collectShots(a, io, dir, dayOf), limits, today, a, r);
 }
 
 /// A name Polter gave a screenshot, its sidecar or one of its tiles:
@@ -325,22 +355,48 @@ pub fn isShot(name: []const u8) bool {
     return true;
 }
 
-fn sweepRenameBackups(a: Allocator, io: Io, state_dir: []const u8, today: u32, dayOf: Records.DayOf, r: *Report) !void {
-    // A rename that is not finished may still need its backup.
+/// Each group rename's backup directory, with what is in it; null while a
+/// rename is unfinished -- it may still need them.
+pub fn collectRenameBackups(a: Allocator, io: Io, state_dir: []const u8, dayOf: Records.DayOf) !?[]Candidate {
     const intent = try std.fs.path.join(a, &.{ state_dir, "rename-intent.json" });
-    if (sizeOf(io, intent) != null) return;
+    if (sizeOf(io, intent) != null) return null;
 
+    var out: std.ArrayListUnmanaged(Candidate) = .empty;
     const root = try std.fs.path.join(a, &.{ state_dir, "rename-backup" });
-    var d = Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return;
+    var d = Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return out.items;
     defer d.close(io);
     var it = d.iterate();
     while (it.next(io) catch null) |e| {
         if (e.kind != .directory) continue;
         const path = try std.fs.path.join(a, &.{ root, e.name });
         const st = sizeOf(io, path) orelse continue;
-        if (Retention.ageInDays(dayOfStat(st, dayOf), today) <= rename_backup_days) continue;
-        if (r.delete) Io.Dir.cwd().deleteTree(io, path) catch continue;
+        try out.append(a, .{ .path = path, .file = .{ .day = dayOfStat(st, dayOf), .bytes = treeBytes(a, io, path) } });
+    }
+    return out.items;
+}
+
+/// What is in a directory and everything under it.
+pub fn treeBytes(a: Allocator, io: Io, path: []const u8) u64 {
+    var d = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return 0;
+    defer d.close(io);
+    var w = d.walk(a) catch return 0;
+    defer w.deinit();
+    var total: u64 = 0;
+    while (w.next(io) catch null) |e| {
+        if (e.kind != .file) continue;
+        const st = e.dir.statFile(io, e.basename, .{}) catch continue;
+        total += st.size;
+    }
+    return total;
+}
+
+fn sweepRenameBackups(a: Allocator, io: Io, state_dir: []const u8, today: u32, dayOf: Records.DayOf, r: *Report) !void {
+    const backups = (try collectRenameBackups(a, io, state_dir, dayOf)) orelse return;
+    for (backups) |b| {
+        if (Retention.ageInDays(b.file.day, today) <= rename_backup_days) continue;
+        if (r.delete) Io.Dir.cwd().deleteTree(io, b.path) catch continue;
         r.dirs += 1;
+        r.bytes += b.file.bytes;
     }
 }
 

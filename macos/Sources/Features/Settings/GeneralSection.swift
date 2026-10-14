@@ -11,6 +11,8 @@ final class GeneralModel: ObservableObject {
     @Published private(set) var group: GeneralGroup = GeneralGroup.allCases[0]
     /// What the last action said, in the bottom bar.
     @Published var status: String?
+    /// Log Management's figures (task 1511).
+    let logs = LogManagementModel()
 
     func select(_ group: GeneralGroup) {
         guard group != self.group else { return }
@@ -238,7 +240,9 @@ struct GeneralView: View {
 
     @ViewBuilder
     private var detailContent: some View {
-        if model.group.needsForm {
+        if model.group == .logs {
+            LogManagementPage(model: model, logs: model.logs)
+        } else if model.group.needsForm {
             ConfigFormPage(model: model, group: model.group)
         } else if let ghostty = model.ghostty {
             switch model.group {
@@ -264,6 +268,10 @@ struct GeneralView: View {
             }
             Spacer()
             switch model.group {
+            case .logs:
+                Button(String(localized: "Show in Finder", comment: "日志管理：底栏按钮，在访达中显示记录所在的文件夹")) {
+                    model.logs.revealStateDirectory()
+                }
             case .appearance, .font, .terminal, .windows, .polter, .all, .screenshot:
                 Button(String(localized: "Open config file…", comment: "设置窗口：通用栏目，用外部编辑器打开配置文件")) {
                     model.openConfigFile()

@@ -166,6 +166,11 @@ final class ControlRoomModel: ObservableObject {
     /// Make a group by the name the person typed. Returns what to tell
     /// them when it was not made; nil when it was -- and then it is
     /// selected as soon as the core lists it.
+    /// The person said OK to the first sweep of old records.
+    func agreeToRetention() {
+        try? perform(.retentionAgree)
+    }
+
     func newGroup(named name: String) -> String? {
         do {
             try perform(.newGroup(name: name))

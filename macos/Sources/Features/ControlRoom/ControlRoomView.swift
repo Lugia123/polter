@@ -21,7 +21,8 @@ struct ControlRoomView: View {
                 ControlRoomListView(
                     list: list,
                     selection: Binding(get: { model.selection }, set: { model.choose($0) }),
-                    onNewGroup: { model.newGroup(named: $0) })
+                    onNewGroup: { model.newGroup(named: $0) },
+                    onRetentionAgree: { model.agreeToRetention() })
             } else {
                 // No snapshot yet: the list's place, with nothing in it.
                 Color.clear.frame(width: CGFloat(Look.Side.width))

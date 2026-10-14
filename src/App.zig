@@ -119,6 +119,10 @@ sweep_state_dir: ?[]const u8 = null,
 /// The limits last handed to the sweeper, to tell a change from a repeat.
 sweep_limits_seen: SweepLimits = .{},
 
+/// Where the host puts screenshots, as it said at the last configure.
+/// Owned. Log Management counts and clears screenshots there.
+sweep_shots_dir: ?[]const u8 = null,
+
 /// Working out who was in the groups from before the session record --
 /// reading the whole chat record, tens of megabytes on a used machine -- on
 /// a thread of its own, so that the first start after an upgrade does not
@@ -615,6 +619,7 @@ pub fn deinit(self: *App) void {
     if (self.terminal_meta) |*m| m.deinit();
     if (self.sweeper) |*w| w.deinit();
     if (self.sweep_state_dir) |d| self.alloc.free(d);
+    if (self.sweep_shots_dir) |d| self.alloc.free(d);
     self.poltergeist_nudged.deinit(self.alloc);
     if (self.group_log) |*l| l.deinit();
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
@@ -709,6 +714,53 @@ fn sweeperWaitingChanged(ctx: *anyopaque) void {
     if (self.poltergeist_stopping.load(.acquire)) return;
     self.storage_due.store(true, .release);
     if (self.poltergeist_rt_app) |rt| rt.wakeup();
+}
+
+/// Settings > General > Log Management: how much each kind takes, how it
+/// is kept, and whether the first sweep is waiting (`Storage.writeUsage`).
+/// Caller owns the JSON. Errors when there is no state directory yet.
+pub fn storageUsageJson(self: *App, alloc: Allocator) ![]u8 {
+    const state_dir = self.sweep_state_dir orelse return error.NoStateDirectory;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const io = global.io();
+    const today = poltergeistpkg.daylog.dayOf(self.poltergeistWallMs());
+    const usages = try poltergeistpkg.Storage.usage(arena.allocator(), io, state_dir, self.sweep_shots_dir, today, poltergeistpkg.daylog.dayOf);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    errdefer buf.deinit();
+    try poltergeistpkg.Storage.writeUsage(&buf.writer, state_dir, usages, if (self.sweeper) |*w| w.waitingBytes() else null);
+    return buf.toOwnedSlice();
+}
+
+/// "Clear…" on one row of Log Management, after the person confirmed.
+/// Tasks are compacted from the panel in memory; shell history keeps every
+/// file a saved project or an open pane names, and is not touched at all
+/// when a project file will not read.
+pub fn storageClear(self: *App, kind: poltergeistpkg.Storage.Kind) !poltergeistpkg.Sweeper.Report {
+    const state_dir = self.sweep_state_dir orelse return error.NoStateDirectory;
+    const now = self.poltergeistWallMs();
+    if (kind == .tasks) {
+        const l = if (self.task_log) |*v| v else return error.LogsClosed;
+        const got = l.compact(&self.tasks, now);
+        return .{ .files = got.files, .bytes = got.bytes };
+    }
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = global.io();
+    var keep: std.ArrayListUnmanaged([]const u8) = .empty;
+    if (kind == .history) {
+        const named = (try poltergeistpkg.Storage.historyNamedByProjects(a, io, state_dir)) orelse
+            return error.ProjectUnreadable;
+        try keep.appendSlice(a, named);
+        for (self.surfaces.items) |rt| {
+            const f = rt.core().history_filename;
+            if (f.len > 0) try keep.append(a, f);
+        }
+    }
+    const r = try poltergeistpkg.Storage.clear(a, io, state_dir, self.sweep_shots_dir, kind, keep.items, poltergeistpkg.daylog.dayOf(now), poltergeistpkg.daylog.dayOf);
+    log.info("poltergeist: cleared {t}: files={d} bytes={d} dirs={d}", .{ kind, r.files, r.bytes, r.dirs });
+    return r;
 }
 
 /// The backfill thread: read, hand over, wake the app thread.
@@ -2594,6 +2646,9 @@ fn configureSweeper(self: *App) void {
             else => null,
         };
     };
+
+    if (self.sweep_shots_dir) |d| self.alloc.free(d);
+    self.sweep_shots_dir = if (shots_dir) |d| self.alloc.dupe(u8, d) catch null else null;
 
     const l = self.sweep_limits;
     // A change of limits while the first sweep waits is the person

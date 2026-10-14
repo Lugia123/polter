@@ -74,6 +74,9 @@ pub const Op = enum {
     closed,
     cancelled,
     edited,
+    /// Written by `compact`: the task as it stands, standing in for the
+    /// days of its history that were cleared (task 1511).
+    compacted,
 };
 
 /// Open the record under a state directory, making it if it is not there.
@@ -96,6 +99,100 @@ pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error
             .probe = null,
         },
     };
+}
+
+/// Compact the record to what the panel is now: every task's current state
+/// written into today's file, and then every day file before today
+/// deleted. **The panel is rebuilt by replaying the record**, so deleting
+/// old days without this would lose a task whose last line was in one --
+/// and hand out its number again. Afterwards the panel comes back exactly
+/// as it is; what is gone is the history of how it got there (task 1511).
+///
+/// The compacted lines are written first. If they cannot all be written,
+/// nothing is deleted. Returns how many files were deleted and their bytes.
+///
+/// **Each compacted line keeps the moment of that task's last event**, not
+/// now: how long a task has gone untouched is read off its newest line
+/// (`StatsLog.summarise`, the idle reminder), and a compaction is not
+/// somebody touching it. The line is still filed in today's file, so it
+/// outlives the days it replaces.
+pub fn compact(self: *TaskLog, tasks: *const Tasks, at_ms: i64) struct { files: usize, bytes: u64 } {
+    var last: std.AutoHashMapUnmanaged(Tasks.TaskId, i64) = .empty;
+    defer last.deinit(self.alloc);
+    self.lastTouched(&last) catch return .{ .files = 0, .bytes = 0 };
+
+    for (tasks.list.items) |t| {
+        var buf: std.Io.Writer.Allocating = .init(self.alloc);
+        defer buf.deinit();
+        var s: std.json.Stringify = .{ .writer = &buf.writer, .options = .{} };
+        render(&s, last.get(t.id) orelse at_ms, .compacted, t) catch return .{ .files = 0, .bytes = 0 };
+        buf.writer.writeByte('\n') catch return .{ .files = 0, .bytes = 0 };
+        self.tree.write(t.group, at_ms, buf.written());
+    }
+    // `append` warns rather than fails; whether every line landed is read
+    // back off the disk.
+    if (self.tree.warned) return .{ .files = 0, .bytes = 0 };
+    self.tree.close();
+
+    const today = daylog.dayOf(at_ms);
+    var files: usize = 0;
+    var bytes: u64 = 0;
+    var d = std.Io.Dir.cwd().openDir(self.io, self.dir, .{ .iterate = true }) catch return .{ .files = 0, .bytes = 0 };
+    defer d.close(self.io);
+    var it = d.iterate();
+    while (it.next(self.io) catch null) |entry| {
+        if (entry.kind != .directory and entry.kind != .unknown) continue;
+        var days = self.tree.daysIn(self.alloc, entry.name) catch continue;
+        defer days.deinit(self.alloc);
+        for (days.items) |day| {
+            if (day.day >= today) continue;
+            const path = self.tree.partPathIn(self.alloc, entry.name, day.day, day.part) catch continue;
+            defer self.alloc.free(path);
+            const st = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch continue;
+            std.Io.Dir.cwd().deleteFile(self.io, path) catch continue;
+            files += 1;
+            bytes += st.size;
+        }
+    }
+    return .{ .files = files, .bytes = bytes };
+}
+
+/// The newest `at_ms` of every task in the record.
+fn lastTouched(self: *TaskLog, out: *std.AutoHashMapUnmanaged(Tasks.TaskId, i64)) !void {
+    var d = std.Io.Dir.cwd().openDir(self.io, self.dir, .{ .iterate = true }) catch return;
+    defer d.close(self.io);
+    var it = d.iterate();
+    while (it.next(self.io) catch null) |entry| {
+        if (entry.kind != .directory and entry.kind != .unknown) continue;
+        var days = self.tree.daysIn(self.alloc, entry.name) catch continue;
+        defer days.deinit(self.alloc);
+        for (days.items) |day| {
+            const path = self.tree.partPathIn(self.alloc, entry.name, day.day, day.part) catch continue;
+            defer self.alloc.free(path);
+            const bytes = std.Io.Dir.readFileAlloc(.cwd(), self.io, path, self.alloc, .limited(max_replay_bytes)) catch continue;
+            defer self.alloc.free(bytes);
+            var lines = std.mem.splitScalar(u8, bytes, '\n');
+            while (lines.next()) |line| {
+                var arena: std.heap.ArenaAllocator = .init(self.alloc);
+                defer arena.deinit();
+                const v = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), line, .{}) catch continue;
+                const obj = switch (v) {
+                    .object => |o| o,
+                    else => continue,
+                };
+                const id: Tasks.TaskId = switch (obj.get("task") orelse continue) {
+                    .integer => |n| if (n < 0) continue else @intCast(n),
+                    else => continue,
+                };
+                const at: i64 = switch (obj.get("at_ms") orelse continue) {
+                    .integer => |n| n,
+                    else => continue,
+                };
+                const gop = try out.getOrPut(self.alloc, id);
+                if (!gop.found_existing or at > gop.value_ptr.*) gop.value_ptr.* = at;
+            }
+        }
+    }
 }
 
 /// Let go of the open day file. The next write opens what is then there.
@@ -974,4 +1071,70 @@ test "a group whose name is not a directory name still round-trips" {
     const got = try tasks.inGroup(alloc, "a/b");
     defer alloc.free(got);
     try testing.expectEqual(@as(usize, 1), got.len);
+}
+
+test "compacting keeps the panel and drops the history before today" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+
+    // Yesterday, a task was made and assigned; another made and closed.
+    const yesterday: i64 = 1_700_000_000_000;
+    const today: i64 = yesterday + std.time.ms_per_day;
+    var next_before: Tasks.TaskId = 0;
+    {
+        var tasks: Tasks = .init(alloc, .{});
+        defer tasks.deinit();
+        var l = try TaskLog.open(alloc, io, dir);
+        defer l.deinit();
+        const one = try tasks.create("build", "keep me", .bug);
+        l.append(yesterday, .created, tasks.get(one).?);
+        try tasks.assign(one, 0x2222);
+        l.append(yesterday, .assigned, tasks.get(one).?);
+        const two = try tasks.create("build", "done one", .research);
+        l.append(yesterday, .created, tasks.get(two).?);
+        try tasks.close(two);
+        l.append(yesterday, .closed, tasks.get(two).?);
+        next_before = tasks.next_id;
+
+        const got = l.compact(&tasks, today);
+        try testing.expectEqual(@as(usize, 1), got.files);
+    }
+
+    // Only today's file is left, and the panel comes back the same.
+    var tasks: Tasks = .init(alloc, .{});
+    defer tasks.deinit();
+    var l = try TaskLog.open(alloc, io, dir);
+    defer l.deinit();
+    l.restore(&tasks);
+    const build = try tasks.inGroup(alloc, "build");
+    defer alloc.free(build);
+    try testing.expectEqual(@as(usize, 2), build.len);
+    try testing.expectEqual(next_before, tasks.next_id);
+    var days = try l.tree.days(alloc, "build");
+    defer days.deinit(alloc);
+    try testing.expectEqual(@as(usize, 1), days.items.len);
+    try testing.expectEqual(daylog.dayOf(today), days.items[0].day);
+    // The compacted lines say when each task was last touched, not now.
+    const page = try l.history(alloc, "build", 0, 10);
+    defer freePage(alloc, page);
+    for (page.events) |e| {
+        try testing.expectEqualStrings("compacted", e.op);
+        try testing.expectEqual(yesterday, e.at_ms);
+    }
+    for (build) |t| {
+        if (std.mem.eql(u8, t.title, "keep me")) {
+            try testing.expectEqual(@as(Tasks.Id, 0x2222), t.owner);
+            try testing.expectEqual(Tasks.State.open, t.state);
+        } else {
+            try testing.expectEqual(Tasks.State.closed, t.state);
+        }
+    }
 }

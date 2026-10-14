@@ -172,6 +172,7 @@ enum ConfigFormRules {
         case .windows: "window"
         case .polter: "polter"
         case .screenshot: "screenshot"
+        case .logs: "logs"
         case .all, .keybinds, .advanced, .about: nil
         }
     }

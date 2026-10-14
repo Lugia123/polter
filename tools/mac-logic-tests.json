@@ -33,6 +33,7 @@
       "macos/Sources/Features/ControlRoom/ControlRoomStartChoice.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomSupervisorFrame.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomView.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomRetentionNotice.swift",
       "macos/Sources/Features/ControlRoom/PaneFrame.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomWindowSize.swift",
       "macos/Sources/Features/ControlRoom/PaneFrameView.swift",
@@ -41,6 +42,7 @@
       "macos/Sources/Features/ControlRoom/TerminalPresence.swift",
       "macos/Sources/Features/Splits/SplitTree.swift",
       "macos/Sources/Features/Splits/SurfaceDragGrip.swift",
+      "macos/Sources/Features/Settings/LogManagementRules.swift",
       "macos/Sources/Features/Roles/OfficialWhy.swift",
       "macos/Sources/Helpers/Backport.swift",
       "macos/Sources/Helpers/Extensions/Array+Extension.swift",
@@ -122,6 +124,7 @@
       "macos/Tests/Splits/SplitStackTests.swift",
       "macos/Tests/Splits/StoredBytesTests.swift",
       "macos/Tests/Splits/SurfaceDragGripTests.swift",
+      "macos/Tests/Settings/LogManagementRulesTests.swift",
       "macos/Tests/Roles/OfficialWhyTests.swift",
       "macos/Tests/Splits/TerminalSplitDropZoneTests.swift"
     ],
