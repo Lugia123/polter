@@ -1722,6 +1722,23 @@ pub struct Api {
     pub app_persona_put: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> bool,
     /// `ghostty_app_persona_delete(app, key, len, err, cap)`.
     pub app_persona_delete: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> bool,
+    /// `ghostty_app_persona_restore(app, key, len, everything, err, cap)`.
+    /// False with `OverridesUnreadable` when the file of changes cannot be
+    /// read; `everything` then sets it aside -- ask the person first.
+    pub app_persona_restore: unsafe extern "C" fn(App, *const u8, usize, bool, *mut u8, usize) -> bool,
+    /// `ghostty_app_persona_adopt(app, key, len, err, cap)`.
+    pub app_persona_adopt: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> bool,
+    /// `ghostty_app_persona_acknowledge(app, key, len, err, cap)`.
+    pub app_persona_acknowledge: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> bool,
+    /// `ghostty_app_official_skills(app, buf, cap)`. JSON:
+    /// `{error,skills:[{name,description,state,reason,source,shipped}]|null}`.
+    pub app_official_skills: unsafe extern "C" fn(App, *mut u8, usize) -> usize,
+    /// `ghostty_app_official_skill_put(app, name, len, text, len, err, cap)`.
+    pub app_official_skill_put: unsafe extern "C" fn(App, *const u8, usize, *const u8, usize, *mut u8, usize) -> bool,
+    /// `ghostty_app_official_skill_restore(app, name, len, err, cap)`.
+    pub app_official_skill_restore: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> bool,
+    /// `ghostty_app_official_skill_acknowledge(app, name, len, err, cap)`.
+    pub app_official_skill_acknowledge: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> bool,
     /// `ghostty_app_agent_clis(app, refresh, buf, cap)`. JSON:
     /// `{stale,refreshing,clis}`; never runs an adapter on this thread.
     pub app_agent_clis: unsafe extern "C" fn(App, bool, *mut u8, usize) -> usize,
