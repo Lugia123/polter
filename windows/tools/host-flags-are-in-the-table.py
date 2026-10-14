@@ -39,10 +39,13 @@ READ = re.compile(r'host_flags\(\)\s*\.\s*(?:has|value)\(\s*"([a-z0-9-]+)"\s*\)'
 ROW = re.compile(r'^\s*\("([a-z0-9-]+)",\s*Takes::\w+\),\s*$', re.M)
 # A flag read around the table: the thing this gate cannot see by name, so it
 # refuses the shape instead. `cli_action_in(std::env::args())` is the CLI
-# action question, not a flag read, and is the one allowed spelling.
+# action question, not a flag read, and is the one allowed spelling --
+# with `polter_cliargs::cli_action_name(std::env::args())`, the same question
+# asked for the action's name (task 1510: where a one-shot action logs).
 RAW_ARGS = re.compile(r"std::env::args\(\)")
 ALLOWED_RAW = re.compile(
     r"cli_action_in\(std::env::args\(\)\)"
+    r"|polter_cliargs::cli_action_name\(std::env::args\(\)\)"
     r"|polter_cliargs::host_flags\(std::env::args\(\)\)"
     r"|let mine: Vec<String> = std::env::args\(\)\.collect\(\)"
 )

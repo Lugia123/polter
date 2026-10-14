@@ -795,6 +795,8 @@ pub fn init(hi: HINSTANCE) {
             // Not `PolterSettings`: that class is `settings_ui.rs`'s plugin
             // page, which phase 2 folds in here.
             lpszClassName: w!("PolterSettingsWindow"),
+            hIcon: crate::app_icon(true),
+            hIconSm: crate::app_icon(false),
             ..Default::default()
         };
         if RegisterClassExW(&wc) == 0 {

@@ -655,6 +655,8 @@ pub fn register_class(hinst: windows::Win32::Foundation::HINSTANCE) -> bool {
         lpszClassName: w!("PolterInspector"),
         hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(std::ptr::null_mut()),
         hCursor: unsafe { LoadCursorW(None, IDC_ARROW).unwrap_or_default() },
+        hIcon: crate::app_icon(true),
+        hIconSm: crate::app_icon(false),
         ..Default::default()
     };
     unsafe { RegisterClassExW(&wc) != 0 }

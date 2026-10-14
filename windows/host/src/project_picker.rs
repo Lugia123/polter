@@ -737,6 +737,9 @@ fn register_class() {
             lpfnWndProc: Some(picker_proc),
             lpszClassName: w!("PolterProjectPicker"),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            // `WNDCLASSW` has no small icon; Windows scales this one for the
+            // title bar.
+            hIcon: crate::app_icon(true),
             ..Default::default()
         };
         RegisterClassW(&wc);
