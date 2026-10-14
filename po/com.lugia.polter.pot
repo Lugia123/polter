@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.lugia.polter\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-15 03:09+0800\n"
+"POT-Creation-Date: 2026-10-15 03:50+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -51,7 +51,7 @@ msgstr ""
 
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
-#: src/apprt/gtk/class/application.zig:2225
+#: src/apprt/gtk/class/application.zig:2226
 #: windows/host/src/project_picker.rs:258
 #: windows/host/src/project_picker.rs:427 windows/host/src/project_ui.rs:413
 #: windows/host/src/project_ui.rs:453 windows/host/src/projects_ui.rs:626
@@ -284,27 +284,27 @@ msgstr ""
 msgid "Execute a command…"
 msgstr ""
 
-#: src/apprt/gtk/class/application.zig:1810
+#: src/apprt/gtk/class/application.zig:1811
 msgid "The keybind was revoked by the system."
 msgstr ""
 
-#: src/apprt/gtk/class/application.zig:1812
+#: src/apprt/gtk/class/application.zig:1813
 msgid "The keybind was denied by the system."
 msgstr ""
 
-#: src/apprt/gtk/class/application.zig:1823
+#: src/apprt/gtk/class/application.zig:1824
 msgid "Global keybind unavailable"
 msgstr ""
 
-#: src/apprt/gtk/class/application.zig:2221
+#: src/apprt/gtk/class/application.zig:2222
 msgid "Export Terminal IO Events"
 msgstr ""
 
-#: src/apprt/gtk/class/application.zig:2224
+#: src/apprt/gtk/class/application.zig:2225
 msgid "Export"
 msgstr ""
 
-#: src/apprt/gtk/class/application.zig:2743
+#: src/apprt/gtk/class/application.zig:2744
 msgid "Editing configuration file"
 msgstr ""
 
@@ -2432,15 +2432,15 @@ msgstr ""
 msgid "{} lines in all."
 msgstr ""
 
-#: windows/host/src/main.rs:6631
+#: windows/host/src/main.rs:6650
 msgid "No reason was recorded."
 msgstr ""
 
-#: windows/host/src/main.rs:6637
+#: windows/host/src/main.rs:6656
 msgid "Polter could not open its first terminal and will close."
 msgstr ""
 
-#: windows/host/src/main.rs:6639
+#: windows/host/src/main.rs:6658
 #, rust-format
 msgid "The full log is at {}"
 msgstr ""
@@ -3891,6 +3891,30 @@ msgstr ""
 
 #: windows/control-room/src/act.rs:211
 msgid "Polter could not find its own program to start the role with."
+msgstr ""
+
+#: windows/control-room/src/alert.rs:36
+#, rust-format
+msgid "{} is waiting for your approval"
+msgstr ""
+
+#: windows/control-room/src/alert.rs:37
+#, rust-format
+msgid "{} is waiting for your answer"
+msgstr ""
+
+#: windows/control-room/src/alert.rs:38
+#, rust-format
+msgid "{} has stopped on an error"
+msgstr ""
+
+#: windows/control-room/src/alert.rs:61
+msgid "1 more group of the same supervisor is waiting too."
+msgstr ""
+
+#: windows/control-room/src/alert.rs:63
+#, rust-format
+msgid "{} more groups of the same supervisor are waiting too."
 msgstr ""
 
 #: windows/control-room/src/lend.rs:378

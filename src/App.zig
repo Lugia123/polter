@@ -165,6 +165,14 @@ control_due: std.atomic.Value(bool) = .init(false),
 /// never has one never has the thread.
 control_wake: ?poltergeistpkg.ControlWake = null,
 
+/// What the control room's notifications have already dealt with
+/// (`ControlNotify`, section 9 of the design).
+control_notify: poltergeistpkg.ControlNotify = .empty,
+
+/// What the host last said about its control room: in front or not, and
+/// which cards are on screen (`ghostty_app_control_presence`).
+control_sight: poltergeistpkg.ControlNotify.Sight = .none,
+
 /// When a refused notice is to be offered again, on the bus's clock; null
 /// when none is waiting. See `noticeRetryIn`.
 notice_retry_ms: ?u64 = null,
@@ -632,6 +640,8 @@ pub fn deinit(self: *App) void {
     if (self.poltergeist_log_dir) |d| self.alloc.free(d);
     self.chat_surfaces.deinit(self.alloc);
     self.control_room.deinit();
+    self.control_notify.deinit(self.alloc);
+    self.control_sight.deinit(self.alloc);
     if (self.control_home) |h| if (h.len > 0) self.alloc.free(h);
     self.chat.deinit();
     self.projects.deinit();
@@ -976,14 +986,85 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         };
     }
 
-    if (outcome.wake_ms != null and self.control_wake == null) {
+    // The notifications are looked at on the same two occasions: something
+    // happened, or a moment one of them is waiting for has come.
+    const notify_wake = self.controlNotifyStep(rt_app, alloc, now_ms) catch |err| wake: {
+        log.warn("control room: could not decide the notifications err={}", .{err});
+        break :wake null;
+    };
+    const wake_ms: ?u64 = if (notify_wake) |n|
+        (if (outcome.wake_ms) |o| @min(o, n) else n)
+    else
+        outcome.wake_ms;
+
+    if (wake_ms != null and self.control_wake == null) {
         self.control_wake = .{ .io = global.io(), .fire = controlRoomDue, .ctx = self };
         self.control_wake.?.start() catch |err| {
             log.warn("control room: no wake thread, thresholds will show late err={}", .{err});
             self.control_wake = null;
         };
     }
-    if (self.control_wake) |*w| w.arm(outcome.wake_ms, now_ms);
+    if (self.control_wake) |*w| w.arm(wake_ms, now_ms);
+}
+
+/// Decide the control room's notifications (`ControlNotify`) and raise the
+/// ones that are due. The moment to look again, or null.
+///
+/// What it is told about the person: which cards are in sight, from the
+/// host (`control_sight`), and which terminals have the keyboard, from
+/// each surface's own focus -- which a host gives a surface only while its
+/// window has the keyboard, so "in that terminal" is per window.
+fn controlNotifyStep(self: *App, rt_app: *apprt.App, arena: Allocator, now_ms: u64) !?u64 {
+    var in_use: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+    for (self.surfaces.items) |v| {
+        const surface: *Surface = v.core();
+        if (surface.focused) try in_use.append(arena, poltergeistpkg.Bus.idOf(surface));
+    }
+    const hours: poltergeistpkg.ControlNotify.Hours = if (self.poltergeist_notify_window) |w| hours: {
+        const m = w.minutesUntilInside(localMinuteNow());
+        break :hours if (m == 0) .open else .{ .closed_for_ms = @as(u64, m) * std.time.ms_per_min };
+    } else .open;
+
+    const d = try self.control_notify.step(self.alloc, arena, self.control_room.notify_rows, .{
+        .cards_in_sight = self.control_sight.inSight(),
+        .terminals_in_use = in_use.items,
+    }, hours, now_ms);
+
+    for (d.held) |h| log.info("control room: not calling about group={s} kind={t}: {t}", .{ h.group, h.signature.kind, h.why });
+    for (d.alerts) |a| {
+        const kind: apprt.action.ControlRoomAlert.Kind = switch (a.kind) {
+            .needs_approval => .needs_approval,
+            .needs_answer => .needs_answer,
+            .failed => .failed,
+            // `ControlNotify.interrupts` lets nothing else through.
+            else => continue,
+        };
+        const group = try arena.dupeZ(u8, a.group);
+        const who = try arena.dupeZ(u8, a.who);
+        const text = try arena.dupeZ(u8, a.text);
+        const alert: apprt.action.ControlRoomAlert.Alert = .{
+            .kind = kind,
+            .group = group.ptr,
+            .more = @intCast(@min(a.more, std.math.maxInt(u32))),
+            .who = who.ptr,
+            .text = text.ptr,
+        };
+        const taken = rt_app.performAction(.app, .control_room_alert, .{ .alert = &alert }) catch |err| {
+            log.warn("control room: calling about group={s} failed err={}", .{ a.group, err });
+            continue;
+        };
+        log.info("control room: calling about group={s} kind={t} more={d} taken={}", .{ a.group, a.kind, a.more, taken });
+    }
+    return d.wake_ms;
+}
+
+/// The host's word on its control room: in front or not, and which cards
+/// it has on screen. Replaces the last one; the notifications read it the
+/// next time they are decided.
+pub fn controlPresence(self: *App, json: []const u8) !void {
+    const sight = try poltergeistpkg.ControlNotify.Sight.parse(self.alloc, json);
+    self.control_sight.deinit(self.alloc);
+    self.control_sight = sight;
 }
 
 /// Something the person did in the control room (`ControlAct.zig` has the

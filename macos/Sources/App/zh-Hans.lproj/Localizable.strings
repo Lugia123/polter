@@ -957,3 +957,10 @@
 "Not by days" = "不按天数";
 "Write a whole number, or leave it empty for no limit." = "请填整数；留空表示不限。";
 "Log Management" = "日志管理";
+
+/* 总控台：有人在等你时的系统通知（#1505，设计第 9 节） */
+"%@ is waiting for your approval" = "「%@」在等你审批";
+"%@ is waiting for your answer" = "「%@」在等你回答";
+"%@ has stopped on an error" = "「%@」出错停下了";
+"1 more group of the same supervisor is waiting too." = "同一个总管还有 1 个群也在等你。";
+"%lld more groups of the same supervisor are waiting too." = "同一个总管还有 %lld 个群也在等你。";

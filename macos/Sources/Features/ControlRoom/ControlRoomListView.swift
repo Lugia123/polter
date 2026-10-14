@@ -37,6 +37,9 @@ struct ControlRoomListView: View {
     var onNewGroup: (String) -> String? = { _ in nil }
     /// "OK" on the notice that the first sweep of old records is waiting.
     var onRetentionAgree: () -> Void = {}
+    /// Which cards are wholly on screen, each time that changes
+    /// (`ControlRoomListLayout.inSight`).
+    var onInSight: ([String]) -> Void = { _ in }
     /// Whether the chip is the system's glass while it slides, which bends
     /// what is under its edge. The table's to say; a still picture turns
     /// it off, because the system's glass cannot be drawn off screen.
@@ -62,11 +65,13 @@ struct ControlRoomListView: View {
     /// row, and moves nothing: for still pictures of the slide.
     init(list: ControlRoomList, selection: Binding<String?>, onNewGroup: @escaping (String) -> String? = { _ in nil },
          onRetentionAgree: @escaping () -> Void = {},
+         onInSight: @escaping ([String]) -> Void = { _ in },
          refraction: Bool = Look.Selection.refractionShown, still: Bool = false, midSlide: CGSize? = nil) {
         self.list = list
         self._selection = selection
         self.onNewGroup = onNewGroup
         self.onRetentionAgree = onRetentionAgree
+        self.onInSight = onInSight
         self.refraction = refraction
         self.still = still
         self.away = midSlide ?? .zero
@@ -125,6 +130,8 @@ struct ControlRoomListView: View {
                         .offset(x: layout.header.minX, y: layout.header.maxY)
                 }
             }
+            .onAppear { onInSight(layout.inSight(order: list.rows.map(\.id))) }
+            .onChange(of: layout.inSight(order: list.rows.map(\.id))) { onInSight($0) }
         }
         .frame(width: CGFloat(Look.Side.width))
         .background(panel)

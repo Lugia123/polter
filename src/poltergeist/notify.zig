@@ -115,6 +115,17 @@ pub const Window = struct {
         // Wraps midnight.
         return minute >= self.start_min or minute < self.end_min;
     }
+
+    /// How many minutes from `minute` until the window opens: 0 inside it.
+    /// For the control room's notifications (`ControlNotify`), which wait
+    /// for the window rather than leaving the matter to the supervisor.
+    /// An empty window (`start == end`) never opens; that reads as "any
+    /// hour", as a malformed one does, so 0.
+    pub fn minutesUntilInside(self: Window, minute: u16) u16 {
+        if (self.start_min == self.end_min or self.contains(minute)) return 0;
+        const day: u16 = 24 * 60;
+        return (self.start_min + day - minute) % day;
+    }
 };
 
 /// What to do about one event.
@@ -366,6 +377,19 @@ test "a window that wraps midnight is an ordinary window" {
     try testing.expect(w.contains(23 * 60));
     try testing.expect(w.contains(3 * 60));
     try testing.expect(!w.contains(12 * 60));
+}
+
+test "a window says how long until it opens" {
+    const w = Window.parse("09:00-22:00").?;
+    try testing.expectEqual(@as(u16, 0), w.minutesUntilInside(10 * 60));
+    try testing.expectEqual(@as(u16, 6 * 60), w.minutesUntilInside(3 * 60));
+    // After it closes, until tomorrow's opening.
+    try testing.expectEqual(@as(u16, 10 * 60 + 30), w.minutesUntilInside(22 * 60 + 30));
+    const night = Window.parse("22:00-07:00").?;
+    try testing.expectEqual(@as(u16, 0), night.minutesUntilInside(3 * 60));
+    try testing.expectEqual(@as(u16, 60), night.minutesUntilInside(21 * 60));
+    const nothing = Window.parse("09:00-09:00").?;
+    try testing.expectEqual(@as(u16, 0), nothing.minutesUntilInside(3 * 60));
 }
 
 test "a scheduling question at 3am is left to the supervisor" {

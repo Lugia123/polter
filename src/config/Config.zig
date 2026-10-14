@@ -1840,6 +1840,10 @@ command: ?Command = null,
 /// decide for you" but "disturb you or let the terminal sit until
 /// morning", and a night wasted costs more than a notification does.
 ///
+/// The control room's own notifications (somebody has waited two minutes
+/// for you) follow the same rule: an approval at any hour, an answer or a
+/// failure held until this window opens.
+///
 /// Empty means any time is acceptable.
 @"poltergeist-notify-window": []const u8 = "",
 

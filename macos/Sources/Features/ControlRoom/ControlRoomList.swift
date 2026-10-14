@@ -1091,6 +1091,17 @@ struct ControlRoomListLayout: Equatable {
     func chip(for id: String?) -> CGRect? {
         id.flatMap { rows[$0] }
     }
+
+    /// The rows whose whole card is on screen: above the allowance block,
+    /// or above the panel's bottom when there is none. The list does not
+    /// scroll -- rows past the bottom are simply cut off -- so this is what
+    /// "the card is in sight" is (task 1505: no notification about a card
+    /// the person can see). `order` is the list's own (`ControlRoomList.rows`);
+    /// this only filters it.
+    func inSight(order: [String]) -> [String] {
+        let bottom = quota.height > 0 ? quota.minY : size.height
+        return order.filter { id in rows[id].map { $0.height > 0 && $0.maxY <= bottom } ?? false }
+    }
 }
 
 // MARK: - How the chip moves

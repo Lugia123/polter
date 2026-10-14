@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-15 03:09+0800\n"
+"POT-Creation-Date: 2026-10-15 03:50+0800\n"
 "PO-Revision-Date: 2026-09-13 10:50+0800\n"
 "Last-Translator: Lukas <134181853+bo2themax@users.noreply.github.com>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -53,7 +53,7 @@ msgstr "本提示将在重载配置后再次出现"
 
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
-#: src/apprt/gtk/class/application.zig:2225
+#: src/apprt/gtk/class/application.zig:2226
 #: windows/host/src/project_picker.rs:258
 #: windows/host/src/project_picker.rs:427 windows/host/src/project_ui.rs:413
 #: windows/host/src/project_ui.rs:453 windows/host/src/projects_ui.rs:626
@@ -289,27 +289,27 @@ msgstr "退出"
 msgid "Execute a command…"
 msgstr "选择要执行的命令…"
 
-#: src/apprt/gtk/class/application.zig:1810
+#: src/apprt/gtk/class/application.zig:1811
 msgid "The keybind was revoked by the system."
 msgstr "系统撤销了该快捷键。"
 
-#: src/apprt/gtk/class/application.zig:1812
+#: src/apprt/gtk/class/application.zig:1813
 msgid "The keybind was denied by the system."
 msgstr "系统拒绝绑定该快捷键。"
 
-#: src/apprt/gtk/class/application.zig:1823
+#: src/apprt/gtk/class/application.zig:1824
 msgid "Global keybind unavailable"
 msgstr "全局快捷键不可用"
 
-#: src/apprt/gtk/class/application.zig:2221
+#: src/apprt/gtk/class/application.zig:2222
 msgid "Export Terminal IO Events"
 msgstr "导出终端输入输出事件"
 
-#: src/apprt/gtk/class/application.zig:2224
+#: src/apprt/gtk/class/application.zig:2225
 msgid "Export"
 msgstr "导出"
 
-#: src/apprt/gtk/class/application.zig:2743
+#: src/apprt/gtk/class/application.zig:2744
 msgid "Editing configuration file"
 msgstr "正在编辑配置文件"
 
@@ -2456,15 +2456,15 @@ msgstr ""
 msgid "{} lines in all."
 msgstr "共 {} 行。"
 
-#: windows/host/src/main.rs:6631
+#: windows/host/src/main.rs:6650
 msgid "No reason was recorded."
 msgstr "没有记录到原因。"
 
-#: windows/host/src/main.rs:6637
+#: windows/host/src/main.rs:6656
 msgid "Polter could not open its first terminal and will close."
 msgstr "Polter 无法打开第一个终端，即将关闭。"
 
-#: windows/host/src/main.rs:6639
+#: windows/host/src/main.rs:6658
 #, rust-format
 msgid "The full log is at {}"
 msgstr "完整日志在 {}"
@@ -3250,13 +3250,17 @@ msgstr "Polter 还没准备好。"
 msgid ""
 "An official role's name, description and what it grants can't be changed. "
 "Duplicate it to make one of your own."
-msgstr "官方角色的名字、说明和它赋予终端的权限不能改。想改就复制一份成为你自己的角色。"
+msgstr ""
+"官方角色的名字、说明和它赋予终端的权限不能改。想改就复制一份成为你自己的角"
+"色。"
 
 #: windows/host/src/roles.rs:792
 msgid ""
 "The file that holds your changes to official roles can't be read, so nothing "
 "was saved into it. Restore Factory Settings sets it aside."
-msgstr "保存你对官方角色改动的文件读不了，所以这次没有存进去。用「恢复出厂设置」可以把它挪开。"
+msgstr ""
+"保存你对官方角色改动的文件读不了，所以这次没有存进去。用「恢复出厂设置」可以"
+"把它挪开。"
 
 #: windows/host/src/roles.rs:793
 msgid ""
@@ -3356,7 +3360,9 @@ msgstr "你对官方角色的改动没被读到，所以没有生效。"
 msgid ""
 "Your role \"{}\" has the key {}, which is now an official role's. Yours is "
 "kept in the file but isn't in use."
-msgstr "你的角色「{}」用的 key 是 {}，这个 key 现在属于官方角色。你的那份还在文件里，但没有被使用。"
+msgstr ""
+"你的角色「{}」用的 key 是 {}，这个 key 现在属于官方角色。你的那份还在文件里，"
+"但没有被使用。"
 
 #: windows/host/src/roles_ui.rs:848
 msgid "Keep It Under a New Key"
@@ -3397,7 +3403,8 @@ msgstr "正文"
 msgid ""
 "Takes effect as soon as it's saved. When an agent that is already running "
 "reads the new text depends on the tool it uses."
-msgstr "保存后立即生效。已经在运行的 agent 什么时候读到新内容，取决于它用的工具。"
+msgstr ""
+"保存后立即生效。已经在运行的 agent 什么时候读到新内容，取决于它用的工具。"
 
 #: windows/host/src/roles_ui.rs:939 windows/host/src/roles_ui.rs:949
 msgid "Key"
@@ -3679,7 +3686,9 @@ msgid ""
 "Restoring will put every official role and skill back to factory settings, "
 "not only this one. The file of your changes and your own copies of official "
 "skills are kept where they were, renamed, so nothing in them is lost."
-msgstr "恢复会把全部官方角色和官方 skill 都设回出厂设置，不只是这一个。保存改动的文件和你的官方 skill 副本都会改名留在原处，里面的内容不会丢。"
+msgstr ""
+"恢复会把全部官方角色和官方 skill 都设回出厂设置，不只是这一个。保存改动的文件"
+"和你的官方 skill 副本都会改名留在原处，里面的内容不会丢。"
 
 #: windows/host/src/roles_ui.rs:3498
 msgid "Restore All"
@@ -3950,6 +3959,30 @@ msgstr "没能为它开出标签页。"
 #: windows/control-room/src/act.rs:211
 msgid "Polter could not find its own program to start the role with."
 msgstr "Polter 找不到自己的程序，没法用它启动角色。"
+
+#: windows/control-room/src/alert.rs:36
+#, rust-format
+msgid "{} is waiting for your approval"
+msgstr "「{}」在等你审批"
+
+#: windows/control-room/src/alert.rs:37
+#, rust-format
+msgid "{} is waiting for your answer"
+msgstr "「{}」在等你回答"
+
+#: windows/control-room/src/alert.rs:38
+#, rust-format
+msgid "{} has stopped on an error"
+msgstr "「{}」出错停下了"
+
+#: windows/control-room/src/alert.rs:61
+msgid "1 more group of the same supervisor is waiting too."
+msgstr "同一个总管还有 1 个群也在等你。"
+
+#: windows/control-room/src/alert.rs:63
+#, rust-format
+msgid "{} more groups of the same supervisor are waiting too."
+msgstr "同一个总管还有 {} 个群也在等你。"
 
 #: windows/control-room/src/lend.rs:378
 msgid "The supervisor's terminal is no longer open."

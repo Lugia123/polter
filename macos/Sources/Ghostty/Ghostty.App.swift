@@ -616,6 +616,10 @@ extension Ghostty {
         func shouldPresentNotification(notification: UNNotification) -> Bool {
             let userInfo = notification.request.content.userInfo
 
+            // The control room's own: whether the person is looking was
+            // decided before it was sent (`ControlNotify.zig`).
+            if userInfo[ControlRoomAlert.groupKey] is String { return true }
+
             // We always require the notification to be attached to a surface.
             guard let uuidString = userInfo["surface"] as? String,
                   let uuid = UUID(uuidString: uuidString),
@@ -804,6 +808,11 @@ extension Ghostty {
                 // The only thing that makes the control room fetch. Whoever
                 // is listening takes the snapshot; nobody polls for it.
                 NotificationCenter.default.post(name: ControlRoomFeed.changed, object: nil)
+
+            case GHOSTTY_ACTION_CONTROL_ROOM_ALERT:
+                // The core decided all of it: whether, when, how often.
+                guard let alert = action.action.control_room_alert.alert?.pointee else { return false }
+                controlRoomAlert(alert)
 
             case GHOSTTY_ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM:
                 // A key binding or the command palette; the menu item calls
@@ -2115,6 +2124,55 @@ extension Ghostty {
             }
         }
 
+        /// The control room calling the person (task 1505): a system
+        /// notification with a sound, about a group, that goes to the
+        /// control room with that group selected when clicked.
+        ///
+        /// **Not silent when it cannot be shown**: with no permission for
+        /// notifications, the log says so, every time, with the group --
+        /// the person asked why none came, and "it was not allowed" is an
+        /// answer only if it is written down.
+        private static func controlRoomAlert(_ a: ghostty_control_room_alert_s) {
+            let kind: ControlRoomAlert.Kind
+            switch a.kind {
+            case GHOSTTY_CONTROL_ROOM_ALERT_NEEDS_APPROVAL: kind = .needsApproval
+            case GHOSTTY_CONTROL_ROOM_ALERT_NEEDS_ANSWER: kind = .needsAnswer
+            case GHOSTTY_CONTROL_ROOM_ALERT_FAILED: kind = .failed
+            default:
+                Ghostty.logger.warning("control room alert of a kind this app does not know: \(a.kind.rawValue)")
+                return
+            }
+            let group = a.group.map { String(cString: $0) } ?? ""
+            let who = a.who.map { String(cString: $0) } ?? ""
+            let text = a.text.map { String(cString: $0) } ?? ""
+            let content = UNMutableNotificationContent()
+            content.title = ControlRoomAlert.title(kind: kind, group: group)
+            content.body = ControlRoomAlert.body(who: who, text: text, more: Int(a.more))
+            content.sound = .default
+            content.userInfo = [ControlRoomAlert.groupKey: group]
+
+            let center = UNUserNotificationCenter.current()
+            center.requestAuthorization(options: [.alert, .sound]) { _, error in
+                if let error {
+                    Ghostty.logger.error("control room alert: asking for permission failed: \(error, privacy: .public)")
+                }
+            }
+            center.getNotificationSettings { settings in
+                guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+                    Ghostty.logger.warning("control room alert for group \(group, privacy: .public) not shown: notifications are not allowed for Polter (status \(settings.authorizationStatus.rawValue))")
+                    return
+                }
+                let request = UNNotificationRequest(identifier: "control-room-\(UUID().uuidString)", content: content, trigger: nil)
+                center.add(request) { error in
+                    if let error {
+                        Ghostty.logger.error("control room alert for group \(group, privacy: .public) was not taken: \(error, privacy: .public)")
+                    } else {
+                        Ghostty.logger.info("control room alert for group \(group, privacy: .public) handed to the system")
+                    }
+                }
+            }
+        }
+
         private static func commandFinished(
             _ app: ghostty_app_t,
             target: ghostty_target_s,
@@ -3075,6 +3133,15 @@ extension Ghostty {
         /// Handle a received user notification. This is called when a user notification is clicked or dismissed by the user
         func handleUserNotification(response: UNNotificationResponse) {
             let userInfo = response.notification.request.content.userInfo
+            if let group = userInfo[ControlRoomAlert.groupKey] as? String {
+                switch response.actionIdentifier {
+                case UNNotificationDefaultActionIdentifier, Ghostty.userNotificationActionShow:
+                    ControlRoomController.show(self, selecting: group)
+                default:
+                    break
+                }
+                return
+            }
             guard let uuidString = userInfo["surface"] as? String,
                   let uuid = UUID(uuidString: uuidString),
                   let surface = delegate?.findSurface(forUUID: uuid) else { return }

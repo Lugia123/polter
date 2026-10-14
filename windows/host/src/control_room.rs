@@ -137,6 +137,9 @@ const WM_ROOM_SELECT: u32 = WM_APP + 61;
 /// Posted to the panel when what it shows on the right may have to change:
 /// see `request_sync`.
 const WM_ROOM_SYNC: u32 = WM_APP + 63;
+/// Where the person is may have changed: a window came to the front or
+/// left it (task 1505). Posted by `presence_may_have_changed`.
+const WM_ROOM_PRESENCE: u32 = WM_APP + 66;
 
 /// Something happened that may change which terminal the control room
 /// shows: its tab came to the front or left it, a pane or a tab was closed,
@@ -251,6 +254,17 @@ pub fn uia_neighbours(group: &str) -> Option<(Option<String>, Option<String>)> {
         before = Some(row);
     }
     None
+}
+
+/// Go to the control room with `group` selected: a click on a notification
+/// it raised (task 1505). Opening it, when it is closed, starts on the kept
+/// selection, so that is set first; an open one is told to select it. On
+/// the window thread, where the balloon's click arrives.
+pub fn go_to(group: &str) {
+    KEPT.with(|k| *k.borrow_mut() = Some(group.to_string()));
+    let _ = uia_select(group);
+    let frame = crate::tabs::overlay_frame();
+    crate::tabs::post_op(frame, crate::tabs::Op::ToggleControlRoom, "control_room_alert click");
 }
 
 /// Select a group for a UI Automation client. Safe from any thread: the
@@ -1031,6 +1045,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_ROOM_SYNC => {
             sync_loan(hwnd);
+            report_presence(hwnd);
+            LRESULT(0)
+        }
+        WM_ROOM_PRESENCE => {
+            report_presence(hwnd);
             LRESULT(0)
         }
         // The name field said Return (1), or Escape / lost the keyboard (0).
@@ -1208,6 +1227,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 let _ = KillTimer(Some(hwnd), TIMER_SLIDE);
                 let _ = KillTimer(Some(hwnd), TIMER_SEEN);
             }
+            // Closed is not in front: nothing on it is in sight any more.
+            say_presence(polter_control_room::alert::Presence::default());
             STATE.with(|s| {
                 let mut st = s.borrow_mut();
                 if st.as_ref().is_some_and(|st| st.hwnd == hwnd.0 as isize) {
@@ -1430,6 +1451,11 @@ fn paint(hwnd: HWND) {
             Data::Ready(r) => {
                 let list: &List = &r.list;
                 let lay = list_layout(hwnd, list, g.room.panel.h);
+                // Which cards are wholly on screen, for where the person is
+                // (task 1505). Told to the core after the paint.
+                if let Ok(mut cards) = CARDS.lock() {
+                    *cards = polter_control_room::alert::in_sight(&lay);
+                }
                 let (chip, lift, sliding) = chip_now(&lay, selected.as_deref());
                 let window = crate::tabs::window(GetAncestor(hwnd, GA_ROOT)).map(|w| polter_control_room::rules::key(w.id));
                 // By the row's identity: a group's name, or the row of a
@@ -1540,6 +1566,55 @@ fn paint(hwnd: HWND) {
         let _ = DeleteObject(bmp.into());
         let _ = DeleteDC(mem);
         let _ = EndPaint(hwnd, &ps);
+    }
+    report_presence(hwnd);
+}
+
+// ------------------------------------------------------- where the person is
+
+/// The cards wholly on screen at the last paint (`alert::in_sight`).
+static CARDS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// What the core was last told, so the same is not said twice.
+static PRESENCE: Mutex<Option<polter_control_room::alert::Reporter>> = Mutex::new(None);
+
+/// A window came to the front or left it: the control room may have come
+/// into the person's sight or gone out of it. Posted; safe from anywhere on
+/// the window thread, and nothing when there is no panel.
+pub fn presence_may_have_changed() {
+    let panel = PANEL.load(Ordering::Acquire);
+    if panel != 0 {
+        let _ = unsafe { PostMessageW(Some(HWND(panel as *mut c_void)), WM_ROOM_PRESENCE, WPARAM(0), LPARAM(0)) };
+    }
+}
+
+/// Tell the core whether the control room is in front and which cards are
+/// on screen in it, when that changed (`ghostty_app_control_presence`): its
+/// notifications are not sent about a card the person can see. "In front"
+/// is this panel's window being the foreground one -- per window, not per
+/// application.
+fn report_presence(hwnd: HWND) {
+    let front = in_front(hwnd);
+    let cards = if front { CARDS.lock().map(|c| c.clone()).unwrap_or_default() } else { Vec::new() };
+    say_presence(polter_control_room::alert::Presence { in_front: front, cards });
+}
+
+fn say_presence(now: polter_control_room::alert::Presence) {
+    let json = match PRESENCE.lock() {
+        Ok(mut p) => p.get_or_insert_with(Default::default).report(now),
+        Err(_) => return,
+    };
+    let Some(json) = json else { return };
+    let Some(api) = crate::api_opt() else { return };
+    let app = crate::app_opt();
+    if app.is_null() {
+        return;
+    }
+    let mut err = [0u8; 64];
+    let ok = unsafe { (api.app_control_presence)(app, json.as_ptr(), json.len(), err.as_mut_ptr(), err.len()) };
+    if !ok {
+        let end = err.iter().position(|&b| b == 0).unwrap_or(err.len());
+        // process-wide: the control room is one per process
+        crate::plogf!("[control-room] presence refused: {}", String::from_utf8_lossy(&err[..end]));
     }
 }
 
