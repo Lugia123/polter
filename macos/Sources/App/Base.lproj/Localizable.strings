@@ -955,3 +955,10 @@
 "Set aside" = "Set aside";
 "Off duty" = "Off duty";
 "Held" = "Held";
+
+/* 总控台：行下面那句由核心说的话（ControlRoom.zig 的 Say 模板，{1} {2} 是参数，宿主替换，#1525） */
+"The process exited" = "The process exited";
+"The hooks it was set up with never came" = "The hooks it was set up with never came";
+"{1}: {2}" = "{1}: {2}";
+"Screen still for {1} min" = "Screen still for {1} min";
+"Screen still for {1} min, no tool call for {2} min" = "Screen still for {1} min, no tool call for {2} min";

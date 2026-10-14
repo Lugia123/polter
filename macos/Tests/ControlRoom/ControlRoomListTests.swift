@@ -862,5 +862,29 @@ struct ControlRoomListTests {
         #expect(ControlRoomList.say("Something new", in: zh) == "Something new")
         // And in English, the msgid is the word.
         #expect(ControlRoomList.say("Awaiting approval") == "Awaiting approval")
+
+        // Task 1525: a row's line that is the core's own sentence is the
+        // template, said and filled in; the fixture's failed group has one.
+        let snapshot = try JSONDecoder().decode(ControlRoomSnapshot.self, from: Self.fixture())
+        let failed = try #require(snapshot.groups.first { $0.what.say != nil })
+        #expect(failed.what.say?.key == "failed")
+        #expect(ControlRoomList.lines(of: failed.what, in: zh) == ["rate_limit：resets 13:40"])
+        #expect(ControlRoomList.lines(of: failed.what) == ["rate_limit: resets 13:40"])
+        // A line that is somebody's own words is left as it came.
+        let own = try #require(snapshot.groups.first { $0.what.say == nil && !$0.what.lines.isEmpty })
+        #expect(ControlRoomList.lines(of: own.what, in: zh) == own.what.lines)
+    }
+
+    @Test func aSentenceIsFilledByPositionAndAPlaceholderWithNothingForItIsLeft() {
+        #expect(ControlRoomList.fill("Screen still for {1} min, no tool call for {2} min", ["3", "7"])
+            == "Screen still for 3 min, no tool call for 7 min")
+        // A translation may put them the other way round.
+        #expect(ControlRoomList.fill("{2} then {1}", ["3", "7"]) == "7 then 3")
+        // Missing an argument: shown as written, not a crash and not a blank.
+        #expect(ControlRoomList.fill("still {1} and {2}", []) == "still {1} and {2}")
+        // An argument goes in as it is, braces and all.
+        #expect(ControlRoomList.fill("x: {1}", ["{1}"]) == "x: {1}")
+        #expect(ControlRoomList.fill("{0} {10} {", ["no"]) == "{0} {10} {")
+        #expect(ControlRoomList.fill("屏幕 {1} 分没动", ["4"]) == "屏幕 4 分没动")
     }
 }

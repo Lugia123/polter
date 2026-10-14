@@ -497,6 +497,19 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var cut: ControlRoomList.What.Cut
         var form: ControlRoomList.What.Form
         var lines: [String]
+        /// Set when `lines` is one of the core's own sentences (task 1525):
+        /// `lines` holds it in English; `ControlRoomList.lines(of:)` says it
+        /// in the person's language. Absent from a core before it said so.
+        var say: Say?
+
+        /// The English msgid with `{1}`, `{2}` where `args` go. The
+        /// arguments are as they go in -- minutes in decimal, an agent's
+        /// own words -- and none is translated.
+        struct Say: Decodable, Equatable {
+            var key: String
+            var template: String
+            var args: [String]
+        }
     }
 
     /// One terminal of a group, as much of it as a title bar shows.
@@ -807,6 +820,36 @@ extension ControlRoomList {
     static func say(_ word: String, in bundle: Bundle = .main) -> String {
         word.isEmpty ? word : bundle.localizedString(forKey: word, value: word, table: nil)
     }
+
+    /// A row's line, where it is one of the core's own sentences, in the
+    /// person's language (task 1525); anything else as the core sent it.
+    static func lines(of what: ControlRoomSnapshot.What, in bundle: Bundle = .main) -> [String] {
+        guard let s = what.say else { return what.lines }
+        return [fill(bundle.localizedString(forKey: s.template, value: s.template, table: nil), s.args)]
+    }
+
+    /// `template` with `{1}`..`{9}` replaced by `args`; a placeholder with no
+    /// argument is left as written. The same few lines as the core's
+    /// `Say.fill` and Windows' `snapshot::fill` -- not `String(format:)`,
+    /// which dies on a translation whose placeholders do not match.
+    static func fill(_ template: String, _ args: [String]) -> String {
+        var out = ""
+        var rest = Substring(template)
+        while let open = rest.firstIndex(of: "{") {
+            let digit = rest.index(after: open)
+            let close = digit < rest.endIndex ? rest.index(after: digit) : rest.endIndex
+            if close < rest.endIndex, rest[close] == "}",
+               let n = rest[digit].wholeNumberValue, (1...9).contains(n), n <= args.count {
+                out += rest[..<open]
+                out += args[n - 1]
+                rest = rest[rest.index(after: close)...]
+            } else {
+                out += rest[...open]
+                rest = rest[digit...]
+            }
+        }
+        return out + rest
+    }
 }
 
 extension ControlRoomList {
@@ -853,7 +896,7 @@ extension ControlRoomList {
                 shown: one.shown,
                 word: Self.say(one.text),
                 waiter: Waiter(is: one.waiter.is, name: one.waiter.name),
-                what: What(cut: one.what.cut, form: one.what.form, lines: one.what.lines),
+                what: What(cut: one.what.cut, form: one.what.form, lines: Self.lines(of: one.what)),
                 others: 0,
                 // The one that breathes is the first the core lists; it is
                 // this row when that one is in no group and is this terminal.
@@ -874,7 +917,7 @@ extension ControlRoomList {
                 shown: group.shown,
                 word: Self.say(group.text),
                 waiter: Waiter(is: group.waiter.is, name: group.waiter.name),
-                what: What(cut: group.what.cut, form: group.what.form, lines: group.what.lines),
+                what: What(cut: group.what.cut, form: group.what.form, lines: Self.lines(of: group.what)),
                 others: group.more,
                 pulses: breathing != nil && breathing == group.name,
                 unseen: group.unseen ?? false,

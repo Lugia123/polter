@@ -118,7 +118,7 @@ fn nothing_in_the_snapshot_says_how_long() {
 #[test]
 fn a_part_is_marked_where_the_rest_would_be_and_never_shown_as_the_whole() {
     use crate::snapshot::{Cut, What};
-    let what = |cut, lines: &[&str]| What { form: Form::Words, lines: lines.iter().map(|l| l.to_string()).collect(), cut };
+    let what = |cut, lines: &[&str]| What { form: Form::Words, lines: lines.iter().map(|l| l.to_string()).collect(), cut, say: None };
     assert_eq!(list::drawn(&what(Cut::None, &["which branch?"])), ["which branch?"]);
     // The end of a turn: something came before it.
     assert_eq!(list::drawn(&what(Cut::Head, &["half first, or all at once?"])), ["… half first, or all at once?"]);
@@ -1531,9 +1531,47 @@ fn the_cores_words_are_said_in_the_persons_language_and_nothing_else_is_touched(
     assert_eq!(held.text, "被按住");
     assert!(s.terminals.iter().any(|t| t.text == "下班"), "an off-duty terminal says so");
 
-    // Only those words: what a row waits on, its reason, its name are not
-    // the core's words and are left as they came.
+    // Task 1525: a row's line that is the core's own sentence is said too,
+    // its arguments filled in as they came.
+    let failed = s.groups.iter().find(|g| g.what.say.is_some()).expect("the fixture has one");
+    assert_eq!(failed.what.say.as_ref().map(|x| x.key.as_str()), Some("failed"));
+    assert_eq!(failed.what.lines, ["rate_limit：resets 13:40"]);
+
+    // Only those: what a row waits on in somebody's own words, its reason,
+    // its name are not the core's and are left as they came.
     for (a, b) in english.groups.iter().zip(&s.groups) {
-        assert_eq!((&a.name, &a.reason, &a.what), (&b.name, &b.reason, &b.what));
+        assert_eq!((&a.name, &a.reason), (&b.name, &b.reason));
+        if a.what.say.is_none() {
+            assert_eq!(a.what, b.what);
+        }
     }
+}
+
+#[test]
+fn a_sentence_is_filled_by_position_and_a_placeholder_with_nothing_for_it_is_left() {
+    use crate::snapshot::fill;
+    let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(fill("Screen still for {1} min, no tool call for {2} min", &a(&["3", "7"])), "Screen still for 3 min, no tool call for 7 min");
+    // A translation may put them the other way round.
+    assert_eq!(fill("{2} then {1}", &a(&["3", "7"])), "7 then 3");
+    // Missing an argument: shown as written, not a crash and not a blank.
+    assert_eq!(fill("still {1} and {2}", &[]), "still {1} and {2}");
+    // An argument goes in as it is, braces and all.
+    assert_eq!(fill("x: {1}", &a(&["{1}"])), "x: {1}");
+    assert_eq!(fill("{0} {10} {", &a(&["no"])), "{0} {10} {");
+    assert_eq!(fill("屏幕 {1} 分没动", &a(&["4"])), "屏幕 4 分没动");
+}
+
+#[test]
+fn a_line_that_is_the_cores_sentence_is_read_and_one_from_before_is_none() {
+    let s = snapshot::decode(FIXTURE).expect("the fixture decodes");
+    let say = s.groups.iter().find_map(|g| g.what.say.clone()).expect("the fixture has one");
+    assert_eq!((say.key.as_str(), say.template.as_str()), ("failed", "{1}: {2}"));
+    assert_eq!(say.args, ["rate_limit", "resets 13:40"]);
+    // Where a core before it said so has no `say` at all, it reads as none:
+    // the fixture with every `"say": null` renamed away still decodes, and
+    // only the one sentence is still one.
+    let old = FIXTURE.replace("\"say\": null", "\"unused\": null");
+    let old = snapshot::decode(&old).expect("still a snapshot");
+    assert_eq!(old.groups.iter().filter(|g| g.what.say.is_some()).count(), 1);
 }

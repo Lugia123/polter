@@ -280,6 +280,14 @@ for r in list.quiet { row("quiet", r) }
 for r in list.rows {
     print("rowname id=\(r.id) name=\(quote(r.name)) alone=\(r.alone?.terminal ?? "-") pane=\(r.alone?.pane.rawValue ?? "-")")
 }
+// Which rows' lines are the core's own sentence, and what goes in it
+// (task 1525): as decoded, before either side says it.
+func say(_ s: ControlRoomSnapshot.What.Say?) -> String {
+    guard let s else { return "none" }
+    return "key=\(s.key) template=\(quote(s.template)) args=\(s.args.map(quote).joined(separator: ","))"
+}
+for g in snapshot.groups { print("say group=\(quote(g.name)) \(say(g.what.say))") }
+for one in snapshot.ungrouped ?? [] { print("say lone=\(one.id) \(say(one.what.say))") }
 // The terminals in no group. Neither host draws a row for one (task 1485,
 // and the rows printed above are compared without them); what such a row
 // would say is still compared, through the switch nothing in the app

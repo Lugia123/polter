@@ -971,3 +971,10 @@
 "Set aside" = "先放着";
 "Off duty" = "下班";
 "Held" = "被按住";
+
+/* 总控台：行下面那句由核心说的话（ControlRoom.zig 的 Say 模板，{1} {2} 是参数，宿主替换，#1525） */
+"The process exited" = "进程退出";
+"The hooks it was set up with never came" = "约好的 hook 没有来";
+"{1}: {2}" = "{1}：{2}";
+"Screen still for {1} min" = "屏幕 {1} 分没动";
+"Screen still for {1} min, no tool call for {2} min" = "屏幕 {1} 分没动，{2} 分没调工具";

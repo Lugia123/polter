@@ -135,6 +135,18 @@ fn main() {
             r.alone.as_ref().map_or("-", |a| a.pane.name())
         );
     }
+    // Which rows' lines are the core's own sentence, and what goes in it
+    // (task 1525): as decoded, before either side says it.
+    let say = |s: &Option<snapshot::Say>| match s {
+        None => "none".to_string(),
+        Some(s) => format!("key={} template={} args={}", s.key, quote(&s.template), s.args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(",")),
+    };
+    for g in &snap.groups {
+        println!("say group={} {}", quote(&g.name), say(&g.what.say));
+    }
+    for one in &snap.ungrouped {
+        println!("say lone={} {}", one.id, say(&one.what.say));
+    }
 
     // The terminals in no group, each with a row of its own.
     let alone = match polter_control_room::lone::decode(&text) {

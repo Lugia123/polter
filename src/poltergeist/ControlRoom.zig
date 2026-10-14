@@ -192,7 +192,7 @@
 //!                             | worker_via_supervisor | worker | terminal.
 //!                             `name` is the worker's when it is one
 //!       "reason": {"from":"hook_note","text":"rm -rf dist/ && npm ci",
-//!                  "missing":null},
+//!                  "missing":null, "say":null},
 //!                             from: hook_note | hook_detail | process |
 //!                             clocks | hooks | last_turn | task | raised |
 //!                             none. `raised` is the supervisor's own
@@ -200,10 +200,11 @@
 //!                             When the line could not be had, text is
 //!                             empty and `missing` says which kind of
 //!                             missing: empty_note | empty_detail |
-//!                             no_turn_kept | self_report_text
+//!                             no_turn_kept | self_report_text.
+//!                             say: as in `what`
 //!       "what": {"form":"command",
 //!                "lines":["rm -rf dist/","&& npm ci"],
-//!                "cut":"none"},
+//!                "cut":"none", "say":null},
 //!                             the same thing in the pieces it is drawn
 //!                             in. form: none | command | code | words. A
 //!                             command is one step to a line; a host shows
@@ -213,7 +214,16 @@
 //!                             summary, the whole not sent) | head (the end
 //!                             of something longer: the last paragraph of
 //!                             a turn). A host marks where the rest is and
-//!                             never shows a part as the whole
+//!                             never shows a part as the whole.
+//!                             say: null, or when lines is one of the
+//!                             core's own sentences (`Say`, task 1525)
+//!                             {"key":"still","template":"Screen still for
+//!                             {1} min","args":["4"]} -- lines then holds
+//!                             it in English, and a host draws the
+//!                             template translated, {N} filled from args,
+//!                             in its place. key: process_exited |
+//!                             hooks_missing | failed | still |
+//!                             still_and_silent
 //!       "more": 1,            other terminals in the group also waiting
 //!       "same_as": "billing" | null,
 //!                             same supervisor as that group's row, which
@@ -315,6 +325,7 @@ const ControlRoom = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Attention = @import("Attention.zig");
+const i18n = @import("../os/i18n.zig");
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Projects = @import("Projects.zig");
@@ -701,9 +712,15 @@ pub const SnoozeOut = struct {
 /// The line that says what it is waiting on (3.2).
 pub const Reason = struct {
     from: From,
+    /// The line. When it is one of the core's own sentences (`say`), this
+    /// is that sentence in English, filled in.
     text: []const u8,
     /// Why there is no text, when there should have been.
     missing: ?Missing,
+    /// Set when `text` is a sentence of the core's own rather than one an
+    /// agent or a supervisor wrote: which one, and what goes in it, for a
+    /// host to say in the person's language (task 1525).
+    say: ?Say = null,
 
     /// `raised`: what the supervisor said when it put this in front of the
     /// person (`notify_user`, `authorisation`; `Bus.raise`).
@@ -712,19 +729,78 @@ pub const Reason = struct {
 
     pub const none: Reason = .{ .from = .none, .text = "", .missing = null };
 
-    /// Every sentence this file writes for the person, in one place. All
-    /// 暂定, like the words in `Attention.Word`.
-    pub const words = struct {
-        pub const process_exited = "进程退出";
-        pub const hooks_missing = "约好的 hook 没有来";
-        /// Error type, then what the agent said about it.
-        pub const failed = "{s}：{s}";
-        pub const still = "屏幕 {d} 分没动";
-        pub const still_and_silent = "屏幕 {d} 分没动，{d} 分没调工具";
-    };
-
     fn lacking(from: From, missing: Missing) Reason {
         return .{ .from = from, .text = "", .missing = missing };
+    }
+
+    /// One of the core's own sentences, filled in: in English in `text`,
+    /// and as its template and arguments in `say`.
+    fn saying(arena: Allocator, from: From, key: Say.Key, args: []const []const u8) Allocator.Error!Reason {
+        const owned = try arena.alloc([]const u8, args.len);
+        for (args, owned) |a, *o| o.* = try arena.dupe(u8, a);
+        const template = Say.templateOf(key);
+        return .{
+            .from = from,
+            .text = try Say.fill(arena, template, owned),
+            .missing = null,
+            .say = .{ .key = key, .template = template, .args = owned },
+        };
+    }
+};
+
+/// A sentence of the core's own (task 1525). **The core does not know the
+/// person's language**, so it says which sentence and what goes in it, and
+/// each host says it: the mac app from `Localizable.strings`, Windows from
+/// `po/`. They were Chinese literals, and so Chinese in an English window.
+///
+/// `template` is the English msgid, with `{1}`, `{2}` where the arguments
+/// go -- not `%@`: a Zig file is read as C by `xgettext`, which can mark a
+/// `%` msgid `c-format` for `msgfmt --check` to reject, and a host filling
+/// with `String(format:)` dies on a translation whose placeholders do not
+/// match its arguments. `{N}` is filled by the same few lines on every side
+/// (`fill`), and one with no argument is left as it is.
+/// `tools/control-room-words-are-translated.py` checks that each template
+/// is translated on both hosts.
+pub const Say = struct {
+    key: Key,
+    template: []const u8,
+    /// As they go in: numbers in decimal, an agent's own words as it wrote
+    /// them. None of them is translated.
+    args: []const []const u8,
+
+    pub const Key = enum { process_exited, hooks_missing, failed, still, still_and_silent };
+
+    pub fn templateOf(key: Key) [:0]const u8 {
+        return switch (key) {
+            .process_exited => i18n.N_("The process exited"), // 暂定
+            .hooks_missing => i18n.N_("The hooks it was set up with never came"), // 暂定
+            // Error type, then what the agent said about it.
+            .failed => i18n.N_("{1}: {2}"),
+            .still => i18n.N_("Screen still for {1} min"), // 暂定
+            .still_and_silent => i18n.N_("Screen still for {1} min, no tool call for {2} min"), // 暂定
+        };
+    }
+
+    /// `template` with `{1}`..`{9}` replaced by `args`; a placeholder with no
+    /// argument is left as written.
+    pub fn fill(arena: Allocator, template: []const u8, args: []const []const u8) Allocator.Error![]const u8 {
+        var out: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+        while (i < template.len) {
+            if (template[i] == '{' and i + 2 < template.len and template[i + 2] == '}' and
+                template[i + 1] >= '1' and template[i + 1] <= '9')
+            {
+                const n = template[i + 1] - '1';
+                if (n < args.len) {
+                    try out.appendSlice(arena, args[n]);
+                    i += 3;
+                    continue;
+                }
+            }
+            try out.append(arena, template[i]);
+            i += 1;
+        }
+        return out.toOwnedSlice(arena);
     }
 };
 
@@ -742,6 +818,10 @@ pub const What = struct {
     /// Whether `lines` is all of it. A host must not show a part as the
     /// whole: it marks where the rest would be.
     cut: Cut,
+    /// Set when `lines` is one of the core's own sentences (`Reason.say`):
+    /// `lines` holds it in English, and a host draws this, said in the
+    /// person's language, in its place.
+    say: ?Say = null,
 
     pub const Cut = enum {
         /// `lines` is everything that was said.
@@ -1343,17 +1423,15 @@ fn reasonOf(
             return .{ .from = .last_turn, .text = try arena.dupe(u8, line), .missing = null };
         },
         .failed => {
-            if (s.source == .process) return .{ .from = .process, .text = Reason.words.process_exited, .missing = null };
+            if (s.source == .process) return Reason.saying(arena, .process, .process_exited, &.{});
             const detail = agent.detail.get();
             const note = agent.note.get();
-            const text = if (detail != null and note != null)
-                try std.fmt.allocPrint(arena, Reason.words.failed, .{ detail.?, note.? })
-            else
-                try arena.dupe(u8, detail orelse note orelse return .lacking(.hook_detail, .empty_detail));
+            if (detail != null and note != null) return Reason.saying(arena, .hook_detail, .failed, &.{ detail.?, note.? });
+            const text = try arena.dupe(u8, detail orelse note orelse return .lacking(.hook_detail, .empty_detail));
             return .{ .from = .hook_detail, .text = text, .missing = null };
         },
         .suspect_stuck => {
-            if (s.source == .hook_missing) return .{ .from = .hooks, .text = Reason.words.hooks_missing, .missing = null };
+            if (s.source == .hook_missing) return Reason.saying(arena, .hooks, .hooks_missing, &.{});
             return clocks(arena, in, s, wake);
         },
         .quiet_unknown => {
@@ -1446,7 +1524,7 @@ fn whatOf(arena: Allocator, in: Input, s: Attention.Status, reason: Reason) Allo
         },
         .process, .clocks, .hooks, .task, .raised, .none => .none,
     };
-    return .{ .form = .words, .lines = try one(arena, reason.text), .cut = how };
+    return .{ .form = .words, .lines = try one(arena, reason.text), .cut = how, .say = reason.say };
 }
 
 fn one(arena: Allocator, text: []const u8) Allocator.Error![]const []const u8 {
@@ -1465,15 +1543,13 @@ fn clocks(arena: Allocator, in: Input, s: Attention.Status, wake: *Wake) Allocat
     wake.consider(in.now_ms + (min_ms - still % min_ms));
 
     const silent = in.bus.callSilentMs(s.id, in.now_ms);
-    const text = if (silent) |ms| text: {
+    const still_min = try std.fmt.allocPrint(arena, "{d}", .{still / min_ms});
+    if (silent) |ms| {
         wake.consider(in.now_ms + (min_ms - ms % min_ms));
-        break :text try std.fmt.allocPrint(
-            arena,
-            Reason.words.still_and_silent,
-            .{ still / min_ms, ms / min_ms },
-        );
-    } else try std.fmt.allocPrint(arena, Reason.words.still, .{still / min_ms});
-    return .{ .from = .clocks, .text = text, .missing = null };
+        const silent_min = try std.fmt.allocPrint(arena, "{d}", .{ms / min_ms});
+        return Reason.saying(arena, .clocks, .still_and_silent, &.{ still_min, silent_min });
+    }
+    return Reason.saying(arena, .clocks, .still, &.{still_min});
 }
 
 const RowDisplay = struct { shown: Attention.Shown, word: Attention.Word };
@@ -2437,7 +2513,18 @@ test "ControlRoom snapshot: the reason line, and which kind of missing when ther
     try testing.expectEqualStrings("rm -rf dist/ .cache/ node_modules/.vite && npm ci && npm run build -- --mode production", approval.text);
 
     try testing.expectEqualStrings("发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号？", (try rowNamed(s, "billing")).reason.text);
-    try testing.expectEqualStrings("rate_limit：resets 13:40", (try rowNamed(s, "docs-site")).reason.text);
+    // The error and what the agent said, put in the core's sentence: which
+    // sentence and what goes in it for a host to say, and in English here.
+    const failed = (try rowNamed(s, "docs-site")).reason;
+    try testing.expectEqual(Say.Key.failed, failed.say.?.key);
+    try testing.expectEqual(@as(usize, 2), failed.say.?.args.len);
+    try testing.expectEqualStrings("rate_limit", failed.say.?.args[0]);
+    try testing.expectEqualStrings("resets 13:40", failed.say.?.args[1]);
+    try testing.expectEqualStrings("rate_limit: resets 13:40", failed.text);
+    // And the row's line is that sentence, with it.
+    try testing.expectEqual(Say.Key.failed, (try rowNamed(s, "docs-site")).what.say.?.key);
+    // An agent's or a supervisor's own words are not the core's.
+    try testing.expect((try rowNamed(s, "billing")).reason.say == null);
     // The last thing it said, which is where a question in prose is.
     try testing.expectEqualStrings("要不要现在切流量？", (try rowNamed(s, "infra")).reason.text);
     // What a working group says it is doing is the panel's word for it.
@@ -2803,6 +2890,50 @@ test "ControlRoom wake: a threshold is woken for once, at the moment it is cross
     try testing.expectEqual(@as(u64, 2), room.recomputes);
     try testing.expectEqual(@as(?u64, 2), crossed.notify);
     try testing.expect(std.mem.indexOf(u8, room.json, "\"kind\":\"suspect_stuck\"") != null);
+}
+
+test "ControlRoom Say: a still screen is the core's sentence, with its minutes" {
+    var w: World = .init();
+    defer w.deinit();
+    // A worker in no group, minded by a supervisor, working by its hooks,
+    // its screen still since 1:00.
+    try w.terminal(0xa1, "boss", 0x21);
+    try w.bus.addSupervisor(0xa1);
+    try w.terminal(0xc1, "w", 0x22);
+    try w.bus.watch(0xc1, 0xa1);
+    try w.hook(0xa1, .session_started, null, 1 * min);
+    try w.hook(0xc1, .turn_started, null, 1 * min);
+    w.bus.noteSampling(0xc1, true, 1 * min);
+    w.bus.noteQuiet(0xc1, 0, 1 * min);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    // At 5:00 that is four minutes, past the common three.
+    const s = (try build(arena.allocator(), w.input(5 * min))).snapshot;
+    const row = for (s.ungrouped) |l| {
+        if (l.attention.kind == .suspect_stuck) break l;
+    } else return error.TestRowMissing;
+    const said = row.what.say orelse return error.TestNoSentence;
+    try testing.expectEqual(Say.Key.still, said.key);
+    try testing.expectEqual(@as(usize, 1), said.args.len);
+    try testing.expectEqualStrings("4", said.args[0]);
+    // On the line, in English, filled in.
+    try testing.expectEqualStrings("Screen still for 4 min", row.what.lines[0]);
+    try testing.expectEqual(Say.Key.still, row.reason.say.?.key);
+}
+
+test "ControlRoom Say: a template is filled by position, and a placeholder with nothing for it is left" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("Screen still for 3 min, no tool call for 7 min", try Say.fill(a, Say.templateOf(.still_and_silent), &.{ "3", "7" }));
+    // A translation may put them the other way round.
+    try testing.expectEqualStrings("7 then 3", try Say.fill(a, "{2} then {1}", &.{ "3", "7" }));
+    // Missing an argument: shown as written, not a crash and not a blank.
+    try testing.expectEqualStrings("still {1} and {2}", try Say.fill(a, "still {1} and {2}", &.{}));
+    // An argument is put in as it is, braces and all.
+    try testing.expectEqualStrings("x: {1}", try Say.fill(a, "x: {1}", &.{"{1}"}));
+    try testing.expectEqualStrings("{0} {10}", try Say.fill(a, "{0} {10}", &.{"no"}));
 }
 
 test "ControlRoom pulses: one waiting glyph breathes, the longest-waiting, and the order is given" {
@@ -3632,6 +3763,12 @@ test "ControlRoom wake: hooks that never came are said once, and there is no mom
     try testing.expectEqual(@as(usize, 1), read.value.ungrouped.len);
     try testing.expectEqual(Attention.Kind.suspect_stuck, read.value.ungrouped[0].attention.kind);
     try testing.expectEqual(Attention.Source.hook_missing, read.value.ungrouped[0].attention.source);
+    // Said as the core's own sentence, for a host to say in the person's
+    // language; in English on the line itself (task 1525).
+    const what = read.value.ungrouped[0].what;
+    try testing.expectEqual(Say.Key.hooks_missing, what.say.?.key);
+    try testing.expectEqual(@as(usize, 0), what.say.?.args.len);
+    try testing.expectEqualStrings(Say.templateOf(.hooks_missing), what.lines[0]);
 }
 
 test "ControlRoom header: terminals on their own are in no count, so the heading, the rows drawn and the Dock are one number" {

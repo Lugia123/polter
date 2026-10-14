@@ -142,6 +142,65 @@ pub struct What {
     pub form: Form,
     pub lines: Vec<String>,
     pub cut: Cut,
+    /// Set when `lines` is one of the core's own sentences (task 1525):
+    /// `lines` then holds it in English, and
+    /// [`Snapshot::translate_words`] puts it in the person's language.
+    pub say: Option<Say>,
+}
+
+/// One of the core's own sentences ("Screen still for {1} min"): the
+/// English msgid with `{1}`, `{2}` where `args` go (`ControlRoom.Say`).
+/// The arguments are as they go in -- minutes in decimal, an agent's own
+/// words -- and none is translated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Say {
+    pub key: String,
+    pub template: String,
+    pub args: Vec<String>,
+}
+
+/// `template` with `{1}`..`{9}` replaced by `args`; a placeholder with no
+/// argument is left as written. The same few lines as the core's
+/// `Say.fill` and the mac app's, so a translation that puts the arguments
+/// the other way round, or drops one, is drawn and does not fail.
+pub fn fill(template: &str, args: &[String]) -> String {
+    let b = template.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    let mut start = 0;
+    while i < b.len() {
+        if b[i] == b'{' && i + 2 < b.len() && b[i + 2] == b'}' && (b'1'..=b'9').contains(&b[i + 1]) {
+            let n = (b[i + 1] - b'1') as usize;
+            if let Some(arg) = args.get(n) {
+                out.push_str(&template[start..i]);
+                out.push_str(arg);
+                i += 3;
+                start = i;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&template[start..]);
+    out
+}
+
+/// `what.say`: absent in a snapshot from before the core said it, null
+/// when the line is not the core's own.
+pub(crate) fn say_of(what: &Value, what_at: &str) -> Res<Option<Say>> {
+    let Some(v) = what.get("say") else { return Ok(None) };
+    if matches!(v, Value::Null) {
+        return Ok(None);
+    }
+    let at = format!("{what_at}.say");
+    let mut args = Vec::new();
+    for (i, a) in list(v, &at, "args")?.iter().enumerate() {
+        match a {
+            Value::Str(s) => args.push(s.clone()),
+            _ => return Err(DecodeError::Field(format!("{at}.args[{i}]"))),
+        }
+    }
+    Ok(Some(Say { key: text(v, &at, "key")?, template: text(v, &at, "template")?, args }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -634,7 +693,9 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// Put every word beside a glyph into the person's language: a group's,
-    /// a terminal's, its pane title's and a lone terminal's (task 1522).
+    /// a terminal's, its pane title's and a lone terminal's (task 1522);
+    /// and a row's line, where it is one of the core's own sentences (task
+    /// 1525).
     /// The core writes them as English msgids ("Awaiting approval",
     /// "Held"), because it does not know the person's language; this is
     /// where the host says them in it -- once, as the snapshot arrives, so
@@ -645,8 +706,15 @@ impl Snapshot {
                 *t = tr(t);
             }
         };
+        // A line that is one of the core's own sentences, said the same way.
+        let sentence = |w: &mut What| {
+            if let Some(s) = &w.say {
+                w.lines = vec![fill(&tr(&s.template), &s.args)];
+            }
+        };
         for g in &mut self.groups {
             say(&mut g.text);
+            sentence(&mut g.what);
         }
         for t in &mut self.terminals {
             say(&mut t.text);
@@ -656,6 +724,7 @@ impl Snapshot {
         }
         for l in &mut self.ungrouped {
             say(&mut l.text);
+            sentence(&mut l.what);
         }
     }
 }
@@ -795,6 +864,7 @@ fn group(v: &Value, path: &str) -> Res<Group> {
             form: Form::parse(&form).ok_or(DecodeError::UnknownValue(format!("{what_at}.form={form}")))?,
             lines,
             cut: Cut::parse(&cut).ok_or(DecodeError::UnknownValue(format!("{what_at}.cut={cut}")))?,
+            say: say_of(what, &what_at)?,
         },
         reason: Reason {
             from: text(reason, &format!("{path}.reason"), "from")?,
