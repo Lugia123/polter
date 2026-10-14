@@ -24,6 +24,7 @@ pub const fn n_(s: &'static str) -> &'static str {
 pub mod general;
 pub mod plugins;
 pub mod handback;
+pub mod official;
 pub mod picker;
 pub mod projects;
 pub mod search;

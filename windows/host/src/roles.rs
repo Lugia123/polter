@@ -1,4 +1,4 @@
-//! The role library's values and the five calls that read and write it.
+//! The role library's values and the calls that read and write it.
 //!
 //! A port of `macos/Sources/Features/Roles/RoleModels.swift` (the values)
 //! and `RoleLibrary.swift` (the calls). The window is `roles_ui.rs`; this
@@ -20,6 +20,7 @@ use serde_json::{Map, Value};
 
 use crate::ffi::Surface;
 use crate::i18n::tr;
+use polter_settings_shell::official::{self, State};
 
 /// The key of the supervisor role Polter ships (`persona.supervisor_key`).
 /// Only the tests name it now: nothing here treats a role differently by
@@ -37,13 +38,34 @@ pub fn menu_name(_key: &str, name: &str) -> String {
     name.to_string()
 }
 
-/// What this window says about an official role, on the role itself and
-/// when the core refuses a write to one. **True as far as this host goes**:
-/// the core keeps what a person changes in an official role and can put it
-/// back, and the Mac's library does both; this window does neither yet
-/// (#1507), and says so rather than showing fields that look editable.
-pub fn official_notice() -> String {
-    tr("Official role. Changing it and restoring its factory settings can't be done on Windows yet.")
+/// What the core said about where an official role or skill stands
+/// (`persona.Official`), with its reason already in the reader's language.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Official {
+    pub state: State,
+    pub overridden: Vec<String>,
+    pub stale: Vec<String>,
+    pub reason: Option<String>,
+}
+
+impl Official {
+    /// `obj` is the object holding `state`, `reason`, `reason_code` and
+    /// `reason_detail`: a role's `official`, or a skill row itself.
+    fn from_json(obj: Option<&Map<String, Value>>) -> Option<Official> {
+        let obj = obj?;
+        let state = State::parse(obj.get("state")?.as_str()?)?;
+        let s = |k: &str| obj.get(k).and_then(Value::as_str);
+        Some(Official {
+            state,
+            overridden: strings(obj.get("overridden")),
+            stale: strings(obj.get("stale")),
+            reason: official::why_text(s("reason_code"), s("reason_detail"), s("reason"), tr),
+        })
+    }
+
+    pub fn can_restore(&self) -> bool {
+        self.state.can_restore()
+    }
 }
 
 // ------------------------------------------------------------- the values
@@ -258,16 +280,20 @@ pub struct Role {
     pub instructions: String,
     pub clis: Vec<CliChoice>,
     pub polter: PolterSettings,
-    /// Shipped with Polter. Shown, launched and copied, never saved: the
-    /// core refuses to replace or delete one.
+    /// Shipped with Polter. Most of it can be changed here and put back;
+    /// its name, its description and what it grants cannot, and it cannot
+    /// be deleted (the core refuses each, by name).
     pub builtin: bool,
+    /// Where an official role stands against the shipped one; `None` for a
+    /// role somebody wrote. The core's word, never worked out here.
+    pub official: Option<Official>,
     /// Everything else in the object. `serde_json::Map` is ordered by key,
     /// so two roles that differ only in the order a file wrote them compare
     /// equal -- the same reason the macOS side serialises with sorted keys.
     pub passthrough: Map<String, Value>,
 }
 
-const EDITED_KEYS: &[&str] = &["key", "name", "description", "instructions", "clis", "polter", "builtin"];
+const EDITED_KEYS: &[&str] = &["key", "name", "description", "instructions", "clis", "polter", "builtin", "official"];
 
 impl Role {
     pub fn new(key: &str, name: &str) -> Self {
@@ -279,6 +305,7 @@ impl Role {
             clis: Vec::new(),
             polter: PolterSettings::default(),
             builtin: false,
+            official: None,
             passthrough: Map::new(),
         }
     }
@@ -309,14 +336,15 @@ impl Role {
             clis,
             polter: PolterSettings::from_json(obj.get("polter")),
             builtin: obj.get("builtin").and_then(Value::as_bool).unwrap_or(false),
+            official: Official::from_json(obj.get("official").and_then(Value::as_object)),
             passthrough,
         })
     }
 
     /// The object `ghostty_app_persona_put` takes. **Never carries
-    /// `builtin`**: a file cannot make a role Polter's, and the core ignores
-    /// it anyway -- leaving it out keeps a copy of a built-in from claiming
-    /// to be one.
+    /// `builtin` or `official`**: a file cannot make a role Polter's, and the
+    /// core ignores both anyway -- leaving them out keeps a copy of a
+    /// built-in from claiming to be one.
     pub fn to_json(&self) -> Value {
         let mut out = self.passthrough.clone();
         out.insert("key".into(), Value::from(self.key.clone()));
@@ -403,6 +431,12 @@ pub struct Catalog {
     pub error: Option<String>,
     pub path: Option<String>,
     pub roles: Vec<Role>,
+    /// Roles of the person's that are in the file and not in use, because
+    /// Polter ships a role under their key: `(key, name)`.
+    pub shadowed: Vec<(String, String)>,
+    /// Why the file of changes to official roles could not be read as a
+    /// whole, in the reader's language; `None` when it could.
+    pub overrides_error: Option<String>,
 }
 
 impl Catalog {
@@ -418,11 +452,76 @@ impl Catalog {
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Role::from_json).collect())
                 .unwrap_or_default(),
+            shadowed: obj
+                .get("shadowed")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|row| {
+                            let key = row.get("key")?.as_str()?;
+                            let name = row.get("name").and_then(Value::as_str).unwrap_or(key);
+                            Some((key.to_string(), name.to_string()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            overrides_error: {
+                let s = |k: &str| obj.get(k).and_then(Value::as_str);
+                official::why_text(s("overrides_error_code"), s("overrides_error_detail"), s("overrides_error"), tr)
+            },
         })
     }
 
     pub fn role(&self, key: &str) -> Option<&Role> {
         self.roles.iter().find(|r| r.key == key)
+    }
+}
+
+/// One skill Polter ships, with the text in use and where it stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfficialSkill {
+    pub name: String,
+    pub summary: String,
+    pub official: Official,
+    /// The whole file in use: the person's copy when there is one.
+    pub source: String,
+}
+
+/// Every skill Polter ships (`ghostty_app_official_skills`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SkillCatalog {
+    /// Why the list could not be made; then `skills` is empty because it is
+    /// not known, not because there are none.
+    pub error: Option<String>,
+    pub skills: Vec<OfficialSkill>,
+}
+
+impl SkillCatalog {
+    pub fn parse(json: &str) -> Option<SkillCatalog> {
+        let v: Value = serde_json::from_str(json).ok()?;
+        let obj = v.as_object()?;
+        let skills = obj
+            .get("skills")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|row| {
+                        let o = row.as_object()?;
+                        Some(OfficialSkill {
+                            name: o.get("name")?.as_str()?.to_string(),
+                            source: o.get("source")?.as_str()?.to_string(),
+                            summary: o.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
+                            official: Official::from_json(Some(o))?,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(SkillCatalog { error: obj.get("error").and_then(Value::as_str).map(str::to_string), skills })
+    }
+
+    pub fn skill(&self, name: &str) -> Option<&OfficialSkill> {
+        self.skills.iter().find(|s| s.name == name)
     }
 }
 
@@ -685,11 +784,17 @@ pub fn message(code: &str) -> String {
         "ChooseCli" => tr("This role is set up for more than one agent CLI. Choose one."),
         "NotYetOpen" => tr("A tab was opened but didn't appear in time, so nothing was started in it."),
         "NoApp" => tr("Polter isn't ready yet."),
-        // The window offers neither save nor delete on a built-in role, and
-        // never changes the three user-only fields on someone else's behalf,
-        // so these two mean something got past it. Worded after
+        // The window greys every field the core would refuse on an official
+        // role, so these mean something got past it.
+        "LockedName" | "LockedDescription" | "LockedStanding" | "LockedField" | "BuiltinPersona" => {
+            tr("An official role's name, description and what it grants can't be changed. Duplicate it to make one of your own.")
+        }
+        "OverridesUnreadable" => tr("The file that holds your changes to official roles can't be read, so nothing was saved into it. Restore Factory Settings sets it aside."),
+        "BadSkill" => tr("This doesn't read as the skill: it needs its opening lines, with its own name in them."),
+        "NoSuchSkill" | "NoConfigDir" => tr("This skill couldn't be saved."),
+        // Never changes the three user-only fields on someone else's behalf,
+        // so this means something got past the window. Worded after
         // `roleWriteFailure` in rpc.zig, which says the same to an agent.
-        "BuiltinPersona" => official_notice(),
         "NotPermitted" => tr("Only you can make a role's terminal a supervisor, let it answer permission prompts, or keep agents out of it."),
         other => other.to_string(),
     }
@@ -790,6 +895,72 @@ pub fn delete(key: &str) -> Result<(), String> {
     } else {
         Err(message(&err_name(&err)))
     }
+}
+
+/// One of the calls that answer true, or false with an error's name. `Err`
+/// is that name, not yet a sentence: `OverridesUnreadable` from `restore`
+/// is a question to ask the person, not a message.
+fn ask(call: impl FnOnce(&crate::ffi::Api, crate::ffi::App, *mut u8, usize) -> bool) -> Result<(), String> {
+    let Some(api) = crate::api_opt() else { return Err("NoApp".into()) };
+    let app = crate::app_opt();
+    if app.is_null() {
+        return Err("NoApp".into());
+    }
+    let mut err = [0u8; 128];
+    if call(api, app, err.as_mut_ptr(), err.len()) {
+        Ok(())
+    } else {
+        Err(err_name(&err))
+    }
+}
+
+/// Put an official role back to the shipped one. `everything` sets the
+/// whole file of changes aside -- every official role and skill -- and is
+/// only ever passed after the person agreed to that. `Err` is the error's
+/// name (see [`ask`]).
+pub fn restore(key: &str, everything: bool) -> Result<(), String> {
+    ask(|api, app, e, cap| unsafe { (api.app_persona_restore)(app, key.as_ptr(), key.len(), everything, e, cap) })
+}
+
+/// "Keep mine", for a role the shipped version has moved under. `Err` is a
+/// sentence for the person.
+pub fn acknowledge(key: &str) -> Result<(), String> {
+    ask(|api, app, e, cap| unsafe { (api.app_persona_acknowledge)(app, key.as_ptr(), key.len(), e, cap) }).map_err(|c| message(&c))
+}
+
+/// Keep a role the file holds under an official key as the person's own,
+/// under a new key. `Err` is a sentence for the person.
+pub fn adopt(key: &str) -> Result<(), String> {
+    ask(|api, app, e, cap| unsafe { (api.app_persona_adopt)(app, key.as_ptr(), key.len(), e, cap) }).map_err(|c| message(&c))
+}
+
+/// Every skill Polter ships. `SkillCatalog::default()` -- no skills and no
+/// error -- when the app is not up or the answer could not be read.
+pub fn skills() -> SkillCatalog {
+    let Some(api) = crate::api_opt() else { return SkillCatalog::default() };
+    let app = crate::app_opt();
+    if app.is_null() {
+        return SkillCatalog::default();
+    }
+    ask_json(|b, c| unsafe { (api.app_official_skills)(app, b, c) })
+        .and_then(|text| SkillCatalog::parse(&text))
+        .unwrap_or_default()
+}
+
+/// Save an official skill's whole text. `Err` is a sentence for the person.
+pub fn skill_put(name: &str, text: &str) -> Result<(), String> {
+    ask(|api, app, e, cap| unsafe { (api.app_official_skill_put)(app, name.as_ptr(), name.len(), text.as_ptr(), text.len(), e, cap) })
+        .map_err(|c| message(&c))
+}
+
+pub fn skill_restore(name: &str) -> Result<(), String> {
+    ask(|api, app, e, cap| unsafe { (api.app_official_skill_restore)(app, name.as_ptr(), name.len(), e, cap) }).map_err(|c| message(&c))
+}
+
+/// "Keep mine", for a skill the shipped text has moved under.
+pub fn skill_acknowledge(name: &str) -> Result<(), String> {
+    ask(|api, app, e, cap| unsafe { (api.app_official_skill_acknowledge)(app, name.as_ptr(), name.len(), e, cap) })
+        .map_err(|c| message(&c))
 }
 
 /// Open a tab beside `surface` and start `cli` in it wearing `key`. `cli`
@@ -1006,6 +1177,64 @@ mod tests {
         assert!(Catalog::parse("not json").is_none());
     }
 
+    #[test]
+    fn an_official_role_carries_where_it_stands_and_never_writes_it_back() {
+        let mut v = supervisor_json();
+        v["official"] = json!({"state": "modified_stale", "overridden": ["instructions"], "stale": ["instructions"],
+                               "reason": null});
+        let r = Role::from_json(&v).unwrap();
+        let o = r.official.as_ref().expect("official");
+        assert_eq!(o.state, State::ModifiedStale);
+        assert_eq!(o.stale, vec!["instructions".to_string()]);
+        assert!(o.can_restore());
+        let out = r.to_json();
+        assert!(out.get("official").is_none(), "{out}");
+        assert!(r.passthrough.get("official").is_none(), "not carried through as an unknown field either");
+        // A role somebody wrote has none, and an unknown state is none
+        // rather than a guess.
+        assert!(Role::from_json(&json!({"key": "a", "name": "A"})).unwrap().official.is_none());
+        let odd = Role::from_json(&json!({"key": "a", "name": "A", "official": {"state": "later"}})).unwrap();
+        assert!(odd.official.is_none());
+    }
+
+    /// The reason the core named is said by its name (here the English
+    /// msgid, since tests have no catalogue); one it did not name is shown
+    /// in the core's own words.
+    #[test]
+    fn reasons_are_read_by_their_name_and_fall_back_to_the_cores_words() {
+        let c = Catalog::parse(
+            r#"{"loaded":true,"personas":[{"key":"w","name":"W","builtin":true,
+                 "official":{"state":"unknown","reason":"english","reason_code":"role_no_value","reason_detail":"instructions"}}],
+                "shadowed":[{"key":"polter-worker","name":"Mine"},{"key":"k"},{"name":"no key"}],
+                "overrides_error":"Could not read C:\x: denied","overrides_error_code":"overrides_unreadable",
+                "overrides_error_detail":"C:\x: denied"}"#,
+        )
+        .unwrap();
+        assert_eq!(c.role("w").unwrap().official.as_ref().unwrap().reason.as_deref(), Some("\"instructions\" has no value."));
+        assert_eq!(c.overrides_error.as_deref(), Some("Could not read C:\\x: denied"));
+        assert_eq!(c.shadowed, vec![("polter-worker".into(), "Mine".into()), ("k".into(), "k".into())]);
+        let old = Catalog::parse(r#"{"loaded":true,"personas":[],"overrides_error":"in English"}"#).unwrap();
+        assert_eq!(old.overrides_error.as_deref(), Some("in English"));
+        assert_eq!(Catalog::parse(r#"{"loaded":true,"personas":[]}"#).unwrap().overrides_error, None);
+    }
+
+    #[test]
+    fn the_official_skills_parse_and_unknown_is_not_empty() {
+        let k = SkillCatalog::parse(
+            r#"{"error":null,"skills":[{"name":"polter-supervising","description":"How","state":"modified",
+                 "reason":null,"source":"---\nname: polter-supervising\n---\n","shipped":"x"},
+               {"name":"no-source","state":"pristine"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(k.skills.len(), 1, "a row with no text is dropped, not shown empty");
+        let s = k.skill("polter-supervising").unwrap();
+        assert_eq!(s.official.state, State::Modified);
+        assert!(s.source.starts_with("---"));
+        let none = SkillCatalog::parse(r#"{"error":"NoConfigDir","skills":null}"#).unwrap();
+        assert_eq!(none.error.as_deref(), Some("NoConfigDir"));
+        assert!(none.skills.is_empty());
+    }
+
     /// The core's own render-failure answer, read out of its source rather
     /// than copied here (the trick `personas.rs` uses): it must come in as a
     /// named error on a library that was not loaded, not as "no roles".
@@ -1145,10 +1374,13 @@ mod tests {
     fn error_names_become_sentences_and_unknown_ones_pass_through() {
         assert!(message("BadPersona").starts_with("This role can't be saved"));
         assert_eq!(message("NoApp"), "Polter isn't ready yet.");
-        // What the core answers when a write to an official role reaches
-        // it: this window cannot do that yet, and says so.
-        assert!(message("BuiltinPersona").starts_with("Official role."));
-        assert!(message("BuiltinPersona").contains("can't be done on Windows yet"));
+        // What the core answers when a write reaches a locked part of an
+        // official role (#1507: the rest of it can be written now).
+        for code in ["LockedName", "LockedDescription", "LockedStanding", "LockedField", "BuiltinPersona"] {
+            assert!(message(code).starts_with("An official role's name, description"), "{code}");
+        }
+        assert!(message("OverridesUnreadable").contains("Restore Factory Settings sets it aside"));
+        assert!(message("BadSkill").starts_with("This doesn't read as the skill"));
         assert!(message("NotPermitted").starts_with("Only you can"));
         assert_eq!(message("SomethingNew"), "SomethingNew");
         assert_eq!(err_name(b"NoCli\0garbage"), "NoCli");

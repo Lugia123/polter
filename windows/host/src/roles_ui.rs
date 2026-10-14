@@ -65,8 +65,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::i18n::tr;
-use crate::roles::{self, AgentCli, Catalog, CliChoice, CliItem, CliSnapshot, ItemGroup, ItemKind, Open, Role};
+use crate::roles::{self, AgentCli, Catalog, CliChoice, CliItem, CliSnapshot, ItemGroup, ItemKind, Official, Open, Role, SkillCatalog};
 use crate::theme;
+use polter_settings_shell::official::{self as shipped, Entry, State as OfficialState};
 use polter_settings_shell::{grid, section_grid};
 
 // ================================================================ the editor
@@ -112,6 +113,12 @@ pub struct Editor {
     /// Whether the key still follows the name. It stops the moment the
     /// person types a key of their own.
     pub key_follows_name: bool,
+    /// The official skill on screen, when it is one of those and not a
+    /// role (`draft` is then `None`): its name, its whole text as it is
+    /// being typed, and the text it was loaded with.
+    pub skill: Option<String>,
+    pub skill_text: String,
+    pub skill_saved: String,
 }
 
 fn taken(cat: &Catalog) -> HashSet<String> {
@@ -120,6 +127,9 @@ fn taken(cat: &Catalog) -> HashSet<String> {
 
 impl Editor {
     pub fn is_dirty(&self) -> bool {
+        if self.skill.is_some() {
+            return self.skill_text != self.skill_saved;
+        }
         match &self.draft {
             None => false,
             Some(d) => self.is_new || Some(d) != self.original.as_ref(),
@@ -127,6 +137,9 @@ impl Editor {
     }
 
     pub fn load(&mut self, cat: &Catalog, key: Option<&str>) {
+        self.skill = None;
+        self.skill_text.clear();
+        self.skill_saved.clear();
         self.selection = key.map(str::to_string);
         self.is_new = false;
         self.status = None;
@@ -136,9 +149,25 @@ impl Editor {
         self.draft = role;
     }
 
+    /// Put an official skill on screen in place of a role. Call only once
+    /// leaving the current draft has been agreed to.
+    pub fn load_skill(&mut self, cat: &Catalog, skills: &SkillCatalog, name: &str) {
+        self.load(cat, None);
+        let text = skills.skill(name).map(|k| k.source.clone()).unwrap_or_default();
+        self.skill = Some(name.to_string());
+        self.skill_text = text.clone();
+        self.skill_saved = text;
+    }
+
     /// After the library changed underneath: keep the draft, refresh what
     /// "saved" means for it, and drop a selection that is gone.
-    pub fn library_changed(&mut self, cat: &Catalog) {
+    pub fn library_changed(&mut self, cat: &Catalog, skills: &SkillCatalog) {
+        if let Some(name) = self.skill.clone() {
+            if !self.is_dirty() {
+                self.load_skill(cat, skills, &name);
+            }
+            return;
+        }
         if self.is_new {
             return;
         }
@@ -224,18 +253,20 @@ impl Editor {
         }
     }
 
-    /// What `put` should be handed, or why not.
+    /// What `put` should be handed, or why not. `Ok(None)` is nothing to
+    /// save: no role on screen.
     ///
-    /// `Ok(None)` is a built-in role: there is nothing of the user's to save,
-    /// and leaving it is fine. **Checked here and not left to the core** for
-    /// the one case the core cannot tell apart: a *new* role whose key is
-    /// already used would be a replacement to the core, and the user asked for
-    /// a new one.
+    /// **An official role is saved like any other** (#1507). It used to be
+    /// `Ok(None)` here, which was right while nothing in one could be typed
+    /// into -- and would have been "saved" with nothing saved the moment
+    /// something could. The core keeps what may change as the person's
+    /// change and refuses the rest by name.
+    ///
+    /// **Checked here and not left to the core** for the one case the core
+    /// cannot tell apart: a *new* role whose key is already used would be a
+    /// replacement to the core, and the user asked for a new one.
     pub fn save_request(&self, cat: &Catalog) -> Result<Option<Role>, String> {
         let Some(role) = self.draft.as_ref() else { return Ok(None) };
-        if role.builtin {
-            return Ok(None);
-        }
         if self.is_new && cat.role(&role.key).is_some() {
             return Err(tr("Another role already uses this key."));
         }
@@ -253,7 +284,10 @@ impl Editor {
     }
 
     pub fn revert(&mut self, cat: &Catalog) {
-        if self.is_new {
+        if self.skill.is_some() {
+            self.skill_text = self.skill_saved.clone();
+            self.status = None;
+        } else if self.is_new {
             self.load(cat, None);
         } else {
             let key = self.draft.as_ref().map(|d| d.key.clone());
@@ -273,21 +307,42 @@ pub fn leave_needs_asking(ed: &Editor) -> bool {
 /// Whether clicking `key` in the list changes anything. Clicking the role
 /// already open is not leaving it, and must not ask.
 pub fn selecting_is_a_change(ed: &Editor, key: &str) -> bool {
-    ed.is_new || ed.draft.as_ref().map(|d| d.key.as_str()) != Some(key)
+    ed.is_new || ed.skill.is_some() || ed.draft.as_ref().map(|d| d.key.as_str()) != Some(key)
+}
+
+/// The same for an official skill in the list.
+pub fn selecting_skill_is_a_change(ed: &Editor, name: &str) -> bool {
+    ed.skill.as_deref() != Some(name)
+}
+
+/// What "Restore Factory Settings…" would act on, for the official role or
+/// skill on screen: where it stands. `None` when there is no official thing
+/// on screen -- then there is no strip and no button.
+pub fn official_on_screen<'a>(ed: &'a Editor, skills: &'a SkillCatalog) -> Option<(bool, Option<&'a Official>)> {
+    if let Some(name) = &ed.skill {
+        return Some((true, skills.skill(name).map(|k| &k.official)));
+    }
+    ed.draft.as_ref().filter(|d| d.builtin && !ed.is_new)?;
+    Some((false, ed.original.as_ref().and_then(|o| o.official.as_ref())))
 }
 
 /// Which parts of the draft can be typed into.
 ///
-/// **A built-in role is read-only, not hidden** -- what it does is the point
-/// of looking at it.
+/// **An official role is mostly editable** (#1507): its name, its
+/// description and the three switches that grant the terminal something are
+/// shown and locked (`official::locks`), and everything else can be changed
+/// and put back.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Editable {
     pub name: bool,
     pub key: bool,
     pub summary: bool,
     pub instructions: bool,
-    /// Supervisor, may-authorise, shield, and "open in".
-    pub polter: bool,
+    /// Supervisor, may-authorise, shield.
+    pub standing: bool,
+    /// "Open in". Its own field: it used to share one with the three above,
+    /// which is one rule for two different things.
+    pub open: bool,
     pub watch: bool,
     pub quiet: bool,
     pub clis: bool,
@@ -297,23 +352,24 @@ pub struct Editable {
 
 pub fn editable(ed: &Editor) -> Editable {
     let Some(d) = ed.draft.as_ref() else { return Editable::default() };
-    let own = !d.builtin;
+    let locks = shipped::locks(d.builtin);
     let p = &d.polter;
     Editable {
-        name: own,
+        name: !locks.name,
         // A key is chosen once: after saving, roles and terminals refer to
         // the role by it.
-        key: own && ed.is_new,
-        summary: own,
-        instructions: own,
-        polter: own,
+        key: !d.builtin && ed.is_new,
+        summary: !locks.summary,
+        instructions: true,
+        standing: !locks.standing,
+        open: true,
         // A supervisor watches, it is not watched; a shielded terminal is out
         // of every tool's reach, a supervisor's included.
-        watch: own && !p.supervisor && !p.shielded,
-        quiet: own && !p.shielded,
-        clis: own,
-        start: own,
-        items: own,
+        watch: !p.supervisor && !p.shielded,
+        quiet: !p.shielded,
+        clis: true,
+        start: true,
+        items: true,
     }
 }
 
@@ -326,12 +382,15 @@ pub struct Buttons {
     pub launch: bool,
     pub revert: bool,
     pub save: bool,
+    /// "Restore Factory Settings…", in the official strip: there is
+    /// something to put back.
+    pub restore: bool,
 }
 
 /// `can_launch`: is there a terminal to open the tab beside. Asked by the
 /// caller every time, because a window can open or close while this one
 /// stays up.
-pub fn buttons(ed: &Editor, cat: &Catalog, can_launch: bool) -> Buttons {
+pub fn buttons(ed: &Editor, cat: &Catalog, skills: &SkillCatalog, can_launch: bool) -> Buttons {
     let broken = cat.error.is_some();
     let dirty = ed.is_dirty();
     let has = ed.draft.is_some();
@@ -347,6 +406,7 @@ pub fn buttons(ed: &Editor, cat: &Catalog, can_launch: bool) -> Buttons {
         launch: has && !dirty && clis > 0 && can_launch,
         revert: dirty,
         save: dirty && !broken,
+        restore: official_on_screen(ed, skills).and_then(|(_, o)| o).is_some_and(Official::can_restore),
     }
 }
 
@@ -358,11 +418,15 @@ pub fn footer_note(ed: &Editor, can_launch: bool) -> Option<(String, bool)> {
     if let Some(s) = &ed.status {
         return Some((s.clone(), true));
     }
-    ed.draft.as_ref()?;
+    if ed.draft.is_none() && ed.skill.is_none() {
+        return None;
+    }
     if ed.is_dirty() {
         return Some((tr("Unsaved changes"), false));
     }
-    if !can_launch {
+    // An official skill is not launched; the reason Launch is grey is not
+    // this page's to give.
+    if !can_launch && ed.skill.is_none() {
         return Some((tr("Open a terminal window first; the new tab goes beside it."), false));
     }
     None
@@ -402,24 +466,35 @@ pub fn tab_label(tab: Tab, ed: &Editor, clis: &CliSnapshot) -> String {
 
 // ============================================================ the left list
 
-/// One row of the role list.
+/// One row of the list column: a role, the official skills' heading, or an
+/// official skill.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListRow {
-    /// `None` for the unsaved new role, which has no key of its own yet in
-    /// the library and cannot be clicked back to.
-    pub key: Option<String>,
+    /// What it is: `Entry::Role(None)` is the unsaved new role, which has no
+    /// key of its own yet in the library and cannot be clicked back to.
+    pub entry: Entry,
     pub title: String,
     pub subtitle: String,
-    /// Comes with Polter: drawn with a lock.
+    /// Comes with Polter: drawn with the "Official" mark.
     pub builtin: bool,
-    /// Drawn with a dot.
-    pub unsaved: bool,
+    /// Drawn with a dot: unsaved here, or changed from factory settings.
+    pub dot: bool,
     pub selected: bool,
 }
 
-pub fn list_rows(ed: &Editor, cat: &Catalog, clis: &CliSnapshot) -> Vec<ListRow> {
+#[cfg(test)]
+impl ListRow {
+    pub fn key(&self) -> Option<&str> {
+        match &self.entry {
+            Entry::Role(k) => k.as_deref(),
+            _ => None,
+        }
+    }
+}
+
+pub fn list_rows(ed: &Editor, cat: &Catalog, skills: &SkillCatalog, clis: &CliSnapshot) -> Vec<ListRow> {
     let row = |r: &Role, key: Option<String>, unsaved: bool, selected: bool| ListRow {
-        key,
+        entry: Entry::Role(key),
         title: if r.display_name().is_empty() { r.key.clone() } else { r.display_name() },
         subtitle: if r.clis.is_empty() {
             tr("No agent CLI")
@@ -427,7 +502,7 @@ pub fn list_rows(ed: &Editor, cat: &Catalog, clis: &CliSnapshot) -> Vec<ListRow>
             r.clis.iter().map(|c| clis.label(&c.cli)).collect::<Vec<_>>().join(" · ")
         },
         builtin: r.builtin,
-        unsaved,
+        dot: shipped::dot(unsaved, r.official.as_ref().map(|o| o.state)),
         selected,
     };
     let mut out = Vec::new();
@@ -437,10 +512,33 @@ pub fn list_rows(ed: &Editor, cat: &Catalog, clis: &CliSnapshot) -> Vec<ListRow>
         }
     }
     for r in &cat.roles {
-        let open = !ed.is_new && ed.draft.as_ref().is_some_and(|d| d.key == r.key);
+        let open = !ed.is_new && ed.skill.is_none() && ed.draft.as_ref().is_some_and(|d| d.key == r.key);
         // The dot goes on the saved row while its draft is dirty: what the
         // list shows is the library, and the dot says the screen differs.
         out.push(row(r, Some(r.key.clone()), open && ed.is_dirty(), open));
+    }
+    // The skills Polter ships, under the roles: the same list, because a
+    // role is where a person meets them, and the same mark.
+    if !skills.skills.is_empty() {
+        out.push(ListRow {
+            entry: Entry::Heading,
+            title: tr("Official Skills"),
+            subtitle: String::new(),
+            builtin: false,
+            dot: false,
+            selected: false,
+        });
+        for k in &skills.skills {
+            let open = ed.skill.as_deref() == Some(k.name.as_str());
+            out.push(ListRow {
+                entry: Entry::Skill(k.name.clone()),
+                title: k.name.clone(),
+                subtitle: k.summary.lines().next().unwrap_or("").to_string(),
+                builtin: true,
+                dot: shipped::dot(open && ed.is_dirty(), Some(k.official.state)),
+                selected: open,
+            });
+        }
     }
     out
 }
@@ -449,7 +547,7 @@ pub fn list_rows(ed: &Editor, cat: &Catalog, clis: &CliSnapshot) -> Vec<ListRow>
 /// not the same as not read yet**: `loaded == false` is a library nobody has
 /// looked at.
 pub fn list_empty_note(ed: &Editor, cat: &Catalog) -> Option<(String, String)> {
-    if !cat.roles.is_empty() || ed.is_new {
+    if !cat.roles.is_empty() || ed.is_new || ed.skill.is_some() {
         return None;
     }
     if !cat.loaded {
@@ -538,6 +636,8 @@ pub struct Row {
 /// Everything [`rows`] reads.
 pub struct View<'a> {
     pub ed: &'a Editor,
+    pub cat: &'a Catalog,
+    pub skills: &'a SkillCatalog,
     pub clis: &'a CliSnapshot,
     /// DIP.
     pub instr_h: i32,
@@ -555,6 +655,12 @@ const SECTION_GAP: i32 = grid::GROUP_GAP;
 /// under them go here as well as the fields beside labels, so the page has
 /// two left edges -- the margin and this -- and no third.
 const CONTROL_COL: i32 = LABEL_W + LABEL_GAP;
+/// The lock after a locked field, and the room kept for it on the rows
+/// beside one (the place's natural width of `Kind::Lock` is this too).
+const LOCK_W: i32 = 12;
+/// An official skill's text box: the macOS side's minimum. The whole file is
+/// in it, frontmatter and all, so it is the page.
+const SKILL_TEXT_H: i32 = 320;
 pub const INSTR_DEFAULT: i32 = 240;
 pub const INSTR_MIN: i32 = 100;
 pub const INSTR_MAX: i32 = 900;
@@ -596,13 +702,17 @@ fn edit(text: &str, cue: String, mono: bool) -> Kind {
 /// A label in the left column and something beside it, the macOS
 /// `labeled(...)`.
 fn field(label: String, cell: Cell) -> Row {
+    field_with(label, vec![cell])
+}
+/// A label and more than one thing beside it: a locked box and its lock.
+fn field_with(label: String, cells: Vec<Cell>) -> Row {
     let lab = Cell {
         key: String::new(),
         kind: Kind::Text { text: label, tone: Tone::Dim, font: Font::Normal, right: true, lines: 1 },
         width: Width::Fixed(LABEL_W),
         enabled: true,
     };
-    row(vec![lab, cell])
+    row(std::iter::once(lab).chain(cells).collect())
 }
 /// A row in the control column, with nothing in the label column: check
 /// boxes and the notes under them (settings.md §2.3a).
@@ -675,26 +785,156 @@ fn cli_segments(ed: &Editor, clis: &CliSnapshot) -> Option<Row> {
     Some(Row { cells, indent: CONTROL_COL, gap: 4 })
 }
 
-/// Every row of the right-hand pane, top to bottom.
+/// Every row of the right-hand pane, top to bottom: what the library and
+/// the thing on screen have to say for themselves, then the page.
 pub fn rows(v: &View) -> Vec<Row> {
-    let Some(d) = v.ed.draft.as_ref() else {
-        return vec![Row {
+    let mut out = notice_rows(v);
+    let page = if v.ed.skill.is_some() {
+        skill_rows(v)
+    } else if let Some(d) = v.ed.draft.as_ref() {
+        match v.ed.tab.kind() {
+            None => basics_rows(v, d),
+            Some(kind) => item_rows(v, d, kind),
+        }
+    } else {
+        vec![Row {
             cells: vec![text(tr("Select a role, or make a new one."), Tone::Dim, Font::Normal)],
             indent: 0,
             gap: 40,
-        }];
+        }]
     };
-    match v.ed.tab.kind() {
-        None => basics_rows(v, d),
-        Some(kind) => item_rows(v, d, kind),
+    // The page starts a group's gap under the notices, as a section does.
+    let had_notices = !out.is_empty();
+    for (i, mut r) in page.into_iter().enumerate() {
+        if i == 0 && had_notices {
+            r.gap = r.gap.max(SECTION_GAP);
+        }
+        out.push(r);
     }
+    out
+}
+
+/// A notice: its first line, with a button beside it when it has one, and
+/// a second line under it.
+fn notice(out: &mut Vec<Row>, first: String, warn: bool, button: Option<(String, String)>, second: Option<String>) {
+    let tone = if warn { Tone::Warn } else { Tone::Text };
+    let mut cells = vec![text(first, tone, Font::Bold)];
+    if let Some((key, label)) = button {
+        cells.push(ctl(key, Kind::Button { text: label }, Width::Auto, true));
+    }
+    out.push(Row { cells, indent: 0, gap: if out.is_empty() { 0 } else { ROW_GAP } });
+    if let Some(t) = second.filter(|t| !t.is_empty()) {
+        out.push(Row { cells: vec![text(t, Tone::Dim, Font::Small)], indent: 0, gap: -4 });
+    }
+}
+
+/// What the macOS side shows as banners over the page: the file of changes
+/// that could not be read, the person's roles an official one has taken the
+/// key of, and -- for the official role or skill on screen -- that the
+/// shipped one has moved since, or that the changes to it were not read.
+///
+/// **Rows of the page, not fixed bands**: each is a sentence of any length
+/// in any language, and `place` already wraps a sentence and puts a button
+/// beside it at every width (the overlap tests hold that).
+fn notice_rows(v: &View) -> Vec<Row> {
+    let mut out = Vec::new();
+    if let Some(why) = &v.cat.overrides_error {
+        notice(&mut out, tr("Your changes to official roles couldn't be read, so they are not in use."), true, None, Some(why.clone()));
+    }
+    for (key, name) in &v.cat.shadowed {
+        let line = tr("Your role \"{}\" has the key {}, which is now an official role's. Yours is kept in the file but isn't in use.")
+            .replacen("{}", name, 1)
+            .replacen("{}", key, 1);
+        notice(&mut out, line, true, Some((format!("adopt:{key}"), tr("Keep It Under a New Key"))), None);
+    }
+    if let Some((_, Some(o))) = official_on_screen(v.ed, v.skills) {
+        match o.state {
+            OfficialState::ModifiedStale => {
+                let mut fields: Vec<String> = shipped::stale_sections(&o.stale).into_iter().map(tr).collect();
+                fields.sort();
+                let first = if fields.is_empty() || v.ed.skill.is_some() {
+                    tr("The official version has changed")
+                } else {
+                    tr("The official version has changed: {}").replace("{}", &fields.join(", "))
+                };
+                notice(
+                    &mut out,
+                    first,
+                    false,
+                    Some(("keepmine".into(), tr("Keep Mine"))),
+                    Some(tr("The official version of what you changed here has changed since. Yours is still the one in use.")),
+                );
+            }
+            OfficialState::Unknown => notice(
+                &mut out,
+                tr("Your changes weren't read, so the factory settings are in use."),
+                true,
+                None,
+                o.reason.clone(),
+            ),
+            OfficialState::Pristine | OfficialState::Modified => {}
+        }
+    }
+    out
+}
+
+/// A field shown and locked: the box, read-only, and the lock after it.
+fn locked(key: &str, value: &str, mono: bool, editable: bool) -> Vec<Cell> {
+    let mut cells = vec![ctl(key, edit(value, String::new(), mono), Width::Fill, editable)];
+    if !editable {
+        cells.push(Cell { key: String::new(), kind: Kind::Lock, width: Width::Fixed(LOCK_W), enabled: true });
+    }
+    cells
+}
+
+/// The room the lock takes, kept on a row with no lock so the boxes above
+/// and below end on one line.
+fn lock_room() -> Cell {
+    Cell {
+        key: String::new(),
+        kind: Kind::Text { text: String::new(), tone: Tone::Dim, font: Font::Small, right: false, lines: 1 },
+        width: Width::Fixed(LOCK_W),
+        enabled: true,
+    }
+}
+
+/// An official skill: its name, which is its file's and cannot change,
+/// where it stands, and its whole text.
+fn skill_rows(v: &View) -> Vec<Row> {
+    let Some(name) = v.ed.skill.as_deref() else { return Vec::new() };
+    let mut out = Vec::new();
+    out.push(field_with(tr("Name"), locked("skillname", name, true, false)));
+    let state = v.skills.skill(name).map(|k| &k.official);
+    let words = match state {
+        Some(o) if o.state == OfficialState::Unknown => tr(o.state.text()).replace("{}", o.reason.as_deref().unwrap_or("")),
+        Some(o) => tr(o.state.text()),
+        // Gone from the list since it was opened: say nothing rather than
+        // a state nobody reported.
+        None => String::new(),
+    };
+    out.push(field(tr("Status"), text(words, Tone::Dim, Font::Normal)));
+    out.push(heading(tr("Skill Text")));
+    out.push(row(vec![ctl(
+        "skilltext",
+        Kind::Edit { text: v.ed.skill_text.clone(), cue: String::new(), multi: true, height: SKILL_TEXT_H, mono: true, number: false },
+        Width::Fill,
+        true,
+    )]));
+    out.push(note(
+        tr("Takes effect as soon as it's saved. When an agent that is already running reads the new text depends on the tool it uses."),
+        0,
+    ));
+    out
 }
 
 fn basics_rows(v: &View, d: &Role) -> Vec<Row> {
     let e = editable(v.ed);
     let mut out = Vec::new();
 
-    out.push(field(tr("Name"), ctl("name", edit(&d.display_name(), String::new(), false), Width::Fill, e.name)));
+    // An official role's name and description are shown with a lock; the
+    // key keeps the lock's room so the three boxes end on one line.
+    let official = d.builtin && !v.ed.is_new;
+    out.push(field_with(tr("Name"), locked("name", &d.display_name(), false, e.name)));
     if v.ed.is_new {
         out.push(field(tr("Key"), ctl("key", edit(&d.key, String::new(), true), Width::Fill, e.key)));
         let ok = Role::is_valid_key(&d.key);
@@ -706,12 +946,22 @@ fn basics_rows(v: &View, d: &Role) -> Vec<Row> {
         out.push(Row { cells: vec![text(t, tone, Font::Small)], indent: CONTROL_COL, gap: -4 });
     } else {
         // Read-only rather than painted: a key is the thing people copy.
-        out.push(field(tr("Key"), ctl("key", edit(&d.key, String::new(), true), Width::Fill, false)));
+        let mut key_row = field(tr("Key"), ctl("key", edit(&d.key, String::new(), true), Width::Fill, false));
+        if official {
+            key_row.cells.push(lock_room());
+        }
+        out.push(key_row);
     }
-    out.push(field(
-        tr("Description"),
-        ctl("summary", edit(&d.display_summary(), tr("What this role is for, for whoever picks it"), false), Width::Fill, e.summary),
-    ));
+    let mut summary = vec![ctl(
+        "summary",
+        edit(&d.display_summary(), tr("What this role is for, for whoever picks it"), false),
+        Width::Fill,
+        e.summary,
+    )];
+    if !e.summary {
+        summary.push(Cell { key: String::new(), kind: Kind::Lock, width: Width::Fixed(LOCK_W), enabled: true });
+    }
+    out.push(field_with(tr("Description"), summary));
 
     out.push(heading(tr("Instructions")));
     out.push(row(vec![ctl(
@@ -730,13 +980,10 @@ fn basics_rows(v: &View, d: &Role) -> Vec<Row> {
 
     let p = &d.polter;
     out.push(heading(tr("Polter")));
-    out.push(in_controls(vec![check("sup", tr("Make this terminal a supervisor"), p.supervisor, e.polter)], 0));
-    out.push(in_controls(vec![check("auth", tr("Let the supervisor answer this terminal's permission prompts"), p.may_authorise, e.polter)], 0));
-    out.push(in_controls(vec![check("shield", tr("Shield it: no tool can reach it, a supervisor's included"), p.shielded, e.polter)], 0));
-    out.push(note(
-        tr("These three give the terminal something, so only you can set them, here. A supervisor that edits roles can't change them."),
-        CONTROL_COL,
-    ));
+    out.push(in_controls(vec![check("sup", tr("Make this terminal a supervisor"), p.supervisor, e.standing)], 0));
+    out.push(in_controls(vec![check("auth", tr("Let the supervisor answer this terminal's permission prompts"), p.may_authorise, e.standing)], 0));
+    out.push(in_controls(vec![check("shield", tr("Shield it: no tool can reach it, a supervisor's included"), p.shielded, e.standing)], 0));
+    out.push(note(tr(shipped::standing_note(d.builtin)), CONTROL_COL));
     out.push(in_controls(vec![check("watch", tr("Hand it to the supervisor to watch"), p.watch, e.watch)], 4));
     // The macOS side has this as the toggle's tooltip. Here it is on the
     // page: the rule is not guessable, and a hover nobody makes teaches
@@ -764,7 +1011,7 @@ fn basics_rows(v: &View, d: &Role) -> Vec<Row> {
                 sel: usize::from(p.open == Open::Tab),
             },
             Width::Auto,
-            e.polter,
+            e.open,
         ),
     );
     open_in.gap = 4;
@@ -1060,10 +1307,14 @@ pub enum Action {
 }
 
 /// What the window has to do after an action, beyond redrawing.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct After {
     /// Ask the adapters again (`roles::clis(true)`).
     pub reread_clis: bool,
+    /// "Keep Mine" was pressed on the official role or skill on screen.
+    pub keep_mine: bool,
+    /// "Keep It Under a New Key" was pressed for this key.
+    pub adopt: Option<String>,
 }
 
 fn set_tab(m: &mut Model, tab: Tab) {
@@ -1087,6 +1338,17 @@ pub fn apply(m: &mut Model, cat: &Catalog, clis: &CliSnapshot, a: Action) -> Aft
         Action::Click(k) if k == "tab:2" => set_tab(m, Tab::Mcp),
         Action::Click(k) if k == "gobasics" => set_tab(m, Tab::Basics),
         Action::Click(k) if k == "reload" => after.reread_clis = true,
+        Action::Click(k) if k == "keepmine" => after.keep_mine = true,
+        Action::Click(k) if k.starts_with("adopt:") => after.adopt = Some(k["adopt:".len()..].to_string()),
+        // The whole file, as the box has it. Its line ends are `\n`, as the
+        // file's are: a box that was given `\n` keeps them (Windows 10 1809
+        // and later), but one somebody pasted `\r\n` into would otherwise
+        // differ from the saved text by every line.
+        Action::Text(k, t) if k == "skilltext" => {
+            if m.ed.skill.is_some() {
+                m.ed.skill_text = t.replace("\r\n", "\n");
+            }
+        }
         Action::Click(k) if k.starts_with("seg:") => {
             let cli = k["seg:".len()..].to_string();
             if m.ed.active_cli.as_deref() != Some(&cli) {
@@ -1199,15 +1461,15 @@ pub fn apply(m: &mut Model, cat: &Catalog, clis: &CliSnapshot, a: Action) -> Aft
             let Some(d) = m.ed.draft.as_mut() else { return after };
             let p = &mut d.polter;
             match k.as_str() {
-                "sup" if e.polter => p.supervisor = on,
-                "auth" if e.polter => p.may_authorise = on,
-                "shield" if e.polter => p.shielded = on,
+                "sup" if e.standing => p.supervisor = on,
+                "auth" if e.standing => p.may_authorise = on,
+                "shield" if e.standing => p.shielded = on,
                 "watch" if e.watch => p.watch = on,
                 "quiet" if e.quiet => p.quiet_ms = on.then_some(QUIET_DEFAULT_MS),
                 _ => {}
             }
         }
-        Action::Choose(k, i) if k == "open" && e.polter => {
+        Action::Choose(k, i) if k == "open" && e.open => {
             if let Some(d) = m.ed.draft.as_mut() {
                 d.polter.open = if i == 1 { Open::Tab } else { Open::Auto };
             }
@@ -1257,8 +1519,11 @@ const CELL_GAP: i32 = grid::BUTTONS_GAP;
 const ROLE_ROW_H: i32 = 44;
 const TABBAR_H: i32 = 44;
 const TABS_MAX_W: i32 = 420;
-const BANNER_H: i32 = 44;
 const GRIP_H: i32 = 8;
+/// Between a list row's name and the "Official" mark, and between the mark
+/// and the dot: the macOS `OfficialMark.gap`, one number for both since
+/// task 1514.
+const MARK_GAP: i32 = 6;
 
 /// A cell with somewhere to be, in the pane's content coordinates (before
 /// scrolling).
@@ -1312,7 +1577,7 @@ pub fn place(rows: &[Row], width: i32, dpi: i32, measure: Measure) -> Laid {
                 (Width::Auto, Kind::Combo { options, .. }) => {
                     Some(options.iter().map(|o| measure(o, avail, Font::Normal, true).0).max().unwrap_or(0) + s(40))
                 }
-                (Width::Auto, Kind::Lock) => Some(s(12)),
+                (Width::Auto, Kind::Lock) => Some(s(LOCK_W)),
                 (Width::Auto, _) => None,
             }
         };
@@ -1387,8 +1652,12 @@ pub struct Frame {
     /// + ⧉ −, at the left end of the bottom band.
     pub list_buttons: [RECT; 3],
     pub error: Option<RECT>,
-    pub banner: Option<RECT>,
-    pub banner_dup: Option<RECT>,
+    /// The official strip over an official role or skill (`official::strip`):
+    /// the band, the words at its left when there is room for them, and
+    /// "Restore Factory Settings…" at its right.
+    pub strip: Option<RECT>,
+    pub strip_words: Option<RECT>,
+    pub restore: Option<RECT>,
     pub tabs: Option<[RECT; 3]>,
     pub pane: RECT,
     /// The rule over the bottom band: the window's rule, on the same row.
@@ -1408,9 +1677,23 @@ fn rect(r: polter_settings_shell::Rect) -> RECT {
     RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
 }
 
-/// `error_h`: the measured height of the library-error text, when there is
-/// one. Measured by the caller because the core's message is any length.
-pub fn frame_layout(w: i32, h: i32, dpi: i32, error_h: Option<i32>, builtin: bool, has_draft: bool) -> Frame {
+/// What decides the fixed parts besides the size: whatever was measured.
+/// **One value for both callers** -- the refresh that moves the controls and
+/// the paint that draws round them -- so they cannot work it out twice and
+/// disagree (`frame_inputs` makes it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameInputs {
+    /// The measured height of the library-error text, when there is one.
+    /// Measured because the core's message is any length.
+    pub error_h: Option<i32>,
+    /// An official role or skill is on screen: the measured width of the
+    /// Restore button's text, which is what the strip gives way around.
+    pub strip_text_w: Option<i32>,
+    /// A role is on screen: the tab bar. Not for a skill, which is one page.
+    pub tabs: bool,
+}
+
+pub fn frame_layout(w: i32, h: i32, dpi: i32, fi: FrameInputs) -> Frame {
     let s = |v: i32| v * dpi / 96;
     let g = section_grid(w, h, dpi, true);
     let (Some(list), Some(list_divider), Some(list_buttons)) = (g.list, g.list_divider, g.list_buttons) else {
@@ -1419,20 +1702,17 @@ pub fn frame_layout(w: i32, h: i32, dpi: i32, error_h: Option<i32>, builtin: boo
     let left = g.editor.left;
     let body = g.editor.bottom;
     let mut y = 0;
-    let error = error_h.map(|eh| {
+    let error = fi.error_h.map(|eh| {
         let r = RECT { left, top: y, right: w, bottom: y + eh + s(PAD) };
         y = r.bottom;
         r
     });
-    let (banner, banner_dup) = if has_draft && builtin {
-        let r = RECT { left, top: y, right: w, bottom: y + s(BANNER_H) };
-        y = r.bottom;
-        let dw = s(grid::ACTION_W[1]);
-        let top = r.top + (s(BANNER_H) - s(BTN_H)) / 2;
-        (Some(r), Some(RECT { left: w - s(PAD) - dw, top, right: w - s(PAD), bottom: top + s(BTN_H) }))
-    } else {
-        (None, None)
-    };
+    let official = fi.strip_text_w.map(|tw| {
+        let st = shipped::strip(left, w, y, dpi, tw);
+        y = st.strip.bottom;
+        st
+    });
+    let has_draft = fi.tabs;
     let tabs = has_draft.then(|| {
         let tw = (w - left - 2 * s(PAD)).min(s(TABS_MAX_W)).max(s(90));
         let x0 = left + ((w - left) - tw) / 2;
@@ -1449,8 +1729,9 @@ pub fn frame_layout(w: i32, h: i32, dpi: i32, error_h: Option<i32>, builtin: boo
         list_divider: rect(list_divider),
         list_buttons: list_buttons.map(rect),
         error,
-        banner,
-        banner_dup,
+        strip: official.map(|o| rect(o.strip)),
+        strip_words: official.and_then(|o| o.words.map(rect)),
+        restore: official.map(|o| rect(o.restore)),
         tabs,
         pane,
         bottom_rule: rect(g.bottom_rule),
@@ -1563,7 +1844,8 @@ const ID_NEW: u16 = 100;
 const ID_DUP: u16 = 101;
 const ID_DEL: u16 = 102;
 const ID_TAB0: u16 = 110;
-const ID_BANNER_DUP: u16 = 120;
+/// "Restore Factory Settings…", in the official strip.
+const ID_RESTORE: u16 = 120;
 const ID_LAUNCH: u16 = 130;
 const ID_REVERT: u16 = 131;
 const ID_SAVE: u16 = 132;
@@ -1624,7 +1906,7 @@ fn dpi_of(h: HWND) -> i32 {
 struct Fixed {
     list_buttons: [HWND; 3],
     tabs: [HWND; 3],
-    banner_dup: HWND,
+    restore: HWND,
     footer: [HWND; 3],
 }
 
@@ -1667,6 +1949,7 @@ fn tag_of(k: &Kind) -> Option<Tag> {
 struct State {
     model: Model,
     cat: Catalog,
+    skills: SkillCatalog,
     clis: CliSnapshot,
     /// The terminal window this one belongs to, re-answered at every open.
     owner: HWND,
@@ -1702,6 +1985,7 @@ impl Default for State {
         State {
             model: Model::default(),
             cat: Catalog::default(),
+            skills: SkillCatalog::default(),
             clis: CliSnapshot::default(),
             owner: HWND(std::ptr::null_mut()),
             prev_focus: HWND(std::ptr::null_mut()),
@@ -1799,11 +2083,13 @@ pub fn show(host: HWND, rect: RECT, origin: HWND, item: Option<&str>) {
     ST.with(|c| c.borrow_mut().owner = owner);
     if !was_visible {
         let cat = roles::catalog();
+        let skills = roles::skills();
         let clis = roles::clis(false);
         let h = load_height();
         ST.with(|c| {
             let s = &mut *c.borrow_mut();
             s.cat = cat;
+            s.skills = skills;
             s.clis = clis;
             s.model.instr_h = h;
             s.scroll = 0;
@@ -1822,7 +2108,7 @@ pub fn show(host: HWND, rect: RECT, origin: HWND, item: Option<&str>) {
                 draft_replaced(s);
             }
             Some(_) => {}
-            None if s.model.ed.draft.is_none() && !s.model.ed.is_new => {
+            None if s.model.ed.draft.is_none() && !s.model.ed.is_new && s.model.ed.skill.is_none() => {
                 let key = s
                     .remembered
                     .clone()
@@ -1927,9 +2213,11 @@ pub fn activated() {
     }
     crate::ime_focus(false);
     let cat = roles::catalog();
+    let skills = roles::skills();
     with_model(|s| {
         s.cat = cat;
-        s.model.ed.library_changed(&s.cat);
+        s.skills = skills;
+        s.model.ed.library_changed(&s.cat, &s.skills);
         draft_replaced(s);
     });
     refresh();
@@ -1946,7 +2234,7 @@ pub fn log_grid() {
     }
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(win, &mut rc) };
-    let f = frame_layout(rc.right, rc.bottom, dpi_of(win), None, false, true);
+    let f = frame_layout(rc.right, rc.bottom, dpi_of(win), FrameInputs { tabs: true, ..FrameInputs::default() });
     let root = dialog_owner();
     let mut origin = [POINT { x: 0, y: 0 }];
     unsafe {
@@ -1995,7 +2283,7 @@ pub fn dpi_changed() {
     make_fonts(dpi_of(win));
     drop_controls();
     if let Some(f) = FIXED.with(|c| c.get()) {
-        for h in f.list_buttons.iter().chain(&f.tabs).chain(&f.footer).chain(std::iter::once(&f.banner_dup)) {
+        for h in f.list_buttons.iter().chain(&f.tabs).chain(&f.footer).chain(std::iter::once(&f.restore)) {
             unsafe {
                 SendMessageW(*h, WM_SETFONT, Some(WPARAM(font(Font::Normal).0 as usize)), Some(LPARAM(1)));
             }
@@ -2032,6 +2320,9 @@ pub fn current() -> Option<(Option<String>, String)> {
     ST.with(|c| {
         let s = c.borrow();
         let ed = &s.model.ed;
+        if let Some(name) = &ed.skill {
+            return Some((None, name.clone()));
+        }
         ed.draft.as_ref().map(|d| {
             let name = d.display_name();
             (ed.selection.clone(), if name.is_empty() { d.key.clone() } else { name })
@@ -2053,18 +2344,23 @@ pub fn search_rows() -> Vec<(String, String)> {
 /// The list as shown: `list_rows`, narrowed by the search box. A new,
 /// unsaved role is always shown -- it is the one being edited, and it has
 /// no key the search could have been looking for.
+/// The heading over the official skills stays only while a skill under it
+/// does: a heading over nothing reads as "there are none".
 pub fn filtered_rows(rows: Vec<ListRow>, query: &str) -> Vec<ListRow> {
-    rows.into_iter()
-        .filter(|r| {
-            r.key.is_none()
-                || polter_settings_shell::matches(query, &r.title)
-                || r.key.as_deref().is_some_and(|k| polter_settings_shell::matches(query, k))
+    let kept: Vec<ListRow> = rows
+        .into_iter()
+        .filter(|r| match &r.entry {
+            Entry::Role(None) | Entry::Heading => true,
+            Entry::Role(Some(k)) => polter_settings_shell::matches(query, &r.title) || polter_settings_shell::matches(query, k),
+            Entry::Skill(name) => polter_settings_shell::matches(query, name),
         })
-        .collect()
+        .collect();
+    let any_skill = kept.iter().any(|r| matches!(r.entry, Entry::Skill(_)));
+    kept.into_iter().filter(|r| any_skill || r.entry != Entry::Heading).collect()
 }
 
 fn shown_rows(s: &State) -> Vec<ListRow> {
-    filtered_rows(list_rows(&s.model.ed, &s.cat, &s.clis), &s.list_filter)
+    filtered_rows(list_rows(&s.model.ed, &s.cat, &s.skills, &s.clis), &s.list_filter)
 }
 
 /// What the search has done to the list (settings.md §2.3a).
@@ -2072,7 +2368,8 @@ fn filter_state() -> polter_settings_shell::Filtered {
     ST.with(|c| {
         let s = c.borrow();
         let rows = shown_rows(&s);
-        let selected = s.model.ed.draft.as_ref().map(|_| rows.iter().any(|r| r.selected));
+        let on_screen = s.model.ed.draft.is_some() || s.model.ed.skill.is_some();
+        let selected = on_screen.then(|| rows.iter().any(|r| r.selected));
         polter_settings_shell::filtered(&s.list_filter, rows.len(), selected)
     })
 }
@@ -2254,7 +2551,7 @@ fn create(host: HWND) -> bool {
             // beside them.
             list_buttons: [mk(ID_NEW, "+".into(), false), mk(ID_DUP, "\u{29c9}".into(), false), mk(ID_DEL, "\u{2212}".into(), false)],
             tabs: [mk(ID_TAB0, String::new(), true), mk(ID_TAB0 + 1, String::new(), true), mk(ID_TAB0 + 2, String::new(), true)],
-            banner_dup: mk(ID_BANNER_DUP, tr("Duplicate"), false),
+            restore: mk(ID_RESTORE, tr("Restore Factory Settings…"), false),
             footer: [mk(ID_LAUNCH, tr("Launch"), false), mk(ID_REVERT, tr("Revert"), false), mk(ID_SAVE, tr("Save"), false)],
         };
         FIXED.with(|f| f.set(Some(fixed)));
@@ -2328,9 +2625,8 @@ fn refresh() {
         tab_labels: [String; 3],
         tab: Tab,
         buttons: Buttons,
-        error: Option<String>,
-        builtin: bool,
         has_draft: bool,
+        has_page: bool,
         launch_label: String,
     }
     let plan = ST.with(|c| {
@@ -2338,6 +2634,8 @@ fn refresh() {
         let ed = &s.model.ed;
         let v = View {
             ed,
+            cat: &s.cat,
+            skills: &s.skills,
             clis: &s.clis,
             instr_h: s.model.instr_h,
             search: &s.model.search,
@@ -2349,10 +2647,9 @@ fn refresh() {
             rows: rows(&v),
             tab_labels: Tab::ALL.map(|t| tab_label(t, ed, &s.clis)),
             tab: ed.tab,
-            buttons: buttons(ed, &s.cat, launchable),
-            error: s.cat.error.clone(),
-            builtin: ed.draft.as_ref().is_some_and(|d| d.builtin),
+            buttons: buttons(ed, &s.cat, &s.skills, launchable),
             has_draft: ed.draft.is_some(),
+            has_page: ed.draft.is_some() || ed.skill.is_some(),
             // More than one CLI opens a menu of them, and says so.
             launch_label: if many { format!("{} ▾", tr("Launch")) } else { tr("Launch") },
         }
@@ -2361,17 +2658,13 @@ fn refresh() {
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(win, &mut rc) };
     let hdc = unsafe { GetDC(Some(win)) };
-    let measure = measure_with(hdc);
-    let error_h = plan.error.as_ref().map(|e| {
-        let w = rc.right - dpi * (LIST_W + PAD * 2) / 96;
-        measure(&error_banner_text(e), w, Font::Normal, false).1
-    });
-    let frame = frame_layout(rc.right, rc.bottom, dpi, error_h, plan.builtin, plan.has_draft);
+    let fi = frame_inputs(hdc, rc.right, dpi);
+    let frame = frame_layout(rc.right, rc.bottom, dpi, fi);
     unsafe {
         ReleaseDC(Some(win), hdc);
     }
 
-    place_fixed(&frame, &plan.tab_labels, plan.tab, plan.buttons, &plan.launch_label, plan.builtin, plan.has_draft);
+    place_fixed(&frame, &plan.tab_labels, plan.tab, plan.buttons, &plan.launch_label, plan.has_draft, plan.has_page);
     let pr = frame.pane;
     unsafe {
         // ⚠️ **`SWP_FRAMECHANGED`, because this window has a scroll bar and a
@@ -2446,6 +2739,24 @@ fn refresh() {
     crate::settings_win::crumb_changed();
 }
 
+/// What the fixed parts are laid out around, measured with `hdc` -- the
+/// one place that does it, so the refresh that moves the controls and the
+/// paint that draws round them cannot disagree about the strip or the error
+/// band (they used to work the band out once each).
+fn frame_inputs(hdc: HDC, width: i32, dpi: i32) -> FrameInputs {
+    let (error, official, tabs) = ST.with(|c| {
+        let s = c.borrow();
+        let ed = &s.model.ed;
+        (s.cat.error.clone(), official_on_screen(ed, &s.skills).is_some(), ed.draft.is_some() && ed.skill.is_none())
+    });
+    let measure = measure_with(hdc);
+    FrameInputs {
+        error_h: error.map(|e| measure(&error_banner_text(&e), width - dpi * (LIST_W + PAD * 2) / 96, Font::Normal, false).1),
+        strip_text_w: official.then(|| measure(&tr("Restore Factory Settings…"), width, Font::Normal, true).0),
+        tabs,
+    }
+}
+
 fn error_banner_text(detail: &str) -> String {
     format!(
         "{}\n{}",
@@ -2455,7 +2766,7 @@ fn error_banner_text(detail: &str) -> String {
 }
 
 /// Move, label, enable and show the controls that are always there.
-fn place_fixed(frame: &Frame, tab_labels: &[String; 3], tab: Tab, b: Buttons, launch_label: &str, builtin: bool, has_draft: bool) {
+fn place_fixed(frame: &Frame, tab_labels: &[String; 3], tab: Tab, b: Buttons, launch_label: &str, has_draft: bool, has_page: bool) {
     let Some(f) = FIXED.with(|c| c.get()) else { return };
     let put = |h: HWND, r: &RECT, show: bool, enabled: bool| unsafe {
         // Off the keyboard before it is hidden or greyed (task 1010).
@@ -2473,14 +2784,17 @@ fn place_fixed(frame: &Frame, tab_labels: &[String; 3], tab: Tab, b: Buttons, la
     let empty = RECT::default();
     for (i, h) in f.tabs.iter().enumerate() {
         let r = frame.tabs.map(|t| t[i]).unwrap_or(empty);
-        put(*h, &r, has_draft, true);
+        put(*h, &r, frame.tabs.is_some(), true);
         set_text_if_changed(*h, &tab_labels[i]);
         set_segment(*h, Tab::ALL[i] == tab);
     }
-    put(f.banner_dup, &frame.banner_dup.unwrap_or(empty), has_draft && builtin, b.duplicate);
+    put(f.restore, &frame.restore.unwrap_or(empty), frame.restore.is_some(), b.restore);
     let enabled = [b.launch, b.revert, b.save];
+    // Launch is a role's; an official skill has Revert and Save only, as on
+    // the macOS side.
+    let shown = [has_draft, has_page, has_page];
     for (i, h) in f.footer.iter().enumerate() {
-        put(*h, &frame.footer_buttons[i], has_draft, enabled[i]);
+        put(*h, &frame.footer_buttons[i], shown[i], enabled[i]);
     }
     set_text_if_changed(f.footer[0], launch_label);
 }
@@ -2704,6 +3018,13 @@ fn make_control(pane: HWND, tag: Tag) -> Option<Live> {
         }
         if matches!(tag, Tag::Edit { multi: true, .. }) && custom {
             let _ = SetWindowTheme(h, w!("DarkMode_Explorer"), PCWSTR::null());
+        }
+        // **As much as the box can hold.** An edit control takes 32 767
+        // characters typed unless told otherwise, and the supervising
+        // skill alone is 63 KB: its whole text went in (setting it is not
+        // limited), and then not one more character could be typed.
+        if matches!(tag, Tag::Edit { multi: true, .. }) {
+            SendMessageW(h, EM_SETLIMITTEXT, Some(WPARAM(0)), Some(LPARAM(0)));
         }
     }
     subclass(h);
@@ -3011,9 +3332,34 @@ fn select(key: &str) {
     refresh();
 }
 
-/// ↑ / ↓ in the role list: the next or previous role in the list as shown,
-/// stopping at the ends, through `select` (which asks about unsaved changes
-/// first), then scrolled so it is on screen.
+/// Put an official skill on screen, asking first about unsaved changes.
+fn select_skill(name: &str) {
+    if !ST.with(|c| selecting_skill_is_a_change(&c.borrow().model.ed, name)) {
+        return;
+    }
+    if confirm_leaving() {
+        with_model(|s| {
+            s.model.ed.load_skill(&s.cat, &s.skills, name);
+            s.scroll = 0;
+            draft_replaced(s);
+        });
+    }
+    refresh();
+}
+
+/// A list row was picked: a role or a skill. The heading is nothing.
+fn pick(entry: &Entry) {
+    match entry {
+        Entry::Role(Some(key)) => select(key),
+        Entry::Skill(name) => select_skill(name),
+        Entry::Role(None) | Entry::Heading => {}
+    }
+}
+
+/// ↑ / ↓ in the list: the next or previous role or skill in the list as
+/// shown, over the skills' heading, stopping at the ends, through `pick`
+/// (which asks about unsaved changes first), then scrolled so it is on
+/// screen.
 fn step_list(down: bool) {
     let win = main_hwnd();
     let (rows, list_top) = ST.with(|c| {
@@ -3021,17 +3367,25 @@ fn step_list(down: bool) {
         (shown_rows(&s), s.list_top)
     });
     let current = rows.iter().position(|r| r.selected);
-    let Some(next) = polter_settings_shell::step(current, rows.len(), down) else { return };
-    let Some(key) = rows[next].key.clone() else { return };
-    select(&key);
+    let entries: Vec<Entry> = rows.iter().map(|r| r.entry.clone()).collect();
+    let Some(next) = shipped::step(&entries, current, down) else { return };
+    let target = entries[next].clone();
+    pick(&target);
     // Only when the move happened: a Cancel leaves the selection, and the
     // list where it was.
-    let moved = ST.with(|c| c.borrow().model.ed.selection.as_deref() == Some(key.as_str()));
+    let moved = ST.with(|c| {
+        let ed = &c.borrow().model.ed;
+        match &target {
+            Entry::Role(Some(k)) => ed.skill.is_none() && ed.selection.as_deref() == Some(k.as_str()),
+            Entry::Skill(n) => ed.skill.as_deref() == Some(n.as_str()),
+            _ => false,
+        }
+    });
     if moved {
         let mut rc = RECT::default();
         let _ = unsafe { GetClientRect(win, &mut rc) };
         let dpi = dpi_of(win);
-        let fit = role_rows_fitting(dpi, frame_layout(rc.right, rc.bottom, dpi, None, false, false).list.bottom);
+        let fit = role_rows_fitting(dpi, frame_layout(rc.right, rc.bottom, dpi, FrameInputs::default()).list.bottom);
         ST.with(|c| {
             let s = &mut *c.borrow_mut();
             s.list_top = polter_settings_shell::keep_visible(list_top, next, fit);
@@ -3042,6 +3396,12 @@ fn step_list(down: bool) {
 
 /// Save the draft. True when it was saved or there was nothing to save.
 fn save() -> bool {
+    if let Some((name, text)) = ST.with(|c| {
+        let ed = &c.borrow().model.ed;
+        ed.skill.clone().map(|n| (n, ed.skill_text.clone()))
+    }) {
+        return save_skill(&name, &text);
+    }
     let req = ST.with(|c| {
         let s = c.borrow();
         s.model.ed.save_request(&s.cat)
@@ -3072,6 +3432,139 @@ fn save() -> bool {
     });
     refresh();
     ok
+}
+
+fn save_skill(name: &str, text: &str) -> bool {
+    let result = roles::skill_put(name, text);
+    let skills = roles::skills();
+    // process-wide: the role library is app-scoped, not any one window's
+    crate::plogf!("[roles-ui] save skill {} -> {}", name, if result.is_ok() { "ok" } else { "refused" });
+    let ok = result.is_ok();
+    with_model(|s| {
+        s.skills = skills;
+        match result {
+            Ok(()) => s.model.ed.load_skill(&s.cat, &s.skills, name),
+            Err(why) => s.model.ed.status = Some(why),
+        }
+        draft_replaced(s);
+    });
+    refresh();
+    ok
+}
+
+/// Read the library and the skills again after the core changed them, and
+/// tell the editor.
+fn reread(s: &mut State) {
+    s.cat = roles::catalog();
+    s.skills = roles::skills();
+}
+
+/// "Restore Factory Settings…" for the official role or skill on screen,
+/// asked first; and when the file of changes cannot be read at all, asked a
+/// second time, because then it is every official role and skill that goes
+/// back (`ghostty_app_persona_restore`'s `everything`).
+fn restore() {
+    let (skill, role) = ST.with(|c| {
+        let ed = &c.borrow().model.ed;
+        (ed.skill.clone(), ed.original.clone().filter(|r| r.builtin && !ed.is_new && ed.skill.is_none()))
+    });
+    let name = match (&skill, &role) {
+        (Some(n), _) => n.clone(),
+        (None, Some(r)) => r.name.clone(),
+        (None, None) => return,
+    };
+    let first = ask(
+        dialog_owner(),
+        &tr("Restore \"{}\" to factory settings?").replace("{}", &name),
+        &tr("Your changes to it are removed, along with anything typed here and not saved. This can't be undone."),
+        &tr("Restore"),
+        None,
+    );
+    if first != Answer::First {
+        return;
+    }
+    let result = match (&skill, &role) {
+        (Some(n), _) => roles::skill_restore(n),
+        (None, Some(r)) => {
+            let mut code = roles::restore(&r.key, false);
+            if code.as_ref().err().map(String::as_str) == Some("OverridesUnreadable") {
+                // One role cannot be taken out of a file nobody can read.
+                // The core sets the whole file aside, and only when told to
+                // -- so the person is told what that costs first.
+                let all = ask(
+                    dialog_owner(),
+                    &tr("The file that holds your changes can't be read."),
+                    &tr("Restoring will put every official role and skill back to factory settings, not only this one. The file of your changes and your own copies of official skills are kept where they were, renamed, so nothing in them is lost."),
+                    &tr("Restore All"),
+                    None,
+                );
+                if all != Answer::First {
+                    return;
+                }
+                code = roles::restore(&r.key, true);
+            }
+            code.map_err(|c| roles::message(&c))
+        }
+        (None, None) => return,
+    };
+    // process-wide: the role library is app-scoped, not any one window's
+    crate::plogf!("[roles-ui] restore {} -> {}", name, if result.is_ok() { "ok" } else { "refused" });
+    with_model(|s| {
+        reread(s);
+        match &skill {
+            Some(n) => s.model.ed.load_skill(&s.cat, &s.skills, n),
+            None => {
+                let key = role.as_ref().map(|r| r.key.clone());
+                s.model.ed.load(&s.cat, key.as_deref());
+            }
+        }
+        s.model.ed.status = result.err();
+        draft_replaced(s);
+    });
+    refresh();
+}
+
+/// "Keep Mine": the notice that the official version moved goes, and what
+/// was changed here stays -- including anything typed and not saved.
+fn keep_mine() {
+    let (skill, key, was_dirty) = ST.with(|c| {
+        let ed = &c.borrow().model.ed;
+        (ed.skill.clone(), ed.original.as_ref().map(|o| o.key.clone()), ed.is_dirty())
+    });
+    let result = match (&skill, &key) {
+        (Some(n), _) => roles::skill_acknowledge(n),
+        (None, Some(k)) => roles::acknowledge(k),
+        (None, None) => return,
+    };
+    // process-wide: the role library is app-scoped, not any one window's
+    crate::plogf!("[roles-ui] keep mine -> {}", if result.is_ok() { "ok" } else { "refused" });
+    with_model(|s| {
+        reread(s);
+        // The text or the draft is the person's either way; only what
+        // "saved" means is refreshed under it.
+        s.model.ed.library_changed(&s.cat, &s.skills);
+        if !was_dirty && skill.is_none() {
+            s.model.ed.load(&s.cat, key.as_deref());
+        }
+        s.model.ed.status = result.err();
+        draft_replaced(s);
+    });
+    refresh();
+}
+
+/// "Keep It Under a New Key" for a role of the person's an official one has
+/// taken the key of.
+fn adopt(key: &str) {
+    let result = roles::adopt(key);
+    // process-wide: the role library is app-scoped, not any one window's
+    crate::plogf!("[roles-ui] adopt {} -> {}", key, if result.is_ok() { "ok" } else { "refused" });
+    with_model(|s| {
+        reread(s);
+        s.model.ed.library_changed(&s.cat, &s.skills);
+        s.model.ed.status = result.err();
+        draft_replaced(s);
+    });
+    refresh();
 }
 
 fn new_role() {
@@ -3242,6 +3735,14 @@ fn run_action(a: Action) {
         let (cat, clis) = (&s.cat, &s.clis);
         apply(&mut s.model, cat, clis, a)
     });
+    if after.keep_mine {
+        keep_mine();
+        return;
+    }
+    if let Some(key) = after.adopt {
+        adopt(&key);
+        return;
+    }
     if after.reread_clis {
         let clis = roles::clis(true);
         with_model(|s| {
@@ -3399,15 +3900,22 @@ fn draw_dot(hdc: HDC, cx: i32, cy: i32, r: i32, colour: u32) {
 fn paint_main(win: HWND) {
     // Everything this paints is read out first; nothing below borrows.
     let no_match = filter_state().no_match_row;
-    let (list, empty, error, builtin, has_draft, list_top, ed) = ST.with(|c| {
+    let (list, empty, error, strip_words, has_page, list_top, ed) = ST.with(|c| {
         let s = c.borrow();
         let ed = &s.model.ed;
+        let words = official_on_screen(ed, &s.skills).map(|(skill, o)| {
+            let (what, how) = shipped::strip_words(skill, o.map(|o| o.state));
+            match how {
+                Some(h) => format!("{} · {}", tr(what), tr(h)),
+                None => tr(what),
+            }
+        });
         (
             shown_rows(&s),
             list_empty_note(ed, &s.cat),
             s.cat.error.clone(),
-            ed.draft.as_ref().is_some_and(|d| d.builtin),
-            ed.draft.is_some(),
+            words,
+            ed.draft.is_some() || ed.skill.is_some(),
             s.list_top,
             ed.clone(),
         )
@@ -3425,10 +3933,7 @@ fn paint_main(win: HWND) {
         let dpi = dpi_of(win);
         let s = |v: i32| v * dpi / 96;
         let measure = measure_with(hdc);
-        let error_h = error.as_ref().map(|e| {
-            measure(&error_banner_text(e), rc.right - s(LIST_W + PAD * 2), Font::Normal, false).1
-        });
-        let frame = frame_layout(rc.right, rc.bottom, dpi, error_h, builtin, has_draft);
+        let frame = frame_layout(rc.right, rc.bottom, dpi, frame_inputs(hdc, rc.right, dpi));
 
         fill(hdc, &rc, theme::bg());
         fill(hdc, &frame.list, theme::panel());
@@ -3439,6 +3944,14 @@ fn paint_main(win: HWND) {
             let Some(r) = role_row_rect_at(dpi, list_top, i) else { continue };
             if r.bottom > limit {
                 break;
+            }
+            // The official skills' heading: small and dim, on the row's
+            // lower half, so it sits over the skills rather than under the
+            // last role.
+            if row.entry == Entry::Heading {
+                let t = RECT { left: frame.text_left, top: r.top, right: r.right - s(PAD), bottom: r.bottom - s(4) };
+                draw_text(hdc, &row.title, &t, Font::Small, theme::dim(), DT_LEFT | DT_SINGLELINE | DT_BOTTOM | DT_END_ELLIPSIS);
+                continue;
             }
             let (fg, dim) = if row.selected {
                 fill(hdc, &RECT { left: s(6), right: r.right - s(6), ..r }, theme::sel());
@@ -3455,18 +3968,20 @@ fn paint_main(win: HWND) {
             // means (the core keeps a person's changes to one, #1504).
             let official = tr("Official");
             let badge_w = if row.builtin { measure(&official, right - x, Font::Small, true).0 + s(10) } else { 0 };
-            let marks = if row.builtin { badge_w + s(6) } else { 0 } + s(14) * i32::from(row.unsaved);
+            // One gap, 6, between the name and the mark and between the mark
+            // and the dot -- the macOS `OfficialMark.gap` (task 1514).
+            let marks = if row.builtin { badge_w + s(MARK_GAP) } else { 0 } + (s(MARK_GAP) + s(6)) * i32::from(row.dot);
             let (tw, _) = measure(&row.title, right - x - marks, Font::Normal, true);
             let title = RECT { left: x, top: r.top + s(4), right: x + tw, bottom: r.top + s(24) };
             draw_text(hdc, &row.title, &title, Font::Normal, fg, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-            let mut mx = title.right + s(6);
+            let mut mx = title.right + s(MARK_GAP);
             if row.builtin {
                 let badge = RECT { left: mx, top: title.top + s(1), right: mx + badge_w, bottom: title.bottom - s(1) };
                 frame_rect(hdc, &badge, theme::border());
                 draw_text(hdc, &official, &badge, Font::Small, dim, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-                mx = badge.right + s(2);
+                mx = badge.right + s(MARK_GAP);
             }
-            if row.unsaved {
+            if row.dot {
                 draw_dot(hdc, mx + s(3), (title.top + title.bottom) / 2, s(3), theme::focus());
             }
             let sub = RECT { left: x, top: r.top + s(23), right, bottom: r.bottom - s(3) };
@@ -3491,21 +4006,18 @@ fn paint_main(win: HWND) {
             draw_text(hdc, &error_banner_text(e), &inner, Font::Normal, theme::warn(), DT_LEFT | DT_WORDBREAK);
             fill(hdc, &RECT { top: r.bottom - 1, ..r }, theme::border());
         }
-        if let (Some(r), Some(d)) = (frame.banner, frame.banner_dup) {
+        if let Some(r) = frame.strip {
             fill(hdc, &r, theme::panel());
-            let t = RECT { left: r.left + s(PAD), top: r.top, right: d.left - s(PAD), bottom: r.bottom };
-            draw_text(
-                hdc,
-                &crate::roles::official_notice(),
-                &t,
-                Font::Normal,
-                theme::dim(),
-                DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_END_ELLIPSIS,
-            );
+            // The words give way to the button (`official::strip`): one
+            // line, cut, and none at all when there is no room left.
+            if let (Some(t), Some(words)) = (frame.strip_words, strip_words.as_ref()) {
+                draw_text(hdc, words, &t, Font::Normal, theme::dim(), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+            fill(hdc, &RECT { top: r.bottom - 1, ..r }, theme::border());
         }
         // The bottom band is always there (settings.md §2.3a), with its text
         // only when a role is open.
-        if let Some((t, is_error)) = footer.filter(|_| has_draft) {
+        if let Some((t, is_error)) = footer.filter(|_| has_page) {
             let colour = if is_error { theme::warn() } else { theme::dim() };
             draw_text(hdc, &t, &frame.status, Font::Normal, colour, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
@@ -3778,7 +4290,8 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 let id = (wp.0 & 0xFFFF) as u16;
                 match id {
                     ID_NEW => new_role(),
-                    ID_DUP | ID_BANNER_DUP => duplicate(),
+                    ID_DUP => duplicate(),
+                    ID_RESTORE => restore(),
                     ID_DEL => delete(),
                     ID_LAUNCH => launch(),
                     ID_REVERT => revert(),
@@ -3817,7 +4330,7 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 let dpi = dpi_of(win);
                 let mut rc = RECT::default();
                 let _ = GetClientRect(win, &mut rc);
-                let list = frame_layout(rc.right, rc.bottom, dpi, None, false, false).list;
+                let list = frame_layout(rc.right, rc.bottom, dpi, FrameInputs::default()).list;
                 if x < list.right && y < list.bottom {
                     // The keyboard comes to the list, so ↑ / ↓ go on from
                     // here (settings.md §2.3a).
@@ -3826,10 +4339,10 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     let hit = ST.with(|c| {
                         let s = c.borrow();
                         let list = shown_rows(&s);
-                        role_row_at_y(dpi, s.list_top, list.len(), y, limit).and_then(|i| list[i].key.clone())
+                        role_row_at_y(dpi, s.list_top, list.len(), y, limit).map(|i| list[i].entry.clone())
                     });
-                    if let Some(key) = hit {
-                        select(&key);
+                    if let Some(entry) = hit {
+                        pick(&entry);
                     }
                 }
                 LRESULT(0)
@@ -3841,7 +4354,7 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 let dpi = dpi_of(win);
                 let mut rc = RECT::default();
                 let _ = GetClientRect(win, &mut rc);
-                let list = frame_layout(rc.right, rc.bottom, dpi, None, false, false).list;
+                let list = frame_layout(rc.right, rc.bottom, dpi, FrameInputs::default()).list;
                 if pt.x < list.right {
                     let fit = role_rows_fitting(dpi, list.bottom);
                     ST.with(|c| {
@@ -4055,7 +4568,7 @@ mod tests {
     }
 
     fn cat(keys: &[&str]) -> Catalog {
-        Catalog { loaded: true, error: None, path: None, roles: keys.iter().map(|k| role(k)).collect() }
+        Catalog { loaded: true, roles: keys.iter().map(|k| role(k)).collect(), ..Catalog::default() }
     }
 
     fn item(id: &str, kind: ItemKind, source: &str, locked: bool) -> CliItem {
@@ -4148,19 +4661,19 @@ mod tests {
     /// A built-in role: **everything** read-only, not only the fields that
     /// look important.
     #[test]
-    fn a_builtin_role_is_read_only_everywhere() {
+    fn an_official_role_locks_its_name_description_and_standing_and_nothing_else() {
         let mut c = cat(&["polter-supervisor"]);
         c.roles[0].builtin = true;
         let mut ed = Editor::default();
         ed.load(&c, Some("polter-supervisor"));
-        assert_eq!(editable(&ed), Editable::default());
-        // The floor: the same role, not built in, is editable -- or the
-        // assertion above would pass on a function that answered no to
-        // everything.
+        let e = editable(&ed);
+        assert!(!e.name && !e.summary && !e.standing && !e.key, "{e:?}");
+        assert!(e.instructions && e.open && e.watch && e.quiet && e.clis && e.start && e.items, "{e:?}");
+        // The floor: the same role, not built in, has the three back.
         c.roles[0].builtin = false;
         ed.load(&c, Some("polter-supervisor"));
         let e = editable(&ed);
-        assert!(e.name && e.summary && e.instructions && e.polter && e.clis && e.items);
+        assert!(e.name && e.summary && e.standing && e.open, "{e:?}");
     }
 
     /// The key is chosen once: editable while new, fixed after saving.
@@ -4199,15 +4712,15 @@ mod tests {
     fn launch_needs_a_saved_role_a_cli_and_a_terminal() {
         let mut c = cat(&["r"]);
         let mut ed = editing(&mut c);
-        assert!(buttons(&ed, &c, true).launch);
-        assert!(!buttons(&ed, &c, false).launch, "no terminal to open the tab beside");
+        assert!(buttons(&ed, &c, &SkillCatalog::default(), true).launch);
+        assert!(!buttons(&ed, &c, &SkillCatalog::default(), false).launch, "no terminal to open the tab beside");
         ed.draft.as_mut().unwrap().summary = "changed".into();
-        assert!(!buttons(&ed, &c, true).launch, "a dirty draft is not what the core would launch");
+        assert!(!buttons(&ed, &c, &SkillCatalog::default(), true).launch, "a dirty draft is not what the core would launch");
         // No CLI, and saved that way.
         c.roles[0].clis.clear();
         ed.load(&c, Some("r"));
         assert!(!ed.is_dirty());
-        assert!(!buttons(&ed, &c, true).launch, "no CLI");
+        assert!(!buttons(&ed, &c, &SkillCatalog::default(), true).launch, "no CLI");
     }
 
     #[test]
@@ -4215,19 +4728,19 @@ mod tests {
         let mut c = cat(&["r", "polter-supervisor"]);
         c.roles[1].builtin = true;
         let mut ed = editing(&mut c);
-        let b = buttons(&ed, &c, true);
+        let b = buttons(&ed, &c, &SkillCatalog::default(), true);
         assert!(!b.save && !b.revert && b.delete && b.duplicate && b.new);
         ed.draft.as_mut().unwrap().name = "x".into();
-        let b = buttons(&ed, &c, true);
+        let b = buttons(&ed, &c, &SkillCatalog::default(), true);
         assert!(b.save && b.revert);
         // A library file that does not parse: nothing is saved over it.
         let mut broken = c.clone();
         broken.error = Some("line 3".into());
-        let b = buttons(&ed, &broken, true);
+        let b = buttons(&ed, &broken, &SkillCatalog::default(), true);
         assert!(!b.save && !b.new && !b.delete && !b.duplicate && b.revert);
         ed.load(&c, Some("polter-supervisor"));
-        assert!(!buttons(&ed, &c, true).delete, "a built-in role cannot be deleted");
-        assert!(buttons(&ed, &c, true).duplicate, "but it can be copied");
+        assert!(!buttons(&ed, &c, &SkillCatalog::default(), true).delete, "a built-in role cannot be deleted");
+        assert!(buttons(&ed, &c, &SkillCatalog::default(), true).duplicate, "but it can be copied");
     }
 
     // ------------------------------------------------------------ leaving
@@ -4342,7 +4855,7 @@ mod tests {
     }
 
     #[test]
-    fn a_builtin_role_ignores_every_edit_that_reaches_it() {
+    fn an_official_role_ignores_edits_to_what_it_locks_and_takes_the_rest() {
         let mut c = cat(&["polter-supervisor"]);
         c.roles[0].builtin = true;
         c.roles[0].clis = vec![CliChoice::new("claude")];
@@ -4352,15 +4865,24 @@ mod tests {
         let clis = snapshot();
         for a in [
             Action::Text("name".into(), "x".into()),
-            Action::Text("instr".into(), "x".into()),
+            Action::Text("summary".into(), "x".into()),
             Action::Check("sup".into(), true),
-            Action::Check("cli:claude".into(), false),
-            Action::Check("keepdef".into(), false),
+            Action::Check("auth".into(), true),
+            Action::Check("shield".into(), true),
         ] {
             apply(&mut m, &c, &clis, a);
         }
-        assert_eq!(m.ed.draft, before.draft);
+        assert_eq!(m.ed.draft, before.draft, "the locked parts did not move");
         assert!(!m.ed.is_dirty());
+        apply(&mut m, &c, &clis, Action::Text("instr".into(), "mine".into()));
+        apply(&mut m, &c, &clis, Action::Choose("open".into(), 1));
+        let d = m.ed.draft.as_ref().unwrap();
+        assert_eq!(d.instructions, "mine");
+        assert_eq!(d.polter.open, Open::Tab, "\"open in\" is not one of the three");
+        assert!(m.ed.is_dirty());
+        // And it is saved, not passed over: `Ok(None)` here was "saved" with
+        // nothing saved.
+        assert_eq!(m.ed.save_request(&c).unwrap().map(|r| r.instructions), Some("mine".to_string()));
     }
 
     // ------------------------------------------------------------- list
@@ -4370,21 +4892,21 @@ mod tests {
         let mut c = cat(&["r", "polter-supervisor"]);
         c.roles[1].builtin = true;
         let mut ed = editing(&mut c);
-        let rows = list_rows(&ed, &c, &snapshot());
+        let rows = list_rows(&ed, &c, &SkillCatalog::default(), &snapshot());
         assert!(!rows[0].builtin && rows[1].builtin);
-        assert!(rows.iter().all(|r| !r.unsaved));
+        assert!(rows.iter().all(|r| !r.dot));
         assert!(rows[0].selected && !rows[1].selected);
         assert_eq!(rows[0].subtitle, "Claude Code");
         assert_eq!(rows[1].subtitle, "No agent CLI");
 
         ed.draft.as_mut().unwrap().summary = "x".into();
-        let rows = list_rows(&ed, &c, &snapshot());
-        assert!(rows[0].unsaved && !rows[1].unsaved);
+        let rows = list_rows(&ed, &c, &SkillCatalog::default(), &snapshot());
+        assert!(rows[0].dot && !rows[1].dot);
 
         ed.new_role(&c, &snapshot());
-        let rows = list_rows(&ed, &c, &snapshot());
+        let rows = list_rows(&ed, &c, &SkillCatalog::default(), &snapshot());
         assert_eq!(rows.len(), 3);
-        assert!(rows[0].unsaved && rows[0].key.is_none() && rows[0].selected);
+        assert!(rows[0].dot && rows[0].key().is_none() && rows[0].selected);
         assert!(!rows[1].selected);
     }
 
@@ -4410,7 +4932,7 @@ mod tests {
         ed.load(&c, Some("r"));
         ed.tab = Tab::Skills;
         let empty = HashSet::new();
-        let v = View { ed: &ed, clis: &snapshot(), instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
+        let v = View { ed: &ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &snapshot(), instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
         assert_eq!(keys(&rows(&v)), vec!["gobasics".to_string()]);
     }
 
@@ -4421,10 +4943,10 @@ mod tests {
         ed.tab = Tab::Skills;
         let empty = HashSet::new();
         let clis = snapshot();
-        let v = View { ed: &ed, clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
+        let v = View { ed: &ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
         assert!(!keys(&rows(&v)).iter().any(|k| k.starts_with("seg:")));
         ed.set_cli("codex", true);
-        let v = View { ed: &ed, clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
+        let v = View { ed: &ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
         let k = keys(&rows(&v));
         assert!(k.contains(&"seg:claude".to_string()) && k.contains(&"seg:codex".to_string()));
     }
@@ -4438,7 +4960,7 @@ mod tests {
         let empty = HashSet::new();
         let clis = snapshot();
         let said = |ed: &Editor| {
-            let v = View { ed, clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
+            let v = View { ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
             rows(&v)
                 .iter()
                 .flat_map(|r| r.cells.iter())
@@ -4466,12 +4988,12 @@ mod tests {
         let empty = HashSet::new();
         let collapsed: HashSet<String> = ["user".to_string()].into();
         let clis = snapshot();
-        let v = View { ed: &ed, clis: &clis, instr_h: 240, search: "", collapsed: &collapsed, expanded: &empty };
+        let v = View { ed: &ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &clis, instr_h: 240, search: "", collapsed: &collapsed, expanded: &empty };
         let k = keys(&rows(&v));
         assert!(k.contains(&"gtoggle:user".to_string()));
         assert!(!k.contains(&"item:skill:a".to_string()));
         assert!(k.contains(&"item:skill:c".to_string()), "the other group is open");
-        let v = View { ed: &ed, clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
+        let v = View { ed: &ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
         assert!(keys(&rows(&v)).contains(&"item:skill:a".to_string()));
     }
 
@@ -4482,7 +5004,7 @@ mod tests {
         let ed = editing(&mut c);
         let empty = HashSet::new();
         let clis = snapshot();
-        let v = View { ed: &ed, clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
+        let v = View { ed: &ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
         place(&rows(&v), width, dpi, &fake_measure)
     }
 
@@ -4528,7 +5050,7 @@ mod tests {
         let empty = HashSet::new();
         let clis = snapshot();
         let at = |h: i32| {
-            let v = View { ed: &ed, clis: &clis, instr_h: h, search: "", collapsed: &empty, expanded: &empty };
+            let v = View { ed: &ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &clis, instr_h: h, search: "", collapsed: &empty, expanded: &empty };
             place(&rows(&v), 560, 96, &fake_measure)
         };
         let (a, b) = (at(240), at(400));
@@ -4580,7 +5102,7 @@ mod tests {
     /// section is below the bottom edge until the page is scrolled.
     #[test]
     fn the_basics_page_is_taller_than_the_pane_it_opens_in() {
-        let f = frame_layout(W0, H0, 96, None, false, true);
+        let f = frame_layout(W0, H0, 96, FrameInputs { tabs: true, ..FrameInputs::default() });
         let pane_h = f.pane.bottom - f.pane.top;
         let laid = basics_laid(96, f.pane.right - f.pane.left);
         assert!(laid.height > pane_h, "{} vs {pane_h}", laid.height);
@@ -4596,7 +5118,7 @@ mod tests {
     #[test]
     fn a_maximised_size_lays_out_like_any_other() {
         for (w, h, dpi) in [(2560, 1440, 96), (3840, 2160, 192)] {
-            let f = frame_layout(w, h, dpi, None, false, true);
+            let f = frame_layout(w, h, dpi, FrameInputs { tabs: true, ..FrameInputs::default() });
             let tabs = f.tabs.unwrap();
             assert!(tabs[0].bottom <= f.pane.top && f.pane.bottom <= f.bottom_rule.top);
             assert!(f.footer_buttons[2].right <= w);
@@ -4647,9 +5169,9 @@ mod tests {
         assert!(m.ed.draft.is_none() && !m.ed.is_dirty() && !m.ed.is_new);
         assert!(m.search.is_empty() && m.collapsed.is_empty() && m.expanded.is_empty());
         // And the page it would draw is the one with no role open.
-        let v = View { ed: &m.ed, clis: &snapshot(), instr_h: 240, search: "", collapsed: &m.collapsed, expanded: &m.expanded };
+        let v = View { ed: &m.ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &snapshot(), instr_h: 240, search: "", collapsed: &m.collapsed, expanded: &m.expanded };
         assert_eq!(keys(&rows(&v)), Vec::<String>::new());
-        assert_eq!(buttons(&m.ed, &c, true), Buttons { new: true, ..Buttons::default() });
+        assert_eq!(buttons(&m.ed, &c, &SkillCatalog::default(), true), Buttons { new: true, ..Buttons::default() });
     }
 
     #[test]
@@ -4666,11 +5188,19 @@ mod tests {
     fn the_frame_fits_at_the_smallest_size_and_nothing_overlaps() {
         for dpi in [96, 120, 144, 192] {
             let (w, h) = (MIN_W * dpi / 96, MIN_H * dpi / 96);
-            let f = frame_layout(w, h, dpi, Some(40), true, true);
+            // The longest English button text, about 170 DIP.
+            let fi = FrameInputs { error_h: Some(40), strip_text_w: Some(170 * dpi / 96), tabs: true };
+            let f = frame_layout(w, h, dpi, fi);
             let tabs = f.tabs.unwrap();
-            let banner = f.banner.unwrap();
-            assert!(f.error.unwrap().bottom <= banner.top);
-            assert!(banner.bottom <= tabs[0].top);
+            let strip = f.strip.unwrap();
+            let restore = f.restore.unwrap();
+            assert!(f.error.unwrap().bottom <= strip.top);
+            assert!(strip.bottom <= tabs[0].top);
+            assert!(restore.top >= strip.top && restore.bottom <= strip.bottom && restore.right <= w);
+            assert!(restore.left >= f.pane.left, "the button stays in the editor column at {dpi}");
+            if let Some(words) = f.strip_words {
+                assert!(words.right <= restore.left, "the words give way at {dpi}");
+            }
             assert!(tabs[0].bottom <= f.pane.top);
             assert!(f.pane.bottom <= f.bottom_rule.top && f.bottom_rule.bottom <= f.band.top);
             assert!(f.pane.bottom - f.pane.top > 100 * dpi / 96, "a pane with room to edit in at {dpi}");
@@ -4680,10 +5210,14 @@ mod tests {
             assert!(f.list_buttons[2].right <= f.status.left);
             assert!(tabs[0].right <= tabs[1].left && tabs[2].right <= w);
         }
-        // No role open: no tabs and no banner, but the bottom band is still
+        // No role open: no tabs and no strip, but the bottom band is still
         // there and the pane stops at its rule (settings.md §2.3a).
-        let f = frame_layout(W0, H0, 96, None, false, false);
-        assert!(f.tabs.is_none() && f.banner.is_none());
+        let f = frame_layout(W0, H0, 96, FrameInputs::default());
+        assert!(f.tabs.is_none() && f.strip.is_none() && f.restore.is_none());
+        // An official skill: the strip and no tabs; the pane starts under it.
+        let f = frame_layout(W0, H0, 96, FrameInputs { strip_text_w: Some(100), ..FrameInputs::default() });
+        assert!(f.tabs.is_none());
+        assert_eq!(f.pane.top, f.strip.unwrap().bottom);
         assert_eq!(f.pane.bottom, f.bottom_rule.top);
         assert_eq!(f.band.bottom, H0);
     }
@@ -4699,7 +5233,8 @@ mod tests {
             let l = polter_settings_shell::layout(ww, wh, dpi);
             let (w, h) = (l.content.width(), l.content.height());
             for has_draft in [true, false] {
-                let f = frame_layout(w, h, dpi, Some(40), true, has_draft);
+                let fi = FrameInputs { error_h: Some(40), strip_text_w: has_draft.then_some(100), tabs: has_draft };
+                let f = frame_layout(w, h, dpi, fi);
                 assert_eq!(l.content.top + f.bottom_rule.top, l.bottom_rule.top, "at {dpi}");
                 assert_eq!(l.content.top + f.list_divider.top, l.top_rule.bottom, "at {dpi}");
                 assert_eq!(l.content.top + f.list_divider.bottom, l.bottom_rule.top, "at {dpi}");
@@ -4772,11 +5307,11 @@ mod tests {
 
     fn listed(key: Option<&str>, title: &str) -> ListRow {
         ListRow {
-            key: key.map(str::to_string),
+            entry: Entry::Role(key.map(str::to_string)),
             title: title.to_string(),
             subtitle: String::new(),
             builtin: false,
-            unsaved: false,
+            dot: false,
             selected: false,
         }
     }
@@ -4787,11 +5322,236 @@ mod tests {
     #[test]
     fn the_search_narrows_the_list_by_name_or_key_and_keeps_a_new_role() {
         let rows = vec![listed(None, "New Role"), listed(Some("reviewer"), "审查员"), listed(Some("dev"), "Developer")];
-        let keys = |q: &str| filtered_rows(rows.clone(), q).into_iter().map(|r| r.key).collect::<Vec<_>>();
+        let keys = |q: &str| filtered_rows(rows.clone(), q).into_iter().map(|r| r.key().map(str::to_string)).collect::<Vec<_>>();
         assert_eq!(keys("审查"), vec![None, Some("reviewer".to_string())]);
         assert_eq!(keys("REVIEW"), vec![None, Some("reviewer".to_string())]);
         assert_eq!(keys("devel"), vec![None, Some("dev".to_string())]);
         assert_eq!(keys("zzz"), vec![None]);
         assert_eq!(keys("").len(), 3);
+    }
+
+    // ------------------------------------------------- official (#1507)
+
+    fn official(state: OfficialState) -> Official {
+        Official { state, overridden: Vec::new(), stale: vec!["instructions".into(), "polter.open".into()], reason: Some("why".into()) }
+    }
+
+    fn shipped_skills() -> SkillCatalog {
+        let skill = |name: &str, state| roles::OfficialSkill {
+            name: name.into(),
+            summary: format!("What {name} is for\nand more"),
+            official: official(state),
+            source: format!("---\nname: {name}\n---\n"),
+        };
+        SkillCatalog { error: None, skills: vec![skill("supervising", OfficialState::Modified), skill("reading", OfficialState::Pristine)] }
+    }
+
+    fn official_cat(state: OfficialState) -> Catalog {
+        let mut c = cat(&["mine", "polter-supervisor"]);
+        c.roles[1].builtin = true;
+        c.roles[1].official = Some(official(state));
+        c
+    }
+
+    #[test]
+    fn the_official_skills_are_listed_under_their_heading_with_the_mark_and_the_dot() {
+        let c = official_cat(OfficialState::Pristine);
+        let k = shipped_skills();
+        let mut ed = Editor::default();
+        ed.load(&c, Some("mine"));
+        let rows = list_rows(&ed, &c, &k, &snapshot());
+        let entries: Vec<Entry> = rows.iter().map(|r| r.entry.clone()).collect();
+        assert_eq!(
+            entries,
+            vec![
+                Entry::Role(Some("mine".into())),
+                Entry::Role(Some("polter-supervisor".into())),
+                Entry::Heading,
+                Entry::Skill("supervising".into()),
+                Entry::Skill("reading".into()),
+            ]
+        );
+        assert!(rows[3].builtin && rows[3].dot, "changed from factory settings");
+        assert!(rows[4].builtin && !rows[4].dot);
+        assert_eq!(rows[3].subtitle, "What supervising is for", "the first line of its description");
+        assert!(!rows[1].dot, "a pristine official role has no dot");
+        // A search that leaves no skill takes the heading with it.
+        let kept: Vec<Entry> = filtered_rows(rows.clone(), "mine").into_iter().map(|r| r.entry).collect();
+        assert_eq!(kept, vec![Entry::Role(Some("mine".into()))]);
+        let kept: Vec<Entry> = filtered_rows(rows, "read").into_iter().map(|r| r.entry).collect();
+        assert_eq!(kept, vec![Entry::Heading, Entry::Skill("reading".into())]);
+        // No skills known: no heading.
+        assert!(list_rows(&ed, &c, &SkillCatalog::default(), &snapshot()).iter().all(|r| r.entry != Entry::Heading));
+    }
+
+    #[test]
+    fn a_skill_on_screen_is_its_text_and_is_dirty_only_when_that_differs() {
+        let c = official_cat(OfficialState::Pristine);
+        let k = shipped_skills();
+        let mut m = Model::default();
+        m.ed.load(&c, Some("mine"));
+        assert!(selecting_skill_is_a_change(&m.ed, "supervising"));
+        m.ed.load_skill(&c, &k, "supervising");
+        assert!(m.ed.draft.is_none() && m.ed.selection.is_none());
+        assert!(!m.ed.is_dirty() && !selecting_skill_is_a_change(&m.ed, "supervising"));
+        assert!(selecting_is_a_change(&m.ed, "mine"), "a role is a change from a skill");
+        apply(&mut m, &c, &snapshot(), Action::Text("skilltext".into(), "---\r\nname: supervising\r\n---\r\n".into()));
+        assert!(!m.ed.is_dirty(), "a pasted CRLF copy of the same text is the same text");
+        apply(&mut m, &c, &snapshot(), Action::Text("skilltext".into(), "changed".into()));
+        assert!(m.ed.is_dirty() && leave_needs_asking(&m.ed));
+        let b = buttons(&m.ed, &c, &k, true);
+        assert!(b.save && b.revert && !b.launch && !b.delete && !b.duplicate, "{b:?}");
+        assert!(b.restore, "the skill is changed from factory settings");
+        assert_eq!(footer_note(&m.ed, false).map(|x| x.0), Some("Unsaved changes".to_string()));
+        m.ed.revert(&c);
+        assert_eq!(m.ed.skill_text, "---\nname: supervising\n---\n");
+        assert!(!m.ed.is_dirty());
+        // Launching is not this page's, so its reason is not said here.
+        assert_eq!(footer_note(&m.ed, false), None);
+        // Back to a role: the skill is gone from the editor.
+        m.ed.load(&c, Some("mine"));
+        assert!(m.ed.skill.is_none() && m.ed.skill_text.is_empty());
+    }
+
+    #[test]
+    fn restore_is_there_for_an_official_thing_and_pressable_when_it_was_changed() {
+        let k = shipped_skills();
+        let mut ed = Editor::default();
+        let c = official_cat(OfficialState::Pristine);
+        ed.load(&c, Some("polter-supervisor"));
+        assert!(official_on_screen(&ed, &k).is_some(), "the strip is there");
+        assert!(!buttons(&ed, &c, &k, true).restore, "nothing to put back");
+        for state in [OfficialState::Modified, OfficialState::ModifiedStale, OfficialState::Unknown] {
+            let c = official_cat(state);
+            ed.load(&c, Some("polter-supervisor"));
+            assert!(buttons(&ed, &c, &k, true).restore, "{state:?}");
+        }
+        ed.load(&c, Some("mine"));
+        assert!(official_on_screen(&ed, &k).is_none(), "a role of one's own has no strip");
+        assert!(!buttons(&ed, &c, &k, true).restore);
+        ed.duplicate(&c);
+        assert!(official_on_screen(&ed, &k).is_none(), "nor does a copy of an official one");
+        ed.load_skill(&c, &k, "reading");
+        assert!(official_on_screen(&ed, &k).is_some() && !buttons(&ed, &c, &k, true).restore);
+    }
+
+    fn page(ed: &Editor, c: &Catalog, k: &SkillCatalog) -> Vec<Row> {
+        let empty = HashSet::new();
+        let clis = snapshot();
+        let v = View { ed, cat: c, skills: k, clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
+        rows(&v)
+    }
+
+    fn texts(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .flat_map(|r| r.cells.iter())
+            .filter_map(|c| match &c.kind {
+                Kind::Text { text, .. } if !text.is_empty() => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_notices_say_what_moved_and_what_was_not_read_with_their_buttons() {
+        let k = shipped_skills();
+        let mut ed = Editor::default();
+        let c = official_cat(OfficialState::ModifiedStale);
+        ed.load(&c, Some("polter-supervisor"));
+        let r = page(&ed, &c, &k);
+        assert!(keys(&r).contains(&"keepmine".to_string()));
+        let t = texts(&r);
+        assert_eq!(t[0], "The official version has changed: Instructions, Polter");
+        assert!(t[1].starts_with("The official version of what you changed here"));
+        let c = official_cat(OfficialState::Unknown);
+        ed.load(&c, Some("polter-supervisor"));
+        let r = page(&ed, &c, &k);
+        assert!(!keys(&r).contains(&"keepmine".to_string()));
+        let t = texts(&r);
+        assert_eq!(t[0], "Your changes weren't read, so the factory settings are in use.");
+        assert_eq!(t[1], "why", "the reason under it");
+        // The library's own: the file of changes, and a role an official
+        // one has taken the key of -- shown whatever is on screen.
+        let mut c = official_cat(OfficialState::Pristine);
+        c.overrides_error = Some("Could not read x".into());
+        c.shadowed = vec![("polter-worker".into(), "Mine".into())];
+        ed.load(&c, Some("mine"));
+        let r = page(&ed, &c, &k);
+        assert!(keys(&r).contains(&"adopt:polter-worker".to_string()));
+        let t = texts(&r);
+        assert!(t[0].starts_with("Your changes to official roles couldn't be read"));
+        assert_eq!(t[1], "Could not read x");
+        assert!(t[2].starts_with("Your role \"Mine\" has the key polter-worker,"), "{}", t[2]);
+        // And the buttons do what they say.
+        let mut m = Model { ed: ed.clone(), ..Model::default() };
+        assert_eq!(apply(&mut m, &c, &snapshot(), Action::Click("adopt:polter-worker".into())).adopt.as_deref(), Some("polter-worker"));
+        assert!(apply(&mut m, &c, &snapshot(), Action::Click("keepmine".into())).keep_mine);
+        // Nothing to say: no notices, and the page starts at the top.
+        let c = official_cat(OfficialState::Modified);
+        ed.load(&c, Some("polter-supervisor"));
+        let r = page(&ed, &c, &k);
+        assert_eq!(r[0].gap, 0);
+        assert_eq!(keys(&r)[0], "name");
+    }
+
+    #[test]
+    fn an_official_roles_locked_fields_carry_a_lock_and_the_three_boxes_end_together() {
+        let k = shipped_skills();
+        let c = official_cat(OfficialState::Modified);
+        let mut ed = Editor::default();
+        ed.load(&c, Some("polter-supervisor"));
+        let laid = place(&page(&ed, &c, &k), 560, 96, &fake_measure);
+        let at = |key: &str| laid.cells.iter().find(|p| p.key == key).unwrap().rect;
+        let (name, key, summary) = (at("name"), at("key"), at("summary"));
+        assert_eq!(name.right, key.right);
+        assert_eq!(key.right, summary.right);
+        let locks: Vec<&Placed> = laid.cells.iter().filter(|p| p.kind == Kind::Lock).collect();
+        assert_eq!(locks.len(), 2, "name and description");
+        assert!(locks.iter().all(|l| l.rect.left > name.right));
+        assert!(texts(&page(&ed, &c, &k)).iter().any(|t| t.starts_with("These three are part of the official role")));
+        // A role of one's own: no lock, and the boxes run to the edge.
+        ed.load(&c, Some("mine"));
+        let laid = place(&page(&ed, &c, &k), 560, 96, &fake_measure);
+        assert!(laid.cells.iter().all(|p| p.kind != Kind::Lock));
+        assert_eq!(laid.cells.iter().find(|p| p.key == "name").unwrap().rect.right, 560 - PAD);
+    }
+
+    #[test]
+    fn the_skill_page_is_its_name_status_and_whole_text() {
+        let k = shipped_skills();
+        let c = official_cat(OfficialState::Pristine);
+        let mut ed = Editor::default();
+        ed.load_skill(&c, &k, "supervising");
+        let r = page(&ed, &c, &k);
+        assert_eq!(keys(&r), vec!["skillname".to_string(), "skilltext".to_string()]);
+        assert!(texts(&r).contains(&"Changed".to_string()));
+        for (dpi, width) in [(96, 400), (144, 600), (192, 800)] {
+            let laid = place(&r, width, dpi, &fake_measure);
+            for p in laid.cells.iter().filter(|p| p.kind.is_control()) {
+                assert!(p.rect.left >= 0 && p.rect.right <= width, "{} escapes at {dpi}", p.key);
+            }
+        }
+    }
+
+    /// Notices with buttons, at the narrowest pane and at three DPIs: the
+    /// button is whole and inside, the words wrap beside it.
+    #[test]
+    fn notices_with_buttons_fit_the_narrowest_pane() {
+        let k = shipped_skills();
+        let mut c = official_cat(OfficialState::ModifiedStale);
+        c.shadowed = vec![("polter-worker".into(), "A role with a long name of its own".into())];
+        let mut ed = Editor::default();
+        ed.load(&c, Some("polter-supervisor"));
+        let r = page(&ed, &c, &k);
+        for dpi in [96, 144, 192] {
+            let width = (MIN_W - LIST_W - 1) * dpi / 96;
+            let laid = place(&r, width, dpi, &fake_measure);
+            for key in ["keepmine", "adopt:polter-worker"] {
+                let b = laid.cells.iter().find(|p| p.key == key).unwrap();
+                assert!(b.rect.right <= width - PAD * dpi / 96 && b.rect.left >= 0, "{key} at {dpi}");
+                let words = laid.cells.iter().find(|p| p.rect.top < b.rect.bottom && b.rect.top < p.rect.bottom && matches!(p.kind, Kind::Text { .. }) && p.rect.right <= b.rect.left);
+                assert!(words.is_some(), "{key}'s words are beside it at {dpi}");
+            }
+        }
     }
 }

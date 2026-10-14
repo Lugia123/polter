@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 22:02+0800\n"
+"POT-Creation-Date: 2026-10-15 03:09+0800\n"
 "PO-Revision-Date: 2026-09-13 10:50+0800\n"
 "Last-Translator: Lukas <134181853+bo2themax@users.noreply.github.com>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -27,19 +27,19 @@ msgstr "在 Ghostty 中打开"
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:12
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:197
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
-#: windows/host/src/main.rs:2564 windows/host/src/main.rs:2570
+#: windows/host/src/main.rs:2576 windows/host/src/main.rs:2582
 msgid "Authorize Clipboard Access"
 msgstr "剪贴板访问授权"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:17
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:17
-#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:203
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:214
 msgid "Deny"
 msgstr "拒绝"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:18
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:18
-#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:202
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:213
 msgid "Allow"
 msgstr "允许"
 
@@ -58,7 +58,7 @@ msgstr "本提示将在重载配置后再次出现"
 #: windows/host/src/project_picker.rs:427 windows/host/src/project_ui.rs:413
 #: windows/host/src/project_ui.rs:453 windows/host/src/projects_ui.rs:626
 #: windows/host/src/projects_ui.rs:653 windows/host/src/projects_ui.rs:658
-#: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:2887
+#: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:3208
 msgid "Cancel"
 msgstr "取消"
 
@@ -314,26 +314,26 @@ msgid "Editing configuration file"
 msgstr "正在编辑配置文件"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
-#: windows/host/src/main.rs:2572
+#: windows/host/src/main.rs:2584
 msgid ""
 "An application is attempting to write to the clipboard. The current "
 "clipboard contents are shown below."
 msgstr "一个应用正在试图向剪贴板写入内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:202
-#: windows/host/src/main.rs:2566
+#: windows/host/src/main.rs:2578
 msgid ""
 "An application is attempting to read from the clipboard. The current "
 "clipboard contents are shown below."
 msgstr "一个应用正在试图从剪贴板读取内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2576
+#: windows/host/src/main.rs:2588
 msgid "Warning: Potentially Unsafe Paste"
 msgstr "警告：粘贴内容可能不安全"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2578
+#: windows/host/src/main.rs:2590
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -991,7 +991,7 @@ msgid "Open a terminal showing what the terminals have said to each other."
 msgstr "开一个终端，显示各个终端之间说过的话。"
 
 #: src/input/command.zig:612 windows/host/src/menu.rs:393
-#: windows/control-room/src/rules.rs:173
+#: windows/control-room/src/rules.rs:180
 msgid "Control Room"
 msgstr "总控台"
 
@@ -1374,9 +1374,9 @@ msgid "The page could not be followed any further, so the picture ends here."
 msgstr "页面没能再跟下去，图片到此为止。"
 
 #: src/input/screenshot.zig:126 windows/host/src/plugins_ui.rs:525
-#: windows/host/src/project_picker.rs:413 windows/host/src/roles_ui.rs:2258
-#: windows/host/src/roles_ui.rs:2951 windows/host/src/roles_ui.rs:2968
-#: windows/host/src/roles_ui.rs:2982
+#: windows/host/src/project_picker.rs:413 windows/host/src/roles_ui.rs:2555
+#: windows/host/src/roles_ui.rs:3272 windows/host/src/roles_ui.rs:3289
+#: windows/host/src/roles_ui.rs:3303
 msgid "Save"
 msgstr "保存"
 
@@ -2116,52 +2116,124 @@ msgstr "保存终端记录"
 msgid "Keep a transcript of what ran in each terminal."
 msgstr "记录每个终端里实际运行了什么。"
 
-#: src/config/form.zig:187 windows/host/src/language.rs:291
+#: src/config/form.zig:189
+msgid "Group Transcripts, Total MB"
+msgstr ""
+
+#: src/config/form.zig:189
+msgid "Transcripts written while in a group, kept by size only."
+msgstr ""
+
+#: src/config/form.zig:190
+msgid "Project Transcripts, Days"
+msgstr ""
+
+#: src/config/form.zig:190
+msgid "Days kept of transcripts from a project's tabs."
+msgstr ""
+
+#: src/config/form.zig:191
+msgid "Project Transcripts, Total MB"
+msgstr ""
+
+#: src/config/form.zig:191
+msgid "Megabytes kept of transcripts from a project's tabs."
+msgstr ""
+
+#: src/config/form.zig:192
+msgid "Other Transcripts, Days"
+msgstr ""
+
+#: src/config/form.zig:192
+msgid "Days kept of transcripts in no group or project."
+msgstr ""
+
+#: src/config/form.zig:193
+msgid "Other Transcripts, Total MB"
+msgstr ""
+
+#: src/config/form.zig:193
+msgid "Megabytes kept of transcripts in no group or project."
+msgstr ""
+
+#: src/config/form.zig:194
+msgid "Logs, Days"
+msgstr ""
+
+#: src/config/form.zig:194
+msgid "Days kept of Polter's own logs and crash reports."
+msgstr ""
+
+#: src/config/form.zig:195
+msgid "Logs, Total MB"
+msgstr ""
+
+#: src/config/form.zig:195
+msgid "Megabytes kept of Polter's own logs."
+msgstr ""
+
+#: src/config/form.zig:196
+msgid "Screenshots, Days"
+msgstr ""
+
+#: src/config/form.zig:196
+msgid "Days kept of Polter's screenshots."
+msgstr ""
+
+#: src/config/form.zig:197
+msgid "Screenshots, Total MB"
+msgstr ""
+
+#: src/config/form.zig:197
+msgid "Megabytes kept of Polter's screenshots."
+msgstr ""
+
+#: src/config/form.zig:198 windows/host/src/language.rs:291
 msgid "Language"
 msgstr "语言"
 
-#: src/config/form.zig:187
+#: src/config/form.zig:198
 msgid "The interface language; empty follows the system."
 msgstr "界面语言；留空跟随系统。"
 
-#: src/config/form.zig:190
+#: src/config/form.zig:201
 msgid "Paste Images as Files"
 msgstr "粘贴图片时存成文件并粘贴路径"
 
-#: src/config/form.zig:190
+#: src/config/form.zig:201
 msgid "Save a pasted image as a file and paste its path."
 msgstr "把粘贴的图片存成文件，再粘贴它的路径。"
 
-#: src/config/form.zig:191
+#: src/config/form.zig:202
 msgid "Screenshot Folder"
 msgstr "截图保存位置"
 
-#: src/config/form.zig:191
+#: src/config/form.zig:202
 msgid "Where screenshots and pasted images are saved."
 msgstr "截图和粘贴的图片存在这里。"
 
-#: src/config/form.zig:192
+#: src/config/form.zig:203
 msgid "Mouse Trigger"
 msgstr "鼠标触发"
 
-#: src/config/form.zig:192
+#: src/config/form.zig:203
 msgid "Hold these keys and click to take a screenshot."
 msgstr "按住这些键单击即可截图。"
 
-#: src/config/form.zig:193 windows/settings-shell/src/plugins.rs:52
+#: src/config/form.zig:204 windows/settings-shell/src/plugins.rs:52
 msgid "Off"
 msgstr "已关"
 
-#: src/config/form.zig:200
+#: src/config/form.zig:211
 #, c-format
 msgid "%s + Click"
 msgstr "%s + 单击"
 
-#: src/config/form.zig:201
+#: src/config/form.zig:212
 msgid "Let Agents Take Screenshots"
 msgstr "允许 agent 截图"
 
-#: src/config/form.zig:201
+#: src/config/form.zig:212
 msgid "Agents may capture the screen with the screenshot tools."
 msgstr "agent 可以用截图工具拍下屏幕。"
 
@@ -2379,20 +2451,20 @@ msgstr ""
 "启动 Polter 的环境里已设 LANG={}，Polter 会优先用它，而不是这里的选择。要让这"
 "个选择生效，请先清掉 LANG，再重新启动 Polter。"
 
-#: windows/host/src/main.rs:2592
+#: windows/host/src/main.rs:2604
 #, rust-format
 msgid "{} lines in all."
 msgstr "共 {} 行。"
 
-#: windows/host/src/main.rs:6437
+#: windows/host/src/main.rs:6631
 msgid "No reason was recorded."
 msgstr "没有记录到原因。"
 
-#: windows/host/src/main.rs:6443
+#: windows/host/src/main.rs:6637
 msgid "Polter could not open its first terminal and will close."
 msgstr "Polter 无法打开第一个终端，即将关闭。"
 
-#: windows/host/src/main.rs:6445
+#: windows/host/src/main.rs:6639
 #, rust-format
 msgid "The full log is at {}"
 msgstr "完整日志在 {}"
@@ -2649,7 +2721,7 @@ msgstr "已启用"
 msgid "Test"
 msgstr "测试"
 
-#: windows/host/src/plugins_ui.rs:524 windows/host/src/roles_ui.rs:2258
+#: windows/host/src/plugins_ui.rs:524 windows/host/src/roles_ui.rs:2555
 msgid "Revert"
 msgstr "还原"
 
@@ -2740,7 +2812,7 @@ msgstr "找不到内置插件目录：没有设置 POLTER_RESOURCES_DIR。"
 msgid "Restart Polter to apply"
 msgstr "重启 Polter 后生效"
 
-#: windows/host/src/plugins_ui.rs:1338
+#: windows/host/src/plugins_ui.rs:1338 windows/host/src/roles_ui.rs:915
 msgid "Status"
 msgstr "状态"
 
@@ -2842,26 +2914,27 @@ msgstr "这个项目打不开"
 msgid "The project could not be saved."
 msgstr "项目存不了："
 
-#: windows/host/src/project_picker.rs:1020 windows/host/src/settings_win.rs:934
-#: windows/host/src/settings_win.rs:1351
+#: windows/host/src/project_picker.rs:1023 windows/host/src/settings_win.rs:936
+#: windows/host/src/settings_win.rs:1353
 msgid "Search"
 msgstr "搜索"
 
-#: windows/host/src/project_picker.rs:1021
+#: windows/host/src/project_picker.rs:1024
 msgid "New Project Name"
 msgstr "新项目的名字"
 
-#: windows/host/src/project_picker.rs:1101 windows/host/src/projects_ui.rs:1214
+#: windows/host/src/project_picker.rs:1104 windows/host/src/projects_ui.rs:1214
 msgid "No Saved Projects"
 msgstr "还没有保存过项目"
 
-#: windows/host/src/project_picker.rs:1101 windows/host/src/projects_ui.rs:1216
+#: windows/host/src/project_picker.rs:1104 windows/host/src/projects_ui.rs:1216
 msgid "No matching projects"
 msgstr "没有匹配的项目"
 
 #: windows/host/src/project_ui.rs:369 windows/host/src/projects_ui.rs:562
-#: windows/host/src/roles_ui.rs:732 windows/settings-shell/src/general.rs:77
-#: windows/control-room/src/rules.rs:176
+#: windows/host/src/roles_ui.rs:982 windows/settings-shell/src/general.rs:77
+#: windows/settings-shell/src/official.rs:162
+#: windows/control-room/src/rules.rs:183
 msgid "Polter"
 msgstr "Polter"
 
@@ -2960,7 +3033,7 @@ msgstr "删除「{}」？"
 msgid "You can undo this until the settings window closes."
 msgstr "关掉设置窗口之前都可以撤销。"
 
-#: windows/host/src/projects_ui.rs:845 windows/host/src/roles_ui.rs:3120
+#: windows/host/src/projects_ui.rs:845 windows/host/src/roles_ui.rs:3613
 msgid "Delete"
 msgstr "删除"
 
@@ -2987,6 +3060,7 @@ msgid "The current version becomes the previous one, so you can switch back."
 msgstr "当前版本会变成上一版，随时可以换回来。"
 
 #: windows/host/src/projects_ui.rs:904 windows/host/src/projects_ui.rs:1385
+#: windows/host/src/roles_ui.rs:3480
 msgid "Restore"
 msgstr "恢复"
 
@@ -3114,144 +3188,153 @@ msgstr "重命名项目"
 msgid "Rename"
 msgstr "重命名"
 
-#: windows/host/src/roles.rs:34 windows/host/src/roles.rs:1163
-#: windows/control-room/src/scene.rs:76
-msgid "Polter Supervisor"
-msgstr "Polter 总管"
-
-#: windows/host/src/roles.rs:355
-msgid ""
-"Makes the terminal it starts in this window's supervisor: splits the work, "
-"hands it out and checks it."
-msgstr "把启动它的终端设为本窗口的总管：拆分工作、派活、验收。"
-
-#: windows/host/src/roles.rs:621
+#: windows/host/src/roles.rs:714
 msgid "Yours"
 msgstr "你自己的"
 
-#: windows/host/src/roles.rs:622
+#: windows/host/src/roles.rs:715
 msgid "This Project"
 msgstr "本项目"
 
-#: windows/host/src/roles.rs:623
+#: windows/host/src/roles.rs:716
 msgid "This Project, Only on This Machine"
 msgstr "本项目（仅本机）"
 
-#: windows/host/src/roles.rs:684
+#: windows/host/src/roles.rs:777
 msgid ""
 "This role can't be saved: it needs a name, and a key of lowercase letters, "
 "digits and dashes."
 msgstr "这个角色存不了：它需要一个名字，以及只含小写字母、数字和短横线的 key。"
 
-#: windows/host/src/roles.rs:685
+#: windows/host/src/roles.rs:778
 msgid ""
 "The role library file has an error in it, so saving would overwrite it. Fix "
 "the file first."
 msgstr "角色库文件里有错误，现在保存会把它覆盖掉。请先修好这个文件。"
 
-#: windows/host/src/roles.rs:686 windows/control-room/src/act.rs:206
+#: windows/host/src/roles.rs:779 windows/control-room/src/act.rs:206
 msgid "That role no longer exists."
 msgstr "这个角色已经不存在了。"
 
-#: windows/host/src/roles.rs:687
+#: windows/host/src/roles.rs:780
 msgid "The role was written but didn't read back. This is a bug in Polter."
 msgstr "角色已写入，但读回失败。这是 Polter 的缺陷。"
 
-#: windows/host/src/roles.rs:688
+#: windows/host/src/roles.rs:781
 msgid "The role library file couldn't be written."
 msgstr "角色库文件写不进去。"
 
-#: windows/host/src/roles.rs:689
+#: windows/host/src/roles.rs:782
 msgid "This role isn't set up for that agent CLI."
 msgstr "这个角色没有为该 agent CLI 配置。"
 
-#: windows/host/src/roles.rs:690 windows/control-room/src/act.rs:208
+#: windows/host/src/roles.rs:783 windows/control-room/src/act.rs:208
 msgid ""
 "This role isn't set up for any agent CLI yet. Pick one in the role library."
 msgstr "这个角色还没选任何 agent CLI，请在角色库里选一个。"
 
-#: windows/host/src/roles.rs:691
+#: windows/host/src/roles.rs:784
 msgid "This role is set up for more than one agent CLI. Choose one."
 msgstr "这个角色配了不止一个 agent CLI，请选一个。"
 
-#: windows/host/src/roles.rs:692
+#: windows/host/src/roles.rs:785
 msgid ""
 "A tab was opened but didn't appear in time, so nothing was started in it."
 msgstr "标签页已打开，但没有及时出现，所以里面什么都没启动。"
 
-#: windows/host/src/roles.rs:693
+#: windows/host/src/roles.rs:786
 msgid "Polter isn't ready yet."
 msgstr "Polter 还没准备好。"
 
-#: windows/host/src/roles.rs:698 windows/host/src/roles_ui.rs:3493
+#: windows/host/src/roles.rs:790
 msgid ""
-"This role comes with Polter and can't be changed or deleted. Duplicate it to "
-"make one of your own."
-msgstr "这是 Polter 自带的角色，不能修改或删除。复制一份就能改成你自己的。"
+"An official role's name, description and what it grants can't be changed. "
+"Duplicate it to make one of your own."
+msgstr "官方角色的名字、说明和它赋予终端的权限不能改。想改就复制一份成为你自己的角色。"
 
-#: windows/host/src/roles.rs:699
+#: windows/host/src/roles.rs:792
+msgid ""
+"The file that holds your changes to official roles can't be read, so nothing "
+"was saved into it. Restore Factory Settings sets it aside."
+msgstr "保存你对官方角色改动的文件读不了，所以这次没有存进去。用「恢复出厂设置」可以把它挪开。"
+
+#: windows/host/src/roles.rs:793
+msgid ""
+"This doesn't read as the skill: it needs its opening lines, with its own "
+"name in them."
+msgstr "这段内容读不成这个 skill：开头那几行要在，里面的名字要是它自己的。"
+
+#: windows/host/src/roles.rs:794
+msgid "This skill couldn't be saved."
+msgstr "这个 skill 没能保存。"
+
+#: windows/host/src/roles.rs:798
 msgid ""
 "Only you can make a role's terminal a supervisor, let it answer permission "
 "prompts, or keep agents out of it."
 msgstr ""
 "只有你能把角色的终端设为总管、允许它回答权限提示，或把 agent 挡在它外面。"
 
-#: windows/host/src/roles_ui.rs:162
+#: windows/host/src/roles_ui.rs:191
 msgid "New Role"
 msgstr "新角色"
 
-#: windows/host/src/roles_ui.rs:184
+#: windows/host/src/roles_ui.rs:213
 #, rust-format
 msgid "{} Copy"
 msgstr "{} 副本"
 
-#: windows/host/src/roles_ui.rs:240
+#: windows/host/src/roles_ui.rs:271
 msgid "Another role already uses this key."
 msgstr "已经有别的角色用了这个 key。"
 
-#: windows/host/src/roles_ui.rs:363 windows/host/src/roles_ui.rs:4564
+#: windows/host/src/roles_ui.rs:425 windows/host/src/roles_ui.rs:5092
 msgid "Unsaved changes"
 msgstr "有未保存的修改"
 
-#: windows/host/src/roles_ui.rs:366 windows/host/src/roles_ui.rs:4561
+#: windows/host/src/roles_ui.rs:430 windows/host/src/roles_ui.rs:5089
 msgid "Open a terminal window first; the new tab goes beside it."
 msgstr "请先打开一个终端窗口，新标签页会开在它旁边。"
 
-#: windows/host/src/roles_ui.rs:391
+#: windows/host/src/roles_ui.rs:455
 msgid "Basics"
 msgstr "基本信息"
 
-#: windows/host/src/roles_ui.rs:393
+#: windows/host/src/roles_ui.rs:457
 #, rust-format
 msgid "Skills {}"
 msgstr "Skills {}"
 
-#: windows/host/src/roles_ui.rs:394 windows/host/src/roles_ui.rs:875
+#: windows/host/src/roles_ui.rs:458 windows/host/src/roles_ui.rs:1122
 msgid "Skills"
 msgstr "技能"
 
-#: windows/host/src/roles_ui.rs:397
+#: windows/host/src/roles_ui.rs:461
 #, rust-format
 msgid "MCP {}"
 msgstr "MCP {}"
 
-#: windows/host/src/roles_ui.rs:398
+#: windows/host/src/roles_ui.rs:462
 msgid "MCP"
 msgstr "MCP"
 
-#: windows/host/src/roles_ui.rs:425
+#: windows/host/src/roles_ui.rs:500
 msgid "No agent CLI"
 msgstr "未选 agent CLI"
 
-#: windows/host/src/roles_ui.rs:456
+#: windows/host/src/roles_ui.rs:525
+msgid "Official Skills"
+msgstr "官方 skill"
+
+#: windows/host/src/roles_ui.rs:554
 msgid "Reading the role library…"
 msgstr "正在读取角色库…"
 
-#: windows/host/src/roles_ui.rs:459
+#: windows/host/src/roles_ui.rs:557
 msgid "No roles yet"
 msgstr "还没有角色"
 
-#: windows/host/src/roles_ui.rs:460
+#: windows/host/src/roles_ui.rs:558
 msgid ""
 "A role is a saved way to start an agent CLI: which skills and MCP servers it "
 "keeps, and what it's told."
@@ -3259,39 +3342,88 @@ msgstr ""
 "角色是一套保存好的 agent CLI 启动方式：保留哪些 skill 和 MCP 服务器、启动时告"
 "诉它什么。"
 
-#: windows/host/src/roles_ui.rs:682
+#: windows/host/src/roles_ui.rs:801
 msgid "Select a role, or make a new one."
 msgstr "选一个角色，或者新建一个。"
 
-#: windows/host/src/roles_ui.rs:697
+#: windows/host/src/roles_ui.rs:842
+msgid ""
+"Your changes to official roles couldn't be read, so they are not in use."
+msgstr "你对官方角色的改动没被读到，所以没有生效。"
+
+#: windows/host/src/roles_ui.rs:845
+#, rust-format
+msgid ""
+"Your role \"{}\" has the key {}, which is now an official role's. Yours is "
+"kept in the file but isn't in use."
+msgstr "你的角色「{}」用的 key 是 {}，这个 key 现在属于官方角色。你的那份还在文件里，但没有被使用。"
+
+#: windows/host/src/roles_ui.rs:848
+msgid "Keep It Under a New Key"
+msgstr "换个 key 留作我自己的角色"
+
+#: windows/host/src/roles_ui.rs:856
+msgid "The official version has changed"
+msgstr "官方版本有更新"
+
+#: windows/host/src/roles_ui.rs:858
+#, rust-format
+msgid "The official version has changed: {}"
+msgstr "官方版本有更新：{}"
+
+#: windows/host/src/roles_ui.rs:864
+msgid "Keep Mine"
+msgstr "知道了，仍用我的"
+
+#: windows/host/src/roles_ui.rs:865
+msgid ""
+"The official version of what you changed here has changed since. Yours is "
+"still the one in use."
+msgstr "你改过的这一项，官方版本后来也改了。现在用的仍是你的。"
+
+#: windows/host/src/roles_ui.rs:870 windows/settings-shell/src/official.rs:217
+msgid "Your changes weren't read, so the factory settings are in use."
+msgstr "你的改动没被读到，现在用的是出厂设置。"
+
+#: windows/host/src/roles_ui.rs:906 windows/host/src/roles_ui.rs:937
 msgid "Name"
 msgstr "名称"
 
-#: windows/host/src/roles_ui.rs:699 windows/host/src/roles_ui.rs:709
+#: windows/host/src/roles_ui.rs:916
+msgid "Skill Text"
+msgstr "正文"
+
+#: windows/host/src/roles_ui.rs:924
+msgid ""
+"Takes effect as soon as it's saved. When an agent that is already running "
+"reads the new text depends on the tool it uses."
+msgstr "保存后立即生效。已经在运行的 agent 什么时候读到新内容，取决于它用的工具。"
+
+#: windows/host/src/roles_ui.rs:939 windows/host/src/roles_ui.rs:949
 msgid "Key"
 msgstr "Key"
 
-#: windows/host/src/roles_ui.rs:702
+#: windows/host/src/roles_ui.rs:942
 msgid "Lowercase letters, digits and dashes. It can't be changed after saving."
 msgstr "只能用小写字母、数字和短横线，保存后不能再改。"
 
-#: windows/host/src/roles_ui.rs:704
+#: windows/host/src/roles_ui.rs:944
 msgid "Only lowercase letters, digits and dashes, at most 32."
 msgstr "只能用小写字母、数字和短横线，最多 32 个字符。"
 
-#: windows/host/src/roles_ui.rs:712
-msgid "Description"
-msgstr "说明"
-
-#: windows/host/src/roles_ui.rs:713
+#: windows/host/src/roles_ui.rs:957
 msgid "What this role is for, for whoever picks it"
 msgstr "这个角色是干什么的，写给挑选它的人看"
 
-#: windows/host/src/roles_ui.rs:716
+#: windows/host/src/roles_ui.rs:964
+msgid "Description"
+msgstr "说明"
+
+#: windows/host/src/roles_ui.rs:966 windows/settings-shell/src/official.rs:161
 msgid "Instructions"
 msgstr "指令"
 
-#: windows/host/src/roles_ui.rs:727
+#: windows/host/src/roles_ui.rs:977
 msgid ""
 "Added to the agent's system prompt when it starts. Leave it empty to add "
 "nothing. Drag the bottom edge to make the box taller."
@@ -3299,31 +3431,23 @@ msgstr ""
 "启动时附加到 agent 的系统提示词后面。留空就什么都不加。拖动下边缘可以把输入框"
 "拉高。"
 
-#: windows/host/src/roles_ui.rs:733
+#: windows/host/src/roles_ui.rs:983
 msgid "Make this terminal a supervisor"
 msgstr "将此终端设为总管"
 
-#: windows/host/src/roles_ui.rs:734
+#: windows/host/src/roles_ui.rs:984
 msgid "Let the supervisor answer this terminal's permission prompts"
 msgstr "允许总管替你回答此终端的权限问题"
 
-#: windows/host/src/roles_ui.rs:735
+#: windows/host/src/roles_ui.rs:985
 msgid "Shield it: no tool can reach it, a supervisor's included"
 msgstr "开启护盾：任何工具都碰不到它，总管也不行"
 
-#: windows/host/src/roles_ui.rs:737
-msgid ""
-"These three give the terminal something, so only you can set them, here. A "
-"supervisor that edits roles can't change them."
-msgstr ""
-"这三项会给终端授予权限，所以只有你能在这里设置。能编辑角色的总管也改不了它"
-"们。"
-
-#: windows/host/src/roles_ui.rs:740
+#: windows/host/src/roles_ui.rs:987
 msgid "Hand it to the supervisor to watch"
 msgstr "交给总管监管"
 
-#: windows/host/src/roles_ui.rs:744
+#: windows/host/src/roles_ui.rs:991
 msgid ""
 "The supervisor that started it, or the only one there is. With several and "
 "you starting it, nobody."
@@ -3331,27 +3455,27 @@ msgstr ""
 "交给启动它的那个总管；如果是你启动的，就交给唯一的那个总管。有多个总管时不交"
 "给任何人。"
 
-#: windows/host/src/roles_ui.rs:745
+#: windows/host/src/roles_ui.rs:992
 msgid "Report it as still after"
 msgstr "静止多久算卡住"
 
-#: windows/host/src/roles_ui.rs:753
+#: windows/host/src/roles_ui.rs:1000
 msgid "min"
 msgstr "分钟"
 
-#: windows/host/src/roles_ui.rs:759
+#: windows/host/src/roles_ui.rs:1006
 msgid "Open in"
 msgstr "打开位置"
 
-#: windows/host/src/roles_ui.rs:763
+#: windows/host/src/roles_ui.rs:1010
 msgid "Here when at a prompt, else a new tab"
 msgstr "在提示符处就地打开，否则开新标签页"
 
-#: windows/host/src/roles_ui.rs:763
+#: windows/host/src/roles_ui.rs:1010
 msgid "Always a new tab"
 msgstr "始终在新标签页中打开"
 
-#: windows/host/src/roles_ui.rs:773
+#: windows/host/src/roles_ui.rs:1020
 msgid ""
 "Applied once, when the role starts an agent CLI. Putting the role on a "
 "terminal that's already running changes its tools, not these."
@@ -3359,75 +3483,75 @@ msgstr ""
 "只在用这个角色启动 agent CLI 时生效一次。给已经在运行的终端换上这个角色，只会"
 "切换它的工具，不会改这些设置。"
 
-#: windows/host/src/roles_ui.rs:777
+#: windows/host/src/roles_ui.rs:1024 windows/settings-shell/src/official.rs:163
 msgid "Agent CLIs"
 msgstr "Agent CLI"
 
-#: windows/host/src/roles_ui.rs:779 windows/host/src/roles_ui.rs:861
+#: windows/host/src/roles_ui.rs:1026 windows/host/src/roles_ui.rs:1108
 msgid "Reading what's installed…"
 msgstr "正在读取已安装的内容…"
 
-#: windows/host/src/roles_ui.rs:781
+#: windows/host/src/roles_ui.rs:1028
 msgid "No plugin that manages an agent CLI is installed and switched on."
 msgstr "没有安装并启用任何管理 agent CLI 的插件。"
 
-#: windows/host/src/roles_ui.rs:786
+#: windows/host/src/roles_ui.rs:1033
 #, rust-format
 msgid "{} isn't on this machine's PATH"
 msgstr "本机 PATH 里找不到 {}"
 
-#: windows/host/src/roles_ui.rs:789 windows/host/src/roles_ui.rs:868
+#: windows/host/src/roles_ui.rs:1036 windows/host/src/roles_ui.rs:1115
 msgid "Its plugin couldn't list what's installed"
 msgstr "它的插件没能列出已安装的内容"
 
-#: windows/host/src/roles_ui.rs:799 windows/host/src/roles_ui.rs:861
+#: windows/host/src/roles_ui.rs:1046 windows/host/src/roles_ui.rs:1108
 msgid "No plugin manages this CLI any more"
 msgstr "已经没有插件管理这个 CLI 了"
 
-#: windows/host/src/roles_ui.rs:811
+#: windows/host/src/roles_ui.rs:1058
 #, rust-format
 msgid "Starting {}"
 msgstr "启动 {}"
 
-#: windows/host/src/roles_ui.rs:813
+#: windows/host/src/roles_ui.rs:1060
 msgid "Model"
 msgstr "模型"
 
-#: windows/host/src/roles_ui.rs:814
+#: windows/host/src/roles_ui.rs:1061
 msgid "The CLI's default"
 msgstr "CLI 默认"
 
-#: windows/host/src/roles_ui.rs:818
+#: windows/host/src/roles_ui.rs:1065
 msgid "Extra Arguments"
 msgstr "额外参数"
 
-#: windows/host/src/roles_ui.rs:822
+#: windows/host/src/roles_ui.rs:1069
 msgid "Added to the command line as typed. Quote anything with a space in it."
 msgstr "按原样追加到命令行。含空格的参数请加引号。"
 
-#: windows/host/src/roles_ui.rs:851
+#: windows/host/src/roles_ui.rs:1098
 msgid ""
 "Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI."
 msgstr ""
 "先在「基本信息」里选一个 agent CLI：skill 和 MCP 服务器是属于某个 CLI 的。"
 
-#: windows/host/src/roles_ui.rs:852
+#: windows/host/src/roles_ui.rs:1099
 msgid "Go to Basics"
 msgstr "去基本信息"
 
-#: windows/host/src/roles_ui.rs:874
+#: windows/host/src/roles_ui.rs:1121
 msgid "Filter skills"
 msgstr "筛选 skill"
 
-#: windows/host/src/roles_ui.rs:876
+#: windows/host/src/roles_ui.rs:1123
 msgid "Keep skills installed later"
 msgstr "以后新装的 skill 默认保留"
 
-#: windows/host/src/roles_ui.rs:877
+#: windows/host/src/roles_ui.rs:1124
 msgid "No skills are installed for this CLI."
 msgstr "这个 CLI 没有安装任何 skill。"
 
-#: windows/host/src/roles_ui.rs:878
+#: windows/host/src/roles_ui.rs:1125
 msgid ""
 "This list is what the CLI has on this machine. A project's own skills aren't "
 "in it; at launch they follow the switch above."
@@ -3435,23 +3559,23 @@ msgstr ""
 "这里列的是这个 CLI 在本机装的东西，项目自带的 skill 不在其中；启动时它们按上"
 "面那个开关处理。"
 
-#: windows/host/src/roles_ui.rs:881
+#: windows/host/src/roles_ui.rs:1128
 msgid "Filter MCP servers"
 msgstr "筛选 MCP 服务器"
 
-#: windows/host/src/roles_ui.rs:882
+#: windows/host/src/roles_ui.rs:1129
 msgid "MCP Servers"
 msgstr "MCP 服务器"
 
-#: windows/host/src/roles_ui.rs:883
+#: windows/host/src/roles_ui.rs:1130
 msgid "Keep MCP servers added later"
 msgstr "以后新加的 MCP 服务器默认保留"
 
-#: windows/host/src/roles_ui.rs:884
+#: windows/host/src/roles_ui.rs:1131
 msgid "No MCP servers are configured for this CLI."
 msgstr "这个 CLI 没有配置任何 MCP 服务器。"
 
-#: windows/host/src/roles_ui.rs:885
+#: windows/host/src/roles_ui.rs:1132
 msgid ""
 "This list is what the CLI has on this machine. A project's own MCP servers "
 "aren't in it; at launch they follow the switch above."
@@ -3459,98 +3583,128 @@ msgstr ""
 "这里列的是这个 CLI 在本机装的东西，项目自带的 MCP 服务器不在其中；启动时它们"
 "按上面那个开关处理。"
 
-#: windows/host/src/roles_ui.rs:911
+#: windows/host/src/roles_ui.rs:1158
 #, rust-format
 msgid "{} of {} kept"
 msgstr "保留 {} / {}"
 
-#: windows/host/src/roles_ui.rs:913
+#: windows/host/src/roles_ui.rs:1160
 msgid "Keep All"
 msgstr "全部保留"
 
-#: windows/host/src/roles_ui.rs:914
+#: windows/host/src/roles_ui.rs:1161
 msgid "Turn All Off"
 msgstr "全部关闭"
 
-#: windows/host/src/roles_ui.rs:921
+#: windows/host/src/roles_ui.rs:1168
 msgid ""
 "What happens to anything that isn't listed here yet, such as something "
 "installed tomorrow or a project's own."
 msgstr "决定这里还没列出的东西怎么处理，比如明天新装的、或某个项目自带的。"
 
-#: windows/host/src/roles_ui.rs:935
+#: windows/host/src/roles_ui.rs:1182
 msgid "Nothing matches the filter."
 msgstr "没有符合筛选条件的项。"
 
-#: windows/host/src/roles_ui.rs:950
+#: windows/host/src/roles_ui.rs:1197
 msgid "Keep or turn off everything in this group"
 msgstr "整组保留或关闭"
 
-#: windows/host/src/roles_ui.rs:978
+#: windows/host/src/roles_ui.rs:1225
 msgid "No description"
 msgstr "没有说明"
 
-#: windows/host/src/roles_ui.rs:994
+#: windows/host/src/roles_ui.rs:1241
 msgid "Show Less"
 msgstr "收起"
 
-#: windows/host/src/roles_ui.rs:994
+#: windows/host/src/roles_ui.rs:1241
 msgid "Show More"
 msgstr "展开"
 
-#: windows/host/src/roles_ui.rs:1016
+#: windows/host/src/roles_ui.rs:1263
 #, rust-format
 msgid "Also in this role but not installed here: {}"
 msgstr "角色里还提到了本机没装的：{}"
 
-#: windows/host/src/roles_ui.rs:2257
-msgid "Duplicate"
-msgstr "复制"
+#: windows/host/src/roles_ui.rs:2554 windows/host/src/roles_ui.rs:2755
+msgid "Restore Factory Settings…"
+msgstr "恢复出厂设置…"
 
-#: windows/host/src/roles_ui.rs:2258 windows/host/src/roles_ui.rs:2357
+#: windows/host/src/roles_ui.rs:2555 windows/host/src/roles_ui.rs:2654
 msgid "Launch"
 msgstr "启动"
 
-#: windows/host/src/roles_ui.rs:2452
+#: windows/host/src/roles_ui.rs:2763
 msgid ""
 "The role library file has an error in it. Roles can't be changed here until "
 "it's fixed."
 msgstr "角色库文件里有错误。修好之前，这里不能修改角色。"
 
-#: windows/host/src/roles_ui.rs:2887 windows/host/src/settings_win.rs:808
+#: windows/host/src/roles_ui.rs:3208 windows/host/src/settings_win.rs:810
 msgid "Polter Settings"
 msgstr "Polter 设置"
 
-#: windows/host/src/roles_ui.rs:2949 windows/host/src/roles_ui.rs:2966
+#: windows/host/src/roles_ui.rs:3270 windows/host/src/roles_ui.rs:3287
 msgid "Save changes to this role?"
 msgstr "保存对这个角色的修改吗？"
 
-#: windows/host/src/roles_ui.rs:2950 windows/host/src/roles_ui.rs:2967
-#: windows/host/src/roles_ui.rs:2982
+#: windows/host/src/roles_ui.rs:3271 windows/host/src/roles_ui.rs:3288
+#: windows/host/src/roles_ui.rs:3303
 msgid "Your changes will be lost if you don't save them."
 msgstr "不保存的话，修改会丢失。"
 
-#: windows/host/src/roles_ui.rs:2952 windows/host/src/roles_ui.rs:2969
-#: windows/host/src/roles_ui.rs:2982
+#: windows/host/src/roles_ui.rs:3273 windows/host/src/roles_ui.rs:3290
+#: windows/host/src/roles_ui.rs:3303
 msgid "Don't Save"
 msgstr "不保存"
 
-#: windows/host/src/roles_ui.rs:3118
+#: windows/host/src/roles_ui.rs:3478
+#, rust-format
+msgid "Restore \"{}\" to factory settings?"
+msgstr "把「{}」恢复出厂设置？"
+
+#: windows/host/src/roles_ui.rs:3479
+msgid ""
+"Your changes to it are removed, along with anything typed here and not "
+"saved. This can't be undone."
+msgstr "你对它的改动会被去掉，这里还没保存的输入也一样。此操作不能撤销。"
+
+#: windows/host/src/roles_ui.rs:3496
+msgid "The file that holds your changes can't be read."
+msgstr "保存你的改动的文件读不了。"
+
+#: windows/host/src/roles_ui.rs:3497
+msgid ""
+"Restoring will put every official role and skill back to factory settings, "
+"not only this one. The file of your changes and your own copies of official "
+"skills are kept where they were, renamed, so nothing in them is lost."
+msgstr "恢复会把全部官方角色和官方 skill 都设回出厂设置，不只是这一个。保存改动的文件和你的官方 skill 副本都会改名留在原处，里面的内容不会丢。"
+
+#: windows/host/src/roles_ui.rs:3498
+msgid "Restore All"
+msgstr "全部恢复"
+
+#: windows/host/src/roles_ui.rs:3611
 #, rust-format
 msgid "Delete the role \"{}\"?"
 msgstr "删除角色「{}」？"
 
-#: windows/host/src/roles_ui.rs:3119
+#: windows/host/src/roles_ui.rs:3612
 msgid ""
 "Terminals wearing it are taken out of it. Agents already running keep "
 "running."
 msgstr "正在用它的终端会被取消这个角色；已经在跑的 agent 会继续跑。"
 
-#: windows/host/src/roles_ui.rs:3177
+#: windows/host/src/roles_ui.rs:3670
 msgid "The role couldn't be launched"
 msgstr "无法用这个角色启动"
 
-#: windows/host/src/roles_ui.rs:3473
+#: windows/host/src/roles_ui.rs:3969
+msgid "Official"
+msgstr "官方"
+
+#: windows/host/src/roles_ui.rs:3995
 msgid "No matching roles"
 msgstr "没有匹配的角色"
 
@@ -3566,7 +3720,7 @@ msgstr "插件"
 msgid "General"
 msgstr "通用"
 
-#: windows/host/src/settings_win.rs:1360 windows/host/src/settings_win.rs:1363
+#: windows/host/src/settings_win.rs:1362 windows/host/src/settings_win.rs:1365
 #, rust-format
 msgid "{} (not in the search results)"
 msgstr "{}（不在搜索结果里）"
@@ -3632,6 +3786,114 @@ msgstr "高级"
 #: windows/settings-shell/src/general.rs:82
 msgid "About"
 msgstr "关于"
+
+#: windows/settings-shell/src/official.rs:49
+msgid "Factory settings"
+msgstr "出厂设置"
+
+#: windows/settings-shell/src/official.rs:50
+#: windows/settings-shell/src/official.rs:215
+msgid "Changed"
+msgstr "已修改"
+
+#: windows/settings-shell/src/official.rs:51
+#: windows/settings-shell/src/official.rs:216
+msgid "Changed · The official version has changed"
+msgstr "已修改 · 官方版本有更新"
+
+#: windows/settings-shell/src/official.rs:52
+#, rust-format
+msgid "Your changes weren't read: {}"
+msgstr "你的改动没被读到：{}"
+
+#: windows/settings-shell/src/official.rs:128
+#, rust-format
+msgid "Could not read {}"
+msgstr "读不了 {}"
+
+#: windows/settings-shell/src/official.rs:129
+msgid "official-overrides.json can't be read as a file of changes."
+msgstr "official-overrides.json 读不成改动文件。"
+
+#: windows/settings-shell/src/official.rs:130
+msgid "What is written for this role is not an object."
+msgstr "改动文件里这个角色的条目不是一个对象。"
+
+#: windows/settings-shell/src/official.rs:131
+#, rust-format
+msgid "\"{}\" is not a field this version of Polter knows."
+msgstr "「{}」不是这个版本的 Polter 认识的字段。"
+
+#: windows/settings-shell/src/official.rs:132
+#, rust-format
+msgid "\"{}\" is not written as a value and its base."
+msgstr "「{}」没有按「值和基准」的格式写。"
+
+#: windows/settings-shell/src/official.rs:133
+#, rust-format
+msgid "\"{}\" has no value."
+msgstr "「{}」没有值。"
+
+#: windows/settings-shell/src/official.rs:134
+#, rust-format
+msgid "The value of \"{}\" can't be read."
+msgstr "「{}」的值读不了。"
+
+#: windows/settings-shell/src/official.rs:135
+#, rust-format
+msgid "\"{}\" has no base, so it can't be compared with the official version."
+msgstr "「{}」没有基准，没法和官方版本比较。"
+
+#: windows/settings-shell/src/official.rs:136
+#, rust-format
+msgid "The base of \"{}\" can't be read."
+msgstr "「{}」的基准读不了。"
+
+#: windows/settings-shell/src/official.rs:137
+msgid "What is written for this skill is not an object."
+msgstr "改动文件里这个 skill 的记录不是一个对象。"
+
+#: windows/settings-shell/src/official.rs:138
+msgid "The record for this skill has no base."
+msgstr "这个 skill 的记录里没有基准。"
+
+#: windows/settings-shell/src/official.rs:139
+msgid "The base recorded for this skill is not text."
+msgstr "这个 skill 记录的基准不是文本。"
+
+#: windows/settings-shell/src/official.rs:140
+#, rust-format
+msgid ""
+"Your copy at {} doesn't read as this skill, so the shipped one is in use."
+msgstr "你放在 {} 的副本读不成这个 skill，现在用的是出厂的那份。"
+
+#: windows/settings-shell/src/official.rs:141
+msgid ""
+"This copy wasn't saved from Polter, so whether the official text has changed "
+"since is not known."
+msgstr "这份副本不是从 Polter 存的，所以不知道官方正文之后有没有变。"
+
+#: windows/settings-shell/src/official.rs:204
+msgid ""
+"These three are part of the official role and can't be changed. Duplicate "
+"the role to make one of your own."
+msgstr "这三项属于官方角色，不能修改。想改就复制一份成为你自己的角色。"
+
+#: windows/settings-shell/src/official.rs:206
+msgid ""
+"These three give the terminal something, so only you can set them, here. A "
+"supervisor that edits roles can't change them."
+msgstr ""
+"这三项会给终端授予权限，所以只有你能在这里设置。能编辑角色的总管也改不了它"
+"们。"
+
+#: windows/settings-shell/src/official.rs:212
+msgid "Official skill"
+msgstr "官方 skill"
+
+#: windows/settings-shell/src/official.rs:212
+msgid "Official role"
+msgstr "官方角色"
 
 #: windows/settings-shell/src/plugins.rs:51
 msgid "Restart to apply"
@@ -3750,7 +4012,7 @@ msgstr "{}，经总管"
 msgid "Worker"
 msgstr "worker"
 
-#: windows/control-room/src/rules.rs:174
+#: windows/control-room/src/rules.rs:181
 msgid "Polter — Control Room"
 msgstr "Polter — 总控台"
 
@@ -3887,11 +4149,11 @@ msgstr "会开一个新会话：上次的会话现在有一个开着的终端在
 msgid "Where the tab starts"
 msgstr "新标签页所在的目录"
 
-#: windows/control-room/src/scene.rs:79
+#: windows/control-room/src/scene.rs:77
 msgid "This terminal is no longer open."
 msgstr "这个终端已经不在了。"
 
-#: windows/control-room/src/scene.rs:80
+#: windows/control-room/src/scene.rs:78
 msgid "Showing in its own tab"
 msgstr "界面在它自己的标签页"
 
@@ -4012,6 +4274,22 @@ msgstr ""
 "项目的各页都还原，总管在它那一格启动；worker 的格子只还原终端，叫谁回来由总管"
 "决定。"
 
+#~ msgid "Polter Supervisor"
+#~ msgstr "Polter 总管"
+
+#~ msgid ""
+#~ "Makes the terminal it starts in this window's supervisor: splits the "
+#~ "work, hands it out and checks it."
+#~ msgstr "把启动它的终端设为本窗口的总管：拆分工作、派活、验收。"
+
+#~ msgid ""
+#~ "This role comes with Polter and can't be changed or deleted. Duplicate it "
+#~ "to make one of your own."
+#~ msgstr "这是 Polter 自带的角色，不能修改或删除。复制一份就能改成你自己的。"
+
+#~ msgid "Duplicate"
+#~ msgstr "复制"
+
 #, rust-format
 #~ msgid "Same supervisor: see {}"
 #~ msgstr "同一个总管：见 {}"
@@ -4108,10 +4386,7 @@ msgstr ""
 #~ msgid "Role Library"
 #~ msgstr "角色库"
 
-#: windows/host/src/roles_ui.rs
-msgid "Official"
-msgstr "官方"
-
-#: windows/host/src/roles.rs
-msgid "Official role. Changing it and restoring its factory settings can't be done on Windows yet."
-msgstr "官方角色。修改与恢复出厂设置在 Windows 上还不能做。"
+#~ msgid ""
+#~ "Official role. Changing it and restoring its factory settings can't be "
+#~ "done on Windows yet."
+#~ msgstr "官方角色。修改与恢复出厂设置在 Windows 上还不能做。"

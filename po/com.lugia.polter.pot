@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.lugia.polter\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 22:02+0800\n"
+"POT-Creation-Date: 2026-10-15 03:09+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -25,19 +25,19 @@ msgstr ""
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:12
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:197
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
-#: windows/host/src/main.rs:2564 windows/host/src/main.rs:2570
+#: windows/host/src/main.rs:2576 windows/host/src/main.rs:2582
 msgid "Authorize Clipboard Access"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:17
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:17
-#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:203
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:214
 msgid "Deny"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:18
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:18
-#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:202
+#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:213
 msgid "Allow"
 msgstr ""
 
@@ -56,7 +56,7 @@ msgstr ""
 #: windows/host/src/project_picker.rs:427 windows/host/src/project_ui.rs:413
 #: windows/host/src/project_ui.rs:453 windows/host/src/projects_ui.rs:626
 #: windows/host/src/projects_ui.rs:653 windows/host/src/projects_ui.rs:658
-#: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:2887
+#: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:3208
 msgid "Cancel"
 msgstr ""
 
@@ -309,26 +309,26 @@ msgid "Editing configuration file"
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
-#: windows/host/src/main.rs:2572
+#: windows/host/src/main.rs:2584
 msgid ""
 "An application is attempting to write to the clipboard. The current "
 "clipboard contents are shown below."
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:202
-#: windows/host/src/main.rs:2566
+#: windows/host/src/main.rs:2578
 msgid ""
 "An application is attempting to read from the clipboard. The current "
 "clipboard contents are shown below."
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2576
+#: windows/host/src/main.rs:2588
 msgid "Warning: Potentially Unsafe Paste"
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2578
+#: windows/host/src/main.rs:2590
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -979,7 +979,7 @@ msgid "Open a terminal showing what the terminals have said to each other."
 msgstr ""
 
 #: src/input/command.zig:612 windows/host/src/menu.rs:393
-#: windows/control-room/src/rules.rs:173
+#: windows/control-room/src/rules.rs:180
 msgid "Control Room"
 msgstr ""
 
@@ -1361,9 +1361,9 @@ msgid "The page could not be followed any further, so the picture ends here."
 msgstr ""
 
 #: src/input/screenshot.zig:126 windows/host/src/plugins_ui.rs:525
-#: windows/host/src/project_picker.rs:413 windows/host/src/roles_ui.rs:2258
-#: windows/host/src/roles_ui.rs:2951 windows/host/src/roles_ui.rs:2968
-#: windows/host/src/roles_ui.rs:2982
+#: windows/host/src/project_picker.rs:413 windows/host/src/roles_ui.rs:2555
+#: windows/host/src/roles_ui.rs:3272 windows/host/src/roles_ui.rs:3289
+#: windows/host/src/roles_ui.rs:3303
 msgid "Save"
 msgstr ""
 
@@ -2102,52 +2102,124 @@ msgstr ""
 msgid "Keep a transcript of what ran in each terminal."
 msgstr ""
 
-#: src/config/form.zig:187 windows/host/src/language.rs:291
+#: src/config/form.zig:189
+msgid "Group Transcripts, Total MB"
+msgstr ""
+
+#: src/config/form.zig:189
+msgid "Transcripts written while in a group, kept by size only."
+msgstr ""
+
+#: src/config/form.zig:190
+msgid "Project Transcripts, Days"
+msgstr ""
+
+#: src/config/form.zig:190
+msgid "Days kept of transcripts from a project's tabs."
+msgstr ""
+
+#: src/config/form.zig:191
+msgid "Project Transcripts, Total MB"
+msgstr ""
+
+#: src/config/form.zig:191
+msgid "Megabytes kept of transcripts from a project's tabs."
+msgstr ""
+
+#: src/config/form.zig:192
+msgid "Other Transcripts, Days"
+msgstr ""
+
+#: src/config/form.zig:192
+msgid "Days kept of transcripts in no group or project."
+msgstr ""
+
+#: src/config/form.zig:193
+msgid "Other Transcripts, Total MB"
+msgstr ""
+
+#: src/config/form.zig:193
+msgid "Megabytes kept of transcripts in no group or project."
+msgstr ""
+
+#: src/config/form.zig:194
+msgid "Logs, Days"
+msgstr ""
+
+#: src/config/form.zig:194
+msgid "Days kept of Polter's own logs and crash reports."
+msgstr ""
+
+#: src/config/form.zig:195
+msgid "Logs, Total MB"
+msgstr ""
+
+#: src/config/form.zig:195
+msgid "Megabytes kept of Polter's own logs."
+msgstr ""
+
+#: src/config/form.zig:196
+msgid "Screenshots, Days"
+msgstr ""
+
+#: src/config/form.zig:196
+msgid "Days kept of Polter's screenshots."
+msgstr ""
+
+#: src/config/form.zig:197
+msgid "Screenshots, Total MB"
+msgstr ""
+
+#: src/config/form.zig:197
+msgid "Megabytes kept of Polter's screenshots."
+msgstr ""
+
+#: src/config/form.zig:198 windows/host/src/language.rs:291
 msgid "Language"
 msgstr ""
 
-#: src/config/form.zig:187
+#: src/config/form.zig:198
 msgid "The interface language; empty follows the system."
 msgstr ""
 
-#: src/config/form.zig:190
+#: src/config/form.zig:201
 msgid "Paste Images as Files"
 msgstr ""
 
-#: src/config/form.zig:190
+#: src/config/form.zig:201
 msgid "Save a pasted image as a file and paste its path."
 msgstr ""
 
-#: src/config/form.zig:191
+#: src/config/form.zig:202
 msgid "Screenshot Folder"
 msgstr ""
 
-#: src/config/form.zig:191
+#: src/config/form.zig:202
 msgid "Where screenshots and pasted images are saved."
 msgstr ""
 
-#: src/config/form.zig:192
+#: src/config/form.zig:203
 msgid "Mouse Trigger"
 msgstr ""
 
-#: src/config/form.zig:192
+#: src/config/form.zig:203
 msgid "Hold these keys and click to take a screenshot."
 msgstr ""
 
-#: src/config/form.zig:193 windows/settings-shell/src/plugins.rs:52
+#: src/config/form.zig:204 windows/settings-shell/src/plugins.rs:52
 msgid "Off"
 msgstr ""
 
-#: src/config/form.zig:200
+#: src/config/form.zig:211
 #, c-format
 msgid "%s + Click"
 msgstr ""
 
-#: src/config/form.zig:201
+#: src/config/form.zig:212
 msgid "Let Agents Take Screenshots"
 msgstr ""
 
-#: src/config/form.zig:201
+#: src/config/form.zig:212
 msgid "Agents may capture the screen with the screenshot tools."
 msgstr ""
 
@@ -2355,20 +2427,20 @@ msgid ""
 "and start Polter again."
 msgstr ""
 
-#: windows/host/src/main.rs:2592
+#: windows/host/src/main.rs:2604
 #, rust-format
 msgid "{} lines in all."
 msgstr ""
 
-#: windows/host/src/main.rs:6437
+#: windows/host/src/main.rs:6631
 msgid "No reason was recorded."
 msgstr ""
 
-#: windows/host/src/main.rs:6443
+#: windows/host/src/main.rs:6637
 msgid "Polter could not open its first terminal and will close."
 msgstr ""
 
-#: windows/host/src/main.rs:6445
+#: windows/host/src/main.rs:6639
 #, rust-format
 msgid "The full log is at {}"
 msgstr ""
@@ -2618,7 +2690,7 @@ msgstr ""
 msgid "Test"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:524 windows/host/src/roles_ui.rs:2258
+#: windows/host/src/plugins_ui.rs:524 windows/host/src/roles_ui.rs:2555
 msgid "Revert"
 msgstr ""
 
@@ -2704,7 +2776,7 @@ msgstr ""
 msgid "Restart Polter to apply"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1338
+#: windows/host/src/plugins_ui.rs:1338 windows/host/src/roles_ui.rs:915
 msgid "Status"
 msgstr ""
 
@@ -2802,26 +2874,27 @@ msgstr ""
 msgid "The project could not be saved."
 msgstr ""
 
-#: windows/host/src/project_picker.rs:1020 windows/host/src/settings_win.rs:934
-#: windows/host/src/settings_win.rs:1351
+#: windows/host/src/project_picker.rs:1023 windows/host/src/settings_win.rs:936
+#: windows/host/src/settings_win.rs:1353
 msgid "Search"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:1021
+#: windows/host/src/project_picker.rs:1024
 msgid "New Project Name"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:1101 windows/host/src/projects_ui.rs:1214
+#: windows/host/src/project_picker.rs:1104 windows/host/src/projects_ui.rs:1214
 msgid "No Saved Projects"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:1101 windows/host/src/projects_ui.rs:1216
+#: windows/host/src/project_picker.rs:1104 windows/host/src/projects_ui.rs:1216
 msgid "No matching projects"
 msgstr ""
 
 #: windows/host/src/project_ui.rs:369 windows/host/src/projects_ui.rs:562
-#: windows/host/src/roles_ui.rs:732 windows/settings-shell/src/general.rs:77
-#: windows/control-room/src/rules.rs:176
+#: windows/host/src/roles_ui.rs:982 windows/settings-shell/src/general.rs:77
+#: windows/settings-shell/src/official.rs:162
+#: windows/control-room/src/rules.rs:183
 msgid "Polter"
 msgstr ""
 
@@ -2920,7 +2993,7 @@ msgstr ""
 msgid "You can undo this until the settings window closes."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:845 windows/host/src/roles_ui.rs:3120
+#: windows/host/src/projects_ui.rs:845 windows/host/src/roles_ui.rs:3613
 msgid "Delete"
 msgstr ""
 
@@ -2947,6 +3020,7 @@ msgid "The current version becomes the previous one, so you can switch back."
 msgstr ""
 
 #: windows/host/src/projects_ui.rs:904 windows/host/src/projects_ui.rs:1385
+#: windows/host/src/roles_ui.rs:3480
 msgid "Restore"
 msgstr ""
 
@@ -3074,427 +3148,509 @@ msgstr ""
 msgid "Rename"
 msgstr ""
 
-#: windows/host/src/roles.rs:34 windows/host/src/roles.rs:1163
-#: windows/control-room/src/scene.rs:76
-msgid "Polter Supervisor"
-msgstr ""
-
-#: windows/host/src/roles.rs:355
-msgid ""
-"Makes the terminal it starts in this window's supervisor: splits the work, "
-"hands it out and checks it."
-msgstr ""
-
-#: windows/host/src/roles.rs:621
+#: windows/host/src/roles.rs:714
 msgid "Yours"
 msgstr ""
 
-#: windows/host/src/roles.rs:622
+#: windows/host/src/roles.rs:715
 msgid "This Project"
 msgstr ""
 
-#: windows/host/src/roles.rs:623
+#: windows/host/src/roles.rs:716
 msgid "This Project, Only on This Machine"
 msgstr ""
 
-#: windows/host/src/roles.rs:684
+#: windows/host/src/roles.rs:777
 msgid ""
 "This role can't be saved: it needs a name, and a key of lowercase letters, "
 "digits and dashes."
 msgstr ""
 
-#: windows/host/src/roles.rs:685
+#: windows/host/src/roles.rs:778
 msgid ""
 "The role library file has an error in it, so saving would overwrite it. Fix "
 "the file first."
 msgstr ""
 
-#: windows/host/src/roles.rs:686 windows/control-room/src/act.rs:206
+#: windows/host/src/roles.rs:779 windows/control-room/src/act.rs:206
 msgid "That role no longer exists."
 msgstr ""
 
-#: windows/host/src/roles.rs:687
+#: windows/host/src/roles.rs:780
 msgid "The role was written but didn't read back. This is a bug in Polter."
 msgstr ""
 
-#: windows/host/src/roles.rs:688
+#: windows/host/src/roles.rs:781
 msgid "The role library file couldn't be written."
 msgstr ""
 
-#: windows/host/src/roles.rs:689
+#: windows/host/src/roles.rs:782
 msgid "This role isn't set up for that agent CLI."
 msgstr ""
 
-#: windows/host/src/roles.rs:690 windows/control-room/src/act.rs:208
+#: windows/host/src/roles.rs:783 windows/control-room/src/act.rs:208
 msgid ""
 "This role isn't set up for any agent CLI yet. Pick one in the role library."
 msgstr ""
 
-#: windows/host/src/roles.rs:691
+#: windows/host/src/roles.rs:784
 msgid "This role is set up for more than one agent CLI. Choose one."
 msgstr ""
 
-#: windows/host/src/roles.rs:692
+#: windows/host/src/roles.rs:785
 msgid ""
 "A tab was opened but didn't appear in time, so nothing was started in it."
 msgstr ""
 
-#: windows/host/src/roles.rs:693
+#: windows/host/src/roles.rs:786
 msgid "Polter isn't ready yet."
 msgstr ""
 
-#: windows/host/src/roles.rs:698 windows/host/src/roles_ui.rs:3493
+#: windows/host/src/roles.rs:790
 msgid ""
-"This role comes with Polter and can't be changed or deleted. Duplicate it to "
-"make one of your own."
+"An official role's name, description and what it grants can't be changed. "
+"Duplicate it to make one of your own."
 msgstr ""
 
-#: windows/host/src/roles.rs:699
+#: windows/host/src/roles.rs:792
+msgid ""
+"The file that holds your changes to official roles can't be read, so nothing "
+"was saved into it. Restore Factory Settings sets it aside."
+msgstr ""
+
+#: windows/host/src/roles.rs:793
+msgid ""
+"This doesn't read as the skill: it needs its opening lines, with its own "
+"name in them."
+msgstr ""
+
+#: windows/host/src/roles.rs:794
+msgid "This skill couldn't be saved."
+msgstr ""
+
+#: windows/host/src/roles.rs:798
 msgid ""
 "Only you can make a role's terminal a supervisor, let it answer permission "
 "prompts, or keep agents out of it."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:162
+#: windows/host/src/roles_ui.rs:191
 msgid "New Role"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:184
+#: windows/host/src/roles_ui.rs:213
 #, rust-format
 msgid "{} Copy"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:240
+#: windows/host/src/roles_ui.rs:271
 msgid "Another role already uses this key."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:363 windows/host/src/roles_ui.rs:4564
+#: windows/host/src/roles_ui.rs:425 windows/host/src/roles_ui.rs:5092
 msgid "Unsaved changes"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:366 windows/host/src/roles_ui.rs:4561
+#: windows/host/src/roles_ui.rs:430 windows/host/src/roles_ui.rs:5089
 msgid "Open a terminal window first; the new tab goes beside it."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:391
+#: windows/host/src/roles_ui.rs:455
 msgid "Basics"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:393
+#: windows/host/src/roles_ui.rs:457
 #, rust-format
 msgid "Skills {}"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:394 windows/host/src/roles_ui.rs:875
+#: windows/host/src/roles_ui.rs:458 windows/host/src/roles_ui.rs:1122
 msgid "Skills"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:397
+#: windows/host/src/roles_ui.rs:461
 #, rust-format
 msgid "MCP {}"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:398
+#: windows/host/src/roles_ui.rs:462
 msgid "MCP"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:425
+#: windows/host/src/roles_ui.rs:500
 msgid "No agent CLI"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:456
+#: windows/host/src/roles_ui.rs:525
+msgid "Official Skills"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:554
 msgid "Reading the role library…"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:459
+#: windows/host/src/roles_ui.rs:557
 msgid "No roles yet"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:460
+#: windows/host/src/roles_ui.rs:558
 msgid ""
 "A role is a saved way to start an agent CLI: which skills and MCP servers it "
 "keeps, and what it's told."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:682
+#: windows/host/src/roles_ui.rs:801
 msgid "Select a role, or make a new one."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:697
+#: windows/host/src/roles_ui.rs:842
+msgid ""
+"Your changes to official roles couldn't be read, so they are not in use."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:845
+#, rust-format
+msgid ""
+"Your role \"{}\" has the key {}, which is now an official role's. Yours is "
+"kept in the file but isn't in use."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:848
+msgid "Keep It Under a New Key"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:856
+msgid "The official version has changed"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:858
+#, rust-format
+msgid "The official version has changed: {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:864
+msgid "Keep Mine"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:865
+msgid ""
+"The official version of what you changed here has changed since. Yours is "
+"still the one in use."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:870 windows/settings-shell/src/official.rs:217
+msgid "Your changes weren't read, so the factory settings are in use."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:906 windows/host/src/roles_ui.rs:937
 msgid "Name"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:699 windows/host/src/roles_ui.rs:709
+#: windows/host/src/roles_ui.rs:916
+msgid "Skill Text"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:924
+msgid ""
+"Takes effect as soon as it's saved. When an agent that is already running "
+"reads the new text depends on the tool it uses."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:939 windows/host/src/roles_ui.rs:949
 msgid "Key"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:702
+#: windows/host/src/roles_ui.rs:942
 msgid "Lowercase letters, digits and dashes. It can't be changed after saving."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:704
+#: windows/host/src/roles_ui.rs:944
 msgid "Only lowercase letters, digits and dashes, at most 32."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:712
-msgid "Description"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:713
+#: windows/host/src/roles_ui.rs:957
 msgid "What this role is for, for whoever picks it"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:716
+#: windows/host/src/roles_ui.rs:964
+msgid "Description"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:966 windows/settings-shell/src/official.rs:161
 msgid "Instructions"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:727
+#: windows/host/src/roles_ui.rs:977
 msgid ""
 "Added to the agent's system prompt when it starts. Leave it empty to add "
 "nothing. Drag the bottom edge to make the box taller."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:733
+#: windows/host/src/roles_ui.rs:983
 msgid "Make this terminal a supervisor"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:734
+#: windows/host/src/roles_ui.rs:984
 msgid "Let the supervisor answer this terminal's permission prompts"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:735
+#: windows/host/src/roles_ui.rs:985
 msgid "Shield it: no tool can reach it, a supervisor's included"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:737
-msgid ""
-"These three give the terminal something, so only you can set them, here. A "
-"supervisor that edits roles can't change them."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:740
+#: windows/host/src/roles_ui.rs:987
 msgid "Hand it to the supervisor to watch"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:744
+#: windows/host/src/roles_ui.rs:991
 msgid ""
 "The supervisor that started it, or the only one there is. With several and "
 "you starting it, nobody."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:745
+#: windows/host/src/roles_ui.rs:992
 msgid "Report it as still after"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:753
+#: windows/host/src/roles_ui.rs:1000
 msgid "min"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:759
+#: windows/host/src/roles_ui.rs:1006
 msgid "Open in"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:763
+#: windows/host/src/roles_ui.rs:1010
 msgid "Here when at a prompt, else a new tab"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:763
+#: windows/host/src/roles_ui.rs:1010
 msgid "Always a new tab"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:773
+#: windows/host/src/roles_ui.rs:1020
 msgid ""
 "Applied once, when the role starts an agent CLI. Putting the role on a "
 "terminal that's already running changes its tools, not these."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:777
+#: windows/host/src/roles_ui.rs:1024 windows/settings-shell/src/official.rs:163
 msgid "Agent CLIs"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:779 windows/host/src/roles_ui.rs:861
+#: windows/host/src/roles_ui.rs:1026 windows/host/src/roles_ui.rs:1108
 msgid "Reading what's installed…"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:781
+#: windows/host/src/roles_ui.rs:1028
 msgid "No plugin that manages an agent CLI is installed and switched on."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:786
+#: windows/host/src/roles_ui.rs:1033
 #, rust-format
 msgid "{} isn't on this machine's PATH"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:789 windows/host/src/roles_ui.rs:868
+#: windows/host/src/roles_ui.rs:1036 windows/host/src/roles_ui.rs:1115
 msgid "Its plugin couldn't list what's installed"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:799 windows/host/src/roles_ui.rs:861
+#: windows/host/src/roles_ui.rs:1046 windows/host/src/roles_ui.rs:1108
 msgid "No plugin manages this CLI any more"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:811
+#: windows/host/src/roles_ui.rs:1058
 #, rust-format
 msgid "Starting {}"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:813
+#: windows/host/src/roles_ui.rs:1060
 msgid "Model"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:814
+#: windows/host/src/roles_ui.rs:1061
 msgid "The CLI's default"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:818
+#: windows/host/src/roles_ui.rs:1065
 msgid "Extra Arguments"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:822
+#: windows/host/src/roles_ui.rs:1069
 msgid "Added to the command line as typed. Quote anything with a space in it."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:851
+#: windows/host/src/roles_ui.rs:1098
 msgid ""
 "Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:852
+#: windows/host/src/roles_ui.rs:1099
 msgid "Go to Basics"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:874
+#: windows/host/src/roles_ui.rs:1121
 msgid "Filter skills"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:876
+#: windows/host/src/roles_ui.rs:1123
 msgid "Keep skills installed later"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:877
+#: windows/host/src/roles_ui.rs:1124
 msgid "No skills are installed for this CLI."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:878
+#: windows/host/src/roles_ui.rs:1125
 msgid ""
 "This list is what the CLI has on this machine. A project's own skills aren't "
 "in it; at launch they follow the switch above."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:881
+#: windows/host/src/roles_ui.rs:1128
 msgid "Filter MCP servers"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:882
+#: windows/host/src/roles_ui.rs:1129
 msgid "MCP Servers"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:883
+#: windows/host/src/roles_ui.rs:1130
 msgid "Keep MCP servers added later"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:884
+#: windows/host/src/roles_ui.rs:1131
 msgid "No MCP servers are configured for this CLI."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:885
+#: windows/host/src/roles_ui.rs:1132
 msgid ""
 "This list is what the CLI has on this machine. A project's own MCP servers "
 "aren't in it; at launch they follow the switch above."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:911
+#: windows/host/src/roles_ui.rs:1158
 #, rust-format
 msgid "{} of {} kept"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:913
+#: windows/host/src/roles_ui.rs:1160
 msgid "Keep All"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:914
+#: windows/host/src/roles_ui.rs:1161
 msgid "Turn All Off"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:921
+#: windows/host/src/roles_ui.rs:1168
 msgid ""
 "What happens to anything that isn't listed here yet, such as something "
 "installed tomorrow or a project's own."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:935
+#: windows/host/src/roles_ui.rs:1182
 msgid "Nothing matches the filter."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:950
+#: windows/host/src/roles_ui.rs:1197
 msgid "Keep or turn off everything in this group"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:978
+#: windows/host/src/roles_ui.rs:1225
 msgid "No description"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:994
+#: windows/host/src/roles_ui.rs:1241
 msgid "Show Less"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:994
+#: windows/host/src/roles_ui.rs:1241
 msgid "Show More"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:1016
+#: windows/host/src/roles_ui.rs:1263
 #, rust-format
 msgid "Also in this role but not installed here: {}"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2257
-msgid "Duplicate"
+#: windows/host/src/roles_ui.rs:2554 windows/host/src/roles_ui.rs:2755
+msgid "Restore Factory Settings…"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2258 windows/host/src/roles_ui.rs:2357
+#: windows/host/src/roles_ui.rs:2555 windows/host/src/roles_ui.rs:2654
 msgid "Launch"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2452
+#: windows/host/src/roles_ui.rs:2763
 msgid ""
 "The role library file has an error in it. Roles can't be changed here until "
 "it's fixed."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2887 windows/host/src/settings_win.rs:808
+#: windows/host/src/roles_ui.rs:3208 windows/host/src/settings_win.rs:810
 msgid "Polter Settings"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2949 windows/host/src/roles_ui.rs:2966
+#: windows/host/src/roles_ui.rs:3270 windows/host/src/roles_ui.rs:3287
 msgid "Save changes to this role?"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2950 windows/host/src/roles_ui.rs:2967
-#: windows/host/src/roles_ui.rs:2982
+#: windows/host/src/roles_ui.rs:3271 windows/host/src/roles_ui.rs:3288
+#: windows/host/src/roles_ui.rs:3303
 msgid "Your changes will be lost if you don't save them."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2952 windows/host/src/roles_ui.rs:2969
-#: windows/host/src/roles_ui.rs:2982
+#: windows/host/src/roles_ui.rs:3273 windows/host/src/roles_ui.rs:3290
+#: windows/host/src/roles_ui.rs:3303
 msgid "Don't Save"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:3118
+#: windows/host/src/roles_ui.rs:3478
+#, rust-format
+msgid "Restore \"{}\" to factory settings?"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3479
+msgid ""
+"Your changes to it are removed, along with anything typed here and not "
+"saved. This can't be undone."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3496
+msgid "The file that holds your changes can't be read."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3497
+msgid ""
+"Restoring will put every official role and skill back to factory settings, "
+"not only this one. The file of your changes and your own copies of official "
+"skills are kept where they were, renamed, so nothing in them is lost."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3498
+msgid "Restore All"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3611
 #, rust-format
 msgid "Delete the role \"{}\"?"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:3119
+#: windows/host/src/roles_ui.rs:3612
 msgid ""
 "Terminals wearing it are taken out of it. Agents already running keep "
 "running."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:3177
+#: windows/host/src/roles_ui.rs:3670
 msgid "The role couldn't be launched"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:3473
+#: windows/host/src/roles_ui.rs:3969
+msgid "Official"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3995
 msgid "No matching roles"
 msgstr ""
 
@@ -3510,7 +3666,7 @@ msgstr ""
 msgid "General"
 msgstr ""
 
-#: windows/host/src/settings_win.rs:1360 windows/host/src/settings_win.rs:1363
+#: windows/host/src/settings_win.rs:1362 windows/host/src/settings_win.rs:1365
 #, rust-format
 msgid "{} (not in the search results)"
 msgstr ""
@@ -3573,6 +3729,112 @@ msgstr ""
 
 #: windows/settings-shell/src/general.rs:82
 msgid "About"
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:49
+msgid "Factory settings"
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:50
+#: windows/settings-shell/src/official.rs:215
+msgid "Changed"
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:51
+#: windows/settings-shell/src/official.rs:216
+msgid "Changed · The official version has changed"
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:52
+#, rust-format
+msgid "Your changes weren't read: {}"
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:128
+#, rust-format
+msgid "Could not read {}"
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:129
+msgid "official-overrides.json can't be read as a file of changes."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:130
+msgid "What is written for this role is not an object."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:131
+#, rust-format
+msgid "\"{}\" is not a field this version of Polter knows."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:132
+#, rust-format
+msgid "\"{}\" is not written as a value and its base."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:133
+#, rust-format
+msgid "\"{}\" has no value."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:134
+#, rust-format
+msgid "The value of \"{}\" can't be read."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:135
+#, rust-format
+msgid "\"{}\" has no base, so it can't be compared with the official version."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:136
+#, rust-format
+msgid "The base of \"{}\" can't be read."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:137
+msgid "What is written for this skill is not an object."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:138
+msgid "The record for this skill has no base."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:139
+msgid "The base recorded for this skill is not text."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:140
+#, rust-format
+msgid ""
+"Your copy at {} doesn't read as this skill, so the shipped one is in use."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:141
+msgid ""
+"This copy wasn't saved from Polter, so whether the official text has changed "
+"since is not known."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:204
+msgid ""
+"These three are part of the official role and can't be changed. Duplicate "
+"the role to make one of your own."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:206
+msgid ""
+"These three give the terminal something, so only you can set them, here. A "
+"supervisor that edits roles can't change them."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:212
+msgid "Official skill"
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:212
+msgid "Official role"
 msgstr ""
 
 #: windows/settings-shell/src/plugins.rs:51
@@ -3692,7 +3954,7 @@ msgstr ""
 msgid "Worker"
 msgstr ""
 
-#: windows/control-room/src/rules.rs:174
+#: windows/control-room/src/rules.rs:181
 msgid "Polter — Control Room"
 msgstr ""
 
@@ -3828,11 +4090,11 @@ msgstr ""
 msgid "Where the tab starts"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:79
+#: windows/control-room/src/scene.rs:77
 msgid "This terminal is no longer open."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:80
+#: windows/control-room/src/scene.rs:78
 msgid "Showing in its own tab"
 msgstr ""
 
@@ -3947,12 +4209,4 @@ msgid ""
 "Every page of its project comes back and the supervisor starts in its own "
 "pane. The workers' panes come back as terminals only; who is called back is "
 "the supervisor's to decide."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs
-msgid "Official"
-msgstr ""
-
-#: windows/host/src/roles.rs
-msgid "Official role. Changing it and restoring its factory settings can't be done on Windows yet."
 msgstr ""
