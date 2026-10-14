@@ -1115,3 +1115,97 @@ test "the marker is the new shell's neither pen nor row" {
     const first = t.screens.get(.primary).?.pages.getCell(.{ .active = .{ .x = 0, .y = 0 } }).?;
     try testing.expectEqual(@as(u16, 0), first.cell.style_id);
 }
+
+/// The viewport's top row, counted from the top of everything, and whether
+/// a screenful of rows is under it -- the thing a viewport has to have,
+/// asked through what any build can ask (the list's own check is compiled
+/// out of release builds).
+fn testViewportHasItsRows(t: *Terminal) !usize {
+    const pages = &t.screens.get(.primary).?.pages;
+    const top = pages.pointFromPin(.screen, pages.getTopLeft(.viewport)).?.screen.y;
+    try testing.expect(top + pages.rows <= pages.total_rows);
+    try testing.expect(pages.getBottomRight(.viewport) != null);
+    return top;
+}
+
+// **A reopened pane is made at one size and given its real one a moment
+// later** (`Termio` builds the terminal before the host has laid the pane
+// out), and it is reopened with its viewport scrolled up to the restored
+// tail. Growing rows with the viewport pinned that close to the bottom
+// failed the page list's integrity check halfway through, on a debug build
+// a panic (#1499: the two taller panes of a project of four, 3 times of 3).
+//
+// Every size here is one a pane of that project was given, or its
+// neighbour: taller and narrower, taller alone, taller and wider, narrower
+// alone (reflow needs more rows than there are), and smaller both ways.
+test "a reopened pane made taller and narrower (#1499)" {
+    try testReopenedPaneResized(36, 27);
+}
+
+test "a reopened pane made taller (#1499)" {
+    try testReopenedPaneResized(49, 27);
+}
+
+test "a reopened pane made taller and wider (#1499)" {
+    try testReopenedPaneResized(54, 27);
+}
+
+test "a reopened pane made narrower (#1499)" {
+    try testReopenedPaneResized(16, 17);
+}
+
+test "a reopened pane made much narrower and taller (#1499)" {
+    try testReopenedPaneResized(16, 27);
+}
+
+test "a reopened pane made smaller both ways (#1499)" {
+    try testReopenedPaneResized(17, 12);
+}
+
+fn testReopenedPaneResized(cols: u16, rows: u16) !void {
+    const size = [2]u16{ cols, rows };
+    {
+        var buf: [128]u8 = undefined;
+        const path = try testPath(&buf);
+        defer testCleanup(path);
+
+        // A little history, and three lines on a cleared screen: what a
+        // shell that has run a few commands looks like, and the shape that
+        // leaves the viewport *pinned* after the restore. With no history,
+        // or a full screen, it is at the top instead and nothing here is
+        // being tested.
+        var source = try testSource(49, 17, 19);
+        defer source.deinit(testing.allocator);
+        {
+            var ss = source.vtStream();
+            defer ss.deinit();
+            ss.nextSlice("\x1b[H\x1b[2Jone\r\ntwo\r\nthree");
+        }
+        try testSave(&source, path);
+
+        var t = try testFresh(49, 17);
+        defer t.deinit(testing.allocator);
+        var s = t.vtStream();
+        defer s.deinit();
+        try testing.expect(restore(testing.allocator, testing.io, path, &t, &s) == .restored);
+
+        const screen = t.screens.get(.primary).?;
+        try testing.expectEqual(.pin, std.meta.activeTag(screen.pages.viewport));
+        _ = try testViewportHasItsRows(&t);
+        const before = try screen.dumpStringAllocUnwrapped(testing.allocator, .{ .screen = .{} });
+        defer testing.allocator.free(before);
+
+        try t.resize(testing.allocator, .{ .cols = size[0], .rows = size[1] });
+
+        // Where it ends up is somewhere a viewport can be, and not a line
+        // of what was restored is gone or changed.
+        _ = try testViewportHasItsRows(&t);
+        const after = try screen.dumpStringAllocUnwrapped(testing.allocator, .{ .screen = .{} });
+        defer testing.allocator.free(after);
+        try testing.expectEqualStrings(
+            std.mem.trimEnd(u8, before, " \n"),
+            std.mem.trimEnd(u8, after, " \n"),
+        );
+        try testing.expect(std.mem.indexOf(u8, after, "three") != null);
+    }
+}

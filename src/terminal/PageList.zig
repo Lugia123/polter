@@ -1271,6 +1271,19 @@ pub const Resize = struct {
 /// TODO: docs
 pub fn resize(self: *PageList, opts: Resize) Allocator.Error!void {
     defer self.assertIntegrity();
+
+    // **The list is checked once, when the resize is done, not after each
+    // step of it** (#1499). Halfway through, it is not meant to be whole:
+    // `rows` is set to the new height before the rows are added one `grow`
+    // at a time, and a viewport pinned in history has a screenful under it
+    // again only once they all are -- or the pin turns out to be in the
+    // active area and the viewport is put back there after the growing.
+    // `grow` checks the whole list as it returns, so a pane scrolled up a
+    // few lines panicked the moment it was made taller. Nothing a step
+    // does reads the half-done state; the deferred check above runs after
+    // this one resumes, on the finished list.
+    self.pauseIntegrityChecks(true);
+    defer self.pauseIntegrityChecks(false);
     self.resize_count += 1;
 
     // Resizing forces all nodes to be decompressed today so we need to
@@ -14885,6 +14898,72 @@ test "PageList resize (no reflow) more rows" {
             .y = 0,
         } }, pt);
     }
+}
+
+// Scroll up a few lines, then make the window taller. The rows are added
+// one `grow` at a time, each of which checks the whole list, and until the
+// last of them a viewport pinned this close to the bottom does not have a
+// screenful under it (#1499).
+test "PageList resize more rows with the viewport pinned just above the active area (#1499)" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // No cursor: scrollback is pulled down and the list grows to exactly
+    // the new height. The pin is in the active area by then, so the
+    // viewport is the active area.
+    {
+        var s = try init(alloc, .{ .cols = 10, .rows = 5 });
+        defer s.deinit();
+        try s.growRows(3);
+        s.scroll(.{ .delta_row = -2 });
+        try testing.expectEqual(.pin, std.meta.activeTag(s.viewport));
+
+        try s.resize(.{ .rows = 12, .reflow = false });
+        try testing.expectEqual(@as(usize, 12), s.rows);
+        try testing.expectEqual(@as(usize, 12), s.totalRows());
+        try testing.expectEqual(.active, std.meta.activeTag(s.viewport));
+        try testing.expectEqual(point.Point{ .screen = .{ .x = 0, .y = 0 } }, s.pointFromPin(.screen, s.getTopLeft(.viewport)).?);
+    }
+
+    // A cursor above the bottom row: nothing is pulled down, the rows are
+    // added under the screen, and the viewport stays on the row it was on
+    // -- which has a screenful under it again only once they all are.
+    {
+        var s = try init(alloc, .{ .cols = 10, .rows = 5 });
+        defer s.deinit();
+        try s.growRows(3);
+        s.scroll(.{ .delta_row = -2 });
+        try testing.expectEqual(.pin, std.meta.activeTag(s.viewport));
+        try testing.expectEqual(point.Point{ .screen = .{ .x = 0, .y = 1 } }, s.pointFromPin(.screen, s.getTopLeft(.viewport)).?);
+
+        try s.resize(.{ .rows = 12, .reflow = false, .cursor = .{ .x = 0, .y = 0 } });
+        try testing.expectEqual(@as(usize, 12), s.rows);
+        try testing.expectEqual(@as(usize, 15), s.totalRows());
+        try testing.expectEqual(.pin, std.meta.activeTag(s.viewport));
+        try testing.expectEqual(point.Point{ .screen = .{ .x = 0, .y = 1 } }, s.pointFromPin(.screen, s.getTopLeft(.viewport)).?);
+    }
+}
+
+// `resize` pauses the integrity checks while it works and checks the
+// finished list as it returns (#1499). If the pause outlived the resize,
+// every check after it would pass without looking, and nothing would say
+// so: the pause has to be over, and the finished list whole.
+test "PageList resize checks the finished list, and leaves the checks running (#1499)" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s = try init(alloc, .{ .cols = 10, .rows = 5 });
+    defer s.deinit();
+    try s.growRows(3);
+    s.scroll(.{ .delta_row = -2 });
+
+    try s.resize(.{ .cols = 7, .rows = 12, .reflow = true });
+    try s.resize(.{ .cols = 13, .rows = 4, .reflow = true });
+    try s.resize(.{ .rows = 9, .reflow = false });
+    if (comptime build_options.slow_runtime_safety) {
+        try testing.expectEqual(@as(usize, 0), s.pause_integrity_checks);
+    }
+    try s.verifyIntegrity();
 }
 
 test "PageList resize (no reflow) more rows with history" {

@@ -7532,6 +7532,75 @@ test "Screen: resize more rows with populated scrollback" {
     }
 }
 
+// Scroll up a few lines, then resize. Whatever the resize does to the
+// rows, the viewport is pinned in history while it does it, and the page
+// list's integrity check -- run after every row it adds -- used to find
+// the pin without a screenful under it before the resize had got round
+// to putting the viewport back on the active area. On a debug build that
+// is a panic (#1499: 49x17, 21 lines, up 3, then 49x27).
+//
+// Taller alone, taller and narrower, taller and wider, and narrower alone
+// (the lines wrap, so reflow needs more rows than there are).
+test "Screen: resize taller with the viewport scrolled up a few lines (#1499)" {
+    try testResizeScrolledUp(49, 27);
+}
+
+test "Screen: resize taller and narrower with the viewport scrolled up a few lines (#1499)" {
+    try testResizeScrolledUp(36, 27);
+}
+
+test "Screen: resize taller and wider with the viewport scrolled up a few lines (#1499)" {
+    try testResizeScrolledUp(54, 27);
+}
+
+test "Screen: resize narrower with the viewport scrolled up a few lines (#1499)" {
+    try testResizeScrolledUp(16, 17);
+}
+
+fn testResizeScrolledUp(cols: size.CellCountInt, rows: size.CellCountInt) !void {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    const new = [2]size.CellCountInt{ cols, rows };
+    {
+        var s = try init(io, alloc, .{ .cols = 49, .rows = 17, .max_scrollback_bytes = null });
+        defer s.deinit();
+        for (0..21) |i| {
+            var buf: [64]u8 = undefined;
+            const line = try std.fmt.bufPrint(&buf, "{s}line {d:0>2}: the quick brown fox", .{
+                if (i == 0) "" else "\n",
+                i,
+            });
+            try s.testWriteString(line);
+        }
+        try testing.expectEqual(@as(usize, 21), s.pages.total_rows);
+        s.scroll(.{ .delta_row = -3 });
+        try testing.expectEqual(.pin, std.meta.activeTag(s.pages.viewport));
+
+        const before = try s.dumpStringAllocUnwrapped(alloc, .{ .screen = .{} });
+        defer alloc.free(before);
+
+        try s.resize(.{ .cols = new[0], .rows = new[1] });
+        try testing.expectEqual(new[0], s.pages.cols);
+        try testing.expectEqual(new[1], s.pages.rows);
+
+        // The viewport has a screenful under it, asked the way a release
+        // build can ask (the list's own check is compiled out of those).
+        const top = s.pages.pointFromPin(.screen, s.pages.getTopLeft(.viewport)).?.screen.y;
+        try testing.expect(top + s.pages.rows <= s.pages.total_rows);
+        try testing.expect(s.pages.getBottomRight(.viewport) != null);
+
+        // And not a line is lost or changed.
+        const after = try s.dumpStringAllocUnwrapped(alloc, .{ .screen = .{} });
+        defer alloc.free(after);
+        try testing.expectEqualStrings(
+            std.mem.trimEnd(u8, before, " \n"),
+            std.mem.trimEnd(u8, after, " \n"),
+        );
+    }
+}
+
 test "Screen: resize more cols no reflow" {
     const testing = std.testing;
     const alloc = testing.allocator;
