@@ -42,6 +42,31 @@ enum SurfaceDragGrip {
         return titled ? .title : .handle
     }
 
+    /// What a pane's title does, when the pane has one.
+    enum TitleGrip: Equatable {
+        /// Held and moved, it drags the pane; clicked, it focuses it.
+        case drag
+        /// Clicked, it focuses the pane. It does not drag, and the pointer
+        /// over it is not a hand: nothing suggests a drag that will not come.
+        case click
+        /// Nothing at all.
+        case none
+    }
+
+    /// What the title of a titled pane does (task 1514).
+    ///
+    /// **`drag-handle` decides whether a pane is dragged, not whether its
+    /// title can be clicked.** The click used to ride on the drag layer, so
+    /// with `never` -- and with `auto` in a fullscreen tab of one pane --
+    /// there was no layer and a click on the title did nothing, while the
+    /// same click with `auto` focused the pane. Only a lent pane's
+    /// placeholder takes no click: its terminal is in the control room.
+    static func titleGrip(setting: Setting, lent: Bool, fullscreen: Bool, split: Bool) -> TitleGrip {
+        guard !lent else { return .none }
+        return place(setting: setting, titled: true, lent: false, fullscreen: fullscreen, split: split) == .title
+            ? .drag : .click
+    }
+
     /// How far the pointer has to move, held down on a title, before it is
     /// a drag and not a click. The handle has none: it does nothing else.
     static let titleDragThreshold: CGFloat = 4

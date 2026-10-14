@@ -3684,9 +3684,17 @@ pub fn restorePersona(self: *App, key: []const u8, everything: bool) !void {
     self.ensurePersonas();
     const path = try poltergeistpkg.PersonaStore.defaultPath(self.alloc);
     defer self.alloc.free(path);
-    try self.personas.restore(global.io(), path, key, everything);
+    // The skills' directories, because restoring everything sets every
+    // person's copy of a shipped skill aside too (task 1514).
+    const dirs = self.skillDirs();
+    defer if (dirs.config_root) |d| self.alloc.free(d);
+    try self.personas.restore(global.io(), path, key, everything, .{
+        .config_root = dirs.config_root,
+        .resources = dirs.resources,
+    });
     self.personasChanged();
-    // Moving the whole file aside takes the skills' records with it.
+    // Moving the whole file aside takes the skills' records with it, and
+    // their copies (`skill_store.setAllAside`).
     if (everything) self.skillsChanged();
 }
 

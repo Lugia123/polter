@@ -188,6 +188,15 @@ def visible_literals(line: str):
 STRINGS_ENTRY = re.compile(r'^\s*"((?:[^"\\]|\\.)*)"\s*=\s*"((?:[^"\\]|\\.)*)"\s*;', re.M)
 XIB_TITLE = re.compile(r'<menuItem\b[^>]*?\btitle="([^"]*)"[^>]*?\bid="([^"]*)"')
 XIB_TITLE_REV = re.compile(r'<menuItem\b[^>]*?\bid="([^"]*)"[^>]*?\btitle="([^"]*)"')
+# **The submenus, too** (task 1514). The menu bar shows a top-level item by
+# its submenu's title -- the `<menu key="submenu" title=...>` -- not by the
+# `<menuItem>` that holds it. Every one of those items had its Chinese and
+# every submenu had none, so a Chinese build showed File/Edit/View along the
+# menu bar over menus that were Chinese inside, and the item regexes above
+# read the items only. Attributes in any order, so the tag is matched whole
+# and taken apart after.
+XIB_SUBMENU = re.compile(r'<menu\b[^>]*\bkey="submenu"[^>]*>')
+XIB_ATTR = re.compile(r'\b(title|id)="([^"]*)"')
 
 # Each entry is the literal and why it is not translatable. Adding one
 # without a reason is how this list stops meaning anything.
@@ -380,6 +389,17 @@ def main() -> int:
         text = xib.read_text(encoding="utf-8")
         items = {i: t for t, i in XIB_TITLE.findall(text)}
         items.update({i: t for i, t in XIB_TITLE_REV.findall(text)})
+        submenus = 0
+        for tag in XIB_SUBMENU.findall(text):
+            attrs = dict(XIB_ATTR.findall(tag))
+            if "title" in attrs and "id" in attrs:
+                items[attrs["id"]] = attrs["title"]
+                submenus += 1
+        if not submenus:
+            problems.append(
+                "MainMenu.xib: no submenu titles were read, so the menu bar's own "
+                "words are not being watched."
+            )
         if not items:
             problems.append(
                 "MainMenu.xib: no menu items were read, so this check is watching "

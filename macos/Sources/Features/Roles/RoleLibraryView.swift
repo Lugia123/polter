@@ -284,7 +284,7 @@ extension RoleLibraryEditor {
             // so the person is told what that costs first.
             guard confirm(
                 String(localized: "The file that holds your changes can't be read.", comment: "角色库：恢复出厂设置时改动文件读不了，第二次确认的标题"),
-                String(localized: "Restoring will put every official role and skill back to factory settings, not only this one. The file is kept beside the role library, renamed, so nothing in it is lost.", comment: "角色库：恢复出厂设置时改动文件读不了，第二次确认的说明"),
+                String(localized: "Restoring will put every official role and skill back to factory settings, not only this one. The file of your changes and your own copies of official skills are kept where they were, renamed, so nothing in them is lost.", comment: "角色库：恢复出厂设置时改动文件读不了，第二次确认的说明"),
                 button: String(localized: "Restore All", comment: "角色库：把全部官方角色与 skill 恢复出厂设置")) else { return }
             code = library.restore(role.key, everything: true)
         }
@@ -444,7 +444,7 @@ struct RoleLibraryView: View {
             }
             ForEach(shown) { skill in
                 SettingsRow(selected: editor.skill == skill.name) {
-                    HStack(spacing: 6) {
+                    HStack(spacing: OfficialMark.gap) {
                         Text(skill.name).lineLimit(1)
                         OfficialMark()
                         if skill.official.canRestore || (editor.skill == skill.name && editor.isDirty) {
@@ -513,7 +513,7 @@ struct RoleLibraryView: View {
 
     private func roleRow(_ role: Role, unsaved: Bool) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
+            HStack(spacing: OfficialMark.gap) {
                 Text(role.displayName.isEmpty ? role.key : role.displayName)
                     .lineLimit(1)
                 if role.builtin {
@@ -1081,6 +1081,11 @@ struct RoleLibraryView: View {
 /// The mark on a role or a skill Polter ships. Words in a thin outline: a
 /// lock said "cannot be changed", which is no longer what official means.
 struct OfficialMark: View {
+    /// Between a row's name and this mark, and between the mark and the dot
+    /// that follows it: one number for the role rows and the skill rows,
+    /// which had 4 and 6 (task 1514).
+    static let gap: CGFloat = 6
+
     var body: some View {
         Text(String(localized: "Official", comment: "角色库：官方角色与官方 skill 的标志"))
             .font(SettingsFont.minimum)

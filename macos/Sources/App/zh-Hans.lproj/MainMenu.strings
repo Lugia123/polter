@@ -115,3 +115,17 @@
 
 /* 重开关掉的标签页 */
 "rt1-Re-Op1.title" = "重新打开关闭的标签页";
+
+/* 子菜单自己的标题（#1514）。菜单栏上显示的是这些，不是上面装着它们的那个 menuItem 的标题；
+   只译了 menuItem 时，中文系统的菜单栏是 File/Edit/View，点开却是中文。两边要同一个词。 */
+"aQe-vS-j8Q.title" = "服务";
+"bib-Uj-vzu.title" = "文件";
+"iU4-OB-ccf.title" = "编辑";
+"vPo-Sd-cTP.title" = "查找";
+"m6z-2H-VW7.title" = "显示";
+"pg0-Mn-Ma2.title" = "智能体";
+"pj0-Mn-Ma2.title" = "项目";
+"Td7-aD-5lo.title" = "窗口";
+"8tg-60-ZSU.title" = "选择分屏";
+"t7T-Ti-0im.title" = "调整分屏大小";
+"F2S-fz-NVQ.title" = "帮助";
