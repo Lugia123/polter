@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-15 03:30+0800\n"
+"POT-Creation-Date: 2026-10-15 04:03+0800\n"
 "PO-Revision-Date: 2026-09-13 10:50+0800\n"
 "Last-Translator: Lukas <134181853+bo2themax@users.noreply.github.com>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -53,7 +53,7 @@ msgstr "本提示将在重载配置后再次出现"
 
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
-#: src/apprt/gtk/class/application.zig:2225 windows/host/src/logs_ui.rs:575
+#: src/apprt/gtk/class/application.zig:2225 windows/host/src/logs_ui.rs:628
 #: windows/host/src/project_picker.rs:258
 #: windows/host/src/project_picker.rs:427 windows/host/src/project_ui.rs:413
 #: windows/host/src/project_ui.rs:453 windows/host/src/projects_ui.rs:634
@@ -251,7 +251,7 @@ msgstr "在新窗口内打开配置"
 msgid "Leave blank to restore the default title."
 msgstr "留空以重置至默认标题。"
 
-#: src/apprt/gtk/ui/1.5/title-dialog.blp:9 windows/host/src/logs_ui.rs:196
+#: src/apprt/gtk/ui/1.5/title-dialog.blp:9 windows/host/src/logs_ui.rs:204
 #: windows/control-room/src/scene.rs:46
 msgid "OK"
 msgstr "确认"
@@ -2238,6 +2238,54 @@ msgstr "允许 agent 截图"
 msgid "Agents may capture the screen with the screenshot tools."
 msgstr "agent 可以用截图工具拍下屏幕。"
 
+#: src/poltergeist/Attention.zig:631
+msgid "Awaiting approval"
+msgstr "等批准"
+
+#: src/poltergeist/Attention.zig:632
+msgid "Awaiting input"
+msgstr "等回答"
+
+#: src/poltergeist/Attention.zig:633
+msgid "Failed"
+msgstr "出错"
+
+#: src/poltergeist/Attention.zig:634
+msgid "Maybe stuck"
+msgstr "疑似卡住"
+
+#: src/poltergeist/Attention.zig:635
+msgid "Done, not looked at"
+msgstr "做完了，没看"
+
+#: src/poltergeist/Attention.zig:636
+msgid "Working"
+msgstr "在干活"
+
+#: src/poltergeist/Attention.zig:637
+msgid "Stopped, cause unknown"
+msgstr "停了，原因不明"
+
+#: src/poltergeist/Attention.zig:638
+msgid "Screen unreadable"
+msgstr "读不到屏幕"
+
+#: src/poltergeist/Attention.zig:639
+msgid "Unattended"
+msgstr "无人看管"
+
+#: src/poltergeist/Attention.zig:640
+msgid "Set aside"
+msgstr "先放着"
+
+#: src/poltergeist/Attention.zig:641
+msgid "Off duty"
+msgstr "下班"
+
+#: src/poltergeist/Attention.zig:651
+msgid "Held"
+msgstr "被按住"
+
 # U+2026, action prompt_tab_title: opens the title overlay (menu.rs, ctxmenu.rs). "Rename Tab..." with three ASCII dots is a DIFFERENT action, rename_tab, in-place on the tab strip. Do not merge them.
 #. TRANSLATORS: U+2026, not three ASCII dots. This opens the title
 #. overlay. "Rename Tab..." with three dots is a DIFFERENT action
@@ -2322,12 +2370,12 @@ msgstr "深色"
 msgid "The screenshot folder could not be worked out."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1510 windows/host/src/logs_ui.rs:624
+#: windows/host/src/general_ui.rs:1510 windows/host/src/logs_ui.rs:677
 #: windows/host/src/projects_ui.rs:1010
 msgid "Explorer could not be started."
 msgstr "资源管理器打不开。"
 
-#: windows/host/src/general_ui.rs:1608 windows/host/src/logs_ui.rs:557
+#: windows/host/src/general_ui.rs:1608 windows/host/src/logs_ui.rs:607
 msgid "Saved to the config file."
 msgstr "已写入配置文件。"
 
@@ -2454,19 +2502,19 @@ msgstr ""
 "启动 Polter 的环境里已设 LANG={}，Polter 会优先用它，而不是这里的选择。要让这"
 "个选择生效，请先清掉 LANG，再重新启动 Polter。"
 
-#: windows/host/src/logs_ui.rs:192
+#: windows/host/src/logs_ui.rs:200
 msgid "Compact…"
 msgstr "压实…"
 
-#: windows/host/src/logs_ui.rs:192
+#: windows/host/src/logs_ui.rs:200
 msgid "Clear…"
 msgstr "清理…"
 
-#: windows/host/src/logs_ui.rs:305 windows/host/src/logs_ui.rs:545
+#: windows/host/src/logs_ui.rs:341 windows/host/src/logs_ui.rs:595
 msgid "No limit"
 msgstr "不限"
 
-#: windows/host/src/logs_ui.rs:424
+#: windows/host/src/logs_ui.rs:469
 msgid ""
 "This is the first clearing since the upgrade, and nothing is deleted until "
 "you choose OK. You can change the settings below first; a change counts as "
@@ -2475,67 +2523,67 @@ msgstr ""
 "升级后的第一次清理，点「好」之后才会删除。也可以先在下面调整保留设置，改过即"
 "按新设置清理。"
 
-#: windows/host/src/logs_ui.rs:443
+#: windows/host/src/logs_ui.rs:488
 msgid "Polter has no records to show yet."
 msgstr "还没有可以显示的记录。"
 
-#: windows/host/src/logs_ui.rs:454 windows/control-room/src/scene.rs:45
+#: windows/host/src/logs_ui.rs:499 windows/control-room/src/scene.rs:45
 msgid "The new retention settings will clear %@ of old records"
 msgstr "按新的保留设置，将清理 %@ 的旧记录"
 
-#: windows/host/src/logs_ui.rs:461
+#: windows/host/src/logs_ui.rs:506
 msgid ""
 "%1$@ in all, in %2$@. Past the limits, cleared when Polter starts and every "
 "hour after."
 msgstr "共 %1$@，在 %2$@。超过上限的，启动时和之后每小时自动清理。"
 
-#: windows/host/src/logs_ui.rs:464
+#: windows/host/src/logs_ui.rs:509
 msgid "Kept Going Round"
 msgstr "循环保存"
 
-#: windows/host/src/logs_ui.rs:464
+#: windows/host/src/logs_ui.rs:509
 msgid "Past the days or the total, the oldest go first"
 msgstr "超过天数或总量，从最旧的删起"
 
-#: windows/host/src/logs_ui.rs:465
+#: windows/host/src/logs_ui.rs:510
 msgid "Kept for Good"
 msgstr "永久保存"
 
-#: windows/host/src/logs_ui.rs:465
+#: windows/host/src/logs_ui.rs:510
 msgid "Deleted only when you choose Clear"
 msgstr "只在你点「清理」时删除"
 
-#: windows/host/src/logs_ui.rs:474
+#: windows/host/src/logs_ui.rs:524
 msgid "Fixed at %lld days"
 msgstr "固定 %lld 天"
 
-#: windows/host/src/logs_ui.rs:475
+#: windows/host/src/logs_ui.rs:525
 msgid "Kept for good"
 msgstr "永久保存"
 
-#: windows/host/src/logs_ui.rs:483
+#: windows/host/src/logs_ui.rs:533
 msgid "Not by days"
 msgstr "不按天数"
 
-#: windows/host/src/logs_ui.rs:485
+#: windows/host/src/logs_ui.rs:535
 msgid "days"
 msgstr "天"
 
-#: windows/host/src/logs_ui.rs:549
+#: windows/host/src/logs_ui.rs:599
 msgid "Write a whole number, or leave it empty for no limit."
 msgstr "请填整数；留空表示不限。"
 
-#: windows/host/src/logs_ui.rs:594
+#: windows/host/src/logs_ui.rs:647
 msgid "Cleared %@."
 msgstr "已清理 %@。"
 
-#: windows/host/src/logs_ui.rs:596
+#: windows/host/src/logs_ui.rs:649
 msgid ""
 "A project file could not be read, so no shell history was cleared: it might "
 "have named some of it."
 msgstr "有项目文件读不了，所以一条 Shell 历史都没清：它可能用着其中一些。"
 
-#: windows/host/src/logs_ui.rs:598
+#: windows/host/src/logs_ui.rs:651
 msgid "Nothing was cleared: Polter's core refused."
 msgstr "什么都没清：Polter 的核心拒绝了。"
 
@@ -3888,128 +3936,128 @@ msgstr "高级"
 msgid "About"
 msgstr "关于"
 
-#: windows/settings-shell/src/logs.rs:154
+#: windows/settings-shell/src/logs.rs:180
 msgid "Terminal Records · In Groups"
 msgstr "终端记录 · 群里的"
 
-#: windows/settings-shell/src/logs.rs:155
+#: windows/settings-shell/src/logs.rs:181
 msgid "Terminal Records · In Projects"
 msgstr "终端记录 · 项目里的"
 
-#: windows/settings-shell/src/logs.rs:156
+#: windows/settings-shell/src/logs.rs:182
 msgid "Terminal Records · Other"
 msgstr "终端记录 · 其它"
 
-#: windows/settings-shell/src/logs.rs:157
+#: windows/settings-shell/src/logs.rs:183
 msgid "Logs"
 msgstr "日志"
 
-#: windows/settings-shell/src/logs.rs:158
+#: windows/settings-shell/src/logs.rs:184
 msgid "Screenshots"
 msgstr "截图"
 
-#: windows/settings-shell/src/logs.rs:159
+#: windows/settings-shell/src/logs.rs:185
 msgid "Group Rename Backups"
 msgstr "改群名的备份"
 
-#: windows/settings-shell/src/logs.rs:160
+#: windows/settings-shell/src/logs.rs:186
 msgid "Group Chat Records"
 msgstr "群聊记录"
 
-#: windows/settings-shell/src/logs.rs:161
+#: windows/settings-shell/src/logs.rs:187
 msgid "Task Records"
 msgstr "任务记录"
 
-#: windows/settings-shell/src/logs.rs:162
+#: windows/settings-shell/src/logs.rs:188
 msgid "Shell History"
 msgstr "Shell 历史"
 
-#: windows/settings-shell/src/logs.rs:163
+#: windows/settings-shell/src/logs.rs:189
 msgid "Archive Plugin's Copy"
 msgstr "归档插件写的副本"
 
-#: windows/settings-shell/src/logs.rs:169
+#: windows/settings-shell/src/logs.rs:195
 msgid ""
 "What terminals printed while working in a group; supervisors look back "
 "through it"
 msgstr "在群里工作期间终端滚出屏幕的内容，总管可以回看"
 
-#: windows/settings-shell/src/logs.rs:170
+#: windows/settings-shell/src/logs.rs:196
 msgid "In a project's tabs, while in no group"
 msgstr "在项目的标签页里、不在群里时的内容"
 
-#: windows/settings-shell/src/logs.rs:171
+#: windows/settings-shell/src/logs.rs:197
 msgid "Terminals in no group and no project"
 msgstr "不在群也不在项目里的终端"
 
-#: windows/settings-shell/src/logs.rs:172
+#: windows/settings-shell/src/logs.rs:198
 msgid "Plugins' older logs, crash reports, hourly group snapshots"
 msgstr "插件的旧日志、崩溃报告、每小时的群快照"
 
-#: windows/settings-shell/src/logs.rs:173
+#: windows/settings-shell/src/logs.rs:199
 msgid "Polter's screenshots; nothing else in the folder is touched"
 msgstr "Polter 截的图，截图文件夹里别的文件不动"
 
-#: windows/settings-shell/src/logs.rs:174
+#: windows/settings-shell/src/logs.rs:200
 msgid "Old files a rename set aside, only to finish an interrupted one"
 msgstr "改名时换下的旧文件，只为续完被打断的改名"
 
-#: windows/settings-shell/src/logs.rs:175
+#: windows/settings-shell/src/logs.rs:201
 msgid "What each group said, day by day"
 msgstr "每个群每天说了什么"
 
-#: windows/settings-shell/src/logs.rs:176
+#: windows/settings-shell/src/logs.rs:202
 msgid "The task panel's history; compacting keeps where each task stands"
 msgstr "任务面板的变更历史；压实只留当前状态"
 
-#: windows/settings-shell/src/logs.rs:177
+#: windows/settings-shell/src/logs.rs:203
 msgid "Each pane's commands; clearing removes only what no project uses"
 msgstr "各分格的命令历史；清理只删没有项目用到的"
 
-#: windows/settings-shell/src/logs.rs:178
+#: windows/settings-shell/src/logs.rs:204
 msgid "The archive plugin's own copy of the chat, not Polter's records"
 msgstr "归档插件另存的群聊，不是 Polter 自己的记录"
 
-#: windows/settings-shell/src/logs.rs:196
+#: windows/settings-shell/src/logs.rs:222
 msgid "%1$@ (%2$lld files) will be deleted. This cannot be undone."
 msgstr "将删除 %1$@（%2$lld 个文件），无法恢复。"
 
-#: windows/settings-shell/src/logs.rs:197
+#: windows/settings-shell/src/logs.rs:223
 msgid "After this, the AI can no longer find them when it looks back."
 msgstr "删除后，AI 回顾时再也找不到它们。"
 
-#: windows/settings-shell/src/logs.rs:198
+#: windows/settings-shell/src/logs.rs:224
 msgid "Today's file that is still being written is kept."
 msgstr "今天正在写的文件不会删。"
 
-#: windows/settings-shell/src/logs.rs:199
+#: windows/settings-shell/src/logs.rs:225
 msgid "Clear “%@”?"
 msgstr "清理「%@」？"
 
-#: windows/settings-shell/src/logs.rs:200
+#: windows/settings-shell/src/logs.rs:226
 msgid "Clear Now"
 msgstr "清理"
 
-#: windows/settings-shell/src/logs.rs:203
+#: windows/settings-shell/src/logs.rs:229
 msgid "These are what terminals printed while working in a group."
 msgstr "这些是终端在群里工作期间滚出屏幕的内容。"
 
-#: windows/settings-shell/src/logs.rs:204
+#: windows/settings-shell/src/logs.rs:230
 msgid "These are what terminals printed in a project's tabs while in no group."
 msgstr "这些是终端在项目标签页里、不在群里时滚出屏幕的内容。"
 
-#: windows/settings-shell/src/logs.rs:205
+#: windows/settings-shell/src/logs.rs:231
 msgid ""
 "These are what terminals printed while in no group and no project's tab."
 msgstr "这些是不在任何群、也不在项目标签页里的终端滚出屏幕的内容。"
 
-#: windows/settings-shell/src/logs.rs:206
+#: windows/settings-shell/src/logs.rs:232
 msgid ""
 "They are only for finding out what went wrong; nothing Polter does depends "
 "on them."
 msgstr "它们只用来排查问题，Polter 的功能不依赖它们。"
 
-#: windows/settings-shell/src/logs.rs:207
+#: windows/settings-shell/src/logs.rs:233
 msgid ""
 "Only Polter's own screenshots go; nothing else in the folder is touched. The "
 "AI can no longer list or open them."
@@ -4017,39 +4065,39 @@ msgstr ""
 "只删 Polter 自己截的图，截图文件夹里别的文件不动。AI 从此列不出、打不开这些截"
 "图。"
 
-#: windows/settings-shell/src/logs.rs:208
+#: windows/settings-shell/src/logs.rs:234
 msgid ""
 "They are only needed to finish a rename that was interrupted, and none is "
 "under way."
 msgstr "它们只在改名被打断时用来续完，现在没有进行中的改名。"
 
-#: windows/settings-shell/src/logs.rs:210
+#: windows/settings-shell/src/logs.rs:236
 msgid "Clear the group chat records?"
 msgstr "清理群聊记录？"
 
-#: windows/settings-shell/src/logs.rs:212
+#: windows/settings-shell/src/logs.rs:238
 msgid ""
 "Every group's chat before today will be deleted, at most %@. This cannot be "
 "undone."
 msgstr "将删除所有群今天以前的聊天记录（最多 %@），无法恢复。"
 
-#: windows/settings-shell/src/logs.rs:213
+#: windows/settings-shell/src/logs.rs:239
 msgid ""
 "The list of groups, their notes, the last supervisor and project ties are "
 "kept."
 msgstr "群列表、群简介、上次的总管、项目绑定都保留。"
 
-#: windows/settings-shell/src/logs.rs:214
+#: windows/settings-shell/src/logs.rs:240
 msgid ""
 "The chat page and the AI reading back a group can no longer reach messages "
 "before today."
 msgstr "聊天页和 AI 回读群聊时，从此翻不到今天以前的消息。"
 
-#: windows/settings-shell/src/logs.rs:219
+#: windows/settings-shell/src/logs.rs:245
 msgid "Compact the task records?"
 msgstr "压实任务记录？"
 
-#: windows/settings-shell/src/logs.rs:221
+#: windows/settings-shell/src/logs.rs:247
 msgid ""
 "Each task keeps only where it stands now: title, owner, progress, open or "
 "closed. The history of changes before today, at most %@, will be deleted. "
@@ -4058,42 +4106,42 @@ msgstr ""
 "每个任务只留下当前状态：标题、负责人、进度、是否关闭。今天以前的变更历史（最"
 "多 %@）将被删除，无法恢复。"
 
-#: windows/settings-shell/src/logs.rs:222
+#: windows/settings-shell/src/logs.rs:248
 msgid "The task panel is unchanged and task numbers stay the same."
 msgstr "任务面板不受影响，任务号不变。"
 
-#: windows/settings-shell/src/logs.rs:223
+#: windows/settings-shell/src/logs.rs:249
 msgid ""
 "The history of task changes and the statistics page will no longer show "
 "events before today."
 msgstr "任务的变更历史和统计页从此看不到今天以前的事件。"
 
-#: windows/settings-shell/src/logs.rs:225
+#: windows/settings-shell/src/logs.rs:251
 msgid "Compact"
 msgstr "压实"
 
-#: windows/settings-shell/src/logs.rs:228
+#: windows/settings-shell/src/logs.rs:254
 msgid "Clear shell history?"
 msgstr "清理 Shell 历史？"
 
-#: windows/settings-shell/src/logs.rs:230
+#: windows/settings-shell/src/logs.rs:256
 msgid ""
 "History files no saved project and no open pane uses will be deleted, at "
 "most %@. This cannot be undone."
 msgstr ""
 "将删除没有已保存项目、也没有打开着的分格在用的历史文件（最多 %@），无法恢复。"
 
-#: windows/settings-shell/src/logs.rs:231
+#: windows/settings-shell/src/logs.rs:257
 msgid "Panes opened from a project, and panes open now, keep their history."
 msgstr "从项目打开的分格、现在开着的分格，历史都保留。"
 
-#: windows/settings-shell/src/logs.rs:238
+#: windows/settings-shell/src/logs.rs:264
 msgid ""
 "The archive plugin's copies before today will be deleted, at most %@. This "
 "cannot be undone."
 msgstr "将删除归档插件今天以前的副本（最多 %@），无法恢复。"
 
-#: windows/settings-shell/src/logs.rs:239
+#: windows/settings-shell/src/logs.rs:265
 msgid ""
 "This is the archive plugin's own copy of the chat; Polter's chat records are "
 "not touched."

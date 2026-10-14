@@ -365,7 +365,7 @@ mod tests {
     fn the_title_is_the_terminals_own_name_glyph_and_word() {
         let all = terminals();
         let b = drawn(Some(WORKER), "not this", SPLIT, Some(&all)).unwrap();
-        assert_eq!(b.title, title("web-app worker", Shown::NeedsYou, "等批准"));
+        assert_eq!(b.title, title("web-app worker", Shown::NeedsYou, "Awaiting approval"));
         // Not the first one listed, and not another terminal's.
         let c = drawn(Some(SHELL), "not this", SPLIT, Some(&all)).unwrap();
         assert_eq!(c.title, title("zsh", Shown::None, ""));
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn an_ordinary_terminal_that_waits_says_so() {
         let c = drawn(Some(WAITING_SHELL), "", SPLIT, Some(&terminals()));
-        assert_eq!(c, Some(Drawn { wears: Wears::Plain, title: title("zsh — ~/work", Shown::NeedsYou, "等批准") }));
+        assert_eq!(c, Some(Drawn { wears: Wears::Plain, title: title("zsh — ~/work", Shown::NeedsYou, "Awaiting approval") }));
     }
 
     // ---- alone in its tab
@@ -433,7 +433,7 @@ mod tests {
         let all = snapshot::decode(&old).unwrap().terminals;
         assert!(all.iter().all(|t| t.pane.is_none()));
         let d = drawn(Some(SUPERVISOR), "", SPLIT, Some(&all));
-        assert_eq!(d, Some(Drawn { wears: Wears::Plain, title: title("web-app", Shown::NeedsYou, "等批准") }));
+        assert_eq!(d, Some(Drawn { wears: Wears::Plain, title: title("web-app", Shown::NeedsYou, "Awaiting approval") }));
     }
 
     #[test]
@@ -748,11 +748,11 @@ mod tests {
     fn a_held_worker_of_the_fixture_says_held_and_its_status_is_untouched() {
         let all = terminals();
         let held = all.iter().find(|t| t.title == "tokens").unwrap();
-        assert_eq!(held.bar, Some(Bar { shown: BarShown::Held, text: "被按住".to_string() }));
+        assert_eq!(held.bar, Some(Bar { shown: BarShown::Held, text: "Held".to_string() }));
         // What a row or a window tab would draw of it is still its status.
-        assert_eq!((held.shown, held.text.as_str()), (Shown::None, "下班"));
+        assert_eq!((held.shown, held.text.as_str()), (Shown::None, "Off duty"));
         let d = drawn(Some(&held.id), "", SPLIT, Some(&all));
-        assert_eq!(d, Some(Drawn { wears: Wears::Worker, title: Title { name: "tokens".to_string(), shown: BarShown::Held, word: "被按住".to_string() } }));
+        assert_eq!(d, Some(Drawn { wears: Wears::Worker, title: Title { name: "tokens".to_string(), shown: BarShown::Held, word: "Held".to_string() } }));
         let held_ones: Vec<&str> = all.iter().filter(|t| t.bar.as_ref().is_some_and(|b| b.shown == BarShown::Held)).map(|t| t.title.as_str()).collect();
         assert_eq!(held_ones, ["tokens"]);
     }

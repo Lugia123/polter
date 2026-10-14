@@ -196,6 +196,14 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
     xgettext.addArg(config_form_path);
     xgettext.addFileInput(b.path(config_form_path));
 
+    // The control room's words beside each glyph ("Awaiting approval",
+    // "Working", "Held"): the core says which, in English, and each host
+    // says them in the person's language (task 1522). They were Chinese
+    // literals until then, and Chinese in an English window on both hosts.
+    const attention_path = "src/poltergeist/Attention.zig";
+    xgettext.addArg(attention_path);
+    xgettext.addFileInput(b.path(attention_path));
+
     // Add support for localizing our `nautilus` integration
     const xgettext_py = b.addSystemCommand(&.{
         "xgettext",

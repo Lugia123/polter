@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.lugia.polter\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-15 03:30+0800\n"
+"POT-Creation-Date: 2026-10-15 04:03+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -51,7 +51,7 @@ msgstr ""
 
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
-#: src/apprt/gtk/class/application.zig:2225 windows/host/src/logs_ui.rs:575
+#: src/apprt/gtk/class/application.zig:2225 windows/host/src/logs_ui.rs:628
 #: windows/host/src/project_picker.rs:258
 #: windows/host/src/project_picker.rs:427 windows/host/src/project_ui.rs:413
 #: windows/host/src/project_ui.rs:453 windows/host/src/projects_ui.rs:634
@@ -246,7 +246,7 @@ msgstr ""
 msgid "Leave blank to restore the default title."
 msgstr ""
 
-#: src/apprt/gtk/ui/1.5/title-dialog.blp:9 windows/host/src/logs_ui.rs:196
+#: src/apprt/gtk/ui/1.5/title-dialog.blp:9 windows/host/src/logs_ui.rs:204
 #: windows/control-room/src/scene.rs:46
 msgid "OK"
 msgstr ""
@@ -2224,6 +2224,54 @@ msgstr ""
 msgid "Agents may capture the screen with the screenshot tools."
 msgstr ""
 
+#: src/poltergeist/Attention.zig:631
+msgid "Awaiting approval"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:632
+msgid "Awaiting input"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:633
+msgid "Failed"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:634
+msgid "Maybe stuck"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:635
+msgid "Done, not looked at"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:636
+msgid "Working"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:637
+msgid "Stopped, cause unknown"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:638
+msgid "Screen unreadable"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:639
+msgid "Unattended"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:640
+msgid "Set aside"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:641
+msgid "Off duty"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:651
+msgid "Held"
+msgstr ""
+
 #. TRANSLATORS: U+2026, not three ASCII dots. This opens the title
 #. overlay. "Rename Tab..." with three dots is a DIFFERENT action
 #. (rename_tab) that edits the tab strip in place. The two entries look
@@ -2306,12 +2354,12 @@ msgstr ""
 msgid "The screenshot folder could not be worked out."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1510 windows/host/src/logs_ui.rs:624
+#: windows/host/src/general_ui.rs:1510 windows/host/src/logs_ui.rs:677
 #: windows/host/src/projects_ui.rs:1010
 msgid "Explorer could not be started."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1608 windows/host/src/logs_ui.rs:557
+#: windows/host/src/general_ui.rs:1608 windows/host/src/logs_ui.rs:607
 msgid "Saved to the config file."
 msgstr ""
 
@@ -2430,86 +2478,86 @@ msgid ""
 "and start Polter again."
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:192
+#: windows/host/src/logs_ui.rs:200
 msgid "Compact…"
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:192
+#: windows/host/src/logs_ui.rs:200
 msgid "Clear…"
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:305 windows/host/src/logs_ui.rs:545
+#: windows/host/src/logs_ui.rs:341 windows/host/src/logs_ui.rs:595
 msgid "No limit"
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:424
+#: windows/host/src/logs_ui.rs:469
 msgid ""
 "This is the first clearing since the upgrade, and nothing is deleted until "
 "you choose OK. You can change the settings below first; a change counts as "
 "agreeing."
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:443
+#: windows/host/src/logs_ui.rs:488
 msgid "Polter has no records to show yet."
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:454 windows/control-room/src/scene.rs:45
+#: windows/host/src/logs_ui.rs:499 windows/control-room/src/scene.rs:45
 msgid "The new retention settings will clear %@ of old records"
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:461
+#: windows/host/src/logs_ui.rs:506
 msgid ""
 "%1$@ in all, in %2$@. Past the limits, cleared when Polter starts and every "
 "hour after."
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:464
+#: windows/host/src/logs_ui.rs:509
 msgid "Kept Going Round"
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:464
+#: windows/host/src/logs_ui.rs:509
 msgid "Past the days or the total, the oldest go first"
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:465
+#: windows/host/src/logs_ui.rs:510
 msgid "Kept for Good"
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:465
+#: windows/host/src/logs_ui.rs:510
 msgid "Deleted only when you choose Clear"
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:474
+#: windows/host/src/logs_ui.rs:524
 msgid "Fixed at %lld days"
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:475
+#: windows/host/src/logs_ui.rs:525
 msgid "Kept for good"
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:483
+#: windows/host/src/logs_ui.rs:533
 msgid "Not by days"
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:485
+#: windows/host/src/logs_ui.rs:535
 msgid "days"
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:549
+#: windows/host/src/logs_ui.rs:599
 msgid "Write a whole number, or leave it empty for no limit."
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:594
+#: windows/host/src/logs_ui.rs:647
 msgid "Cleared %@."
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:596
+#: windows/host/src/logs_ui.rs:649
 msgid ""
 "A project file could not be read, so no shell history was cleared: it might "
 "have named some of it."
 msgstr ""
 
-#: windows/host/src/logs_ui.rs:598
+#: windows/host/src/logs_ui.rs:651
 msgid "Nothing was cleared: Polter's core refused."
 msgstr ""
 
@@ -3821,207 +3869,207 @@ msgstr ""
 msgid "About"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:154
+#: windows/settings-shell/src/logs.rs:180
 msgid "Terminal Records · In Groups"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:155
+#: windows/settings-shell/src/logs.rs:181
 msgid "Terminal Records · In Projects"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:156
+#: windows/settings-shell/src/logs.rs:182
 msgid "Terminal Records · Other"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:157
+#: windows/settings-shell/src/logs.rs:183
 msgid "Logs"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:158
+#: windows/settings-shell/src/logs.rs:184
 msgid "Screenshots"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:159
+#: windows/settings-shell/src/logs.rs:185
 msgid "Group Rename Backups"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:160
+#: windows/settings-shell/src/logs.rs:186
 msgid "Group Chat Records"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:161
+#: windows/settings-shell/src/logs.rs:187
 msgid "Task Records"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:162
+#: windows/settings-shell/src/logs.rs:188
 msgid "Shell History"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:163
+#: windows/settings-shell/src/logs.rs:189
 msgid "Archive Plugin's Copy"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:169
+#: windows/settings-shell/src/logs.rs:195
 msgid ""
 "What terminals printed while working in a group; supervisors look back "
 "through it"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:170
+#: windows/settings-shell/src/logs.rs:196
 msgid "In a project's tabs, while in no group"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:171
+#: windows/settings-shell/src/logs.rs:197
 msgid "Terminals in no group and no project"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:172
+#: windows/settings-shell/src/logs.rs:198
 msgid "Plugins' older logs, crash reports, hourly group snapshots"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:173
+#: windows/settings-shell/src/logs.rs:199
 msgid "Polter's screenshots; nothing else in the folder is touched"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:174
+#: windows/settings-shell/src/logs.rs:200
 msgid "Old files a rename set aside, only to finish an interrupted one"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:175
+#: windows/settings-shell/src/logs.rs:201
 msgid "What each group said, day by day"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:176
+#: windows/settings-shell/src/logs.rs:202
 msgid "The task panel's history; compacting keeps where each task stands"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:177
+#: windows/settings-shell/src/logs.rs:203
 msgid "Each pane's commands; clearing removes only what no project uses"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:178
+#: windows/settings-shell/src/logs.rs:204
 msgid "The archive plugin's own copy of the chat, not Polter's records"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:196
+#: windows/settings-shell/src/logs.rs:222
 msgid "%1$@ (%2$lld files) will be deleted. This cannot be undone."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:197
+#: windows/settings-shell/src/logs.rs:223
 msgid "After this, the AI can no longer find them when it looks back."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:198
+#: windows/settings-shell/src/logs.rs:224
 msgid "Today's file that is still being written is kept."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:199
+#: windows/settings-shell/src/logs.rs:225
 msgid "Clear “%@”?"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:200
+#: windows/settings-shell/src/logs.rs:226
 msgid "Clear Now"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:203
+#: windows/settings-shell/src/logs.rs:229
 msgid "These are what terminals printed while working in a group."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:204
+#: windows/settings-shell/src/logs.rs:230
 msgid "These are what terminals printed in a project's tabs while in no group."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:205
+#: windows/settings-shell/src/logs.rs:231
 msgid ""
 "These are what terminals printed while in no group and no project's tab."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:206
+#: windows/settings-shell/src/logs.rs:232
 msgid ""
 "They are only for finding out what went wrong; nothing Polter does depends "
 "on them."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:207
+#: windows/settings-shell/src/logs.rs:233
 msgid ""
 "Only Polter's own screenshots go; nothing else in the folder is touched. The "
 "AI can no longer list or open them."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:208
+#: windows/settings-shell/src/logs.rs:234
 msgid ""
 "They are only needed to finish a rename that was interrupted, and none is "
 "under way."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:210
+#: windows/settings-shell/src/logs.rs:236
 msgid "Clear the group chat records?"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:212
+#: windows/settings-shell/src/logs.rs:238
 msgid ""
 "Every group's chat before today will be deleted, at most %@. This cannot be "
 "undone."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:213
+#: windows/settings-shell/src/logs.rs:239
 msgid ""
 "The list of groups, their notes, the last supervisor and project ties are "
 "kept."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:214
+#: windows/settings-shell/src/logs.rs:240
 msgid ""
 "The chat page and the AI reading back a group can no longer reach messages "
 "before today."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:219
+#: windows/settings-shell/src/logs.rs:245
 msgid "Compact the task records?"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:221
+#: windows/settings-shell/src/logs.rs:247
 msgid ""
 "Each task keeps only where it stands now: title, owner, progress, open or "
 "closed. The history of changes before today, at most %@, will be deleted. "
 "This cannot be undone."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:222
+#: windows/settings-shell/src/logs.rs:248
 msgid "The task panel is unchanged and task numbers stay the same."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:223
+#: windows/settings-shell/src/logs.rs:249
 msgid ""
 "The history of task changes and the statistics page will no longer show "
 "events before today."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:225
+#: windows/settings-shell/src/logs.rs:251
 msgid "Compact"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:228
+#: windows/settings-shell/src/logs.rs:254
 msgid "Clear shell history?"
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:230
+#: windows/settings-shell/src/logs.rs:256
 msgid ""
 "History files no saved project and no open pane uses will be deleted, at "
 "most %@. This cannot be undone."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:231
+#: windows/settings-shell/src/logs.rs:257
 msgid "Panes opened from a project, and panes open now, keep their history."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:238
+#: windows/settings-shell/src/logs.rs:264
 msgid ""
 "The archive plugin's copies before today will be deleted, at most %@. This "
 "cannot be undone."
 msgstr ""
 
-#: windows/settings-shell/src/logs.rs:239
+#: windows/settings-shell/src/logs.rs:265
 msgid ""
 "This is the archive plugin's own copy of the chat; Polter's chat records are "
 "not touched."

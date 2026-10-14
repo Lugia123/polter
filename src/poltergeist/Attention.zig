@@ -21,6 +21,7 @@
 const Attention = @This();
 
 const std = @import("std");
+const i18n = @import("../os/i18n.zig");
 const Bus = @import("Bus.zig");
 const Sampler = @import("Sampler.zig");
 
@@ -617,23 +618,37 @@ pub const Word = enum {
     off_duty,
     none,
 
-    pub fn text(self: Word) []const u8 {
+    /// The words, **in English, as the msgid both hosts translate** (task
+    /// 1522): the mac app in `Localizable.strings`, Windows in `po/`, the
+    /// same way as the settings form's labels. They were Chinese literals,
+    /// and so were Chinese in an English window on both hosts -- the core
+    /// does not know the person's language, so it cannot pick the words in
+    /// it; it can only say which words, and let the host say them.
+    /// `tools/control-room-words-are-translated.py` checks that each one
+    /// has a translation on both hosts.
+    pub fn text(self: Word) [:0]const u8 {
         return switch (self) {
-            .needs_approval => "等批准",
-            .needs_answer => "等回答",
-            .failed => "出错",
-            .suspect_stuck => "疑似卡住",
-            .done_unseen => "做完了，没看",
-            .working => "在干活",
-            .quiet_unknown => "停了，原因不明", // 暂定
-            .screen_unreadable => "读不到屏幕", // 暂定
-            .unattended => "无人看管", // 暂定
-            .snoozed => "先放着", // 暂定
-            .off_duty => "下班", // 暂定
+            .needs_approval => i18n.N_("Awaiting approval"),
+            .needs_answer => i18n.N_("Awaiting input"),
+            .failed => i18n.N_("Failed"),
+            .suspect_stuck => i18n.N_("Maybe stuck"),
+            .done_unseen => i18n.N_("Done, not looked at"),
+            .working => i18n.N_("Working"),
+            .quiet_unknown => i18n.N_("Stopped, cause unknown"), // 暂定
+            .screen_unreadable => i18n.N_("Screen unreadable"), // 暂定
+            .unattended => i18n.N_("Unattended"), // 暂定
+            .snoozed => i18n.N_("Set aside"), // 暂定
+            .off_duty => i18n.N_("Off duty"), // 暂定
             .none => "",
         };
     }
 };
+
+/// What a pane's title says when its terminal is held and nobody is waiting
+/// on it (`ControlRoom.Bar`). Here with the other words so that one file
+/// holds every word the control room draws, for the translators and for
+/// the check that each one has been translated.
+pub const held_text = i18n.N_("Held");
 
 pub const Display = struct {
     shown: Shown,
@@ -1206,16 +1221,16 @@ test "Attention: one supervisor minding three groups is one waiting" {
 test "Attention: the merge table" {
     const Row = struct { Kind, Shown, []const u8 };
     const rows = [_]Row{
-        .{ .needs_approval, .needs_you, "等批准" },
-        .{ .needs_answer, .needs_you, "等回答" },
-        .{ .failed, .trouble, "出错" },
-        .{ .suspect_stuck, .trouble, "疑似卡住" },
-        .{ .done_unseen, .done_unseen, "做完了，没看" },
-        .{ .quiet_unknown, .done_unseen, "停了，原因不明" },
-        .{ .working, .working, "在干活" },
+        .{ .needs_approval, .needs_you, "Awaiting approval" },
+        .{ .needs_answer, .needs_you, "Awaiting input" },
+        .{ .failed, .trouble, "Failed" },
+        .{ .suspect_stuck, .trouble, "Maybe stuck" },
+        .{ .done_unseen, .done_unseen, "Done, not looked at" },
+        .{ .quiet_unknown, .done_unseen, "Stopped, cause unknown" },
+        .{ .working, .working, "Working" },
         .{ .idle, .none, "" },
-        .{ .unattended, .none, "无人看管" },
-        .{ .snoozed, .none, "先放着" },
+        .{ .unattended, .none, "Unattended" },
+        .{ .snoozed, .none, "Set aside" },
     };
     try testing.expectEqual(std.enums.values(Kind).len, rows.len);
     for (rows) |row| {

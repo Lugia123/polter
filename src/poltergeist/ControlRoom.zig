@@ -186,7 +186,7 @@
 //!                             both needs_me and unseen
 //!       "shown": "needs_you",   needs_you | trouble | done_unseen |
 //!                               working | none
-//!       "word": "needs_approval", "text": "等批准",
+//!       "word": "needs_approval", "text": "Awaiting approval",
 //!       "waiter": {"is":"supervisor","name":""},
 //!                             who the row is about. is: none | supervisor
 //!                             | worker_via_supervisor | worker | terminal.
@@ -243,7 +243,7 @@
 //!                             this run, whoever is in it now
 //!       "window":"0x…"|null, "tab":"0x…"|null,
 //!       "pane":"supervisor"|"worker"|"plain",
-//!       "bar":{"shown":"held","text":"被按住"} } ],
+//!       "bar":{"shown":"held","text":"Held"} } ],
 //!                             `pane` is which of the three frames this
 //!                             terminal's pane wears in its own tab: the
 //!                             terminal minding others, one being minded,
@@ -968,7 +968,7 @@ pub const Bar = struct {
             .needs_you, .trouble => false,
             .done_unseen, .working, .none => held,
         };
-        if (covered) return .{ .shown = .held, .text = "被按住" };
+        if (covered) return .{ .shown = .held, .text = Attention.held_text };
         return .{
             .shown = switch (d.shown) {
                 .needs_you => .needs_you,
@@ -3233,7 +3233,7 @@ test "ControlRoom bar: a held terminal's title says held, unless somebody is wai
             // Working, finished unseen, nothing to say: it says held.
             .done_unseen, .working, .none => {
                 try testing.expectEqual(Bar.Shown.held, held.shown);
-                try testing.expectEqualStrings("被按住", held.text);
+                try testing.expectEqualStrings(Attention.held_text, held.text);
             },
         }
     }
@@ -3272,9 +3272,9 @@ test "ControlRoom bar: the snapshot carries it for every terminal, and a row's g
     const s = (try build(arena.allocator(), w.input(2 * min))).snapshot;
     const Want = struct { u64, Bar.Shown, []const u8, Attention.Shown };
     for ([_]Want{
-        .{ 0xb1, .held, "被按住", .working },
-        .{ 0xb2, .needs_you, "等批准", .needs_you },
-        .{ 0xb3, .working, "在干活", .working },
+        .{ 0xb1, .held, Attention.held_text, .working },
+        .{ 0xb2, .needs_you, Attention.Word.needs_approval.text(), .needs_you },
+        .{ 0xb3, .working, Attention.Word.working.text(), .working },
     }) |want| {
         const t = for (s.terminals) |t| {
             if (t.id.id == want[0]) break t;

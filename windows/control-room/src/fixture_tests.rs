@@ -233,7 +233,7 @@ fn the_rows_keep_the_snapshots_order_in_two_sections() {
         ]
     );
     let words: Vec<&str> = l.rows().map(|r| r.word.as_str()).collect();
-    assert_eq!(words, ["等批准", "等批准", "等批准", "等回答", "出错", "做完了，没看", "在干活", ""]);
+    assert_eq!(words, ["Awaiting approval", "Awaiting approval", "Awaiting approval", "Awaiting input", "Failed", "Done, not looked at", "Working", ""]);
 }
 
 #[test]
@@ -1232,7 +1232,7 @@ fn a_terminal_waiting_in_no_group_has_a_row_so_the_list_shows_what_the_badge_cou
     // It is called by its title, and is a copy of what the core says.
     assert_eq!(row.name(), "zsh — ~/work");
     assert_eq!(row.id, LONE);
-    assert_eq!((row.shown, row.word.as_str()), (Shown::NeedsYou, "等批准"));
+    assert_eq!((row.shown, row.word.as_str()), (Shown::NeedsYou, "Awaiting approval"));
     assert_eq!(row.waiter.is, WaiterIs::Terminal);
     assert_eq!((row.what.form, row.what.lines.clone()), (Form::Command, vec!["git push".to_string()]));
     assert_eq!(row.others, 0);
@@ -1473,7 +1473,7 @@ fn the_title_of_a_groups_frame_is_its_supervisors_own_terminal() {
     assert_eq!(l.row("mobile").unwrap().shown, Shown::NeedsYou);
     assert_eq!(
         l.row("billing").unwrap().title,
-        Some(SupervisorTitle { name: "billing".into(), shown: Shown::NeedsYou, word: "等回答".into() })
+        Some(SupervisorTitle { name: "billing".into(), shown: Shown::NeedsYou, word: "Awaiting input".into() })
     );
     // Two groups under one supervisor both name that terminal.
     assert_eq!(l.row("web-app-docs").unwrap().title.as_ref().unwrap().name, "web-app");
@@ -1499,4 +1499,41 @@ fn the_title_of_a_groups_frame_is_its_supervisors_own_terminal() {
 fn agreeing_to_the_first_sweep_is_one_word() {
     // Task 1511: `ControlAct.zig` takes `retention_agree` and nothing with it.
     assert_eq!(act::encode(&Act::RetentionAgree).unwrap(), r#"{"act":"retention_agree"}"#);
+}
+
+/// Task 1522: the core writes the words beside each glyph as English msgids,
+/// and the host says them once, as the snapshot arrives. Here they are said
+/// through the shipped Chinese catalogue, read from the tree.
+#[test]
+fn the_cores_words_are_said_in_the_persons_language_and_nothing_else_is_touched() {
+    const PO: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../po/zh_CN.po"));
+    // One-line entries only: every word beside a glyph is one.
+    let mut catalogue = std::collections::HashMap::new();
+    let mut id: Option<&str> = None;
+    for line in PO.lines() {
+        if let Some(m) = line.strip_prefix("msgid \"").and_then(|r| r.strip_suffix('"')) {
+            id = Some(m);
+        } else if let (Some(m), Some(k)) = (line.strip_prefix("msgstr \"").and_then(|r| r.strip_suffix('"')), id.take()) {
+            if !k.is_empty() && !m.is_empty() {
+                catalogue.insert(k.to_string(), m.to_string());
+            }
+        }
+    }
+    let tr = |w: &str| catalogue.get(w).cloned().unwrap_or_else(|| w.to_string());
+
+    let english = snapshot::decode(FIXTURE).expect("the fixture decodes");
+    let mut s = english.clone();
+    s.translate_words(&tr);
+
+    let words: Vec<String> = List::from_snapshot(&s).rows().map(|r| r.word.clone()).collect();
+    assert_eq!(words, ["等批准", "等批准", "等批准", "等回答", "出错", "做完了，没看", "在干活", ""]);
+    let held = s.terminals.iter().find_map(|t| t.bar.as_ref().filter(|b| b.shown == snapshot::BarShown::Held)).expect("the fixture holds one");
+    assert_eq!(held.text, "被按住");
+    assert!(s.terminals.iter().any(|t| t.text == "下班"), "an off-duty terminal says so");
+
+    // Only those words: what a row waits on, its reason, its name are not
+    // the core's words and are left as they came.
+    for (a, b) in english.groups.iter().zip(&s.groups) {
+        assert_eq!((&a.name, &a.reason, &a.what), (&b.name, &b.reason, &b.what));
+    }
 }

@@ -82,7 +82,7 @@ enum PaneFrame {
             // The pair the core says the title draws. Only a snapshot from
             // before it said so falls back to the status.
             let shown = listed.bar?.shown ?? .init(listed.shown)
-            return Drawn(wears: listed.pane ?? .plain, title: Title(name: listed.title, shown: shown, word: listed.bar?.text ?? listed.text))
+            return Drawn(wears: listed.pane ?? .plain, title: Title(name: listed.title, shown: shown, word: ControlRoomList.say(listed.bar?.text ?? listed.text)))
         }
             ?? Drawn(wears: .plain, title: Title(name: ownName, shown: .none, word: ""))
         if drawn.wears == .plain, place.alone { return nil }
