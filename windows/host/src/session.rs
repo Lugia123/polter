@@ -21,6 +21,17 @@
 //! built. The "clean exit" marker in particular is a separate *file* rather
 //! than a field in this one, so adding it later changes no format and no line
 //! of this module.
+//!
+//! **Its own file, `host-window.json`, and never `session.json`** (#1513).
+//! It used to be `session.json`, in the directory the core keeps *its*
+//! `session.json` in whenever neither `XDG_STATE_HOME` nor `XDG_CONFIG_HOME`
+//! is set -- which is every ordinary Windows machine. Both sides replace the
+//! whole file and neither reads the other's half, so whoever wrote last won:
+//! the window came back in the default place, or the supervisor's
+//! `session_recall` came back empty and a group restored from disk had its
+//! members written away as `[]`. `windows/tools/host-files-are-not-the-cores.py`
+//! keeps the two sets of names apart. What an older build left in
+//! `session.json` is read once, see `load`.
 
 use std::path::PathBuf;
 
@@ -32,9 +43,22 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::wlogf;
 
-/// `%LOCALAPPDATA%/polter/session.json`, the sibling of `plugins/`.
+/// The file this writes, in the directory above `plugins/`. See the module
+/// note for why it is not `session.json`.
+pub const FILE: &str = "host-window.json";
+
+/// Where an older build wrote the geometry: read, never written, by this one.
+/// The core owns this name.
+const LEGACY_FILE: &str = "session.json";
+
+/// `%LOCALAPPDATA%/polter/host-window.json`, the sibling of `plugins/`.
 fn path() -> Option<PathBuf> {
-    Some(crate::plugins::user_dir()?.parent()?.join("session.json"))
+    Some(crate::plugins::user_dir()?.parent()?.join(FILE))
+}
+
+/// Read in `load` and nowhere else; the gate checks that it is never written.
+fn legacy_path() -> Option<PathBuf> {
+    Some(crate::plugins::user_dir()?.parent()?.join(LEGACY_FILE)) // gate: read-only (#1513)
 }
 
 /// The saved rectangle, plus whether the window was maximized.
@@ -154,9 +178,29 @@ pub fn flush_if_dirty(frame: HWND) {
 }
 
 /// What was saved last time, if anything.
+///
+/// **The old place is read only while the new one is not there.** A build
+/// from before #1513 left the geometry in `session.json`; reading it once
+/// keeps that person's window where it was, and the first flush then writes
+/// `host-window.json`, after which `session.json` is never looked at again.
+/// It is not removed or changed: the name is the core's, and what is in it
+/// now may be the core's record. When the core wrote last there is no
+/// `window` in it and nothing comes back -- the window lost in that case was
+/// lost before this change.
 pub fn load() -> Option<Geometry> {
-    let text = std::fs::read_to_string(path()?).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let new = path()?;
+    let text = match std::fs::read_to_string(&new) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::read_to_string(legacy_path()?).ok()?,
+        Err(_) => return None,
+    };
+    parse(&text)
+}
+
+/// The geometry in a file this or an older build wrote. `None` for anything
+/// without a `window` -- which includes the core's own `session.json`.
+pub fn parse(text: &str) -> Option<Geometry> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
     let w = v.get("window")?;
     let num = |k: &str| -> Option<i32> { w.get(k)?.as_i64().map(|n| n as i32) };
     Some(Geometry {
@@ -284,7 +328,27 @@ fn clamp_onto_a_monitor(frame: HWND) {
 
 #[cfg(test)]
 mod tests {
-    use super::Geometry;
+    use super::{parse, Geometry, FILE, LEGACY_FILE};
+
+    /// Not the core's file (#1513). The gate
+    /// `windows/tools/host-files-are-not-the-cores.py` holds the whole set;
+    /// this holds the one name that collided.
+    #[test]
+    fn the_window_is_not_saved_in_the_cores_file() {
+        assert_ne!(FILE, LEGACY_FILE);
+        assert_ne!(FILE, "session.json");
+    }
+
+    /// What an older build wrote is read back; what the core writes in the
+    /// same name has no window in it and gives none.
+    #[test]
+    fn an_older_builds_file_is_read_and_the_cores_is_not_taken_for_one() {
+        let old = "{\n  \"window\": { \"x\": 137, \"y\": 89, \"w\": 823, \"h\": 467, \"maximized\": true }\n}\n";
+        assert_eq!(parse(old), Some(Geometry { x: 137, y: 89, w: 823, h: 467, maximized: true }));
+        let core = r#"{"groups":[{"name":"web","brief":"","members":[]}],"terminals":[]}"#;
+        assert_eq!(parse(core), None);
+        assert_eq!(parse("not json"), None);
+    }
 
     /// The line both `saved` and `restored` print. **The acceptance check is
     /// that two log lines carry the same four numbers**, so the formatting is
