@@ -842,7 +842,7 @@
 "Restore All" = "Restore All";
 "Restore Factory Settings…" = "Restore Factory Settings…";
 "Restore \"%@\" to factory settings?" = "Restore \"%@\" to factory settings?";
-"Restoring will put every official role and skill back to factory settings, not only this one. The file is kept beside the role library, renamed, so nothing in it is lost." = "Restoring will put every official role and skill back to factory settings, not only this one. The file is kept beside the role library, renamed, so nothing in it is lost.";
+"Restoring will put every official role and skill back to factory settings, not only this one. The file of your changes and your own copies of official skills are kept where they were, renamed, so nothing in them is lost." = "Restoring will put every official role and skill back to factory settings, not only this one. The file of your changes and your own copies of official skills are kept where they were, renamed, so nothing in them is lost.";
 "Takes effect as soon as it's saved. When an agent that is already running reads the new text depends on the tool it uses." = "Takes effect as soon as it's saved. When an agent that is already running reads the new text depends on the tool it uses.";
 "The file that holds your changes can't be read." = "The file that holds your changes can't be read.";
 "The file that holds your changes to official roles can't be read, so nothing was saved into it. Restore Factory Settings sets it aside." = "The file that holds your changes to official roles can't be read, so nothing was saved into it. Restore Factory Settings sets it aside.";
@@ -858,3 +858,19 @@
 "Your changes weren't read: %@" = "Your changes weren't read: %@";
 "Your role \"%1$@\" has the key %2$@, which is now an official role's. Yours is kept in the file but isn't in use." = "Your role \"%1$@\" has the key %2$@, which is now an official role's. Yours is kept in the file but isn't in use.";
 "Skill Text" = "Skill Text";
+
+/* 角色库：官方角色与 skill 的改动读不出来时的原因（#1514，official.WhyCode） */
+"Could not read %@" = "Could not read %@";
+"official-overrides.json can't be read as a file of changes." = "official-overrides.json can't be read as a file of changes.";
+"What is written for this role is not an object." = "What is written for this role is not an object.";
+"\"%@\" is not a field this version of Polter knows." = "\"%@\" is not a field this version of Polter knows.";
+"\"%@\" is not written as a value and its base." = "\"%@\" is not written as a value and its base.";
+"\"%@\" has no value." = "\"%@\" has no value.";
+"The value of \"%@\" can't be read." = "The value of \"%@\" can't be read.";
+"\"%@\" has no base, so it can't be compared with the official version." = "\"%@\" has no base, so it can't be compared with the official version.";
+"The base of \"%@\" can't be read." = "The base of \"%@\" can't be read.";
+"What is written for this skill is not an object." = "What is written for this skill is not an object.";
+"The record for this skill has no base." = "The record for this skill has no base.";
+"The base recorded for this skill is not text." = "The base recorded for this skill is not text.";
+"Your copy at %@ doesn't read as this skill, so the shipped one is in use." = "Your copy at %@ doesn't read as this skill, so the shipped one is in use.";
+"This copy wasn't saved from Polter, so whether the official text has changed since is not known." = "This copy wasn't saved from Polter, so whether the official text has changed since is not known.";

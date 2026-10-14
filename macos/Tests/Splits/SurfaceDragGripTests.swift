@@ -25,6 +25,32 @@ struct SurfaceDragGripTests {
         #expect(place == .title)
     }
 
+    // MARK: - What a title does (task 1514)
+
+    @Test func neverStillLetsTheTitleBeClicked() {
+        let grip = Grip.titleGrip(setting: .never, lent: false, fullscreen: false, split: true)
+        #expect(grip == .click)
+    }
+
+    @Test func autoFullscreenAloneStillLetsTheTitleBeClicked() {
+        let grip = Grip.titleGrip(setting: .auto, lent: false, fullscreen: true, split: false)
+        #expect(grip == .click)
+    }
+
+    @Test func aTitleThatDragsIsAlsoClicked() {
+        let auto = Grip.titleGrip(setting: .auto, lent: false, fullscreen: false, split: true)
+        let always = Grip.titleGrip(setting: .always, lent: false, fullscreen: true, split: false)
+        #expect(auto == .drag)
+        #expect(always == .drag)
+    }
+
+    @Test func aLentPanesTitleTakesNoClickWhateverTheSetting() {
+        for setting in [Grip.Setting.always, .auto, .never] {
+            let grip = Grip.titleGrip(setting: setting, lent: true, fullscreen: false, split: true)
+            #expect(grip == .none)
+        }
+    }
+
     // MARK: - drag-handle
 
     @Test func neverMeansTheTitleDoesNotDrag() {

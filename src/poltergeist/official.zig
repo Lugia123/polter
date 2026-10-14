@@ -399,7 +399,110 @@ fn sectionOf(root: std.json.ObjectMap, name: []const u8) ?std.json.ObjectMap {
     };
 }
 
-pub const not_json = "official-overrides.json could not be read as an overrides file";
+/// Every sentence that says why a change could not be read, by a name.
+///
+/// **Why a name and not only the sentence** (task 1514): these reach the
+/// person -- the role library shows them in its banners and states -- and
+/// they are English. The sentence stays, for the log and for any reader
+/// that does not know the name; beside it the catalogs write the name and
+/// the one variable part (`writeWhy`), and the window says the same thing
+/// in the person's language. `tools/official-why-codes-agree.py` holds the
+/// window's list of names to this one.
+///
+/// **One table both makes the sentences and reads them back** (`say`,
+/// `classify`), so a sentence cannot be reworded on one side only: a
+/// sentence not made from this table is written with no name, and shows in
+/// English, which is how a new one is noticed.
+pub const WhyCode = enum {
+    overrides_unreadable,
+    overrides_not_json,
+    role_not_object,
+    role_unknown_field,
+    role_not_value_and_base,
+    role_no_value,
+    role_value_unreadable,
+    role_no_base,
+    role_base_unreadable,
+    skill_not_object,
+    skill_no_base,
+    skill_base_not_text,
+    skill_copy_not_this_skill,
+    skill_copy_unrecorded,
+};
+
+/// A sentence: the words before the variable part and after it. `detail`
+/// false is a sentence with no variable part.
+const Template = struct { before: []const u8, after: []const u8 = "", detail: bool = true };
+
+fn template(code: WhyCode) Template {
+    return switch (code) {
+        .overrides_unreadable => .{ .before = "could not read " },
+        .overrides_not_json => .{ .before = "official-overrides.json could not be read as an overrides file", .detail = false },
+        .role_not_object => .{ .before = "what is written for this role is not an object", .detail = false },
+        .role_unknown_field => .{ .before = "\"", .after = "\" is not a field this version of Polter knows" },
+        .role_not_value_and_base => .{ .before = "\"", .after = "\" is not written as a value and its base" },
+        .role_no_value => .{ .before = "\"", .after = "\" has no value" },
+        .role_value_unreadable => .{ .before = "the value of \"", .after = "\" does not read" },
+        .role_no_base => .{ .before = "\"", .after = "\" has no base, so it cannot be compared with the official version" },
+        .role_base_unreadable => .{ .before = "the base of \"", .after = "\" does not read" },
+        .skill_not_object => .{ .before = "what is written for this skill is not an object", .detail = false },
+        .skill_no_base => .{ .before = "the record for this skill has no base", .detail = false },
+        .skill_base_not_text => .{ .before = "the base recorded for this skill is not text", .detail = false },
+        .skill_copy_not_this_skill => .{ .before = "your copy at ", .after = " does not read as this skill; the shipped one is in use" },
+        .skill_copy_unrecorded => .{ .before = "this copy was not saved from Polter, so whether the official text has changed since is not known", .detail = false },
+    };
+}
+
+/// The sentence `code` says, with no variable part.
+pub fn sayConst(comptime code: WhyCode) []const u8 {
+    const t = comptime template(code);
+    comptime std.debug.assert(!t.detail);
+    return t.before;
+}
+
+/// The sentence `code` says about `detail`.
+pub fn say(aa: Allocator, comptime code: WhyCode, detail: []const u8) Allocator.Error![]const u8 {
+    const t = comptime template(code);
+    comptime std.debug.assert(t.detail);
+    return std.mem.concat(aa, u8, &.{ t.before, detail, t.after });
+}
+
+pub const Why = struct { code: WhyCode, detail: []const u8 };
+
+/// Which sentence `text` is, and its variable part; null for a sentence
+/// this table did not make. The longest match wins, so `"x" has no base,
+/// so ...` is not read as `"x" has no value`'s shape with a strange field.
+pub fn classify(text: []const u8) ?Why {
+    var best: ?Why = null;
+    var best_len: usize = 0;
+    inline for (@typeInfo(WhyCode).@"enum".fields) |f| {
+        const code: WhyCode = @enumFromInt(f.value);
+        const t = comptime template(code);
+        const fixed = t.before.len + t.after.len;
+        const hit = if (!t.detail)
+            std.mem.eql(u8, text, t.before)
+        else
+            text.len > fixed and std.mem.startsWith(u8, text, t.before) and std.mem.endsWith(u8, text, t.after);
+        if (hit and (best == null or fixed > best_len)) {
+            best = .{ .code = code, .detail = if (t.detail) text[t.before.len .. text.len - t.after.len] else "" };
+            best_len = fixed;
+        }
+    }
+    return best;
+}
+
+/// `,"<key>_code":…,"<key>_detail":…` for the sentence `text`, both null
+/// when there is none or this table did not make it.
+pub fn writeWhy(w: *std.Io.Writer, comptime key: []const u8, text: ?[]const u8) std.Io.Writer.Error!void {
+    const why = if (text) |t| classify(t) else null;
+    if (why) |y| {
+        try w.print(",\"" ++ key ++ "_code\":\"{t}\",\"" ++ key ++ "_detail\":{f}", .{ y.code, std.json.fmt(y.detail, .{}) });
+    } else {
+        try w.writeAll(",\"" ++ key ++ "_code\":null,\"" ++ key ++ "_detail\":null");
+    }
+}
+
+pub const not_json = sayConst(.overrides_not_json);
 
 /// Why the file as a whole could not be used, or null when it could (or is
 /// not there). One entry in it being wrong is not this: that is said on the
@@ -431,7 +534,7 @@ pub fn roleFields(aa: Allocator, read: Read, key: []const u8) Allocator.Error!Ro
     const roles = sectionOf(root, "roles") orelse return .none;
     const entry = switch (roles.get(key) orelse return .none) {
         .object => |o| o,
-        else => return .{ .unknown = "what is written for this role is not an object" },
+        else => return .{ .unknown = sayConst(.role_not_object) },
     };
 
     var out: std.ArrayList(Field) = .empty;
@@ -439,22 +542,22 @@ pub fn roleFields(aa: Allocator, read: Read, key: []const u8) Allocator.Error!Ro
     while (it.next()) |kv| {
         const path = kv.key_ptr.*;
         const t = targetOf(path) orelse
-            return .{ .unknown = try std.fmt.allocPrint(aa, "\"{s}\" is not a field this version of Polter knows", .{path}) };
+            return .{ .unknown = try say(aa, .role_unknown_field, path) };
         const pair = switch (kv.value_ptr.*) {
             .object => |o| o,
-            else => return .{ .unknown = try std.fmt.allocPrint(aa, "\"{s}\" is not written as a value and its base", .{path}) },
+            else => return .{ .unknown = try say(aa, .role_not_value_and_base, path) },
         };
         const value = valueOf(aa, t, pair.get("value") orelse
-            return .{ .unknown = try std.fmt.allocPrint(aa, "\"{s}\" has no value", .{path}) }) catch |err| switch (err) {
+            return .{ .unknown = try say(aa, .role_no_value, path) }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            error.BadField => return .{ .unknown = try std.fmt.allocPrint(aa, "the value of \"{s}\" does not read", .{path}) },
+            error.BadField => return .{ .unknown = try say(aa, .role_value_unreadable, path) },
         };
         // Without a base there is no telling whether the official text has
         // moved since, and that is said rather than guessed.
         const base = valueOf(aa, t, pair.get("base") orelse
-            return .{ .unknown = try std.fmt.allocPrint(aa, "\"{s}\" has no base, so it cannot be compared with the official version", .{path}) }) catch |err| switch (err) {
+            return .{ .unknown = try say(aa, .role_no_base, path) }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            error.BadField => return .{ .unknown = try std.fmt.allocPrint(aa, "the base of \"{s}\" does not read", .{path}) },
+            error.BadField => return .{ .unknown = try say(aa, .role_base_unreadable, path) },
         };
         try out.append(aa, .{ .path = path, .value = value, .base = base });
     }
@@ -674,11 +777,11 @@ pub fn skillBase(aa: Allocator, read: Read, name: []const u8) SkillBase {
     const skills = sectionOf(root, "skills") orelse return .none;
     const entry = switch (skills.get(name) orelse return .none) {
         .object => |o| o,
-        else => return .{ .unknown = "what is written for this skill is not an object" },
+        else => return .{ .unknown = sayConst(.skill_not_object) },
     };
-    return switch (entry.get("base") orelse return .{ .unknown = "the record for this skill has no base" }) {
+    return switch (entry.get("base") orelse return .{ .unknown = sayConst(.skill_no_base) }) {
         .string => |s| .{ .hash = s },
-        else => .{ .unknown = "the base recorded for this skill is not text" },
+        else => .{ .unknown = sayConst(.skill_base_not_text) },
     };
 }
 
@@ -1057,4 +1160,36 @@ test "official: a key to keep a shadowed role under fits, and steps past what is
     try testing.expectEqualStrings("polter-tester-mine-2", try adoptedKey(aa, "polter-tester", &taken));
     const long = try adoptedKey(aa, "a" ** persona.max_key_len, &.{});
     try testing.expect(persona.isValidKey(long));
+}
+
+test "official: every reason sentence is read back as the sentence it is" {
+    const aa = testing.allocator;
+    inline for (@typeInfo(WhyCode).@"enum".fields) |f| {
+        const code: WhyCode = @enumFromInt(f.value);
+        const t = comptime template(code);
+        const detail = if (t.detail) "polter.watch" else "";
+        const text = if (t.detail) try say(aa, code, detail) else sayConst(code);
+        defer if (t.detail) aa.free(text);
+        const got = classify(text) orelse {
+            std.debug.print("not read back: {s}\n", .{text});
+            return error.TestExpectedEqual;
+        };
+        try testing.expectEqual(code, got.code);
+        try testing.expectEqualStrings(detail, got.detail);
+    }
+    // A sentence the table did not make has no name, so it shows as it is.
+    try testing.expect(classify("out of memory") == null);
+    try testing.expect(classify("") == null);
+}
+
+test "official: the catalog names the reason beside the sentence" {
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const text = try say(testing.allocator, .role_no_base, "instructions");
+    defer testing.allocator.free(text);
+    try writeWhy(&out.writer, "reason", text);
+    try writeWhy(&out.writer, "overrides_error", null);
+    try testing.expectEqualStrings(
+        \\,"reason_code":"role_no_base","reason_detail":"instructions","overrides_error_code":null,"overrides_error_detail":null
+    , out.written());
 }

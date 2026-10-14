@@ -267,7 +267,10 @@ struct RoleOfficial: Equatable {
         self.state = state
         overridden = (obj["overridden"] as? [String]) ?? []
         stale = (obj["stale"] as? [String]) ?? []
-        reason = obj["reason"] as? String
+        reason = OfficialWhy.display(
+            code: obj["reason_code"] as? String,
+            detail: obj["reason_detail"] as? String,
+            english: obj["reason"] as? String)
     }
 
     /// Whether there is anything to put back.
@@ -359,7 +362,10 @@ struct RoleCatalog: Equatable {
             guard let key = row["key"] as? String else { return nil }
             return Shadowed(key: key, name: (row["name"] as? String) ?? key)
         }
-        overridesError = obj["overrides_error"] as? String
+        overridesError = OfficialWhy.display(
+            code: obj["overrides_error_code"] as? String,
+            detail: obj["overrides_error_detail"] as? String,
+            english: obj["overrides_error"] as? String)
     }
 }
 

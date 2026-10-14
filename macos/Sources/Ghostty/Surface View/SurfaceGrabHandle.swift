@@ -101,18 +101,30 @@ extension Ghostty {
         @State private var isDragging: Bool = false
 
         var body: some View {
-            if surfaceView.dragGrip(dragHandle, titled: true, lent: lent) == .title {
+            // `drag-handle` takes the drag away, never the click (task 1514).
+            switch surfaceView.titleGrip(dragHandle, lent: lent) {
+            case .drag:
                 SurfaceDragSource(
                     surfaceView: surfaceView,
                     isDragging: $isDragging,
                     isHovering: $isHovering,
                     dragThreshold: SurfaceDragGrip.titleDragThreshold,
-                    onClick: {
-                        surfaceView.window?.makeFirstResponder(surfaceView)
-                    }
+                    onClick: focus
                 )
                 .contentShape(Rectangle())
+            case .click:
+                // Not `SurfaceDragSource`: its cursor is an open hand, which
+                // says "drag me" over a title that will not drag.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: focus)
+            case .none:
+                EmptyView()
             }
+        }
+
+        private func focus() {
+            surfaceView.window?.makeFirstResponder(surfaceView)
         }
     }
 }
@@ -121,13 +133,28 @@ extension Ghostty.SurfaceView {
     /// `SurfaceDragGrip.place` for this surface as it is now: whether its
     /// window is fullscreen and its tab split are read off the window.
     func dragGrip(_ setting: Ghostty.Config.DragHandle, titled: Bool, lent: Bool) -> SurfaceDragGrip.Place {
+        let (fullscreen, split) = gripContext
+        return SurfaceDragGrip.place(setting: Self.gripSetting(setting), titled: titled, lent: lent, fullscreen: fullscreen, split: split)
+    }
+
+    /// `SurfaceDragGrip.titleGrip` for this surface as it is now.
+    func titleGrip(_ setting: Ghostty.Config.DragHandle, lent: Bool) -> SurfaceDragGrip.TitleGrip {
+        let (fullscreen, split) = gripContext
+        return SurfaceDragGrip.titleGrip(setting: Self.gripSetting(setting), lent: lent, fullscreen: fullscreen, split: split)
+    }
+
+    /// Whether this surface's window is fullscreen, and its tab split.
+    private var gripContext: (fullscreen: Bool, split: Bool) {
         let fullscreen = window?.styleMask.contains(.fullScreen) ?? false
         let split = (window?.windowController as? BaseTerminalController)?.surfaceTree.isSplit ?? false
-        let setting: SurfaceDragGrip.Setting = switch setting {
+        return (fullscreen, split)
+    }
+
+    private static func gripSetting(_ setting: Ghostty.Config.DragHandle) -> SurfaceDragGrip.Setting {
+        switch setting {
         case .always: .always
         case .auto: .auto
         case .never: .never
         }
-        return SurfaceDragGrip.place(setting: setting, titled: titled, lent: lent, fullscreen: fullscreen, split: split)
     }
 }
