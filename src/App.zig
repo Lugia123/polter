@@ -7073,14 +7073,19 @@ fn poltergeistDrainNotices(
 
 fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
-    try self.chat.create(group, by);
 
-    // The person at the keyboard is in every group. These are
-    // conversations happening on their machine; a window they could read
-    // but not answer in would be a strange thing to build.
-    // The person at the keyboard has no terminal of their own, so there
-    // is nothing to record about where they are working.
-    try self.chat.add(group, poltergeistpkg.Chat.user_id, .all, .{});
+    var buf: [2048]u8 = undefined;
+    var fixed: std.heap.FixedBufferAllocator = .init(&buf);
+    const footing = self.footingOf(fixed.allocator(), by);
+    try createGroup(
+        &self.chat,
+        if (self.session_log) |*l| l else null,
+        group,
+        by,
+        footing,
+        self.poltergeistWallMs(),
+        self.memberOf(by, footing),
+    );
 
     // Written down now rather than when something is first said in it: a
     // group made at midnight and never spoken in would otherwise leave no
@@ -7591,20 +7596,96 @@ fn footingOf(
 /// (task 1511). The footing is the one `Chat.add` was just given.
 fn noteJoined(self: *App, group: []const u8, id: poltergeistpkg.Bus.Id, footing: poltergeistpkg.Chat.Footing) void {
     const l = if (self.session_log) |*v| v else return;
+    l.joined(group, self.poltergeistWallMs(), id, self.memberOf(id, footing), false);
+}
+
+/// What is known of `id` now, as a group's record keeps it.
+fn memberOf(self: *App, id: poltergeistpkg.Bus.Id, footing: poltergeistpkg.Chat.Footing) poltergeistpkg.SessionLog.Member {
     const agent = self.poltergeist.agentOf(id);
     const role: []const u8 = if (self.personas.launchOf(id)) |launch| launch.role else switch (self.poltergeist.roleOf(id)) {
         .supervisor => "supervisor",
         .watched => "worker",
         else => "",
     };
-    l.joined(group, self.poltergeistWallMs(), id, .{
+    return .{
         .role = role,
         .cli = agent.cli.get() orelse "",
         .cwd = footing.cwd,
         .title = footing.title,
         .session_id = agent.session_id.get() orelse "",
         .transcript_path = if (self.terminal_meta) |*m| m.transcriptPathOf(id) else "",
-    }, false);
+    };
+}
+
+/// Make a group, with its creator in it and written down as having joined.
+///
+/// The creator is a member from the first moment (`Chat.create`), and what
+/// it does there is as much the group's work as anything a terminal added
+/// later does -- so a supervisor looking back through the group has to
+/// find it too. Before the tenth run found it, only `chatAdd` wrote the
+/// join, and a group's own creator was missing from its record.
+///
+/// The person at the keyboard is in every group as well: these are
+/// conversations happening on their machine, and a window they could read
+/// but not answer in would be a strange thing to build. They have no
+/// terminal of their own, so there is nothing to write down about where
+/// they are working, and nothing for anyone to look back through.
+fn createGroup(
+    chat: *poltergeistpkg.Chat,
+    sessions: ?*poltergeistpkg.SessionLog,
+    group: []const u8,
+    by: poltergeistpkg.Bus.Id,
+    footing: poltergeistpkg.Chat.Footing,
+    at_ms: i64,
+    member: poltergeistpkg.SessionLog.Member,
+) !void {
+    try chat.create(group, by);
+    try chat.add(group, poltergeistpkg.Chat.user_id, .all, .{});
+    if (by == poltergeistpkg.Chat.user_id) return;
+    try chat.setFooting(group, by, footing);
+    if (sessions) |l| l.joined(group, at_ms, by, member, false);
+}
+
+test "a group's creator is written down as having joined it, the person at the keyboard is not" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-creategroup-{x}", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+
+    var chat: poltergeistpkg.Chat = .init(alloc, .{});
+    defer chat.deinit();
+    const at: i64 = 1_700_000_000_000;
+    {
+        var l = try poltergeistpkg.SessionLog.open(alloc, io, dir);
+        defer l.deinit();
+        try createGroup(&chat, &l, "build", 0x11, .{ .cwd = "/work/repo", .title = "✳ boss" }, at, .{ .role = "supervisor", .cwd = "/work/repo" });
+        // Restoring a group after a restart makes it in the person's name.
+        try createGroup(&chat, &l, "ops", poltergeistpkg.Chat.user_id, .{}, at + 1, .{});
+    }
+
+    try testing.expect(chat.isMember("build", 0x11));
+    try testing.expect(chat.isMember("build", poltergeistpkg.Chat.user_id));
+    try testing.expectEqualStrings("/work/repo", chat.footingOf("build", 0x11).?.cwd);
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const r = try poltergeistpkg.SessionLog.read(arena.allocator(), io, dir);
+    try testing.expectEqual(@as(usize, 1), r.stints.len);
+    const s = r.stints[0];
+    try testing.expectEqualStrings("build", s.group);
+    try testing.expectEqual(@as(u64, 0x11), s.terminal);
+    try testing.expectEqual(at, s.from_ms);
+    try testing.expectEqualStrings("supervisor", s.role);
 }
 
 /// An agent said which session it is: beside its transcript, and in every

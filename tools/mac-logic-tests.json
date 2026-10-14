@@ -43,6 +43,7 @@
       "macos/Sources/Features/Splits/SplitTree.swift",
       "macos/Sources/Features/Splits/SurfaceDragGrip.swift",
       "macos/Sources/Features/Settings/LogManagementRules.swift",
+      "macos/Sources/Features/Settings/LogManagementAlert.swift",
       "macos/Sources/Features/Roles/OfficialWhy.swift",
       "macos/Sources/Helpers/Backport.swift",
       "macos/Sources/Helpers/Extensions/Array+Extension.swift",

@@ -13,6 +13,9 @@ final class LogManagementModel: ObservableObject {
     /// The core could not say: there is no state directory yet.
     @Published private(set) var unavailable = false
 
+    /// How often the page reads the figures again while it is shown.
+    static let refreshSeconds: TimeInterval = 10
+
     func reload(_ ghostty: Ghostty.App?) {
         guard let app = ghostty?.app,
               let json = PersonaCatalog.readJSON({ ghostty_app_storage_usage(app, $0, $1) }),
@@ -29,14 +32,12 @@ final class LogManagementModel: ObservableObject {
     /// person said no.
     func clear(_ kind: StorageUsage.Kind, ghostty: Ghostty.App?) -> String? {
         guard let app = ghostty?.app else { return nil }
+        // Measured now, as the question is asked: the figure on the row may
+        // be minutes old, and the confirmation is what the person agrees to.
+        reload(ghostty)
+        guard let kind = LogManagementRules.current(kind, in: usage) else { return nil }
         let c = LogManagementRules.confirmation(kind)
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = c.title
-        alert.informativeText = c.lines.joined(separator: "\n\n")
-        let go = alert.addButton(withTitle: c.button)
-        go.hasDestructiveAction = true
-        alert.addButton(withTitle: String(localized: "Cancel", comment: "日志管理：确认框的取消按钮"))
+        let alert = LogManagementAlert.make(c, cancel: String(localized: "Cancel", comment: "日志管理：确认框的取消按钮"))
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
 
         // Done once: the call is not asked for its size first.
@@ -79,6 +80,10 @@ struct LogManagementPage: View {
 
     private typealias Grid = SettingsLayout
 
+    /// Kept, not made in `body`: a publisher made there would start over
+    /// each time the page is drawn again, and every reading draws it again.
+    private let tick = Timer.publish(every: LogManagementModel.refreshSeconds, on: .main, in: .common).autoconnect()
+
     var body: some View {
         VStack(spacing: 0) {
             if let waiting = logs.usage?.waitingBytes {
@@ -110,6 +115,13 @@ struct LogManagementPage: View {
         }
         .onAppear {
             if model.form == nil { model.reloadForm() }
+            logs.reload(model.ghostty)
+        }
+        // What the page shows changes behind it -- the control room's "OK",
+        // files written while it is open (the tenth run, D4) -- so while it
+        // is shown it reads the figures again. A field being typed in keeps
+        // its text: it follows the form's value only when not focused.
+        .onReceive(tick) { _ in
             logs.reload(model.ghostty)
         }
     }
@@ -151,15 +163,20 @@ struct LogManagementPage: View {
 }
 
 /// The columns, right to left from the content's right edge
-/// (`log-management-v2/README.md`).
+/// (`log-management-v3/README.md`: the tenth run found the English page's
+/// "days" broken in two at a unit of 28, and "Compact…" has no room in 80).
 enum LogManagementColumns {
-    static let button: CGFloat = 80
+    static let button: CGFloat = 96
     static let size: CGFloat = 72
     static let days: CGFloat = 44
     static let mb: CGFloat = 56
-    static let unit: CGFloat = 28
+    static let unit: CGFloat = 36
     static let gap: CGFloat = 8
+    /// The least a row is; one whose description wraps grows.
     static let rowHeight: CGFloat = 40
+    /// A description wraps rather than being cut off -- the English ones
+    /// run past their column -- but to no more than this.
+    static let detailLines = 2
     /// Both fields and their units, which a row with no fields fills with
     /// one sentence instead.
     static var rule: CGFloat { days + unit + gap + mb + unit + gap }
@@ -178,8 +195,9 @@ private struct LogManagementRow: View {
                 Text(LogManagementRules.title(kind.key)).fontWeight(.medium)
                 Text(LogManagementRules.detail(kind.key))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(Columns.detailLines)
                     .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             rule

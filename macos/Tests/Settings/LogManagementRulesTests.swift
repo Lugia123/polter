@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Ghostty
@@ -73,6 +74,41 @@ struct LogManagementRulesTests {
             }
             #expect(c.lines.count >= 2, "\(key)")
             #expect(LogManagementRules.title(key) != key, "\(key) has a name")
+        }
+    }
+
+    // The tenth run, D5: the formatter's own "Zero KB" in a column of figures.
+    @Test func nothingIsANumberNotAWord() {
+        let zero = LogManagementRules.size(0)
+        #expect(zero.first?.isNumber == true, "\(zero)")
+        #expect(LogManagementRules.size(2048).first?.isNumber == true)
+    }
+
+    // The tenth run, D4: the confirmation said "at most 17 bytes" and 33 went.
+    @Test func theConfirmationIsOfTheFiguresReadWhenItIsAsked() throws {
+        let shown = try #require(StorageUsage.parse(json)).kinds[0]
+        let later = try #require(StorageUsage.parse(json.replacingOccurrences(of: "\"bytes\":10,\"files\":1", with: "\"bytes\":33,\"files\":4")))
+        let now = try #require(LogManagementRules.current(shown, in: later))
+        #expect(now.bytes == 33)
+        #expect(now.files == 4)
+        #expect(LogManagementRules.confirmation(now) != LogManagementRules.confirmation(shown))
+        // Gone since the page was drawn: nothing to ask about.
+        let gone = try #require(StorageUsage.parse(json.replacingOccurrences(of: "\"key\":\"group_transcripts\"", with: "\"key\":\"x\"")))
+        #expect(LogManagementRules.current(shown, in: gone) == nil)
+        #expect(LogManagementRules.current(shown, in: nil) == nil)
+    }
+
+    // Return answers Cancel, in the person's language as much as in English:
+    // NSAlert's own binding goes by the title "Cancel", and 取消 is not it.
+    @MainActor @Test func returnCancelsAndDeletesNothing() throws {
+        let usage = try #require(StorageUsage.parse(json))
+        for cancel in ["Cancel", "取消"] {
+            let alert = LogManagementAlert.make(LogManagementRules.confirmation(usage.kinds[0]), cancel: cancel)
+            #expect(alert.buttons.count == 2)
+            #expect(alert.buttons[0].hasDestructiveAction)
+            #expect(alert.buttons[0].keyEquivalent == "", "\(cancel): the deleting button answers Return")
+            #expect(alert.buttons[1].title == cancel)
+            #expect(alert.buttons[1].keyEquivalent == "\r", "\(cancel): Cancel does not answer Return")
         }
     }
 }

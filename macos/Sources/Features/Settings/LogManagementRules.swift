@@ -74,6 +74,12 @@ enum LogManagementRules {
         }
     }
 
+    /// `shown` as it is in `usage`, read again just now; nil when the core
+    /// no longer lists it, and then nothing is asked.
+    static func current(_ shown: StorageUsage.Kind, in usage: StorageUsage?) -> StorageUsage.Kind? {
+        usage?.kinds.first { $0.key == shown.key }
+    }
+
     /// What the button on a row says.
     static func action(_ kind: StorageUsage.Kind) -> String {
         kind.action == "compact"
@@ -81,10 +87,19 @@ enum LogManagementRules {
             : String(localized: "Clear…", comment: "日志管理：每一行的清理按钮")
     }
 
-    /// A size, the way the Finder writes one.
+    /// A size, the way the Finder writes one -- but nothing is "0 KB", not
+    /// "Zero KB": the formatter spells zero out unless told not to, and
+    /// in a column of figures the word stands out as something else.
     static func size(_ bytes: UInt64) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
+        sizeFormatter.string(fromByteCount: Int64(clamping: bytes))
     }
+
+    private static let sizeFormatter: ByteCountFormatter = {
+        let f = ByteCountFormatter()
+        f.countStyle = .file
+        f.allowsNonnumericFormatting = false
+        return f
+    }()
 
     /// What a retention field shows for the value in the config file.
     static func fieldText(_ value: String) -> String {

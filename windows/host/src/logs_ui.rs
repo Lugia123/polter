@@ -42,6 +42,11 @@ const EN_KILLFOCUS: u32 = 0x0200;
 const PROP_PREV: PCWSTR = w!("PolterLogsPrevProc");
 /// Read the figures again, posted rather than done: see `reload_later`.
 const WM_RELOAD_LATER: u32 = WM_APP + 0x51;
+/// While the page is shown it reads the figures again this often: what
+/// it shows changes behind it -- the control room's "OK", files written
+/// while it is open (the tenth run, D4).
+const REFRESH_TIMER: usize = 0x1511;
+const REFRESH_MS: u32 = 10_000;
 
 static PAGE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
@@ -145,8 +150,11 @@ pub fn place(rect: Rect, show: bool) {
     }
     if show && !was {
         reload();
+        unsafe { SetTimer(Some(h), REFRESH_TIMER, REFRESH_MS, None) };
     } else if show {
         layout();
+    } else if was {
+        let _ = unsafe { KillTimer(Some(h), REFRESH_TIMER) };
     }
 }
 
@@ -203,6 +211,34 @@ pub fn reload() {
     fill_fields(&usage);
     ST.with(|c| c.borrow_mut().filling = false);
     layout();
+}
+
+/// The figures again, from behind the page's back. Where only the figures
+/// moved, only they are redrawn: rebuilding the rows would take a field
+/// out from under someone typing in it. Where the rows themselves changed
+/// -- the notice went, a kind came or went -- the page is made again, but
+/// not while one of its fields has the focus; the next tick tries again.
+fn refresh() {
+    let h = page();
+    if h.0.is_null() {
+        return;
+    }
+    let fresh = read_usage();
+    let same = ST.with(|c| match (&c.borrow().usage, &fresh) {
+        (Some(a), Some(b)) => rules::same_rows(&a.kinds, a.waiting_bytes, &b.kinds, b.waiting_bytes),
+        (None, None) => true,
+        _ => false,
+    });
+    if same {
+        ST.with(|c| c.borrow_mut().usage = fresh);
+        let _ = unsafe { InvalidateRect(Some(h), None, false) };
+        return;
+    }
+    let focus = unsafe { GetFocus() };
+    let typing = !focus.0.is_null() && unsafe { IsChild(h, focus) }.as_bool();
+    if !typing {
+        reload();
+    }
 }
 
 fn read_usage() -> Option<Usage> {
@@ -359,10 +395,19 @@ struct Laid {
 
 fn laid(width: i32, dpi: i32, usage: &Usage) -> Laid {
     let notice_h = usage.waiting_bytes.map(|_| notice_height(width, dpi));
-    let cycle = usage.kinds.iter().filter(|k| k.goes_round()).count();
-    let forever = usage.kinds.len() - cycle;
     let control_h = shell::scale(grid::CONTROL_H - 4, dpi);
-    let page = rules::page_layout(width, dpi, metrics(font()), control_h, cycle, forever);
+    let line = metrics(font());
+    // Each row as tall as its description wrapped to the width it has
+    // (the kinds come with the ones that go round first, as the rows do).
+    let s = |v| shell::scale(v, dpi);
+    let text_w = rules::row_parts(s(grid::PAD), width - s(grid::PAD), 0, 0, dpi, control_h).text.width().max(1);
+    let height = |k: &rules::Kind| {
+        let lines = (measure(&tr(rules::detail_msgid(&k.key)), text_w) + line - 1) / line.max(1);
+        rules::row_height(dpi, line, lines)
+    };
+    let cycle: Vec<i32> = usage.kinds.iter().filter(|k| k.goes_round()).map(height).collect();
+    let forever: Vec<i32> = usage.kinds.iter().filter(|k| !k.goes_round()).map(height).collect();
+    let page = rules::page_layout(width, dpi, line, control_h, &cycle, &forever);
     let offset = notice_h.unwrap_or(0);
     Laid { notice: notice_h.map(|h| Rect::new(0, 0, width, h)), page, offset }
 }
@@ -466,9 +511,14 @@ fn paint(win: HWND) {
             for (k, p) in u.kinds.iter().zip(at.page.rows.iter()) {
                 let line = metrics(font());
                 let text = to(p.text, dy);
-                let top = text.top + (text.bottom - text.top - 2 * line - s(rules::LINE_GAP)) / 2;
+                // The description wraps, to at most `DETAIL_LINES`; its row
+                // was made tall enough for what it takes (`laid`).
+                let detail = tr(rules::detail_msgid(&k.key));
+                let lines = ((measure(&detail, (text.right - text.left).max(1)) + line - 1) / line.max(1)).clamp(1, rules::DETAIL_LINES);
+                let top = text.top + (text.bottom - text.top - (1 + lines) * line - s(rules::LINE_GAP)) / 2;
                 draw_text(hdc, &tr(rules::title_msgid(&k.key)), &RECT { top, bottom: top + line, ..text }, bold(), theme::text(), one);
-                draw_text(hdc, &tr(rules::detail_msgid(&k.key)), &RECT { top: top + line + s(rules::LINE_GAP), bottom: top + 2 * line + s(rules::LINE_GAP), ..text }, font(), theme::dim(), one);
+                let d = RECT { top: top + line + s(rules::LINE_GAP), bottom: top + (1 + lines) * line + s(rules::LINE_GAP), ..text };
+                draw_text(hdc, &detail, &d, font(), theme::dim(), DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
                 // The rule, where there are no fields to say it.
                 let rule = match k.kept.as_str() {
                     "fixed" => Some(rules::fill(&tr("Fixed at %lld days"), "", k.fixed_days.unwrap_or(0))),
@@ -566,7 +616,10 @@ fn commit(row: usize, part: u16) {
 
 /// "Clear…" on a row: ask, then have the core clear it once.
 fn clear(row: usize) {
-    let Some(k) = kind_at(row) else { return };
+    let Some(shown) = kind_at(row) else { return };
+    // Measured now, as the question is asked: the figure on the row may be
+    // minutes old, and the confirmation is what the person agrees to.
+    let Some(k) = read_usage().and_then(|u| u.kinds.into_iter().find(|f| f.key == shown.key)) else { return };
     let c = rules::confirmation(&k.key);
     let size = rules::size_text(k.bytes);
     let title = rules::fill(&tr(c.title), &tr(rules::title_msgid(&k.key)), 0);
@@ -702,6 +755,10 @@ unsafe extern "system" fn page_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             WM_RELOAD_LATER => {
                 reload();
+                LRESULT(0)
+            }
+            WM_TIMER if wp.0 == REFRESH_TIMER => {
+                refresh();
                 LRESULT(0)
             }
             WM_SIZE => {

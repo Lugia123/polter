@@ -33,17 +33,30 @@ impl Kind {
     }
 }
 
-/// The columns, right to left from the content's right edge, in DIP.
-pub const BUTTON_W: i32 = 80;
+/// The columns, right to left from the content's right edge, in DIP
+/// (`log-management-v3`: the tenth run found the English page's "days"
+/// broken in two and "Compact…" with no room, at 28 and 80).
+pub const BUTTON_W: i32 = 96;
 pub const SIZE_W: i32 = 72;
 pub const DAYS_W: i32 = 44;
 pub const MB_W: i32 = 56;
 /// A field's unit after it ("天", "MB"), with the four between.
-pub const UNIT_W: i32 = 28;
+pub const UNIT_W: i32 = 36;
 pub const COL_GAP: i32 = 8;
+/// The least a row is: one line of name over one of description.
 pub const ROW_H: i32 = 40;
 /// A row's two lines: the name over the description.
 pub const LINE_GAP: i32 = 2;
+/// A description wraps rather than being cut off -- the English ones run
+/// past their column -- but to no more than this, and its row grows.
+pub const DETAIL_LINES: i32 = 2;
+
+/// How tall a row is whose description takes `detail_lines` lines of
+/// `line_h` (as wrapped to [`RowParts::text`]'s width).
+pub fn row_height(dpi: i32, line_h: i32, detail_lines: i32) -> i32 {
+    let lines = detail_lines.clamp(1, DETAIL_LINES);
+    scale(ROW_H, dpi).max(line_h * (1 + lines) + scale(LINE_GAP, dpi))
+}
 
 /// Where one row's parts go, in the page's coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,11 +76,13 @@ pub struct RowParts {
     pub button: Rect,
 }
 
-/// The parts of a row whose top is `top`, between `left` and `right`.
-pub fn row_parts(left: i32, right: i32, top: i32, dpi: i32, control_h: i32) -> RowParts {
+/// The parts of a row whose top is `top` and which is `height` tall
+/// ([`row_height`]), between `left` and `right`. Its controls are centred
+/// in it.
+pub fn row_parts(left: i32, right: i32, top: i32, height: i32, dpi: i32, control_h: i32) -> RowParts {
     let s = |v| scale(v, dpi);
-    let row = Rect::new(left, top, right, top + s(ROW_H));
-    let mid = |h: i32| top + (s(ROW_H) - h) / 2;
+    let row = Rect::new(left, top, right, top + height);
+    let mid = |h: i32| top + (height - h) / 2;
     let button = Rect::new(right - s(BUTTON_W), mid(control_h), right, mid(control_h) + control_h);
     let size = Rect::new(button.left - s(COL_GAP) - s(SIZE_W), top, button.left - s(COL_GAP), row.bottom);
     let mb_unit = Rect::new(size.left - s(COL_GAP) - (s(UNIT_W) - s(4)), top, size.left - s(COL_GAP), row.bottom);
@@ -92,7 +107,8 @@ pub struct PageLayout {
     pub height: i32,
 }
 
-pub fn page_layout(width: i32, dpi: i32, line_h: i32, control_h: i32, cycle: usize, forever: usize) -> PageLayout {
+/// `cycle` and `forever` are the rows' heights ([`row_height`]), in order.
+pub fn page_layout(width: i32, dpi: i32, line_h: i32, control_h: i32, cycle: &[i32], forever: &[i32]) -> PageLayout {
     let s = |v| scale(v, dpi);
     let left = s(PAD);
     let right = width - s(PAD);
@@ -102,18 +118,28 @@ pub fn page_layout(width: i32, dpi: i32, line_h: i32, control_h: i32, cycle: usi
     let mut rows = Vec::new();
     let cycle_heading = Rect::new(left, y, right, y + line_h);
     y += line_h + s(ROW_GAP);
-    for _ in 0..cycle {
-        rows.push(row_parts(left, right, y, dpi, control_h));
-        y += s(ROW_H) + s(ROW_GAP);
+    for &h in cycle {
+        rows.push(row_parts(left, right, y, h, dpi, control_h));
+        y += h + s(ROW_GAP);
     }
     y += s(GROUP_GAP) - s(ROW_GAP);
     let forever_heading = Rect::new(left, y, right, y + line_h);
     y += line_h + s(ROW_GAP);
-    for _ in 0..forever {
-        rows.push(row_parts(left, right, y, dpi, control_h));
-        y += s(ROW_H) + s(ROW_GAP);
+    for &h in forever {
+        rows.push(row_parts(left, right, y, h, dpi, control_h));
+        y += h + s(ROW_GAP);
     }
     PageLayout { intro, cycle_heading, forever_heading, rows, height: y - s(ROW_GAP) + s(PAD) }
+}
+
+/// Whether a page read again would have the same rows and controls as
+/// the one shown: the same kinds in the same order, each with the same
+/// fields and button, and the notice up or not in both. When it would, only
+/// the figures need drawing again -- and a field someone is typing in is
+/// left where it is.
+pub fn same_rows(a: &[Kind], a_waiting: Option<u64>, b: &[Kind], b_waiting: Option<u64>) -> bool {
+    let shape = |k: &Kind| (k.key.clone(), k.kept.clone(), k.days_key.clone(), k.mb_key.clone(), k.fixed_days, k.action.clone());
+    a_waiting.is_some() == b_waiting.is_some() && a.len() == b.len() && a.iter().zip(b).all(|(x, y)| shape(x) == shape(y))
 }
 
 /// What a retention field shows for the value in the config file.
@@ -260,33 +286,77 @@ mod tests {
 
     #[test]
     fn the_columns_are_the_drawings() {
-        // log-management-windows-v1/README.md, at 96 DPI, in the editor
-        // that starts at 482 and ends at 1180: content 498..1164.
-        let p = row_parts(498, 1164, 0, 96, 24);
-        assert_eq!((p.button.left, p.button.right), (1084, 1164));
-        assert_eq!((p.size.left, p.size.right), (1004, 1076));
-        assert_eq!((p.mb.left, p.mb_unit.right), (912, 996));
-        assert_eq!((p.days.left, p.days_unit.right), (832, 904));
-        assert_eq!(p.text.right, 824);
-        assert_eq!((p.rule.left, p.rule.right), (832, 996));
+        // log-management-v3/README.md, at 96 DPI, in the editor that
+        // starts at 482 and ends at 1180: content 498..1164.
+        let p = row_parts(498, 1164, 0, ROW_H, 96, 24);
+        assert_eq!((p.button.left, p.button.right), (1068, 1164));
+        assert_eq!((p.size.left, p.size.right), (988, 1060));
+        assert_eq!((p.mb.left, p.mb_unit.right), (888, 980));
+        assert_eq!((p.days.left, p.days_unit.right), (800, 880));
+        assert_eq!(p.text.right, 792);
+        assert_eq!((p.rule.left, p.rule.right), (800, 980));
+        // "days" is 28.5 wide in the drawing's English; its box is 32.
+        assert_eq!(p.days_unit.width(), 32);
     }
 
     #[test]
     fn the_columns_scale_with_the_dpi() {
-        let p = row_parts(0, 2000, 0, 192, 48);
-        assert_eq!(p.button.right - p.button.left, 160);
+        let p = row_parts(0, 2000, 0, row_height(192, 34, 1), 192, 48);
+        assert_eq!(p.button.right - p.button.left, 192);
         assert_eq!(p.row.bottom - p.row.top, 80);
     }
 
     #[test]
     fn rows_follow_their_headings_a_row_gap_apart() {
-        let l = page_layout(698, 96, 17, 24, 2, 1);
+        let l = page_layout(698, 96, 17, 24, &[ROW_H, ROW_H], &[ROW_H]);
         assert_eq!(l.rows.len(), 3);
         assert_eq!(l.rows[0].row.top, l.cycle_heading.bottom + ROW_GAP);
         assert_eq!(l.rows[1].row.top - l.rows[0].row.top, ROW_H + ROW_GAP);
         assert_eq!(l.forever_heading.top, l.rows[1].row.bottom + GROUP_GAP);
         assert_eq!(l.rows[2].row.top, l.forever_heading.bottom + ROW_GAP);
         assert_eq!(l.height, l.rows[2].row.bottom + PAD);
+    }
+
+    #[test]
+    fn a_description_that_wraps_makes_its_row_taller_and_moves_the_rest_down() {
+        // 17 is a line at 14px: one line of description fits in 40.
+        assert_eq!(row_height(96, 17, 1), ROW_H);
+        let two = row_height(96, 17, 2);
+        assert_eq!(two, 17 * 3 + LINE_GAP);
+        // No more than two: a third line is cut, not given room.
+        assert_eq!(row_height(96, 17, 3), two);
+        let l = page_layout(698, 96, 17, 24, &[two, ROW_H], &[]);
+        assert_eq!(l.rows[0].row.height(), two);
+        assert_eq!(l.rows[1].row.top, l.rows[0].row.bottom + ROW_GAP);
+        // The controls stay in the middle of the taller row (53 - 24 is
+        // odd: the spare pixel goes below).
+        let p = l.rows[0];
+        let (above, below) = (p.button.top - p.row.top, p.row.bottom - p.button.bottom);
+        assert!(below - above == 0 || below - above == 1, "{above} above, {below} below");
+        assert!(above > (ROW_H - 24) / 2, "{above}: still where a one-line row has it");
+    }
+
+    #[test]
+    fn new_figures_keep_the_rows_and_a_new_shape_does_not() {
+        let k = |key: &str, bytes: u64| Kind {
+            key: key.into(),
+            kept: "cycle".into(),
+            bytes,
+            files: 1,
+            days_key: Some("d".into()),
+            mb_key: Some("m".into()),
+            fixed_days: None,
+            action: "clear".into(),
+        };
+        let shown = [k("logs", 10), k("shots", 20)];
+        // Files written while the page was open: only the figures moved.
+        assert!(same_rows(&shown, None, &[k("logs", 99), k("shots", 20)], None));
+        // The control room's OK took the notice away: the page is made again.
+        assert!(!same_rows(&shown, Some(5), &shown, None));
+        assert!(!same_rows(&shown, None, &[k("logs", 10)], None));
+        let mut compact = k("shots", 20);
+        compact.action = "compact".into();
+        assert!(!same_rows(&shown, None, &[k("logs", 10), compact], None));
     }
 
     #[test]
