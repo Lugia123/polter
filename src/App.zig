@@ -116,6 +116,27 @@ sweep_limits: SweepLimits = .{},
 /// The state directory the sweeper works in. Owned.
 sweep_state_dir: ?[]const u8 = null,
 
+/// The limits last handed to the sweeper, to tell a change from a repeat.
+sweep_limits_seen: SweepLimits = .{},
+
+/// Working out who was in the groups from before the session record --
+/// reading the whole chat record, tens of megabytes on a used machine -- on
+/// a thread of its own, so that the first start after an upgrade does not
+/// hold the window still. What it found is written here, on this thread,
+/// at the next tick (`storageTick`).
+backfill_thread: ?std.Thread = null,
+backfill_mutex: std.Io.Mutex = .init,
+/// Set by the backfill thread under `backfill_mutex`, taken by `storageTick`.
+backfill_found: ?poltergeistpkg.SessionLog.Inference = null,
+/// App thread only: a backfill has started and its lines are not written.
+/// The sweeper is held until they are, so that its first sweep knows which
+/// old transcripts belong to a group.
+backfill_pending: bool = false,
+
+/// Something on a storage thread wants the app thread: a backfill is done,
+/// or the sweeper has something to say. Read in `tick`.
+storage_due: std.atomic.Value(bool) = .init(false),
+
 /// The group shells on disk, so the list has last night's groups in it.
 ///
 /// The same state directory and the same condition as `chat_log`, because
@@ -546,6 +567,14 @@ pub fn deinit(self: *App) void {
     self.poltergeist_stopping.store(true, .release);
     if (self.poltergeist_late_alert) |t| t.join();
 
+    // The storage threads read and write the state directory: gone before
+    // the logs they would race are closed.
+    if (self.backfill_thread) |t| t.join();
+    self.backfill_thread = null;
+    if (self.backfill_found) |*f| f.deinit();
+    self.backfill_found = null;
+    if (self.sweeper) |*w| w.stop();
+
     // The same for the control room's wake thread, which calls the apprt's
     // `wakeup`: gone before the surfaces, so it cannot fire into a close.
     if (self.control_wake) |*w| w.stop();
@@ -647,8 +676,58 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
         }
     }
 
+    if (self.storage_due.swap(false, .acq_rel)) self.storageTick();
+
     // After it, so that everything this tick changed is in one snapshot.
     self.controlRoomTick(rt_app);
+}
+
+/// What the storage threads left for this one: the backfill's lines to
+/// write, and then the sweeper let go.
+fn storageTick(self: *App) void {
+    if (self.poltergeist_stopping.load(.acquire)) return;
+    const io = global.io();
+    self.backfill_mutex.lockUncancelable(io);
+    const found = self.backfill_found;
+    self.backfill_found = null;
+    self.backfill_mutex.unlock(io);
+
+    if (found) |f| {
+        var owned = f;
+        defer owned.deinit();
+        if (self.session_log) |*l| l.writeInferred(owned, self.poltergeistWallMs());
+        self.backfill_pending = false;
+        if (self.sweeper) |*w| w.release();
+    }
+    self.control_dirty = true;
+}
+
+/// On the sweeper's thread: the first sweep has started or stopped waiting
+/// for the person. The control room says so at the next tick.
+fn sweeperWaitingChanged(ctx: *anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (self.poltergeist_stopping.load(.acquire)) return;
+    self.storage_due.store(true, .release);
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
+}
+
+/// The backfill thread: read, hand over, wake the app thread.
+fn backfillMain(self: *App, state_dir: []const u8) void {
+    defer std.heap.page_allocator.free(state_dir);
+    const io = global.io();
+    const started = poltergeistpkg.daylog.nowMs(io);
+    const found = poltergeistpkg.SessionLog.infer(std.heap.page_allocator, io, state_dir, poltergeistpkg.Chat.user_id) catch |err| {
+        log.warn("poltergeist: could not work out the older groups' members err={}", .{err});
+        return;
+    };
+    log.info("poltergeist: older groups read in {d}ms: {d} groups, {d} members", .{
+        poltergeistpkg.daylog.nowMs(io) - started, found.groups.len, found.members.len,
+    });
+    self.backfill_mutex.lockUncancelable(io);
+    self.backfill_found = found;
+    self.backfill_mutex.unlock(io);
+    self.storage_due.store(true, .release);
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
 }
 
 /// Come back in `delay_ms` and offer the supervisors their boxes again: a
@@ -826,6 +905,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         ),
         .tasks = &self.tasks,
         .quota = quota_read,
+        .retention_waiting = if (self.sweeper) |*w| w.waitingBytes() else null,
         .supervisor_roles = roles,
         .cli_resume = cli_resume,
         .projects = projects,
@@ -886,6 +966,7 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
             .projectFailed = controlActProjectFailed,
             .projectRemove = controlActProjectRemove,
             .projectRename = controlActProjectRename,
+            .retentionAgree = controlActRetentionAgree,
         },
         self.poltergeistElapsedMs(),
         @intCast(@max(0, self.poltergeistWallMs())),
@@ -1334,6 +1415,22 @@ fn controlActProjectRemove(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) anyerror!
 /// A project is about to be renamed. One that is a group's is renamed by
 /// renaming the group -- the person's doing, like any rename from the
 /// interface -- and the host is then ordered to rename the file.
+/// The person said OK to the first sweep of old records: written down,
+/// and the sweep run now.
+fn controlActRetentionAgree(ctx: *anyopaque) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    self.agreeToRetention("acknowledged");
+}
+
+/// Write the person's agreement to sweeping and sweep now. Also what a
+/// change to the limits means while the first sweep is waiting: they have
+/// seen the notice and said what they want kept instead.
+pub fn agreeToRetention(self: *App, how: []const u8) void {
+    const dir = self.sweep_state_dir orelse return;
+    poltergeistpkg.Sweeper.writeConsent(global.io(), dir, self.poltergeistWallMs(), how);
+    if (self.sweeper) |*w| w.sweepNow();
+}
+
 fn controlActProjectRename(ctx: *anyopaque, from: []const u8, to: []const u8) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
@@ -2467,6 +2564,11 @@ pub fn ensureSweeper(self: *App) void {
     };
     self.sweep_state_dir = state_dir;
     self.sweeper = .init(self.alloc, io);
+    // Held until the backfill's lines are written, if one is reading.
+    if (self.sweeper) |*w| {
+        w.held = self.backfill_pending;
+        w.on_waiting = .{ .f = sweeperWaitingChanged, .ctx = self };
+    }
     self.configureSweeper();
     if (self.sweeper) |*w| w.start() catch |err| {
         log.warn("poltergeist: could not start the sweeper err={}", .{err});
@@ -2494,6 +2596,12 @@ fn configureSweeper(self: *App) void {
     };
 
     const l = self.sweep_limits;
+    // A change of limits while the first sweep waits is the person
+    // answering the notice: they have said what to keep instead.
+    if (w.waitingBytes() != null and !std.meta.eql(l, self.sweep_limits_seen)) {
+        self.agreeToRetention("settings-changed");
+    }
+    self.sweep_limits_seen = l;
     w.configure(.{
         .state_dir = state_dir,
         .shots_dir = shots_dir,
@@ -2598,8 +2706,17 @@ pub fn ensureChatLog(self: *App, want: bool) void {
     if (poltergeistpkg.SessionLog.open(self.alloc, io, state_dir)) |l| {
         self.session_log = l;
         // Groups from before this record: who was in them, as far as the
-        // chat and the panel say. Once per group, before anybody joins.
-        if (self.session_log) |*sl| sl.backfill(state_dir, self.poltergeistWallMs(), poltergeistpkg.Chat.user_id);
+        // chat and the panel say. Read on a thread of its own; written
+        // here when it is done (`storageTick`).
+        if (std.heap.page_allocator.dupe(u8, state_dir)) |dir| {
+            if (std.Thread.spawn(.{}, backfillMain, .{ self, dir })) |t| {
+                self.backfill_thread = t;
+                self.backfill_pending = true;
+            } else |err| {
+                std.heap.page_allocator.free(dir);
+                log.warn("poltergeist: could not start reading the older groups err={}", .{err});
+            }
+        } else |_| {}
     } else |err| {
         log.warn("poltergeist: could not open the session log err={}", .{err});
     }
@@ -4542,6 +4659,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .membership = poltergeistMembership,
         .chatRead = chatRead,
         .chatHistory = chatHistory,
+        .recordTool = recordTool,
         .pluginList = pluginList,
         .pluginRoots = pluginRoots,
         .pluginConfigure = pluginConfigure,
@@ -8084,6 +8202,116 @@ fn chatRead(
 }
 
 /// Read further back than the group still holds, out of the log on disk.
+/// `record_*` and `log_*`: who the caller is, as `RecordTools` needs it,
+/// and the state directory. The rule is all `RecordTools`'s.
+fn recordTool(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    caller: poltergeistpkg.Bus.Id,
+    req: poltergeistpkg.rpc.Request,
+) anyerror!poltergeistpkg.RecordTools.Answer {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const Tools = poltergeistpkg.RecordTools;
+    const state_dir = self.sweep_state_dir orelse self.poltergeist_state_dir orelse return error.LogsClosed;
+    const io = global.io();
+
+    // The groups the caller supervises now, and their projects.
+    var supervises: std.ArrayListUnmanaged([]const u8) = .empty;
+    var projects: std.ArrayListUnmanaged([]const u8) = .empty;
+    if (self.poltergeist.isSupervisor(caller)) {
+        var it = self.chat.groups.iterator();
+        while (it.next()) |kv| {
+            if (!self.chat.isMember(kv.key_ptr.*, caller)) continue;
+            try supervises.append(alloc, try alloc.dupe(u8, kv.key_ptr.*));
+            switch (self.chat.projectOf(kv.key_ptr.*)) {
+                .bound => |name| try projects.append(alloc, try alloc.dupe(u8, name)),
+                .undecided, .declined => {},
+            }
+        }
+    }
+    const access: Tools.Access = .{ .caller = caller, .supervises = supervises.items, .projects = projects.items };
+
+    return switch (req) {
+        .record_list => |p| blk: {
+            const scope = recordScope(p.group, p.project, p.task, p.terminal, p.session_id) orelse break :blk tooManyScopes();
+            break :blk try Tools.list(alloc, io, state_dir, access, .{
+                .scope = scope,
+                .since_ms = p.since_ms,
+                .until_ms = p.until_ms,
+                .cursor = p.cursor,
+                .limit = p.limit,
+            });
+        },
+        .record_search => |p| blk: {
+            const scope = recordScope(p.group, p.project, p.task, p.terminal, p.session_id) orelse break :blk tooManyScopes();
+            break :blk try Tools.search(alloc, io, state_dir, access, .{
+                .scope = scope,
+                .query = p.query,
+                .since_ms = p.since_ms,
+                .until_ms = p.until_ms,
+                .after_file = p.after_file,
+                .after_line = p.after_line,
+            });
+        },
+        .record_read => |p| try Tools.read(alloc, io, state_dir, access, .{
+            .terminal = p.terminal,
+            .day = p.day,
+            .part = p.part,
+            .from_line = p.from_line,
+            .limit = p.limit,
+        }),
+        .log_list => try Tools.logList(alloc, io, state_dir),
+        .log_read => |p| try Tools.logRead(alloc, io, state_dir, .{
+            .name = p.name,
+            .from_line = p.from_line,
+            .limit = p.limit,
+        }),
+        else => unreachable,
+    };
+}
+
+/// Which one thing a look back is about; null when it named more than one.
+fn recordScope(group: []const u8, project: []const u8, task: u64, who: ?poltergeistpkg.Bus.Id, session_id: []const u8) ?poltergeistpkg.RecordTools.Scope {
+    var n: usize = 0;
+    var scope: poltergeistpkg.RecordTools.Scope = .mine;
+    if (group.len > 0) {
+        n += 1;
+        scope = .{ .group = group };
+    }
+    if (project.len > 0) {
+        n += 1;
+        scope = .{ .project = project };
+    }
+    if (task != 0) {
+        n += 1;
+        scope = .{ .task = task };
+    }
+    if (who) |t| {
+        n += 1;
+        scope = .{ .terminal = t };
+    }
+    if (session_id.len > 0) {
+        n += 1;
+        scope = .{ .session = session_id };
+    }
+    return if (n > 1) null else scope;
+}
+
+test "record tools: one scope or none, never two" {
+    try std.testing.expect(recordScope("", "", 0, null, "").? == .mine);
+    try std.testing.expectEqualStrings("build", recordScope("build", "", 0, null, "").?.group);
+    try std.testing.expectEqual(@as(u64, 7), recordScope("", "", 7, null, "").?.task);
+    try std.testing.expect(recordScope("build", "", 7, null, "") == null);
+    try std.testing.expect(recordScope("", "p", 0, 0x11, "") == null);
+}
+
+fn tooManyScopes() poltergeistpkg.RecordTools.Answer {
+    return .{ .refused = .{
+        .code = "BadParams",
+        .message = "name one of group, project, task, terminal or session_id -- or none, for your own record.",
+    } };
+}
+
 fn chatHistory(
     ctx: *anyopaque,
     alloc: Allocator,

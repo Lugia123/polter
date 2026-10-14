@@ -661,6 +661,41 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "record_list",
+        .description = "Which terminals' records you may look back through, and what each was: its title, the groups it was in and when, its role, the agent sessions it ran -- with `transcript_path`, where the agent CLI keeps its own record of that session, which Polter points at and does not read -- and which days of transcript there are. **A transcript is what scrolled out of that terminal's screen**, not the agent's conversation. Name one scope or none: none is your own record, including earlier runs of the same agent session (ids change at a restart, a resumed session does not). `group` is a group you supervise, and you are handed every terminal that worked in it -- **for the time it was a member and no other**: `reach` says `while_yours` for those and `all` for your own. `project` is one of your groups' projects: its terminals, except while they were in some group. Another group's record is refused (NotYourGroup) rather than coming back empty. Members found only from older records are marked `inferred`. Page with `cursor`. The shield is not consulted.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string","description":"A group you supervise: every terminal that worked in it, for the time it was there"},"project":{"type":"string","description":"A project one of your groups is tied to: its terminals, outside any group"},"task":{"type":"integer","description":"A task number: whoever held it"},"terminal":{"type":"string","description":"One terminal, 0x…"},"session_id":{"type":"string","description":"An agent session: every run that carried it"},"since_ms":{"type":"integer","description":"Wall-clock ms"},"until_ms":{"type":"integer","description":"Wall-clock ms"},"cursor":{"type":"integer"},"limit":{"type":"integer"}},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "record_search",
+        .description = "The lines you may read, in the transcripts of one scope (as record_list takes it), that contain `query` -- as typed, ASCII case ignored; not a pattern. Each hit says the terminal, the day and part, the line number and a snippet: hand those to record_read to see round it. At most 50 hits a page, and at most 64MB read per call; either way `more` is true and `after_file` / `after_line` say where to carry on. `read_bytes` says how much this call read.",
+        .schema =
+        \\{"type":"object","properties":{"query":{"type":"string"},"group":{"type":"string","description":"A group you supervise: every terminal that worked in it, for the time it was there"},"project":{"type":"string","description":"A project one of your groups is tied to: its terminals, outside any group"},"task":{"type":"integer","description":"A task number: whoever held it"},"terminal":{"type":"string","description":"One terminal, 0x…"},"session_id":{"type":"string","description":"An agent session: every run that carried it"},"since_ms":{"type":"integer","description":"Wall-clock ms"},"until_ms":{"type":"integer","description":"Wall-clock ms"},"after_file":{"type":"integer"},"after_line":{"type":"integer"}},"required":["query"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "record_read",
+        .description = "Lines of one day of one terminal's transcript, from `from_line` on (counted from 0), as record_list and record_search name them: `day` YYYY-MM-DD, `part` from 1. Only the lines you may read are handed back; `withheld` counts the ones you may not -- another group's time, or before the terminal joined yours -- so a page with gaps does not read as the whole day. At most 400 lines and 96KB a page; `next_line` says where to carry on.",
+        .schema =
+        \\{"type":"object","properties":{"terminal":{"type":"string"},"day":{"type":"string"},"part":{"type":"integer"},"from_line":{"type":"integer"},"limit":{"type":"integer"}},"required":["terminal","day"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "log_list",
+        .description = "Polter's own logs, for a supervisor: each plugin's log and its older generation, the Windows host's logs, and the crash reports -- with size and when each was last written. Crash reports are listed and not read: they are dumps for a debugger.",
+        .schema =
+        \\{"type":"object","properties":{},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "log_read",
+        .description = "Lines of one of Polter's logs, by the name log_list gives it. Without `from_line`, the last `limit` lines (200 unless said, at most 400 and 96KB). For a supervisor.",
+        .schema =
+        \\{"type":"object","properties":{"name":{"type":"string"},"from_line":{"type":"integer"},"limit":{"type":"integer"}},"required":["name"],"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "plugin_list",
         .description = "What plugins are installed, whether each is switched on, what parameters it takes, and -- for the chat archive, which runs all the time -- how far it has got and whether it is healthy. Configured values are not handed back in the clear: a reference (env:, file:, keychain:, cmd:) is shown as the user wrote it, because where a secret lives is not the secret; a value typed in plainly is reported as being set and nothing more. Supervisor only.",
         .schema =

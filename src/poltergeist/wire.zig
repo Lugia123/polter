@@ -349,6 +349,47 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .match = (try optionalString(aa, params, "match")) orelse "",
         } },
 
+        .record_list => .{ .record_list = .{
+            .group = (try optionalString(aa, params, "group")) orelse "",
+            .project = (try optionalString(aa, params, "project")) orelse "",
+            .task = try optionalU64(params, "task", 0),
+            .terminal = try optionalIdParam(params, "terminal"),
+            .session_id = (try optionalString(aa, params, "session_id")) orelse "",
+            .since_ms = try optionalI64(params, "since_ms", 0),
+            .until_ms = try optionalI64(params, "until_ms", 0),
+            .cursor = try optionalU64(params, "cursor", 0),
+            .limit = try optionalU64(params, "limit", 0),
+        } },
+
+        .record_search => .{ .record_search = .{
+            .query = try requireString(aa, params, "query"),
+            .group = (try optionalString(aa, params, "group")) orelse "",
+            .project = (try optionalString(aa, params, "project")) orelse "",
+            .task = try optionalU64(params, "task", 0),
+            .terminal = try optionalIdParam(params, "terminal"),
+            .session_id = (try optionalString(aa, params, "session_id")) orelse "",
+            .since_ms = try optionalI64(params, "since_ms", 0),
+            .until_ms = try optionalI64(params, "until_ms", 0),
+            .after_file = try optionalU64(params, "after_file", 0),
+            .after_line = try optionalU64(params, "after_line", 0),
+        } },
+
+        .record_read => .{ .record_read = .{
+            .terminal = try requireIdNamed(params, "terminal"),
+            .day = try requireString(aa, params, "day"),
+            .part = try optionalU64(params, "part", 1),
+            .from_line = try optionalU64(params, "from_line", 0),
+            .limit = try optionalU64(params, "limit", 0),
+        } },
+
+        .log_list => .log_list,
+
+        .log_read => .{ .log_read = .{
+            .name = try requireString(aa, params, "name"),
+            .from_line = try optionalMaybeU64(params, "from_line"),
+            .limit = try optionalU64(params, "limit", 0),
+        } },
+
         .task_history => .{ .task_history = .{
             .group = try requireString(aa, params, "group"),
             .before_seq = try optionalU64(params, "before_seq", 0),

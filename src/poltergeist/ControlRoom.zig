@@ -290,7 +290,13 @@
 //!   "quota": { … }            how much of each account's allowance is
 //!                             used: the block at the bottom of the list.
 //!                             `quota.zig` has the shape. Its moments are
-//!                             wall clock }
+//!                             wall clock
+//!   "retention_waiting_bytes": N|null
+//!                             the first sweep of old records is waiting
+//!                             for the person to agree, and would delete
+//!                             this much; null when nothing is waiting.
+//!                             Shown once, as a notice with "OK"
+//!                             (`{"act":"retention_agree"}`) (task 1511) }
 //! ```
 //!
 //! **Nothing here says how long anything has waited**, and nothing draws
@@ -473,6 +479,10 @@ pub const Input = struct {
     /// default: a caller that forgot it would show "no number yet" for
     /// ever, which is also what a machine with no agent on it shows.
     quota: []const quota.Reading,
+    /// How much the first sweep of old records would delete, while it waits
+    /// for the person (`Sweeper.waiting`); null when it is not waiting. No
+    /// default, for the reason `quota` has none.
+    retention_waiting: ?u64,
     /// The roles a supervisor can be started in from the control room, in
     /// the order to offer them; the first is the one used unless the person
     /// picks. Empty when there is none, and then nothing can be started.
@@ -1147,6 +1157,8 @@ pub const Snapshot = struct {
     pulses: []const Pulse,
     /// The allowance block at the bottom of the list (`quota.zig`).
     quota: quota.Out,
+    /// See `Input.retention_waiting`.
+    retention_waiting_bytes: ?u64,
 };
 
 pub fn writeAlloc(alloc: Allocator, snapshot: Snapshot, options: std.json.Stringify.Options) Allocator.Error![]u8 {
@@ -1995,6 +2007,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .choose_supervisor_role = in.supervisor_roles.len > 1,
             .pulses = pulses,
             .quota = allowance.out,
+            .retention_waiting_bytes = in.retention_waiting,
         },
         .wake_ms = wake.at,
     };
@@ -2037,6 +2050,7 @@ const World = struct {
     open: std.ArrayListUnmanaged(Terminal) = .empty,
     wall_ms: u64 = 1_700_000_000_000,
     quota: []const quota.Reading = &.{},
+    retention_waiting: ?u64 = null,
     roles: []const StartRole = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{"claude-code"} }},
     cli_resume: CliResume = .{ .read = &.{"claude-code"} },
     projects: ProjectsIn = .unknown,
@@ -2129,6 +2143,7 @@ const World = struct {
             .thresholds = T,
             .tasks = &self.tasks,
             .quota = self.quota,
+            .retention_waiting = self.retention_waiting,
             .supervisor_roles = self.roles,
             .cli_resume = self.cli_resume,
             .projects = self.projects,

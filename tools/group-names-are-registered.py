@@ -64,6 +64,7 @@ GROUP_NAME_FILES = {
     "src/poltergeist/Transcript.zig": "terminals, not groups: its `group`-like parameters are the daylog path segment",
     "src/poltergeist/SessionLog.zig": "sessions/<group>/ (group_stores.Root.sessions); what it reads back carries the name it was filed under",
     "src/poltergeist/Records.zig": "works out which transcripts belong to which group from a SessionLog record already read; stores nothing by name",
+    "src/poltergeist/RecordTools.zig": "the record tools: a group's name is a scope a caller asks about and is matched against a SessionLog record already read; stores nothing by name",
 }
 
 TREE_FILES = {

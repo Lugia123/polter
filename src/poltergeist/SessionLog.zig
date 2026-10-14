@@ -118,49 +118,104 @@ fn backfilled(self: *SessionLog, group: []const u8, at_ms: i64, members: usize) 
 /// seen.
 const Seen = struct { first: i64, last: i64 };
 
-/// Fill in the groups that were working before this record existed: every
-/// group with a chat or task record and no session record gets a joined
-/// line at the first moment each terminal shows in it -- speaking, or
-/// holding a task -- and a left line at the last, both `inferred`.
+/// One terminal's first and last moment in one group, as the older records
+/// show it.
+pub const Inferred = struct {
+    group: []const u8,
+    terminal: u64,
+    first: i64,
+    last: i64,
+};
+
+/// What `infer` found: the members, and every group it looked at -- a
+/// group with no members found is still marked done, or it would be read
+/// through again at every start.
+pub const Inference = struct {
+    arena: std.heap.ArenaAllocator,
+    members: []Inferred,
+    groups: []const []const u8,
+
+    pub fn deinit(self: *Inference) void {
+        self.arena.deinit();
+    }
+};
+
+/// Work out who was in the groups that were working before this record
+/// existed: every group with a chat or task record and no session record,
+/// each terminal at the first and last moment it shows -- speaking, or
+/// holding a task.
 ///
 /// **What this cannot find, said once:** a member that never spoke and
 /// never held a task left nothing behind, and is not in the result. Its
 /// transcript is kept and read as one in no group.
 ///
-/// On the app thread, before any terminal can join: the lines written
-/// here and the ones `joined` writes go through the same open file.
-pub fn backfill(self: *SessionLog, state_dir: []const u8, now_ms: i64, user_id: u64) void {
-    var arena: std.heap.ArenaAllocator = .init(self.alloc);
-    defer arena.deinit();
-    const a = arena.allocator();
+/// **Reads only, on any thread.** A first start after an upgrade reads the
+/// whole chat record -- tens of megabytes on a machine that has been used
+/// -- and the app thread must not wait for that. What it finds is written
+/// by `writeInferred`, on the thread that owns this log.
+pub fn infer(alloc: Allocator, io: std.Io, state_dir: []const u8, user_id: u64) Allocator.Error!Inference {
+    var out: Inference = .{ .arena = .init(alloc), .members = &.{}, .groups = &.{} };
+    errdefer out.arena.deinit();
+    const a = out.arena.allocator();
 
-    const chat = std.fs.path.join(a, &.{ state_dir, "chat" }) catch return;
-    var d = std.Io.Dir.cwd().openDir(self.io, chat, .{ .iterate = true }) catch return;
-    defer d.close(self.io);
+    var members: std.ArrayListUnmanaged(Inferred) = .empty;
+    var groups: std.ArrayListUnmanaged([]const u8) = .empty;
+
+    const chat = try std.fs.path.join(a, &.{ state_dir, "chat" });
+    const mine_root = try std.fs.path.join(a, &.{ state_dir, "sessions" });
+    var d = std.Io.Dir.cwd().openDir(io, chat, .{ .iterate = true }) catch return out;
+    defer d.close(io);
 
     var it = d.iterate();
-    while (it.next(self.io) catch null) |entry| {
+    while (it.next(io) catch null) |entry| {
         if (entry.kind != .directory and entry.kind != .unknown) continue;
-        const mine = std.fs.path.join(a, &.{ self.dir, entry.name }) catch continue;
-        if (std.Io.Dir.cwd().statFile(self.io, mine, .{})) |_| continue else |_| {}
+        const mine = try std.fs.path.join(a, &.{ mine_root, entry.name });
+        if (std.Io.Dir.cwd().statFile(io, mine, .{})) |_| continue else |_| {}
         const group = (daylog.decodeSegment(a, entry.name) catch continue) orelse continue;
 
         var seen: std.AutoArrayHashMapUnmanaged(u64, Seen) = .empty;
         inline for (.{ .{ "chat", "from" }, .{ "tasks", "owner" } }) |src| {
-            gather(a, self.io, state_dir, src[0], entry.name, src[1], &seen) catch {};
+            gather(a, io, state_dir, src[0], entry.name, src[1], &seen) catch {};
         }
 
-        var n: usize = 0;
         var si = seen.iterator();
         while (si.next()) |kv| {
             if (kv.key_ptr.* == user_id or kv.key_ptr.* == 0) continue;
-            self.joined(group, kv.value_ptr.first, kv.key_ptr.*, .{}, true);
-            self.left(group, kv.value_ptr.last, kv.key_ptr.*, true);
-            n += 1;
+            try members.append(a, .{ .group = group, .terminal = kv.key_ptr.*, .first = kv.value_ptr.first, .last = kv.value_ptr.last });
         }
-        self.backfilled(group, now_ms, n);
-        if (n > 0) log.info("session log: inferred {d} members of a group from its record", .{n});
+        try groups.append(a, group);
     }
+
+    out.members = try members.toOwnedSlice(a);
+    out.groups = try groups.toOwnedSlice(a);
+    return out;
+}
+
+/// Write what `infer` found: a joined and a left line for each member, both
+/// `inferred`, and a `backfilled` line for every group looked at. A group
+/// that has had a line of its own since -- somebody joined it while `infer`
+/// was reading -- is still filled in: the inferred lines are dated in the
+/// past, and they say something different from the live ones.
+pub fn writeInferred(self: *SessionLog, found: Inference, now_ms: i64) void {
+    for (found.members) |m| {
+        self.joined(m.group, m.first, m.terminal, .{}, true);
+        self.left(m.group, m.last, m.terminal, true);
+    }
+    for (found.groups) |g| {
+        var n: usize = 0;
+        for (found.members) |m| {
+            if (std.mem.eql(u8, m.group, g)) n += 1;
+        }
+        self.backfilled(g, now_ms, n);
+    }
+    if (found.members.len > 0) log.info("session log: inferred {d} group memberships from the older records", .{found.members.len});
+}
+
+/// `infer` and `writeInferred` in one, for a caller that may wait.
+pub fn backfill(self: *SessionLog, state_dir: []const u8, now_ms: i64, user_id: u64) void {
+    var found = infer(self.alloc, self.io, state_dir, user_id) catch return;
+    defer found.deinit();
+    self.writeInferred(found, now_ms);
 }
 
 fn gather(
@@ -175,13 +230,24 @@ fn gather(
     const dir = try std.fs.path.join(a, &.{ state_dir, root });
     const tree: daylog.GroupTree = .{ .owner = .chat, .alloc = a, .io = io, .dir = dir };
     const days = try tree.daysIn(a, seg);
+
+    // One file at a time, and one line at a time inside it: what a file
+    // and its parsed lines cost is given back before the next, so reading
+    // a record of any size holds one file's worth, not the record's.
+    var file_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer file_arena.deinit();
+    var line_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer line_arena.deinit();
     for (days.items) |day| {
-        const path = tree.partPathIn(a, seg, day.day, day.part) catch continue;
-        const bytes = std.Io.Dir.readFileAlloc(.cwd(), io, path, a, .limited(64 * 1024 * 1024)) catch continue;
+        _ = file_arena.reset(.retain_capacity);
+        const fa = file_arena.allocator();
+        const path = tree.partPathIn(fa, seg, day.day, day.part) catch continue;
+        const bytes = std.Io.Dir.readFileAlloc(.cwd(), io, path, fa, .limited(64 * 1024 * 1024)) catch continue;
         var lines = std.mem.splitScalar(u8, bytes, '\n');
         while (lines.next()) |line| {
             if (line.len == 0) continue;
-            const v = std.json.parseFromSliceLeaky(std.json.Value, a, line, .{}) catch continue;
+            _ = line_arena.reset(.retain_capacity);
+            const v = std.json.parseFromSliceLeaky(std.json.Value, line_arena.allocator(), line, .{}) catch continue;
             const obj = switch (v) {
                 .object => |o| o,
                 else => continue,

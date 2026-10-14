@@ -19,6 +19,7 @@ const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Plugin = @import("Plugin.zig");
 const Tasks = @import("Tasks.zig");
+const RecordTools = @import("RecordTools.zig");
 const screenshot = @import("screenshot.zig");
 pub const actions = @import("actions.zig");
 pub const keys = @import("keys.zig");
@@ -134,6 +135,18 @@ pub const Method = enum {
     /// disk. Page with `log_seq`, which is the log's own number and the
     /// only cursor that survives a restart.
     group_history,
+
+    /// Look back through what terminals printed (task 1511): which ones,
+    /// the lines that contain a word, a day of one. Who may read what is
+    /// `RecordTools.reachOf`.
+    record_list,
+    record_search,
+    record_read,
+
+    /// Polter's own logs, for a supervisor: which there are, and lines of
+    /// one.
+    log_list,
+    log_read,
 
     /// What plugins are installed, whether each is switched on, what it
     /// takes, and -- for a resident one -- how it is getting on.
@@ -517,6 +530,42 @@ pub const Request = union(Method) {
         match: []const u8 = "",
     },
 
+    record_list: struct {
+        group: []const u8 = "",
+        project: []const u8 = "",
+        task: u64 = 0,
+        terminal: ?Bus.Id = null,
+        session_id: []const u8 = "",
+        since_ms: i64 = 0,
+        until_ms: i64 = 0,
+        cursor: u64 = 0,
+        limit: u64 = 0,
+    },
+    record_search: struct {
+        query: []const u8,
+        group: []const u8 = "",
+        project: []const u8 = "",
+        task: u64 = 0,
+        terminal: ?Bus.Id = null,
+        session_id: []const u8 = "",
+        since_ms: i64 = 0,
+        until_ms: i64 = 0,
+        after_file: u64 = 0,
+        after_line: u64 = 0,
+    },
+    record_read: struct {
+        terminal: Bus.Id,
+        day: []const u8,
+        part: u64 = 1,
+        from_line: u64 = 0,
+        limit: u64 = 0,
+    },
+    log_list: void,
+    log_read: struct {
+        name: []const u8,
+        from_line: ?u64 = null,
+        limit: u64 = 0,
+    },
     plugin_list: struct { key: []const u8 = "" },
     plugin_configure: struct {
         key: []const u8,
@@ -961,6 +1010,11 @@ pub fn callableByPlugin(method: Method) bool {
         .group_post,
         .group_read,
         .group_history,
+        .record_list,
+        .record_search,
+        .record_read,
+        .log_list,
+        .log_read,
 
         // The supervisor's own. `requiresSupervisor` refuses these to a
         // plugin already; they are named here too so this list reads as the
@@ -1137,6 +1191,10 @@ pub fn requiresSupervisor(method: Method) bool {
 
         .group_project,
         .session_recall,
+        // Polter's own logs: about the whole machine and no group, so a
+        // supervisor's to read (the user, 2026-10-15).
+        .log_list,
+        .log_read,
         .notify_user,
 
         // Rearranging a window is a supervisor's: it changes what the person
@@ -1244,6 +1302,12 @@ pub fn requiresSupervisor(method: Method) bool {
         .group_post,
         .group_read,
         .group_history,
+        // Looking back is open to every terminal: what it may see is
+        // decided by `RecordTools.reachOf` -- its own record, and a
+        // supervisor's group's -- and nothing is refused here.
+        .record_list,
+        .record_search,
+        .record_read,
         .group_members,
         => false,
 
@@ -1337,6 +1401,11 @@ pub fn targetsTerminal(method: Method) bool {
         .group_post,
         .group_read,
         .group_history,
+        .record_list,
+        .record_search,
+        .record_read,
+        .log_list,
+        .log_read,
         .group_members,
         .group_set_brief,
         .group_project,
@@ -1453,6 +1522,11 @@ pub fn target(req: Request) ?Bus.Id {
         .group_post,
         .group_read,
         .group_history,
+        .record_list,
+        .record_search,
+        .record_read,
+        .log_list,
+        .log_read,
         .group_members,
         .group_set_brief,
         .group_project,
@@ -1566,6 +1640,11 @@ pub fn selfPermitted(req: Request) bool {
         .group_post,
         .group_read,
         .group_history,
+        .record_list,
+        .record_search,
+        .record_read,
+        .log_list,
+        .log_read,
         .group_members,
         .group_set_brief,
         .group_project,
@@ -1830,6 +1909,11 @@ pub fn promptReach(method: Method) enum {
         .group_post,
         .group_read,
         .group_history,
+        .record_list,
+        .record_search,
+        .record_read,
+        .log_list,
+        .log_read,
         .group_members,
         .group_set_brief,
         .group_project,
@@ -2331,7 +2415,18 @@ test "only what changes the arrangement needs the supervisor" {
             // the arrangement.
             .agent_event,
             .terminal_turn,
+
+            // Looking back through records: what may be seen is decided
+            // by `RecordTools.reachOf`, not by standing.
+            .record_list,
+            .record_search,
+            .record_read,
             => true,
+
+            // Polter's own logs are about the whole machine.
+            .log_list,
+            .log_read,
+            => false,
 
             // Writing what a group is for is arranging, not talking.
             // Reading last night's arrangement, likewise.
@@ -5430,6 +5525,17 @@ pub const Host = struct {
             filter: ChatFilter,
         ) anyerror!ChatPage,
 
+        /// `record_*` and `log_*` (task 1511): the host knows who `caller`
+        /// is -- which groups it supervises, which projects they are tied
+        /// to -- and where the state directory is; `RecordTools` does the
+        /// rest. Everything returned belongs to `alloc`.
+        recordTool: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            caller: Bus.Id,
+            req: Request,
+        ) anyerror!RecordTools.Answer,
+
         /// Every plugin installed -- **including the ones switched off**,
         /// because the question this answers is "what is here and is it
         /// on". `key` empty means all of them. Returned memory belongs to
@@ -5882,6 +5988,10 @@ pub const Host = struct {
         return self.vtable.chatRead(self.ctx, alloc, group, id, since);
     }
 
+    fn recordTool(self: Host, alloc: std.mem.Allocator, caller: Bus.Id, req: Request) anyerror!RecordTools.Answer {
+        return self.vtable.recordTool(self.ctx, alloc, caller, req);
+    }
+
     fn chatHistory(
         self: Host,
         alloc: std.mem.Allocator,
@@ -6178,6 +6288,11 @@ pub fn isAgentCall(method: Method) bool {
         .group_post,
         .group_read,
         .group_history,
+        .record_list,
+        .record_search,
+        .record_read,
+        .log_list,
+        .log_read,
         .plugin_list,
         .plugin_configure,
         .plugin_test,
@@ -7518,6 +7633,17 @@ fn dispatchOne(
                 .more = batch.more,
                 .next = next,
             } };
+        },
+
+        .record_list, .record_search, .record_read, .log_list, .log_read => {
+            const answer = host.recordTool(alloc, caller, req) catch |err| return switch (err) {
+                error.LogsClosed => hostFailure("LogsClosed", "the state directory could not be opened, so there is no record to look through."),
+                else => hostFailure("HostRefused", "the record could not be read"),
+            };
+            return switch (answer) {
+                .json => |j| .{ .json = j },
+                .refused => |r| hostFailure(r.code, r.message),
+            };
         },
 
         .group_history => |p| {
@@ -9177,6 +9303,7 @@ const FakeHost = struct {
             .membership = membership,
             .chatRead = chatRead,
             .chatHistory = chatHistory,
+            .recordTool = recordTool,
             .pluginList = pluginList,
             .pluginRoots = pluginRoots,
             .pluginConfigure = pluginConfigure,
@@ -9607,6 +9734,10 @@ const FakeHost = struct {
         // one that can cut is a real `Chat`, which is what the 579 tests
         // use -- see the note above them for why the fake cannot stand in.
         return .{ .lines = one, .more = self.read_more };
+    }
+
+    fn recordTool(_: *anyopaque, _: std.mem.Allocator, _: Bus.Id, _: Request) anyerror!RecordTools.Answer {
+        return .{ .json = "{}" };
     }
 
     fn chatHistory(

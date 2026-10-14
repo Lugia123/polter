@@ -62,6 +62,7 @@ pub const SessionLog = @import("SessionLog.zig");
 pub const TerminalMeta = @import("TerminalMeta.zig");
 pub const Records = @import("Records.zig");
 pub const Sweeper = @import("Sweeper.zig");
+pub const RecordTools = @import("RecordTools.zig");
 pub const skill = @import("skill.zig");
 pub const skill_store = @import("skill_store.zig");
 pub const Transcript = @import("Transcript.zig");
@@ -110,6 +111,7 @@ test {
     _ = TerminalMeta;
     _ = Records;
     _ = Sweeper;
+    _ = RecordTools;
     _ = notify;
     _ = quota;
     _ = QuotaWatch;

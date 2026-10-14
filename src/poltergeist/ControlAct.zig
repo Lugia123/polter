@@ -70,6 +70,10 @@
 //! {"act":"project_rename","from":"web-app","to":"storefront"}
 //! ```
 //!
+//! And one about old records (task 1511): `{"act":"retention_agree"}` -- the
+//! person said OK to the notice that the first sweep would delete
+//! `retention_waiting_bytes`.
+//!
 //! `projects` is **everything the host knows, every time** (`Projects.zig`
 //! has the whole of it): each project, the group its file names, how many
 //! pages it has, and for one that is open the terminals on each page, the
@@ -169,6 +173,9 @@ pub const Act = union(enum) {
     project_failed: struct { name: []const u8, why: ProjectFailure },
     project_remove: Id,
     project_rename: struct { from: []const u8, to: []const u8 },
+    /// The person agreed to the first sweep of old records the notice told
+    /// them about (task 1511).
+    retention_agree,
 };
 
 /// Why the host could not open a project it was ordered to.
@@ -236,6 +243,8 @@ pub const Host = struct {
     projectRemove: *const fn (ctx: *anyopaque, terminal: Id) anyerror!void,
     /// A project is about to be renamed: rename its group, if it has one.
     projectRename: *const fn (ctx: *anyopaque, from: []const u8, to: []const u8) anyerror!void,
+    /// The person agreed to the first sweep of old records.
+    retentionAgree: *const fn (ctx: *anyopaque) anyerror!void,
 };
 
 fn fieldOf(obj: std.json.ObjectMap, name: []const u8) Refusal!std.json.Value {
@@ -286,6 +295,7 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
         project_failed,
         project_remove,
         project_rename,
+        retention_agree,
     };
     const name = std.meta.stringToEnum(Name, try textOf(obj, "act")) orelse return error.BadRequest;
     return switch (name) {
@@ -333,6 +343,7 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
             .from = try textOf(obj, "from"),
             .to = try textOf(obj, "to"),
         } },
+        .retention_agree => .retention_agree,
     };
 }
 
@@ -419,6 +430,7 @@ pub fn perform(
         .project_failed => |f| try host.projectFailed(host.ctx, f.name, f.why),
         .project_remove => |terminal| try host.projectRemove(host.ctx, terminal),
         .project_rename => |r| try host.projectRename(host.ctx, r.from, r.to),
+        .retention_agree => try host.retentionAgree(host.ctx),
     }
 }
 
@@ -450,6 +462,7 @@ const Recorder = struct {
     project_failed: ?ProjectFailure = null,
     asked_remove: ?Id = null,
     renames: usize = 0,
+    agreed: usize = 0,
 
     const Started = struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session };
 
@@ -478,7 +491,14 @@ const Recorder = struct {
             .projectFailed = projectFailed,
             .projectRemove = projectRemove,
             .projectRename = projectRename,
+            .retentionAgree = retentionAgree,
         };
+    }
+
+    fn retentionAgree(ctx: *anyopaque) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        self.agreed += 1;
     }
 
     fn stateProjects(ctx: *anyopaque, list: []const Projects.Stated) anyerror!void {
@@ -1004,4 +1024,11 @@ test "Projects: the core takes what the Windows host writes, line for line" {
     try b.act(lines.next().?, 1_000);
     try testing.expectEqual(@as(usize, 1), b.rec.renames);
     try testing.expectEqual(@as(?[]const u8, null), lines.next());
+}
+
+test "agreeing to the first sweep reaches the host" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const act = try parse(arena.allocator(), "{\"act\":\"retention_agree\"}");
+    try testing.expect(act == .retention_agree);
 }

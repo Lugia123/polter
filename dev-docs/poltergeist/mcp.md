@@ -145,6 +145,10 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 | `terminal_read(id, lines?)` | 终端与行数 | 可见屏幕或最近 N 行纯文本                          | 按可达性 |
 | `group_read(group, since?)` | 群名与游标 | 消息数组                                           | 成员     |
 | `group_history(group, before_seq?, limit?)` | 群名与日志游标 | 群里已经不留的更早消息，取自磁盘日志；这一批的 `seq` 恒为 0，翻页只能用 `log_seq` | 成员 |
+| `record_list(group? \| project? \| task? \| terminal? \| session_id?, since_ms?, until_ms?, cursor?)` | 一个范围，或不给（自己的） | 能回看的终端：标题、在过哪些群（何时进出、是否 `inferred`）、角色、agent 会话（含 `transcript_path`，只给路径）、有哪几天的记录 | 全部，按「谁能读谁的」 |
+| `record_search(query, 范围同上, after_file?, after_line?)` | 字面量，ASCII 不分大小写 | 命中行：终端、日、part、行号、片段；每页 ≤50 条、每次最多读 64MB | 全部，按「谁能读谁的」 |
+| `record_read(terminal, day, part?, from_line?, limit?)` | 一个终端的一天 | 能读的行；`withheld` 是读不到的行数；每页 ≤400 行、≤96KB | 全部，按「谁能读谁的」 |
+| `log_list()` / `log_read(name, from_line?, limit?)` | 日志名 | Polter 自己的日志（插件、Windows 宿主）与崩溃报告的名字；读最后 N 行或从某行起 | 总管 |
 | `group_list()`              | 无         | 自己所在的群名，已排序                             | 全部     |
 | `group_members(group)`      | 群名       | 群里有谁，按 id 排                                 | 成员     |
 | `session_recall()`          | 无         | 上次关机前写下的现场材料，只读，没有任何东西照它接线 | 总管     |

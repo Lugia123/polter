@@ -49,26 +49,84 @@ pub const Settings = struct {
     other: Retention.Limits,
 };
 
-/// What one sweep did, for the log line.
+/// What one sweep did, or -- with `delete` false -- would have done.
 pub const Report = struct {
     files: usize = 0,
     bytes: u64 = 0,
     dirs: usize = 0,
+    /// False: work out what would go, and touch nothing.
+    delete: bool = true,
+    /// Set when the sweep was held back for the person to agree to: how
+    /// much it would have deleted. Nothing was deleted.
+    held_bytes: ?u64 = null,
 };
 
+/// Past this, the first sweep there has ever been waits for the person.
+///
+/// **Why there is a first sweep to ask about.** The rules came with an
+/// upgrade, after the records had been growing with none: a machine that
+/// has been used for a month starts with hundreds of megabytes the new
+/// limits say should go (the development machine: 417MB of transcripts
+/// from one month). That is what the person asked for, and still not
+/// something to find out about afterwards. So the first sweep that would
+/// delete more than this deletes nothing and says how much it would; it
+/// goes ahead once the person has agreed, or has changed the limits.
+/// Under it, it goes ahead and counts as agreed: the next one never asks.
+pub const consent_threshold_bytes: u64 = 50 * 1024 * 1024;
+
+/// Whether the person has agreed to sweeping, as far as the state directory
+/// says: the file `consent_file` is there.
+pub const consent_file = "retention-consent.json";
+
 /// One sweep, now. `today` is the local day, as `daylog.dayOf` writes it;
-/// `dayOf` turns a moment into one (tests pass a fixed one).
-pub fn sweepOnce(alloc: Allocator, io: Io, s: Settings, today: u32, dayOf: Records.DayOf) Report {
+/// `dayOf` turns a moment into one (tests pass a fixed one). Without
+/// `consented`, a sweep over `consent_threshold_bytes` is only measured.
+pub fn sweepOnce(alloc: Allocator, io: Io, s: Settings, today: u32, dayOf: Records.DayOf, consented: bool) Report {
+    return sweepGated(alloc, io, s, today, dayOf, if (consented) null else consent_threshold_bytes);
+}
+
+/// `sweepOnce` with the threshold said: null sweeps whatever it comes to.
+fn sweepGated(alloc: Allocator, io: Io, s: Settings, today: u32, dayOf: Records.DayOf, threshold: ?u64) Report {
+    if (threshold) |limit| {
+        var dry: Report = .{ .delete = false };
+        pass(alloc, io, s, today, dayOf, &dry);
+        if (dry.bytes > limit) return .{ .delete = false, .held_bytes = dry.bytes };
+    }
+    var r: Report = .{};
+    pass(alloc, io, s, today, dayOf, &r);
+    return r;
+}
+
+fn pass(alloc: Allocator, io: Io, s: Settings, today: u32, dayOf: Records.DayOf, r: *Report) void {
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();
     const a = arena.allocator();
+    sweepTranscripts(a, io, s, today, dayOf, r) catch |err| log.warn("sweep: transcripts err={}", .{err});
+    sweepLogs(a, io, s, today, dayOf, r) catch |err| log.warn("sweep: logs err={}", .{err});
+    if (s.shots_dir) |dir| sweepShots(a, io, dir, s.shots, today, dayOf, r) catch |err| log.warn("sweep: screenshots err={}", .{err});
+    sweepRenameBackups(a, io, s.state_dir, today, dayOf, r) catch |err| log.warn("sweep: rename backups err={}", .{err});
+}
 
-    var r: Report = .{};
-    sweepTranscripts(a, io, s, today, dayOf, &r) catch |err| log.warn("sweep: transcripts err={}", .{err});
-    sweepLogs(a, io, s, today, dayOf, &r) catch |err| log.warn("sweep: logs err={}", .{err});
-    if (s.shots_dir) |dir| sweepShots(a, io, dir, s.shots, today, dayOf, &r) catch |err| log.warn("sweep: screenshots err={}", .{err});
-    sweepRenameBackups(a, io, s.state_dir, today, dayOf, &r) catch |err| log.warn("sweep: rename backups err={}", .{err});
-    return r;
+/// Whether `state_dir` holds the person's agreement.
+pub fn hasConsent(io: Io, state_dir: []const u8) bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = std.fmt.bufPrint(&buf, "{s}{c}{s}", .{ state_dir, std.fs.path.sep, consent_file }) catch return false;
+    _ = Io.Dir.cwd().statFile(io, path, .{}) catch return false;
+    return true;
+}
+
+/// Write the agreement down, with how it was given.
+pub fn writeConsent(io: Io, state_dir: []const u8, at_ms: i64, how: []const u8) void {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = std.fmt.bufPrint(&buf, "{s}{c}{s}", .{ state_dir, std.fs.path.sep, consent_file }) catch return;
+    var f = Io.Dir.cwd().createFile(io, path, .{}) catch |err| {
+        log.warn("sweep: could not write the agreement err={}", .{err});
+        return;
+    };
+    defer f.close(io);
+    var line: [160]u8 = undefined;
+    const text = std.fmt.bufPrint(&line, "{{\"at_ms\":{d},\"how\":\"{s}\"}}\n", .{ at_ms, how }) catch return;
+    f.writePositionalAll(io, text, 0) catch {};
 }
 
 /// A file the sweep might delete, with what the rule needs to know.
@@ -82,7 +140,7 @@ fn deleteChosen(io: Io, files: []const Candidate, limits: Retention.Limits, toda
     for (files, 0..) |c, i| plain[i] = c.file;
     const chosen = try Retention.plan(alloc, plain, today, limits);
     for (chosen) |i| {
-        Io.Dir.cwd().deleteFile(io, files[i].path) catch continue;
+        if (r.delete) Io.Dir.cwd().deleteFile(io, files[i].path) catch continue;
         r.files += 1;
         r.bytes += files[i].file.bytes;
     }
@@ -158,15 +216,15 @@ fn sweepTranscripts(a: Allocator, io: Io, s: Settings, today: u32, dayOf: Record
 
     // A directory with nothing left in it goes; a terminal that is still
     // open makes it again at its next line.
-    for (dirs.items) |dir| {
+    if (r.delete) for (dirs.items) |dir| {
         Io.Dir.cwd().deleteDir(io, dir) catch continue;
         r.dirs += 1;
-    }
+    };
 
     // A terminal's notes go once its transcript has, and once nobody has
     // written them for a day -- a terminal that has not printed a line yet
     // has notes and no directory.
-    for (metas.items) |m| {
+    if (r.delete) for (metas.items) |m| {
         var still = false;
         var di = d.iterate();
         while (di.next(io) catch null) |e| {
@@ -181,7 +239,7 @@ fn sweepTranscripts(a: Allocator, io: Io, s: Settings, today: u32, dayOf: Record
         Io.Dir.cwd().deleteFile(io, m.path) catch continue;
         r.files += 1;
         r.bytes += st.size;
-    }
+    };
 }
 
 fn sweepLogs(a: Allocator, io: Io, s: Settings, today: u32, dayOf: Records.DayOf, r: *Report) !void {
@@ -281,7 +339,7 @@ fn sweepRenameBackups(a: Allocator, io: Io, state_dir: []const u8, today: u32, d
         const path = try std.fs.path.join(a, &.{ root, e.name });
         const st = sizeOf(io, path) orelse continue;
         if (Retention.ageInDays(dayOfStat(st, dayOf), today) <= rename_backup_days) continue;
-        Io.Dir.cwd().deleteTree(io, path) catch continue;
+        if (r.delete) Io.Dir.cwd().deleteTree(io, path) catch continue;
         r.dirs += 1;
     }
 }
@@ -296,6 +354,14 @@ mutex: Io.Mutex = .init,
 /// said them, and then nothing is swept.
 settings: ?Settings = null,
 stopping: bool = false,
+/// Not sweeping yet: something the first sweep needs is still being
+/// written (the app's backfill of older groups). `release` lets it go.
+held: bool = false,
+/// The first sweep is waiting for the person: how much it would delete.
+/// Null when it is not waiting. Read with `waitingBytes`.
+waiting: ?u64 = null,
+/// Told, on the sweeper's thread, when `waiting` changes.
+on_waiting: ?struct { f: *const fn (ctx: *anyopaque) void, ctx: *anyopaque } = null,
 generation: std.atomic.Value(u32) = .init(0),
 thread: ?std.Thread = null,
 
@@ -309,17 +375,42 @@ pub fn start(self: *Sweeper) std.Thread.SpawnError!void {
     self.thread = try std.Thread.spawn(.{}, main, .{self});
 }
 
+/// Stop the thread and wait for it. A sweep under way finishes first.
+pub fn stop(self: *Sweeper) void {
+    const t = self.thread orelse return;
+    self.mutex.lockUncancelable(self.io);
+    self.stopping = true;
+    self.mutex.unlock(self.io);
+    self.poke();
+    t.join();
+    self.thread = null;
+}
+
 pub fn deinit(self: *Sweeper) void {
-    if (self.thread) |t| {
-        self.mutex.lockUncancelable(self.io);
-        self.stopping = true;
-        self.mutex.unlock(self.io);
-        self.poke();
-        t.join();
-        self.thread = null;
-    }
+    self.stop();
     if (self.settings) |s| self.free(s);
     self.* = undefined;
+}
+
+/// How much the first sweep would delete, while it waits for the person.
+pub fn waitingBytes(self: *Sweeper) ?u64 {
+    self.mutex.lockUncancelable(self.io);
+    defer self.mutex.unlock(self.io);
+    return self.waiting;
+}
+
+/// Sweep now, whatever the clock says: the person has just agreed.
+pub fn sweepNow(self: *Sweeper) void {
+    self.poke();
+}
+
+/// What the first sweep was waiting for is written: sweep now.
+pub fn release(self: *Sweeper) void {
+    self.mutex.lockUncancelable(self.io);
+    const was = self.held;
+    self.held = false;
+    self.mutex.unlock(self.io);
+    if (was) self.poke();
 }
 
 /// Replace the settings. When they are different from the last -- the
@@ -372,14 +463,26 @@ fn main(self: *Sweeper) void {
         defer arena.deinit();
         self.mutex.lockUncancelable(self.io);
         const stopping = self.stopping;
-        const s: ?Settings = if (self.settings) |v| copy(arena.allocator(), v) catch null else null;
+        const s: ?Settings = if (self.held) null else if (self.settings) |v| copy(arena.allocator(), v) catch null else null;
         self.mutex.unlock(self.io);
         if (stopping) return;
 
         if (s) |settings| {
             const now = daylog.nowMs(self.io);
-            const r = sweepOnce(std.heap.page_allocator, self.io, settings, daylog.dayOf(now), daylog.dayOf);
-            if (r.files > 0 or r.dirs > 0) log.info("sweep: deleted files={d} bytes={d} dirs={d}", .{ r.files, r.bytes, r.dirs });
+            const consented = hasConsent(self.io, settings.state_dir);
+            const r = sweepOnce(std.heap.page_allocator, self.io, settings, daylog.dayOf(now), daylog.dayOf, consented);
+            if (r.held_bytes) |held| {
+                log.info("sweep: waiting for agreement before the first sweep, which would delete bytes={d}", .{held});
+            } else {
+                if (r.files > 0 or r.dirs > 0) log.info("sweep: deleted files={d} bytes={d} dirs={d}", .{ r.files, r.bytes, r.dirs });
+                // Under the threshold the first time: agreed, never asked.
+                if (!consented) writeConsent(self.io, settings.state_dir, now, "first-sweep-under-threshold");
+            }
+            self.mutex.lockUncancelable(self.io);
+            const changed = self.waiting != r.held_bytes;
+            self.waiting = r.held_bytes;
+            self.mutex.unlock(self.io);
+            if (changed) if (self.on_waiting) |cb| cb.f(cb.ctx);
         }
 
         const deadline: Io.Clock.Timestamp = .fromNow(self.io, .{
@@ -493,7 +596,7 @@ test "a sweep keeps each tier by its own rule and never the live file" {
         .group = .unlimited,
         .project = .unlimited,
         .other = .{ .keep_days = 7, .max_bytes = 50 },
-    }, today, fakeDay);
+    }, today, fakeDay, true);
 
     var q: [512]u8 = undefined;
     // In the group that day: kept, however old.
@@ -518,4 +621,64 @@ test "a sweep keeps each tier by its own rule and never the live file" {
 
     try testing.expectEqual(@as(usize, 1), r.dirs);
     try testing.expectEqual(@as(usize, 6), r.files);
+}
+
+test "the first sweep over the threshold deletes nothing and says how much it would" {
+    const alloc = testing.allocator;
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const state = try std.fmt.allocPrint(alloc, "/tmp/polter-sweep-{x}", .{&raw});
+    defer {
+        Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+    var p: [512]u8 = undefined;
+    const dir = try alloc.dupe(u8, try std.fmt.bufPrint(&p, "{s}/terminals/0000000000000022-b", .{state}));
+    defer alloc.free(dir);
+    try put(io, dir, "2026-09-01.jsonl", 300);
+    try put(io, dir, "2026-09-02.jsonl", 300);
+
+    const settings: Settings = .{
+        .state_dir = state,
+        .logs = .unlimited,
+        .shots = .unlimited,
+        .group = .unlimited,
+        .project = .unlimited,
+        .other = .{ .keep_days = 7, .max_bytes = null },
+    };
+    var q: [512]u8 = undefined;
+    const old = try std.fmt.bufPrint(&q, "{s}/2026-09-01.jsonl", .{dir});
+
+    // 600 bytes would go; over a threshold of 500, nothing does.
+    const held = sweepGated(alloc, io, settings, 20261015, fakeDay, 500);
+    try testing.expectEqual(@as(?u64, 600), held.held_bytes);
+    try testing.expect(exists(io, old));
+
+    // Under it, the sweep goes ahead.
+    const under = sweepGated(alloc, io, settings, 20261015, fakeDay, 600);
+    try testing.expectEqual(@as(?u64, null), under.held_bytes);
+    try testing.expectEqual(@as(usize, 2), under.files);
+    try testing.expect(!exists(io, old));
+}
+
+test "the agreement is a file in the state directory" {
+    const alloc = testing.allocator;
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const state = try std.fmt.allocPrint(alloc, "/tmp/polter-consent-{x}", .{&raw});
+    defer {
+        Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+    try Io.Dir.cwd().createDirPath(io, state);
+    try testing.expect(!hasConsent(io, state));
+    writeConsent(io, state, 1, "acknowledged");
+    try testing.expect(hasConsent(io, state));
 }
