@@ -31,11 +31,21 @@ extension Ghostty {
         /// Binding that reflects whether the mouse is hovering over this view.
         @Binding var isHovering: Bool
 
+        /// How far the pointer has to move while held down before a drag
+        /// starts. Zero starts it on the first movement, as the grab handle
+        /// always has; a pane's title has a threshold so that it can be clicked.
+        var dragThreshold: CGFloat = 0
+
+        /// Called when the pointer goes up again without having started a drag.
+        var onClick: (() -> Void)?
+
         var body: some View {
             SurfaceDragSourceViewRepresentable(
                 surfaceView: surfaceView,
                 isDragging: $isDragging,
-                isHovering: $isHovering)
+                isHovering: $isHovering,
+                dragThreshold: dragThreshold,
+                onClick: onClick)
             .preference(key: DraggingSurfaceKey.self, value: isDragging ? surfaceView.id : nil)
         }
     }
@@ -46,10 +56,14 @@ extension Ghostty {
         let surfaceView: SurfaceView
         @Binding var isDragging: Bool
         @Binding var isHovering: Bool
+        let dragThreshold: CGFloat
+        let onClick: (() -> Void)?
 
         func makeNSView(context: Context) -> SurfaceDragSourceView {
             let view = SurfaceDragSourceView()
             view.surfaceView = surfaceView
+            view.dragThreshold = dragThreshold
+            view.onClick = onClick
             view.onDragStateChanged = { dragging in
                 isDragging = dragging
             }
@@ -63,6 +77,8 @@ extension Ghostty {
 
         func updateNSView(_ nsView: SurfaceDragSourceView, context: Context) {
             nsView.surfaceView = surfaceView
+            nsView.dragThreshold = dragThreshold
+            nsView.onClick = onClick
             nsView.onDragStateChanged = { dragging in
                 isDragging = dragging
             }
@@ -95,6 +111,15 @@ extension Ghostty {
         /// Used to update the hover state for visual feedback in the parent view.
         var onHoverChanged: ((Bool) -> Void)?
 
+        /// See `SurfaceDragSource.dragThreshold`.
+        var dragThreshold: CGFloat = 0
+
+        /// See `SurfaceDragSource.onClick`.
+        var onClick: (() -> Void)?
+
+        /// Where the pointer went down, in window coordinates; nil when it is up.
+        private var mouseDownLocation: NSPoint?
+
         /// Whether we are currently in a mouse tracking loop (between mouseDown
         /// and either mouseUp or drag initiation). Used to determine cursor state.
         private var isTracking: Bool = false
@@ -121,6 +146,21 @@ extension Ghostty {
             // window's drag handler. This fixes issue #10110 where grab handles
             // would drag the window instead of initiating pane drags.
             // Don't call super - the drag will be initiated in mouseDragged.
+            mouseDownLocation = event.locationInWindow
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            // A drag session takes the mouse-up for itself, so reaching here
+            // means the pointer never went far enough: it was a click.
+            // The grab handle has no click and passes the mouse-up on, as it
+            // did before it could be clicked.
+            let wasDown = mouseDownLocation != nil
+            mouseDownLocation = nil
+            guard let onClick else {
+                super.mouseUp(with: event)
+                return
+            }
+            if wasDown { onClick() }
         }
 
         override func updateTrackingAreas() {
@@ -152,6 +192,10 @@ extension Ghostty {
 
         override func mouseDragged(with event: NSEvent) {
             guard !isTracking, let surfaceView = surfaceView else { return }
+            guard SurfaceDragGrip.isDrag(
+                from: mouseDownLocation ?? event.locationInWindow,
+                to: event.locationInWindow,
+                threshold: dragThreshold) else { return }
 
             // Create our dragging item from our transferable
             guard let pasteboardItem = surfaceView.pasteboardItem() else { return }
@@ -188,6 +232,7 @@ extension Ghostty {
                 )
             }
 
+            mouseDownLocation = nil
             onDragStateChanged?(true)
             let session = beginDraggingSession(with: [item], event: event, source: self)
 

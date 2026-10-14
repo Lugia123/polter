@@ -40,6 +40,7 @@
       "macos/Sources/Features/ControlRoom/PaneStackStripView.swift",
       "macos/Sources/Features/ControlRoom/TerminalPresence.swift",
       "macos/Sources/Features/Splits/SplitTree.swift",
+      "macos/Sources/Features/Splits/SurfaceDragGrip.swift",
       "macos/Sources/Helpers/Backport.swift",
       "macos/Sources/Helpers/Extensions/Array+Extension.swift",
       "macos/Sources/Features/Terminal/TabAccessory.swift",
@@ -119,6 +120,7 @@
       "macos/Tests/Splits/SplitTreeTests.swift",
       "macos/Tests/Splits/SplitStackTests.swift",
       "macos/Tests/Splits/StoredBytesTests.swift",
+      "macos/Tests/Splits/SurfaceDragGripTests.swift",
       "macos/Tests/Splits/TerminalSplitDropZoneTests.swift"
     ],
     "out": [

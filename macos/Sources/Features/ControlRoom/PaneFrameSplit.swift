@@ -50,6 +50,10 @@ private struct PaneFrameGroundKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct PaneHasTitleKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
     /// Where the panes of this tab are, as far as a frame cares.
     var paneFramePlace: PaneFrame.Place {
@@ -62,6 +66,13 @@ extension EnvironmentValues {
     var paneFrameGround: Bool {
         get { self[PaneFrameGroundKey.self] }
         set { self[PaneFrameGroundKey.self] = newValue }
+    }
+
+    /// Whether the pane this is inside wears a title. It is then picked up
+    /// by the title, and the terminal draws no drag handle (task 1508).
+    var paneHasTitle: Bool {
+        get { self[PaneHasTitleKey.self] }
+        set { self[PaneHasTitleKey.self] = newValue }
     }
 }
 
@@ -105,6 +116,7 @@ private struct PaneFramed: ViewModifier {
 
     @EnvironmentObject private var ghostty: Ghostty.App
     @ObservedObject private var source = PaneFrameSource.shared
+    @ObservedObject private var lender = ControlRoomLender.shared
     @Environment(\.paneFramePlace) private var place
     @Environment(\.paneFrameGround) private var ground
     @Environment(\.ghosttyLastFocusedSurface) private var lastFocused
@@ -119,12 +131,27 @@ private struct PaneFramed: ViewModifier {
         // choice here did to the terminal (task 1461). A pane with nothing
         // of its own whose neighbours are framed keeps the same gap; with
         // no ground it is as it ever was.
-        content.modifier(PaneFrameChrome(
-            wears: drawn?.wears, title: drawn?.title, caption: nil,
-            focused: lastFocused?.value === surfaceView,
-            well: ghostty.config.backgroundColor,
-            cover: Look.theme(scheme).windowBase.color,
-            outside: drawn != nil || ground ? PaneFrameSplit.inset : 0))
+        let outside = drawn != nil || ground ? PaneFrameSplit.inset : 0
+        content
+            .environment(\.paneHasTitle, drawn != nil)
+            .modifier(PaneFrameChrome(
+                wears: drawn?.wears, title: drawn?.title, caption: nil,
+                focused: lastFocused?.value === surfaceView,
+                well: ghostty.config.backgroundColor,
+                cover: Look.theme(scheme).windowBase.color,
+                outside: outside))
+            // The title is where the pane is picked up (task 1508): a layer
+            // over the title band, and nothing round what is framed.
+            .overlay(alignment: .top) {
+                if let drawn {
+                    Ghostty.SurfaceTitleGrip(
+                        surfaceView: surfaceView,
+                        dragHandle: ghostty.config.dragHandle,
+                        lent: lender.lentID == surfaceView.id)
+                    .frame(height: PaneFrameChrome.room(for: drawn.wears).top)
+                    .padding(outside)
+                }
+            }
     }
 }
 
