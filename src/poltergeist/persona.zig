@@ -834,6 +834,7 @@ pub fn writePersona(w: *std.Io.Writer, p: Persona) std.Io.Writer.Error!void {
         try writeStrings(w, o.stale);
         try w.writeAll(",\"reason\":");
         if (o.reason) |r| try w.print("{f}", .{jstr(r)}) else try w.writeAll("null");
+        try official.writeWhy(w, "reason", o.reason);
         try w.writeAll("}");
     }
     try w.writeAll("}");

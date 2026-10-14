@@ -230,7 +230,7 @@ pub fn status(aa: Allocator, copy: UserCopy, shipped_bytes: []const u8, read: of
         .none => return .{ .state = .pristine, .reason = null },
         .broken => |path| return .{
             .state = .unknown,
-            .reason = try std.fmt.allocPrint(aa, "your copy at {s} does not read as this skill; the shipped one is in use", .{path}),
+            .reason = try official.say(aa, .skill_copy_not_this_skill, path),
         },
         .ok => {},
     }
@@ -241,7 +241,7 @@ pub fn status(aa: Allocator, copy: UserCopy, shipped_bytes: []const u8, read: of
             .{ .state = .modified_stale, .reason = null },
         .none => .{
             .state = .unknown,
-            .reason = "this copy was not saved from Polter, so whether the official text has changed since is not known",
+            .reason = official.sayConst(.skill_copy_unrecorded),
         },
         .unknown => |why| .{ .state = .unknown, .reason = why },
     };
@@ -285,6 +285,7 @@ pub fn writeCatalogJson(
             st.state,
         });
         if (st.reason) |r| try w.print("{f}", .{std.json.fmt(r, .{})}) else try w.writeAll("null");
+        try official.writeWhy(w, "reason", st.reason);
         try w.print(",\"source\":{f},\"shipped\":{f}}}", .{
             std.json.fmt(text, .{}),
             std.json.fmt(shipped_bytes, .{}),
@@ -445,6 +446,82 @@ pub fn restore(
         log.warn("poltergeist: could not write {s}: {t}", .{ opath, err });
         return error.CouldNotWrite;
     };
+}
+
+/// Where skills are read from, for a caller that has to act on all of them.
+/// No defaults: a caller that forgets the configuration root would set no
+/// copy aside and say nothing.
+pub const Dirs = struct {
+    config_root: ?[]const u8,
+    resources: ?[]const u8,
+};
+
+/// One copy `setAllAside` moved, so that it can be put back.
+pub const Moved = struct { from: []const u8, to: []const u8 };
+
+/// Move every person's copy of every shipped skill out of use, keeping it:
+/// `<name>.md` becomes `<name>.md.restored-<hex>` beside where it was, in
+/// both places a copy can be. Only `<name>.md` is ever read as a copy, so
+/// the renamed file is not used, and it is there to be looked at.
+///
+/// The second half of "Restore All" (task 1514). That used to move the
+/// overrides file aside and nothing else, while the confirmation said every
+/// official role **and skill** went back: a copy of `supervising.md` stayed
+/// in use, measured on the test machine.
+///
+/// **All or nothing.** When one rename fails, the ones already done are put
+/// back before the error returns, so the caller can stop without having
+/// changed anything. The moves are returned, in `aa`, for a caller whose
+/// own next step may fail too (`putBack`).
+///
+/// Only shipped names are touched: the directory is the person's, and a
+/// file in it that is not a copy of a shipped skill is not this function's.
+/// What ships has to be known for that; when it is not, nothing moves and
+/// the answer is `CouldNotWrite` -- a restore that quietly skipped the
+/// skills is the defect this exists to end.
+pub fn setAllAside(aa: Allocator, io: std.Io, dirs: Dirs) WriteError![]const Moved {
+    // No configuration directory: there is nowhere a copy could be.
+    const root = dirs.config_root orelse return &.{};
+    const names = switch (shipped(aa, io, dirs.resources)) {
+        .unreadable => |err| {
+            log.warn("poltergeist: the shipped skills could not be listed ({t}); no copy set aside", .{err});
+            return error.CouldNotWrite;
+        },
+        .names => |n| n,
+    };
+    var raw: [4]u8 = undefined;
+    io.random(&raw);
+
+    var moved: std.ArrayList(Moved) = .empty;
+    const cwd = std.Io.Dir.cwd();
+    for (names) |name| {
+        for ([_]bool{ false, true }) |legacy| {
+            const from = (if (legacy) skill.legacyUserPath(aa, root, name) else skill.userPath(aa, root, name)) catch |err| switch (err) {
+                // `shipped` lists valid names only.
+                error.BadName => continue,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+            const to = try std.fmt.allocPrint(aa, "{s}.restored-{x}", .{ from, &raw });
+            cwd.rename(from, cwd, to, io) catch |err| switch (err) {
+                error.FileNotFound => continue,
+                else => {
+                    log.warn("poltergeist: could not set {s} aside: {t}", .{ from, err });
+                    putBack(io, moved.items);
+                    return error.CouldNotWrite;
+                },
+            };
+            try moved.append(aa, .{ .from = from, .to = to });
+        }
+    }
+    for (moved.items) |m| log.warn("poltergeist: your copy {s} was set aside as {s}", .{ m.from, m.to });
+    return moved.items;
+}
+
+/// Undo `setAllAside`, as far as the disk lets it.
+pub fn putBack(io: std.Io, moved: []const Moved) void {
+    const cwd = std.Io.Dir.cwd();
+    for (moved) |m| cwd.rename(m.to, cwd, m.from, io) catch |err|
+        log.warn("poltergeist: could not put {s} back from {s}: {t}", .{ m.from, m.to, err });
 }
 
 // -- tests ------------------------------------------------------------------

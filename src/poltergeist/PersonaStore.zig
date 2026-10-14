@@ -27,6 +27,7 @@ const Allocator = std.mem.Allocator;
 
 const persona = @import("persona.zig");
 const official = @import("official.zig");
+const skill_store = @import("skill_store.zig");
 const Bus = @import("Bus.zig");
 const global = @import("../global.zig");
 const internal_os = @import("../os/main.zig");
@@ -334,7 +335,7 @@ pub fn readOverrides(aa: Allocator, io: std.Io, personas_path: []const u8) offic
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, aa, .limited(max_bytes)) catch |err| switch (err) {
         error.FileNotFound => return .absent,
         else => return .{
-            .unreadable = std.fmt.allocPrint(aa, "could not read {s}: {t}", .{ path, err }) catch "could not read official-overrides.json",
+            .unreadable = official.say(aa, .overrides_unreadable, std.fmt.allocPrint(aa, "{s}: {t}", .{ path, err }) catch path) catch "could not read official-overrides.json",
         },
     };
     return .{ .bytes = bytes };
@@ -530,9 +531,23 @@ fn putOfficial(
 /// and whatever was in the file is still on disk for the person to look
 /// at. The caller asks them first, in those words.
 ///
+/// **"And skill" is done here, first** (task 1514): every person's copy of
+/// a shipped skill is set aside the same way (`skill_store.setAllAside`),
+/// and only then the file. Setting the skills aside fails as a whole or not
+/// at all; when the file then cannot be moved, the skills are put back. It
+/// used to move the file alone, so a copy of a skill stayed in use under a
+/// confirmation that said it would not.
+///
 /// Not reachable by an agent: there is no method for it, only the library
 /// window's call.
-pub fn restore(self: *PersonaStore, io: std.Io, path: []const u8, key: []const u8, everything: bool) WriteError!void {
+pub fn restore(
+    self: *PersonaStore,
+    io: std.Io,
+    path: []const u8,
+    key: []const u8,
+    everything: bool,
+    skills: skill_store.Dirs,
+) WriteError!void {
     if (!official.isKey(key)) return error.NoSuchPersona;
     // With the library file unreadable a reload keeps the last good set,
     // official roles and all, so the restore would be written and not seen.
@@ -549,8 +564,13 @@ pub fn restore(self: *PersonaStore, io: std.Io, path: []const u8, key: []const u
         error.OutOfMemory => return error.OutOfMemory,
         error.Unreadable => {
             if (!everything) return error.OverridesUnreadable;
+            const moved = skill_store.setAllAside(sa, io, skills) catch |e| return switch (e) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.CouldNotWrite,
+            };
             _ = setOverridesAside(sa, io, path) catch |e| {
                 log.warn("poltergeist: could not move the overrides file aside: {t}", .{e});
+                skill_store.putBack(io, moved);
                 return error.CouldNotWrite;
             };
             self.load(io, path);
@@ -719,6 +739,7 @@ pub fn writeCatalogJson(self: *const PersonaStore, w: *std.Io.Writer, path: ?[]c
     // whole; null when it could, or when there is none.
     try w.writeAll("],\"overrides_error\":");
     if (self.overrides_error) |e| try w.print("{f}", .{std.json.fmt(e, .{})}) else try w.writeAll("null");
+    try official.writeWhy(w, "overrides_error", self.overrides_error);
     try w.writeAll("}");
 }
 
@@ -1254,6 +1275,10 @@ fn tmpDir(alloc: Allocator, io: std.Io) ![]const u8 {
     return dir;
 }
 
+/// For the tests of roles alone: no configuration directory, so no skill
+/// copy can exist and `restore` has none to set aside.
+const no_skills: skill_store.Dirs = .{ .config_root = null, .resources = null };
+
 test "personas: a bad file on the first read still leaves the official roles" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -1766,14 +1791,14 @@ test "personas: the person's change to an official role is an override, and rest
     try testing.expectEqualStrings("my own rules", other.set.find(persona.supervisor_key).?.instructions.?);
 
     // Back to the shipped one.
-    try b.store.restore(b.io(), b.path, persona.supervisor_key, false);
+    try b.store.restore(b.io(), b.path, persona.supervisor_key, false, no_skills);
     try testing.expectEqual(S.pristine, b.state(persona.supervisor_key));
     try testing.expectEqualStrings(shipped_prose, b.role(persona.supervisor_key).instructions.?);
     try testing.expect(!b.role(persona.supervisor_key).polter.watch);
 
     // Restoring what was never changed is not an error and writes nothing.
-    try b.store.restore(b.io(), b.path, persona.tester_key, false);
-    try testing.expectError(error.NoSuchPersona, b.store.restore(b.io(), b.path, "archer", false));
+    try b.store.restore(b.io(), b.path, persona.tester_key, false, no_skills);
+    try testing.expectError(error.NoSuchPersona, b.store.restore(b.io(), b.path, "archer", false, no_skills));
 }
 
 test "personas: keeping mine clears the notice and changes nothing the person wrote" {
@@ -1804,7 +1829,7 @@ test "personas: keeping mine clears the notice and changes nothing the person wr
     try testing.expectEqual(S.modified_stale, b.state(persona.supervisor_key));
 
     // Nothing changed is nothing to keep; nothing readable cannot be kept.
-    try b.store.restore(b.io(), b.path, key, false);
+    try b.store.restore(b.io(), b.path, key, false, no_skills);
     try b.store.acknowledge(b.io(), b.path, key);
     try testing.expectEqual(S.pristine, b.state(key));
     try b.write(b.opath, "{\"version\":1,\"roles\":{\"polter-tester\":{\"nope\":{\"value\":1,\"base\":1}}}}");
@@ -1898,7 +1923,7 @@ test "personas: restoring a role whose entry cannot be read clears that entry an
     // One entry being wrong is not the file being wrong.
     try testing.expect(b.store.overrides_error == null);
 
-    try b.store.restore(b.io(), b.path, persona.tester_key, false);
+    try b.store.restore(b.io(), b.path, persona.tester_key, false, no_skills);
     try testing.expectEqual(S.pristine, b.state(persona.tester_key));
     // The other role's change and the skill's record are where they were.
     try testing.expectEqual(S.modified, b.state(persona.supervisor_key));
@@ -1927,7 +1952,7 @@ test "personas: a file of changes that cannot be read is kept, and is only set a
     // One role cannot be taken out of a file nobody can read, and saying
     // so is not the same as doing it to all of them: refused, file as it
     // was.
-    try testing.expectError(error.OverridesUnreadable, b.store.restore(b.io(), b.path, persona.supervisor_key, false));
+    try testing.expectError(error.OverridesUnreadable, b.store.restore(b.io(), b.path, persona.supervisor_key, false, no_skills));
     try testing.expectEqualStrings(broken, try b.read(b.opath));
     // Nor is a new change written over it.
     var mine = b.role(persona.tester_key);
@@ -1937,7 +1962,7 @@ test "personas: a file of changes that cannot be read is kept, and is only set a
 
     // Asked for everything: the file is moved aside, whole, and every
     // official role is the shipped one.
-    try b.store.restore(b.io(), b.path, persona.supervisor_key, true);
+    try b.store.restore(b.io(), b.path, persona.supervisor_key, true, no_skills);
     try testing.expect(!b.exists(b.opath));
     try testing.expectEqual(S.pristine, b.state(persona.supervisor_key));
     try testing.expectEqual(S.pristine, b.state(persona.tester_key));
@@ -1952,6 +1977,87 @@ test "personas: a file of changes that cannot be read is kept, and is only set a
             kept = try std.fmt.allocPrint(b.arena.allocator(), "{s}/{s}", .{ b.dir, entry.name });
     }
     try testing.expectEqualStrings(broken, try b.read(kept.?));
+}
+
+/// The names under `dir` that start with `prefix`, joined to `dir`.
+fn namesStarting(b: *Bench, dir: []const u8, prefix: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    var d = try std.Io.Dir.cwd().openDir(b.io(), dir, .{ .iterate = true });
+    defer d.close(b.io());
+    var it = d.iterate();
+    while (try it.next(b.io())) |entry| {
+        if (std.mem.startsWith(u8, entry.name, prefix))
+            try out.append(b.arena.allocator(), try std.fmt.allocPrint(b.arena.allocator(), "{s}/{s}", .{ dir, entry.name }));
+    }
+    return out.items;
+}
+
+test "personas: restoring everything sets every copy of a shipped skill aside too, and keeps it" {
+    var b: Bench = undefined;
+    try b.init();
+    defer b.deinit();
+    const aa = b.arena.allocator();
+    const skill = @import("skill.zig");
+
+    const config = try std.fmt.allocPrint(aa, "{s}/config", .{b.dir});
+    const res = try std.fmt.allocPrint(aa, "{s}/res", .{b.dir});
+    try b.write(try skill.resourcePath(aa, res, "supervising"), "---\nname: supervising\n---\nshipped\n");
+    try b.write(try skill.resourcePath(aa, res, "reading-a-terminal"), "---\nname: reading-a-terminal\n---\nread\n");
+    // A copy in each place one can be, and a file of the person's own that
+    // is not a copy of anything shipped.
+    const mine = "---\nname: supervising\n---\nR9-MINE-SKILL\n";
+    const old = "---\nname: reading-a-terminal\n---\nOLD-PLACE\n";
+    const sup = try skill.userPath(aa, config, "supervising");
+    const rd = try skill.legacyUserPath(aa, config, "reading-a-terminal");
+    const own = try std.fmt.allocPrint(aa, "{s}/polter/skills/my-own.md", .{config});
+    try b.write(sup, mine);
+    try b.write(rd, old);
+    try b.write(own, "mine");
+    try b.write(b.opath, "{\"version\":1,");
+    b.store.load(b.io(), b.path);
+
+    const dirs: skill_store.Dirs = .{ .config_root = config, .resources = res };
+    try b.store.restore(b.io(), b.path, persona.supervisor_key, true, dirs);
+
+    // Neither copy is in use any more: the shipped text is.
+    try testing.expect(!b.exists(sup));
+    try testing.expect(!b.exists(rd));
+    try testing.expectEqual(skill_store.Origin.shipped, (try skill_store.resolve(aa, b.io(), "supervising", config, res)).?.origin);
+    try testing.expectEqual(skill_store.Origin.shipped, (try skill_store.resolve(aa, b.io(), "reading-a-terminal", config, res)).?.origin);
+    // Both kept, whole, beside where they were.
+    const kept_sup = try namesStarting(&b, std.fs.path.dirname(sup).?, "supervising.md.restored-");
+    const kept_rd = try namesStarting(&b, std.fs.path.dirname(rd).?, "reading-a-terminal.md.restored-");
+    try testing.expectEqual(@as(usize, 1), kept_sup.len);
+    try testing.expectEqual(@as(usize, 1), kept_rd.len);
+    try testing.expectEqualStrings(mine, try b.read(kept_sup[0]));
+    try testing.expectEqualStrings(old, try b.read(kept_rd[0]));
+    // Not a copy of anything shipped: not touched.
+    try testing.expectEqualStrings("mine", try b.read(own));
+    // And the file of changes, as before.
+    try testing.expect(!b.exists(b.opath));
+}
+
+test "personas: when what ships is not known, restoring everything moves nothing" {
+    var b: Bench = undefined;
+    try b.init();
+    defer b.deinit();
+    const aa = b.arena.allocator();
+    const skill = @import("skill.zig");
+
+    const config = try std.fmt.allocPrint(aa, "{s}/config", .{b.dir});
+    const sup = try skill.userPath(aa, config, "supervising");
+    try b.write(sup, "---\nname: supervising\n---\nmine\n");
+    const broken = "{\"version\":1,";
+    try b.write(b.opath, broken);
+    b.store.load(b.io(), b.path);
+
+    // No resources directory: which copies are copies of a shipped skill
+    // cannot be told, so none is moved -- and then the file is not either,
+    // rather than half a "Restore All".
+    const dirs: skill_store.Dirs = .{ .config_root = config, .resources = null };
+    try testing.expectError(error.CouldNotWrite, b.store.restore(b.io(), b.path, persona.supervisor_key, true, dirs));
+    try testing.expect(b.exists(sup));
+    try testing.expectEqualStrings(broken, try b.read(b.opath));
 }
 
 test "personas: a role the file has under an official key survives every save, and can be kept under a new key" {
