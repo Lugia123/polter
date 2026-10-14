@@ -1065,6 +1065,10 @@ pub fn controlPresence(self: *App, json: []const u8) !void {
     const sight = try poltergeistpkg.ControlNotify.Sight.parse(self.alloc, json);
     self.control_sight.deinit(self.alloc);
     self.control_sight = sight;
+    // Hosts say this only when it changes, so one line per change. The line
+    // a notification decision can be checked against (task 1531: a round
+    // where it never took effect left nothing to read).
+    log.info("control room: presence in_front={} cards={d}", .{ sight.in_front, sight.cards.len });
 }
 
 /// Something the person did in the control room (`ControlAct.zig` has the

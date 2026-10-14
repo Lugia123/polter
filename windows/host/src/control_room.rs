@@ -1623,6 +1623,11 @@ fn say_presence(now: polter_control_room::alert::Presence) {
         Err(_) => return,
     };
     let Some(json) = json else { return };
+    // Only when it changed (`alert::Reporter`). The line a notification
+    // decision can be checked against: on the Mac this was never true and
+    // nothing said so (task 1531).
+    // process-wide: the control room is one per process
+    crate::plogf!("[control-room] presence {json}");
     let Some(api) = crate::api_opt() else { return };
     let app = crate::app_opt();
     if app.is_null() {

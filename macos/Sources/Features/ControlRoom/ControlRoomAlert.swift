@@ -50,12 +50,33 @@ enum ControlRoomAlert {
         return lines.joined(separator: "\n")
     }
 
+    /// Whether the control room is what the person is looking at: its
+    /// window has the keyboard, in the application that is active, and is
+    /// not on its way out.
+    ///
+    /// **Not whether the window is "visible" by its occlusion state** (task
+    /// 1531). The first version asked that as well, and on the eleventh
+    /// round the control room was never in front however it came there --
+    /// and the right column read "showing in the supervisor's tab", which is
+    /// what the same controller draws when it thinks its window is covered.
+    /// A key window of the active application is on screen; the occlusion
+    /// state adds nothing but a way to be wrong.
+    static func inFront(appActive: Bool, windowIsKey: Bool, closing: Bool) -> Bool {
+        appActive && windowIsKey && !closing
+    }
+
     /// The control room's half of where the person is: in front or not,
     /// and which cards are on screen. Said to the core when it changes and
     /// at no other time (`ghostty_app_control_presence`).
     struct Presence: Equatable {
         var inFront = false
         var cards: [String] = []
+
+        /// What to say for these facts: out of front, no card is in sight,
+        /// whatever the list holds.
+        static func of(inFront: Bool, cards: [String]) -> Presence {
+            Presence(inFront: inFront, cards: inFront ? cards : [])
+        }
 
         /// The JSON the core reads. The cards in the order given; the core
         /// reads them as a set.

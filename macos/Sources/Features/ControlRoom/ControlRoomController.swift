@@ -56,6 +56,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// the core was last told about where the person is (task 1505).
     private var cardsInSight: [String] = []
     private var presence = ControlRoomAlert.PresenceReporter()
+    private var appActivity: [NSObjectProtocol] = []
     private var closing = false
 
     init(_ ghostty: Ghostty.App, selection: String? = nil) {
@@ -112,6 +113,15 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         model.onCardsInSight = { [weak self] cards in
             self?.cardsInSight = cards
             self?.reportPresence()
+        }
+        // **The application coming to the front is its own moment** (task
+        // 1531). Clicking back from another application makes this window
+        // key before `NSApp.isActive` is true, and nothing else follows to
+        // ask again -- so the control room stayed "behind" while in front.
+        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
+            appActivity.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.reportPresence() }
+            })
         }
         model.askForTerminal = { [weak self] in self?.lend(.askedFor) }
         model.perform = { try actions.perform($0) }
@@ -195,6 +205,9 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         giveListTheKeyboardIfNobodyHasIt()
         syncLentFocus()
         reportPresence()
+        // And once more after this turn of the run loop: becoming key is
+        // said before the activation it is part of has finished.
+        DispatchQueue.main.async { [weak self] in self?.reportPresence() }
     }
 
     /// A window the system restored comes back with itself as first
@@ -235,9 +248,14 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// this window having the keyboard in the active application and not
     /// being covered -- this window's, not the application's.
     private func reportPresence() {
-        let inFront = !closing && isInFront && isVisible
-        let now = ControlRoomAlert.Presence(inFront: inFront, cards: inFront ? cardsInSight : [])
+        let active = NSApp.isActive
+        let key = window?.isKeyWindow ?? false
+        let inFront = ControlRoomAlert.inFront(appActive: active, windowIsKey: key, closing: closing)
+        let now = ControlRoomAlert.Presence.of(inFront: inFront, cards: cardsInSight)
         guard let json = presence.report(now), let app = ghostty.app else { return }
+        // Only when it changed (`PresenceReporter`). The inputs ride along:
+        // the eleventh round could not tell which of them was wrong.
+        Ghostty.logger.info("control room: presence \(json, privacy: .public) (active=\(active) key=\(key) visible=\(self.isVisible) cards=\(self.cardsInSight.count))")
         var refusal = [CChar](repeating: 0, count: 64)
         let taken = json.withCString { ptr in
             ghostty_app_control_presence(app, ptr, UInt(strlen(ptr)), &refusal, UInt(refusal.count))
@@ -530,6 +548,8 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         // Closed is not in front: nothing on it is in sight any more.
         closing = true
         reportPresence()
+        appActivity.forEach(NotificationCenter.default.removeObserver)
+        appActivity = []
         lend(.closing)
         detail.giveBack()
         lender.onReclaim = nil

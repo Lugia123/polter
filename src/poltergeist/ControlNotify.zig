@@ -271,10 +271,11 @@ pub fn step(
     var wake: ?u64 = null;
 
     for (merged.items) |*m| {
-        // The supervisor's own wait is the thing while there is one;
-        // otherwise the first row's, in the snapshot's order.
+        // The things this supervisor's rows are about. While the supervisor
+        // itself waits, that is the one thing: its workers' states coming
+        // and going under it are not new. Otherwise each waiting row's own
+        // wait is a thing.
         var own: ?Need = null;
-        var first_waiting: ?usize = null;
         var waiting: usize = 0;
         for (m.groups.items) |gi| {
             const r = rows[gi];
@@ -285,55 +286,85 @@ pub fn step(
             if (r.own) |o| try current.put(arena, Signature.of(o), {});
             if (r.snoozed or !interrupts(r.top.kind)) continue;
             waiting += 1;
-            if (first_waiting == null) first_waiting = gi;
         }
-        const first = first_waiting orelse continue;
-        const need = own orelse rows[first].top;
-        const sig = Signature.of(need);
-        m.first = first;
+        if (waiting == 0) continue;
+
+        // Every thing of this supervisor's that is waiting, with the row
+        // that shows it.
+        var things: std.ArrayListUnmanaged(Thing) = .empty;
+        for (m.groups.items) |gi| {
+            const r = rows[gi];
+            if (r.snoozed or !interrupts(r.top.kind)) continue;
+            const need = own orelse r.top;
+            const sig = Signature.of(need);
+            const seen = for (things.items) |t| {
+                if (std.meta.eql(t.signature, sig)) break true;
+            } else false;
+            if (!seen) try things.append(arena, .{ .signature = sig, .need = need, .row = gi });
+        }
+
+        // **One thing is said once, and so is what it was said with**
+        // (task 1531). A thing that went out as "and 1 more" has been said:
+        // when the group named first stops waiting, the one it carried is
+        // not a new call. Only a thing nobody has been told of is news --
+        // which a changed state always is, since its moment changes.
+        //
+        // Which of the new ones a call is about: one that is due, an
+        // approval first (quiet hours never hold those), then the
+        // snapshot's order.
+        var lead: ?Thing = null;
+        var next_due: ?u64 = null;
+        for (things.items) |t| {
+            if (self.done.contains(t.signature)) continue;
+            const due = t.need.since_ms +| delay_ms;
+            if (now_ms < due) {
+                next_due = earlier(next_due, due);
+                continue;
+            }
+            if (lead == null or (t.need.kind == .needs_approval and lead.?.need.kind != .needs_approval)) lead = t;
+        }
+        const l = lead orelse {
+            if (next_due) |d| wake = earlier(wake, d);
+            continue;
+        };
+        const r = rows[l.row];
+        m.first = l.row;
         m.more = waiting - 1;
 
-        if (self.done.contains(sig)) continue;
-
-        const due = need.since_ms +| delay_ms;
-        if (now_ms < due) {
-            wake = earlier(wake, due);
-            continue;
-        }
-
-        const r = rows[first];
         if (inSight(presence, rows, m.groups.items)) {
-            try self.done.put(alloc, sig, {});
-            try held.append(arena, .{ .group = r.group, .signature = sig, .why = .card_in_sight });
+            try self.settle(alloc, things.items);
+            try held.append(arena, .{ .group = r.group, .signature = l.signature, .why = .card_in_sight });
             continue;
         }
-        if (need.terminal) |t| {
+        if (l.need.terminal) |t| {
             if (inUse(presence, t)) {
-                try self.done.put(alloc, sig, {});
-                try held.append(arena, .{ .group = r.group, .signature = sig, .why = .in_the_terminal });
+                try self.settle(alloc, things.items);
+                try held.append(arena, .{ .group = r.group, .signature = l.signature, .why = .in_the_terminal });
                 continue;
             }
         }
         switch (hours) {
             .open => {},
-            .closed_for_ms => |ms| if (need.kind != .needs_approval) {
+            .closed_for_ms => |ms| if (l.need.kind != .needs_approval) {
                 wake = earlier(wake, now_ms +| @max(ms, 1));
-                try held.append(arena, .{ .group = r.group, .signature = sig, .why = .quiet_hours });
+                try held.append(arena, .{ .group = r.group, .signature = l.signature, .why = .quiet_hours });
                 continue;
             },
         }
 
-        try self.done.put(alloc, sig, {});
+        // Everything it says is said: the one it names and the ones it
+        // counts in "N more", due or not.
+        try self.settle(alloc, things.items);
         const own_is_it = own != null;
         try alerts.append(arena, .{
             .group = r.group,
             .more = m.more,
-            .kind = need.kind,
+            .kind = l.need.kind,
             // The supervisor's own wait has no worker to name, whichever
             // row came first.
             .who = if (own_is_it) "" else r.who,
             .text = if (own_is_it) ownText(rows, m.groups.items) else r.text,
-            .signature = sig,
+            .signature = l.signature,
         });
     }
 
@@ -345,6 +376,19 @@ pub fn step(
     for (gone.items) |k| _ = self.done.remove(k);
 
     return .{ .alerts = alerts.items, .held = held.items, .wake_ms = wake };
+}
+
+/// One supervisor's waiting thing and the row that shows it.
+const Thing = struct {
+    signature: Signature,
+    need: Need,
+    row: usize,
+};
+
+/// Mark every thing a call was about -- or that the person was found
+/// looking at -- as dealt with.
+fn settle(self: *ControlNotify, alloc: Allocator, things: []const Thing) Allocator.Error!void {
+    for (things) |t| try self.done.put(alloc, t.signature, {});
 }
 
 /// The words for a supervisor's own wait: from a row that is about the
@@ -588,4 +632,62 @@ test "ControlNotify: what has gone is forgotten" {
     try testing.expectEqual(@as(u32, 1), r.n.done.count());
     _ = try r.at(&.{row("web", .working, 3 * min, sup)}, .nobody, .open, 4 * min);
     try testing.expectEqual(@as(u32, 0), r.n.done.count());
+}
+
+test "ControlNotify 1531: what went out as \"N more\" has been said, and is not called again when the first stops" {
+    var r: Run = .{};
+    defer r.deinit();
+    var b = row("r11b", .needs_approval, 0, worker);
+    var c = row("r11c", .needs_approval, 0, 0xb3);
+    c.who = "worker-c";
+    const both = [_]Row{ b, c };
+    const d = try r.at(&both, .nobody, .open, 2 * min);
+    try testing.expectEqual(@as(usize, 1), d.alerts.len);
+    try testing.expectEqualStrings("r11b", d.alerts[0].group);
+    try testing.expectEqual(@as(usize, 1), d.alerts[0].more);
+
+    // r11b is answered; r11c is still on the same prompt it was counted on.
+    b.top = .{ .kind = .working, .since_ms = 2 * min + 1_000, .terminal = worker };
+    const after = [_]Row{ b, c };
+    const e = try r.at(&after, .nobody, .open, 2 * min + 21_000);
+    try testing.expectEqual(@as(usize, 0), e.alerts.len);
+    try testing.expectEqual(@as(?u64, null), e.wake_ms);
+
+    // Its state changes -- a second prompt -- and that is news.
+    c.top = .{ .kind = .needs_approval, .since_ms = 5 * min, .terminal = 0xb3 };
+    const changed = [_]Row{ b, c };
+    const f = try r.at(&changed, .nobody, .open, 7 * min);
+    try testing.expectEqual(@as(usize, 1), f.alerts.len);
+    try testing.expectEqualStrings("r11c", f.alerts[0].group);
+}
+
+test "ControlNotify 1531: a group that starts waiting after the call is its own news, two minutes on" {
+    var r: Run = .{};
+    defer r.deinit();
+    const b = row("r11b", .needs_approval, 0, worker);
+    try testing.expectEqual(@as(usize, 1), (try r.at(&.{b}, .nobody, .open, 2 * min)).alerts.len);
+
+    // r11b still waits; r11c begins later. It was in no call.
+    var c = row("r11c", .needs_approval, 3 * min, 0xb3);
+    c.who = "worker-c";
+    const both = [_]Row{ b, c };
+    const early = try r.at(&both, .nobody, .open, 4 * min);
+    try testing.expectEqual(@as(usize, 0), early.alerts.len);
+    try testing.expectEqual(@as(?u64, 5 * min), early.wake_ms);
+    const due = try r.at(&both, .nobody, .open, 5 * min);
+    try testing.expectEqual(@as(usize, 1), due.alerts.len);
+    try testing.expectEqualStrings("r11c", due.alerts[0].group);
+}
+
+test "ControlNotify 1531: in quiet hours an approval leads, and is not held behind an answer" {
+    var r: Run = .{};
+    defer r.deinit();
+    var a = row("ask", .needs_answer, 0, worker);
+    a.who = "worker-a";
+    var p = row("perm", .needs_approval, 0, 0xb3);
+    p.who = "worker-p";
+    const d = try r.at(&.{ a, p }, .nobody, .{ .closed_for_ms = 60 * min }, 2 * min);
+    try testing.expectEqual(@as(usize, 1), d.alerts.len);
+    try testing.expectEqualStrings("perm", d.alerts[0].group);
+    try testing.expectEqual(@as(usize, 1), d.alerts[0].more);
 }

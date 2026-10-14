@@ -48,6 +48,19 @@ struct ControlRoomAlertTests {
                 == #"{"in_front":true,"cards":["web","a \"q\""]}"#)
     }
 
+    @Test func inFrontIsTheKeyWindowOfTheActiveApplicationAndNothingMore() {
+        #expect(ControlRoomAlert.inFront(appActive: true, windowIsKey: true, closing: false))
+        #expect(!ControlRoomAlert.inFront(appActive: false, windowIsKey: true, closing: false))
+        #expect(!ControlRoomAlert.inFront(appActive: true, windowIsKey: false, closing: false))
+        #expect(!ControlRoomAlert.inFront(appActive: true, windowIsKey: true, closing: true))
+    }
+
+    @Test func outOfFrontNoCardIsInSightWhateverTheListHolds() {
+        #expect(ControlRoomAlert.Presence.of(inFront: true, cards: ["web"]).cards == ["web"])
+        #expect(ControlRoomAlert.Presence.of(inFront: false, cards: ["web"]).cards.isEmpty)
+        #expect(ControlRoomAlert.Presence.of(inFront: true, cards: ["web"]).json == #"{"in_front":true,"cards":["web"]}"#)
+    }
+
     @Test func aCardIsInSightWhenItIsWhollyAboveTheBottom() throws {
         let list = try ControlRoomList.decode(snapshot: ControlRoomListTests.fixture())
         let ordered = list.rows.map(\.id)
@@ -67,5 +80,32 @@ struct ControlRoomAlertTests {
         let cut = ControlRoomListLayout(list: list, height: second.midY + taken)
         #expect(cut.inSight(order: ordered).contains(ordered[0]))
         #expect(!cut.inSight(order: ordered).contains(ordered[1]))
+    }
+}
+
+import AppKit
+import SwiftUI
+
+/// The list view as the app hosts it, off screen: what it tells the
+/// controller about the cards in sight (task 1531).
+@MainActor
+struct ControlRoomListInSightHostingTests {
+    @Test func theHostedListReportsItsCardsInSight() async throws {
+        let list = try ControlRoomList.decode(snapshot: ControlRoomListTests.fixture())
+        var reported: [[String]] = []
+        let view = ControlRoomListView(list: list, selection: .constant(nil), onInSight: { reported.append($0) })
+        let host = NSHostingView(rootView: view.frame(height: 800))
+        host.frame = NSRect(x: 0, y: 0, width: 400, height: 800)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: true)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        for _ in 0..<50 where reported.last?.isEmpty ?? true {
+            try await Task.sleep(nanoseconds: 20_000_000)
+            host.layoutSubtreeIfNeeded()
+        }
+        let ids = list.rows.map(\.id)
+        let expected = ControlRoomListLayout(list: list, height: 800).inSight(order: ids)
+        #expect(!expected.isEmpty)
+        #expect(reported.last == expected, "reports: \(reported)")
     }
 }
