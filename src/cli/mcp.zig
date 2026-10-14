@@ -184,7 +184,7 @@ pub fn run(alloc: Allocator) !u8 {
         env.get("GHOSTTY_POLTER_TOKEN") orelse
         return complain(io, "GHOSTTY_POLTER_TOKEN");
 
-    var host: Host = try .connect(alloc, io, socket_path, token);
+    var host: Host = try .connect(alloc, io, socket_path, token, .agent);
     defer host.deinit();
 
     return serve(alloc, io, &host, socket_path, token);
@@ -273,11 +273,17 @@ pub const Host = struct {
     /// sentence was written as a statement of fact and was not one.** A comment
     /// that describes an arrangement nobody implemented is worse than none: it
     /// answers the question, so the next person stops looking.
+    ///
+    /// `kind` is what this connection tells Polter it is
+    /// (`poltergeist_server.Kind`): `.agent` for one that carries an
+    /// agent's tool calls, which is how Polter knows an agent is there --
+    /// and so `.agent` only for that one.
     pub fn connect(
         alloc: Allocator,
         io: std.Io,
         path: []const u8,
         token: []const u8,
+        kind: poltergeist_server.Kind,
     ) !Host {
         const stream = try transport.connect(io, path);
         errdefer stream.close(io);
@@ -300,8 +306,8 @@ pub const Host = struct {
         // Prove who we are before anything else. The host closes the
         // connection if this does not check out.
         try self.writer.interface.print(
-            \\{{"method":"auth","params":{{"token":"{s}"}}}}
-        ++ "\n", .{token});
+            \\{{"method":"auth","params":{{"token":"{s}"{s}}}}}
+        ++ "\n", .{ token, kind.authField() });
         try self.writer.interface.flush();
 
         const reply = (try self.reader.interface.takeDelimiter('\n')) orelse
@@ -900,7 +906,8 @@ const tools = [_]Tool{
             "with the same meaning and the same placement code: `auto` (the default) first " ++
             "uses a pane you opened for an earlier worker that now has no agent in it and " ++
             "is waiting at its prompt (`placed: \"reused\"`, `reused: \"free_worker\"`, " ++
-            "and the reply carries that terminal's id), then goes beside you -- three in a " ++
+            "and the reply carries that terminal's id; when one of yours was there and not " ++
+            "free, `passed_over` names it and why), then goes beside you -- three in a " ++
             "column, three more beside those -- and into a new tab only after that; `tab` " ++
             "is always a new tab; `here` is a new split in your own tab; the reply's " ++
             "`placed` says which it got, and `fallback` why when it was not what you asked. " ++
@@ -1308,7 +1315,9 @@ fn notifier(
     token: []const u8,
     shared: *Shared,
 ) void {
-    var host: Host = Host.connect(alloc, io, socket_path, token) catch {
+    // `.notifier`: this one parks a wait, so it can outlive the agent by a
+    // whole one, and must not be what says the agent is there (#1498).
+    var host: Host = Host.connect(alloc, io, socket_path, token, .notifier) catch {
         // No second connection: the terminal keeps working, it just will
         // not hear about a change until it lists its tools for some other
         // reason. Quiet on purpose -- stdout is the protocol and stderr

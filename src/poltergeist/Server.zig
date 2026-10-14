@@ -81,9 +81,72 @@ const Slot = struct {
     /// agent has already gone.
     caller: ?Bus.Caller = null,
 
+    /// The connection said, when it authenticated, that it only waits to be
+    /// told things (`Kind.listens`). Cleared with `caller`.
+    listens: bool = false,
+
     /// Set by the connection thread on its way out, so the accept loop can
     /// reap it without blocking.
     finished: std.atomic.Value(bool) = .init(false),
+};
+
+/// What a connection says it is, beside its token in `auth`.
+///
+/// **Accounting, never authority** (the rule `cli/mcp_slot.zig` set down
+/// for this field before anything sent it): the token decides who a
+/// connection is and what it may reach, and nothing here grants or takes
+/// away a request it may make. What it changes is one answer --
+/// `agentPresent` -- and why is #1498.
+///
+/// # The defect
+///
+/// `+mcp` holds two connections: the one an agent's tool calls go over,
+/// and a notifier that parks a `persona_wait` here for up to
+/// `PersonaWaits.timeout_ms` (30 s). A thread serving a parked request is
+/// waiting on its answer, not reading its socket, so it learns its client
+/// has gone only when the wait comes back. Until then that slot still named
+/// the terminal, and `agentPresent` said an agent was there for up to half
+/// a minute after the CLI had exited. Measured on a Mac (round seven): a
+/// worker's pane stopped with ctrl+c was not used again 3 s later and was
+/// at 34 s. Worse, and the reason this is not a matter of speed: a notice
+/// in that half minute is *typed* into what is by then a bare shell
+/// (`App.noticeFor`), which runs it.
+///
+/// So a connection that only listens says so, and is not counted. Whether
+/// an agent is there is answered by the connection its tool calls use,
+/// which `+mcp` opens first and holds until it exits.
+///
+/// **No `kind`, or one this build does not know, is an agent.** An older
+/// `+mcp` connects to a newer Polter saying nothing -- the host's MCP config
+/// records a path, and the binary behind it can be replaced -- and today
+/// that is what every connection is. Reading silence as "listens" would
+/// make every agent of an older build look absent, and notices to it would
+/// be printed where it never reads them.
+pub const Kind = enum {
+    /// Carries an agent's tool calls. Sends no `kind`, as every client did
+    /// before there was one.
+    agent,
+    /// `+mcp`'s second connection, which parks `persona_wait`.
+    notifier,
+    /// A `+mcp-slot` process, which asks about its slot and waits.
+    slot,
+
+    /// Not counted by `agentPresent`.
+    pub fn listens(self: Kind) bool {
+        return switch (self) {
+            .agent => false,
+            .notifier, .slot => true,
+        };
+    }
+
+    /// What goes after the token in `auth`: nothing for an agent.
+    pub fn authField(self: Kind) []const u8 {
+        return switch (self) {
+            .agent => "",
+            .notifier => ",\"kind\":\"notifier\"",
+            .slot => ",\"kind\":\"slot\"",
+        };
+    }
 };
 
 /// Tokens are 32 random bytes, rendered as hex.
@@ -664,6 +727,9 @@ pub fn agentPresent(self: *Server, id: Bus.Id) bool {
         // A plugin connection carries no surface, so there is nothing here
         // it could be mistaken for.
         const caller = self.slots[i].caller orelse continue;
+        // A connection that only waits to be told things may outlive its
+        // client by a whole wait (`Kind`).
+        if (self.slots[i].listens) continue;
         switch (caller) {
             .terminal => |tid| if (tid == id) return true,
             .plugin => {},
@@ -731,6 +797,7 @@ fn connectionMain(self: *Server, index: usize) void {
         // Same moment, same lock: the connection is over, so it no longer
         // speaks for anybody.
         self.slots[index].caller = null;
+        self.slots[index].listens = false;
         self.slots_mutex.unlock(self.io);
 
         stream.close(self.io);
@@ -743,13 +810,15 @@ fn connectionMain(self: *Server, index: usize) void {
     var writer = stream.writer(self.io, &write_buf);
 
     // A connection says who it is once, before anything else.
-    const caller = self.handshake(&reader, &writer) orelse return;
+    const shook = self.handshake(&reader, &writer) orelse return;
+    const caller = shook.caller;
 
     // Recorded, not just held: `agentPresent` is answered off this.
     {
         self.slots_mutex.lockUncancelable(self.io);
         defer self.slots_mutex.unlock(self.io);
         self.slots[index].caller = caller;
+        self.slots[index].listens = shook.kind.listens();
     }
 
     while (self.running.load(.acquire)) {
@@ -767,7 +836,7 @@ fn handshake(
     self: *Server,
     reader: *transport.Reader,
     writer: *transport.Writer,
-) ?Bus.Caller {
+) ?struct { caller: Bus.Caller, kind: Kind } {
     const line = (reader.interface.takeDelimiter('\n') catch return null) orelse return null;
 
     const token = parseAuthToken(self.alloc, line) orelse {
@@ -783,7 +852,29 @@ fn handshake(
 
     wire.writeResponse(&writer.interface, .ok) catch return null;
     writer.interface.flush() catch return null;
-    return caller;
+    return .{ .caller = caller, .kind = parseAuthKind(self.alloc, line) };
+}
+
+/// `params.kind` of an `auth` request, read the way `Kind` says: absent,
+/// not a string, or not a word this build knows, it is an agent.
+fn parseAuthKind(alloc: Allocator, line: []const u8) Kind {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+
+    const v = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), line, .{}) catch return .agent;
+    const obj = switch (v) {
+        .object => |o| o,
+        else => return .agent,
+    };
+    const params = switch (obj.get("params") orelse return .agent) {
+        .object => |o| o,
+        else => return .agent,
+    };
+    const word = switch (params.get("kind") orelse return .agent) {
+        .string => |s| s,
+        else => return .agent,
+    };
+    return std.meta.stringToEnum(Kind, word) orelse .agent;
 }
 
 /// Pull `params.token` out of an `auth` request without going through the

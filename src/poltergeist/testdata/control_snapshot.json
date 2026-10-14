@@ -867,7 +867,7 @@
         "role": "polter-supervisor",
         "cli": "claude-code",
         "session": "s",
-        "opened_by": null
+        "worker_of": null
       },
       "bar": {
         "shown": "needs_you",
@@ -898,7 +898,7 @@
         "role": "",
         "cli": "claude-code",
         "session": "s",
-        "opened_by": null
+        "worker_of": null
       },
       "bar": {
         "shown": "needs_you",
@@ -929,7 +929,7 @@
         "role": "",
         "cli": "",
         "session": "",
-        "opened_by": null
+        "worker_of": null
       },
       "bar": {
         "shown": "trouble",
@@ -960,7 +960,7 @@
         "role": "",
         "cli": "claude-code",
         "session": "s",
-        "opened_by": null
+        "worker_of": null
       },
       "bar": {
         "shown": "done_unseen",
@@ -991,7 +991,7 @@
         "role": "",
         "cli": "claude-code",
         "session": "s",
-        "opened_by": null
+        "worker_of": null
       },
       "bar": {
         "shown": "working",
@@ -1022,7 +1022,7 @@
         "role": "",
         "cli": "claude-code",
         "session": "s",
-        "opened_by": null
+        "worker_of": null
       },
       "bar": {
         "shown": "none",
@@ -1053,7 +1053,7 @@
         "role": "",
         "cli": "claude-code",
         "session": "s",
-        "opened_by": null
+        "worker_of": null
       },
       "bar": {
         "shown": "none",
@@ -1084,7 +1084,7 @@
         "role": "dev-worker",
         "cli": "claude-code",
         "session": "s",
-        "opened_by": "0x00000000000000a1"
+        "worker_of": "0x00000000000000a1"
       },
       "bar": {
         "shown": "needs_you",
@@ -1115,7 +1115,7 @@
         "role": null,
         "cli": null,
         "session": null,
-        "opened_by": null
+        "worker_of": null
       },
       "bar": {
         "shown": "held",
@@ -1146,7 +1146,7 @@
         "role": "",
         "cli": "claude-code",
         "session": "s",
-        "opened_by": null
+        "worker_of": null
       },
       "bar": {
         "shown": "needs_you",
@@ -1177,7 +1177,7 @@
         "role": "",
         "cli": "claude-code",
         "session": "s",
-        "opened_by": null
+        "worker_of": null
       },
       "bar": {
         "shown": "needs_you",
@@ -1208,7 +1208,7 @@
         "role": null,
         "cli": null,
         "session": null,
-        "opened_by": null
+        "worker_of": null
       },
       "bar": {
         "shown": "none",
