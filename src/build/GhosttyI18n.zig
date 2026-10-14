@@ -204,6 +204,13 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
     xgettext.addArg(attention_path);
     xgettext.addFileInput(b.path(attention_path));
 
+    // And the sentence under a row's name when it is one of the core's own
+    // ("The process exited", "Screen still for {1} min"): the template is
+    // the msgid, the host fills it in (task 1525).
+    const control_room_path = "src/poltergeist/ControlRoom.zig";
+    xgettext.addArg(control_room_path);
+    xgettext.addFileInput(b.path(control_room_path));
+
     // Add support for localizing our `nautilus` integration
     const xgettext_py = b.addSystemCommand(&.{
         "xgettext",

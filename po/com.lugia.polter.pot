@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.lugia.polter\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-15 04:17+0800\n"
+"POT-Creation-Date: 2026-10-15 04:50+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -1394,276 +1394,276 @@ msgstr ""
 msgid "No settings match."
 msgstr ""
 
-#: src/cli/chat.zig:603
+#: src/cli/chat.zig:672
 msgid "all"
 msgstr ""
 
-#: src/cli/chat.zig:604
+#: src/cli/chat.zig:673
 msgid "open"
 msgstr ""
 
-#: src/cli/chat.zig:605
+#: src/cli/chat.zig:674
 msgid "blocked"
 msgstr ""
 
-#: src/cli/chat.zig:606
+#: src/cli/chat.zig:675
 msgid "closed"
 msgstr ""
 
-#: src/cli/chat.zig:1857
+#: src/cli/chat.zig:1881
 msgid "Take the group \"{0}\" off this list?"
 msgstr ""
 
-#: src/cli/chat.zig:1862
+#: src/cli/chat.zig:1886
 msgid "Not one word of the conversation is deleted:"
 msgstr ""
 
-#: src/cli/chat.zig:1863
+#: src/cli/chat.zig:1887
 msgid "every day of it stays exactly as it is under"
 msgstr ""
 
-#: src/cli/chat.zig:1864
+#: src/cli/chat.zig:1888
 msgid "<state>/chat/, to be read and grepped later."
 msgstr ""
 
-#: src/cli/chat.zig:1865
+#: src/cli/chat.zig:1889
 msgid "What goes is one row of this list."
 msgstr ""
 
-#: src/cli/chat.zig:1867
+#: src/cli/chat.zig:1891
 msgid "y to confirm    any other key cancels"
 msgstr ""
 
-#: src/cli/chat.zig:1932
+#: src/cli/chat.zig:1956
 msgid "GROUPS   d removes"
 msgstr ""
 
-#: src/cli/chat.zig:1936
+#: src/cli/chat.zig:1960
 msgid "  (no groups yet)"
 msgstr ""
 
-#: src/cli/chat.zig:1984
+#: src/cli/chat.zig:2008
 msgid "MEMBERS"
 msgstr ""
 
-#: src/cli/chat.zig:2210
+#: src/cli/chat.zig:2234
 msgid "No groups. Tasks will appear here once a supervisor makes one."
 msgstr ""
 
-#: src/cli/chat.zig:2219
+#: src/cli/chat.zig:2243
 msgid "No tasks in this group yet."
 msgstr ""
 
-#: src/cli/chat.zig:2259 src/cli/chat.zig:2264
+#: src/cli/chat.zig:2283 src/cli/chat.zig:2288
 msgid "filter"
 msgstr ""
 
-#: src/cli/chat.zig:2276
+#: src/cli/chat.zig:2300
 msgid "Nothing matches this filter. Press f to change it."
 msgstr ""
 
-#: src/cli/chat.zig:2368
+#: src/cli/chat.zig:2392
 msgid "No groups. There will be numbers here once a supervisor makes one."
 msgstr ""
 
-#: src/cli/chat.zig:2495
+#: src/cli/chat.zig:2519
 msgid "Waiting on you"
 msgstr ""
 
-#: src/cli/chat.zig:2497 src/cli/chat.zig:2773
+#: src/cli/chat.zig:2521 src/cli/chat.zig:2797
 msgid "  The task record has not been read yet."
 msgstr ""
 
-#: src/cli/chat.zig:2499
+#: src/cli/chat.zig:2523
 msgid "  Nothing open."
 msgstr ""
 
-#: src/cli/chat.zig:2515 src/cli/chat.zig:2528
+#: src/cli/chat.zig:2539 src/cli/chat.zig:2552
 msgid "with nothing happening"
 msgstr ""
 
-#: src/cli/chat.zig:2525
+#: src/cli/chat.zig:2549
 msgid "#{0}  {1} {2}  {3}"
 msgstr ""
 
-#: src/cli/chat.zig:2534
+#: src/cli/chat.zig:2558
 msgid "  and {0} more still open"
 msgstr ""
 
-#: src/cli/chat.zig:2541
+#: src/cli/chat.zig:2565
 msgid "Where it stopped"
 msgstr ""
 
-#: src/cli/chat.zig:2549
+#: src/cli/chat.zig:2573
 msgid "  a day {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2553
+#: src/cli/chat.zig:2577
 msgid "  last message {0} ago"
 msgstr ""
 
-#: src/cli/chat.zig:2560
+#: src/cli/chat.zig:2584
 msgid "  longest silence {0} (from {1})"
 msgstr ""
 
-#: src/cli/chat.zig:2569
+#: src/cli/chat.zig:2593
 msgid "Saying · doing"
 msgstr ""
 
-#: src/cli/chat.zig:2571
+#: src/cli/chat.zig:2595
 msgid "  Nobody has been in this group."
 msgstr ""
 
-#: src/cli/chat.zig:2605 src/cli/chat.zig:2619
+#: src/cli/chat.zig:2629 src/cli/chat.zig:2643
 msgid "said"
 msgstr ""
 
-#: src/cli/chat.zig:2606 src/cli/chat.zig:2622
+#: src/cli/chat.zig:2630 src/cli/chat.zig:2646
 msgid "doing"
 msgstr ""
 
-#: src/cli/chat.zig:2617
+#: src/cli/chat.zig:2641
 msgid "  {0} {1} {2} {3}  {4} {5} {6}"
 msgstr ""
 
-#: src/cli/chat.zig:2629
+#: src/cli/chat.zig:2653
 msgid "  and {0} more"
 msgstr ""
 
-#: src/cli/chat.zig:2636
+#: src/cli/chat.zig:2660
 msgid "Terminals"
 msgstr ""
 
-#: src/cli/chat.zig:2639
+#: src/cli/chat.zig:2663
 msgid "  {0} in the group now, {1} in the record"
 msgstr ""
 
-#: src/cli/chat.zig:2677
+#: src/cli/chat.zig:2701
 msgid "  no supervisor was recorded"
 msgstr ""
 
-#: src/cli/chat.zig:2679
+#: src/cli/chat.zig:2703
 msgid "  last supervisor:"
 msgstr ""
 
-#: src/cli/chat.zig:2700
+#: src/cli/chat.zig:2724
 msgid "  and {0} other terminals"
 msgstr ""
 
-#: src/cli/chat.zig:2730
+#: src/cli/chat.zig:2754
 msgid "This session"
 msgstr ""
 
-#: src/cli/chat.zig:2735
+#: src/cli/chat.zig:2759
 msgid "  first line {0} · {1} since · {2} messages"
 msgstr ""
 
-#: src/cli/chat.zig:2750
+#: src/cli/chat.zig:2774
 msgid "  made {0} · closed {1} · cancelled {2} · open {3}"
 msgstr ""
 
-#: src/cli/chat.zig:2765
+#: src/cli/chat.zig:2789
 msgid "  {0} handed round · {1} progress reports / {2}"
 msgstr ""
 
-#: src/cli/chat.zig:2777
+#: src/cli/chat.zig:2801
 msgid "Task mix"
 msgstr ""
 
-#: src/cli/chat.zig:2785
+#: src/cli/chat.zig:2809
 msgid "  No tasks in this group yet."
 msgstr ""
 
-#: src/cli/chat.zig:2818
+#: src/cli/chat.zig:2842
 msgid "closed {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2823
+#: src/cli/chat.zig:2847
 msgid "past the mark {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2828
+#: src/cli/chat.zig:2852
 msgid "open {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2833
+#: src/cli/chat.zig:2857
 msgid "cancelled {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2840
+#: src/cli/chat.zig:2864
 msgid "How long tasks lived"
 msgstr ""
 
-#: src/cli/chat.zig:2842
+#: src/cli/chat.zig:2866
 msgid "  Nothing has been closed yet."
 msgstr ""
 
-#: src/cli/chat.zig:2850
+#: src/cli/chat.zig:2874
 msgid "  fastest {0} · median {1} · slowest {2} (over {3})"
 msgstr ""
 
-#: src/cli/chat.zig:2860
+#: src/cli/chat.zig:2884
 msgid "Rhythm"
 msgstr ""
 
-#: src/cli/chat.zig:2868
+#: src/cli/chat.zig:2892
 msgid "  00:00{0}23:00"
 msgstr ""
 
-#: src/cli/chat.zig:2874
+#: src/cli/chat.zig:2898
 msgid "  busiest {0}:00 ({1} messages)"
 msgstr ""
 
-#: src/cli/chat.zig:3039
+#: src/cli/chat.zig:3063
 msgid "Chat"
 msgstr ""
 
-#: src/cli/chat.zig:3040
+#: src/cli/chat.zig:3064
 msgid "Tasks"
 msgstr ""
 
-#: src/cli/chat.zig:3041
+#: src/cli/chat.zig:3065
 msgid "Stats"
 msgstr ""
 
-#: src/cli/chat.zig:3065
+#: src/cli/chat.zig:3089
 msgid "· unassigned"
 msgstr ""
 
-#: src/cli/chat.zig:3089
+#: src/cli/chat.zig:3113
 msgid ""
 "No groups. The conversation will appear here once a supervisor makes one."
 msgstr ""
 
-#: src/cli/chat.zig:3112
+#: src/cli/chat.zig:3136
 msgid "── nothing older ──"
 msgstr ""
 
-#: src/cli/chat.zig:3123
+#: src/cli/chat.zig:3147
 msgid "  (summary)"
 msgstr ""
 
-#: src/cli/chat.zig:3358
+#: src/cli/chat.zig:3382
 msgid "under a minute"
 msgstr ""
 
-#: src/cli/chat.zig:3361
+#: src/cli/chat.zig:3385
 msgid "{0} min"
 msgstr ""
 
-#: src/cli/chat.zig:3366
+#: src/cli/chat.zig:3390
 msgid "{0} h"
 msgstr ""
 
-#: src/cli/chat.zig:3367
+#: src/cli/chat.zig:3391
 msgid "{0} h {1} min"
 msgstr ""
 
-#: src/cli/chat.zig:3372
+#: src/cli/chat.zig:3396
 msgid "{0} d"
 msgstr ""
 
-#: src/cli/chat.zig:3373
+#: src/cli/chat.zig:3397
 msgid "{0} d {1} h"
 msgstr ""
 
@@ -2270,6 +2270,26 @@ msgstr ""
 
 #: src/poltergeist/Attention.zig:651
 msgid "Held"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:821
+msgid "The process exited"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:822
+msgid "The hooks it was set up with never came"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:824
+msgid "{1}: {2}"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:825
+msgid "Screen still for {1} min"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:826
+msgid "Screen still for {1} min, no tool call for {2} min"
 msgstr ""
 
 #. TRANSLATORS: U+2026, not three ASCII dots. This opens the title

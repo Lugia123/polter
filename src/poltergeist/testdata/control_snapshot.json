@@ -82,7 +82,8 @@
       "reason": {
         "from": "hook_note",
         "text": "rm -rf dist/ .cache/ node_modules/.vite && npm ci && npm run build -- --mode production",
-        "missing": null
+        "missing": null,
+        "say": null
       },
       "what": {
         "form": "command",
@@ -91,7 +92,8 @@
           "&& npm ci",
           "&& npm run build -- --mode production"
         ],
-        "cut": "none"
+        "cut": "none",
+        "say": null
       },
       "more": 1,
       "same_as": "web-app-docs",
@@ -194,7 +196,8 @@
       "reason": {
         "from": "hook_note",
         "text": "rm -rf dist/ .cache/ node_modules/.vite && npm ci && npm run build -- --mode production",
-        "missing": null
+        "missing": null,
+        "say": null
       },
       "what": {
         "form": "command",
@@ -203,7 +206,8 @@
           "&& npm ci",
           "&& npm run build -- --mode production"
         ],
-        "cut": "none"
+        "cut": "none",
+        "say": null
       },
       "more": 0,
       "same_as": null,
@@ -289,14 +293,16 @@
       "reason": {
         "from": "hook_note",
         "text": "git push --force-with-lease origin release/2.4",
-        "missing": null
+        "missing": null,
+        "say": null
       },
       "what": {
         "form": "command",
         "lines": [
           "git push --force-with-lease origin release/2.4"
         ],
-        "cut": "none"
+        "cut": "none",
+        "say": null
       },
       "more": 0,
       "same_as": null,
@@ -399,14 +405,16 @@
       "reason": {
         "from": "hook_note",
         "text": "发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号？",
-        "missing": null
+        "missing": null,
+        "say": null
       },
       "what": {
         "form": "words",
         "lines": [
           "发票编号要按租户分开，还是全局连续？分开的话，旧发票要不要一起改编号？"
         ],
-        "cut": "none"
+        "cut": "none",
+        "say": null
       },
       "more": 0,
       "same_as": null,
@@ -491,15 +499,31 @@
       },
       "reason": {
         "from": "hook_detail",
-        "text": "rate_limit：resets 13:40",
-        "missing": null
+        "text": "rate_limit: resets 13:40",
+        "missing": null,
+        "say": {
+          "key": "failed",
+          "template": "{1}: {2}",
+          "args": [
+            "rate_limit",
+            "resets 13:40"
+          ]
+        }
       },
       "what": {
         "form": "words",
         "lines": [
-          "rate_limit：resets 13:40"
+          "rate_limit: resets 13:40"
         ],
-        "cut": "none"
+        "cut": "none",
+        "say": {
+          "key": "failed",
+          "template": "{1}: {2}",
+          "args": [
+            "rate_limit",
+            "resets 13:40"
+          ]
+        }
       },
       "more": 0,
       "same_as": null,
@@ -585,14 +609,16 @@
       "reason": {
         "from": "last_turn",
         "text": "要不要现在切流量？",
-        "missing": null
+        "missing": null,
+        "say": null
       },
       "what": {
         "form": "words",
         "lines": [
           "要不要现在切流量？"
         ],
-        "cut": "head"
+        "cut": "head",
+        "say": null
       },
       "more": 0,
       "same_as": null,
@@ -678,14 +704,16 @@
       "reason": {
         "from": "task",
         "text": "改按钮的三种尺寸",
-        "missing": null
+        "missing": null,
+        "say": null
       },
       "what": {
         "form": "words",
         "lines": [
           "改按钮的三种尺寸"
         ],
-        "cut": "none"
+        "cut": "none",
+        "say": null
       },
       "more": 0,
       "same_as": null,
@@ -788,12 +816,14 @@
       "reason": {
         "from": "none",
         "text": "",
-        "missing": null
+        "missing": null,
+        "say": null
       },
       "what": {
         "form": "none",
         "lines": [],
-        "cut": "none"
+        "cut": "none",
+        "say": null
       },
       "more": 0,
       "same_as": null,
@@ -844,14 +874,16 @@
       "reason": {
         "from": "hook_note",
         "text": "git push",
-        "missing": null
+        "missing": null,
+        "say": null
       },
       "what": {
         "form": "command",
         "lines": [
           "git push"
         ],
-        "cut": "none"
+        "cut": "none",
+        "say": null
       }
     }
   ],

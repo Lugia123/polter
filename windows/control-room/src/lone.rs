@@ -107,6 +107,7 @@ pub(crate) fn lone(v: &Value, path: &str) -> Result<Lone, DecodeError> {
             form: Form::parse(&form).ok_or(DecodeError::UnknownValue(format!("{what_at}.form={form}")))?,
             lines,
             cut: Cut::parse(&cut).ok_or(DecodeError::UnknownValue(format!("{what_at}.cut={cut}")))?,
+            say: crate::snapshot::say_of(what, &what_at)?,
         },
         terminal: opt_text(attention, &at, "terminal")?,
         since_ms: int(attention, &at, "since_ms")?,
