@@ -8364,10 +8364,27 @@ fn postMentioning(
 
     // Step 4. One delivery per terminal, however many names lead to it: two
     // workers both redirected to one supervisor type one line, not two.
+    //
+    // **Nobody listening, nothing typed** (#1533). A mention is typed with a
+    // return, and at a bare shell -- an agent that has exited leaves one --
+    // the shell runs it: `zsh: no matches found: [poltergeist]` on every
+    // try, and with a `;` in the message, the rest of it as a command. The
+    // same gate `task_assign` has (`NoAgentThere`), asked here rather than
+    // in the host so that the host is never handed the line at all. Not
+    // `terminal_send`'s: typing at a shell is what that tool is for.
     var targets: std.ArrayList(Delivery) = .empty;
-    for (rows) |row| {
+    for (rows) |*row| {
         const to = row.to orelse continue;
         if (row.code != null) continue;
+        if (!host.agentPresent(to)) {
+            row.code = "NoAgent";
+            row.message = "there is no agent in that terminal (no live MCP connection), " ++
+                "so nothing was typed: typed at a bare shell, the message would be run " ++
+                "as a command. The message itself is in the group and counted unread. " ++
+                "If an agent has only just started there, give it a moment -- it counts " ++
+                "once it has connected.";
+            continue;
+        }
         for (targets.items) |t| {
             if (t.to == to) break;
         } else try targets.append(alloc, .{ .to = to });
@@ -9276,6 +9293,10 @@ const FakeHost = struct {
     /// empty terminal sets it false.
     agent_present: bool = true,
 
+    /// Terminals with no agent in them whatever `agent_present` says, for
+    /// the tests where one named terminal has one and another does not.
+    agent_absent: []const Bus.Id = &.{},
+
     /// The one slot this terminal's persona wants, for the slot tests.
     slot_wanted: ?[]const u8 = null,
 
@@ -9897,8 +9918,9 @@ const FakeHost = struct {
         self.sent = .{ .id = id, .text = text, .submit = submit };
     }
 
-    fn agentPresent(ctx: *anyopaque, _: Bus.Id) bool {
+    fn agentPresent(ctx: *anyopaque, id: Bus.Id) bool {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (std.mem.indexOfScalar(Bus.Id, self.agent_absent, id) != null) return false;
         return self.agent_present;
     }
 
@@ -14685,6 +14707,54 @@ test "mention: nobody who was not named is typed into" {
         .text = "for whoever reads it",
     } });
     _ = plain;
+    try testing.expectEqual(@as(usize, 0), fake.typed_count);
+}
+
+test "mention: a terminal whose agent has gone is not typed into, and the post stands (#1533)" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    // `worker`'s agent has exited and left its shell; `other` still has one.
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members, .agent_absent = &.{worker} };
+
+    const res = try postNaming(arena.allocator(), &b, &fake, boss, &.{ worker, other });
+
+    // In the group regardless.
+    try testing.expectEqual(@as(usize, 1), fake.post_count);
+
+    const rows = res.posted.deliveries;
+    try testing.expectEqual(@as(usize, 2), rows.len);
+    // `orelse`, not `.?`: typed by mistake, this is an assertion that fails
+    // and names what came back, rather than a panic on a null.
+    try testing.expectEqualStrings("NoAgent", rows[0].code orelse "(typed)");
+    try testing.expect(std.mem.indexOf(u8, rows[0].message.?, "in the group") != null);
+    try testing.expect(std.mem.indexOf(u8, rows[0].message.?, "bare shell") != null);
+
+    // The one with an agent is typed into as before, and is the only one.
+    try testing.expect(rows[1].code == null);
+    try testing.expect(typedInto(&fake, other) != null);
+    try testing.expect(typedInto(&fake, worker) == null);
+    try testing.expectEqual(@as(usize, 1), fake.typed_count);
+}
+
+test "mention: a message with a `;` in it never reaches a shell (#1533)" {
+    // The case that made this urgent: what follows the `;` is a command of
+    // its own to a shell. Not escaped, not quoted -- not typed.
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members, .agent_present = false };
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .group_post = .{
+        .group = "build",
+        .text = "done; rm -rf build",
+        .mention = &.{ worker, other },
+    } });
+
+    try testing.expectEqual(@as(usize, 1), fake.post_count);
+    for (res.posted.deliveries) |row| try testing.expectEqualStrings("NoAgent", row.code orelse "(typed)");
     try testing.expectEqual(@as(usize, 0), fake.typed_count);
 }
 

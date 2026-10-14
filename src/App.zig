@@ -1095,6 +1095,7 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
             .ctx = self,
             .sendKey = controlActKey,
             .sendText = controlActText,
+            .agentPresent = controlActAgentPresent,
             .persist = controlActPersist,
             .createGroup = controlActCreateGroup,
             .stewardOf = controlActStewardOf,
@@ -1125,6 +1126,11 @@ fn controlActText(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, text: []const u8) 
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
     try surface.typePoltergeistText(text, true);
+}
+
+fn controlActAgentPresent(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) bool {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.agentPresent(id);
 }
 
 fn controlActPersist(ctx: *anyopaque, group: []const u8, marks: poltergeistpkg.Chat.Marks) void {
@@ -8793,7 +8799,7 @@ pub fn tellSurface(self: *App, id: poltergeistpkg.Bus.Id, text: []const u8) void
 /// `false` when Poltergeist's server is not running: there is then no
 /// socket for a sidecar to be on, so no terminal can have an agent
 /// reachable through one. It is also the safe answer -- see `noticeFor`.
-fn agentPresent(self: *App, id: poltergeistpkg.Bus.Id) bool {
+pub fn agentPresent(self: *App, id: poltergeistpkg.Bus.Id) bool {
     if (self.poltergeist_server) |*srv| return srv.agentPresent(id);
     return false;
 }

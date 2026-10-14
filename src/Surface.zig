@@ -4204,6 +4204,19 @@ fn typePoltergeistNotice(self: *Surface, text: []const u8) !bool {
     // waiting; a new refusal below says so again.
     self.poltergeist_notice_refused = false;
 
+    // **Asked again at the moment of typing** (#1533). Whoever queued this
+    // chose to type it because an agent was connected then (`noticeFor`,
+    // `deliverPoltergeistNotices`), and the mailbox is a hop later: an agent that
+    // exited in between leaves a bare shell, which would run the line. So
+    // the same question, here, and the same safe answer -- printed for the
+    // person. `Server.agentPresent` takes its own lock, so asking from the
+    // app thread is what the queuing side already does. Not counted as
+    // delivered, the same as a notice that was printed from the start.
+    if (!self.app.agentPresent(self.id)) {
+        try self.showPoltergeistAlert(text);
+        return false;
+    }
+
     // A refused notice is not an error worth propagating: the sampler will
     // say the same thing again on its repeat interval.
     self.typePoltergeistText(text, true) catch |err| switch (err) {

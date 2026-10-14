@@ -646,7 +646,9 @@ const tools = [_]Tool{
             "or nothing is posted. A worker naming another worker reaches that worker's " ++
             "supervisor instead unless the supervisor has allowed it. The reply has one " ++
             "row per name in `deliveries`: `delivered: false` with a `code` " ++
-            "(UserPresent, DraftInLine, ...) means that terminal was not typed into -- " ++
+            "(UserPresent, DraftInLine, NoAgent, ...) means that terminal was not typed " ++
+            "into -- NoAgent is a terminal with no agent connected, which is never typed " ++
+            "into, because a bare shell would run the line -- " ++
             "the message is in the group either way.",
         .schema =
         \\{"type":"object","properties":{"group":{"type":"string"},"text":{"type":"string"},"mention":{"type":"array","items":{"type":"string"},"description":"Terminal ids (0x...) to type this message into, each with a return. Every one must be a member of the group."}},"required":["group","text"]}

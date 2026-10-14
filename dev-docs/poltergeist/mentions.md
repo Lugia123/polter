@@ -35,6 +35,13 @@ group_post(group, text, mention: ["0x2528…", "0xf95a…"])
 被点名的终端走 `terminal_send(submit = true)`——打字并回车，等效主管
 发指令。**不是** notice（notice 只打字不回车）。
 
+**只打给有 agent 在场的终端**（#1533）：`agentPresent`，只认主连接（#1498）。
+agent 退出后终端里是裸 shell，打字加回车会被当命令执行——真机上每次都是
+`zsh: no matches found: [poltergeist]`，消息里带 `;` 时后半句会单独执行。不在场
+就不打字，那一格 `delivered:false`、`code:"NoAgent"`，消息照常入群。判断在
+`rpc.postMentioning` 里做，不交给宿主，所以宿主根本拿不到那一行。主管自己用
+`terminal_send` 往裸 shell 里打字不受影响——那是那个工具的本意。
+
 ## 三、送不到要逐个回报，而且不许绕过那两道拒绝
 
 `terminal_send` 会因两件事被拒，**它们在这里不是碍事，是唯一挡住
@@ -146,7 +153,8 @@ waking(name, id, role) = switch (role) {
 
 每个不同的 id 恰好一行。`to` 是实际敲进去的终端，可能是 id 本身，也可能
 是改写后的主管；`NotATerminal`（点了用户 `0x0`）/ `Shielded` /
-`NoSupervisor` 这几种情况什么都没敲，`to` 为 null。其余 `code` 的取值和
+`NoSupervisor` 这几种情况什么都没敲，`to` 为 null。`NoAgent`：那个终端里
+没有 agent（没有活的 MCP 连接），没敲，`to` 仍是它。其余 `code` 的取值和
 `terminal_send` 的拒绝一样：`UserPresent`、`DraftInLine`、`ChildExited`、
 `NoSuchTerminal`、`UnbracketedMultiline`、`UnsafeText`、`SendFailed`。
 

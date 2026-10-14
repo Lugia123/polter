@@ -113,7 +113,7 @@
 //! | snooze | `SnoozeInThePast` | `until_ms` is not after now |
 //! | approve, refuse, reply | `UnknownTerminal` | the terminal is not there |
 //! | approve, refuse | `PromptGone` | it is not waiting on an approval; or `since_ms` / `event_ms` are not the ones it has now; or its screen has moved since the box was drawn |
-//! | reply | `NothingToReplyTo` | it is not waiting on an answer, finished, or failed -- a box or a turn in progress is not somewhere to type a sentence |
+//! | reply | `NothingToReplyTo` | it is not waiting on an answer, finished, or failed -- a box or a turn in progress is not somewhere to type a sentence; or no agent is connected from it any more, so the line would go to a bare shell |
 //! | reply | `Stale` | `since_ms` is not the one it has now |
 //! | reply | `EmptyText` | nothing but whitespace |
 //! | approve, refuse, reply | `UserPresent` | a key reached that terminal in the last ten seconds |
@@ -223,6 +223,9 @@ pub const Host = struct {
     sendKey: *const fn (ctx: *anyopaque, id: Id, key: []const u8) anyerror!void,
     /// Type a line into a terminal and submit it, through the same guards.
     sendText: *const fn (ctx: *anyopaque, id: Id, text: []const u8) anyerror!void,
+    /// Whether an agent is connected from that terminal right now
+    /// (`Server.agentPresent`): what the hooks last said is not that.
+    agentPresent: *const fn (ctx: *anyopaque, id: Id) bool,
     /// Write a group's marks down.
     persist: *const fn (ctx: *anyopaque, group: []const u8, marks: Chat.Marks) void,
     /// Make a group, the way the person makes one anywhere else: they are
@@ -407,6 +410,13 @@ pub fn perform(
             };
             if (!open) return error.NothingToReplyTo;
             if (a.since_ms != r.since_ms) return error.Stale;
+            // **And somebody still there to read it** (#1533). `ended` and
+            // `failed` are what the hooks said last, and an agent that has
+            // exited said nothing after that: the terminal is a bare shell,
+            // and a sentence typed with a return is run as a command. The
+            // person's next move is the same as for any other state that is
+            // not waiting on them, so it is the same refusal.
+            if (!host.agentPresent(host.ctx, r.terminal)) return error.NothingToReplyTo;
             try host.sendText(host.ctx, r.terminal, text);
         },
         .new_group => |raw| {
@@ -463,6 +473,8 @@ const Recorder = struct {
     asked_remove: ?Id = null,
     renames: usize = 0,
     agreed: usize = 0,
+    /// The terminal's agent has exited and left its shell behind.
+    agent_gone: bool = false,
 
     const Started = struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session };
 
@@ -483,6 +495,7 @@ const Recorder = struct {
             .ctx = self,
             .sendKey = sendKey,
             .sendText = sendText,
+            .agentPresent = agentPresent,
             .persist = persist,
             .createGroup = createGroup,
             .stewardOf = stewardOf,
@@ -558,6 +571,11 @@ const Recorder = struct {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
         if (self.refuse_with) |err| return err;
         try self.texts.append(testing.allocator, text);
+    }
+
+    fn agentPresent(ctx: *anyopaque, _: Id) bool {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        return !self.agent_gone;
     }
 
     fn persist(ctx: *anyopaque, _: []const u8, marks: Chat.Marks) void {
@@ -731,6 +749,26 @@ test "ControlRoom act: a reply is not typed into a box, a turn, or a state that 
     try b.act(
         \\{"act":"reply","terminal":"0x00000000000000a1","since_ms":5000,"text":"go on"}
     , 6_000);
+    try testing.expectEqual(@as(usize, 1), b.rec.texts.items.len);
+}
+
+test "ControlRoom act: a reply to an agent that has exited is not typed at its shell (#1533)" {
+    var b = try Bench.init();
+    defer b.deinit();
+
+    // The last thing its hooks said was that it finished; then it exited.
+    try b.hook(.turn_ended, null, 1_000);
+    b.rec.agent_gone = true;
+    try testing.expectError(error.NothingToReplyTo, b.act(
+        \\{"act":"reply","terminal":"0x00000000000000a1","since_ms":1000,"text":"done; rm -rf build"}
+    , 2_000));
+    try testing.expectEqual(@as(usize, 0), b.rec.texts.items.len);
+
+    // The same reply with the agent still there is typed.
+    b.rec.agent_gone = false;
+    try b.act(
+        \\{"act":"reply","terminal":"0x00000000000000a1","since_ms":1000,"text":"go on"}
+    , 2_000);
     try testing.expectEqual(@as(usize, 1), b.rec.texts.items.len);
 }
 
