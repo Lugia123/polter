@@ -1138,7 +1138,7 @@ hook 说话**（`rpc` 的 `agentHeard`）核心都重新看一遍——目录、
 [projects.md](projects.md)。
 
 **每个终端里是谁（任务 #1495）。** 快照 `terminals[].who`：`is`（`agent` / `none` / `unknown`）、`role`、
-`cli`、`session`、`opened_by`，供宿主写进项目文件的每一格；判法与「总管开的格子」怎么活过重启在
+`cli`、`session`、`worker_of`，供宿主写进项目文件的每一格；判法与「总管开的格子」怎么活过重启在
 [projects.md](projects.md) 第 9 节。两个宿主的逻辑层都读入并进了对照闸（`who` / `who_is` 两种行），界面不画它。
 
 **总管起来就知道自己是哪个群的。** 启动行里的 `--group=<群>` 只改一件事：给 agent 的启动说明换成点名这个群

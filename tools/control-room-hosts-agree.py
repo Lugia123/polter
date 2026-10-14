@@ -387,12 +387,12 @@ for why in ControlRoomList.SupervisorStart.ResumeWhy.allCases {
     print("resume_why \(why.rawValue)")
 }
 // Who the core says is working in every terminal: which of its three
-// answers, the three words a project's pane keeps, and who opened it.
+// answers, the three words a project's pane keeps, and whose worker it is.
 for t in snapshot.terminals ?? [] {
     if let w = t.who {
         print("who id=\(t.id) is=\(w.is.rawValue) role=\(w.role.map(quote) ?? "-") "
             + "cli=\(w.cli.map(quote) ?? "-") session=\(w.session.map(quote) ?? "-") "
-            + "opened_by=\(w.opened_by ?? "-")")
+            + "worker_of=\(w.worker_of ?? "-")")
     } else {
         print("who id=\(t.id) -")
     }

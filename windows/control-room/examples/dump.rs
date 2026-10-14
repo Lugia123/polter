@@ -315,13 +315,13 @@ fn main() {
     for t in &snap.terminals {
         match &t.who {
             Some(w) => println!(
-                "who id={} is={} role={} cli={} session={} opened_by={}",
+                "who id={} is={} role={} cli={} session={} worker_of={}",
                 t.id,
                 w.is.name(),
                 w.role.as_deref().map(quote).unwrap_or_else(|| "-".into()),
                 w.cli.as_deref().map(quote).unwrap_or_else(|| "-".into()),
                 w.session.as_deref().map(quote).unwrap_or_else(|| "-".into()),
-                w.opened_by.as_deref().unwrap_or("-")
+                w.worker_of.as_deref().unwrap_or("-")
             ),
             None => println!("who id={} -", t.id),
         }

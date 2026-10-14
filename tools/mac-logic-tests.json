@@ -109,6 +109,7 @@
       "macos/Tests/ControlRoom/ControlRoomSupervisorTitleTests.swift",
       "macos/Tests/ControlRoom/ControlRoomWindowSizeTests.swift",
       "macos/Tests/ControlRoom/PaneFrameChromeTests.swift",
+      "macos/Tests/ControlRoom/PaneFrameBarFitTests.swift",
       "macos/Tests/ControlRoom/PaneFrameTests.swift",
       "macos/Tests/ControlRoom/PaneStackStripTests.swift",
       "macos/Tests/ControlRoom/TerminalPresenceTests.swift",

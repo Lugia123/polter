@@ -288,8 +288,8 @@ struct ProjectLinkTests {
 
     // MARK: Who is in a pane
 
-    private func who(_ kind: Link.Who.Kind, role: String? = nil, cli: String? = nil, session: String? = nil, openedBy: UInt64? = nil) -> Link.Who {
-        Link.Who(kind: kind, role: role, cli: cli, session: session, openedBy: openedBy.map(Link.terminal))
+    private func who(_ kind: Link.Who.Kind, role: String? = nil, cli: String? = nil, session: String? = nil, workerOf: UInt64? = nil) -> Link.Who {
+        Link.Who(kind: kind, role: role, cli: cli, session: session, workerOf: workerOf.map(Link.terminal))
     }
 
     /// The core's three answers are the file's three; a terminal the
@@ -306,21 +306,23 @@ struct ProjectLinkTests {
             == .agent(role: "", cli: "claude-code", session: "", supervisor: false))
     }
 
-    /// A pane is one the supervisor opened when the terminal that opened it
-    /// is the one in the project's supervisor pane -- and with no such
-    /// terminal to compare with, that is not said.
+    /// A pane is one the supervisor opened when it was opened as a worker
+    /// of the terminal in the project's supervisor pane -- and with no such
+    /// terminal to compare with, that is not said. A pane the supervisor
+    /// split off for itself is not one: the core says no `worker_of` for it
+    /// (#1498), and that is the `who(.none)` line below.
     @Test func aPaneIsTheSupervisorsToUseWhenTheSupervisorsTerminalOpenedIt() {
         let supervisor = Link.terminal(0xa1)
-        #expect(Link.pane(who(.agent, role: "polter-dev", cli: "codex", session: "", openedBy: 0xa1), supervisor: supervisor).bySupervisor)
+        #expect(Link.pane(who(.agent, role: "polter-dev", cli: "codex", session: "", workerOf: 0xa1), supervisor: supervisor).bySupervisor)
         // The agent has left; the pane is still one the supervisor opened.
-        #expect(Link.pane(who(.none, openedBy: 0xa1), supervisor: supervisor).bySupervisor)
+        #expect(Link.pane(who(.none, workerOf: 0xa1), supervisor: supervisor).bySupervisor)
         // Opened by somebody else's agent, by a person, or not in the snapshot.
-        #expect(!Link.pane(who(.none, openedBy: 0xc9), supervisor: supervisor).bySupervisor)
+        #expect(!Link.pane(who(.none, workerOf: 0xc9), supervisor: supervisor).bySupervisor)
         #expect(!Link.pane(who(.none), supervisor: supervisor).bySupervisor)
         #expect(!Link.pane(nil, supervisor: supervisor).bySupervisor)
         // The supervisor's page is closed: nothing to compare with -- and a
         // pane nobody opened does not match "no supervisor".
-        #expect(!Link.pane(who(.none, openedBy: 0xa1), supervisor: nil).bySupervisor)
+        #expect(!Link.pane(who(.none, workerOf: 0xa1), supervisor: nil).bySupervisor)
         #expect(!Link.pane(who(.none), supervisor: nil).bySupervisor)
     }
 

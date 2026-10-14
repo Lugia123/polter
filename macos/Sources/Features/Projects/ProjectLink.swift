@@ -219,9 +219,12 @@ enum ProjectLink {
         let role: String?
         let cli: String?
         let session: String?
-        /// The terminal whose agent opened this one, in this run of the
-        /// app; nil when none did, or it was opened before the app started.
-        let openedBy: String?
+        /// The supervisor this one was opened for as a worker, in this run
+        /// of the app (the snapshot's `who.worker_of`); nil when it was not,
+        /// or it was opened before the app started. Not "who opened it": a
+        /// supervisor's own split is opened by it and is not a worker's
+        /// pane (#1498).
+        let workerOf: String?
     }
 
     /// What a save writes of a pane, given what the core says of its
@@ -232,8 +235,8 @@ enum ProjectLink {
     /// - **Whether it is the supervisor is not said here**: that is the
     ///   project's own mark (`ProjectPages.makeSupervisor`), which a save
     ///   keeps (`ProjectNode.keepingWhatTheFileKnew`).
-    /// - The pane is one the supervisor opened when the terminal that
-    ///   opened it is the one in the project's supervisor pane now. With no
+    /// - The pane is one the supervisor opened when it was opened as a
+    ///   worker of the terminal in the project's supervisor pane now. With no
     ///   supervisor's terminal to compare with -- its page is closed, or
     ///   the project has none -- that cannot be told, which is not "no":
     ///   the file's mark stays.
@@ -246,7 +249,7 @@ enum ProjectLink {
         case .agent:
             agent = .agent(role: who.role ?? "", cli: who.cli ?? "", session: who.session ?? "", supervisor: false)
         }
-        return (agent, supervisor != nil && who.openedBy == supervisor)
+        return (agent, supervisor != nil && who.workerOf == supervisor)
     }
 
     /// What the core last said. Kept here, where the control room's views

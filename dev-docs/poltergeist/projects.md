@@ -190,7 +190,7 @@
 **每一格里是谁**：快照 `terminals[]` 每项多了
 
 ```json
-"who": {"is":"agent","role":"dev-worker","cli":"claude-code","session":"…","opened_by":"0x…a1"}
+"who": {"is":"agent","role":"dev-worker","cli":"claude-code","session":"…","worker_of":"0x…a1"}
 ```
 
 `role` / `cli` / `session` 与 `group.json` 的 `supervisor` 一节、项目文件 leaf 的 `agent` 同名同义，宿主保存
@@ -207,11 +207,15 @@
 `none` 与 `unknown` 不是一回事：前者是「没有人」，后者是「不知道」。宿主保存到 `unknown` 的格子时保留文件里
 原来写的。是不是总管不在 `who` 里：一格是总管 ⇔ 它的终端号等于绑着本项目的那个群的 `groups[].steward`。
 
-**「总管开的格子」**：`who.opened_by` 是本轮里哪个终端的 agent 开的这一格（不管现在里面是谁），没有就是
-`null`。终端号每次运行都换，所以要活过重启只能靠项目文件，一条通道三段：
+**「总管开的格子」**：`who.worker_of` 是本轮里这一格作为哪个总管的 worker 开出来的（经 `role_launch` /
+`terminal_open` 放置，`Bus.Entry.worker_of`；不管现在里面是谁），没有就是
+`null`。总管自己用 `terminal_action new_split` / `terminal_layout` 分出来的格**不算**（#1498）：那些记在
+`Bus.Entry.opened_by` 里，管的是关格要不要问人、tab 归哪个项目，不说它是 worker 的格；以前这里读的就是
+`opened_by`，重启后那些格被当成 worker，下一个 worker 被放到了它下面。终端号每次运行都换，所以要活过重启
+只能靠项目文件，一条通道三段：
 
-1. 核心 → 宿主：`who.opened_by`（上面）。
-2. 宿主 ↔ 项目文件：保存时，这一格的 `opened_by` 等于本项目总管那格的终端 → 在 leaf 上记一个标记。一个项目
+1. 核心 → 宿主：`who.worker_of`（上面）。
+2. 宿主 ↔ 项目文件：保存时，这一格的 `worker_of` 等于本项目总管那格的终端 → 在 leaf 上记一个标记。一个项目
    只有一个总管，所以文件里只用记「是总管开的」，不用记是哪位。**这个标记在项目文件格式里叫什么由格式那一边定
    （写这段时还没有）**；它不该放进 `agent` 里——agent 走了以后那一格是 `none`，而「总管开的」仍然成立。
 3. 宿主 → 核心：`projects` 陈述的 `workers`——开着的项目里带标记的格子现在是哪些终端。核心收到后，把本轮还

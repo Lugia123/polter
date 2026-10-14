@@ -316,32 +316,40 @@ struct PaneFrameBar: View {
 
     var body: some View {
         let theme = Look.theme(scheme)
-        HStack(spacing: CGFloat(Look.Pane.barGap)) {
+        Group {
             if let title {
-                HStack(spacing: CGFloat(Look.Pane.nameRoleGap)) {
-                    Text(title.name)
-                        .font(.system(size: CGFloat(Look.Font.body), design: .monospaced))
-                        .fontWeight(Look.weight(wears == .plain ? Look.Font.weightBody : Look.Font.weightEmphasis))
-                        .foregroundStyle(nameColor(theme))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    // The title's own word when it brings one; the frame's
-                    // otherwise (`SupervisorTitle.says`).
-                    if let role = title.roleWord(in: wears) {
-                        Text(role)
-                            .foregroundStyle(secondaryColor(theme))
-                            .fixedSize()
+                // **What gives way when the bar is narrow, in order** (#1498):
+                // the word for what the pane is; then the name, cut in the
+                // middle down to `nameFloor`; then the status word, leaving
+                // its glyph; then the name. Each line is laid out whole or
+                // not at all, so nothing is drawn over anything else. At
+                // 80 pt they used to overlap: the role and status words
+                // would not shrink, and the name had nothing left.
+                //
+                // The first three steps are the Windows host's order too
+                // (`scene::place_line`: trailing parts whole, the name cut
+                // by them, the role only after a whole name). The last two
+                // are this host's alone; Windows lets the status run past
+                // the bar's left edge instead.
+                ViewThatFits(in: .horizontal) {
+                    line(title, theme: theme, role: true, nameCut: false, word: true)
+                    line(title, theme: theme, role: false, nameCut: false, word: true)
+                    line(title, theme: theme, role: false, nameCut: true, word: true)
+                    line(title, theme: theme, role: false, nameCut: true, word: false)
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        status(title, theme: theme, word: false)
                     }
                 }
-                Spacer(minLength: CGFloat(Look.Pane.barGap))
-                status(title, theme: theme)
             } else {
-                Text(caption ?? "")
-                    .font(.system(size: CGFloat(Look.Font.body), design: .monospaced))
-                    .foregroundStyle(secondaryColor(theme))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 0)
+                HStack(spacing: CGFloat(Look.Pane.barGap)) {
+                    Text(caption ?? "")
+                        .font(.system(size: CGFloat(Look.Font.body), design: .monospaced))
+                        .foregroundStyle(secondaryColor(theme))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
             }
         }
         .font(.system(size: CGFloat(Look.Font.body)))
@@ -349,8 +357,54 @@ struct PaneFrameBar: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// The narrowest a cut name is let go before the status word gives way:
+    /// four characters of the name's face, which with the ellipsis is a
+    /// beginning and an end to recognise it by.
+    static let nameFloor: CGFloat = {
+        let font = NSFont.monospacedSystemFont(ofSize: CGFloat(Look.Font.body), weight: .regular)
+        return ceil(("MMMM" as NSString).size(withAttributes: [.font: font]).width)
+    }()
+
+    /// One way of laying out the bar. `nameCut`: the name asks only for
+    /// `nameFloor` and takes what it is given; otherwise it asks for all of
+    /// itself, so the line fits only where the whole name does.
     @ViewBuilder
-    private func status(_ title: PaneFrame.Title, theme: Look.Theme) -> some View {
+    private func line(_ title: PaneFrame.Title, theme: Look.Theme, role: Bool, nameCut: Bool, word: Bool) -> some View {
+        // The gap between the two sides is the spacer's, and only the
+        // spacer's: a spacing here would be added on both sides of it.
+        HStack(spacing: 0) {
+            HStack(spacing: CGFloat(Look.Pane.nameRoleGap)) {
+                if nameCut {
+                    name(title, theme: theme)
+                        .frame(minWidth: 0, idealWidth: Self.nameFloor, maxWidth: .infinity, alignment: .leading)
+                } else {
+                    name(title, theme: theme)
+                        .fixedSize()
+                }
+                // The title's own word when it brings one; the frame's
+                // otherwise (`SupervisorTitle.says`).
+                if role, let word = title.roleWord(in: wears) {
+                    Text(word)
+                        .foregroundStyle(secondaryColor(theme))
+                        .fixedSize()
+                }
+            }
+            Spacer(minLength: CGFloat(Look.Pane.barGap))
+            status(title, theme: theme, word: word)
+        }
+    }
+
+    private func name(_ title: PaneFrame.Title, theme: Look.Theme) -> some View {
+        Text(title.name)
+            .font(.system(size: CGFloat(Look.Font.body), design: .monospaced))
+            .fontWeight(Look.weight(wears == .plain ? Look.Font.weightBody : Look.Font.weightEmphasis))
+            .foregroundStyle(nameColor(theme))
+            .lineLimit(1)
+            .truncationMode(.middle)
+    }
+
+    @ViewBuilder
+    private func status(_ title: PaneFrame.Title, theme: Look.Theme, word: Bool) -> some View {
         if title.shown != .none || !title.word.isEmpty {
             HStack(spacing: CGFloat(Look.Side.statusWordGap)) {
                 // Held is not a status and has no colour of its own: the
@@ -363,10 +417,12 @@ struct PaneFrameBar: View {
                         .frame(width: CGFloat(Look.Side.glyph), height: CGFloat(Look.Side.glyph))
                         .accessibilityHidden(true)
                 }
-                Text(title.word)
-                    .fontWeight(Look.weight(Look.Font.weightEmphasis))
-                    .foregroundStyle(wordColor(title.shown, theme: theme))
-                    .fixedSize()
+                if word {
+                    Text(title.word)
+                        .fontWeight(Look.weight(Look.Font.weightEmphasis))
+                        .foregroundStyle(wordColor(title.shown, theme: theme))
+                        .fixedSize()
+                }
             }
         }
     }

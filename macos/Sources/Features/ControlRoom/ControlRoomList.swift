@@ -595,8 +595,9 @@ struct ControlRoomSnapshot: Decodable, Equatable {
             var role: String?
             var cli: String?
             var session: String?
-            /// The terminal whose agent opened this one, in this run.
-            var opened_by: String?
+            /// The supervisor this one was opened for as a worker, in this
+            /// run.
+            var worker_of: String?
         }
 
         /// Absent in a snapshot from before the core said it.

@@ -230,7 +230,7 @@
 //!       "shown", "word", "text", "waiter", "reason", "what" } ],
 //!   "terminals": [ { the member fields but `role`, and "event_ms",
 //!       "who":{"is":"agent","role":"dev-worker","cli":"claude-code",
-//!              "session":"…","opened_by":"0x…"|null},
+//!              "session":"…","worker_of":"0x…"|null},
 //!                             who is working in it (`WhoOut`). is:
 //!                             agent | none (nobody: no agent, and the
 //!                             shell is at its prompt) | unknown (the core
@@ -238,9 +238,9 @@
 //!                             session are the words a group's record and
 //!                             a project's pane use; for an agent, "" is
 //!                             that part not known, and for the other two
-//!                             all three are null. opened_by is the
-//!                             terminal whose agent opened this one, in
-//!                             this run, whoever is in it now
+//!                             all three are null. worker_of is the
+//!                             supervisor this one was opened for as a
+//!                             worker, in this run, whoever is in it now
 //!       "window":"0x…"|null, "tab":"0x…"|null,
 //!       "pane":"supervisor"|"worker"|"plain",
 //!       "bar":{"shown":"held","text":"Held"} } ],
@@ -1014,11 +1014,14 @@ pub const WhoOut = struct {
     role: ?[]const u8,
     cli: ?[]const u8,
     session: ?[]const u8,
-    /// The terminal whose agent opened this one in this run
-    /// (`Bus.Entry.opened_by`), whoever is in it now; null when no agent
-    /// did. It says which panes are a supervisor's own, so a host can
-    /// keep that with the project and say it back (`Projects`, `workers`).
-    opened_by: ?Hex,
+    /// The supervisor this one was opened for as a worker in this run
+    /// (`Bus.Entry.worker_of`), whoever is in it now; null when it was not.
+    /// It says which panes are a supervisor's workers', so a host can keep
+    /// that with the project and say it back (`Projects`, `workers`).
+    ///
+    /// It was `opened_by` until #1498, and that also named the panes a
+    /// supervisor split off for itself: a restart made them workers.
+    worker_of: ?Hex,
 
     pub const Is = enum { unknown, none, agent };
 };
@@ -1036,15 +1039,15 @@ pub fn whoOf(arena: Allocator, bus: *const Bus, t: Terminal) Allocator.Error!Who
         .agent
     else
         .unknown;
-    const opened_by: ?Hex = .opt(bus.openedBy(t.id));
+    const worker_of: ?Hex = .opt(bus.workerOf(t.id));
     return switch (kind) {
-        .unknown, .none => .{ .is = kind, .role = null, .cli = null, .session = null, .opened_by = opened_by },
+        .unknown, .none => .{ .is = kind, .role = null, .cli = null, .session = null, .worker_of = worker_of },
         .agent => .{
             .is = .agent,
             .role = try arena.dupe(u8, t.role),
             .cli = try arena.dupe(u8, a.cli.get() orelse t.launched_cli),
             .session = try arena.dupe(u8, a.session_id.get() orelse ""),
-            .opened_by = opened_by,
+            .worker_of = worker_of,
         },
     };
 }
@@ -2234,6 +2237,7 @@ fn fixtureWorld() !World {
         else => {},
     };
     try w.bus.markOpenedByAgent(0xb1, 0xa1);
+    try w.bus.markWorkerOf(0xb1, 0xa1);
 
     // One group tied to a project, the host not having said anything yet:
     // it is started by opening it, and how many pages it has is not known.
@@ -4222,9 +4226,14 @@ test "Projects: who is in a terminal is an agent, nobody, or not known -- and no
         },
         else => {},
     };
-    // The supervisor opened two of them; nobody opened the rest.
+    // The supervisor opened two of them for workers; nobody opened the
+    // rest -- but for 0xa4, which it split off for itself (#1498): opened
+    // by it, and not a worker.
     try w.bus.markOpenedByAgent(0xa3, 0xa1);
+    try w.bus.markWorkerOf(0xa3, 0xa1);
     try w.bus.markOpenedByAgent(0xa5, 0xa1);
+    try w.bus.markWorkerOf(0xa5, 0xa1);
+    try w.bus.markOpenedByAgent(0xa4, 0xa1);
 
     const s = (try room.compute(aa, w.input(1_000))).snapshot;
     const who = struct {
@@ -4243,7 +4252,7 @@ test "Projects: who is in a terminal is an agent, nobody, or not known -- and no
     try testing.expectEqualStrings("polter-supervisor", boss.role.?);
     try testing.expectEqualStrings("claude-code", boss.cli.?);
     try testing.expectEqualStrings("s", boss.session.?);
-    try testing.expectEqual(@as(?Hex, null), boss.opened_by);
+    try testing.expectEqual(@as(?Hex, null), boss.worker_of);
 
     // There, and nothing known of it: empty strings, which is "an agent,
     // and that part is not known" -- not nulls.
@@ -4259,15 +4268,18 @@ test "Projects: who is in a terminal is an agent, nobody, or not known -- and no
     try testing.expectEqual(@as(?[]const u8, null), left.role);
     try testing.expectEqual(@as(?[]const u8, null), left.cli);
     try testing.expectEqual(@as(?[]const u8, null), left.session);
-    try testing.expectEqual(@as(u64, 0xa1), left.opened_by.?.id);
+    try testing.expectEqual(@as(u64, 0xa1), left.worker_of.?.id);
 
-    try testing.expectEqual(WhoOut.Is.none, (try who(s, 0xa4)).is);
+    // The supervisor's own split: nobody's worker (#1498).
+    const own = try who(s, 0xa4);
+    try testing.expectEqual(WhoOut.Is.none, own.is);
+    try testing.expectEqual(@as(?Hex, null), own.worker_of);
 
     // Not at a prompt, and nothing heard: the core cannot tell.
     const blind = try who(s, 0xa5);
     try testing.expectEqual(WhoOut.Is.unknown, blind.is);
     try testing.expectEqual(@as(?[]const u8, null), blind.role);
-    try testing.expectEqual(@as(u64, 0xa1), blind.opened_by.?.id);
+    try testing.expectEqual(@as(u64, 0xa1), blind.worker_of.?.id);
 
     // On its way: what the launch said is what is known so far.
     const starting = try who(s, 0xa6);
@@ -4278,12 +4290,12 @@ test "Projects: who is in a terminal is an agent, nobody, or not known -- and no
 
     const json = try writeAlloc(aa, s, .{});
     try testing.expect(std.mem.indexOf(u8, json,
-        \\"who":{"is":"agent","role":"polter-supervisor","cli":"claude-code","session":"s","opened_by":null}
+        \\"who":{"is":"agent","role":"polter-supervisor","cli":"claude-code","session":"s","worker_of":null}
     ) != null);
     try testing.expect(std.mem.indexOf(u8, json,
-        \\"who":{"is":"none","role":null,"cli":null,"session":null,"opened_by":"0x00000000000000a1"}
+        \\"who":{"is":"none","role":null,"cli":null,"session":null,"worker_of":"0x00000000000000a1"}
     ) != null);
     try testing.expect(std.mem.indexOf(u8, json,
-        \\"who":{"is":"unknown","role":null,"cli":null,"session":null,"opened_by":"0x00000000000000a1"}
+        \\"who":{"is":"unknown","role":null,"cli":null,"session":null,"worker_of":"0x00000000000000a1"}
     ) != null);
 }
