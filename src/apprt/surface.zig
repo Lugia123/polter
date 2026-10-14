@@ -65,6 +65,13 @@ pub const Message = union(enum) {
     /// and a fixed buffer keeps this off the allocator on the app thread.
     poltergeist_notice: [255:0]u8,
 
+    /// The bus's scheduled hand-over (`Bus.drainIfDue`): typed like a
+    /// notice, and **when it was typed and submitted, what it carried has
+    /// arrived** (`Bus.delivered`, task 1503). Its own variant so that a
+    /// group's "N new messages" typed by the same path does not count as
+    /// the bus's line having arrived.
+    poltergeist_handover: [255:0]u8,
+
     /// A line for Poltergeist to put on this terminal's screen, for the
     /// user to read.
     ///

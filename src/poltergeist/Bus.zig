@@ -997,6 +997,24 @@ pub fn noteCall(self: *Bus, id: Id, now_ms: u64) void {
     e.silent_handed = 0;
 }
 
+/// Whether the agent's own hooks account for it calling nothing: it ended
+/// its turn, failed, or is waiting on somebody (task 1503). Only with hooks
+/// `live`; a terminal with none is measured as before.
+fn silenceExplained(a: Agent) bool {
+    return a.hooks == .live and stateExplains(a.state);
+}
+
+/// How long this terminal's calls have been silent, as the `no tool call`
+/// notice counts it: since the last call, or since the turn it is in
+/// started when that is later -- an agent that waited two hours for an
+/// instruction and has just been given one has not been silent for two
+/// hours of work (task 1503). Null when it has never called.
+fn silenceMs(e: Entry, now_ms: u64) ?u64 {
+    const last = e.last_call_ms orelse return null;
+    const from = if (e.agent.hooks == .live and e.agent.state == .in_turn) @max(last, e.agent.since_ms) else last;
+    return now_ms -| from;
+}
+
 /// How long it has been since this terminal last called a Polter tool, or
 /// null if it never has. See `Entry.last_call_ms` for why those differ.
 pub fn callSilentMs(self: *const Bus, id: Id, now_ms: u64) ?u64 {
@@ -1045,9 +1063,13 @@ pub fn considerCalls(self: *Bus, now_ms: u64) bool {
         const e = kv.value_ptr;
         if (e.role != .watched) continue;
         if (e.duty == .off) continue;
-        const last = e.last_call_ms orelse continue;
-
-        const silent = now_ms -| last;
+        // **Not while the agent has said why it is not calling** (task
+        // 1503): a turn that ended, failed, or is waiting on somebody has
+        // its own notice, and a worker sitting at its prompt waiting for
+        // the next instruction is not stuck. The clock is for a turn in
+        // progress, and for terminals with no hooks to say anything.
+        if (silenceExplained(e.agent)) continue;
+        const silent = silenceMs(e.*, now_ms) orelse continue;
         if (silent < e.silent_raised_ms + after) continue;
 
         e.silent_raised_ms = silent - silent % after;
@@ -1574,6 +1596,17 @@ pub fn report(
     // makes someone turn the whole thing off.
     if (e.duty == .off) return false;
 
+    // **The screen moving is not the agent going back to work when its
+    // hooks say it is not** (task 1503): an agent that ended its turn, or
+    // is waiting, redraws its prompt without starting anything, and a new
+    // turn says so itself (`turn_started`). The quiet report it replaces
+    // goes too: it was about a stillness the agent had already explained.
+    if (kind == .resumed and self.quietExplained(about, now_ms)) {
+        e.pending = null;
+        e.handed_over = 0;
+        return false;
+    }
+
     // Into the box. One slot per terminal, so a later report replaces an
     // earlier one rather than stacking behind it.
     //
@@ -1714,18 +1747,50 @@ pub fn agentEvent(
     try self.keepAsk(id, ev);
 
     // A new turn makes whatever was waiting about the last one stale, the
-    // way `resumed` replaces a quiet report.
+    // way `resumed` replaces a quiet report. The `no tool call` clock
+    // starts again with it too (`silenceMs`): what was said about the wait
+    // before it is not about this turn.
     if (ev.event == .turn_started or ev.event == .session_started) {
         a.pending = null;
         a.handed = 0;
+        e.silent_pending = false;
+        e.silent_handed = 0;
+        e.silent_raised_ms = 0;
     }
 
     const kind = notice orelse return false;
     if (e.role != .watched or e.duty == .off) return false;
+    if (!saysSomethingNew(before, a.*, kind)) return false;
     a.pending = kind;
     a.handed = 0;
     return true;
 }
+
+/// Whether an agent event is news for the supervisor (task 1503).
+///
+/// **Once per state, not once per event.** An agent left waiting says so
+/// again: Claude Code sends its idle notification over and over while it
+/// sits at the prompt, and each one used to put the same `awaiting input`
+/// line back in the box -- a supervisor got it every minute until it
+/// switched watching off. A waiting state said again, waiting on the same
+/// thing (`sameState`), is not news; waiting on something else is.
+///
+/// **And an idle prompt after a turn that ended is the same news again.**
+/// The supervisor has just been told the turn ended; Claude Code's
+/// `idle_prompt` a minute later only says it is still sitting there.
+/// A question it actually asks (`elicitation_dialog`) is news.
+fn saysSomethingNew(was: Agent, is: Agent, kind: AgentNotice) bool {
+    if (isWaiting(kind) and sameState(was, is)) return false;
+    if (kind == .awaiting_input and was.hooks == .live and
+        (was.state == .ended or was.state == .failed) and
+        sameText(is.detail.get(), idle_prompt)) return false;
+    return true;
+}
+
+/// What Claude Code's adapter writes as the detail of an idle notification
+/// (`plugins/claude-code/adapter.py`, the `Notification` hook's
+/// `idle_prompt`).
+const idle_prompt = "idle_prompt";
 
 /// Whether an event left the agent in the state it was already in.
 fn sameState(was: Agent, is: Agent) bool {
@@ -2158,6 +2223,51 @@ pub fn deliveryRefused(self: *Bus, to: Id, peers: Peers) void {
     }
 }
 
+/// The scheduled hand-over to `to` was typed and its return reached the
+/// program: what it carried has arrived, and is not handed over again
+/// (task 1503).
+///
+/// **Why this is now the rule.** A hand-over used to be held for up to
+/// `max_hand_overs` rounds whatever became of it, because typing was not
+/// arrival: a return the agent's input box swallowed left the notice lost
+/// (see "a scheduled hand-over holds the notice, because typing is not
+/// arrival"). Typing now says which it was -- a refusal, or a return that
+/// never reached the program (`NotSubmitted`), comes back as one, and the
+/// pause before the return is what made it take -- so a line that went in
+/// is one the supervisor has. Holding it anyway is what typed `no tool
+/// call 15m` and then `no tool call 16m` a minute later, and `turn ended
+/// 0s ago` then `turn ended 60s ago`, into a supervisor that had read the
+/// first.
+///
+/// Only what a hand-over has carried (its counters above zero): something
+/// that came into the box after the line was made is still to come.
+pub fn delivered(self: *Bus, to: Id, peers: Peers) void {
+    const minder = self.entries.getPtr(to) orelse return;
+    if (minder.role != .supervisor) return;
+    if (minder.memo_handed > 0) {
+        minder.memo_len = 0;
+        minder.memo_handed = 0;
+    }
+    const alone = self.supervisorCount() <= 1;
+    var it = self.entries.iterator();
+    while (it.next()) |kv| {
+        const e = kv.value_ptr;
+        if (!hears(to, kv.key_ptr.*, e, alone, peers)) continue;
+        if (e.pending != null and e.handed_over > 0) {
+            e.pending = null;
+            e.handed_over = 0;
+        }
+        if (e.silent_pending and e.silent_handed > 0) {
+            e.silent_pending = false;
+            e.silent_handed = 0;
+        }
+        if (e.agent.pending != null and e.agent.handed > 0) {
+            e.agent.pending = null;
+            e.agent.handed = 0;
+        }
+    }
+}
+
 /// `take`, or -- with `only_waiting` -- just the waiting notices nobody has
 /// been handed, leaving everything else in the box exactly as it was.
 fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers, only_waiting: bool) ?[]u8 {
@@ -2297,7 +2407,7 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
             if (listed < max_listed) {
                 const sep = if (listed == 0) " " else ", ";
                 const mark = w.end;
-                const silent_min = (self.callSilentMs(id, now_ms) orelse 0) / std.time.ms_per_min;
+                const silent_min = (silenceMs(e.*, now_ms) orelse 0) / std.time.ms_per_min;
                 const written = if (self.observed(id)) w.print(
                     "{s}0x{x:0>16} no tool call {d}m (screen changed {d}s ago)",
                     .{ sep, id, silent_min, self.quietMs(id, now_ms) / std.time.ms_per_s },
@@ -2422,6 +2532,16 @@ fn quietExplained(self: *const Bus, id: Id, now_ms: u64) bool {
     const a = e.agent;
     if (a.hooks != .live or !stateExplains(a.state)) return false;
     if (!self.observed(id)) return true;
+    // **A turn that ended or failed, or a question being waited on, holds
+    // for any stillness after it** (task 1503). The screen of an agent
+    // sitting at its prompt still redraws -- a status line, a cursor --
+    // and every redraw was a `back at work` followed by another `quiet`
+    // with the same `turn ended` beside it. Nothing the agent does next
+    // goes unsaid: a new turn is `turn_started`. #879's rule below stays
+    // for the one state it was measured on: declining a permission box
+    // fires no hook, so the agent can be at its prompt while the last
+    // word is still `awaiting approval`.
+    if (a.state != .awaiting_approval) return true;
     const still_since = now_ms -| self.quietMs(id, now_ms);
     return still_since <= a.eventMs() + event_redraw_grace_ms;
 }
@@ -4517,11 +4637,14 @@ test "notice delivery: a waiting notice handed over a moment ago is not said aga
     const again = b.drainIfDue(boss, 118_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expect(std.mem.indexOf(u8, again, "awaiting approval Bash") != null);
 
-    // A supervisor that asks for its box is never held back by this.
-    _ = try b.agentEvent(worker, ask, 200_000);
+    // A supervisor that asks for its box is never held back by this. (A
+    // second prompt: the same one said again is not news, task 1503.)
+    var next = hookEv(.awaiting_approval);
+    next.detail = "Write";
+    _ = try b.agentEvent(worker, next, 200_000);
     _ = b.drainIfDue(boss, 200_000, &buf, .none) orelse return error.TestExpectedNotice;
     const asked = b.drain(boss, 200_500, &buf, .none) orelse return error.TestExpectedNotice;
-    try testing.expect(std.mem.indexOf(u8, asked, "awaiting approval Bash") != null);
+    try testing.expect(std.mem.indexOf(u8, asked, "awaiting approval Write") != null);
 }
 
 test "hooks: waiting for an answer is urgent too, and a turn that merely ended is not" {
@@ -4734,7 +4857,12 @@ test "hooks 879: the screen drawing the event itself does not count as moving af
     try testing.expect(b.drain(boss, 10_000 + event_redraw_grace_ms + 60_000, &buf, .none) == null);
 }
 
-test "hooks 879: a turn that ended and then saw the screen move is reported quiet too" {
+test "hooks 1503: a turn that ended and then saw the screen move is neither back at work nor quiet again" {
+    // This used to be #879's "reported quiet too". An agent sitting at its
+    // prompt after a turn redraws it -- a status line, the cursor -- and
+    // every redraw was a `back at work` and then another `quiet` with the
+    // same `turn ended` beside it, all night (task 1503). A new turn says
+    // so itself: `turn_started`.
     var b = try hookedBus();
     defer b.deinit();
 
@@ -4746,15 +4874,19 @@ test "hooks 879: a turn that ended and then saw the screen move is reported quie
     var buf: [255]u8 = undefined;
     _ = b.drain(boss, 0, &buf, .none);
 
-    // Something drew on the screen long after the turn ended -- the person
-    // typing, a CLI interrupted mid-turn -- and no hook said a word.
+    // Something drew on the screen long after the turn ended, and no hook
+    // said a word.
+    try testing.expect(!b.report(worker, .{ .resumed = .{ .quiet_ms = 0, .silent_ms = 0, .changed_rows = 3, .total_rows = 24 } }, 20_000));
+    try testing.expect(b.drain(boss, 20_000, &buf, .none) == null);
     b.noteQuiet(worker, 0, 20_000);
     _ = b.report(worker, quiet(40_000), 60_000);
-    const line = b.drain(boss, 60_000, &buf, .none) orelse return error.TestExpectedNotice;
-    try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 quiet 40s (last event: turn ended 60s ago)",
-        line,
-    );
+    try testing.expect(b.drain(boss, 60_000, &buf, .none) == null);
+
+    // The floor: a turn that really starts, and stops, is said.
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 61_000);
+    _ = b.report(worker, quiet(200_000), 300_000);
+    const line = b.drain(boss, 300_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "quiet 200s (in turn") != null);
 }
 
 test "ControlRoom facts: everything the bus knows of a terminal, at one moment" {
@@ -4989,4 +5121,134 @@ test "may-authorise off in the configuration: every terminal starts shut, and on
     b.config.may_authorise = true;
     try testing.expect(!b.mayAuthorise(worker));
     try testing.expect(b.mayAuthorise(other));
+}
+
+// -- task 1503: one notice per thing ------------------------------------------
+
+test "notices 1503: the same wait said again is not news, a different one is" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 0);
+
+    var idle = hookEv(.awaiting_input);
+    idle.detail = "idle_prompt";
+    try testing.expect(try b.agentEvent(worker, idle, 1_000));
+    _ = b.drain(boss, 1_000, &buf, .none) orelse return error.TestExpectedNotice;
+
+    // Claude Code says it again a minute later, and again: nothing new.
+    try testing.expect(!try b.agentEvent(worker, idle, 61_000));
+    try testing.expect(!try b.agentEvent(worker, idle, 121_000));
+    try testing.expect(b.drain(boss, 121_000, &buf, .none) == null);
+
+    // Waiting on something else is.
+    var asks = hookEv(.awaiting_input);
+    asks.detail = "which branch?";
+    try testing.expect(try b.agentEvent(worker, asks, 130_000));
+    const line = b.drain(boss, 130_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "awaiting input which branch?") != null);
+}
+
+test "notices 1503: an idle prompt after a turn ended is the same news, a question is not" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 0);
+    var done = hookEv(.turn_ended);
+    done.text = "done";
+    done.text_bytes = 4;
+    try testing.expect(try b.agentEvent(worker, done, 1_000));
+    _ = b.drain(boss, 1_000, &buf, .none) orelse return error.TestExpectedNotice;
+
+    var idle = hookEv(.awaiting_input);
+    idle.detail = "idle_prompt";
+    try testing.expect(!try b.agentEvent(worker, idle, 61_000));
+    try testing.expect(b.drain(boss, 61_000, &buf, .none) == null);
+    // The state is still what the agent said: waiting for input.
+    try testing.expectEqual(AgentState.awaiting_input, b.agentOf(worker).state);
+
+    // After a turn that ended, a form it puts up is a question.
+    var b2 = try hookedBus();
+    defer b2.deinit();
+    _ = try b2.agentEvent(worker, hookEv(.turn_started), 0);
+    _ = try b2.agentEvent(worker, done, 1_000);
+    var form = hookEv(.awaiting_input);
+    form.detail = "elicitation_dialog";
+    try testing.expect(try b2.agentEvent(worker, form, 2_000));
+}
+
+test "notices 1503: no tool call is not said while the agent has said why it is not calling" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    const t = b.config.calls_silent_after_ms;
+
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 0);
+    b.noteCall(worker, 1_000);
+    var done = hookEv(.turn_ended);
+    done.text = "done";
+    done.text_bytes = 4;
+    _ = try b.agentEvent(worker, done, 2_000);
+    _ = b.drain(boss, 2_000, &buf, .none);
+
+    // Ended, waiting for its next instruction: an hour of no calls is not
+    // a stuck worker.
+    try testing.expect(!b.considerCalls(1_000 + 4 * t));
+    try testing.expect(b.drain(boss, 1_000 + 4 * t, &buf, .none) == null);
+
+    // Given its instruction, it is counted from the turn's start, not from
+    // its last call an hour ago.
+    const start = 1_000 + 4 * t;
+    _ = try b.agentEvent(worker, hookEv(.turn_started), start);
+    try testing.expect(!b.considerCalls(start + t - 1));
+    try testing.expect(b.considerCalls(start + t));
+    const line = b.drain(boss, start + t, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "no tool call 15m") != null);
+}
+
+test "notices 1503: a hand-over that went in is not typed again with a new figure" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    const t = b.config.calls_silent_after_ms;
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 0);
+    b.noteCall(worker, 0);
+
+    try testing.expect(b.considerCalls(t));
+    const first = b.drainIfDue(boss, t, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, first, "no tool call 15m") != null);
+    // It was typed and submitted.
+    b.delivered(boss, .none);
+
+    // A minute on there is nothing to type: not `no tool call 16m`.
+    try testing.expect(b.drainIfDue(boss, t + std.time.ms_per_min, &buf, .none) == null);
+    // The next whole threshold is a new thing, and is said.
+    try testing.expect(b.considerCalls(2 * t));
+    const second = b.drainIfDue(boss, 2 * t, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, second, "no tool call 30m") != null);
+}
+
+test "notices 1503: a hand-over that did not go in comes round again, and what came after it waits its turn" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 0);
+    var done = hookEv(.turn_ended);
+    done.text = "done";
+    done.text_bytes = 4;
+    _ = try b.agentEvent(worker, done, 1_000);
+
+    // Typed and refused (or never submitted): no `delivered`. It comes
+    // round on the interval, as it always did.
+    _ = b.drainIfDue(boss, 1_000, &buf, .none) orelse return error.TestExpectedNotice;
+    const again = b.drainIfDue(boss, 61_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, again, "turn ended") != null);
+
+    // That one went in -- and what was put in the box after it was made is
+    // not taken with it.
+    try testing.expect(b.leaveNote(boss, "a note for later"));
+    b.delivered(boss, .none);
+    const after = b.drain(boss, 62_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, after, "turn ended") == null);
+    try testing.expect(std.mem.indexOf(u8, after, "a note for later") != null);
 }

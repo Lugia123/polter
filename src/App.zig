@@ -2293,7 +2293,11 @@ fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
         const line = self.poltergeist.drainIfDue(to, now_ms, &buf, self.chat.peers()) orelse continue;
         buf[line.len] = 0;
 
-        self.surfaceMessage(surface, self.noticeFor(to, buf)) catch |err| {
+        const msg: apprt.surface.Message = if (self.agentPresent(to))
+            .{ .poltergeist_handover = buf }
+        else
+            .{ .poltergeist_alert = buf };
+        self.surfaceMessage(surface, msg) catch |err| {
             log.warn("poltergeist: could not deliver notices err={}", .{err});
         };
     }
