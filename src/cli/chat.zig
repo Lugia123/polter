@@ -150,12 +150,10 @@ const Host = struct {
     alloc: Allocator,
     io: std.Io,
 
-    /// Kept because the state directory is the one that holds it: the
-    /// statistics read `session.json` out of there, and deriving the
-    /// directory from the socket means this window never has a second
-    /// opinion about where Polter's state lives. Borrowed from the caller,
-    /// which holds it for the life of the program.
-    socket_path: []const u8,
+    // No `socket_path` here any more, on purpose (#1524). It was kept to
+    // find the state directory as the socket's own, which is true on a Mac
+    // and on Windows is `\\.\pipe`. Where `session.json` is, is asked
+    // (`recalledFrom`).
 
     stream: transport.Conn,
     read_buf: []u8,
@@ -195,7 +193,6 @@ const Host = struct {
         var self: Host = .{
             .alloc = alloc,
             .io = io,
-            .socket_path = path,
             .stream = stream,
             .read_buf = read_buf,
             .write_buf = write_buf,
@@ -369,6 +366,78 @@ const Recalled = struct {
     cwd: []const u8,
     role: []const u8,
 };
+
+/// Last night's members of `group`, out of `session.json`, appended to `out`.
+///
+/// **A file rather than a call** for what is in it, and this is the one
+/// place this window touches the state directory. The tool that hands this
+/// material over the socket, `session_recall`, is the supervisor's -- it is
+/// prose written for an agent to act on. What is wanted here is the same
+/// facts as a table, for the person, and inventing a second tool to carry
+/// them to the one program that is definitionally running as the user
+/// seemed worse than reading the file the user owns.
+///
+/// **Where the file is, is asked** (`session_file`, #1524): the core
+/// answers with the path it writes. This used to be the directory the
+/// socket is in -- the state directory on a Mac, and on Windows, where the
+/// socket is a named pipe, `\\.\pipe`: the list was empty there every
+/// time. Working the path out here instead would be a second opinion that
+/// a shell profile setting `XDG_STATE_HOME` could make disagree.
+///
+/// Failure is silence: no answer (an older Polter that does not know the
+/// question), no file, unreadable, or a shape this does not recognise all
+/// leave the list empty, and an empty list draws nothing.
+fn recalledFrom(
+    host: *Host,
+    arena: Allocator,
+    io: std.Io,
+    group: []const u8,
+    out: *std.ArrayListUnmanaged(Recalled),
+) !void {
+    const asked = host.callJson(arena,
+        \\{"method":"session_file"}
+    ) catch return;
+    const path = try arena.dupe(u8, stringField(asked, "text") orelse return);
+
+    const bytes = std.Io.Dir.readFileAlloc(
+        .cwd(),
+        io,
+        path,
+        arena,
+        .limited(1024 * 1024),
+    ) catch return;
+
+    try recalledIn(arena, bytes, group, out);
+}
+
+/// The members `session.json` lists for `group`.
+fn recalledIn(
+    arena: Allocator,
+    bytes: []const u8,
+    group: []const u8,
+    out: *std.ArrayListUnmanaged(Recalled),
+) !void {
+    const parsed = std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        bytes,
+        .{},
+    ) catch return;
+
+    for (arrayField(parsed, "groups") catch return) |g| {
+        const name = stringField(g, "name") orelse continue;
+        if (!std.mem.eql(u8, name, group)) continue;
+
+        for (arrayField(g, "members") catch continue) |m| {
+            try out.append(arena, .{
+                .title = try arena.dupe(u8, stringField(m, "title") orelse ""),
+                .cwd = try arena.dupe(u8, stringField(m, "cwd") orelse ""),
+                .role = try arena.dupe(u8, stringField(m, "role") orelse ""),
+            });
+        }
+        return;
+    }
+}
 
 /// One member, with the id as well as the name.
 ///
@@ -1186,58 +1255,13 @@ const Chat = struct {
 
     /// Read last night's members for `group` out of `session.json`.
     ///
-    /// **A file rather than a call**, and this is the one place this window
-    /// touches the state directory. The tool that hands this material over
-    /// the socket, `session_recall`, is the supervisor's -- it is prose
-    /// written for an agent to act on. What is wanted here is the same
-    /// facts as a table, for the person, and inventing a second tool to
-    /// carry them to the one program that is definitionally running as the
-    /// user seemed worse than reading the file the user owns.
-    ///
-    /// The directory is found from the socket, which sits in it, so nothing
-    /// here has a second opinion about where the state lives.
-    ///
-    /// Failure is silence: no file, unreadable, or a shape this does not
-    /// recognise all leave the list empty, and an empty list draws nothing.
+    /// `.empty`, not `clearRetainingCapacity`: the list's own buffer was
+    /// allocated from the arena that `fetchEvents` has just reset, so
+    /// keeping the capacity keeps a pointer into freed memory. The events
+    /// list a few lines up does the same thing for the same reason.
     fn readRecalled(self: *Chat, arena: Allocator, group: []const u8) !void {
-        // `.empty`, not `clearRetainingCapacity`: the list's own buffer was
-        // allocated from the arena that `fetchEvents` has just reset, so
-        // keeping the capacity keeps a pointer into freed memory. The
-        // events list a few lines up does the same thing for the same
-        // reason.
         self.recalled = .empty;
-
-        const dir = std.fs.path.dirname(self.host.socket_path) orelse return;
-        const path = try std.fs.path.join(arena, &.{ dir, "session.json" });
-
-        const bytes = std.Io.Dir.readFileAlloc(
-            .cwd(),
-            self.io,
-            path,
-            arena,
-            .limited(1024 * 1024),
-        ) catch return;
-
-        const parsed = std.json.parseFromSliceLeaky(
-            std.json.Value,
-            arena,
-            bytes,
-            .{},
-        ) catch return;
-
-        for (arrayField(parsed, "groups") catch return) |g| {
-            const name = stringField(g, "name") orelse continue;
-            if (!std.mem.eql(u8, name, group)) continue;
-
-            for (arrayField(g, "members") catch continue) |m| {
-                try self.recalled.append(arena, .{
-                    .title = try arena.dupe(u8, stringField(m, "title") orelse ""),
-                    .cwd = try arena.dupe(u8, stringField(m, "cwd") orelse ""),
-                    .role = try arena.dupe(u8, stringField(m, "role") orelse ""),
-                });
-            }
-            return;
-        }
+        try recalledFrom(self.host, arena, self.io, group, &self.recalled);
     }
 
     fn update(self: *Chat, event: Event) !void {
@@ -3883,4 +3907,92 @@ test "cycling the filter reaches every one of them and comes back" {
     }
     try testing.expectEqual(std.enums.values(F).len, seen.count());
     try testing.expectEqual(F.all, f);
+}
+
+// Where last night's members are read from is the path the core answers,
+// not the directory the socket is in (#1524). On Windows the socket is a
+// named pipe and its directory is `\\.\pipe`, so reading beside it found
+// nothing, ever. Here the two places are made different on purpose, and the
+// one beside the socket holds a decoy: reading there gives the wrong name,
+// not merely none.
+test "last night's members come from where the core says, not from beside the socket (#1524)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const Server = @import("../poltergeist/Server.zig");
+    const wire = @import("../poltergeist/wire.zig");
+    const alloc = testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [5]u8 = undefined;
+    io.random(&raw);
+    const beside = try std.fmt.allocPrint(alloc, "/tmp/pg-chat-sock-{x}", .{&raw});
+    defer alloc.free(beside);
+    const kept = try std.fmt.allocPrint(alloc, "/tmp/pg-chat-state-{x}", .{&raw});
+    defer alloc.free(kept);
+    try std.Io.Dir.cwd().createDirPath(io, beside);
+    defer std.Io.Dir.cwd().deleteTree(io, beside) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, kept);
+    defer std.Io.Dir.cwd().deleteTree(io, kept) catch {};
+
+    const notes =
+        \\{"groups":[{"name":"web","members":[{"title":"%s","cwd":"/src","role":"worker"}]}]}
+    ;
+    const kept_file = try std.fmt.allocPrint(alloc, "{s}/session.json", .{kept});
+    defer alloc.free(kept_file);
+    const decoy_file = try std.fmt.allocPrint(alloc, "{s}/session.json", .{beside});
+    defer alloc.free(decoy_file);
+    {
+        const real = try std.mem.replaceOwned(u8, alloc, notes, "%s", "asked");
+        defer alloc.free(real);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = kept_file, .data = real });
+        const decoy = try std.mem.replaceOwned(u8, alloc, notes, "%s", "beside the socket");
+        defer alloc.free(decoy);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = decoy_file, .data = decoy });
+    }
+
+    // A core that answers every request with the path it keeps.
+    const Fake = struct {
+        io: std.Io,
+        path: []const u8,
+        fn submit(ctx: *anyopaque, pending: *Server.Pending) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            defer pending.release();
+            pending.complete(self.io, wire.Response{ .text = self.path });
+        }
+    };
+    var fake: Fake = .{ .io = io, .path = kept_file };
+    const sock = try std.fmt.allocPrint(alloc, "{s}/polter-test.sock", .{beside});
+    defer alloc.free(sock);
+    var server: Server = try .init(alloc, io, sock, .{ .ctx = &fake, .func = Fake.submit }, Server.default_max_connections);
+    defer server.deinit();
+    try server.start();
+    const token = try server.issueToken(0x2222);
+
+    var host: Host = try .connect(alloc, io, sock, token);
+    defer host.deinit();
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    var out: std.ArrayListUnmanaged(Recalled) = .empty;
+    try recalledFrom(&host, arena.allocator(), io, "web", &out);
+
+    try testing.expectEqual(@as(usize, 1), out.items.len);
+    try testing.expectEqualStrings("asked", out.items[0].title);
+}
+
+test "a group session.json does not list has no members recalled (#1524)" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayListUnmanaged(Recalled) = .empty;
+    const notes =
+        \\{"groups":[{"name":"web","members":[{"title":"a","cwd":"/","role":"worker"}]}]}
+    ;
+    try recalledIn(arena.allocator(), notes, "api", &out);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+    try recalledIn(arena.allocator(), "not json", "web", &out);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+    try recalledIn(arena.allocator(), notes, "web", &out);
+    try testing.expectEqual(@as(usize, 1), out.items.len);
 }

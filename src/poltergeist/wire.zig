@@ -115,6 +115,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .terminal_list => .terminal_list,
         .notices => .notices,
         .session_recall => .session_recall,
+        .session_file => .session_file,
 
         .notify_user => .{
             .notify_user = .{

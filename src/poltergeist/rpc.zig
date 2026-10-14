@@ -229,6 +229,18 @@ pub const Method = enum {
     /// machine.
     persona_wait,
 
+    /// Where the core keeps `session.json`, as the core works it out.
+    ///
+    /// **Asked rather than derived** (#1524). `polter +chat` used to take
+    /// the directory its socket is in, which on a Mac is the state
+    /// directory and on Windows is `\\.\pipe` -- so on Windows it read
+    /// `\\.\pipe\session.json` and never found last night's members.
+    /// Working the path out again on the client side would not do either:
+    /// a shell profile can set `XDG_STATE_HOME` for the terminal that the
+    /// application never saw. Answered with `text`; `NoSessionFile` when
+    /// the core keeps none (no state directory).
+    session_file,
+
     /// Open a terminal in this window, starting in a chosen directory.
     ///
     /// Separate from `terminal_action` and its `new_tab` because a tab
@@ -584,6 +596,7 @@ pub const Request = union(Method) {
     terminal_capabilities: struct { id: Bus.Id },
     persona_slot: struct { slot: []const u8 },
     persona_wait: struct { slot: []const u8, epoch: u64 = 0 },
+    session_file,
     terminal_open: struct {
         cwd: []const u8 = "",
         watch: bool = false,
@@ -945,6 +958,7 @@ pub fn callableByPlugin(method: Method) bool {
         .persona_face,
         .persona_slot,
         .persona_wait,
+        .session_file,
 
         // **Closed to plugins.** An agent's events are only ever reported
         // by the terminal they are about, with its own token: a plugin
@@ -1119,6 +1133,10 @@ pub fn offeredAsTool(method: Method) bool {
         // question it does have -- what may I see.
         .persona_slot, .persona_wait => false,
 
+        // Asked by `polter +chat` for the path it reads. An agent has
+        // `session_recall` for what is in the file.
+        .session_file => false,
+
         // Sent by `polter +hook` on the CLI's behalf. An agent calling it
         // would be reporting its own state by hand, which is what the hook
         // is there to make unnecessary -- and could be wrong.
@@ -1271,6 +1289,14 @@ pub fn requiresSupervisor(method: Method) bool {
         .persona_face => false,
         .persona_slot => false,
         .persona_wait => false,
+
+        // Where the core keeps `session.json`, asked by `polter +chat` --
+        // the person's own window -- so it reads the file the core writes
+        // rather than working out a path of its own (#1524). A path, not
+        // the file: what is in it is read with the user's own permissions,
+        // which every terminal already has. `session_recall`, the material
+        // itself, is still the supervisor's.
+        .session_file => false,
 
         // **The same question about another terminal is the supervisor's.**
         // A worker asking it of a peer is the reconnaissance `persona_face`
@@ -1441,6 +1467,7 @@ pub fn targetsTerminal(method: Method) bool {
         .persona_face,
         .persona_slot,
         .persona_wait,
+        .session_file,
 
         // A role, a CLI, or a new terminal nobody has yet -- never an
         // existing one.
@@ -1555,6 +1582,7 @@ pub fn target(req: Request) ?Bus.Id {
         .persona_face,
         .persona_slot,
         .persona_wait,
+        .session_file,
         .role_list,
         .role_put,
         .role_delete,
@@ -1632,6 +1660,7 @@ pub fn selfPermitted(req: Request) bool {
         .persona_face,
         .persona_slot,
         .persona_wait,
+        .session_file,
         .group_create,
         .group_destroy,
         .group_rename,
@@ -1892,6 +1921,7 @@ pub fn promptReach(method: Method) enum {
         .persona_face,
         .persona_slot,
         .persona_wait,
+        .session_file,
         .terminal_capabilities,
         .clock_in,
         .clock_out,
@@ -2373,6 +2403,7 @@ test "only what changes the arrangement needs the supervisor" {
             .persona_face,
             .persona_slot,
             .persona_wait,
+            .session_file,
 
             // Open on purpose, and the only method here that is open
             // *because* of who cannot call it: requiring the supervisor's
@@ -5484,6 +5515,13 @@ pub const Host = struct {
             alloc: std.mem.Allocator,
         ) anyerror![]const u8,
 
+        /// Where `session.json` is kept, the path the core itself writes;
+        /// null when it keeps none. See `Method.session_file`.
+        sessionFile: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+        ) anyerror!?[]const u8,
+
         /// The groups `id` may see, each with the group's brief.
         ///
         /// `all` widens the listing past `id`'s own memberships; it does
@@ -5876,6 +5914,10 @@ pub const Host = struct {
 
     fn sessionRecall(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
         return self.vtable.sessionRecall(self.ctx, alloc);
+    }
+
+    fn sessionFile(self: Host, alloc: std.mem.Allocator) anyerror!?[]const u8 {
+        return self.vtable.sessionFile(self.ctx, alloc);
     }
 
     fn chatSetBrief(self: Host, group: []const u8, text: []const u8) anyerror!Chat.Kept {
@@ -6281,6 +6323,7 @@ pub fn showsAnAgent(req: Request) bool {
 pub fn isAgentCall(method: Method) bool {
     return switch (method) {
         .persona_wait,
+        .session_file,
         .persona_slot,
         .persona_face,
 
@@ -6581,6 +6624,13 @@ fn dispatchOne(
             const text = host.sessionRecall(alloc) catch
                 return hostFailure("ReadFailed", "could not read last night's notes");
             return .{ .text = text };
+        },
+
+        .session_file => {
+            const path = host.sessionFile(alloc) catch
+                return hostFailure("ReadFailed", "could not say where the session notes are kept");
+            return .{ .text = path orelse
+                return hostFailure("NoSessionFile", "this Polter keeps no session notes: it has no state directory") };
         },
 
         .group_project => |p| {
@@ -9148,6 +9198,8 @@ const FakeHost = struct {
 
     /// What `session_recall` hands back.
     session: []const u8 = "",
+    /// What `session_file` answers; null is "keeps none".
+    session_file: ?[]const u8 = null,
 
     /// The reason of the last notification asked for.
     notified: ?[]const u8 = null,
@@ -9330,6 +9382,7 @@ const FakeHost = struct {
             .chatPost = chatPost,
             .notifyUser = notifyUser,
             .sessionRecall = sessionRecall,
+            .sessionFile = sessionFile,
             .chatSetBrief = chatSetBrief,
             .groupProject = groupProject,
             .chatGroupInfo = chatGroupInfo,
@@ -9699,6 +9752,12 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.ReadFailed;
         return alloc.dupe(u8, self.session);
+    }
+
+    fn sessionFile(ctx: *anyopaque, alloc: std.mem.Allocator) anyerror!?[]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.ReadFailed;
+        return if (self.session_file) |p| try alloc.dupe(u8, p) else null;
     }
 
     fn groupProject(ctx: *anyopaque, _: std.mem.Allocator, id: Bus.Id, group: []const u8, use: bool) anyerror![]const u8 {
@@ -10091,6 +10150,31 @@ test "dispatch refuses an unauthorized request before touching the host" {
         .clock_out = .{ .id = boss },
     });
     try testing.expectEqualStrings("NotPermitted", closed.failed.code);
+}
+
+// `polter +chat` -- the person's window, on an ordinary terminal's token --
+// asks the core where `session.json` is rather than working it out from its
+// socket, which on Windows is a pipe (#1524). The path is anybody's; what
+// is in the file, as material for an agent, is still the supervisor's.
+test "any terminal may ask where the session notes are kept, not for them (#1524)" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .session_file = "C:\\Users\\me\\AppData\\Local\\polter\\session.json" };
+
+    const asked = try dispatch(testing.allocator, &b, fake.host(), term(worker), .session_file);
+    try testing.expectEqual(.text, std.meta.activeTag(asked));
+    defer testing.allocator.free(asked.text);
+    try testing.expectEqualStrings(fake.session_file.?, asked.text);
+
+    const notes = try dispatch(testing.allocator, &b, fake.host(), term(worker), .session_recall);
+    try testing.expectEqual(.failed, std.meta.activeTag(notes));
+    try testing.expectEqualStrings("NotPermitted", notes.failed.code);
+
+    // None kept: said, not an empty path somebody would try to open.
+    fake.session_file = null;
+    const none = try dispatch(testing.allocator, &b, fake.host(), term(worker), .session_file);
+    try testing.expectEqual(.failed, std.meta.activeTag(none));
+    try testing.expectEqualStrings("NoSessionFile", none.failed.code);
 }
 
 test "a screen is handed over fenced, and says which terminal it is" {

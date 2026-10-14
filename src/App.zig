@@ -4772,6 +4772,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .chatPost = chatPost,
         .notifyUser = notifyUser,
         .sessionRecall = sessionRecall,
+        .sessionFile = sessionFile,
         .chatSetBrief = chatSetBrief,
         .groupProject = poltergeistGroupProject,
         .chatGroupInfo = chatGroupInfo,
@@ -8236,6 +8237,13 @@ fn sessionRecall(ctx: *anyopaque, alloc: Allocator) anyerror![]const u8 {
     const self: *App = @ptrCast(@alignCast(ctx));
 
     return alloc.dupe(u8, self.poltergeist_recall.text());
+}
+
+/// The path `saveSession` writes, for `polter +chat` to read (#1524).
+fn sessionFile(ctx: *anyopaque, alloc: Allocator) anyerror!?[]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const path = self.poltergeist_session_path orelse return null;
+    return try alloc.dupe(u8, path);
 }
 
 /// Say what a group is for.
