@@ -197,8 +197,12 @@ fn now_str() -> String {
 }
 
 /// Where the log goes: `POLTER_HOST_LOG` if set, else
-/// `<exe stem>-<pid>.log` next to the exe -- `polter-host-<pid>.log` for the
+/// `<exe stem>-<pid>.log` in `log_dir()` -- `polter-host-<pid>.log` for the
 /// GUI, `polter-cli-<pid>.log` for a `+action`. See `log_stem`.
+///
+/// **Not beside the exe any more** (task 1510): every process wrote one file
+/// there and nothing deleted any of them, so the program's own folder filled
+/// with logs that only grew. See `log_dir` and `start_log_sweep`.
 ///
 /// **The pid is not decoration.** Earlier builds all wrote
 /// `C:\\app\\polter-host.log`, so an older host left running on the test
@@ -1444,7 +1448,7 @@ impl Sink {
         // verdict came back in -- so it is a channel measured to work in this
         // exact case rather than one believed to.
         let name = format!("{}-stdio-{}.log", log_stem(), std::process::id());
-        let side = std::env::current_exe().ok().map(|p| p.with_file_name(name));
+        let side = Some(log_dir().join(name));
         if let Some(path) = side {
             if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
                 return Sink {
@@ -1513,7 +1517,15 @@ pub fn log_line(msg: &str) {
     // cannot be interrupted, because there is nothing to interrupt.
     // `alarm` below has been this shape all along, for the unrelated reason
     // that it may not allocate.
-    let s = format!("[{}] {}\n", now_str(), msg);
+    // **The pid, when the file is shared** (task 1510): a one-shot `+action`
+    // writes the day's file together with every other one, and a record that
+    // does not say whose it is would bring back the mistake one file per
+    // process was for. See `log_file_name`.
+    let s = if log_is_shared() {
+        format!("[{}] p{} {}\n", now_str(), std::process::id(), msg)
+    } else {
+        format!("[{}] {}\n", now_str(), msg)
+    };
     // **The file is the only copy, and it always was the one we trust**: it is
     // flushed on every line and it is the artifact that leaves the machine.
     // There used to be a `println!` here as well. It went with the console
@@ -5735,10 +5747,167 @@ fn log_path_given(owns: bool, pinned: Option<String>) -> std::path::PathBuf {
             return std::path::PathBuf::from(p);
         }
     }
-    let name = format!("{}-{}.log", log_stem(), std::process::id());
-    match std::env::current_exe() {
-        Ok(exe) => exe.with_file_name(name),
-        Err(_) => std::path::PathBuf::from(name),
+    log_dir().join(log_file_name())
+}
+
+/// This process's log file name: `<exe stem>-<pid>.log`, or the day's shared
+/// `<exe stem>-day-<yyyymmdd>.log` for a one-shot `+action` (task 1510).
+///
+/// # Why one-shot actions share a file
+///
+/// Claude Code runs `polter-cli.exe +hook` for every hook and `+statusline`
+/// for every status line refresh. One file per process was **606 pairs in
+/// twenty hours** in one package directory on the test machine (task 1509).
+/// Which actions count as one-shot is `polter_hostlog::shares_a_daily_file`,
+/// with the list read off the core's `Action` enum.
+///
+/// # Why that does not undo the reason for per-pid files
+///
+/// That reason is an old process's heartbeat read as a new one's. In the
+/// shared file **every record carries its pid** (`log_line`), so whose line
+/// it is stays a reading, not an inference. The GUI and the resident
+/// actions (`+mcp`, `+chat`) keep a file of their own as before.
+///
+/// # Why concurrent appends from many processes are safe
+///
+/// `Sink` opens with `append(true)` and no `write(true)`, which Rust's
+/// Windows `OpenOptions` turns into `FILE_APPEND_DATA` **without**
+/// `FILE_WRITE_DATA`. For such a handle Windows places every `WriteFile` at
+/// the end of the file as one operation, so two processes cannot write over
+/// each other; and `log_line` hands each record, newline included, to one
+/// write, so they cannot be spliced into each other either. The default share
+/// mode lets every process open the file at once.
+///
+/// **Decided once**, so a one-shot action that runs across midnight does not
+/// change files halfway, and so the log and its stdio verdict agree.
+fn log_file_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        if log_is_shared() {
+            let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+            polter_hostlog::day_log_name(&log_stem(), t.wYear, t.wMonth, t.wDay)
+        } else {
+            format!("{}-{}.log", log_stem(), std::process::id())
+        }
+    })
+}
+
+/// Whether this process writes the day's shared file rather than its own:
+/// a one-shot `+action`. The GUI never does. See `log_file_name`.
+fn log_is_shared() -> bool {
+    static SHARED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SHARED.get_or_init(|| {
+        polter_cliargs::cli_action_name(std::env::args())
+            .is_some_and(|a| polter_hostlog::shares_a_daily_file(&a))
+    })
+}
+
+/// The directory every per-pid log of this process goes into.
+///
+/// `<state root>\polter\logs` by the core's rule (`polter_hostlog::log_dir`):
+/// beside `polter\plugins`, which `plugins::log_path` already uses. When
+/// neither variable names a root, or the directory cannot be made, the
+/// temporary directory's `polter\logs`, and failing that the temporary
+/// directory itself.
+///
+/// ⚠️ **Never the executable's directory**, not even as the last fallback.
+/// That is the place task 1510 took the logs out of; a fallback that put them
+/// back would bring the defect back on exactly the machines least able to
+/// report it.
+///
+/// Answered once: every writer of every per-pid file asks, and the answer
+/// must not move between the log and its stdio sidecar.
+fn log_dir() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let state = polter_hostlog::log_dir(
+            std::env::var_os("XDG_STATE_HOME").as_deref(),
+            std::env::var_os("LOCALAPPDATA").as_deref(),
+        );
+        let temp = std::env::temp_dir();
+        for d in state.into_iter().chain([temp.join("polter").join("logs")]) {
+            if std::fs::create_dir_all(&d).is_ok() {
+                return d;
+            }
+        }
+        temp
+    })
+}
+
+/// Whether process `pid` is still running, for the log sweep.
+///
+/// **Answers "running" whenever it cannot be sure.** A process another user
+/// owns, or one that is elevated, refuses `OpenProcess` with access denied --
+/// and it exists. Only `ERROR_INVALID_PARAMETER`, which is what a pid nobody
+/// holds gets, counts as gone. Wrong in this direction keeps a file one more
+/// sweep; wrong in the other deletes the log of a live process.
+fn pid_is_live(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
+        Ok(h) => {
+            let mut code = 0u32;
+            let got = unsafe { GetExitCodeProcess(h, &mut code) };
+            let _ = unsafe { CloseHandle(h) };
+            got.is_err() || code == STILL_ACTIVE.0 as u32
+        }
+        Err(e) => e.code() != ERROR_INVALID_PARAMETER.to_hresult(),
+    }
+}
+
+/// Bound the log directory: once now, then once an hour, on a thread of its
+/// own (task 1510).
+///
+/// **The GUI process only** -- `main` calls this behind `owns_the_log`.
+/// `polter-cli` children start often and several at once; letting each sweep
+/// would have them racing to delete each other's files for no gain, since the
+/// GUI that started them sweeps anyway.
+///
+/// **Its own thread, not the watchdog's.** The watchdog's loop is the
+/// liveness instrument, and a directory listing on a slow or stuck disk would
+/// make it go quiet exactly as a deadlock does. Not the UI thread either, for
+/// the same reason the other way round.
+///
+/// The rule itself is `polter_hostlog::plan`, tested on the Mac.
+fn start_log_sweep() {
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+    let spawned = std::thread::Builder::new().name("polter-log-sweep".into()).spawn(|| {
+        crate::name_this_thread("polter-log-sweep");
+        let stem = log_stem();
+        let me = std::process::id();
+        loop {
+            let limits = polter_hostlog::Limits::DEFAULT;
+            match polter_hostlog::sweep(log_dir(), std::time::SystemTime::now(), &stem, me, &pid_is_live, limits) {
+                Ok(r) => {
+                    // process-wide: the log directory belongs to the process
+                    plogf!(
+                        "[logs] sweep dir={} deleted={} kept={} kept_bytes={} failed={} \
+                         (limits: {} days, {} files, {} bytes)",
+                        log_dir().display(),
+                        r.deleted.len(),
+                        r.kept,
+                        r.kept_bytes,
+                        r.failed.len(),
+                        limits.max_age.as_secs() / 86400,
+                        limits.max_files,
+                        limits.max_bytes
+                    );
+                    for (name, why) in &r.failed {
+                        // process-wide: as above
+                        plogf!("[logs] could not delete {name}: {why}");
+                    }
+                }
+                // process-wide: as above
+                Err(e) => plogf!("[logs] sweep of {} failed: {e}", log_dir().display()),
+            }
+            std::thread::sleep(EVERY);
+        }
+    });
+    if let Err(e) = spawned {
+        // process-wide: one sweep thread for the process
+        plogf!("[logs] FAILED to start the log sweep: {e:?} -- the log directory is unbounded this run");
     }
 }
 
@@ -5754,7 +5923,8 @@ fn log_path_given(owns: bool, pinned: Option<String>) -> std::path::PathBuf {
 ///
 /// It also made a tool wrong in a way nobody would notice:
 /// `windows/tools/uia-tree-dump.ps1` picks **the newest `polter-host-*.log`
-/// beside the exe**, and a chat subprocess started after the window is exactly
+/// in the log directory** (beside the exe until task 1510), and a chat
+/// subprocess started after the window is exactly
 /// that -- so the dump's log could be a subprocess's while reading as the
 /// host's. Deriving the stem separates them at the source rather than asking
 /// that tool to guess.
@@ -5959,7 +6129,7 @@ fn file_identity(h: windows::Win32::Foundation::HANDLE) -> Option<(u32, u64)> {
 /// apart**, because the only place the answer was written was the place that
 /// went.
 ///
-/// # Why a per-pid file beside the exe, and not the two obvious alternatives
+/// # Why a per-pid file in the log directory, and not the two obvious alternatives
 ///
 /// **Not the log**: that is the file under discussion.
 ///
@@ -5981,13 +6151,14 @@ fn file_identity(h: windows::Win32::Foundation::HANDLE) -> Option<(u32, u64)> {
 /// same argument that put a pid in the main log's name, applied to the one
 /// file that has to survive when the main log does not.
 ///
-/// **What this cannot do**, said rather than papered over: if the directory
-/// beside the exe is not writable, this fails, and the only place that
-/// failure could be reported is the log. That circle does not close.
+/// **What this cannot do**, said rather than papered over: if the log
+/// directory is not writable, this fails, and the only place that failure
+/// could be reported is the log. That circle does not close. (It was beside
+/// the exe until task 1510; `log_dir` says why it moved.)
 fn write_stdio_verdict(verdict: &str) -> Option<std::path::PathBuf> {
     use std::io::Write as _;
     let name = format!("{}-stdio-{}.log", log_stem(), std::process::id());
-    let path = std::env::current_exe().ok()?.with_file_name(name);
+    let path = log_dir().join(name);
     let mut line = String::from(verdict);
     line.push('\n');
     // One `write_all` of a record that already ends in its newline, for the
@@ -6185,7 +6356,7 @@ fn adopt_std_handles() -> String {
     if missing.is_empty() && colliding.is_empty() {
         let line = "[stdio] stdout and stderr both came from whoever started us, \
                     and neither is this log file; leaving them alone";
-        return with_verdict(line.to_string(), &evidence, "left alone", true);
+        return with_verdict(line.to_string(), &evidence, "left alone", true, false);
     }
 
     // not the log sink: this handle is for `SetStdHandle`, so that the
@@ -6253,6 +6424,7 @@ fn adopt_std_handles() -> String {
             &evidence,
             "could not open the log for the streams; nothing acted on them",
             reachable,
+            true,
         );
     };
 
@@ -6293,7 +6465,11 @@ fn adopt_std_handles() -> String {
         line.push_str(&format!(" SetStdHandle refused {};", refused.join(" and ")));
     }
     line.pop();
-    with_verdict(line, &evidence, "acted", true)
+    // Trouble when a stream could not be re-pointed, or when one had to be
+    // rescued from overwriting the log: either is worth the sidecar even for
+    // a one-shot action. Adopting a missing stream is the ordinary case.
+    let trouble = !refused.is_empty() || !rescued.is_empty();
+    with_verdict(line, &evidence, "acted", true, trouble)
 }
 
 /// Put the verdict where the collision cannot reach it, and say in the log
@@ -6305,13 +6481,24 @@ fn adopt_std_handles() -> String {
 /// copy is -- and that sentence, in the case that matters, is exactly the one
 /// that did not survive. So it is written in both, and the one that survives
 /// is self-contained.
+///
+/// **`trouble` decides whether a one-shot `+action` writes the sidecar at
+/// all** (task 1510). Every `+hook` and `+statusline` run used to leave a
+/// `-stdio-<pid>.log` beside its log, which was half of the 606 pairs the
+/// test machine collected in a day; the verdict on those runs is the ordinary
+/// "left alone", and it is in the shared log line anyway. The GUI and the
+/// resident actions write the sidecar exactly as before.
 fn with_verdict(
     line: String,
     evidence: &[String],
     outcome: &str,
     log_reachable: bool,
+    trouble: bool,
 ) -> String {
     let full = format!("[stdio] verdict={outcome}; {} ;; {line}", evidence.join("; "));
+    if log_is_shared() && !trouble && log_reachable {
+        return format!("{line} [one-shot command and nothing went wrong: no stdio sidecar written]");
+    }
     match write_stdio_verdict(&full) {
         // **"also" is right on two exits and wrong on the third.** The exit
         // where the log file could not be opened is the one where this string
@@ -6536,6 +6723,42 @@ fn refuse_command_line(why: &polter_cliargs::Rejection) -> ! {
     std::process::exit(2);
 }
 
+/// Polter's icon, resource 1 in `polter.rc`, at the size Windows uses for a
+/// large (`big`) or small icon (task 1510). Null when it cannot be loaded --
+/// a build whose resource compiler did not run -- and a null class icon is
+/// the generic one, which is what every window had before.
+///
+/// **Every top-level window class with a title bar takes it**: `PolterHost`
+/// (the frame), `PolterSettingsWindow`, `PolterInspector` and
+/// `PolterProjectPicker`. Every other class this host registers is a child
+/// (`WS_CHILD`) or a tool window (`WS_EX_TOOLWINDOW`), neither of which shows
+/// an icon anywhere. `notify.rs` loads the same resource for the
+/// notification area.
+///
+/// `LR_SHARED`: the system owns the handle and hands back the same one for
+/// the same size, so asking more than once costs nothing and nothing has to
+/// free it.
+pub fn app_icon(big: bool) -> windows::Win32::UI::WindowsAndMessaging::HICON {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, LoadImageW, HICON, IMAGE_ICON, LR_DEFAULTCOLOR, LR_SHARED, SM_CXICON,
+        SM_CXSMICON, SM_CYICON, SM_CYSMICON,
+    };
+    let hinst = unsafe { GetModuleHandleW(None) }.ok().map(HINSTANCE::from);
+    let (cx, cy) = if big {
+        unsafe { (GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON)) }
+    } else {
+        unsafe { (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) }
+    };
+    match unsafe { LoadImageW(hinst, PCWSTR(1 as _), IMAGE_ICON, cx, cy, LR_DEFAULTCOLOR | LR_SHARED) } {
+        Ok(h) => HICON(h.0),
+        Err(e) => {
+            // process-wide: one resource for the whole process
+            plogf!("[icon] could not load icon resource 1 at {cx}x{cy}: {e}; the generic icon shows instead");
+            HICON::default()
+        }
+    }
+}
+
 fn main() {
     // **Only the instance that owns the log clears it.** These two statements
     // used to run unconditionally, above everything -- including above the
@@ -6563,6 +6786,9 @@ fn main() {
         log_path().display()
     );
     logf!("{stdio}");
+    if owns_the_log() {
+        start_log_sweep();
+    }
     // **The UI thread names itself first**, so the tid in every later
     // `[thread]` line has something to be compared against.
     name_this_thread("polter-ui");
@@ -6808,6 +7034,9 @@ fn main() {
         lpszClassName: frame_class,
         hbrBackground: HBRUSH(std::ptr::null_mut()),
         hCursor: unsafe { LoadCursorW(None, IDC_ARROW).unwrap_or_default() },
+        // The taskbar button, Alt+Tab and the title bar take these.
+        hIcon: app_icon(true),
+        hIconSm: app_icon(false),
         ..Default::default()
     };
     if unsafe { RegisterClassExW(&wc) } == 0 {

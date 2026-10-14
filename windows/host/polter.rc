@@ -2,7 +2,22 @@
    with no RT_MANIFEST resource gets comctl32 v5 for every standard control;
    see polter.manifest for what that looked like. */
 #include <windows.h>
+/* POLTER_VER_*, written by build.rs into OUT_DIR; see VERSIONINFO below. */
+#include "polter-version.h"
 1 RT_MANIFEST "polter.manifest"
+
+/* Polter's icon, task 1510. Until then this exe had none, and every place
+   Windows shows one -- Explorer, the taskbar, Alt+Tab, the title bar, the
+   notification area -- showed the generic application icon.
+
+   **ID 1, and the lowest ID matters**: Explorer shows an exe's first icon
+   group. The host loads the same ID for its window classes and for the
+   notification icon (`app_icon` in main.rs), so the file and the running
+   program cannot show two different pictures.
+
+   `polter.ico` is made by `make-icon.sh` from images/polter-icon.svg; both
+   binaries get it, since one .rc serves both. */
+1 ICON "polter.ico"
 
 /* The application's own name, and it was missing entirely.
 
@@ -32,19 +47,22 @@
    fails by doing nothing, which is the outcome `notify.rs`'s header already
    names as the worst of the three.
 
-   **`FILEVERSION` is 0,0,0,0 on purpose, and that is the whole reason it is
-   written out rather than omitted.** Omitting it produces the same zeros --
-   the field defaults -- but as an accident, and the file properties dialog
-   then shows a number nobody decided on. There is no trustworthy build-time
-   version to put here: `Cargo.toml` says 0.1.0 while the product is v0.6 and
-   nothing keeps those two in step, and the version that is *real* is the
-   core's (`main.rs`'s `core_commit` parses `1.3.2-dev+<commit>` out of
-   libghostty at run time), which a static resource cannot hold. Inventing a
-   third number would be a third reader of a fact that already has two
-   disagreeing ones.
+   **The version is Polter's release number, written by `build.rs`** into
+   `polter-version.h` (task 1510): `POLTER_VER_MAJOR`/`_MINOR`/`_PATCH` and
+   `POLTER_VER_STR` are the `POLTER_VERSION` that `build.rs` computes by the scheme of
+   `src/build/PolterVersion.zig` -- the number the macOS bundle carries as
+   `CFBundleShortVersionString` and `update.rs` compares against releases.
+   It used to be 0,0,0,0, written out on purpose because there was then no
+   trustworthy build-time number; `POLTER_VERSION` is that number now.
+   `Cargo.toml`'s 0.1.0 is still not it, and the core's `1.3.2-dev+<commit>`
+   answers a different question (which libghostty this is).
 
-   **`CompanyName` and `LegalCopyright` are absent for the same reason.** An
-   empty field shows nothing; a made-up one is exactly the defect this file is
+   **No fallback number here.** Built by anything but `build.rs`, the header
+   is missing and the resource compiler stops -- better than a file that
+   claims to be 0.0.0.
+
+   **`CompanyName` and `LegalCopyright` are absent**: nothing at build time
+   knows a true value for them. An empty field shows nothing; a made-up one is exactly the defect this file is
    fixing, one line further down the same dialog.
 
    **One `.rc` serves two binaries** -- `polter-host.exe` (GUI) and
@@ -54,8 +72,8 @@
    `polter-cli.exe` that field is therefore wrong, which is why it is said here
    rather than left for somebody to find. */
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,0,0,0
-PRODUCTVERSION 0,0,0,0
+FILEVERSION POLTER_VER_MAJOR,POLTER_VER_MINOR,POLTER_VER_PATCH,0
+PRODUCTVERSION POLTER_VER_MAJOR,POLTER_VER_MINOR,POLTER_VER_PATCH,0
 FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
 FILEFLAGS 0
 FILEOS VOS_NT_WINDOWS32
@@ -73,6 +91,8 @@ BEGIN
             VALUE "ProductName",     "Polter"
             VALUE "InternalName",    "polter-host"
             VALUE "OriginalFilename","polter-host.exe"
+            VALUE "FileVersion",     POLTER_VER_STR
+            VALUE "ProductVersion",  POLTER_VER_STR
         END
     END
     BLOCK "VarFileInfo"

@@ -30,8 +30,10 @@
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, Ordering};
 use std::sync::Mutex;
 
-use windows::core::w;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::{LoadIconMetric, LIM_SMALL};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE,
     NIM_MODIFY, NIN_BALLOONUSERCLICK, NOTIFYICONDATAW,
@@ -141,11 +143,15 @@ fn ensure_icon(hwnd: HWND) -> bool {
     let mut d = base(hwnd);
     d.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     d.uCallbackMessage = WM_TRAY_CALLBACK;
-    // **The generic application icon**, because this executable carries no
-    // icon resource of its own (`polter.rc` has the manifest and nothing
-    // else). Said here rather than left as a puzzle for whoever notices the
-    // notification looks unbranded.
-    d.hIcon = unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default();
+    // **Polter's own icon** (task 1510; it was the generic application icon
+    // while `polter.rc` had none). `LoadIconMetric` rather than the window
+    // classes' `LoadImageW`: it is the call the notification area documents,
+    // and it picks the size for the current DPI. The generic icon remains
+    // the fallback, so a build without the resource still gets an icon added.
+    let hinst = unsafe { GetModuleHandleW(None) }.ok().map(HINSTANCE::from);
+    d.hIcon = unsafe { LoadIconMetric(hinst, PCWSTR(1 as _), LIM_SMALL) }
+        .or_else(|_| unsafe { LoadIconW(None, IDI_APPLICATION) })
+        .unwrap_or_default();
     put(&mut d.szTip, "Polter");
     let ok = unsafe { Shell_NotifyIconW(NIM_ADD, &d) }.as_bool();
     if ok {

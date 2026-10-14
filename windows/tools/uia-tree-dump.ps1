@@ -38,7 +38,9 @@
 
 .PARAMETER LogPath
   The host's log, for the `concurrent` mode's counting. Defaults to the
-  newest `polter-host-*.log` beside the exe.
+  running host's own `polter-host-<pid>.log` in the log directory,
+  `%LOCALAPPDATA%\polter\logs` (`$env:XDG_STATE_HOME\polter\logs` when
+  that is set). Before task 1510 the logs were beside the exe.
 
 .NOTES
   What this cannot tell you is in `dev-docs/windows/uia.md`. The short version,
@@ -184,11 +186,21 @@ function Get-DocumentText {
 function Resolve-LogPath {
     if ($LogPath) { return $LogPath }
     $proc = (Get-HostProcesses)[0]
-    $dir  = Split-Path -Parent $proc.Path
-    $cand = Get-ChildItem -Path $dir -Filter 'polter-host-*.log' -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if (-not $cand) { throw "no polter-host-*.log found in $dir; pass -LogPath" }
-    return $cand.FullName
+    # The host's rule (`log_dir` in main.rs, `polter_hostlog::log_dir`):
+    # XDG_STATE_HOME, else LOCALAPPDATA, then polter\logs; the temporary
+    # directory's polter\logs when neither works.
+    $root = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } else { $env:LOCALAPPDATA }
+    $dirs = @()
+    if ($root) { $dirs += (Join-Path $root 'polter\logs') }
+    $dirs += (Join-Path ([IO.Path]::GetTempPath()) 'polter\logs')
+    # **By pid, not "the newest"**: the newest file in that directory is as
+    # likely to be a +mcp child's as the window's.
+    $name = "polter-host-$($proc.Id).log"
+    foreach ($d in $dirs) {
+        $p = Join-Path $d $name
+        if (Test-Path -LiteralPath $p) { return $p }
+    }
+    throw "no $name in $($dirs -join ' or '); pass -LogPath"
 }
 
 function Count-RealReads {

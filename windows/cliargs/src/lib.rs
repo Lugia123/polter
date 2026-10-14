@@ -118,6 +118,46 @@ where
     pending || fallback
 }
 
+/// **Which** CLI action this command line asks for, without the `+`: `None`
+/// exactly when [`asks_for_a_cli_action`] says no (a test holds the two to
+/// that).
+///
+/// Asked by the host to decide where a `+action`'s log goes (task 1510): a
+/// one-shot command like `+hook` shares a file per day, a resident one like
+/// `+mcp` keeps a file of its own. `--version` is `version` and `--help` /
+/// `-h` with no `+action` is `help`, as the core reads them. With two
+/// `+action`s -- which the core refuses -- the first is named.
+pub fn cli_action_name<I, S>(args: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut named: Option<String> = None;
+    let mut fallback = false;
+
+    for arg in args.into_iter().skip(1) {
+        let arg = arg.as_ref();
+        if let Some(special) = special_case(arg) {
+            match special {
+                Special::Action => return Some("version".to_string()),
+                Special::Fallback => fallback = true,
+                Special::AbortIfNoAction => {
+                    if named.is_none() {
+                        return None;
+                    }
+                }
+            }
+        }
+        if named.is_none() {
+            if let Some(name) = arg.strip_prefix('+') {
+                named = Some(name.to_string());
+            }
+        }
+    }
+
+    named.or_else(|| fallback.then(|| "help".to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // The host's own flags (issue #21)
 // ---------------------------------------------------------------------------
@@ -279,6 +319,31 @@ pub fn renamed(arg: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `cli_action_name` names an action exactly when `asks_for_a_cli_action`
+    /// says there is one, and names the one the core would run.
+    #[test]
+    fn the_action_named_is_the_action_asked_for() {
+        let table: &[(&[&str], Option<&str>)] = &[
+            (&["polter-cli.exe"], None),
+            (&["polter-cli.exe", "+hook", "--event=Stop"], Some("hook")),
+            (&["polter-cli.exe", "--x", "+mcp"], Some("mcp")),
+            (&["polter-cli.exe", "--help"], Some("help")),
+            (&["polter-cli.exe", "-h"], Some("help")),
+            (&["polter-cli.exe", "+chat", "--help"], Some("chat")),
+            (&["polter-cli.exe", "--version"], Some("version")),
+            (&["polter-cli.exe", "+chat", "--version"], Some("version")),
+            (&["polter-cli.exe", "-e", "polter-cli.exe", "+hook"], None),
+            (&["polter-cli.exe", "+statusline", "-e", "x"], Some("statusline")),
+            (&["C:\\+tools\\polter-cli.exe"], None),
+            (&["polter-cli.exe", "+a", "+b"], Some("a")),
+        ];
+        for (line, want) in table {
+            let got = cli_action_name(line.iter().copied());
+            assert_eq!(got.as_deref(), *want, "{line:?}");
+            assert_eq!(got.is_some(), asks(line), "the two disagree about {line:?}");
+        }
+    }
 
     fn asks(v: &[&str]) -> bool {
         asks_for_a_cli_action(v.iter().copied())

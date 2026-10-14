@@ -208,3 +208,8 @@ path = "../settings-shell"
 # (`tools/control-room-hosts-do-not-decide.py` reads `control_room*.rs`).
 [dependencies.polter-control-room]
 path = "../control-room"
+
+# Where this host's own logs go and which of them may be deleted (task 1510).
+# Out here so the cleanup rule has tests that run on the Mac.
+[dependencies.polter-hostlog]
+path = "../hostlog"
