@@ -4978,6 +4978,36 @@ pub const Opened = struct {
     /// for a tab the runtime has not made by the time this returns.
     id: ?Bus.Id,
     placed: Placed,
+    /// Under `auto`, the caller's own worker pane that was looked at to be
+    /// used again and was not, and why. See `PassedOver`.
+    passed_over: ?PassedOver = null,
+};
+
+/// A worker pane `auto` would have used again, and the reason it did not.
+///
+/// **Said because the alternative was a new pane with no word about the old
+/// one** (#1498). A worker's pane, stopped with ctrl+c, was passed over 3 s
+/// later and the reply said only `tab`, `column_full` -- true, and silent
+/// about the pane that was sitting there empty. Which of the facts had not
+/// caught up yet had to be worked out from the source. Now the reply names
+/// the pane and the fact.
+///
+/// The oldest of the caller's panes still in its tab, the one `auto` would
+/// have taken first; panes elsewhere are not candidates and not named.
+pub const PassedOver = struct {
+    id: Bus.Id,
+    why: Why,
+
+    pub const Why = enum {
+        /// An agent is still connected from it.
+        agent,
+        /// Its shell is not at a prompt -- something is running there.
+        not_at_prompt,
+        /// Something half typed is in its input line.
+        draft,
+        /// It stands in another directory than the one asked for.
+        other_directory,
+    };
 };
 
 pub const Place = struct {
@@ -6822,7 +6852,12 @@ fn dispatchOne(
                 break :watch .watching;
             };
 
-            return .{ .opened = .{ .id = opened.id, .watch = watch, .placed = opened.placed } };
+            return .{ .opened = .{
+                .id = opened.id,
+                .watch = watch,
+                .placed = opened.placed,
+                .passed_over = opened.passed_over,
+            } };
         },
 
         .role_list => {
@@ -6914,6 +6949,7 @@ fn dispatchOne(
                     // a terminal that is not there, so it is not known.
                     .watch = if (opened.id) |new| launchedWatching(alloc, bus, host, caller, new) else .unknown,
                     .placed = opened.placed,
+                    .passed_over = opened.passed_over,
                 },
             };
         },

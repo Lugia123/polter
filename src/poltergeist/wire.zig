@@ -1077,6 +1077,11 @@ pub const Response = union(enum) {
         /// the field predates `role_launch` taking a placement; both fill it
         /// now.
         placed: ?rpc.Placed,
+
+        /// The caller's worker pane `auto` looked at and did not use, and
+        /// why (`rpc.PassedOver`). No default: both replies that carry a
+        /// terminal pass on what they were given.
+        passed_over: ?rpc.PassedOver,
     },
     /// A task's number, answering `task_create`.
     task: u64,
@@ -1385,6 +1390,18 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                         try s.write(@tagName(why));
                     },
                 }
+            }
+
+            // Only when one was passed over: absent is "none of the caller's
+            // panes was in the running", which is most replies.
+            if (v.passed_over) |over| {
+                try s.objectField("passed_over");
+                try s.beginObject();
+                try s.objectField("id");
+                try writeId(&s, over.id);
+                try s.objectField("why");
+                try s.write(@tagName(over.why));
+                try s.endObject();
             }
         },
         .actions => |list| {
@@ -2699,6 +2716,29 @@ test "group_post: mention is ids in either form, and the reply has one row per n
     );
 }
 
+test "a worker pane passed over is named in the reply, with why (#1498)" {
+    const alloc = testing.allocator;
+    {
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        defer out.deinit();
+        try writeResponse(&out.writer, .{ .opened = .{
+            .id = null,
+            .watch = .unknown,
+            .placed = .{ .tab = .column_full },
+            .passed_over = .{ .id = 0x2a, .why = .agent },
+        } });
+        const text = out.written();
+        try testing.expect(std.mem.indexOf(u8, text, "\"passed_over\":{\"id\":\"0x") != null);
+        try testing.expect(std.mem.indexOf(u8, text, "\"why\":\"agent\"}") != null);
+    }
+    {
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        defer out.deinit();
+        try writeResponse(&out.writer, .{ .opened = .{ .id = null, .watch = .unknown, .placed = .split, .passed_over = null } });
+        try testing.expect(std.mem.indexOf(u8, out.written(), "passed_over") == null);
+    }
+}
+
 test "every answer about a watch carries its reason onto the wire" {
     // This is the layer that could fold a reason back into a bare
     // `watching: false`, so it is held to each case here -- a consumer
@@ -2715,7 +2755,7 @@ test "every answer about a watch carries its reason onto the wire" {
         };
         var out: std.Io.Writer.Allocating = .init(alloc);
         defer out.deinit();
-        try writeResponse(&out.writer, .{ .opened = .{ .id = null, .watch = watch, .placed = null } });
+        try writeResponse(&out.writer, .{ .opened = .{ .id = null, .watch = watch, .placed = null, .passed_over = null } });
         const text = out.written();
 
         const named = try std.fmt.allocPrint(alloc, "\"watch\":\"{s}\"", .{@tagName(tag)});

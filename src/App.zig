@@ -4259,8 +4259,10 @@ pub fn launchPersona(
     // how a tab filled with idle shells while new workers went to new tabs
     // (task 1492). The person's own panes are never candidates: only what
     // `poltergeist_workers` says this supervisor opened.
+    var passed_over: ?poltergeistpkg.rpc.PassedOver = null;
     if (where == .auto) {
-        if (try self.poltergeistFreeWorker(alloc, by, cwd)) |free| {
+        const found = try self.poltergeistFreeWorker(alloc, by, cwd);
+        if (found.free) |free| {
             if (self.launchPersonaIn(free, by, choice, line)) {
                 return .{ .id = free, .placed = .{ .reused = .free_worker } };
             } else |err| {
@@ -4268,6 +4270,10 @@ pub fn launchPersona(
                 // pane is the answer it would have been without this.
                 log.info("poltergeist: worker pane {x} could not be used again ({}); opening another", .{ free, err });
             }
+        }
+        if (found.passed_over) |over| {
+            log.info("poltergeist: worker pane {x} not used again: {t}; opening another", .{ over.id, over.why });
+            passed_over = over;
         }
     }
 
@@ -4278,7 +4284,8 @@ pub fn launchPersona(
     // A launch whose terminal was refused must not wait for the next
     // terminal anybody opens.
     errdefer self.personas.dropLaunch();
-    const opened = try poltergeistOpenTerminal(self, alloc, cwd, by, where);
+    var opened = try poltergeistOpenTerminal(self, alloc, cwd, by, where);
+    opened.passed_over = passed_over;
     if (opened.id) |new| {
         // Claimed already when the surface was made inside the call; if not,
         // it is this terminal's now -- taken the same way a late one takes
@@ -4333,9 +4340,10 @@ fn poltergeistFreeWorker(
     alloc: Allocator,
     by: poltergeistpkg.Bus.Id,
     cwd: []const u8,
-) Allocator.Error!?poltergeistpkg.Bus.Id {
-    const workers: []const poltergeistpkg.Bus.Id = if (self.poltergeist_workers.get(by)) |l| l.items else return null;
-    const caller = self.findSurfaceByID(by) orelse return null;
+) Allocator.Error!FreeWorker.Found {
+    const none: FreeWorker.Found = .{ .free = null, .passed_over = null };
+    const workers: []const poltergeistpkg.Bus.Id = if (self.poltergeist_workers.get(by)) |l| l.items else return none;
+    const caller = self.findSurfaceByID(by) orelse return none;
     const tab = poltergeistTabOf(caller);
     const now = try self.poltergeistSeen(alloc);
     defer alloc.free(now);
@@ -4359,8 +4367,9 @@ fn poltergeistFreeWorker(
             } else false,
         };
     }
-    const at = FreeWorker.pick(seats) orelse return null;
-    return workers[at];
+    if (FreeWorker.pick(seats)) |at| return .{ .free = workers[at], .passed_over = null };
+    const over = FreeWorker.passedOver(seats) orelse return none;
+    return .{ .free = null, .passed_over = .{ .id = workers[over.at], .why = over.why } };
 }
 
 /// Whether a pane a supervisor opened for a worker can have a role started
@@ -4401,6 +4410,31 @@ const FreeWorker = struct {
         }
         return null;
     }
+
+    /// When none can be used: the one `pick` would have taken first, and
+    /// what kept it -- said in the reply (`rpc.PassedOver`, #1498). A pane
+    /// that is not in the caller's tab was never in the running, so it is
+    /// not named; null when no pane was.
+    fn passedOver(seats: []const Seat) ?struct { at: usize, why: poltergeistpkg.rpc.PassedOver.Why } {
+        for (seats, 0..) |seat, i| {
+            const why: poltergeistpkg.rpc.PassedOver.Why = switch (seat.why() orelse continue) {
+                .elsewhere => continue,
+                .agent => .agent,
+                .not_at_prompt => .not_at_prompt,
+                .draft => .draft,
+                .other_directory => .other_directory,
+            };
+            return .{ .at = i, .why = why };
+        }
+        return null;
+    }
+
+    /// What `poltergeistFreeWorker` found: a pane to use, or the one that
+    /// was passed over. At most one of the two.
+    const Found = struct {
+        free: ?poltergeistpkg.Bus.Id,
+        passed_over: ?poltergeistpkg.rpc.PassedOver,
+    };
 };
 
 test "a worker's pane is used again only when it is ours, empty, waiting and where the role is to start" {
@@ -4435,6 +4469,31 @@ test "a worker's pane is used again only when it is ours, empty, waiting and whe
     try testing.expectEqual(@as(?usize, 0), FreeWorker.pick(&.{ free, busy }));
     try testing.expectEqual(@as(?usize, null), FreeWorker.pick(&.{ busy, busy }));
     try testing.expectEqual(@as(?usize, null), FreeWorker.pick(&.{}));
+}
+
+// When nothing can be used, the reply names the pane `auto` would have taken
+// and why (#1498): the oldest of the caller's in its tab, and only those.
+test "the worker pane passed over is the oldest in the tab, with its reason (#1498)" {
+    const testing = std.testing;
+    const free: FreeWorker.Seat = .{ .here = true, .agent = false, .at_prompt = true, .draft = false, .dir_fits = true };
+
+    var gone = free;
+    gone.here = false;
+    var agent = free;
+    agent.agent = true;
+    var running = free;
+    running.at_prompt = false;
+
+    // A pane elsewhere is skipped; the first in the tab is named.
+    const over = FreeWorker.passedOver(&.{ gone, agent, running }).?;
+    try testing.expectEqual(@as(usize, 1), over.at);
+    try testing.expectEqual(poltergeistpkg.rpc.PassedOver.Why.agent, over.why);
+
+    try testing.expectEqual(poltergeistpkg.rpc.PassedOver.Why.not_at_prompt, FreeWorker.passedOver(&.{running}).?.why);
+
+    // None in the tab: nobody was passed over.
+    try testing.expect(FreeWorker.passedOver(&.{ gone, gone }) == null);
+    try testing.expect(FreeWorker.passedOver(&.{}) == null);
 }
 
 /// Called by a surface at the end of its `init`: if the tool surface asked
@@ -6694,6 +6753,12 @@ const WorkerSpot = union(enum) {
 
 /// Add `id` to the end of `by`'s workers. See `poltergeist_workers`.
 fn poltergeistRecordWorker(self: *App, by: poltergeistpkg.Bus.Id, id: poltergeistpkg.Bus.Id) void {
+    // On the bus as well, for the snapshot's `who.worker_of`: what a host
+    // keeps with a project, and says back after a restart to land here
+    // again (#1498).
+    self.poltergeist.markWorkerOf(id, by) catch |err| {
+        log.warn("poltergeist: could not record terminal {x} as a worker of {x} err={}", .{ id, by, err });
+    };
     const entry = self.poltergeist_workers.getOrPut(self.alloc, by) catch return;
     if (!entry.found_existing) entry.value_ptr.* = .empty;
     entry.value_ptr.append(self.alloc, id) catch {};

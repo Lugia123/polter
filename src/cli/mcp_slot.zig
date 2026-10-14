@@ -398,10 +398,15 @@ const Reply = struct {
 
 // -- what this process tells Polter it is ------------------------------
 //
-// **This half is not implemented yet**, and it is written down here because
-// the server half is somebody else's and the two must agree. `auth` today
-// is `{"method":"auth","params":{"token":"…"}}` and says nothing about who
-// is calling. The proposal is a `kind` beside the token:
+// **`kind` is sent; the slot name is not, yet.** Written down here first
+// because the server half is somebody else's and the two must agree. It
+// went in for #1498 (`poltergeist/Server.zig`, `Kind`): a slot parks a wait,
+// and while it did Polter counted it as an agent still in the terminal for
+// up to half a minute after the agent had gone. This process now sends
+//
+//     {"method":"auth","params":{"token":"…","kind":"slot"}}
+//
+// and the proposal's full form, with point 3's slot name, is
 //
 //     {"method":"auth","params":{"token":"…","kind":"slot","slot":"argus"}}
 //
@@ -486,7 +491,7 @@ const Link = struct {
             .io = io,
             .path = path,
             .token = token,
-            .host = try .connect(alloc, io, path, token),
+            .host = try .connect(alloc, io, path, token, .slot),
         };
     }
 
@@ -551,7 +556,7 @@ const Link = struct {
             ) catch {};
             if (stop.load(.acquire)) return;
 
-            if (mcp.Host.connect(self.alloc, self.io, self.path, self.token)) |h| {
+            if (mcp.Host.connect(self.alloc, self.io, self.path, self.token, .slot)) |h| {
                 self.host = h;
                 self.backoff_ms = reconnect_delay_ms;
                 log.info("mcp-slot: reconnected to polter", .{});

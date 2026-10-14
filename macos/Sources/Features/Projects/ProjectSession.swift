@@ -206,7 +206,7 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
             case .agent: kind = .agent
             }
             said[terminal.id] = ProjectLink.Who(
-                kind: kind, role: who.role, cli: who.cli, session: who.session, openedBy: who.opened_by)
+                kind: kind, role: who.role, cli: who.cli, session: who.session, workerOf: who.worker_of)
         }
         let supervisor = stated?.supervisor
         return { view in

@@ -501,8 +501,9 @@ pub struct Who {
     pub role: Option<String>,
     pub cli: Option<String>,
     pub session: Option<String>,
-    /// The terminal whose agent opened this one, in this run.
-    pub opened_by: Option<String>,
+    /// The supervisor this one was opened for as a worker, in this run
+    /// (#1498: not who opened it -- a supervisor's own split is not one).
+    pub worker_of: Option<String>,
 }
 
 /// One window tab and the one glyph it carries.
@@ -862,7 +863,7 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
                             role: opt_text(w, &at, "role")?,
                             cli: opt_text(w, &at, "cli")?,
                             session: opt_text(w, &at, "session")?,
-                            opened_by: opt_text(w, &at, "opened_by")?,
+                            worker_of: opt_text(w, &at, "worker_of")?,
                         })
                     }
                 },

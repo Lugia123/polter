@@ -611,6 +611,9 @@ like one that went right from inside a tool reply. What to expect today:
   `cwd` -- already standing there. The reply says `placed: "reused"`,
   `reused: "free_worker"`, and carries that terminal's id. Nothing is opened.
   (`terminal_open` never does this: it is asked for a terminal, not a role.)
+  When a pane of yours was there and not free, the reply of the pane that
+  was opened instead says which and why: `passed_over: {id, why}`, `why`
+  one of `agent`, `not_at_prompt`, `draft`, `other_directory`.
 - Workers 1–3: beside you, top to bottom, with you on the left — the first
   splits your own pane to the right, the next two go under the one before.
   The person's own panes in that tab stay as they were and are not counted.

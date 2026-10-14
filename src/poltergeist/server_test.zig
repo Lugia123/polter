@@ -633,3 +633,179 @@ test "a server with no `full` callback refuses without reaching for it" {
     try testing.expectEqual(@as(usize, 2), server.slots.len);
     try testing.expect(server.submit.full == null);
 }
+
+// -- who counts as an agent being there (#1498) ------------------------------
+
+const mcp = @import("../cli/mcp.zig");
+
+/// Ask `agentPresent` until it says `want`, for up to `limit_ms`, and return
+/// the last answer. A connection is let go on its own thread, so the answer
+/// that matters is the one a short while after the close, not the instant
+/// after it -- and it must arrive well inside the half minute a parked wait
+/// lasts, or nothing was fixed.
+fn presentWithin(f: *Fixture, want: bool, limit_ms: u64) bool {
+    var waited: u64 = 0;
+    while (true) {
+        const now = f.server.agentPresent(worker);
+        if (now == want or waited >= limit_ms) return now;
+        f.io.sleep(.fromNanoseconds(10 * std.time.ns_per_ms), .awake) catch {};
+        waited += 10;
+    }
+}
+
+/// One request answered on `c`. **Needed before asking whether a connection
+/// is counted as absent**: the server answers `auth` and only then records
+/// who the connection is, so straight after the handshake "not counted" is
+/// also what a connection that has not been recorded yet looks like, and an
+/// assertion of `false` would pass without having looked. A request is read
+/// after the record, so once one is answered the record is there.
+fn roundTrip(c: *Client) !void {
+    try c.send(
+        \\{"method":"me"}
+    );
+    try expectOk(try c.recv());
+}
+
+fn authAs(c: *Client, token: []const u8, kind: []const u8) ![]const u8 {
+    var buf: [256]u8 = undefined;
+    const line = try std.fmt.bufPrint(
+        &buf,
+        "{{\"method\":\"auth\",\"params\":{{\"token\":\"{s}\",\"kind\":{s}}}}}",
+        .{ token, kind },
+    );
+    try c.send(line);
+    return c.recv();
+}
+
+// The shape `+mcp` has: the connection its tool calls use, and a notifier
+// parked on a wait the app has not answered. The CLI exits and both close.
+// The parked one is not read again until its wait comes back -- up to 30 s
+// with `persona_wait` -- and for all that time the terminal still read as
+// having an agent. A notice in that time was *typed* into what had become a
+// bare shell (`App.noticeFor` asks exactly this), and a worker's pane was
+// not used again (measured on a Mac: not at 3 s, yes at 34 s).
+test "an agent that has gone is gone at once, though its notifier is still waiting (#1498)" {
+    var f: Fixture = undefined;
+    try f.setup(false);
+    defer f.deinit();
+
+    const token = try f.server.issueToken(worker);
+
+    var calls = try f.connect();
+    try expectOk(try calls.auth(token));
+
+    var notifier = try f.connect();
+    try expectOk(try authAs(&notifier, token, "\"notifier\""));
+    try notifier.send(
+        \\{"method":"me"}
+    );
+    while (f.fake.seen.load(.acquire) == 0) std.Thread.yield() catch {};
+
+    try testing.expect(presentWithin(&f, true, 2000));
+
+    calls.close();
+    notifier.close();
+
+    // The moment a notice sent right after the CLI exits would ask. False
+    // is "print it"; true is "type it", into a shell.
+    try testing.expect(!presentWithin(&f, false, 2000));
+}
+
+// An older `+mcp` connects saying nothing about what it is, and that has to
+// keep meaning what it always meant: an agent. Read as "only listening", every
+// agent of an older build would look absent, and notices to it would be
+// printed where it never reads them. So its parked wait still counts -- the
+// old behaviour, kept on purpose, until that build is replaced.
+test "a connection that names no kind is an agent, parked or not (#1498)" {
+    var f: Fixture = undefined;
+    try f.setup(false);
+    defer f.deinit();
+
+    const token = try f.server.issueToken(worker);
+
+    var old = try f.connect();
+    try expectOk(try old.auth(token));
+    try testing.expect(presentWithin(&f, true, 2000));
+
+    try old.send(
+        \\{"method":"me"}
+    );
+    while (f.fake.seen.load(.acquire) == 0) std.Thread.yield() catch {};
+    old.close();
+
+    // Not let go while its wait is parked: 200 ms is long enough for a
+    // connection that is read to have been noticed closing.
+    try testing.expect(presentWithin(&f, false, 200));
+}
+
+// Which words count. Only the two this build knows as listeners are left
+// out; anything else -- a word from a newer build, a number -- is read as
+// what silence means, an agent.
+test "only a notifier or a slot is left out of who is there (#1498)" {
+    const cases = [_]struct { kind: []const u8, present: bool }{
+        .{ .kind = "\"notifier\"", .present = false },
+        .{ .kind = "\"slot\"", .present = false },
+        .{ .kind = "\"agent\"", .present = true },
+        .{ .kind = "\"something-newer\"", .present = true },
+        .{ .kind = "42", .present = true },
+    };
+    for (cases) |case| {
+        var f: Fixture = undefined;
+        try f.setup(true);
+        defer f.deinit();
+
+        const token = try f.server.issueToken(worker);
+        var c = try f.connect();
+        defer c.close();
+        try expectOk(try authAs(&c, token, case.kind));
+        try roundTrip(&c);
+
+        testing.expectEqual(case.present, presentWithin(&f, case.present, 2000)) catch |err| {
+            std.debug.print("\nkind {s}\n", .{case.kind});
+            return err;
+        };
+    }
+}
+
+// `kind` is accounting, never authority: a connection that says it only
+// listens is answered like any other.
+test "a notifier's requests are answered like an agent's (#1498)" {
+    var f: Fixture = undefined;
+    try f.setup(true);
+    defer f.deinit();
+
+    const token = try f.server.issueToken(worker);
+    var c = try f.connect();
+    defer c.close();
+    try expectOk(try authAs(&c, token, "\"notifier\""));
+    try roundTrip(&c);
+}
+
+// The client half: the auth line `+mcp` and `+mcp-slot` really send, through
+// a real handshake. A kind that went out misspelt would be read as an agent
+// and nothing would say so.
+test "+mcp says which of its connections only listens (#1498)" {
+    const cases = [_]struct { kind: Server.Kind, present: bool }{
+        .{ .kind = .agent, .present = true },
+        .{ .kind = .notifier, .present = false },
+        .{ .kind = .slot, .present = false },
+    };
+    for (cases) |case| {
+        var f: Fixture = undefined;
+        try f.setup(true);
+        defer f.deinit();
+
+        const token = try f.server.issueToken(worker);
+        var host = try mcp.Host.connect(testing.allocator, f.io, f.path, token, case.kind);
+        defer host.deinit();
+        // See `roundTrip`.
+        try expectOk(try host.call(
+            \\{"method":"me"}
+        ));
+
+        testing.expectEqual(case.present, presentWithin(&f, case.present, 2000)) catch |err| {
+            std.debug.print("\nkind {t}\n", .{case.kind});
+            return err;
+        };
+    }
+}

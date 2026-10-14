@@ -451,6 +451,18 @@ pub const Entry = struct {
     /// goes into that supervisor's group's project (`Projects`).
     opened_by: ?Id = null,
 
+    /// The supervisor this terminal was opened for as one of its workers --
+    /// placed by `role_launch` or `terminal_open` (`App.poltergeist_workers`)
+    /// -- whoever is in it now; null otherwise.
+    ///
+    /// **Not `opened_by`, which says more** (#1498). A supervisor's own
+    /// `terminal_action new_split` or `terminal_layout` opens a terminal too,
+    /// and for closing it and for which project its tab is in that is the
+    /// right answer. But it is not a worker's pane: kept with the project as
+    /// one, it came back after a restart as a worker, and the next worker
+    /// was placed under it instead of beside the supervisor.
+    worker_of: ?Id = null,
+
     /// Whether a supervisor may answer a permission prompt in this terminal
     /// on its behalf. `null` is "the person has not said for this terminal",
     /// and then the answer is the bus's default (`Config.may_authorise`),
@@ -872,6 +884,19 @@ pub fn markOpenedByAgent(self: *Bus, id: Id, by: Id) Allocator.Error!void {
     const e = self.entries.getPtr(id).?;
     e.opened_by_agent = true;
     e.opened_by = by;
+}
+
+/// Record that `id` was opened for `by` as one of its workers
+/// (`Entry.worker_of`).
+pub fn markWorkerOf(self: *Bus, id: Id, by: Id) Allocator.Error!void {
+    try self.register(id);
+    self.entries.getPtr(id).?.worker_of = by;
+}
+
+/// The supervisor `id` was opened for as a worker, or null.
+pub fn workerOf(self: *const Bus, id: Id) ?Id {
+    const e = self.entries.get(id) orelse return null;
+    return e.worker_of;
 }
 
 /// The terminal whose agent opened this one, or null.
