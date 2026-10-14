@@ -113,6 +113,7 @@ dependencies = [
  "polter-cliargs",
  "polter-control-room",
  "polter-droppath",
+ "polter-hostlog",
  "polter-projectfile",
  "polter-projectname",
  "polter-projects",
@@ -125,6 +126,10 @@ dependencies = [
  "windows",
  "windows-core",
 ]
+
+[[package]]
+name = "polter-hostlog"
+version = "0.1.0"
 
 [[package]]
 name = "polter-projectfile"

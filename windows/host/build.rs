@@ -298,7 +298,11 @@ const POLTER_FORK_POINT: &str = "f81dcadc82ea2afdcf2dc92929037701122f05b5";
 /// tag identically to no tag at all, so the fact is carried out of whichever
 /// branch below actually decided it, the same way `PolterVersion.zig`'s
 /// `sourcedMajorMinor` does on the macOS side.
-fn emit_polter_version() {
+///
+/// Returns `(major, minor, patch)` as well, for the `VERSIONINFO` resource
+/// (`polter.rc`, task 1510): the file properties dialog shows the same number
+/// the macOS bundle's `CFBundleShortVersionString` does.
+fn emit_polter_version() -> (u32, u32, u32) {
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
         .join("..")
         .join("..");
@@ -335,6 +339,7 @@ fn emit_polter_version() {
 
     println!("cargo:rustc-env=POLTER_VERSION={major}.{minor}.{count}");
     println!("cargo:rustc-env=POLTER_VERSION_SOURCE={source}");
+    (major, minor, count)
 }
 
 /// `v0.6.657` -> `Some((0, 6))`, read off an exact tag on `HEAD` if there is
@@ -452,10 +457,11 @@ fn main() {
     // and a stamp that depends on the target is a stamp the reader has to
     // reason about.
     emit_provenance();
-    emit_polter_version();
+    let (major, minor, patch) = emit_polter_version();
 
     println!("cargo:rerun-if-changed=polter.rc");
     println!("cargo:rerun-if-changed=polter.manifest");
+    println!("cargo:rerun-if-changed=polter.ico");
 
     // **Before the target check, on purpose.** A manifest that does not parse
     // is broken on every machine, and the one that reads it last is the
@@ -497,9 +503,30 @@ fn main() {
     };
 
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("polter-manifest.o");
+    // The version goes in as a generated header, so `polter.rc` holds no
+    // number of its own (task 1510). **A header, not `-D`**: windres hands
+    // its command line to the preprocessor through a shell, so a quoted
+    // `-DPOLTER_VER_STR="0.10.5"` arrives without its quotes and the string
+    // is a syntax error -- measured, with windres 2.46. A `u32` patch above
+    // 65535 would not fit a `VERSIONINFO` word; it is clamped there and the
+    // string says the truth.
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    std::fs::write(
+        out_dir.join("polter-version.h"),
+        format!(
+            "#define POLTER_VER_MAJOR {}\n#define POLTER_VER_MINOR {}\n#define POLTER_VER_PATCH {}\n\
+             #define POLTER_VER_STR \"{major}.{minor}.{patch}\"\n",
+            major.min(65535),
+            minor.min(65535),
+            patch.min(65535)
+        ),
+    )
+    .expect("could not write polter-version.h");
     let status = Command::new(windres)
         .args(["polter.rc", "-O", "coff", "-o"])
         .arg(&out)
+        .arg("-I")
+        .arg(&out_dir)
         .status();
 
     match status {

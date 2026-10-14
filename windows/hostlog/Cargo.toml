@@ -1,0 +1,16 @@
+[package]
+name = "polter-hostlog"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Where the Windows host's own log files go, and which of them startup and the
+# hourly sweep may delete (task 1510).
+#
+# Out of `polter-host` for the reason `droppath` and `shots` are: the host
+# cannot be tested off Windows at all, and a cleanup that matches too much
+# deletes somebody's files on a day nobody is watching -- while one that
+# matches too little looks exactly like one that works until the disk fills.
+#
+# Zero dependencies.
+[dependencies]

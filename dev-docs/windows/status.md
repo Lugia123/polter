@@ -376,6 +376,9 @@ like for some reason in macOS its already scaled. I'm not sure why that is"*。
 一个文件里混着两个进程。「主线程 ticks 在涨」被读成「循环没死、卡在某条消息里」，
 **那串心跳其实是旧进程打的**，新版死在进消息泵之前。判据是：日志里同时出现只有新版
 会打的行和只有旧版会打的行。现在日志是 `polter-host-<pid>.log`，首行打 pid 和路径。
+（#1510 起它在 `%LOCALAPPDATA%\polter\logs\`，不再在 exe 旁边；一跑就退的 `+hook` /
+`+statusline` 等共用 `polter-cli-day-<yyyymmdd>.log`、每行带 `p<pid>`；目录由主程序按
+7 天 / 100 个 / 64 MB 清理。规则在 `windows/hostlog/`。）
 
 ### 已知未检验（不是已排除）
 
@@ -592,8 +595,9 @@ not an error」没有变——所以万一目录真的不在（包打错了、ex
    > （例如 `info(app): poltergeist: N plugin(s) ready`），不是「文件存在」。
 3. **ConPTY 测试 harness**：`ConPTY B` 仍 skip。已定性为「控制台归属未检验，仍是最有希望的候选」
    （`GetConsoleCP=936`，测试进程确实附着控制台；m1host 是 GUI 子系统所以能工作）。
-4. **品牌六处未做**：AppUserModelID（不设的话换目录就变两个任务栏图标，且决定 toast 身份）、
-   VERSIONINFO 资源、单实例互斥体名、注册表键、崩溃上报名。
+4. **品牌未做的几处**：AppUserModelID（不设的话换目录就变两个任务栏图标，且决定 toast 身份）、
+   单实例互斥体名、注册表键、崩溃上报名。（VERSIONINFO 已在 `windows/host/polter.rc`，
+   #1510 起版本号是构建时的 `POLTER_VERSION`，与 mac 同源；图标资源也是 #1510 加的。）
 5. ~~**（进行中，#73）合并后的宿主在真机上黑屏、窗口未响应。**~~ → **已解，见第二之四节。**
    两处叠在一起：`layout()` 持锁调 `SetWindowPos` 造成的可重入死锁，和
    **GL 上下文建在一个还是 100×100 的占位子窗口上**（`development.md` 5.2
