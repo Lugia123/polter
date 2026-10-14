@@ -178,6 +178,7 @@ mod tests {
             fits: Vec::new(),
             separator: r(0.0),
             quiet_header: r(0.0),
+            notice: None,
         };
         // `api` ends exactly at the bottom and is in; `docs` is cut off.
         // In the list's order.
