@@ -52,7 +52,7 @@ result; a return to an idle prompt with no pending work.
 **This is where you decide whether there is more worth doing.** Nothing
 decides it for you — you are the one who knows what the work was. If there
 is, say what is next; if there is not, `clock_out` stops it being reported
-again.
+again. When work for it turns up later, `clock_in` puts it back on duty.
 
 One case is decided already: a terminal the user is holding to its work
 (`held: true`, a ring in its tab) cannot be clocked off, and `clock_out`

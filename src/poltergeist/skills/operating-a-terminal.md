@@ -321,6 +321,44 @@ screenshot also needs Accessibility. Without them you get
 up on your behalf** — say so to the user; taking one screenshot themselves
 is what raises the system's prompt.
 
+## Looking back: `record_list`, `record_search`, `record_read`
+
+Polter keeps a transcript of every terminal: **what scrolled out of its
+screen**, a file a day. It is not your conversation with the person — that
+is your CLI's own record — and it is not what is on the screen now, which is
+`terminal_read`'s. It is the build log that went past an hour ago, the error
+you saw before a restart, the command you ran yesterday and cannot remember.
+Reach for it when the screen no longer holds what you need, and before you
+ask somebody to tell you what you already printed.
+
+- **`record_list`** with no scope is your own record: this terminal, and
+  earlier runs of the same agent session (a terminal's id changes at every
+  restart; a resumed session does not). It says which days of transcript
+  there are, and, for each agent session, `transcript_path` — where your CLI
+  keeps its own record of it. Polter points at that file and does not read
+  it. Page with `cursor`.
+- **`record_search(query)`** finds the lines that contain `query`, as typed,
+  ASCII case ignored — not a pattern. Each hit names the terminal, the day,
+  the part and the line: hand those to `record_read`. At most 50 hits a
+  page and 64MB read per call; when `more` is true, carry on from
+  `after_file` / `after_line`.
+- **`record_read(terminal, day)`** hands back lines of one day, from
+  `from_line` on (`part` from 1 when a day ran to several files). At most 400
+  lines and 96KB a page; `next_line` says where to carry on.
+
+**Whose you may read.** Your own, from the scope above. Asking for a group,
+a project or another terminal's record is a supervisor's question, and
+another group's record is refused (`NotYourGroup`) rather than coming back
+empty, so "not yours" and "nothing there" stay different answers. The other
+direction is worth knowing: **while you are a member of a group, its
+supervisor may read what you write in that time** — and only that time, not
+before you joined or after you left. The shield is not consulted here.
+
+This is what Polter hands you when you ask, not a wall round the files. The
+transcripts are the user's own files on the user's own disk; that a tool
+does not hand you something is not a statement that it is protected, and
+not an invitation to go round the tool to get it.
+
 ## Reading the rest
 
 `skill_read(name)` hands you any of Polter's skills — instructions, not

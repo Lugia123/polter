@@ -1067,6 +1067,51 @@ so and ask; do not guess.
 Quiet times and round counts are deliberately absent: they describe a moment
 that has passed, and your counting starts from zero.
 
+## Looking back through what your workers did
+
+`session_recall` says how things were arranged. What a terminal actually
+*did* is in its transcript — **what scrolled out of its screen**, a file a
+day — and the same three tools a worker has for its own record reach your
+group's:
+
+- **`record_list(group)`** hands you every terminal that worked in the group
+  — **for the time it was a member and no other**. `reach` says
+  `while_yours` for those and `all` for your own. Members found only in
+  older records are marked `inferred`. `project` instead of `group` is the
+  terminals in one of your groups' projects, for the time they were in no
+  group. `task` is whoever held that task; `terminal` and `session_id` name
+  one. Each agent session comes with `transcript_path`, the CLI's own record
+  of it, which Polter points at and does not read. Page with `cursor`.
+- **`record_search(query, group)`** finds the lines containing `query`, as
+  typed, ASCII case ignored, across that scope. At most 50 hits a page and
+  64MB read per call; carry on from `after_file` / `after_line` while
+  `more` is true.
+- **`record_read(terminal, day)`** reads round a hit. At most 400 lines and
+  96KB a page, `next_line` to carry on. `withheld` counts the lines you may
+  not have — another group's time, or before the terminal joined yours — so
+  a page with gaps does not read as the whole day.
+
+Reach for these when a worker went quiet and the screen has scrolled past
+why; when a `done` needs checking against what actually ran; and after a
+restart, beside `session_recall`, to see what each terminal had got to.
+**Read before you ask a worker to repeat itself, and before you decide it is
+stuck.**
+
+Another group's record is refused with `NotYourGroup`, not handed back
+empty, so you can tell "not mine" from "nothing there". The shield is not
+consulted. None of this is a wall round the files — they are the user's, on
+the user's disk; it is what Polter hands a supervisor, and what it does not
+hand you is not yours to go round it for.
+
+**Polter's own logs** are yours as a supervisor: `log_list` names them — each
+plugin's log and its older generation, the Windows host's logs, the crash
+reports — with size and when each was last written; `log_read(name)` reads
+one, the last 200 lines unless you say otherwise, at most 400 lines and 96KB
+a page, `from_line` to go elsewhere. Use them when a plugin or the
+application itself behaved oddly and the question is what Polter saw. Crash
+reports are listed and not read: they are dumps for a debugger, so say that
+one exists and when, and leave it to the person.
+
 ## What you are working under, and what you cannot do
 
 `config_get(key)` reads the user's settings — worth doing **before** you are
