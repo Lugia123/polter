@@ -989,3 +989,8 @@
 "{1}: {2}" = "{1}: {2}";
 "Screen still for {1} min" = "Screen still for {1} min";
 "Screen still for {1} min, no tool call for {2} min" = "Screen still for {1} min, no tool call for {2} min";
+"Fix" = "Fix";
+"Supervisor notified" = "Supervisor notified";
+"It is no longer failing. Nothing was sent." = "It is no longer failing. Nothing was sent.";
+"The supervisor has already been told." = "The supervisor has already been told.";
+"No agent is connected in that terminal, so nothing was typed. It is kept in the group." = "No agent is connected in that terminal, so nothing was typed. It is kept in the group.";

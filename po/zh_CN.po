@@ -4364,6 +4364,28 @@ msgstr "没能为它开出标签页。"
 msgid "Polter could not find its own program to start the role with."
 msgstr "Polter 找不到自己的程序，没法用它启动角色。"
 
+#: windows/control-room/src/scene.rs:50
+msgid "Fix"
+msgstr "修复"
+
+#: windows/control-room/src/scene.rs:51
+msgid "Supervisor notified"
+msgstr "已通知总管"
+
+#: windows/control-room/src/act.rs:255
+msgid "It is no longer failing. Nothing was sent."
+msgstr "它已经不是出错了，什么都没有发出去。"
+
+#: windows/control-room/src/act.rs:256
+msgid "The supervisor has already been told."
+msgstr "已经通知过总管了。"
+
+#: windows/control-room/src/act.rs:257
+msgid ""
+"No agent is connected in that terminal, so nothing was typed. It is kept in "
+"the group."
+msgstr "那个终端里没有连着的 agent，没有打字进去；这段话留在群里了。"
+
 #: windows/control-room/src/alert.rs:36
 #, rust-format
 msgid "{} is waiting for your approval"

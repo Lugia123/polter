@@ -44,6 +44,12 @@ struct ControlRoomActions {
                              session: ControlRoomStartChoice.Session? = nil)
         /// The person said OK to the first sweep of old records (task 1511).
         case retentionAgree
+        /// "Fix" on a card that reads "Failed" (task 1560): the core tells
+        /// the card's supervisor. The row's id is all it needs -- which
+        /// card, as last drawn, is the core's to look up.
+        case fix(group: String)
+        /// The same, on the row of a terminal that is in no group.
+        case fixTerminal(String)
     }
 
     /// Why an action was not done. `name` is the core's word for it and is
@@ -125,6 +131,18 @@ struct ControlRoomActions {
             case "OpenFailed", "NoRuntime":
                 return String(localized: "No tab could be opened for it.",
                               comment: "总控台：启动总管时开不出标签页")
+            case "NothingToFix":
+                return String(localized: "It is no longer failing. Nothing was sent.",
+                              comment: "总控台：点「修复」时这张卡片已经不是出错")
+            case "AlreadyNotified":
+                return String(localized: "The supervisor has already been told.",
+                              comment: "总控台：点「修复」时已经通知过总管、卡片也没变")
+            case "NoAgent":
+                return String(localized: "No agent is connected in that terminal, so nothing was typed. It is kept in the group.",
+                              comment: "总控台：点「修复」时要打字的终端里没有连着的 agent，话留在群里")
+            case "NoSuchTerminal":
+                return String(localized: "That terminal is no longer there.",
+                              comment: "总控台：终端已经不在了")
             case "NoExecutable":
                 return String(localized: "Polter could not find its own program to start the role with.",
                               comment: "总控台：启动总管时找不到 Polter 自己的可执行文件")
@@ -170,6 +188,10 @@ struct ControlRoomActions {
             return request
         case .retentionAgree:
             return ["act": "retention_agree"]
+        case .fix(let group):
+            return ["act": "fix", "group": group]
+        case .fixTerminal(let terminal):
+            return ["act": "fix", "terminal": terminal]
         }
     }
 
@@ -193,6 +215,15 @@ struct ControlRoomActions {
         guard let row = rows.first(where: { $0.id == rowId }) else { return nil }
         if let alone = row.alone { return .seenTerminal(alone.terminal) }
         return .seen(group: row.id)
+    }
+
+    /// What "Fix" on `row` is said as; nil when the row offers no button
+    /// to press -- none, or one already pressed. A lone terminal's row is
+    /// fixed by its terminal, as `seen` is.
+    static func fix(_ row: ControlRoomList.Row) -> Act? {
+        guard row.fix == .offered else { return nil }
+        if let alone = row.alone { return .fixTerminal(alone.terminal) }
+        return .fix(group: row.id)
     }
 
     /// Do it. Success says nothing; a refusal is thrown, by name.

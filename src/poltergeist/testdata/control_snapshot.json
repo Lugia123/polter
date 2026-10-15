@@ -132,7 +132,8 @@
           "held": false,
           "shielded": false
         }
-      ]
+      ],
+      "fix": "none"
     },
     {
       "name": "web-app-docs",
@@ -229,7 +230,8 @@
           "held": false,
           "shielded": false
         }
-      ]
+      ],
+      "fix": "none"
     },
     {
       "name": "mobile",
@@ -341,7 +343,8 @@
           "held": false,
           "shielded": false
         }
-      ]
+      ],
+      "fix": "none"
     },
     {
       "name": "billing",
@@ -436,7 +439,8 @@
           "held": false,
           "shielded": false
         }
-      ]
+      ],
+      "fix": "none"
     },
     {
       "name": "docs-site",
@@ -545,7 +549,8 @@
           "held": false,
           "shielded": false
         }
-      ]
+      ],
+      "fix": "offered"
     },
     {
       "name": "infra",
@@ -640,7 +645,8 @@
           "held": false,
           "shielded": false
         }
-      ]
+      ],
+      "fix": "none"
     },
     {
       "name": "design-system",
@@ -752,7 +758,8 @@
           "held": true,
           "shielded": false
         }
-      ]
+      ],
+      "fix": "none"
     },
     {
       "name": "notes",
@@ -845,7 +852,8 @@
           "held": false,
           "shielded": false
         }
-      ]
+      ],
+      "fix": "none"
     }
   ],
   "ungrouped": [
@@ -884,7 +892,8 @@
         ],
         "cut": "none",
         "say": null
-      }
+      },
+      "fix": "none"
     }
   ],
   "terminals": [

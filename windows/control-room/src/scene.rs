@@ -19,7 +19,7 @@ use crate::lend::{msg as lend_msg, Detail as Detail_};
 use crate::layout::{AskFit, ListLayout, Rect};
 use crate::list::{self, List, Row};
 use crate::look::{font, line, pane, radius, side, space, Rgba, Theme};
-use crate::snapshot::Shown;
+use crate::snapshot::{Fix, Shown};
 
 /// The English of what the panel says; `build` passes each through the
 /// host's translation. `{}` is where the one argument goes.
@@ -45,6 +45,10 @@ pub mod msg {
     /// share a translation.
     pub const RETENTION_WAITING: &str = n_("The new retention settings will clear %@ of old records");
     pub const OK: &str = n_("OK");
+    /// The button on a card that reads "Failed" (task 1560), and what it
+    /// says, greyed, once pressed. The macOS host's words.
+    pub const FIX: &str = n_("Fix");
+    pub const FIX_SENT: &str = n_("Supervisor notified");
     /// What the right side says of a group with no supervisor, by what the
     /// core says became of starting one. The macOS host's sentences.
     pub const STARTING: &str = n_("Starting the supervisor…");
@@ -335,6 +339,9 @@ pub struct View<'a> {
     /// The person pressed "new group" and has not made one or given up:
     /// the header is the field for its name.
     pub naming: Option<Naming<'a>>,
+    /// Why the last "Fix" was refused, and on which row (`Row::id`): said
+    /// beside the button (`act::fix_refusal_stands` says how long).
+    pub fix_refusal: Option<(&'a str, &'a str)>,
 }
 
 /// A group being named.
@@ -343,6 +350,24 @@ pub struct Naming<'a> {
     /// Why the name as typed made no group; said under the field.
     pub refusal: Option<&'a str>,
 }
+
+/// The "Fix" button on a waiting row whose rect is `row`: on the line the
+/// layout left at the row's bottom (`side::FIX_LINE_HEIGHT`), under the
+/// row's text. A press here is the button's and not the row's. 暂定: a
+/// fixed width, the room "Supervisor notified" takes, since only a host can
+/// measure the words.
+pub fn fix_hit(row: Rect) -> Rect {
+    let (_, text_x) = glyph_column(row);
+    let line_y = row.y + row.h - side::ROW_PADDING_Y - side::FIX_LINE_HEIGHT;
+    let h = crate::layout::NOTICE_BUTTON_H;
+    Rect { x: text_x, y: line_y + (side::FIX_LINE_HEIGHT - h) / 2.0, w: FIX_BUTTON_W, h }
+}
+
+/// See `fix_hit`.
+pub const FIX_BUTTON_W: f64 = 136.0;
+/// 暂定: a push button's corner, rounder than nothing and not a row's, so
+/// that it is not read as a second selection chip.
+pub const FIX_BUTTON_RADIUS: f64 = 4.0;
 
 /// The notice's OK: under its two lines, at its left.
 pub fn retention_ok_hit(notice: Rect) -> Rect {
@@ -648,11 +673,36 @@ fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, fit: &AskFit, view: &
     if let Some((template, n)) = list::others(row.others) {
         note(list::fill(&tr(template), &n));
     }
-    // **Nothing on a row can be pressed.** A row says that somebody is
-    // waiting and for what; the person goes to the terminal to answer. A
+    // **Nothing on a row answers for the person.** A row says that somebody
+    // is waiting and for what; the person goes to the terminal to answer. A
     // tick and a cross were here for a day and were taken out again (the
     // user's ruling, 2026-10-12): a row is too small to show what is being
     // agreed to, and what is being asked is often not a yes or a no.
+    //
+    // "Fix" on a card that reads "Failed" (task 1560) answers nothing: it
+    // has the core tell the card's supervisor, which decides.
+    if row.fix != Fix::None {
+        let button = fix_hit(rect);
+        let offered = row.fix == Fix::Offered;
+        let ink = if offered { theme.text } else { theme.text_tertiary };
+        let panel = panel_color(theme);
+        out.push(Item::Round { rect: button, radius: FIX_BUTTON_RADIUS, color: panel, edge: Some(over(panel, theme.line_faint, 1.0)) });
+        out.push(Item::Text {
+            rect: button,
+            text: tr(if offered { msg::FIX } else { msg::FIX_SENT }),
+            style: body(ink),
+            align: Align::Centre,
+        });
+        if let Some((_, why)) = view.fix_refusal.filter(|(id, _)| offered && *id == row.id) {
+            let x = button.x + button.w + side::ROW_ITEM_GAP;
+            out.push(Item::Text {
+                rect: Rect { x, y: button.y, w: (rect.x + rect.w - side::ROW_PADDING_X - x).max(0.0), h: button.h },
+                text: why.to_string(),
+                style: body(theme.text_secondary),
+                align: Align::Left,
+            });
+        }
+    }
 }
 
 /// Who is waiting, as the parts of a line's right end: the worker's name in
@@ -1283,8 +1333,67 @@ mod tests {
 
     fn scene(list: &List, selection: Option<&str>, dark: bool, scale: f64, pulsing: Option<&str>) -> Vec<Item> {
         let at = ListLayout::new(list, 900.0);
-        let view = View { theme: look::theme(dark), scale, selection, lit: Lit::Selection, chip: at.chip(selection), lift: 0.0, pulsing, naming: None };
+        let view = View { theme: look::theme(dark), scale, selection, lit: Lit::Selection, chip: at.chip(selection), lift: 0.0, pulsing, naming: None, fix_refusal: None };
         build(list, &at, &view, &same)
+    }
+
+    /// Task 1560: "Fix" on the card that reads "Failed", at the bottom of
+    /// its row, where a press is the button's and not the row's.
+    #[test]
+    fn fix_is_drawn_on_the_failed_card_only_on_the_line_left_for_it_and_greys_once_pressed() {
+        let mut l = list();
+        let at = ListLayout::new(&l, 900.0);
+        let row = at.chip(Some("docs-site")).unwrap();
+        let hit = fix_hit(row);
+        // Inside its row, under everything else the row says, on the last
+        // line, and clear of the row's padding.
+        assert!(hit.x >= row.x && hit.x + hit.w <= row.x + row.w - side::ROW_PADDING_X, "{hit:?} in {row:?}");
+        assert!(hit.y >= row.y + row.h - side::ROW_PADDING_Y - side::FIX_LINE_HEIGHT - 1e-9);
+        assert!(hit.y + hit.h <= row.y + row.h - side::ROW_PADDING_Y + 1e-9);
+        assert_eq!(at.row_at(hit.x + 1.0, hit.y + 1.0), Some("docs-site"));
+        let words_below = |items: &[Item], word: &str| -> Vec<Rect> {
+            items.iter().filter_map(|i| match i {
+                Item::Text { rect, text, .. } if text == word => Some(*rect),
+                _ => None,
+            }).collect()
+        };
+        let items = scene(&l, None, false, 1.0, None);
+        assert_eq!(words_below(&items, msg::FIX), [hit], "one button, on docs-site's card");
+        assert!(words_below(&items, msg::FIX_SENT).is_empty());
+
+        // Pressed: greyed, in its own words, in the same place.
+        for r in l.waiting.iter_mut().filter(|r| r.id == "docs-site") {
+            r.fix = Fix::Sent;
+        }
+        let items = scene(&l, None, false, 1.0, None);
+        assert!(words_below(&items, msg::FIX).is_empty());
+        assert_eq!(words_below(&items, msg::FIX_SENT), [hit]);
+        let grey = items.iter().find_map(|i| match i {
+            Item::Text { text, style, .. } if text == msg::FIX_SENT => Some(style.color),
+            _ => None,
+        });
+        assert_eq!(grey, Some(look::theme(false).text_tertiary));
+    }
+
+    #[test]
+    fn why_a_fix_was_refused_is_said_beside_its_own_button_and_nowhere_else() {
+        let l = list();
+        let at = ListLayout::new(&l, 900.0);
+        let said = |refusal: Option<(&str, &str)>| -> Vec<Rect> {
+            let view = View { theme: look::theme(false), scale: 1.0, selection: None, lit: Lit::Selection, chip: None, lift: 0.0, pulsing: None, naming: None, fix_refusal: refusal };
+            build(&l, &at, &view, &same).into_iter().filter_map(|i| match i {
+                Item::Text { rect, text, .. } if text == "why" => Some(rect),
+                _ => None,
+            }).collect()
+        };
+        let hit = fix_hit(at.chip(Some("docs-site")).unwrap());
+        let beside = said(Some(("docs-site", "why")));
+        assert_eq!(beside.len(), 1);
+        assert_eq!(beside[0].y, hit.y);
+        assert_eq!(beside[0].x, hit.x + hit.w + side::ROW_ITEM_GAP);
+        // About another row: not on this one, and that one has no button.
+        assert!(said(Some(("billing", "why"))).is_empty());
+        assert!(said(None).is_empty());
     }
 
     /// Task 1511: the first sweep of old records waiting for the person.
@@ -1552,8 +1661,10 @@ mod tests {
             }
             // Top to bottom with nothing between and nothing left over: the
             // last thing drawn ends where the row's padding begins.
+            // A card with "Fix" ends in its button, centred on its line.
             let bottom = inside.iter().map(|i| rect_of(i)).map(|r| r.y + r.h).fold(0.0, f64::max);
-            assert!((bottom - (rect.y + rect.h - side::ROW_PADDING_Y)).abs() < 1e-9, "{}: {bottom} in {rect:?}", row.id);
+            let end = if row.fix == Fix::None { 0.0 } else { (side::FIX_LINE_HEIGHT - crate::layout::NOTICE_BUTTON_H) / 2.0 };
+            assert!((bottom - (rect.y + rect.h - side::ROW_PADDING_Y - end)).abs() < 1e-9, "{}: {bottom} in {rect:?}", row.id);
             // And it is set in the primary colour: it is the heaviest thing
             // on the row.
             for i in &inside {
@@ -1674,7 +1785,9 @@ mod tests {
         for under in &items[1..chip] {
             assert!(matches!(under, Item::Round { radius, edge: None, .. } if *radius > radius::ROW), "{under:?}");
         }
-        assert!(items[chip + 1..].iter().all(|i| !matches!(i, Item::Round { .. })));
+        // Nothing round over it but the "Fix" buttons on the cards that
+        // have one (task 1560).
+        assert!(items[chip + 1..].iter().all(|i| !matches!(i, Item::Round { radius, .. } if *radius != FIX_BUTTON_RADIUS)));
         let at = ListLayout::new(&l, 900.0);
         assert_eq!(rect_of(&items[chip]), at.chip(Some(&first)).unwrap());
     }
@@ -1686,7 +1799,7 @@ mod tests {
         let at = ListLayout::new(&l, 900.0);
         let chip = at.chip(Some(&first)).unwrap();
         let lowest = |lift: f64| {
-            let view = View { theme: look::theme(false), scale: 1.0, selection: Some(&first), lit: Lit::Selection, chip: Some(chip), lift, pulsing: None, naming: None };
+            let view = View { theme: look::theme(false), scale: 1.0, selection: Some(&first), lit: Lit::Selection, chip: Some(chip), lift, pulsing: None, naming: None, fix_refusal: None };
             build(&l, &at, &view, &same)
                 .iter()
                 .filter_map(|i| match i {
@@ -1706,7 +1819,7 @@ mod tests {
         let (first, second) = (l.waiting[0].id.clone(), l.waiting[1].id.clone());
         let at = ListLayout::new(&l, 900.0);
         let names = |lit: Lit| {
-            let view = View { theme: look::theme(true), scale: 1.0, selection: Some(&second), lit, chip: at.chip(Some(&second)), lift: 1.0, pulsing: None, naming: None };
+            let view = View { theme: look::theme(true), scale: 1.0, selection: Some(&second), lit, chip: at.chip(Some(&second)), lift: 1.0, pulsing: None, naming: None, fix_refusal: None };
             let items = build(&l, &at, &view, &same);
             [&first, &second].map(|id| {
                 items.iter().find_map(|i| match i {
@@ -1724,7 +1837,7 @@ mod tests {
         // Both passes have the chip in them, in the same place: what
         // differs is only how the rows are written.
         let chips = |lit: Lit| {
-            let view = View { theme: look::theme(true), scale: 1.0, selection: Some(&second), lit, chip: at.chip(Some(&second)), lift: 1.0, pulsing: None, naming: None };
+            let view = View { theme: look::theme(true), scale: 1.0, selection: Some(&second), lit, chip: at.chip(Some(&second)), lift: 1.0, pulsing: None, naming: None, fix_refusal: None };
             build(&l, &at, &view, &same).into_iter().filter(|i| matches!(i, Item::Round { radius, .. } if *radius == radius::ROW)).count()
         };
         assert_eq!((chips(Lit::Every), chips(Lit::Nobody)), (1, 1));
@@ -2044,7 +2157,7 @@ mod tests {
     fn naming_scene(refusal: Option<&str>) -> Vec<Item> {
         let l = list();
         let at = ListLayout::new(&l, 900.0);
-        let view = View { theme: look::theme(false), scale: 1.0, selection: None, lit: Lit::Selection, chip: None, lift: 0.0, pulsing: None, naming: Some(Naming { refusal }) };
+        let view = View { theme: look::theme(false), scale: 1.0, selection: None, lit: Lit::Selection, chip: None, lift: 0.0, pulsing: None, naming: Some(Naming { refusal }), fix_refusal: None };
         build(&l, &at, &view, &same)
     }
 

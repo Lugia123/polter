@@ -7,6 +7,7 @@
 use crate::json::quote;
 use crate::n_;
 use crate::list::Row;
+use crate::snapshot::Fix;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Act<'a> {
@@ -30,6 +31,33 @@ pub enum Act<'a> {
     StartSupervisor { group: &'a str, role: Option<&'a str>, cwd: Option<&'a str>, session: Option<Session> },
     /// The person said OK to the first sweep of old records (task 1511).
     RetentionAgree,
+    /// "Fix" on a card that reads "Failed" (task 1560): the core tells the
+    /// card's supervisor. Which card, as last drawn, is the core's to look
+    /// up; the row's name is all it is told.
+    Fix { group: &'a str },
+    /// The same, on the row of a terminal that is in no group.
+    FixTerminal { terminal: &'a str },
+}
+
+/// What "Fix" on `row` is sent as; none when the row offers no button to
+/// press -- none, or one already pressed. A lone terminal's row is fixed by
+/// its terminal, as it is seen. The macOS host's `ControlRoomActions.fix`.
+pub fn fix_act(row: &Row) -> Option<Act<'_>> {
+    if row.fix != Fix::Offered {
+        return None;
+    }
+    Some(match &row.alone {
+        Some(alone) => Act::FixTerminal { terminal: &alone.terminal },
+        None => Act::Fix { group: &row.id },
+    })
+}
+
+/// Whether the reason the last "Fix" on `refused` was refused is still
+/// said, now that the list is `rows`: only while that row still offers the
+/// button, to be pressed again. The macOS host's `ControlRoomModel` does
+/// the same when a list arrives.
+pub fn fix_refusal_stands<'r>(refused: &str, mut rows: impl Iterator<Item = &'r Row>) -> bool {
+    rows.any(|r| r.id == refused && r.fix == Fix::Offered)
 }
 
 /// Which session a start is asked for: the core's two words
@@ -89,6 +117,8 @@ pub fn encode(act: &Act) -> Option<String> {
         ),
         Act::NewGroup { name } => format!("{{\"act\":\"new_group\",\"name\":{}}}", quote(name)),
         Act::RetentionAgree => "{\"act\":\"retention_agree\"}".to_string(),
+        Act::Fix { group } => format!("{{\"act\":\"fix\",\"group\":{}}}", quote(group)),
+        Act::FixTerminal { terminal } => format!("{{\"act\":\"fix\",\"terminal\":{}}}", quote(terminal)),
         Act::StartSupervisor { group, role, cwd, session } => {
             // Left out when the person picked neither: the core then uses
             // the ones its snapshot named.
@@ -147,6 +177,13 @@ pub enum Refusal {
     /// No tab could be opened for it.
     OpenFailed,
     NoExecutable,
+    /// "Fix" on a card that is not failing any more.
+    NothingToFix,
+    /// "Fix" on a card that was fixed and has not changed since.
+    AlreadyNotified,
+    /// Nobody connected in the terminal "Fix" would type into; the
+    /// paragraph is kept in the group.
+    NoAgent,
     /// A name this build does not know. Shown as it came, never dropped.
     Other,
 }
@@ -178,6 +215,9 @@ impl Refusal {
             "NotAbsolute" | "NoSuchDirectory" | "NotADirectory" => Refusal::NoSuchDirectory,
             "OpenFailed" | "NoRuntime" => Refusal::OpenFailed,
             "NoExecutable" => Refusal::NoExecutable,
+            "NothingToFix" => Refusal::NothingToFix,
+            "AlreadyNotified" => Refusal::AlreadyNotified,
+            "NoAgent" => Refusal::NoAgent,
             _ => Refusal::Other,
         }
     }
@@ -212,6 +252,9 @@ impl Refusal {
             Refusal::NoSuchDirectory => n_("That directory is not there."),
             Refusal::OpenFailed => n_("No tab could be opened for it."),
             Refusal::NoExecutable => n_("Polter could not find its own program to start the role with."),
+            Refusal::NothingToFix => n_("It is no longer failing. Nothing was sent."),
+            Refusal::AlreadyNotified => n_("The supervisor has already been told."),
+            Refusal::NoAgent => n_("No agent is connected in that terminal, so nothing was typed. It is kept in the group."),
             Refusal::Other => "It was not done ({}).",
         }
     }

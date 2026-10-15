@@ -7,7 +7,7 @@
 //! `ControlRoomList.swift` is the same thing, and
 //! `tools/control-room-hosts-agree.py` holds the two to one answer.
 
-use crate::snapshot::{Cut, Form, Header, HeaderNumber, HeaderOf, Shown, Snapshot, SupervisorRole, SupervisorStart, Waiter, WaiterIs, What};
+use crate::snapshot::{Cut, Fix, Form, Header, HeaderNumber, HeaderOf, Shown, Snapshot, SupervisorRole, SupervisorStart, Waiter, WaiterIs, What};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -39,6 +39,9 @@ pub struct Row {
     /// What the title of the frame on the right says while it holds this
     /// row's terminal; none when the core lists no such terminal.
     pub title: Option<SupervisorTitle>,
+    /// The "Fix" button on a card that reads "Failed" (task 1560): the
+    /// core's word.
+    pub fix: Fix,
 }
 
 /// What the frame's title says of the terminal in it: that terminal's own
@@ -205,6 +208,7 @@ impl List {
                 event_ms: g.event_ms,
                 start: g.supervisor.clone(),
                 alone: None,
+                fix: g.fix,
                 // Always the supervisor's own terminal, as the core wrote
                 // it. Whether the row is about the supervisor or about one
                 // of its workers is not asked here.
@@ -240,6 +244,7 @@ impl List {
                 event_ms: one.event_ms,
                 start: None,
                 alone: Some(Alone { terminal: one.id.clone(), title: one.title.clone(), pane }),
+                fix: one.fix,
                 title: Some(SupervisorTitle { name: one.title.clone(), shown: one.shown, word: one.text.clone() }),
             };
             if one.needs_me {

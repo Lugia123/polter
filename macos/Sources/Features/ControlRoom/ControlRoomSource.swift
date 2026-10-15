@@ -170,6 +170,9 @@ final class ControlRoomModel: ObservableObject {
     @Published private(set) var startRefusal: (group: String, message: String)?
     /// A group the person has just made, until the core lists it.
     private var madeGroup: String?
+    /// Why the last "Fix" was not done, and on which row: said beside the
+    /// button until it is pressed again or the card stops offering it.
+    @Published private(set) var fixRefusal: (row: String, message: String)?
 
     /// Make a group by the name the person typed. Returns what to tell
     /// them when it was not made; nil when it was -- and then it is
@@ -199,6 +202,21 @@ final class ControlRoomModel: ObservableObject {
         choose(made)
     }
 
+    /// "Fix" on a card that reads "Failed" (task 1560): the core tells the
+    /// card's supervisor, and the next list greys the button. A refusal is
+    /// kept beside it, and the button stays to be pressed again.
+    func fix(_ row: ControlRoomList.Row) {
+        guard let act = ControlRoomActions.fix(row) else { return }
+        do {
+            try perform(act)
+            fixRefusal = nil
+        } catch let refusal as ControlRoomActions.Refusal {
+            fixRefusal = (row.id, refusal.message)
+        } catch {
+            fixRefusal = (row.id, ControlRoomActions.Refusal(name: "Refused").message)
+        }
+    }
+
     /// Start a supervisor for `group`. A nil role or directory is the one
     /// the core named. What becomes of it arrives in the next list; a
     /// refusal is kept to be shown.
@@ -224,6 +242,12 @@ final class ControlRoomModel: ObservableObject {
             guard let self else { return }
             let next = ControlRoomList(snapshot: snapshot, showing: showing())
             self.list = next
+            // A refusal is about a button that is there to press again;
+            // once the card stops offering it, there is nothing to say.
+            if let refused = self.fixRefusal,
+               next.rows.first(where: { $0.id == refused.row })?.fix != .offered {
+                self.fixRefusal = nil
+            }
             // A group that is no longer listed cannot stay selected.
             let kept = ControlRoomRules.restoredSelection(self.selection, in: next.rows)
             let start = ControlRoomRules.selection(

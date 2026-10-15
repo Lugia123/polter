@@ -334,6 +334,7 @@ const AgentEvent = @import("agent_event.zig");
 const ShellSteps = @import("ShellSteps.zig");
 const quota = @import("quota.zig");
 const Tasks = @import("Tasks.zig");
+const ControlFix = @import("ControlFix.zig");
 
 pub const Id = Bus.Id;
 
@@ -367,6 +368,10 @@ notify_rows: []const ControlNotify.Row,
 /// The same rows, in what a click on a notification needs of them
 /// (`groupToShow`). Lives beside them, in `notify_arena`.
 route_rows: []const RouteRow,
+/// The cards that read "Failed", with who failed under each: what the
+/// "Fix" button acts on (`ControlFix`). Lives beside them, in
+/// `notify_arena`: what was on screen when the button was pressed.
+fix_cards: []const ControlFix.Card,
 notify_arena: std.heap.ArenaAllocator,
 
 pub fn init(alloc: Allocator) ControlRoom {
@@ -381,6 +386,7 @@ pub fn init(alloc: Allocator) ControlRoom {
         .recomputes = 0,
         .notify_rows = &.{},
         .route_rows = &.{},
+        .fix_cards = &.{},
         .notify_arena = .init(alloc),
     };
 }
@@ -427,6 +433,7 @@ pub fn refresh(self: *ControlRoom, in: Input, cause: Cause) Allocator.Error!Outc
     _ = self.notify_arena.reset(.retain_capacity);
     self.notify_rows = try notifyRows(self.notify_arena.allocator(), built.snapshot.groups);
     self.route_rows = try routeRows(self.notify_arena.allocator(), built.snapshot.groups);
+    self.fix_cards = try copyCards(self.notify_arena.allocator(), built.fix_cards);
 
     const stable = try writeAlloc(self.alloc, try stripped(arena.allocator(), built.snapshot), .{});
     if (std.mem.eql(u8, stable, self.stable)) {
@@ -604,6 +611,10 @@ pub const Input = struct {
     /// The person's home directory, where a supervisor is started when
     /// nothing says better. Empty when it is not known.
     home: []const u8,
+    /// The cards the person has pressed "Fix" on, and as of which moment
+    /// (`ControlFix.Sent`). No default: a caller that forgot it would offer
+    /// the button again the moment it was pressed.
+    fix_sent: *const ControlFix.Sent,
     /// The bus's clock, and the real one.
     now_ms: u64,
     wall_ms: u64,
@@ -1079,6 +1090,9 @@ pub const GroupRow = struct {
     more: usize,
     same_as: ?[]const u8,
     members: []const Member,
+    /// The "Fix" button (`ControlFix`): none, offered, or pressed and
+    /// standing until the card changes.
+    fix: ControlFix.State,
 };
 
 pub const LoneRow = struct {
@@ -1093,6 +1107,8 @@ pub const LoneRow = struct {
     waiter: Waiter,
     reason: Reason,
     what: What,
+    /// As a group's row has it.
+    fix: ControlFix.State,
 };
 
 /// Which of the three frames a terminal's pane wears in its own tab
@@ -1374,6 +1390,8 @@ fn stripped(arena: Allocator, s: Snapshot) Allocator.Error!Snapshot {
 const Built = struct {
     snapshot: Snapshot,
     wake_ms: ?u64,
+    /// Every card that offers "Fix" or has had it pressed.
+    fix_cards: []const ControlFix.Card,
 };
 
 /// The earliest of the moments offered that is still ahead.
@@ -1830,6 +1848,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
 
     var grouped: std.AutoHashMapUnmanaged(Id, ?u64) = .empty;
     var rows: std.ArrayListUnmanaged(Pending) = .empty;
+    var fix_cards: std.ArrayListUnmanaged(ControlFix.Card) = .empty;
 
     for (names.items) |name| {
         const all = in.chat.membersOf(arena, name) catch continue;
@@ -1841,6 +1860,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         var steward: ?Attention.Status = null;
         var workers: std.ArrayListUnmanaged(Attention.Status) = .empty;
         var members: std.ArrayListUnmanaged(Member) = .empty;
+        var failing: std.ArrayListUnmanaged(ControlFix.Failing) = .empty;
         var has_agent = false;
 
         for (all) |id| {
@@ -1857,6 +1877,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             const s = statusOf(in, id, seen, &wake);
             const is_steward = steward_id != null and steward_id.? == id;
             if (is_steward) steward = s else try workers.append(arena, s);
+            if (s.alive and s.kind == .failed) try failing.append(arena, try failingOf(arena, in, s));
 
             // A worker's first minute is its supervisor's; the row changes
             // when that minute is up.
@@ -1916,6 +1937,14 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         }
 
         const d = rowDisplay(a, about);
+        const fix_key: ControlFix.Key = .{ .group = try arena.dupe(u8, name) };
+        const fix = ControlFix.stateOf(d.word, in.fix_sent, steward_id, failing.items);
+        if (fix != .none) try fix_cards.append(arena, .{
+            .key = fix_key,
+            .steward = steward_id,
+            .failing = failing.items,
+            .state = fix,
+        });
         const reason: Reason = if (about != null and a.kind == about.?.kind)
             try reasonOf(arena, in, about.?, name, &wake)
         else
@@ -1963,6 +1992,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
                 .more = more,
                 .same_as = null,
                 .members = members.items,
+                .fix = fix,
             },
         });
     }
@@ -2035,6 +2065,18 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
 
         const a = Attention.ofTerminal(s);
         const rd = rowDisplay(a, s);
+        const lone_key: ControlFix.Key = .{ .terminal = t.id };
+        const lone_failing: []const ControlFix.Failing = if (s.alive and s.kind == .failed)
+            try arena.dupe(ControlFix.Failing, &.{try failingOf(arena, in, s)})
+        else
+            &.{};
+        const lone_fix = ControlFix.stateOf(rd.word, in.fix_sent, null, lone_failing);
+        if (lone_fix != .none) try fix_cards.append(arena, .{
+            .key = lone_key,
+            .steward = null,
+            .failing = lone_failing,
+            .state = lone_fix,
+        });
         const reason: Reason = if (a.kind == s.kind) try reasonOf(arena, in, s, null, &wake) else .none;
         try lone.append(arena, .{
             .attention = a,
@@ -2051,6 +2093,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
                 .waiter = if (Attention.needsMe(a)) .{ .is = .terminal, .name = "" } else .none,
                 .reason = reason,
                 .what = try whatOf(arena, in, s, reason),
+                .fix = lone_fix,
             },
         });
     }
@@ -2180,7 +2223,59 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .retention_waiting_bytes = in.retention_waiting,
         },
         .wake_ms = wake.at,
+        .fix_cards = fix_cards.items,
     };
+}
+
+/// One failed terminal, as the "Fix" button names it.
+fn failingOf(arena: Allocator, in: Input, s: Attention.Status) Allocator.Error!ControlFix.Failing {
+    // The error's name, as `reasonOf` reads it: the detail, else the note.
+    const agent = in.bus.agentOf(s.id);
+    const what: []const u8 = if (s.source == .process) "process_exited" else agent.detail.get() orelse agent.note.get() orelse "";
+    return .{
+        .id = s.id,
+        .title = if (find(in.terminals, s.id)) |t| try arena.dupe(u8, t.title) else "",
+        .what = try arena.dupe(u8, what),
+        .since_ms = s.since_ms,
+        .at_wall_ms = in.wall_ms -| (in.now_ms -| s.since_ms),
+    };
+}
+
+/// The cards, copied into `arena`: the snapshot they come from does not
+/// outlive `refresh`.
+fn copyCards(arena: Allocator, cards: []const ControlFix.Card) Allocator.Error![]const ControlFix.Card {
+    const out = try arena.alloc(ControlFix.Card, cards.len);
+    for (cards, out) |c, *o| {
+        const failing = try arena.alloc(ControlFix.Failing, c.failing.len);
+        for (c.failing, failing) |f, *g| {
+            g.* = f;
+            g.title = try arena.dupe(u8, f.title);
+            g.what = try arena.dupe(u8, f.what);
+        }
+        o.* = .{
+            .key = switch (c.key) {
+                .group => |name| .{ .group = try arena.dupe(u8, name) },
+                .terminal => c.key,
+            },
+            .steward = c.steward,
+            .failing = failing,
+            .state = c.state,
+        };
+    }
+    return out;
+}
+
+/// The card the "Fix" button on `key` acts on, as it was last drawn; null
+/// when no such card offers it.
+pub fn fixCard(self: *const ControlRoom, key: ControlFix.Key) ?ControlFix.Card {
+    for (self.fix_cards) |c| {
+        const same = switch (key) {
+            .group => |name| c.key == .group and std.mem.eql(u8, c.key.group, name),
+            .terminal => |id| c.key == .terminal and c.key.terminal == id,
+        };
+        if (same) return c;
+    }
+    return null;
 }
 
 /// A terminal that is itself waiting on the person.
@@ -2226,6 +2321,7 @@ const World = struct {
     projects: ProjectsIn = .unknown,
     cli_names: []const CliName = &.{.{ .key = "claude-code", .label = "Claude Code" }},
     home: []const u8 = "/Users/me",
+    fix_sent: ControlFix.Sent = .{},
 
     fn init() World {
         return .{
@@ -2236,6 +2332,7 @@ const World = struct {
     }
 
     fn deinit(self: *World) void {
+        self.fix_sent.deinit(testing.allocator);
         self.open.deinit(testing.allocator);
         self.tasks.deinit();
         self.chat.deinit();
@@ -2319,6 +2416,7 @@ const World = struct {
             .projects = self.projects,
             .cli_names = self.cli_names,
             .home = self.home,
+            .fix_sent = &self.fix_sent,
             .now_ms = now_ms,
             .wall_ms = self.wall_ms + now_ms,
         };
@@ -2481,6 +2579,74 @@ test "ControlRoom snapshot: the fixture is what the fixture's world comes to" {
         std.debug.print("\n<<<control_snapshot.json\n{s}\n>>>control_snapshot.json\n", .{json});
         return error.TestFixtureOutOfDate;
     }
+}
+
+test "ControlRoom snapshot: Fix is on the cards that read Failed, names who failed, and stands until they change" {
+    var w = try fixtureWorld();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var room = try fixtureRoom(&w);
+    defer room.deinit();
+
+    _ = try room.refresh(w.input(fixture_now), .event);
+    var s = (try room.compute(arena.allocator(), w.input(fixture_now))).snapshot;
+    for (s.groups) |g| {
+        try testing.expectEqual(g.word == .failed, g.fix == .offered);
+        if (g.word != .failed) try testing.expectEqual(ControlFix.State.none, g.fix);
+    }
+    for (s.ungrouped) |r| try testing.expectEqual(r.word == .failed, r.fix == .offered);
+
+    // The supervisor of docs-site failed: the card is its, and so is the
+    // one failure under it.
+    try testing.expectEqual(ControlFix.State.offered, (try rowNamed(s, "docs-site")).fix);
+    const card = room.fixCard(.{ .group = "docs-site" }) orelse return error.TestCardMissing;
+    try testing.expectEqual(@as(?Id, 0xa3), card.steward);
+    try testing.expectEqual(@as(usize, 1), card.failing.len);
+    try testing.expectEqual(@as(Id, 0xa3), card.failing[0].id);
+    try testing.expectEqualStrings("rate_limit", card.failing[0].what);
+    try testing.expectEqualStrings("docs-site", card.failing[0].title);
+    try testing.expectEqual(w.wall_ms + 98 * min, card.failing[0].at_wall_ms);
+    // A card that does not read Failed is not one to fix.
+    try testing.expectEqual(@as(?ControlFix.Card, null), room.fixCard(.{ .group = "billing" }));
+
+    // Pressed: notified, until the card changes.
+    try w.fix_sent.mark(testing.allocator, ControlFix.stampOf(card.steward, card.failing));
+    s = (try room.compute(arena.allocator(), w.input(fixture_now))).snapshot;
+    try testing.expectEqual(ControlFix.State.sent, (try rowNamed(s, "docs-site")).fix);
+
+    // Its next turn clears the failure, and the button with it.
+    try w.hook(0xa3, .turn_started, null, fixture_now + 1_000);
+    s = (try room.compute(arena.allocator(), w.input(fixture_now + 2_000))).snapshot;
+    try testing.expectEqual(ControlFix.State.none, (try rowNamed(s, "docs-site")).fix);
+
+    // That turn fails too: a new moment, and the button again.
+    var again: AgentEvent.Event = .none;
+    again.event = .turn_failed;
+    again.detail = "server_error";
+    _ = try w.bus.agentEvent(0xa3, again, fixture_now + 3_000);
+    s = (try room.compute(arena.allocator(), w.input(fixture_now + 4_000))).snapshot;
+    try testing.expectEqual(ControlFix.State.offered, (try rowNamed(s, "docs-site")).fix);
+}
+
+test "ControlRoom snapshot: a worker's failure is fixed through its supervisor" {
+    var w = try fixtureWorld();
+    defer w.deinit();
+    var room = try fixtureRoom(&w);
+    defer room.deinit();
+
+    try w.worker(0xb6, "tokens-2", 0x25, 0xa5, "design-system");
+    try w.hook(0xb6, .turn_failed, "boom", fixture_now);
+    // Its first minute is its supervisor's: the card does not read Failed.
+    _ = try room.refresh(w.input(fixture_now + 1_000), .event);
+    try testing.expectEqual(@as(?ControlFix.Card, null), room.fixCard(.{ .group = "design-system" }));
+
+    _ = try room.refresh(w.input(fixture_now + 60_001), .event);
+    const card = room.fixCard(.{ .group = "design-system" }) orelse return error.TestCardMissing;
+    try testing.expectEqual(@as(?Id, 0xa5), card.steward);
+    try testing.expectEqual(@as(usize, 1), card.failing.len);
+    try testing.expectEqual(@as(Id, 0xb6), card.failing[0].id);
+    try testing.expectEqualStrings("boom", card.failing[0].what);
 }
 
 test "ControlRoom snapshot: the JSON reads back and writes out the same" {

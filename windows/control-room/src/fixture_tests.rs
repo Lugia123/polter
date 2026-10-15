@@ -353,7 +353,8 @@ fn the_panel_is_laid_out_from_the_look_and_nothing_else() {
     // One step, too long for one line.
     assert_eq!(high("mobile"), 80.0);
     assert_eq!(high("billing"), 80.0);
-    assert_eq!(high("docs-site"), 60.0);
+    // Failed: one line, and the line with "Fix" under it (task 1560).
+    assert_eq!(high("docs-site"), 60.0 + side::FIX_LINE_HEIGHT);
     let fourth = lay.chip(Some("docs-site")).unwrap();
     assert_eq!(fourth.y, first.y + 120.0 + 100.0 + 80.0 + 80.0 + 4.0 * side::ROW_GAP);
     assert_eq!(lay.fit("web-app"), Some(&AskFit { lines: vec![1, 1, 1], hidden: 0 }));
@@ -364,7 +365,7 @@ fn the_panel_is_laid_out_from_the_look_and_nothing_else() {
     // The terminal in no group has no row: the line follows the last group.
     assert_eq!(lay.chip(Some(LONE)), None);
     assert_eq!(lay.fit(LONE), None);
-    let below = fourth.y + 60.0 + side::ROW_GAP + side::SEPARATOR_SPACE_ABOVE;
+    let below = fourth.y + 60.0 + side::FIX_LINE_HEIGHT + side::ROW_GAP + side::SEPARATOR_SPACE_ABOVE;
     assert_eq!(lay.separator.y, below);
     assert_eq!(lay.separator.h, line::HAIRLINE);
     assert_eq!(lay.quiet_header.y, below + line::HAIRLINE + side::SEPARATOR_SPACE_BELOW);
@@ -448,7 +449,7 @@ fn what_is_cut_is_the_end_of_a_line_and_never_a_step() {
     }
     // More steps than lines: the row grows by a line a step.
     assert_eq!(AskFit::fit(&[2, 1, 1, 1]), AskFit { lines: vec![1, 1, 1, 1], hidden: 0 });
-    assert_eq!(layout::row_height(&AskFit::fit(&[1, 1, 1, 1]), 0), 120.0);
+    assert_eq!(layout::row_height(&AskFit::fit(&[1, 1, 1, 1]), 0, crate::snapshot::Fix::None), 120.0);
     assert_eq!(AskFit::fit(&[1; 7]), AskFit { lines: vec![1; 5], hidden: 2 });
 
     assert_eq!(layout::nominal_lines(""), 1);
@@ -1574,4 +1575,92 @@ fn a_line_that_is_the_cores_sentence_is_read_and_one_from_before_is_none() {
     let old = FIXTURE.replace("\"say\": null", "\"unused\": null");
     let old = snapshot::decode(&old).expect("still a snapshot");
     assert_eq!(old.groups.iter().filter(|g| g.what.say.is_some()).count(), 1);
+}
+
+// -- "Fix" on a card that reads "Failed" (task 1560) ----------------------------
+
+#[test]
+fn fix_is_read_from_the_core_on_every_row_and_a_core_that_says_none_offers_none() {
+    use crate::snapshot::Fix;
+    let s = snapshot::decode(FIXTURE).unwrap();
+    // The fixture's one failed card is docs-site's; no other offers it.
+    for g in &s.groups {
+        let want = if g.name == "docs-site" { Fix::Offered } else { Fix::None };
+        assert_eq!(g.fix, want, "{}", g.name);
+    }
+    assert!(s.ungrouped.iter().all(|one| one.fix == Fix::None));
+    let l = list();
+    assert_eq!(l.row("docs-site").unwrap().fix, Fix::Offered);
+
+    // A core from before the button: no key, no button.
+    let old = FIXTURE.replace(",\n      \"fix\": \"none\"", "").replace(",\n      \"fix\": \"offered\"", "");
+    assert!(!old.contains("\"fix\""));
+    let s = snapshot::decode(&old).unwrap();
+    assert!(s.groups.iter().all(|g| g.fix == Fix::None));
+    // Pressed: the core says so.
+    let sent = FIXTURE.replace("\"fix\": \"offered\"", "\"fix\": \"sent\"");
+    let s = snapshot::decode(&sent).unwrap();
+    assert_eq!(s.groups.iter().find(|g| g.name == "docs-site").unwrap().fix, Fix::Sent);
+    // A word this build does not know is an error, never a missing button.
+    let odd = FIXTURE.replace("\"fix\": \"offered\"", "\"fix\": \"maybe\"");
+    assert!(matches!(snapshot::decode(&odd), Err(DecodeError::UnknownValue(v)) if v.ends_with(".fix=maybe")));
+    let odd_lone = FIXTURE.replacen("\"fix\": \"none\"\n    }\n  ],\n  \"terminals\"", "\"fix\": \"maybe\"\n    }\n  ],\n  \"terminals\"", 1);
+    assert_ne!(odd_lone, FIXTURE, "the fixture's last ungrouped row ends that way");
+    assert!(crate::lone::decode(&odd_lone).is_err());
+}
+
+#[test]
+fn fix_is_sent_by_the_rows_name_or_its_terminal_and_only_when_offered() {
+    use crate::snapshot::Fix;
+    let l = list_with_lone();
+    let mut row = l.row("docs-site").unwrap().clone();
+    let act = act::fix_act(&row).unwrap();
+    assert_eq!(act, Act::Fix { group: "docs-site" });
+    assert_eq!(act::encode(&act).unwrap(), r#"{"act":"fix","group":"docs-site"}"#);
+    row.fix = Fix::Sent;
+    assert_eq!(act::fix_act(&row), None);
+    row.fix = Fix::None;
+    assert_eq!(act::fix_act(&row), None);
+
+    let mut lone = l.row(LONE).unwrap().clone();
+    lone.fix = Fix::Offered;
+    let act = act::fix_act(&lone).unwrap();
+    assert_eq!(act, Act::FixTerminal { terminal: "0x00000000000000c1" });
+    assert_eq!(act::encode(&act).unwrap(), r#"{"act":"fix","terminal":"0x00000000000000c1"}"#);
+}
+
+#[test]
+fn a_refused_fix_says_why_in_the_macos_words_and_until_the_card_stops_offering_it() {
+    use crate::snapshot::Fix;
+    for (name, want, says) in [
+        ("NothingToFix", Refusal::NothingToFix, "It is no longer failing. Nothing was sent."),
+        ("AlreadyNotified", Refusal::AlreadyNotified, "The supervisor has already been told."),
+        ("NoAgent", Refusal::NoAgent, "No agent is connected in that terminal, so nothing was typed. It is kept in the group."),
+    ] {
+        assert_eq!(Refusal::parse(name), want);
+        assert_eq!(want.message(), says);
+    }
+    // A mention's own refusals are read as they always were.
+    assert_eq!(Refusal::parse("DraftInLine"), Refusal::DraftInLine);
+    assert_eq!(Refusal::parse("UserPresent"), Refusal::UserPresent);
+
+    let mut l = list();
+    assert!(act::fix_refusal_stands("docs-site", l.rows()));
+    assert!(!act::fix_refusal_stands("billing", l.rows()));
+    assert!(!act::fix_refusal_stands("gone", l.rows()));
+    for row in l.waiting.iter_mut().filter(|r| r.id == "docs-site") {
+        row.fix = Fix::Sent;
+    }
+    assert!(!act::fix_refusal_stands("docs-site", l.rows()));
+}
+
+#[test]
+fn a_card_with_fix_is_one_line_taller_whether_offered_or_pressed() {
+    use crate::snapshot::Fix;
+    let fit = AskFit::fit(&[1]);
+    let plain = layout::row_height(&fit, 0, Fix::None);
+    assert_eq!(plain, 60.0);
+    assert_eq!(layout::row_height(&fit, 0, Fix::Offered), plain + side::FIX_LINE_HEIGHT);
+    assert_eq!(layout::row_height(&fit, 0, Fix::Sent), plain + side::FIX_LINE_HEIGHT);
+    assert_eq!(layout::row_height(&fit, 2, Fix::Offered), plain + side::ASK_LINE_HEIGHT + side::FIX_LINE_HEIGHT);
 }

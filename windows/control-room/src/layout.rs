@@ -6,6 +6,7 @@
 //! the last moment and nowhere else.
 
 use crate::list::List;
+use crate::snapshot::Fix;
 use crate::look::{line, side, space};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -135,10 +136,15 @@ pub fn ask_width() -> f64 {
 }
 
 /// How high a waiting row is: its first line, the lines of what it waits
-/// on, and one more when other terminals of the group wait too.
-pub fn row_height(fit: &AskFit, others: u64) -> f64 {
+/// on, one more when other terminals of the group wait too, and the line
+/// with "Fix" on a card that has it (task 1560). The macOS host's
+/// `ControlRoomListLayout.rowHeight`.
+pub fn row_height(fit: &AskFit, others: u64, fix: Fix) -> f64 {
     let lines = fit.drawn() + usize::from(others > 0);
-    2.0 * side::ROW_PADDING_Y + side::ROW_LINE1_HEIGHT + lines as f64 * side::ASK_LINE_HEIGHT
+    2.0 * side::ROW_PADDING_Y
+        + side::ROW_LINE1_HEIGHT
+        + lines as f64 * side::ASK_LINE_HEIGHT
+        + if fix == Fix::None { 0.0 } else { side::FIX_LINE_HEIGHT }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -203,7 +209,7 @@ impl ListLayout {
             let code = crate::list::is_code(&row.what);
             let wanted: Vec<usize> = crate::list::drawn(&row.what).iter().map(|line| needed(line, code)).collect();
             let fit = AskFit::fit(&wanted);
-            let row_h = row_height(&fit, row.others);
+            let row_h = row_height(&fit, row.others, row.fix);
             rows.push((row.id.clone(), Rect { x: pad, y, w: inner, h: row_h }));
             fits.push((row.id.clone(), fit));
             y += row_h + side::ROW_GAP;

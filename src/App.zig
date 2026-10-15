@@ -154,6 +154,11 @@ group_log: ?poltergeistpkg.GroupLog = null,
 /// (`dev-docs/poltergeist/control-room.md`, 5.4).
 control_room: poltergeistpkg.ControlRoom,
 
+/// The cards the person has pressed "Fix" on, and as of which moment
+/// (`ControlFix.Sent`). Not written down: a terminal's id does not outlive
+/// the run, and a failure is the run's.
+control_fix_sent: poltergeistpkg.ControlFix.Sent = .{},
+
 /// Something happened that the snapshot may not show yet. Read and cleared
 /// by `tick`, which is the one place it is worked out.
 control_dirty: bool = false,
@@ -640,6 +645,7 @@ pub fn deinit(self: *App) void {
     if (self.poltergeist_log_dir) |d| self.alloc.free(d);
     self.chat_surfaces.deinit(self.alloc);
     self.control_room.deinit();
+    self.control_fix_sent.deinit(self.alloc);
     self.control_notify.deinit(self.alloc);
     self.control_sight.deinit(self.alloc);
     if (self.control_home) |h| if (h.len > 0) self.alloc.free(h);
@@ -973,6 +979,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         .projects = projects,
         .cli_names = self.controlCliNames(alloc) catch return,
         .home = self.controlHome(),
+        .fix_sent = &self.control_fix_sent,
         .now_ms = now_ms,
         .wall_ms = @intCast(@max(0, wall_ms)),
     }, if (dirty) .event else .timer) catch |err| {
@@ -1105,6 +1112,11 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
             .projectRemove = controlActProjectRemove,
             .projectRename = controlActProjectRename,
             .retentionAgree = controlActRetentionAgree,
+            .fixCard = controlActFixCard,
+            .fixPost = controlActFixPost,
+            .fixSend = controlActFixSend,
+            .fixSent = controlActFixSent,
+            .clock = controlFixClock,
         },
         self.poltergeistElapsedMs(),
         @intCast(@max(0, self.poltergeistWallMs())),
@@ -1126,6 +1138,49 @@ fn controlActText(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, text: []const u8) 
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
     try surface.typePoltergeistText(text, true);
+}
+
+fn controlActFixCard(ctx: *anyopaque, key: poltergeistpkg.ControlFix.Key) ?poltergeistpkg.ControlFix.Card {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.control_room.fixCard(key);
+}
+
+/// "Fix" on a group's card: said in the group by the person and typed into
+/// `to` -- `chatPost`, the road a `group_post` mention takes, with its
+/// guards and its record.
+fn controlActFixPost(
+    ctx: *anyopaque,
+    group: []const u8,
+    text: []const u8,
+    to: []poltergeistpkg.ControlFix.Target,
+) anyerror!void {
+    var deliveries: [poltergeistpkg.Chat.max_mentions]poltergeistpkg.rpc.Delivery = undefined;
+    if (to.len > deliveries.len) return error.TooManyMentions;
+    for (to, 0..) |t, i| deliveries[i] = .{ .to = t.to };
+    _ = try chatPost(ctx, group, poltergeistpkg.Chat.user_id, text, .{
+        .from_title = "you",
+        .to = deliveries[0..to.len],
+    });
+    for (to, 0..) |*t, i| t.err = deliveries[i].err;
+    log.info("control room: fix posted in group={s} typed={d}", .{ group, to.len });
+}
+
+/// "Fix" on a lone terminal's card: typed into it, by `terminal_send`'s
+/// road. There is no group to keep it in.
+fn controlActFixSend(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, text: []const u8) anyerror!void {
+    try poltergeistSend(ctx, id, text, true);
+}
+
+fn controlActFixSent(ctx: *anyopaque, stamp: u64) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    try self.control_fix_sent.mark(self.alloc, stamp);
+}
+
+/// `MM-DD HH:MM`, in the person's timezone: when a failure happened, in
+/// the paragraph "Fix" types.
+fn controlFixClock(buf: *[19]u8, at_ms: i64) []const u8 {
+    const full = poltergeistpkg.daylog.stamp(buf, at_ms);
+    return if (full.len >= 16) full[5..16] else full;
 }
 
 fn controlActAgentPresent(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) bool {

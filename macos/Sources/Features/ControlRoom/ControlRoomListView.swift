@@ -43,6 +43,10 @@ struct ControlRoomListView: View {
     /// Return while the list has the keyboard: the selected group's
     /// supervisor (task 1551).
     var onEnter: () -> Void = {}
+    /// "Fix" on a card that reads "Failed" (task 1560), and why the last
+    /// one was refused, on which row.
+    var onFix: (Row) -> Void = { _ in }
+    var fixRefusal: (row: String, message: String)?
     /// Whether the chip is the system's glass while it slides, which bends
     /// what is under its edge. The table's to say; a still picture turns
     /// it off, because the system's glass cannot be drawn off screen.
@@ -70,6 +74,8 @@ struct ControlRoomListView: View {
          onRetentionAgree: @escaping () -> Void = {},
          onInSight: @escaping ([String]) -> Void = { _ in },
          onEnter: @escaping () -> Void = {},
+         onFix: @escaping (Row) -> Void = { _ in },
+         fixRefusal: (row: String, message: String)? = nil,
          refraction: Bool = Look.Selection.refractionShown, still: Bool = false, midSlide: CGSize? = nil) {
         self.list = list
         self._selection = selection
@@ -77,6 +83,8 @@ struct ControlRoomListView: View {
         self.onRetentionAgree = onRetentionAgree
         self.onInSight = onInSight
         self.onEnter = onEnter
+        self.onFix = onFix
+        self.fixRefusal = fixRefusal
         self.refraction = refraction
         self.still = still
         self.away = midSlide ?? .zero
@@ -493,6 +501,20 @@ struct ControlRoomListView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(ControlRoomList.spoken(row))
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        // Over the row and not in it: the row is one element to the
+        // accessibility tree, and the button is a second, beside it. In the
+        // room `rowHeight` left at the bottom, under the row's text.
+        .overlay(alignment: .bottomLeading) {
+            if row.fix != .none {
+                ControlRoomFixLine(
+                    fix: row.fix,
+                    refusal: fixRefusal.flatMap { $0.row == row.id ? $0.message : nil },
+                    onFix: { onFix(row) })
+                    .padding(.leading, CGFloat(Look.Side.rowPaddingX) + CGFloat(Look.Side.glyph) + gap)
+                    .padding(.trailing, CGFloat(Look.Side.rowPaddingX))
+                    .padding(.bottom, CGFloat(Look.Side.rowPaddingY))
+            }
+        }
     }
 
     /// The face's weight for one of the table's.

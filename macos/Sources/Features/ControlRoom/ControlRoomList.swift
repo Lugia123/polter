@@ -63,10 +63,19 @@ struct ControlRoomList: Equatable {
         /// Set on a row that is a terminal on its own, in no group
         /// (`ungrouped` in the snapshot): which terminal, and its title.
         var alone: Alone?
+        /// The "Fix" button on a card that reads "Failed" (task 1560): the
+        /// core's word, from the snapshot's `fix`.
+        var fix: Fix = .none
 
         /// What the row is called: the group's name, or the terminal's
         /// title.
         var name: String { alone?.title ?? id }
+    }
+
+    /// The "Fix" button (`ControlFix.zig`): not there, there, or pressed
+    /// and greyed until the card changes. Which is the core's to say.
+    enum Fix: String, Equatable, Decodable {
+        case none, offered, sent
     }
 
     /// A terminal that is in no group and has a row of its own: a
@@ -685,6 +694,8 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var reason: Reason
         var more: Int
         var same_as: String?
+        /// Absent in snapshots from before task 1560: no button.
+        var fix: ControlRoomList.Fix?
     }
 
     /// A terminal in no group, with a row of its own (`ControlRoom.zig`,
@@ -699,6 +710,8 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var text: String
         var waiter: Waiter
         var what: What
+        /// Absent in snapshots from before task 1560: no button.
+        var fix: ControlRoomList.Fix?
     }
 
     var rev: UInt64
@@ -909,7 +922,8 @@ extension ControlRoomList {
                     }
                 },
                 start: nil,
-                alone: Alone(terminal: one.id, title: one.title, pane: pane(of: one.id))))
+                alone: Alone(terminal: one.id, title: one.title, pane: pane(of: one.id)),
+                fix: one.fix ?? .none))
         }
         let groups = snapshot.groups.map { group in
             (group.needs_me, Row(
@@ -930,7 +944,8 @@ extension ControlRoomList {
                 start: group.supervisor.map {
                     SupervisorStart(state: $0.state, canStart: $0.can_start, failed: $0.failed,
                                     role: $0.role, cwd: $0.cwd, last: $0.startLast)
-                }))
+                },
+                fix: group.fix ?? .none))
         }
         let rows = groups + lone
         self.init(
@@ -1082,11 +1097,13 @@ struct ControlRoomListLayout: Equatable {
     }
 
     /// How high a waiting row is: its first line, the lines of what it
-    /// waits on, and one more when other terminals of the group wait too.
-    static func rowHeight(fit: ControlRoomAskFit, others: Int) -> CGFloat {
+    /// waits on, one more when other terminals of the group wait too, and
+    /// the line with "Fix" on a card that has it (task 1560).
+    static func rowHeight(fit: ControlRoomAskFit, others: Int, fix: ControlRoomList.Fix = .none) -> CGFloat {
         let lines = fit.drawn + (others > 0 ? 1 : 0)
         return 2 * CGFloat(Look.Side.rowPaddingY) + CGFloat(Look.Side.rowLine1Height)
             + CGFloat(lines) * CGFloat(Look.Side.askLineHeight)
+            + (fix == .none ? 0 : CGFloat(Look.Side.fixLineHeight))
     }
 
     /// `needed` says how many lines one step would take with all the room
@@ -1114,7 +1131,7 @@ struct ControlRoomListLayout: Equatable {
         var fitted: [String: ControlRoomAskFit] = [:]
         for row in list.waiting {
             let fit = ControlRoomAskFit.fit(needed: row.what.drawn.map { needed($0, row.what.isCode) })
-            let rowH = Self.rowHeight(fit: fit, others: row.others)
+            let rowH = Self.rowHeight(fit: fit, others: row.others, fix: row.fix)
             fitted[row.id] = fit
             frames[row.id] = CGRect(x: pad, y: y, width: inner, height: rowH)
             y += rowH + gap
