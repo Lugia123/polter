@@ -2150,7 +2150,16 @@ fn about_tip(value: HWND, whole: Option<&str>) {
         lpszText: windows::core::PWSTR(text.as_mut_ptr()),
         ..Default::default()
     };
+    // Lines, not one line: wrapped at `tip_max_width` of the work area of
+    // the screen the value is on, so the whole value stays on it (#1579 V9).
+    let work_w = unsafe {
+        let mon = MonitorFromWindow(value, MONITOR_DEFAULTTONEAREST);
+        let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if GetMonitorInfoW(mon, &mut mi).as_bool() { mi.rcWork.right - mi.rcWork.left } else { 1024 }
+    };
+    let scale = unsafe { GetDpiForWindow(value) }.max(96) as f64 / 96.0;
     unsafe {
+        SendMessageW(tip, TTM_SETMAXTIPWIDTH, None, Some(LPARAM(rules::tip_max_width(work_w, scale) as isize)));
         // Taken away and put back, so the text is the one just worked out.
         SendMessageW(tip, TTM_DELTOOLW, None, Some(LPARAM(&mut ti as *mut _ as isize)));
         if whole.is_some() {

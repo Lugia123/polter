@@ -42,6 +42,7 @@ pub mod act;
 pub mod alert;
 pub mod chrome;
 pub mod glyph;
+pub mod hud;
 pub mod json;
 pub mod layout;
 pub mod lend;

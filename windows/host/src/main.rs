@@ -651,8 +651,9 @@ pub const WM_ASK_CLOSE_TAB: u32 = windows::Win32::UI::WindowsAndMessaging::WM_AP
 /// the chord did nothing. `+ 23` is used by nothing else in this host.
 pub const WM_ASK_QUIT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 23;
 
-/// The config changed: what is drawn over this window's panes from it -- the
-/// veils, the handles' dots, the dividers -- is drawn again now (#1552).
+/// The config changed: the window is laid out again, and what is drawn over
+/// its panes from it -- the frames, the veils, the handles' dots, the
+/// dividers -- is drawn again now (#1552, #1579).
 ///
 /// Posted rather than done in `reload::on_config_change`, because that runs
 /// inside the core's `config_change`, and the layers it would redraw live in
@@ -4696,7 +4697,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             },
 
             m if m == WM_CONFIG_REDRAW => {
-                crate::panedrag::sync(hwnd);
+                // A layout, not only the layers over the panes: whether the
+                // panes wear frames (`poltergeist-pane-frames`) is read there
+                // and nowhere else, and a reload that turned them off left
+                // the titles up until the next tab switch (#1579). It ends
+                // in `panedrag::sync` and `divider::sync` itself.
+                tabs::layout(hwnd);
                 crate::divider::repaint(hwnd);
                 LRESULT(0)
             }
@@ -4728,6 +4734,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // A lit caption button is the pointer's business; coming to
                 // or leaving the front, it is asked again (#1552).
                 shell::forget_hover(hwnd);
+                // Back at a window: a fallback balloon still in the corner
+                // is taken down (#1579 T5).
+                if (wp.0 & 0xFFFF) as u32 != WA_INACTIVE {
+                    crate::notify::on_window_activated();
+                }
                 // Which window is in front decides whether the control room
                 // is in the person's sight (task 1505).
                 crate::control_room::presence_may_have_changed();

@@ -777,9 +777,33 @@ pub fn elide_end(text: &str, fits: impl Fn(&str) -> bool) -> String {
     with(lo)
 }
 
+/// How wide the tooltip that shows an About value whole may grow before it
+/// wraps, in pixels, on a screen whose work area is `work_w` wide at
+/// `scale`: a third of the work area, but never under 240 points or wider
+/// than the work area less 16 points on each side.
+///
+/// **A width at all is the fix** (#1579 V9): with none the tooltip is one
+/// line, and the Build line ran past the right of the screen with its
+/// `mtime` cut off -- the only place the whole value is shown.
+pub fn tip_max_width(work_w: i32, scale: f64) -> i32 {
+    let px = |pt: f64| (pt * scale).round() as i32;
+    let most = (work_w - px(32.0)).max(1);
+    (work_w / 3).max(px(240.0)).min(most)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_about_tooltip_wraps_inside_the_screen() {
+        // The test machine: 1440 wide at 100%.
+        assert_eq!(tip_max_width(1440, 1.0), 480);
+        // Narrow screens: never under 240pt, never past the edges.
+        assert_eq!(tip_max_width(600, 1.0), 240);
+        assert_eq!(tip_max_width(250, 1.0), 218);
+        assert_eq!(tip_max_width(2880, 2.0), 960);
+    }
 
     #[test]
     fn an_about_value_that_does_not_fit_ends_in_the_mark() {
