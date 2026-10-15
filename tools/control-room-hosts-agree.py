@@ -686,8 +686,13 @@ for (n, c) in stripCases.enumerated() {
         let b = table.beyond(urgent: urgent, offset: table.revealing(c.1, from: 0))
         return "\(b.left.map(String.init) ?? "-")|\(b.right.map(String.init) ?? "-")"
     }
+    let closes = [CGFloat(0), 250, 10000].map { o -> String in
+        let o = min(o, table.maxOffset)
+        return table.tabs.filter { table.closeSeen($0.member, offset: o) }.map { String($0.member) }.joined(separator: ",")
+    }
     print("strip \(n) at68=[\(widths.joined(separator: " "))] scrolls68=\(sl.scrolls) "
-        + "reveals=\(revealed.joined(separator: "/")) carries=\(carried.joined(separator: "/"))")
+        + "reveals=\(revealed.joined(separator: "/")) carries=\(carried.joined(separator: "/")) "
+        + "closes=\(closes.joined(separator: "/"))")
 }
 for name in ["", "api", "frontend", "任务", "billing-worker"] {
     print("strip nominal \(quote(name)) plain=\(f(PaneStackStripLayout.nominalWidth(name: name, glyph: false))) "

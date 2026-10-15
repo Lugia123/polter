@@ -3231,8 +3231,13 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 // the caption, so it overwrote whatever `set_window_title`
                 // had been asked to put there -- at the next prompt, which
                 // is far enough from the rename to look unrelated.
+                //
+                // **Not written here at all now** (task 1600 ③): the caption
+                // is the terminal in front's, and this title may be from one
+                // behind it. The queued `SetTabTitle` records it on its pane,
+                // and `tabs::sync_caption` puts it up if that pane is in front.
                 match origin {
-                    Some(frame) => wintitle::set_program(frame, &t),
+                    Some(_) => {}
                     // process-wide: an app-targeted title names no window, so
                     // there is no caption this could belong to
                     None => plogf!(

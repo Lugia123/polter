@@ -110,6 +110,12 @@ fn store_then_paint(frame: HWND, edit: impl FnOnce(&mut Entry)) {
 /// the override show whatever was there before the person renamed the window,
 /// which is a title the shell has since moved on from.
 pub fn set_program(frame: HWND, title: &str) {
+    // Said again on every layout (`tabs::sync_caption`): the same title is
+    // not painted again.
+    let same = TITLES.lock().is_ok_and(|g| g.iter().any(|e| e.frame == frame.0 as isize && e.program == title));
+    if same {
+        return;
+    }
     let t = title.to_string();
     store_then_paint(frame, |e| e.program = t);
 }

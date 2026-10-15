@@ -35,9 +35,9 @@
 
 use std::path::PathBuf;
 
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    GetMonitorInfoW, MonitorFromPoint, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -267,7 +267,7 @@ pub fn restore(frame: HWND, origin: bool, size: bool) -> bool {
     // there. macOS clamps for the same reason (`min(saved, visibleFrame)` plus
     // pushing an out-of-bounds origin back in), so this is matching behaviour
     // rather than inventing it.
-    clamp_onto_a_monitor(frame);
+    clamp_onto_a_monitor(frame, None);
 
     // Nothing has been written yet this run; remember what is on screen so the
     // first flush does not rewrite an identical file.
@@ -287,13 +287,21 @@ pub fn restore(frame: HWND, origin: bool, size: bool) -> bool {
 /// of a taskbar elsewhere. Letting Windows apply the placement first and then
 /// reading `GetWindowRect` puts both sides in screen coordinates, and the
 /// conversion is Windows' own.
-fn clamp_onto_a_monitor(frame: HWND) {
+///
+/// `on`: the monitor under this point rather than the one nearest the
+/// window -- where a tab or a pane was let go to make the window (task 1600
+/// ④): it opened at the pointer, and from near a screen's right or bottom
+/// edge mostly off it (#1593, 1330,500-2330,1200 on a 1440x900 screen).
+pub fn clamp_onto_a_monitor(frame: HWND, on: Option<POINT>) {
     unsafe {
         let mut r = RECT::default();
         if GetWindowRect(frame, &mut r).is_err() {
             return;
         }
-        let mon = MonitorFromRect(&r, MONITOR_DEFAULTTONEAREST);
+        let mon = match on {
+            Some(pt) => MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST),
+            None => MonitorFromRect(&r, MONITOR_DEFAULTTONEAREST),
+        };
         let mut mi = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()
@@ -302,12 +310,7 @@ fn clamp_onto_a_monitor(frame: HWND) {
             return;
         }
         let work = mi.rcWork;
-        let (mut w, mut h) = (r.right - r.left, r.bottom - r.top);
-        // Never larger than the screen it is going onto.
-        w = w.min(work.right - work.left);
-        h = h.min(work.bottom - work.top);
-        let x = r.left.clamp(work.left, (work.right - w).max(work.left));
-        let y = r.top.clamp(work.top, (work.bottom - h).max(work.top));
+        let (x, y, w, h) = fit(r, work);
 
         if x == r.left && y == r.top && w == r.right - r.left && h == r.bottom - r.top {
             return;
@@ -326,9 +329,39 @@ fn clamp_onto_a_monitor(frame: HWND) {
     }
 }
 
+/// Where a window at `r` goes to be inside `work`: never larger than it,
+/// moved in from whichever edge it is past. `(x, y, w, h)`.
+fn fit(r: RECT, work: RECT) -> (i32, i32, i32, i32) {
+    let w = (r.right - r.left).min(work.right - work.left);
+    let h = (r.bottom - r.top).min(work.bottom - work.top);
+    let x = r.left.clamp(work.left, (work.right - w).max(work.left));
+    let y = r.top.clamp(work.top, (work.bottom - h).max(work.top));
+    (x, y, w, h)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse, Geometry, FILE, LEGACY_FILE};
+    use super::{fit, parse, Geometry, FILE, LEGACY_FILE};
+    use windows::Win32::Foundation::RECT;
+
+    /// Task 1600 ④, with #1593's numbers: let go at 1330,500 on a 1440x900
+    /// screen, a 1000x700 window went to 1330,500-2330,1200.
+    #[test]
+    fn a_window_made_where_it_was_let_go_is_moved_inside_the_work_area() {
+        let work = RECT { left: 0, top: 0, right: 1440, bottom: 860 };
+        let at = |x, y, w, h| RECT { left: x, top: y, right: x + w, bottom: y + h };
+        assert_eq!(fit(at(1330, 500, 1000, 700), work), (440, 160, 1000, 700));
+        assert_eq!(fit(at(1320, 230, 1000, 700), work), (440, 160, 1000, 700));
+        // Inside already: where it is.
+        assert_eq!(fit(at(100, 50, 1000, 700), work), (100, 50, 1000, 700));
+        // Past the left and the top.
+        assert_eq!(fit(at(-300, -20, 1000, 700), work), (0, 0, 1000, 700));
+        // Larger than the screen: as large as it, at its corner.
+        assert_eq!(fit(at(900, 400, 2000, 1000), work), (0, 0, 1440, 860));
+        // A second screen to the right, its work area under a top taskbar.
+        let right = RECT { left: 1440, top: 40, right: 3360, bottom: 1080 };
+        assert_eq!(fit(at(3000, 10, 1000, 700), right), (2360, 40, 1000, 700));
+    }
 
     /// Not the core's file (#1513). The gate
     /// `windows/tools/host-files-are-not-the-cores.py` holds the whole set;

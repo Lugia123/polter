@@ -217,7 +217,8 @@ struct PaneStackStripView: View {
                                 y: top + (tabH - CGFloat(Look.StackTab.separatorHeight)) / 2)
                         .allowsHitTesting(false)
                 }
-                self.tab(stack.members[tab.member], index: tab.member, current: tab.current)
+                self.tab(stack.members[tab.member], index: tab.member, current: tab.current,
+                         closeSeen: layout.closeSeen(tab.member, offset: offset))
                     .frame(width: tab.width, height: tabH)
                     .offset(x: x, y: top)
             }
@@ -286,7 +287,7 @@ struct PaneStackStripView: View {
     /// One tab: its name and what it is at the left, its glyph and its
     /// close button at the right. What it is picked up and right-clicked
     /// by lies behind it (`PaneStackActions.grip`).
-    private func tab(_ member: PaneStack.Member, index: Int, current: Bool) -> some View {
+    private func tab(_ member: PaneStack.Member, index: Int, current: Bool, closeSeen: Bool) -> some View {
         let closeLabel = String(localized: "Close Terminal", comment: "分屏标题和层叠标签右端的 x；层叠标签右键菜单：关闭这一个终端")
         return ZStack {
             if let grip = actions.grip {
@@ -322,10 +323,11 @@ struct PaneStackStripView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .allowsHitTesting(false)
             // The close button: under the pointer, and always on the tab in
-            // front (`PolterPaneTabRules.closeShows`).
+            // front (`PolterPaneTabRules.closeShows`) -- while it is whole
+            // in the window, never under the plus (`closeSeen`, task 1600).
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
-                if PolterPaneTabRules.closeShows(hovering: hovered == index, current: current) {
+                if closeSeen, PolterPaneTabRules.closeShows(hovering: hovered == index, current: current) {
                     Button { actions.close(index) } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: CGFloat(Look.Font.body) - 2, weight: .semibold))

@@ -136,6 +136,21 @@ pub fn settle(layout: &Layout, member: usize, offset: f64, changed: bool, wheele
     }
 }
 
+/// Whether the close button of `member`'s tab is whole inside the window
+/// the tabs are seen through, scrolled to `offset`: it sits at the tab's
+/// right end inside its padding. Only then is it drawn or pressed.
+///
+/// **Never over the plus** (task 1600, #1601 W3 on a real machine): the
+/// person scrolled the tab in front under the plus, and its close button
+/// was drawn on top of the plus.
+pub fn close_seen(layout: &Layout, member: usize, offset: f64) -> bool {
+    let Some(tab) = layout.tabs.iter().find(|t| t.member == member) else {
+        return false;
+    };
+    let x = tab.x - t::INSET - offset + tab.width - t::PADDING_X - t::CLOSE_BUTTON;
+    x >= -0.5 && x + t::CLOSE_BUTTON <= layout.viewport + 0.5
+}
+
 /// How wide a tab's name wants it with no font to measure by: so many cells
 /// of `nominal_cell_width`, a wide character two, between the tab's
 /// paddings, room for its glyph when it has one, and the close button's

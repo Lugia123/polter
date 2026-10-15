@@ -580,8 +580,9 @@ enum Drag {
     /// `home` is where the tab was when it was picked up, so Esc and a lost
     /// capture can put it back (task 1549); `over` is another window of
     /// ours the pointer is over, and the gap in its strip the tab would go
-    /// into.
-    Dragging { id: TabId, home: usize, over: Option<(isize, usize)> },
+    /// into; `aside`, whether the window shows another tab while this one
+    /// is out of the strip (`stand_aside`, task 1600).
+    Dragging { id: TabId, home: usize, over: Option<(isize, usize)>, aside: bool },
 }
 
 /// One strip's interaction state. **All four fields are per-window**, and the
@@ -833,7 +834,7 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
         }
         match u.drag {
             Drag::Pressed { id, at } if polter_split_tree::drag::is_drag((at.x as f64, at.y as f64), (now.x as f64, now.y as f64), slop) => {
-                u.drag = Drag::Dragging { id, home: home(id), over: None };
+                u.drag = Drag::Dragging { id, home: home(id), over: None, aside: false };
                 (true, Some(id))
             }
             Drag::Dragging { id, .. } => (false, Some(id)),
@@ -843,6 +844,10 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
     if started {
         log_state(frame, &format!("drag start {:?}", dragging_id));
     }
+    let aside = match dragging_id {
+        Some(id) => stand_aside(frame, id, x, y, slop),
+        None => false,
+    };
 
     // **Over a pane** -- below a strip, in this window or another -- the
     // tab is shown going into it, beside that pane (task 1583).
@@ -887,6 +892,12 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
         }
     }
 
+    // Out of the strip, standing aside: it is not in the strip to reorder.
+    if aside {
+        repaint(frame);
+        return;
+    }
+
     if let Some(id) = dragging_id {
         // Where the pointer is now, in tab positions. Resolved against the
         // *current* order every time, so a reorder mid-drag stays consistent.
@@ -907,6 +918,44 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
         }
     }
     repaint(frame);
+}
+
+/// **Out of the strip, the tab being dragged stands aside** (task 1600, D6;
+/// macOS, where AppKit lifts it out of its group): the window shows the tab
+/// it would with this one gone, so a tab can be let go into a pane of its
+/// own window -- in front, it was alone with its own panes, which it never
+/// goes into. Back over the strip, it is in front again
+/// (`polter_split_tree::drag::standing_aside`). Answers whether it stands
+/// aside now.
+fn stand_aside(frame: HWND, id: TabId, x: i32, y: i32, slop: f64) -> bool {
+    use polter_split_tree::drag::{out_of_strip, standing_aside, Aside};
+    let mut rc = RECT::default();
+    unsafe {
+        let _ = GetClientRect(frame, &mut rc);
+    }
+    let out = out_of_strip((x as f64, y as f64), (rc.right - rc.left) as f64, strip_h(tabs::scale_of(frame)) as f64, slop);
+    let was = with_ui(frame, |u| matches!(u.drag, Drag::Dragging { aside: true, .. }));
+    let (list, active) = tabs::strip_snapshot(frame);
+    let Some(at) = list.iter().position(|(t, _)| *t == id) else { return was };
+    let now = match standing_aside(out, was, at, active, list.len()) {
+        Aside::Keep => return was,
+        Aside::Show(i) => {
+            tabs::activate_tab(frame, list[i].0);
+            wlogf!(frame, "[strip] {:?} dragged out of the strip; showing {:?} meanwhile", id, list[i].0);
+            true
+        }
+        Aside::Back => {
+            tabs::activate_tab(frame, id);
+            wlogf!(frame, "[strip] {:?} dragged back over the strip; in front again", id);
+            false
+        }
+    };
+    with_ui(frame, |u| {
+        if let Drag::Dragging { aside, .. } = &mut u.drag {
+            *aside = now;
+        }
+    });
+    now
 }
 
 fn cursor() -> POINT {
@@ -989,12 +1038,9 @@ fn set_marker(frame: HWND, index: Option<usize>) {
     }
 }
 
-/// The pane a tab dragged out of `frame` would go into at `pt`: its window,
-/// the pane, the side, and the half of it to light, on the screen. None
-/// over a strip, outside our windows, and where it is refused
-/// (`tabs::tab_into_pane_refusal`) -- said in the log once, when let go.
-fn pane_into_at(frame: HWND, id: TabId, pt: POINT) -> Option<(HWND, PaneId, polter_split_tree::NewSplit, RECT)> {
-    use polter_split_tree::drag::Zone;
+/// The pane shown at `pt` below a strip of one of our windows: the window,
+/// the pane, where it is in the window, and the point in the window.
+fn pane_at(pt: POINT) -> Option<(HWND, PaneId, polter_split_tree::Rect, (f64, f64))> {
     let dst = frame_at(pt)?;
     let mut at = pt;
     unsafe {
@@ -1008,6 +1054,16 @@ fn pane_into_at(frame: HWND, id: TabId, pt: POINT) -> Option<(HWND, PaneId, polt
         let r = polter_split_tree::Rect::new(px.x as f64, px.y as f64, px.w as f64, px.h as f64);
         polter_split_tree::drag::contains(&r, p).then_some((pane, r))
     })?;
+    Some((dst, pane, r, p))
+}
+
+/// The pane a tab dragged out of `frame` would go into at `pt`: its window,
+/// the pane, the side, and the half of it to light, on the screen. None
+/// over a strip, outside our windows, and where it is refused
+/// (`tabs::tab_into_pane_refusal`) -- said in the log once, when let go.
+fn pane_into_at(frame: HWND, id: TabId, pt: POINT) -> Option<(HWND, PaneId, polter_split_tree::NewSplit, RECT)> {
+    use polter_split_tree::drag::Zone;
+    let (dst, pane, r, p) = pane_at(pt)?;
     tabs::tab_into_pane_refusal(frame, id, dst, pane).ok()?;
     let zone = Zone::at(r, p);
     let h = zone.highlight(r);
@@ -1019,18 +1075,33 @@ fn pane_into_at(frame: HWND, id: TabId, pt: POINT) -> Option<(HWND, PaneId, polt
 }
 
 /// The tab dragged out of `frame` was let go: into the pane under it
-/// (task 1583), or where `polter_split_tree::drag::tab_ending` says.
-fn let_go(frame: HWND, id: TabId, over: Option<(isize, usize)>) {
+/// (task 1583), or where `polter_split_tree::drag::tab_ending` says. Stood
+/// aside (`aside`) and staying in its window, it is put in front again.
+fn let_go(frame: HWND, id: TabId, over: Option<(isize, usize)>, aside: bool) {
     use polter_split_tree::drag::{tab_ending, TabEnding, TabOver};
     crate::panedrag::hide_zone();
     if let Some((f, _)) = over {
         set_marker(HWND(f as *mut std::ffi::c_void), None);
     }
     let pt = cursor();
+    let back = |why: &str| {
+        if aside {
+            tabs::activate_tab(frame, id);
+            wlogf!(frame, "[strip] {:?} let go ({}); in front again", id, why);
+        }
+    };
     if let Some((dst, pane, dir, _)) = pane_into_at(frame, id, pt) {
-        tabs::tab_into_pane(frame, id, dst, pane, dir);
+        if !tabs::tab_into_pane(frame, id, dst, pane, dir) {
+            back("not put into the pane");
+        }
         repaint(frame);
         return;
+    }
+    // Over a pane that does not take it: why, once (task 1600).
+    if let Some((dst, pane, _, _)) = pane_at(pt) {
+        if let Err(why) = tabs::tab_into_pane_refusal(frame, id, dst, pane) {
+            wlogf!(frame, "[drag] tab {:?} not put into pane {}: {}", id, pane, why);
+        }
     }
     let at = match over {
         Some((f, index)) => TabOver::Other { window: f, index },
@@ -1043,7 +1114,7 @@ fn let_go(frame: HWND, id: TabId, over: Option<(isize, usize)>) {
         },
     };
     match tab_ending(at, tabs::count(frame), false) {
-        TabEnding::Stay | TabEnding::Restore => {}
+        TabEnding::Stay | TabEnding::Restore => back("it stays in its window"),
         TabEnding::Join { window, index } => {
             tabs::move_tab_to_window(frame, id, HWND(window as *mut std::ffi::c_void), index);
         }
@@ -1076,7 +1147,7 @@ pub fn cancel_drag(why: &str) -> bool {
         c.borrow_mut().iter_mut().find_map(|(k, u)| match std::mem::replace(&mut u.drag, Drag::Idle) {
             Drag::Idle => None,
             Drag::Pressed { .. } => Some((*k, None)),
-            Drag::Dragging { id, home, over } => Some((*k, Some((id, home, over)))),
+            Drag::Dragging { id, home, over, aside } => Some((*k, Some((id, home, over, aside)))),
         })
     });
     let Some((k, dragged)) = found else { return false };
@@ -1085,11 +1156,14 @@ pub fn cancel_drag(why: &str) -> bool {
     unsafe {
         let _ = ReleaseCapture();
     }
-    if let Some((id, home, over)) = dragged {
+    if let Some((id, home, over, aside)) = dragged {
         if let Some((f, _)) = over {
             set_marker(HWND(f as *mut std::ffi::c_void), None);
         }
         tabs::move_tab_to(frame, id, home);
+        if aside {
+            tabs::activate_tab(frame, id);
+        }
         wlogf!(frame, "[strip] drag of {:?} cancelled ({}); put back at {}", id, why, home);
     }
     repaint(frame);
@@ -1246,9 +1320,9 @@ pub fn on_button_up(frame: HWND, x: i32, y: i32) {
     unsafe {
         let _ = ReleaseCapture();
     }
-    if let Drag::Dragging { id, over, .. } = was {
+    if let Drag::Dragging { id, over, aside, .. } = was {
         log_state(frame, "drag end");
-        let_go(frame, id, over);
+        let_go(frame, id, over, aside);
         return;
     }
     if let Drag::Pressed { id, .. } = was {

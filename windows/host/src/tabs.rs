@@ -2529,9 +2529,10 @@ pub fn layout(frame: HWND) {
         let _ = InvalidateRect(Some(frame), None, false);
     }
 
-    // The window's caption follows the control room in and out of the
-    // front. From here for the dividers' reason just below: every way a tab
-    // comes to the front ends in a layout.
+    // The window's caption follows the tab in front, and the control room
+    // in and out of the front. From here for the dividers' reason just
+    // below: every way a tab comes to the front ends in a layout.
+    sync_caption(frame);
     crate::wintitle::set_control_room(
         frame,
         match room {
@@ -5165,6 +5166,41 @@ pub fn rename_tab(frame: HWND, id: TabId, title: String, by: NamedBy) {
     }
     if renamed {
         crate::uia::tab_renamed(frame, id, &title);
+        sync_caption(frame);
+    }
+}
+
+/// What the window's caption says of the tab in front of `tabs`
+/// (`active`): the name somebody gave it, or else the title of the terminal
+/// it has the keyboard on -- in a stack, the member shown. None for the
+/// control room's tab (`wintitle::set_control_room` names that) and for a
+/// tab nothing has named yet.
+///
+/// **It follows the tab and the terminal in front** (task 1600 ③; macOS,
+/// where the window is the tab and its title is the focused terminal's).
+/// It was whichever terminal of the window announced a title last: brought
+/// to the front of a stack, M2 left the caption saying M3, and a closed
+/// tab's "C:\Users" stayed up after it had gone (#1593).
+fn front_caption(tabs: &[Tab], active: usize) -> Option<String> {
+    let tab = tabs.get(active)?;
+    if let Some(pinned) = &tab.title_override {
+        return Some(pinned.text.clone());
+    }
+    let term = tab.terminal()?;
+    term.panes
+        .iter()
+        .find(|p| p.id == term.focused)
+        .and_then(|p| p.title.clone())
+        .or_else(|| (!tab.title.is_empty()).then(|| tab.title.clone()))
+}
+
+/// Put the tab in front's title on `frame`'s caption (`front_caption`). The
+/// guard is gone before the caption is written: `SetWindowTextW` sends
+/// `WM_SETTEXT` to this thread's window procedure.
+pub fn sync_caption(frame: HWND) {
+    let caption = window(frame).and_then(|w| front_caption(&w.tabs, w.active));
+    if let Some(t) = caption {
+        crate::wintitle::set_program(frame, &t);
     }
 }
 
@@ -5383,6 +5419,42 @@ mod pane_metadata_tests {
     fn a_surface_nobody_owns_is_not_found() {
         let mut tabs = vec![test_tab(vec![test_pane(1, 10)])];
         assert!(!apply_pane_cwd(&mut tabs, 999, "/nowhere"));
+    }
+
+    /// Task 1600 ③: the caption is the tab in front's -- its name if it
+    /// has one, else the title of the terminal it has the keyboard on --
+    /// not whichever terminal announced a title last.
+    #[test]
+    fn the_caption_names_the_terminal_in_front_of_the_tab_in_front() {
+        let mut tabs = vec![test_tab(vec![test_pane(1, 10), test_pane(2, 20), test_pane(3, 30)]), test_tab(vec![test_pane(4, 40)])];
+        let focus = |tabs: &mut Vec<Tab>, t: usize, p: PaneId| {
+            if let Some(term) = tabs[t].terminal_mut() {
+                term.focused = p;
+            }
+        };
+        focus(&mut tabs, 0, 2);
+        focus(&mut tabs, 1, 4);
+        apply_pane_title(&mut tabs, 10, "M1");
+        apply_pane_title(&mut tabs, 20, "M2");
+        apply_pane_title(&mut tabs, 30, "M3");
+        apply_pane_title(&mut tabs, 40, "C:\\Users");
+        // M3 spoke last; M2 has the keyboard.
+        assert_eq!(front_caption(&tabs, 0).as_deref(), Some("M2"));
+        focus(&mut tabs, 0, 3);
+        assert_eq!(front_caption(&tabs, 0).as_deref(), Some("M3"));
+        // The other tab in front: its terminal, whoever spoke last.
+        apply_pane_title(&mut tabs, 10, "M1 again");
+        assert_eq!(front_caption(&tabs, 1).as_deref(), Some("C:\\Users"));
+        // Gone, the tab after it names the window.
+        tabs.remove(1);
+        assert_eq!(front_caption(&tabs, 0).as_deref(), Some("M3"));
+        assert_eq!(front_caption(&tabs, 1), None);
+        // A terminal that has said nothing yet: the tab's title; a name
+        // somebody gave the tab outranks both.
+        focus(&mut tabs, 0, 9);
+        assert_eq!(front_caption(&tabs, 0).as_deref(), Some("M1 again"));
+        tabs[0].title_override = Some(PinnedTitle { by: NamedBy::User, text: "my build".to_string() });
+        assert_eq!(front_caption(&tabs, 0).as_deref(), Some("my build"));
     }
 
     /// Same case, for title: three panes running three different programs
@@ -5957,18 +6029,34 @@ fn settle_after_move(src: HWND, dst: HWND, emptied: Option<TabId>) {
 /// was closed by anybody, so it is not remembered for reopening, and the
 /// window is left to the caller, which knows whether it made that too.
 pub fn retract_tab(frame: HWND, id: TabId) {
-    let doomed: Vec<(PaneId, isize, usize)> = {
+    let (doomed, snaps): (Vec<(PaneId, isize, usize)>, Vec<std::path::PathBuf>) = {
         let Some(mut win) = window(frame) else { return };
         let Some(at) = win.tabs.iter().position(|t| t.id == id) else { return };
         let front = win.tabs.get(win.active).map(|t| t.id);
         let tab = win.tabs.remove(at);
         win.active = front.and_then(|f| win.tabs.iter().position(|t| t.id == f)).unwrap_or(at.min(win.tabs.len().saturating_sub(1)));
-        tab.panes().iter().map(|p| (p.id, p.hwnd, p.surface)).collect()
+        let mut snaps: Vec<std::path::PathBuf> = Vec::new();
+        for p in tab.panes() {
+            if let Some(j) = &p.scrollback {
+                if !snaps.contains(&j.slot().dir) {
+                    snaps.push(j.slot().dir.clone());
+                }
+            }
+        }
+        (tab.panes().iter().map(|p| (p.id, p.hwnd, p.surface)).collect(), snaps)
     };
     for (pane, hwnd, surface) in &doomed {
         free_pane(*pane, *hwnd, *surface);
     }
     wlogf!(frame, "[tab] {:?} taken back: {} pane(s) freed, {} tab(s) left", id, doomed.len(), count(frame));
+    // **After the surfaces are freed**, which is the core's last write to
+    // them: the snapshot directory their journals made goes too, when
+    // nothing was left in it (task 1600 ⑤).
+    for dir in &snaps {
+        if crate::project::remove_if_empty(dir) {
+            wlogf!(frame, "[tab] {:?} taken back: removed the empty snapshot directory {:?}", id, dir);
+        }
+    }
     if count(frame) > 0 {
         set_active(frame, active_index(frame));
     }
@@ -6112,11 +6200,14 @@ pub fn pane_to_new_tab(src: HWND, pane: PaneId, dst: HWND, index: usize) -> bool
     true
 }
 
-/// Put a window's top left at a point on the screen, keeping its size.
+/// Put a window's top left at a point on the screen, keeping its size,
+/// then inside the work area of the screen that point is on.
 pub fn place_at(frame: HWND, at: windows::Win32::Foundation::POINT) {
     unsafe {
         let _ = SetWindowPos(frame, None, at.x, at.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    // Inside the work area of the screen it was let go on (task 1600 ④).
+    crate::session::clamp_onto_a_monitor(frame, Some(at));
 }
 
 /// Move tab `id` of `src` into `dst`'s strip at `index` (a tab dragged onto
@@ -6554,8 +6645,10 @@ fn focus_verdict(frame: HWND, want: PaneId) -> (bool, bool) {
 
 pub fn focus_active(frame: HWND) {
     // A supervisor's frame says whether the keyboard is in it, and every
-    // way the keyboard moves between panes ends here.
+    // way the keyboard moves between panes ends here -- and the caption
+    // names the terminal the keyboard is in (task 1600).
     crate::pane_frames::repaint(frame);
+    sync_caption(frame);
     // What is in front, as an owned answer: the guard must be gone before
     // any window call below.
     enum Target {
@@ -7960,6 +8053,11 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 let outcome = set_shell_title(surface, title.clone());
                 unsafe {
                     let _ = InvalidateRect(Some(frame), None, false);
+                }
+                // The caption, of the window the title landed in: it changes
+                // only if that is the terminal in front (task 1600).
+                if let ShellTitle::Applied(owner, ..) | ShellTitle::Overridden(owner, ..) = outcome {
+                    sync_caption(HWND(owner as *mut c_void));
                 }
                 // **One line, and it says which of the three happened, and to
                 // which tab.** The line that used to be here read
