@@ -41,6 +41,7 @@
       "macos/Sources/Features/Splits/SplitTree.swift",
       "macos/Sources/Helpers/Extensions/Array+Extension.swift",
       "macos/Sources/Features/Terminal/TabAccessory.swift",
+      "macos/Sources/Features/Terminal/TabIntoPane.swift",
       {
         "path": "macos/Sources/Features/Splits/PoltergeistLayoutShape.swift",
         "until": "extension SplitTree<Ghostty.SurfaceView> {",
@@ -114,6 +115,7 @@
       "macos/Tests/Splits/SplitTreeTests.swift",
       "macos/Tests/Splits/SplitStackTests.swift",
       "macos/Tests/Splits/StoredBytesTests.swift",
+      "macos/Tests/Splits/TabIntoPaneTests.swift",
       "macos/Tests/Splits/TerminalSplitDropZoneTests.swift"
     ],
     "out": [

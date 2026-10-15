@@ -703,6 +703,9 @@
 /* 总控台：右栏总管框标题条上，名字后面说明身份的字 */
 "Supervisor" = "Supervisor";
 
+/* 把标签拖到分屏上时：标签里有终端借给了总控台，不能并入 */
+"This tab can't go into a pane: one of its terminals is in the Control Room." = "This tab can't go into a pane: one of its terminals is in the Control Room.";
+
 /* 总控台：右栏的总管终端 */
 "This terminal is in the Control Room." = "This terminal is in the Control Room.";
 "Bring It Back" = "Bring It Back";

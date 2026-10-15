@@ -99,6 +99,9 @@ private struct TerminalSplitLeaf: View {
     /// Whether the control room has this pane's terminal just now.
     @ObservedObject private var lender = ControlRoomLender.shared
 
+    /// A window tab being dragged over this pane (`TabIntoPane`).
+    @ObservedObject private var tabOffer = TabIntoPaneOffer.shared
+
     var body: some View {
         GeometryReader { geometry in
             Group {
@@ -131,6 +134,18 @@ private struct TerminalSplitLeaf: View {
                 if !isSelfDragging, case .dropping(let zone) = dropState {
                     zone.overlay(in: geometry)
                         .allowsHitTesting(false)
+                }
+            }
+            .overlay {
+                if let offer = tabOffer.offer, offer.pane == surfaceView.id {
+                    Group {
+                        if let refusal = offer.refusal {
+                            TabIntoPaneRefusalView(refusal: refusal)
+                        } else {
+                            offer.zone.overlay(in: geometry)
+                        }
+                    }
+                    .allowsHitTesting(false)
                 }
             }
             .onPreferenceChange(Ghostty.DraggingSurfaceKey.self) { value in
@@ -205,6 +220,42 @@ private struct TerminalSplitLeaf: View {
     }
 }
 
+/// Said on a pane while a window tab that cannot go into it is over it.
+private struct TabIntoPaneRefusalView: View {
+    typealias Look = ControlRoomLook
+
+    let refusal: TabIntoPane.Refusal
+
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        // In the words and colours of the placeholder a lent pane shows.
+        let theme = Look.theme(scheme)
+        Text(message)
+            .font(.system(size: CGFloat(Look.Font.body)))
+            .foregroundStyle(theme.text.color)
+            .multilineTextAlignment(.center)
+            .padding(CGFloat(Look.Space.frameToContent))
+            .background(
+                theme.terminalBackground.color,
+                in: RoundedRectangle(cornerRadius: CGFloat(Look.Radius.supervisorInner)))
+            .overlay(
+                RoundedRectangle(cornerRadius: CGFloat(Look.Radius.supervisorInner))
+                    .stroke(theme.line.color))
+            .padding(CGFloat(Look.Space.frameToContent))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var message: String {
+        switch refusal {
+        case .lentToControlRoom:
+            String(
+                localized: "This tab can't go into a pane: one of its terminals is in the Control Room.",
+                comment: "把标签拖到分屏上时：标签里有终端借给了总控台，不能并入")
+        }
+    }
+}
+
 enum TerminalSplitDropZone: String, Equatable {
     case top
     case bottom
@@ -269,3 +320,4 @@ enum TerminalSplitDropZone: String, Equatable {
         }
     }
 }
+

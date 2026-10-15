@@ -186,6 +186,40 @@ class TerminalWindow: NSWindow {
         level = UserDefaults.ghostty.value(forKey: Self.defaultLevelKey) as? NSWindow.Level ?? .normal
     }
 
+    /// The alpha this window had when it was held invisible, while its tab
+    /// is being dragged onto a pane (`TabIntoPane`); nil when it is not held.
+    private var alphaBeforeTabDrop: CGFloat?
+
+    /// Whether this window is held invisible because its tab is being
+    /// dragged onto a pane. **AppKit sets the alpha back to 1 when it tears
+    /// the tab off** (measured), which would show the torn-off window for
+    /// a moment before it is taken apart; while held, that is ignored.
+    var heldForTabDrop: Bool {
+        get { alphaBeforeTabDrop != nil }
+        set {
+            guard newValue != heldForTabDrop else { return }
+            if newValue {
+                alphaBeforeTabDrop = super.alphaValue
+                super.alphaValue = 0
+            } else {
+                let alpha = alphaBeforeTabDrop ?? 1
+                alphaBeforeTabDrop = nil
+                super.alphaValue = alpha
+            }
+        }
+    }
+
+    override var alphaValue: CGFloat {
+        get { super.alphaValue }
+        set {
+            if alphaBeforeTabDrop != nil {
+                alphaBeforeTabDrop = newValue
+            } else {
+                super.alphaValue = newValue
+            }
+        }
+    }
+
     // Both of these must be true for windows without decorations to be able to
     // still become key/main and receive events.
     override var canBecomeKey: Bool { return true }
