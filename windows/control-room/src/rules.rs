@@ -27,6 +27,40 @@ pub fn trigger(open: usize) -> Trigger {
     }
 }
 
+/// What the application does about the control room as it starts
+/// (`polter-control-room-at-launch`, task 1581). The macOS host's
+/// `ControlRoomRules.atLaunch`; the two are held to one table by their tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtLaunch {
+    /// As before the setting existed.
+    Nothing,
+    /// Nothing was restored: one window, the control room its first tab and
+    /// an empty terminal its second, with the control room in front.
+    OwnWindow,
+    /// Terminals were restored and the control room was not: it goes first
+    /// among the front window's tabs, behind the tab that is in front, which
+    /// keeps the keyboard. No terminal is added.
+    FirstTabBehind,
+}
+
+/// - `enabled`: `polter-control-room-at-launch`.
+/// - `restored_terminals`: terminal windows the launch restored.
+/// - `room_restored`: the control room was among what it restored.
+/// - `initial_window`: `initial-window`; with nothing restored and this off,
+///   the application opens no window, and this setting does not make it.
+pub fn at_launch(enabled: bool, restored_terminals: usize, room_restored: bool, initial_window: bool) -> AtLaunch {
+    if !enabled || room_restored {
+        return AtLaunch::Nothing;
+    }
+    if restored_terminals > 0 {
+        AtLaunch::FirstTabBehind
+    } else if initial_window {
+        AtLaunch::OwnWindow
+    } else {
+        AtLaunch::Nothing
+    }
+}
+
 /// A group the person has just made is selected once the core lists it --
 /// not before: the list on screen when the answer comes back may be the one
 /// from before the group existed, and a selection that names no row is
@@ -257,6 +291,27 @@ pub fn project_tab(front: Kind, lent: bool) -> ProjectTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 1581's table, the same rows as the macOS host's
+    /// `ControlRoomAtLaunchTests`.
+    #[test]
+    fn what_the_launch_does_about_the_control_room() {
+        use AtLaunch::*;
+        // (enabled, restored terminals, room restored, initial-window) -> answer
+        let table = [
+            ((true, 0, false, true), OwnWindow),
+            ((true, 2, false, true), FirstTabBehind),
+            ((true, 2, true, true), Nothing),
+            ((true, 0, true, true), Nothing),
+            ((false, 0, false, true), Nothing),
+            ((false, 2, false, true), Nothing),
+            ((true, 0, false, false), Nothing),
+            ((true, 1, false, false), FirstTabBehind),
+        ];
+        for ((on, n, room, initial), want) in table {
+            assert_eq!(at_launch(on, n, room, initial), want, "enabled={on} restored={n} room={room} initial={initial}");
+        }
+    }
 
     #[test]
     fn it_opens_once_and_after_that_it_is_gone_to() {

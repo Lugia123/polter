@@ -166,6 +166,7 @@ pub const table = [_]Item{
 
     // Windows and tabs
     .{ .key = .@"window-save-state", .group = .window, .label = i18n.N_("Restore Windows"), .summary = i18n.N_("Reopen windows, tabs and splits where they were."), .choices = &.{ .{ .value = "default", .label = i18n.N_("System Default") }, .{ .value = "never", .label = i18n.N_("Never") }, .{ .value = "always", .label = i18n.N_("Always") } } },
+    .{ .key = .@"polter-control-room-at-launch", .group = .window, .label = i18n.N_("Open the Control Room at Launch"), .summary = i18n.N_("Open the control room when Polter starts."), .aliases = &.{ "control room", "startup", "launch", "总控台", "启动" } },
     .{ .key = .@"window-inherit-working-directory", .group = .window, .label = i18n.N_("New Windows Inherit Directory"), .summary = i18n.N_("New windows start in the focused window's directory.") },
     .{ .key = .@"quit-after-last-window-closed", .group = .window, .label = i18n.N_("Quit After Last Window Closes"), .summary = i18n.N_("Quit Polter when its last window is closed.") },
     .{ .key = .@"window-decoration", .group = .window, .label = i18n.N_("Window Decorations"), .summary = i18n.N_("Whether windows have a title bar and borders."), .choices = &.{ .{ .value = "auto", .label = i18n.N_("Automatic") }, .{ .value = "client", .label = i18n.N_("Drawn by Polter") }, .{ .value = "server", .label = i18n.N_("Drawn by the System") }, .{ .value = "none", .label = i18n.N_("No Decorations") } } },

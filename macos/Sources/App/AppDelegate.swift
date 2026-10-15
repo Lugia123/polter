@@ -573,10 +573,26 @@ class AppDelegate: NSObject,
             // is possible to have other windows in a few scenarios:
             //   - if we're opening a URL since `application(_:openFile:)` is called before this.
             //   - if we're restoring from persisted state
+            // What was restored, read before anything is opened here
+            // (task 1581). A restored control room has set `shared` by now.
+            let atLaunch = ControlRoomRules.atLaunch(
+                enabled: ghostty.config.polterControlRoomAtLaunch,
+                restoredTerminals: TerminalController.all.count,
+                roomRestored: ControlRoomController.shared != nil,
+                initialWindow: derivedConfig.initialWindow)
+            var opened: NSWindow?
             if TerminalController.all.isEmpty && derivedConfig.initialWindow {
                 undoManager.disableUndoRegistration()
-                _ = TerminalController.newWindow(ghostty)
+                opened = TerminalController.newWindow(ghostty).window
                 undoManager.enableUndoRegistration()
+            }
+            // On the next turn, once the window just made or the ones
+            // restored are on screen to be tabbed into.
+            let front = opened ?? TerminalController.preferredParent?.window
+            Self.logger.info("control room at launch: \(String(describing: atLaunch), privacy: .public)")
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                ControlRoomController.atLaunch(self.ghostty, atLaunch, front: front)
             }
         }
     }

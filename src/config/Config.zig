@@ -1687,6 +1687,29 @@ command: ?Command = null,
 /// top only, and no frame has a shadow.
 @"poltergeist-pane-frames": bool = true,
 
+/// Open the control room when Polter starts.
+///
+/// Only when the application starts: a new window, or a new tab, never
+/// opens it. What it does depends on what was restored (`window-save-state`):
+///
+///   * Nothing restored -- the first launch, or a launch with no saved
+///     windows: one window is opened with the control room as its first tab
+///     and an empty terminal, in the usual working directory, as its second.
+///     The control room is in front.
+///
+///   * Windows restored -- a restored control room is left as it was. If
+///     none was restored, the control room is put first among the tabs of
+///     the front window, behind the tab that was in front, which keeps the
+///     keyboard. No extra terminal is opened: there are terminals already.
+///
+/// On macOS, with `initial-window = false` and nothing restored, no window
+/// is opened at all, as before. Windows does not restore tabs, so there it
+/// is always the first case.
+///
+/// Set this to `false` to start the way Polter did before: the control room
+/// opens only from its menu item or key binding.
+@"polter-control-room-at-launch": bool = true,
+
 /// Write what the terminals say to each other to disk.
 ///
 /// The conversation in memory is a working set: it trims as it grows, and

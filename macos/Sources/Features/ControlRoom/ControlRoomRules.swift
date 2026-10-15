@@ -33,6 +33,35 @@ enum ControlRoomRules {
         return parentTakesTabs == true ? .openAsFirstTab : .openInOwnWindow
     }
 
+    // MARK: At launch (task 1581)
+
+    /// What the application does about the control room as it starts
+    /// (`polter-control-room-at-launch`). The Windows host's
+    /// `rules::at_launch`; the two are held to one table by their tests.
+    enum AtLaunch: Equatable {
+        /// As before the setting existed.
+        case nothing
+        /// Nothing was restored: one window, the control room its first tab
+        /// and an empty terminal its second, with the control room in front.
+        case ownWindow
+        /// Terminals were restored and the control room was not: it goes
+        /// first among the front window's tabs, behind the tab that is in
+        /// front, which keeps the keyboard. No terminal is added.
+        case firstTabBehind
+    }
+
+    /// - `enabled`: `polter-control-room-at-launch`.
+    /// - `restoredTerminals`: terminal windows the launch restored.
+    /// - `roomRestored`: the control room was among what it restored.
+    /// - `initialWindow`: `initial-window`; with nothing restored and this
+    ///   off, the application opens no window, and this setting does not
+    ///   make it.
+    static func atLaunch(enabled: Bool, restoredTerminals: Int, roomRestored: Bool, initialWindow: Bool) -> AtLaunch {
+        if !enabled || roomRestored { return .nothing }
+        if restoredTerminals > 0 { return .firstTabBehind }
+        return initialWindow ? .ownWindow : .nothing
+    }
+
     // MARK: Closing
 
     enum CloseTab: Equatable {

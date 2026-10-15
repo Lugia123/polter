@@ -1976,6 +1976,14 @@ msgid "Always"
 msgstr "总是"
 
 #: src/config/form.zig:169
+msgid "Open the Control Room at Launch"
+msgstr "启动时打开总控台"
+
+#: src/config/form.zig:169
+msgid "Open the control room when Polter starts."
+msgstr "Polter 启动时打开总控台。"
+
+#: src/config/form.zig:169
 msgid "New Windows Inherit Directory"
 msgstr "新窗口沿用目录"
 
