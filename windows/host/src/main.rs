@@ -126,6 +126,7 @@ mod overlay;
 mod osk;
 mod palette;
 mod pane_frames;
+mod panedrag;
 mod personas;
 mod plugins;
 mod general_ui;
@@ -4663,18 +4664,42 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
 
-            // The strip owns the pointer while it is over it.
+            // The strip owns the pointer while it is over it; below it, a
+            // pane's title is where the pane is picked up (task 1549).
             WM_LBUTTONDOWN => {
-                strip::on_button_down(hwnd, lo_i16(lp), hi_i16(lp));
+                if !panedrag::title_press(hwnd, lo_i16(lp), hi_i16(lp)) {
+                    strip::on_button_down(hwnd, lo_i16(lp), hi_i16(lp));
+                }
                 LRESULT(0)
             }
             WM_MOUSEMOVE => {
-                strip::on_mouse_move(hwnd, lo_i16(lp), hi_i16(lp));
+                if !panedrag::on_move() {
+                    strip::on_mouse_move(hwnd, lo_i16(lp), hi_i16(lp));
+                }
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
-                strip::on_button_up(hwnd, lo_i16(lp), hi_i16(lp));
+                if !panedrag::on_up() {
+                    strip::on_button_up(hwnd, lo_i16(lp), hi_i16(lp));
+                }
                 LRESULT(0)
+            }
+            // A drag the frame was holding the pointer for -- a pane's or a
+            // tab's -- that loses the capture without the button coming up
+            // (Alt+Tab, a dialog) is put back, not left half done.
+            WM_CAPTURECHANGED => {
+                if HWND(lp.0 as *mut c_void) != hwnd {
+                    panedrag::capture_lost();
+                    strip::capture_lost(hwnd);
+                }
+                LRESULT(0)
+            }
+            WM_SETCURSOR => {
+                if (lp.0 & 0xFFFF) as u32 == HTCLIENT && panedrag::title_cursor(hwnd) {
+                    LRESULT(1)
+                } else {
+                    DefWindowProcW(hwnd, msg, wp, lp)
+                }
             }
             WM_LBUTTONDBLCLK => {
                 strip::on_double_click(hwnd, lo_i16(lp), hi_i16(lp));
@@ -4751,6 +4776,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 }
                 project_session::note(polter_projects::autosave::Change::WindowFrame);
                 ime_layout_changed();
+                // The layers over the panes are windows of their own and do
+                // not move with the frame.
+                panedrag::sync(hwnd);
                 LRESULT(0)
             }
 
@@ -4886,6 +4914,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // `HWND`s, so an entry left under a dead handle can be found
                 // again by the next window that gets it.
                 strip::forget(hwnd);
+                panedrag::forget(hwnd);
                 // **Last, because it is the only moment both registries have
                 // finished with this window.** Anywhere earlier it would be
                 // reading one of the two legitimate disagreements. See
@@ -7439,6 +7468,7 @@ fn main() {
     taskbar::init(hinst);
     notify::init(hinst);
     divider::init(hinst);
+    panedrag::init(hinst);
     // What each plugin's running copy starts with: the status dots' ↻
     // (settings.md §5.1) compares against it, and the core keeps no copy.
     plugins::snapshot_at_startup();
@@ -7814,6 +7844,9 @@ fn main() {
                              not printed. The total is on the exit line."
                         );
                     }
+                } else if panedrag::pre_translate(&msg) {
+                    // Esc while a pane or a tab is being dragged: the drag is
+                    // put back, and the key goes nowhere (task 1549).
                 } else if settings_win::pre_translate(&msg) {
                     // The settings window's own chord, taken before any of its
                     // controls could swallow it (task 1005).

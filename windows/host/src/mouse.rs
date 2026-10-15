@@ -242,6 +242,12 @@ fn peek(surface: usize) -> Option<(i32, bool)> {
     g.iter().find(|r| r.surface == surface).map(|r| (r.shape, r.hidden))
 }
 
+/// Whether the core has hidden the pointer over this surface (typing with
+/// `mouse-hide-while-typing`). A handle's dots do not show then (task 1549).
+pub fn hidden(surface: usize) -> bool {
+    peek(surface).is_some_and(|(_, h)| h)
+}
+
 /// The core asked for a shape. Returns what it will look like, for the log.
 pub fn record_shape(surface: usize, shape: i32) -> Pick {
     with_rec(surface, |r| r.shape = shape);

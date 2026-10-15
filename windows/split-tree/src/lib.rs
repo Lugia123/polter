@@ -1055,5 +1055,7 @@ impl Spatial {
     }
 }
 
+pub mod drag;
+
 #[cfg(test)]
 mod tests;

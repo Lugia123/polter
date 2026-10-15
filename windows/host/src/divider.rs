@@ -175,6 +175,9 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
             hCursor: HCURSOR(std::ptr::null_mut()),
             hbrBackground: HBRUSH(std::ptr::null_mut()),
             lpszClassName: w!("PolterDivider"),
+            // A double click on a divider makes every split even, as on
+            // macOS (`SplitView`'s `onEqualize`, task 1549).
+            style: CS_DBLCLKS,
             ..Default::default()
         };
         if RegisterClassExW(&wc) == 0 {
@@ -536,6 +539,16 @@ extern "system" fn div_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
                     let _ = ReleaseCapture();
                     logf!("[div] drag end");
                 }
+                LRESULT(0)
+            }
+
+            // Every split of the tab even, the same thing `equalize_splits`
+            // does -- macOS equalizes the whole tree from any of its
+            // dividers. The first click of the two already started a drag
+            // and its release ended it; nothing is held here.
+            WM_LBUTTONDBLCLK => {
+                tabs::post_op(frame, tabs::Op::EqualizeSplits, "divider double click");
+                wlogf!(frame, "[div] double click -> equalize");
                 LRESULT(0)
             }
 

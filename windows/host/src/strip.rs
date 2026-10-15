@@ -182,7 +182,13 @@ const TAB_MAX_W: i32 = 220;
 const TAB_MIN_W: i32 = 60;
 /// How far the pointer travels before a press becomes a drag rather than a
 /// click. Without it, a click with a shaky hand reorders tabs.
-const DRAG_SLOP: i32 = 4;
+///
+/// **In points, and measured as a straight line** (task 1549): it was four
+/// device pixels along `x` alone, which is two points at 200%, and a tab
+/// pulled straight down out of its strip never became a drag at all.
+fn drag_slop(scale: f64) -> f64 {
+    polter_split_tree::drag::px(polter_split_tree::drag::TAB_DRAG_THRESHOLD_PT, scale)
+}
 
 /// The `≡` button's width at this scale, which is also **the tabs' left
 /// inset**.
@@ -518,11 +524,16 @@ fn hit(g: &Geometry, x: i32, y: i32) -> Hit {
 enum Drag {
     Idle,
     /// A button is down on a tab but the pointer has not moved far enough for
-    /// this to be a drag rather than a click.
-    Pressed { id: TabId, x: i32 },
+    /// this to be a drag rather than a click. `at` is on the screen.
+    Pressed { id: TabId, at: POINT },
     /// The pointer's position is not kept here: it arrives with every
     /// `WM_MOUSEMOVE`, and a stored copy could only ever be staler.
-    Dragging { id: TabId },
+    ///
+    /// `home` is where the tab was when it was picked up, so Esc and a lost
+    /// capture can put it back (task 1549); `over` is another window of
+    /// ours the pointer is over, and the gap in its strip the tab would go
+    /// into.
+    Dragging { id: TabId, home: usize, over: Option<(isize, usize)> },
 }
 
 /// One strip's interaction state. **All four fields are per-window**, and the
@@ -557,6 +568,9 @@ struct Interaction {
     /// selected now, while there is one (`chip_now`).
     chip: Option<TabId>,
     slide: Option<ChipSlide>,
+    /// Where a tab dragged from another window would go into this strip:
+    /// the `x` of the gap, drawn as a bar while the pointer is over it.
+    marker: Option<i32>,
     /// How many times **this** strip has actually painted. **"The strip was
     /// asked to repaint" and "the strip painted" are different claims**, and
     /// a strip that vanishes could be either; only a counter tells them
@@ -581,7 +595,7 @@ struct Interaction {
 
 impl Interaction {
     const fn new() -> Self {
-        Interaction { drag: Drag::Idle, hover: Hit::None, scroll: 0, editing: None, chip: None, slide: None, paints: 0 }
+        Interaction { drag: Drag::Idle, hover: Hit::None, scroll: 0, editing: None, chip: None, slide: None, marker: None, paints: 0 }
     }
 }
 
@@ -721,12 +735,14 @@ pub fn on_button_down(frame: HWND, x: i32, y: i32) {
         Hit::Close(id) => {
             // Act on release, the way every other close button does: pressing
             // and sliding off has to be a way out.
-            with_ui(frame, |u| u.drag = Drag::Pressed { id, x });
+            let at = cursor();
+            with_ui(frame, |u| u.drag = Drag::Pressed { id, at });
         }
         Hit::Tab(id) => {
             logf!("[strip] click -> activate {:?}", id);
             tabs::activate_tab(frame, id);
-            with_ui(frame, |u| u.drag = Drag::Pressed { id, x });
+            let at = cursor();
+            with_ui(frame, |u| u.drag = Drag::Pressed { id, at });
             unsafe {
                 SetCapture(frame);
             }
@@ -752,21 +768,47 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
     }
 
     let h = hit(&g, x, y);
+    let now = cursor();
+    let slop = drag_slop(tabs::scale_of(frame));
+    let home = |id: TabId| g.slots.iter().position(|s| s.id == id).unwrap_or(0);
     let (started, dragging_id) = with_ui(frame, |u| {
         if u.hover != h {
             u.hover = h;
         }
         match u.drag {
-            Drag::Pressed { id, x: x0 } if (x - x0).abs() >= DRAG_SLOP => {
-                u.drag = Drag::Dragging { id };
+            Drag::Pressed { id, at } if polter_split_tree::drag::is_drag((at.x as f64, at.y as f64), (now.x as f64, now.y as f64), slop) => {
+                u.drag = Drag::Dragging { id, home: home(id), over: None };
                 (true, Some(id))
             }
-            Drag::Dragging { id } => (false, Some(id)),
+            Drag::Dragging { id, .. } => (false, Some(id)),
             _ => (false, None),
         }
     });
     if started {
         log_state(frame, &format!("drag start {:?}", dragging_id));
+    }
+
+    // Over another window of ours, the tab is shown going into that
+    // window's strip; over its own, it reorders as it always has.
+    let elsewhere = dragging_id.and_then(|_| other_window_at(frame, now));
+    if let Some(id) = dragging_id {
+        let was = with_ui(frame, |u| match &mut u.drag {
+            Drag::Dragging { over, .. } => std::mem::replace(over, elsewhere),
+            _ => None,
+        });
+        if was.map(|w| w.0) != elsewhere.map(|w| w.0) {
+            if let Some((f, _)) = was {
+                set_marker(HWND(f as *mut std::ffi::c_void), None);
+            }
+        }
+        if let Some((f, index)) = elsewhere {
+            set_marker(HWND(f as *mut std::ffi::c_void), Some(index));
+        }
+        if elsewhere.is_some() || !over_own_window(frame, now) {
+            repaint(frame);
+            let _ = id;
+            return;
+        }
     }
 
     if let Some(id) = dragging_id {
@@ -789,6 +831,152 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
         }
     }
     repaint(frame);
+}
+
+fn cursor() -> POINT {
+    let mut p = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut p);
+    }
+    p
+}
+
+/// The frame a screen point is over, when it is one of ours.
+fn frame_at(pt: POINT) -> Option<HWND> {
+    let hit = unsafe { WindowFromPoint(pt) };
+    if hit.0.is_null() {
+        return None;
+    }
+    let root = unsafe { GetAncestor(hit, GA_ROOT) };
+    tabs::is_frame(root).then_some(root)
+}
+
+fn over_own_window(frame: HWND, pt: POINT) -> bool {
+    frame_at(pt) == Some(frame)
+}
+
+/// Another frame than `frame` under `pt`, and the gap in its strip a tab let
+/// go there goes into -- its end, when the pointer is not over its strip.
+fn other_window_at(frame: HWND, pt: POINT) -> Option<(isize, usize)> {
+    let other = frame_at(pt).filter(|f| *f != frame)?;
+    let g = slots(other);
+    let n = g.slots.len();
+    let mut at = pt;
+    unsafe {
+        let _ = ScreenToClient(other, &mut at);
+    }
+    let index = match (g.slots.first(), at.y < strip_h(tabs::scale_of(other))) {
+        (Some(first), true) => {
+            let w = (first.rect.right - first.rect.left + 1) as f64;
+            polter_split_tree::drag::insertion_index(at.x as f64, first.rect.left as f64, w, n)
+        }
+        _ => n,
+    };
+    Some((other.0 as isize, index))
+}
+
+/// Show (or with `None`, take away) the bar in `frame`'s strip where a
+/// dragged tab would go.
+fn set_marker(frame: HWND, index: Option<usize>) {
+    let x = index.map(|i| {
+        let g = slots(frame);
+        match (g.slots.get(i), g.slots.last()) {
+            (Some(s), _) => s.rect.left,
+            (None, Some(last)) => last.rect.right + 1,
+            (None, None) => menu_w(tabs::scale_of(frame)),
+        }
+    });
+    let changed = with_ui(frame, |u| std::mem::replace(&mut u.marker, x) != x);
+    if changed {
+        repaint(frame);
+    }
+}
+
+/// The tab dragged out of `frame` was let go: where it goes follows
+/// `polter_split_tree::drag::tab_ending`.
+fn let_go(frame: HWND, id: TabId, over: Option<(isize, usize)>) {
+    use polter_split_tree::drag::{tab_ending, TabEnding, TabOver};
+    if let Some((f, _)) = over {
+        set_marker(HWND(f as *mut std::ffi::c_void), None);
+    }
+    let pt = cursor();
+    let at = match over {
+        Some((f, index)) => TabOver::Other { window: f, index },
+        None if over_own_window(frame, pt) => TabOver::Home,
+        None => match frame_at(pt) {
+            // Another of our windows that the last move did not see.
+            Some(f) => TabOver::Other { window: f.0 as isize, index: tabs::count(f) },
+            None if pointer_over_any_window_of_ours(pt) => TabOver::Home,
+            None => TabOver::Outside,
+        },
+    };
+    match tab_ending(at, tabs::count(frame), false) {
+        TabEnding::Stay | TabEnding::Restore => {}
+        TabEnding::Join { window, index } => {
+            tabs::move_tab_to_window(frame, id, HWND(window as *mut std::ffi::c_void), index);
+        }
+        TabEnding::NewWindow => {
+            let hinst = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }.map(Into::into).unwrap_or_default();
+            if let Some(dest) = tabs::move_tab_out(frame, hinst, id) {
+                tabs::place_at(dest, pt);
+            }
+        }
+    }
+    repaint(frame);
+}
+
+/// Any window of this process -- the settings window, say -- under `pt`.
+/// Letting a tab go there is not "nowhere", so it does not get a window.
+fn pointer_over_any_window_of_ours(pt: POINT) -> bool {
+    let hit = unsafe { WindowFromPoint(pt) };
+    if hit.0.is_null() {
+        return false;
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(GetAncestor(hit, GA_ROOT), Some(&mut pid)) };
+    pid == unsafe { windows::Win32::System::Threading::GetCurrentProcessId() }
+}
+
+/// Put a dragged tab back where it was picked up, and stop the drag: Esc,
+/// or the capture went somewhere else. **True when there was one.**
+pub fn cancel_drag(why: &str) -> bool {
+    let found = UI.with(|c| {
+        c.borrow_mut().iter_mut().find_map(|(k, u)| match std::mem::replace(&mut u.drag, Drag::Idle) {
+            Drag::Idle => None,
+            Drag::Pressed { .. } => Some((*k, None)),
+            Drag::Dragging { id, home, over } => Some((*k, Some((id, home, over)))),
+        })
+    });
+    let Some((k, dragged)) = found else { return false };
+    let frame = HWND(k as *mut std::ffi::c_void);
+    unsafe {
+        let _ = ReleaseCapture();
+    }
+    if let Some((id, home, over)) = dragged {
+        if let Some((f, _)) = over {
+            set_marker(HWND(f as *mut std::ffi::c_void), None);
+        }
+        tabs::move_tab_to(frame, id, home);
+        wlogf!(frame, "[strip] drag of {:?} cancelled ({}); put back at {}", id, why, home);
+    }
+    repaint(frame);
+    true
+}
+
+/// The frame lost the capture while a tab was held: put it back.
+pub fn capture_lost(frame: HWND) {
+    let held = with_ui(frame, |u| !matches!(u.drag, Drag::Idle));
+    if held {
+        cancel_drag("the capture was taken away");
+    }
+}
+
+/// The tab under `(x, y)` in `frame`'s strip, if any.
+pub fn tab_at(frame: HWND, x: i32, y: i32) -> Option<TabId> {
+    match hit(&slots(frame), x, y) {
+        Hit::Tab(id) | Hit::Close(id) => Some(id),
+        Hit::None | Hit::Overflow | Hit::New | Hit::Menu => None,
+    }
 }
 
 /// Wheel over the strip scrolls it, when there is anything to scroll.
@@ -922,8 +1110,10 @@ pub fn on_button_up(frame: HWND, x: i32, y: i32) {
     unsafe {
         let _ = ReleaseCapture();
     }
-    if matches!(was, Drag::Dragging { .. }) {
+    if let Drag::Dragging { id, over, .. } = was {
         log_state(frame, "drag end");
+        let_go(frame, id, over);
+        return;
     }
     if let Drag::Pressed { id, .. } = was {
         // A press that never became a drag: if it started and ended on the
@@ -1198,7 +1388,7 @@ pub fn paint(frame: HWND) {
             (
                 u.hover,
                 match u.drag {
-                    Drag::Dragging { id } => Some(id),
+                    Drag::Dragging { id, .. } => Some(id),
                     _ => None,
                 },
             )
@@ -1457,6 +1647,13 @@ pub fn paint(frame: HWND) {
                 &mut tr,
                 DT_CENTER | DT_SINGLELINE | DT_VCENTER,
             );
+        }
+
+        // Where a tab dragged from another window would go (task 1549).
+        if let Some(mx) = with_ui(frame, |u| u.marker) {
+            let w = ((2.0 * scale).round() as i32).max(2);
+            let bar = RECT { left: mx - w / 2, top: (4.0 * scale) as i32, right: mx - w / 2 + w, bottom: sh - (4.0 * scale) as i32 };
+            fill(mem, &bar, GetSysColor(COLOR_HIGHLIGHT));
         }
 
         // The caption buttons go into the same memory DC, so the whole bar

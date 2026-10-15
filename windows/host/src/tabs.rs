@@ -2499,6 +2499,9 @@ pub fn layout(frame: HWND) {
     // Safe here specifically because the `STATE` guard above has already been
     // dropped: `sync` takes that lock itself.
     crate::divider::sync(frame);
+    // The veils and the handles' dots are over the panes, so they follow
+    // them from the same place (task 1549).
+    crate::panedrag::sync(frame);
 }
 
 /// Create one pane: a child window at the rectangle the tree gave it, plus
@@ -4799,6 +4802,16 @@ fn move_tab_to_new_window(
     hinst: windows::Win32::Foundation::HINSTANCE,
     id: TabId,
 ) -> bool {
+    move_tab_out(frame, hinst, id).is_some()
+}
+
+/// `move_tab_to_new_window`, answering with the window the tab went to, so a
+/// tab dragged out of its strip can put that window where it was let go.
+pub fn move_tab_out(
+    frame: HWND,
+    hinst: windows::Win32::Foundation::HINSTANCE,
+    id: TabId,
+) -> Option<HWND> {
     // **Asked before the window is built and asked again after.** Building a
     // frame pumps messages, so the tab set can change underneath -- and the
     // second answer is the one that acts. The first exists so the ordinary
@@ -4807,7 +4820,7 @@ fn move_tab_to_new_window(
     match index_of(frame, id) {
         None => {
             wlogf!(frame, "[tab] move to new window: {:?} is not in this window", id);
-            return false;
+            return None;
         }
         Some((_, 1)) => {
             wlogf!(
@@ -4815,14 +4828,14 @@ fn move_tab_to_new_window(
                 "[tab] move to new window: {:?} is the only tab, so it already has one",
                 id
             );
-            return false;
+            return None;
         }
         Some(_) => {}
     }
 
     let Some(dest) = crate::create_frame_secondary(hinst) else {
         wlogf!(frame, "[tab] move to new window: no frame created; {:?} stays put", id);
-        return false;
+        return None;
     };
 
     // Everything that has to happen while nothing else can look: the tab
@@ -4864,7 +4877,7 @@ fn move_tab_to_new_window(
             id
         );
         crate::winid::close_window_now(dest);
-        return false;
+        return None;
     };
 
     // **Outside the guard**, because `SetParent` sends `WM_*` to both windows'
@@ -4915,6 +4928,280 @@ fn move_tab_to_new_window(
         crate::winid::tag(dest),
         left
     );
+    Some(dest)
+}
+
+/// What a pane being moved left behind it, worked out under the lock and
+/// acted on after it.
+struct PaneMoved {
+    hwnd: isize,
+    surface: usize,
+    /// The tab it came out of, when that tab has no pane left.
+    emptied: Option<TabId>,
+}
+
+/// Take `pane` out of whichever tab of `ws[si]` has it. **Refused, with the
+/// model untouched, when `must_stay_split` and its tab is not split** -- a
+/// pane alone in its tab does not leave for a window of its own.
+fn take_pane(ws: &mut [WindowState], si: usize, pane: PaneId, must_stay_split: bool) -> Result<(Pane, Option<TabId>), &'static str> {
+    let st = ws[si].tabs.iter().position(|t| t.pane(pane).is_some()).ok_or("no tab in that window has it")?;
+    let tab_id = ws[si].tabs[st].id;
+    let term = ws[si].tabs[st].terminal_mut().ok_or("its tab is not a terminal's")?;
+    if must_stay_split && !term.tree.is_split() {
+        return Err("it is alone in its tab");
+    }
+    let pos = term.panes.iter().position(|p| p.id == pane).ok_or("its tab does not list it")?;
+    let p = term.panes.remove(pos);
+    term.tree = term.tree.remove(pane);
+    if term.focused == pane {
+        term.focused = term.tree.panes().first().copied().unwrap_or(0);
+    }
+    Ok((p, term.panes.is_empty().then_some(tab_id)))
+}
+
+/// Move `pane` next to `onto`, on the side `dir` says: in the same tab, in
+/// another tab of its window, or into another window (task 1549, the macOS
+/// host's `splitDidDrop`).
+///
+/// **The pane keeps its window and its surface**, for the reason
+/// `move_tab_to_new_window` gives: a move that rebuilt it would be a close
+/// and a new terminal. Across windows the window is re-parented.
+///
+/// A tab the pane leaves empty goes; a window left with no tab closes.
+/// Answers whether the pane moved.
+pub fn move_pane(src: HWND, pane: PaneId, dst: HWND, onto: PaneId, dir: NewSplit) -> bool {
+    let moved: Result<Option<PaneMoved>, &'static str> = with_windows_mut(|ws| {
+        let si = ws.iter().position(|w| w.frame == src.0 as isize).ok_or("its window is gone")?;
+        let di = ws.iter().position(|w| w.frame == dst.0 as isize).ok_or("the window it was let go over is gone")?;
+        let st = ws[si].tabs.iter().position(|t| t.pane(pane).is_some()).ok_or("no tab in its window has it")?;
+        let dt = ws[di].tabs.iter().position(|t| t.pane(onto).is_some()).ok_or("the pane it was let go on is gone")?;
+        let dst_tab = ws[di].tabs[dt].id;
+        if si == di && st == dt {
+            let term = ws[si].tabs[st].terminal_mut().ok_or("its tab is not a terminal's")?;
+            term.tree = term.tree.moving(pane, onto, dir).map_err(|_| "the tree refused the move")?;
+            term.focused = pane;
+            ws[si].active = st;
+            return Ok(None);
+        }
+        // Into the other tree first: if that refuses, nothing has moved.
+        let into = ws[di].tabs[dt].terminal().ok_or("the tab it was let go on is not a terminal's")?.tree.insert(pane, onto, dir).map_err(|_| "the target tree refused it")?;
+        let (p, emptied) = take_pane(ws, si, pane, false)?;
+        let (hwnd, surface) = (p.hwnd, p.surface);
+        // Found again by identity: the source tab is still there (it is
+        // taken away below, after the lock), so no index has moved, but the
+        // rule here is that a tab is named, never counted.
+        let dt = ws[di].tabs.iter().position(|t| t.id == dst_tab).ok_or("the tab it was let go on is gone")?;
+        let Some(term) = ws[di].tabs[dt].terminal_mut() else { return Err("the tab it was let go on is not a terminal's") };
+        term.tree = into;
+        term.panes.push(p);
+        term.focused = pane;
+        ws[di].active = dt;
+        Ok(Some(PaneMoved { hwnd, surface, emptied }))
+    });
+    let moved = match moved {
+        Ok(m) => m,
+        Err(why) => {
+            wlogf!(src, "[drag] pane {} not moved onto {}: {}", pane, onto, why);
+            return false;
+        }
+    };
+    let Some(m) = moved else {
+        wlogf!(src, "[drag] pane {} moved {:?} of pane {} in its tab", pane, dir, onto);
+        crate::project_session::note(polter_projects::autosave::Change::Layout);
+        layout(src);
+        focus_active(src);
+        crate::uia::tabs_changed(src);
+        return true;
+    };
+    if src != dst {
+        rehome_pane(src, dst, m.hwnd, m.surface);
+    }
+    wlogf!(src, "[drag] pane {} moved {:?} of pane {} in {}", pane, dir, onto, crate::winid::tag(dst));
+    settle_after_move(src, dst, m.emptied);
+    true
+}
+
+/// Give a pane's window to another frame, and tell its surface the scale
+/// there.
+fn rehome_pane(src: HWND, dst: HWND, hwnd: isize, surface: usize) {
+    if let Err(e) = unsafe { SetParent(HWND(hwnd as *mut c_void), Some(dst)) } {
+        wlogf!(dst, "[drag] SetParent failed for pane window {:?}: {e:?}", hwnd);
+    }
+    let (from, to) = (scale_of(src), scale_of(dst));
+    if from != to {
+        unsafe { (api().surface_set_content_scale)(surface as Surface, to, to) };
+        wlogf!(dst, "[drag] content scale {} -> {}", from, to);
+    }
+}
+
+/// After a pane left `src` for `dst`: the tab it emptied goes, a window left
+/// with none closes, and both are laid out again with the pane focused.
+fn settle_after_move(src: HWND, dst: HWND, emptied: Option<TabId>) {
+    if let Some(tab) = emptied {
+        retire_emptied_tab(src, tab);
+    }
+    forget_a_loan_that_went(src);
+    crate::project_session::note(polter_projects::autosave::Change::Layout);
+    if src != dst {
+        // absence: means it was not reached -- the window it left still has a tab, and stays.
+        if count(src) == 0 {
+            wlogf!(src, "[drag] its last pane left; closing the window");
+            crate::winid::close_window_now(src);
+        } else {
+            set_active(src, active_index(src));
+            crate::uia::tabs_changed(src);
+        }
+    }
+    set_active(dst, active_index(dst));
+    crate::uia::tabs_changed(dst);
+    unsafe {
+        let _ = SetForegroundWindow(dst);
+    }
+    focus_active(dst);
+    crate::control_room::request_sync();
+}
+
+/// Take away a tab that a move left with no pane. **Not `destroy_tab_at`**:
+/// there is nothing to free, and the tab is not *closed* -- what was in it
+/// is still open somewhere else, so it is not remembered for reopening, and
+/// its project is not saved one last time with nothing in it.
+fn retire_emptied_tab(frame: HWND, id: TabId) {
+    let gone = {
+        let Some(mut win) = window(frame) else { return };
+        let Some(at) = win.tabs.iter().position(|t| t.id == id) else { return };
+        let front = win.tabs.get(win.active).map(|t| t.id);
+        win.tabs.remove(at);
+        win.active = front.and_then(|f| win.tabs.iter().position(|t| t.id == f)).unwrap_or(at.min(win.tabs.len().saturating_sub(1)));
+        true
+    };
+    if gone {
+        crate::project_session::tab_left(id);
+        wlogf!(frame, "[drag] tab {:?} has no pane left; taken away", id);
+    }
+}
+
+/// Give `pane` a window of its own, its top left at `at` on the screen
+/// (`ghosttySurfaceDragEndedNoTarget`). **Only from a tab that is split**;
+/// a pane alone in its tab already has one.
+pub fn pane_to_new_window(src: HWND, pane: PaneId, at: windows::Win32::Foundation::POINT, hinst: windows::Win32::Foundation::HINSTANCE) -> bool {
+    let split = window(src).is_some_and(|w| w.tabs.iter().any(|t| t.pane(pane).is_some() && t.terminal().is_some_and(|x| x.tree.is_split())));
+    if !split {
+        wlogf!(src, "[drag] pane {} not given a window: it is alone in its tab", pane);
+        return false;
+    }
+    let Some(dest) = crate::create_frame_secondary(hinst) else {
+        wlogf!(src, "[drag] pane {} not given a window: no frame was created", pane);
+        return false;
+    };
+    // Taken before the lock: `take_id` takes it too.
+    let tab_id = TabId(take_id());
+    let may_authorise = may_authorise_until_marked();
+    let moved: Result<PaneMoved, &'static str> = with_windows_mut(|ws| {
+        let si = ws.iter().position(|w| w.frame == src.0 as isize).ok_or("its window is gone")?;
+        let title = ws[si].tabs.iter().find(|t| t.pane(pane).is_some()).map(|t| t.title.clone()).unwrap_or_default();
+        let di = ws.iter().position(|w| w.frame == dest.0 as isize).ok_or("the new window was never registered")?;
+        let (p, emptied) = take_pane(ws, si, pane, true)?;
+        let (hwnd, surface) = (p.hwnd, p.surface);
+        let cwd = p.cwd.clone();
+        let own = p.title.clone();
+        ws[di].tabs.push(Tab {
+            id: tab_id,
+            body: Body::Terminal(Terminal { tree: Tree::with_pane(pane), panes: vec![p], focused: pane }),
+            title: own.unwrap_or(title),
+            color: 0,
+            role: 0,
+            shielded: false,
+            held: false,
+            may_authorise,
+            worker_mentions: false,
+            persona: None,
+            cwd,
+            title_override: None,
+        });
+        ws[di].active = 0;
+        Ok(PaneMoved { hwnd, surface, emptied })
+    });
+    let m = match moved {
+        Ok(m) => m,
+        Err(why) => {
+            wlogf!(src, "[drag] pane {} not given a window: {}; closing the empty one", pane, why);
+            crate::winid::close_window_now(dest);
+            return false;
+        }
+    };
+    rehome_pane(src, dest, m.hwnd, m.surface);
+    place_at(dest, at);
+    wlogf!(src, "[drag] pane {} given a window of its own: {}", pane, crate::winid::tag(dest));
+    settle_after_move(src, dest, m.emptied);
+    true
+}
+
+/// Put a window's top left at a point on the screen, keeping its size.
+pub fn place_at(frame: HWND, at: windows::Win32::Foundation::POINT) {
+    unsafe {
+        let _ = SetWindowPos(frame, None, at.x, at.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+/// Move tab `id` of `src` into `dst`'s strip at `index` (a tab dragged onto
+/// another window). A window left with no tab closes. Answers whether it
+/// moved.
+pub fn move_tab_to_window(src: HWND, id: TabId, dst: HWND, index: usize) -> bool {
+    if src == dst {
+        move_tab_to(src, id, index);
+        return true;
+    }
+    let moved: Result<(Vec<isize>, Vec<usize>), &'static str> = with_windows_mut(|ws| {
+        let si = ws.iter().position(|w| w.frame == src.0 as isize).ok_or("its window is gone")?;
+        let di = ws.iter().position(|w| w.frame == dst.0 as isize).ok_or("the window it was let go over is gone")?;
+        let at = ws[si].tabs.iter().position(|t| t.id == id).ok_or("it is not in its window any more")?;
+        let front = ws[si].tabs.get(ws[si].active).map(|t| t.id);
+        let tab = ws[si].tabs.remove(at);
+        ws[si].active = front.and_then(|f| ws[si].tabs.iter().position(|t| t.id == f)).unwrap_or(at.min(ws[si].tabs.len().saturating_sub(1)));
+        let hwnds: Vec<isize> = match &tab.body {
+            Body::Terminal(t) => t.panes.iter().map(|p| p.hwnd).collect(),
+            Body::ControlRoom(r) => vec![r.hwnd],
+        };
+        let surfaces: Vec<usize> = tab.panes().iter().map(|p| p.surface).collect();
+        let index = index.min(ws[di].tabs.len());
+        ws[di].tabs.insert(index, tab);
+        ws[di].active = index;
+        Ok((hwnds, surfaces))
+    });
+    let (hwnds, surfaces) = match moved {
+        Ok(m) => m,
+        Err(why) => {
+            wlogf!(src, "[drag] tab {:?} not moved to {}: {}", id, crate::winid::tag(dst), why);
+            return false;
+        }
+    };
+    for h in &hwnds {
+        if let Err(e) = unsafe { SetParent(HWND(*h as *mut c_void), Some(dst)) } {
+            wlogf!(dst, "[drag] SetParent failed for {:?}: {e:?}", h);
+        }
+    }
+    let (from, to) = (scale_of(src), scale_of(dst));
+    if from != to {
+        for s in surfaces {
+            unsafe { (api().surface_set_content_scale)(s as Surface, to, to) };
+        }
+    }
+    wlogf!(src, "[drag] tab {:?} moved into {} at {}", id, crate::winid::tag(dst), index);
+    crate::project_session::note(polter_projects::autosave::Change::Pages);
+    // absence: means it was not reached -- the window it left still has a tab, and stays.
+    if count(src) == 0 {
+        wlogf!(src, "[drag] its only tab left; closing the window");
+        crate::winid::close_window_now(src);
+    } else {
+        set_active(src, active_index(src));
+        crate::uia::tabs_changed(src);
+    }
+    set_active(dst, active_index(dst));
+    crate::uia::tabs_changed(dst);
+    unsafe {
+        let _ = SetForegroundWindow(dst);
+    }
+    crate::control_room::request_sync();
     true
 }
 
@@ -5387,6 +5674,8 @@ pub fn focus_active(frame: HWND) {
         unsafe { (api().surface_set_focus)(s, true) };
         wlogf!(frame, "[focus] pane {} took focus (host asked)", id);
     }
+    // The veil moves off the pane that has the keyboard now (task 1549).
+    crate::panedrag::sync(frame);
 }
 
 pub fn set_initial_input(cmd: &str) {
@@ -5783,6 +6072,18 @@ pub fn surface_of(hwnd: HWND) -> Surface {
 /// first message a pane receives. Reach for `pane_of` when you genuinely need
 /// the tab index or the `PaneId`, and then treat `None` as "not yet", not as
 /// "not ours".
+/// The window of pane `pane` of `frame`, when that window has it.
+pub fn pane_hwnd(frame: HWND, pane: PaneId) -> Option<HWND> {
+    let win = window(frame)?;
+    win.tabs.iter().flat_map(|t| t.panes().iter()).find(|p| p.id == pane).map(|p| HWND(p.hwnd as *mut c_void))
+}
+
+/// The tab in front in `frame`.
+pub fn active_tab_id(frame: HWND) -> Option<TabId> {
+    let win = window(frame)?;
+    win.tabs.get(win.active).map(|t| t.id)
+}
+
 pub fn pane_of(hwnd: HWND) -> Option<(HWND, usize, PaneId)> {
     let key = hwnd.0 as isize;
     with_windows(|ws| {
@@ -7355,6 +7656,10 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             // to an arrow here, so the class cursor stays the single place the
             // default is written.
             WM_SETCURSOR => {
+                // Over the pane's handle, the move cursor (task 1549).
+                if (lp.0 & 0xFFFF) as u32 == HTCLIENT as u32 && crate::panedrag::handle_cursor(hwnd) {
+                    return LRESULT(1);
+                }
                 if (lp.0 & 0xFFFF) as u32 == HTCLIENT as u32 {
                     let s = surface_of(hwnd);
                     if !s.is_null() && crate::mouse::apply(hwnd, s as usize) {
@@ -7509,6 +7814,13 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             // that is also how focus moves between them, so it goes through
             // the model rather than straight to SetFocus.
             WM_LBUTTONDOWN => {
+                // **The handle is pressed here, in the terminal's own
+                // window**: its dots are drawn by a click-through layer
+                // above it (`panedrag.rs`). A press on it picks the pane up
+                // and the terminal is told nothing -- no selection starts.
+                if crate::panedrag::handle_press(hwnd, (lp.0 & 0xFFFF) as i16 as i32, ((lp.0 >> 16) & 0xFFFF) as i16 as i32) {
+                    return LRESULT(0);
+                }
                 // **No frame argument any more, and that is the fix.** This
                 // passed `frame_hwnd()` -- the first window -- for a click
                 // that arrived at a pane which may belong to any window.
@@ -7528,6 +7840,13 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
 
             WM_MOUSEMOVE => {
                 mouse_pos(hwnd, lp);
+                crate::panedrag::pane_pointer(hwnd);
+                LRESULT(0)
+            }
+
+            // Asked for by `panedrag::pane_pointer`, for the handle's dots.
+            windows::Win32::UI::Controls::WM_MOUSELEAVE => {
+                crate::panedrag::pane_pointer_left(hwnd);
                 LRESULT(0)
             }
 
