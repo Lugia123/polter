@@ -274,8 +274,8 @@ pub const Host = struct {
     fixSend: *const fn (ctx: *anyopaque, id: Id, text: []const u8) anyerror!void,
     /// Remember the press (`ControlFix.Sent`, `ControlFix.stampOf`).
     fixSent: *const fn (ctx: *anyopaque, stamp: u64) anyerror!void,
-    /// How a moment is written in the paragraph.
-    clock: ControlFix.Clock,
+    /// How the paragraph is written: its moments, and its language.
+    voice: ControlFix.Voice,
 };
 
 fn fieldOf(obj: std.json.ObjectMap, name: []const u8) Refusal!std.json.Value {
@@ -467,7 +467,7 @@ pub fn perform(
             if (card.state == .sent) return error.AlreadyNotified;
             var arena: std.heap.ArenaAllocator = .init(chat.alloc);
             defer arena.deinit();
-            const deliveries = try ControlFix.plan(arena.allocator(), card, host.clock);
+            const deliveries = try ControlFix.plan(arena.allocator(), card, host.voice);
             try ControlFix.deliver(card.key, deliveries, .{
                 .ctx = host.ctx,
                 .agentPresent = host.agentPresent,
@@ -564,7 +564,7 @@ const Recorder = struct {
             .fixPost = fixPost,
             .fixSend = fixSend,
             .fixSent = fixSent,
-            .clock = clock,
+            .voice = .{ .clock = clock, .tr = ControlFix.english },
         };
     }
 
@@ -1170,7 +1170,7 @@ test "ControlRoom act: Fix types the paragraph into the supervisor, keeps it in 
         \\{"act":"fix","group":"web-app"}
     , 1_000);
     try testing.expectEqual(@as(usize, 1), b.rec.fix_posts.items.len);
-    try testing.expect(std.mem.startsWith(u8, b.rec.fix_posts.items[0], "[Polter 修复] 终端 api（0x00000000000000b1）出错了：server_error，12:00。"));
+    try testing.expect(std.mem.startsWith(u8, b.rec.fix_posts.items[0], "[Polter fix] Terminal api (0x00000000000000b1) failed: server_error, 12:00. "));
     try testing.expectEqual(@as(usize, 1), b.rec.fix_typed);
     try testing.expectEqual(@as(?u64, ControlFix.stampOf(term, &failing)), b.rec.fix_marked);
 }

@@ -3692,6 +3692,65 @@ msgstr ""
 msgid "Supervisor notified"
 msgstr ""
 
+#: src/poltergeist/ControlFix.zig:183
+msgid "Terminal {1} ({2})"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:184
+msgid "Terminal {1}"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:185
+msgid "cause unknown"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:187
+msgid "{1}, {2}"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:189
+msgid "{1} failed: {2}."
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:190
+msgid "Your last turn failed: {1}."
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:191
+msgid "Your own last turn failed: {1}."
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:192
+msgid "{1} failures here:"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:194
+msgid ""
+"Read it with terminal_read first to see where it stopped: if it had not "
+"finished, have it carry on (terminal_send it to continue or retry); if it "
+"had finished, have it say one line that it is done (that line clears the "
+"failure), or close it once it is no longer needed. Say in the group when "
+"you have dealt with it."
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:195
+msgid "For each terminal that failed: {1}"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:196
+msgid ""
+"Decide whether your last turn finished: if not, carry on; if it did, say so "
+"in one line."
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:197
+msgid "For yourself: {1}"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:199
+msgid "{1} {2}"
+msgstr ""
+
 #: windows/control-room/src/act.rs:255
 msgid "It is no longer failing. Nothing was sent."
 msgstr ""

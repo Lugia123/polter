@@ -1116,7 +1116,7 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
             .fixPost = controlActFixPost,
             .fixSend = controlActFixSend,
             .fixSent = controlActFixSent,
-            .clock = controlFixClock,
+            .voice = .{ .clock = controlFixClock, .tr = controlFixTr },
         },
         self.poltergeistElapsedMs(),
         @intCast(@max(0, self.poltergeistWallMs())),
@@ -1174,6 +1174,13 @@ fn controlActFixSend(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, text: []const u
 fn controlActFixSent(ctx: *anyopaque, stamp: u64) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     try self.control_fix_sent.mark(self.alloc, stamp);
+}
+
+/// The paragraph "Fix" types, in the interface's language: the one the
+/// core was started in (`LANG`, which the macOS app sets from its own
+/// language choice), as every other word the core writes.
+fn controlFixTr(msgid: [:0]const u8) []const u8 {
+    return std.mem.span(internal_os.i18n._(msgid.ptr));
 }
 
 /// `MM-DD HH:MM`, in the person's timezone: when a failure happened, in

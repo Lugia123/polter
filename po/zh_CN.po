@@ -2300,6 +2300,67 @@ msgstr "约好的 hook 没有来"
 msgid "{1}: {2}"
 msgstr "{1}：{2}"
 
+#: src/poltergeist/ControlFix.zig:183
+msgid "Terminal {1} ({2})"
+msgstr "终端 {1}（{2}）"
+
+#: src/poltergeist/ControlFix.zig:184
+msgid "Terminal {1}"
+msgstr "终端 {1} "
+
+#: src/poltergeist/ControlFix.zig:185
+msgid "cause unknown"
+msgstr "原因不明"
+
+#: src/poltergeist/ControlFix.zig:187
+msgid "{1}, {2}"
+msgstr "{1}，{2}"
+
+#: src/poltergeist/ControlFix.zig:189
+msgid "{1} failed: {2}."
+msgstr "{1}出错了：{2}。"
+
+#: src/poltergeist/ControlFix.zig:190
+msgid "Your last turn failed: {1}."
+msgstr "你上一轮出错了：{1}。"
+
+#: src/poltergeist/ControlFix.zig:191
+msgid "Your own last turn failed: {1}."
+msgstr "你自己上一轮出错了：{1}。"
+
+#: src/poltergeist/ControlFix.zig:192
+msgid "{1} failures here:"
+msgstr "这里有 {1} 处出错："
+
+#: src/poltergeist/ControlFix.zig:194
+msgid ""
+"Read it with terminal_read first to see where it stopped: if it had not "
+"finished, have it carry on (terminal_send it to continue or retry); if it "
+"had finished, have it say one line that it is done (that line clears the "
+"failure), or close it once it is no longer needed. Say in the group when "
+"you have dealt with it."
+msgstr ""
+"请先 terminal_read 看它停在哪：没做完，就让它接着做（terminal_send "
+"叫它继续或重试）；已经做完了，就让它回一句完成（这一句会消掉出错），或者在不再需要时关掉它。处理完在群里说一声。"
+
+#: src/poltergeist/ControlFix.zig:195
+msgid "For each terminal that failed: {1}"
+msgstr "对每个出错的终端，{1}"
+
+#: src/poltergeist/ControlFix.zig:196
+msgid ""
+"Decide whether your last turn finished: if not, carry on; if it did, say so "
+"in one line."
+msgstr "请判断上一轮做完没有：没做完就接着做；做完了就回一句完成。"
+
+#: src/poltergeist/ControlFix.zig:197
+msgid "For yourself: {1}"
+msgstr "你自己：{1}"
+
+#: src/poltergeist/ControlFix.zig:199
+msgid "{1} {2}"
+msgstr "{1}{2}"
+
 #: src/poltergeist/ControlRoom.zig:870
 msgid "Screen still for {1} min"
 msgstr "屏幕 {1} 分没动"

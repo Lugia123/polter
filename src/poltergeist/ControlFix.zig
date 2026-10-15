@@ -26,6 +26,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Attention = @import("Attention.zig");
 const Bus = @import("Bus.zig");
+const ControlRoom = @import("ControlRoom.zig");
+const i18n = @import("../os/i18n.zig");
 
 pub const Id = Bus.Id;
 
@@ -147,14 +149,62 @@ pub const Delivery = struct {
 /// string in a test.
 pub const Clock = *const fn (buf: *[19]u8, at_ms: i64) []const u8;
 
-pub const tag = "[Polter 修复]";
+/// A msgid in the person's language: `i18n._` in the app, `english` (the
+/// msgid itself) or a catalogue in a test.
+pub const Tr = *const fn (msgid: [:0]const u8) []const u8;
+
+pub fn english(msgid: [:0]const u8) []const u8 {
+    return msgid;
+}
+
+/// What the paragraph is written with: the clock its moments are read by
+/// and the language its words are in.
+///
+/// **The interface's language**, the one the menus are in: the paragraph
+/// is something the person caused, typed where they may well read it, and
+/// the core already speaks to them in that language wherever it writes
+/// into a terminal itself (the line above a restored scrollback). An agent
+/// reads either.
+pub const Voice = struct {
+    clock: Clock,
+    tr: Tr,
+};
+
+/// What the paragraph starts with, in every language: one string that a
+/// supervisor, its skill (`supervising.md`) and anybody reading the group
+/// can look for, whatever language the person who pressed it uses.
+/// Translated, it would be one marker per language, and the skill would
+/// have to list them all.
+pub const tag = "[Polter fix]";
+
+// The paragraph's words. English msgids; `{1}`, `{2}` filled by
+// `ControlRoom.Say.fill`, as the control room's own sentences are.
+const words = struct {
+    const who = i18n.N_("Terminal {1} ({2})");
+    const who_bare = i18n.N_("Terminal {1}");
+    const unknown = i18n.N_("cause unknown");
+    /// What failed, then when.
+    const what_when = i18n.N_("{1}, {2}");
+    /// Who, then what and when.
+    const failed = i18n.N_("{1} failed: {2}.");
+    const own = i18n.N_("Your last turn failed: {1}.");
+    const own_among = i18n.N_("Your own last turn failed: {1}.");
+    const many = i18n.N_("{1} failures here:");
+    // One literal: `xgettext` reads this file as C and does not follow `++`.
+    const worker_ask = i18n.N_("Read it with terminal_read first to see where it stopped: if it had not finished, have it carry on (terminal_send it to continue or retry); if it had finished, have it say one line that it is done (that line clears the failure), or close it once it is no longer needed. Say in the group when you have dealt with it.");
+    const each_ask = i18n.N_("For each terminal that failed: {1}");
+    const own_ask = i18n.N_("Decide whether your last turn finished: if not, carry on; if it did, say so in one line.");
+    const self_ask = i18n.N_("For yourself: {1}");
+    /// Two sentences side by side: a space in English, nothing in Chinese.
+    const join = i18n.N_("{1} {2}");
+};
 
 /// Who is told, and what. One paragraph to the supervisor when there is
 /// one, naming every failed terminal under the card; otherwise one to each
 /// failed terminal, about itself.
-pub fn plan(arena: Allocator, card: Card, clock: Clock) Allocator.Error![]const Delivery {
+pub fn plan(arena: Allocator, card: Card, voice: Voice) Allocator.Error![]const Delivery {
     if (card.steward) |steward| {
-        const text = try paragraph(arena, steward, card.failing, clock);
+        const text = try paragraph(arena, steward, card.failing, voice);
         const out = try arena.alloc(Delivery, 1);
         out[0] = .{ .to = steward, .text = text };
         return out;
@@ -162,79 +212,75 @@ pub fn plan(arena: Allocator, card: Card, clock: Clock) Allocator.Error![]const 
     const out = try arena.alloc(Delivery, card.failing.len);
     for (card.failing, out) |f, *d| d.* = .{
         .to = f.id,
-        .text = try paragraph(arena, f.id, &.{f}, clock),
+        .text = try paragraph(arena, f.id, &.{f}, voice),
     };
     return out;
 }
 
 /// The paragraph typed into `to` about `failing`, of which `to` itself may
-/// be one.
-pub fn paragraph(arena: Allocator, to: Id, failing: []const Failing, clock: Clock) Allocator.Error![]const u8 {
-    var out: std.Io.Writer.Allocating = .init(arena);
-    writeParagraph(&out.writer, to, failing, clock) catch return error.OutOfMemory;
-    return out.written();
+/// be one: the tag, then the sentences in the person's language.
+pub fn paragraph(arena: Allocator, to: Id, failing: []const Failing, voice: Voice) Allocator.Error![]const u8 {
+    const body = try sentences(arena, to, failing, voice);
+    return std.fmt.allocPrint(arena, "{s} {s}", .{ tag, body });
 }
 
-fn writeParagraph(w: *std.Io.Writer, to: Id, failing: []const Failing, clock: Clock) std.Io.Writer.Error!void {
+fn fill(arena: Allocator, voice: Voice, msgid: [:0]const u8, args: []const []const u8) Allocator.Error![]const u8 {
+    return ControlRoom.Say.fill(arena, voice.tr(msgid), args);
+}
+
+fn join(arena: Allocator, voice: Voice, a: []const u8, b: []const u8) Allocator.Error![]const u8 {
+    return fill(arena, voice, words.join, &.{ a, b });
+}
+
+fn sentences(arena: Allocator, to: Id, failing: []const Failing, voice: Voice) Allocator.Error![]const u8 {
     var own: ?Failing = null;
     var workers: usize = 0;
     for (failing) |f| {
         if (f.id == to) own = f else workers += 1;
     }
 
-    // One of them: the sentence the supervisor wrote, word for word.
+    // One of them: the sentence the supervisor wrote.
     if (failing.len == 1) {
         const f = failing[0];
-        if (own != null) {
-            try w.print("{s} 你上一轮出错了：", .{tag});
-            try writeWhatWhen(w, f, clock);
-            try w.writeAll("。" ++ own_ask);
-        } else {
-            try w.print("{s} ", .{tag});
-            try writeWho(w, f);
-            try w.writeAll("出错了：");
-            try writeWhatWhen(w, f, clock);
-            try w.writeAll("。" ++ worker_ask);
-        }
-        return;
+        if (own != null) return join(
+            arena,
+            voice,
+            try fill(arena, voice, words.own, &.{try whatWhen(arena, f, voice)}),
+            voice.tr(words.own_ask),
+        );
+        return join(
+            arena,
+            voice,
+            try fill(arena, voice, words.failed, &.{ try who(arena, f, voice), try whatWhen(arena, f, voice) }),
+            voice.tr(words.worker_ask),
+        );
     }
 
     // Several: each named in turn, then what to do about each kind.
-    try w.print("{s} 这里有 {d} 处出错：", .{ tag, failing.len });
-    var first = true;
+    var out = try fill(arena, voice, words.many, &.{try std.fmt.allocPrint(arena, "{d}", .{failing.len})});
     for (failing) |f| {
-        if (!first) try w.writeAll("；");
-        first = false;
-        if (f.id == to) {
-            try w.writeAll("你自己上一轮出错了：");
-        } else {
-            try writeWho(w, f);
-            try w.writeAll("出错了：");
-        }
-        try writeWhatWhen(w, f, clock);
+        const said = if (f.id == to)
+            try fill(arena, voice, words.own_among, &.{try whatWhen(arena, f, voice)})
+        else
+            try fill(arena, voice, words.failed, &.{ try who(arena, f, voice), try whatWhen(arena, f, voice) });
+        out = try join(arena, voice, out, said);
     }
-    try w.writeAll("。");
-    if (workers > 0) try w.writeAll("对每个出错的终端，" ++ worker_ask);
-    if (own != null) try w.writeAll("你自己：" ++ own_ask);
+    if (workers > 0) out = try join(arena, voice, out, try fill(arena, voice, words.each_ask, &.{voice.tr(words.worker_ask)}));
+    if (own != null) out = try join(arena, voice, out, try fill(arena, voice, words.self_ask, &.{voice.tr(words.own_ask)}));
+    return out;
 }
 
-const worker_ask = "请先 terminal_read 看它停在哪：没做完，就让它接着做（terminal_send 叫它继续或重试）；" ++
-    "已经做完了，就让它回一句完成（这一句会消掉出错），或者在不再需要时关掉它。处理完在群里说一声。";
-const own_ask = "请判断上一轮做完没有：没做完就接着做；做完了就回一句完成。";
-
-fn writeWho(w: *std.Io.Writer, f: Failing) std.Io.Writer.Error!void {
-    if (f.title.len > 0) {
-        try w.print("终端 {s}（0x{x:0>16}）", .{ f.title, f.id });
-    } else {
-        try w.print("终端 0x{x:0>16} ", .{f.id});
-    }
+fn who(arena: Allocator, f: Failing, voice: Voice) Allocator.Error![]const u8 {
+    const id = try std.fmt.allocPrint(arena, "0x{x:0>16}", .{f.id});
+    if (f.title.len > 0) return fill(arena, voice, words.who, &.{ f.title, id });
+    return fill(arena, voice, words.who_bare, &.{id});
 }
 
-fn writeWhatWhen(w: *std.Io.Writer, f: Failing, clock: Clock) std.Io.Writer.Error!void {
-    try w.writeAll(if (f.what.len > 0) f.what else "原因不明");
+fn whatWhen(arena: Allocator, f: Failing, voice: Voice) Allocator.Error![]const u8 {
+    const what = if (f.what.len > 0) f.what else voice.tr(words.unknown);
     var buf: [19]u8 = undefined;
-    const at = clock(&buf, @intCast(@min(f.at_wall_ms, std.math.maxInt(i64))));
-    try w.print("，{s}", .{at});
+    const at = voice.clock(&buf, @intCast(@min(f.at_wall_ms, std.math.maxInt(i64))));
+    return fill(arena, voice, words.what_when, &.{ what, at });
 }
 
 /// What delivering needs from outside this file.
@@ -317,7 +363,12 @@ test "ControlFix: the button is on a card that reads Failed, and on no other" {
     }
 }
 
-test "ControlFix: a worker that failed: the supervisor is told, in the sentence the supervisor wrote" {
+const en: Voice = .{ .clock = fixedClock, .tr = english };
+
+const worker_ask_en = "Read it with terminal_read first to see where it stopped: if it had not finished, have it carry on (terminal_send it to continue or retry); if it had finished, have it say one line that it is done (that line clears the failure), or close it once it is no longer needed. Say in the group when you have dealt with it.";
+const own_ask_en = "Decide whether your last turn finished: if not, carry on; if it did, say so in one line.";
+
+test "ControlFix: a worker that failed: the supervisor is told who, with what and when, and what to do" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const out = try plan(arena.allocator(), .{
@@ -325,13 +376,11 @@ test "ControlFix: a worker that failed: the supervisor is told, in the sentence 
         .steward = boss,
         .failing = &.{failed(w1, "api", "server_error", 7)},
         .state = .offered,
-    }, fixedClock);
+    }, en);
     try testing.expectEqual(@as(usize, 1), out.len);
     try testing.expectEqual(boss, out[0].to);
     try testing.expectEqualStrings(
-        "[Polter 修复] 终端 api（0x00000000000000a1）出错了：server_error，T7。" ++
-            "请先 terminal_read 看它停在哪：没做完，就让它接着做（terminal_send 叫它继续或重试）；" ++
-            "已经做完了，就让它回一句完成（这一句会消掉出错），或者在不再需要时关掉它。处理完在群里说一声。",
+        "[Polter fix] Terminal api (0x00000000000000a1) failed: server_error, T7. " ++ worker_ask_en,
         out[0].text,
     );
 }
@@ -344,14 +393,13 @@ test "ControlFix: the supervisor that failed is told about itself" {
         .steward = boss,
         .failing = &.{failed(boss, "boss", "rate_limit", 9)},
         .state = .offered,
-    }, fixedClock);
+    }, en);
     try testing.expectEqual(@as(usize, 1), out.len);
     try testing.expectEqual(boss, out[0].to);
-    try testing.expectEqualStrings(
-        "[Polter 修复] 你上一轮出错了：rate_limit，T9。请判断上一轮做完没有：没做完就接着做；做完了就回一句完成。",
-        out[0].text,
-    );
+    try testing.expectEqualStrings("[Polter fix] Your last turn failed: rate_limit, T9. " ++ own_ask_en, out[0].text);
 }
+
+const three = [_]Failing{ failed(w1, "api", "server_error", 7), failed(w2, "", "", 8), failed(boss, "boss", "rate_limit", 9) };
 
 test "ControlFix: several failed under one card: one paragraph, each named in turn" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
@@ -359,19 +407,18 @@ test "ControlFix: several failed under one card: one paragraph, each named in tu
     const out = try plan(arena.allocator(), .{
         .key = .{ .group = "build" },
         .steward = boss,
-        .failing = &.{ failed(w1, "api", "server_error", 7), failed(w2, "", "", 8), failed(boss, "boss", "rate_limit", 9) },
+        .failing = &three,
         .state = .offered,
-    }, fixedClock);
+    }, en);
     try testing.expectEqual(@as(usize, 1), out.len);
     try testing.expectEqual(boss, out[0].to);
     try testing.expectEqualStrings(
-        "[Polter 修复] 这里有 3 处出错：" ++
-            "终端 api（0x00000000000000a1）出错了：server_error，T7；" ++
-            "终端 0x00000000000000a2 出错了：原因不明，T8；" ++
-            "你自己上一轮出错了：rate_limit，T9。" ++
-            "对每个出错的终端，请先 terminal_read 看它停在哪：没做完，就让它接着做（terminal_send 叫它继续或重试）；" ++
-            "已经做完了，就让它回一句完成（这一句会消掉出错），或者在不再需要时关掉它。处理完在群里说一声。" ++
-            "你自己：请判断上一轮做完没有：没做完就接着做；做完了就回一句完成。",
+        "[Polter fix] 3 failures here: " ++
+            "Terminal api (0x00000000000000a1) failed: server_error, T7. " ++
+            "Terminal 0x00000000000000a2 failed: cause unknown, T8. " ++
+            "Your own last turn failed: rate_limit, T9. " ++
+            "For each terminal that failed: " ++ worker_ask_en ++ " " ++
+            "For yourself: " ++ own_ask_en,
         out[0].text,
     );
 }
@@ -384,17 +431,63 @@ test "ControlFix: no supervisor: each failed terminal is told about itself" {
         .steward = null,
         .failing = &.{ failed(w1, "api", "server_error", 7), failed(w2, "web", "rate_limit", 8) },
         .state = .offered,
-    }, fixedClock);
+    }, en);
     try testing.expectEqual(@as(usize, 2), out.len);
     try testing.expectEqual(w1, out[0].to);
-    try testing.expectEqualStrings(
-        "[Polter 修复] 你上一轮出错了：server_error，T7。请判断上一轮做完没有：没做完就接着做；做完了就回一句完成。",
-        out[0].text,
-    );
+    try testing.expectEqualStrings("[Polter fix] Your last turn failed: server_error, T7. " ++ own_ask_en, out[0].text);
     try testing.expectEqual(w2, out[1].to);
+    try testing.expectEqualStrings("[Polter fix] Your last turn failed: rate_limit, T8. " ++ own_ask_en, out[1].text);
+}
+
+/// `po/zh_CN.po` as a translator, the way gettext reads it: what the
+/// catalogue says, or the msgid where it says nothing.
+const Zh = struct {
+    var catalogue: []const u8 = "";
+    var arena: ?*std.heap.ArenaAllocator = null;
+
+    fn tr(msgid: [:0]const u8) []const u8 {
+        const found = i18n.po_text.lookup(arena.?.allocator(), catalogue, msgid) catch return msgid;
+        const said = found orelse return msgid;
+        return if (said.len == 0) msgid else said;
+    }
+};
+
+test "ControlFix: in Chinese, every word of the paragraph comes from zh_CN.po, and the tag does not change" {
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    Zh.catalogue = std.Io.Dir.cwd().readFileAlloc(threaded.io(), "po/zh_CN.po", a, .limited(4 * 1024 * 1024)) catch |err| {
+        std.debug.print("cannot read po/zh_CN.po ({t}). Run `zig build test` from the repository root.\n", .{err});
+        return error.SourceUnreadable;
+    };
+    Zh.arena = &arena;
+    defer Zh.arena = null;
+    const zh: Voice = .{ .clock = fixedClock, .tr = Zh.tr };
+
+    const worker_ask_zh = "请先 terminal_read 看它停在哪：没做完，就让它接着做（terminal_send 叫它继续或重试）；" ++
+        "已经做完了，就让它回一句完成（这一句会消掉出错），或者在不再需要时关掉它。处理完在群里说一声。";
+    const own_ask_zh = "请判断上一轮做完没有：没做完就接着做；做完了就回一句完成。";
+
+    const worker = try plan(a, .{ .key = .{ .group = "build" }, .steward = boss, .failing = &.{three[0]}, .state = .offered }, zh);
     try testing.expectEqualStrings(
-        "[Polter 修复] 你上一轮出错了：rate_limit，T8。请判断上一轮做完没有：没做完就接着做；做完了就回一句完成。",
-        out[1].text,
+        "[Polter fix] 终端 api（0x00000000000000a1）出错了：server_error，T7。" ++ worker_ask_zh,
+        worker[0].text,
+    );
+
+    const own = try plan(a, .{ .key = .{ .group = "build" }, .steward = boss, .failing = &.{three[2]}, .state = .offered }, zh);
+    try testing.expectEqualStrings("[Polter fix] 你上一轮出错了：rate_limit，T9。" ++ own_ask_zh, own[0].text);
+
+    const many = try plan(a, .{ .key = .{ .group = "build" }, .steward = boss, .failing = &three, .state = .offered }, zh);
+    try testing.expectEqualStrings(
+        "[Polter fix] 这里有 3 处出错：" ++
+            "终端 api（0x00000000000000a1）出错了：server_error，T7。" ++
+            "终端 0x00000000000000a2 出错了：原因不明，T8。" ++
+            "你自己上一轮出错了：rate_limit，T9。" ++
+            "对每个出错的终端，" ++ worker_ask_zh ++
+            "你自己：" ++ own_ask_zh,
+        many[0].text,
     );
 }
 
