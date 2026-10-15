@@ -719,6 +719,9 @@
 /* 总控台：右栏总管框标题条上，名字后面说明身份的字 */
 "Supervisor" = "总管";
 
+/* 把标签拖到分屏上时：标签里有终端借给了总控台，不能并入 */
+"This tab can't go into a pane: one of its terminals is in the Control Room." = "这个标签不能并入分屏：它有一个终端在总控台里。";
+
 /* 总控台：右栏的总管终端 */
 "Showing in the control room" = "界面在总控台";
 "Click to switch here" = "点击切换到这里";

@@ -370,6 +370,9 @@ class AppDelegate: NSObject,
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A window tab dragged onto a pane goes into it (TabIntoPane).
+        TabIntoPaneFollower.shared.install()
+
         // The Dock icon says how many terminals are waiting for the person,
         // whenever the core says that changed. The label is set directly:
         // nothing here asks for permission to notify.

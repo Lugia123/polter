@@ -265,6 +265,93 @@ struct SplitStackTests {
         #expect(refusal { _ = try f.tree.unstacking(f.d, direction: .right) } == .viewNotFound)
     }
 
+    // MARK: A tab dropped onto a pane
+
+    /// A tab of three panes, x | (y over z), with w stacked behind z: four
+    /// terminals in the order x, y, z, w. The keyboard is on y.
+    private struct DroppedTab {
+        let x = MockView(), y = MockView(), z = MockView(), w = MockView()
+        let tree: Tree
+
+        init() throws {
+            var tree = Tree(view: x)
+            tree = try tree.inserting(view: y, at: x, direction: .right)
+            tree = try tree.inserting(view: z, at: y, direction: .down)
+            tree = try tree.stacking(w, onto: z)
+            tree = try tree.showing(z)
+            self.tree = tree
+        }
+    }
+
+    @Test func aTabOfSeveralDroppedOnAPaneOfOneBecomesOneStackedPane() throws {
+        let target = MockView()
+        let t = try DroppedTab()
+        let tree = try Tree(view: target).inserting(tab: t.tree, showing: t.y, at: target, direction: .left)
+        sound(tree)
+
+        // Two panes: the new one on the side it was dropped, showing y.
+        #expect(ids(tree.shownLeaves()) == ids([t.y, target]))
+        // Every terminal of the tab is in it, in the tab's order.
+        let stack = try only(tree)
+        #expect(ids(stack.members) == ids([t.x, t.y, t.z, t.w]))
+        #expect(stack.shown == t.y.id)
+        #expect(tree.count == 5)
+    }
+
+    @Test func aTabOfSeveralDroppedOnOnePaneOfSeveralStacksBesideThatPane() throws {
+        let f = try Fixture()
+        let t = try DroppedTab()
+        let tree = try f.tree.inserting(tab: t.tree, showing: t.y, at: f.b, direction: .down)
+        sound(tree)
+        #expect(ids(tree.shownLeaves()) == ids([f.a, f.b, t.y, f.c]))
+        let stack = try only(tree)
+        #expect(ids(stack.members) == ids([t.x, t.y, t.z, t.w]))
+        #expect(stack.shown == t.y.id)
+        #expect(ids(tree.members()) == ids([f.a, f.b, t.x, t.y, t.z, t.w, f.c]))
+    }
+
+    @Test func aTabOfOneDroppedOnAPaneIsAnOrdinaryPane() throws {
+        let x = MockView()
+        let tab = Tree(view: x)
+
+        let target = MockView()
+        let one = try Tree(view: target).inserting(tab: tab, showing: x, at: target, direction: .right)
+        sound(one)
+        #expect(ids(one.shownLeaves()) == ids([target, x]))
+        #expect(one.stacks.isEmpty)
+
+        let f = try Fixture()
+        let several = try f.tree.inserting(tab: tab, showing: x, at: f.a, direction: .up)
+        sound(several)
+        #expect(ids(several.shownLeaves()) == ids([x, f.a, f.b, f.c]))
+        #expect(several.stacks.isEmpty)
+    }
+
+    @Test func aTabDroppedOnAStackedPaneGoesBesideThatPaneAndLeavesItsStack() throws {
+        let f = try Fixture()
+        let stacked = try f.tree.stacking(f.d, onto: f.b)
+        let t = try DroppedTab()
+        // Named by the terminal behind: still that pane.
+        let tree = try stacked.inserting(tab: t.tree, showing: t.w, at: f.b, direction: .right)
+        sound(tree)
+        #expect(ids(tree.shownLeaves()) == ids([f.a, f.d, t.w, f.c]))
+        #expect(tree.stacks.count == 2)
+        #expect(ids(tree.stack(of: f.b)?.members ?? []) == ids([f.b, f.d]))
+        #expect(ids(tree.stack(of: t.x)?.members ?? []) == ids([t.x, t.y, t.z, t.w]))
+        #expect(tree.stack(of: t.x)?.shown == t.w.id)
+    }
+
+    @Test func aTabDropRefusesATerminalAlreadyHereAShownOneNotInTheTabAndATargetNotHere() throws {
+        let f = try Fixture()
+        let t = try DroppedTab()
+        #expect(refusal { _ = try f.tree.inserting(tab: t.tree, showing: f.a, at: f.b, direction: .left) }
+            == .viewNotFound)
+        #expect(refusal { _ = try f.tree.inserting(tab: t.tree, showing: t.x, at: f.d, direction: .left) }
+            == .viewNotFound)
+        #expect(refusal { _ = try f.tree.inserting(tab: f.tree, showing: f.a, at: f.b, direction: .left) }
+            == .viewAlreadyPresent)
+    }
+
     // MARK: Zoom
 
     @Test func theZoomStaysOnThePaneWhenWhatItShowsChanges() throws {

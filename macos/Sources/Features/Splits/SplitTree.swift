@@ -1520,6 +1520,30 @@ extension SplitTree {
         }
         return try without.inserting(view: view, at: pane, direction: direction)
     }
+
+    /// Every terminal of `tab` made one new pane beside the pane `target`
+    /// is in: a tab dropped onto a pane.
+    ///
+    /// The new pane holds them in `tab`'s order (`members()`: pane by pane,
+    /// and inside a pane in the order of its stack) and shows `shown`, the
+    /// one `tab` had the keyboard on. A tab of one terminal makes an
+    /// ordinary pane, as `inserting(view:at:direction:)` does: one is not a
+    /// stack. `tab`'s splits are not kept -- the tab becomes one pane.
+    func inserting(tab: Self, showing shown: ViewType, at target: ViewType, direction: NewDirection) throws -> Self {
+        let incoming = tab.members()
+        guard incoming.contains(where: { $0 === shown }) else { throw SplitError.viewNotFound }
+        guard !incoming.contains(where: { view in contains { $0 === view } }) else {
+            throw SplitError.viewAlreadyPresent
+        }
+        guard let pane = self.shown(for: target) else { throw SplitError.viewNotFound }
+
+        let inserted = try inserting(view: shown, at: pane, direction: direction)
+        guard incoming.count > 1 else { return inserted }
+        return .init(
+            root: inserted.root,
+            zoomed: inserted.zoomed,
+            stacks: inserted.stacks + [Stack(shown: shown.id, members: incoming)])
+    }
 }
 
 // MARK: SplitTree Combine
