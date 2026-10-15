@@ -293,3 +293,26 @@ pub fn paint(frame: HWND, hdc: HDC, below: RECT) -> bool {
     }
     true
 }
+
+/// The pane whose title is under `(x, y)`, in the frame window's pixels;
+/// none where there is no title (task 1549). A title is the band of a frame
+/// above the terminal's window: from the frame's top to the well's.
+pub fn title_at(frame: HWND, x: i32, y: i32) -> Option<PaneId> {
+    let win = tabs::window(frame)?;
+    if !win.pane_frames.ground {
+        return None;
+    }
+    let scale = win.scale.max(0.1);
+    win.pane_frames.panes.iter().find_map(|one| {
+        let drawn = one.drawn.as_ref()?;
+        let well = pane::well_px(one.rect, drawn.wears, scale);
+        let inside = x >= one.rect.x && x < one.rect.right() && y >= one.rect.y && y < well.y;
+        inside.then_some(one.pane)
+    })
+}
+
+/// Where each pane showing in the tab in front is, frame and all, in the
+/// frame window's pixels: what a dragged pane can be let go on.
+pub fn showing(frame: HWND) -> Vec<(PaneId, Px)> {
+    tabs::window(frame).map(|w| w.pane_frames.panes.iter().map(|p| (p.pane, p.rect)).collect()).unwrap_or_default()
+}

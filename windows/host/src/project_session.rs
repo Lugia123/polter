@@ -362,6 +362,27 @@ pub fn save_all() {
 /// open. **Its page stays in the project.**
 ///
 /// Called while the tab and its panes are all still there.
+/// A tab that a move left with no pane has been taken away (task 1549).
+/// **Not `tab_closing`**: what was in it is open somewhere else, so it is not
+/// written one last time with nothing in it -- it simply stops being one of
+/// its project's open pages.
+pub fn tab_left(tab: TabId) {
+    let known = OPEN.with(|o| o.try_borrow().ok().is_some_and(|o| o.iter().any(|p| p.tabs.iter().any(|(t, _)| *t == tab))));
+    if !known {
+        return;
+    }
+    OPEN.with(|o| {
+        if let Ok(mut open) = o.try_borrow_mut() {
+            for p in open.iter_mut() {
+                p.tabs.retain(|(t, _)| *t != tab);
+            }
+            open.retain(|p| !p.tabs.is_empty());
+        }
+    });
+    state();
+    arm_timer();
+}
+
 pub fn tab_closing(frame: HWND, tab: TabId) {
     let Some(file) = OPEN.with(|o| o.try_borrow().ok()?.iter().find(|p| p.tabs.iter().any(|(t, _)| *t == tab)).map(|p| p.file.clone())) else {
         return;
