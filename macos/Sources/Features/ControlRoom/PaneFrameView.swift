@@ -90,8 +90,20 @@ struct PaneFrameChrome: ViewModifier {
     /// empty, and what is framed is the same view either way.
     var stack: PaneStack?
     var stackActions = PaneStackActions()
+    /// Room at the title's right end for the pane's close button, which
+    /// the split view lays over it (task 1582). Off in the control room.
+    var closeRoom = false
 
     @Environment(\.colorScheme) private var scheme
+
+    /// From the frame's edge to its title's text, left and right.
+    static func barPadding(for wears: PaneFrame.Kind) -> CGFloat {
+        switch wears {
+        case .supervisor: CGFloat(Look.Space.supervisorBezel) + CGFloat(Look.Pane.supervisorBarPaddingX)
+        case .worker: CGFloat(Look.Pane.barPaddingX)
+        case .plain: CGFloat(Look.Pane.plainTitleInsetX)
+        }
+    }
 
     func body(content: Content) -> some View {
         let theme = Look.theme(scheme)
@@ -221,11 +233,7 @@ struct PaneFrameChrome: ViewModifier {
     @ViewBuilder
     private func overFrame(_ theme: Look.Theme) -> some View {
         if let wears {
-            let padding: CGFloat = switch wears {
-            case .supervisor: CGFloat(Look.Space.supervisorBezel) + CGFloat(Look.Pane.supervisorBarPaddingX)
-            case .worker: CGFloat(Look.Pane.barPaddingX)
-            case .plain: CGFloat(Look.Pane.plainTitleInsetX)
-            }
+            let padding = Self.barPadding(for: wears)
             ZStack {
                 VStack(spacing: 0) {
                     // Under a strip the bar is still there and says
@@ -234,6 +242,11 @@ struct PaneFrameChrome: ViewModifier {
                     PaneFrameBar(wears: wears, title: stack == nil ? title : nil, caption: stack == nil ? caption : nil)
                         .frame(height: Self.room(for: wears).top)
                         .padding(.horizontal, padding)
+                        // The close button's place, kept whether or not it
+                        // shows, so the status does not move under the
+                        // pointer (task 1582).
+                        .padding(.trailing, closeRoom && stack == nil
+                            ? CGFloat(Look.StackTab.closeGap) + CGFloat(Look.StackTab.closeButton) : 0)
                     Spacer(minLength: 0)
                 }
                 switch wears {

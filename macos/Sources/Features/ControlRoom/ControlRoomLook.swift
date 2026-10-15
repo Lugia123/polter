@@ -249,23 +249,25 @@ enum ControlRoomLook {
         static let separatorHeight: Double = 12.0
         /// Source: design v17, src/style.css.
         static let addButton: Double = 28.0
+        /// Each tab's close button at its right end, after the glyph (task 1582): the window tab's `close`. Its place is kept in every tab whether or not it is showing, so a tab does not change width when the pointer comes over it.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let closeButton: Double = 16.0
+        /// Between a tab's glyph and its close button.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let closeGap: Double = 4.0
+        /// How wide the fade is at an end of the tabs when more of them are scrolled out of sight that way (task 1582, in place of the `more` menu).
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let scrollFade: Double = 16.0
         /// From the status at the right end of the strip to the strip's right edge. In a supervisor's frame this is measured inside the border, like `inset`.
         /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
         static let trailing: Double = 12.0
         /// The least between the plus and the status at the right end.
         /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
         static let statusGap: Double = 8.0
-        /// The `more` button that stands for the tabs there was no room for, between the last tab and the plus: the dots with how many tabs they stand for, and beside them the place for the glyph of the most pressing terminal among those (6 + dots and count 30 + 4 + glyph 14 + 6). The glyph's place is kept whether or not there is one, so that the strip does not move when one of them starts waiting; the count is room for two digits.
-        /// TENTATIVE (other candidate: 44). The design draws no strip with more tabs than fit. 44 is the dots without the count: narrower, and it does not say whether one terminal is behind them or nine.
-        /// Source: not in the design: chosen while building the mac list, to be ruled on.
-        static let moreButton: Double = 60.0
-        /// Between the dots and the glyph beside them.
-        /// Source: not in the design: chosen while building the mac list, to be ruled on.
-        static let moreGlyphGap: Double = 4.0
         /// How wide one character of a tab's name is taken to be where there is no font to measure with: what the two hosts are held to one answer by. A wide character is two.
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
         static let nominalCellWidth: Double = 8.0
-        /// The narrowest a tab is squeezed to before the rest go behind a `more` menu at the right end. 104 is the design's eight-letter tab: at that a name keeps seven characters and its ellipsis.
+        /// The narrowest a tab is squeezed to; past that the tabs scroll sideways (task 1582; they used to go behind a `more` menu). 104 is the design's eight-letter tab: at that a name keeps seven characters and its ellipsis.
         /// TENTATIVE (other candidate: 68). 68 is the design's three-letter tab (padding 12 + three cells + gap 8 + glyph 14 + padding 12): more tabs stay on the strip, and each is one letter and an ellipsis. The design draws no squeezed strip; where squeezing stops has not been ruled on.
         /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
         static let minWidth: Double = 104.0
@@ -722,7 +724,6 @@ enum ControlRoomLook {
         "side.ask_max_lines",
         "side.ask_max_steps",
         "stack_tab.inset",
-        "stack_tab.more_button",
         "stack_tab.min_width",
         "elsewhere.veil",
         "selection.spring_damping",

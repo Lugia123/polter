@@ -36,7 +36,11 @@ enum SurfaceDragGrip {
     ///   pane -- a stack included -- cannot be picked up, by a handle or by
     ///   a title, fullscreen or not: it moves by its tab (task 1566). It
     ///   used to keep the handle unless the window was fullscreen.
-    static func place(setting: Setting, titled: Bool, lent: Bool, controlRoom: Bool, split: Bool) -> Place {
+    /// - `stacked`: the pane holds a stack. It is picked up by its tabs
+    ///   (`stackTabGrip`) as a framed pane is by its title, so it never has
+    ///   the handle (task 1582: the `⋯` over a stacked terminal was hard to
+    ///   find and in the way).
+    static func place(setting: Setting, titled: Bool, lent: Bool, controlRoom: Bool, split: Bool, stacked: Bool = false) -> Place {
         guard !lent, !controlRoom else { return .none }
         let allowed = switch setting {
         case .always: true
@@ -44,7 +48,7 @@ enum SurfaceDragGrip {
         case .auto: split
         }
         guard allowed else { return .none }
-        return titled ? .title : .handle
+        return titled || stacked ? .title : .handle
     }
 
     /// What a pane's title does, when the pane has one.
@@ -56,6 +60,20 @@ enum SurfaceDragGrip {
         case click
         /// Nothing at all.
         case none
+    }
+
+    /// What a stack's tab does when pressed (task 1582): held and moved it
+    /// drags that member, clicked it brings it to the front. The tabs are
+    /// where a stacked pane is picked up -- it has no handle -- so the drag
+    /// is there whenever `drag-handle` allows dragging at all, in a tab of
+    /// one pane too: a member dragged out of a stack has somewhere to go.
+    static func stackTabGrip(setting: Setting, lent: Bool, controlRoom: Bool) -> TitleGrip {
+        guard !lent else { return .none }
+        if controlRoom { return .click }
+        switch setting {
+        case .always, .auto: return .drag
+        case .never: return .click
+        }
     }
 
     /// What the title of a titled pane does (task 1514).

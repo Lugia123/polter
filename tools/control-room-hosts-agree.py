@@ -104,9 +104,11 @@ line, word for word and number for number, each of their windows -- and how
 high each side makes the block and where its parts start; and the strip of
 tabs over a pane that holds a stack -- on eighteen made-up stacks, where each
 tab is and how wide, which is in front, where a hairline stands, which are
-cut short, which go behind `more`, where `more`, the plus and the status are,
-the same stacks with the other candidate for the least width, and which
-member's glyph `more` carries for three orders the core might hand in -- and
+cut short, how wide the window onto them is and how wide they are together
+(task 1582: they scroll rather than go behind `more`), where the plus and the
+status are, the same stacks with the other candidate for the least width,
+where the tab in front is scrolled to from three offsets, and which member's
+glyph each edge carries for three orders the core might hand in -- and
 a tab's nominal width for five names.
 
 **NOT COMPARED, and why.**
@@ -672,15 +674,20 @@ for (n, c) in stripCases.enumerated() {
         "\(t.member)@\(f(t.x))+\(f(t.width))\(t.current ? "*" : "")\(t.separatorBefore ? "|" : "")\(t.squeezed ? "~" : "")"
     }
     let status = sl.status.map { "\(f($0.lowerBound))..\(f($0.upperBound))" } ?? "-"
-    print("strip \(n) tabs=[\(tabs.joined(separator: " "))] hidden=[\(sl.hidden.map(String.init).joined(separator: ","))] "
-        + "more=\(sl.moreX.map { f($0) } ?? "-") add=\(f(sl.addX)) status=\(status)")
+    print("strip \(n) tabs=[\(tabs.joined(separator: " "))] viewport=\(f(sl.viewport)) content=\(f(sl.content)) "
+        + "add=\(f(sl.addX)) status=\(status)")
 }
 for (n, c) in stripCases.enumerated() {
     let sl = PaneStackStripLayout(wants: c.0, current: c.1, width: c.2, status: c.3, minWidth: 68)
     let widths = sl.tabs.map { "\($0.member):\(f($0.width))" }
     let table = PaneStackStripLayout(wants: c.0, current: c.1, width: c.2, status: c.3)
-    let carried = [[6, 4, 0, 2], [0, 2, 4, 9, 11], []].map { table.behindMore(urgent: $0).map(String.init) ?? "-" }
-    print("strip \(n) at68=[\(widths.joined(separator: " "))] hidden68=\(sl.hidden.count) carries=\(carried.joined(separator: "/"))")
+    let revealed = [CGFloat(0), 250, 10000].map { f(table.revealing(c.1, from: $0)) }
+    let carried = [[6, 4, 0, 2], [0, 2, 4, 9, 11], []].map { urgent -> String in
+        let b = table.beyond(urgent: urgent, offset: table.revealing(c.1, from: 0))
+        return "\(b.left.map(String.init) ?? "-")|\(b.right.map(String.init) ?? "-")"
+    }
+    print("strip \(n) at68=[\(widths.joined(separator: " "))] scrolls68=\(sl.scrolls) "
+        + "reveals=\(revealed.joined(separator: "/")) carries=\(carried.joined(separator: "/"))")
 }
 for name in ["", "api", "frontend", "任务", "billing-worker"] {
     print("strip nominal \(quote(name)) plain=\(f(PaneStackStripLayout.nominalWidth(name: name, glyph: false))) "

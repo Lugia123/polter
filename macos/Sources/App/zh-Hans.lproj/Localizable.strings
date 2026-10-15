@@ -1024,3 +1024,12 @@
 "It is no longer failing. Nothing was sent." = "它已经不是出错了，什么都没有发出去。";
 "The supervisor has already been told." = "已经通知过总管了。";
 "No agent is connected in that terminal, so nothing was typed. It is kept in the group." = "那个终端里没有连着的 agent，没有打字进去；这段话留在群里了。";
+
+/* A pane's title and a stack's tabs: the close button and the menu (task 1582). */
+"Close Terminal" = "关闭终端";
+"Close Others" = "关闭其他";
+"Close to the Right" = "关闭右侧";
+"Close to the Left" = "关闭左侧";
+"Close Tab" = "关闭标签页";
+"Close Other Tabs" = "关闭其他标签页";
+"Move Tab to New Window" = "将标签页移到新窗口";

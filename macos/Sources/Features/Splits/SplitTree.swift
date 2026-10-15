@@ -1465,6 +1465,33 @@ extension SplitTree {
         return try swapping(front, for: view, stacks: others + [Stack(shown: view.id, members: members)])
     }
 
+    /// Put `view` into the pane `target` is in at tab `index` of its stack
+    /// (task 1582: a tab let go on a stack's strip), in front. `index` is
+    /// where it ends up, from 0; past the end is the end. A pane of one
+    /// terminal becomes a stack of two.
+    func stacking(_ view: ViewType, onto target: ViewType, at index: Int) throws -> Self {
+        let stacked = try stacking(view, onto: target)
+        guard let stack = stacked.stack(of: view) else { return stacked }
+        var members = stack.members.filter { $0 !== view }
+        members.insert(view, at: Swift.min(Swift.max(index, 0), members.count))
+        let others = stacked.stacks.filter { other in !other.members.contains { $0 === view } }
+        return .init(root: stacked.root, zoomed: stacked.zoomed, stacks: others + [Stack(shown: stack.shown, members: members)])
+    }
+
+    /// `view`'s tab moved to `index` of its own stack (task 1582: a tab
+    /// dragged along its strip). Which terminal the pane shows does not
+    /// change; nothing else in the tree does. `index` is where it ends up;
+    /// past the end is the end.
+    func reordering(_ view: ViewType, to index: Int) throws -> Self {
+        guard let stack = stack(of: view) else {
+            throw root?.node(view: view) == nil ? SplitError.viewNotFound : SplitError.notStacked
+        }
+        var members = stack.members.filter { $0 !== view }
+        members.insert(view, at: Swift.min(Swift.max(index, 0), members.count))
+        let others = stacks.filter { other in !other.members.contains { $0 === view } }
+        return .init(root: root, zoomed: zoomed, stacks: others + [Stack(shown: stack.shown, members: members)])
+    }
+
     /// Bring `view`, which is stacked behind another, to the front of its
     /// pane. Showing what is already shown changes nothing.
     func showing(_ view: ViewType) throws -> Self {

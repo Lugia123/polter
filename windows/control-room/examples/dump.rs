@@ -671,26 +671,33 @@ fn main() {
             .iter()
             .map(|t| format!("{}@{:.3}+{:.3}{}{}{}", t.member, t.x, t.width, if t.current { "*" } else { "" }, if t.separator_before { "|" } else { "" }, if t.squeezed { "~" } else { "" }))
             .collect();
-        let hidden: Vec<String> = sl.hidden.iter().map(|i| i.to_string()).collect();
         println!(
-            "strip {n} tabs=[{}] hidden=[{}] more={} add={:.3} status={}",
+            "strip {n} tabs=[{}] viewport={:.3} content={:.3} add={:.3} status={}",
             tabs.join(" "),
-            hidden.join(","),
-            sl.more_x.map_or("-".to_string(), |x| format!("{x:.3}")),
+            sl.viewport,
+            sl.content,
             sl.add_x,
             sl.status.map_or("-".to_string(), |(a, b)| format!("{a:.3}..{b:.3}")),
         );
     }
-    // The other candidate for the least width, and what `more` carries for
-    // three orders the core might hand in.
+    // The other candidate for the least width, and where the tab in front
+    // is scrolled to from three offsets (task 1582).
     for (n, (wants, current, width, status)) in stackstrip::CASES.iter().enumerate() {
         let sl = stackstrip::layout_with(wants, *current, *width, *status, 68.0);
         let widths: Vec<String> = sl.tabs.iter().map(|t| format!("{}:{:.3}", t.member, t.width)).collect();
+        let table = stackstrip::layout(wants, *current, *width, *status);
+        let revealed: Vec<String> = [0.0, 250.0, 10000.0]
+            .iter()
+            .map(|o| format!("{:.3}", stackstrip::revealing(&table, *current, *o)))
+            .collect();
         let carried: Vec<String> = [&[6usize, 4, 0, 2][..], &[0, 2, 4, 9, 11], &[]]
             .iter()
-            .map(|urgent| stackstrip::behind_more(&stackstrip::layout(wants, *current, *width, *status), urgent).map_or("-".to_string(), |i| i.to_string()))
+            .map(|urgent| {
+                let (l, r) = stackstrip::beyond(&table, urgent, stackstrip::revealing(&table, *current, 0.0));
+                format!("{}|{}", l.map_or("-".to_string(), |i| i.to_string()), r.map_or("-".to_string(), |i| i.to_string()))
+            })
             .collect();
-        println!("strip {n} at68=[{}] hidden68={} carries={}", widths.join(" "), sl.hidden.len(), carried.join("/"));
+        println!("strip {n} at68=[{}] scrolls68={} reveals={} carries={}", widths.join(" "), sl.scrolls(), revealed.join("/"), carried.join("/"));
     }
     for name in ["", "api", "frontend", "任务", "billing-worker"] {
         println!("strip nominal {} plain={:.3} glyph={:.3}", quote(name), stackstrip::nominal_width(name, false), stackstrip::nominal_width(name, true));

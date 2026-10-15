@@ -15,10 +15,10 @@
 //!  2. When they do not all fit, the widest are cut to one common width --
 //!     the long names give way first and the short are left whole -- down
 //!     to `min_width` and no further. The tab in front is not cut.
-//!  3. When they do not fit at that either, the ones there is no room for
-//!     go behind a `more` button at the right end of the tabs. The tab in
-//!     front is never one of them. The tabs that stay then share the room
-//!     there is by rule 2.
+//!  3. When they do not fit at that either, **they scroll sideways** (task
+//!     1582): every tab keeps its least width, the tabs together are wider
+//!     than the room for them, and the room is a window onto them. They used
+//!     to go behind a `more` menu, which hid who was there.
 //!  4. The status at the right end gives way before the tab in front
 //!     does; and a tab in front that does not fit even alone is cut to
 //!     what there is.
@@ -43,25 +43,79 @@ pub struct Tab {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
-    /// The tabs that are drawn, in order.
+    /// Every tab, in order, at its place among the others: `x` is where it
+    /// stands when the tabs are not scrolled.
     pub tabs: Vec<Tab>,
-    /// The members behind `more`, in order.
-    pub hidden: Vec<usize>,
-    /// Where `more` starts; none when every tab is drawn.
-    pub more_x: Option<f64>,
-    /// Where the plus starts.
+    /// How wide the room for the tabs is: the window onto them.
+    pub viewport: f64,
+    /// How wide the tabs are together. Wider than `viewport` is a strip
+    /// that scrolls.
+    pub content: f64,
+    /// Where the plus starts: after the tabs, or after the room for them
+    /// when they scroll.
     pub add_x: f64,
     /// Where the status at the right end starts and ends; none when there
     /// is no room for it or nothing to say.
     pub status: Option<(f64, f64)>,
 }
 
+impl Layout {
+    /// Whether the tabs are wider than the room for them.
+    pub fn scrolls(&self) -> bool {
+        self.content > self.viewport
+    }
+
+    /// The furthest the tabs scroll.
+    pub fn max_offset(&self) -> f64 {
+        (self.content - self.viewport).max(0.0)
+    }
+}
+
+/// The members waiting out of sight, scrolled at `offset`: on each side,
+/// the first of `urgent` -- the core's order, most pressing first -- whose
+/// tab is not wholly in view that way. What the strip draws at that end so
+/// that a terminal waiting off the edge is not waiting unseen (what `more`
+/// used to carry). None on a side with none.
+pub fn beyond(layout: &Layout, urgent: &[usize], offset: f64) -> (Option<usize>, Option<usize>) {
+    let offset = offset.clamp(0.0, layout.max_offset());
+    let side = |test: &dyn Fn(&Tab) -> bool| {
+        urgent.iter().copied().find(|m| layout.tabs.iter().find(|t| t.member == *m).is_some_and(test))
+    };
+    (
+        side(&|t: &Tab| t.x - t::INSET < offset),
+        side(&|t: &Tab| t.x - t::INSET + t.width > offset + layout.viewport),
+    )
+}
+
+/// How far to scroll the tabs, from `offset`, so that the tab of `member`
+/// is wholly in view -- the least move that does it, and none when it
+/// already is (task 1582: the tab in front is scrolled into view, as the
+/// window's own tabs do). `offset` is how far the tabs are scrolled now,
+/// 0 for not at all.
+pub fn revealing(layout: &Layout, member: usize, offset: f64) -> f64 {
+    let offset = offset.clamp(0.0, layout.max_offset());
+    let Some(tab) = layout.tabs.iter().find(|t| t.member == member) else {
+        return offset;
+    };
+    let start = tab.x - t::INSET;
+    let end = start + tab.width;
+    let to = if start < offset {
+        start
+    } else if end > offset + layout.viewport {
+        end - layout.viewport
+    } else {
+        offset
+    };
+    to.clamp(0.0, layout.max_offset())
+}
+
 /// How wide a tab's name wants it with no font to measure by: so many cells
 /// of `nominal_cell_width`, a wide character two, between the tab's
-/// paddings, and room for its glyph when it has one.
+/// paddings, room for its glyph when it has one, and the close button's
+/// place, which every tab keeps (task 1582).
 pub fn nominal_width(name: &str, glyph: bool) -> f64 {
     let cells: usize = name.chars().map(|c| if c as u32 >= 0x2E80 { 2 } else { 1 }).sum();
-    let mut w = 2.0 * t::PADDING_X + cells as f64 * t::NOMINAL_CELL_WIDTH;
+    let mut w = 2.0 * t::PADDING_X + cells as f64 * t::NOMINAL_CELL_WIDTH + t::CLOSE_GAP + t::CLOSE_BUTTON;
     if glyph {
         w += t::GAP + side::GLYPH;
     }
@@ -110,39 +164,24 @@ pub fn layout(wants: &[f64], current: usize, width: f64, status: f64) -> Layout 
     layout_with(wants, current, width, status, t::MIN_WIDTH)
 }
 
-/// The member whose glyph `more` carries: the first of `urgent` -- the
-/// members that have a glyph to show, **in the core's order, most pressing
-/// first** -- that is behind it. None when nothing is behind `more`, or
-/// nothing behind it has a glyph. A walk down a list and a test of
-/// membership: nothing here ranks one glyph over another.
-pub fn behind_more(layout: &Layout, urgent: &[usize]) -> Option<usize> {
-    urgent.iter().copied().find(|i| layout.hidden.contains(i))
-}
-
 /// `layout`, with the least a tab is cut to given rather than read from
 /// the table: for pictures of the other candidate.
 pub fn layout_with(wants: &[f64], current: usize, width: f64, status: f64, min_width: f64) -> Layout {
     let front = if current < wants.len() { current } else { 0 };
-    let room = |status: f64, more: bool| {
+    let room = |status: f64| {
         let mut r = width - t::INSET - t::ADD_BUTTON - t::TRAILING;
         if status > 0.0 {
             r -= t::STATUS_GAP + status;
-        }
-        if more {
-            r -= t::MORE_BUTTON;
         }
         r
     };
 
     // The status gives way before the tab in front does.
     let front_wants = wants.get(front).copied().unwrap_or(0.0);
-    let said = if status > 0.0 && room(status, false) >= front_wants { status } else { 0.0 };
-    let fits = room(said, false);
+    let said = if status > 0.0 && room(status) >= front_wants { status } else { 0.0 };
+    let fits = room(said).max(0.0);
 
     let mut widths = wants.to_vec();
-    let mut shown: Vec<usize> = (0..wants.len()).collect();
-    let mut hidden = Vec::new();
-
     if wants.iter().sum::<f64>() > fits {
         let least: Vec<f64> =
             wants.iter().enumerate().map(|(i, w)| if i == front { *w } else { w.min(min_width) }).collect();
@@ -153,56 +192,37 @@ pub fn layout_with(wants: &[f64], current: usize, width: f64, status: f64, min_w
             cut.insert(front, front_wants);
             widths = cut;
         } else {
-            // Not even at the least: some go behind `more`.
-            widths = least.clone();
-            let fits_with_more = room(said, true);
-            let mut taken = Vec::new();
-            let mut used = least[front];
-            for i in (0..wants.len()).filter(|i| *i != front) {
-                if used + least[i] > fits_with_more {
-                    break;
-                }
-                taken.push(i);
-                used += least[i];
-            }
-            // In the stack's order, the one in front where it belongs.
-            shown = (0..wants.len()).filter(|i| *i == front || taken.contains(i)).collect();
-            hidden = (0..wants.len()).filter(|i| !shown.contains(i)).collect();
-            // Too wide even alone: it is cut to what there is.
-            widths[front] = least[front].min(fits_with_more).max(0.0);
-            // Those that stayed were counted at their least; what room is
-            // left over goes back to them, the widest cut first as before.
-            let stayed: Vec<usize> = shown.iter().copied().filter(|i| *i != front).collect();
-            let back = capped(&stayed.iter().map(|i| wants[*i]).collect::<Vec<_>>(), fits_with_more - widths[front], min_width);
-            for (n, i) in stayed.iter().enumerate() {
-                widths[*i] = back[n];
-            }
+            // Not even at the least: every tab at its least, and they
+            // scroll. One too wide even alone is cut to the room there is.
+            widths = least;
+            widths[front] = widths[front].min(fits);
         }
     }
 
     let mut x = t::INSET;
     let mut tabs = Vec::new();
-    for (place, i) in shown.iter().enumerate() {
-        let before = if place > 0 { Some(shown[place - 1]) } else { None };
+    for i in 0..wants.len() {
         tabs.push(Tab {
-            member: *i,
+            member: i,
             x,
-            width: widths[*i],
-            current: *i == front,
-            separator_before: before.is_some() && *i != front && before != Some(front),
-            squeezed: widths[*i] < wants[*i],
+            width: widths[i],
+            current: i == front,
+            separator_before: i > 0 && i != front && i - 1 != front,
+            squeezed: widths[i] < wants[i],
         });
-        x += widths[*i];
+        x += widths[i];
     }
-    let more_x = if hidden.is_empty() {
-        None
-    } else {
-        let at = x;
-        x += t::MORE_BUTTON;
-        Some(at)
-    };
+    // `fold` from 0, not `sum`: the sum of nothing is -0 in Rust, and the
+    // other host prints 0 (`control-room-hosts-agree`).
+    let content = widths.iter().fold(0.0, |a, w| a + w);
     let end = width - t::TRAILING;
-    Layout { tabs, hidden, more_x, add_x: x, status: if said > 0.0 { Some((end - said, end)) } else { None } }
+    Layout {
+        tabs,
+        viewport: fits,
+        content,
+        add_x: t::INSET + content.min(fits),
+        status: if said > 0.0 { Some((end - said, end)) } else { None },
+    }
 }
 
 /// The cases both hosts lay out for `tools/control-room-hosts-agree.py`:
@@ -245,7 +265,8 @@ mod tests {
 
     #[test]
     fn the_numbers_these_tests_add_up_with() {
-        assert_eq!((t::INSET, t::ADD_BUTTON, t::TRAILING, t::STATUS_GAP, t::MORE_BUTTON, t::MIN_WIDTH), (20.0, 28.0, 12.0, 8.0, 60.0, 104.0));
+        assert_eq!((t::INSET, t::ADD_BUTTON, t::TRAILING, t::STATUS_GAP, t::MIN_WIDTH), (20.0, 28.0, 12.0, 8.0, 104.0));
+        assert_eq!((t::CLOSE_BUTTON, t::CLOSE_GAP), (16.0, 4.0));
     }
 
     #[test]
@@ -254,8 +275,7 @@ mod tests {
         assert_eq!(xs(&l), [20.0, 120.0, 180.0]);
         assert_eq!(widths(&l), [100.0, 60.0, 60.0]);
         assert!(l.tabs.iter().all(|t| !t.squeezed));
-        assert!(l.hidden.is_empty());
-        assert_eq!(l.more_x, None);
+        assert!(!l.scrolls());
         assert_eq!(l.add_x, 240.0);
         assert_eq!(l.status, Some((338.0, 388.0)));
     }
@@ -285,46 +305,65 @@ mod tests {
     fn cutting_stops_at_the_least_width_and_the_least_can_be_the_other_candidate() {
         let fits = layout(&[200.0, 72.0, 200.0, 200.0], 1, 444.0, 0.0);
         assert_eq!(widths(&fits), [104.0, 72.0, 104.0, 104.0]);
-        assert!(fits.hidden.is_empty());
-        assert!(!layout(&[200.0, 72.0, 200.0, 200.0], 1, 443.0, 0.0).hidden.is_empty());
+        assert!(!fits.scrolls());
+        assert!(layout(&[200.0, 72.0, 200.0, 200.0], 1, 443.0, 0.0).scrolls());
         // At 68 the same four still fit where at 104 they did not.
         assert_eq!(widths(&layout_with(&[200.0, 72.0, 200.0, 200.0], 1, 336.0, 0.0, 68.0)), [68.0, 72.0, 68.0, 68.0]);
-        assert!(!layout(&[200.0, 72.0, 200.0, 200.0], 1, 336.0, 0.0).hidden.is_empty());
+        assert!(layout(&[200.0, 72.0, 200.0, 200.0], 1, 336.0, 0.0).scrolls());
     }
 
     #[test]
-    fn what_there_is_no_room_for_goes_behind_more_and_the_one_in_front_never_does() {
+    fn what_there_is_no_room_for_scrolls_and_every_tab_is_still_there() {
+        // Task 1582: no tab goes behind a menu. All eight are laid out, at
+        // their least, the one in front whole, and the room is a window.
         let l = layout(&[150.0; 8], 6, 400.0, 0.0);
-        assert_eq!(members(&l), [0, 6]);
-        // Counted at 104 to see whether it fits; given the 130 there is.
-        assert_eq!(widths(&l), [130.0, 150.0]);
-        assert_eq!(l.hidden, [1, 2, 3, 4, 5, 7]);
-        assert_eq!((l.more_x, l.add_x), (Some(300.0), 360.0));
-        // `more` has its own 60: a second tab would fit without it.
-        assert_eq!(members(&layout(&[150.0; 8], 6, 434.0, 0.0)), [0, 6]);
-        // And the tabs keep the stack's order.
-        let second = layout(&[150.0; 8], 1, 520.0, 0.0);
-        assert_eq!(members(&second), [0, 1, 2]);
-        assert_eq!(widths(&second), [125.0, 150.0, 125.0]);
+        assert_eq!(members(&l), [0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(widths(&l), [104.0, 104.0, 104.0, 104.0, 104.0, 104.0, 150.0, 104.0]);
+        assert_eq!((l.viewport, l.content), (340.0, 878.0));
+        assert!(l.scrolls());
+        // The plus stands after the room, not after the tabs.
+        assert_eq!(l.add_x, 360.0);
     }
 
     #[test]
-    fn more_carries_the_first_of_the_cores_order_that_is_behind_it() {
+    fn a_waiting_terminal_off_an_edge_is_carried_by_that_edge_in_the_cores_order() {
+        // Eight at 104 (the seventh 150), a 340 window. Scrolled to 434:
+        // tabs 0-3 are off the left (4 is cut at its left), 7 off the right.
         let l = layout(&[150.0; 8], 6, 400.0, 0.0);
-        assert_eq!(behind_more(&l, &[6, 4, 0, 2]), Some(4));
-        // The order is the core's and is not second-guessed.
-        assert_eq!(behind_more(&l, &[0, 2, 4]), Some(2));
-        assert_eq!(behind_more(&l, &[6, 0]), None);
-        assert_eq!(behind_more(&l, &[]), None);
+        assert_eq!(beyond(&l, &[6, 4, 0, 7], 434.0), (Some(4), Some(7)));
+        // The core's order is not second-guessed: 0 before 4.
+        assert_eq!(beyond(&l, &[0, 4], 434.0), (Some(0), None));
+        // Not scrolled: nothing off the left, and the first of the order
+        // that is off the right.
+        assert_eq!(beyond(&l, &[1, 5, 3], 0.0), (None, Some(5)));
+        assert_eq!(beyond(&l, &[], 434.0), (None, None));
+    }
+
+    #[test]
+    fn the_tab_in_front_is_scrolled_into_view_by_the_least_move() {
+        let l = layout(&[150.0; 8], 6, 400.0, 0.0);
+        // Tab 6 runs from 624 to 774 of the tabs; the window is 340 wide.
+        assert_eq!(revealing(&l, 6, 0.0), 434.0);
+        // Already in view: no move.
+        assert_eq!(revealing(&l, 6, 500.0), 500.0);
+        // To its left: its start comes to the window's left edge.
+        assert_eq!(revealing(&l, 1, 500.0), 104.0);
+        // Never past either end.
+        assert_eq!(revealing(&l, 7, 0.0), 538.0);
+        assert_eq!(revealing(&l, 0, 900.0), 0.0);
+        // A strip that does not scroll does not move.
         let roomy = layout(&[100.0, 60.0, 60.0], 1, 400.0, 0.0);
-        assert_eq!(behind_more(&roomy, &[0, 1, 2]), None);
+        assert_eq!(revealing(&roomy, 2, 0.0), 0.0);
     }
 
     #[test]
     fn the_status_gives_way_before_the_tab_in_front_and_then_the_tab_itself() {
         let l = layout(&[120.0, 150.0], 0, 200.0, 60.0);
         assert_eq!(l.status, None);
-        assert_eq!((members(&l), widths(&l), l.hidden.clone()), (vec![0], vec![80.0], vec![1]));
+        // The room is 140: the one in front whole, the other at its least,
+        // and they scroll.
+        assert_eq!((widths(&l), l.viewport), (vec![120.0, 104.0], 140.0));
+        assert!(l.scrolls());
         let roomy = layout(&[120.0, 80.0], 0, 330.0, 60.0);
         assert_eq!(roomy.status, Some((258.0, 318.0)));
         assert_eq!(widths(&roomy), [120.0, 80.0]);
@@ -341,8 +380,8 @@ mod tests {
 
     #[test]
     fn a_tabs_nominal_width_is_its_cells_its_paddings_and_its_glyph() {
-        assert_eq!(nominal_width("api", false), 48.0);
-        assert_eq!(nominal_width("api", true), 70.0);
-        assert_eq!(nominal_width("任务", false), 56.0);
+        assert_eq!(nominal_width("api", false), 68.0);
+        assert_eq!(nominal_width("api", true), 90.0);
+        assert_eq!(nominal_width("任务", false), 76.0);
     }
 }

@@ -20,8 +20,25 @@ struct SurfaceDragGripTests {
     }
 
     @Test func aPaneWithNoTitleKeepsTheHandle() {
-        // A stack in a split: its band is the strip, so it has no title.
         #expect(place(.auto, split: true) == .handle)
+    }
+
+    @Test func aStackedPaneHasNoHandleAndIsPickedUpByItsTabs() {
+        // Task 1582: the `⋯` over a stacked terminal is gone; its tabs are
+        // where it is picked up, as a title is.
+        #expect(Grip.place(setting: .auto, titled: false, lent: false, controlRoom: false, split: true, stacked: true) == .title)
+        #expect(Grip.place(setting: .always, titled: false, lent: false, controlRoom: false, split: false, stacked: true) == .title)
+        #expect(Grip.place(setting: .never, titled: false, lent: false, controlRoom: false, split: true, stacked: true) == .none)
+    }
+
+    @Test func aStackTabDragsUnlessDraggingIsOffAndIsAlwaysAClickWhenItCannot() {
+        // In a tab of one pane too: a member dragged out of its stack has
+        // somewhere to go.
+        #expect(Grip.stackTabGrip(setting: .auto, lent: false, controlRoom: false) == .drag)
+        #expect(Grip.stackTabGrip(setting: .always, lent: false, controlRoom: false) == .drag)
+        #expect(Grip.stackTabGrip(setting: .never, lent: false, controlRoom: false) == .click)
+        #expect(Grip.stackTabGrip(setting: .auto, lent: false, controlRoom: true) == .click)
+        #expect(Grip.stackTabGrip(setting: .auto, lent: true, controlRoom: false) == .none)
     }
 
     // MARK: - A tab of one pane (task 1566)

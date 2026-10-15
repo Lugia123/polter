@@ -151,8 +151,13 @@ final class TabStripDragOverlay {
             // strip whose tabs cannot be named is no strip.
             guard buttons.count == windows.count, !buttons.isEmpty else { return nil }
             let selected = window.tabGroup?.selectedWindow.flatMap { windows.firstIndex(of: $0) }
-            let source = surface.window
-            let alone = (source?.windowController as? BaseTerminalController)?.surfaceTree.isSplit == false
+            // The tab the terminal is in, found by its tree: one stacked
+            // behind another hangs in no window (task 1582).
+            let owner = BaseTerminalController.controller(owning: surface)
+            let source = owner?.window ?? surface.window
+            // A pane alone in its tab is the tab -- unless it is one of a
+            // stack, which leaves the stack for a tab of its own.
+            let alone = owner?.surfaceTree.isSplit == false && owner?.surfaceTree.stack(of: surface) == nil
                 && source.map { windows.contains($0) } == true
             let target = TabStripDrop.target(
                 x: local.x,

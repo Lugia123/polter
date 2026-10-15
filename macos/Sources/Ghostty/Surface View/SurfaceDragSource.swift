@@ -39,13 +39,23 @@ extension Ghostty {
         /// Called when the pointer goes up again without having started a drag.
         var onClick: (() -> Void)?
 
+        /// Whether it drags at all. False is a title that is only clicked
+        /// (`SurfaceDragGrip.TitleGrip.click`): no drag, and no open hand
+        /// over it to suggest one.
+        var canDrag: Bool = true
+
+        /// The menu a right-click opens on it (task 1582); nil for none.
+        var menu: (() -> NSMenu?)?
+
         var body: some View {
             SurfaceDragSourceViewRepresentable(
                 surfaceView: surfaceView,
                 isDragging: $isDragging,
                 isHovering: $isHovering,
                 dragThreshold: dragThreshold,
-                onClick: onClick)
+                onClick: onClick,
+                canDrag: canDrag,
+                menu: menu)
             .preference(key: DraggingSurfaceKey.self, value: isDragging ? surfaceView.id : nil)
         }
     }
@@ -58,12 +68,16 @@ extension Ghostty {
         @Binding var isHovering: Bool
         let dragThreshold: CGFloat
         let onClick: (() -> Void)?
+        let canDrag: Bool
+        let menu: (() -> NSMenu?)?
 
         func makeNSView(context: Context) -> SurfaceDragSourceView {
             let view = SurfaceDragSourceView()
             view.surfaceView = surfaceView
             view.dragThreshold = dragThreshold
             view.onClick = onClick
+            view.canDrag = canDrag
+            view.menuProvider = menu
             view.onDragStateChanged = { dragging in
                 isDragging = dragging
             }
@@ -79,6 +93,11 @@ extension Ghostty {
             nsView.surfaceView = surfaceView
             nsView.dragThreshold = dragThreshold
             nsView.onClick = onClick
+            if nsView.canDrag != canDrag {
+                nsView.canDrag = canDrag
+                nsView.window?.invalidateCursorRects(for: nsView)
+            }
+            nsView.menuProvider = menu
             nsView.onDragStateChanged = { dragging in
                 isDragging = dragging
             }
@@ -116,6 +135,16 @@ extension Ghostty {
 
         /// See `SurfaceDragSource.onClick`.
         var onClick: (() -> Void)?
+
+        /// See `SurfaceDragSource.canDrag`.
+        var canDrag: Bool = true
+
+        /// See `SurfaceDragSource.menu`.
+        var menuProvider: (() -> NSMenu?)?
+
+        override func menu(for event: NSEvent) -> NSMenu? {
+            menuProvider?() ?? super.menu(for: event)
+        }
 
         /// Where the pointer went down, in window coordinates; nil when it is up.
         private var mouseDownLocation: NSPoint?
@@ -179,6 +208,7 @@ extension Ghostty {
         }
 
         override func resetCursorRects() {
+            guard canDrag else { return }
             addCursorRect(bounds, cursor: isTracking ? .closedHand : .openHand)
         }
 
@@ -191,7 +221,7 @@ extension Ghostty {
         }
 
         override func mouseDragged(with event: NSEvent) {
-            guard !isTracking, let surfaceView = surfaceView else { return }
+            guard canDrag, !isTracking, let surfaceView = surfaceView else { return }
             guard SurfaceDragGrip.isDrag(
                 from: mouseDownLocation ?? event.locationInWindow,
                 to: event.locationInWindow,

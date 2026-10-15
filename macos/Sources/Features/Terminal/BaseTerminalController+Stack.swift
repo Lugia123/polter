@@ -133,26 +133,62 @@ extension BaseTerminalController {
             quick: !holdsStacks)
     }
 
-    /// The menu behind a strip's `more`: the terminals there was no room
-    /// to draw a tab for, by name. Choosing one brings it to the front.
-    func presentStackMenu(of view: Ghostty.SurfaceView, members indices: [Int], names: [String]) {
-        guard let stack = surfaceTree.stack(of: view) else { return }
-        let menu = NSMenu()
-        for index in indices where stack.members.indices.contains(index) {
-            let item = NSMenuItem(
-                title: names.indices.contains(index) ? names[index] : "",
-                action: #selector(stackMenuChose(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = stack.members[index]
-            menu.addItem(item)
+    /// Close `views`, terminals of one stack, together (task 1582: "close
+    /// others / to the right / to the left"). **One question for all of
+    /// them**: when any has something running, the person is asked once;
+    /// then they go without asking again. Closing every one takes the pane
+    /// with it, as closing a pane's last terminal always has.
+    func polterCloseStacked(_ views: [Ghostty.SurfaceView]) {
+        let here = views.filter { surfaceTree.contains($0) }
+        guard !here.isEmpty else { return }
+        let remove = { [weak self] in
+            guard let self else { return }
+            var tree = self.surfaceTree
+            for view in here where tree.contains(view) {
+                ClosedTabs.shared.remember(directory: view.pwd)
+                guard let next = try? tree.removing(member: view) else { continue }
+                tree = next
+            }
+            let focus = self.focusedSurface.flatMap { tree.contains($0) ? $0 : nil } ?? tree.shownLeaves().first
+            self.replaceSurfaceTree(tree, moveFocusTo: focus, undoAction: "Close Terminals")
         }
-        guard !menu.items.isEmpty, let window else { return }
-        menu.popUp(positioning: nil, at: window.mouseLocationOutsideOfEventStream, in: window.contentView)
+        guard here.contains(where: { $0.needsConfirmQuit }) else {
+            remove()
+            return
+        }
+        confirmClose(
+            messageText: String(localized: "Close Terminal?", comment: "关闭确认框"),
+            informativeText: String(localized: "The terminal still has a running process. If you close the terminal the process will be killed.", comment: "关闭确认框")
+        ) { remove() }
     }
 
-    @objc private func stackMenuChose(_ sender: NSMenuItem) {
-        guard let view = sender.representedObject as? Ghostty.SurfaceView else { return }
-        showStackMember(view)
+    /// A terminal let go on the strip of the pane `target` is in, at tab
+    /// `index` (task 1582). One of that same stack is moved along it; one
+    /// from elsewhere -- this tab or another window's -- joins the stack
+    /// there, in front, and leaves where it was the way a dragged pane
+    /// always has (`polterLetGo`).
+    func polterDrop(_ source: Ghostty.SurfaceView, onStackOf target: Ghostty.SurfaceView, at index: Int) {
+        guard holdsStacks, surfaceTree.contains(target) else { return }
+        if let stack = surfaceTree.stack(of: target), stack.members.contains(where: { $0 === source }) {
+            // Along its own strip. `index` counts the tab itself; where it
+            // ends up does not.
+            let from = stack.members.firstIndex { $0 === source } ?? 0
+            let to = index > from ? index - 1 : index
+            guard to != from, let tree = try? surfaceTree.reordering(source, to: to) else { return }
+            replaceSurfaceTree(tree, undoAction: "Move Stacked Terminal")
+            return
+        }
+        guard source !== target else { return }
+        if surfaceTree.contains(source) {
+            guard let without = polterTakingOut(source)?.tree,
+                  let tree = try? without.stacking(source, onto: target, at: index) else { return }
+            replaceSurfaceTree(tree, moveFocusTo: source, moveFocusFrom: focusedSurface, undoAction: "Stack Terminal")
+            return
+        }
+        guard let from = BaseTerminalController.controller(owning: source), from !== self,
+              let tree = try? surfaceTree.stacking(source, onto: target, at: index) else { return }
+        from.polterLetGo(source)
+        replaceSurfaceTree(tree, moveFocusTo: source, moveFocusFrom: focusedSurface, undoAction: "Stack Terminal")
     }
 
     // MARK: The menu
