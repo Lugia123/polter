@@ -2451,6 +2451,29 @@ msgstr ""
 msgid "Let Workers Name Each Other Directly"
 msgstr ""
 
+#: windows/host/src/ctxmenu.rs:129
+msgid "Toggle Terminal Inspector"
+msgstr ""
+
+#: windows/host/src/ctxmenu.rs:130
+msgid "Terminal Read-only"
+msgstr ""
+
+#. TRANSLATORS: macOS's words for the title overlay, three ASCII dots and
+#. all, so the two hosts share one catalogue entry. The strip's in-place
+#. rename (rename_tab) is a DIFFERENT action with a different label.
+#: windows/host/src/ctxmenu.rs:138
+msgid "Change Tab Title..."
+msgstr ""
+
+#: windows/host/src/ctxmenu.rs:139
+msgid "Change Terminal Title..."
+msgstr ""
+
+#: windows/host/src/ctxmenu.rs:147
+msgid "Supervise This Terminal"
+msgstr ""
+
 #: windows/host/src/general_ui.rs:274
 msgid "Not set"
 msgstr ""

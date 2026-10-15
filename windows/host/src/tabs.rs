@@ -8739,13 +8739,55 @@ fn release_middle() {
     }
 }
 
+/// Which pane the core has been told is holding the right button, or 0,
+/// and whether the core took that press (`RIGHT_TAKEN`).
+///
+/// **The right button goes to the core first, as on macOS** (task 1603;
+/// `SurfaceView_AppKit.swift`, `rightMouseDown`). Before this the host
+/// handled no right-button message: `DefWindowProcW` turned every release
+/// into `WM_CONTEXTMENU`, so `right-click-action`, the word selected under a
+/// right click, and a program reporting the mouse (vim, tmux) never saw the
+/// button at all. Now the menu is what happens only when the core declines
+/// the press -- `polter_control_room::hud::right_up` is the rule.
+///
+/// The same one-press-one-release slot as `MIDDLE_DOWN_PANE`, and no capture
+/// for the same reason: the left arms own it.
+static RIGHT_DOWN_PANE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static RIGHT_TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Tell the core the right button went down on this pane, and remember it
+/// and the core's answer.
+fn press_right(pane: HWND) -> bool {
+    let taken = mouse_button(pane, crate::ffi::MOUSE_PRESS, crate::ffi::MOUSE_RIGHT);
+    RIGHT_TAKEN.store(taken, std::sync::atomic::Ordering::Release);
+    RIGHT_DOWN_PANE.store(pane.0 as isize, std::sync::atomic::Ordering::Release);
+    taken
+}
+
+/// The right button came up over `up_on`. Sends the release to the pane
+/// that saw the press -- at most once per press -- and answers whether the
+/// terminal's menu should open over `up_on`.
+fn release_right(up_on: HWND) -> bool {
+    let key = RIGHT_DOWN_PANE.swap(0, std::sync::atomic::Ordering::AcqRel);
+    let taken = RIGHT_TAKEN.swap(false, std::sync::atomic::Ordering::AcqRel);
+    let press = (key != 0).then_some((key as usize, taken));
+    let up = polter_control_room::hud::right_up(press, up_on.0 as usize);
+    if let Some(p) = up.release_to {
+        mouse_button(HWND(p as *mut _), crate::ffi::MOUSE_RELEASE, crate::ffi::MOUSE_RIGHT);
+    }
+    up.menu
+}
+
+/// Tell the core about a button, and return what it said: `true` when it
+/// took the click. Only the right button asks -- a taken right press is
+/// what keeps the menu shut. `false` when the pane has no surface, which has
 /// no position to report and must not invent one.
-fn mouse_button(pane: HWND, state: i32, button: i32) {
+fn mouse_button(pane: HWND, state: i32, button: i32) -> bool {
     let s = surface_of(pane);
     if s.is_null() {
-        return;
+        return false;
     }
-    unsafe { (api().surface_mouse_button)(s, state, button, crate::keys::mods()) };
+    unsafe { (api().surface_mouse_button)(s, state, button, crate::keys::mods()) }
 }
 
 pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -8908,6 +8950,43 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             WM_CONTEXTMENU => {
                 crate::ctxmenu::on_context_menu(hwnd, lp.0);
                 LRESULT(0)
+            }
+
+            // **The core first** (task 1603). The press goes to it with the
+            // position, and its answer decides the release: taken -- a
+            // program reporting the mouse, or a `right-click-action` other
+            // than `context-menu` -- and the release is all that follows;
+            // declined, and the release goes on to `DefWindowProcW`, whose
+            // `WM_CONTEXTMENU` is the arm above. The keyboard's menu key never
+            // comes through here and opens the menu as before.
+            //
+            // No focus change, as on macOS and as the menu has always been:
+            // a right click on another pane acts on that pane without asking
+            // it to be typed into.
+            WM_RBUTTONDOWN => {
+                mouse_pos(hwnd, lp);
+                let taken = press_right(hwnd);
+                // Not rate-gated: a person right-clicks at the speed of a
+                // person, and "the core took it" is the line that tells a
+                // missing menu apart from a broken one.
+                crate::hlogf!(
+                    hwnd,
+                    "[mouse] right press on {:?}: {}",
+                    hwnd.0,
+                    if taken { "the core took it, so no menu" } else { "the core left it to the menu" }
+                );
+                LRESULT(0)
+            }
+            WM_RBUTTONUP => {
+                // A position only for the pane it arrived at; see `WM_MBUTTONUP`.
+                if RIGHT_DOWN_PANE.load(std::sync::atomic::Ordering::Acquire) == hwnd.0 as isize {
+                    mouse_pos(hwnd, lp);
+                }
+                if release_right(hwnd) {
+                    DefWindowProcW(hwnd, msg, wp, lp)
+                } else {
+                    LRESULT(0)
+                }
             }
 
             WM_CHAR => {

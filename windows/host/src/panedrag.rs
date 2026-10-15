@@ -683,6 +683,9 @@ pub fn pane_pointer_left(pane_hwnd: HWND) {
 pub fn sync(frame: HWND) {
     sync_veils(frame);
     sync_handles(frame);
+    // The find bar is the other window kept over one pane (task 1603), and
+    // these are the moments its pane moves too.
+    crate::search::keep_over_its_terminal(frame);
 }
 
 /// The panes showing in the tab in front, with their windows.
