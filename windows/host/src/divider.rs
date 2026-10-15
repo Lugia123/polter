@@ -237,7 +237,7 @@ pub fn sync(frame: HWND) {
         // panes with nothing zoomed, there are exactly P-1 boundaries. Two
         // numbers on one line is a check anyone can do; "N dividers" alone
         // needs a second source to mean anything.
-        let panes = term.tree.panes().len();
+        let panes = term.tree.shown_panes().len();
         let zoomed = term.tree.zoomed().is_some();
         let t = scaled_thickness(frame) as f64;
         let rects = term.tree

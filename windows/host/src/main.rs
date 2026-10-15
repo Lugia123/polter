@@ -4468,14 +4468,24 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // keep their windows and surfaces (`tabs::move_tab_for_tool`).
         ffi::ACTION_POLTER_TAB_MOVE => layout::perform_tab_move(&action, target_surface(&target)),
 
-        // Stacking terminals in one pane (`Binding.zig`, `pane_stack`). macOS
-        // has it; this host's split tree holds one terminal to a pane, and
-        // doing something else instead (a split, say) would be an answer to
-        // a question nobody asked.
-        // owed: 1493 -- stacks are macOS only so far; nothing is stacked, switched or taken out here.
+        // Stacking terminals in one pane (`Binding.zig`, `pane_stack`; task
+        // 1583). **Answered now**: a verb with nothing to do returns false
+        // so the key falls through, as macOS's does; one that has is queued
+        // for the window's thread, on the pane the action named.
         ffi::ACTION_PANE_STACK => {
-            alogf!(origin, "[action] pane_stack: not built on this host; nothing done");
-            false
+            let v = action.as_i32();
+            let at = target_surface(&target).and_then(tabs::pane_id_of_surface);
+            let Some(verb) = polter_split_tree::stack::Verb::from_c(v) else {
+                alogf!(origin, "[action] pane_stack {}: a verb this host does not know; nothing done", v);
+                return false;
+            };
+            let offered = origin.is_some_and(|f| tabs::pane_stack_offers(f, verb, at));
+            if !offered {
+                alogf!(origin, "[action] pane_stack {:?} from={:?}: nothing to do there; not taken", verb, at);
+                return false;
+            }
+            alogf!(origin, "[action] pane_stack {:?} from={:?}", verb, at);
+            queue_from(origin, Op::PaneStack(verb, at), "pane_stack action")
         }
 
         // owed: 286 -- reviewed and deferred; there is no transparency to toggle.
@@ -5583,6 +5593,7 @@ fn load_api() -> Option<Api> {
             surface_set_size: sym!(internal, "ghostty_surface_set_size"),
             surface_set_content_scale: sym!(internal, "ghostty_surface_set_content_scale"),
             surface_set_focus: sym!(internal, "ghostty_surface_set_focus"),
+            surface_set_occlusion: sym!(internal, "ghostty_surface_set_occlusion"),
             surface_free: sym!(internal, "ghostty_surface_free"),
             surface_capture_scrollback: sym!(internal, "ghostty_surface_capture_scrollback"),
             surface_set_scrollback_journal: sym!(internal, "ghostty_surface_set_scrollback_journal"),

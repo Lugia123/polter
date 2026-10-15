@@ -222,6 +222,32 @@ pub enum Error {
     /// The pane has no ancestor split on the axis the resize needs, so there
     /// is no divider to move.
     NoSplitOnAxis,
+    /// The pane is already somewhere in this tree -- shown, or stacked
+    /// behind another (Swift's `viewAlreadyPresent`).
+    AlreadyPresent,
+    /// The pane is the only terminal of its place: there is nothing to show
+    /// instead of it, or to take it out from (`notStacked`).
+    NotStacked,
+    /// A node was to be replaced by one without a place that has terminals
+    /// stacked behind it (`stackedPaneReplaced`).
+    StackedPaneReplaced,
+}
+
+/// One place in the tree that holds more than one terminal (control-room.md,
+/// 12.6.2): Swift's `SplitTree.Stack`.
+///
+/// **A leaf is still one pane: the one its place is showing.** The others
+/// stacked behind it are here, not in the tree, so everything that walks
+/// nodes -- layout, focus, resizing, zoom -- sees exactly what it saw
+/// before there were stacks. A place with one terminal has no entry: it is
+/// not "a stack of one", it is a leaf.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Stack {
+    /// Which of `members` the place is showing: the pane in its leaf.
+    pub shown: PaneId,
+    /// Every terminal of the place, the shown one among them, in the order
+    /// of their tabs. Always more than one.
+    pub members: Vec<PaneId>,
 }
 
 /// The tree of panes for one tab.
@@ -236,6 +262,13 @@ pub struct Tree {
     /// bookkeeping on removal a single comparison instead of a subtree
     /// search.
     zoomed: Option<PaneId>,
+    /// The places that hold more than one terminal (`stack.rs`).
+    ///
+    /// Every function here that returns a tree carries these along, and
+    /// `stack_tests` holds each of them to it: a tree rebuilt from its root
+    /// and nothing else would drop the terminals behind without a word, and
+    /// they would go on running with no place.
+    stacks: Vec<Stack>,
 }
 
 // ---------------------------------------------------------------------------
@@ -245,12 +278,12 @@ pub struct Tree {
 impl Tree {
     /// An empty tree.
     pub fn new() -> Self {
-        Tree { root: None, zoomed: None }
+        Tree { root: None, zoomed: None, stacks: Vec::new() }
     }
 
     /// A tree holding a single pane.
     pub fn with_pane(pane: PaneId) -> Self {
-        Tree { root: Some(Node::Leaf(pane)), zoomed: None }
+        Tree { root: Some(Node::Leaf(pane)), zoomed: None, stacks: Vec::new() }
     }
 
     /// A tree with a whole shape given at once.
@@ -273,7 +306,7 @@ impl Tree {
     /// pane was filling the tab a moment ago, and carrying the old answer
     /// over would zoom a pane the caller never mentioned.
     pub fn with_root(root: Node) -> Self {
-        Tree { root: Some(root), zoomed: None }
+        Tree { root: Some(root), zoomed: None, stacks: Vec::new() }
     }
 
     pub fn root(&self) -> Option<&Node> {
@@ -293,8 +326,16 @@ impl Tree {
         self.zoomed
     }
 
-    /// Every pane, in tree order (left to right, top to bottom).
-    pub fn panes(&self) -> Vec<PaneId> {
+    /// The pane each place is showing, in tree order (left to right, top
+    /// to bottom): what is on screen, or would be were nothing zoomed. **One
+    /// to a place**: terminals stacked behind are not here -- ask
+    /// [`Tree::members`].
+    ///
+    /// This was `panes()`, which read as "every terminal", and once a place
+    /// can hold more than one that is no longer what it gives. Renamed so
+    /// that every caller had to say which it meant (Swift renamed
+    /// `leaves()` to `shownLeaves()` for the same reason).
+    pub fn shown_panes(&self) -> Vec<PaneId> {
         let mut out = Vec::new();
         if let Some(root) = &self.root {
             root.collect_leaves(&mut out);
@@ -302,12 +343,16 @@ impl Tree {
         out
     }
 
+    /// How many terminals, the ones stacked behind included.
     pub fn len(&self) -> usize {
-        self.panes().len()
+        self.members().len()
     }
 
+    /// Whether `pane` is in this tree, **shown or stacked behind** -- the
+    /// question "is this terminal in this tab" asks. Whether it is on
+    /// screen is [`Tree::is_shown`].
     pub fn contains(&self, pane: PaneId) -> bool {
-        self.path_of(pane).is_some()
+        self.path_of(pane).is_some() || self.stack_of(pane).is_some()
     }
 
     /// The address of a pane, or `None` if it is not in this tree.
@@ -351,10 +396,7 @@ impl Tree {
             right: if new_on_left { existing } else { fresh },
         }));
 
-        Ok(Tree {
-            root: Some(root.replacing(&path, split)?),
-            zoomed: None,
-        })
+        Ok(self.derived(Some(root.replacing(&path, split)?), None))
     }
 
     /// Close a pane. Its sibling takes the place of their parent split, which
@@ -363,13 +405,19 @@ impl Tree {
     ///
     /// Removing the last pane leaves an empty tree. Removing a pane that is
     /// not in the tree is a no-op.
+    ///
+    /// **A place with terminals stacked behind it does not go when the one
+    /// it shows does**: the next one in the stack takes its place, and the
+    /// place goes only with its last terminal. A pane stacked behind is
+    /// taken out of its stack and nothing on screen moves
+    /// ([`Tree::removing_member`]).
     pub fn remove(&self, pane: PaneId) -> Tree {
+        if self.stack_of(pane).is_some() {
+            return self.removing_member(pane).unwrap_or_else(|_| self.clone());
+        }
         let Some(root) = &self.root else { return self.clone() };
         let new_root = root.removing_leaf(pane);
-        Tree {
-            root: new_root,
-            zoomed: if self.zoomed == Some(pane) { None } else { self.zoomed },
-        }
+        self.derived(new_root, if self.zoomed == Some(pane) { None } else { self.zoomed })
     }
 
     /// Close every pane under an address at once. Used when a whole split is
@@ -381,25 +429,25 @@ impl Tree {
         doomed.collect_leaves(&mut gone);
 
         let new_root = root.removing_at(path, 0);
-        Ok(Tree {
-            root: new_root,
-            zoomed: match self.zoomed {
+        Ok(self.derived(
+            new_root,
+            match self.zoomed {
                 Some(z) if gone.contains(&z) => None,
                 other => other,
             },
-        })
+        ))
     }
 
     /// Zoom a pane, or un-zoom if it is already zoomed. A pane that is not in
     /// the tree is ignored.
+    ///
+    /// A pane stacked behind another zooms the place it is in: the pane that
+    /// place shows.
     pub fn toggle_zoom(&self, pane: PaneId) -> Tree {
-        if !self.contains(pane) {
+        let Some(pane) = self.shown_for(pane) else {
             return self.clone();
-        }
-        Tree {
-            root: self.root.clone(),
-            zoomed: if self.zoomed == Some(pane) { None } else { Some(pane) },
-        }
+        };
+        self.derived(self.root.clone(), if self.zoomed == Some(pane) { None } else { Some(pane) })
     }
 
     /// Where focus should go from `from`.
@@ -409,7 +457,7 @@ impl Tree {
     /// Focus always lives on a surface, so this takes a `PaneId` and the two
     /// cases collapse into one.
     pub fn focus_target(&self, focus: Focus, from: PaneId) -> Option<PaneId> {
-        let leaves = self.panes();
+        let leaves = self.shown_panes();
         let idx = leaves.iter().position(|&p| p == from)?;
 
         match focus {
@@ -450,10 +498,7 @@ impl Tree {
     /// that split's own axis. A child split on the *other* axis counts as one,
     /// because from this split's point of view it occupies one slot.
     pub fn equalize(&self) -> Tree {
-        Tree {
-            root: self.root.as_ref().map(|r| r.equalized()),
-            zoomed: self.zoomed,
-        }
+        self.derived(self.root.as_ref().map(|r| r.equalized()), self.zoomed)
     }
 
     /// Move the divider nearest to `pane` by `pixels`, in the given
@@ -518,10 +563,7 @@ impl Tree {
         let ratio = raw.clamp(0.1, 0.9);
 
         let new_split = Node::Split(Box::new(Split { ratio, ..split }));
-        Ok(Tree {
-            root: Some(root.replacing(&split_path, new_split)?),
-            zoomed: None,
-        })
+        Ok(self.derived(Some(root.replacing(&split_path, new_split)?), None))
     }
 
     /// Every draggable boundary inside `bounds`, `thickness` pixels across.
@@ -531,7 +573,7 @@ impl Tree {
     pub fn dividers(&self, bounds: Rect, thickness: f64) -> Vec<Divider> {
         let Some(root) = &self.root else { return Vec::new() };
         if let Some(z) = self.zoomed {
-            if self.contains(z) {
+            if self.path_of(z).is_some() {
                 return Vec::new();
             }
         }
@@ -579,13 +621,10 @@ impl Tree {
             ratio,
             ..(**split).clone()
         }));
-        Ok(Tree {
-            root: Some(root.replacing(path, new_split)?),
-            // Unlike `resize`, dragging a divider does not clear zoom: a
-            // divider is not reachable while zoomed, so there is no zoom to
-            // clear and pretending otherwise would be a lie in the state.
-            zoomed: self.zoomed,
-        })
+        // Unlike `resize`, dragging a divider does not clear zoom: a
+        // divider is not reachable while zoomed, so there is no zoom to
+        // clear and pretending otherwise would be a lie in the state.
+        Ok(self.derived(Some(root.replacing(path, new_split)?), self.zoomed))
     }
 
     /// What should happen to every pane, inside `bounds`. This is what the
@@ -621,10 +660,14 @@ impl Tree {
         // caller that did exactly what the return value said still wrong: it
         // had to compute the complement against `panes()` to learn who to
         // hide, and that requirement lived nowhere but in prose.
+        //
+        // **The same for a terminal stacked behind another** (task 1583): it
+        // has a window like every pane and is `Hidden`, in the place of its
+        // tab -- every member of the tree, in `members()` order, once.
         if let Some(z) = self.zoomed {
-            if self.contains(z) {
+            if self.path_of(z).is_some() {
                 return self
-                    .panes()
+                    .members()
                     .into_iter()
                     .map(|p| {
                         let place = if p == z {
@@ -638,10 +681,14 @@ impl Tree {
             }
         }
 
-        let mut out = Vec::new();
-        root.layout_into(bounds, &mut out);
-        out.into_iter()
-            .map(|(p, r)| (p, Placement::Visible(r)))
+        let mut shown = Vec::new();
+        root.layout_into(bounds, &mut shown);
+        self.members()
+            .into_iter()
+            .map(|p| match shown.iter().find(|(s, _)| *s == p) {
+                Some((_, r)) => (p, Placement::Visible(*r)),
+                None => (p, Placement::Hidden),
+            })
             .collect()
     }
 
@@ -1071,6 +1118,9 @@ pub fn own_slots(owners: &[isize], window: isize) -> Vec<usize> {
 }
 
 pub mod drag;
+pub mod stack;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod stack_tests;

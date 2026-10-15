@@ -207,9 +207,16 @@ fn to_screen(owner: HWND, r: Rect) -> RECT {
 /// when it was on a pane's title**, and then this has taken it.
 pub fn title_press(frame: HWND, x: i32, y: i32) -> bool {
     let Some(pane) = crate::pane_frames::title_at(frame, x, y) else { return false };
+    // A stack's strip stands where the title would (task 1583): its close
+    // buttons below, everything else there.
+    let on_strip = crate::pane_frames::strip_at(frame, x, y).is_some();
+    if on_strip && crate::pane_frames::close_at(frame, x, y).is_none() {
+        return crate::pane_frames::strip_press(frame, x, y);
+    }
     // The close cross is a button, not a grip: it neither drags nor gives
     // the pane the keyboard, and acts on release, as the strip's does.
-    if crate::pane_frames::close_at(frame, x, y) == Some(pane) {
+    let closing = crate::pane_frames::close_at(frame, x, y).filter(|c| *c == pane || on_strip);
+    if let Some(pane) = closing {
         GESTURE.with(|g| *g.borrow_mut() = Gesture::Pressed { frame: frame.0 as isize, pane, at: cursor(), threshold: 0.0, drags: false, clicks: false, closes: true });
         unsafe {
             SetCapture(frame);
@@ -558,8 +565,9 @@ pub fn title_cursor(frame: HWND) -> bool {
         let _ = ScreenToClient(frame, &mut at);
     }
     let Some(pane) = crate::pane_frames::title_at(frame, at.x, at.y) else { return false };
-    // Over the close cross the pointer stays an arrow: it is a button.
-    if crate::pane_frames::close_at(frame, at.x, at.y) == Some(pane) {
+    // Over the close cross the pointer stays an arrow: it is a button. So
+    // over a stack's strip, whose tabs are clicked (task 1583).
+    if crate::pane_frames::close_at(frame, at.x, at.y) == Some(pane) || crate::pane_frames::strip_at(frame, at.x, at.y).is_some() {
         return false;
     }
     let Some((s, _)) = situation(frame, pane) else { return false };

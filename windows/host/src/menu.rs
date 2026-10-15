@@ -99,6 +99,10 @@ enum Enable {
     No,
     /// Greyed while the closed-tab stack is empty.
     WhenReopenable,
+    /// One of the stack's verbs (`pane_stack:<verb>`, task 1583): greyed
+    /// while it has nothing to do on the pane in front
+    /// (`tabs::pane_stack_offers`), as macOS greys its Stack menu.
+    WhenStackOffers,
 }
 
 fn row_enabled(r: &Row) -> bool {
@@ -106,6 +110,7 @@ fn row_enabled(r: &Row) -> bool {
         Enable::Yes => true,
         Enable::No => false,
         Enable::WhenReopenable => crate::reopen::can_reopen(),
+        Enable::WhenStackOffers => stack_verb_of(r.action).is_some_and(|v| crate::tabs::pane_stack_offers(crate::tabs::overlay_frame(), v, None)),
     };
     // A row about the page in front is lit when that page is, or is not,
     // a page of a project -- whichever the row needs.
@@ -115,6 +120,36 @@ fn row_enabled(r: &Row) -> bool {
     });
     by_state && by_page && offered_in_front(r)
 }
+
+/// The stack verb a `pane_stack:<verb>` row names; none for anything else.
+fn stack_verb_of(action: Option<&str>) -> Option<polter_split_tree::stack::Verb> {
+    use polter_split_tree::stack::Verb;
+    Some(match action?.strip_prefix("pane_stack:")? {
+        "new" => Verb::New,
+        "next" => Verb::Next,
+        "previous" => Verb::Previous,
+        "out" => Verb::Out,
+        "onto_next" => Verb::OntoNext,
+        "onto_previous" => Verb::OntoPrevious,
+        _ => return None,
+    })
+}
+
+/// A Stack row: live while its verb has something to do.
+const fn act_stack(label: &'static str, action: &'static str) -> Row {
+    Row { label, action: Some(action), sub: None, personas: false, check: None, ready: Ready::NeedsState("a stack verb with nothing to do on the pane in front"), enabled: Enable::WhenStackOffers }
+}
+
+/// The Stack submenu, after «Resize Split» (macOS puts it after «Equalize
+/// Splits», which is in that submenu here). macOS's words, one msgid each.
+const STACK_ROWS: &[Row] = &[
+    act_stack(n_("New Terminal in This Pane"), "pane_stack:new"),
+    act_stack(n_("Next Stacked Terminal"), "pane_stack:next"),
+    act_stack(n_("Previous Stacked Terminal"), "pane_stack:previous"),
+    act_stack(n_("Move Terminal Out of Stack"), "pane_stack:out"),
+    act_stack(n_("Stack onto Next Pane"), "pane_stack:onto_next"),
+    act_stack(n_("Stack onto Previous Pane"), "pane_stack:onto_previous"),
+];
 
 /// Whether the row can be done with the tab that is in front.
 ///
@@ -508,6 +543,7 @@ const WINDOW_ROWS: &[Row] = &[
     act(n_("Next Split"), "goto_split:next"),
     sub(n_("Select Split"), GOTO_SPLIT_ROWS),
     sub(n_("Resize Split"), RESIZE_SPLIT_ROWS),
+    sub(n_("Stack"), STACK_ROWS),
     sep(),
     act(n_("Reset Window Size"), "reset_window_size"),
     sep(),

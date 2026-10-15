@@ -69,7 +69,7 @@ fn empty_tree() {
     assert!(t.is_empty());
     assert!(!t.is_split());
     assert_eq!(t.len(), 0);
-    assert!(t.panes().is_empty());
+    assert!(t.shown_panes().is_empty());
     assert!(t.layout(Rect::new(0.0, 0.0, 100.0, 100.0)).is_empty());
     assert_eq!(t.path_of(A), None);
 }
@@ -79,7 +79,7 @@ fn single_pane_fills_everything() {
     let t = Tree::with_pane(A);
     assert!(!t.is_empty());
     assert!(!t.is_split());
-    assert_eq!(t.panes(), vec![A]);
+    assert_eq!(t.shown_panes(), vec![A]);
     assert_eq!(t.path_of(A), Some(vec![]));
 
     let b = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -99,7 +99,7 @@ fn insert_into_missing_pane_is_an_error() {
 fn split_right_puts_the_new_pane_on_the_right() {
     let t = row();
     assert!(t.is_split());
-    assert_eq!(t.panes(), vec![A, B]);
+    assert_eq!(t.shown_panes(), vec![A, B]);
 
     let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
     assert_rect(rect_of(&t, bounds, A), 0.0, 0.0, 100.0, 100.0);
@@ -109,7 +109,7 @@ fn split_right_puts_the_new_pane_on_the_right() {
 #[test]
 fn split_left_puts_the_new_pane_on_the_left() {
     let t = Tree::with_pane(A).insert(B, A, NewSplit::Left).unwrap();
-    assert_eq!(t.panes(), vec![B, A]);
+    assert_eq!(t.shown_panes(), vec![B, A]);
 
     let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
     assert_rect(rect_of(&t, bounds, B), 0.0, 0.0, 100.0, 100.0);
@@ -119,7 +119,7 @@ fn split_left_puts_the_new_pane_on_the_left() {
 #[test]
 fn split_down_stacks_the_new_pane_below() {
     let t = Tree::with_pane(A).insert(B, A, NewSplit::Down).unwrap();
-    assert_eq!(t.panes(), vec![A, B]);
+    assert_eq!(t.shown_panes(), vec![A, B]);
 
     let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
     assert_rect(rect_of(&t, bounds, A), 0.0, 0.0, 200.0, 50.0);
@@ -173,7 +173,7 @@ fn layout_covers_the_bounds_exactly() {
 
 #[test]
 fn panes_come_out_in_tree_order() {
-    assert_eq!(grid().panes(), vec![A, C, B, D]);
+    assert_eq!(grid().shown_panes(), vec![A, C, B, D]);
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn path_and_node_round_trip() {
     assert_eq!(t.path_of(D), Some(vec![Branch::Right, Branch::Right]));
     assert_eq!(t.path_of(99), None);
 
-    for pane in t.panes() {
+    for pane in t.shown_panes() {
         let path = t.path_of(pane).unwrap();
         assert_eq!(t.node_at(&path), Some(&Node::Leaf(pane)));
     }
@@ -314,14 +314,14 @@ fn borders() {
 fn closing_the_only_pane_empties_the_tree() {
     let t = Tree::with_pane(A).remove(A);
     assert!(t.is_empty());
-    assert_eq!(t.panes(), Vec::<PaneId>::new());
+    assert_eq!(t.shown_panes(), Vec::<PaneId>::new());
 }
 
 #[test]
 fn closing_one_of_two_collapses_the_split() {
     let t = row().remove(A);
     assert!(!t.is_split());
-    assert_eq!(t.panes(), vec![B]);
+    assert_eq!(t.shown_panes(), vec![B]);
 
     let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
     assert_rect(rect_of(&t, bounds, B), 0.0, 0.0, 200.0, 100.0);
@@ -330,7 +330,7 @@ fn closing_one_of_two_collapses_the_split() {
 #[test]
 fn closing_the_middle_of_three_leaves_the_other_two() {
     let t = row3().remove(B);
-    assert_eq!(t.panes(), vec![A, C]);
+    assert_eq!(t.shown_panes(), vec![A, C]);
 
     // The outer split kept its ratio; c simply took b's slot.
     let bounds = Rect::new(0.0, 0.0, 400.0, 100.0);
@@ -344,7 +344,7 @@ fn closing_a_pane_promotes_its_sibling_into_the_parent_slot() {
     // inner split becomes the root and keeps its own ratio; the outer 1/3 is
     // gone with the split that held it.
     let t = row3().equalize().remove(A);
-    assert_eq!(t.panes(), vec![B, C]);
+    assert_eq!(t.shown_panes(), vec![B, C]);
 
     let bounds = Rect::new(0.0, 0.0, 400.0, 100.0);
     assert_rect(rect_of(&t, bounds, B), 0.0, 0.0, 200.0, 100.0);
@@ -356,7 +356,7 @@ fn closing_a_pane_in_a_grid_widens_its_row() {
     // Close c: the left column's vertical split collapses and a gets the
     // whole left column.
     let t = grid().remove(C);
-    assert_eq!(t.panes(), vec![A, B, D]);
+    assert_eq!(t.shown_panes(), vec![A, B, D]);
 
     let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
     assert_rect(rect_of(&t, bounds, A), 0.0, 0.0, 100.0, 100.0);
@@ -386,7 +386,7 @@ fn closing_a_subtree_takes_all_of_it() {
     let t = grid();
     let right_column = vec![Branch::Right];
     let after = t.remove_subtree(&right_column).unwrap();
-    assert_eq!(after.panes(), vec![A, C]);
+    assert_eq!(after.shown_panes(), vec![A, C]);
 
     assert_eq!(
         t.remove_subtree(&[Branch::Left, Branch::Left, Branch::Left]),
@@ -468,7 +468,7 @@ fn removed_panes_do_not_appear_in_the_layout_at_all() {
 
     // The rest still come out complete, so "absent" is specific to the pane
     // that was removed and not a hole in the whole answer.
-    assert_eq!(placed, t.panes());
+    assert_eq!(placed, t.shown_panes());
 }
 
 /// Whatever the zoom state, the answer names every pane the tree knows about
@@ -482,7 +482,7 @@ fn every_known_pane_appears_exactly_once_in_every_zoom_state() {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), placed.len(), "a pane was named twice");
-        assert_eq!(placed, t.panes(), "layout and panes() must agree, in order");
+        assert_eq!(placed, t.shown_panes(), "layout and panes() must agree, in order");
     }
 }
 
@@ -832,7 +832,7 @@ fn a_shape_given_at_once_is_the_shape_that_comes_back() {
     let t = Tree::with_root(split(Axis::Horizontal, 0.25, leaf(1),
         split(Axis::Horizontal, 0.33, leaf(2), square)));
 
-    assert_eq!(t.panes(), vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(t.shown_panes(), vec![1, 2, 3, 4, 5, 6]);
 
     // **The square is a square, not four columns**, and this is the
     // assertion that tells those apart: 3 and 4 share a vertical split, so

@@ -50,6 +50,7 @@ pub mod list;
 pub mod lone;
 pub mod look;
 pub mod pane;
+pub mod panestack;
 pub mod pulse;
 pub mod quota;
 pub mod reach;

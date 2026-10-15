@@ -363,18 +363,14 @@ struct Unavailable {
 // action `cb_action` now handles is exactly what `test "the Windows palette
 // hides only what it must"` in `src/apprt/action.zig` exists to catch.
 //
+// `pane_stack` left in task 1583: the split tree here holds stacks now and
+// `cb_action` carries out its six verbs.
+//
 // `check_for_updates` left the same way in task 649: `update.rs` answers
 // `ACTION_CHECK_FOR_UPDATES` for real now (a GitHub releases check, prompt
 // only, no download), and `menu.rs`'s "Check for Updates…" row moved out of
 // `HostGap` at the same time.
 const UNAVAILABLE: &[Unavailable] = &[
-    Unavailable {
-        key: "pane_stack",
-        blocked_on: "pane_stack",
-        why: "Several terminals in one pane, one in front (`Binding.zig`, `pane_stack`). macOS \
-              has it; this host's split tree holds one terminal to a pane, so there is nothing \
-              for any of the six rows to do yet (task 1493).",
-    },
     Unavailable {
         key: "show_gtk_inspector",
         blocked_on: "show_gtk_inspector",
