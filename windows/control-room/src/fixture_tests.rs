@@ -1664,3 +1664,123 @@ fn a_card_with_fix_is_one_line_taller_whether_offered_or_pressed() {
     assert_eq!(layout::row_height(&fit, 0, Fix::Sent), plain + side::FIX_LINE_HEIGHT);
     assert_eq!(layout::row_height(&fit, 2, Fix::Offered), plain + side::ASK_LINE_HEIGHT + side::FIX_LINE_HEIGHT);
 }
+
+/// Task 1575: a refusal is said in the person's language. The host looks
+/// each sentence up with `tr` as it shows it, so one with no entry in the
+/// catalogue reaches a Chinese window as its English msgid -- which is what
+/// the Fix button showed, because the first twelve were never marked `n_`
+/// and so never extracted. The host's own scan
+/// (`every_msgid_this_host_shows_has_a_translation`) walks `host/src` only
+/// and could not see them here.
+#[test]
+fn every_refusal_is_said_in_chinese() {
+    const PO: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../po/zh_CN.po"));
+    // Every variant, by a match with no `_`: a new refusal is a compile
+    // error here until somebody lists it, rather than a sentence this
+    // silently never asks about.
+    fn listed(r: Refusal) -> Refusal {
+        match r {
+            Refusal::BadRequest
+            | Refusal::NoSuchGroup
+            | Refusal::SnoozeInThePast
+            | Refusal::UnknownTerminal
+            | Refusal::PromptGone
+            | Refusal::NothingToReplyTo
+            | Refusal::Stale
+            | Refusal::EmptyText
+            | Refusal::UserPresent
+            | Refusal::DraftInLine
+            | Refusal::ChildExited
+            | Refusal::KeyFailed
+            | Refusal::BadName
+            | Refusal::GroupExists
+            | Refusal::TooManyGroups
+            | Refusal::HasSupervisor
+            | Refusal::AlreadyStarting
+            | Refusal::NoSupervisorRole
+            | Refusal::NoSuchPersona
+            | Refusal::NotASupervisorRole
+            | Refusal::NoCli
+            | Refusal::NoSuchDirectory
+            | Refusal::OpenFailed
+            | Refusal::NoExecutable
+            | Refusal::NothingToFix
+            | Refusal::AlreadyNotified
+            | Refusal::NoAgent
+            | Refusal::Other => r,
+        }
+    }
+    let all = [
+        Refusal::BadRequest,
+        Refusal::NoSuchGroup,
+        Refusal::SnoozeInThePast,
+        Refusal::UnknownTerminal,
+        Refusal::PromptGone,
+        Refusal::NothingToReplyTo,
+        Refusal::Stale,
+        Refusal::EmptyText,
+        Refusal::UserPresent,
+        Refusal::DraftInLine,
+        Refusal::ChildExited,
+        Refusal::KeyFailed,
+        Refusal::BadName,
+        Refusal::GroupExists,
+        Refusal::TooManyGroups,
+        Refusal::HasSupervisor,
+        Refusal::AlreadyStarting,
+        Refusal::NoSupervisorRole,
+        Refusal::NoSuchPersona,
+        Refusal::NotASupervisorRole,
+        Refusal::NoCli,
+        Refusal::NoSuchDirectory,
+        Refusal::OpenFailed,
+        Refusal::NoExecutable,
+        Refusal::NothingToFix,
+        Refusal::AlreadyNotified,
+        Refusal::NoAgent,
+        Refusal::Other,
+    ];
+    // The list and the match agree on the count: the match alone proves
+    // every variant is named, not that every one is in `all`.
+    assert_eq!(all.iter().map(|r| format!("{:?}", listed(*r))).collect::<std::collections::BTreeSet<_>>().len(), 28);
+
+    // msgid and msgstr, with the continuation lines `msgmerge` wraps long
+    // ones into joined back up.
+    let mut catalogue = std::collections::HashMap::new();
+    let (mut id, mut s, mut into) = (String::new(), String::new(), 0u8);
+    for line in PO.lines().chain(std::iter::once("")) {
+        let quoted = |l: &str| l.strip_prefix('"').and_then(|r| r.strip_suffix('"')).map(|r| r.replace("\\\"", "\""));
+        if let Some(r) = line.strip_prefix("msgid ") {
+            (id, s, into) = (quoted(r).unwrap_or_default(), String::new(), 1);
+        } else if let Some(r) = line.strip_prefix("msgstr ") {
+            (s, into) = (quoted(r).unwrap_or_default(), 2);
+        } else if let Some(q) = quoted(line) {
+            match into {
+                1 => id.push_str(&q),
+                2 => s.push_str(&q),
+                _ => {}
+            }
+        } else {
+            if into == 2 && !id.is_empty() {
+                catalogue.insert(std::mem::take(&mut id), std::mem::take(&mut s));
+            }
+            into = 0;
+        }
+    }
+    // The floor under the parse: a long, wrapped entry that was always there.
+    assert_eq!(
+        catalogue.get("This role isn't set up for any agent CLI yet. Pick one in the role library.").map(|s| !s.is_empty()),
+        Some(true),
+        "the catalogue parse lost a wrapped entry"
+    );
+
+    let missing: Vec<&str> = all
+        .iter()
+        .map(|r| r.message())
+        .filter(|m| catalogue.get(*m).is_none_or(|t| t.is_empty() || t == m))
+        .collect();
+    assert!(missing.is_empty(), "{} refusal(s) would show in English on a Chinese machine:\n{}", missing.len(), missing.join("\n"));
+
+    // `Other` keeps its place for the name, or the name would vanish.
+    assert!(catalogue[Refusal::Other.message()].contains("{}"));
+}

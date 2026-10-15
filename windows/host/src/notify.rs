@@ -47,7 +47,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use polter_control_room::toast::{Launch, Route};
+use polter_control_room::toast::{self as toast_rules, Launch, Route};
 
 use crate::{plogf, wlogf};
 
@@ -307,7 +307,8 @@ fn show(p: Pending) {
     // 1551); the balloon below is the way back, and the log says why it
     // was taken.
     let launch = Launch { group: p.group.clone(), terminal: p.terminal, frame: p.frame };
-    match crate::toast::show(&p.title, p.subtitle.as_deref(), &p.body, &launch) {
+    let route = crate::toast::show(&p.title, p.subtitle.as_deref(), &p.body, &launch);
+    match route {
         Route::Toast => {
             let frame = HWND(p.frame as *mut std::ffi::c_void);
             if p.frame != 0 {
@@ -318,8 +319,24 @@ fn show(p: Pending) {
             }
             return;
         }
+        // **Turned off: nothing pops up** (task 1575). The balloon this used
+        // to take was turned off with it and appeared nowhere, logged
+        // `shown -> true`; the taskbar button is what is left.
+        Route::Held(off) => {
+            let flashed = flash(p.frame);
+            // process-wide: the notifier's setting is the process's
+            plogf!("[notify] not shown {:?}: {}; {flashed}", p.title, toast_rules::held_says(off));
+            return;
+        }
         // process-wide: why the process's notifier was not used
         Route::Balloon(why) => plogf!("[notify] a balloon instead of a toast: {}", why.says()),
+    }
+    // The balloon may be turned off with Polter's toasts too -- the same
+    // identity -- so the flash goes first, as the floor under it.
+    if route.flashes() {
+        let flashed = flash(p.frame);
+        // process-wide: the fallback is the process's
+        plogf!("[notify] under the balloon for {:?}: {flashed}", p.title);
     }
     if hwnd.0.is_null() || !ensure_icon(hwnd) {
         return;
@@ -355,6 +372,37 @@ fn show(p: Pending) {
         // process-wide: the notification named no window
         plogf!("[notify] shown {:?} -> {ok} (no window)", p.title);
     }
+}
+
+/// Flash the taskbar button of the window a notification came from, until
+/// the person brings it forward -- what is left to see when no toast went
+/// (task 1575). A notification that names no window (the control room's)
+/// flashes the window the control room is in, or else the first window.
+/// Says what it did, for the log.
+fn flash(frame: isize) -> String {
+    let named = HWND(frame as *mut std::ffi::c_void);
+    let target = if frame != 0 && unsafe { IsWindow(Some(named)) }.as_bool() {
+        Some(named)
+    } else {
+        crate::control_room::frame_of_panel().or_else(|| crate::winid::all().into_iter().next())
+    };
+    let Some(hwnd) = target else {
+        return "no window to flash".to_string();
+    };
+    if unsafe { GetForegroundWindow() } == hwnd {
+        return format!("window {:#x} is in front, not flashed", hwnd.0 as usize);
+    }
+    let fw = FLASHWINFO {
+        cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
+        hwnd,
+        // The button only, and until it is brought forward: the caption
+        // flashing too would be louder than a notification is.
+        dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG,
+        uCount: 0,
+        dwTimeout: 0,
+    };
+    let _ = unsafe { FlashWindowEx(&fw) };
+    format!("flashed the taskbar button of window {:#x}", hwnd.0 as usize)
 }
 
 extern "system" fn worker_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {

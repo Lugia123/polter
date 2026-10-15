@@ -299,6 +299,15 @@ fn panel() -> Option<HWND> {
     STATE.with(|s| s.borrow().as_ref().map(|st| HWND(st.hwnd as *mut c_void)))
 }
 
+/// The top-level window the panel is in, when there is a panel. The UI
+/// thread's answer: anywhere else there is none (`STATE` is per thread).
+/// For a control room alert that has to flash a taskbar button and names
+/// no window of its own (task 1575).
+pub fn frame_of_panel() -> Option<HWND> {
+    let root = unsafe { GetAncestor(panel()?, GA_ROOT) };
+    (!root.0.is_null()).then_some(root)
+}
+
 // ------------------------------------------------------------------ lifetime
 
 /// Make the panel as a child of `frame`, hidden, at `bounds`. `tabs::layout`

@@ -226,18 +226,18 @@ impl Refusal {
     /// `Other` it has a `{}` for the name the core gave.
     pub fn message(self) -> &'static str {
         match self {
-            Refusal::BadRequest => "That could not be sent. This is a fault in Polter, not something you did.",
-            Refusal::NoSuchGroup => "That group is no longer there.",
-            Refusal::SnoozeInThePast => "That time has already passed.",
-            Refusal::UnknownTerminal => "That terminal is no longer there.",
-            Refusal::PromptGone => "The prompt has changed since this was drawn. Nothing was sent; look again.",
-            Refusal::NothingToReplyTo => "It is not waiting to be told anything right now.",
-            Refusal::Stale => "It has moved on since this was drawn. Nothing was sent; look again.",
-            Refusal::EmptyText => "There is nothing to send.",
-            Refusal::UserPresent => "Somebody typed in that terminal a moment ago. Nothing was sent; try again shortly.",
-            Refusal::DraftInLine => "That terminal has unsent text in its input line. Nothing was sent; go to the terminal.",
-            Refusal::ChildExited => "The program in that terminal has ended.",
-            Refusal::KeyFailed => "The key did not reach the program. Go to the terminal.",
+            Refusal::BadRequest => n_("That could not be sent. This is a fault in Polter, not something you did."),
+            Refusal::NoSuchGroup => n_("That group is no longer there."),
+            Refusal::SnoozeInThePast => n_("That time has already passed."),
+            Refusal::UnknownTerminal => n_("That terminal is no longer there."),
+            Refusal::PromptGone => n_("The prompt has changed since this was drawn. Nothing was sent; look again."),
+            Refusal::NothingToReplyTo => n_("It is not waiting to be told anything right now."),
+            Refusal::Stale => n_("It has moved on since this was drawn. Nothing was sent; look again."),
+            Refusal::EmptyText => n_("There is nothing to send."),
+            Refusal::UserPresent => n_("Somebody typed in that terminal a moment ago. Nothing was sent; try again shortly."),
+            Refusal::DraftInLine => n_("That terminal has unsent text in its input line. Nothing was sent; go to the terminal."),
+            Refusal::ChildExited => n_("The program in that terminal has ended."),
+            Refusal::KeyFailed => n_("The key did not reach the program. Go to the terminal."),
             // The sentences below are the macOS host's, word for word
             // (`ControlRoomActions.Refusal.message`).
             Refusal::BadName => n_("A group's name is lowercase letters, digits and dashes, 48 at most."),
@@ -255,7 +255,7 @@ impl Refusal {
             Refusal::NothingToFix => n_("It is no longer failing. Nothing was sent."),
             Refusal::AlreadyNotified => n_("The supervisor has already been told."),
             Refusal::NoAgent => n_("No agent is connected in that terminal, so nothing was typed. It is kept in the group."),
-            Refusal::Other => "It was not done ({}).",
+            Refusal::Other => n_("It was not done ({})."),
         }
     }
 
