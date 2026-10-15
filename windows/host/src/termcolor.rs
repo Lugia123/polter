@@ -7,40 +7,27 @@
 //!
 //! # What the host does with it, and what it does not
 //!
-//! **Does:** remembers the colours per surface, and paints the window's DWM
-//! border with the active surface's background. That is the piece of this
-//! window still drawn by the system rather than by us (`shell.rs` takes the
-//! caption away with `WM_NCCALCSIZE` and draws the rest), so it is the piece
-//! that otherwise stays the built-in grey while the terminal inside goes
-//! light -- a bright window in a dark hairline, which is exactly the "half one
-//! colour and half another" `theme.rs` was written to stop.
-//!
-//! **Does not:** repaint the tab strip. The strip's palette is a set of
-//! constants in `shell.rs` and `strip.rs` shared with the buttons and the tab
-//! shapes, and making it follow the terminal is a design decision about a
-//! surface a person reads, not a mechanical substitution -- a light terminal
-//! would need light tab text, hover greys, and a close glyph that is still
-//! visible. **Recorded as a limit rather than half-done**: half of the chrome
-//! following the terminal and half not is worse than none of it doing so.
+//! **Does:** remembers the colours per surface, and works out from the
+//! background of the pane in front whether the whole window is light or dark
+//! and what its strip is painted in ([`chrome`]) -- the macOS rule, where a
+//! terminal window takes its terminal's background (task 1550). The border,
+//! the caption, the strip, the control room and the frames round the panes
+//! all ask it when they paint; a background change here only asks them to
+//! paint again (`shell::recolor`).
 //!
 //! # High contrast wins here too
 //!
-//! When a high-contrast theme is on, nothing is applied. A person who has
-//! asked the system for a specific set of colours has not asked for whatever
-//! a program in a terminal decided to emit, and `theme.rs` makes the same
-//! judgement for every other colour in this port.
+//! When a high-contrast theme is on, the painters use system colours whatever
+//! this says. A person who has asked the system for a specific set of colours
+//! has not asked for whatever a program in a terminal decided to emit, and
+//! `theme.rs` makes the same judgement for every other colour in this port.
 
 use std::sync::Mutex;
 
-use windows::Win32::Foundation::{COLORREF, HWND};
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
+use windows::Win32::Foundation::HWND;
 
 use crate::ffi;
 use crate::{plogf, wlogf};
-
-/// `DWMWA_BORDER_COLOR`. Not in the `windows` crate's enum for the SDK this
-/// builds against, and named here the same way `shell.rs` names it.
-const DWMWA_BORDER_COLOR: u32 = 34;
 
 /// What one surface has said about its colours.
 ///
@@ -121,7 +108,7 @@ pub fn on_color_change(
         return false;
     };
     let value = colorref(r, g, b);
-    let colors = record(surface as usize, kind, value);
+    record(surface as usize, kind, value);
 
     let Some(f) = frame else {
         // process-wide: the surface is not in any window this host knows, so
@@ -143,22 +130,40 @@ pub fn on_color_change(
         return true;
     }
 
-    if crate::theme::high_contrast() {
-        wlogf!(f, "[color] high contrast is on; the border keeps the system colour");
-        return true;
-    }
-
-    let bg = colors.bg.unwrap_or(value);
-    let res = unsafe {
-        DwmSetWindowAttribute(
-            f,
-            DWMWINDOWATTRIBUTE(DWMWA_BORDER_COLOR as i32),
-            &COLORREF(bg) as *const _ as *const std::ffi::c_void,
-            std::mem::size_of::<COLORREF>() as u32,
-        )
-    };
-    wlogf!(f, "[color] background #{r:02x}{g:02x}{b:02x} -> border {:?}", res.is_ok());
+    // The whole chrome follows the terminal's background now (task 1550):
+    // the border, the caption, the strip, the control room and the frames
+    // round the panes, light or dark by the macOS rule.
+    let c = chrome(f);
+    crate::shell::recolor(f);
+    wlogf!(f, "[color] background #{r:02x}{g:02x}{b:02x}; the window is {}", if c.dark { "dark" } else { "light" });
     true
+}
+
+/// The background the window's chrome is worked out from: what the pane in
+/// front last said with OSC 11, or the configured `background`. `None` when
+/// neither can be read, which `Chrome::of` takes as dark.
+///
+/// **A pane that set its background and then reset it (OSC 111) is still
+/// read as the colour it set**: the core sends the reset as no colour, and
+/// this table has never heard of one. Recorded as a limit.
+pub fn ground(frame: HWND) -> Option<u32> {
+    let s = crate::tabs::active_surface(frame) as usize;
+    let said = (s != 0)
+        .then(|| {
+            let guard = match COLORS.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            guard.iter().find(|(k, _)| *k == s).and_then(|(_, c)| c.bg)
+        })
+        .flatten();
+    said.or_else(|| crate::divider::terminal_background().map(|c| c.0))
+}
+
+/// Light or dark for `frame`, and its strip's ground, by the macOS rule
+/// (`polter_control_room::chrome`).
+pub fn chrome(frame: HWND) -> polter_control_room::chrome::Chrome {
+    polter_control_room::chrome::Chrome::of(ground(frame).map(polter_control_room::chrome::from_bgr))
 }
 
 #[cfg(test)]

@@ -107,24 +107,9 @@ pub fn ui_face() -> PCWSTR {
 pub fn mono_face() -> PCWSTR {
     use std::sync::OnceLock;
     use windows::core::w;
-    use windows::Win32::Foundation::LPARAM;
-    use windows::Win32::Graphics::Gdi::{EnumFontFamiliesExW, GetDC, ReleaseDC, LOGFONTW, TEXTMETRICW};
     static CASCADIA: OnceLock<bool> = OnceLock::new();
-    unsafe extern "system" fn found(_: *const LOGFONTW, _: *const TEXTMETRICW, _: u32, seen: LPARAM) -> i32 {
-        unsafe { *(seen.0 as *mut bool) = true };
-        0
-    }
     let has = *CASCADIA.get_or_init(|| {
-        let mut seen = false;
-        let mut want = LOGFONTW { lfCharSet: DEFAULT_CHARSET, ..Default::default() };
-        for (to, from) in want.lfFaceName.iter_mut().zip("Cascadia Mono".encode_utf16()) {
-            *to = from;
-        }
-        unsafe {
-            let dc = GetDC(None);
-            EnumFontFamiliesExW(dc, &want, Some(found), LPARAM(&mut seen as *mut bool as isize), 0);
-            ReleaseDC(None, dc);
-        }
+        let seen = installed("Cascadia Mono");
         // process-wide: which faces are installed is the machine's
         plogf!("[uifont] the control room's fixed-width face: {}", if seen { "Cascadia Mono" } else { "Consolas (Cascadia Mono is not installed)" });
         seen
@@ -134,4 +119,58 @@ pub fn mono_face() -> PCWSTR {
     } else {
         w!("Consolas")
     }
+}
+
+/// The settings and project windows' interface face at `px` (one of
+/// `polter_settings_shell::type_size`), as the control room's: the system's
+/// message font (task 1550).
+pub fn ui(dpi: i32, px: i32, weight: i32) -> HFONT {
+    make(dpi, px, weight, ui_face())
+}
+
+/// Their fixed-width face: keys, paths, a role's key.
+pub fn mono(dpi: i32) -> HFONT {
+    make(dpi, polter_settings_shell::type_size::MONO, windows::Win32::Graphics::Gdi::FW_NORMAL.0 as i32, mono_face())
+}
+
+/// The face the settings sidebar's icons are drawn from: **Segoe Fluent
+/// Icons** (Windows 11), or **Segoe MDL2 Assets** where it is not installed
+/// (Windows 10), which has the four glyphs used at the same code points
+/// (`Section::icon`). Asked once.
+pub fn icon_face() -> PCWSTR {
+    use std::sync::OnceLock;
+    use windows::core::w;
+    static FLUENT: OnceLock<bool> = OnceLock::new();
+    let has = *FLUENT.get_or_init(|| {
+        let seen = installed("Segoe Fluent Icons");
+        // process-wide: which faces are installed is the machine's
+        plogf!("[uifont] the settings sidebar's icon face: {}", if seen { "Segoe Fluent Icons" } else { "Segoe MDL2 Assets (Segoe Fluent Icons is not installed)" });
+        seen
+    });
+    if has {
+        w!("Segoe Fluent Icons")
+    } else {
+        w!("Segoe MDL2 Assets")
+    }
+}
+
+/// Is a font family installed?
+fn installed(name: &str) -> bool {
+    use windows::Win32::Foundation::LPARAM;
+    use windows::Win32::Graphics::Gdi::{EnumFontFamiliesExW, GetDC, ReleaseDC, LOGFONTW, TEXTMETRICW};
+    unsafe extern "system" fn found(_: *const LOGFONTW, _: *const TEXTMETRICW, _: u32, seen: LPARAM) -> i32 {
+        unsafe { *(seen.0 as *mut bool) = true };
+        0
+    }
+    let mut seen = false;
+    let mut want = LOGFONTW { lfCharSet: DEFAULT_CHARSET, ..Default::default() };
+    for (to, from) in want.lfFaceName.iter_mut().zip(name.encode_utf16()) {
+        *to = from;
+    }
+    unsafe {
+        let dc = GetDC(None);
+        EnumFontFamiliesExW(dc, &want, Some(found), LPARAM(&mut seen as *mut bool as isize), 0);
+        ReleaseDC(None, dc);
+    }
+    seen
 }

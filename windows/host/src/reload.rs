@@ -300,4 +300,7 @@ fn perform(soft: bool, surface: ffi::Surface) {
 /// shortcut is looked up from.
 pub fn on_config_change() {
     crate::general_ui::config_changed();
+    // The terminal's `background` may be another colour now, and every
+    // window's chrome is worked out from it (task 1550).
+    crate::shell::recolor_all();
 }

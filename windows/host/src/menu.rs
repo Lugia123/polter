@@ -1126,17 +1126,18 @@ static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(
 
 /// Draw the `≡` button into `rect`.
 ///
-/// **The colours are `strip.rs`'s, by value, not by a second name.** A menu
-/// button that hovers a different grey than the tab beside it is the kind of
-/// thing nobody reports and everybody sees.
-pub fn draw_menu_button(hdc: HDC, rect: RECT, scale: f64, hover: bool) {
+/// **The colours are the strip's, handed in** (`colours`, the window's
+/// `chrome::Buttons`). A menu button that hovers a different grey than the
+/// tab beside it is the kind of thing nobody reports and everybody sees.
+pub fn draw_menu_button(hdc: HDC, rect: RECT, scale: f64, hover: bool, colours: &polter_control_room::chrome::Buttons) {
+    use polter_control_room::chrome::bgr;
     let rect = &rect;
     validate_once();
     unsafe {
         let fill = if OPEN.load(std::sync::atomic::Ordering::Relaxed) {
-            Some(0x00403f3du32)
+            Some(bgr(colours.hover))
         } else if hover {
-            Some(0x00302f2du32)
+            Some(bgr(colours.hover_soft))
         } else {
             None
         };
@@ -1156,7 +1157,7 @@ pub fn draw_menu_button(hdc: HDC, rect: RECT, scale: f64, hover: bool) {
 
         // The three bars.
         let pen_w = (1.0 * scale).round().max(1.0) as i32;
-        let pen = CreatePen(PS_SOLID, pen_w, windows::Win32::Foundation::COLORREF(0x00d0cfcd));
+        let pen = CreatePen(PS_SOLID, pen_w, windows::Win32::Foundation::COLORREF(bgr(colours.glyph)));
         let old_pen = SelectObject(hdc, pen.into());
         let cx = (rect.left + rect.right) / 2;
         let cy = (rect.top + rect.bottom) / 2;

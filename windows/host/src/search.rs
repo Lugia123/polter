@@ -647,7 +647,7 @@ extern "system" fn search_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             // making it dark. Under high contrast `ctl_color` answers `None`,
             // this falls through, and the system's colours stand.
             WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
-                match crate::theme::ctl_color(windows::Win32::Graphics::Gdi::HDC(
+                match crate::theme::for_window(hwnd).ctl_color(windows::Win32::Graphics::Gdi::HDC(
                     wp.0 as *mut std::ffi::c_void,
                 )) {
                     Some(b) => LRESULT(b.0 as isize),
@@ -753,7 +753,7 @@ fn paint(hwnd: HWND) {
         let dpi = GetDpiForWindow(hwnd).max(96) as i32;
         let sc = |v: i32| v * dpi / 96;
 
-        let bg = CreateSolidBrush(COLORREF(theme::bg()));
+        let bg = CreateSolidBrush(COLORREF(theme::for_window(hwnd).bg()));
         FillRect(hdc, &rc, bg);
         let _ = DeleteObject(bg.into());
         SetBkMode(hdc, TRANSPARENT);
@@ -767,10 +767,10 @@ fn paint(hwnd: HWND) {
             // The counter. Three distinct states, and they must look
             // different: not answered yet, answered zero, answered n.
             let (label, colour) = match (st.total, st.selected) {
-                (None, _) => (String::new(), theme::dim()),
+                (None, _) => (String::new(), theme::for_window(hwnd).dim()),
                 (Some(0), _) => ("0/0".to_string(), col_none()),
-                (Some(t), Some(s)) => (format!("{}/{}", s, t), theme::text()),
-                (Some(t), None) => (format!("-/{}", t), theme::dim()),
+                (Some(t), Some(s)) => (format!("{}/{}", s, t), theme::for_window(hwnd).text()),
+                (Some(t), None) => (format!("-/{}", t), theme::for_window(hwnd).dim()),
             };
 
             let next_x = rc.right - sc(PAD) - sc(BTN_W);
@@ -788,7 +788,7 @@ fn paint(hwnd: HWND) {
                 DrawTextW(hdc, &mut wide, &mut tr, DT_RIGHT | DT_SINGLELINE);
             }
 
-            SetTextColor(hdc, COLORREF(theme::dim()));
+            SetTextColor(hdc, COLORREF(theme::for_window(hwnd).dim()));
             for (x, glyph) in [(prev_x, "\u{2039}"), (next_x, "\u{203A}")] {
                 let mut g: Vec<u16> = glyph.encode_utf16().collect();
                 let mut br = RECT {

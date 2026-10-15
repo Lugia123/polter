@@ -436,9 +436,12 @@ fn geometry(hwnd: HWND) -> Geometry {
     Geometry { scale, room: Room::new(rc.right as f64 / scale, rc.bottom as f64 / scale) }
 }
 
-fn dark() -> bool {
-    // The system's own setting; a configured window theme is not read yet.
-    crate::shot::appearance() == "dark"
+/// Light or dark for the control room in `hwnd`'s window: **its terminal's
+/// background**, as the strip and the frame round it (`termcolor::chrome`,
+/// the macOS rule, task 1550). It used to be the system's setting, which put
+/// a light control room inside a dark strip on a light system.
+fn dark(hwnd: HWND) -> bool {
+    crate::termcolor::chrome(unsafe { GetAncestor(hwnd, GA_ROOT) }).dark
 }
 
 /// Whether the control room is what the person is looking at: its panel is
@@ -749,7 +752,7 @@ fn begin_naming(hwnd: HWND) {
         // A group's name is 48 at most; a little more can be typed, so that
         // the core is the one to say it is too long.
         SendMessageW(edit, EM_SETLIMITTEXT, Some(WPARAM(64)), Some(LPARAM(0)));
-        let brush = CreateSolidBrush(rgb(scene::panel_color(look::theme(dark()))));
+        let brush = CreateSolidBrush(rgb(scene::panel_color(look::theme(dark(hwnd)))));
         // The control's own procedure is on record before ours is put in
         // front of it: ours passes on to it from its first message.
         let old_proc = GetWindowLongPtrW(edit, GWLP_WNDPROC);
@@ -1067,7 +1070,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let brush = NAMING.with(|n| n.borrow().as_ref().map(|f| f.brush));
             match brush {
                 Some(brush) => {
-                    let theme = look::theme(dark());
+                    let theme = look::theme(dark(hwnd));
                     let dc = HDC(wp.0 as *mut c_void);
                     unsafe {
                         SetTextColor(dc, rgb(theme.text));
@@ -1306,7 +1309,7 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         return;
     }
     let selected = selection();
-    let theme = look::theme(dark());
+    let theme = look::theme(dark(hwnd));
     // What starting a supervisor offers, when the core says one can be.
     let offered = start_scene(&g, theme);
     let (rx, ry) = (px - g.room.right.x, py - g.room.right.y);
@@ -1346,7 +1349,7 @@ fn goes_at(hwnd: HWND, x: i32, y: i32) -> bool {
     let (px, py) = (x as f64 / g.scale, y as f64 / g.scale);
     let detail = detail();
     let selected = selection();
-    let theme = look::theme(dark());
+    let theme = look::theme(dark(hwnd));
     let go = source::with(|data| {
         let row = match data {
             Data::Ready(r) => selected.as_deref().and_then(|id| r.list.row(id)),
@@ -1431,7 +1434,7 @@ fn paint(hwnd: HWND) {
         return;
     }
     let g = geometry(hwnd);
-    let theme = look::theme(dark());
+    let theme = look::theme(dark(hwnd));
     let selected = selection();
     let t = source::clock();
     let translate = |s: &str| tr(s);

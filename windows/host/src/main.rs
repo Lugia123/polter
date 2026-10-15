@@ -118,6 +118,7 @@ mod keyseq;
 mod app_language;
 mod language;
 mod links;
+mod polter_links;
 mod layout;
 mod menu;
 mod mouse;
@@ -4820,6 +4821,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
 
+            // High contrast on or off arrives as these; the window's chrome
+            // follows its terminal otherwise, which no system setting
+            // changes (task 1550). The message still goes on to the default.
+            WM_THEMECHANGED | WM_SYSCOLORCHANGE => {
+                crate::shell::recolor_now(hwnd);
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_SETTINGCHANGE if crate::theme::is_colour_change(lp) => {
+                crate::shell::recolor_now(hwnd);
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+
             WM_DPICHANGED => {
                 let dpi = (wp.0 & 0xFFFF) as f64;
                 let scale = dpi / 96.0;
@@ -6913,6 +6926,17 @@ fn refuse_command_line(why: &polter_cliargs::Rejection) -> ! {
 /// `LR_SHARED`: the system owns the handle and hands back the same one for
 /// the same size, so asking more than once costs nothing and nothing has to
 /// free it.
+/// The application's icon at `px` square, for About (task 1550). Shared,
+/// like [`app_icon`]'s.
+pub fn app_icon_at(px: i32) -> windows::Win32::UI::WindowsAndMessaging::HICON {
+    use windows::Win32::UI::WindowsAndMessaging::{LoadImageW, HICON, IMAGE_ICON, LR_DEFAULTCOLOR, LR_SHARED};
+    let hinst = unsafe { GetModuleHandleW(None) }.ok().map(HINSTANCE::from);
+    match unsafe { LoadImageW(hinst, PCWSTR(1 as _), IMAGE_ICON, px, px, LR_DEFAULTCOLOR | LR_SHARED) } {
+        Ok(h) => HICON(h.0),
+        Err(_) => HICON::default(),
+    }
+}
+
 pub fn app_icon(big: bool) -> windows::Win32::UI::WindowsAndMessaging::HICON {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetSystemMetrics, LoadImageW, HICON, IMAGE_ICON, LR_DEFAULTCOLOR, LR_SHARED, SM_CXICON,

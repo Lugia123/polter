@@ -60,8 +60,11 @@ const PROP_PREV: PCWSTR = w!("PolterGeneralPrevProc");
 /// `WM_MEASUREITEM` with.
 const CHOICE_ROW_H: i32 = 20;
 const CHOICE_LIST_ROWS: i32 = 30;
-/// How many lines of a key's documentation go under its control.
-const DOC_LINES: i32 = 2;
+/// How many lines of a key's documentation go under its control, and of
+/// its name in the label column: the macOS form's (`ConfigFormView`,
+/// task 1550).
+const DOC_LINES: i32 = 3;
+const LABEL_LINES: i32 = 2;
 
 static SECTION: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static FORM: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
@@ -145,6 +148,10 @@ struct Fixed {
     reload: HWND,
     edit_keybinds: HWND,
     reveal_logs: HWND,
+    /// About's three values, as read-only boxes with no frame: words to
+    /// look at, and **to select and copy**, as the macOS ones are (task
+    /// 1550) -- a version is the thing a bug report needs pasted.
+    about: [HWND; 3],
 }
 
 struct State {
@@ -407,6 +414,17 @@ pub(crate) struct SetResult {
     pub(crate) ok: bool,
     pub(crate) code: String,
     pub(crate) message: Option<String>,
+    /// The file the core wrote, when it says (`form.zig`'s `"wrote"`).
+    pub(crate) wrote: Option<String>,
+}
+
+impl SetResult {
+    /// The status line after a write that took: which file it went to, as
+    /// the macOS form says it (task 1550). Nothing when the core named no
+    /// file, as there.
+    pub(crate) fn saved_line(&self) -> Option<String> {
+        self.wrote.as_deref().map(|p| tr("Saved to {}.").replacen("{}", p, 1))
+    }
 }
 
 /// `ghostty_app_config_set`: `None` restores the default. The write happens
@@ -441,7 +459,7 @@ fn set_with(
     write: impl FnOnce(&str, Option<&str>) -> Result<String, &'static str>,
     reload: impl FnOnce(),
 ) -> SetResult {
-    let failed = |m: &str| SetResult { ok: false, code: "failed".into(), message: Some(m.into()) };
+    let failed = |m: &str| SetResult { ok: false, code: "failed".into(), message: Some(m.into()), wrote: None };
     let text = match write(key, value) {
         Ok(t) => t,
         Err(m) => return failed(m),
@@ -456,6 +474,7 @@ fn set_with(
         ok: v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false),
         code: v.get("code").and_then(|c| c.as_str()).unwrap_or("").to_string(),
         message: v.get("message").and_then(|m| m.as_str()).map(str::to_string),
+        wrote: v.get("wrote").and_then(|m| m.as_str()).map(str::to_string),
     };
     if r.ok {
         reload();
@@ -481,15 +500,11 @@ fn write_through_core(key: &str, value: Option<&str>) -> Result<String, &'static
 
 // ============================================================ the window
 
-fn make_font(dpi: i32, px: i32, weight: i32, face: PCWSTR) -> HFONT {
-    crate::uifont::make(dpi, px, weight, face)
-}
-
 fn make_fonts(dpi: i32) {
     for (slot, f) in [
-        (&FONT, make_font(dpi, 14, FW_NORMAL.0 as i32, w!("Segoe UI"))),
-        (&FONT_BOLD, make_font(dpi, 15, FW_SEMIBOLD.0 as i32, w!("Segoe UI"))),
-        (&FONT_MONO, make_font(dpi, 12, FW_NORMAL.0 as i32, w!("Consolas"))),
+        (&FONT, crate::uifont::ui(dpi, polter_settings_shell::type_size::BODY, FW_NORMAL.0 as i32)),
+        (&FONT_BOLD, crate::uifont::ui(dpi, polter_settings_shell::type_size::HEADING, FW_SEMIBOLD.0 as i32)),
+        (&FONT_MONO, crate::uifont::mono(dpi)),
     ] {
         let old = slot.swap(f.0, Ordering::AcqRel);
         if !old.is_null() {
@@ -600,12 +615,32 @@ fn create(host: HWND) -> bool {
         )
         .unwrap_or_default();
         crate::settings_win::subclass_child(filter);
+        let value = || {
+            let h = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("EDIT"),
+                PCWSTR::null(),
+                WS_CHILD | WINDOW_STYLE((ES_READONLY | ES_AUTOHSCROLL) as u32),
+                0,
+                0,
+                10,
+                10,
+                Some(sec),
+                None,
+                Some(hinst()),
+                None,
+            )
+            .unwrap_or_default();
+            crate::settings_win::subclass_child(h);
+            h
+        };
         let fixed = Fixed {
             filter,
             open_config: button(ID_OPEN_CONFIG),
             reload: button(ID_RELOAD),
             edit_keybinds: button(ID_EDIT_KEYBINDS),
             reveal_logs: button(ID_REVEAL_LOGS),
+            about: [value(), value(), value()],
         };
         crate::logs_ui::create(sec);
         set_fixed(fixed);
@@ -627,9 +662,12 @@ fn label_fixed(f: Fixed) {
         set_text(h, &t);
     }
     set_font(f.filter, font());
+    for h in f.about {
+        set_font(h, mono());
+    }
     // The placeholder, from the system: this box is not the search field
     // `settings_win.rs` paints its own placeholder into.
-    let cue = wide(&tr("Filter by key"));
+    let cue = wide(&tr("Filter by setting name"));
     unsafe {
         SendMessageW(f.filter, EM_SETCUEBANNER, Some(WPARAM(1)), Some(LPARAM(cue.as_ptr() as isize)));
     }
@@ -986,10 +1024,10 @@ fn form_layout(width: i32, dpi: i32) -> (Vec<polter_settings_shell::plugins::For
             // its own. A name too long for the label column wraps (task
             // 990) rather than being cut.
             let help = measure(&note, control_w, font(), if expanded { 0 } else { DOC_LINES }) + if link { metrics(font()) } else { 0 };
-            (measure(&title, label_w, font(), 3), help)
+            (measure(&title, label_w, font(), LABEL_LINES), help)
         })
         .collect();
-    let (rows, total) = polter_settings_shell::plugins::form_labeled(width, dpi, &rows);
+    let (rows, total) = polter_settings_shell::plugins::form_spaced(width, dpi, &rows, polter_settings_shell::plugins::GENERAL_ROW_GAP);
     if !crumbed {
         return (rows, Vec::new(), total);
     }
@@ -1405,6 +1443,17 @@ fn relayout() {
     }
     place(form_hwnd(), body, group.is_form() || searching);
     place(kb_hwnd(), body, group == Group::Keybinds && !searching);
+    if let Some(f) = fixed() {
+        let about = group == Group::About && !searching;
+        let at = about_layout(&about_area(&g, dpi), dpi);
+        for (i, (h, (_, v))) in f.about.iter().zip(about_values()).enumerate() {
+            if about {
+                set_text(*h, &v);
+            }
+            let r = at.rows[i].1;
+            place(*h, Rect::new(r.left, r.top, r.right, r.bottom), about);
+        }
+    }
     // Log Management is its own page over the whole editor: its notice
     // runs edge to edge, and it keeps its own margins (`logs_ui`).
     crate::logs_ui::place(g.editor, group == Group::Logs && !searching);
@@ -1641,7 +1690,7 @@ fn write(index: usize, key: &str, value: Option<&str>) {
             if let Some(row) = s.rows.get_mut(index) {
                 row.error = None;
             }
-            s.status = tr("Saved to the config file.");
+            s.status = r.saved_line().unwrap_or_default();
             s.status_warn = false;
         });
         // Rule 7: reloading is the host's, through its usual path; `set`
@@ -1874,11 +1923,11 @@ fn paint(win: HWND) {
             // dimmed, nothing selected, and `section_proc` ignores it.
             let on = *gr == group && !searching;
             if on {
-                fill(hdc, &r, theme::sel());
+                theme::fill_round(hdc, &r, polter_settings_shell::scale(polter_settings_shell::grid::SECTION_ROW_RADIUS, dpi), theme::sel());
             }
             let t = RECT { left: list.left + g.text_left, ..r };
             let colour = if searching { theme::dim() } else if on { theme::sel_text() } else { theme::text() };
-            draw_text(hdc, &label(*gr), &t, if on { bold() } else { font() }, colour, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            draw_text(hdc, &label(*gr), &t, font(), colour, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         }
     }
     if let Some(d) = g.list_divider {
@@ -1898,7 +1947,7 @@ fn paint(win: HWND) {
             }
         }
         Group::Advanced => paint_advanced(hdc, &area, dpi, errors.unwrap_or_else(read_diagnostics), main, backup),
-        Group::About => paint_about(hdc, &area, dpi),
+        Group::About => paint_about(hdc, &about_area(&g, dpi), dpi),
         _ => {}
     }
     let _ = unsafe { EndPaint(win, &ps) };
@@ -1944,34 +1993,125 @@ fn paint_advanced(hdc: HDC, area: &RECT, dpi: i32, errors: Vec<String>, main: Op
     }
 }
 
-/// About (§7.1): version, build and commit -- all three from the core and
-/// this binary, not composed here (the reason `settings_ui.rs`'s about box
-/// gave: two version strings disagree exactly in a bug report).
-fn paint_about(hdc: HDC, area: &RECT, dpi: i32) {
+/// Where About is drawn: the editor less the grid's padding.
+fn about_area(g: &shell::SectionGrid, dpi: i32) -> RECT {
+    let pad = shell::scale(grid::PAD, dpi);
+    let ed = g.editor;
+    RECT { left: ed.left + pad, top: ed.top + pad, right: ed.right - pad, bottom: ed.bottom - pad }
+}
+
+/// The three links under About's values, as the macOS page's buttons:
+/// what each says and where it goes (`polter_links.rs`, the macOS
+/// `PolterLinks.swift`'s addresses).
+const ABOUT_LINKS: [(&str, &str); 3] = [
+    ("Docs", crate::polter_links::DOCS),
+    ("GitHub", crate::polter_links::GITHUB),
+    ("Ghostty", crate::polter_links::UPSTREAM),
+];
+
+/// About's parts, in the macOS page's order (`GeneralAbout`, task 1550):
+/// the 64-point icon with the name and the line under it beside it, the
+/// three values, the links, and the licence line. **One place for the
+/// painter, the boxes and the click**, so the three cannot disagree.
+struct AboutLayout {
+    icon: RECT,
+    title: RECT,
+    tag: RECT,
+    /// Each value's label and its box.
+    rows: [(RECT, RECT); 3],
+    links: [RECT; 3],
+    licence: RECT,
+}
+
+fn about_layout(area: &RECT, dpi: i32) -> AboutLayout {
     let s = |v: i32| shell::scale(v, dpi);
-    let mut y = area.top;
-    let big = metrics(bold());
-    draw_text(hdc, "Polter", &RECT { top: y, bottom: y + big, ..*area }, bold(), theme::text(), DT_SINGLELINE);
-    y += big + s(grid::BUTTON_GAP);
-    let tag = tr("A terminal that minds the agents running in it. \nBuilt on Ghostty.");
-    let h = measure(&tag, area.right - area.left, font(), 0);
-    draw_text(hdc, &tag, &RECT { top: y, bottom: y + h, ..*area }, font(), theme::dim(), DT_WORDBREAK);
-    y += h + s(grid::GROUP_GAP);
+    let icon = RECT { left: area.left, top: area.top, right: area.left + s(64), bottom: area.top + s(64) };
+    let text_left = icon.right + s(grid::PAD);
+    let title_h = metrics(title_font(dpi));
+    let tag_h = measure(&tr("A terminal that minds the agents running in it. \nBuilt on Ghostty."), (area.right - text_left).max(1), font(), 0);
+    let block = title_h + s(4) + tag_h;
+    let top = icon.top + ((icon.bottom - icon.top) - block).max(0) / 2;
+    let title = RECT { left: text_left, top, right: area.right, bottom: top + title_h };
+    let tag = RECT { left: text_left, top: title.bottom + s(4), right: area.right, bottom: title.bottom + s(4) + tag_h };
+    let mut y = icon.bottom.max(tag.bottom) + s(grid::GROUP_GAP);
     let line = metrics(font()).max(s(grid::CONTROL_H));
     let label_right = area.left + s(grid::LABEL_W);
     let control_left = label_right + s(grid::LABEL_GAP);
-    for (l, v) in about_values() {
-        let name = match l {
+    let rows = [0, 1, 2].map(|_| {
+        let l = RECT { left: area.left, top: y, right: label_right, bottom: y + line };
+        // The box is the mono line's own height, in the middle of the row,
+        // so its words sit where painted words would.
+        let mh = metrics(mono());
+        let v = RECT { left: control_left, top: y + (line - mh) / 2, right: area.right, bottom: y + (line - mh) / 2 + mh };
+        y += line + s(grid::ROW_GAP);
+        (l, v)
+    });
+    y += s(grid::GROUP_GAP) - s(grid::ROW_GAP);
+    let mut x = area.left;
+    let links = ABOUT_LINKS.map(|(word, _)| {
+        let w = text_width(&tr(word), font());
+        let r = RECT { left: x, top: y, right: x + w, bottom: y + line };
+        x = r.right + s(grid::GROUP_GAP);
+        r
+    });
+    y += line + s(grid::GROUP_GAP);
+    let licence = RECT { left: area.left, top: y, right: area.right, bottom: y + line };
+    AboutLayout { icon, title, tag, rows, links, licence }
+}
+
+/// About's name, at the macOS `.title2` semibold.
+fn title_font(dpi: i32) -> HFONT {
+    thread_local! {
+        static F: std::cell::Cell<(i32, isize)> = const { std::cell::Cell::new((0, 0)) };
+    }
+    F.with(|c| {
+        let (at, h) = c.get();
+        if at == dpi && h != 0 {
+            return HFONT(h as *mut c_void);
+        }
+        if h != 0 {
+            let _ = unsafe { DeleteObject(HGDIOBJ(h as *mut c_void)) };
+        }
+        let f = crate::uifont::ui(dpi, polter_settings_shell::type_size::TITLE, FW_SEMIBOLD.0 as i32);
+        c.set((dpi, f.0 as isize));
+        f
+    })
+}
+
+/// About (§7.1): version, build and commit -- all three from the core and
+/// this binary, not composed here (the reason `settings_ui.rs`'s about box
+/// gave: two version strings disagree exactly in a bug report). The values
+/// themselves are the boxes `relayout` puts over their places.
+fn paint_about(hdc: HDC, area: &RECT, dpi: i32) {
+    let at = about_layout(area, dpi);
+    let icon = crate::app_icon_at(at.icon.right - at.icon.left);
+    if !icon.is_invalid() {
+        let _ = unsafe { DrawIconEx(hdc, at.icon.left, at.icon.top, icon, at.icon.right - at.icon.left, at.icon.bottom - at.icon.top, 0, None, DI_NORMAL) };
+    }
+    draw_text(hdc, "Polter", &at.title, title_font(dpi), theme::text(), DT_SINGLELINE);
+    draw_text(hdc, &tr("A terminal that minds the agents running in it. \nBuilt on Ghostty."), &at.tag, font(), theme::dim(), DT_WORDBREAK);
+    for ((l, _), (label, _)) in at.rows.iter().zip(about_values()) {
+        let name = match label {
             rules::AboutLabel::Version => tr("Version"),
             rules::AboutLabel::Build => tr("Build"),
             rules::AboutLabel::Commit => tr("Commit"),
         };
-        draw_text(hdc, &name, &RECT { left: area.left, top: y, right: label_right, bottom: y + line }, font(), theme::dim(), DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
-        draw_text(hdc, &v, &RECT { left: control_left, top: y, right: area.right, bottom: y + line }, mono(), theme::text(), DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-        y += line + s(grid::ROW_GAP);
+        draw_text(hdc, &name, l, font(), theme::dim(), DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
     }
-    y += s(grid::GROUP_GAP);
-    draw_text(hdc, &tr("MIT licensed. A fork of Ghostty."), &RECT { top: y, bottom: y + line, ..*area }, font(), theme::dim(), DT_SINGLELINE);
+    for (r, (word, _)) in at.links.iter().zip(ABOUT_LINKS) {
+        draw_text(hdc, &tr(word), r, font(), theme::link(), DT_SINGLELINE | DT_VCENTER);
+    }
+    draw_text(hdc, &tr("MIT licensed. A fork of Ghostty."), &at.licence, font(), theme::dim(), DT_SINGLELINE);
+}
+
+/// A click on one of About's links opens it.
+fn about_click(x: i32, y: i32) -> bool {
+    let (g, dpi) = laid();
+    let at = about_layout(&about_area(&g, dpi), dpi);
+    let Some((_, (_, url))) = at.links.iter().zip(ABOUT_LINKS).find(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom) else {
+        return false;
+    };
+    crate::shellopen::detached(None, "about", url.to_string())
 }
 
 /// Version from the core (`ghostty_info`), build as the build mode and this
@@ -2019,9 +2159,13 @@ fn paint_form(win: HWND) {
     fill(hdc, &rc, theme::bg());
     // A search that finds nothing says so (screenshot.md §12.2): not an
     // empty page, which reads as a window that failed to draw.
+    // In the middle of the page, as the macOS one (task 1550).
     if searching && items.is_empty() {
-        let line = RECT { bottom: metrics(font()) * 2, ..rc };
-        draw_text(hdc, &tr(find::NO_RESULTS), &line, font(), theme::dim(), DT_LEFT | DT_WORDBREAK);
+        let text = tr(find::NO_RESULTS);
+        let h = measure(&text, rc.right - rc.left, font(), 0);
+        let top = rc.top + ((rc.bottom - rc.top) - h).max(0) / 2;
+        let line = RECT { top, bottom: top + h, ..rc };
+        draw_text(hdc, &text, &line, font(), theme::dim(), DT_CENTER | DT_WORDBREAK);
     }
     let dot = shell::scale(8, dpi);
     for (i, (r, (it, control, error, h, h2, slider, expanded, crumb))) in rows.iter().zip(items.iter()).enumerate() {
@@ -2207,20 +2351,30 @@ fn kb_paint(win: HWND) {
         for i in top..(top + fit).min(rows.len()) {
             let Some(r) = kb_row_rect(i) else { continue };
             let row = &rows[i];
-            let line = s(rules::KB_ROW_H);
+            let line = s(rules::KB_LINE_H);
+            // The name, and under it the action's tag in the fixed-width
+            // face: what a config file is written in. An action with no
+            // name of its own is its tag, once (task 1550, the macOS page).
+            let named = row.name != row.action;
             let nr = RECT { left: 0, top: r.top, right: name_w, bottom: r.top + line };
-            draw_text(hdc, &row.name, &nr, font(), theme::text(), DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            draw_text(hdc, &row.name, &nr, if named { font() } else { mono() }, theme::text(), DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            if named {
+                let tr_ = RECT { left: 0, top: nr.bottom, right: name_w, bottom: nr.bottom + line };
+                draw_text(hdc, &row.action, &tr_, mono(), theme::dim(), DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            }
             let kr = RECT { left: name_w + gap, top: r.top, right: name_w + gap + keys_w, bottom: r.top + line };
-            draw_text(hdc, &row.keys, &kr, font(), if unbound.get(i).copied().unwrap_or(false) { theme::dim() } else { theme::text() }, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            draw_text(hdc, &row.keys, &kr, mono(), if unbound.get(i).copied().unwrap_or(false) { theme::dim() } else { theme::text() }, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
             if !row.note.is_empty() {
                 let colour = if hidden.get(i).copied().unwrap_or(false) { theme::warn() } else { theme::dim() };
                 let note = tr(&row.note);
+                // The note wraps in the room it has, as the macOS one does,
+                // rather than being cut at one line.
                 let nr = if below {
-                    RECT { left: name_w + gap, top: r.top + line, right: rc.right, bottom: r.bottom }
+                    RECT { left: name_w + gap, top: r.top + 2 * line, right: rc.right, bottom: r.bottom }
                 } else {
                     RECT { left: name_w + gap + keys_w + gap, top: r.top, right: rc.right, bottom: r.bottom }
                 };
-                draw_text(hdc, &note, &nr, font(), colour, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                draw_text(hdc, &note, &nr, font(), colour, DT_WORDBREAK | DT_END_ELLIPSIS);
             }
         }
     }
@@ -2231,6 +2385,13 @@ fn kb_paint(win: HWND) {
 
 unsafe extern "system" fn section_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        // About's values are words on the page, not fields: the page's
+        // ground behind them, not a box's.
+        if msg == WM_CTLCOLORSTATIC && fixed().is_some_and(|f| f.about.contains(&HWND(lp.0 as *mut c_void))) {
+            if let Some(b) = theme::on_ground(HDC(wp.0 as *mut c_void)) {
+                return LRESULT(b.0 as isize);
+            }
+        }
         if let Some(r) = crate::roles_ui::common(win, msg, wp, lp) {
             return r;
         }
@@ -2262,6 +2423,9 @@ unsafe extern "system" fn section_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_LBUTTONDOWN => {
                 let x = (lp.0 & 0xFFFF) as i16 as i32;
                 let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
+                if current() == Group::About && !is_searching() && about_click(x, y) {
+                    return LRESULT(0);
+                }
                 let (g, dpi) = laid();
                 if let Some(list) = g.list.filter(|_| !is_searching()) {
                     if let Some(gr) = rules::group_at(list, dpi, x, y) {

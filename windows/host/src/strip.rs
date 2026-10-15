@@ -42,12 +42,9 @@ use polter_control_room::{slide, tabstrip};
 /// Height of the strip in unscaled pixels.
 pub const STRIP_H: i32 = 30;
 
-/// The strip's own ground, as GDI writes a colour (blue high). The track
-/// and the chip are worked out from it (`strip_ground`).
-const STRIP_GROUND: u32 = 0x00201f1d;
-
-fn strip_ground() -> Rgba {
-    Rgba { r: (STRIP_GROUND & 0xff) as u8, g: ((STRIP_GROUND >> 8) & 0xff) as u8, b: ((STRIP_GROUND >> 16) & 0xff) as u8, a: 1.0 }
+/// A colour as GDI writes it (blue high).
+fn gdi(c: Rgba) -> u32 {
+    polter_control_room::chrome::bgr(c)
 }
 
 /// The timer that redraws the strip while the selected tab's chip slides.
@@ -1379,7 +1376,12 @@ pub fn paint(frame: HWND) {
         let bmp = CreateCompatibleBitmap(hdc, rc.right.max(1), sh.max(1));
         let old = SelectObject(mem, bmp.into());
 
-        fill(mem, &strip, STRIP_GROUND);
+        // The strip's ground is the terminal's background, and light or dark
+        // follows it (`termcolor::chrome`, the macOS rule, task 1550). The
+        // track and the chip are worked out from it.
+        let chrome = crate::termcolor::chrome(frame);
+        let buttons = chrome.buttons();
+        fill(mem, &strip, gdi(chrome.ground));
 
         let (tabs_now, active) = tabs::strip_snapshot(frame);
         let colours = tabs::tab_colors(frame);
@@ -1403,10 +1405,9 @@ pub fn paint(frame: HWND) {
         // strip, a bright chip on the selected tab, and nothing behind the
         // others. Where each is, how round and which colour are asked for;
         // this file places them on its own slots and decides none of it.
-        // The strip is the same dark colour whatever the system's setting,
-        // so it is the dark table's.
-        let theme = look::theme(true);
-        let ground = strip_ground();
+        // Light or dark is the terminal's (above), not the system's.
+        let theme = chrome.theme();
+        let ground = chrome.ground;
         let shf = sh as f64;
         let active_id = slots.get(active).map(|s| s.id);
         let rest = slots.get(active).map(|s| tabstrip::chip(rect_f(&s.rect), shf, scale));
@@ -1467,7 +1468,7 @@ pub fn paint(frame: HWND) {
                 let pen = CreatePen(
                     PS_SOLID,
                     (1.0 * scale).max(1.0) as i32,
-                    COLORREF(if lit { 0x00ffffff } else { 0x00808080 }),
+                    COLORREF(gdi(if lit { buttons.text_hot } else { buttons.glyph_dim })),
                 );
                 let old_pen = SelectObject(mem, pen.into());
                 let pad = (4.0 * scale) as i32;
@@ -1618,7 +1619,7 @@ pub fn paint(frame: HWND) {
         // under it -- and drawn here, after them, it is also drawn over the
         // strip's own background rather than over a tab, which is what the
         // hit test says is true.
-        draw_menu_button(mem, menu, scale, hover == Hit::Menu);
+        draw_menu_button(mem, menu, scale, hover == Hit::Menu, &buttons);
 
         // The `+`, drawn before the overflow button so that when both are
         // pinned to the right the overflow one wins the pixels -- the same
@@ -1627,8 +1628,8 @@ pub fn paint(frame: HWND) {
             // Same two colours the overflow button uses, so the two controls
             // at the right end read as one row rather than two decorations.
             let lit = hover == Hit::New;
-            fill(mem, &new, if lit { 0x00403f3d } else { 0x00201f1d });
-            SetTextColor(mem, COLORREF(if lit { 0x00ffffff } else { 0x00a0a0a0 }));
+            fill(mem, &new, gdi(if lit { buttons.hover } else { chrome.ground }));
+            SetTextColor(mem, COLORREF(gdi(if lit { buttons.text_hot } else { buttons.text })));
             let mut plus: Vec<u16> = "+".encode_utf16().collect();
             let mut r2 = new;
             DrawTextW(mem, &mut plus, &mut r2, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
@@ -1637,8 +1638,8 @@ pub fn paint(frame: HWND) {
         // The overflow button, drawn last so the scrolled tabs pass under it.
         if let Some(r) = overflow {
             let lit = hover == Hit::Overflow;
-            fill(mem, &r, if lit { 0x00403f3d } else { 0x00201f1d });
-            SetTextColor(mem, COLORREF(if lit { 0x00ffffff } else { 0x00a0a0a0 }));
+            fill(mem, &r, gdi(if lit { buttons.hover } else { chrome.ground }));
+            SetTextColor(mem, COLORREF(gdi(if lit { buttons.text_hot } else { buttons.text })));
             let mut chevron: Vec<u16> = "\u{00bb}".encode_utf16().collect();
             let mut tr = r;
             DrawTextW(
@@ -1693,7 +1694,7 @@ pub fn paint(frame: HWND) {
     let mut below = rc;
     below.top = sh;
     if below.bottom > below.top && ps.rcPaint.bottom > sh && !crate::pane_frames::paint(frame, hdc, below) {
-        fill(hdc, &below, 0x00201f1d);
+        fill(hdc, &below, gdi(crate::termcolor::chrome(frame).ground));
     }
 
     let _ = unsafe { EndPaint(frame, &ps) };

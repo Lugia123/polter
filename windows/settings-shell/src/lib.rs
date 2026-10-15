@@ -26,6 +26,7 @@ pub mod logs;
 pub mod plugins;
 pub mod handback;
 pub mod official;
+pub mod palette;
 pub mod picker;
 pub mod projects;
 pub mod search;
@@ -52,6 +53,25 @@ impl Section {
             Section::Projects => "projects",
             Section::Plugins => "plugins",
             Section::General => "general",
+        }
+    }
+
+    /// The section's icon in the sidebar: the Segoe Fluent Icons glyph that
+    /// stands for the macOS side's SF Symbol (`SettingsSection.symbol`).
+    /// All four are in Windows 10's Segoe MDL2 Assets at the same code
+    /// points, which is why Projects is ViewAll and not GridView (U+F0E2,
+    /// the closer drawing of `square.grid.2x2`, which only the Windows 11
+    /// face has).
+    pub fn icon(self) -> char {
+        match self {
+            // person.crop.circle -> Contact
+            Section::Roles => '\u{E77B}',
+            // square.grid.2x2 -> ViewAll
+            Section::Projects => '\u{E8A9}',
+            // puzzlepiece.extension -> Puzzle
+            Section::Plugins => '\u{EA86}',
+            // gearshape -> Setting
+            Section::General => '\u{E713}',
         }
     }
 
@@ -510,8 +530,19 @@ pub mod grid {
     /// column too.
     pub const LABEL_W: i32 = 120;
     pub const LABEL_GAP: i32 = 8;
-    /// A sidebar row.
-    pub const SECTION_ROW_H: i32 = 32;
+    /// A sidebar row's highlight: the macOS `SettingsRow`, a control high.
+    pub const SECTION_ROW_H: i32 = 28;
+    /// Between one sidebar row's highlight and the next, so that two rows
+    /// are 30 apart, as on macOS. **Not a multiple of 4**, and so not in
+    /// [`ALL`]: it is the macOS value, and the rhythm is what is compared.
+    pub const SECTION_ROW_GAP: i32 = 2;
+    /// The highlight's corners.
+    pub const SECTION_ROW_RADIUS: i32 = 6;
+    /// A section's icon (macOS: the SF Symbol in its `Label`), in a box this
+    /// wide at the row's text edge; the section's name follows it after
+    /// `SECTION_ICON_GAP`.
+    pub const SECTION_ICON: i32 = 16;
+    pub const SECTION_ICON_GAP: i32 = 4;
     /// Between two buttons that belong together (+ ⧉ −).
     pub const BUTTON_GAP: i32 = 4;
     /// Between groups of buttons, and between Launch / Revert / Save.
@@ -525,13 +556,47 @@ pub mod grid {
     pub const CHECK_GAP: i32 = 8;
 
     /// Every value above, for the test that holds them to multiples of 4.
-    pub const ALL: [i32; 19] = [
+    pub const ALL: [i32; 21] = [
         TOP, BOTTOM, SIDEBAR, LIST, PAD, PAD_SIDEBAR, ROW_GAP, GROUP_GAP, CONTROL_H, LABEL_W, LABEL_GAP, SECTION_ROW_H,
-        BUTTON_GAP, BUTTONS_GAP, ACTION_W[0], ACTION_W[1], ACTION_W[2], CHECK_BOX, CHECK_GAP,
+        BUTTON_GAP, BUTTONS_GAP, ACTION_W[0], ACTION_W[1], ACTION_W[2], CHECK_BOX, CHECK_GAP, SECTION_ICON,
+        SECTION_ICON_GAP,
     ];
 }
 
 use grid::*;
+
+/// The settings window's type sizes, in 96-DPI pixels, as the macOS window
+/// sets them (task 1550): `.body` 13, `.headline` 13 semibold, `.title2` 17
+/// for the about page's name, and the fixed-width face at the body's size.
+/// **Every font the settings and project windows make takes its size from
+/// here**; `windows/tools/settings-text-is-the-macos-sizes.py` holds the
+/// host to it. Each is still floored at the menu font by [`text_px`].
+pub mod type_size {
+    pub const BODY: i32 = 13;
+    /// A group's heading, a selected row's name: the body's size, heavier.
+    pub const HEADING: i32 = 13;
+    /// The one large line, the application's name on the about page.
+    pub const TITLE: i32 = 17;
+    /// Secondary lines under a row. The macOS floor is its menu font, and
+    /// this is the Windows one's design size; `text_px` raises it to the
+    /// menu font where that is larger.
+    pub const SMALL: i32 = 12;
+    pub const MONO: i32 = 13;
+}
+
+/// A section row's icon box and where its name starts, from the row's text
+/// edge (`Layout::sidebar_text_left`).
+pub fn section_icon(text_left: i32, row: Rect, dpi: i32) -> (Rect, i32) {
+    let icon = Rect::new(text_left, row.top, text_left + scale(SECTION_ICON, dpi), row.bottom);
+    (icon, icon.right + scale(SECTION_ICON_GAP, dpi))
+}
+
+/// From one sidebar row's top to the next one's: the highlight and the gap
+/// under it, each scaled on its own so a row is the same height wherever it
+/// is.
+pub fn section_pitch(dpi: i32) -> i32 {
+    scale(SECTION_ROW_H, dpi) + scale(SECTION_ROW_GAP, dpi)
+}
 
 /// The window's grid in a client area `w` × `h`, in pixels. **The only place
 /// that decides**: the painter, the click and the sections all ask it.
@@ -584,7 +649,7 @@ pub fn layout(w: i32, h: i32, dpi: i32) -> Layout {
     let divider = Rect::new(side, 0, side + 1, h);
     let first = top_rule.bottom + s(ROW_GAP);
     let rows = [0, 1, 2, 3].map(|i| {
-        let t = first + i * s(SECTION_ROW_H);
+        let t = first + i * section_pitch(dpi);
         Rect::new(search.left, t, search.right, t + s(SECTION_ROW_H))
     });
     let sidebar = Rect::new(0, 0, side, h);

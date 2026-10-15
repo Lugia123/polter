@@ -38,7 +38,6 @@ use polter_settings_shell::plugins::{self as plugin_rules, Hit};
 use polter_settings_shell::{self as shell, grid, Place, Rect, Route, Section, Unsaved};
 use windows::core::{w, BOOL, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -59,7 +58,6 @@ const PROP_PREV: PCWSTR = w!("PolterSettingsWinPrevProc");
 static WIN: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static SEARCH: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static FONT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-static FONT_BOLD: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 /// Set while this side moves the window to where it opens: the move can
 /// cross onto a monitor with another DPI, and the rectangle Windows then
 /// suggests is the old one rescaled -- a second scaling of a size that was
@@ -395,9 +393,10 @@ fn search_edit_rect(l: &shell::Layout, dpi: i32) -> Rect {
 fn crumb_top(l: &shell::Layout) -> (i32, i32) {
     let dpi = dpi_of(win());
     let e = search_edit_rect(l, dpi);
+    // The breadcrumb is set in the body font, as the macOS one is (task
+    // 1550; it was bold), so its top is the edit's.
     let (_, asc) = metrics(FONT.load(Ordering::Acquire));
-    let (_, bold_asc) = metrics(FONT_BOLD.load(Ordering::Acquire));
-    (e.top + asc - bold_asc, bold_asc)
+    (e.top, asc)
 }
 
 /// Show `target`'s section and hide the others. Leaving was agreed to.
@@ -754,11 +753,13 @@ fn opening_state(origin: HWND) -> (Rect, bool, &'static str) {
 // ================================================================ window
 
 fn make_font(dpi: i32, px: i32, weight: i32) -> HFONT {
-    crate::uifont::make(dpi, px, weight, w!("Segoe UI"))
+    crate::uifont::ui(dpi, px, weight)
 }
 
 fn make_fonts(dpi: i32) {
-    for (slot, f) in [(&FONT, make_font(dpi, 14, FW_NORMAL.0 as i32)), (&FONT_BOLD, make_font(dpi, 15, FW_SEMIBOLD.0 as i32))] {
+    // One font: the sidebar and the breadcrumb are the body's size and
+    // weight, a selected row included, as on macOS (task 1550).
+    for (slot, f) in [(&FONT, make_font(dpi, polter_settings_shell::type_size::BODY, FW_NORMAL.0 as i32))] {
         let old = slot.swap(f.0, Ordering::AcqRel);
         if !old.is_null() {
             let _ = unsafe { DeleteObject(HGDIOBJ(old)) };
@@ -832,16 +833,9 @@ pub fn init(hi: HINSTANCE) {
             }
         };
         WIN.store(h.0, Ordering::Release);
-        if theme::custom_drawing() {
-            // The dark title bar, as `shell.rs` asks for the frame's.
-            let on: BOOL = true.into();
-            let _ = DwmSetWindowAttribute(
-                h,
-                DWMWINDOWATTRIBUTE(20),
-                &on as *const BOOL as *const c_void,
-                std::mem::size_of::<BOOL>() as u32,
-            );
-        }
+        // The caption the system draws is the system's light or dark, as
+        // the page under it is (task 1550).
+        theme::system().dress_caption(h);
         let search = CreateWindowExW(
             // No border of its own: the frame around it is painted with the
             // breadcrumb bar's, from the same rectangle (§2.3).
@@ -1276,7 +1270,6 @@ fn paint(h: HWND) {
     let dpi = dpi_of(h);
     let l = shell::layout(rc.right, rc.bottom, dpi);
     let font = FONT.load(Ordering::Acquire);
-    let bold = FONT_BOLD.load(Ordering::Acquire);
 
     fill(hdc, &from_rect(l.sidebar), theme::panel());
     let right = RECT { left: l.content.left, top: 0, right: rc.right, bottom: rc.bottom };
@@ -1297,17 +1290,30 @@ fn paint(h: HWND) {
     unsafe {
         let _ = IntersectClipRect(hdc, 0, l.top_rule.bottom, l.sidebar.right, l.bottom_rule.top);
     }
+    let radius = shell::scale(grid::SECTION_ROW_RADIUS, dpi);
+    let light = theme::system_light();
+    // The icons are the body's size: an SF Symbol in a `Label` is set at
+    // the text's size.
+    let icons = crate::uifont::make(dpi, polter_settings_shell::type_size::BODY, FW_NORMAL.0 as i32, crate::uifont::icon_face());
     for (row, r) in plugin_rows.iter().zip(sb.plugins.iter()) {
         let r = from_rect(*r);
         let on = section == Some(Section::Plugins) && row.selected;
         if on {
-            fill(hdc, &r, theme::sel());
+            theme::fill_round(hdc, &r, radius, theme::sel());
         }
         let colour = if searching { theme::dim() } else if on { theme::sel_text() } else { theme::text() };
         let dim = if on { theme::sel_text() } else { theme::dim() };
         let word = crate::plugins_ui::dot_word(row.dot);
         let (name_r, word_r) = plugin_rules::plugin_columns(to_rect(r), sb.plugin_text_left, word_w, dpi);
-        draw_text(hdc, &format!("{} {}", row.dot.glyph(), row.name), &from_rect(name_r), font, colour, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        // The dot in its own colour in a box a section's icon wide, then the
+        // name, as the macOS row (`SettingsPluginsView`, task 1550).
+        let mut dot_r = from_rect(name_r);
+        dot_r.right = dot_r.left + shell::scale(grid::SECTION_ICON, dpi);
+        let mut text_r = from_rect(name_r);
+        text_r.left = (dot_r.right + shell::scale(grid::ROW_GAP, dpi)).min(text_r.right);
+        let dot_colour = if searching { theme::dim() } else { row.dot.colour(light).filter(|_| theme::custom_drawing()).unwrap_or(dim) };
+        draw_text(hdc, row.dot.glyph(), &dot_r, font, dot_colour, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+        draw_text(hdc, &row.name, &text_r, font, colour, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         draw_text(hdc, &word, &from_rect(word_r), font, dim, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
     }
     for (i, sec) in Section::ALL.iter().enumerate() {
@@ -1317,22 +1323,21 @@ fn paint(h: HWND) {
         let on = section == Some(*sec) && !(*sec == Section::Plugins && plugin_rows.iter().any(|p| p.selected));
         if on {
             // The highlight is the row's box: the search field's left and
-            // right edges (§2.3a, `PAD_SIDEBAR`).
-            fill(hdc, &r, theme::sel());
+            // right edges (§2.3a, `PAD_SIDEBAR`), round at the corners and
+            // under a name of the same weight, as the macOS row.
+            theme::fill_round(hdc, &r, radius, theme::sel());
         }
-        // The labels start where the search field's text does.
-        let t = RECT { left: l.sidebar_text_left, ..r };
-        draw_text(
-            hdc,
-            &label(*sec),
-            &t,
-            if on || section == Some(*sec) { bold } else { font },
-            if searching { theme::dim() } else if on { theme::sel_text() } else { theme::text() },
-            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-        );
+        // The icon starts where the search field's text does; the name
+        // follows it.
+        let colour = if searching { theme::dim() } else if on { theme::sel_text() } else { theme::text() };
+        let (icon_r, text_left) = shell::section_icon(l.sidebar_text_left, to_rect(r), dpi);
+        draw_text(hdc, &sec.icon().to_string(), &from_rect(icon_r), icons.0, colour, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+        let t = RECT { left: text_left, ..r };
+        draw_text(hdc, &label(*sec), &t, font, colour, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     }
     unsafe {
         let _ = RestoreDC(hdc, clip);
+        let _ = DeleteObject(HGDIOBJ(icons.0));
     }
 
     // §2.3a. The search field's frame; the breadcrumb on the search text's
@@ -1350,7 +1355,7 @@ fn paint(h: HWND) {
         // The line above the content names what is under it: the results.
         let (top, _) = crumb_top(&l);
         let t = RECT { left: l.breadcrumb.left, top, right: l.breadcrumb.right, bottom: l.top_rule.top };
-        draw_text(hdc, &tr("Search"), &t, bold, theme::text(), DT_SINGLELINE | DT_TOP | DT_END_ELLIPSIS);
+        draw_text(hdc, &tr("Search"), &t, font, theme::text(), DT_SINGLELINE | DT_TOP | DT_END_ELLIPSIS);
     }
     if let Some(sec) = section {
         // §2.3a: an item the search has hidden from its list says so here.
@@ -1369,7 +1374,7 @@ fn paint(h: HWND) {
         let crumb = shell::breadcrumb(&label(sec), item.as_deref());
         let (top, _) = crumb_top(&l);
         let t = RECT { left: l.breadcrumb.left, top, right: l.breadcrumb.right, bottom: l.top_rule.top };
-        draw_text(hdc, &crumb, &t, bold, theme::text(), DT_SINGLELINE | DT_TOP | DT_END_ELLIPSIS);
+        draw_text(hdc, &crumb, &t, font, theme::text(), DT_SINGLELINE | DT_TOP | DT_END_ELLIPSIS);
     }
     let _ = unsafe { EndPaint(h, &ps) };
 }
@@ -1520,7 +1525,20 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             }
             // Sent to top-level windows only, so the role library -- a child
             // now -- hears it from here.
+            // **Light and dark switching is neither of these**: it arrives
+            // as `WM_SETTINGCHANGE` with `ImmersiveColorSet` and nothing
+            // else, and until task 1550 nothing here listened for it, which
+            // was harmless only while the page had one table.
+            WM_SETTINGCHANGE if theme::is_colour_change(lp) => {
+                theme::system().dress_caption(h);
+                crate::roles_ui::theme_changed();
+                crate::plugins_ui::theme_changed();
+                crate::general_ui::theme_changed();
+                theme::repaint_all(h);
+                DefWindowProcW(h, msg, wp, lp)
+            }
             WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+                theme::system().dress_caption(h);
                 crate::roles_ui::theme_changed();
                 crate::plugins_ui::theme_changed();
                 crate::general_ui::theme_changed();

@@ -14,6 +14,7 @@
 //! | [`reach`] | what can still be done with no terminal in front: which actions, and which key is which |
 //! | [`rules`] | the control room's tab: one in the application, where it opens, what closing it involves |
 //! | [`slide`] | the selection chip's move from one place to the next, a frame at a time, and when it is over |
+//! | [`chrome`] | light or dark for a terminal window, from its terminal's background; the strip's ground |
 //! | [`tabstrip`] | the window tab strip's track and the chip on the selected tab, in whole pixels |
 //! | [`scene`] | everything the panel draws, as a list of rectangles, words and glyphs for a host to paint |
 //! | [`pane`] | which frame a pane of a split terminal tab wears, where it and the terminal in it go, and what it draws |
@@ -39,6 +40,7 @@ pub const fn n_(s: &'static str) -> &'static str {
 
 pub mod act;
 pub mod alert;
+pub mod chrome;
 pub mod glyph;
 pub mod json;
 pub mod layout;

@@ -608,11 +608,11 @@ pub fn doc_summary(doc: &str) -> String {
 // ================================================================= layout
 
 /// One group's row in the section's list column: `SECTION_ROW_H` tall, the
-/// sidebar's rhythm, from `PAD` below the list's top, with the list's text
+/// sidebar's rhythm (`section_pitch` apart), from `PAD` below the list's top, with the list's text
 /// edge.
 pub fn group_row(list: Rect, dpi: i32, index: usize) -> Rect {
     let s = |v| scale(v, dpi);
-    let top = list.top + s(ROW_GAP) + index as i32 * s(SECTION_ROW_H);
+    let top = list.top + s(ROW_GAP) + index as i32 * crate::section_pitch(dpi);
     Rect::new(list.left + s(PAD_SIDEBAR), top, list.right - s(PAD_SIDEBAR), top + s(SECTION_ROW_H))
 }
 
@@ -652,9 +652,13 @@ pub const KB_NAME_W: i32 = 220;
 pub const KB_KEYS_W: i32 = 160;
 pub const KB_GAP: i32 = 12;
 pub const KB_MIN_NOTE: i32 = 160;
-/// A row, and one with the note under it.
-pub const KB_ROW_H: i32 = 24;
-pub const KB_ROW_H_TALL: i32 = 44;
+/// A row -- the name, and the action's tag under it in the fixed-width face,
+/// as the macOS page (task 1550; the tag is what a config file is written
+/// in) -- and one with the note under those as well.
+pub const KB_ROW_H: i32 = 44;
+pub const KB_ROW_H_TALL: i32 = 64;
+/// One line of a row: the name's, the keys', the tag's.
+pub const KB_LINE_H: i32 = 20;
 /// The legend line above the rows.
 pub const KB_HEADER: i32 = 32;
 

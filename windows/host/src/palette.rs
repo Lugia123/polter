@@ -1159,7 +1159,7 @@ extern "system" fn palette_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
             // making it dark. Under high contrast `ctl_color` answers `None`,
             // this falls through, and the system's colours stand.
             WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
-                match crate::theme::ctl_color(windows::Win32::Graphics::Gdi::HDC(
+                match crate::theme::for_window(hwnd).ctl_color(windows::Win32::Graphics::Gdi::HDC(
                     wp.0 as *mut std::ffi::c_void,
                 )) {
                     Some(b) => LRESULT(b.0 as isize),
@@ -1291,7 +1291,7 @@ fn paint(hwnd: HWND) {
         let dpi = GetDpiForWindow(hwnd).max(96) as i32;
         let sc = |v: i32| v * dpi / 96;
 
-        let bg = CreateSolidBrush(COLORREF(theme::bg()));
+        let bg = CreateSolidBrush(COLORREF(theme::for_window(hwnd).bg()));
         FillRect(hdc, &rc, bg);
         let _ = DeleteObject(bg.into());
 
@@ -1304,7 +1304,7 @@ fn paint(hwnd: HWND) {
             let old_font = SelectObject(hdc, wins.font.into());
 
             if st.filtered.is_empty() {
-                SetTextColor(hdc, COLORREF(theme::dim()));
+                SetTextColor(hdc, COLORREF(theme::for_window(hwnd).dim()));
                 let mut wide: Vec<u16> = "no matching command".encode_utf16().collect();
                 let mut tr = RECT {
                     left: sc(PAD * 2),
@@ -1331,12 +1331,12 @@ fn paint(hwnd: HWND) {
                 };
                 let y = row.top;
                 if idx == st.selected {
-                    let sel = CreateSolidBrush(COLORREF(theme::sel()));
+                    let sel = CreateSolidBrush(COLORREF(theme::for_window(hwnd).sel()));
                     FillRect(hdc, &row, sel);
                     let _ = DeleteObject(sel.into());
                 }
 
-                SetTextColor(hdc, COLORREF(theme::text()));
+                SetTextColor(hdc, COLORREF(theme::for_window(hwnd).text()));
                 let mut wide: Vec<u16> = cmd.title.encode_utf16().collect();
                 let mut tr = RECT {
                     left: sc(PAD * 2),
@@ -1352,7 +1352,7 @@ fn paint(hwnd: HWND) {
                 );
 
                 if !cmd.description.is_empty() {
-                    SetTextColor(hdc, COLORREF(theme::dim()));
+                    SetTextColor(hdc, COLORREF(theme::for_window(hwnd).dim()));
                     let mut dw: Vec<u16> = cmd.description.encode_utf16().collect();
                     let mut dr = RECT {
                         left: rc.right / 2,
