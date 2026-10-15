@@ -1120,6 +1120,22 @@ msgstr "层叠：叠到下一格"
 msgid "Stack: Onto the Previous Pane"
 msgstr "层叠：叠到上一格"
 
+#: windows/control-room/src/panestack.rs:26
+msgid "Add a terminal to this pane"
+msgstr "在这一格里再开一个终端"
+
+#: windows/control-room/src/panestack.rs:29
+msgid "Close Others"
+msgstr "关闭其他"
+
+#: windows/control-room/src/panestack.rs:30
+msgid "Close to the Right"
+msgstr "关闭右侧"
+
+#: windows/control-room/src/panestack.rs:31
+msgid "Close to the Left"
+msgstr "关闭左侧"
+
 #: src/input/command.zig:667
 msgid "Close Terminal"
 msgstr "关闭终端"

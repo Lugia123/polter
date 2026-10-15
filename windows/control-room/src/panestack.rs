@@ -663,11 +663,32 @@ mod tests {
     fn the_tab_in_front_is_scrolled_into_view_and_the_rest_move_with_it() {
         // Eight at least 104 (the seventh 150) in a 400 strip: they scroll.
         let geo = g(&[150.0; 8], 6, 400.0, 0.0);
-        assert_eq!(geo.offset, 434.0);
+        assert_eq!(geo.offset, 450.0);
         let r = geo.tab_rect(6).unwrap();
         assert!(r.x >= geo.row().x + t::REVERSE_ARC_RADIUS && r.x + r.w <= geo.row().x + geo.row().w - t::REVERSE_ARC_RADIUS, "{r:?}");
         assert_eq!(geo.fades(), (true, true));
         assert_eq!(g(&[100.0, 60.0], 0, 400.0, 0.0).fades(), (false, false));
+    }
+
+    /// Task 1594: the twelfth tab was brought in only half way, the right
+    /// end's fade over its name and its close button. Brought into view, the
+    /// tab in front is clear of every fade that shows.
+    #[test]
+    fn the_tab_in_front_is_brought_clear_of_the_fades() {
+        let fade = t::REVERSE_ARC_RADIUS + t::SCROLL_FADE;
+        let wants = [94.0, 70.0, 48.0, 126.0, 56.0, 150.0, 78.0, 94.0, 56.0, 142.0, 78.0, 56.0];
+        for w in [300.0, 400.0, 520.0] {
+            for current in 0..wants.len() {
+                for from in [0.0, 250.0, 10000.0] {
+                    let geo = geometry(Wears::Worker, w, &wants, current, 0.0, from, true);
+                    let r = geo.tab_rect(current).unwrap();
+                    let row = geo.row();
+                    let (left, right) = geo.fades();
+                    let (lo, hi) = (row.x + if left { fade } else { 0.0 }, row.x + row.w - if right { fade } else { 0.0 });
+                    assert!(r.x >= lo - 1e-9 && r.x + r.w <= hi + 1e-9, "w={w} current={current} from={from}: {r:?} not within {lo}..{hi}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -679,7 +700,7 @@ mod tests {
         assert_eq!(still.scrolled(-500.0), 0.0);
         assert_eq!(still.scrolled(16.0), 116.0);
         // Revealing: the tab in front comes into view.
-        assert_eq!(geometry(Wears::Worker, 400.0, &[150.0; 8], 6, 0.0, 100.0, true).offset, 434.0);
+        assert_eq!(geometry(Wears::Worker, 400.0, &[150.0; 8], 6, 0.0, 100.0, true).offset, 450.0);
     }
 
     #[test]

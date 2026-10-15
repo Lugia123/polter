@@ -92,17 +92,25 @@ pub fn beyond(layout: &Layout, urgent: &[usize], offset: f64) -> (Option<usize>,
 /// already is (task 1582: the tab in front is scrolled into view, as the
 /// window's own tabs do). `offset` is how far the tabs are scrolled now,
 /// 0 for not at all.
+///
+/// **In view is clear of the fades** (task 1594): an end with more tabs
+/// past it fades out over `scroll_fade` of the window, and a tab brought
+/// only to the window's edge stood under it -- its name's end and its close
+/// button faded away on a real machine. So the tab is brought `scroll_fade`
+/// inside the edge it comes in at. At the very start and end there is no
+/// fade, and the clamp leaves the first and the last tab at the edge.
 pub fn revealing(layout: &Layout, member: usize, offset: f64) -> f64 {
     let offset = offset.clamp(0.0, layout.max_offset());
     let Some(tab) = layout.tabs.iter().find(|t| t.member == member) else {
         return offset;
     };
+    let fade = t::SCROLL_FADE;
     let start = tab.x - t::INSET;
     let end = start + tab.width;
-    let to = if start < offset {
-        start
-    } else if end > offset + layout.viewport {
-        end - layout.viewport
+    let to = if start < offset + fade {
+        start - fade
+    } else if end > offset + layout.viewport - fade {
+        end - layout.viewport + fade
     } else {
         offset
     };
@@ -343,11 +351,12 @@ mod tests {
     fn the_tab_in_front_is_scrolled_into_view_by_the_least_move() {
         let l = layout(&[150.0; 8], 6, 400.0, 0.0);
         // Tab 6 runs from 624 to 774 of the tabs; the window is 340 wide.
-        assert_eq!(revealing(&l, 6, 0.0), 434.0);
-        // Already in view: no move.
+        // Its end comes to 16 (the fade) inside the window's right edge.
+        assert_eq!(revealing(&l, 6, 0.0), 450.0);
+        // Already in view, clear of both fades: no move.
         assert_eq!(revealing(&l, 6, 500.0), 500.0);
-        // To its left: its start comes to the window's left edge.
-        assert_eq!(revealing(&l, 1, 500.0), 104.0);
+        // To its left: its start comes to 16 inside the window's left edge.
+        assert_eq!(revealing(&l, 1, 500.0), 88.0);
         // Never past either end.
         assert_eq!(revealing(&l, 7, 0.0), 538.0);
         assert_eq!(revealing(&l, 0, 900.0), 0.0);
