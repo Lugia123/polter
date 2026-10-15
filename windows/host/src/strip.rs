@@ -76,6 +76,10 @@ fn rect_px(r: ChipRect) -> RECT {
     RECT { left: r.x.round() as i32, top: r.y.round() as i32, right: (r.x + r.w).round() as i32, bottom: (r.y + r.h).round() as i32 }
 }
 
+fn fill_rgba(hdc: HDC, r: &RECT, c: Rgba) {
+    fill(hdc, r, (c.r as u32) | ((c.g as u32) << 8) | ((c.b as u32) << 16));
+}
+
 /// The strip's font at the weight a selected tab's title is set in. The
 /// caller deletes it; an invalid handle means "use the plain one".
 fn emphasised(plain: HGDIOBJ) -> HFONT {
@@ -1511,6 +1515,13 @@ pub fn paint(frame: HWND) {
             }
         };
 
+        // Which gaps get a short line: by index, the Mac's rule
+        // (`tabstrip::separator_gaps`). `active` is where the chip is going,
+        // so a slide does not light both sides of the tab it left.
+        let hovered = slots.iter().position(|s| matches!(hover, Hit::Tab(h) | Hit::Close(h) if h == s.id));
+        let held = slots.iter().position(|s| dragging == Some(s.id));
+        let lines = tabstrip::separator_gaps(slots.len(), Some(active), hovered, held);
+
         let no_font = HFONT::default();
         for (i, slot) in slots.iter().enumerate() {
             // Scrolled off either end: nothing to draw.
@@ -1535,9 +1546,12 @@ pub fn paint(frame: HWND) {
                 crate::control_room::round(mem, rect_px(pill), tabstrip::corner(pill, scale, false) as i32, color, None);
             }
 
-            // No line between two tabs: the Mac's tab bar has none to
-            // speak of, and a line beside the pill shapes reads as a
-            // leftover from the square tabs (task 1556).
+            // The line after this tab, faint, and only between two plain
+            // tabs (task 1562, which put back what 1556 removed).
+            if lines.contains(&i) {
+                let line = tabstrip::separator(slot.rect.right as f64, shf, scale);
+                fill_rgba(mem, &rect_px(line), tabstrip::separator_color(ground, theme));
+            }
             draw_tab(i, slot, false, no_font);
         }
 
