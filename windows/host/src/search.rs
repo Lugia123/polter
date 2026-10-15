@@ -180,6 +180,9 @@ thread_local! {
     /// The window that had focus when the bar opened. A `Cell` and not a field
     /// of `Model`, for the reason above.
     static PREV_FOCUS: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
+    /// Where the bar was last put, so following its terminal moves it only
+    /// when the terminal did.
+    static LAST_AT: Cell<(i32, i32)> = const { Cell::new((i32::MIN, i32::MIN)) };
 }
 
 /// The handles, or `None` before `init`. **Takes no borrow.**
@@ -313,8 +316,9 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         let dpi = GetDpiForWindow(hwnd).max(96);
         let sc = |v: i32| v * dpi as i32 / 96;
 
-        // Leaves room on the right for the counter and the two arrows.
-        let edit_w = sc(WIDTH) - sc(PAD * 2) - sc(BTN_W * 2) - sc(64);
+        // Leaves room on the right for the counter, the two arrows and the
+        // close button.
+        let edit_w = sc(WIDTH) - sc(PAD * 2) - sc(BTN_W * 3) - sc(64);
         let edit = match CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("EDIT"),
@@ -386,29 +390,34 @@ fn show(needle: &str, owner: Option<usize>) {
     if me.0.is_null() {
         return;
     }
-    STATE.with(|c| {
-        if let Some(st) = c.borrow_mut().as_mut() {
+    // **One bar, so one search on screen.** A search started in another
+    // terminal while the bar is up moves the bar there (macOS gives each
+    // terminal its own bar); the search it leaves is ended first, so its
+    // matches are not left lit under no bar.
+    let left = STATE.with(|c| {
+        c.borrow_mut().as_mut().and_then(|st| {
+            let left = st.surface.filter(|old| st.visible && owner.is_some() && Some(*old) != owner);
             st.surface = owner;
-        }
+            left
+        })
     });
     // **Before the bar is on screen**, so a count that arrives while it is
     // being placed is already being judged against the right owner.
     OPEN_FOR.store(owner.unwrap_or(0), Ordering::Release);
+    // **After the store**: the core may answer `end_search` before the call
+    // returns, and that `end_search` is for the terminal left behind -- which
+    // `is_for_the_open_search` now drops instead of closing the bar that is
+    // opening.
+    if let Some(old) = left {
+        let ok = crate::binding_on(old as crate::ffi::Surface, "end_search");
+        // process-wide: the line is about two terminals, the one left and the
+        // one the bar is moving to
+        plogf!("[search] moving to {:?}: ended the search on {:#x} -> {}", owner, old, ok);
+    }
     unsafe {
-        // Opens over window 1 wherever it was invoked; see `tabs::overlay_frame`.
-        let frame = crate::tabs::overlay_frame();
-        let mut fr = RECT::default();
-        if frame.0.is_null() || GetWindowRect(frame, &mut fr).is_err() {
+        let Some((frame, x, y, w, h)) = place(me, owner) else {
             return;
-        }
-        let dpi = GetDpiForWindow(me).max(96);
-        let sc = |v: i32| v * dpi as i32 / 96;
-        let (w, h) = (sc(WIDTH), sc(HEIGHT));
-
-        // Top-right of the frame, inset. Not a corner the terminal's cursor
-        // usually occupies, and it does not move while typing.
-        let x = fr.right - w - sc(16);
-        let y = fr.top + sc(56);
+        };
 
         STATE.with(|c| {
             if let Some(st) = c.borrow_mut().as_mut() {
@@ -430,6 +439,7 @@ fn show(needle: &str, owner: Option<usize>) {
         }
 
         let _ = SetWindowPos(me, Some(HWND_TOPMOST), x, y, w, h, SWP_SHOWWINDOW);
+        LAST_AT.set((x, y));
 
         if let Some(wins) = wins {
             // **Not over a focus that is already the bar's own** (#1016).
@@ -447,8 +457,107 @@ fn show(needle: &str, owner: Option<usize>) {
         }
         // `frame` is the window this bar positioned itself over, a few lines
         // up -- so the line names where it actually landed, not a guess.
-        wlogf!(frame, "[search] shown, needle={:?}", needle);
+        wlogf!(frame, "[search] shown at {},{} over its terminal, needle={:?}", x, y, needle);
     }
+}
+
+/// The terminal window the bar belongs over: its owner's pane, or -- when
+/// `start_search` named no surface -- the pane with the keyboard in the
+/// window in front, which is where that search went (`to_owner`'s guess).
+fn pane_for(owner: Option<usize>) -> HWND {
+    match owner {
+        Some(s) => crate::tabs::pane_hwnd_of_surface(s as crate::ffi::Surface).unwrap_or_default(),
+        None => crate::tabs::active_hwnd(crate::tabs::overlay_frame()),
+    }
+}
+
+/// Where the bar goes for `owner`: **the top-right of that terminal**, as on
+/// macOS (#1596 D-4; `polter_control_room::hud::find_bar_at`), not of the
+/// window -- which in a split is the other pane's corner. Returns the window
+/// the terminal is in, the bar's top-left and its size, all in screen pixels.
+fn place(me: HWND, owner: Option<usize>) -> Option<(HWND, i32, i32, i32, i32)> {
+    let pane = pane_for(owner);
+    let mut pr = RECT::default();
+    if pane.0.is_null() || unsafe { GetWindowRect(pane, &mut pr) }.is_err() {
+        // process-wide: no pane to name -- this line is the reading that the
+        // bar's terminal could not be found
+        plogf!("[search] no terminal window for {:?}; the bar is not placed", owner);
+        return None;
+    }
+    let frame = unsafe { GetAncestor(pane, GA_ROOT) };
+    let dpi = unsafe { GetDpiForWindow(me) }.max(96);
+    let sc = |v: i32| v * dpi as i32 / 96;
+    let (w, h) = (sc(WIDTH), sc(HEIGHT));
+    let (x, y) = polter_control_room::hud::find_bar_at(
+        (pr.left, pr.top, pr.right, pr.bottom),
+        (w, h),
+        sc(polter_control_room::hud::FIND_INSET),
+    );
+    Some((frame, x, y, w, h))
+}
+
+/// The panes of `frame` have moved -- a layout, the keyboard moving, the
+/// window moving (`panedrag::sync` calls this). **The bar stays over its own
+/// terminal**: it is that terminal's search, so it follows that terminal and
+/// not the keyboard, as the macOS bar lives inside its terminal's view.
+///
+/// A terminal that is no longer showing -- its tab or stack put something
+/// else in front -- gets the same treatment as a tab switch (`tab_changed`).
+pub fn keep_over_its_terminal(frame: HWND) {
+    let me = hwnd();
+    let owner = OPEN_FOR.load(Ordering::Acquire);
+    if me.0.is_null() || owner == 0 {
+        return;
+    }
+    let visible = STATE.with(|c| c.borrow().as_ref().map(|s| s.visible).unwrap_or(false));
+    if !visible {
+        return;
+    }
+    let pane = pane_for(Some(owner));
+    if pane.0.is_null() || unsafe { GetAncestor(pane, GA_ROOT) } != frame {
+        return;
+    }
+    if !unsafe { IsWindowVisible(pane) }.as_bool() {
+        post(WM_SEARCH_TABCHECK);
+        return;
+    }
+    let Some((_, x, y, w, h)) = place(me, Some(owner)) else { return };
+    if LAST_AT.get() == (x, y) {
+        return;
+    }
+    LAST_AT.set((x, y));
+    let _ = unsafe {
+        SetWindowPos(me, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER)
+    };
+    wlogf!(frame, "[search] moved to {},{} with its terminal", x, y);
+}
+
+/// Esc in the box (macOS's `onExitCommand`; the rule is
+/// `polter_control_room::hud::find_escape`): an empty box closes the bar, a
+/// box with a needle gives the keyboard back to the bar's terminal and leaves
+/// the bar and its matches up. Esc there ends the search through the core's
+/// own binding, and the bar closes on the `end_search` that sends.
+fn escape() {
+    let Some(wins) = windows() else { return };
+    let empty = unsafe { GetWindowTextLengthW(wins.edit) } == 0;
+    match polter_control_room::hud::find_escape(empty) {
+        polter_control_room::hud::FindEscape::Close => end_from_host(),
+        polter_control_room::hud::FindEscape::BackToTerminal => {
+            let owner = OPEN_FOR.load(Ordering::Acquire);
+            let pane = pane_for((owner != 0).then_some(owner));
+            let me = hwnd();
+            crate::overlay::foreground_back(me, pane, "search");
+            crate::overlay::focus_back(me, pane, "search");
+        }
+    }
+}
+
+/// The three buttons' left edges in a client rectangle `right` wide:
+/// previous, next, close -- the close button last, as on macOS.
+fn buttons(right: i32, sc: &dyn Fn(i32) -> i32) -> (i32, i32, i32) {
+    let close_x = right - sc(PAD) - sc(BTN_W);
+    let next_x = close_x - sc(BTN_W);
+    (next_x - sc(BTN_W), next_x, close_x)
 }
 
 fn hide() {
@@ -670,9 +779,10 @@ extern "system" fn search_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 let sc = |v: i32| v * dpi / 96;
                 let mut rc = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rc);
-                let next_x = rc.right - sc(PAD) - sc(BTN_W);
-                let prev_x = next_x - sc(BTN_W);
-                if x >= next_x {
+                let (prev_x, next_x, close_x) = buttons(rc.right, &sc);
+                if x >= close_x {
+                    end_from_host();
+                } else if x >= next_x {
                     navigate(true);
                 } else if x >= prev_x {
                     navigate(false);
@@ -701,7 +811,7 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         match msg {
             WM_KEYDOWN => match VIRTUAL_KEY(wp.0 as u16) {
                 VK_ESCAPE => {
-                    end_from_host();
+                    escape();
                     return LRESULT(0);
                 }
                 VK_RETURN => {
@@ -773,8 +883,7 @@ fn paint(hwnd: HWND) {
                 (Some(t), None) => (format!("-/{}", t), theme::for_window(hwnd).dim()),
             };
 
-            let next_x = rc.right - sc(PAD) - sc(BTN_W);
-            let prev_x = next_x - sc(BTN_W);
+            let (prev_x, next_x, close_x) = buttons(rc.right, &sc);
 
             if !label.is_empty() {
                 SetTextColor(hdc, COLORREF(colour));
@@ -789,7 +898,7 @@ fn paint(hwnd: HWND) {
             }
 
             SetTextColor(hdc, COLORREF(theme::for_window(hwnd).dim()));
-            for (x, glyph) in [(prev_x, "\u{2039}"), (next_x, "\u{203A}")] {
+            for (x, glyph) in [(prev_x, "\u{2039}"), (next_x, "\u{203A}"), (close_x, "\u{00D7}")] {
                 let mut g: Vec<u16> = glyph.encode_utf16().collect();
                 let mut br = RECT {
                     left: x,

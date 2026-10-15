@@ -937,6 +937,29 @@ mac 侧是在同一个提交上、走宿主走的同一条路（`Binding.Action.
 
 ---
 
+### 3.8 鼠标右键：先交给核心，核心不要才弹菜单（task 1603）
+
+**以前**：宿主一个右键消息都不处理，`DefWindowProcW` 在松开时把它变成 `WM_CONTEXTMENU`，直接弹 Polter 的终端右键菜单。核心从来收不到右键，所以下面三件事在 Windows 上都不起作用：`right-click-action`、右键选中单词、程序开了鼠标上报（vim、tmux）时收右键。
+
+**现在照 mac 逐条对齐**（`SurfaceView_AppKit.swift` 的 `rightMouseDown` / `rightMouseUp` / `menu(for:)`）：
+
+| 步骤 | mac | Windows（`tabs.rs` 的 `surface_wndproc`） |
+| --- | --- | --- |
+| 按下 | `ghostty_surface_mouse_button(PRESS, RIGHT)`，返回 true 表示核心收下了，就到此为止 | `WM_RBUTTONDOWN`：先 `mouse_pos`，再 `press_right` 交给核心，记下按的是哪一格、核心收下了没有（`RIGHT_DOWN_PANE` / `RIGHT_TAKEN`） |
+| 核心收下的情形 | 程序在报鼠标；`right-click-action` 是 `copy` / `paste` / `copy-or-paste` / `ignore` | 同一份核心代码（`Surface.zig` 的 `mouseButtonCallback`），一样 |
+| 核心不收的情形 | `context-menu`：先选中指针下的单词（已有选区且包含点击点时不动），返回 false | 一样 |
+| 菜单 | 返回 false 时走 `super.rightMouseDown`，AppKit 在按下时弹 `menu(for:)` | `WM_RBUTTONUP`：松开交给按下的那一格；只有核心没收、而且松开在同一格时，才交给 `DefWindowProcW`，由它发 `WM_CONTEXTMENU` 弹菜单。规则是 `polter_control_room::hud::right_up`，有测试 |
+| 松开 | 菜单是模态的，松开被菜单吃掉，核心收不到 | 先把松开交给核心，再弹菜单，所以菜单开着时核心不会以为右键还按着 |
+| 焦点 | 右键不改第一响应者 | 右键不改焦点（和中键一样）；菜单作用在被点的那一格上，不是焦点那一格 |
+| 键盘的菜单键、Shift+F10 | — | 不经过核心，照旧直接弹菜单 |
+| Ctrl+左键 | 没有鼠标上报时当右键用 | **没做**：这是 mac 的平台习惯，Windows 没有这个约定 |
+
+**菜单里的「拷贝」**：只有有选区时才出现（mac 也是不显示而不是置灰）。菜单是在核心处理完按下之后才建的，所以 `context-menu` 时点在字上，右键先选中单词，「拷贝」就在。
+
+**日志**：每次右键按下都记一行 `[mouse] right press on …: the core took it, so no menu` 或 `…: the core left it to the menu`，不限频。菜单没出来时先看这一行：是核心收下了（vim 开着鼠标、`right-click-action` 不是 `context-menu`），还是宿主的问题。
+
+**可信度**：上面 Windows 一列只读过源码、过了交叉编译；真机清单 `verify-win-1603/CHECKLIST.md` 的 M 段用 vim 实测。
+
 ## 四、扫描码：一条待验的线索
 
 `keys.rs::keycode()` 从 `WM_KEYDOWN` 的 lParam 取**扫描码**（bit 16–23，bit 24 是扩展位），

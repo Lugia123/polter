@@ -101,19 +101,15 @@ const ROLES: Row = Row { label: "", action: None, tick: None, roles: true };
 /// `start_search`. That mismatch is the same one the palette has, and it is
 /// being fixed there separately.
 const ROWS: &[Row] = &[
+    // **macOS's order, section by section** (task 1603; `menu(for:)` in
+    // `SurfaceView_AppKit.swift`): copy and paste, the splits, the terminal,
+    // the two titles, the agent rows. The rows this host adds are kept
+    // (DECISIONS 9) and come after all of them, behind a separator.
+    //
+    // «Copy» is only on the menu when there is a selection to copy -- macOS
+    // leaves it off rather than greying it. See `build_scoped`.
     item(n_("Copy"), "copy_to_clipboard"),
     item(n_("Paste"), "paste_from_clipboard"),
-    item(n_("Select All"), "select_all"),
-    SEP,
-    item(n_("Find…"), "start_search"),
-    SEP,
-    item(n_("New Tab"), "new_tab"),
-    // **Not here because the strip's close cross is missing** -- it is not; a
-    // test in `strip.rs` now pins that it never can be. It is here because
-    // this is a second place to look, and the one place a person who has not
-    // noticed the cross would think to look next. The alternative they reach
-    // for otherwise is the window's ×, which takes every other tab with it.
-    item(n_("Close Tab"), "close_tab:this"),
     SEP,
     // All four directions, because macOS has all four. Two of them were
     // missing here, and a split menu that offers right and down but not left
@@ -130,18 +126,17 @@ const ROWS: &[Row] = &[
     item(n_("Close Split"), "close_surface"),
     SEP,
     item(n_("Reset Terminal"), "reset"),
-    item(n_("Terminal Inspector"), "inspector:toggle"),
-    checkable(n_("Read-only"), "toggle_readonly", Tick::Readonly),
+    item(n_("Toggle Terminal Inspector"), "inspector:toggle"),
+    checkable(n_("Terminal Read-only"), "toggle_readonly", Tick::Readonly),
     SEP,
     // Two different titles, and they are genuinely different: the tab title
     // sticks to the tab and survives focus moving inside it, the surface
     // title is this pane's. The core has a separate action for each.
-    // TRANSLATORS: U+2026, not three ASCII dots. This opens the title
-    // overlay. "Rename Tab..." with three dots is a DIFFERENT action
-    // (rename_tab) that edits the tab strip in place. The two entries look
-    // almost identical; do not merge them.
-    item(n_("Rename Tab…"), "prompt_tab_title"),
-    item(n_("Rename Terminal…"), "prompt_surface_title"),
+    // TRANSLATORS: macOS's words for the title overlay, three ASCII dots and
+    // all, so the two hosts share one catalogue entry. The strip's in-place
+    // rename (rename_tab) is a DIFFERENT action with a different label.
+    item(n_("Change Tab Title..."), "prompt_tab_title"),
+    item(n_("Change Terminal Title..."), "prompt_surface_title"),
     SEP,
     checkable(
         n_("Make This Terminal a Supervisor"),
@@ -149,7 +144,7 @@ const ROWS: &[Row] = &[
         Tick::PgSupervisor,
     ),
     checkable(
-        n_("Toggle Supervision of This Terminal"),
+        n_("Supervise This Terminal"),
         "poltergeist_toggle_watch",
         Tick::PgWatched,
     ),
@@ -183,6 +178,9 @@ const ROWS: &[Row] = &[
         "poltergeist_toggle_authorise",
         Tick::PgMayAuthorise,
     ),
+    // The role submenu, where macOS has `PersonaMenu`: after the four agent
+    // rows and before the supervisor's switch.
+    ROLES,
     // **A supervisor's own setting, and the only row here that is not about
     // the terminal the menu was opened on.** Off by default: a worker naming
     // another worker has that mention rewritten to this supervisor. On, they
@@ -192,8 +190,18 @@ const ROWS: &[Row] = &[
         "poltergeist_toggle_worker_mentions",
         Tick::PgWorkerMentions,
     ),
-    ROLES,
+    // ---- this host's own rows, after everything macOS has (DECISIONS 9).
+    // macOS reaches these from its menu bar instead.
     SEP,
+    item(n_("Select All"), "select_all"),
+    item(n_("Find…"), "start_search"),
+    // **Not here because the strip's close cross is missing** -- it is not; a
+    // test in `strip.rs` now pins that it never can be. It is here because
+    // this is a second place to look, and the one place a person who has not
+    // noticed the cross would think to look next. The alternative they reach
+    // for otherwise is the window's ×, which takes every other tab with it.
+    item(n_("New Tab"), "new_tab"),
+    item(n_("Close Tab"), "close_tab:this"),
     item(n_("Command Palette"), "toggle_command_palette"),
 ];
 
@@ -370,7 +378,7 @@ fn build(
     shortcut: &dyn Fn(&str) -> Option<String>,
     tick: &dyn Fn(Tick) -> bool,
 ) -> Vec<Item> {
-    build_scoped(shortcut, tick, true)
+    build_scoped(shortcut, tick, true, true)
 }
 
 /// The same menu, with the supervisor-only row left out when it does not
@@ -382,14 +390,24 @@ fn build(
 /// nothing. `menu.rs` cannot do this so cheaply: its ids are handed out in
 /// walk order, which is why the same hiding there had to be taught to both
 /// of its walks.
+///
+/// **«Copy» is left out the same way when nothing is selected**, as macOS
+/// does (`menu(for:)` adds it only when `accessibilitySelectedText` is not
+/// empty). Left out rather than greyed: the row is not a command that is
+/// unavailable for now, it is the answer to "copy what?", and with no
+/// selection there is no question. A right click with `right-click-action =
+/// context-menu` selects the word under the pointer before this is built, so
+/// on text the row is there.
 fn build_scoped(
     shortcut: &dyn Fn(&str) -> Option<String>,
     tick: &dyn Fn(Tick) -> bool,
     supervisor: bool,
+    selection: bool,
 ) -> Vec<Item> {
     ROWS.iter()
         .enumerate()
         .filter(|(_, row)| supervisor || row.tick != Some(Tick::PgWorkerMentions))
+        .filter(|(_, row)| selection || row.action != Some("copy_to_clipboard"))
         .map(|(index, row)| {
             if row.roles {
                 // **The text is filled in by `show`**, which has the surface.
@@ -461,10 +479,15 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
     let surface = crate::tabs::surface_of(surface_hwnd);
     let mark = mark_of(surface);
     let in_split = crate::tabs::surface_is_split(surface);
+    // Asked when the menu is built, after the core has had the press: with
+    // `right-click-action = context-menu` that press is what selected the
+    // word under the pointer.
+    let selection = !surface.is_null() && unsafe { (crate::api().surface_has_selection)(surface) };
     let items = build_scoped(
         &|a| crate::keys::shortcut_for(a),
         &|t| tick_state(surface, mark, t),
         crate::worker_mentions::offered(mark.map(|m| m.role)),
+        selection,
     );
 
     unsafe {
@@ -528,10 +551,11 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
         // having no shortcut text at all.
         hlogf!(
             surface_hwnd,
-            "[ctx] built {} items, {} with shortcuts, {} separators",
+            "[ctx] built {} items, {} with shortcuts, {} separators; selection={}",
             shown,
             with_shortcut,
-            items.len() - shown
+            items.len() - shown,
+            selection
         );
         if mark.is_none() && !PG_NEVER_TOLD_LOGGED.swap(true, Ordering::AcqRel) {
             // process-wide: no mark has reached *the host*, which is a fact
@@ -759,6 +783,80 @@ mod tests {
             "poltergeist_toggle_authorise",
         ] {
             assert!(have.contains(&a), "the macOS menu has {a} and this one does not");
+        }
+    }
+
+    /// **macOS's order, then this host's own rows** (task 1603). Spelled
+    /// out whole, separators and the role submenu included, because the
+    /// thing being pinned is the order: `the_macos_menu_is_covered` above
+    /// passes with the rows in any order at all.
+    #[test]
+    fn the_rows_are_in_the_macos_order_then_this_hosts_own() {
+        let got: Vec<&str> = ROWS
+            .iter()
+            .map(|r| if r.roles { "ROLES" } else { r.action.unwrap_or("-") })
+            .collect();
+        let want = [
+            // menu(for:) in SurfaceView_AppKit.swift
+            "copy_to_clipboard",
+            "paste_from_clipboard",
+            "-",
+            "new_split:right",
+            "new_split:left",
+            "new_split:down",
+            "new_split:up",
+            "close_surface",
+            "-",
+            "reset",
+            "inspector:toggle",
+            "toggle_readonly",
+            "-",
+            "prompt_tab_title",
+            "prompt_surface_title",
+            "-",
+            "poltergeist_supervisor",
+            "poltergeist_toggle_watch",
+            "poltergeist_toggle_shielded",
+            "poltergeist_toggle_authorise",
+            "ROLES",
+            "poltergeist_toggle_worker_mentions",
+            // this host's own (DECISIONS 9), behind one separator
+            "-",
+            "select_all",
+            "start_search",
+            "new_tab",
+            "close_tab:this",
+            "toggle_command_palette",
+        ];
+        assert_eq!(got, want);
+    }
+
+    /// The words are macOS's (`Localizable.strings` keys), so the two hosts
+    /// say the same thing and share catalogue entries.
+    #[test]
+    fn the_labels_are_the_macos_words() {
+        let label = |a: &str| ROWS.iter().find(|r| r.action == Some(a)).map(|r| r.label).unwrap();
+        assert_eq!(label("inspector:toggle"), "Toggle Terminal Inspector");
+        assert_eq!(label("toggle_readonly"), "Terminal Read-only");
+        assert_eq!(label("prompt_tab_title"), "Change Tab Title...");
+        assert_eq!(label("prompt_surface_title"), "Change Terminal Title...");
+        assert_eq!(label("poltergeist_toggle_watch"), "Supervise This Terminal");
+    }
+
+    /// **«Copy» is on the menu only with a selection, as on macOS** -- left
+    /// out, not greyed -- and leaving it out moves no other row's command.
+    #[test]
+    fn copy_is_left_out_without_a_selection_and_shifts_nothing() {
+        let with = build_scoped(&no_shortcuts, &no_ticks, true, true);
+        let without = build_scoped(&no_shortcuts, &no_ticks, true, false);
+        let has_copy = |v: &Vec<Item>| v.iter().any(|i| ROWS[i.index].action == Some("copy_to_clipboard"));
+        assert!(has_copy(&with), "a selection should offer Copy");
+        assert!(!has_copy(&without), "nothing selected, nothing to copy");
+        assert_eq!(with.len(), without.len() + 1, "exactly one row came off");
+        // «Paste» is first without it, and every row keeps its id.
+        assert_eq!(ROWS[without[0].index].action, Some("paste_from_clipboard"));
+        for it in &without {
+            assert!(with.iter().any(|w| w.index == it.index && w.text == it.text));
         }
     }
 
@@ -996,8 +1094,8 @@ mod tests {
     /// the wrong command while looking right.
     #[test]
     fn the_supervisor_only_row_is_absent_elsewhere_and_shifts_nothing() {
-        let wide = build_scoped(&no_shortcuts, &no_ticks, true);
-        let narrow = build_scoped(&no_shortcuts, &no_ticks, false);
+        let wide = build_scoped(&no_shortcuts, &no_ticks, true, true);
+        let narrow = build_scoped(&no_shortcuts, &no_ticks, false, true);
 
         let mentions = |v: &Vec<Item>| {
             v.iter().any(|i| ROWS[i.index].tick == Some(Tick::PgWorkerMentions))
