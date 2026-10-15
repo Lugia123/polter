@@ -124,6 +124,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             })
         }
         model.askForTerminal = { [weak self] in self?.lend(.askedFor) }
+        model.goToSupervisor = { [weak self] in self?.goToSupervisor() }
         model.perform = { try actions.perform($0) }
         // Selecting the row that is already selected changes nothing the
         // sink above would see, and still means the person is on it now.
@@ -285,6 +286,22 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         lend(isVisible
             ? .selected(group: group, supervisor: supervisor, present: present)
             : .outOfSight(group: group, supervisor: supervisor, present: present))
+    }
+
+    /// Return on the list (task 1551): the selected group's supervisor, in
+    /// its own tab, with the keyboard. Shown here, it is taken back the way
+    /// the placeholder's own button takes it (`reclaimed`); already back in
+    /// its tab, that tab is brought forward. No supervisor, nothing.
+    private func goToSupervisor() {
+        if let terminal = lending.loan?.terminal {
+            lend(.reclaimed(terminal: terminal))
+            return
+        }
+        guard let group = model.selection,
+              let supervisor = ControlRoomFeed.shared(ghostty).latest?.terminal(shownFor: group),
+              let view = ControlRoomLender.surface(for: supervisor) else { return }
+        view.window?.makeKeyAndOrderFront(nil)
+        Ghostty.moveFocus(to: view)
     }
 
     /// Hand `event` to the lending and do what it says, in order.

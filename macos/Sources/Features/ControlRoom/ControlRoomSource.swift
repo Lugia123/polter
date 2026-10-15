@@ -153,6 +153,10 @@ final class ControlRoomModel: ObservableObject {
     /// The person asked, on the right-hand side, for the terminal they had
     /// taken back.
     var askForTerminal: () -> Void = {}
+    /// Return on the list: go to the selected group's supervisor in its own
+    /// tab, with the keyboard -- what Return does on Windows' list
+    /// (`control_room.rs::go_to_supervisor`), task 1551.
+    var goToSupervisor: () -> Void = {}
 
     /// Sends what the person does about a group. Handed in by whoever has
     /// the core (`ControlRoomController`); without it nothing is done and

@@ -111,4 +111,13 @@ struct LogManagementRulesTests {
             #expect(alert.buttons[1].keyEquivalent == "\r", "\(cancel): Cancel does not answer Return")
         }
     }
+
+    // Esc is Cancel too (task 1551) -- answered by `run`, since Cancel's one
+    // key equivalent is Return. Esc alone; not with a modifier.
+    @Test func escapeIsAnsweredAndOnlyBare() {
+        #expect(LogManagementAlert.isEscape(keyCode: 53, flags: []))
+        #expect(!LogManagementAlert.isEscape(keyCode: 53, flags: [.command]))
+        #expect(!LogManagementAlert.isEscape(keyCode: 53, flags: [.option]))
+        #expect(!LogManagementAlert.isEscape(keyCode: 36, flags: []))
+    }
 }

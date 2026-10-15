@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.lugia.polter\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-15 14:12+0800\n"
+"POT-Creation-Date: 2026-10-15 14:22+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -25,7 +25,7 @@ msgstr ""
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:12
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:197
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
-#: windows/host/src/main.rs:2578 windows/host/src/main.rs:2584
+#: windows/host/src/main.rs:2590 windows/host/src/main.rs:2596
 msgid "Authorize Clipboard Access"
 msgstr ""
 
@@ -52,8 +52,8 @@ msgstr ""
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
 #: src/apprt/gtk/class/application.zig:2226 windows/host/src/logs_ui.rs:648
-#: windows/host/src/project_picker.rs:257
-#: windows/host/src/project_picker.rs:422 windows/host/src/project_ui.rs:413
+#: windows/host/src/project_picker.rs:279
+#: windows/host/src/project_picker.rs:444 windows/host/src/project_ui.rs:413
 #: windows/host/src/project_ui.rs:453 windows/host/src/projects_ui.rs:647
 #: windows/host/src/projects_ui.rs:674 windows/host/src/projects_ui.rs:683
 #: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:3186
@@ -85,7 +85,7 @@ msgstr ""
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:434 src/apprt/gtk/ui/1.5/window.blp:318
 #: windows/host/src/general_ui.rs:657 windows/host/src/general_ui.rs:934
-#: windows/host/src/menu.rs:524
+#: windows/host/src/menu.rs:535
 msgid "Reload Configuration"
 msgstr ""
 
@@ -127,18 +127,18 @@ msgid ""
 "application."
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:107 windows/host/src/ctxmenu.rs:129
-#: windows/host/src/menu.rs:372
+#: src/apprt/gtk/ui/1.2/surface.blp:107 windows/host/src/ctxmenu.rs:134
+#: windows/host/src/menu.rs:379
 msgid "Read-only"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:311 src/apprt/gtk/ui/1.5/window.blp:203
-#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:338
+#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:345
 msgid "Copy"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:208
-#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:339
+#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:346
 msgid "Paste"
 msgstr ""
 
@@ -186,7 +186,8 @@ msgstr ""
 msgid "Split Right"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/menu.rs:286
+#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/ctxmenu.rs:130
+#: windows/host/src/menu.rs:286
 msgid "Close Split"
 msgstr ""
 
@@ -202,17 +203,17 @@ msgstr ""
 #: src/apprt/gtk/ui/1.2/surface.blp:386 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
 #: src/input/command.zig:427 windows/host/src/ctxmenu.rs:110
-#: windows/host/src/menu.rs:261 windows/host/src/strip.rs:2128
+#: windows/host/src/menu.rs:261 windows/host/src/strip.rs:2382
 msgid "New Tab"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:242
 #: src/input/command.zig:674 windows/host/src/ctxmenu.rs:116
-#: windows/host/src/menu.rs:287 windows/host/src/strip.rs:1605
+#: windows/host/src/menu.rs:287 windows/host/src/strip.rs:1805
 msgid "Close Tab"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:549
+#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:560
 msgid "Window"
 msgstr ""
 
@@ -263,13 +264,13 @@ msgstr ""
 msgid "Main Menu"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:192
-#: windows/host/src/menu.rs:357 windows/host/src/strip.rs:2135
+#: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:197
+#: windows/host/src/menu.rs:364 windows/host/src/strip.rs:2389
 msgid "Command Palette"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:128
-#: windows/host/src/menu.rs:381
+#: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:133
+#: windows/host/src/menu.rs:392
 msgid "Terminal Inspector"
 msgstr ""
 
@@ -310,26 +311,26 @@ msgid "Editing configuration file"
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
-#: windows/host/src/main.rs:2586
+#: windows/host/src/main.rs:2598
 msgid ""
 "An application is attempting to write to the clipboard. The current "
 "clipboard contents are shown below."
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:202
-#: windows/host/src/main.rs:2580
+#: windows/host/src/main.rs:2592
 msgid ""
 "An application is attempting to read from the clipboard. The current "
 "clipboard contents are shown below."
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2590
+#: windows/host/src/main.rs:2602
 msgid "Warning: Potentially Unsafe Paste"
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2592
+#: windows/host/src/main.rs:2604
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -340,36 +341,37 @@ msgid "Quit Ghostty?"
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
-#: windows/host/src/tabs.rs:3513
+#: windows/host/src/tabs.rs:3521
 msgid "Close Tab?"
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
-#: windows/host/src/tabs.rs:3514
+#: windows/host/src/tabs.rs:3522
 msgid "Close Window?"
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
-#: windows/host/src/tabs.rs:3515
+#: windows/host/src/tabs.rs:3523
 msgid "Close Split?"
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:193
+#: windows/host/src/tabs.rs:3531
 msgid "All terminal sessions will be terminated."
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
-#: windows/host/src/tabs.rs:3523
+#: windows/host/src/tabs.rs:3532
 msgid "All terminal sessions in this tab will be terminated."
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
-#: windows/host/src/tabs.rs:3524
+#: windows/host/src/tabs.rs:3533
 msgid "All terminal sessions in this window will be terminated."
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
-#: windows/host/src/tabs.rs:3525
+#: windows/host/src/tabs.rs:3534
 msgid "The currently running process in this split will be terminated."
 msgstr ""
 
@@ -415,7 +417,7 @@ msgstr ""
 msgid "Ghostty Developers"
 msgstr ""
 
-#: src/input/command.zig:149 windows/host/src/ctxmenu.rs:127
+#: src/input/command.zig:149 windows/host/src/ctxmenu.rs:132
 msgid "Reset Terminal"
 msgstr ""
 
@@ -546,7 +548,7 @@ msgstr ""
 msgid "Decrease the font size by 1 point."
 msgstr ""
 
-#: src/input/command.zig:237 windows/host/src/menu.rs:353
+#: src/input/command.zig:237 windows/host/src/menu.rs:360
 msgid "Reset Font Size"
 msgstr ""
 
@@ -563,7 +565,7 @@ msgid "Clear the screen and scrollback."
 msgstr ""
 
 #: src/input/command.zig:249 windows/host/src/ctxmenu.rs:106
-#: windows/host/src/menu.rs:347
+#: windows/host/src/menu.rs:354
 msgid "Select All"
 msgstr ""
 
@@ -806,7 +808,7 @@ msgstr ""
 msgid "Move the current tab to the right."
 msgstr ""
 
-#: src/input/command.zig:446 windows/host/src/strip.rs:1608
+#: src/input/command.zig:446 windows/host/src/strip.rs:1808
 msgid "Move Tab to New Window"
 msgstr ""
 
@@ -930,8 +932,8 @@ msgstr ""
 msgid "Toggle read-only mode for the current surface."
 msgstr ""
 
-#: src/input/command.zig:557 windows/host/src/ctxmenu.rs:142
-#: windows/host/src/menu.rs:402 windows/host/src/strip.rs:1614
+#: src/input/command.zig:557 windows/host/src/ctxmenu.rs:147
+#: windows/host/src/menu.rs:413 windows/host/src/strip.rs:1814
 msgid "Make This Terminal a Supervisor"
 msgstr ""
 
@@ -941,8 +943,8 @@ msgid ""
 "supervisors; each reaches only its own."
 msgstr ""
 
-#: src/input/command.zig:563 windows/host/src/ctxmenu.rs:147
-#: windows/host/src/menu.rs:403 windows/host/src/strip.rs:1615
+#: src/input/command.zig:563 windows/host/src/ctxmenu.rs:152
+#: windows/host/src/menu.rs:414 windows/host/src/strip.rs:1815
 msgid "Toggle Supervision of This Terminal"
 msgstr ""
 
@@ -950,7 +952,7 @@ msgstr ""
 msgid "Report this terminal to the supervisor when its screen goes quiet."
 msgstr ""
 
-#: src/input/command.zig:594 windows/host/src/menu.rs:461
+#: src/input/command.zig:594 windows/host/src/menu.rs:472
 msgid "Hold This Terminal to Its Work"
 msgstr ""
 
@@ -960,8 +962,8 @@ msgid ""
 "Its tab wears a ring while the hold lasts. Only you can set this."
 msgstr ""
 
-#: src/input/command.zig:600 windows/host/src/ctxmenu.rs:152
-#: windows/host/src/menu.rs:404 windows/host/src/strip.rs:1616
+#: src/input/command.zig:600 windows/host/src/ctxmenu.rs:157
+#: windows/host/src/menu.rs:415 windows/host/src/strip.rs:1816
 msgid "Keep Agents Out of This Terminal"
 msgstr ""
 
@@ -971,7 +973,7 @@ msgid ""
 "into it. Its tab wears a lock while the shield stands. Only you can set this."
 msgstr ""
 
-#: src/input/command.zig:606 windows/host/src/menu.rs:400
+#: src/input/command.zig:606 windows/host/src/menu.rs:411
 msgid "Terminal Conversations"
 msgstr ""
 
@@ -979,7 +981,7 @@ msgstr ""
 msgid "Open a terminal showing what the terminals have said to each other."
 msgstr ""
 
-#: src/input/command.zig:612 windows/host/src/menu.rs:393
+#: src/input/command.zig:612 windows/host/src/menu.rs:404
 #: windows/control-room/src/rules.rs:180
 msgid "Control Room"
 msgstr ""
@@ -990,7 +992,7 @@ msgid ""
 "if it is closed."
 msgstr ""
 
-#: src/input/command.zig:618 windows/host/src/menu.rs:479
+#: src/input/command.zig:618 windows/host/src/menu.rs:490
 msgid "Equalize Splits"
 msgstr ""
 
@@ -998,7 +1000,7 @@ msgstr ""
 msgid "Equalize the size of all splits."
 msgstr ""
 
-#: src/input/command.zig:624 windows/host/src/menu.rs:501
+#: src/input/command.zig:624 windows/host/src/menu.rs:512
 msgid "Reset Window Size"
 msgstr ""
 
@@ -1066,21 +1068,21 @@ msgstr ""
 msgid "Close the current tab."
 msgstr ""
 
-#: src/input/command.zig:679 windows/host/src/strip.rs:1606
-#: windows/host/src/tabs.rs:3516
+#: src/input/command.zig:679 windows/host/src/strip.rs:1806
+#: windows/host/src/tabs.rs:3524
 msgid "Close Other Tabs"
 msgstr ""
 
-#: src/input/command.zig:680 windows/host/src/tabs.rs:3533
+#: src/input/command.zig:680 windows/host/src/tabs.rs:3542
 msgid "Close all tabs in this window except the current one."
 msgstr ""
 
-#: src/input/command.zig:684 windows/host/src/strip.rs:1607
-#: windows/host/src/tabs.rs:3517
+#: src/input/command.zig:684 windows/host/src/strip.rs:1807
+#: windows/host/src/tabs.rs:3525
 msgid "Close Tabs to the Right"
 msgstr ""
 
-#: src/input/command.zig:685 windows/host/src/tabs.rs:3534
+#: src/input/command.zig:685 windows/host/src/tabs.rs:3543
 msgid "Close all tabs to the right of the current one."
 msgstr ""
 
@@ -1153,7 +1155,7 @@ msgid "Toggle the background opacity of a window that started transparent."
 msgstr ""
 
 #: src/input/command.zig:745 src/input/screenshot.zig:107
-#: windows/settings-shell/src/general.rs:84
+#: windows/host/src/menu.rs:385 windows/settings-shell/src/general.rs:84
 msgid "Screenshot"
 msgstr ""
 
@@ -1247,19 +1249,19 @@ msgstr ""
 msgid "Block Size"
 msgstr ""
 
-#: src/input/screenshot.zig:96 windows/host/src/strip.rs:1569
+#: src/input/screenshot.zig:96 windows/host/src/strip.rs:1766
 msgid "Red"
 msgstr ""
 
-#: src/input/screenshot.zig:97 windows/host/src/strip.rs:1570
+#: src/input/screenshot.zig:97 windows/host/src/strip.rs:1767
 msgid "Orange"
 msgstr ""
 
-#: src/input/screenshot.zig:98 windows/host/src/strip.rs:1571
+#: src/input/screenshot.zig:98 windows/host/src/strip.rs:1768
 msgid "Yellow"
 msgstr ""
 
-#: src/input/screenshot.zig:99 windows/host/src/strip.rs:1572
+#: src/input/screenshot.zig:99 windows/host/src/strip.rs:1769
 msgid "Green"
 msgstr ""
 
@@ -1267,11 +1269,11 @@ msgstr ""
 msgid "Cyan"
 msgstr ""
 
-#: src/input/screenshot.zig:101 windows/host/src/strip.rs:1566
+#: src/input/screenshot.zig:101 windows/host/src/strip.rs:1763
 msgid "Blue"
 msgstr ""
 
-#: src/input/screenshot.zig:102 windows/host/src/strip.rs:1567
+#: src/input/screenshot.zig:102 windows/host/src/strip.rs:1764
 msgid "Purple"
 msgstr ""
 
@@ -1362,7 +1364,7 @@ msgid "The page could not be followed any further, so the picture ends here."
 msgstr ""
 
 #: src/input/screenshot.zig:126 windows/host/src/plugins_ui.rs:525
-#: windows/host/src/project_picker.rs:409 windows/host/src/roles_ui.rs:2553
+#: windows/host/src/project_picker.rs:431 windows/host/src/roles_ui.rs:2553
 #: windows/host/src/roles_ui.rs:2753 windows/host/src/roles_ui.rs:3208
 #: windows/host/src/roles_ui.rs:3225 windows/host/src/roles_ui.rs:3239
 msgid "Save"
@@ -2296,20 +2298,21 @@ msgstr ""
 #. overlay. "Rename Tab..." with three dots is a DIFFERENT action
 #. (rename_tab) that edits the tab strip in place. The two entries look
 #. almost identical; do not merge them.
-#: windows/host/src/ctxmenu.rs:138 windows/host/src/menu.rs:369
+#: windows/host/src/ctxmenu.rs:143 windows/host/src/menu.rs:376
 msgid "Rename Tab…"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:139 windows/host/src/menu.rs:370
+#: windows/host/src/ctxmenu.rs:144 windows/host/src/menu.rs:377
 msgid "Rename Terminal…"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:177 windows/host/src/menu.rs:419
+#: windows/host/src/ctxmenu.rs:182 windows/host/src/menu.rs:430
+#: windows/host/src/strip.rs:1819
 msgid "Let a Supervisor Answer Prompts Here"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:433
-#: windows/host/src/strip.rs:1617
+#: windows/host/src/ctxmenu.rs:191 windows/host/src/menu.rs:444
+#: windows/host/src/strip.rs:1820
 msgid "Let Workers Name Each Other Directly"
 msgstr ""
 
@@ -2582,34 +2585,34 @@ msgstr ""
 msgid "Nothing was cleared: Polter's core refused."
 msgstr ""
 
-#: windows/host/src/main.rs:2606
+#: windows/host/src/main.rs:2618
 #, rust-format
 msgid "{} lines in all."
 msgstr ""
 
-#: windows/host/src/main.rs:6783
+#: windows/host/src/main.rs:6848
 msgid "No reason was recorded."
 msgstr ""
 
-#: windows/host/src/main.rs:6789
+#: windows/host/src/main.rs:6854
 msgid "Polter could not open its first terminal and will close."
 msgstr ""
 
-#: windows/host/src/main.rs:6791
+#: windows/host/src/main.rs:6856
 #, rust-format
 msgid "The full log is at {}"
 msgstr ""
 
-#: windows/host/src/menu.rs:272 windows/host/src/strip.rs:2134
+#: windows/host/src/menu.rs:272 windows/host/src/strip.rs:2388
 msgid "Reopen Closed Tab"
 msgstr ""
 
 #: windows/host/src/menu.rs:302 windows/host/src/projects_ui.rs:645
-#: windows/host/src/strip.rs:1620
+#: windows/host/src/strip.rs:1823
 msgid "Save as Project…"
 msgstr ""
 
-#: windows/host/src/menu.rs:303 windows/host/src/strip.rs:1621
+#: windows/host/src/menu.rs:303 windows/host/src/strip.rs:1824
 msgid "Load Project…"
 msgstr ""
 
@@ -2617,7 +2620,7 @@ msgstr ""
 msgid "Manage Projects…"
 msgstr ""
 
-#: windows/host/src/menu.rs:309 windows/host/src/strip.rs:1890
+#: windows/host/src/menu.rs:309 windows/host/src/strip.rs:2135
 msgid "Add to Project…"
 msgstr ""
 
@@ -2645,144 +2648,156 @@ msgstr ""
 msgid "Hide the Find Bar"
 msgstr ""
 
-#: windows/host/src/menu.rs:349
+#: windows/host/src/menu.rs:340
+msgid "Use Selection for Find"
+msgstr ""
+
+#: windows/host/src/menu.rs:341
+msgid "Jump to Selection"
+msgstr ""
+
+#: windows/host/src/menu.rs:356
 msgid "Find"
 msgstr ""
 
-#: windows/host/src/menu.rs:354
+#: windows/host/src/menu.rs:361
 msgid "Zoom In"
 msgstr ""
 
-#: windows/host/src/menu.rs:355
+#: windows/host/src/menu.rs:362
 msgid "Zoom Out"
 msgstr ""
 
-#: windows/host/src/menu.rs:374
+#: windows/host/src/menu.rs:381
 msgid "Quick Terminal"
 msgstr ""
 
-#: windows/host/src/menu.rs:465
+#: windows/host/src/menu.rs:476
 msgid "Plugins…"
 msgstr ""
 
-#: windows/host/src/menu.rs:468 windows/host/src/personas.rs:538
+#: windows/host/src/menu.rs:479 windows/host/src/personas.rs:538
 msgid "Role Library..."
 msgstr ""
 
-#: windows/host/src/menu.rs:472
+#: windows/host/src/menu.rs:483
 msgid "Up"
 msgstr ""
 
-#: windows/host/src/menu.rs:473
+#: windows/host/src/menu.rs:484
 msgid "Down"
 msgstr ""
 
-#: windows/host/src/menu.rs:474
+#: windows/host/src/menu.rs:485
 msgid "Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:475
+#: windows/host/src/menu.rs:486
 msgid "Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:481
+#: windows/host/src/menu.rs:492
 msgid "Grow Up"
 msgstr ""
 
-#: windows/host/src/menu.rs:482
+#: windows/host/src/menu.rs:493
 msgid "Grow Down"
 msgstr ""
 
-#: windows/host/src/menu.rs:483
+#: windows/host/src/menu.rs:494
 msgid "Grow Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:484
+#: windows/host/src/menu.rs:495
 msgid "Grow Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:490
+#: windows/host/src/menu.rs:501
 msgid "Minimize"
 msgstr ""
 
-#: windows/host/src/menu.rs:491
+#: windows/host/src/menu.rs:502
 msgid "Maximize"
 msgstr ""
 
-#: windows/host/src/menu.rs:493
+#: windows/host/src/menu.rs:504
 msgid "Full Screen"
 msgstr ""
 
-#: windows/host/src/menu.rs:495
+#: windows/host/src/menu.rs:506
 msgid "Split Zoom"
 msgstr ""
 
-#: windows/host/src/menu.rs:496
+#: windows/host/src/menu.rs:507
 msgid "Previous Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:497
+#: windows/host/src/menu.rs:508
 msgid "Next Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:498
+#: windows/host/src/menu.rs:509
 msgid "Select Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:499
+#: windows/host/src/menu.rs:510
 msgid "Resize Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:503
+#: windows/host/src/menu.rs:514
 msgid "Float on Top"
 msgstr ""
 
-#: windows/host/src/menu.rs:510
+#: windows/host/src/menu.rs:521
 msgid "Polter Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:523
+#: windows/host/src/menu.rs:534
 msgid "Check for Updates…"
 msgstr ""
 
-#: windows/host/src/menu.rs:529
+#: windows/host/src/menu.rs:540
 msgid "File"
 msgstr ""
 
-#: windows/host/src/menu.rs:530
+#: windows/host/src/menu.rs:541
 msgid "Edit"
 msgstr ""
 
-#: windows/host/src/menu.rs:531
+#: windows/host/src/menu.rs:542
 msgid "View"
 msgstr ""
 
-#: windows/host/src/menu.rs:547
+#: windows/host/src/menu.rs:558
 msgid "Agents"
 msgstr ""
 
-#: windows/host/src/menu.rs:548
+#: windows/host/src/menu.rs:559
 msgid "Project"
 msgstr ""
 
-#: windows/host/src/menu.rs:550
+#: windows/host/src/menu.rs:561
 msgid "Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:555
+#: windows/host/src/menu.rs:566
 msgid "Settings…"
 msgstr ""
 
-#: windows/host/src/menu.rs:567
+#: windows/host/src/menu.rs:578
 msgid "Language…"
 msgstr ""
 
-#: windows/host/src/menu.rs:581
+#: windows/host/src/menu.rs:592
 msgid "Keyboard Shortcuts…"
 msgstr ""
 
-#: windows/host/src/menu.rs:582
+#: windows/host/src/menu.rs:593
 msgid "About Polter"
+msgstr ""
+
+#: windows/host/src/menu.rs:601
+msgid "Quit Polter"
 msgstr ""
 
 #: windows/host/src/personas.rs:166
@@ -3006,54 +3021,54 @@ msgstr ""
 msgid "What it is handed: {}"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:97 windows/host/src/project_picker.rs:628
+#: windows/host/src/project_picker.rs:97 windows/host/src/project_picker.rs:650
 msgid "Load Project"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:98 windows/host/src/project_picker.rs:231
-#: windows/host/src/project_picker.rs:699
-#: windows/host/src/project_picker.rs:705
+#: windows/host/src/project_picker.rs:98 windows/host/src/project_picker.rs:253
+#: windows/host/src/project_picker.rs:714
+#: windows/host/src/project_picker.rs:720
 msgid "Save as Project"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:248
+#: windows/host/src/project_picker.rs:270
 #, rust-format
 msgid "All {} Pages of This Window"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:257
+#: windows/host/src/project_picker.rs:279
 msgid "This Page Only"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:344
+#: windows/host/src/project_picker.rs:366
 #, rust-format
 msgid "Saves this tab: {} pane(s)"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:628 windows/host/src/projects_ui.rs:716
+#: windows/host/src/project_picker.rs:650 windows/host/src/projects_ui.rs:716
 msgid "The project could not be opened."
 msgstr ""
 
-#: windows/host/src/project_picker.rs:699
-#: windows/host/src/project_picker.rs:705 windows/host/src/projects_ui.rs:971
+#: windows/host/src/project_picker.rs:714
+#: windows/host/src/project_picker.rs:720 windows/host/src/projects_ui.rs:971
 #: windows/host/src/projects_ui.rs:984
 msgid "The project could not be saved."
 msgstr ""
 
-#: windows/host/src/project_picker.rs:1041 windows/host/src/settings_win.rs:930
-#: windows/host/src/settings_win.rs:1358
+#: windows/host/src/project_picker.rs:1056 windows/host/src/settings_win.rs:968
+#: windows/host/src/settings_win.rs:1396
 msgid "Search"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:1042
+#: windows/host/src/project_picker.rs:1057
 msgid "New Project Name"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:1122 windows/host/src/projects_ui.rs:1242
+#: windows/host/src/project_picker.rs:1137 windows/host/src/projects_ui.rs:1242
 msgid "No Saved Projects"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:1122 windows/host/src/projects_ui.rs:1244
+#: windows/host/src/project_picker.rs:1137 windows/host/src/projects_ui.rs:1244
 msgid "No matching projects"
 msgstr ""
 
@@ -3834,28 +3849,28 @@ msgstr ""
 msgid "General"
 msgstr ""
 
-#: windows/host/src/settings_win.rs:811
+#: windows/host/src/settings_win.rs:849
 msgid "Polter Settings"
 msgstr ""
 
-#: windows/host/src/settings_win.rs:1367 windows/host/src/settings_win.rs:1370
+#: windows/host/src/settings_win.rs:1405 windows/host/src/settings_win.rs:1408
 #, rust-format
 msgid "{} (not in the search results)"
 msgstr ""
 
-#: windows/host/src/strip.rs:1565
+#: windows/host/src/strip.rs:1762
 msgid "None"
 msgstr ""
 
-#: windows/host/src/strip.rs:1568
+#: windows/host/src/strip.rs:1765
 msgid "Pink"
 msgstr ""
 
-#: windows/host/src/strip.rs:1573
+#: windows/host/src/strip.rs:1770
 msgid "Teal"
 msgstr ""
 
-#: windows/host/src/strip.rs:1574
+#: windows/host/src/strip.rs:1771
 msgid "Graphite"
 msgstr ""
 
@@ -3863,12 +3878,20 @@ msgstr ""
 #. in place on the tab strip. "Rename Tab…" with U+2026 is a
 #. DIFFERENT action (prompt_tab_title) that opens the title overlay.
 #. The two entries look almost identical; do not merge them.
-#: windows/host/src/strip.rs:1613
+#: windows/host/src/strip.rs:1813
 msgid "Rename Tab..."
 msgstr ""
 
-#: windows/host/src/strip.rs:1844
+#: windows/host/src/strip.rs:2061
 msgid "Tab Color"
+msgstr ""
+
+#: windows/host/src/strip.rs:2118
+msgid "Save as New Project…"
+msgstr ""
+
+#: windows/host/src/tabs.rs:3520
+msgid "Quit Polter?"
 msgstr ""
 
 #: windows/host/src/uia.rs:1171

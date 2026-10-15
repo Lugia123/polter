@@ -38,7 +38,7 @@ final class LogManagementModel: ObservableObject {
         guard let kind = LogManagementRules.current(kind, in: usage) else { return nil }
         let c = LogManagementRules.confirmation(kind)
         let alert = LogManagementAlert.make(c, cancel: String(localized: "Cancel", comment: "日志管理：确认框的取消按钮"))
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        guard LogManagementAlert.run(alert) == .alertFirstButtonReturn else { return nil }
 
         // Done once: the call is not asked for its size first.
         var buf = [CChar](repeating: 0, count: 512)

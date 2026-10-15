@@ -7660,10 +7660,11 @@ pub const Keybinds = struct {
                 // **The letters were chosen by construction, not by
                 // survey -- and the construction has to cover two tables.**
                 //
-                // `b h l r s u y` appear nowhere in this function, so no
-                // block on any platform binds them and no later `put` can
-                // take one back; a chord silently lost to a later binding is
-                // exactly the defect task 336 fixed.
+                // `b h l r s u y` appear with `ctrl+shift` nowhere else in
+                // this function, so no later `put` can take one back; a
+                // chord silently lost to a later binding is exactly the
+                // defect task 336 fixed. (macOS has the same five letters
+                // since task 1551, on `⌃⌘`, in its own block.)
                 //
                 // ⚠️ **That argument was not enough on its own.** This host
                 // keeps a second table, `keys.rs::accelerator()`, and the
@@ -7672,7 +7673,8 @@ pub const Keybinds = struct {
                 // `the Windows host's accelerator table` caught it. **Both
                 // tables have to be checked, and `CLAUDE.md` says so in one
                 // sentence naming both.** That table's `ctrl+shift` letters
-                // are `M`, `D`, `Z` and `OEM_PLUS`.
+                // are `M`, `D` and `Z` (`OEM_PLUS` moved into the core,
+                // task 1551).
                 //
                 // English initial where it was free (`s`upervisor, `h`eld), a
                 // word from the row's own meaning where it was not
@@ -7731,11 +7733,19 @@ pub const Keybinds = struct {
             .{ .reset_font_size = {} },
         );
 
-        try self.set.put(
-            alloc,
-            .{ .key = .{ .unicode = 'j' }, .mods = .{ .shift = true, .ctrl = true, .super = true } },
-            .{ .write_screen_file = .copy },
-        );
+        // **Not on Windows** (task 1551): there `super` is the Win key, the
+        // operating system's modifier (`dev-docs/windows/keys.md` §7.5), and
+        // the two chords next door already spend `ctrl+shift+j` and
+        // `ctrl+shift+alt+j`. Left unbound rather than moved to a chord
+        // chosen for nothing: the command palette has it, and
+        // `keybind = …=write_screen_file:copy` gives it any key.
+        if (comptime builtin.target.os.tag != .windows) {
+            try self.set.put(
+                alloc,
+                .{ .key = .{ .unicode = 'j' }, .mods = .{ .shift = true, .ctrl = true, .super = true } },
+                .{ .write_screen_file = .copy },
+            );
+        }
 
         try self.set.put(
             alloc,
@@ -7920,68 +7930,152 @@ pub const Keybinds = struct {
                 .{ .key = .{ .unicode = 'e' }, .mods = .{ .ctrl = true, .shift = true } },
                 .{ .new_split = .down },
             );
-            try self.set.putFlags(
-                alloc,
-                .{ .key = .{ .unicode = '[' }, .mods = .{ .ctrl = true, .super = true } },
-                .{ .goto_split = .previous },
-                .{ .performable = true },
-            );
-            try self.set.putFlags(
-                alloc,
-                .{ .key = .{ .unicode = ']' }, .mods = .{ .ctrl = true, .super = true } },
-                .{ .goto_split = .next },
-                .{ .performable = true },
-            );
-            try self.set.putFlags(
-                alloc,
-                .{ .key = .{ .physical = .arrow_up }, .mods = .{ .ctrl = true, .alt = true } },
-                .{ .goto_split = .up },
-                .{ .performable = true },
-            );
-            try self.set.putFlags(
-                alloc,
-                .{ .key = .{ .physical = .arrow_down }, .mods = .{ .ctrl = true, .alt = true } },
-                .{ .goto_split = .down },
-                .{ .performable = true },
-            );
-            try self.set.putFlags(
-                alloc,
-                .{ .key = .{ .physical = .arrow_left }, .mods = .{ .ctrl = true, .alt = true } },
-                .{ .goto_split = .left },
-                .{ .performable = true },
-            );
-            try self.set.putFlags(
-                alloc,
-                .{ .key = .{ .physical = .arrow_right }, .mods = .{ .ctrl = true, .alt = true } },
-                .{ .goto_split = .right },
-                .{ .performable = true },
-            );
+            // **Windows takes these seven off the Win key, and makes the
+            // ten split moves menu-visible** (task 1551).
+            //
+            // ⚠️ The chords below the `else` put `super` on the Win key,
+            // which is the operating system's modifier there, not the
+            // application's (`dev-docs/windows/keys.md` §7.5): `Win+arrows`
+            // snaps windows and `Ctrl+Win+arrows` switches desktops. So on
+            // Windows, by the "⌘X ↔ Ctrl+Shift+X" rule the rest of this block
+            // follows: macOS's `⌘[` / `⌘]` become `ctrl+shift+[` / `]`, and
+            // resizing -- `⌃⌘arrows` there, which that rule cannot translate
+            // (two modifiers collapse into one) -- takes `ctrl+shift+alt` and
+            // the arrows, the move chord plus Shift. Arrows type no character,
+            // so the AltGr objection to `ctrl+alt` (§7.1) does not reach them.
+            //
+            // ⚠️ **And not `performable` on Windows, which is a trade made on
+            // purpose.** `performable` keeps a binding out of the reverse map,
+            // so the menu could name none of these ten (§3.7, cause one); macOS
+            // binds them plain and its menu shows them all. The price is that
+            // with one pane these chords no longer fall through to the
+            // terminal -- they do nothing, as they do on macOS. Linux keeps
+            // upstream's bindings exactly.
+            if (comptime builtin.target.os.tag == .windows) {
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .unicode = '[' }, .mods = .{ .ctrl = true, .shift = true } },
+                    .{ .goto_split = .previous },
+                );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .unicode = ']' }, .mods = .{ .ctrl = true, .shift = true } },
+                    .{ .goto_split = .next },
+                );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_up }, .mods = .{ .ctrl = true, .alt = true } },
+                    .{ .goto_split = .up },
+                );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_down }, .mods = .{ .ctrl = true, .alt = true } },
+                    .{ .goto_split = .down },
+                );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_left }, .mods = .{ .ctrl = true, .alt = true } },
+                    .{ .goto_split = .left },
+                );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_right }, .mods = .{ .ctrl = true, .alt = true } },
+                    .{ .goto_split = .right },
+                );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_up }, .mods = .{ .ctrl = true, .shift = true, .alt = true } },
+                    .{ .resize_split = .{ .up, 10 } },
+                );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_down }, .mods = .{ .ctrl = true, .shift = true, .alt = true } },
+                    .{ .resize_split = .{ .down, 10 } },
+                );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_left }, .mods = .{ .ctrl = true, .shift = true, .alt = true } },
+                    .{ .resize_split = .{ .left, 10 } },
+                );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_right }, .mods = .{ .ctrl = true, .shift = true, .alt = true } },
+                    .{ .resize_split = .{ .right, 10 } },
+                );
+                // macOS's `⌃⌘=`. This used to be a row in the host's own
+                // accelerator table (`keys.rs`), which the core could not
+                // see and no menu could name; the core has it now, and that
+                // row is gone -- a core binding on the same chord would have
+                // made it silently dead (§7.8).
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .unicode = '=' }, .mods = .{ .ctrl = true, .shift = true } },
+                    .{ .equalize_splits = {} },
+                );
+            } else {
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .unicode = '[' }, .mods = .{ .ctrl = true, .super = true } },
+                    .{ .goto_split = .previous },
+                    .{ .performable = true },
+                );
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .unicode = ']' }, .mods = .{ .ctrl = true, .super = true } },
+                    .{ .goto_split = .next },
+                    .{ .performable = true },
+                );
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_up }, .mods = .{ .ctrl = true, .alt = true } },
+                    .{ .goto_split = .up },
+                    .{ .performable = true },
+                );
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_down }, .mods = .{ .ctrl = true, .alt = true } },
+                    .{ .goto_split = .down },
+                    .{ .performable = true },
+                );
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_left }, .mods = .{ .ctrl = true, .alt = true } },
+                    .{ .goto_split = .left },
+                    .{ .performable = true },
+                );
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_right }, .mods = .{ .ctrl = true, .alt = true } },
+                    .{ .goto_split = .right },
+                    .{ .performable = true },
+                );
 
-            // Resizing splits
-            try self.set.putFlags(
-                alloc,
-                .{ .key = .{ .physical = .arrow_up }, .mods = .{ .super = true, .ctrl = true, .shift = true } },
-                .{ .resize_split = .{ .up, 10 } },
-                .{ .performable = true },
-            );
-            try self.set.putFlags(
-                alloc,
-                .{ .key = .{ .physical = .arrow_down }, .mods = .{ .super = true, .ctrl = true, .shift = true } },
-                .{ .resize_split = .{ .down, 10 } },
-                .{ .performable = true },
-            );
-            try self.set.putFlags(
-                alloc,
-                .{ .key = .{ .physical = .arrow_left }, .mods = .{ .super = true, .ctrl = true, .shift = true } },
-                .{ .resize_split = .{ .left, 10 } },
-                .{ .performable = true },
-            );
-            try self.set.putFlags(
-                alloc,
-                .{ .key = .{ .physical = .arrow_right }, .mods = .{ .super = true, .ctrl = true, .shift = true } },
-                .{ .resize_split = .{ .right, 10 } },
-                .{ .performable = true },
-            );
+                // Resizing splits
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_up }, .mods = .{ .super = true, .ctrl = true, .shift = true } },
+                    .{ .resize_split = .{ .up, 10 } },
+                    .{ .performable = true },
+                );
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_down }, .mods = .{ .super = true, .ctrl = true, .shift = true } },
+                    .{ .resize_split = .{ .down, 10 } },
+                    .{ .performable = true },
+                );
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_left }, .mods = .{ .super = true, .ctrl = true, .shift = true } },
+                    .{ .resize_split = .{ .left, 10 } },
+                    .{ .performable = true },
+                );
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .physical = .arrow_right }, .mods = .{ .super = true, .ctrl = true, .shift = true } },
+                    .{ .resize_split = .{ .right, 10 } },
+                    .{ .performable = true },
+                );
+            }
 
             // Viewport scrolling
             try self.set.put(
@@ -8304,6 +8398,49 @@ pub const Keybinds = struct {
 
         // Mac-specific keyboard bindings.
         if (comptime builtin.target.os.tag.isDarwin()) {
+            // **Polter's five, with Windows' letters** (task 1551) -- read the
+            // Windows block's note on these first: binding them opens the
+            // same side door there (a supervisor's `terminal_key` can
+            // synthesise a chord that `terminal_action` refuses), and the
+            // product owner decided it for both platforms.
+            //
+            // **`⌃⌘`, not `⌘⇧`.** `⇧⌘L` ("Search With Google") and `⇧⌘Y`
+            // ("Make Sticky") are macOS's own default Services shortcuts, and
+            // the Services menu sits in the application menu, ahead of
+            // `Agents` in the order a key equivalent is looked for. `⌃⌘` with
+            // these letters is bound nowhere in this function, nowhere in
+            // `MainMenu.xib` (whose only fixed keys are `⌘H`, `⌥⌘H`, `⌘⇧T`,
+            // `⌘M` and `⌘?`), and by no macOS default: the system's `⌃⌘`
+            // chords are `Q` (lock), `D` (look up), `F` (full screen) and
+            // `Space`. Not `performable`, for the reason the Windows block
+            // gives: a toggle has nothing to decline, and `performable` would
+            // cost the menu its shortcut.
+            try self.set.put(
+                alloc,
+                .{ .key = .{ .unicode = 's' }, .mods = .{ .super = true, .ctrl = true } },
+                .{ .poltergeist_supervisor = {} },
+            );
+            try self.set.put(
+                alloc,
+                .{ .key = .{ .unicode = 'h' }, .mods = .{ .super = true, .ctrl = true } },
+                .{ .poltergeist_toggle_held = {} },
+            );
+            try self.set.put(
+                alloc,
+                .{ .key = .{ .unicode = 'l' }, .mods = .{ .super = true, .ctrl = true } },
+                .{ .poltergeist_toggle_chat = {} },
+            );
+            try self.set.put(
+                alloc,
+                .{ .key = .{ .unicode = 'y' }, .mods = .{ .super = true, .ctrl = true } },
+                .{ .poltergeist_toggle_watch = {} },
+            );
+            try self.set.put(
+                alloc,
+                .{ .key = .{ .unicode = 'b' }, .mods = .{ .super = true, .ctrl = true } },
+                .{ .poltergeist_toggle_shielded = {} },
+            );
+
             // The screenshot hotkey, `global:` so it works with another
             // application in front. ⚠️ **This is the one `global:` binding
             // that must not cost the Accessibility permission**: the host
@@ -8989,6 +9126,40 @@ pub const Keybinds = struct {
         try testing.expect(keybinds.set.getTrigger(.start_search) == null);
     }
 
+    // **Polter's five on macOS (task 1551), and through `getTrigger`** --
+    // the reverse map, which is what the Agents menu asks
+    // (`AppDelegate.syncMenuShortcut`). Same letters as Windows, `⌃⌘`.
+    test "Keybinds: macOS gives the agent toggles Windows' letters on ctrl+cmd" {
+        if (comptime !builtin.target.os.tag.isDarwin()) return error.SkipZigTest;
+
+        const testing = std.testing;
+        var arena = ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var keybinds: Keybinds = .{};
+        try keybinds.init(alloc);
+
+        for ([_]struct { a: inputpkg.Binding.Action, c: u21 }{
+            .{ .a = .{ .poltergeist_supervisor = {} }, .c = 's' },
+            .{ .a = .{ .poltergeist_toggle_held = {} }, .c = 'h' },
+            .{ .a = .{ .poltergeist_toggle_chat = {} }, .c = 'l' },
+            .{ .a = .{ .poltergeist_toggle_watch = {} }, .c = 'y' },
+            .{ .a = .{ .poltergeist_toggle_shielded = {} }, .c = 'b' },
+        }) |want| {
+            const t = keybinds.set.getTrigger(want.a) orelse {
+                std.debug.print("no menu-visible trigger for {s}\n", .{@tagName(std.meta.activeTag(want.a))});
+                return error.PoltergeistActionHasNoShortcut;
+            };
+            try testing.expect(std.meta.activeTag(t.key) == .unicode);
+            try testing.expectEqual(want.c, t.key.unicode);
+            try testing.expect(t.mods.super and t.mods.ctrl and !t.mods.shift and !t.mods.alt);
+            // And the chord is that action's, not something written after it.
+            const leaf = keybinds.set.get(t).?.value_ptr.leaf;
+            try testing.expect(leaf.action.equal(want.a));
+        }
+    }
+
     // **The Windows `ctrl+c` / `ctrl+v` divergence, pinned.**
     //
     // This test is the only automated check those two lines have, and on a
@@ -9090,6 +9261,32 @@ pub const Keybinds = struct {
             try testing.expectEqual(want.c, t.key.unicode);
             try testing.expect(t.mods.ctrl and t.mods.shift and !t.mods.alt);
         }
+
+        // **The ten split moves and equalize, menu-visible and off the Win
+        // key (task 1551).** `getTrigger` again: each of these was bound and
+        // could not be named by the menu, because `performable` kept it out
+        // of the reverse map (`dev-docs/windows/keys.md` §3.7, cause one).
+        for ([_]struct { a: inputpkg.Binding.Action, shift: bool, alt: bool }{
+            .{ .a = .{ .goto_split = .previous }, .shift = true, .alt = false },
+            .{ .a = .{ .goto_split = .next }, .shift = true, .alt = false },
+            .{ .a = .{ .goto_split = .up }, .shift = false, .alt = true },
+            .{ .a = .{ .goto_split = .down }, .shift = false, .alt = true },
+            .{ .a = .{ .goto_split = .left }, .shift = false, .alt = true },
+            .{ .a = .{ .goto_split = .right }, .shift = false, .alt = true },
+            .{ .a = .{ .resize_split = .{ .up, 10 } }, .shift = true, .alt = true },
+            .{ .a = .{ .resize_split = .{ .down, 10 } }, .shift = true, .alt = true },
+            .{ .a = .{ .resize_split = .{ .left, 10 } }, .shift = true, .alt = true },
+            .{ .a = .{ .resize_split = .{ .right, 10 } }, .shift = true, .alt = true },
+            .{ .a = .{ .equalize_splits = {} }, .shift = true, .alt = false },
+        }) |want| {
+            const t = keybinds.set.getTrigger(want.a) orelse return error.SplitMoveHasNoShortcut;
+            try testing.expect(t.mods.ctrl and !t.mods.super);
+            try testing.expectEqual(want.shift, t.mods.shift);
+            try testing.expectEqual(want.alt, t.mods.alt);
+        }
+        // No default on Windows touches the Win key any more.
+        var it = keybinds.set.bindings.iterator();
+        while (it.next()) |e| try testing.expect(!e.key_ptr.mods.super);
     }
 
     test "parseCLI table definition" {

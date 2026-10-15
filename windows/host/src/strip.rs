@@ -1785,6 +1785,9 @@ enum TabCmd {
     Supervisor,
     Watch,
     Shield,
+    /// A supervisor may answer this terminal's permission boxes. macOS's tab
+    /// menu has it beside the shield (`appendAgentSection`), task 1551.
+    Authorise,
     /// This terminal, **as a supervisor**, lets the workers it minds name
     /// each other directly in the group. Default off: a worker naming another
     /// worker has that mention rewritten to this supervisor.
@@ -1811,6 +1814,9 @@ impl TabCmd {
             TabCmd::Supervisor => n_("Make This Terminal a Supervisor"),
             TabCmd::Watch => n_("Toggle Supervision of This Terminal"),
             TabCmd::Shield => n_("Keep Agents Out of This Terminal"),
+            // The same msgid as `menu.rs` and `ctxmenu.rs`: one switch, one
+            // entry in the catalogue.
+            TabCmd::Authorise => n_("Let a Supervisor Answer Prompts Here"),
             TabCmd::WorkerMentions => n_("Let Workers Name Each Other Directly"),
             // The menu bar's words for the same two rows (`menu.rs`), so one
             // msgid each.
@@ -1834,6 +1840,7 @@ impl TabCmd {
             TabCmd::Supervisor => "poltergeist_supervisor",
             TabCmd::Watch => "poltergeist_toggle_watch",
             TabCmd::Shield => "poltergeist_toggle_shielded",
+            TabCmd::Authorise => "poltergeist_toggle_authorise",
             TabCmd::WorkerMentions => "poltergeist_toggle_worker_mentions",
             // The menu bar's names for the same two rows (`menu.rs`). The
             // `__polter_` prefix is what says a row is the host's own and
@@ -1863,6 +1870,7 @@ impl TabCmd {
             TabCmd::Supervisor => m.role == 1,
             TabCmd::Watch => m.role == 2,
             TabCmd::Shield => m.shielded,
+            TabCmd::Authorise => m.may_authorise,
             TabCmd::WorkerMentions => {
                 crate::worker_mentions::ticked(Some(m.role), m.worker_mentions)
             }
@@ -1903,6 +1911,7 @@ impl TabCmd {
             | TabCmd::Supervisor
             | TabCmd::Watch
             | TabCmd::Shield
+            | TabCmd::Authorise
             | TabCmd::WorkerMentions
             | TabCmd::SaveProject
             | TabCmd::LoadProject => false,
@@ -1950,6 +1959,7 @@ const TAB_MENU: &[Option<TabCmd>] = &[
     Some(TabCmd::Supervisor),
     Some(TabCmd::Watch),
     Some(TabCmd::Shield),
+    Some(TabCmd::Authorise),
     Some(TabCmd::WorkerMentions),
 ];
 
@@ -1979,6 +1989,13 @@ const STRIP_ID_BASE: usize = 0x5200;
 /// The rows about a tab's project, which are not in `TAB_MENU`: what they
 /// say depends on the tab (the project's name), and a table's row cannot.
 const TAB_PROJECT_BASE: usize = 0x5300;
+/// «Add to Project ▸»'s rows: one per saved project, in the order the list
+/// gave them (task 1551). Above `TAB_PROJECT_BASE`'s three so neither range
+/// can read the other's ids.
+const TAB_ADD_TO_BASE: usize = 0x5400;
+/// At most this many projects in the submenu; the rest are a click away in
+/// the picker, which the menu bar's «Add to Project…» still opens.
+const TAB_ADD_TO_MAX: usize = 0xFF;
 const TAB_PROJECT_ACTS: [crate::project_ui::PageAct; 3] =
     [crate::project_ui::PageAct::AddTo, crate::project_ui::PageAct::TakeOut, crate::project_ui::PageAct::CloseProject];
 
@@ -2001,6 +2018,9 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
     let (role, shielded) = (mark.role, mark.shielded);
     let colour = tabs::tab_color(frame, target.id);
 
+    // The projects the submenu listed, by id offset: what a pick is matched
+    // against, so a list that changed meanwhile cannot name another project.
+    let mut add_to: Vec<(String, std::path::PathBuf)> = Vec::new();
     let chosen = unsafe {
         let Ok(menu) = CreatePopupMenu() else {
             wlogf!(frame, "[tabmenu] CreatePopupMenu failed");
@@ -2078,6 +2098,34 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
                 if !crate::project_ui::page_act_offered(*act, Some(target.id)) {
                     continue;
                 }
+                // **A submenu, as macOS has it** (`appendProjectSection`,
+                // task 1551): every project there is, then "Save as New
+                // Project…" -- not a row that opens a picker to choose from
+                // the same list.
+                if *act == crate::project_ui::PageAct::AddTo {
+                    if let Ok(sub) = CreatePopupMenu() {
+                        add_to = crate::project_picker::project_names(frame);
+                        add_to.truncate(TAB_ADD_TO_MAX);
+                        for (k, (name, _)) in add_to.iter().enumerate() {
+                            let mut wide: Vec<u16> = name.encode_utf16().collect();
+                            wide.push(0);
+                            let _ = AppendMenuW(sub, MF_STRING, TAB_ADD_TO_BASE + k, PCWSTR(wide.as_ptr()));
+                        }
+                        if !add_to.is_empty() {
+                            let _ = AppendMenuW(sub, MF_SEPARATOR, 0, PCWSTR::null());
+                        }
+                        let save_at = TAB_MENU.iter().position(|r| *r == Some(TabCmd::SaveProject)).unwrap_or(0);
+                        let mut wide: Vec<u16> = tr("Save as New Project…").encode_utf16().collect();
+                        wide.push(0);
+                        let _ = AppendMenuW(sub, MF_STRING, TAB_ID_BASE + save_at, PCWSTR(wide.as_ptr()));
+                        let mut wide: Vec<u16> = tr(rules::ADD_TO_PROJECT).encode_utf16().collect();
+                        wide.push(0);
+                        let _ = AppendMenuW(menu, MF_POPUP, menu_handle_as_id(sub), PCWSTR(wide.as_ptr()));
+                        items += 1;
+                        wlogf!(frame, "[tabmenu] tab {} add to project: {} project(s) listed", target.index + 1, add_to.len());
+                        continue;
+                    }
+                }
                 let label = match act {
                     crate::project_ui::PageAct::TakeOut => {
                         let w = rules::take_out_title(project.as_deref());
@@ -2143,6 +2191,15 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
     if (TAB_COLOR_BASE..TAB_COLOR_BASE + TAB_COLORS.len()).contains(&chosen) {
         let c = chosen - TAB_COLOR_BASE;
         run_tab_colour(frame, target.id, c as u8);
+        return;
+    }
+    if (TAB_ADD_TO_BASE..TAB_ADD_TO_BASE + TAB_ADD_TO_MAX).contains(&chosen) {
+        let Some((name, path)) = add_to.get(chosen - TAB_ADD_TO_BASE) else {
+            wlogf!(frame, "[tabmenu] add to project: id {} names no listed project", chosen);
+            return;
+        };
+        let ok = crate::project_picker::add_tab_to(frame, target.id, name, path);
+        wlogf!(frame, "[tabmenu] pick add to project {:?} tab {} ok={}", name, target.index + 1, ok);
         return;
     }
     if (TAB_PROJECT_BASE..TAB_PROJECT_BASE + TAB_PROJECT_ACTS.len()).contains(&chosen) {
@@ -2265,7 +2322,7 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
         // `Mentions` rides with the three agent rows: all four are core
         // binding strings performed on the tab that was right-clicked, and
         // the core is what decides whether the binding can be performed.
-        TabCmd::Supervisor | TabCmd::Watch | TabCmd::Shield | TabCmd::WorkerMentions => {
+        TabCmd::Supervisor | TabCmd::Watch | TabCmd::Shield | TabCmd::Authorise | TabCmd::WorkerMentions => {
             // Straight at that tab's surface. `crate::binding` would send it
             // to whichever surface has focus.
             tabs::binding_on_tab(frame, id, cmd.action())
@@ -3288,7 +3345,7 @@ mod menu_inset_tests {
     /// so the cheap check is worth having next to the real one.
     #[test]
     fn the_core_bound_rows_have_binding_shaped_names() {
-        for cmd in [TabCmd::Supervisor, TabCmd::Watch, TabCmd::Shield] {
+        for cmd in [TabCmd::Supervisor, TabCmd::Watch, TabCmd::Shield, TabCmd::Authorise] {
             let a = cmd.action();
             assert!(!a.contains(' '), "binding names have no spaces: {a}");
             assert!(a.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c == ':'));

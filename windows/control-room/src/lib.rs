@@ -58,6 +58,7 @@ pub mod slide;
 pub mod snapshot;
 pub mod stackstrip;
 pub mod tabstrip;
+pub mod toast;
 
 #[cfg(test)]
 mod fixture_tests;

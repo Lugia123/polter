@@ -646,7 +646,12 @@ pub enum PageKey {
 /// The window's own table (`crate::window_key`), so the page and the rest of
 /// the window cannot disagree about which keys those are.
 pub fn page_accelerator(vk: u32, ctrl: bool, shift: bool, alt: bool) -> Option<PageKey> {
-    crate::window_key(vk, ctrl, shift, alt).map(|crate::WindowKey::Close| PageKey::Close)
+    match crate::window_key(vk, ctrl, shift, alt)? {
+        crate::WindowKey::Close => Some(PageKey::Close),
+        // A plugin's page is its own form: Ctrl+S there is the page's to
+        // answer, and the settings window has no Save of its own over it.
+        crate::WindowKey::Save => None,
+    }
 }
 
 /// The calls a page may make through `window.polter` -- the whole surface

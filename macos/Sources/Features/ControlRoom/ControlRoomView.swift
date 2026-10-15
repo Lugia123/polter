@@ -23,7 +23,8 @@ struct ControlRoomView: View {
                     selection: Binding(get: { model.selection }, set: { model.choose($0) }),
                     onNewGroup: { model.newGroup(named: $0) },
                     onRetentionAgree: { model.agreeToRetention() },
-                    onInSight: { model.onCardsInSight($0) })
+                    onInSight: { model.onCardsInSight($0) },
+                    onEnter: { model.goToSupervisor() })
             } else {
                 // No snapshot yet: the list's place, with nothing in it.
                 Color.clear.frame(width: CGFloat(Look.Side.width))
