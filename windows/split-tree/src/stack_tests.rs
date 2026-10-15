@@ -506,3 +506,19 @@ fn every_member_of_a_stack_has_a_place_to_be_made() {
     // Not in the tree: nowhere.
     assert_eq!(tree.rect_to_make(99, bounds), None);
 }
+
+/// Task 1611: a member behind its stack, lent to the control room, is told
+/// to the core as seen; given back, as behind again. The one in front, and
+/// a terminal alone in its place, are seen either way.
+#[test]
+fn a_member_behind_its_stack_is_seen_while_the_control_room_shows_it() {
+    let tree = fixture().stacking(D, B).unwrap();
+    // D is in front of the place B held; B is behind it.
+    assert!(tree.is_shown(D) && !tree.is_shown(B), "the fixture is not the one this is about");
+    assert!(tree.behind_for_core(B, false), "behind and not lent: out of sight");
+    assert!(!tree.behind_for_core(B, true), "lent from behind its stack, the core was told it cannot be seen");
+    assert!(!tree.behind_for_core(D, false) && !tree.behind_for_core(D, true));
+    assert!(!tree.behind_for_core(A, false) && !tree.behind_for_core(A, true));
+    // Not in this tree: nothing to say.
+    assert!(!tree.behind_for_core(E, false));
+}

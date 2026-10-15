@@ -144,3 +144,36 @@ full screen = Toggle Fullscreen
 关闭其他标签 = Close Other Tabs
 关闭右侧的标签 = Close Tabs to the Right
 移到新窗口 = Move Tab to New Window
+
+# The stack's six verbs (task 1583), as the window menu says them in Chinese.
+# The palette's titles all begin "Stack:", and none of the menu's words is in
+# them -- so the menu's own word found nothing until these lines (task 1611).
+在这一格里新开终端 = Stack: New Terminal in This Pane
+这一叠的下一个 = Stack: Next Terminal
+这一叠的上一个 = Stack: Previous Terminal
+从这一叠里拿出来 = Stack: Move Terminal Out
+叠到下一格 = Stack: Onto the Next Pane
+叠到上一格 = Stack: Onto the Previous Pane
+
+# Words the menus took from macOS in task 1604, which the lines above still
+# spell the old way (task 1611).
+查找下一个 = Next Search Result
+查找上一个 = Previous Search Result
+隐藏查找栏 = End Search
+用选中内容查找 = Search Selection
+跳转到选中处 = Scroll to Selection
+拷贝 = Copy to Clipboard
+修改标签页标题… = Change Tab Title…
+修改终端标题… = Change Terminal Title…
+终端只读 = Toggle Read-Only Mode
+选择上方分屏 = Focus Split: Up
+选择下方分屏 = Focus Split: Down
+选择左侧分屏 = Focus Split: Left
+选择右侧分屏 = Focus Split: Right
+切换全屏 = Toggle Fullscreen
+放大分屏 = Toggle Split Zoom
+选择上一个分屏 = Focus Split: Previous
+选择下一个分屏 = Focus Split: Next
+窗口置顶 = Toggle Float on Top
+重新载入配置 = Reload Config
+切换终端检查器 = Toggle Inspector

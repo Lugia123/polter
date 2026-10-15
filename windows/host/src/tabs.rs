@@ -2313,16 +2313,17 @@ pub fn layout(frame: HWND) {
         // is told so** (task 1583; macOS's `ownTabReports`): every tab of the
         // window, not only the one in front, since a stack changes in a tab
         // behind too (an agent's layout, a close). Only the change is said.
-        // The one the control room is showing is not this tab's to report.
+        // **The one the control room is showing is seen, wherever it sits in
+        // its stack** (task 1611, `Tree::behind_for_core`): it used to be
+        // skipped here, so one lent from behind was never told it could be
+        // seen and the control room's side showed what was there before.
+        // Given back, it is behind again and told so.
         let lent = win.shown_on_loan().map(|l| l.pane);
         for tab in win.tabs.iter_mut() {
             let Some(term) = tab.terminal_mut() else { continue };
             let tree = term.tree.clone();
             for p in term.panes.iter_mut() {
-                if Some(p.id) == lent {
-                    continue;
-                }
-                let behind = tree.contains(p.id) && !tree.is_shown(p.id);
+                let behind = tree.behind_for_core(p.id, Some(p.id) == lent);
                 if behind != p.behind_said {
                     p.behind_said = behind;
                     occlusion.push((p.id, p.surface, !behind));
@@ -6589,8 +6590,9 @@ pub fn go_to_terminal(key: &str) -> bool {
         }
     }
     // Makes the pane's tab active and focuses the pane, the way a click on
-    // it does.
-    focus_pane_at(pane);
+    // it does -- and, shown in the control room, takes it back to its tab
+    // (task 1611).
+    focus_pane_reached(pane, polter_control_room::lend::Reach::GoneTo);
     true
 }
 
@@ -6796,9 +6798,12 @@ pub fn focus_active(frame: HWND) {
         // 443: by the readings of 2026-09-09 the window thread stops inside
         // one of these three, and without a pair here the third one would be
         // the one nobody could see.
-        let id = window(frame)
-            .and_then(|w| w.tabs.get(w.active).and_then(|t| t.focused()))
-            .unwrap_or(0);
+        // The pane `active_surface` is: with the control room in front and
+        // the keyboard in the terminal it shows, that one -- the tab in
+        // front has no pane, and this line used to say "pane 0" for it,
+        // which read on a real machine as the keyboard being taken away
+        // (#1610 K8, task 1611).
+        let id = window(frame).and_then(|w| w.typing_pane().map(|p| p.id)).unwrap_or(0);
         wlogf!(frame, "[focus] pane {} taking focus (host asked)", id);
         unsafe { (api().surface_set_focus)(s, true) };
         wlogf!(frame, "[focus] pane {} took focus (host asked)", id);
@@ -7290,6 +7295,13 @@ pub fn pane_of(hwnd: HWND) -> Option<(HWND, usize, PaneId)> {
 /// the two-layer fix without its substance -- see `split_pane`, where the
 /// second layer exists because `run_ops` is a real second reader.
 pub fn focus_pane_at(hwnd: HWND) {
+    focus_pane_reached(hwnd, polter_control_room::lend::Reach::Clicked);
+}
+
+/// `focus_pane_at`, for a pane given the keyboard `reach`'s way: clicked,
+/// or gone to (`go_to_terminal`), which takes a terminal the control room
+/// is showing back to its own tab (task 1611).
+fn focus_pane_reached(hwnd: HWND, reach: polter_control_room::lend::Reach) {
     let Some((frame, tab_idx, id)) = pane_of(hwnd) else {
         // process-wide: without `pane_of` there is no frame to tag the line
         // with, and which window this pane belonged to is exactly the fact
@@ -7345,7 +7357,15 @@ pub fn focus_pane_at(hwnd: HWND) {
         // control room the moment the person clicked into the terminal it
         // is showing. The keyboard goes into the terminal and the tab in
         // front stays the control room's.
-        if let Some(lent) = win.shown_on_loan().filter(|l| l.pane == id) {
+        //
+        // **Gone to, it goes to its own tab instead** (task 1611,
+        // `lend::stays_in_the_room`): the control room goes behind, the
+        // terminal is home, and a member lent from behind its stack comes to
+        // its front below, as any other does.
+        if let Some(lent) = win
+            .shown_on_loan()
+            .filter(|l| l.pane == id && polter_control_room::lend::stays_in_the_room(true, reach))
+        {
             let had = lent.keyboard;
             win.lent = Some(Lent { pane: id, keyboard: true });
             if let Some(tab) = win.tabs.get_mut(tab_idx).and_then(|t| t.terminal_mut()) {
