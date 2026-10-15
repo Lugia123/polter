@@ -6855,20 +6855,26 @@ pub fn pane_place(hwnd: HWND) -> Option<(HWND, bool)> {
     })
 }
 
-/// Whether the pane holding `surface` is on screen: its tab is its window's
-/// active one. `None` when no pane holds it any more (#1016).
+/// Where the find bar's terminal is (task 1610). This replaced
+/// `surface_showing`, which said only whether its tab was in front (#1016):
+/// a stack member behind another, or a pane under a zoom, is in a tab in
+/// front and still not seen. `None` when the surface is in no window -- it
+/// was closed.
 // window-free: keyed by surface, which is unique in the process -- this finds
 // the window it is in
-pub fn surface_showing(surface: usize) -> Option<bool> {
+pub fn find_owner_at(surface: usize) -> Option<polter_control_room::hud::FindOwnerAt> {
     with_windows(|ws| {
         ws.iter().find_map(|w| {
-            w.tabs
-                .iter()
-                .position(|t| t.panes().iter().any(|p| p.surface == surface))
-                .map(|i| {
-                    let lent = w.shown_on_loan().is_some_and(|l| w.tabs[i].panes().iter().any(|p| p.id == l.pane && p.surface == surface));
-                    i == w.active || lent
+            w.tabs.iter().enumerate().find_map(|(i, t)| {
+                let p = t.panes().iter().find(|p| p.surface == surface)?;
+                let tree = t.terminal().map(|term| &term.tree);
+                Some(polter_control_room::hud::FindOwnerAt {
+                    tab_in_front: i == w.active,
+                    lent: w.shown_on_loan().is_some_and(|l| l.pane == p.id),
+                    shown_in_its_stack: tree.is_none_or(|tr| !tr.contains(p.id) || tr.is_shown(p.id)),
+                    zoomed_over: tree.and_then(|tr| tr.zoomed()).is_some_and(|z| z != p.id),
                 })
+            })
         })
     })
 }
@@ -7350,9 +7356,22 @@ pub fn focus_pane_at(hwnd: HWND) {
         let Some(tab) = win.tabs.get_mut(tab_idx).and_then(|t| t.terminal_mut()) else {
             break 'commit None;
         };
+        // **A terminal stacked behind another is brought to the front
+        // first** (task 1610): the palette's "Focus: …", the control room
+        // and a notification all come here, and the keyboard used to go
+        // into the member nobody could see.
+        let revealed = tab.tree.revealing(id);
+        let brought = revealed.is_some();
+        if let Some(t) = revealed {
+            tab.tree = t;
+        }
         tab.focused = id;
         win.active = tab_idx;
-        Some(was != (tab_idx, Some(id)))
+        if brought {
+            drop(win);
+            wlogf!(frame, "[stack] pane {} was behind its stack; brought to the front to take the keyboard", id);
+        }
+        Some(brought || was != (tab_idx, Some(id)))
     };
     // **Said out here, with the guard dropped.** `wlogf!` reaches
     // `winid::tag`, which takes a lock of its own, and this file's rule is

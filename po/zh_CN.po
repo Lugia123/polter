@@ -841,6 +841,10 @@ msgstr "更改当前终端的标题。"
 msgid "Prompt for a new title for the current tab."
 msgstr "更改当前标签页的标题。"
 
+#: src/input/command.zig:471
+msgid "Prompt for a new title for the current window."
+msgstr "更改当前窗口的标题。"
+
 #: src/input/command.zig:478
 msgid "Split the terminal to the left."
 msgstr "向左创建新分屏。"

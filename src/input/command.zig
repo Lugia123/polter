@@ -467,8 +467,8 @@ fn actionCommands(action: Action.Key) []const Command {
 
         .prompt_window_title => comptime &.{.{
             .action = .prompt_window_title,
-            .title = "Change Window Title…",
-            .description = "Prompt for a new title for the current window.",
+            .title = i18n.N_("Change Window Title…"),
+            .description = i18n.N_("Prompt for a new title for the current window."),
         }},
 
         .new_split => comptime &.{
