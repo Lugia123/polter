@@ -748,9 +748,47 @@ pub fn about_rows(version: Option<&str>, build: Option<&str>, commit: Option<&st
         .collect()
 }
 
+/// An About value cut to what fits, with the mark where the rest would be:
+/// the longest start of `text` that `fits` once `…` is put after it. The
+/// whole text when it fits as it is, and the mark alone when not even one
+/// character does.
+///
+/// **The values are read-only boxes, and a box cuts without saying so**
+/// (#1552): the Build line -- the build mode and this binary's identity --
+/// ran off the right of the page and read as complete. Whoever shows the cut
+/// one shows the whole one under the pointer.
+pub fn elide_end(text: &str, fits: impl Fn(&str) -> bool) -> String {
+    const MARK: &str = "\u{2026}";
+    if fits(text) {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let with = |n: usize| -> String { chars[..n].iter().collect::<String>() + MARK };
+    // The longest `n` whose cut fits: `fits` grows no wider as `n` shrinks.
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if fits(&with(mid)) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    with(lo)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_about_value_that_does_not_fit_ends_in_the_mark() {
+        let ten = |s: &str| s.chars().count() <= 10;
+        assert_eq!(elide_end("ReleaseFast", ten), "ReleaseFa\u{2026}");
+        assert_eq!(elide_end("short", ten), "short", "a value that fits is left alone");
+        assert_eq!(elide_end("构建模式与标识符很长很长", ten), "构建模式与标识符很\u{2026}", "cut by character, not by byte");
+        assert_eq!(elide_end("abc", |_| false), "\u{2026}", "nothing fits: the mark alone");
+    }
 
     fn item(key: &str, group: Option<&str>, control: Control, default: &str, value: &str) -> Item {
         Item {

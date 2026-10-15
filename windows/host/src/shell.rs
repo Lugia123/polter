@@ -267,6 +267,15 @@ fn is_maximized(hwnd: HWND) -> bool {
     unsafe { IsZoomed(hwnd).as_bool() }
 }
 
+/// Fullscreen, read off the window's style: `tabs::go_fullscreen` swaps the
+/// overlapped style for `WS_POPUP`, and a frame never has it otherwise.
+/// **The style, not the tab model**, because `WM_NCCALCSIZE` arrives inside
+/// `SetWindowPos` calls made while that model's lock may be held.
+fn is_fullscreen(hwnd: HWND) -> bool {
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } as u32;
+    style & WS_POPUP.0 != 0
+}
+
 /// `WM_NCCALCSIZE`: the caption is gone, the resize borders stay.
 ///
 /// Returning a client rect equal to the window rect removes every non-client
@@ -284,8 +293,8 @@ pub fn nc_calc_size(hwnd: HWND, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
     }
     unsafe {
         let rc = &mut (*params).rgrc[0];
-        if is_maximized(hwnd) {
-            let inset = maximized_overhang(hwnd);
+        let inset = polter_control_room::chrome::client_inset(is_maximized(hwnd), is_fullscreen(hwnd), maximized_overhang(hwnd));
+        if inset != 0 {
             rc.left += inset;
             rc.top += inset;
             rc.right -= inset;
@@ -401,9 +410,12 @@ pub fn hit_test(hwnd: HWND, screen_x: i32, screen_y: i32) -> LRESULT {
     LRESULT(HTCAPTION as isize)
 }
 
-/// Which caption button the pointer is over, if any, for the hover state.
-/// Kept here rather than in the strip because the strip does not own these.
-static HOVER: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+thread_local! {
+    /// Which caption button the pointer is over, **and in which window**
+    /// (`chrome::lit_button`, #1552). Kept here rather than in the strip
+    /// because the strip does not own these.
+    static HOVER: std::cell::Cell<Option<(isize, usize)>> = const { std::cell::Cell::new(None) };
+}
 
 /// `WM_NCMOUSEMOVE` / `WM_NCMOUSELEAVE`: light the button under the pointer.
 ///
@@ -412,12 +424,31 @@ static HOVER: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-
 /// no hover feedback, which reads as "not a real button".
 pub fn nc_hover(hwnd: HWND, hit: isize) {
     let idx = match hit as u32 {
-        HTCLOSE => 0,
-        HTMAXBUTTON => 1,
-        HTMINBUTTON => 2,
-        _ => -1i32 as u32,
-    } as i32;
-    if HOVER.swap(idx, std::sync::atomic::Ordering::Relaxed) != idx {
+        HTCLOSE => Some(0),
+        HTMAXBUTTON => Some(1),
+        HTMINBUTTON => Some(2),
+        _ => None,
+    };
+    let now = idx.map(|i| (hwnd.0 as isize, i));
+    let was = HOVER.with(|h| h.replace(now));
+    if was != now {
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            // The window that was lit before, if it was another one.
+            if let Some((w, _)) = was.filter(|(w, _)| *w != hwnd.0 as isize) {
+                let _ = InvalidateRect(Some(HWND(w as *mut core::ffi::c_void)), None, false);
+            }
+        }
+    }
+}
+
+/// The window was activated or deactivated: whatever the pointer was over
+/// there is not known any more, and the next `WM_NCMOUSEMOVE` says again.
+pub fn forget_hover(hwnd: HWND) {
+    let me = hwnd.0 as isize;
+    let was = HOVER.with(|h| h.get());
+    if was.is_some_and(|(w, _)| w == me) {
+        HOVER.with(|h| h.set(None));
         unsafe {
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
@@ -477,7 +508,7 @@ fn fill(hdc: HDC, r: &RECT, color: u32) {
 pub fn paint_buttons(hdc: HDC, hwnd: HWND, active: bool) {
     let scale = tabs::scale_of(hwnd);
     let b = buttons(hwnd);
-    let hover = HOVER.load(std::sync::atomic::Ordering::Relaxed);
+    let hover = polter_control_room::chrome::lit_button(HOVER.with(|h| h.get()), hwnd.0 as isize).map_or(-1, |b| b as i32);
     let chrome = crate::termcolor::chrome(hwnd);
     let colours = chrome.buttons();
     let glyph = polter_control_room::chrome::bgr(if active { colours.glyph } else { colours.glyph_dim });

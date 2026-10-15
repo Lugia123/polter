@@ -2512,6 +2512,51 @@ pub fn layout(frame: HWND) {
     // The veils and the handles' dots are over the panes, so they follow
     // them from the same place (task 1549).
     crate::panedrag::sync(frame);
+    // So do the scrollbar and the link bar: they are drawn over one pane,
+    // and another tab coming to the front hides that pane (#1552).
+    crate::hud::on_panes_moved();
+    // And the panes are asked to draw once more after the shape settles.
+    if shape_changed {
+        repaint_soon(frame);
+    }
+}
+
+/// The frame timer that asks the panes to draw again after a layout.
+const TIMER_REPAINT: usize = 0x5E1A;
+/// How long after the last change of shape. Short enough to read as part of
+/// the switch; long enough that a divider drag, which changes the shape on
+/// every move, asks once when it stops rather than on every move.
+const REPAINT_AFTER_MS: u32 = 80;
+
+/// Ask every pane of `frame` to draw again, a moment from now (#1552).
+///
+/// **Why a second time.** `layout` already refreshes each pane it places,
+/// and the test machine still showed white blocks -- the rectangles where
+/// the previous tab's panes had been -- after switching tabs and going in and
+/// out of fullscreen, until a key or the pointer made the terminal draw.
+/// Those are the parts of the new pane that were uncovered *by hiding its
+/// siblings*, and the draw that `layout` asks for ran in the same moment as
+/// that hiding. ⚠️ **Which step loses that draw is not measured**; what is
+/// measured is that a later draw puts it right. This is that later draw,
+/// through `WM_PAINT` (which refreshes the surface), for the panes and for
+/// whatever else is a child of the frame.
+fn repaint_soon(frame: HWND) {
+    unsafe {
+        let _ = SetTimer(Some(frame), TIMER_REPAINT, REPAINT_AFTER_MS, Some(repaint_tick));
+    }
+}
+
+unsafe extern "system" fn repaint_tick(frame: HWND, _msg: u32, id: usize, _time: u32) {
+    unsafe {
+        let _ = KillTimer(Some(frame), id);
+        let _ = RedrawWindow(Some(frame), None, None, RDW_INVALIDATE | RDW_ALLCHILDREN);
+    }
+    static SAID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    // absence: depends -- the first 40 only. Past that, a repaint that ran
+    // and one that never did are both silent.
+    if SAID.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 40 {
+        wlogf!(frame, "[layout] asked every pane to draw again, {}ms after the shape changed", REPAINT_AFTER_MS);
+    }
 }
 
 /// Create one pane: a child window at the rectangle the tree gave it, plus

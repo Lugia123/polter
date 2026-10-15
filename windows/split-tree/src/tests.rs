@@ -859,3 +859,15 @@ fn a_shape_given_at_once_carries_no_zoom_over() {
     let fresh = Tree::with_root(split(Axis::Horizontal, 0.5, leaf(1), leaf(2)));
     assert_eq!(fresh.zoomed(), None);
 }
+
+#[test]
+fn a_window_lays_out_only_the_dividers_it_owns() {
+    // #1552: w1 made two dividers, w3 one. A layout of w3 that is handed
+    // w1's first divider puts it at w3's coordinates inside w1.
+    let (w1, w3) = (0x10, 0x30);
+    let owners = [w1, w1, w3];
+    assert_eq!(own_slots(&owners, w3), vec![2]);
+    assert_eq!(own_slots(&owners, w1), vec![0, 1]);
+    // A window that has made none has none to use, and makes its own.
+    assert_eq!(own_slots(&owners, 0x50), Vec::<usize>::new());
+}

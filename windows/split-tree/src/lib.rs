@@ -1055,6 +1055,21 @@ impl Spatial {
     }
 }
 
+/// Which entries of a process-wide pool of divider windows a layout of
+/// `window` may use, in pool order: the ones that window owns, and no other.
+///
+/// **A divider is a child window, so it can only ever be drawn inside the
+/// window that made it** (#1552). The pool was one list for the whole
+/// process, and a second window's layout took the first window's dividers
+/// and placed them at its own coordinates -- inside the first window. After
+/// a pane was dragged from w1 into w3, w1 had logged `0 dividers` and still
+/// showed one that took the pointer, until something laid w1 out again.
+///
+/// `owners` holds each pool entry's window, in pool order.
+pub fn own_slots(owners: &[isize], window: isize) -> Vec<usize> {
+    owners.iter().enumerate().filter(|(_, o)| **o == window).map(|(i, _)| i).collect()
+}
+
 pub mod drag;
 
 #[cfg(test)]

@@ -82,6 +82,8 @@ const COL_HOT: u32 = 0x00605f5d;
 /// One divider window and what it stands for.
 struct Div {
     hwnd: HWND,
+    /// The window it is a child of, and so the only one it can be drawn in.
+    frame: isize,
     path: Vec<Branch>,
     axis: Axis,
 }
@@ -91,10 +93,15 @@ struct State {
     /// A pool: windows are reused across layouts and hidden when a layout
     /// needs fewer, because creating and destroying windows during a drag is
     /// how a divider disappears out from under the pointer.
+    ///
+    /// ⚠️ **One list for every window, but each entry belongs to one**:
+    /// a sync of a window uses only its own (`own_slots`, #1552).
     pool: Vec<Div>,
-    /// Index into `pool` of the divider being dragged.
-    dragging: Option<usize>,
-    hot: Option<usize>,
+    /// The divider being dragged. **Its window, not its place in `pool`**:
+    /// a sync drops the entries of windows that are gone, and an index kept
+    /// across that would start naming another divider.
+    dragging: Option<HWND>,
+    hot: Option<HWND>,
     /// Whether this drag has already said why it is going nowhere.
     ///
     /// **A drag is one line, not one line per `WM_MOUSEMOVE`.** The reasons
@@ -258,11 +265,25 @@ pub fn sync(frame: HWND) {
             .unwrap_or_default()
     };
 
+    // Gone windows took their dividers with them; their handles may come
+    // back as somebody else's.
+    let live: Vec<bool> = STATE.with(|c| c.borrow().pool.iter().map(|d| d.hwnd).collect::<Vec<_>>())
+        .into_iter()
+        .map(|h| unsafe { IsWindow(Some(h)).as_bool() })
+        .collect();
+    STATE.with(|c| {
+        let mut st = c.borrow_mut();
+        let mut keep = live.into_iter();
+        st.pool.retain(|_| keep.next().unwrap_or(true));
+    });
+
+    let key = frame.0 as isize;
     STATE.with(|c| {
         let mut st = c.borrow_mut();
 
-        // Grow the pool to fit.
-        while st.pool.len() < wanted.len() {
+        // Grow this window's share of the pool to fit.
+        let owners = |st: &State| st.pool.iter().map(|d| d.frame).collect::<Vec<_>>();
+        while polter_split_tree::own_slots(&owners(&st), key).len() < wanted.len() {
             let hwnd = unsafe {
                 CreateWindowExW(
                     WINDOW_EX_STYLE::default(),
@@ -282,6 +303,7 @@ pub fn sync(frame: HWND) {
             match hwnd {
                 Ok(h) => st.pool.push(Div {
                     hwnd: h,
+                    frame: key,
                     path: Vec::new(),
                     axis: Axis::Horizontal,
                 }),
@@ -292,7 +314,8 @@ pub fn sync(frame: HWND) {
             }
         }
 
-        for (i, (path, axis, rc)) in wanted.iter().enumerate() {
+        let mine = polter_split_tree::own_slots(&owners(&st), key);
+        for (&i, (path, axis, rc)) in mine.iter().zip(wanted.iter()) {
             let d = &mut st.pool[i];
             d.path = path.clone();
             d.axis = *axis;
@@ -310,15 +333,15 @@ pub fn sync(frame: HWND) {
             }
         }
         // Hide the leftovers rather than destroy them.
-        for d in st.pool.iter().skip(wanted.len()) {
+        for &i in mine.iter().skip(wanted.len()) {
             unsafe {
-                let _ = ShowWindow(d.hwnd, SW_HIDE);
+                let _ = ShowWindow(st.pool[i].hwnd, SW_HIDE);
             }
         }
         // The two widths #19 is about, read back from the windows rather than
         // restated from the constants: how wide the first divider can be
         // grabbed (its window) and how wide it is drawn.
-        let widths = st.pool.first().filter(|_| !wanted.is_empty()).map(|d| {
+        let widths = mine.first().map(|&i| &st.pool[i]).filter(|_| !wanted.is_empty()).map(|d| {
             let mut wr = RECT::default();
             let _ = unsafe { GetWindowRect(d.hwnd, &mut wr) };
             let hit = match d.axis {
@@ -348,6 +371,18 @@ pub fn sync(frame: HWND) {
 
 use crate::tabs;
 
+/// Paint `frame`'s dividers again: their ground is the terminal's
+/// background, read when they paint, and a reload may have changed it.
+pub fn repaint(frame: HWND) {
+    let key = frame.0 as isize;
+    let mine: Vec<HWND> = STATE.with(|c| c.borrow().pool.iter().filter(|d| d.frame == key).map(|d| d.hwnd).collect());
+    for h in mine {
+        unsafe {
+            let _ = InvalidateRect(Some(h), None, true);
+        }
+    }
+}
+
 // ------------------------------------------------------------------- drag
 
 /// The pointer in frame client coordinates -- the same space `content_bounds`
@@ -373,7 +408,7 @@ fn pointer_in_frame(frame: HWND) -> Option<POINT> {
 /// in its own words -- "a divider that silently stops responding is
 /// indistinguishable from a frozen app" -- and every early exit above it had
 /// exactly the same consequence without the same treatment.
-fn drag_to(frame: HWND, idx: usize) {
+fn drag_to(frame: HWND, div: HWND) {
     // One place, so a new exit cannot forget the gate.
     let say = |what: &str| {
         let first = STATE.with(|c| {
@@ -388,7 +423,7 @@ fn drag_to(frame: HWND, idx: usize) {
         // exit leaves no trace at all: the count of these lines is a count of
         // drags, never of refusals.
         if first {
-            wlogf!(frame, "[div] drag {} is going nowhere: {}", idx, what);
+            wlogf!(frame, "[div] drag {:?} is going nowhere: {}", div.0, what);
         }
     };
 
@@ -397,17 +432,13 @@ fn drag_to(frame: HWND, idx: usize) {
         return;
     };
 
-    let (path, axis) = STATE.with(|c| {
-        let st = c.borrow();
-        st.pool
-            .get(idx)
-            .map(|d| (d.path.clone(), d.axis))
-            .unwrap_or((Vec::new(), Axis::Horizontal))
-    });
-    if path.is_empty() && idx > 0 {
+    // An empty path is the root split's, which is a real divider; the pool
+    // having no entry for this window is not.
+    let found = STATE.with(|c| c.borrow().pool.iter().find(|d| d.hwnd == div).map(|d| (d.path.clone(), d.axis)));
+    let Some((path, axis)) = found else {
         say("this divider has no path in the tree");
         return;
-    }
+    };
 
     let position = match axis {
         Axis::Horizontal => p.x as f64,
@@ -468,6 +499,11 @@ fn index_of(hwnd: HWND) -> Option<usize> {
     STATE.with(|c| c.borrow().pool.iter().position(|d| d.hwnd == hwnd))
 }
 
+/// `hwnd`, when it is one of the pool's.
+fn known(hwnd: HWND) -> Option<HWND> {
+    index_of(hwnd).map(|_| hwnd)
+}
+
 extern "system" fn div_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let frame = GetParent(hwnd).unwrap_or_default();
@@ -489,7 +525,7 @@ extern "system" fn div_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
                 if let Some(i) = index_of(hwnd) {
                     STATE.with(|c| {
                         let mut st = c.borrow_mut();
-                        st.dragging = Some(i);
+                        st.dragging = Some(hwnd);
                         // A new drag gets a new voice; see `complained`.
                         st.complained = false;
                     });
@@ -502,12 +538,12 @@ extern "system" fn div_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
             WM_MOUSEMOVE => {
                 let dragging = STATE.with(|c| c.borrow().dragging);
                 match dragging {
-                    Some(i) => drag_to(frame, i),
+                    Some(div) => drag_to(frame, div),
                     None => {
                         // Hover feedback. Tracked so the divider un-highlights
                         // when the pointer leaves; without this it stays lit
                         // for the rest of the session.
-                        let i = index_of(hwnd);
+                        let i = known(hwnd);
                         let was = STATE.with(|c| {
                             let mut st = c.borrow_mut();
                             std::mem::replace(&mut st.hot, i)
@@ -567,7 +603,7 @@ extern "system" fn div_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
                 if !hdc.is_invalid() {
                     let mut rc = RECT::default();
                     let _ = GetClientRect(hwnd, &mut rc);
-                    let hot = index_of(hwnd) == STATE.with(|c| c.borrow().hot);
+                    let hot = STATE.with(|c| c.borrow().hot) == Some(hwnd);
                     let line_col = COLORREF(if hot { COL_HOT } else { COL });
 
                     // See `LINE`: the whole window is the hit area, only the

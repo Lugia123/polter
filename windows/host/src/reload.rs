@@ -303,4 +303,18 @@ pub fn on_config_change() {
     // The terminal's `background` may be another colour now, and every
     // window's chrome is worked out from it (task 1550).
     crate::shell::recolor_all();
+    // So are the veil over a pane without the keyboard, the handle's dots
+    // and the dividers' ground. They used to wait for the keyboard to move,
+    // and a reloaded `unfocused-split-fill` stayed the old colour until then
+    // (#1552).
+    for f in crate::winid::all() {
+        let _ = unsafe {
+            windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(f),
+                crate::WM_CONFIG_REDRAW,
+                windows::Win32::Foundation::WPARAM(0),
+                windows::Win32::Foundation::LPARAM(0),
+            )
+        };
+    }
 }

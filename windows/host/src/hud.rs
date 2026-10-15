@@ -593,6 +593,42 @@ fn pane_rect_for(surface: usize) -> Option<RECT> {
     Some(r)
 }
 
+/// Whether the pane window showing `surface` is on screen: its tab is the
+/// one in front. `IsWindowVisible` asks the window and every parent, so a
+/// minimised or hidden frame answers no as well.
+fn pane_shown(surface: usize) -> bool {
+    let hwnd = crate::tabs::with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes().iter())
+            .find(|p| p.surface == surface)
+            .map(|p| HWND(p.hwnd as *mut c_void))
+    });
+    hwnd.is_some_and(|h| unsafe { IsWindowVisible(h).as_bool() })
+}
+
+/// The panes moved, or another tab came to the front. **Main thread only**:
+/// called at the end of every layout (`tabs::layout`).
+///
+/// The scrollbar is drawn over the pane it describes, and nothing else told
+/// it that pane had gone behind another tab (#1552): it stayed over the new
+/// tab for minutes, because the core only sends `scrollbar` when the numbers
+/// change. Asked again here, it hides while its pane is not showing and comes
+/// back when it is. The link bar is asked for the same reason, while it is
+/// up. **Not the badges or the size sign**: a sync of theirs with nothing to
+/// show writes a line every time, and a layout happens on every split, drag
+/// and tab switch.
+pub fn on_panes_moved() {
+    let scroll = HWND_SCROLL.load(Ordering::Acquire);
+    if !scroll.is_null() && SCROLL_SHOWN_FOR.load(Ordering::Acquire) != 0 {
+        let _ = unsafe { PostMessageW(Some(HWND(scroll)), WM_HUD_SYNC, WPARAM(0), LPARAM(0)) };
+    }
+    let link = HWND_LINK.load(Ordering::Acquire);
+    if !link.is_null() && HOVER.lock().is_ok_and(|h| h.is_some()) {
+        let _ = unsafe { PostMessageW(Some(HWND(link)), WM_HUD_SYNC, WPARAM(0), LPARAM(0)) };
+    }
+}
+
 /// Drop surfaces that no longer exist, and say how many are read-only.
 ///
 /// Called on every sync: a pane that closed while read-only would otherwise
@@ -1175,6 +1211,17 @@ unsafe extern "system" fn link_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     );
                     return LRESULT(0);
                 };
+                if !pane_shown(surface) {
+                    // Its tab went behind another while the pointer was on a
+                    // link (#1552, the scrollbar's case).
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    hlogf!(
+                        frame_hwnd_of(surface),
+                        "[hud] link bar hidden for surface {:#x}: its pane is not showing",
+                        surface
+                    );
+                    return LRESULT(0);
+                }
                 let dpi = GetDpiForWindow(hwnd).max(96) as i32;
                 let sc = |v: i32| v * dpi / 96;
                 // Bottom-left of the pane, where every browser and every other
@@ -1339,6 +1386,24 @@ unsafe extern "system" fn scroll_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     }
                     return LRESULT(0);
                 };
+                if !pane_shown(surface) {
+                    // Its tab is behind another (#1552). **Still the surface
+                    // this bar is for** -- `SCROLL_SHOWN_FOR` is kept, so the
+                    // layout that brings the tab back shows it again; the
+                    // core will not send the numbers again until they change.
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    SCROLL_SHOWN_FOR.store(surface, Ordering::Release);
+                    // absence: depends -- see `SCROLL_SAID`: at most one line
+                    // per second per surface.
+                    if scroll_line_due(surface) {
+                        hlogf!(
+                            frame_hwnd_of(surface),
+                            "[hud] scrollbar hidden for surface {:#x}: its pane is not showing",
+                            surface
+                        );
+                    }
+                    return LRESULT(0);
+                }
                 let dpi = GetDpiForWindow(hwnd).max(96) as i32;
                 let sc = |v: i32| v * dpi / 96;
                 let h = fr.bottom - fr.top;
