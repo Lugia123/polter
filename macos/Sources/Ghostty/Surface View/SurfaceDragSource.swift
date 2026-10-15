@@ -261,6 +261,7 @@ extension Ghostty {
             escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 if event.keyCode == 53 { // Escape key
                     self?.dragCancelledByEscape = true
+                    TabStripDragOverlay.shared.clear()
                 }
                 return event
             }
@@ -271,6 +272,8 @@ extension Ghostty {
             movedTo screenPoint: NSPoint
         ) {
             NSCursor.closedHand.set()
+            guard !dragCancelledByEscape, let surfaceView else { return }
+            TabStripDragOverlay.shared.moved(to: screenPoint, surface: surfaceView)
         }
 
         func draggingSession(
@@ -283,7 +286,30 @@ extension Ghostty {
                 self.escapeMonitor = nil
             }
 
-            if operation == [] && !dragCancelledByEscape {
+            // **Esc does not always reach the monitor above**: the drag's
+            // own tracking loop can take it and end the session first, and
+            // then this is called with the flag still down (task 1557,
+            // t57-03d: a pane was made a tab after Esc). A session that ends
+            // while the button is still held was not let go, so it was
+            // cancelled.
+            if NSEvent.pressedMouseButtons & 1 != 0 {
+                dragCancelledByEscape = true
+            }
+
+            // Let go in a gap of a tab strip: a tab of its own there (task
+            // 1557). The strip is the system's and takes no drop, so it is
+            // asked here, whatever the operation says.
+            if let surfaceView,
+               let gap = TabStripDragOverlay.shared.ended(at: screenPoint, surface: surfaceView, cancelled: dragCancelledByEscape) {
+                NotificationCenter.default.post(
+                    name: .ghosttySurfaceDragEndedOnTabStrip,
+                    object: surfaceView,
+                    userInfo: [
+                        Foundation.Notification.Name.ghosttySurfaceDragEndedOnTabStripNeighborKey: gap.neighbor,
+                        Foundation.Notification.Name.ghosttySurfaceDragEndedOnTabStripOrderedKey: gap.ordered.rawValue,
+                    ]
+                )
+            } else if operation == [] && !dragCancelledByEscape {
                 let endsInWindow = NSApplication.shared.windows.contains { window in
                     window.isVisible && window.frame.contains(screenPoint)
                 }
@@ -310,4 +336,12 @@ extension Notification.Name {
 
     /// Key for the screen point where the drag ended in the userInfo dictionary.
     static let ghosttySurfaceDragEndedNoTargetPointKey = "endedAtPoint"
+
+    /// Posted when a surface drag ends in a gap of a tab strip (task 1557):
+    /// the surface becomes a tab of its own there. The object is the
+    /// SurfaceView; the userInfo names the tab's window to go beside and
+    /// the side (`NSWindow.OrderingMode` raw value: below is before it).
+    static let ghosttySurfaceDragEndedOnTabStrip = Notification.Name("ghosttySurfaceDragEndedOnTabStrip")
+    static let ghosttySurfaceDragEndedOnTabStripNeighborKey = "neighbor"
+    static let ghosttySurfaceDragEndedOnTabStripOrderedKey = "ordered"
 }

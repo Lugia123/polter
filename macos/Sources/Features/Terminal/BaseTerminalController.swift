@@ -221,6 +221,11 @@ class BaseTerminalController: NSWindowController,
             selector: #selector(ghosttySurfaceDragEndedNoTarget(_:)),
             name: .ghosttySurfaceDragEndedNoTarget,
             object: nil)
+        center.addObserver(
+            self,
+            selector: #selector(ghosttySurfaceDragEndedOnTabStrip(_:)),
+            name: .ghosttySurfaceDragEndedOnTabStrip,
+            object: nil)
 
         // Listen for local events that we need to know of outside of
         // single surface handlers.
@@ -887,6 +892,52 @@ class BaseTerminalController: NSWindowController,
             tree: newTree,
             position: notification.userInfo?[Notification.Name.ghosttySurfaceDragEndedNoTargetPointKey] as? NSPoint,
             confirmUndo: false,
+            inheritBackgroundOpacity: isBackgroundOpaque)
+    }
+
+    /// A pane let go in a gap of a tab strip becomes a tab of its own there,
+    /// in front (task 1557). From a split tab it leaves the tree; alone in
+    /// its tab, the tab itself goes to that strip. `TabStripDrop` has
+    /// already refused a pane alone in its tab on its own strip.
+    @objc private func ghosttySurfaceDragEndedOnTabStrip(_ notification: Notification) {
+        guard let target = notification.object as? Ghostty.SurfaceView else { return }
+        guard let targetNode = surfaceTree.root?.node(view: target) else { return }
+        guard let neighbor = notification.userInfo?[Notification.Name.ghosttySurfaceDragEndedOnTabStripNeighborKey] as? NSWindow,
+              let raw = notification.userInfo?[Notification.Name.ghosttySurfaceDragEndedOnTabStripOrderedKey] as? Int,
+              let ordered = NSWindow.OrderingMode(rawValue: raw) else { return }
+
+        guard surfaceTree.isSplit else {
+            guard let window, window !== neighbor, window.tabbingMode != .disallowed else { return }
+            if let group = window.tabGroup, group.windows.count > 1 {
+                group.removeWindow(window)
+            }
+            if neighbor.addTabbedWindowSafely(window, ordered: ordered) {
+                window.tabGroup?.selectedWindow = window
+                window.makeKeyAndOrderFront(nil)
+            }
+            return
+        }
+
+        let oldFocusedSurface = focusedSurface
+        if focusedSurface == target {
+            focusedSurface = findNextFocusTargetAfterClosing(node: targetNode)
+        }
+
+        let removedTree = surfaceTree.removing(targetNode)
+        let newTree = SplitTree<Ghostty.SurfaceView>(view: target)
+
+        undoManager?.beginUndoGrouping()
+        undoManager?.setActionName("Move Split")
+        defer {
+            undoManager?.endUndoGrouping()
+        }
+
+        replaceSurfaceTree(removedTree, moveFocusFrom: oldFocusedSurface)
+        _ = TerminalController.newTab(
+            ghostty,
+            tree: newTree,
+            beside: neighbor,
+            ordered: ordered,
             inheritBackgroundOpacity: isBackgroundOpaque)
     }
 

@@ -564,6 +564,10 @@ struct Interaction {
     /// Where a tab dragged from another window would go into this strip:
     /// the `x` of the gap, drawn as a bar while the pointer is over it.
     marker: Option<i32>,
+    /// The tab a dragged pane is held over to bring it forward, and how far
+    /// along the wait is, 0 to 1: a hover ground under it and a bar along
+    /// its bottom that fills (task 1557).
+    dwell: Option<(TabId, f64)>,
     /// How many times **this** strip has actually painted. **"The strip was
     /// asked to repaint" and "the strip painted" are different claims**, and
     /// a strip that vanishes could be either; only a counter tells them
@@ -588,7 +592,7 @@ struct Interaction {
 
 impl Interaction {
     const fn new() -> Self {
-        Interaction { drag: Drag::Idle, hover: Hit::None, scroll: 0, editing: None, chip: None, slide: None, marker: None, paints: 0 }
+        Interaction { drag: Drag::Idle, hover: Hit::None, scroll: 0, editing: None, chip: None, slide: None, marker: None, dwell: None, paints: 0 }
     }
 }
 
@@ -868,6 +872,27 @@ fn other_window_at(frame: HWND, pt: POINT) -> Option<(isize, usize)> {
     Some((other.0 as isize, index))
 }
 
+/// The tabs of `frame`'s strip as a dragged pane's rule reads them
+/// (`polter_split_tree::drag::strip_target`): each one's left and right, in
+/// order, its id, and which is in front.
+pub fn pane_drag_tabs(frame: HWND) -> (Vec<(f64, f64)>, Vec<TabId>, usize) {
+    let g = slots(frame);
+    let (_, active) = tabs::strip_snapshot(frame);
+    let spans = g.slots.iter().map(|s| (s.rect.left as f64, (s.rect.right + 1) as f64)).collect();
+    (spans, g.slots.iter().map(|s| s.id).collect(), active)
+}
+
+/// What a dragged pane shows in `frame`'s strip (task 1557): the bar in the
+/// gap it would become a tab in, and the tab it is waiting on with how far
+/// along the wait is. Both `None` takes everything away.
+pub fn set_pane_hint(frame: HWND, gap: Option<usize>, dwell: Option<(TabId, f64)>) {
+    set_marker(frame, gap);
+    let changed = with_ui(frame, |u| std::mem::replace(&mut u.dwell, dwell) != dwell);
+    if changed {
+        repaint(frame);
+    }
+}
+
 /// Show (or with `None`, take away) the bar in `frame`'s strip where a
 /// dragged tab would go.
 fn set_marker(frame: HWND, index: Option<usize>) {
@@ -961,14 +986,6 @@ pub fn capture_lost(frame: HWND) {
     let held = with_ui(frame, |u| !matches!(u.drag, Drag::Idle));
     if held {
         cancel_drag("the capture was taken away");
-    }
-}
-
-/// The tab under `(x, y)` in `frame`'s strip, if any.
-pub fn tab_at(frame: HWND, x: i32, y: i32) -> Option<TabId> {
-    match hit(&slots(frame), x, y) {
-        Hit::Tab(id) | Hit::Close(id) => Some(id),
-        Hit::None | Hit::Overflow | Hit::New | Hit::Menu => None,
     }
 }
 
@@ -1382,13 +1399,14 @@ pub fn paint(frame: HWND) {
         let (tabs_now, active) = tabs::strip_snapshot(frame);
         let colours = tabs::tab_colors(frame);
         let Geometry { slots, overflow, new, menu } = slots(frame);
-        let (hover, dragging) = with_ui(frame, |u| {
+        let (hover, dragging, dwell) = with_ui(frame, |u| {
             (
                 u.hover,
                 match u.drag {
                     Drag::Dragging { id, .. } => Some(id),
                     _ => None,
                 },
+                u.dwell,
             )
         });
 
@@ -1518,7 +1536,8 @@ pub fn paint(frame: HWND) {
                 continue;
             }
             let is_active = i == active;
-            let is_hover = matches!(hover, Hit::Tab(h) | Hit::Close(h) if h == slot.id);
+            let held_over = dwell.is_some_and(|(id, _)| id == slot.id);
+            let is_hover = held_over || matches!(hover, Hit::Tab(h) | Hit::Close(h) if h == slot.id);
             let is_dragged = dragging == Some(slot.id);
 
             // Nothing behind a tab that is not selected -- unless the
@@ -1639,11 +1658,35 @@ pub fn paint(frame: HWND) {
             );
         }
 
-        // Where a tab dragged from another window would go (task 1549).
+        // The accent, for the two marks a drag makes below.
+        let accent = {
+            let c = GetSysColor(COLOR_HIGHLIGHT);
+            Rgba { r: (c & 0xff) as u8, g: ((c >> 8) & 0xff) as u8, b: ((c >> 16) & 0xff) as u8, a: 1.0 }
+        };
+
+        // A tab a dragged pane is held over: a bar along the bottom of its
+        // pill that fills in the dwell, clear of the round ends (task 1557).
+        if let Some((id, progress)) = dwell {
+            if let Some(slot) = slots.iter().find(|s| s.id == id) {
+                let pill = tabstrip::chip(rect_f(&slot.rect), shf, scale);
+                let inset = tabstrip::corner(pill, scale, false);
+                let full = (pill.w - 2.0 * inset).max(0.0);
+                let h = (2.0 * scale).round().max(2.0) as i32;
+                let bottom = (pill.y + pill.h).round() as i32;
+                let left = (pill.x + inset).round() as i32;
+                let bar = RECT { left, top: bottom - h, right: left + (full * progress.clamp(0.0, 1.0)).round() as i32, bottom };
+                crate::control_room::round(mem, bar, h / 2, accent, None);
+            }
+        }
+
+        // Where a tab, or a pane, dragged here would go (tasks 1549, 1557):
+        // a round-ended bar 2pt wide, as tall as a tab less 4pt at each end.
         if let Some(mx) = with_ui(frame, |u| u.marker) {
             let w = ((2.0 * scale).round() as i32).max(2);
-            let bar = RECT { left: mx - w / 2, top: (4.0 * scale) as i32, right: mx - w / 2 + w, bottom: sh - (4.0 * scale) as i32 };
-            fill(mem, &bar, GetSysColor(COLOR_HIGHLIGHT));
+            let pill = slots.first().map(|s| tabstrip::chip(rect_f(&s.rect), shf, scale));
+            let (top, bottom) = pill.map_or((0.0, shf), |p| (p.y, p.y + p.h));
+            let bar = RECT { left: mx - w / 2, top: (top + 4.0 * scale).round() as i32, right: mx - w / 2 + w, bottom: (bottom - 4.0 * scale).round() as i32 };
+            crate::control_room::round(mem, bar, w / 2, accent, None);
         }
 
         // The caption buttons go into the same memory DC, so the whole bar

@@ -306,8 +306,10 @@ pub enum Over {
     /// A pane of ours, in the zone given. `own` when it is the pane being
     /// dragged.
     Pane { pane: PaneId, zone: Zone, own: bool },
-    /// One of our windows, but no pane in it: a strip, a frame's ground, the
-    /// control room.
+    /// A gap in a strip, at this index (`StripTarget::Insert`).
+    Strip(usize),
+    /// One of our windows, but no pane in it and no gap of a strip: the
+    /// middle of a tab, a frame's ground, the control room.
     Window,
     /// None of our windows.
     Outside,
@@ -320,6 +322,9 @@ pub enum Ending {
     Move { onto: PaneId, zone: Zone },
     /// The pane gets a window of its own where the pointer is.
     NewWindow,
+    /// The pane becomes a tab of its own at this index of the strip it was
+    /// let go over, in front.
+    NewTab(usize),
     /// It stays where it was.
     Nothing,
 }
@@ -327,8 +332,11 @@ pub enum Ending {
 /// What letting go over `over` does.
 ///
 /// - Onto itself: nothing; it is not a target (macOS hides its drop zone).
-/// - Onto a window of ours that is not a pane: nothing, as a drop that
-///   found no target.
+/// - Into a gap of a strip: a tab of its own there (task 1557). Whether
+///   there is a gap at all -- not on its own strip for a pane alone in its
+///   tab -- is `strip_target`'s to say.
+/// - Onto a window of ours that is not a pane or a gap: nothing, as a drop
+///   that found no target.
 /// - Outside every window: a window of its own -- **only from a tab that is
 ///   split**. A pane alone in its tab already is one (`surfaceTree.isSplit`
 ///   guard in `ghosttySurfaceDragEndedNoTarget`).
@@ -340,6 +348,7 @@ pub fn ending(over: Over, from_split: bool, cancelled: bool) -> Ending {
     match over {
         Over::Pane { own: true, .. } => Ending::Nothing,
         Over::Pane { pane, zone, own: false } => Ending::Move { onto: pane, zone },
+        Over::Strip(index) => Ending::NewTab(index),
         Over::Window => Ending::Nothing,
         Over::Outside if from_split => Ending::NewWindow,
         Over::Outside => Ending::Nothing,
@@ -351,7 +360,7 @@ pub fn ending(over: Over, from_split: bool, cancelled: bool) -> Ending {
 pub fn lit(over: Over) -> Option<(PaneId, Zone)> {
     match over {
         Over::Pane { pane, zone, own: false } => Some((pane, zone)),
-        Over::Pane { own: true, .. } | Over::Window | Over::Outside => None,
+        Over::Pane { own: true, .. } | Over::Strip(_) | Over::Window | Over::Outside => None,
     }
 }
 
@@ -372,9 +381,12 @@ impl Tree {
 
 // --------------------------------------------------------- other tabs
 
-/// How long a dragged pane has to stay over another tab for that tab to
-/// come to the front (DECISIONS.md 1, as measured on macOS in verify-cr-09).
-pub const TAB_DWELL_SECS: f64 = 2.5;
+/// How long a dragged pane has to stay over the middle of another tab for
+/// that tab to come to the front -- the same as macOS's
+/// `TabStripDrop.dwell` (task 1557). It was 2.5 s, macOS's own tab-bar
+/// spring loading as measured in verify-cr-09 (DECISIONS.md 1, now
+/// superseded); the user waited without knowing whether anything was coming.
+pub const TAB_DWELL_SECS: f64 = 0.8;
 
 /// Whether a dragged pane has been over the same tab long enough for it to
 /// come to the front. `T` is whatever names a tab to the caller.
@@ -415,6 +427,98 @@ impl<T: Copy + PartialEq> Dwell<T> {
             }
         }
     }
+
+    /// How far along the dwell is at `now`, 0 to 1, for the bar under the
+    /// tab; none when there is no tab to bring forward or it has come.
+    pub fn progress(&self, now: f64) -> Option<f64> {
+        match self.over {
+            Some((_, since)) if since.is_finite() => Some(((now - since) / TAB_DWELL_SECS).clamp(0.0, 1.0)),
+            _ => None,
+        }
+    }
+
+    /// The tab being waited on.
+    pub fn tab(&self) -> Option<T> {
+        match self.over {
+            Some((t, since)) if since.is_finite() => Some(t),
+            _ => None,
+        }
+    }
+}
+
+// ------------------------------------------------- a pane over a strip
+
+/// What a pane dragged over a tab strip would do there (task 1557). The
+/// macOS host has the same rule in `TabStripDrop.target`; the tests below
+/// name the same cases as `TabStripDropTests`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StripTarget {
+    /// Let go here and the pane becomes a new tab at this index: before the
+    /// tab that has it now, or at the end when it is the count.
+    Insert(usize),
+    /// Hold here and this tab comes to the front.
+    BringForward(usize),
+    /// Nothing: the middle of the tab in front, or a pane that is already a
+    /// tab of its own on its own strip.
+    Nothing,
+}
+
+/// What the pointer at `x` over a strip of `tabs` (each `(left, right)`,
+/// left to right) means.
+///
+/// - Within a quarter of a tab's width of its left or right edge, or in
+///   the gap between two tabs: the gap on that side.
+/// - Past the last tab: after it. Before the first: before it.
+/// - The rest of a tab, its middle half: that tab comes to the front,
+///   unless it is `selected` already.
+/// - `alone`: the pane is the only one of a tab in this strip. Making it a
+///   new tab here would leave everything as it was, so no gap is offered;
+///   bringing another tab forward still is.
+///
+/// The quarter lines themselves belong to the middle.
+pub fn strip_target(x: f64, tabs: &[(f64, f64)], selected: Option<usize>, alone: bool) -> StripTarget {
+    let gap = |i: usize| if alone { StripTarget::Nothing } else { StripTarget::Insert(i) };
+    let (Some(first), Some(last)) = (tabs.first(), tabs.last()) else {
+        return StripTarget::Nothing;
+    };
+    if x < first.0 {
+        return gap(0);
+    }
+    if x > last.1 {
+        return gap(tabs.len());
+    }
+    for (i, &(l, r)) in tabs.iter().enumerate() {
+        if x < l {
+            return gap(i);
+        }
+        if x > r {
+            continue;
+        }
+        let quarter = (r - l) / 4.0;
+        if x < l + quarter {
+            return gap(i);
+        }
+        if x > r - quarter {
+            return gap(i + 1);
+        }
+        return if selected == Some(i) { StripTarget::Nothing } else { StripTarget::BringForward(i) };
+    }
+    gap(tabs.len())
+}
+
+/// The x of the insertion mark for gap `index`: midway between the two tabs
+/// on either side, or on the outer edge of the first or last.
+pub fn mark_x(index: usize, tabs: &[(f64, f64)]) -> Option<f64> {
+    if tabs.is_empty() || index > tabs.len() {
+        return None;
+    }
+    Some(if index == 0 {
+        tabs[0].0
+    } else if index == tabs.len() {
+        tabs[index - 1].1
+    } else {
+        (tabs[index - 1].1 + tabs[index].0) / 2.0
+    })
 }
 
 // ------------------------------------------------------------------ tabs
@@ -646,6 +750,14 @@ mod tests {
     fn esc_cancels_wherever_the_pointer_is() {
         assert_eq!(ending(Over::Outside, true, true), Ending::Nothing);
         assert_eq!(ending(Over::Pane { pane: 2, zone: Zone::Top, own: false }, true, true), Ending::Nothing);
+        assert_eq!(ending(Over::Strip(1), true, true), Ending::Nothing);
+    }
+
+    #[test]
+    fn let_go_in_a_gap_of_a_strip_a_pane_becomes_a_tab_there_and_no_zone_is_lit() {
+        assert_eq!(ending(Over::Strip(2), true, false), Ending::NewTab(2));
+        assert_eq!(ending(Over::Strip(0), false, false), Ending::NewTab(0), "alone, onto another window's strip");
+        assert_eq!(lit(Over::Strip(2)), None);
     }
 
     #[test]
@@ -661,18 +773,113 @@ mod tests {
     }
 
     #[test]
+    fn the_dwell_is_eight_tenths_of_a_second() {
+        assert_eq!(TAB_DWELL_SECS, 0.8);
+    }
+
+    #[test]
     fn a_tab_comes_to_the_front_once_after_the_whole_dwell_on_it() {
         let mut d = Dwell::default();
         assert_eq!(d.at(Some(7), 0.0), None);
-        assert_eq!(d.at(Some(7), 2.4), None);
-        assert_eq!(d.at(Some(7), 2.5), Some(7));
-        assert_eq!(d.at(Some(7), 9.0), None, "only once");
-        // Off and back on starts again.
-        assert_eq!(d.at(None, 9.1), None);
-        assert_eq!(d.at(Some(7), 9.2), None);
-        assert_eq!(d.at(Some(8), 11.0), None, "a different tab starts its own wait");
-        assert_eq!(d.at(Some(8), 13.4), None);
-        assert_eq!(d.at(Some(8), 13.5), Some(8));
+        assert_eq!(d.progress(0.4), Some(0.5));
+        assert_eq!(d.at(Some(7), 0.79), None);
+        assert_eq!(d.at(Some(7), 0.81), Some(7));
+        assert_eq!(d.at(Some(7), 2.0), None, "only once");
+        assert_eq!(d.progress(2.0), None, "no bar once it has come");
+    }
+
+    #[test]
+    fn moving_off_and_back_starts_again() {
+        let mut d = Dwell::default();
+        d.at(Some(7), 0.0);
+        d.at(None, 0.5);
+        assert_eq!(d.progress(0.5), None);
+        d.at(Some(7), 1.0);
+        assert_eq!(d.at(Some(7), 1.75), None);
+        assert_eq!(d.at(Some(7), 1.85), Some(7));
+    }
+
+    #[test]
+    fn another_tab_starts_its_own_dwell() {
+        let mut d = Dwell::default();
+        d.at(Some(7), 0.0);
+        assert_eq!(d.at(Some(8), 0.7), None);
+        assert_eq!(d.at(Some(8), 1.0), None);
+        assert_eq!(d.at(Some(8), 1.6), Some(8));
+    }
+
+    /// Three tabs 100 wide with a gap of 4: 0-100, 104-204, 208-308.
+    const STRIP: [(f64, f64); 3] = [(0.0, 100.0), (104.0, 204.0), (208.0, 308.0)];
+
+    fn over(x: f64, selected: usize, alone: bool) -> StripTarget {
+        strip_target(x, &STRIP, Some(selected), alone)
+    }
+
+    #[test]
+    fn the_left_quarter_of_a_tab_is_the_gap_before_it() {
+        assert_eq!(over(105.0, 0, false), StripTarget::Insert(1));
+        assert_eq!(over(128.9, 0, false), StripTarget::Insert(1));
+    }
+
+    #[test]
+    fn the_right_quarter_of_a_tab_is_the_gap_after_it() {
+        assert_eq!(over(179.1, 0, false), StripTarget::Insert(2));
+        assert_eq!(over(204.0, 0, false), StripTarget::Insert(2));
+    }
+
+    #[test]
+    fn the_quarter_lines_belong_to_the_middle() {
+        assert_eq!(over(129.0, 0, false), StripTarget::BringForward(1));
+        assert_eq!(over(179.0, 0, false), StripTarget::BringForward(1));
+    }
+
+    #[test]
+    fn the_gap_between_two_tabs_is_that_gap() {
+        assert_eq!(over(102.0, 0, false), StripTarget::Insert(1));
+        assert_eq!(over(206.0, 0, false), StripTarget::Insert(2));
+    }
+
+    #[test]
+    fn past_the_last_tab_is_after_it() {
+        assert_eq!(over(309.0, 0, false), StripTarget::Insert(3));
+        assert_eq!(over(2000.0, 0, false), StripTarget::Insert(3));
+    }
+
+    #[test]
+    fn before_the_first_tab_is_before_it() {
+        assert_eq!(over(-5.0, 0, false), StripTarget::Insert(0));
+        assert_eq!(over(10.0, 0, false), StripTarget::Insert(0));
+    }
+
+    #[test]
+    fn an_empty_strip_means_nothing() {
+        assert_eq!(strip_target(10.0, &[], None, false), StripTarget::Nothing);
+    }
+
+    #[test]
+    fn the_middle_of_the_tab_in_front_is_nothing() {
+        assert_eq!(over(50.0, 0, false), StripTarget::Nothing);
+        assert_eq!(over(50.0, 1, false), StripTarget::BringForward(0));
+    }
+
+    #[test]
+    fn a_pane_alone_in_its_tab_is_offered_no_gap_on_its_own_strip() {
+        assert_eq!(over(10.0, 0, true), StripTarget::Nothing);
+        assert_eq!(over(102.0, 0, true), StripTarget::Nothing);
+        assert_eq!(over(2000.0, 0, true), StripTarget::Nothing);
+    }
+
+    #[test]
+    fn a_pane_alone_in_its_tab_can_still_bring_another_tab_forward() {
+        assert_eq!(over(150.0, 0, true), StripTarget::BringForward(1));
+    }
+
+    #[test]
+    fn the_mark_sits_in_the_gap_or_on_the_outer_edge() {
+        assert_eq!(mark_x(0, &STRIP), Some(0.0));
+        assert_eq!(mark_x(1, &STRIP), Some(102.0));
+        assert_eq!(mark_x(3, &STRIP), Some(308.0));
+        assert_eq!(mark_x(4, &STRIP), None);
     }
 
     #[test]

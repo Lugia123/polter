@@ -28,13 +28,19 @@ enum WindowTabChipSlide {
 
     static let animationKey = "polter.window-tab-chip-slide"
 
+    /// A pane is being dragged (`TabStripDragOverlay`): a tab brought
+    /// forward under it shows its glass at once. Played while the drag's
+    /// tracking loop runs, the slide stopped half way and stayed there,
+    /// stretched across two tabs, until the drag ended (task 1557, t57-02d).
+    static var held = false
+
     /// `window` is now the tab in front. Slides the glass in from the tab
     /// that was, when there was another and it is still in the bar.
     static func selected(_ window: NSWindow) {
         guard let group = window.tabGroup else { return }
         let previous = shown.object(forKey: group)
         shown.setObject(window, forKey: group)
-        guard let previous, previous !== window else { return }
+        guard let previous, previous !== window, !held else { return }
 
         // The bar may not have been handed to this window yet when it is
         // told it is in front; then the next turn of the main queue has it.

@@ -41,15 +41,16 @@ use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use polter_split_tree::drag::{self, Dwell, Ending, Grip, Over, Setting, Situation, TitleGrip};
+use polter_split_tree::drag::{self, Dwell, Ending, Grip, Over, Setting, Situation, StripTarget, TitleGrip};
 use polter_split_tree::{PaneId, Rect};
 
 use crate::tabs::{self, TabId};
 use crate::{plogf, wlogf};
 
 /// How often a drag looks again while the pointer is still: a dwell over a
-/// tab has to end without the pointer moving.
-const DWELL_TICK_MS: u32 = 100;
+/// tab has to end without the pointer moving, and the bar under that tab
+/// fills as it goes -- so a frame's worth, not a tenth of a second.
+const DWELL_TICK_MS: u32 = 16;
 const TIMER_DWELL: usize = 0xD2A6;
 
 /// The pointer's business with a pane. **Names the pane, never a position**:
@@ -307,11 +308,37 @@ struct Target {
     frame: Option<HWND>,
     /// What lights up, on the screen.
     lit: Option<RECT>,
-    /// A tab of a frame's strip that is not the one in front.
+    /// A tab of a frame's strip that is not the one in front, under the
+    /// middle of which the pointer is (`StripTarget::BringForward`).
     tab: Option<(HWND, TabId)>,
 }
 
-fn target_at(pt: POINT, dragged: PaneId) -> Target {
+thread_local! {
+    /// The frame whose strip shows a dragged pane's hint, so that moving to
+    /// another one, or letting go, takes it away there.
+    static HINTED: RefCell<Option<isize>> = const { RefCell::new(None) };
+}
+
+/// Show what a dragged pane would do in `frame`'s strip -- or, with no
+/// frame, in nobody's -- taking it away from the strip that had it.
+fn hint(frame: Option<HWND>, gap: Option<usize>, dwell: Option<(TabId, f64)>) {
+    let want = frame.filter(|_| gap.is_some() || dwell.is_some());
+    let was = HINTED.with(|h| std::mem::replace(&mut *h.borrow_mut(), want.map(|f| f.0 as isize)));
+    if let Some(w) = was.filter(|w| Some(*w) != want.map(|f| f.0 as isize)) {
+        let w = HWND(w as *mut core::ffi::c_void);
+        if tabs::is_frame(w) {
+            crate::strip::set_pane_hint(w, None, None);
+        }
+    }
+    if let Some(f) = want {
+        crate::strip::set_pane_hint(f, gap, dwell);
+    }
+}
+
+/// `home` is the frame the pane was picked up in, and `from_split` whether
+/// its tab had other panes: a pane alone in its tab is offered no gap in
+/// its own strip (`strip_target`'s `alone`).
+fn target_at(pt: POINT, dragged: PaneId, home: isize, from_split: bool) -> Target {
     let nothing = |over| Target { over, frame: None, lit: None, tab: None };
     let hit = unsafe { WindowFromPoint(pt) };
     if hit.0.is_null() {
@@ -332,8 +359,14 @@ fn target_at(pt: POINT, dragged: PaneId) -> Target {
     }
     let sh = crate::strip::strip_h(tabs::scale_of(root));
     if at.y < sh {
-        let tab = crate::strip::tab_at(root, at.x, at.y).filter(|t| tabs::active_tab_id(root) != Some(*t));
-        return Target { over: Over::Window, frame: Some(root), lit: None, tab: tab.map(|t| (root, t)) };
+        let (spans, ids, active) = crate::strip::pane_drag_tabs(root);
+        let alone = !from_split && root.0 as isize == home;
+        let (over, tab) = match drag::strip_target(at.x as f64, &spans, Some(active), alone) {
+            StripTarget::Insert(gap) => (Over::Strip(gap), None),
+            StripTarget::BringForward(i) => (Over::Window, ids.get(i).map(|t| (root, *t))),
+            StripTarget::Nothing => (Over::Window, None),
+        };
+        return Target { over, frame: Some(root), lit: None, tab };
     }
     let p = (at.x as f64, at.y as f64);
     for (pane, px) in crate::pane_frames::showing(root) {
@@ -350,23 +383,29 @@ fn target_at(pt: POINT, dragged: PaneId) -> Target {
 }
 
 fn track(pt: POINT) {
-    let Some((pane, began)) = GESTURE.with(|g| match &*g.borrow() {
-        Gesture::Dragging(d) => Some((d.pane, d.began)),
+    let Some((pane, began, home, from_split)) = GESTURE.with(|g| match &*g.borrow() {
+        Gesture::Dragging(d) => Some((d.pane, d.began, d.frame, d.from_split)),
         Gesture::Idle | Gesture::Pressed { .. } => None,
     }) else {
         return;
     };
-    let t = target_at(pt, pane);
+    let t = target_at(pt, pane, home, from_split);
     let key = t.tab.map(|(f, id)| (f.0 as isize, id.0));
-    let switch = GESTURE.with(|g| match &mut *g.borrow_mut() {
-        Gesture::Dragging(d) => d.dwell.at(key, began.elapsed().as_secs_f64()),
-        Gesture::Idle | Gesture::Pressed { .. } => None,
+    let now = began.elapsed().as_secs_f64();
+    let (switch, waiting) = GESTURE.with(|g| match &mut *g.borrow_mut() {
+        Gesture::Dragging(d) => (d.dwell.at(key, now), d.dwell.tab().zip(d.dwell.progress(now))),
+        Gesture::Idle | Gesture::Pressed { .. } => (None, None),
     });
     if let Some((f, id)) = switch {
         let frame = HWND(f as *mut core::ffi::c_void);
         wlogf!(frame, "[drag] pane {} held over tab {} for {}s; bringing it to the front", pane, id, drag::TAB_DWELL_SECS);
         tabs::activate_tab(frame, TabId(id));
     }
+    let gap = match t.over {
+        Over::Strip(gap) => Some(gap),
+        Over::Pane { .. } | Over::Window | Over::Outside => None,
+    };
+    hint(t.frame, gap, waiting.map(|((_, id), p)| (TabId(id), p)));
     match (t.frame, t.lit) {
         (Some(owner), Some(rc)) => show(Kind::Zone, owner, 0, rc, accent().0, (drag::HIGHLIGHT_OPACITY * 255.0).round() as u8),
         _ => hide_kind(Kind::Zone),
@@ -416,8 +455,9 @@ fn finish(d: Drag, cancelled: Option<&str>) {
         let _ = ReleaseCapture();
     }
     hide_kind(Kind::Zone);
+    hint(None, None, None);
     let pt = cursor();
-    let t = target_at(pt, d.pane);
+    let t = target_at(pt, d.pane, d.frame, d.from_split);
     let ending = drag::ending(t.over, d.from_split, cancelled.is_some());
     if let Some(why) = cancelled {
         wlogf!(frame, "[drag] pane {} put back: {}", d.pane, why);
@@ -430,6 +470,12 @@ fn finish(d: Drag, cancelled: Option<&str>) {
         }
         (Ending::Move { onto, .. }, None) => {
             wlogf!(frame, "[drag] pane {} let go on pane {} in no window; nothing", d.pane, onto);
+        }
+        (Ending::NewTab(index), Some(dst)) => {
+            tabs::pane_to_new_tab(frame, d.pane, dst, index);
+        }
+        (Ending::NewTab(index), None) => {
+            wlogf!(frame, "[drag] pane {} let go in gap {} of no window; nothing", d.pane, index);
         }
         (Ending::NewWindow, _) => {
             let hinst: HINSTANCE = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }.map(Into::into).unwrap_or_default();
