@@ -2036,12 +2036,25 @@ mod tests {
         );
 
         // Rows the terminal's own state can refuse, rightly.
+        //
+        // The six Stack rows (task 1583) are among them: each verb has
+        // something to do only on some panes -- `next`, `previous` and `out`
+        // on a pane that holds a stack, `onto_*` in a tab of more than one
+        // pane -- so a row is greyed by `Enable::WhenStackOffers` from the
+        // same rule the key answers by (`tabs::pane_stack_offers`), and a
+        // `false` from one chosen anyway is the pane's state, not a gap.
         let mut needs_state = vec![
             "__polter_reopen_tab",
             "copy_to_clipboard",
             "end_search",
             "navigate_search:next",
             "navigate_search:previous",
+            "pane_stack:new",
+            "pane_stack:next",
+            "pane_stack:onto_next",
+            "pane_stack:onto_previous",
+            "pane_stack:out",
+            "pane_stack:previous",
             "scroll_to_selection",
             "search_selection",
         ];
