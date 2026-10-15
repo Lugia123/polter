@@ -467,3 +467,25 @@ fn a_tab_goes_into_a_pane_unless_it_is_the_control_rooms_its_own_or_lent() {
     assert_eq!(r(false, true, false), Some(TabIntoPane::Lent));
     assert_eq!(r(false, false, true), Some(TabIntoPane::OwnTab));
 }
+
+/// Task 1597: a layout or a project that makes the terminals of a stack
+/// made only the one in front -- the others are `Hidden` in the layout,
+/// and the host refused them ("pane N has no place in that layout"). Every
+/// member has a place to be made: its own place's.
+#[test]
+fn every_member_of_a_stack_has_a_place_to_be_made() {
+    let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+    // a | (b, d, e with d in front): what a project of p93's shape builds.
+    let root = fixture().root().unwrap().clone();
+    let tree = Tree::with_root_and_stacks(root, vec![Stack { shown: B, members: vec![D, B, E] }]).unwrap();
+    let place = tree.layout(bounds).into_iter().find(|(p, _)| *p == B).and_then(|(_, at)| at.rect()).unwrap();
+    for m in [D, B, E] {
+        assert_eq!(tree.rect_to_make(m, bounds), Some(place), "member {m}");
+    }
+    // A pane hidden by a zoom is made where it would be shown unzoomed.
+    let zoomed = fixture().toggle_zoom(A);
+    let c = fixture().layout(bounds).into_iter().find(|(p, _)| *p == C).and_then(|(_, at)| at.rect()).unwrap();
+    assert_eq!(zoomed.rect_to_make(C, bounds), Some(c));
+    // Not in the tree: nowhere.
+    assert_eq!(tree.rect_to_make(99, bounds), None);
+}

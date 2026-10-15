@@ -619,23 +619,35 @@ pub fn open_page_in_new_tab(
         return Err("the new tab is not in its window".to_string());
     };
 
-    let seed_surface = tabs::active_surface(frame);
-    if seed_surface.is_null() {
-        return Err("the new tab has no active surface".to_string());
-    }
+    // **All of the page, or none of it** (task 1597): from here on the tab
+    // exists, and a page that cannot be built whole takes it back -- a
+    // refused layout used to leave its first pane standing alone in a tab
+    // nobody asked for, and a window made for the project with it.
+    let built = (|| -> Result<(), String> {
+        let seed_surface = tabs::active_surface(frame);
+        if seed_surface.is_null() {
+            return Err("the new tab has no active surface".to_string());
+        }
+        let shape_json = shape_for_page_seeded(root, seed_surface as usize, snaps);
+        let shape = crate::layout::parse_project(&shape_json)?;
+        let at = tabs::pane_id_of_surface(seed_surface);
 
-    let shape_json = shape_for_page_seeded(root, seed_surface as usize, snaps);
-    let shape = crate::layout::parse_project(&shape_json)?;
-    let at = tabs::pane_id_of_surface(seed_surface);
+        let outcome: crate::layout::Outcome = std::sync::Arc::new(std::sync::Mutex::new(None));
+        tabs::post_op(frame, tabs::Op::ApplyLayout(shape, at, outcome.clone()), "open_page_in_new_tab");
+        tabs::drain_for_layout(frame);
 
-    let outcome: crate::layout::Outcome = std::sync::Arc::new(std::sync::Mutex::new(None));
-    tabs::post_op(frame, tabs::Op::ApplyLayout(shape, at, outcome.clone()), "open_page_in_new_tab");
-    tabs::drain_for_layout(frame);
-
-    match outcome.lock().ok().and_then(|mut o| o.take()) {
-        Some(Ok(_)) => Ok(id),
-        Some(Err(e)) => Err(e),
-        None => Err("the layout was queued and did not run; the window may have closed".to_string()),
+        match outcome.lock().ok().and_then(|mut o| o.take()) {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(e)) => Err(e),
+            None => Err("the layout was queued and did not run; the window may have closed".to_string()),
+        }
+    })();
+    match built {
+        Ok(()) => Ok(id),
+        Err(e) => {
+            tabs::retract_tab(frame, id);
+            Err(e)
+        }
     }
 }
 

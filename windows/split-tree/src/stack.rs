@@ -267,6 +267,25 @@ impl Tree {
     }
 }
 
+impl Tree {
+    /// Where to make the window of `pane` when it is made for this tree,
+    /// inside `bounds`. A surface is bound to the size of the window it is
+    /// made in (windows/AGENTS.md), so every pane is made somewhere real.
+    ///
+    /// **Where its place is, whether or not it is on screen** (task 1597):
+    /// a terminal stacked behind another is made the size of the place it
+    /// is stacked in, and one hidden by a zoom the size of its own place
+    /// unzoomed. Only `Visible` used to count, so a layout or a project that
+    /// made the members of a stack was refused at the first one behind.
+    /// None for a pane not in this tree.
+    pub fn rect_to_make(&self, pane: PaneId, bounds: crate::Rect) -> Option<crate::Rect> {
+        let place = self.shown_for(pane)?;
+        let mut shown = Vec::new();
+        self.root.as_ref()?.layout_into(bounds, &mut shown);
+        shown.into_iter().find(|(p, _)| *p == place).map(|(_, r)| r)
+    }
+}
+
 /// One of the stack's verbs (`Binding.zig`'s `pane_stack`, by the numbers
 /// of `ghostty_action_pane_stack_e`): what it does to the place the
 /// keyboard is in. macOS's `PaneStackRules.Verb`.
