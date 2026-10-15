@@ -74,6 +74,44 @@ pub fn start(pane: u64, surface: usize, slot: Slot) -> Journaled {
     Journaled { slot }
 }
 
+/// A pane's snapshot that its scrollback was restored from, **held back:
+/// nothing is written to it yet** (task 1609). Made by `hold` when a pane
+/// is made from a project; `begin` turns it into a `Journaled` once the
+/// page the pane is on has been built whole.
+///
+/// **Why the wait.** A page is built pane by pane, and it can still be
+/// refused after some of them exist (`project_ui::open_page_in_new_tab`
+/// takes it back). Journaled from the moment they were made, those panes
+/// had already rewritten their snapshots by then: on a real machine (#1605
+/// S2) a failed open turned a saved 0.snap of 1510 bytes into 1873, and in
+/// a project never opened before left a new one behind (S1). Held, a pane
+/// that is taken back has written nothing, and the files are as they were.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Held {
+    pane: u64,
+    surface: usize,
+    slot: Slot,
+}
+
+impl Held {
+    pub fn pane(&self) -> u64 {
+        self.pane
+    }
+}
+
+/// Hold `slot` for the pane `pane` (`surface`) made from it. **Asks the
+/// core nothing.**
+pub fn hold(pane: u64, surface: usize, slot: Slot) -> Held {
+    logf!("[journal] pane {}: restored from {:?}; not journaled until its page is built", pane, slot.dir.join(&slot.name));
+    Held { pane, surface, slot }
+}
+
+/// The page is built: keep the pane's scrollback journaled at the slot it
+/// was restored from, from now on (`start`).
+pub fn begin(held: Held) -> Journaled {
+    start(held.pane, held.surface, held.slot)
+}
+
 #[cfg(not(test))]
 fn request(surface: usize, path: &std::ffi::CStr) -> bool {
     unsafe { (crate::api().surface_set_scrollback_journal)(surface as crate::ffi::Surface, path.as_ptr()) }
@@ -128,6 +166,26 @@ mod tests {
         ANSWER.with(|a| a.set(true));
         assert_eq!(asked().len(), 1);
         assert_eq!(j.slot(), &slot(), "a refusal must not cost the pane its number");
+    }
+
+    /// Task 1609: a pane made from a saved snapshot asks the core nothing
+    /// while its page is being built; only `begin`, once the page stands,
+    /// starts the journal -- at the slot it was restored from.
+    #[test]
+    fn a_held_snapshot_is_not_written_until_its_page_is_built() {
+        asked();
+        let held = hold(7, 0x1234, slot());
+        assert!(asked().is_empty(), "a pane being built asked the core to write its snapshot");
+        assert_eq!(held.slot, slot());
+        // Taken back: dropped, and still nothing asked.
+        drop(held);
+        assert!(asked().is_empty());
+        let j = begin(hold(8, 0x5678, slot()));
+        let calls = asked();
+        assert_eq!(calls.len(), 1, "a built page journals each pane once, got {:?}", calls);
+        assert_eq!(calls[0].0, 0x5678);
+        assert_eq!(PathBuf::from(&calls[0].1), PathBuf::from(r"C:\p\x.scrollback").join("3.snap"));
+        assert_eq!(j.slot(), &slot());
     }
 
     #[test]

@@ -643,7 +643,12 @@ pub fn open_page_in_new_tab(
         }
     })();
     match built {
-        Ok(()) => Ok(id),
+        // Built whole: only now are its terminals' snapshots written to.
+        Ok(()) => {
+            let n = tabs::begin_journals(frame, id);
+            wlogf!(frame, "[project] page built: {} terminal(s) journaled to their snapshots from now on", n);
+            Ok(id)
+        }
         Err(e) => {
             tabs::retract_tab(frame, id);
             Err(e)

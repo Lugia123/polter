@@ -118,20 +118,6 @@ pub fn scrollback_dir(project_file: &Path) -> PathBuf {
     polter_settings_shell::projects::scrollback_dir(project_file)
 }
 
-/// Remove `dir` when it is there and empty, and answer whether it was: a
-/// project's snapshot directory that an open which then failed left behind
-/// (task 1600 ⑤). Its terminals were asked to journal there, and the core
-/// makes the directory on the first write -- before the open was refused,
-/// and once more as each was freed.
-///
-/// **Only an empty one.** A directory holding anything -- the snapshots a
-/// project saved before, or anything somebody put there -- is left as it
-/// is: `remove_dir` refuses a directory that is not empty, and it is asked
-/// only after looking.
-pub fn remove_if_empty(dir: &Path) -> bool {
-    std::fs::read_dir(dir).is_ok_and(|mut d| d.next().is_none()) && std::fs::remove_dir(dir).is_ok()
-}
-
 /// Remove the snapshots in `dir` that this save did not name.
 ///
 /// **The filter is what this code makes, not a pattern it happens to
@@ -626,26 +612,6 @@ mod tests {
     /// (`LongPathsEnabled`) -- then nothing below would have been tested, and
     /// the test says so and fails instead of passing on a machine that cannot
     /// show the problem.
-    /// Task 1600 ⑤: a failed open left an empty `r4ratio.scrollback`.
-    /// An empty directory goes; one with anything in it, or none, stays.
-    #[test]
-    fn only_an_empty_snapshot_directory_is_removed() {
-        let root = std::env::temp_dir().join(format!("polter-project-rs-empty-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let empty = root.join("r4ratio.scrollback");
-        let kept = root.join("p93.scrollback");
-        std::fs::create_dir_all(&empty).unwrap();
-        std::fs::create_dir_all(&kept).unwrap();
-        std::fs::write(kept.join("0.snap"), b"x").unwrap();
-
-        assert!(remove_if_empty(&empty));
-        assert!(!empty.exists(), "the empty directory is still there");
-        assert!(!remove_if_empty(&kept));
-        assert!(kept.join("0.snap").exists(), "a snapshot was lost");
-        assert!(!remove_if_empty(&root.join("never.scrollback")));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
     #[cfg(windows)]
     #[test]
     fn a_project_past_max_path_saves_lists_opens_and_deletes() {
