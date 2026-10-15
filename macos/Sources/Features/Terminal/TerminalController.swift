@@ -455,6 +455,52 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         return c
     }
 
+    /// A tab holding an existing split tree, beside `neighbor` in its tab
+    /// group -- before it for `.below`, after it for `.above` -- and in
+    /// front (a pane let go in a gap of a tab strip, task 1557). Undo closes
+    /// it, as `newWindow(_:tree:)`'s does its window.
+    static func newTab(
+        _ ghostty: Ghostty.App,
+        tree: SplitTree<Ghostty.SurfaceView>,
+        beside neighbor: NSWindow,
+        ordered: NSWindow.OrderingMode,
+        inheritBackgroundOpacity: Bool? = nil
+    ) -> TerminalController {
+        let c = TerminalController.init(ghostty, withSurfaceTree: tree)
+        if let inheritBackgroundOpacity {
+            c.isBackgroundOpaque = inheritBackgroundOpacity
+        }
+        if let window = c.window {
+            if neighbor.isMiniaturized { neighbor.deminiaturize(self) }
+            // AppKit may have put it in the neighbour's group already; it is
+            // taken out so that the order below is the one that holds.
+            if let group = neighbor.tabGroup, group.windows.contains(window) {
+                group.removeWindow(window)
+            }
+            if window.tabbingMode != .disallowed, neighbor.addTabbedWindowSafely(window, ordered: ordered) {
+                neighbor.tabGroup?.selectedWindow = window
+            }
+        }
+        c.showWindowSafely(self)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            c.relabelTabs()
+        }
+
+        if let undoManager = c.undoManager {
+            undoManager.setActionName("New Tab")
+            undoManager.registerUndo(
+                withTarget: c,
+                expiresAfter: c.undoExpiration
+            ) { target in
+                undoManager.disableUndoRegistration {
+                    target.closeWindowImmediately()
+                }
+            }
+        }
+
+        return c
+    }
+
     static func newTab(
         _ ghostty: Ghostty.App,
         from parent: NSWindow? = nil,

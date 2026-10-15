@@ -5165,6 +5165,68 @@ pub fn pane_to_new_window(src: HWND, pane: PaneId, at: windows::Win32::Foundatio
     true
 }
 
+/// Make `pane` a tab of its own in `dst`'s strip at `index`, in front (a
+/// pane let go in a gap of a strip, task 1557). From a split tab it leaves
+/// the tree; a pane alone in its tab takes its tab along, as a tab dragged
+/// there would (`TabStripDrop` on macOS refuses only its own strip, and the
+/// rule says so before this is reached). A window left with no tab closes.
+pub fn pane_to_new_tab(src: HWND, pane: PaneId, dst: HWND, index: usize) -> bool {
+    let alone = window(src).and_then(|w| w.tabs.iter().find(|t| t.pane(pane).is_some()).map(|t| (t.id, t.terminal().is_some_and(|x| !x.tree.is_split()))));
+    match alone {
+        None => {
+            wlogf!(src, "[drag] pane {} not made a tab: no tab in its window has it", pane);
+            return false;
+        }
+        Some((id, true)) => return move_tab_to_window(src, id, dst, index),
+        Some((_, false)) => {}
+    }
+    let tab_id = TabId(take_id());
+    let may_authorise = may_authorise_until_marked();
+    let moved: Result<PaneMoved, &'static str> = with_windows_mut(|ws| {
+        let si = ws.iter().position(|w| w.frame == src.0 as isize).ok_or("its window is gone")?;
+        let di = ws.iter().position(|w| w.frame == dst.0 as isize).ok_or("the window it was let go over is gone")?;
+        let title = ws[si].tabs.iter().find(|t| t.pane(pane).is_some()).map(|t| t.title.clone()).unwrap_or_default();
+        let (p, emptied) = take_pane(ws, si, pane, true)?;
+        let (hwnd, surface) = (p.hwnd, p.surface);
+        let cwd = p.cwd.clone();
+        let own = p.title.clone();
+        let index = index.min(ws[di].tabs.len());
+        ws[di].tabs.insert(
+            index,
+            Tab {
+                id: tab_id,
+                body: Body::Terminal(Terminal { tree: Tree::with_pane(pane), panes: vec![p], focused: pane }),
+                title: own.unwrap_or(title),
+                color: 0,
+                role: 0,
+                shielded: false,
+                held: false,
+                may_authorise,
+                worker_mentions: false,
+                persona: None,
+                cwd,
+                title_override: None,
+            },
+        );
+        ws[di].active = index;
+        Ok(PaneMoved { hwnd, surface, emptied })
+    });
+    let m = match moved {
+        Ok(m) => m,
+        Err(why) => {
+            wlogf!(src, "[drag] pane {} not made a tab in {}: {}", pane, crate::winid::tag(dst), why);
+            return false;
+        }
+    };
+    if src != dst {
+        rehome_pane(src, dst, m.hwnd, m.surface);
+    }
+    wlogf!(src, "[drag] pane {} made a tab of its own in {} at {}", pane, crate::winid::tag(dst), index);
+    crate::project_session::note(polter_projects::autosave::Change::Pages);
+    settle_after_move(src, dst, m.emptied);
+    true
+}
+
 /// Put a window's top left at a point on the screen, keeping its size.
 pub fn place_at(frame: HWND, at: windows::Win32::Foundation::POINT) {
     unsafe {
@@ -6134,12 +6196,6 @@ pub fn surface_of(hwnd: HWND) -> Surface {
 pub fn pane_hwnd(frame: HWND, pane: PaneId) -> Option<HWND> {
     let win = window(frame)?;
     win.tabs.iter().flat_map(|t| t.panes().iter()).find(|p| p.id == pane).map(|p| HWND(p.hwnd as *mut c_void))
-}
-
-/// The tab in front in `frame`.
-pub fn active_tab_id(frame: HWND) -> Option<TabId> {
-    let win = window(frame)?;
-    win.tabs.get(win.active).map(|t| t.id)
 }
 
 pub fn pane_of(hwnd: HWND) -> Option<(HWND, usize, PaneId)> {
