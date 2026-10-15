@@ -875,6 +875,26 @@
 "Your copy at %@ doesn't read as this skill, so the shipped one is in use." = "Your copy at %@ doesn't read as this skill, so the shipped one is in use.";
 "This copy wasn't saved from Polter, so whether the official text has changed since is not known." = "This copy wasn't saved from Polter, so whether the official text has changed since is not known.";
 
+/* 设置表单：日志管理组的标签与说明（核心 form.zig 的 N_；mac 的表单查这张表，不查 po，#1535） */
+"Group Transcripts, Total MB" = "Group Transcripts, Total MB";
+"Transcripts written while in a group, kept by size only." = "Transcripts written while in a group, kept by size only.";
+"Project Transcripts, Days" = "Project Transcripts, Days";
+"Days kept of transcripts from a project's tabs." = "Days kept of transcripts from a project's tabs.";
+"Project Transcripts, Total MB" = "Project Transcripts, Total MB";
+"Megabytes kept of transcripts from a project's tabs." = "Megabytes kept of transcripts from a project's tabs.";
+"Other Transcripts, Days" = "Other Transcripts, Days";
+"Days kept of transcripts in no group or project." = "Days kept of transcripts in no group or project.";
+"Other Transcripts, Total MB" = "Other Transcripts, Total MB";
+"Megabytes kept of transcripts in no group or project." = "Megabytes kept of transcripts in no group or project.";
+"Logs, Days" = "Logs, Days";
+"Days kept of Polter's own logs and crash reports." = "Days kept of Polter's own logs and crash reports.";
+"Logs, Total MB" = "Logs, Total MB";
+"Megabytes kept of Polter's own logs." = "Megabytes kept of Polter's own logs.";
+"Screenshots, Days" = "Screenshots, Days";
+"Days kept of Polter's screenshots." = "Days kept of Polter's screenshots.";
+"Screenshots, Total MB" = "Screenshots, Total MB";
+"Megabytes kept of Polter's screenshots." = "Megabytes kept of Polter's screenshots.";
+
 /* 日志管理（#1511） */
 "Terminal Records · In Groups" = "Terminal Records · In Groups";
 "Terminal Records · In Projects" = "Terminal Records · In Projects";

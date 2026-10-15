@@ -451,7 +451,7 @@
 "Open" = "打开";
 "\"%@\" moves to the Trash. You can undo this until you close this window." = "「%@」会移到废纸篓。关掉这个窗口之前都可以撤销。";
 "\"%@\" is replaced by the tab \"%@\" (%@ pane(s)), and that tab saves to it from now on. The replaced layout is kept as the previous version." = "「%@」会被标签页「%@」（%@ 个面板）替换，之后这个标签页会自动保存到它。被替换的布局留作上一版。";
-"Show in Finder" = "在 Finder 中显示";
+"Show in Finder" = "在访达中显示";
 "Saved" = "上次保存";
 "Panes" = "面板数";
 "Directories" = "目录";
@@ -890,6 +890,26 @@
 "The base recorded for this skill is not text." = "这个 skill 记录的基准不是文本。";
 "Your copy at %@ doesn't read as this skill, so the shipped one is in use." = "你放在 %@ 的副本读不成这个 skill，现在用的是出厂的那份。";
 "This copy wasn't saved from Polter, so whether the official text has changed since is not known." = "这份副本不是从 Polter 存的，所以不知道官方正文之后有没有变。";
+
+/* 设置表单：日志管理组的标签与说明（核心 form.zig 的 N_；mac 的表单查这张表，不查 po，#1535） */
+"Group Transcripts, Total MB" = "群里的终端记录，总量 MB";
+"Transcripts written while in a group, kept by size only." = "在群里时写下的终端记录，只按总量保留。";
+"Project Transcripts, Days" = "项目里的终端记录，天数";
+"Days kept of transcripts from a project's tabs." = "项目标签页里的终端记录保留几天。";
+"Project Transcripts, Total MB" = "项目里的终端记录，总量 MB";
+"Megabytes kept of transcripts from a project's tabs." = "项目标签页里的终端记录最多保留多少 MB。";
+"Other Transcripts, Days" = "其它终端记录，天数";
+"Days kept of transcripts in no group or project." = "不在群也不在项目里的终端记录保留几天。";
+"Other Transcripts, Total MB" = "其它终端记录，总量 MB";
+"Megabytes kept of transcripts in no group or project." = "不在群也不在项目里的终端记录最多保留多少 MB。";
+"Logs, Days" = "日志，天数";
+"Days kept of Polter's own logs and crash reports." = "Polter 自己的日志和崩溃报告保留几天。";
+"Logs, Total MB" = "日志，总量 MB";
+"Megabytes kept of Polter's own logs." = "Polter 自己的日志最多保留多少 MB。";
+"Screenshots, Days" = "截图，天数";
+"Days kept of Polter's screenshots." = "Polter 的截图保留几天。";
+"Screenshots, Total MB" = "截图，总量 MB";
+"Megabytes kept of Polter's screenshots." = "Polter 的截图最多保留多少 MB。";
 
 /* 日志管理（#1511） */
 "Terminal Records · In Groups" = "终端记录 · 群里的";

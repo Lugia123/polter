@@ -17,7 +17,12 @@ the failure mode, sitting one line above the strings it describes, for
 however long it took somebody to notice the menu was in the wrong language.
 Writing a hazard down is not the same as watching for it.
 
-# The two checks, and why they are two
+# The checks, and why the first two are two
+
+(Further down, 3 asks that every key the Swift code asks for has Chinese,
+4 that every command-less action has a name, and 5 that every word of the
+core's settings form -- `N_` in `form.zig`, which the mac looks up in this
+table and not in `po/` -- is in both tables.)
 
   1. **Every key in `Base.lproj` has one in `zh-Hans.lproj`.** This is the
      drift the header warns about: a reworded English string leaves its
@@ -505,6 +510,50 @@ def main() -> int:
                         "Localizable.strings tables."
                     )
 
+    # 5. Every label and summary the core's settings form hands over has an
+    #    entry in both tables, the Chinese one with Chinese in it.
+    #
+    # The form's words are the core's, marked `N_` in `form.zig`, but the
+    # mac does not ask gettext for them: `ConfigFormRules.localized` looks
+    # them up in Localizable.strings by their English. So a row added to the
+    # form and translated only in `po/zh_CN.po` is Chinese on Windows and
+    # English on the mac -- the eighteen labels and summaries of the `.logs`
+    # group were, in All Options and on the Screenshot page (task 1535), with
+    # every check above green: none of them is a Swift literal, and a key in
+    # neither table is in agreement between the two.
+    form_zig = ROOT / "src" / "config" / "form.zig"
+    form_ids: list[str] = []
+    # The form's words that are the same in Chinese, each with its reason.
+    FORM_SAME_IN_CHINESE = {
+        **{shell: "the name of a shell program, written the same in every language"
+           for shell in ("Bash", "Elvish", "fish", "Nushell", "PowerShell", "Zsh")},
+    }
+    localized_base = strings_keys(BASE_DIR / "Localizable.strings")
+    if form_zig.is_file():
+        form_ids = list(dict.fromkeys(
+            unescape(s) for s in re.findall(r'i18n\.N_\("((?:[^"\\]|\\.)*)"\)', form_zig.read_text(encoding="utf-8"))
+        ))
+        if not form_ids:
+            problems.append(
+                "src/config/form.zig: no i18n.N_(\"…\") was read, so the form's "
+                "words are not being watched."
+            )
+        for msgid in form_ids:
+            if msgid not in localized_base:
+                problems.append(f"src/config/form.zig: {msgid!r} is not in Base.lproj/Localizable.strings.")
+            zh = localized_zh.get(msgid)
+            if zh is not None and zh == msgid and msgid in FORM_SAME_IN_CHINESE:
+                continue
+            if zh is None or not re.search(r"[㐀-鿿]", zh):
+                problems.append(
+                    f"src/config/form.zig: {msgid!r} has no Chinese in zh-Hans ({zh!r}).\n"
+                    "      The mac's settings form looks the core's words up in "
+                    "Localizable.strings, not in po/: translating it in "
+                    "zh_CN.po alone leaves it English on the mac."
+                )
+    else:
+        problems.append("src/config/form.zig is not there; the form's words are not being watched.")
+
     if problems:
         print("FAIL: the macOS interface has English with no Chinese behind it:")
         for p in problems:
@@ -514,7 +563,8 @@ def main() -> int:
     print(
         f"{swift_files} Swift file(s) and two .strings tables read: every "
         "user-visible string goes through the table, and every key in Base has "
-        "one in zh-Hans."
+        f"one in zh-Hans; the settings form's {len(form_ids)} words from form.zig "
+        "are in both tables."
     )
     for k, why in EXEMPT.items():
         print(f"      exempt: {k!r} -- {why}")
