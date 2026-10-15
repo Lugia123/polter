@@ -212,16 +212,16 @@ pub fn status_width(title: &Title, word: f64) -> f64 {
     side::GLYPH + side::STATUS_WORD_GAP + if scene::draws(&title.word) { word } else { 0.0 }
 }
 
-/// Where the strip of a frame `w` points wide is, and its tabs at a scroll
-/// of `offset`, kept to what they can scroll. With `reveal` -- the tab in
-/// front changed, a tab came or went, the strip changed width -- moved the
-/// least it takes so that the tab in front is in view
-/// (`stackstrip::revealing`); without it, where the wheel left them.
-pub fn geometry(wears: Wears, w: f64, wants: &[f64], current: usize, status: f64, offset: f64, reveal: bool) -> Geometry {
+/// Where the strip of a frame `w` points wide is, and its tabs scrolled on
+/// from `offset` by `stackstrip::settle`: `changed` -- the tab in front, the
+/// number of tabs or the strip's width changed -- and `wheeled` -- the
+/// person scrolled them since -- decide whether the tab in front is brought
+/// into view (task 1599: it is, unless they scrolled).
+pub fn geometry(wears: Wears, w: f64, wants: &[f64], current: usize, status: f64, offset: f64, changed: bool, wheeled: bool) -> Geometry {
     let room = side_room(wears);
     let strip = Rect { x: room, y: 0.0, w: (w - 2.0 * room).max(0.0), h: t::STRIP_HEIGHT };
     let layout = stackstrip::layout(wants, current, strip.w, status);
-    let offset = if reveal { stackstrip::revealing(&layout, current, offset) } else { offset.clamp(0.0, layout.max_offset()) };
+    let offset = stackstrip::settle(&layout, current, offset, changed, wheeled);
     Geometry { strip, layout, offset }
 }
 
@@ -646,14 +646,14 @@ mod tests {
     // ---- geometry
 
     fn g(wants: &[f64], current: usize, w: f64, offset: f64) -> Geometry {
-        geometry(Wears::Worker, w, wants, current, 0.0, offset, true)
+        geometry(Wears::Worker, w, wants, current, 0.0, offset, true, false)
     }
 
     #[test]
     fn a_supervisors_strip_is_inside_its_border_and_the_others_reach_the_edges() {
-        let s = geometry(Wears::Supervisor, 400.0, &[100.0], 0, 0.0, 0.0, true);
+        let s = geometry(Wears::Supervisor, 400.0, &[100.0], 0, 0.0, 0.0, true, false);
         assert_eq!(s.strip, Rect { x: 4.0, y: 0.0, w: 392.0, h: 32.0 });
-        let w = geometry(Wears::Worker, 400.0, &[100.0], 0, 0.0, 0.0, true);
+        let w = geometry(Wears::Worker, 400.0, &[100.0], 0, 0.0, 0.0, true, false);
         assert_eq!(w.strip, Rect { x: 0.0, y: 0.0, w: 400.0, h: 32.0 });
         // The tabs stand on the strip's bottom.
         assert_eq!(w.tab_rect(0), Some(Rect { x: 20.0, y: 4.0, w: 100.0, h: 28.0 }));
@@ -680,7 +680,7 @@ mod tests {
         for w in [300.0, 400.0, 520.0] {
             for current in 0..wants.len() {
                 for from in [0.0, 250.0, 10000.0] {
-                    let geo = geometry(Wears::Worker, w, &wants, current, 0.0, from, true);
+                    let geo = geometry(Wears::Worker, w, &wants, current, 0.0, from, true, false);
                     let r = geo.tab_rect(current).unwrap();
                     let row = geo.row();
                     let (left, right) = geo.fades();
@@ -694,13 +694,13 @@ mod tests {
     #[test]
     fn the_wheel_leaves_the_tabs_where_it_put_them_until_something_changes() {
         // Not revealing: the offset stays where the wheel left it, in range.
-        let still = geometry(Wears::Worker, 400.0, &[150.0; 8], 6, 0.0, 100.0, false);
+        let still = geometry(Wears::Worker, 400.0, &[150.0; 8], 6, 0.0, 100.0, false, true);
         assert_eq!(still.offset, 100.0);
-        assert_eq!(geometry(Wears::Worker, 400.0, &[150.0; 8], 6, 0.0, 9999.0, false).offset, still.layout.max_offset());
+        assert_eq!(geometry(Wears::Worker, 400.0, &[150.0; 8], 6, 0.0, 9999.0, false, true).offset, still.layout.max_offset());
         assert_eq!(still.scrolled(-500.0), 0.0);
         assert_eq!(still.scrolled(16.0), 116.0);
         // Revealing: the tab in front comes into view.
-        assert_eq!(geometry(Wears::Worker, 400.0, &[150.0; 8], 6, 0.0, 100.0, true).offset, 450.0);
+        assert_eq!(geometry(Wears::Worker, 400.0, &[150.0; 8], 6, 0.0, 100.0, true, false).offset, 450.0);
     }
 
     #[test]
@@ -831,7 +831,7 @@ mod tests {
                 for m in &mut s.members {
                     m.wears = wears;
                 }
-                let geo = geometry(wears, w, &wants, current, 0.0, 0.0, true);
+                let geo = geometry(wears, w, &wants, current, 0.0, 0.0, true, false);
                 let d = build(&geo, &s, wears, &status_title(&s, ""), &view(theme, None), &|x| x.to_string());
                 let clip = geo.row();
                 assert!(clip.w > 0.0 && clip.h > 0.0, "{wears:?} {wants:?}: the clip is empty: {clip:?}");
@@ -861,7 +861,7 @@ mod tests {
         for m in &mut s.members {
             m.wears = Wears::Plain;
         }
-        let geo = geometry(Wears::Plain, 400.0, &[100.0, 100.0], 1, 0.0, 0.0, true);
+        let geo = geometry(Wears::Plain, 400.0, &[100.0, 100.0], 1, 0.0, 0.0, true, false);
         let theme = look::theme(false);
         let d = build(&geo, &s, Wears::Plain, &status_title(&s, ""), &view(theme, None), &|x| x.to_string());
         // Under the tabs: painted first, so they stand on it.

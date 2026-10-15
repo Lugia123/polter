@@ -124,6 +124,28 @@ struct PaneStackStripTests {
         #expect(l.addX == 360)
     }
 
+    /// Task 1599, the same two steps as `stackstrip.rs`'s
+    /// `a_new_tab_whose_name_comes_later_is_still_brought_into_view`: a new
+    /// terminal's name comes after it is made, its tab widens, and nothing
+    /// the strip is keyed on changed. Until the person scrolls, the tab in
+    /// front is still brought into view.
+    @Test func aNewTabWhoseNameComesLaterIsStillBroughtIntoView() {
+        var wants: [CGFloat] = Array(repeating: 150, count: 11) + [60]
+        let before = Layout(wants: wants, current: 11, width: 400, status: 0)
+        let first = before.settle(11, from: 0, changed: true, wheeled: false)
+        #expect(first == before.maxOffset)
+        wants[11] = 200
+        let after = Layout(wants: wants, current: 11, width: 400, status: 0)
+        let then = after.settle(11, from: first, changed: false, wheeled: false)
+        let tab = after.tabs.first { $0.member == 11 }!
+        let start = tab.x - CGFloat(ControlRoomLook.StackTab.inset) - then
+        #expect(start >= 0 && start + tab.width <= after.viewport)
+        // Scrolled by the person: left where they put it until one of the
+        // three changes.
+        #expect(after.settle(11, from: 100, changed: false, wheeled: true) == 100)
+        #expect(after.settle(11, from: 100, changed: true, wheeled: true) == after.revealing(11, from: 100))
+    }
+
     @Test func theTabInFrontIsScrolledIntoViewByTheLeastMove() {
         let l = Layout(wants: Array(repeating: 150, count: 8), current: 6, width: 400, status: 0)
         // Tab 6 runs from 624 to 774 of the row; the window is 340 wide.
