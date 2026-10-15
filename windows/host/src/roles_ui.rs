@@ -4175,6 +4175,13 @@ pub(crate) fn fit_combo(h: HWND, want: i32) {
     }
 }
 
+/// A window's class name, for telling which control sent a notification.
+fn class_of(h: HWND) -> String {
+    let mut buf = [0u16; 64];
+    let n = unsafe { GetClassNameW(h, &mut buf) }.max(0) as usize;
+    String::from_utf16_lossy(&buf[..n])
+}
+
 /// The messages both procedures answer the same way: colours, custom draw,
 /// the owner-drawn combo.
 /// The messages every window holding these controls answers the same way --
@@ -4188,7 +4195,9 @@ pub(crate) unsafe fn common(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Opti
             }
             WM_NOTIFY => {
                 let nm = &*(lp.0 as *const NMHDR);
-                if nm.code == NM_CUSTOMDRAW && theme::custom_drawing() {
+                // Buttons only: a tooltip or a trackbar sends the same
+                // notification and is the system's to draw (#1591 R4).
+                if nm.code == NM_CUSTOMDRAW && theme::custom_drawing() && polter_settings_shell::custom_draws(&class_of(nm.hwndFrom)) {
                     let cd = &*(lp.0 as *const NMCUSTOMDRAW);
                     if cd.dwDrawStage == CDDS_PREPAINT {
                         draw_button(cd);
