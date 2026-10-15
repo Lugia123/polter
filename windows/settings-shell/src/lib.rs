@@ -724,6 +724,21 @@ pub const fn content_size(outer_w: i32, outer_h: i32) -> (i32, i32) {
     (outer_w - FRAME_ALLOW_W - SIDEBAR - 1, outer_h - FRAME_ALLOW_H - TOP - 1)
 }
 
+/// Whether the settings windows paint a control's `NM_CUSTOMDRAW` themselves:
+/// only a button's (window class `Button`, any case). Everything else that
+/// sends the notification is left to the system.
+///
+/// **The class, not the style bits** (#1591 R4). The custom draw read the
+/// sender's style through `BS_TYPEMASK`, and a tooltip's
+/// `TTS_ALWAYSTIP | TTS_NOPREFIX` is 3 there -- `BS_AUTOCHECKBOX`. The About
+/// tooltip was painted as a check box: a square on its left and its text on
+/// one line, centred, cut with an ellipsis, inside a box the system had
+/// sized for the wrapped text. The trackbar had met the same thing first
+/// and was excused by name in one window procedure.
+pub fn custom_draws(class: &str) -> bool {
+    class.eq_ignore_ascii_case("Button")
+}
+
 /// A check box's square, at `dpi`, in a control `row_h` tall: the grid's
 /// size scaled, never taller than the row.
 pub fn check_box(dpi: i32, row_h: i32) -> i32 {
@@ -936,6 +951,17 @@ pub fn search_section(current: Section, query: &str, items: &[(Section, Vec<Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_buttons_are_painted_by_the_settings_windows() {
+        use super::custom_draws;
+        assert!(custom_draws("Button"));
+        assert!(custom_draws("BUTTON"));
+        // #1591 R4: the About tooltip was painted as a check box.
+        assert!(!custom_draws("tooltips_class32"));
+        assert!(!custom_draws("msctls_trackbar32"));
+        assert!(!custom_draws("SysListView32"));
+    }
+
     #[test]
     fn a_box_is_given_crlf_and_hands_back_lf() {
         use super::{from_box, to_box};

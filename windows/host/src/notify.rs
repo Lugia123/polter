@@ -478,8 +478,11 @@ extern "system" fn worker_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 let group = LAST_GROUP.lock().ok().and_then(|g| g.clone());
                 let terminal = LAST_TERMINAL.load(Ordering::Acquire);
                 let f = LAST_FRAME.load(Ordering::Acquire);
-                go(polter_control_room::alert::click_of(group.as_deref(), terminal, f), f, "balloon");
+                // **Taken down before going**: going brings a window to
+                // the front, and the front's own reason would be the one
+                // the log kept (#1591 R1).
                 take_balloon_down("clicked");
+                go(polter_control_room::alert::click_of(group.as_deref(), terminal, f), f, "balloon");
             } else if event == NIN_BALLOONTIMEOUT || event == NIN_BALLOONHIDE {
                 // The shell took it down itself: nothing left for the timer.
                 if BALLOON_UP.swap(false, Ordering::AcqRel) {
