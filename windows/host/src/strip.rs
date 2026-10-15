@@ -76,10 +76,6 @@ fn rect_px(r: ChipRect) -> RECT {
     RECT { left: r.x.round() as i32, top: r.y.round() as i32, right: (r.x + r.w).round() as i32, bottom: (r.y + r.h).round() as i32 }
 }
 
-fn fill_rgba(hdc: HDC, r: &RECT, c: Rgba) {
-    fill(hdc, r, (c.r as u32) | ((c.g as u32) << 8) | ((c.b as u32) << 16));
-}
-
 /// The strip's font at the weight a selected tab's title is set in. The
 /// caller deletes it; an invalid handle means "use the plain one".
 fn emphasised(plain: HGDIOBJ) -> HFONT {
@@ -1539,16 +1535,9 @@ pub fn paint(frame: HWND) {
                 crate::control_room::round(mem, rect_px(pill), tabstrip::corner(pill, scale, false) as i32, color, None);
             }
 
-            // A short line after a tab with nothing behind it, when the
-            // next has nothing behind it either and the chip is not there.
-            let next = slots.get(i + 1);
-            let plain = |s: &Slot| dragging != Some(s.id) && !matches!(hover, Hit::Tab(h) | Hit::Close(h) if h == s.id);
-            let line = tabstrip::separator(slot.rect.right as f64, shf, scale);
-            let under_chip = now.chip.is_some_and(|c| line.x >= c.x - 1.0 && line.x <= c.x + c.w);
-            if behind.is_none() && next.is_some_and(plain) && !under_chip {
-                fill_rgba(mem, &rect_px(line), tabstrip::separator_color(ground, theme));
-            }
-
+            // No line between two tabs: the Mac's tab bar has none to
+            // speak of, and a line beside the pill shapes reads as a
+            // leftover from the square tabs (task 1556).
             draw_tab(i, slot, false, no_font);
         }
 

@@ -13,7 +13,7 @@
 //! never two at half strength.
 
 use crate::layout::Rect;
-use crate::look::{radius, stack_tab, window_tab, Rgba, Theme};
+use crate::look::{radius, window_tab, Rgba, Theme};
 use crate::scene::over;
 
 const WHITE: Rgba = Rgba { r: 255, g: 255, b: 255, a: 1.0 };
@@ -71,18 +71,6 @@ pub fn chip_edge(ground: Rgba, theme: &Theme, lift: f64) -> Rgba {
 /// What is under the pointer and not selected.
 pub fn hover_color(ground: Rgba, theme: &Theme) -> Rgba {
     over(track_color(ground, theme), theme.window_tab_hover, 1.0)
-}
-
-/// The short line between two tabs that have nothing behind them: one
-/// pixel wide at `x`, in the middle of the strip. A host leaves it out
-/// beside the chip and beside what the pointer is over.
-pub fn separator(x: f64, strip_h: f64, scale: f64) -> Rect {
-    let h = px(stack_tab::SEPARATOR_HEIGHT, scale).min(strip_h);
-    Rect { x: x.round(), y: ((strip_h - h) / 2.0).floor(), w: 1.0, h }
-}
-
-pub fn separator_color(ground: Rgba, theme: &Theme) -> Rgba {
-    over(track_color(ground, theme), theme.line, 1.0)
 }
 
 /// A tab that is being dragged: brighter than the chip, so that it reads
@@ -166,8 +154,6 @@ mod tests {
             }
             let t = track(44.0, 900.0, strip_h, scale);
             assert!(whole(t), "track {t:?} at {scale}");
-            let s = separator(263.0, strip_h, scale);
-            assert!(whole(s) && s.w == 1.0 && s.y > t.y && s.y + s.h < t.y + t.h, "separator {s:?} at {scale}");
         }
     }
 
@@ -217,7 +203,6 @@ mod tests {
             let edge = chip_edge(ground, theme, 0.0);
             assert_eq!(light(edge) > light(rest), theme.selection_edge > 0.0, "dark={dark}");
             assert!(light(dragged_color(ground, theme)) > light(rest), "dark={dark}");
-            assert_ne!(separator_color(ground, theme), track);
             // Selected reads stronger than not.
             assert_ne!(title_color(theme, true), title_color(theme, false));
         }
