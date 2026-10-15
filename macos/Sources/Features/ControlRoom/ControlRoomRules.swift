@@ -443,4 +443,27 @@ enum ControlRoomRules {
         guard opening, let openOn else { return (nil, true) }
         return (openOn, false)
     }
+
+    // MARK: Return on the list
+
+    /// Who a Return pressed in the left-hand side is for (task 1554).
+    enum ReturnOwner: Equatable {
+        /// The text box with the keyboard -- the new group's name, or any
+        /// other: the box submits it, nothing else happens.
+        case text
+        /// The list itself: go to the selected group's supervisor (#1551).
+        case list
+        /// Neither: not answered here.
+        case nobody
+    }
+
+    /// **A text box first, always.** The list's own focus says true while
+    /// the keyboard is anywhere inside it -- the name field is inside it --
+    /// so "the list has the keyboard" alone took the Return from the field
+    /// and went to a supervisor instead of making the group (#1554).
+    static func returnOwner(textHasKeyboard: Bool, listHasKeyboard: Bool, hasSelection: Bool) -> ReturnOwner {
+        if textHasKeyboard { return .text }
+        if listHasKeyboard && hasSelection { return .list }
+        return .nobody
+    }
 }

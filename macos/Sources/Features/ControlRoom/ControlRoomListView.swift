@@ -153,13 +153,27 @@ struct ControlRoomListView: View {
             }
         }
         // Only while the list itself has the keyboard: Return in the new
-        // group's name field is that field's.
+        // group's name field -- or any text box -- is that box's (#1554).
+        // `listHasKeyboard` alone cannot say so: it is true with the
+        // keyboard anywhere inside the list, the name field included.
         .backport.onKeyPress(.return) { _ in
-            guard listHasKeyboard, selection != nil else { return .ignored }
-            onEnter()
-            return .handled
+            let text = nameHasKeyboard || Self.isText(NSApp.keyWindow?.firstResponder)
+            switch ControlRoomRules.returnOwner(
+                textHasKeyboard: text, listHasKeyboard: listHasKeyboard, hasSelection: selection != nil) {
+            case .list:
+                onEnter()
+                return .handled
+            case .text, .nobody:
+                return .ignored
+            }
         }
         .onChange(of: selection) { _ in takeOff() }
+    }
+
+    /// Whether the window's first responder is somewhere text is typed: a
+    /// text field, or the field editor one is using (an `NSText`).
+    static func isText(_ responder: NSResponder?) -> Bool {
+        responder is NSText || responder is NSTextField
     }
 
     // MARK: Selection

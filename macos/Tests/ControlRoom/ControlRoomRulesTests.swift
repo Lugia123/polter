@@ -351,4 +351,32 @@ struct ControlRoomNewTabAnswerTests {
             }
         }
     }
+
+    // MARK: Return on the list (#1554)
+
+    /// A text box with the keyboard gets the Return whatever the list says:
+    /// the name field is inside the list, so the list's focus is true then.
+    @Test func returnInATextBoxIsTheBoxs() {
+        for list in [true, false] {
+            for selected in [true, false] {
+                #expect(Rules.returnOwner(textHasKeyboard: true, listHasKeyboard: list, hasSelection: selected) == .text,
+                        "list=\(list) selected=\(selected)")
+            }
+        }
+    }
+
+    @Test func returnOnTheListGoesToTheSupervisorOnlyWithASelection() {
+        #expect(Rules.returnOwner(textHasKeyboard: false, listHasKeyboard: true, hasSelection: true) == .list)
+        #expect(Rules.returnOwner(textHasKeyboard: false, listHasKeyboard: true, hasSelection: false) == .nobody)
+        #expect(Rules.returnOwner(textHasKeyboard: false, listHasKeyboard: false, hasSelection: true) == .nobody)
+    }
+
+    /// What counts as a text box: a field, and the field editor a field
+    /// types through -- the first responder while someone is typing.
+    @MainActor @Test func aFieldAndItsEditorAreText() {
+        #expect(ControlRoomListView.isText(NSTextField()))
+        #expect(ControlRoomListView.isText(NSTextView()))
+        #expect(!ControlRoomListView.isText(NSView()))
+        #expect(!ControlRoomListView.isText(nil))
+    }
 }
