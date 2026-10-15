@@ -50,12 +50,35 @@ pub const LINE_GAP: i32 = 2;
 /// A description wraps rather than being cut off -- the English ones run
 /// past their column -- but to no more than this, and its row grows.
 pub const DETAIL_LINES: i32 = 2;
+/// The least the name and description are given beside the controls. Less
+/// than this and the row is [stacked](stacks): the longest name in
+/// `log-management-v3` is 181 wide (tg).
+///
+/// Task 1541: at the window's least width, 900, the controls took all but
+/// 16 of the content's 388, and every name and description went.
+pub const TEXT_MIN_W: i32 = 200;
+/// In a stacked row, between the description and the controls under it.
+pub const STACK_GAP: i32 = 4;
 
 /// How tall a row is whose description takes `detail_lines` lines of
 /// `line_h` (as wrapped to [`RowParts::text`]'s width).
 pub fn row_height(dpi: i32, line_h: i32, detail_lines: i32) -> i32 {
     let lines = detail_lines.clamp(1, DETAIL_LINES);
     scale(ROW_H, dpi).max(line_h * (1 + lines) + scale(LINE_GAP, dpi))
+}
+
+/// Whether rows between `left` and `right` are too narrow to keep the name
+/// and description beside the controls ([`TEXT_MIN_W`]). A stacked row has
+/// them on top across the whole width and the controls under them, in the
+/// same columns from the right edge.
+pub fn stacks(left: i32, right: i32, dpi: i32, control_h: i32) -> bool {
+    beside(left, right, 0, 0, dpi, control_h).text.width() < scale(TEXT_MIN_W, dpi)
+}
+
+/// [`row_height`] for a [stacked](stacks) row: its text, then the controls.
+pub fn stacked_row_height(dpi: i32, line_h: i32, detail_lines: i32, control_h: i32) -> i32 {
+    let lines = detail_lines.clamp(1, DETAIL_LINES);
+    line_h * (1 + lines) + scale(LINE_GAP, dpi) + scale(STACK_GAP, dpi) + control_h
 }
 
 /// Where one row's parts go, in the page's coordinates.
@@ -77,16 +100,31 @@ pub struct RowParts {
 }
 
 /// The parts of a row whose top is `top` and which is `height` tall
-/// ([`row_height`]), between `left` and `right`. Its controls are centred
-/// in it.
+/// ([`row_height`], or [`stacked_row_height`] when it [stacks]), between
+/// `left` and `right`. Its controls are centred in it, or in the band at its
+/// foot when it stacks.
 pub fn row_parts(left: i32, right: i32, top: i32, height: i32, dpi: i32, control_h: i32) -> RowParts {
+    if !stacks(left, right, dpi, control_h) {
+        return beside(left, right, top, height, dpi, control_h);
+    }
+    let bottom = top + height;
+    let band = beside(left, right, bottom - control_h, control_h, dpi, control_h);
+    let text = Rect::new(left, top, right, (bottom - control_h - scale(STACK_GAP, dpi)).max(top));
+    RowParts { row: Rect::new(left, top, right, bottom), text, ..band }
+}
+
+/// A row with the text beside the controls: the drawing's.
+fn beside(left: i32, right: i32, top: i32, height: i32, dpi: i32, control_h: i32) -> RowParts {
     let s = |v| scale(v, dpi);
     let row = Rect::new(left, top, right, top + height);
     let mid = |h: i32| top + (height - h) / 2;
     let button = Rect::new(right - s(BUTTON_W), mid(control_h), right, mid(control_h) + control_h);
     let size = Rect::new(button.left - s(COL_GAP) - s(SIZE_W), top, button.left - s(COL_GAP), row.bottom);
     let mb_unit = Rect::new(size.left - s(COL_GAP) - (s(UNIT_W) - s(4)), top, size.left - s(COL_GAP), row.bottom);
-    let field_h = control_h - s(6);
+    // 22 at 96 DPI, as the drawing's fields are (`lg.days h=22.0`). It was
+    // `control_h - 6`, 18, and the 14 px digits stood on the bottom border
+    // (task 1541, the tenth-round screenshot).
+    let field_h = control_h - s(2);
     let mb = Rect::new(mb_unit.left - s(4) - s(MB_W), mid(field_h), mb_unit.left - s(4), mid(field_h) + field_h);
     let days_unit = Rect::new(mb.left - s(COL_GAP) - (s(UNIT_W) - s(4)), top, mb.left - s(COL_GAP), row.bottom);
     let days = Rect::new(days_unit.left - s(4) - s(DAYS_W), mid(field_h), days_unit.left - s(4), mid(field_h) + field_h);
@@ -295,6 +333,8 @@ mod tests {
         assert_eq!((p.days.left, p.days_unit.right), (800, 880));
         assert_eq!(p.text.right, 792);
         assert_eq!((p.rule.left, p.rule.right), (800, 980));
+        assert_eq!((p.days.height(), p.mb.height()), (22, 22), "lg.days and lg.mb are 22 tall");
+        assert!(!stacks(498, 1164, 96, 24), "the drawing's width keeps the text beside the controls");
         // "days" is 28.5 wide in the drawing's English; its box is 32.
         assert_eq!(p.days_unit.width(), 32);
     }
@@ -304,6 +344,42 @@ mod tests {
         let p = row_parts(0, 2000, 0, row_height(192, 34, 1), 192, 48);
         assert_eq!(p.button.right - p.button.left, 192);
         assert_eq!(p.row.bottom - p.row.top, 80);
+    }
+
+    /// Task 1541: at the window's least width the controls took all but 16
+    /// of the content's 388 (96 DPI), and every name and description went.
+    /// There the row stacks: text across the whole width, controls under it
+    /// in the drawing's columns from the right edge.
+    #[test]
+    fn at_the_least_window_width_a_row_stacks_and_keeps_its_text() {
+        let (left, right) = (16, 404);
+        assert!(stacks(left, right, 96, 24));
+        let h = stacked_row_height(96, 17, 2, 24);
+        assert_eq!(h, 17 * 3 + LINE_GAP + STACK_GAP + 24);
+        let p = row_parts(left, right, 100, h, 96, 24);
+        assert_eq!((p.text.left, p.text.right), (left, right), "the text has the whole width");
+        assert!(p.text.width() >= TEXT_MIN_W);
+        assert_eq!(p.text.bottom + STACK_GAP, p.button.top, "the controls come under the text");
+        assert_eq!((p.button.bottom, p.row.bottom), (100 + h, 100 + h));
+        // The drawing's columns, from the right edge, as when not stacked.
+        assert_eq!((p.button.right, p.button.width(), p.size.width(), p.mb.width(), p.days.width()), (right, 96, 72, 56, 44));
+        assert_eq!(p.size.right, p.button.left - COL_GAP);
+        for (what, r) in [("days", p.days), ("rule", p.rule), ("size", p.size), ("button", p.button)] {
+            assert!(r.left >= left, "{what} starts at {} left of the content's {left}", r.left);
+            assert!(r.top >= p.text.bottom && r.bottom <= p.row.bottom, "{what} is not in the band under the text");
+        }
+    }
+
+    /// Where it starts to stack: the text keeps [`TEXT_MIN_W`] or goes on top.
+    #[test]
+    fn a_row_stacks_exactly_where_its_text_would_go_under_the_least() {
+        // 372 = the four columns and their gaps, at 96 DPI.
+        assert_eq!(row_parts(0, 572, 0, ROW_H, 96, 24).text.width(), TEXT_MIN_W);
+        assert!(!stacks(0, 572, 96, 24));
+        assert!(stacks(0, 571, 96, 24));
+        // In DIP: the same width at 150% decides the same way.
+        assert!(!stacks(0, scale(572, 144), 144, scale(24, 144)));
+        assert!(stacks(0, scale(388, 144), 144, scale(24, 144)));
     }
 
     #[test]

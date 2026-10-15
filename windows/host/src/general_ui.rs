@@ -412,23 +412,39 @@ pub(crate) struct SetResult {
 /// `ghostty_app_config_set`: `None` restores the default. The write happens
 /// once per call, so a result that did not fit is read back with
 /// `_set_result`, never by calling again.
+///
+/// **A write that took is followed by the host's reload, here and nowhere
+/// else** (task 1541). The core only writes the file -- "Reloading is the
+/// host's" (`ghostty_app_config_set`) -- and each caller used to ask for the
+/// reload itself. Log Management's fields did not, so a retention setting
+/// changed there reached the file and not the sweep until something else
+/// reloaded. With the request inside the one write path no caller can leave
+/// it out.
+///
+/// ⚠️ **Not `GHOSTTY_ACTION_CONFIG_CHANGE` instead.** That arrives from
+/// inside `ghostty_app_update_config`, before `reload::perform` has swapped
+/// the host's handle, so `read_log_limits` there would read the config being
+/// replaced: it would look fixed and keep the old limits. The hard reload
+/// reads them after the swap (`reload.rs`).
 pub(crate) fn set(key: &str, value: Option<&str>) -> SetResult {
+    set_with(key, value, write_through_core, || {
+        let _ = crate::reload::request(false, std::ptr::null_mut());
+    })
+}
+
+/// [`set`] with its two effects handed in, so the rule between them -- a
+/// reload after a write that took, and only then -- can be tested without a
+/// core. `write` answers the core's JSON, or why there is none.
+fn set_with(
+    key: &str,
+    value: Option<&str>,
+    write: impl FnOnce(&str, Option<&str>) -> Result<String, &'static str>,
+    reload: impl FnOnce(),
+) -> SetResult {
     let failed = |m: &str| SetResult { ok: false, code: "failed".into(), message: Some(m.into()) };
-    let Some(api) = crate::api_opt() else { return failed("NoApp") };
-    let app = crate::app_opt();
-    if app.is_null() {
-        return failed("NoApp");
-    }
-    let (vp, vl) = value.map(|v| (v.as_ptr(), v.len())).unwrap_or((std::ptr::null(), 0));
-    let mut buf = vec![0u8; 4096];
-    let need = unsafe { (api.app_config_set)(app, key.as_ptr(), key.len(), vp, vl, buf.as_mut_ptr(), buf.len()) };
-    let text = if need < buf.len() {
-        String::from_utf8_lossy(&buf[..need]).into_owned()
-    } else {
-        match ask_json(|b, c| unsafe { (api.app_config_set_result)(app, b, c) }) {
-            Some(t) => t,
-            None => return failed("the core's answer could not be read"),
-        }
+    let text = match write(key, value) {
+        Ok(t) => t,
+        Err(m) => return failed(m),
     };
     let v: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
@@ -436,10 +452,30 @@ pub(crate) fn set(key: &str, value: Option<&str>) -> SetResult {
     };
     // process-wide: the one config file, written from the one settings window
     crate::plogf!("[general-ui] set {} = {:?} -> {}", key, value, text);
-    SetResult {
+    let r = SetResult {
         ok: v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false),
         code: v.get("code").and_then(|c| c.as_str()).unwrap_or("").to_string(),
         message: v.get("message").and_then(|m| m.as_str()).map(str::to_string),
+    };
+    if r.ok {
+        reload();
+    }
+    r
+}
+
+fn write_through_core(key: &str, value: Option<&str>) -> Result<String, &'static str> {
+    let Some(api) = crate::api_opt() else { return Err("NoApp") };
+    let app = crate::app_opt();
+    if app.is_null() {
+        return Err("NoApp");
+    }
+    let (vp, vl) = value.map(|v| (v.as_ptr(), v.len())).unwrap_or((std::ptr::null(), 0));
+    let mut buf = vec![0u8; 4096];
+    let need = unsafe { (api.app_config_set)(app, key.as_ptr(), key.len(), vp, vl, buf.as_mut_ptr(), buf.len()) };
+    if need < buf.len() {
+        Ok(String::from_utf8_lossy(&buf[..need]).into_owned())
+    } else {
+        ask_json(|b, c| unsafe { (api.app_config_set_result)(app, b, c) }).ok_or("the core's answer could not be read")
     }
 }
 
@@ -1608,9 +1644,9 @@ fn write(index: usize, key: &str, value: Option<&str>) {
             s.status = tr("Saved to the config file.");
             s.status_warn = false;
         });
-        // Rule 7: reloading is the host's, through its usual path. The
-        // reload ends in `config_changed`, which reads the table again.
-        let _ = crate::reload::request(false, std::ptr::null_mut());
+        // Rule 7: reloading is the host's, through its usual path; `set`
+        // asked for it. The reload ends in `config_changed`, which reads the
+        // table again.
         refresh_values(FormRead::AfterOwnWrite);
     } else {
         let why = match r.code.as_str() {
@@ -2403,5 +2439,33 @@ unsafe extern "system" fn kb_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             }
             _ => DefWindowProcW(win, msg, wp, lp),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::set_with;
+    use std::cell::Cell;
+
+    /// Task 1541: Log Management's fields wrote the file and nothing reloaded
+    /// it, so the sweep kept its old limits. The reload is now the write
+    /// path's own: after a write the core took, exactly once; after one it
+    /// refused, or that never reached it, not at all.
+    #[test]
+    fn a_write_that_took_is_followed_by_one_reload_and_a_refused_one_by_none() {
+        let reloads = Cell::new(0);
+        let r = set_with("poltergeist-log-keep-days", Some("1"), |_, _| Ok(r#"{"ok":true}"#.into()), || reloads.set(reloads.get() + 1));
+        assert!(r.ok);
+        assert_eq!(reloads.get(), 1, "a write that took must be followed by the host's reload");
+
+        reloads.set(0);
+        let r = set_with("poltergeist-log-keep-days", Some("x"), |_, _| Ok(r#"{"ok":false,"code":"invalid_value"}"#.into()), || reloads.set(reloads.get() + 1));
+        assert!(!r.ok);
+        assert_eq!(r.code, "invalid_value");
+        assert_eq!(reloads.get(), 0, "a refused write changed nothing to reload");
+
+        let r = set_with("poltergeist-log-keep-days", Some("1"), |_, _| Err("NoApp"), || reloads.set(reloads.get() + 1));
+        assert!(!r.ok);
+        assert_eq!(reloads.get(), 0, "a write that never reached the core changed nothing either");
     }
 }

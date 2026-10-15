@@ -1340,10 +1340,10 @@ pub fn apply(m: &mut Model, cat: &Catalog, clis: &CliSnapshot, a: Action) -> Aft
         Action::Click(k) if k == "reload" => after.reread_clis = true,
         Action::Click(k) if k == "keepmine" => after.keep_mine = true,
         Action::Click(k) if k.starts_with("adopt:") => after.adopt = Some(k["adopt:".len()..].to_string()),
-        // The whole file, as the box has it. Its line ends are `\n`, as the
-        // file's are: a box that was given `\n` keeps them (Windows 10 1809
-        // and later), but one somebody pasted `\r\n` into would otherwise
-        // differ from the saved text by every line.
+        // The whole file, as the box has it. The window hands it over with
+        // `\n` line ends already (`from_box` on `EN_CHANGE`); this keeps a
+        // caller that did not -- a test, a paste into a model -- from
+        // differing from the saved text by every line.
         Action::Text(k, t) if k == "skilltext" => {
             if m.ed.skill.is_some() {
                 m.ed.skill_text = t.replace("\r\n", "\n");
@@ -2882,9 +2882,11 @@ fn reconcile(pane: HWND, laid: &Laid, scroll: i32, dpi: i32, gen: u64) -> HashMa
         }
         match &p.kind {
             Kind::Edit { text, cue, .. } => {
-                let same = get_text(h) == *text;
+                // `\n` in the model, `\r\n` in the box: a multi-line box
+                // draws a bare `\n` as no line end at all (task 1541).
+                let same = polter_settings_shell::from_box(&get_text(h)) == *text;
                 if text_needs_writing(h == focus, same, live.gen != gen) {
-                    set_text(h, text);
+                    set_text(h, &polter_settings_shell::to_box(text));
                 }
                 live.gen = gen;
                 if live.label != *cue {
@@ -3763,7 +3765,8 @@ fn on_pane_command(wp: WPARAM, lp: LPARAM) {
     let h = HWND(lp.0 as *mut c_void);
     let Some(key) = ST.with(|c| c.borrow().ids.get(&id).cloned()) else { return };
     let action = match code {
-        EN_CHANGE => Action::Text(key, get_text(h)),
+        // Back to `\n`, the way the model and the files keep it.
+        EN_CHANGE => Action::Text(key, polter_settings_shell::from_box(&get_text(h))),
         // Focus left a field: bring it in line with the model.
         EN_KILLFOCUS => {
             refresh();

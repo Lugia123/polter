@@ -70,6 +70,31 @@ pub fn make(dpi: i32, px: i32, weight: i32, face: PCWSTR) -> HFONT {
     }
 }
 
+/// The face the control room sets its interface text in: **the system's
+/// message font** (`lfMessageFont`), which is Segoe UI on an English Windows
+/// and Microsoft YaHei UI on a Chinese one.
+///
+/// It was Segoe UI everywhere, and on a Chinese machine every Chinese
+/// character then came from the face linked in for it while the Latin ones
+/// stayed Segoe's -- so "54.8 MB" inside a Chinese sentence read a size
+/// smaller than the words round it (task 1541, the tenth-round screenshot).
+/// The system's own face has both sets of letters drawn to one size.
+/// Asked once; Segoe UI when the system will not say.
+pub fn ui_face() -> PCWSTR {
+    use std::sync::OnceLock;
+    static FACE: OnceLock<Vec<u16>> = OnceLock::new();
+    let face = FACE.get_or_init(|| {
+        let mut m = NONCLIENTMETRICSW { cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32, ..Default::default() };
+        let asked = unsafe { SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS.0, m.cbSize, Some(&mut m as *mut _ as *mut _), 0, 96) };
+        let name: Vec<u16> = m.lfMessageFont.lfFaceName.iter().copied().take_while(|&c| c != 0).collect();
+        let name = if asked.is_ok() && !name.is_empty() { name } else { "Segoe UI".encode_utf16().collect() };
+        // process-wide: the system's fonts are the session's
+        plogf!("[uifont] the control room's interface face: {}", String::from_utf16_lossy(&name));
+        name.into_iter().chain(Some(0)).collect()
+    });
+    PCWSTR(face.as_ptr())
+}
+
 /// The face the control room sets names, commands and paths in.
 ///
 /// **Cascadia Mono where it is installed, Consolas where it is not.** The

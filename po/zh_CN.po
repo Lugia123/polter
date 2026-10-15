@@ -2540,7 +2540,7 @@ msgid ""
 "you choose OK. You can change the settings below first; a change counts as "
 "agreeing."
 msgstr ""
-"升级后的第一次清理，点「好」之后才会删除。也可以先在下面调整保留设置，改过即"
+"升级后的第一次清理，点「确认」之后才会删除。也可以先在下面调整保留设置，改过即"
 "按新设置清理。"
 
 #: windows/host/src/logs_ui.rs:488

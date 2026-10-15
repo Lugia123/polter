@@ -322,30 +322,85 @@ pub fn alert(
         try std.mem.join(alloc, ", and ", costs.items);
     defer alloc.free(cost);
 
-    const text = switch (why) {
-        .stopped => try std.fmt.allocPrint(
-            alloc,
-            "polter: the \"{s}\" plugin is not running, so {s}. It is being " ++
-                "retried; what it complained about is in Polter's log.",
-            .{ key, cost },
-        ),
-
+    // Which plugin, what it costs, and what to do or where to look: the
+    // three parts, so a sentence too long for the screen loses the middle
+    // and keeps the end.
+    const head = switch (why) {
+        .stopped => try std.fmt.allocPrint(alloc, "polter: the \"{s}\" plugin is not running", .{key}),
         .dormant => try std.fmt.allocPrint(
             alloc,
             "polter: the \"{s}\" plugin has failed {d} times and is now only " ++
-                "retried every fifteen minutes, so {s}. Its settings are in " ++
-                "$XDG_CONFIG_HOME/polter/plugins/{s}.json",
-            .{ key, failures, cost, key },
+                "retried every fifteen minutes",
+            .{ key, failures },
         ),
     };
-    if (text.len <= max_alert) return text;
+    defer alloc.free(head);
+    const so_cost = try std.mem.concat(alloc, u8, &.{ ", so ", cost });
+    defer alloc.free(so_cost);
+    const tail = switch (why) {
+        .stopped => try alloc.dupe(u8, ". It is being retried; what it complained about is in Polter's log."),
+        .dormant => try std.fmt.allocPrint(alloc, ". Its settings are in $XDG_CONFIG_HOME/polter/plugins/{s}.json", .{key}),
+    };
+    defer alloc.free(tail);
 
-    defer alloc.free(text);
+    return fitMiddle(alloc, head, so_cost, tail);
+}
 
-    // Cut on a codepoint boundary. A key is plain ASCII but `cost` is not
-    // necessarily, and half a UTF-8 sequence on somebody's screen is a
-    // replacement character where a word should be.
-    return alloc.dupe(u8, text[0..scrub.cut(text, max_alert)]);
+const ellipsis = "…";
+
+/// `head ++ middle ++ tail`, in at most `max_alert` bytes, by shortening
+/// **the middle** at a word.
+///
+/// The clamp used to take the end off the whole sentence, and the end is
+/// where it says what to do -- "what it complained about is in Polter's
+/// log", "its settings are in …" -- so the one plugin whose consequences
+/// ran long lost exactly that half, mid-word (task 1541, the test machine).
+/// When the head and tail leave the middle less than `min_middle` --
+/// `dormant` names a long key twice -- the middle keeps that much, at a
+/// word, and the head gives way after it at a word of its own: the plugin's
+/// name is at the head's start, the consequence begins in the middle, and
+/// the end is still whole. Only a tail with no room beside it is cut itself.
+fn fitMiddle(alloc: Allocator, head: []const u8, middle: []const u8, tail: []const u8) Allocator.Error![]const u8 {
+    const min_middle = 32;
+    if (head.len + middle.len + tail.len <= max_alert)
+        return std.mem.concat(alloc, u8, &.{ head, middle, tail });
+    const fixed = head.len + tail.len + ellipsis.len;
+    if (fixed + @min(middle.len, min_middle) > max_alert) {
+        const mid = middle[0..cutAtWord(middle, min_middle)];
+        const rest = tail.len + mid.len + 2 * ellipsis.len;
+        if (rest < max_alert) {
+            const kept = head[0..cutAtWord(head, max_alert - rest)];
+            return std.mem.concat(alloc, u8, &.{ kept, ellipsis, mid, ellipsis, tail });
+        }
+        const whole = try std.mem.concat(alloc, u8, &.{ head, middle, tail });
+        defer alloc.free(whole);
+        return clampAtWord(alloc, whole);
+    }
+    const kept = middle[0..cutAtWord(middle, max_alert - fixed)];
+    return std.mem.concat(alloc, u8, &.{ head, kept, ellipsis, tail });
+}
+
+/// `text` in at most `max_alert` bytes: whole, or cut at a word with `…`.
+fn clampAtWord(alloc: Allocator, text: []const u8) Allocator.Error![]const u8 {
+    if (text.len <= max_alert) return alloc.dupe(u8, text);
+    const kept = text[0..cutAtWord(text, max_alert - ellipsis.len)];
+    return std.mem.concat(alloc, u8, &.{ kept, ellipsis });
+}
+
+/// Where to cut `text` to at most `max` bytes: before the last space that
+/// fits, with the spaces before it dropped, so no word is left in half.
+/// Text with no space to cut at -- a long word, a language written without
+/// them -- is cut on a codepoint boundary, as `scrub.cut` does: half a UTF-8
+/// sequence on a screen is a replacement character where a word should be.
+fn cutAtWord(text: []const u8, max: usize) usize {
+    if (text.len <= max) return text.len;
+    const at = scrub.cut(text, max);
+    // `text[at]` is the first byte left out: a space there means the cut
+    // already falls between words.
+    if (text[at] == ' ') return std.mem.trimEnd(u8, text[0..at], " ").len;
+    const space = std.mem.lastIndexOfScalar(u8, text[0..at], ' ') orelse return at;
+    const before = std.mem.trimEnd(u8, text[0..space], " ").len;
+    return if (before == 0) at else before;
 }
 
 /// What the plugin itself asked to have said, on the user's own screen.
@@ -402,7 +457,9 @@ pub fn told(
     if (whole.len <= max_alert) return whole;
 
     defer alloc.free(whole);
-    return alloc.dupe(u8, whole[0..scrub.cut(whole, max_alert)]);
+    // At a word, and said to be cut: the plugin's sentence is the plugin's,
+    // and the end it lost is not ours to guess at.
+    return clampAtWord(alloc, whole);
 }
 
 /// What `plugin_test` says about a plugin subscribed to `terminal.quiet`.
@@ -785,6 +842,62 @@ test "a plugin failure reaches the user, and says what it costs them" {
             try testing.expect(std.mem.indexOf(u8, said, " so ") != null);
         }
     }
+}
+
+test "a sentence too long for the screen loses its middle, never its end" {
+    // Task 1541: every subscription at once and a long key run past 254
+    // bytes, and the clamp took the end off -- the half that says where to
+    // look. Each `Trouble` must keep its end whole and cut only at a word.
+    const alloc = testing.allocator;
+    const key = "a-plugin-with-a-name-of-exactly-sixty-four-characters-aaaaaaaaaaa";
+    const all = std.enums.values(Plugin.Event);
+    for ([_]Trouble{ .stopped, .dormant }) |why| {
+        const said = try alert(alloc, key, .{ .events = all }, why, 999);
+        defer alloc.free(said);
+
+        try testing.expect(said.len <= max_alert);
+        try testing.expect(std.unicode.utf8ValidateSlice(said));
+        const end = switch (why) {
+            .stopped => ". It is being retried; what it complained about is in Polter's log.",
+            .dormant => ". Its settings are in $XDG_CONFIG_HOME/polter/plugins/" ++ key ++ ".json",
+        };
+        try testing.expect(std.mem.endsWith(u8, said, end));
+        // Whose it is, and what it costs, both still said.
+        try testing.expect(std.mem.startsWith(u8, said, "polter: the \"" ++ key ++ "\" plugin"));
+        try testing.expect(std.mem.indexOf(u8, said, ", so ") != null);
+        // The middle was what gave way, at a word: what comes before the
+        // ellipsis is a whole word of the consequence.
+        const dots = std.mem.lastIndexOf(u8, said, "…") orelse return error.TestExpectedEqual;
+        try testing.expect(said[dots - 1] != ' ');
+        const word_start = std.mem.lastIndexOfScalar(u8, said[0..dots], ' ').? + 1;
+        const word = said[word_start..dots];
+        var whole = false;
+        for ([_][]const u8{
+            "an agent started here has no Polter tools",
+            "nothing will tell you when a terminal needs you",
+            "the extra copy of the chat is not being written",
+        }) |cost| {
+            var it = std.mem.tokenizeScalar(u8, cost, ' ');
+            while (it.next()) |w| whole = whole or std.mem.eql(u8, w, std.mem.trimEnd(u8, word, ","));
+        }
+        try testing.expect(whole);
+    }
+}
+
+test "a plugin's own words are cut at a word, and say they were" {
+    const alloc = testing.allocator;
+    const long = "could not write the skill file " ** 12;
+    const line = try told(alloc, "talkative", long);
+    defer alloc.free(line);
+    try testing.expect(line.len <= max_alert);
+    try testing.expect(std.mem.endsWith(u8, line, "…"));
+    const kept = line[0 .. line.len - "…".len];
+    // Ends on a whole word of the sentence, not in one.
+    var ok = false;
+    for ([_][]const u8{ "could", "not", "write", "the", "skill", "file" }) |w| {
+        ok = ok or (std.mem.endsWith(u8, kept, w) and kept[kept.len - w.len - 1] == ' ');
+    }
+    try testing.expect(ok);
 }
 
 test "what a plugin says reaches the user, attributed and defanged" {

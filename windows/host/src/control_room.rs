@@ -1402,7 +1402,7 @@ impl Fonts {
         }
         // `uifont::make` never goes below the system's menu font at this
         // DPI, whatever size is asked for.
-        let face = if mono { crate::uifont::mono_face() } else { w!("Segoe UI") };
+        let face = if mono { crate::uifont::mono_face() } else { crate::uifont::ui_face() };
         let f = crate::uifont::make(self.dpi, key.0, key.1, face);
         self.made.push((key, f));
         f

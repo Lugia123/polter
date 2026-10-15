@@ -233,6 +233,31 @@ pub const FIRST_H: i32 = 800;
 pub const MIN_W: i32 = 900;
 pub const MIN_H: i32 = 620;
 
+/// Text as a multi-line `EDIT` is to be given it: every line end `\r\n`.
+///
+/// **A multi-line `EDIT` breaks a line only at `\r\n`.** Handed a file's
+/// `\n` it draws every line as one (task 1541: a skill's frontmatter on a
+/// single line on the test machine, Windows 11). A `\r\n` already there is
+/// not doubled, and a lone `\r` is left alone.
+pub fn to_box(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + s.len() / 32);
+    let mut prev = '\0';
+    for c in s.chars() {
+        if c == '\n' && prev != '\r' {
+            out.push('\r');
+        }
+        out.push(c);
+        prev = c;
+    }
+    out
+}
+
+/// What a multi-line `EDIT` holds, as the model keeps it: `\n` line ends,
+/// the inverse of [`to_box`].
+pub fn from_box(s: &str) -> String {
+    s.replace("\r\n", "\n")
+}
+
 pub fn scale(v: i32, dpi: i32) -> i32 {
     v * dpi / 96
 }
@@ -833,6 +858,18 @@ pub fn search_section(current: Section, query: &str, items: &[(Section, Vec<Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_box_is_given_crlf_and_hands_back_lf() {
+        use super::{from_box, to_box};
+        let file = "---\nname: polter-supervising\n---\n\nbody";
+        assert_eq!(to_box(file), "---\r\nname: polter-supervising\r\n---\r\n\r\nbody");
+        assert_eq!(from_box(&to_box(file)), file, "there and back is the same text");
+        assert_eq!(to_box("a\r\nb"), "a\r\nb", "a CRLF already there is not doubled");
+        assert_eq!(to_box("a\rb"), "a\rb", "a lone CR is not a line end here");
+        assert_eq!(to_box("中\n文"), "中\r\n文");
+        assert_eq!(to_box(""), "");
+    }
+
     use super::*;
 
     // ------------------------------------------------- smallest text

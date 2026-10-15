@@ -400,10 +400,18 @@ fn laid(width: i32, dpi: i32, usage: &Usage) -> Laid {
     // Each row as tall as its description wrapped to the width it has
     // (the kinds come with the ones that go round first, as the rows do).
     let s = |v| shell::scale(v, dpi);
-    let text_w = rules::row_parts(s(grid::PAD), width - s(grid::PAD), 0, 0, dpi, control_h).text.width().max(1);
+    // Too narrow for the text beside the controls (the window's least
+    // width, task 1541), each row puts it on top and the controls under it.
+    let (left, right) = (s(grid::PAD), width - s(grid::PAD));
+    let stacked = rules::stacks(left, right, dpi, control_h);
+    let text_w = if stacked { right - left } else { rules::row_parts(left, right, 0, 0, dpi, control_h).text.width() }.max(1);
     let height = |k: &rules::Kind| {
         let lines = (measure(&tr(rules::detail_msgid(&k.key)), text_w) + line - 1) / line.max(1);
-        rules::row_height(dpi, line, lines)
+        if stacked {
+            rules::stacked_row_height(dpi, line, lines, control_h)
+        } else {
+            rules::row_height(dpi, line, lines)
+        }
     };
     let cycle: Vec<i32> = usage.kinds.iter().filter(|k| k.goes_round()).map(height).collect();
     let forever: Vec<i32> = usage.kinds.iter().filter(|k| !k.goes_round()).map(height).collect();
@@ -529,7 +537,9 @@ fn paint(win: HWND) {
                     draw_text(hdc, &r, &to(p.rule, dy), font(), theme::dim(), one);
                 } else {
                     if k.days_key.is_none() {
-                        let dr = to(Rect::new(p.rule.left, p.row.top, p.days_unit.right, p.row.bottom), dy);
+                        // The rule's height, not the row's: a stacked row has
+                        // its controls in a band under the text.
+                        let dr = to(Rect::new(p.rule.left, p.rule.top, p.days_unit.right, p.rule.bottom), dy);
                         draw_text(hdc, &tr("Not by days"), &dr, font(), theme::dim(), DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
                     } else {
                         draw_text(hdc, &tr("days"), &to(p.days_unit, dy), font(), theme::dim(), one);
@@ -608,8 +618,10 @@ fn commit(row: usize, part: u16) {
     } else {
         crate::general_ui::say_status(r.message.unwrap_or(r.code), true);
     }
-    // The write reloads the config; the sweep runs with the new limits on
-    // its own thread, and what it left is read when the page is shown next.
+    // `set` asked the host to reload, which is where the sweep's limits are
+    // read again (task 1541: it used to say the write reloads, and nothing
+    // did). The sweep runs on its own thread; what it left is read when the
+    // page is shown next.
     crate::general_ui::refresh_form_values();
     reload_later();
 }
