@@ -1017,3 +1017,8 @@
 "{1}: {2}" = "{1}：{2}";
 "Screen still for {1} min" = "屏幕 {1} 分没动";
 "Screen still for {1} min, no tool call for {2} min" = "屏幕 {1} 分没动，{2} 分没调工具";
+"Fix" = "修复";
+"Supervisor notified" = "已通知总管";
+"It is no longer failing. Nothing was sent." = "它已经不是出错了，什么都没有发出去。";
+"The supervisor has already been told." = "已经通知过总管了。";
+"No agent is connected in that terminal, so nothing was typed. It is kept in the group." = "那个终端里没有连着的 agent，没有打字进去；这段话留在群里了。";

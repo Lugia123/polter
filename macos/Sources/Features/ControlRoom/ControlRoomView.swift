@@ -24,7 +24,9 @@ struct ControlRoomView: View {
                     onNewGroup: { model.newGroup(named: $0) },
                     onRetentionAgree: { model.agreeToRetention() },
                     onInSight: { model.onCardsInSight($0) },
-                    onEnter: { model.goToSupervisor() })
+                    onEnter: { model.goToSupervisor() },
+                    onFix: { model.fix($0) },
+                    fixRefusal: model.fixRefusal)
             } else {
                 // No snapshot yet: the list's place, with nothing in it.
                 Color.clear.frame(width: CGFloat(Look.Side.width))

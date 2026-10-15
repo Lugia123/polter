@@ -25,12 +25,21 @@
 //! {"act":"refuse",   "terminal":"0x…","since_ms":N,"event_ms":N}
 //! {"act":"reply",    "terminal":"0x…","since_ms":N,"text":"…"}
 //! {"act":"new_group","name":"web-app"}
+//! {"act":"fix",      "group":"web-app"}
+//! {"act":"fix",      "terminal":"0x…"}                  a terminal in no group
 //! {"act":"start_supervisor","group":"web-app"}          the snapshot's role
 //!                                                       and directory
 //! {"act":"start_supervisor","group":"web-app","role":"…","cwd":"/…"}
 //! {"act":"start_supervisor","group":"web-app","session":"new"}
 //!                                                       last | new
 //! ```
+//!
+//! `fix` is the "Fix" button on a card that reads "Failed"
+//! (`ControlFix.zig`): a paragraph naming who failed, with what and when,
+//! typed into the card's supervisor -- or, with none, into each failed
+//! terminal -- and kept in the group, by the road a `group_post` mention
+//! takes. It is aimed at the card as it was last drawn, and clears
+//! nothing: the failure is cleared by that terminal's next event.
 //!
 //! `start_supervisor` opens a tab, starts the role's CLI in it, and holds
 //! "this terminal is `group`'s supervisor" for the agent that connects from
@@ -119,6 +128,9 @@
 //! | approve, refuse, reply | `UserPresent` | a key reached that terminal in the last ten seconds |
 //! | approve, refuse, reply | `DraftInLine` | there is unsubmitted text in its input line |
 //! | approve, refuse, reply | `ChildExited` | its process has ended |
+//! | fix | `NothingToFix` | the card does not read "Failed" any more, or is not there |
+//! | fix | `AlreadyNotified` | it was pressed, and the card has not changed since |
+//! | fix | `NoAgent`, `UserPresent`, `DraftInLine`, ... | a mention's refusals: the paragraph is kept in the group, and was not typed |
 //! | approve, refuse | `KeyFailed` | the key did not reach the program |
 //! | new_group | `BadName` | the name is empty, longer than 48, or has anything but `a-z`, `0-9` and `-` in it |
 //! | new_group | `GroupExists` | there is one by that name |
@@ -147,6 +159,7 @@ const Allocator = std.mem.Allocator;
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Projects = @import("Projects.zig");
+const ControlFix = @import("ControlFix.zig");
 
 pub const Id = Bus.Id;
 
@@ -166,6 +179,8 @@ pub const Act = union(enum) {
     refuse: Prompt,
     reply: struct { terminal: Id, since_ms: u64, text: []const u8 },
     new_group: []const u8,
+    /// The "Fix" button on a card that reads "Failed".
+    fix: ControlFix.Key,
     /// Empty `role` and `cwd` are "the one the snapshot names".
     start_supervisor: struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session },
     /// Everything the host knows about projects, replacing what it said.
@@ -208,6 +223,8 @@ pub const Refusal = error{
     GroupExists,
     HasSupervisor,
     AlreadyStarting,
+    NothingToFix,
+    AlreadyNotified,
 };
 
 /// The keys an approval and a refusal are. One key each, and neither
@@ -248,6 +265,17 @@ pub const Host = struct {
     projectRename: *const fn (ctx: *anyopaque, from: []const u8, to: []const u8) anyerror!void,
     /// The person agreed to the first sweep of old records.
     retentionAgree: *const fn (ctx: *anyopaque) anyerror!void,
+    /// The card the "Fix" button on `key` is on, as last drawn; null when
+    /// none offers it (`ControlRoom.fixCard`).
+    fixCard: *const fn (ctx: *anyopaque, key: ControlFix.Key) ?ControlFix.Card,
+    /// `ControlFix.Port.post` and `.send`: a group post from the person
+    /// naming `to`, typed into each; a line typed into a lone terminal.
+    fixPost: *const fn (ctx: *anyopaque, group: []const u8, text: []const u8, to: []ControlFix.Target) anyerror!void,
+    fixSend: *const fn (ctx: *anyopaque, id: Id, text: []const u8) anyerror!void,
+    /// Remember the press (`ControlFix.Sent`, `ControlFix.stampOf`).
+    fixSent: *const fn (ctx: *anyopaque, stamp: u64) anyerror!void,
+    /// How the paragraph is written: its moments, and its language.
+    voice: ControlFix.Voice,
 };
 
 fn fieldOf(obj: std.json.ObjectMap, name: []const u8) Refusal!std.json.Value {
@@ -293,6 +321,7 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
         refuse,
         reply,
         new_group,
+        fix,
         start_supervisor,
         projects,
         project_failed,
@@ -323,6 +352,11 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
             .text = try textOf(obj, "text"),
         } },
         .new_group => .{ .new_group = try textOf(obj, "name") },
+        // One or the other, as for `seen`.
+        .fix => if (obj.get("terminal")) |_|
+            (if (obj.get("group")) |_| return error.BadRequest else .{ .fix = .{ .terminal = try idOf(obj, "terminal") } })
+        else
+            .{ .fix = .{ .group = try textOf(obj, "group") } },
         .start_supervisor => .{
             .start_supervisor = .{
                 .group = try textOf(obj, "group"),
@@ -428,6 +462,20 @@ pub fn perform(
             const name = std.mem.trim(u8, raw, " \t\r\n");
             try host.createGroup(host.ctx, name);
         },
+        .fix => |key| {
+            const card = host.fixCard(host.ctx, key) orelse return error.NothingToFix;
+            if (card.state == .sent) return error.AlreadyNotified;
+            var arena: std.heap.ArenaAllocator = .init(chat.alloc);
+            defer arena.deinit();
+            const deliveries = try ControlFix.plan(arena.allocator(), card, host.voice);
+            try ControlFix.deliver(card.key, deliveries, .{
+                .ctx = host.ctx,
+                .agentPresent = host.agentPresent,
+                .post = host.fixPost,
+                .send = host.fixSend,
+            });
+            try host.fixSent(host.ctx, ControlFix.stampOf(card.steward, card.failing));
+        },
         .start_supervisor => |s| {
             if (!chat.exists(s.group)) return error.NoSuchGroup;
             if (host.stewardOf(host.ctx, s.group) != null) return error.HasSupervisor;
@@ -475,6 +523,11 @@ const Recorder = struct {
     agreed: usize = 0,
     /// The terminal's agent has exited and left its shell behind.
     agent_gone: bool = false,
+    /// The card a "Fix" is aimed at, and what came of it.
+    fix_card: ?ControlFix.Card = null,
+    fix_posts: std.ArrayListUnmanaged([]const u8) = .empty,
+    fix_typed: usize = 0,
+    fix_marked: ?u64 = null,
 
     const Started = struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session };
 
@@ -488,6 +541,8 @@ const Recorder = struct {
             testing.allocator.free(st.cwd);
         }
         self.started.deinit(testing.allocator);
+        for (self.fix_posts.items) |t| testing.allocator.free(t);
+        self.fix_posts.deinit(testing.allocator);
     }
 
     fn host(self: *Recorder) Host {
@@ -505,7 +560,41 @@ const Recorder = struct {
             .projectRemove = projectRemove,
             .projectRename = projectRename,
             .retentionAgree = retentionAgree,
+            .fixCard = fixCard,
+            .fixPost = fixPost,
+            .fixSend = fixSend,
+            .fixSent = fixSent,
+            .voice = .{ .clock = clock, .tr = ControlFix.english },
         };
+    }
+
+    fn fixCard(ctx: *anyopaque, _: ControlFix.Key) ?ControlFix.Card {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        return self.fix_card;
+    }
+
+    fn fixPost(ctx: *anyopaque, _: []const u8, text: []const u8, to: []ControlFix.Target) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        try self.fix_posts.append(testing.allocator, try testing.allocator.dupe(u8, text));
+        for (to) |*t| {
+            if (self.refuse_with) |err| t.err = err else self.fix_typed += 1;
+        }
+    }
+
+    fn fixSend(ctx: *anyopaque, _: Id, _: []const u8) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        self.fix_typed += 1;
+    }
+
+    fn fixSent(ctx: *anyopaque, stamp: u64) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        self.fix_marked = stamp;
+    }
+
+    fn clock(buf: *[19]u8, _: i64) []const u8 {
+        @memcpy(buf[0..5], "12:00");
+        return buf[0..5];
     }
 
     fn retentionAgree(ctx: *anyopaque) anyerror!void {
@@ -1069,4 +1158,70 @@ test "agreeing to the first sweep reaches the host" {
     defer arena.deinit();
     const act = try parse(arena.allocator(), "{\"act\":\"retention_agree\"}");
     try testing.expect(act == .retention_agree);
+}
+
+test "ControlRoom act: Fix types the paragraph into the supervisor, keeps it in the group, and marks the card" {
+    var b = try Bench.init();
+    defer b.deinit();
+    const failing = [_]ControlFix.Failing{.{ .id = 0xb1, .title = "api", .what = "server_error", .since_ms = 5, .at_wall_ms = 5 }};
+    b.rec.fix_card = .{ .key = .{ .group = "web-app" }, .steward = term, .failing = &failing, .state = .offered };
+
+    try b.act(
+        \\{"act":"fix","group":"web-app"}
+    , 1_000);
+    try testing.expectEqual(@as(usize, 1), b.rec.fix_posts.items.len);
+    try testing.expect(std.mem.startsWith(u8, b.rec.fix_posts.items[0], "[Polter fix] Terminal api (0x00000000000000b1) failed: server_error, 12:00. "));
+    try testing.expectEqual(@as(usize, 1), b.rec.fix_typed);
+    try testing.expectEqual(@as(?u64, ControlFix.stampOf(term, &failing)), b.rec.fix_marked);
+}
+
+test "ControlRoom act: Fix on a card that is not failing, or was fixed and has not changed, does nothing" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try testing.expectError(error.NothingToFix, b.act(
+        \\{"act":"fix","group":"web-app"}
+    , 1_000));
+    const failing = [_]ControlFix.Failing{.{ .id = term, .title = "", .what = "", .since_ms = 5, .at_wall_ms = 5 }};
+    b.rec.fix_card = .{ .key = .{ .group = "web-app" }, .steward = term, .failing = &failing, .state = .sent };
+    try testing.expectError(error.AlreadyNotified, b.act(
+        \\{"act":"fix","group":"web-app"}
+    , 1_000));
+    try testing.expectEqual(@as(usize, 0), b.rec.fix_posts.items.len);
+    try testing.expectEqual(@as(?u64, null), b.rec.fix_marked);
+    // Both or neither is not a request.
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"fix","group":"web-app","terminal":"0x00000000000000a1"}
+    , 1_000));
+}
+
+test "ControlRoom act: a Fix that could not be typed is refused by the mention's name, kept, and not marked" {
+    var b = try Bench.init();
+    defer b.deinit();
+    const failing = [_]ControlFix.Failing{.{ .id = term, .title = "", .what = "", .since_ms = 5, .at_wall_ms = 5 }};
+    b.rec.fix_card = .{ .key = .{ .group = "web-app" }, .steward = term, .failing = &failing, .state = .offered };
+
+    b.rec.refuse_with = error.DraftInLine;
+    try testing.expectError(error.DraftInLine, b.act(
+        \\{"act":"fix","group":"web-app"}
+    , 1_000));
+    try testing.expectEqual(@as(usize, 1), b.rec.fix_posts.items.len);
+    try testing.expectEqual(@as(?u64, null), b.rec.fix_marked);
+
+    b.rec.refuse_with = null;
+    b.rec.agent_gone = true;
+    try testing.expectError(error.NoAgent, b.act(
+        \\{"act":"fix","group":"web-app"}
+    , 1_000));
+    try testing.expectEqual(@as(usize, 0), b.rec.fix_typed);
+    try testing.expectEqual(@as(?u64, null), b.rec.fix_marked);
+
+    // A terminal in no group: typed into it, nothing kept.
+    b.rec.agent_gone = false;
+    b.rec.fix_card = .{ .key = .{ .terminal = term }, .steward = null, .failing = &failing, .state = .offered };
+    try b.act(
+        \\{"act":"fix","terminal":"0x00000000000000a1"}
+    , 1_000);
+    try testing.expectEqual(@as(usize, 2), b.rec.fix_posts.items.len);
+    try testing.expectEqual(@as(usize, 1), b.rec.fix_typed);
+    try testing.expect(b.rec.fix_marked != null);
 }

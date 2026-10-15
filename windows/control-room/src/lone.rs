@@ -16,7 +16,7 @@
 //! showed nothing of it.
 
 use crate::json::{self, Value};
-use crate::snapshot::{boolean, field, int, list, opt_int, opt_text, text, Cut, DecodeError, Form, Shown, Waiter, WaiterIs, What};
+use crate::snapshot::{boolean, field, fix_of, int, list, opt_int, opt_text, text, Cut, DecodeError, Fix, Form, Shown, Waiter, WaiterIs, What};
 
 /// One terminal on its own: what a group's row says, about one terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +36,8 @@ pub struct Lone {
     pub terminal: Option<String>,
     pub since_ms: u64,
     pub event_ms: Option<u64>,
+    /// The "Fix" button, as on a group's row.
+    pub fix: Fix,
 }
 
 impl Lone {
@@ -112,6 +114,7 @@ pub(crate) fn lone(v: &Value, path: &str) -> Result<Lone, DecodeError> {
         terminal: opt_text(attention, &at, "terminal")?,
         since_ms: int(attention, &at, "since_ms")?,
         event_ms: opt_int(attention, &at, "event_ms")?,
+        fix: fix_of(v, path)?,
     })
 }
 

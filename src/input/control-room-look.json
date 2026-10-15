@@ -108,6 +108,11 @@
       "separator_space_below": { "v": 4, "src": "v17-style" },
       "row_line1_height": { "v": 24, "src": "v18-a", "doc": "The glyph, the name, who is waiting and the status word. A waiting row is this, then its lines of what it waits on, inside `row_padding_y` above and below: 60, 80 or 100 high for one, two or three lines." },
       "ask_line_height": { "v": 20, "src": "v18-a", "doc": "One line of what a row waits on." },
+      "fix_line_height": {
+        "v": 28, "src": "undesigned",
+        "doc": "The line under a card that reads Failed, holding its Fix button (task 1560) and, when the last press was refused, why: a regular-size push button at the menu's font, which does not fit in `ask_line_height`.",
+        "tentative": { "alt": 24, "why": "Not in the design. 28 is the room the retention notice's OK takes; 24 would fit a small button, whose font is under the menu's." }
+      },
       "ask_max_lines": {
         "v": 3, "src": "v18-a",
         "doc": "How many lines what a row waits on may wrap to. A sentence takes up to this many and ends in an ellipsis. A command of this many steps or fewer gives every step a line first, and what is left over to the steps that need a second.",

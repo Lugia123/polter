@@ -417,6 +417,25 @@ Your own silence cannot come to you — if you are stuck you would not read it �
 so it goes on your tab instead: your flag turns hollow, ⚑ to ⚐, for the person
 to see.
 
+### `[Polter fix]`: the person pressed "Fix" on a failed card
+
+A failed turn (`failed server_error`, `rate_limit`, ...) leaves a terminal
+at its prompt with nothing more to say, and its card reads "Failed" until
+its next event. The person's "Fix" on that card types a paragraph into you
+that starts `[Polter fix]`, names each terminal that failed, with what and
+when, and is kept in the group. The tag is the same in every language; the
+rest is in the language the person's Polter is in. Nothing has been
+cleared: only that terminal's next event clears it.
+
+- **A worker failed.** `terminal_read` it to see where it stopped. Not
+  finished: `terminal_send` it to go on, or retry. Finished: have it say one
+  line that it is done -- that clears the failure -- or close it if it is
+  no longer needed. Say in the group what you did.
+- **You failed** ("Your last turn failed"). This paragraph is already a new turn,
+  so the failure is gone. Judge whether your last turn finished: not
+  finished, carry on; finished, say so in one line.
+- Several at once come in one paragraph; deal with each.
+
 ### A worker waiting on a prompt is yours to deal with
 
 The person's rule, in their words (2026-10-12): a worker's waiting and its

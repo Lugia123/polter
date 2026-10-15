@@ -561,6 +561,17 @@ fn arm_seen(hwnd: HWND) {
 /// A new list has arrived: tell the marker the selected row as it is now,
 /// and start a wait if that is news.
 fn list_changed(hwnd: HWND) {
+    // A refused "Fix" is said while there is a button to press again.
+    let stands = FIX_REFUSAL.with(|f| f.borrow().as_ref().map(|(row, _)| row.clone())).map(|row| {
+        source::with(|data| match data {
+            Data::Ready(r) => act::fix_refusal_stands(&row, r.list.rows()),
+            Data::NotYet => false,
+            Data::Unreadable(_) => false,
+        })
+    });
+    if stands == Some(false) {
+        FIX_REFUSAL.with(|f| *f.borrow_mut() = None);
+    }
     let selected = STATE
         .with(|s| s.borrow().as_ref().and_then(|st| st.selection.is_a_look().then(|| st.selection.current().map(str::to_string))))
         .flatten();
@@ -670,6 +681,10 @@ thread_local! {
     /// A group the person has just made, until the core lists it.
     static AWAITED: RefCell<Option<String>> = const { RefCell::new(None) };
     static PICKS: RefCell<StartPicks> = RefCell::new(StartPicks::default());
+    /// Why the last "Fix" was refused (task 1560), and on which row: said
+    /// beside its button until it is pressed again or the card stops
+    /// offering it (`act::fix_refusal_stands`).
+    static FIX_REFUSAL: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
 }
 
 /// The field's window, when a group is being named. **A copy, taken with the
@@ -978,6 +993,27 @@ fn start_supervisor(hwnd: HWND, group: &str) {
             wlogf!(frame, "[control-room] start supervisor for {:?} refused: {}", group, why);
             let words = refusal_words(&why);
             pick(group, |p| p.refusal = Some(words));
+        }
+    }
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// "Fix" on a card that reads "Failed" (task 1560): the core tells the
+/// card's supervisor, and the next list greys the button. A refusal is
+/// kept beside it, and the button stays to be pressed again.
+fn fix(hwnd: HWND, row: &str, request: &str) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    match source::act(request) {
+        Ok(()) => {
+            wlogf!(frame, "[control-room] fix on {:?} taken", row);
+            FIX_REFUSAL.with(|f| *f.borrow_mut() = None);
+        }
+        Err(why) => {
+            wlogf!(frame, "[control-room] fix on {:?} refused: {}", row, why);
+            let words = refusal_words(&why);
+            FIX_REFUSAL.with(|f| *f.borrow_mut() = Some((row.to_string(), words)));
         }
     }
     unsafe {
@@ -1304,6 +1340,26 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         }
         return;
     }
+    // "Fix" on a failed card (task 1560): a press on the button is the
+    // button's, not the row's. A greyed one takes the press as the row.
+    let pressed_fix = source::with(|data| match data {
+        Data::Ready(r) => {
+            let lay = list_layout(hwnd, &r.list, g.room.panel.h);
+            r.list.waiting.iter().find_map(|w| {
+                let rect = lay.chip(Some(&w.id))?;
+                if !inside(scene::fix_hit(rect), px - g.room.panel.x, py - g.room.panel.y) {
+                    return None;
+                }
+                Some((w.id.clone(), act::fix_act(w).and_then(|a| act::encode(&a))?))
+            })
+        }
+        Data::NotYet => None,
+        Data::Unreadable(_) => None,
+    });
+    if let Some((id, request)) = pressed_fix {
+        fix(hwnd, &id, &request);
+        return;
+    }
     if row.is_some() {
         select(hwnd, row);
         return;
@@ -1442,6 +1498,8 @@ fn paint(hwnd: HWND) {
     let in_terminal = crate::tabs::keyboard_in_lent(unsafe { GetAncestor(hwnd, GA_ROOT) });
     // Whether a new group is being named, and why the name made none.
     let naming: Option<Option<String>> = NAMING.with(|n| n.borrow().as_ref().map(|f| f.refusal.clone()));
+    let fix_refusal: Option<(String, String)> = FIX_REFUSAL.with(|f| f.borrow().clone());
+    let fix_refusal = fix_refusal.as_ref().map(|(row, why)| (row.as_str(), why.as_str()));
     let offered = start_scene(&g, theme);
 
     // Everything is drawn once, into memory, and blitted: the chip's slide
@@ -1492,11 +1550,11 @@ fn paint(hwnd: HWND) {
                 // as selected, and what does is drawn through its outline
                 // below.
                 let lit = if sliding { Lit::Nobody } else { Lit::Selection };
-                let view = View { theme, scale: g.scale, selection: selected.as_deref(), lit, chip, lift, pulsing, naming: naming_view };
+                let view = View { theme, scale: g.scale, selection: selected.as_deref(), lit, chip, lift, pulsing, naming: naming_view, fix_refusal };
                 if sliding {
                     if let Some(chip) = chip {
                         let inside =
-                            View { theme, scale: g.scale, selection: selected.as_deref(), lit: Lit::Every, chip: Some(chip), lift, pulsing, naming: naming_view };
+                            View { theme, scale: g.scale, selection: selected.as_deref(), lit: Lit::Every, chip: Some(chip), lift, pulsing, naming: naming_view, fix_refusal };
                         under_chip = Some((at.rect(chip), scene::build(list, &lay, &inside, &translate)));
                     }
                 }

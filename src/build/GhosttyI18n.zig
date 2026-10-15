@@ -211,6 +211,13 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
     xgettext.addArg(control_room_path);
     xgettext.addFileInput(b.path(control_room_path));
 
+    // The paragraph the control room's "Fix" types into a supervisor (task
+    // 1560): written by the core into a terminal, in the interface's
+    // language, like the scrollback line above.
+    const control_fix_path = "src/poltergeist/ControlFix.zig";
+    xgettext.addArg(control_fix_path);
+    xgettext.addFileInput(b.path(control_fix_path));
+
     // Add support for localizing our `nautilus` integration
     const xgettext_py = b.addSystemCommand(&.{
         "xgettext",
