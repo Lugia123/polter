@@ -2879,6 +2879,14 @@ extern "C" fn action_cb_told(app: App, target: Target, action: Action) -> bool {
     carried_out
 }
 
+/// The last answer given to `poltergeist_grouping` for each surface, so
+/// that only a changed one is logged (`polter_hostlog::Changes`).
+fn grouping_answers() -> &'static std::sync::Mutex<polter_hostlog::Changes<usize, Option<(u64, u64)>>> {
+    static ANSWERS: std::sync::OnceLock<std::sync::Mutex<polter_hostlog::Changes<usize, Option<(u64, u64)>>>> =
+        std::sync::OnceLock::new();
+    ANSWERS.get_or_init(|| std::sync::Mutex::new(polter_hostlog::Changes::new(4096)))
+}
+
 // unused-arg: `_app` is the app handle this host already holds; the target
 // and the action carry everything an arm needs. Nothing the core computed is
 // being thrown away with it.
@@ -4277,25 +4285,35 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 );
                 return false;
             };
-            match tabs::grouping_of_surface(s) {
+            // **Said when it is news, not every time it is asked** (task
+            // 1544). The core asks this of every terminal each time it works
+            // the control room out again -- twice a second with a chat tab
+            // open -- and the answer is almost always the last one.
+            let answer = tabs::grouping_of_surface(s);
+            let news = grouping_answers().lock().map(|mut c| c.changed(s as usize, answer)).unwrap_or(true);
+            match answer {
                 Some((window, tab)) => {
                     unsafe {
                         window_cell.write(window);
                         tab_cell.write(tab);
                     }
-                    alogf!(
-                        origin,
-                        "[action] poltergeist_grouping surface={:?} -> window={} tab={}",
-                        s, window, tab
-                    );
+                    if news {
+                        alogf!(
+                            origin,
+                            "[action] poltergeist_grouping surface={:?} -> window={} tab={} (said again only when it changes)",
+                            s, window, tab
+                        );
+                    }
                     true
                 }
                 None => {
-                    alogf!(
-                        origin,
-                        "[action] poltergeist_grouping surface={:?}: in no tracked tab; not answered",
-                        s
-                    );
+                    if news {
+                        alogf!(
+                            origin,
+                            "[action] poltergeist_grouping surface={:?}: in no tracked tab; not answered (said again only when it changes)",
+                            s
+                        );
+                    }
                     false
                 }
             }

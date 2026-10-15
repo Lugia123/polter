@@ -251,23 +251,46 @@ test "a window that did not raise the notification is never reported as one that
     }
 }
 
-/// What came of putting it on the control room's list: the caller's group
-/// as one that is waiting for the person (`Bus.raise`).
+/// What came of putting it on the control room's list (`Bus.raise`): the
+/// caller's group as one that is waiting for the person, or -- for a
+/// terminal in no group -- the caller's own row (task 1544).
+///
+/// Each sentence says where it is listed, whether anything calls the person
+/// later, and where a click on the system notification goes (task 1538),
+/// because a caller deciding whether to wait needs all three.
 pub const Raised = enum {
     /// This call does not: only `authorisation` does.
     not_asked,
     /// Recorded. The group is in "waiting for you" from the next snapshot,
     /// until the person has looked at it.
     shown,
+    /// Recorded, for a terminal in no group: it is on a row of its own in
+    /// the control room, and nothing calls the person about it later -- the
+    /// control room's own notification is only for groups (`ControlNotify`).
+    shown_alone,
     /// The caller is not a terminal the bus knows, so it has no group to
     /// be shown on.
     not_a_terminal,
+
+    /// What a raise that `took` (or did not) comes to, for a caller that is
+    /// or is not in a group.
+    pub fn of(took: bool, in_group: bool) Raised {
+        if (!took) return .not_a_terminal;
+        return if (in_group) .shown else .shown_alone;
+    }
 
     pub fn sentence(self: Raised) []const u8 {
         return switch (self) {
             .not_asked => "",
             .shown => "Your group is now listed in the control room as waiting for the person, " ++
-                "with what you said, until they have looked at it.",
+                "with what you said, until they have looked at it; if it is still waiting two " ++
+                "minutes on, the control room may call them with a notification of its own. " ++
+                "A click on a system notification about it opens the control room at your group.",
+            .shown_alone => "You are in no group, so you are listed in the control room on a row " ++
+                "of your own, as waiting for the person, with what you said, until they have " ++
+                "looked at it. Nothing calls them about it later: the control room's own " ++
+                "notification two minutes on is only for groups. A click on the system " ++
+                "notification goes to your own tab and pane.",
             .not_a_terminal => "Not listed in the control room: this call did not come from a " ++
                 "terminal Polter is tracking, so there is no group to list it under.",
         };
@@ -330,7 +353,7 @@ test "the reply says each channel separately" {
     try testing.expect(std.mem.indexOf(u8, neither, " No system notification: ") != null);
     try testing.expect(std.mem.endsWith(u8, neither, "Plugins: " ++ nobody));
 
-    // Only one of the two that says it was listed.
+    // Only the group's says it was listed as a group.
     for (std.enums.values(Raised)) |r| {
         try testing.expectEqual(r == .shown, std.mem.indexOf(u8, r.sentence(), "is now listed") != null);
     }
@@ -339,6 +362,32 @@ test "the reply says each channel separately" {
     const plain = try reply(a, .not_asked, .not_asked, nobody);
     defer a.free(plain);
     try testing.expectEqualStrings(nobody, plain);
+}
+
+test "a terminal in no group is not told its group was listed, nor that a click opens the control room" {
+    try testing.expectEqual(Raised.shown, Raised.of(true, true));
+    try testing.expectEqual(Raised.shown_alone, Raised.of(true, false));
+    try testing.expectEqual(Raised.not_a_terminal, Raised.of(false, true));
+    try testing.expectEqual(Raised.not_a_terminal, Raised.of(false, false));
+
+    const alone = Raised.shown_alone.sentence();
+    try testing.expect(std.mem.indexOf(u8, alone, "Your group") == null);
+    try testing.expect(std.mem.indexOf(u8, alone, "in no group") != null);
+    try testing.expect(std.mem.indexOf(u8, alone, "your own tab and pane") != null);
+    try testing.expect(std.mem.indexOf(u8, alone, "opens the control room") == null);
+    // It is listed -- on its own row -- and it says nothing comes later.
+    try testing.expect(std.mem.indexOf(u8, alone, "row of your own") != null);
+    try testing.expect(std.mem.indexOf(u8, alone, "Nothing calls them about it later") != null);
+
+    const grouped = Raised.shown.sentence();
+    try testing.expect(std.mem.indexOf(u8, grouped, "opens the control room at your group") != null);
+    try testing.expect(std.mem.indexOf(u8, grouped, "own tab and pane") == null);
+
+    const a = testing.allocator;
+    const said = try reply(a, Raised.of(true, false), .handed, "nobody was told.");
+    defer a.free(said);
+    try testing.expect(std.mem.startsWith(u8, said, "You are in no group"));
+    try testing.expect(std.mem.indexOf(u8, said, " A system notification was handed") != null);
 }
 
 pub fn count(plugins: []const Plugin.Manifest, e: Plugin.Event) usize {
