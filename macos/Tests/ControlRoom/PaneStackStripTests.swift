@@ -248,6 +248,28 @@ struct PaneStackStripTests {
         #expect(stack.showing?.wears == .plain)
     }
 
+    // MARK: The close button
+
+    /// Task 1600 (#1601 W3): scrolled so that a tab stood under the plus,
+    /// its close button was drawn there. It is seen only whole inside the
+    /// window the tabs are seen through.
+    @Test func aCloseButtonScrolledOutOfTheWindowIsNotSeen() {
+        let l = Layout(wants: Array(repeating: 150, count: 8), current: 7, width: 400, status: 0)
+        let button = CGFloat(Look.StackTab.closeButton), pad = CGFloat(Look.StackTab.paddingX)
+        let inset = CGFloat(Look.StackTab.inset)
+        for offset in [CGFloat(0), 100, 300, 400, l.maxOffset] {
+            for tab in l.tabs {
+                let x = tab.x - inset - offset + tab.width - pad - button
+                #expect(l.closeSeen(tab.member, offset: offset) == (x >= 0 && x + button <= l.viewport),
+                        "offset \(offset), tab \(tab.member) at \(x)")
+            }
+        }
+        // At the start the first tab's is seen, the last tab's is not.
+        #expect(l.closeSeen(0, offset: 0))
+        #expect(!l.closeSeen(7, offset: 0))
+        #expect(!l.closeSeen(99, offset: 0))
+    }
+
     // MARK: The glyph at the right end
 
     @Test func aHeldTerminalDrawsTheHeldMarkAndEveryStatusDrawsItsOwnGlyph() {

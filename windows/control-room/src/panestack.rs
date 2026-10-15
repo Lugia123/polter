@@ -268,15 +268,19 @@ impl Geometry {
     }
 
     /// The close button of the tab of `member`: at the tab's right end,
-    /// inside its padding, centred up and down.
+    /// inside its padding, centred up and down. None while any of it is
+    /// scrolled out of the window the tabs are seen through
+    /// (`stackstrip::close_seen`), so it is neither drawn over the plus nor
+    /// pressed there.
     pub fn close_rect(&self, member: usize) -> Option<Rect> {
         let r = self.tab_rect(member)?;
-        Some(Rect {
+        let close = Rect {
             x: r.x + r.w - t::PADDING_X - t::CLOSE_BUTTON,
             y: r.y + (r.h - t::CLOSE_BUTTON) / 2.0,
             w: t::CLOSE_BUTTON,
             h: t::CLOSE_BUTTON,
-        })
+        };
+        stackstrip::close_seen(&self.layout, member, self.offset).then_some(close)
     }
 
     /// The plus.
@@ -792,6 +796,30 @@ mod tests {
         for i in &d.row {
             if let Item::Line { rect, .. } = i {
                 assert!(rect.x + rect.w <= close.x, "{rect:?} runs into the close button at {}", close.x);
+            }
+        }
+    }
+
+    /// Task 1600 (#1601, W3 on a real machine): scrolled by the person so
+    /// that the tab in front stood under the plus, its close button was
+    /// drawn on top of the plus. A close button is drawn only wholly inside
+    /// the window the tabs are seen through, and never over the plus.
+    #[test]
+    fn a_close_button_scrolled_out_of_the_window_is_not_drawn() {
+        let s = {
+            let mut s = named(&["a", "b", "c", "d", "e", "f", "g", "h"]);
+            s.current = 7;
+            s
+        };
+        let viewport = geometry(Wears::Worker, 400.0, &[150.0; 8], 7, 0.0, 0.0, true, false).layout.viewport;
+        for offset in [0.0, 100.0, 300.0, 400.0, 600.0] {
+            // Left where the wheel put it: the tab in front may be out of view.
+            let geo = geometry(Wears::Worker, 400.0, &[150.0; 8], 7, 0.0, offset, false, true);
+            let d = build(&geo, &s, Wears::Worker, &status_title(&s, ""), &view(look::theme(false), Some(3)), &|x| x.to_string());
+            let (lo, hi) = (geo.strip.x + t::INSET, geo.strip.x + t::INSET + viewport);
+            for (m, r) in &d.closes {
+                assert!(r.x >= lo && r.x + r.w <= hi, "offset {offset}: tab {m}'s close button {r:?} outside {lo}..{hi}");
+                assert!(r.x + r.w <= d.add.x, "offset {offset}: tab {m}'s close button {r:?} over the plus at {}", d.add.x);
             }
         }
     }

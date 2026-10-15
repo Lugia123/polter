@@ -191,6 +191,21 @@ struct PaneStackStripLayout: Equatable {
         return min(max(offset, 0), maxOffset)
     }
 
+    /// Whether the close button of `member`'s tab is whole inside the
+    /// window the tabs are seen through, scrolled to `offset`: it sits at
+    /// the tab's right end inside its padding. Only then is it drawn.
+    ///
+    /// **Never over the plus** (task 1600, #1601 W3 on Windows): scrolled
+    /// under the plus, the tab in front had its close button drawn there.
+    /// Here the row is clipped a foot past the window and fades out, so it
+    /// showed at most a foot of it, faded -- the same rule all the same.
+    func closeSeen(_ member: Int, offset: CGFloat) -> Bool {
+        guard let tab = tabs.first(where: { $0.member == member }) else { return false }
+        let button = CGFloat(Look.StackTab.closeButton)
+        let x = tab.x - CGFloat(Look.StackTab.inset) - offset + tab.width - CGFloat(Look.StackTab.paddingX) - button
+        return x >= -0.5 && x + button <= viewport + 0.5
+    }
+
     /// The members waiting out of sight, scrolled at `offset`: on each side,
     /// the first of `urgent` -- the core's order, most pressing first --
     /// whose tab is not wholly in view that way. What the strip draws at

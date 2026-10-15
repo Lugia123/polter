@@ -217,7 +217,8 @@ pub fn withMoves(alloc: Allocator, reply: []const u8, list: []const Move) ![]con
     var arr: std.json.Array = .init(aa);
     for (list) |m| {
         var o: std.json.ObjectMap = .empty;
-        try o.put(aa, "id", .{ .string = try std.fmt.allocPrint(aa, "0x{x}", .{m.id}) });
+        // As `terminal_list` writes it, all sixteen digits (task 1600).
+        try o.put(aa, "id", .{ .string = try std.fmt.allocPrint(aa, "0x{x:0>16}", .{m.id}) });
         try o.put(aa, "from", try whereValue(aa, m.from));
         try o.put(aa, "to", try whereValue(aa, m.to));
         try arr.append(.{ .object = o });
@@ -323,8 +324,11 @@ test "tidying: the reply carries the moves beside the layout" {
     }};
     const out = try withMoves(testing.allocator, "{\"layout\":{\"pane\":\"0x2a\"}}", &list);
     defer testing.allocator.free(out);
+    // The moved terminal's id as terminal_list writes it, sixteen digits
+    // (task 1600); the layout's own cells are the reply's, rewritten
+    // elsewhere.
     try testing.expectEqualStrings(
-        "{\"layout\":{\"pane\":\"0x2a\"},\"moved\":[{\"id\":\"0x2a\",\"from\":{\"window\":1,\"tab\":2,\"tab_index\":3},\"to\":{\"window\":1,\"tab\":4,\"tab_index\":0}}]}",
+        "{\"layout\":{\"pane\":\"0x2a\"},\"moved\":[{\"id\":\"0x000000000000002a\",\"from\":{\"window\":1,\"tab\":2,\"tab_index\":3},\"to\":{\"window\":1,\"tab\":4,\"tab_index\":0}}]}",
         out,
     );
 }

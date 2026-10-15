@@ -639,6 +639,44 @@ pub fn tab_ending<W: Copy + PartialEq>(over: TabOver<W>, tabs_home: usize, cance
     }
 }
 
+/// Whether a window tab being dragged is out of its own strip: past the
+/// window's sides, or more than `slop` above or below the strip (`p` in the
+/// window's client coordinates, the strip `strip_h` tall at its top).
+pub fn out_of_strip(p: (f64, f64), client_w: f64, strip_h: f64, slop: f64) -> bool {
+    p.0 < 0.0 || p.0 >= client_w || p.1 < -slop || p.1 >= strip_h + slop
+}
+
+/// What a window shows while one of its tabs is dragged.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Aside {
+    /// As it is.
+    Keep,
+    /// The tab at this place in the strip, the one it would show with the
+    /// dragged tab gone.
+    Show(usize),
+    /// The dragged tab again.
+    Back,
+}
+
+/// What a window shows while its tab at `at` is dragged, with `active` in
+/// front of `count` tabs: `out` is whether the pointer is out of the strip
+/// (`out_of_strip`), `aside` whether the window shows another tab for it now.
+///
+/// **Out of the strip, the dragged tab stands aside** (task 1600, D6; macOS,
+/// where AppKit lifts the tab out of its group): the window shows the tab it
+/// would with the dragged one gone -- the next one, or the one before the
+/// last -- so its panes can take the dragged tab's terminals. Its own panes
+/// never could (`TabIntoPane::OwnTab`), and in front there were no others.
+/// Back over the strip it is in front again. A tab dragged from behind, or
+/// the only tab, leaves the window as it is.
+pub fn standing_aside(out: bool, aside: bool, at: usize, active: usize, count: usize) -> Aside {
+    match (out, aside) {
+        (true, false) if at == active && count > 1 => Aside::Show(if at + 1 < count { at + 1 } else { at - 1 }),
+        (false, true) => Aside::Back,
+        _ => Aside::Keep,
+    }
+}
+
 /// Where a tab dropped at `x` lands in a strip whose tabs start at `first`
 /// and are `width` wide, with `n` of them: before the tab whose middle is
 /// right of the pointer, so the gap nearest the pointer.
@@ -981,6 +1019,33 @@ mod tests {
         assert_eq!(mark_x(1, &STRIP), Some(102.0));
         assert_eq!(mark_x(3, &STRIP), Some(308.0));
         assert_eq!(mark_x(4, &STRIP), None);
+    }
+
+    /// Task 1600, D6.
+    #[test]
+    fn a_tab_dragged_out_of_its_strip_stands_aside_for_the_one_shown_without_it() {
+        // Out: the next one, and for the last the one before it.
+        assert_eq!(standing_aside(true, false, 0, 0, 3), Aside::Show(1));
+        assert_eq!(standing_aside(true, false, 1, 1, 3), Aside::Show(2));
+        assert_eq!(standing_aside(true, false, 2, 2, 3), Aside::Show(1));
+        // Already aside, still out: nothing more.
+        assert_eq!(standing_aside(true, true, 2, 1, 3), Aside::Keep);
+        // Back over the strip: in front again; over it and not aside, nothing.
+        assert_eq!(standing_aside(false, true, 2, 1, 3), Aside::Back);
+        assert_eq!(standing_aside(false, false, 2, 2, 3), Aside::Keep);
+        // The only tab, and a tab dragged from behind, leave it as it is.
+        assert_eq!(standing_aside(true, false, 0, 0, 1), Aside::Keep);
+        assert_eq!(standing_aside(true, false, 0, 2, 3), Aside::Keep);
+    }
+
+    #[test]
+    fn out_of_the_strip_is_past_a_side_or_more_than_the_slop_off_it() {
+        let out = |x, y| out_of_strip((x, y), 800.0, 40.0, 5.0);
+        assert!(!out(10.0, 20.0));
+        assert!(!out(10.0, -5.0) && !out(10.0, 44.9));
+        assert!(out(10.0, -5.1) && out(10.0, 45.0) && out(10.0, 300.0));
+        assert!(out(-1.0, 20.0) && out(800.0, 20.0));
+        assert!(!out(0.0, 20.0) && !out(799.0, 20.0));
     }
 
     #[test]

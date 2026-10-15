@@ -697,7 +697,21 @@ fn main() {
                 format!("{}|{}", l.map_or("-".to_string(), |i| i.to_string()), r.map_or("-".to_string(), |i| i.to_string()))
             })
             .collect();
-        println!("strip {n} at68=[{}] scrolls68={} reveals={} carries={}", widths.join(" "), sl.scrolls(), revealed.join("/"), carried.join("/"));
+        let closes: Vec<String> = [0.0f64, 250.0, 10000.0]
+            .iter()
+            .map(|&o| {
+                let o = o.min(table.max_offset());
+                table.tabs.iter().filter(|t| stackstrip::close_seen(&table, t.member, o)).map(|t| t.member.to_string()).collect::<Vec<_>>().join(",")
+            })
+            .collect();
+        println!(
+            "strip {n} at68=[{}] scrolls68={} reveals={} carries={} closes={}",
+            widths.join(" "),
+            sl.scrolls(),
+            revealed.join("/"),
+            carried.join("/"),
+            closes.join("/")
+        );
     }
     for name in ["", "api", "frontend", "任务", "billing-worker"] {
         println!("strip nominal {} plain={:.3} glyph={:.3}", quote(name), stackstrip::nominal_width(name, false), stackstrip::nominal_width(name, true));

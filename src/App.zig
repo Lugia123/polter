@@ -5927,22 +5927,47 @@ fn rewriteLayout(
     text: []const u8,
     to_surface: bool,
 ) ![]const u8 {
+    const Map = struct {
+        fn toSurface(ctx: *const anyopaque, id: u64) ?u64 {
+            const app: *App = @ptrCast(@alignCast(@constCast(ctx)));
+            const s = app.findSurfaceByID(id) orelse return null;
+            return @intFromPtr(s.rt_surface);
+        }
+        fn toId(ctx: *const anyopaque, handle: u64) ?u64 {
+            const app: *const App = @ptrCast(@alignCast(ctx));
+            return app.surfaceIdOfHandle(handle);
+        }
+    };
+    return rewriteLayoutWith(alloc, text, self, if (to_surface) Map.toSurface else Map.toId, to_surface);
+}
+
+/// `rewriteLayout` with the map passed in, so it can be tested without an
+/// `App`: every `pane` cell's number is replaced by what `map` gives for it.
+fn rewriteLayoutWith(
+    alloc: Allocator,
+    text: []const u8,
+    ctx: *const anyopaque,
+    map: *const fn (*const anyopaque, u64) ?u64,
+    to_surface: bool,
+) ![]const u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, text, .{}) catch
         return error.BadLayout;
     defer parsed.deinit();
 
-    try self.rewriteLayoutValue(alloc, &parsed.value, to_surface);
+    // The new cell strings live in the parse's own arena, freed with it.
+    try rewriteLayoutValue(parsed.arena.allocator(), &parsed.value, ctx, map, to_surface);
 
     var buf: std.Io.Writer.Allocating = .init(alloc);
     errdefer buf.deinit();
     std.json.Stringify.value(parsed.value, .{}, &buf.writer) catch return error.BadLayout;
-    return buf.written();
+    return buf.toOwnedSlice();
 }
 
 fn rewriteLayoutValue(
-    self: *App,
     alloc: Allocator,
     v: *std.json.Value,
+    ctx: *const anyopaque,
+    map: *const fn (*const anyopaque, u64) ?u64,
     to_surface: bool,
 ) !void {
     switch (v.*) {
@@ -5951,18 +5976,20 @@ fn rewriteLayoutValue(
                 if (cell.* == .string) {
                     const n = std.fmt.parseUnsigned(u64, cell.string, 0) catch
                         return error.BadLayout;
-                    const mapped: u64 = if (to_surface) m: {
-                        const s = self.findSurfaceByID(n) orelse return error.UnknownPane;
-                        break :m @intFromPtr(s.rt_surface);
-                    } else m: {
-                        break :m self.surfaceIdOfHandle(n) orelse return error.UnknownPane;
-                    };
-                    cell.* = .{ .string = try std.fmt.allocPrint(alloc, "0x{x}", .{mapped}) };
+                    const mapped = map(ctx, n) orelse return error.UnknownPane;
+                    // **A terminal id as `terminal_list` writes it**, all
+                    // sixteen digits (task 1600: `0x2566…` came back for
+                    // `0x02566…`, and a caller comparing the two found no
+                    // match). A handle for the apprt is read as a number.
+                    cell.* = .{ .string = if (to_surface)
+                        try std.fmt.allocPrint(alloc, "0x{x}", .{mapped})
+                    else
+                        try std.fmt.allocPrint(alloc, "0x{x:0>16}", .{mapped}) };
                 }
             }
-            for (o.values()) |*child| try self.rewriteLayoutValue(alloc, child, to_surface);
+            for (o.values()) |*child| try rewriteLayoutValue(alloc, child, ctx, map, to_surface);
         },
-        .array => |*a| for (a.items) |*child| try self.rewriteLayoutValue(alloc, child, to_surface),
+        .array => |*a| for (a.items) |*child| try rewriteLayoutValue(alloc, child, ctx, map, to_surface),
         else => {},
     }
 }
@@ -6023,7 +6050,8 @@ fn rewriteHandles(
 
         if (value) |v| {
             if (lookup(ctx, v)) |sid| {
-                try out.print(alloc, "0x{x}", .{sid});
+                // As `terminal_list` writes it (task 1600).
+                try out.print(alloc, "0x{x:0>16}", .{sid});
                 i = j;
                 continue;
             }
@@ -9473,7 +9501,7 @@ fn drainMailbox(self: *App, rt_app: *apprt.App) !void {
             .poltergeist_quiet => |msg| self.poltergeistHeartbeat(msg.from, msg.quiet_ms),
             .poltergeist_sampling => |msg| {
                 if (!msg.started) log.warn(
-                    "poltergeist: sampling could not start for terminal 0x{x}; it is marked watched with nothing measuring it",
+                    "poltergeist: sampling could not start for terminal 0x{x:0>16}; it is marked watched with nothing measuring it",
                     .{msg.from},
                 );
                 self.poltergeist.noteSampling(msg.from, msg.started, self.poltergeistElapsedMs());
@@ -9865,6 +9893,44 @@ pub const Wasm = if (!builtin.target.isWasm()) struct {} else struct {
     //     }
     // }
 };
+
+test "task 1600: every terminal id handed to a caller is written as terminal_list writes it" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    // A terminal id with a leading zero digit: the one a real machine lost
+    // (0x2566… where terminal_list said 0x02566…). Handle 0x1e066b80000.
+    const Map = struct {
+        fn toId(_: *const anyopaque, handle: u64) ?u64 {
+            return if (handle == 0x1e066b80000) 0x02566e9a51296e32 else null;
+        }
+        fn toSurface(_: *const anyopaque, id: u64) ?u64 {
+            return if (id == 0x02566e9a51296e32) 0x1e066b80000 else null;
+        }
+    };
+    const ctx: *const anyopaque = @ptrCast(&Map{});
+    var listed: [18]u8 = undefined;
+    const want = try std.fmt.bufPrint(&listed, "0x{x:0>16}", .{@as(u64, 0x02566e9a51296e32)});
+    try testing.expectEqualStrings("0x02566e9a51296e32", want);
+
+    // The layout's reply.
+    {
+        const got = try rewriteLayoutWith(alloc, "{\"stack\":[{\"pane\":\"0x1e066b80000\"}],\"shown\":0}", ctx, Map.toId, false);
+        defer alloc.free(got);
+        try testing.expectEqualStrings("{\"stack\":[{\"pane\":\"0x02566e9a51296e32\"}],\"shown\":0}", got);
+    }
+    // A refusal's sentence.
+    {
+        const got = try rewriteHandles(alloc, "the layout names terminal 0x1e066b80000 twice.", ctx, Map.toId);
+        defer alloc.free(got);
+        try testing.expectEqualStrings("the layout names terminal 0x02566e9a51296e32 twice.", got);
+    }
+    // And the caller's id still finds its surface on the way in.
+    {
+        const got = try rewriteLayoutWith(alloc, "{\"pane\":\"0x02566e9a51296e32\"}", ctx, Map.toSurface, true);
+        defer alloc.free(got);
+        try testing.expectEqualStrings("{\"pane\":\"0x1e066b80000\"}", got);
+    }
+}
 
 test "a refusal names terminals, and leaves every other number alone" {
     const testing = std.testing;
