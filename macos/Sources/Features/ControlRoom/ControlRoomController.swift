@@ -326,7 +326,10 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
 
         // Sized to the right-hand side before the terminal is in it, so the
         // first size the terminal is told is the one it will keep.
-        let host = NSHostingView(rootView: Ghostty.SurfaceWrapper(surfaceView: view).environmentObject(ghostty))
+        // It draws no drag handle here, whatever `drag-handle` says (task 1566).
+        let host = NSHostingView(rootView: Ghostty.SurfaceWrapper(surfaceView: view)
+            .environment(\.surfaceInControlRoom, true)
+            .environmentObject(ghostty))
         host.frame = detail.bounds
         detail.host(host, for: loan.group)
         detail.layoutSubtreeIfNeeded()

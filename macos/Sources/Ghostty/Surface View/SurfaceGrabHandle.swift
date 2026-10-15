@@ -14,12 +14,14 @@ extension Ghostty {
 
         /// A pane with a title is picked up by it, and has no handle (task 1508).
         @Environment(\.paneHasTitle) private var paneHasTitle
+        /// The control room's right-hand side drags nothing (task 1566).
+        @Environment(\.surfaceInControlRoom) private var inControlRoom
 
         @State private var isHovering: Bool = false
         @State private var isDragging: Bool = false
 
         private var handleVisible: Bool {
-            surfaceView.dragGrip(dragHandle, titled: paneHasTitle, lent: false) == .handle
+            surfaceView.dragGrip(dragHandle, titled: paneHasTitle, lent: false, controlRoom: inControlRoom) == .handle
         }
 
         private var ellipsisVisible: Bool {
@@ -131,23 +133,21 @@ extension Ghostty {
 
 extension Ghostty.SurfaceView {
     /// `SurfaceDragGrip.place` for this surface as it is now: whether its
-    /// window is fullscreen and its tab split are read off the window.
-    func dragGrip(_ setting: Ghostty.Config.DragHandle, titled: Bool, lent: Bool) -> SurfaceDragGrip.Place {
-        let (fullscreen, split) = gripContext
-        return SurfaceDragGrip.place(setting: Self.gripSetting(setting), titled: titled, lent: lent, fullscreen: fullscreen, split: split)
+    /// tab is split is read off the window.
+    func dragGrip(_ setting: Ghostty.Config.DragHandle, titled: Bool, lent: Bool, controlRoom: Bool) -> SurfaceDragGrip.Place {
+        SurfaceDragGrip.place(
+            setting: Self.gripSetting(setting), titled: titled, lent: lent, controlRoom: controlRoom, split: gripSplit)
     }
 
     /// `SurfaceDragGrip.titleGrip` for this surface as it is now.
     func titleGrip(_ setting: Ghostty.Config.DragHandle, lent: Bool) -> SurfaceDragGrip.TitleGrip {
-        let (fullscreen, split) = gripContext
-        return SurfaceDragGrip.titleGrip(setting: Self.gripSetting(setting), lent: lent, fullscreen: fullscreen, split: split)
+        SurfaceDragGrip.titleGrip(setting: Self.gripSetting(setting), lent: lent, split: gripSplit)
     }
 
-    /// Whether this surface's window is fullscreen, and its tab split.
-    private var gripContext: (fullscreen: Bool, split: Bool) {
-        let fullscreen = window?.styleMask.contains(.fullScreen) ?? false
-        let split = (window?.windowController as? BaseTerminalController)?.surfaceTree.isSplit ?? false
-        return (fullscreen, split)
+    /// Whether this surface's tab has more than one pane. A stack is one
+    /// pane: its tree's root is a leaf.
+    private var gripSplit: Bool {
+        (window?.windowController as? BaseTerminalController)?.surfaceTree.isSplit ?? false
     }
 
     private static func gripSetting(_ setting: Ghostty.Config.DragHandle) -> SurfaceDragGrip.Setting {

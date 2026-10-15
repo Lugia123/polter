@@ -28,15 +28,20 @@ enum SurfaceDragGrip {
     /// - `titled`: it wears a frame with a title (`PaneFrame.drawn` is not nil).
     /// - `lent`: its terminal is on the control room's right-hand side and
     ///   the pane shows a placeholder, which had no handle either.
-    /// - `fullscreen`, `split`: its window is fullscreen; its tab has more
-    ///   than one pane. With `auto` a fullscreen tab of one pane cannot be
-    ///   picked up, by a handle or by a title.
-    static func place(setting: Setting, titled: Bool, lent: Bool, fullscreen: Bool, split: Bool) -> Place {
-        guard !lent else { return .none }
+    /// - `controlRoom`: this is the terminal itself, shown on the control
+    ///   room's right-hand side (task 1566). The control room is not a split
+    ///   and nothing in it is dragged, **whatever `drag-handle` says**:
+    ///   `always` included.
+    /// - `split`: its tab has more than one pane. With `auto` a tab of one
+    ///   pane -- a stack included -- cannot be picked up, by a handle or by
+    ///   a title, fullscreen or not: it moves by its tab (task 1566). It
+    ///   used to keep the handle unless the window was fullscreen.
+    static func place(setting: Setting, titled: Bool, lent: Bool, controlRoom: Bool, split: Bool) -> Place {
+        guard !lent, !controlRoom else { return .none }
         let allowed = switch setting {
         case .always: true
         case .never: false
-        case .auto: !fullscreen || split
+        case .auto: split
         }
         guard allowed else { return .none }
         return titled ? .title : .handle
@@ -57,13 +62,13 @@ enum SurfaceDragGrip {
     ///
     /// **`drag-handle` decides whether a pane is dragged, not whether its
     /// title can be clicked.** The click used to ride on the drag layer, so
-    /// with `never` -- and with `auto` in a fullscreen tab of one pane --
-    /// there was no layer and a click on the title did nothing, while the
+    /// with `never` -- and with `auto` in a tab of one pane -- there was no
+    /// layer and a click on the title did nothing, while the
     /// same click with `auto` focused the pane. Only a lent pane's
     /// placeholder takes no click: its terminal is in the control room.
-    static func titleGrip(setting: Setting, lent: Bool, fullscreen: Bool, split: Bool) -> TitleGrip {
+    static func titleGrip(setting: Setting, lent: Bool, split: Bool) -> TitleGrip {
         guard !lent else { return .none }
-        return place(setting: setting, titled: true, lent: false, fullscreen: fullscreen, split: split) == .title
+        return place(setting: setting, titled: true, lent: false, controlRoom: false, split: split) == .title
             ? .drag : .click
     }
 

@@ -60,12 +60,17 @@ pub enum Grip {
 pub struct Situation {
     /// It wears a frame with a title.
     pub titled: bool,
-    /// Its terminal is on the control room's right-hand side, and the pane
-    /// shows a placeholder.
+    /// Its terminal is on the control room's right-hand side. Nothing is
+    /// dragged there, **whatever `drag-handle` says**, `always` included
+    /// (task 1566). Deviation: macOS asks this twice, `lent` for the
+    /// placeholder in the pane and `controlRoom` for the terminal on the
+    /// right-hand side, because there they are two views; here the pane is
+    /// the one window, moved, and this is both.
     pub lent: bool,
-    /// Its window is fullscreen.
-    pub fullscreen: bool,
-    /// Its tab has more than one pane.
+    /// Its tab has more than one pane. With `auto` a tab of one pane cannot
+    /// be picked up, by a handle or by a title, fullscreen or not: it moves
+    /// by its tab (task 1566). It used to keep the handle unless the window
+    /// was fullscreen.
     pub split: bool,
 }
 
@@ -77,7 +82,7 @@ pub fn place(setting: Setting, s: Situation) -> Grip {
     let allowed = match setting {
         Setting::Always => true,
         Setting::Never => false,
-        Setting::Auto => !s.fullscreen || s.split,
+        Setting::Auto => s.split,
     };
     if !allowed {
         return Grip::None;
@@ -583,7 +588,7 @@ pub fn insertion_index(x: f64, first: f64, width: f64, n: usize) -> usize {
 mod tests {
     use super::*;
 
-    const LONE: Situation = Situation { titled: false, lent: false, fullscreen: false, split: false };
+    const LONE: Situation = Situation { titled: false, lent: false, split: false };
 
     #[test]
     fn the_veil_is_what_the_opacity_leaves_and_never_hides_a_pane() {
@@ -629,23 +634,38 @@ mod tests {
         let split = Situation { split: true, ..LONE };
         assert_eq!(place(Setting::Auto, Situation { titled: true, ..split }), Grip::Title);
         assert_eq!(place(Setting::Auto, split), Grip::Handle);
-        assert_eq!(place(Setting::Auto, LONE), Grip::Handle);
+        assert_eq!(place(Setting::Always, Situation { titled: true, ..split }), Grip::Title);
+        assert_eq!(place(Setting::Always, split), Grip::Handle);
+        assert_eq!(place(Setting::Never, split), Grip::None);
     }
 
     #[test]
-    fn auto_takes_the_grip_away_only_from_a_lone_pane_in_fullscreen() {
-        let full = Situation { fullscreen: true, ..LONE };
-        assert_eq!(place(Setting::Auto, full), Grip::None);
-        assert_eq!(place(Setting::Auto, Situation { split: true, ..full }), Grip::Handle);
-        assert_eq!(place(Setting::Always, full), Grip::Handle);
+    fn auto_alone_in_its_tab_has_no_grip() {
+        // Fullscreen or not: it moves by its tab (task 1566).
+        assert_eq!(place(Setting::Auto, LONE), Grip::None);
+        assert_eq!(place(Setting::Auto, Situation { titled: true, ..LONE }), Grip::None);
+    }
+
+    #[test]
+    fn always_alone_in_its_tab_keeps_the_grip_and_never_has_none() {
+        assert_eq!(place(Setting::Always, LONE), Grip::Handle);
+        assert_eq!(place(Setting::Always, Situation { titled: true, ..LONE }), Grip::Title);
         assert_eq!(place(Setting::Never, LONE), Grip::None);
+        assert_eq!(place(Setting::Never, Situation { titled: true, ..LONE }), Grip::None);
     }
 
     #[test]
     fn a_lent_pane_has_no_grip_and_its_title_takes_no_click() {
-        let lent = Situation { titled: true, lent: true, split: true, ..LONE };
-        assert_eq!(place(Setting::Always, lent), Grip::None);
-        assert_eq!(title_grip(Setting::Always, lent), TitleGrip::None);
+        // Task 1566: `always` included, split or not.
+        for setting in [Setting::Always, Setting::Auto, Setting::Never] {
+            for split in [false, true] {
+                for titled in [false, true] {
+                    let lent = Situation { titled, lent: true, split };
+                    assert_eq!(place(setting, lent), Grip::None, "{setting:?} split={split} titled={titled}");
+                    assert_eq!(title_grip(setting, lent), TitleGrip::None, "{setting:?} split={split}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -653,8 +673,9 @@ mod tests {
         let split = Situation { titled: true, split: true, ..LONE };
         assert_eq!(title_grip(Setting::Auto, split), TitleGrip::Drag);
         assert_eq!(title_grip(Setting::Never, split), TitleGrip::Click);
-        let full = Situation { titled: true, fullscreen: true, ..LONE };
-        assert_eq!(title_grip(Setting::Auto, full), TitleGrip::Click);
+        let alone = Situation { titled: true, ..LONE };
+        assert_eq!(title_grip(Setting::Auto, alone), TitleGrip::Click);
+        assert_eq!(title_grip(Setting::Always, alone), TitleGrip::Drag);
     }
 
     #[test]

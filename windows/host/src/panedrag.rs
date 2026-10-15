@@ -171,7 +171,7 @@ fn situation(frame: HWND, pane: PaneId) -> Option<(Situation, f64)> {
     let split = tab.terminal().is_some_and(|t| t.tree.is_split());
     let lent = win.shown_on_loan().is_some_and(|l| l.pane == pane);
     let titled = win.pane_frames.ground && win.pane_frames.panes.iter().any(|p| p.pane == pane && p.drawn.is_some());
-    Some((Situation { titled, lent, fullscreen: win.pre_fullscreen.is_some(), split }, win.scale.max(0.1)))
+    Some((Situation { titled, lent, split }, win.scale.max(0.1)))
 }
 
 fn cursor() -> POINT {

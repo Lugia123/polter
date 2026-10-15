@@ -2970,16 +2970,14 @@ keybind: Keybinds = .{},
 ///  - `always`
 ///
 ///    Always display the drag handle, even when there's only one split.
+///    Not in the control room: the terminal shown there is never dragged.
 ///
 ///  - `auto` *(default)*
 ///
-///    Automatically show and hide the drag handle.
-///
-///    On Linux, the handle is only shown when there are two or
-///    more splits present.
-///
-///    On macOS, the handle is only hidden when there's one split
-///    in **fullscreen** mode, otherwise it's shown when hovered.
+///    The handle is only shown when the tab has two or more splits; a
+///    tab of one split is moved by dragging the tab itself. On macOS and
+///    Windows it shows when hovered. The terminal shown in the control
+///    room never has one.
 ///
 ///  - `never`
 ///

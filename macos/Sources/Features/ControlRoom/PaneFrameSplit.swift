@@ -62,6 +62,10 @@ private struct PaneHasTitleKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct SurfaceInControlRoomKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 private struct PaneFrameTreeKey: EnvironmentKey {
     /// Outside a scope no pane holds a stack.
     static let defaultValue: SplitTree<Ghostty.SurfaceView>? = nil
@@ -93,6 +97,13 @@ extension EnvironmentValues {
     var paneHasTitle: Bool {
         get { self[PaneHasTitleKey.self] }
         set { self[PaneHasTitleKey.self] = newValue }
+    }
+
+    /// Whether the terminal this is inside is the one shown on the control
+    /// room's right-hand side. Nothing there is dragged (task 1566).
+    var surfaceInControlRoom: Bool {
+        get { self[SurfaceInControlRoomKey.self] }
+        set { self[SurfaceInControlRoomKey.self] = newValue }
     }
 }
 
